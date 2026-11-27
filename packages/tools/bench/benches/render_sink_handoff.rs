@@ -8,7 +8,7 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use nve_abi::{
-    ColorRgba, EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId,
+    ColorRgba, EventBatchBuf, FrameId, InteractionEvent, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
@@ -125,8 +125,11 @@ fn find_tick_node_id(store: &NodeStore) -> NodeId {
     store
         .live_nodes()
         .find_map(|id| {
-            let mask = store.try_row::<Interaction>(id)?.event_mask();
-            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id)
+            store
+                .try_row::<Interaction>(id)?
+                .listeners()
+                .contains(InteractionEvent::Press)
+                .then_some(id)
         })
         .expect("pressable tick node")
 }
@@ -146,16 +149,19 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
     let direct_btn = find_tick_node_id(direct_surface.store());
     let mut direct_frame = FrameId(1);
 
+    let mut direct_ev = EventBatchBuf::with_capacity(1, 0);
     group.bench_function("direct_commit_to_web", |b| {
         b.iter(|| {
             direct_frame = direct_frame.next();
-            direct_surface.dispatch_events(&[NativeEvent {
-                surface_id: SurfaceId::ROOT,
-                node_id: direct_btn,
-                timestamp_us: direct_frame.raw() * 16_000,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x: 10.0, y: 10.0 },
-            }]);
+            direct_ev.clear();
+            direct_ev.push_press(
+                SurfaceId::ROOT,
+                direct_btn,
+                TimestampUs(direct_frame.raw() * 16_000),
+                10.0,
+                10.0,
+            );
+            direct_surface.dispatch_events(direct_ev.as_validated());
             black_box(
                 direct_surface
                     .commit_to(direct_frame, &mut direct_web)
@@ -178,16 +184,19 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
     let wire_btn = find_tick_node_id(wire_web.store());
     let mut wire_frame = FrameId(1);
 
+    let mut wire_ev = EventBatchBuf::with_capacity(1, 0);
     group.bench_function("nve2_wire_encode_decode_web", |b| {
         b.iter(|| {
             wire_frame = wire_frame.next();
-            wire_surface.dispatch_events(&[NativeEvent {
-                surface_id: SurfaceId::ROOT,
-                node_id: wire_btn,
-                timestamp_us: wire_frame.raw() * 16_000,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x: 10.0, y: 10.0 },
-            }]);
+            wire_ev.clear();
+            wire_ev.push_press(
+                SurfaceId::ROOT,
+                wire_btn,
+                TimestampUs(wire_frame.raw() * 16_000),
+                10.0,
+                10.0,
+            );
+            wire_surface.dispatch_events(wire_ev.as_validated());
             let bytes = wire_surface.render_nve2_slice(wire_frame);
             black_box(
                 wire_web

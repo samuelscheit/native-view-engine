@@ -247,20 +247,17 @@ uint32_t NveRnwComponentHost::dispatch_scroll(
   if (!session_.is_valid() && !session_.is_paired()) {
     return 0u;
   }
-  NveDirectEvent ev{};
-  ev.surface_id = surface_id();
-  ev.node_id = node_id;
-  ev.timestamp_us = nve::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(nve::EventKind::Scroll);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_SCROLL;
-  ev.x = offset_x;
-  ev.y = offset_y;
-  ev.width = content_width;
-  ev.height = content_height;
-  ev.value = nve::make_null_value();
+  const NveEvent ev = nve::make_scroll_event(
+      surface_id(),
+      node_id,
+      nve::current_timestamp_us(),
+      offset_x,
+      offset_y,
+      content_width,
+      content_height);
 
   const uint32_t dirty =
-      session_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/false);
+      session_.dispatch_events(nve::make_single_event_batch(ev), /*auto_render=*/false);
   if (dirty != 0u && session_.is_valid()) {
     (void)render_frame(nullptr);
   } else {

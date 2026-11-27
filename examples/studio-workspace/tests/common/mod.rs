@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nve_abi::{ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{ColorRgba, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
@@ -141,13 +141,15 @@ impl MultiBackendHarness {
             "hit_test at center of '{test_id}' hit Node#{hit} instead of Node#{node_id}"
         );
 
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: hit,
-            timestamp_us: self.next_frame * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            hit,
+            TimestampUs(self.next_frame * 16_000),
+            cx,
+            cy,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "press on '{test_id}' was not handled");
         self.render_next();
     }
@@ -160,13 +162,14 @@ impl MultiBackendHarness {
             self.ascii()
         );
         let node_id = node_id.expect("checked above");
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(
+            SurfaceId::ROOT,
             node_id,
-            timestamp_us: self.next_frame * 16_000,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(text.to_owned()),
-        }]);
+            TimestampUs(self.next_frame * 16_000),
+            text,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "text change on '{test_id}' was not handled");
         self.render_next();
     }

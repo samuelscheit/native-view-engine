@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use nve_abi::table::NveTableView;
 use nve_abi::{
-    ColorRgba, FrameId, NativeEvent, NodeId, NveRenderNode, NveSceneTable, NveSceneView,
+    ColorRgba, EventBatchBuf, FrameId, NodeId, NveRenderNode, NveSceneTable, NveSceneView,
     PrimarySlot, SceneNodeInput, ShortLen, SurfaceId, ZIndex, NVE_NODE_CLIP_BOUNDS,
     NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
@@ -79,7 +79,7 @@ pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) interaction: InteractionTracker,
     pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
     pub(crate) last_mutations: Vec<HeadlessMutation>,
-    pub(crate) pending_events: Vec<NativeEvent>,
+    pub(crate) pending_events: EventBatchBuf,
     pub(crate) scene_table: NveSceneTable,
     pub(crate) published_tables: Vec<NveTableView>,
     published_dirty_buf: Vec<u32>,
@@ -117,7 +117,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             interaction: InteractionTracker::new(),
             scroll_offsets: HashMap::new(),
             last_mutations: Vec::new(),
-            pending_events: Vec::new(),
+            pending_events: EventBatchBuf::new(),
             scene_table: NveSceneTable::new(),
             published_tables: Vec::new(),
             published_dirty_buf: Vec::new(),
@@ -268,8 +268,8 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     #[inline]
-    pub fn push_event(&mut self, event: NativeEvent) {
-        self.pending_events.push(event);
+    pub fn pending_events_mut(&mut self) -> &mut EventBatchBuf {
+        &mut self.pending_events
     }
 
     #[inline]
@@ -420,10 +420,10 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 return Some(hit);
             }
         }
-        let mask = store
+        let has_listeners = store
             .try_row::<Interaction>(id)
-            .map_or(0, |i| i.event_mask());
-        if inside && !effective_hidden && mask != 0 {
+            .is_some_and(|i| !i.listeners().is_empty());
+        if inside && !effective_hidden && has_listeners {
             Some(id)
         } else {
             None
@@ -495,9 +495,9 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 } else {
                     (0, 0, 0.0, 0.0, 1.0, 0, false)
                 };
-            let event_mask = store
+            let has_listeners = store
                 .try_row::<Interaction>(id)
-                .map_or(0, |i| i.event_mask());
+                .is_some_and(|i| !i.listeners().is_empty());
             let (text_offset, text_len) = if let Some(tc) = store.try_row::<TextContent>(id) {
                 let span = tc.text_span();
                 let s = tc.text();
@@ -527,7 +527,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             if text_len > 0 && children.is_empty() {
                 flags |= NVE_NODE_LEAF_TEXT;
             }
-            if event_mask != 0 {
+            if has_listeners {
                 flags |= NVE_NODE_INTERACTIVE;
             }
             if clip {

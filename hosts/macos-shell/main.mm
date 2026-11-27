@@ -33,10 +33,11 @@ class BuiltinMacDemoApp {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto *self = static_cast<BuiltinMacDemoApp *>(h);
-    if (batch.ptr == nullptr) return 0;
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      const NveDirectEvent &ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4) {
+    if (batch.events == nullptr) return 0;
+    for (uint32_t i = 0; i < batch.event_count; ++i) {
+      const NveEvent &ev = batch.events[i];
+      if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+          ev.node == 4) {
         ++self->count_;
         return 1;
       }

@@ -127,10 +127,10 @@ static NveBufferSlice fixture_render(NveAppHandle handle, uint64_t frame_id) {
 
 static uint32_t fixture_dispatch_events(NveAppHandle handle, NveEventBatch batch) {
   SessionFixtureApp* app = (SessionFixtureApp*)handle;
-  if (!app || !batch.ptr || batch.len == 0) {
+  if (!app || !batch.events || batch.event_count == 0) {
     return 0u;
   }
-  app->count += (int32_t)batch.len;
+  app->count += (int32_t)batch.event_count;
   return 1u;
 }
 
@@ -153,7 +153,7 @@ static uint32_t fixture_set_props(
 
 static NveEventBatch fixture_drain_events(NveAppHandle handle) {
   (void)handle;
-  NveEventBatch empty = {NULL, 0u, 0u};
+  NveEventBatch empty = {NULL, NULL, 0u, 0u};
   return empty;
 }
 

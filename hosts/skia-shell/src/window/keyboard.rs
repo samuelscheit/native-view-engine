@@ -3,8 +3,7 @@
 //! and clipboard (`Ctrl/Cmd+C/X/V`) handling for [`DesktopSession`].
 
 use nve_abi::{
-    native_events_to_direct, pack_key_modifiers, EventMask, EventPayload, NativeEvent,
-    NativeEventKind, NodeId, NveDirectEvent, ROOT_NODE_ID,
+    EventBatchBuf, EventFlags, InteractionEvent, NodeId, TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
 use nve_backend_skia::SkiaBackend;
 use nve_components::tables::Interaction;
@@ -20,7 +19,8 @@ use super::{DesktopApp, DesktopHostError};
 
 fn has_keydown_listener(store: &NodeStore, id: NodeId) -> bool {
     store.try_row::<Interaction>(id).is_some_and(|i| {
-        (u64::from(i.event_mask()) & (EventMask::KEY_DOWN | EventMask::KEY_UP)) != 0
+        let l = i.listeners();
+        l.contains(InteractionEvent::KeyDown) || l.contains(InteractionEvent::KeyUp)
     })
 }
 
@@ -71,7 +71,7 @@ fn move_caret_visual(backend: &SkiaBackend, text: &str, caret: usize, delta: i32
 }
 
 impl<A: DesktopApp> DesktopSession<A> {
-    /// Dispatches a direct typed `NativeEventKind::KeyDown` event.
+    /// Dispatches a direct typed `InteractionEvent::KeyDown` event.
     pub fn handle_keydown(
         &mut self,
         key: &str,
@@ -87,19 +87,17 @@ impl<A: DesktopApp> DesktopSession<A> {
             Some(focused) => find_keydown_target_from(self.replica.store(), focused),
             None => find_keydown_target(self.replica.store()),
         };
-        let event = [NveDirectEvent::key_down(
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_key_down(
             self.surface_id,
             node_id,
-            now_us(),
+            TimestampUs(now_us()),
             key,
             "",
-            pack_key_modifiers(meta, ctrl, shift, alt, false),
+            EventFlags::from_modifiers(meta, ctrl, shift, alt, false),
             0,
-            false,
-        )];
-        // SAFETY: `key` and `""` remain valid for the duration of `dispatch_events`.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
-        let handled = self.app.dispatch_events(batch);
+        );
+        let handled = self.app.dispatch_events(batch.as_validated());
         if handled {
             self.render_and_rasterize()?;
         }
@@ -170,13 +168,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, None, None);
                     }
-                    let mut events = Vec::with_capacity(1);
+                    let mut events = EventBatchBuf::with_capacity(1, 0);
                     self.push_composition_event(
                         &mut events,
                         focused_id,
-                        now_us(),
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
+                        TimestampUs(now_us()),
+                        TextInputEvent::CompositionEnd,
+                        "",
                     );
                     self.dispatch_and_redraw(&events)?;
                     return Ok(true);
@@ -380,29 +378,19 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let (store, backend) = self.replica.store_and_backend_mut();
                     backend.set_ime_preedit(store, None, None);
                 }
-                let ts = now_us();
-                let mut events = Vec::with_capacity(2);
+                let ts = TimestampUs(now_us());
+                let mut events = EventBatchBuf::with_capacity(2, current.len());
                 if had_preedit {
                     self.push_composition_event(
                         &mut events,
                         focused_id,
                         ts,
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
+                        TextInputEvent::CompositionEnd,
+                        "",
                     );
                 }
-                events.push(NativeEvent {
-                    surface_id: self.surface_id,
-                    node_id: focused_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::Submit,
-                    payload: EventPayload::Text(current),
-                });
-                let mut direct = Vec::with_capacity(events.len());
-                native_events_to_direct(&events, &mut direct);
-                // SAFETY: `direct` borrows solely from `events`, which outlives `dispatch_events`.
-                let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
-                if self.app.dispatch_events(batch) {
+                events.push_submit(self.surface_id, focused_id, ts, &current);
+                if self.app.dispatch_events(events.as_validated()) {
                     self.render_and_rasterize()?;
                     Ok(true)
                 } else {
@@ -415,13 +403,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, None, None);
                     }
-                    let mut events = Vec::with_capacity(1);
+                    let mut events = EventBatchBuf::with_capacity(1, 0);
                     self.push_composition_event(
                         &mut events,
                         focused_id,
-                        now_us(),
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
+                        TimestampUs(now_us()),
+                        TextInputEvent::CompositionEnd,
+                        "",
                     );
                     self.dispatch_and_redraw(&events)?;
                     return Ok(true);
@@ -434,29 +422,19 @@ impl<A: DesktopApp> DesktopSession<A> {
                 }
                 self.dragging_text_node = None;
 
-                let ts = now_us();
-                let mut events = Vec::with_capacity(2);
-                events.push(NativeEvent {
-                    surface_id: self.surface_id,
-                    node_id: focused_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::Blur,
-                    payload: EventPayload::Empty,
-                });
+                let ts = TimestampUs(now_us());
+                let mut events = EventBatchBuf::with_capacity(2, 0);
+                events.push_blur(self.surface_id, focused_id, ts);
                 if has_custom {
-                    events.push(NativeEvent {
-                        surface_id: self.surface_id,
-                        node_id: custom_target,
-                        timestamp_us: ts,
-                        kind: NativeEventKind::KeyDown,
-                        payload: EventPayload::Key {
-                            key: "Escape".to_string(),
-                            code: String::new(),
-                            key_code: 0,
-                            modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
-                            is_composing: false,
-                        },
-                    });
+                    events.push_key_down(
+                        self.surface_id,
+                        custom_target,
+                        ts,
+                        "Escape",
+                        "",
+                        EventFlags::from_modifiers(meta, ctrl, shift, alt, false),
+                        0,
+                    );
                 }
                 self.dispatch_and_redraw(&events)?;
                 Ok(true)

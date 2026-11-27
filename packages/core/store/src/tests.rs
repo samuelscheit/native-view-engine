@@ -361,44 +361,137 @@ fn word_values_are_total() {
 }
 
 #[test]
-fn publish_table_views_and_table_event_bus_roundtrip() {
+fn publish_table_views_and_surface_event_tracker_roundtrip() {
+    #[repr(u8)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, crate::EventEnum)]
+    enum WidgetEvent {
+        Press = 0,
+        Hover = 1,
+        Focus = 2,
+    }
+
+    #[allow(dead_code)]
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.widget_events", storage = "sparse", flags = "publish", events = WidgetEvent)]
+    struct WidgetEvents {
+        #[effect(semantics)]
+        disabled: bool,
+    }
+
+    assert_eq!(WidgetEvents::DESC.events_word, 0);
+    assert_ne!(WidgetEvents::DESC.flags & nve_abi::table::table_flags::HAS_EVENTS, 0);
+    assert_eq!(WidgetEvents::DESC.defaults[0], 0);
+
     let mut store = NodeStore::new();
-    let mut tx = store.tx();
-    let n = tx.create();
-    tx.set_children(NodeId::ROOT, &[n]);
-    tx.edit::<Visual>(n).opacity(0.4).bg(Rgba::rgb(1, 2, 3));
-    let mut changes = ChangeSet::default();
-    tx.commit_into(&mut changes);
+    let mut tracker = crate::SurfaceEventTracker::new();
+    tracker.track::<WidgetEvents>();
+    let mut transitions = Vec::new();
 
-    let mut views = Vec::new();
-    let mut dirty = Vec::new();
-    store.publish_table_views(&changes, &mut views, &mut dirty);
-    let view = views
-        .iter()
-        .find(|v| v.key_lo == Visual::KEY.lo() && v.key_hi == Visual::KEY.hi())
-        .expect("published Visual NveTableView");
-    assert_eq!(view.words as usize, Visual::DESC.words());
-    assert!(view.row_count as usize > n.index());
-    assert_eq!(view.dirty_count, 1);
+    let (n1, n2) = {
+        let mut tx = store.tx();
+        let n1 = tx.create();
+        let n2 = tx.create();
+        tx.set_children(NodeId::ROOT, &[n1, n2]);
+        tx.edit::<Visual>(n1).opacity(0.4).bg(Rgba::rgb(1, 2, 3));
+        tx.edit::<WidgetEvents>(n1)
+            .listen(WidgetEvent::Press)
+            .listen(WidgetEvent::Hover);
+        tx.edit::<WidgetEvents>(n2).listen(WidgetEvent::Press);
+        let mut changes = ChangeSet::default();
+        tx.commit_into(&mut changes);
 
-    // Zero-serialization in-process TableEventBus + FFI NveDirectEvent + EventRing round-trip.
-    let mut bus = crate::TableEventBus::new();
-    bus.emit::<Visual, (f32, f32)>(nve_abi::SurfaceId::new(7, 0), n, 1234, 42, (10.0, 20.0));
-    let events: Vec<_> = bus.drain().collect();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].payload::<(f32, f32)>(), Some(&(10.0, 20.0)));
+        let mut views = Vec::new();
+        let mut dirty = Vec::new();
+        store.publish_table_views(&changes, &mut views, &mut dirty);
+        let view = views
+            .iter()
+            .find(|v| v.key_lo == Visual::KEY.lo() && v.key_hi == Visual::KEY.hi())
+            .expect("published Visual NveTableView");
+        assert_eq!(view.words as usize, Visual::DESC.words());
+        assert!(view.row_count as usize > n1.index());
+        assert_eq!(view.dirty_count, 1);
 
-    let native = events[0].to_native_event(|_| b"ok".to_vec());
-    let direct = native.as_direct_event();
-    let batch = [direct];
-    // SAFETY: `batch` and `native` outlive `batch_ref` in this test.
-    let batch_ref = unsafe { nve_abi::NveEventBatchRef::from_slice(&batch) };
-    let decoded_direct = nve_abi::direct_event_to_native(batch_ref.get(0).unwrap()).unwrap();
-    assert_eq!(decoded_direct, native);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+        (n1, n2)
+    };
 
-    let ring = nve_abi::encode_events(std::slice::from_ref(&native));
-    let decoded_ring = nve_abi::decode_events(&ring).unwrap();
-    assert_eq!(decoded_ring, vec![native]);
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 2);
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Hover), 1);
+    assert_eq!(
+        tracker.listeners_of::<WidgetEvents>(n1),
+        WidgetEvent::Press | WidgetEvent::Hover
+    );
+    assert_eq!(
+        store.row::<WidgetEvents>(n1).listeners(),
+        WidgetEvent::Press | WidgetEvent::Hover
+    );
+    assert_eq!(
+        transitions,
+        vec![
+            (WidgetEvents::slot(), WidgetEvent::Press.event_id(), true),
+            (WidgetEvents::slot(), WidgetEvent::Hover.event_id(), true),
+        ]
+    );
+
+    // Unlisten Hover on n1 (1 -> 0) and detach WidgetEvents on n2 (Press 2 -> 1).
+    transitions.clear();
+    {
+        let mut tx = store.tx();
+        tx.edit::<WidgetEvents>(n1).unlisten(WidgetEvent::Hover);
+        tx.detach::<WidgetEvents>(n2);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+    }
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 1);
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Hover), 0);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Hover.event_id(), false)]
+    );
+
+    // Removing n1 drops Press from 1 -> 0.
+    transitions.clear();
+    {
+        let mut tx = store.tx();
+        tx.remove(n1);
+        let changes = commit_tx(tx);
+        tracker.sync(&store, &changes, |slot, ev, on| {
+            transitions.push((slot, ev, on));
+        });
+    }
+    assert_eq!(tracker.active_count_of::<WidgetEvents>(WidgetEvent::Press), 0);
+    assert_eq!(
+        transitions,
+        vec![(WidgetEvents::slot(), WidgetEvent::Press.event_id(), false)]
+    );
+
+    // Uniform 64 B NveEvent batch + wire roundtrip.
+    let mut batch = crate::EventBatchBuf::new();
+    batch.push_event(
+        WidgetEvents::KEY,
+        nve_abi::SurfaceId::new(7, 0),
+        n2,
+        crate::TimestampUs(1234),
+        WidgetEvent::Press,
+        crate::EventFlags::EMPTY,
+        [10.0f32.to_bits(), 20.0f32.to_bits(), 0, 0, 0, 0],
+        b"ok",
+    );
+    let validated = batch.as_validated();
+    assert_eq!(validated.len(), 1);
+    let ev = validated.get(0).unwrap();
+    assert_eq!(ev.table(), WidgetEvents::KEY);
+    assert_eq!(ev.event(), WidgetEvent::Press.event_id());
+    assert_eq!(ev.bytes(), b"ok");
+
+    let wire = batch.to_wire_bytes();
+    let decoded = crate::EventBatchBuf::decode_wire(&wire).unwrap();
+    assert_eq!(decoded.events(), batch.events());
+    assert_eq!(decoded.bytes(), batch.bytes());
 }
 
 #[test]

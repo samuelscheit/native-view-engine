@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_canvas.dart';
+import 'package:nve_flutter/src/nve_core_abi.generated.dart' as abi show NveEvent;
 
 String _readStr(NveStrSlice s) =>
     (s.ptr == ffi.nullptr || s.len == 0) ? '' : utf8.decode(s.ptr.asTypedList(s.len));
@@ -169,7 +170,7 @@ class _SyntheticNativeApp {
   }
 
   int _onDispatch(ffi.Pointer<ffi.Void> _, NveEventBatch batch) {
-    if (batch.ptr == ffi.nullptr || batch.len == 0) return 0;
+    if (batch.events == ffi.nullptr || batch.eventCount == 0) return 0;
     receivedEvents.addAll(NveDirectEventWriter.decodeBatch(batch));
     return 1;
   }
@@ -194,39 +195,26 @@ class _SyntheticNativeApp {
     pendingOutbound = <NveEvent>[];
     if (out.isEmpty) {
       _scratchBatch.ref
-        ..ptr = ffi.nullptr
-        ..len = 0
-        ..pad = 0;
+        ..events = ffi.nullptr
+        ..bytes = ffi.nullptr
+        ..eventCount = 0
+        ..bytesLen = 0;
       return _scratchBatch.ref;
     }
-    final ptr = _heap.allocate<NveDirectEvent>(ffi.sizeOf<NveDirectEvent>() * out.length);
-    for (var i = 0; i < out.length; i++) {
-      final ev = out[i];
-      final dst = ptr[i]
-        ..surfaceId = ev.surfaceId
-        ..nodeId = ev.nodeId
-        ..timestampUs = ev.timestampUs
-        ..kind = ev.kind.code;
-      if (ev.payload case NveBinValuePayload(:final bytes)) {
-        dst.payloadTag = NveEventPayloadTag.custom.code;
-        if (ev.name != null && ev.name!.isNotEmpty) {
-          final nameBytes = Uint8List.fromList(utf8.encode(ev.name!));
-          dst.name
-            ..ptr = _heap.copy(nameBytes)
-            ..len = nameBytes.length;
-        }
-        if (bytes.isNotEmpty) {
-          dst.value.tag = NveValueTag.bytes.code;
-          dst.value.data.bytesVal
-            ..ptr = _heap.copy(bytes)
-            ..len = bytes.length;
-        }
-      }
-    }
-    _scratchBatch.ref
-      ..ptr = ptr
-      ..len = out.length
-      ..pad = 0;
+    NveDirectEventWriter.withBatch(out, (NveEventBatch tmp) {
+      final evByteLen = tmp.eventCount * ffi.sizeOf<abi.NveEvent>();
+      final evCopy = _heap.copy(
+        Uint8List.fromList(tmp.events.cast<ffi.Uint8>().asTypedList(evByteLen)),
+      );
+      final bytesCopy = (tmp.bytes == ffi.nullptr || tmp.bytesLen == 0)
+          ? ffi.nullptr
+          : _heap.copy(Uint8List.fromList(tmp.bytes.asTypedList(tmp.bytesLen)));
+      _scratchBatch.ref
+        ..events = evCopy.cast<abi.NveEvent>()
+        ..bytes = bytesCopy
+        ..eventCount = tmp.eventCount
+        ..bytesLen = tmp.bytesLen;
+    });
     return _scratchBatch.ref;
   }
 
@@ -308,7 +296,7 @@ void main() {
         y: 67.25,
         timestampUs: 987654321,
       );
-      expect(bytes.length, 30);
+      expect(bytes.length, 78);
 
       final decoded = NveEventRingCodec.decode(bytes);
       expect(decoded, hasLength(1));

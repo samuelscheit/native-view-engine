@@ -354,17 +354,10 @@ int main(int argc, char** argv) {
         /*ops_per_iter=*/1,
         cfg,
         [&](int iter) {
-          NveDirectEvent press{};
-          press.surface_id = surface_cfg.surface_id;
-          press.node_id = 2;
-          press.timestamp_us = static_cast<uint64_t>(iter) * 16667ULL;
-          press.kind = NVE_EVENT_PRESS;
-          press.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-          press.x = 42.0f;
-          press.y = 24.0f;
-          press.value = nve::make_null_value();
+          const NveEvent press = nve::make_press_event(
+              surface_cfg.surface_id, 2, static_cast<uint64_t>(iter) * 16667ULL, 42.0f, 24.0f);
           const uint32_t dirty =
-              bridge.dispatch_events(NveEventBatch{&press, 1u, 0u}, /*auto_render=*/true);
+              bridge.dispatch_events(nve::make_single_event_batch(press), /*auto_render=*/true);
           const auto outbound = bridge.drain_emitted_events();
           do_not_optimize(dirty);
           do_not_optimize(outbound.size());
@@ -380,23 +373,23 @@ int main(int argc, char** argv) {
 
     auto direct_sink = [](NveEventBatch batch) -> uint32_t {
       double acc = 0.0;
-      for (uint32_t i = 0; i < batch.len; ++i) {
-        const NveValue& val = batch.ptr[i].value;
-        if (val.tag == NVE_VAL_MAP) {
-          for (size_t j = 0; j < val.data.map_val.len; ++j) {
-            const NveMapEntry& e = val.data.map_val.ptr[j];
-            const std::string_view k = nve::str_slice_view(e.key);
-            if (k == "x" && e.value.tag == NVE_VAL_F64) {
-              acc += e.value.data.f64_val;
-            } else if (k == "velocity" && e.value.tag == NVE_VAL_ARRAY &&
-                       e.value.data.array_val.len >= 2) {
-              acc += e.value.data.array_val.ptr[0].data.f64_val;
+      for (uint32_t i = 0; i < batch.event_count; ++i) {
+        std::string_view cname;
+        std::span<const uint8_t> cpayload;
+        if (nve::event_custom_parts(
+                batch.events[i], batch.bytes, batch.bytes_len, cname, cpayload)) {
+          if (const auto view = nve::BinValueView::parse(cpayload.data(), cpayload.size())) {
+            if (const auto x = view->map_get("x"); x && x->as_f64()) {
+              acc += *x->as_f64();
+            }
+            if (const auto v = view->map_get("velocity"); v && v->array_at(0)) {
+              acc += v->array_at(0)->as_f64().value_or(0.0);
             }
           }
         }
       }
       do_not_optimize(acc);
-      return batch.len;
+      return batch.event_count;
     };
 
     results.push_back(run_bench(

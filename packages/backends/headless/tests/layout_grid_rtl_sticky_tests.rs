@@ -1,7 +1,7 @@
 //! Integration tests for CSS Grid, RTL logical edges, sticky positioning, overflow clipping,
 //! and `Transform2D` inverse hit-testing in [`HeadlessBackend`].
 
-use nve_abi::{EventMask, SurfaceId};
+use nve_abi::{InteractionEvent, SurfaceId};
 use nve_backend_headless::{GridTrack, HeadlessBackend};
 use nve_components::tables::{
     Direction, Display, FlexDirection, GridLayout, GridTracks, Interaction, Layout, Overflow,
@@ -44,7 +44,7 @@ fn sticky_clamping_overflow_clipping_and_transform_hit_test() {
         .flex_shrink(0.0)
         .height(Length::points(40.0));
     tx.edit::<Interaction>(sticky_hdr)
-        .event_mask(EventMask::PRESS as u32);
+        .listen(InteractionEvent::Press);
 
     tx.edit::<Layout>(body)
         .flex_shrink(0.0)
@@ -56,7 +56,7 @@ fn sticky_clamping_overflow_clipping_and_transform_hit_test() {
         .translate_x(100.0)
         .translate_y(20.0);
     tx.edit::<Interaction>(transformed_btn)
-        .event_mask(EventMask::PRESS as u32);
+        .listen(InteractionEvent::Press);
     tx.commit_into(&mut changes);
 
     backend.commit(&store, &changes).unwrap();

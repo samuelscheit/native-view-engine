@@ -8,8 +8,8 @@ mod loader_common;
 
 use loader_common::{compile_test_cdylib, TempDirGuard, SHARED_ABI_DEFS};
 use nve_abi::{
-    FrameId, NodeId, NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
-    NveSizeConstraints, NveValue, SurfaceId,
+    EventBatchBuf, FrameId, NodeId, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
+    NveSizeConstraints, NveValue, SurfaceId, TimestampUs, ValidatedEvents,
 };
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::HotPatchMsg;
@@ -87,7 +87,7 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
             NveBufferSlice { ptr: app.buf.as_ptr(), len: app.buf.len() }
         }
         unsafe extern "C" fn dispatch_events(_h: *mut c_void, ev: NveEventBatch) -> u32 {
-            u32::from(ev.count > 0)
+            u32::from(ev.event_count > 0)
         }
 
         static SURFACE_API: NveSurfaceApi = NveSurfaceApi {
@@ -112,9 +112,10 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
     let mut inst = HotAppInstance::load(&path, SurfaceId::new(5, 0), 1, Some(b"ignored")).expect("load surface-only");
     assert_eq!(inst.generation(), 1);
     assert_eq!(inst.render(FrameId(9)), 9u64.to_le_bytes());
-    let tap = [NveDirectEvent::press(SurfaceId::new(5, 0), NodeId::new(2, 0), 10, 1.0, 2.0)];
-    assert!(inst.dispatch_events(&tap));
-    assert!(!inst.dispatch_events(&[]));
+    let mut tap = EventBatchBuf::new();
+    tap.push_press(SurfaceId::new(5, 0), NodeId::new(2, 0), TimestampUs(10), 1.0, 2.0);
+    assert!(inst.dispatch_events(tap.as_validated()));
+    assert!(!inst.dispatch_events(ValidatedEvents::EMPTY));
 
     assert_eq!(inst.measure(NveSizeConstraints::loose(300.0, 400.0)), None);
     assert_eq!(inst.hit_test(10.0, 20.0, 1), NveGestureDisposition::PassThrough);
@@ -134,7 +135,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
             counter: u32,
             render_buf: Vec<u8>,
             state_buf: Vec<u8>,
-            emitted_buf: Vec<NveDirectEvent>,
+            emitted_buf: Vec<NveEvent>,
         }
 
         unsafe extern "C" fn create(_surface_id: u32) -> *mut c_void {
@@ -155,24 +156,18 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
         }
         unsafe extern "C" fn dispatch_events(h: *mut c_void, ev: NveEventBatch) -> u32 {
             let app = unsafe { &mut *(h as *mut FullApp) };
-            if ev.count > 0 {
+            if ev.event_count > 0 {
                 app.counter += 1;
-                app.emitted_buf = vec![NveDirectEvent {
-                    surface_id: 1,
-                    node_id: app.counter,
+                app.emitted_buf = vec![NveEvent {
                     timestamp_us: 99,
-                    kind: 1,
-                    payload_tag: 1,
-                    modifiers: 0,
-                    event_flags: 0,
-                    key_code: 0,
-                    name: NveStrSlice { ptr: std::ptr::null(), len: 0 },
-                    x: 1.0,
-                    y: 2.0,
-                    width: 0.0,
-                    height: 0.0,
-                    text: NveStrSlice { ptr: std::ptr::null(), len: 0 },
-                    value: NveValue { tag: 0, _pad: 0, payload: [0, 0] },
+                    table: 0,
+                    surface: 1,
+                    node: app.counter,
+                    event: 0,
+                    flags: 0,
+                    payload: [1.0f32.to_bits(), 2.0f32.to_bits(), 0, 0, 0, 0],
+                    bytes_offset: 0,
+                    bytes_len: 0,
                 }];
                 1
             } else {
@@ -198,7 +193,12 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
         }
         unsafe extern "C" fn drain_emitted_events(h: *mut c_void) -> NveEventBatch {
             let app = unsafe { &mut *(h as *mut FullApp) };
-            NveEventBatch { ptr: app.emitted_buf.as_ptr(), count: app.emitted_buf.len() as u32, _pad: 0 }
+            NveEventBatch {
+                events: app.emitted_buf.as_ptr(),
+                bytes: std::ptr::null(),
+                event_count: app.emitted_buf.len() as u32,
+                bytes_len: 0,
+            }
         }
         unsafe extern "C" fn apply_hot_patch(h: *mut c_void, patch: NveBufferSlice) -> u32 {
             let app = unsafe { &mut *(h as *mut FullApp) };
@@ -257,11 +257,12 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
 
     let props = [NveMapEntry::new("counter", NveValue::i64(5))];
     assert!(inst.set_props(&props));
-    let tap = [NveDirectEvent::press(SurfaceId::ROOT, NodeId::new(2, 0), 10, 1.0, 2.0)];
-    assert!(inst.dispatch_events(&tap));
+    let mut tap = EventBatchBuf::new();
+    tap.push_press(SurfaceId::ROOT, NodeId::new(2, 0), TimestampUs(10), 1.0, 2.0);
+    assert!(inst.dispatch_events(tap.as_validated()));
     let emitted = inst.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    assert_eq!(emitted.get(0).unwrap().node_id(), NodeId::new(6, 0));
+    assert_eq!(emitted.get(0).unwrap().node(), NodeId::new(6, 0));
 
     let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }
         .to_bytes()
@@ -280,7 +281,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert!(gen2_copy.exists());
     assert_eq!(inst.generation(), 2);
     assert_eq!(inst.render(FrameId(3)), b"frame=3;counter=16");
-    assert!(inst.dispatch_events(&tap));
+    assert!(inst.dispatch_events(tap.as_validated()));
     assert_eq!(inst.render(FrameId(4)), b"frame=4;counter=17");
 
     // Transactional failure safety across missing/corrupt/bad-symbol/no-surface/null-handle.

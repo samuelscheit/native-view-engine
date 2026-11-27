@@ -241,7 +241,7 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
     writeln!(out, "}}");
     writeln!(out);
 
-    // Typed events + zero-copy `NveDirectEvent` emitters + compact binary `NveBinValue` encoders
+    // Typed events + uniform 64-byte `EventBatchBuf` emitters + compact binary `NveBinValue` encoders
     for ev in &v.events {
         let ev_pascal = to_pascal_case(&ev.name);
         let ev_snake = to_snake_case(&ev.name);
@@ -280,43 +280,21 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         writeln!(out, "    }}");
         writeln!(out);
 
-        // Zero-copy stack-allocated `NveDirectEvent` emitter
+        // Uniform 64-byte `EventBatchBuf` custom event emitter
         writeln!(
             out,
-            "    /// Emits a zero-copy `NveDirectEvent` backed by stack-allocated `NveMapEntry` values."
+            "    /// Appends this typed custom event into an [`EventBatchBuf`] using compact binary `NveBinValue`."
         );
         writeln!(
             out,
-            "    pub fn emit_direct<F: FnOnce(&NveDirectEvent)>(&self, surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs, sink: F) {{"
+            "    pub fn push_event(&self, surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs, out: &mut EventBatchBuf) {{"
         );
-        // Pre-encode any complex event fields into local `Vec<u8>` so stack `NveValue` references stay alive.
-        for (idx, param) in ev.params.iter().enumerate() {
-            if !is_direct_nve_value_scalar_or_slice(&param.ty) {
-                let pname = rust_ident(&param.name);
-                writeln!(out, "        let mut _bin_{idx} = Vec::with_capacity(32);");
-                emit_bin_write_expr(
-                    out,
-                    "        ",
-                    &format!("&mut _bin_{idx}"),
-                    &format!("&self.{pname}"),
-                    &param.ty,
-                );
-            }
-        }
-        writeln!(out, "        let entries: [NveMapEntry; {}] = [", ev.params.len());
-        for (idx, param) in ev.params.iter().enumerate() {
-            let pname = rust_ident(&param.name);
-            let key_lit = escape_c_like_string(&param.name);
-            let val_expr = direct_nve_value_expr(&format!("self.{pname}"), &param.ty, idx);
-            writeln!(out, "            NveMapEntry::new(\"{key_lit}\", {val_expr}),");
-        }
-        writeln!(out, "        ];");
         let ev_name_lit = escape_c_like_string(&ev.name);
+        writeln!(out, "        let bin = self.encode_bin();");
         writeln!(
             out,
-            "        let direct = NveDirectEvent::custom(surface_id, node_id, timestamp_us.raw(), \"{ev_name_lit}\", NveValue::map(&entries));"
+            "        out.push_custom(surface_id, node_id, timestamp_us, \"{ev_name_lit}\", &bin);"
         );
-        writeln!(out, "        sink(&direct);");
         writeln!(out, "    }}");
         writeln!(out, "}}");
         writeln!(out);
@@ -324,18 +302,18 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         // Convenience top-level `emit_<event>` helper function
         writeln!(
             out,
-            "/// Convenience zero-copy `NveDirectEvent` emitter for `{pascal}::{}`.",
+            "/// Convenience `EventBatchBuf` custom event emitter for `{pascal}::{}`.",
             sanitize_single_line_comment(&ev.name)
         );
         write!(
             out,
-            "pub fn emit_{snake}_{ev_snake}<F: FnOnce(&NveDirectEvent)>(surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs"
+            "pub fn emit_{snake}_{ev_snake}(surface_id: nve_abi::SurfaceId, node_id: nve_abi::NodeId, timestamp_us: nve_abi::TimestampUs"
         );
         for param in &ev.params {
             let pname = rust_ident(&param.name);
             write!(out, ", {pname}: {}", rust_owned_type(&param.ty));
         }
-        writeln!(out, ", sink: F) {{");
+        writeln!(out, ", out: &mut EventBatchBuf) {{");
         write!(out, "    let payload = {ev_struct} {{");
         for param in &ev.params {
             let pname = rust_ident(&param.name);
@@ -344,7 +322,7 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         writeln!(out, " }};");
         writeln!(
             out,
-            "    payload.emit_direct(surface_id, node_id, timestamp_us, sink);"
+            "    payload.push_event(surface_id, node_id, timestamp_us, out);"
         );
         writeln!(out, "}}");
         writeln!(out);

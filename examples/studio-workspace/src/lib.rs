@@ -33,9 +33,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    FrameId, NativeEventKind, NveDirectEvent, NveEventBatchRef, NveGestureDisposition,
-    NveHostCallbacks, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, NveValue, SurfaceId,
-    ROOT_NODE_ID,
+    EventBatchBuf, FrameId, InteractionEvent, LayoutEvent, NveGestureDisposition, NveHostCallbacks,
+    NveIntrinsicSize, NvePropsRef, NveSizeConstraints, ScrollEvent, SurfaceId, TextInputEvent,
+    TimestampUs, ValidatedEvents, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -136,7 +136,7 @@ pub struct StudioWorkspaceModule {
     mounted: bool,
     last_reported_layout_engine: LayoutEngineMode,
     last_state_buf: Vec<u8>,
-    last_emitted_events: Vec<NveDirectEvent>,
+    last_emitted_events: EventBatchBuf,
     persist_store: Option<WorkspaceStore>,
     last_persisted_frame_count: u64,
 }
@@ -168,7 +168,7 @@ impl StudioWorkspaceModule {
             mounted: false,
             last_reported_layout_engine: layout_engine,
             last_state_buf: Vec::new(),
-            last_emitted_events: Vec::new(),
+            last_emitted_events: EventBatchBuf::new(),
             persist_store: Some(persist),
             last_persisted_frame_count: initial_frame_count,
         })
@@ -315,7 +315,7 @@ impl NveApp for StudioWorkspaceModule {
             mounted: false,
             last_reported_layout_engine: layout_engine,
             last_state_buf: Vec::new(),
-            last_emitted_events: Vec::new(),
+            last_emitted_events: EventBatchBuf::new(),
             persist_store,
             last_persisted_frame_count: initial_frame_count,
         }
@@ -335,80 +335,75 @@ impl NveApp for StudioWorkspaceModule {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled_host_event = false;
         for ev in events.iter() {
-            match (ev.kind(), ev.payload_tag()) {
-                (Some(NativeEventKind::Layout), 4)
-                    if ev.node_id() == ROOT_NODE_ID && ev.width() > 0.0 =>
+            if ev.layout_event() == Some(LayoutEvent::Layout)
+                && ev.node() == ROOT_NODE_ID
+                && ev.width() > 0.0
+            {
+                if let Ok(mut guard) = self.store.lock() {
+                    let prev_stream_h = guard.current.stream.viewport_height;
+                    let mask = guard.update_viewport_with_mask(ev.width(), ev.height());
+                    let stream_h_changed = guard.current.active_view == ActiveView::Stream100k
+                        && guard.current.stream.viewport_height != prev_stream_h;
+                    if mask.any_breakpoint_changed() || stream_h_changed {
+                        handled_host_event = true;
+                    }
+                }
+            } else if ev.scroll_event() == Some(ScrollEvent::Scroll) {
+                if let Ok(mut guard) = self.store.lock()
+                    && guard.current.active_view == ActiveView::Stream100k
                 {
-                    if let Ok(mut guard) = self.store.lock() {
-                        let prev_stream_h = guard.current.stream.viewport_height;
-                        let mask = guard.update_viewport_with_mask(ev.width(), ev.height());
-                        let stream_h_changed = guard.current.active_view == ActiveView::Stream100k
-                            && guard.current.stream.viewport_height != prev_stream_h;
-                        if mask.any_breakpoint_changed() || stream_h_changed {
-                            handled_host_event = true;
+                    let y = ev.y();
+                    let target_y = if y.is_finite() && y >= 0.0 {
+                        y as u32
+                    } else {
+                        0
+                    };
+                    guard.set_stream_scroll_offset(target_y);
+                    handled_host_event = true;
+                }
+            } else if ev.interaction() == Some(InteractionEvent::KeyDown) {
+                if !ev.key().is_empty()
+                    && let Ok(mut guard) = self.store.lock()
+                    && dispatch_keydown(&mut guard, ev.key(), ev.has_primary_modifier())
+                {
+                    handled_host_event = true;
+                }
+            } else if ev.text_input() == Some(TextInputEvent::Submit)
+                && let Ok(mut guard) = self.store.lock()
+            {
+                let submitted = if guard.palette.open {
+                    guard.execute_palette_selected()
+                } else {
+                    match guard.current.active_view {
+                        ActiveView::Board => guard.submit_new_task_draft(),
+                        ActiveView::ChannelEngineering => {
+                            guard.submit_channel_draft(ChannelKind::Engineering)
                         }
-                    }
-                }
-                (Some(NativeEventKind::Scroll), 2) => {
-                    if let Ok(mut guard) = self.store.lock()
-                        && guard.current.active_view == ActiveView::Stream100k
-                    {
-                        let y = ev.y();
-                        let target_y = if y.is_finite() && y >= 0.0 {
-                            y as u32
-                        } else {
-                            0
-                        };
-                        guard.set_stream_scroll_offset(target_y);
-                        handled_host_event = true;
-                    }
-                }
-                (Some(NativeEventKind::KeyDown), 6) => {
-                    if !ev.key().is_empty()
-                        && let Ok(mut guard) = self.store.lock()
-                        && dispatch_keydown(&mut guard, ev.key(), ev.has_primary_modifier())
-                    {
-                        handled_host_event = true;
-                    }
-                }
-                (Some(NativeEventKind::Submit), 0 | 3) => {
-                    if let Ok(mut guard) = self.store.lock() {
-                        let submitted = if guard.palette.open {
-                            guard.execute_palette_selected()
-                        } else {
-                            match guard.current.active_view {
-                                ActiveView::Board => guard.submit_new_task_draft(),
-                                ActiveView::ChannelEngineering => {
-                                    guard.submit_channel_draft(ChannelKind::Engineering)
-                                }
-                                ActiveView::ChannelDesign => {
-                                    guard.submit_channel_draft(ChannelKind::Design)
-                                }
-                                ActiveView::Docs => {
-                                    if guard.current.doc_editing_block_id.is_some() {
-                                        guard.commit_doc_block_edit()
-                                    } else {
-                                        guard.submit_new_doc_block_draft()
-                                    }
-                                }
-                                _ => false,
+                        ActiveView::ChannelDesign => {
+                            guard.submit_channel_draft(ChannelKind::Design)
+                        }
+                        ActiveView::Docs => {
+                            if guard.current.doc_editing_block_id.is_some() {
+                                guard.commit_doc_block_edit()
+                            } else {
+                                guard.submit_new_doc_block_draft()
                             }
-                        };
-                        if submitted {
-                            handled_host_event = true;
                         }
+                        _ => false,
                     }
+                };
+                if submitted {
+                    handled_host_event = true;
                 }
-                _ => {}
             }
         }
         if handled_host_event {
             self.reset_surface_with_current_store();
         }
-        let handled_ui = self.surface.dispatch_direct_events(events);
+        let handled_ui = self.surface.dispatch_events(events);
         if handled_host_event || handled_ui {
             self.persist_if_dirty();
         }
@@ -485,7 +480,7 @@ impl NveApp for StudioWorkspaceModule {
         changed
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         let current_engine = self
             .store
             .lock()
@@ -494,15 +489,15 @@ impl NveApp for StudioWorkspaceModule {
         self.last_emitted_events.clear();
         if current_engine != self.last_reported_layout_engine {
             self.last_reported_layout_engine = current_engine;
-            self.last_emitted_events.push(NveDirectEvent::custom(
+            self.last_emitted_events.push_custom(
                 self.surface_id,
                 ROOT_NODE_ID,
-                0,
+                TimestampUs::ZERO,
                 "layout_engine_changed",
-                NveValue::from_str(current_engine.as_str()),
-            ));
+                current_engine.as_str().as_bytes(),
+            );
         }
-        &self.last_emitted_events
+        self.last_emitted_events.as_validated()
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {

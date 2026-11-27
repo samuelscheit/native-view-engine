@@ -14,8 +14,8 @@ pub mod state;
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
-    NveSizeConstraints, SurfaceId,
+    FrameId, NveGestureDisposition, NveIntrinsicSize, NvePropsRef, NveSizeConstraints, SurfaceId,
+    ValidatedEvents,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
@@ -143,8 +143,8 @@ impl NveApp for KitchenSinkModule {
         }
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
-        self.surface.dispatch_direct_events(events)
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        self.surface.dispatch_events(events)
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {

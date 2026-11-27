@@ -358,16 +358,18 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchTextChange(
     }
   }
 
-  NveDirectEvent ev{};
-  ev.surface_id = state->config.surface_id;
-  ev.node_id = static_cast<uint32_t>(node_id);
-  ev.timestamp_us = nve::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(nve::EventKind::TextChange);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
-  ev.text = nve::make_str_slice(utf8);
-  ev.value = nve::make_null_value();
-  const uint32_t dirty =
-      state->session.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
+  const NveEvent ev = nve::make_text_event(
+      state->config.surface_id,
+      static_cast<uint32_t>(node_id),
+      nve::current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_CHANGE,
+      static_cast<uint32_t>(utf8.size()));
+  const uint32_t dirty = state->session.dispatch_events(
+      nve::make_single_event_batch(
+          ev,
+          utf8.empty() ? nullptr : reinterpret_cast<const uint8_t*>(utf8.data()),
+          static_cast<uint32_t>(utf8.size())),
+      /*auto_render=*/true);
   (void)state->session.drain_events();
   return static_cast<jint>(dirty);
 }
@@ -404,19 +406,16 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchCustomEvent(
     }
   }
 
-  NveDirectEvent ev{};
-  ev.surface_id = state->config.surface_id;
-  ev.node_id = static_cast<uint32_t>(node_id);
-  ev.timestamp_us = nve::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-  ev.name = nve::make_str_slice(event_name);
-  ev.value = nve::make_bytes_value(NveBufferSlice{
+  nve::EventBatchBuilder builder;
+  (void)builder.push_custom(
+      state->config.surface_id,
+      static_cast<uint32_t>(node_id),
+      nve::current_timestamp_us(),
+      event_name,
       utf8_payload.empty() ? nullptr : reinterpret_cast<const uint8_t*>(utf8_payload.data()),
-      utf8_payload.size(),
-  });
+      utf8_payload.size());
   const uint32_t dirty =
-      state->session.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
+      state->session.dispatch_events(builder.as_batch(), /*auto_render=*/true);
   (void)state->session.drain_events();
   return static_cast<jint>(dirty);
 }
@@ -433,19 +432,16 @@ Java_dev_nve_android_NveMainActivity_nativeDispatchScroll(
   if (!is_session_active(state) || node_id <= 0) {
     return 0;
   }
-  NveDirectEvent ev{};
-  ev.surface_id = state->config.surface_id;
-  ev.node_id = static_cast<uint32_t>(node_id);
-  ev.timestamp_us = nve::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(nve::EventKind::Scroll);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_SCROLL;
-  ev.x = sanitize_finite(scroll_x);
-  ev.y = sanitize_finite(scroll_y);
-  ev.width = 0.0f;
-  ev.height = 0.0f;
-  ev.value = nve::make_null_value();
-  const uint32_t dirty =
-      state->session.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
+  const NveEvent ev = nve::make_scroll_event(
+      state->config.surface_id,
+      static_cast<uint32_t>(node_id),
+      nve::current_timestamp_us(),
+      sanitize_finite(scroll_x),
+      sanitize_finite(scroll_y),
+      0.0f,
+      0.0f);
+  const uint32_t dirty = state->session.dispatch_events(
+      nve::make_single_event_batch(ev), /*auto_render=*/true);
   (void)state->session.drain_events();
   return static_cast<jint>(dirty);
 }

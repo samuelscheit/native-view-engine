@@ -9,10 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NVE_KEY_MOD_CTRL,
-    NVE_KEY_MOD_META, ROOT_NODE_ID, SurfaceId,
-};
+use nve_abi::{EventBatchBuf, FrameId, InteractionEvent, NodeId, ROOT_NODE_ID, SurfaceId};
 use nve_backend_web::{HydrationReport, WebBackend};
 use nve_canvas_web::CanvasWebSystem;
 use nve_components::tables::DebugId;
@@ -112,37 +109,45 @@ impl DocsWebSession {
         }
     }
 
-    fn retarget_root_keydown(&self, events: &mut [NativeEvent]) {
+    fn retarget_root_keydown(&self, src: &EventBatchBuf, dst: &mut EventBatchBuf) {
+        dst.clear();
         let search_input_id = self.find_node_by_test_id("docs-search-input");
         let docs_root_id = self.find_node_by_test_id("docs-root");
 
-        for ev in events {
-            if ev.node_id == ROOT_NODE_ID
-                && ev.kind == NativeEventKind::KeyDown
-                && let EventPayload::Key { key, modifiers, .. } = &ev.payload
-            {
-                let has_primary = (*modifiers & (NVE_KEY_MOD_META | NVE_KEY_MOD_CTRL)) != 0;
-                let is_cmd_k = has_primary && key.eq_ignore_ascii_case("k");
-                if is_cmd_k {
-                    if let Some(root_id) = docs_root_id {
-                        ev.node_id = root_id;
-                    }
-                } else if let Some(input_id) = search_input_id {
-                    ev.node_id = input_id;
-                } else if let Some(root_id) = docs_root_id {
-                    ev.node_id = root_id;
+        for ev in src.as_validated().iter() {
+            if ev.node() == ROOT_NODE_ID && ev.interaction() == Some(InteractionEvent::KeyDown) {
+                let is_cmd_k = ev.has_primary_modifier() && ev.key().eq_ignore_ascii_case("k");
+                let target = if is_cmd_k {
+                    docs_root_id.unwrap_or(ROOT_NODE_ID)
+                } else {
+                    search_input_id.or(docs_root_id).unwrap_or(ROOT_NODE_ID)
+                };
+                if target != ROOT_NODE_ID {
+                    dst.push_key_down(
+                        ev.surface(),
+                        target,
+                        ev.timestamp(),
+                        ev.key(),
+                        ev.code(),
+                        ev.flags(),
+                        ev.key_code(),
+                    );
+                    continue;
                 }
             }
+            dst.push_validated(ev);
         }
     }
 
     fn pump_events(&mut self) -> Result<(), String> {
-        let mut drained = self.backend.drain_events();
+        let mut drained = EventBatchBuf::new();
+        self.backend.drain_events(&mut drained);
         if drained.is_empty() {
             return Ok(());
         }
-        self.retarget_root_keydown(&mut drained);
-        if self.surface.dispatch_events(&drained) {
+        let mut retargeted = EventBatchBuf::with_capacity(drained.len(), drained.bytes().len());
+        self.retarget_root_keydown(&drained, &mut retargeted);
+        if self.surface.dispatch_events(retargeted.as_validated()) {
             self.render_next_frame()?;
             self.sync_browser_chrome(true);
         }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_abi.generated.h"
+#include "nve_event_batch.hpp"
 #include "nve_scene_abi.generated.h"
 #include "nve_value.hpp"
 
@@ -26,7 +27,7 @@ struct LayoutRect {
   float height{0.0f};
 };
 
-/// Decoded native event kind matching `packages/core/abi/src/events.rs` (`NativeEventKind`).
+/// Decoded host event kind derived from `(NveEvent::table, NveEvent::event)`.
 enum class EventKind : uint8_t {
   Press = 1,
   LongPress = 2,
@@ -50,11 +51,13 @@ enum class EventKind : uint8_t {
   Wheel = 20,
 };
 
-/// Decoded event materialized from an `NveEventBatch` or network `EventRing`.
+/// Decoded event materialized from an `NveEventBatch` or `NVEV` v2 wire frame.
 struct DecodedEvent {
   uint32_t surface_id{0};
   uint32_t node_id{0};
   uint64_t timestamp_us{0};
+  uint64_t table{0};
+  uint32_t event_id{0};
   EventKind kind{EventKind::Custom};
   /// For EventKind::Custom this is the custom event name (e.g. "onIncrement");
   /// for built-in kinds it is the canonical RN name ("onPress", "onLongPress",
@@ -70,9 +73,14 @@ struct DecodedEvent {
   std::string text;
   /// Typed key/pointer/wheel fields populated for KeyDown/KeyUp/Pointer*/Wheel events.
   uint8_t modifiers{0};
-  uint8_t event_flags{0};
+  uint32_t event_flags{0};
   uint32_t key_code{0};
   std::string code;
+
+  uint8_t pointer_button() const noexcept {
+    return static_cast<uint8_t>(
+        (event_flags & NVE_EVENT_FLAG_BUTTON_MASK) >> NVE_EVENT_FLAG_BUTTON_SHIFT);
+  }
 
   std::string_view payload_as_string() const noexcept {
     if (payload_bytes.empty()) {

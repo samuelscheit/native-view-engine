@@ -46,7 +46,7 @@ fn store_node_to_scene_input<'a>(
     }
     if store
         .try_row::<Interaction>(node_id)
-        .is_some_and(|i| i.event_mask() != 0)
+        .is_some_and(|i| !i.listeners().is_empty())
     {
         flags |= NVE_NODE_INTERACTIVE;
     }

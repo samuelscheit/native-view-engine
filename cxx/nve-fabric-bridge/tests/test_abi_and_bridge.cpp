@@ -25,13 +25,16 @@ static_assert(sizeof(NveHostApi) == 2u * sizeof(void*), "NveHostApi vtable size 
 static_assert(offsetof(NveHostApi, dispatch_host_events) == sizeof(void*), "NveHostApi::dispatch_host_events slot mismatch");
 static_assert(sizeof(NveHostCallbacks) == 3u * sizeof(void*), "NveHostCallbacks size mismatch");
 static_assert(offsetof(NveHostCallbacks, channel_publish) == 2u * sizeof(void*), "NveHostCallbacks::channel_publish offset mismatch");
-static_assert(sizeof(NveDirectEvent) == offsetof(NveDirectEvent, value) + sizeof(NveValue), "NveDirectEvent size must equal offsetof(value) + sizeof(NveValue)");
-static_assert(sizeof(NveDirectEvent) == (sizeof(void*) == 8u ? 96u : (offsetof(NveValue, data) == 8u ? 72u : 68u)), "NveDirectEvent size must not grow");
-static_assert(offsetof(NveDirectEvent, modifiers) == 18u, "NveDirectEvent::modifiers offset mismatch");
-static_assert(offsetof(NveDirectEvent, event_flags) == 19u, "NveDirectEvent::event_flags offset mismatch");
-static_assert(offsetof(NveDirectEvent, key_code) == 20u, "NveDirectEvent::key_code offset mismatch");
-static_assert(offsetof(NveDirectEvent, name) == 24u, "NveDirectEvent::name offset mismatch");
-static_assert(sizeof(NveEventBatch) == (sizeof(void*) == 8u ? 16u : 12u), "NveEventBatch size mismatch");
+static_assert(sizeof(NveEvent) == NVE_EVENT_SIZE && NVE_EVENT_SIZE == 64u, "NveEvent size must be 64");
+static_assert(offsetof(NveEvent, timestamp) == 0u, "NveEvent::timestamp offset mismatch");
+static_assert(offsetof(NveEvent, table) == 8u, "NveEvent::table offset mismatch");
+static_assert(offsetof(NveEvent, surface) == 16u, "NveEvent::surface offset mismatch");
+static_assert(offsetof(NveEvent, node) == 20u, "NveEvent::node offset mismatch");
+static_assert(offsetof(NveEvent, event) == 24u, "NveEvent::event offset mismatch");
+static_assert(offsetof(NveEvent, flags) == 28u, "NveEvent::flags offset mismatch");
+static_assert(offsetof(NveEvent, payload) == 32u, "NveEvent::payload offset mismatch");
+static_assert(offsetof(NveEvent, bytes) == 56u, "NveEvent::bytes offset mismatch");
+static_assert(sizeof(NveEventBatch) == 2u * sizeof(void*) + 8u, "NveEventBatch size mismatch");
 static_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE && NVE_NODE_META_SIZE == 64u, "NveNodeMeta size mismatch");
 static_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE, "NveRenderNode size mismatch");
 static_assert(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView::removed_ids offset mismatch");
@@ -172,7 +175,7 @@ void test_all_opcodes_and_custom_components() {
   assert(saw_custom_props);
   assert(saw_custom_command);
 
-  // Node 2 subscribed to EventMask::LAYOUT, so commit should have emitted a Layout event!
+  // Node 2 subscribed to layout events, so commit should have emitted a Layout event!
   const NveBufferSlice ev_slice = nve_fabric_host_drain_events(host);
   std::vector<nve::DecodedEvent> events;
   assert(nve::decode_event_ring(ev_slice, events));
@@ -518,7 +521,7 @@ void test_all_opcodes_and_custom_components() {
     nve_fabric_host_destroy(canvas_host);
   }
 
-  // 1c. EventRingWriter hardening checks (null+nonzero len, narrowing guards, unknown payload_tag).
+  // 1c. EventRingWriter / EventBatchBuilder hardening checks (`NVEV` v2 + direct `NveEventBatch`).
   {
     nve::EventRingWriter ring;
     ring.clear();
@@ -526,62 +529,24 @@ void test_all_opcodes_and_custom_components() {
     // nullptr with nonzero length MUST be rejected without corrupting framing or count!
     assert(!ring.push_custom(1u, 10u, 100u, "badNull", nullptr, 32u));
     assert(ring.count() == 0u);
-    assert(ring.finalize().size() == 4u);
+    assert(ring.finalize().size() == nve::wire::kEventWireHeaderSize);
 
     // nullptr with zero length is valid and roundtrips cleanly with empty payload.
     assert(ring.push_custom(1u, 10u, 101u, "emptyOk", nullptr, 0u));
     assert(ring.count() == 1u);
 
-    // Name exceeding uint16_t max MUST be rejected cleanly without mutating ring.
-    const std::string oversized_name(70000u, 'x');
-    const uint8_t one_byte = 0x42u;
-    assert(!ring.push_custom(1u, 10u, 102u, oversized_name, &one_byte, 1u));
-    assert(!ring.push_custom_value(1u, 10u, 103u, oversized_name, nve::make_bool_value(true)));
-    assert(ring.count() == 1u);
-
-    // Unknown payload_tag in push_direct_event MUST be rejected (not silently mapped to Custom).
-    for (uint8_t bad_tag : {uint8_t{9u}, uint8_t{42u}, uint8_t{255u}}) {
-      NveDirectEvent bad_ev{};
-      bad_ev.surface_id = 1u;
-      bad_ev.node_id = 10u;
-      bad_ev.timestamp_us = 104u;
-      bad_ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
-      bad_ev.payload_tag = bad_tag;
-      bad_ev.name = nve::make_str_slice("shouldReject");
-      bad_ev.value = nve::make_i64_value(7);
-      assert(!ring.push_direct_event(bad_ev));
+    // Out-of-bounds arena slice in push_nve_event MUST be rejected cleanly.
+    {
+      NveEvent bad_ev = nve::make_text_event(1u, 10u, 104u, NVE_TEXT_INPUT_EVENT_CHANGE, 16u, 4u);
+      const std::array<uint8_t, 8> small_arena{};
+      assert(!ring.push_nve_event(bad_ev, small_arena));
+      assert(ring.count() == 1u);
     }
-    assert(ring.count() == 1u);
 
-    // Valid direct events across tags 0..5 roundtrip accurately via templated write_le<T>.
-    NveDirectEvent ev_press{};
-    ev_press.surface_id = 1u;
-    ev_press.node_id = 11u;
-    ev_press.timestamp_us = 200u;
-    ev_press.kind = static_cast<uint8_t>(nve::EventKind::Press);
-    ev_press.payload_tag = 1u;
-    ev_press.x = 12.5f;
-    ev_press.y = 34.25f;
-    assert(ring.push_direct_event(ev_press));
-
-    NveDirectEvent ev_text{};
-    ev_text.surface_id = 1u;
-    ev_text.node_id = 12u;
-    ev_text.timestamp_us = 201u;
-    ev_text.kind = static_cast<uint8_t>(nve::EventKind::TextChange);
-    ev_text.payload_tag = 3u;
-    ev_text.text = nve::make_str_slice("hello-hardened");
-    assert(ring.push_direct_event(ev_text));
-
-    NveDirectEvent ev_custom{};
-    ev_custom.surface_id = 1u;
-    ev_custom.node_id = 13u;
-    ev_custom.timestamp_us = 202u;
-    ev_custom.kind = static_cast<uint8_t>(nve::EventKind::Custom);
-    ev_custom.payload_tag = 5u;
-    ev_custom.name = nve::make_str_slice("onMetric");
-    ev_custom.value = nve::make_i64_value(9001);
-    assert(ring.push_direct_event(ev_custom));
+    // Valid events across Interaction / TextInput / Custom roundtrip accurately.
+    ring.push_press(1u, 11u, 200u, 12.5f, 34.25f);
+    assert(ring.push_text_change(1u, 12u, 201u, "hello-hardened"));
+    assert(ring.push_custom_value(1u, 13u, 202u, "onMetric", nve::make_i64_value(9001)));
 
     assert(ring.count() == 4u);
     const auto& bytes = ring.finalize();
@@ -598,32 +563,38 @@ void test_all_opcodes_and_custom_components() {
         decoded[3].payload_bytes.data(), decoded[3].payload_bytes.size());
     assert(v3.has_value() && v3->as_i64() == 9001);
 
-    // Typed KeyDown, PointerDown, and Wheel direct events roundtrip through EventRingWriter & decode_event_ring.
+    std::vector<nve::DecodedEvent> direct_decoded;
+    assert(nve::decode_direct_events(ring.as_batch(), direct_decoded));
+    assert(direct_decoded.size() == 4u && direct_decoded[2].text == "hello-hardened");
+
+    // Typed KeyDown (inline & >16 B split), PointerDown, and Wheel roundtrip through NVEV v2.
     nve::EventRingWriter typed_ring;
     typed_ring.clear();
-    NveDirectEvent ev_key{.surface_id = 1u, .node_id = 14u, .timestamp_us = 300u,
-        .kind = NVE_EVENT_KEY_DOWN, .payload_tag = NVE_EVENT_PAYLOAD_KEY,
-        .modifiers = NVE_KEY_MOD_META | NVE_KEY_MOD_SHIFT, .event_flags = NVE_EVENT_FLAG_COMPOSING,
-        .key_code = 75u, .name = nve::make_str_slice("KeyK"), .text = nve::make_str_slice("k")};
-    NveDirectEvent ev_ptr{.surface_id = 1u, .node_id = 15u, .timestamp_us = 301u,
-        .kind = NVE_EVENT_POINTER_DOWN, .payload_tag = NVE_EVENT_PAYLOAD_POINTER,
-        .modifiers = NVE_KEY_MOD_CTRL, .event_flags = 1u | NVE_EVENT_FLAG_CAPTURE,
-        .x = 120.5f, .y = 48.25f};
-    NveDirectEvent ev_wheel{.surface_id = 1u, .node_id = 16u, .timestamp_us = 302u,
-        .kind = NVE_EVENT_WHEEL, .payload_tag = NVE_EVENT_PAYLOAD_WHEEL,
-        .modifiers = NVE_KEY_MOD_ALT, .x = -4.0f, .y = 24.5f};
-    assert(typed_ring.push_direct_event(ev_key) && typed_ring.push_direct_event(ev_ptr) && typed_ring.push_direct_event(ev_wheel));
+    assert(typed_ring.push_key_event(
+        1u, 14u, 300u, NVE_INTERACTION_EVENT_KEY_DOWN, "k", "KeyK",
+        NVE_EVENT_FLAG_MOD_META | NVE_EVENT_FLAG_MOD_SHIFT | NVE_EVENT_FLAG_COMPOSING, 75u));
+    typed_ring.push_pointer_event(
+        1u, 15u, 301u, NVE_INTERACTION_EVENT_POINTER_DOWN, 120.5f, 48.25f,
+        NVE_EVENT_FLAG_MOD_CTRL | (1u << NVE_EVENT_FLAG_BUTTON_SHIFT) | NVE_EVENT_FLAG_CAPTURE);
+    typed_ring.push_wheel_event(1u, 16u, 302u, -4.0f, 24.5f, NVE_EVENT_FLAG_MOD_ALT);
+    assert(typed_ring.push_key_event(
+        1u, 17u, 303u, NVE_INTERACTION_EVENT_KEY_UP, "MediaTrackPreviousKey", "MediaTrackPrevious",
+        NVE_EVENT_FLAG_MOD_ALT, 177u));
     const auto& typed_bytes = typed_ring.finalize();
     std::vector<nve::DecodedEvent> td;
-    assert(nve::decode_event_ring(NveBufferSlice{typed_bytes.data(), typed_bytes.size()}, td) && td.size() == 3u);
+    assert(nve::decode_event_ring(NveBufferSlice{typed_bytes.data(), typed_bytes.size()}, td) &&
+           td.size() == 4u);
     assert(td[0].kind == nve::EventKind::KeyDown && td[0].text == "k" && td[0].code == "KeyK" &&
-           td[0].key_code == 75u && td[0].modifiers == (NVE_KEY_MOD_META | NVE_KEY_MOD_SHIFT) &&
-           td[0].event_flags == NVE_EVENT_FLAG_COMPOSING);
+           td[0].key_code == 75u &&
+           td[0].modifiers == (NVE_EVENT_FLAG_MOD_META | NVE_EVENT_FLAG_MOD_SHIFT) &&
+           (td[0].event_flags & NVE_EVENT_FLAG_COMPOSING) != 0u);
     assert(td[1].kind == nve::EventKind::PointerDown && approx_eq(td[1].x, 120.5f, 1e-4f) &&
-           approx_eq(td[1].y, 48.25f, 1e-4f) && td[1].modifiers == NVE_KEY_MOD_CTRL &&
-           td[1].event_flags == (1u | NVE_EVENT_FLAG_CAPTURE));
+           approx_eq(td[1].y, 48.25f, 1e-4f) && td[1].modifiers == NVE_EVENT_FLAG_MOD_CTRL &&
+           td[1].pointer_button() == 1u && (td[1].event_flags & NVE_EVENT_FLAG_CAPTURE) != 0u);
     assert(td[2].kind == nve::EventKind::Wheel && approx_eq(td[2].x, -4.0f, 1e-4f) &&
-           approx_eq(td[2].y, 24.5f, 1e-4f) && td[2].modifiers == NVE_KEY_MOD_ALT);
+           approx_eq(td[2].y, 24.5f, 1e-4f) && td[2].modifiers == NVE_EVENT_FLAG_MOD_ALT);
+    assert(td[3].kind == nve::EventKind::KeyUp && td[3].text == "MediaTrackPreviousKey" &&
+           td[3].code == "MediaTrackPrevious" && td[3].key_code == 177u);
   }
 }
 

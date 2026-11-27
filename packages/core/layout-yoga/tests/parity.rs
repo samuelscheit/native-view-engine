@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use nve_abi::{EventMask, FrameId, SurfaceId};
+use nve_abi::{EventSet, FrameId, InteractionEvent, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_components::tables::{
     AlignItems, FlexDirection, Interaction, JustifyContent, Layout, TextContent, Typography,
@@ -372,7 +372,7 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
         tx.edit::<Layout>(n4)
             .width(Length::points(80.0))
             .height(Length::points(32.0));
-        tx.edit::<Interaction>(n4).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(n4).listeners(EventSet::one(InteractionEvent::Press));
 
         tx.set_children(n2, &[n3, n4]);
         tx.set_children(NodeId::ROOT, &[n2]);

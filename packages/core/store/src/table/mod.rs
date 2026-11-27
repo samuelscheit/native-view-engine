@@ -71,6 +71,20 @@ pub unsafe trait NveTable: 'static {
     fn slot() -> TableSlot;
 }
 
+/// Marker and typed listener-mask handle for tables declared with `#[nve_table(events = E)]`.
+///
+/// # Safety
+///
+/// Implementors must guarantee that:
+/// - `(Self::DESC.flags & table_flags::HAS_EVENTS) != 0`,
+/// - `Self::DESC.events_word == 0` and `(Self::DESC.str_words | Self::DESC.resource_words) & 1 == 0`,
+/// - `Self::DESC.defaults[0] == 0`, and
+/// - [`Self::LISTENERS`] addresses word `0` with full 32-bit mask `u32::MAX`.
+pub unsafe trait HasEvents: NveTable + Sized {
+    type Event: nve_abi::EventEnum;
+    const LISTENERS: Prop<Self, nve_abi::EventSet<Self::Event>>;
+}
+
 /// Owned descriptor for a runtime/wire-declared dynamic table scoped to a single
 /// [`crate::wire::WireDecoder`] / [`crate::NodeStore`] (never leaked into global `REGISTRY`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +231,20 @@ impl TableMeta {
     }
 
     #[inline(always)]
+    pub(crate) fn events_word(&self) -> u8 {
+        match self {
+            Self::Static(d) => d.events_word,
+            Self::Dynamic(d) => {
+                if (d.flags & table_flags::HAS_EVENTS) != 0 {
+                    0
+                } else {
+                    nve_abi::table::NO_VAL_WORD
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn as_static(&self) -> Option<&'static TableDesc> {
         match self {
             Self::Static(d) => Some(*d),
@@ -251,7 +279,14 @@ pub(crate) fn static_desc_matches(existing: &TableDesc, spec: &TableDescSpec<'_>
 }
 
 fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError> {
+    let has_events = (desc.flags & table_flags::HAS_EVENTS) != 0;
+    let events_word_ok = if has_events {
+        desc.events_word == 0
+    } else {
+        desc.events_word == nve_abi::table::NO_VAL_WORD
+    };
     if desc.inherited != ((desc.flags & table_flags::INHERITED) != 0)
+        || !events_word_ok
         || !validate_desc_invariants(
             desc.words(),
             desc.flags,
@@ -317,11 +352,19 @@ pub(crate) fn validate_desc_invariants(
     if defaults.len() != words || word_effects.len() != words {
         return false;
     }
+    if (flags & table_flags::INHERITED) != 0 && (flags & table_flags::HAS_EVENTS) != 0 {
+        return false;
+    }
     if (flags & table_flags::INHERITED) != 0
         && (words < 2
             || defaults[0] != 0
             || word_effects[0] != 0
             || ((str_words | resource_words) & 1) != 0)
+    {
+        return false;
+    }
+    if (flags & table_flags::HAS_EVENTS) != 0
+        && (defaults[0] != 0 || ((str_words | resource_words) & 1) != 0)
     {
         return false;
     }

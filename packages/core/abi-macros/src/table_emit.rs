@@ -124,6 +124,7 @@ pub(super) fn emit(t: &Table) -> String {
     let name = quote_str(&t.name);
 
     let inherited = t.inherited;
+    let has_events = t.events_ty.is_some();
     let (
         mut def_consts,
         mut pack_inputs,
@@ -149,6 +150,41 @@ pub(super) fn emit(t: &Table) -> String {
             "#[doc = \"Raw explicit-override bitmask (`word 0`); bit `i` is set iff field `i` was explicitly written.\"] \
             #[inline(always)] pub fn explicit_mask(&self) -> u32 { self.0.word(0) }",
         );
+    }
+    if let Some(ev_ty) = &t.events_ty {
+        props.push_str(&format!(
+            "#[doc = \"Subscribed `{ev_ty}` event listener bitset (`events_word`).\"] \
+            pub const LISTENERS: {S}::Prop<{id}, {S}::EventSet<{ev_ty}>> = <Self as {S}::HasEvents>::LISTENERS;"
+        ));
+        getters.push_str(&format!(
+            "#[doc = \"Subscribed `{ev_ty}` event listeners on this row.\"] \
+            #[inline(always)] pub fn listeners(&self) -> {S}::EventSet<{ev_ty}> {{ \
+                const __W: usize = <{id} as {S}::NveTable>::DESC.events_word as usize; \
+                {S}::EventSet::from_raw(self.0.word(__W)) \
+            }}"
+        ));
+        setters.push_str(&format!(
+            "#[doc = \"Replaces the subscribed `{ev_ty}` listener bitset on this row.\"] \
+            #[inline(always)] pub fn listeners(mut self, v: {S}::EventSet<{ev_ty}>) -> Self {{ \
+                const __W: usize = <{id} as {S}::NveTable>::DESC.events_word as usize; \
+                self.0.put(__W, 0, u32::MAX, v.raw()); \
+                self \
+            }} \
+            #[doc = \"Adds one `{ev_ty}` listener bit to this row.\"] \
+            #[inline(always)] pub fn listen(mut self, ev: {ev_ty}) -> Self {{ \
+                const __W: usize = <{id} as {S}::NveTable>::DESC.events_word as usize; \
+                let __cur = self.0.as_row_ref().word(__W); \
+                self.0.put(__W, 0, u32::MAX, __cur | <{ev_ty} as {S}::EventEnum>::bit(ev)); \
+                self \
+            }} \
+            #[doc = \"Removes one `{ev_ty}` listener bit from this row.\"] \
+            #[inline(always)] pub fn unlisten(mut self, ev: {ev_ty}) -> Self {{ \
+                const __W: usize = <{id} as {S}::NveTable>::DESC.events_word as usize; \
+                let __cur = self.0.as_row_ref().word(__W); \
+                self.0.put(__W, 0, u32::MAX, __cur & !<{ev_ty} as {S}::EventEnum>::bit(ev)); \
+                self \
+            }}"
+        ));
     }
 
     for (idx, f) in t.fields.iter().enumerate() {
@@ -470,6 +506,26 @@ pub(super) fn emit(t: &Table) -> String {
         String::new()
     };
 
+    let has_events_impl = if let Some(ev_ty) = &t.events_ty {
+        format!(
+            r#"
+    unsafe impl {S}::HasEvents for {id} {{
+        type Event = {ev_ty};
+        const LISTENERS: {S}::Prop<Self, {S}::EventSet<{ev_ty}>> = unsafe {{
+            {S}::Prop::new_wide(
+                <Self as {S}::NveTable>::DESC.events_word,
+                0,
+                32,
+                {S}::__private::NO_VAL_WORD,
+            )
+        }};
+    }}
+"#
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         r#"
 const _: () = {{
@@ -478,7 +534,7 @@ const _: () = {{
         {S}::__private::pack_table(
             [{pack_inputs}],
             {inherited},
-            false,
+            {has_events},
         )
     }};
     const __NVE_WORD_COUNT: usize = __NVE_LAYOUT.word_count;
@@ -530,6 +586,7 @@ const _: () = {{
         }}
     }}
     {inherited_impl}
+    {has_events_impl}
 
     // Force eager const evaluation of `pack_table` & `DESC` at every derive site.
     let _ = <{id} as {S}::NveTable>::DESC;

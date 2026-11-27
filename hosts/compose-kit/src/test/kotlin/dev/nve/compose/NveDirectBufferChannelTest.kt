@@ -64,7 +64,7 @@ class NveDirectBufferChannelTest {
 
         override fun submitEventsDirect(handlePtr: Long, byteLength: Int): Boolean {
             val buf = eventScratchBuffers[handlePtr] ?: return false
-            if (byteLength < 4 || byteLength > buf.capacity()) return false
+            if (byteLength < NveEventRingCodec.WIRE_HEADER_BYTES || byteLength > buf.capacity()) return false
             directEventSubmissions += 1
             val snapshot = ByteArray(byteLength)
             val dup = buf.duplicate()
@@ -188,16 +188,16 @@ class NveDirectBufferChannelTest {
     fun encodeIntoHandlesEmptyBatchExactBoundaryCapacityOverflowAndReadOnlyGuards() {
         val direct = ByteBuffer.allocateDirect(64)
 
-        // Empty batch encodes 4-byte count=0 header matching encode(emptyList()).
+        // Empty batch encodes 14-byte NVEV v2 header matching encode(emptyList()).
         val emptyWritten = NveEventRingCodec.encodeInto(emptyList(), direct)
-        assertEquals(4, emptyWritten)
-        val emptyActual = ByteArray(4)
+        assertEquals(14, emptyWritten)
+        val emptyActual = ByteArray(14)
         direct.duplicate().get(emptyActual)
         assertArrayEquals(NveEventRingCodec.encode(emptyList()), emptyActual)
         assertTrue(NveEventRingCodec.decode(direct).isEmpty())
 
-        // Capacity < 4 rejected cleanly.
-        for (cap in 0..3) {
+        // Capacity < 14 rejected cleanly.
+        for (cap in 0..13) {
             assertEquals(-1, NveEventRingCodec.encodeInto(emptyList(), ByteBuffer.allocateDirect(cap)))
         }
 

@@ -1,4 +1,4 @@
-use nve_abi::{ColorRgba, EventMask, FrameId, PrimarySlot, SurfaceId};
+use nve_abi::{ColorRgba, FrameId, InteractionEvent, PrimarySlot, SurfaceId};
 use nve_components::tables::{
     core_realization_order, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
 };
@@ -42,7 +42,7 @@ fn headless_commit_layout_hit_test_scene_view_and_reloc_export() {
     tx.edit::<Layout>(btn)
         .height(Length::points(48.0))
         .flex_direction(FlexDirection::Row);
-    tx.edit::<Interaction>(btn).event_mask(EventMask::PRESS as u32);
+    tx.edit::<Interaction>(btn).listen(InteractionEvent::Press);
     tx.commit_into(&mut changes);
 
     let stats = backend.commit(&store, &changes).unwrap();
@@ -190,14 +190,14 @@ fn visibility_hidden_blocks_hit_test_while_opacity_zero_remains_hittable_and_fix
             .width(Length::points(80.0))
             .height(Length::points(40.0));
         tx.edit::<Visual>(z).opacity(0.0);
-        tx.edit::<Interaction>(z).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(z).listen(InteractionEvent::Press);
 
         // visibility: hidden is NOT hit-testable.
         tx.edit::<Layout>(h)
             .width(Length::points(80.0))
             .height(Length::points(40.0));
         tx.edit::<Visual>(h).visibility(Visibility::Hidden);
-        tx.edit::<Interaction>(h).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(h).listen(InteractionEvent::Press);
 
         // position: fixed is positioned relative to root viewport (0, 0), NOT parent (50, 100).
         tx.edit::<Layout>(f)
@@ -313,14 +313,14 @@ fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
         tx.set_children(p, &[inh, vis]);
         tx.edit::<Layout>(p).width(Length::points(200.0)).height(Length::points(200.0));
         tx.edit::<Visual>(p).visibility(Visibility::Hidden);
-        tx.edit::<Interaction>(p).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(p).listen(InteractionEvent::Press);
         // Ordinary `Visibility::Inherit` child under Hidden parent inherits hiddenness.
         tx.edit::<Layout>(inh).width(Length::points(80.0)).height(Length::points(80.0));
-        tx.edit::<Interaction>(inh).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(inh).listen(InteractionEvent::Press);
         // Explicit `Visibility::Visible` child overrides Hidden parent (CSS parity).
         tx.edit::<Layout>(vis).width(Length::points(80.0)).height(Length::points(80.0));
         tx.edit::<Visual>(vis).visibility(Visibility::Visible);
-        tx.edit::<Interaction>(vis).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(vis).listen(InteractionEvent::Press);
         tx.commit_into(&mut changes);
         (p, inh, vis)
     };
@@ -376,13 +376,14 @@ fn hidden_text_input_collapses_to_zero_layout_no_hit_and_auto_cursor() {
             .width(Length::points(200.0))
             .height(Length::points(40.0));
         tx.edit::<Interaction>(sized)
-            .event_mask((EventMask::PRESS | EventMask::FOCUS) as u32)
+            .listen(InteractionEvent::Press)
+            .listen(InteractionEvent::Focus)
             .cursor(CursorKind::Pointer);
         tx.edit::<Layout>(sib)
             .width(Length::points(120.0))
             .height(Length::points(30.0));
         tx.edit::<Interaction>(sib)
-            .event_mask(EventMask::PRESS as u32);
+            .listen(InteractionEvent::Press);
         tx.commit_into(&mut changes);
         (bare, sized, sib)
     };

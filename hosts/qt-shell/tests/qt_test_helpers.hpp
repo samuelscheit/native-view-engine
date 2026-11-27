@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_abi.generated.h"
+#include "nve_event_batch.hpp"
 #include "nve_value.hpp"
 
 #include <cmath>
@@ -183,45 +184,23 @@ class BinaryCmdHelper {
 };
 
 struct DirectOutboundQueue {
-  struct Pending {
-    uint32_t surface_id{0};
-    uint32_t node_id{0};
-    uint64_t ts{0};
-    std::string name;
-    std::string payload;
-  };
-  std::vector<Pending> pending;
-  std::vector<Pending> drained;
-  std::vector<NveDirectEvent> batch_storage;
+  nve::EventBatchBuilder pending;
+  nve::EventBatchBuilder drained;
 
   void push_custom(uint32_t sid, uint32_t nid, uint64_t ts, std::string name, std::string payload) {
-    pending.push_back(Pending{sid, nid, ts, std::move(name), std::move(payload)});
+    (void)pending.push_custom(
+        sid,
+        nid,
+        ts,
+        name,
+        payload.empty() ? nullptr : reinterpret_cast<const uint8_t*>(payload.data()),
+        payload.size());
   }
 
   NveEventBatch drain() {
-    drained.swap(pending);
+    drained = std::move(pending);
     pending.clear();
-    batch_storage.clear();
-    batch_storage.reserve(drained.size());
-    for (const auto& p : drained) {
-      NveDirectEvent ev{};
-      ev.surface_id = p.surface_id;
-      ev.node_id = p.node_id;
-      ev.timestamp_us = p.ts;
-      ev.kind = NVE_EVENT_CUSTOM;
-      ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-      ev.name = nve::make_str_slice(p.name);
-      ev.value = nve::make_bytes_value(NveBufferSlice{
-          reinterpret_cast<const uint8_t*>(p.payload.data()),
-          p.payload.size(),
-      });
-      batch_storage.push_back(ev);
-    }
-    return NveEventBatch{
-        batch_storage.empty() ? nullptr : batch_storage.data(),
-        static_cast<uint32_t>(batch_storage.size()),
-        0u,
-    };
+    return drained.as_batch();
   }
 };
 

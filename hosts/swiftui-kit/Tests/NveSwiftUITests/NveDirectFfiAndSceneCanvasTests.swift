@@ -371,48 +371,36 @@ final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
         ]
 
         try NveDirectEventWriter.withBatch(batch) { cBatch in
-            XCTAssertEqual(cBatch.len, 7)
-            let ptr = try XCTUnwrap(cBatch.ptr)
+            XCTAssertEqual(cBatch.event_count, 7)
+            let ptr = try XCTUnwrap(cBatch.events)
 
-            XCTAssertEqual(ptr[0].kind, NveEventKind.focus.rawValue)
-            XCTAssertEqual(ptr[0].payload_tag, UInt8(NVE_EVENT_PAYLOAD_EMPTY.rawValue))
+            XCTAssertEqual(ptr[0].table, UInt64(NVE_TABLE_INTERACTION))
+            XCTAssertEqual(ptr[0].event, UInt32(NVE_INTERACTION_EVENT_FOCUS.rawValue))
 
-            XCTAssertEqual(ptr[1].kind, NveEventKind.press.rawValue)
-            XCTAssertEqual(ptr[1].payload_tag, UInt8(NVE_EVENT_PAYLOAD_POINT.rawValue))
-            XCTAssertEqual(ptr[1].x, 12.5)
-            XCTAssertEqual(ptr[1].y, 34.25)
+            XCTAssertEqual(ptr[1].table, UInt64(NVE_TABLE_INTERACTION))
+            XCTAssertEqual(ptr[1].event, UInt32(NVE_INTERACTION_EVENT_PRESS.rawValue))
+            XCTAssertEqual(Float(bitPattern: ptr[1].payload.0), 12.5)
+            XCTAssertEqual(Float(bitPattern: ptr[1].payload.1), 34.25)
 
-            XCTAssertEqual(ptr[2].kind, NveEventKind.scroll.rawValue)
-            XCTAssertEqual(ptr[2].payload_tag, UInt8(NVE_EVENT_PAYLOAD_SCROLL.rawValue))
-            XCTAssertEqual(ptr[2].y, 145.5)
-            XCTAssertEqual(ptr[2].width, 320)
-            XCTAssertEqual(ptr[2].height, 900)
+            XCTAssertEqual(ptr[2].table, UInt64(NVE_TABLE_SCROLL))
+            XCTAssertEqual(Float(bitPattern: ptr[2].payload.1), 145.5)
+            XCTAssertEqual(Float(bitPattern: ptr[2].payload.2), 320)
+            XCTAssertEqual(Float(bitPattern: ptr[2].payload.3), 900)
 
-            XCTAssertEqual(ptr[3].kind, NveEventKind.textChange.rawValue)
-            XCTAssertEqual(ptr[3].payload_tag, UInt8(NVE_EVENT_PAYLOAD_TEXT.rawValue))
-            XCTAssertEqual(readSliceString(ptr[3].text), "Typing ✍️")
+            XCTAssertEqual(ptr[3].table, UInt64(NVE_TABLE_TEXT_INPUT))
+            XCTAssertEqual(ptr[3].event, UInt32(NVE_TEXT_INPUT_EVENT_CHANGE.rawValue))
 
-            XCTAssertEqual(ptr[4].kind, NveEventKind.layout.rawValue)
-            XCTAssertEqual(ptr[4].payload_tag, UInt8(NVE_EVENT_PAYLOAD_LAYOUT.rawValue))
-            XCTAssertEqual(ptr[4].x, 4)
-            XCTAssertEqual(ptr[4].y, 8)
-            XCTAssertEqual(ptr[4].width, 200)
-            XCTAssertEqual(ptr[4].height, 100)
+            XCTAssertEqual(ptr[4].table, UInt64(NVE_TABLE_LAYOUT))
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.0), 4)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.1), 8)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.2), 200)
+            XCTAssertEqual(Float(bitPattern: ptr[4].payload.3), 100)
 
-            XCTAssertEqual(ptr[5].kind, NveEventKind.custom.rawValue)
-            XCTAssertEqual(ptr[5].payload_tag, UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue))
-            XCTAssertEqual(readSliceString(ptr[5].name), "onFormSubmit")
-            XCTAssertEqual(
-                readDirectValue(ptr[5].value),
-                .map([
-                    ("action", .string("submit")),
-                    ("items", .array([.int64(1), .int64(2)])),
-                ])
-            )
+            XCTAssertEqual(ptr[5].table, UInt64(NVE_TABLE_CUSTOM))
+            XCTAssertEqual(ptr[6].table, UInt64(NVE_TABLE_CUSTOM))
 
-            // Non-NveBinValue raw bytes fall back to NVE_VAL_BYTES cleanly.
-            XCTAssertEqual(readSliceString(ptr[6].name), "onRawBytes")
-            XCTAssertEqual(readDirectValue(ptr[6].value), .bytes(Data([0xFF, 0x01])))
+            let decoded = NveDirectEventWriter.decodeBatch(cBatch)
+            XCTAssertEqual(decoded, batch)
         }
     }
 

@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use nve_abi::{EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, InteractionEvent, NodeId, SurfaceId, TimestampUs};
 use nve_bench::create_bench_dioxus_surface;
 use nve_components::tables::Interaction;
 use nve_engine::HotPatchMsg;
@@ -11,8 +11,11 @@ fn find_pressable_node_id(store: &NodeStore) -> NodeId {
     store
         .live_nodes()
         .find_map(|id| {
-            let mask = store.try_row::<Interaction>(id)?.event_mask();
-            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id)
+            store
+                .try_row::<Interaction>(id)?
+                .listeners()
+                .contains(InteractionEvent::Press)
+                .then_some(id)
         })
         .expect("pressable node in BenchCounterApp")
 }
@@ -34,16 +37,19 @@ fn bench_dioxus(c: &mut Criterion) {
     let btn_id = find_pressable_node_id(surface.store());
     let mut frame_id = FrameId(1);
 
+    let mut ev_buf = EventBatchBuf::with_capacity(1, 0);
     group.bench_function("incremental_state_update_diff", |b| {
         b.iter(|| {
             frame_id = frame_id.next();
-            let handled = surface.dispatch_events(&[NativeEvent {
-                surface_id: SurfaceId::ROOT,
-                node_id: btn_id,
-                timestamp_us: frame_id.raw() * 16_000,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x: 40.0, y: 20.0 },
-            }]);
+            ev_buf.clear();
+            ev_buf.push_press(
+                SurfaceId::ROOT,
+                btn_id,
+                TimestampUs(frame_id.raw() * 16_000),
+                40.0,
+                20.0,
+            );
+            let handled = surface.dispatch_events(ev_buf.as_validated());
             debug_assert!(handled);
             black_box(surface.render_nve2_slice(frame_id).len())
         });

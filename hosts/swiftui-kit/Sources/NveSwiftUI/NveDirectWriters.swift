@@ -72,26 +72,60 @@ public enum NveDirectPropsWriter {
     }
 }
 
-// MARK: - Zero-Copy Direct C-ABI Event Batch Writer & Reader
+// MARK: - Zero-Copy Direct C-ABI Event Batch Writer
 
-/// Writes and decodes typed `NveEvent` batches directly against C-ABI `NveDirectEvent[]` +
-/// `NveEventBatch` buffers for `NveSurfaceApi.dispatch_events` and `drain_emitted_events`.
+/// Writes typed `NveEvent` batches directly into pointer-free 64-byte C-ABI `NveEvent[]` +
+/// shared byte-arena `NveEventBatch` buffers for `NveSurfaceApi.dispatch_events`.
 public enum NveDirectEventWriter {
+    private static func makeBatch<E>(
+        _ rawEvents: UnsafeRawPointer?,
+        bytes: UnsafePointer<UInt8>?,
+        count: UInt32,
+        bytesLen: UInt32,
+        ctor: (UnsafePointer<E>?, UnsafePointer<UInt8>?, UInt32, UInt32) -> NveEventBatch
+    ) -> NveEventBatch {
+        ctor(rawEvents?.assumingMemoryBound(to: E.self), bytes, count, bytesLen)
+    }
+
     public static func withBatch<R>(
         _ events: [NveEvent],
         _ body: (NveEventBatch) throws -> R
     ) throws -> R {
         guard !events.isEmpty else {
-            return try body(NveEventBatch(ptr: nil, len: 0, _pad: 0))
+            return try body(NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0))
         }
         return try NveDirectArena.withArena { arena in
-            guard let buf = arena.allocateTyped(NveDirectEvent.self, count: events.count) else {
-                return try body(NveEventBatch(ptr: nil, len: 0, _pad: 0))
+            var rawRecords = Data(count: events.count * 64)
+            var byteArena = Data()
+            rawRecords.withUnsafeMutableBytes { recBuf in
+                for (idx, event) in events.enumerated() {
+                    encodeRecord(event, into: recBuf, offset: idx * 64, byteArena: &byteArena)
+                }
             }
-            for (idx, event) in events.enumerated() {
-                buf.advanced(by: idx).initialize(to: try encodeEvent(event, into: arena))
+            let recRaw = arena.allocate(byteCount: rawRecords.count, alignment: 8)
+            rawRecords.withUnsafeBytes { src in
+                if let base = src.baseAddress {
+                    recRaw.copyMemory(from: base, byteCount: rawRecords.count)
+                }
             }
-            return try body(NveEventBatch(ptr: UnsafePointer(buf), len: UInt32(events.count), _pad: 0))
+            var arenaPtr: UnsafePointer<UInt8>? = nil
+            if !byteArena.isEmpty {
+                let dst = arena.allocate(byteCount: byteArena.count, alignment: 1)
+                byteArena.withUnsafeBytes { src in
+                    if let base = src.baseAddress {
+                        dst.copyMemory(from: base, byteCount: byteArena.count)
+                    }
+                }
+                arenaPtr = UnsafePointer(dst.assumingMemoryBound(to: UInt8.self))
+            }
+            let batch = makeBatch(
+                UnsafeRawPointer(recRaw),
+                bytes: arenaPtr,
+                count: UInt32(events.count),
+                bytesLen: UInt32(byteArena.count),
+                ctor: NveEventBatch.init
+            )
+            return try body(batch)
         }
     }
 
@@ -103,170 +137,137 @@ public enum NveDirectEventWriter {
         value: NveBinValue,
         _ body: (NveEventBatch) throws -> R
     ) throws -> R {
-        try NveDirectArena.withArena { arena in
-            var event = makeDirectEvent(
-                surfaceId: surfaceId,
-                nodeId: nodeId,
-                timestampUs: timestampUs,
-                kind: NveEventKind.custom.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue),
-                name: arena.copyString(name),
-                value: try arena.writeValue(value)
-            )
-            return try withUnsafePointer(to: &event) { ptr in
-                try body(NveEventBatch(ptr: ptr, len: 1, _pad: 0))
-            }
-        }
-    }
-
-    private static func makeDirectEvent(
-        surfaceId: UInt32,
-        nodeId: UInt32,
-        timestampUs: UInt64,
-        kind: UInt8,
-        payloadTag: UInt8,
-        modifiers: UInt8 = 0,
-        eventFlags: UInt8 = 0,
-        keyCode: UInt32 = 0,
-        name: NveStrSlice = NveStrSlice(ptr: nil, len: 0),
-        x: Float = 0,
-        y: Float = 0,
-        width: Float = 0,
-        height: Float = 0,
-        text: NveStrSlice = NveStrSlice(ptr: nil, len: 0),
-        value: NveValue = NveDirectArena.nullValue()
-    ) -> NveDirectEvent {
-        NveDirectEvent(
-            surface_id: surfaceId,
-            node_id: nodeId,
-            timestamp_us: timestampUs,
-            kind: kind,
-            payload_tag: payloadTag,
-            modifiers: modifiers,
-            event_flags: eventFlags,
-            key_code: keyCode,
-            name: name,
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-            text: text,
-            value: value
+        let encoded = try value.encode()
+        return try withBatch(
+            [
+                NveEvent(
+                    surfaceId: surfaceId,
+                    nodeId: nodeId,
+                    timestampUs: timestampUs,
+                    kind: .custom,
+                    name: name,
+                    payload: .binValue(encoded)
+                ),
+            ],
+            body
         )
     }
 
-    private static func encodeEvent(
+    internal static func tableAndEventId(for kind: NveEventKind) -> (UInt64, UInt32) {
+        switch kind {
+        case .press: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_PRESS.rawValue))
+        case .longPress: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_LONG_PRESS.rawValue))
+        case .focus: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_FOCUS.rawValue))
+        case .blur: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_BLUR.rawValue))
+        case .keyDown: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue))
+        case .keyUp: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_KEY_UP.rawValue))
+        case .pointerDown: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue))
+        case .pointerMove: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue))
+        case .pointerUp: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue))
+        case .pointerEnter: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue))
+        case .pointerLeave: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_POINTER_LEAVE.rawValue))
+        case .wheel: return (UInt64(NVE_TABLE_INTERACTION), UInt32(NVE_INTERACTION_EVENT_WHEEL.rawValue))
+        case .textChange: return (UInt64(NVE_TABLE_TEXT_INPUT), UInt32(NVE_TEXT_INPUT_EVENT_CHANGE.rawValue))
+        case .submit: return (UInt64(NVE_TABLE_TEXT_INPUT), UInt32(NVE_TEXT_INPUT_EVENT_SUBMIT.rawValue))
+        case .compositionStart: return (UInt64(NVE_TABLE_TEXT_INPUT), UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_START.rawValue))
+        case .compositionUpdate: return (UInt64(NVE_TABLE_TEXT_INPUT), UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE.rawValue))
+        case .compositionEnd: return (UInt64(NVE_TABLE_TEXT_INPUT), UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_END.rawValue))
+        case .scroll: return (UInt64(NVE_TABLE_SCROLL), UInt32(NVE_SCROLL_EVENT_SCROLL.rawValue))
+        case .layout: return (UInt64(NVE_TABLE_LAYOUT), UInt32(NVE_LAYOUT_EVENT_LAYOUT.rawValue))
+        case .custom: return (UInt64(NVE_TABLE_CUSTOM), 0)
+        }
+    }
+
+    internal static func encodeRecord(
         _ event: NveEvent,
-        into arena: NveDirectArena
-    ) throws -> NveDirectEvent {
+        into buf: UnsafeMutableRawBufferPointer,
+        offset base: Int,
+        byteArena: inout Data
+    ) {
+        var (table, eventId) = tableAndEventId(for: event.kind)
+        var flags: UInt32 = 0
+        var p: (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) = (0, 0, 0, 0, 0, 0)
+        var bytesOff: UInt32 = 0
+        var bytesLen: UInt32 = 0
+
+        func appendArena(_ data: Data) {
+            if !data.isEmpty {
+                bytesOff = UInt32(byteArena.count)
+                bytesLen = UInt32(data.count)
+                byteArena.append(data)
+            }
+        }
+
         switch event.payload {
         case .empty:
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_EMPTY.rawValue)
-            )
+            break
         case let .point(x, y):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_POINT.rawValue),
-                x: x,
-                y: y
-            )
+            p = (x.bitPattern, y.bitPattern, 0, 0, 0, 0)
         case let .scroll(x, y, contentWidth, contentHeight):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_SCROLL.rawValue),
-                x: x,
-                y: y,
-                width: contentWidth,
-                height: contentHeight
-            )
+            p = (x.bitPattern, y.bitPattern, contentWidth.bitPattern, contentHeight.bitPattern, 0, 0)
         case let .text(text):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_TEXT.rawValue),
-                text: arena.copyString(text)
-            )
+            flags |= UInt32(NVE_EVENT_FLAG_UTF8_BYTES)
+            appendArena(Data(text.utf8))
         case let .layout(x, y, width, height):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_LAYOUT.rawValue),
-                x: x,
-                y: y,
-                width: width,
-                height: height
-            )
+            p = (x.bitPattern, y.bitPattern, width.bitPattern, height.bitPattern, 0, 0)
         case let .binValue(data):
-            let cVal: NveValue
-            if data.isEmpty {
-                cVal = NveDirectArena.nullValue()
-            } else if let parsed = try? NveBinValueView.withParsed(data, { view in
-                try arena.writeBinValueView(view)
-            }) {
-                cVal = parsed
-            } else {
-                cVal = NveDirectArena.bytesValue(arena.copyBytes(data))
-            }
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: NveEventKind.custom.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue),
-                name: arena.copyString(event.name ?? ""),
-                value: cVal
-            )
+            table = UInt64(NVE_TABLE_CUSTOM)
+            eventId = 0
+            flags |= UInt32(NVE_EVENT_FLAG_CUSTOM_NAMED)
+            let nameBytes = Data((event.name ?? "").utf8)
+            p.0 = UInt32(nameBytes.count)
+            var combined = Data(capacity: nameBytes.count + data.count)
+            combined.append(nameBytes)
+            combined.append(data)
+            appendArena(combined)
         case let .key(key, code, modifiers, keyCode, isComposing):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_KEY.rawValue),
-                modifiers: modifiers,
-                eventFlags: isComposing ? UInt8(NVE_EVENT_FLAG_COMPOSING) : 0,
-                keyCode: keyCode,
-                name: arena.copyString(code),
-                text: arena.copyString(key)
-            )
-        case let .pointer(x, y, modifiers, flags):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_POINTER.rawValue),
-                modifiers: modifiers,
-                eventFlags: flags,
-                x: x,
-                y: y
-            )
+            flags |= UInt32(modifiers & 0x1F)
+            if isComposing { flags |= UInt32(NVE_EVENT_FLAG_COMPOSING) }
+            let keyBytes = Array(key.utf8)
+            let codeData = Data(code.utf8)
+            if keyBytes.count <= 16 {
+                var kb = [UInt8](repeating: 0, count: 16)
+                for i in 0 ..< keyBytes.count { kb[i] = keyBytes[i] }
+                let w2 = UInt32(kb[0]) | (UInt32(kb[1]) << 8) | (UInt32(kb[2]) << 16) | (UInt32(kb[3]) << 24)
+                let w3 = UInt32(kb[4]) | (UInt32(kb[5]) << 8) | (UInt32(kb[6]) << 16) | (UInt32(kb[7]) << 24)
+                let w4 = UInt32(kb[8]) | (UInt32(kb[9]) << 8) | (UInt32(kb[10]) << 16) | (UInt32(kb[11]) << 24)
+                let w5 = UInt32(kb[12]) | (UInt32(kb[13]) << 8) | (UInt32(kb[14]) << 16) | (UInt32(kb[15]) << 24)
+                p = (keyCode, UInt32(keyBytes.count), w2, w3, w4, w5)
+                flags |= UInt32(NVE_EVENT_FLAG_INLINE_KEY_UTF8)
+                if !codeData.isEmpty { flags |= UInt32(NVE_EVENT_FLAG_UTF8_BYTES) }
+                appendArena(codeData)
+            } else {
+                p = (keyCode, UInt32(keyBytes.count), 0, 0, 0, 0)
+                flags |= UInt32(NVE_EVENT_FLAG_KEY_SPLIT_BYTES) | UInt32(NVE_EVENT_FLAG_UTF8_BYTES)
+                var combined = Data(capacity: keyBytes.count + codeData.count)
+                combined.append(contentsOf: keyBytes)
+                combined.append(codeData)
+                appendArena(combined)
+            }
+        case let .pointer(x, y, modifiers, pflags):
+            flags |= UInt32(modifiers & 0x1F)
+            let button = UInt32(pflags & 0x07)
+            flags |= (button << UInt32(NVE_EVENT_FLAG_BUTTON_SHIFT)) & UInt32(NVE_EVENT_FLAG_BUTTON_MASK)
+            if (pflags & 0x08) != 0 { flags |= UInt32(NVE_EVENT_FLAG_CAPTURE) }
+            p = (x.bitPattern, y.bitPattern, 0, 0, 0, 0)
         case let .wheel(deltaX, deltaY, modifiers):
-            return makeDirectEvent(
-                surfaceId: event.surfaceId,
-                nodeId: event.nodeId,
-                timestampUs: event.timestampUs,
-                kind: event.kind.rawValue,
-                payloadTag: UInt8(NVE_EVENT_PAYLOAD_WHEEL.rawValue),
-                modifiers: modifiers,
-                x: deltaX,
-                y: deltaY
-            )
+            flags |= UInt32(modifiers & 0x1F)
+            p = (deltaX.bitPattern, deltaY.bitPattern, 0, 0, 0, 0)
         }
+
+        buf.storeBytes(of: event.timestampUs.littleEndian, toByteOffset: base + 0, as: UInt64.self)
+        buf.storeBytes(of: table.littleEndian, toByteOffset: base + 8, as: UInt64.self)
+        buf.storeBytes(of: event.surfaceId.littleEndian, toByteOffset: base + 16, as: UInt32.self)
+        buf.storeBytes(of: event.nodeId.littleEndian, toByteOffset: base + 20, as: UInt32.self)
+        buf.storeBytes(of: eventId.littleEndian, toByteOffset: base + 24, as: UInt32.self)
+        buf.storeBytes(of: flags.littleEndian, toByteOffset: base + 28, as: UInt32.self)
+        buf.storeBytes(of: p.0.littleEndian, toByteOffset: base + 32, as: UInt32.self)
+        buf.storeBytes(of: p.1.littleEndian, toByteOffset: base + 36, as: UInt32.self)
+        buf.storeBytes(of: p.2.littleEndian, toByteOffset: base + 40, as: UInt32.self)
+        buf.storeBytes(of: p.3.littleEndian, toByteOffset: base + 44, as: UInt32.self)
+        buf.storeBytes(of: p.4.littleEndian, toByteOffset: base + 48, as: UInt32.self)
+        buf.storeBytes(of: p.5.littleEndian, toByteOffset: base + 52, as: UInt32.self)
+        buf.storeBytes(of: bytesOff.littleEndian, toByteOffset: base + 56, as: UInt32.self)
+        buf.storeBytes(of: bytesLen.littleEndian, toByteOffset: base + 60, as: UInt32.self)
     }
 }

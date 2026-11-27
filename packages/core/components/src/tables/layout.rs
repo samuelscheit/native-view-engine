@@ -120,7 +120,12 @@ pub enum BoxSizing {
 /// Box geometry of every node (Flexbox / Grid item / absolute position). Dense: every node lays
 /// out, and keeping insets here keeps the layout loop free of presence branches.
 #[derive(NveTable)]
-#[nve_table(name = "nve.layout", storage = "dense", flags = "publish")]
+#[nve_table(
+    name = "nve.layout",
+    storage = "dense",
+    flags = "publish",
+    events = nve_abi::LayoutEvent
+)]
 pub struct Layout {
     #[effect(layout)]
     #[default(Length::AUTO)]
@@ -240,6 +245,6 @@ pub struct GridItem {
 }
 
 const _: () = {
-    assert!(Layout::DESC.defaults.len() == 25);
+    assert!(Layout::DESC.defaults.len() == 26);
     assert!(GridItem::DESC.defaults.len() == 2);
 };

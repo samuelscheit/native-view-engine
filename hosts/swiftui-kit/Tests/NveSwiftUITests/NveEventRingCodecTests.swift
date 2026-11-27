@@ -13,19 +13,12 @@ final class NveEventRingCodecTests: XCTestCase {
         appendLE(value.bitPattern, to: &data)
     }
 
-    private func appendEventHeader(
-        surfaceId: UInt32,
-        nodeId: UInt32,
-        timestampUs: UInt64,
-        kind: UInt8,
-        payloadTag: UInt8,
-        to data: inout Data
-    ) {
-        appendLE(surfaceId, to: &data)
-        appendLE(nodeId, to: &data)
-        appendLE(timestampUs, to: &data)
-        data.append(kind)
-        data.append(payloadTag)
+    private func makeNvevHeader(eventCount: UInt32, bytesLen: UInt32, version: UInt16 = 2) -> Data {
+        var out = Data([0x4E, 0x56, 0x45, 0x56])
+        appendLE(version, to: &out)
+        appendLE(eventCount, to: &out)
+        appendLE(bytesLen, to: &out)
+        return out
     }
 
     func testEnumRawValues() {
@@ -186,8 +179,7 @@ final class NveEventRingCodecTests: XCTestCase {
         }
 
         // Zero count is valid
-        var zeroCount = Data()
-        appendLE(UInt32(0), to: &zeroCount)
+        let zeroCount = makeNvevHeader(eventCount: 0, bytesLen: 0)
         XCTAssertEqual(try NveEventRingCodec.decodeStrict(zeroCount), [])
 
         // Every strict prefix of a rich batch throws `.truncated` on decodeStrict and never crashes decode.
@@ -232,87 +224,58 @@ final class NveEventRingCodecTests: XCTestCase {
             XCTAssertEqual(err as? NveEventRingError, .trailingBytes(1))
         }
 
-        // Unknown event kind rejected by decodeStrict
-        var badKind = Data()
-        appendLE(UInt32(1), to: &badKind)
-        appendEventHeader(
-            surfaceId: 5,
-            nodeId: 6,
-            timestampUs: 77,
-            kind: 250,
-            payloadTag: 0,
-            to: &badKind
-        )
-        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badKind)) { err in
-            XCTAssertEqual(err as? NveEventRingError, .invalidEventKind(250))
+        // Bad magic and unsupported version rejected cleanly
+        var badMagic = zeroCount
+        badMagic[0] = 0x00
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badMagic)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .invalidMagic)
+        }
+        let badVer = makeNvevHeader(eventCount: 0, bytesLen: 0, version: 1)
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badVer)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .unsupportedVersion(1))
         }
 
-        // Unknown payload tag rejected by both decodeStrict and decode
-        var unknownTag = Data()
-        appendLE(UInt32(1), to: &unknownTag)
-        appendEventHeader(
-            surfaceId: 5,
-            nodeId: 6,
-            timestampUs: 77,
-            kind: NveEventKind.custom.rawValue,
-            payloadTag: 99,
-            to: &unknownTag
-        )
-        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(unknownTag)) { err in
-            XCTAssertEqual(err as? NveEventRingError, .invalidPayloadTag(99))
+        // Unknown table key rejected by decodeStrict and decode
+        var badTable = NveEventRingCodec.encode([
+            NveEvent(surfaceId: 5, nodeId: 6, timestampUs: 77, kind: .focus),
+        ])
+        let bogusTable: UInt64 = 0xDEAD_BEEF_CAFE_BABE
+        withUnsafeBytes(of: bogusTable.littleEndian) { raw in
+            badTable.replaceSubrange(14 + 8 ..< 14 + 16, with: raw)
         }
-        XCTAssertTrue(NveEventRingCodec.decode(unknownTag).isEmpty)
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badTable)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .invalidEventTable(bogusTable, 2))
+        }
+        XCTAssertTrue(NveEventRingCodec.decode(badTable).isEmpty)
 
         // Invalid UTF-8 in Text event rejected
-        var badTextUtf8 = Data()
-        appendLE(UInt32(1), to: &badTextUtf8)
-        appendEventHeader(
-            surfaceId: 1,
-            nodeId: 2,
-            timestampUs: 3,
-            kind: NveEventKind.textChange.rawValue,
-            payloadTag: 3,
-            to: &badTextUtf8
-        )
-        appendLE(UInt32(2), to: &badTextUtf8)
-        badTextUtf8.append(contentsOf: [0xFF, 0xFE])
+        var badTextUtf8 = NveEventRingCodec.encode([
+            NveEvent(surfaceId: 1, nodeId: 2, timestampUs: 3, kind: .textChange, payload: .text("ab")),
+        ])
+        badTextUtf8[badTextUtf8.count - 2] = 0xFF
+        badTextUtf8[badTextUtf8.count - 1] = 0xFE
         XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badTextUtf8)) { err in
             XCTAssertEqual(err as? NveEventRingError, .invalidUtf8)
         }
         XCTAssertTrue(NveEventRingCodec.decode(badTextUtf8).isEmpty)
 
-        // Oversized custom payload length rejected cleanly
-        var oversized = Data()
-        appendLE(UInt32(1), to: &oversized)
-        appendEventHeader(
-            surfaceId: 1,
-            nodeId: 1,
-            timestampUs: 1,
-            kind: NveEventKind.custom.rawValue,
-            payloadTag: 5,
-            to: &oversized
-        )
-        appendLE(UInt16(2), to: &oversized)
-        oversized.append(Data("ok".utf8))
-        appendLE(UInt32(9999), to: &oversized)
-        oversized.append(Data([1, 2]))
+        // Out-of-bounds arena range inside record rejected cleanly
+        var badBounds = NveEventRingCodec.encode([
+            NveEvent(surfaceId: 1, nodeId: 1, timestampUs: 1, kind: .textChange, payload: .text("ok")),
+        ])
+        withUnsafeBytes(of: UInt32(9999).littleEndian) { raw in
+            badBounds.replaceSubrange(14 + 60 ..< 14 + 64, with: raw)
+        }
+        XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(badBounds)) { err in
+            XCTAssertEqual(err as? NveEventRingError, .invalidBounds)
+        }
+        XCTAssertTrue(NveEventRingCodec.decode(badBounds).isEmpty)
+
+        // Oversized header arena length rejected cleanly
+        let oversized = makeNvevHeader(eventCount: 1, bytesLen: 9999) + Data(count: 64)
         XCTAssertThrowsError(try NveEventRingCodec.decodeStrict(oversized)) { err in
             XCTAssertEqual(err as? NveEventRingError, .truncated)
         }
         XCTAssertTrue(NveEventRingCodec.decode(oversized).isEmpty)
-
-        // Mid-payload truncation on Point (4 of 8 bytes)
-        var partialPoint = Data()
-        appendLE(UInt32(1), to: &partialPoint)
-        appendEventHeader(
-            surfaceId: 1,
-            nodeId: 2,
-            timestampUs: 3,
-            kind: NveEventKind.press.rawValue,
-            payloadTag: 1,
-            to: &partialPoint
-        )
-        appendF32(12.5, to: &partialPoint)
-        XCTAssertTrue(NveEventRingCodec.decode(partialPoint).isEmpty)
     }
 }

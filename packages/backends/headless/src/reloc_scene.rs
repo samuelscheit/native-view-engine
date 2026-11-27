@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nve_abi::{
-    ColorRgba, FrameId, NveDirectEvent, NveEventBatchRef, SurfaceId, ROOT_NODE_ID,
+    ColorRgba, EventBatchBuf, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID,
 };
 use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
@@ -89,7 +89,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             let event_mask = u64::from(
                 store
                     .try_row::<Interaction>(id)
-                    .map_or(0, |i| i.event_mask()),
+                    .map_or(0, |i| i.listeners().raw()),
             );
             if event_mask != 0 {
                 flags |= SCENE_NODE_INTERACTIVE;
@@ -267,17 +267,17 @@ fn prerender_native_frame0_into<A: NveApp, L: StoreLayoutEngine>(
         && viewport.width > 0.0
         && viewport.height > 0.0
     {
-        let layout_ev = [NveDirectEvent::layout(
+        let mut ev_buf = EventBatchBuf::new();
+        ev_buf.push_layout(
             surface_id,
             ROOT_NODE_ID,
-            0,
+            TimestampUs(0),
             0.0,
             0.0,
             viewport.width,
             viewport.height,
-        )];
-        // SAFETY: `layout_ev` is a stack-local slice containing no nested pointers.
-        let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
+        );
+        let _ = app.dispatch_events(ev_buf.as_validated());
     }
 
     let mut replica = StoreWireReplica::new(backend, core_realization_order());

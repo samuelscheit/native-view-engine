@@ -1,9 +1,6 @@
 use std::path::PathBuf;
 
-use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-    SurfaceId,
-};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
@@ -47,16 +44,15 @@ fn press_test_id(
 ) {
     let id = find_node_by_test_id(surface.store(), test_id);
     let rect = backend.layout_of(id).unwrap_or_default();
-    let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: id,
-        timestamp_us: frame_id * 16_000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point {
-            x: rect.x + 2.0,
-            y: rect.y + 2.0,
-        },
-    }]);
+    let mut batch = EventBatchBuf::new();
+    batch.push_press(
+        SurfaceId::ROOT,
+        id,
+        TimestampUs(frame_id * 16_000),
+        rect.x + 2.0,
+        rect.y + 2.0,
+    );
+    let handled = surface.dispatch_events(batch.as_validated());
     assert!(handled, "expected press on '{test_id}' to be handled");
     surface
         .commit_to(FrameId(frame_id), backend)
@@ -147,13 +143,9 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     // Press Increment + twice via testID lookup.
     for frame_id in 2..=3 {
         let inc_id = find_node_by_test_id(app.store(), "ks-counter-inc");
-        let handled = app.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: inc_id,
-            timestamp_us: frame_id * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, inc_id, TimestampUs(frame_id * 16_000), 10.0, 10.0);
+        let handled = app.dispatch_events(batch.as_validated());
         assert!(handled);
         app.reconcile(FrameId(frame_id));
         headless.commit(app.store(), app.last_changes()).unwrap();
@@ -246,9 +238,9 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     rep1.submit_nve2_frame(&f1).unwrap();
 
     let inc_id = find_node_by_test_id(rep1.store(), "ks-counter-inc");
-    let press_ev = [NveDirectEvent::press(SurfaceId::ROOT, inc_id, 1_000, 4.0, 4.0)];
-    // SAFETY: `press_ev` stack array outlives the synchronous `dispatch_events` call.
-    assert!(m1.dispatch_events(unsafe { NveEventBatchRef::from_slice(&press_ev) }));
+    let mut press_ev = EventBatchBuf::new();
+    press_ev.push_press(SurfaceId::ROOT, inc_id, TimestampUs(1_000), 4.0, 4.0);
+    assert!(m1.dispatch_events(press_ev.as_validated()));
     let _ = m1.render(FrameId(2));
     assert_eq!(m1.count(), 1);
 
@@ -298,12 +290,13 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 0"));
 
     let inc_node = find_node_by_test_id(rep.store(), "ks-counter-inc");
-    let press_ev = [NveDirectEvent::press(SurfaceId::ROOT, inc_node, 1000, 10.0, 10.0)];
+    let mut press_ev = EventBatchBuf::new();
+    press_ev.push_press(SurfaceId::ROOT, inc_node, TimestampUs(1000), 10.0, 10.0);
 
-    assert!(inst.dispatch_events(&press_ev));
+    assert!(inst.dispatch_events(press_ev.as_validated()));
     let f2 = inst.render(FrameId(2));
     rep.submit_nve2_frame(f2).unwrap();
-    assert!(inst.dispatch_events(&press_ev));
+    assert!(inst.dispatch_events(press_ev.as_validated()));
     let f3 = inst.render(FrameId(3));
     rep.submit_nve2_frame(f3).unwrap();
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 2"));

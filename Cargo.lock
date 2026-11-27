@@ -3300,6 +3300,7 @@ dependencies = [
 name = "nve-webview-web"
 version = "0.1.0"
 dependencies = [
+ "nve-abi",
  "nve-backend-web",
  "nve-store",
  "nve-webview",

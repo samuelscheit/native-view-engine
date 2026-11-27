@@ -35,208 +35,244 @@ const char* canonical_event_name(EventKind kind) noexcept {
   return "onUnknown";
 }
 
+bool decode_nve_event_record(
+    const NveEvent& src,
+    const uint8_t* arena,
+    size_t arena_len,
+    DecodedEvent& out) {
+  if (src.bytes.len > 0u &&
+      (arena == nullptr || src.bytes.offset > arena_len ||
+       src.bytes.len > arena_len - src.bytes.offset)) {
+    return false;
+  }
+  const uint8_t* ev_bytes = src.bytes.len > 0u ? (arena + src.bytes.offset) : nullptr;
+  const size_t ev_len = src.bytes.len;
+
+  out = DecodedEvent{};
+  out.surface_id = src.surface;
+  out.node_id = src.node;
+  out.timestamp_us = src.timestamp;
+  out.table = src.table;
+  out.event_id = src.event;
+  out.modifiers = static_cast<uint8_t>(src.flags & 0x1Fu);
+  out.event_flags = src.flags;
+
+  if (src.table == NVE_TABLE_INTERACTION) {
+    switch (src.event) {
+      case NVE_INTERACTION_EVENT_PRESS:
+        out.kind = EventKind::Press;
+        out.x = event_payload_f32(src, 0u);
+        out.y = event_payload_f32(src, 1u);
+        break;
+      case NVE_INTERACTION_EVENT_LONG_PRESS:
+        out.kind = EventKind::LongPress;
+        out.x = event_payload_f32(src, 0u);
+        out.y = event_payload_f32(src, 1u);
+        break;
+      case NVE_INTERACTION_EVENT_FOCUS:
+        out.kind = EventKind::Focus;
+        break;
+      case NVE_INTERACTION_EVENT_BLUR:
+        out.kind = EventKind::Blur;
+        break;
+      case NVE_INTERACTION_EVENT_KEY_DOWN:
+      case NVE_INTERACTION_EVENT_KEY_UP: {
+        out.kind = (src.event == NVE_INTERACTION_EVENT_KEY_DOWN) ? EventKind::KeyDown
+                                                                 : EventKind::KeyUp;
+        out.key_code = src.payload[0];
+        const uint32_t key_len = src.payload[1];
+        if ((src.flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) != 0u) {
+          if (key_len > NVE_EVENT_INLINE_KEY_CAP) {
+            return false;
+          }
+          std::array<uint8_t, NVE_EVENT_INLINE_KEY_CAP> kb{};
+          for (size_t w = 0u; w < 4u; ++w) {
+            const uint32_t word = src.payload[2u + w];
+            kb[w * 4u + 0u] = static_cast<uint8_t>(word & 0xFFu);
+            kb[w * 4u + 1u] = static_cast<uint8_t>((word >> 8u) & 0xFFu);
+            kb[w * 4u + 2u] = static_cast<uint8_t>((word >> 16u) & 0xFFu);
+            kb[w * 4u + 3u] = static_cast<uint8_t>((word >> 24u) & 0xFFu);
+          }
+          out.text.assign(reinterpret_cast<const char*>(kb.data()), key_len);
+          if (ev_len > 0u) {
+            out.code.assign(reinterpret_cast<const char*>(ev_bytes), ev_len);
+          }
+        } else if ((src.flags & NVE_EVENT_FLAG_KEY_SPLIT_BYTES) != 0u) {
+          if (key_len > ev_len) {
+            return false;
+          }
+          out.text.assign(reinterpret_cast<const char*>(ev_bytes), key_len);
+          if (ev_len > key_len) {
+            out.code.assign(reinterpret_cast<const char*>(ev_bytes + key_len), ev_len - key_len);
+          }
+        } else if (ev_len > 0u) {
+          out.text.assign(reinterpret_cast<const char*>(ev_bytes), ev_len);
+        }
+        break;
+      }
+      case NVE_INTERACTION_EVENT_POINTER_DOWN:
+      case NVE_INTERACTION_EVENT_POINTER_MOVE:
+      case NVE_INTERACTION_EVENT_POINTER_UP:
+      case NVE_INTERACTION_EVENT_POINTER_ENTER:
+      case NVE_INTERACTION_EVENT_POINTER_LEAVE:
+        switch (src.event) {
+          case NVE_INTERACTION_EVENT_POINTER_DOWN: out.kind = EventKind::PointerDown; break;
+          case NVE_INTERACTION_EVENT_POINTER_MOVE: out.kind = EventKind::PointerMove; break;
+          case NVE_INTERACTION_EVENT_POINTER_UP: out.kind = EventKind::PointerUp; break;
+          case NVE_INTERACTION_EVENT_POINTER_ENTER: out.kind = EventKind::PointerEnter; break;
+          default: out.kind = EventKind::PointerLeave; break;
+        }
+        out.x = event_payload_f32(src, 0u);
+        out.y = event_payload_f32(src, 1u);
+        break;
+      case NVE_INTERACTION_EVENT_WHEEL:
+        out.kind = EventKind::Wheel;
+        out.x = event_payload_f32(src, 0u);
+        out.y = event_payload_f32(src, 1u);
+        break;
+      default:
+        return false;
+    }
+    out.name = canonical_event_name(out.kind);
+    return true;
+  }
+
+  if (src.table == NVE_TABLE_TEXT_INPUT) {
+    switch (src.event) {
+      case NVE_TEXT_INPUT_EVENT_CHANGE: out.kind = EventKind::TextChange; break;
+      case NVE_TEXT_INPUT_EVENT_SUBMIT: out.kind = EventKind::Submit; break;
+      case NVE_TEXT_INPUT_EVENT_COMPOSITION_START: out.kind = EventKind::CompositionStart; break;
+      case NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE: out.kind = EventKind::CompositionUpdate; break;
+      case NVE_TEXT_INPUT_EVENT_COMPOSITION_END: out.kind = EventKind::CompositionEnd; break;
+      default: return false;
+    }
+    out.name = canonical_event_name(out.kind);
+    if (ev_len > 0u) {
+      out.text.assign(reinterpret_cast<const char*>(ev_bytes), ev_len);
+      out.payload_bytes.assign(ev_bytes, ev_bytes + ev_len);
+    }
+    return true;
+  }
+
+  if (src.table == NVE_TABLE_SCROLL) {
+    if (src.event != NVE_SCROLL_EVENT_SCROLL) return false;
+    out.kind = EventKind::Scroll;
+    out.name = canonical_event_name(out.kind);
+    out.x = event_payload_f32(src, 0u);
+    out.y = event_payload_f32(src, 1u);
+    out.width = event_payload_f32(src, 2u);
+    out.height = event_payload_f32(src, 3u);
+    return true;
+  }
+
+  if (src.table == NVE_TABLE_LAYOUT) {
+    if (src.event != NVE_LAYOUT_EVENT_LAYOUT) return false;
+    out.kind = EventKind::Layout;
+    out.name = canonical_event_name(out.kind);
+    out.x = event_payload_f32(src, 0u);
+    out.y = event_payload_f32(src, 1u);
+    out.width = event_payload_f32(src, 2u);
+    out.height = event_payload_f32(src, 3u);
+    return true;
+  }
+
+  out.kind = EventKind::Custom;
+  std::string_view cname;
+  std::span<const uint8_t> cpayload;
+  if (!event_custom_parts(src, arena, arena_len, cname, cpayload)) {
+    return false;
+  }
+  out.name = ((src.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) != 0u)
+                 ? std::string(cname)
+                 : std::string(canonical_event_name(EventKind::Custom));
+  if (!cpayload.empty()) {
+    out.payload_bytes.assign(cpayload.begin(), cpayload.end());
+  }
+  return true;
+}
+
+uint64_t read_le_u64(const uint8_t* p) noexcept {
+  return static_cast<uint64_t>(wire::read_le_u32(p)) |
+         (static_cast<uint64_t>(wire::read_le_u32(p + 4u)) << 32u);
+}
+
+NveEvent read_event_le(const uint8_t* p) noexcept {
+  NveEvent ev{};
+  ev.timestamp = read_le_u64(p + wire::kEventOffsetTimestamp);
+  ev.table = read_le_u64(p + wire::kEventOffsetTable);
+  ev.surface = wire::read_le_u32(p + wire::kEventOffsetSurface);
+  ev.node = wire::read_le_u32(p + wire::kEventOffsetNode);
+  ev.event = wire::read_le_u32(p + wire::kEventOffsetEvent);
+  ev.flags = wire::read_le_u32(p + wire::kEventOffsetFlags);
+  for (size_t i = 0u; i < 6u; ++i) {
+    ev.payload[i] = wire::read_le_u32(p + wire::kEventOffsetPayload + i * 4u);
+  }
+  ev.bytes.offset = wire::read_le_u32(p + wire::kEventOffsetBytesOffset);
+  ev.bytes.len = wire::read_le_u32(p + wire::kEventOffsetBytesLen);
+  return ev;
+}
+
 } // namespace
 
 bool decode_event_ring(NveBufferSlice slice, std::vector<DecodedEvent>& out_events) {
   out_events.clear();
-  if (slice.len == 0) {
+  if (slice.len == 0u) {
     return true;
   }
   if (slice.ptr == nullptr) {
     return false;
   }
 
-  BinaryReader r(slice.ptr, slice.len);
-  uint32_t count = 0;
-  if (!r.read(count)) {
+  const auto hdr = wire::decode_event_batch_header(std::span<const uint8_t>(slice.ptr, slice.len));
+  if (!hdr.has_value()) {
+    return false;
+  }
+  const size_t body_len = slice.len - wire::kEventWireHeaderSize;
+  const size_t max_events = body_len / wire::kEventRecordSize;
+  if (static_cast<size_t>(hdr->event_count) > max_events) {
+    return false;
+  }
+  const size_t ev_bytes = static_cast<size_t>(hdr->event_count) * wire::kEventRecordSize;
+  if (body_len - ev_bytes != static_cast<size_t>(hdr->bytes_len)) {
     return false;
   }
 
-  out_events.reserve(count < 4096 ? count : 4096);
-  for (uint32_t i = 0; i < count; ++i) {
-    DecodedEvent ev{};
-    uint8_t raw_kind = 0;
-    uint8_t payload_tag = 0;
-    if (!r.read(ev.surface_id) || !r.read(ev.node_id) || !r.read(ev.timestamp_us) ||
-        !r.read(raw_kind) || !r.read(payload_tag)) {
-      out_events.clear();
-      return false;
-    }
-    if (raw_kind < 1 || raw_kind > 20) {
-      out_events.clear();
-      return false;
-    }
-    ev.kind = static_cast<EventKind>(raw_kind);
-    ev.name = canonical_event_name(ev.kind);
+  const uint8_t* ev_base = slice.ptr + wire::kEventWireHeaderSize;
+  const uint8_t* arena_base = ev_base + ev_bytes;
+  const size_t arena_len = hdr->bytes_len;
 
-    switch (payload_tag) {
-      case 0: /* Empty */
-        break;
-      case 1: /* Point */
-        if (!r.read(ev.x) || !r.read(ev.y)) {
-          out_events.clear();
-          return false;
-        }
-        break;
-      case 2: /* Scroll */
-        if (!r.read(ev.x) || !r.read(ev.y) || !r.read(ev.width) || !r.read(ev.height)) {
-          out_events.clear();
-          return false;
-        }
-        break;
-      case 3: { /* Text */
-        uint32_t len = 0;
-        std::string_view sv;
-        if (!r.read(len) || !r.read_string(len, sv)) {
-          out_events.clear();
-          return false;
-        }
-        ev.text.assign(sv.begin(), sv.end());
-        ev.payload_bytes.assign(
-            reinterpret_cast<const uint8_t*>(sv.data()),
-            reinterpret_cast<const uint8_t*>(sv.data()) + sv.size());
-        break;
-      }
-      case 4: /* Layout */
-        if (!r.read(ev.x) || !r.read(ev.y) || !r.read(ev.width) || !r.read(ev.height)) {
-          out_events.clear();
-          return false;
-        }
-        break;
-      case 5: { /* Custom */
-        uint16_t nlen = 0;
-        std::string_view name;
-        uint32_t dlen = 0;
-        if (!r.read(nlen) || !r.read_string(nlen, name) || !r.read(dlen) ||
-            !r.read_bytes(dlen, ev.payload_bytes)) {
-          out_events.clear();
-          return false;
-        }
-        ev.name.assign(name.begin(), name.end());
-        break;
-      }
-      case 6: { /* Key */
-        uint8_t is_composing = 0;
-        uint16_t klen = 0;
-        uint16_t clen = 0;
-        std::string_view key;
-        std::string_view code;
-        if (!r.read(ev.modifiers) || !r.read(is_composing) || !r.read(ev.key_code) ||
-            !r.read(klen) || !r.read_string(klen, key) || !r.read(clen) ||
-            !r.read_string(clen, code)) {
-          out_events.clear();
-          return false;
-        }
-        ev.event_flags = is_composing != 0 ? NVE_EVENT_FLAG_COMPOSING : 0u;
-        ev.text.assign(key.begin(), key.end());
-        ev.code.assign(code.begin(), code.end());
-        break;
-      }
-      case 7: /* Pointer */
-        if (!r.read(ev.x) || !r.read(ev.y) || !r.read(ev.modifiers) || !r.read(ev.event_flags)) {
-          out_events.clear();
-          return false;
-        }
-        break;
-      case 8: /* Wheel */
-        if (!r.read(ev.x) || !r.read(ev.y) || !r.read(ev.modifiers)) {
-          out_events.clear();
-          return false;
-        }
-        break;
-      default:
-        out_events.clear();
-        return false;
+  out_events.reserve(hdr->event_count < 4096u ? hdr->event_count : 4096u);
+  for (uint32_t i = 0u; i < hdr->event_count; ++i) {
+    const NveEvent raw = read_event_le(ev_base + static_cast<size_t>(i) * wire::kEventRecordSize);
+    DecodedEvent decoded{};
+    if (!decode_nve_event_record(raw, arena_base, arena_len, decoded)) {
+      out_events.clear();
+      return false;
     }
-    out_events.push_back(std::move(ev));
-  }
-  if (r.remaining() != 0) {
-    out_events.clear();
-    return false;
+    out_events.push_back(std::move(decoded));
   }
   return true;
 }
 
 bool decode_direct_events(NveEventBatch batch, std::vector<DecodedEvent>& out_events) {
   out_events.clear();
-  if (batch.len == 0u) {
-    return true;
-  }
-  if (batch.ptr == nullptr) {
+  if (batch.bytes_len > 0u && batch.bytes == nullptr) {
     return false;
   }
-  out_events.reserve(batch.len < 4096u ? batch.len : 4096u);
-  for (uint32_t i = 0u; i < batch.len; ++i) {
-    const NveDirectEvent& src = batch.ptr[i];
-    if (src.kind < 1u || src.kind > 20u) {
+  if (batch.event_count == 0u) {
+    return true;
+  }
+  if (batch.events == nullptr) {
+    return false;
+  }
+  out_events.reserve(batch.event_count < 4096u ? batch.event_count : 4096u);
+  for (uint32_t i = 0u; i < batch.event_count; ++i) {
+    DecodedEvent decoded{};
+    if (!decode_nve_event_record(batch.events[i], batch.bytes, batch.bytes_len, decoded)) {
       out_events.clear();
       return false;
     }
-    DecodedEvent ev{};
-    ev.surface_id = src.surface_id;
-    ev.node_id = src.node_id;
-    ev.timestamp_us = src.timestamp_us;
-    ev.kind = static_cast<EventKind>(src.kind);
-    ev.name = canonical_event_name(ev.kind);
-    ev.modifiers = src.modifiers;
-    ev.event_flags = src.event_flags;
-    ev.key_code = src.key_code;
-
-    switch (src.payload_tag) {
-      case NVE_EVENT_PAYLOAD_EMPTY:
-        break;
-      case NVE_EVENT_PAYLOAD_POINT:
-      case NVE_EVENT_PAYLOAD_POINTER:
-      case NVE_EVENT_PAYLOAD_WHEEL:
-        ev.x = src.x;
-        ev.y = src.y;
-        break;
-      case NVE_EVENT_PAYLOAD_SCROLL:
-      case NVE_EVENT_PAYLOAD_LAYOUT:
-        ev.x = src.x;
-        ev.y = src.y;
-        ev.width = src.width;
-        ev.height = src.height;
-        break;
-      case NVE_EVENT_PAYLOAD_TEXT: {
-        const std::string_view sv = str_slice_view(src.text);
-        ev.text.assign(sv.begin(), sv.end());
-        ev.payload_bytes.assign(
-            reinterpret_cast<const uint8_t*>(sv.data()),
-            reinterpret_cast<const uint8_t*>(sv.data()) + sv.size());
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_CUSTOM: {
-        const std::string_view name = str_slice_view(src.name);
-        ev.name.assign(name.begin(), name.end());
-        if (src.value.tag == NVE_VAL_BYTES) {
-          if (src.value.data.bytes_val.ptr != nullptr && src.value.data.bytes_val.len > 0u) {
-            ev.payload_bytes.assign(
-                src.value.data.bytes_val.ptr,
-                src.value.data.bytes_val.ptr + src.value.data.bytes_val.len);
-          }
-        } else if (src.value.tag != NVE_VAL_NULL) {
-          if (!encode_bin_value(ev.payload_bytes, src.value)) {
-            out_events.clear();
-            return false;
-          }
-        } else if (src.text.ptr != nullptr && src.text.len > 0u) {
-          ev.payload_bytes.assign(src.text.ptr, src.text.ptr + src.text.len);
-        }
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_KEY: {
-        const std::string_view key = str_slice_view(src.text);
-        const std::string_view code = str_slice_view(src.name);
-        ev.text.assign(key.begin(), key.end());
-        ev.code.assign(code.begin(), code.end());
-        break;
-      }
-      default:
-        out_events.clear();
-        return false;
-    }
-    out_events.push_back(std::move(ev));
+    out_events.push_back(std::move(decoded));
   }
   return true;
 }

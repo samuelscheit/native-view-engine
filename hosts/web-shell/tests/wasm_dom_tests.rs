@@ -7,7 +7,7 @@
 //!   verifies the `wasm_bindgen` entrypoints and `WebAppController` surface compile cleanly
 //!   with zero warnings.
 
-use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{InteractionEvent, NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
 use nve_components::tables::{DebugId, Interaction};
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
@@ -42,21 +42,16 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         "expected mounted node with testID='{test_id}'"
     );
     let node_id = node_id.expect("checked above");
-    let mask = session
+    let listens_press = session
         .store()
         .try_row::<Interaction>(node_id)
-        .map_or(0, |i| u64::from(i.event_mask()));
-    assert_ne!(
-        mask & EventMask::PRESS,
-        0,
-        "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
+        .is_some_and(|i| i.listeners().contains(InteractionEvent::Press));
+    assert!(
+        listens_press,
+        "node '{test_id}' (id={node_id}) should subscribe to InteractionEvent::Press"
     );
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id,
-        timestamp_us,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 12.0, y: 10.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, node_id, TimestampUs(timestamp_us), 12.0, 10.0);
     });
     session
         .pump_events()
@@ -190,22 +185,14 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
         .expect("ks-counter-reset button");
 
     // Unhandled press on a nonexistent node must be ignored cleanly (no frame, no panic).
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: NodeId::new(99_999, 0),
-        timestamp_us: 10,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 0.0, y: 0.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, NodeId::new(99_999, 0), TimestampUs(10), 0.0, 0.0);
     });
     assert!(session.pump_events().expect("pump should not fail").is_none());
 
     for step in 1..=10u64 {
-        session.backend_mut().push_event(NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: inc_id,
-            timestamp_us: step * 100,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 40.0, y: 20.0 },
+        session.backend_mut().with_pending_events(|evs| {
+            evs.push_press(SurfaceId::ROOT, inc_id, TimestampUs(step * 100), 40.0, 20.0);
         });
         let timing = session
             .pump_events()
@@ -217,12 +204,8 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
         assert!(html.contains(&format!("Count: {step}")));
     }
 
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: reset_id,
-        timestamp_us: 2000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 40.0, y: 20.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, reset_id, TimestampUs(2000), 40.0, 20.0);
     });
     session.pump_events().expect("reset pump").expect("reset frame");
     assert!(session.render_html().contains("Count: 0"));

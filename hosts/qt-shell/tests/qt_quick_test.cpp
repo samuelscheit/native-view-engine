@@ -38,10 +38,10 @@ std::span<const uint8_t> nve_test_patch(std::string_view text) {
   return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
 }
 
-struct RecordedDirectEvent {
+struct RecordedEvent {
   uint32_t node_id{0};
-  uint8_t kind{0};
-  uint8_t payload_tag{0};
+  uint64_t table{0};
+  uint32_t event_id{0};
   float x{0.0f};
   float y{0.0f};
   float width{0.0f};
@@ -57,7 +57,7 @@ struct MockQuickComponent {
   std::string title{"QuickGPU"};
   std::string input_text{"hi"};
   bool show_extra_text{true};
-  std::vector<RecordedDirectEvent> direct_events;
+  std::vector<RecordedEvent> direct_events;
   int direct_press_calls{0};
   int direct_scroll_calls{0};
   int direct_text_calls{0};
@@ -169,45 +169,48 @@ struct MockQuickComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockQuickComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
+    if (batch.events == nullptr) return 0u;
     uint32_t dirty = 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      RecordedDirectEvent rec{};
-      rec.node_id = ev.node_id;
-      rec.kind = ev.kind;
-      rec.payload_tag = ev.payload_tag;
-      rec.x = ev.x;
-      rec.y = ev.y;
-      rec.width = ev.width;
-      rec.height = ev.height;
-      const auto sv = nve::str_slice_view(ev.text);
-      rec.text.assign(sv.data(), sv.size());
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      RecordedEvent rec{};
+      rec.node_id = ev.node;
+      rec.table = ev.table;
+      rec.event_id = ev.event;
+      rec.x = nve::event_payload_f32(ev, 0u);
+      rec.y = nve::event_payload_f32(ev, 1u);
+      rec.width = nve::event_payload_f32(ev, 2u);
+      rec.height = nve::event_payload_f32(ev, 3u);
+      if (ev.bytes.len > 0u && batch.bytes != nullptr && ev.bytes.offset <= batch.bytes_len &&
+          ev.bytes.len <= batch.bytes_len - ev.bytes.offset) {
+        rec.text.assign(
+            reinterpret_cast<const char*>(batch.bytes + ev.bytes.offset), ev.bytes.len);
+      }
       self->direct_events.push_back(rec);
 
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press)) {
+      if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS) {
         ++self->direct_press_calls;
-        if (ev.node_id == 5u || ev.node_id == 11u) {
+        if (ev.node == 5u || ev.node == 11u) {
           ++self->count;
           self->outbound.push_custom(
               self->surface_id,
-              ev.node_id,
-              ev.timestamp_us,
+              ev.node,
+              ev.timestamp,
               "onQuickPress",
               "{\"count\":" + std::to_string(self->count) + "}");
           dirty = 1u;
         }
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+      } else if (ev.table == NVE_TABLE_SCROLL && ev.event == NVE_SCROLL_EVENT_SCROLL) {
         ++self->direct_scroll_calls;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+      } else if (ev.table == NVE_TABLE_TEXT_INPUT && ev.event == NVE_TEXT_INPUT_EVENT_CHANGE) {
         ++self->direct_text_calls;
-        if (ev.node_id == 13u) {
+        if (ev.node == 13u) {
           self->input_text = rec.text;
           dirty = 1u;
         }
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Focus)) {
+      } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_FOCUS) {
         ++self->direct_focus_calls;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Blur)) {
+      } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_BLUR) {
         ++self->direct_blur_calls;
       }
     }
@@ -465,8 +468,8 @@ void test_scene_hit_test_direct_events_and_scene_graph_caching() {
   NVE_CHECK(mock->direct_press_calls == 1 && item->sceneNodeText(4) == "Clicks: 1");
   NVE_CHECK(!mock->direct_events.empty());
   const auto& first_ev = mock->direct_events.back();
-  NVE_CHECK(first_ev.node_id == 5u && first_ev.kind == static_cast<uint8_t>(nve::EventKind::Press));
-  NVE_CHECK(first_ev.payload_tag == 1u);
+  NVE_CHECK(first_ev.node_id == 5u && first_ev.table == NVE_TABLE_INTERACTION &&
+            first_ev.event_id == NVE_INTERACTION_EVENT_PRESS);
   NVE_CHECK(approx_eq(first_ev.x, btn5_bounds.width() * 0.5, 1.5));
   NVE_CHECK(approx_eq(first_ev.y, btn5_bounds.height() * 0.5, 1.5));
   NVE_CHECK(emitted_events.size() == 1u && emitted_events[0].name == "onQuickPress");

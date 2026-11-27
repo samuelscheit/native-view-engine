@@ -18,7 +18,7 @@ const int nveMaxOpCount = 1000000;
 /// Maximum finite layout/style scalar magnitude (matches `kMaxLayoutScalar` in C++).
 const double nveMaxLayoutScalar = 1e7;
 
-/// Event subscription bitflags matching `EventMask` in `packages/core/abi/src/events.rs`.
+/// Legacy NVE1 command-buffer event subscription bitflags.
 abstract final class NveEventMask {
   static const int none = 0;
   static const int press = 1 << 0;

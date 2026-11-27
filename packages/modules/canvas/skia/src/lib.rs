@@ -444,7 +444,8 @@ mod tests {
     use nve_canvas::DrawListRecorder;
     use nve_canvas::CanvasOp;
     use nve_engine::LayoutRect;
-    use nve_store::{ChangeSet, Rgba, TableEventBus};
+    use nve_abi::EventBatchBuf;
+    use nve_store::{ChangeSet, Rgba};
 
     #[test]
     fn canvas_skia_system_draws_shapes_and_clips() {
@@ -484,7 +485,7 @@ mod tests {
         tx.commit_into(&mut changes);
 
         let mut buf = PixelBuffer::new(32, 32);
-        let mut events = TableEventBus::new();
+        let mut events = EventBatchBuf::new();
         let mut ctx = SkiaSystemPaintCtx {
             buffer: &mut buf,
             rect: LayoutRect {

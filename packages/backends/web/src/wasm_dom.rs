@@ -26,11 +26,11 @@ impl WebBackend {
             container.set_inner_html("");
         }
         let mut backend = Self::new();
-        let delegator = RootEventDelegator::attach(
+        let delegator = RootEventDelegator::new(
             container.clone(),
             std::rc::Rc::clone(&backend.surface_id),
             std::rc::Rc::clone(&backend.pending_events),
-            std::rc::Rc::clone(&backend.node_event_meta),
+            std::rc::Rc::clone(&backend.event_state),
             std::rc::Rc::clone(&backend.input_sync),
             std::rc::Rc::clone(&backend.ime_guard),
             std::rc::Rc::clone(&backend.on_event),

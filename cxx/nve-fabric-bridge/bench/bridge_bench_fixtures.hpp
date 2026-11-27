@@ -351,8 +351,8 @@ struct BenchComponent {
   bool mounted{false};
   nve::CommandBufferEncoder encoder{1, 1};
   nve::BumpArena outbound_arena{1024u};
-  std::vector<NveDirectEvent> outbound_pending;
-  std::vector<NveDirectEvent> outbound_drained;
+  nve::EventBatchBuilder outbound_pending;
+  nve::EventBatchBuilder outbound_drained;
 
   static NveAppHandle create(uint32_t sid) {
     auto* self = new BenchComponent();
@@ -391,11 +391,12 @@ struct BenchComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<BenchComponent*>(h);
-    if (!self || !batch.ptr || batch.len == 0) return 0;
+    if (!self || !batch.events || batch.event_count == 0) return 0;
     uint32_t dirty = 0;
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == NVE_EVENT_PRESS && ev.node_id == 2) {
+    for (uint32_t i = 0; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+          ev.node == 2) {
         ++self->presses;
         self->outbound_arena.reset();
         NveMapEntry* entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
@@ -403,15 +404,8 @@ struct BenchComponent {
             nve::make_str_slice("presses"),
             nve::make_i64_value(static_cast<int64_t>(self->presses)),
         };
-        NveDirectEvent out{};
-        out.surface_id = self->surface_id;
-        out.node_id = 2;
-        out.timestamp_us = ev.timestamp_us;
-        out.kind = NVE_EVENT_CUSTOM;
-        out.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-        out.name = nve::make_str_slice("onPressCount");
-        out.value = nve::make_map_value(entry, 1u);
-        self->outbound_pending.push_back(out);
+        (void)self->outbound_pending.push_custom_value(
+            self->surface_id, 2, ev.timestamp, "onPressCount", nve::make_map_value(entry, 1u));
         dirty = 1;
       }
     }
@@ -437,11 +431,7 @@ struct BenchComponent {
     auto* self = static_cast<BenchComponent*>(h);
     self->outbound_drained = std::move(self->outbound_pending);
     self->outbound_pending.clear();
-    return NveEventBatch{
-        self->outbound_drained.empty() ? nullptr : self->outbound_drained.data(),
-        static_cast<uint32_t>(self->outbound_drained.size()),
-        0u,
-    };
+    return self->outbound_drained.as_batch();
   }
 
   static const void* get_interface(uint32_t interface_id) {

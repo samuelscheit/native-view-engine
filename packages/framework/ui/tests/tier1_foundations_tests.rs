@@ -11,7 +11,7 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 
-use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_web::{InputSyncTracker, WebBackend};
 use nve_components::tables::{DebugId, TextContent, TextInput};
@@ -111,27 +111,19 @@ impl DualHarness {
 
     fn press(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 8.0, y: 8.0 },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, id, ts, 8.0, 8.0);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     fn text_change(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_owned()),
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(SurfaceId::ROOT, id, ts, value);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 }

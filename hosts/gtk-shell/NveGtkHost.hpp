@@ -344,8 +344,7 @@ class NveGtkHost {
   void remove_canvas_binding(uint32_t node_id, GtkWidget* widget);
   ScrollBinding* ensure_scroll_binding(uint32_t node_id, GtkWidget* widget);
   void remove_scroll_binding(uint32_t node_id);
-  uint32_t dispatch_single_direct_event(const NveDirectEvent& ev);
-  NveDirectEvent make_base_event(uint32_t node_id, EventKind kind, uint8_t payload_tag) const;
+  uint32_t dispatch_event_batch(NveEventBatch batch);
   void sync_children_impl(
       uint32_t parent_id,
       GtkWidget** parent_view,

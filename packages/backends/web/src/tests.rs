@@ -126,7 +126,7 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
 #[cfg(feature = "hydrate")]
 #[test]
 fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_stale() {
-    use nve_abi::{EventMask, NativeEventKind};
+    use nve_abi::{EventBatchBuf, InteractionEvent};
     use crate::CapturedPreHydrationEvent;
 
     let mut store = NodeStore::new();
@@ -136,7 +136,7 @@ fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_sta
     let label = tx.create();
     tx.set_children(NodeId::ROOT, &[btn]);
     tx.set_children(btn, &[label]);
-    tx.edit::<Interaction>(btn).event_mask(EventMask::PRESS as u32);
+    tx.edit::<Interaction>(btn).listen(InteractionEvent::Press);
     tx.edit::<TextContent>(label).text("Click Me");
     tx.commit_into(&mut changes);
 
@@ -160,11 +160,14 @@ fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_sta
         },
     ]);
     hydrated.commit(&store, &changes).unwrap();
-    let drained = hydrated.drain_events();
+    let mut drained = EventBatchBuf::new();
+    hydrated.drain_events(&mut drained);
+    let validated = drained.as_validated();
     assert_eq!(hydrated.hydration_report().replayed_events, 1);
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].kind, NativeEventKind::Press);
-    assert_eq!(drained[0].node_id, btn);
+    assert_eq!(validated.len(), 1);
+    let ev = validated.get(0).unwrap();
+    assert_eq!(ev.interaction(), Some(InteractionEvent::Press));
+    assert_eq!(ev.node(), btn);
 }
 
 #[test]

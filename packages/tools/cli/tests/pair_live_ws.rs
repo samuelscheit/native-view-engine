@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{
     core_realization_order, register_core_tables, Interaction, TextContent,
@@ -205,7 +205,7 @@ fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
         }
         let active_pressable = if store
             .try_row::<Interaction>(id)
-            .is_some_and(|i| i.event_mask() != 0)
+            .is_some_and(|i| !i.listeners().is_empty())
         {
             Some(id)
         } else {
@@ -283,14 +283,9 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
         find_pressable_with_label(replica.store(), "Reset").expect("find Reset pressable node");
 
     let send_press = |client: &NveWireClient, node_id: NodeId, ts: u64| {
-        let ev_ring = encode_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 40.0, y: 20.0 },
-        }]);
-        client.send_events(&ev_ring).expect("send EventBatch");
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, node_id, TimestampUs(ts), 40.0, 20.0);
+        client.send_events(&batch.to_wire_bytes()).expect("send EventBatch");
     };
 
     send_press(&ws, inc_node, 1_000);

@@ -21,7 +21,7 @@ use nve_components::tables::{
     Accessibility, AriaRole, Image, Link, TextContent, TextInput, Transform, Typography, Visual,
 };
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend};
-use nve_store::{ChangeSet, NodeId, NodeStore, TableEventBus, TableSlot};
+use nve_store::{ChangeSet, EventBatchBuf, NodeId, NodeStore, TableSlot};
 
 #[path = "table_system_ctx.rs"]
 mod ctx;
@@ -212,7 +212,7 @@ pub struct WebStoreRenderer {
     /// `retagged` is non-empty) so Step 2b skips already-committed slots in O(1).
     #[cfg(any(target_arch = "wasm32", test))]
     retag_committed_scratch: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
-    pub events: TableEventBus,
+    pub events: EventBatchBuf,
     pub composite_fast_lane_hits: u64,
     pub full_style_rebuilds: u64,
 }

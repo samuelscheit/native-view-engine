@@ -6,7 +6,7 @@ use std::ffi::{c_int, c_long};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use nve_abi::{EventMask, FrameId, SurfaceId, ROOT_NODE_ID};
+use nve_abi::{EventSet, FrameId, InteractionEvent, SurfaceId, ROOT_NODE_ID};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
@@ -328,7 +328,7 @@ impl BenchFeedSource {
                 tx.set(row_id, Layout::COLUMN_GAP, Length::points(12.0));
                 tx.set(row_id, Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
                 tx.set(row_id, Visual::BORDER_RADIUS, 8.0f32);
-                tx.set(row_id, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+                tx.edit::<Interaction>(row_id).listeners(EventSet::one(InteractionEvent::Press));
 
                 tx.create_at(text_id);
                 tx.set_str(

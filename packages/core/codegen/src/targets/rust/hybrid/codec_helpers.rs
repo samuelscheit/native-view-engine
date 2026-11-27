@@ -263,45 +263,6 @@ pub(super) fn value_ref_decode_expr(var: &str, ty: &HybridType) -> String {
     }
 }
 
-pub(super) fn is_direct_nve_value_scalar_or_slice(ty: &HybridType) -> bool {
-    matches!(
-        ty,
-        HybridType::Bool
-            | HybridType::U8
-            | HybridType::U16
-            | HybridType::Usize
-            | HybridType::I32
-            | HybridType::U32
-            | HybridType::I64
-            | HybridType::U64
-            | HybridType::F32
-            | HybridType::F64
-            | HybridType::Enum(_)
-            | HybridType::String
-            | HybridType::Bytes
-    )
-}
-
-pub(super) fn direct_nve_value_expr(expr: &str, ty: &HybridType, idx: usize) -> String {
-    match ty {
-        HybridType::Bool => format!("NveValue::bool({expr})"),
-        HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64 => {
-            format!("NveValue::i64({expr} as i64)")
-        }
-        HybridType::F32 | HybridType::F64 => format!("NveValue::f64({expr} as f64)"),
-        HybridType::Enum(_) => format!("NveValue::i64({expr}.to_u32() as i64)"),
-        HybridType::String => format!("NveValue::from_str({expr}.as_str())"),
-        HybridType::Bytes => format!("NveValue::from_bytes({expr}.as_slice())"),
-        _ => format!("NveValue::from_bytes(_bin_{idx}.as_slice())"),
-    }
-}
-
 pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefaultValue>) -> String {
     let Some(def) = def else {
         return "Default::default()".to_string();

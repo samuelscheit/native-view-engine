@@ -260,6 +260,19 @@ impl WordValue for SurfaceId {
     }
 }
 
+impl<E: nve_abi::EventEnum> WordValue for nve_abi::EventSet<E> {
+    const BITS: u8 = 32;
+    const KIND: FieldKind = FieldKind::U32;
+    #[inline(always)]
+    fn to_bits(self) -> u32 {
+        self.raw()
+    }
+    #[inline(always)]
+    fn from_bits(bits: u32) -> Self {
+        Self::from_raw(bits)
+    }
+}
+
 /// Packed `RGBA8888` color (`r | g<<8 | b<<16 | a<<24`).
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

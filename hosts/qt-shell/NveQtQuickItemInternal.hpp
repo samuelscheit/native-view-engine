@@ -189,19 +189,9 @@ class NveQtQuickItem::Impl {
     }
   }
 
-  NveDirectEvent makeEvent(uint32_t node_id, nve::EventKind kind, uint8_t tag) const {
-    NveDirectEvent ev{};
-    ev.surface_id = surface_id_;
-    ev.node_id = node_id;
-    ev.timestamp_us = nve::current_timestamp_us();
-    ev.kind = static_cast<uint8_t>(kind);
-    ev.payload_tag = tag;
-    ev.value = nve::make_null_value();
-    return ev;
-  }
-
   uint32_t dispatchBatch(NveEventBatch batch) {
-    if ((!session_.is_valid() && !session_.is_paired()) || batch.ptr == nullptr || batch.len == 0u) {
+    if ((!session_.is_valid() && !session_.is_paired()) || batch.events == nullptr ||
+        batch.event_count == 0u) {
       return 0u;
     }
     const uint32_t dirty = session_.dispatch_events(batch, /*auto_render=*/true);
@@ -215,11 +205,12 @@ class NveQtQuickItem::Impl {
     const uint32_t prev_focus = focused_node_id_;
     if (prev_focus != 0u) ime_preedit_buffers_.erase(prev_focus);
     focused_node_id_ = next_focus;
-    NveDirectEvent evs[2]{};
+    NveEvent evs[2]{};
     uint32_t n = 0u;
-    if (prev_focus != 0u) evs[n++] = makeEvent(prev_focus, nve::EventKind::Blur, 0u);
-    if (next_focus != 0u) evs[n++] = makeEvent(next_focus, nve::EventKind::Focus, 0u);
-    if (n > 0u) (void)dispatchBatch(NveEventBatch{evs, n, 0u});
+    const uint64_t ts = nve::current_timestamp_us();
+    if (prev_focus != 0u) evs[n++] = nve::make_blur_event(surface_id_, prev_focus, ts);
+    if (next_focus != 0u) evs[n++] = nve::make_focus_event(surface_id_, next_focus, ts);
+    if (n > 0u) (void)dispatchBatch(NveEventBatch{evs, nullptr, n, 0u});
     if (!pending_full_sg_sync_) {
       if (prev_focus != 0u) pending_dirty_ids_.insert(prev_focus);
       if (next_focus != 0u) pending_dirty_ids_.insert(next_focus);

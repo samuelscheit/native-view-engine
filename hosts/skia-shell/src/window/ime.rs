@@ -1,7 +1,7 @@
 //! Unified IME composition (`CompositionStart` / `CompositionUpdate` / `CompositionEnd`)
 //! lifecycle dispatch for [`DesktopSession`].
 
-use nve_abi::{native_events_to_direct, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{EventBatchBuf, NodeId, TextInputEvent, TimestampUs};
 use winit::event::Ime;
 
 use super::session::{now_us, DesktopSession};
@@ -11,13 +11,9 @@ use super::{DesktopApp, DesktopHostError};
 impl<A: DesktopApp> DesktopSession<A> {
     pub(super) fn dispatch_and_redraw(
         &mut self,
-        events: &[NativeEvent],
+        events: &EventBatchBuf,
     ) -> Result<(), DesktopHostError> {
-        let mut direct = Vec::with_capacity(events.len());
-        native_events_to_direct(events, &mut direct);
-        // SAFETY: `direct` borrows solely from `events`, which remains live for the call duration.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
-        if self.app.dispatch_events(batch) {
+        if self.app.dispatch_events(events.as_validated()) {
             self.render_and_rasterize()?;
         } else {
             self.rasterize_current();
@@ -27,19 +23,13 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub(super) fn push_composition_event(
         &self,
-        events: &mut Vec<NativeEvent>,
+        events: &mut EventBatchBuf,
         node_id: NodeId,
-        ts: u64,
-        kind: NativeEventKind,
-        text: String,
+        ts: TimestampUs,
+        event: TextInputEvent,
+        text: &str,
     ) {
-        events.push(NativeEvent {
-            surface_id: self.surface_id,
-            node_id,
-            timestamp_us: ts,
-            kind,
-            payload: EventPayload::Text(text),
-        });
+        events.push_composition(self.surface_id, node_id, ts, event, text);
     }
 
     pub(super) fn emit_text_change(
@@ -54,24 +44,18 @@ impl<A: DesktopApp> DesktopSession<A> {
             backend.set_ime_preedit(store, None, None);
             backend.set_uncontrolled_text_input(store, Some(new_value.clone()), new_caret);
         }
-        let ts = now_us();
-        let mut events = Vec::with_capacity(2);
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(2, new_value.len());
         if let Some(committed) = composition_end {
             self.push_composition_event(
                 &mut events,
                 node_id,
                 ts,
-                NativeEventKind::CompositionEnd,
-                committed,
+                TextInputEvent::CompositionEnd,
+                &committed,
             );
         }
-        events.push(NativeEvent {
-            surface_id: self.surface_id,
-            node_id,
-            timestamp_us: ts,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(new_value),
-        });
+        events.push_text_change(self.surface_id, node_id, ts, &new_value);
         self.dispatch_and_redraw(&events)?;
         Ok(true)
     }
@@ -105,13 +89,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, None, None);
                     }
-                    let mut events = Vec::with_capacity(1);
+                    let mut events = EventBatchBuf::with_capacity(1, 0);
                     self.push_composition_event(
                         &mut events,
                         focused_id,
-                        now_us(),
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
+                        TimestampUs(now_us()),
+                        TextInputEvent::CompositionEnd,
+                        "",
                     );
                     self.dispatch_and_redraw(&events)?;
                     Ok(true)
@@ -121,17 +105,17 @@ impl<A: DesktopApp> DesktopSession<A> {
                         backend.set_ime_preedit(store, Some(text.clone()), *cursor);
                     }
                     let kind = if was_composing {
-                        NativeEventKind::CompositionUpdate
+                        TextInputEvent::CompositionUpdate
                     } else {
-                        NativeEventKind::CompositionStart
+                        TextInputEvent::CompositionStart
                     };
-                    let mut events = Vec::with_capacity(1);
+                    let mut events = EventBatchBuf::with_capacity(1, text.len());
                     self.push_composition_event(
                         &mut events,
                         focused_id,
-                        now_us(),
+                        TimestampUs(now_us()),
                         kind,
-                        text.clone(),
+                        text,
                     );
                     self.dispatch_and_redraw(&events)?;
                     Ok(true)
@@ -147,13 +131,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                         let (store, backend) = self.replica.store_and_backend_mut();
                         backend.set_ime_preedit(store, None, None);
                     }
-                    let mut events = Vec::with_capacity(1);
+                    let mut events = EventBatchBuf::with_capacity(1, 0);
                     self.push_composition_event(
                         &mut events,
                         focused_id,
-                        now_us(),
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
+                        TimestampUs(now_us()),
+                        TextInputEvent::CompositionEnd,
+                        "",
                     );
                     self.dispatch_and_redraw(&events)?;
                     return Ok(true);
@@ -183,13 +167,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                 if !had {
                     return Ok(false);
                 }
-                let mut events = Vec::with_capacity(1);
+                let mut events = EventBatchBuf::with_capacity(1, 0);
                 self.push_composition_event(
                     &mut events,
                     focused_id,
-                    now_us(),
-                    NativeEventKind::CompositionEnd,
-                    String::new(),
+                    TimestampUs(now_us()),
+                    TextInputEvent::CompositionEnd,
+                    "",
                 );
                 self.dispatch_and_redraw(&events)?;
                 Ok(true)

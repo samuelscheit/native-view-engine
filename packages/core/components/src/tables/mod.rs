@@ -44,7 +44,15 @@ pub use visual::{
     Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
 };
 
+pub use nve_abi::{EventSet, InteractionEvent, LayoutEvent, ScrollEvent, TextInputEvent};
 use nve_store::{NveTable, RealizationOrder};
+
+const _: () = {
+    assert!(Interaction::KEY.0 == nve_abi::NVE_TABLE_INTERACTION.0);
+    assert!(TextInput::KEY.0 == nve_abi::NVE_TABLE_TEXT_INPUT.0);
+    assert!(Scroll::KEY.0 == nve_abi::NVE_TABLE_SCROLL.0);
+    assert!(Layout::KEY.0 == nve_abi::NVE_TABLE_LAYOUT.0);
+};
 
 /// Registers every cross-platform core table and its resource codecs in the process-global table registry.
 /// Idempotent and fast after the first call.

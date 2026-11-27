@@ -1,6 +1,6 @@
 //! Generic, app-agnostic Web SSG + 0ms Instant-Restore document builder & shell injector.
 
-use nve_abi::{FrameId, NveDirectEvent, NveEventBatchRef, SurfaceId, ROOT_NODE_ID};
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID};
 use nve_components::tables::core_realization_order;
 use nve_engine::{BackendError, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::NodeStore;
@@ -37,17 +37,17 @@ pub fn prerender_nve_app_frame0<A: NveApp>(
         && viewport.width > 0.0
         && viewport.height > 0.0
     {
-        let layout = [NveDirectEvent::layout(
+        let mut layout = EventBatchBuf::with_capacity(1, 0);
+        layout.push_layout(
             SurfaceId::ROOT,
             ROOT_NODE_ID,
-            0,
+            TimestampUs(0),
             0.0,
             0.0,
             viewport.width,
             viewport.height,
-        )];
-        // SAFETY: `layout` is a stack-local slice containing no nested pointers.
-        let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout) });
+        );
+        let _ = app.dispatch_events(layout.as_validated());
     }
     let frame_bytes = app.render(FrameId(1)).to_vec();
     let mut backend = WebBackend::new();

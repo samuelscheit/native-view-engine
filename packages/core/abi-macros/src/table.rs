@@ -49,6 +49,7 @@ struct Table {
     dense: bool,
     flags: u8,
     inherited: bool,
+    events_ty: Option<String>,
     fields: Vec<Field>,
 }
 
@@ -221,7 +222,11 @@ fn check_no_split_bool_pairs(fields: &[Field]) -> Result<(), String> {
     Ok(())
 }
 
-fn check_no_method_collisions(inherited: bool, fields: &[Field]) -> Result<(), String> {
+fn check_no_method_collisions(
+    inherited: bool,
+    has_events: bool,
+    fields: &[Field],
+) -> Result<(), String> {
     for f in fields {
         if f.name == "get" {
             return Err("field `get` collides with generated `*Mut::get()` method".into());
@@ -231,6 +236,12 @@ fn check_no_method_collisions(inherited: bool, fields: &[Field]) -> Result<(), S
                 "field `explicit_mask` collides with generated `*Ref::explicit_mask()` method on inherited table"
                     .into(),
             );
+        }
+        if has_events && matches!(f.name.as_str(), "listeners" | "listen" | "unlisten") {
+            return Err(format!(
+                "field `{}` collides with generated `{}()` method on event-bearing table",
+                f.name, f.name
+            ));
         }
     }
     if inherited {
@@ -370,10 +381,9 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
     if inherited && events_ty.is_some() {
         return Err("#[nve_table]: cannot combine `inherited` and `events`".into());
     }
-    if let Some(ev) = events_ty {
-        return Err(format!(
-            "#[nve_table(events = {ev})]: EventEnum table support lands in C5"
-        ));
+    if events_ty.is_some() {
+        // Set `table_flags::HAS_EVENTS` (1 << 4) so wire `DeclareTables` carries events_word = 0.
+        flags |= 1 << 4;
     }
 
     let vis_start = pos;
@@ -396,7 +406,7 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
     };
     let name = name.ok_or_else(|| format!("`{ident}` needs #[nve_table(name = \"...\")]"))?;
     let fields = parse_fields(body)?;
-    if fields.is_empty() {
+    if fields.is_empty() && events_ty.is_none() {
         return Err(format!("table `{ident}` must declare at least 1 field"));
     }
     if inherited {
@@ -415,7 +425,7 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
         ));
     }
     check_no_split_bool_pairs(&fields)?;
-    check_no_method_collisions(inherited, &fields)?;
+    check_no_method_collisions(inherited, events_ty.is_some(), &fields)?;
     Ok(Table {
         vis,
         ident,
@@ -423,6 +433,7 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
         dense,
         flags,
         inherited,
+        events_ty,
         fields,
     })
 }

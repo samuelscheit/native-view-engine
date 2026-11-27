@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, ValidatedEvents};
 use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::Viewport;
 use nve_interop::{SurfacePresentation, WindowDescriptor, WindowError, WindowRect};
@@ -56,7 +56,8 @@ impl DesktopApp for SurfaceCounterApp {
             tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
             tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(140.0));
             tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(48.0));
-            tx.set(NodeId::new(4, 0), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.edit::<Interaction>(NodeId::new(4, 0))
+                .listeners(EventSet::one(InteractionEvent::Press));
             tx.set_children(NodeId::new(2, 0), &[NodeId::new(4, 0)]);
             tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             self.initialized = true;
@@ -74,12 +75,12 @@ impl DesktopApp for SurfaceCounterApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            if ev.surface_id() == self.surface_id
-                && ev.node_id() == NodeId::new(4, 0)
-                && ev.kind() == Some(NativeEventKind::Press)
+            if ev.surface() == self.surface_id
+                && ev.node() == NodeId::new(4, 0)
+                && ev.interaction() == Some(InteractionEvent::Press)
             {
                 self.presses += 1;
                 handled = true;

@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use nve_abi::{
-    decode_events, native_events_to_direct, FrameId, NveDirectEvent, NveMapEntry, NveValue,
-    SurfaceId, ROOT_NODE_ID,
+    EventBatchBuf, FrameId, NveMapEntry, NveValue, SurfaceId, TimestampUs, ValidatedEvents,
+    ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
@@ -46,7 +46,7 @@ pub(crate) enum PairControlMsg {
 /// Runtime abstraction over a live NVE app hosted by [`PairSession`].
 pub(crate) trait PairedApp {
     fn render(&mut self, frame_id: FrameId) -> Cow<'_, [u8]>;
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool;
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool;
     fn set_props(&mut self, _entries: &[NveMapEntry]) -> bool {
         false
     }
@@ -62,7 +62,7 @@ impl PairedApp for HotAppInstance {
     fn render(&mut self, frame_id: FrameId) -> Cow<'_, [u8]> {
         Cow::Borrowed(HotAppInstance::render(self, frame_id))
     }
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         HotAppInstance::dispatch_events(self, events)
     }
     fn set_props(&mut self, entries: &[NveMapEntry]) -> bool {
@@ -82,11 +82,8 @@ impl PairedApp for DioxusSurface {
     fn render(&mut self, frame_id: FrameId) -> Cow<'_, [u8]> {
         Cow::Borrowed(self.render_nve2_slice(frame_id))
     }
-    fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
-        // SAFETY: `events` is a valid borrowed slice whose nested pointers outlive this call.
-        DioxusSurface::dispatch_direct_events(self, unsafe {
-            nve_abi::NveEventBatchRef::from_slice(events)
-        })
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
+        DioxusSurface::dispatch_events(self, events)
     }
 }
 
@@ -336,16 +333,17 @@ impl<A: PairedApp> PairSession<A> {
             .map_err(|e| format!("bind NveWireServer on quic={quic_bind} wss={wss_bind}: {e}"))?;
 
         if width > 0.0 && height > 0.0 {
-            let layout_ev = [NveDirectEvent::layout(
+            let mut layout_ev = EventBatchBuf::with_capacity(1, 0);
+            layout_ev.push_layout(
                 SurfaceId::ROOT,
                 ROOT_NODE_ID,
-                0,
+                TimestampUs::ZERO,
                 0.0,
                 0.0,
                 width,
                 height,
-            )];
-            let _ = app.dispatch_events(&layout_ev);
+            );
+            let _ = app.dispatch_events(layout_ev.as_validated());
         }
 
         let now = Instant::now();
@@ -458,12 +456,8 @@ impl<A: PairedApp> PairSession<A> {
         }
         while let Some(msg) = self.server.try_recv_inbound() {
             if msg.frame.kind == NveWireKind::EventBatch {
-                let handled = decode_events(&msg.frame.payload)
-                    .map(|decoded| {
-                        let mut direct = Vec::with_capacity(decoded.len());
-                        native_events_to_direct(&decoded, &mut direct);
-                        self.app.dispatch_events(&direct)
-                    })
+                let handled = EventBatchBuf::decode_wire(&msg.frame.payload)
+                    .map(|decoded| self.app.dispatch_events(decoded.as_validated()))
                     .unwrap_or(false);
                 outcome.events_dispatched += 1;
                 if self.render_and_broadcast(handled).unwrap_or(false) {

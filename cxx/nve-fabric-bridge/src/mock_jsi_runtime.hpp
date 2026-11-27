@@ -51,7 +51,7 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
       : arena_(initial_arena_bytes), global_arena_(4096u) {
     global_node_ = detail::alloc_jsi_object_node(global_arena_, /*is_global=*/true);
     global_pv_ = global_arena_.emplace<ArenaPointerValue>(global_node_);
-    direct_events_.reserve(64);
+    direct_batch_.reserve(64u, 2048u);
   }
 
   ~MockJsiRecorderRuntime() override = default;
@@ -62,7 +62,7 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
 
   /// Reset frame arena and direct event batch in O(1) with zero deallocations (reuses slabs).
   void reset_frame() noexcept {
-    direct_events_.clear();
+    direct_batch_.clear();
     if (!buffers_.empty()) buffers_.clear();
     if (!host_objects_.empty()) host_objects_.clear();
     if (!host_functions_.empty()) host_functions_.clear();
@@ -76,37 +76,24 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
     return materialize_jsi_value(value, 0u);
   }
 
-  /// Primary in-process hot path: capture `value` directly into `arena_` and append an
-  /// `NveDirectEvent` to the current frame's batch (0 bytes serialized, 0 JSON).
-  void record_direct_event(
+  /// Primary in-process hot path: capture `value` directly into `arena_` and append a uniform
+  /// 64-byte `NveEvent` + compact `NveBinValue` payload into the reusable batch arena.
+  bool record_direct_event(
       uint32_t surface_id,
       uint32_t node_id,
       uint64_t ts_us,
       std::string_view event_name,
       const facebook::jsi::Value& value) {
-    NveDirectEvent ev{};
-    ev.surface_id = surface_id;
-    ev.node_id = node_id;
-    ev.timestamp_us = ts_us;
-    ev.kind = 8u;        /* NativeEventKind::Custom */
-    ev.payload_tag = 5u; /* EventPayload::Custom */
-    ev.name = arena_.copy_str(event_name);
-    ev.value = capture_value(value);
-    direct_events_.push_back(ev);
+    const NveValue captured = capture_value(value);
+    return direct_batch_.push_custom_value(surface_id, node_id, ts_us, event_name, captured);
   }
 
   /// Borrowed view of all direct events recorded since the last `reset_frame()`.
-  NveEventBatch direct_event_batch() const noexcept {
-    return NveEventBatch{
-        direct_events_.empty() ? nullptr : direct_events_.data(),
-        static_cast<uint32_t>(direct_events_.size()),
-        0u,
-    };
-  }
+  NveEventBatch direct_event_batch() const noexcept { return direct_batch_.as_batch(); }
 
   /// Dispatch the recorded `NveEventBatch` directly into `NveSurfaceApi::dispatch_events`.
   uint32_t dispatch_direct(const NveSurfaceApi* surface, NveAppHandle app) const {
-    if (surface == nullptr || app == nullptr || direct_events_.empty() ||
+    if (surface == nullptr || app == nullptr || direct_batch_.empty() ||
         surface->dispatch_events == nullptr) {
       return 0u;
     }
@@ -116,7 +103,7 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   /// Dispatch the recorded `NveEventBatch` directly to any callable sink (`uint32_t(NveEventBatch)`).
   template <typename SinkFn>
   uint32_t dispatch_direct(SinkFn&& sink) const {
-    if (direct_events_.empty()) {
+    if (direct_batch_.empty()) {
       return 0u;
     }
     return static_cast<uint32_t>(sink(direct_event_batch()));
@@ -598,7 +585,7 @@ class MockJsiRecorderRuntime final : public facebook::jsi::Runtime {
   BumpArena global_arena_;
   ArenaNode* global_node_{nullptr};
   ArenaPointerValue* global_pv_{nullptr};
-  std::vector<NveDirectEvent> direct_events_;
+  EventBatchBuilder direct_batch_;
 
   // Rare side-tables for non-trivial JSI shared_ptr objects (untouched on hot path).
   std::vector<std::shared_ptr<facebook::jsi::MutableBuffer>> buffers_;

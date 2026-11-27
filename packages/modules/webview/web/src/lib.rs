@@ -2,10 +2,11 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+use nve_abi::{EventFlags, TimestampUs};
 use nve_backend_web::html::write_attr;
 use nve_backend_web::{is_safe_web_url, WebSystemCommitCtx, WebTableSystem};
 use nve_store::{NodeId, NodeStore, NveTable, SurfaceId, TableSlot};
-use nve_webview::{events, WebView, WebViewCommand};
+use nve_webview::{WebView, WebViewCommand, WebViewEvent};
 
 /// Default iframe sandbox policy — intentionally omits `allow-same-origin` so sandboxed content
 /// cannot escape the sandbox on same-origin URLs.
@@ -68,8 +69,16 @@ impl WebTableSystem for WebViewWebSystem {
             && is_safe_web_url(&url)
         {
             ctx.set_attr(node, "src", &url);
-            ctx.events
-                .emit::<WebView, String>(SurfaceId::NULL, node, 0, events::LOAD_START, url);
+            ctx.events.push_event_text(
+                WebView::KEY,
+                SurfaceId::NULL,
+                node,
+                TimestampUs::ZERO,
+                WebViewEvent::LoadStart,
+                EventFlags::EMPTY,
+                [0; 6],
+                &url,
+            );
         }
     }
 }

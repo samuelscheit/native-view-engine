@@ -6,10 +6,7 @@ use std::time::Instant;
 use common::{
     data_attr_in_store, find_in_store, live_node_ids, register_studio_tables, MultiBackendHarness,
 };
-use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveDirectEventRef,
-    NveEventBatchRef, SurfaceId,
-};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_engine::reloc::{
     encode_reloc_bundle, write_reloc_atomic, MmapReloc, RelocBundleView, VerifyMode,
@@ -57,16 +54,15 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         let nid = find_in_store(host.store(), tid)
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).expect("node layout");
-        let ev = [NveDirectEvent::press(
+        let mut ev = EventBatchBuf::new();
+        ev.push_press(
             SurfaceId::ROOT,
             nid,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
-        )];
-        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-        let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
-        assert!(app.dispatch_events(batch), "press '{tid}' not handled");
+        );
+        assert!(app.dispatch_events(ev.as_validated()), "press '{tid}' not handled");
         let frame = app.render(FrameId(fid)).to_vec();
         host.submit_nve2_frame(&frame)
             .expect("submit frame after press");
@@ -237,13 +233,15 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
         let cy = rect.y + rect.height * 0.5;
 
         let t0 = Instant::now();
-        let handled = h.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: nid,
-            timestamp_us: h.next_frame * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            nid,
+            TimestampUs(h.next_frame * 16_000),
+            cx,
+            cy,
+        );
+        let handled = h.surface.dispatch_events(batch.as_validated());
         assert!(handled);
         let t_disp = t0.elapsed().as_micros();
         let fid = h.next_frame;
@@ -413,15 +411,15 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         let nid = find_in_store(replica.store(), tid)
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = replica.backend().layout_of(nid).unwrap();
-        let ev = [NveDirectEvent::press(
+        let mut ev = EventBatchBuf::new();
+        ev.push_press(
             SurfaceId::ROOT,
             nid,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
-        )];
-        // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
-        assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
+        );
+        assert!(app.dispatch_events(ev.as_validated()));
         let frame = app.render(FrameId(fid)).to_vec();
         replica.submit_nve2_frame(&frame).unwrap();
         frame
@@ -441,11 +439,10 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
 
     let emitted = app.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    // SAFETY: `emitted` stays borrowed from `app` for the duration of `ev0`.
-    let ev0 = unsafe { NveDirectEventRef::from_raw(&emitted[0]) };
-    assert_eq!(ev0.kind(), Some(NativeEventKind::Custom));
-    assert_eq!(ev0.name(), "layout_engine_changed");
-    assert_eq!(ev0.value().as_str(), Some("yoga"));
+    let ev0 = emitted.get(0).expect("emitted event");
+    assert!(ev0.is_custom());
+    assert_eq!(ev0.custom_name(), "layout_engine_changed");
+    assert_eq!(ev0.custom_data(), b"yoga");
 
     let taffy_rects_before: Vec<(NodeId, LayoutRect)> = {
         let mut pairs: Vec<(NodeId, LayoutRect)> = live_node_ids(replica.store())

@@ -106,7 +106,8 @@ fn core_tables_roundtrip_through_nve2_wire() {
             patch: RowPatch::new().opacity(0.5),
         }])));
     tx.edit::<Interaction>(n)
-        .event_mask(0b101)
+        .listen(InteractionEvent::Press)
+        .listen(InteractionEvent::PointerDown)
         .cursor(CursorKind::Pointer)
         .tab_index(Some(-1))
         .state_rules(Some(StateRules::new(vec![StateStyleRule {

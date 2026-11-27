@@ -1,4 +1,4 @@
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventBatchBuf, TimestampUs, ValidatedEvents};
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{core_realization_order, register_core_tables, TextContent};
 use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
@@ -126,13 +126,9 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
         .expect("pressable button");
 
     let make_tap = |ts: u64| {
-        encode_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: btn_node,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 60.0, y: 75.0 },
-        }])
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, btn_node, TimestampUs(ts), 60.0, 75.0);
+        batch.to_wire_bytes()
     };
 
     // 1. QUIC tap -> Counter: 1 across QUIC, WebTransport, and WSS.
@@ -214,7 +210,7 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
             Cow::Owned(out)
         }
 
-        fn dispatch_events(&mut self, _events: &[NveDirectEvent]) -> bool {
+        fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
             false
         }
 

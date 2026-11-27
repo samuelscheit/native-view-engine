@@ -1,7 +1,7 @@
 //! Per-commit mutable context ([`WebSystemCommitCtx`]) passed into [`super::WebTableSystem`] hooks.
 
 use nve_abi::hash::HashMap;
-use nve_store::{NodeId, TableEventBus, TableSlot};
+use nve_store::{EventBatchBuf, NodeId, TableSlot};
 
 use crate::table_system::WebTableRegistry;
 
@@ -23,7 +23,7 @@ pub struct WebSystemCommitCtx<'a> {
     pub attrs: &'a mut HashMap<NodeId, Vec<(String, String)>>,
     pub inner_html: &'a mut HashMap<NodeId, String>,
     pub inline_css: &'a mut HashMap<NodeId, String>,
-    pub events: &'a mut TableEventBus,
+    pub events: &'a mut EventBatchBuf,
     pub(crate) current_slot: TableSlot,
     pub(crate) registry: &'a WebTableRegistry,
     pub(crate) slot_attrs: &'a mut HashMap<(NodeId, TableSlot), Vec<OwnedAttr>>,

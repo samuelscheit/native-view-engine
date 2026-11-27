@@ -195,7 +195,7 @@ final class NveMultiApplePlatformTests: XCTestCase {
             XCTAssertEqual(roundtripped, [event])
         }
 
-        // Typed KeyDown with modifiers + code roundtrips cleanly through EventRing and NveDirectEvent.
+        // Typed KeyDown with modifiers + code roundtrips cleanly through NVEV v2 and NveEventBatch.
         let modified = NveEvent(
             surfaceId: 7,
             nodeId: 19,

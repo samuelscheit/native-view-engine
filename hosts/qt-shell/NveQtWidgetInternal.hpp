@@ -165,8 +165,7 @@ class NveQtWidget::Impl {
   void handlePressFromWidget(uint32_t node_id, float x, float y);
   void handleScrollFromWidget(uint32_t node_id, QScrollArea* scroll);
 
-  NveDirectEvent makeBaseEvent(uint32_t node_id, nve::EventKind kind, uint8_t payload_tag) const;
-  uint32_t dispatchSingleDirectEvent(const NveDirectEvent& ev);
+  uint32_t dispatchEventBatch(NveEventBatch batch);
   uint32_t dispatchPress(uint32_t node_id, float x, float y);
   uint32_t dispatchScroll(
       uint32_t node_id,

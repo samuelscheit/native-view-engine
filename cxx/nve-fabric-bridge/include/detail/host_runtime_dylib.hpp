@@ -24,8 +24,8 @@
 
 namespace nve {
 
-/// Event mask bit matching `EventMask::PRESS` in `packages/core/abi`.
-inline constexpr uint64_t kEventMaskPress = 1ULL << 0;
+/// Interaction Press subscription bit matching `InteractionEvent::Press` (`1 << 0`).
+inline constexpr uint64_t kEventMaskPress = 1ULL << NVE_INTERACTION_EVENT_PRESS;
 
 /// Callback type for outbound component events drained from `NveComponentApi`.
 using EventCallback = EventEmitterCallback;

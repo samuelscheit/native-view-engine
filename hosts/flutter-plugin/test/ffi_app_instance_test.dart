@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
+import 'package:nve_flutter/src/nve_core_abi.generated.dart' as abi show NveEvent;
 
 String _readStrSlice(NveStrSlice slice) {
   if (slice.ptr == ffi.nullptr || slice.len == 0) return '';
@@ -36,17 +37,16 @@ Object? _readNveValue(NveValue v) {
 
 class _RecordedDirectEvent {
   const _RecordedDirectEvent({
-    required this.surfaceId, required this.nodeId, required this.timestampUs,
-    required this.kind, required this.payloadTag, required this.modifiers,
-    required this.eventFlags, required this.keyCode, required this.name,
-    required this.x, required this.y, required this.width, required this.height,
-    required this.text, required this.value,
+    required this.table,
+    required this.eventId,
+    required this.flags,
+    required this.event,
   });
 
-  final int surfaceId, nodeId, timestampUs, kind, payloadTag, modifiers, eventFlags, keyCode;
-  final String name, text;
-  final double x, y, width, height;
-  final Object? value;
+  final int table;
+  final int eventId;
+  final int flags;
+  final NveEvent event;
 }
 
 class _TestAlloc {
@@ -231,26 +231,16 @@ class _MockNativeModule {
 
   int _onDispatchEvents(ffi.Pointer<ffi.Void> handle, NveEventBatch batch) {
     final captured = <_RecordedDirectEvent>[];
-    if (batch.ptr != ffi.nullptr && batch.len > 0) {
-      for (var i = 0; i < batch.len; i++) {
-        final ev = batch.ptr[i];
+    if (batch.events != ffi.nullptr && batch.eventCount > 0) {
+      final decoded = NveDirectEventWriter.decodeBatch(batch);
+      for (var i = 0; i < batch.eventCount && i < decoded.length; i++) {
+        final raw = batch.events[i];
         captured.add(
           _RecordedDirectEvent(
-            surfaceId: ev.surfaceId,
-            nodeId: ev.nodeId,
-            timestampUs: ev.timestampUs,
-            kind: ev.kind,
-            payloadTag: ev.payloadTag,
-            modifiers: ev.modifiers,
-            eventFlags: ev.eventFlags,
-            keyCode: ev.keyCode,
-            name: _readStrSlice(ev.name),
-            x: ev.x,
-            y: ev.y,
-            width: ev.width,
-            height: ev.height,
-            text: _readStrSlice(ev.text),
-            value: _readNveValue(ev.value),
+            table: raw.table,
+            eventId: raw.event,
+            flags: raw.flags,
+            event: decoded[i],
           ),
         );
       }
@@ -297,39 +287,26 @@ class _MockNativeModule {
     outboundEvents = <NveEvent>[];
     if (events.isEmpty) {
       _scratchBatch.ref
-        ..ptr = ffi.nullptr
-        ..len = 0
-        ..pad = 0;
+        ..events = ffi.nullptr
+        ..bytes = ffi.nullptr
+        ..eventCount = 0
+        ..bytesLen = 0;
       return _scratchBatch.ref;
     }
-    final ptr = _alloc.allocate<NveDirectEvent>(ffi.sizeOf<NveDirectEvent>() * events.length);
-    for (var i = 0; i < events.length; i++) {
-      final ev = events[i];
-      final dst = ptr[i]
-        ..surfaceId = ev.surfaceId
-        ..nodeId = ev.nodeId
-        ..timestampUs = ev.timestampUs
-        ..kind = ev.kind.code;
-      if (ev.payload case NveBinValuePayload(:final bytes)) {
-        dst.payloadTag = NveEventPayloadTag.custom.code;
-        if (ev.name != null && ev.name!.isNotEmpty) {
-          final nameBytes = Uint8List.fromList(utf8.encode(ev.name!));
-          dst.name
-            ..ptr = _alloc.copyBytes(nameBytes)
-            ..len = nameBytes.length;
-        }
-        if (bytes.isNotEmpty) {
-          dst.value.tag = NveValueTag.bytes.code;
-          dst.value.data.bytesVal
-            ..ptr = _alloc.copyBytes(bytes)
-            ..len = bytes.length;
-        }
-      }
-    }
-    _scratchBatch.ref
-      ..ptr = ptr
-      ..len = events.length
-      ..pad = 0;
+    NveDirectEventWriter.withBatch(events, (NveEventBatch tmp) {
+      final evByteLen = tmp.eventCount * ffi.sizeOf<abi.NveEvent>();
+      final evCopy = _alloc.copyBytes(
+        Uint8List.fromList(tmp.events.cast<ffi.Uint8>().asTypedList(evByteLen)),
+      );
+      final bytesCopy = (tmp.bytes == ffi.nullptr || tmp.bytesLen == 0)
+          ? ffi.nullptr
+          : _alloc.copyBytes(Uint8List.fromList(tmp.bytes.asTypedList(tmp.bytesLen)));
+      _scratchBatch.ref
+        ..events = evCopy.cast<abi.NveEvent>()
+        ..bytes = bytesCopy
+        ..eventCount = tmp.eventCount
+        ..bytesLen = tmp.bytesLen;
+    });
     return _scratchBatch.ref;
   }
 
@@ -496,30 +473,44 @@ void main() {
       expect(mock.dispatchedDirectBatches, hasLength(1));
       final batch = mock.dispatchedDirectBatches.single;
       expect(batch, hasLength(6));
-      expect(batch[0].kind, NveEventKind.press.code);
-      expect(batch[0].x, closeTo(10.5, 1e-3));
-      expect(batch[0].y, closeTo(20.25, 1e-3));
-      expect(batch[1].kind, NveEventKind.scroll.code);
-      expect(batch[1].y, closeTo(80.0, 1e-3));
-      expect(batch[1].height, closeTo(900.0, 1e-3));
-      expect(batch[2].kind, NveEventKind.keyDown.code);
-      expect(batch[2].payloadTag, NveEventPayloadTag.key.code);
-      expect(batch[2].text, 'k');
-      expect(batch[2].name, 'KeyK');
-      expect(batch[2].modifiers, nveKeyModMeta | nveKeyModShift);
-      expect(batch[2].eventFlags, nveEventFlagComposing);
-      expect(batch[2].keyCode, 75);
-      expect(batch[3].kind, NveEventKind.pointerDown.code);
-      expect(batch[3].x, closeTo(12.0, 1e-3));
-      expect(batch[3].y, closeTo(34.0, 1e-3));
-      expect(batch[3].modifiers, nveKeyModAlt);
-      expect(batch[3].eventFlags, 1);
-      expect(batch[4].kind, NveEventKind.wheel.code);
-      expect(batch[4].x, closeTo(-4.0, 1e-3));
-      expect(batch[4].y, closeTo(120.0, 1e-3));
-      expect(batch[4].modifiers, nveKeyModCtrl);
-      expect(batch[5].name, 'reset');
-      expect(batch[5].value, <String, Object?>{'hard': true});
+      expect(batch[0].table, nveTableInteraction);
+      expect(batch[0].eventId, NveInteractionEvent.press.code);
+      expect(batch[0].event.kind, NveEventKind.press);
+      final pt0 = batch[0].event.payload as NvePointPayload;
+      expect(pt0.x, closeTo(10.5, 1e-3));
+      expect(pt0.y, closeTo(20.25, 1e-3));
+      expect(batch[1].table, nveTableScroll);
+      expect(batch[1].event.kind, NveEventKind.scroll);
+      final sc1 = batch[1].event.payload as NveScrollPayload;
+      expect(sc1.y, closeTo(80.0, 1e-3));
+      expect(sc1.contentHeight, closeTo(900.0, 1e-3));
+      expect(batch[2].table, nveTableInteraction);
+      expect(batch[2].eventId, NveInteractionEvent.keyDown.code);
+      expect(batch[2].event.kind, NveEventKind.keyDown);
+      final key2 = batch[2].event.payload as NveKeyPayload;
+      expect(key2.key, 'k');
+      expect(key2.code, 'KeyK');
+      expect(key2.modifiers, nveKeyModMeta | nveKeyModShift);
+      expect(key2.isComposing, isTrue);
+      expect(key2.keyCode, 75);
+      expect(batch[3].table, nveTableInteraction);
+      expect(batch[3].eventId, NveInteractionEvent.pointerDown.code);
+      expect(batch[3].event.kind, NveEventKind.pointerDown);
+      final ptr3 = batch[3].event.payload as NvePointerPayload;
+      expect(ptr3.x, closeTo(12.0, 1e-3));
+      expect(ptr3.y, closeTo(34.0, 1e-3));
+      expect(ptr3.modifiers, nveKeyModAlt);
+      expect(ptr3.flags, 1);
+      expect(batch[4].table, nveTableInteraction);
+      expect(batch[4].eventId, NveInteractionEvent.wheel.code);
+      expect(batch[4].event.kind, NveEventKind.wheel);
+      final wh4 = batch[4].event.payload as NveWheelPayload;
+      expect(wh4.deltaX, closeTo(-4.0, 1e-3));
+      expect(wh4.deltaY, closeTo(120.0, 1e-3));
+      expect(wh4.modifiers, nveKeyModCtrl);
+      expect(batch[5].table, nveTableCustom);
+      expect(batch[5].event.name, 'reset');
+      expect(batch[5].event.parseBinValue()?.get('hard')?.asBool(), isTrue);
 
       // drainEmittedEvents
       mock.outboundEvents = <NveEvent>[

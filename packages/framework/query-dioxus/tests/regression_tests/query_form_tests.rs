@@ -147,14 +147,9 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
     );
 
     let form_id = find_by_test_id(surface.store(), "multi-form");
-    let submit_ev = nve_abi::NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: form_id,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Submit,
-        payload: nve_abi::EventPayload::Text(String::new()),
-    };
-    assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
+    let mut submit_ev = nve_abi::EventBatchBuf::new();
+    submit_ev.push_submit(SurfaceId::ROOT, form_id, nve_abi::TimestampUs::ZERO, "");
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     assert_eq!(*submitted.lock().unwrap(), vec!["first-a".to_owned()]);
 
@@ -171,7 +166,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         ssr2.contains("value=\"swapped-a\""),
         "swapped controller value must render: {ssr2}"
     );
-    assert!(surface.dispatch_events(&[submit_ev]));
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     assert_eq!(
         *submitted.lock().unwrap(),

@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::DebugId;
 use nve_engine::{StoreBackend, Viewport};
@@ -562,13 +562,9 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
             .hit_test(store, cx, cy)
             .unwrap_or_else(|| panic!("hit_test missed '{tid}' at ({cx}, {cy}) rect={rect:?}"));
         assert_eq!(hit, nid, "hit_test hit wrong node for '{tid}'");
-        assert!(surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: hit,
-            timestamp_us: *fid * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]));
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, hit, TimestampUs(*fid * 16_000), cx, cy);
+        assert!(surface.dispatch_events(batch.as_validated()));
         surface
             .commit_to(FrameId(*fid), headless)
             .expect("commit after press");

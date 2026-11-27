@@ -59,6 +59,8 @@ pub mod table_flags {
     pub const AFFECTS_LAYOUT: u8 = 1 << 2;
     /// Word 0 is the hidden `__explicit: u32` bitmask (`#[nve_table(inherited)]`).
     pub const INHERITED: u8 = 1 << 3;
+    /// Word 0 is the `EventSet<E>` subscription bitmask (`#[nve_table(events = E)]`).
+    pub const HAS_EVENTS: u8 = 1 << 4;
 }
 
 /// Sentinel `FieldDesc::val_word` / `TableDesc::events_word` meaning "not applicable".

@@ -3,7 +3,7 @@
 //! - Verifies all 5 interactive playgrounds mount and respond to real press/input events
 //! - Verifies lossless zero-mismatch `WebBackend::hydrate_from_ssr` DOM identity preservation
 
-use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
 use nve_canvas::{Canvas, DrawList};
 use nve_canvas_web::CanvasWebSystem;
@@ -90,15 +90,16 @@ impl InteractiveHarness {
 
     fn press(&mut self, test_id: &str) {
         let node_id = self.find(test_id);
-        let ev = NativeEvent {
-            surface_id: SurfaceId::ROOT,
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
             node_id,
-            timestamp_us: self.frame_id * 1000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
-        };
+            TimestampUs(self.frame_id * 1000),
+            10.0,
+            10.0,
+        );
         assert!(
-            self.surface.dispatch_events(&[ev]),
+            self.surface.dispatch_events(batch.as_validated()),
             "press on '{test_id}' should be handled"
         );
         self.frame_id += 1;
@@ -109,15 +110,15 @@ impl InteractiveHarness {
 
     fn type_text(&mut self, test_id: &str, value: &str) {
         let node_id = self.find(test_id);
-        let ev = NativeEvent {
-            surface_id: SurfaceId::ROOT,
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(
+            SurfaceId::ROOT,
             node_id,
-            timestamp_us: self.frame_id * 1000,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_string()),
-        };
+            TimestampUs(self.frame_id * 1000),
+            value,
+        );
         assert!(
-            self.surface.dispatch_events(&[ev]),
+            self.surface.dispatch_events(batch.as_validated()),
             "text change on '{test_id}' should be handled"
         );
         self.frame_id += 1;

@@ -11,6 +11,8 @@
 pub mod css;
 pub mod event_replay;
 pub mod events;
+#[cfg(target_arch = "wasm32")]
+mod events_dom;
 mod hot_patch;
 pub mod html;
 #[cfg(feature = "hydrate")]
@@ -50,20 +52,23 @@ use std::rc::Rc;
 pub type RenderCallback = Rc<dyn Fn()>;
 
 use nve_abi::hash::HashMap;
-use nve_abi::{EventMask, NativeEvent, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, NodeId, SurfaceId};
+#[cfg(feature = "hydrate")]
+use nve_abi::{InteractionEvent, TextInputEvent, TimestampUs};
 use nve_components::keyboard::KeyboardInsets;
-use nve_components::tables::{Interaction, Link, TextInput};
+#[cfg(feature = "hydrate")]
+use nve_components::tables::{Interaction, TextInput};
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
-use nve_store::{ChangeSet, NodeStore, TableEventBus};
+use nve_store::{ChangeSet, NodeStore};
 
 pub use css::{canonical_f32_bits, write_compositor_css, write_store_node_css, NVE_BASE_RESET_CSS};
 pub use event_replay::{
-    drain_valid_pre_hydration_events, pre_hydration_event_to_native,
-    pre_hydration_replay_script_tag, CapturedPreHydrationEvent, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
+    drain_valid_pre_hydration_events, pre_hydration_replay_script_tag, push_pre_hydration_event,
+    CapturedPreHydrationEvent, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
 pub use events::{
-    decode_form_urlencoded_map, is_hard_nav_anchor, resolve_delegated_node,
-    should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
+    decode_form_urlencoded_map, is_hard_nav_anchor, should_intercept_anchor_click,
+    ImeCompositionGuard, InputSyncTracker, WebEventState, NODE_KIND_INPUT, NODE_KIND_LINK,
 };
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
@@ -108,8 +113,8 @@ pub struct WebBackend {
     pub(crate) renderer: WebStoreRenderer,
     pub(crate) stylesheet: StyleSheetCache,
     pub(crate) patch_css: HashMap<NodeId, String>,
-    pub(crate) pending_events: Rc<RefCell<Vec<NativeEvent>>>,
-    pub(crate) node_event_meta: Rc<RefCell<HashMap<NodeId, NodeEventMeta>>>,
+    pub(crate) pending_events: Rc<RefCell<EventBatchBuf>>,
+    pub(crate) event_state: Rc<RefCell<WebEventState>>,
     pub(crate) input_sync: Rc<RefCell<InputSyncTracker>>,
     pub(crate) ime_guard: Rc<ImeCompositionGuard>,
     pub(crate) keyboard_insets: Rc<Cell<KeyboardInsets>>,
@@ -153,8 +158,8 @@ impl WebBackend {
             renderer: WebStoreRenderer::new(),
             stylesheet: StyleSheetCache::new(),
             patch_css: HashMap::default(),
-            pending_events: Rc::new(RefCell::new(Vec::new())),
-            node_event_meta: Rc::new(RefCell::new(HashMap::default())),
+            pending_events: Rc::new(RefCell::new(EventBatchBuf::new())),
+            event_state: Rc::new(RefCell::new(WebEventState::new())),
             input_sync: Rc::new(RefCell::new(InputSyncTracker::new())),
             ime_guard: Rc::new(ImeCompositionGuard::new()),
             keyboard_insets: Rc::new(Cell::new(KeyboardInsets::default())),
@@ -202,12 +207,12 @@ impl WebBackend {
     }
 
     #[inline]
-    pub fn table_events(&self) -> &TableEventBus {
+    pub fn table_events(&self) -> &EventBatchBuf {
         &self.renderer.events
     }
 
     #[inline]
-    pub fn table_events_mut(&mut self) -> &mut TableEventBus {
+    pub fn table_events_mut(&mut self) -> &mut EventBatchBuf {
         &mut self.renderer.events
     }
 
@@ -246,9 +251,10 @@ impl WebBackend {
         &self.ime_guard
     }
 
+    /// Mutably accesses the pending [`EventBatchBuf`] queue (for hosts/tests injecting events).
     #[inline]
-    pub fn push_event(&mut self, event: NativeEvent) {
-        self.pending_events.borrow_mut().push(event);
+    pub fn with_pending_events<R>(&mut self, f: impl FnOnce(&mut EventBatchBuf) -> R) -> R {
+        f(&mut self.pending_events.borrow_mut())
     }
 
     #[inline]
@@ -274,35 +280,15 @@ impl WebBackend {
         }
     }
 
-    fn sync_event_meta(&self, store: &NodeStore, changes: &ChangeSet) {
-        let mut meta = self.node_event_meta.borrow_mut();
+    fn sync_event_state(&mut self, store: &NodeStore, changes: &ChangeSet) {
         for &removed in &changes.removed {
-            meta.remove(&removed);
             self.input_sync.borrow_mut().remove(removed);
         }
-        for &id in changes.created.iter().chain(changes.touched.iter()) {
-            if !store.is_live(id) {
-                continue;
-            }
-            let mask = u64::from(
-                store
-                    .try_row::<Interaction>(id)
-                    .map_or(0, |i| i.event_mask()),
-            );
-            let is_input = store.has::<TextInput>(id);
-            let is_link = store.has::<Link>(id);
-            if mask != 0 || is_input || is_link {
-                meta.insert(
-                    id,
-                    NodeEventMeta {
-                        is_input,
-                        is_link,
-                        mask,
-                    },
-                );
-            } else {
-                meta.remove(&id);
-            }
+        let mut state = self.event_state.borrow_mut();
+        state.sync(store, changes, |_, _, _| {});
+        #[cfg(target_arch = "wasm32")]
+        if let Some(ref mut delegator) = self.delegated_events {
+            delegator.sync_listeners(&state);
         }
     }
 }
@@ -338,18 +324,18 @@ impl StoreBackend for WebBackend {
             }
         };
 
-        self.sync_event_meta(store, changes);
+        self.sync_event_state(store, changes);
 
         #[cfg(feature = "hydrate")]
         if !self.pre_hydration_events.is_empty() {
             let drained = std::mem::take(&mut self.pre_hydration_events);
             let valid = drain_valid_pre_hydration_events(drained, |id| store.is_live(id));
-            let meta = self.node_event_meta.borrow();
+            let state = self.event_state.borrow();
             let mut evs = self.pending_events.borrow_mut();
             let sid = self.surface_id.get();
-            for captured in valid {
-                let target_id = resolve_replay_target(store, &meta, &captured);
-                evs.push(pre_hydration_event_to_native(captured, sid, 0, target_id));
+            for captured in &valid {
+                let target_id = resolve_replay_target(store, &state, captured);
+                push_pre_hydration_event(captured, sid, TimestampUs(0), target_id, &mut evs);
                 self.hydration_report.replayed_events += 1;
             }
         }
@@ -402,8 +388,18 @@ impl StoreBackend for WebBackend {
         Ok(stats)
     }
 
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        std::mem::take(&mut *self.pending_events.borrow_mut())
+    fn drain_events(&mut self, out: &mut EventBatchBuf) {
+        {
+            let mut pending = self.pending_events.borrow_mut();
+            if !pending.is_empty() {
+                out.extend_from_validated(pending.as_validated());
+                pending.clear();
+            }
+        }
+        if !self.renderer.events.is_empty() {
+            out.extend_from_validated(self.renderer.events.as_validated());
+            self.renderer.events.clear();
+        }
     }
 
     fn reset(&mut self) {
@@ -411,7 +407,14 @@ impl StoreBackend for WebBackend {
         self.stylesheet.clear();
         self.patch_css.clear();
         self.pending_events.borrow_mut().clear();
-        self.node_event_meta.borrow_mut().clear();
+        {
+            let mut state = self.event_state.borrow_mut();
+            state.reset();
+            #[cfg(target_arch = "wasm32")]
+            if let Some(ref mut delegator) = self.delegated_events {
+                delegator.sync_listeners(&state);
+            }
+        }
         #[cfg(target_arch = "wasm32")]
         self.clear_live_dom();
     }
@@ -420,22 +423,24 @@ impl StoreBackend for WebBackend {
 #[cfg(feature = "hydrate")]
 fn resolve_replay_target(
     store: &NodeStore,
-    meta: &HashMap<NodeId, NodeEventMeta>,
+    state: &WebEventState,
     ev: &CapturedPreHydrationEvent,
 ) -> NodeId {
     let mut cur = Some(ev.node_id());
     while let Some(nid) = cur {
-        if let Some(m) = meta.get(&nid) {
-            let matched = match ev {
-                CapturedPreHydrationEvent::Press { .. } => (m.mask & EventMask::PRESS) != 0,
-                CapturedPreHydrationEvent::KeyDown { .. } => (m.mask & EventMask::KEY_DOWN) != 0,
-                CapturedPreHydrationEvent::Submit { .. } => {
-                    m.is_input || (m.mask & EventMask::SUBMIT) != 0
-                }
-            };
-            if matched {
-                return nid;
+        let matched = match ev {
+            CapturedPreHydrationEvent::Press { .. } => {
+                state.listens::<Interaction>(nid, InteractionEvent::Press)
             }
+            CapturedPreHydrationEvent::KeyDown { .. } => {
+                state.listens::<Interaction>(nid, InteractionEvent::KeyDown)
+            }
+            CapturedPreHydrationEvent::Submit { .. } => {
+                state.is_input(nid) || state.listens::<TextInput>(nid, TextInputEvent::Submit)
+            }
+        };
+        if matched {
+            return nid;
         }
         cur = store.parent(nid);
     }

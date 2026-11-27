@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{
+    ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, TextInputEvent,
+    ValidatedEvents,
+};
 use nve_components::tables::{
     register_core_tables, Display, FlexDirection, InputKind, Interaction, Layout, TextInput,
     Typography, Visual,
@@ -75,11 +78,8 @@ impl DesktopApp for MockTextInputApp {
             tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
             tx.set(NodeId::new(2, 0), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
             if self.has_custom_listener {
-                tx.set(
-                    NodeId::new(2, 0),
-                    Interaction::EVENT_MASK,
-                    (EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
-                );
+                tx.edit::<Interaction>(NodeId::new(2, 0))
+                    .listeners(EventSet::one(InteractionEvent::KeyDown));
             }
 
             for id in [10u32, 11, 12] {
@@ -97,24 +97,21 @@ impl DesktopApp for MockTextInputApp {
             tx.set(NodeId::new(10, 0), Visual::BORDER_WIDTH, 1.0);
             tx.set(NodeId::new(10, 0), Visual::BORDER_RADIUS, 6.0);
             tx.set_str(NodeId::new(10, 0), TextInput::PLACEHOLDER, "Search...");
-            tx.set(
-                NodeId::new(10, 0),
-                Interaction::EVENT_MASK,
-                (EventMask::FOCUS
-                    | EventMask::BLUR
-                    | EventMask::TEXT_CHANGE
-                    | EventMask::SUBMIT
-                    | EventMask::KEY_DOWN
-                    | EventMask::CUSTOM) as u32,
+            tx.edit::<Interaction>(NodeId::new(10, 0)).listeners(
+                EventSet::one(InteractionEvent::Focus)
+                    .with(InteractionEvent::Blur)
+                    .with(InteractionEvent::KeyDown),
+            );
+            tx.edit::<TextInput>(NodeId::new(10, 0)).listeners(
+                EventSet::one(TextInputEvent::Change).with(TextInputEvent::Submit),
             );
 
             tx.set(NodeId::new(11, 0), Visual::BORDER_RADIUS, 6.0);
             tx.set(NodeId::new(11, 0), TextInput::SECURE, true);
-            tx.set(
-                NodeId::new(11, 0),
-                Interaction::EVENT_MASK,
-                (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE) as u32,
-            );
+            tx.edit::<Interaction>(NodeId::new(11, 0))
+                .listeners(EventSet::one(InteractionEvent::Focus).with(InteractionEvent::Blur));
+            tx.edit::<TextInput>(NodeId::new(11, 0))
+                .listeners(EventSet::one(TextInputEvent::Change));
 
             tx.set_children(
                 NodeId::new(2, 0),
@@ -132,45 +129,51 @@ impl DesktopApp for MockTextInputApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            match (ev.kind(), ev.payload_tag()) {
-                (Some(NativeEventKind::Focus), 0) => {
-                    self.focus_log.push((ev.node_id(), "focus"));
-                    handled = true;
-                }
-                (Some(NativeEventKind::Blur), 0) => {
-                    self.focus_log.push((ev.node_id(), "blur"));
-                    handled = true;
-                }
-                (Some(NativeEventKind::TextChange), 3) => {
-                    let text = ev.text().to_owned();
-                    if ev.node_id() == NodeId::new(10, 0) {
-                        self.title_value = text.clone();
-                        handled = true;
-                    } else if ev.node_id() == NodeId::new(11, 0) {
-                        self.password_value = text.clone();
+            if let Some(ie) = ev.interaction() {
+                match ie {
+                    InteractionEvent::Focus => {
+                        self.focus_log.push((ev.node(), "focus"));
                         handled = true;
                     }
-                    self.text_changes.push((ev.node_id(), text));
+                    InteractionEvent::Blur => {
+                        self.focus_log.push((ev.node(), "blur"));
+                        handled = true;
+                    }
+                    InteractionEvent::KeyDown => {
+                        let shorthand = format_keydown_shorthand(
+                            ev.key(),
+                            ev.meta(),
+                            ev.ctrl(),
+                            ev.shift(),
+                            ev.alt(),
+                        );
+                        self.keydowns.push((ev.node(), shorthand));
+                        handled = true;
+                    }
+                    _ => {}
                 }
-                (Some(NativeEventKind::Submit), 0 | 3) => {
-                    self.submits.push((ev.node_id(), ev.text().to_owned()));
-                    handled = true;
+            } else if let Some(te) = ev.text_input() {
+                match te {
+                    TextInputEvent::Change => {
+                        let text = ev.text().to_owned();
+                        if ev.node() == NodeId::new(10, 0) {
+                            self.title_value = text.clone();
+                            handled = true;
+                        } else if ev.node() == NodeId::new(11, 0) {
+                            self.password_value = text.clone();
+                            handled = true;
+                        }
+                        self.text_changes.push((ev.node(), text));
+                    }
+                    TextInputEvent::Submit => {
+                        self.submits.push((ev.node(), ev.text().to_owned()));
+                        handled = true;
+                    }
+                    _ => {}
                 }
-                (Some(NativeEventKind::KeyDown), 6) => {
-                    let shorthand = format_keydown_shorthand(
-                        ev.key(),
-                        ev.meta(),
-                        ev.ctrl(),
-                        ev.shift(),
-                        ev.alt(),
-                    );
-                    self.keydowns.push((ev.node_id(), shorthand));
-                    handled = true;
-                }
-                _ => {}
             }
         }
         handled
@@ -618,16 +621,20 @@ fn hidden_input_and_display_none_nodes_have_zero_layout_paint_hit_and_reject_foc
                 tx.edit::<TextInput>(NodeId::new(10, 0))
                     .input_kind(InputKind::Hidden)
                     .value("secret");
-                tx.edit::<Interaction>(NodeId::new(10, 0))
-                    .event_mask((EventMask::PRESS | EventMask::FOCUS | EventMask::BLUR) as u32);
+                tx.edit::<Interaction>(NodeId::new(10, 0)).listeners(
+                    EventSet::one(InteractionEvent::Press)
+                        .with(InteractionEvent::Focus)
+                        .with(InteractionEvent::Blur),
+                );
                 // Node 11: Display::None TextInput
                 tx.edit::<TextInput>(NodeId::new(11, 0)).value("display-none");
                 tx.edit::<Layout>(NodeId::new(11, 0))
                     .display(Display::None)
                     .width(Length::points(180.0))
                     .height(Length::points(36.0));
-                tx.edit::<Interaction>(NodeId::new(11, 0))
-                    .event_mask((EventMask::FOCUS | EventMask::BLUR) as u32);
+                tx.edit::<Interaction>(NodeId::new(11, 0)).listeners(
+                    EventSet::one(InteractionEvent::Focus).with(InteractionEvent::Blur),
+                );
                 // Node 12: Display::None parent containing visible-looking TextInput child 13
                 tx.edit::<Layout>(NodeId::new(12, 0)).display(Display::None);
                 tx.edit::<TextInput>(NodeId::new(13, 0)).value("under-none");
@@ -645,7 +652,7 @@ fn hidden_input_and_display_none_nodes_have_zero_layout_paint_hit_and_reject_foc
             &self.frame_buf
         }
 
-        fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+        fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
             false
         }
 

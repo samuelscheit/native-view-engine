@@ -1,3 +1,6 @@
+#if canImport(CNveAbi)
+import CNveAbi
+#endif
 import Foundation
 
 // MARK: - Core Event & Backend Types
@@ -8,7 +11,7 @@ public enum NveRenderBackend: String, Sendable, Hashable {
     case skia
 }
 
-/// Native event kind mirroring `NativeEventKind` in `packages/core/abi/src/events.rs`.
+/// Native event kind bridged over the NVE C ABI and `NVEV` v2 wire format.
 public enum NveEventKind: UInt8, Sendable, Hashable {
     case press = 1
     case longPress = 2
@@ -94,296 +97,231 @@ public struct NveEvent: Sendable, Equatable {
 /// Strict validation errors thrown by ``NveEventRingCodec/decodeStrict(_:)``.
 public enum NveEventRingError: Error, Equatable, Sendable {
     case truncated
-    case invalidEventKind(UInt8)
-    case invalidPayloadTag(UInt8)
+    case invalidMagic
+    case unsupportedVersion(UInt16)
+    case invalidEventTable(UInt64, UInt32)
+    case invalidBounds
     case invalidUtf8
     case trailingBytes(Int)
 }
 
-// MARK: - Binary EventRing Codec (matches `packages/core/abi/src/events.rs`, binary FFI)
+// MARK: - Binary `NVEV` v2 Event Batch Codec (matches `packages/core/abi/src/event/wire.rs`)
 
 public enum NveEventRingCodec {
-    /// Strictly decodes a binary `EventRing` buffer, throwing on truncation, unknown enums,
-    /// invalid UTF-8, or trailing garbage bytes.
+    public static let wireHeaderBytes: Int = 14
+    public static let eventRecordBytes: Int = 64
+    public static let wireVersion: UInt16 = 2
+
+    /// Strictly decodes a binary `NVEV` v2 event batch buffer, throwing on bad magic/version,
+    /// truncation, out-of-bounds arena ranges, unknown event tables/IDs, invalid UTF-8, or
+    /// trailing bytes.
     public static func decodeStrict(_ data: Data) throws -> [NveEvent] {
-        guard data.count >= 4 else {
+        guard data.count >= wireHeaderBytes else {
             throw NveEventRingError.truncated
         }
         return try data.withUnsafeBytes { raw in
-            var pos = 0
-
-            func readU8() throws -> UInt8 {
-                guard pos < raw.count else { throw NveEventRingError.truncated }
-                let value = raw[pos]
-                pos += 1
-                return value
+            guard raw[0] == 0x4E, raw[1] == 0x56, raw[2] == 0x45, raw[3] == 0x56 else {
+                throw NveEventRingError.invalidMagic
+            }
+            let version = UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: 4, as: UInt16.self))
+            guard version == wireVersion else {
+                throw NveEventRingError.unsupportedVersion(version)
+            }
+            let eventCount = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 6, as: UInt32.self)))
+            let bytesLen = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: 10, as: UInt32.self)))
+            let remaining = raw.count - wireHeaderBytes
+            guard eventCount <= remaining / eventRecordBytes else {
+                throw NveEventRingError.truncated
+            }
+            let recordsBytes = eventCount * eventRecordBytes
+            let arenaStart = wireHeaderBytes + recordsBytes
+            let availableArena = raw.count - arenaStart
+            if availableArena < bytesLen {
+                throw NveEventRingError.truncated
+            }
+            if availableArena > bytesLen {
+                throw NveEventRingError.trailingBytes(availableArena - bytesLen)
             }
 
-            func readU16() throws -> UInt16 {
-                guard pos + 2 <= raw.count else { throw NveEventRingError.truncated }
-                let value = raw.loadUnaligned(fromByteOffset: pos, as: UInt16.self)
-                pos += 2
-                return UInt16(littleEndian: value)
-            }
-
-            func readU32() throws -> UInt32 {
-                guard pos + 4 <= raw.count else { throw NveEventRingError.truncated }
-                let value = raw.loadUnaligned(fromByteOffset: pos, as: UInt32.self)
-                pos += 4
-                return UInt32(littleEndian: value)
-            }
-
-            func readU64() throws -> UInt64 {
-                guard pos + 8 <= raw.count else { throw NveEventRingError.truncated }
-                let value = raw.loadUnaligned(fromByteOffset: pos, as: UInt64.self)
-                pos += 8
-                return UInt64(littleEndian: value)
-            }
-
-            func readF32() throws -> Float {
-                Float(bitPattern: try readU32())
-            }
-
-            func readUtf8(length: Int) throws -> String {
-                guard length >= 0, length <= raw.count - pos else {
-                    throw NveEventRingError.truncated
+            func sliceArena(off: Int, len: Int) throws -> UnsafeRawBufferPointer {
+                guard off >= 0, len >= 0, off <= bytesLen, len <= bytesLen - off else {
+                    throw NveEventRingError.invalidBounds
                 }
-                let slice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + length)])
-                pos += length
-                guard let str = String(bytes: slice, encoding: .utf8) else {
+                return UnsafeRawBufferPointer(rebasing: raw[(arenaStart + off) ..< (arenaStart + off + len)])
+            }
+
+            func decodeUtf8Strict(_ slice: UnsafeRawBufferPointer) throws -> String {
+                guard let s = String(bytes: slice, encoding: .utf8) else {
                     throw NveEventRingError.invalidUtf8
                 }
-                return str
-            }
-
-            let count = Int(try readU32())
-            guard count <= (raw.count - pos) / 18 else {
-                throw NveEventRingError.truncated
+                return s
             }
 
             var events: [NveEvent] = []
-            events.reserveCapacity(min(count, 4096))
+            events.reserveCapacity(min(eventCount, 4096))
 
-            for _ in 0 ..< count {
-                let surfaceId = try readU32()
-                let nodeId = try readU32()
-                let timestampUs = try readU64()
-                let kindByte = try readU8()
-                guard let kind = NveEventKind(rawValue: kindByte) else {
-                    throw NveEventRingError.invalidEventKind(kindByte)
-                }
-                let payloadTag = try readU8()
+            for i in 0 ..< eventCount {
+                let base = wireHeaderBytes + i * eventRecordBytes
+                let ts = UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: base + 0, as: UInt64.self))
+                let table = UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: base + 8, as: UInt64.self))
+                let surfaceId = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 16, as: UInt32.self))
+                let nodeId = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 20, as: UInt32.self))
+                let eventId = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 24, as: UInt32.self))
+                let flags = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 28, as: UInt32.self))
+                let p0 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 32, as: UInt32.self))
+                let p1 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 36, as: UInt32.self))
+                let p2 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 40, as: UInt32.self))
+                let p3 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 44, as: UInt32.self))
+                let p4 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 48, as: UInt32.self))
+                let p5 = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 52, as: UInt32.self))
+                let bytesOff = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 56, as: UInt32.self)))
+                let bytesLenRec = Int(UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: base + 60, as: UInt32.self)))
+                let arenaSlice = try sliceArena(off: bytesOff, len: bytesLenRec)
 
                 var name: String?
+                let kind: NveEventKind
                 let payload: NveEventPayload
 
-                switch payloadTag {
-                case 0:
-                    payload = .empty
-                case 1:
-                    let x = try readF32()
-                    let y = try readF32()
-                    payload = .point(x: x, y: y)
-                case 2:
-                    let x = try readF32()
-                    let y = try readF32()
-                    let cw = try readF32()
-                    let ch = try readF32()
-                    payload = .scroll(x: x, y: y, contentWidth: cw, contentHeight: ch)
-                case 3:
-                    let len = Int(try readU32())
-                    payload = .text(try readUtf8(length: len))
-                case 4:
-                    let x = try readF32()
-                    let y = try readF32()
-                    let w = try readF32()
-                    let h = try readF32()
-                    payload = .layout(x: x, y: y, width: w, height: h)
-                case 5:
-                    let nameLen = Int(try readU16())
-                    name = try readUtf8(length: nameLen)
-                    let dataLen = Int(try readU32())
-                    guard dataLen <= raw.count - pos else {
-                        throw NveEventRingError.truncated
+                if table == UInt64(NVE_TABLE_CUSTOM) {
+                    kind = .custom
+                    let nlen = Int(p0)
+                    guard nlen <= arenaSlice.count else {
+                        throw NveEventRingError.invalidBounds
                     }
-                    let slice = Data(raw[pos ..< (pos + dataLen)])
-                    pos += dataLen
-                    payload = .binValue(slice)
-                case 6:
-                    let modifiers = try readU8()
-                    let isComposing = try readU8() != 0
-                    let keyCode = try readU32()
-                    let keyLen = Int(try readU16())
-                    let key = try readUtf8(length: keyLen)
-                    let codeLen = Int(try readU16())
-                    let code = try readUtf8(length: codeLen)
-                    payload = .key(key: key, code: code, modifiers: modifiers, keyCode: keyCode, isComposing: isComposing)
-                case 7:
-                    let x = try readF32()
-                    let y = try readF32()
-                    let modifiers = try readU8()
-                    let flags = try readU8()
-                    payload = .pointer(x: x, y: y, modifiers: modifiers, flags: flags)
-                case 8:
-                    let dx = try readF32()
-                    let dy = try readF32()
-                    let modifiers = try readU8()
-                    payload = .wheel(deltaX: dx, deltaY: dy, modifiers: modifiers)
-                default:
-                    throw NveEventRingError.invalidPayloadTag(payloadTag)
+                    let nameBuf = UnsafeRawBufferPointer(rebasing: arenaSlice[0 ..< nlen])
+                    name = try decodeUtf8Strict(nameBuf)
+                    payload = .binValue(Data(arenaSlice[nlen ..< arenaSlice.count]))
+                } else if table == UInt64(NVE_TABLE_INTERACTION) {
+                    switch eventId {
+                    case UInt32(NVE_INTERACTION_EVENT_PRESS.rawValue):
+                        kind = .press
+                        payload = .point(x: Float(bitPattern: p0), y: Float(bitPattern: p1))
+                    case UInt32(NVE_INTERACTION_EVENT_LONG_PRESS.rawValue):
+                        kind = .longPress
+                        payload = .point(x: Float(bitPattern: p0), y: Float(bitPattern: p1))
+                    case UInt32(NVE_INTERACTION_EVENT_FOCUS.rawValue):
+                        kind = .focus
+                        payload = .empty
+                    case UInt32(NVE_INTERACTION_EVENT_BLUR.rawValue):
+                        kind = .blur
+                        payload = .empty
+                    case UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue),
+                         UInt32(NVE_INTERACTION_EVENT_KEY_UP.rawValue):
+                        kind = eventId == UInt32(NVE_INTERACTION_EVENT_KEY_DOWN.rawValue) ? .keyDown : .keyUp
+                        let key: String
+                        let code: String
+                        if (flags & UInt32(NVE_EVENT_FLAG_INLINE_KEY_UTF8)) != 0 {
+                            let klen = Int(p1)
+                            guard klen <= Int(NVE_EVENT_INLINE_KEY_CAP) else {
+                                throw NveEventRingError.invalidBounds
+                            }
+                            var kb: [UInt8] = []
+                            kb.reserveCapacity(16)
+                            for w in [p2, p3, p4, p5] {
+                                kb.append(UInt8(truncatingIfNeeded: w))
+                                kb.append(UInt8(truncatingIfNeeded: w >> 8))
+                                kb.append(UInt8(truncatingIfNeeded: w >> 16))
+                                kb.append(UInt8(truncatingIfNeeded: w >> 24))
+                            }
+                            guard let decodedKey = String(bytes: kb.prefix(klen), encoding: .utf8) else {
+                                throw NveEventRingError.invalidUtf8
+                            }
+                            key = decodedKey
+                            code = try decodeUtf8Strict(arenaSlice)
+                        } else {
+                            let klen = Int(p1)
+                            guard klen <= arenaSlice.count else {
+                                throw NveEventRingError.invalidBounds
+                            }
+                            key = try decodeUtf8Strict(UnsafeRawBufferPointer(rebasing: arenaSlice[0 ..< klen]))
+                            code = try decodeUtf8Strict(UnsafeRawBufferPointer(rebasing: arenaSlice[klen ..< arenaSlice.count]))
+                        }
+                        payload = .key(
+                            key: key,
+                            code: code,
+                            modifiers: UInt8(flags & 0x1F),
+                            keyCode: p0,
+                            isComposing: (flags & UInt32(NVE_EVENT_FLAG_COMPOSING)) != 0
+                        )
+                    case UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue),
+                         UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue),
+                         UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue),
+                         UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue),
+                         UInt32(NVE_INTERACTION_EVENT_POINTER_LEAVE.rawValue):
+                        switch eventId {
+                        case UInt32(NVE_INTERACTION_EVENT_POINTER_DOWN.rawValue): kind = .pointerDown
+                        case UInt32(NVE_INTERACTION_EVENT_POINTER_MOVE.rawValue): kind = .pointerMove
+                        case UInt32(NVE_INTERACTION_EVENT_POINTER_UP.rawValue): kind = .pointerUp
+                        case UInt32(NVE_INTERACTION_EVENT_POINTER_ENTER.rawValue): kind = .pointerEnter
+                        default: kind = .pointerLeave
+                        }
+                        let btn = UInt8((flags & UInt32(NVE_EVENT_FLAG_BUTTON_MASK)) >> UInt32(NVE_EVENT_FLAG_BUTTON_SHIFT))
+                        let cap: UInt8 = (flags & UInt32(NVE_EVENT_FLAG_CAPTURE)) != 0 ? 0x08 : 0
+                        payload = .pointer(
+                            x: Float(bitPattern: p0),
+                            y: Float(bitPattern: p1),
+                            modifiers: UInt8(flags & 0x1F),
+                            flags: btn | cap
+                        )
+                    case UInt32(NVE_INTERACTION_EVENT_WHEEL.rawValue):
+                        kind = .wheel
+                        payload = .wheel(
+                            deltaX: Float(bitPattern: p0),
+                            deltaY: Float(bitPattern: p1),
+                            modifiers: UInt8(flags & 0x1F)
+                        )
+                    default:
+                        throw NveEventRingError.invalidEventTable(table, eventId)
+                    }
+                } else if table == UInt64(NVE_TABLE_TEXT_INPUT) {
+                    switch eventId {
+                    case UInt32(NVE_TEXT_INPUT_EVENT_CHANGE.rawValue): kind = .textChange
+                    case UInt32(NVE_TEXT_INPUT_EVENT_SUBMIT.rawValue): kind = .submit
+                    case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_START.rawValue): kind = .compositionStart
+                    case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_UPDATE.rawValue): kind = .compositionUpdate
+                    case UInt32(NVE_TEXT_INPUT_EVENT_COMPOSITION_END.rawValue): kind = .compositionEnd
+                    default:
+                        throw NveEventRingError.invalidEventTable(table, eventId)
+                    }
+                    payload = .text(try decodeUtf8Strict(arenaSlice))
+                } else if table == UInt64(NVE_TABLE_SCROLL) && eventId == UInt32(NVE_SCROLL_EVENT_SCROLL.rawValue) {
+                    kind = .scroll
+                    payload = .scroll(
+                        x: Float(bitPattern: p0),
+                        y: Float(bitPattern: p1),
+                        contentWidth: Float(bitPattern: p2),
+                        contentHeight: Float(bitPattern: p3)
+                    )
+                } else if table == UInt64(NVE_TABLE_LAYOUT) && eventId == UInt32(NVE_LAYOUT_EVENT_LAYOUT.rawValue) {
+                    kind = .layout
+                    payload = .layout(
+                        x: Float(bitPattern: p0),
+                        y: Float(bitPattern: p1),
+                        width: Float(bitPattern: p2),
+                        height: Float(bitPattern: p3)
+                    )
+                } else {
+                    throw NveEventRingError.invalidEventTable(table, eventId)
                 }
 
                 events.append(
                     NveEvent(
                         surfaceId: surfaceId,
                         nodeId: nodeId,
-                        timestampUs: timestampUs,
+                        timestampUs: ts,
                         kind: kind,
                         name: name,
                         payload: payload
                     )
                 )
-            }
-
-            if pos != raw.count {
-                throw NveEventRingError.trailingBytes(raw.count - pos)
             }
             return events
         }
     }
 
-    /// Best-effort decoder that returns all valid events decoded before any truncation or corruption.
+    /// Best-effort decoder returning `[]` on any truncated or malformed `NVEV` v2 payload.
     public static func decode(_ data: Data) -> [NveEvent] {
-        guard data.count >= 4 else { return [] }
-        return data.withUnsafeBytes { raw in
-            var pos = 0
-
-            func readU8() -> UInt8? {
-                guard pos < raw.count else { return nil }
-                let value = raw[pos]
-                pos += 1
-                return value
-            }
-
-            func readU16() -> UInt16? {
-                guard pos + 2 <= raw.count else { return nil }
-                let value = raw.loadUnaligned(fromByteOffset: pos, as: UInt16.self)
-                pos += 2
-                return UInt16(littleEndian: value)
-            }
-
-            func readU32() -> UInt32? {
-                guard pos + 4 <= raw.count else { return nil }
-                let value = raw.loadUnaligned(fromByteOffset: pos, as: UInt32.self)
-                pos += 4
-                return UInt32(littleEndian: value)
-            }
-
-            func readU64() -> UInt64? {
-                guard pos + 8 <= raw.count else { return nil }
-                let value = raw.loadUnaligned(fromByteOffset: pos, as: UInt64.self)
-                pos += 8
-                return UInt64(littleEndian: value)
-            }
-
-            func readF32() -> Float? {
-                readU32().map(Float.init(bitPattern:))
-            }
-
-            guard let count = readU32() else { return [] }
-            var events: [NveEvent] = []
-            events.reserveCapacity(Int(min(count, 4096)))
-
-            for _ in 0 ..< count {
-                guard
-                    let surfaceId = readU32(),
-                    let nodeId = readU32(),
-                    let timestampUs = readU64(),
-                    let kindByte = readU8(),
-                    let payloadTag = readU8()
-                else {
-                    break
-                }
-
-                let kind = NveEventKind(rawValue: kindByte) ?? .custom
-                var name: String?
-                let payload: NveEventPayload
-
-                switch payloadTag {
-                case 0:
-                    payload = .empty
-                case 1:
-                    guard let x = readF32(), let y = readF32() else { return events }
-                    payload = .point(x: x, y: y)
-                case 2:
-                    guard let x = readF32(), let y = readF32(), let cw = readF32(), let ch = readF32() else {
-                        return events
-                    }
-                    payload = .scroll(x: x, y: y, contentWidth: cw, contentHeight: ch)
-                case 3:
-                    guard let len = readU32(), Int(len) <= raw.count - pos else { return events }
-                    let slice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + Int(len))])
-                    pos += Int(len)
-                    guard let text = String(bytes: slice, encoding: .utf8) else { return events }
-                    payload = .text(text)
-                case 4:
-                    guard let x = readF32(), let y = readF32(), let w = readF32(), let h = readF32() else {
-                        return events
-                    }
-                    payload = .layout(x: x, y: y, width: w, height: h)
-                case 5:
-                    guard let nameLen = readU16(), Int(nameLen) <= raw.count - pos else { return events }
-                    let nameSlice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + Int(nameLen))])
-                    pos += Int(nameLen)
-                    guard let decodedName = String(bytes: nameSlice, encoding: .utf8) else {
-                        return events
-                    }
-                    name = decodedName
-                    guard let dataLen = readU32(), Int(dataLen) <= raw.count - pos else { return events }
-                    payload = .binValue(Data(raw[pos ..< (pos + Int(dataLen))]))
-                    pos += Int(dataLen)
-                case 6:
-                    guard
-                        let modifiers = readU8(),
-                        let composingByte = readU8(),
-                        let keyCode = readU32(),
-                        let keyLen = readU16(), Int(keyLen) <= raw.count - pos
-                    else { return events }
-                    let keySlice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + Int(keyLen))])
-                    pos += Int(keyLen)
-                    guard
-                        let key = String(bytes: keySlice, encoding: .utf8),
-                        let codeLen = readU16(), Int(codeLen) <= raw.count - pos
-                    else { return events }
-                    let codeSlice = UnsafeRawBufferPointer(rebasing: raw[pos ..< (pos + Int(codeLen))])
-                    pos += Int(codeLen)
-                    guard let code = String(bytes: codeSlice, encoding: .utf8) else { return events }
-                    payload = .key(key: key, code: code, modifiers: modifiers, keyCode: keyCode, isComposing: composingByte != 0)
-                case 7:
-                    guard let x = readF32(), let y = readF32(), let modifiers = readU8(), let flags = readU8() else {
-                        return events
-                    }
-                    payload = .pointer(x: x, y: y, modifiers: modifiers, flags: flags)
-                case 8:
-                    guard let dx = readF32(), let dy = readF32(), let modifiers = readU8() else { return events }
-                    payload = .wheel(deltaX: dx, deltaY: dy, modifiers: modifiers)
-                default:
-                    return events
-                }
-
-                events.append(
-                    NveEvent(
-                        surfaceId: surfaceId,
-                        nodeId: nodeId,
-                        timestampUs: timestampUs,
-                        kind: kind,
-                        name: name,
-                        payload: payload
-                    )
-                )
-            }
-            return events
-        }
+        (try? decodeStrict(data)) ?? []
     }
 
     private static func appendLE<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
@@ -392,77 +330,30 @@ public enum NveEventRingCodec {
         }
     }
 
-    private static func appendF32(_ value: Float, to data: inout Data) {
-        appendLE(value.bitPattern, to: &data)
-    }
-
-    /// Encodes a batch of typed events into the binary `EventRing` wire format.
+    /// Encodes a batch of typed events into the binary `NVEV` v2 wire format.
     public static func encode(_ events: [NveEvent]) -> Data {
-        var out = Data()
-        out.reserveCapacity(4 + events.count * 32)
-        appendLE(UInt32(events.count), to: &out)
-
-        for event in events {
-            appendLE(event.surfaceId, to: &out)
-            appendLE(event.nodeId, to: &out)
-            appendLE(event.timestampUs, to: &out)
-            out.append(event.kind.rawValue)
-
-            switch event.payload {
-            case .empty:
-                out.append(0)
-            case let .point(x, y):
-                out.append(1)
-                appendF32(x, to: &out)
-                appendF32(y, to: &out)
-            case let .scroll(x, y, contentWidth, contentHeight):
-                out.append(2)
-                appendF32(x, to: &out)
-                appendF32(y, to: &out)
-                appendF32(contentWidth, to: &out)
-                appendF32(contentHeight, to: &out)
-            case let .text(str):
-                out.append(3)
-                let bytes = Data(str.utf8)
-                appendLE(UInt32(bytes.count), to: &out)
-                out.append(bytes)
-            case let .layout(x, y, width, height):
-                out.append(4)
-                appendF32(x, to: &out)
-                appendF32(y, to: &out)
-                appendF32(width, to: &out)
-                appendF32(height, to: &out)
-            case let .binValue(payload):
-                out.append(5)
-                let nameBytes = Data((event.name ?? "").utf8)
-                appendLE(UInt16(nameBytes.count), to: &out)
-                out.append(nameBytes)
-                appendLE(UInt32(payload.count), to: &out)
-                out.append(payload)
-            case let .key(key, code, modifiers, keyCode, isComposing):
-                out.append(6)
-                out.append(modifiers)
-                out.append(isComposing ? 1 : 0)
-                appendLE(keyCode, to: &out)
-                let keyBytes = Data(key.utf8)
-                appendLE(UInt16(keyBytes.count), to: &out)
-                out.append(keyBytes)
-                let codeBytes = Data(code.utf8)
-                appendLE(UInt16(codeBytes.count), to: &out)
-                out.append(codeBytes)
-            case let .pointer(x, y, modifiers, flags):
-                out.append(7)
-                appendF32(x, to: &out)
-                appendF32(y, to: &out)
-                out.append(modifiers)
-                out.append(flags)
-            case let .wheel(deltaX, deltaY, modifiers):
-                out.append(8)
-                appendF32(deltaX, to: &out)
-                appendF32(deltaY, to: &out)
-                out.append(modifiers)
+        var rawRecords = Data(count: events.count * eventRecordBytes)
+        var byteArena = Data()
+        if !events.isEmpty {
+            rawRecords.withUnsafeMutableBytes { recBuf in
+                for (idx, event) in events.enumerated() {
+                    NveDirectEventWriter.encodeRecord(
+                        event,
+                        into: recBuf,
+                        offset: idx * eventRecordBytes,
+                        byteArena: &byteArena
+                    )
+                }
             }
         }
+        var out = Data()
+        out.reserveCapacity(wireHeaderBytes + rawRecords.count + byteArena.count)
+        out.append(contentsOf: [0x4E, 0x56, 0x45, 0x56])
+        appendLE(wireVersion, to: &out)
+        appendLE(UInt32(events.count), to: &out)
+        appendLE(UInt32(byteArena.count), to: &out)
+        out.append(rawRecords)
+        out.append(byteArena)
         return out
     }
 

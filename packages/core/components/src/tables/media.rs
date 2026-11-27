@@ -28,7 +28,12 @@ pub enum Scrollbars {
 /// Scroll container configuration and virtualization hints.
 /// Presence replaces `ComponentKind::ScrollView`.
 #[derive(NveTable)]
-#[nve_table(name = "nve.scroll", storage = "sparse", flags = "publish")]
+#[nve_table(
+    name = "nve.scroll",
+    storage = "sparse",
+    flags = "publish",
+    events = nve_abi::ScrollEvent
+)]
 pub struct Scroll {
     #[effect(realize, layout, composite)]
     pub axes: ScrollAxes,
@@ -180,7 +185,12 @@ impl InputKind {
 
 /// Text input field. Presence replaces `ComponentKind::TextInput`.
 #[derive(NveTable)]
-#[nve_table(name = "nve.text_input", storage = "sparse", flags = "publish")]
+#[nve_table(
+    name = "nve.text_input",
+    storage = "sparse",
+    flags = "publish",
+    events = nve_abi::TextInputEvent
+)]
 pub struct TextInput {
     #[effect(paint, semantics)]
     pub value: Str,

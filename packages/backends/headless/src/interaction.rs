@@ -40,7 +40,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             return false;
         }
         let has_inter = store.try_row::<Interaction>(id).is_some_and(|i| {
-            i.event_mask() != 0
+            !i.listeners().is_empty()
                 || i.cursor() != CursorKind::Auto
                 || i.disabled()
                 || !i.state_rules().is_none()

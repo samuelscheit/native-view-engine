@@ -1,7 +1,7 @@
 //! Unit tests for Progressive & Island DOM Hydration (`HydrateTrigger`,
 //! `IslandHydrationScheduler`, event capture + replay, and Studio Workspace SSR byte reduction).
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{NodeId, SurfaceId, TimestampUs};
 use nve_backend_web::{
     CapturedPreHydrationEvent, MemorySnapshotStorage, WebBackend, WebSnapshotStore,
     PRE_HYDRATION_REPLAY_SCRIPT_TAG, SNAPSHOT_BOOTSTRAP_MAX_BYTES,
@@ -215,12 +215,8 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
     // 1. Toggle AET-101 status -> Done (2)
     let status_btn = find_node_by_testid(session1.store(), "task-status-1")
         .expect("task-status-1 present on initial Board");
-    session1.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: status_btn,
-        timestamp_us: 1,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
+    session1.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, status_btn, TimestampUs(1), 10.0, 10.0);
     });
     session1.pump_events().unwrap();
     assert!(session1.render_html().contains("Done (2)"));
@@ -228,12 +224,8 @@ fn mutated_studio_canonical_snapshot_roundtrips_with_zero_mismatch_hydration_and
     // 2. Switch active view to Docs (`nav-docs`)
     let docs_btn = find_node_by_testid(session1.store(), "nav-docs")
         .expect("nav-docs present in sidebar");
-    session1.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: docs_btn,
-        timestamp_us: 2,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
+    session1.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, docs_btn, TimestampUs(2), 10.0, 10.0);
     });
     session1.pump_events().unwrap();
     assert!(session1.render_html().contains("RFC-042: Zero-Copy NveSceneView"));
@@ -320,12 +312,8 @@ fn kitchen_sink_canonical_snapshot_roundtrips_binary_state_with_zero_mismatch_hy
         .expect("ks-counter-inc button must exist in Kitchen Sink Frame 0");
 
     for i in 1..=3 {
-        session1.backend_mut().push_event(NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: inc_btn,
-            timestamp_us: i,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 10.0, y: 10.0 },
+        session1.backend_mut().with_pending_events(|evs| {
+            evs.push_press(SurfaceId::ROOT, inc_btn, TimestampUs(i), 10.0, 10.0);
         });
         session1.pump_events().unwrap();
     }

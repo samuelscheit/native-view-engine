@@ -6,7 +6,12 @@
 
 #![allow(non_upper_case_globals, non_snake_case, non_camel_case_types)]
 
+use core::marker::PhantomData;
+
 use dioxus_core::{Attribute, AttributeValue, Event};
+use nve_abi::table::TableKey;
+use nve_abi::{EventFlags, EventId, EventSet, NveEvent, SurfaceId, TimestampUs};
+use nve_store::{HasEvents, NodeId, NodeRef, NodeStore};
 
 pub type AttributeDescription = (&'static str, Option<&'static str>, bool);
 
@@ -58,6 +63,88 @@ pub struct TableEventData {
     pub payload: Vec<u8>,
 }
 
+/// Generic 64-byte [`NveEvent`] payload carrying the fixed POD header plus a reusable byte buffer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NveEventData {
+    pub raw: NveEvent,
+    pub bytes: Vec<u8>,
+}
+
+impl NveEventData {
+    #[inline(always)] pub const fn table(&self) -> TableKey { self.raw.table }
+    #[inline(always)] pub const fn surface(&self) -> SurfaceId { self.raw.surface }
+    #[inline(always)] pub const fn node(&self) -> NodeId { self.raw.node }
+    #[inline(always)] pub const fn timestamp(&self) -> TimestampUs { self.raw.timestamp }
+    #[inline(always)] pub const fn event(&self) -> EventId { self.raw.event }
+    #[inline(always)] pub const fn flags(&self) -> EventFlags { self.raw.flags }
+    #[inline(always)] pub const fn x(&self) -> f32 { self.raw.payload_f32(0) }
+    #[inline(always)] pub const fn y(&self) -> f32 { self.raw.payload_f32(1) }
+    #[inline(always)] pub const fn width(&self) -> f32 { self.raw.payload_f32(2) }
+    #[inline(always)] pub const fn height(&self) -> f32 { self.raw.payload_f32(3) }
+    #[inline(always)] pub fn bytes(&self) -> &[u8] { &self.bytes }
+    #[inline(always)] pub fn text(&self) -> &str {
+        if self.raw.flags.contains(EventFlags::UTF8_BYTES)
+            && !self.raw.flags.contains(EventFlags::KEY_SPLIT_BYTES)
+        {
+            core::str::from_utf8(&self.bytes).unwrap_or("")
+        } else {
+            ""
+        }
+    }
+}
+
+/// Zero-cost typed view over a node's [`HasEvents`] table row and active listener [`EventSet`].
+#[derive(Clone, Copy)]
+pub struct ComponentView<'a, T: HasEvents> {
+    node: NodeRef<'a>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<'a, T: HasEvents> ComponentView<'a, T> {
+    #[inline(always)]
+    pub const fn new(node: NodeRef<'a>) -> Self {
+        Self { node, _marker: PhantomData }
+    }
+
+    #[inline(always)]
+    pub fn from_store(store: &'a NodeStore, id: NodeId) -> Option<Self> {
+        store.get(id).map(Self::new)
+    }
+
+    #[inline(always)]
+    pub fn node_id(self) -> NodeId {
+        self.node.id()
+    }
+
+    #[inline(always)]
+    pub fn node(self) -> NodeRef<'a> {
+        self.node
+    }
+
+    #[inline(always)]
+    pub fn try_row(self) -> Option<T::Ref<'a>> {
+        self.node.try_row::<T>()
+    }
+
+    #[inline(always)]
+    pub fn row(self) -> T::Ref<'a> {
+        self.node.row::<T>()
+    }
+
+    #[inline(always)]
+    pub fn listeners(self) -> EventSet<T::Event> {
+        self.node
+            .words(T::slot())
+            .and_then(|w| w.get(T::DESC.events_word as usize).copied())
+            .map_or(EventSet::EMPTY, EventSet::from_raw)
+    }
+
+    #[inline(always)]
+    pub fn is_listening(self, ev: T::Event) -> bool {
+        self.listeners().contains(ev)
+    }
+}
+
 pub type PressEvent = Event<PressEventData>;
 pub type TextEvent = Event<TextEventData>;
 pub type ScrollEvent = Event<ScrollEventData>;
@@ -66,6 +153,7 @@ pub type KeyEvent = Event<KeyEventData>;
 pub type SubmitEvent = Event<SubmitEventData>;
 pub type CompositionEvent = Event<CompositionEventData>;
 pub type TableEvent = Event<TableEventData>;
+pub type RawNveEvent = Event<NveEventData>;
 
 macro_rules! define_attrs {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -225,38 +313,51 @@ pub mod elements {
 
 pub use elements::*;
 
-macro_rules! define_event {
-    ($fn_name:ident, $wire_name:literal, $event_ty:ty) => {
-        pub fn $fn_name(handler: impl FnMut($event_ty) + 'static) -> Attribute {
-            Attribute::new($wire_name, AttributeValue::listener(handler), None, false)
-        }
-
-        pub mod $fn_name {
+/// Single-source compile-time declaration of every built-in RSX event attribute.
+macro_rules! rsx_events {
+    ($( $fn_name:ident => ($wire_name:literal, $event_ty:ty) ),* $(,)?) => {
+        pub mod events {
             use super::*;
-            pub fn call_with_explicit_closure(
-                handler: impl FnMut($event_ty) + 'static,
-            ) -> Attribute {
-                Attribute::new($wire_name, AttributeValue::listener(handler), None, false)
-            }
+            $(
+                pub fn $fn_name(handler: impl FnMut($event_ty) + 'static) -> Attribute {
+                    Attribute::new($wire_name, AttributeValue::listener(handler), None, false)
+                }
+
+                pub mod $fn_name {
+                    use super::*;
+                    pub fn call_with_explicit_closure(
+                        handler: impl FnMut($event_ty) + 'static,
+                    ) -> Attribute {
+                        Attribute::new($wire_name, AttributeValue::listener(handler), None, false)
+                    }
+                }
+            )*
         }
     };
 }
 
-pub mod events {
-    use super::*;
-
-    define_event!(onpress, "onpress", PressEvent);
-    define_event!(onclick, "onpress", PressEvent);
-    define_event!(onchange, "onchange", TextEvent);
-    define_event!(onscroll, "onscroll", ScrollEvent);
-    define_event!(onfocus, "onfocus", FocusEvent);
-    define_event!(onblur, "onblur", FocusEvent);
-    define_event!(onkeydown, "onkeydown", KeyEvent);
-    define_event!(onsubmit, "onsubmit", SubmitEvent);
-    define_event!(oncompositionstart, "oncompositionstart", CompositionEvent);
-    define_event!(oncompositionupdate, "oncompositionupdate", CompositionEvent);
-    define_event!(oncompositionend, "oncompositionend", CompositionEvent);
-    define_event!(ontableevent, "ontableevent", TableEvent);
+rsx_events! {
+    onpress => ("onpress", PressEvent),
+    onclick => ("onpress", PressEvent),
+    onlongpress => ("onlongpress", PressEvent),
+    onpointerdown => ("onpointerdown", PressEvent),
+    onpointermove => ("onpointermove", PressEvent),
+    onpointerup => ("onpointerup", PressEvent),
+    onpointerenter => ("onpointerenter", PressEvent),
+    onpointerleave => ("onpointerleave", PressEvent),
+    onwheel => ("onwheel", ScrollEvent),
+    onchange => ("onchange", TextEvent),
+    onscroll => ("onscroll", ScrollEvent),
+    onfocus => ("onfocus", FocusEvent),
+    onblur => ("onblur", FocusEvent),
+    onkeydown => ("onkeydown", KeyEvent),
+    onkeyup => ("onkeyup", KeyEvent),
+    onsubmit => ("onsubmit", SubmitEvent),
+    oncompositionstart => ("oncompositionstart", CompositionEvent),
+    oncompositionupdate => ("oncompositionupdate", CompositionEvent),
+    oncompositionend => ("oncompositionend", CompositionEvent),
+    onlayout => ("onlayout", RawNveEvent),
+    ontableevent => ("ontableevent", TableEvent),
 }
 
 pub mod GlobalAttributes {

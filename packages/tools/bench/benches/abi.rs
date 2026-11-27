@@ -2,9 +2,9 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
-    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, FrameId, NodeId,
-    NveLayoutApi, NveMapEntry, NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi,
-    NveValue, PrimarySlot, SceneNodeInput, SurfaceId, ZIndex, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    encode_bin_value_to_vec, BinValueView, EventBatchBuf, FrameId, NodeId, NveLayoutApi,
+    NveMapEntry, NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi, NveValue,
+    PrimarySlot, SceneNodeInput, SurfaceId, ZIndex, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
     NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
@@ -51,14 +51,16 @@ fn bench_event_ring_codec(c: &mut Criterion) {
     let mut group = c.benchmark_group("abi/event_ring");
     for &count in &[16usize, 256] {
         let events = build_event_batch(count);
-        let encoded = encode_events(&events);
+        let encoded = events.to_wire_bytes();
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(BenchmarkId::new("encode", count), &events, |b, evs| {
-            b.iter(|| black_box(encode_events(black_box(evs))));
+            b.iter(|| black_box(black_box(evs).to_wire_bytes()));
         });
         group.bench_with_input(BenchmarkId::new("decode", count), &encoded, |b, bytes| {
-            b.iter(|| black_box(decode_events(black_box(bytes)).expect("decode valid bench events")));
+            b.iter(|| {
+                black_box(EventBatchBuf::decode_wire(black_box(bytes)).expect("decode valid bench events"))
+            });
         });
     }
     group.finish();

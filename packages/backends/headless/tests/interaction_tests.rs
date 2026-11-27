@@ -1,7 +1,7 @@
 //! Deep integration tests for `:hover`, `:focus`, `:focus-visible`, `:active`, `:disabled`,
 //! and [`CursorKind`] resolution inside [`HeadlessBackend`] over `NodeStore` word tables.
 
-use nve_abi::{ColorRgba, EventMask, SurfaceId};
+use nve_abi::{ColorRgba, InteractionEvent, SurfaceId};
 use nve_backend_headless::{
     CursorKind, FocusModality, HeadlessBackend, InteractionState, RowPatch, StateStyleRule,
     StylePatchExt,
@@ -53,7 +53,7 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
         .height(Length::points(40.0));
     tx.edit::<Visual>(btn).background(Rgba::rgb(15, 23, 42));
     tx.edit::<Interaction>(btn)
-        .event_mask(EventMask::PRESS as u32)
+        .listen(InteractionEvent::Press)
         .cursor(CursorKind::Pointer)
         .state_rules(Some(StateRules(rules.into())));
 

@@ -13,8 +13,8 @@ mod common;
 
 use common::{data_attr_in_store, find_in_store, live_node_ids, register_studio_tables};
 use nve_abi::{
-    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-    NveMapEntry, NvePropsRef, NveValue, SurfaceId, ROOT_NODE_ID,
+    EventBatchBuf, FrameId, NodeId, NveMapEntry, NvePropsRef, NveValue, SurfaceId, TimestampUs,
+    ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
@@ -123,13 +123,15 @@ impl StudioHarness {
         let hit = hit.expect("checked above");
         assert_eq!(hit, node_id, "hit_test mismatch for '{test_id}'");
 
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: hit,
-            timestamp_us: self.next_frame * 16_000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: cx, y: cy },
-        }]);
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(
+            SurfaceId::ROOT,
+            hit,
+            TimestampUs(self.next_frame * 16_000),
+            cx,
+            cy,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "press on '{test_id}' was not handled");
         self.render_next();
     }
@@ -327,9 +329,9 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = app.render(FrameId(1));
     let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
-        let ev = [NveDirectEvent::layout(SurfaceId::ROOT, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
-        // SAFETY: `ev` stack array outlives the synchronous `dispatch_events` call.
-        app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) })
+        let mut ev = EventBatchBuf::new();
+        ev.push_layout(SurfaceId::ROOT, ROOT_NODE_ID, TimestampUs(ts), 0.0, 0.0, w, h);
+        app.dispatch_events(ev.as_validated())
     };
 
     // Initial default is 960x640 (Medium) -> 1200x800 (Expanded) crosses breakpoint.

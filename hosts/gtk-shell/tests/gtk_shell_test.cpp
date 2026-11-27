@@ -31,13 +31,8 @@ struct MockGtkRustComponent {
   std::string title{"Initial"};
   std::string input_value{"hello"};
   std::vector<uint8_t> cmd_buf;
-  std::vector<std::string> pending_names;
-  std::vector<std::string> pending_payloads;
-  std::vector<uint64_t> pending_ts;
-  std::vector<uint32_t> pending_nodes;
-  std::vector<std::string> drained_names;
-  std::vector<std::string> drained_payloads;
-  std::vector<NveDirectEvent> drained_events;
+  nve::EventBatchBuilder pending_outbound;
+  nve::EventBatchBuilder drained_outbound;
 
   static NveAppHandle create(uint32_t sid) {
     auto* self = new MockGtkRustComponent();
@@ -48,10 +43,13 @@ struct MockGtkRustComponent {
   static void destroy(NveAppHandle h) { delete static_cast<MockGtkRustComponent*>(h); }
 
   void emit_custom(uint32_t node_id, uint64_t ts, std::string name, std::string payload) {
-    pending_nodes.push_back(node_id);
-    pending_ts.push_back(ts);
-    pending_names.push_back(std::move(name));
-    pending_payloads.push_back(std::move(payload));
+    (void)pending_outbound.push_custom(
+        surface_id,
+        node_id,
+        ts,
+        name,
+        payload.empty() ? nullptr : reinterpret_cast<const uint8_t*>(payload.data()),
+        payload.size());
   }
 
   template <typename T>
@@ -195,13 +193,14 @@ struct MockGtkRustComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockGtkRustComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4u) {
+    if (batch.events == nullptr) return 0u;
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+          ev.node == 4u) {
         ++self->count;
         self->emit_custom(
-            4u, ev.timestamp_us, "onIncrement", "{\"count\":" + std::to_string(self->count) + "}");
+            4u, ev.timestamp, "onIncrement", "{\"count\":" + std::to_string(self->count) + "}");
         return 1u;
       }
     }
@@ -227,34 +226,9 @@ struct MockGtkRustComponent {
 
   static NveEventBatch drain_emitted_events(NveAppHandle h) {
     auto* self = static_cast<MockGtkRustComponent*>(h);
-    self->drained_names.swap(self->pending_names);
-    self->drained_payloads.swap(self->pending_payloads);
-    self->pending_names.clear();
-    self->pending_payloads.clear();
-    self->drained_events.clear();
-    const size_t n = self->drained_names.size();
-    self->drained_events.reserve(n);
-    for (size_t i = 0u; i < n; ++i) {
-      NveDirectEvent ev{};
-      ev.surface_id = self->surface_id;
-      ev.node_id = self->pending_nodes[i];
-      ev.timestamp_us = self->pending_ts[i];
-      ev.kind = static_cast<uint8_t>(nve::EventKind::Custom);
-      ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-      ev.name = nve::make_str_slice(self->drained_names[i]);
-      ev.value = nve::make_bytes_value(NveBufferSlice{
-          reinterpret_cast<const uint8_t*>(self->drained_payloads[i].data()),
-          self->drained_payloads[i].size(),
-      });
-      self->drained_events.push_back(ev);
-    }
-    self->pending_nodes.clear();
-    self->pending_ts.clear();
-    return NveEventBatch{
-        self->drained_events.empty() ? nullptr : self->drained_events.data(),
-        static_cast<uint32_t>(self->drained_events.size()),
-        0u,
-    };
+    self->drained_outbound = std::move(self->pending_outbound);
+    self->pending_outbound.clear();
+    return self->drained_outbound.as_batch();
   }
 
   static const void* get_interface(uint32_t interface_id) {

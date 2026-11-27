@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
-use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
 use nve_backend_headless::HeadlessBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -134,13 +134,9 @@ pub(crate) fn cmd_inspect() {
         .expect("expected pressable button hit at (60, 75)");
     println!("\n--> Simulated native Press at (60, 75) hit Node#{hit}");
 
-    let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: hit,
-        timestamp_us: 1000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 60.0, y: 75.0 },
-    }]);
+    let mut batch = EventBatchBuf::new();
+    batch.push_press(SurfaceId::ROOT, hit, TimestampUs(1000), 60.0, 75.0);
+    let handled = surface.dispatch_events(batch.as_validated());
     assert!(handled, "press event should have been handled");
 
     let (rec2, s2) = surface
@@ -173,13 +169,9 @@ mod tests {
         let hit = backend
             .hit_test(surface.store(), 60.0, 75.0)
             .expect("hit button");
-        assert!(surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: hit,
-            timestamp_us: 1000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 60.0, y: 75.0 },
-        }]));
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, hit, TimestampUs(1000), 60.0, 75.0);
+        assert!(surface.dispatch_events(batch.as_validated()));
         surface.commit_to(FrameId(2), &mut backend).unwrap();
         assert!(backend.render_ascii_tree(surface.store()).contains("Counter: 1"));
     }

@@ -380,26 +380,11 @@ uint32_t NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
   return dirty;
 }
 
-NveDirectEvent NveGtkHost::make_base_event(
-    uint32_t node_id,
-    EventKind kind,
-    uint8_t payload_tag) const {
-  NveDirectEvent ev{};
-  ev.surface_id = config_.surface_id;
-  ev.node_id = node_id;
-  ev.timestamp_us = current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(kind);
-  ev.payload_tag = payload_tag;
-  ev.value = make_null_value();
-  return ev;
-}
-
-uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
+uint32_t NveGtkHost::dispatch_event_batch(NveEventBatch batch) {
   if (!session_.is_valid() && !session_.is_paired()) {
     return 0u;
   }
-  const uint32_t dirty =
-      session_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
+  const uint32_t dirty = session_.dispatch_events(batch, /*auto_render=*/true);
   if (dirty != 0u && !session_.is_paired()) {
     sync_views(/*check_raw_props=*/false);
   }
@@ -408,22 +393,36 @@ uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
 }
 
 uint32_t NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  NveDirectEvent ev = make_base_event(node_id, EventKind::TextChange, 3u);
-  ev.text = make_str_slice(text);
-  return dispatch_single_direct_event(ev);
+  const NveEvent ev = make_text_event(
+      config_.surface_id,
+      node_id,
+      current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_CHANGE,
+      static_cast<uint32_t>(text.size()));
+  return dispatch_event_batch(make_single_event_batch(
+      ev,
+      text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()),
+      static_cast<uint32_t>(text.size())));
 }
 
 uint32_t NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
-  NveDirectEvent ev = make_base_event(node_id, EventKind::Custom, 5u);
-  ev.name = make_str_slice("onSubmit");
-  ev.text = make_str_slice(text);
-  ev.value = make_str_value(text);
-  return dispatch_single_direct_event(ev);
+  const NveEvent ev = make_text_event(
+      config_.surface_id,
+      node_id,
+      current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_SUBMIT,
+      static_cast<uint32_t>(text.size()));
+  return dispatch_event_batch(make_single_event_batch(
+      ev,
+      text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()),
+      static_cast<uint32_t>(text.size())));
 }
 
 uint32_t NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
-  NveDirectEvent ev = make_base_event(node_id, focused ? EventKind::Focus : EventKind::Blur, 0u);
-  return dispatch_single_direct_event(ev);
+  const uint64_t ts = current_timestamp_us();
+  const NveEvent ev = focused ? make_focus_event(config_.surface_id, node_id, ts)
+                              : make_blur_event(config_.surface_id, node_id, ts);
+  return dispatch_event_batch(make_single_event_batch(ev));
 }
 
 uint32_t NveGtkHost::dispatch_scroll(
@@ -432,12 +431,15 @@ uint32_t NveGtkHost::dispatch_scroll(
     float offset_y,
     float content_width,
     float content_height) {
-  NveDirectEvent ev = make_base_event(node_id, EventKind::Scroll, 2u);
-  ev.x = offset_x;
-  ev.y = offset_y;
-  ev.width = content_width;
-  ev.height = content_height;
-  return dispatch_single_direct_event(ev);
+  const NveEvent ev = make_scroll_event(
+      config_.surface_id,
+      node_id,
+      current_timestamp_us(),
+      offset_x,
+      offset_y,
+      content_width,
+      content_height);
+  return dispatch_event_batch(make_single_event_batch(ev));
 }
 
 void NveGtkHost::set_surface_size(float width, float height, float scale_factor) {

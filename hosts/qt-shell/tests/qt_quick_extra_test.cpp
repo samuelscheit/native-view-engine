@@ -303,21 +303,28 @@ struct MockQuickA11yImeComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockQuickA11yImeComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+    if (batch.events == nullptr) return 0u;
+    auto read_text = [&](const NveEvent& ev) -> std::string {
+      if (ev.bytes.len == 0u || batch.bytes == nullptr || ev.bytes.offset > batch.bytes_len ||
+          ev.bytes.len > batch.bytes_len - ev.bytes.offset) {
+        return {};
+      }
+      return std::string(
+          reinterpret_cast<const char*>(batch.bytes + ev.bytes.offset), ev.bytes.len);
+    };
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.node == 5u && ev.table == NVE_TABLE_TEXT_INPUT &&
+          ev.event == NVE_TEXT_INPUT_EVENT_CHANGE) {
         ++self->direct_text_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_text.assign(sv.data(), sv.size());
+        self->last_text = read_text(ev);
         self->input_text = self->last_text;
         return 1u;
       }
-      if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
-          nve::str_slice_view(ev.name) == "onSubmit") {
+      if (ev.node == 5u && ev.table == NVE_TABLE_TEXT_INPUT &&
+          ev.event == NVE_TEXT_INPUT_EVENT_SUBMIT) {
         ++self->direct_submit_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_submit.assign(sv.data(), sv.size());
+        self->last_submit = read_text(ev);
       }
     }
     return 0u;

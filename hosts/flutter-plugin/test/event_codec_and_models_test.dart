@@ -4,31 +4,51 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
 
-Uint8List _buildEventRing(List<void Function(BytesBuilder)> writers) {
+Uint8List _buildNvevV2(List<Uint8List> records, Uint8List arena) {
   final builder = BytesBuilder(copy: false);
-  final countHeader = ByteData(4)..setUint32(0, writers.length, Endian.little);
-  builder.add(countHeader.buffer.asUint8List());
-  for (final write in writers) {
-    write(builder);
+  final hdr = ByteData(14)
+    ..setUint8(0, 0x4E)
+    ..setUint8(1, 0x56)
+    ..setUint8(2, 0x45)
+    ..setUint8(3, 0x56)
+    ..setUint16(4, 2, Endian.little)
+    ..setUint32(6, records.length, Endian.little)
+    ..setUint32(10, arena.length, Endian.little);
+  builder.add(hdr.buffer.asUint8List());
+  for (final r in records) {
+    builder.add(r);
   }
+  builder.add(arena);
   return builder.toBytes();
 }
 
-void _writeEventHeader(
-  BytesBuilder builder, {
+int _f32Bits(double v) => (ByteData(4)..setFloat32(0, v, Endian.little)).getUint32(0, Endian.little);
+
+Uint8List _makeRecord({
+  required int timestampUs,
+  required int table,
   required int surfaceId,
   required int nodeId,
-  required int timestampUs,
-  required int kindCode,
-  required int payloadTag,
+  required int eventId,
+  int flags = 0,
+  List<int> payload = const <int>[],
+  int bytesOffset = 0,
+  int bytesLen = 0,
 }) {
-  final meta = ByteData(18)
-    ..setUint32(0, surfaceId, Endian.little)
-    ..setUint32(4, nodeId, Endian.little)
-    ..setUint64(8, timestampUs, Endian.little)
-    ..setUint8(16, kindCode)
-    ..setUint8(17, payloadTag);
-  builder.add(meta.buffer.asUint8List());
+  final bd = ByteData(64)
+    ..setUint64(0, timestampUs, Endian.little)
+    ..setUint64(8, table, Endian.little)
+    ..setUint32(16, surfaceId, Endian.little)
+    ..setUint32(20, nodeId, Endian.little)
+    ..setUint32(24, eventId, Endian.little)
+    ..setUint32(28, flags, Endian.little);
+  for (var i = 0; i < payload.length && i < 6; i++) {
+    bd.setUint32(32 + i * 4, payload[i], Endian.little);
+  }
+  bd
+    ..setUint32(56, bytesOffset, Endian.little)
+    ..setUint32(60, bytesLen, Endian.little);
+  return bd.buffer.asUint8List();
 }
 
 void main() {
@@ -122,101 +142,74 @@ void main() {
   });
 
   group('NveEventRingCodec', () {
-    test('decodes all 6 typed payload variants matching packages/core/abi/src/events.rs', () {
+    test('decodes all 6 typed payload variants matching NVEV v2 wire layout', () {
       final customBin = NveBinValueEncoder.encode(<String, Object?>{'delta': 5});
-      final bytes = _buildEventRing(<void Function(BytesBuilder)>[
-        // 0: Empty
-        (b) => _writeEventHeader(
-              b,
-              surfaceId: 1,
-              nodeId: 10,
-              timestampUs: 100,
-              kindCode: NveEventKind.blur.code,
-              payloadTag: 0,
-            ),
-        // 1: Point
-        (b) {
-          _writeEventHeader(
-            b,
+      final textBytes = Uint8List.fromList(utf8.encode('Hello Flutter 🚀'));
+      final nameBytes = Uint8List.fromList(utf8.encode('onIncrement'));
+      final arena = BytesBuilder(copy: false);
+      final textOff = arena.length;
+      arena.add(textBytes);
+      final customOff = arena.length;
+      arena
+        ..add(nameBytes)
+        ..add(customBin);
+      final bytes = _buildNvevV2(
+        <Uint8List>[
+          _makeRecord(
+            timestampUs: 100,
+            table: nveTableInteraction,
+            surfaceId: 1,
+            nodeId: 10,
+            eventId: NveInteractionEvent.blur.code,
+          ),
+          _makeRecord(
+            timestampUs: 200,
+            table: nveTableInteraction,
             surfaceId: 1,
             nodeId: 11,
-            timestampUs: 200,
-            kindCode: NveEventKind.press.code,
-            payloadTag: 1,
-          );
-          final pt = ByteData(8)
-            ..setFloat32(0, 42.5, Endian.little)
-            ..setFloat32(4, 18.25, Endian.little);
-          b.add(pt.buffer.asUint8List());
-        },
-        // 2: Scroll
-        (b) {
-          _writeEventHeader(
-            b,
+            eventId: NveInteractionEvent.press.code,
+            payload: <int>[_f32Bits(42.5), _f32Bits(18.25)],
+          ),
+          _makeRecord(
+            timestampUs: 300,
+            table: nveTableScroll,
             surfaceId: 2,
             nodeId: 12,
-            timestampUs: 300,
-            kindCode: NveEventKind.scroll.code,
-            payloadTag: 2,
-          );
-          final sc = ByteData(16)
-            ..setFloat32(0, 12.0, Endian.little)
-            ..setFloat32(4, 240.5, Endian.little)
-            ..setFloat32(8, 390.0, Endian.little)
-            ..setFloat32(12, 1600.0, Endian.little);
-          b.add(sc.buffer.asUint8List());
-        },
-        // 3: Text (UTF-8)
-        (b) {
-          _writeEventHeader(
-            b,
+            eventId: NveScrollEvent.scroll.code,
+            payload: <int>[_f32Bits(12.0), _f32Bits(240.5), _f32Bits(390.0), _f32Bits(1600.0)],
+          ),
+          _makeRecord(
+            timestampUs: 400,
+            table: nveTableTextInput,
             surfaceId: 2,
             nodeId: 13,
-            timestampUs: 400,
-            kindCode: NveEventKind.textChange.code,
-            payloadTag: 3,
-          );
-          final textBytes = utf8.encode('Hello Flutter 🚀');
-          final len = ByteData(4)..setUint32(0, textBytes.length, Endian.little);
-          b.add(len.buffer.asUint8List());
-          b.add(textBytes);
-        },
-        // 4: Layout
-        (b) {
-          _writeEventHeader(
-            b,
+            eventId: NveTextInputEvent.change.code,
+            flags: nveEventFlagUtf8Bytes,
+            bytesOffset: textOff,
+            bytesLen: textBytes.length,
+          ),
+          _makeRecord(
+            timestampUs: 500,
+            table: nveTableLayout,
             surfaceId: 3,
             nodeId: 14,
-            timestampUs: 500,
-            kindCode: NveEventKind.layout.code,
-            payloadTag: 4,
-          );
-          final layout = ByteData(16)
-            ..setFloat32(0, 8.0, Endian.little)
-            ..setFloat32(4, 16.0, Endian.little)
-            ..setFloat32(8, 320.0, Endian.little)
-            ..setFloat32(12, 180.0, Endian.little);
-          b.add(layout.buffer.asUint8List());
-        },
-        // 5: Custom with binary NveBinValue payload
-        (b) {
-          _writeEventHeader(
-            b,
+            eventId: NveLayoutEvent.layout.code,
+            payload: <int>[_f32Bits(8.0), _f32Bits(16.0), _f32Bits(320.0), _f32Bits(180.0)],
+          ),
+          _makeRecord(
+            timestampUs: 600,
+            table: nveTableCustom,
             surfaceId: 3,
             nodeId: 15,
-            timestampUs: 600,
-            kindCode: NveEventKind.custom.code,
-            payloadTag: 5,
-          );
-          final nameBytes = utf8.encode('onIncrement');
-          final nameLen = ByteData(2)..setUint16(0, nameBytes.length, Endian.little);
-          final dataLen = ByteData(4)..setUint32(0, customBin.length, Endian.little);
-          b.add(nameLen.buffer.asUint8List());
-          b.add(nameBytes);
-          b.add(dataLen.buffer.asUint8List());
-          b.add(customBin);
-        },
-      ]);
+            eventId: 0,
+            flags: nveEventFlagCustomNamed,
+            payload: <int>[nameBytes.length],
+            bytesOffset: customOff,
+            bytesLen: nameBytes.length + customBin.length,
+          ),
+        ],
+        arena.takeBytes(),
+      );
 
       final events = NveEventRingCodec.decode(bytes);
       expect(events, hasLength(6));
@@ -334,7 +327,7 @@ void main() {
         contentHeight: 1200.0,
         timestampUs: 999999,
       );
-      expect(bytes.length, 38);
+      expect(bytes.length, 78);
       final decoded = NveEventRingCodec.decode(bytes);
       expect(decoded, hasLength(1));
       expect(decoded.single.surfaceId, 4);
@@ -394,19 +387,16 @@ void main() {
         expect(partial.length, lessThan(5));
       }
 
-      // Oversized length (0xFFFFFFFF) must never throw RangeError.
-      final oversizedText = BytesBuilder()
-        ..add((ByteData(4)..setUint32(0, 1, Endian.little)).buffer.asUint8List());
-      _writeEventHeader(
-        oversizedText,
-        surfaceId: 1,
-        nodeId: 9,
-        timestampUs: 10,
-        kindCode: NveEventKind.textChange.code,
-        payloadTag: 3,
-      );
-      oversizedText.add((ByteData(4)..setUint32(0, 0xFFFFFFFF, Endian.little)).buffer.asUint8List());
-      expect(NveEventRingCodec.decode(oversizedText.toBytes()), isEmpty);
+      // Oversized arena length (0xFFFFFFFF) must never throw RangeError.
+      final oversizedArena = ByteData(14)
+        ..setUint8(0, 0x4E)
+        ..setUint8(1, 0x56)
+        ..setUint8(2, 0x45)
+        ..setUint8(3, 0x56)
+        ..setUint16(4, 2, Endian.little)
+        ..setUint32(6, 1, Endian.little)
+        ..setUint32(10, 0xFFFFFFFF, Endian.little);
+      expect(NveEventRingCodec.decode(oversizedArena.buffer.asUint8List()), isEmpty);
     });
   });
 }

@@ -178,20 +178,28 @@ struct MockA11yImeQtApp {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockA11yImeQtApp*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 2u) {
+    if (batch.events == nullptr) return 0u;
+    auto read_text = [&](const NveEvent& ev) -> std::string {
+      if (ev.bytes.len == 0u || batch.bytes == nullptr || ev.bytes.offset > batch.bytes_len ||
+          ev.bytes.len > batch.bytes_len - ev.bytes.offset) {
+        return {};
+      }
+      return std::string(
+          reinterpret_cast<const char*>(batch.bytes + ev.bytes.offset), ev.bytes.len);
+    };
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+          ev.node == 2u) {
         ++self->press_calls;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange) && ev.node_id == 5u) {
+      } else if (ev.table == NVE_TABLE_TEXT_INPUT && ev.event == NVE_TEXT_INPUT_EVENT_CHANGE &&
+                 ev.node == 5u) {
         ++self->text_change_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_text.assign(sv.data(), sv.size());
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) && ev.node_id == 5u &&
-                 nve::str_slice_view(ev.name) == "onSubmit") {
+        self->last_text = read_text(ev);
+      } else if (ev.table == NVE_TABLE_TEXT_INPUT && ev.event == NVE_TEXT_INPUT_EVENT_SUBMIT &&
+                 ev.node == 5u) {
         ++self->submit_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_submit.assign(sv.data(), sv.size());
+        self->last_submit = read_text(ev);
       }
     }
     return 0u;
@@ -382,15 +390,16 @@ struct MockQtImageScrollApp {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockQtImageScrollApp*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+    if (batch.events == nullptr) return 0u;
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.table == NVE_TABLE_SCROLL && ev.event == NVE_SCROLL_EVENT_SCROLL) {
         ++self->scroll_events;
-        self->last_scroll_node = ev.node_id;
-        self->last_scroll_y = ev.y;
-        self->last_scroll_content_h = ev.height;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 7u) {
+        self->last_scroll_node = ev.node;
+        self->last_scroll_y = nve::event_payload_f32(ev, 1u);
+        self->last_scroll_content_h = nve::event_payload_f32(ev, 3u);
+      } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+                 ev.node == 7u) {
         ++self->counter;
         return 1u;
       }

@@ -34,10 +34,13 @@ mod value;
 pub mod wire;
 
 pub use changes::{ChangeSet, Command, TableChanges};
-pub use events::{TableEventBus, TypedTableEvent};
+pub use events::SurfaceEventTracker;
 pub use id::{Idx, IndexVec, NodeId, NodeIndex, ResourceId, TableSet, TableSetIter};
 pub use inherited::{InheritedTable, ResolvedRow};
-pub use nve_abi::SurfaceId;
+pub use nve_abi::{
+    EventBatchBuf, EventEnum, EventFlags, EventId, EventSet, NveEvent, NveEventBatch, SurfaceId,
+    TimestampUs, ValidatedEvent, ValidatedEvents,
+};
 pub use nve_abi::table::{
     effect, table_flags, FieldDesc, FieldKind, OptEncoding, Storage, TableDesc, TableKey, Word,
 };
@@ -56,8 +59,8 @@ pub use row_patch::{
 pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
 pub use store::{NodeRef, NodeRow, NodeStore, RealizationOrder, StoreStats};
 pub use table::{
-    desc, slot_of, NveTable, Prop, RegistryError, Res, ResProp, ScalarField, Str, StrProp,
-    TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
+    desc, slot_of, HasEvents, NveTable, Prop, RegistryError, Res, ResProp, ScalarField, Str,
+    StrProp, TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
 };
 pub use node_mut::{NodeMut, TempResources};
 pub use tx::Transaction;

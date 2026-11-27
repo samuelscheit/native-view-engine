@@ -64,8 +64,8 @@ struct MockEmbeddedRustComponent {
   int count{0};
   std::vector<uint8_t> last_cmd_buf;
   nve::BumpArena outbound_arena{2048u};
-  std::vector<NveDirectEvent> outbound_pending;
-  std::vector<NveDirectEvent> outbound_drained;
+  nve::EventBatchBuilder outbound_pending;
+  nve::EventBatchBuilder outbound_drained;
   std::string saved_state_buf;
 
   static NveAppHandle create(uint32_t sid) {
@@ -75,15 +75,7 @@ struct MockEmbeddedRustComponent {
   }
 
   void push_outbound_custom(uint32_t node_id, uint64_t ts_us, std::string_view name, NveValue val) {
-    NveDirectEvent ev{};
-    ev.surface_id = surface_id;
-    ev.node_id = node_id;
-    ev.timestamp_us = ts_us;
-    ev.kind = NVE_EVENT_CUSTOM;
-    ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-    ev.name = outbound_arena.copy_str(name);
-    ev.value = val;
-    outbound_pending.push_back(ev);
+    (void)outbound_pending.push_custom_value(surface_id, node_id, ts_us, name, val);
   }
 
   static void destroy(NveAppHandle h) {
@@ -110,12 +102,13 @@ struct MockEmbeddedRustComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
-    if (!self || !batch.ptr || batch.len == 0) return 0;
+    if (!self || !batch.events || batch.event_count == 0) return 0;
     uint32_t dirty = 0;
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
+    for (uint32_t i = 0; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
       ++self->direct_event_calls;
-      if (ev.kind == NVE_EVENT_PRESS && ev.node_id == 2) {
+      if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+          ev.node == 2) {
         self->count += 1;
         NveMapEntry* entry = self->outbound_arena.alloc_array<NveMapEntry>(1u);
         entry[0] = NveMapEntry{
@@ -123,10 +116,14 @@ struct MockEmbeddedRustComponent {
             nve::make_i64_value(static_cast<int64_t>(self->count)),
         };
         self->push_outbound_custom(
-            2, ev.timestamp_us, "onIncrement", nve::make_map_value(entry, 1u));
+            2, ev.timestamp, "onIncrement", nve::make_map_value(entry, 1u));
         dirty = 1;
-      } else if (ev.kind == NVE_EVENT_CUSTOM) {
-        self->last_direct_event_name = std::string(nve::str_slice_view(ev.name));
+      } else if (ev.table == NVE_TABLE_CUSTOM) {
+        std::string_view cname;
+        std::span<const uint8_t> cpayload;
+        if (nve::event_custom_parts(ev, batch.bytes, batch.bytes_len, cname, cpayload)) {
+          self->last_direct_event_name = std::string(cname);
+        }
         dirty = 1;
       }
     }
@@ -186,11 +183,7 @@ struct MockEmbeddedRustComponent {
     auto* self = static_cast<MockEmbeddedRustComponent*>(h);
     self->outbound_drained = std::move(self->outbound_pending);
     self->outbound_pending.clear();
-    return NveEventBatch{
-        self->outbound_drained.empty() ? nullptr : self->outbound_drained.data(),
-        static_cast<uint32_t>(self->outbound_drained.size()),
-        0u,
-    };
+    return self->outbound_drained.as_batch();
   }
 
   static NveIntrinsicSize measure(NveAppHandle, NveSizeConstraints c) {

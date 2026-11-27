@@ -5,14 +5,15 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    InterfaceId, NveAppHandle, NveComponentApi, NveDirectEvent, NveEventBatch, SurfaceId,
-    NVE_IFACE_COMPONENT, NVE_IFACE_SURFACE,
+    EventFlags, EventId, InterfaceId, NveAppHandle, NveComponentApi, NveEvent, NveEventBatch,
+    RawEventBytes, SurfaceId, TimestampUs, NVE_IFACE_COMPONENT, NVE_IFACE_SURFACE,
+    NVE_TABLE_INTERACTION,
 };
 use nve_store::NodeId;
 
 use super::lifecycle_tests::{
     p_set_props, plugin_v1_get_interface, plugin_v2_get_interface, surface_only_get_interface,
-    MockPluginState, P1_SURFACE,
+    P1_SURFACE,
 };
 use super::*;
 
@@ -118,30 +119,20 @@ fn hot_swap_returns_generation_exhausted_at_u64_max() {
 
 #[test]
 fn drain_emitted_events_canonicalizes_non_canonical_c_pod_handles() {
-    unsafe extern "C" fn p_drain_corrupt_events(handle: NveAppHandle) -> NveEventBatch {
-        // SAFETY: `handle` was allocated by `p1_create` as `Box<MockPluginState>`.
-        let st = unsafe { &mut *(handle as *mut MockPluginState) };
-        st.out_events.clear();
-        st.out_events.push(NveDirectEvent {
-            // SAFETY: `SurfaceId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
-            surface_id: unsafe { core::mem::transmute::<u32, SurfaceId>(0x0500_0000) },
-            // SAFETY: `NodeId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
-            node_id: unsafe { core::mem::transmute::<u32, NodeId>(0x0700_0000) },
-            timestamp_us: 42,
-            kind: 1,
-            payload_tag: 0,
-            modifiers: 0,
-            event_flags: 0,
-            key_code: 0,
-            name: nve_abi::NveStrSlice::EMPTY,
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-            text: nve_abi::NveStrSlice::EMPTY,
-            value: nve_abi::NveValue::null(),
-        });
-        NveEventBatch::from_slice(&st.out_events)
+    static CORRUPT_EVENT: [NveEvent; 1] = [NveEvent {
+        table: NVE_TABLE_INTERACTION,
+        // SAFETY: `SurfaceId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
+        surface: unsafe { core::mem::transmute::<u32, SurfaceId>(0x0500_0000) },
+        // SAFETY: `NodeId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
+        node: unsafe { core::mem::transmute::<u32, NodeId>(0x0700_0000) },
+        timestamp: TimestampUs(42),
+        event: EventId(0),
+        flags: EventFlags::EMPTY,
+        payload: [0; 6],
+        bytes: RawEventBytes::EMPTY,
+    }];
+    unsafe extern "C" fn p_drain_corrupt_events(_handle: NveAppHandle) -> NveEventBatch {
+        NveEventBatch::from_parts(&CORRUPT_EVENT, &[])
     }
     static CORRUPT_COMP: NveComponentApi = NveComponentApi {
         set_props: p_set_props,
@@ -168,9 +159,9 @@ fn drain_emitted_events_canonicalizes_non_canonical_c_pod_handles() {
         let batch = slot.drain_emitted_events();
         assert_eq!(batch.len(), 1);
         let ev = batch.get(0).unwrap();
-        assert_eq!(ev.surface_id(), SurfaceId::NULL);
-        assert_eq!(ev.node_id(), NodeId::NULL);
-        assert_eq!(ev.timestamp_us(), 42);
+        assert_eq!(ev.surface(), SurfaceId::NULL);
+        assert_eq!(ev.node(), NodeId::NULL);
+        assert_eq!(ev.timestamp(), TimestampUs(42));
     }
     let _ = runtime.unload_plugin(corrupt_pid).unwrap();
 }

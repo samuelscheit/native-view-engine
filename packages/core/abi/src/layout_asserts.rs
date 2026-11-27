@@ -7,10 +7,13 @@
 
 use core::mem::{align_of, offset_of, size_of};
 
+use crate::event::{
+    InteractionEvent, LayoutEvent, NveEvent, NveEventBatch, RawEventBytes, ScrollEvent,
+    TextInputEvent, NVE_EVENT_ALIGN, NVE_EVENT_SIZE,
+};
 use crate::ffi::{
-    NativeEventKind, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats,
-    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi,
-    NveSurfaceConfig,
+    NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats, NveGestureDisposition,
+    NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig,
 };
 use crate::host::{NveHostApi, NveHostCallbacks, NveHostStatus};
 use crate::scene::{
@@ -18,8 +21,8 @@ use crate::scene::{
     NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
 };
 use crate::value::{
-    NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
-    NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap, NveValueTag,
+    NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveStrSlice, NveValue,
+    NveValueArray, NveValueData, NveValueMap, NveValueTag,
 };
 
 const PTR_SIZE: usize = size_of::<*const ()>();
@@ -34,8 +37,14 @@ const _: () = {
     // ---- Repr enums ----
     assert!(size_of::<NveGestureDisposition>() == 1);
     assert!(align_of::<NveGestureDisposition>() == 1);
-    assert!(size_of::<NativeEventKind>() == 1);
-    assert!(align_of::<NativeEventKind>() == 1);
+    assert!(size_of::<InteractionEvent>() == 1);
+    assert!(align_of::<InteractionEvent>() == 1);
+    assert!(size_of::<TextInputEvent>() == 1);
+    assert!(align_of::<TextInputEvent>() == 1);
+    assert!(size_of::<ScrollEvent>() == 1);
+    assert!(align_of::<ScrollEvent>() == 1);
+    assert!(size_of::<LayoutEvent>() == 1);
+    assert!(align_of::<LayoutEvent>() == 1);
     assert!(size_of::<NveHostStatus>() == 4);
     assert!(align_of::<NveHostStatus>() == 4);
     assert!(size_of::<NveValueTag>() == 4);
@@ -155,58 +164,28 @@ const _: () = {
             )
     );
 
-    assert!(offset_of!(NveDirectEvent, surface_id) == 0);
-    assert!(offset_of!(NveDirectEvent, node_id) == 4);
-    assert!(offset_of!(NveDirectEvent, timestamp_us) == 8);
-    assert!(offset_of!(NveDirectEvent, kind) == 16);
-    assert!(offset_of!(NveDirectEvent, payload_tag) == 17);
-    assert!(offset_of!(NveDirectEvent, modifiers) == 18);
-    assert!(offset_of!(NveDirectEvent, event_flags) == 19);
-    assert!(offset_of!(NveDirectEvent, key_code) == 20);
-    assert!(offset_of!(NveDirectEvent, name) == 24);
-    assert!(offset_of!(NveDirectEvent, x) == offset_of!(NveDirectEvent, name) + size_of::<NveStrSlice>());
-    assert!(offset_of!(NveDirectEvent, y) == offset_of!(NveDirectEvent, x) + 4);
-    assert!(offset_of!(NveDirectEvent, width) == offset_of!(NveDirectEvent, y) + 4);
-    assert!(offset_of!(NveDirectEvent, height) == offset_of!(NveDirectEvent, width) + 4);
-    assert!(
-        offset_of!(NveDirectEvent, text)
-            == align_up(offset_of!(NveDirectEvent, height) + 4, align_of::<NveStrSlice>())
-    );
-    assert!(
-        offset_of!(NveDirectEvent, value)
-            == align_up(
-                offset_of!(NveDirectEvent, text) + size_of::<NveStrSlice>(),
-                align_of::<NveValue>()
-            )
-    );
-    assert!(
-        size_of::<NveDirectEvent>()
-            == offset_of!(NveDirectEvent, value) + size_of::<NveValue>()
-    );
-    assert!(
-        size_of::<NveDirectEvent>()
-            == if PTR_SIZE == 8 {
-                96
-            } else if align_of::<u64>() == 8 {
-                72
-            } else {
-                68
-            }
-    );
-    assert!(
-        align_of::<NveDirectEvent>()
-            == if align_of::<u64>() > PTR_ALIGN {
-                align_of::<u64>()
-            } else {
-                PTR_ALIGN
-            }
-    );
+    assert!(size_of::<RawEventBytes>() == 8);
+    assert!(align_of::<RawEventBytes>() == 4);
+    assert!(offset_of!(RawEventBytes, offset) == 0);
+    assert!(offset_of!(RawEventBytes, len) == 4);
 
-    assert!(offset_of!(NveEventBatch, ptr) == 0);
-    assert!(offset_of!(NveEventBatch, len) == PTR_SIZE);
-    assert!(offset_of!(NveEventBatch, _pad) == PTR_SIZE + 4);
+    assert!(size_of::<NveEvent>() == NVE_EVENT_SIZE);
+    assert!(align_of::<NveEvent>() == NVE_EVENT_ALIGN);
+    assert!(offset_of!(NveEvent, timestamp) == 0);
+    assert!(offset_of!(NveEvent, table) == 8);
+    assert!(offset_of!(NveEvent, surface) == 16);
+    assert!(offset_of!(NveEvent, node) == 20);
+    assert!(offset_of!(NveEvent, event) == 24);
+    assert!(offset_of!(NveEvent, flags) == 28);
+    assert!(offset_of!(NveEvent, payload) == 32);
+    assert!(offset_of!(NveEvent, bytes) == 56);
+
+    assert!(offset_of!(NveEventBatch, events) == 0);
+    assert!(offset_of!(NveEventBatch, bytes) == PTR_SIZE);
+    assert!(offset_of!(NveEventBatch, event_count) == 2 * PTR_SIZE);
+    assert!(offset_of!(NveEventBatch, bytes_len) == 2 * PTR_SIZE + 4);
     assert!(align_of::<NveEventBatch>() == PTR_ALIGN);
-    assert!(size_of::<NveEventBatch>() == PTR_SIZE + 8);
+    assert!(size_of::<NveEventBatch>() == 2 * PTR_SIZE + 8);
 
     assert!(offset_of!(NvePropEntry, field_id) == 0);
     assert!(offset_of!(NvePropEntry, _pad) == 2);
@@ -324,20 +303,13 @@ const _: () = {
     assert!(align_of::<NveMapEntry>() == 8);
     assert!(offset_of!(NveMapEntry, value) == 16);
 
-    assert!(size_of::<NveDirectEvent>() == 96);
-    assert!(align_of::<NveDirectEvent>() == 8);
-    assert!(offset_of!(NveDirectEvent, name) == 24);
-    assert!(offset_of!(NveDirectEvent, x) == 40);
-    assert!(offset_of!(NveDirectEvent, y) == 44);
-    assert!(offset_of!(NveDirectEvent, width) == 48);
-    assert!(offset_of!(NveDirectEvent, height) == 52);
-    assert!(offset_of!(NveDirectEvent, text) == 56);
-    assert!(offset_of!(NveDirectEvent, value) == 72);
-
-    assert!(size_of::<NveEventBatch>() == 16);
+    assert!(size_of::<NveEvent>() == 64);
+    assert!(align_of::<NveEvent>() == 64);
+    assert!(size_of::<NveEventBatch>() == 24);
     assert!(align_of::<NveEventBatch>() == 8);
-    assert!(offset_of!(NveEventBatch, len) == 8);
-    assert!(offset_of!(NveEventBatch, _pad) == 12);
+    assert!(offset_of!(NveEventBatch, bytes) == 8);
+    assert!(offset_of!(NveEventBatch, event_count) == 16);
+    assert!(offset_of!(NveEventBatch, bytes_len) == 20);
 
     assert!(size_of::<NvePropEntry>() == 32);
     assert!(align_of::<NvePropEntry>() == 8);

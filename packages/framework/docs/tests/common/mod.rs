@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use nve_abi::{
-    ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId,
-    pack_key_modifiers,
+    ColorRgba, EventBatchBuf, EventFlags, FrameId, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{Accessibility, DebugId, Link, TextContent, Visual};
@@ -382,48 +381,38 @@ impl DocsHarness {
     }
 
     pub fn press_id(&mut self, id: NodeId) {
-        let ts = self.next_ts();
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 8.0, y: 8.0 },
-        }]);
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, id, ts, 8.0, 8.0);
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "press on node {id} should be handled");
         self.render();
     }
 
     pub fn type_text(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_string()),
-        }]);
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(SurfaceId::ROOT, id, ts, value);
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "text change on '{tid}' should be handled");
         self.render();
     }
 
     pub fn keydown(&mut self, tid: &str, key: &str, meta: bool, ctrl: bool, shift: bool, alt: bool) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key: key.to_string(),
-                code: String::new(),
-                key_code: 0,
-                modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
-                is_composing: false,
-            },
-        }]);
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_key_down(
+            SurfaceId::ROOT,
+            id,
+            ts,
+            key,
+            "",
+            EventFlags::from_modifiers(meta, ctrl, shift, alt, false),
+            0,
+        );
+        let handled = self.surface.dispatch_events(batch.as_validated());
         assert!(handled, "keydown '{key}' on '{tid}' should be handled");
         self.render();
     }

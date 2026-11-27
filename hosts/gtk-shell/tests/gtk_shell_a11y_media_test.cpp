@@ -235,20 +235,27 @@ struct MockGtkA11yImeComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockGtkA11yImeComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
+    if (batch.events == nullptr) return 0u;
+    auto read_text = [&](const NveEvent& ev) -> std::string {
+      if (ev.bytes.len == 0u || batch.bytes == nullptr || ev.bytes.offset > batch.bytes_len ||
+          ev.bytes.len > batch.bytes_len - ev.bytes.offset) {
+        return {};
+      }
+      return std::string(
+          reinterpret_cast<const char*>(batch.bytes + ev.bytes.offset), ev.bytes.len);
+    };
     uint32_t dirty = 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.node == 5u && ev.table == NVE_TABLE_TEXT_INPUT &&
+          ev.event == NVE_TEXT_INPUT_EVENT_CHANGE) {
         ++self->text_change_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_text.assign(sv.data(), sv.size());
+        self->last_text = read_text(ev);
         dirty = 1u;
-      } else if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
-                 nve::str_slice_view(ev.name) == "onSubmit") {
+      } else if (ev.node == 5u && ev.table == NVE_TABLE_TEXT_INPUT &&
+                 ev.event == NVE_TEXT_INPUT_EVENT_SUBMIT) {
         ++self->submit_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_submit.assign(sv.data(), sv.size());
+        self->last_submit = read_text(ev);
       }
     }
     return dirty;
@@ -489,16 +496,17 @@ struct MockGtkImageScrollComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockGtkImageScrollComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+    if (batch.events == nullptr) return 0u;
+    for (uint32_t i = 0; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.table == NVE_TABLE_SCROLL && ev.event == NVE_SCROLL_EVENT_SCROLL) {
         ++self->scroll_events;
-        self->last_scroll_node = ev.node_id;
-        self->last_scroll_x = ev.x;
-        self->last_scroll_y = ev.y;
-        self->last_scroll_content_h = ev.height;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 7u) {
+        self->last_scroll_node = ev.node;
+        self->last_scroll_x = nve::event_payload_f32(ev, 0u);
+        self->last_scroll_y = nve::event_payload_f32(ev, 1u);
+        self->last_scroll_content_h = nve::event_payload_f32(ev, 3u);
+      } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+                 ev.node == 7u) {
         ++self->counter;
         return 1u;
       }

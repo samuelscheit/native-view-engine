@@ -12,8 +12,8 @@ use crate::session::*;
     feature = "scene-view"
 ))]
 use nve_abi::{
-    EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NveRenderNode, NveSceneRef,
-    PrimarySlot, ZIndex, NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
+    FrameId, InteractionEvent, NveRenderNode, NveSceneRef, PrimarySlot, TimestampUs, ZIndex,
+    NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
 };
 use nve_abi::{NodeId, SurfaceId};
 #[cfg(all(
@@ -77,21 +77,16 @@ pub(crate) fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<No
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
     let node_id = find_node_by_test_id(session.store(), test_id)
         .expect("expected mounted node with requested test_id");
-    let mask = session
+    let listens_press = session
         .store()
         .try_row::<Interaction>(node_id)
-        .map_or(0, |i| u64::from(i.event_mask()));
-    assert_ne!(
-        mask & EventMask::PRESS,
-        0,
-        "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
+        .is_some_and(|i| i.listeners().contains(InteractionEvent::Press));
+    assert!(
+        listens_press,
+        "node '{test_id}' (id={node_id}) should subscribe to InteractionEvent::Press"
     );
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id,
-        timestamp_us,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 16.0, y: 12.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, node_id, TimestampUs(timestamp_us), 16.0, 12.0);
     });
     session
         .pump_events()
@@ -156,7 +151,7 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
             rnode.is_interactive(),
             store
                 .try_row::<Interaction>(sid)
-                .is_some_and(|i| i.event_mask() != 0)
+                .is_some_and(|i| !i.listeners().is_empty())
         );
         assert_eq!(
             rnode.clips_bounds(),
@@ -504,12 +499,8 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 
     // 2. Board TextInput search + custom task create via `submit` (and empty submit is a safe no-op).
     let search_id = find_node_by_test_id(session.store(), "board-search-input").unwrap();
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: search_id,
-        timestamp_us: 1000,
-        kind: NativeEventKind::TextChange,
-        payload: EventPayload::Text("AppKit".into()),
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_text_change(SurfaceId::ROOT, search_id, TimestampUs(1000), "AppKit");
     });
     session.pump_events().unwrap().expect("search filter frame");
     let html_filtered = session.render_html();
@@ -518,30 +509,18 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     press_test_id(&mut session, "board-search-clear", 1500);
     assert!(session.render_html().contains("AET-101"));
 
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: ROOT_NODE_ID,
-        timestamp_us: 1600,
-        kind: NativeEventKind::Submit,
-        payload: EventPayload::Text(String::new()),
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_submit(SurfaceId::ROOT, ROOT_NODE_ID, TimestampUs(1600), "");
     });
     assert!(session.pump_events().unwrap().is_none());
 
     let new_task_id = find_node_by_test_id(session.store(), "board-new-task-input").unwrap();
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: new_task_id,
-        timestamp_us: 1700,
-        kind: NativeEventKind::TextChange,
-        payload: EventPayload::Text("Web Canvas Parity".into()),
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_text_change(SurfaceId::ROOT, new_task_id, TimestampUs(1700), "Web Canvas Parity");
     });
     session.pump_events().unwrap().expect("draft update");
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: new_task_id,
-        timestamp_us: 1800,
-        kind: NativeEventKind::Submit,
-        payload: EventPayload::Text("Web Canvas Parity".into()),
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_submit(SurfaceId::ROOT, new_task_id, TimestampUs(1800), "Web Canvas Parity");
     });
     session.pump_events().unwrap().expect("submit custom task");
     assert!(session.render_html().contains("Web Canvas Parity"));
@@ -556,12 +535,8 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(pal_html.contains("role=\"searchbox\""));
 
     let pal_in = find_node_by_test_id(session.store(), "palette-input").unwrap();
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: pal_in,
-        timestamp_us: 2000,
-        kind: NativeEventKind::TextChange,
-        payload: EventPayload::Text("Accent:".into()),
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_text_change(SurfaceId::ROOT, pal_in, TimestampUs(2000), "Accent:");
     });
     session.pump_events().unwrap().expect("palette filter");
     assert!(session.dispatch_keydown("ArrowDown", false, false).unwrap().is_some());
@@ -582,24 +557,23 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(html_islands.contains("Bus: 1 tx"));
     assert!(html_islands.contains("Claim | winner:"));
 
-    // 5. 100k Stream view jump #50k, #99,999, and NativeEventKind::Scroll.
+    // 5. 100k Stream view jump #50k, #99,999, and ScrollEvent::Scroll.
     press_test_id(&mut session, "nav-stream", 4000);
     press_test_id(&mut session, "stream-jump-50k", 4100);
     assert!(session.render_html().contains("STR-50000"));
     press_test_id(&mut session, "stream-jump-end", 4200);
     assert!(session.render_html().contains("STR-99999"));
     let stream_vp = find_node_by_test_id(session.store(), "stream-viewport").unwrap();
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: stream_vp,
-        timestamp_us: 4300,
-        kind: NativeEventKind::Scroll,
-        payload: EventPayload::Scroll {
-            x: 0.0,
-            y: 0.0,
-            content_width: 800.0,
-            content_height: 4_000_000.0,
-        },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_scroll(
+            SurfaceId::ROOT,
+            stream_vp,
+            TimestampUs(4300),
+            0.0,
+            0.0,
+            800.0,
+            4_000_000.0,
+        );
     });
     session.pump_events().unwrap().expect("scroll frame");
     let html_top = session.render_html();

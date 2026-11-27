@@ -1,12 +1,12 @@
 # Native View Engine — Web WASM Shell (`hosts/web-shell`)
 
-Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-backend-web` (`web-sys`) using the exact same `nve-abi` binary `CommandBuffer` and `NativeEvent` ring used by Skia and React Native Fabric.
+Mounts any `native-view-engine` Dioxus app directly into browser DOM via `nve-backend-web` (`web-sys`) using the exact same `nve-abi` binary `NVE2` frames and 64-byte `NveEvent` batches used by Skia and React Native Fabric.
 
 ## Architecture
 
 1. **`DioxusSurface`** (`nve_studio_workspace::create_surface(1)` by default, or `nve_example_kitchen_sink::create_surface(1)` via `?app=kitchen-sink`) reconciles `rsx!` into a batched binary `CommandBuffer`.
 2. **`WebBackend::mount_into(container)`** decodes the `CommandBuffer` and mutates real `web_sys::Element` nodes, applying Flexbox `LayoutProps` + `StyleProps` via `HtmlElement::style().set_css_text(...)`.
-3. **Interactive DOM Events**: `EventMask::PRESS` (`click`) and `EventMask::TEXT_CHANGE` (`input`) attach real `wasm_bindgen::closure::Closure` listeners that push `NativeEvent`s into a shared `Rc<RefCell<Vec<NativeEvent>>>` and trigger an immediate incremental re-render (`drain_events -> DioxusSurface::dispatch_events -> render_frame -> submit_recorded_frame`).
+3. **Interactive DOM Events**: Table-scoped `EventSet` listeners (`InteractionEvent::Press`, `TextInputEvent::Change`, etc.) drive lazy `0 -> 1` / `1 -> 0` root DOM delegation via `SurfaceEventTracker`, pushing 64-byte `NveEvent`s into a shared `Rc<RefCell<EventBatchBuf>>` and triggering an immediate incremental re-render (`drain_events -> DioxusSurface::dispatch_events -> commit_to`).
 4. **2-Tier Hot Reload (`nve dev`, `dev` bundle only)**: `?dev` connects a browser `WebSocket` to `ws://<host>:8089` (`?ws=<url>` picks another endpoint) consuming binary `NVP1` `nve_engine::HotPatchMsg` frames (text frames are ignored):
    - `template_patch`: Applies Tier-1 live text/style updates directly (<50ms, zero page reload).
    - `dylib_reload`: Logs generation & build time and cleanly reloads the page.

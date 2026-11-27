@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use nve_abi::{ColorRgba, FrameId, NodeId, NveDirectEvent, SurfaceId, ROOT_NODE_ID};
+use nve_abi::{ColorRgba, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs, ROOT_NODE_ID};
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceError, GpuSwapchain,
 };
@@ -325,18 +325,17 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// Dispatches the current logical viewport dimensions to the mounted app as a `Layout` event
     /// so responsive layouts (e.g. mobile portrait vs. desktop) react immediately.
     pub fn notify_viewport_resize(&mut self) -> bool {
-        let event = [NveDirectEvent::layout(
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_layout(
             self.surface_id,
             ROOT_NODE_ID,
-            now_us(),
+            TimestampUs(now_us()),
             0.0,
             0.0,
             self.viewport.width,
             self.viewport.height,
-        )];
-        // SAFETY: `NveDirectEvent::layout` contains only scalar geometry and no borrowed pointers.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
-        self.app.dispatch_events(batch)
+        );
+        self.app.dispatch_events(batch.as_validated())
     }
 
     /// Presents the current retained `DisplayList` directly through a hardware or offscreen
@@ -368,7 +367,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     /// Scrolls the `ScrollView` under logical `(x, y)` by `(delta_x, delta_y)` (positive `delta_y`
-    /// scrolls down), clamps to content bounds, dispatches `NativeEventKind::Scroll` into the app,
+    /// scrolls down), clamps to content bounds, dispatches `ScrollEvent::Scroll` into the app,
     /// and re-renders / re-rasterizes when either the app handled the event or the scroll offset
     /// changed.
     pub fn handle_scroll_logical(
@@ -394,18 +393,17 @@ impl<A: DesktopApp> DesktopSession<A> {
             .scroll_content_size(store, scroll_node_id)
             .unwrap_or((self.viewport.width, self.viewport.height));
 
-        let event = [NveDirectEvent::scroll(
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_scroll(
             self.surface_id,
             scroll_node_id,
-            now_us(),
+            TimestampUs(now_us()),
             new_x,
             new_y,
             content_width,
             content_height,
-        )];
-        // SAFETY: `NveDirectEvent::scroll` contains only scalar geometry and no borrowed pointers.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
-        let handled = self.app.dispatch_events(batch);
+        );
+        let handled = self.app.dispatch_events(batch.as_validated());
         if handled {
             self.render_and_rasterize()?;
         } else if offset_changed {

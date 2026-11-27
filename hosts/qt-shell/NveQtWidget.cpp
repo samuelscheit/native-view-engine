@@ -65,26 +65,11 @@ void NveQtWidget::Impl::handleScrollFromWidget(uint32_t node_id, QScrollArea* sc
   (void)dispatchScroll(node_id, ox, oy, cw, ch);
 }
 
-NveDirectEvent NveQtWidget::Impl::makeBaseEvent(
-    uint32_t node_id,
-    nve::EventKind kind,
-    uint8_t payload_tag) const {
-  NveDirectEvent ev{};
-  ev.surface_id = surface_id_;
-  ev.node_id = node_id;
-  ev.timestamp_us = nve::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(kind);
-  ev.payload_tag = payload_tag;
-  ev.value = nve::make_null_value();
-  return ev;
-}
-
-uint32_t NveQtWidget::Impl::dispatchSingleDirectEvent(const NveDirectEvent& ev) {
+uint32_t NveQtWidget::Impl::dispatchEventBatch(NveEventBatch batch) {
   if (!session_.is_valid() && !session_.is_paired()) {
     return 0;
   }
-  const uint32_t dirty =
-      session_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
+  const uint32_t dirty = session_.dispatch_events(batch, /*auto_render=*/true);
   if (dirty != 0 && !session_.is_paired()) {
     syncViews(/*check_raw_props=*/false);
   }
@@ -154,32 +139,43 @@ uint32_t NveQtWidget::Impl::dispatchScroll(
     float offset_y,
     float content_width,
     float content_height) {
-  NveDirectEvent ev = makeBaseEvent(node_id, nve::EventKind::Scroll, 2u);
-  ev.x = offset_x;
-  ev.y = offset_y;
-  ev.width = content_width;
-  ev.height = content_height;
-  return dispatchSingleDirectEvent(ev);
+  const NveEvent ev = nve::make_scroll_event(
+      surface_id_, node_id, nve::current_timestamp_us(), offset_x, offset_y, content_width,
+      content_height);
+  return dispatchEventBatch(nve::make_single_event_batch(ev));
 }
 
 uint32_t NveQtWidget::Impl::dispatchTextChange(uint32_t node_id, std::string_view text) {
-  NveDirectEvent ev = makeBaseEvent(node_id, nve::EventKind::TextChange, 3u);
-  ev.text = nve::make_str_slice(text);
-  return dispatchSingleDirectEvent(ev);
+  const NveEvent ev = nve::make_text_event(
+      surface_id_,
+      node_id,
+      nve::current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_CHANGE,
+      static_cast<uint32_t>(text.size()));
+  return dispatchEventBatch(nve::make_single_event_batch(
+      ev,
+      text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()),
+      static_cast<uint32_t>(text.size())));
 }
 
 uint32_t NveQtWidget::Impl::dispatchSubmit(uint32_t node_id, std::string_view text) {
-  NveDirectEvent ev = makeBaseEvent(node_id, nve::EventKind::Custom, 5u);
-  ev.name = nve::make_str_slice("onSubmit");
-  ev.text = nve::make_str_slice(text);
-  ev.value = nve::make_str_value(text);
-  return dispatchSingleDirectEvent(ev);
+  const NveEvent ev = nve::make_text_event(
+      surface_id_,
+      node_id,
+      nve::current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_SUBMIT,
+      static_cast<uint32_t>(text.size()));
+  return dispatchEventBatch(nve::make_single_event_batch(
+      ev,
+      text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()),
+      static_cast<uint32_t>(text.size())));
 }
 
 uint32_t NveQtWidget::Impl::dispatchFocus(uint32_t node_id, bool focused) {
-  NveDirectEvent ev =
-      makeBaseEvent(node_id, focused ? nve::EventKind::Focus : nve::EventKind::Blur, 0u);
-  return dispatchSingleDirectEvent(ev);
+  const uint64_t ts = nve::current_timestamp_us();
+  const NveEvent ev = focused ? nve::make_focus_event(surface_id_, node_id, ts)
+                              : nve::make_blur_event(surface_id_, node_id, ts);
+  return dispatchEventBatch(nve::make_single_event_batch(ev));
 }
 
 // -----------------------------------------------------------------------------

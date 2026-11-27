@@ -9,8 +9,8 @@
 //!   `schema_hash`, `create`, `destroy`, `alloc_bytes`, `free_bytes`, and direct `extern "C"`
 //!   trampolines (`build_<snake>_vtable::<Impl>()`)
 //! - For `HybridView`: typed `<Name>Props`, zero-copy `decode_props_direct(&[NveMapEntry])`,
-//!   typed event payload structs, zero-copy `NveDirectEvent` emitters, and compact binary
-//!   `NveBinValue` encoders (`encode_<event>_bin`).
+//!   typed event payload structs, uniform 64-byte `EventBatchBuf` emitters, and compact binary
+//!   `NveBinValue` encoders (`encode_bin`).
 
 mod codec_helpers;
 mod types_emitter;
@@ -63,9 +63,9 @@ pub fn generate_hybrid_rust(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     const NVE_ABI_IMPORTS: &[&str] = &[
         "BinValueView",
         "DecodeError",
+        "EventBatchBuf",
         "NveAppHandle",
         "NveBufferSlice",
-        "NveDirectEvent",
         "NveMapEntry",
         "NveMapRef",
         "NveStrSlice",
@@ -76,7 +76,7 @@ pub fn generate_hybrid_rust(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     let used_imports: Vec<&str> = NVE_ABI_IMPORTS
         .iter()
         .copied()
-        .filter(|sym| body.contains(sym))
+        .filter(|sym| contains_rust_ident(&body, sym))
         .collect();
     if !used_imports.is_empty() {
         writeln!(out, "use nve_abi::{{\n    {},\n}};", used_imports.join(", "));
@@ -290,5 +290,21 @@ fn emit_doc_comments(out: &mut CodeWriter, indent: &str, doc: Option<&str>) {
             writeln!(out, "{indent}/// {}", sanitize_single_line_comment(line));
         }
     }
+}
+
+fn contains_rust_ident(haystack: &str, ident: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(ident) {
+        let abs = start + pos;
+        let end = abs + ident.len();
+        let before_ok = abs == 0 || !(bytes[abs - 1].is_ascii_alphanumeric() || bytes[abs - 1] == b'_');
+        let after_ok = end == bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
 }
 

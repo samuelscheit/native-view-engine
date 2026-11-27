@@ -155,7 +155,7 @@ class NativeHostSession {
         ++paired_frame_count_;
         last_stats = stats;
         const NveBufferSlice ev = nve_fabric_host_drain_events(paired_host_);
-        if (ev.ptr != nullptr && ev.len > 4u) {
+        if (ev.ptr != nullptr && ev.len > wire::kEventWireHeaderSize) {
           (void)pair_client_->send_events(std::span<const uint8_t>(ev.ptr, ev.len));
         }
       }
@@ -166,9 +166,9 @@ class NativeHostSession {
     return applied;
   }
 
-  /// Stream a raw binary `EventRing` batch upstream to the paired host (`InputEvents = 11`).
+  /// Stream a raw binary `NVEV` v2 event batch upstream to the paired host (`InputEvents = 11`).
   bool send_paired_event_ring(NveBufferSlice events, std::string* out_error = nullptr) {
-    if (!is_paired() || events.ptr == nullptr || events.len < 4u) {
+    if (!is_paired() || events.ptr == nullptr || events.len < wire::kEventWireHeaderSize) {
       return false;
     }
     return pair_client_->send_events(std::span<const uint8_t>(events.ptr, events.len), out_error);
@@ -392,16 +392,9 @@ class NativeHostSession {
 
   uint32_t dispatch_press(uint32_t node_id, float x, float y, bool auto_render = true) {
     if (is_valid()) {
-      NveDirectEvent ev{};
-      ev.surface_id = config_.surface_id;
-      ev.node_id = node_id;
-      ev.timestamp_us = current_timestamp_us();
-      ev.kind = static_cast<uint8_t>(EventKind::Press);
-      ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-      ev.x = x;
-      ev.y = y;
-      ev.value = make_null_value();
-      return bridge_->dispatch_events(NveEventBatch{&ev, 1u, 0u}, auto_render);
+      const NveEvent ev =
+          make_press_event(config_.surface_id, node_id, current_timestamp_us(), x, y);
+      return bridge_->dispatch_events(make_single_event_batch(ev), auto_render);
     }
     if (is_paired()) {
       fabric_host_enqueue_press(paired_host_, node_id, current_timestamp_us(), x, y);
@@ -415,12 +408,12 @@ class NativeHostSession {
     if (is_valid()) {
       return bridge_->dispatch_events(batch, auto_render);
     }
-    if (is_paired() && batch.ptr != nullptr && batch.len > 0u) {
+    if (is_paired() && batch.events != nullptr && batch.event_count > 0u) {
       std::vector<uint8_t> ring;
       if (!encode_direct_event_batch(batch, ring)) {
         return 0u;
       }
-      return pair_client_->send_events(ring) ? batch.len : 0u;
+      return pair_client_->send_events(ring) ? batch.event_count : 0u;
     }
     return 0;
   }

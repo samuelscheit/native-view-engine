@@ -9,7 +9,8 @@ use nve_abi::schema::{
     NveEnumSchema, NveSchema, NveStructSchema, NveUnionSchema,
 };
 use nve_abi::{
-    NativeEventKind, NveAbi, NveBufferSlice, NveNodeMeta, NveRenderNode, NveSceneView, NveValueData,
+    InteractionEvent, NveAbi, NveBufferSlice, NveEvent, NveNodeMeta, NveRenderNode, NveSceneView,
+    NveValueData,
 };
 
 /// Custom aligned POD struct exercising all `#[nve_abi(...)]` struct & field options.
@@ -89,16 +90,23 @@ fn derive_nve_abi_handles_downstream_struct_union_and_signed_enum() {
 fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     let core = core_abi_descriptor();
     assert_eq!(core.namespace, Some("NveCoreAbi"));
-    assert_eq!(core.consts.len(), 13);
-    assert_eq!(core.aliases.len(), 14);
+    assert_eq!(core.consts.len(), 26);
+    assert_eq!(core.aliases.len(), 15);
     assert_eq!(core.aliases[0].name, "NveNodeId");
     assert_eq!(core.aliases[1].name, "NveSurfaceId");
-    assert_eq!(core.aliases[4].name, "NveDurationUs");
-    assert_eq!(core.aliases[9].name, "NveInterfaceId");
-    assert_eq!(core.enums.len(), 4);
-    assert_eq!(core.records.len(), 17);
+    assert_eq!(core.aliases[3].name, "NveTableKey");
+    assert_eq!(core.aliases[5].name, "NveDurationUs");
+    assert_eq!(core.aliases[10].name, "NveInterfaceId");
+    assert_eq!(core.enums.len(), 6);
+    assert_eq!(core.records.len(), 18);
     assert_eq!(core.modules.len(), 5);
     assert_eq!(core.c_functions.len(), 5);
+
+    let ev_schema = <NveEvent as NveStructSchema>::SCHEMA;
+    assert_eq!(ev_schema.size, 64);
+    assert_eq!(ev_schema.align, 64);
+    assert_eq!(ev_schema.explicit_align, Some(64));
+    assert_eq!(ev_schema.fields.len(), 8);
 
     // Union NveValueData stays in exact declaration slot 4 between NveValueMap and NveValue
     assert!(matches!(
@@ -155,7 +163,7 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
         AbiItemDescriptor::Union(<NveValueData as NveUnionSchema>::SCHEMA)
     );
     assert_eq!(
-        <NativeEventKind as NveSchema>::ITEM,
-        AbiItemDescriptor::Enum(<NativeEventKind as NveEnumSchema>::SCHEMA)
+        <InteractionEvent as NveSchema>::ITEM,
+        AbiItemDescriptor::Enum(<InteractionEvent as NveEnumSchema>::SCHEMA)
     );
 }

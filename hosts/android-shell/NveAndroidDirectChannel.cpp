@@ -8,38 +8,9 @@ namespace nve::android_internal {
 
 namespace {
 
-/// Minimum valid `EventRing` wire frame is the 4-byte little-endian `event_count` header.
-constexpr size_t kMinEventRingBytes = 4u;
-constexpr size_t kEventHeaderBytes = 18u;
+/// Minimum valid `NVEV` v2 wire frame is the 14-byte header.
+constexpr size_t kMinEventRingBytes = nve::wire::kEventWireHeaderSize;
 constexpr size_t kStackEventCapacity = 32u;
-
-inline bool read_u16_le(const uint8_t* ptr, size_t len, size_t& pos, uint16_t& out) noexcept {
-  if (pos > len || len - pos < 2u) return false;
-  std::memcpy(&out, ptr + pos, sizeof(uint16_t));
-  pos += 2u;
-  return true;
-}
-
-inline bool read_u32_le(const uint8_t* ptr, size_t len, size_t& pos, uint32_t& out) noexcept {
-  if (pos > len || len - pos < 4u) return false;
-  std::memcpy(&out, ptr + pos, sizeof(uint32_t));
-  pos += 4u;
-  return true;
-}
-
-inline bool read_u64_le(const uint8_t* ptr, size_t len, size_t& pos, uint64_t& out) noexcept {
-  if (pos > len || len - pos < 8u) return false;
-  std::memcpy(&out, ptr + pos, sizeof(uint64_t));
-  pos += 8u;
-  return true;
-}
-
-inline bool read_f32_le(const uint8_t* ptr, size_t len, size_t& pos, float& out) noexcept {
-  if (pos > len || len - pos < 4u) return false;
-  std::memcpy(&out, ptr + pos, sizeof(float));
-  pos += 4u;
-  return true;
-}
 
 bool convert_bin_value(const nve::BinValueView& view, nve::BumpArena& arena, NveValue& out) noexcept {
   switch (view.tag()) {
@@ -140,131 +111,58 @@ jboolean dispatch_event_ring_slice(
   if (!is_session_active(session) || ptr == nullptr || len < kMinEventRingBytes) {
     return JNI_FALSE;
   }
-  size_t pos = 0u;
-  uint32_t count = 0u;
-  if (!read_u32_le(ptr, len, pos, count)) {
+  if (std::memcmp(ptr, nve::wire::kEventWireMagicBytes.data(), 4u) != 0) {
+    return JNI_FALSE;
+  }
+  const uint16_t version = nve::wire::read_le_u16(ptr + 4u);
+  if (version != nve::wire::kEventWireVersion) {
+    return JNI_FALSE;
+  }
+  const uint32_t count = nve::wire::read_le_u32(ptr + 6u);
+  const uint32_t bytes_len = nve::wire::read_le_u32(ptr + 10u);
+  const size_t body_len = len - nve::wire::kEventWireHeaderSize;
+  if (static_cast<size_t>(count) > body_len / nve::wire::kEventRecordSize) {
+    return JNI_FALSE;
+  }
+  const size_t records_bytes = static_cast<size_t>(count) * nve::wire::kEventRecordSize;
+  if (body_len - records_bytes != static_cast<size_t>(bytes_len)) {
     return JNI_FALSE;
   }
   if (count == 0u) {
-    return pos == len ? JNI_TRUE : JNI_FALSE;
-  }
-  if (static_cast<size_t>(count) > (len - pos) / kEventHeaderBytes) {
-    return JNI_FALSE;
+    return JNI_TRUE;
   }
 
-  std::array<NveDirectEvent, kStackEventCapacity> stack_events{};
-  std::vector<NveDirectEvent> heap_events;
-  NveDirectEvent* events = stack_events.data();
+  std::array<NveEvent, kStackEventCapacity> stack_events{};
+  std::vector<NveEvent> heap_events;
+  NveEvent* events = stack_events.data();
   if (count > kStackEventCapacity) {
     heap_events.resize(count);
     events = heap_events.data();
   }
 
-  session->props_arena.reset();
+  const uint8_t* rec_base = ptr + nve::wire::kEventWireHeaderSize;
+  const uint8_t* arena_ptr = bytes_len > 0u ? (rec_base + records_bytes) : nullptr;
   for (uint32_t i = 0u; i < count; ++i) {
-    NveDirectEvent ev{};
-    if (!read_u32_le(ptr, len, pos, ev.surface_id) ||
-        !read_u32_le(ptr, len, pos, ev.node_id) ||
-        !read_u64_le(ptr, len, pos, ev.timestamp_us) ||
-        len - pos < 2u) {
-      return JNI_FALSE;
+    const uint8_t* rec = rec_base + static_cast<size_t>(i) * nve::wire::kEventRecordSize;
+    NveEvent ev{};
+    ev.timestamp = nve::wire::read_le_u64(rec + 0u);
+    ev.table = nve::wire::read_le_u64(rec + 8u);
+    ev.surface = nve::wire::read_le_u32(rec + 16u);
+    ev.node = nve::wire::read_le_u32(rec + 20u);
+    ev.event = nve::wire::read_le_u32(rec + 24u);
+    ev.flags = nve::wire::read_le_u32(rec + 28u);
+    for (size_t p = 0u; p < 6u; ++p) {
+      ev.payload[p] = nve::wire::read_le_u32(rec + 32u + p * 4u);
     }
-    ev.kind = ptr[pos++];
-    ev.payload_tag = ptr[pos++];
-    ev.value = nve::make_null_value();
-
-    switch (ev.payload_tag) {
-      case NVE_EVENT_PAYLOAD_EMPTY:
-        break;
-      case NVE_EVENT_PAYLOAD_POINT:
-        if (!read_f32_le(ptr, len, pos, ev.x) || !read_f32_le(ptr, len, pos, ev.y)) {
-          return JNI_FALSE;
-        }
-        break;
-      case NVE_EVENT_PAYLOAD_SCROLL:
-      case NVE_EVENT_PAYLOAD_LAYOUT:
-        if (!read_f32_le(ptr, len, pos, ev.x) ||
-            !read_f32_le(ptr, len, pos, ev.y) ||
-            !read_f32_le(ptr, len, pos, ev.width) ||
-            !read_f32_le(ptr, len, pos, ev.height)) {
-          return JNI_FALSE;
-        }
-        break;
-      case NVE_EVENT_PAYLOAD_TEXT: {
-        uint32_t tlen = 0u;
-        if (!read_u32_le(ptr, len, pos, tlen) || len - pos < tlen) {
-          return JNI_FALSE;
-        }
-        ev.text = NveStrSlice{tlen == 0u ? nullptr : ptr + pos, tlen};
-        pos += tlen;
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_CUSTOM: {
-        uint16_t nlen = 0u;
-        if (!read_u16_le(ptr, len, pos, nlen) || len - pos < nlen) {
-          return JNI_FALSE;
-        }
-        ev.name = NveStrSlice{nlen == 0u ? nullptr : ptr + pos, nlen};
-        pos += nlen;
-        uint32_t dlen = 0u;
-        if (!read_u32_le(ptr, len, pos, dlen) || len - pos < dlen) {
-          return JNI_FALSE;
-        }
-        const uint8_t* data_ptr = dlen == 0u ? nullptr : ptr + pos;
-        pos += dlen;
-        if (dlen > 0u) {
-          if (const auto parsed = nve::BinValueView::parse(data_ptr, dlen)) {
-            if (!convert_bin_value(*parsed, session->props_arena, ev.value)) {
-              ev.value = nve::make_bytes_value(NveBufferSlice{data_ptr, dlen});
-            }
-          } else {
-            ev.value = nve::make_bytes_value(NveBufferSlice{data_ptr, dlen});
-          }
-        }
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_KEY: {
-        uint16_t klen = 0u;
-        if (!read_u16_le(ptr, len, pos, klen) || len - pos < klen) return JNI_FALSE;
-        ev.text = NveStrSlice{klen == 0u ? nullptr : ptr + pos, klen};
-        pos += klen;
-        uint16_t clen = 0u;
-        if (!read_u16_le(ptr, len, pos, clen) || len - pos < clen) return JNI_FALSE;
-        ev.name = NveStrSlice{clen == 0u ? nullptr : ptr + pos, clen};
-        pos += clen;
-        if (len - pos < 6u) return JNI_FALSE;
-        ev.modifiers = ptr[pos++];
-        if (!read_u32_le(ptr, len, pos, ev.key_code)) return JNI_FALSE;
-        ev.event_flags = ptr[pos++] != 0u ? NVE_EVENT_FLAG_COMPOSING : 0u;
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_POINTER: {
-        if (!read_f32_le(ptr, len, pos, ev.x) || !read_f32_le(ptr, len, pos, ev.y) ||
-            len - pos < 2u) {
-          return JNI_FALSE;
-        }
-        ev.event_flags = ptr[pos++];
-        ev.modifiers = ptr[pos++];
-        break;
-      }
-      case NVE_EVENT_PAYLOAD_WHEEL: {
-        if (!read_f32_le(ptr, len, pos, ev.x) || !read_f32_le(ptr, len, pos, ev.y) ||
-            len - pos < 1u) {
-          return JNI_FALSE;
-        }
-        ev.modifiers = ptr[pos++];
-        break;
-      }
-      default:
-        return JNI_FALSE;
+    ev.bytes.offset = nve::wire::read_le_u32(rec + 56u);
+    ev.bytes.len = nve::wire::read_le_u32(rec + 60u);
+    if (ev.bytes.offset > bytes_len || ev.bytes.len > bytes_len - ev.bytes.offset) {
+      return JNI_FALSE;
     }
     events[i] = ev;
   }
-  if (pos != len) {
-    return JNI_FALSE;
-  }
 
-  const NveEventBatch batch{events, count, 0u};
+  const NveEventBatch batch{events, arena_ptr, count, bytes_len};
   if (session->session.bridge() != nullptr) {
     (void)session->session.dispatch_events(batch, /*auto_render=*/true);
     (void)session->session.drain_events();

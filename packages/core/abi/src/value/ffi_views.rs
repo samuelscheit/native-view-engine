@@ -1,10 +1,5 @@
-use crate::{NativeEventKind, NodeId, PropFieldId, SurfaceId};
+use crate::PropFieldId;
 
-use super::ffi_events::{
-    NveDirectEvent, NveEventBatch, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
-    NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
-    NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
-};
 use super::ffi_types::{
     guarded_slice, NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveValue, NveValueTag,
 };
@@ -172,108 +167,6 @@ impl<'a> NveMapRef<'a> {
             // SAFETY: `NveMapRef` guarantees entry key pointers remain valid for `'a`.
             Some((unsafe { entry.key.as_str() }.ok()?, NveValueRef { raw: &entry.value }))
         })
-    }
-}
-
-/// Zero-copy borrowed view of a single `NveDirectEvent`.
-#[derive(Clone, Copy)]
-pub struct NveDirectEventRef<'a> {
-    raw: &'a NveDirectEvent,
-}
-
-impl<'a> NveDirectEventRef<'a> {
-    /// # Safety
-    /// All pointers inside `raw` must remain valid and immutable for `'a`.
-    #[inline] pub const unsafe fn from_raw(raw: &'a NveDirectEvent) -> Self { Self { raw } }
-    #[inline] pub const fn raw(&self) -> &'a NveDirectEvent { self.raw }
-    #[inline] pub const fn surface_id(&self) -> SurfaceId { SurfaceId::from_raw_or_null(self.raw.surface_id.raw()) }
-    #[inline] pub const fn node_id(&self) -> NodeId { NodeId::from_raw_or_null(self.raw.node_id.raw()) }
-    #[inline] pub const fn timestamp_us(&self) -> u64 { self.raw.timestamp_us }
-    #[inline] pub const fn kind(&self) -> Option<NativeEventKind> { NativeEventKind::from_u8_opt(self.raw.kind) }
-    #[inline] pub const fn payload_tag(&self) -> u8 { self.raw.payload_tag }
-    #[inline] pub const fn modifiers(&self) -> u8 { self.raw.modifiers }
-    #[inline] pub const fn event_flags(&self) -> u8 { self.raw.event_flags }
-    #[inline] pub const fn key_code(&self) -> u32 { self.raw.key_code }
-    #[inline] pub const fn meta(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_META) != 0 }
-    #[inline] pub const fn ctrl(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_CTRL) != 0 }
-    #[inline] pub const fn shift(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_SHIFT) != 0 }
-    #[inline] pub const fn alt(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_ALT) != 0 }
-    #[inline] pub const fn repeat(&self) -> bool { (self.raw.modifiers & NVE_KEY_MOD_REPEAT) != 0 }
-    #[inline] pub const fn has_primary_modifier(&self) -> bool { self.meta() || self.ctrl() }
-    #[inline] pub const fn pointer_button(&self) -> u8 { self.raw.event_flags & NVE_EVENT_FLAG_BUTTON_MASK }
-    #[inline] pub const fn is_capture(&self) -> bool { (self.raw.event_flags & NVE_EVENT_FLAG_CAPTURE) != 0 }
-    #[inline] pub const fn is_composing(&self) -> bool { (self.raw.event_flags & NVE_EVENT_FLAG_COMPOSING) != 0 }
-    #[inline] pub fn name(&self) -> &'a str {
-        // SAFETY: `NveDirectEventRef` guarantees `raw.name` pointer remains valid for `'a`.
-        unsafe { self.raw.name.as_str() }.unwrap_or("")
-    }
-    #[inline] pub fn code(&self) -> &'a str { self.name() }
-    #[inline] pub const fn x(&self) -> f32 { self.raw.x }
-    #[inline] pub const fn y(&self) -> f32 { self.raw.y }
-    #[inline] pub const fn delta_x(&self) -> f32 { self.raw.x }
-    #[inline] pub const fn delta_y(&self) -> f32 { self.raw.y }
-    #[inline] pub const fn width(&self) -> f32 { self.raw.width }
-    #[inline] pub const fn height(&self) -> f32 { self.raw.height }
-    #[inline] pub fn text(&self) -> &'a str {
-        // SAFETY: `NveDirectEventRef` guarantees `raw.text` pointer remains valid for `'a`.
-        unsafe { self.raw.text.as_str() }.unwrap_or("")
-    }
-    #[inline] pub fn key(&self) -> &'a str { self.text() }
-    #[inline] pub const fn value(&self) -> NveValueRef<'a> { NveValueRef { raw: &self.raw.value } }
-    /// Table identity key for `NativeEventKind::TableEvent`.
-    #[inline]
-    pub fn table_key(&self) -> crate::Key64 {
-        crate::Key64(self.value().as_i64().unwrap_or(0) as u64)
-    }
-    /// Table-scoped event ID for `NativeEventKind::TableEvent`.
-    #[inline]
-    pub const fn table_event_id(&self) -> u32 {
-        self.raw.key_code
-    }
-    /// Raw payload bytes for `NativeEventKind::TableEvent`.
-    #[inline]
-    pub fn table_payload(&self) -> &'a [u8] {
-        // SAFETY: `NveDirectEventRef` guarantees `raw.text` pointer remains valid for `'a`.
-        unsafe { self.raw.text.as_bytes() }
-    }
-}
-
-/// Zero-copy borrowed batch of `NveDirectEvent`s passed into `NveApp::dispatch_events`.
-#[derive(Clone, Copy)]
-pub struct NveEventBatchRef<'a> {
-    events: &'a [NveDirectEvent],
-}
-
-impl<'a> NveEventBatchRef<'a> {
-    pub const EMPTY: Self = Self { events: &[] };
-
-    /// # Safety
-    /// Caller must ensure `batch.ptr` and all nested pointers are valid for `'a`.
-    #[inline] pub unsafe fn try_from_raw(batch: NveEventBatch) -> Option<Self> {
-        // SAFETY: Caller guarantees `batch.ptr` and nested pointers are valid for `'a`.
-        Some(Self { events: unsafe { batch.try_as_slice() }? })
-    }
-    /// # Safety
-    /// Caller must ensure `batch.ptr` and all nested pointers are valid for `'a`.
-    #[inline] pub unsafe fn from_raw(batch: NveEventBatch) -> Self {
-        // SAFETY: Caller guarantees `batch.ptr` and nested pointers are valid for `'a`.
-        unsafe { Self::try_from_raw(batch) }.unwrap_or(Self::EMPTY)
-    }
-    /// # Safety
-    /// Caller must ensure all nested pointers inside `events` are valid for `'a`.
-    #[inline] pub const unsafe fn from_slice(events: &'a [NveDirectEvent]) -> Self { Self { events } }
-    /// Returns the underlying raw `NveEventBatch` descriptor for forwarding across C FFI boundaries.
-    #[doc(hidden)]
-    #[inline] pub fn as_raw_batch(&self) -> NveEventBatch {
-        NveEventBatch::from_slice(self.events)
-    }
-    #[inline] pub const fn len(&self) -> usize { self.events.len() }
-    #[inline] pub const fn is_empty(&self) -> bool { self.events.is_empty() }
-    #[inline] pub fn get(&self, index: usize) -> Option<NveDirectEventRef<'a>> {
-        self.events.get(index).map(|raw| NveDirectEventRef { raw })
-    }
-    #[inline] pub fn iter(&self) -> impl ExactSizeIterator<Item = NveDirectEventRef<'a>> + 'a {
-        self.events.iter().map(|raw| NveDirectEventRef { raw })
     }
 }
 

@@ -187,33 +187,47 @@ int32_t NveQtQuickItem::renderFrame() {
 
 uint32_t NveQtQuickItem::dispatchDirectEvents(NveEventBatch batch) { return impl_->dispatchBatch(batch); }
 uint32_t NveQtQuickItem::dispatchPress(uint32_t nodeId, float x, float y) {
-  NveDirectEvent ev = impl_->makeEvent(nodeId, nve::EventKind::Press, 1u);
-  ev.x = x; ev.y = y;
-  return impl_->dispatchBatch(NveEventBatch{&ev, 1u, 0u});
+  const NveEvent ev =
+      nve::make_press_event(impl_->surface_id_, nodeId, nve::current_timestamp_us(), x, y);
+  return impl_->dispatchBatch(nve::make_single_event_batch(ev));
 }
 uint32_t NveQtQuickItem::dispatchPress(uint32_t nodeId, const QPointF& p) {
   return dispatchPress(nodeId, static_cast<float>(p.x()), static_cast<float>(p.y()));
 }
 uint32_t NveQtQuickItem::dispatchScroll(uint32_t nodeId, float ox, float oy, float cw, float ch) {
-  NveDirectEvent ev = impl_->makeEvent(nodeId, nve::EventKind::Scroll, 2u);
-  ev.x = ox; ev.y = oy; ev.width = cw; ev.height = ch;
-  return impl_->dispatchBatch(NveEventBatch{&ev, 1u, 0u});
+  const NveEvent ev = nve::make_scroll_event(
+      impl_->surface_id_, nodeId, nve::current_timestamp_us(), ox, oy, cw, ch);
+  return impl_->dispatchBatch(nve::make_single_event_batch(ev));
 }
 uint32_t NveQtQuickItem::dispatchTextChange(uint32_t nodeId, std::string_view text) {
-  NveDirectEvent ev = impl_->makeEvent(nodeId, nve::EventKind::TextChange, 3u);
-  ev.text = nve::make_str_slice(text);
-  return impl_->dispatchBatch(NveEventBatch{&ev, 1u, 0u});
+  const NveEvent ev = nve::make_text_event(
+      impl_->surface_id_,
+      nodeId,
+      nve::current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_CHANGE,
+      static_cast<uint32_t>(text.size()));
+  return impl_->dispatchBatch(nve::make_single_event_batch(
+      ev,
+      text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()),
+      static_cast<uint32_t>(text.size())));
 }
 uint32_t NveQtQuickItem::dispatchSubmit(uint32_t nodeId, std::string_view text) {
-  NveDirectEvent ev = impl_->makeEvent(nodeId, nve::EventKind::Custom, 5u);
-  ev.name = nve::make_str_slice("onSubmit");
-  ev.text = nve::make_str_slice(text);
-  ev.value = nve::make_str_value(text);
-  return impl_->dispatchBatch(NveEventBatch{&ev, 1u, 0u});
+  const NveEvent ev = nve::make_text_event(
+      impl_->surface_id_,
+      nodeId,
+      nve::current_timestamp_us(),
+      NVE_TEXT_INPUT_EVENT_SUBMIT,
+      static_cast<uint32_t>(text.size()));
+  return impl_->dispatchBatch(nve::make_single_event_batch(
+      ev,
+      text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()),
+      static_cast<uint32_t>(text.size())));
 }
 uint32_t NveQtQuickItem::dispatchFocus(uint32_t nodeId, bool focused) {
-  NveDirectEvent ev = impl_->makeEvent(nodeId, focused ? nve::EventKind::Focus : nve::EventKind::Blur, 0u);
-  return impl_->dispatchBatch(NveEventBatch{&ev, 1u, 0u});
+  const uint64_t ts = nve::current_timestamp_us();
+  const NveEvent ev = focused ? nve::make_focus_event(impl_->surface_id_, nodeId, ts)
+                              : nve::make_blur_event(impl_->surface_id_, nodeId, ts);
+  return impl_->dispatchBatch(nve::make_single_event_batch(ev));
 }
 
 std::optional<NodeSemantics> NveQtQuickItem::accessibilityInfoForNodeId(uint32_t nodeId) const {

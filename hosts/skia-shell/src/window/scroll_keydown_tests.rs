@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{
+    ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, ScrollEvent, SurfaceId, ValidatedEvents,
+};
 use nve_components::tables::{
     register_core_tables, FlexDirection, Interaction, Layout, Overflow, Scroll, Visual,
 };
@@ -53,11 +55,10 @@ impl DesktopApp for MockScrollAndKeyApp {
             tx.set(NodeId::new(2, 0), Layout::HEIGHT, Length::points(100.0));
             tx.set(NodeId::new(2, 0), Layout::FLEX_DIRECTION, FlexDirection::Column);
             tx.set(NodeId::new(2, 0), Visual::OVERFLOW_Y, Overflow::Scroll);
-            tx.set(
-                NodeId::new(2, 0),
-                Interaction::EVENT_MASK,
-                (EventMask::SCROLL | EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
-            );
+            tx.edit::<Interaction>(NodeId::new(2, 0))
+                .listeners(EventSet::one(InteractionEvent::KeyDown));
+            tx.edit::<Scroll>(NodeId::new(2, 0))
+                .listeners(EventSet::one(ScrollEvent::Scroll));
             for id in [10u32, 11, 12] {
                 let nid = NodeId::new(id, 0);
                 let _ = tx.create_at(nid);
@@ -91,37 +92,33 @@ impl DesktopApp for MockScrollAndKeyApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            match (ev.kind(), ev.payload_tag()) {
-                (Some(NativeEventKind::Scroll), 2) => {
-                    self.scroll_events.push((
-                        ev.node_id(),
-                        ev.x(),
-                        ev.y(),
-                        ev.width(),
-                        ev.height(),
-                    ));
-                    handled = true;
+            if ev.scroll_event() == Some(ScrollEvent::Scroll) {
+                self.scroll_events.push((
+                    ev.node(),
+                    ev.x(),
+                    ev.y(),
+                    ev.width(),
+                    ev.height(),
+                ));
+                handled = true;
+            } else if ev.interaction() == Some(InteractionEvent::KeyDown) {
+                let shorthand = format_keydown_shorthand(
+                    ev.key(),
+                    ev.meta(),
+                    ev.ctrl(),
+                    ev.shift(),
+                    ev.alt(),
+                );
+                if ev.meta() && ev.key() == "k" {
+                    self.palette_open = !self.palette_open;
+                } else if ev.key() == "Escape" {
+                    self.palette_open = false;
                 }
-                (Some(NativeEventKind::KeyDown), 6) => {
-                    let shorthand = format_keydown_shorthand(
-                        ev.key(),
-                        ev.meta(),
-                        ev.ctrl(),
-                        ev.shift(),
-                        ev.alt(),
-                    );
-                    if ev.meta() && ev.key() == "k" {
-                        self.palette_open = !self.palette_open;
-                    } else if ev.key() == "Escape" {
-                        self.palette_open = false;
-                    }
-                    self.keydown_payloads.push((ev.node_id(), shorthand));
-                    handled = true;
-                }
-                _ => {}
+                self.keydown_payloads.push((ev.node(), shorthand));
+                handled = true;
             }
         }
         handled

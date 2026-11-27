@@ -1,7 +1,9 @@
 //! End-to-end tests for `DioxusSurface` directly over `NodeStore`, `TypedStyle`, `TableAttr`
 //! extensibility, surgical `HotPatchMsg`, direct event dispatch, and `NVE2` wire round-trip.
 
-use nve_abi::{ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
+use nve_abi::{
+    ColorRgba, EventBatchBuf, FrameId, InteractionEvent, SurfaceId, TimestampUs,
+};
 use nve_components::tables::{
     Accessibility, AriaRole, DebugId, Interaction, Layout, TextContent, TextInput, Typography,
     Visual,
@@ -100,10 +102,16 @@ fn dioxus_surface_nodestore_typed_style_table_attr_events_and_nve2_roundtrip() {
         surface.store().try_row::<Accessibility>(btn).unwrap().role(),
         Some(AriaRole::Button)
     );
-    assert_ne!(
-        surface.store().try_row::<Interaction>(btn).unwrap().event_mask(),
-        0
+    assert!(
+        surface
+            .store()
+            .try_row::<Interaction>(btn)
+            .unwrap()
+            .listeners()
+            .contains(InteractionEvent::Press)
     );
+    let btn_view = ComponentView::<Interaction>::from_store(surface.store(), btn).unwrap();
+    assert!(btn_view.is_listening(InteractionEvent::Press));
     let ti = surface.store().try_row::<TextInput>(input).unwrap();
     assert_eq!(ti.value(), "Ada");
     assert_eq!(ti.placeholder(), "Your name");
@@ -124,13 +132,9 @@ fn dioxus_surface_nodestore_typed_style_table_attr_events_and_nve2_roundtrip() {
     );
 
     // Dispatch a Press event on the button and verify reactive update + NVE2 delta.
-    let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: btn,
-        timestamp_us: 100,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
-    }]);
+    let mut ev_buf = EventBatchBuf::new();
+    ev_buf.push_press(SurfaceId::ROOT, btn, TimestampUs(100), 10.0, 10.0);
+    let handled = surface.dispatch_events(ev_buf.as_validated());
     assert!(handled);
 
     surface.render_nve2(FrameId(2), &mut wire_bytes);

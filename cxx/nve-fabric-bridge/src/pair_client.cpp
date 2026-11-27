@@ -208,16 +208,26 @@ bool parse_pair_endpoint(
 
 bool encode_direct_event_batch(NveEventBatch batch, std::vector<uint8_t>& out_ring) {
   out_ring.clear();
-  if (batch.len == 0u || batch.ptr == nullptr) return false;
-  EventRingWriter enc;
-  enc.clear();
-  for (uint32_t i = 0; i < batch.len; ++i) {
-    if (!enc.push_direct_event(batch.ptr[i])) {
-      enc.push_empty(batch.ptr[i].surface_id, batch.ptr[i].node_id, batch.ptr[i].timestamp_us, batch.ptr[i].kind);
-    }
+  if (batch.event_count == 0u || batch.events == nullptr ||
+      (batch.bytes_len > 0u && batch.bytes == nullptr)) {
+    return false;
   }
-  out_ring = enc.finalize();
-  return !out_ring.empty();
+  out_ring.reserve(
+      wire::kEventWireHeaderSize +
+      static_cast<size_t>(batch.event_count) * wire::kEventRecordSize +
+      static_cast<size_t>(batch.bytes_len));
+  out_ring.insert(
+      out_ring.end(), wire::kEventWireMagicBytes.begin(), wire::kEventWireMagicBytes.end());
+  wire::append_le_u16(out_ring, wire::kEventWireVersion);
+  wire::append_le_u32(out_ring, batch.event_count);
+  wire::append_le_u32(out_ring, batch.bytes_len);
+  for (uint32_t i = 0u; i < batch.event_count; ++i) {
+    append_event_le(out_ring, batch.events[i]);
+  }
+  if (batch.bytes_len > 0u) {
+    out_ring.insert(out_ring.end(), batch.bytes, batch.bytes + batch.bytes_len);
+  }
+  return true;
 }
 
 // =============================================================================

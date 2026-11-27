@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use common::{find_in_store, live_node_ids, register_studio_tables, write_ppm, MultiBackendHarness};
 use nve_abi::{
-    ColorRgba, FrameId, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveValue, SurfaceId,
+    ColorRgba, EventBatchBuf, FrameId, NveGestureDisposition, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveValue, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::Visual;
@@ -355,14 +355,15 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
         let nid = find_in_store(host.store(), tid)
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).unwrap();
-        let ev = [NveDirectEvent::press(
+        let mut ev = EventBatchBuf::new();
+        ev.push_press(
             SurfaceId::ROOT,
             nid,
-            fid * 16_000,
+            TimestampUs(fid * 16_000),
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
-        )];
-        assert!(inst.dispatch_events(&ev));
+        );
+        assert!(inst.dispatch_events(ev.as_validated()));
         let frame = inst.render(FrameId(fid));
         host.submit_nve2_frame(frame).unwrap();
     };

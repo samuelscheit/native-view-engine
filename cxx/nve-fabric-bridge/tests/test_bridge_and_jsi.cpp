@@ -138,16 +138,8 @@ void test_rn_component_bridge() {
   assert(emitted_via_cb.size() == 1);
 
   // 2. Direct press dispatch -> outbound onIncrement direct event
-  NveDirectEvent press_ev{};
-  press_ev.surface_id = 42;
-  press_ev.node_id = 2;
-  press_ev.timestamp_us = 99999;
-  press_ev.kind = NVE_EVENT_PRESS;
-  press_ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-  press_ev.x = 15.0f;
-  press_ev.y = 25.0f;
-  press_ev.value = nve::make_null_value();
-  assert(bridge.dispatch_events(NveEventBatch{&press_ev, 1u, 0u}, /*auto_render=*/true) == 1);
+  const NveEvent press_ev = nve::make_press_event(42, 2, 99999, 15.0f, 25.0f);
+  assert(bridge.dispatch_events(nve::make_single_event_batch(press_ev), /*auto_render=*/true) == 1);
   assert(bridge.frame_count() == 2);
 
   auto evs2 = bridge.drain_emitted_events();
@@ -158,15 +150,9 @@ void test_rn_component_bridge() {
   assert(emitted_via_cb.size() == 2);
 
   // 2b. Direct custom event dispatch via NveRnComponentBridge::dispatch_events
-  NveDirectEvent direct_ev{};
-  direct_ev.surface_id = 42;
-  direct_ev.node_id = 2;
-  direct_ev.timestamp_us = 100500;
-  direct_ev.kind = NVE_EVENT_CUSTOM;
-  direct_ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-  direct_ev.name = nve::make_str_slice("onDirectPinch");
-  direct_ev.value = nve::make_f64_value(2.5);
-  assert(bridge.dispatch_events(NveEventBatch{&direct_ev, 1u, 0u}, /*auto_render=*/true) == 1);
+  nve::EventBatchBuilder custom_batch;
+  assert(custom_batch.push_custom_value(42, 2, 100500, "onDirectPinch", nve::make_f64_value(2.5)));
+  assert(bridge.dispatch_events(custom_batch.as_batch(), /*auto_render=*/true) == 1);
   assert(mock_app->direct_event_calls == 2);
   assert(mock_app->last_direct_event_name == "onDirectPinch");
   assert(bridge.frame_count() == 3);
@@ -211,51 +197,33 @@ void test_mock_jsi_recorder_runtime() {
     root.setProperty(rt, "nested", child);
     child.setProperty(rt, "lateKey", "lateVal");
 
-    rt.record_direct_event(1, 77, 123456, "onSvgLoad", facebook::jsi::Value(rt, root));
+    assert(rt.record_direct_event(1, 77, 123456, "onSvgLoad", facebook::jsi::Value(rt, root)));
 
     bool sink_called = false;
     const uint32_t rc = rt.dispatch_direct([&](NveEventBatch batch) -> uint32_t {
       sink_called = true;
-      assert(batch.len == 1);
-      const NveDirectEvent& ev = batch.ptr[0];
-      assert(ev.surface_id == 1 && ev.node_id == 77 && ev.timestamp_us == 123456);
-      assert(ev.kind == 8 && ev.payload_tag == 5);
-      assert(nve::str_slice_view(ev.name) == "onSvgLoad");
-      assert(ev.value.tag == NVE_VAL_MAP);
-
-      auto find_field = [&](std::string_view key) -> const NveValue* {
-        for (size_t i = 0; i < ev.value.data.map_val.len; ++i) {
-          if (nve::str_slice_view(ev.value.data.map_val.ptr[i].key) == key) {
-            return &ev.value.data.map_val.ptr[i].value;
-          }
-        }
-        return nullptr;
-      };
-
-      const NveValue* f_event = find_field("event");
-      assert(f_event && f_event->tag == NVE_VAL_STR &&
-             nve::str_slice_view(f_event->data.str_val) == "onSvgLoad");
-      const NveValue* f_width = find_field("width");
-      assert(f_width && f_width->tag == NVE_VAL_F64 &&
-             std::fabs(f_width->data.f64_val - 128.5) < 1e-9);
-      const NveValue* f_anim = find_field("animated");
-      assert(f_anim && f_anim->tag == NVE_VAL_BOOL && f_anim->data.bool_val == 1);
-      const NveValue* f_tag = find_field("tag");
-      assert(f_tag && f_tag->tag == NVE_VAL_NULL);
-      const NveValue* f_big = find_field("big");
-      assert(f_big && f_big->tag == NVE_VAL_I64 &&
-             f_big->data.i64_val == -9007199254740993LL);
-      const NveValue* f_blob = find_field("blob");
-      assert(f_blob && f_blob->tag == NVE_VAL_BYTES && f_blob->data.bytes_val.len == 4 &&
-             f_blob->data.bytes_val.ptr[0] == 0xCA && f_blob->data.bytes_val.ptr[3] == 0xBE);
-      const NveValue* f_pts = find_field("points");
-      assert(f_pts && f_pts->tag == NVE_VAL_ARRAY && f_pts->data.array_val.len == 2);
-      assert(std::fabs(f_pts->data.array_val.ptr[0].data.f64_val - 10.0) < 1e-9);
-      assert(std::fabs(f_pts->data.array_val.ptr[1].data.f64_val - 20.0) < 1e-9);
-      const NveValue* f_nested = find_field("nested");
-      assert(f_nested && f_nested->tag == NVE_VAL_MAP && f_nested->data.map_val.len == 1);
-      assert(nve::str_slice_view(f_nested->data.map_val.ptr[0].key) == "lateKey");
-      assert(nve::str_slice_view(f_nested->data.map_val.ptr[0].value.data.str_val) == "lateVal");
+      assert(batch.event_count == 1);
+      const NveEvent& ev = batch.events[0];
+      assert(ev.surface == 1 && ev.node == 77 && ev.timestamp == 123456);
+      assert(ev.table == NVE_TABLE_CUSTOM && (ev.flags & NVE_EVENT_FLAG_CUSTOM_NAMED) != 0u);
+      std::string_view cname;
+      std::span<const uint8_t> cpayload;
+      assert(nve::event_custom_parts(ev, batch.bytes, batch.bytes_len, cname, cpayload));
+      assert(cname == "onSvgLoad");
+      const auto view = nve::BinValueView::parse(cpayload.data(), cpayload.size());
+      assert(view.has_value() && view->tag() == NVE_VAL_MAP);
+      assert(view->map_get("event")->as_str() == "onSvgLoad");
+      assert(std::fabs(*view->map_get("width")->as_f64() - 128.5) < 1e-9);
+      assert(view->map_get("animated")->as_bool() == true);
+      assert(view->map_get("tag")->is_null());
+      assert(view->map_get("big")->as_i64() == -9007199254740993LL);
+      const auto blob = view->map_get("blob")->as_bytes();
+      assert(blob.has_value() && blob->len == 4 && blob->ptr[0] == 0xCA && blob->ptr[3] == 0xBE);
+      const auto pts = view->map_get("points");
+      assert(pts.has_value() && pts->array_len() == 2);
+      assert(std::fabs(*pts->array_at(0)->as_f64() - 10.0) < 1e-9);
+      assert(std::fabs(*pts->array_at(1)->as_f64() - 20.0) < 1e-9);
+      assert(view->map_get("nested")->map_get("lateKey")->as_str() == "lateVal");
       return 1u;
     });
     assert(sink_called && rc == 1u);
@@ -316,9 +284,9 @@ void test_mock_jsi_recorder_runtime() {
       v.setValueAtIndex(rt, 0, 1.5);
       v.setValueAtIndex(rt, 1, -2.5);
       ev.setProperty(rt, "velocity", std::move(v));
-      rt.record_direct_event(1, static_cast<uint32_t>(10 + k), static_cast<uint64_t>(frame), "onGestureUpdate", facebook::jsi::Value(rt, ev));
+      assert(rt.record_direct_event(1, static_cast<uint32_t>(10 + k), static_cast<uint64_t>(frame), "onGestureUpdate", facebook::jsi::Value(rt, ev)));
     }
-    assert(rt.direct_event_batch().len == 8);
+    assert(rt.direct_event_batch().event_count == 8);
     if (frame == 0) {
       slabs_after_warmup = rt.arena().slab_count();
     } else {

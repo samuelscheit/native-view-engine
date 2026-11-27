@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use libloading::Library;
 use nve_abi::{
-    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
-    NveGestureDisposition, NveGetInterfaceFn, NveHostApi, NveHostCallbacks, NveIntrinsicSize,
-    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT,
+    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
+    NveGetInterfaceFn, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi, NveMapEntry,
+    NveSizeConstraints, NveSurfaceApi, SurfaceId, ValidatedEvents, NVE_IFACE_COMPONENT,
     NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 
@@ -210,15 +210,8 @@ impl HotAppInstance {
         unsafe { (self.surface.render)(self.handle, frame_id).as_slice() }
     }
 
-    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
-        // SAFETY: `self.handle` is live and `events` slice stays valid for the duration of the FFI call.
-        unsafe {
-            (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events)) != 0
-        }
-    }
-
-    /// Forwards a borrowed [`nve_abi::NveEventBatchRef`] directly across the C FFI boundary.
-    pub fn dispatch_event_batch(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    /// Forwards a validated zero-copy event batch directly across the C FFI boundary.
+    pub fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         // SAFETY: `self.handle` is live and `events` stays valid for the synchronous FFI call.
         unsafe { (self.surface.dispatch_events)(self.handle, events.as_raw_batch()) != 0 }
     }
@@ -256,14 +249,14 @@ impl HotAppInstance {
         }
     }
 
-    /// Drains outbound component events as a canonicalizing borrowed `NveEventBatchRef` without copying.
-    pub fn drain_emitted_events(&mut self) -> nve_abi::NveEventBatchRef<'_> {
+    /// Drains outbound component events as an ingress-validated zero-copy [`ValidatedEvents`].
+    pub fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         match self.component {
             // SAFETY: `self.handle` is live; returned batch borrows from the module's buffer until next `&mut self` call.
             Some(api) => unsafe {
-                nve_abi::NveEventBatchRef::from_raw((api.drain_emitted_events)(self.handle))
+                ValidatedEvents::from_raw((api.drain_emitted_events)(self.handle))
             },
-            None => nve_abi::NveEventBatchRef::EMPTY,
+            None => ValidatedEvents::EMPTY,
         }
     }
 

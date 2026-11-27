@@ -178,6 +178,18 @@ fn derive_nve_table_rejects_magic_sentinels_split_bools_and_inherited_conflicts(
             "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] get: u32 }",
             "collides with generated `*Mut::get()`",
         ),
+        (
+            "#[nve_table(name = \"t.a\", events = MyEv)] struct T { #[effect(paint)] listeners: u32 }",
+            "collides with generated `listeners()`",
+        ),
+        (
+            "#[nve_table(name = \"t.a\", events = MyEv)] struct T { #[effect(paint)] listen: bool }",
+            "collides with generated `listen()`",
+        ),
+        (
+            "#[nve_table(name = \"t.a\", events = MyEv)] struct T { #[effect(paint)] unlisten: bool }",
+            "collides with generated `unlisten()`",
+        ),
     ];
     for (src, expected) in cases {
         let err = derive_tokens(&lex(src)).expect_err(&format!("expected error for: {src}"));

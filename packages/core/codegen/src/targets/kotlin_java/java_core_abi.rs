@@ -3,6 +3,7 @@ use crate::schema::hybrid::core_abi::{
     compute_scene_schema_hash, core_abi_spec, format_c_enum_prefix, format_enum_value,
     scene_abi_spec, snake_to_screaming, ResolvedSceneAbi, HOST_STATUS_VARIANTS,
 };
+use crate::schema::hybrid::HybridType;
 use crate::writer::CodeWriter;
 
 // ============================================================================
@@ -47,10 +48,12 @@ pub fn generate_java_core_abi() -> String {
 
     for c in &spec.consts {
         let jname = c.name.strip_prefix("NVE_").unwrap_or(&c.name);
-        if c.hex {
-            writeln!(out, "    public static final int {jname} = 0x{:X};", c.value);
-        } else {
-            writeln!(out, "    public static final int {jname} = {};", c.value);
+        let is_u64 = c.ty == HybridType::U64;
+        match (c.hex, is_u64) {
+            (true, true) => writeln!(out, "    public static final long {jname} = 0x{:016X}L;", c.value),
+            (false, true) => writeln!(out, "    public static final long {jname} = {}L;", c.value),
+            (true, false) => writeln!(out, "    public static final int {jname} = 0x{:X};", c.value),
+            (false, false) => writeln!(out, "    public static final int {jname} = {};", c.value),
         }
     }
     writeln!(out);

@@ -136,13 +136,9 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
     // Defer action, click RowAction (which applies optimistic patch AND unmounts itself!).
     transport.inner.lock().unwrap().defer_actions = true;
     let btn = find_by_test_id(surface.store(), "row-opt-btn");
-    assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: btn,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Press,
-        payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
-    }]));
+    let mut batch = nve_abi::EventBatchBuf::new();
+    batch.push_press(SurfaceId::ROOT, btn, nve_abi::TimestampUs::ZERO, 1.0, 1.0);
+    assert!(surface.dispatch_events(batch.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert!(
@@ -284,13 +280,9 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
     // Click KillProvider: applies optimistic patch, spawns task, and IMMEDIATELY unmounts provider
     // before the spawned future's first poll -> pre-spawn OptimisticDropGuard MUST roll back!
     let btn = find_by_test_id(surface.store(), "unmount-provider-btn");
-    assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: btn,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Press,
-        payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
-    }]));
+    let mut batch = nve_abi::EventBatchBuf::new();
+    batch.push_press(SurfaceId::ROOT, btn, nve_abi::TimestampUs::ZERO, 1.0, 1.0);
+    assert!(surface.dispatch_events(batch.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     assert_eq!(bridge.live_signal_count(), 0);
 
@@ -380,13 +372,9 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
 
     // 1. Trigger UseAction::run() and immediately unmount RunRow before first task poll.
     let run_btn = find_by_test_id(surface.store(), "run-and-unmount-btn");
-    assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: run_btn,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Press,
-        payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
-    }]));
+    let mut batch = nve_abi::EventBatchBuf::new();
+    batch.push_press(SurfaceId::ROOT, run_btn, nve_abi::TimestampUs::ZERO, 1.0, 1.0);
+    assert!(surface.dispatch_events(batch.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().action_calls, 1);
@@ -395,22 +383,10 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
     // 2. Submit ActionForm and unmount FormRow in the SAME event batch before first task poll.
     let form_id = find_by_test_id(surface.store(), "unmount-action-form");
     let hide_btn = find_by_test_id(surface.store(), "hide-form-btn");
-    assert!(surface.dispatch_events(&[
-        nve_abi::NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: form_id,
-            timestamp_us: 0,
-            kind: nve_abi::NativeEventKind::Submit,
-            payload: nve_abi::EventPayload::Text(String::new()),
-        },
-        nve_abi::NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: hide_btn,
-            timestamp_us: 0,
-            kind: nve_abi::NativeEventKind::Press,
-            payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
-        },
-    ]));
+    batch.clear();
+    batch.push_submit(SurfaceId::ROOT, form_id, nve_abi::TimestampUs::ZERO, "");
+    batch.push_press(SurfaceId::ROOT, hide_btn, nve_abi::TimestampUs::ZERO, 1.0, 1.0);
+    assert!(surface.dispatch_events(batch.as_validated()));
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().action_calls, 2);

@@ -23,9 +23,10 @@ pub mod typed_style;
 mod writer;
 
 pub use elements::{
-    CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent, KeyEventData,
-    PressEvent, PressEventData, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData,
-    TableEvent, TableEventData, TextEvent, TextEventData,
+    ComponentView, CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent,
+    KeyEventData, NveEventData, PressEvent, PressEventData, RawNveEvent, ScrollEvent,
+    ScrollEventData, SubmitEvent, SubmitEventData, TableEvent, TableEventData, TextEvent,
+    TextEventData,
 };
 pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
@@ -112,9 +113,10 @@ pub type CustomEvent = dioxus_core::Event<CustomEventData>;
 pub mod prelude {
     pub use crate::dioxus_elements;
     pub use crate::elements::{
-        events::*, CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent,
-        KeyEventData, PressEvent, PressEventData, ScrollEvent, ScrollEventData, SubmitEvent,
-        SubmitEventData, TableEvent, TableEventData, TextEvent, TextEventData,
+        events::*, ComponentView, CompositionEvent, CompositionEventData, FocusEvent,
+        FocusEventData, KeyEvent, KeyEventData, NveEventData, PressEvent, PressEventData,
+        RawNveEvent, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData, TableEvent,
+        TableEventData, TextEvent, TextEventData,
     };
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,

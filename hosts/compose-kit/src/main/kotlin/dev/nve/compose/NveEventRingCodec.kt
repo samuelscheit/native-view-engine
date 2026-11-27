@@ -1,6 +1,5 @@
 package dev.nve.compose
 
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.CharacterCodingException
@@ -8,7 +7,7 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 
 /**
- * Native event discriminator matching `NativeEventKind` in `packages/core/abi/src/events.rs`.
+ * Native event kind bridged over the NVE `NVEV` v2 wire format (`packages/core/abi/src/event/`).
  */
 enum class NveEventKind(val code: Int) {
     PRESS(1),
@@ -44,8 +43,8 @@ enum class NveGestureDisposition(val code: Int) {
 }
 
 /**
- * Strictly typed binary payload carried by an [NveEvent] in `EventRing` wire format
- * (`packages/core/abi/src/events.rs`), with binary FFI conversion.
+ * Strictly typed binary payload carried by an [NveEvent] in `NVEV` v2 wire format
+ * (`packages/core/abi/src/event/`).
  */
 sealed interface NveEventPayload {
     val tag: Int
@@ -107,18 +106,20 @@ sealed interface NveEventPayload {
 }
 
 /**
- * Strict validation error thrown when decoding malformed or truncated `EventRing` buffers.
+ * Strict validation error thrown when decoding malformed or truncated `NVEV` v2 buffers.
  */
 sealed class NveEventRingException(message: String) : IllegalArgumentException(message) {
-    class Truncated(detail: String) : NveEventRingException("Truncated EventRing: $detail")
-    class InvalidKind(val code: Int) : NveEventRingException("Invalid EventRing event kind: $code")
-    class InvalidPayloadTag(val tag: Int) : NveEventRingException("Invalid EventRing payload tag: $tag")
-    class InvalidUtf8(field: String) : NveEventRingException("Invalid UTF-8 in EventRing $field")
-    class TrailingBytes(val remaining: Int) : NveEventRingException("EventRing has $remaining trailing bytes")
+    class Truncated(detail: String) : NveEventRingException("Truncated NVEV v2 buffer: $detail")
+    class InvalidHeader(detail: String) : NveEventRingException("Invalid NVEV v2 header: $detail")
+    class InvalidTable(val table: Long, val eventId: Int) :
+        NveEventRingException("Invalid NVEV v2 table=0x${table.toULong().toString(16)} event=$eventId")
+    class InvalidBounds(detail: String) : NveEventRingException("Invalid NVEV v2 arena bounds: $detail")
+    class InvalidUtf8(field: String) : NveEventRingException("Invalid UTF-8 in NVEV v2 $field")
+    class TrailingBytes(val remaining: Int) : NveEventRingException("NVEV v2 buffer has $remaining trailing bytes")
 }
 
 /**
- * Binary event crossing the host <-> Rust `EventRing` boundary (`packages/core/abi/src/events.rs`).
+ * Binary event crossing the host <-> Rust `NVEV` v2 boundary (`packages/core/abi/src/event/`).
  */
 data class NveEvent(
     val surfaceId: Int,
@@ -139,19 +140,35 @@ data class NveEvent(
 }
 
 /**
- * Binary `EventRing` encoder & decoder matching `packages/core/abi/src/events.rs` byte-for-byte.
+ * Binary `NVEV` v2 event-batch encoder & decoder matching `packages/core/abi/src/event/wire.rs`
+ * byte-for-byte.
  *
  * Wire layout (all integers little-endian):
- * - Header: `u32 event_count`
- * - Per event (18-byte fixed header + variable payload):
- *   - `u32 surface_id`
- *   - `u32 node_id`
- *   - `u64 timestamp_us`
- *   - `u8 kind` (1..8)
- *   - `u8 payload_tag` (0=Empty, 1=Point, 2=Scroll, 3=Text, 4=Layout, 5=Custom)
+ * - 14-byte header: `magic[4] = "NVEV"`, `u16 version = 2`, `u32 event_count`, `u32 bytes_len`
+ * - `event_count * 64` bytes: uniform `NveEvent` records
+ * - `bytes_len` bytes: contiguous payload byte arena
  */
 object NveEventRingCodec {
-    const val EVENT_HEADER_BYTES: Int = 18
+    const val WIRE_HEADER_BYTES: Int = 14
+    const val EVENT_RECORD_BYTES: Int = 64
+    const val WIRE_VERSION: Int = 2
+
+    val TABLE_INTERACTION: Long = 0x7F37FFD2CBF7C243uL.toLong()
+    val TABLE_TEXT_INPUT: Long = 0xED1E95C480AF810DuL.toLong()
+    val TABLE_SCROLL: Long = 0xBEF99001B482274AuL.toLong()
+    val TABLE_LAYOUT: Long = 0xDB14E892BE101C33uL.toLong()
+    val TABLE_CUSTOM: Long = 0x67CD76B58B37B058uL.toLong()
+
+    const val INTERACTION_PRESS: Int = 0
+    const val INTERACTION_LONG_PRESS: Int = 1
+    const val INTERACTION_FOCUS: Int = 2
+    const val INTERACTION_BLUR: Int = 3
+    const val TEXT_INPUT_CHANGE: Int = 0
+    const val SCROLL_SCROLL: Int = 0
+    const val LAYOUT_LAYOUT: Int = 0
+
+    const val FLAG_UTF8_BYTES: Int = 0x10000
+    const val FLAG_CUSTOM_NAMED: Int = 0x40000
 
     fun press(
         surfaceId: Int,
@@ -243,24 +260,32 @@ object NveEventRingCodec {
     fun encodeSingle(event: NveEvent): ByteArray = encode(listOf(event))
 
     /**
-     * Zero-allocation `EventRing` encoder writing little-endian bytes directly into [out]
+     * Zero-allocation `NVEV` v2 encoder writing little-endian bytes directly into [out]
      * (typically a native-owned `DirectByteBuffer` from [NveBridgeBackend.getEventScratchBuffer]).
      *
      * On success, flips [out] (`position = 0`, `limit = written`) and returns the exact byte count
      * written (byte-for-byte identical to [encode]).
-     * Returns `-1` (leaving [out] cleared) if [out] is read-only or lacks capacity for the batch,
-     * allowing the caller to fall back cleanly to [encode] (`ByteArray`).
+     * Returns `-1` (leaving [out] cleared) if [out] is read-only or lacks capacity for the batch.
      */
     fun encodeInto(events: List<NveEvent>, out: ByteBuffer): Int {
-        if (out.isReadOnly || out.capacity() < 4) return -1
+        var arenaLen = 0L
+        for (i in events.indices) {
+            arenaLen += measureEventArenaBytes(events[i])
+        }
+        val totalLen = WIRE_HEADER_BYTES.toLong() + events.size.toLong() * EVENT_RECORD_BYTES + arenaLen
+        if (out.isReadOnly || totalLen > out.capacity().toLong()) {
+            if (!out.isReadOnly) out.clear()
+            return -1
+        }
         out.clear()
         out.order(ByteOrder.LITTLE_ENDIAN)
-        out.putInt(events.size)
+        writeHeader(out, events.size, arenaLen.toInt())
+        var arenaOff = 0
         for (i in events.indices) {
-            if (!writeEventInto(events[i], out)) {
-                out.clear()
-                return -1
-            }
+            arenaOff += writeRecordInto(events[i], arenaOff, out)
+        }
+        for (i in events.indices) {
+            writeArenaInto(events[i], out)
         }
         val written = out.position()
         out.flip()
@@ -269,77 +294,134 @@ object NveEventRingCodec {
 
     /**
      * Zero-allocation single-event encoder writing directly into [out] without wrapping in a [List].
-     * Returns bytes written (`>= 22`) or `-1` if [out] lacks capacity.
+     * Returns bytes written (`>= 78`) or `-1` if [out] lacks capacity.
      */
     fun encodeSingleInto(event: NveEvent, out: ByteBuffer): Int {
-        if (out.isReadOnly || out.capacity() < 4 + EVENT_HEADER_BYTES) return -1
-        out.clear()
-        out.order(ByteOrder.LITTLE_ENDIAN)
-        out.putInt(1)
-        if (!writeEventInto(event, out)) {
-            out.clear()
+        val arenaLen = measureEventArenaBytes(event)
+        val totalLen = WIRE_HEADER_BYTES.toLong() + EVENT_RECORD_BYTES + arenaLen
+        if (out.isReadOnly || totalLen > out.capacity().toLong()) {
+            if (!out.isReadOnly) out.clear()
             return -1
         }
+        out.clear()
+        out.order(ByteOrder.LITTLE_ENDIAN)
+        writeHeader(out, 1, arenaLen.toInt())
+        writeRecordInto(event, 0, out)
+        writeArenaInto(event, out)
         val written = out.position()
         out.flip()
         return written
     }
 
-    private fun writeEventInto(event: NveEvent, out: ByteBuffer): Boolean {
-        if (out.remaining() < EVENT_HEADER_BYTES) return false
-        out.putInt(event.surfaceId)
-        out.putInt(event.nodeId)
-        out.putLong(event.timestampUs)
-        out.put((event.kind.code and 0xFF).toByte())
-        val payload = event.payload
-        out.put((payload.tag and 0xFF).toByte())
-        return when (payload) {
-            NveEventPayload.Empty -> true
+    private fun measureEventArenaBytes(event: NveEvent): Long = when (val payload = event.payload) {
+        is NveEventPayload.Text -> utf8ByteLength(payload.text).toLong()
+        is NveEventPayload.Custom -> {
+            val nameLen = utf8ByteLength(payload.name)
+            require(nameLen <= 0xFFFF) {
+                "Custom event name exceeds uint16 length limit: $nameLen"
+            }
+            nameLen.toLong() + payload.data.size.toLong()
+        }
+        else -> 0L
+    }
+
+    private fun writeHeader(out: ByteBuffer, eventCount: Int, bytesLen: Int) {
+        out.put(0x4E)
+        out.put(0x56)
+        out.put(0x45)
+        out.put(0x56)
+        out.putShort(WIRE_VERSION.toShort())
+        out.putInt(eventCount)
+        out.putInt(bytesLen)
+    }
+
+    private fun writeRecordInto(event: NveEvent, arenaOff: Int, out: ByteBuffer): Int {
+        var table = when (event.kind) {
+            NveEventKind.PRESS, NveEventKind.LONG_PRESS, NveEventKind.FOCUS, NveEventKind.BLUR -> TABLE_INTERACTION
+            NveEventKind.TEXT_CHANGE -> TABLE_TEXT_INPUT
+            NveEventKind.SCROLL -> TABLE_SCROLL
+            NveEventKind.LAYOUT -> TABLE_LAYOUT
+            NveEventKind.CUSTOM -> TABLE_CUSTOM
+        }
+        var eventId = when (event.kind) {
+            NveEventKind.PRESS -> INTERACTION_PRESS
+            NveEventKind.LONG_PRESS -> INTERACTION_LONG_PRESS
+            NveEventKind.FOCUS -> INTERACTION_FOCUS
+            NveEventKind.BLUR -> INTERACTION_BLUR
+            NveEventKind.TEXT_CHANGE -> TEXT_INPUT_CHANGE
+            NveEventKind.SCROLL -> SCROLL_SCROLL
+            NveEventKind.LAYOUT -> LAYOUT_LAYOUT
+            NveEventKind.CUSTOM -> 0
+        }
+        var flags = 0
+        var p0 = 0
+        var p1 = 0
+        var p2 = 0
+        var p3 = 0
+        var bytesOff = 0
+        var bytesLen = 0
+
+        when (val payload = event.payload) {
+            NveEventPayload.Empty -> Unit
             is NveEventPayload.Point -> {
-                if (out.remaining() < 8) return false
-                out.putInt(payload.x.toRawBits())
-                out.putInt(payload.y.toRawBits())
-                true
+                p0 = payload.x.toRawBits()
+                p1 = payload.y.toRawBits()
             }
             is NveEventPayload.Scroll -> {
-                if (out.remaining() < 16) return false
-                out.putInt(payload.x.toRawBits())
-                out.putInt(payload.y.toRawBits())
-                out.putInt(payload.contentWidth.toRawBits())
-                out.putInt(payload.contentHeight.toRawBits())
-                true
+                p0 = payload.x.toRawBits()
+                p1 = payload.y.toRawBits()
+                p2 = payload.contentWidth.toRawBits()
+                p3 = payload.contentHeight.toRawBits()
             }
             is NveEventPayload.Text -> {
-                val utf8Len = utf8ByteLength(payload.text)
-                if (out.remaining() < 4 + utf8Len) return false
-                out.putInt(utf8Len)
-                writeUtf8Into(payload.text, out)
-                true
+                flags = FLAG_UTF8_BYTES
+                bytesLen = utf8ByteLength(payload.text)
+                bytesOff = if (bytesLen > 0) arenaOff else 0
             }
             is NveEventPayload.Layout -> {
-                if (out.remaining() < 16) return false
-                out.putInt(payload.x.toRawBits())
-                out.putInt(payload.y.toRawBits())
-                out.putInt(payload.width.toRawBits())
-                out.putInt(payload.height.toRawBits())
-                true
+                p0 = payload.x.toRawBits()
+                p1 = payload.y.toRawBits()
+                p2 = payload.width.toRawBits()
+                p3 = payload.height.toRawBits()
             }
             is NveEventPayload.Custom -> {
+                table = TABLE_CUSTOM
+                eventId = 0
+                flags = FLAG_CUSTOM_NAMED
                 val nameLen = utf8ByteLength(payload.name)
-                require(nameLen <= 0xFFFF) {
-                    "Custom event name exceeds uint16 length limit: $nameLen"
-                }
-                val dataLen = payload.data.size
-                val needed = 2L + nameLen.toLong() + 4L + dataLen.toLong()
-                if (out.remaining().toLong() < needed) return false
-                out.putShort((nameLen and 0xFFFF).toShort())
+                p0 = nameLen
+                bytesLen = nameLen + payload.data.size
+                bytesOff = if (bytesLen > 0) arenaOff else 0
+            }
+        }
+
+        out.putLong(event.timestampUs)
+        out.putLong(table)
+        out.putInt(event.surfaceId)
+        out.putInt(event.nodeId)
+        out.putInt(eventId)
+        out.putInt(flags)
+        out.putInt(p0)
+        out.putInt(p1)
+        out.putInt(p2)
+        out.putInt(p3)
+        out.putInt(0)
+        out.putInt(0)
+        out.putInt(bytesOff)
+        out.putInt(bytesLen)
+        return bytesLen
+    }
+
+    private fun writeArenaInto(event: NveEvent, out: ByteBuffer) {
+        when (val payload = event.payload) {
+            is NveEventPayload.Text -> writeUtf8Into(payload.text, out)
+            is NveEventPayload.Custom -> {
                 writeUtf8Into(payload.name, out)
-                out.putInt(dataLen)
-                if (dataLen > 0) {
+                if (payload.data.isNotEmpty()) {
                     out.put(payload.data)
                 }
-                true
             }
+            else -> Unit
         }
     }
 
@@ -402,51 +484,16 @@ object NveEventRingCodec {
     }
 
     fun encode(events: List<NveEvent>): ByteArray {
-        val out = ByteArrayOutputStream(4 + events.size * 32)
-        writeI32Le(out, events.size)
-        for (event in events) {
-            writeI32Le(out, event.surfaceId)
-            writeI32Le(out, event.nodeId)
-            writeI64Le(out, event.timestampUs)
-            out.write(event.kind.code and 0xFF)
-            val payload = event.payload
-            out.write(payload.tag and 0xFF)
-            when (payload) {
-                NveEventPayload.Empty -> Unit
-                is NveEventPayload.Point -> {
-                    writeF32Le(out, payload.x)
-                    writeF32Le(out, payload.y)
-                }
-                is NveEventPayload.Scroll -> {
-                    writeF32Le(out, payload.x)
-                    writeF32Le(out, payload.y)
-                    writeF32Le(out, payload.contentWidth)
-                    writeF32Le(out, payload.contentHeight)
-                }
-                is NveEventPayload.Text -> {
-                    val bytes = payload.text.toByteArray(StandardCharsets.UTF_8)
-                    writeI32Le(out, bytes.size)
-                    out.write(bytes)
-                }
-                is NveEventPayload.Layout -> {
-                    writeF32Le(out, payload.x)
-                    writeF32Le(out, payload.y)
-                    writeF32Le(out, payload.width)
-                    writeF32Le(out, payload.height)
-                }
-                is NveEventPayload.Custom -> {
-                    val nameBytes = payload.name.toByteArray(StandardCharsets.UTF_8)
-                    require(nameBytes.size <= 0xFFFF) {
-                        "Custom event name exceeds uint16 length limit: ${nameBytes.size}"
-                    }
-                    writeU16Le(out, nameBytes.size)
-                    out.write(nameBytes)
-                    writeI32Le(out, payload.data.size)
-                    out.write(payload.data)
-                }
-            }
+        var arenaLen = 0L
+        for (i in events.indices) {
+            arenaLen += measureEventArenaBytes(events[i])
         }
-        return out.toByteArray()
+        val totalLen = WIRE_HEADER_BYTES.toLong() + events.size.toLong() * EVENT_RECORD_BYTES + arenaLen
+        require(totalLen <= Int.MAX_VALUE) { "Event batch exceeds ByteArray size limit: $totalLen" }
+        val bytes = ByteArray(totalLen.toInt())
+        val written = encodeInto(events, ByteBuffer.wrap(bytes))
+        check(written == bytes.size) { "Expected $totalLen bytes written, got $written" }
+        return bytes
     }
 
     fun decode(bytes: ByteArray): List<NveEvent> {
@@ -457,65 +504,142 @@ object NveEventRingCodec {
     fun decode(source: ByteBuffer): List<NveEvent> {
         val buf = source.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         if (!buf.hasRemaining()) return emptyList()
-        if (buf.remaining() < 4) {
-            throw NveEventRingException.Truncated("missing 4-byte event count")
+        if (buf.remaining() < WIRE_HEADER_BYTES) {
+            throw NveEventRingException.Truncated("missing 14-byte NVEV v2 header")
+        }
+        val m0 = buf.get().toInt() and 0xFF
+        val m1 = buf.get().toInt() and 0xFF
+        val m2 = buf.get().toInt() and 0xFF
+        val m3 = buf.get().toInt() and 0xFF
+        if (m0 != 0x4E || m1 != 0x56 || m2 != 0x45 || m3 != 0x56) {
+            throw NveEventRingException.InvalidHeader("invalid magic bytes")
+        }
+        val version = buf.short.toInt() and 0xFFFF
+        if (version != WIRE_VERSION) {
+            throw NveEventRingException.InvalidHeader("unsupported version $version")
         }
         val rawCount = buf.int.toLong() and 0xFFFF_FFFFL
-        if (rawCount * EVENT_HEADER_BYTES > buf.remaining().toLong()) {
+        val rawArenaLen = buf.int.toLong() and 0xFFFF_FFFFL
+        val bodyAvail = buf.remaining().toLong()
+        if (rawCount > bodyAvail / EVENT_RECORD_BYTES) {
             throw NveEventRingException.Truncated(
-                "declared $rawCount events require at least ${rawCount * EVENT_HEADER_BYTES} bytes, " +
-                    "only ${buf.remaining()} available",
+                "declared $rawCount events require ${rawCount * EVENT_RECORD_BYTES} bytes, only $bodyAvail available",
             )
         }
+        val recordsBytes = rawCount * EVENT_RECORD_BYTES
+        val arenaAvail = bodyAvail - recordsBytes
+        if (arenaAvail < rawArenaLen) {
+            throw NveEventRingException.Truncated(
+                "declared $rawArenaLen arena bytes, only $arenaAvail available",
+            )
+        }
+        if (arenaAvail > rawArenaLen) {
+            throw NveEventRingException.TrailingBytes((arenaAvail - rawArenaLen).toInt())
+        }
+
         val count = rawCount.toInt()
+        val arenaLen = rawArenaLen.toInt()
+        val recordsStart = buf.position()
+        val arenaStart = recordsStart + recordsBytes.toInt()
         val out = ArrayList<NveEvent>(count)
-        repeat(count) {
-            if (buf.remaining() < EVENT_HEADER_BYTES) {
-                throw NveEventRingException.Truncated("missing 18-byte event header")
+
+        fun readArenaSlice(off: Long, len: Long): ByteArray {
+            if (off < 0L || len < 0L || off > arenaLen.toLong() || len > arenaLen.toLong() - off) {
+                throw NveEventRingException.InvalidBounds("arena slice [$off..+${len}] exceeds $arenaLen")
             }
+            val arr = ByteArray(len.toInt())
+            if (arr.isNotEmpty()) {
+                val slice = buf.duplicate()
+                slice.position(arenaStart + off.toInt())
+                slice.get(arr)
+            }
+            return arr
+        }
+
+        for (i in 0 until count) {
+            buf.position(recordsStart + i * EVENT_RECORD_BYTES)
+            val timestampUs = buf.long
+            val table = buf.long
             val surfaceId = buf.int
             val nodeId = buf.int
-            val timestampUs = buf.long
-            val kindCode = buf.get().toInt() and 0xFF
-            val kind = NveEventKind.fromCodeOrNull(kindCode)
-                ?: throw NveEventRingException.InvalidKind(kindCode)
-            val payloadTag = buf.get().toInt() and 0xFF
+            val eventId = buf.int
+            @Suppress("UNUSED_VARIABLE")
+            val flags = buf.int
+            val p0 = buf.int
+            val p1 = buf.int
+            val p2 = buf.int
+            val p3 = buf.int
+            buf.int // p4
+            buf.int // p5
+            val bytesOff = buf.int.toLong() and 0xFFFF_FFFFL
+            val bytesLen = buf.int.toLong() and 0xFFFF_FFFFL
+            val slice = readArenaSlice(bytesOff, bytesLen)
 
-            val payload: NveEventPayload = when (payloadTag) {
-                0 -> NveEventPayload.Empty
-                1 -> {
-                    requireRemaining(buf, 8, "Point payload")
-                    NveEventPayload.Point(buf.float, buf.float)
+            val kind: NveEventKind
+            val payload: NveEventPayload
+            when (table) {
+                TABLE_CUSTOM -> {
+                    kind = NveEventKind.CUSTOM
+                    val nameLen = p0.toLong() and 0xFFFF_FFFFL
+                    if (nameLen > slice.size.toLong()) {
+                        throw NveEventRingException.InvalidBounds("custom name len $nameLen > ${slice.size}")
+                    }
+                    val nlen = nameLen.toInt()
+                    val name = decodeUtf8Strict(slice.copyOfRange(0, nlen), "custom name")
+                    val data = if (nlen < slice.size) slice.copyOfRange(nlen, slice.size) else ByteArray(0)
+                    payload = NveEventPayload.Custom(name, data)
                 }
-                2 -> {
-                    requireRemaining(buf, 16, "Scroll payload")
-                    NveEventPayload.Scroll(buf.float, buf.float, buf.float, buf.float)
+                TABLE_INTERACTION -> when (eventId) {
+                    INTERACTION_PRESS -> {
+                        kind = NveEventKind.PRESS
+                        payload = NveEventPayload.Point(Float.fromBits(p0), Float.fromBits(p1))
+                    }
+                    INTERACTION_LONG_PRESS -> {
+                        kind = NveEventKind.LONG_PRESS
+                        payload = NveEventPayload.Point(Float.fromBits(p0), Float.fromBits(p1))
+                    }
+                    INTERACTION_FOCUS -> {
+                        kind = NveEventKind.FOCUS
+                        payload = NveEventPayload.Empty
+                    }
+                    INTERACTION_BLUR -> {
+                        kind = NveEventKind.BLUR
+                        payload = NveEventPayload.Empty
+                    }
+                    else -> throw NveEventRingException.InvalidTable(table, eventId)
                 }
-                3 -> {
-                    requireRemaining(buf, 4, "Text length")
-                    val len = readU32Length(buf, "Text payload")
-                    val textBytes = ByteArray(len)
-                    buf.get(textBytes)
-                    NveEventPayload.Text(decodeUtf8Strict(textBytes, "text"))
+                TABLE_TEXT_INPUT -> {
+                    if (eventId != TEXT_INPUT_CHANGE) {
+                        throw NveEventRingException.InvalidTable(table, eventId)
+                    }
+                    kind = NveEventKind.TEXT_CHANGE
+                    payload = NveEventPayload.Text(decodeUtf8Strict(slice, "text"))
                 }
-                4 -> {
-                    requireRemaining(buf, 16, "Layout payload")
-                    NveEventPayload.Layout(buf.float, buf.float, buf.float, buf.float)
+                TABLE_SCROLL -> {
+                    if (eventId != SCROLL_SCROLL) {
+                        throw NveEventRingException.InvalidTable(table, eventId)
+                    }
+                    kind = NveEventKind.SCROLL
+                    payload = NveEventPayload.Scroll(
+                        Float.fromBits(p0),
+                        Float.fromBits(p1),
+                        Float.fromBits(p2),
+                        Float.fromBits(p3),
+                    )
                 }
-                5 -> {
-                    requireRemaining(buf, 2, "Custom name length")
-                    val nameLen = buf.short.toInt() and 0xFFFF
-                    requireRemaining(buf, nameLen, "Custom name bytes")
-                    val nameBytes = ByteArray(nameLen)
-                    buf.get(nameBytes)
-                    val name = decodeUtf8Strict(nameBytes, "custom name")
-                    requireRemaining(buf, 4, "Custom data length")
-                    val dataLen = readU32Length(buf, "Custom data payload")
-                    val data = ByteArray(dataLen)
-                    buf.get(data)
-                    NveEventPayload.Custom(name, data)
+                TABLE_LAYOUT -> {
+                    if (eventId != LAYOUT_LAYOUT) {
+                        throw NveEventRingException.InvalidTable(table, eventId)
+                    }
+                    kind = NveEventKind.LAYOUT
+                    payload = NveEventPayload.Layout(
+                        Float.fromBits(p0),
+                        Float.fromBits(p1),
+                        Float.fromBits(p2),
+                        Float.fromBits(p3),
+                    )
                 }
-                else -> throw NveEventRingException.InvalidPayloadTag(payloadTag)
+                else -> throw NveEventRingException.InvalidTable(table, eventId)
             }
 
             out.add(
@@ -528,24 +652,7 @@ object NveEventRingCodec {
                 ),
             )
         }
-        if (buf.hasRemaining()) {
-            throw NveEventRingException.TrailingBytes(buf.remaining())
-        }
         return out
-    }
-
-    private fun requireRemaining(buf: ByteBuffer, needed: Int, detail: String) {
-        if (buf.remaining() < needed) {
-            throw NveEventRingException.Truncated("$detail requires $needed bytes, remaining=${buf.remaining()}")
-        }
-    }
-
-    private fun readU32Length(buf: ByteBuffer, detail: String): Int {
-        val len = buf.int.toLong() and 0xFFFF_FFFFL
-        if (len > buf.remaining().toLong()) {
-            throw NveEventRingException.Truncated("$detail declares $len bytes, remaining=${buf.remaining()}")
-        }
-        return len.toInt()
     }
 
     private fun decodeUtf8Strict(bytes: ByteArray, field: String): String {
@@ -558,32 +665,5 @@ object NveEventRingCodec {
         } catch (_: CharacterCodingException) {
             throw NveEventRingException.InvalidUtf8(field)
         }
-    }
-
-    private fun writeU16Le(out: ByteArrayOutputStream, v: Int) {
-        out.write(v and 0xFF)
-        out.write((v ushr 8) and 0xFF)
-    }
-
-    private fun writeI32Le(out: ByteArrayOutputStream, v: Int) {
-        out.write(v and 0xFF)
-        out.write((v ushr 8) and 0xFF)
-        out.write((v ushr 16) and 0xFF)
-        out.write((v ushr 24) and 0xFF)
-    }
-
-    private fun writeF32Le(out: ByteArrayOutputStream, v: Float) {
-        writeI32Le(out, v.toRawBits())
-    }
-
-    private fun writeI64Le(out: ByteArrayOutputStream, v: Long) {
-        out.write((v and 0xFF).toInt())
-        out.write(((v ushr 8) and 0xFF).toInt())
-        out.write(((v ushr 16) and 0xFF).toInt())
-        out.write(((v ushr 24) and 0xFF).toInt())
-        out.write(((v ushr 32) and 0xFF).toInt())
-        out.write(((v ushr 40) and 0xFF).toInt())
-        out.write(((v ushr 48) and 0xFF).toInt())
-        out.write(((v ushr 56) and 0xFF).toInt())
     }
 }

@@ -6,12 +6,16 @@ use crate::schema::wire::{
     DRAW_LIST_ATTR_PREFIX, DRAW_LIST_HEADER_SIZE, DRAW_LIST_MAGIC, DRAW_LIST_MAX_CLIP_DEPTH,
     DRAW_LIST_MAX_OPS, DRAW_LIST_MAX_POLYLINE_POINTS, DRAW_LIST_OP_COUNT_OFFSET, DRAW_LIST_VERSION,
     DRAW_LIST_VERSION_OFFSET, DRAW_OPCODES, DRAW_OP_POLYLINE_HEADER_BYTES,
-    DRAW_OP_POLYLINE_POINT_STRIDE, EVENT_ENTRY_HEADER_SIZE, EVENT_ENTRY_KIND_OFFSET,
-    EVENT_ENTRY_NODE_ID_OFFSET, EVENT_ENTRY_PAYLOAD_TAG_OFFSET, EVENT_ENTRY_SURFACE_ID_OFFSET,
-    EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
-    EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
-    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
-    NVE_WIRE_CODECS_SCHEMA_HASH,
+    DRAW_OP_POLYLINE_POINT_STRIDE, EVENT_FLAG_BUTTON_MASK, EVENT_FLAG_BUTTON_SHIFT,
+    EVENT_FLAG_CAPTURE, EVENT_FLAG_COMPOSING, EVENT_FLAG_CUSTOM_NAMED, EVENT_FLAG_INLINE_KEY_UTF8,
+    EVENT_FLAG_KEY_SPLIT_BYTES, EVENT_FLAG_MOD_ALT, EVENT_FLAG_MOD_CTRL, EVENT_FLAG_MOD_META,
+    EVENT_FLAG_MOD_REPEAT, EVENT_FLAG_MOD_SHIFT, EVENT_FLAG_UTF8_BYTES, EVENT_INLINE_KEY_CAP,
+    EVENT_OFFSET_BYTES_LEN, EVENT_OFFSET_BYTES_OFFSET, EVENT_OFFSET_EVENT, EVENT_OFFSET_FLAGS,
+    EVENT_OFFSET_NODE, EVENT_OFFSET_PAYLOAD, EVENT_OFFSET_SURFACE, EVENT_OFFSET_TABLE,
+    EVENT_OFFSET_TIMESTAMP, EVENT_RECORD_SIZE, EVENT_WIRE_HEADER_SIZE, EVENT_WIRE_MAGIC,
+    EVENT_WIRE_MAGIC_BYTES, EVENT_WIRE_VERSION, INTERACTION_EVENTS, LAYOUT_EVENTS,
+    NVE_WIRE_CODECS_SCHEMA_HASH, SCROLL_EVENTS, TABLE_KEY_CUSTOM, TABLE_KEY_INTERACTION,
+    TABLE_KEY_LAYOUT, TABLE_KEY_SCROLL, TABLE_KEY_TEXT_INPUT, TEXT_INPUT_EVENTS,
 };
 
 fn format_java_bytes(bytes: &[u8]) -> String {
@@ -31,7 +35,7 @@ pub fn generate_java_wire_codecs() -> String {
     );
     writeln!(
         s,
-        "// Source: packages/core/codegen/src/wire_codecs/spec.rs (schema 0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X})."
+        "// Source: packages/core/codegen/src/schema/wire.rs (schema 0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X})."
     );
     writeln!(s, "package dev.nve.android.generated;\n");
     writeln!(s, "import java.io.ByteArrayOutputStream;");
@@ -39,7 +43,7 @@ pub fn generate_java_wire_codecs() -> String {
 
     writeln!(
         s,
-        "/** Single-source wire codec constants, EventRing writer, and NVE_DRAW1 decoder. */"
+        "/** Single-source wire codec constants, NVEV v2 EventBatchWriter, and NVE_DRAW1 decoder. */"
     );
     writeln!(s, "public final class NveWireCodecs {{");
     writeln!(s, "    private NveWireCodecs() {{}}\n");
@@ -52,108 +56,94 @@ pub fn generate_java_wire_codecs() -> String {
         "    public static final String WIRE_CODECS_SCHEMA_HASH_HEX = \"0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X}\";\n"
     );
 
-    // EventRing
-    writeln!(s, "    // EventRing (`NVEV` / network event framing)");
+    writeln!(s, "    // Uniform 64-byte `NveEvent` batch wire format (`NVEV` v2)");
     writeln!(
         s,
-        "    public static final byte[] EVENT_RING_MAGIC_BYTES = new byte[] {{{}}};",
-        format_java_bytes(&EVENT_RING_MAGIC_BYTES)
+        "    public static final byte[] EVENT_WIRE_MAGIC_BYTES = new byte[] {{{}}};",
+        format_java_bytes(&EVENT_WIRE_MAGIC_BYTES)
     );
-    writeln!(s, "    public static final int EVENT_RING_MAGIC = 0x{EVENT_RING_MAGIC:08X};");
-    writeln!(s, "    public static final int EVENT_RING_VERSION = {EVENT_RING_VERSION};");
-    writeln!(
-        s,
-        "    public static final int EVENT_RING_COUNT_HEADER_SIZE = {EVENT_RING_COUNT_HEADER_SIZE};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_RING_FRAMED_HEADER_SIZE = {EVENT_RING_FRAMED_HEADER_SIZE};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_ENTRY_HEADER_SIZE = {EVENT_ENTRY_HEADER_SIZE};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_ENTRY_SURFACE_ID_OFFSET = {EVENT_ENTRY_SURFACE_ID_OFFSET};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_ENTRY_NODE_ID_OFFSET = {EVENT_ENTRY_NODE_ID_OFFSET};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_ENTRY_TIMESTAMP_US_OFFSET = {EVENT_ENTRY_TIMESTAMP_US_OFFSET};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_ENTRY_KIND_OFFSET = {EVENT_ENTRY_KIND_OFFSET};"
-    );
-    writeln!(
-        s,
-        "    public static final int EVENT_ENTRY_PAYLOAD_TAG_OFFSET = {EVENT_ENTRY_PAYLOAD_TAG_OFFSET};\n"
-    );
+    writeln!(s, "    public static final int EVENT_WIRE_MAGIC = 0x{EVENT_WIRE_MAGIC:08X};");
+    writeln!(s, "    public static final int EVENT_WIRE_VERSION = {EVENT_WIRE_VERSION};");
+    writeln!(s, "    public static final int EVENT_WIRE_HEADER_SIZE = {EVENT_WIRE_HEADER_SIZE};");
+    writeln!(s, "    public static final int EVENT_RECORD_SIZE = {EVENT_RECORD_SIZE};");
+    writeln!(s, "    public static final int EVENT_INLINE_KEY_CAP = {EVENT_INLINE_KEY_CAP};");
+    writeln!(s, "    public static final int EVENT_OFFSET_TIMESTAMP = {EVENT_OFFSET_TIMESTAMP};");
+    writeln!(s, "    public static final int EVENT_OFFSET_TABLE = {EVENT_OFFSET_TABLE};");
+    writeln!(s, "    public static final int EVENT_OFFSET_SURFACE = {EVENT_OFFSET_SURFACE};");
+    writeln!(s, "    public static final int EVENT_OFFSET_NODE = {EVENT_OFFSET_NODE};");
+    writeln!(s, "    public static final int EVENT_OFFSET_EVENT = {EVENT_OFFSET_EVENT};");
+    writeln!(s, "    public static final int EVENT_OFFSET_FLAGS = {EVENT_OFFSET_FLAGS};");
+    writeln!(s, "    public static final int EVENT_OFFSET_PAYLOAD = {EVENT_OFFSET_PAYLOAD};");
+    writeln!(s, "    public static final int EVENT_OFFSET_BYTES_OFFSET = {EVENT_OFFSET_BYTES_OFFSET};");
+    writeln!(s, "    public static final int EVENT_OFFSET_BYTES_LEN = {EVENT_OFFSET_BYTES_LEN};\n");
 
-    for v in EVENT_KINDS {
-        writeln!(s, "    public static final int EVENT_KIND_{} = {};", v.screaming, v.value);
-    }
-    writeln!(s);
-    for v in EVENT_PAYLOAD_TAGS {
-        writeln!(s, "    public static final int EVENT_PAYLOAD_{} = {};", v.screaming, v.tag);
-    }
-    writeln!(s);
-    for f in EVENT_MASKS {
-        writeln!(s, "    public static final long EVENT_MASK_{} = {}L;", f.screaming, f.value);
-    }
-    writeln!(s);
+    writeln!(s, "    public static final long TABLE_KEY_INTERACTION = 0x{TABLE_KEY_INTERACTION:016X}L;");
+    writeln!(s, "    public static final long TABLE_KEY_TEXT_INPUT = 0x{TABLE_KEY_TEXT_INPUT:016X}L;");
+    writeln!(s, "    public static final long TABLE_KEY_SCROLL = 0x{TABLE_KEY_SCROLL:016X}L;");
+    writeln!(s, "    public static final long TABLE_KEY_LAYOUT = 0x{TABLE_KEY_LAYOUT:016X}L;");
+    writeln!(s, "    public static final long TABLE_KEY_CUSTOM = 0x{TABLE_KEY_CUSTOM:016X}L;\n");
 
-    writeln!(s, "    public static final int KEY_MOD_META = 0x{KEY_MOD_META:02X};");
-    writeln!(s, "    public static final int KEY_MOD_CTRL = 0x{KEY_MOD_CTRL:02X};");
-    writeln!(s, "    public static final int KEY_MOD_SHIFT = 0x{KEY_MOD_SHIFT:02X};");
-    writeln!(s, "    public static final int KEY_MOD_ALT = 0x{KEY_MOD_ALT:02X};");
-    writeln!(s, "    public static final int KEY_MOD_REPEAT = 0x{KEY_MOD_REPEAT:02X};\n");
+    writeln!(s, "    public static final int EVENT_FLAG_MOD_META = 0x{EVENT_FLAG_MOD_META:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_MOD_CTRL = 0x{EVENT_FLAG_MOD_CTRL:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_MOD_SHIFT = 0x{EVENT_FLAG_MOD_SHIFT:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_MOD_ALT = 0x{EVENT_FLAG_MOD_ALT:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_MOD_REPEAT = 0x{EVENT_FLAG_MOD_REPEAT:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_BUTTON_SHIFT = {EVENT_FLAG_BUTTON_SHIFT};");
+    writeln!(s, "    public static final int EVENT_FLAG_BUTTON_MASK = 0x{EVENT_FLAG_BUTTON_MASK:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_CAPTURE = 0x{EVENT_FLAG_CAPTURE:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_COMPOSING = 0x{EVENT_FLAG_COMPOSING:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_UTF8_BYTES = 0x{EVENT_FLAG_UTF8_BYTES:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_INLINE_KEY_UTF8 = 0x{EVENT_FLAG_INLINE_KEY_UTF8:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_CUSTOM_NAMED = 0x{EVENT_FLAG_CUSTOM_NAMED:X};");
+    writeln!(s, "    public static final int EVENT_FLAG_KEY_SPLIT_BYTES = 0x{EVENT_FLAG_KEY_SPLIT_BYTES:X};\n");
+
+    for (prefix, variants) in [
+        ("INTERACTION_EVENT_", INTERACTION_EVENTS),
+        ("TEXT_INPUT_EVENT_", TEXT_INPUT_EVENTS),
+        ("SCROLL_EVENT_", SCROLL_EVENTS),
+        ("LAYOUT_EVENT_", LAYOUT_EVENTS),
+    ] {
+        for v in variants {
+            writeln!(s, "    public static final int {prefix}{} = {};", v.screaming, v.value);
+        }
+        writeln!(s);
+    }
 
     writeln!(
         s,
-        r#"    public static final class EventRingFramedHeader {{
+        r#"    public static final class EventBatchHeader {{
         public final int version;
-        public final long count;
+        public final long eventCount;
+        public final long bytesLen;
 
-        public EventRingFramedHeader(int version, long count) {{
+        public EventBatchHeader(int version, long eventCount, long bytesLen) {{
             this.version = version;
-            this.count = count;
+            this.eventCount = eventCount;
+            this.bytesLen = bytesLen;
         }}
     }}
 
-    public static EventRingFramedHeader decodeEventRingFramedHeader(byte[] bytes) {{
-        if (bytes == null || bytes.length < EVENT_RING_FRAMED_HEADER_SIZE) {{
+    public static EventBatchHeader decodeEventBatchHeader(byte[] bytes) {{
+        if (bytes == null || bytes.length < EVENT_WIRE_HEADER_SIZE) {{
             return null;
         }}
-        if (readLeI32(bytes, 0) != EVENT_RING_MAGIC) {{
+        if (readLeI32(bytes, 0) != EVENT_WIRE_MAGIC) {{
             return null;
         }}
         int version = readLeU16(bytes, 4);
-        if (version != EVENT_RING_VERSION) {{
+        if (version != EVENT_WIRE_VERSION) {{
             return null;
         }}
-        long count = readLeU32(bytes, 6);
-        return new EventRingFramedHeader(version, count);
+        long eventCount = readLeU32(bytes, 6);
+        long bytesLen = readLeU32(bytes, 10);
+        return new EventBatchHeader(version, eventCount, bytesLen);
     }}
 
-    /** Flat binary EventRing writer matching packages/core/abi/src/events.rs. */
-    public static final class EventRingWriter {{
-        private final boolean framed;
-        private final ByteArrayOutputStream out = new ByteArrayOutputStream(256);
+    /** Flat binary NVEV v2 writer matching nve_abi::EventBatchBuf::decode_wire. */
+    public static final class EventBatchWriter {{
+        private final ByteArrayOutputStream events = new ByteArrayOutputStream(256);
+        private final ByteArrayOutputStream arena = new ByteArrayOutputStream(128);
         private int count = 0;
-
-        public EventRingWriter() {{
-            this(false);
-        }}
-
-        public EventRingWriter(boolean framed) {{
-            this.framed = framed;
-            clear();
-        }}
 
         public int count() {{
             return count;
@@ -161,33 +151,69 @@ pub fn generate_java_wire_codecs() -> String {
 
         public void clear() {{
             count = 0;
-            out.reset();
-            if (framed) {{
-                out.write(EVENT_RING_MAGIC_BYTES, 0, EVENT_RING_MAGIC_BYTES.length);
-                writeLeU16(EVENT_RING_VERSION);
-                writeLeU32(0);
-            }} else {{
-                writeLeU32(0);
-            }}
+            events.reset();
+            arena.reset();
         }}
 
-        public void pushEmpty(int surfaceId, int nodeId, long timestampUs, int kind) {{
-            writeEntryHeader(surfaceId, nodeId, timestampUs, kind, EVENT_PAYLOAD_EMPTY);
+        public boolean pushEvent(
+                long table,
+                int surfaceId,
+                int nodeId,
+                long timestampUs,
+                int eventId,
+                int flags,
+                int[] payload,
+                byte[] data) {{
+            int len = data != null ? data.length : 0;
+            int off = len > 0 ? arena.size() : 0;
+            if (len > 0) {{
+                arena.write(data, 0, len);
+            }}
+            writeLeU64(events, timestampUs);
+            writeLeU64(events, table);
+            writeLeU32(events, surfaceId);
+            writeLeU32(events, nodeId);
+            writeLeU32(events, eventId);
+            writeLeU32(events, flags);
+            for (int i = 0; i < 6; i++) {{
+                writeLeU32(events, (payload != null && i < payload.length) ? payload[i] : 0);
+            }}
+            writeLeU32(events, off);
+            writeLeU32(events, len);
             count++;
+            return true;
         }}
 
         public void pushPress(int surfaceId, int nodeId, long timestampUs, float x, float y) {{
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_PRESS, EVENT_PAYLOAD_POINT);
-            writeLeF32(x);
-            writeLeF32(y);
-            count++;
+            pushEvent(
+                    TABLE_KEY_INTERACTION,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    INTERACTION_EVENT_PRESS,
+                    0,
+                    new int[] {{Float.floatToRawIntBits(x), Float.floatToRawIntBits(y), 0, 0, 0, 0}},
+                    null);
         }}
 
         public void pushLongPress(int surfaceId, int nodeId, long timestampUs, float x, float y) {{
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_LONG_PRESS, EVENT_PAYLOAD_POINT);
-            writeLeF32(x);
-            writeLeF32(y);
-            count++;
+            pushEvent(
+                    TABLE_KEY_INTERACTION,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    INTERACTION_EVENT_LONG_PRESS,
+                    0,
+                    new int[] {{Float.floatToRawIntBits(x), Float.floatToRawIntBits(y), 0, 0, 0, 0}},
+                    null);
+        }}
+
+        public void pushFocus(int surfaceId, int nodeId, long timestampUs) {{
+            pushEvent(TABLE_KEY_INTERACTION, surfaceId, nodeId, timestampUs, INTERACTION_EVENT_FOCUS, 0, null, null);
+        }}
+
+        public void pushBlur(int surfaceId, int nodeId, long timestampUs) {{
+            pushEvent(TABLE_KEY_INTERACTION, surfaceId, nodeId, timestampUs, INTERACTION_EVENT_BLUR, 0, null, null);
         }}
 
         public void pushScroll(
@@ -198,20 +224,35 @@ pub fn generate_java_wire_codecs() -> String {
                 float y,
                 float contentWidth,
                 float contentHeight) {{
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_SCROLL, EVENT_PAYLOAD_SCROLL);
-            writeLeF32(x);
-            writeLeF32(y);
-            writeLeF32(contentWidth);
-            writeLeF32(contentHeight);
-            count++;
+            pushEvent(
+                    TABLE_KEY_SCROLL,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    SCROLL_EVENT_SCROLL,
+                    0,
+                    new int[] {{
+                        Float.floatToRawIntBits(x),
+                        Float.floatToRawIntBits(y),
+                        Float.floatToRawIntBits(contentWidth),
+                        Float.floatToRawIntBits(contentHeight),
+                        0,
+                        0
+                    }},
+                    null);
         }}
 
         public void pushTextChange(int surfaceId, int nodeId, long timestampUs, String text) {{
             byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_TEXT_CHANGE, EVENT_PAYLOAD_TEXT);
-            writeLeU32(utf8.length);
-            out.write(utf8, 0, utf8.length);
-            count++;
+            pushEvent(
+                    TABLE_KEY_TEXT_INPUT,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    TEXT_INPUT_EVENT_CHANGE,
+                    EVENT_FLAG_UTF8_BYTES,
+                    null,
+                    utf8);
         }}
 
         public void pushLayout(
@@ -222,24 +263,41 @@ pub fn generate_java_wire_codecs() -> String {
                 float y,
                 float width,
                 float height) {{
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_LAYOUT, EVENT_PAYLOAD_LAYOUT);
-            writeLeF32(x);
-            writeLeF32(y);
-            writeLeF32(width);
-            writeLeF32(height);
-            count++;
+            pushEvent(
+                    TABLE_KEY_LAYOUT,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    LAYOUT_EVENT_LAYOUT,
+                    0,
+                    new int[] {{
+                        Float.floatToRawIntBits(x),
+                        Float.floatToRawIntBits(y),
+                        Float.floatToRawIntBits(width),
+                        Float.floatToRawIntBits(height),
+                        0,
+                        0
+                    }},
+                    null);
         }}
 
         public boolean pushCustom(int surfaceId, int nodeId, long timestampUs, String name, byte[] data) {{
             byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
-            if (nameBytes.length > 0xFFFF) return false;
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_CUSTOM, EVENT_PAYLOAD_CUSTOM);
-            writeLeU16(nameBytes.length);
-            out.write(nameBytes, 0, nameBytes.length);
-            writeLeU32(data.length);
-            out.write(data, 0, data.length);
-            count++;
-            return true;
+            int dlen = data != null ? data.length : 0;
+            byte[] combined = new byte[nameBytes.length + dlen];
+            System.arraycopy(nameBytes, 0, combined, 0, nameBytes.length);
+            if (dlen > 0) {{
+                System.arraycopy(data, 0, combined, nameBytes.length, dlen);
+            }}
+            return pushEvent(
+                    TABLE_KEY_CUSTOM,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    0,
+                    EVENT_FLAG_CUSTOM_NAMED,
+                    new int[] {{nameBytes.length, 0, 0, 0, 0, 0}},
+                    combined);
         }}
 
         public boolean pushKeyDown(
@@ -268,68 +326,80 @@ pub fn generate_java_wire_codecs() -> String {
                 boolean isComposing) {{
             byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
             byte[] codeBytes = code.getBytes(StandardCharsets.UTF_8);
-            if (keyBytes.length > 0xFFFF || codeBytes.length > 0xFFFF) return false;
-            int modifiers = 0;
-            if (meta) modifiers |= KEY_MOD_META;
-            if (ctrl) modifiers |= KEY_MOD_CTRL;
-            if (shift) modifiers |= KEY_MOD_SHIFT;
-            if (alt) modifiers |= KEY_MOD_ALT;
-            writeEntryHeader(surfaceId, nodeId, timestampUs, EVENT_KIND_KEY_DOWN, EVENT_PAYLOAD_KEY);
-            out.write(modifiers & 0xFF);
-            out.write(isComposing ? 1 : 0);
-            writeLeU32(keyCode);
-            writeLeU16(keyBytes.length);
-            out.write(keyBytes, 0, keyBytes.length);
-            writeLeU16(codeBytes.length);
-            out.write(codeBytes, 0, codeBytes.length);
-            count++;
-            return true;
+            int flags = 0;
+            if (meta) flags |= EVENT_FLAG_MOD_META;
+            if (ctrl) flags |= EVENT_FLAG_MOD_CTRL;
+            if (shift) flags |= EVENT_FLAG_MOD_SHIFT;
+            if (alt) flags |= EVENT_FLAG_MOD_ALT;
+            if (isComposing) flags |= EVENT_FLAG_COMPOSING;
+            int[] payload = new int[] {{keyCode, keyBytes.length, 0, 0, 0, 0}};
+            if (keyBytes.length <= EVENT_INLINE_KEY_CAP) {{
+                byte[] kb = new byte[EVENT_INLINE_KEY_CAP];
+                System.arraycopy(keyBytes, 0, kb, 0, keyBytes.length);
+                for (int w = 0; w < 4; w++) {{
+                    payload[2 + w] = readLeI32(kb, w * 4);
+                }}
+                flags |= EVENT_FLAG_INLINE_KEY_UTF8;
+                if (codeBytes.length > 0) flags |= EVENT_FLAG_UTF8_BYTES;
+                return pushEvent(
+                        TABLE_KEY_INTERACTION,
+                        surfaceId,
+                        nodeId,
+                        timestampUs,
+                        INTERACTION_EVENT_KEY_DOWN,
+                        flags,
+                        payload,
+                        codeBytes);
+            }}
+            byte[] combined = new byte[keyBytes.length + codeBytes.length];
+            System.arraycopy(keyBytes, 0, combined, 0, keyBytes.length);
+            System.arraycopy(codeBytes, 0, combined, keyBytes.length, codeBytes.length);
+            flags |= EVENT_FLAG_KEY_SPLIT_BYTES | EVENT_FLAG_UTF8_BYTES;
+            return pushEvent(
+                    TABLE_KEY_INTERACTION,
+                    surfaceId,
+                    nodeId,
+                    timestampUs,
+                    INTERACTION_EVENT_KEY_DOWN,
+                    flags,
+                    payload,
+                    combined);
         }}
 
         public byte[] finish() {{
-            byte[] bytes = out.toByteArray();
-            int off = framed ? 6 : 0;
-            bytes[off] = (byte) (count & 0xFF);
-            bytes[off + 1] = (byte) ((count >>> 8) & 0xFF);
-            bytes[off + 2] = (byte) ((count >>> 16) & 0xFF);
-            bytes[off + 3] = (byte) ((count >>> 24) & 0xFF);
-            return bytes;
+            byte[] evBytes = events.toByteArray();
+            byte[] arenaBytes = arena.toByteArray();
+            ByteArrayOutputStream out = new ByteArrayOutputStream(EVENT_WIRE_HEADER_SIZE + evBytes.length + arenaBytes.length);
+            out.write(EVENT_WIRE_MAGIC_BYTES, 0, EVENT_WIRE_MAGIC_BYTES.length);
+            writeLeU16(out, EVENT_WIRE_VERSION);
+            writeLeU32(out, count);
+            writeLeU32(out, arenaBytes.length);
+            out.write(evBytes, 0, evBytes.length);
+            out.write(arenaBytes, 0, arenaBytes.length);
+            return out.toByteArray();
         }}
 
-        private void writeEntryHeader(int surfaceId, int nodeId, long timestampUs, int kind, int payloadTag) {{
-            writeLeU32(surfaceId);
-            writeLeU32(nodeId);
-            writeLeU64(timestampUs);
-            out.write(kind & 0xFF);
-            out.write(payloadTag & 0xFF);
+        private static void writeLeU16(ByteArrayOutputStream dst, int v) {{
+            dst.write(v & 0xFF);
+            dst.write((v >>> 8) & 0xFF);
         }}
 
-        private void writeLeU16(int v) {{
-            out.write(v & 0xFF);
-            out.write((v >>> 8) & 0xFF);
+        private static void writeLeU32(ByteArrayOutputStream dst, int v) {{
+            dst.write(v & 0xFF);
+            dst.write((v >>> 8) & 0xFF);
+            dst.write((v >>> 16) & 0xFF);
+            dst.write((v >>> 24) & 0xFF);
         }}
 
-        private void writeLeU32(int v) {{
-            out.write(v & 0xFF);
-            out.write((v >>> 8) & 0xFF);
-            out.write((v >>> 16) & 0xFF);
-            out.write((v >>> 24) & 0xFF);
-        }}
-
-        private void writeLeU64(long v) {{
+        private static void writeLeU64(ByteArrayOutputStream dst, long v) {{
             for (int shift = 0; shift < 64; shift += 8) {{
-                out.write((int) ((v >>> shift) & 0xFFL));
+                dst.write((int) ((v >>> shift) & 0xFFL));
             }}
-        }}
-
-        private void writeLeF32(float v) {{
-            writeLeU32(Float.floatToRawIntBits(v));
         }}
     }}
 "#
     );
 
-    // NVE_DRAW1
     writeln!(s, "    // `NVE_DRAW1` Vector Canvas Opcodes & Header Decoder");
     writeln!(
         s,
@@ -338,35 +408,14 @@ pub fn generate_java_wire_codecs() -> String {
     );
     writeln!(s, "    public static final int DRAW_LIST_VERSION = {DRAW_LIST_VERSION};");
     writeln!(s, "    public static final int DRAW_LIST_HEADER_SIZE = {DRAW_LIST_HEADER_SIZE};");
-    writeln!(
-        s,
-        "    public static final int DRAW_LIST_VERSION_OFFSET = {DRAW_LIST_VERSION_OFFSET};"
-    );
-    writeln!(
-        s,
-        "    public static final int DRAW_LIST_OP_COUNT_OFFSET = {DRAW_LIST_OP_COUNT_OFFSET};"
-    );
+    writeln!(s, "    public static final int DRAW_LIST_VERSION_OFFSET = {DRAW_LIST_VERSION_OFFSET};");
+    writeln!(s, "    public static final int DRAW_LIST_OP_COUNT_OFFSET = {DRAW_LIST_OP_COUNT_OFFSET};");
     writeln!(s, "    public static final int DRAW_LIST_MAX_OPS = {DRAW_LIST_MAX_OPS};");
-    writeln!(
-        s,
-        "    public static final int DRAW_LIST_MAX_POLYLINE_POINTS = {DRAW_LIST_MAX_POLYLINE_POINTS};"
-    );
-    writeln!(
-        s,
-        "    public static final int DRAW_LIST_MAX_CLIP_DEPTH = {DRAW_LIST_MAX_CLIP_DEPTH};"
-    );
-    writeln!(
-        s,
-        "    public static final String DRAW_LIST_ATTR_PREFIX = \"{DRAW_LIST_ATTR_PREFIX}\";"
-    );
-    writeln!(
-        s,
-        "    public static final int DRAW_OP_POLYLINE_HEADER_BYTES = {DRAW_OP_POLYLINE_HEADER_BYTES};"
-    );
-    writeln!(
-        s,
-        "    public static final int DRAW_OP_POLYLINE_POINT_STRIDE = {DRAW_OP_POLYLINE_POINT_STRIDE};\n"
-    );
+    writeln!(s, "    public static final int DRAW_LIST_MAX_POLYLINE_POINTS = {DRAW_LIST_MAX_POLYLINE_POINTS};");
+    writeln!(s, "    public static final int DRAW_LIST_MAX_CLIP_DEPTH = {DRAW_LIST_MAX_CLIP_DEPTH};");
+    writeln!(s, "    public static final String DRAW_LIST_ATTR_PREFIX = \"{DRAW_LIST_ATTR_PREFIX}\";");
+    writeln!(s, "    public static final int DRAW_OP_POLYLINE_HEADER_BYTES = {DRAW_OP_POLYLINE_HEADER_BYTES};");
+    writeln!(s, "    public static final int DRAW_OP_POLYLINE_POINT_STRIDE = {DRAW_OP_POLYLINE_POINT_STRIDE};\n");
 
     for op in DRAW_OPCODES {
         writeln!(s, "    public static final int DRAW_OP_{} = {};", op.screaming, op.opcode);

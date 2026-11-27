@@ -6,7 +6,7 @@
 //! `nve-wire`, remote hosts) decode `NVE2` frames into a replica [`NodeStore`] via
 //! [`StoreWireReplica`] and forward `(&store, &changes)` into the exact same [`StoreBackend`].
 
-use nve_abi::{NativeEvent, NodeId, SurfaceId};
+use nve_abi::{EventBatchBuf, NodeId, SurfaceId};
 use nve_store::wire::WireDecoder;
 use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
@@ -30,10 +30,8 @@ pub trait StoreBackend {
         changes: &ChangeSet,
     ) -> Result<BackendApplyStats, BackendError>;
 
-    /// Drains any pending native input/layout events since the last frame.
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        Vec::new()
-    }
+    /// Drains any pending native input/layout events since the last frame into `out`.
+    fn drain_events(&mut self, _out: &mut EventBatchBuf) {}
 
     /// Returns computed layout rectangle for a node if available.
     fn layout_of(&self, _node_id: NodeId) -> Option<LayoutRect> {

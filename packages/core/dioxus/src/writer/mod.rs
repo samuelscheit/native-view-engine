@@ -9,12 +9,15 @@ mod tests;
 
 use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
 use nve_abi::hash::HashMap;
-use nve_abi::{EventMask, SurfaceId};
+use nve_abi::table::TableKey;
+use nve_abi::{
+    EventEnum, EventId, InteractionEvent, LayoutEvent, ScrollEvent, SurfaceId, TextInputEvent,
+};
 use nve_components::interaction::CursorKind;
 use nve_components::tables::{
-    self, AriaRole, Image, Interaction, Link, Scroll, TextContent, TextInput,
+    self, AriaRole, Image, Interaction, Layout, Link, Scroll, TextContent, TextInput,
 };
-use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
+use nve_store::{ChangeSet, HasEvents, NodeId, NodeStore, Transaction};
 
 use crate::table_attr::TableAttr;
 use crate::typed_style::TypedStyle;
@@ -47,6 +50,8 @@ pub struct NveMutationWriter {
     pub(crate) inline_styles: HashMap<NodeId, (String, u64)>,
     /// Tracks standalone CSS/style attributes (`width`, `color`, `opacity`, etc.) per node.
     pub(crate) standalone_style_attrs: HashMap<NodeId, Vec<(String, StandaloneStyleVal)>>,
+    /// Dense node-index flags for non-table Dioxus listeners (bit 0 = `ontableevent`, bit 1 = custom).
+    pub(crate) aux_event_flags: Vec<u8>,
     #[cfg(test)]
     pub(crate) standalone_replay_count: usize,
     #[cfg(test)]
@@ -75,6 +80,7 @@ impl NveMutationWriter {
             typed_styles: HashMap::default(),
             inline_styles: HashMap::default(),
             standalone_style_attrs: HashMap::default(),
+            aux_event_flags: Vec::new(),
             #[cfg(test)]
             standalone_replay_count: 0,
             #[cfg(test)]
@@ -113,23 +119,48 @@ impl NveMutationWriter {
     }
 
     #[inline]
-    pub fn has_event_mask(&self, node_id: NodeId, mask: u64) -> bool {
-        self.store
-            .try_row::<Interaction>(node_id)
-            .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
+    pub fn has_listener<T: HasEvents>(&self, node_id: NodeId, event: T::Event) -> bool {
+        let mask = self.store.node_events_mask(T::slot(), node_id);
+        (mask & event.bit()) != 0
     }
 
-    /// Walks up from `node_id` to `NodeId::ROOT` checking if any ancestor subscribed to `mask`.
-    pub fn has_event_mask_in_chain(&self, node_id: NodeId, mask: u64) -> bool {
+    /// Walks up from `node_id` to `NodeId::ROOT` checking if any ancestor listens to `(T, event)`.
+    pub fn has_listener_in_chain<T: HasEvents>(&self, node_id: NodeId, event: T::Event) -> bool {
+        let slot = T::slot();
+        let bit = event.bit();
         let mut cur = Some(node_id);
         while let Some(nid) = cur {
             if !self.store.is_live(nid) {
                 break;
             }
-            if self
-                .store
-                .try_row::<Interaction>(nid)
-                .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
+            if (self.store.node_events_mask(slot, nid) & bit) != 0 {
+                return true;
+            }
+            cur = self.store.parent(nid);
+        }
+        false
+    }
+
+    /// Walks up from `node_id` checking for either a generic `ontableevent` handler or a table's
+    /// own `events_word` subscription bit.
+    pub fn has_table_event_listener_in_chain(
+        &self,
+        node_id: NodeId,
+        table: TableKey,
+        event: EventId,
+    ) -> bool {
+        let slot = nve_store::slot_of(table);
+        let bit = if event.raw() < 32 { 1u32 << event.raw() } else { 0 };
+        let mut cur = Some(node_id);
+        while let Some(nid) = cur {
+            if !self.store.is_live(nid) {
+                break;
+            }
+            if (self.aux_event_flags.get(nid.index()).copied().unwrap_or(0) & 1) != 0 {
+                return true;
+            }
+            if let Some(s) = slot
+                && (self.store.node_events_mask(s, nid) & bit) != 0
             {
                 return true;
             }
@@ -156,6 +187,7 @@ impl NveMutationWriter {
             typed_styles,
             inline_styles,
             standalone_style_attrs,
+            aux_event_flags,
             #[cfg(test)]
             standalone_replay_count,
             #[cfg(test)]
@@ -176,6 +208,7 @@ impl NveMutationWriter {
                 typed_styles,
                 inline_styles,
                 standalone_style_attrs,
+                aux_event_flags,
                 #[cfg(test)]
                 standalone_replay_count,
                 #[cfg(test)]
@@ -200,6 +233,7 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) typed_styles: &'a mut HashMap<NodeId, TypedStyle>,
     pub(crate) inline_styles: &'a mut HashMap<NodeId, (String, u64)>,
     pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, Vec<(String, StandaloneStyleVal)>>,
+    pub(crate) aux_event_flags: &'a mut Vec<u8>,
     #[cfg(test)]
     pub(crate) standalone_replay_count: &'a mut usize,
     #[cfg(test)]
@@ -509,6 +543,9 @@ impl StoreMutationTx<'_, '_> {
             self.typed_styles.remove(&nid);
             self.inline_styles.remove(&nid);
             self.standalone_style_attrs.remove(&nid);
+            if let Some(slot) = self.aux_event_flags.get_mut(nid.index()) {
+                *slot = 0;
+            }
         }
         self.tx.remove(root);
     }
@@ -522,49 +559,56 @@ impl StoreMutationTx<'_, '_> {
         Some(cur)
     }
 
-    pub(crate) fn update_event_mask(&mut self, node: NodeId, bit: u64, set: bool) {
-        debug_assert!(
-            bit <= u64::from(u32::MAX),
-            "EventMask bit {bit:#x} exceeds Interaction::event_mask u32 width"
-        );
-        let cur = u64::from(
-            self.tx
-                .store()
-                .try_row::<Interaction>(node)
-                .map_or(0, |i| i.event_mask()),
-        );
-        let next = if set { cur | bit } else { cur & !bit };
-        self.tx
-            .edit::<Interaction>(node)
-            .event_mask(u32::try_from(next).unwrap_or(u32::MAX));
+    fn set_aux_event_flag(&mut self, node: NodeId, bit: u8, set: bool) {
+        let idx = node.index();
+        if set {
+            if idx >= self.aux_event_flags.len() {
+                self.aux_event_flags.resize(idx + 1, 0);
+            }
+            self.aux_event_flags[idx] |= bit;
+        } else if let Some(slot) = self.aux_event_flags.get_mut(idx) {
+            *slot &= !bit;
+        }
     }
-}
 
-pub(crate) fn event_name_to_mask(name: &str) -> u64 {
-    match name {
-        "press" | "onpress" | "click" | "onclick" => EventMask::PRESS,
-        "longpress" | "onlongpress" => EventMask::LONG_PRESS,
-        "scroll" | "onscroll" => EventMask::SCROLL,
-        "change" | "onchange" | "input" | "oninput" => EventMask::TEXT_CHANGE,
-        "focus" | "onfocus" => EventMask::FOCUS,
-        "blur" | "onblur" => EventMask::BLUR,
-        "layout" | "onlayout" => EventMask::LAYOUT,
-        "compositionstart"
-        | "oncompositionstart"
-        | "compositionupdate"
-        | "oncompositionupdate"
-        | "compositionend"
-        | "oncompositionend" => EventMask::COMPOSITION,
-        "keydown" | "onkeydown" => EventMask::KEY_DOWN,
-        "keyup" | "onkeyup" => EventMask::KEY_UP,
-        "submit" | "onsubmit" => EventMask::SUBMIT,
-        "pointerdown" | "onpointerdown" => EventMask::POINTER_DOWN,
-        "pointermove" | "onpointermove" => EventMask::POINTER_MOVE,
-        "pointerup" | "onpointerup" => EventMask::POINTER_UP,
-        "pointerenter" | "onpointerenter" => EventMask::POINTER_ENTER,
-        "pointerleave" | "onpointerleave" => EventMask::POINTER_LEAVE,
-        "wheel" | "onwheel" => EventMask::WHEEL,
-        "tableevent" | "ontableevent" => EventMask::TABLE_EVENT,
-        _ => EventMask::CUSTOM,
+    pub(crate) fn set_event_listener(&mut self, node: NodeId, name: &str, listen: bool) {
+        macro_rules! toggle {
+            ($table:ty, $ev:expr) => {{
+                if listen {
+                    self.tx.edit::<$table>(node).listen($ev);
+                } else if self.tx.store().has::<$table>(node) {
+                    self.tx.edit::<$table>(node).unlisten($ev);
+                }
+            }};
+        }
+        match name {
+            "press" | "onpress" | "click" | "onclick" => toggle!(Interaction, InteractionEvent::Press),
+            "longpress" | "onlongpress" => toggle!(Interaction, InteractionEvent::LongPress),
+            "pointerdown" | "onpointerdown" => toggle!(Interaction, InteractionEvent::PointerDown),
+            "pointermove" | "onpointermove" => toggle!(Interaction, InteractionEvent::PointerMove),
+            "pointerup" | "onpointerup" => toggle!(Interaction, InteractionEvent::PointerUp),
+            "pointerenter" | "onpointerenter" => toggle!(Interaction, InteractionEvent::PointerEnter),
+            "pointerleave" | "onpointerleave" => toggle!(Interaction, InteractionEvent::PointerLeave),
+            "wheel" | "onwheel" => toggle!(Interaction, InteractionEvent::Wheel),
+            "focus" | "onfocus" => toggle!(Interaction, InteractionEvent::Focus),
+            "blur" | "onblur" => toggle!(Interaction, InteractionEvent::Blur),
+            "keydown" | "onkeydown" => toggle!(Interaction, InteractionEvent::KeyDown),
+            "keyup" | "onkeyup" => toggle!(Interaction, InteractionEvent::KeyUp),
+            "change" | "onchange" | "input" | "oninput" => toggle!(TextInput, TextInputEvent::Change),
+            "submit" | "onsubmit" => toggle!(TextInput, TextInputEvent::Submit),
+            "compositionstart" | "oncompositionstart" => {
+                toggle!(TextInput, TextInputEvent::CompositionStart)
+            }
+            "compositionupdate" | "oncompositionupdate" => {
+                toggle!(TextInput, TextInputEvent::CompositionUpdate)
+            }
+            "compositionend" | "oncompositionend" => {
+                toggle!(TextInput, TextInputEvent::CompositionEnd)
+            }
+            "scroll" | "onscroll" => toggle!(Scroll, ScrollEvent::Scroll),
+            "layout" | "onlayout" => toggle!(Layout, LayoutEvent::Layout),
+            "tableevent" | "ontableevent" => self.set_aux_event_flag(node, 1 << 0, listen),
+            _ => self.set_aux_event_flag(node, 1 << 1, listen),
+        }
     }
 }

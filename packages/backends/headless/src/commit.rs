@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use nve_abi::table::effect;
-use nve_abi::{NativeEvent, NodeId, NveSceneTable, SurfaceId};
+use nve_abi::{EventBatchBuf, NodeId, NveSceneTable, SurfaceId};
 use nve_components::tables::{Interaction, TextContent};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, Viewport,
@@ -152,8 +152,11 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
         })
     }
 
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        std::mem::take(&mut self.pending_events)
+    fn drain_events(&mut self, out: &mut EventBatchBuf) {
+        if !self.pending_events.is_empty() {
+            out.extend_from_validated(self.pending_events.as_validated());
+            self.pending_events.clear();
+        }
     }
 
     fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {

@@ -1,7 +1,7 @@
 //! Binary `NVN1` fuzz tests, `NveChannelBus` bidirectional sync tests, and live Dioxus + `NVE1`
 //! wire scene E2E tests for `nve-router`.
 
-use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
 use nve_components::tables::{Accessibility, AriaRole, DebugId, Interaction, TextContent};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -385,13 +385,9 @@ fn press_test_id(surface: &mut DioxusSurface, scene: &mut Nve2Replica, test_id: 
     let node_id = scene.find_by_test_id(test_id);
     assert!(node_id.is_some(), "missing test_id {test_id}");
     let node_id = node_id.expect("checked above");
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id,
-        timestamp_us: frame_id * 16_000,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 10.0 },
-    }]));
+    let mut batch = EventBatchBuf::new();
+    batch.push_press(SurfaceId::ROOT, node_id, TimestampUs(frame_id * 16_000), 10.0, 10.0);
+    assert!(surface.dispatch_events(batch.as_validated()));
     let mut wire = Vec::new();
     surface.render_nve2(FrameId(frame_id), &mut wire);
     scene.apply(&wire);
@@ -411,12 +407,11 @@ fn dioxus_e2e_router_provider_link_outlet_press_navigation_and_modal() {
         scene.store.try_row::<Accessibility>(link_id).and_then(|a| a.role()),
         Some(AriaRole::Link)
     );
-    assert_ne!(
+    assert!(
         scene
             .store
             .try_row::<Interaction>(link_id)
-            .map_or(0, |i| i.event_mask()),
-        0
+            .is_some_and(|i| !i.listeners().is_empty())
     );
 
     press_test_id(&mut surface, &mut scene, "link-issue-42", 2);

@@ -5,6 +5,7 @@ error[E0277]: the trait bound `ResourceId: TableField` is not satisfied
   |          ^^^^^^^^ the trait `WordValue` is not implemented for `ResourceId`
   |
   = help: the following other types implement trait `WordValue`:
+            EventSet<E>
             NodeId
             Option<T>
             Rgba
@@ -12,7 +13,6 @@ error[E0277]: the trait bound `ResourceId: TableField` is not satisfied
             bool
             f32
             i16
-            i32
           and $N others
   = note: required for `ResourceId` to implement `TableField`
   = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)
@@ -24,6 +24,7 @@ error[E0277]: the trait bound `ResourceId: ScalarField` is not satisfied
   |          ^^^^^^^^ the trait `WordValue` is not implemented for `ResourceId`
   |
   = help: the following other types implement trait `WordValue`:
+            EventSet<E>
             NodeId
             Option<T>
             Rgba
@@ -31,7 +32,6 @@ error[E0277]: the trait bound `ResourceId: ScalarField` is not satisfied
             bool
             f32
             i16
-            i32
           and $N others
   = note: required for `ResourceId` to implement `ScalarField`
 note: required by a bound in `Prop::<T, V>::new_wide`
@@ -51,6 +51,7 @@ error[E0277]: the trait bound `ResourceId: TableField` is not satisfied
   |          ^^^^^^^^ the trait `WordValue` is not implemented for `ResourceId`
   |
   = help: the following other types implement trait `WordValue`:
+            EventSet<E>
             NodeId
             Option<T>
             Rgba
@@ -58,7 +59,6 @@ error[E0277]: the trait bound `ResourceId: TableField` is not satisfied
             bool
             f32
             i16
-            i32
           and $N others
   = note: required for `ResourceId` to implement `TableField`
 note: required by a bound in `read_ref`
@@ -78,6 +78,7 @@ error[E0277]: the trait bound `ResourceId: TableField` is not satisfied
   |          ^^^^^^^^ the trait `WordValue` is not implemented for `ResourceId`
   |
   = help: the following other types implement trait `WordValue`:
+            EventSet<E>
             NodeId
             Option<T>
             Rgba
@@ -85,7 +86,6 @@ error[E0277]: the trait bound `ResourceId: TableField` is not satisfied
             bool
             f32
             i16
-            i32
           and $N others
   = note: required for `ResourceId` to implement `TableField`
 note: required by a bound in `write_row`

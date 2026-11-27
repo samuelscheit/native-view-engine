@@ -3,11 +3,11 @@ mod common;
 use common::{live_node_ids, register_studio_tables, unique_test_dir, MultiBackendHarness};
 use nve_abi::xxh64;
 use nve_abi::{
-    pack_key_modifiers, EventMask, FrameId, NveDirectEvent, NveEventBatchRef, NveMapEntry,
-    NvePropsRef, NveValue, SurfaceId, ROOT_NODE_ID,
+    EventBatchBuf, EventFlags, FrameId, NveMapEntry, NvePropsRef, NveValue, SurfaceId,
+    TextInputEvent, TimestampUs, ROOT_NODE_ID,
 };
 use nve_canvas::{Canvas, CanvasOpRef, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
-use nve_components::tables::{Image, ImageFit, ImageSrc, ImageSrcView, Interaction, TextInput};
+use nve_components::tables::{Image, ImageFit, ImageSrc, ImageSrcView, TextInput};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::NveApp;
 use nve_store::wire::WireDecoder;
@@ -54,14 +54,10 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
         "expected search + custom task TextInputs on Board, got {}",
         board_inputs.len()
     );
-    for (id, inp) in &board_inputs {
-        let mask = store
-            .try_row::<Interaction>(*id)
-            .map_or(0, |i| i.event_mask());
-        assert_ne!(
-            u64::from(mask) & EventMask::TEXT_CHANGE,
-            0,
-            "TextInput must subscribe to EventMask::TEXT_CHANGE"
+    for (_id, inp) in &board_inputs {
+        assert!(
+            inp.listeners().contains(TextInputEvent::Change),
+            "TextInput must subscribe to TextInputEvent::Change"
         );
         assert!(!inp.placeholder().is_empty());
     }
@@ -421,18 +417,17 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
 
     let mut app = StudioWorkspaceModule::create(SurfaceId::ROOT);
     let _ = app.render(FrameId(1));
-    let cmd_k = [NveDirectEvent::key_down(
+    let mut cmd_k = EventBatchBuf::new();
+    cmd_k.push_key_down(
         SurfaceId::ROOT,
         ROOT_NODE_ID,
-        1000,
+        TimestampUs(1000),
         "k",
         "",
-        pack_key_modifiers(true, false, false, false, false),
+        EventFlags::from_modifiers(true, false, false, false, false),
         0,
-        false,
-    )];
-    // SAFETY: `cmd_k` outlives the synchronous `dispatch_events` call.
-    assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&cmd_k) }));
+    );
+    assert!(app.dispatch_events(cmd_k.as_validated()));
     assert!(app.state_snapshot().palette.open);
 
     let mut h_mob = MultiBackendHarness::new(393.0, 852.0);

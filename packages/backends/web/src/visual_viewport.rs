@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, ROOT_NODE_ID};
+use nve_abi::{TimestampUs, ROOT_NODE_ID};
 use nve_codec::NveEncode;
 pub use nve_components::keyboard::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
@@ -15,6 +15,8 @@ pub use nve_components::keyboard::{
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::{Cell, RefCell};
+#[cfg(target_arch = "wasm32")]
+use nve_abi::EventBatchBuf;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
@@ -26,7 +28,7 @@ use crate::WebBackend;
 
 pub(crate) type KeyboardInsetsCallback = Rc<dyn Fn(KeyboardInsets)>;
 
-/// Event name emitted on `ROOT_NODE_ID` (`NativeEventKind::Custom`) carrying an 8-byte binary
+/// Custom event name emitted on `ROOT_NODE_ID` (`NVE_TABLE_CUSTOM`) carrying an 8-byte binary
 /// `NveCodec`-encoded [`KeyboardInsets`] payload whenever `window.visualViewport` keyboard
 /// occlusion changes.
 pub const KEYBOARD_INSETS_EVENT_NAME: &str = "keyboard_insets";
@@ -85,7 +87,7 @@ fn commit_keyboard_insets(
     next: KeyboardInsets,
     slot: &Rc<Cell<KeyboardInsets>>,
     on_keyboard_insets: &Rc<RefCell<Option<KeyboardInsetsCallback>>>,
-    events: &Rc<RefCell<Vec<NativeEvent>>>,
+    events: &Rc<RefCell<EventBatchBuf>>,
     on_event: &Rc<RefCell<Option<crate::RenderCallback>>>,
     surface_id: &Rc<Cell<nve_abi::SurfaceId>>,
 ) {
@@ -96,16 +98,14 @@ fn commit_keyboard_insets(
     if let Some(cb) = on_keyboard_insets.borrow().clone() {
         cb(next);
     }
-    events.borrow_mut().push(NativeEvent {
-        surface_id: surface_id.get(),
-        node_id: ROOT_NODE_ID,
-        timestamp_us: now_us(),
-        kind: NativeEventKind::Custom,
-        payload: EventPayload::Custom {
-            name: KEYBOARD_INSETS_EVENT_NAME.to_owned(),
-            data: encode_keyboard_insets(next),
-        },
-    });
+    let data = encode_keyboard_insets(next);
+    events.borrow_mut().push_custom(
+        surface_id.get(),
+        ROOT_NODE_ID,
+        now_us(),
+        KEYBOARD_INSETS_EVENT_NAME,
+        &data,
+    );
     if let Some(cb) = on_event.borrow().clone() {
         cb();
     }
@@ -146,16 +146,14 @@ impl WebBackend {
         if let Some(cb) = self.on_keyboard_insets.borrow().clone() {
             cb(next);
         }
-        self.push_event(NativeEvent {
-            surface_id: self.surface_id.get(),
-            node_id: ROOT_NODE_ID,
-            timestamp_us: 0,
-            kind: NativeEventKind::Custom,
-            payload: EventPayload::Custom {
-                name: KEYBOARD_INSETS_EVENT_NAME.to_owned(),
-                data: encode_keyboard_insets(next),
-            },
-        });
+        let data = encode_keyboard_insets(next);
+        self.pending_events.borrow_mut().push_custom(
+            self.surface_id.get(),
+            ROOT_NODE_ID,
+            TimestampUs(0),
+            KEYBOARD_INSETS_EVENT_NAME,
+            &data,
+        );
         true
     }
 
@@ -235,19 +233,19 @@ mod tests {
         assert_eq!(list[1], KeyboardInsets::HIDDEN);
 
         // Event queue received compact 8-byte binary payloads decodable back to KeyboardInsets.
-        let events = backend.drain_events();
-        assert_eq!(events.len(), 2);
-        match &events[0].payload {
-            EventPayload::Custom { name, data } => {
-                assert_eq!(name, KEYBOARD_INSETS_EVENT_NAME);
-                assert_eq!(data.len(), 8);
-                let mut reader = nve_codec::ByteReader::new(data);
-                assert_eq!(
-                    <KeyboardInsets as nve_codec::NveDecode>::decode(&mut reader).ok(),
-                    Some(list[0])
-                );
-            }
-            other => panic!("expected Custom keyboard_insets event, got {other:?}"),
-        }
+        let mut events = nve_abi::EventBatchBuf::new();
+        backend.drain_events(&mut events);
+        let validated = events.as_validated();
+        assert_eq!(validated.len(), 2);
+        let ev0 = validated.get(0).unwrap();
+        assert!(ev0.is_custom());
+        assert_eq!(ev0.custom_name(), KEYBOARD_INSETS_EVENT_NAME);
+        let data = ev0.custom_data();
+        assert_eq!(data.len(), 8);
+        let mut reader = nve_codec::ByteReader::new(data);
+        assert_eq!(
+            <KeyboardInsets as nve_codec::NveDecode>::decode(&mut reader).ok(),
+            Some(list[0])
+        );
     }
 }

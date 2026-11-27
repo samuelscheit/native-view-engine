@@ -178,11 +178,12 @@ final class NveSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(state.dispatchedDirectEvents.count, 1)
         XCTAssertEqual(state.dispatchedDirectEvents[0].count, 1)
         let ev = state.dispatchedDirectEvents[0][0]
-        XCTAssertEqual(ev.surfaceId, 9)
-        XCTAssertEqual(ev.kind, NveEventKind.custom.rawValue)
-        XCTAssertEqual(ev.payloadTag, UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue))
-        XCTAssertEqual(ev.name, "reset")
-        XCTAssertEqual(ev.value, .map([("animated", .bool(true))]))
+        XCTAssertEqual(ev.table, UInt64(NVE_TABLE_CUSTOM))
+        XCTAssertEqual(ev.decoded.surfaceId, 9)
+        XCTAssertEqual(ev.decoded.kind, .custom)
+        XCTAssertEqual(ev.decoded.name, "reset")
+        let animated = try ev.decoded.withBinValueView { $0.mapValue(forKey: "animated")?.boolValue }
+        XCTAssertEqual(animated, true)
         XCTAssertEqual(state.renderedFrameIds, [1])
         XCTAssertEqual(receivedEvents.count, 1)
         XCTAssertEqual(receivedEvents[0].name, "onResetComplete")

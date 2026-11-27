@@ -2,13 +2,8 @@
 //! feature `dev`), canonical 0ms snapshot capture, and zero-copy `NveSceneTable` mirroring
 //! (feature `scene-view`).
 
-#[cfg(feature = "app-studio")]
-use nve_abi::NveDirectEvent;
-#[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
-use nve_abi::{native_events_to_direct, NveEventBatchRef};
 use nve_abi::{
-    pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId,
-    ROOT_NODE_ID,
+    EventBatchBuf, EventFlags, FrameId, SurfaceId, TimestampUs, ValidatedEvents, ROOT_NODE_ID,
 };
 #[cfg(feature = "scene-view")]
 use crate::scene::SceneMirror;
@@ -37,17 +32,17 @@ fn dispatch_studio_viewport_layout(
     viewport: Viewport,
 ) {
     if viewport.width > 0.0 && viewport.height > 0.0 {
-        let layout_ev = [NveDirectEvent::layout(
+        let mut layout_ev = EventBatchBuf::with_capacity(1, 0);
+        layout_ev.push_layout(
             surface_id,
             ROOT_NODE_ID,
-            0,
+            TimestampUs::ZERO,
             0.0,
             0.0,
             viewport.width,
             viewport.height,
-        )];
-        // SAFETY: `layout_ev` is a stack-local slice containing scalar geometry and no pointers.
-        let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
+        );
+        let _ = module.dispatch_events(layout_ev.as_validated());
     }
 }
 
@@ -161,24 +156,14 @@ impl SessionApp {
         }
     }
 
-    fn dispatch_events(&mut self, events: &[NativeEvent]) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
             Self::Dioxus(surface) => surface.dispatch_events(events),
             #[cfg(feature = "app-studio")]
-            Self::Studio(module) => {
-                let mut direct = Vec::with_capacity(events.len());
-                native_events_to_direct(events, &mut direct);
-                // SAFETY: `direct` borrows directly from `events`, which outlives this call.
-                module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&direct) })
-            }
+            Self::Studio(module) => module.dispatch_events(events),
             #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => {
-                let mut direct = Vec::with_capacity(events.len());
-                native_events_to_direct(events, &mut direct);
-                // SAFETY: `direct` borrows directly from `events`, which outlives this call.
-                module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&direct) })
-            }
+            Self::KitchenSink(module) => module.dispatch_events(events),
         }
     }
 
@@ -474,7 +459,7 @@ impl WebAppSession {
         self.render_and_submit()
     }
 
-    /// Updates `WebBackend`'s viewport and dispatches `NativeEventKind::Layout` on `ROOT_NODE_ID`,
+    /// Updates `WebBackend`'s viewport and dispatches `LayoutEvent::Layout` on `ROOT_NODE_ID`,
     /// re-rendering immediately if the application changed responsive layout.
     pub fn resize_viewport(
         &mut self,
@@ -489,7 +474,17 @@ impl WebAppSession {
         {
             return Ok(None);
         }
-        let timing = if self.app.dispatch_events(&[layout_event(surface_id, viewport)]) {
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_layout(
+            surface_id,
+            ROOT_NODE_ID,
+            TimestampUs::ZERO,
+            0.0,
+            0.0,
+            viewport.width,
+            viewport.height,
+        );
+        let timing = if self.app.dispatch_events(batch.as_validated()) {
             Some(self.render_and_submit()?)
         } else {
             None
@@ -497,7 +492,7 @@ impl WebAppSession {
         Ok(timing)
     }
 
-    /// Dispatches a `keydown` custom event on `ROOT_NODE_ID` (e.g. `Cmd+K`/`Ctrl+K`, `ArrowUp`,
+    /// Dispatches a `keydown` event on `ROOT_NODE_ID` (e.g. `Cmd+K`/`Ctrl+K`, `ArrowUp`,
     /// `ArrowDown`, `Enter`, `Escape`) and commits an incremental frame if handled.
     pub fn dispatch_keydown(
         &mut self,
@@ -506,20 +501,17 @@ impl WebAppSession {
         ctrl: bool,
     ) -> Result<Option<FrameTiming>, BackendError> {
         let surface_id = self.surface_id;
-        let ev = NativeEvent {
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_key_down(
             surface_id,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: 0,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key: key.to_owned(),
-                code: String::new(),
-                key_code: 0,
-                modifiers: pack_key_modifiers(meta, ctrl, false, false, false),
-                is_composing: false,
-            },
-        };
-        if !self.app.dispatch_events(&[ev]) {
+            ROOT_NODE_ID,
+            TimestampUs::ZERO,
+            key,
+            "",
+            EventFlags::from_modifiers(meta, ctrl, false, false, false),
+            0,
+        );
+        if !self.app.dispatch_events(batch.as_validated()) {
             return Ok(None);
         }
         self.render_and_submit().map(Some)
@@ -527,11 +519,12 @@ impl WebAppSession {
 
     /// Drains pending DOM events, dispatches them to the app, and commits an incremental frame if handled.
     pub fn pump_events(&mut self) -> Result<Option<FrameTiming>, BackendError> {
-        let events = self.backend.drain_events();
+        let mut events = EventBatchBuf::new();
+        self.backend.drain_events(&mut events);
         if events.is_empty() {
             return Ok(None);
         }
-        if !self.app.dispatch_events(&events) {
+        if !self.app.dispatch_events(events.as_validated()) {
             return Ok(None);
         }
         self.render_and_submit().map(Some)
@@ -593,17 +586,3 @@ impl WebAppSession {
     }
 }
 
-fn layout_event(surface_id: SurfaceId, viewport: Viewport) -> NativeEvent {
-    NativeEvent {
-        surface_id,
-        node_id: ROOT_NODE_ID,
-        timestamp_us: 0,
-        kind: NativeEventKind::Layout,
-        payload: EventPayload::Layout {
-            x: 0.0,
-            y: 0.0,
-            width: viewport.width,
-            height: viewport.height,
-        },
-    }
-}

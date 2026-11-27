@@ -2,17 +2,28 @@
 //!
 //! Proves that an external crate can define a custom `#[derive(NveTable)]` capability, paint onto
 //! `PixelBuffer` via `SkiaTableRegistry`, handle imperative commands, emit zero-serialization
-//! typed `TableEventBus` events, and round-trip over `NVE2` with zero modifications to `nve-backend-skia`.
+//! uniform 64-byte `NveEvent` records via `EventBatchBuf`, and round-trip over `NVE2` with zero modifications to `nve-backend-skia`.
 
-use nve_abi::{ColorRgba, SurfaceId};
+use nve_abi::{ColorRgba, EventBatchBuf, EventEnum, EventFlags, SurfaceId, TimestampUs};
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 use nve_engine::LayoutRect;
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, Rgba, TableEventBus, TableSlot};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, Rgba, TableSlot};
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EventEnum)]
+enum MockMapEvent {
+    PinTapped = 0,
+}
 
 #[allow(dead_code)]
 #[derive(NveTable)]
-#[nve_table(name = "acme.skia_map", storage = "sparse", flags = "publish")]
+#[nve_table(
+    name = "acme.skia_map",
+    storage = "sparse",
+    flags = "publish",
+    events = MockMapEvent
+)]
 struct MockSkiaMapTable {
     #[effect(paint)]
     pin_color: Rgba,
@@ -20,13 +31,6 @@ struct MockSkiaMapTable {
     pin_x: f32,
     #[effect(paint)]
     pin_y: f32,
-}
-
-const EVENT_PIN_TAPPED: u32 = 7;
-
-#[derive(Debug, Clone, PartialEq)]
-struct PinTapped {
-    pin_id: u32,
 }
 
 struct MockSkiaMapSystem;
@@ -52,18 +56,21 @@ impl SkiaTableSystem for MockSkiaMapSystem {
         node: NodeId,
         op: u32,
         payload: &[u8],
-        events: &mut TableEventBus,
+        events: &mut EventBatchBuf,
     ) {
         if op == 1
             && let Ok(bytes) = <[u8; 4]>::try_from(payload)
         {
             let pin_id = u32::from_le_bytes(bytes);
-            events.emit::<MockSkiaMapTable, _>(
+            events.push_event(
+                MockSkiaMapTable::KEY,
                 SurfaceId::ROOT,
                 node,
-                42,
-                EVENT_PIN_TAPPED,
-                PinTapped { pin_id },
+                TimestampUs(42),
+                MockMapEvent::PinTapped,
+                EventFlags::EMPTY,
+                [pin_id, 0, 0, 0, 0, 0],
+                &[],
             );
         }
     }
@@ -103,7 +110,7 @@ fn third_party_skia_table_system_paints_handles_commands_and_roundtrips_nve2() {
 
     let mut buf = PixelBuffer::new(32, 32);
     buf.clear(ColorRgba::BLACK);
-    let mut events = TableEventBus::new();
+    let mut events = EventBatchBuf::new();
     {
         let mut ctx = SkiaSystemPaintCtx {
             buffer: &mut buf,
@@ -134,9 +141,11 @@ fn third_party_skia_table_system_paints_handles_commands_and_roundtrips_nve2() {
             &mut events,
         ));
     }
-    let drained: Vec<_> = events.drain().collect();
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].node, node);
-    assert_eq!(drained[0].event_id, EVENT_PIN_TAPPED);
-    assert_eq!(drained[0].payload::<PinTapped>(), Some(&PinTapped { pin_id: 99 }));
+    let view = events.as_validated();
+    assert_eq!(view.len(), 1);
+    let ev = view.get(0).unwrap();
+    assert_eq!(ev.table(), MockSkiaMapTable::KEY);
+    assert_eq!(ev.node(), node);
+    assert_eq!(ev.event(), MockMapEvent::PinTapped.event_id());
+    assert_eq!(ev.payload()[0], 99);
 }

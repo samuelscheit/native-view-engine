@@ -69,17 +69,24 @@ class NveEventRingCodecTest {
         val bytes = NveEventRingCodec.encodeSingle(
             NveEventRingCodec.press(surfaceId = 7, nodeId = 42, x = 10.0f, y = 20.0f, timestampUs = 0x1122334455667788L),
         )
-        // 4 (count) + 18 (header) + 8 (Point x, y) = 30 bytes
-        assertEquals(30, bytes.size)
+        // 14 (NVEV v2 header) + 64 (uniform NveEvent record) = 78 bytes
+        assertEquals(78, bytes.size)
         val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        assertEquals(1, buf.int)
-        assertEquals(7, buf.int)
-        assertEquals(42, buf.int)
-        assertEquals(0x1122334455667788L, buf.long)
-        assertEquals(NveEventKind.PRESS.code, buf.get().toInt() and 0xFF)
-        assertEquals(1, buf.get().toInt() and 0xFF) // Point payload tag
-        assertEquals(10.0f, buf.float)
-        assertEquals(20.0f, buf.float)
+        assertEquals('N'.code.toByte(), buf.get())
+        assertEquals('V'.code.toByte(), buf.get())
+        assertEquals('E'.code.toByte(), buf.get())
+        assertEquals('V'.code.toByte(), buf.get())
+        assertEquals(2.toShort(), buf.short)
+        assertEquals(1, buf.int) // event_count
+        assertEquals(0, buf.int) // bytes_len
+        assertEquals(0x1122334455667788L, buf.long) // timestamp
+        assertEquals(NveEventRingCodec.TABLE_INTERACTION, buf.long) // table
+        assertEquals(7, buf.int) // surface
+        assertEquals(42, buf.int) // node
+        assertEquals(NveEventRingCodec.INTERACTION_PRESS, buf.int) // event
+        assertEquals(0, buf.int) // flags
+        assertEquals(10.0f, buf.float) // payload[0]
+        assertEquals(20.0f, buf.float) // payload[1]
     }
 
     @Test
@@ -107,18 +114,18 @@ class NveEventRingCodecTest {
             NveEventRingCodec.decode(validBatch + byteArrayOf(0x00))
         }
 
-        // Invalid event kind
-        val badKind = NveEventRingCodec.encodeSingle(NveEvent(1, 2, 3L, NveEventKind.FOCUS))
-        badKind[4 + 16] = 99 // kind byte
-        assertThrows(NveEventRingException.InvalidKind::class.java) {
-            NveEventRingCodec.decode(badKind)
+        // Invalid magic rejected
+        val badMagic = NveEventRingCodec.encode(emptyList())
+        badMagic[0] = 0
+        assertThrows(NveEventRingException.InvalidHeader::class.java) {
+            NveEventRingCodec.decode(badMagic)
         }
 
-        // Invalid payload tag
-        val badTag = NveEventRingCodec.encodeSingle(NveEvent(1, 2, 3L, NveEventKind.FOCUS))
-        badTag[4 + 17] = 7 // payload tag byte
-        assertThrows(NveEventRingException.InvalidPayloadTag::class.java) {
-            NveEventRingCodec.decode(badTag)
+        // Invalid table key rejected
+        val badTable = NveEventRingCodec.encodeSingle(NveEvent(1, 2, 3L, NveEventKind.FOCUS))
+        badTable[14 + 8] = 0x55
+        assertThrows(NveEventRingException.InvalidTable::class.java) {
+            NveEventRingCodec.decode(badTable)
         }
 
         // Invalid UTF-8 in Text event
@@ -130,8 +137,11 @@ class NveEventRingCodecTest {
         }
 
         // Huge declared count (OOM guard)
-        val hugeCount = ByteBuffer.allocate(22).order(ByteOrder.LITTLE_ENDIAN)
+        val hugeCount = ByteBuffer.allocate(14).order(ByteOrder.LITTLE_ENDIAN)
+            .put('N'.code.toByte()).put('V'.code.toByte()).put('E'.code.toByte()).put('V'.code.toByte())
+            .putShort(2)
             .putInt(0x7FFF_FFFF)
+            .putInt(0)
             .array()
         assertThrows(NveEventRingException.Truncated::class.java) {
             NveEventRingCodec.decode(hugeCount)

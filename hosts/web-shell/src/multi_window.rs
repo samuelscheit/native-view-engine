@@ -229,7 +229,7 @@ impl WebMultiWindowHost {
 
 #[cfg(all(test, feature = "app-kitchen-sink"))]
 mod tests {
-    use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
+    use nve_abi::TimestampUs;
     use nve_backend_web::WebBackend;
     use nve_engine::Viewport;
     use nve_interop::WindowRect;
@@ -346,12 +346,8 @@ mod tests {
 
         // Clicking Increment on surface 2 updates surface 2 only, leaving surface 3 untouched.
         let inc_node = find_testid_node_id(host.session(s2).unwrap().store(), "ks-counter-inc");
-        host.session_mut(s2).unwrap().backend_mut().push_event(NativeEvent {
-            surface_id: s2,
-            node_id: inc_node,
-            timestamp_us: 1000,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 20.0, y: 20.0 },
+        host.session_mut(s2).unwrap().backend_mut().with_pending_events(|evs| {
+            evs.push_press(s2, inc_node, TimestampUs(1000), 20.0, 20.0);
         });
         host.session_mut(s2).unwrap().pump_events().unwrap().unwrap();
         assert!(host.session(s2).unwrap().render_html().contains("Count: 1"));

@@ -2,10 +2,11 @@ use std::cell::Cell;
 use std::ffi::c_void;
 
 use nve_abi::{
-    NodeId, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
+    EventBatchBuf, InterfaceId, NodeId, NveBufferSlice, NveComponentApi, NveDevApi, NveEventBatch,
     NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
-    InterfaceId, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, TimestampUs,
+    ValidatedEvents, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT,
+    NVE_IFACE_SURFACE,
 };
 
 use super::*;
@@ -44,7 +45,7 @@ fn current_panic_target() -> PanicTarget {
 struct PanickingTestApp {
     surface_id: SurfaceId,
     frame_buf: Vec<u8>,
-    emitted_buf: Vec<NveDirectEvent>,
+    emitted_buf: EventBatchBuf,
     state_buf: Vec<u8>,
 }
 
@@ -61,12 +62,16 @@ impl NveApp for PanickingTestApp {
         match current_panic_target() {
             PanicTarget::Create => panic!("boom in create"),
             PanicTarget::NonStringPayload => std::panic::panic_any(404u32),
-            _ => Self {
-                surface_id,
-                frame_buf: vec![0xAA, 0xBB],
-                emitted_buf: vec![NveDirectEvent::press(surface_id, NodeId::ROOT, 10, 1.0, 2.0)],
-                state_buf: vec![1, 2, 3],
-            },
+            _ => {
+                let mut emitted_buf = EventBatchBuf::new();
+                emitted_buf.push_press(surface_id, NodeId::ROOT, TimestampUs(10), 1.0, 2.0);
+                Self {
+                    surface_id,
+                    frame_buf: vec![0xAA, 0xBB],
+                    emitted_buf,
+                    state_buf: vec![1, 2, 3],
+                }
+            }
         }
     }
 
@@ -77,7 +82,7 @@ impl NveApp for PanickingTestApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         if current_panic_target() == PanicTarget::DispatchEvents {
             panic!("boom in dispatch_events");
         }
@@ -108,11 +113,11 @@ impl NveApp for PanickingTestApp {
         true
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         if current_panic_target() == PanicTarget::DrainEmittedEvents {
             panic!("boom in drain_emitted_events");
         }
-        &self.emitted_buf
+        self.emitted_buf.as_validated()
     }
 
     fn apply_hot_patch(&mut self, _patch: &crate::HotPatchMsg) -> bool {
@@ -189,7 +194,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
             NveGestureDisposition::PassThrough as u8
         );
         assert_eq!((component.set_props)(null_h, std::ptr::null(), 0), 0);
-        assert_eq!((component.drain_emitted_events)(null_h).len, 0);
+        assert_eq!((component.drain_emitted_events)(null_h).event_count, 0);
         assert_eq!((dev.apply_hot_patch)(null_h, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null_h).len, 0);
         (dev.restore_state)(null_h, NveBufferSlice::EMPTY);
@@ -248,11 +253,9 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         assert!(msg.contains("NveSurfaceApi::render") && msg.contains("boom in render frame 99"));
 
         set_panic_target(PanicTarget::DispatchEvents);
-        let direct_ev = [NveDirectEvent::press(SurfaceId::new(42, 0), NodeId::new(2, 0), 100, 1.0, 2.0)];
-        assert_eq!(
-            (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_ev)),
-            0
-        );
+        let mut ev_buf = EventBatchBuf::new();
+        ev_buf.push_press(SurfaceId::new(42, 0), NodeId::new(2, 0), TimestampUs(100), 1.0, 2.0);
+        assert_eq!((surface.dispatch_events)(handle, ev_buf.as_raw_batch()), 0);
         let msg = take_last_ffi_panic().unwrap();
         assert!(
             msg.contains("NveSurfaceApi::dispatch_events")
@@ -289,7 +292,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
 
         set_panic_target(PanicTarget::DrainEmittedEvents);
         let drained = (component.drain_emitted_events)(handle);
-        assert!(drained.ptr.is_null() && drained.len == 0);
+        assert!(drained.events.is_null() && drained.event_count == 0);
         let msg = take_last_ffi_panic().unwrap();
         assert!(
             msg.contains("NveComponentApi::drain_emitted_events")
@@ -372,7 +375,7 @@ impl NveApp for DirectOnlyPropsApp {
         &[]
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 

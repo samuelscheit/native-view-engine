@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 
-use nve_abi::EventMask;
+use nve_abi::{EventSet, InteractionEvent};
 use nve_backend_web::WebBackend;
 use nve_canvas::Canvas;
 use nve_components::tables::{
@@ -90,7 +90,7 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
         tx.set_str(link, DebugId::TEST_ID, "probe-link");
         tx.set(link, Accessibility::ROLE, Some(AriaRole::Link));
         tx.set_str(link, Link::HREF, "/docs/ssr");
-        tx.set(link, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+        tx.edit::<Interaction>(link).listeners(EventSet::one(InteractionEvent::Press));
         tx.set_str(link, TextContent::TEXT, "Docs Link");
 
         tx.set_children(card, &[heading, link]);

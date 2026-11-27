@@ -30,7 +30,7 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
     writeln!(out, "pub mod {mod_name} {{");
     writeln!(
         out,
-        "    use nve_abi::{{encode_bin_value_to_vec, BinValueView, ColorRgba, DecodeError, EventPayload, NativeEvent, NativeEventKind, NveMapEntry, NveValue, NveValueRef}};"
+        "    use nve_abi::{{encode_bin_value_to_vec, BinValueView, ColorRgba, DecodeError, NveMapEntry, NveValue, NveValueRef, ValidatedEvent}};"
     );
     writeln!(out, "    use nve_dioxus::elements::AttributeDescription;");
     writeln!(out);
@@ -87,23 +87,16 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
 
         writeln!(
             out,
-            "    /// Decodes a `NativeEventKind::Custom` binary `NveBinValue` event emitted by `{}` into `{pascal}Event`.",
+            "    /// Decodes a custom binary `NveBinValue` event emitted by `{}` into `{pascal}Event`.",
             sanitize_single_line_comment(&spec.component_name)
         );
         writeln!(
             out,
-            "    pub fn decode_event(event: &NativeEvent) -> Option<{pascal}Event> {{"
+            "    pub fn decode_event(event: ValidatedEvent<'_>) -> Option<{pascal}Event> {{"
         );
-        writeln!(out, "        if event.kind != NativeEventKind::Custom {{");
-        writeln!(out, "            return None;");
-        writeln!(out, "        }}");
-        writeln!(
-            out,
-            "        let EventPayload::Custom {{ name, data }} = &event.payload else {{"
-        );
-        writeln!(out, "            return None;");
-        writeln!(out, "        }};");
-        writeln!(out, "        match name.as_str() {{");
+        writeln!(out, "        let name = event.custom_name()?;");
+        writeln!(out, "        let data = event.custom_data()?;");
+        writeln!(out, "        match name {{");
         for ev in &spec.events {
             let variant = to_pascal_case(&strip_on_prefix(&ev.name));
             let short_name = strip_on_prefix(&ev.name);

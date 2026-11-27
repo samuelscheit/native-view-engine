@@ -1,8 +1,8 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    FrameId, InterfaceId, NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
-    NveSizeConstraints, SurfaceId,
+    EventBatchBuf, FrameId, InterfaceId, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
+    NveSizeConstraints, SurfaceId, TimestampUs, ValidatedEvents,
 };
 use nve_components::tables::TextContent;
 use nve_store::wire::{WireDecoder, WireEncoder};
@@ -75,7 +75,7 @@ struct ExportedFlakyPlugin {
     _surface_id: SurfaceId,
     counter: u32,
     frame_buf: Vec<u8>,
-    out_events: Vec<NveDirectEvent>,
+    out_events: EventBatchBuf,
     state_buf: Vec<u8>,
 }
 
@@ -92,11 +92,13 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         if get_host_panic_mode() == HostPanicMode::PanicCreate {
             panic!("flaky plugin exploded in create");
         }
+        let mut out_events = EventBatchBuf::new();
+        out_events.push_press(surface_id, NodeId::ROOT, TimestampUs(0), 0.0, 0.0);
         Self {
             _surface_id: surface_id,
             counter: 10,
             frame_buf: Vec::new(),
-            out_events: vec![NveDirectEvent::press(surface_id, NodeId::ROOT, 0, 0.0, 0.0)],
+            out_events,
             state_buf: Vec::new(),
         }
     }
@@ -109,7 +111,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         if get_host_panic_mode() == HostPanicMode::PanicDispatchEvents {
             panic!("flaky plugin exploded in dispatch_events");
         }
@@ -142,11 +144,11 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         true
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         if get_host_panic_mode() == HostPanicMode::PanicDrainEvents {
             panic!("flaky plugin exploded in drain_emitted_events");
         }
-        &self.out_events
+        self.out_events.as_validated()
     }
 
     fn apply_hot_patch(&mut self, _patch: &nve_engine::HotPatchMsg) -> bool {
@@ -194,7 +196,7 @@ impl nve_engine::NveApp for ExportedHealthyPlugin {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         self.ticks += 1;
         true
     }
@@ -275,11 +277,12 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     let flaky_sid = runtime.plugins().get(flaky_id).unwrap().surface_id();
     let healthy_sid = runtime.plugins().get(healthy_id).unwrap().surface_id();
     set_host_panic_mode(HostPanicMode::PanicDispatchEvents);
-    let direct_ev = [NveDirectEvent::press(flaky_sid, NodeId::new(2, 0), 100, 1.0, 2.0)];
+    let mut ev_buf = EventBatchBuf::new();
+    ev_buf.push_press(flaky_sid, NodeId::new(2, 0), TimestampUs(100), 1.0, 2.0);
     let ev_err: InteropError = runtime
         .plugin_mut(flaky_id)
         .unwrap()
-        .dispatch_events(&direct_ev)
+        .dispatch_events(ev_buf.as_validated())
         .unwrap_err()
         .into();
     assert!(matches!(
@@ -335,7 +338,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     // 7. Transactional hot-swap onto a plugin whose `restore_state` panics fails cleanly and
     // preserves the existing mounted plugin!
     set_host_panic_mode(HostPanicMode::Healthy);
-    assert!(runtime.plugin_mut(flaky_id).unwrap().dispatch_events(&direct_ev).unwrap()); // counter -> 11
+    assert!(runtime.plugin_mut(flaky_id).unwrap().dispatch_events(ev_buf.as_validated()).unwrap()); // counter -> 11
     set_host_panic_mode(HostPanicMode::PanicRestore);
     let swap_err = runtime
         .hot_swap_plugin_in_process(
@@ -355,8 +358,8 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
 
     // 8. Healthy sibling plugin stayed 100% healthy throughout all flaky panics!
     let mut sibling = runtime.plugin_mut(healthy_id).unwrap();
-    assert!(sibling.dispatch_events(&direct_ev).unwrap());
-    assert!(sibling.dispatch_events(&direct_ev).unwrap());
+    assert!(sibling.dispatch_events(ev_buf.as_validated()).unwrap());
+    assert!(sibling.dispatch_events(ev_buf.as_validated()).unwrap());
     let sibling_frame = sibling.render(FrameId(1)).unwrap().to_vec();
     assert_eq!(sibling.surface_id(), healthy_sid);
     assert_eq!(decode_first_text(&sibling_frame), "healthy:ticks=2");

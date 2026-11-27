@@ -1083,21 +1083,23 @@ fn main() {
         let ev_view = BinValueView::parse(&ev_bin).unwrap();
         assert_eq!(ev_view.get("position_ms").unwrap().as_i64(), Some(1200));
         assert_eq!(ev_view.get("duration_ms").unwrap().as_i64(), Some(9000));
-        let mut saw_direct = false;
+        let mut batch = nve_abi::EventBatchBuf::new();
         emit_video_surface_on_progress(
             nve_abi::SurfaceId::ROOT,
             nve_abi::NodeId::new(2, 0),
             nve_abi::TimestampUs(333),
             1200,
             9000,
-            |d| {
-                saw_direct = true;
-                assert_eq!(d.surface_id, nve_abi::SurfaceId::ROOT);
-                assert_eq!(d.node_id, nve_abi::NodeId::new(2, 0));
-                assert_eq!(d.timestamp_us, 333);
-            },
+            &mut batch,
         );
-        assert!(saw_direct);
+        let view = batch.as_validated();
+        assert_eq!(view.len(), 1);
+        let d = view.get(0).unwrap();
+        assert_eq!(d.surface(), nve_abi::SurfaceId::ROOT);
+        assert_eq!(d.node(), nve_abi::NodeId::new(2, 0));
+        assert_eq!(d.timestamp(), nve_abi::TimestampUs(333));
+        assert!(d.is_custom());
+        assert_eq!(d.custom_name(), "on_progress");
 
         (vvt.destroy)(vh);
         (vt.destroy)(h);
@@ -1200,8 +1202,8 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
 fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
     use core::mem::{align_of, offset_of, size_of};
     use nve_abi::{
-        NveBufferSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue,
-        NveValueArray, NveValueData, NveValueMap,
+        NveBufferSlice, NveEvent, NveEventBatch, NveMapEntry, NveStrSlice, NveValue, NveValueArray,
+        NveValueData, NveValueMap, RawEventBytes,
     };
 
     if !tool_available("clang") {
@@ -1295,22 +1297,29 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         ],
     );
     check_layout(
-        "NveDirectEvent",
-        size_of::<NveDirectEvent>(),
-        align_of::<NveDirectEvent>(),
+        "RawEventBytes",
+        size_of::<RawEventBytes>(),
+        align_of::<RawEventBytes>(),
         &[
-            ("surface_id", offset_of!(NveDirectEvent, surface_id)),
-            ("node_id", offset_of!(NveDirectEvent, node_id)),
-            ("timestamp_us", offset_of!(NveDirectEvent, timestamp_us)),
-            ("kind", offset_of!(NveDirectEvent, kind)),
-            ("payload_tag", offset_of!(NveDirectEvent, payload_tag)),
-            ("name", offset_of!(NveDirectEvent, name)),
-            ("x", offset_of!(NveDirectEvent, x)),
-            ("y", offset_of!(NveDirectEvent, y)),
-            ("width", offset_of!(NveDirectEvent, width)),
-            ("height", offset_of!(NveDirectEvent, height)),
-            ("text", offset_of!(NveDirectEvent, text)),
-            ("value", offset_of!(NveDirectEvent, value)),
+            ("offset", offset_of!(RawEventBytes, offset)),
+            ("len", offset_of!(RawEventBytes, len)),
+        ],
+    );
+    // C keeps `NveEvent` naturally aligned (`alignof(uint64_t)`) for Swift ClangImporter
+    // compatibility while Rust slabs are 64-byte cache-line aligned; size and every field offset match.
+    check_layout(
+        "NveEvent",
+        size_of::<NveEvent>(),
+        align_of::<u64>(),
+        &[
+            ("timestamp", offset_of!(NveEvent, timestamp)),
+            ("table", offset_of!(NveEvent, table)),
+            ("surface", offset_of!(NveEvent, surface)),
+            ("node", offset_of!(NveEvent, node)),
+            ("event", offset_of!(NveEvent, event)),
+            ("flags", offset_of!(NveEvent, flags)),
+            ("payload", offset_of!(NveEvent, payload)),
+            ("bytes", offset_of!(NveEvent, bytes)),
         ],
     );
     check_layout(
@@ -1318,8 +1327,10 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         size_of::<NveEventBatch>(),
         align_of::<NveEventBatch>(),
         &[
-            ("ptr", offset_of!(NveEventBatch, ptr)),
-            ("len", offset_of!(NveEventBatch, len)),
+            ("events", offset_of!(NveEventBatch, events)),
+            ("bytes", offset_of!(NveEventBatch, bytes)),
+            ("event_count", offset_of!(NveEventBatch, event_count)),
+            ("bytes_len", offset_of!(NveEventBatch, bytes_len)),
         ],
     );
 

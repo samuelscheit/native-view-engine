@@ -12,7 +12,7 @@ use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use common::UiHarness;
-use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
+use nve_abi::{EventBatchBuf, FrameId, SurfaceId, TimestampUs};
 use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
@@ -364,19 +364,18 @@ fn virtual_list_zero_allocation_guards() {
     // (1,000x larger dataset!) to prove strictly O(viewport) allocation independent of N.
     let mut harness_100 = UiHarness::new(Live100RowVirtualListApp);
     let vlist_100_id = harness_100.find("live-vlist-100");
+    let mut scroll_100_buf = EventBatchBuf::with_capacity(1, 0);
+    scroll_100_buf.push_scroll(
+        SurfaceId::ROOT,
+        vlist_100_id,
+        TimestampUs(16_000),
+        0.0,
+        1_800.0,
+        800.0,
+        4_400.0,
+    );
     let (scroll_100_stats, _) = measure_allocs(|| {
-        assert!(harness_100.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: vlist_100_id,
-            timestamp_us: 16_000,
-            kind: NativeEventKind::Scroll,
-            payload: EventPayload::Scroll {
-                x: 0.0,
-                y: 1_800.0,
-                content_width: 800.0,
-                content_height: 4_400.0,
-            },
-        }]));
+        assert!(harness_100.surface.dispatch_events(scroll_100_buf.as_validated()));
         harness_100
             .surface
             .commit_to(FrameId(2), &mut harness_100.backend)
@@ -384,19 +383,18 @@ fn virtual_list_zero_allocation_guards() {
     });
 
     let vlist_100k_id = harness.find("live-vlist");
+    let mut scroll_100k_buf = EventBatchBuf::with_capacity(1, 0);
+    scroll_100k_buf.push_scroll(
+        SurfaceId::ROOT,
+        vlist_100k_id,
+        TimestampUs(32_000),
+        0.0,
+        2_200_000.0,
+        800.0,
+        5_000_000.0,
+    );
     let (scroll_100k_stats, _) = measure_allocs(|| {
-        assert!(harness.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: vlist_100k_id,
-            timestamp_us: 32_000,
-            kind: NativeEventKind::Scroll,
-            payload: EventPayload::Scroll {
-                x: 0.0,
-                y: 2_200_000.0,
-                content_width: 800.0,
-                content_height: 5_000_000.0,
-            },
-        }]));
+        assert!(harness.surface.dispatch_events(scroll_100k_buf.as_validated()));
         harness
             .surface
             .commit_to(FrameId(10), &mut harness.backend)

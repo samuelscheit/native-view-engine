@@ -315,49 +315,68 @@ NveBufferSlice scene_render(NveAppHandle handle, uint64_t frame_id) {
   return NveBufferSlice{app->frame.data(), app->frame.size()};
 }
 
-std::string extract_event_payload_str(const NveDirectEvent& ev) {
-  if (ev.value.tag == NVE_VAL_STR) {
-    return std::string(nve::str_slice_view(ev.value.data.str_val));
+std::string_view event_arena_str(const NveEvent& ev, const NveEventBatch& batch) {
+  if (ev.bytes.len == 0u || batch.bytes == nullptr ||
+      ev.bytes.offset > batch.bytes_len || ev.bytes.len > batch.bytes_len - ev.bytes.offset) {
+    return {};
   }
-  if (ev.value.tag == NVE_VAL_BYTES && ev.value.data.bytes_val.ptr != nullptr) {
-    return std::string(
-        reinterpret_cast<const char*>(ev.value.data.bytes_val.ptr),
-        ev.value.data.bytes_val.len);
+  return std::string_view(
+      reinterpret_cast<const char*>(batch.bytes + ev.bytes.offset), ev.bytes.len);
+}
+
+std::string extract_key_name(const NveEvent& ev, const NveEventBatch& batch) {
+  if ((ev.flags & NVE_EVENT_FLAG_INLINE_KEY_UTF8) != 0u) {
+    const uint32_t klen = std::min<uint32_t>(ev.payload[1], NVE_EVENT_INLINE_KEY_CAP);
+    std::string out;
+    out.reserve(klen);
+    for (uint32_t i = 0u; i < klen; ++i) {
+      out.push_back(static_cast<char>((ev.payload[2u + (i / 4u)] >> ((i % 4u) * 8u)) & 0xFFu));
+    }
+    return out;
   }
-  return {};
+  const std::string_view arena_sv = event_arena_str(ev, batch);
+  const size_t klen = std::min<size_t>(ev.payload[1], arena_sv.size());
+  return std::string(arena_sv.substr(0u, klen));
 }
 
 uint32_t scene_dispatch_events(NveAppHandle handle, NveEventBatch batch) {
   auto* app = static_cast<MockSceneApp*>(handle);
-  if (batch.ptr == nullptr || batch.len == 0) {
+  if (batch.events == nullptr || batch.event_count == 0u) {
     return 0;
   }
   uint32_t dirty = 0;
-  for (uint32_t i = 0; i < batch.len; ++i) {
-    const NveDirectEvent& ev = batch.ptr[i];
-    const std::string_view ev_name = nve::str_slice_view(ev.name);
-    if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll) && ev.node_id == 6) {
+  for (uint32_t i = 0; i < batch.event_count; ++i) {
+    const NveEvent& ev = batch.events[i];
+    if (ev.table == NVE_TABLE_SCROLL && ev.event == NVE_SCROLL_EVENT_SCROLL && ev.node == 6u) {
       app->scroll_count += 1;
-      app->last_scroll_x = ev.x;
-      app->last_scroll_y = ev.y;
+      app->last_scroll_x = nve::event_payload_f32(ev, 0u);
+      app->last_scroll_y = nve::event_payload_f32(ev, 1u);
       dirty = 1;
-    } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) && ev_name == "submit") {
+    } else if (ev.table == NVE_TABLE_CUSTOM) {
+      std::string_view ev_name;
+      std::span<const uint8_t> payload;
+      if (nve::event_custom_parts(ev, batch.bytes, batch.bytes_len, ev_name, payload)) {
+        const std::string payload_str(
+            reinterpret_cast<const char*>(payload.data()), payload.size());
+        if (ev_name == "submit") {
+          app->submit_count += 1;
+          app->last_submit = payload_str;
+          dirty = 1;
+        } else if (ev_name == "keydown") {
+          app->keydown_count += 1;
+          app->last_keydown = payload_str;
+          dirty = 1;
+        }
+      }
+    } else if (ev.table == NVE_TABLE_TEXT_INPUT && ev.event == NVE_TEXT_INPUT_EVENT_SUBMIT) {
       app->submit_count += 1;
-      app->last_submit = extract_event_payload_str(ev);
+      app->last_submit = std::string(event_arena_str(ev, batch));
       dirty = 1;
-    } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Submit)) {
-      app->submit_count += 1;
-      app->last_submit = std::string(nve::str_slice_view(ev.text));
-      dirty = 1;
-    } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) && ev_name == "keydown") {
+    } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_KEY_DOWN) {
       app->keydown_count += 1;
-      app->last_keydown = extract_event_payload_str(ev);
+      app->last_keydown = extract_key_name(ev, batch);
       dirty = 1;
-    } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::KeyDown)) {
-      app->keydown_count += 1;
-      app->last_keydown = std::string(nve::str_slice_view(ev.text));
-      dirty = 1;
-    } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press)) {
+    } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS) {
       app->press_count += 1;
       dirty = 1;
     }
@@ -388,7 +407,7 @@ uint32_t scene_set_props(NveAppHandle handle, const NveMapEntry* entries, uint32
 }
 
 NveEventBatch scene_drain_emitted_events(NveAppHandle) {
-  return NveEventBatch{nullptr, 0u, 0u};
+  return NveEventBatch{nullptr, nullptr, 0u, 0u};
 }
 
 } // namespace

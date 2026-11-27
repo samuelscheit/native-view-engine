@@ -1,10 +1,10 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    FrameId, InterfaceId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
+    EventBatchBuf, FrameId, InterfaceId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
     NveEventBatch, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, TimestampUs, ValidatedEvents,
+    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_components::tables::TextContent;
 use nve_store::wire::{WireDecoder, WireEncoder};
@@ -48,7 +48,7 @@ pub(super) struct MockPluginState {
     pub(super) counter: u32,
     pub(super) frame_buf: Vec<u8>,
     pub(super) state_buf: Vec<u8>,
-    pub(super) out_events: Vec<NveDirectEvent>,
+    pub(super) out_events: EventBatchBuf,
 }
 
 unsafe extern "C" fn p1_create(surface_id: SurfaceId) -> NveAppHandle {
@@ -58,7 +58,7 @@ unsafe extern "C" fn p1_create(surface_id: SurfaceId) -> NveAppHandle {
         counter: 1,
         frame_buf: Vec::new(),
         state_buf: Vec::new(),
-        out_events: Vec::new(),
+        out_events: EventBatchBuf::new(),
     })) as NveAppHandle
 }
 
@@ -69,7 +69,7 @@ unsafe extern "C" fn p2_create(surface_id: SurfaceId) -> NveAppHandle {
         counter: 1,
         frame_buf: Vec::new(),
         state_buf: Vec::new(),
-        out_events: Vec::new(),
+        out_events: EventBatchBuf::new(),
     })) as NveAppHandle
 }
 
@@ -130,14 +130,15 @@ pub(super) unsafe extern "C" fn p_set_props(
 unsafe extern "C" fn p_drain_events(handle: NveAppHandle) -> NveEventBatch {
     // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    st.out_events = vec![NveDirectEvent::press(
+    st.out_events.clear();
+    st.out_events.push_press(
         st.surface_id,
         NodeId::new(st.counter, 0),
-        0,
+        TimestampUs(0),
         0.0,
         0.0,
-    )];
-    NveEventBatch::from_slice(&st.out_events)
+    );
+    st.out_events.as_raw_batch()
 }
 
 unsafe extern "C" fn p_hot_patch(_: NveAppHandle, _: NveBufferSlice) -> u32 {
@@ -322,7 +323,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     // Mutate plugin state via props + events before hot-swap.
     let props = [NveMapEntry::new("counter", NveValue::i64(42))];
     assert!(slot.set_props(&props).unwrap());
-    assert!(slot.dispatch_events(&[]).unwrap()); // counter -> 43
+    assert!(slot.dispatch_events(ValidatedEvents::EMPTY).unwrap()); // counter -> 43
     let f1 = slot.render(FrameId(1)).unwrap().to_vec();
     assert_eq!(decode_first_text(&f1), "v1:count=43");
 

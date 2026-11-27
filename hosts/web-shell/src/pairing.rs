@@ -4,10 +4,7 @@
 
 use std::collections::VecDeque;
 
-use nve_abi::{
-    encode_events, pack_key_modifiers, EventPayload, FrameId, NativeEvent, NativeEventKind,
-    SurfaceId, ROOT_NODE_ID,
-};
+use nve_abi::{EventBatchBuf, EventFlags, FrameId, SurfaceId, TimestampUs, ROOT_NODE_ID};
 use nve_backend_web::WebBackend;
 use nve_engine::{BackendError, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::NodeStore;
@@ -146,15 +143,15 @@ impl PairClientMachine {
         Ok(out)
     }
 
-    /// Encodes a batch of local DOM [`NativeEvent`]s into one `NveWireKind::EventBatch` frame.
-    pub fn encode_input_events(&mut self, events: &[NativeEvent]) -> Result<Vec<u8>, String> {
+    /// Encodes a batch of local DOM events into one `NveWireKind::EventBatch` frame.
+    pub fn encode_input_events(&mut self, events: &EventBatchBuf) -> Result<Vec<u8>, String> {
         if events.is_empty() {
             return Ok(Vec::new());
         }
         if !self.is_connected() {
             return Err("cannot send EventBatch before handshake completes".to_string());
         }
-        let encoded_ring = encode_events(events);
+        let encoded_ring = events.to_wire_bytes();
         self.session
             .encode_event_batch(&encoded_ring)
             .map_err(|e| e.to_string())
@@ -294,7 +291,8 @@ impl PairedWebSession {
 
     /// Drains pending browser DOM events from `WebBackend` into one `NveWireKind::EventBatch` frame.
     pub fn drain_dom_events_as_wire_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
-        let events = self.replica.backend_mut().drain_events();
+        let mut events = EventBatchBuf::new();
+        self.replica.backend_mut().drain_events(&mut events);
         if events.is_empty() || !self.client.is_connected() {
             return Ok(None);
         }
@@ -319,19 +317,17 @@ impl PairedWebSession {
             return Ok(None);
         }
 
-        let ev = NativeEvent {
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_layout(
             surface_id,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: 0,
-            kind: NativeEventKind::Layout,
-            payload: EventPayload::Layout {
-                x: 0.0,
-                y: 0.0,
-                width: viewport.width,
-                height: viewport.height,
-            },
-        };
-        let pkt = self.client.encode_input_events(&[ev])?;
+            ROOT_NODE_ID,
+            TimestampUs::ZERO,
+            0.0,
+            0.0,
+            viewport.width,
+            viewport.height,
+        );
+        let pkt = self.client.encode_input_events(&batch)?;
         Ok((!pkt.is_empty()).then_some(pkt))
     }
 
@@ -345,20 +341,17 @@ impl PairedWebSession {
             return Ok(None);
         }
         let surface_id = self.surface_id;
-        let ev = NativeEvent {
+        let mut batch = EventBatchBuf::with_capacity(1, 0);
+        batch.push_key_down(
             surface_id,
-            node_id: ROOT_NODE_ID,
-            timestamp_us: 0,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key: key.to_owned(),
-                code: String::new(),
-                key_code: 0,
-                modifiers: pack_key_modifiers(meta, ctrl, false, false, false),
-                is_composing: false,
-            },
-        };
-        let pkt = self.client.encode_input_events(&[ev])?;
+            ROOT_NODE_ID,
+            TimestampUs::ZERO,
+            key,
+            "",
+            EventFlags::from_modifiers(meta, ctrl, false, false, false),
+            0,
+        );
+        let pkt = self.client.encode_input_events(&batch)?;
         Ok((!pkt.is_empty()).then_some(pkt))
     }
 

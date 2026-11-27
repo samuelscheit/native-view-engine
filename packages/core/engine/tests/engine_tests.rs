@@ -7,11 +7,11 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveDirectEvent, NveEventBatch, NveEventBatchRef, NveGestureDisposition, NveHostApi,
-    NveHostCallbacks, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
-    InterfaceId, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT,
-    NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    DecodeError, EventBatchBuf, FrameId, InterfaceId, NodeId, NveBufferSlice, NveComponentApi,
+    NveDevApi, NveEventBatch, NveGestureDisposition, NveHostApi, NveHostCallbacks,
+    NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi,
+    NveValue, SurfaceId, TimestampUs, ValidatedEvents, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::{
     BackendApplyStats, BackendError, FrameProfiler, FrameTiming, HotPatchMsg, LayoutRect, NveApp,
@@ -102,7 +102,7 @@ struct RoutingTestApp {
     patches_received: Vec<HotPatchMsg>,
     state: Vec<u8>,
     frame_buf: Vec<u8>,
-    emitted: Vec<NveDirectEvent>,
+    emitted: EventBatchBuf,
 }
 
 impl NveApp for RoutingTestApp {
@@ -113,6 +113,8 @@ impl NveApp for RoutingTestApp {
         let mut encoder = nve_store::wire::WireEncoder::default();
         let mut frame_buf = Vec::new();
         encoder.encode(&store, &changes, &mut frame_buf);
+        let mut emitted = EventBatchBuf::new();
+        emitted.push_press(surface_id, NodeId::new(2, 0), TimestampUs(10), 1.0, 2.0);
         Self {
             store,
             changes,
@@ -120,7 +122,7 @@ impl NveApp for RoutingTestApp {
             patches_received: Vec::new(),
             state: b"initial".to_vec(),
             frame_buf,
-            emitted: vec![NveDirectEvent::press(surface_id, NodeId::new(2, 0), 10, 1.0, 2.0)],
+            emitted,
         }
     }
 
@@ -131,18 +133,18 @@ impl NveApp for RoutingTestApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         events
             .iter()
-            .any(|ev| ev.name() == "onPing" && ev.value().get("ok").and_then(|v| v.as_bool()) == Some(true))
+            .any(|ev| ev.is_custom() && ev.custom_name() == "onPing" && ev.custom_data() == b"ok")
     }
 
     fn set_props(&mut self, props: NvePropsRef<'_>) -> bool {
         props.get("count").and_then(|v| v.as_i64()).is_some()
     }
 
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
-        &self.emitted
+    fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
+        self.emitted.as_validated()
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
@@ -196,7 +198,7 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         );
         assert_eq!((layout.hit_test)(null, 10.0, 20.0, 1), 2);
         assert_eq!((component.set_props)(null, std::ptr::null(), 0), 0);
-        assert_eq!((component.drain_emitted_events)(null).len, 0);
+        assert_eq!((component.drain_emitted_events)(null).event_count, 0);
         assert_eq!((dev.apply_hot_patch)(null, NveBufferSlice::EMPTY), 0);
         assert_eq!((dev.snapshot_state)(null).len, 0);
         (dev.restore_state)(null, NveBufferSlice::EMPTY);
@@ -205,17 +207,17 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
         assert!(!handle.is_null());
 
         // Direct zero-copy event dispatch & props update via C ABI
-        let payload_entries = [NveMapEntry::new("ok", NveValue::bool(true))];
-        let direct_events = [NveDirectEvent::custom(
+        let mut ev_buf = EventBatchBuf::new();
+        ev_buf.push_custom(
             SurfaceId::new(7, 0),
             NodeId::new(42, 0),
-            1234,
+            TimestampUs(1234),
             "onPing",
-            NveValue::map(&payload_entries),
-        )];
+            b"ok",
+        );
         let prop_entries = [NveMapEntry::new("count", NveValue::i64(99))];
         assert_eq!(
-            (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_events)),
+            (surface.dispatch_events)(handle, ev_buf.as_raw_batch()),
             1
         );
         assert_eq!(
@@ -223,7 +225,7 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             1
         );
         let emitted = (component.drain_emitted_events)(handle);
-        assert_eq!(emitted.len, 1);
+        assert_eq!(emitted.event_count, 1);
 
         // Default NveApp::measure handles finite and infinite constraints properly.
         let finite_size = (layout.measure)(
@@ -457,9 +459,7 @@ impl StoreBackend for StubBackend {
         })
     }
 
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        Vec::new()
-    }
+    fn drain_events(&mut self, _out: &mut EventBatchBuf) {}
 
     fn layout_of(&self, _node_id: NodeId) -> Option<LayoutRect> {
         None
@@ -544,7 +544,7 @@ impl NveApp for HostCapableApp {
         &self.state_buf
     }
 
-    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, _events: ValidatedEvents<'_>) -> bool {
         false
     }
 

@@ -4,9 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use nve_abi::{
-    native_events_to_direct, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId,
-};
+use nve_abi::{EventBatchBuf, InteractionEvent, NodeId, TextInputEvent, TimestampUs};
 use nve_backend_skia::SkiaBackend;
 use nve_components::tables::{is_subtree_display_none, Interaction, TextInput};
 use nve_store::NodeStore;
@@ -31,7 +29,8 @@ pub(super) fn is_focusable(store: &NodeStore, id: NodeId) -> bool {
         return true;
     }
     store.try_row::<Interaction>(id).is_some_and(|i| {
-        (u64::from(i.event_mask()) & (EventMask::FOCUS | EventMask::BLUR)) != 0
+        let l = i.listeners();
+        l.contains(InteractionEvent::Focus) || l.contains(InteractionEvent::Blur)
     })
 }
 
@@ -77,34 +76,22 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
         self.dragging_text_node = None;
         self.reset_multi_click();
-        let ts = now_us();
-        let mut events = Vec::with_capacity(3);
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(3, 0);
         if let Some(old_id) = prev_focus {
             if had_preedit {
                 self.push_composition_event(
                     &mut events,
                     old_id,
                     ts,
-                    NativeEventKind::CompositionEnd,
-                    String::new(),
+                    TextInputEvent::CompositionEnd,
+                    "",
                 );
             }
-            events.push(NativeEvent {
-                surface_id: self.surface_id,
-                node_id: old_id,
-                timestamp_us: ts,
-                kind: NativeEventKind::Blur,
-                payload: EventPayload::Empty,
-            });
+            events.push_blur(self.surface_id, old_id, ts);
         }
         if let Some(new_id) = resolved_next {
-            events.push(NativeEvent {
-                surface_id: self.surface_id,
-                node_id: new_id,
-                timestamp_us: ts,
-                kind: NativeEventKind::Focus,
-                payload: EventPayload::Empty,
-            });
+            events.push_focus(self.surface_id, new_id, ts);
         }
         self.dispatch_and_redraw(&events)?;
         Ok(true)
@@ -124,8 +111,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             .hit_test_interaction(self.replica.store(), x, y)
             .or_else(|| self.replica.backend().hit_test(self.replica.store(), x, y));
 
-        let ts = now_us();
-        let mut events = Vec::with_capacity(4);
+        let ts = TimestampUs(now_us());
+        let mut events = EventBatchBuf::with_capacity(4, 0);
         let mut visual_changed = {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.pointer_down(store, x, y)
@@ -145,26 +132,14 @@ impl<A: DesktopApp> DesktopSession<A> {
                             &mut events,
                             old_id,
                             ts,
-                            NativeEventKind::CompositionEnd,
-                            String::new(),
+                            TextInputEvent::CompositionEnd,
+                            "",
                         );
                     }
-                    events.push(NativeEvent {
-                        surface_id: self.surface_id,
-                        node_id: old_id,
-                        timestamp_us: ts,
-                        kind: NativeEventKind::Blur,
-                        payload: EventPayload::Empty,
-                    });
+                    events.push_blur(self.surface_id, old_id, ts);
                 }
                 if let Some(new_id) = resolved_next {
-                    events.push(NativeEvent {
-                        surface_id: self.surface_id,
-                        node_id: new_id,
-                        timestamp_us: ts,
-                        kind: NativeEventKind::Focus,
-                        payload: EventPayload::Empty,
-                    });
+                    events.push_focus(self.surface_id, new_id, ts);
                 }
             }
         }
@@ -256,13 +231,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
 
         if let Some(node_id) = press_target {
-            events.push(NativeEvent {
-                surface_id: self.surface_id,
-                node_id,
-                timestamp_us: ts,
-                kind: NativeEventKind::Press,
-                payload: EventPayload::Point { x, y },
-            });
+            events.push_press(self.surface_id, node_id, ts, x, y);
         }
 
         if events.is_empty() && !visual_changed {
@@ -272,11 +241,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let handled = if events.is_empty() {
             false
         } else {
-            let mut direct = Vec::with_capacity(events.len());
-            native_events_to_direct(&events, &mut direct);
-            // SAFETY: `direct` borrows solely from `events`, which outlives `dispatch_events`.
-            let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
-            self.app.dispatch_events(batch)
+            self.app.dispatch_events(events.as_validated())
         };
         if handled {
             self.render_and_rasterize()?;

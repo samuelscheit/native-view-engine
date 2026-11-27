@@ -4,8 +4,7 @@
 use std::collections::HashMap;
 
 use nve_abi::{
-    pack_key_modifiers, ColorRgba, EdgeInsets, EventPayload, FrameId, NativeEvent, NativeEventKind,
-    NodeId, SurfaceId,
+    ColorRgba, EdgeInsets, EventBatchBuf, EventFlags, FrameId, NodeId, SurfaceId, TimestampUs,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{
@@ -314,59 +313,45 @@ impl UiHarness {
 
     pub fn press(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Press,
-            payload: EventPayload::Point { x: 4.0, y: 4.0 },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_press(SurfaceId::ROOT, id, ts, 4.0, 4.0);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::KeyDown,
-            payload: EventPayload::Key {
-                key: key.to_owned(),
-                code: String::new(),
-                key_code: 0,
-                modifiers: pack_key_modifiers(false, false, shift, false, false),
-                is_composing: false,
-            },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_key_down(
+            SurfaceId::ROOT,
+            id,
+            ts,
+            key,
+            "",
+            EventFlags::from_modifiers(false, false, shift, false, false),
+            0,
+        );
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn focus(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Focus,
-            payload: EventPayload::Empty,
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_focus(SurfaceId::ROOT, id, ts);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn blur(&mut self, tid: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Blur,
-            payload: EventPayload::Empty,
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_blur(SurfaceId::ROOT, id, ts);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
@@ -376,45 +361,28 @@ impl UiHarness {
 
     pub fn change_text(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::TextChange,
-            payload: EventPayload::Text(value.to_owned()),
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_text_change(SurfaceId::ROOT, id, ts, value);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn submit(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Submit,
-            payload: EventPayload::Text(value.to_owned()),
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_submit(SurfaceId::ROOT, id, ts, value);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 
     pub fn scroll(&mut self, tid: &str, y: f32) {
         let id = self.find(tid);
-        let ts = self.next_ts();
-        assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: id,
-            timestamp_us: ts,
-            kind: NativeEventKind::Scroll,
-            payload: EventPayload::Scroll {
-                x: 0.0,
-                y,
-                content_width: 800.0,
-                content_height: y + 600.0,
-            },
-        }]));
+        let ts = TimestampUs(self.next_ts());
+        let mut batch = EventBatchBuf::new();
+        batch.push_scroll(SurfaceId::ROOT, id, ts, 0.0, y, 800.0, y + 600.0);
+        assert!(self.surface.dispatch_events(batch.as_validated()));
         self.render();
     }
 }

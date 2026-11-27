@@ -282,8 +282,8 @@ void test_seeded_fuzz_corpus() {
   valid_ring.push_long_press(1, 2, 200, 15.0f, 36.0f);
   valid_ring.push_scroll(1, 3, 300, 0.0f, 120.0f, 393.0f, 2000.0f);
   valid_ring.push_text_change(1, 4, 400, "hello world");
-  valid_ring.push_empty(1, 5, 500, 5); /* Focus */
-  valid_ring.push_empty(1, 5, 600, 6); /* Blur */
+  valid_ring.push_focus(1, 5, 500);
+  valid_ring.push_blur(1, 5, 600);
   valid_ring.push_layout(1, 6, 700, 0.0f, 0.0f, 300.0f, 200.0f);
   const std::string custom_json = "{\"ok\":true}";
   valid_ring.push_custom(
@@ -320,7 +320,8 @@ void test_seeded_fuzz_corpus() {
 
   // Oversized count (0xFFFFFFFF) -> false without OOM.
   {
-    const uint8_t huge_cnt[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    const uint8_t huge_cnt[14] = {
+        'N', 'V', 'E', 'V', 2, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0};
     assert(!nve::decode_event_ring(NveBufferSlice{huge_cnt, sizeof(huge_cnt)}, out_events));
     assert(out_events.empty());
     ++ring_fuzz_cases;

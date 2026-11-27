@@ -21,18 +21,18 @@ fn node_and_surface_id_try_new_and_from_raw_reject_null_and_overflow() {
     assert_eq!(NodeId::from_raw_or_null(1u32 << NodeId::INDEX_BITS), NodeId::NULL);
     assert_eq!(NodeId::from_raw_or_null(max_node.raw()), max_node);
 
-    // Direct FFI event view canonicalizes non-canonical index-0 bit patterns (e.g. from C PODs).
-    let corrupt_ev = crate::NveDirectEvent {
+    // Validated FFI event view canonicalizes non-canonical index-0 bit patterns (e.g. from C PODs).
+    let corrupt_ev = [crate::NveEvent {
         // SAFETY: `SurfaceId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
-        surface_id: unsafe { core::mem::transmute::<u32, SurfaceId>(0x0500_0000) },
+        surface: unsafe { core::mem::transmute::<u32, SurfaceId>(0x0500_0000) },
         // SAFETY: `NodeId` is `#[repr(transparent)]` over `u32`; simulating raw C POD bits.
-        node_id: unsafe { core::mem::transmute::<u32, NodeId>(0x0700_0000) },
-        ..crate::NveDirectEvent::default()
-    };
-    // SAFETY: `corrupt_ev` holds empty slices with no dangling pointers.
-    let ev_ref = unsafe { crate::NveDirectEventRef::from_raw(&corrupt_ev) };
-    assert_eq!(ev_ref.surface_id(), SurfaceId::NULL);
-    assert_eq!(ev_ref.node_id(), NodeId::NULL);
+        node: unsafe { core::mem::transmute::<u32, NodeId>(0x0700_0000) },
+        ..crate::NveEvent::default()
+    }];
+    let batch = crate::ValidatedEvents::validate(&corrupt_ev, &[]).expect("valid empty-span event");
+    let ev_ref = batch.get(0).unwrap();
+    assert_eq!(ev_ref.surface(), SurfaceId::NULL);
+    assert_eq!(ev_ref.node(), NodeId::NULL);
 
     #[cfg(not(debug_assertions))]
     {

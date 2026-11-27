@@ -2,7 +2,7 @@ import CNveAbi
 import Foundation
 import NveSwiftUI
 
-// MARK: - C-ABI Value Snapshot Helpers (mirrors Rust NveValueRef / NveDirectEventRef)
+// MARK: - C-ABI Value Snapshot Helpers (mirrors Rust NveValue / NveEventBatch)
 
 func readCString(_ slice: NveStrSlice) -> String {
     guard let ptr = slice.ptr, slice.len > 0 else { return "" }
@@ -34,18 +34,10 @@ func readCValue(_ value: NveValue) -> NveBinValue {
 }
 
 struct RecordedDirectEvent: Equatable {
-    let surfaceId: UInt32
-    let nodeId: UInt32
-    let timestampUs: UInt64
-    let kind: UInt8
-    let payloadTag: UInt8
-    let name: String
-    let x: Float
-    let y: Float
-    let width: Float
-    let height: Float
-    let text: String
-    let value: NveBinValue
+    let table: UInt64
+    let eventId: UInt32
+    let flags: UInt32
+    let decoded: NveSwiftUI.NveEvent
 }
 
 let nvp1DevStatus = Data([0x4E, 0x56, 0x50, 0x31, 3, 1, 0, 0, 0, 0x78, 0, 0, 0, 0, 0, 0, 0, 0])
@@ -63,8 +55,7 @@ final class MockSurfaceState: @unchecked Sendable {
     var dispatchEventsReturnValue: UInt32 = 1
     var hotPatchHistory: [Data] = []
     var hotPatchReturnValue: UInt32 = 1
-    var pendingOutboundEvents: [NveEvent] = []
-    var drainedOutboundStorage: [NveDirectEvent] = []
+    var pendingOutboundEvents: [NveSwiftUI.NveEvent] = []
     var lastConstraints: NveSizeConstraints?
     var intrinsicSize = NveIntrinsicSize(width: 180, height: 90)
 
@@ -159,15 +150,16 @@ enum MockVtables {
                 dispatch_events: { handle, batch in
                     guard let state = MockAbiRegistry.shared.state(for: handle) else { return 0 }
                     var captured: [RecordedDirectEvent] = []
-                    if let base = batch.ptr, batch.len > 0 {
-                        for i in 0 ..< Int(batch.len) {
+                    let decoded = NveDirectEventWriter.decodeBatch(batch)
+                    if let base = batch.events, batch.event_count > 0 {
+                        for i in 0 ..< min(Int(batch.event_count), decoded.count) {
                             let ev = base[i]
                             captured.append(
                                 RecordedDirectEvent(
-                                    surfaceId: ev.surface_id, nodeId: ev.node_id, timestampUs: ev.timestamp_us,
-                                    kind: ev.kind, payloadTag: ev.payload_tag, name: readCString(ev.name),
-                                    x: ev.x, y: ev.y, width: ev.width, height: ev.height,
-                                    text: readCString(ev.text), value: readCValue(ev.value)
+                                    table: ev.table,
+                                    eventId: ev.event,
+                                    flags: ev.flags,
+                                    decoded: decoded[i]
                                 )
                             )
                         }
@@ -237,51 +229,35 @@ enum MockVtables {
                 },
                 drain_emitted_events: { handle in
                     guard let state = MockAbiRegistry.shared.state(for: handle) else {
-                        return NveEventBatch(ptr: nil, len: 0, _pad: 0)
+                        return NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0)
                     }
                     state.lock.lock()
                     let outbound = state.pendingOutboundEvents
                     state.pendingOutboundEvents = []
-                    state.drainedOutboundStorage = []
-                    if outbound.isEmpty {
-                        state.lock.unlock()
-                        return NveEventBatch(ptr: nil, len: 0, _pad: 0)
-                    }
-                    for ev in outbound {
-                        var nameSlice = NveStrSlice(ptr: nil, len: 0)
-                        if let name = ev.name, !name.isEmpty {
-                            let d = Data(name.utf8)
-                            let p = UnsafeMutablePointer<UInt8>.allocate(capacity: d.count)
-                            d.copyBytes(to: p, count: d.count)
-                            nameSlice = NveStrSlice(ptr: UnsafePointer(p), len: d.count)
-                        }
-                        var val = NveValue(tag: UInt32(NVE_VAL_NULL.rawValue), data: NveValueData())
-                        var ptag = UInt8(NVE_EVENT_PAYLOAD_EMPTY.rawValue)
-                        if case let .binValue(payloadData) = ev.payload {
-                            ptag = UInt8(NVE_EVENT_PAYLOAD_CUSTOM.rawValue)
-                            if !payloadData.isEmpty {
-                                let p = UnsafeMutablePointer<UInt8>.allocate(capacity: payloadData.count)
-                                payloadData.copyBytes(to: p, count: payloadData.count)
-                                val = NveValue(
-                                    tag: UInt32(NVE_VAL_BYTES.rawValue),
-                                    data: NveValueData(bytes_val: NveBufferSlice(ptr: UnsafePointer(p), len: payloadData.count))
-                                )
-                            }
-                        }
-                        state.drainedOutboundStorage.append(
-                            NveDirectEvent(
-                                surface_id: ev.surfaceId, node_id: ev.nodeId, timestamp_us: ev.timestampUs,
-                                kind: ev.kind.rawValue, payload_tag: ptag, modifiers: 0, event_flags: 0, key_code: 0,
-                                name: nameSlice, x: 0, y: 0, width: 0, height: 0,
-                                text: NveStrSlice(ptr: nil, len: 0), value: val
-                            )
-                        )
-                    }
-                    let count = state.drainedOutboundStorage.count
-                    let outPtr = UnsafeMutablePointer<NveDirectEvent>.allocate(capacity: count)
-                    for i in 0 ..< count { outPtr.advanced(by: i).initialize(to: state.drainedOutboundStorage[i]) }
                     state.lock.unlock()
-                    return NveEventBatch(ptr: UnsafePointer(outPtr), len: UInt32(count), _pad: 0)
+                    if outbound.isEmpty {
+                        return NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0)
+                    }
+                    let copied: NveEventBatch = (try? NveDirectEventWriter.withBatch(outbound) { batch in
+                        let evCount = Int(batch.event_count)
+                        let evPtr = UnsafeMutablePointer<CNveAbi.NveEvent>.allocate(capacity: evCount)
+                        if let srcEv = batch.events {
+                            evPtr.initialize(from: srcEv, count: evCount)
+                        }
+                        var bytesPtr: UnsafePointer<UInt8>? = nil
+                        if let srcBytes = batch.bytes, batch.bytes_len > 0 {
+                            let bp = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(batch.bytes_len))
+                            bp.initialize(from: srcBytes, count: Int(batch.bytes_len))
+                            bytesPtr = UnsafePointer(bp)
+                        }
+                        return NveEventBatch(
+                            events: UnsafePointer(evPtr),
+                            bytes: bytesPtr,
+                            event_count: batch.event_count,
+                            bytes_len: batch.bytes_len
+                        )
+                    }) ?? NveEventBatch(events: nil, bytes: nil, event_count: 0, bytes_len: 0)
+                    return copied
                 }
             )
         )

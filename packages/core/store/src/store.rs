@@ -454,6 +454,27 @@ impl NodeStore {
         self.columns[slot.0 as usize].as_ref().map(|c| &c.desc)
     }
 
+    /// Word holding the `EventSet` listener bitmask for `slot`, or [`nve_abi::table::NO_VAL_WORD`]
+    /// when `slot` has no events or is not installed in this store.
+    #[inline]
+    pub fn events_word(&self, slot: TableSlot) -> u8 {
+        self.table_meta(slot)
+            .map_or(nve_abi::table::NO_VAL_WORD, TableMeta::events_word)
+    }
+
+    /// Raw 32-bit `EventSet` listener bitmask on live node `id` for `slot` (`0` if absent or no
+    /// events).
+    #[inline]
+    pub fn node_events_mask(&self, slot: TableSlot, id: NodeId) -> u32 {
+        let ew = self.events_word(slot);
+        if ew == nve_abi::table::NO_VAL_WORD {
+            return 0;
+        }
+        self.words(id, slot)
+            .and_then(|w| w.get(ew as usize).copied())
+            .unwrap_or(0)
+    }
+
     /// Installs a session-scoped dynamic table column strictly in the dynamic slot partition
     /// (`MAX_STATIC_TABLE_SLOTS..MAX_TABLE_SLOTS`), returning `false` on slot-range violation or
     /// schema mismatch against an already-installed column at `slot`.

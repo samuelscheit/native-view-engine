@@ -480,14 +480,9 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     // 3. ActionForm local 0ms `FormDecode` validation (empty title -> 0 network calls, inline error!).
     let actions_before = transport.state.lock().unwrap().action_calls;
     let form_node = find_by_test_id(surface.store(), "rename-form");
-    let submit_ev = nve_abi::NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: form_node,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Submit,
-        payload: nve_abi::EventPayload::Text(String::new()),
-    };
-    assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
+    let mut submit_ev = nve_abi::EventBatchBuf::new();
+    submit_ev.push_submit(SurfaceId::ROOT, form_node, nve_abi::TimestampUs::ZERO, "");
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     assert_eq!(
         transport.state.lock().unwrap().action_calls,
@@ -504,7 +499,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
         ctrl_sig.write().set_text("title", "FORBIDDEN");
     });
     let _ = render_html(&mut surface, &mut web, &mut frame);
-    assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     let html_field_err = web.render_html(surface.store());
@@ -523,7 +518,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
         ctrl_sig.write().set_text("title", "OUTAGE");
     });
     let _ = render_html(&mut surface, &mut web, &mut frame);
-    assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     let html_form_err = web.render_html(surface.store());
@@ -551,7 +546,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
         ctrl_sig.write().set_text("title", "Shipped Cleanly");
     });
     let _ = render_html(&mut surface, &mut web, &mut frame);
-    assert!(surface.dispatch_events(&[submit_ev]));
+    assert!(surface.dispatch_events(submit_ev.as_validated()));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     let html_done = web.render_html(surface.store());
@@ -647,14 +642,9 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
     let btn = find_by_test_id(surface.store(), "opt-fail-btn");
 
     // Click triggers `run_optimistic`: synchronous patch appears immediately while RPC is in flight!
-    let press_ev = nve_abi::NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: btn,
-        timestamp_us: 0,
-        kind: nve_abi::NativeEventKind::Press,
-        payload: nve_abi::EventPayload::Point { x: 1.0, y: 1.0 },
-    };
-    assert!(surface.dispatch_events(&[press_ev]));
+    let mut press_ev = nve_abi::EventBatchBuf::new();
+    press_ev.push_press(SurfaceId::ROOT, btn, nve_abi::TimestampUs::ZERO, 1.0, 1.0);
+    assert!(surface.dispatch_events(press_ev.as_validated()));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     let mid = web.render_html(surface.store());

@@ -289,7 +289,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let c11_rev = tmp.join("check_abi_rev.c");
     std::fs::write(
         &c11_rev,
-        "#include \"nve_scene_abi.generated.h\"\n#include \"nve_abi.generated.h\"\nint check_abi_rev(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveDirectEvent)); }\n",
+        "#include \"nve_scene_abi.generated.h\"\n#include \"nve_abi.generated.h\"\nint check_abi_rev(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveEvent)); }\n",
     )
     .unwrap();
     let status_c11_rev = std::process::Command::new("clang")
@@ -472,9 +472,9 @@ fn generated_c_and_cpp_abi_headers_pass_syntax_checks_on_64bit_and_i686() {
 
     let probe_c = tmp_dir.join("probe.c");
     let probe_cpp = tmp_dir.join("probe.cpp");
-    let probe_src = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nint nve_abi_probe(void) { return (int)sizeof(NveDirectEvent); }\n";
-    let probe_i686 = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nNVE_STATIC_ASSERT(sizeof(NveDirectEvent) == 68u, \"i686 NveDirectEvent must be 68 B\");\nNVE_STATIC_ASSERT(NVE_ALIGNOF(NveDirectEvent) == 4u, \"i686 NveDirectEvent must be 4-byte aligned\");\nint nve_abi_probe(void) { return (int)sizeof(NveDirectEvent); }\n";
-    let probe_armv7 = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nNVE_STATIC_ASSERT(sizeof(NveDirectEvent) == 72u, \"armv7 NveDirectEvent must be 72 B\");\nNVE_STATIC_ASSERT(NVE_ALIGNOF(NveDirectEvent) == 8u, \"armv7 NveDirectEvent must be 8-byte aligned\");\nint nve_abi_probe(void) { return (int)sizeof(NveDirectEvent); }\n";
+    let probe_src = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nint nve_abi_probe(void) { return (int)sizeof(NveEvent); }\n";
+    let probe_i686 = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nNVE_STATIC_ASSERT(sizeof(NveEvent) == 64u, \"i686 NveEvent must be 64 B\");\nNVE_STATIC_ASSERT(sizeof(NveEventBatch) == 16u, \"i686 NveEventBatch must be 16 B\");\nint nve_abi_probe(void) { return (int)sizeof(NveEvent); }\n";
+    let probe_armv7 = "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nNVE_STATIC_ASSERT(sizeof(NveEvent) == 64u, \"armv7 NveEvent must be 64 B\");\nNVE_STATIC_ASSERT(sizeof(NveEventBatch) == 16u, \"armv7 NveEventBatch must be 16 B\");\nint nve_abi_probe(void) { return (int)sizeof(NveEvent); }\n";
     let probe_i686_c = tmp_dir.join("probe_i686.c");
     let probe_i686_cpp = tmp_dir.join("probe_i686.cpp");
     let probe_armv7_c = tmp_dir.join("probe_armv7.c");

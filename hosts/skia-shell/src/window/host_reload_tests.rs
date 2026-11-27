@@ -82,7 +82,12 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
 
         #[repr(C)]
         #[derive(Clone, Copy)]
-        pub struct NveEventBatch { pub ptr: *const c_void, pub count: u32, pub _pad: u32 }
+        pub struct NveEventBatch {
+            pub events: *const c_void,
+            pub bytes: *const u8,
+            pub event_count: u32,
+            pub bytes_len: u32,
+        }
 
         #[repr(C)]
         pub struct NveSurfaceApi {
@@ -171,7 +176,7 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
 
         unsafe extern "C" fn dispatch_events(h: *mut c_void, ev: NveEventBatch) -> u32 {
             let app = unsafe { &mut *(h as *mut LiveHostCdylib) };
-            if ev.count > 0 {
+            if ev.event_count > 0 {
                 app.reloads_preserved += 1;
                 return 1;
             }
@@ -235,10 +240,9 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
 
     // Gen 1 received initial #[repr(C)] ThemeSnapshot and invokes SERVICE_SYSTEM_ENV::GET_THEME live.
     assert_eq!(slot.render(FrameId(1)), b"f=1;bound=1;themes=1;state=1;scheme=1");
-    let tick = [nve_abi::NveDirectEvent::press(SurfaceId::ROOT, NodeId::new(2, 0), 1, 0.0, 0.0)];
-    // SAFETY: `NveDirectEvent::press` holds only scalar coordinates and no borrowed pointers.
-    let tick_batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&tick) };
-    assert!(slot.dispatch_events(tick_batch));
+    let mut tick = nve_abi::EventBatchBuf::new();
+    tick.push_press(SurfaceId::ROOT, NodeId::new(2, 0), nve_abi::TimestampUs(1), 0.0, 0.0);
+    assert!(slot.dispatch_events(tick.as_validated()));
 
     // Update theme to Dark -> push typed SkiaHostEvent::ThemeChanged -> Tier-2 reload to Gen 2.
     let dark_snap = services.update_theme_from_winit(WinitTheme::Dark, 2.0);
@@ -249,7 +253,7 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
     let gen2 = slot.reload(&dylib, SurfaceId::ROOT).expect("reload gen 2");
     assert_eq!(gen2, 2);
     assert_eq!(slot.render(FrameId(3)), b"f=3;bound=1;themes=1;state=2;scheme=2");
-    assert!(slot.dispatch_events(tick_batch));
+    assert!(slot.dispatch_events(tick.as_validated()));
 
     // Unbind cleanly clears callbacks (scheme becomes 0, bound=0).
     assert!(slot.bind_host_services(None));

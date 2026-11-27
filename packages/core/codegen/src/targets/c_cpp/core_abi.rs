@@ -100,10 +100,12 @@ pub fn generate_c_core_abi_h() -> String {
         if c.name == "NVE_BIN_VALUE_MAX_DEPTH" {
             continue;
         }
-        if c.hex {
-            writeln!(out, "#define {} 0x{:X}u", c.name, c.value);
-        } else {
-            writeln!(out, "#define {} {}u", c.name, c.value);
+        let is_u64 = c.ty == HybridType::U64;
+        match (c.hex, is_u64) {
+            (true, true) => writeln!(out, "#define {} 0x{:016X}ULL", c.name, c.value),
+            (false, true) => writeln!(out, "#define {} {}ULL", c.name, c.value),
+            (true, false) => writeln!(out, "#define {} 0x{:X}u", c.name, c.value),
+            (false, false) => writeln!(out, "#define {} {}u", c.name, c.value),
         }
     }
     writeln!(out);
@@ -246,36 +248,26 @@ pub fn generate_c_core_abi_h() -> String {
                     "NVE_STATIC_ASSERT(sizeof(void*) != 8 || offsetof(NveMapEntry, value) == 16u, \"NveMapEntry::value offset must be 16 on 64-bit\");"
                 );
             }
-            "NveDirectEvent" => {
-                writeln!(
-                    out,
-                    "NVE_STATIC_ASSERT(sizeof(NveDirectEvent) == offsetof(NveDirectEvent, value) + sizeof(NveValue), \"NveDirectEvent size must equal offsetof(value) + sizeof(NveValue)\");"
-                );
-                writeln!(
-                    out,
-                    "NVE_STATIC_ASSERT(sizeof(void*) != 4 || sizeof(NveDirectEvent) == (offsetof(NveValue, data) == 8u ? 72u : 68u), \"NveDirectEvent size must be 72 (ARM32/wasm32) or 68 (i686 SysV) on 32-bit\");"
-                );
-                writeln!(
-                    out,
-                    "NVE_STATIC_ASSERT(NVE_ALIGNOF(NveDirectEvent) == (sizeof(void*) == 8u ? 8u : offsetof(NveValue, data)), \"NveDirectEvent alignment must match NveValue alignment\");"
-                );
-            }
             "NveEventBatch" => {
                 writeln!(
                     out,
-                    "NVE_STATIC_ASSERT(sizeof(NveEventBatch) == sizeof(void*) + 8u, \"NveEventBatch size must be sizeof(void*) + 8\");"
+                    "NVE_STATIC_ASSERT(sizeof(NveEventBatch) == 2u * sizeof(void*) + 8u, \"NveEventBatch size must be 2 * sizeof(void*) + 8\");"
                 );
                 writeln!(
                     out,
-                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, ptr) == 0u, \"NveEventBatch::ptr offset must be 0\");"
+                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, events) == 0u, \"NveEventBatch::events offset must be 0\");"
                 );
                 writeln!(
                     out,
-                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, len) == sizeof(void*), \"NveEventBatch::len offset must be sizeof(void*)\");"
+                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, bytes) == sizeof(void*), \"NveEventBatch::bytes offset must be sizeof(void*)\");"
                 );
                 writeln!(
                     out,
-                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, _pad) == sizeof(void*) + 4u, \"NveEventBatch::_pad offset must be sizeof(void*) + 4\");"
+                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, event_count) == 2u * sizeof(void*), \"NveEventBatch::event_count offset must be 2 * sizeof(void*)\");"
+                );
+                writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(offsetof(NveEventBatch, bytes_len) == 2u * sizeof(void*) + 4u, \"NveEventBatch::bytes_len offset must be 2 * sizeof(void*) + 4\");"
                 );
             }
             "NvePropEntry" => {

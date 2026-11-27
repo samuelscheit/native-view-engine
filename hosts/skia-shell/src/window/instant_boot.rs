@@ -303,7 +303,7 @@ mod tests {
             WireEncoder::default().encode(&store, &changes, &mut self.buf);
             &self.buf
         }
-        fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+        fn dispatch_events(&mut self, _events: nve_abi::ValidatedEvents<'_>) -> bool {
             self.count += 1;
             true
         }

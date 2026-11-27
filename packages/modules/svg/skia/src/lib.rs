@@ -309,7 +309,8 @@ impl SkiaTableSystem for SvgSkiaSystem {
 mod tests {
     use super::*;
     use nve_engine::LayoutRect;
-    use nve_store::{ChangeSet, Rgba, TableEventBus};
+    use nve_abi::EventBatchBuf;
+    use nve_store::{ChangeSet, Rgba};
 
     #[test]
     fn svg_skia_system_rasterizes_and_caches_vector_shape() {
@@ -326,7 +327,7 @@ mod tests {
 
         let mut buf = PixelBuffer::new(32, 32);
         buf.clear(ColorRgba::BLACK);
-        let mut events = TableEventBus::new();
+        let mut events = EventBatchBuf::new();
         let mut ctx = SkiaSystemPaintCtx {
             buffer: &mut buf,
             rect: LayoutRect {

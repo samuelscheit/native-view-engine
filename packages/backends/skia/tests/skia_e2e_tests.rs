@@ -3,7 +3,7 @@
 //! - `Transform2D` + sticky positioning hit-testing and painting
 //! - `SceneRelocView` Frame-0 zero-layout instant-boot painting
 
-use nve_abi::{ColorRgba, EventMask, FrameId, SurfaceId};
+use nve_abi::{ColorRgba, FrameId, InteractionEvent, SurfaceId};
 use nve_backend_skia::{
     CursorKind, EasingCurve, FocusModality, InteractionState, MotionPreference, PixelBuffer,
     RowPatch, SkiaBackend, StateStyleRule, StylePatchExt, TransitionProperty, TransitionSpec,
@@ -50,7 +50,7 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
         .height(Length::points(44.0));
     tx.edit::<Visual>(btn).background(Rgba::rgb(15, 23, 42));
     tx.edit::<Interaction>(btn)
-        .event_mask(EventMask::PRESS as u32)
+        .listen(InteractionEvent::Press)
         .cursor(CursorKind::Pointer)
         .state_rules(Some(StateRules(rules.into())));
     tx.edit::<Motion>(btn).transitions(Some(Transitions(transitions.into())));
@@ -122,7 +122,9 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
             .value("secret");
         tx.edit::<Visual>(n).background(Rgba::rgb(255, 0, 0));
         tx.edit::<Interaction>(n)
-            .event_mask((EventMask::PRESS | EventMask::FOCUS | EventMask::BLUR) as u32);
+            .listen(InteractionEvent::Press)
+            .listen(InteractionEvent::Focus)
+            .listen(InteractionEvent::Blur);
         tx.commit_into(&mut changes);
         n
     };

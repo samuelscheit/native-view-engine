@@ -145,7 +145,7 @@ class NveQtQuickItem : public QQuickItem {
   /// Render one frame from the loaded NVE app and synchronize the flat `NveSceneView`.
   Q_INVOKABLE int32_t renderFrame();
 
-  /// Dispatch zero-copy `NveDirectEvent`s into `NativeHostSession`.
+  /// Dispatch zero-copy `NveEventBatch` records into `NativeHostSession`.
   uint32_t dispatchDirectEvents(NveEventBatch batch);
   uint32_t dispatchPress(uint32_t nodeId, float x = 0.0f, float y = 0.0f);
   uint32_t dispatchPress(uint32_t nodeId, const QPointF& localPoint);

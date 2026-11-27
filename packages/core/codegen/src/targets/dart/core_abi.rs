@@ -143,7 +143,11 @@ pub fn generate_dart_core_abi() -> String {
     // Core constants
     for c in &spec.consts {
         let dart_name = screaming_snake_to_camel_case(&c.name);
-        if c.hex {
+        if c.ty == HybridType::U64 {
+            let signed = c.value as i64;
+            writeln!(out, "/// `0x{:016X}`", c.value);
+            writeln!(out, "const int {dart_name} = {signed};");
+        } else if c.hex {
             writeln!(out, "const int {dart_name} = 0x{:X};", c.value);
         } else {
             writeln!(out, "const int {dart_name} = {};", c.value);

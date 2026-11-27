@@ -13,8 +13,7 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    encode_events, ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId,
-    SurfaceId, NVE_PRIMARY_SLOT_NONE,
+    ColorRgba, EventBatchBuf, FrameId, NodeId, SurfaceId, TimestampUs, NVE_PRIMARY_SLOT_NONE,
 };
 use nve_components::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::{
@@ -155,13 +154,9 @@ async fn live_quic_nve_wire_2_roundtrip_scene_command_patch_events_and_datagram(
     assert_eq!(patch_view.patch_str(&patch_view.patches()[0]).unwrap(), "SCORE 42");
 
     // 4. Upstream EventBatch backchannel.
-    let event_bytes = encode_events(&[NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        kind: NativeEventKind::Press,
-        node_id: NodeId::new(2, 0),
-        timestamp_us: 1234,
-        payload: EventPayload::Point { x: 10.0, y: 20.0 },
-    }]);
+    let mut ev_buf = EventBatchBuf::new();
+    ev_buf.push_press(SurfaceId::ROOT, NodeId::new(2, 0), TimestampUs(1234), 10.0, 20.0);
+    let event_bytes = ev_buf.to_wire_bytes();
     client.send_events(&event_bytes).unwrap();
     let inbound = server
         .recv_inbound_async(Duration::from_secs(2))

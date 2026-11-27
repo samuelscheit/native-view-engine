@@ -7,7 +7,8 @@ Zero-copy `#[repr(C)]` C ABI and binary wire definitions (`packages/core/abi`, *
 - `ffi::{NveAppHandle, NveComponentApi, NveDevApi, NveBufferSlice}`, `host::{NveHostApi, NveHostCallbacks, NveHostStatus}`
 - `scene::{NveRenderNode, NveSceneView, NveSceneTable, NveNodeMeta, NVE_PRIMARY_SLOT_NONE}`
 - `table::{NveTableView, TableDesc, FieldDesc, FieldKind, compute_table_schema_hash}`
-- `value::{NveValue, NveValueRef, NveDirectEvent, BinValueView}`, `events`, `schema`, `NveAbi`
+- `event::{NveEvent, NveEventBatch, RawEventBytes, EventEnum, EventSet, ValidatedEvents, EventBatchBuf}`
+- `value::{NveValue, NveValueRef, BinValueView}`, `schema`, `NveAbi`
 
 ```rust
 use nve_abi::{FrameId, NodeId, NveSceneTable, PrimarySlot, SceneNodeInput};

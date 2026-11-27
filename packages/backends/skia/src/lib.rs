@@ -38,14 +38,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId};
+use nve_abi::{ColorRgba, EventBatchBuf, NodeId, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_components::tables::{ImageFit, Typography};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer,
     Viewport,
 };
-use nve_store::{ChangeSet, NodeStore, ResolvedRow, Rgba, TableEventBus};
+use nve_store::{ChangeSet, NodeStore, ResolvedRow, Rgba};
 
 use display_list::emit_node_into;
 
@@ -192,7 +192,7 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) focus: TextFocusState,
     pub(crate) motion: MotionDriver,
     pub(crate) table_registry: SkiaTableRegistry,
-    pub(crate) table_events: TableEventBus,
+    pub(crate) table_events: EventBatchBuf,
     pub(crate) sort_scratch: Vec<NodeId>,
 }
 
@@ -234,7 +234,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             focus: TextFocusState::default(),
             motion: MotionDriver::new(),
             table_registry: SkiaTableRegistry::new(),
-            table_events: TableEventBus::new(),
+            table_events: EventBatchBuf::new(),
             sort_scratch: Vec::new(),
         }
     }
@@ -256,12 +256,12 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     #[inline]
-    pub fn table_events(&self) -> &TableEventBus {
+    pub fn table_events(&self) -> &EventBatchBuf {
         &self.table_events
     }
 
     #[inline]
-    pub fn table_events_mut(&mut self) -> &mut TableEventBus {
+    pub fn table_events_mut(&mut self) -> &mut EventBatchBuf {
         &mut self.table_events
     }
 
@@ -311,7 +311,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
     /// Disjoint borrows of `(display_list, table_registry, table_events)` for GPU/Skia rendering.
     #[inline]
-    pub fn paint_parts_mut(&mut self) -> (&DisplayList, &SkiaTableRegistry, &mut TableEventBus) {
+    pub fn paint_parts_mut(&mut self) -> (&DisplayList, &SkiaTableRegistry, &mut EventBatchBuf) {
         (&self.display_list, &self.table_registry, &mut self.table_events)
     }
 
@@ -448,8 +448,12 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
         Ok(stats)
     }
 
-    fn drain_events(&mut self) -> Vec<NativeEvent> {
-        self.layout_tree.drain_events()
+    fn drain_events(&mut self, out: &mut EventBatchBuf) {
+        self.layout_tree.drain_events(out);
+        if !self.table_events.is_empty() {
+            out.extend_from_validated(self.table_events.as_validated());
+            self.table_events.clear();
+        }
     }
 
     fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {

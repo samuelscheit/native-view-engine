@@ -93,7 +93,7 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
 
 #[test]
 fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
-    use nve_abi::EventMask;
+    use nve_abi::InteractionEvent;
     use nve_components::tables::{Interaction, ScrollAxes, Visibility};
 
     let mut store = NodeStore::new();
@@ -121,14 +121,14 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
         tx.edit::<Visual>(p)
             .visibility(Visibility::Hidden)
             .background(Rgba::rgb(255, 0, 0));
-        tx.edit::<Interaction>(p).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(p).listen(InteractionEvent::Press);
         // Ordinary `Inherit` child under Hidden parent: neither painted nor hit-testable (including scroll & interaction).
         tx.edit::<Layout>(inh)
             .width(Length::points(80.0))
             .height(Length::points(80.0));
         tx.edit::<Visual>(inh).background(Rgba::rgb(0, 0, 255));
         tx.edit::<Scroll>(inh).axes(ScrollAxes::Vertical);
-        tx.edit::<Interaction>(inh).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(inh).listen(InteractionEvent::Press);
         // Explicit `Visible` child under Hidden parent: painted, hit-testable, interaction & scroll eligible.
         tx.edit::<Layout>(vis)
             .width(Length::points(80.0))
@@ -137,7 +137,7 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
             .visibility(Visibility::Visible)
             .background(Rgba::rgb(0, 255, 0));
         tx.edit::<Scroll>(vis).axes(ScrollAxes::Vertical);
-        tx.edit::<Interaction>(vis).event_mask(EventMask::PRESS as u32);
+        tx.edit::<Interaction>(vis).listen(InteractionEvent::Press);
         tx.commit_into(&mut changes);
         (p, inh, vis)
     };

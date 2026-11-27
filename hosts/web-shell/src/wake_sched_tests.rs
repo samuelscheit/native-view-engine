@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Wake, Waker};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, SurfaceId};
+use nve_abi::{SurfaceId, TimestampUs};
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -429,12 +429,8 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
 
     // 1. Task-spawning click drained synchronously -> 0 trailing microtasks despite mid-pump wake.
     let spawn_btn = find(&session, "spawn-btn");
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: spawn_btn,
-        timestamp_us: 1,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 1.0, y: 1.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, spawn_btn, TimestampUs(1), 1.0, 1.0);
     });
     run_direct(&mut session, &fw, false);
     assert!(session.render_html().contains("CLICKS:1:ASYNC:1"));
@@ -448,12 +444,8 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     //    `on_before_poll` clears it before settling, so 0 trailing microtasks are queued!
     //    (Fails right here if `on_before_poll` is hoisted once before the loop.)
     let rw_btn = find(&session, "render-wake-btn");
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: rw_btn,
-        timestamp_us: 2,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 1.0, y: 1.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, rw_btn, TimestampUs(2), 1.0, 1.0);
     });
     run_direct(&mut session, &fw, false);
     assert!(session.render_html().contains("RW:0"));
@@ -501,12 +493,8 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     // 3. Wake fired DURING the final settling `poll_work()` (returning `false`) MUST survive and
     //    schedule exactly 1 follow-up microtask! (Fails if `on_before_poll` is moved after poll.)
     let fp_btn = find(&session, "final-poll-wake-btn");
-    session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: fp_btn,
-        timestamp_us: 3,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 1.0, y: 1.0 },
+    session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, fp_btn, TimestampUs(3), 1.0, 1.0);
     });
     run_direct(&mut session, &fw, false);
     assert!(fw.queues.lock().unwrap().microtasks.is_empty());

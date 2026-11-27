@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
+use nve_abi::{
+    ColorRgba, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId, TextInputEvent,
+    ValidatedEvents,
+};
 use nve_backend_skia::{grapheme_count, is_grapheme_boundary};
 use nve_components::tables::{
     register_core_tables, FlexDirection, Interaction, Layout, TextInput, Typography, Visual,
@@ -18,10 +21,20 @@ use super::input::{
 };
 use super::{DesktopApp, DesktopHostError, DesktopSession};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoggedEvent {
+    TextChange,
+    CompositionStart,
+    CompositionUpdate,
+    CompositionEnd,
+    Focus,
+    Blur,
+}
+
 struct TextMaturityApp {
     single_val: String,
     multi_val: String,
-    events_log: Vec<(NodeId, NativeEventKind, String)>,
+    events_log: Vec<(NodeId, LoggedEvent, String)>,
     store: NodeStore,
     encoder: WireEncoder,
     changes: ChangeSet,
@@ -77,11 +90,13 @@ impl DesktopApp for TextMaturityApp {
             tx.set(NodeId::new(10, 0), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
             tx.set(NodeId::new(10, 0), Typography::COLOR, Rgba::WHITE);
             tx.set(NodeId::new(10, 0), Typography::FONT_SIZE, 16.0);
-            tx.set(
-                NodeId::new(10, 0),
-                Interaction::EVENT_MASK,
-                (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION)
-                    as u32,
+            tx.edit::<Interaction>(NodeId::new(10, 0))
+                .listeners(EventSet::one(InteractionEvent::Focus).with(InteractionEvent::Blur));
+            tx.edit::<TextInput>(NodeId::new(10, 0)).listeners(
+                EventSet::one(TextInputEvent::Change)
+                    .with(TextInputEvent::CompositionStart)
+                    .with(TextInputEvent::CompositionUpdate)
+                    .with(TextInputEvent::CompositionEnd),
             );
 
             // Node 11: multiline TextInput
@@ -94,11 +109,13 @@ impl DesktopApp for TextMaturityApp {
             tx.set(NodeId::new(11, 0), Typography::COLOR, Rgba::WHITE);
             tx.set(NodeId::new(11, 0), Typography::FONT_SIZE, 16.0);
             tx.set(NodeId::new(11, 0), TextInput::MULTILINE, true);
-            tx.set(
-                NodeId::new(11, 0),
-                Interaction::EVENT_MASK,
-                (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION)
-                    as u32,
+            tx.edit::<Interaction>(NodeId::new(11, 0))
+                .listeners(EventSet::one(InteractionEvent::Focus).with(InteractionEvent::Blur));
+            tx.edit::<TextInput>(NodeId::new(11, 0)).listeners(
+                EventSet::one(TextInputEvent::Change)
+                    .with(TextInputEvent::CompositionStart)
+                    .with(TextInputEvent::CompositionUpdate)
+                    .with(TextInputEvent::CompositionEnd),
             );
 
             tx.set_children(NodeId::new(2, 0), &[NodeId::new(10, 0), NodeId::new(11, 0)]);
@@ -114,36 +131,53 @@ impl DesktopApp for TextMaturityApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            match (ev.kind(), ev.payload_tag()) {
-                (Some(NativeEventKind::TextChange), 3) => {
-                    let t = ev.text().to_owned();
-                    if ev.node_id() == NodeId::new(10, 0) {
-                        self.single_val = t.clone();
-                    } else if ev.node_id() == NodeId::new(11, 0) {
-                        self.multi_val = t.clone();
+            if let Some(te) = ev.text_input() {
+                match te {
+                    TextInputEvent::Change => {
+                        let t = ev.text().to_owned();
+                        if ev.node() == NodeId::new(10, 0) {
+                            self.single_val = t.clone();
+                        } else if ev.node() == NodeId::new(11, 0) {
+                            self.multi_val = t.clone();
+                        }
+                        self.events_log.push((ev.node(), LoggedEvent::TextChange, t));
+                        handled = true;
                     }
-                    self.events_log.push((ev.node_id(), NativeEventKind::TextChange, t));
-                    handled = true;
+                    TextInputEvent::CompositionStart => {
+                        self.events_log
+                            .push((ev.node(), LoggedEvent::CompositionStart, ev.text().to_owned()));
+                        handled = true;
+                    }
+                    TextInputEvent::CompositionUpdate => {
+                        self.events_log.push((
+                            ev.node(),
+                            LoggedEvent::CompositionUpdate,
+                            ev.text().to_owned(),
+                        ));
+                        handled = true;
+                    }
+                    TextInputEvent::CompositionEnd => {
+                        self.events_log
+                            .push((ev.node(), LoggedEvent::CompositionEnd, ev.text().to_owned()));
+                        handled = true;
+                    }
+                    _ => {}
                 }
-                (
-                    Some(
-                        kind @ (NativeEventKind::CompositionStart
-                        | NativeEventKind::CompositionUpdate
-                        | NativeEventKind::CompositionEnd),
-                    ),
-                    0 | 3,
-                ) => {
-                    self.events_log.push((ev.node_id(), kind, ev.text().to_owned()));
-                    handled = true;
+            } else if let Some(ie) = ev.interaction() {
+                match ie {
+                    InteractionEvent::Focus => {
+                        self.events_log.push((ev.node(), LoggedEvent::Focus, String::new()));
+                        handled = true;
+                    }
+                    InteractionEvent::Blur => {
+                        self.events_log.push((ev.node(), LoggedEvent::Blur, String::new()));
+                        handled = true;
+                    }
+                    _ => {}
                 }
-                (Some(kind @ (NativeEventKind::Focus | NativeEventKind::Blur)), 0) => {
-                    self.events_log.push((ev.node_id(), kind, String::new()));
-                    handled = true;
-                }
-                _ => {}
             }
         }
         handled
@@ -359,10 +393,10 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "ni".into()),
-            (NodeId::new(10, 0), NativeEventKind::CompositionUpdate, "nihao".into()),
-            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, "你好".into()),
-            (NodeId::new(10, 0), NativeEventKind::TextChange, "你好".into()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionStart, "ni".into()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionUpdate, "nihao".into()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionEnd, "你好".into()),
+            (NodeId::new(10, 0), LoggedEvent::TextChange, "你好".into()),
         ]
     );
 
@@ -377,9 +411,9 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "zhong".into()),
-            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, String::new()),
-            (NodeId::new(10, 0), NativeEventKind::Blur, String::new()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionStart, "zhong".into()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionEnd, String::new()),
+            (NodeId::new(10, 0), LoggedEvent::Blur, String::new()),
         ]
     );
 
@@ -397,10 +431,10 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "ka".into()),
-            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, String::new()),
-            (NodeId::new(10, 0), NativeEventKind::CompositionStart, "ki".into()),
-            (NodeId::new(10, 0), NativeEventKind::CompositionEnd, String::new()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionStart, "ka".into()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionEnd, String::new()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionStart, "ki".into()),
+            (NodeId::new(10, 0), LoggedEvent::CompositionEnd, String::new()),
         ]
     );
 }

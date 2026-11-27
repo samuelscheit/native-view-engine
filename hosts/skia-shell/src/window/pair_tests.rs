@@ -10,8 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    decode_events, ColorRgba, EventMask, EventPayload, FrameId, NativeEventKind, NodeId,
-    SurfaceId, NVE_KEY_MOD_META,
+    ColorRgba, EventBatchBuf, EventSet, FrameId, InteractionEvent, NodeId, SurfaceId,
 };
 use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
@@ -66,11 +65,8 @@ impl RemoteServerApp {
                     Rgba::rgb(15, 23, 42)
                 },
             );
-            tx.set(
-                NodeId::new(2, 0),
-                Interaction::EVENT_MASK,
-                (EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
-            );
+            tx.edit::<Interaction>(NodeId::new(2, 0))
+                .listeners(EventSet::one(InteractionEvent::KeyDown));
 
             tx.set(NodeId::new(4, 0), Layout::WIDTH, Length::points(160.0));
             tx.set(NodeId::new(4, 0), Layout::HEIGHT, Length::points(56.0));
@@ -84,7 +80,8 @@ impl RemoteServerApp {
                 },
             );
             tx.set(NodeId::new(4, 0), Visual::BORDER_RADIUS, 8.0);
-            tx.set(NodeId::new(4, 0), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.edit::<Interaction>(NodeId::new(4, 0))
+                .listeners(EventSet::one(InteractionEvent::Press));
             tx.set_children(NodeId::new(2, 0), &[NodeId::new(4, 0)]);
             tx.set_children(NodeId::ROOT, &[NodeId::new(2, 0)]);
             tx.commit_into(&mut changes);
@@ -95,19 +92,17 @@ impl RemoteServerApp {
     }
 
     fn dispatch(&mut self, encoded_events: &[u8]) -> bool {
-        let Ok(events) = decode_events(encoded_events) else {
+        let Ok(events) = EventBatchBuf::decode_wire(encoded_events) else {
             return false;
         };
         let mut changed = false;
-        for ev in events {
-            match (ev.kind, ev.payload) {
-                (NativeEventKind::Press, _) if ev.node_id == NodeId::new(4, 0) => {
+        for ev in events.as_validated().iter() {
+            match ev.interaction() {
+                Some(InteractionEvent::Press) if ev.node() == NodeId::new(4, 0) => {
                     self.clicks += 1;
                     changed = true;
                 }
-                (NativeEventKind::KeyDown, EventPayload::Key { key, modifiers, .. })
-                    if (modifiers & NVE_KEY_MOD_META) != 0 && key == "k" =>
-                {
+                Some(InteractionEvent::KeyDown) if ev.meta() && ev.key() == "k" => {
                     self.palette_open = !self.palette_open;
                     changed = true;
                 }

@@ -3,9 +3,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
 use nve_abi::{
-    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
-    NveEventBatch, NveEventBatchRef, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
-    NveLayoutApi, NveMapEntry, NveSizeConstraints, NveSurfaceApi, SurfaceId,
+    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveGestureDisposition,
+    NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NveSizeConstraints,
+    NveSurfaceApi, SurfaceId, ValidatedEvents,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use nve_engine::loader::{LoaderError, StagedDylib};
@@ -214,12 +214,12 @@ impl NvePluginSlot {
         Ok(unsafe { slice.as_slice() })
     }
 
-    /// Dispatches direct typed FFI events (`NveEventBatch`) into the plugin.
-    pub(super) fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
+    /// Dispatches ingress-validated FFI events (`NveEventBatch`) into the plugin.
+    pub(super) fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> Result<bool, PluginError> {
         nve_engine::clear_last_ffi_panic();
         let handled = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: `self.handle` is live and `events` remains valid for the synchronous FFI call.
-            unsafe { (self.surface.dispatch_events)(self.handle, NveEventBatch::from_slice(events)) }
+            unsafe { (self.surface.dispatch_events)(self.handle, events.as_raw_batch()) }
         }))
         .map_err(|_| PluginError::PluginPanicked("NveSurfaceApi::dispatch_events".into()))?;
         if let Some(msg) = nve_engine::take_last_ffi_panic() {
@@ -286,12 +286,11 @@ impl NvePluginSlot {
         Ok(changed != 0)
     }
 
-    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported,
-    /// returning a zero-copy borrowed [`NveEventBatchRef`] whose accessors canonicalize
-    /// `SurfaceId`/`NodeId` handles at FFI ingress.
-    pub(super) fn drain_emitted_events(&mut self) -> NveEventBatchRef<'_> {
+    /// Drains component-emitted outbound events via `NVE_IFACE_COMPONENT` if exported, returning
+    /// an ingress-validated zero-copy [`ValidatedEvents`] view.
+    pub(super) fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         let Some(api) = self.component else {
-            return NveEventBatchRef::EMPTY;
+            return ValidatedEvents::EMPTY;
         };
         nve_engine::clear_last_ffi_panic();
         match catch_unwind(AssertUnwindSafe(|| {
@@ -300,11 +299,11 @@ impl NvePluginSlot {
         })) {
             Ok(batch) if nve_engine::take_last_ffi_panic().is_none() => {
                 // SAFETY: Borrowed batch remains valid until the next `&mut self` call on this slot.
-                unsafe { NveEventBatchRef::from_raw(batch) }
+                unsafe { ValidatedEvents::from_raw(batch) }
             }
             _ => {
                 nve_engine::clear_last_ffi_panic();
-                NveEventBatchRef::EMPTY
+                ValidatedEvents::EMPTY
             }
         }
     }
@@ -389,9 +388,9 @@ impl<'a> PluginSlotMut<'a> {
         self.0.render(frame_id)
     }
 
-    /// Dispatches direct typed FFI events (`NveEventBatch`) into the plugin.
+    /// Dispatches ingress-validated FFI events (`NveEventBatch`) into the plugin.
     #[inline]
-    pub fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> Result<bool, PluginError> {
+    pub fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> Result<bool, PluginError> {
         self.0.dispatch_events(events)
     }
 
@@ -413,9 +412,9 @@ impl<'a> PluginSlotMut<'a> {
         self.0.set_props(entries)
     }
 
-    /// Drains component-emitted outbound direct events via `NVE_IFACE_COMPONENT` if exported.
+    /// Drains component-emitted outbound events via `NVE_IFACE_COMPONENT` if exported.
     #[inline]
-    pub fn drain_emitted_events(&mut self) -> NveEventBatchRef<'_> {
+    pub fn drain_emitted_events(&mut self) -> ValidatedEvents<'_> {
         self.0.drain_emitted_events()
     }
 

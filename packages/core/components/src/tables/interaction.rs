@@ -8,11 +8,13 @@ use super::resources::{AriaRelations, StateRules};
 
 /// Interactive subscriptions, pointer cursor, focusability, and pseudo-state style rules.
 #[derive(NveTable)]
-#[nve_table(name = "nve.interaction", storage = "sparse", flags = "publish")]
+#[nve_table(
+    name = "nve.interaction",
+    storage = "sparse",
+    flags = "publish",
+    events = nve_abi::InteractionEvent
+)]
 pub struct Interaction {
-    /// Bitmask of subscribed `EventMask` bits.
-    #[effect(events, realize)]
-    pub event_mask: u32,
     #[effect(paint)]
     pub cursor: CursorKind,
     #[effect(semantics, events, paint)]

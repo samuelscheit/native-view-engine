@@ -341,16 +341,17 @@ struct MockWinImageScrollComponent {
 
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
     auto* self = static_cast<MockWinImageScrollComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
+    if (batch.events == nullptr) return 0u;
+    for (uint32_t i = 0u; i < batch.event_count; ++i) {
+      const NveEvent& ev = batch.events[i];
+      if (ev.table == NVE_TABLE_SCROLL && ev.event == NVE_SCROLL_EVENT_SCROLL) {
         ++self->scroll_events;
-        self->last_scroll_node = ev.node_id;
-        self->last_scroll_x = ev.x;
-        self->last_scroll_y = ev.y;
-        self->last_scroll_content_h = ev.height;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 5u) {
+        self->last_scroll_node = ev.node;
+        self->last_scroll_x = nve::event_payload_f32(ev, 0u);
+        self->last_scroll_y = nve::event_payload_f32(ev, 1u);
+        self->last_scroll_content_h = nve::event_payload_f32(ev, 3u);
+      } else if (ev.table == NVE_TABLE_INTERACTION && ev.event == NVE_INTERACTION_EVENT_PRESS &&
+                 ev.node == 5u) {
         ++self->counter;
         return 1u;
       }

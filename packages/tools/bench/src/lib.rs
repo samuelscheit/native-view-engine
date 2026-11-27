@@ -17,9 +17,9 @@ pub use wasm_bundle_size::{
 };
 
 use nve_abi::{
-    EventMask, EventPayload, FrameId, InterfaceId, NativeEvent, NativeEventKind, NodeId,
-    NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId,
-    ROOT_NODE_ID,
+    EventBatchBuf, EventFlags, EventId, EventSet, FrameId, InteractionEvent, InterfaceId, Key64,
+    NodeId, NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, TimestampUs,
+    ValidatedEvents, ROOT_NODE_ID,
 };
 use nve_components::tables::{
     register_core_tables, AlignItems, FlexDirection, Interaction, JustifyContent, Layout,
@@ -88,7 +88,7 @@ impl RowFeedFixture {
                 tx.set(row_id, Visual::BORDER_COLOR, Rgba::rgb(51, 65, 85));
                 tx.set(row_id, Visual::BORDER_WIDTH, 1.0f32);
                 tx.set(row_id, Visual::BORDER_RADIUS, 8.0f32);
-                tx.set(row_id, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+                tx.edit::<Interaction>(row_id).listeners(EventSet::one(InteractionEvent::Press));
 
                 tx.create_at(text_id);
                 tx.set_str(text_id, TextContent::TEXT, &format!("Row #{i} — NVE Bench"));
@@ -164,7 +164,7 @@ pub fn build_node_tree_cmd(node_count: usize, _frame_id: FrameId) -> Vec<u8> {
                 tx.set(nid, Layout::COLUMN_GAP, Length::points(6.0));
                 tx.set(nid, Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
                 tx.set(nid, Visual::BORDER_RADIUS, 6.0f32);
-                tx.set(nid, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+                tx.edit::<Interaction>(nid).listeners(EventSet::one(InteractionEvent::Press));
             } else {
                 tx.set_str(nid, TextContent::TEXT, &format!("Node #{i}"));
                 tx.set(nid, Typography::COLOR, Rgba::rgb(226, 232, 240));
@@ -239,7 +239,7 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
         tx.set(button, Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
         tx.set(button, Visual::BORDER_RADIUS, 12.0f32);
         tx.set(button, Visual::OPACITY, 0.92f32);
-        tx.set(button, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+        tx.edit::<Interaction>(button).listeners(EventSet::one(InteractionEvent::Press));
 
         tx.create_at(btn_label);
         tx.set(btn_label, Typography::COLOR, Rgba::WHITE);
@@ -259,56 +259,36 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
     out
 }
 
-/// Builds a mixed batch of `NativeEvent` payloads for EventRing benchmarks.
-pub fn build_event_batch(count: usize) -> Vec<NativeEvent> {
-    (0..count)
-        .map(|i| {
-            let node_id = NodeId::new((i as u32 % 100) + 2, 0);
-            let ts = (i as u64 + 1) * 16_000;
-            match i % 4 {
-                0 => NativeEvent {
-                    surface_id: SurfaceId::ROOT,
-                    node_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::Press,
-                    payload: EventPayload::Point {
-                        x: (i % 390) as f32 + 0.5,
-                        y: (i % 800) as f32 + 0.25,
-                    },
-                },
-                1 => NativeEvent {
-                    surface_id: SurfaceId::ROOT,
-                    node_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::Scroll,
-                    payload: EventPayload::Scroll {
-                        x: 0.0,
-                        y: i as f32 * 12.0,
-                        content_width: 393.0,
-                        content_height: 4800.0,
-                    },
-                },
-                2 => NativeEvent {
-                    surface_id: SurfaceId::ROOT,
-                    node_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::TextChange,
-                    payload: EventPayload::Text(format!("query-{i}")),
-                },
-                _ => NativeEvent {
-                    surface_id: SurfaceId::ROOT,
-                    node_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::TableEvent,
-                    payload: EventPayload::TableEvent {
-                        table_key: nve_hash::xxh64(b"nve.gesture", 0),
-                        event_id: 1,
-                        payload: vec![1, 2, 3, 4],
-                    },
-                },
-            }
-        })
-        .collect()
+/// Builds a mixed batch of 64-byte [`nve_abi::NveEvent`] payloads for EventBatch benchmarks.
+pub fn build_event_batch(count: usize) -> EventBatchBuf {
+    let mut batch = EventBatchBuf::with_capacity(count, count * 16);
+    let gesture_table = Key64::of("nve.gesture");
+    for i in 0..count {
+        let node_id = NodeId::new((i as u32 % 100) + 2, 0);
+        let ts = TimestampUs((i as u64 + 1) * 16_000);
+        match i % 4 {
+            0 => batch.push_press(
+                SurfaceId::ROOT,
+                node_id,
+                ts,
+                (i % 390) as f32 + 0.5,
+                (i % 800) as f32 + 0.25,
+            ),
+            1 => batch.push_scroll(SurfaceId::ROOT, node_id, ts, 0.0, i as f32 * 12.0, 393.0, 4800.0),
+            2 => batch.push_text_change(SurfaceId::ROOT, node_id, ts, &format!("query-{i}")),
+            _ => batch.push_table_event(
+                gesture_table,
+                SurfaceId::ROOT,
+                node_id,
+                ts,
+                EventId(1),
+                EventFlags::EMPTY,
+                [0; 6],
+                &[1, 2, 3, 4],
+            ),
+        }
+    }
+    batch
 }
 
 /// Interactive Dioxus component used for initial render, incremental diff, and hot-patch benchmarks.
@@ -372,7 +352,7 @@ impl NveApp for BenchFfiApp {
         &self.frame_buf
     }
 
-    fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
+    fn dispatch_events(&mut self, events: ValidatedEvents<'_>) -> bool {
         !events.is_empty()
     }
 

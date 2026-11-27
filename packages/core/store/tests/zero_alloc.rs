@@ -9,8 +9,9 @@ use std::cell::Cell;
 
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{
-    ChangeSet, FlatResource, GridLine, Length, NodeId, NodeStore, NveTable, Res, ResolvedRow,
-    Rgba, RowPatch, Str, WordEnum,
+    ChangeSet, EventBatchBuf, EventEnum, EventFlags, FlatResource, GridLine, Length, NodeId,
+    NodeStore, NveTable, Res, ResolvedRow, Rgba, RowPatch, Str, SurfaceEventTracker, SurfaceId,
+    TimestampUs, WordEnum,
 };
 
 thread_local! {
@@ -141,6 +142,21 @@ struct BenchLabel {
     text: Str,
     #[effect(paint)]
     blob: Res<BenchBlob>,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EventEnum)]
+enum BenchEvent {
+    Click = 0,
+    Hover = 1,
+}
+
+#[allow(dead_code)]
+#[derive(NveTable)]
+#[nve_table(name = "bench.events", storage = "sparse", flags = "publish", events = BenchEvent)]
+struct BenchEvents {
+    #[effect(semantics)]
+    disabled: bool,
 }
 
 #[allow(dead_code)]
@@ -462,5 +478,55 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     assert_eq!(
         allocs_flat_res, 0,
         "steady-state flat ResourceStore dedup hit, ephemeral in-place rewrite, and RowPatchView::apply_table must allocate 0 bytes"
+    );
+
+    // 8. Steady-state SurfaceEventTracker::sync + EventBatchBuf + ValidatedEvents = 0 allocs.
+    let mut tracker = SurfaceEventTracker::new();
+    tracker.track::<BenchEvents>();
+    tracker.reserve_nodes(store.capacity());
+    let mut ev_buf = EventBatchBuf::with_capacity(16, 256);
+    {
+        let mut tx = store.tx();
+        tx.edit::<BenchEvents>(nodes[0]).listen(BenchEvent::Click);
+        tx.commit_into(&mut changes);
+        tracker.sync(&store, &changes, |_, _, _| {});
+    }
+    let (allocs_events, ev_transitions) = measure_allocs(|| {
+        let mut t_count = 0usize;
+        let mut tx = store.tx();
+        tx.edit::<BenchEvents>(nodes[0]).listen(BenchEvent::Hover);
+        tx.commit_into(&mut changes);
+        tracker.sync(&store, &changes, |_, _, _| {
+            t_count += 1;
+        });
+
+        let mut tx = store.tx();
+        tx.edit::<BenchEvents>(nodes[0]).unlisten(BenchEvent::Hover);
+        tx.commit_into(&mut changes);
+        tracker.sync(&store, &changes, |_, _, _| {
+            t_count += 1;
+        });
+
+        ev_buf.clear();
+        ev_buf.push_press(SurfaceId::ROOT, nodes[0], TimestampUs(99), 12.0, 34.0);
+        ev_buf.push_key_down(
+            SurfaceId::ROOT,
+            nodes[0],
+            TimestampUs(100),
+            "Enter",
+            "Enter",
+            EventFlags::MOD_META,
+            13,
+        );
+        let validated = ev_buf.as_validated();
+        for ev in validated.iter() {
+            t_count += ev.key().len();
+        }
+        t_count
+    });
+    assert!(ev_transitions >= 2);
+    assert_eq!(
+        allocs_events, 0,
+        "steady-state SurfaceEventTracker::sync + EventBatchBuf + ValidatedEvents must allocate 0 bytes"
     );
 }

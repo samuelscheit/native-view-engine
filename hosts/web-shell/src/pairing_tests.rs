@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use nve_abi::{
-    decode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, NVE_KEY_MOD_META,
+    EventBatchBuf, InteractionEvent, LayoutEvent, NodeId, TimestampUs,
 };
 use nve_backend_web::WebBackend;
 use nve_engine::Viewport;
@@ -85,17 +85,17 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
         .recv_inbound_timeout(Duration::from_secs(2))
         .expect("server received initial Layout EventBatch");
     assert_eq!(layout_msg.frame.kind, NveWireKind::EventBatch);
-    let layout_evs = decode_events(&layout_msg.frame.payload).expect("valid Layout EventRing");
-    assert_eq!(layout_evs[0].kind, NativeEventKind::Layout);
+    let layout_evs =
+        EventBatchBuf::decode_wire(&layout_msg.frame.payload).expect("valid Layout EventBatch");
+    assert_eq!(
+        layout_evs.as_validated().get(0).unwrap().layout_event(),
+        Some(LayoutEvent::Layout)
+    );
 
     // Local DOM click -> EventBatch -> server mutates KitchenSinkApp -> CommandDelta -> Count: 1.
     let btn_id = find_counter_increment_button(web_session.store());
-    web_session.backend_mut().push_event(NativeEvent {
-        surface_id: SurfaceId::ROOT,
-        node_id: btn_id,
-        timestamp_us: 12_345,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 24.0, y: 18.0 },
+    web_session.backend_mut().with_pending_events(|evs| {
+        evs.push_press(SurfaceId::ROOT, btn_id, TimestampUs(12_345), 24.0, 18.0);
     });
     let click_frame = web_session
         .drain_dom_events_as_wire_frame()
@@ -108,8 +108,9 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     let click_in = server
         .recv_inbound_timeout(Duration::from_secs(2))
         .expect("server received click EventBatch");
-    let click_evs = decode_events(&click_in.frame.payload).expect("valid click EventRing");
-    assert!(kitchen_sink.dispatch_events(&click_evs));
+    let click_evs =
+        EventBatchBuf::decode_wire(&click_in.frame.payload).expect("valid click EventBatch");
+    assert!(kitchen_sink.dispatch_events(click_evs.as_validated()));
     let frame2 = kitchen_sink.render_nve2_slice(FrameId(2)).to_vec();
     assert_eq!(server.broadcast_command_delta(2, &frame2).unwrap(), 1);
 
@@ -135,15 +136,11 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     let kd_in = server
         .recv_inbound_timeout(Duration::from_secs(2))
         .expect("server received keydown");
-    let kd_evs = decode_events(&kd_in.frame.payload).expect("decode keydown EventRing");
-    assert_eq!(kd_evs[0].kind, NativeEventKind::KeyDown);
-    match &kd_evs[0].payload {
-        EventPayload::Key { key, modifiers, .. } => {
-            assert_eq!(key, "k");
-            assert_ne!(*modifiers & NVE_KEY_MOD_META, 0);
-        }
-        other => panic!("expected Key payload, got {other:?}"),
-    }
+    let kd_evs = EventBatchBuf::decode_wire(&kd_in.frame.payload).expect("decode keydown EventBatch");
+    let kd0 = kd_evs.as_validated().get(0).unwrap();
+    assert_eq!(kd0.interaction(), Some(InteractionEvent::KeyDown));
+    assert_eq!(kd0.key(), "k");
+    assert!(kd0.meta());
 
     if let Some(bye) = web_session.build_bye() {
         let _ = ws.send(Message::Binary(bye.into()));
@@ -156,15 +153,9 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
 fn pair_client_machine_rejects_bad_frames_and_unauthorized_reject() {
     let mut client = PairClientMachine::new("secret-token");
     assert!(!client.is_connected());
-    assert!(client
-        .encode_input_events(&[NativeEvent {
-            surface_id: SurfaceId::ROOT,
-            node_id: NodeId::ROOT,
-            timestamp_us: 0,
-            kind: NativeEventKind::Focus,
-            payload: EventPayload::Empty,
-        }])
-        .is_err());
+    let mut focus_ev = EventBatchBuf::new();
+    focus_ev.push_focus(SurfaceId::ROOT, NodeId::ROOT, TimestampUs::ZERO);
+    assert!(client.encode_input_events(&focus_ev).is_err());
 
     // Truncated / bad magic / bad version frames are rejected.
     assert!(client.on_binary_message(b"NW").is_err());

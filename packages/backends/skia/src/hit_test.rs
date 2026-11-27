@@ -1,7 +1,7 @@
 //! Z-ordered, clip-aware, scroll-shifted, sticky-clamped, `Transform2D`-mapped hit testing for
 //! [`crate::SkiaBackend`] directly over `&NodeStore`.
 
-use nve_abi::{EventMask, NodeId};
+use nve_abi::NodeId;
 use nve_components::tables::{is_node_display_none, Interaction, Scroll, Visual};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::NodeStore;
@@ -25,7 +25,7 @@ impl HitTargetFilter {
         match self {
             Self::EventSubscribed => store
                 .try_row::<Interaction>(id)
-                .is_some_and(|i| i.event_mask() != 0),
+                .is_some_and(|i| !i.listeners().is_empty()),
             Self::InteractionEligible => backend.layout_tree.is_interaction_target(store, id),
         }
     }
@@ -217,10 +217,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             return None;
         }
 
-        let is_scrollable = store.has::<Scroll>(id)
-            || store
-                .try_row::<Interaction>(id)
-                .is_some_and(|i| (u64::from(i.event_mask()) & EventMask::SCROLL) != 0);
+        let is_scrollable = store.has::<Scroll>(id);
 
         let child_clip = if should_clip_children(store, id) {
             match clip {

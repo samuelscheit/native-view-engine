@@ -13,8 +13,9 @@ use std::ffi::c_void;
 
 use nve_abi_macros::NveAbi;
 
+use crate::event::NveEventBatch;
 use crate::id::{DurationUs, FrameId, InterfaceId, SurfaceId};
-use crate::value::{NveEventBatch, NveMapEntry};
+use crate::value::NveMapEntry;
 
 /// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
 /// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
@@ -150,90 +151,6 @@ impl NveGestureDisposition {
             _ => Self::PassThrough,
         }
     }
-}
-
-/// Native event discriminator matching `enum NveEventKind` in `nve_abi.generated.h`.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[nve_abi(name = "NveEventKind", c_prefix = "NVE_EVENT_", dart_fallback = "Custom")]
-pub enum NativeEventKind {
-    Press = 1,
-    LongPress = 2,
-    Scroll = 3,
-    TextChange = 4,
-    Focus = 5,
-    Blur = 6,
-    Layout = 7,
-    Custom = 8,
-    CompositionStart = 9,
-    CompositionUpdate = 10,
-    CompositionEnd = 11,
-    KeyDown = 12,
-    KeyUp = 13,
-    Submit = 14,
-    PointerDown = 15,
-    PointerMove = 16,
-    PointerUp = 17,
-    PointerEnter = 18,
-    PointerLeave = 19,
-    Wheel = 20,
-    TableEvent = 21,
-}
-
-impl NativeEventKind {
-    #[inline]
-    pub const fn from_u8_opt(v: u8) -> Option<Self> {
-        match v {
-            1 => Some(Self::Press),
-            2 => Some(Self::LongPress),
-            3 => Some(Self::Scroll),
-            4 => Some(Self::TextChange),
-            5 => Some(Self::Focus),
-            6 => Some(Self::Blur),
-            7 => Some(Self::Layout),
-            8 => Some(Self::Custom),
-            9 => Some(Self::CompositionStart),
-            10 => Some(Self::CompositionUpdate),
-            11 => Some(Self::CompositionEnd),
-            12 => Some(Self::KeyDown),
-            13 => Some(Self::KeyUp),
-            14 => Some(Self::Submit),
-            15 => Some(Self::PointerDown),
-            16 => Some(Self::PointerMove),
-            17 => Some(Self::PointerUp),
-            18 => Some(Self::PointerEnter),
-            19 => Some(Self::PointerLeave),
-            20 => Some(Self::Wheel),
-            21 => Some(Self::TableEvent),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub const fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match Self::from_u8_opt(v) {
-            Some(kind) => Ok(kind),
-            None => Err(DecodeError::InvalidEnum("NativeEventKind", v as u32)),
-        }
-    }
-}
-
-/// Event payload wire tag matching `EventPayload` in `packages/core/abi/src/events.rs`.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
-#[nve_abi(c_prefix = "NVE_EVENT_PAYLOAD_")]
-pub enum NveEventPayloadTag {
-    Empty = 0,
-    Point = 1,
-    Scroll = 2,
-    Text = 3,
-    Layout = 4,
-    Custom = 5,
-    Key = 6,
-    Pointer = 7,
-    Wheel = 8,
-    TableEvent = 9,
 }
 
 /// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.

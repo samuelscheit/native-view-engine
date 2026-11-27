@@ -292,10 +292,9 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   (void)_bridge->drain_emitted_events();
 }
 
-- (void)_dispatchDirectEvent:(const NveDirectEvent &)ev {
+- (void)_dispatchEventBatch:(NveEventBatch)batch {
   if (_bridge) {
-    const uint32_t dirty =
-        _bridge->dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/false);
+    const uint32_t dirty = _bridge->dispatch_events(batch, /*auto_render=*/false);
     if (dirty != 0) {
       [self renderFrame];
     } else {
@@ -303,7 +302,7 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
     }
   } else if (_pairClient && _pairedHost != nullptr) {
     std::vector<uint8_t> ring;
-    if (nve::encode_direct_event_batch(NveEventBatch{&ev, 1u, 0u}, ring)) {
+    if (nve::encode_direct_event_batch(batch, ring)) {
       (void)_pairClient->send_events(ring);
     }
   }
@@ -311,62 +310,37 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
   if (!_bridge && !(_pairClient && _pairedHost != nullptr)) return;
-  NveDirectEvent ev{};
-  ev.surface_id = _surfaceId;
-  ev.node_id = nodeId;
-  ev.timestamp_us = nve::apple::current_timestamp_us();
-  ev.kind = NVE_EVENT_PRESS;
-  ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
-  ev.x = x;
-  ev.y = y;
-  ev.value = nve::make_null_value();
-  [self _dispatchDirectEvent:ev];
+  const NveEvent ev =
+      nve::make_press_event(_surfaceId, nodeId, nve::apple::current_timestamp_us(), x, y);
+  [self _dispatchEventBatch:nve::make_single_event_batch(ev)];
 }
 
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text {
   if (!_bridge && !(_pairClient && _pairedHost != nullptr)) return;
   NSData *utf8 = [(text ?: @"") dataUsingEncoding:NSUTF8StringEncoding];
-  const std::string_view sv =
-      utf8 ? std::string_view(reinterpret_cast<const char *>(utf8.bytes), utf8.length)
-           : std::string_view{};
-  NveDirectEvent ev{};
-  ev.surface_id = _surfaceId;
-  ev.node_id = nodeId;
-  ev.timestamp_us = nve::apple::current_timestamp_us();
-  ev.kind = NVE_EVENT_TEXT_CHANGE;
-  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
-  ev.text = nve::make_str_slice(sv);
-  ev.value = nve::make_null_value();
-  [self _dispatchDirectEvent:ev];
+  const uint8_t *bytes = utf8 ? reinterpret_cast<const uint8_t *>(utf8.bytes) : nullptr;
+  const uint32_t len = utf8 ? static_cast<uint32_t>(utf8.length) : 0u;
+  const NveEvent ev = nve::make_text_event(
+      _surfaceId, nodeId, nve::apple::current_timestamp_us(), NVE_TEXT_INPUT_EVENT_CHANGE, len);
+  [self _dispatchEventBatch:nve::make_single_event_batch(ev, bytes, len)];
 }
 
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text {
   if (!_bridge && !(_pairClient && _pairedHost != nullptr)) return;
   NSData *utf8 = [(text ?: @"") dataUsingEncoding:NSUTF8StringEncoding];
-  const std::string_view sv =
-      utf8 ? std::string_view(reinterpret_cast<const char *>(utf8.bytes), utf8.length)
-           : std::string_view{};
-  NveDirectEvent ev{};
-  ev.surface_id = _surfaceId;
-  ev.node_id = nodeId;
-  ev.timestamp_us = nve::apple::current_timestamp_us();
-  ev.kind = NVE_EVENT_SUBMIT;
-  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
-  ev.text = nve::make_str_slice(sv);
-  ev.value = nve::make_null_value();
-  [self _dispatchDirectEvent:ev];
+  const uint8_t *bytes = utf8 ? reinterpret_cast<const uint8_t *>(utf8.bytes) : nullptr;
+  const uint32_t len = utf8 ? static_cast<uint32_t>(utf8.length) : 0u;
+  const NveEvent ev = nve::make_text_event(
+      _surfaceId, nodeId, nve::apple::current_timestamp_us(), NVE_TEXT_INPUT_EVENT_SUBMIT, len);
+  [self _dispatchEventBatch:nve::make_single_event_batch(ev, bytes, len)];
 }
 
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused {
   if (!_bridge && !(_pairClient && _pairedHost != nullptr)) return;
-  NveDirectEvent ev{};
-  ev.surface_id = _surfaceId;
-  ev.node_id = nodeId;
-  ev.timestamp_us = nve::apple::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(focused ? nve::EventKind::Focus : nve::EventKind::Blur);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_EMPTY;
-  ev.value = nve::make_null_value();
-  [self _dispatchDirectEvent:ev];
+  const uint64_t ts = nve::apple::current_timestamp_us();
+  const NveEvent ev = focused ? nve::make_focus_event(_surfaceId, nodeId, ts)
+                              : nve::make_blur_event(_surfaceId, nodeId, ts);
+  [self _dispatchEventBatch:nve::make_single_event_batch(ev)];
 }
 
 - (void)dispatchScrollOnNodeId:(uint32_t)nodeId
@@ -375,18 +349,13 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
                   contentWidth:(float)contentWidth
                  contentHeight:(float)contentHeight {
   if ((!_bridge && !(_pairClient && _pairedHost != nullptr)) || nodeId == 0u) return;
-  NveDirectEvent ev{};
-  ev.surface_id = _surfaceId;
-  ev.node_id = nodeId;
-  ev.timestamp_us = nve::apple::current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(nve::EventKind::Scroll);
-  ev.payload_tag = NVE_EVENT_PAYLOAD_SCROLL;
-  ev.x = std::isfinite(x) ? x : 0.0f;
-  ev.y = std::isfinite(y) ? y : 0.0f;
-  ev.width = (std::isfinite(contentWidth) && contentWidth >= 0.0f) ? contentWidth : 0.0f;
-  ev.height = (std::isfinite(contentHeight) && contentHeight >= 0.0f) ? contentHeight : 0.0f;
-  ev.value = nve::make_null_value();
-  [self _dispatchDirectEvent:ev];
+  const float sx = std::isfinite(x) ? x : 0.0f;
+  const float sy = std::isfinite(y) ? y : 0.0f;
+  const float cw = (std::isfinite(contentWidth) && contentWidth >= 0.0f) ? contentWidth : 0.0f;
+  const float ch = (std::isfinite(contentHeight) && contentHeight >= 0.0f) ? contentHeight : 0.0f;
+  const NveEvent ev = nve::make_scroll_event(
+      _surfaceId, nodeId, nve::apple::current_timestamp_us(), sx, sy, cw, ch);
+  [self _dispatchEventBatch:nve::make_single_event_batch(ev)];
 }
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor {

@@ -3,6 +3,7 @@ use crate::schema::hybrid::core_abi::{
     compute_scene_schema_hash, core_abi_spec, format_enum_value, scene_abi_spec,
     snake_to_screaming, ResolvedSceneAbi, HOST_STATUS_VARIANTS,
 };
+use crate::schema::hybrid::HybridType;
 use crate::writer::CodeWriter;
 
 // ============================================================================
@@ -30,10 +31,12 @@ pub fn generate_ts_core_abi() -> String {
         "export const NVE_CORE_ABI_SCHEMA_HASH: bigint = 0x{schema_hash:016X}n;"
     );
     for c in &spec.consts {
-        if c.hex {
-            writeln!(out, "export const {} = 0x{:X} as const;", c.name, c.value);
-        } else {
-            writeln!(out, "export const {} = {} as const;", c.name, c.value);
+        let is_u64 = c.ty == HybridType::U64;
+        match (c.hex, is_u64) {
+            (true, true) => writeln!(out, "export const {}: bigint = 0x{:016X}n;", c.name, c.value),
+            (false, true) => writeln!(out, "export const {}: bigint = {}n;", c.name, c.value),
+            (true, false) => writeln!(out, "export const {} = 0x{:X} as const;", c.name, c.value),
+            (false, false) => writeln!(out, "export const {} = {} as const;", c.name, c.value),
         }
     }
     writeln!(out);

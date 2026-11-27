@@ -8,8 +8,7 @@ extern crate self as nve_abi;
 
 pub mod appearance;
 pub mod bitflags;
-#[cfg(feature = "wire")]
-pub mod events;
+pub mod event;
 pub mod ffi;
 pub mod hash;
 pub mod host;
@@ -23,19 +22,22 @@ pub mod table;
 pub mod value;
 
 pub use appearance::{ColorScheme, ContrastLevel};
-pub use nve_abi_macros::NveAbi;
+pub use event::{
+    EventBatchBuf, EventEnum, EventSet, EventSetIter, EventValidationError, InteractionEvent,
+    LayoutEvent, NveEvent, NveEventBatch, RawEventBytes, ScrollEvent, TextInputEvent,
+    ValidatedEvent, ValidatedEvents, ValidatedEventsIter, NVE_EVENT_ALIGN,
+    NVE_EVENT_INLINE_KEY_CAP, NVE_EVENT_SIZE, NVE_EVENT_WIRE_HEADER_SIZE, NVE_EVENT_WIRE_MAGIC,
+    NVE_EVENT_WIRE_VERSION, NVE_TABLE_CUSTOM, NVE_TABLE_INTERACTION, NVE_TABLE_LAYOUT,
+    NVE_TABLE_SCROLL, NVE_TABLE_TEXT_INPUT,
+};
+pub use nve_abi_macros::{EventEnum, NveAbi};
 pub use nve_hash::{const_id, xxh64, Key64, Xxh64Hasher};
 
-#[cfg(feature = "wire")]
-pub use events::{
-    decode_events, direct_event_to_native, encode_events, native_events_to_direct,
-    pack_key_modifiers, EventMask, EventPayload, NativeEvent,
-};
 pub use ffi::{
-    DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
-    NveEventPayloadTag, NveFrameStats, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
-    NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    DecodeError, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveFrameStats,
+    NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize, NveLayoutApi, NveSizeConstraints,
+    NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use host::{
     NveHostApi, NveHostCallbacks, NveHostChannelPublishFn, NveHostInvokeFn, NveHostStatus,
@@ -58,12 +60,9 @@ pub use value::{
     NVE_BIN_VALUE_MAX_DEPTH,
 };
 pub use value::{
-    NveArrayRef, NveCommandSlice, NveCommandSliceRef, NveDirectEvent, NveDirectEventRef,
-    NveEventBatch, NveEventBatchRef, NveMapEntry, NveMapRef, NvePropEntry, NvePropSlice,
-    NvePropSliceRef, NvePropsRef, NveStrSlice, NveValue, NveValueArray, NveValueData, NveValueMap,
-    NveValueRef, NveValueTag, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
-    NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
-    NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
+    NveArrayRef, NveCommandSlice, NveCommandSliceRef, NveMapEntry, NveMapRef, NvePropEntry,
+    NvePropSlice, NvePropSliceRef, NvePropsRef, NveStrSlice, NveValue, NveValueArray, NveValueData,
+    NveValueMap, NveValueRef, NveValueTag,
 };
 
 pub use id::{
