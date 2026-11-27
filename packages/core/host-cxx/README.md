@@ -17,13 +17,12 @@ keys, and field specs.
 | `nve/host/scene_reader.hpp` | C++20 | `SceneReader<View>` over the generated `NveSceneView`. It validates once, then does O(1) bounds-checked reads. |
 | `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue` (`from_bytes` validates a buffer, `read` a reader's next value with sticky errors); with `bin_codec.hpp`, the runtime of every generated C++ hybrid client and JNI glue (`nve codegen hybrid`) |
 | `nve/host/value_tree.hpp` | C++20 (+ generated ABI header) | `NveValueTree`: the C `NveValue` view of a `DynamicValue`, for C signatures that take `NveValue` |
-| `nve/host/runtime_session.hpp` | C++20 | `RuntimeSession` / `RuntimeSceneGuard` (borrowed `resource(id)` payloads) / `RuntimeSceneReader` over `libnve_runtime`'s `NveRuntimeApi` |
+| `nve/host/runtime_session.hpp` | C++20 | `RuntimeSession` / `RuntimeSceneGuard` (borrowed `resource(id)` payloads) / `RuntimeSceneReader` over `libnve_runtime`'s `NveRuntimeApi`, including the runtime's app files: `load_app_module` (staged `cdylib` copies, state-carrying hot reload) and `save_state_file` / `restore_state_file` / `clear_state_file` (the engine's checksummed, crash-atomic `StateFile`) |
 | `nve/host/bound_table.hpp` | C++20 | `BoundTable` (a generated `NveTableDesc` resolved in one scene, O(1) node → row) and `RowRef` (row or defaults); packed `NodeId` helpers |
 | `nve/host/scene_nodes.hpp` | C++20 | `SceneTables` (every core table a view host renders) and `read_node` → `NodeData` (kind, absolute / local rects, visual, inherited typography, text, image, text input, scroll, interaction, accessibility, link) |
 | `nve/host/retained_tree.hpp` | C++20 | `RetainedTree<Adapter>`: O(changed) native-view reconciler (removals, `dirty_indices`, typography cascades, generation-checked slot reuse, relinking recreated views) |
-| `nve/host/host_session.hpp` | C++20 | `HostSession`: runtime surface + in-process / `cdylib` (hot reload) / paired app, UI-thread wake poster, `EventFactory`, emitted-event sink, props, app-state files |
-| `nve/host/app_state.hpp` | C++20 | Persisted app state files (atomic write, schema-tagged read, per-app cache path, `NVE_STATE_DISABLE` / `NVE_STATE_PATH` / `NVE_RESET_STATE`) |
-| `nve/host/module_loader.hpp` | C++20 | `AppModule`: `dlopen` / `LoadLibraryW` + validated `nve_get_interface` |
+| `nve/host/host_session.hpp` | C++20 | `HostSession`: runtime surface + in-process / runtime-loaded `cdylib` (hot reload, `ModuleError` status mapping) / paired app, UI-thread wake poster, `EventFactory`, emitted-event sink, props, app-state files |
+| `nve/host/app_state.hpp` | C++20 | App-state path policy only: per-app cache path, `NVE_STATE_DISABLE` / `NVE_STATE_PATH`, `reset_requested()` (`NVE_RESET_STATE`); the file itself is the runtime's |
 | `nve/host/nve2_writer.hpp` | C++20 | `Nve2Writer`: `NVE2` frames from generated `NVE_TABLE_<T>_DESC`s (C++ apps, demos, fixtures) |
 | `nve/host/core_resources.hpp` | C++20 | `ImageSrc` / `BoxShadows` resource codecs |
 | `nve/host/demo_counter_app.hpp` | C++20 | Built-in counter demo app (`nve_get_interface`) shared by every native shell and fixture |

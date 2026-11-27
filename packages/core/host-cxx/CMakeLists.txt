@@ -68,19 +68,16 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     # Retained-view host stack (`Nve2Writer`, `RetainedTree`, `HostSession`, app modules).
     include("${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveHostFixtures.cmake")
     nve_add_app_module_fixtures(nve_host_fixture)
-    add_executable(nve_host_runtime_test tests/test_host_runtime.cpp)
-    set_target_properties(nve_host_runtime_test PROPERTIES
-      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    target_include_directories(nve_host_runtime_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/support")
-    target_link_libraries(nve_host_runtime_test PRIVATE nve_host_cxx nve::runtime)
-    target_compile_definitions(nve_host_runtime_test PRIVATE
-      NVE_TEST_COUNTER_MODULE="$<TARGET_FILE:nve_host_fixture_counter>"
-      NVE_TEST_NO_SURFACE_MODULE="$<TARGET_FILE:nve_host_fixture_no_surface>"
-      NVE_TEST_NO_ENTRY_MODULE="$<TARGET_FILE:nve_host_fixture_no_entry>")
-    add_dependencies(nve_host_runtime_test
-      nve_host_fixture_counter nve_host_fixture_no_surface nve_host_fixture_no_entry)
-    target_compile_options(nve_host_runtime_test PRIVATE ${_nve_host_warnings} ${_nve_host_sanitize})
-    target_link_options(nve_host_runtime_test PRIVATE ${_nve_host_sanitize})
-    add_test(NAME nve_host_runtime COMMAND nve_host_runtime_test)
+    foreach(_suite runtime app_files)
+      set(_target nve_host_${_suite}_test)
+      add_executable(${_target} tests/test_host_${_suite}.cpp)
+      set_target_properties(${_target} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+      target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/support")
+      target_link_libraries(${_target} PRIVATE nve_host_cxx nve::runtime)
+      nve_use_app_module_fixtures(${_target} nve_host_fixture)
+      target_compile_options(${_target} PRIVATE ${_nve_host_warnings} ${_nve_host_sanitize})
+      target_link_options(${_target} PRIVATE ${_nve_host_sanitize})
+      add_test(NAME nve_host_${_suite} COMMAND ${_target})
+    endforeach()
   endif()
 endif()

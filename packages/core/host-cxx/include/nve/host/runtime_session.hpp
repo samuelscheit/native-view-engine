@@ -7,6 +7,8 @@
 // `RuntimeSession` wraps the `NveRuntimeApi` vtable with RAII `destroy` and move-only ownership.
 // Borrowed outputs keep their C lifetimes: `RuntimeSceneGuard::resource` bytes live until the
 // guard releases; `drain_emitted_events` / `snapshot_state` spans until the next session call.
+// App `cdylib` loading and app-state files are the runtime's (`load_app_module`, `*_state_file`):
+// hosts never `dlopen` apps or encode state files themselves.
 #pragma once
 
 #include <algorithm>
@@ -42,6 +44,11 @@ struct RuntimeResource {
 /// Span as an `NveBufferSlice` (NULL pointer when empty).
 [[nodiscard]] inline NveBufferSlice buffer_slice(std::span<const uint8_t> bytes) noexcept {
   return NveBufferSlice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
+}
+
+/// UTF-8 text as an `NveStrSlice` (NULL pointer when empty).
+[[nodiscard]] inline NveStrSlice str_slice(std::string_view text) noexcept {
+  return NveStrSlice{text.empty() ? nullptr : reinterpret_cast<const uint8_t*>(text.data()), text.size()};
 }
 
 /// Validated zero-copy reader over a borrowed `NveRuntimeSceneView`.
@@ -350,6 +357,16 @@ class RuntimeSession {
     return attach_app_interface(nullptr);
   }
 
+  /// Loads and attaches the app `cdylib` at `utf8_path` from a private staged copy, so a rebuilt
+  /// file always runs its new code; `carry_state` moves the running app's state into the new app
+  /// before it goes live. `IO`: cannot open, `NOT_FOUND`: no `nve_get_interface`, `UNSUPPORTED`:
+  /// no complete `NVE_IFACE_SURFACE`. A failure leaves the running app untouched.
+  [[nodiscard]] NveRuntimeStatus load_app_module(std::string_view utf8_path, bool carry_state = false) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->load_app_module(handle_, str_slice(utf8_path), carry_state ? 1u : 0u));
+  }
+
   /// Installs a native text measurer (`ctx` must outlive it); the next `tick` relayouts.
   [[nodiscard]] NveRuntimeStatus set_text_measurer(NveRuntimeMeasureTextFn measure, void* ctx) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
@@ -397,6 +414,27 @@ class RuntimeSession {
   [[nodiscard]] NveRuntimeStatus restore_state(std::span<const uint8_t> state) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->restore_state(handle_, buffer_slice(state)));
+  }
+
+  /// Writes the app state as a crash-atomic, checksummed runtime `StateFile` tagged
+  /// `schema_version` (`NOT_FOUND` when the app has no state).
+  [[nodiscard]] NveRuntimeStatus save_state_file(std::string_view utf8_path, uint32_t schema_version) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->save_state_file(handle_, str_slice(utf8_path), schema_version));
+  }
+
+  /// Restores a `save_state_file` file (`NOT_FOUND` when missing, quarantined as corrupt, or
+  /// rotated as an older schema; `IO` for a newer schema).
+  [[nodiscard]] NveRuntimeStatus restore_state_file(std::string_view utf8_path, uint32_t schema_version) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(
+        api_->restore_state_file(handle_, str_slice(utf8_path), schema_version));
+  }
+
+  /// Deletes a state file (cold start; `OK` when already absent).
+  [[nodiscard]] NveRuntimeStatus clear_state_file(std::string_view utf8_path) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->clear_state_file(handle_, str_slice(utf8_path)));
   }
 
   /// Validates and forwards one `NVP1` hot patch (`NVE_RUNTIME_UNSUPPORTED` without `NVE_IFACE_DEV`).
@@ -478,15 +516,7 @@ class RuntimeSession {
   [[nodiscard]] NveRuntimeStatus pair_connect(std::string_view uri,
                                               std::string_view token = {}) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
-    const NveStrSlice uri_s{
-        uri.empty() ? nullptr : reinterpret_cast<const uint8_t*>(uri.data()),
-        uri.size(),
-    };
-    const NveStrSlice tok_s{
-        token.empty() ? nullptr : reinterpret_cast<const uint8_t*>(token.data()),
-        token.size(),
-    };
-    return static_cast<NveRuntimeStatus>(api_->pair_connect(handle_, uri_s, tok_s));
+    return static_cast<NveRuntimeStatus>(api_->pair_connect(handle_, str_slice(uri), str_slice(token)));
   }
 
   [[nodiscard]] NveRuntimeStatus pair_disconnect() noexcept {

@@ -1,8 +1,9 @@
 // NVE host runtime: one native host surface over `libnve_runtime`.
 //
 // `HostSession` owns a `RuntimeSession`, the app it runs (an in-process `nve_get_interface`, a
-// loaded `cdylib` with state-preserving hot reload, or a paired remote via `pair_connect`), the
-// wake marshaling to the host's UI thread, typed input-event dispatch, and app-state persistence.
+// runtime-loaded `cdylib` with state-preserving hot reload, or a paired remote via `pair_connect`),
+// the wake marshaling to the host's UI thread, typed input-event dispatch, and app-state files
+// (the runtime's checksummed, crash-atomic `StateFile`).
 // Every call except `post_wake` runs on the thread that created the session (the runtime's owner
 // thread); a host drives it with `pump()` from its UI loop whenever the wake callback fires.
 #pragma once
@@ -19,12 +20,29 @@
 #include <utility>
 #include <vector>
 
-#include "app_state.hpp"
-#include "module_loader.hpp"
 #include "../generated/nve_abi.generated.h"
 #include "runtime_session.hpp"
 
 namespace nve::host {
+
+/// Why loading an app module failed (`load_app_module` statuses; details in `last_error`).
+enum class ModuleError : uint8_t {
+  None = 0,
+  Open = 1,            // NVE_RUNTIME_IO: missing / unreadable / not a loadable library
+  MissingEntry = 2,    // NVE_RUNTIME_NOT_FOUND: no `nve_get_interface` export
+  MissingSurface = 3,  // NVE_RUNTIME_UNSUPPORTED: no complete `NVE_IFACE_SURFACE`
+  Attach = 4,          // any other status: the runtime refused the app (create failed, busy, ...)
+};
+
+[[nodiscard]] constexpr ModuleError module_error(NveRuntimeStatus status) noexcept {
+  switch (status) {
+    case NVE_RUNTIME_OK: return ModuleError::None;
+    case NVE_RUNTIME_IO: return ModuleError::Open;
+    case NVE_RUNTIME_NOT_FOUND: return ModuleError::MissingEntry;
+    case NVE_RUNTIME_UNSUPPORTED: return ModuleError::MissingSurface;
+    default: return ModuleError::Attach;
+  }
+}
 
 /// Builds `NveDirectEvent`s for one surface (payloads follow `NveEventPayloadTag`).
 struct EventFactory {
@@ -87,8 +105,6 @@ class HostSession {
 
   ~HostSession() {
     (void)runtime_.clear_wake_callback();  // drains in-flight wakes before `wake_` dies
-    (void)runtime_.detach_app();
-    runtime_.reset();  // the runtime drops the app before its module unloads
   }
   HostSession(const HostSession&) = delete;
   HostSession& operator=(const HostSession&) = delete;
@@ -98,7 +114,8 @@ class HostSession {
   [[nodiscard]] const EventFactory& events() const noexcept { return events_; }
   [[nodiscard]] uint32_t surface_id() const noexcept { return events_.surface_id; }
   [[nodiscard]] bool has_app() const noexcept { return attached_ || runtime_.pair_is_connected(); }
-  [[nodiscard]] bool has_module() const noexcept { return module_.loaded(); }
+  /// The running app came from `load_module` / `reload_module`.
+  [[nodiscard]] bool has_module() const noexcept { return module_; }
   /// Bumped whenever the scene's source changes (attach, module load / reload, pair, unpair): the
   /// runtime then replaces the scene without removals, so `RetainedTree::sync` takes it to run a
   /// full pass.
@@ -119,33 +136,20 @@ class HostSession {
     if (get_interface == nullptr) return false;
     // A successful attach replaces any paired source; a failed one leaves everything running.
     if (runtime_.attach_app_interface(get_interface) != NVE_RUNTIME_OK) return false;
-    module_.close();  // the previous module's app is gone
-    attached_ = true;
-    ++source_generation_;
+    on_source_changed(true, false);
     return true;
   }
 
-  /// Loads and runs an app `cdylib`.
+  /// Loads and runs an app `cdylib` (the runtime loads a private copy, so a rebuilt file always
+  /// runs its new code). A failure leaves the running app untouched.
   bool load_module(std::string_view path, ModuleError* out_error = nullptr, std::string* out_message = nullptr) {
-    AppModule next = AppModule::open(path, out_error, out_message);
-    if (!next.loaded()) return false;
-    if (runtime_.attach_app_interface(next.get_interface()) != NVE_RUNTIME_OK) {
-      if (out_error != nullptr) *out_error = ModuleError::Attach;
-      if (out_message != nullptr) *out_message = runtime_.last_error();
-      return false;
-    }
-    module_ = std::move(next);
-    attached_ = true;
-    ++source_generation_;
-    return true;
+    return load(path, false, out_error, out_message);
   }
 
-  /// Hot-reloads the app `cdylib`, carrying its `NveDevApi` state across the swap.
+  /// Hot-reloads the app `cdylib` at `path` (typically just rebuilt), carrying its `NveDevApi`
+  /// state into the new app before it goes live.
   bool reload_module(std::string_view path, ModuleError* out_error = nullptr, std::string* out_message = nullptr) {
-    std::vector<uint8_t> state = snapshot_state();
-    if (!load_module(path, out_error, out_message)) return false;
-    if (!state.empty()) (void)runtime_.restore_state(state);
-    return true;
+    return load(path, true, out_error, out_message);
   }
 
   /// Thin-client mode: frames come from a remote `nve dev` server, input goes upstream.
@@ -154,9 +158,7 @@ class HostSession {
       if (out_error != nullptr) *out_error = runtime_.last_error();
       return false;
     }
-    module_.close();
-    attached_ = false;
-    ++source_generation_;
+    on_source_changed(false, false);
     return true;
   }
 
@@ -211,34 +213,54 @@ class HostSession {
     return std::vector<uint8_t>(state.begin(), state.end());
   }
 
-  /// Atomically persists the app state to `path` tagged with the host's `schema_version`
-  /// (`app_state::write_file`); `false` when the app has no state or the write failed.
-  bool save_state(const std::string& path, uint32_t schema_version) {
-    const std::vector<uint8_t> state = snapshot_state();
-    return !state.empty() && app_state::write_file(path, schema_version, state);
+  /// Persists the app state to `path` tagged with the host's `schema_version` (runtime
+  /// `save_state_file`); `false` (reason in `last_error`) when the app has no state or the write
+  /// failed.
+  bool save_state(std::string_view path, uint32_t schema_version) {
+    return runtime_.save_state_file(path, schema_version) == NVE_RUNTIME_OK;
   }
 
-  /// Restores state saved by `save_state` into the running app (`app_state::read_file` rules).
-  bool restore_state_file(const std::string& path, uint32_t schema_version) {
-    const std::optional<std::vector<uint8_t>> state = app_state::read_file(path, schema_version);
-    return state && runtime_.restore_state(*state) == NVE_RUNTIME_OK;
+  /// Restores state saved by `save_state` into the running app; `false` when there is no usable
+  /// file (missing, corrupt -> quarantined, other schema) or the app takes no state.
+  bool restore_state_file(std::string_view path, uint32_t schema_version) {
+    return runtime_.restore_state_file(path, schema_version) == NVE_RUNTIME_OK;
   }
+
+  /// Deletes the state file at `path` (cold start, e.g. `--reset-state`).
+  bool clear_state_file(std::string_view path) { return runtime_.clear_state_file(path) == NVE_RUNTIME_OK; }
 
  private:
   HostSession(RuntimeSession rt, uint32_t surface_id) : runtime_(std::move(rt)) { events_.surface_id = surface_id; }
+
+  bool load(std::string_view path, bool carry_state, ModuleError* out_error, std::string* out_message) {
+    const ModuleError e = module_error(runtime_.load_app_module(path, carry_state));
+    if (out_error != nullptr) *out_error = e;
+    if (e != ModuleError::None) {
+      if (out_message != nullptr) *out_message = runtime_.last_error();
+      return false;
+    }
+    on_source_changed(true, true);
+    return true;
+  }
+
+  void on_source_changed(bool attached, bool module) noexcept {
+    attached_ = attached;
+    module_ = module;
+    ++source_generation_;
+  }
 
   static void on_wake(void* ctx) {
     auto* self = static_cast<HostSession*>(ctx);
     if (self->wake_) self->wake_();
   }
 
-  RuntimeSession runtime_;  // reset in the destructor body, so `module_` outlives its app
-  AppModule module_;
+  RuntimeSession runtime_;  // owns the app and its staged module
   WakePoster wake_;
   EventSink sink_;
   EventFactory events_;
   uint64_t source_generation_ = 0u;
   bool attached_ = false;
+  bool module_ = false;
 };
 
 }  // namespace nve::host

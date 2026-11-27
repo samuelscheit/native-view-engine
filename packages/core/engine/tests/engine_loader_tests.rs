@@ -48,7 +48,7 @@ fn loader_rejects_dylib_with_missing_symbol_or_null_surface_interface() {
     let err = HotAppInstance::load(&no_sym_path, 1, 1, None)
         .err()
         .expect("missing symbol must fail");
-    assert!(matches!(err, LoaderError::Load(_)), "got {err:?}");
+    assert!(matches!(err, LoaderError::MissingEntry(_)), "got {err:?}");
 
     let null_surface_path = compile_test_cdylib(
         dir.path(),
@@ -292,7 +292,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
         "reload_no_sym",
         "#[unsafe(no_mangle)] pub extern \"C\" fn not_nve_get_interface() -> u32 { 1 }",
     );
-    assert!(matches!(inst.reload(&no_sym_path), Err(LoaderError::Load(_))));
+    assert!(matches!(inst.reload(&no_sym_path), Err(LoaderError::MissingEntry(_))));
 
     let no_surface_path = compile_test_cdylib(
         dir.path(),

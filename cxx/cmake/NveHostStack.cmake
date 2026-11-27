@@ -3,7 +3,7 @@
 #   nve::runtime     `libnve_runtime` (`nve_runtime_get_interface`)
 #   nve::canvas_cxx  `nve.canvas` table binding + `NVE_DRAW1` codec
 # plus, for host test suites, `nve::host_test_support` (`nve/host/testing/scripted_app.hpp`) and
-# `nve_add_app_module_fixtures(prefix)`.
+# `nve_add_app_module_fixtures(prefix)` / `nve_use_app_module_fixtures(target prefix)`.
 #
 #   include("${NVE_ROOT}/cxx/cmake/NveHostStack.cmake")
 #   target_link_libraries(my_host PRIVATE nve::host_cxx nve::runtime nve::canvas_cxx)

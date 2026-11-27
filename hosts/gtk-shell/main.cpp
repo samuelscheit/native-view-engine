@@ -12,7 +12,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -97,9 +96,13 @@ void on_activate(GtkApplication* app, gpointer data) {
     attach_builtin(*s->host);
   }
 
-  std::error_code ec;
-  if (!s->no_state && !s->state_path.empty() && std::filesystem::exists(s->state_path, ec) &&
-      s->host->restore_state(s->state_path, s->schema_version)) {
+  if (s->no_state) {
+    // Nothing to restore or clear.
+  } else if (s->reset_state) {
+    if (!s->host->clear_state(s->state_path)) {
+      std::cerr << "[nve-gtk-shell] clearing " << s->state_path << " failed: " << s->host->last_error() << "\n";
+    }
+  } else if (s->host->restore_state(s->state_path, s->schema_version)) {
     std::cerr << "[nve-gtk-shell] restored app state from " << s->state_path << "\n";
   }
   gtk_window_present(GTK_WINDOW(window));
@@ -150,10 +153,7 @@ int main(int argc, char* argv[]) {
     s.state_path = app_state::resolve_path(s.dylib_path.empty() ? "nve-gtk-shell-builtin" : s.dylib_path);
   }
   s.no_state = s.no_state || s.state_path.empty();
-  if (s.reset_state && !s.state_path.empty()) {
-    std::error_code ec;
-    std::filesystem::remove(s.state_path, ec);
-  }
+  s.reset_state = s.reset_state || app_state::reset_requested();
 
   GtkApplication* app = gtk_application_new("dev.nve.GtkShell", G_APPLICATION_NON_UNIQUE);
   s.app = app;

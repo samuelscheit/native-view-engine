@@ -436,6 +436,6 @@ const _: () = {
 
     assert!(size_of::<NveRuntimeSceneView>() == 112);
     assert!(align_of::<NveRuntimeSceneView>() == 8);
-    assert!(size_of::<crate::runtime::NveRuntimeApi>() == 16 + 24 * 8);
+    assert!(size_of::<crate::runtime::NveRuntimeApi>() == 16 + 28 * 8);
     assert!(align_of::<crate::runtime::NveRuntimeApi>() == 8);
 };
