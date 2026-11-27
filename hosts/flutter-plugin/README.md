@@ -23,9 +23,9 @@ Flutter widget tree
   and press targets, with taps routed back as presses.
 - **Commands** (`NveCanvasController.sendCommand`) are root `Custom` events.
 
-Pending runtime entry points (`NveRuntimeApi` additions): `setProps`, app-emitted events
-(`onAppEvent`), and resource payloads (`resources`: image sources, draw lists) are wired as seams
-on `NveCanvasController`.
+- **Runtime hooks**: `setProps` forwards host props (`set_props`), `onAppEvent` receives events
+  the app emitted (`drain_emitted_events`, drained after every tick), and painters resolve image
+  sources and module draw lists through `resources` (`resource_payload`, borrowed per scene read).
 
 ## Quickstart
 

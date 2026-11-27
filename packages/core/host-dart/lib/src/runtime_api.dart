@@ -58,6 +58,12 @@ final class RuntimeApi {
         setWakeCallback = vtable.ref.setWakeCallback.asFunction(),
         setViewport = vtable.ref.setViewport.asFunction(),
         attachAppInterface = vtable.ref.attachAppInterface.asFunction(),
+        setProps = vtable.ref.setProps.asFunction(),
+        drainEmittedEvents = vtable.ref.drainEmittedEvents.asFunction(),
+        snapshotState = vtable.ref.snapshotState.asFunction(),
+        restoreState = vtable.ref.restoreState.asFunction(),
+        applyHotPatch = vtable.ref.applyHotPatch.asFunction(),
+        resourcePayload = vtable.ref.resourcePayload.asFunction(),
         submitNve2 = vtable.ref.submitNve2.asFunction(),
         tick = vtable.ref.tick.asFunction(),
         dispatchEvents = vtable.ref.dispatchEvents.asFunction(),
@@ -118,6 +124,12 @@ final class RuntimeApi {
   final NveRuntimeSetWakeCallbackDart setWakeCallback;
   final NveRuntimeSetViewportDart setViewport;
   final NveRuntimeAttachAppInterfaceDart attachAppInterface;
+  final NveRuntimeSetPropsDart setProps;
+  final NveRuntimeDrainEmittedEventsDart drainEmittedEvents;
+  final NveRuntimeSnapshotStateDart snapshotState;
+  final NveRuntimeRestoreStateDart restoreState;
+  final NveRuntimeApplyHotPatchDart applyHotPatch;
+  final NveRuntimeResourcePayloadDart resourcePayload;
   final NveRuntimeSubmitNve2Dart submitNve2;
   final NveRuntimeTickDart tick;
   final NveRuntimeDispatchEventsDart dispatchEvents;

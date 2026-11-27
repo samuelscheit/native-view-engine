@@ -6,13 +6,14 @@
 /// point the runtime may trigger from another thread; it is delivered asynchronously.
 library;
 
+import 'dart:convert' show utf8;
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
 import 'generated/nve_abi_const.generated.dart';
 import 'generated/nve_abi_ffi.generated.dart';
 import 'generated/nve_runtime_abi.generated.dart';
-import 'hybrid_ffi.dart' show HybridArena;
+import 'hybrid_ffi.dart' show HybridArena, checkedNativeBytes;
 import 'key64.dart';
 import 'runtime_api.dart';
 import 'runtime_scene_reader.dart';
@@ -201,6 +202,7 @@ final class RuntimeSession {
   ffi.DynamicLibrary? _appLibrary;
 
   final ffi.Pointer<ffi.Uint32> _outU32 = NativeHeap.zeroed<ffi.Uint32>(4);
+  final ffi.Pointer<ffi.Uint64> _outU64 = NativeHeap.zeroed<ffi.Uint64>(8);
   final ffi.Pointer<ffi.Float> _outF32 = NativeHeap.zeroed<ffi.Float>(8);
   final ffi.Pointer<NveRuntimeSceneView> _view =
       NativeHeap.zeroed<NveRuntimeSceneView>(ffi.sizeOf<NveRuntimeSceneView>());
@@ -265,13 +267,113 @@ final class RuntimeSession {
 
   /// Applies one `NVE2` store wire frame (replay / custom transports; rejected while an app or
   /// pair session is attached).
-  void submitNve2(Uint8List frame) {
-    final bytes = _bytes.reserve(frame.length);
-    bytes.asTypedList(frame.length).setAll(0, frame);
-    _buffer.ref
-      ..ptr = bytes
-      ..len = frame.length;
-    api.check(api.submitNve2(_live, _buffer.ref), 'submit_nve2');
+  void submitNve2(Uint8List frame) => api.check(api.submitNve2(_live, _borrow(frame)), 'submit_nve2');
+
+  /// Forwards embedding-host [props] to the attached app (`set_props`, one `NveMapEntry` per
+  /// key); `true` when the app re-renders. Throws [RuntimeException] with
+  /// [NveRuntimeStatus.unsupported] when the app exposes no component interface.
+  bool setProps(Map<String, Object?> props) {
+    final handle = _live;
+    return HybridArena.using((arena) {
+      final entries = props.isEmpty
+          ? ffi.Pointer<NveMapEntry>.fromAddress(0)
+          : arena.allocStructArray<NveMapEntry>(ffi.sizeOf<NveMapEntry>(), props.length);
+      var i = 0;
+      for (final MapEntry(:key, :value) in props.entries) {
+        final entry = entries[i++];
+        arena.writeStrSlice(entry.key, key);
+        NveValueTree.writeObject(arena, entry.value, value);
+      }
+      api.check(api.setProps(handle, entries, props.length, _outU32), 'set_props');
+      return _outU32.value != 0;
+    });
+  }
+
+  /// Drains the events the app emitted since the last drain (`drain_emitted_events`), decoded
+  /// into owned [RuntimeEvent]s. Empty when the app exposes no component interface.
+  List<RuntimeEvent> drainEmittedEvents() {
+    final status = api.drainEmittedEvents(_live, _batch);
+    if (status == NveRuntimeStatus.unsupported.code) {
+      return const <RuntimeEvent>[];
+    }
+    api.check(status, 'drain_emitted_events');
+    final batch = _batch.ref;
+    if (batch.len == 0) {
+      return const <RuntimeEvent>[];
+    }
+    if (batch.ptr.address == 0) {
+      throw RuntimeException(NveRuntimeStatus.error, 'drain_emitted_events: NULL batch with ${batch.len} events');
+    }
+    return [
+      for (var i = 0; i < batch.len; i++)
+        if (_decodeEvent(batch.ptr[i]) case final event?) event,
+    ];
+  }
+
+  /// Copies one borrowed native event; `null` for a payload tag this binding does not know
+  /// (unknown kinds decode as `custom`, the ABI's forward-compatible fallback).
+  static RuntimeEvent? _decodeEvent(NveDirectEvent e) {
+    final payload = NveEventPayloadTag.fromCode(e.payloadTag);
+    if (payload == null) {
+      return null;
+    }
+    String str(NveStrSlice s) => utf8.decode(checkedNativeBytes(s.ptr, s.len));
+    return RuntimeEvent(NveEventKind.fromCode(e.kind),
+        payload: payload,
+        nodeId: e.nodeId,
+        timestampUs: e.timestampUs,
+        x: e.x,
+        y: e.y,
+        width: e.width,
+        height: e.height,
+        modifiers: e.modifiers,
+        eventFlags: e.eventFlags,
+        keyCode: e.keyCode,
+        name: str(e.name),
+        text: str(e.text),
+        value: NveValueTree.toDynamicValue(e.value).toObject());
+  }
+
+  /// Canonical payload bytes and kind of published resource [resourceId] (`resource_payload`).
+  /// The bytes borrow runtime memory: valid only inside the [withScene] read that fetched them.
+  /// `null` for `0` or an id the current scene does not reference.
+  (Key64, Uint8List)? resourcePayload(int resourceId) {
+    if (!_inScene) {
+      throw StateError('resourcePayload outside withScene');
+    }
+    if (resourceId == 0) {
+      return null;
+    }
+    final status = api.resourcePayload(_handle, resourceId, _outU64, _buffer);
+    if (status == NveRuntimeStatus.notFound.code) {
+      return null;
+    }
+    api.check(status, 'resource_payload');
+    return (key64FromBits(_outU64.value), checkedNativeBytes(_buffer.ref.ptr, _buffer.ref.len));
+  }
+
+  /// Owned copy of the app's state snapshot (`snapshot_state`, dev interface).
+  Uint8List snapshotState() {
+    api.check(api.snapshotState(_live, _buffer), 'snapshot_state');
+    return Uint8List.fromList(checkedNativeBytes(_buffer.ref.ptr, _buffer.ref.len));
+  }
+
+  /// Restores a [snapshotState] result and schedules a re-render (`restore_state`).
+  void restoreState(Uint8List state) => api.check(api.restoreState(_live, _borrow(state)), 'restore_state');
+
+  /// Validates and forwards one `NVP1` hot patch (`apply_hot_patch`); `true` when it changed the app.
+  bool applyHotPatch(Uint8List patch) {
+    api.check(api.applyHotPatch(_live, _borrow(patch), _outU32), 'apply_hot_patch');
+    return _outU32.value != 0;
+  }
+
+  /// Copies [bytes] into the reusable native block, described by [_buffer].
+  NveBufferSlice _borrow(Uint8List bytes) {
+    final block = _bytes.reserve(bytes.length);
+    block.asTypedList(bytes.length).setAll(0, bytes);
+    return _buffer.ref
+      ..ptr = block
+      ..len = bytes.length;
   }
 
   /// Advances one frame by [dtSeconds] (drains app async work and pair frames); `true` when a new
@@ -449,7 +551,7 @@ final class RuntimeSession {
     api.destroy(_handle);
     _handle = ffi.nullptr;
     _appLibrary = null;
-    for (final p in <ffi.Pointer<ffi.NativeType>>[_outU32, _outF32, _view, _metrics, _strs, _buffer, _batch]) {
+    for (final p in <ffi.Pointer<ffi.NativeType>>[_outU32, _outU64, _outF32, _view, _metrics, _strs, _buffer, _batch]) {
       NativeHeap.free(p);
     }
     _bytes.free();

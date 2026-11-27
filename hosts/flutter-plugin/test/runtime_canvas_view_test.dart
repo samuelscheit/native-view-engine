@@ -189,6 +189,36 @@ void main() {
     expect(shiftY(), closeTo(90, 0.5), reason: 'two-finger trackpad pan scrolls by the pan distance');
   });
 
+  testWidgets('runtime hooks: resource payloads, props, and emitted-event draining', (tester) async {
+    final emitted = <RuntimeEvent>[];
+    c.onAppEvent = emitted.add;
+    await tester.pumpWidget(_host(c));
+    await _settle(tester, c);
+
+    // Every interaction `state_rules` resource the kitchen sink publishes resolves through
+    // `resources` while the scene is held, and decodes as a non-empty payload.
+    final payloads = c.withTree((t) {
+      final table = t.s.findTable(InteractionTable.key);
+      final sizes = <int>[];
+      for (var row = 0; table != null && row < table.rowCount; row++) {
+        final id = table.resource(row, InteractionTable.stateRules);
+        if (id != 0) {
+          sizes.add(c.resources.payload(id)?.length ?? -1);
+        }
+      }
+      expect(c.resources.payload(0), isNull);
+      return sizes;
+    });
+    expect(payloads, isNotEmpty, reason: 'kitchen sink publishes state rules');
+    expect(payloads.every((n) => n > 0), isTrue, reason: '$payloads');
+    expect(() => c.resources.payload(1), throwsStateError, reason: 'borrowed: only inside withTree');
+
+    expect(c.setProps(const {'unknown': 1}), isFalse, reason: 'unknown props change nothing');
+    c.tick();
+    expect(emitted, isEmpty, reason: 'the kitchen sink emits no host events');
+    expect(c.lastError, isNull);
+  });
+
   testWidgets('controller swap and disposal tear down cleanly', (tester) async {
     await tester.pumpWidget(_host(c));
     await _settle(tester, c);

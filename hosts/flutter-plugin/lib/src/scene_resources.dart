@@ -1,8 +1,7 @@
 /// Resource access seam for painters plus the decoders of core resource payloads.
 ///
-/// `NveRuntimeApi` v1 publishes no resource view, so [NveCanvasController.resources] is `null`
-/// until the runtime exposes `resource_payload` (Slice 2B-0); painters then fetch image sources and
-/// module payloads (canvas draw lists) through [NveSceneResources] with no other change.
+/// `NveCanvasController.resources` serves `resource_payload` of the live runtime; tests pass
+/// synthetic [NveSceneResources].
 library;
 
 import 'dart:convert' show utf8;

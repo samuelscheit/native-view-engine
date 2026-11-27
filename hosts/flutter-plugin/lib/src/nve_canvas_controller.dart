@@ -15,12 +15,14 @@ import 'package:nve_host/nve_host_ffi.dart';
 import 'scene_resources.dart';
 import 'scene_tree.dart';
 
-/// Event an attached app emitted towards its host (`name` + structured `value`).
-final class NveAppEvent {
-  const NveAppEvent(this.name, this.value);
+/// [NveSceneResources] over the session's `resource_payload`: valid inside [NveCanvasController.withTree].
+final class _SessionResources implements NveSceneResources {
+  const _SessionResources(this.session);
 
-  final String name;
-  final Object? value;
+  final RuntimeSession session;
+
+  @override
+  Uint8List? payload(int resourceId) => session.resourcePayload(resourceId)?.$2;
 }
 
 /// Owns a [RuntimeSession] on the UI isolate. Runtime work happens only on scheduled frames:
@@ -65,13 +67,11 @@ class NveCanvasController extends ChangeNotifier {
   /// Observes every input event this controller dispatches (after dispatch).
   ValueChanged<RuntimeEvent>? onEvent;
 
-  /// Receives app-emitted events. Hookup point for `NveRuntimeApi.drain_emitted_events`
-  /// (Slice 2B-0): drain after each [tick] and forward here.
-  ValueChanged<NveAppEvent>? onAppEvent;
+  /// Receives app-emitted events (`drain_emitted_events`, drained after every [tick]).
+  ValueChanged<RuntimeEvent>? onAppEvent;
 
-  /// Resource payloads for painters. Hookup point for `NveRuntimeApi.resource_payload`
-  /// (Slice 2B-0); `null` while the runtime exposes no resource view.
-  NveSceneResources? get resources => null;
+  /// Published resource payloads (`resource_payload`) for painters; valid inside [withTree].
+  late final NveSceneResources resources = _SessionResources(session);
 
   /// Last tick / dispatch failure (also reported through [FlutterError.reportError]).
   Exception? lastError;
@@ -124,10 +124,22 @@ class NveCanvasController extends ChangeNotifier {
     scheduleTick();
   }
 
-  /// Forwards embedding-host props to the attached app. Hookup point for
-  /// `NveRuntimeApi.set_props` (Slice 2B-0, `DirectProps.withMap` → `NveMapEntry[]`); returns
-  /// `false` while the runtime has no props entry point.
-  bool setProps(Map<String, Object?> props) => false;
+  /// Forwards embedding-host props to the attached app (`set_props`); `true` (and a scheduled
+  /// tick) when the app re-renders, `false` when nothing changed or the app takes no props.
+  bool setProps(Map<String, Object?> props) {
+    try {
+      if (!session.setProps(props)) {
+        return false;
+      }
+    } on RuntimeException catch (e) {
+      if (e.status == NveRuntimeStatus.unsupported) {
+        return false;
+      }
+      rethrow;
+    }
+    scheduleTick();
+    return true;
+  }
 
   /// Sends imperative command [name] to the attached app as a `Custom` event on the root node,
   /// with [args] as its structured value (codegen `NveExportSpec.commands`).
@@ -211,12 +223,19 @@ class NveCanvasController extends ChangeNotifier {
     if (isDisposed) {
       return false;
     }
+    final bool published;
+    final List<RuntimeEvent> emitted;
     try {
-      if (!session.tick(dtSeconds)) {
-        return false;
-      }
+      published = session.tick(dtSeconds);
+      emitted = session.drainEmittedEvents();
     } on RuntimeException catch (e, st) {
       _report(e, st);
+      return false;
+    }
+    if (onAppEvent case final listener?) {
+      emitted.forEach(listener);
+    }
+    if (!published || isDisposed) {
       return false;
     }
     _frames++;

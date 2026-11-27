@@ -118,6 +118,78 @@ List<(int, double, double)> _pressTargets(RuntimeSceneReader s, double viewportH
   ];
 }
 
+bool _sameBytes(Uint8List a, Uint8List b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Resource kind of each core table's resource field(s), by table name.
+const _resourceKinds = {
+  'nve.grid': 'nve.res.grid_tracks',
+  'nve.visual': 'nve.res.box_shadows|nve.res.background_fill',
+  'nve.motion': 'nve.res.transitions',
+  'nve.responsive': 'nve.res.responsive_rules',
+  'nve.interaction': 'nve.res.state_rules',
+  'nve.accessibility': 'nve.res.aria_relations',
+  'nve.image': 'nve.res.image_src',
+};
+
+/// Slice 2B-0 embedding-host hooks against the kitchen sink.
+void _runtimeHooks(Check c, RuntimeSession session) {
+  // ---- resource_payload: every published resource word resolves inside the scene read -----
+  c.throwsA<StateError>(() => session.resourcePayload(1), 'resource payload outside withScene');
+  final resolved = session.withScene((s) {
+    c.eq(session.resourcePayload(0), null, 'resource id 0 is absent');
+    c.eq(session.resourcePayload(0xFFFFFF), null, 'unknown resource id is NOT_FOUND');
+    var n = 0;
+    for (final info in nveTables) {
+      final table = s.findTable(info.key);
+      if (table == null) {
+        continue;
+      }
+      final kinds = (_resourceKinds[info.name] ?? '').split('|').map(Key64.of).toSet();
+      for (final field in info.fields.where((f) => f.kind == FieldKind.resource)) {
+        for (var row = 0; row < table.rowCount; row++) {
+          final id = table.resource(row, field);
+          if (id == 0) {
+            continue;
+          }
+          final got = session.resourcePayload(id);
+          final again = session.resourcePayload(id);
+          if (got == null || again == null) {
+            c.that(false, '${info.name} resource $id resolves');
+            continue;
+          }
+          c.that(kinds.contains(got.$1), '${info.name} resource $id kind ${got.$1}');
+          c.that(got.$2.isNotEmpty, '${info.name} resource $id payload is non-empty');
+          c.that(_sameBytes(again.$2, got.$2), '${info.name} resource $id payload is stable within one read');
+          n++;
+        }
+      }
+    }
+    return n;
+  });
+  c.that(resolved > 0, 'kitchen sink publishes resources ($resolved resolved)');
+
+  // ---- set_props / drain_emitted_events / snapshot / hot patch ------------------------------
+  c.eq(session.setProps(const {}), false, 'empty props change nothing');
+  c.eq(session.setProps({'unknown': 1, 'nested': {'a': [1, 'b']}}), false, 'unknown props change nothing');
+  c.eq(session.drainEmittedEvents(), const <RuntimeEvent>[], 'kitchen sink emits no events');
+  final snapshot = session.snapshotState();
+  c.that(snapshot.isNotEmpty, 'snapshot carries app state (${snapshot.length} bytes)');
+  session.restoreState(snapshot);
+  session.tick(0);
+  c.that(_sameBytes(session.snapshotState(), snapshot), 'restore -> snapshot round-trips');
+  _expectStatus(c, NveRuntimeStatus.invalidArg, () => session.applyHotPatch(Uint8List(4)), 'malformed NVP1 patch');
+}
+
 void main() {
   final c = Check();
   runRuntimeIngress(c);
@@ -238,6 +310,8 @@ void main() {
   } else {
     c.that(false, 'kitchen sink exposes a scroll container');
   }
+
+  _runtimeHooks(c, session);
 
   session.setViewport(800, 600, 1);
   session.tick(1 / 60);

@@ -283,7 +283,7 @@ fn emit_flutter_dart(spec: &NveExportSpec) -> String {
     writeln!(out, "  }}");
     writeln!(out);
 
-    writeln!(out, "  void _handleEvent(NveAppEvent event) {{");
+    writeln!(out, "  void _handleEvent(RuntimeEvent event) {{");
     writeln!(out, "    switch (event.name) {{");
     for ev in &spec.events {
         let cb = dart_ident(&ev.name);
