@@ -3,15 +3,20 @@ name = "nve-example-issues-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Reference fullstack issue-tracker server built on nve-rpc, nve-server, and nve-http-hyper."
+description = "Reference fullstack issue-tracker server built on nve-rpc, nve-server, nve-http-hyper, and streaming nve-ssr."
 
 [dependencies]
 nve-example-issues-api = { workspace = true }
+nve-example-issues-client = { workspace = true }
+nve-dioxus = { workspace = true }
+nve-query = { workspace = true }
+nve-query-dioxus = { workspace = true }
+nve-ssr = { workspace = true }
+nve-ui = { workspace = true }
 nve-rpc = { workspace = true }
 nve-server = { workspace = true }
 nve-http-hyper = { workspace = true }
 http = { workspace = true }
-http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server", "http1"] }
 tower-service = { workspace = true }
 bytes = { workspace = true }
@@ -20,4 +25,6 @@ tokio = { workspace = true }
 [dev-dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
 minicbor = { workspace = true }
+http-body-util = { workspace = true }
+base64 = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }

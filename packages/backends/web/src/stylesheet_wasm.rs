@@ -197,6 +197,26 @@ impl StyleSheetCache {
         self.append_to_fallback_style(doc, batch, layer);
     }
 
+    /// Creates a runtime `<style>` element carrying the SSR page's CSP nonce (read from the
+    /// server-emitted `<style data-nve-base nonce>`), so strict `style-src 'nonce-…'` policies
+    /// accept fallback stylesheets. Uses the `nonce` IDL property: browsers hide the attribute
+    /// value after parsing.
+    fn create_style_el(doc: &web_sys::Document) -> Option<web_sys::Element> {
+        use wasm_bindgen::JsCast as _;
+        let el = doc.create_element("style").ok()?;
+        let nonce = doc
+            .query_selector("style[data-nve-base][nonce]")
+            .ok()
+            .flatten()
+            .and_then(|s| s.dyn_into::<web_sys::HtmlElement>().ok())
+            .map(|s| s.nonce())
+            .filter(|n| !n.is_empty());
+        if let Some(nonce) = nonce {
+            let _ = el.set_attribute("nonce", &nonce);
+        }
+        Some(el)
+    }
+
     fn style_parent(doc: &web_sys::Document) -> Option<web_sys::Element> {
         doc.query_selector("head")
             .ok()
@@ -219,7 +239,7 @@ impl StyleSheetCache {
         }
         self.use_adopted = Some(false);
         if doc.get_element_by_id("nve-base-styles").is_none()
-            && let Ok(style_el) = doc.create_element("style")
+            && let Some(style_el) = Self::create_style_el(doc)
         {
             style_el.set_id("nve-base-styles");
             let _ = style_el.set_attribute("data-nve-base", "");
@@ -252,7 +272,7 @@ impl StyleSheetCache {
                 let el = match doc.get_element_by_id(id) {
                     Some(el) => el,
                     None => {
-                        let Ok(created) = doc.create_element("style") else {
+                        let Some(created) = Self::create_style_el(doc) else {
                             return;
                         };
                         created.set_id(id);

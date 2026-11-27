@@ -161,7 +161,9 @@ pub fn parse_focus_issue_query(query: Option<&str>) -> Option<IssueId> {
     parse_u64_query_param(query, "issue").map(IssueId)
 }
 
-fn parse_u64_query_param(query: Option<&str>, key: &str) -> Option<u64> {
+/// Parses the first `key=<u64>` pair from a URL query string (with or without leading `?`).
+#[must_use]
+pub fn parse_u64_query_param(query: Option<&str>, key: &str) -> Option<u64> {
     let raw = query?.strip_prefix('?').unwrap_or(query?);
     for pair in raw.split('&') {
         let Some((k, v)) = pair.split_once('=') else {

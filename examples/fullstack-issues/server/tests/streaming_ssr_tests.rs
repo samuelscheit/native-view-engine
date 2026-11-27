@@ -1,0 +1,358 @@
+//! Streaming SSR `GET /issues` integration tests over real loopback HTTP/1.1:
+//! - DSD shell + out-of-order `stats` / `comments` slots (both delay orders) + strict per-request
+//!   nonce CSP with zero inline executable `<script>`
+//! - pre-headers `404` for unknown `?issue=`, post-headers `<ErrorBoundary>` + `DomainErr` `NVEQ`
+//!   chunk for unknown `?comments_issue=`
+//! - external `/pkg/issues/boot.js` and opt-in `/_test/*` stream-control hooks
+
+use core::time::Duration;
+
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+use bytes::Bytes;
+use http::header::CONTENT_SECURITY_POLICY;
+use http::{Method, Request, Response, StatusCode};
+use http_body_util::{BodyExt as _, Empty};
+use hyper::body::Incoming;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
+use nve_example_issues_api::{ApiError, IssueId, ListComments};
+use nve_example_issues_server::auth::{DEMO_WEB_COOKIE_TOKEN, SESSION_COOKIE_NAME};
+use nve_example_issues_server::store::IssueStore;
+use nve_example_issues_server::{build_issues_server, IssuesHttpService};
+use nve_http_hyper::serve_service_with_shutdown;
+use nve_query::QueryOptions;
+use nve_query_dioxus::erased_query_client;
+use nve_rpc::{RpcError, RpcStatus};
+use nve_server::DirectTransport;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+
+struct TestServer {
+    origin: String,
+    store: IssueStore,
+    client: Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl TestServer {
+    async fn start(configure: impl FnOnce(IssuesHttpService) -> IssuesHttpService) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let store = IssueStore::seeded();
+        let svc = configure(IssuesHttpService::new(build_issues_server(
+            store.clone(),
+            [origin.clone()],
+        )));
+        let (tx, rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            serve_service_with_shutdown(listener, svc, async {
+                let _ = rx.await;
+            })
+            .await
+            .unwrap();
+        });
+        Self {
+            origin,
+            store,
+            client: Client::builder(TokioExecutor::new()).build_http(),
+            shutdown: Some(tx),
+            task: Some(task),
+        }
+    }
+
+    async fn request(&self, method: Method, path: &str, cookie: bool) -> Response<Incoming> {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.origin));
+        if cookie {
+            req = req.header(
+                http::header::COOKIE,
+                format!("{SESSION_COOKIE_NAME}={DEMO_WEB_COOKIE_TOKEN}"),
+            );
+        }
+        self.client.request(req.body(Empty::new()).unwrap()).await.unwrap()
+    }
+
+    async fn page(&self, path: &str) -> (Response<()>, String) {
+        let resp = self.request(Method::GET, path, true).await;
+        let (parts, body) = resp.into_parts();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        (
+            Response::from_parts(parts, ()),
+            String::from_utf8(bytes.to_vec()).unwrap(),
+        )
+    }
+
+    async fn stream_status(&self) -> String {
+        let resp = self.request(Method::GET, "/_test/stream-status", false).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    async fn stop(mut self) {
+        let _ = self.shutdown.take().unwrap().send(());
+        self.task.take().unwrap().await.unwrap();
+    }
+}
+
+fn header<T>(resp: &Response<T>, name: impl http::header::AsHeaderName) -> &str {
+    resp.headers().get(name).unwrap().to_str().unwrap()
+}
+
+fn index_of(html: &str, needle: &str) -> usize {
+    html.find(needle)
+        .unwrap_or_else(|| panic!("missing {needle:?} in streamed HTML:\n{html}"))
+}
+
+/// Asserts the strict zero-inline-JS CSP and returns its per-request nonce.
+fn assert_strict_csp(resp: &Response<()>, html: &str) -> String {
+    let csp = header(resp, CONTENT_SECURITY_POLICY);
+    let script_src = csp
+        .split(';')
+        .map(str::trim)
+        .find(|d| d.starts_with("script-src "))
+        .unwrap();
+    assert_eq!(script_src, "script-src 'self' 'wasm-unsafe-eval'");
+    let nonce = csp
+        .split("'nonce-")
+        .nth(1)
+        .and_then(|rest| rest.split('\'').next())
+        .unwrap()
+        .to_owned();
+    assert_eq!(nonce.len(), 24, "128-bit base64 nonce: {csp}");
+    // Every `<style>` carries the nonce; every `<script>` is either external or inert data.
+    let style_count = html.matches("<style").count();
+    assert!(style_count >= 2);
+    assert_eq!(
+        html.matches(&format!("nonce=\"{nonce}\"")).count(),
+        style_count,
+        "every <style> must carry the CSP nonce"
+    );
+    for (pos, _) in html.match_indices("<script") {
+        let tag = &html[pos..pos + html[pos..].find('>').unwrap()];
+        assert!(
+            tag.contains("type=\"application/x-nve-query\"")
+                || (tag.contains(" src=\"") && tag.contains("type=\"module\"")),
+            "inline executable script found: {tag}"
+        );
+    }
+    nonce
+}
+
+/// Decodes every `<script type="application/x-nve-query" data-nve-seq>` payload in order.
+fn nveq_chunks(html: &str) -> Vec<(u64, Vec<u8>)> {
+    const MARKER: &str = "<script type=\"application/x-nve-query\" data-nve-seq=\"";
+    html.match_indices(MARKER)
+        .map(|(pos, _)| {
+            let rest = &html[pos + MARKER.len()..];
+            let (seq, rest) = rest.split_once("\">").unwrap();
+            let b64 = &rest[..rest.find("</script>").unwrap()];
+            (seq.parse().unwrap(), BASE64_STANDARD.decode(b64).unwrap())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn issues_page_streams_out_of_order_slots_with_strict_nonce_csp() {
+    let srv = TestServer::start(|svc| svc.with_wasm_dir(std::env::temp_dir())).await;
+
+    // Comments slower than stats -> stats slot streams first.
+    srv.store.set_stats_delay_ms(5);
+    srv.store.set_comments_delay_ms(60);
+    let (resp, html) = srv.page("/issues").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(header(&resp, "content-type"), "text/html; charset=utf-8");
+    let nonce_a = assert_strict_csp(&resp, &html);
+
+    let host = index_of(&html, "<template shadowrootmode=\"open\">");
+    let list = index_of(&html, "testid=\"issues-list\"");
+    let stats_fallback = index_of(&html, "testid=\"stats-skeleton\"");
+    let comments_fallback = index_of(&html, "testid=\"comments-skeleton\"");
+    let stats_slot = index_of(&html, "<div slot=\"nve-slot-stats\"");
+    let comments_slot = index_of(&html, "<div slot=\"nve-slot-comments\"");
+    assert!(host < list && host < stats_fallback && stats_fallback < comments_fallback);
+    assert!(comments_fallback < stats_slot && stats_slot < comments_slot);
+    // seq=0 (issue list) precedes the async boot module; each slot's NVEQ precedes its delta.
+    let seq0 = index_of(&html, "data-nve-seq=\"0\"");
+    let boot = index_of(
+        &html,
+        "<script type=\"module\" async src=\"/pkg/issues/boot.js\"></script>",
+    );
+    assert!(seq0 < boot && boot < stats_slot);
+    assert!(index_of(&html, "data-nve-seq=\"1\"") < stats_slot);
+    assert!(stats_slot < index_of(&html, "data-nve-seq=\"2\"") && comments_slot > seq0);
+    assert!(html.contains("<link rel=\"modulepreload\" href=\"/pkg/issues/boot.js\">"));
+    assert_eq!(nveq_chunks(&html).len(), 3);
+
+    // Reversed delays -> comments slot streams first (true out-of-order, not document order).
+    srv.store.set_stats_delay_ms(60);
+    srv.store.set_comments_delay_ms(5);
+    let (resp_b, html_b) = srv.page("/issues").await;
+    let nonce_b = assert_strict_csp(&resp_b, &html_b);
+    assert!(
+        index_of(&html_b, "<div slot=\"nve-slot-comments\"")
+            < index_of(&html_b, "<div slot=\"nve-slot-stats\"")
+    );
+    assert_ne!(nonce_a, nonce_b, "CSP nonce must be fresh per request");
+
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn issues_page_without_wasm_dir_ships_zero_scripts_but_query_data() {
+    let srv = TestServer::start(|svc| svc).await;
+    let (resp, html) = srv.page("/issues").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_strict_csp(&resp, &html);
+    assert!(!html.contains("boot.js"));
+    assert!(!html.contains("type=\"module\""));
+    assert!(html.contains("form") && html.contains("action=\"/issues/create\""));
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn unknown_focus_issue_is_404_before_headers_and_known_focus_is_200() {
+    let srv = TestServer::start(|svc| svc).await;
+    let (missing, body) = srv.page("/issues?issue=999").await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert!(missing.headers().get(CONTENT_SECURITY_POLICY).is_none());
+    assert!(!body.contains("<html"));
+    let (found, _) = srv.page("/issues?issue=2").await;
+    assert_eq!(found.status(), StatusCode::OK);
+    // Unauthenticated callers never reach SSR.
+    let unauth = srv.request(Method::GET, "/issues?issue=999", false).await;
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn unknown_comments_issue_streams_error_boundary_and_domain_err_nveq() {
+    let srv = TestServer::start(|svc| svc).await;
+    srv.store.set_comments_delay_ms(20);
+    let (resp, html) = srv.page("/issues?comments_issue=999").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_strict_csp(&resp, &html);
+    let slot = index_of(&html, "<div slot=\"nve-slot-comments\"");
+    assert!(index_of(&html, "testid=\"comments-error-boundary\"") > slot);
+
+    // Hydrating every streamed chunk yields the typed `ApiError::NotFound(999)` without any RPC.
+    let verify = erased_query_client(DirectTransport::new(build_issues_server(
+        IssueStore::seeded(),
+        ["http://unused"],
+    )));
+    for (seq, bytes) in nveq_chunks(&html) {
+        if seq == 0 {
+            verify.hydrate_bytes(&bytes).unwrap();
+        } else {
+            verify.hydrate_stream_chunk_bytes(&bytes).unwrap();
+        }
+    }
+    let handle = verify
+        .subscribe::<ListComments>(&IssueId(999), QueryOptions::default())
+        .unwrap();
+    let snap = verify.read::<ListComments>(handle);
+    assert!(snap.data.is_none() && !snap.is_fetching && !snap.is_stream_pending);
+    assert_eq!(
+        *snap.error.expect("DomainErr hydrated from NVEQ"),
+        RpcError::Domain {
+            status: RpcStatus::NotFound,
+            error: ApiError::NotFound(IssueId(999)),
+        }
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn boot_js_is_external_nosniff_module_only_with_wasm_dir() {
+    let empty_dir = std::env::temp_dir().join(format!("nve-issues-boot-{}", std::process::id()));
+    std::fs::create_dir_all(&empty_dir).unwrap();
+    let srv = TestServer::start(|svc| svc.with_wasm_dir(&empty_dir)).await;
+    let resp = srv.request(Method::GET, "/pkg/issues/boot.js", false).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        header(&resp, "content-type"),
+        "application/javascript; charset=utf-8"
+    );
+    assert_eq!(header(&resp, "x-content-type-options"), "nosniff");
+    assert_eq!(header(&resp, "cache-control"), "no-store");
+    let js = resp.into_body().collect().await.unwrap().to_bytes();
+    let js = core::str::from_utf8(&js).unwrap();
+    assert!(js.contains("mod.start_issues_app('app', '')"));
+    assert!(js.contains("/pkg/issues/manifest.json"));
+    srv.stop().await;
+    let _ = std::fs::remove_dir_all(&empty_dir);
+
+    let no_wasm = TestServer::start(|svc| svc).await;
+    let resp = no_wasm.request(Method::GET, "/pkg/issues/boot.js", false).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    no_wasm.stop().await;
+}
+
+#[tokio::test]
+async fn test_hooks_are_404_unless_enabled() {
+    let srv = TestServer::start(|svc| svc).await;
+    for (method, path) in [
+        (Method::POST, "/_test/stream-control?hold_comments=1"),
+        (Method::GET, "/_test/stream-status"),
+    ] {
+        let resp = srv.request(method, path, true).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn test_hooks_hold_comments_slot_open_until_released() {
+    let srv = TestServer::start(|svc| svc.with_test_hooks(true)).await;
+    let unknown = srv.request(Method::GET, "/_test/nope", false).await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    let ctl = srv
+        .request(
+            Method::POST,
+            "/_test/stream-control?stats_delay_ms=0&comments_delay_ms=0&hold_comments=1",
+            false,
+        )
+        .await;
+    assert_eq!(ctl.status(), StatusCode::OK);
+
+    // Headers + shell arrive while the comments RPC is parked on the barrier (0ms stats resolve
+    // synchronously during the shell pass, so they render inline without a slot delta).
+    let resp = srv.request(Method::GET, "/issues", true).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    let mut html = String::new();
+    while !html.contains("testid=\"stats-panel\"") || !html.contains("data-nve-q-ack=\"0\"") {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame())
+            .await
+            .expect("stats slot streams while comments are held")
+            .unwrap()
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            html.push_str(core::str::from_utf8(&data).unwrap());
+        }
+    }
+    assert_eq!(srv.stream_status().await, "comments_waiting=1");
+    assert!(html.contains("testid=\"comments-skeleton\""));
+    assert!(!html.contains("<div slot=\"nve-slot-comments\""));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), body.frame())
+            .await
+            .is_err(),
+        "stream must stay open while held"
+    );
+
+    let release = srv
+        .request(Method::POST, "/_test/stream-control?hold_comments=0", false)
+        .await;
+    assert_eq!(release.status(), StatusCode::OK);
+    let rest = body.collect().await.unwrap().to_bytes();
+    html.push_str(core::str::from_utf8(&rest).unwrap());
+    assert!(html.contains("<div slot=\"nve-slot-comments\""));
+    assert!(html.contains("testid=\"featured-comments-panel\""));
+    assert_eq!(srv.stream_status().await, "comments_waiting=0");
+    srv.stop().await;
+}

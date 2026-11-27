@@ -34,7 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|s| !s.trim().is_empty())
         .map(|o| CorsPolicy::allow_origins([o]));
     let server = build_issues_server_with_cors(IssueStore::seeded(), [origin], cors);
-    let mut svc = IssuesHttpService::new(server);
+    let test_hooks = std::env::var("NVE_ISSUES_TEST_HOOKS").is_ok_and(|v| v == "1");
+    if test_hooks {
+        println!("WARNING: NVE_ISSUES_TEST_HOOKS=1 mounts /_test/* stream-control routes (E2E only)");
+    }
+    let mut svc = IssuesHttpService::new(server).with_test_hooks(test_hooks);
     if let Ok(wasm_dir) = std::env::var("NVE_ISSUES_WASM_DIR")
         && !wasm_dir.trim().is_empty()
     {

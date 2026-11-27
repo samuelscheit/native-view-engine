@@ -3,9 +3,11 @@
 use dioxus_core::{AttributeValue, ElementId, Template, TemplateAttribute, TemplateNode, WriteMutations};
 use nve_abi::{ComponentKind, EventMask, NodeId, RawPropValueRef};
 use nve_components::resolve_tag;
+use nve_components::style_patch::Display;
 use nve_engine::RenderSink;
 
 use crate::native_view::NATIVE_VIEW_TAG;
+use crate::typed_style::TypedStyle;
 
 use super::{MutationTx, NodeRecord};
 
@@ -97,6 +99,13 @@ impl<S: RenderSink> WriteMutations for MutationTx<'_, S> {
 
     fn create_placeholder(&mut self, id: ElementId) {
         let nid = self.writer.alloc_node(self.sink, ComponentKind::View, None);
+        // Empty `if`/`match` arms must not occupy layout: as a plain `View` the placeholder is a
+        // flex item and adds a spurious `gap` on every backend (Web CSS, Yoga/Skia).
+        self.writer.apply_typed_style(
+            self.sink,
+            nid,
+            TypedStyle::new().display(Display::None),
+        );
         self.writer.bind_element_id(nid, id);
         self.writer.stack.push(nid);
     }

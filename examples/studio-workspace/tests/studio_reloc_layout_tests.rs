@@ -15,6 +15,7 @@ use nve_engine::reloc::{
 use nve_engine::{
     DynLayoutEngine, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer, Viewport,
 };
+use nve_components::layout_ext::LayoutExt;
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
     AccentTheme, ActiveView, CornerRadiusMode, DensityMode, LayoutEngineMode,
@@ -357,6 +358,16 @@ impl LayoutEngine for HostMirrorLayoutEngine {
 
     fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
         self.inner.set_layout(id, layout);
+    }
+
+    // Defaulted no-op trait methods must be forwarded too, or `display: none` / grid / position
+    // extensions silently diverge from the wrapped engine.
+    fn set_layout_ext(&mut self, id: NodeId, ext: Option<&LayoutExt>) {
+        self.inner.set_layout_ext(id, ext);
+    }
+
+    fn set_raw_layout_prop(&mut self, id: NodeId, key: &str, value: &str) {
+        self.inner.set_raw_layout_prop(id, key, value);
     }
 
     fn set_style(&mut self, id: NodeId, style: &StyleProps) {
