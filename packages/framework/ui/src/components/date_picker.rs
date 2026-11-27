@@ -1,5 +1,5 @@
 //! Accessible, locale-aware [`DatePicker`] and [`DateRangePicker`] RSX components built
-//! on `nve-i18n`, `UiTheme` tokens, WAI-ARIA dialog/grid semantics (`role="dialog"`,
+//! on `nve-i18n`, `nve_ui::Theme` tokens, WAI-ARIA dialog/grid semantics (`role="dialog"`,
 //! `role="grid"`, `role="gridcell"`, `aria-selected`, `aria-disabled`), and `positioning.rs`
 //! collision-flipping geometry.
 

@@ -33,7 +33,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
     let text_primary = theme.text.primary.hex();
     let text_secondary = theme.text.secondary.hex();
     let text_muted = theme.text.tertiary.hex();
-    let accent = theme.status.accent.solid.hex();
+    let accent_text = theme.status.accent.text.hex();
     let surface_subtle = theme.surface.subtle.hex();
     let border = theme.border.default.hex();
 
@@ -79,7 +79,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                             justify: Some("space-between".to_owned()),
                             align: Some("center".to_owned()),
                             text {
-                                style: "font-size: 12px; font-weight: 700; color: {accent};",
+                                style: "font-size: 12px; font-weight: 700; color: {accent_text};",
                                 "{copy(\"INTERACTIVE COUNTER\", pseudo)}"
                             }
                             Badge {

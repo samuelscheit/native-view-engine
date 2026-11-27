@@ -6,6 +6,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::error_text;
 use crate::theme::use_theme;
 
 /// Accessible text input with optional label, helper/error text (`aria-describedby`),
@@ -108,7 +109,7 @@ pub fn Input(
     let desc_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
             color: if has_error {
-                theme.status.danger.solid
+                error_text(&theme)
             } else {
                 theme.text.tertiary
             },

@@ -9,11 +9,12 @@ use std::rc::Rc;
 
 use dioxus_core::{provide_context, try_consume_context, use_hook, EventHandler};
 use dioxus_core_macro::Props;
-use nve_abi::{ColorRgba, FlexAlign, FlexDirection, FlexJustify};
+use nve_abi::{FlexAlign, FlexDirection, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::{tab_colors, ControlColors};
 use crate::theme::use_theme;
 
 #[derive(Clone)]
@@ -189,31 +190,8 @@ pub fn TabTrigger(
         .unwrap_or_else(|| format!("tabs-tab-{value}"));
     let resolved_test_id = test_id.unwrap_or(tab_id_default);
 
-    let (bg, fg, bw, bc) = if focused() && !disabled {
-        (
-            if is_selected {
-                theme.surface.base
-            } else {
-                ColorRgba::TRANSPARENT
-            },
-            if is_selected {
-                theme.status.accent.solid
-            } else {
-                theme.text.primary
-            },
-            2.0,
-            theme.border.focus,
-        )
-    } else if is_selected {
-        (theme.surface.base, theme.status.accent.solid, 1.0, theme.border.default)
-    } else {
-        (
-            ColorRgba::TRANSPARENT,
-            theme.text.secondary,
-            0.0,
-            ColorRgba::TRANSPARENT,
-        )
-    };
+    let ControlColors { bg, fg, border_width: bw, border: bc } =
+        tab_colors(&theme, is_selected, focused() && !disabled);
 
     let trigger_style = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)

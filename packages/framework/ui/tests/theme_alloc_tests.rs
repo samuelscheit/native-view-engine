@@ -97,13 +97,16 @@ fn theme_resolution_accent_override_and_hex_bridge_allocate_nothing() {
 
 thread_local! {
     static READ_ALLOCS: Cell<usize> = const { Cell::new(usize::MAX) };
+    static FIRST_READ_ALLOCS: Cell<usize> = const { Cell::new(usize::MAX) };
     static RENDERS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[component]
 fn Reader() -> Element {
-    // The first read registers this scope as a subscriber (one-time setup per render).
-    let first = use_theme();
+    // The first read registers this scope as a subscriber; measured separately so the initial
+    // subscription cost is visible and re-render subscriptions are proven free.
+    let (first_allocs, first) = allocs_during(use_theme);
+    FIRST_READ_ALLOCS.with(|c| c.set(first_allocs));
     let (allocs, theme) = allocs_during(|| {
         let mut last = first;
         for _ in 0..1_000 {
@@ -150,4 +153,8 @@ fn use_theme_context_reads_allocate_nothing_across_rerenders() {
     dom.render_immediate_to_vec();
     assert_eq!(RENDERS.with(Cell::get), 2, "theme switch re-renders the reader once");
     assert_eq!(READ_ALLOCS.with(Cell::get), 0);
+    // Dioxus clears a scope's subscriptions on every render, so the first read re-registers it:
+    // a fixed per-render cost of at most one allocation, independent of the read count.
+    let first = FIRST_READ_ALLOCS.with(Cell::get);
+    assert!(first <= 1, "per-render use_theme() subscription allocated {first} times (max 1)");
 }

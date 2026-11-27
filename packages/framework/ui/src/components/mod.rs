@@ -19,6 +19,7 @@ pub(crate) mod html_tables;
 pub mod keyboard_avoiding;
 pub mod layout;
 pub mod overlays;
+pub mod roles;
 pub mod split_pane;
 pub mod tabs;
 pub mod toast;

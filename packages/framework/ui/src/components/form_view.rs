@@ -19,6 +19,7 @@ use crate::components::actions::{Button, ButtonSize, ButtonVariant};
 use crate::components::forms::Input;
 use crate::form_draft::FormController;
 use crate::style_buf::{TypedStyleBuilder, TypedTextStyle};
+use crate::components::roles::error_text;
 use crate::theme::use_theme;
 
 /// HTTP submission method emitted on `<form method="...">`.
@@ -143,7 +144,7 @@ pub fn Form(
         .finish();
     let form_err_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: theme.status.danger.solid,
+            color: error_text(&theme),
             font_size: theme.typography.ui.size,
             font_weight: "500",
             text_align: "left",

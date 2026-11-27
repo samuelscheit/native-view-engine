@@ -9,7 +9,8 @@ use nve_interop::traits::UiDensity;
 use nve_interop::{ColorScheme, ContrastLevel};
 use nve_ui::{
     apca_contrast, composite, relative_luminance, wcag_contrast, Accent, AppBrand, Appearance,
-    Breakpoint, Layer, Polarity, Scale, Theme, ThemeConfig, ThemeMode,
+    badge_colors, button_colors, error_text, selected_text, tab_colors, BadgeVariant, Breakpoint,
+    ButtonVariant, ControlColors, Layer, Polarity, Scale, Theme, ThemeConfig, ThemeMode,
 };
 
 /// `(min WCAG ratio, min |APCA Lc|)` per role.
@@ -85,6 +86,53 @@ impl Report {
             self.0.push(msg);
         }
     }
+}
+
+/// Every component variant's actual `(fg, bg)` pairing, through the same pure helpers the
+/// components paint with (catches wrong token pairings that raw-token checks cannot).
+#[test]
+fn every_component_variant_pairing_is_readable_in_every_preset() {
+    let mut rep = Report(Vec::new());
+    for (name, t) in all_themes() {
+        let bar = if t.is_high_contrast() { &HIGH } else { &STANDARD };
+        let s = t.surface;
+        let mut control = |label: String, c: ControlColors, on: ColorRgba| {
+            let bg = composite(c.bg, on);
+            rep.text(&label, c.fg, bg, bar.readable);
+        };
+        for (sn, on) in [("base", s.base), ("raised", s.raised), ("overlay", s.overlay)] {
+            for v in [
+                ButtonVariant::Primary,
+                ButtonVariant::Secondary,
+                ButtonVariant::Ghost,
+                ButtonVariant::Destructive,
+                ButtonVariant::Outline,
+            ] {
+                for focused in [false, true] {
+                    let c = button_colors(&t, v, focused, false);
+                    control(format!("{name} Button::{v:?} focused={focused}@{sn}"), c, on);
+                }
+            }
+            for v in [
+                BadgeVariant::Neutral,
+                BadgeVariant::Accent,
+                BadgeVariant::Success,
+                BadgeVariant::Warning,
+                BadgeVariant::Danger,
+            ] {
+                control(format!("{name} Badge::{v:?}@{sn}"), badge_colors(&t, v), on);
+            }
+            for (selected, focused) in [(false, false), (false, true), (true, false), (true, true)] {
+                let c = tab_colors(&t, selected, focused);
+                control(format!("{name} Tab sel={selected} focus={focused}@{sn}"), c, on);
+            }
+        }
+        for (sn, bg) in [("canvas", s.canvas), ("base", s.base), ("raised", s.raised), ("overlay", s.overlay)] {
+            rep.text(&format!("{name} error_text/{sn}"), error_text(&t), bg, bar.readable);
+            rep.text(&format!("{name} selected_text/{sn}"), selected_text(&t), bg, bar.readable);
+        }
+    }
+    assert!(rep.0.is_empty(), "{} component contrast violations:\n{}", rep.0.len(), rep.0.join("\n"));
 }
 
 #[test]

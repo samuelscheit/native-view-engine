@@ -73,6 +73,9 @@ pub use style_buf::{
     parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,
     TypedTextStyle,
 };
+pub use components::roles::{
+    badge_colors, button_colors, error_text, selected_text, tab_colors, ControlColors,
+};
 pub use nve_interop::traits::UiDensity;
 pub use theme::{
     apca_contrast, composite, relative_luminance, use_theme, use_theme_signal, wcag_contrast,

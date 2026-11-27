@@ -2,10 +2,11 @@
 
 use dioxus_core::EventHandler;
 use dioxus_core_macro::Props;
-use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::{badge_colors, button_colors, ControlColors};
 use crate::theme::{use_theme, Theme};
 
 /// Visual hierarchy variants for [`Button`] and [`IconButton`].
@@ -37,55 +38,6 @@ pub enum BadgeVariant {
     Success,
     Warning,
     Danger,
-}
-
-fn button_colors(
-    theme: &Theme,
-    variant: ButtonVariant,
-    focused: bool,
-    disabled: bool,
-) -> (ColorRgba, ColorRgba, f32, ColorRgba) {
-    let (bg, fg, base_bw, base_bc) = match variant {
-        ButtonVariant::Primary => (
-            theme.status.accent.solid,
-            theme.status.accent.on_solid,
-            if theme.is_high_contrast() { 2.0 } else { 0.0 },
-            if theme.is_high_contrast() {
-                theme.border.default
-            } else {
-                ColorRgba::TRANSPARENT
-            },
-        ),
-        ButtonVariant::Secondary => (theme.surface.subtle, theme.text.primary, 1.0, theme.border.default),
-        ButtonVariant::Ghost => (
-            ColorRgba::TRANSPARENT,
-            theme.text.primary,
-            0.0,
-            ColorRgba::TRANSPARENT,
-        ),
-        ButtonVariant::Destructive => (
-            theme.status.danger.solid,
-            theme.status.danger.on_solid,
-            if theme.is_high_contrast() { 2.0 } else { 0.0 },
-            if theme.is_high_contrast() {
-                theme.border.default
-            } else {
-                ColorRgba::TRANSPARENT
-            },
-        ),
-        ButtonVariant::Outline => (
-            theme.surface.base,
-            theme.text.primary,
-            if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.border.default,
-        ),
-    };
-
-    if focused && !disabled {
-        (bg, fg, 2.0, theme.border.focus)
-    } else {
-        (bg, fg, base_bw, base_bc)
-    }
 }
 
 fn button_metrics(theme: &Theme, size: ButtonSize) -> (f32, f32, f32, f32) {
@@ -145,7 +97,8 @@ pub fn Button(
     let mut focused = use_signal(|| false);
     let blocked = disabled || loading;
 
-    let (bg, fg, bw, bc) = button_colors(&theme, variant, focused(), blocked);
+    let ControlColors { bg, fg, border_width: bw, border: bc } =
+        button_colors(&theme, variant, focused(), blocked);
     let (min_h, pad_x, pad_y, font_size) = button_metrics(&theme, size);
 
     let btn_style = TypedStyleBuilder::new()
@@ -261,7 +214,8 @@ pub fn IconButton(
     let mut focused = use_signal(|| false);
     let blocked = disabled || loading;
 
-    let (bg, fg, bw, bc) = button_colors(&theme, variant, focused(), blocked);
+    let ControlColors { bg, fg, border_width: bw, border: bc } =
+        button_colors(&theme, variant, focused(), blocked);
     let dim = match size {
         ButtonSize::Sm => 28.0,
         ButtonSize::Md => 36.0,
@@ -362,21 +316,7 @@ pub fn Badge(
     #[props(default)] style: Option<String>,
 ) -> Element {
     let theme = use_theme();
-    let (bg, fg, border_color) = match variant {
-        BadgeVariant::Neutral => (theme.surface.subtle, theme.text.secondary, theme.border.default),
-        BadgeVariant::Accent => (theme.status.accent.solid, theme.status.accent.on_solid, theme.status.accent.solid),
-        BadgeVariant::Success => (theme.status.success.solid, theme.status.accent.on_solid, theme.status.success.solid),
-        BadgeVariant::Warning => (
-            theme.status.warning.solid,
-            if theme.is_high_contrast() {
-                ColorRgba::BLACK
-            } else {
-                ColorRgba::WHITE
-            },
-            theme.status.warning.solid,
-        ),
-        BadgeVariant::Danger => (theme.status.danger.solid, theme.status.danger.on_solid, theme.status.danger.solid),
-    };
+    let ControlColors { bg, fg, border: border_color, .. } = badge_colors(&theme, variant);
 
     let pill_style = TypedStyleBuilder::new()
         .flex_row()

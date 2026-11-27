@@ -22,7 +22,7 @@ const PLAYGROUND_SPECS: [PlaygroundCardSpec; 5] = [
         tab_label: "UI Kitchen Sink",
         title: "nve-ui Component Kitchen Sink",
         guide_route: "/docs/guides/ui-components",
-        summary: "Interactive Button variants, Switch, Checkbox, Input, Tabs, Badge, and Toast notifications driven by UiTheme tokens.",
+        summary: "Interactive Button variants, Switch, Checkbox, Input, Tabs, Badge, and Toast notifications driven by nve_ui::Theme tokens.",
         badges: &["nve-ui", "WAI-ARIA", "Zero CSS"],
     },
     PlaygroundCardSpec {

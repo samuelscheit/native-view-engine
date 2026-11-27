@@ -200,24 +200,6 @@ impl Scale {
         }
         Self { steps }
     }
-
-    /// A chromatic scale for `accent` sharing the neutral lightness curve, with step 9/10 pinned
-    /// to the accent's solid lightness.
-    pub const fn chromatic(polarity: Polarity, accent: Accent) -> Self {
-        let p = polarity.profile();
-        let mut steps = [ColorRgba::TRANSPARENT; 12];
-        let mut i = 0;
-        while i < 12 {
-            let ramp = if i < 8 { 0.12 + 0.1 * i as f32 } else { 0.9 };
-            steps[i] = Oklch::new(p.neutral_l[i], accent.chroma * ramp, accent.hue).to_srgb();
-            i += 1;
-        }
-        let solid = solid_lightness(polarity, accent);
-        let hover = if solid > 0.6 { solid - 0.04 } else { solid + 0.04 };
-        steps[8] = Oklch::new(solid, accent.chroma, accent.hue).to_srgb();
-        steps[9] = Oklch::new(hover, accent.chroma, accent.hue).to_srgb();
-        Self { steps }
-    }
 }
 
 const fn solid_lightness(polarity: Polarity, accent: Accent) -> f32 {

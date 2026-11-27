@@ -11,6 +11,7 @@ use crate::components::overlays::resolve_anchored_position;
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::error_text;
 use crate::theme::{use_theme, Layer};
 
 /// Item entry rendered inside [`DropdownMenu`].
@@ -220,7 +221,7 @@ pub fn DropdownMenu(
             ColorRgba::TRANSPARENT
         };
         let fg = if item.destructive {
-            theme.status.danger.solid
+            error_text(&theme)
         } else {
             theme.text.primary
         };

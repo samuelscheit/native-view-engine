@@ -11,6 +11,7 @@ pub use crate::components::combobox_state::{
     default_combobox_filter, ComboboxAction, ComboboxOption, ComboboxState,
 };
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::selected_text;
 use crate::theme::{use_theme, Layer};
 
 /// Accessible searchable single-select & multi-select combobox component with `role="combobox"`,
@@ -244,7 +245,7 @@ pub fn Combobox(
             let opt_text_style = TypedStyleBuilder::new()
                 .text_style(TypedTextStyle {
                     color: if is_sel {
-                        theme.status.accent.solid
+                        selected_text(&theme)
                     } else {
                         theme.text.primary
                     },
