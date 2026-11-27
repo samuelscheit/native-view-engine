@@ -54,7 +54,7 @@ public final class NveSparseRowIndex {
 }
 
 /// The published core tables of one borrowed scene, read through the generated `NveTables` specs.
-public struct NveSceneTables {
+public struct NveRuntimeTables {
     public let scene: NveRuntimeScene
     public let visual, typography, text, image, scroll, accessibility, textInput, link, interaction: TableReader?
     private let sparse: [Key64: [Int32]]
@@ -81,11 +81,12 @@ public struct NveSceneTables {
     /// Row of node slot `index` in `table` (dense: the slot, only when the node's `table_set`
     /// holds the table — unattached dense rows are not defaults; sparse: the owner map).
     public func row(_ table: TableReader?, _ index: Int) -> Int? {
-        guard let table, scene.isLive(index) else { return nil }
-        guard table.isSparse else {
-            guard table.slot < 128, scene.hasTable(index, slot: UInt8(table.slot)) else { return nil }
-            return TableReader.denseRow(UInt32(index), rowCount: table.rowCount)
+        // A node owns a row only when its `table_set` holds the table; the runtime may publish
+        // owners for dense tables too, so owners (when present) resolve the row either way.
+        guard let table, scene.isLive(index), table.slot < 128, scene.hasTable(index, slot: UInt8(table.slot)) else {
+            return nil
         }
+        guard table.isSparse else { return TableReader.denseRow(UInt32(index), rowCount: table.rowCount) }
         guard let map = sparse[table.key], map.indices.contains(index), map[index] >= 0 else { return nil }
         return Int(map[index])
     }

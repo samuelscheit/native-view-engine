@@ -48,9 +48,9 @@ public final class NveSceneStore: ObservableObject {
     }
 
     /// Runs `body` over the published scene; `nil` when no scene is published yet.
-    public func withTables<R>(_ body: (NveSceneTables) -> R) -> R? {
+    public func withTables<R>(_ body: (NveRuntimeTables) -> R) -> R? {
         let result: R?? = try? session.withScene { scene in
-            scene.nodeCapacity > 1 ? body(NveSceneTables(scene: scene, index: sparseIndex)) : nil
+            scene.nodeCapacity > 1 ? body(NveRuntimeTables(scene: scene, index: sparseIndex)) : nil
         }
         return result ?? nil
     }
@@ -59,7 +59,7 @@ public final class NveSceneStore: ObservableObject {
     public func sync() {
         var scrollNodes: [NodeId] = []
         let synced: Bool = (try? session.withScene { scene in
-            let tables = NveSceneTables(scene: scene, index: sparseIndex)
+            let tables = NveRuntimeTables(scene: scene, index: sparseIndex)
             for raw in scene.removedIds { scrollOffsets.removeValue(forKey: NodeId(raw: raw)) }
             if let image = tables.image, !image.dirtyRows.isEmpty || !scene.removedIds.isEmpty {
                 imageSources.removeAll(keepingCapacity: true)
@@ -150,7 +150,7 @@ public final class NveSceneStore: ObservableObject {
     }
 
     private func collect(
-        _ t: NveSceneTables, _ i: Int, translate: CGPoint, clip: CGRect?, into out: inout [NveSceneAccessibilityElement]
+        _ t: NveRuntimeTables, _ i: Int, translate: CGPoint, clip: CGRect?, into out: inout [NveSceneAccessibilityElement]
     ) {
         guard t.opacity(i) > 0, let id = t.scene.nodeId(at: i) else { return }
         let a11y = t.accessibility(i)
@@ -192,7 +192,7 @@ public final class NveSceneStore: ObservableObject {
         }
     }
 
-    private static func role(_ t: NveSceneTables, _ i: Int, aria: NveAriaRole?, input: Bool) -> NveAccessibilityRole {
+    private static func role(_ t: NveRuntimeTables, _ i: Int, aria: NveAriaRole?, input: Bool) -> NveAccessibilityRole {
         switch aria {
         case .button?: return .button
         case .link?: return .link
@@ -214,7 +214,7 @@ public final class NveSceneStore: ObservableObject {
         return .none
     }
 
-    private func collectText(_ t: NveSceneTables, _ i: Int) -> String {
+    private func collectText(_ t: NveRuntimeTables, _ i: Int) -> String {
         if let text = t.text(i), !text.isEmpty { return text }
         return t.paintOrderedChildren(i).map { collectText(t, $0) }.filter { !$0.isEmpty }.joined(separator: " ")
     }

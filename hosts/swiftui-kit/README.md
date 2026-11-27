@@ -12,7 +12,7 @@ CoreText measurement), scroll state, hit testing, and pairing; Swift paints its 
 - **`NveSurfaceRepresentable`**: one SwiftUI `View` on iOS, macOS, tvOS, watchOS, and visionOS: paints the scene (`NveSceneCanvasView`), negotiates intrinsic size via the app's `NveLayoutApi::measure`, and pushes deduplicated props (`set_props`).
 - **`NveSurfaceController`**: attaches an app (`nve_get_interface`: explicit, `NveStaticInterfaceTable`, or `dlopen`), forwards props / input / hot patches (`apply_hot_patch`), Tier-2 reloads with `snapshot_state` / `restore_state`, drains outbound app events, and pairs with `nve dev` (`pair_connect`).
 - **`NveRuntimeSession`**: RAII Swift wrapper over every `NveRuntimeApi` slot (wake + text-measurer trampolines, `withScene` borrows).
-- **`NveSceneStore` / `NveSceneTables` / `NveSceneRenderer`**: zero-copy scene reads (visual, inherited typography, text, image `object-fit` + tint, text input, scroll, accessibility, `z_index` order).
+- **`NveSceneStore` / `NveRuntimeTables` / `NveSceneRenderer`**: zero-copy scene reads (visual, inherited typography, text, image `object-fit` + tint, text input, scroll, accessibility, `z_index` order).
 - **`NveChannelClient`**: Thread-safe pub/sub and retained shared-state bridge to `NveChannelBus`.
 
 Generated inputs (`cargo run --locked -p nve-cli -- codegen abi`): `CNveAbi` imports

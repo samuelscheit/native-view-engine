@@ -21,7 +21,7 @@ public enum NveSceneRenderer {
     }
 
     private static func drawNode(
-        _ t: NveSceneTables, _ i: Int, store: NveSceneStore, inheritedVisible: Bool, into context: inout GraphicsContext
+        _ t: NveRuntimeTables, _ i: Int, store: NveSceneStore, inheritedVisible: Bool, into context: inout GraphicsContext
     ) {
         let opacity = t.opacity(i)
         guard opacity > 0, let id = t.scene.nodeId(at: i) else { return }
