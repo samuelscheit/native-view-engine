@@ -1,0 +1,9 @@
+name: nve_host
+description: >-
+  Zero-dependency NVE host runtime for Dart (VM, Flutter, and Dart-web): XXH64 / Key64 on 32-bit
+  halves, the NveBinValue codec, and word-table / scene readers. Bit-identical on the VM and in JS.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"

@@ -1,0 +1,253 @@
+package dev.nve.host;
+
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Bounds-checked little-endian cursor over {@code byte[]} plus the compact tagged {@code NveBinValue}
+ * format (byte-identical to Rust {@code nve_abi::encode_bin_value}).
+ *
+ * <p>Wire layout: Null [0] | Bool [1, 0|1] | I64 [2, i64] | F64 [3, f64] | Str [4, len u32, utf8] |
+ * Bytes [5, len u32, raw] | Array [6, payload u32, count u32, ...] | Map [7, payload u32, count u32,
+ * (klen u32, key, value)...]; {@code payload} counts every byte after the payload field.
+ */
+public final class BinReader {
+    private final byte[] data;
+    private final int end;
+    private int pos;
+    /** End offset of the container most recently opened by {@link #openContainer}. */
+    private int containerEnd;
+
+    public BinReader(byte[] data) {
+        this(data, 0, data.length);
+    }
+
+    /** Reads {@code data[offset .. offset + length)}. */
+    public BinReader(byte[] data, int offset, int length) {
+        if (offset < 0 || length < 0 || length > data.length - offset) {
+            throw new IndexOutOfBoundsException("range [" + offset + ", +" + length + ") of " + data.length);
+        }
+        this.data = data;
+        this.pos = offset;
+        this.end = offset + length;
+    }
+
+    public int position() {
+        return pos;
+    }
+
+    public int remaining() {
+        return end - pos;
+    }
+
+    public boolean atEnd() {
+        return pos == end;
+    }
+
+    // ---- raw little-endian primitives ---------------------------------------------------------
+
+    public int u8() {
+        return data[take(1)] & 0xFF;
+    }
+
+    public int u16() {
+        final int at = take(2);
+        return (data[at] & 0xFF) | (data[at + 1] & 0xFF) << 8;
+    }
+
+    /** Raw {@code u32} bits (use {@link Integer#toUnsignedLong} for the unsigned value). */
+    public int u32() {
+        return Xxh64.read32(data, take(4));
+    }
+
+    /** Raw {@code u64} bits (unsigned in a {@code long}). */
+    public long u64() {
+        return Xxh64.read64(data, take(8));
+    }
+
+    public float f32() {
+        return Float.intBitsToFloat(u32());
+    }
+
+    public double f64() {
+        return Double.longBitsToDouble(u64());
+    }
+
+    /** Copy of the next {@code n} bytes. */
+    public byte[] bytes(int n) {
+        final int at = take(n);
+        final byte[] out = new byte[n];
+        System.arraycopy(data, at, out, 0, n);
+        return out;
+    }
+
+    /** Next {@code n} bytes decoded as strictly validated UTF-8. */
+    public String utf8(int n) {
+        final int at = take(n);
+        if (!Utf8.isValid(data, at, n)) throw new BinCodecException(BinCodecException.Kind.INVALID_UTF8, "at " + at);
+        return new String(data, at, n, StandardCharsets.UTF_8);
+    }
+
+    // ---- tagged NveBinValue ------------------------------------------------------------------
+
+    public BinTag peekTag() {
+        if (pos >= end) throw truncated(1);
+        return BinTag.fromCode(data[pos] & 0xFF);
+    }
+
+    /** Consumes a {@code null} and returns {@code true}; leaves any other value in place. */
+    public boolean readNull() {
+        if (peekTag() != BinTag.NULL) return false;
+        pos++;
+        return true;
+    }
+
+    public boolean readBool() {
+        expect(BinTag.BOOL);
+        final int b = u8();
+        if (b > 1) throw new BinCodecException(BinCodecException.Kind.INVALID_BOOL, "byte " + b);
+        return b == 1;
+    }
+
+    public long readI64() {
+        expect(BinTag.I64);
+        return u64();
+    }
+
+    /** {@code F64}, or an {@code I64} widened to {@code double} (Rust {@code BinValueView::as_number}). */
+    public double readF64() {
+        if (peekTag() == BinTag.I64) return (double) readI64();
+        expect(BinTag.F64);
+        return f64();
+    }
+
+    public String readStr() {
+        expect(BinTag.STR);
+        return utf8(length());
+    }
+
+    public byte[] readBytes() {
+        expect(BinTag.BYTES);
+        return bytes(length());
+    }
+
+    /** Element count of an array; rejects counts its payload cannot hold. */
+    public int beginArray() {
+        return openContainer(BinTag.ARRAY, 1);
+    }
+
+    /** Entry count of a map; read each entry as {@link #readMapKey()} then a value. */
+    public int beginMap() {
+        return openContainer(BinTag.MAP, 5);
+    }
+
+    public String readMapKey() {
+        return utf8(length());
+    }
+
+    /** Skips one value in O(1). */
+    public void skipValue() {
+        final BinTag tag = peekTag();
+        pos++;
+        switch (tag) {
+            case NULL:
+                return;
+            case BOOL:
+                take(1);
+                return;
+            case I64:
+            case F64:
+                take(8);
+                return;
+            default:
+                take(length());
+        }
+    }
+
+    /** Copy of the next complete encoded value. */
+    public byte[] readRawValue() {
+        final int start = pos;
+        skipValue();
+        final byte[] out = new byte[pos - start];
+        System.arraycopy(data, start, out, 0, out.length);
+        return out;
+    }
+
+    /** Fully validates and consumes the next value (Rust {@code BinValueView::parse} rules). */
+    public void checkValue() {
+        checkValue(0);
+    }
+
+    /** Throws unless {@code bytes} holds exactly one valid {@code NveBinValue}. */
+    public static void validate(byte[] bytes) {
+        final BinReader r = new BinReader(bytes);
+        r.checkValue();
+        if (!r.atEnd()) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, r.remaining() + " bytes");
+    }
+
+    private int take(int n) {
+        if (n < 0 || n > end - pos) throw truncated(n);
+        final int at = pos;
+        pos += n;
+        return at;
+    }
+
+    /** A {@code u32} length; anything above {@code Integer.MAX_VALUE} cannot fit and is truncated input. */
+    private int length() {
+        final long len = Integer.toUnsignedLong(u32());
+        if (len > end - pos) throw truncated(len);
+        return (int) len;
+    }
+
+    private BinCodecException truncated(long need) {
+        return new BinCodecException(BinCodecException.Kind.TRUNCATED, "need " + need + " at " + pos + ", have " + (end - pos));
+    }
+
+    private void expect(BinTag tag) {
+        final BinTag actual = peekTag();
+        if (actual != tag) {
+            throw new BinCodecException(BinCodecException.Kind.UNEXPECTED_TAG, "expected " + tag + ", got " + actual);
+        }
+        pos++;
+    }
+
+    private int openContainer(BinTag tag, int minEntryBytes) {
+        expect(tag);
+        final int payload = length();
+        if (payload < 4) throw truncated(4);
+        containerEnd = pos + payload;
+        final long count = Integer.toUnsignedLong(u32());
+        if (count > (payload - 4) / minEntryBytes) throw truncated(count);
+        return (int) count;
+    }
+
+    private void checkValue(int depth) {
+        final BinTag tag = peekTag();
+        switch (tag) {
+            case NULL:
+            case I64:
+            case F64:
+                skipValue();
+                return;
+            case BOOL:
+                readBool();
+                return;
+            case STR:
+                readStr();
+                return;
+            case BYTES:
+                readBytes();
+                return;
+            default:
+                if (depth >= BinTag.MAX_DEPTH) throw new BinCodecException(BinCodecException.Kind.MAX_DEPTH, "depth " + depth);
+                final boolean isMap = tag == BinTag.MAP;
+                final int count = openContainer(tag, isMap ? 5 : 1);
+                final int stop = containerEnd;
+                for (int i = 0; i < count; i++) {
+                    if (isMap) readMapKey();
+                    checkValue(depth + 1);
+                }
+                if (pos > stop) throw truncated(pos - stop);
+                if (pos < stop) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (stop - pos) + " bytes");
+        }
+    }
+}

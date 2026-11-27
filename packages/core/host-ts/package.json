@@ -1,0 +1,21 @@
+{
+  "name": "@nve/host",
+  "version": "0.1.0",
+  "description": "Zero-dependency NVE host runtime: 53-bit-safe XXH64 / Key64, NveBinValue codec, word-table and scene readers.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
