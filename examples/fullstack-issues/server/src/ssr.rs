@@ -4,8 +4,10 @@
 use core::ops::ControlFlow;
 use core::time::Duration;
 
-use http::header::{HeaderValue, CONTENT_SECURITY_POLICY};
-use http::Response;
+use http::header::{
+    HeaderValue, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+};
+use http::{Response, StatusCode};
 use nve_backend_web::WebBackend;
 use nve_dioxus::DioxusSurface;
 use nve_example_issues_api::{
@@ -101,6 +103,73 @@ pub fn ssr_error_response(err: &SsrError) -> Response<HttpBody> {
         _ => RpcStatus::Internal,
     };
     page_error_response(status, "")
+}
+
+/// Renders the zero-JS dark-theme landing / demo sign-in page for unauthenticated `GET /` visits.
+///
+/// Uses a fresh CSPRNG nonce and the same strict zero-inline-JS CSP as `/issues`; submitting the
+/// form hits `POST /demo-login` (CSRF-checked) to mint the `HttpOnly; SameSite=Lax` demo cookie.
+pub fn render_demo_login_page(boot_wasm: bool) -> Response<HttpBody> {
+    let nonce = match generate_csp_nonce() {
+        Ok(nonce) => nonce,
+        Err(err) => return ssr_error_response(&err),
+    };
+    let theme = &Theme::DARK;
+    let mode_note = if boot_wasm {
+        "Streaming SSR + WASM hydration enabled (/pkg/issues/boot.js)."
+    } else {
+        "0-JS streaming SSR mode active (run ./hosts/web-shell/build.sh --dev issues for WASM hydration)."
+    };
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>{PAGE_TITLE} — Sign In</title>\
+         <link rel=\"icon\" href=\"data:,\">\
+         <style nonce=\"{nonce}\">\
+         *{{box-sizing:border-box}}\
+         html,body{{margin:0;min-height:100%;background:{bg};color:{fg};color-scheme:dark;\
+         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;\
+         display:flex;align-items:center;justify-content:center;padding:24px}}\
+         .card{{width:100%;max-width:440px;background:{surface};border:1px solid {border};\
+         border-radius:12px;padding:24px;display:flex;flex-direction:column;gap:14px}}\
+         h1{{margin:0;font-size:20px;line-height:1.25}}\
+         p{{margin:0;font-size:14px;line-height:1.5;color:{secondary}}}\
+         button{{width:100%;padding:10px 16px;border:0;border-radius:8px;background:{accent};\
+         color:{accent_fg};font-size:14px;font-weight:600;cursor:pointer}}\
+         button:focus-visible{{outline:2px solid {focus};outline-offset:2px}}\
+         .meta{{font-size:12px;color:{muted};line-height:1.5}}\
+         code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}}\
+         </style></head><body><main class=\"card\">\
+         <h1>{PAGE_TITLE}</h1>\
+         <p>Reference fullstack app demonstrating streaming SSR, out-of-order \
+         <code>&lt;QuerySuspense&gt;</code>, strict nonce CSP, and fail-closed dual auth \
+         (<code>HttpOnly</code> cookie on web, <code>Bearer</code> token on native).</p>\
+         <form method=\"POST\" action=\"/demo-login\">\
+         <button type=\"submit\">Sign in as web-bob &rarr;</button>\
+         </form>\
+         <p class=\"meta\">{mode_note}<br>Direct unauthenticated requests to \
+         <code>/issues</code> intentionally return <code>401</code>.</p>\
+         </main></body></html>",
+        bg = theme.surface.subtle.hex(),
+        fg = theme.text.primary.hex(),
+        surface = theme.surface.base.hex(),
+        border = theme.border.default.hex(),
+        secondary = theme.text.secondary.hex(),
+        muted = theme.text.tertiary.hex(),
+        accent = theme.status.accent.solid.hex(),
+        accent_fg = theme.status.accent.on_solid.hex(),
+        focus = theme.border.focus.hex(),
+    );
+    let csp = HeaderValue::from_str(&content_security_policy(&nonce))
+        .expect("base64 nonce is a valid header value");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(CACHE_CONTROL, "no-store")
+        .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(CONTENT_SECURITY_POLICY, csp)
+        .body(HttpBody::full(html.into()))
+        .expect("demo login page builds cleanly")
 }
 
 /// Renders `/issues` for `actor`. `query` is the raw URL query (`?comments_issue=`, `?issue=`).

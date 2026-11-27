@@ -465,3 +465,110 @@ async fn stalled_critical_prefetch_answers_503_before_headers() {
     .await;
     assert!(settled.is_continue());
 }
+
+#[tokio::test]
+async fn root_demo_login_and_logout_flow_enforce_csp_csrf_and_fail_closed_issues_route() {
+    let srv = TestServer::start(|svc| svc).await;
+
+    // Unauthenticated `GET /` serves the zero-JS sign-in page with a strict nonce CSP.
+    let root_resp = srv.request(Method::GET, "/", false).await;
+    assert_eq!(root_resp.status(), StatusCode::OK);
+    assert_eq!(header(&root_resp, "content-type"), "text/html; charset=utf-8");
+    assert_eq!(header(&root_resp, "x-content-type-options"), "nosniff");
+    assert_eq!(header(&root_resp, "cache-control"), "no-store");
+    let csp = header(&root_resp, CONTENT_SECURITY_POLICY).to_owned();
+    let nonce = csp
+        .split("'nonce-")
+        .nth(1)
+        .and_then(|rest| rest.split('\'').next())
+        .unwrap()
+        .to_owned();
+    assert_eq!(nonce.len(), 24, "128-bit base64 nonce: {csp}");
+    assert!(csp.contains("script-src 'self' 'wasm-unsafe-eval'"));
+    let root_html = String::from_utf8(
+        root_resp
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(root_html.contains(&format!("<style nonce=\"{nonce}\">")));
+    assert!(!root_html.contains("<script"));
+    assert!(root_html.contains("action=\"/demo-login\""));
+
+    // Unauthenticated `GET /issues` still fails closed with 401.
+    let unauth_issues = srv.request(Method::GET, "/issues", false).await;
+    assert_eq!(unauth_issues.status(), StatusCode::UNAUTHORIZED);
+
+    // Cross-site `POST /demo-login` is blocked by CSRF with 403 and sets no cookie.
+    let cross_site_login = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{}/demo-login", srv.origin))
+        .header(http::header::ORIGIN, "https://evil.example.com")
+        .header("sec-fetch-site", "cross-site")
+        .body(Empty::new())
+        .unwrap();
+    let cross_resp = srv.client.request(cross_site_login).await.unwrap();
+    assert_eq!(cross_resp.status(), StatusCode::FORBIDDEN);
+    assert!(cross_resp.headers().get(http::header::SET_COOKIE).is_none());
+
+    // Same-origin `POST /demo-login` mints the hardened HttpOnly cookie and redirects 303 -> /issues.
+    let same_origin_login = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{}/demo-login", srv.origin))
+        .header(http::header::ORIGIN, &srv.origin)
+        .header("sec-fetch-site", "same-origin")
+        .body(Empty::new())
+        .unwrap();
+    let login_resp = srv.client.request(same_origin_login).await.unwrap();
+    assert_eq!(login_resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(header(&login_resp, http::header::LOCATION), "/issues");
+    let set_cookie = header(&login_resp, http::header::SET_COOKIE).to_owned();
+    assert!(set_cookie.contains(&format!("{SESSION_COOKIE_NAME}={DEMO_WEB_COOKIE_TOKEN}")));
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("SameSite=Lax"));
+    assert!(set_cookie.contains("Path=/"));
+
+    // Authenticated `GET /` redirects straight to `/issues`.
+    let authed_root = srv.request(Method::GET, "/", true).await;
+    assert_eq!(authed_root.status(), StatusCode::SEE_OTHER);
+    assert_eq!(header(&authed_root, http::header::LOCATION), "/issues");
+
+    // Cross-site `POST /demo-logout` fails with 403; same-origin clears cookie and redirects -> `/`.
+    let cross_logout = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{}/demo-logout", srv.origin))
+        .header(
+            http::header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}={DEMO_WEB_COOKIE_TOKEN}"),
+        )
+        .header(http::header::ORIGIN, "https://evil.example.com")
+        .header("sec-fetch-site", "cross-site")
+        .body(Empty::new())
+        .unwrap();
+    assert_eq!(
+        srv.client.request(cross_logout).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let same_logout = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{}/demo-logout", srv.origin))
+        .header(
+            http::header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}={DEMO_WEB_COOKIE_TOKEN}"),
+        )
+        .header(http::header::ORIGIN, &srv.origin)
+        .header("sec-fetch-site", "same-origin")
+        .body(Empty::new())
+        .unwrap();
+    let logout_resp = srv.client.request(same_logout).await.unwrap();
+    assert_eq!(logout_resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(header(&logout_resp, http::header::LOCATION), "/");
+    assert!(header(&logout_resp, http::header::SET_COOKIE).contains("Max-Age=0"));
+
+    srv.stop().await;
+}
