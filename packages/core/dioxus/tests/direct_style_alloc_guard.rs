@@ -54,8 +54,8 @@ fn count_allocs<F: FnOnce()>(f: F) -> usize {
 struct NoopSink {
     layout_calls: usize,
     style_calls: usize,
-    el1_id: NodeId,
-    el2_id: NodeId,
+    el1_id: Option<NodeId>,
+    el2_id: Option<NodeId>,
     el1_layout: Option<LayoutProps>,
     el1_style: Option<StyleProps>,
     el2_style: Option<StyleProps>,
@@ -64,25 +64,25 @@ struct NoopSink {
 impl RenderSink for NoopSink {
     fn begin_frame(&mut self, _: u32, _: u64) {}
     fn create_node(&mut self, id: NodeId, _: ComponentKind, _: Option<&str>) {
-        if self.el1_id == 0 {
-            self.el1_id = id;
-        } else if self.el2_id == 0 {
-            self.el2_id = id;
+        if self.el1_id.is_none() {
+            self.el1_id = Some(id);
+        } else if self.el2_id.is_none() {
+            self.el2_id = Some(id);
         }
     }
     fn remove_node(&mut self, _: NodeId) {}
     fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
     fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
         self.layout_calls += 1;
-        if id == self.el1_id {
+        if self.el1_id == Some(id) {
             self.el1_layout = Some(*layout);
         }
     }
     fn set_style(&mut self, id: NodeId, style: &StyleProps) {
         self.style_calls += 1;
-        if id == self.el1_id {
+        if self.el1_id == Some(id) {
             self.el1_style = Some(*style);
-        } else if id == self.el2_id {
+        } else if self.el2_id == Some(id) {
             self.el2_style = Some(*style);
         }
     }

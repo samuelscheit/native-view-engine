@@ -1,7 +1,7 @@
 //! Inline/shorthand CSS & RN attribute parsing into typed `LayoutProps` / `StyleProps`,
 //! canonical typed & raw style key normalization, and CSS Color 4 parsing.
 
-use nve_abi::num::parse_f32;
+use nve_abi::num::{is_valid_style_scalar, parse_f32};
 use nve_abi::{Dimension, LayoutProps, StyleProps};
 
 use crate::css_shorthand;
@@ -410,11 +410,17 @@ where
             on_ext(ExtStyleDecl::FlexBasis(basis));
         }
         K::FlexGrow => {
-            let Some(v) = parse_f32(value.trim()).filter(|v| *v >= 0.0) else { return false };
+            let Some(v) = parse_f32(value.trim()).filter(|&v| is_valid_style_scalar(v) && v >= 0.0)
+            else {
+                return false;
+            };
             layout.flex_grow = v;
         }
         K::FlexShrink => {
-            let Some(v) = parse_f32(value.trim()).filter(|v| *v >= 0.0) else { return false };
+            let Some(v) = parse_f32(value.trim()).filter(|&v| is_valid_style_scalar(v) && v >= 0.0)
+            else {
+                return false;
+            };
             layout.flex_shrink = v;
         }
         K::Gap => {

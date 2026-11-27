@@ -41,6 +41,15 @@
 
 /// Fractional digits kept by [`write_f64`] (1/1000 px is below any device pixel).
 pub const FRACTION_DIGITS: u32 = 3;
+/// Maximum finite scalar magnitude accepted across CSS parsers, typed style builders, and
+/// native backends (`HeadlessBackend` / `SkiaBackend`), sealing range invariants at ingress.
+pub const MAX_STYLE_SCALAR: f32 = 1e7;
+
+/// Returns `true` iff `v` is finite and within `[-MAX_STYLE_SCALAR, MAX_STYLE_SCALAR]`.
+#[inline]
+pub const fn is_valid_style_scalar(v: f32) -> bool {
+    v.is_finite() && v >= -MAX_STYLE_SCALAR && v <= MAX_STYLE_SCALAR
+}
 const SCALE: f64 = 1000.0;
 /// Largest scaled magnitude: integers up to 2^53 are exact in binary64 (and in JS numbers).
 const MAX_SCALED: f64 = 9_007_199_254_740_992.0;

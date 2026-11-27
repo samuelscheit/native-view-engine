@@ -281,16 +281,36 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexDirection, "bogus", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::JustifyContent, "bogus", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::AlignItems, "bogus", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, "nope", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, "-1", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, "nope", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, "-2", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Gap, "-8px", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::BorderRadius, "-4px", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Opacity, "nope", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FontSize, "0px", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FontSize, "-4px", |_| {}));
-    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::ZIndex, "nope", |_| {}));
+    for (kind, bad) in [
+        (TypedAttrKind::Width, "-10px"),
+        (TypedAttrKind::Width, "1e8px"),
+        (TypedAttrKind::Height, "1e8%"),
+        (TypedAttrKind::Padding, "20000000px"),
+        (TypedAttrKind::MarginLeft, "-20000000px"),
+        (TypedAttrKind::FlexGrow, "nope"),
+        (TypedAttrKind::FlexGrow, "-1"),
+        (TypedAttrKind::FlexGrow, "99999999"),
+        (TypedAttrKind::FlexShrink, "nope"),
+        (TypedAttrKind::FlexShrink, "-2"),
+        (TypedAttrKind::FlexShrink, "99999999"),
+        (TypedAttrKind::Flex, "99999999"),
+        (TypedAttrKind::FlexBasis, "1e8%"),
+        (TypedAttrKind::Gap, "-8px"),
+        (TypedAttrKind::Gap, "20000000px"),
+        (TypedAttrKind::BorderWidth, "20000000px"),
+        (TypedAttrKind::BorderRadius, "-4px"),
+        (TypedAttrKind::BorderRadius, "1e8px"),
+        (TypedAttrKind::Opacity, "nope"),
+        (TypedAttrKind::FontSize, "0px"),
+        (TypedAttrKind::FontSize, "-4px"),
+        (TypedAttrKind::FontSize, "1e8px"),
+        (TypedAttrKind::ZIndex, "nope"),
+    ] {
+        assert!(
+            !apply_typed_attr_kind(&mut l_strict, &mut s_strict, kind, bad, |_| {}),
+            "{kind:?}: {bad:?} must be rejected"
+        );
+    }
     assert_eq!((l_strict, s_strict), (snap_l, snap_s));
 
     let mut explicit_color = false;

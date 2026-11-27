@@ -8,7 +8,7 @@ use crate::{HeadlessNode, NodeSlotMap, MAX_TREE_DEPTH};
 
 #[inline]
 fn is_valid_scalar(v: f32) -> bool {
-    v.is_finite() && v.abs() <= 1e7
+    nve_abi::num::is_valid_style_scalar(v)
 }
 
 #[inline]
@@ -112,5 +112,43 @@ pub(crate) fn fmt_node(
     out.push('\n');
     for &child in &node.children {
         fmt_node(nodes, child, depth + 1, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_css_parser_never_produces_layout_or_style_rejected_by_headless() {
+        let adversarial = [
+            "gap: -8px",
+            "gap: 20000000px",
+            "width: -10px",
+            "width: 1e8px",
+            "height: 1e8%",
+            "padding: 20000000px",
+            "margin-left: -20000000px",
+            "flex-grow: -1",
+            "flex-grow: 99999999",
+            "flex-shrink: -2",
+            "flex-shrink: 99999999",
+            "flex: 99999999",
+            "flex-basis: 1e8%",
+            "border-width: 20000000px",
+            "border-radius: -4px",
+            "border-radius: 1e8px",
+            "font-size: 0px",
+            "font-size: -4px",
+            "font-size: 1e8px",
+            "opacity: 99999999",
+        ];
+        let mut l = LayoutProps::default();
+        let mut s = StyleProps::default();
+        for css in adversarial {
+            assert!(nve_components::apply_typed_attr(&mut l, &mut s, "style", css));
+            assert!(validate_layout(&l).is_ok(), "validate_layout failed for `{css}`: {l:?}");
+            assert!(validate_style(&s).is_ok(), "validate_style failed for `{css}`: {s:?}");
+        }
     }
 }

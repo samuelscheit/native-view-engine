@@ -5,7 +5,7 @@
 //! Every parser is all-or-nothing: one unsupported token leaves the target untouched instead of
 //! applying half a declaration.
 
-use nve_abi::num::parse_f32;
+use nve_abi::num::{is_valid_style_scalar, parse_f32};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets};
 
 use crate::{parse_color, parse_px};
@@ -180,7 +180,11 @@ pub(crate) fn parse_flex(value: &str) -> Option<FlexShorthand> {
                 prev_was_factor = false;
                 continue;
             }
-            if n < 0.0 || n_factors == 2 || (n_factors == 1 && !prev_was_factor) {
+            if !is_valid_style_scalar(n)
+                || n < 0.0
+                || n_factors == 2
+                || (n_factors == 1 && !prev_was_factor)
+            {
                 return None;
             }
             factors[n_factors] = n;
@@ -214,7 +218,9 @@ pub(crate) fn parse_flex_basis(token: &str) -> Option<Dimension> {
         return Some(Dimension::Auto);
     }
     if let Some(pct) = t.strip_suffix('%') {
-        return parse_f32(pct).filter(|v| *v >= 0.0).map(Dimension::Percent);
+        return parse_f32(pct)
+            .filter(|&v| is_valid_style_scalar(v) && v >= 0.0)
+            .map(Dimension::Percent);
     }
     if let Some(n) = parse_f32(t) {
         return (n == 0.0).then_some(Dimension::Points(0.0));

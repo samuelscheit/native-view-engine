@@ -1,20 +1,22 @@
 //! Primitive CSS value parsers: `px` lengths, `Dimension`, hex (`#rgb`, `#rgba`, `#rrggbb`,
 //! `#rrggbbaa`), strict CSS Color 4 `rgb()`/`rgba()`, and named colors.
 
-use nve_abi::num::parse_f32;
+use nve_abi::num::{is_valid_style_scalar, parse_f32};
 use nve_abi::{ColorRgba, Dimension, FlexAlign, FlexDirection, FlexJustify};
 
-/// Parses a CSS pixel length (`12px`, `12PX`) or a unitless RN-style number (`12`).
+/// Parses a CSS pixel length (`12px`, `12PX`) or a unitless RN-style number (`12`) within
+/// `[-MAX_STYLE_SCALAR, MAX_STYLE_SCALAR]`.
 pub fn parse_px(raw: &str) -> Option<f32> {
     let s = raw.trim();
     let num = match s.len().checked_sub(2) {
         Some(at) if s.is_char_boundary(at) && s[at..].eq_ignore_ascii_case("px") => &s[..at],
         _ => s,
     };
-    parse_f32(num)
+    parse_f32(num).filter(|&v| is_valid_style_scalar(v))
 }
 
-/// Strict CSS dimension parser: `auto`, `<f32>%`, or `<px>` length; returns `None` on invalid tokens.
+/// Strict CSS dimension parser: `auto`, non-negative `<f32>%`, or non-negative `<px>` length
+/// within `MAX_STYLE_SCALAR`; returns `None` on invalid or out-of-range tokens.
 pub(crate) fn parse_dim_checked(raw: &str) -> Option<Dimension> {
     let s = raw.trim();
     if s.is_empty() {
@@ -23,9 +25,11 @@ pub(crate) fn parse_dim_checked(raw: &str) -> Option<Dimension> {
     if s.eq_ignore_ascii_case("auto") {
         Some(Dimension::Auto)
     } else if let Some(pct) = s.strip_suffix('%') {
-        parse_f32(pct.trim()).map(Dimension::Percent)
+        parse_f32(pct.trim())
+            .filter(|&v| is_valid_style_scalar(v) && v >= 0.0)
+            .map(Dimension::Percent)
     } else {
-        parse_px(s).map(Dimension::Points)
+        parse_px(s).filter(|&v| v >= 0.0).map(Dimension::Points)
     }
 }
 

@@ -590,4 +590,17 @@ fn plain_standalone_typed_attrs_allocate_zero_node_extras_and_current_color_repa
     assert_eq!(writer.nodes[&abort_compose_node].layout.width, Dimension::Points(200.0));
     assert!(!writer.nodes[&abort_compose_node].is_dirty_compose());
     assert_eq!(spy.last_basis, Some(Dimension::Points(240.0)));
+
+    // 5. `TypedStyle` clamps extreme out-of-range scalars to `[-MAX_STYLE_SCALAR, MAX_STYLE_SCALAR]`.
+    let clamped = TypedStyle::new()
+        .width(Dimension::Points(1e8))
+        .height(Dimension::Percent(f32::INFINITY))
+        .gap(2e7)
+        .margin(-2e7)
+        .font_size(1e8);
+    assert_eq!(clamped.layout().width, Dimension::Points(nve_abi::num::MAX_STYLE_SCALAR));
+    assert_eq!(clamped.layout().height, Dimension::Percent(0.0));
+    assert_eq!(clamped.layout().gap, nve_abi::num::MAX_STYLE_SCALAR);
+    assert_eq!(clamped.layout().margin.top, -nve_abi::num::MAX_STYLE_SCALAR);
+    assert_eq!(clamped.style().font_size, nve_abi::num::MAX_STYLE_SCALAR);
 }
