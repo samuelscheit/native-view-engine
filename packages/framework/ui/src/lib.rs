@@ -74,7 +74,8 @@ pub use style_buf::{
     TypedTextStyle,
 };
 pub use components::roles::{
-    badge_colors, button_colors, error_text, selected_text, tab_colors, ControlColors,
+    accent_indicator, badge_colors, button_colors, error_text, selected_text, tab_colors,
+    toast_tone, ControlColors,
 };
 pub use nve_interop::traits::UiDensity;
 pub use theme::{

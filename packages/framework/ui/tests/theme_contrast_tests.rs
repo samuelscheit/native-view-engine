@@ -9,8 +9,9 @@ use nve_interop::traits::UiDensity;
 use nve_interop::{ColorScheme, ContrastLevel};
 use nve_ui::{
     apca_contrast, composite, relative_luminance, wcag_contrast, Accent, AppBrand, Appearance,
-    badge_colors, button_colors, error_text, selected_text, tab_colors, BadgeVariant, Breakpoint,
-    ButtonVariant, ControlColors, Layer, Polarity, Scale, Theme, ThemeConfig, ThemeMode,
+    accent_indicator, badge_colors, button_colors, error_text, selected_text, tab_colors,
+    toast_tone, BadgeVariant, Breakpoint, ButtonVariant, ControlColors, Layer, Oklch, Polarity, Scale,
+    Theme, ThemeConfig, ThemeMode, ToastVariant,
 };
 
 /// `(min WCAG ratio, min |APCA Lc|)` per role.
@@ -130,7 +131,13 @@ fn every_component_variant_pairing_is_readable_in_every_preset() {
         for (sn, bg) in [("canvas", s.canvas), ("base", s.base), ("raised", s.raised), ("overlay", s.overlay)] {
             rep.text(&format!("{name} error_text/{sn}"), error_text(&t), bg, bar.readable);
             rep.text(&format!("{name} selected_text/{sn}"), selected_text(&t), bg, bar.readable);
+            rep.non_text(&format!("{name} accent_indicator/{sn}"), accent_indicator(&t), bg, bar.non_text);
         }
+        for v in [ToastVariant::Info, ToastVariant::Success, ToastVariant::Warning, ToastVariant::Danger] {
+            let edge = toast_tone(&t, v).text;
+            rep.non_text(&format!("{name} Toast::{v:?} edge/overlay"), edge, s.overlay, bar.non_text);
+        }
+        rep.check(toast_tone(&t, ToastVariant::Info) == t.status.info, format!("{name} Toast::Info uses status.info"));
     }
     assert!(rep.0.is_empty(), "{} component contrast violations:\n{}", rep.0.len(), rep.0.join("\n"));
 }
@@ -227,8 +234,74 @@ fn surface_elevation_and_state_layers_are_ordered() {
         }
         assert!(t.scrim.a > 0x40);
         let n = Scale::neutral(p);
-        assert_eq!(n.step(12), t.text.primary);
+        assert_eq!(n.step::<12>(), t.text.primary);
     }
+}
+
+/// Checks an accent's every accent-bound role in all four polarities.
+fn check_accent(rep: &mut Report, name: &str, accent: Accent) {
+    for p in Polarity::ALL {
+        let t = Theme::preset(p, AppBrand::Default).with_accent(accent);
+        let bar = if t.is_high_contrast() { &HIGH } else { &STANDARD };
+        let tone = t.status.accent;
+        rep.text(&format!("{name} {p:?} on_solid/solid"), tone.on_solid, tone.solid, bar.readable);
+        rep.text(&format!("{name} {p:?} text/subtle"), tone.text, tone.subtle, bar.readable);
+        for (sn, bg) in [("canvas", t.surface.canvas), ("base", t.surface.base), ("overlay", t.surface.overlay)] {
+            rep.text(&format!("{name} {p:?} link/{sn}"), t.text.link, bg, bar.readable);
+            rep.non_text(&format!("{name} {p:?} focus/{sn}"), t.border.focus, bg, bar.non_text);
+        }
+    }
+}
+
+/// Any runtime brand color (`Accent::from_srgb`) yields a contrast-safe accent: real Tailwind-500
+/// brand colors, sRGB primaries, and a full hue × chroma × lightness sweep.
+#[test]
+fn every_runtime_accent_is_contrast_safe_in_every_polarity() {
+    let mut rep = Report(Vec::new());
+    let srgb = [
+        0xef4444, 0xf97316, 0xf59e0b, 0xeab308, 0x84cc16, 0x22c55e, 0x10b981, 0x14b8a6, 0x06b6d4,
+        0x0ea5e9, 0x3b82f6, 0x6366f1, 0x8b5cf6, 0xa855f7, 0xd946ef, 0xec4899, 0xf43f5e, 0xff00ff,
+        0x00ff00, 0x0000ff, 0xffff00, 0xff0000, 0x000000, 0xffffff, 0x808080,
+    ];
+    for hex in srgb {
+        let c = ColorRgba::rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+        check_accent(&mut rep, &format!("#{hex:06x}"), Accent::from_srgb(c));
+    }
+    for hue in (0..360).step_by(15) {
+        for chroma in [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.37] {
+            for li in 0..=14 {
+                let l = 0.25 + li as f32 * 0.05;
+                check_accent(&mut rep, &format!("oklch({l:.2} {chroma} {hue})"), Accent::new(hue as f32, chroma, l));
+            }
+        }
+    }
+    assert!(rep.0.is_empty(), "{} accent violations:\n{}", rep.0.len(), rep.0.join("\n"));
+}
+
+/// Non-finite and out-of-range inputs never panic, poison the encode, or collapse saturated
+/// colors to gray.
+#[test]
+fn oklch_and_accent_inputs_are_sanitized() {
+    let saturated = Oklch::new(0.63, 0.4, 29.0).to_srgb();
+    for c in [0.4, 100.0, 1e6, f32::INFINITY] {
+        assert_eq!(Oklch::new(0.63, c, 29.0).to_srgb(), saturated, "chroma {c} caps to the gamut edge");
+    }
+    assert!(saturated.r > 200 && saturated.g < 80, "saturated red stays red: {saturated:?}");
+    let gray = Oklch::new(0.63, 0.0, 29.0).to_srgb();
+    assert_eq!(Oklch::new(0.63, f32::NAN, 29.0).to_srgb(), gray);
+    assert_eq!(Oklch::new(f32::NAN, 0.1, 29.0).to_srgb(), ColorRgba::BLACK);
+    assert_eq!(Oklch::new(0.63, 0.1, f32::NAN).to_srgb(), Oklch::new(0.63, 0.1, 0.0).to_srgb());
+    assert_eq!(Oklch::new(2.0, 0.1, 29.0).to_srgb(), ColorRgba::WHITE);
+
+    for (h, c, l) in [(f32::NAN, f32::NAN, f32::NAN), (f32::INFINITY, -1.0, -3.0), (-30.0, 9.0, 7.0)] {
+        let a = Accent::new(h, c, l);
+        assert!(a.hue.is_finite() && (0.0..360.0).contains(&a.hue), "{a:?}");
+        assert!((0.0..=0.4).contains(&a.chroma) && (0.0..=1.0).contains(&a.solid_l), "{a:?}");
+        let mut rep = Report(Vec::new());
+        check_accent(&mut rep, &format!("{a:?}"), a);
+        assert!(rep.0.is_empty(), "{}", rep.0.join("\n"));
+    }
+    assert_eq!(Accent::new(-30.0, 0.1, 0.5).hue, 330.0);
 }
 
 #[test]

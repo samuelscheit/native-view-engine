@@ -183,18 +183,18 @@ impl Theme {
         let p = polarity.profile();
         let dark = polarity.is_dark();
         let hc = polarity.is_high_contrast();
-        let ink = n.step(12);
+        let ink = n.step::<12>();
         let white = ColorRgba::WHITE;
         let (base, raised, overlay, sunken, subtle) = if dark {
-            (n.step(2), n.step(3), n.step(4), n.step(1), n.step(3))
+            (n.step::<2>(), n.step::<3>(), n.step::<4>(), n.step::<1>(), n.step::<3>())
         } else {
-            (white, white, white, n.step(2), n.step(2))
+            (white, white, white, n.step::<2>(), n.step::<2>())
         };
         let tertiary = Oklch::new(p.tertiary_l, p.neutral_c[10], NEUTRAL_HUE).to_srgb();
         let (hairline_subtle, hairline_default) = match polarity {
             Polarity::Light => (with_alpha(ink, 0x12), with_alpha(ink, 0x1f)),
             Polarity::Dark => (with_alpha(ink, 0x10), with_alpha(ink, 0x1a)),
-            Polarity::HighContrastLight | Polarity::HighContrastDark => (n.step(6), n.step(7)),
+            Polarity::HighContrastLight | Polarity::HighContrastDark => (n.step::<6>(), n.step::<7>()),
         };
         let (hover_a, active_a) = match polarity {
             Polarity::Light => (0x0b, 0x14),
@@ -208,7 +208,7 @@ impl Theme {
             polarity,
             brand,
             accent: brand.accent(),
-            surface: Surface { canvas: n.step(1), base, raised, overlay, sunken, subtle },
+            surface: Surface { canvas: n.step::<1>(), base, raised, overlay, sunken, subtle },
             state: StateLayer {
                 hover: with_alpha(ink, hover_a),
                 active: with_alpha(ink, active_a),
@@ -216,7 +216,7 @@ impl Theme {
             },
             text: Text {
                 primary: ink,
-                secondary: n.step(11),
+                secondary: n.step::<11>(),
                 tertiary,
                 link: ColorRgba::TRANSPARENT,
                 on_accent: ColorRgba::TRANSPARENT,
@@ -224,11 +224,12 @@ impl Theme {
             border: Border {
                 subtle: hairline_subtle,
                 default: hairline_default,
-                strong: n.step(8),
+                strong: n.step::<8>(),
                 focus: ColorRgba::TRANSPARENT,
             },
             status: Status {
-                accent: Tone::derive(polarity, brand.accent()),
+                // Derived once by the trailing `with_accent(brand.accent())`.
+                accent: Tone::UNSET,
                 success,
                 warning: Tone::derive(polarity, WARNING),
                 danger,
@@ -244,14 +245,14 @@ impl Theme {
                 function: syntax_hue(polarity, 258.0),
                 macro_name: syntax_hue(polarity, 350.0),
                 attribute: syntax_hue(polarity, 85.0),
-                punctuation: n.step(11),
+                punctuation: n.step::<11>(),
                 diff_add: success.text,
                 diff_del: danger.text,
             },
             scrim: if dark {
                 ColorRgba::rgba(0, 0, 0, 0xb3)
             } else {
-                with_alpha(n.step(12), 0x73)
+                with_alpha(n.step::<12>(), 0x73)
             },
             elevation: if hc {
                 Elevation::FLAT

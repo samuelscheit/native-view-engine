@@ -7,6 +7,7 @@
 use nve_abi::ColorRgba;
 
 use crate::components::actions::{BadgeVariant, ButtonVariant};
+use crate::components::toast::ToastVariant;
 use crate::theme::{Theme, Tone};
 
 /// Resolved paint of one control state.
@@ -101,6 +102,23 @@ pub const fn tab_colors(theme: &Theme, selected: bool, focused: bool) -> Control
         }
     };
     if focused { base.focused(theme) } else { base }
+}
+
+/// [`crate::ToastViewport`] severity tone. The toast's status edge paints the tone's `text`
+/// color, which also clears the 3:1 non-text bar on `surface.overlay`.
+pub const fn toast_tone(theme: &Theme, variant: ToastVariant) -> Tone {
+    match variant {
+        ToastVariant::Info => theme.status.info,
+        ToastVariant::Success => theme.status.success,
+        ToastVariant::Warning => theme.status.warning,
+        ToastVariant::Danger => theme.status.danger,
+    }
+}
+
+/// Non-text accent indicator on a surface (today ring, active rail): the tone's `text` color,
+/// since `solid` can fall below 3:1 against light or dark surfaces.
+pub const fn accent_indicator(theme: &Theme) -> ColorRgba {
+    theme.status.accent.text
 }
 
 /// Error/validation message text (on any surface).

@@ -7,7 +7,7 @@
 
 use nve_abi::{ColorRgba, ColorScheme, ContrastLevel};
 
-use super::lch::{best_foreground, Oklch};
+use super::lch::{best_foreground, Oklch, MAX_CHROMA};
 
 /// One of the four supported appearance modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,8 +69,9 @@ impl Polarity {
 
 /// A brand / status hue: OKLCH hue + peak chroma + lightness of its solid (step 9) fill.
 ///
-/// `solid_l` must sit outside the `0.54..0.71` band where neither white nor near-black text
-/// reaches WCAG AA; [`Accent::new`] snaps it out of that band.
+/// `solid_l` must sit outside the `0.54..0.75` band where neither white nor near-black text
+/// reaches both WCAG AA (4.5:1) and APCA Lc 55 for every hue/chroma; [`Accent::new`] snaps it
+/// out of that band and sanitizes non-finite or out-of-range inputs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Accent {
     pub hue: f32,
@@ -88,13 +89,23 @@ impl Accent {
     pub const RED: Self = Self::new(25.0, 0.2, 0.53);
 
     pub const fn new(hue: f32, chroma: f32, solid_l: f32) -> Self {
-        let solid_l = if solid_l > 0.54 && solid_l < 0.625 {
-            0.53
-        } else if solid_l >= 0.625 && solid_l < 0.71 {
-            0.71
+        let solid_l = if solid_l.is_nan() || solid_l < 0.0 {
+            0.0
+        } else if solid_l > 1.0 {
+            1.0
         } else {
             solid_l
         };
+        let solid_l = if solid_l > 0.54 && solid_l < 0.645 {
+            0.53
+        } else if solid_l >= 0.645 && solid_l < 0.75 {
+            0.75
+        } else {
+            solid_l
+        };
+        let chroma = if chroma >= 0.0 { chroma.min(MAX_CHROMA) } else { 0.0 };
+        let hue = if hue.is_finite() { hue % 360.0 } else { 0.0 };
+        let hue = if hue < 0.0 { hue + 360.0 } else { hue };
         Self { hue, chroma, solid_l }
     }
 
@@ -184,9 +195,10 @@ pub struct Scale {
 }
 
 impl Scale {
-    /// Radix step `1..=12`.
-    pub const fn step(&self, n: usize) -> ColorRgba {
-        self.steps[n - 1]
+    /// Radix step `N` (`1..=12`, checked at compile time).
+    pub const fn step<const N: usize>(&self) -> ColorRgba {
+        const { assert!(N >= 1 && N <= 12, "Radix scale steps are 1..=12") };
+        self.steps[N - 1]
     }
 
     /// The neutral graphite scale for `polarity`.
@@ -221,6 +233,15 @@ pub struct Tone {
 }
 
 impl Tone {
+    /// Placeholder for a tone that is derived later (never painted).
+    pub(crate) const UNSET: Self = Self {
+        solid: ColorRgba::TRANSPARENT,
+        on_solid: ColorRgba::TRANSPARENT,
+        subtle: ColorRgba::TRANSPARENT,
+        border: ColorRgba::TRANSPARENT,
+        text: ColorRgba::TRANSPARENT,
+    };
+
     pub const fn derive(polarity: Polarity, accent: Accent) -> Self {
         let p = polarity.profile();
         const fn at(role: (f32, f32), accent: Accent) -> ColorRgba {

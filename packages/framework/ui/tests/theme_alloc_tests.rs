@@ -64,6 +64,13 @@ fn allocs_during<R>(f: impl FnOnce() -> R) -> (usize, R) {
 }
 
 #[test]
+fn counting_allocator_detects_allocations() {
+    let (allocs, b) = allocs_during(|| black_box(Box::new(1u8)));
+    drop(b);
+    assert!(allocs > 0, "CountingAlloc self-check: a Box must be counted");
+}
+
+#[test]
 fn theme_resolution_accent_override_and_hex_bridge_allocate_nothing() {
     let appearances = [
         Appearance::LIGHT,

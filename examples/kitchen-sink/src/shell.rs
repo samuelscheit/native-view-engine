@@ -166,6 +166,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
     let text_primary = theme.text.primary.hex();
     let text_muted = theme.text.tertiary.hex();
     let accent_col = theme.status.accent.solid.hex();
+    let accent_ink = theme.status.accent.on_solid.hex();
 
     rsx! {
         view {
@@ -183,7 +184,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                     view {
                         style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {accent_col};",
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: #ffffff;",
+                            style: "font-size: 11px; font-weight: 700; color: {accent_ink};",
                             "NVE"
                         }
                     }

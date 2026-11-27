@@ -49,7 +49,7 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
     let text_muted = theme.text.tertiary.hex();
     let surface_subtle = theme.surface.subtle.hex();
     let border = theme.border.default.hex();
-    let accent = theme.status.accent.solid.hex();
+    let accent = theme.status.accent.text.hex();
 
     let kb_insets = KeyboardInsets {
         height: simulated_kb_px(),

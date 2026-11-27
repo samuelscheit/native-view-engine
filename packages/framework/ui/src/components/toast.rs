@@ -7,6 +7,7 @@ use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::toast_tone;
 use crate::theme::{use_theme, Layer};
 
 /// Visual severity for a toast item.
@@ -325,12 +326,7 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
 
     let mut rendered = Vec::with_capacity(items.len());
     for item in items {
-        let accent = match item.variant {
-            ToastVariant::Info => theme.status.accent.solid,
-            ToastVariant::Success => theme.status.success.solid,
-            ToastVariant::Warning => theme.status.warning.solid,
-            ToastVariant::Danger => theme.status.danger.solid,
-        };
+        let accent = toast_tone(&theme, item.variant).text;
 
         let card_style = TypedStyleBuilder::new()
             .flex_row()

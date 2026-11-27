@@ -363,7 +363,7 @@ fn ErrorFallbackCard(
     reset: ErrorBoundaryReset,
 ) -> Element {
     let theme = use_theme();
-    let danger = theme.status.danger.solid.hex();
+    let danger = theme.status.danger.text.hex();
     let text_primary = theme.text.primary.hex();
     let text_muted = theme.text.tertiary.hex();
     let surface_subtle = theme.surface.subtle.hex();

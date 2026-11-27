@@ -9,6 +9,7 @@ use nve_i18n::{CalendarDate, NameWidth};
 use crate::components::date_picker_grid::CalendarMonthGrid;
 use crate::positioning::ComputedPosition;
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
+use crate::components::roles::accent_indicator;
 use crate::theme::{Layer, Theme};
 
 pub(crate) const DEFAULT_FALLBACK_DATE: CalendarDate = CalendarDate {
@@ -181,7 +182,7 @@ pub(crate) fn render_calendar_dialog(
                     let (border_w, border_col) = if cell.is_focused {
                         (2.0, theme.border.focus)
                     } else if cell.is_today {
-                        (1.0, theme.status.accent.solid)
+                        (1.0, accent_indicator(theme))
                     } else {
                         (0.0, ColorRgba::TRANSPARENT)
                     };

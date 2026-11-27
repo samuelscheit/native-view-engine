@@ -6,6 +6,9 @@
 
 use nve_abi::ColorRgba;
 
+/// Chroma ceiling for generated colors (the sRGB gamut peaks near C 0.32).
+pub const MAX_CHROMA: f32 = 0.4;
+
 const PI: f64 = core::f64::consts::PI;
 const LN_2: f64 = core::f64::consts::LN_2;
 
@@ -158,10 +161,12 @@ impl Oklch {
     /// Maps into the sRGB gamut by bisecting chroma (hue and lightness are preserved), then
     /// quantizes to 8-bit sRGB.
     pub const fn to_srgb(self) -> ColorRgba {
-        let l = (self.l as f64).clamp(0.0, 1.0);
-        let h = self.h as f64 * PI / 180.0;
+        // Non-finite inputs collapse to their neutral value instead of poisoning the encode.
+        let l = if self.l.is_nan() { 0.0 } else { (self.l as f64).clamp(0.0, 1.0) };
+        let h = if self.h.is_finite() { self.h as f64 * PI / 180.0 } else { 0.0 };
         let (ca, sa) = (cos(h), sin(h));
-        let mut c = if self.c > 0.0 { self.c as f64 } else { 0.0 };
+        // sRGB peaks near C 0.32; capping keeps the 18-step bisection precise for any input.
+        let mut c = if self.c > 0.0 { (self.c as f64).min(MAX_CHROMA as f64) } else { 0.0 };
         if !in_gamut(oklab_to_linear(l, c * ca, c * sa)) {
             let (mut lo, mut hi) = (0.0, c);
             let mut i = 0;
