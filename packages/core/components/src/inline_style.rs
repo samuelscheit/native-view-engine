@@ -2,10 +2,13 @@
 //! canonical typed & raw style key normalization, and CSS Color 4 parsing.
 
 use nve_abi::num::parse_f32;
-use nve_abi::{Dimension, FlexAlign, FlexDirection, FlexJustify, LayoutProps, StyleProps};
+use nve_abi::{Dimension, LayoutProps, StyleProps};
 
 use crate::css_shorthand;
-use crate::css_values::{parse_color, parse_dim_checked, parse_px};
+use crate::css_values::{
+    parse_color, parse_dim_checked, parse_flex_align, parse_flex_direction, parse_flex_justify,
+    parse_px,
+};
 
 /// Returns the canonical kebab-case raw prop key for inline CSS declarations that are
 /// forwarded via `raw_props` rather than stored in the binary ABI `LayoutProps`/`StyleProps`.
@@ -122,7 +125,6 @@ impl TypedAttrKind {
             _ => return None,
         })
     }
-
 }
 
 /// A parsed inline declaration that lives outside the binary `LayoutProps` / `StyleProps`.
@@ -386,74 +388,16 @@ where
             layout.max_height = d;
         }
         K::FlexDirection => {
-            let v = value.trim();
-            layout.flex_direction = if v.eq_ignore_ascii_case("column") {
-                FlexDirection::Column
-            } else if v.eq_ignore_ascii_case("row") {
-                FlexDirection::Row
-            } else if v.eq_ignore_ascii_case("column-reverse")
-                || v.eq_ignore_ascii_case("columnReverse")
-            {
-                FlexDirection::ColumnReverse
-            } else if v.eq_ignore_ascii_case("row-reverse")
-                || v.eq_ignore_ascii_case("rowReverse")
-            {
-                FlexDirection::RowReverse
-            } else {
-                return false;
-            };
+            let Some(dir) = parse_flex_direction(value) else { return false };
+            layout.flex_direction = dir;
         }
         K::JustifyContent => {
-            let v = value.trim();
-            layout.justify_content = if v.eq_ignore_ascii_case("flex-start")
-                || v.eq_ignore_ascii_case("start")
-                || v.eq_ignore_ascii_case("flexStart")
-            {
-                FlexJustify::FlexStart
-            } else if v.eq_ignore_ascii_case("center") {
-                FlexJustify::Center
-            } else if v.eq_ignore_ascii_case("flex-end")
-                || v.eq_ignore_ascii_case("end")
-                || v.eq_ignore_ascii_case("flexEnd")
-            {
-                FlexJustify::FlexEnd
-            } else if v.eq_ignore_ascii_case("space-between")
-                || v.eq_ignore_ascii_case("spaceBetween")
-            {
-                FlexJustify::SpaceBetween
-            } else if v.eq_ignore_ascii_case("space-around")
-                || v.eq_ignore_ascii_case("spaceAround")
-            {
-                FlexJustify::SpaceAround
-            } else if v.eq_ignore_ascii_case("space-evenly")
-                || v.eq_ignore_ascii_case("spaceEvenly")
-            {
-                FlexJustify::SpaceEvenly
-            } else {
-                return false;
-            };
+            let Some(just) = parse_flex_justify(value) else { return false };
+            layout.justify_content = just;
         }
         K::AlignItems => {
-            let v = value.trim();
-            layout.align_items = if v.eq_ignore_ascii_case("stretch") {
-                FlexAlign::Stretch
-            } else if v.eq_ignore_ascii_case("flex-start")
-                || v.eq_ignore_ascii_case("start")
-                || v.eq_ignore_ascii_case("flexStart")
-            {
-                FlexAlign::FlexStart
-            } else if v.eq_ignore_ascii_case("center") {
-                FlexAlign::Center
-            } else if v.eq_ignore_ascii_case("flex-end")
-                || v.eq_ignore_ascii_case("end")
-                || v.eq_ignore_ascii_case("flexEnd")
-            {
-                FlexAlign::FlexEnd
-            } else if v.eq_ignore_ascii_case("baseline") {
-                FlexAlign::Baseline
-            } else {
-                return false;
-            };
+            let Some(align) = parse_flex_align(value) else { return false };
+            layout.align_items = align;
         }
         K::Flex => {
             let Some(flex) = css_shorthand::parse_flex(value) else { return false };
@@ -528,7 +472,7 @@ where
             style.opacity = v.clamp(0.0, 1.0);
         }
         K::FontSize => {
-            let Some(v) = parse_px(value) else { return false };
+            let Some(v) = parse_px(value).filter(|v| *v > 0.0) else { return false };
             style.font_size = v;
         }
         K::ZIndex => {

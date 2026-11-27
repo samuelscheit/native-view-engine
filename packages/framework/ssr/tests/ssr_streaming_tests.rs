@@ -24,7 +24,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use http::StatusCode;
 use hyper::body::Body as _;
-use nve_abi::{ColorRgba, StyleProps};
+use nve_abi::ColorRgba;
 use nve_backend_web::{
     streaming_http_headers, StreamingError, WebBackend, NVE_STREAM_KEEPALIVE_COMMENT,
 };
@@ -220,25 +220,15 @@ async fn scenario_2_out_of_order_streaming_css_nveq_dedup_and_mid_and_post_hydra
     let ssr_client = erased_ssr_query_client(transport.clone());
 
     fn shell_style() -> TypedStyle {
-        let mut ts = TypedStyle::new();
-        ts.style = StyleProps {
-            background: ColorRgba::rgb(15, 23, 42),
-            text_color: ColorRgba::WHITE,
-            ..Default::default()
-        };
-        ts.has_style = true;
-        ts
+        TypedStyle::new()
+            .bg(ColorRgba::rgb(15, 23, 42))
+            .color(ColorRgba::WHITE)
     }
 
     fn delta_style() -> TypedStyle {
-        let mut ts = TypedStyle::new();
-        ts.style = StyleProps {
-            background: ColorRgba::rgb(22, 163, 74),
-            border_radius: 12.0,
-            ..Default::default()
-        };
-        ts.has_style = true;
-        ts
+        TypedStyle::new()
+            .bg(ColorRgba::rgb(22, 163, 74))
+            .radius(12.0)
     }
 
     #[component]

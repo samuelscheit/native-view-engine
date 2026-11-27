@@ -16,7 +16,9 @@
 
 use std::borrow::Cow;
 
-use nve_abi::{ColorRgba, Dimension, LayoutProps, NodeId, RawPropValueRef, StyleProps};
+use nve_abi::{
+    ColorRgba, ComponentKind, Dimension, LayoutProps, NodeId, RawPropValueRef, StyleProps,
+};
 use nve_components::layout_ext::LayoutExt;
 use nve_components::{apply_typed_attr_kind, apply_typed_attr_with_ext, ExtStyleDecl, TypedAttrKind};
 use nve_engine::RenderSink;
@@ -163,6 +165,8 @@ impl NveMutationWriter {
         {
             let prev_layout = rec.layout;
             let prev_style = rec.style;
+            let prev_explicit_color = rec.has_explicit_text_color();
+            let prev_explicit_font_size = rec.has_explicit_font_size();
             let mut parsed_basis = None;
             let mut border_current = None;
             let mut explicit_color = false;
@@ -207,9 +211,8 @@ impl NveMutationWriter {
                 }
             }
             if explicit_color {
-                let prev = rec.has_explicit_text_color();
                 rec.set_has_explicit_text_color(true);
-                if !prev || rec.style.text_color != prev_style.text_color {
+                if !prev_explicit_color || rec.style.text_color != prev_style.text_color {
                     self.color_tree_dirty = true;
                 }
             }
@@ -219,7 +222,13 @@ impl NveMutationWriter {
             if rec.layout != prev_layout {
                 self.dirty_layout.push(node_id);
             }
-            if rec.style != prev_style {
+            // Emit `set_style` when a `Text` node first receives an explicit `color`/`font_size`
+            // even if its value equals `StyleProps::default()` (`16px` / `#000000`), so native
+            // backends (`headless`, `skia`) mark it explicit instead of overwriting from parent.
+            let became_explicit_text = rec.kind == ComponentKind::Text
+                && ((!prev_explicit_color && explicit_color)
+                    || (!prev_explicit_font_size && explicit_font_size));
+            if rec.style != prev_style || became_explicit_text {
                 self.dirty_style.push(node_id);
             }
             return;
@@ -502,7 +511,10 @@ impl NveMutationWriter {
             rec.layout = next_layout;
             self.dirty_layout.push(node_id);
         }
-        if next_style != prev_style {
+        let became_explicit_text = rec.kind == ComponentKind::Text
+            && ((!prev_explicit_text_color && explicit_text_color)
+                || (!prev_explicit_font_size && explicit_font_size));
+        if next_style != prev_style || became_explicit_text {
             rec.style = next_style;
             self.dirty_style.push(node_id);
         }

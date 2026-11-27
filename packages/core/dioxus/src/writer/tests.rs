@@ -534,21 +534,60 @@ fn plain_standalone_typed_attrs_allocate_zero_node_extras_and_current_color_repa
     );
     assert!(writer.node_layout_ext(cbf_node).is_none());
 
-    // 4. Abandoned `MutationTx`: dropping a tx with pending `dirty_compose` entries must NOT leave
-    // stale `FLAG_DIRTY_COMPOSE` set on the next `begin_tx`, or future style updates are skipped.
-    let abort_node = {
-        let tx7 = writer.begin_tx(&mut sink, 1, 7);
-        let nid = tx7.writer.alloc_node(tx7.sink, ComponentKind::View, None);
-        tx7.writer.bind_element_id(nid, ElementId(53));
-        tx7.writer.apply_str_attr(tx7.sink, nid, "style", "width: 100px");
-        assert!(tx7.writer.nodes[&nid].is_dirty_compose());
-        nid
+    // 4. Abandoned `MutationTx`: dropping a tx with pending `dirty_compose` AND `dirty_extended`
+    // entries must reset both `FLAG_DIRTY_COMPOSE` and `ext.dirty_ext_mask` on the next `begin_tx`,
+    // so subsequent style AND extended-prop updates still flush to the sink.
+    #[derive(Default)]
+    struct ExtSpySink {
+        last_basis: Option<Dimension>,
+    }
+    impl RenderSink for ExtSpySink {
+        fn begin_frame(&mut self, _: u32, _: u64) {}
+        fn create_node(&mut self, _: NodeId, _: ComponentKind, _: Option<&str>) {}
+        fn remove_node(&mut self, _: NodeId) {}
+        fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
+        fn set_layout(&mut self, _: NodeId, _: &LayoutProps) {}
+        fn set_style(&mut self, _: NodeId, _: &StyleProps) {}
+        fn set_text(&mut self, _: NodeId, _: &str) {}
+        fn set_event_mask(&mut self, _: NodeId, _: u64) {}
+        fn set_raw_prop(&mut self, _: NodeId, _: &str, _: nve_abi::RawPropValueRef<'_>) {}
+        fn dispatch_command(&mut self, _: NodeId, _: &str, _: &[u8]) {}
+        fn set_layout_ext(
+            &mut self,
+            _: NodeId,
+            ext: Option<&nve_components::layout_ext::LayoutExt>,
+        ) {
+            self.last_basis = ext.map(|e| e.flex_basis);
+        }
+        fn commit_frame(
+            &mut self,
+            _: bool,
+        ) -> Result<nve_engine::BackendApplyStats, nve_engine::BackendError> {
+            Ok(nve_engine::BackendApplyStats::default())
+        }
+    }
+    let mut spy = ExtSpySink::default();
+    let (abort_compose_node, abort_ext_node) = {
+        let tx7 = writer.begin_tx(&mut spy, 1, 7);
+        let n1 = tx7.writer.alloc_node(tx7.sink, ComponentKind::View, None);
+        tx7.writer.bind_element_id(n1, ElementId(53));
+        tx7.writer.apply_str_attr(tx7.sink, n1, "style", "width: 100px");
+        assert!(tx7.writer.nodes[&n1].is_dirty_compose());
+
+        let n2 = tx7.writer.alloc_node(tx7.sink, ComponentKind::View, None);
+        tx7.writer.bind_element_id(n2, ElementId(54));
+        tx7.writer.apply_str_attr(tx7.sink, n2, "flex", "1 0 120px");
+        assert_ne!(tx7.writer.nodes[&n2].extras().unwrap().dirty_ext_mask, 0);
+        (n1, n2)
     };
 
-    let tx8 = writer.begin_tx(&mut sink, 1, 8);
-    assert!(!tx8.writer.nodes[&abort_node].is_dirty_compose());
-    tx8.writer.apply_str_attr(tx8.sink, abort_node, "style", "width: 200px");
+    let tx8 = writer.begin_tx(&mut spy, 1, 8);
+    assert!(!tx8.writer.nodes[&abort_compose_node].is_dirty_compose());
+    assert_eq!(tx8.writer.nodes[&abort_ext_node].extras().unwrap().dirty_ext_mask, 0);
+    tx8.writer.apply_str_attr(tx8.sink, abort_compose_node, "style", "width: 200px");
+    tx8.writer.apply_str_attr(tx8.sink, abort_ext_node, "flex", "1 0 240px");
     tx8.finish_frame(true).unwrap();
-    assert_eq!(writer.nodes[&abort_node].layout.width, Dimension::Points(200.0));
-    assert!(!writer.nodes[&abort_node].is_dirty_compose());
+    assert_eq!(writer.nodes[&abort_compose_node].layout.width, Dimension::Points(200.0));
+    assert!(!writer.nodes[&abort_compose_node].is_dirty_compose());
+    assert_eq!(spy.last_basis, Some(Dimension::Points(240.0)));
 }

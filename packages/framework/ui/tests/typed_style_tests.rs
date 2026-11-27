@@ -105,9 +105,9 @@ fn style_buf_into_typed_matches_typed_style_builder_identically() {
         .finish();
 
     assert_eq!(from_buf, direct);
-    assert_eq!(from_buf.layout.width, Dimension::Percent(100.0));
-    assert_eq!(from_buf.layout.flex_direction, FlexDirection::Row);
-    assert_eq!(from_buf.layout.padding, EdgeInsets::symmetric(6.0, 14.0));
+    assert_eq!(from_buf.layout().width, Dimension::Percent(100.0));
+    assert_eq!(from_buf.layout().flex_direction, FlexDirection::Row);
+    assert_eq!(from_buf.layout().padding, EdgeInsets::symmetric(6.0, 14.0));
 }
 
 #[component]

@@ -57,12 +57,12 @@ impl IntoAttributeValue for ShowOn {
 /// `NodeRecord` inside `NveMutationWriter` without formatting or parsing any CSS.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
-    pub layout: LayoutProps,
-    pub style: StyleProps,
-    pub has_layout: bool,
-    pub has_style: bool,
-    pub has_text_color: bool,
-    pub has_font_size: bool,
+    pub(crate) layout: LayoutProps,
+    pub(crate) style: StyleProps,
+    pub(crate) has_layout: bool,
+    pub(crate) has_style: bool,
+    pub(crate) has_text_color: bool,
+    pub(crate) has_font_size: bool,
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
     pub box_shadow: Option<Cow<'static, str>>,
@@ -111,6 +111,20 @@ impl TypedStyle {
             state_rules: Vec::new(),
             transitions: Vec::new(),
         }
+    }
+
+    /// Read-only view of the typed layout properties (mutate via builder methods so presence flags
+    /// stay in sync).
+    #[inline]
+    pub const fn layout(&self) -> &LayoutProps {
+        &self.layout
+    }
+
+    /// Read-only view of the typed visual style properties (mutate via builder methods so explicit
+    /// `text_color` / `font_size` inheritance flags stay in sync).
+    #[inline]
+    pub const fn style(&self) -> &StyleProps {
+        &self.style
     }
 
     #[inline]
@@ -606,35 +620,17 @@ impl IntoAttributeValue for TypedStyle {
 /// Parses a CSS/RN `flex-direction` keyword into [`FlexDirection`] with zero allocations.
 #[inline]
 pub fn parse_flex_direction(value: &str) -> FlexDirection {
-    match value.trim() {
-        "row" => FlexDirection::Row,
-        "column-reverse" | "columnReverse" => FlexDirection::ColumnReverse,
-        "row-reverse" | "rowReverse" => FlexDirection::RowReverse,
-        _ => FlexDirection::Column,
-    }
+    nve_components::parse_flex_direction(value).unwrap_or(FlexDirection::Column)
 }
 
 /// Parses a CSS/RN `justify-content` keyword into [`FlexJustify`] with zero allocations.
 #[inline]
 pub fn parse_flex_justify(value: &str) -> FlexJustify {
-    match value.trim() {
-        "center" => FlexJustify::Center,
-        "flex-end" | "end" => FlexJustify::FlexEnd,
-        "space-between" | "spaceBetween" => FlexJustify::SpaceBetween,
-        "space-around" | "spaceAround" => FlexJustify::SpaceAround,
-        "space-evenly" | "spaceEvenly" => FlexJustify::SpaceEvenly,
-        _ => FlexJustify::FlexStart,
-    }
+    nve_components::parse_flex_justify(value).unwrap_or(FlexJustify::FlexStart)
 }
 
 /// Parses a CSS/RN `align-items` keyword into [`FlexAlign`] with zero allocations.
 #[inline]
 pub fn parse_flex_align(value: &str) -> FlexAlign {
-    match value.trim() {
-        "flex-start" | "start" => FlexAlign::FlexStart,
-        "center" => FlexAlign::Center,
-        "flex-end" | "end" => FlexAlign::FlexEnd,
-        "baseline" => FlexAlign::Baseline,
-        _ => FlexAlign::Stretch,
-    }
+    nve_components::parse_flex_align(value).unwrap_or(FlexAlign::Stretch)
 }

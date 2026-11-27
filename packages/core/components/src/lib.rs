@@ -36,7 +36,9 @@ pub use canvas_ir::{
 pub use client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
-pub use css_values::{parse_color, parse_dim, parse_px};
+pub use css_values::{
+    parse_color, parse_dim, parse_flex_align, parse_flex_direction, parse_flex_justify, parse_px,
+};
 pub use inline_style::{
     apply_typed_attr, apply_typed_attr_kind, apply_typed_attr_with_ext, canonical_raw_style_key,
     ExtStyleDecl, TypedAttrKind,

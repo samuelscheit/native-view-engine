@@ -1,5 +1,8 @@
 use super::*;
-use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexDirection, LayoutProps, StyleProps};
+use nve_abi::{
+    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
+    StyleProps,
+};
 
 /// Collects every [`ExtStyleDecl::FlexBasis`] and [`ExtStyleDecl::Raw`] emitted while applying `key: value`.
 fn ext_decls(
@@ -266,6 +269,8 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::ZIndex, " 10 ", |_| {}));
     assert_eq!(l_strict.width, Dimension::Points(120.0));
     assert_eq!(l_strict.flex_direction, FlexDirection::Row);
+    assert_eq!(l_strict.justify_content, FlexJustify::Center);
+    assert_eq!(l_strict.align_items, FlexAlign::FlexEnd);
     assert_eq!((l_strict.flex_grow, l_strict.flex_shrink), (2.0, 0.0));
     assert_eq!(s_strict.opacity, 0.5);
     assert_eq!(s_strict.z_index, 10);
@@ -279,6 +284,8 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, "nope", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, "nope", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Opacity, "nope", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FontSize, "0px", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FontSize, "-4px", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::ZIndex, "nope", |_| {}));
     assert_eq!((l_strict, s_strict), (snap_l, snap_s));
 

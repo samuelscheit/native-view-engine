@@ -143,6 +143,17 @@ test("superseding arm, timeout expiry, and upstream abort while held are handled
     await assert.rejects(superseded, /superseded by a newer arm\(\) call/);
     await assert.rejects(timedOut, /not reached in 30 ms/);
 
+    const withTimeout = (promise, label) => {
+      let timer;
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 5_000);
+          timer.unref?.();
+        }),
+      ]).finally(() => clearTimeout(timer));
+    };
+
     // 2. Upstream aborts while held: stream stays held (not destroyed early), and release()
     // surfaces the abort rather than faking a clean EOF.
     const cut = proxy.arm({ marker: "<marker/>", timeoutMs: 5_000 });
@@ -163,28 +174,21 @@ test("superseding arm, timeout expiry, and upstream abort while held are handled
     // Destroy upstream socket while held; verify the client response stays OPEN until release()
     // (racing `clientDone` against a timer detects premature `res.destroy()` regressions).
     activeRes.socket.destroy();
+    let holdTimer;
     const whileHeld = await Promise.race([
       clientDone,
-      new Promise((r) => setTimeout(() => r("still-open"), 35)),
-    ]);
+      new Promise((r) => {
+        holdTimer = setTimeout(() => r("still-open"), 35);
+      }),
+    ]).finally(() => clearTimeout(holdTimer));
     assert.equal(whileHeld, "still-open", "upstream RST while held must not tear down held response");
     assert.equal(clientChunk, "<html><body>BEFORE<marker/>");
     proxy.release();
-    const outcome = await clientDone;
+    const outcome = await withTimeout(clientDone, "client teardown after held-RST release");
     assert.notEqual(outcome, "end", "abort after release must not look like a clean EOF");
 
     // 3. Upstream aborts AFTER release() (while forwarding): must destroy client instead of clean EOF.
     const cut2 = proxy.arm({ marker: "<marker/>", timeoutMs: 5_000 });
-    const withTimeout = (promise, label) => {
-      let timer;
-      return Promise.race([
-        promise,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 5_000);
-          timer.unref?.();
-        }),
-      ]).finally(() => clearTimeout(timer));
-    };
     let tailBuf = "";
     let gotTail = false;
     let onTail;

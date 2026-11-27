@@ -2,7 +2,7 @@
 //! `#rrggbbaa`), strict CSS Color 4 `rgb()`/`rgba()`, and named colors.
 
 use nve_abi::num::parse_f32;
-use nve_abi::{ColorRgba, Dimension};
+use nve_abi::{ColorRgba, Dimension, FlexAlign, FlexDirection, FlexJustify};
 
 /// Parses a CSS pixel length (`12px`, `12PX`) or a unitless RN-style number (`12`).
 pub fn parse_px(raw: &str) -> Option<f32> {
@@ -72,16 +72,86 @@ pub fn parse_color(raw: &str) -> Option<ColorRgba> {
         strip_ascii_prefix(s, "rgba(").or_else(|| strip_ascii_prefix(s, "rgb("))
     {
         parse_rgb_args(args.strip_suffix(')')?)
+    } else if s.eq_ignore_ascii_case("white") {
+        Some(ColorRgba::WHITE)
+    } else if s.eq_ignore_ascii_case("black") {
+        Some(ColorRgba::BLACK)
+    } else if s.eq_ignore_ascii_case("transparent") {
+        Some(ColorRgba::TRANSPARENT)
+    } else if s.eq_ignore_ascii_case("red") {
+        Some(ColorRgba::rgb(239, 68, 68))
+    } else if s.eq_ignore_ascii_case("green") {
+        Some(ColorRgba::rgb(34, 197, 94))
+    } else if s.eq_ignore_ascii_case("blue") {
+        Some(ColorRgba::rgb(59, 130, 246))
     } else {
-        match s.to_ascii_lowercase().as_str() {
-            "white" => Some(ColorRgba::WHITE),
-            "black" => Some(ColorRgba::BLACK),
-            "transparent" => Some(ColorRgba::TRANSPARENT),
-            "red" => Some(ColorRgba::rgb(239, 68, 68)),
-            "green" => Some(ColorRgba::rgb(34, 197, 94)),
-            "blue" => Some(ColorRgba::rgb(59, 130, 246)),
-            _ => None,
-        }
+        None
+    }
+}
+
+/// Parses a CSS/RN `flex-direction` keyword (ASCII case-insensitive, zero heap allocations).
+pub fn parse_flex_direction(raw: &str) -> Option<FlexDirection> {
+    let v = raw.trim();
+    if v.eq_ignore_ascii_case("column") {
+        Some(FlexDirection::Column)
+    } else if v.eq_ignore_ascii_case("row") {
+        Some(FlexDirection::Row)
+    } else if v.eq_ignore_ascii_case("column-reverse") || v.eq_ignore_ascii_case("columnReverse") {
+        Some(FlexDirection::ColumnReverse)
+    } else if v.eq_ignore_ascii_case("row-reverse") || v.eq_ignore_ascii_case("rowReverse") {
+        Some(FlexDirection::RowReverse)
+    } else {
+        None
+    }
+}
+
+/// Parses a CSS/RN `justify-content` keyword (ASCII case-insensitive, zero heap allocations).
+pub fn parse_flex_justify(raw: &str) -> Option<FlexJustify> {
+    let v = raw.trim();
+    if v.eq_ignore_ascii_case("flex-start")
+        || v.eq_ignore_ascii_case("start")
+        || v.eq_ignore_ascii_case("flexStart")
+    {
+        Some(FlexJustify::FlexStart)
+    } else if v.eq_ignore_ascii_case("center") {
+        Some(FlexJustify::Center)
+    } else if v.eq_ignore_ascii_case("flex-end")
+        || v.eq_ignore_ascii_case("end")
+        || v.eq_ignore_ascii_case("flexEnd")
+    {
+        Some(FlexJustify::FlexEnd)
+    } else if v.eq_ignore_ascii_case("space-between") || v.eq_ignore_ascii_case("spaceBetween") {
+        Some(FlexJustify::SpaceBetween)
+    } else if v.eq_ignore_ascii_case("space-around") || v.eq_ignore_ascii_case("spaceAround") {
+        Some(FlexJustify::SpaceAround)
+    } else if v.eq_ignore_ascii_case("space-evenly") || v.eq_ignore_ascii_case("spaceEvenly") {
+        Some(FlexJustify::SpaceEvenly)
+    } else {
+        None
+    }
+}
+
+/// Parses a CSS/RN `align-items` keyword (ASCII case-insensitive, zero heap allocations).
+pub fn parse_flex_align(raw: &str) -> Option<FlexAlign> {
+    let v = raw.trim();
+    if v.eq_ignore_ascii_case("stretch") {
+        Some(FlexAlign::Stretch)
+    } else if v.eq_ignore_ascii_case("flex-start")
+        || v.eq_ignore_ascii_case("start")
+        || v.eq_ignore_ascii_case("flexStart")
+    {
+        Some(FlexAlign::FlexStart)
+    } else if v.eq_ignore_ascii_case("center") {
+        Some(FlexAlign::Center)
+    } else if v.eq_ignore_ascii_case("flex-end")
+        || v.eq_ignore_ascii_case("end")
+        || v.eq_ignore_ascii_case("flexEnd")
+    {
+        Some(FlexAlign::FlexEnd)
+    } else if v.eq_ignore_ascii_case("baseline") {
+        Some(FlexAlign::Baseline)
+    } else {
+        None
     }
 }
 

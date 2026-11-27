@@ -400,7 +400,7 @@ pub(super) fn parse_inline_css_to_typed(css: &str) -> TypedStyle {
             }
             "padding-horizontal" | "paddingHorizontal" => {
                 if let Some(f) = parse_px(v) {
-                    let mut insets = ts.layout.padding;
+                    let mut insets = ts.layout().padding;
                     insets.left = f;
                     insets.right = f;
                     ts = ts.padding_insets(insets);
@@ -408,7 +408,7 @@ pub(super) fn parse_inline_css_to_typed(css: &str) -> TypedStyle {
             }
             "padding-vertical" | "paddingVertical" => {
                 if let Some(f) = parse_px(v) {
-                    let mut insets = ts.layout.padding;
+                    let mut insets = ts.layout().padding;
                     insets.top = f;
                     insets.bottom = f;
                     ts = ts.padding_insets(insets);

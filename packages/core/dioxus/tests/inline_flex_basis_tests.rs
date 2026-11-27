@@ -519,6 +519,15 @@ fn SameFrameTransitionAndFallbackApp() -> Element {
                     "ifs"
                 }
                 text {
+                    test_id: "dyn_inline_col",
+                    style: match s {
+                        0 => None,
+                        1 | 2 => Some("color: #ef4444; opacity: 0.8"),
+                        _ => Some("opacity: 0.8"),
+                    },
+                    "icol"
+                }
+                text {
                     test_id: "dyn_color",
                     color: match s { 0 => None, 1 | 2 => Some("#ef4444"), _ => None },
                     "col"
@@ -528,6 +537,33 @@ fn SameFrameTransitionAndFallbackApp() -> Element {
                     nve_style: TypedStyle::new().opacity(0.6),
                     "top"
                 }
+                text {
+                    test_id: "typed_fs_col",
+                    nve_style: match s {
+                        1 | 2 => TypedStyle::new()
+                            .font_size(16.0)
+                            .color(nve_abi::ColorRgba::rgb(0xef, 0x44, 0x44)),
+                        _ => TypedStyle::new().opacity(0.6),
+                    },
+                    "tfc"
+                }
+            }
+            // Explicit default-valued `Text` children on mount (`16px` under `24px`, `#000000`
+            // under `#0000ff`) MUST emit `set_style` so native backends (`headless`/`skia`) mark
+            // them explicit instead of overwriting them with parent values.
+            text {
+                font_size: "24px",
+                text { test_id: "default_fs_mount", font_size: "16px", "d1" }
+                text { test_id: "default_inline_fs_mount", style: "font-size: 16px", "d2" }
+                text {
+                    test_id: "default_typed_fs_mount",
+                    nve_style: TypedStyle::new().font_size(16.0),
+                    "d3"
+                }
+            }
+            text {
+                color: "#0000ff",
+                text { test_id: "default_col_mount", color: "#000000", "d4" }
             }
             pressable { test_id: "cycle", onpress: move |_| step += 1 }
         }
@@ -549,11 +585,33 @@ fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
     assert_eq!(sink.raw_of("ov_to_w", "overflow"), Some(Some("hidden")));
     assert_eq!(sink.layout[&sink.node("direct_invalid")].padding, EdgeInsets::all(8.0));
     assert_eq!(sink.layout[&sink.node("layered_invalid")].padding, EdgeInsets::all(8.0));
-    for id in ["dyn_opacity", "dyn_fs", "dyn_inline_fs", "dyn_color", "typed_op"] {
+    for id in [
+        "dyn_opacity",
+        "dyn_fs",
+        "dyn_inline_fs",
+        "dyn_inline_col",
+        "dyn_color",
+        "typed_op",
+        "typed_fs_col",
+    ] {
         assert_eq!(sink.style_of(id).font_size, 24.0, "{id}");
         assert_eq!(sink.style_of(id).text_color, blue, "{id}");
     }
     assert_eq!(sink.style_of("typed_op").opacity, 0.6);
+
+    // Explicit default-valued `Text` children MUST emit `set_style` directly (not be absent from `sink.style`).
+    for id in ["default_fs_mount", "default_inline_fs_mount", "default_typed_fs_mount"] {
+        assert_eq!(
+            sink.style.get(&sink.node(id)).map(|s| s.font_size),
+            Some(16.0),
+            "{id} must emit set_style for native backends"
+        );
+    }
+    assert_eq!(
+        sink.style.get(&sink.node("default_col_mount")).map(|s| s.text_color),
+        Some(ColorRgba::BLACK),
+        "default_col_mount must emit set_style for native backends"
+    );
 
     // Frame 2 (s=1): same-frame layer removal + typed attr insertion, invalid-value fallback, AND
     // dynamic per-property Text overrides (must preserve sibling inherited color / font_size!).
@@ -577,8 +635,15 @@ fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
     assert_eq!(sink.style_of("dyn_inline_fs").opacity, 0.8);
     assert_eq!(sink.style_of("dyn_inline_fs").text_color, blue);
 
+    assert_eq!(sink.style_of("dyn_inline_col").text_color, red);
+    assert_eq!(sink.style_of("dyn_inline_col").opacity, 0.8);
+    assert_eq!(sink.style_of("dyn_inline_col").font_size, 24.0);
+
     assert_eq!(sink.style_of("dyn_color").text_color, red);
     assert_eq!(sink.style_of("dyn_color").font_size, 24.0);
+
+    assert_eq!(sink.style_of("typed_fs_col").font_size, 16.0);
+    assert_eq!(sink.style_of("typed_fs_col").text_color, red);
 
     // Frame 3 (s=2): parent updates to (30px, green); each child inherits ONLY its non-explicit props.
     press(&mut surface, &mut sink, 3);
@@ -588,10 +653,14 @@ fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
     assert_eq!(sink.style_of("dyn_fs").text_color, green);
     assert_eq!(sink.style_of("dyn_inline_fs").font_size, 16.0);
     assert_eq!(sink.style_of("dyn_inline_fs").text_color, green);
+    assert_eq!(sink.style_of("dyn_inline_col").text_color, red);
+    assert_eq!(sink.style_of("dyn_inline_col").font_size, 30.0);
     assert_eq!(sink.style_of("dyn_color").text_color, red);
     assert_eq!(sink.style_of("dyn_color").font_size, 30.0);
     assert_eq!(sink.style_of("typed_op").font_size, 30.0);
     assert_eq!(sink.style_of("typed_op").text_color, green);
+    assert_eq!(sink.style_of("typed_fs_col").font_size, 16.0);
+    assert_eq!(sink.style_of("typed_fs_col").text_color, red);
 
     // Frame 4 (s=3): removing / invalidating explicit overrides restores parent's (30px, green).
     press(&mut surface, &mut sink, 4);
@@ -603,6 +672,12 @@ fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
     assert_eq!(sink.style_of("dyn_inline_fs").font_size, 30.0);
     assert_eq!(sink.style_of("dyn_inline_fs").opacity, 0.8);
     assert_eq!(sink.style_of("dyn_inline_fs").text_color, green);
+    assert_eq!(sink.style_of("dyn_inline_col").text_color, green);
+    assert_eq!(sink.style_of("dyn_inline_col").opacity, 0.8);
+    assert_eq!(sink.style_of("dyn_inline_col").font_size, 30.0);
     assert_eq!(sink.style_of("dyn_color").text_color, green);
     assert_eq!(sink.style_of("dyn_color").font_size, 30.0);
+    assert_eq!(sink.style_of("typed_fs_col").font_size, 30.0);
+    assert_eq!(sink.style_of("typed_fs_col").text_color, green);
+    assert_eq!(sink.style_of("typed_fs_col").opacity, 0.6);
 }

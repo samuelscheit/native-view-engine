@@ -68,19 +68,18 @@ enum BorderColorToken {
 }
 
 /// Parses a CSS border width token (`thin`, `medium`, `thick`, `0`, or non-negative `px`;
-/// unitless non-zero widths are rejected for consistency with `flex-basis`).
-fn parse_border_width(token: &str, lower: &str) -> Option<f32> {
-    match lower {
-        "thin" => Some(1.0),
-        "medium" => Some(3.0),
-        "thick" => Some(5.0),
-        _ => {
-            if let Some(n) = parse_f32(token) {
-                (n == 0.0).then_some(0.0)
-            } else {
-                parse_px(token).filter(|w| *w >= 0.0)
-            }
-        }
+/// unitless non-zero widths are rejected for consistency with `flex-basis`, zero allocations).
+fn parse_border_width(token: &str) -> Option<f32> {
+    if token.eq_ignore_ascii_case("thin") {
+        Some(1.0)
+    } else if token.eq_ignore_ascii_case("medium") {
+        Some(3.0)
+    } else if token.eq_ignore_ascii_case("thick") {
+        Some(5.0)
+    } else if let Some(n) = parse_f32(token) {
+        (n == 0.0).then_some(0.0)
+    } else {
+        parse_px(token).filter(|w| *w >= 0.0)
     }
 }
 
@@ -91,27 +90,29 @@ pub(crate) fn parse_border_width_value(value: &str) -> Option<f32> {
     if t.is_empty() {
         return None;
     }
-    parse_border_width(t, &t.to_ascii_lowercase())
+    parse_border_width(t)
 }
 
 /// Parses `border: <width> || <style> || <color>` into `(width, color)` where `color == None`
 /// denotes `currentColor` (either omitted or explicit) so callers can resolve it after the full
 /// declaration list has updated `text_color`. Omitted width is `medium` (3px), and an omitted,
-/// `none`, or `hidden` style computes width to `0`.
+/// `none`, or `hidden` style computes width to `0`. Zero heap allocations.
 pub(crate) fn parse_border(value: &str) -> Option<(f32, Option<ColorRgba>)> {
-    let (mut width, mut style, mut color) = (None, None, None);
+    let (mut width, mut style_visible, mut color) = (None, None, None);
     let mut any = false;
     for token in css_tokens(value) {
         any = true;
-        let lower = token.to_ascii_lowercase();
         if width.is_none()
-            && let Some(w) = parse_border_width(token, &lower)
+            && let Some(w) = parse_border_width(token)
         {
             width = Some(w);
-        } else if style.is_none() && BORDER_STYLES.contains(&lower.as_str()) {
-            style = Some(lower);
+        } else if style_visible.is_none()
+            && BORDER_STYLES.iter().any(|s| token.eq_ignore_ascii_case(s))
+        {
+            style_visible =
+                Some(!token.eq_ignore_ascii_case("none") && !token.eq_ignore_ascii_case("hidden"));
         } else if color.is_none()
-            && let Some(c) = if lower == "currentcolor" {
+            && let Some(c) = if token.eq_ignore_ascii_case("currentcolor") {
                 Some(BorderColorToken::Current)
             } else {
                 parse_color(token).map(BorderColorToken::Concrete)
@@ -125,9 +126,9 @@ pub(crate) fn parse_border(value: &str) -> Option<(f32, Option<ColorRgba>)> {
     if !any {
         return None;
     }
-    let width = match style.as_deref() {
-        None | Some("none" | "hidden") => 0.0,
-        Some(_) => width.unwrap_or(3.0),
+    let width = match style_visible {
+        Some(true) => width.unwrap_or(3.0),
+        Some(false) | None => 0.0,
     };
     let resolved_color = match color {
         Some(BorderColorToken::Concrete(c)) => Some(c),
@@ -160,11 +161,12 @@ impl FlexShorthand {
 /// is a basis only when it is `0` (`flex: 1 1 0`).
 pub(crate) fn parse_flex(value: &str) -> Option<FlexShorthand> {
     let v = value.trim();
-    match v.to_ascii_lowercase().as_str() {
-        "none" => return Some(FlexShorthand::new(0.0, 0.0, Dimension::Auto)),
-        "auto" => return Some(FlexShorthand::new(1.0, 1.0, Dimension::Auto)),
-        "initial" => return Some(FlexShorthand::new(0.0, 1.0, Dimension::Auto)),
-        _ => {}
+    if v.eq_ignore_ascii_case("none") {
+        return Some(FlexShorthand::new(0.0, 0.0, Dimension::Auto));
+    } else if v.eq_ignore_ascii_case("auto") {
+        return Some(FlexShorthand::new(1.0, 1.0, Dimension::Auto));
+    } else if v.eq_ignore_ascii_case("initial") {
+        return Some(FlexShorthand::new(0.0, 1.0, Dimension::Auto));
     }
     let mut factors = [0.0f32; 2];
     let mut n_factors = 0usize;

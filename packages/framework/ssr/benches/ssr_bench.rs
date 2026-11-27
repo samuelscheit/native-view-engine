@@ -9,7 +9,7 @@ use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, Criterion};
 use http_body_util::BodyExt as _;
 use minicbor::{Decode, Encode};
-use nve_abi::{ColorRgba, StyleProps};
+use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_http_hyper::HttpBody;
@@ -67,13 +67,9 @@ impl Transport for YieldingBenchTransport {
 fn BenchPanel(id: u32) -> Element {
     let q = use_query_with::<BenchGetItem>(id, QueryOptions::default().stale_time_ms(60_000));
     let item = q.suspend()?;
-    let mut style = TypedStyle::new();
-    style.style = StyleProps {
-        background: ColorRgba::rgb(24, 34, 52),
-        border_radius: 8.0,
-        ..Default::default()
-    };
-    style.has_style = true;
+    let style = TypedStyle::new()
+        .bg(ColorRgba::rgb(24, 34, 52))
+        .radius(8.0);
     rsx! {
         view {
             nve_style: style,
