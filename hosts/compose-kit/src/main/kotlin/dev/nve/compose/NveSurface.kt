@@ -22,7 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,7 +46,7 @@ import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import dev.nve.android.generated.NveTables
+import dev.nve.host.generated.NveTables
 
 /**
  * Renders a runtime surface: every node of [NveSurfaceController.scene] as a positioned
@@ -105,7 +107,9 @@ private fun NveScrollContainer(scene: NveSceneSnapshot, node: NveNode, base: Mod
         }
     }
     val density = LocalDensity.current.density
-    LaunchedEffect(node.id, state) { trackScroll(state, node, controller, density, contentW, contentH) }
+    // The collector outlives recompositions: it must read the latest content size, not the first.
+    val content by rememberUpdatedState(floatArrayOf(contentW, contentH))
+    LaunchedEffect(node.id, state) { trackScroll(state, node, controller, density) { content } }
     Box(if (node.scrollHorizontal) base.horizontalScroll(state) else base.verticalScroll(state)) {
         Box(Modifier.size(contentW.dp, contentH.dp)) {
             for (child in node.children) NveNodeContent(scene, child, controller)
@@ -118,19 +122,20 @@ private suspend fun trackScroll(
     node: NveNode,
     controller: NveSurfaceController,
     density: Float,
-    contentW: Float,
-    contentH: Float,
+    content: () -> FloatArray,
 ) {
     var last = state.value
     snapshotFlow { state.value }.collect { px ->
         val delta = (px - last) / density
         last = px
-        if (delta == 0f) return@collect
+        // Clamps from content resizes are not user scrolls (the runtime clamps on its own).
+        if (delta == 0f || !state.isScrollInProgress) return@collect
         val pos = px / density
+        val (w, h) = content()
         if (node.scrollHorizontal) {
-            controller.scrolled(node.id, delta, 0f, pos, 0f, contentW, contentH)
+            controller.scrolled(node.id, delta, 0f, pos, 0f, w, h)
         } else {
-            controller.scrolled(node.id, 0f, delta, 0f, pos, contentW, contentH)
+            controller.scrolled(node.id, 0f, delta, 0f, pos, w, h)
         }
     }
 }

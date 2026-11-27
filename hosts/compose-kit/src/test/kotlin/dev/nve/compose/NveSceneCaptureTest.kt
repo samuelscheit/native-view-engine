@@ -1,10 +1,11 @@
 package dev.nve.compose
 
-import dev.nve.android.generated.NveCoreAbi
-import dev.nve.android.generated.NveTables
 import dev.nve.host.ImageSource
 import dev.nve.host.Key64
-import dev.nve.host.NativeRuntime
+import dev.nve.host.SceneSemantics
+import dev.nve.host.generated.NveModuleTables
+import dev.nve.host.generated.NveTableBits
+import dev.nve.host.generated.NveTables
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -16,7 +17,7 @@ import java.nio.ByteBuffer
 
 class NveSceneCaptureTest {
     private val drawKind = Key64.of("nve.res.draw_list")
-    private val press = 1 shl (NveCoreAbi.EVENT_PRESS - 1)
+    private val press = NveTableBits.INTERACTION_EVENT_MASK_PRESS
 
     /** Root(1) → column(2) → [title(3), input(4), image(5), scroll(6) → [row(7)], canvas(8), button(9)]. */
     private fun showcase(scene: TestScene = TestScene()): TestScene {
@@ -54,8 +55,8 @@ class NveSceneCaptureTest {
         scene.set(image, 5, NveTables.Image.SRC, 1).set(image, 5, NveTables.Image.FIT, NveTables.Image.FIT_CONTAIN)
         val scroll = scene.table(NveTables.Scroll.KEY, NveTables.Scroll.WORDS)
         scene.set(scroll, 6, NveTables.Scroll.AXES, NveTables.Scroll.AXES_HORIZONTAL)
-        val canvas = scene.table(NveTables.Canvas.KEY, NveTables.Canvas.WORDS)
-        scene.set(canvas, 8, NveTables.Canvas.DRAW_LIST, 2)
+        val canvas = scene.table(NveModuleTables.Canvas.KEY, NveModuleTables.Canvas.WORDS)
+        scene.set(canvas, 8, NveModuleTables.Canvas.DRAW_LIST, 2)
         val interaction = scene.table(NveTables.Interaction.KEY, NveTables.Interaction.WORDS)
         scene.set(interaction, 9, NveTables.Interaction.EVENT_MASK, press).set(interaction, 3, NveTables.Interaction.EVENT_MASK, press)
             .set(interaction, 3, NveTables.Interaction.DISABLED, 1)
@@ -67,14 +68,14 @@ class NveSceneCaptureTest {
         return scene
     }
 
-    private class Resources(var image: ByteBuffer, var draw: ByteBuffer, var drawFlags: Long = 0L) : NveResourceLookup {
+    private class Resources(var image: ByteBuffer, var draw: ByteBuffer) : NveResourceLookup {
         val calls = ArrayList<Int>()
 
         override fun resource(id: Int): NveResource? {
             calls.add(id)
             return when (id) {
-                1 -> NveResource(ImageSource.KIND, 0L, image)
-                2 -> NveResource(Key64.of("nve.res.draw_list"), drawFlags, draw)
+                1 -> NveResource(ImageSource.KIND, image)
+                2 -> NveResource(Key64.of("nve.res.draw_list"), draw)
                 else -> null
             }
         }
@@ -95,6 +96,7 @@ class NveSceneCaptureTest {
         assertEquals("Hello \uD83D\uDE80", title.text)
         assertEquals(5f to 15f, title.x to title.y)  // relative to the column at (5, 5)
         assertEquals(NveTextStyle(color = 0xFF00FF00.toInt(), fontSize = 24f, fontWeight = 700), title.textStyle)
+        assertEquals(SceneSemantics.DEFAULT_FONT_WEIGHT, snap.nodes.getValue(0x1000009).textStyle.fontWeight, "siblings do not inherit overrides")
         assertFalse(title.pressable, "disabled interaction is not pressable")
         assertTrue(title.semantics.disabled)
         val input = snap.nodes.getValue(0x1000004)
@@ -119,24 +121,51 @@ class NveSceneCaptureTest {
     }
 
     @Test
-    fun resourcesAreCopiedOutOfTheFrameAndReusedWhileUnchanged() {
+    fun resourcesAreCopiedOutOfTheFrameAndReusedOnlyWhileProvablyUnchanged() {
         val draw = ByteBuffer.allocateDirect(3).put(byteArrayOf(4, 5, 6)).flip() as ByteBuffer
         val res = Resources(imageSourceBytes(1, byteArrayOf(0x89.toByte(), 'P'.code.toByte())), draw)
-        val first = NveSceneCapture.capture(showcase().reader(), res, NveSceneSnapshot.EMPTY)
+        val first = NveSceneCapture.capture(showcase(TestScene(frameId = 1)).reader(), res, NveSceneSnapshot.EMPTY)
         val encoded = first.nodes.getValue(0x1000005).image as NveImage.Encoded
         assertArrayEquals(byteArrayOf(0x89.toByte(), 'P'.code.toByte()), encoded.bytes)
         draw.put(0, 9)  // the frame's buffer is reused by the next frame: the snapshot must not alias it
         assertArrayEquals(byteArrayOf(4, 5, 6), first.nodes.getValue(0x1000008).drawList)
 
         res.calls.clear()
-        val second = NveSceneCapture.capture(showcase().reader(), res, first)
+        val second = NveSceneCapture.capture(showcase(TestScene(frameId = 2)).reader(), res, first)
         assertSame(encoded, second.nodes.getValue(0x1000005).image, "same image id reuses the decoded copy")
         assertSame(first.nodes.getValue(0x1000008).drawList, second.nodes.getValue(0x1000008).drawList)
-        assertFalse(1 in res.calls, "unchanged image resource is not re-read")
+        assertTrue(res.calls.isEmpty(), "unchanged resources are not re-read")
 
-        res.drawFlags = NativeRuntime.RESOURCE_FLAG_EPHEMERAL
-        val third = NveSceneCapture.capture(showcase().reader(), res, second)
-        assertArrayEquals(byteArrayOf(9, 5, 6), third.nodes.getValue(0x1000008).drawList, "ephemeral draw lists re-read every frame")
+        // Same id, new bytes (ephemeral rewrite / recycled slot): listed in dirty_resources.
+        val rewritten = showcase(TestScene(frameId = 3)).also { it.dirtyResources.add(2) }
+        val third = NveSceneCapture.capture(rewritten.reader(), res, second)
+        assertArrayEquals(byteArrayOf(9, 5, 6), third.nodes.getValue(0x1000008).drawList, "dirty draw list re-read")
+        assertSame(encoded, third.nodes.getValue(0x1000005).image, "clean image still reused")
+
+        // A skipped frame may have redefined anything: re-read everything.
+        res.calls.clear()
+        val gap = NveSceneCapture.capture(showcase(TestScene(frameId = 5)).reader(), res, third)
+        assertEquals(setOf(1, 2), res.calls.toSet(), "frame gap re-reads every resource")
+        // A new epoch reuses ids for unrelated resources.
+        res.calls.clear()
+        NveSceneCapture.capture(showcase(TestScene(frameId = 6, epoch = 1)).reader(), res, gap)
+        assertEquals(setOf(1, 2), res.calls.toSet(), "epoch change re-reads every resource")
+    }
+
+    @Test
+    fun nonFiniteGeometryAndPaintAreSanitized() {
+        val scene = TestScene().node(2, 1, Float.NaN, 0f, Float.POSITIVE_INFINITY, Float.NaN)
+        val visual = scene.table(NveTables.Visual.KEY, NveTables.Visual.WORDS)
+        scene.set(visual, 2, NveTables.Visual.OPACITY, Float.NaN).set(visual, 2, NveTables.Visual.BORDER_RADIUS, Float.NaN)
+            .set(visual, 2, NveTables.Visual.BORDER_WIDTH, Float.NEGATIVE_INFINITY)
+        val typo = scene.table(NveTables.Typography.KEY, NveTables.Typography.WORDS)
+        scene.set(typo, 2, NveTables.Typography.SET, NveTableBits.TYPOGRAPHY_SET_FONT_SIZE).set(typo, 2, NveTables.Typography.FONT_SIZE, Float.NaN)
+        val text = scene.table(NveTables.Text.KEY, NveTables.Text.WORDS)
+        scene.set(text, 2, NveTables.Text.TEXT, "x")
+        val n = NveSceneCapture.capture(scene.reader(), { null }, NveSceneSnapshot.EMPTY).nodes.getValue(0x1000002)
+        assertEquals(listOf(0f, 0f, 0f, 0f), listOf(n.x, n.y, n.width, n.height))
+        assertEquals(NveBox(opacity = 1f), n.box)
+        assertEquals(SceneSemantics.DEFAULT_FONT_SIZE, n.textStyle.fontSize)
     }
 
     @Test

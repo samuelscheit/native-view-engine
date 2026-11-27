@@ -71,6 +71,9 @@ val nveHostJavaDir = nveRepoRoot.resolve("packages/core/host-java/src/main/java"
 val nveGeneratedJavaFiles = listOf(
     nveHostJavaDir.resolve("dev/nve/host/generated/NveAbi.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveTables.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveRuntimeAbi.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveTableBits.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveModuleTables.java"),
 )
 
 android.sourceSets.getByName("main").java.srcDir(nveHostJavaDir)

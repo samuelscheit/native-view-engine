@@ -13,7 +13,7 @@ import java.nio.charset.StandardCharsets
  * `libnve_android_shell` hands to [RuntimeSceneReader]) so scene capture runs on the JVM.
  * Node index `i` has `NodeId = 1 << 24 | i`; index 1 is the root.
  */
-class TestScene(private val capacity: Int = 16, private val frameId: Long = 1L) {
+class TestScene(private val capacity: Int = 16, private val frameId: Long = 1L, private val epoch: Int = 0) {
     class Table(val key: Key64, val slot: Int, val words: Int) {
         val rows = LinkedHashMap<Int, IntArray>()
     }
@@ -25,6 +25,8 @@ class TestScene(private val capacity: Int = 16, private val frameId: Long = 1L) 
     private val tables = ArrayList<Table>()
     private val text = java.io.ByteArrayOutputStream()
     val removed = ArrayList<Int>()
+    /** Resource ids (re)defined on this frame (`dirty_resources`). */
+    val dirtyResources = ArrayList<Int>()
 
     init {
         live[1] = true
@@ -93,12 +95,15 @@ class TestScene(private val capacity: Int = 16, private val frameId: Long = 1L) 
         header[RuntimeSceneReader.H_TEXT_LEN] = textBytes.size.toLong()
         header[RuntimeSceneReader.H_CHILDREN_LEN] = childSlab.size.toLong()
         header[RuntimeSceneReader.H_TABLE_COUNT] = tables.size.toLong()
+        header[RuntimeSceneReader.H_SCENE_EPOCH] = epoch.toLong()
+        header[RuntimeSceneReader.H_DIRTY_RESOURCE_COUNT] = dirtyResources.size.toLong()
         slabs[RuntimeSceneReader.S_ROWS] = rows
         slabs[RuntimeSceneReader.S_RECTS] = rectBuf
         slabs[RuntimeSceneReader.S_TEXT] = buf(textBytes.size).also { it.put(0, textBytes) }
         slabs[RuntimeSceneReader.S_CHILDREN] = ints(childSlab)
         slabs[RuntimeSceneReader.S_DIRTY] = ints(dirty)
         slabs[RuntimeSceneReader.S_REMOVED] = ints(removed)
+        slabs[RuntimeSceneReader.S_DIRTY_RESOURCES] = ints(dirtyResources)
         tables.forEachIndexed { n, t ->
             val h = RuntimeSceneReader.H_TABLES + n * RuntimeSceneReader.H_TABLE_STRIDE
             header[h] = t.key.value()

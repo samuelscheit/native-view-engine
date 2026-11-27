@@ -25,15 +25,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import dev.nve.android.generated.NveTables
 import dev.nve.host.NativeRuntime
+import dev.nve.host.SceneSemantics
+import dev.nve.host.generated.NveTables
 import kotlin.math.ceil
 
 /** Runtime text style → Compose: sizes are dp (logical points), independent of the font scale. */
 internal fun NveTextStyle.toCompose(density: Density): TextStyle = with(density) {
     TextStyle(
         color = argb(color),
-        fontSize = (if (fontSize.isFinite() && fontSize > 0f) fontSize else 16f).dp.toSp(),
+        fontSize = fontSize.dp.toSp(),  // sanitized by SceneSemantics.TextStyle
         fontWeight = FontWeight(fontWeight.coerceIn(1, 1000)),
         fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
         textAlign = when (align) {
@@ -52,21 +53,38 @@ internal fun NveTextStyle.toCompose(density: Density): TextStyle = with(density)
  * [androidx.compose.foundation.text.BasicText]s that draw it.
  */
 class NveComposeTextMeasurer(private val measurer: TextMeasurer, private val density: Density) : NativeRuntime.TextMeasurer {
-    override fun measure(text: String, fontSize: Float, fontWeight: Int, maxWidth: Float, out: FloatArray): Boolean {
-        val style = NveTextStyle(fontSize = fontSize, fontWeight = fontWeight).toCompose(density)
+    override fun measure(text: String, fontSize: Float, fontWeight: Int, maxWidth: Float, out: FloatArray) {
+        val size = if (fontSize.isFinite() && fontSize > 0f) fontSize else SceneSemantics.DEFAULT_FONT_SIZE
+        val style = NveTextStyle(fontSize = size, fontWeight = fontWeight).toCompose(density)
         val maxPx = when {
-            maxWidth.isInfinite() -> Constraints.Infinity
+            // Unconstrained: +Inf, NaN, or wider than `Constraints` can encode.
+            maxWidth.isNaN() || maxWidth * density.density >= MAX_CONSTRAINT_PX -> Constraints.Infinity
             // Min-content: the widest unbreakable word, as CSS does.
-            maxWidth <= 0f -> text.split(Regex("\\s+")).maxOfOrNull { word ->
-                if (word.isEmpty()) 0 else measurer.measure(word, style).size.width
-            }?.coerceAtLeast(1) ?: 1
+            maxWidth <= 0f -> minContentPx(text, style)
             else -> ceil(maxWidth * density.density).toInt().coerceAtLeast(1)
         }
+        // An empty string still measures one line height (an empty paragraph, like a caret line).
         val result = measurer.measure(text, style, constraints = Constraints(maxWidth = maxPx))
         val widest = (0 until result.lineCount).maxOfOrNull { result.getLineRight(it) - result.getLineLeft(it) } ?: 0f
         out[0] = ceil(widest / density.density)
         out[1] = ceil(result.size.height / density.density)
-        return true
+    }
+
+    private fun minContentPx(text: String, style: TextStyle): Int {
+        var widest = 1
+        var start = 0
+        for (i in 0..text.length) {
+            if (i == text.length || text[i].isWhitespace()) {
+                if (i > start) widest = maxOf(widest, measurer.measure(text.substring(start, i), style).size.width)
+                start = i + 1
+            }
+        }
+        return widest
+    }
+
+    private companion object {
+        /** Widest finite `Constraints.maxWidth` used (larger widths encode as unbounded). */
+        const val MAX_CONSTRAINT_PX = (1 shl 18) - 2f
     }
 }
 
@@ -76,6 +94,8 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
     // The runtime value is the source of truth; local state only bridges keystrokes until it echoes.
     var text by remember(node.id) { mutableStateOf(input.value) }
     LaunchedEffect(node.id, input.value) { text = input.value }
+    // `onFocusChanged` reports the initial (unfocused) state on attach: only transitions are events.
+    var focused by remember(node.id) { mutableStateOf(false) }
     val style = node.textStyle.toCompose(LocalDensity.current)
     BasicTextField(
         value = text,
@@ -83,7 +103,12 @@ internal fun NveTextField(node: NveNode, base: Modifier, controller: NveSurfaceC
             text = it
             controller.textChanged(node.id, it)
         },
-        modifier = base.onFocusChanged { controller.focusChanged(node.id, it.isFocused) },
+        modifier = base.onFocusChanged {
+            if (it.isFocused != focused) {
+                focused = it.isFocused
+                controller.focusChanged(node.id, it.isFocused)
+            }
+        },
         readOnly = input.readOnly,
         singleLine = !input.multiline,
         textStyle = style,

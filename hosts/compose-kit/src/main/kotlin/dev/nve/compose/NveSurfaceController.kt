@@ -3,11 +3,11 @@ package dev.nve.compose
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.nve.android.generated.NveCoreAbi
-import dev.nve.host.EventRingWriter
 import dev.nve.host.NativeRuntime
 import dev.nve.host.RuntimeSceneReader
 import dev.nve.host.RuntimeSurface
+import dev.nve.host.generated.NveAbi
+import dev.nve.host.generated.NveRuntimeAbi
 import java.util.concurrent.Executor
 
 /** What a surface shows: a local app `.so` (hot-reloadable) or a paired `nve pair` server. */
@@ -31,8 +31,11 @@ interface NveRuntimeHost : AutoCloseable {
     /** Ticks and delivers a changed frame; `true` when one was delivered. */
     fun render(): Boolean
 
-    /** Writes events with [write], dispatches them, and renders a changed frame. */
-    fun dispatch(write: (EventRingWriter) -> Unit): Int
+    /**
+     * Writes events with [write] and dispatches them (rendering a changed frame); inside a frame
+     * callback the batch is deferred until the frame is released.
+     */
+    fun send(write: RuntimeSurface.EventWriter): Int
 
     fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int
 
@@ -47,7 +50,7 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
     override fun setFrameListener(listener: (RuntimeSceneReader, NveResourceLookup) -> Unit) {
         surface.setFrameConsumer { scene, sf ->
             listener(scene) { id ->
-                sf.resource(id)?.let { NveResource(sf.resourceKind(), sf.resourceFlags(), it) }
+                sf.resource(id)?.let { NveResource(sf.resourceKind(), it) }
             }
         }
     }
@@ -64,12 +67,9 @@ class NativeRuntimeHost(surfaceId: Int, widthDp: Float, heightDp: Float, density
 
     override fun render(): Boolean = surface.render()
 
-    override fun dispatch(write: (EventRingWriter) -> Unit): Int {
-        write(surface.events())
-        return surface.dispatch()
-    }
+    override fun send(write: RuntimeSurface.EventWriter): Int = surface.send(write)
 
-    override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int = surface.scrollBy(nodeId, dxDp, dyDp, null)
+    override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int = surface.scrollBy(nodeId, dxDp, dyDp)
 
     override val lastError: String get() = surface.lastError()
 
@@ -103,7 +103,7 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     /** Attaches the app or pairing session and renders the first frame; `false` (with [error]) on failure. */
     fun start(source: NveSource): Boolean {
         val st = host.start(source)
-        if (st != NativeRuntime.STATUS_OK) {
+        if (st != NveRuntimeAbi.STATUS_OK) {
             error = "start failed ($st): ${host.lastError}"
             return false
         }
@@ -126,25 +126,25 @@ class NveSurfaceController(private val host: NveRuntimeHost) : AutoCloseable {
     }
 
     fun press(nodeId: Int, xDp: Float, yDp: Float) {
-        host.dispatch { it.point(NveCoreAbi.EVENT_PRESS, nodeId, now(), xDp, yDp) }
+        host.send { it.point(NveAbi.EVENT_PRESS, nodeId, now(), xDp, yDp) }
     }
 
     fun textChanged(nodeId: Int, text: String) {
-        host.dispatch { it.text(NveCoreAbi.EVENT_TEXT_CHANGE, nodeId, now(), text) }
+        host.send { it.text(NveAbi.EVENT_TEXT_CHANGE, nodeId, now(), text) }
     }
 
     fun submit(nodeId: Int, text: String) {
-        host.dispatch { it.text(NveCoreAbi.EVENT_SUBMIT, nodeId, now(), text) }
+        host.send { it.text(NveAbi.EVENT_SUBMIT, nodeId, now(), text) }
     }
 
     fun focusChanged(nodeId: Int, focused: Boolean) {
-        host.dispatch { it.empty(if (focused) NveCoreAbi.EVENT_FOCUS else NveCoreAbi.EVENT_BLUR, nodeId, now()) }
+        host.send { it.empty(if (focused) NveAbi.EVENT_FOCUS else NveAbi.EVENT_BLUR, nodeId, now()) }
     }
 
     /** Native scroll moved by `(dx, dy)` to `(x, y)`: syncs runtime hit testing and tells the app. */
     fun scrolled(nodeId: Int, dxDp: Float, dyDp: Float, xDp: Float, yDp: Float, contentWDp: Float, contentHDp: Float) {
         host.scrollBy(nodeId, dxDp, dyDp)
-        host.dispatch { it.scroll(NveCoreAbi.EVENT_SCROLL, nodeId, now(), xDp, yDp, contentWDp, contentHDp) }
+        host.send { it.scroll(NveAbi.EVENT_SCROLL, nodeId, now(), xDp, yDp, contentWDp, contentHDp) }
     }
 
     /** Wake-driven or explicit re-render (e.g. after resuming). */

@@ -1,10 +1,12 @@
 package dev.nve.compose
 
-import dev.nve.android.generated.NveCoreAbi
-import dev.nve.android.generated.NveTables
 import dev.nve.host.EventRingWriter
 import dev.nve.host.NativeRuntime
 import dev.nve.host.RuntimeSceneReader
+import dev.nve.host.RuntimeSurface
+import dev.nve.host.generated.NveAbi
+import dev.nve.host.generated.NveRuntimeAbi
+import dev.nve.host.generated.NveTables
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -15,7 +17,7 @@ import java.nio.ByteOrder
 
 /** JVM double of `NativeRuntimeHost`: serves [TestScene] frames and records dispatched rings. */
 class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
-    var startStatus = NativeRuntime.STATUS_OK
+    var startStatus = NveRuntimeAbi.STATUS_OK
     val started = ArrayList<NveSource>()
     val viewports = ArrayList<List<Float>>()
     val rings = ArrayList<ByteBuffer>()
@@ -35,12 +37,12 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
 
     override fun setViewport(widthDp: Float, heightDp: Float, density: Float): Int {
         viewports.add(listOf(widthDp, heightDp, density))
-        return NativeRuntime.STATUS_OK
+        return NveRuntimeAbi.STATUS_OK
     }
 
     override fun setTextMeasurer(measurer: NativeRuntime.TextMeasurer?): Int {
         this.measurer = measurer
-        return NativeRuntime.STATUS_OK
+        return NveRuntimeAbi.STATUS_OK
     }
 
     override fun render(): Boolean {
@@ -48,16 +50,16 @@ class FakeRuntimeHost(var scene: TestScene) : NveRuntimeHost {
         return true
     }
 
-    override fun dispatch(write: (EventRingWriter) -> Unit): Int {
+    override fun send(write: RuntimeSurface.EventWriter): Int {
         val ring = EventRingWriter(ByteBuffer.allocate(1024), 1)
-        write(ring)
+        write.write(ring)
         rings.add(ByteBuffer.wrap(ring.buffer().array().copyOf(ring.length())).order(ByteOrder.LITTLE_ENDIAN))
         return 0
     }
 
     override fun scrollBy(nodeId: Int, dxDp: Float, dyDp: Float): Int {
         scrolls.add(listOf(nodeId.toFloat(), dxDp, dyDp))
-        return NativeRuntime.STATUS_OK
+        return NveRuntimeAbi.STATUS_OK
     }
 
     override val lastError: String get() = "app library missing"
@@ -88,7 +90,7 @@ class NveSurfaceControllerTest {
 
     @Test
     fun failedStartReportsTheRuntimeError() {
-        val host = FakeRuntimeHost(scene()).apply { startStatus = NativeRuntime.STATUS_NOT_FOUND }
+        val host = FakeRuntimeHost(scene()).apply { startStatus = NveRuntimeAbi.STATUS_NOT_FOUND }
         val c = NveSurfaceController(host)
         assertFalse(c.start(NveSource.Paired("ws://pair.example.test:9000/nve-wire", "t")))
         assertEquals("start failed (6): app library missing", c.error)
@@ -105,14 +107,14 @@ class NveSurfaceControllerTest {
         c.focusChanged(0x1000003, true)
         c.focusChanged(0x1000003, false)
         c.scrolled(0x1000004, 0f, 12f, 0f, 30f, 100f, 300f)
-        assertEquals(listOf(1, 0x1000002, NveCoreAbi.EVENT_PRESS, 1), head(host.rings[0]))
+        assertEquals(listOf(1, 0x1000002, NveAbi.EVENT_PRESS, 1), head(host.rings[0]))
         assertEquals(50f, host.rings[0].getFloat(22))
-        assertEquals(listOf(1, 0x1000003, NveCoreAbi.EVENT_TEXT_CHANGE, 3), head(host.rings[1]))
+        assertEquals(listOf(1, 0x1000003, NveAbi.EVENT_TEXT_CHANGE, 3), head(host.rings[1]))
         assertEquals(3, host.rings[1].getInt(22), "UTF-8 byte length")
-        assertEquals(listOf(1, 0x1000003, NveCoreAbi.EVENT_SUBMIT, 3), head(host.rings[2]))
-        assertEquals(NveCoreAbi.EVENT_FOCUS, head(host.rings[3])[2])
-        assertEquals(NveCoreAbi.EVENT_BLUR, head(host.rings[4])[2])
-        assertEquals(listOf(1, 0x1000004, NveCoreAbi.EVENT_SCROLL, 2), head(host.rings[5]))
+        assertEquals(listOf(1, 0x1000003, NveAbi.EVENT_SUBMIT, 3), head(host.rings[2]))
+        assertEquals(NveAbi.EVENT_FOCUS, head(host.rings[3])[2])
+        assertEquals(NveAbi.EVENT_BLUR, head(host.rings[4])[2])
+        assertEquals(listOf(1, 0x1000004, NveAbi.EVENT_SCROLL, 2), head(host.rings[5]))
         assertEquals(listOf(0x1000004.toFloat(), 0f, 12f), host.scrolls.single(), "native scroll syncs runtime offsets")
     }
 
@@ -132,7 +134,7 @@ class NveSurfaceControllerTest {
     fun measurerAndCloseReachTheHost() {
         val host = FakeRuntimeHost(scene())
         val c = NveSurfaceController(host)
-        val m = NativeRuntime.TextMeasurer { _, _, _, _, out -> out[0] = 1f; out[1] = 1f; true }
+        val m = NativeRuntime.TextMeasurer { _, _, _, _, out -> out[0] = 1f; out[1] = 1f }
         c.setTextMeasurer(m)
         assertEquals(m, host.measurer)
         c.setTextMeasurer(null)
