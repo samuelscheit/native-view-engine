@@ -7,7 +7,7 @@ use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::{use_theme, Layer};
 
 /// Visual severity for a toast item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -266,7 +266,7 @@ pub fn use_toast() -> ToastController {
 /// Renders active toasts from the nearest [`ToastProvider`] with live-region semantics.
 #[component]
 pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut ctrl = use_toast();
     let items = ctrl.items();
 
@@ -280,14 +280,14 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
         .flex_col()
         .gap(theme.spacing.sm)
         .padding(theme.spacing.md)
-        .z_index(1100)
+        .z_index(Layer::Toast.z())
         .finish();
 
     let body_col_style = TypedStyle::new().flex_col().gap(2.0);
     let title_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.sm,
+            color: theme.text.primary,
+            font_size: theme.typography.ui.size,
             font_weight: "600",
             text_align: "left",
             opacity: 1.0,
@@ -295,8 +295,8 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
         .finish();
     let desc_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_secondary,
-            font_size: theme.typography.xs,
+            color: theme.text.secondary,
+            font_size: theme.typography.caption.size,
             font_weight: "400",
             text_align: "left",
             opacity: 1.0,
@@ -305,18 +305,18 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
     let dismiss_style = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
         .surface(TypedSurfaceStyle {
-            background: colors.surface_subtle,
+            background: theme.surface.subtle,
             border_width: 1.0,
-            border_color: colors.border,
-            border_radius: theme.radii.sm,
+            border_color: theme.border.default,
+            border_radius: theme.radius.sm,
             opacity: 1.0,
             box_shadow: "none",
         })
         .finish();
     let dismiss_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.xs,
+            color: theme.text.primary,
+            font_size: theme.typography.caption.size,
             font_weight: "600",
             text_align: "center",
             opacity: 1.0,
@@ -326,10 +326,10 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
     let mut rendered = Vec::with_capacity(items.len());
     for item in items {
         let accent = match item.variant {
-            ToastVariant::Info => colors.accent,
-            ToastVariant::Success => colors.success,
-            ToastVariant::Warning => colors.warning,
-            ToastVariant::Danger => colors.danger,
+            ToastVariant::Info => theme.status.accent.solid,
+            ToastVariant::Success => theme.status.success.solid,
+            ToastVariant::Warning => theme.status.warning.solid,
+            ToastVariant::Danger => theme.status.danger.solid,
         };
 
         let card_style = TypedStyleBuilder::new()
@@ -339,12 +339,12 @@ pub fn ToastViewport(#[props(default)] test_id: Option<String>) -> Element {
             .padding(theme.spacing.md)
             .gap(theme.spacing.md)
             .surface(TypedSurfaceStyle {
-                background: colors.surface_elevated,
+                background: theme.surface.overlay,
                 border_width: 2.0,
                 border_color: accent,
-                border_radius: theme.radii.md,
+                border_radius: theme.radius.md,
                 opacity: 1.0,
-                box_shadow: theme.elevation_shadow(),
+                box_shadow: theme.elevation.overlay,
             })
             .finish();
 

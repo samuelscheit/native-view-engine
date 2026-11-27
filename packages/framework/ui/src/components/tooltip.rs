@@ -10,7 +10,7 @@ use nve_dioxus::prelude::*;
 use crate::components::overlays::resolve_anchored_position;
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::{use_theme, Layer};
 
 /// Accessible tooltip (`accessibilityRole="tooltip"`, `aria-expanded`, `aria-describedby`,
 /// `Escape` dismiss) with optional anchored collision-flipping via [`crate::positioning::compute_overlay_position`].
@@ -28,7 +28,7 @@ pub fn Tooltip(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut internal_open = use_signal(|| false);
     let is_open = match open {
         Some(v) => v,
@@ -56,18 +56,18 @@ pub fn Tooltip(
 
     let mut tip_builder = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
-        .z_index(950)
+        .z_index(Layer::Tooltip.z())
         .surface(TypedSurfaceStyle {
-            background: colors.text_primary,
+            background: theme.text.primary,
             border_width: if theme.is_high_contrast() { 1.0 } else { 0.0 },
             border_color: if theme.is_high_contrast() {
-                colors.border
+                theme.border.default
             } else {
                 ColorRgba::TRANSPARENT
             },
-            border_radius: theme.radii.sm,
+            border_radius: theme.radius.sm,
             opacity: 1.0,
-            box_shadow: theme.elevation_shadow(),
+            box_shadow: theme.elevation.overlay,
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
@@ -89,8 +89,8 @@ pub fn Tooltip(
 
     let tip_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.surface,
-            font_size: theme.typography.xs,
+            color: theme.surface.base,
+            font_size: theme.typography.caption.size,
             font_weight: "500",
             text_align: "left",
             opacity: 1.0,

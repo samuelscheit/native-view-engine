@@ -7,7 +7,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::{use_theme, Layer};
 
 const EPS: f32 = 1e-4;
 
@@ -400,7 +400,7 @@ pub fn BottomSheet(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut handle_focused = use_signal(|| false);
     let mut inner_scroll_top = use_signal(|| 0.0f32);
     let mut state = use_signal(|| {
@@ -448,9 +448,9 @@ pub fn BottomSheet(
         .flex_col()
         .justify_content(FlexJustify::FlexEnd)
         .align_items(FlexAlign::Stretch)
-        .z_index(1000)
+        .z_index(Layer::Modal.z())
         .surface(TypedSurfaceStyle {
-            background: theme.backdrop_scrim_rgba(),
+            background: theme.scrim,
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
@@ -465,14 +465,14 @@ pub fn BottomSheet(
         .flex_col()
         .padding(theme.spacing.lg)
         .gap(theme.spacing.md)
-        .z_index(1001)
+        .z_index(Layer::Modal.z() + 1)
         .surface(TypedSurfaceStyle {
-            background: colors.surface_elevated,
+            background: theme.surface.overlay,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: colors.border,
-            border_radius: theme.radii.lg,
+            border_color: theme.border.default,
+            border_radius: theme.radius.lg,
             opacity: 1.0,
-            box_shadow: theme.elevation_shadow(),
+            box_shadow: theme.elevation.overlay,
         })
         .finish();
 
@@ -488,13 +488,13 @@ pub fn BottomSheet(
         .height_px(4.0)
         .surface(TypedSurfaceStyle {
             background: if handle_focused() {
-                colors.border_focus
+                theme.border.focus
             } else {
-                colors.border
+                theme.border.default
             },
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
-            border_radius: theme.radii.full,
+            border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -502,8 +502,8 @@ pub fn BottomSheet(
 
     let title_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.lg,
+            color: theme.text.primary,
+            font_size: theme.typography.title.size,
             font_weight: "700",
             text_align: "left",
             opacity: 1.0,

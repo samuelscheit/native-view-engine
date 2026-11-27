@@ -6,7 +6,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 /// Accessible text input with optional label, helper/error text (`aria-describedby`),
 /// `secure`, `multiline`, `read_only`, `disabled`, and explicit focus/error ring styling.
@@ -35,7 +35,7 @@ pub fn Input(
     #[props(default)] accessibility_role: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
 
     let base_id = id
@@ -53,19 +53,19 @@ pub fn Input(
 
     let has_error = error.is_some();
     let (border_width, border_color) = if has_error {
-        (2.0, colors.danger)
+        (2.0, theme.status.danger.solid)
     } else if focused() && !disabled {
-        (2.0, colors.border_focus)
+        (2.0, theme.border.focus)
     } else {
         (
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            colors.border,
+            theme.border.strong,
         )
     };
     let field_bg = if disabled || read_only {
-        colors.surface_subtle
+        theme.surface.subtle
     } else {
-        colors.surface
+        theme.surface.base
     };
 
     let wrapper_style = TypedStyleBuilder::new()
@@ -82,13 +82,13 @@ pub fn Input(
             background: field_bg,
             border_width,
             border_color,
-            border_radius: theme.radii.md,
+            border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: "none",
         })
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "400",
             text_align: "left",
             opacity: if disabled { 0.55 } else { 1.0 },
@@ -97,8 +97,8 @@ pub fn Input(
 
     let label_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.sm,
+            color: theme.text.primary,
+            font_size: theme.typography.ui.size,
             font_weight: "600",
             text_align: "left",
             opacity: if disabled { 0.6 } else { 1.0 },
@@ -108,11 +108,11 @@ pub fn Input(
     let desc_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
             color: if has_error {
-                colors.danger
+                theme.status.danger.solid
             } else {
-                colors.text_muted
+                theme.text.tertiary
             },
-            font_size: theme.typography.xs,
+            font_size: theme.typography.caption.size,
             font_weight: if has_error { "500" } else { "400" },
             text_align: "left",
             opacity: 1.0,
@@ -204,7 +204,7 @@ pub fn Checkbox(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
 
     let aria_checked = if indeterminate {
@@ -224,7 +224,7 @@ pub fn Checkbox(
             background: ColorRgba::TRANSPARENT,
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
-            border_radius: theme.radii.sm,
+            border_radius: theme.radius.sm,
             opacity: if disabled { 0.5 } else { 1.0 },
             box_shadow: "none",
         })
@@ -233,20 +233,20 @@ pub fn Checkbox(
     let (box_bg, box_bw, box_bc) = if focused() && !disabled {
         (
             if active_fill {
-                colors.accent
+                theme.status.accent.solid
             } else {
-                colors.surface
+                theme.surface.base
             },
             2.0,
-            colors.border_focus,
+            theme.border.focus,
         )
     } else if active_fill {
-        (colors.accent, 1.0, colors.accent)
+        (theme.status.accent.solid, 1.0, theme.status.accent.solid)
     } else {
         (
-            colors.surface,
+            theme.surface.base,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            colors.border,
+            theme.border.strong,
         )
     };
 
@@ -259,7 +259,7 @@ pub fn Checkbox(
             background: box_bg,
             border_width: box_bw,
             border_color: box_bc,
-            border_radius: theme.radii.sm,
+            border_radius: theme.radius.sm,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -267,8 +267,8 @@ pub fn Checkbox(
 
     let mark_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.accent_fg,
-            font_size: theme.typography.sm,
+            color: theme.status.accent.on_solid,
+            font_size: theme.typography.ui.size,
             font_weight: "700",
             text_align: "center",
             opacity: 1.0,
@@ -277,8 +277,8 @@ pub fn Checkbox(
 
     let lbl_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "400",
             text_align: "left",
             opacity: 1.0,
@@ -347,7 +347,7 @@ pub fn Switch(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
 
     let aria_checked = if checked { "true" } else { "false" };
@@ -360,7 +360,7 @@ pub fn Switch(
             background: ColorRgba::TRANSPARENT,
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
-            border_radius: theme.radii.sm,
+            border_radius: theme.radius.sm,
             opacity: if disabled { 0.5 } else { 1.0 },
             box_shadow: "none",
         })
@@ -368,14 +368,14 @@ pub fn Switch(
 
     let (track_bg, track_bw, track_bc) = if focused() && !disabled {
         (
-            if checked { colors.accent } else { colors.border },
+            if checked { theme.status.accent.solid } else { theme.border.strong },
             2.0,
-            colors.border_focus,
+            theme.border.focus,
         )
     } else if checked {
-        (colors.accent, 1.0, colors.accent)
+        (theme.status.accent.solid, 1.0, theme.status.accent.solid)
     } else {
-        (colors.border, 1.0, colors.border)
+        (theme.border.strong, 1.0, theme.border.strong)
     };
 
     let track_style = TypedStyleBuilder::new()
@@ -393,7 +393,7 @@ pub fn Switch(
             background: track_bg,
             border_width: track_bw,
             border_color: track_bc,
-            border_radius: theme.radii.full,
+            border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -404,13 +404,13 @@ pub fn Switch(
         .height_px(18.0)
         .surface(TypedSurfaceStyle {
             background: if checked {
-                colors.accent_fg
+                theme.status.accent.on_solid
             } else {
-                colors.surface
+                theme.surface.base
             },
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
-            border_radius: theme.radii.full,
+            border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -418,8 +418,8 @@ pub fn Switch(
 
     let lbl_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "400",
             text_align: "left",
             opacity: 1.0,

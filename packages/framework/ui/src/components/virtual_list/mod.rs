@@ -17,7 +17,7 @@ use nve_abi::{ColorRgba, FlexAlign};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 use engine::{clamp_scroll, sanitize_extent};
 use state::compute_handle_key;
 
@@ -58,7 +58,7 @@ pub fn VirtualList(
     #[props(default)] accessibility_label: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let sanitized_vp = sanitize_extent(f64::from(viewport_height));
 
     let mut view_state = use_signal(|| {
@@ -142,13 +142,13 @@ pub fn VirtualList(
                 .align_items(FlexAlign::Center)
                 .surface(TypedSurfaceStyle {
                     background: if is_selected {
-                        colors.surface_subtle
+                        theme.surface.subtle
                     } else {
                         ColorRgba::TRANSPARENT
                     },
                     border_width: if is_selected { 1.0 } else { 0.0 },
                     border_color: if is_selected {
-                        colors.border_focus
+                        theme.border.focus
                     } else {
                         ColorRgba::TRANSPARENT
                     },
@@ -189,10 +189,10 @@ pub fn VirtualList(
         .flex_col()
         .overflow("hidden")
         .surface(TypedSurfaceStyle {
-            background: colors.surface,
+            background: theme.surface.base,
             border_width: 1.0,
-            border_color: colors.border,
-            border_radius: theme.radii.md,
+            border_color: theme.border.default,
+            border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: "none",
         })

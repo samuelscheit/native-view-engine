@@ -11,7 +11,7 @@ use crate::components::overlays::resolve_anchored_position;
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::{use_theme, Layer};
 
 /// Item entry rendered inside [`DropdownMenu`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub fn DropdownMenu(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut trigger_focused = use_signal(|| false);
 
     let entries: Vec<FocusableEntry> = items
@@ -145,14 +145,14 @@ pub fn DropdownMenu(
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
         .surface(TypedSurfaceStyle {
-            background: colors.surface,
+            background: theme.surface.base,
             border_width: if trigger_focused() { 2.0 } else { 1.0 },
             border_color: if trigger_focused() {
-                colors.border_focus
+                theme.border.focus
             } else {
-                colors.border
+                theme.border.default
             },
-            border_radius: theme.radii.md,
+            border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -160,8 +160,8 @@ pub fn DropdownMenu(
 
     let trigger_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "500",
             text_align: "center",
             opacity: 1.0,
@@ -173,14 +173,14 @@ pub fn DropdownMenu(
         .min_width_px(180.0)
         .padding(theme.spacing.xs)
         .gap(2.0)
-        .z_index(920)
+        .z_index(Layer::Popover.z())
         .surface(TypedSurfaceStyle {
-            background: colors.surface_elevated,
+            background: theme.surface.overlay,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: colors.border,
-            border_radius: theme.radii.md,
+            border_color: theme.border.default,
+            border_radius: theme.radius.md,
             opacity: 1.0,
-            box_shadow: theme.elevation_shadow(),
+            box_shadow: theme.elevation.overlay,
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
@@ -210,19 +210,19 @@ pub fn DropdownMenu(
         let item_test_id = format!("{base_id}-item-{}", item.id);
 
         let bg = if is_active {
-            colors.surface_subtle
+            theme.surface.subtle
         } else {
             ColorRgba::TRANSPARENT
         };
         let bc = if is_active {
-            colors.border_focus
+            theme.border.focus
         } else {
             ColorRgba::TRANSPARENT
         };
         let fg = if item.destructive {
-            colors.danger
+            theme.status.danger.solid
         } else {
-            colors.text_primary
+            theme.text.primary
         };
 
         let item_style = TypedStyleBuilder::new()
@@ -234,7 +234,7 @@ pub fn DropdownMenu(
                 background: bg,
                 border_width: if is_active { 1.0 } else { 0.0 },
                 border_color: bc,
-                border_radius: theme.radii.sm,
+                border_radius: theme.radius.sm,
                 opacity: if item.disabled { 0.45 } else { 1.0 },
                 box_shadow: "none",
             })
@@ -243,7 +243,7 @@ pub fn DropdownMenu(
         let item_text_style = TypedStyleBuilder::new()
             .text_style(TypedTextStyle {
                 color: fg,
-                font_size: theme.typography.sm,
+                font_size: theme.typography.ui.size,
                 font_weight: if is_active { "600" } else { "400" },
                 text_align: "left",
                 opacity: 1.0,

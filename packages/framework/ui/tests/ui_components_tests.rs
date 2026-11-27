@@ -8,11 +8,23 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::UiHarness;
-use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
 use nve_interop::{ColorScheme, ContrastLevel, ThemeContext};
 use nve_ui::prelude::*;
 use nve_ui::{Orientation, UiDensity};
+
+fn island_theme() -> Theme {
+    Theme::from_theme_context(
+        &ThemeContext {
+            color_scheme: None,
+            contrast: ContrastLevel::Standard,
+            accent_rgba: 0x10B9_81FF,
+            tokens: BTreeMap::new(),
+        },
+        ColorScheme::Dark,
+        AppBrand::Default,
+    )
+}
 
 #[component]
 fn LayoutActionsThemeApp() -> Element {
@@ -22,20 +34,11 @@ fn LayoutActionsThemeApp() -> Element {
     let mut presses = use_signal(|| 0u32);
 
     let theme = match mode() {
-        0 => UiTheme::light(),
-        1 => UiTheme::dark(),
-        2 => UiTheme::high_contrast_light(),
-        3 => UiTheme::high_contrast_dark().with_density(UiDensity::Compact),
-        _ => {
-            let mut tokens = BTreeMap::new();
-            tokens.insert("surface_elevated".into(), "#102a43".into());
-            UiTheme::from_theme_context(&ThemeContext {
-                color_scheme: Some(ColorScheme::Dark),
-                contrast: ContrastLevel::Standard,
-                accent_rgba: 0x10B9_81FF,
-                tokens,
-            })
-        }
+        0 => Theme::LIGHT,
+        1 => Theme::DARK,
+        2 => Theme::HIGH_CONTRAST_LIGHT,
+        3 => Theme::HIGH_CONTRAST_DARK.with_density(UiDensity::Compact),
+        _ => island_theme(),
     };
 
     rsx! {
@@ -151,17 +154,19 @@ fn layout_actions_theme_switching_and_explicit_style_resets() {
     assert!((h.opacity(btn) - 1.0).abs() < 1e-3);
 
     // Theme switching: light -> dark -> high_contrast_light -> high_contrast_dark -> ThemeContext.
-    assert_eq!(h.bg(card_el), ColorRgba::rgb(0xf8, 0xfa, 0xfc));
+    assert_eq!(h.bg(card_el), Theme::LIGHT.surface.raised);
     h.press("cycle-theme");
-    assert_eq!(h.bg(card_el), ColorRgba::rgb(0x1e, 0x29, 0x3b));
+    assert_eq!(h.bg(card_el), Theme::DARK.surface.raised);
     h.press("cycle-theme");
     assert_eq!(h.border_width(card_el), 2.0);
     assert_eq!(h.raw_str(card_el, "box-shadow"), Some("none"));
     h.press("cycle-theme");
-    assert_eq!(h.bg(card_el), ColorRgba::rgb(0x0a, 0x0a, 0x0a));
+    assert_eq!(h.bg(card_el), Theme::HIGH_CONTRAST_DARK.surface.raised);
     h.press("cycle-theme");
-    assert_eq!(h.bg(card_el), ColorRgba::rgb(0x10, 0x2a, 0x43));
-    assert_eq!(h.bg(btn), ColorRgba::rgb(0x10, 0xb9, 0x81));
+    // ThemeContext with `color_scheme: None` follows the OS (dark) and applies the island accent.
+    assert_eq!(h.bg(card_el), Theme::DARK.surface.raised);
+    assert_eq!(h.bg(btn), island_theme().status.accent.solid);
+    assert_ne!(island_theme().status.accent.solid, Theme::DARK.status.accent.solid);
 }
 
 #[component]
@@ -176,7 +181,7 @@ fn FormsApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 padding: 12.0,
                 Input {
@@ -273,7 +278,7 @@ fn NavigationAndOverlaysApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::dark(),
+            theme: Theme::DARK,
             ToastProvider {
                 test_id: "toasts",
                 Col {
@@ -467,7 +472,7 @@ fn VirtualList100kApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 VirtualList {
                     test_id: "vlist", heights: heights, viewport_height: 300.0,

@@ -9,7 +9,7 @@ use nve_i18n::{CalendarDate, NameWidth};
 use crate::components::date_picker_grid::CalendarMonthGrid;
 use crate::positioning::ComputedPosition;
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::{UiPaletteRgba, UiTheme};
+use crate::theme::{Layer, Theme};
 
 pub(crate) const DEFAULT_FALLBACK_DATE: CalendarDate = CalendarDate {
     year: 2026,
@@ -39,8 +39,7 @@ pub(crate) fn render_calendar_dialog(
     grid: &CalendarMonthGrid,
     weekday_width: NameWidth,
     computed: Option<ComputedPosition>,
-    theme: &UiTheme,
-    colors: UiPaletteRgba,
+    theme: &Theme,
     disabled: bool,
     cb: CalendarCallbacks,
 ) -> Element {
@@ -55,14 +54,14 @@ pub(crate) fn render_calendar_dialog(
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
         .min_width_px(280.0)
-        .z_index(940)
+        .z_index(Layer::Popover.z())
         .surface(TypedSurfaceStyle {
-            background: colors.surface_elevated,
+            background: theme.surface.overlay,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: colors.border,
-            border_radius: theme.radii.lg,
+            border_color: theme.border.default,
+            border_radius: theme.radius.lg,
             opacity: 1.0,
-            box_shadow: theme.elevation_shadow(),
+            box_shadow: theme.elevation.overlay,
         });
     if let Some(pos) = computed {
         if let Some(mw) = pos.max_width {
@@ -86,18 +85,18 @@ pub(crate) fn render_calendar_dialog(
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
         .surface(TypedSurfaceStyle {
-            background: colors.surface,
+            background: theme.surface.base,
             border_width: 1.0,
-            border_color: colors.border,
-            border_radius: theme.radii.sm,
+            border_color: theme.border.default,
+            border_radius: theme.radius.sm,
             opacity: if disabled { 0.45 } else { 1.0 },
             box_shadow: "none",
         })
         .finish();
     let nav_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.sm,
+            color: theme.text.primary,
+            font_size: theme.typography.ui.size,
             font_weight: "600",
             text_align: "center",
             opacity: 1.0,
@@ -105,8 +104,8 @@ pub(crate) fn render_calendar_dialog(
         .finish();
     let title_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "600",
             text_align: "center",
             opacity: 1.0,
@@ -126,8 +125,8 @@ pub(crate) fn render_calendar_dialog(
         .finish();
     let weekday_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_muted,
-            font_size: theme.typography.xs,
+            color: theme.text.tertiary,
+            font_size: theme.typography.caption.size,
             font_weight: "600",
             text_align: "center",
             opacity: 1.0,
@@ -166,23 +165,23 @@ pub(crate) fn render_calendar_dialog(
                     let cell_disabled = disabled || cell.is_disabled;
                     let is_endpoint = cell.is_selected || cell.is_range_start || cell.is_range_end;
                     let bg = if is_endpoint {
-                        colors.accent
+                        theme.status.accent.solid
                     } else if cell.is_in_range {
-                        colors.surface_subtle
+                        theme.surface.subtle
                     } else {
                         ColorRgba::TRANSPARENT
                     };
                     let fg = if is_endpoint {
-                        colors.accent_fg
+                        theme.status.accent.on_solid
                     } else if cell_disabled || !cell.in_current_month {
-                        colors.text_muted
+                        theme.text.tertiary
                     } else {
-                        colors.text_primary
+                        theme.text.primary
                     };
                     let (border_w, border_col) = if cell.is_focused {
-                        (2.0, colors.border_focus)
+                        (2.0, theme.border.focus)
                     } else if cell.is_today {
-                        (1.0, colors.accent)
+                        (1.0, theme.status.accent.solid)
                     } else {
                         (0.0, ColorRgba::TRANSPARENT)
                     };
@@ -195,7 +194,7 @@ pub(crate) fn render_calendar_dialog(
                             background: bg,
                             border_width: border_w,
                             border_color: border_col,
-                            border_radius: theme.radii.sm,
+                            border_radius: theme.radius.sm,
                             opacity: if cell_disabled {
                                 0.35
                             } else if !cell.in_current_month {
@@ -209,7 +208,7 @@ pub(crate) fn render_calendar_dialog(
                     let cell_text_style = TypedStyleBuilder::new()
                         .text_style(TypedTextStyle {
                             color: fg,
-                            font_size: theme.typography.sm,
+                            font_size: theme.typography.ui.size,
                             font_weight: if is_endpoint || cell.is_today { "600" } else { "400" },
                             text_align: "center",
                             opacity: 1.0,
@@ -360,8 +359,7 @@ pub(crate) fn render_calendar_dialog(
 }
 
 pub(crate) fn build_trigger_styles(
-    theme: &UiTheme,
-    colors: UiPaletteRgba,
+    theme: &Theme,
     focused: bool,
     disabled: bool,
     has_value: bool,
@@ -369,8 +367,8 @@ pub(crate) fn build_trigger_styles(
     let wrap_style = TypedStyleBuilder::new().flex_col().gap(theme.spacing.xs).finish();
     let label_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.sm,
+            color: theme.text.primary,
+            font_size: theme.typography.ui.size,
             font_weight: "600",
             text_align: "left",
             opacity: 1.0,
@@ -383,18 +381,18 @@ pub(crate) fn build_trigger_styles(
         .min_height_px(38.0)
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .surface(TypedSurfaceStyle {
-            background: if disabled { colors.surface_subtle } else { colors.surface },
+            background: if disabled { theme.surface.subtle } else { theme.surface.base },
             border_width: if focused && !disabled { 2.0 } else { 1.0 },
-            border_color: if focused && !disabled { colors.border_focus } else { colors.border },
-            border_radius: theme.radii.md,
+            border_color: if focused && !disabled { theme.border.focus } else { theme.border.strong },
+            border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: "none",
         })
         .finish();
     let trigger_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: if has_value { colors.text_primary } else { colors.text_muted },
-            font_size: theme.typography.md,
+            color: if has_value { theme.text.primary } else { theme.text.tertiary },
+            font_size: theme.typography.body.size,
             font_weight: "400",
             text_align: "left",
             opacity: if disabled { 0.55 } else { 1.0 },

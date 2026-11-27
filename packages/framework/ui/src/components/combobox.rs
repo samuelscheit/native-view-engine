@@ -11,7 +11,7 @@ pub use crate::components::combobox_state::{
     default_combobox_filter, ComboboxAction, ComboboxOption, ComboboxState,
 };
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::{use_theme, Layer};
 
 /// Accessible searchable single-select & multi-select combobox component with `role="combobox"`,
 /// `aria-expanded`, `aria-activedescendant`, `role="listbox"`, and `role="option"`.
@@ -32,7 +32,7 @@ pub fn Combobox(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
     let mut state = use_signal(|| {
         let mut s = ComboboxState::new(options.clone(), multi).with_selected(selected.clone());
@@ -81,23 +81,23 @@ pub fn Combobox(
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .surface(TypedSurfaceStyle {
             background: if disabled {
-                colors.surface_subtle
+                theme.surface.subtle
             } else {
-                colors.surface
+                theme.surface.base
             },
             border_width: if focused() && !disabled { 2.0 } else { 1.0 },
             border_color: if focused() && !disabled {
-                colors.border_focus
+                theme.border.focus
             } else {
-                colors.border
+                theme.border.strong
             },
-            border_radius: theme.radii.md,
+            border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: "none",
         })
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "400",
             text_align: "left",
             opacity: if disabled { 0.55 } else { 1.0 },
@@ -108,21 +108,21 @@ pub fn Combobox(
         .flex_col()
         .padding(theme.spacing.xs)
         .gap(2.0)
-        .z_index(930)
+        .z_index(Layer::Popover.z())
         .surface(TypedSurfaceStyle {
-            background: colors.surface_elevated,
+            background: theme.surface.overlay,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: colors.border,
-            border_radius: theme.radii.md,
+            border_color: theme.border.default,
+            border_radius: theme.radius.md,
             opacity: 1.0,
-            box_shadow: theme.elevation_shadow(),
+            box_shadow: theme.elevation.overlay,
         })
         .finish();
 
     let label_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.sm,
+            color: theme.text.primary,
+            font_size: theme.typography.ui.size,
             font_weight: "600",
             text_align: "left",
             opacity: 1.0,
@@ -132,8 +132,8 @@ pub fn Combobox(
     let muted_style = TypedStyleBuilder::new()
         .padding_xy(theme.spacing.md, theme.spacing.sm)
         .text_style(TypedTextStyle {
-            color: colors.text_muted,
-            font_size: theme.typography.sm,
+            color: theme.text.tertiary,
+            font_size: theme.typography.ui.size,
             font_weight: "400",
             text_align: "left",
             opacity: 1.0,
@@ -151,10 +151,10 @@ pub fn Combobox(
         .align_items(FlexAlign::Center)
         .padding_xy(theme.spacing.sm, theme.spacing.xs)
         .surface(TypedSurfaceStyle {
-            background: colors.surface_subtle,
+            background: theme.surface.subtle,
             border_width: 1.0,
-            border_color: colors.border,
-            border_radius: theme.radii.full,
+            border_color: theme.border.default,
+            border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -162,8 +162,8 @@ pub fn Combobox(
 
     let tag_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.xs,
+            color: theme.text.primary,
+            font_size: theme.typography.caption.size,
             font_weight: "500",
             text_align: "left",
             opacity: 1.0,
@@ -225,17 +225,17 @@ pub fn Combobox(
                 .padding_xy(theme.spacing.md, theme.spacing.sm)
                 .surface(TypedSurfaceStyle {
                     background: if is_hl {
-                        colors.surface_subtle
+                        theme.surface.subtle
                     } else {
                         ColorRgba::TRANSPARENT
                     },
                     border_width: if is_hl { 1.0 } else { 0.0 },
                     border_color: if is_hl {
-                        colors.border_focus
+                        theme.border.focus
                     } else {
                         ColorRgba::TRANSPARENT
                     },
-                    border_radius: theme.radii.sm,
+                    border_radius: theme.radius.sm,
                     opacity: if opt_disabled { 0.45 } else { 1.0 },
                     box_shadow: "none",
                 })
@@ -244,11 +244,11 @@ pub fn Combobox(
             let opt_text_style = TypedStyleBuilder::new()
                 .text_style(TypedTextStyle {
                     color: if is_sel {
-                        colors.accent
+                        theme.status.accent.solid
                     } else {
-                        colors.text_primary
+                        theme.text.primary
                     },
-                    font_size: theme.typography.sm,
+                    font_size: theme.typography.ui.size,
                     font_weight: if is_sel || is_hl { "600" } else { "400" },
                     text_align: "left",
                     opacity: 1.0,

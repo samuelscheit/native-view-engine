@@ -10,7 +10,7 @@ use nve_dioxus::prelude::*;
 
 use crate::focus::Orientation;
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 /// Size constraint expressed either in logical pixels or as a fraction (`0.0..=1.0`) of the
 /// usable split axis.
@@ -379,7 +379,7 @@ pub fn SplitPane(
     primary: Element,
     secondary: Element,
 ) -> Element {
-    let (_theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut divider_focused = use_signal(|| false);
     let mut state = use_signal(|| {
         let mut s = SplitPaneState::new(orientation, container_size, initial_ratio)
@@ -480,12 +480,12 @@ pub fn SplitPane(
         .align_items(FlexAlign::Center)
         .surface(TypedSurfaceStyle {
             background: if divider_focused() {
-                colors.border_focus
+                theme.border.focus
             } else {
-                colors.border
+                theme.border.default
             },
             border_width: 0.0,
-            border_color: colors.border,
+            border_color: theme.border.default,
             border_radius: 0.0,
             opacity: 1.0,
             box_shadow: "none",

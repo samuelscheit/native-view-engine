@@ -27,7 +27,7 @@ fn AnchoredOverlaysApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 padding: 8.0,
                 gap: 8.0,
@@ -199,7 +199,7 @@ fn ComboboxApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 padding: 12.0,
                 gap: 8.0,
@@ -341,7 +341,7 @@ fn SplitPaneApp() -> Element {
     let mut last_ratio = use_signal(|| 0.5f32);
     rsx! {
         ThemeProvider {
-            theme: UiTheme::dark(),
+            theme: Theme::DARK,
             SplitPane {
                 test_id: "sp",
                 orientation: Orientation::Horizontal,
@@ -494,7 +494,7 @@ fn BottomSheetApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 BottomSheet {
                     test_id: "sheet",

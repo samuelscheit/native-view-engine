@@ -55,7 +55,7 @@ fn NativeWebPrimitivesShowcase() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 padding: 16.0, gap: 12.0,
                 Dialog {
@@ -232,7 +232,7 @@ fn InteractiveDisclosureAndFormApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 padding: 12.0, gap: 10.0,
                 Accordion {

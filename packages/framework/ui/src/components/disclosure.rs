@@ -8,7 +8,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 /// Physics-backed disclosure animation state using [`SpringSpec`] for native hosts while Web
 /// delegates zero-JS expand/collapse directly to `<details>` / `<summary>`.
@@ -93,7 +93,7 @@ pub fn Disclosure(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut internal_open = use_signal(|| default_open);
     let mut spring = use_signal(|| DisclosureSpring::new(open.unwrap_or(default_open)));
     let mut focused = use_signal(|| false);
@@ -116,10 +116,10 @@ pub fn Disclosure(
         .flex_col()
         .width_pct(100.0)
         .surface(TypedSurfaceStyle {
-            background: colors.surface,
+            background: theme.surface.base,
             border_width: if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            border_color: colors.border,
-            border_radius: theme.radii.md,
+            border_color: theme.border.default,
+            border_radius: theme.radius.md,
             opacity: if disabled { 0.55 } else { 1.0 },
             box_shadow: "none",
         })
@@ -134,11 +134,11 @@ pub fn Disclosure(
             background: ColorRgba::TRANSPARENT,
             border_width: if focused() && !disabled { 2.0 } else { 0.0 },
             border_color: if focused() && !disabled {
-                colors.border_focus
+                theme.border.focus
             } else {
                 ColorRgba::TRANSPARENT
             },
-            border_radius: theme.radii.md,
+            border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -146,8 +146,8 @@ pub fn Disclosure(
 
     let summary_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_primary,
-            font_size: theme.typography.md,
+            color: theme.text.primary,
+            font_size: theme.typography.body.size,
             font_weight: "600",
             text_align: "left",
             opacity: 1.0,
@@ -269,7 +269,7 @@ pub fn Accordion(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut open_ids = use_signal(|| {
         default_open_id
             .clone()
@@ -292,8 +292,8 @@ pub fn Accordion(
 
     let body_text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_secondary,
-            font_size: theme.typography.sm,
+            color: theme.text.secondary,
+            font_size: theme.typography.ui.size,
             font_weight: "400",
             text_align: "left",
             opacity: 1.0,

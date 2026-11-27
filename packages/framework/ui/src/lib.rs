@@ -73,9 +73,13 @@ pub use style_buf::{
     parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,
     TypedTextStyle,
 };
+pub use nve_interop::traits::UiDensity;
 pub use theme::{
-    rgba_to_hex, use_theme, use_theme_rgba, use_theme_signal, RadiiScale, SpacingScale,
-    ThemeProvider, TypographyScale, UiDensity, UiPalette, UiPaletteRgba, UiTheme,
+    apca_contrast, composite, relative_luminance, use_theme, use_theme_signal, wcag_contrast,
+    with_alpha, Accent, AppBrand, Appearance, Border, Breakpoint, ColorHex, CubicBezier,
+    Elevation, FontStack, Hex, Layer, Motion, Oklch, Polarity, Radius, Scale, Spacing, Spring,
+    StateLayer, Status, Surface, Syntax, Text, Theme, ThemeConfig, ThemeMode, ThemeProvider, Tone,
+    TypeStyle, Typography,
 };
 
 pub mod prelude {
@@ -133,7 +137,7 @@ pub mod prelude {
         TypedTextStyle,
     };
     pub use crate::theme::{
-        rgba_to_hex, use_theme, use_theme_rgba, use_theme_signal, RadiiScale, SpacingScale,
-        ThemeProvider, TypographyScale, UiDensity, UiPalette, UiPaletteRgba, UiTheme,
+        use_theme, use_theme_signal, Accent, AppBrand, Appearance, ColorHex, Theme, ThemeConfig,
+        ThemeMode, ThemeProvider,
     };
 }

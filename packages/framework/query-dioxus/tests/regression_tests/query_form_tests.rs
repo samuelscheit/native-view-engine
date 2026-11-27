@@ -110,7 +110,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         let cur = active();
         rsx! {
             ThemeProvider {
-                theme: UiTheme::light(),
+                theme: Theme::LIGHT,
                 Form {
                     test_id: "multi-form".to_owned(),
                     controller: Some(cur),

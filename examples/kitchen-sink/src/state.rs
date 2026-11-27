@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use nve_components::SpringSpec;
 use nve_i18n::{CalendarDate, Currency, LocaleId};
-use nve_ui::{DateRange, UiDensity, UiTheme};
+use nve_ui::{DateRange, Theme, UiDensity};
 
 /// 16-byte self-documenting ASCII magic identifying a binary Kitchen Sink state payload.
 pub const KITCHEN_SINK_STATE_MAGIC: [u8; 16] = *b"NVE_KITCHEN_SINK";
@@ -177,7 +177,7 @@ impl DensityPreset {
     pub const fn to_ui_density(self) -> UiDensity {
         match self {
             Self::Compact => UiDensity::Compact,
-            Self::Comfortable => UiDensity::Normal,
+            Self::Comfortable => UiDensity::Comfortable,
             Self::Spacious => UiDensity::Spacious,
         }
     }
@@ -383,11 +383,11 @@ impl Default for KitchenSinkState {
 }
 
 impl KitchenSinkState {
-    /// Builds the active `UiTheme` for `ThemeProvider`.
-    pub fn build_theme(&self) -> UiTheme {
+    /// Builds the active [`Theme`] for `ThemeProvider`.
+    pub fn build_theme(&self) -> Theme {
         let base = match self.theme_mode {
-            ThemeMode::Dark => UiTheme::dark(),
-            ThemeMode::Light => UiTheme::light(),
+            ThemeMode::Dark => Theme::DARK,
+            ThemeMode::Light => Theme::LIGHT,
         };
         base.with_density(self.density.to_ui_density())
     }

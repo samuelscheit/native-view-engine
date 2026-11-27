@@ -1,10 +1,12 @@
 //! Deep unit & edge-case tests for `FocusScope`, `FocusTrap`, `RovingFocus`, `FenwickHeightTree`,
-//! `VirtualListState`, `UiTheme::from_theme_context`, `ToastQueue`, and `StyleBuf`.
+//! `VirtualListState`, `Theme::from_theme_context`, `ToastQueue`, and `StyleBuf`.
 
 use std::collections::BTreeMap;
 
+use nve_abi::ColorRgba;
 use nve_interop::{ColorScheme, ContrastLevel, ThemeContext};
 use nve_ui::prelude::*;
+use nve_ui::{wcag_contrast, Hex, Oklch};
 
 #[test]
 fn focus_trap_wrap_around_disabled_skipping_and_restore_edge_cases() {
@@ -686,19 +688,24 @@ fn variable_height_page_up_down_jumps_by_viewport_pixels_and_1m_rows_conserve_u6
 
 #[test]
 fn theme_context_bridge_toast_queue_and_style_buf_invariants() {
-    // ThemeContext with bright yellow accent picks dark foreground; dark purple picks white.
-    let mut bright_tokens = BTreeMap::new();
-    bright_tokens.insert("surface.bg".into(), "#fafafa".into());
-    let bright = UiTheme::from_theme_context(&ThemeContext {
-        color_scheme: Some(ColorScheme::Light),
-        contrast: ContrastLevel::High,
-        accent_rgba: 0xFACC_15FF,
-        tokens: bright_tokens,
-    });
-    assert_eq!(bright.palette.surface.as_ref(), "#fafafa");
-    assert_eq!(bright.palette.accent.as_ref(), "#facc15");
-    assert_eq!(bright.palette.accent_fg.as_ref(), "#0f172a");
-    assert_eq!(rgba_to_hex(0x1122_3380), "#11223380");
+    // ThemeContext accent override keeps the brand hue but forces a maximum-contrast
+    // high-contrast solid with an AAA foreground.
+    let bright = Theme::from_theme_context(
+        &ThemeContext {
+            color_scheme: Some(ColorScheme::Light),
+            contrast: ContrastLevel::High,
+            accent_rgba: 0xFACC_15FF,
+            tokens: BTreeMap::new(),
+        },
+        ColorScheme::Dark,
+        AppBrand::Default,
+    );
+    assert!(!bright.is_dark() && bright.is_high_contrast());
+    let hue = Oklch::from_srgb(bright.status.accent.solid).h;
+    assert!((80.0..115.0).contains(&hue), "yellow hue preserved, got {hue}");
+    assert!(wcag_contrast(bright.status.accent.on_solid, bright.status.accent.solid) >= 7.0);
+    assert_eq!(Hex(ColorRgba::rgba(0x11, 0x22, 0x33, 0x80)).to_string(), "#11223380");
+    assert_eq!(ColorRgba::rgb(0x09, 0x09, 0x0b).hex().to_string(), "#09090b");
 
     // ToastQueue max_visible eviction + tick expiration.
     let mut q = ToastQueue::new(2);

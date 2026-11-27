@@ -3,7 +3,7 @@
 
 use nve_dioxus::prelude::*;
 use nve_i18n::CalendarDate;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     use_theme, Badge, BadgeVariant, Card, CardVariant, Combobox, ComboboxOption, DatePicker,
     DateRange, DateRangePicker, Separator,
 };
@@ -36,7 +36,6 @@ fn engine_module_options() -> Vec<ComboboxOption> {
 #[component]
 pub fn SelectionSection(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
 
@@ -47,10 +46,10 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
         .unwrap_or_else(|| CalendarDate::new(2026, 11, 25).expect("valid static date"));
     let readout = compute_locale_readout(snap.locale, active_date, snap.counter);
 
-    let text_primary = p.text_primary.as_ref();
-    let text_muted = p.text_muted.as_ref();
-    let surface_subtle = p.surface_subtle.as_ref();
-    let border = p.border.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let surface_subtle = theme.surface.subtle.hex();
+    let border = theme.border.default.hex();
 
     let single_selected = if snap.combobox_single.is_empty() {
         Vec::new()

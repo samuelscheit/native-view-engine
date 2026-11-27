@@ -23,6 +23,7 @@ use nve_example_issues_api::{
 use nve_query::QueryOptions;
 use nve_query_dioxus::prelude::*;
 use nve_ui::prelude::*;
+use nve_ui::with_alpha;
 
 use crate::detail::IssueDetailPanel;
 use crate::panels::{FeaturedCommentsSection, WorkspaceStatsSection};
@@ -85,7 +86,7 @@ pub fn IssuesApp(
 ) -> Element {
     rsx! {
         ThemeProvider {
-            theme: UiTheme::dark(),
+            theme: Theme::DARK,
             QueryClientProvider {
                 client: client,
                 sleep: sleep,
@@ -102,7 +103,6 @@ pub fn IssuesApp(
 #[component]
 pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
     let mut active_tab = use_signal(|| FilterTab::All);
     let mut selected_id = use_signal(|| Option::<IssueId>::None);
     let mut status_banner = use_signal(|| Option::<String>::None);
@@ -127,12 +127,12 @@ pub fn IssuesWorkspace(#[props(default = IssueId(1))] featured_issue_id: IssueId
     let selected_issue = selected_id()
         .and_then(|id| issues_list.iter().find(|it| it.id == id).cloned());
 
-    let bg_hex = p.surface_subtle.as_ref();
-    let surface_hex = p.surface.as_ref();
-    let border_hex = p.border.as_ref();
-    let fg_hex = p.text_primary.as_ref();
-    let muted_hex = p.text_secondary.as_ref();
-    let danger_hex = p.danger.as_ref();
+    let bg_hex = theme.surface.subtle.hex();
+    let surface_hex = theme.surface.base.hex();
+    let border_hex = theme.border.default.hex();
+    let fg_hex = theme.text.primary.hex();
+    let muted_hex = theme.text.secondary.hex();
+    let danger_hex = theme.status.danger.text.hex();
 
     let count_label = if issues_list.len() == 1 {
         "1 issue".to_owned()
@@ -392,14 +392,14 @@ fn IssueRowItem(
     on_close: EventHandler<IssueId>,
 ) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
-    let fg_hex = p.text_primary.as_ref();
-    let muted_hex = p.text_secondary.as_ref();
+    let fg_hex = theme.text.primary.hex();
+    let muted_hex = theme.text.secondary.hex();
     let selected_bg = if is_selected {
-        p.surface_elevated.as_ref()
+        theme.state.selected
     } else {
-        "transparent"
-    };
+        with_alpha(theme.state.selected, 0)
+    }
+    .hex();
     let (badge_text, badge_variant) = state_badge(issue.state);
     let id = issue.id;
     let id_num = id.0;

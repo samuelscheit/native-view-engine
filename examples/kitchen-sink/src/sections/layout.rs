@@ -4,7 +4,7 @@
 
 use dioxus_core::Callback;
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     effective_bottom_inset, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
     Card, CardVariant, KeyboardAvoidingView, KeyboardInsets, Orientation, RowHeights, SplitBound,
     SplitPane, TabList, TabPanel, TabTrigger, TabsRoot, VirtualList,
@@ -19,7 +19,6 @@ const VIRTUAL_ROW_COUNT: usize = 1_000;
 #[component]
 pub fn LayoutSection(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
 
@@ -45,12 +44,12 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
         )
     };
 
-    let text_primary = p.text_primary.as_ref();
-    let text_secondary = p.text_secondary.as_ref();
-    let text_muted = p.text_muted.as_ref();
-    let surface_subtle = p.surface_subtle.as_ref();
-    let border = p.border.as_ref();
-    let accent = p.accent.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_secondary = theme.text.secondary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let surface_subtle = theme.surface.subtle.hex();
+    let border = theme.border.default.hex();
+    let accent = theme.status.accent.solid.hex();
 
     let kb_insets = KeyboardInsets {
         height: simulated_kb_px(),
@@ -229,9 +228,6 @@ pub fn LayoutSection(handle: AppHandle) -> Element {
                         initial_selected: selected_row(),
                         on_select: move |idx: usize| selected_row.set(Some(idx)),
                         render_row: Callback::new({
-                            let row_accent = row_accent.clone();
-                            let row_primary = row_primary.clone();
-                            let row_muted = row_muted.clone();
                             move |(idx, is_sel): (usize, bool)| {
                                 let row_h = match idx % 4 {
                                     0 => 38,

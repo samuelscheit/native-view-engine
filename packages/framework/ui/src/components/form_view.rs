@@ -19,7 +19,7 @@ use crate::components::actions::{Button, ButtonSize, ButtonVariant};
 use crate::components::forms::Input;
 use crate::form_draft::FormController;
 use crate::style_buf::{TypedStyleBuilder, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 /// HTTP submission method emitted on `<form method="...">`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,7 +93,7 @@ pub fn Form(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
 
     let has_external_ctrl = controller.is_some();
     let persist_key_init = persist_key.clone();
@@ -143,8 +143,8 @@ pub fn Form(
         .finish();
     let form_err_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.danger,
-            font_size: theme.typography.sm,
+            color: theme.status.danger.solid,
+            font_size: theme.typography.ui.size,
             font_weight: "500",
             text_align: "left",
             opacity: 1.0,

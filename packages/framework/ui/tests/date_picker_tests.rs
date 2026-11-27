@@ -355,7 +355,7 @@ fn DatePickerE2eApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 padding: 12.0,
                 gap: 12.0,

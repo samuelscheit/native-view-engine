@@ -10,7 +10,7 @@ pub use nve_dioxus::{
 
 use crate::components::{Button, ButtonSize, ButtonVariant, Card, CardVariant};
 use crate::style_buf::{TypedStyleBuilder, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 /// Theme-aware subtree [`ErrorBoundary`] isolating render `Result` errors and panics.
 ///
@@ -69,7 +69,7 @@ fn DefaultErrorFallbackView(
     reset: ErrorBoundaryReset,
     #[props(default)] test_id: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let base_id = test_id.unwrap_or_else(|| "nve-error-boundary".to_owned());
     let title_id = format!("{base_id}-title");
     let msg_id = format!("{base_id}-message");
@@ -77,8 +77,8 @@ fn DefaultErrorFallbackView(
 
     let title_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.danger,
-            font_size: theme.typography.md,
+            color: theme.status.danger.solid,
+            font_size: theme.typography.body.size,
             font_weight: "600",
             text_align: "left",
             opacity: 1.0,
@@ -87,8 +87,8 @@ fn DefaultErrorFallbackView(
 
     let message_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: colors.text_secondary,
-            font_size: theme.typography.sm,
+            color: theme.text.secondary,
+            font_size: theme.typography.ui.size,
             font_weight: "400",
             text_align: "left",
             opacity: 1.0,

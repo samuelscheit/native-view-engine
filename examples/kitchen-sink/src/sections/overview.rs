@@ -4,7 +4,7 @@
 
 use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CardVariant, Col,
     IconButton, Orientation, Row, Separator, Stack,
 };
@@ -25,30 +25,28 @@ const CURSOR_DEMOS: [(&str, CursorKind); 6] = [
 #[component]
 pub fn OverviewSection(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let colors = theme.palette_rgba();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
     let mut last_action = use_signal(|| "Ready — click any control".to_owned());
     let mut loading_btn = use_signal(|| false);
 
-    let text_primary = p.text_primary.as_ref();
-    let text_secondary = p.text_secondary.as_ref();
-    let text_muted = p.text_muted.as_ref();
-    let accent = p.accent.as_ref();
-    let surface_subtle = p.surface_subtle.as_ref();
-    let border = p.border.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_secondary = theme.text.secondary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let accent = theme.status.accent.solid.hex();
+    let surface_subtle = theme.surface.subtle.hex();
+    let border = theme.border.default.hex();
 
     let hover_card_style = TypedStyle::new()
         .padding_xy(14.0, 12.0)
         .radius(10.0)
-        .bg(colors.surface_subtle)
-        .border(1.0, colors.border)
+        .bg(theme.surface.subtle)
+        .border(1.0, theme.border.default)
         .cursor(CursorKind::Pointer)
         .transition(TransitionSpec::all(150))
-        .on_hover_with(|patch| patch.bg(colors.accent).border(1.0, colors.accent))
+        .on_hover_with(|patch| patch.bg(theme.status.accent.solid).border(1.0, theme.status.accent.solid))
         .on_active_with(|patch| patch.opacity(0.85))
-        .on_focus_visible_with(|patch| patch.border(2.0, colors.border_focus));
+        .on_focus_visible_with(|patch| patch.border(2.0, theme.border.focus));
 
     let hover_demo_label = copy(
         "Hover, press, or focus me (:hover / :active / :focus-visible)",
@@ -160,8 +158,8 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                                     key: "{label}",
                                     label: label.to_owned(),
                                     cursor_kind,
-                                    bg: colors.surface_subtle,
-                                    border: colors.border,
+                                    bg: theme.surface.subtle,
+                                    border: theme.border.default,
                                     text_color: text_secondary.to_owned(),
                                 }
                             }

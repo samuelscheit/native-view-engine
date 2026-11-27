@@ -6,7 +6,7 @@ use nve_dioxus::prelude::*;
 
 use crate::focus::Orientation;
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle};
-use crate::theme::{use_theme, use_theme_rgba};
+use crate::theme::use_theme;
 
 /// Visual elevation and border style for [`Card`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -138,7 +138,7 @@ pub fn Separator(
     #[props(default)] style: Option<String>,
     #[props(default)] test_id: Option<String>,
 ) -> Element {
-    let (_theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut sb = match orientation {
         Orientation::Horizontal => TypedStyleBuilder::new().width_pct(100.0).height_px(1.0),
         Orientation::Vertical => TypedStyleBuilder::new().width_px(1.0).height_pct(100.0),
@@ -148,7 +148,7 @@ pub fn Separator(
     }
     let sep_style = sb
         .surface(TypedSurfaceStyle {
-            background: colors.border,
+            background: theme.border.default,
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
             border_radius: 0.0,
@@ -177,25 +177,25 @@ pub fn Card(
     #[props(default)] test_id: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let (bg, border_width, border_color, shadow) = match variant {
         CardVariant::Elevated => (
-            colors.surface_elevated,
+            theme.surface.raised,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            colors.border,
-            theme.elevation_shadow(),
+            theme.border.default,
+            theme.elevation.raised,
         ),
         CardVariant::Outlined => (
-            colors.surface,
+            theme.surface.base,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            colors.border,
+            theme.border.default,
             "none",
         ),
         CardVariant::Subtle => (
-            colors.surface_subtle,
+            theme.surface.subtle,
             if theme.is_high_contrast() { 1.0 } else { 0.0 },
             if theme.is_high_contrast() {
-                colors.border
+                theme.border.default
             } else {
                 ColorRgba::TRANSPARENT
             },
@@ -211,7 +211,7 @@ pub fn Card(
             background: bg,
             border_width,
             border_color,
-            border_radius: theme.radii.lg,
+            border_radius: theme.radius.lg,
             opacity: 1.0,
             box_shadow: shadow,
         })

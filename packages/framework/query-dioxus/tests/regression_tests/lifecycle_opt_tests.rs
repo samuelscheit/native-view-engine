@@ -86,7 +86,7 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
         });
         rsx! {
             ThemeProvider {
-                theme: UiTheme::light(),
+                theme: Theme::LIGHT,
                 if show_provider() {
                     QueryClientProvider {
                         client: client,
@@ -232,7 +232,7 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
         let show_provider = use_signal(|| true);
         rsx! {
             ThemeProvider {
-                theme: UiTheme::light(),
+                theme: Theme::LIGHT,
                 if show_provider() {
                     QueryClientProvider {
                         client: client,
@@ -354,7 +354,7 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
         let show_form = use_signal(|| true);
         rsx! {
             ThemeProvider {
-                theme: UiTheme::light(),
+                theme: Theme::LIGHT,
                 QueryClientProvider {
                     client: client,
                     Col {

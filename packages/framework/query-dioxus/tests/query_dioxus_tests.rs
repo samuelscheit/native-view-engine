@@ -338,7 +338,7 @@ fn DemoApp(props: DemoAppProps) -> Element {
     let id = *props.active_id.read();
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             QueryClientProvider {
                 client: props.client.clone(),
                 Col {
@@ -624,7 +624,7 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
         let client = dioxus_core::consume_context::<ErasedQueryClient>();
         rsx! {
             ThemeProvider {
-                theme: UiTheme::light(),
+                theme: Theme::LIGHT,
                 QueryClientProvider {
                     client: client,
                     OptView {}

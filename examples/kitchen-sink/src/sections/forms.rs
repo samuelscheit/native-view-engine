@@ -3,7 +3,7 @@
 //! and `UndoRedoStack` live editor.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     use_theme, AutofillHint, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
     CardVariant, Checkbox, FormState, Input, InputMode, Row, Separator, Switch, UndoRedoStack,
 };
@@ -64,7 +64,6 @@ fn build_demo_form() -> FormState {
 #[component]
 pub fn FormsSection(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
 
@@ -72,8 +71,8 @@ pub fn FormsSection(handle: AppHandle) -> Element {
     let mut submit_status = use_signal(|| Option::<String>::None);
     let mut history = use_signal(|| UndoRedoStack::new(snap.notes.clone(), 32));
 
-    let text_primary = p.text_primary.as_ref();
-    let text_muted = p.text_muted.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
 
     let (email_val, pw_val, confirm_val, otp_val, email_err, pw_err, confirm_err, otp_err, dirty_count, is_dirty, is_valid) = {
         let f = form.read();

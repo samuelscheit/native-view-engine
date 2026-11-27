@@ -8,14 +8,14 @@ pub mod overlays;
 pub mod selection;
 
 use nve_dioxus::prelude::*;
-use nve_ui::{use_theme, Badge, BadgeVariant};
+use nve_ui::{ColorHex, use_theme, Badge, BadgeVariant};
 
 /// Reusable section heading banner shared across all 6 gallery sections.
 #[component]
 pub fn SectionHeader(title: String, subtitle: String, tag: String) -> Element {
     let theme = use_theme();
-    let text_primary = theme.palette.text_primary.as_ref();
-    let text_muted = theme.palette.text_muted.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
 
     rsx! {
         view {

@@ -93,7 +93,7 @@ fn Live100RowVirtualListApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 VirtualList {
                     test_id: "live-vlist-100",
@@ -116,7 +116,7 @@ fn Live100kVirtualListApp() -> Element {
 
     rsx! {
         ThemeProvider {
-            theme: UiTheme::light(),
+            theme: Theme::LIGHT,
             Col {
                 Button {
                     test_id: "mutate-row-50k",

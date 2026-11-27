@@ -3,7 +3,7 @@
 //! and multi-detent `BottomSheet` (`Peek` / `Half` / `Full`).
 
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     compute_overlay_position, use_theme, use_toast, Alignment, Badge, BadgeVariant, BottomSheet,
     Button, ButtonSize, ButtonVariant, Card, CardVariant, Dialog, DropdownMenu, MenuItem, Modal,
     Placement, Popover, PositionOptions, Rect, Separator, SheetDetent, Side, Size, ToastOptions,
@@ -26,7 +26,6 @@ const PLACEMENTS: [(&str, Placement); 6] = [
 #[component]
 pub fn OverlaysSection(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
     let mut toast = use_toast();
@@ -42,8 +41,8 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
     let mut sheet_detent_idx = use_signal(|| 1usize);
     let mut sheet_detent_label = use_signal(|| "Half (50%)".to_owned());
 
-    let text_primary = p.text_primary.as_ref();
-    let text_muted = p.text_muted.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
 
     let active_placement = PLACEMENTS[placement_idx() % PLACEMENTS.len()];
     let anchor = Rect {

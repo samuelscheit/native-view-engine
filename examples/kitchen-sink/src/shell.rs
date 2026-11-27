@@ -4,7 +4,7 @@
 use dioxus_core::EventHandler;
 use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, FocusScopeProvider, Input,
     Separator, ThemeProvider, ToastProvider,
 };
@@ -82,7 +82,6 @@ pub fn KitchenSinkApp() -> Element {
 #[component]
 fn KitchenSinkShell(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
     let mut search_query = use_signal(String::new);
@@ -161,12 +160,12 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
         copy("Reduced Motion: OFF", pseudo)
     };
 
-    let bg_surface = p.surface.as_ref();
-    let bg_elevated = p.surface_elevated.as_ref();
-    let border_col = p.border.as_ref();
-    let text_primary = p.text_primary.as_ref();
-    let text_muted = p.text_muted.as_ref();
-    let accent_col = p.accent.as_ref();
+    let bg_surface = theme.surface.base.hex();
+    let bg_elevated = theme.surface.raised.hex();
+    let border_col = theme.border.default.hex();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let accent_col = theme.status.accent.solid.hex();
 
     rsx! {
         view {
@@ -447,21 +446,20 @@ fn SidebarNavItem(
     on_select: EventHandler<()>,
 ) -> Element {
     let theme = use_theme();
-    let colors = theme.palette_rgba();
     let bg = if active {
-        colors.accent
+        theme.status.accent.solid
     } else {
         ColorRgba::TRANSPARENT
     };
     let hover_bg = if active {
-        colors.accent
+        theme.status.accent.solid
     } else {
-        colors.surface_subtle
+        theme.surface.subtle
     };
     let fg = if active {
-        theme.palette.accent_fg.as_ref()
+        theme.status.accent.on_solid.hex()
     } else {
-        theme.palette.text_primary.as_ref()
+        theme.text.primary.hex()
     };
 
     let nav_style = TypedStyle::new()
@@ -474,7 +472,7 @@ fn SidebarNavItem(
         .bg(bg)
         .cursor(CursorKind::Pointer)
         .on_hover_with(|patch| patch.bg(hover_bg))
-        .on_focus_visible_with(|patch| patch.border(2.0, colors.border_focus));
+        .on_focus_visible_with(|patch| patch.border(2.0, theme.border.focus));
 
     rsx! {
         pressable {

@@ -14,7 +14,7 @@ use nve_dioxus::prelude::*;
 
 use crate::focus::{FocusableEntry, Orientation, RovingFocus};
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 #[derive(Clone)]
 struct TabsContext {
@@ -124,7 +124,7 @@ pub fn TabList(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let orientation = try_consume_context::<TabsContext>()
         .map(|c| c.orientation)
         .unwrap_or(Orientation::Horizontal);
@@ -137,10 +137,10 @@ pub fn TabList(
         .gap(theme.spacing.xs)
         .padding(theme.spacing.xs)
         .surface(TypedSurfaceStyle {
-            background: colors.surface_subtle,
+            background: theme.surface.subtle,
             border_width: 1.0,
-            border_color: colors.border,
-            border_radius: theme.radii.md,
+            border_color: theme.border.default,
+            border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -168,7 +168,7 @@ pub fn TabTrigger(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
     let ctx = try_consume_context::<TabsContext>();
 
@@ -192,24 +192,24 @@ pub fn TabTrigger(
     let (bg, fg, bw, bc) = if focused() && !disabled {
         (
             if is_selected {
-                colors.surface
+                theme.surface.base
             } else {
                 ColorRgba::TRANSPARENT
             },
             if is_selected {
-                colors.accent
+                theme.status.accent.solid
             } else {
-                colors.text_primary
+                theme.text.primary
             },
             2.0,
-            colors.border_focus,
+            theme.border.focus,
         )
     } else if is_selected {
-        (colors.surface, colors.accent, 1.0, colors.border)
+        (theme.surface.base, theme.status.accent.solid, 1.0, theme.border.default)
     } else {
         (
             ColorRgba::TRANSPARENT,
-            colors.text_secondary,
+            theme.text.secondary,
             0.0,
             ColorRgba::TRANSPARENT,
         )
@@ -223,7 +223,7 @@ pub fn TabTrigger(
             background: bg,
             border_width: bw,
             border_color: bc,
-            border_radius: theme.radii.sm,
+            border_radius: theme.radius.sm,
             opacity: if disabled { 0.45 } else { 1.0 },
             box_shadow: "none",
         })
@@ -232,7 +232,7 @@ pub fn TabTrigger(
     let text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
             color: fg,
-            font_size: theme.typography.sm,
+            font_size: theme.typography.ui.size,
             font_weight: if is_selected { "600" } else { "500" },
             text_align: "center",
             opacity: 1.0,
@@ -290,7 +290,7 @@ pub fn TabPanel(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let ctx = try_consume_context::<TabsContext>();
     let is_active = ctx
         .as_ref()
@@ -315,10 +315,10 @@ pub fn TabPanel(
         .padding(theme.spacing.md)
         .gap(theme.spacing.sm)
         .surface(TypedSurfaceStyle {
-            background: colors.surface,
+            background: theme.surface.base,
             border_width: 1.0,
-            border_color: colors.border,
-            border_radius: theme.radii.md,
+            border_color: theme.border.default,
+            border_radius: theme.radius.md,
             opacity: 1.0,
             box_shadow: "none",
         })

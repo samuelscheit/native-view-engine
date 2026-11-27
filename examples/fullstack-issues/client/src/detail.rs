@@ -18,11 +18,10 @@ pub(crate) fn IssueDetailPanel(
     on_renamed: EventHandler<Issue>,
 ) -> Element {
     let theme = use_theme();
-    let p = &theme.palette;
-    let fg_hex = p.text_primary.as_ref();
-    let muted_hex = p.text_secondary.as_ref();
-    let border_hex = p.border.as_ref();
-    let subtle_bg = p.surface_subtle.as_ref();
+    let fg_hex = theme.text.primary.hex();
+    let muted_hex = theme.text.secondary.hex();
+    let border_hex = theme.border.default.hex();
+    let subtle_bg = theme.surface.subtle.hex();
     let id_num = issue.id.0;
     let (badge_label, badge_variant) = state_badge(issue.state);
 

@@ -1,5 +1,5 @@
 //! Deep tests for `nve-ui` direct `TypedStyle` emission:
-//! - `parse_color_rgba` and `UiPaletteRgba` parity (including mutated `UiPalette` like `nve-docs`)
+//! - `parse_color_rgba` parsing of the remaining Phase-0 `style:` strings
 //! - `StyleBuf::into_typed()` parity with `TypedStyleBuilder`
 //! - `nve-ui` components merging user `style: Option<String>` overrides deterministically on top
 //!   of `nve_style`, plus state-transition resets (`disabled`, `focused`, `checked`, `error`)
@@ -8,15 +8,13 @@
 #[allow(dead_code)]
 mod common;
 
-use std::borrow::Cow;
-
 use common::UiHarness;
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
 #[test]
-fn parse_color_rgba_and_palette_rgba_match_builtin_and_custom_palettes() {
+fn parse_color_rgba_parses_hex_and_keywords() {
     assert_eq!(parse_color_rgba("#0f172a"), Some(ColorRgba::rgb(0x0f, 0x17, 0x2a)));
     assert_eq!(parse_color_rgba("#0f172a80"), Some(ColorRgba::rgba(0x0f, 0x17, 0x2a, 0x80)));
     assert_eq!(parse_color_rgba("#fff"), Some(ColorRgba::WHITE));
@@ -26,24 +24,6 @@ fn parse_color_rgba_and_palette_rgba_match_builtin_and_custom_palettes() {
     assert_eq!(parse_color_rgba("black"), Some(ColorRgba::BLACK));
     assert_eq!(parse_color_rgba("not-a-color"), None);
 
-    assert_eq!(UiTheme::light().palette_rgba(), UiPaletteRgba::LIGHT);
-    assert_eq!(UiTheme::dark().palette_rgba(), UiPaletteRgba::DARK);
-    assert_eq!(
-        UiTheme::high_contrast_light().palette_rgba(),
-        UiPaletteRgba::HIGH_CONTRAST_LIGHT
-    );
-    assert_eq!(
-        UiTheme::high_contrast_dark().palette_rgba(),
-        UiPaletteRgba::HIGH_CONTRAST_DARK
-    );
-
-    // Mutating `theme.palette` directly (as `nve-docs` does) produces matching `ColorRgba` tokens.
-    let mut custom = UiTheme::dark();
-    custom.palette.accent = Cow::Borrowed("#10b981");
-    custom.palette.surface = Cow::Borrowed("#09090b");
-    let custom_rgba = custom.palette_rgba();
-    assert_eq!(custom_rgba.accent, ColorRgba::rgb(0x10, 0xb9, 0x81));
-    assert_eq!(custom_rgba.surface, ColorRgba::rgb(0x09, 0x09, 0x0b));
 }
 
 #[test]
@@ -110,6 +90,10 @@ fn style_buf_into_typed_matches_typed_style_builder_identically() {
     assert_eq!(from_buf.layout.padding, EdgeInsets::symmetric(6.0, 14.0));
 }
 
+fn emerald() -> Accent {
+    Accent::from_srgb(ColorRgba::rgb(0x10, 0xb9, 0x81))
+}
+
 #[component]
 fn OverrideAndStateResetApp() -> Element {
     let mut use_override = use_signal(|| true);
@@ -119,13 +103,13 @@ fn OverrideAndStateResetApp() -> Element {
     let mut dark = use_signal(|| false);
 
     let mut theme = if dark() {
-        UiTheme::dark()
+        Theme::DARK
     } else {
-        UiTheme::light()
+        Theme::LIGHT
     };
     if dark() {
-        // Verify ThemeProvider picks up caller-mutated UiPalette cleanly into UiPaletteRgba.
-        theme.palette.accent = Cow::Borrowed("#10b981");
+        // ThemeProvider propagates a runtime accent override to every component.
+        theme = theme.with_accent(emerald());
     }
 
     let btn_override = if use_override() {
@@ -177,13 +161,13 @@ fn nve_ui_components_merge_style_overrides_and_reset_all_state_transitions_clean
     let btn = h.find("styled-btn");
     assert_eq!(h.padding(btn), EdgeInsets::all(20.0));
     assert_eq!(h.border_radius(btn), 22.0);
-    assert_eq!(h.bg(btn), UiPaletteRgba::LIGHT.accent);
+    assert_eq!(h.bg(btn), Theme::LIGHT.status.accent.solid);
     assert_eq!(h.raw_str(btn, "style"), None);
 
     // 2. Focus -> border_width=2.0 while user override padding=20 & radius=22 stay intact!
     h.focus("styled-btn");
     assert_eq!(h.border_width(btn), 2.0);
-    assert_eq!(h.border_color(btn), UiPaletteRgba::LIGHT.border_focus);
+    assert_eq!(h.border_color(btn), Theme::LIGHT.border.focus);
     assert_eq!(h.padding(btn), EdgeInsets::all(20.0));
     assert_eq!(h.border_radius(btn), 22.0);
 
@@ -201,31 +185,31 @@ fn nve_ui_components_merge_style_overrides_and_reset_all_state_transitions_clean
 
     // 4. Removing user `style` override restores exact theme radii & padding with zero raw "style" prop.
     h.press("toggle-override");
-    assert_eq!(h.border_radius(btn), 8.0);
+    assert_eq!(h.border_radius(btn), Theme::LIGHT.radius.md);
     assert_eq!(h.padding(btn), EdgeInsets::symmetric(8.0, 16.0));
     assert_eq!(h.raw_str(btn, "style"), None);
 
     // 5. Checkbox checked -> unchecked cleanly resets box fill & border.
     let cb = h.find("state-cb");
     let cb_box = h.children_of(cb)[0];
-    assert_eq!(h.bg(cb_box), UiPaletteRgba::LIGHT.surface);
+    assert_eq!(h.bg(cb_box), Theme::LIGHT.surface.base);
     h.press("toggle-checked");
-    assert_eq!(h.bg(cb_box), UiPaletteRgba::LIGHT.accent);
+    assert_eq!(h.bg(cb_box), Theme::LIGHT.status.accent.solid);
     h.press("toggle-checked");
-    assert_eq!(h.bg(cb_box), UiPaletteRgba::LIGHT.surface);
+    assert_eq!(h.bg(cb_box), Theme::LIGHT.surface.base);
 
     // 6. Input error -> valid resets border_width (2 -> 1) and border_color (danger -> border).
     let inp = h.find("state-input");
     assert_eq!(h.border_width(inp), 1.0);
-    assert_eq!(h.border_color(inp), UiPaletteRgba::LIGHT.border);
+    assert_eq!(h.border_color(inp), Theme::LIGHT.border.strong);
     h.press("toggle-error");
     assert_eq!(h.border_width(inp), 2.0);
-    assert_eq!(h.border_color(inp), UiPaletteRgba::LIGHT.danger);
+    assert_eq!(h.border_color(inp), Theme::LIGHT.status.danger.solid);
     h.press("toggle-error");
     assert_eq!(h.border_width(inp), 1.0);
-    assert_eq!(h.border_color(inp), UiPaletteRgba::LIGHT.border);
+    assert_eq!(h.border_color(inp), Theme::LIGHT.border.strong);
 
-    // 7. ThemeProvider syncs custom-mutated `theme.palette.accent = #10b981` into pre-parsed colors.
+    // 7. ThemeProvider propagates the runtime emerald accent override.
     h.press("toggle-dark");
-    assert_eq!(h.bg(btn), ColorRgba::rgb(0x10, 0xb9, 0x81));
+    assert_eq!(h.bg(btn), Theme::DARK.with_accent(emerald()).status.accent.solid);
 }

@@ -20,7 +20,7 @@ pub use crate::components::date_picker_state::{
 };
 use crate::components::overlays::resolve_anchored_position;
 use crate::positioning::{Placement, PositionOptions, Rect, Size, Viewport};
-use crate::theme::use_theme_rgba;
+use crate::theme::use_theme;
 
 /// Accessible locale-aware single-date picker with segmented keyboard typing, localized
 /// 6×7 calendar grid (`role="dialog"`, `role="grid"`, `role="gridcell"`, `aria-selected`,
@@ -48,7 +48,7 @@ pub fn DatePicker(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut trigger_focused = use_signal(|| false);
     let constraints = DateConstraints {
         min_date,
@@ -101,7 +101,7 @@ pub fn DatePicker(
         Size::new(300.0, 320.0),
     );
     let (wrap_style, label_style, trigger_style, trigger_text_style) =
-        build_trigger_styles(&theme, colors, trigger_focused(), disabled, has_value);
+        build_trigger_styles(&theme, trigger_focused(), disabled, has_value);
 
     let aria_expanded = if is_open { "true" } else { "false" };
     let aria_dis = if disabled { "true" } else { "false" };
@@ -193,7 +193,7 @@ pub fn DatePicker(
                 text { test_id: format!("{base_id}-value"), nve_style: trigger_text_style, "{display_text}" }
             }
             if is_open {
-                {render_calendar_dialog(base_id, &grid, weekday_width, computed, &theme, colors, disabled, cbs)}
+                {render_calendar_dialog(base_id, &grid, weekday_width, computed, &theme, disabled, cbs)}
             }
         }
     }
@@ -225,7 +225,7 @@ pub fn DateRangePicker(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut trigger_focused = use_signal(|| false);
     let constraints = DateConstraints {
         min_date,
@@ -285,7 +285,7 @@ pub fn DateRangePicker(
         Size::new(300.0, 320.0),
     );
     let (wrap_style, label_style, trigger_style, trigger_text_style) =
-        build_trigger_styles(&theme, colors, trigger_focused(), disabled, has_value);
+        build_trigger_styles(&theme, trigger_focused(), disabled, has_value);
 
     let aria_expanded = if is_open { "true" } else { "false" };
     let aria_dis = if disabled { "true" } else { "false" };
@@ -370,7 +370,7 @@ pub fn DateRangePicker(
                 text { test_id: format!("{base_id}-value"), nve_style: trigger_text_style, "{display_text}" }
             }
             if is_open {
-                {render_calendar_dialog(base_id, &grid, weekday_width, computed, &theme, colors, disabled, cbs)}
+                {render_calendar_dialog(base_id, &grid, weekday_width, computed, &theme, disabled, cbs)}
             }
         }
     }

@@ -6,7 +6,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::theme::{use_theme_rgba, UiPaletteRgba, UiTheme};
+use crate::theme::{use_theme, Theme};
 
 /// Visual hierarchy variants for [`Button`] and [`IconButton`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,79 +40,78 @@ pub enum BadgeVariant {
 }
 
 fn button_colors(
-    theme: &UiTheme,
-    colors: &UiPaletteRgba,
+    theme: &Theme,
     variant: ButtonVariant,
     focused: bool,
     disabled: bool,
 ) -> (ColorRgba, ColorRgba, f32, ColorRgba) {
     let (bg, fg, base_bw, base_bc) = match variant {
         ButtonVariant::Primary => (
-            colors.accent,
-            colors.accent_fg,
+            theme.status.accent.solid,
+            theme.status.accent.on_solid,
             if theme.is_high_contrast() { 2.0 } else { 0.0 },
             if theme.is_high_contrast() {
-                colors.border
+                theme.border.default
             } else {
                 ColorRgba::TRANSPARENT
             },
         ),
-        ButtonVariant::Secondary => (colors.surface_subtle, colors.text_primary, 1.0, colors.border),
+        ButtonVariant::Secondary => (theme.surface.subtle, theme.text.primary, 1.0, theme.border.default),
         ButtonVariant::Ghost => (
             ColorRgba::TRANSPARENT,
-            colors.text_primary,
+            theme.text.primary,
             0.0,
             ColorRgba::TRANSPARENT,
         ),
         ButtonVariant::Destructive => (
-            colors.danger,
-            colors.danger_fg,
+            theme.status.danger.solid,
+            theme.status.danger.on_solid,
             if theme.is_high_contrast() { 2.0 } else { 0.0 },
             if theme.is_high_contrast() {
-                colors.border
+                theme.border.default
             } else {
                 ColorRgba::TRANSPARENT
             },
         ),
         ButtonVariant::Outline => (
-            colors.surface,
-            colors.text_primary,
+            theme.surface.base,
+            theme.text.primary,
             if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            colors.border,
+            theme.border.default,
         ),
     };
 
     if focused && !disabled {
-        (bg, fg, 2.0, colors.border_focus)
+        (bg, fg, 2.0, theme.border.focus)
     } else {
         (bg, fg, base_bw, base_bc)
     }
 }
 
-fn button_metrics(theme: &UiTheme, size: ButtonSize) -> (f32, f32, f32, f32) {
+fn button_metrics(theme: &Theme, size: ButtonSize) -> (f32, f32, f32, f32) {
     let pad_scale = match theme.density {
-        crate::theme::UiDensity::Normal => 1.0,
-        crate::theme::UiDensity::Compact => 0.8,
-        crate::theme::UiDensity::Spacious => 1.15,
+        crate::UiDensity::Comfortable => 1.0,
+        crate::UiDensity::Compact => 0.8,
+        crate::UiDensity::Spacious => 1.15,
     };
     match size {
         ButtonSize::Sm => (
             30.0 * pad_scale,
             theme.spacing.sm,
             theme.spacing.xs,
-            theme.typography.sm,
+            theme.typography.ui.size,
         ),
         ButtonSize::Md => (
             38.0 * pad_scale,
             theme.spacing.lg,
             theme.spacing.sm,
-            theme.typography.md,
+            theme.typography.body.size,
         ),
         ButtonSize::Lg => (
             46.0 * pad_scale,
             theme.spacing.xl,
             theme.spacing.md,
-            theme.typography.lg,
+            theme.typography.title.size,
         ),
     }
 }
@@ -142,11 +141,11 @@ pub fn Button(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
     let blocked = disabled || loading;
 
-    let (bg, fg, bw, bc) = button_colors(&theme, &colors, variant, focused(), blocked);
+    let (bg, fg, bw, bc) = button_colors(&theme, variant, focused(), blocked);
     let (min_h, pad_x, pad_y, font_size) = button_metrics(&theme, size);
 
     let btn_style = TypedStyleBuilder::new()
@@ -160,7 +159,7 @@ pub fn Button(
             background: bg,
             border_width: bw,
             border_color: bc,
-            border_radius: theme.radii.md,
+            border_radius: theme.radius.md,
             opacity: if blocked { 0.5 } else { 1.0 },
             box_shadow: "none",
         })
@@ -258,20 +257,20 @@ pub fn IconButton(
     #[props(default)] style: Option<String>,
     #[props(default)] children: Option<Element>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let mut focused = use_signal(|| false);
     let blocked = disabled || loading;
 
-    let (bg, fg, bw, bc) = button_colors(&theme, &colors, variant, focused(), blocked);
+    let (bg, fg, bw, bc) = button_colors(&theme, variant, focused(), blocked);
     let dim = match size {
         ButtonSize::Sm => 28.0,
         ButtonSize::Md => 36.0,
         ButtonSize::Lg => 44.0,
     };
     let font_size = match size {
-        ButtonSize::Sm => theme.typography.sm,
-        ButtonSize::Md => theme.typography.md,
-        ButtonSize::Lg => theme.typography.lg,
+        ButtonSize::Sm => theme.typography.ui.size,
+        ButtonSize::Md => theme.typography.body.size,
+        ButtonSize::Lg => theme.typography.title.size,
     };
 
     let btn_style = TypedStyleBuilder::new()
@@ -283,7 +282,7 @@ pub fn IconButton(
             background: bg,
             border_width: bw,
             border_color: bc,
-            border_radius: theme.radii.md,
+            border_radius: theme.radius.md,
             opacity: if blocked { 0.5 } else { 1.0 },
             box_shadow: "none",
         })
@@ -362,21 +361,21 @@ pub fn Badge(
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
 ) -> Element {
-    let (theme, colors) = use_theme_rgba();
+    let theme = use_theme();
     let (bg, fg, border_color) = match variant {
-        BadgeVariant::Neutral => (colors.surface_subtle, colors.text_secondary, colors.border),
-        BadgeVariant::Accent => (colors.accent, colors.accent_fg, colors.accent),
-        BadgeVariant::Success => (colors.success, colors.accent_fg, colors.success),
+        BadgeVariant::Neutral => (theme.surface.subtle, theme.text.secondary, theme.border.default),
+        BadgeVariant::Accent => (theme.status.accent.solid, theme.status.accent.on_solid, theme.status.accent.solid),
+        BadgeVariant::Success => (theme.status.success.solid, theme.status.accent.on_solid, theme.status.success.solid),
         BadgeVariant::Warning => (
-            colors.warning,
+            theme.status.warning.solid,
             if theme.is_high_contrast() {
                 ColorRgba::BLACK
             } else {
                 ColorRgba::WHITE
             },
-            colors.warning,
+            theme.status.warning.solid,
         ),
-        BadgeVariant::Danger => (colors.danger, colors.danger_fg, colors.danger),
+        BadgeVariant::Danger => (theme.status.danger.solid, theme.status.danger.on_solid, theme.status.danger.solid),
     };
 
     let pill_style = TypedStyleBuilder::new()
@@ -388,7 +387,7 @@ pub fn Badge(
             background: bg,
             border_width: 1.0,
             border_color,
-            border_radius: theme.radii.full,
+            border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: "none",
         })
@@ -397,7 +396,7 @@ pub fn Badge(
     let text_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
             color: fg,
-            font_size: theme.typography.xs,
+            font_size: theme.typography.caption.size,
             font_weight: "600",
             text_align: "center",
             opacity: 1.0,

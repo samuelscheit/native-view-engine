@@ -7,7 +7,7 @@ use nve_canvas::{Canvas, DrawList};
 use nve_components::MotionClock;
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     ui_error, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
     CardVariant, ErrorBoundary as UiErrorBoundary, ErrorBoundaryReset, ErrorFallback,
     UiErrorReport,
@@ -73,8 +73,6 @@ fn build_canvas_draw_list(
 #[component]
 pub fn MotionSection(handle: AppHandle) -> Element {
     let theme = use_theme();
-    let colors = theme.palette_rgba();
-    let p = &theme.palette;
     let snap = handle.read_state();
     let pseudo = snap.pseudo_locale;
 
@@ -83,10 +81,10 @@ pub fn MotionSection(handle: AppHandle) -> Element {
     let armed_error = use_signal(|| false);
     let mut recovery_count = use_signal(|| 0u32);
 
-    let text_primary = p.text_primary.as_ref();
-    let text_muted = p.text_muted.as_ref();
-    let surface_subtle = p.surface_subtle.as_ref();
-    let border = p.border.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let surface_subtle = theme.surface.subtle.hex();
+    let border = theme.border.default.hex();
 
     let (t80, t200, t500) = sample_spring_curve(snap.spring_preset, snap.reduced_motion);
     let spec = snap.spring_preset.spec();
@@ -107,16 +105,16 @@ pub fn MotionSection(handle: AppHandle) -> Element {
         .padding_xy(14.0, 10.0)
         .radius(if snap.motion_toggled { 14.0 } else { 8.0 })
         .bg(if snap.motion_toggled {
-            colors.accent
+            theme.status.accent.solid
         } else {
-            colors.surface_subtle
+            theme.surface.subtle
         })
         .border(
             1.0,
             if snap.motion_toggled {
-                colors.accent
+                theme.status.accent.solid
             } else {
-                colors.border
+                theme.border.default
             },
         )
         .transition(
@@ -128,10 +126,10 @@ pub fn MotionSection(handle: AppHandle) -> Element {
     let canvas_dl = build_canvas_draw_list(
         bar_mode(),
         alt_series(),
-        colors.accent,
-        colors.success,
-        colors.surface_subtle,
-        colors.border,
+        theme.status.accent.solid,
+        theme.status.success.solid,
+        theme.surface.subtle,
+        theme.border.default,
     );
     let canvas_table = table_attr_fn(move |tx, node| {
         tx.edit::<Canvas>(node).draw_list_ephemeral(canvas_dl.clone());
@@ -329,9 +327,9 @@ fn IsolatedWidgetSubtree(mut armed_error: Signal<bool>) -> Element {
         return Err(ui_error("Simulated render failure inside isolated Kitchen Sink subtree").into());
     }
     let theme = use_theme();
-    let text_primary = theme.palette.text_primary.as_ref();
-    let surface_subtle = theme.palette.surface_subtle.as_ref();
-    let border = theme.palette.border.as_ref();
+    let text_primary = theme.text.primary.hex();
+    let surface_subtle = theme.surface.subtle.hex();
+    let border = theme.border.default.hex();
 
     rsx! {
         view {
@@ -365,10 +363,10 @@ fn ErrorFallbackCard(
     reset: ErrorBoundaryReset,
 ) -> Element {
     let theme = use_theme();
-    let danger = theme.palette.danger.as_ref();
-    let text_primary = theme.palette.text_primary.as_ref();
-    let text_muted = theme.palette.text_muted.as_ref();
-    let surface_subtle = theme.palette.surface_subtle.as_ref();
+    let danger = theme.status.danger.solid.hex();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let surface_subtle = theme.surface.subtle.hex();
 
     rsx! {
         view {
