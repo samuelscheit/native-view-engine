@@ -307,6 +307,7 @@ fn external_text_slab_view_and_ref_roundtrip() {
     let r = table.as_ref_with_external_text(ext_slab);
     assert_eq!(r.node_text(&r.nodes()[idx as usize]).unwrap(), "external");
     let raw = table.as_view_with_external_text(ext_slab);
+    // SAFETY: `raw` borrows live `table` and `ext_slab` slices for this test assertion.
     let from_raw = unsafe { NveSceneRef::from_raw(raw) }.unwrap();
     assert_eq!(from_raw.node_text(&from_raw.nodes()[idx as usize]).unwrap(), "external");
 }

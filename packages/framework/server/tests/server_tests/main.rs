@@ -22,10 +22,11 @@ pub(crate) fn block_on<F: Future>(fut: F) -> F::Output {
     let mut fut = std::pin::pin!(fut);
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(out) => out,
-        Poll::Pending => panic!("sans-I/O test future unexpectedly yielded Poll::Pending"),
-    }
+    let ready = match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(out) => Some(out),
+        Poll::Pending => None,
+    };
+    ready.expect("sans-I/O test future unexpectedly yielded Poll::Pending")
 }
 
 struct CountingAlloc;
@@ -34,13 +35,16 @@ thread_local! {
     static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
 }
 
+// SAFETY: Delegates directly to `std::alloc::System` while incrementing a thread-local counter.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+        // SAFETY: Forwards caller-validated `layout` to the global `System` allocator.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Forwards caller-validated `(ptr, layout)` allocated by `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -142,7 +146,7 @@ impl AuthResolver<(), String> for DemoAuth {
         state: &'a (),
         headers: &'a HeaderMap,
     ) -> nve_rpc::BoxFuture<'a, Result<String, AuthError>> {
-        let res = self.try_resolve_sync(state, headers).unwrap();
+        let res = self.try_resolve_sync(state, headers).expect("sync auth");
         Box::pin(async move { res })
     }
 }

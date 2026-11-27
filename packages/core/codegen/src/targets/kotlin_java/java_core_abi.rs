@@ -216,28 +216,28 @@ pub fn generate_java_scene_buffer() -> String {
         out,
         "     * Rebinds this reusable reader to the latest frame's direct buffers without table views."
     );
-    let _ = writeln!(out, "     */");
-    let _ = writeln!(out, "    public void attach(");
-    let _ = writeln!(out, "            long schemaHash,");
-    let _ = writeln!(out, "            long frameId,");
-    let _ = writeln!(out, "            int nodeCount,");
-    let _ = writeln!(out, "            int dirtyCount,");
-    let _ = writeln!(out, "            int removedCount,");
-    let _ = writeln!(out, "            int textSlabLen,");
-    let _ = writeln!(out, "            int childrenSlabLen,");
-    let _ = writeln!(out, "            ByteBuffer nodesBuf,");
-    let _ = writeln!(out, "            ByteBuffer textSlabBuf,");
-    let _ = writeln!(out, "            ByteBuffer childrenSlabBuf,");
-    let _ = writeln!(out, "            ByteBuffer dirtyIndicesBuf,");
-    let _ = writeln!(out, "            ByteBuffer removedIdsBuf) {{");
-    let _ = writeln!(
+    writeln!(out, "     */");
+    writeln!(out, "    public void attach(");
+    writeln!(out, "            long schemaHash,");
+    writeln!(out, "            long frameId,");
+    writeln!(out, "            int nodeCount,");
+    writeln!(out, "            int dirtyCount,");
+    writeln!(out, "            int removedCount,");
+    writeln!(out, "            int textSlabLen,");
+    writeln!(out, "            int childrenSlabLen,");
+    writeln!(out, "            ByteBuffer nodesBuf,");
+    writeln!(out, "            ByteBuffer textSlabBuf,");
+    writeln!(out, "            ByteBuffer childrenSlabBuf,");
+    writeln!(out, "            ByteBuffer dirtyIndicesBuf,");
+    writeln!(out, "            ByteBuffer removedIdsBuf) {{");
+    writeln!(
         out,
         "        attach(schemaHash, frameId, nodeCount, dirtyCount, removedCount, textSlabLen, childrenSlabLen, 0, nodesBuf, textSlabBuf, childrenSlabBuf, dirtyIndicesBuf, removedIdsBuf, null);"
     );
-    let _ = writeln!(out, "    }}");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "    /**");
-    let _ = writeln!(
+    writeln!(out, "    }}");
+    writeln!(out);
+    writeln!(out, "    /**");
+    writeln!(
         out,
         "     * Rebinds this reusable reader to the latest frame's direct buffers without copying."
     );

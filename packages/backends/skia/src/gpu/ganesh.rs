@@ -44,7 +44,8 @@ pub trait NativeSwapchain {
     /// Resizes the native swapchain or offscreen GPU render target to `next`.
     ///
     /// Returns `Ok(true)` if underlying GPU swapchain/render-target resources were recreated
-    /// (incrementing `swapchain_recreations`), or `Ok(false)` for a scale-factor-only metadata update.
+    /// (incrementing `swapchain_recreations`), or `Ok(false)` for either a scale-factor-only
+    /// metadata update or a deferred recreation handled by [`Self::begin_native_frame`].
     fn resize_native(
         &mut self,
         prev: SwapchainExtent,

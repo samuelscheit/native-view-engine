@@ -38,15 +38,27 @@ pub enum PairTransport {
 
 impl PairTransport {
     pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "" | "auto" => Ok(Self::Auto),
-            "quic" | "udp" => Ok(Self::Quic),
-            "wt" | "webtransport" | "h3" => Ok(Self::WebTransport),
-            "wss" | "tls" => Ok(Self::Wss),
-            "ws" | "tcp" | "websocket" => Ok(Self::Ws),
-            other => Err(format!(
-                "invalid --pair-transport '{other}' (expected one of: auto, quic, webtransport, wss, ws)"
-            )),
+        let s = raw.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("auto") {
+            Ok(Self::Auto)
+        } else if s.eq_ignore_ascii_case("quic") || s.eq_ignore_ascii_case("udp") {
+            Ok(Self::Quic)
+        } else if s.eq_ignore_ascii_case("wt")
+            || s.eq_ignore_ascii_case("webtransport")
+            || s.eq_ignore_ascii_case("h3")
+        {
+            Ok(Self::WebTransport)
+        } else if s.eq_ignore_ascii_case("wss") || s.eq_ignore_ascii_case("tls") {
+            Ok(Self::Wss)
+        } else if s.eq_ignore_ascii_case("ws")
+            || s.eq_ignore_ascii_case("tcp")
+            || s.eq_ignore_ascii_case("websocket")
+        {
+            Ok(Self::Ws)
+        } else {
+            Err(format!(
+                "invalid --pair-transport '{s}' (expected one of: auto, quic, webtransport, wss, ws)"
+            ))
         }
     }
 
@@ -248,7 +260,7 @@ impl PairedRemoteApp {
     }
 
     pub fn metrics(&self) -> NveWireMetrics {
-        *self.metrics.lock().unwrap()
+        *self.metrics.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn wait_for_frame(
@@ -336,7 +348,7 @@ impl DesktopApp for PairedRemoteApp {
     }
 
     fn install_wake_callback(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        *self.wake_cb.lock().unwrap() = Some(wake);
+        *self.wake_cb.lock().unwrap_or_else(|e| e.into_inner()) = Some(wake);
     }
 
     fn has_pending_remote_frame(&self) -> bool {
@@ -418,11 +430,15 @@ fn pair_worker_loop(
         {
             last_metrics_refresh = now;
             connected.store(client.is_connected(), Ordering::Relaxed);
-            *metrics.lock().unwrap() = client.metrics();
+            *metrics.lock().unwrap_or_else(|e| e.into_inner()) = client.metrics();
         }
 
         if received_any
-            && let Some(cb) = wake_cb.lock().unwrap().as_ref().cloned()
+            && let Some(cb) = wake_cb
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .cloned()
         {
             cb();
         }

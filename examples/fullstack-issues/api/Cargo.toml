@@ -8,3 +8,6 @@ description = "Shared pure-Rust RPC procedure contracts, integer-keyed CBOR mode
 [dependencies]
 nve-rpc = { workspace = true }
 minicbor = { workspace = true }
+
+[lints]
+workspace = true

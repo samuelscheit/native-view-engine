@@ -280,11 +280,9 @@ pub fn check_crate_readmes_and_doctest_hooks(idx: &RepoIndex) -> (Vec<Violation>
         let lib_rs = crate_dir.join("src/lib.rs");
         if lib_rs.is_file() {
             let lib_rel = rel_path(&idx.root, &lib_rs);
-            let has_hook = idx.read_text(&lib_rel).is_some_and(|src| {
-                let compact: String = src.chars().filter(|c| !c.is_whitespace()).collect();
-                compact.contains("doctest,doc=include_str!(\"../README.md\")")
-                    || compact.contains("doctest),doc=include_str!(\"../README.md\")")
-            });
+            let has_hook = idx
+                .parse_rust(&lib_rel)
+                .is_some_and(|parsed| has_readme_doctest_attr(&parsed.ast));
             if !has_hook {
                 v_doctest.push(Violation::new(
                     lib_rel,
@@ -296,6 +294,51 @@ pub fn check_crate_readmes_and_doctest_hooks(idx: &RepoIndex) -> (Vec<Violation>
         }
     }
     (v_readme, v_doctest)
+}
+
+fn cfg_meta_mentions_doctest(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::Path(p) => p.is_ident("doctest"),
+        syn::Meta::List(list) if list.path.is_ident("all") => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|items| items.iter().any(cfg_meta_mentions_doctest)),
+        _ => false,
+    }
+}
+
+fn has_readme_doctest_attr(ast: &syn::File) -> bool {
+    ast.attrs.iter().any(|attr| {
+        if !attr.path().is_ident("cfg_attr") {
+            return false;
+        }
+        let Ok(items) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        ) else {
+            return false;
+        };
+        let mut iter = items.iter();
+        let Some(cond) = iter.next() else {
+            return false;
+        };
+        if !cfg_meta_mentions_doctest(cond) {
+            return false;
+        }
+        iter.any(|m| {
+            matches!(
+                m,
+                syn::Meta::NameValue(nv)
+                    if nv.path.is_ident("doc")
+                        && matches!(
+                            &nv.value,
+                            syn::Expr::Macro(em)
+                                if em.mac.path.is_ident("include_str")
+                                    && em.mac.tokens.to_string().replace(' ', "") == "\"../README.md\""
+                        )
+            )
+        })
+    })
 }
 
 /// Monotonic 650-line production `.rs` file ratchet across BOTH `packages/` and `hosts/`.

@@ -12,6 +12,8 @@ pub mod dag;
 pub mod hot_path;
 pub mod hygiene;
 pub mod purity;
+pub mod rpc_dag;
+pub mod spec_registry;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -349,7 +351,7 @@ fn git_tracked_files(root: &Path) -> Vec<String> {
     files
 }
 
-fn walk_files_no_symlinks(dir: &Path, out: &mut Vec<PathBuf>) {
+pub fn walk_files_no_symlinks(dir: &Path, out: &mut Vec<PathBuf>) {
     const SKIP: &[&str] = &[
         "target",
         ".git",

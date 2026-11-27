@@ -20,7 +20,13 @@ pub const EXISTING_HOT_PATH_FILES: &[&str] = &[
     "packages/backends/headless/src/taffy_store/mod.rs",
 ];
 
-const COLD_FN_NAMES: &[&str] = &["new", "try_str", "to_owned"];
+fn is_allowlisted_cold_fn(rel: &str, name: &str) -> bool {
+    ((rel == "packages/core/store/src/store.rs"
+        || rel == "packages/backends/headless/src/taffy_store/mod.rs")
+        && name == "new")
+        || (rel == "packages/core/store/src/span_pool.rs" && name == "try_str")
+        || (rel == "packages/core/wire-core/src/frame.rs" && name == "to_owned")
+}
 
 /// Scans all `EXISTING_HOT_PATH_FILES` plus hot modules in `packages/core/store/src/` for banned
 /// hot-path UTF-8 re-validation (`from_utf8(`) and heap allocations/sorting.
@@ -137,7 +143,7 @@ pub fn scan_hot_path_ast(
 
         fn visit_item_fn(&mut self, node: &'ast ItemFn) {
             if is_cfg_test_attr(&node.attrs)
-                || COLD_FN_NAMES.contains(&node.sig.ident.to_string().as_str())
+                || is_allowlisted_cold_fn(self.rel, &node.sig.ident.to_string())
             {
                 return;
             }
@@ -146,7 +152,7 @@ pub fn scan_hot_path_ast(
 
         fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
             if is_cfg_test_attr(&node.attrs)
-                || COLD_FN_NAMES.contains(&node.sig.ident.to_string().as_str())
+                || is_allowlisted_cold_fn(self.rel, &node.sig.ident.to_string())
             {
                 return;
             }

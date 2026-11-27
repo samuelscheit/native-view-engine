@@ -38,8 +38,8 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
     for count in [1usize, 50, 500] {
         let issues = sample_issues(count);
         let mut cbor_buf = Vec::with_capacity(count * 64);
-        codec.encode_into(&issues, &mut cbor_buf).unwrap();
-        let json_buf = serde_json::to_vec(&issues).unwrap();
+        codec.encode_into(&issues, &mut cbor_buf).expect("encode cbor fixture");
+        let json_buf = serde_json::to_vec(&issues).expect("encode json fixture");
         eprintln!(
             "[wire-size] count={count}: cbor={} B, json={} B ({:.1}% of JSON)",
             cbor_buf.len(),
@@ -53,7 +53,7 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
             let mut scratch = Vec::with_capacity(cbor_buf.len() + 64);
             b.iter(|| {
                 scratch.clear();
-                codec.encode_into(black_box(data), &mut scratch).unwrap();
+                codec.encode_into(black_box(data), &mut scratch).expect("encode cbor");
                 black_box(scratch.len())
             });
         });
@@ -62,7 +62,7 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
             let mut scratch = Vec::with_capacity(json_buf.len() + 64);
             b.iter(|| {
                 scratch.clear();
-                serde_json::to_writer(&mut scratch, black_box(data)).unwrap();
+                serde_json::to_writer(&mut scratch, black_box(data)).expect("encode json");
                 black_box(scratch.len())
             });
         });
@@ -73,7 +73,7 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
             |b, wire| {
                 b.iter(|| {
                     let decoded: Vec<IssueSummary> =
-                        codec.decode_bounded(black_box(wire)).unwrap();
+                        codec.decode_bounded(black_box(wire)).expect("decode cbor");
                     black_box(decoded.len())
                 });
             },
@@ -82,7 +82,7 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("json_decode", count), &json_buf, |b, wire| {
             b.iter(|| {
                 let decoded: Vec<IssueSummary> =
-                    serde_json::from_slice(black_box(wire)).unwrap();
+                    serde_json::from_slice(black_box(wire)).expect("decode json");
                 black_box(decoded.len())
             });
         });
@@ -92,7 +92,7 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
             &cbor_buf,
             |b, wire| {
                 b.iter(|| {
-                    validate_cbor(black_box(wire), CborLimits::DEFAULT).unwrap();
+                    validate_cbor(black_box(wire), CborLimits::DEFAULT).expect("validate cbor");
                 });
             },
         );
@@ -102,7 +102,9 @@ fn bench_cbor_vs_json(c: &mut Criterion) {
     let mut deep_64 = vec![0x81u8; 64];
     deep_64.push(0x00);
     group.bench_function("cbor_validate_worst_depth_64", |b| {
-        b.iter(|| validate_cbor(black_box(&deep_64), CborLimits::DEFAULT).unwrap());
+        b.iter(|| {
+            validate_cbor(black_box(&deep_64), CborLimits::DEFAULT).expect("validate deep_64")
+        });
     });
 
     group.bench_function("tag64_keyed", |b| {

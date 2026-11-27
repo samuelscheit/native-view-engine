@@ -19,3 +19,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "query_bench"
 harness = false
+
+[lints]
+workspace = true

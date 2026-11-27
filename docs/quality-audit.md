@@ -29,11 +29,11 @@ Default posture is skepticism: nothing is graded above L1 without verified real 
 | `packages/backends/*` | 3 | 0 | 1 (`skia`) | 2 (`headless`, `web`) | 0 | 0 |
 | `packages/framework/*` | 11 | 0 | 3 (`docs`, `i18n`, `ui`) | 8 (`http-hyper`, `http-web`, `mdx`, `query`, `query-dioxus`, `router`, `rpc`, `server`) | 0 | 0 |
 | `packages/modules/*` | 11 | **0** *(7 L0 crates deleted)* | **11** *(trimmed `camera` & `native-views`; `pair` deleted in Wave S2)* | 0 | 0 | 0 |
-| `packages/tools/*` | 2 | 0 | 1 (`cli`) | 1 (`bench`) | 0 | 0 |
+| `packages/tools/*` | 3 | 0 | 1 (`cli`) | 2 (`arch-invariants`, `bench`) | 0 | 0 |
 | `cxx/nve-fabric-bridge` | 1 | 0 | 1 | 0 | 0 | 0 |
 | `hosts/*` | 12 | 0 | 6 (`compose-kit`, `flutter-plugin`, `gtk-shell`, `ios-shell`, `swiftui-kit`, `windows-shell`) | 6 (`android-shell`, `apple-common`, `macos-shell`, `qt-shell`, `skia-shell`, `web-shell`) | 0 | 0 |
 | `examples/*` | 4 | 0 | 1 (`kitchen-sink`) | 3 (`fullstack-issues`, `nve-docs-site`, `studio-workspace`) | 0 | 0 |
-| **Total** | **56** | **0** | **27** | **29** | **0** | **0** |
+| **Total** | **57** | **0** | **27** | **30** | **0** | **0** |
 
 ### Five Systemic Root Causes Across the Repo
 
@@ -148,8 +148,9 @@ In **Step 1 Part B**, all half-baked standalone platform stubs (`src/host_servic
 
 | Target | LOC | Level | Reality Summary | Disposition |
 | :--- | ---: | :---: | :--- | :--- |
+| `packages/tools/arch-invariants` | ~3,500 | **L2** | Standalone `syn` + `guppy` + `target-spec` L2 architectural invariant suite (workspace DAG, RPC/server purity, `[INV:<id>]` spec registry, `#[repr(C)]` locks, 650-line ratchet, README doctest & benchmark guards) with synthetic positive/negative unit tests. | **Keep** |
 | `packages/tools/bench` | 4,341 | **L2** | Real Criterion suites (`abi`, `dioxus`, `backends`, `interop`, `arena_and_mmap`) + WASM/Brotli budget checker. Redundant hand-rolled JSON codec in `baseline_codec.rs`; zero GPU Skia or real browser DOM benchmarks. | **Keep & Harden API** |
-| `packages/tools/cli` | 7,526 | **L1** | Working `codegen`, `dev`, `pair`, `docs`, `prerender`, `build`, `bench`, `doctor`. Hardcodes 5 internal example/shell crates in `Cargo.toml` (cannot prerender external apps); `main.rs:172` docs mismatch `prerender.rs`; `dev.rs` hardcodes `target/debug` and `./hosts/web-shell/build.sh` (broken on Windows). | **Refactor / Simplify** |
+| `packages/tools/cli` | 7,526 | **L1** | Working `codegen`, `dev` (spawning binary-only `nve-skia-shell` subprocess), `pair`, `docs`, `prerender`, `build`, `bench`, `doctor`. Hardcodes internal example crates in `Cargo.toml` (cannot prerender external apps); `main.rs:172` docs mismatch `prerender.rs`; `dev.rs` hardcodes `target/debug` and `./hosts/web-shell/build.sh` (broken on Windows). | **Refactor / Simplify** |
 | `cxx/nve-fabric-bridge` | 22,416 | **L1** | Real C++20 RN Yoga (`NVE_WITH_RN_YOGA=1`) + RN JSI (`NVE_WITH_RN_JSI=1`) + standalone scene publisher + `NVERELOC` mmap + CTest/fuzz. **CRITICAL**: `commit_rn_shadow_tree` (`src/fabric_c_api.cpp:143-159`) is a **no-op stub** (`old_root.clone({})`), `cxx/build-fabric` compiles with `NVE_WITH_RN_FABRIC=OFF`, `update_props_json` (`nve_rn_component.cpp:206`) is broken, **11 files exceed 650 LOC** (`nve_snapshot.hpp` 1,358 LOC hand-duplicates `nve-codegen`). | **Refactor / Simplify** |
 
 ---
@@ -158,7 +159,7 @@ In **Step 1 Part B**, all half-baked standalone platform stubs (`src/host_servic
 
 | Target | LOC | Level | What Is Real | Key Broken / Missing / Stubbed Items | Disposition |
 | :--- | ---: | :---: | :--- | :--- | :--- |
-| `hosts/skia-shell` | 9,500 | **L2** | `winit` multi-window, GPU Skia (opt-in) + `softbuffer` CPU, full IME/text editing, hot reload, Frame-0 instant boot, direct `DioxusDesktopApp` + coalesced `METHOD_WINDOW_REQUEST_FRAME` async wakeup, **only** host binding `NVE_IFACE_HOST = 5`. | **Zero accessibility** (no AccessKit); duplicates `nve-clipboard` (`window/clipboard.rs`); *(L0 `NativeNotifications` & dead `serde_json` removed in Step 1 Part B)*; side-channel styles (`:hover`, transitions, gradients, SVG) don't cross dylib FFI. | **Keep & Harden** |
+| `hosts/skia-shell` | 9,500 | **L2** | Binary-only `winit` multi-window host (zero `[lib]`), GPU Skia (opt-in, generic `GaneshPresenter<S>`) + `softbuffer` CPU, full IME/text editing, hot reload, Frame-0 instant boot, direct `DioxusDesktopApp` + coalesced `METHOD_WINDOW_REQUEST_FRAME` async wakeup, **only** host binding `NVE_IFACE_HOST = 5`. | **Zero accessibility** (no AccessKit); duplicates `nve-clipboard` (`window/clipboard.rs`); *(L0 `NativeNotifications` & dead `serde_json` removed in Step 1 Part B)*; side-channel styles (`:hover`, transitions, gradients, SVG) don't cross dylib FFI. | **Keep & Harden** |
 | `hosts/web-shell` | 7,136 | **L2** | `wasm32` `talc`, real browser DOM/Canvas2D/ARIA, coalesced `WebAsyncWakeGuard`/`WakeScheduler` microtask + `setTimeout(0)` macrotask paint-yield async wakeup, SSR hydration + replay, `localStorage` snapshot boot, feature-gated `app-issues` fullstack bundle, real headless Chrome CDP E2E. | **Zero `NVE_IFACE_HOST = 5`** (no `navigator.clipboard`/`matchMedia`/`Intl`); hardcodes demo apps; *(split `wasm_api.rs` below 650 LOC into `wasm_hotreload.rs`, `wasm_wake.rs`, and `wake_sched.rs` in Slice 1b)*; doesn't yet sync newly added gradient/SVG side-channels. | **Keep & Harden** |
 | `hosts/apple-common` | 3,778 | **L2** | Shared AppKit/UIKit reconciler, CoreGraphics `NVE_DRAW1`, LRU image cache, accessibility + IME guards, Frame-0 replay. | **Zero `NVE_IFACE_HOST = 5`**; single-line `NSTextField`/`UITextField` only; no hover/transition/gradient/SVG across FFI. | **Keep & Harden** |
 | `hosts/macos-shell` | 4,145 | **L2** | CMake `-Werror` `NSWindow`/`NSView` host, multi-window, Frame-0 instant boot + state restore, real dylib CTest. | **Zero `NVE_IFACE_HOST = 5`**; RN Fabric `RCTViewComponentView` path untested in `check-all.sh`; no global keyboard shortcuts outside text fields. | **Keep & Harden** |

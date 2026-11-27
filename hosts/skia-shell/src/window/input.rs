@@ -12,11 +12,11 @@ use nve_components::tables::{Interaction, TextInput};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use super::session::{now_us, DesktopSession};
-pub use super::text_edit::{
-    clamp_grapheme_boundary, classify_focused_key, classify_unfocused_keydown, delete_backward,
-    delete_forward, format_keydown_shorthand, insert_text_at, is_printable_text,
-    next_grapheme_boundary, normalize_line_endings, paragraph_bounds_at, prev_grapheme_boundary,
-    sanitize_pasted_multiline, sanitize_pasted_single_line, word_bounds_at, FocusedKeyAction,
+pub(super) use super::text_edit::{paragraph_bounds_at, word_bounds_at};
+#[cfg(test)]
+pub(super) use super::text_edit::{
+    format_keydown_shorthand, normalize_line_endings, sanitize_pasted_multiline,
+    sanitize_pasted_single_line,
 };
 use super::{DesktopApp, DesktopHostError};
 
@@ -63,6 +63,7 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     /// Programmatically moves focus to `next_focus` (or blurs when `None`), emitting balanced
     /// `CompositionEnd` (when blurring mid-composition) + `Blur`/`Focus` events and re-rendering.
+    #[cfg(test)]
     pub fn focus_node(&mut self, next_focus: Option<NodeId>) -> Result<bool, DesktopHostError> {
         let prev_focus = self.replica.backend().focused_node();
         let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();
@@ -349,6 +350,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     /// Finishes any in-progress mouse drag selection and releases active press state.
+    #[cfg(test)]
     pub fn handle_pointer_up_logical(&mut self) {
         let _ = self.handle_pointer_up_with_redraw();
     }

@@ -1,4 +1,5 @@
-# Polyglot legacy NodeStore-era host/component symbol bans (synced with `arch_invariants/types_abi_and_regressions.rs`):
+# [INV:no-legacy-nodestore-symbols]
+# Polyglot legacy NodeStore-era host/component symbol bans (synced with `nve-arch-invariants`):
 # `NVE_HOST_CLASS_*`, `ComponentKind`, `RenderSink`, `RawPropValue`, `RawStyleProps`,
 # `NativeViewSpec`, `BatchSink`, `ExtensionUpdate`, `SetRawProp`, `ErasedExtension`.
 

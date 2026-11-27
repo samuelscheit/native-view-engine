@@ -30,13 +30,13 @@ struct DeferredState {
 impl DeferredTransport {
     fn new(defer: bool) -> Self {
         let t = Self::default();
-        t.state.lock().unwrap().defer = defer;
+        t.state.lock().unwrap_or_else(|e| e.into_inner()).defer = defer;
         t
     }
 
     fn release(&self) {
         let wakers = {
-            let mut g = self.state.lock().unwrap();
+            let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
             g.defer = false;
             core::mem::take(&mut g.wakers)
         };
@@ -51,7 +51,7 @@ impl Transport for DeferredTransport {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
             core::future::poll_fn(|cx| {
-                let mut g = state.lock().unwrap();
+                let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                 if g.defer {
                     g.wakers.push(cx.waker().clone());
                     Poll::Pending
@@ -61,12 +61,12 @@ impl Transport for DeferredTransport {
             })
             .await;
             let n = {
-                let mut g = state.lock().unwrap();
+                let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                 g.calls += 1;
                 g.calls
             };
             if req.name == GetItem::NAME {
-                let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode id");
                 let mut body = Vec::new();
                 CborCodec::default()
                     .encode_into(
@@ -77,7 +77,7 @@ impl Transport for DeferredTransport {
                         },
                         &mut body,
                     )
-                    .unwrap();
+                    .expect("encode deferred item");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -87,7 +87,7 @@ impl Transport for DeferredTransport {
                 });
             }
             if req.name == RenameItem::NAME {
-                let inp: RenameInput = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let inp: RenameInput = CborCodec::default().decode_bounded(&req.body).expect("decode rename");
                 let mut body = Vec::new();
                 CborCodec::default()
                     .encode_into(
@@ -98,7 +98,7 @@ impl Transport for DeferredTransport {
                         },
                         &mut body,
                     )
-                    .unwrap();
+                    .expect("encode renamed item");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,

@@ -91,6 +91,7 @@ fn row_writer_put_rejects_str_word_corruption() {
     let mut tx = store.tx();
     let n = tx.create();
     // `HardBox::LABEL` is a `Str` field; attempting a raw scalar `tx.set` on its word must panic.
+    // SAFETY: Deliberately mismatched descriptor constructed to verify `RowWriter` panic guard.
     let fake_scalar = unsafe { nve_store::Prop::<HardBox, u32>::new(HardBox::LABEL.word(), 0, 32) };
     tx.set(n, fake_scalar, 0xDEAD_BEEF);
 }
@@ -101,6 +102,7 @@ fn row_writer_put_str_panics_on_non_str_word() {
     let mut store = NodeStore::new();
     let mut tx = store.tx();
     let n = tx.create();
+    // SAFETY: Deliberately mismatched descriptor constructed to verify `RowWriter::put_str` guard.
     let fake_str = unsafe { nve_store::StrProp::<HardBox>::new(HardBox::WIDTH.word()) };
     tx.set_str(n, fake_str, "corrupt");
 }
@@ -111,6 +113,7 @@ fn row_writer_put_resource_panics_on_non_resource_word() {
     let mut store = NodeStore::new();
     let mut tx = store.tx();
     let n = tx.create();
+    // SAFETY: Deliberately mismatched descriptor constructed to verify `RowWriter::put_resource` guard.
     let fake_res =
         unsafe { nve_store::ResProp::<HardBox, EphemeralBlob>::new(HardBox::WIDTH.word()) };
     tx.set_resource(n, fake_res, Some(EphemeralBlob(vec![1, 2])));
@@ -512,6 +515,7 @@ fn sparse_swap_remove_notifies_table_view_without_wire_retransmit() {
         .expect("PubSparse table view");
     assert_eq!(view.row_count, 1);
     assert_eq!(view.dirty_count, 1, "relocated row index 0 must be reported dirty");
+    // SAFETY: `view.dirty_rows` borrows `dirty_buf` with `view.dirty_count` initialized entries.
     let dirty_slice = unsafe { core::slice::from_raw_parts(view.dirty_rows, view.dirty_count as usize) };
     assert_eq!(dirty_slice, &[0]);
     assert_eq!(store.row::<PubSparse>(b).val(), 22);

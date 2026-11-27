@@ -1,5 +1,6 @@
 //! Dioxus 0.7 reactive query/action hooks, dense slot-signal bridge, and progressive
 //! [`ActionForm`] built on [`nve_query`] and [`nve_ui`].
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod action_form;
 pub mod bridge;
