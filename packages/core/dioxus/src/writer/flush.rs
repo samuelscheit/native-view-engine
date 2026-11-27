@@ -26,6 +26,18 @@ impl<S: RenderSink> MutationTx<'_, S> {
             }
         }
 
+        // Compose layered styles (`nve_style` -> standalone attrs -> inline `style`) ONCE per
+        // dirty node per frame (eliminating O(k^2) reparsing and mid-frame raw-prop churn).
+        if !w.dirty_compose.is_empty() {
+            let dirty = std::mem::take(&mut w.dirty_compose);
+            for &nid in &dirty {
+                w.recompute_node_styles(sink, nid);
+            }
+            let mut reusable = dirty;
+            reusable.clear();
+            w.dirty_compose = reusable;
+        }
+
         // Propagate inherited text_color, font_size, font_weight, and text_align from styled Text
         // parents to unstyled child Text leaves.
         if !w.dirty_children.is_empty()
@@ -42,12 +54,18 @@ impl<S: RenderSink> MutationTx<'_, S> {
                 let pid = w.style_sources[i];
                 w.propagate_text_style_down(sink, pid);
             }
-            if w.current_color_border_nodes > 0 {
-                w.resolve_current_color_borders();
-            }
             w.style_sources.clear();
             w.dirty_text_props.clear();
         }
+
+        // Resolve symbolic `currentColor` borders in O(k * depth) ONLY for live `currentColor`
+        // border nodes and ONLY when a color or structural change occurred this frame.
+        if (w.color_tree_dirty || !w.dirty_children.is_empty())
+            && !w.current_color_borders.is_empty()
+        {
+            w.resolve_current_color_borders();
+        }
+        w.color_tree_dirty = false;
 
         // Coalesce all structural/style/layout mutations into one deterministic batch per frame
         // using persistent scratch Vecs sorted & deduped in place (zero per-frame heap allocs).
@@ -229,46 +247,25 @@ impl NveMutationWriter {
         }
     }
 
-    /// Resolves symbolic `currentColor` borders against own or inherited ancestor `color` for
-    /// every dirty source subtree before `dirty_style` flushes.
+    /// Resolves symbolic `currentColor` borders in O(k * depth) across only the live nodes that
+    /// currently use `currentColor`, never walking unrelated subtrees.
     fn resolve_current_color_borders(&mut self) {
-        self.color_walk_stack.clear();
-        for i in 0..self.style_sources.len() {
-            let src_id = self.style_sources[i];
-            let Some(src) = self.nodes.get(&src_id) else {
+        for i in 0..self.current_color_borders.len() {
+            let nid = self.current_color_borders[i];
+            let Some(rec) = self.nodes.get(&nid) else {
                 continue;
             };
-            let src_color = if src.has_explicit_text_color() {
-                src.style.text_color
+            let resolved = if rec.has_explicit_text_color() {
+                rec.style.text_color
             } else {
-                self.inherited_text_color_from_ancestors(src_id)
+                self.inherited_text_color_from_ancestors(nid)
             };
-            if let Some(rec) = self.nodes.get_mut(&src_id) {
-                if rec.border_uses_current_color() && rec.style.border_color != src_color {
-                    rec.style.border_color = src_color;
-                    self.dirty_style.push(src_id);
-                }
-                for &cid in &rec.children {
-                    self.color_walk_stack.push((cid, src_color));
-                }
-            }
-            while let Some((cid, inherited_color)) = self.color_walk_stack.pop() {
-                let Some(child) = self.nodes.get_mut(&cid) else {
-                    continue;
-                };
-                if child.has_explicit_text_color() {
-                    continue;
-                }
-                if child.border_uses_current_color() && child.style.border_color != inherited_color
-                {
-                    child.style.border_color = inherited_color;
-                    self.dirty_style.push(cid);
-                }
-                for &grandchild in &child.children {
-                    self.color_walk_stack.push((grandchild, inherited_color));
-                }
+            if let Some(rec) = self.nodes.get_mut(&nid)
+                && rec.style.border_color != resolved
+            {
+                rec.style.border_color = resolved;
+                self.dirty_style.push(nid);
             }
         }
-        self.color_walk_stack.clear();
     }
 }

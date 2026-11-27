@@ -13,7 +13,8 @@ use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{BackendApplyStats, BackendError, RenderSink};
 
-/// Mirrors the last flushed `LayoutExt` (`None` when cleared), layout, style, and raw props per node.
+/// Mirrors the last flushed `LayoutExt` (`None` when cleared), layout, style, and raw prop
+/// values (`Some(s)` for String, `None` for Null) per node, plus per-frame write counters.
 #[derive(Default)]
 struct ExtSink {
     layout_ext: HashMap<NodeId, Option<LayoutExt>>,
@@ -21,10 +22,16 @@ struct ExtSink {
     style: HashMap<NodeId, StyleProps>,
     test_ids: HashMap<String, NodeId>,
     raw_keys: Vec<String>,
+    raw_props: HashMap<NodeId, HashMap<String, Option<String>>>,
+    frame_raw_writes: usize,
+    frame_style_writes: HashMap<NodeId, usize>,
 }
 
 impl RenderSink for ExtSink {
-    fn begin_frame(&mut self, _: SurfaceId, _: FrameId) {}
+    fn begin_frame(&mut self, _: SurfaceId, _: FrameId) {
+        self.frame_raw_writes = 0;
+        self.frame_style_writes.clear();
+    }
     fn create_node(&mut self, _: NodeId, _: ComponentKind, _: Option<&str>) {}
     fn remove_node(&mut self, _: NodeId) {}
     fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
@@ -34,13 +41,24 @@ impl RenderSink for ExtSink {
     }
     fn set_style(&mut self, node_id: NodeId, style: &StyleProps) {
         self.style.insert(node_id, *style);
+        *self.frame_style_writes.entry(node_id).or_default() += 1;
     }
     fn set_raw_prop(&mut self, node_id: NodeId, key: &str, value: RawPropValueRef<'_>) {
-        if key == "testID"
-            && let RawPropValueRef::String(tid) = value
-        {
-            self.test_ids.insert(tid.to_owned(), node_id);
-        }
+        self.frame_raw_writes += 1;
+        let recorded = match value {
+            RawPropValueRef::String(s) => {
+                if key == "testID" {
+                    self.test_ids.insert(s.to_owned(), node_id);
+                }
+                Some(s.to_owned())
+            }
+            RawPropValueRef::Null => None,
+            _ => Some("<non-string>".to_owned()),
+        };
+        self.raw_props
+            .entry(node_id)
+            .or_default()
+            .insert(key.to_owned(), recorded);
         self.raw_keys.push(key.to_owned());
     }
     fn set_event_mask(&mut self, _: NodeId, _: u64) {}
@@ -74,6 +92,15 @@ impl ExtSink {
 
     fn style_of(&self, tid: &str) -> StyleProps {
         self.style.get(&self.node(tid)).copied().unwrap_or_default()
+    }
+
+    /// Returns `Some(Some(val))` if set, `Some(None)` if explicitly cleared via `Null`, or `None`
+    /// if never emitted.
+    fn raw_of(&self, tid: &str, key: &str) -> Option<Option<&str>> {
+        self.raw_props
+            .get(&self.node(tid))
+            .and_then(|m| m.get(key))
+            .map(|opt| opt.as_deref())
     }
 }
 
@@ -302,4 +329,147 @@ fn current_color_resolves_across_attributes_dynamic_updates_and_ancestor_inherit
     // Frame 4: parent sets accent blue -> inherited updates again.
     press(&mut surface, &mut sink, 4);
     assert_eq!(sink.style_of("inherited").border_color, accent);
+}
+
+#[component]
+fn RawStyleLayerAndDiffApp() -> Element {
+    let mut step = use_signal(|| 0usize);
+    let s = step();
+    let w = if s == 0 { "100px" } else { "200px" };
+    let ov: Option<String> = (s < 2).then(|| "hidden".to_owned());
+    let fw: Option<String> = (s < 2).then(|| "700".to_owned());
+    let inline_raw: Option<String> = match s {
+        0 => Some("display: none; white-space: nowrap; flex-wrap: wrap".to_owned()),
+        1 => Some("display: none; white-space: nowrap; flex-wrap: wrap".to_owned()),
+        2 => Some("padding: 8px".to_owned()),
+        _ => None,
+    };
+    let parent_opacity = if s % 2 == 0 { "1" } else { "0.5" };
+    let child_pad_style = if s == 0 {
+        "border: 1px solid"
+    } else {
+        "border: 1px solid; padding: 12px"
+    };
+    rsx! {
+        view {
+            // Standalone raw-style attrs in BOTH attribute orders relative to typed attrs.
+            view { test_id: "raw_first", "overflow": ov.clone(), width: w }
+            view { test_id: "typed_first", width: w, "overflow": ov }
+            text { test_id: "text_raw", "font-weight": fw, padding: "4px", "Bold" }
+            // Inline raw-style attrs + dynamic typed attr update (must not re-send unchanged raw).
+            view { test_id: "inline_raw", width: w, style: inline_raw }
+            // Unrelated opacity animation on a colored parent must not rewrite currentColor child.
+            view {
+                test_id: "anim_parent",
+                style: "color: #ffffff; opacity: {parent_opacity}",
+                view { test_id: "anim_child", style: "{child_pad_style}" }
+            }
+            pressable { test_id: "cycle", onpress: move |_| step += 1 }
+        }
+    }
+}
+
+#[test]
+fn standalone_raw_style_attrs_survive_typed_attrs_and_inline_raw_props_diff_and_clear_cleanly() {
+    use nve_abi::ColorRgba;
+    let mut surface = DioxusSurface::new(1, RawStyleLayerAndDiffApp);
+    let mut sink = ExtSink::default();
+    surface.flush_into(1, &mut sink).unwrap();
+
+    // Frame 1: standalone raw-style attributes survive typed attributes in BOTH orders.
+    assert_eq!(sink.raw_of("raw_first", "overflow"), Some(Some("hidden")));
+    assert_eq!(sink.raw_of("typed_first", "overflow"), Some(Some("hidden")));
+    assert_eq!(sink.raw_of("text_raw", "font-weight"), Some(Some("700")));
+    assert_eq!(sink.raw_of("inline_raw", "display"), Some(Some("none")));
+    assert_eq!(sink.raw_of("inline_raw", "white-space"), Some(Some("nowrap")));
+    assert_eq!(sink.raw_of("inline_raw", "flex-wrap"), Some(Some("wrap")));
+    assert_eq!(sink.style_of("anim_child").border_color, ColorRgba::WHITE);
+
+    // Frame 2: only `width` + `opacity` + child `padding` changed -> ZERO redundant raw prop writes,
+    // and child `border_color` stays WHITE (no revert to black, no extra SetStyle write on child!).
+    press(&mut surface, &mut sink, 2);
+    assert_eq!(
+        sink.frame_raw_writes, 0,
+        "width-only update must not re-send unchanged raw style props"
+    );
+    assert_eq!(sink.raw_of("raw_first", "overflow"), Some(Some("hidden")));
+    assert_eq!(sink.raw_of("typed_first", "overflow"), Some(Some("hidden")));
+    assert_eq!(sink.style_of("anim_child").border_color, ColorRgba::WHITE);
+    assert_eq!(
+        sink.frame_style_writes.get(&sink.node("anim_child")).copied().unwrap_or(0),
+        0,
+        "unrelated opacity animation + child padding change must not emit SetStyle for anim_child"
+    );
+
+    // Frame 3: remove standalone `"overflow"` / `"font-weight"` and drop inline raw declarations
+    // (`display`, `white-space`, `flex-wrap`) -> all MUST emit `Null` on the wire!
+    press(&mut surface, &mut sink, 3);
+    assert_eq!(sink.raw_of("raw_first", "overflow"), Some(None));
+    assert_eq!(sink.raw_of("typed_first", "overflow"), Some(None));
+    assert_eq!(sink.raw_of("text_raw", "font-weight"), Some(None));
+    assert_eq!(sink.raw_of("inline_raw", "display"), Some(None));
+    assert_eq!(sink.raw_of("inline_raw", "white-space"), Some(None));
+    assert_eq!(sink.raw_of("inline_raw", "flex-wrap"), Some(None));
+
+    // Frame 4: removing inline `style` completely emits zero extra Nulls for already-cleared keys.
+    press(&mut surface, &mut sink, 4);
+    assert_eq!(sink.frame_raw_writes, 0);
+}
+
+#[component]
+fn ShorthandLonghandPrecedenceApp() -> Element {
+    let mut step = use_signal(|| 0usize);
+    let s = step();
+    // Dynamic shorthand paired with static longhand (Dioxus applies static template attrs BEFORE
+    // dynamic attrs) AND `Some -> None -> Some` toggle cycle on `padding` + `padding_horizontal`.
+    let dyn_flex = if s % 2 == 0 { "1 0 200px" } else { "2 0 150px" };
+    let opt_pad: Option<String> = (s != 1).then(|| "16px".to_owned());
+    let opt_bw: Option<String> = (s != 1).then(|| "5px".to_owned());
+    rsx! {
+        view {
+            view { test_id: "flex_split", flex: "{dyn_flex}", flex_grow: "3" }
+            view { test_id: "pad_toggle", padding: opt_pad, padding_horizontal: "4px" }
+            view { test_id: "border_split", "border": "2px solid #ef4444", border_width: opt_bw }
+            pressable { test_id: "cycle", onpress: move |_| step += 1 }
+        }
+    }
+}
+
+#[test]
+fn layer2_shorthand_vs_longhand_precedence_survives_static_dynamic_split_and_toggles() {
+    use nve_abi::{ColorRgba, EdgeInsets};
+    let mut surface = DioxusSurface::new(1, ShorthandLonghandPrecedenceApp);
+    let mut sink = ExtSink::default();
+    surface.flush_into(1, &mut sink).unwrap();
+
+    // Frame 1: static `flex_grow: "3"` wins over dynamic `flex: "1 0 200px"`;
+    // `padding_horizontal: "4px"` wins over `padding: "16px"`; `border_width: "5px"` wins over `2px`.
+    assert_eq!(sink.flex_factors("flex_split"), (3.0, 0.0));
+    assert_eq!(sink.basis("flex_split"), Dimension::Points(200.0));
+    assert_eq!(
+        sink.layout[&sink.node("pad_toggle")].padding,
+        EdgeInsets { top: 16.0, right: 4.0, bottom: 16.0, left: 4.0 }
+    );
+    assert_eq!(sink.style_of("border_split").border_width, 5.0);
+    assert_eq!(sink.style_of("border_split").border_color, ColorRgba::rgb(239, 68, 68));
+
+    // Frame 2: `padding` -> None leaves `padding_horizontal: 4px`; `border_width` -> None falls
+    // back to `border` shorthand's `2px`; dynamic `flex` update keeps `flex_grow: 3.0`.
+    press(&mut surface, &mut sink, 2);
+    assert_eq!(sink.flex_factors("flex_split"), (3.0, 0.0));
+    assert_eq!(sink.basis("flex_split"), Dimension::Points(150.0));
+    assert_eq!(
+        sink.layout[&sink.node("pad_toggle")].padding,
+        EdgeInsets { top: 0.0, right: 4.0, bottom: 0.0, left: 4.0 }
+    );
+    assert_eq!(sink.style_of("border_split").border_width, 2.0);
+    assert_eq!(sink.style_of("border_split").border_color, ColorRgba::rgb(239, 68, 68));
+
+    // Frame 3: `padding` re-appears (`Some("16px")`) — MUST match Frame 1 identically (`4px` horiz).
+    press(&mut surface, &mut sink, 3);
+    assert_eq!(
+        sink.layout[&sink.node("pad_toggle")].padding,
+        EdgeInsets { top: 16.0, right: 4.0, bottom: 16.0, left: 4.0 }
+    );
+    assert_eq!(sink.style_of("border_split").border_width, 5.0);
 }

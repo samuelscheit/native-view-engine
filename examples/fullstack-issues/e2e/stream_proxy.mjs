@@ -52,7 +52,11 @@ export function startStreamProxy(upstreamPort) {
       }
     );
     upstream.on("error", (err) => {
-      if (plan && !handedOff) {
+      if (plan && handedOff) {
+        // After handoff, `cutStream`'s `up` error/close handlers govern held vs released state.
+        return;
+      }
+      if (plan) {
         plan.onMiss(`upstream request error: ${err?.message || err}`);
       }
       if (!res.headersSent) {
@@ -167,6 +171,7 @@ function cutStream(plan, up, upstreamReq, res) {
     state.held = true;
     plan.onCut();
   });
+  let upstreamAborted = false;
   up.on("end", () => {
     upstreamEnded = true;
     if (!state.held && !truncated) {
@@ -175,32 +180,32 @@ function cutStream(plan, up, upstreamReq, res) {
       if (cut < 0) plan.onMiss("marker never appeared before EOF");
     }
   });
-  up.on("error", (err) => {
-    if (truncated) return;
-    if (state.held) {
-      upstreamEnded = true;
-      return;
-    }
-    if (!res.writableEnded) res.end();
-    if (cut < 0) plan.onMiss(`upstream response error: ${err?.message || err}`);
-  });
-  up.on("close", () => {
-    if (truncated) return;
-    if (state.held) {
-      upstreamEnded = true;
-      return;
-    }
-    if (!upstreamEnded) {
+  const handleAbort = (reason) => {
+    if (truncated || upstreamEnded) return;
+    upstreamAborted = true;
+    if (state.held) return;
+    if (cut < 0) {
       if (!res.writableEnded) res.end();
-      if (cut < 0) plan.onMiss("upstream response closed before EOF");
+      plan.onMiss(reason);
+    } else if (!res.destroyed) {
+      // Upstream died after `release()`: surface the abort to the client instead of faking EOF.
+      res.destroy();
     }
+  };
+  up.on("error", (err) => handleAbort(`upstream response error: ${err?.message || err}`));
+  up.on("close", () => {
+    if (!upstreamEnded) handleAbort("upstream response closed before EOF");
   });
 
   function release() {
     if (!state.held) return;
     state.held = false;
     forwardTo(buf.length);
-    if (upstreamEnded) res.end();
+    if (upstreamAborted) {
+      if (!res.destroyed) res.destroy();
+    } else if (upstreamEnded && !res.writableEnded) {
+      res.end();
+    }
   }
 
   /** Ends the document gracefully at the cut (no stream-end marker) and drops the upstream. */

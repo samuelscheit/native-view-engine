@@ -6,6 +6,7 @@ mod attr_keys;
 mod attributes;
 mod flush;
 mod mutations;
+mod standalone_mask;
 mod style_compose;
 #[cfg(test)]
 mod tests;
@@ -44,18 +45,48 @@ pub(crate) const EXT_SVG: u16 = 1 << 8;
 pub(crate) const EXT_DRAW_LIST: u16 = 1 << 9;
 pub(crate) const EXT_NATIVE_VIEW_PROPS: u16 = 1 << 10;
 
+/// Parsed Layer-2 standalone typed attribute snapshot (allocated lazily only when a node combines
+/// standalone typed attributes with `nve_style`, inline `style`, standalone raw-style attrs, or
+/// overlapping shorthand + longhand attributes). Keeps shorthand, axis-shorthand, and longhand
+/// values in distinct tiers so precedence (`shorthand` < `axis` < `longhand`) is 100% independent
+/// of attribute order, static/dynamic template split, and `Some -> None -> Some` toggles.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StandaloneLayer {
+    /// Active shorthand/axis bits (`SH_*` in `standalone_mask.rs`).
+    pub(crate) shorthand_mask: u8,
+    pub(crate) sh_flex_grow: f32,
+    pub(crate) sh_flex_shrink: f32,
+    pub(crate) sh_flex_basis: nve_abi::Dimension,
+    pub(crate) sh_padding: nve_abi::EdgeInsets,
+    pub(crate) sh_pad_h: f32,
+    pub(crate) sh_pad_v: f32,
+    pub(crate) sh_margin: nve_abi::EdgeInsets,
+    pub(crate) sh_mar_h: f32,
+    pub(crate) sh_mar_v: f32,
+    pub(crate) sh_border_width: f32,
+    pub(crate) sh_border_color: ColorRgba,
+    pub(crate) sh_border_current_color: bool,
+    /// Active non-shorthand / longhand field bits (`MASK_*`).
+    pub(crate) mask: u32,
+    pub(crate) layout: LayoutProps,
+    pub(crate) style: StyleProps,
+    pub(crate) flex_basis: nve_abi::Dimension,
+    pub(crate) border_current_color: bool,
+}
+
 /// Cold optional per-node metadata boxed behind `Option<Box<NodeExtras>>` so hot `NodeRecord`
 /// entries stay compact (`<= 200` bytes).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NodeExtras {
     pub(crate) typed_style: Option<TypedStyle>,
-    pub(crate) standalone_typed_attrs: Vec<(&'static str, String)>,
+    pub(crate) standalone_layer: Option<Box<StandaloneLayer>>,
+    pub(crate) standalone_raw_attrs: Vec<(&'static str, String)>,
     pub(crate) inline_style_override: Option<String>,
+    /// Last-emitted non-inherited raw style props (`display`, `box-shadow`, `overflow`, ...),
+    /// keyed by canonical `&'static str`, enabling zero-redundancy diffing and `Null` clearing.
+    pub(crate) emitted_raw_styles: Vec<(&'static str, Cow<'static, str>)>,
     pub(crate) font_weight: Option<Cow<'static, str>>,
     pub(crate) text_align: Option<Cow<'static, str>>,
-    pub(crate) box_shadow: Option<Cow<'static, str>>,
-    pub(crate) overflow: Option<Cow<'static, str>>,
-    pub(crate) object_fit: Option<Cow<'static, str>>,
     pub(crate) test_id: Option<String>,
     pub(crate) text: Option<String>,
     pub(crate) native_kind: Option<String>,
@@ -82,6 +113,7 @@ const FLAG_EXPLICIT_TEXT_ALIGN: u8 = 1 << 2;
 const FLAG_DEFERRED_NATIVE_CREATE: u8 = 1 << 3;
 const FLAG_EXPLICIT_TEXT_COLOR: u8 = 1 << 4;
 const FLAG_BORDER_CURRENT_COLOR: u8 = 1 << 5;
+const FLAG_DIRTY_COMPOSE: u8 = 1 << 6;
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeRecord {
@@ -93,6 +125,12 @@ pub(crate) struct NodeRecord {
     pub(crate) extras: Option<Box<NodeExtras>>,
     /// `0` means no parent (valid node IDs start at `ROOT_NODE_ID == 1`).
     parent_raw: NodeId,
+    /// Field bitmask of standalone typed attributes written directly into `layout`/`style` on the
+    /// zero-alloc fast path (cleared to `0` once promoted into `extras.standalone_layer`).
+    pub(super) standalone_mask: u32,
+    /// Shorthand/axis bits active on the direct fast path (`SH_*`), so overlapping shorthand +
+    /// longhand attributes promote cleanly into `StandaloneLayer` without losing precedence.
+    pub(super) direct_shorthands: u8,
     pub(crate) kind: ComponentKind,
     flags: u8,
 }
@@ -107,6 +145,8 @@ impl Default for NodeRecord {
             event_mask: 0,
             extras: None,
             parent_raw: 0,
+            standalone_mask: 0,
+            direct_shorthands: 0,
             kind: ComponentKind::View,
             flags: 0,
         }
@@ -218,6 +258,20 @@ impl NodeRecord {
             self.flags &= !FLAG_BORDER_CURRENT_COLOR;
         }
     }
+
+    #[inline]
+    pub(super) fn is_dirty_compose(&self) -> bool {
+        (self.flags & FLAG_DIRTY_COMPOSE) != 0
+    }
+
+    #[inline]
+    pub(super) fn set_dirty_compose(&mut self, v: bool) {
+        if v {
+            self.flags |= FLAG_DIRTY_COMPOSE;
+        } else {
+            self.flags &= !FLAG_DIRTY_COMPOSE;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -244,8 +298,11 @@ pub struct NveMutationWriter {
     /// Persistent scratch buffers reused across frames (cleared + sorted/deduped in place).
     pub(super) style_sources: Vec<NodeId>,
     pub(super) style_walk_stack: Vec<TextStyleWalkEntry>,
-    pub(super) color_walk_stack: Vec<(NodeId, ColorRgba)>,
-    pub(super) current_color_border_nodes: u32,
+    /// Dense list of live nodes whose `border-color` symbolically tracks `currentColor`.
+    pub(super) current_color_borders: Vec<NodeId>,
+    pub(super) color_tree_dirty: bool,
+    pub(super) dirty_compose: Vec<NodeId>,
+    pub(super) raw_style_scratch: Vec<(&'static str, Cow<'static, str>)>,
     pub(super) dirty_children: Vec<NodeId>,
     pub(super) dirty_layout: Vec<NodeId>,
     pub(super) dirty_style: Vec<NodeId>,
@@ -289,8 +346,10 @@ impl NveMutationWriter {
             stack: Vec::with_capacity(64),
             style_sources: Vec::with_capacity(16),
             style_walk_stack: Vec::new(),
-            color_walk_stack: Vec::new(),
-            current_color_border_nodes: 0,
+            current_color_borders: Vec::new(),
+            color_tree_dirty: false,
+            dirty_compose: Vec::new(),
+            raw_style_scratch: Vec::new(),
             dirty_children: Vec::with_capacity(16),
             dirty_layout: Vec::with_capacity(16),
             dirty_style: Vec::with_capacity(16),
@@ -314,7 +373,9 @@ impl NveMutationWriter {
         self.stack.clear();
         self.style_sources.clear();
         self.style_walk_stack.clear();
-        self.color_walk_stack.clear();
+        self.color_tree_dirty = false;
+        self.dirty_compose.clear();
+        self.raw_style_scratch.clear();
         self.dirty_children.clear();
         self.dirty_layout.clear();
         self.dirty_style.clear();
@@ -543,8 +604,10 @@ impl NveMutationWriter {
 
     pub(super) fn remove_subtree<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
         if let Some(rec) = self.nodes.remove(&node_id) {
-            if rec.border_uses_current_color() {
-                self.current_color_border_nodes = self.current_color_border_nodes.saturating_sub(1);
+            if rec.border_uses_current_color()
+                && let Some(pos) = self.current_color_borders.iter().position(|&id| id == node_id)
+            {
+                self.current_color_borders.swap_remove(pos);
             }
             if let Some(binder) = rec.extras.and_then(|e| e.native_handle_binder) {
                 binder.unbind();

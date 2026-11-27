@@ -415,13 +415,18 @@ fn multi_query_error_boundary_retains_all_live_handles_and_clears_on_reset_unmou
     expected.sort_by_key(|h| (h.slot.index(), h.generation));
     assert_eq!(caught, expected, "ErrorBoundary catch must retain all live boundary handles");
 
-    // 2. Disable synthetic failure and reset -> recovers cleanly and clears errored set.
+    // 2. Disable synthetic failure and reset: `clear_errored()` must empty the caught set
+    // immediately on reset (before re-render mounts and resolves the recovered children).
     let mut fail_sig = ctl.fail_second.borrow().unwrap();
     let reset = ctl.reset_fn.borrow().clone().expect("error fallback mounted");
     surface.in_root_scope(|| {
         fail_sig.set(false);
         reset.reset();
     });
+    assert!(
+        registry.entry("multi_err").unwrap().query_handles().is_empty(),
+        "reset must clear errored handles immediately before re-render"
+    );
     let recovered_html = settle(&mut surface);
     assert!(recovered_html.contains("10:ok+11:ok"), "{recovered_html}");
 

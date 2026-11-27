@@ -2,13 +2,11 @@
 //! `nve_style` + inline `style` override merging, extended-prop dirty tracking, and ARIA key
 //! canonicalization.
 
-use std::borrow::Cow;
-
 use dioxus_core::{AttributeValue, ElementId};
 use nve_abi::{NodeId, RawPropValueRef};
 use nve_components::{
-    canonical_raw_style_key, canonical_typed_attr_key, AutofillHint, DrawList, DrawListDecoder,
-    InputMode, MediaQuery, SvgPicture, DRAW_LIST_ATTR_PREFIX,
+    canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder, InputMode, MediaQuery,
+    SvgPicture, TypedAttrKind, DRAW_LIST_ATTR_PREFIX,
 };
 use nve_engine::RenderSink;
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
@@ -21,6 +19,7 @@ use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
 use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
 use super::attr_keys::{canonical_a11y_attr_key, canonical_input_attr_key};
+use super::style_compose::promote_direct_attrs_if_needed;
 use super::{
     mark_ext_dirty, NveMutationWriter, EXT_BACKGROUND_FILL, EXT_CURSOR, EXT_DRAW_LIST,
     EXT_NATIVE_VIEW_PROPS, EXT_RESPONSIVE_RULES, EXT_SHOW_ON, EXT_STATE_RULES, EXT_SVG,
@@ -93,11 +92,11 @@ impl NveMutationWriter {
             }
             AttributeValue::None => {
                 if name == "style" {
-                    self.clear_inline_style(sink, node_id);
+                    self.clear_inline_style(node_id);
                     return;
                 }
                 if name == NVE_TYPED_STYLE_ATTR {
-                    self.clear_typed_style(sink, node_id);
+                    self.clear_typed_style(node_id);
                     return;
                 }
                 if name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR {
@@ -134,12 +133,15 @@ impl NveMutationWriter {
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
                 }
-                if let Some(canon) = canonical_typed_attr_key(name) {
-                    self.remove_standalone_typed_attr(sink, node_id, canon);
+                if let Some(kind) = TypedAttrKind::from_key(name) {
+                    self.remove_standalone_typed_attr(node_id, kind);
                     return;
                 }
-                let prop_name = canonical_raw_style_key(name)
-                    .or_else(|| canonical_a11y_attr_key(name))
+                if let Some(canon) = canonical_raw_style_key(name) {
+                    self.remove_standalone_raw_attr(node_id, canon);
+                    return;
+                }
+                let prop_name = canonical_a11y_attr_key(name)
                     .or_else(|| canonical_input_attr_key(name))
                     .unwrap_or(name);
                 sink.set_raw_prop(node_id, prop_name, RawPropValueRef::Null);
@@ -264,6 +266,7 @@ impl NveMutationWriter {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
+        promote_direct_attrs_if_needed(rec);
         let ext = rec.extras_mut();
 
         let next_show = ext.explicit_show_on.or(typed.show_on);
@@ -296,10 +299,11 @@ impl NveMutationWriter {
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
         }
         ext.typed_style = Some(typed);
-        self.recompute_node_styles(sink, node_id);
+        let _ = sink;
+        self.mark_dirty_compose(node_id);
     }
 
-    fn clear_typed_style<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
+    fn clear_typed_style(&mut self, node_id: NodeId) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
@@ -334,10 +338,10 @@ impl NveMutationWriter {
         if ext.background_fill.take().is_some() {
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
         }
-        self.recompute_node_styles(sink, node_id);
+        self.mark_dirty_compose(node_id);
     }
 
-    fn clear_inline_style<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
+    fn clear_inline_style(&mut self, node_id: NodeId) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
@@ -347,7 +351,7 @@ impl NveMutationWriter {
         if ext.inline_style_override.take().is_none() {
             return;
         }
-        self.recompute_node_styles(sink, node_id);
+        self.mark_dirty_compose(node_id);
     }
 
     pub(crate) fn apply_str_attr<S: RenderSink>(
@@ -362,48 +366,39 @@ impl NveMutationWriter {
         }
         if name == "style" {
             let trimmed = value.trim();
-            let next_override = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            let next_override = (!trimmed.is_empty()).then_some(trimmed);
             if let Some(rec) = self.nodes.get_mut(&node_id) {
                 if rec
                     .extras()
                     .and_then(|e| e.inline_style_override.as_deref())
-                    == next_override.as_deref()
+                    == next_override
                 {
                     return;
                 }
-                if next_override.is_some() || rec.extras.is_some() {
-                    rec.extras_mut().inline_style_override = next_override;
+                promote_direct_attrs_if_needed(rec);
+                if let Some(css) = next_override {
+                    let ext = rec.extras_mut();
+                    match &mut ext.inline_style_override {
+                        Some(existing) => {
+                            existing.clear();
+                            existing.push_str(css);
+                        }
+                        None => ext.inline_style_override = Some(css.to_owned()),
+                    }
+                } else if let Some(ext) = rec.extras.as_deref_mut() {
+                    ext.inline_style_override = None;
                 }
-                self.recompute_node_styles(sink, node_id);
+                self.mark_dirty_compose(node_id);
             }
             return;
         }
-        if let Some(canon) = canonical_typed_attr_key(name) {
-            self.upsert_standalone_typed_attr(sink, node_id, canon, value);
+        if let Some(kind) = TypedAttrKind::from_key(name) {
+            self.apply_standalone_typed_attr(node_id, kind, value);
             return;
         }
-        if let Some(rec) = self.nodes.get_mut(&node_id)
-            && let Some(canonical) = canonical_raw_style_key(name)
-        {
-            match canonical {
-                "font-weight" => {
-                    rec.set_has_explicit_font_weight(true);
-                    rec.extras_mut().font_weight = Some(Cow::Owned(value.to_owned()));
-                    self.dirty_text_props.push(node_id);
-                }
-                "text-align" => {
-                    rec.set_has_explicit_text_align(true);
-                    rec.extras_mut().text_align = Some(Cow::Owned(value.to_owned()));
-                    self.dirty_text_props.push(node_id);
-                }
-                "box-shadow" => {
-                    rec.extras_mut().box_shadow = Some(Cow::Owned(value.to_owned()));
-                }
-                "overflow" => {
-                    rec.extras_mut().overflow = Some(Cow::Owned(value.to_owned()));
-                }
-                _ => {}
-            }
+        if let Some(canon) = canonical_raw_style_key(name) {
+            self.apply_standalone_raw_attr(node_id, canon, value);
+            return;
         }
         // Decode legacy `nve-draw1;b64,...` string attributes directly into binary `RawPropValueRef::Bytes`.
         if value.starts_with(DRAW_LIST_ATTR_PREFIX)
@@ -412,8 +407,7 @@ impl NveMutationWriter {
             sink.set_raw_prop(node_id, name, RawPropValueRef::Bytes(&raw_draw_bytes));
             return;
         }
-        let prop_name = canonical_raw_style_key(name)
-            .or_else(|| canonical_a11y_attr_key(name))
+        let prop_name = canonical_a11y_attr_key(name)
             .or_else(|| canonical_input_attr_key(name))
             .unwrap_or(name);
         sink.set_raw_prop(node_id, prop_name, RawPropValueRef::String(value));

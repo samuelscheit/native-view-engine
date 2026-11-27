@@ -431,3 +431,61 @@ fn dioxus_surface_new_with_props_and_new_with_context_render_cleanly() {
         .iter()
         .any(|c| matches!(c, Command::SetText { text, .. } if text == "typed-ctx-ok")));
 }
+
+#[test]
+fn plain_standalone_typed_attrs_allocate_zero_node_extras_and_current_color_reparents_and_cleans_up() {
+    let mut writer = NveMutationWriter::new(1);
+    let mut sink = BatchSink::new(1);
+
+    // 1. Mount 200 plain nodes with standalone typed attrs: ZERO `NodeExtras` allocations!
+    let tx = writer.begin_tx(&mut sink, 1, 1);
+    let mut plain_ids = Vec::with_capacity(200);
+    for _ in 0..200 {
+        let nid = tx.writer.alloc_node(tx.sink, ComponentKind::View, None);
+        tx.writer.apply_str_attr(tx.sink, nid, "width", "100px");
+        tx.writer.apply_str_attr(tx.sink, nid, "padding", "8px");
+        tx.writer.apply_str_attr(tx.sink, nid, "height", "40px");
+        plain_ids.push(nid);
+    }
+    tx.finish_frame(true).unwrap();
+    for nid in plain_ids {
+        let rec = &writer.nodes[&nid];
+        assert!(rec.extras.is_none(), "plain typed-attr node must not allocate Box<NodeExtras>");
+        assert_eq!(rec.layout.width, Dimension::Points(100.0));
+        assert_eq!(rec.layout.padding, EdgeInsets::all(8.0));
+        assert_eq!(rec.layout.height, Dimension::Points(40.0));
+    }
+
+    // 2. Reparent a `currentColor` border node between red and blue parents, then remove it.
+    let tx2 = writer.begin_tx(&mut sink, 1, 2);
+    let red_parent = tx2.writer.alloc_node(tx2.sink, ComponentKind::View, None);
+    tx2.writer.apply_str_attr(tx2.sink, red_parent, "color", "#ef4444");
+    let blue_parent = tx2.writer.alloc_node(tx2.sink, ComponentKind::View, None);
+    tx2.writer.apply_str_attr(tx2.sink, blue_parent, "color", "#3b82f6");
+    let child = tx2.writer.alloc_node(tx2.sink, ComponentKind::View, None);
+    tx2.writer.apply_str_attr(tx2.sink, child, "border", "1px solid");
+    tx2.writer.nodes.get_mut(&red_parent).unwrap().children.push(child);
+    tx2.writer.nodes.get_mut(&child).unwrap().set_parent(Some(red_parent));
+    tx2.writer.dirty_children.push(red_parent);
+    tx2.finish_frame(true).unwrap();
+    assert_eq!(writer.current_color_borders, vec![child]);
+    assert_eq!(writer.nodes[&child].style.border_color, ColorRgba::rgb(0xef, 0x44, 0x44));
+
+    // Reparent `child` under `blue_parent` without touching any style attributes.
+    let tx3 = writer.begin_tx(&mut sink, 1, 3);
+    tx3.writer.detach_from_parent(child);
+    tx3.writer.nodes.get_mut(&blue_parent).unwrap().children.push(child);
+    tx3.writer.nodes.get_mut(&child).unwrap().set_parent(Some(blue_parent));
+    tx3.writer.dirty_children.push(blue_parent);
+    tx3.finish_frame(true).unwrap();
+    assert_eq!(writer.nodes[&child].style.border_color, ColorRgba::rgb(0x3b, 0x82, 0xf6));
+
+    // Remove `blue_parent` subtree -> `current_color_borders` must drop to empty!
+    let tx4 = writer.begin_tx(&mut sink, 1, 4);
+    tx4.writer.remove_subtree(tx4.sink, blue_parent);
+    tx4.finish_frame(true).unwrap();
+    assert!(
+        writer.current_color_borders.is_empty(),
+        "removing a currentColor subtree must remove its entries from current_color_borders"
+    );
+}

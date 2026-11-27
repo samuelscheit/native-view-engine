@@ -26,7 +26,7 @@ fn css_tokens(value: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Parses one box-edge length; negative lengths only where `allow_negative` (margins).
-fn parse_edge(token: &str, allow_negative: bool) -> Option<f32> {
+pub(crate) fn parse_edge(token: &str, allow_negative: bool) -> Option<f32> {
     parse_px(token).filter(|v| allow_negative || *v >= 0.0)
 }
 
@@ -54,48 +54,6 @@ pub(crate) fn parse_edges(value: &str, allow_negative: bool) -> Option<EdgeInset
         right,
         bottom,
         left,
-    })
-}
-
-/// Applies a single-edge longhand (`padding-top`, `marginLeft`, `margin-horizontal`, ...) to
-/// `edges`. Returns `false` when `suffix` names no edge; an invalid length (or a negative one
-/// unless `allow_negative`) leaves `edges` untouched.
-pub(crate) fn apply_edge_longhand(
-    edges: &mut EdgeInsets,
-    suffix: &str,
-    value: &str,
-    allow_negative: bool,
-) -> bool {
-    let Some(v) = parse_edge(value, allow_negative) else {
-        // A recognized edge with an unparsable value is still handled (left untouched).
-        return edge_targets(suffix).is_some();
-    };
-    let Some([top, right, bottom, left]) = edge_targets(suffix) else {
-        return false;
-    };
-    for (on, slot) in [
-        (top, &mut edges.top),
-        (right, &mut edges.right),
-        (bottom, &mut edges.bottom),
-        (left, &mut edges.left),
-    ] {
-        if on {
-            *slot = v;
-        }
-    }
-    true
-}
-
-/// `[top, right, bottom, left]` edges addressed by a kebab-case or camelCase longhand suffix.
-fn edge_targets(suffix: &str) -> Option<[bool; 4]> {
-    Some(match suffix {
-        "-top" | "Top" => [true, false, false, false],
-        "-right" | "Right" => [false, true, false, false],
-        "-bottom" | "Bottom" => [false, false, true, false],
-        "-left" | "Left" => [false, false, false, true],
-        "-horizontal" | "Horizontal" => [false, true, false, true],
-        "-vertical" | "Vertical" => [true, false, true, false],
-        _ => return None,
     })
 }
 
@@ -291,19 +249,11 @@ mod tests {
         assert_eq!(parse_edges("-4px 8px", true), Some(edges(-4.0, 8.0, -4.0, 8.0)));
         assert_eq!(parse_edges("-4px 8px", false), None);
         assert_eq!(parse_edges("4px -1", false), None);
-
-        let mut e = EdgeInsets::all(1.0);
-        assert!(apply_edge_longhand(&mut e, "-top", "5px", false));
-        assert!(apply_edge_longhand(&mut e, "Left", "7", false));
-        assert!(apply_edge_longhand(&mut e, "-horizontal", "9PX", false));
-        assert!(apply_edge_longhand(&mut e, "Vertical", "2px", false));
-        assert_eq!(e, edges(2.0, 9.0, 2.0, 9.0));
-        assert!(apply_edge_longhand(&mut e, "-bottom", "auto", false), "handled, untouched");
-        assert!(apply_edge_longhand(&mut e, "-bottom", "-3px", false), "handled, untouched");
-        assert_eq!(e.bottom, 2.0);
-        assert!(apply_edge_longhand(&mut e, "-bottom", "-3px", true));
-        assert_eq!(e.bottom, -3.0);
-        assert!(!apply_edge_longhand(&mut e, "-start", "3px", true));
+        assert_eq!(parse_edge("5px", false), Some(5.0));
+        assert_eq!(parse_edge("9PX", false), Some(9.0));
+        assert_eq!(parse_edge("-3px", false), None);
+        assert_eq!(parse_edge("-3px", true), Some(-3.0));
+        assert_eq!(parse_edge("auto", false), None);
     }
 
     #[test]

@@ -216,6 +216,20 @@ impl SsrBoundaryRegistryInner {
             .position(|e| e.slot_id == slot_id && !e.flushed && e.suspense_ctx.is_some())
             .or_else(|| self.boundaries.iter().position(|e| e.slot_id == slot_id))
     }
+
+    fn collect_pending_handles(&self) -> Vec<QueryHandle> {
+        let mut out = Vec::new();
+        for entry in &self.boundaries {
+            if !entry.flushed && entry.suspense_ctx.is_some() {
+                for h in entry.handles.handles() {
+                    if !out.contains(&h) {
+                        out.push(h);
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Optional server-only context injected on `ScopeId::ROOT` by `nve-ssr` to coordinate
@@ -271,17 +285,7 @@ impl SsrBoundaryRegistry {
                 entry.flushed = true;
             }
         }
-        let mut out = Vec::new();
-        for entry in &inner.boundaries {
-            if !entry.flushed && entry.suspense_ctx.is_some() {
-                for h in entry.handles.handles() {
-                    if !out.contains(&h) {
-                        out.push(h);
-                    }
-                }
-            }
-        }
-        out
+        inner.collect_pending_handles()
     }
 
     /// Marks streaming slot `slot_id` flushed, returning `true` iff it transitioned from
@@ -312,22 +316,9 @@ impl SsrBoundaryRegistry {
         inner.boundaries.get(pos).cloned()
     }
 
-    /// Collects all unique [`QueryHandle`]s across unflushed suspended boundaries (the
-    /// `StreamPending` set of [`nve_query::QueryClient::dehydrate_initial_stream_chunk`] for the
-    /// `seq=0` mid-stream boot payload).
+    /// Collects all unique [`QueryHandle`]s across unflushed suspended boundaries (read-only view).
     pub fn pending_handles(&self) -> Vec<QueryHandle> {
-        let inner = self.inner.borrow();
-        let mut out = Vec::new();
-        for entry in &inner.boundaries {
-            if !entry.flushed && entry.suspense_ctx.is_some() {
-                for h in entry.handles.handles() {
-                    if !out.contains(&h) {
-                        out.push(h);
-                    }
-                }
-            }
-        }
-        out
+        self.inner.borrow().collect_pending_handles()
     }
 }
 

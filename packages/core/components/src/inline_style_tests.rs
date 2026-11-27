@@ -1,5 +1,5 @@
 use super::*;
-use nve_abi::EdgeInsets;
+use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexDirection, LayoutProps, StyleProps};
 
 /// Collects every [`ExtStyleDecl::FlexBasis`] and [`ExtStyleDecl::Raw`] emitted while applying `key: value`.
 fn ext_decls(
@@ -205,10 +205,12 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     assert_eq!(parse_color("#fff"), Some(ColorRgba::WHITE));
     assert_eq!(parse_color("#0F8"), Some(ColorRgba::rgb(0x00, 0xff, 0x88)));
     assert_eq!(parse_color("#0f8c"), Some(ColorRgba::rgba(0x00, 0xff, 0x88, 0xcc)));
-    // Non-ASCII hex inputs with 3/4/6/8 byte lengths must return None without panicking.
-    for non_ascii in ["#aéabc", "#éé", "#ééé", "#aéabcdef"] {
-        assert_eq!(parse_color(non_ascii), None, "{non_ascii:?}");
+    // Non-ASCII and leading-sign hex inputs must return None without panicking.
+    for bad_hex in ["#aéabc", "#éé", "#ééé", "#aéabcdef", "#+f+f+f", "#+f+f+f+f", "#-12345"] {
+        assert_eq!(parse_color(bad_hex), None, "{bad_hex:?}");
     }
+    assert_eq!(canonical_raw_style_key("object-fit"), Some("object-fit"));
+    assert_eq!(canonical_raw_style_key("objectFit"), Some("object-fit"));
     // `border: 1px solid #fff` works with 3-digit hex.
     let mut l = LayoutProps::default();
     let mut s = StyleProps::default();
