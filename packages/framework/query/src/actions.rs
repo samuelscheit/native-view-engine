@@ -10,6 +10,7 @@ use nve_rpc::{
 };
 
 use crate::engine::{query_key_hash, run_side_effects, QueryClient};
+use crate::fetch::FetchStart;
 use crate::optimistic::{
     apply_layer_to_slot, mark_mutation_settling, prepare_recompute_job, remove_mutation_layers,
     OptimisticHandle, OptimisticTx, PendingPatchOp,
@@ -104,29 +105,24 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         const MAX_TAKEOVERS: usize = 8;
         let mut ticket_and_call = None;
         for _ in 0..MAX_TAKEOVERS {
-            if let Some(pair) = self.begin_fetch_for::<P>(handle) {
-                ticket_and_call = Some(pair);
-                break;
-            }
-            let wait_snapshot = self.inner.state.with(|s| {
-                if !s.is_live(handle) {
-                    return None;
-                }
-                let idx = handle.slot.index();
-                let meta = s.metas[idx];
-                if meta.proc_id != P::ID || !meta.is_fetching() {
-                    return None;
-                }
-                let inv_ver = ((u64::from(s.wildcard_epoch)) << 32) | u64::from(meta.fetch_gen);
-                Some((s.payloads[idx].completed_seq, inv_ver))
-            });
-            let Some((pre_completed_seq, pre_inv_ver)) = wait_snapshot else {
-                let snap = self.read::<P>(handle);
-                if let Some(err) = snap.error {
-                    return Err(err);
-                }
-                return Ok(snap.data);
-            };
+            let (pre_completed_seq, pre_inv_ver) =
+                match self.begin_fetch_or_wait_snapshot::<P>(handle) {
+                    FetchStart::Started(ticket, call) => {
+                        ticket_and_call = Some((ticket, call));
+                        break;
+                    }
+                    FetchStart::Wait {
+                        completed_seq,
+                        inv_ver,
+                    } => (completed_seq, inv_ver),
+                    FetchStart::Unavailable => {
+                        let snap = self.read::<P>(handle);
+                        if let Some(err) = snap.error {
+                            return Err(err);
+                        }
+                        return Ok(snap.data);
+                    }
+                };
             self.wait_for_in_flight(handle).await;
             let settled_by_leader = self.inner.state.with(|s| {
                 if !s.is_live(handle) {

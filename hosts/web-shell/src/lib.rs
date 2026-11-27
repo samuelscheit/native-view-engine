@@ -21,6 +21,11 @@ pub mod pairing;
 #[cfg(feature = "scene-view")]
 pub mod scene;
 pub mod session;
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(target_arch = "wasm32", feature = "app-issues")
+))]
+pub(crate) mod wake_sched;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;
 #[cfg(all(target_arch = "wasm32", feature = "dev"))]

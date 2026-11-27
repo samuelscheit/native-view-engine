@@ -135,13 +135,37 @@ mod wake_notifier {
 
 use wake_notifier::WakeNotifier;
 
+struct SlotTaskEntry {
+    seq: u64,
+    slot_gen: u32,
+    inv_ver: u64,
+    task: Task,
+}
+
 struct BridgeSlots {
     alive: bool,
+    next_task_seq: u64,
     signals: Vec<Option<(Signal<u32>, u32)>>,
-    slot_tasks: Vec<Option<Task>>,
-    last_attempted: Vec<Option<(u32, u64)>>,
+    slot_tasks: Vec<Option<SlotTaskEntry>>,
     dirty_buf: Vec<(QuerySlotId, u32)>,
     to_update_buf: Vec<(Signal<u32>, u32)>,
+}
+
+struct SlotTaskGuard {
+    slots: Rc<RefCell<BridgeSlots>>,
+    slot: QuerySlotId,
+    seq: u64,
+}
+
+impl Drop for SlotTaskGuard {
+    fn drop(&mut self) {
+        if let Ok(mut slots) = self.slots.try_borrow_mut()
+            && let Some(entry) = slots.slot_tasks.get_mut(self.slot.index())
+            && entry.as_ref().is_some_and(|e| e.seq == self.seq)
+        {
+            *entry = None;
+        }
+    }
 }
 
 /// Reactive UI-thread bridge connecting an [`ErasedQueryClient`] to dense recycled per-slot
@@ -168,9 +192,9 @@ impl DioxusQueryBridge {
             sleep,
             slots: Rc::new(RefCell::new(BridgeSlots {
                 alive: true,
+                next_task_seq: 1,
                 signals: Vec::new(),
                 slot_tasks: Vec::new(),
-                last_attempted: Vec::new(),
                 dirty_buf: Vec::with_capacity(16),
                 to_update_buf: Vec::with_capacity(16),
             })),
@@ -202,62 +226,61 @@ impl DioxusQueryBridge {
         Some(Runtime::current().in_scope(self.provider_scope, || spawn(fut)))
     }
 
-    /// Records `(handle.generation, invalidation_version)` as the latest fetch attempt watermark
-    /// for `handle.slot`. Returns `true` when this caller should initiate the fetch and `false`
-    /// when a sibling already attempted (or failed) this exact `(slot_gen, invalidation_version)`.
-    pub(crate) fn claim_slot_attempt(&self, handle: QueryHandle, invalidation_version: u64) -> bool {
-        let mut slots = self.slots.borrow_mut();
-        let idx = handle.slot.index();
-        if idx >= slots.last_attempted.len() {
-            slots.last_attempted.resize(idx + 1, None);
-        }
-        let token = (handle.generation, invalidation_version);
-        if slots.last_attempted[idx] == Some(token) {
-            return false;
-        }
-        slots.last_attempted[idx] = Some(token);
-        true
+    /// Returns `true` when an active provider-owned fetch or retry-backoff task is currently
+    /// running for `(handle.slot, handle.generation, inv_ver)`.
+    pub(crate) fn has_active_slot_task_for(&self, handle: QueryHandle, inv_ver: u64) -> bool {
+        self.slots
+            .borrow()
+            .slot_tasks
+            .get(handle.slot.index())
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.slot_gen == handle.generation && entry.inv_ver == inv_ver)
     }
 
-    /// Clears the per-slot attempt watermark unconditionally (e.g. on explicit `refetch()`).
-    pub(crate) fn clear_slot_attempt(&self, slot: QuerySlotId) {
-        let mut slots = self.slots.borrow_mut();
-        if let Some(entry) = slots.last_attempted.get_mut(slot.index()) {
-            *entry = None;
-        }
-    }
-
-    /// Clears the per-slot attempt watermark only if it still matches `(handle.generation, inv)`
-    /// (called when a fetch resolves `Ok`, allowing future time-based stale revalidation).
-    pub(crate) fn clear_slot_attempt_if(&self, handle: QueryHandle, invalidation_version: u64) {
-        let mut slots = self.slots.borrow_mut();
-        if let Some(entry) = slots.last_attempted.get_mut(handle.slot.index())
-            && *entry == Some((handle.generation, invalidation_version))
-        {
-            *entry = None;
-        }
-    }
-
-    /// Spawns (or replaces) the provider-owned fetch task for `slot`, cancelling any superseded
-    /// prior task outside the `RefCell` borrow so orphaned retry loops cannot outlive unmount.
+    /// Spawns (or replaces) the provider-owned fetch task for `(handle, inv_ver)`, cancelling any
+    /// superseded prior task outside the `RefCell` borrow and clearing the entry automatically via
+    /// RAII when the task completes or drops so finished failures never block later mounts.
     pub(crate) fn spawn_slot_fetch(
         &self,
-        slot: QuerySlotId,
+        handle: QueryHandle,
+        inv_ver: u64,
         fut: impl Future<Output = ()> + 'static,
     ) {
-        let Some(task) = self.spawn_in_provider(fut) else {
+        let seq = {
+            let mut slots = self.slots.borrow_mut();
+            if !slots.alive {
+                return;
+            }
+            let seq = slots.next_task_seq;
+            slots.next_task_seq = slots.next_task_seq.wrapping_add(1).max(1);
+            seq
+        };
+        let guard = SlotTaskGuard {
+            slots: Rc::clone(&self.slots),
+            slot: handle.slot,
+            seq,
+        };
+        let Some(task) = self.spawn_in_provider(async move {
+            let _guard = guard;
+            fut.await;
+        }) else {
             return;
         };
         let prev = {
             let mut slots = self.slots.borrow_mut();
-            let idx = slot.index();
+            let idx = handle.slot.index();
             if idx >= slots.slot_tasks.len() {
-                slots.slot_tasks.resize(idx + 1, None);
+                slots.slot_tasks.resize_with(idx + 1, || None);
             }
-            slots.slot_tasks[idx].replace(task)
+            slots.slot_tasks[idx].replace(SlotTaskEntry {
+                seq,
+                slot_gen: handle.generation,
+                inv_ver,
+                task,
+            })
         };
         if let Some(prev) = prev {
-            prev.cancel();
+            prev.task.cancel();
         }
     }
 
@@ -288,13 +311,10 @@ impl DioxusQueryBridge {
             if *count == 0 {
                 let sig = *sig;
                 slots.signals[idx] = None;
-                if let Some(attempt) = slots.last_attempted.get_mut(idx) {
-                    *attempt = None;
-                }
-                let task = slots.slot_tasks.get_mut(idx).and_then(Option::take);
+                let entry = slots.slot_tasks.get_mut(idx).and_then(Option::take);
                 drop(slots);
-                if let Some(task) = task {
-                    task.cancel();
+                if let Some(entry) = entry {
+                    entry.task.cancel();
                 }
                 sig.manually_drop();
             }

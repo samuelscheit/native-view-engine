@@ -1,7 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 //! Permanent adversarial regression guards for `nve-query-dioxus` and `nve-ui` `<Form>`, split
-//! across `query_form_tests` and `lifecycle_opt_tests` so every file stays well under 650 lines.
+//! across `dedup_retry_tests`, `lifecycle_opt_tests`, and `query_form_tests` so every file stays
+//! well under 650 lines.
 
+mod dedup_retry_tests;
 mod lifecycle_opt_tests;
 mod query_form_tests;
 

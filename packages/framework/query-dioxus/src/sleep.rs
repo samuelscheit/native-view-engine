@@ -110,7 +110,7 @@ fn native_sleep_ms(ms: u32) -> BoxFuture<'static, ()> {
                 cv: Condvar::new(),
             });
             let bg = Arc::clone(&wheel);
-            std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name("nve-query-timer".into())
                 .spawn(move || {
                     let mut to_wake = Vec::new();
@@ -152,9 +152,15 @@ fn native_sleep_ms(ms: u32) -> BoxFuture<'static, ()> {
                             guard = bg.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
                         }
                     }
-                })
-                .ok()
-                .map(|_| wheel)
+                }) {
+                Ok(_) => Some(wheel),
+                Err(err) => {
+                    eprintln!(
+                        "[nve-query-dioxus] failed to spawn retry timer thread ({err}); falling back to yield_once"
+                    );
+                    None
+                }
+            }
         })
         .as_ref()
         .map(Arc::clone)

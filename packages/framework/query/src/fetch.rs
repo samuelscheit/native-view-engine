@@ -14,6 +14,12 @@ use crate::slab::{
 };
 use crate::types::{into_shared_any, FetchTicket, QueryHandle, Shared};
 
+pub(crate) enum FetchStart {
+    Started(FetchTicket, RawCall),
+    Wait { completed_seq: u32, inv_ver: u64 },
+    Unavailable,
+}
+
 impl<T, C> QueryClient<T, C> {
     /// Sans-I/O fetch start: transitions `handle` to `IS_FETCHING` and returns its deduplicated
     /// `(FetchTicket, RawCall)`, or `None` if already fetching (dedup!), invalid, or missing a
@@ -22,7 +28,10 @@ impl<T, C> QueryClient<T, C> {
     where
         C: CodecFormat,
     {
-        self.begin_fetch_named(handle, None, None)
+        match self.begin_fetch_inner(handle, None, None) {
+            FetchStart::Started(ticket, call) => Some((ticket, call)),
+            FetchStart::Wait { .. } | FetchStart::Unavailable => None,
+        }
     }
 
     /// Typed sans-I/O fetch start verifying `meta.proc_id == P::ID` and binding `P::NAME`
@@ -32,38 +41,59 @@ impl<T, C> QueryClient<T, C> {
         P: Procedure<Effect = Query>,
         C: CodecFormat,
     {
-        self.begin_fetch_named(handle, Some(P::ID), Some(P::NAME))
+        match self.begin_fetch_inner(handle, Some(P::ID), Some(P::NAME)) {
+            FetchStart::Started(ticket, call) => Some((ticket, call)),
+            FetchStart::Wait { .. } | FetchStart::Unavailable => None,
+        }
     }
 
-    fn begin_fetch_named(
+    /// Atomically starts a fetch for `(P, handle)` OR returns the `(completed_seq, inv_ver)` wait
+    /// snapshot in one lock acquisition so multi-threaded callers never observe a TOCTOU gap
+    /// between checking `is_fetching()` and recording the pre-wait watermark.
+    pub(crate) fn begin_fetch_or_wait_snapshot<P>(&self, handle: QueryHandle) -> FetchStart
+    where
+        P: Procedure<Effect = Query>,
+        C: CodecFormat,
+    {
+        self.begin_fetch_inner(handle, Some(P::ID), Some(P::NAME))
+    }
+
+    fn begin_fetch_inner(
         &self,
         handle: QueryHandle,
         expected_proc_id: Option<ProcId>,
         proc_name_override: Option<&'static str>,
-    ) -> Option<(FetchTicket, RawCall)>
+    ) -> FetchStart
     where
         C: CodecFormat,
     {
         let (out, wake) = self.inner.state.with(|s| {
             if !s.is_live(handle) {
-                return (None, None);
+                return (FetchStart::Unavailable, None);
             }
             let idx = handle.slot.index();
             let meta = &mut s.metas[idx];
             if let Some(pid) = expected_proc_id
                 && meta.proc_id != pid
             {
-                return (None, None);
+                return (FetchStart::Unavailable, None);
             }
             if meta.is_fetching() {
-                return (None, None);
+                let inv_ver = ((u64::from(s.wildcard_epoch)) << 32) | u64::from(meta.fetch_gen);
+                return (
+                    FetchStart::Wait {
+                        completed_seq: s.payloads[idx].completed_seq,
+                        inv_ver,
+                    },
+                    None,
+                );
             }
             let payload = &mut s.payloads[idx];
             if let Some(name) = proc_name_override {
                 payload.proc_name = name;
             }
             if payload.proc_name.is_empty() {
-                return (None, None);
+                return (FetchStart::Unavailable, None);
             }
             meta.flags |= FLAG_IS_FETCHING;
             let ticket = FetchTicket {
@@ -79,7 +109,7 @@ impl<T, C> QueryClient<T, C> {
                 body: payload.encoded_args.clone(),
             };
             let wake = s.mark_dirty(handle.slot);
-            (Some((ticket, call)), wake)
+            (FetchStart::Started(ticket, call), wake)
         });
         if let Some(cb) = wake {
             cb();

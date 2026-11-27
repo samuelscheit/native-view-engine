@@ -85,6 +85,12 @@ impl IssueStore {
     }
 
     pub fn list(&self, filter: &IssueFilter) -> Vec<Issue> {
+        let query_lower = filter
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase);
         let guard = self.inner.read().expect("issue store lock poisoned");
         guard
             .issues
@@ -95,11 +101,10 @@ impl IssueStore {
                 {
                     return false;
                 }
-                if let Some(q) = filter.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                    let q_lower = q.to_lowercase();
-                    if !issue.title.to_lowercase().contains(&q_lower) {
-                        return false;
-                    }
+                if let Some(q_lower) = query_lower.as_deref()
+                    && !issue.title.to_lowercase().contains(q_lower)
+                {
+                    return false;
                 }
                 true
             })

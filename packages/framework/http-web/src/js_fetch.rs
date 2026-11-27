@@ -124,8 +124,18 @@ export function nveAttachLifecycle(onFocus, onOnline) {
   };
 }
 export function nveStartTimer(ms, cb) {
-  const id = setTimeout(cb, ms);
-  return () => clearTimeout(id);
+  let active = true;
+  const id = setTimeout(() => {
+    if (!active) return;
+    active = false;
+    cb(true);
+  }, ms);
+  return () => {
+    if (!active) return;
+    active = false;
+    clearTimeout(id);
+    cb(false);
+  };
 }
 "#)]
 extern "C" {
@@ -325,7 +335,6 @@ pub(crate) struct JsSleepFuture {
     ms: u32,
     state: Rc<RefCell<TimerState>>,
     cancel_fn: Option<Function>,
-    _cb: Option<Closure<dyn FnMut()>>,
 }
 
 impl Drop for JsSleepFuture {
@@ -334,9 +343,6 @@ impl Drop for JsSleepFuture {
         if let Some(cancel) = self.cancel_fn.take() {
             let _ = cancel.call0(&JsValue::NULL);
         }
-        // Release the wasm-bindgen Closure strictly AFTER `clearTimeout` so cancellation never
-        // leaks Closure slots and JS can never invoke a freed callback.
-        self._cb = None;
     }
 }
 
@@ -348,14 +354,19 @@ impl Future for JsSleepFuture {
         if st.done {
             drop(st);
             self.cancel_fn = None;
-            self._cb = None;
             return Poll::Ready(());
         }
         st.waker = Some(cx.waker().clone());
         drop(st);
         if self.cancel_fn.is_none() {
             let st_cb = Rc::clone(&self.state);
-            let cb = Closure::<dyn FnMut()>::new(move || {
+            // One-shot JS closure invoked once either when `setTimeout` fires (`fired = true`) or
+            // when `Drop` cancels the timer (`fired = false`), ensuring zero leaked Closure slots
+            // and full soundness even if a synchronous `Waker` polls/drops `JsSleepFuture` inline.
+            let cb = Closure::once_into_js(move |fired: bool| {
+                if !fired {
+                    return;
+                }
                 let waker = {
                     let mut guard = st_cb.borrow_mut();
                     guard.done = true;
@@ -365,8 +376,7 @@ impl Future for JsSleepFuture {
                     w.wake();
                 }
             });
-            self.cancel_fn = Some(nve_start_timer(self.ms, cb.as_ref()));
-            self._cb = Some(cb);
+            self.cancel_fn = Some(nve_start_timer(self.ms, &cb));
         }
         Poll::Pending
     }
@@ -380,6 +390,5 @@ pub(crate) fn sleep_ms_future(ms: u32) -> JsSleepFuture {
             waker: None,
         })),
         cancel_fn: None,
-        _cb: None,
     }
 }

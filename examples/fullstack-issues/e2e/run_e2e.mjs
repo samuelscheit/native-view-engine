@@ -336,7 +336,7 @@ class CdpClient {
             else e.resolve(msg.result);
           }
         } else if (msg.method) {
-          for (const fn of this.listeners.get(msg.method) || []) fn(msg.params);
+          for (const fn of [...(this.listeners.get(msg.method) || [])]) fn(msg.params);
         }
       });
     });
@@ -408,21 +408,50 @@ async function openTab(debugPort) {
   return cdp;
 }
 
-async function navigateAndWait(cdp, url, timeoutMs = 15000) {
-  const loaded = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cdp.off("Page.loadEventFired", handler);
-      reject(new Error(`Timed out waiting for Page.loadEventFired on ${url}`));
-    }, timeoutMs);
-    const handler = () => {
+function waitForEvent(cdp, method, predicate = () => true, timeoutMs = 15000, desc = method) {
+  let timer = null;
+  let handler = null;
+  const cancel = () => {
+    if (timer !== null) {
       clearTimeout(timer);
-      cdp.off("Page.loadEventFired", handler);
-      resolve();
+      timer = null;
+    }
+    if (handler !== null) {
+      cdp.off(method, handler);
+      handler = null;
+    }
+  };
+  const promise = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      cancel();
+      reject(new Error(`Timed out waiting for CDP event: ${desc}`));
+    }, timeoutMs);
+    handler = (params) => {
+      if (predicate(params)) {
+        cancel();
+        resolve(params);
+      }
     };
-    cdp.on("Page.loadEventFired", handler);
+    cdp.on(method, handler);
   });
-  await cdp.send("Page.navigate", { url });
-  await loaded;
+  return { promise, cancel };
+}
+
+async function navigateAndWait(cdp, url, timeoutMs = 15000) {
+  const loaded = waitForEvent(
+    cdp,
+    "Page.loadEventFired",
+    () => true,
+    timeoutMs,
+    `Page.loadEventFired on ${url}`
+  );
+  try {
+    await cdp.send("Page.navigate", { url });
+    await loaded.promise;
+  } catch (err) {
+    loaded.cancel();
+    throw err;
+  }
 }
 
 async function setInputValue(cdp, selector, value) {
@@ -606,23 +635,54 @@ async function main() {
       patterns: [{ urlPattern: "*Issues/Close*", requestStage: "Request" }],
     });
     let pausedCloseReqId = null;
-    const closePaused = new Promise((resolve) => {
-      const onPaused = (p) => {
-        pausedCloseReqId = p.requestId;
-        cdp.off("Fetch.requestPaused", onPaused);
-        resolve();
-      };
-      cdp.on("Fetch.requestPaused", onPaused);
-    });
-    await evalJs(cdp, `document.querySelector('[testid="issue-close-4"]').click()`);
-    await closePaused;
-    await waitFor(
+    const closePaused = waitForEvent(
       cdp,
-      "optimistic CloseIssue shows Closed BEFORE server responds",
-      `() => document.querySelector('[testid="issue-state-4"]')?.textContent?.includes("Closed")`
+      "Fetch.requestPaused",
+      (p) => Boolean(p?.requestId),
+      10000,
+      "Fetch.requestPaused for Issues/Close"
     );
-    await cdp.send("Fetch.continueRequest", { requestId: pausedCloseReqId });
-    await cdp.send("Fetch.disable");
+    try {
+      await evalJs(cdp, `document.querySelector('[testid="issue-close-4"]').click()`);
+      const pausedParams = await closePaused.promise;
+      pausedCloseReqId = pausedParams.requestId;
+      const closeNetworkId = pausedParams.networkId || null;
+      await waitFor(
+        cdp,
+        "optimistic CloseIssue shows Closed BEFORE server responds",
+        `() => document.querySelector('[testid="issue-state-4"]')?.textContent?.includes("Closed")`
+      );
+      const closeFinished = closeNetworkId
+        ? waitForEvent(
+            cdp,
+            "Network.loadingFinished",
+            (p) => p?.requestId === closeNetworkId,
+            10000,
+            "Network.loadingFinished for Issues/Close"
+          )
+        : waitForEvent(
+            cdp,
+            "Network.responseReceived",
+            (p) => Boolean(p?.response?.url?.includes("Issues/Close")),
+            10000,
+            "Network.responseReceived for Issues/Close"
+          );
+      try {
+        const reqId = pausedCloseReqId;
+        pausedCloseReqId = null;
+        await cdp.send("Fetch.continueRequest", { requestId: reqId });
+        await closeFinished.promise;
+      } catch (err) {
+        closeFinished.cancel();
+        throw err;
+      }
+    } finally {
+      closePaused.cancel();
+      if (pausedCloseReqId) {
+        await cdp.send("Fetch.continueRequest", { requestId: pausedCloseReqId }).catch(() => {});
+      }
+      await cdp.send("Fetch.disable").catch(() => {});
+    }
     await waitFor(
       cdp,
       "confirmed CloseIssue remains Closed after server response",
@@ -744,20 +804,28 @@ async function main() {
       throw new Error(`0-JS SSR page missing expected form/issues: ${JSON.stringify(zeroJsBefore)}`);
     }
 
-    const navDone = new Promise((resolve) => {
-      const h = () => resolve();
-      cdp.on("Page.loadEventFired", h);
-    });
-    await evalJs(
+    const navDone = waitForEvent(
       cdp,
-      `(() => {
-        const form = document.querySelector('form[action="/issues/create"]');
-        const input = form.querySelector('input[name="title"]');
-        input.value = "Created via 0-JS HTML Form";
-        form.requestSubmit ? form.requestSubmit() : form.submit();
-      })()`
+      "Page.loadEventFired",
+      () => true,
+      15000,
+      "0-JS form Page.loadEventFired"
     );
-    await navDone;
+    try {
+      await evalJs(
+        cdp,
+        `(() => {
+          const form = document.querySelector('form[action="/issues/create"]');
+          const input = form.querySelector('input[name="title"]');
+          input.value = "Created via 0-JS HTML Form";
+          form.requestSubmit ? form.requestSubmit() : form.submit();
+        })()`
+      );
+      await navDone.promise;
+    } catch (err) {
+      navDone.cancel();
+      throw err;
+    }
 
     const zeroJsAfter = await evalJs(
       cdp,

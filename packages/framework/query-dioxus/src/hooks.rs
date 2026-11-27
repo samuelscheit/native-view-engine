@@ -118,7 +118,6 @@ where
         if bridge.client().mode() == QueryMode::SsrReadOnly {
             return;
         }
-        bridge.clear_slot_attempt(handle.slot);
         let inv_ver = bridge.client().read::<P>(handle).invalidation_version;
         spawn_query_fetch::<P>(bridge, handle, inv_ver);
     }
@@ -131,14 +130,10 @@ where
 {
     let client = bridge.client().clone();
     let bridge_for_task = bridge.clone();
-    bridge.spawn_slot_fetch(handle.slot, async move {
-        if client
+    bridge.spawn_slot_fetch(handle, inv_ver, async move {
+        let _ = client
             .fetch_handle_with_retry::<P, _, _>(handle, |ms| bridge_for_task.sleep_ms(ms))
-            .await
-            .is_ok()
-        {
-            bridge_for_task.clear_slot_attempt_if(handle, inv_ver);
-        }
+            .await;
     });
 }
 
@@ -237,6 +232,7 @@ where
 
     if bridge.client().mode() == QueryMode::Client {
         let snap = bridge.client().read::<P>(handle);
+        let active_for_ver = bridge.has_active_slot_task_for(handle, snap.invalidation_version);
         let should_initial = !fetched_for_key && bridge.client().needs_fetch(handle);
         let should_refetch_invalidated =
             snap.is_invalidated && !snap.is_fetching && last_inv_ver != snap.invalidation_version;
@@ -246,11 +242,15 @@ where
                 st.fetched_for_key = true;
                 st.last_invalidation_ver = snap.invalidation_version;
             }
-            if bridge.claim_slot_attempt(handle, snap.invalidation_version) {
+            if !active_for_ver {
                 spawn_query_fetch::<P>(bridge, handle, snap.invalidation_version);
             }
-        } else if !fetched_for_key && !snap.is_fetching {
-            state.write().fetched_for_key = true;
+        } else if !fetched_for_key
+            || ((snap.is_fetching || active_for_ver) && last_inv_ver != snap.invalidation_version)
+        {
+            let mut st = state.write();
+            st.fetched_for_key = true;
+            st.last_invalidation_ver = snap.invalidation_version;
         }
     }
 
@@ -470,9 +470,8 @@ where
         Opt: FnOnce(&mut OptimisticTx<'_, CborCodec>),
     {
         let bridge = self.bridge.read().clone();
-        let client = bridge.client().clone();
+        let (client, pending_guard) = self.begin_pending_guard();
         let opt_handle = client.apply_optimistic(optimistic);
-        let pending_guard = self.begin_pending_guard();
         let mut opt_guard = OptimisticDropGuard {
             client: client.clone(),
             handle: Some(opt_handle),

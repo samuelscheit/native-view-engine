@@ -539,3 +539,64 @@ fn cancelled_leader_takeover_works_on_stale_data_and_prior_error() {
     };
     assert_eq!(res2.expect("fresh item expected").title, "Deferred #11 v2");
 }
+
+#[test]
+fn concurrent_multithreaded_leader_cancel_never_causes_follower_to_return_none() {
+    use std::sync::Barrier;
+
+    struct NotifyThread(std::thread::Thread);
+    impl std::task::Wake for NotifyThread {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let transport = DeferredTransport::new(false);
+    let client = QueryClient::new(transport.clone());
+
+    for round in 0..24u64 {
+        let id = 100 + round;
+        let h = client
+            .subscribe::<GetItem>(&id, QueryOptions::default())
+            .unwrap();
+        transport.state.lock().unwrap().defer = true;
+
+        let barrier = Arc::new(Barrier::new(2));
+        let b_follower = Arc::clone(&barrier);
+        let c_follower = client.clone();
+
+        // Start leader on main thread so slot is in-flight, then race cancel vs follower thread!
+        let mut leader = Box::pin(client.fetch_handle::<GetItem>(h));
+        let main_waker = Waker::from(Arc::new(WakeCounter(AtomicUsize::new(0))));
+        assert!(matches!(
+            Pin::as_mut(&mut leader).poll(&mut Context::from_waker(&main_waker)),
+            Poll::Pending
+        ));
+
+        let follower_thread = std::thread::spawn(move || {
+            b_follower.wait();
+            let waker = Waker::from(Arc::new(NotifyThread(std::thread::current())));
+            let mut cx = Context::from_waker(&waker);
+            let mut fut = Box::pin(c_follower.fetch_handle::<GetItem>(h));
+            loop {
+                match Pin::as_mut(&mut fut).poll(&mut cx) {
+                    Poll::Ready(res) => return res,
+                    Poll::Pending => std::thread::park_timeout(std::time::Duration::from_millis(5)),
+                }
+            }
+        });
+
+        barrier.wait();
+        drop(leader);
+        transport.release();
+
+        let res = follower_thread
+            .join()
+            .unwrap()
+            .expect("follower must succeed after leader cancel race");
+        assert!(
+            res.is_some(),
+            "round {round}: atomic begin_fetch_or_wait_snapshot must never let cancelled-leader race return Ok(None)"
+        );
+    }
+}

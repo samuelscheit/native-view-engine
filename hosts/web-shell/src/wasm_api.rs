@@ -430,9 +430,7 @@ where
     #[cfg(feature = "app-issues")]
     let async_wake = WebAsyncWakeGuard::new(surface_id, generation);
     #[cfg(feature = "app-issues")]
-    let wake_for_events = async_wake.waker().clone();
-    #[cfg(feature = "app-issues")]
-    let macrotask_for_events = async_wake.macrotask_handle();
+    let wake_for_events = async_wake.handle();
 
     let session_for_events = Rc::clone(&session);
     let trigger_for_events = snapshot_trigger.clone();
@@ -441,20 +439,24 @@ where
             match guard.pump_events() {
                 Ok(ev_frame) => {
                     #[cfg(feature = "app-issues")]
-                    let async_rendered = match guard.pump_async_work(&wake_for_events) {
-                        Ok(outcome) => {
-                            if outcome.hit_cap {
-                                macrotask_for_events.schedule_macrotask();
+                    let async_rendered = wake_for_events
+                        .run_direct_pump(|waker| match guard.pump_async_work(waker) {
+                            Ok(outcome) => (
+                                if outcome.hit_cap {
+                                    PumpNext::Macrotask
+                                } else {
+                                    PumpNext::Done
+                                },
+                                outcome.timing.is_some(),
+                            ),
+                            Err(err) => {
+                                web_sys::console::error_1(&JsValue::from_str(&format!(
+                                    "[NVE Web] {err}"
+                                )));
+                                (PumpNext::Done, false)
                             }
-                            outcome.timing.is_some()
-                        }
-                        Err(err) => {
-                            web_sys::console::error_1(&JsValue::from_str(&format!(
-                                "[NVE Web] {err}"
-                            )));
-                            false
-                        }
-                    };
+                        })
+                        .unwrap_or(false);
                     #[cfg(not(feature = "app-issues"))]
                     let async_rendered = false;
                     if (ev_frame.is_some() || async_rendered)
@@ -481,15 +483,23 @@ where
             .pump_events()
             .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?;
         #[cfg(feature = "app-issues")]
-        let async_rendered = {
-            let outcome = guard
-                .pump_async_work(async_wake.waker())
-                .map_err(|e| JsValue::from_str(&format!("initial async pump failed: {e}")))?;
-            if outcome.hit_cap {
-                async_wake.schedule_macrotask();
-            }
-            outcome.timing.is_some()
-        };
+        let async_rendered = async_wake
+            .run_direct_pump(|waker| match guard.pump_async_work(waker) {
+                Ok(outcome) => (
+                    if outcome.hit_cap {
+                        PumpNext::Macrotask
+                    } else {
+                        PumpNext::Done
+                    },
+                    Ok(outcome.timing.is_some()),
+                ),
+                Err(err) => (
+                    PumpNext::Done,
+                    Err(JsValue::from_str(&format!("initial async pump failed: {e}", e = err))),
+                ),
+            })
+            .transpose()?
+            .unwrap_or(false);
         #[cfg(not(feature = "app-issues"))]
         let async_rendered = false;
         if (replayed_frame.is_some() || async_rendered)

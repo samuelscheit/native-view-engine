@@ -416,9 +416,15 @@ async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
-    std::fs::write(tmp.join("manifest.json"), b"{\"js\":\"a.js\"}").unwrap();
-    std::fs::write(tmp.join("secret.txt"), b"do not serve").unwrap();
+    let pkg_dir = tmp.join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(pkg_dir.join("manifest.json"), b"{\"js\":\"a.js\"}").unwrap();
+    std::fs::write(pkg_dir.join("secret.txt"), b"do not serve").unwrap();
+    // Allowlisted `.json` placed OUTSIDE `pkg_dir` so traversal & symlink tests actually fail
+    // if `resolve_safe_subpath`'s `..` or `canonicalize`/`starts_with` checks are removed.
+    std::fs::write(tmp.join("outside.json"), b"{\"secret\":true}").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(tmp.join("outside.json"), pkg_dir.join("escape.json")).unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -426,7 +432,7 @@ async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
     let (tx, rx) = oneshot::channel::<()>();
 
     let server = build_issues_server(IssueStore::seeded(), [origin.clone()]);
-    let svc = IssuesHttpService::new(server).with_wasm_dir(&tmp);
+    let svc = IssuesHttpService::new(server).with_wasm_dir(&pkg_dir);
     let task = tokio::spawn(async move {
         serve_service_with_shutdown(listener, svc, async {
             let _ = rx.await;
@@ -459,12 +465,22 @@ async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
         .unwrap();
     assert_eq!(blocked_resp.status(), StatusCode::NOT_FOUND);
 
-    // Traversal attempt -> 404.
+    // Parent-directory traversal to an existing allowlisted `.json` file outside `pkg_dir` -> 404.
     let trav_resp = raw_client
-        .get(format!("{origin}/pkg/issues/../secret.txt").parse().unwrap())
+        .get(format!("{origin}/pkg/issues/../outside.json").parse().unwrap())
         .await
         .unwrap();
     assert_eq!(trav_resp.status(), StatusCode::NOT_FOUND);
+
+    // Symlink escape inside `pkg_dir` pointing to an existing allowlisted `.json` outside -> 404.
+    #[cfg(unix)]
+    {
+        let sym_resp = raw_client
+            .get(format!("{origin}/pkg/issues/escape.json").parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(sym_resp.status(), StatusCode::NOT_FOUND);
+    }
 
     let _ = tx.send(());
     task.await.unwrap();

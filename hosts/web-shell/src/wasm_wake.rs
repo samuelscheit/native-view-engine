@@ -3,9 +3,7 @@
 
 use std::rc::Rc;
 #[cfg(feature = "app-issues")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "app-issues")]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "app-issues")]
 use std::task::{Wake, Waker};
 
@@ -17,6 +15,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 #[cfg(feature = "app-issues")]
+pub(crate) use crate::wake_sched::{PumpNext, ScheduleKind, WakeScheduler};
+
+#[cfg(feature = "app-issues")]
 #[wasm_bindgen(inline_js = "export function nve_queue_microtask(cb) { queueMicrotask(cb); }
 export function nve_schedule_macrotask(cb) { setTimeout(cb, 0); }")]
 extern "C" {
@@ -25,63 +26,80 @@ extern "C" {
 }
 
 #[cfg(feature = "app-issues")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PumpNext {
-    Done,
-    Microtask,
-    Macrotask,
-}
-
-#[cfg(feature = "app-issues")]
 struct WebFrameWaker {
     surface_id: SurfaceId,
     generation: u64,
-    scheduled: AtomicBool,
-    alive: AtomicBool,
+    sched: Mutex<WakeScheduler>,
 }
 
 #[cfg(feature = "app-issues")]
 impl WebFrameWaker {
-    fn schedule(self: &Arc<Self>, macrotask: bool) {
-        if !self.alive.load(Ordering::Acquire) {
+    fn dispatch(self: &Arc<Self>, item: Option<(ScheduleKind, u64)>) {
+        let Some((kind, token)) = item else {
             return;
-        }
-        if self.scheduled.swap(true, Ordering::AcqRel) {
-            return;
-        }
+        };
         let waker_arc = Arc::clone(self);
         let cb = Closure::once_into_js(move || {
-            waker_arc.scheduled.store(false, Ordering::Release);
-            if !waker_arc.alive.load(Ordering::Acquire) {
+            let entered = waker_arc
+                .sched
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .on_scheduled_tick_enter(token);
+            if !entered {
                 return;
             }
             let waker = Waker::from(Arc::clone(&waker_arc));
-            match crate::wasm_api::pump_surface_async_work(
+            let next = crate::wasm_api::pump_surface_async_work(
                 waker_arc.surface_id,
                 waker_arc.generation,
                 &waker,
-            ) {
-                PumpNext::Done => {}
-                PumpNext::Microtask => waker_arc.schedule(false),
-                PumpNext::Macrotask => waker_arc.schedule(true),
-            }
+            );
+            let follow = waker_arc
+                .sched
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .on_pump_exit(next);
+            waker_arc.dispatch(follow);
         });
-        if macrotask {
-            nve_schedule_macrotask(&cb);
-        } else {
-            nve_queue_microtask(&cb);
+        match kind {
+            ScheduleKind::Microtask => nve_queue_microtask(&cb),
+            ScheduleKind::Macrotask => nve_schedule_macrotask(&cb),
         }
+    }
+
+    fn run_direct_pump<R>(
+        self: &Arc<Self>,
+        waker: &Waker,
+        f: impl FnOnce(&Waker) -> (PumpNext, R),
+    ) -> Option<R> {
+        if !self
+            .sched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .on_direct_pump_enter()
+        {
+            return None;
+        }
+        let (next, res) = f(waker);
+        let follow = self
+            .sched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .on_pump_exit(next);
+        self.dispatch(follow);
+        Some(res)
     }
 }
 
 #[cfg(feature = "app-issues")]
 impl Wake for WebFrameWaker {
     fn wake(self: Arc<Self>) {
-        self.schedule(false);
+        self.wake_by_ref();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.schedule(false);
+        let item = self.sched.lock().unwrap_or_else(|e| e.into_inner()).on_wake();
+        self.dispatch(item);
     }
 }
 
@@ -98,45 +116,55 @@ impl WebAsyncWakeGuard {
         let inner = Arc::new(WebFrameWaker {
             surface_id,
             generation,
-            scheduled: AtomicBool::new(false),
-            alive: AtomicBool::new(true),
+            sched: Mutex::new(WakeScheduler::new()),
         });
         let waker = Waker::from(Arc::clone(&inner));
         Self { inner, waker }
     }
 
     #[inline]
-    pub(crate) fn waker(&self) -> &Waker {
-        &self.waker
+    pub(crate) fn run_direct_pump<R>(
+        &self,
+        f: impl FnOnce(&Waker) -> (PumpNext, R),
+    ) -> Option<R> {
+        self.inner.run_direct_pump(&self.waker, f)
     }
 
     #[inline]
-    pub(crate) fn schedule_macrotask(&self) {
-        self.inner.schedule(true);
-    }
-
-    #[inline]
-    pub(crate) fn macrotask_handle(&self) -> MacrotaskHandle {
-        MacrotaskHandle(Arc::clone(&self.inner))
+    pub(crate) fn handle(&self) -> AsyncWakeHandle {
+        AsyncWakeHandle {
+            inner: Arc::clone(&self.inner),
+            waker: self.waker.clone(),
+        }
     }
 }
 
 #[cfg(feature = "app-issues")]
 #[derive(Clone)]
-pub(crate) struct MacrotaskHandle(Arc<WebFrameWaker>);
+pub(crate) struct AsyncWakeHandle {
+    inner: Arc<WebFrameWaker>,
+    waker: Waker,
+}
 
 #[cfg(feature = "app-issues")]
-impl MacrotaskHandle {
+impl AsyncWakeHandle {
     #[inline]
-    pub(crate) fn schedule_macrotask(&self) {
-        self.0.schedule(true);
+    pub(crate) fn run_direct_pump<R>(
+        &self,
+        f: impl FnOnce(&Waker) -> (PumpNext, R),
+    ) -> Option<R> {
+        self.inner.run_direct_pump(&self.waker, f)
     }
 }
 
 #[cfg(feature = "app-issues")]
 impl Drop for WebAsyncWakeGuard {
     fn drop(&mut self) {
-        self.inner.alive.store(false, Ordering::Release);
+        self.inner
+            .sched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .shutdown();
     }
 }
 
