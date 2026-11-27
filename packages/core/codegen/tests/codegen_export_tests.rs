@@ -126,7 +126,7 @@ fn multi_target_export_generates_flutter_swiftui_compose_and_web_component() {
 fn validates_invalid_specs_cleanly() {
     assert!(export_rn_spec(&NveExportSpec::new("", ExportBackend::Fabric)).is_err());
     assert!(export_rn_spec(&NveExportSpec::new("123BadName", ExportBackend::Fabric)).is_err());
-    assert!(NveExportSpec::from_json("{invalid json").is_err());
+    assert!(serde_json::from_str::<NveExportSpec>("{invalid json").is_err());
     assert!(parse_rn_spec("export const x = 42;").is_err());
     assert!(ExportTarget::from_name("unknown-platform").is_err());
 }
@@ -297,7 +297,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
 
     assert_eq!(core_files.len(), 5);
     assert_eq!(scene_files.len(), 5);
-    assert_eq!(all_files.len(), 21);
+    assert_eq!(all_files.len(), 16);
 
     assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
     assert_eq!(core_abi_schema_hash(), NVE_CORE_ABI_SCHEMA_HASH);

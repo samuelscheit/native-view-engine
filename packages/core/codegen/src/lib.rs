@@ -2,12 +2,13 @@
 //!
 //! Organized as a compiler pipeline:
 //! - [`schema`]: Intermediate representations, layout computation, validation, and colocated
-//!   `#[derive(NveAbi)]` descriptor bridges (`export`, `hybrid`, `reloc`, `wire`).
+//!   `#[derive(NveAbi)]` descriptor bridges (`export`, `hybrid`).
 //! - [`frontend`]: Input specification lexers and parsers (`rn_spec`, `hybrid_rust`).
 //! - [`targets`]: Output-language code emitters (`c_cpp`, `rust`, `swift`, `kotlin_java`, `dart`,
 //!   `typescript`) plus unified multi-target dispatchers.
 //!
-//! Zero external dependencies beyond `std`, `serde`, and `serde_json`.
+//! Zero external dependencies beyond `std` and `serde` derives: reading specs from JSON files is
+//! the CLI's job (`nve-cli`), so no runtime crate links `serde_json`.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
@@ -40,24 +41,15 @@ pub use schema::hybrid::{
     NVE_HYBRID_INTERFACE_ID_BASE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
     NVE_SCENE_SCHEMA_HASH,
 };
-pub use schema::reloc::{
-    FieldLayout, RelocEnum, RelocEnumRepr, RelocEnumVariant, RelocField, RelocSchema, RelocStruct,
-    RelocType, StructLayout, RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_MAX_VERIFY_DEPTH,
-    RELOC_SLICE_ALIGN, RELOC_SLICE_SIZE,
-};
-pub use schema::wire::{wire_codecs_schema_hash, NVE_WIRE_CODECS_SCHEMA_HASH};
 pub use targets::{
     generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
-    generate_all_wire_codec_files, generate_c_core_abi_h, generate_c_scene_abi_h,
-    generate_cpp_wire_codecs, generate_dart_core_abi, generate_dart_scene_abi,
-    generate_dart_wire_codecs, generate_export_compose, generate_export_flutter,
-    generate_export_rn, generate_export_swiftui, generate_export_web_component,
-    generate_hybrid_all, generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin,
-    generate_hybrid_rust, generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts,
-    generate_import_rn, generate_java_core_abi, generate_java_scene_buffer,
-    generate_java_wire_codecs, generate_reloc_all, generate_reloc_cpp, generate_reloc_rust,
-    generate_swift_wire_codecs, generate_ts_core_abi, generate_ts_scene_view,
-    generate_ts_wire_codecs, HybridGenerateOutput,
+    generate_c_core_abi_h, generate_c_scene_abi_h, generate_dart_core_abi,
+    generate_dart_scene_abi, generate_export_compose, generate_export_flutter, generate_export_rn,
+    generate_export_swiftui, generate_export_web_component, generate_hybrid_all,
+    generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin, generate_hybrid_rust,
+    generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts, generate_import_rn,
+    generate_java_core_abi, generate_java_scene_buffer, generate_ts_core_abi,
+    generate_ts_scene_view, HybridGenerateOutput,
 };
 
 // ===========================================================================
@@ -161,14 +153,4 @@ pub fn export_all_targets(
         outputs.push(export_target(spec, target)?);
     }
     Ok(outputs)
-}
-
-/// CLI entrypoint (`nve codegen export`): reads a JSON `NveExportSpec` file and generates
-/// bindings for every requested [`ExportTarget`].
-pub fn export_json_file_for_targets(
-    spec_json_path: &Path,
-    targets: &[ExportTarget],
-) -> Result<Vec<MultiTargetExportOutput>, CodegenError> {
-    let spec = NveExportSpec::from_json_file(spec_json_path)?;
-    export_all_targets(&spec, targets)
 }

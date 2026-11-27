@@ -730,7 +730,7 @@ fi
 
 # 1b. ABI codegen generate + parity check (required before host builds/tests)
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (21/21)"
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (16/16)"
 else
   skip_suite "ABI codegen parity" "cargo not found"
 fi

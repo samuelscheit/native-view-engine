@@ -226,23 +226,6 @@ impl NveExportSpec {
         }
     }
 
-    pub fn from_json(json: &str) -> Result<Self, CodegenError> {
-        let spec: Self =
-            serde_json::from_str(json).map_err(|e| CodegenError::Json(e.to_string()))?;
-        spec.validate()?;
-        Ok(spec)
-    }
-
-    pub fn from_json_file(path: &Path) -> Result<Self, CodegenError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| CodegenError::io(path.display().to_string(), e))?;
-        Self::from_json(&content)
-    }
-
-    pub fn to_json_pretty(&self) -> Result<String, CodegenError> {
-        serde_json::to_string_pretty(self).map_err(|e| CodegenError::Json(e.to_string()))
-    }
-
     pub fn vtable_symbol(&self) -> &str {
         self.rust_vtable_symbol
             .as_deref()

@@ -18,9 +18,8 @@ pub const MAX_PROD_LINES: usize = 650;
 /// Fails if any listed file exceeds its ceiling OR drops to <= 650 lines (forcing ratchet downward to zero).
 pub const EXISTING_OVERSIZE_ALLOWLIST: &[(&str, usize)] = &[];
 
-/// Monotonic ratchet of pre-existing personal-path hits: `(path, max_hits)`.
-const PENDING_CLEANUP_PERSONAL_PATHS: &[(&str, usize)] =
-    &[("packages/core/codegen/tests/codegen_tests.rs", 1)];
+/// Monotonic ratchet of pre-existing personal-path hits: `(path, max_hits)` (empty since Track 1B-1e).
+const PENDING_CLEANUP_PERSONAL_PATHS: &[(&str, usize)] = &[];
 
 const PERSONAL_SCAN_EXTS: &[&str] = &[
     ".rs", ".ts", ".js", ".mjs", ".swift", ".kt", ".kts", ".java", ".dart", ".cpp", ".hpp", ".h",

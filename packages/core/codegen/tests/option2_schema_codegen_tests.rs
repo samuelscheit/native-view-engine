@@ -1,22 +1,19 @@
 //! Proves that NVE's Option 2 zero-serialization schemas (`NveDrawOp`/`NveDrawListView` and
 //! `NveThemeSnapshot`/`NveSensorSample`/`NveCameraFrameDescriptor`/host-service vtables) can be
-//! authored purely as typed Rust `HybridFileSpec` and `RelocSchema` values — colocated in their
-//! owning packages with ZERO centralized `.nve.rs` text parsing — and compile cleanly under
-//! `clang -std=c11 -Wall -Wextra -Werror`, `clang++ -std=c++20 -Wall -Wextra -Werror`, and
-//! `rustc --edition=2024 -D warnings`.
+//! authored purely as typed Rust `HybridFileSpec` values — colocated in their owning packages with
+//! ZERO centralized `.nve.rs` text parsing — and compile cleanly under
+//! `clang -std=c11 -Wall -Wextra -Werror` and `clang++ -std=c++20 -Wall -Wextra -Werror`.
 
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use common::{check_c11_syntax, compile_and_run_cpp20, tool_available};
+use common::{check_c11_syntax, compile_and_run_cpp20};
 
 use nve_codegen::{
-    generate_hybrid_target, generate_reloc_all, HybridEnumSpec, HybridEnumVariant,
-    HybridFieldSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec,
-    HybridStructSpec, HybridTarget, HybridType, RelocEnum, RelocEnumRepr, RelocEnumVariant,
-    RelocField, RelocSchema, RelocStruct, RelocType,
+    generate_hybrid_target, HybridEnumSpec, HybridEnumVariant, HybridFieldSpec, HybridFileSpec,
+    HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridStructSpec, HybridTarget,
+    HybridType,
 };
 
 fn workspace_root() -> PathBuf {
@@ -177,76 +174,6 @@ fn draw_ops_hybrid_spec() -> HybridFileSpec {
             HybridType::I32,
         )],
         ..Default::default()
-    }
-}
-
-/// Companion `RelocSchema` representation of `NveDrawOp` (64-byte pure POD) for mmap/IPC slabs.
-fn draw_ops_reloc_schema() -> RelocSchema {
-    RelocSchema {
-        name: "NveDrawSlab".to_string(),
-        magic: *b"NVEDRAW2",
-        root: "DrawSlabRoot".to_string(),
-        enums: vec![RelocEnum {
-            name: "NveDrawOpKind".to_string(),
-            repr: RelocEnumRepr::U32,
-            variants: vec![
-                RelocEnumVariant::new("FillRect", 0),
-                RelocEnumVariant::new("StrokeRect", 1),
-                RelocEnumVariant::new("FillRoundedRect", 2),
-                RelocEnumVariant::new("StrokeRoundedRect", 3),
-                RelocEnumVariant::new("FillCircle", 4),
-                RelocEnumVariant::new("StrokeCircle", 5),
-                RelocEnumVariant::new("DrawLine", 6),
-                RelocEnumVariant::new("StrokePolyline", 7),
-                RelocEnumVariant::new("FillPath", 8),
-                RelocEnumVariant::new("DrawText", 9),
-                RelocEnumVariant::new("PushClip", 10),
-                RelocEnumVariant::new("PopClip", 11),
-                RelocEnumVariant::new("DrawImage", 12),
-            ],
-            doc: None,
-        }],
-        structs: vec![
-            RelocStruct {
-                name: "NveDrawOp".to_string(),
-                align: Some(64),
-                fields: vec![
-                    RelocField::new("kind", RelocType::Enum("NveDrawOpKind".to_string())),
-                    RelocField::new("flags", RelocType::U32),
-                    RelocField::new("color_rgba", RelocType::U32),
-                    RelocField::new("secondary_rgba", RelocType::U32),
-                    RelocField::new("x", RelocType::F32),
-                    RelocField::new("y", RelocType::F32),
-                    RelocField::new("width", RelocType::F32),
-                    RelocField::new("height", RelocType::F32),
-                    RelocField::new("param0", RelocType::F32),
-                    RelocField::new("param1", RelocType::F32),
-                    RelocField::new("param2", RelocType::F32),
-                    RelocField::new("param3", RelocType::F32),
-                    RelocField::new("data_offset", RelocType::U32),
-                    RelocField::new("data_len", RelocType::U32),
-                    RelocField::new("text_offset", RelocType::U32),
-                    RelocField::new("text_len", RelocType::U32),
-                ],
-                doc: None,
-            },
-            RelocStruct {
-                name: "DrawSlabRoot".to_string(),
-                align: None,
-                fields: vec![
-                    RelocField::new(
-                        "ops",
-                        RelocType::RelocSlice(Box::new(RelocType::Struct("NveDrawOp".to_string()))),
-                    ),
-                    RelocField::new(
-                        "vertices",
-                        RelocType::RelocSlice(Box::new(RelocType::F32)),
-                    ),
-                    RelocField::new("text_buf", RelocType::RelocStr),
-                ],
-                doc: None,
-            },
-        ],
     }
 }
 
@@ -764,12 +691,6 @@ fn option2_draw_ops_and_host_services_validate_and_hash_deterministically() {
     assert_ne!(draw_spec.file_schema_hash(), 0);
     assert!(draw_spec.find_struct("NveDrawOp").unwrap().is_pod(&draw_spec));
 
-    let draw_reloc = draw_ops_reloc_schema();
-    let reloc_layouts = draw_reloc.compute_layouts().expect("NveDrawSlab reloc layout");
-    assert_eq!(reloc_layouts["NveDrawOp"].size, 64);
-    assert_eq!(reloc_layouts["NveDrawOp"].align, 64);
-    assert!(reloc_layouts["NveDrawOp"].is_pure_pod);
-
     let host_spec = host_services_hybrid_spec();
     host_spec
         .validate()
@@ -794,9 +715,7 @@ fn option2_draw_ops_and_host_services_validate_and_hash_deterministically() {
 }
 
 #[test]
-fn option2_draw_ops_and_host_services_compile_under_c11_cpp20_and_rust2024() {
-    assert!(tool_available("rustc"), "rustc must be available");
-
+fn option2_draw_ops_and_host_services_compile_under_c11_and_cpp20() {
     let dir = temp_test_dir("compile");
     common::write_generated_c_abi_headers(&dir);
     let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
@@ -807,12 +726,6 @@ fn option2_draw_ops_and_host_services_compile_under_c11_cpp20_and_rust2024() {
     let host_cpp = generate_hybrid_target(&host_spec, HybridTarget::Cpp).unwrap();
     draw_cpp.write_to_dir(&dir).unwrap();
     host_cpp.write_to_dir(&dir).unwrap();
-
-    // Also emit & compile the companion RelocSchema for NveDrawOp
-    let draw_reloc_files = generate_reloc_all(&draw_ops_reloc_schema()).unwrap();
-    for f in &draw_reloc_files {
-        std::fs::write(dir.join(&f.relative_path), &f.content).unwrap();
-    }
 
     // 1. Verify BOTH pure C11 headers compile under `clang -std=c11 -Wall -Wextra -Werror`
     let c_driver = dir.join("check_c11.c");
@@ -842,14 +755,13 @@ uint64_t _check_hashes(void) {
 
     check_c11_syntax(&c_driver, &[&dir, &nve_inc], &dir);
 
-    // 2. Compile AND execute a C++20 binary exercising both Hybrid C++20 headers + DrawSlab Reloc header
+    // 2. Compile AND execute a C++20 binary exercising both Hybrid C++20 headers
     let cpp_driver = dir.join("check_cpp20.cpp");
     std::fs::write(
         &cpp_driver,
         r#"
 #include "NveDrawOpsHybridSpec.generated.hpp"
 #include "NveHostServicesHybridSpec.generated.hpp"
-#include "NveDrawSlabReloc.generated.hpp"
 
 #include <cassert>
 
@@ -938,13 +850,6 @@ int main() {
   static_assert(sizeof(raw_sample) == 24u);
   assert(nve::hybrid::NveSensorSample::from_abi(raw_sample).timestampNs == UINT64_C(999999));
 
-  // Verify Reloc NveDrawOp is 64-byte aligned & has as_bytes()
-  nve::reloc::nve_draw_slab::NveDrawOp reloc_op{};
-  reloc_op.kind = nve::reloc::nve_draw_slab::NveDrawOpKind::DrawText;
-  static_assert(sizeof(reloc_op) == 64u);
-  static_assert(alignof(nve::reloc::nve_draw_slab::NveDrawOp) == 64u);
-  assert(reloc_op.as_bytes().size() == 64u);
-
   return 0;
 }
 "#,
@@ -952,27 +857,6 @@ int main() {
     .unwrap();
 
     compile_and_run_cpp20(&cpp_driver, "check_cpp20", &[&dir, &nve_inc], &dir);
-
-    // 3. Also verify the companion NveDrawSlab Rust 2024 module compiles with `-D warnings`
-    let rust_check = Command::new("rustc")
-        .args([
-            "--edition=2024",
-            "--crate-type=lib",
-            "--crate-name=nve_draw_slab_reloc",
-            "-D",
-            "warnings",
-        ])
-        .arg(dir.join("nve_draw_slab_reloc.generated.rs"))
-        .arg("-o")
-        .arg(dir.join("libnve_draw_slab_reloc.rlib"))
-        .output()
-        .expect("run rustc on NveDrawSlab reloc");
-    assert!(
-        rust_check.status.success(),
-        "rustc on NveDrawSlab reloc failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&rust_check.stdout),
-        String::from_utf8_lossy(&rust_check.stderr)
-    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

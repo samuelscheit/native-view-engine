@@ -69,7 +69,7 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Generate NVE ABI & Wire Codec bindings
+      - name: Generate NVE ABI bindings
         run: |
           cargo run --locked -p nve-cli -- codegen abi
           cargo run --locked -p nve-cli -- codegen abi --check

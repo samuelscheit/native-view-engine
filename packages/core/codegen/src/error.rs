@@ -13,8 +13,6 @@ pub enum CodegenError {
     Validation(String),
     /// Filesystem I/O failure when reading specs or writing generated outputs.
     Io { path: String, message: String },
-    /// JSON serialization or deserialization failure for `NveExportSpec`.
-    Json(String),
 }
 
 impl CodegenError {
@@ -46,7 +44,6 @@ impl fmt::Display for CodegenError {
             }
             Self::Validation(msg) => write!(f, "spec validation error: {msg}"),
             Self::Io { path, message } => write!(f, "I/O error for '{path}': {message}"),
-            Self::Json(msg) => write!(f, "JSON error: {msg}"),
         }
     }
 }

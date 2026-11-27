@@ -1,5 +1,4 @@
 #include "nve_pair_client.hpp"
-#include "nve_wire_codecs.generated.hpp"
 
 #include <atomic>
 #include <chrono>

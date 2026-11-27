@@ -1,19 +1,20 @@
 mod common;
 
-use std::path::Path;
-
 use common::specs::{assert_balanced_delimiters, counter_card_export_spec, EMBEDDED_SWITCH_SPEC};
 use nve_codegen::{
     export_rn_spec, import_rn_file, import_rn_source, parse_rn_spec, parse_rn_spec_file,
     DefaultValue, EventBubbling, ExportBackend, NveExportSpec, ParsedRnSpec, PropType,
 };
 
-const RN_LIBRARIES_DIR: &str =
-    "/Users/user/developer/developer/respond/react-native/react-native/packages/react-native/Libraries";
+/// Optional checkout of React Native's `packages/react-native/Libraries`, from `NVE_RN_LIBRARIES_DIR`.
+/// Unset (or missing files) falls back to the embedded specs, so the suite runs anywhere.
+fn rn_libraries_dir() -> std::path::PathBuf {
+    std::env::var_os("NVE_RN_LIBRARIES_DIR").map(Into::into).unwrap_or_default()
+}
 
 #[test]
 fn parses_real_rn_component_specs_and_follows_reexports() {
-    let switch_path = Path::new(RN_LIBRARIES_DIR).join("Components/Switch/SwitchNativeComponent.js");
+    let switch_path = rn_libraries_dir().join("Components/Switch/SwitchNativeComponent.js");
     let switch_spec = if switch_path.exists() {
         parse_rn_spec_file(&switch_path).expect("parse real SwitchNativeComponent.js")
     } else {
@@ -56,7 +57,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
     assert_eq!(sw.commands[0].params[0].param_type, PropType::Bool);
 
     // Additional real RN specs if the local RN checkout is present
-    let activity_path = Path::new(RN_LIBRARIES_DIR)
+    let activity_path = rn_libraries_dir()
         .join("Components/ActivityIndicator/ActivityIndicatorViewNativeComponent.js");
     if activity_path.exists() {
         let out = import_rn_file(&activity_path).expect("import ActivityIndicatorView");
@@ -79,7 +80,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
         assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
     }
 
-    let modal_path = Path::new(RN_LIBRARIES_DIR).join("Modal/RCTModalHostViewNativeComponent.js");
+    let modal_path = rn_libraries_dir().join("Modal/RCTModalHostViewNativeComponent.js");
     if modal_path.exists() {
         let out = import_rn_file(&modal_path).expect("import ModalHostView");
         let ParsedRnSpec::Component(modal) = &out.spec else {
@@ -99,7 +100,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
         assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
     }
 
-    let refresh_path = Path::new(RN_LIBRARIES_DIR)
+    let refresh_path = rn_libraries_dir()
         .join("Components/RefreshControl/PullToRefreshViewNativeComponent.js");
     if refresh_path.exists() {
         let out = import_rn_file(&refresh_path).expect("import PullToRefreshView");
@@ -123,7 +124,7 @@ fn parses_real_rn_component_specs_and_follows_reexports() {
 
 #[test]
 fn parses_real_rn_turbomodule_specs_and_ts_turbomodules() {
-    let appearance_path = Path::new(RN_LIBRARIES_DIR).join("Utilities/NativeAppearance.js");
+    let appearance_path = rn_libraries_dir().join("Utilities/NativeAppearance.js");
     if appearance_path.exists() {
         let out = import_rn_file(&appearance_path).expect("import NativeAppearance");
         let ParsedRnSpec::TurboModule(tm) = &out.spec else {
@@ -286,8 +287,9 @@ fn import_rn_array_of_objects_preencodes_buffers_and_propagates_decode_error() {
 #[test]
 fn export_rn_generates_valid_five_file_package_and_roundtrips_through_import_rn() {
     let spec = counter_card_export_spec(ExportBackend::Fabric);
-    let json = spec.to_json_pretty().expect("serialize NveExportSpec");
-    let parsed_spec = NveExportSpec::from_json(&json).expect("deserialize NveExportSpec");
+    let json = serde_json::to_string_pretty(&spec).expect("serialize NveExportSpec");
+    let parsed_spec: NveExportSpec = serde_json::from_str(&json).expect("deserialize NveExportSpec");
+    parsed_spec.validate().expect("round-tripped spec validates");
     let out = export_rn_spec(&parsed_spec).expect("export_rn_spec");
 
     assert_eq!(

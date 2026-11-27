@@ -67,12 +67,11 @@ val nveGeneratedJavaDir =
 val nveGeneratedJavaFiles = listOf(
     nveGeneratedJavaDir.resolve("NveCoreAbi.java"),
     nveGeneratedJavaDir.resolve("NveSceneBuffer.java"),
-    nveGeneratedJavaDir.resolve("NveWireCodecs.java"),
 )
 
 val generateNveAbi by tasks.registering(Exec::class) {
     group = "codegen"
-    description = "Generate NVE Core/Scene ABI and Wire Codec bindings via nve-cli when missing."
+    description = "Generate NVE Core/Scene ABI bindings via nve-cli when missing."
     workingDir = nveRepoRoot
     commandLine("cargo", "run", "--locked", "-p", "nve-cli", "--", "codegen", "abi")
     onlyIf {

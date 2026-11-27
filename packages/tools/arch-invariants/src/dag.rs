@@ -19,8 +19,8 @@ pub const APPROVED_HOST_CARGO_TOMLS: &[&str] = &[
     "hosts/web-shell/Cargo.toml",
 ];
 
-/// Pre-existing runtime `serde_json` allowlist (Track 1B-1e).
-const PENDING_CLEANUP_SERDE_JSON: &[(&str, &str)] = &[("nve-codegen", "Track 1B-1e")];
+/// Pre-existing runtime `serde_json` allowlist (empty: `nve-codegen` reads no JSON since Track 1B-1e).
+const PENDING_CLEANUP_SERDE_JSON: &[(&str, &str)] = &[];
 
 pub(crate) const TARGET_TRIPLES_ALL: &[&str] = &[
     "x86_64-unknown-linux-gnu",

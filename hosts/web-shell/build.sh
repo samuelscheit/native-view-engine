@@ -115,11 +115,10 @@ publish_bundle() {
     "${PUBLISHED_HASH}" "${PUBLISHED_HASH}" > "${out_dir}/manifest.json"
 }
 
-# Ensure generated TypeScript ABI/Wire bindings exist on a fresh checkout.
+# Ensure generated TypeScript ABI bindings exist on a fresh checkout.
 if [[ ! -f "${SCRIPT_DIR}/nve_core_abi.generated.ts" \
-   || ! -f "${SCRIPT_DIR}/nve_scene_view.generated.ts" \
-   || ! -f "${SCRIPT_DIR}/nve_wire_codecs.generated.ts" ]]; then
-  echo "==> Generating NVE ABI + Wire Codec bindings (nve-cli codegen abi)"
+   || ! -f "${SCRIPT_DIR}/nve_scene_view.generated.ts" ]]; then
+  echo "==> Generating NVE ABI bindings (nve-cli codegen abi)"
   (cd "${REPO_ROOT}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo run --locked -p nve-cli -- codegen abi)
 fi
 

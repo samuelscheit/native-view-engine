@@ -2,5 +2,3 @@
 
 pub mod export;
 pub mod hybrid;
-pub mod reloc;
-pub mod wire;

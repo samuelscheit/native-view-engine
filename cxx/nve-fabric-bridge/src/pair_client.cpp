@@ -1,6 +1,5 @@
 #include "event_ring_writer.hpp"
 #include "nve_pair_client.hpp"
-#include "nve_wire_codecs.generated.hpp"
 
 #include <algorithm>
 #include <atomic>

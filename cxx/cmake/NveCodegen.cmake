@@ -1,4 +1,4 @@
-# Shared CMake helper to ensure NVE Core/Scene ABI and Wire Codec generated headers exist
+# Shared CMake helper to ensure NVE Core/Scene ABI generated headers exist
 # and stay fresh relative to `packages/core/{abi,abi-macros,codegen}/src/`.
 #
 # Usage:
@@ -27,7 +27,6 @@ function(nve_ensure_abi_codegen)
   set(_nve_generated_headers
     "${_nve_include_dir}/nve_abi.generated.h"
     "${_nve_include_dir}/nve_scene_abi.generated.h"
-    "${_nve_include_dir}/nve_wire_codecs.generated.hpp"
   )
 
   set(_nve_needs_codegen FALSE)
@@ -95,7 +94,7 @@ function(nve_ensure_abi_codegen)
     add_custom_target(nve_codegen_abi
       COMMAND "${_nve_cargo_bin}" run --locked -p nve-cli -- codegen abi
       WORKING_DIRECTORY "${_nve_repo_root}"
-      COMMENT "Regenerating NVE Core/Scene ABI and Wire Codec bindings"
+      COMMENT "Regenerating NVE Core/Scene ABI bindings"
       VERBATIM
     )
   endif()

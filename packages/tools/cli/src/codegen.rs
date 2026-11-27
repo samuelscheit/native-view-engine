@@ -3,22 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use nve_codegen::{ExportTarget, HybridTarget};
+use nve_codegen::{ExportTarget, HybridTarget, NveExportSpec};
 
 #[derive(Subcommand)]
 pub(crate) enum CodegenAction {
-    /// Regenerate (or check for drift in) all 21 Core ABI, Scene ABI, Wire Codec, and XXH64 mirror artifacts.
+    /// Regenerate (or check for drift in) all 16 Core ABI, Scene ABI, and XXH64 mirror artifacts.
     Abi {
         /// Verify checked-in artifacts match generated output byte-for-byte without writing files.
-        #[arg(long, default_value_t = false)]
-        check: bool,
-        /// Workspace root directory where relative artifact paths are resolved.
-        #[arg(long, default_value = ".")]
-        out: PathBuf,
-    },
-    /// Regenerate (or check for drift in) the 5 cross-language wire codec files only.
-    Wire {
-        /// Verify checked-in wire codec artifacts match generated output byte-for-byte without writing files.
         #[arg(long, default_value_t = false)]
         check: bool,
         /// Workspace root directory where relative artifact paths are resolved.
@@ -139,9 +130,14 @@ pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBu
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 
-pub(crate) fn run_codegen_wire(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let files = nve_codegen::generate_all_wire_codec_files();
-    write_or_check_generated(&files, out_root, check, "cargo nve codegen wire")
+/// Reads and validates an `NveExportSpec` JSON file. JSON parsing lives here, in the CLI, so the
+/// `nve-codegen` library itself never links `serde_json`.
+pub(crate) fn load_export_spec(path: &Path) -> Result<NveExportSpec, String> {
+    let json = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let spec: NveExportSpec =
+        serde_json::from_str(&json).map_err(|e| format!("invalid NveExportSpec JSON in {}: {e}", path.display()))?;
+    spec.validate().map_err(|e| format!("invalid NveExportSpec in {}: {e}", path.display()))?;
+    Ok(spec)
 }
 
 pub(crate) fn run_codegen_hybrid(
@@ -172,33 +168,11 @@ pub(crate) fn cmd_codegen(action: CodegenAction) {
             Ok(paths) => {
                 let verb = if check { "Verified" } else { "Generated" };
                 println!(
-                    "{verb} {} Core + Scene ABI + Wire Codec + XXH64 mirror file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}, wire_hash=0x{:016X}){}",
+                    "{verb} {} Core + Scene ABI + XXH64 mirror file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}){}",
                     paths.len(),
                     out.display(),
                     nve_codegen::core_abi_schema_hash(),
                     nve_codegen::NVE_SCENE_SCHEMA_HASH,
-                    nve_codegen::NVE_WIRE_CODECS_SCHEMA_HASH,
-                    if check { "." } else { ":" }
-                );
-                if !check {
-                    for path in paths {
-                        println!("  - {}", path.display());
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-        },
-        CodegenAction::Wire { check, out } => match run_codegen_wire(&out, check) {
-            Ok(paths) => {
-                let verb = if check { "Verified" } else { "Generated" };
-                println!(
-                    "{verb} {} Wire Codec file(s) in {} (wire_hash=0x{:016X}){}",
-                    paths.len(),
-                    out.display(),
-                    nve_codegen::NVE_WIRE_CODECS_SCHEMA_HASH,
                     if check { "." } else { ":" }
                 );
                 if !check {
@@ -248,11 +222,14 @@ pub(crate) fn cmd_codegen(action: CodegenAction) {
                 eprintln!("{e}");
                 std::process::exit(1);
             });
-            let bundles = nve_codegen::export_json_file_for_targets(&spec, &targets)
-                .unwrap_or_else(|e| {
-                    eprintln!("export failed for {}: {e}", spec.display());
-                    std::process::exit(1);
-                });
+            let export_spec = load_export_spec(&spec).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
+            let bundles = nve_codegen::export_all_targets(&export_spec, &targets).unwrap_or_else(|e| {
+                eprintln!("export failed for {}: {e}", spec.display());
+                std::process::exit(1);
+            });
             for bundle in bundles {
                 let target_dir = out.join(bundle.target.dir_name());
                 let written = bundle.write_to_dir(&target_dir).unwrap_or_else(|e| {
@@ -309,14 +286,8 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         assert!(run_codegen_abi(&tmp, true).is_err());
-        assert!(run_codegen_wire(&tmp, true).is_err());
-        let wire_written = run_codegen_wire(&tmp, false).expect("write 5 wire codec files");
-        assert_eq!(wire_written.len(), 5);
-        assert!(run_codegen_wire(&tmp, true).is_ok());
-        assert!(run_codegen_abi(&tmp, true).is_err());
-
-        let written = run_codegen_abi(&tmp, false).expect("write all 21 ABI + wire + hash files");
-        assert_eq!(written.len(), 21);
+        let written = run_codegen_abi(&tmp, false).expect("write all 16 ABI + hash files");
+        assert_eq!(written.len(), 16);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("hosts/web-shell/nve_core_abi.generated.ts");
@@ -324,10 +295,17 @@ mod tests {
         let drift_err = run_codegen_abi(&tmp, true).unwrap_err();
         assert!(drift_err.contains("hosts/web-shell/nve_core_abi.generated.ts"));
 
-        let wire_file = tmp.join("hosts/web-shell/nve_wire_codecs.generated.ts");
-        std::fs::write(&wire_file, "// drifted wire\n").unwrap();
-        let wire_drift_err = run_codegen_wire(&tmp, true).unwrap_err();
-        assert!(wire_drift_err.contains("hosts/web-shell/nve_wire_codecs.generated.ts"));
+        // `codegen export` JSON loading: valid specs load, broken JSON and invalid specs are refused.
+        let export_json = tmp.join("export.json");
+        let spec = NveExportSpec::new("NveCounterCard", nve_codegen::ExportBackend::Fabric);
+        std::fs::write(&export_json, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+        assert_eq!(load_export_spec(&export_json).unwrap().name, "NveCounterCard");
+        std::fs::write(&export_json, "{invalid json").unwrap();
+        assert!(load_export_spec(&export_json).unwrap_err().contains("invalid NveExportSpec JSON"));
+        let invalid = NveExportSpec::new("123BadName", nve_codegen::ExportBackend::Fabric);
+        std::fs::write(&export_json, serde_json::to_string_pretty(&invalid).unwrap()).unwrap();
+        assert!(load_export_spec(&export_json).unwrap_err().contains("invalid NveExportSpec in"));
+        assert!(load_export_spec(&tmp.join("missing.json")).unwrap_err().contains("read "));
 
         let spec_file = tmp.join("greeter.nve.rs");
         std::fs::write(

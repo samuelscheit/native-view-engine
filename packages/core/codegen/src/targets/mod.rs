@@ -1,5 +1,5 @@
 //! Target-language code emitters organized by output language, plus unified multi-target
-//! dispatchers for Core/Scene ABI, Wire Codecs, Hybrid FFI, Reloc slabs, and RN import/export.
+//! dispatchers for Core/Scene ABI, Hybrid FFI, and RN import/export.
 
 pub mod c_cpp;
 pub mod dart;
@@ -18,25 +18,20 @@ use crate::schema::export::{
     ParsedRnSpec, RnComponentSpec, TurboModuleSpec,
 };
 use crate::schema::hybrid::{HybridFileSpec, HybridTarget};
-use crate::schema::reloc::RelocSchema;
 
-pub use c_cpp::{
-    generate_c_core_abi_h, generate_c_scene_abi_h, generate_cpp_wire_codecs, generate_hybrid_cpp,
-    generate_reloc_cpp,
-};
+pub use c_cpp::{generate_c_core_abi_h, generate_c_scene_abi_h, generate_hybrid_cpp};
 pub use dart::{
-    generate_dart_core_abi, generate_dart_scene_abi, generate_dart_wire_codecs,
-    generate_export_flutter, generate_hybrid_dart,
+    generate_dart_core_abi, generate_dart_scene_abi, generate_export_flutter, generate_hybrid_dart,
 };
 pub use kotlin_java::{
     generate_export_compose, generate_hybrid_kotlin, generate_java_core_abi,
-    generate_java_scene_buffer, generate_java_wire_codecs,
+    generate_java_scene_buffer,
 };
-pub use rust::{generate_hybrid_rust, generate_reloc_rust};
-pub use swift::{generate_export_swiftui, generate_hybrid_swift, generate_swift_wire_codecs};
+pub use rust::generate_hybrid_rust;
+pub use swift::{generate_export_swiftui, generate_hybrid_swift};
 pub use typescript::{
     generate_export_web_component, generate_hybrid_ts, generate_ts_core_abi,
-    generate_ts_scene_view, generate_ts_wire_codecs,
+    generate_ts_scene_view,
 };
 
 // ============================================================================
@@ -90,7 +85,7 @@ pub fn generate_hybrid_all(
 }
 
 // ============================================================================
-// Unified Core ABI (5) + Scene ABI (5) + Wire Codec (5) = 15 Artifacts
+// Unified Core ABI (5) + Scene ABI (5) + XXH64 mirror (6) = 16 Artifacts
 // ============================================================================
 
 /// Generates all 5 checked-in Core ABI files keyed by workspace-relative path.
@@ -153,55 +148,12 @@ pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
     ]
 }
 
-/// Generates all 5 checked-in cross-language wire codec artifacts keyed by workspace-relative path.
-pub fn generate_all_wire_codec_files() -> Vec<GeneratedFile> {
-    vec![
-        GeneratedFile {
-            relative_path: "cxx/nve-fabric-bridge/include/nve_wire_codecs.generated.hpp".to_owned(),
-            content: generate_cpp_wire_codecs(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/swiftui-kit/Sources/NveSwiftUI/NveWireCodecs.generated.swift"
-                .to_owned(),
-            content: generate_swift_wire_codecs(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/flutter-plugin/lib/src/nve_wire_codecs.generated.dart".to_owned(),
-            content: generate_dart_wire_codecs(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/web-shell/nve_wire_codecs.generated.ts".to_owned(),
-            content: generate_ts_wire_codecs(),
-        },
-        GeneratedFile {
-            relative_path:
-                "hosts/android-shell/android-app/src/dev/nve/android/generated/NveWireCodecs.java"
-                    .to_owned(),
-            content: generate_java_wire_codecs(),
-        },
-    ]
-}
-
-/// Generates every Core ABI (5) + Scene ABI (5) + Wire Codecs (5) + XXH64 mirror (6) artifact.
+/// Generates every Core ABI (5) + Scene ABI (5) + XXH64 mirror (6) artifact.
 pub fn generate_all_abi_files() -> Vec<GeneratedFile> {
     let mut files = generate_all_core_abi_files();
     files.extend(generate_all_scene_abi_files());
-    files.extend(generate_all_wire_codec_files());
     files.extend(hash::generate_all_hash_files());
     files
-}
-
-// ============================================================================
-// Reloc Zero-Copy Slab Dispatcher
-// ============================================================================
-
-/// Emits both the standalone Rust module (`<snake>_reloc.generated.rs`) and C++20 header
-/// (`<Pascal>Reloc.generated.hpp`) for one [`RelocSchema`].
-pub fn generate_reloc_all(schema: &RelocSchema) -> Result<Vec<GeneratedFile>, CodegenError> {
-    Ok(vec![
-        generate_reloc_rust(schema)?,
-        generate_reloc_cpp(schema)?,
-    ])
 }
 
 // ============================================================================
