@@ -1,21 +1,15 @@
-//! Pure-Rust headless [`StoreBackend`] generic over any [`StoreLayoutEngine`] (defaulting to
-//! [`TaffyStoreLayout`] directly over `NodeStore` word columns with zero `TaffyTree` duplication).
+//! Pure-Rust headless [`nve_engine::StoreBackend`] generic over any [`StoreLayoutEngine`]
+//! (defaulting to `nve_layout::TaffyStoreLayout` directly over `NodeStore` word columns).
 //!
-//! Provides <50ms edit->test verification of any Rust UI frontend, mutation diffing, coordinate
-//! hit-testing (with scroll offsets, sticky clamping, overflow clipping, and `Transform2D`),
-//! interactive pseudo-state & cursor tracking (`InteractionTracker`), live `NveSceneView`
-//! (`primary_slot` + `NveTableView`) publication, live layout-engine swapping, and an ASCII
-//! tree + rect inspector.
+//! Wraps [`LaidOutScene`] and adds mutation diffing, live legacy `NveSceneView`
+//! (`primary_slot` + `NveTableView`) publication, and ASCII tree + rect inspection.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 mod commit;
 mod hit_test;
 mod interaction;
-mod snapshot;
-pub mod taffy_store;
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -25,9 +19,8 @@ use nve_abi::{
     SceneNodeInput, SurfaceId, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
 use nve_components::tables::{Interaction, TextContent, Typography};
-use nve_engine::{
-    HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport,
-};
+use nve_engine::{LayoutRect, Viewport};
+use nve_layout::{LaidOutScene, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable, TableSlot};
 
 pub use nve_components::interaction::{
@@ -39,14 +32,10 @@ pub use nve_components::layout_ext::{
 };
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
-pub(crate) use nve_components::tables::{
-    box_visual, generates_box, is_display_contents, node_clips_overflow, paint_of_box,
-};
-pub(crate) use snapshot::{is_display_none, length_to_dim};
-pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
-pub use taffy_store::{ResolvedTextStyle, TaffyStoreLayout};
+pub use nve_layout::{layout_snapshot_of, visual_snapshot_of};
+pub(crate) use nve_components::tables::{box_visual, node_clips_overflow};
 
-pub(crate) const MAX_TREE_DEPTH: usize = 512;
+pub(crate) use nve_layout::MAX_TREE_DEPTH;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HeadlessMutation {
@@ -57,20 +46,16 @@ pub enum HeadlessMutation {
     UpdateStyle(NodeId),
 }
 
-/// Pure-Rust headless [`StoreBackend`] backed by a zero-copy [`StoreLayoutEngine`].
+/// Pure-Rust headless [`StoreBackend`] backed by a zero-copy [`LaidOutScene`].
 ///
 /// Holds ZERO duplicate copies of the UI tree, strings, or style props — reads directly from
 /// `&NodeStore` during `commit` and inspection methods.
 pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) surface_id: SurfaceId,
-    pub(crate) viewport: Viewport,
-    pub(crate) layout: L,
-    text_measurer: Arc<dyn TextMeasurer>,
+    pub(crate) scene: LaidOutScene<L>,
     pub(crate) prev_rects: Vec<(u64, LayoutRect)>,
     pub(crate) rect_gen: u64,
     pub(crate) track_mutations: bool,
-    pub(crate) interaction: InteractionTracker,
-    pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
     pub(crate) last_mutations: Vec<HeadlessMutation>,
     pub(crate) pending_events: Vec<NativeEvent>,
     pub(crate) scene_table: NveSceneTable,
@@ -80,10 +65,6 @@ pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     text_dirty_marks: Vec<u64>,
     text_dirty_epoch: u64,
     pub(crate) walk_stack: Vec<(StoreNodeId, usize)>,
-    /// `(z, index)` sort keys reused across hit-test queries (mixed-`z_index` sibling lists
-    /// longer than the walk's stack buffer); keeps its high-water capacity. A `Cell` suffices:
-    /// the backend is neither `Send` nor `Sync` (raw table views), and queries never nest.
-    pub(crate) hit_scratch: std::cell::Cell<Vec<(i32, u32)>>,
 }
 
 impl Default for HeadlessBackend<TaffyStoreLayout> {
@@ -99,19 +80,13 @@ impl HeadlessBackend<TaffyStoreLayout> {
 }
 
 impl<L: StoreLayoutEngine> HeadlessBackend<L> {
-    pub fn with_layout(mut layout: L) -> Self {
-        let text_measurer: Arc<dyn TextMeasurer> = Arc::new(HeuristicTextMeasurer);
-        layout.set_text_measurer(Arc::clone(&text_measurer));
+    pub fn with_layout(layout: L) -> Self {
         Self {
             surface_id: 1,
-            viewport: Viewport::default(),
-            layout,
-            text_measurer,
+            scene: LaidOutScene::new(layout),
             prev_rects: Vec::new(),
             rect_gen: 0,
             track_mutations: true,
-            interaction: InteractionTracker::new(),
-            scroll_offsets: HashMap::new(),
             last_mutations: Vec::new(),
             pending_events: Vec::new(),
             scene_table: NveSceneTable::new(),
@@ -121,8 +96,17 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             text_dirty_marks: Vec::new(),
             text_dirty_epoch: 0,
             walk_stack: Vec::new(),
-            hit_scratch: std::cell::Cell::new(Vec::new()),
         }
+    }
+
+    #[inline]
+    pub fn scene(&self) -> &LaidOutScene<L> {
+        &self.scene
+    }
+
+    #[inline]
+    pub fn scene_mut(&mut self) -> &mut LaidOutScene<L> {
+        &mut self.scene
     }
 
     pub fn with_mutation_tracking(mut self, enabled: bool) -> Self {
@@ -137,22 +121,22 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     #[inline]
     pub fn layout_engine_name(&self) -> &'static str {
-        self.layout.name()
+        self.scene.layout_engine_name()
     }
 
     #[inline]
     pub fn layout_engine(&self) -> &L {
-        &self.layout
+        self.scene.layout_engine()
     }
 
     #[inline]
     pub fn layout_engine_mut(&mut self) -> &mut L {
-        &mut self.layout
+        self.scene.layout_engine_mut()
     }
 
     #[inline]
     pub fn viewport(&self) -> Viewport {
-        self.viewport
+        self.scene.viewport()
     }
 
     #[inline]
@@ -161,32 +145,25 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     pub fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
-        self.text_measurer = Arc::clone(&measurer);
-        self.layout.set_text_measurer(measurer);
+        self.scene.set_text_measurer(measurer);
     }
 
     #[inline]
     pub fn text_measurer(&self) -> &Arc<dyn TextMeasurer> {
-        &self.text_measurer
+        self.scene.text_measurer()
     }
 
     /// Hot-swaps the active layout engine while preserving viewport, scroll, and interaction state.
-    /// The caller should follow with `recompute_layout(store)` if an immediate re-layout is needed.
     pub fn swap_layout_engine<L2: StoreLayoutEngine>(
         self,
-        mut new_layout: L2,
+        new_layout: L2,
     ) -> HeadlessBackend<L2> {
-        new_layout.set_text_measurer(Arc::clone(&self.text_measurer));
         HeadlessBackend {
             surface_id: self.surface_id,
-            viewport: self.viewport,
-            layout: new_layout,
-            text_measurer: self.text_measurer,
+            scene: self.scene.swap_layout_engine(new_layout),
             prev_rects: self.prev_rects,
             rect_gen: self.rect_gen,
             track_mutations: self.track_mutations,
-            interaction: self.interaction,
-            scroll_offsets: self.scroll_offsets,
             last_mutations: self.last_mutations,
             pending_events: self.pending_events,
             scene_table: self.scene_table,
@@ -196,15 +173,13 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             text_dirty_marks: self.text_dirty_marks,
             text_dirty_epoch: self.text_dirty_epoch,
             walk_stack: self.walk_stack,
-            hit_scratch: self.hit_scratch,
         }
     }
 
     /// Recomputes layout for `store` immediately (e.g. after swapping layout engines or viewport);
     /// returns whether the engine ran a pass (it self-gates clean frames).
     pub fn recompute_layout(&mut self, store: &NodeStore) -> bool {
-        self.layout
-            .compute_layout(store, StoreNodeId::ROOT, self.viewport)
+        self.scene.recompute_layout(store)
     }
 
     #[inline]
@@ -270,25 +245,21 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     #[inline]
     pub fn set_scroll_offset(&mut self, id: NodeId, dx: f32, dy: f32) {
-        self.scroll_offsets.insert(id, (dx, dy));
+        self.scene.set_scroll_offset_raw(id, dx, dy);
     }
 
     #[inline]
     pub fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
-        self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0))
+        self.scene.scroll_offset(id)
     }
 
     #[inline]
     pub fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
-        self.layout.layout_of(StoreNodeId(id))
+        self.scene.layout_of(StoreNodeId(id))
     }
 
     /// Publishes the latest laid-out `NodeStore` into a zero-copy `NveSceneView` with
     /// `primary_slot` and dense `NveTableView` descriptors ready for native C++/Swift/Kotlin/Dart hosts.
-    ///
-    /// Unifies `NveSceneView::text_slab` directly with `store.text_slab()` so both
-    /// `NveRenderNode::{text_offset,text_len}` and every published `NveTableView` `Str` word decode
-    /// against the single zero-copy UTF-8 slab with zero text duplication.
     pub fn publish_scene_view(
         &mut self,
         store: &NodeStore,
@@ -327,7 +298,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             if !store.is_live(id) {
                 continue;
             }
-            let rect = self.layout.layout_of(id).unwrap_or_default();
+            let rect = self.scene.layout_of(id).unwrap_or_default();
             let (bg, border_color, border_width, border_radius, opacity, z_index) =
                 if let Some(v) = box_visual(store, id) {
                     (
@@ -459,7 +430,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         for _ in 0..depth {
             out.push_str("  ");
         }
-        let rect = self.layout.layout_of(id).unwrap_or_default();
+        let rect = self.scene.layout_of(id).unwrap_or_default();
         let slot = store.primary_slot(id);
         let _ = write!(
             out,

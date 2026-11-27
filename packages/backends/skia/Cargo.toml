@@ -33,8 +33,6 @@ skia-d3d = [
     "skia-safe/d3d",
     "dep:windows",
 ]
-# Real React Native Yoga C++20 layout engine integration (compiled when RN_REACT_COMMON_DIR is set)
-yoga = ["dep:nve-layout-yoga"]
 
 [dependencies]
 nve-abi = { workspace = true }
@@ -42,12 +40,12 @@ nve-components = { workspace = true }
 nve-engine = { workspace = true }
 nve-store = { workspace = true }
 nve-backend-headless = { workspace = true }
+nve-layout = { workspace = true }
 cosmic-text = { workspace = true }
 unicode-segmentation = { workspace = true }
 base64 = { workspace = true }
 flate2 = "1.1"
 raw-window-handle = "0.6.2"
-nve-layout-yoga = { workspace = true, optional = true }
 skia-safe = { workspace = true, optional = true }
 ash = { version = "0.38.0", optional = true }
 

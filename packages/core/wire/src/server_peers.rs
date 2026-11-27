@@ -2,8 +2,10 @@
 //! TLS WebSocket (`wss://` + loopback `ws://`) peers.
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
@@ -11,12 +13,57 @@ use tokio_tungstenite::tungstenite::Message;
 use web_transport_quinn::generic::SendStream as _;
 
 use nve_wire_core::{
-    NveWireFrame, NveWireHello, NveWireKind, NveWireRejectReason, NveWireTransportKind,
+    NveWireFrame, NveWireHello, NveWireHelloAck, NveWireKind, NveWireRejectReason,
+    NveWireTransportKind, NVE_WIRE_CAP_DATAGRAMS, NVE_WIRE_CAP_NODE_PATCHES,
+    NVE_WIRE_CAP_SCENE_ARCHIVE, NVE_WIRE_CAP_SLOT_CHUNKS,
 };
 
+use crate::auth::verify_bearer_token;
 use crate::framing::{read_stream_frame, read_wt_frame, write_stream_raw, write_wt_raw};
 use crate::server::{OutboundCommand, SharedServerState};
 use crate::tls::{NVE_WIRE_QUIC_ALPN_BYTES, WEBTRANSPORT_ALPN};
+
+impl SharedServerState {
+    pub(crate) fn verify_hello(
+        &self,
+        hello: &NveWireHello,
+    ) -> Result<(), (NveWireRejectReason, &'static str)> {
+        if !verify_bearer_token(&self.bearer_token, &hello.bearer_token) {
+            self.rejected_handshakes.fetch_add(1, Ordering::Relaxed);
+            return Err((NveWireRejectReason::Unauthorized, "invalid bearer token"));
+        }
+        if hello.schema_version != self.schema_version {
+            self.rejected_handshakes.fetch_add(1, Ordering::Relaxed);
+            return Err((
+                NveWireRejectReason::SchemaVersionMismatch,
+                "wire schema version mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn make_hello_ack(&self, session_id: u32) -> Bytes {
+        let ack = NveWireHelloAck {
+            session_id,
+            schema_version: self.schema_version,
+            server_capabilities: NVE_WIRE_CAP_SCENE_ARCHIVE
+                | NVE_WIRE_CAP_NODE_PATCHES
+                | NVE_WIRE_CAP_DATAGRAMS
+                | NVE_WIRE_CAP_SLOT_CHUNKS,
+        };
+        let bytes = NveWireFrame::new(NveWireKind::HelloAck, 1, ack.encode().to_vec())
+            .encode()
+            .unwrap_or_default();
+        Bytes::from(bytes)
+    }
+
+    pub(crate) fn make_reject(reason: NveWireRejectReason, detail: &str) -> Bytes {
+        let bytes = NveWireFrame::new(NveWireKind::Reject, 1, reason.encode(detail))
+            .encode()
+            .unwrap_or_default();
+        Bytes::from(bytes)
+    }
+}
 
 fn negotiated_alpn(conn: &quinn::Connection) -> Option<Vec<u8>> {
     let data = conn.handshake_data()?;

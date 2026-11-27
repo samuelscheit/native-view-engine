@@ -19,7 +19,7 @@ use tungstenite::Message;
 
 use super::session::prewarm_frame0_into_replica;
 use super::{
-    DesktopApp, DesktopHostError, DesktopSession, HotAppSlot, HotReloadClient,
+    DesktopApp, DesktopHostError, DesktopSession, HotAppSlot, HotReloadClient, LayoutEngineChoice,
     write_pixel_buffer_ppm,
 };
 
@@ -442,7 +442,7 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         ..meta
     };
     let mismatch =
-        prewarm_frame0_into_replica(&frame0_path, wrong_meta, 1, viewport, ColorRgba::BLACK);
+        prewarm_frame0_into_replica(&frame0_path, wrong_meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy);
     assert!(matches!(
         mismatch,
         Err(DesktopHostError::Frame0(Frame0Miss::BuildIdMismatch {
@@ -452,7 +452,7 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
     ));
 
     let (_replica, pixel_buffer, loaded_footer) =
-        prewarm_frame0_into_replica(&frame0_path, meta, 1, viewport, ColorRgba::BLACK)
+        prewarm_frame0_into_replica(&frame0_path, meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
             .expect("prewarm frame0");
     assert_eq!(loaded_footer.node_count, footer.node_count);
     assert_eq!(
@@ -467,7 +467,7 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         scale_factor: 1.0,
     };
     let (wide_replica, wide_buf, _) =
-        prewarm_frame0_into_replica(&frame0_path, meta, 1, wide_vp, ColorRgba::BLACK)
+        prewarm_frame0_into_replica(&frame0_path, meta, 1, wide_vp, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
             .expect("prewarm wide viewport");
     assert_eq!(wide_buf.width(), 600);
     assert_eq!(
@@ -532,7 +532,7 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
     assert_eq!(post_reg_meta, cold_meta);
 
     let (_replica, _buf, loaded_footer) =
-        prewarm_frame0_into_replica(&frame0_path, post_reg_meta, 1, viewport, ColorRgba::BLACK)
+        prewarm_frame0_into_replica(&frame0_path, post_reg_meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
             .expect("cold prewarm must hit cache despite late module table registration");
     assert_eq!(loaded_footer.node_count, saved_footer.node_count);
 

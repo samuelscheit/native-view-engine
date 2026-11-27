@@ -16,10 +16,11 @@ mod window;
 
 use std::path::PathBuf;
 
+use nve_wire::NveWireTransportKind;
 use window::{
     render_headless_screenshot, render_paired_headless_screenshot,
     run_desktop_preview_with_options, run_paired_desktop_preview, DesktopPreviewOptions,
-    PairConnectConfig, PairTransport, DEFAULT_WS_URL,
+    LayoutEngineChoice, PairConnectConfig, DEFAULT_WS_URL,
 };
 
 #[derive(Debug, PartialEq)]
@@ -52,23 +53,24 @@ Options:
   --width <px>              Logical window/viewport width (default: 420)
   --height <px>             Logical window/viewport height (default: 780)
   --scale <factor>          HiDPI scale factor for headless rendering (default: 1.0)
+  --layout <taffy|yoga>     Layout engine (default: taffy; yoga requires `--features yoga`)
   --no-hud                  Hide the top-left hot-reload HUD banner
   -h, --help                Show this help message";
 
-fn infer_transport_from_addr(addr: &str) -> Option<PairTransport> {
+fn infer_transport_from_addr(addr: &str) -> Option<NveWireTransportKind> {
     let trimmed = addr.trim();
     let has_prefix = |p: &str| {
         trimmed.len() >= p.len()
             && trimmed.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
     };
     if has_prefix("quic://") || has_prefix("udp://") {
-        Some(PairTransport::Quic)
+        Some(NveWireTransportKind::Quic)
     } else if has_prefix("https://") || has_prefix("wt://") {
-        Some(PairTransport::WebTransport)
+        Some(NveWireTransportKind::WebTransport)
     } else if has_prefix("wss://") {
-        Some(PairTransport::Wss)
+        Some(NveWireTransportKind::Wss)
     } else if has_prefix("ws://") || has_prefix("tcp://") {
-        Some(PairTransport::Ws)
+        Some(NveWireTransportKind::Ws)
     } else {
         None
     }
@@ -82,7 +84,7 @@ where
     let mut dylib_path: Option<PathBuf> = None;
     let mut pair_connect: Option<String> = None;
     let mut pair_token: Option<String> = None;
-    let mut pair_transport: Option<PairTransport> = None;
+    let mut pair_transport: Option<NveWireTransportKind> = None;
     let mut explicit_ws = false;
     let mut options = DesktopPreviewOptions {
         ws_url: Some(DEFAULT_WS_URL.to_string()),
@@ -115,7 +117,12 @@ where
                 let raw = iter
                     .next()
                     .ok_or_else(|| "--pair-transport requires one of: udp, tcp, ws".to_string())?;
-                pair_transport = Some(PairTransport::parse(&raw)?);
+                pair_transport = Some(NveWireTransportKind::parse(&raw).map_err(|_| {
+                    format!(
+                        "invalid --pair-transport '{}' (expected one of: auto, quic, webtransport, wss, ws)",
+                        raw.trim()
+                    )
+                })?);
             }
             "--ws" => {
                 let url = iter
@@ -176,6 +183,12 @@ where
                 }
                 options.scale_factor = val;
             }
+            "--layout" => {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| "--layout requires one of: taffy, yoga".to_string())?;
+                options.layout_engine = LayoutEngineChoice::parse(&raw)?;
+            }
             "--no-hud" => {
                 options.show_hud = false;
             }
@@ -195,7 +208,7 @@ where
             .ok_or_else(|| "--pair-token is required when using --pair-connect".to_string())?;
         let transport = pair_transport
             .or_else(|| infer_transport_from_addr(&addr))
-            .unwrap_or(PairTransport::Auto);
+            .unwrap_or(NveWireTransportKind::Auto);
         if !explicit_ws {
             options.ws_url = None;
         }
@@ -316,7 +329,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "127.0.0.1:8091",
                 "nve-deadbeef-12345678",
-                PairTransport::Quic,
+                NveWireTransportKind::Quic,
             ))
         );
         assert_eq!(cfg.options.ws_url, None);
@@ -338,7 +351,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "127.0.0.1:8092",
                 "tok",
-                PairTransport::Auto,
+                NveWireTransportKind::Auto,
             ))
         );
 
@@ -355,7 +368,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "quic://127.0.0.1:8091",
                 "tok",
-                PairTransport::Quic,
+                NveWireTransportKind::Quic,
             ))
         );
     }
@@ -378,5 +391,18 @@ mod tests {
         assert!(parse_args(s(&["libapp.dylib", "--frame0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--width", "0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn parses_layout_engine_flag() {
+        let yoga = parse_args(s(&["libapp.dylib", "--layout", "yoga"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(yoga.options.layout_engine, LayoutEngineChoice::Yoga);
+        let taffy = parse_args(s(&["libapp.dylib", "--layout", "taffy"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(taffy.options.layout_engine, LayoutEngineChoice::Taffy);
+        assert!(parse_args(s(&["libapp.dylib", "--layout", "bogus"])).is_err());
     }
 }

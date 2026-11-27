@@ -58,6 +58,17 @@ impl NveWireTransportKind {
         }
     }
 
+    /// Inverse of `kind as u8`; unknown values read as [`Self::Auto`].
+    pub const fn from_u8(raw: u8) -> Self {
+        match raw {
+            1 => Self::Quic,
+            2 => Self::WebTransport,
+            3 => Self::Wss,
+            4 => Self::Ws,
+            _ => Self::Auto,
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",

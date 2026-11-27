@@ -8,7 +8,7 @@ Cross-platform desktop host (`nve-skia-shell`) that loads any compiled NVE `cdyl
 - **2-Tier Hot Reload (`nve dev`)**: Connects to `ws://127.0.0.1:8089` (configurable via `--ws <url>` or disabled via `--no-ws`) to apply Tier-1 template patches and Tier-2 `cdylib` reloads with state preservation.
 - **Frame-0 `frame0.nve2` Pre-Warm**: Pass `--frame0 <path.nve2>` to pre-warm a cold `NodeStore` + live Taffy layout from an `NVE2` keyframe before `dlopen` and atomically refresh it on exit.
 - **Headless Screenshot Capture**: Pass `--screenshot <out.ppm> [--width W] [--height H] [--scale S]` to render headlessly without a display server and write a binary `P6` PPM image.
-- **Hardware GPU Swapchains**: Forward `--features skia`, `--features skia-metal`, `--features skia-vulkan`, `--features skia-d3d`, or `--features yoga` directly to `nve-backend-skia`.
+- **Hardware GPU Swapchains**: Forward `--features skia`, `--features skia-metal`, `--features skia-vulkan`, or `--features skia-d3d` directly to `nve-backend-skia`.
 
 ## Build & Run
 

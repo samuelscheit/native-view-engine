@@ -38,10 +38,11 @@ dioxus-core-macro = { workspace = true }
 serde = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-nve-wire = { workspace = true }
+nve-wire = { workspace = true, features = ["client", "server"] }
 
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
+nve-layout = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-canvas-skia = { workspace = true }

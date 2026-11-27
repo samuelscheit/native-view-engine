@@ -15,8 +15,12 @@ use crate::table::{self, NveTable, OwnedTableDesc, TableMeta, TableSlot};
 use crate::wire::WireError;
 use crate::wire::budget::SessionBudget;
 
-/// Node is allocated.
-pub(crate) const LIVE: u8 = 1 << 0;
+/// Node is allocated (exported as `nve_abi::NVE_NODE_ROW_FLAG_LIVE`).
+pub const LIVE: u8 = 1 << 0;
+
+const _: () = {
+    assert!(LIVE == nve_abi::NVE_NODE_ROW_FLAG_LIVE);
+};
 /// Node was created during the current frame.
 pub(crate) const CREATED: u8 = 1 << 1;
 /// Node's child list changed during the current frame (already queued).
@@ -50,9 +54,33 @@ pub struct NodeRow {
     pub(crate) flags: u8,
 }
 
+// Complete compile-time proof that `NodeRow` and `nve_abi::NveNodeRow` are bit-for-bit identical
+// in size, alignment compatibility, little-endian `[u32; 4]` bitset encoding, and EVERY field
+// offset (including `pub(crate)` `flags` and `ChildSpan::{off, len}`) for zero-copy C FFI export.
 const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+    use nve_abi::NveNodeRow;
+    assert!(cfg!(target_endian = "little"));
     assert!(size_of::<NodeRow>() == 32);
     assert!(align_of::<NodeRow>() == 32);
+    assert!(size_of::<NodeRow>() == size_of::<NveNodeRow>());
+    assert!(align_of::<NodeRow>() >= align_of::<NveNodeRow>());
+    assert!(size_of::<TableSet>() == size_of::<[u32; 4]>());
+    assert!(offset_of!(NodeRow, tables) == offset_of!(NveNodeRow, table_set));
+    assert!(offset_of!(NodeRow, parent) == offset_of!(NveNodeRow, parent));
+    assert!(
+        offset_of!(NodeRow, children) + offset_of!(ChildSpan, off)
+            == offset_of!(NveNodeRow, child_off)
+    );
+    assert!(
+        offset_of!(NodeRow, children) + offset_of!(ChildSpan, len)
+            == offset_of!(NveNodeRow, child_len)
+    );
+    assert!(offset_of!(NodeRow, generation) == offset_of!(NveNodeRow, generation));
+    assert!(offset_of!(NodeRow, primary_slot) == offset_of!(NveNodeRow, primary_slot));
+    assert!(offset_of!(NodeRow, effects) == offset_of!(NveNodeRow, effects));
+    assert!(offset_of!(NodeRow, flags) == offset_of!(NveNodeRow, flags));
+    assert!(LIVE == nve_abi::NVE_NODE_ROW_FLAG_LIVE);
 };
 
 /// Ordered realization priority list: the first attached [`TableSlot`] in `slots` becomes the
@@ -367,6 +395,13 @@ impl NodeStore {
         self.nodes.len()
     }
 
+    /// Dense contiguous slice of all [`NodeRow`] slots (slot 0 is reserved null; live nodes live
+    /// in `1..capacity()` with `flags & LIVE != 0`). Published zero-copy in `NveRuntimeSceneView`.
+    #[inline]
+    pub fn node_rows(&self) -> &[NodeRow] {
+        self.nodes.as_slice()
+    }
+
     /// Iterates every live node id.
     pub fn live_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
         (1..self.nodes.len()).filter_map(|i| self.id_at(i))
@@ -503,91 +538,6 @@ impl NodeStore {
     pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
         let c = self.columns[slot.0 as usize].as_ref()?;
         Some((&c.rows, &c.owners, c.row_count()))
-    }
-
-    /// Populates `out` with zero-copy [`nve_abi::table::NveTableView`] entries for every
-    /// `PUBLISH_TO_SCENE` table currently allocated in this store — zero heap allocations when
-    /// `out` and `dirty_buf` have sufficient capacity.
-    ///
-    /// Dirty row indices are appended into `dirty_buf` (which must live as long as `out` is read).
-    pub fn publish_table_views(
-        &self,
-        changes: &crate::changes::ChangeSet,
-        out: &mut Vec<nve_abi::table::NveTableView>,
-        dirty_buf: &mut Vec<u32>,
-    ) {
-        out.clear();
-        dirty_buf.clear();
-        let mut ranges = [(TableSlot(0), 0usize, 0usize); MAX_TABLE_SLOTS];
-        let mut range_len = 0usize;
-        let mut reloc_pos = 0usize;
-        for slot in self.table_slots() {
-            let Some(col) = self.columns[slot.0 as usize].as_ref() else {
-                continue;
-            };
-            if col.desc.flags() & nve_abi::table::table_flags::PUBLISH_TO_SCENE == 0 {
-                continue;
-            }
-            let start = dirty_buf.len();
-            if let Some(tc) = changes.table(slot) {
-                for &nid in &tc.nodes {
-                    if let Some(row_idx) = col.find_row(nid.node_index()) {
-                        dirty_buf.push(row_idx as u32);
-                    }
-                }
-            }
-            while reloc_pos < changes.relocated_rows.len()
-                && changes.relocated_rows[reloc_pos].0 < slot
-            {
-                reloc_pos += 1;
-            }
-            let row_count_u32 = col.row_count() as u32;
-            while reloc_pos < changes.relocated_rows.len()
-                && changes.relocated_rows[reloc_pos].0 == slot
-            {
-                let row_idx = changes.relocated_rows[reloc_pos].1;
-                if row_idx < row_count_u32 {
-                    dirty_buf.push(row_idx);
-                }
-                reloc_pos += 1;
-            }
-            ranges[range_len] = (slot, start, dirty_buf.len() - start);
-            range_len += 1;
-        }
-
-        for &(slot, start, dirty_count) in &ranges[..range_len] {
-            let Some(col) = self.columns[slot.0 as usize].as_ref() else {
-                continue;
-            };
-            let row_count = col.row_count();
-            let rows_ptr = if col.rows.is_empty() {
-                core::ptr::null()
-            } else {
-                col.rows.as_ptr()
-            };
-            let owners_ptr = if col.owners.is_empty() {
-                core::ptr::null()
-            } else {
-                col.owners.as_ptr()
-            };
-            let dirty_ptr = if dirty_count == 0 {
-                core::ptr::null()
-            } else {
-                // SAFETY: `start` is within `dirty_buf` (captured before pushing `dirty_count > 0` items).
-                unsafe { dirty_buf.as_ptr().add(start) }
-            };
-            out.push(nve_abi::table::NveTableView {
-                key_lo: col.desc.key().lo(),
-                key_hi: col.desc.key().hi(),
-                slot: slot.0 as u32,
-                words: col.w as u32,
-                row_count: row_count as u32,
-                dirty_count: dirty_count as u32,
-                rows: rows_ptr,
-                owners: owners_ptr,
-                dirty_rows: dirty_ptr,
-            });
-        }
     }
 
     pub fn stats(&self) -> StoreStats {

@@ -8,18 +8,14 @@ license.workspace = true
 nve-abi = { workspace = true }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
+nve-layout = { workspace = true }
 nve-store = { workspace = true }
-taffy = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
 
 [[bench]]
 name = "headless_bench"
-harness = false
-
-[[bench]]
-name = "taffy_hoisted_bench"
 harness = false
 
 [[bench]]

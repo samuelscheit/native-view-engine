@@ -7,11 +7,10 @@ use std::time::{Duration, Instant};
 use nve_abi::{
     native_events_to_direct, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId,
 };
-use nve_backend_skia::SkiaBackend;
 use nve_components::tables::{is_subtree_display_none, Interaction, TextInput};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
-use super::session::{now_us, DesktopSession};
+use super::session::{now_us, DesktopSession, ShellSkiaBackend};
 pub(super) use super::text_edit::{paragraph_bounds_at, word_bounds_at};
 #[cfg(test)]
 pub(super) use super::text_edit::{
@@ -35,7 +34,12 @@ pub(super) fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
     })
 }
 
-fn hit_test_focusable(store: &NodeStore, backend: &SkiaBackend, x: f32, y: f32) -> Option<NodeId> {
+fn hit_test_focusable(
+    store: &NodeStore,
+    backend: &ShellSkiaBackend,
+    x: f32,
+    y: f32,
+) -> Option<NodeId> {
     let mut cur = backend.hit_test_interaction(store, x, y).or_else(|| backend.hit_test(store, x, y))?;
     for _ in 0..256 {
         let sid = StoreNodeId(cur);

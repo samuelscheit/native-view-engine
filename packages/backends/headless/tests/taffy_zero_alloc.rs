@@ -5,7 +5,8 @@
 mod counting_alloc;
 
 use counting_alloc::count_allocs;
-use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
+use nve_backend_headless::HeadlessBackend;
+use nve_layout::TaffyStoreLayout;
 use nve_components::tables::{
     FlexDirection, Layout, TextContent, Transform, Typography, Visual, core_realization_order,
 };

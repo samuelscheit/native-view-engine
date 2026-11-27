@@ -1,27 +1,29 @@
 //! `nve pair` — Unified dual-ALPN QUIC (`nve-wire-2`) + HTTP/3 WebTransport (`h3`) + TLS
-//! WebSocket (`wss://`) device pairing server with 13-day ECDSA P-256 cert pinning and
-//! binary bidirectional `EventBatch` ingestion back into the live app instance.
+//! WebSocket (`wss://`) device pairing server with 13-day ECDSA P-256 cert pinning, targeted
+//! `KeyframeRequest` snapshot recovery, and binary bidirectional `EventBatch` ingestion.
+
+#[path = "pair_format.rs"]
+mod pair_format;
 
 use std::borrow::Cow;
 use std::io::Write as _;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use nve_abi::{
-    decode_events, native_events_to_direct, NveDirectEvent, NveMapEntry, NveValue, ROOT_NODE_ID,
+    decode_events, native_events_to_direct, NveDirectEvent, NveMapEntry, ROOT_NODE_ID,
 };
+use nve_components::tables::{core_realization_order, register_core_tables};
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
-use nve_wire::{
-    format_wire_uri, generate_bearer_token, NveWireKind, NveWireServer, NveWireServerConfig,
-    NveWireServerMetrics,
-};
+use nve_store::wire::{WireDecoder, WireEncoder};
+use nve_store::NodeStore;
+use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig};
 
-use crate::dev::{dylib_path_for_package_in, resolve_cargo_target_dir};
+pub(crate) use pair_format::*;
 
 pub(crate) struct PairOptions {
     pub dylib: Option<PathBuf>,
@@ -89,152 +91,6 @@ impl PairedApp for DioxusSurface {
     }
 }
 
-pub(crate) fn generate_pairing_token() -> String {
-    generate_bearer_token()
-}
-
-pub(crate) fn resolve_or_generate_token(token: Option<String>) -> String {
-    match token {
-        Some(t) if !t.trim().is_empty() => t.trim().to_owned(),
-        _ => generate_pairing_token(),
-    }
-}
-
-pub(crate) fn format_bind_addr(host: &str, port: u16) -> String {
-    if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
-pub(crate) fn display_host_for_uri(host: &str) -> &str {
-    if host == "0.0.0.0" || host == "::" || host == "[::]" {
-        "127.0.0.1"
-    } else {
-        host
-    }
-}
-
-pub(crate) fn format_ws_url(host: &str, ws_port: u16) -> String {
-    let disp = display_host_for_uri(host);
-    if disp.contains(':') && !disp.starts_with('[') {
-        format!("ws://[{disp}]:{ws_port}")
-    } else {
-        format!("ws://{disp}:{ws_port}")
-    }
-}
-
-pub(crate) fn format_pairing_uri(
-    host: &str,
-    quic_port: u16,
-    wss_port: u16,
-    token: &str,
-    cert_sha256: Option<&[u8; 32]>,
-    width: f32,
-    height: f32,
-) -> String {
-    let h = display_host_for_uri(host);
-    format_wire_uri(
-        h,
-        quic_port,
-        wss_port,
-        token,
-        cert_sha256,
-        width.round() as u32,
-        height.round() as u32,
-    )
-}
-
-pub(crate) fn format_browser_pair_query(
-    host: &str,
-    ws_port: u16,
-    token: &str,
-    cert_hash_hex: Option<&str>,
-) -> String {
-    match cert_hash_hex {
-        Some(h) if !h.is_empty() => {
-            format!("?pair={}&token={token}&cert_hash={h}", format_ws_url(host, ws_port))
-        }
-        _ => format!("?pair={}&token={token}", format_ws_url(host, ws_port)),
-    }
-}
-
-pub(crate) fn format_pair_ready_line(
-    host: &str,
-    quic_addr: SocketAddr,
-    wss_addr: SocketAddr,
-    token: &str,
-    cert_hash_hex: &str,
-) -> String {
-    let ws_url = format_ws_url(host, wss_addr.port());
-    format!(
-        "NVE_PAIR_READY ws={ws_url} token={token} udp={quic_addr} tcp={wss_addr} cert_hash={cert_hash_hex}"
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn format_pair_banner(
-    dylib_path: &Path,
-    host: &str,
-    quic_addr: SocketAddr,
-    wss_addr: SocketAddr,
-    token: &str,
-    cert_sha256: &[u8; 32],
-    cert_hash_hex: &str,
-    width: f32,
-    height: f32,
-) -> String {
-    let disp = display_host_for_uri(host);
-    let uri = format_pairing_uri(
-        host,
-        quic_addr.port(),
-        wss_addr.port(),
-        token,
-        Some(cert_sha256),
-        width,
-        height,
-    );
-    let browser_query = format_browser_pair_query(host, wss_addr.port(), token, Some(cert_hash_hex));
-    format!(
-        "nve pair — Unified QUIC/WebTransport + WSS Device Pairing (NveWireFrame v2)\n  dylib:     {}\n  quic/h3:   https://{disp}:{}/nve-wire (ALPN: h3, nve-wire-2; bound {quic_addr})\n  wss/ws:    wss://{disp}:{}/nve-wire (bound {wss_addr})\n  cert_hash: {cert_hash_hex} (13-day ECDSA P-256)\n  token:     {token}\n  uri:       {uri}\n  browser:   {browser_query}\n",
-        dylib_path.display(),
-        quic_addr.port(),
-        wss_addr.port(),
-    )
-}
-
-pub(crate) fn resolve_dylib_path(
-    dylib: Option<PathBuf>,
-    package: Option<&str>,
-) -> Result<PathBuf, String> {
-    if let Some(path) = dylib {
-        return if path.exists() {
-            Ok(path)
-        } else {
-            Err(format!("specified dylib does not exist: {}", path.display()))
-        };
-    }
-    let pkg = package.unwrap_or("nve-studio-workspace");
-    let target_dir = resolve_cargo_target_dir().unwrap_or_else(|_| PathBuf::from("target"));
-    let path = dylib_path_for_package_in(&target_dir, pkg);
-    if !path.exists() {
-        println!("[pair] building {pkg} -> {}...", path.display());
-        let status = ProcessCommand::new("cargo")
-            .args(["build", "-p", pkg])
-            .status()
-            .map_err(|e| format!("failed to invoke cargo build -p {pkg}: {e}"))?;
-        if !status.success() {
-            return Err(format!("cargo build -p {pkg} failed"));
-        }
-    }
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(format!("expected cdylib at {} after building {pkg}", path.display()))
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PairStepOutcome {
     pub events_dispatched: usize,
@@ -242,66 +98,17 @@ pub(crate) struct PairStepOutcome {
     pub shutdown_requested: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SyncTelemetrySnapshot {
-    pub transport: &'static str,
-    pub peers: u16,
-    pub kbps_tenths: u32,
-    pub compression_tenths: u16,
-    pub rtt_ms_tenths: u32,
-}
-
-impl SyncTelemetrySnapshot {
-    fn from_server(has_quic: bool, m: &NveWireServerMetrics, elapsed: Duration) -> Self {
-        let peers = m.connected_peers.min(u16::MAX as usize) as u16;
-        let transport = if has_quic {
-            "lan-quic"
-        } else if peers > 0 {
-            "relay-wss"
-        } else {
-            "offline"
-        };
-        let secs = elapsed.as_secs_f64().max(0.05);
-        let kbps = ((m.wire_bytes_tx + m.wire_bytes_rx) as f64 / 1024.0) / secs;
-        let kbps_tenths = if kbps.is_finite() {
-            (kbps * 10.0).round() as u32
-        } else {
-            0
-        };
-        Self {
-            transport,
-            peers,
-            kbps_tenths,
-            compression_tenths: 10,
-            rtt_ms_tenths: 0,
-        }
-    }
-
-    fn as_prop_entries(&self) -> [NveMapEntry; 5] {
-        [
-            NveMapEntry::new("syncTransport", NveValue::from_str(self.transport)),
-            NveMapEntry::new("syncPeers", NveValue::i64(i64::from(self.peers))),
-            NveMapEntry::new("syncKbps", NveValue::f64(f64::from(self.kbps_tenths) / 10.0)),
-            NveMapEntry::new(
-                "syncCompression",
-                NveValue::f64(f64::from(self.compression_tenths) / 10.0),
-            ),
-            NveMapEntry::new(
-                "syncRttMs",
-                NveValue::f64(f64::from(self.rtt_ms_tenths) / 10.0),
-            ),
-        ]
-    }
-}
-
-const TELEMETRY_PUSH_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Live unified dual-ALPN QUIC/WebTransport + WSS pairing session owning a [`PairedApp`].
+/// Live unified dual-ALPN QUIC/WebTransport + WSS pairing session owning a [`PairedApp`] and a
+/// mirror [`NodeStore`] so `KeyframeRequest` replies synthesize fresh full snapshots on demand.
 pub(crate) struct PairSession<A: PairedApp> {
     app: A,
     server: NveWireServer,
     frame_id: u64,
     last_frame: Vec<u8>,
+    mirror_store: NodeStore,
+    mirror_decoder: WireDecoder,
+    mirror_changes: nve_store::ChangeSet,
+    mirror_has_state: bool,
     token: String,
     started_at: Instant,
     last_telemetry: Option<SyncTelemetrySnapshot>,
@@ -318,6 +125,7 @@ impl<A: PairedApp> PairSession<A> {
         width: f32,
         height: f32,
     ) -> Result<Self, String> {
+        register_core_tables();
         let quic_bind: SocketAddr = format_bind_addr(host, quic_port)
             .to_socket_addrs()
             .map_err(|e| format!("resolve QUIC bind address: {e}"))?
@@ -339,12 +147,19 @@ impl<A: PairedApp> PairSession<A> {
             let _ = app.dispatch_events(&layout_ev);
         }
 
+        let mut mirror_store = NodeStore::replica();
+        mirror_store.set_realization_order(core_realization_order());
+
         let now = Instant::now();
         let mut session = Self {
             app,
             server,
             frame_id: 0,
             last_frame: Vec::new(),
+            mirror_store,
+            mirror_decoder: WireDecoder::default(),
+            mirror_changes: nve_store::ChangeSet::default(),
+            mirror_has_state: false,
             token,
             started_at: now,
             last_telemetry: None,
@@ -397,24 +212,81 @@ impl<A: PairedApp> PairSession<A> {
         self.app.set_props(&entries)
     }
 
+    fn apply_to_mirror(&mut self, bytes: &[u8], is_keyframe: bool) {
+        if WireDecoder::validate_header(bytes).is_err() {
+            return;
+        }
+        if is_keyframe && self.mirror_has_state {
+            self.mirror_store = NodeStore::replica();
+            self.mirror_store
+                .set_realization_order(core_realization_order());
+            self.mirror_decoder = WireDecoder::default();
+            self.mirror_has_state = false;
+        }
+        let applied = {
+            let mut tx = self.mirror_store.tx();
+            if self.mirror_decoder.apply(&mut tx, bytes).is_ok() {
+                tx.commit_into(&mut self.mirror_changes);
+                true
+            } else {
+                false
+            }
+        };
+        if applied {
+            self.mirror_has_state = true;
+        } else {
+            self.mirror_store = NodeStore::replica();
+            self.mirror_store
+                .set_realization_order(core_realization_order());
+            self.mirror_decoder = WireDecoder::default();
+            self.mirror_has_state = false;
+        }
+    }
+
+    fn send_fresh_keyframe_to_peer(&self, peer_session_id: u32) {
+        if self.mirror_has_state {
+            let mut full = Vec::new();
+            WireEncoder::default().encode_full_with_labels(
+                &self.mirror_store,
+                self.mirror_decoder.declared_wire_tables(),
+                &mut full,
+            );
+            let _ = self
+                .server
+                .send_scene_keyframe_to_peer(peer_session_id, self.frame_id as u32, &full);
+        }
+    }
+
     pub(crate) fn render_and_broadcast(&mut self, force: bool) -> Result<bool, String> {
+        self.render_and_broadcast_with_kind(force, false)
+    }
+
+    fn render_and_broadcast_with_kind(
+        &mut self,
+        force: bool,
+        force_keyframe: bool,
+    ) -> Result<bool, String> {
         self.frame_id += 1;
         let frame = self.app.render(self.frame_id);
         if frame.is_empty() || (!force && frame.as_ref() == self.last_frame.as_slice()) {
             return Ok(false);
         }
-        self.server
-            .broadcast_command_delta(self.frame_id as u32, &frame)
-            .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
-        match frame {
-            Cow::Borrowed(slice) => {
-                self.last_frame.clear();
-                self.last_frame.extend_from_slice(slice);
-            }
-            Cow::Owned(vec) => {
-                self.last_frame = vec;
-            }
+        let header_frame_is_1 =
+            WireDecoder::validate_header(&frame).is_ok_and(|(num, _)| num == 1);
+        let is_keyframe = force_keyframe || self.frame_id == 1 || header_frame_is_1;
+        if is_keyframe {
+            self.server
+                .broadcast_scene_keyframe(self.frame_id as u32, &frame)
+                .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
+        } else {
+            self.server
+                .broadcast_command_delta(self.frame_id as u32, &frame)
+                .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
         }
+        // Apply to mirror BEFORE moving/storing into `self.last_frame` (avoids per-frame clone).
+        let frame_owned = frame.into_owned();
+        self.apply_to_mirror(&frame_owned, is_keyframe);
+        self.last_frame = frame_owned;
         Ok(true)
     }
 
@@ -434,7 +306,7 @@ impl<A: PairedApp> PairSession<A> {
                         }
                     }
                     PairControlMsg::DylibReload(path) => match self.app.reload(&path) {
-                        Ok(_) if self.render_and_broadcast(true).unwrap_or(false) => {
+                        Ok(_) if self.render_and_broadcast_with_kind(true, true).unwrap_or(false) => {
                             outcome.frames_broadcast += 1;
                         }
                         Ok(_) => {}
@@ -448,18 +320,24 @@ impl<A: PairedApp> PairSession<A> {
             }
         }
         while let Some(msg) = self.server.try_recv_inbound() {
-            if msg.frame.kind == NveWireKind::EventBatch {
-                let handled = decode_events(&msg.frame.payload)
-                    .map(|decoded| {
-                        let mut direct = Vec::with_capacity(decoded.len());
-                        native_events_to_direct(&decoded, &mut direct);
-                        self.app.dispatch_events(&direct)
-                    })
-                    .unwrap_or(false);
-                outcome.events_dispatched += 1;
-                if self.render_and_broadcast(handled).unwrap_or(false) {
-                    outcome.frames_broadcast += 1;
+            match msg.frame.kind {
+                NveWireKind::EventBatch => {
+                    let handled = decode_events(&msg.frame.payload)
+                        .map(|decoded| {
+                            let mut direct = Vec::with_capacity(decoded.len());
+                            native_events_to_direct(&decoded, &mut direct);
+                            self.app.dispatch_events(&direct)
+                        })
+                        .unwrap_or(false);
+                    outcome.events_dispatched += 1;
+                    if self.render_and_broadcast(handled).unwrap_or(false) {
+                        outcome.frames_broadcast += 1;
+                    }
                 }
+                NveWireKind::KeyframeRequest => {
+                    self.send_fresh_keyframe_to_peer(msg.session_id);
+                }
+                _ => {}
             }
         }
         if self.push_telemetry_if_needed(false)

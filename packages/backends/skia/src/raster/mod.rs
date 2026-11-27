@@ -9,7 +9,8 @@ pub(crate) mod text_blend;
 mod transform;
 
 use nve_abi::ColorRgba;
-use nve_engine::{LayoutRect, TextMeasurer};
+use nve_engine::LayoutRect;
+use nve_layout::TextMeasurer;
 use nve_store::{NodeStore, TableEventBus};
 
 use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry};

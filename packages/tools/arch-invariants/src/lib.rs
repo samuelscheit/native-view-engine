@@ -15,6 +15,7 @@ pub mod hot_path;
 pub mod hygiene;
 pub mod inline_style_keys;
 pub mod persistence_guard;
+pub mod native_build;
 pub mod purity;
 pub mod rpc_dag;
 pub mod spec_registry;

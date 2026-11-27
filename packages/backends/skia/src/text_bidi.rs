@@ -3,7 +3,7 @@
 //! selection geometry powered by `cosmic-text`.
 
 use cosmic_text::{Buffer, Metrics, Shaping, Wrap};
-use nve_engine::TextMeasurer;
+use nve_layout::TextMeasurer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::font::BitmapFontTextMeasurer;

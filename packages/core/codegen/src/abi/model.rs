@@ -154,6 +154,36 @@ impl<'a> AbiModel<'a> {
     }
 }
 
+/// The embedding-host runtime ABI (`nve_runtime_abi.generated.h`), rendered on top of the Core +
+/// Scene header it includes: its records must not redeclare any record of `base`.
+#[derive(Debug)]
+pub struct RuntimeAbiModel<'a> {
+    pub file: &'a AbiFileDescriptor,
+    pub hash: U64Split,
+    pub records: Vec<RecordLayout<'a>>,
+}
+
+impl<'a> RuntimeAbiModel<'a> {
+    pub fn new(file: &'a AbiFileDescriptor, base: &AbiModel<'_>) -> Result<Self, CodegenError> {
+        let records = layout_records(&[file])?;
+        super::validate::abi(&[file], &records)?;
+        if let Some(r) = records
+            .iter()
+            .find(|r| base.records.iter().any(|b| b.name == r.name))
+        {
+            return Err(CodegenError::validation(format!(
+                "the runtime ABI redeclares `{}`, which `nve_abi.generated.h` already declares",
+                r.name
+            )));
+        }
+        Ok(Self {
+            file,
+            hash: U64Split::new(nve_abi::NVE_RUNTIME_SCHEMA_HASH),
+            records,
+        })
+    }
+}
+
 /// C constant prefix of an enum's variants (`c_prefix`, else `SCREAMING_NAME_`).
 pub fn c_enum_prefix(e: &AbiEnumDescriptor) -> String {
     e.c_prefix.map_or_else(

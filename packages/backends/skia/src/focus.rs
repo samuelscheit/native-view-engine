@@ -3,7 +3,8 @@
 
 use nve_abi::NodeId;
 use nve_components::tables::{is_subtree_display_none, InputKind, TextInput, Typography};
-use nve_engine::{LayoutRect, StoreLayoutEngine};
+use nve_engine::LayoutRect;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::text::DEFAULT_FONT_WEIGHT;

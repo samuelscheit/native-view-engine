@@ -1,40 +1,61 @@
 //! Unified QUIC (`nve-wire-2`) + HTTP/3 WebTransport (`h3`) + TLS WebSocket (`wss://`)
-//! Happy-Eyeballs wire transport and C ABI for Native View Engine.
+//! Happy-Eyeballs wire transport for Native View Engine.
+//!
+//! Feature split:
+//! - `client`: [`NveWireClient`], [`ReconnectingWireClient`], client TLS SHA-256 pinning (embedded in `nve-runtime`).
+//! - `server`: [`NveWireServer`], [`NveDevCertificate`], Bearer token generation (`nve pair` CLI / dev servers).
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod auth;
-pub mod c_api;
+#[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
 mod client_ws;
 pub mod framing;
+#[cfg(feature = "client")]
+pub mod reconnect;
+#[cfg(feature = "client")]
+mod reconnect_loop;
+#[cfg(feature = "client")]
+pub mod resync;
+#[cfg(feature = "server")]
 pub mod server;
+#[cfg(feature = "server")]
 mod server_peers;
 pub mod tls;
 
 use std::fmt;
+#[cfg(feature = "server")]
 use std::net::SocketAddr;
 use std::time::Duration;
 
-pub use auth::{generate_bearer_token, verify_bearer_token};
-pub use c_api::{
-    nve_wire_client_connect_uri, nve_wire_client_destroy, nve_wire_client_is_connected,
-    nve_wire_client_metrics, nve_wire_client_poll_frame, nve_wire_client_request_keyframe,
-    nve_wire_client_send_datagram, nve_wire_client_send_events, NveWireClientHandle,
-    NveWireMetricsC, NVE_WIRE_ERR_AUTH, NVE_WIRE_ERR_BUFFER_TOO_SMALL, NVE_WIRE_ERR_CONNECT,
-    NVE_WIRE_ERR_EMPTY, NVE_WIRE_ERR_INVALID_ARG, NVE_WIRE_ERR_IO, NVE_WIRE_ERR_PANIC,
-    NVE_WIRE_ERR_PARSE, NVE_WIRE_OK,
-};
+#[cfg(feature = "server")]
+pub use auth::generate_bearer_token;
+pub use auth::verify_bearer_token;
+#[cfg(feature = "client")]
 pub use client::NveWireClient;
 pub use nve_wire_core::*;
+#[cfg(feature = "client")]
+pub use reconnect::{
+    ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireWakeCallback,
+};
+#[cfg(feature = "client")]
+pub use resync::WireResyncState;
+#[cfg(feature = "server")]
 pub use server::NveWireServer;
+#[cfg(feature = "server")]
+pub use tls::NveDevCertificate;
 pub use tls::{
-    ensure_crypto_provider, NveDevCertificate, DEV_CERT_VALIDITY_DAYS, NVE_WIRE_QUIC_ALPN_BYTES,
-    WEBTRANSPORT_ALPN,
+    ensure_crypto_provider, DEV_CERT_VALIDITY_DAYS, NVE_WIRE_QUIC_ALPN_BYTES, WEBTRANSPORT_ALPN,
 };
 
 /// Default Happy-Eyeballs delay before racing `wss://` alongside QUIC (`250ms`).
 pub const DEFAULT_HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
+
+/// 1-byte `KeyframeRequest` payload marker identifying an automatic reconnect-init request
+/// (deduplicated against `register_peer`'s initial send; empty payload = explicit recovery).
+pub(crate) const KEYFRAME_REQ_RECONNECT_INIT: u8 = 1;
 
 /// Errors returned by `nve-wire` server/client transport operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +64,7 @@ pub enum NveWireTransportError {
     Tls(String),
     Auth(String),
     Connect(String),
+    Backpressure(String),
     Io(String),
 }
 
@@ -59,6 +81,7 @@ impl fmt::Display for NveWireTransportError {
             Self::Tls(msg) => write!(f, "TLS error: {msg}"),
             Self::Auth(msg) => write!(f, "authentication error: {msg}"),
             Self::Connect(msg) => write!(f, "connect error: {msg}"),
+            Self::Backpressure(msg) => write!(f, "wire backpressure: {msg}"),
             Self::Io(msg) => write!(f, "I/O error: {msg}"),
         }
     }
@@ -67,6 +90,7 @@ impl fmt::Display for NveWireTransportError {
 impl std::error::Error for NveWireTransportError {}
 
 /// Configuration for launching an [`NveWireServer`].
+#[cfg(feature = "server")]
 #[derive(Debug, Clone)]
 pub struct NveWireServerConfig {
     pub quic_bind_addr: SocketAddr,
@@ -79,6 +103,7 @@ pub struct NveWireServerConfig {
     pub allow_plain_loopback_ws: bool,
 }
 
+#[cfg(feature = "server")]
 impl NveWireServerConfig {
     pub fn new(
         quic_bind_addr: SocketAddr,
@@ -97,6 +122,7 @@ impl NveWireServerConfig {
 }
 
 /// Configuration for connecting an [`NveWireClient`].
+#[cfg(feature = "client")]
 #[derive(Debug, Clone)]
 pub struct NveWireClientConfig {
     pub bearer_token: String,
@@ -108,6 +134,7 @@ pub struct NveWireClientConfig {
     pub fallback_delay: Duration,
 }
 
+#[cfg(feature = "client")]
 impl NveWireClientConfig {
     pub fn new(bearer_token: impl Into<String>, client_name: impl Into<String>) -> Self {
         Self {
@@ -128,6 +155,7 @@ impl NveWireClientConfig {
 }
 
 /// Inbound frame received by [`NveWireServer`] from an authenticated peer.
+#[cfg(feature = "server")]
 #[derive(Debug, Clone)]
 pub struct NveWireInboundMessage {
     pub session_id: u32,
@@ -136,6 +164,7 @@ pub struct NveWireInboundMessage {
 }
 
 /// Aggregate telemetry snapshot from [`NveWireServer`].
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NveWireServerMetrics {
     pub connected_peers: usize,

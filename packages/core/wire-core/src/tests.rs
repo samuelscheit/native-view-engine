@@ -189,3 +189,18 @@ fn handshake_slot_chunk_uri_and_session_roundtrip() {
         }
     ));
 }
+
+#[test]
+fn transport_kind_u8_round_trips_and_unknown_reads_as_auto() {
+    for kind in [
+        NveWireTransportKind::Auto,
+        NveWireTransportKind::Quic,
+        NveWireTransportKind::WebTransport,
+        NveWireTransportKind::Wss,
+        NveWireTransportKind::Ws,
+    ] {
+        assert_eq!(NveWireTransportKind::from_u8(kind as u8), kind);
+    }
+    assert_eq!(NveWireTransportKind::from_u8(5), NveWireTransportKind::Auto);
+    assert_eq!(NveWireTransportKind::from_u8(u8::MAX), NveWireTransportKind::Auto);
+}

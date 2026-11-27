@@ -470,13 +470,9 @@ fn long_mixed_z_sibling_lists_hit_the_topmost_box_through_nested_scratch() {
     for query in 0..2 {
         assert_eq!(backend.hit_test(&store, 5.0, 5.0), topmost, "query {query}");
         assert_eq!(backend.hit_test_interaction(&store, 5.0, 5.0), topmost);
-        let scratch = backend.hit_scratch.take();
-        assert!(scratch.is_empty(), "every level truncated its keys");
-        assert!(
-            scratch.capacity() >= 201,
-            "both levels' keys were held at once"
-        );
-        backend.hit_scratch.set(scratch);
+        let (len, cap) = backend.scene().hit_scratch_stats();
+        assert_eq!(len, 0, "every level truncated its keys");
+        assert!(cap >= 201, "both levels' keys were held at once");
     }
     // The inner list orders correctly too: its own topmost child under its point.
     let inner_point = (100.5, 100.5);
@@ -494,7 +490,7 @@ fn long_mixed_z_sibling_lists_hit_the_topmost_box_through_nested_scratch() {
 /// the hit walk's stack.
 struct UniformRects;
 
-impl nve_engine::StoreLayoutEngine for UniformRects {
+impl nve_layout::StoreLayoutEngine for UniformRects {
     fn name(&self) -> &'static str {
         "uniform-rects"
     }
@@ -510,7 +506,7 @@ impl nve_engine::StoreLayoutEngine for UniformRects {
             height: 10.0,
         })
     }
-    fn set_text_measurer(&mut self, _: std::sync::Arc<dyn nve_engine::TextMeasurer>) {}
+    fn set_text_measurer(&mut self, _: std::sync::Arc<dyn nve_layout::TextMeasurer>) {}
     fn reset(&mut self) {}
 }
 
