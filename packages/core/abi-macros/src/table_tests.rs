@@ -29,6 +29,10 @@ fn derive_nve_table_rejects_invalid_bits_and_effects_cleanly() {
             "narrowing integer primitives",
         ),
         (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[bits(4294967297)] x: u8 }",
+            "strictly narrowing integer primitives",
+        ),
+        (
             "#[nve_table(name = \"t.a\")] struct T { #[effect()] x: u8 }",
             "at least one effect",
         ),
@@ -63,9 +67,18 @@ fn derive_nve_table_parses_option_defaults_on_tokens_and_emits_opt_to_word() {
         }
     "#;
     let out = derive_tokens(&lex(src)).expect("valid Opts table");
-    assert!(out.contains("default_lo: f32::to_bits(1.5)"));
-    assert!(out.contains("default_present: true"));
-    assert!(out.contains("opt_bool_to_word(::core::option::Option::Some(true))"));
-    assert!(out.contains("<Dir>::opt_to_word(::core::option::Option::Some(Dir :: Row))"));
+    assert!(
+        out.contains("const __NVE_DEF_0: Option < f32 > = (Some (1.5));"),
+        "unexpected output:\n{out}"
+    );
+    assert!(out.contains("default_present: ::core::option::Option::is_some(&__NVE_DEF_0)"));
+    assert!(
+        out.contains("const __NVE_DEF_1: Option < u32 > = (:: core :: option :: Option :: None);"),
+        "unexpected output:\n{out}"
+    );
+    assert!(out.contains("opt_bool_to_word(__NVE_DEF_2)"));
+    assert!(out.contains("<Dir>::opt_to_word(__NVE_DEF_3)"));
+    assert!(out.contains("const __NVE_DEF_4: i8 = (- 3i8);"));
+    assert!(out.contains("overflows #[bits(4)] signed range"));
     assert!(out.contains("bits: 4u8"));
 }

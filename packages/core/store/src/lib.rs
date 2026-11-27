@@ -66,6 +66,6 @@ pub mod __private {
 }
 
 #[cfg(test)]
-mod c2_tests;
+mod table_packing_tests;
 #[cfg(test)]
 mod tests;

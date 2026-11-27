@@ -153,6 +153,20 @@ fn bench_row_write_and_commit(c: &mut Criterion) {
     });
 
     c.bench_function("opt_wide_64_grid_read_1000_nodes", |b| {
+        // Populate non-default OptWord/WideOpt/Wide64/GridLine values so this benchmark runs
+        // standalone even when `opt_wide_64_grid_write_1000_nodes` is filtered out.
+        {
+            let mut tx = store.tx();
+            for (i, &n) in nodes.iter().enumerate() {
+                tx.edit::<BenchBox>(n)
+                    .grid_col(if i & 1 == 0 { GridLine::Span(2) } else { GridLine::Line(3) })
+                    .opt_align(if i & 1 == 0 { Some(BenchAlign::Center) } else { None })
+                    .opt_tint(if i & 1 == 0 { Some(Rgba::rgb(12, 34, 56)) } else { None })
+                    .opt_ratio(Some(1.777))
+                    .stamp((i as u64) << 32 | i as u64);
+            }
+            tx.commit_into(&mut changes);
+        }
         b.iter(|| {
             let mut acc = 0u64;
             for &n in &nodes {

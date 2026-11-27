@@ -3,7 +3,7 @@
 
 use dioxus_core::{AttributeValue, ElementId, WriteMutations};
 use nve_abi::SurfaceId;
-use nve_components::tables::{Interaction, Layout, Link, TextContent, Visual};
+use nve_components::tables::{Interaction, Layout, Link, TextContent, TextInput, Visual};
 use nve_store::{Length, NodeId, NveTable};
 
 use super::NveMutationWriter;
@@ -836,4 +836,48 @@ fn standalone_invalid_reset_empty_style_clear_noop_and_shorthand_order_preservat
         nve_abi::ColorRgba::rgb(0x00, 0xff, 0x00).to_u32(),
         "re-setting cleared `background` shorthand must stay ranked before `backgroundColor`"
     );
+}
+
+#[test]
+fn text_input_minlength_and_maxlength_preserve_zero_and_map_negative_to_none() {
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n1 = writer.resolve_el(ElementId(1)).unwrap();
+
+    // Int attribute path: 0 -> Some(0), negative -> None, large positive -> clamped u16::MAX.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Int(0), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Int(0), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), Some(0));
+    assert_eq!(ti.max_length(), Some(0));
+
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Int(-5), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Int(-1), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), None);
+    assert_eq!(ti.max_length(), None);
+
+    // String attribute path: "0" -> Some(0), "-3" -> None, "42" -> Some(42).
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Text("0".into()), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Text("42".into()), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), Some(0));
+    assert_eq!(ti.max_length(), Some(42));
+
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Text("-3".into()), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Text("-9".into()), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), None);
+    assert_eq!(ti.max_length(), None);
 }

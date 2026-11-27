@@ -1,142 +1,96 @@
 //! Code emission for `#[derive(NveTable)]`.
 
 use crate::emit::quote_str;
-use crate::tok::{is_colon2, render_tokens, Delim, Tok};
+use crate::tok::render_tokens;
 
 use super::{upper, Class, Field, Table, S};
 
-fn scalar_default_expr(short_ty: &str, expr: &str) -> (String, String) {
+/// Encodes an already type-checked local/const identifier `val` of declared scalar type `short_ty`
+/// into `(default_lo, default_hi)` raw words.
+fn encode_typed_scalar(short_ty: &str, val: &str) -> (String, String) {
     match short_ty {
-        "f32" => (format!("f32::to_bits({expr})"), "0u32".into()),
+        "f32" => (format!("f32::to_bits({val})"), "0u32".into()),
         "f64" => (
-            format!("(f64::to_bits({expr}) as u32)"),
-            format!("((f64::to_bits({expr}) >> 32) as u32)"),
+            format!("(f64::to_bits({val}) as u32)"),
+            format!("((f64::to_bits({val}) >> 32) as u32)"),
         ),
-        "u64" => (
-            format!("(({expr}) as u64 as u32)"),
-            format!("(((({expr}) as u64) >> 32) as u32)"),
-        ),
+        "u64" => (format!("({val} as u32)"), format!("(({val} >> 32) as u32)")),
         "i64" => (
-            format!("((({expr}) as i64) as u64 as u32)"),
-            format!("((((({expr}) as i64) as u64) >> 32) as u32)"),
+            format!("(({val} as u64) as u32)"),
+            format!("((({val} as u64) >> 32) as u32)"),
         ),
-        "u32" | "u16" | "u8" | "i32" | "bool" => (format!("(({expr}) as u32)"), "0u32".into()),
-        "i16" => (format!("((({expr}) as i16) as u16 as u32)"), "0u32".into()),
-        "i8" => (format!("((({expr}) as i8) as u8 as u32)"), "0u32".into()),
-        "NodeId" | "SurfaceId" => (format!("(({expr}).raw())"), "0u32".into()),
-        _ => (format!("(({expr}).to_word())"), "0u32".into()),
+        "u32" | "u16" | "u8" | "i32" | "bool" => (format!("({val} as u32)"), "0u32".into()),
+        "i16" => (format!("(({val} as u16) as u32)"), "0u32".into()),
+        "i8" => (format!("(({val} as u8) as u32)"), "0u32".into()),
+        "NodeId" | "SurfaceId" => (format!("{val}.raw()"), "0u32".into()),
+        _ => (format!("{val}.to_word()"), "0u32".into()),
     }
-}
-
-enum OptionDefault {
-    None,
-    Some(String),
-    Expr(String),
-}
-
-/// Classifies an `Option<T>` default expression directly on `&[Tok]` (avoiding brittle spacing
-/// assumptions from `render_tokens`).
-fn classify_option_default(toks: &[Tok]) -> OptionDefault {
-    let mut i = 0usize;
-    if is_colon2(toks, i) {
-        i += 2;
-    }
-    let mut segs: Vec<&str> = Vec::new();
-    while let Some(Tok::Ident(id)) = toks.get(i) {
-        segs.push(id.as_str());
-        i += 1;
-        if is_colon2(toks, i) {
-            i += 2;
-        } else {
-            break;
-        }
-    }
-    let is_none_path = matches!(
-        segs.as_slice(),
-        ["None"]
-            | ["Option", "None"]
-            | ["core", "option", "Option", "None"]
-            | ["std", "option", "Option", "None"]
-    );
-    if is_none_path && i == toks.len() {
-        return OptionDefault::None;
-    }
-    let is_some_path = matches!(
-        segs.as_slice(),
-        ["Some"]
-            | ["Option", "Some"]
-            | ["core", "option", "Option", "Some"]
-            | ["std", "option", "Option", "Some"]
-    );
-    if is_some_path
-        && i + 1 == toks.len()
-        && let Some(Tok::Group(Delim::Paren, inner)) = toks.get(i)
-    {
-        return OptionDefault::Some(render_tokens(inner));
-    }
-    OptionDefault::Expr(render_tokens(toks))
 }
 
 fn is_wide_opt_inner(inner_short: &str) -> bool {
     matches!(inner_short, "f32" | "u32" | "i32" | "Rgba")
 }
 
-fn narrow_opt_default_expr(inner_short: &str, inner_full: &str, opt_expr: &str) -> String {
+fn narrow_opt_default_expr(inner_short: &str, inner_full: &str, opt_ident: &str) -> String {
     match inner_short {
-        "bool" => format!("{S}::__private::opt_bool_to_word({opt_expr})"),
-        "u8" => format!("{S}::__private::opt_u8_to_word({opt_expr})"),
-        "i8" => format!("{S}::__private::opt_i8_to_word({opt_expr})"),
-        "u16" => format!("{S}::__private::opt_u16_to_word({opt_expr})"),
-        "i16" => format!("{S}::__private::opt_i16_to_word({opt_expr})"),
-        "NodeId" => format!("{S}::__private::opt_node_to_word({opt_expr})"),
-        "SurfaceId" => format!("{S}::__private::opt_surf_to_word({opt_expr})"),
-        _ => format!("<{inner_full}>::opt_to_word({opt_expr})"),
+        "bool" => format!("{S}::__private::opt_bool_to_word({opt_ident})"),
+        "u8" => format!("{S}::__private::opt_u8_to_word({opt_ident})"),
+        "i8" => format!("{S}::__private::opt_i8_to_word({opt_ident})"),
+        "u16" => format!("{S}::__private::opt_u16_to_word({opt_ident})"),
+        "i16" => format!("{S}::__private::opt_i16_to_word({opt_ident})"),
+        "NodeId" => format!("{S}::__private::opt_node_to_word({opt_ident})"),
+        "SurfaceId" => format!("{S}::__private::opt_surf_to_word({opt_ident})"),
+        _ => format!("<{inner_full}>::opt_to_word({opt_ident})"),
     }
 }
 
-fn default_pack_fields(f: &Field) -> (String, String, String) {
+/// Emits a single-evaluated, concretely typed `const __NVE_DEF_{idx}: {ty} = ...;` binding (plus
+/// a compile-time narrowed `#[bits(N)]` range assertion when applicable) and returns
+/// `(default_lo, default_hi, default_present)`.
+fn emit_field_default(idx: usize, f: &Field, def_consts: &mut String) -> (String, String, String) {
     let Some(toks) = f.default_toks.as_deref() else {
         return ("0u32".into(), "0u32".into(), "false".into());
     };
+    let expr = render_tokens(toks);
+    let ty = &f.ty;
+    let ident = format!("__NVE_DEF_{idx}");
+    def_consts.push_str(&format!("const {ident}: {ty} = ({expr});\n"));
+
+    if let Some(n) = f.bits {
+        match f.short_ty.as_str() {
+            "u8" | "u16" | "u32" => {
+                def_consts.push_str(&format!(
+                    "const _: () = assert!(({ident} as u64) < (1u64 << {n}), \"default value overflows #[bits({n})] unsigned range\");\n"
+                ));
+            }
+            "i8" | "i16" | "i32" => {
+                def_consts.push_str(&format!(
+                    "const _: () = assert!(({ident} as i64) >= -(1i64 << ({n} - 1)) && ({ident} as i64) < (1i64 << ({n} - 1)), \"default value overflows #[bits({n})] signed range\");\n"
+                ));
+            }
+            _ => {}
+        }
+    }
+
     if let (Some(inner_short), Some(inner_full)) =
         (f.inner_opt_short.as_deref(), f.inner_opt_full.as_deref())
     {
         if is_wide_opt_inner(inner_short) {
-            return match classify_option_default(toks) {
-                OptionDefault::None => ("0u32".into(), "0u32".into(), "false".into()),
-                OptionDefault::Some(inner_expr) => {
-                    let (lo, _) = scalar_default_expr(inner_short, &inner_expr);
-                    (lo, "0u32".into(), "true".into())
-                }
-                OptionDefault::Expr(full_expr) => {
-                    let (some_lo, _) = scalar_default_expr(inner_short, "__nve_v");
-                    let lo = format!(
-                        "match ({full_expr}) {{ ::core::option::Option::Some(__nve_v) => {some_lo}, ::core::option::Option::None => 0u32 }}"
-                    );
-                    let present = format!("::core::option::Option::is_some(&({full_expr}))");
-                    (lo, "0u32".into(), present)
-                }
-            };
+            let (some_lo, _) = encode_typed_scalar(inner_short, "__nve_v");
+            let lo = format!(
+                "match {ident} {{ ::core::option::Option::Some(__nve_v) => {some_lo}, ::core::option::Option::None => 0u32 }}"
+            );
+            let present = format!("::core::option::Option::is_some(&{ident})");
+            return (lo, "0u32".into(), present);
         }
-        return match classify_option_default(toks) {
-            OptionDefault::None => ("0u32".into(), "0u32".into(), "false".into()),
-            OptionDefault::Some(inner_expr) => {
-                let opt_expr = format!("::core::option::Option::Some({inner_expr})");
-                (
-                    narrow_opt_default_expr(inner_short, inner_full, &opt_expr),
-                    "0u32".into(),
-                    "false".into(),
-                )
-            }
-            OptionDefault::Expr(full_expr) => (
-                narrow_opt_default_expr(inner_short, inner_full, &full_expr),
-                "0u32".into(),
-                "false".into(),
-            ),
-        };
+        return (
+            narrow_opt_default_expr(inner_short, inner_full, &ident),
+            "0u32".into(),
+            "false".into(),
+        );
     }
-    let expr = render_tokens(toks);
-    let (lo, hi) = scalar_default_expr(&f.short_ty, expr.trim());
+
+    let (lo, hi) = encode_typed_scalar(&f.short_ty, &ident);
     (lo, hi, "false".into())
 }
 
@@ -155,7 +109,8 @@ pub(super) fn emit(t: &Table) -> String {
     let storage = if t.dense { "Dense" } else { "Sparse" };
     let name = quote_str(&t.name);
 
-    let (mut pack_inputs, mut props, mut getters, mut setters, mut regs) = (
+    let (mut def_consts, mut pack_inputs, mut props, mut getters, mut setters, mut regs) = (
+        String::new(),
         String::new(),
         String::new(),
         String::new(),
@@ -168,7 +123,7 @@ pub(super) fn emit(t: &Table) -> String {
         let fname = &f.name;
         let d = docs(f);
         let cname = upper(fname);
-        let (def_lo, def_hi, def_present) = default_pack_fields(f);
+        let (def_lo, def_hi, def_present) = emit_field_default(idx, f, &mut def_consts);
         let bits_expr = match f.bits {
             Some(b) => format!("{b}u8"),
             None => format!("<{ty} as {S}::TableField>::BITS"),
@@ -274,6 +229,7 @@ pub(super) fn emit(t: &Table) -> String {
     format!(
         r#"
 const _: () = {{
+    {def_consts}
     const LAYOUT: {S}::__private::PackLayout<{field_count}> = {S}::__private::pack_table(
         [{pack_inputs}],
         false,

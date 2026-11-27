@@ -49,13 +49,29 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
+struct CountingGuard;
+
+impl Drop for CountingGuard {
+    fn drop(&mut self) {
+        let _ = COUNTING.try_with(|a| a.set(false));
+    }
+}
+
 fn measure_allocs<R>(f: impl FnOnce() -> R) -> (usize, R) {
     THREAD_ALLOCS.with(|c| c.set(0));
     COUNTING.with(|a| a.set(true));
+    let _guard = CountingGuard;
     let r = f();
-    COUNTING.with(|a| a.set(false));
+    drop(_guard);
     let count = THREAD_ALLOCS.with(Cell::get);
     (count, r)
+}
+
+#[test]
+fn counting_alloc_positive_probe_detects_heap_allocation() {
+    let (allocs, v) = measure_allocs(|| Vec::<u32>::with_capacity(64));
+    assert!(allocs >= 1, "CountingAlloc must detect heap allocations (saw {allocs})");
+    drop(v);
 }
 
 #[repr(u8)]

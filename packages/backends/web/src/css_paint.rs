@@ -207,7 +207,9 @@ pub(super) fn write_visual_and_typography_css(
             }
             out.push(';');
         }
-        if let Some(max_lines) = t.max_lines() {
+        // CSS `-webkit-line-clamp` requires a positive integer (`>= 1`); `0` is ignored while
+        // `-webkit-box` + `overflow:hidden` would still alter layout.
+        if let Some(max_lines) = t.max_lines().filter(|&n| n > 0) {
             out.push_str("display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;-webkit-line-clamp:");
             write_u64(out, u64::from(max_lines));
             out.push(';');

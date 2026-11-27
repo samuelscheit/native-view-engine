@@ -27,13 +27,18 @@ pub trait WordValue: Copy {
     fn to_bits(self) -> u32;
     fn from_bits(bits: u32) -> Self;
 
-    /// Encodes `self` into a field of `bit_width` bits (debug-asserting range on narrowed integers).
+    /// Encodes `self` into a field of `bit_width` (`1..=32`) bits.
+    ///
+    /// For narrowed integer fields (`#[bits(N)]`), debug builds assert that `self` fits in the
+    /// narrowed signed/unsigned range; release builds truncate/wrap modulo `2^bit_width` via the
+    /// caller's branchless bitmask write.
     #[inline(always)]
     fn to_masked_bits(self, _bit_width: u32) -> u32 {
         self.to_bits()
     }
 
-    /// Decodes `bits` from a field of `bit_width` bits (sign-extending narrowed signed integers).
+    /// Decodes `bits` from a field of `bit_width` (`1..=32`) bits (sign-extending narrowed signed
+    /// integers).
     #[inline(always)]
     fn from_masked_bits(bits: u32, _bit_width: u32) -> Self {
         Self::from_bits(bits)
@@ -66,9 +71,11 @@ impl WordValue for u32 {
     }
     #[inline(always)]
     fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let w = bit_width.clamp(1, 32);
         debug_assert!(
-            bit_width >= 32 || self < (1u32 << bit_width),
-            "u32 value {self} overflows #[bits({bit_width})]"
+            w >= 32 || self < (1u32 << w),
+            "u32 value {self} overflows #[bits({w})]"
         );
         self
     }
@@ -87,17 +94,20 @@ impl WordValue for i32 {
     }
     #[inline(always)]
     fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let w = bit_width.clamp(1, 32);
         debug_assert!(
-            bit_width >= 32
-                || (i64::from(self) >= -(1i64 << (bit_width - 1))
-                    && i64::from(self) < (1i64 << (bit_width - 1))),
-            "i32 value {self} overflows signed #[bits({bit_width})]"
+            w >= 32
+                || (i64::from(self) >= -(1i64 << (w - 1))
+                    && i64::from(self) < (1i64 << (w - 1))),
+            "i32 value {self} overflows signed #[bits({w})]"
         );
         self as u32
     }
     #[inline(always)]
     fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
-        let shift = 32 - bit_width;
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let shift = 32 - bit_width.clamp(1, 32);
         ((bits << shift) as i32) >> shift
     }
 }
@@ -128,9 +138,11 @@ impl WordValue for u8 {
     }
     #[inline(always)]
     fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let w = bit_width.clamp(1, 32);
         debug_assert!(
-            bit_width >= 8 || u32::from(self) < (1u32 << bit_width),
-            "u8 value {self} overflows #[bits({bit_width})]"
+            w >= 8 || u32::from(self) < (1u32 << w),
+            "u8 value {self} overflows #[bits({w})]"
         );
         u32::from(self)
     }
@@ -149,17 +161,20 @@ impl WordValue for i8 {
     }
     #[inline(always)]
     fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let w = bit_width.clamp(1, 32);
         debug_assert!(
-            bit_width >= 8
-                || (i32::from(self) >= -(1i32 << (bit_width - 1))
-                    && i32::from(self) < (1i32 << (bit_width - 1))),
-            "i8 value {self} overflows signed #[bits({bit_width})]"
+            w >= 8
+                || (i32::from(self) >= -(1i32 << (w - 1))
+                    && i32::from(self) < (1i32 << (w - 1))),
+            "i8 value {self} overflows signed #[bits({w})]"
         );
         (self as u8) as u32
     }
     #[inline(always)]
     fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
-        let shift = 32 - bit_width;
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let shift = 32 - bit_width.clamp(1, 8);
         (((bits << shift) as i32) >> shift) as i8
     }
 }
@@ -177,9 +192,11 @@ impl WordValue for u16 {
     }
     #[inline(always)]
     fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let w = bit_width.clamp(1, 32);
         debug_assert!(
-            bit_width >= 16 || u32::from(self) < (1u32 << bit_width),
-            "u16 value {self} overflows #[bits({bit_width})]"
+            w >= 16 || u32::from(self) < (1u32 << w),
+            "u16 value {self} overflows #[bits({w})]"
         );
         u32::from(self)
     }
@@ -198,17 +215,20 @@ impl WordValue for i16 {
     }
     #[inline(always)]
     fn to_masked_bits(self, bit_width: u32) -> u32 {
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let w = bit_width.clamp(1, 32);
         debug_assert!(
-            bit_width >= 16
-                || (i32::from(self) >= -(1i32 << (bit_width - 1))
-                    && i32::from(self) < (1i32 << (bit_width - 1))),
-            "i16 value {self} overflows signed #[bits({bit_width})]"
+            w >= 16
+                || (i32::from(self) >= -(1i32 << (w - 1))
+                    && i32::from(self) < (1i32 << (w - 1))),
+            "i16 value {self} overflows signed #[bits({w})]"
         );
         (self as u16) as u32
     }
     #[inline(always)]
     fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
-        let shift = 32 - bit_width;
+        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
+        let shift = 32 - bit_width.clamp(1, 16);
         (((bits << shift) as i32) >> shift) as i16
     }
 }

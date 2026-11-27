@@ -6,8 +6,10 @@
 //! - `pub const BITS: u8` (`ceil(log2(COUNT))`, min `1`)
 //! - `pub const ALL: &'static [Self]`
 //! - `pub const fn to_word(self) -> u32`
+//! - `pub const fn try_from_word(bits: u32) -> Option<Self>` (fallible; returns `None` out of range)
 //! - `pub const fn from_word(bits: u32) -> Self` (total; out-of-range bits fall back to the
 //!   `#[default]` variant when present, otherwise variant 0)
+//! - `pub const fn opt_to_word(v: Option<Self>) -> u32` (`None` -> `0`, `Some(v)` -> `v + 1`)
 //! - `impl ::nve_store::WordValue`
 //! - `impl ::nve_store::OptWord` (with `OPT_BITS = ceil(log2(COUNT + 1))`, `0 = None`,
 //!   `disc + 1 = Some(v)`)
@@ -346,11 +348,7 @@ impl {s}::OptWord for {id} {{
 
     #[inline(always)]
     fn opt_from_bits(__nve_bits: u32) -> ::core::option::Option<Self> {{
-        if __nve_bits == 0 || __nve_bits > (Self::COUNT as u32) {{
-            ::core::option::Option::None
-        }} else {{
-            Self::try_from_word(__nve_bits - 1)
-        }}
+        Self::try_from_word(__nve_bits.wrapping_sub(1))
     }}
 }}
 "#

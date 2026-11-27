@@ -68,7 +68,7 @@ use crate::NodeId;
 /// ```
 ///
 /// Rejecting raw `ResourceId` scalar field (must use refcounted `Res<R>`):
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use nve_store::{NveTable, ResourceId};
 /// #[derive(NveTable)]
 /// #[nve_table(name = "doctest.bad_res", storage = "sparse")]
@@ -76,7 +76,7 @@ use crate::NodeId;
 /// ```
 ///
 /// Rejecting raw `Option<ResourceId>` field (must use refcounted `Res<R>`):
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use nve_store::{NveTable, ResourceId};
 /// #[derive(NveTable)]
 /// #[nve_table(name = "doctest.bad_opt_res", storage = "sparse")]
@@ -90,9 +90,39 @@ use crate::NodeId;
 /// #[nve_table(name = "doctest.bits_ok", storage = "sparse")]
 /// struct BitsOk {
 ///     #[effect(paint)] #[bits(4)] #[default(-3i8)] small_i: i8,
-///     #[effect(paint)] #[bits(6)] small_u: u8,
+///     #[effect(paint)] #[bits(6)] #[default(63u8)] small_u: u8,
 /// }
 /// assert_eq!(<BitsOk as NveTable>::DESC.words(), 1);
+/// ```
+///
+/// Rejecting out-of-range signed narrowed `#[bits(4)] #[default(8i8)]` at compile time:
+/// ```compile_fail,E0080
+/// use nve_store::NveTable;
+/// #[derive(NveTable)]
+/// #[nve_table(name = "doctest.bad_narrow_i8", storage = "sparse")]
+/// struct BadNarrowI8 { #[effect(paint)] #[bits(4)] #[default(8i8)] x: i8 }
+/// ```
+///
+/// Rejecting out-of-range unsigned narrowed `#[bits(4)] #[default(16u8)]` at compile time:
+/// ```compile_fail,E0080
+/// use nve_store::NveTable;
+/// #[derive(NveTable)]
+/// #[nve_table(name = "doctest.bad_narrow_u8", storage = "sparse")]
+/// struct BadNarrowU8 { #[effect(paint)] #[bits(4)] #[default(16u8)] x: u8 }
+/// ```
+///
+/// Rejecting ill-typed defaults (`#[default(true)]` on `u8`, `#[default(Some(2.5))]` on `Option<u32>`):
+/// ```compile_fail,E0308
+/// use nve_store::NveTable;
+/// #[derive(NveTable)]
+/// #[nve_table(name = "doctest.bad_def_ty", storage = "sparse")]
+/// struct BadDefTy { #[effect(paint)] #[default(true)] x: u8 }
+/// ```
+/// ```compile_fail,E0308
+/// use nve_store::NveTable;
+/// #[derive(NveTable)]
+/// #[nve_table(name = "doctest.bad_opt_def_ty", storage = "sparse")]
+/// struct BadOptDefTy { #[effect(paint)] #[default(Some(2.5))] x: Option<u32> }
 /// ```
 ///
 /// Rejecting redundant `#[bits(8)]` on `u8`:

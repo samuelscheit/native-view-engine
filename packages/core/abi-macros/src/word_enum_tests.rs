@@ -15,7 +15,7 @@ fn derive_word_enum_computes_exact_bit_widths_and_respects_default_fallback() {
     assert!(code.contains("pub const fn try_from_word("));
     assert!(code.contains("pub const fn opt_to_word("));
     assert!(code.contains("OptEncoding::PlusOne"));
-    assert!(code.contains("Self::try_from_word(__nve_bits - 1)"));
+    assert!(code.contains("Self::try_from_word(__nve_bits.wrapping_sub(1))"));
     assert!(code.contains("_ => Self::Back,"));
 
     // 3 variants -> BITS = 2, OPT_BITS = 2 (3 + 1 = 4 states fit in 2 bits!)

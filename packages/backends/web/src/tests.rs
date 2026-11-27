@@ -274,12 +274,15 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     let txt = tx.create();
     let link = tx.create();
     let inp = tx.create();
+    let txt_clamped = tx.create();
     let inp_zero = tx.create();
-    tx.set_children(NodeId::ROOT, &[txt, link, inp, inp_zero]);
+    tx.set_children(NodeId::ROOT, &[txt, txt_clamped, link, inp, inp_zero]);
     tx.edit::<TextContent>(txt).text("safe");
     tx.edit::<Typography>(txt)
         .font_family("Inter;}</style><script>alert(1)</script>")
         .max_lines(Some(0));
+    tx.edit::<TextContent>(txt_clamped).text("clamped");
+    tx.edit::<Typography>(txt_clamped).max_lines(Some(3));
     tx.edit::<Link>(link)
         .href("https://example.com")
         .target(LinkTarget::Blank);
@@ -294,7 +297,8 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     assert!(doc.contains("rel=\"noopener noreferrer\""));
     assert!(!doc.contains("maxlength=\"65535\""));
     assert!(doc.contains("maxlength=\"0\""), "Some(0) max_length must be emitted: {doc}");
-    assert!(doc.contains("-webkit-line-clamp:0;"), "Some(0) max_lines must be emitted: {doc}");
+    assert!(!doc.contains("-webkit-line-clamp:0;"), "Some(0) max_lines must not emit broken CSS clamp: {doc}");
+    assert!(doc.contains("-webkit-line-clamp:3;"), "Some(3) max_lines must emit clamp: {doc}");
 
     // Plain relative paths, query paths, data: srcset, multi-URL ping, data-nve-* prefix,
     // whitespace-padded tags/attrs, raw-text tags, font-family comments/quotes, and non-finite flex.

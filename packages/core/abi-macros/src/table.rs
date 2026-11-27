@@ -238,13 +238,13 @@ fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
                     let [Tok::Literal(l)] = g else {
                         return Err("expected integer in #[bits]".into());
                     };
-                    let n = parse_usize_literal(l)? as u32;
-                    if n == 0 || n >= 32 {
+                    let raw = parse_usize_literal(l)?;
+                    if raw == 0 || raw >= 32 {
                         return Err(format!(
-                            "#[bits({n})] is only valid for strictly narrowing integer primitives (`1..natural_bits`)"
+                            "#[bits({raw})] is only valid for strictly narrowing integer primitives (`1..natural_bits`)"
                         ));
                     }
-                    bits = Some(n);
+                    bits = Some(raw as u32);
                 }
                 "doc" => {
                     if let Some(Tok::Literal(l)) = inner.get(2) {
