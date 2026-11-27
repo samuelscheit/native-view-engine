@@ -4,12 +4,96 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use nve_rpc::{ProcId, Tag64};
+use nve_rpc::{ProcId, RpcError, RpcStatus, Tag64, TransportError, TransportErrorKind, STATUS_TABLE};
 
 use crate::optimistic::OptimisticLayer;
 use crate::types::{IdentityBuildHasher, QueryOptions, SharedAny};
 
 pub(crate) const NONE_IDX: u32 = u32::MAX;
+pub(crate) const MAX_PROTOCOL_ERR_MSG_BYTES: usize = 256;
+
+/// Maps a raw `NVEQ` v2 `RpcStatus` discriminant byte back to [`RpcStatus`], rejecting `0` (`Ok`)
+/// and out-of-range values so error wire entries fail closed.
+#[inline]
+pub(crate) fn rpc_status_from_u8(raw: u8) -> Option<RpcStatus> {
+    let status = STATUS_TABLE.get(raw as usize)?.0;
+    (status != RpcStatus::Ok).then_some(status)
+}
+
+/// Truncates `s` to at most `max_bytes` UTF-8 bytes on a valid char boundary.
+#[inline]
+pub(crate) fn truncate_utf8_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Raw wire representation of a settled query error stored in [`QueryPayload`] for zero-reencode
+/// `NVEQ` v2 dehydration and lazy client decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawErrorWire {
+    Domain { status: u8, body: Bytes },
+    Protocol { status: u8, message: String },
+}
+
+impl RawErrorWire {
+    /// Captures a sanitized protocol error wire entry: `5xx`/internal statuses are clamped strictly
+    /// to `status.code_str()` (never leaking internal details), and `4xx` messages are capped at
+    /// `256` UTF-8 bytes.
+    pub(crate) fn from_protocol(status: RpcStatus, message: &str) -> Self {
+        let status = if status == RpcStatus::Ok {
+            RpcStatus::Internal
+        } else {
+            status
+        };
+        let sanitized = if status.http_status() >= 500 {
+            status.code_str().to_owned()
+        } else {
+            truncate_utf8_bytes(message, MAX_PROTOCOL_ERR_MSG_BYTES).to_owned()
+        };
+        Self::Protocol {
+            status: status as u8,
+            message: sanitized,
+        }
+    }
+
+    /// Captures a sanitized protocol error wire entry for non-cancelled transport failures,
+    /// clamping the message strictly to `status.code_str()` so internal hosts/sockets never leak.
+    pub(crate) fn from_transport(err: &TransportError) -> Option<Self> {
+        let status = match err.kind {
+            TransportErrorKind::Cancelled => return None,
+            TransportErrorKind::Timeout => RpcStatus::RequestTimeout,
+            TransportErrorKind::Network | TransportErrorKind::Offline => RpcStatus::Unavailable,
+            TransportErrorKind::ResponseTooLarge => RpcStatus::PayloadTooLarge,
+            TransportErrorKind::Config
+            | TransportErrorKind::Redirect
+            | TransportErrorKind::Other => RpcStatus::Internal,
+        };
+        Some(Self::Protocol {
+            status: status as u8,
+            message: status.code_str().to_owned(),
+        })
+    }
+
+    /// Captures a sanitized wire error from an [`RpcError`] when raw domain bytes are not
+    /// separately available (e.g. sans-I/O `complete_fetch` with protocol/transport errors).
+    pub(crate) fn from_non_domain_error<E>(err: &RpcError<E>) -> Option<Self> {
+        match err {
+            RpcError::Domain { .. } => None,
+            RpcError::Protocol { status, message } => Some(Self::from_protocol(*status, message)),
+            RpcError::Transport(terr) => Self::from_transport(terr),
+            RpcError::Codec(_) => Some(Self::Protocol {
+                status: RpcStatus::Internal as u8,
+                message: RpcStatus::Internal.code_str().to_owned(),
+            }),
+        }
+    }
+}
 
 #[inline]
 pub(crate) const fn pack_invalidation_version(wildcard_epoch: u32, fetch_gen: u32) -> u64 {
@@ -43,6 +127,7 @@ pub(crate) const FLAG_REFETCH_ON_FOCUS: u16 = 1 << 6;
 pub(crate) const FLAG_REFETCH_ON_RECONNECT: u16 = 1 << 7;
 pub(crate) const FLAG_SUBSCRIBED_ALL: u16 = 1 << 8;
 pub(crate) const FLAG_HYDRATED: u16 = 1 << 9;
+pub(crate) const FLAG_STREAM_PENDING: u16 = 1 << 10;
 
 /// Hot per-query metadata packed into exactly one 64-byte cache line with zero heap pointers.
 #[repr(C, align(64))]
@@ -111,16 +196,26 @@ impl QueryMeta {
     }
 
     #[inline]
+    pub fn is_stream_pending(&self) -> bool {
+        (self.flags & FLAG_STREAM_PENDING) != 0
+    }
+
+    #[inline]
     pub fn is_invalidated(&self, wildcard_epoch: u32) -> bool {
         (self.flags & FLAG_IS_INVALIDATED) != 0 || self.invalidated_epoch != wildcard_epoch
     }
 
     #[inline]
     pub fn is_stale(&self, now_ms: u64, wildcard_epoch: u32, hydration_grace_ms: u32) -> bool {
-        if self.is_invalidated(wildcard_epoch) || !self.has_data() {
+        if self.is_invalidated(wildcard_epoch) {
             return true;
         }
-        let eff_stale = if (self.flags & FLAG_HYDRATED) != 0 {
+        let hydrated_settled =
+            (self.flags & FLAG_HYDRATED) != 0 && (self.has_data() || self.has_error());
+        if !self.has_data() && !hydrated_settled {
+            return true;
+        }
+        let eff_stale = if hydrated_settled {
             i64::from(self.stale_time_ms.max(hydration_grace_ms))
         } else {
             i64::from(self.stale_time_ms)
@@ -137,6 +232,7 @@ pub(crate) struct QueryPayload {
     pub encoded_args: Bytes,
     pub raw_response: Option<Bytes>,
     pub raw_body_hash: u64,
+    pub raw_error: Option<RawErrorWire>,
     pub committed: Option<SharedAny>,
     pub committed_error: Option<SharedAny>,
     pub effective_optimistic: Option<SharedAny>,
@@ -156,6 +252,7 @@ impl QueryPayload {
             encoded_args: Bytes::new(),
             raw_response: None,
             raw_body_hash: 0,
+            raw_error: None,
             committed: None,
             committed_error: None,
             effective_optimistic: None,
@@ -182,6 +279,7 @@ impl QueryPayload {
         self.encoded_args = Bytes::new();
         self.raw_response = None;
         self.raw_body_hash = 0;
+        self.raw_error = None;
         self.committed = None;
         self.committed_error = None;
         self.effective_optimistic = None;

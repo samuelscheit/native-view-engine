@@ -247,7 +247,7 @@ fn retry_backoff_action_transport_invalidation_hydration_and_gc_work() {
         CborCodec::default(),
         ssr_clock.clone(),
         QueryClientConfig {
-            mode: QueryMode::SsrReadOnly,
+            mode: QueryMode::Ssr,
             ..QueryClientConfig::default()
         },
     );

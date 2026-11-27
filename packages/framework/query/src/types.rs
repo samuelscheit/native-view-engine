@@ -63,9 +63,10 @@ pub enum QueryMode {
     /// Normal interactive client: subscribes, deduplicates, fetches, and refetches on invalidation.
     #[default]
     Client = 0,
-    /// Server-side render read-only mode: reads prefetched/seeded cache slots synchronously and
-    /// never triggers background network fetches during render.
-    SsrReadOnly = 1,
+    /// Server-side render mode: plain `use_query` reads prefetched/seeded cache slots synchronously
+    /// and never auto-fetches during render; explicit `prefetch` and `.suspend()` trigger
+    /// deduplicated single-shot I/O.
+    Ssr = 1,
 }
 
 /// Per-query freshness, GC, retry, and refetch options.
@@ -172,7 +173,7 @@ pub struct QueryClientConfig {
     /// `QueryOptions::stale_time_ms == 0`, preventing an immediate duplicate fetch on mount while
     /// still expiring cleanly afterward (default: `5_000` ms).
     pub hydration_grace_ms: u32,
-    /// Operating mode (`Client` vs `SsrReadOnly`).
+    /// Operating mode (`Client` vs `Ssr`).
     pub mode: QueryMode,
 }
 
@@ -194,6 +195,9 @@ pub struct QuerySnapshot<T, E> {
     pub data: Option<Shared<T>>,
     pub error: Option<Shared<RpcError<E>>>,
     pub is_fetching: bool,
+    /// True when the slot was seeded as `StreamPending` by an SSR shell and is awaiting its
+    /// out-of-order streaming hydration chunk (or [`crate::QueryClient::finish_ssr_stream`]).
+    pub is_stream_pending: bool,
     pub is_stale: bool,
     pub is_invalidated: bool,
     pub data_version: u32,
@@ -219,6 +223,7 @@ impl<T, E> Clone for QuerySnapshot<T, E> {
             data: self.data.as_ref().map(Shared::clone),
             error: self.error.as_ref().map(Shared::clone),
             is_fetching: self.is_fetching,
+            is_stream_pending: self.is_stream_pending,
             is_stale: self.is_stale,
             is_invalidated: self.is_invalidated,
             data_version: self.data_version,

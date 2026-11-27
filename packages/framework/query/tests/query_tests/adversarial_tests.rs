@@ -318,15 +318,19 @@ fn wildcard_inactive_race_hydration_expiry_overflow_tags_and_dehydrate_errors_wo
         client.live_slot_count()
     );
 
-    // 5. `DehydrateError` bounds: bad magic, unsupported version, truncated, trailing bytes.
+    // 5. `DehydrateError` bounds: bad magic, unsupported v1/unknown version, truncated, trailing bytes.
     assert_eq!(c2.hydrate_bytes(b"NOPE12345"), Err(DehydrateError::InvalidMagic));
+    assert_eq!(
+        c2.hydrate_bytes(b"NVEQ\x01\x00\x00\x00\x00"),
+        Err(DehydrateError::UnsupportedVersion(1))
+    );
     assert_eq!(
         c2.hydrate_bytes(b"NVEQ\x99\x00\x00\x00\x00"),
         Err(DehydrateError::UnsupportedVersion(0x99))
     );
     assert_eq!(c2.hydrate_bytes(b"NVEQ"), Err(DehydrateError::Truncated));
     assert_eq!(
-        c2.hydrate_bytes(b"NVEQ\x01\x00\x00\x00\x00EXTRA"),
+        c2.hydrate_bytes(b"NVEQ\x02\x00\x00\x00\x00EXTRA"),
         Err(DehydrateError::TrailingBytes(5))
     );
 }

@@ -5,16 +5,17 @@ use bytes::Bytes;
 use nve_hash::xxh64;
 use nve_rpc::{
     encode_args, CborCodec, CodecError, MaybeSend, MaybeSync, ProcId, Procedure, Query, RpcCodec,
-    RpcError, TagSink, Transport,
+    RpcError, RpcStatus, TagSink, Transport,
 };
 
 use core::task::Waker;
 
 use crate::optimistic::{prepare_recompute_job, settle_layers_up_to};
 use crate::slab::{
-    pack_invalidation_version, QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED,
-    FLAG_IN_DIRTY_QUEUE, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS,
-    FLAG_REFETCH_ON_RECONNECT, FLAG_SUBSCRIBED_ALL, NONE_IDX,
+    pack_invalidation_version, rpc_status_from_u8, QueryMeta, QueryPayload, QuerySlotId,
+    RawErrorWire, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IN_DIRTY_QUEUE,
+    FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
+    FLAG_STREAM_PENDING, FLAG_SUBSCRIBED_ALL, NONE_IDX,
 };
 use crate::state::CacheState;
 #[cfg(not(target_arch = "wasm32"))]
@@ -110,15 +111,15 @@ impl<T: Transport> QueryClient<T, CborCodec> {
         )
     }
 
-    /// Creates a per-request SSR client in [`QueryMode::SsrReadOnly`] (never fires background
-    /// fetches during synchronous render; use [`Self::prefetch`] beforehand).
+    /// Creates a per-request SSR client in [`QueryMode::Ssr`] (plain `use_query` reads prefetched
+    /// slots without auto-fetching; explicit [`Self::prefetch`] and `.suspend()` trigger I/O).
     pub fn ssr(transport: T) -> Self {
         Self::with_clock(
             transport,
             CborCodec::default(),
             Shared::new(SystemClock::new()),
             QueryClientConfig {
-                mode: QueryMode::SsrReadOnly,
+                mode: QueryMode::Ssr,
                 ..QueryClientConfig::default()
             },
         )
@@ -225,6 +226,12 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let handle = if let Some(slot) = s.lookup_slot(P::ID, key_hash, &encoded_args) {
                 let idx = slot.index();
                 let meta = &mut s.metas[idx];
+                // If an inactive `StreamPending` slot was superseded by `invalidate_all()`, clear
+                // its stale streaming flags on mount so the new subscriber fetches cleanly.
+                if meta.is_stream_pending() && meta.is_invalidated(s.wildcard_epoch) {
+                    meta.flags &= !(FLAG_STREAM_PENDING | FLAG_IS_FETCHING);
+                    waiters.append(&mut s.payloads[idx].in_flight_waiters);
+                }
                 if meta.subscriber_count == 0 {
                     meta.stale_time_ms = options.stale_time_ms;
                     meta.gc_time_ms = options.gc_time_ms;
@@ -325,12 +332,18 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     }
 
     /// Reads the current typed [`QuerySnapshot`] for `handle` (zero heap allocations on cache hit;
-    /// lazily decodes `raw_response` once for hydrated entries outside the cache lock).
+    /// lazily decodes `raw_response` or `raw_error` once for hydrated entries outside the cache
+    /// lock).
     pub fn read<P>(&self, handle: QueryHandle) -> QuerySnapshot<P::Output, P::Error>
     where
         P: Procedure<Effect = Query>,
-        C: RpcCodec<P::Output>,
+        C: RpcCodec<P::Output> + RpcCodec<P::Error>,
     {
+        enum LazyDecode {
+            Output { raw: Bytes, expected_hash: u64 },
+            Error { raw: RawErrorWire, expected_seq: u32 },
+        }
+
         let now_ms = self.inner.clock.now_ms();
         let grace = self.inner.config.hydration_grace_ms;
         let fast = self.inner.state.with(|s| {
@@ -347,30 +360,35 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             if payload.committed.is_none()
                 && let Some(raw) = payload.raw_response.as_ref()
             {
-                return Err((raw.clone(), payload.raw_body_hash));
+                return Err(LazyDecode::Output {
+                    raw: raw.clone(),
+                    expected_hash: payload.raw_body_hash,
+                });
+            }
+            if payload.committed_error.is_none()
+                && let Some(raw_err) = payload.raw_error.as_ref()
+            {
+                return Err(LazyDecode::Error {
+                    raw: raw_err.clone(),
+                    expected_seq: payload.completed_seq,
+                });
             }
 
-            Ok(QuerySnapshot {
-                data: payload
-                    .visible_data()
-                    .and_then(downcast_shared::<P::Output>),
-                error: payload
-                    .committed_error
-                    .as_ref()
-                    .and_then(downcast_shared::<RpcError<P::Error>>),
-                is_fetching: meta.is_fetching(),
-                is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
-                is_invalidated: meta.is_invalidated(s.wildcard_epoch),
-                data_version: meta.data_version,
-                invalidation_version: pack_invalidation_version(s.wildcard_epoch, meta.fetch_gen),
-                completed_seq: payload.completed_seq,
-                completed_invalidation_version: payload.completed_invalidation_version,
-            })
+            Ok(build_snapshot::<P>(
+                meta,
+                payload,
+                now_ms,
+                s.wildcard_epoch,
+                grace,
+            ))
         });
 
         match fast {
             Ok(snap) => snap,
-            Err((raw_bytes, expected_hash)) => {
+            Err(LazyDecode::Output {
+                raw: raw_bytes,
+                expected_hash,
+            }) => {
                 let decoded: Result<P::Output, CodecError> =
                     self.inner.codec.decode_bounded(&raw_bytes);
                 let job = self.inner.state.with(|s| {
@@ -412,40 +430,70 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 if let Some(job) = job {
                     let _ = self.recompute_jobs_outside_lock(vec![job]);
                 }
+                self.read_locked_snapshot::<P>(handle, now_ms, grace)
+            }
+            Err(LazyDecode::Error { raw, expected_seq }) => {
+                let (rpc_err, clear_raw) = match raw {
+                    RawErrorWire::Domain { status, body } => {
+                        let status =
+                            rpc_status_from_u8(status).unwrap_or(RpcStatus::Unprocessable);
+                        match RpcCodec::<P::Error>::decode_bounded(&self.inner.codec, &body) {
+                            Ok(error) => (RpcError::Domain { status, error }, false),
+                            Err(err) => (RpcError::Codec(err), true),
+                        }
+                    }
+                    RawErrorWire::Protocol { status, message } => {
+                        let status = rpc_status_from_u8(status).unwrap_or(RpcStatus::Internal);
+                        (RpcError::Protocol { status, message }, false)
+                    }
+                };
                 self.inner.state.with(|s| {
                     if !s.is_live(handle) {
-                        return empty_snapshot();
+                        return;
                     }
                     let idx = handle.slot.index();
-                    let meta = s.metas[idx];
-                    let payload = &s.payloads[idx];
-                    QuerySnapshot {
-                        data: payload
-                            .visible_data()
-                            .and_then(downcast_shared::<P::Output>),
-                        error: payload
-                            .committed_error
-                            .as_ref()
-                            .and_then(downcast_shared::<RpcError<P::Error>>),
-                        is_fetching: meta.is_fetching(),
-                        is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
-                        is_invalidated: meta.is_invalidated(s.wildcard_epoch),
-                        data_version: meta.data_version,
-                        invalidation_version: pack_invalidation_version(
-                            s.wildcard_epoch,
-                            meta.fetch_gen,
-                        ),
-                        completed_seq: payload.completed_seq,
-                        completed_invalidation_version: payload.completed_invalidation_version,
+                    if s.metas[idx].proc_id != P::ID {
+                        return;
                     }
-                })
+                    let payload = &mut s.payloads[idx];
+                    if payload.committed_error.is_none() && payload.completed_seq == expected_seq {
+                        payload.committed_error = Some(into_shared_any(rpc_err));
+                        s.metas[idx].flags |= FLAG_HAS_ERROR;
+                        if clear_raw {
+                            payload.raw_error = None;
+                        }
+                    }
+                });
+                self.read_locked_snapshot::<P>(handle, now_ms, grace)
             }
         }
     }
 
+    fn read_locked_snapshot<P>(
+        &self,
+        handle: QueryHandle,
+        now_ms: u64,
+        grace: u32,
+    ) -> QuerySnapshot<P::Output, P::Error>
+    where
+        P: Procedure<Effect = Query>,
+    {
+        self.inner.state.with(|s| {
+            if !s.is_live(handle) {
+                return empty_snapshot();
+            }
+            let idx = handle.slot.index();
+            let meta = s.metas[idx];
+            if meta.proc_id != P::ID {
+                return empty_snapshot();
+            }
+            build_snapshot::<P>(meta, &s.payloads[idx], now_ms, s.wildcard_epoch, grace)
+        })
+    }
+
     /// Returns `true` when `handle` should initiate a fetch in the current [`QueryMode`].
     pub fn needs_fetch(&self, handle: QueryHandle) -> bool {
-        if self.inner.config.mode == QueryMode::SsrReadOnly {
+        if self.inner.config.mode == QueryMode::Ssr {
             return false;
         }
         let now_ms = self.inner.clock.now_ms();
@@ -455,7 +503,9 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 return false;
             }
             let meta = s.metas[handle.slot.index()];
-            !meta.is_fetching() && meta.is_stale(now_ms, s.wildcard_epoch, grace)
+            !meta.is_fetching()
+                && !meta.is_stream_pending()
+                && meta.is_stale(now_ms, s.wildcard_epoch, grace)
         })
     }
 
@@ -511,12 +561,17 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             meta.updated_at_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
             meta.invalidated_epoch = s.wildcard_epoch;
             meta.flags |= FLAG_HAS_DATA;
-            meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING | FLAG_HYDRATED);
+            meta.flags &= !(FLAG_HAS_ERROR
+                | FLAG_IS_INVALIDATED
+                | FLAG_IS_FETCHING
+                | FLAG_HYDRATED
+                | FLAG_STREAM_PENDING);
 
             let payload = &mut s.payloads[idx];
             waiters.append(&mut payload.in_flight_waiters);
             payload.raw_response = Some(raw_body);
             payload.raw_body_hash = raw_hash;
+            payload.raw_error = None;
             payload.committed = Some(into_shared_any(value));
             payload.committed_error = None;
             payload.record_commit(pack_invalidation_version(s.wildcard_epoch, new_fetch_gen));
@@ -529,7 +584,33 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         run_side_effects(recompute_wake.or(wake), waiters);
         Ok(handle)
     }
+}
 
+#[inline]
+fn build_snapshot<P: Procedure<Effect = Query>>(
+    meta: QueryMeta,
+    payload: &QueryPayload,
+    now_ms: u64,
+    wildcard_epoch: u32,
+    grace: u32,
+) -> QuerySnapshot<P::Output, P::Error> {
+    QuerySnapshot {
+        data: payload
+            .visible_data()
+            .and_then(downcast_shared::<P::Output>),
+        error: payload
+            .committed_error
+            .as_ref()
+            .and_then(downcast_shared::<RpcError<P::Error>>),
+        is_fetching: meta.is_fetching(),
+        is_stream_pending: meta.is_stream_pending(),
+        is_stale: meta.is_stale(now_ms, wildcard_epoch, grace),
+        is_invalidated: meta.is_invalidated(wildcard_epoch),
+        data_version: meta.data_version,
+        invalidation_version: pack_invalidation_version(wildcard_epoch, meta.fetch_gen),
+        completed_seq: payload.completed_seq,
+        completed_invalidation_version: payload.completed_invalidation_version,
+    }
 }
 
 #[inline]
@@ -538,6 +619,7 @@ fn empty_snapshot<T, E>() -> QuerySnapshot<T, E> {
         data: None,
         error: None,
         is_fetching: false,
+        is_stream_pending: false,
         is_stale: true,
         is_invalidated: false,
         data_version: 0,

@@ -3,6 +3,7 @@
 
 use core::cell::RefCell;
 use core::future::{poll_fn, Future};
+use core::task::{Poll, Waker};
 use std::rc::Rc;
 
 use dioxus_core::{
@@ -15,6 +16,7 @@ use nve_query::{Clock, QueryClient, QueryClientConfig, QueryHandle, QuerySlotId,
 use nve_rpc::{BoxFuture, CborCodec, RawCall, RawReply, Transport, TransportError};
 
 use crate::sleep::{default_sleep_callback, SleepHandle};
+use crate::suspense::sanitize_slot_id;
 
 /// Object-safe type-erased [`Transport`] wrapper so shared cross-platform Dioxus UI components
 /// never thread `<T: Transport>` generics across Web (`FetchTransport`), Native (`HyperTransport`),
@@ -46,7 +48,7 @@ pub fn erased_query_client<T: Transport>(transport: T) -> ErasedQueryClient {
     QueryClient::new(DynTransport::new(transport))
 }
 
-/// Creates a per-request SSR [`ErasedQueryClient`] in [`nve_query::QueryMode::SsrReadOnly`].
+/// Creates a per-request SSR [`ErasedQueryClient`] in [`nve_query::QueryMode::Ssr`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn erased_ssr_query_client<T: Transport>(transport: T) -> ErasedQueryClient {
     QueryClient::ssr(DynTransport::new(transport))
@@ -140,11 +142,13 @@ struct SlotTaskEntry {
     slot_gen: u32,
     inv_ver: u64,
     task: Task,
+    waiters: Vec<Waker>,
 }
 
 struct BridgeSlots {
     alive: bool,
     next_task_seq: u64,
+    next_suspense_id: u32,
     signals: Vec<Option<(Signal<u32>, u32)>>,
     slot_tasks: Vec<Option<SlotTaskEntry>>,
     dirty_buf: Vec<(QuerySlotId, u32)>,
@@ -159,11 +163,16 @@ struct SlotTaskGuard {
 
 impl Drop for SlotTaskGuard {
     fn drop(&mut self) {
-        if let Ok(mut slots) = self.slots.try_borrow_mut()
+        let waiters = if let Ok(mut slots) = self.slots.try_borrow_mut()
             && let Some(entry) = slots.slot_tasks.get_mut(self.slot.index())
             && entry.as_ref().is_some_and(|e| e.seq == self.seq)
         {
-            *entry = None;
+            entry.take().map(|e| e.waiters).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for w in waiters {
+            w.wake();
         }
     }
 }
@@ -193,6 +202,7 @@ impl DioxusQueryBridge {
             slots: Rc::new(RefCell::new(BridgeSlots {
                 alive: true,
                 next_task_seq: 1,
+                next_suspense_id: 0,
                 signals: Vec::new(),
                 slot_tasks: Vec::new(),
                 dirty_buf: Vec::with_capacity(16),
@@ -208,6 +218,18 @@ impl DioxusQueryBridge {
     #[inline]
     pub fn client(&self) -> &ErasedQueryClient {
         &self.client
+    }
+
+    /// Allocates a deterministic `<QuerySuspense>` slot ID matching `SsrBoundaryRegistry`'s
+    /// `s0`, `s1`, ... sequence when no explicit `id` is provided.
+    pub(crate) fn allocate_suspense_id(&self, explicit_id: Option<&str>) -> String {
+        if let Some(clean) = sanitize_slot_id(explicit_id) {
+            return clean;
+        }
+        let mut slots = self.slots.borrow_mut();
+        let n = slots.next_suspense_id;
+        slots.next_suspense_id = slots.next_suspense_id.wrapping_add(1);
+        format!("s{n}")
     }
 
     #[inline]
@@ -235,6 +257,30 @@ impl DioxusQueryBridge {
             .get(handle.slot.index())
             .and_then(Option::as_ref)
             .is_some_and(|entry| entry.slot_gen == handle.generation && entry.inv_ver == inv_ver)
+    }
+
+    /// Suspends until the provider-owned fetch task for `(handle, inv_ver)` completes, is
+    /// superseded, or is cancelled (zero polling, safe for multiple sibling `<QuerySuspense>`
+    /// waiters sharing one slot task).
+    pub(crate) async fn wait_for_slot_task(&self, handle: QueryHandle, inv_ver: u64) {
+        poll_fn(|cx| {
+            let mut slots = self.slots.borrow_mut();
+            let Some(entry) = slots
+                .slot_tasks
+                .get_mut(handle.slot.index())
+                .and_then(Option::as_mut)
+            else {
+                return Poll::Ready(());
+            };
+            if entry.slot_gen != handle.generation || entry.inv_ver != inv_ver {
+                return Poll::Ready(());
+            }
+            if !entry.waiters.iter().any(|w| w.will_wake(cx.waker())) {
+                entry.waiters.push(cx.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await;
     }
 
     /// Spawns (or replaces) the provider-owned fetch task for `(handle, inv_ver)`, cancelling any
@@ -277,10 +323,14 @@ impl DioxusQueryBridge {
                 slot_gen: handle.generation,
                 inv_ver,
                 task,
+                waiters: Vec::new(),
             })
         };
         if let Some(prev) = prev {
             prev.task.cancel();
+            for w in prev.waiters {
+                w.wake();
+            }
         }
     }
 
@@ -315,6 +365,9 @@ impl DioxusQueryBridge {
                 drop(slots);
                 if let Some(entry) = entry {
                     entry.task.cancel();
+                    for w in entry.waiters {
+                        w.wake();
+                    }
                 }
                 sig.manually_drop();
             }

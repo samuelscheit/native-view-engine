@@ -9,8 +9,8 @@ use crate::optimistic::{
     fold_recompute_job, prepare_recompute_job, settle_layers_up_to, RecomputeJob,
 };
 use crate::slab::{
-    pack_invalidation_version, QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED,
-    FLAG_IS_FETCHING, FLAG_IS_INVALIDATED,
+    pack_invalidation_version, QuerySlotId, RawErrorWire, FLAG_HAS_DATA, FLAG_HAS_ERROR,
+    FLAG_HYDRATED, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_STREAM_PENDING,
 };
 use crate::types::{into_shared_any, FetchTicket, QueryHandle, Shared};
 
@@ -129,13 +129,18 @@ impl<T, C> QueryClient<T, C> {
     where
         P: Procedure<Effect = Query>,
     {
-        self.complete_fetch_shared::<P>(ticket, result.map_err(Shared::new))
+        let raw_error = result
+            .as_ref()
+            .err()
+            .and_then(RawErrorWire::from_non_domain_error);
+        self.complete_fetch_shared::<P>(ticket, result.map_err(Shared::new), raw_error)
     }
 
     pub(crate) fn complete_fetch_shared<P>(
         &self,
         ticket: FetchTicket,
         result: Result<CallReply<P::Output>, Shared<RpcError<P::Error>>>,
+        raw_error: Option<RawErrorWire>,
     ) -> bool
     where
         P: Procedure<Effect = Query>,
@@ -153,7 +158,7 @@ impl<T, C> QueryClient<T, C> {
             {
                 let (wake, waiters) =
                     if meta.proc_id == P::ID && meta.fetch_gen == ticket.fetch_gen {
-                        meta.flags &= !FLAG_IS_FETCHING;
+                        meta.flags &= !(FLAG_IS_FETCHING | FLAG_STREAM_PENDING);
                         let waiters = core::mem::take(&mut s.payloads[idx].in_flight_waiters);
                         let wake = s.mark_dirty(ticket.handle.slot);
                         (wake, waiters)
@@ -162,7 +167,7 @@ impl<T, C> QueryClient<T, C> {
                     };
                 return (false, wake, waiters, None);
             }
-            meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED);
+            meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED | FLAG_STREAM_PENDING);
             let payload = &mut s.payloads[idx];
             let waiters = core::mem::take(&mut payload.in_flight_waiters);
 
@@ -182,6 +187,7 @@ impl<T, C> QueryClient<T, C> {
                     meta.invalidated_epoch = ticket.wildcard_epoch;
                     meta.flags |= FLAG_HAS_DATA;
                     meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED);
+                    payload.raw_error = None;
                     payload.record_commit(pack_invalidation_version(
                         ticket.wildcard_epoch,
                         ticket.fetch_gen,
@@ -211,8 +217,12 @@ impl<T, C> QueryClient<T, C> {
                     (true, wake, waiters, None)
                 }
                 Err(shared_err) => {
+                    if !meta.has_data() {
+                        meta.updated_at_ms = i64::try_from(now_ms).unwrap_or(i64::MAX);
+                    }
                     meta.flags |= FLAG_HAS_ERROR;
                     payload.committed_error = Some(shared_err);
+                    payload.raw_error = raw_error;
                     payload.record_commit(pack_invalidation_version(
                         ticket.wildcard_epoch,
                         ticket.fetch_gen,

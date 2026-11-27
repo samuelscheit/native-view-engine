@@ -11,7 +11,7 @@ use core::task::Waker;
 use crate::slab::{
     QueryMeta, QueryPayload, QuerySlotId, TagIndex, FLAG_HYDRATED, FLAG_IN_DIRTY_QUEUE,
     FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
-    FLAG_SUBSCRIBED_ALL, NONE_IDX,
+    FLAG_STREAM_PENDING, FLAG_SUBSCRIBED_ALL, NONE_IDX,
 };
 use crate::types::{IdentityBuildHasher, QueryHandle, QueryOptions};
 
@@ -228,7 +228,7 @@ impl CacheState {
         // Bump `fetch_gen` BEFORE refetch so slow pre-mutation replies are discarded cleanly.
         meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
         meta.flags |= FLAG_IS_INVALIDATED;
-        meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED);
+        meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED | FLAG_STREAM_PENDING);
         let generation = meta.slot_gen;
         let is_active = meta.subscriber_count > 0;
         waiters_out.append(&mut self.payloads[idx].in_flight_waiters);

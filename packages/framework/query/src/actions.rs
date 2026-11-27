@@ -6,7 +6,7 @@ use core::task::Poll;
 
 use nve_rpc::{
     call_with_codec, decode_reply, Action, CallReply, MaybeSend, MaybeSync, Procedure, Query,
-    RpcCodec, RpcError, Tag64, TagSink, Transport,
+    ReplyKind, RpcCodec, RpcError, Tag64, TagSink, Transport,
 };
 
 use crate::engine::{query_key_hash, run_side_effects, QueryClient};
@@ -15,7 +15,7 @@ use crate::optimistic::{
     apply_layer_to_slot, mark_mutation_settling, prepare_recompute_job, remove_mutation_layers,
     OptimisticHandle, OptimisticTx, PendingPatchOp,
 };
-use crate::slab::{pack_invalidation_version, QuerySlotId, FLAG_SUBSCRIBED_ALL};
+use crate::slab::{pack_invalidation_version, QuerySlotId, RawErrorWire, FLAG_SUBSCRIBED_ALL};
 use crate::state::WakeCallback;
 use crate::types::{FetchTicket, MutationId, QueryHandle, Shared};
 
@@ -69,16 +69,17 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop
 }
 
 impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C> {
-    /// Suspends until `handle` is no longer `IS_FETCHING` (or is evicted), enabling deduplicated
-    /// concurrent `fetch_handle` / `prefetch` callers to share a single in-flight network request.
-    async fn wait_for_in_flight(&self, handle: QueryHandle) {
+    /// Suspends via `in_flight_waiters` while `handle` is live and either `IS_FETCHING` or
+    /// `STREAM_PENDING` (zero polling, cancellation-safe).
+    pub async fn wait_for_settled(&self, handle: QueryHandle) {
         poll_fn(|cx| {
             self.inner.state.with(|s| {
                 if !s.is_live(handle) {
                     return Poll::Ready(());
                 }
                 let idx = handle.slot.index();
-                if !s.metas[idx].is_fetching() {
+                let meta = s.metas[idx];
+                if !meta.is_fetching() && !meta.is_stream_pending() {
                     return Poll::Ready(());
                 }
                 let waiters = &mut s.payloads[idx].in_flight_waiters;
@@ -123,7 +124,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         return Ok(snap.data);
                     }
                 };
-            self.wait_for_in_flight(handle).await;
+            self.wait_for_settled(handle).await;
             let settled_by_leader = self.inner.state.with(|s| {
                 if !s.is_live(handle) {
                     return true;
@@ -161,19 +162,37 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             ticket: Some(ticket),
         };
         let raw_res = self.inner.transport.call_raw(raw_call).await;
-        let decoded = match raw_res {
-            Ok(raw_reply) => decode_reply::<P, C>(&self.inner.codec, raw_reply),
-            Err(terr) => Err(RpcError::Transport(terr)),
+        let (decoded, raw_err) = match raw_res {
+            Ok(raw_reply) => {
+                let domain_body =
+                    (raw_reply.kind == ReplyKind::Domain).then(|| raw_reply.body.clone());
+                let res = decode_reply::<P, C>(&self.inner.codec, raw_reply);
+                let raw_err = match &res {
+                    Ok(_) => None,
+                    Err(RpcError::Domain { status, .. }) => domain_body.map(|body| {
+                        RawErrorWire::Domain {
+                            status: *status as u8,
+                            body,
+                        }
+                    }),
+                    Err(other) => RawErrorWire::from_non_domain_error(other),
+                };
+                (res, raw_err)
+            }
+            Err(terr) => {
+                let raw_err = RawErrorWire::from_transport(&terr);
+                (Err(RpcError::Transport(terr)), raw_err)
+            }
         };
         cancel_guard.ticket = None;
         match decoded {
             Ok(reply) => {
-                self.complete_fetch_shared::<P>(ticket, Ok(reply));
+                self.complete_fetch_shared::<P>(ticket, Ok(reply), None);
                 Ok(self.read::<P>(handle).data)
             }
             Err(err) => {
                 let shared_err = Shared::new(err);
-                self.complete_fetch_shared::<P>(ticket, Err(Shared::clone(&shared_err)));
+                self.complete_fetch_shared::<P>(ticket, Err(Shared::clone(&shared_err)), raw_err);
                 Err(shared_err)
             }
         }
