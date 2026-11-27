@@ -3,7 +3,6 @@
 //! selection geometry powered by `cosmic-text`.
 
 use cosmic_text::{Buffer, Metrics, Shaping, Wrap};
-use nve_layout::TextMeasurer;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::font::BitmapFontTextMeasurer;
@@ -375,7 +374,7 @@ fn shape_single_line_bitmap_fallback(text: &str, font_size: f32) -> ShapedLineLa
             space_w
         } else {
             BitmapFontTextMeasurer
-                .measure(g, font_size, None)
+                .measure_text(g, font_size, None)
                 .0
                 .max(space_w)
         };

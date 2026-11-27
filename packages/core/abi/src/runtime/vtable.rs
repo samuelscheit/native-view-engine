@@ -49,8 +49,8 @@ pub const RUNTIME_CALLBACK_TYPEDEFS: &[RuntimeFnSignature] = &[
     sig(
         "NveRuntimeMeasureTextFn",
         "void",
-        "void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width, float* out_width, float* out_height",
-        "Native text measurer; owner thread, during layout; `max_width` is INFINITY when unconstrained.",
+        "void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width, float* out_width, float* out_height",
+        "Native text measurer; owner thread, during layout; measures `text` with the node's resolved typography (`style`, borrowed for the call); `max_width` is INFINITY when unconstrained.",
     ),
 ];
 

@@ -1,59 +1,173 @@
-//! Pluggable text measurement (`TextMeasurer`) and the deterministic cross-platform
-//! `HeuristicTextMeasurer` fallback used by every layout engine.
+//! Pluggable text measurement (`TextMeasurer`), the inherited [`TextStyle`] every measurer
+//! receives, and the deterministic cross-platform `HeuristicTextMeasurer` fallback used by every
+//! layout engine.
 
 use std::sync::Arc;
 
-use nve_components::tables::Typography;
-use nve_store::{Length, NodeId, NodeStore, Rgba};
+use nve_components::tables::{FontStyle, OverflowWrap, Typography, WhiteSpace, WordBreak};
+use nve_store::{Length, NodeId, NodeStore, Rgba, StrSpan};
 
-/// Inherited typography resolved once per layout pass for every node.
+/// Fully resolved, inherited typography of one node: everything a host needs to measure text
+/// exactly as it paints it. `F` is the family: a [`StrSpan`] into the store while layout keeps it
+/// per node ([`ResolvedTextStyle`]), a borrowed `&str` when handed to a [`TextMeasurer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ResolvedTextStyle {
+pub struct TextStyle<F> {
     pub color: Rgba,
+    /// CSS font-family list as authored; empty = the host's default UI font.
+    pub font_family: F,
+    /// Logical points, finite and `>= 0`.
     pub font_size: f32,
+    /// CSS weight (`100..=900` once a host clamps it).
     pub font_weight: u16,
+    pub font_style: FontStyle,
+    /// Extra advance after every character, logical points.
+    pub letter_spacing: f32,
+    /// Points = absolute; percent = unit-less multiplier × 100 of `font_size`; auto = `normal`.
     pub line_height: Length,
+    pub white_space: WhiteSpace,
+    pub word_break: WordBreak,
+    pub overflow_wrap: OverflowWrap,
+    /// Maximum painted lines (`0` = unlimited); measured height never exceeds them.
+    pub max_lines: u32,
 }
 
-impl Default for ResolvedTextStyle {
+/// Inherited typography kept per node during a layout pass.
+pub type ResolvedTextStyle = TextStyle<StrSpan>;
+
+impl<F: Default> Default for TextStyle<F> {
     fn default() -> Self {
         Self {
             color: Rgba::BLACK,
+            font_family: F::default(),
             font_size: HeuristicTextMeasurer::DEFAULT_FONT_SIZE,
             font_weight: 400,
+            font_style: FontStyle::Normal,
+            letter_spacing: 0.0,
             line_height: Length::AUTO,
+            white_space: WhiteSpace::Normal,
+            word_break: WordBreak::Normal,
+            overflow_wrap: OverflowWrap::Normal,
+            max_lines: 0,
         }
+    }
+}
+
+impl<F> TextStyle<F> {
+    /// The same style with the family mapped to another representation.
+    #[inline]
+    pub fn map_family<'s, G>(&'s self, f: impl FnOnce(&'s F) -> G) -> TextStyle<G> {
+        TextStyle {
+            color: self.color,
+            font_family: f(&self.font_family),
+            font_size: self.font_size,
+            font_weight: self.font_weight,
+            font_style: self.font_style,
+            letter_spacing: self.letter_spacing,
+            line_height: self.line_height,
+            white_space: self.white_space,
+            word_break: self.word_break,
+            overflow_wrap: self.overflow_wrap,
+            max_lines: self.max_lines,
+        }
+    }
+
+    /// `false` for `white-space: nowrap | pre`: lines break only at `\n`, never at `max_width`.
+    #[inline]
+    pub fn wraps(&self) -> bool {
+        !matches!(self.white_space, WhiteSpace::NoWrap | WhiteSpace::Pre)
+    }
+
+    /// The line height in points, `None` for `normal` (the font's own metrics).
+    #[inline]
+    pub fn line_height_points(&self) -> Option<f32> {
+        let lh = if self.line_height.is_percent() {
+            self.line_height.value() * self.font_size / 100.0
+        } else {
+            self.line_height.resolve(self.font_size)?
+        };
+        (lh.is_finite() && lh > 0.0).then_some(lh)
+    }
+}
+
+impl<F: AsRef<str>> TextStyle<F> {
+    /// The measurer view of an owned-family style.
+    #[inline]
+    pub fn borrowed(&self) -> TextStyle<&str> {
+        self.map_family(AsRef::as_ref)
+    }
+}
+
+impl<'a> TextStyle<&'a str> {
+    /// Default typography at `font_size` (the host's default family).
+    pub fn sized(font_size: f32) -> Self {
+        Self {
+            font_size,
+            ..Self::default()
+        }
+    }
+}
+
+impl ResolvedTextStyle {
+    /// The measurer view of this style, its family read from `store`.
+    #[inline]
+    pub fn in_store<'a>(&self, store: &'a NodeStore) -> TextStyle<&'a str> {
+        self.map_family(|&span| store.text(span))
     }
 }
 
 /// Resolves one node's inherited [`ResolvedTextStyle`] from its parent's resolved typography and
 /// any explicit fields on `id`'s [`Typography`] row. Shared by every layout engine so invalid
-/// (`<= 0` or non-finite) font sizes fall back identically across Taffy and Yoga.
+/// (`< 0` or non-finite) sizes and spacings fall back identically across Taffy and Yoga.
 #[inline]
 pub fn resolve_inherited_text(
     store: &NodeStore,
     id: NodeId,
     mut parent: ResolvedTextStyle,
 ) -> ResolvedTextStyle {
-    if let Some(t) = store.try_row::<Typography>(id) {
-        let set = t.set();
-        if set & Typography::SET_COLOR != 0 || (set == 0 && t.color() != Rgba::BLACK) {
-            parent.color = t.color();
+    let Some(t) = store.try_row::<Typography>(id) else {
+        return parent;
+    };
+    let set = t.set();
+    // Rows without `set` bits (older producers) mark a field explicit by a non-default value.
+    let explicit = |bit: u32, differs: bool| set & bit != 0 || (set == 0 && differs);
+    if explicit(Typography::SET_COLOR, t.color() != Rgba::BLACK) {
+        parent.color = t.color();
+    }
+    if explicit(Typography::SET_FONT_SIZE, t.font_size().to_bits() != 16.0f32.to_bits()) {
+        let raw_fs = t.font_size();
+        if raw_fs.is_finite() && raw_fs >= 0.0 {
+            parent.font_size = raw_fs;
         }
-        if set & Typography::SET_FONT_SIZE != 0
-            || (set == 0 && t.font_size().to_bits() != 16.0f32.to_bits())
-        {
-            let raw_fs = t.font_size();
-            if raw_fs.is_finite() && raw_fs >= 0.0 {
-                parent.font_size = raw_fs;
-            }
+    }
+    if explicit(Typography::SET_FONT_WEIGHT, t.font_weight() != 400) {
+        parent.font_weight = t.font_weight();
+    }
+    if explicit(Typography::SET_LINE_HEIGHT, t.line_height() != Length::AUTO) {
+        parent.line_height = t.line_height();
+    }
+    if explicit(Typography::SET_LETTER_SPACING, t.letter_spacing() != 0.0) {
+        let ls = t.letter_spacing();
+        if ls.is_finite() {
+            parent.letter_spacing = ls;
         }
-        if set & Typography::SET_FONT_WEIGHT != 0 || (set == 0 && t.font_weight() != 400) {
-            parent.font_weight = t.font_weight();
-        }
-        if set & Typography::SET_LINE_HEIGHT != 0 || (set == 0 && t.line_height() != Length::AUTO) {
-            parent.line_height = t.line_height();
-        }
+    }
+    if explicit(Typography::SET_FONT_FAMILY, !t.font_family().is_empty()) {
+        parent.font_family = t.font_family_span();
+    }
+    if explicit(Typography::SET_MAX_LINES, t.max_lines() != 0) {
+        parent.max_lines = t.max_lines();
+    }
+    if explicit(Typography::SET_FONT_STYLE, t.font_style() != FontStyle::Normal) {
+        parent.font_style = t.font_style();
+    }
+    if explicit(Typography::SET_WHITE_SPACE, t.white_space() != WhiteSpace::Normal) {
+        parent.white_space = t.white_space();
+    }
+    if explicit(Typography::SET_WORD_BREAK, t.word_break() != WordBreak::Normal) {
+        parent.word_break = t.word_break();
+    }
+    if explicit(Typography::SET_OVERFLOW_WRAP, t.overflow_wrap() != OverflowWrap::Normal) {
+        parent.overflow_wrap = t.overflow_wrap();
     }
     parent
 }
@@ -61,28 +175,16 @@ pub fn resolve_inherited_text(
 /// Pluggable text measurement provider used by layout engines to size intrinsic text nodes
 /// (including multi-line and width-constrained wrapping).
 pub trait TextMeasurer: Send + Sync {
-    /// Measures `text` at `font_size` logical points under an optional `max_width` constraint.
-    ///
-    /// Returns `(width, height)` in logical points.
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32);
-
-    /// Measures `text` at `font_size` logical points and CSS `font_weight` (`100..=900`, default `400`).
-    ///
-    /// Defaults to [`TextMeasurer::measure`] for measurers that are weight-invariant.
-    fn measure_with_weight(
-        &self,
-        text: &str,
-        font_size: f32,
-        _font_weight: u16,
-        max_width: Option<f32>,
-    ) -> (f32, f32) {
-        self.measure(text, font_size, max_width)
-    }
+    /// Measures `text` with the node's resolved typography under an optional `max_width`
+    /// constraint (`Some(0.0)` is a min-content probe). Returns `(width, height)` in logical
+    /// points.
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32);
 }
 
 /// Default deterministic text measurer matching NVE's cross-platform heuristic
-/// (`font_size * 0.58` average character advance, `font_size * 1.35` line height),
-/// with explicit `\n` line break and `max_width` wrapping support.
+/// (`font_size * 0.58 + letter_spacing` per character, `font_size * 1.35` `normal` line height),
+/// with explicit `\n` line breaks, `max_width` wrapping (none for `nowrap` / `pre`), explicit
+/// line heights, and `max_lines`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HeuristicTextMeasurer;
 
@@ -93,53 +195,51 @@ impl HeuristicTextMeasurer {
 }
 
 impl TextMeasurer for HeuristicTextMeasurer {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        if text.is_empty() || font_size == 0.0 {
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
+        if text.is_empty() || style.font_size == 0.0 {
             return (0.0, 0.0);
         }
-        let fs = if font_size.is_finite() && font_size > 0.0 {
-            font_size
+        let fs = if style.font_size.is_finite() && style.font_size > 0.0 {
+            style.font_size
         } else {
             Self::DEFAULT_FONT_SIZE
         };
-        let char_w = fs * Self::CHAR_WIDTH_FACTOR;
-        let line_h = fs * Self::LINE_HEIGHT_FACTOR;
+        let sized = TextStyle { font_size: fs, ..*style };
+        let char_w = (fs * Self::CHAR_WIDTH_FACTOR + style.letter_spacing).max(0.0);
+        let line_h = sized.line_height_points().unwrap_or(fs * Self::LINE_HEIGHT_FACTOR);
+        let height = |lines: f32| {
+            let lines = lines.max(1.0);
+            let capped = if style.max_lines > 0 { lines.min(style.max_lines as f32) } else { lines };
+            capped * line_h
+        };
+        let line_widths = || text.split('\n').map(|line| line.chars().count() as f32 * char_w);
 
-        let mut max_line_w = 0.0f32;
-        let mut total_lines = 0.0f32;
-
-        match max_width {
+        match max_width.filter(|_| style.wraps()) {
             Some(mw) if !mw.is_finite() || mw <= 0.0 => {
                 // Min-content probe (e.g. Yoga `AtMost 0` or Taffy `MinContent`).
-                let explicit_lines = text.split('\n').count().max(1) as f32;
-                (0.0, explicit_lines * line_h)
+                (0.0, height(text.split('\n').count() as f32))
             }
             Some(mw) => {
                 // Allow a few-ULP float32 tolerance (~1e-5 relative/absolute) so padding+border
                 // add/sub round-trips (e.g. `(6.38_f32 + 18.0) - 18.0 = 6.3799992 < 6.3800001`)
                 // do not spuriously wrap an exact-fit single line onto two lines.
                 let wrap_eps = (mw * 1e-5).max(1e-5);
-                for line in text.split('\n') {
-                    let raw_w = line.chars().count() as f32 * char_w;
+                let (mut max_line_w, mut total_lines) = (0.0f32, 0.0f32);
+                for raw_w in line_widths() {
                     if raw_w > mw + wrap_eps {
-                        let wrapped = ((raw_w - wrap_eps) / mw).ceil().max(1.0);
                         max_line_w = max_line_w.max(mw);
-                        total_lines += wrapped;
+                        total_lines += ((raw_w - wrap_eps) / mw).ceil().max(1.0);
                     } else {
                         max_line_w = max_line_w.max(raw_w);
                         total_lines += 1.0;
                     }
                 }
-                let final_w = max_line_w.max(1.0).min(mw);
-                (final_w, total_lines.max(1.0) * line_h)
+                (max_line_w.max(1.0).min(mw), height(total_lines))
             }
             None => {
-                for line in text.split('\n') {
-                    let raw_w = line.chars().count() as f32 * char_w;
-                    max_line_w = max_line_w.max(raw_w);
-                    total_lines += 1.0;
-                }
-                (max_line_w.max(1.0), total_lines.max(1.0) * line_h)
+                let (max_line_w, lines) =
+                    line_widths().fold((0.0f32, 0.0f32), |(w, n), lw| (w.max(lw), n + 1.0));
+                (max_line_w.max(1.0), height(lines))
             }
         }
     }
@@ -147,26 +247,16 @@ impl TextMeasurer for HeuristicTextMeasurer {
 
 impl<F> TextMeasurer for F
 where
-    F: Fn(&str, f32, Option<f32>) -> (f32, f32) + Send + Sync,
+    F: Fn(&str, &TextStyle<&str>, Option<f32>) -> (f32, f32) + Send + Sync,
 {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        (self)(text, font_size, max_width)
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
+        (self)(text, style, max_width)
     }
 }
 
 impl<T: TextMeasurer + ?Sized> TextMeasurer for Arc<T> {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        (**self).measure(text, font_size, max_width)
-    }
-
-    fn measure_with_weight(
-        &self,
-        text: &str,
-        font_size: f32,
-        font_weight: u16,
-        max_width: Option<f32>,
-    ) -> (f32, f32) {
-        (**self).measure_with_weight(text, font_size, font_weight, max_width)
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
+        (**self).measure(text, style, max_width)
     }
 }
 
@@ -174,38 +264,77 @@ impl<T: TextMeasurer + ?Sized> TextMeasurer for Arc<T> {
 mod tests {
     use super::*;
 
+    fn sized(fs: f32) -> TextStyle<&'static str> {
+        TextStyle::sized(fs)
+    }
+
     #[test]
     fn heuristic_text_measurer_matches_single_line_and_wraps() {
         let m = HeuristicTextMeasurer;
 
         // Empty text produces zero size.
-        assert_eq!(m.measure("", 16.0, None), (0.0, 0.0));
+        assert_eq!(m.measure("", &sized(16.0), None), (0.0, 0.0));
 
         // Single-line unconstrained matches font_size * 0.58 and font_size * 1.35.
-        let (w, h) = m.measure("Hello World", 20.0, None);
+        let (w, h) = m.measure("Hello World", &sized(20.0), None);
         assert!((w - 11.0 * 20.0 * 0.58).abs() < 1e-4);
         assert!((h - 20.0 * 1.35).abs() < 1e-4);
 
         // Wrapping under max_width increases line count proportionally.
-        let (ww, wh) = m.measure("01234567890123456789", 20.0, Some(100.0));
+        let (ww, wh) = m.measure("01234567890123456789", &sized(20.0), Some(100.0));
         assert!((ww - 100.0).abs() < 1e-4);
         // 20 * 11.6 = 232px -> ceil(232 / 100) = 3 lines
         assert!((wh - 3.0 * 20.0 * 1.35).abs() < 1e-4);
 
         // Explicit newline increases line count.
-        let (nw, nh) = m.measure("Line 1\nLine 2", 16.0, None);
+        let (nw, nh) = m.measure("Line 1\nLine 2", &sized(16.0), None);
         assert!((nw - 6.0 * 16.0 * 0.58).abs() < 1e-4);
         assert!((nh - 2.0 * 16.0 * 1.35).abs() < 1e-4);
 
         // Float32 padding+border round-trip (`(w + 18.0) - 18.0` losing 1 ULP) must not
         // spuriously wrap a single-line string onto two lines.
-        let (single_w, single_h) = m.measure("8", 11.0, None);
+        let (single_w, single_h) = m.measure("8", &sized(11.0), None);
         let round_trip_mw = (single_w + 18.0_f32) - 18.0_f32;
-        assert_eq!(m.measure("8", 11.0, Some(round_trip_mw)).1, single_h);
+        assert_eq!(m.measure("8", &sized(11.0), Some(round_trip_mw)).1, single_h);
 
         // Closure blanket impl & Arc<dyn TextMeasurer> work identically.
         let custom: Arc<dyn TextMeasurer> =
-            Arc::new(|text: &str, fs: f32, _mw: Option<f32>| (text.len() as f32 * fs, fs * 2.0));
-        assert_eq!(custom.measure("abc", 10.0, None), (30.0, 20.0));
+            Arc::new(|text: &str, s: &TextStyle<&str>, _mw: Option<f32>| {
+                (text.len() as f32 * s.font_size, s.font_size * 2.0)
+            });
+        assert_eq!(custom.measure("abc", &sized(10.0), None), (30.0, 20.0));
+    }
+
+    #[test]
+    fn heuristic_text_measurer_honours_the_resolved_typography() {
+        let m = HeuristicTextMeasurer;
+        let text = "0123456789";
+        let base = m.measure(text, &sized(20.0), None);
+
+        // Letter spacing widens every character.
+        let spaced = TextStyle { letter_spacing: 2.0, ..sized(20.0) };
+        assert!((m.measure(text, &spaced, None).0 - (base.0 + 10.0 * 2.0)).abs() < 1e-3);
+
+        // `nowrap` / `pre` ignore the width constraint (also the min-content probe).
+        for ws in [WhiteSpace::NoWrap, WhiteSpace::Pre] {
+            let s = TextStyle { white_space: ws, ..sized(20.0) };
+            assert_eq!(m.measure(text, &s, Some(50.0)), base, "{ws:?}");
+            assert_eq!(m.measure(text, &s, Some(0.0)), base, "{ws:?}");
+        }
+        let pre_wrap = TextStyle { white_space: WhiteSpace::PreWrap, ..sized(20.0) };
+        assert!(m.measure(text, &pre_wrap, Some(50.0)).1 > base.1);
+
+        // Line heights: points are absolute, percent is a multiplier of the font size.
+        let points = TextStyle { line_height: Length::points(30.0), ..sized(20.0) };
+        assert_eq!(m.measure("a\nb", &points, None).1, 60.0);
+        let percent = TextStyle { line_height: Length::percent(150.0), ..sized(20.0) };
+        assert_eq!(m.measure("a\nb", &percent, None).1, 60.0);
+        assert_eq!(percent.line_height_points(), Some(30.0));
+        assert_eq!(sized(20.0).line_height_points(), None);
+
+        // `max_lines` caps wrapped and explicit lines.
+        let two = TextStyle { max_lines: 2, ..points };
+        assert_eq!(m.measure(text, &two, Some(20.0)).1, 60.0);
+        assert_eq!(m.measure("a\nb\nc\nd", &two, None).1, 60.0);
     }
 }

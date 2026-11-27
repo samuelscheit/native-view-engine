@@ -1,32 +1,38 @@
 import CoreGraphics
 import CoreText
+import CNveAbi
 import Foundation
 
-/// Native glyph metrics for runtime layout: system font at the requested size / weight, wrapped
-/// to `maxWidth` with CoreText, so laid-out text boxes match what `NveSceneRenderer` draws.
+/// Native glyph metrics for runtime layout: the system font at the node's size / weight / italic
+/// (exactly what `NveSceneRenderer` draws: it does not paint family, letter spacing, line
+/// height, or max lines yet, so measuring them would break paint parity), wrapped to `maxWidth`
+/// with CoreText. The runtime already passes `.infinity` for `nowrap` / `pre`.
 public final class NveCoreTextMeasurer: NveTextMeasuring {
     public init() {}
 
-    /// Fonts by `(size bits, weight)`: layout measures every text node with a handful of styles.
+    /// Fonts by `(size bits, weight, italic)`: layout measures every text node with a handful of styles.
     private var fonts: [UInt64: CTFont] = [:]
     private let lock = NSLock()
 
-    private func font(size: CGFloat, weight: UInt16) -> CTFont? {
-        let key = UInt64(Float(size).bitPattern) << 16 | UInt64(weight)
+    func font(size: CGFloat, weight: UInt16, italic: Bool) -> CTFont? {
+        let key = UInt64(Float(size).bitPattern) << 17 | UInt64(weight) << 1 | (italic ? 1 : 0)
         lock.lock()
         defer { lock.unlock() }
         if let cached = fonts[key] { return cached }
         guard let system = CTFontCreateUIFontForLanguage(.system, size, nil) else { return nil }
+        var traits: [CFString: Any] = [kCTFontWeightTrait: Self.weightTrait(weight)]
+        if italic { traits[kCTFontSymbolicTrait] = CTFontSymbolicTraits.traitItalic.rawValue }
         let descriptor = CTFontDescriptorCreateCopyWithAttributes(
-            CTFontCopyFontDescriptor(system),
-            [kCTFontTraitsAttribute: [kCTFontWeightTrait: Self.weightTrait(weight)]] as CFDictionary)
+            CTFontCopyFontDescriptor(system), [kCTFontTraitsAttribute: traits] as CFDictionary)
         let font = CTFontCreateWithFontDescriptor(descriptor, size, nil)
         fonts[key] = font
         return font
     }
 
-    public func measure(text: String, fontSize: CGFloat, fontWeight: UInt16, maxWidth: CGFloat) -> CGSize {
-        guard !text.isEmpty, fontSize > 0, fontSize.isFinite, let font = font(size: fontSize, weight: fontWeight) else {
+    public func measure(text: String, style: NveRuntimeTextStyle, maxWidth: CGFloat) -> CGSize {
+        let fontSize = CGFloat(style.font_size)
+        guard !text.isEmpty, fontSize > 0, fontSize.isFinite,
+              let font = font(size: fontSize, weight: style.font_weight, italic: style.isItalic) else {
             return .zero
         }
         let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: font] as CFDictionary)!

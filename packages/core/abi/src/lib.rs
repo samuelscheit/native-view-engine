@@ -48,7 +48,8 @@ pub use host::{
 pub use runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
     NveRuntimeHandle, NveRuntimeMeasureTextFn, NveRuntimeMetrics, NveRuntimeSceneView,
-    NveScrollOffset,
+    NveRuntimeTextStyle, NveScrollOffset, NVE_LINE_HEIGHT_AUTO, NVE_LINE_HEIGHT_PERCENT,
+    NVE_LINE_HEIGHT_POINTS,
     NveRuntimeStatus, NveRuntimeWakeFn, RuntimeFnSignature, NVE_LAYOUT_RECT_SIZE,
     NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
     RUNTIME_API_SLOTS, RUNTIME_CALLBACK_TYPEDEFS,

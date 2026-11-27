@@ -10,7 +10,6 @@ mod transform;
 
 use nve_abi::ColorRgba;
 use nve_engine::LayoutRect;
-use nve_layout::TextMeasurer;
 use nve_store::{NodeStore, TableEventBus};
 
 use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry};
@@ -560,7 +559,8 @@ pub fn draw_hud_banner(buffer: &mut PixelBuffer, scale_factor: f32, text: &str) 
     let pad_y = 5.0f32;
     let margin = 10.0f32;
     let max_logical_w = (buffer.width() as f32 / scale - margin * 2.0 - pad_x * 2.0).max(16.0);
-    let (measured_w, measured_h) = text_engine.measure(text, logical_font_size, Some(max_logical_w));
+    let (measured_w, measured_h) =
+        text_engine.measure_text(text, logical_font_size, Some(max_logical_w));
 
     let pill_w_logical =
         (measured_w + pad_x * 2.0).min(buffer.width() as f32 / scale - margin * 2.0);

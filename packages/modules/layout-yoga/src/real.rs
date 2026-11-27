@@ -232,7 +232,7 @@ impl YogaLayoutEngine {
         }
     }
 
-    /// Propagates inherited `Typography` (`font_size`, `font_weight`) from `root` down into
+    /// Propagates inherited `Typography` (every measure-affecting field) from `root` down into
     /// every text node's Yoga measure payload via shared [`resolve_inherited_text`].
     fn propagate_typography(&mut self, store: &NodeStore, root: NodeId) {
         if !self.typo_dirty {
@@ -250,16 +250,13 @@ impl YogaLayoutEngine {
             if let Some(entry) = self.nodes.get_mut(&id)
                 && let Some(state) = entry.measure_state.as_mut()
             {
+                let resolved = text.in_store(store);
                 let changed = state.with_payload_mut(|payload| {
-                    if payload.font_size.to_bits() != text.font_size.to_bits()
-                        || payload.font_weight != text.font_weight
-                    {
-                        payload.font_size = text.font_size;
-                        payload.font_weight = text.font_weight;
-                        true
-                    } else {
-                        false
+                    if payload.style.borrowed() == resolved {
+                        return false;
                     }
+                    payload.style = resolved.map_family(|f| (*f).to_owned());
+                    true
                 });
                 if changed {
                     self.layout_dirty = true;

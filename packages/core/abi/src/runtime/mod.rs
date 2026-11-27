@@ -27,7 +27,7 @@ pub use vtable::{
 };
 
 /// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
-pub const NVE_RUNTIME_ABI_VERSION: u32 = 3;
+pub const NVE_RUNTIME_ABI_VERSION: u32 = 4;
 
 /// Exact byte size of one `NveLayoutRect` record (16 bytes).
 pub const NVE_LAYOUT_RECT_SIZE: usize = 16;
@@ -47,18 +47,62 @@ pub type NveRuntimeWakeFn = unsafe extern "C" fn(ctx: *mut c_void);
 
 /// Native OS text measurement callback installed via [`NveRuntimeApi::set_text_measurer`].
 ///
-/// Called synchronously on the owner thread during layout. `text` is UTF-8 borrowed for the call,
-/// `font_weight` is CSS `100..=900`, and `max_width` is `INFINITY` when unconstrained. Writes the
-/// measured logical-point size to `out_width` / `out_height` (both non-null, pre-zeroed).
+/// Called synchronously on the owner thread during layout. `text` and `*style` (including its
+/// `font_family`) are borrowed for the call; `max_width` is `INFINITY` when unconstrained. Writes
+/// the measured logical-point size to `out_width` / `out_height` (both non-null, pre-zeroed).
 pub type NveRuntimeMeasureTextFn = unsafe extern "C" fn(
     ctx: *mut c_void,
     text: NveStrSlice,
-    font_size: f32,
-    font_weight: u32,
+    style: *const NveRuntimeTextStyle,
     max_width: f32,
     out_width: *mut f32,
     out_height: *mut f32,
 );
+
+/// Fully resolved (inherited) typography of one text node, handed to the host text measurer so
+/// it measures exactly what it paints. Enum fields carry the `nve.typography` values
+/// (`NVE_FONT_STYLE_*`, `NVE_WHITE_SPACE_*`, `NVE_WORD_BREAK_*`, `NVE_OVERFLOW_WRAP_*`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, NveAbi)]
+pub struct NveRuntimeTextStyle {
+    /// Logical points, finite and `> 0`.
+    #[nve_abi(offset = 0)]
+    pub font_size: f32,
+    /// Extra advance after every character, logical points (`0` = none).
+    #[nve_abi(offset = 4)]
+    pub letter_spacing: f32,
+    /// Meaning per `line_height_unit`: points (absolute line height), percent (multiplier × 100
+    /// of `font_size`, i.e. CSS unit-less `line-height`), or auto (`normal`, value `0`).
+    #[nve_abi(offset = 8)]
+    pub line_height: f32,
+    /// Maximum painted lines, ellipsized after the last (`0` = unlimited).
+    #[nve_abi(offset = 12)]
+    pub max_lines: u32,
+    /// CSS weight, `100..=900`.
+    #[nve_abi(offset = 16)]
+    pub font_weight: u16,
+    /// `NveLengthUnit` of `line_height`: `0` points, `1` percent, `2` auto.
+    #[nve_abi(offset = 18)]
+    pub line_height_unit: u8,
+    #[nve_abi(offset = 19)]
+    pub font_style: u8,
+    /// `NoWrap` / `Pre` never wrap at `max_width`; `Pre*` / `BreakSpaces` keep spaces.
+    #[nve_abi(offset = 20)]
+    pub white_space: u8,
+    #[nve_abi(offset = 21)]
+    pub word_break: u8,
+    #[nve_abi(offset = 22)]
+    pub overflow_wrap: u8,
+    #[nve_abi(offset = 23)]
+    pub _reserved: u8,
+    /// CSS font-family list as authored (UTF-8, may be empty = the host's default UI font).
+    pub font_family: NveStrSlice,
+}
+
+/// `NveRuntimeTextStyle::line_height_unit` values (the `NveLengthUnit` word tags).
+pub const NVE_LINE_HEIGHT_POINTS: u8 = 0;
+pub const NVE_LINE_HEIGHT_PERCENT: u8 = 1;
+pub const NVE_LINE_HEIGHT_AUTO: u8 = 2;
 
 /// Status codes returned by [`NveRuntimeApi`] entry points.
 #[repr(i32)]
@@ -400,6 +444,23 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "flags", "u32", b"@", offset_of!(NveRuntimeConfig, flags));
     hash_rt_field(&mut h, "_reserved", "u32", b"@", offset_of!(NveRuntimeConfig, _reserved));
 
+    h.update(b";NveRuntimeTextStyle");
+    hash_rt_field(&mut h, "font_size", "f32", b"@", offset_of!(NveRuntimeTextStyle, font_size));
+    hash_rt_field(&mut h, "letter_spacing", "f32", b"@", offset_of!(NveRuntimeTextStyle, letter_spacing));
+    hash_rt_field(&mut h, "line_height", "f32", b"@", offset_of!(NveRuntimeTextStyle, line_height));
+    hash_rt_field(&mut h, "max_lines", "u32", b"@", offset_of!(NveRuntimeTextStyle, max_lines));
+    hash_rt_field(&mut h, "font_weight", "u16", b"@", offset_of!(NveRuntimeTextStyle, font_weight));
+    hash_rt_field(&mut h, "line_height_unit", "u8", b"@", offset_of!(NveRuntimeTextStyle, line_height_unit));
+    hash_rt_field(&mut h, "font_style", "u8", b"@", offset_of!(NveRuntimeTextStyle, font_style));
+    hash_rt_field(&mut h, "white_space", "u8", b"@", offset_of!(NveRuntimeTextStyle, white_space));
+    hash_rt_field(&mut h, "word_break", "u8", b"@", offset_of!(NveRuntimeTextStyle, word_break));
+    hash_rt_field(&mut h, "overflow_wrap", "u8", b"@", offset_of!(NveRuntimeTextStyle, overflow_wrap));
+    hash_rt_field(&mut h, "_reserved", "u8", b"@", offset_of!(NveRuntimeTextStyle, _reserved));
+    hash_rt_field(&mut h, "font_family", "NveStrSlice", b"@", offset_of!(NveRuntimeTextStyle, font_family));
+    h.update_u64(NVE_LINE_HEIGHT_POINTS as u64);
+    h.update_u64(NVE_LINE_HEIGHT_PERCENT as u64);
+    h.update_u64(NVE_LINE_HEIGHT_AUTO as u64);
+
     h.update(b";NveRuntimeMetrics");
     h.update_u64(size_of::<NveRuntimeMetrics>() as u64);
     hash_rt_field(&mut h, "frame_id", "u64", b"@", offset_of!(NveRuntimeMetrics, frame_id));
@@ -488,6 +549,27 @@ const RUNTIME_CONSTS: &[AbiConstDescriptor] = &[
         hex: false,
         doc: Some("Bit 0 in `NveNodeRow::flags` indicating an allocated live node slot."),
     },
+    AbiConstDescriptor {
+        name: "NVE_LINE_HEIGHT_POINTS",
+        ty: "u32",
+        value: NVE_LINE_HEIGHT_POINTS as u64,
+        hex: false,
+        doc: Some("`NveRuntimeTextStyle::line_height_unit`: absolute line height in points."),
+    },
+    AbiConstDescriptor {
+        name: "NVE_LINE_HEIGHT_PERCENT",
+        ty: "u32",
+        value: NVE_LINE_HEIGHT_PERCENT as u64,
+        hex: false,
+        doc: Some("`NveRuntimeTextStyle::line_height_unit`: multiplier × 100 of `font_size`."),
+    },
+    AbiConstDescriptor {
+        name: "NVE_LINE_HEIGHT_AUTO",
+        ty: "u32",
+        value: NVE_LINE_HEIGHT_AUTO as u64,
+        hex: false,
+        doc: Some("`NveRuntimeTextStyle::line_height_unit`: `normal` (the font's own line height)."),
+    },
 ];
 
 const RUNTIME_ENUMS: &[AbiEnumDescriptor] = &[<NveRuntimeStatus as NveEnumSchema>::SCHEMA];
@@ -498,6 +580,7 @@ const RUNTIME_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveNodeRow as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeConfig as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeMetrics as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<NveRuntimeTextStyle as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveRuntimeSceneView as NveStructSchema>::SCHEMA),
 ];
 
@@ -524,6 +607,9 @@ const _: () = {
     assert!(align_of::<NveNodeRow>() == 4);
     assert!(size_of::<NveRuntimeConfig>() == 24);
     assert!(align_of::<NveRuntimeConfig>() == 4);
+    // Scalars sit at fixed offsets; the trailing slice starts at 24 on every data model.
+    assert!(offset_of!(NveRuntimeTextStyle, font_family) == 24);
+    assert!(size_of::<NveRuntimeTextStyle>() == 24 + size_of::<NveStrSlice>());
     assert!(size_of::<NveRuntimeMetrics>() == 64);
     // 8 on every data model except i386 System V, where `u64` fields are 4-byte aligned.
     assert!(align_of::<NveRuntimeMetrics>() == align_of::<u64>());

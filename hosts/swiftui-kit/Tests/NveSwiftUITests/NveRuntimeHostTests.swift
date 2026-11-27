@@ -1,4 +1,5 @@
 import CNveAbi
+import CoreText
 import NveHost
 import SwiftUI
 import XCTest
@@ -7,9 +8,12 @@ import XCTest
 private func noApp(_ id: UInt32) -> UnsafeRawPointer? { nil }
 
 private final class RecordingMeasurer: NveTextMeasuring {
-    var calls: [(String, CGFloat, UInt16, CGFloat)] = []
-    func measure(text: String, fontSize: CGFloat, fontWeight: UInt16, maxWidth: CGFloat) -> CGSize {
-        calls.append((text, fontSize, fontWeight, maxWidth))
+    var calls: [(String, CGFloat, UInt16, CGFloat, String)] = []
+    func measure(text: String, style: NveRuntimeTextStyle, maxWidth: CGFloat) -> CGSize {
+        let family = style.font_family.ptr.map {
+            String(decoding: UnsafeBufferPointer(start: $0, count: style.font_family.len), as: UTF8.self)
+        } ?? ""
+        calls.append((text, CGFloat(style.font_size), style.font_weight, maxWidth, family))
         return CGSize(width: 12.5, height: 30)
     }
 }
@@ -166,12 +170,13 @@ final class NveRuntimeHostTests: XCTestCase {
 
         let measurer = RecordingMeasurer()
         try session.setTextMeasurer(measurer)
-        let size = try XCTUnwrap(m.measureText("héllo 🚀", size: 17, weight: 600, maxWidth: .infinity))
+        let size = try XCTUnwrap(m.measureText("héllo 🚀", size: 17, weight: 600, maxWidth: .infinity, family: "Menlo"))
         XCTAssertEqual([size.width, size.height], [12.5, 30])
         XCTAssertEqual(measurer.calls.first?.0, "héllo 🚀")
         XCTAssertEqual(measurer.calls.first?.1, 17)
         XCTAssertEqual(measurer.calls.first?.2, 600)
         XCTAssertEqual(measurer.calls.first?.3, .infinity)
+        XCTAssertEqual(measurer.calls.first?.4, "Menlo", "the resolved style reaches the measurer")
         // A refused swap keeps the installed box alive (the runtime still calls it) and frees the new one.
         let rejected = RecordingMeasurer()
         m.failNextWith = Int32(NVE_RUNTIME_INVALID_ARG.rawValue)
@@ -184,10 +189,16 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertNil(m.wake.0)
         try session.setTextMeasurer(nil)
         XCTAssertNil(m.measurer.0)
-        let real = NveCoreTextMeasurer().measure(text: "Hello world", fontSize: 16, fontWeight: 400, maxWidth: 30)
-        let wide = NveCoreTextMeasurer().measure(text: "Hello world", fontSize: 16, fontWeight: 400, maxWidth: .infinity)
+        let core = NveCoreTextMeasurer()
+        let real = core.measure(text: "Hello world", style: .sized(16), maxWidth: 30)
+        let wide = core.measure(text: "Hello world", style: .sized(16), maxWidth: .infinity)
         XCTAssertGreaterThan(real.height, wide.height, "constrained width wraps onto more lines")
-        XCTAssertEqual(NveCoreTextMeasurer().measure(text: "", fontSize: 16, fontWeight: 400, maxWidth: 10), .zero)
+        XCTAssertEqual(core.measure(text: "", style: .sized(16), maxWidth: 10), .zero)
+        // Italic is painted, so it is measured with the slanted face.
+        let traits = { (italic: Bool) in CTFontGetSymbolicTraits(try XCTUnwrap(core.font(size: 16, weight: 400, italic: italic))) }
+        XCTAssertTrue(try traits(true).contains(.traitItalic))
+        XCTAssertFalse(try traits(false).contains(.traitItalic))
+        XCTAssertGreaterThan(core.measure(text: "Hello world", style: .sized(16, italic: true), maxWidth: .infinity).width, 0)
     }
 
     // MARK: Scene tables

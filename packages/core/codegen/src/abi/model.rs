@@ -14,7 +14,7 @@ use nve_abi::table::{
 };
 use nve_hash::{Key64, PRIME1, xxh64};
 
-use super::layout::{RecordLayout, layout_records};
+use super::layout::{RecordLayout, layout_records, layout_records_on};
 use crate::error::CodegenError;
 
 /// A 64-bit value with its `(lo, hi)` `u32` halves: Dart / TypeScript spell only the halves, so
@@ -171,8 +171,8 @@ pub struct RuntimeAbiModel<'a> {
 }
 
 impl<'a> RuntimeAbiModel<'a> {
-    pub fn new(file: &'a AbiFileDescriptor, base: &AbiModel<'_>) -> Result<Self, CodegenError> {
-        let records = layout_records(&[file])?;
+    pub fn new(file: &'a AbiFileDescriptor, base: &AbiModel<'a>) -> Result<Self, CodegenError> {
+        let records = layout_records_on(&base.records, &[file])?;
         super::validate::abi(&[file], &records)?;
         if let Some(r) = records
             .iter()

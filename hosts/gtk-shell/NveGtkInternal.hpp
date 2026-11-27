@@ -66,6 +66,10 @@ void apply_accessibility(GtkWidget* widget, const GtkNodeSemantics& sem);
 [[nodiscard]] std::string build_css_rule(const std::string& selector, const host::NodeData& node,
                                          WidgetKind kind, std::span<const host::BoxShadow> shadows);
 [[nodiscard]] std::string css_rgba(uint32_t rgba);
+/// An authored `font-family` list made safe for a CSS string and Pango (control bytes, quotes,
+/// and CSS block punctuation dropped; bounded length). The painter's CSS and the measurer's
+/// Pango description use the same string, so both resolve the same font.
+[[nodiscard]] std::string font_family_list(std::string_view authored);
 [[nodiscard]] std::string css_float(double value);
 [[nodiscard]] const char* cursor_name(uint8_t cursor) noexcept;
 void load_css(GtkCssProvider* provider, const std::string& css);

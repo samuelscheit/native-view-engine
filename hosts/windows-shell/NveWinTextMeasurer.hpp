@@ -2,7 +2,10 @@
 //
 // `DirectWriteTextMeasurer` is installed as the runtime's text measurer (`measure_trampoline`
 // matches `NveRuntimeMeasureTextFn`) and builds the `IDWriteTextLayout`s the Direct2D painter
-// draws, so measured and painted text agree (family / size / weight / style / wrapping).
+// draws. Both go through `create_layout` with a `TextPaint`: the measurer's from the node's
+// resolved `NveRuntimeTextStyle`, the painter's from the scene, so measured and painted text
+// agree on family (first installed entry of the CSS list), size, weight, style, letter spacing,
+// line height, white-space, and max lines.
 #pragma once
 
 #if !defined(_WIN32)
@@ -11,6 +14,7 @@
 
 #include "NveWinVisualTree.hpp"
 
+#include <nve/host/font_family.hpp>
 #include <nve/host/utf16.hpp>
 
 #include <dwrite.h>
@@ -93,14 +97,21 @@ class DirectWriteTextMeasurer {
     return layout;
   }
 
-  /// Measured size in DIPs (the runtime's `NveRuntimeMeasureTextFn` contract).
-  [[nodiscard]] NveIntrinsicSize measure(std::string_view text, float font_size, uint16_t font_weight,
+  /// Measured size in DIPs of `text` laid out exactly as the painter lays it out (the runtime's
+  /// `NveRuntimeMeasureTextFn` contract; `max_width` INFINITY = unconstrained).
+  [[nodiscard]] NveIntrinsicSize measure(std::string_view text, const NveRuntimeTextStyle& style,
                                          float max_width) const {
-    TextPaint style;
-    style.font_size = std::isfinite(font_size) && font_size > 0.0f ? font_size : 16.0f;
-    style.font_weight = font_weight;
-    IDWriteTextLayout* layout = create_layout(text, style, max_width, 0.0f);
+    const TextPaint paint = TextPaint::from(style);
+    IDWriteTextLayout* layout = create_layout(text, paint, max_width, 0.0f);
     if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
+    // `max_width == 0` probes min-content: wrap at the widest unbreakable run.
+    FLOAT min_width = 0.0f;
+    if (max_width == 0.0f && paint.wraps() && SUCCEEDED(layout->DetermineMinWidth(&min_width)) && min_width > 0.0f) {
+      layout->Release();
+      max_width = min_width;
+      layout = create_layout(text, paint, max_width, 0.0f);
+      if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
+    }
     DWRITE_TEXT_METRICS m{};
     const HRESULT hr = layout->GetMetrics(&m);
     layout->Release();
@@ -110,11 +121,10 @@ class DirectWriteTextMeasurer {
     return NveIntrinsicSize{std::isfinite(w) ? w : 0.0f, std::isfinite(m.height) ? std::ceil(m.height) : 0.0f};
   }
 
-  static void measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+  static void measure_trampoline(void* ctx, NveStrSlice text, const NveRuntimeTextStyle* style, float max_width,
                                  float* out_width, float* out_height) {
-    const std::string_view sv(reinterpret_cast<const char*>(text.ptr), text.ptr != nullptr ? text.len : 0u);
-    const NveIntrinsicSize s = static_cast<const DirectWriteTextMeasurer*>(ctx)->measure(
-        sv, font_size, static_cast<uint16_t>(std::clamp<uint32_t>(font_weight, 1u, 1000u)), max_width);
+    const NveIntrinsicSize s =
+        static_cast<const DirectWriteTextMeasurer*>(ctx)->measure(host::str_view(text), *style, max_width);
     *out_width = s.width;
     *out_height = s.height;
   }
@@ -156,12 +166,34 @@ class DirectWriteTextMeasurer {
     }
   }
 
+  /// First installed family of the CSS list `list` (generic names mapped to Windows' defaults),
+  /// else Segoe UI: `CreateTextFormat` takes one name and silently substitutes unknown ones.
+  [[nodiscard]] std::wstring resolve_family(std::string_view list) const {
+    std::wstring found;
+    IDWriteFontCollection* fonts = nullptr;
+    if (FAILED(factory_->GetSystemFontCollection(&fonts, FALSE)) || fonts == nullptr) return L"Segoe UI";
+    host::for_each_font_family(list, [&](std::string_view name) {
+      const std::wstring candidate = name == "monospace" || name == "ui-monospace" ? std::wstring(L"Consolas")
+                                     : name == "sans-serif" || name == "system-ui" || name == "ui-sans-serif"
+                                         ? std::wstring(L"Segoe UI")
+                                     : name == "serif" || name == "ui-serif" ? std::wstring(L"Times New Roman")
+                                     : name == "cursive"                     ? std::wstring(L"Comic Sans MS")
+                                                                             : wide(name);
+      UINT32 index = 0u;
+      BOOL exists = FALSE;
+      if (SUCCEEDED(fonts->FindFamilyName(candidate.c_str(), &index, &exists)) && exists) found = candidate;
+      return found.empty();
+    });
+    fonts->Release();
+    return found.empty() ? std::wstring(L"Segoe UI") : found;
+  }
+
   IDWriteTextFormat* format(const TextPaint& s) const {
-    const std::wstring family = s.font_family.empty() ? std::wstring(L"Segoe UI") : wide(s.font_family);
-    std::wstring key = family;
+    std::wstring key = wide(s.font_family);  // the authored list: resolved once per format
     key += L'|' + std::to_wstring(std::lround(s.font_size * 100.0f)) + L'|' + std::to_wstring(s.font_weight) + L'|' +
            std::to_wstring(s.font_style);
     if (const auto it = formats_.find(key); it != formats_.end()) return it->second;
+    const std::wstring family = resolve_family(s.font_family);
     const DWRITE_FONT_STYLE style = s.font_style == NVE_FONT_STYLE_ITALIC    ? DWRITE_FONT_STYLE_ITALIC
                                     : s.font_style == NVE_FONT_STYLE_OBLIQUE ? DWRITE_FONT_STYLE_OBLIQUE
                                                                              : DWRITE_FONT_STYLE_NORMAL;

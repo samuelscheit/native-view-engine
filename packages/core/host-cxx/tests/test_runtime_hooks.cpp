@@ -8,18 +8,27 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <optional>
+#include <string_view>
 #include <span>
 #include <utility>
 #include <vector>
 
 #include "check.h"
+#include "nve/host/font_family.hpp"
 #include "nve/host/runtime_session.hpp"
 #include "nve/host/nve2_builder.hpp"
 
 namespace {
 
+using nve::host::for_each_font_family;
 using nve::host::Key64;
+using nve::host::line_height_points;
+using nve::host::str_slice;
+using nve::host::str_view;
+using nve::host::text_style;
+using nve::host::white_space_wraps;
 using nve::host::RuntimeResource;
 using nve::host::RuntimeSceneGuard;
 using nve::host::RuntimeSceneReader;
@@ -76,7 +85,7 @@ struct MeasureCtx {
   uint32_t calls = 0u;
 };
 
-void measure_fixed(void* ctx, NveStrSlice, float, uint32_t, float, float* out_w, float* out_h) {
+void measure_fixed(void* ctx, NveStrSlice, const NveRuntimeTextStyle*, float, float* out_w, float* out_h) {
   ++static_cast<MeasureCtx*>(ctx)->calls;
   *out_w = 10.0f;
   *out_h = 10.0f;
@@ -100,6 +109,40 @@ void test_text_measurer() {
   CHECK(ctx.calls == 0u);  // no text nodes: never invoked
   RuntimeSession empty;
   CHECK(empty.set_text_measurer(&measure_fixed, &ctx) == NVE_RUNTIME_INVALID_ARG);
+}
+
+/// The helpers every host measurer and painter share.
+void test_text_style_helpers() {
+  const NveRuntimeTextStyle s = text_style(13.0f, 700u);
+  CHECK(s.font_size == 13.0f && s.font_weight == 700u && s.line_height_unit == NVE_LINE_HEIGHT_AUTO);
+  CHECK(s.font_family.ptr == nullptr && s.font_family.len == 0u && str_view(s.font_family).empty());
+  CHECK(str_view(str_slice("Menlo")) == "Menlo" && str_view(NveStrSlice{nullptr, 4u}).empty());
+  CHECK(line_height_points(NVE_LINE_HEIGHT_POINTS, 22.0f, 13.0f) == 22.0);
+  CHECK(line_height_points(NVE_LINE_HEIGHT_PERCENT, 150.0f, 20.0f) == 30.0);  // a multiplier of the size
+  CHECK(line_height_points(NVE_LINE_HEIGHT_AUTO, 30.0f, 20.0f) == 0.0);
+  for (const float bad : {0.0f, -4.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+    CHECK(line_height_points(NVE_LINE_HEIGHT_POINTS, bad, 13.0f) == 0.0);
+  }
+  CHECK(!white_space_wraps(NVE_WHITE_SPACE_NO_WRAP) && !white_space_wraps(NVE_WHITE_SPACE_PRE));
+  CHECK(white_space_wraps(NVE_WHITE_SPACE_NORMAL) && white_space_wraps(NVE_WHITE_SPACE_PRE_WRAP) &&
+        white_space_wraps(NVE_WHITE_SPACE_PRE_LINE) && white_space_wraps(NVE_WHITE_SPACE_BREAK_SPACES));
+
+  std::vector<std::string_view> names;
+  for_each_font_family(" 'Fira Code' ,\t\"Segoe UI\",, monospace ,", [&](std::string_view n) {
+    names.push_back(n);
+    return true;
+  });
+  CHECK((names == std::vector<std::string_view>{"Fira Code", "Segoe UI", "monospace"}));
+  names.clear();
+  for_each_font_family("a,b,c", [&](std::string_view n) {
+    names.push_back(n);
+    return n != "b";  // stops after `b`
+  });
+  CHECK((names == std::vector<std::string_view>{"a", "b"}));
+  names.clear();
+  for_each_font_family("", [&](std::string_view n) { names.push_back(n); return true; });
+  for_each_font_family(" , '' ,", [&](std::string_view n) { names.push_back(n); return true; });
+  CHECK(names.empty());
 }
 
 bool same_bytes(std::span<const uint8_t> a, std::span<const uint8_t> b) {
@@ -242,6 +285,7 @@ void test_scroll_offsets() {
 int main() {
   test_vtable_complete_and_validated();
   test_text_measurer();
+  test_text_style_helpers();
   test_resource_payload();
   test_app_hooks_without_app();
   test_scroll_offsets();

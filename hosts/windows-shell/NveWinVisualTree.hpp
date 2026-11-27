@@ -57,6 +57,9 @@ struct TextPaint {
   uint8_t text_decoration = 0u;
 
   [[nodiscard]] static TextPaint from(const host::TextStyle& s);
+  /// The runtime measurer's resolved typography (no colour / alignment / decoration: they do
+  /// not change the measured size).
+  [[nodiscard]] static TextPaint from(const NveRuntimeTextStyle& s);
   [[nodiscard]] bool wraps() const noexcept {
     return white_space != NVE_WHITE_SPACE_NO_WRAP && white_space != NVE_WHITE_SPACE_PRE;
   }

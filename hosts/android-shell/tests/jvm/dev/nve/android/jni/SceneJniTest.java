@@ -271,7 +271,11 @@ public final class SceneJniTest {
                 && NativeRuntime.lastError(h).contains("dlopen(/nonexistent/libn\u00f6pe.so)"), "missing library, non-ASCII error survives JNI");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick after failed reloads");
         c.eq(onlyText(scene), "generation two", "failed reloads keep the running app");
-        c.that(NativeRuntime.pairConnect(h, "ws://127.0.0.1:9/x", "t") == NveRuntimeAbi.STATUS_INVALID_ARG, "no pairing while an app runs");
+        c.that(NativeRuntime.pairConnect(h, "not-a-url", "t") == NveRuntimeAbi.STATUS_INVALID_ARG, "invalid pairing URI rejected");
+        c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick after a rejected pairing");
+        c.eq(onlyText(scene), "generation two", "a rejected pairing keeps the running app");
+        c.eq(NativeRuntime.pairConnect(h, "ws://127.0.0.1:9/x", "t"), 0, "pairing replaces the running app");
+        c.eq(NativeRuntime.pairDisconnect(h), 0, "unpair");
         c.eq(NativeRuntime.detachApp(h), 0, "detach");
         c.eq(NativeRuntime.tick(h, 0f, null), 0, "tick detached");
         final RuntimeSceneReader s = scene.acquire();

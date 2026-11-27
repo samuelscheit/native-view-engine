@@ -1,4 +1,5 @@
 use super::*;
+use crate::TextStyle;
 use nve_components::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
 use nve_components::tables::{
     AlignItems as NveAlignItems, BoxSizing as NveBoxSizing, Direction as NveDirection,
@@ -461,7 +462,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             let (_, h) =
                 layout
                     .text_measurer()
-                    .measure_with_weight(WRAPPED, 16.0, 400, Some(expected.0));
+                    .measure(WRAPPED, &TextStyle::sized(16.0), Some(expected.0));
             assert!(h > 2.0 * 16.0 * 1.25, "case {i}: wraps to several lines");
             assert_eq!((r.width, r.height), (expected.0, h.round()), "case {i}");
         } else {
@@ -515,7 +516,7 @@ fn text_wraps_inside_a_ratio_box_whose_padding_consumes_the_transferred_width() 
     assert!(layout.compute_layout(&store, NodeId::ROOT, vp));
     let (word_w, _) = layout
         .text_measurer()
-        .measure_with_weight(WRAPPED, 16.0, 400, Some(0.0));
+        .measure(WRAPPED, &TextStyle::sized(16.0), Some(0.0));
     let r = layout.layout_of(leaf).expect("leaf laid out");
     assert_eq!((r.width, r.height), ((50.0 + word_w).round(), 25.0));
     assert!(
@@ -556,7 +557,7 @@ fn an_overflowing_ratio_transfer_does_not_collapse_text_to_zero_width() {
     assert!(layout.compute_layout(&store, NodeId::ROOT, vp));
     let (line_w, _) = layout
         .text_measurer()
-        .measure_with_weight(WRAPPED, 16.0, 400, Some(400.0));
+        .measure(WRAPPED, &TextStyle::sized(16.0), Some(400.0));
     let r = layout.layout_of(leaf).expect("leaf laid out");
     assert!(r.width.is_finite() && r.height.is_finite(), "{r:?}");
     assert_eq!((r.width, r.height), (line_w.round(), 100.0));

@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use nve_abi::{
     NveBufferSlice, NveEventBatch, NveMapEntry, NvePropsRef, NveRuntimeHandle,
-    NveRuntimeMeasureTextFn, NveStrSlice,
+    NveRuntimeMeasureTextFn, NveRuntimeTextStyle, NveStrSlice, NVE_LINE_HEIGHT_AUTO,
+    NVE_LINE_HEIGHT_PERCENT, NVE_LINE_HEIGHT_POINTS,
 };
 use nve_engine::HotPatchMsg;
-use nve_layout::TextMeasurer;
+use nve_layout::{TextMeasurer, TextStyle};
 use nve_store::ResourceId;
 
 use super::{host_bytes, required, with_runtime, write_opt, SendPtr};
@@ -25,33 +26,51 @@ fn finite_size(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
-impl TextMeasurer for HostTextMeasurer {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        self.measure_with_weight(text, font_size, 400, max_width)
+/// The C view of a resolved style: weights inside CSS `100..=900`, a line height that is
+/// finite and positive or `auto`, finite letter spacing.
+fn abi_text_style(style: &TextStyle<&str>) -> NveRuntimeTextStyle {
+    let lh = style.line_height;
+    let (line_height, line_height_unit) = match lh.value() {
+        v if lh.is_auto() || !v.is_finite() || v <= 0.0 => (0.0, NVE_LINE_HEIGHT_AUTO),
+        v if lh.is_percent() => (v, NVE_LINE_HEIGHT_PERCENT),
+        v => (v, NVE_LINE_HEIGHT_POINTS),
+    };
+    NveRuntimeTextStyle {
+        font_size: style.font_size,
+        letter_spacing: if style.letter_spacing.is_finite() { style.letter_spacing } else { 0.0 },
+        line_height,
+        max_lines: style.max_lines,
+        font_weight: style.font_weight.clamp(100, 900),
+        line_height_unit,
+        font_style: style.font_style as u8,
+        white_space: style.white_space as u8,
+        word_break: style.word_break as u8,
+        overflow_wrap: style.overflow_wrap as u8,
+        _reserved: 0,
+        font_family: NveStrSlice::from_str(style.font_family),
     }
+}
 
-    fn measure_with_weight(
-        &self,
-        text: &str,
-        font_size: f32,
-        font_weight: u16,
-        max_width: Option<f32>,
-    ) -> (f32, f32) {
-        // Degenerate sizes measure as empty without a host round trip; weights reach the host
-        // inside the CSS `100..=900` range whatever the style resolver produced.
-        if !font_size.is_finite() || font_size <= 0.0 {
+impl TextMeasurer for HostTextMeasurer {
+    fn measure(&self, text: &str, style: &TextStyle<&str>, max_width: Option<f32>) -> (f32, f32) {
+        // Degenerate sizes measure as empty without a host round trip.
+        if !style.font_size.is_finite() || style.font_size <= 0.0 {
             return (0.0, 0.0);
         }
+        let abi_style = abi_text_style(style);
+        // `nowrap` / `pre` never wrap: the host gets an unconstrained width (also for the
+        // min-content probe) whatever its own `white_space` handling.
+        let max_width = max_width.filter(|_| style.wraps()).unwrap_or(f32::INFINITY);
         let (mut width, mut height) = (0.0f32, 0.0f32);
         // SAFETY: The host guarantees `measure(ctx, ..)` stays callable until it is replaced or the
-        // runtime is destroyed; `text` and both out slots outlive the synchronous call.
+        // runtime is destroyed; `text`, `abi_style` (and its family), and both out slots outlive
+        // the synchronous call.
         unsafe {
             (self.measure)(
                 self.ctx.as_ptr(),
                 NveStrSlice::from_str(text),
-                font_size,
-                u32::from(font_weight.clamp(100, 900)),
-                max_width.unwrap_or(f32::INFINITY),
+                &raw const abi_style,
+                max_width,
                 &raw mut width,
                 &raw mut height,
             );
@@ -180,18 +199,32 @@ mod tests {
 
     use super::*;
 
-    static SEEN: Mutex<Vec<(f32, u32)>> = Mutex::new(Vec::new());
+    /// What the host saw: size, weight, line height (value, unit), letter spacing, family,
+    /// max width.
+    type Seen = (f32, u16, f32, u8, f32, String, f32);
+    static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
     unsafe extern "C" fn record(
         _ctx: *mut core::ffi::c_void,
         _text: NveStrSlice,
-        font_size: f32,
-        font_weight: u32,
-        _max_width: f32,
+        style: *const NveRuntimeTextStyle,
+        max_width: f32,
         out_width: *mut f32,
         out_height: *mut f32,
     ) {
-        SEEN.lock().unwrap().push((font_size, font_weight));
+        // SAFETY: The runtime passes a live style whose family is borrowed for the call.
+        let s = unsafe { &*style };
+        // SAFETY: As above.
+        let family = unsafe { s.font_family.as_str() }.unwrap().to_owned();
+        SEEN.lock().unwrap().push((
+            s.font_size,
+            s.font_weight,
+            s.line_height,
+            s.line_height_unit,
+            s.letter_spacing,
+            family,
+            max_width,
+        ));
         // SAFETY: Runtime-owned out slots.
         unsafe {
             *out_width = 5.0;
@@ -200,18 +233,40 @@ mod tests {
     }
 
     #[test]
-    fn host_measurer_clamps_weight_and_skips_degenerate_sizes() {
+    fn host_measurer_sanitizes_the_style_and_skips_degenerate_sizes() {
+        use nve_components::tables::WhiteSpace;
+        use nve_store::Length;
+
         let m = HostTextMeasurer {
             measure: record,
             ctx: SendPtr(core::ptr::null_mut()),
         };
         for size in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(m.measure_with_weight("x", size, 400, None), (0.0, 0.0));
+            assert_eq!(m.measure("x", &TextStyle::sized(size), None), (0.0, 0.0));
         }
         assert!(SEEN.lock().unwrap().is_empty(), "degenerate sizes never reach the host");
-        assert_eq!(m.measure_with_weight("x", 12.0, 0, None), (5.0, 6.0));
-        assert_eq!(m.measure_with_weight("x", 12.0, 1000, Some(10.0)), (5.0, 6.0));
-        assert_eq!(m.measure_with_weight("x", 12.0, 650, None), (5.0, 6.0));
-        assert_eq!(*SEEN.lock().unwrap(), [(12.0, 100), (12.0, 900), (12.0, 650)]);
+        let base = TextStyle { font_family: "Mono", ..TextStyle::sized(12.0) };
+        let cases = [
+            TextStyle { font_weight: 0, letter_spacing: f32::NAN, ..base },
+            TextStyle { font_weight: 1000, line_height: Length::points(-3.0), ..base },
+            TextStyle { font_weight: 650, line_height: Length::percent(150.0), ..base },
+            TextStyle { line_height: Length::points(20.0), letter_spacing: 1.5, ..base },
+            TextStyle { white_space: WhiteSpace::NoWrap, ..base },
+        ];
+        for style in &cases {
+            assert_eq!(m.measure("x", style, Some(10.0)), (5.0, 6.0));
+        }
+        let inf = f32::INFINITY;
+        let mono = || "Mono".to_owned();
+        assert_eq!(
+            *SEEN.lock().unwrap(),
+            [
+                (12.0, 100, 0.0, NVE_LINE_HEIGHT_AUTO, 0.0, mono(), 10.0),
+                (12.0, 900, 0.0, NVE_LINE_HEIGHT_AUTO, 0.0, mono(), 10.0),
+                (12.0, 650, 150.0, NVE_LINE_HEIGHT_PERCENT, 0.0, mono(), 10.0),
+                (12.0, 400, 20.0, NVE_LINE_HEIGHT_POINTS, 1.5, mono(), 10.0),
+                (12.0, 400, 0.0, NVE_LINE_HEIGHT_AUTO, 0.0, mono(), inf), // nowrap: unconstrained
+            ]
+        );
     }
 }
