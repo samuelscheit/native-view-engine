@@ -54,12 +54,26 @@ pub(crate) struct SurfaceState {
     /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
     pub(crate) published_scroll: Vec<NveScrollOffset>,
     pub(crate) published_view: NveRuntimeSceneView,
-    /// `ResourceStore` of the store `published_view` borrows (null while invalidated); lets
-    /// `resource_payload` serve any `scene_acquire` thread without touching `!Sync` apps.
-    pub(crate) published_resources: *const ResourceStore,
+    /// `ResourceStore` of the store `published_view` borrows; lets `resource_payload` serve any
+    /// `scene_acquire` thread without touching `!Sync` apps.
+    pub(crate) published_resources: PublishedResources,
     pub(crate) metrics: NveRuntimeMetrics,
     pub(crate) needs_render: bool,
     pub(crate) needs_publish: bool,
+}
+
+/// Which `ResourceStore` the published view borrows. The replica store lives inline in
+/// [`RuntimeInner`] (it moves with `SurfaceRuntime`), so it is resolved at read time instead of
+/// being cached as an address; a direct app's store lives behind its `Box<dyn RuntimeApp>`, whose
+/// heap address survives runtime moves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublishedResources {
+    /// Invalidated: no resource reads.
+    None,
+    /// `RuntimeInner::replica_store.resources()`.
+    Replica,
+    /// The attached app's `direct_store().resources()`.
+    App(*const ResourceStore),
 }
 
 pub(crate) struct RuntimeInner {
@@ -84,14 +98,38 @@ impl RuntimeInner {
             .unwrap_or(&self.replica_store)
     }
 
+    /// The active store, which `ResourceStore` publishing it borrows, and the disjoint state.
     #[inline]
-    pub(crate) fn split_store_and_state(&mut self) -> (&NodeStore, &mut SurfaceState) {
-        let store = self
-            .app
-            .as_ref()
-            .and_then(|a| a.direct_store())
-            .unwrap_or(&self.replica_store);
-        (store, &mut self.state)
+    pub(crate) fn split_store_and_state(
+        &mut self,
+    ) -> (&NodeStore, PublishedResources, &mut SurfaceState) {
+        match self.app.as_ref().and_then(|a| a.direct_store()) {
+            Some(store) => (
+                store,
+                PublishedResources::App(store.resources()),
+                &mut self.state,
+            ),
+            None => (&self.replica_store, PublishedResources::Replica, &mut self.state),
+        }
+    }
+
+    /// `true` while every pointer in `published_view` (and its resource source) still matches
+    /// the active store.
+    pub(crate) fn published_view_is_current(&mut self) -> bool {
+        let (store, resources, state) = self.split_store_and_state();
+        state.published_view_matches_store(store, resources)
+    }
+
+    /// Resources of the published view; `None` while invalidated.
+    #[inline]
+    pub(crate) fn published_resources(&self) -> Option<&ResourceStore> {
+        match self.state.published_resources {
+            PublishedResources::None => None,
+            PublishedResources::Replica => Some(self.replica_store.resources()),
+            // SAFETY: Set by `publish_scene` from the attached app's boxed store; any app detach,
+            // swap, or store move invalidates the view (`published_view_is_current`) first.
+            PublishedResources::App(p) => Some(unsafe { &*p }),
+        }
     }
 
     #[inline]
@@ -188,7 +226,7 @@ impl RuntimeInner {
     }
 
     fn commit_and_publish(&mut self, has_changes: bool) {
-        let (store, state) = self.split_store_and_state();
+        let (store, resources, state) = self.split_store_and_state();
         state.invalidate_published_view();
         state.frame_id = state.frame_id.wrapping_add(1).max(1);
         let t_lay = Timer::start();
@@ -212,11 +250,11 @@ impl RuntimeInner {
         state.metrics.layout_us = t_lay.elapsed_us();
         if has_changes {
             let changes = std::mem::take(&mut state.merged_changes);
-            state.publish_scene(store, &changes, laid_out);
+            state.publish_scene(store, resources, &changes, laid_out);
             state.merged_changes = changes;
         } else {
             let empty = std::mem::take(&mut state.empty_changes);
-            state.publish_scene(store, &empty, laid_out);
+            state.publish_scene(store, resources, &empty, laid_out);
             state.empty_changes = empty;
         }
     }

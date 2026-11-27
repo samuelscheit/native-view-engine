@@ -28,6 +28,7 @@ enum class SceneError : uint8_t {
   MisalignedSlab,  ///< a non-empty slab pointer violates its element type alignment
   InvalidUtf8,     ///< `text_slab` is not well-formed UTF-8
   InvalidTable,    ///< a published `NveTableView` is malformed
+  UnsortedScrollOffsets,  ///< `scroll_offsets` node ids are not strictly ascending
 };
 
 template <class View>

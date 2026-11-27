@@ -17,7 +17,7 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::lock::SceneLock;
-use crate::state::{RuntimeInner, SurfaceState};
+use crate::state::{PublishedResources, RuntimeInner, SurfaceState};
 use crate::surface::SurfaceRuntime;
 use crate::wake::WakeBridge;
 
@@ -225,7 +225,7 @@ impl RuntimeBuilder {
                     dirty_epoch: 0,
                     removed_ids: Vec::new(),
                     published_scroll: Vec::new(),
-                    published_resources: core::ptr::null(),
+                    published_resources: PublishedResources::None,
                     published_view: NveRuntimeSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,
                         ..NveRuntimeSceneView::default()
