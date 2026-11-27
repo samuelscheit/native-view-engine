@@ -7,6 +7,10 @@
  *
  * Usage:
  *   node examples/nve-docs-site/e2e/run_docs_e2e.mjs [distDir] [--shots-dir /tmp/nve-docs-shots]
+ *     [--base-path /prefix] [--allow-example-fallback]
+ *
+ * The `/examples/*` pages must boot the live WASM apps; `--allow-example-fallback` accepts their
+ * bundle-less fallback cards (only for sites built with `--skip-wasm`).
  */
 
 import http from "node:http";
@@ -33,9 +37,12 @@ function parseArgs(argv) {
   let distDir = "/tmp/nve-site-dist";
   let shotsDir = "/tmp/nve-landing-shots";
   let basePath = "";
+  let allowExampleFallback = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--shots-dir") {
+    if (arg === "--allow-example-fallback") {
+      allowExampleFallback = true;
+    } else if (arg === "--shots-dir") {
       shotsDir = argv[++i];
     } else if (arg === "--base-path") {
       basePath = argv[++i] || "";
@@ -47,7 +54,7 @@ function parseArgs(argv) {
   }
   basePath = basePath.trim().replace(/^\/+|\/+$/g, "");
   basePath = basePath ? `/${basePath}` : "";
-  return { distDir: path.resolve(distDir), shotsDir: path.resolve(shotsDir), basePath };
+  return { distDir: path.resolve(distDir), shotsDir: path.resolve(shotsDir), basePath, allowExampleFallback };
 }
 
 function findChromeBinary() {
@@ -302,7 +309,7 @@ async function createPageCdp(debugPort) {
 }
 
 async function run() {
-  const { distDir, shotsDir, basePath } = parseArgs(process.argv.slice(2));
+  const { distDir, shotsDir, basePath, allowExampleFallback } = parseArgs(process.argv.slice(2));
   assert(fs.existsSync(path.join(distDir, "index.html")), `Missing ${distDir}/index.html`);
   fs.mkdirSync(shotsDir, { recursive: true });
 
@@ -977,7 +984,11 @@ async function run() {
       );
       console.log("    ✓ /examples/kitchen-sink/ live WASM booted and incremented Count: 0 -> 1");
     } else {
-      console.log(`    ! /examples/studio/ in fallback mode (${studioMeta.mode}) — skipping live WASM assertions`);
+      assert(
+        allowExampleFallback,
+        `/examples/studio/ shipped its fallback card (mode=${studioMeta.mode}); build the WASM bundles (hosts/web-shell/build.sh --dev) and pass --web-shell-dist, or run with --allow-example-fallback for a --skip-wasm site`
+      );
+      console.log(`    ! /examples/studio/ in fallback mode (${studioMeta.mode}) — allowed by --allow-example-fallback`);
     }
 
     assert(exCdp.consoleErrors.length === 0, `Examples console errors: ${exCdp.consoleErrors.join(" | ")}`);

@@ -257,23 +257,25 @@ fn docs_build_discovers_both_unified_and_per_app_web_shell_bundles() {
     assert!(kitchen_sink_runtime_html.contains("data-nve-ssr"));
     assert!(kitchen_sink_runtime_html.contains("data-nve-snapshot-boot"));
 
-    // A `pkg/` without the app's manifest is not a bundle for that app.
+    // A `pkg/` without the app's manifest is not a bundle for that app, and an explicit
+    // `--web-shell-dist` missing a bundle fails the build instead of shipping a fallback page.
     let no_manifest_src = temp_test_dir("ws-no-manifest-src");
     fs::create_dir_all(no_manifest_src.join("pkg/studio/0123456789abcdef")).unwrap();
     fs::write(no_manifest_src.join("index.html"), "<html></html>").unwrap();
     fs::write(no_manifest_src.join("pkg/studio/0123456789abcdef/nve_web_shell_bg.wasm"), b"\0asm").unwrap();
     let out_no_manifest = temp_test_dir("ws-no-manifest-out");
-    let status_nm = Command::new(nve_bin())
+    let output_nm = Command::new(nve_bin())
         .current_dir(repo_root())
         .args(["docs", "build", "--content", "docs/content", "--skip-wasm", "--web-shell-dist"])
         .arg(&no_manifest_src)
         .arg("--out")
         .arg(&out_no_manifest)
-        .status()
+        .output()
         .expect("run docs build without manifests");
-    assert!(status_nm.success());
-    let studio_fallback = fs::read_to_string(out_no_manifest.join("examples/studio/index.html")).unwrap();
-    assert!(!studio_fallback.contains("data-bundle-mode=\"unified\""), "{studio_fallback}");
+    let stderr_nm = String::from_utf8_lossy(&output_nm.stderr);
+    assert!(!output_nm.status.success(), "missing bundles must fail the build");
+    assert!(stderr_nm.contains("has no WASM bundle for [\"studio\", \"kitchen-sink\"]"), "{stderr_nm}");
+    assert!(!out_no_manifest.join("examples/studio/index.html").exists(), "no fallback page may be emitted");
 
     // 2. Future per-app layout (`<dist>/studio/` + `<dist>/kitchen-sink/` + shared `nve_dom.js`)
     let per_app_src = temp_test_dir("ws-perapp-src");

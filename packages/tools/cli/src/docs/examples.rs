@@ -66,14 +66,23 @@ pub(crate) fn stage_example_apps(
     skip_wasm: bool,
 ) -> Result<ExamplesStageSummary, String> {
     let mut resolved = resolve_all_bundles(repo_root, web_shell_dist, skip_wasm);
+    let missing = |resolved: &[(ExampleAppSpec, DiscoveredBundle)]| -> Vec<&'static str> {
+        resolved.iter().filter(|(_, b)| matches!(b, DiscoveredBundle::Fallback)).map(|(s, _)| s.slug).collect()
+    };
 
-    if with_examples
-        && resolved
-            .iter()
-            .all(|(_, b)| matches!(b, DiscoveredBundle::Fallback))
-    {
+    // Build whenever any app lacks a bundle (a partial `pkg/` must not leave fallback pages).
+    if with_examples && !missing(&resolved).is_empty() {
         run_web_shell_build(repo_root)?;
         resolved = resolve_all_bundles(repo_root, web_shell_dist, false);
+    }
+    // An explicit `--web-shell-dist` promises live apps: a missing bundle is an error, not a
+    // silent fallback page (those are for `--skip-wasm` / bundle-less builds).
+    let unbuilt = missing(&resolved);
+    if let Some(dist) = web_shell_dist.filter(|_| !unbuilt.is_empty()) {
+        return Err(format!(
+            "--web-shell-dist {} has no WASM bundle for {unbuilt:?}; run `./hosts/web-shell/build.sh --dev {}` first",
+            dist.display(), unbuilt.join(" ")
+        ));
     }
 
     // If any app uses the Unified bundle, stage it once under `<out>/examples/_runtime/`.
