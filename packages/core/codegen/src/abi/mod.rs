@@ -14,17 +14,19 @@ mod validate;
 use askama::Template;
 use nve_abi::NveHostStatus;
 use nve_abi::schema::{
-    AbiEnumDescriptor, AbiFileDescriptor, NveEnumSchema, core_abi_descriptor, scene_abi_descriptor,
+    AbiEnumDescriptor, AbiFileDescriptor, NveEnumSchema, core_abi_descriptor, runtime_abi_descriptor,
+    scene_abi_descriptor,
 };
 use nve_abi::table::TableDesc;
 
 use crate::error::CodegenError;
 use crate::schema::export::GeneratedFile;
-use model::{AbiModel, HashVector, TableModel, hash_vectors, tables_model};
+use model::{AbiModel, HashVector, RuntimeAbiModel, TableModel, hash_vectors, tables_model};
 use spell::{c, dart, ts};
 
 const CORE: AbiFileDescriptor = core_abi_descriptor();
 const SCENE: AbiFileDescriptor = scene_abi_descriptor();
+const RUNTIME: AbiFileDescriptor = runtime_abi_descriptor();
 const HOST_STATUS: AbiEnumDescriptor = <NveHostStatus as NveEnumSchema>::SCHEMA;
 
 const CXX: &str = "packages/core/host-cxx";
@@ -33,6 +35,8 @@ const JAVA: &str = "packages/core/host-java/src";
 const DART: &str = "packages/core/host-dart";
 const TS: &str = "packages/core/host-ts";
 const C_ABI_HEADER: &str = "packages/core/host-cxx/include/nve/generated/nve_abi.generated.h"; // under `CXX`
+const C_RUNTIME_ABI_HEADER: &str =
+    "packages/core/host-cxx/include/nve/generated/nve_runtime_abi.generated.h"; // under `CXX`
 
 macro_rules! templates {
     ($($name:ident: $path:literal => $field:ident: $ty:ty;)*) => {$(
@@ -46,6 +50,7 @@ macro_rules! templates {
 
 templates! {
     CAbi: "c/nve_abi.h" => m: AbiModel<'a>;
+    CRuntimeAbi: "c/nve_runtime_abi.h" => m: RuntimeAbiModel<'a>;
     CTables: "c/nve_tables.h" => tables: [TableModel<'a>];
     CVectors: "c/hash_vectors.h" => vectors: [HashVector];
     SwiftTables: "swift/NveTables.swift" => tables: [TableModel<'a>];
@@ -65,6 +70,11 @@ templates! {
 /// The Core + Scene ABI model of the linked `nve-abi`.
 pub fn abi_model() -> Result<AbiModel<'static>, CodegenError> {
     AbiModel::new(&CORE, &SCENE, &HOST_STATUS)
+}
+
+/// The runtime ABI model on top of `base` (`abi_model()`).
+pub fn runtime_abi_model(base: &AbiModel<'_>) -> Result<RuntimeAbiModel<'static>, CodegenError> {
+    RuntimeAbiModel::new(&RUNTIME, base)
 }
 
 /// Renders one template into a pre-sized buffer, ending in exactly one `\n` (Askama drops a
@@ -96,11 +106,14 @@ pub fn generate_c_abi_header() -> Result<String, CodegenError> {
     Ok(render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?.content)
 }
 
-/// Every Core + Scene ABI file (C, Java, Dart const + `dart:ffi`, TypeScript).
+/// Every Core + Scene ABI file (C, Java, Dart const + `dart:ffi`, TypeScript) plus the C runtime
+/// ABI header.
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     let m = abi_model()?;
+    let runtime = runtime_abi_model(&m)?;
     Ok(vec![
         render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?,
+        render(&CRuntimeAbi { m: &runtime }, C_RUNTIME_ABI_HEADER.to_owned())?,
         render(
             &JavaAbi { m: &m },
             format!("{JAVA}/main/java/dev/nve/host/generated/NveAbi.java"),

@@ -3,16 +3,15 @@
 //! inherited typography propagation, zero-allocation z-index sorting, and uniform
 //! `SkiaTableRegistry` plugin dispatch (`PaintOp::Plugin`).
 
-use std::collections::HashMap;
-
-use nve_abi::{ColorRgba, NodeId};
+use nve_abi::ColorRgba;
 use nve_backend_headless::HeadlessBackend;
 use nve_components::style_patch::Display;
 use nve_components::tables::{
     BackgroundFillRes, BoxShadows, Display as NveDisplay, Image, ImageSrc, Layout, Overflow,
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
-use nve_engine::{LayoutRect, StoreLayoutEngine};
+use nve_engine::LayoutRect;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore, Rgba};
 
 use crate::motion::MotionDriver;
@@ -34,11 +33,6 @@ pub(crate) fn offset_rect(rect: LayoutRect, offset: (f32, f32)) -> LayoutRect {
         width: rect.width,
         height: rect.height,
     }
-}
-
-#[inline]
-pub(crate) fn point_in_rect(x: f32, y: f32, r: LayoutRect) -> bool {
-    r.width > 0.0 && r.height > 0.0 && x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
 }
 
 #[inline]
@@ -87,7 +81,6 @@ pub(crate) fn should_clip_children(store: &NodeStore, id: StoreNodeId) -> bool {
 fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
-    scroll_offsets: &HashMap<NodeId, (f32, f32)>,
     id: StoreNodeId,
     rect: LayoutRect,
     ops: &mut Vec<PaintOp>,
@@ -100,7 +93,7 @@ fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     if !has_v && !has_h {
         return;
     }
-    let (sx, sy) = scroll_offsets.get(&id.raw()).copied().unwrap_or((0.0, 0.0));
+    let (sx, sy) = layout_tree.scene().scroll_offset(id.raw());
     let corner_gap = if has_v && has_h {
         SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
     } else {
@@ -175,7 +168,6 @@ fn map_text_align(align: NveTextAlign) -> TextAlign {
 pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
-    scroll_offsets: &HashMap<NodeId, (f32, f32)>,
     focus: &TextFocusState,
     motion: &MotionDriver,
     table_registry: &SkiaTableRegistry,
@@ -411,7 +403,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                 ops.push(PaintOp::PushClip { rect, radius });
             }
 
-            let (sx, sy) = scroll_shift_for(store, scroll_offsets, id);
+            let (sx, sy) = layout_tree.scene().visual_scroll_shift(store, id);
             let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
             let child_inherited = InheritedTextStyle {
                 font_weight: Some(effective_weight),
@@ -436,7 +428,6 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                     emit_node_into(
                         store,
                         layout_tree,
-                        scroll_offsets,
                         focus,
                         motion,
                         table_registry,
@@ -457,7 +448,6 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                     emit_node_into(
                         store,
                         layout_tree,
-                        scroll_offsets,
                         focus,
                         motion,
                         table_registry,
@@ -486,7 +476,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
 
     // 7. Scrollbars for `Scroll` containers
     if !effective_hidden && in_clip && store.has::<Scroll>(id) {
-        emit_scrollview_scrollbars(store, layout_tree, scroll_offsets, id, rect, ops);
+        emit_scrollview_scrollbars(store, layout_tree, id, rect, ops);
     }
 
     if has_tf {
@@ -502,23 +492,5 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         } else {
             ops.push(PaintOp::Restore);
         }
-    }
-}
-
-#[inline]
-pub(crate) fn scroll_shift_for(
-    store: &NodeStore,
-    scroll_offsets: &HashMap<NodeId, (f32, f32)>,
-    id: StoreNodeId,
-) -> (f32, f32) {
-    let Some(scroll) = store.try_row::<Scroll>(id) else {
-        return (0.0, 0.0);
-    };
-    let (sx, sy) = scroll_offsets.get(&id.raw()).copied().unwrap_or((0.0, 0.0));
-    let top_spacer = scroll.virtual_top_spacer();
-    if top_spacer.is_finite() && top_spacer > 0.0 {
-        (sx, (sy - top_spacer).max(0.0))
-    } else {
-        (sx, sy)
     }
 }

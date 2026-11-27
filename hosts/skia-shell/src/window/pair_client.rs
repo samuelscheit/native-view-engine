@@ -1,18 +1,19 @@
 //! Live `NveWireFrame` v2 thin-client pairing adapter (`PairedRemoteApp`) connecting
-//! `nve-skia-shell` directly to a remote `nve pair` host over QUIC (`nve-wire-2`), HTTP/3
-//! WebTransport (`h3`), TLS WebSocket (`wss://`), or Happy-Eyeballs auto-fallback.
+//! `nve-skia-shell` directly to a remote `nve pair` host via [`nve_wire::ReconnectingWireClient`]
+//! over QUIC (`nve-wire-2`), HTTP/3 WebTransport (`h3`), TLS WebSocket (`wss://`), or
+//! Happy-Eyeballs auto-fallback with automatic exponential-backoff reconnect & keyframe recovery.
 
+use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use nve_abi::{direct_event_to_native, encode_events, FrameId, SurfaceId};
+use nve_store::wire::WireDecoder;
 use nve_wire::{
-    parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireKind, NveWireMetrics,
-    NveWireTransportKind, NveWireUri, DEFAULT_WIRE_WSS_PATH,
+    parse_wire_uri, NveWireClientConfig, NveWireKind, NveWireMetrics, NveWireTransportKind,
+    NveWireUri, ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireResyncState,
+    DEFAULT_WIRE_WSS_PATH,
 };
 
 use super::{DesktopApp, DesktopHostError};
@@ -20,68 +21,8 @@ use super::{DesktopApp, DesktopHostError};
 /// Default WebSocket / WebTransport path served by `nve pair`.
 pub const DEFAULT_PAIR_WS_PATH: &str = DEFAULT_WIRE_WSS_PATH;
 
-/// Transport protocol used by `--pair-connect`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PairTransport {
-    /// Happy-Eyeballs: QUIC first, racing `wss://` after 250ms.
-    #[default]
-    Auto,
-    /// Native raw QUIC (`nve-wire-2` ALPN).
-    Quic,
-    /// HTTP/3 WebTransport (`h3` ALPN).
-    WebTransport,
-    /// TLS WebSocket (`wss://`).
-    Wss,
-    /// Localhost plain WebSocket (`ws://`).
-    Ws,
-}
-
-impl PairTransport {
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        let s = raw.trim();
-        if s.is_empty() || s.eq_ignore_ascii_case("auto") {
-            Ok(Self::Auto)
-        } else if s.eq_ignore_ascii_case("quic") || s.eq_ignore_ascii_case("udp") {
-            Ok(Self::Quic)
-        } else if s.eq_ignore_ascii_case("wt")
-            || s.eq_ignore_ascii_case("webtransport")
-            || s.eq_ignore_ascii_case("h3")
-        {
-            Ok(Self::WebTransport)
-        } else if s.eq_ignore_ascii_case("wss") || s.eq_ignore_ascii_case("tls") {
-            Ok(Self::Wss)
-        } else if s.eq_ignore_ascii_case("ws")
-            || s.eq_ignore_ascii_case("tcp")
-            || s.eq_ignore_ascii_case("websocket")
-        {
-            Ok(Self::Ws)
-        } else {
-            Err(format!(
-                "invalid --pair-transport '{s}' (expected one of: auto, quic, webtransport, wss, ws)"
-            ))
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "AUTO",
-            Self::Quic => "QUIC",
-            Self::WebTransport => "WT/H3",
-            Self::Wss => "WSS",
-            Self::Ws => "WS",
-        }
-    }
-
-    fn to_wire_kind(self) -> NveWireTransportKind {
-        match self {
-            Self::Auto => NveWireTransportKind::Auto,
-            Self::Quic => NveWireTransportKind::Quic,
-            Self::WebTransport => NveWireTransportKind::WebTransport,
-            Self::Wss => NveWireTransportKind::Wss,
-            Self::Ws => NveWireTransportKind::Ws,
-        }
-    }
-}
+/// Maximum queued wire frames retained between ticks before triggering keyframe resync.
+const MAX_PENDING_REMOTE_FRAMES: usize = 256;
 
 /// Connection parameters for live thin-client pairing mode (`--pair-connect`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +32,7 @@ pub struct PairConnectConfig {
     /// Shared Bearer token printed by `nve pair`.
     pub token: String,
     /// Wire transport protocol (`auto`, `quic`, `webtransport`, `wss`, or `ws`).
-    pub transport: PairTransport,
+    pub transport: NveWireTransportKind,
     /// Optional pinned SHA-256 leaf certificate digest (auto-parsed from `nve://pair?...`).
     pub cert_sha256: Option<[u8; 32]>,
     /// WebSocket / WebTransport path.
@@ -104,7 +45,7 @@ impl PairConnectConfig {
     pub fn new(
         addr: impl Into<String>,
         token: impl Into<String>,
-        transport: PairTransport,
+        transport: NveWireTransportKind,
     ) -> Self {
         Self {
             addr: addr.into(),
@@ -126,8 +67,8 @@ impl PairConnectConfig {
         let mut uri = parse_wire_uri(&self.addr).map_err(|e| {
             DesktopHostError::Pairing(format!("invalid pair endpoint '{}': {e}", self.addr))
         })?;
-        if self.transport != PairTransport::Auto {
-            uri.transport = self.transport.to_wire_kind();
+        if self.transport != NveWireTransportKind::Auto {
+            uri.transport = self.transport;
         }
         if !self.token.trim().is_empty() {
             uri.token = self.token.clone();
@@ -142,29 +83,31 @@ impl PairConnectConfig {
     }
 }
 
-type WakeFn = Arc<dyn Fn() + Send + Sync>;
+struct QueuedRemoteFrame {
+    session_id: u64,
+    is_keyframe: bool,
+    is_frame1: bool,
+    payload: Vec<u8>,
+}
 
-/// Live thin-client [`DesktopApp`] backed by `nve_wire::NveWireClient` (QUIC / WebTransport / WSS).
+/// Live thin-client [`DesktopApp`] backed directly by [`ReconnectingWireClient`].
+///
+/// Queues ordered frames in a bounded [`VecDeque`] and shares [`WireResyncState`] with
+/// `nve-runtime` so incremental `CommandDelta` batches apply sequentially and recover cleanly on
+/// reconnect, overflow, or decode failure.
 pub struct PairedRemoteApp {
-    transport: PairTransport,
+    client: ReconnectingWireClient,
     endpoint_label: String,
-    #[cfg(test)]
-    session_id: u32,
-    frame_rx: Receiver<(u32, Vec<u8>)>,
-    event_tx: Sender<Vec<u8>>,
-    latest_frame: Vec<u8>,
-    has_unconsumed_frame: bool,
-    frames_received: Arc<AtomicU64>,
-    last_seq: Arc<AtomicU64>,
-    connected: Arc<AtomicBool>,
-    metrics: Arc<Mutex<NveWireMetrics>>,
-    wake_cb: Arc<Mutex<Option<WakeFn>>>,
-    stop: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+    pending_frames: VecDeque<QueuedRemoteFrame>,
+    has_seen_frame: bool,
+    resync: WireResyncState,
+    last_dequeued_session_id: u64,
+    last_dequeued_resets: bool,
 }
 
 impl PairedRemoteApp {
-    /// Connects to a remote `nve pair` server over QUIC/WebTransport/WSS and spawns the reader loop.
+    /// Connects to a remote `nve pair` server over QUIC/WebTransport/WSS/WS using the shared
+    /// single-thread [`ReconnectingWireClient`].
     pub fn connect(config: PairConnectConfig) -> Result<Self, DesktopHostError> {
         let uri = config.resolve_uri()?;
         if uri.token.trim().is_empty() {
@@ -176,130 +119,195 @@ impl PairedRemoteApp {
         let mut wire_cfg = NveWireClientConfig::new(uri.token.clone(), "nve-skia-shell");
         wire_cfg.cert_sha256 = uri.cert_sha256;
 
-        let client = NveWireClient::connect_uri_sync(&uri, &wire_cfg).map_err(|e| {
-            DesktopHostError::Pairing(format!("wire pair connect to {} failed: {e}", config.addr))
-        })?;
-
-        let active_transport = match client.transport_kind() {
-            NveWireTransportKind::Auto => PairTransport::Auto,
-            NveWireTransportKind::Quic => PairTransport::Quic,
-            NveWireTransportKind::WebTransport => PairTransport::WebTransport,
-            NveWireTransportKind::Wss => PairTransport::Wss,
-            NveWireTransportKind::Ws => PairTransport::Ws,
-        };
-        #[cfg(test)]
-        let session_id = client.session_id();
-        let initial_metrics = client.metrics();
-        let (frame_tx, frame_rx) = unbounded::<(u32, Vec<u8>)>();
-        let (event_tx, event_rx) = unbounded::<Vec<u8>>();
-        let frames_received = Arc::new(AtomicU64::new(0));
-        let last_seq = Arc::new(AtomicU64::new(0));
-        let connected = Arc::new(AtomicBool::new(client.is_connected()));
-        let metrics = Arc::new(Mutex::new(initial_metrics));
-        let wake_cb: Arc<Mutex<Option<WakeFn>>> = Arc::new(Mutex::new(None));
-        let stop = Arc::new(AtomicBool::new(false));
-
-        let w_frames = Arc::clone(&frames_received);
-        let w_seq = Arc::clone(&last_seq);
-        let w_conn = Arc::clone(&connected);
-        let w_metrics = Arc::clone(&metrics);
-        let w_wake = Arc::clone(&wake_cb);
-        let w_stop = Arc::clone(&stop);
-
-        let worker = thread::Builder::new()
-            .name("nve-skia-wire-client".to_string())
-            .spawn(move || {
-                pair_worker_loop(
-                    client, frame_tx, event_rx, w_frames, w_seq, w_conn, w_metrics, w_wake, w_stop,
-                );
-            })
-            .map_err(|e| {
-                DesktopHostError::Pairing(format!("failed to spawn pairing worker thread: {e}"))
-            })?;
+        let client =
+            ReconnectingWireClient::connect_sync(uri, wire_cfg, ReconnectConfig::default(), None)
+                .map_err(|e| {
+                    DesktopHostError::Pairing(format!(
+                        "wire pair connect to {} failed: {e}",
+                        config.addr
+                    ))
+                })?;
 
         Ok(Self {
-            transport: active_transport,
+            client,
             endpoint_label: config.addr,
-            #[cfg(test)]
-            session_id,
-            frame_rx,
-            event_tx,
-            latest_frame: Vec::new(),
-            has_unconsumed_frame: false,
-            frames_received,
-            last_seq,
-            connected,
-            metrics,
-            wake_cb,
-            stop,
-            worker: Some(worker),
+            pending_frames: VecDeque::new(),
+            has_seen_frame: false,
+            resync: WireResyncState::new(),
+            last_dequeued_session_id: 0,
+            last_dequeued_resets: false,
         })
     }
 
     #[cfg(test)]
-    pub fn transport(&self) -> PairTransport {
-        self.transport
+    pub fn spawn_for_test(config: PairConnectConfig) -> Result<Self, DesktopHostError> {
+        let uri = config.resolve_uri()?;
+        if uri.token.trim().is_empty() {
+            return Err(DesktopHostError::Pairing(
+                "missing --pair-token for --pair-connect".to_string(),
+            ));
+        }
+        let mut wire_cfg = NveWireClientConfig::new(uri.token.clone(), "nve-skia-shell");
+        wire_cfg.cert_sha256 = uri.cert_sha256;
+        let client = ReconnectingWireClient::spawn(
+            uri,
+            wire_cfg,
+            ReconnectConfig {
+                initial_backoff: Duration::from_millis(20),
+                max_backoff: Duration::from_millis(40),
+            },
+            None,
+        )
+        .map_err(|e| DesktopHostError::Pairing(format!("wire spawn failed: {e}")))?;
+        Ok(Self {
+            client,
+            endpoint_label: config.addr,
+            pending_frames: VecDeque::new(),
+            has_seen_frame: false,
+            resync: WireResyncState::new(),
+            last_dequeued_session_id: 0,
+            last_dequeued_resets: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn auth_rejections(&self) -> u64 {
+        self.client.auth_rejections()
+    }
+
+    #[cfg(test)]
+    pub fn transport(&self) -> NveWireTransportKind {
+        self.client.transport_kind()
     }
 
     #[cfg(test)]
     pub fn session_id(&self) -> u32 {
-        self.session_id
+        self.client.session_id()
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
+        self.client.is_connected()
     }
 
     #[cfg(test)]
     pub fn frames_received(&self) -> u64 {
-        self.frames_received.load(Ordering::Relaxed)
+        let m = self.client.metrics();
+        m.command_deltas_received.saturating_add(m.keyframes_received)
     }
 
+    #[cfg(test)]
     pub fn last_seq(&self) -> u32 {
-        self.last_seq.load(Ordering::Relaxed) as u32
+        self.client.metrics().last_sequence
     }
 
     pub fn metrics(&self) -> NveWireMetrics {
-        *self.metrics.lock().unwrap_or_else(|e| e.into_inner())
+        self.client.metrics()
+    }
+
+    /// Processes one ordered [`WireInboundItem`], returning `Some(sequence)` when a scene frame
+    /// was enqueued.
+    fn ingest_item(&mut self, item: WireInboundItem) -> Option<u32> {
+        match item {
+            WireInboundItem::SessionStarted {
+                session_id,
+                reconnected,
+            } => {
+                if reconnected {
+                    self.pending_frames.clear();
+                }
+                self.resync
+                    .on_session_started(session_id, reconnected, self.has_seen_frame);
+                None
+            }
+            WireInboundItem::Overflowed { session_id } => {
+                self.pending_frames.clear();
+                let client = &self.client;
+                self.resync
+                    .on_overflowed(session_id, || client.request_keyframe().is_ok());
+                None
+            }
+            WireInboundItem::Frame { session_id, frame } => {
+                if !matches!(
+                    frame.kind,
+                    NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
+                ) || frame.payload.is_empty()
+                {
+                    return None;
+                }
+                let is_keyframe = frame.kind == NveWireKind::SceneKeyframe;
+                let is_frame1 =
+                    WireDecoder::validate_header(&frame.payload).is_ok_and(|(num, _)| num == 1);
+                let has_queued_resync_base = self
+                    .pending_frames
+                    .front()
+                    .is_some_and(|f| (f.is_keyframe || f.is_frame1) && f.session_id == session_id);
+                if !self.resync.should_apply(is_keyframe, is_frame1) && !has_queued_resync_base {
+                    return None;
+                }
+                if is_keyframe || is_frame1 {
+                    self.pending_frames.clear();
+                } else if self.pending_frames.len() >= MAX_PENDING_REMOTE_FRAMES {
+                    self.pending_frames.clear();
+                    let client = &self.client;
+                    self.resync
+                        .on_overflowed(session_id, || client.request_keyframe().is_ok());
+                    return None;
+                }
+                let seq = frame.sequence;
+                self.pending_frames.push_back(QueuedRemoteFrame {
+                    session_id,
+                    is_keyframe,
+                    is_frame1,
+                    payload: frame.payload,
+                });
+                self.has_seen_frame = true;
+                Some(seq)
+            }
+        }
     }
 
     pub fn wait_for_frame(
         &mut self,
         timeout: Duration,
     ) -> Result<(u32, Vec<u8>), DesktopHostError> {
-        let first = self.frame_rx.recv_timeout(timeout).map_err(|e| {
-            DesktopHostError::Pairing(format!(
-                "timed out waiting for paired wire frame from {} ({e})",
-                self.endpoint_label
-            ))
-        })?;
-        let mut latest = first;
-        while let Ok(newer) = self.frame_rx.try_recv() {
-            latest = newer;
-        }
-        self.latest_frame = latest.1.clone();
-        self.has_unconsumed_frame = true;
-        Ok(latest)
-    }
-
-    fn drain_incoming_frames(&mut self) -> bool {
-        let mut got_new = false;
-        while let Ok((_seq, bytes)) = self.frame_rx.try_recv() {
-            if !bytes.is_empty() {
-                self.latest_frame = bytes;
-                self.has_unconsumed_frame = true;
-                got_new = true;
+        let deadline = Instant::now() + timeout;
+        let mut last_seq = self.client.metrics().last_sequence;
+        while self.pending_frames.is_empty() {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(DesktopHostError::Pairing(format!(
+                    "timed out waiting for paired wire frame from {}",
+                    self.endpoint_label
+                )));
+            }
+            let Some(item) = self.client.recv_item_timeout(deadline - now) else {
+                continue;
+            };
+            if let Some(seq) = self.ingest_item(item) {
+                last_seq = seq;
             }
         }
-        got_new
+        while let Some(item) = self.client.try_recv_item() {
+            if let Some(seq) = self.ingest_item(item) {
+                last_seq = seq;
+            }
+        }
+        let latest = self
+            .pending_frames
+            .back()
+            .map(|f| f.payload.clone())
+            .unwrap_or_default();
+        Ok((last_seq, latest))
+    }
+
+    fn drain_incoming_frames(&mut self) {
+        while let Some(item) = self.client.try_recv_item() {
+            let _ = self.ingest_item(item);
+        }
     }
 
     pub fn disconnect(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.worker.take() {
-            let _ = handle.join();
-        }
-        self.connected.store(false, Ordering::Relaxed);
+        self.client.shutdown();
     }
 }
 
@@ -311,28 +319,56 @@ impl Drop for PairedRemoteApp {
 
 impl DesktopApp for PairedRemoteApp {
     fn generation(&self) -> u64 {
-        self.frames_received.load(Ordering::Relaxed).max(1)
+        let m = self.client.metrics();
+        m.command_deltas_received
+            .saturating_add(m.keyframes_received)
+            .max(1)
     }
 
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        // Queued wire apps deliver all frames strictly via `take_queued_wire_frame`.
+        &[]
+    }
+
+    fn uses_queued_wire_frames(&self) -> bool {
+        true
+    }
+
+    fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
         self.drain_incoming_frames();
-        if self.has_unconsumed_frame {
-            self.has_unconsumed_frame = false;
-            &self.latest_frame
-        } else {
-            &[]
+        let q = self.pending_frames.pop_front()?;
+        self.last_dequeued_session_id = q.session_id;
+        self.last_dequeued_resets = q.is_keyframe || q.is_frame1;
+        Some((q.is_keyframe, q.payload))
+    }
+
+    fn on_queued_wire_frame_applied(&mut self, is_keyframe: bool) {
+        if is_keyframe || self.last_dequeued_resets {
+            self.resync.mark_keyframe_applied();
         }
     }
 
+    fn on_queued_wire_frame_error(&mut self) {
+        self.pending_frames.clear();
+        let sid = if self.last_dequeued_session_id != 0 {
+            self.last_dequeued_session_id
+        } else {
+            self.client.active_session_id()
+        };
+        let client = &self.client;
+        self.resync
+            .on_decode_error(sid, || client.request_keyframe().is_ok());
+    }
+
     fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
-        if events.is_empty() || !self.connected.load(Ordering::Relaxed) {
+        if events.is_empty() || !self.client.is_connected() {
             return false;
         }
         let owned: Vec<_> = events.iter().filter_map(direct_event_to_native).collect();
         if owned.is_empty() {
             return false;
         }
-        self.event_tx.send(encode_events(&owned)).is_ok()
+        self.client.send_events(encode_events(&owned)).is_ok()
     }
 
     fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
@@ -350,102 +386,37 @@ impl DesktopApp for PairedRemoteApp {
     }
 
     fn install_wake_callback(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        *self.wake_cb.lock().unwrap_or_else(|e| e.into_inner()) = Some(wake);
+        self.client.set_wake_callback(Some(wake));
     }
 
     fn has_pending_remote_frame(&self) -> bool {
-        self.has_unconsumed_frame || !self.frame_rx.is_empty()
+        !self.pending_frames.is_empty() || self.client.has_pending_item()
     }
 
     fn remote_status_banner(&self) -> Option<String> {
         let m = self.metrics();
+        let transport = self.client.transport_kind();
+        if self.client.auth_rejections() > 0 {
+            let reason = self
+                .client
+                .last_error()
+                .unwrap_or_else(|| "unauthorized".to_owned());
+            return Some(format!(
+                "Paired {} [AUTH REJECTED] · {reason}",
+                transport.as_str(),
+            ));
+        }
         let state = if self.is_connected() {
             "LIVE"
         } else {
-            "DISCONNECTED"
+            "RECONNECTING"
         };
         Some(format!(
             "Paired {} [{}] · seq #{} · {} B rx",
-            self.transport.label(),
+            transport.as_str(),
             state,
-            self.last_seq(),
+            m.last_sequence,
             m.wire_bytes_rx
         ))
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn pair_worker_loop(
-    client: NveWireClient,
-    frame_tx: Sender<(u32, Vec<u8>)>,
-    event_rx: Receiver<Vec<u8>>,
-    frames_received: Arc<AtomicU64>,
-    last_seq: Arc<AtomicU64>,
-    connected: Arc<AtomicBool>,
-    metrics: Arc<Mutex<NveWireMetrics>>,
-    wake_cb: Arc<Mutex<Option<WakeFn>>>,
-    stop: Arc<AtomicBool>,
-) {
-    let mut last_metrics_refresh = Instant::now();
-    let poll_timeout = Duration::from_millis(2);
-
-    while !stop.load(Ordering::Relaxed) {
-        let mut flushed_event = false;
-        while let Ok(encoded_ring) = event_rx.try_recv() {
-            if client.send_events(&encoded_ring).is_ok() {
-                flushed_event = true;
-            }
-        }
-
-        let mut received_any = false;
-        if let Some(frame) = client.recv_frame_timeout(poll_timeout) {
-            if matches!(
-                frame.kind,
-                NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
-            ) {
-                frames_received.fetch_add(1, Ordering::Relaxed);
-                last_seq.store(u64::from(frame.sequence), Ordering::Relaxed);
-                if frame_tx.send((frame.sequence, frame.payload)).is_err() {
-                    break;
-                }
-                received_any = true;
-            }
-            while let Some(f2) = client.try_recv_frame() {
-                if matches!(f2.kind, NveWireKind::CommandDelta | NveWireKind::SceneKeyframe) {
-                    frames_received.fetch_add(1, Ordering::Relaxed);
-                    last_seq.store(u64::from(f2.sequence), Ordering::Relaxed);
-                    if frame_tx.send((f2.sequence, f2.payload)).is_err() {
-                        break;
-                    }
-                    received_any = true;
-                }
-            }
-        } else if !client.is_connected() {
-            connected.store(false, Ordering::Relaxed);
-            break;
-        }
-
-        let now = Instant::now();
-        if received_any
-            || flushed_event
-            || now.saturating_duration_since(last_metrics_refresh) >= Duration::from_millis(100)
-        {
-            last_metrics_refresh = now;
-            connected.store(client.is_connected(), Ordering::Relaxed);
-            *metrics.lock().unwrap_or_else(|e| e.into_inner()) = client.metrics();
-        }
-
-        if received_any
-            && let Some(cb) = wake_cb
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .cloned()
-        {
-            cb();
-        }
-    }
-
-    client.close();
-    connected.store(false, Ordering::Relaxed);
 }

@@ -25,6 +25,7 @@ enum class SceneError : uint8_t {
   NullView,        ///< view pointer is null
   SchemaMismatch,  ///< `schema_hash` differs from the generated `NVE_SCENE_SCHEMA_HASH`
   NullSlab,        ///< a slab pointer is null while its count is non-zero
+  MisalignedSlab,  ///< a non-empty slab pointer violates its element type alignment
   InvalidUtf8,     ///< `text_slab` is not well-formed UTF-8
   InvalidTable,    ///< a published `NveTableView` is malformed
 };

@@ -3,7 +3,7 @@
 
 use nve_abi::NodeId;
 use nve_components::interaction::{CursorKind, FocusModality, InteractionState, InteractionTracker};
-use nve_engine::StoreLayoutEngine;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::SkiaBackend;

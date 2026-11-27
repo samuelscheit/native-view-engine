@@ -11,7 +11,7 @@ use nve_components::motion::{
 use nve_components::style_patch::VisualSnapshot;
 use nve_components::tables::{Motion, Transitions};
 use nve_components::transform::{lerp_transform_2d, Transform2D};
-use nve_engine::StoreLayoutEngine;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable};
 
 use crate::SkiaBackend;

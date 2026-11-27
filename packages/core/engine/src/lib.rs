@@ -1,4 +1,4 @@
-//! Core framework-agnostic runtime: `StoreBackend` / `StoreLayoutEngine` traits, `SurfaceRunner`
+//! Core framework-agnostic runtime: `StoreBackend` trait, `SurfaceRunner`
 //! coordinator, `StoreWireReplica` for cross-boundary `NVE2` frames, 6-stage `FrameProfiler` with
 //! Perfetto/Chrome trace export, and 2-tier hot-reload spine.
 
@@ -6,24 +6,24 @@
 
 pub mod app;
 pub mod hotreload;
-pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod persistence;
 pub mod profiler;
+pub mod runtime_app;
 pub mod store_backend;
+pub mod wake;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NodeId, SurfaceId};
 use nve_store::{ChangeSet, NodeStore};
 
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
+pub use runtime_app::{AppFrame, FrameTickHook, RuntimeApp};
 pub use store_backend::{StoreBackend, StoreWireReplica};
+pub use wake::{WakeBridge, WakeCallback, WakeToken};
 
 pub use hotreload::HotPatchMsg;
-pub use layout::{
-    BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, StoreLayoutEngine, TextMeasurer,
-};
 pub use persistence::{
     write_file_atomic, Frame0File, Frame0Footer, Frame0Meta, Frame0Miss, PersistenceError,
     StateFile, StateRecoveryStats, StateSaveOutcome, DEFAULT_FRAME0_FILE_NAME,

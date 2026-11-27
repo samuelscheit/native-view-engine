@@ -14,6 +14,7 @@ pub fn verify_bearer_token(expected: &str, provided: &str) -> bool {
 }
 
 /// Generates a 128-bit cryptographically random Bearer token (`nve_<32 lowercase hex chars>`).
+#[cfg(feature = "server")]
 pub fn generate_bearer_token() -> String {
     let mut entropy = [0u8; 16];
     getrandom::fill(&mut entropy).expect("OS CSPRNG unavailable for Bearer token generation");

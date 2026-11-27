@@ -13,6 +13,10 @@ use crate::ffi::{
     NveSurfaceConfig,
 };
 use crate::host::{NveHostApi, NveHostCallbacks, NveHostStatus};
+use crate::runtime::{
+    NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics,
+    NveRuntimeSceneView, NveRuntimeStatus, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
+};
 use crate::scene::{
     NveNodeMeta, NveRenderNode, NveSceneView, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE,
     NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
@@ -280,6 +284,94 @@ const _: () = {
     assert!(offset_of!(NveNodeMeta, test_id_len) == 38);
     assert!(offset_of!(NveNodeMeta, test_id_offset) == 40);
     assert!(offset_of!(NveNodeMeta, _reserved) == 44);
+
+    // ---- Zero-copy runtime ABI types (runtime.rs) ----
+    assert!(size_of::<NveRuntimeStatus>() == 4);
+    assert!(align_of::<NveRuntimeStatus>() == 4);
+
+    assert!(size_of::<NveLayoutRect>() == NVE_LAYOUT_RECT_SIZE);
+    assert!(align_of::<NveLayoutRect>() == 4);
+    assert!(offset_of!(NveLayoutRect, x) == 0);
+    assert!(offset_of!(NveLayoutRect, y) == 4);
+    assert!(offset_of!(NveLayoutRect, width) == 8);
+    assert!(offset_of!(NveLayoutRect, height) == 12);
+
+    assert!(size_of::<NveNodeRow>() == NVE_NODE_ROW_SIZE);
+    assert!(align_of::<NveNodeRow>() == 4);
+    assert!(offset_of!(NveNodeRow, table_set) == 0);
+    assert!(offset_of!(NveNodeRow, parent) == 16);
+    assert!(offset_of!(NveNodeRow, child_off) == 20);
+    assert!(offset_of!(NveNodeRow, child_len) == 24);
+    assert!(offset_of!(NveNodeRow, generation) == 28);
+    assert!(offset_of!(NveNodeRow, primary_slot) == 29);
+    assert!(offset_of!(NveNodeRow, effects) == 30);
+    assert!(offset_of!(NveNodeRow, flags) == 31);
+
+    assert!(size_of::<NveRuntimeConfig>() == 24);
+    assert!(align_of::<NveRuntimeConfig>() == 4);
+    assert!(offset_of!(NveRuntimeConfig, surface_id) == 0);
+    assert!(offset_of!(NveRuntimeConfig, width) == 4);
+    assert!(offset_of!(NveRuntimeConfig, height) == 8);
+    assert!(offset_of!(NveRuntimeConfig, scale_factor) == 12);
+    assert!(offset_of!(NveRuntimeConfig, flags) == 16);
+    assert!(offset_of!(NveRuntimeConfig, _reserved) == 20);
+
+    assert!(size_of::<NveRuntimeMetrics>() == 64);
+    assert!(align_of::<NveRuntimeMetrics>() == align_of::<u64>()); // 4 on i386 System V
+    assert!(offset_of!(NveRuntimeMetrics, frame_id) == 0);
+    assert!(offset_of!(NveRuntimeMetrics, reconcile_us) == 8);
+    assert!(offset_of!(NveRuntimeMetrics, layout_us) == 16);
+    assert!(offset_of!(NveRuntimeMetrics, publish_us) == 24);
+    assert!(offset_of!(NveRuntimeMetrics, wire_bytes_rx) == 32);
+    assert!(offset_of!(NveRuntimeMetrics, wire_bytes_tx) == 40);
+    assert!(offset_of!(NveRuntimeMetrics, live_nodes) == 48);
+    assert!(offset_of!(NveRuntimeMetrics, dirty_nodes) == 52);
+    assert!(offset_of!(NveRuntimeMetrics, pair_connected) == 56);
+    assert!(offset_of!(NveRuntimeMetrics, _reserved) == 60);
+
+    assert!(offset_of!(NveRuntimeSceneView, schema_hash) == 0);
+    assert!(offset_of!(NveRuntimeSceneView, frame_id) == 8);
+    assert!(offset_of!(NveRuntimeSceneView, node_capacity) == 16);
+    assert!(offset_of!(NveRuntimeSceneView, dirty_count) == 20);
+    assert!(offset_of!(NveRuntimeSceneView, removed_count) == 24);
+    assert!(offset_of!(NveRuntimeSceneView, text_slab_len) == 28);
+    assert!(offset_of!(NveRuntimeSceneView, children_slab_len) == 32);
+    assert!(offset_of!(NveRuntimeSceneView, table_count) == 36);
+    assert!(offset_of!(NveRuntimeSceneView, rows) == 40);
+    assert!(offset_of!(NveRuntimeSceneView, rects) == 40 + PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, text_slab) == 40 + 2 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, children_slab) == 40 + 3 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, dirty_indices) == 40 + 4 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, removed_ids) == 40 + 5 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, tables) == 40 + 6 * PTR_SIZE);
+    assert!(
+        size_of::<NveRuntimeSceneView>()
+            == align_up(40 + 7 * PTR_SIZE, align_of::<NveRuntimeSceneView>())
+    );
+
+    assert!(offset_of!(NveRuntimeApi, abi_version) == 0);
+    assert!(offset_of!(NveRuntimeApi, struct_size) == 4);
+    assert!(offset_of!(NveRuntimeApi, schema_hash) == 8);
+    assert!(offset_of!(NveRuntimeApi, create) == 16);
+    assert!(offset_of!(NveRuntimeApi, destroy) == 16 + PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, set_wake_callback) == 16 + 2 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, set_viewport) == 16 + 3 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, attach_app_interface) == 16 + 4 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, submit_nve2) == 16 + 5 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, tick) == 16 + 6 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, dispatch_events) == 16 + 7 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, hit_test) == 16 + 8 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, scroll_by) == 16 + 9 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, scene_acquire) == 16 + 10 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, scene_release) == 16 + 11 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, get_metrics) == 16 + 12 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, pair_connect) == 16 + 13 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, pair_disconnect) == 16 + 14 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, pair_is_connected) == 16 + 15 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 16 * PTR_SIZE);
+    assert!(
+        size_of::<NveRuntimeApi>() == align_up(16 + 17 * PTR_SIZE, align_of::<NveRuntimeApi>())
+    );
 };
 
 // Exact 64-bit ABI verification matching the checked-in C/Swift/Dart/TS/Java artifacts.
@@ -356,4 +448,9 @@ const _: () = {
 
     assert!(size_of::<crate::table::NveTableView>() == 48);
     assert!(align_of::<crate::table::NveTableView>() == 8);
+
+    assert!(size_of::<NveRuntimeSceneView>() == 96);
+    assert!(align_of::<NveRuntimeSceneView>() == 8);
+    assert!(size_of::<NveRuntimeApi>() == 152);
+    assert!(align_of::<NveRuntimeApi>() == 8);
 };

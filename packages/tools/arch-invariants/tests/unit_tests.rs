@@ -3,8 +3,131 @@
 
 use guppy::graph::PackageGraph;
 use nve_arch_invariants::{
-    ast_enums, ast_layout, bench, codegen_53bit, dag, hot_path, hygiene, is_cfg_test_attr, purity,
+    ast_enums, ast_layout, bench, codegen_53bit, dag, hot_path, hygiene, is_cfg_test_attr,
+    native_build, purity,
 };
+
+#[test]
+fn unit_native_source_reason_flags_cxx_sources_and_cc_build_scripts_only() {
+    let flagged = |rel: &str, src: Option<&str>| native_build::native_source_reason(rel, src).is_some();
+    assert!(flagged("packages/core/x/c_api/shim.cpp", None));
+    assert!(flagged("packages/core/x/c_api/SHIM.CPP", None));
+    assert!(flagged("packages/core/x/src/a.cc", None));
+    assert!(flagged("packages/core/x/src/a.mm", None));
+    assert!(flagged("packages/core/x/src/trampoline.S", None));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { cc::Build::new(); }")));
+    assert!(flagged("packages/core/x/scripts/gen.rs", Some("fn main() { cmake::build(\"x\"); }")));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { cxx_build::bridge(\"src/lib.rs\"); }")));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { bindgen::Builder::default(); }")));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { autocxx_build::Builder::new(\"src/lib.rs\", &[]); }")));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { std::process::Command::new(\"clang\"); }")));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { std::process::Command::new(\"cmake\"); }")));
+    assert!(!flagged("packages/core/x/build.rs", Some("fn main() { println!(\"cargo::rerun-if-changed=x\"); }")));
+    assert!(!flagged("packages/core/x/src/lib.rs", None));
+    assert!(!flagged("packages/core/x/include/api.h", None));
+    assert!(!flagged("packages/core/x/README.md", None));
+    assert!(!flagged("packages/core/x/tests/fixtures/driver.cpp", None));
+    assert!(flagged("packages/core/x/tests/driver.cpp", None));
+    assert!(flagged("packages/core/x/src/tests/fixtures.cpp", None));
+}
+
+#[test]
+fn unit_native_build_graph_and_core_to_backends_dag_checks() {
+    let json = format!(
+        r#"{{
+        "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",
+        "workspace_members": [
+            "path+file:///repo/packages/core/bad-core#0.1.0",
+            "path+file:///repo/packages/tools/cxx-helper#0.1.0",
+            "path+file:///repo/packages/backends/headless#0.1.0"
+        ],
+        "packages": [
+            {{
+                "id": "path+file:///repo/packages/core/bad-core#0.1.0", "name": "nve-bad-core", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/bad-core/Cargo.toml", "targets": {t_core}, "features": {{}},
+                "links": "badnative",
+                "dependencies": [
+                    {{"name": "nve-cxx-helper", "req": "*", "kind": "build", "optional": false, "uses_default_features": true, "features": [], "target": null, "path": "/repo/packages/tools/cxx-helper"}},
+                    {{"name": "nve-backend-headless", "req": "*", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null, "path": "/repo/packages/backends/headless"}},
+                    {{"name": "foo-sys", "req": "^1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/tools/cxx-helper#0.1.0", "name": "nve-cxx-helper", "version": "0.1.0",
+                "manifest_path": "/repo/packages/tools/cxx-helper/Cargo.toml", "targets": {t_helper}, "features": {{}},
+                "dependencies": [
+                    {{"name": "cmake", "req": "^0.1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/backends/headless#0.1.0", "name": "nve-backend-headless", "version": "0.1.0",
+                "manifest_path": "/repo/packages/backends/headless/Cargo.toml", "targets": {t_bk}, "features": {{}},
+                "dependencies": []
+            }},
+            {{"id": "registry+https://github.com/rust-lang/crates.io-index#cmake@0.1.50", "name": "cmake", "version": "0.1.50", "manifest_path": "/cargo/cmake/Cargo.toml", "targets": {t_cmake}, "features": {{}}, "dependencies": []}},
+            {{"id": "registry+https://github.com/rust-lang/crates.io-index#foo-sys@1.0.0", "name": "foo-sys", "version": "1.0.0", "manifest_path": "/cargo/foo-sys/Cargo.toml", "targets": {t_foosys}, "features": {{}}, "links": "foo", "dependencies": []}}
+        ],
+        "resolve": {{
+            "nodes": [
+                {{
+                    "id": "path+file:///repo/packages/core/bad-core#0.1.0",
+                    "dependencies": [
+                        "path+file:///repo/packages/tools/cxx-helper#0.1.0",
+                        "path+file:///repo/packages/backends/headless#0.1.0",
+                        "registry+https://github.com/rust-lang/crates.io-index#foo-sys@1.0.0"
+                    ],
+                    "deps": [
+                        {{"name": "nve_cxx_helper", "pkg": "path+file:///repo/packages/tools/cxx-helper#0.1.0", "dep_kinds": [{{"kind": "build", "target": null}}]}},
+                        {{"name": "nve_backend_headless", "pkg": "path+file:///repo/packages/backends/headless#0.1.0", "dep_kinds": [{{"kind": null, "target": null}}]}},
+                        {{"name": "foo_sys", "pkg": "registry+https://github.com/rust-lang/crates.io-index#foo-sys@1.0.0", "dep_kinds": [{{"kind": null, "target": null}}]}}
+                    ]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/tools/cxx-helper#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#cmake@0.1.50"],
+                    "deps": [{{"name": "cmake", "pkg": "registry+https://github.com/rust-lang/crates.io-index#cmake@0.1.50", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{"id": "path+file:///repo/packages/backends/headless#0.1.0", "dependencies": [], "deps": []}},
+                {{"id": "registry+https://github.com/rust-lang/crates.io-index#cmake@0.1.50", "dependencies": [], "deps": []}},
+                {{"id": "registry+https://github.com/rust-lang/crates.io-index#foo-sys@1.0.0", "dependencies": [], "deps": []}}
+            ]
+        }}
+    }}"#,
+        t_core = lib_target("nve_bad_core", "/repo/packages/core/bad-core"),
+        t_helper = lib_target("nve_cxx_helper", "/repo/packages/tools/cxx-helper"),
+        t_bk = lib_target("nve_backend_headless", "/repo/packages/backends/headless"),
+        t_cmake = lib_target("cmake", "/cargo/cmake"),
+        t_foosys = lib_target("foo_sys", "/cargo/foo-sys"),
+    );
+    let graph = PackageGraph::from_json(&json).expect("valid synthetic native_build graph");
+
+    let v_native = native_build::check_core_zero_native_cxx_graph(&graph);
+    assert!(
+        v_native.iter().any(|v| v.snippet.contains("links = \"badnative\"")),
+        "expected `links` violation: {v_native:?}"
+    );
+    assert!(
+        v_native
+            .iter()
+            .any(|v| v.snippet == "nve-bad-core -> nve-cxx-helper -> cmake"),
+        "expected transitive workspace native-build violation: {v_native:?}"
+    );
+    assert!(
+        v_native
+            .iter()
+            .any(|v| v.snippet == "nve-bad-core -> foo-sys (links=foo)"),
+        "expected direct external `*-sys` (`links`) violation: {v_native:?}"
+    );
+
+    let v_dag = dag::check_core_backend_module_deps(&graph);
+    assert!(
+        v_dag
+            .iter()
+            .any(|v| v.snippet == "nve-bad-core -> nve-backend-headless"
+                && v.reason.contains("packages/backends/*")),
+        "expected core -> backends violation: {v_dag:?}"
+    );
+}
 
 fn lib_target(name: &str, dir: &str) -> String {
     format!(

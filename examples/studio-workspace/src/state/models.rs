@@ -1,7 +1,6 @@
 //! Domain models, configuration enums, live sync telemetry, and initial seed snapshot
 //! for **Aether Workspace** + **NVE Studio**.
 
-use nve_engine::BuiltinLayout;
 use nve_ui::Accent;
 
 use crate::ui_islands::IslandsSnapshot;
@@ -236,13 +235,6 @@ impl LayoutEngineMode {
         match self {
             Self::Taffy => "Active: Taffy (Rust)",
             Self::Yoga => "Active: Yoga (C++20)",
-        }
-    }
-
-    pub const fn to_builtin(self) -> BuiltinLayout {
-        match self {
-            Self::Taffy => BuiltinLayout::Taffy,
-            Self::Yoga => BuiltinLayout::Yoga,
         }
     }
 

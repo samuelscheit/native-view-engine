@@ -1,0 +1,35 @@
+[package]
+name = "nve-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Framework-agnostic host runtime for NVE: zero-copy NveRuntimeSceneView publication, LaidOutScene orchestration, WakeBridge, FrameTickHook, and single-entry C ABI"
+
+[lib]
+name = "nve_runtime"
+crate-type = ["rlib"]
+
+[features]
+default = ["wire"]
+wire = ["dep:nve-wire"]
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-components = { workspace = true }
+nve-engine = { workspace = true }
+nve-layout = { workspace = true }
+nve-store = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nve-wire = { workspace = true, features = ["client"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+nve-wire = { workspace = true, features = ["client", "server"] }
+
+[[bench]]
+name = "runtime_tick_bench"
+harness = false
+
+[lints]
+workspace = true

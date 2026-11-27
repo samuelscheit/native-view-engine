@@ -27,6 +27,7 @@ use crate::value::{
 };
 use crate::ROOT_NODE_ID;
 
+pub use crate::runtime::runtime_abi_descriptor;
 pub use nve_abi_macros::NveAbi;
 
 /// Compile-time metadata for one named field of a `#[repr(C)]` struct or union.

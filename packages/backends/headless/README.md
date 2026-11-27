@@ -1,10 +1,11 @@
 # `nve-backend-headless`
 
-Pure-Rust headless `StoreBackend` (`packages/backends/headless`, **Backend layer**) generic over any `StoreLayoutEngine` (defaulting to `TaffyStoreLayout`) for fast offscreen layout, hit-testing, and Frame-0 scene verification.
+Pure-Rust headless `StoreBackend` (`packages/backends/headless`, **Backend layer**) generic over any `nve_layout::StoreLayoutEngine` (defaulting to `nve_layout::TaffyStoreLayout`) for fast offscreen layout, hit-testing, and Frame-0 scene verification.
 
 ## Key Public API
 
-- `HeadlessBackend<L = TaffyStoreLayout>`, `TaffyStoreLayout`, `InteractionTracker`
+- `HeadlessBackend<L = nve_layout::TaffyStoreLayout>`
+- `InteractionTracker`
 
 ```rust
 use nve_backend_headless::HeadlessBackend;
@@ -17,7 +18,7 @@ assert_eq!(backend.viewport().width, 800.0);
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `taffy`.
+- **Depends on**: `nve-abi`, `nve-components`, `nve-engine`, `nve-layout`, `nve-store`.
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

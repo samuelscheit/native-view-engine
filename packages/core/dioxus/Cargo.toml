@@ -16,6 +16,7 @@ dioxus-core-macro = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
+nve-runtime = { workspace = true }
 
 [[bench]]
 name = "dioxus_bench"

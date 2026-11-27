@@ -33,17 +33,14 @@ mod text_bidi_tests;
 #[cfg(test)]
 mod text_tests;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId};
-use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
+use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::ImageFit;
-use nve_engine::{
-    BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer,
-    Viewport,
-};
+use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
+use nve_layout::{StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, Rgba, TableEventBus};
 
 use display_list::{emit_node_into, InheritedTextStyle};
@@ -87,8 +84,6 @@ pub use nve_components::paint::{
 };
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use nve_components::transform::Transform2D;
-#[cfg(feature = "yoga")]
-pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
     draw_hud_banner, parse_box_shadow, rasterize_display_list, rasterize_display_list_bitmap,
     rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, BoxShadow,
@@ -184,9 +179,6 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) display_list: DisplayList,
     pub(crate) viewport: Viewport,
     pub(crate) text_engine: Arc<CosmicTextEngine>,
-    pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
-    pub(crate) last_virtual_scroll_x: HashMap<NodeId, f32>,
-    pub(crate) last_virtual_scroll_y: HashMap<NodeId, f32>,
     pub(crate) focus: TextFocusState,
     pub(crate) motion: MotionDriver,
     pub(crate) table_registry: SkiaTableRegistry,
@@ -206,13 +198,6 @@ impl SkiaBackend<TaffyStoreLayout> {
     }
 }
 
-#[cfg(feature = "yoga")]
-impl SkiaBackend<YogaLayoutEngine> {
-    pub fn new_yoga() -> Result<Self, YogaUnavailableError> {
-        Ok(Self::with_layout(YogaLayoutEngine::new()?))
-    }
-}
-
 impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn with_layout(layout: L) -> Self {
         Self::with_layout_and_text_engine(layout, CosmicTextEngine::shared())
@@ -226,9 +211,6 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             display_list: DisplayList::default(),
             viewport: Viewport::default(),
             text_engine,
-            scroll_offsets: HashMap::new(),
-            last_virtual_scroll_x: HashMap::new(),
-            last_virtual_scroll_y: HashMap::new(),
             focus: TextFocusState::default(),
             motion: MotionDriver::new(),
             table_registry: SkiaTableRegistry::new(),
@@ -286,9 +268,6 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             display_list: DisplayList::default(),
             viewport: self.viewport,
             text_engine: self.text_engine,
-            scroll_offsets: self.scroll_offsets,
-            last_virtual_scroll_x: self.last_virtual_scroll_x,
-            last_virtual_scroll_y: self.last_virtual_scroll_y,
             focus: self.focus,
             motion: self.motion,
             table_registry: self.table_registry,
@@ -363,7 +342,6 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         emit_node_into(
             store,
             &self.layout_tree,
-            &self.scroll_offsets,
             &self.focus,
             &self.motion,
             &self.table_registry,
@@ -457,9 +435,6 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
     fn reset(&mut self) {
         self.layout_tree.reset();
         self.display_list.ops.clear();
-        self.scroll_offsets.clear();
-        self.last_virtual_scroll_x.clear();
-        self.last_virtual_scroll_y.clear();
         self.focus = TextFocusState::default();
         self.motion = MotionDriver::new();
         self.table_events.clear();

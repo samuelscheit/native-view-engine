@@ -18,7 +18,9 @@
 #define NVE_EXTERN_C_END }
 /* `constexpr` functions are implicitly `inline` and usable in constant expressions. */
 #define NVE_INLINE constexpr inline
-#define NVE_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#ifndef NVE_STATIC_ASSERT
+#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)
+#endif
 #define NVE_ALIGNOF(type) alignof(type)
 /* Over-aligns a struct member (and so its struct), like Rust `#[repr(C, align(N))]`. */
 #define NVE_ALIGNAS(n) alignas(n)
@@ -26,7 +28,9 @@
 #define NVE_EXTERN_C_BEGIN
 #define NVE_EXTERN_C_END
 #define NVE_INLINE static inline
-#define NVE_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#ifndef NVE_STATIC_ASSERT
+#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)
+#endif
 #define NVE_ALIGNOF(type) _Alignof(type)
 #define NVE_ALIGNAS(n) _Alignas(n)
 #endif

@@ -129,6 +129,16 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         self.submit_nve2_frame_with_hint(wire_bytes, 0)
     }
 
+    /// Decodes a full `SceneKeyframe` `NVE2` payload, unconditionally resetting prior replica state
+    /// (even when the `NVE2` header carries `frame > 1`) once the header validates.
+    pub fn submit_nve2_keyframe(
+        &mut self,
+        wire_bytes: &[u8],
+    ) -> Result<BackendApplyStats, BackendError> {
+        self.decode_nve2_into_replica(wire_bytes, 0, true)?;
+        self.commit_decoded_or_reset()
+    }
+
     /// Like [`Self::submit_nve2_frame`], additionally pre-sizing `NodeStore` and `ChangeSet` for
     /// `node_count_hint` nodes before decoding a Frame-0 keyframe (`frame == 1`).
     pub fn submit_nve2_frame_with_hint(
@@ -136,7 +146,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         wire_bytes: &[u8],
         node_count_hint: usize,
     ) -> Result<BackendApplyStats, BackendError> {
-        self.decode_nve2_into_replica(wire_bytes, node_count_hint)?;
+        self.decode_nve2_into_replica(wire_bytes, node_count_hint, false)?;
         self.commit_decoded_or_reset()
     }
 
@@ -148,7 +158,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         wire_bytes: &[u8],
         expected_live_nodes: usize,
     ) -> Result<BackendApplyStats, Frame0SubmitError> {
-        if let Err(err) = self.decode_nve2_into_replica(wire_bytes, expected_live_nodes) {
+        if let Err(err) = self.decode_nve2_into_replica(wire_bytes, expected_live_nodes, false) {
             return Err(match err {
                 BackendError::Wire(WireError::Alloc) => Frame0SubmitError::Alloc,
                 BackendError::Wire(_) | BackendError::NeedsKeyframe(Some(_)) => {
@@ -166,16 +176,19 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             .map_err(Frame0SubmitError::Backend)
     }
 
+    /// `is_keyframe` resets prior state whatever the header's `frame`; otherwise only `frame == 1`
+    /// does, and deltas are refused while [`Self::needs_keyframe`].
     fn decode_nve2_into_replica(
         &mut self,
         wire_bytes: &[u8],
         node_count_hint: usize,
+        is_keyframe: bool,
     ) -> Result<(), BackendError> {
         let (frame, _ops) = WireDecoder::validate_header(wire_bytes)?;
-        if self.needs_keyframe && frame != 1 {
+        if !is_keyframe && self.needs_keyframe && frame != 1 {
             return Err(BackendError::NeedsKeyframe(None));
         }
-        if frame == 1
+        if (is_keyframe || frame == 1)
             && (self.needs_keyframe || self.store.frame() > 0 || self.store.capacity() > 1)
         {
             self.reset();

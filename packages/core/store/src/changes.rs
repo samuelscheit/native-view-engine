@@ -155,6 +155,100 @@ impl ChangeSet {
         Ok(())
     }
 
+    /// Overwrites `self` with a copy of `other` while reusing existing `Vec` capacities.
+    pub fn copy_from(&mut self, other: &ChangeSet) {
+        self.clear();
+        self.frame = other.frame;
+        self.merge_from(other);
+    }
+
+    /// Merges `other` into `self` while preserving `Vec` capacities, reconciling nodes created in
+    /// `self` and removed in `other` (preventing create-then-remove resurrection across multi-pump
+    /// ticks), and keeping `relocated_rows` ordered by `TableSlot` for linear `publish_table_views`.
+    pub fn merge_from(&mut self, other: &ChangeSet) {
+        if other.frame > self.frame {
+            self.frame = other.frame;
+        }
+        if !other.removed.is_empty() {
+            // Strip nodes removed in `other` from earlier `self` lists. Nodes born in `self.created`
+            // and killed in `other.removed` never existed before this merged frame and cancel out.
+            for &rid in &other.removed {
+                if let Some(pos) = self.created.iter().position(|&c| c == rid) {
+                    self.created.remove(pos);
+                } else {
+                    self.removed.push(rid);
+                }
+            }
+            self.children.retain(|id| !other.removed.contains(id));
+            let mut write = 0usize;
+            for read in 0..self.touched.len() {
+                if !other.removed.contains(&self.touched[read]) {
+                    self.touched[write] = self.touched[read];
+                    self.effects[write] = self.effects[read];
+                    write += 1;
+                }
+            }
+            self.touched.truncate(write);
+            self.effects.truncate(write);
+            for tbl in &mut self.tables[..self.table_len.as_usize()] {
+                let mut tw = 0usize;
+                for tr in 0..tbl.nodes.len() {
+                    if !other.removed.contains(&tbl.nodes[tr]) {
+                        tbl.nodes[tw] = tbl.nodes[tr];
+                        tbl.masks[tw] = tbl.masks[tr];
+                        tw += 1;
+                    }
+                }
+                tbl.nodes.truncate(tw);
+                tbl.masks.truncate(tw);
+                tbl.detached.retain(|id| !other.removed.contains(id));
+            }
+        }
+        self.created.extend_from_slice(&other.created);
+        self.children.extend_from_slice(&other.children);
+        self.touched.extend_from_slice(&other.touched);
+        self.effects.extend_from_slice(&other.effects);
+        for src in other.tables() {
+            if let Some(dst) = self.tables[..self.table_len.as_usize()]
+                .iter_mut()
+                .find(|t| t.slot == src.slot)
+            {
+                dst.nodes.extend_from_slice(&src.nodes);
+                dst.masks.extend_from_slice(&src.masks);
+                dst.detached.extend_from_slice(&src.detached);
+            } else {
+                let dst = self.next_table(src.slot);
+                dst.nodes.extend_from_slice(&src.nodes);
+                dst.masks.extend_from_slice(&src.masks);
+                dst.detached.extend_from_slice(&src.detached);
+            }
+        }
+        if !other.relocated_rows.is_empty() {
+            let had = !self.relocated_rows.is_empty();
+            self.relocated_rows.extend_from_slice(&other.relocated_rows);
+            if had {
+                self.relocated_rows.sort_unstable();
+            }
+        }
+        self.resources_defined
+            .extend_from_slice(&other.resources_defined);
+        self.resources_released
+            .extend_from_slice(&other.resources_released);
+        if !other.commands.is_empty() {
+            let base = self.command_bytes.len() as u32;
+            self.command_bytes.extend_from_slice(&other.command_bytes);
+            for cmd in &other.commands {
+                self.commands.push(Command {
+                    node: cmd.node,
+                    table: cmd.table,
+                    op: cmd.op,
+                    off: base.saturating_add(cmd.off),
+                    len: cmd.len,
+                });
+            }
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.created.clear();
         self.removed.clear();

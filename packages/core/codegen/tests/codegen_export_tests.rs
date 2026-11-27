@@ -247,7 +247,7 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let c11_harness = tmp.join("check_abi.c");
     std::fs::write(
         &c11_harness,
-        "#include <nve/generated/nve_abi.generated.h>\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView)); }\n",
+        "#include <nve/generated/nve_runtime_abi.generated.h>\n#include <nve/generated/nve_abi.generated.h>\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView) + sizeof(NveRuntimeApi) + sizeof(NveRuntimeSceneView)); }\n",
     )
     .unwrap();
     let status_c11 = std::process::Command::new("clang")
@@ -266,7 +266,10 @@ fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let cpp_harness = tmp.join("check_abi.cpp");
     std::fs::write(
         &cpp_harness,
-        "#include <nve/generated/nve_abi.generated.h>\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nint check_abi_cpp() { return static_cast<int>(NVE_PRIMARY_SLOT_NONE); }\n",
+        format!(
+            "#include <nve/generated/nve_abi.generated.h>\n#include <nve/generated/nve_runtime_abi.generated.h>\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nstatic_assert(sizeof(NveNodeRow) == NVE_NODE_ROW_SIZE);\nstatic_assert(NVE_RUNTIME_SCHEMA_HASH == 0x{:016X}ULL);\nint check_abi_cpp() {{ return static_cast<int>(NVE_PRIMARY_SLOT_NONE) + static_cast<int>(NVE_RUNTIME_OK); }}\n",
+            nve_abi::NVE_RUNTIME_SCHEMA_HASH
+        ),
     )
     .unwrap();
     let status_cpp = std::process::Command::new("clang++")

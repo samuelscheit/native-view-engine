@@ -30,7 +30,7 @@ fn generation_is_deterministic_lf_only_and_lands_in_the_host_packages() {
         first, second,
         "ABI codegen must be byte-for-byte deterministic"
     );
-    assert_eq!(first.len(), 15);
+    assert_eq!(first.len(), 16);
     for f in &first {
         assert!(
             !f.content.contains('\r'),
@@ -82,7 +82,8 @@ fn templates_are_lf_only_and_under_650_lines() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 15, "one template per generated file");
+    // One template per generated file, plus the shared `c/records.h` macros.
+    assert_eq!(checked, 17, "one template per generated file");
 }
 
 /// Integer-valued numeric literals in JS / Dart source that are not exact JavaScript numbers:
@@ -569,6 +570,7 @@ fn generated_c_headers_compile_on_every_data_model() {
 fn record_layouts_match_rustc_on_every_data_model() {
     use nve_codegen::abi::layout::Model;
     let model = nve_codegen::abi::abi_model().expect("ABI model");
+    let runtime = nve_codegen::abi::runtime_abi_model(&model).expect("runtime ABI model");
     let required =
         std::env::var_os("CI").is_some() || std::env::var_os("NVE_REQUIRE_CROSS").is_some();
     let rustc = Command::new("rustc")
@@ -632,7 +634,7 @@ fn record_layouts_match_rustc_on_every_data_model() {
         let mut asserts = String::from(
             "#![no_std]\n#![allow(unused_imports)]\nuse nve_abi::*;\nuse nve_abi::table::NveTableView;\n",
         );
-        for r in &model.records {
+        for r in model.records.iter().chain(&runtime.records) {
             let rust_align = r.align.at(data_model).max(r.slab_align.unwrap_or(1));
             asserts += &format!(
                 "const _: () = assert!(core::mem::size_of::<{0}>() == {1} && core::mem::align_of::<{0}>() == {2}, \"{0} size/align\");\n",

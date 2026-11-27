@@ -23,8 +23,9 @@ dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 nve-codegen = { workspace = true }
 nve-interop = { workspace = true }
-nve-wire = { workspace = true }
+nve-wire = { workspace = true, features = ["client", "server"] }
 nve-backend-headless = { workspace = true }
+nve-layout = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-docs = { workspace = true }

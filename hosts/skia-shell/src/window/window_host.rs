@@ -71,6 +71,7 @@ impl DesktopWindowHost<HotAppSlot> {
                 options.surface_id,
                 initial_viewport,
                 options.clear_color,
+                options.layout_engine,
             )
             .ok()
         });
@@ -89,14 +90,16 @@ impl DesktopWindowHost<HotAppSlot> {
                 options.clear_color,
                 options.show_hud,
             )
+            .with_layout_choice(options.layout_engine)
         } else {
-            DesktopSession::new(
+            DesktopSession::new_with_layout(
                 app,
                 options.surface_id,
                 initial_viewport,
                 options.clear_color,
                 options.show_hud,
-            )
+                options.layout_engine,
+            )?
         };
         let _ = session.notify_viewport_resize();
         session.render_and_rasterize()?;
@@ -133,13 +136,14 @@ impl DesktopWindowHost<PairedRemoteApp> {
         };
         let initial_timeout = pair_config.initial_frame_timeout;
         let app = PairedRemoteApp::connect(pair_config)?;
-        let mut session = DesktopSession::new(
+        let mut session = DesktopSession::new_with_layout(
             app,
             options.surface_id,
             initial_viewport,
             options.clear_color,
             options.show_hud,
-        );
+            options.layout_engine,
+        )?;
         let _ = session.notify_viewport_resize();
         session.app_mut().wait_for_frame(initial_timeout)?;
         if let Some(banner) = session.app().remote_status_banner() {
@@ -457,14 +461,22 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         let mut reschedule = false;
         for sw in self.windows.values_mut() {
             let has_remote = sw.session.app().has_pending_remote_frame();
-            if has_remote && let Some(banner) = sw.session.app().remote_status_banner() {
+            let mut banner_changed = false;
+            if let Some(banner) = sw.session.app().remote_status_banner()
+                && sw.session.status_banner() != Some(banner.as_str())
+            {
                 sw.session.set_status_banner(Some(banner));
+                banner_changed = true;
             }
             let (rendered, exhausted) = Self::pump_window_async(sw, has_remote);
             reschedule |= exhausted;
             if rendered {
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.window.request_redraw();
+            } else if banner_changed {
+                sw.session.rasterize_current();
+                sw.sync_title();
                 sw.window.request_redraw();
             }
         }

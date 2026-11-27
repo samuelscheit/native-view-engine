@@ -41,7 +41,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     let mut kitchen_sink = nve_example_kitchen_sink::create_surface(1);
     let frame1 = kitchen_sink.render_nve2_slice(1).to_vec();
     server
-        .broadcast_command_delta(1, &frame1)
+        .broadcast_scene_keyframe(1, &frame1)
         .expect("seed initial keyframe");
 
     let viewport = Viewport {

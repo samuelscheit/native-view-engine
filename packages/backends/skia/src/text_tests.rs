@@ -1,5 +1,6 @@
 use nve_abi::ColorRgba;
-use nve_engine::{LayoutRect, TextMeasurer};
+use nve_engine::LayoutRect;
+use nve_layout::TextMeasurer;
 
 use crate::font::BitmapFontTextMeasurer;
 use crate::raster::PixelBuffer;

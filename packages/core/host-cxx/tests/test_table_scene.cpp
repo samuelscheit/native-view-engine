@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "nve/host/runtime_session.hpp"
 #include "nve/host/scene_reader.hpp"
 #include "nve/host/table_reader.hpp"
 #include "check.h"
@@ -275,6 +276,143 @@ void test_scene_slab_counts_fit_the_address_space() {
   }
 }
 
+void test_runtime_scene_reader_and_session_mock() {
+  struct MockState {
+    int acquires = 0;
+    int releases = 0;
+    int destroys = 0;
+    int wake_fires = 0;
+    bool corrupt_view = false;
+    NveRuntimeSceneView view{};
+  };
+  static MockState* g_mock = nullptr;
+  MockState state{};
+  g_mock = &state;
+
+  const std::array<NveNodeRow, 2> rows = {
+      NveNodeRow{{0u, 0u, 0u, 0u}, 0u, 0u, 0u, 0u, 0xFFu, 0u, 0u},
+      NveNodeRow{{1u, 0u, 0u, 0u}, 0u, 0u, 0u, 1u, 0u, 0u, static_cast<uint8_t>(NVE_NODE_ROW_FLAG_LIVE)},
+  };
+  const std::array<NveLayoutRect, 2> rects = {
+      NveLayoutRect{0.0f, 0.0f, 0.0f, 0.0f},
+      NveLayoutRect{10.0f, 20.0f, 120.0f, 40.0f},
+  };
+  state.view = NveRuntimeSceneView{
+      NVE_RUNTIME_SCHEMA_HASH, 3u, 2u, 0u, 0u, 0u, 0u, 0u,
+      rows.data(), rects.data(), nullptr, nullptr, nullptr, nullptr, nullptr,
+  };
+
+  auto noop_i32 = [](NveRuntimeHandle) -> int32_t { return NVE_RUNTIME_OK; };
+  NveRuntimeApi mock_api{};
+  mock_api.abi_version = NVE_RUNTIME_ABI_VERSION;
+  mock_api.struct_size = static_cast<uint32_t>(sizeof(NveRuntimeApi));
+  mock_api.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
+  mock_api.create = [](const NveRuntimeConfig*) -> NveRuntimeHandle { return g_mock; };
+  mock_api.destroy = [](NveRuntimeHandle) { ++g_mock->destroys; };
+  mock_api.set_wake_callback = [](NveRuntimeHandle, NveRuntimeWakeFn cb, void* ctx) -> int32_t {
+    if (cb != nullptr) cb(ctx);
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.set_viewport = [](NveRuntimeHandle, float, float, float) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.attach_app_interface = [](NveRuntimeHandle, NveGetInterfaceFn) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.submit_nve2 = [](NveRuntimeHandle, NveBufferSlice) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.tick = [](NveRuntimeHandle, float, uint32_t* c) -> int32_t {
+    if (c != nullptr) *c = 0u;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.dispatch_events = [](NveRuntimeHandle, NveEventBatch, uint32_t*) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.hit_test = [](NveRuntimeHandle, float, float, uint32_t* out) -> int32_t {
+    *out = 1u;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.scroll_by = [](NveRuntimeHandle, uint32_t, float, float, float*, float*) -> int32_t {
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.scene_acquire = [](NveRuntimeHandle, NveRuntimeSceneView* out) -> int32_t {
+    ++g_mock->acquires;
+    *out = g_mock->view;
+    if (g_mock->corrupt_view) out->schema_hash ^= 1ULL;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.scene_release = [](NveRuntimeHandle) -> int32_t {
+    ++g_mock->releases;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.get_metrics = [](NveRuntimeHandle, NveRuntimeMetrics* m) -> int32_t {
+    *m = NveRuntimeMetrics{};
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.pair_connect = [](NveRuntimeHandle, NveStrSlice, NveStrSlice) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.pair_disconnect = noop_i32;
+  mock_api.pair_is_connected = [](NveRuntimeHandle) -> uint32_t { return 0u; };
+  mock_api.last_error = [](uint8_t*, size_t) -> size_t { return 0u; };
+
+  {
+    auto sess = nve::host::RuntimeSession::create(&mock_api);
+    CHECK(sess.has_value());
+    auto wake_cb = [](void* ctx) { ++static_cast<MockState*>(ctx)->wake_fires; };
+    CHECK(sess->set_wake_callback(wake_cb, &state) == NVE_RUNTIME_OK);
+    CHECK(state.wake_fires == 1);
+    CHECK(sess->clear_wake_callback() == NVE_RUNTIME_OK);
+    {
+      auto guard = sess->acquire_scene();
+      CHECK(guard.has_value());
+      CHECK(guard->active());
+      CHECK((*guard)->frame_id() == 3u && (*guard)->is_live(1u) && (*guard)->has_table(1u, 0u));
+      CHECK((*guard)->rect(1u)->width == 120.0f);
+
+      // Move-ctor clears moved-from guard spans so no dangling std::span remains.
+      nve::host::RuntimeSceneGuard moved(std::move(*guard));
+      CHECK(!guard->active());
+      CHECK(guard->reader().rows().empty() && guard->reader().rects().empty());
+      CHECK(moved.active() && moved->frame_id() == 3u);
+
+      // Move-assign + self-move safety.
+      nve::host::RuntimeSceneGuard assigned(std::move(moved));
+      CHECK(!moved.active() && moved.reader().rows().empty());
+      nve::host::RuntimeSceneGuard* self_ptr = &assigned;
+      assigned = std::move(*self_ptr);
+      CHECK(assigned.active() && assigned->frame_id() == 3u);
+
+      // Non-self move-assignment releases prior guard_a lock immediately and clears moved-from guard_b.
+      auto guard_b = sess->acquire_scene();
+      CHECK(guard_b.has_value() && guard_b->active());
+      const int releases_before = state.releases;
+      assigned = std::move(*guard_b);
+      CHECK(state.releases == releases_before + 1);
+      CHECK(!guard_b->active());
+      CHECK(guard_b->reader().rows().empty() && guard_b->reader().rects().empty());
+      CHECK(guard_b->raw().rows == nullptr && guard_b->raw().node_capacity == 0u);
+      CHECK(assigned.active() && assigned->frame_id() == 3u);
+
+      // Explicit release() clears raw_ and reader_ spans immediately.
+      assigned.release();
+      CHECK(!assigned.active());
+      CHECK(assigned.reader().rows().empty() && assigned.reader().rects().empty());
+      CHECK(assigned.raw().rows == nullptr && assigned.raw().node_capacity == 0u);
+    }
+    CHECK(state.acquires == 2 && state.releases == 2);
+
+    // Misaligned slab pointer MUST be rejected by RuntimeSceneReader::open() with MisalignedSlab.
+    alignas(NveNodeRow) uint8_t unaligned_buf[sizeof(NveNodeRow) * 2u + 4u]{};
+    NveRuntimeSceneView misaligned = state.view;
+    misaligned.rows = reinterpret_cast<const NveNodeRow*>(unaligned_buf + 1u);
+    SceneError align_err = SceneError::None;
+    CHECK(!nve::host::RuntimeSceneReader::open(&misaligned, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err)
+               .has_value());
+    CHECK(align_err == SceneError::MisalignedSlab);
+
+    // Corrupted view MUST release reader lock immediately instead of leaking!
+    state.corrupt_view = true;
+    SceneError err = SceneError::None;
+    CHECK(!sess->acquire_scene(nullptr, &err).has_value());
+    CHECK(err == SceneError::SchemaMismatch);
+    CHECK(state.acquires == 3 && state.releases == 3);
+  }
+  CHECK(state.destroys == 1);
+  g_mock = nullptr;
+}
+
 }  // namespace
 
 int main() {
@@ -285,6 +423,7 @@ int main() {
   test_count_fits_with_32_bit_limits();
   test_scene_reader();
   test_scene_reader_rejects();
+  test_runtime_scene_reader_and_session_mock();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_table_scene_test: %d failure(s)\n", g_failures);
     return 1;

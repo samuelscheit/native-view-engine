@@ -25,6 +25,7 @@ function(nve_ensure_abi_codegen)
 
   set(_nve_generated_headers
     "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_abi.generated.h"
+    "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_runtime_abi.generated.h"
     "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_tables.generated.h"
     "${_nve_repo_root}/packages/core/host-cxx/tests/hash_vectors.generated.h"
   )

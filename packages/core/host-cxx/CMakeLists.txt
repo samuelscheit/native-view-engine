@@ -8,6 +8,7 @@ target_include_directories(nve_host_cxx INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/i
 target_compile_features(nve_host_cxx INTERFACE c_std_11 cxx_std_20)
 
 option(NVE_HOST_CXX_BUILD_TESTS "Build the nve_host_cxx test suite" ${PROJECT_IS_TOP_LEVEL})
+option(NVE_HOST_CXX_WITH_RUNTIME "Build and run live C++20 RuntimeSession tests linked against libnve_runtime" OFF)
 
 if(NVE_HOST_CXX_BUILD_TESTS)
   enable_testing()
@@ -47,4 +48,18 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     add_test(NAME nve_host_compile_fail_${_case} COMMAND ${_nve_host_syntax_only} -DNVE_EXPECT_${_case})
     set_tests_properties(nve_host_compile_fail_${_case} PROPERTIES WILL_FAIL TRUE)
   endforeach()
+
+  if(NVE_HOST_CXX_WITH_RUNTIME)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveRuntime.cmake")
+    add_executable(nve_host_runtime_session_test tests/test_runtime_session.cpp)
+    set_target_properties(nve_host_runtime_session_test PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_link_libraries(nve_host_runtime_session_test PRIVATE nve_host_cxx nve::runtime)
+    if(NOT NVE_RUNTIME_NO_DEFAULT_FEATURES)
+      target_compile_definitions(nve_host_runtime_session_test PRIVATE NVE_RUNTIME_TEST_HAS_WIRE=1)
+    endif()
+    target_compile_options(nve_host_runtime_session_test PRIVATE ${_nve_host_warnings} ${_nve_host_sanitize})
+    target_link_options(nve_host_runtime_session_test PRIVATE ${_nve_host_sanitize})
+    add_test(NAME nve_host_runtime_session COMMAND nve_host_runtime_session_test)
+  endif()
 endif()

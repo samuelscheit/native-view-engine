@@ -6,12 +6,11 @@ use nve_abi::{
     native_events_to_direct, pack_key_modifiers, EventMask, EventPayload, NativeEvent,
     NativeEventKind, NodeId, NveDirectEvent, ROOT_NODE_ID,
 };
-use nve_backend_skia::SkiaBackend;
 use nve_components::tables::Interaction;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 use winit::keyboard::{Key, ModifiersState};
 
-use super::session::{now_us, DesktopSession};
+use super::session::{now_us, DesktopSession, ShellSkiaBackend};
 use super::text_edit::{
     classify_focused_key, classify_unfocused_keydown, delete_backward, delete_forward,
     insert_text_at, sanitize_pasted_multiline, sanitize_pasted_single_line, FocusedKeyAction,
@@ -61,7 +60,7 @@ fn has_any_keydown_listener(store: &NodeStore) -> bool {
     store.live_nodes().any(|id| has_keydown_listener(store, id))
 }
 
-fn move_caret_visual(backend: &SkiaBackend, text: &str, caret: usize, delta: i32) -> usize {
+fn move_caret_visual(backend: &ShellSkiaBackend, text: &str, caret: usize, delta: i32) -> usize {
     let shaped = backend.text_engine().shape_single_line(
         text,
         14.0,

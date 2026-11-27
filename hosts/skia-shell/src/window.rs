@@ -46,6 +46,7 @@ use nve_backend_skia::gpu::GpuBackendKind;
 use nve_backend_skia::raster::PixelBuffer;
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{BackendError, Frame0Miss, PersistenceError};
+use nve_layout::{DynLayoutEngine, TaffyStoreLayout};
 
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
@@ -54,7 +55,7 @@ pub use dioxus_app::DioxusDesktopApp;
 #[cfg(test)]
 pub use hot_reload_client::HotReloadClient;
 pub use multi_window::HostWakeEvent;
-pub use pair_client::{PairConnectConfig, PairTransport};
+pub use pair_client::PairConnectConfig;
 #[cfg(test)]
 pub use pair_client::PairedRemoteApp;
 #[cfg(test)]
@@ -75,6 +76,7 @@ pub enum DesktopHostError {
     Window(String),
     Surface(String),
     Reload(String),
+    Layout(String),
 }
 
 impl fmt::Display for DesktopHostError {
@@ -90,6 +92,7 @@ impl fmt::Display for DesktopHostError {
             Self::Window(msg) => write!(f, "window error: {msg}"),
             Self::Surface(msg) => write!(f, "softbuffer surface error: {msg}"),
             Self::Reload(msg) => write!(f, "hot reload error: {msg}"),
+            Self::Layout(msg) => write!(f, "layout engine error: {msg}"),
         }
     }
 }
@@ -126,6 +129,48 @@ impl From<std::io::Error> for DesktopHostError {
     }
 }
 
+/// Pluggable layout engine selected by `--layout <taffy|yoga>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutEngineChoice {
+    #[default]
+    Taffy,
+    Yoga,
+}
+
+impl LayoutEngineChoice {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("taffy") {
+            Ok(Self::Taffy)
+        } else if s.eq_ignore_ascii_case("yoga") {
+            Ok(Self::Yoga)
+        } else {
+            Err(format!("invalid --layout '{s}' (expected 'taffy' or 'yoga')"))
+        }
+    }
+
+    pub fn build_layout_engine(self) -> Result<DynLayoutEngine, DesktopHostError> {
+        match self {
+            Self::Taffy => Ok(Box::new(TaffyStoreLayout::new())),
+            Self::Yoga => {
+                #[cfg(feature = "yoga")]
+                {
+                    nve_layout_yoga::YogaLayoutEngine::new()
+                        .map(|engine| Box::new(engine) as DynLayoutEngine)
+                        .map_err(|err| DesktopHostError::Layout(err.to_string()))
+                }
+                #[cfg(not(feature = "yoga"))]
+                {
+                    Err(DesktopHostError::Layout(
+                        "layout engine 'yoga' requires building nve-skia-shell with `--features yoga`"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+    }
+}
+
 /// Configuration for the live desktop preview window and optional Frame-0 `frame0.nve2` cache.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopPreviewOptions {
@@ -138,6 +183,7 @@ pub struct DesktopPreviewOptions {
     pub surface_id: SurfaceId,
     pub show_hud: bool,
     pub preferred_backend: GpuBackendKind,
+    pub layout_engine: LayoutEngineChoice,
     pub vsync: bool,
     pub frame0_path: Option<PathBuf>,
 }
@@ -154,6 +200,7 @@ impl Default for DesktopPreviewOptions {
             surface_id: 1,
             show_hud: true,
             preferred_backend: GpuBackendKind::platform_preferred(),
+            layout_engine: LayoutEngineChoice::Taffy,
             vsync: true,
             frame0_path: None,
         }
@@ -208,6 +255,25 @@ pub trait DesktopApp {
     fn has_pending_remote_frame(&self) -> bool {
         false
     }
+
+    /// Returns `true` when this app delivers frames exclusively via [`Self::take_queued_wire_frame`]
+    /// rather than synchronous [`Self::render`] calls (e.g. [`PairedRemoteApp`]).
+    fn uses_queued_wire_frames(&self) -> bool {
+        false
+    }
+
+    /// Takes the next queued `(is_keyframe, wire_bytes)` frame in delivery order for paired/remote
+    /// apps so incremental `CommandDelta` batches are never overwritten before rendering.
+    fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
+        None
+    }
+
+    /// Invoked after the most recently dequeued wire frame applied cleanly into `StoreWireReplica`.
+    fn on_queued_wire_frame_applied(&mut self, _is_keyframe: bool) {}
+
+    /// Invoked when the most recently dequeued wire frame failed to decode/apply, allowing paired
+    /// remote apps to enter `waiting_for_keyframe` and request a rate-limited `SceneKeyframe`.
+    fn on_queued_wire_frame_error(&mut self) {}
 
     /// Optional live status banner for remote/paired sessions (shown in HUD & window title).
     fn remote_status_banner(&self) -> Option<String> {

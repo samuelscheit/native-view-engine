@@ -160,6 +160,7 @@ macro_rules! export_nve_app {
         $crate::export_nve_app!($app_ty, symbol = nve_get_interface);
     };
     ($app_ty:ty, symbol = $symbol:ident) => {
+        #[allow(unsafe_code)]
         const _: () = {
             use ::std::ffi::c_void;
             use $crate::abi::{

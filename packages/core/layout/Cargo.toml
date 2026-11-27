@@ -1,0 +1,23 @@
+[package]
+name = "nve-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared NodeStore layout layer: StoreLayoutEngine / TextMeasurer traits and the default direct Taffy engine"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-components = { workspace = true }
+nve-engine = { workspace = true }
+nve-store = { workspace = true }
+taffy = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "taffy_hoisted_bench"
+harness = false
+
+[lints]
+workspace = true

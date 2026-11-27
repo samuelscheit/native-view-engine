@@ -13,7 +13,7 @@ HOST_RUNTIME_SUITES="cxx swift java dart ts"
 host_runtime_missing_tool() {
   local tool
   case "$1" in
-    cxx) set -- cmake ctest ;;
+    cxx) set -- cmake ctest cargo ;;
     swift) set -- swift ;;
     java) set -- javac java ;;
     dart) set -- dart node ;;  # node runs the dart2js parity build
@@ -57,7 +57,7 @@ suite_host_cxx() {
   local dir="$BUILD_ROOT/host-cxx"
   local gen=()
   command -v ninja >/dev/null 2>&1 && gen=(-G Ninja)
-  cmake -S "$HOST_RT_ROOT/packages/core/host-cxx" -B "$dir" ${gen[@]+"${gen[@]}"} -DCMAKE_BUILD_TYPE=Debug
+  cmake -S "$HOST_RT_ROOT/packages/core/host-cxx" -B "$dir" ${gen[@]+"${gen[@]}"} -DCMAKE_BUILD_TYPE=Debug -DNVE_HOST_CXX_WITH_RUNTIME=ON
   cmake --build "$dir"
   ctest --test-dir "$dir" --output-on-failure
 }

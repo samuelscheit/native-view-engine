@@ -4,6 +4,7 @@
 #define NVE_ABI_GENERATED_H
 
 #include "../host/api.h"
+{%- import "c/records.h" as records %}
 
 NVE_EXTERN_C_BEGIN
 
@@ -20,20 +21,8 @@ NVE_EXTERN_C_BEGIN
 {%- for iface in m.core.modules %}
 #define NVE_IFACE_{{ spell::screaming(iface.name) }} {{ iface.interface_id }}u /* const {{ iface.c_name }}* */
 {%- endfor %}
-{% for e in m.enums() %}
-{%- if let Some(doc) = e.doc %}
-/* {{ spell::one_line(doc) }} */
-{%- endif %}
-typedef enum {{ e.name }} {
-{%- for v in e.variants %}
-  {{ model::c_enum_prefix(e) }}{{ spell::screaming(v.name) }} = {{ spell::int(v.value) }},
-{%- endfor %}
-} {{ e.name }};
-{% endfor %}
-/* Every record is declared up front so records can point at each other in any order. */
-{%- for r in m.records %}
-typedef {% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {{ r.name }};
-{%- endfor %}
+{% for e in m.enums() %}{% call records::enum_def(e) %}{% endcall %}{% endfor %}
+{%- call records::typedefs(m.records) %}{% endcall %}
 {% for a in m.value_aliases() %}
 {%- if let Some(doc) = a.doc %}
 /* {{ spell::one_line(doc) }} */
@@ -45,21 +34,7 @@ typedef {{ c::ty(a.target) }} {{ a.name }};
 typedef int32_t (*NveHostInvokeFn)(void* host_ctx, uint32_t service_id, uint32_t method_id, uint64_t request_id,
                                    NveBufferSlice request, uint8_t* out_buf, size_t out_cap, size_t* out_len);
 typedef int32_t (*NveHostChannelPublishFn)(void* host_ctx, uint32_t channel_id, uint32_t flags, NveBufferSlice payload);
-{% for r in m.records %}
-{%- if let Some(doc) = r.doc %}
-/* {{ spell::one_line(doc) }} */
-{%- endif %}
-{%- if let Some(n) = r.slab_align %}
-/* Rust aligns `{{ r.name }}` slabs to {{ n }} bytes (`align({{ n }})`); that changes no size or layout here, so C
- * keeps the natural alignment Swift's ClangImporter imports as a plain value type. A C producer that
- * hands Rust a `{{ r.name }}` array must still allocate it {{ n }}-byte aligned (`aligned_alloc({{ n }}, ...)`). */
-{%- endif %}
-{% if r.is_union %}union{% else %}struct{% endif %} {{ r.name }} {
-{%- for f in r.fields %}
-  {% if loop.first %}{% if let Some(n) = r.alignas %}NVE_ALIGNAS({{ n }}) {% endif %}{% endif %}{{ c::field_decl(f) }};
-{%- endfor %}
-};
-{% endfor %}
+{%- call records::definitions(m.records) %}{% endcall %}
 /* Layouts on every data model NVE runs on, computed from the field types and checked against
  * `rustc`: 64-bit pointers; 32-bit pointers with 8-byte-aligned 64-bit fields (armv7, wasm32,
  * arm64_32, Windows x86); and i386 System V, where 64-bit fields are 4-byte aligned in structs. */
@@ -67,16 +42,8 @@ typedef struct NveDetailU64AlignProbe {
   uint8_t pad;
   uint64_t value;
 } NveDetailU64AlignProbe;
-#define NVE_ABI_U64_FIELD_ALIGN offsetof(NveDetailU64AlignProbe, value)
 NVE_STATIC_ASSERT(sizeof(void*) == 4u || sizeof(void*) == 8u, "NVE supports 32-bit and 64-bit targets only");
-{%- for r in m.records %}
-NVE_STATIC_ASSERT(sizeof({{ r.name }}) == {{ c::width(r.size) }}, "{{ r.name }} size");
-NVE_STATIC_ASSERT(NVE_ALIGNOF({{ r.name }}) == {{ c::width(r.align) }}, "{{ r.name }} alignment");
-{%- for f in r.fields %}
-NVE_STATIC_ASSERT(offsetof({{ r.name }}, {{ f.name() }}) == {{ c::width(f.offset) }}, "{{ r.name }}.{{ f.name() }} offset");
-{%- endfor %}
-{%- endfor %}
-#undef NVE_ABI_U64_FIELD_ALIGN
+{%- call records::asserts(m.records) %}{% endcall %}
 {% for iface in m.core.modules %}
 {%- if let Some(doc) = iface.doc %}
 /* {{ spell::one_line(doc) }} */

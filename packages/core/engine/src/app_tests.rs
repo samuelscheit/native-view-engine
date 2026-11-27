@@ -412,3 +412,28 @@ fn direct_set_props_reads_nested_maps_and_arrays_zero_copy() {
     assert_eq!(app.tag_count, 2);
     assert!(!app.set_props(NvePropsRef::EMPTY));
 }
+
+#[deny(unsafe_code)]
+mod deny_unsafe_export_smoke {
+    use nve_abi::{FrameId, NveEventBatchRef, SurfaceId};
+
+    use crate::NveApp;
+
+    struct SafeOnlyApp;
+
+    impl NveApp for SafeOnlyApp {
+        fn create(_surface_id: SurfaceId) -> Self {
+            Self
+        }
+
+        fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+            &[]
+        }
+
+        fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+            false
+        }
+    }
+
+    crate::export_nve_app!(SafeOnlyApp, symbol = test_safe_only_app_get_interface);
+}

@@ -10,9 +10,8 @@ use std::time::Instant;
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::CosmicTextEngine;
 use nve_components::tables::{core_realization_order, register_core_tables};
-use nve_engine::{
-    Frame0File, Frame0Meta, NveApp, StoreBackend, StoreWireReplica, TextMeasurer, Viewport,
-};
+use nve_engine::{Frame0File, Frame0Meta, NveApp, StoreBackend, StoreWireReplica, Viewport};
+use nve_layout::TextMeasurer;
 use nve_example_kitchen_sink::{KITCHEN_SINK_STATE_VERSION, KitchenSinkModule};
 use nve_studio_workspace::{STUDIO_SNAPSHOT_SCHEMA_VERSION, StudioWorkspaceModule};
 

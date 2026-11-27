@@ -93,6 +93,15 @@ impl WireDecoder {
         SessionBudget::max_frame0_node_hint(wire_bytes)
     }
 
+    /// Returns every active `(wire_slot, local_slot)` table mapping declared in this decoder
+    /// session, including sparse tables with zero currently-attached rows.
+    pub fn declared_wire_tables(&self) -> impl Iterator<Item = (u8, TableSlot)> + '_ {
+        self.map
+            .iter()
+            .enumerate()
+            .filter_map(|(wire, &local)| (local != u8::MAX).then_some((wire as u8, TableSlot(local))))
+    }
+
     fn slot_layout(store: &NodeStore, slot: TableSlot) -> Option<(usize, u32, u32)> {
         if let Some(m) = store.table_meta(slot) {
             return Some((m.words(), m.str_words(), m.resource_words()));
