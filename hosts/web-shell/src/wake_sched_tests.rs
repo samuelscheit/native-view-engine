@@ -7,8 +7,6 @@ use std::task::{Poll, Wake, Waker};
 
 use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_web::WebBackend;
-use nve_components::tables::DebugId;
-use nve_store::NodeId as StoreNodeId;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::Viewport;
@@ -420,18 +418,8 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
         };
 
     let find = |session: &WebAppSession, tid: &str| {
-        let store = session.store();
-        let mut stack = vec![StoreNodeId::ROOT];
-        while let Some(id) = stack.pop() {
-            if id != StoreNodeId::ROOT
-                && let Some(dbg) = store.try_row::<DebugId>(id)
-                && dbg.test_id() == tid
-            {
-                return id.raw();
-            }
-            stack.extend_from_slice(store.children(id));
-        }
-        panic!("missing node test_id={tid}");
+        crate::tests::find_node_by_test_id(session.store(), tid)
+            .unwrap_or_else(|| panic!("missing node test_id={tid}"))
     };
 
     run_direct(&mut session, &fw, true);

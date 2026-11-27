@@ -2,7 +2,7 @@
 //! [`crate::SkiaBackend`] directly over `&NodeStore`.
 
 use nve_abi::{EventMask, NodeId};
-use nve_components::tables::{Display, Interaction, Layout, Scroll, Visual};
+use nve_components::tables::{is_node_display_none, Interaction, Scroll, Visual};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
@@ -104,13 +104,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         filter: HitTargetFilter,
         depth: usize,
     ) -> Option<NodeId> {
-        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) {
-            return None;
-        }
-        if store
-            .try_row::<Layout>(id)
-            .is_some_and(|l| l.display() == Display::None)
-        {
+        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) || is_node_display_none(store, id) {
             return None;
         }
         let is_vis_hidden = store
@@ -209,13 +203,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         inherited_hidden: bool,
         depth: usize,
     ) -> Option<NodeId> {
-        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) {
-            return None;
-        }
-        if store
-            .try_row::<Layout>(id)
-            .is_some_and(|l| l.display() == Display::None)
-        {
+        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) || is_node_display_none(store, id) {
             return None;
         }
         let is_vis_hidden = store

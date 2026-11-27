@@ -252,7 +252,7 @@ pub struct TextInput {
     #[effect(semantics)]
     #[bits(1)]
     pub required: bool,
-    #[effect(semantics)]
+    #[effect(layout, paint, semantics)]
     #[bits(4)]
     pub input_kind: InputKind,
     #[effect(semantics)]

@@ -235,6 +235,19 @@ word_enum! {
     pub enum AriaLive: 2 { Unset = 0, Off = 1, Polite = 2, Assertive = 3 }
 }
 
+impl AriaLive {
+    /// Canonical WAI-ARIA `aria-live` attribute token (`None` when `Unset`).
+    #[inline]
+    pub const fn as_aria_str(self) -> Option<&'static str> {
+        match self {
+            Self::Unset => None,
+            Self::Off => Some("off"),
+            Self::Polite => Some("polite"),
+            Self::Assertive => Some("assertive"),
+        }
+    }
+}
+
 word_enum! {
     pub enum AriaOrientation: 2 { Unset = 0, Horizontal = 1, Vertical = 2 }
 }

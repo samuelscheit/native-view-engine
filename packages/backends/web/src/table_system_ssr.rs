@@ -126,6 +126,9 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if !label.is_empty() {
             write_attr("aria-label", label, out);
         }
+        if let Some(live) = a11y.live().as_aria_str() {
+            write_attr("aria-live", live, out);
+        }
         if a11y.hidden() {
             write_attr("aria-hidden", "true", out);
         }

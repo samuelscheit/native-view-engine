@@ -446,6 +446,7 @@ impl WebBackend {
             if let Some(a11y) = store.try_row::<Accessibility>(id) {
                 set_or_remove_attr(el, "role", a11y.role().as_aria_str());
                 set_or_remove_attr(el, "aria-label", a11y.label());
+                set_or_remove_attr(el, "aria-live", a11y.live().as_aria_str().unwrap_or(""));
                 if a11y.hidden() {
                     let _ = el.set_attribute("aria-hidden", "true");
                 } else {
@@ -454,6 +455,7 @@ impl WebBackend {
             } else {
                 let _ = el.remove_attribute("role");
                 let _ = el.remove_attribute("aria-label");
+                let _ = el.remove_attribute("aria-live");
                 let _ = el.remove_attribute("aria-hidden");
             }
         }

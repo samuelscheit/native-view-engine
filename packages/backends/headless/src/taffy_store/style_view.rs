@@ -225,7 +225,9 @@ impl CoreStyle for StyleView<'_> {
 
     #[inline]
     fn box_generation_mode(&self) -> BoxGenerationMode {
-        if self.layout().display() == NveDisplay::None {
+        if self.layout().display() == NveDisplay::None
+            || nve_components::tables::is_hidden_text_input(self.store, self.id)
+        {
             BoxGenerationMode::None
         } else {
             BoxGenerationMode::Normal

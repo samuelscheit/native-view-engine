@@ -413,19 +413,20 @@ where
         build_session(surface_id, backend, viewport, valid_state.as_deref());
     let session = Rc::new(RefCell::new(session_val));
 
-    let (snapshot_guard, snapshot_trigger) = if enable_persistence {
-        let (guard, trigger) = SnapshotPersistenceGuard::install(
-            &window,
-            Rc::clone(&session),
-            container_for_snapshot,
-            app_slug,
-            schema_version,
-            !is_reset,
-        );
-        (Some(guard), Some(trigger))
-    } else {
-        (None, None)
-    };
+    let (snapshot_guard, snapshot_trigger) =
+        if enable_persistence && session.borrow().app_slug().is_some() {
+            let (guard, trigger) = SnapshotPersistenceGuard::install(
+                &window,
+                Rc::downgrade(&session),
+                container_for_snapshot,
+                app_slug,
+                schema_version,
+                !is_reset,
+            );
+            (Some(guard), Some(trigger))
+        } else {
+            (None, None)
+        };
 
     let generation = NEXT_SHELL_GENERATION.with(|c| {
         let next = c.get();

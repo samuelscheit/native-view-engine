@@ -117,7 +117,9 @@ impl DesktopApp for DioxusDesktopApp {
         _new_dylib_path: &Path,
         _surface_id: SurfaceId,
     ) -> Result<u64, DesktopHostError> {
-        Ok(self.generation)
+        Err(DesktopHostError::Reload(
+            "in-process DioxusDesktopApp does not support dylib reload".into(),
+        ))
     }
 
     fn install_wake_callback(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {

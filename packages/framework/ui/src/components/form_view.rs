@@ -279,7 +279,6 @@ pub fn FormHiddenField(name: String, value: String) -> Element {
             nve_table: super::html_tables::html_form_control_name(Some(name)),
             input_type: "hidden",
             value: "{value}",
-            style: "display: none;",
         }
     }
 }

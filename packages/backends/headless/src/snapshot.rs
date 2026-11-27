@@ -3,15 +3,13 @@
 use nve_abi::ColorRgba;
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
-    Display as NveDisplay, Layout as NveLayout, Overflow, Typography, Visual,
+    is_node_display_none, Layout as NveLayout, Overflow, Typography, Visual,
 };
 use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
 
 #[inline]
 pub(crate) fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
-    store
-        .try_row::<NveLayout>(id)
-        .is_some_and(|l| l.display() == NveDisplay::None)
+    is_node_display_none(store, id)
 }
 
 #[inline]

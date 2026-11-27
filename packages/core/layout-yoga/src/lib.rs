@@ -226,9 +226,13 @@ mod real_impl {
             let Some(entry) = self.nodes.get_mut(&id) else {
                 return;
             };
+            let hidden_input = nve_components::tables::is_hidden_text_input(store, id);
             if let Some(layout) = store.try_row::<Layout>(id) {
                 let props = NveYogaLayoutProps::from_store_layout(&layout);
-                let ext = NveYogaLayoutExt::from_store_layout(&layout);
+                let mut ext = NveYogaLayoutExt::from_store_layout(&layout);
+                if hidden_input {
+                    ext.display = 1;
+                }
                 unsafe {
                     nve_yg_node_apply_layout(entry.yg_node, &props);
                     nve_yg_node_apply_layout_ext(entry.yg_node, &ext);
@@ -238,9 +242,20 @@ mod real_impl {
                     flex_shrink: 1.0,
                     ..Default::default()
                 };
-                unsafe {
-                    nve_yg_node_apply_layout(entry.yg_node, &props);
-                    nve_yg_node_apply_layout_ext(entry.yg_node, std::ptr::null());
+                if hidden_input {
+                    let ext = NveYogaLayoutExt {
+                        display: 1,
+                        ..Default::default()
+                    };
+                    unsafe {
+                        nve_yg_node_apply_layout(entry.yg_node, &props);
+                        nve_yg_node_apply_layout_ext(entry.yg_node, &ext);
+                    }
+                } else {
+                    unsafe {
+                        nve_yg_node_apply_layout(entry.yg_node, &props);
+                        nve_yg_node_apply_layout_ext(entry.yg_node, std::ptr::null());
+                    }
                 }
             }
 

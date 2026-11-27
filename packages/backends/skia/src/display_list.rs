@@ -189,7 +189,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     ops: &mut Vec<PaintOp>,
     id: StoreNodeId,
 ) {
-    if !store.is_live(id) {
+    if !store.is_live(id) || nve_components::tables::is_hidden_text_input(store, id) {
         return;
     }
     let patch = layout_tree.effective_patch(store, id);
