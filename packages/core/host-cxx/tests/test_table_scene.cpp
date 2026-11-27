@@ -345,7 +345,71 @@ void test_runtime_scene_reader_and_session_mock() {
   mock_api.pair_connect = [](NveRuntimeHandle, NveStrSlice, NveStrSlice) -> int32_t { return NVE_RUNTIME_OK; };
   mock_api.pair_disconnect = noop_i32;
   mock_api.pair_is_connected = [](NveRuntimeHandle) -> uint32_t { return 0u; };
+  mock_api.set_props = [](NveRuntimeHandle, const struct NveMapEntry*, uint32_t count, uint32_t* c) -> int32_t {
+    if (c != nullptr) *c = count;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.drain_emitted_events = [](NveRuntimeHandle, NveEventBatch* out) -> int32_t {
+    *out = NveEventBatch{nullptr, 0u, 0u};
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.measure = [](NveRuntimeHandle, NveSizeConstraints c, NveIntrinsicSize* out) -> int32_t {
+    *out = NveIntrinsicSize{c.max_w, 12.0f};
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.apply_hot_patch = [](NveRuntimeHandle, NveBufferSlice p, uint32_t* c) -> int32_t {
+    if (c != nullptr) *c = p.len > 0u ? 1u : 0u;
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.snapshot_state = [](NveRuntimeHandle, NveBufferSlice* out) -> int32_t {
+    static const uint8_t kState[3] = {1u, 2u, 3u};
+    *out = NveBufferSlice{kState, sizeof(kState)};
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.restore_state = [](NveRuntimeHandle, NveBufferSlice s) -> int32_t {
+    return s.len == 3u ? NVE_RUNTIME_OK : NVE_RUNTIME_INVALID_ARG;
+  };
+  mock_api.set_text_measurer = [](NveRuntimeHandle, NveTextMeasureFn, void*) -> int32_t { return NVE_RUNTIME_OK; };
+  mock_api.resource_bytes = [](NveRuntimeHandle, uint32_t id, uint8_t* out, size_t cap, size_t* out_len) -> int32_t {
+    if (id != 7u) return NVE_RUNTIME_NOT_FOUND;
+    *out_len = 4u;
+    if (cap == 0u) return NVE_RUNTIME_OK;
+    if (cap < 4u || out == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    for (uint8_t i = 0u; i < 4u; ++i) out[i] = static_cast<uint8_t>(0xA0u + i);
+    return NVE_RUNTIME_OK;
+  };
   mock_api.last_error = [](uint8_t*, size_t) -> size_t { return 0u; };
+
+  {
+    // Every slot is mandatory: a vtable missing any of them is rejected before `create`.
+    NveRuntimeApi partial = mock_api;
+    partial.resource_bytes = nullptr;
+    CHECK(!nve::host::RuntimeSession::validate_api(&partial));
+    CHECK(!nve::host::RuntimeSession::create(&partial).has_value());
+
+    auto sess = nve::host::RuntimeSession::create(&mock_api);
+    CHECK(sess.has_value());
+    bool changed = false;
+    CHECK(sess->set_props(nullptr, 2u, &changed) == NVE_RUNTIME_OK && changed);
+    NveEventBatch batch{};
+    CHECK(sess->drain_emitted_events(&batch) == NVE_RUNTIME_OK && batch.len == 0u);
+    CHECK(sess->drain_emitted_events(nullptr) == NVE_RUNTIME_INVALID_ARG);
+    NveIntrinsicSize size{};
+    CHECK(sess->measure(NveSizeConstraints{0.0f, 0.0f, 90.0f, 50.0f}, &size) == NVE_RUNTIME_OK);
+    CHECK(size.width == 90.0f && size.height == 12.0f);
+    const std::array<uint8_t, 2> patch = {1u, 2u};
+    CHECK(sess->apply_hot_patch(patch, &changed) == NVE_RUNTIME_OK && changed);
+    CHECK(sess->apply_hot_patch({}, &changed) == NVE_RUNTIME_OK && !changed);
+    std::span<const uint8_t> snap;
+    CHECK(sess->snapshot_state(&snap) == NVE_RUNTIME_OK && snap.size() == 3u && snap[2] == 3u);
+    CHECK(sess->restore_state(snap) == NVE_RUNTIME_OK);
+    CHECK(sess->set_text_measurer(nullptr, nullptr) == NVE_RUNTIME_OK);
+    std::vector<uint8_t> bytes;
+    CHECK(sess->resource_bytes(7u, bytes) == NVE_RUNTIME_OK && bytes.size() == 4u && bytes[3] == 0xA3u);
+    CHECK(sess->resource_bytes(8u, bytes) == NVE_RUNTIME_NOT_FOUND && bytes.empty());
+  }
+  CHECK(state.destroys == 1);
+  state.destroys = 0;
 
   {
     auto sess = nve::host::RuntimeSession::create(&mock_api);

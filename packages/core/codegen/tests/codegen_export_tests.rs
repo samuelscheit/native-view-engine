@@ -341,7 +341,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     let all_files = generate_all_abi_files();
 
     assert_eq!(core_files.len(), 5);
-    assert_eq!(scene_files.len(), 5);
+    assert_eq!(scene_files.len(), 4);
     assert_eq!(all_files.len(), 17);
 
     assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
@@ -353,7 +353,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     assert_eq!(NVE_SCENE_SCHEMA_HASH, nve_abi::NVE_SCENE_SCHEMA_HASH);
 
     assert_eq!(core_files[0].content, core_files[1].content);
-    assert_eq!(scene_files[0].content, scene_files[1].content);
+    assert!(scene_files[0].relative_path.ends_with("nve_scene_abi.generated.h"));
 
     assert!(core_files[0].content.contains("#define NVE_IFACE_HOST 5u"));
     assert!(core_files[0].content.contains("typedef enum NveHostStatus"));

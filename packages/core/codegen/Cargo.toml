@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-components = { workspace = true }
 nve-hash = { workspace = true }
 serde = { workspace = true }
 # Hybrid `.rs` spec frontend; `span-locations` gives parse errors real line/column numbers.

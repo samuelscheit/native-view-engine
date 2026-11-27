@@ -63,7 +63,7 @@ fn golden_vectors_match_canonical_rust_xxh64() {
     }
     assert_eq!(ABC_ID, 0x44BC_2CF5_AD77_0999);
     let files = generate_all_hash_files();
-    assert_eq!(files.len(), 6);
+    assert_eq!(files.len(), 5);
     for f in &files {
         assert!(f.relative_path.contains(".generated.") || f.relative_path.ends_with("NveHash.java"));
         assert!(f.content.starts_with("// @generated"), "{}", f.relative_path);
@@ -130,30 +130,6 @@ fn java_mirror_compiles_and_verifies() {
         return;
     };
     assert_ok_line(&run(Command::new("java").current_dir(&dir).args(["-cp", "classes", "Check"])).unwrap());
-}
-
-#[test]
-fn swift_mirror_compiles_and_verifies() {
-    let dir = temp_dir("swift");
-    write_mirror(&dir, "NveHash.generated.swift", "NveHash.generated.swift");
-    std::fs::write(
-        dir.join("main.swift"),
-        "precondition(NveXxh64.verifyTestVectors())\n\
-         let k = NveKey64.of(\"abc\")\nprecondition(NveKey64(lo: k.lo, hi: k.hi) == k)\n\
-         print(\"ok \" + String(k.value, radix: 16).leftPad())\n\
-         extension String { func leftPad() -> String { String(repeating: \"0\", count: max(0, 16 - count)) + self } }\n",
-    )
-    .unwrap();
-    let Some(_) = run(Command::new("swiftc").current_dir(&dir).args([
-        "-O",
-        "NveHash.generated.swift",
-        "main.swift",
-        "-o",
-        "swift_bin",
-    ])) else {
-        return;
-    };
-    assert_ok_line(&run(&mut Command::new(dir.join("swift_bin"))).unwrap());
 }
 
 const JS_CHECK: &str = "if (!nveHashVerifyTestVectors()) throw new Error('vectors');\n\

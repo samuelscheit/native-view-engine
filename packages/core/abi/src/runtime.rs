@@ -11,13 +11,14 @@ use core::mem::{align_of, offset_of, size_of};
 use nve_abi_macros::NveAbi;
 use nve_hash::Xxh64Hasher;
 
-use crate::ffi::{NveBufferSlice, NveGetInterfaceFn};
+use crate::ffi::{NveBufferSlice, NveGetInterfaceFn, NveIntrinsicSize, NveSizeConstraints};
+pub use crate::runtime_methods::{NveRuntimeMethod, NVE_RUNTIME_API_METHODS};
 use crate::schema::{
     AbiConstDescriptor, AbiEnumDescriptor, AbiFileDescriptor, AbiRecordDescriptor, NveEnumSchema,
     NveStructSchema,
 };
 use crate::table::NveTableView;
-use crate::value::{NveEventBatch, NveStrSlice};
+use crate::value::{NveEventBatch, NveMapEntry, NveStrSlice};
 
 /// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
 pub const NVE_RUNTIME_ABI_VERSION: u32 = 1;
@@ -37,6 +38,19 @@ pub type NveRuntimeHandle = *mut c_void;
 /// Asynchronous wake callback registered by a host to be notified when frames or pairing work
 /// become ready.
 pub type NveRuntimeWakeFn = unsafe extern "C" fn(ctx: *mut c_void);
+
+/// Host text measurement callback installed with [`NveRuntimeApi::set_text_measurer`].
+///
+/// Invoked on the runtime owner thread during layout (`tick`) with UTF-8 `text`, `font_size` in
+/// logical points, CSS `font_weight` (`100..=900`) and `max_width` (non-finite = unconstrained);
+/// returns the measured `(width, height)` in logical points. It MUST NOT call back into the runtime.
+pub type NveTextMeasureFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    text: NveStrSlice,
+    font_size: f32,
+    font_weight: u16,
+    max_width: f32,
+) -> NveIntrinsicSize;
 
 /// Status codes returned by [`NveRuntimeApi`] entry points.
 #[repr(i32)]
@@ -328,8 +342,42 @@ pub struct NveRuntimeApi {
     ) -> i32,
     pub pair_disconnect: unsafe extern "C" fn(handle: NveRuntimeHandle) -> i32,
     pub pair_is_connected: unsafe extern "C" fn(handle: NveRuntimeHandle) -> u32,
+    pub set_props: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        entries: *const NveMapEntry,
+        count: u32,
+        out_changed: *mut u32,
+    ) -> i32,
+    pub drain_emitted_events:
+        unsafe extern "C" fn(handle: NveRuntimeHandle, out_batch: *mut NveEventBatch) -> i32,
+    pub measure: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        constraints: NveSizeConstraints,
+        out_size: *mut NveIntrinsicSize,
+    ) -> i32,
+    pub apply_hot_patch: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        patch_nvp1: NveBufferSlice,
+        out_changed: *mut u32,
+    ) -> i32,
+    pub snapshot_state:
+        unsafe extern "C" fn(handle: NveRuntimeHandle, out_state: *mut NveBufferSlice) -> i32,
+    pub restore_state: unsafe extern "C" fn(handle: NveRuntimeHandle, state: NveBufferSlice) -> i32,
+    pub set_text_measurer: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        cb: Option<NveTextMeasureFn>,
+        ctx: *mut c_void,
+    ) -> i32,
+    pub resource_bytes: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        resource_id: u32,
+        out_buf: *mut u8,
+        cap: usize,
+        out_len: *mut usize,
+    ) -> i32,
     pub last_error: unsafe extern "C" fn(out_buf: *mut u8, cap: usize) -> usize,
 }
+
 
 /// Entry-point signature exported by `libnve_runtime` (`nve_runtime_get_interface`).
 pub type NveRuntimeGetInterfaceFn = unsafe extern "C" fn(abi_version: u32) -> *const NveRuntimeApi;
@@ -343,13 +391,20 @@ const fn hash_rt_field(h: &mut Xxh64Hasher, name: &str, ty: &str, sep: &[u8], v:
     h.update_u64(v as u64);
 }
 
-const fn hash_rt_method(h: &mut Xxh64Hasher, idx: usize, name: &str, sig: &str) {
-    h.update(b"|fn#");
-    h.update_u64(idx as u64);
-    h.update(b":");
-    h.update(name.as_bytes());
-    h.update(b"=");
-    h.update(sig.as_bytes());
+const fn hash_rt_methods(h: &mut Xxh64Hasher) {
+    let mut idx = 0;
+    while idx < NVE_RUNTIME_API_METHODS.len() {
+        let m = &NVE_RUNTIME_API_METHODS[idx];
+        h.update(b"|fn#");
+        h.update_u64(idx as u64);
+        h.update(b":");
+        h.update(m.name.as_bytes());
+        h.update(b"=(");
+        h.update(m.params.as_bytes());
+        h.update(b")->");
+        h.update(m.ret.as_bytes());
+        idx += 1;
+    }
 }
 
 const fn hash_rt_variant(h: &mut Xxh64Hasher, name: &str, value: i32) {
@@ -447,23 +502,8 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "abi_version", "u32", b"@", offset_of!(NveRuntimeApi, abi_version));
     hash_rt_field(&mut h, "struct_size", "u32", b"@", offset_of!(NveRuntimeApi, struct_size));
     hash_rt_field(&mut h, "schema_hash", "u64", b"@", offset_of!(NveRuntimeApi, schema_hash));
-    hash_rt_method(&mut h, 0, "create", "(const NveRuntimeConfig*)->NveRuntimeHandle");
-    hash_rt_method(&mut h, 1, "destroy", "(NveRuntimeHandle)->void");
-    hash_rt_method(&mut h, 2, "set_wake_callback", "(NveRuntimeHandle,NveRuntimeWakeFn,void*)->i32");
-    hash_rt_method(&mut h, 3, "set_viewport", "(NveRuntimeHandle,f32,f32,f32)->i32");
-    hash_rt_method(&mut h, 4, "attach_app_interface", "(NveRuntimeHandle,NveGetInterfaceFn)->i32");
-    hash_rt_method(&mut h, 5, "submit_nve2", "(NveRuntimeHandle,NveBufferSlice)->i32");
-    hash_rt_method(&mut h, 6, "tick", "(NveRuntimeHandle,f32,u32*)->i32");
-    hash_rt_method(&mut h, 7, "dispatch_events", "(NveRuntimeHandle,NveEventBatch,u32*)->i32");
-    hash_rt_method(&mut h, 8, "hit_test", "(NveRuntimeHandle,f32,f32,u32*)->i32");
-    hash_rt_method(&mut h, 9, "scroll_by", "(NveRuntimeHandle,u32,f32,f32,f32*,f32*)->i32");
-    hash_rt_method(&mut h, 10, "scene_acquire", "(NveRuntimeHandle,NveRuntimeSceneView*)->i32");
-    hash_rt_method(&mut h, 11, "scene_release", "(NveRuntimeHandle)->i32");
-    hash_rt_method(&mut h, 12, "get_metrics", "(NveRuntimeHandle,NveRuntimeMetrics*)->i32");
-    hash_rt_method(&mut h, 13, "pair_connect", "(NveRuntimeHandle,NveStrSlice,NveStrSlice)->i32");
-    hash_rt_method(&mut h, 14, "pair_disconnect", "(NveRuntimeHandle)->i32");
-    hash_rt_method(&mut h, 15, "pair_is_connected", "(NveRuntimeHandle)->u32");
-    hash_rt_method(&mut h, 16, "last_error", "(u8*,usize)->usize");
+    h.update(b";NveTextMeasureFn=(void*,NveStrSlice,f32,u16,f32)->NveIntrinsicSize");
+    hash_rt_methods(&mut h);
     h.digest()
 }
 
@@ -535,4 +575,7 @@ const _: () = {
     assert!(align_of::<NveRuntimeConfig>() == 4);
     assert!(size_of::<NveRuntimeMetrics>() == 64);
     assert!(align_of::<NveRuntimeMetrics>() == 8);
+    // Header (abi_version, struct_size, schema_hash) + one pointer per method-table slot; the
+    // per-slot offsets are locked in `layout_asserts.rs`.
+    assert!(size_of::<NveRuntimeApi>() == 16 + NVE_RUNTIME_API_METHODS.len() * size_of::<usize>());
 };

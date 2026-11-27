@@ -17,6 +17,12 @@ use crate::app::CAbiAppAdapter;
 use crate::builder::{RuntimeBuilder, RuntimeError};
 use crate::surface::SurfaceRuntime;
 
+mod component_slots;
+use component_slots::{
+    rt_apply_hot_patch, rt_drain_emitted_events, rt_measure, rt_resource_bytes, rt_restore_state,
+    rt_set_props, rt_set_text_measurer, rt_snapshot_state,
+};
+
 /// Maximum time `rt_destroy` waits for concurrent readers before refusing to UAF a leaked lock.
 const DESTROY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -571,6 +577,14 @@ static RUNTIME_API: NveRuntimeApi = NveRuntimeApi {
     pair_connect: rt_pair_connect,
     pair_disconnect: rt_pair_disconnect,
     pair_is_connected: rt_pair_is_connected,
+    set_props: rt_set_props,
+    drain_emitted_events: rt_drain_emitted_events,
+    measure: rt_measure,
+    apply_hot_patch: rt_apply_hot_patch,
+    snapshot_state: rt_snapshot_state,
+    restore_state: rt_restore_state,
+    set_text_measurer: rt_set_text_measurer,
+    resource_bytes: rt_resource_bytes,
     last_error: rt_last_error,
 };
 

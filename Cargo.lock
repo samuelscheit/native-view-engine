@@ -2688,6 +2688,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
+ "nve-components",
  "nve-hash",
  "proc-macro2",
  "serde",

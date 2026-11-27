@@ -1,6 +1,8 @@
 //! C11 / C++20 emitter for `nve_runtime_abi.generated.h` derived directly from
 //! `nve_abi::schema::runtime_abi_descriptor()`.
 
+use nve_abi::NVE_RUNTIME_API_METHODS;
+
 use super::core_abi::c_core_type;
 use crate::schema::hybrid::schema_bridge::from_abi_descriptor;
 use crate::schema::hybrid::HybridType;
@@ -119,6 +121,23 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, "  uint32_t _pad;");
     writeln!(out, "}} NveEventBatch;");
     writeln!(out, "#endif");
+    writeln!(out, "#ifndef NVE_TYPE_SIZE_CONSTRAINTS_DEFINED");
+    writeln!(out, "#define NVE_TYPE_SIZE_CONSTRAINTS_DEFINED");
+    writeln!(out, "typedef struct NveSizeConstraints {{");
+    writeln!(out, "  float min_w;");
+    writeln!(out, "  float min_h;");
+    writeln!(out, "  float max_w;");
+    writeln!(out, "  float max_h;");
+    writeln!(out, "}} NveSizeConstraints;");
+    writeln!(out, "#endif");
+    writeln!(out, "#ifndef NVE_TYPE_INTRINSIC_SIZE_DEFINED");
+    writeln!(out, "#define NVE_TYPE_INTRINSIC_SIZE_DEFINED");
+    writeln!(out, "typedef struct NveIntrinsicSize {{");
+    writeln!(out, "  float width;");
+    writeln!(out, "  float height;");
+    writeln!(out, "}} NveIntrinsicSize;");
+    writeln!(out, "#endif");
+    writeln!(out, "struct NveMapEntry;");
     writeln!(out, "#ifndef NVE_TYPE_GET_INTERFACE_FN_DEFINED");
     writeln!(out, "#define NVE_TYPE_GET_INTERFACE_FN_DEFINED");
     writeln!(
@@ -138,6 +157,10 @@ pub fn generate_c_runtime_abi_h() -> String {
 
     writeln!(out, "typedef void* NveRuntimeHandle;");
     writeln!(out, "typedef void (*NveRuntimeWakeFn)(void* ctx);");
+    writeln!(
+        out,
+        "typedef NveIntrinsicSize (*NveTextMeasureFn)(void* ctx, NveStrSlice text, float font_size, uint16_t font_weight, float max_width);"
+    );
     writeln!(out);
 
     writeln!(out, "typedef enum NveRuntimeStatus {{");
@@ -164,65 +187,9 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, "  uint32_t abi_version;");
     writeln!(out, "  uint32_t struct_size;");
     writeln!(out, "  uint64_t schema_hash;");
-    writeln!(
-        out,
-        "  NveRuntimeHandle (*create)(const NveRuntimeConfig* config);"
-    );
-    writeln!(out, "  void (*destroy)(NveRuntimeHandle handle);");
-    writeln!(
-        out,
-        "  int32_t (*set_wake_callback)(NveRuntimeHandle handle, NveRuntimeWakeFn cb, void* ctx);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*set_viewport)(NveRuntimeHandle handle, float width, float height, float scale_factor);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*attach_app_interface)(NveRuntimeHandle handle, NveGetInterfaceFn get_iface);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*submit_nve2)(NveRuntimeHandle handle, NveBufferSlice frame);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*tick)(NveRuntimeHandle handle, float dt_s, uint32_t* out_changed);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*dispatch_events)(NveRuntimeHandle handle, NveEventBatch batch, uint32_t* out_changed);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*hit_test)(NveRuntimeHandle handle, float x, float y, uint32_t* out_node_id);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*scroll_by)(NveRuntimeHandle handle, uint32_t node_id, float dx, float dy, float* out_x, float* out_y);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*scene_acquire)(NveRuntimeHandle handle, NveRuntimeSceneView* out_view);"
-    );
-    writeln!(out, "  int32_t (*scene_release)(NveRuntimeHandle handle);");
-    writeln!(
-        out,
-        "  int32_t (*get_metrics)(NveRuntimeHandle handle, NveRuntimeMetrics* out_metrics);"
-    );
-    writeln!(
-        out,
-        "  int32_t (*pair_connect)(NveRuntimeHandle handle, NveStrSlice uri, NveStrSlice token);"
-    );
-    writeln!(out, "  int32_t (*pair_disconnect)(NveRuntimeHandle handle);");
-    writeln!(
-        out,
-        "  uint32_t (*pair_is_connected)(NveRuntimeHandle handle);"
-    );
-    writeln!(
-        out,
-        "  size_t (*last_error)(uint8_t* out_buf, size_t cap);"
-    );
+    for m in NVE_RUNTIME_API_METHODS {
+        writeln!(out, "  {} (*{})({});", m.ret, m.name, m.params);
+    }
     writeln!(out, "}} NveRuntimeApi;");
     writeln!(out);
     writeln!(out, "/*");
@@ -230,12 +197,21 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, " * - Owner thread affinity: `create` binds the surface to its creating thread.");
     writeln!(out, " *   All mutating, layout, and app-touching calls (`destroy`, `set_viewport`,");
     writeln!(out, " *   `attach_app_interface`, `submit_nve2`, `tick`, `dispatch_events`, `hit_test`,");
-    writeln!(out, " *   `scroll_by`, `pair_connect`, `pair_disconnect`) MUST be invoked on that");
+    writeln!(out, " *   `scroll_by`, `pair_connect`, `pair_disconnect`, `set_props`,");
+    writeln!(out, " *   `drain_emitted_events`, `measure`, `apply_hot_patch`, `snapshot_state`,");
+    writeln!(out, " *   `restore_state`, `set_text_measurer`) MUST be invoked on that");
     writeln!(out, " *   owner thread (wrong-thread calls return `NVE_RUNTIME_INVALID_ARG` with");
     writeln!(out, " *   diagnostic text in `last_error`). No thread may concurrently access the");
     writeln!(out, " *   handle during or after `destroy(h)`.");
     writeln!(out, " * - Cross-thread safe calls: `scene_acquire`, `scene_release`, `get_metrics`,");
-    writeln!(out, " *   `pair_is_connected`, `set_wake_callback`, and `last_error`.");
+    writeln!(out, " *   `pair_is_connected`, `set_wake_callback`, `resource_bytes`, and `last_error`.");
+    writeln!(out, " * - Borrowed app memory: the `NveEventBatch` of `drain_emitted_events` and the");
+    writeln!(out, " *   `NveBufferSlice` of `snapshot_state` stay valid until the next owner-thread");
+    writeln!(out, " *   call on the handle. `resource_bytes` copies into the host buffer (`cap = 0`");
+    writeln!(out, " *   only reports the length).");
+    writeln!(out, " * - `NveTextMeasureFn(ctx, ..)` runs on the owner thread during `tick` layout;");
+    writeln!(out, " *   `max_width` is non-finite when unconstrained. It MUST NOT call the runtime.");
+    writeln!(out, " *   `ctx` must outlive the measurer (replace with NULL or `destroy` first).");
     writeln!(out, " * - Borrowed `NveRuntimeSceneView`: all pointers remain valid and immutable ONLY");
     writeln!(out, " *   between a successful `scene_acquire` and its matching `scene_release`.");
     writeln!(out, " *   While any reader holds `scene_acquire`, writes fail with `NVE_RUNTIME_BUSY`;");
@@ -356,36 +332,17 @@ pub fn generate_c_runtime_abi_h() -> String {
         out,
         "NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, schema_hash) == 8u, \"NveRuntimeApi.schema_hash @8\");"
     );
-    for (slot_idx, fn_name) in [
-        "create",
-        "destroy",
-        "set_wake_callback",
-        "set_viewport",
-        "attach_app_interface",
-        "submit_nve2",
-        "tick",
-        "dispatch_events",
-        "hit_test",
-        "scroll_by",
-        "scene_acquire",
-        "scene_release",
-        "get_metrics",
-        "pair_connect",
-        "pair_disconnect",
-        "pair_is_connected",
-        "last_error",
-    ]
-    .iter()
-    .enumerate()
-    {
+    for (slot_idx, m) in NVE_RUNTIME_API_METHODS.iter().enumerate() {
+        let fn_name = m.name;
         writeln!(
             out,
             "NVE_STATIC_ASSERT(offsetof(NveRuntimeApi, {fn_name}) == 16u + {slot_idx}u * sizeof(void*), \"NveRuntimeApi.{fn_name} offset\");"
         );
     }
+    let api_size_64 = 16 + NVE_RUNTIME_API_METHODS.len() * 8;
     writeln!(
         out,
-        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeApi) == 152u, \"NveRuntimeApi must be 152 bytes on 64-bit\");"
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeApi) == {api_size_64}u, \"NveRuntimeApi must be {api_size_64} bytes on 64-bit\");"
     );
     writeln!(out);
     writeln!(out, "#ifdef __cplusplus");

@@ -44,7 +44,29 @@ pub use visual::{
     Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
 };
 
-use nve_store::{NveTable, RealizationOrder};
+use nve_store::{NveTable, RealizationOrder, TableDesc};
+
+/// Descriptor (key, storage, word layout, field specs) of every core table, in
+/// [`register_core_tables`] order: the single source for generated host table mirrors.
+pub const CORE_TABLE_DESCS: &[&TableDesc] = &[
+    &Layout::DESC,
+    &GridLayout::DESC,
+    &GridItem::DESC,
+    &Visual::DESC,
+    &Typography::DESC,
+    &TextContent::DESC,
+    &Transform::DESC,
+    &Motion::DESC,
+    &Responsive::DESC,
+    &Interaction::DESC,
+    &Accessibility::DESC,
+    &DebugId::DESC,
+    &StreamBoundary::DESC,
+    &Link::DESC,
+    &Scroll::DESC,
+    &Image::DESC,
+    &TextInput::DESC,
+];
 
 /// Registers every cross-platform core table and its resource codecs in the process-global table registry.
 /// Idempotent and fast after the first call.
