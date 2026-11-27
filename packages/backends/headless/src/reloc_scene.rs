@@ -14,13 +14,13 @@ use nve_components::tables::{
 };
 use nve_engine::{
     encode_scene_reloc, BackendError, LayoutRect, NveApp, RelocBuf, RelocError, SceneRelocInput,
-    SceneRelocNodeInput, StoreBackend, StoreLayoutEngine, StoreWireReplica, TextMeasurer, Viewport,
-    SCENE_NODE_CLIP_CHILDREN, SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN,
-    SCENE_NODE_INTERACTIVE,
+    SceneRelocNodeInput, StoreBackend, StoreWireReplica, Viewport, SCENE_NODE_CLIP_CHILDREN,
+    SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN, SCENE_NODE_INTERACTIVE,
 };
+use nve_layout::{StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
-use crate::{HeadlessBackend, TaffyStoreLayout, MAX_TREE_DEPTH};
+use crate::{HeadlessBackend, MAX_TREE_DEPTH};
 
 struct OwnedNodeData {
     node_id: u32,

@@ -35,11 +35,11 @@ pub fn bitmap_font_metrics(font_size: f32) -> BitmapFontMetrics {
     }
 }
 
-/// [`nve_engine::TextMeasurer`] backed by the embedded 5x7 bitmap font metrics.
+/// [`nve_layout::TextMeasurer`] backed by the embedded 5x7 bitmap font metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BitmapFontTextMeasurer;
 
-impl nve_engine::TextMeasurer for BitmapFontTextMeasurer {
+impl nve_layout::TextMeasurer for BitmapFontTextMeasurer {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
         if text.is_empty() {
             return (0.0, 0.0);

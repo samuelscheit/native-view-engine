@@ -17,7 +17,7 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{Criterion, criterion_group};
-    use nve_backend_headless::TaffyStoreLayout;
+    use nve_layout::TaffyStoreLayout;
     use nve_components::tables::core_realization_order;
     use nve_store::{ChangeSet, NodeId, NodeStore};
 

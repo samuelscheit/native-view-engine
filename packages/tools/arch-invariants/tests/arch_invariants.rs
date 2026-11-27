@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use nve_arch_invariants::{
     assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
-    find_files_named, host_runtimes, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, purity,
+    find_files_named, host_runtimes, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, native_build, purity,
     rel_path, repo_index, rpc_dag, spec_registry, theme_hygiene, inline_style_keys, Stage, Violation,
 };
 
@@ -41,6 +41,16 @@ fn core_crates_zero_dioxus_and_platform_dependencies() {
     let mut violations = dag::check_core_zero_dioxus(&idx.graph);
     violations.extend(dag::check_core_zero_platform_crates(&idx.graph));
     assert_no_violations("Framework- & platform-agnostic packages/core/*", &violations);
+}
+
+/// Enforces [INV:core-zero-native-cxx].
+#[test]
+fn core_crates_compile_zero_native_cxx() {
+    let idx = repo_index();
+    assert_no_violations(
+        "packages/core/* Rust crates compile zero native C/C++",
+        &native_build::check_core_zero_native_cxx(idx),
+    );
 }
 
 /// Enforces [INV:zero-runtime-serde-json] and [INV:module-and-host-boundaries].

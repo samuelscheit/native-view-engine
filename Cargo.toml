@@ -7,7 +7,7 @@ members = [
     "packages/core/abi-macros",
     "packages/core/components",
     "packages/core/engine",
-    "packages/core/layout-yoga",
+    "packages/core/layout",
     "packages/core/dioxus",
     "packages/core/codegen",
     "packages/core/interop",
@@ -53,6 +53,7 @@ members = [
     "packages/modules/webview/web",
     "packages/modules/filesystem",
     "packages/modules/haptics",
+    "packages/modules/layout-yoga",
     "packages/modules/linking",
     "packages/modules/secure-store",
     "packages/modules/storage",
@@ -92,7 +93,8 @@ nve-store = { version = "0.1.0", path = "packages/core/store" }
 nve-abi-macros = { version = "0.1.0", path = "packages/core/abi-macros" }
 nve-components = { version = "0.1.0", path = "packages/core/components" }
 nve-engine = { version = "0.1.0", path = "packages/core/engine" }
-nve-layout-yoga = { version = "0.1.0", path = "packages/core/layout-yoga" }
+nve-layout = { version = "0.1.0", path = "packages/core/layout" }
+nve-layout-yoga = { version = "0.1.0", path = "packages/modules/layout-yoga" }
 nve-dioxus = { version = "0.1.0", path = "packages/core/dioxus" }
 nve-codegen = { version = "0.1.0", path = "packages/core/codegen" }
 nve-interop = { version = "0.1.0", path = "packages/core/interop" }

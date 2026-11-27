@@ -10,9 +10,9 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
-    use nve_backend_headless::TaffyStoreLayout;
     use nve_components::tables::{Layout, TextContent};
-    use nve_engine::{StoreLayoutEngine, Viewport};
+    use nve_engine::Viewport;
+    use nve_layout::{StoreLayoutEngine, TaffyStoreLayout};
     use nve_layout_yoga::YogaLayoutEngine;
     use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 

@@ -4,7 +4,7 @@
 use nve_abi::NodeId;
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::Scroll;
-use nve_engine::StoreLayoutEngine;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore, NveTable};
 
 use crate::{SkiaBackend, MAX_HIT_TEST_DEPTH};

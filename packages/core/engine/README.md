@@ -6,7 +6,7 @@ Framework-agnostic core runtime (`packages/core/engine`, **Core Runtime layer**)
 
 - `StoreBackend`, `StoreWireReplica`, `Viewport`, `LayoutRect`, `BackendApplyStats`, `BackendError`
 - `app::NveApp`, `mmap_arena`, `instant_boot`
-- `layout::{StoreLayoutEngine, TextMeasurer, HeuristicTextMeasurer}`, `profiler`, `hotreload::HotPatchMsg`
+- `profiler`, `hotreload::HotPatchMsg` (layout traits live in `nve-layout`)
 
 ```rust
 use nve_engine::{LayoutRect, Viewport};

@@ -2502,8 +2502,8 @@ dependencies = [
  "nve-abi",
  "nve-components",
  "nve-engine",
+ "nve-layout",
  "nve-store",
- "taffy",
 ]
 
 [[package]]
@@ -2519,7 +2519,7 @@ dependencies = [
  "nve-backend-headless",
  "nve-components",
  "nve-engine",
- "nve-layout-yoga",
+ "nve-layout",
  "nve-store",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -2565,6 +2565,7 @@ dependencies = [
  "nve-engine",
  "nve-hash",
  "nve-interop",
+ "nve-layout",
  "nve-layout-yoga",
  "nve-store",
  "rkyv",
@@ -2663,6 +2664,7 @@ dependencies = [
  "nve-engine",
  "nve-example-kitchen-sink",
  "nve-interop",
+ "nve-layout",
  "nve-mdx",
  "nve-store",
  "nve-studio-workspace",
@@ -2951,6 +2953,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-layout"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "nve-abi",
+ "nve-components",
+ "nve-engine",
+ "nve-store",
+ "taffy",
+]
+
+[[package]]
 name = "nve-layout-yoga"
 version = "0.1.0"
 dependencies = [
@@ -2961,6 +2975,7 @@ dependencies = [
  "nve-components",
  "nve-engine",
  "nve-example-kitchen-sink",
+ "nve-layout",
  "nve-store",
 ]
 
@@ -3155,6 +3170,7 @@ dependencies = [
  "nve-engine",
  "nve-host-services",
  "nve-interop",
+ "nve-layout",
  "nve-layout-yoga",
  "nve-router",
  "nve-store",

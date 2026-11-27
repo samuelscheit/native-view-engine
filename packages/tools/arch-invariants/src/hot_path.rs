@@ -12,17 +12,18 @@ use crate::{
 /// Real existing hot-path production files always scanned today (plus `packages/core/store/src`).
 /// Every listed file MUST exist so this scanner can never silently no-op.
 pub const EXISTING_HOT_PATH_FILES: &[&str] = &[
-    "packages/core/engine/src/layout.rs",
+    "packages/core/layout/src/engine.rs",
+    "packages/core/layout/src/measure.rs",
     "packages/core/wire-core/src/frame.rs",
     "packages/core/store/src/store.rs",
     "packages/core/store/src/tx.rs",
     "packages/core/store/src/span_pool.rs",
-    "packages/backends/headless/src/taffy_store/mod.rs",
+    "packages/core/layout/src/taffy_store/mod.rs",
 ];
 
 fn is_allowlisted_cold_fn(rel: &str, name: &str) -> bool {
     ((rel == "packages/core/store/src/store.rs"
-        || rel == "packages/backends/headless/src/taffy_store/mod.rs")
+        || rel == "packages/core/layout/src/taffy_store/mod.rs")
         && name == "new")
         || (rel == "packages/core/store/src/span_pool.rs" && name == "try_str")
         || (rel == "packages/core/wire-core/src/frame.rs" && name == "to_owned")
@@ -298,7 +299,7 @@ fn is_per_node_downcast_scope(rel: &str) -> bool {
         || rel.starts_with("packages/core/abi/")
         || rel.starts_with("packages/core/components/")
         || rel.starts_with("packages/core/tables/")
-        || rel == "packages/core/engine/src/layout.rs"
+        || rel.starts_with("packages/core/layout/")
         || matches!(
             rel,
             "packages/core/store/src/store.rs"

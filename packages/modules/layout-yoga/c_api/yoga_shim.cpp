@@ -39,7 +39,8 @@ struct NveYogaLayoutProps {
   uint8_t _reserved;
   float flex_grow;
   float flex_shrink;
-  float gap;
+  float row_gap;
+  float column_gap;
   float pad_top;
   float pad_right;
   float pad_bottom;
@@ -81,6 +82,12 @@ struct NveYogaLayoutExt {
   float mar_start;
   uint8_t has_mar_end;
   float mar_end;
+  uint8_t flex_wrap;      // 0=nowrap, 1=wrap, 2=wrap-reverse
+  uint8_t align_content;  // 0=stretch, 1=flex-start, 2=center, 3=flex-end, 4=space-between, 5=space-around, 6=space-evenly
+  uint8_t align_self;     // 0=auto, 1=stretch, 2=flex-start, 3=center, 4=flex-end, 5=baseline
+  uint8_t box_sizing;     // 0=border-box, 1=content-box
+  uint8_t overflow;       // 0=visible, 1=hidden, 2=scroll
+  float border_width;
 };
 
 static uint8_t encode_measure_mode(YGMeasureMode mode) noexcept {
@@ -177,7 +184,11 @@ static YGAlign map_align(uint8_t a) noexcept {
 }
 
 YGConfigRef nve_yg_config_new(void) {
-  return YGConfigNew();
+  YGConfigRef cfg = YGConfigNew();
+  if (cfg) {
+    YGConfigSetErrata(cfg, YGErrataNone);
+  }
+  return cfg;
 }
 
 void nve_yg_config_free(YGConfigRef config) {
@@ -345,7 +356,8 @@ void nve_yg_node_apply_layout(YGNodeRef node, const NveYogaLayoutProps* props) {
   YGNodeStyleSetAlignItems(node, map_align(props->align_items));
   YGNodeStyleSetFlexGrow(node, props->flex_grow);
   YGNodeStyleSetFlexShrink(node, props->flex_shrink);
-  YGNodeStyleSetGap(node, YGGutterAll, props->gap);
+  YGNodeStyleSetGap(node, YGGutterRow, props->row_gap);
+  YGNodeStyleSetGap(node, YGGutterColumn, props->column_gap);
 
   YGNodeStyleSetPadding(node, YGEdgeTop, props->pad_top);
   YGNodeStyleSetPadding(node, YGEdgeRight, props->pad_right);
@@ -390,6 +402,12 @@ void nve_yg_node_apply_layout_ext(YGNodeRef node, const NveYogaLayoutExt* ext) {
     YGNodeStyleSetPadding(node, YGEdgeEnd, YGUndefined);
     YGNodeStyleSetMargin(node, YGEdgeStart, YGUndefined);
     YGNodeStyleSetMargin(node, YGEdgeEnd, YGUndefined);
+    YGNodeStyleSetFlexWrap(node, YGWrapNoWrap);
+    YGNodeStyleSetAlignContent(node, YGAlignStretch);
+    YGNodeStyleSetAlignSelf(node, YGAlignAuto);
+    YGNodeStyleSetBoxSizing(node, YGBoxSizingBorderBox);
+    YGNodeStyleSetOverflow(node, YGOverflowVisible);
+    YGNodeStyleSetBorder(node, YGEdgeAll, 0.0f);
     return;
   }
   YGNodeStyleSetDisplay(node, ext->display == 1 ? YGDisplayNone : YGDisplayFlex);
@@ -440,6 +458,76 @@ void nve_yg_node_apply_layout_ext(YGNodeRef node, const NveYogaLayoutExt* ext) {
   YGNodeStyleSetPadding(node, YGEdgeEnd, ext->has_pad_end ? ext->pad_end : YGUndefined);
   YGNodeStyleSetMargin(node, YGEdgeStart, ext->has_mar_start ? ext->mar_start : YGUndefined);
   YGNodeStyleSetMargin(node, YGEdgeEnd, ext->has_mar_end ? ext->mar_end : YGUndefined);
+  switch (ext->flex_wrap) {
+    case 1:
+      YGNodeStyleSetFlexWrap(node, YGWrapWrap);
+      break;
+    case 2:
+      YGNodeStyleSetFlexWrap(node, YGWrapWrapReverse);
+      break;
+    default:
+      YGNodeStyleSetFlexWrap(node, YGWrapNoWrap);
+      break;
+  }
+  switch (ext->align_content) {
+    case 1:
+      YGNodeStyleSetAlignContent(node, YGAlignFlexStart);
+      break;
+    case 2:
+      YGNodeStyleSetAlignContent(node, YGAlignCenter);
+      break;
+    case 3:
+      YGNodeStyleSetAlignContent(node, YGAlignFlexEnd);
+      break;
+    case 4:
+      YGNodeStyleSetAlignContent(node, YGAlignSpaceBetween);
+      break;
+    case 5:
+      YGNodeStyleSetAlignContent(node, YGAlignSpaceAround);
+      break;
+    case 6:
+      YGNodeStyleSetAlignContent(node, YGAlignSpaceEvenly);
+      break;
+    default:
+      YGNodeStyleSetAlignContent(node, YGAlignStretch);
+      break;
+  }
+  switch (ext->align_self) {
+    case 1:
+      YGNodeStyleSetAlignSelf(node, YGAlignStretch);
+      break;
+    case 2:
+      YGNodeStyleSetAlignSelf(node, YGAlignFlexStart);
+      break;
+    case 3:
+      YGNodeStyleSetAlignSelf(node, YGAlignCenter);
+      break;
+    case 4:
+      YGNodeStyleSetAlignSelf(node, YGAlignFlexEnd);
+      break;
+    case 5:
+      YGNodeStyleSetAlignSelf(node, YGAlignBaseline);
+      break;
+    default:
+      YGNodeStyleSetAlignSelf(node, YGAlignAuto);
+      break;
+  }
+  YGNodeStyleSetBoxSizing(
+      node, ext->box_sizing == 1 ? YGBoxSizingContentBox : YGBoxSizingBorderBox);
+  switch (ext->overflow) {
+    case 1:
+      YGNodeStyleSetOverflow(node, YGOverflowHidden);
+      break;
+    case 2:
+      YGNodeStyleSetOverflow(node, YGOverflowScroll);
+      break;
+    default:
+      YGNodeStyleSetOverflow(node, YGOverflowVisible);
+      break;
+  }
+  YGNodeStyleSetBorder(
+      node, YGEdgeAll,
+      (std::isfinite(ext->border_width) && ext->border_width > 0.0f) ? ext->border_width : 0.0f);
 }
 
 void nve_yg_node_set_fixed_size(YGNodeRef node, float width, float height) {

@@ -5,9 +5,8 @@ use std::time::Instant;
 use nve_abi::table::effect;
 use nve_abi::{NativeEvent, NodeId, NveSceneTable, SurfaceId};
 use nve_components::tables::{Interaction, TextContent};
-use nve_engine::{
-    BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, Viewport,
-};
+use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
+use nve_layout::StoreLayoutEngine;
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 
 use crate::{HeadlessBackend, HeadlessMutation, MAX_TREE_DEPTH};

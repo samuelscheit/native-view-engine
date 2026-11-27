@@ -12,7 +12,8 @@ use nve_components::tables::{
     BackgroundFillRes, BoxShadows, Display as NveDisplay, Image, ImageSrc, Layout, Overflow,
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
-use nve_engine::{LayoutRect, StoreLayoutEngine};
+use nve_engine::LayoutRect;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore, Rgba};
 
 use crate::motion::MotionDriver;

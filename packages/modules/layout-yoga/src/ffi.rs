@@ -3,7 +3,8 @@
 use std::ffi::c_void;
 
 use nve_components::tables::{
-    AlignItems, Direction, Display, FlexDirection, JustifyContent, LayoutRef, Position,
+    AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
+    JustifyContent, LayoutRef, Overflow, Position, VisualRef,
 };
 use nve_store::Length;
 
@@ -57,7 +58,8 @@ pub struct NveYogaLayoutProps {
     pub _reserved: u8,
     pub flex_grow: f32,
     pub flex_shrink: f32,
-    pub gap: f32,
+    pub row_gap: f32,
+    pub column_gap: f32,
     pub pad_top: f32,
     pub pad_right: f32,
     pub pad_bottom: f32,
@@ -103,6 +105,12 @@ pub struct NveYogaLayoutExt {
     pub mar_start: f32,
     pub has_mar_end: u8,
     pub mar_end: f32,
+    pub flex_wrap: u8,
+    pub align_content: u8,
+    pub align_self: u8,
+    pub box_sizing: u8,
+    pub overflow: u8,
+    pub border_width: f32,
 }
 
 #[inline]
@@ -168,7 +176,8 @@ impl NveYogaLayoutProps {
             _reserved: 0,
             flex_grow: l.flex_grow(),
             flex_shrink: l.flex_shrink(),
-            gap: len_px(l.row_gap()).max(len_px(l.column_gap())),
+            row_gap: len_px(l.row_gap()),
+            column_gap: len_px(l.column_gap()),
             pad_top: len_px(l.padding_top()),
             pad_right: if pad_inline { 0.0 } else { len_px(l.padding_right()) },
             pad_bottom: len_px(l.padding_bottom()),
@@ -182,7 +191,24 @@ impl NveYogaLayoutProps {
 }
 
 impl NveYogaLayoutExt {
-    pub fn from_store_layout(l: &LayoutRef<'_>) -> Self {
+    pub fn from_store(l: Option<&LayoutRef<'_>>, v: Option<&VisualRef<'_>>) -> Self {
+        let overflow = v.map_or(0, |vis| {
+            let map = |o: Overflow| match o {
+                Overflow::Visible => 0u8,
+                Overflow::Hidden => 1u8,
+                Overflow::Scroll | Overflow::Auto => 2u8,
+            };
+            map(vis.overflow_x()).max(map(vis.overflow_y()))
+        });
+        let bw = v.map_or(0.0, |vis| vis.border_width());
+        let border_width = if bw.is_finite() && bw > 0.0 { bw } else { 0.0 };
+        let Some(l) = l else {
+            return Self {
+                overflow,
+                border_width,
+                ..Default::default()
+            };
+        };
         let (flex_basis_tag, flex_basis_val) = encode_len(l.flex_basis());
         let (top_tag, top_val) = encode_len(l.inset_top());
         let (right_tag, right_val) = encode_len(l.inset_right());
@@ -227,6 +253,34 @@ impl NveYogaLayoutExt {
             mar_start: if mar_inline { len_px(l.margin_left()) } else { 0.0 },
             has_mar_end: u8::from(mar_inline),
             mar_end: if mar_inline { len_px(l.margin_right()) } else { 0.0 },
+            flex_wrap: match l.flex_wrap() {
+                FlexWrap::NoWrap => 0,
+                FlexWrap::Wrap => 1,
+                FlexWrap::WrapReverse => 2,
+            },
+            align_content: match l.align_content() {
+                AlignContent::Stretch => 0,
+                AlignContent::FlexStart => 1,
+                AlignContent::Center => 2,
+                AlignContent::FlexEnd => 3,
+                AlignContent::SpaceBetween => 4,
+                AlignContent::SpaceAround => 5,
+                AlignContent::SpaceEvenly => 6,
+            },
+            align_self: match l.align_self() {
+                AlignSelf::Auto => 0,
+                AlignSelf::Stretch => 1,
+                AlignSelf::FlexStart => 2,
+                AlignSelf::Center => 3,
+                AlignSelf::FlexEnd => 4,
+                AlignSelf::Baseline => 5,
+            },
+            box_sizing: match l.box_sizing() {
+                BoxSizing::BorderBox => 0,
+                BoxSizing::ContentBox => 1,
+            },
+            overflow,
+            border_width,
         }
     }
 }

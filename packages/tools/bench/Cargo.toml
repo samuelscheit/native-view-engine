@@ -22,6 +22,7 @@ dioxus-signals = { workspace = true }
 criterion = { workspace = true }
 musli-zerocopy = "0.1.4"
 nve-backend-headless = { workspace = true }
+nve-layout = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-interop = { workspace = true }

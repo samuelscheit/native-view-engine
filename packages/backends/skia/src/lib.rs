@@ -39,12 +39,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId};
-use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
+use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::ImageFit;
-use nve_engine::{
-    BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer,
-    Viewport,
-};
+use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
+use nve_layout::{StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, Rgba, TableEventBus};
 
 use display_list::{emit_node_into, InheritedTextStyle};
@@ -88,8 +86,6 @@ pub use nve_components::paint::{
 };
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use nve_components::transform::Transform2D;
-#[cfg(feature = "yoga")]
-pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
     draw_hud_banner, parse_box_shadow, rasterize_display_list, rasterize_display_list_bitmap,
     rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, BoxShadow,
@@ -204,13 +200,6 @@ impl Default for SkiaBackend<TaffyStoreLayout> {
 impl SkiaBackend<TaffyStoreLayout> {
     pub fn new() -> Self {
         Self::with_layout(TaffyStoreLayout::new())
-    }
-}
-
-#[cfg(feature = "yoga")]
-impl SkiaBackend<YogaLayoutEngine> {
-    pub fn new_yoga() -> Result<Self, YogaUnavailableError> {
-        Ok(Self::with_layout(YogaLayoutEngine::new()?))
     }
 }
 

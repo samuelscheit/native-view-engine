@@ -2,14 +2,15 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use nve_abi::ColorRgba;
-use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
+use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
 use nve_bench::{
     build_card_scene_cmd, build_row_tree_cmd, RowFeedFixture, DEFAULT_VIEWPORT,
 };
 use nve_components::tables::core_realization_order;
-use nve_engine::{StoreBackend, StoreLayoutEngine, StoreWireReplica};
+use nve_engine::{StoreBackend, StoreWireReplica};
+use nve_layout::{StoreLayoutEngine, TaffyStoreLayout};
 use nve_layout_yoga::YogaLayoutEngine;
 
 fn bench_headless_backend(c: &mut Criterion) {

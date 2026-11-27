@@ -10,7 +10,8 @@ use std::time::Instant;
 use nve_abi::ColorRgba;
 use nve_backend_headless::prerender_native_frame0_with_text_measurer;
 use nve_backend_skia::CosmicTextEngine;
-use nve_engine::{write_reloc_atomic, NveApp, SceneRelocView, TextMeasurer, VerifyMode, Viewport};
+use nve_engine::{write_reloc_atomic, NveApp, SceneRelocView, VerifyMode, Viewport};
+use nve_layout::TextMeasurer;
 use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 

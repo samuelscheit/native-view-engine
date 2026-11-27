@@ -10,7 +10,7 @@ mod hoisted_tree;
 
 use counting_alloc::count_allocs;
 use hoisted_tree::{CARDS, VIEWPORT, build_hoisted_tree, commit_badge_frame, commit_paint_frame};
-use nve_backend_headless::TaffyStoreLayout;
+use nve_layout::TaffyStoreLayout;
 use nve_components::tables::core_realization_order;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 

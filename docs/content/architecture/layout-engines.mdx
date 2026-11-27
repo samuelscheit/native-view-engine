@@ -6,27 +6,24 @@ order: 4
 
 # Pluggable Layout Engines
 
-Layout in `native-view-engine` is decoupled from rendering through two narrow traits in `packages/core/engine/src/layout.rs`: **`LayoutEngine`** and **`TextMeasurer`**. Backends like `HeadlessBackend<L>` and `SkiaBackend<L>` are generic over `L: LayoutEngine` — giving zero-vtable monomorphization by default while allowing live mid-session engine switching through `DynLayoutEngine` (`Box<dyn LayoutEngine>`).
+Layout in `native-view-engine` is decoupled from rendering through two narrow traits in `packages/core/layout` (`nve-layout`): **`StoreLayoutEngine`** and **`TextMeasurer`**. Backends like `HeadlessBackend<L>` and `SkiaBackend<L>` are generic over `L: StoreLayoutEngine` — giving zero-vtable monomorphization by default while allowing live mid-session engine switching through `DynLayoutEngine` (`Box<dyn StoreLayoutEngine>`). Core crates and backends never depend on an optional engine: hosts inject one through `with_layout(...)`.
 
 ## Core Traits
 
-```rust title="packages/core/engine/src/layout.rs (excerpt)" highlight="2,13-22"
+```rust title="packages/core/layout/src/{measure,engine}.rs (excerpt)"
 pub trait TextMeasurer: Send + Sync {
     /// Returns (width, height) in logical points under an optional max_width wrap constraint.
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32);
 }
 
-pub trait LayoutEngine: Send {
+pub trait StoreLayoutEngine: Send {
     fn name(&self) -> &'static str;
-    fn upsert_node(&mut self, id: NodeId, kind: ComponentKind);
-    fn remove_node(&mut self, id: NodeId);
-    fn set_layout(&mut self, id: NodeId, layout: &LayoutProps);
-    fn set_style(&mut self, id: NodeId, style: &StyleProps);
-    fn set_text(&mut self, id: NodeId, text: &str);
-    fn set_children(&mut self, parent: NodeId, children: &[NodeId]);
-    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>);
-    fn compute_layout(&mut self, root: NodeId, viewport: Viewport);
+    /// Invalidates cached entries for every layout/measure/structural change in `changes`.
+    fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet);
+    /// Self-gated: returns `false` without a pass when nothing that affects layout changed.
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) -> bool;
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect>;
+    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>);
     fn reset(&mut self);
 }
 ```
@@ -37,8 +34,8 @@ All coordinates returned by `layout_of(id)` are normalized to **surface-space (r
 
 | Engine | Crate | Implementation | 100 Rows | 1,000 Rows | Best For |
 | :--- | :--- | :--- | ---: | ---: | :--- |
-| **Taffy** (`BuiltinLayout::Taffy`) | `nve-backend-headless` | Pure Rust (`taffy 0.16.0`) | **168.5 µs** | **1.77 ms** | Default Skia, WASM, headless CI, zero-C++ builds |
-| **React Native Yoga** (`BuiltinLayout::Yoga`) | `nve-layout-yoga` | Real C++20 `yogacore` via FFI | **76.2 µs** (custom measurer) | **801.6 µs** (custom measurer) | Bit-exact React Native Fabric parity |
+| **Taffy** (`TaffyStoreLayout`, default) | `nve-layout` | Pure Rust (`taffy 0.16.0`) | **168.5 µs** | **1.77 ms** | Default Skia, WASM, headless CI, zero-C++ builds |
+| **React Native Yoga** (`YogaLayoutEngine`, opt-in module) | `nve-layout-yoga` | Real C++20 `yogacore` via FFI | **76.2 µs** (custom measurer) | **801.6 µs** (custom measurer) | Bit-exact React Native Fabric parity |
 | **C++ Standalone Flexbox** | `cxx/nve-fabric-bridge` | Zero-dep C++20 Flexbox solver | **44.7 µs** | **450.7 µs** | Native C++ hosts built without `RN_REACT_COMMON_DIR` |
 
 ### Dynamic Dispatch Overhead: Effectively Zero
@@ -52,7 +49,7 @@ Because layout traversal dominates execution time, boxing the engine for runtime
 
 ## Real React Native Yoga (`nve-layout-yoga`)
 
-`packages/core/layout-yoga` compiles React Native's actual `yogacore` C++20 sources when `RN_REACT_COMMON_DIR` is set at build time, bridging `YGNodeSetMeasureFunc` directly back into any Rust `TextMeasurer` (such as `CosmicTextEngine` or `HeuristicTextMeasurer`):
+`packages/modules/layout-yoga` compiles React Native's actual `yogacore` C++20 sources when `RN_REACT_COMMON_DIR` is set at build time, bridging `YGNodeSetMeasureFunc` directly back into any Rust `TextMeasurer` (such as `CosmicTextEngine` or `HeuristicTextMeasurer`):
 
 - **Heap-stable measure contexts** — Each node's `BoxedMeasureState` (`NveYogaMeasureHook` + `MeasurePayload`) lives behind a `Box`, so rehashing the internal `HashMap<NodeId, YogaNodeEntry>` never invalidates pointers stored in `YGNodeSetContext`.
 - **Panic-safe measure callbacks** — `rust_measure_callback` wraps `TextMeasurer::measure` in `catch_unwind` so a panicking measurer never unwinds into C++ Yoga.

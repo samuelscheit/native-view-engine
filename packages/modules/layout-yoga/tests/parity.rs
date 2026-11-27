@@ -9,13 +9,12 @@
 use std::sync::Arc;
 
 use nve_abi::EventMask;
-use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
+use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{
     AlignItems, FlexDirection, Interaction, JustifyContent, Layout, TextContent, Typography,
 };
-use nve_engine::{
-    DynLayoutEngine, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer, Viewport,
-};
+use nve_engine::{LayoutRect, StoreBackend, Viewport};
+use nve_layout::{DynLayoutEngine, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 
@@ -69,8 +68,10 @@ fn compare_store_taffy_vs_yoga(
         .commit(store, changes)
         .expect("yoga parity commit");
 
-    assert_eq!(taffy_backend.name(), "headless-taffy");
-    assert_eq!(yoga_backend.name(), "headless-yoga");
+    assert_eq!(taffy_backend.name(), "headless");
+    assert_eq!(taffy_backend.layout_engine_name(), "taffy");
+    assert_eq!(yoga_backend.name(), "headless");
+    assert_eq!(yoga_backend.layout_engine_name(), "yoga");
 
     for &id in node_ids {
         let tr = taffy_backend.layout_of(id.raw());
@@ -254,10 +255,12 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     let store = surface.store();
     let changes = surface.last_changes();
 
+    // Kitchen Sink mounts its 248px desktop sidebar (`ShowOn(min_width(900))`); lay out at
+    // desktop width so all 346 nodes (toolbar, sidebar, badges, scrollview, cards) match reality.
     let viewport = Viewport {
-        width: 393.0,
-        height: 852.0,
-        scale_factor: 3.0,
+        width: 1280.0,
+        height: 800.0,
+        scale_factor: 2.0,
     };
 
     let mut taffy_backend = HeadlessBackend::new();

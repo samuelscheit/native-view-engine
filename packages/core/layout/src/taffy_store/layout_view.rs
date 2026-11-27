@@ -1,7 +1,8 @@
 //! Taffy tree adapter (`LayoutView`) over disjoint borrows of `NodeStore` and `TaffyStoreLayout`.
 
-use nve_components::tables::{Display as NveDisplay, Layout as NveLayout, TextContent};
-use nve_engine::TextMeasurer;
+use nve_components::tables::{
+    Display as NveDisplay, Layout as NveLayout, TextContent, is_node_display_none,
+};
 use nve_store::{NodeId, NodeStore};
 
 use taffy::geometry::Size;
@@ -14,6 +15,8 @@ use taffy::{
     compute_flexbox_layout, compute_grid_layout, compute_hidden_layout, compute_leaf_layout,
     compute_oof_layout,
 };
+
+use crate::TextMeasurer;
 
 use super::contents::BoxChildren;
 use super::node_lists::NodeLists;
@@ -246,7 +249,7 @@ impl LayoutPartialTree for LayoutView<'_> {
         }
         compute_cached_layout(self, n, inputs, |tree, n, inputs| {
             let id = tree.id_of(n);
-            let display = if crate::is_display_none(tree.store, id) {
+            let display = if is_node_display_none(tree.store, id) {
                 NveDisplay::None
             } else {
                 tree.store.row::<NveLayout>(id).display()

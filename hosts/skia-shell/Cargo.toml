@@ -18,8 +18,6 @@ skia-metal = ["skia", "nve-backend-skia/skia-metal"]
 skia-vulkan = ["skia", "nve-backend-skia/skia-vulkan"]
 # Windows Direct3D 12 + DXGI hardware GPU swapchain & offscreen context
 skia-d3d = ["skia", "nve-backend-skia/skia-d3d"]
-# Real React Native Yoga C++20 layout engine integration (compiled when RN_REACT_COMMON_DIR is set)
-yoga = ["nve-backend-skia/yoga"]
 
 [dependencies]
 nve-abi = { workspace = true }

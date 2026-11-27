@@ -1,4 +1,4 @@
-//! Core framework-agnostic runtime: `StoreBackend` / `StoreLayoutEngine` traits, `SurfaceRunner`
+//! Core framework-agnostic runtime: `StoreBackend` trait, `SurfaceRunner`
 //! coordinator, `StoreWireReplica` for cross-boundary `NVE2` frames, 6-stage `FrameProfiler` with
 //! Perfetto/Chrome trace export, and 2-tier hot-reload spine.
 
@@ -7,7 +7,6 @@
 pub mod app;
 pub mod hotreload;
 pub mod instant_boot;
-pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
 pub mod mmap_arena;
@@ -29,9 +28,6 @@ pub use instant_boot::{
     NativeInstantBootStore, NativeStateStore, StateBlobRoot, StateRecoveryStats, StateSaveOutcome,
     StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY, DEFAULT_STATE_ARENA_FILE,
     DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
-};
-pub use layout::{
-    BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, StoreLayoutEngine, TextMeasurer,
 };
 pub use mmap_arena::{
     ArenaError, ArenaHeaderSlot, ArenaPod, MmapOffsetArena, OffsetPtr, OffsetSlice, OffsetStr,

@@ -9,7 +9,8 @@ use crate::TaffyStoreLayout;
 use nve_components::tables::{
     AlignSelf, Display, FlexDirection, Layout, Overflow, Position, TextContent, Typography, Visual,
 };
-use nve_engine::{TextMeasurer, Viewport};
+use crate::TextMeasurer;
+use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Transaction};
 
 /// Deterministic measurer whose width depends on text, size, and weight, so every text input

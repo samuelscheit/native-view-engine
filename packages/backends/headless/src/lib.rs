@@ -1,5 +1,5 @@
-//! Pure-Rust headless [`StoreBackend`] generic over any [`StoreLayoutEngine`] (defaulting to
-//! [`TaffyStoreLayout`] directly over `NodeStore` word columns with zero `TaffyTree` duplication).
+//! Pure-Rust headless [`nve_engine::StoreBackend`] generic over any [`StoreLayoutEngine`]
+//! (defaulting to `nve_layout::TaffyStoreLayout` directly over `NodeStore` word columns).
 //!
 //! Provides <50ms edit->test verification of any Rust UI frontend, mutation diffing, coordinate
 //! hit-testing (with scroll offsets, sticky clamping, overflow clipping, and `Transform2D`),
@@ -14,7 +14,6 @@ mod hit_test;
 mod interaction;
 pub mod reloc_scene;
 mod snapshot;
-pub mod taffy_store;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -26,9 +25,8 @@ use nve_abi::{
     SceneNodeInput, SurfaceId, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
 use nve_components::tables::{Interaction, TextContent, Typography};
-use nve_engine::{
-    HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport,
-};
+use nve_engine::{LayoutRect, Viewport};
+use nve_layout::{HeuristicTextMeasurer, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable, TableSlot};
 
 pub use nve_components::interaction::{
@@ -42,13 +40,12 @@ pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, Ra
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
 pub(crate) use nve_components::tables::{
-    box_visual, generates_box, is_display_contents, node_clips_overflow, paint_of_box,
+    box_visual, generates_box, node_clips_overflow, paint_of_box,
 };
 pub(crate) use snapshot::{is_display_none, length_to_dim};
 pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
-pub use taffy_store::{ResolvedTextStyle, TaffyStoreLayout};
 
-pub(crate) const MAX_TREE_DEPTH: usize = 512;
+pub(crate) use nve_layout::MAX_TREE_DEPTH;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HeadlessMutation {

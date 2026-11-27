@@ -4,6 +4,10 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
 
 ---
 
+## Track 1B-2 — Host-Owned Layout & Runtime
+
+- **Slice 2A-1 Part 1 — shared `nve-layout` + Yoga as an opt-in module (A3)**: `StoreLayoutEngine`, `DynLayoutEngine`, `TextMeasurer`, `HeuristicTextMeasurer`, and the direct `TaffyStoreLayout` engine (with its unit, `CountingAlloc`, and Criterion `taffy_relayout_1k_hoisted` guards) move out of `nve-engine` and `nve-backend-headless` into `packages/core/layout`, so headless, Skia, the coming host runtime, and Yoga share one layout layer without a core → backend edge; `nve-engine` and the `wasm32` web backend stay Taffy-free. `packages/core/layout-yoga` moves to `packages/modules/layout-yoga`; `nve-backend-skia` loses its `yoga` feature, `pub use nve_layout_yoga`, and `SkiaBackend::new_yoga` (hosts inject any engine via `with_layout`), `skia-shell` loses its `yoga` feature, and the single-variant `BuiltinLayout` enum is deleted. New `[INV:core-zero-native-cxx]` guard (`nve-arch-invariants::native_build`): Rust crates under `packages/core/*` may not take `cc`/`cmake`/`cxx-build`/`bindgen` build-dependencies, compile `cc::Build`/`cmake::` in `build.rs`, or hold `.c/.cc/.cpp/.cxx/.m/.mm` sources.
+
 ## UI/UX Overhaul
 
 - **Phase 0 — Unified OKLCH Theme, OS-Following Polarity & Fine-Grained Studio Store**

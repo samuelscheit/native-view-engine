@@ -14,9 +14,11 @@ use std::sync::Arc;
 use nve_abi::table::effect;
 use nve_components::tables::{
     Direction as NveDirection, Layout as NveLayout, Position as NvePosition, TextContent,
-    TextInput, Typography,
+    TextInput, Typography, is_display_contents, is_node_display_none,
 };
-use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
+use nve_engine::{LayoutRect, Viewport};
+
+use crate::{HeuristicTextMeasurer, StoreLayoutEngine, TextMeasurer};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
 
 use taffy::compute_root_layout;
@@ -93,8 +95,8 @@ pub struct TaffyStoreLayout {
 fn is_out_of_flow(store: &NodeStore, id: NodeId) -> bool {
     // `display: contents` generates no box, so `position` does not take it out of flow: its
     // children flatten into the parent box in flow (CSS Display 3 §2.5).
-    !crate::is_display_none(store, id)
-        && !crate::is_display_contents(store, id)
+    !is_node_display_none(store, id)
+        && !is_display_contents(store, id)
         && store
             .try_row::<NveLayout>(id)
             .is_some_and(|l| matches!(l.position(), NvePosition::Absolute | NvePosition::Fixed))
@@ -278,7 +280,7 @@ impl TaffyStoreLayout {
     /// whether `id` is `display: contents` (any other value only changes how its own box lays
     /// out, which `mark_dirty` already covers).
     fn display_change_reshapes_boxes(&self, store: &NodeStore, id: NodeId) -> bool {
-        crate::is_display_contents(store, id)
+        is_display_contents(store, id)
             != self.was_contents.get(id.index()).copied().unwrap_or(false)
     }
 
@@ -326,7 +328,7 @@ impl TaffyStoreLayout {
             // `display: contents` ancestors (never laid out, so always empty).
             if matches!(self.caches[idx].clear(), ClearState::AlreadyEmpty)
                 && steps > 1
-                && !crate::is_display_contents(store, id)
+                && !is_display_contents(store, id)
             {
                 break;
             }
@@ -386,7 +388,7 @@ impl TaffyStoreLayout {
 
             self.node_gens[idx] = id.generation();
             self.resolved_rtl[idx] = rtl;
-            let contents = crate::is_display_contents(store, id);
+            let contents = is_display_contents(store, id);
             self.was_contents[idx] = contents;
             self.resolved_text[idx] = text;
 
@@ -491,7 +493,7 @@ impl TaffyStoreLayout {
             let idx = id.index();
             // `display: contents` generates no box: a zero rect at the parent origin, which its
             // children (laid out by Taffy as the parent's) inherit unchanged.
-            let b = if id != root && crate::is_display_contents(store, id) {
+            let b = if id != root && is_display_contents(store, id) {
                 UnroundedBox::default()
             } else {
                 self.boxes[idx]
@@ -511,7 +513,7 @@ impl TaffyStoreLayout {
             self.rect_gen[idx] = cur_gen;
             self.node_gens[idx] = id.generation();
 
-            let self_hidden = ancestor_hidden || crate::is_display_none(store, id);
+            let self_hidden = ancestor_hidden || is_node_display_none(store, id);
 
             if !self_hidden {
                 for &child in self.hoisted.get(idx).iter().rev() {
@@ -589,7 +591,6 @@ impl StoreLayoutEngine for TaffyStoreLayout {
 }
 
 #[cfg(test)]
-#[path = "../taffy_store_tests.rs"]
 mod tests;
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use nve_components::interaction::{
 };
 use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
 use nve_components::tables::{InputKind, Interaction, StateRules, TextInput};
-use nve_engine::StoreLayoutEngine;
+use nve_layout::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::{

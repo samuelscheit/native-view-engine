@@ -505,7 +505,7 @@ fn long_mixed_z_sibling_lists_hit_the_topmost_box_through_nested_scratch() {
 /// the hit walk's stack.
 struct UniformRects;
 
-impl nve_engine::StoreLayoutEngine for UniformRects {
+impl nve_layout::StoreLayoutEngine for UniformRects {
     fn name(&self) -> &'static str {
         "uniform-rects"
     }
@@ -521,7 +521,7 @@ impl nve_engine::StoreLayoutEngine for UniformRects {
             height: 10.0,
         })
     }
-    fn set_text_measurer(&mut self, _: std::sync::Arc<dyn nve_engine::TextMeasurer>) {}
+    fn set_text_measurer(&mut self, _: std::sync::Arc<dyn nve_layout::TextMeasurer>) {}
     fn reset(&mut self) {}
 }
 

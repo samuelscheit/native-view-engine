@@ -3,6 +3,7 @@
 //! contents child is replaced, recursively and in document order, by its own children. Contents
 //! nodes are never laid out; the rounding pass passes their parent's origin straight through.
 
+use nve_components::tables::is_display_contents;
 use nve_store::{NodeId, NodeStore};
 
 use super::node_lists::NodeLists;
@@ -70,7 +71,7 @@ impl BoxChildren {
         let children = store.children(parent);
         let flatten = children
             .iter()
-            .any(|&c| crate::is_display_contents(store, c));
+            .any(|&c| is_display_contents(store, c));
         if !flatten {
             // Return the capacity: a parent that stops flattening must not pin its peak list.
             if self.flattened.get(idx).copied().unwrap_or(false) {
@@ -86,7 +87,7 @@ impl BoxChildren {
         self.stack.clear();
         self.stack.extend(children.iter().rev());
         while let Some(child) = self.stack.pop() {
-            if crate::is_display_contents(store, child) {
+            if is_display_contents(store, child) {
                 self.stack.extend(store.children(child).iter().rev());
             } else {
                 self.out.push(child);

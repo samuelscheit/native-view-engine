@@ -3,8 +3,22 @@
 
 use guppy::graph::PackageGraph;
 use nve_arch_invariants::{
-    ast_enums, ast_layout, bench, dag, hot_path, hygiene, is_cfg_test_attr, purity,
+    ast_enums, ast_layout, bench, dag, hot_path, hygiene, is_cfg_test_attr, native_build, purity,
 };
+
+#[test]
+fn unit_native_source_reason_flags_cxx_sources_and_cc_build_scripts_only() {
+    let flagged = |rel: &str, src: Option<&str>| native_build::native_source_reason(rel, src).is_some();
+    assert!(flagged("packages/core/x/c_api/shim.cpp", None));
+    assert!(flagged("packages/core/x/src/a.cc", None));
+    assert!(flagged("packages/core/x/src/a.mm", None));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { cc::Build::new(); }")));
+    assert!(flagged("packages/core/x/build.rs", Some("fn main() { cmake::build(\"x\"); }")));
+    assert!(!flagged("packages/core/x/build.rs", Some("fn main() { println!(\"cargo::rerun-if-changed=x\"); }")));
+    assert!(!flagged("packages/core/x/src/lib.rs", None));
+    assert!(!flagged("packages/core/x/include/api.h", None));
+    assert!(!flagged("packages/core/x/README.md", None));
+}
 
 fn lib_target(name: &str, dir: &str) -> String {
     format!(
