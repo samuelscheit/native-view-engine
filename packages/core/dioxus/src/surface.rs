@@ -129,6 +129,15 @@ impl DioxusSurface {
         )
     }
 
+    /// Awaits the next dirty scope or completed async task on the underlying `VirtualDom`.
+    ///
+    /// Used by streaming SSR executors (`nve-ssr`) inside a cancellation-safe `select!` loop
+    /// paired with [`Self::flush_into`] so mutations are streamed out as suspense boundaries
+    /// resolve.
+    pub async fn wait_for_work(&mut self) {
+        self.vdom.wait_for_work().await;
+    }
+
     pub fn signal_registry(&self) -> &SignalRegistry {
         &self.signal_registry
     }

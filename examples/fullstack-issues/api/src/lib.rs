@@ -124,6 +124,58 @@ pub struct IssueFilter {
     pub query: Option<String>,
 }
 
+/// Extensible empty CBOR map request for [`GetWorkspaceStats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
+#[cbor(map)]
+pub struct StatsRequest {}
+
+/// Aggregate workspace issue counters encoded as an integer-keyed CBOR map.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
+#[cbor(map)]
+pub struct WorkspaceStats {
+    #[n(0)]
+    pub total: u32,
+    #[n(1)]
+    pub open: u32,
+    #[n(2)]
+    pub in_progress: u32,
+    #[n(3)]
+    pub closed: u32,
+    #[n(4)]
+    pub total_comments: u32,
+}
+
+/// Parses `?comments_issue=<u64>` from a URL query string (with or without leading `?`),
+/// defaulting to [`IssueId(1)`] so SSR and WASM hydration share one canonical parser.
+#[must_use]
+pub fn parse_comments_issue_query(query: Option<&str>) -> IssueId {
+    parse_u64_query_param(query, "comments_issue")
+        .map(IssueId)
+        .unwrap_or(IssueId(1))
+}
+
+/// Parses optional `?issue=<u64>` from a URL query string (with or without leading `?`) for
+/// pre-headers critical issue validation.
+#[must_use]
+pub fn parse_focus_issue_query(query: Option<&str>) -> Option<IssueId> {
+    parse_u64_query_param(query, "issue").map(IssueId)
+}
+
+fn parse_u64_query_param(query: Option<&str>, key: &str) -> Option<u64> {
+    let raw = query?.strip_prefix('?').unwrap_or(query?);
+    for pair in raw.split('&') {
+        let Some((k, v)) = pair.split_once('=') else {
+            continue;
+        };
+        if k == key
+            && let Ok(parsed) = v.parse::<u64>()
+        {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
 /// Input for creating a new issue (supports both CBOR RPC and 0-JS HTML `<form>`).
 #[derive(Debug, Clone, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
 #[cbor(map)]
@@ -426,6 +478,11 @@ procedures! {
             sink.push(IssueTag::Comments(*id));
         };
 
+    pub query GetWorkspaceStats = "issues.v1.Stats/Get" (StatsRequest) -> WorkspaceStats, ApiError,
+        tags |_req, sink| {
+            sink.push(IssueTag::List);
+        };
+
     pub action CreateIssue = "issues.v1.Issues/Create" (CreateIssueInput) -> Issue, ApiError,
         invalidates |_input, sink| {
             sink.push(IssueTag::List);
@@ -449,4 +506,52 @@ procedures! {
             sink.push(IssueTag::Issue(input.issue_id));
             sink.push(IssueTag::Comments(input.issue_id));
         };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nve_rpc::{CborCodec, RpcCodec};
+
+    #[test]
+    fn workspace_stats_cbor_roundtrip_and_query_parsers() {
+        let stats = WorkspaceStats {
+            total: 4,
+            open: 2,
+            in_progress: 1,
+            closed: 1,
+            total_comments: 3,
+        };
+        let mut buf = Vec::new();
+        CborCodec::default().encode_into(&stats, &mut buf).unwrap();
+        let decoded: WorkspaceStats = CborCodec::default().decode_bounded(&buf).unwrap();
+        assert_eq!(decoded, stats);
+
+        let mut req_buf = Vec::new();
+        CborCodec::default()
+            .encode_into(&StatsRequest::default(), &mut req_buf)
+            .unwrap();
+        let _: StatsRequest = CborCodec::default().decode_bounded(&req_buf).unwrap();
+
+        assert_eq!(parse_comments_issue_query(None), IssueId(1));
+        assert_eq!(parse_comments_issue_query(Some("")), IssueId(1));
+        assert_eq!(
+            parse_comments_issue_query(Some("?foo=bar&comments_issue=999")),
+            IssueId(999)
+        );
+        assert_eq!(
+            parse_comments_issue_query(Some("comments_issue=42&issue=7")),
+            IssueId(42)
+        );
+        assert_eq!(
+            parse_comments_issue_query(Some("comments_issue=invalid")),
+            IssueId(1)
+        );
+        assert_eq!(parse_focus_issue_query(None), None);
+        assert_eq!(parse_focus_issue_query(Some("?issue=999")), Some(IssueId(999)));
+        assert_eq!(
+            parse_focus_issue_query(Some("comments_issue=2&issue=3")),
+            Some(IssueId(3))
+        );
+    }
 }

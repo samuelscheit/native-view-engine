@@ -18,7 +18,8 @@ use http_body_util::Full;
 use hyper::body::Body;
 use nve_example_issues_api::{
     AddComment, AddCommentInput, CloseIssue, CloseIssueInput, CreateIssue, CreateIssueInput,
-    GetIssue, IssueFilter, IssueId, ListComments, ListIssues, RenameIssue, RenameIssueInput,
+    GetIssue, GetWorkspaceStats, IssueFilter, IssueId, ListComments, ListIssues, RenameIssue,
+    RenameIssueInput, StatsRequest,
 };
 use nve_http_hyper::NveHyperService;
 use nve_server::{
@@ -63,8 +64,16 @@ where
     });
 
     reg.register::<ListComments, _, _>(|cx: Cx<IssueStore, Actor>, id: IssueId| async move {
+        cx.state.wait_comments_hook().await;
         cx.state.list_comments(id)
     });
+
+    reg.register::<GetWorkspaceStats, _, _>(
+        |cx: Cx<IssueStore, Actor>, _req: StatsRequest| async move {
+            cx.state.wait_stats_hook().await;
+            Ok(cx.state.stats())
+        },
+    );
 
     reg.register_with_form::<CreateIssue, _, _>(
         |cx: Cx<IssueStore, Actor>, input: CreateIssueInput| async move {
