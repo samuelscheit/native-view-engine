@@ -237,14 +237,8 @@ impl crate::store::NodeStore {
             let Some(col) = self.columns[slot.0 as usize].as_ref() else {
                 continue;
             };
-            // Dense tables publish no owners (row = node index) and only the rows of node slots
-            // that exist; the column's power-of-two growth tail belongs to no node.
             let dense = col.is_dense();
-            let row_count = if dense {
-                col.row_count().min(self.capacity())
-            } else {
-                col.row_count()
-            };
+            let row_count = col.published_row_count(self.capacity());
             let rows_ptr = if col.rows.is_empty() {
                 core::ptr::null()
             } else {

@@ -1,0 +1,19 @@
+[package]
+name = "nve-host-fixtures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Writes real NVE2 scene frames (standard tables, resources, canvas draw lists) that native host suites submit to libnve_runtime"
+
+[[bin]]
+name = "nve-host-fixtures"
+path = "src/main.rs"
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-canvas = { workspace = true }
+nve-components = { workspace = true }
+nve-store = { workspace = true }
+
+[lints]
+workspace = true

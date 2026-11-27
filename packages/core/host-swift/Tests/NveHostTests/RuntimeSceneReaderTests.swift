@@ -31,6 +31,8 @@ final class RuntimeSceneReaderTests: XCTestCase {
     func testRowsRectsAndIdentity() throws {
         let s = try scene()
         XCTAssertEqual(s.frameId, 7)
+        XCTAssertEqual(s.sceneEpoch, 5)
+        XCTAssertEqual(Array(s.dirtyResources), [3, 9])
         XCTAssertEqual(s.nodeCapacity, 4)
         XCTAssertFalse(s.isLive(0))  // reserved null slot
         XCTAssertTrue(s.isLive(1))
@@ -137,6 +139,9 @@ final class RuntimeSceneReaderTests: XCTestCase {
         assertRejects(v, .nullSlab)
         v = base
         v.scroll_offsets = nil
+        assertRejects(v, .nullSlab)
+        v = base
+        v.dirty_resources = nil
         assertRejects(v, .nullSlab)
         // Counts past the address space are refused before a span is formed.
         v = base

@@ -601,10 +601,9 @@ suite_gtk4_host() {
 suite_android_jni_host() {
   local build_dir="$BUILD_ROOT/android-shell"
   JAVA_HOME="$DETECTED_JAVA_HOME" cmake -S "$REPO_ROOT/hosts/android-shell" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
+    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"}
   cmake --build "$build_dir"
-  ctest --test-dir "$build_dir" --output-on-failure
+  JAVA_HOME="$DETECTED_JAVA_HOME" ctest --test-dir "$build_dir" --output-on-failure
 }
 
 suite_android_compose_kit() {
@@ -868,7 +867,7 @@ else
   # 6. Android JNI host
   DETECTED_JAVA_HOME=""
   if has_cmake && DETECTED_JAVA_HOME="$(detect_java_home)"; then
-    run_suite "Android JNI host" suite_android_jni_host "android_jni_bridge_test + bridge_abi_test"
+    run_suite "Android JNI host" suite_android_jni_host "android_{scene,events,pair}_jni_test (desktop JVM + libnve_runtime)"
   elif ! has_cmake; then
     skip_suite "Android JNI host" "cmake not found"
   else

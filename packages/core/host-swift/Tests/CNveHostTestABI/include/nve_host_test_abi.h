@@ -53,6 +53,8 @@ typedef struct NveTestRuntimeSceneView {
   uint32_t children_slab_len;
   uint32_t table_count;
   uint32_t scroll_count;
+  uint32_t scene_epoch;
+  uint32_t dirty_resource_count;
   uint32_t _reserved;
   const NveTestNodeRow* rows;
   const NveTestLayoutRect* rects;
@@ -62,6 +64,7 @@ typedef struct NveTestRuntimeSceneView {
   const uint32_t* removed_ids;
   const NveTestTableView* tables;
   const NveTestScrollOffset* scroll_offsets;
+  const uint32_t* dirty_resources;
 } NveTestRuntimeSceneView;
 
 _Static_assert(sizeof(NveTestNodeRow) == 32, "NveNodeRow is 32 bytes");
@@ -69,10 +72,13 @@ _Static_assert(offsetof(NveTestNodeRow, parent) == 16, "NveNodeRow.parent @16");
 _Static_assert(offsetof(NveTestNodeRow, flags) == 31, "NveNodeRow.flags @31");
 _Static_assert(sizeof(NveTestLayoutRect) == 16, "NveLayoutRect is 16 bytes");
 _Static_assert(offsetof(NveTestRuntimeSceneView, table_count) == 36, "NveRuntimeSceneView.table_count @36");
-_Static_assert(offsetof(NveTestRuntimeSceneView, rows) == 48, "NveRuntimeSceneView.rows @48");
-_Static_assert(offsetof(NveTestRuntimeSceneView, tables) == 96, "NveRuntimeSceneView.tables @96");
-_Static_assert(offsetof(NveTestRuntimeSceneView, scroll_offsets) == 104, "NveRuntimeSceneView.scroll_offsets @104");
-_Static_assert(sizeof(NveTestRuntimeSceneView) == 112, "NveRuntimeSceneView is 112 bytes");
+_Static_assert(offsetof(NveTestRuntimeSceneView, scene_epoch) == 44, "NveRuntimeSceneView.scene_epoch @44");
+_Static_assert(offsetof(NveTestRuntimeSceneView, dirty_resource_count) == 48, "NveRuntimeSceneView.dirty_resource_count @48");
+_Static_assert(offsetof(NveTestRuntimeSceneView, rows) == 56, "NveRuntimeSceneView.rows @56");
+_Static_assert(offsetof(NveTestRuntimeSceneView, tables) == 104, "NveRuntimeSceneView.tables @104");
+_Static_assert(offsetof(NveTestRuntimeSceneView, scroll_offsets) == 112, "NveRuntimeSceneView.scroll_offsets @112");
+_Static_assert(offsetof(NveTestRuntimeSceneView, dirty_resources) == 120, "NveRuntimeSceneView.dirty_resources @120");
+_Static_assert(sizeof(NveTestRuntimeSceneView) == 128, "NveRuntimeSceneView is 128 bytes");
 _Static_assert(offsetof(NveTestTableView, rows) == 24, "NveTableView.rows @24");
 
 /* Static fixture frame published from C memory (schema 0xF00DFACEC0FFEE11, frame 7): slot 0 null,

@@ -59,6 +59,10 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
     testImplementation("org.robolectric:robolectric:4.14.1")
+    // Compose UI tests of `NveSurface` under Robolectric.
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 val nveRepoRoot = rootProject.projectDir.resolve("../..").canonicalFile
@@ -67,6 +71,8 @@ val nveHostJavaDir = nveRepoRoot.resolve("packages/core/host-java/src/main/java"
 val nveGeneratedJavaFiles = listOf(
     nveHostJavaDir.resolve("dev/nve/host/generated/NveAbi.java"),
     nveHostJavaDir.resolve("dev/nve/host/generated/NveTables.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveRuntimeAbi.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveModuleTables.java"),
 )
 
 android.sourceSets.getByName("main").java.srcDir(nveHostJavaDir)
@@ -84,7 +90,7 @@ val generateNveAbi by tasks.registering(Exec::class) {
 tasks.matching {
     it.name == "preBuild" ||
         it.name == "compileJava" ||
-        (it.name.startsWith("compile") && it.name.endsWith("JavaWithJavac"))
+        (it.name.startsWith("compile") && (it.name.endsWith("JavaWithJavac") || it.name.endsWith("Kotlin")))
 }.configureEach {
     dependsOn(generateNveAbi)
 }
