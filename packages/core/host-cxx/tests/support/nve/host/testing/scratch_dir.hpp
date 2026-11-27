@@ -10,6 +10,8 @@
 #include <string_view>
 #include <system_error>
 
+#include "nve/host/app_state.hpp"
+
 #if defined(_WIN32)
 #include <process.h>
 #else
@@ -29,8 +31,11 @@ class ScratchDir {
   ScratchDir& operator=(const ScratchDir&) = delete;
 
   [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
-  /// `path() / name` as a string.
-  [[nodiscard]] std::string file(std::string_view name) const { return (path_ / std::string(name)).string(); }
+  /// `path() / name` as UTF-8 (the encoding host and runtime path APIs take; never the Windows
+  /// ANSI code page).
+  [[nodiscard]] std::string file(std::string_view name) const {
+    return app_state::utf8(path_ / app_state::from_utf8(name));
+  }
 
  private:
   [[nodiscard]] static std::filesystem::path unique_path(std::string_view tag) {
