@@ -275,6 +275,12 @@ pub trait DesktopApp {
         false
     }
 
+    /// Returns `true` when this app delivers frames exclusively via [`Self::take_queued_wire_frame`]
+    /// rather than synchronous [`Self::render`] calls (e.g. [`PairedRemoteApp`]).
+    fn uses_queued_wire_frames(&self) -> bool {
+        false
+    }
+
     /// Takes the next queued `(is_keyframe, wire_bytes)` frame in delivery order for paired/remote
     /// apps so incremental `CommandDelta` batches are never overwritten before rendering.
     fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {

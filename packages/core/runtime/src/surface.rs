@@ -538,8 +538,8 @@ impl SurfaceRuntime {
     pub fn metrics(&self) -> Result<NveRuntimeMetrics, RuntimeError> {
         self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: Reader lock held for `_guard`'s lifetime; `overlay_live_metrics` only reads
-        // immutable `u64` snapshots and atomic counters on `ReconnectingWireClient`.
+        // SAFETY: `read_guard()` prevents concurrent writes to `inner` (so `inner.pair` and
+        // `last_rx`/`last_tx` stay immutable) while `overlay_live_metrics` reads `&self` atomics.
         let inner = unsafe { &*self.inner.get() };
         let mut m = inner.state.metrics;
         if let Some(pair) = inner.pair.as_ref() {

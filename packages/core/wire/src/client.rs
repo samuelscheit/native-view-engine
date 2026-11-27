@@ -451,6 +451,35 @@ impl NveWireClient {
         self.send_frame(&frame)
     }
 
+    pub(crate) fn request_keyframe_reconnect_init(&self) -> Result<(), NveWireTransportError> {
+        let frame = NveWireFrame::new(
+            NveWireKind::KeyframeRequest,
+            self.alloc_seq(),
+            vec![crate::KEYFRAME_REQ_RECONNECT_INIT],
+        );
+        self.send_frame(&frame)
+    }
+
+    pub(crate) async fn send_keyframe_request_async(
+        &self,
+        reconnect_init: bool,
+    ) -> Result<(), NveWireTransportError> {
+        let payload = if reconnect_init {
+            vec![crate::KEYFRAME_REQ_RECONNECT_INIT]
+        } else {
+            Vec::new()
+        };
+        let frame = NveWireFrame::new(NveWireKind::KeyframeRequest, self.alloc_seq(), payload);
+        let bytes = Bytes::from(frame.encode()?);
+        let len = bytes.len() as u64;
+        self.outbound_tx
+            .send(ClientOut::Stream(bytes))
+            .await
+            .map_err(|_| NveWireTransportError::Io("wire client outbound closed".to_owned()))?;
+        self.stats.wire_bytes_tx.fetch_add(len, Ordering::Relaxed);
+        Ok(())
+    }
+
     pub fn try_recv_frame(&self) -> Option<NveWireFrame> {
         self.inbound_rx.try_recv().ok()
     }

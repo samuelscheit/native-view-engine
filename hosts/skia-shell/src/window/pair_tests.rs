@@ -621,6 +621,49 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
         .expect("valid keyframe + trailing delta must apply cleanly");
     assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((16, 185, 129)));
 
+    // 3b. Mid-frame corrupt delta (valid NVE2 header + CreateNodes(99) + corrupt op 0xFE) must
+    //     recover cleanly, request a keyframe, and reset cleanly on recovery (no leaked node 99)!
+    let mut mid_corrupt = Vec::new();
+    for _ in 0..6 {
+        mid_corrupt.extend_from_slice(&0u32.to_le_bytes());
+    }
+    mid_corrupt.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes()); // CreateNodes count=1
+    mid_corrupt.extend_from_slice(&1u32.to_le_bytes());
+    mid_corrupt.extend_from_slice(&99u32.to_le_bytes());
+    mid_corrupt.extend_from_slice(&(0xFEu32 | (1u32 << 16)).to_le_bytes()); // unknown op 0xFE
+    mid_corrupt.extend_from_slice(&1u32.to_le_bytes());
+    mid_corrupt.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    let total_words = (mid_corrupt.len() / 4) as u32;
+    mid_corrupt[0..4].copy_from_slice(&0x3245_564Eu32.to_le_bytes());
+    mid_corrupt[4..8].copy_from_slice(&1u32.to_le_bytes());
+    mid_corrupt[8..12].copy_from_slice(&6u32.to_le_bytes());
+    mid_corrupt[12..16].copy_from_slice(&0u32.to_le_bytes());
+    mid_corrupt[16..20].copy_from_slice(&2u32.to_le_bytes());
+    mid_corrupt[20..24].copy_from_slice(&total_words.to_le_bytes());
+
+    assert_eq!(server.broadcast_command_delta(6, &mid_corrupt).unwrap(), 1);
+    wait_rx(&session, 6);
+    session
+        .render_and_rasterize()
+        .expect("mid-frame corrupt delta must recover, not return Err");
+    let req2 = server
+        .recv_inbound_timeout(Duration::from_secs(2))
+        .expect("server receives KeyframeRequest after mid-frame corrupt delta");
+    assert_eq!(req2.frame.kind, NveWireKind::KeyframeRequest);
+
+    assert!(server
+        .send_scene_keyframe_to_peer(req2.session_id, 7, &kf_yellow)
+        .unwrap());
+    wait_rx(&session, 7);
+    session
+        .render_and_rasterize()
+        .expect("recovery keyframe after mid-frame corrupt delta");
+    assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((250, 204, 21)));
+    assert!(
+        !session.store().is_live(StoreNodeId(99)),
+        "mid-frame corrupt node 99 must not survive recovery keyframe"
+    );
+
     // 4. Terminal auth rejection surfaces `[AUTH REJECTED]` in remote_status_banner!
     let bad_cfg = PairConnectConfig::new(
         format!("ws://{}/nve-wire", server.wss_addr()),

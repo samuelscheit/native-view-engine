@@ -147,9 +147,12 @@ impl SharedState {
     pub(crate) fn checkpoint_metrics(&self) {
         let cur = *self.metrics.lock().unwrap_or_else(|e| e.into_inner());
         *self.base_metrics.lock().unwrap_or_else(|e| e.into_inner()) = cur;
-        let cur_dropped = self.cur_client_dropped_inbound.swap(0, Ordering::AcqRel);
+        // Increment `base` BEFORE zeroing `cur` (paired with `cur` then `base` Acquire loads in
+        // `dropped_inbound()`) so readers never observe a downward dip across reconnects.
+        let cur_dropped = self.cur_client_dropped_inbound.load(Ordering::Acquire);
         self.base_client_dropped_inbound
             .fetch_add(cur_dropped, Ordering::Release);
+        self.cur_client_dropped_inbound.store(0, Ordering::Release);
     }
 }
 
@@ -356,19 +359,20 @@ impl ReconnectingWireClient {
 
     #[inline]
     pub fn dropped_inbound(&self) -> u64 {
+        // Load `cur` BEFORE `base` to pair with `checkpoint_metrics` (`base += cur` then `cur = 0`).
+        let cur = self
+            .shared
+            .cur_client_dropped_inbound
+            .load(Ordering::Acquire);
+        let base = self
+            .shared
+            .base_client_dropped_inbound
+            .load(Ordering::Acquire);
         self.shared
             .dropped_inbound
             .load(Ordering::Acquire)
-            .saturating_add(
-                self.shared
-                    .base_client_dropped_inbound
-                    .load(Ordering::Acquire),
-            )
-            .saturating_add(
-                self.shared
-                    .cur_client_dropped_inbound
-                    .load(Ordering::Acquire),
-            )
+            .saturating_add(base)
+            .saturating_add(cur)
     }
 
     pub fn last_error(&self) -> Option<String> {
@@ -450,7 +454,7 @@ impl ReconnectingWireClient {
             self.shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
             match e {
                 mpsc::error::TrySendError::Full(_) => {
-                    NveWireTransportError::Io("wire client outbound queue full".to_owned())
+                    NveWireTransportError::Backpressure("wire client outbound queue full".to_owned())
                 }
                 mpsc::error::TrySendError::Closed(_) => {
                     NveWireTransportError::Io("wire worker channel closed".to_owned())
@@ -470,7 +474,14 @@ impl ReconnectingWireClient {
             return Err(NveWireTransportError::Io("wire client shut down".to_owned()));
         };
         tx.try_send(OutboundCmd::RequestKeyframe { session_id: sid })
-            .map_err(|_| NveWireTransportError::Io("wire worker channel unavailable".to_owned()))
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    NveWireTransportError::Backpressure("wire client outbound queue full".to_owned())
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    NveWireTransportError::Io("wire worker channel unavailable".to_owned())
+                }
+            })
     }
 
     /// Installs or clears the wake callback, draining any in-flight invocation, dropping the

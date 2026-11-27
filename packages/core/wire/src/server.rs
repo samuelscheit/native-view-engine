@@ -14,16 +14,16 @@ use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
 use nve_wire_core::{
-    NveWireChannel, NveWireFrame, NveWireHello, NveWireHelloAck, NveWireKind,
-    NveWireRejectReason, NveWireTransportKind, DEFAULT_MAX_WIRE_FRAME_BYTES,
-    DEFAULT_WIRE_SCHEMA_VERSION, NVE_WIRE_CAP_DATAGRAMS, NVE_WIRE_CAP_NODE_PATCHES,
-    NVE_WIRE_CAP_SCENE_ARCHIVE, NVE_WIRE_CAP_SLOT_CHUNKS, NVE_WIRE_FLAG_DATAGRAM,
+    NveWireChannel, NveWireFrame, NveWireKind, NveWireTransportKind, DEFAULT_MAX_WIRE_FRAME_BYTES,
+    DEFAULT_WIRE_SCHEMA_VERSION, NVE_WIRE_FLAG_DATAGRAM,
 };
 
-use crate::auth::verify_bearer_token;
 use crate::server_peers::{handle_quic_or_wt_connection, handle_tcp_ws_connection};
 use crate::tls::{build_dual_alpn_quic_server_config, build_wss_server_config, NveDevCertificate};
-use crate::{NveWireInboundMessage, NveWireServerConfig, NveWireServerMetrics, NveWireTransportError};
+use crate::{
+    NveWireInboundMessage, NveWireServerConfig, NveWireServerMetrics, NveWireTransportError,
+    KEYFRAME_REQ_RECONNECT_INIT,
+};
 
 #[derive(Clone)]
 pub(crate) enum OutboundCommand {
@@ -40,13 +40,15 @@ struct CachedKeyframe {
 struct PeerEntry {
     transport: NveWireTransportKind,
     tx: mpsc::UnboundedSender<OutboundCommand>,
-    last_sent_kf_seq: u64,
+    /// Keyframe sequence pushed specifically by `register_peer` on connect (NEVER set by
+    /// `broadcast_frame`) so only duplicate reconnect-init requests are deduplicated.
+    join_sent_kf_seq: u64,
     pending_kf_request: bool,
 }
 
 pub(crate) struct SharedServerState {
-    bearer_token: String,
-    schema_version: u16,
+    pub(crate) bearer_token: String,
+    pub(crate) schema_version: u16,
     pub(crate) max_frame_bytes: usize,
     next_session_id: AtomicU32,
     next_kf_seq: AtomicU64,
@@ -61,7 +63,7 @@ pub(crate) struct SharedServerState {
     frames_received: AtomicU64,
     wire_bytes_tx: AtomicU64,
     wire_bytes_rx: AtomicU64,
-    rejected_handshakes: AtomicU64,
+    pub(crate) rejected_handshakes: AtomicU64,
     shutdown: AtomicBool,
 }
 
@@ -79,7 +81,7 @@ impl SharedServerState {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-            let (last_sent_kf_seq, pending_kf_request) = if let Some(cached) = kf_guard.as_ref() {
+            let (join_sent_kf_seq, pending_kf_request) = if let Some(cached) = kf_guard.as_ref() {
                 if tx.send(OutboundCommand::Stream(cached.bytes.clone())).is_ok() {
                     self.frames_sent.fetch_add(1, Ordering::Relaxed);
                     self.wire_bytes_tx
@@ -101,7 +103,7 @@ impl SharedServerState {
                 PeerEntry {
                     transport,
                     tx,
-                    last_sent_kf_seq,
+                    join_sent_kf_seq,
                     pending_kf_request,
                 },
             );
@@ -135,46 +137,6 @@ impl SharedServerState {
             .remove(&session_id);
     }
 
-    pub(crate) fn verify_hello(
-        &self,
-        hello: &NveWireHello,
-    ) -> Result<(), (NveWireRejectReason, &'static str)> {
-        if !verify_bearer_token(&self.bearer_token, &hello.bearer_token) {
-            self.rejected_handshakes.fetch_add(1, Ordering::Relaxed);
-            return Err((NveWireRejectReason::Unauthorized, "invalid bearer token"));
-        }
-        if hello.schema_version != self.schema_version {
-            self.rejected_handshakes.fetch_add(1, Ordering::Relaxed);
-            return Err((
-                NveWireRejectReason::SchemaVersionMismatch,
-                "wire schema version mismatch",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn make_hello_ack(&self, session_id: u32) -> Bytes {
-        let ack = NveWireHelloAck {
-            session_id,
-            schema_version: self.schema_version,
-            server_capabilities: NVE_WIRE_CAP_SCENE_ARCHIVE
-                | NVE_WIRE_CAP_NODE_PATCHES
-                | NVE_WIRE_CAP_DATAGRAMS
-                | NVE_WIRE_CAP_SLOT_CHUNKS,
-        };
-        let bytes = NveWireFrame::new(NveWireKind::HelloAck, 1, ack.encode().to_vec())
-            .encode()
-            .unwrap_or_default();
-        Bytes::from(bytes)
-    }
-
-    pub(crate) fn make_reject(reason: NveWireRejectReason, detail: &str) -> Bytes {
-        let bytes = NveWireFrame::new(NveWireKind::Reject, 1, reason.encode(detail))
-            .encode()
-            .unwrap_or_default();
-        Bytes::from(bytes)
-    }
-
     pub(crate) fn handle_inbound_frame(
         &self,
         session_id: u32,
@@ -196,6 +158,8 @@ impl SharedServerState {
             }
             NveWireKind::Bye => false,
             NveWireKind::KeyframeRequest => {
+                let is_reconnect_init =
+                    frame.payload.as_slice() == [KEYFRAME_REQ_RECONNECT_INIT];
                 // Lock ordering: `latest_keyframe` -> `peers`.
                 let mut forward_to_producer = false;
                 {
@@ -205,31 +169,34 @@ impl SharedServerState {
                         .unwrap_or_else(|e| e.into_inner());
                     let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(cached) = kf_guard.as_ref() {
-                        let already_sent = peers
-                            .get_mut(&session_id)
-                            .is_some_and(|p| {
-                                if p.last_sent_kf_seq == cached.seq {
-                                    // Suppress duplicate reconnect keyframe right after register_peer,
-                                    // but allow a subsequent explicit request (e.g. corrupt frame).
-                                    p.last_sent_kf_seq = 0;
+                        // Only deduplicate automatic reconnect-init requests against the exact
+                        // cached keyframe `register_peer` already pushed; explicit recovery
+                        // requests (empty payload) are ALWAYS served immediately!
+                        let suppress_dup = is_reconnect_init
+                            && peers.get_mut(&session_id).is_some_and(|p| {
+                                if p.join_sent_kf_seq == cached.seq {
+                                    p.join_sent_kf_seq = 0;
                                     true
                                 } else {
-                                    p.last_sent_kf_seq = cached.seq;
-                                    p.pending_kf_request = false;
                                     false
                                 }
                             });
-                        if !already_sent
-                            && reply_tx
+                        if !suppress_dup {
+                            if let Some(p) = peers.get_mut(&session_id) {
+                                p.join_sent_kf_seq = 0;
+                                p.pending_kf_request = false;
+                            }
+                            if reply_tx
                                 .send(OutboundCommand::Stream(cached.bytes.clone()))
                                 .is_ok()
-                        {
-                            self.frames_sent.fetch_add(1, Ordering::Relaxed);
-                            self.wire_bytes_tx
-                                .fetch_add(cached.bytes.len() as u64, Ordering::Relaxed);
+                            {
+                                self.frames_sent.fetch_add(1, Ordering::Relaxed);
+                                self.wire_bytes_tx
+                                    .fetch_add(cached.bytes.len() as u64, Ordering::Relaxed);
+                            }
                         }
                     } else if let Some(p) = peers.get_mut(&session_id) {
-                        if !p.pending_kf_request {
+                        if !(is_reconnect_init && p.pending_kf_request) {
                             p.pending_kf_request = true;
                             forward_to_producer = true;
                         }
@@ -479,7 +446,7 @@ impl NveWireServer {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let mut peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        let new_kf_seq = match frame.kind {
+        let is_keyframe = match frame.kind {
             NveWireKind::SceneKeyframe => {
                 let seq = self.state.next_kf_seq.fetch_add(1, Ordering::Relaxed);
                 *kf_guard = Some(CachedKeyframe {
@@ -487,24 +454,27 @@ impl NveWireServer {
                     bytes: encoded.clone(),
                 });
                 self.state.had_scene_frame.store(true, Ordering::Release);
-                Some(seq)
+                true
             }
-            NveWireKind::CommandDelta => {
+            NveWireKind::CommandDelta | NveWireKind::NodePatchDelta => {
                 *kf_guard = None;
                 self.state.had_scene_frame.store(true, Ordering::Release);
-                None
+                false
             }
-            _ => None,
+            _ => false,
         };
         let mut delivered = 0usize;
         for peer in peers.values_mut() {
             if peer.tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
                 delivered += 1;
-                if let Some(seq) = new_kf_seq {
-                    peer.last_sent_kf_seq = seq;
+                if is_keyframe {
+                    peer.join_sent_kf_seq = 0;
                     peer.pending_kf_request = false;
-                } else if frame.kind == NveWireKind::CommandDelta {
-                    peer.last_sent_kf_seq = 0;
+                } else if matches!(
+                    frame.kind,
+                    NveWireKind::CommandDelta | NveWireKind::NodePatchDelta
+                ) {
+                    peer.join_sent_kf_seq = 0;
                 }
             }
         }

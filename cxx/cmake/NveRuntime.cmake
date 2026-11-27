@@ -32,6 +32,7 @@ if(NOT TARGET nve_runtime)
     set(_nve_rt_lib_name "libnve_runtime.a")
   endif()
 
+  set(_nve_rt_is_multiconfig FALSE)
   if(NVE_RUNTIME_PREBUILT_LIB)
     if(NOT EXISTS "${NVE_RUNTIME_PREBUILT_LIB}")
       message(FATAL_ERROR
@@ -40,30 +41,6 @@ if(NOT TARGET nve_runtime)
     endif()
     set(_nve_rt_lib_path "${NVE_RUNTIME_PREBUILT_LIB}")
   else()
-    if("${NVE_RUNTIME_PROFILE}" STREQUAL "")
-      if(CMAKE_CONFIGURATION_TYPES)
-        # Multi-config generators (Xcode, Visual Studio) leave `CMAKE_BUILD_TYPE` empty at
-        # configure time; default deterministically to `debug` (override with `-DNVE_RUNTIME_PROFILE=release`).
-        set(_nve_rt_profile "debug")
-      else()
-        string(TOLOWER "${CMAKE_BUILD_TYPE}" _nve_rt_build_type)
-        if(_nve_rt_build_type STREQUAL "release"
-           OR _nve_rt_build_type STREQUAL "relwithdebinfo"
-           OR _nve_rt_build_type STREQUAL "minsizerel")
-          set(_nve_rt_profile "release")
-        else()
-          set(_nve_rt_profile "debug")
-        endif()
-      endif()
-    else()
-      string(TOLOWER "${NVE_RUNTIME_PROFILE}" _nve_rt_profile)
-    endif()
-    if(NOT _nve_rt_profile STREQUAL "debug" AND NOT _nve_rt_profile STREQUAL "release")
-      message(FATAL_ERROR
-        "NveRuntime.cmake: invalid NVE_RUNTIME_PROFILE='${NVE_RUNTIME_PROFILE}' (expected 'debug' or 'release')"
-      )
-    endif()
-
     find_program(_nve_rt_cargo_bin cargo
       HINTS
         "$ENV{CARGO_HOME}/bin"
@@ -84,9 +61,6 @@ if(NOT TARGET nve_runtime)
     endif()
 
     set(_nve_rt_cargo_args rustc --locked -p nve-runtime --lib --crate-type staticlib)
-    if(_nve_rt_profile STREQUAL "release")
-      list(APPEND _nve_rt_cargo_args --release)
-    endif()
     if(NVE_RUNTIME_NO_DEFAULT_FEATURES)
       list(APPEND _nve_rt_cargo_args --no-default-features)
     endif()
@@ -95,26 +69,72 @@ if(NOT TARGET nve_runtime)
     endif()
     if(NVE_RUNTIME_CARGO_TARGET)
       list(APPEND _nve_rt_cargo_args --target "${NVE_RUNTIME_CARGO_TARGET}")
-      set(_nve_rt_lib_path "${_nve_rt_target_dir}/${NVE_RUNTIME_CARGO_TARGET}/${_nve_rt_profile}/${_nve_rt_lib_name}")
+      set(_nve_rt_target_prefix "${_nve_rt_target_dir}/${NVE_RUNTIME_CARGO_TARGET}")
     else()
-      set(_nve_rt_lib_path "${_nve_rt_target_dir}/${_nve_rt_profile}/${_nve_rt_lib_name}")
+      set(_nve_rt_target_prefix "${_nve_rt_target_dir}")
     endif()
 
-    add_custom_target(nve_runtime_cargo_build
-      COMMAND "${_nve_rt_cargo_bin}" ${_nve_rt_cargo_args}
-      WORKING_DIRECTORY "${_nve_rt_repo_root}"
-      BYPRODUCTS "${_nve_rt_lib_path}"
-      COMMENT "Building nve-runtime staticlib (${_nve_rt_profile})"
-      VERBATIM
-    )
+    if("${NVE_RUNTIME_PROFILE}" STREQUAL "" AND CMAKE_CONFIGURATION_TYPES)
+      # Multi-config generators (Xcode, Visual Studio): derive Cargo profile per `$<CONFIG>`.
+      set(_nve_rt_is_multiconfig TRUE)
+      set(_nve_rt_debug_path "${_nve_rt_target_prefix}/debug/${_nve_rt_lib_name}")
+      set(_nve_rt_release_path "${_nve_rt_target_prefix}/release/${_nve_rt_lib_name}")
+      add_custom_target(nve_runtime_cargo_build
+        COMMAND "${_nve_rt_cargo_bin}" ${_nve_rt_cargo_args} $<$<NOT:$<CONFIG:Debug>>:--release>
+        WORKING_DIRECTORY "${_nve_rt_repo_root}"
+        BYPRODUCTS "${_nve_rt_debug_path}" "${_nve_rt_release_path}"
+        COMMENT "Building nve-runtime staticlib ($<CONFIG>)"
+        VERBATIM
+      )
+    else()
+      if("${NVE_RUNTIME_PROFILE}" STREQUAL "")
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" _nve_rt_build_type)
+        if(_nve_rt_build_type STREQUAL "release"
+           OR _nve_rt_build_type STREQUAL "relwithdebinfo"
+           OR _nve_rt_build_type STREQUAL "minsizerel")
+          set(_nve_rt_profile "release")
+        else()
+          set(_nve_rt_profile "debug")
+        endif()
+      else()
+        string(TOLOWER "${NVE_RUNTIME_PROFILE}" _nve_rt_profile)
+      endif()
+      if(NOT _nve_rt_profile STREQUAL "debug" AND NOT _nve_rt_profile STREQUAL "release")
+        message(FATAL_ERROR
+          "NveRuntime.cmake: invalid NVE_RUNTIME_PROFILE='${NVE_RUNTIME_PROFILE}' (expected 'debug' or 'release')"
+        )
+      endif()
+      if(_nve_rt_profile STREQUAL "release")
+        list(APPEND _nve_rt_cargo_args --release)
+      endif()
+      set(_nve_rt_lib_path "${_nve_rt_target_prefix}/${_nve_rt_profile}/${_nve_rt_lib_name}")
+      add_custom_target(nve_runtime_cargo_build
+        COMMAND "${_nve_rt_cargo_bin}" ${_nve_rt_cargo_args}
+        WORKING_DIRECTORY "${_nve_rt_repo_root}"
+        BYPRODUCTS "${_nve_rt_lib_path}"
+        COMMENT "Building nve-runtime staticlib (${_nve_rt_profile})"
+        VERBATIM
+      )
+    endif()
   endif()
 
   add_library(nve_runtime STATIC IMPORTED GLOBAL)
   add_library(nve::runtime ALIAS nve_runtime)
-  set_target_properties(nve_runtime PROPERTIES
-    IMPORTED_LOCATION "${_nve_rt_lib_path}"
-    INTERFACE_INCLUDE_DIRECTORIES "${_nve_rt_repo_root}/packages/core/host-cxx/include"
-  )
+  if(_nve_rt_is_multiconfig)
+    set_target_properties(nve_runtime PROPERTIES
+      IMPORTED_CONFIGURATIONS "DEBUG;RELEASE;RELWITHDEBINFO;MINSIZEREL"
+      IMPORTED_LOCATION_DEBUG "${_nve_rt_debug_path}"
+      IMPORTED_LOCATION_RELEASE "${_nve_rt_release_path}"
+      IMPORTED_LOCATION_RELWITHDEBINFO "${_nve_rt_release_path}"
+      IMPORTED_LOCATION_MINSIZEREL "${_nve_rt_release_path}"
+      INTERFACE_INCLUDE_DIRECTORIES "${_nve_rt_repo_root}/packages/core/host-cxx/include"
+    )
+  else()
+    set_target_properties(nve_runtime PROPERTIES
+      IMPORTED_LOCATION "${_nve_rt_lib_path}"
+      INTERFACE_INCLUDE_DIRECTORIES "${_nve_rt_repo_root}/packages/core/host-cxx/include"
+    )
+  endif()
   if(TARGET nve_runtime_cargo_build)
     add_dependencies(nve_runtime nve_runtime_cargo_build)
   endif()

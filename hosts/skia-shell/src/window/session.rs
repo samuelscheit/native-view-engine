@@ -504,7 +504,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 }
             }
         }
-        if !saw_queued {
+        if !saw_queued && !self.app.uses_queued_wire_frames() {
             let frame_id = self.next_frame_id;
             self.next_frame_id += 1;
             let bytes = self.app.render(frame_id);

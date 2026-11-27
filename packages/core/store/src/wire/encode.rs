@@ -1,5 +1,7 @@
 //! `ChangeSet` + `NodeStore` → `NVE2` bytes.
 
+use nve_abi::table::{table_flags, MAX_TABLE_SLOTS};
+
 use crate::changes::ChangeSet;
 use crate::id::ResourceId;
 use crate::span_pool::StrSpan;
@@ -69,7 +71,34 @@ impl WireEncoder {
     /// Appends a self-contained `NVE2` keyframe (`frame = 1`, `DeclareTables` + all live nodes,
     /// resources, non-default words, strings, and children) for `store` to `out`.
     pub fn encode_full(&mut self, store: &NodeStore, out: &mut Vec<u8>) {
+        self.encode_full_with_labels(store, core::iter::empty(), out);
+    }
+
+    /// Appends a self-contained `NVE2` keyframe (`frame = 1`) while preserving an upstream
+    /// producer's `(wire_slot, local_slot)` table labels (e.g. from
+    /// [`super::WireDecoder::declared_wire_tables`]).
+    ///
+    /// Every `(wire_slot, local_slot)` in `wire_tables` is declared in `Op::DeclareTables`
+    /// (including sparse tables with zero currently-attached rows) and all `Patch` / `SetStrings`
+    /// ops use the matching upstream `wire_slot`, so subsequent incremental deltas from the
+    /// original producer apply without `WireError::UndeclaredTable`.
+    pub fn encode_full_with_labels(
+        &mut self,
+        store: &NodeStore,
+        wire_tables: impl IntoIterator<Item = (u8, TableSlot)>,
+        out: &mut Vec<u8>,
+    ) {
         self.reset();
+        let mut forced = Vec::new();
+        let mut local_to_wire = [u8::MAX; MAX_TABLE_SLOTS];
+        for (wire_slot, local_slot) in wire_tables {
+            if (wire_slot as usize) < MAX_TABLE_SLOTS && (local_slot.0 as usize) < MAX_TABLE_SLOTS {
+                local_to_wire[local_slot.0 as usize] = wire_slot;
+                forced.push((wire_slot, local_slot));
+            }
+        }
+        let has_labels = !forced.is_empty();
+
         let mut changes = ChangeSet {
             frame: 1,
             ..Default::default()
@@ -130,18 +159,48 @@ impl WireEncoder {
             }
         }
 
-        self.encode(store, &changes, out);
+        let label_map = has_labels.then_some(&local_to_wire);
+        self.encode_inner(store, &changes, &forced, label_map, out);
     }
 
     /// Appends one `NVE2` frame for `changes` (read against the post-commit `store`) to `out`.
     pub fn encode(&mut self, store: &NodeStore, changes: &ChangeSet, out: &mut Vec<u8>) {
+        self.encode_inner(store, changes, &[], None, out);
+    }
+
+    fn encode_inner(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        force_declare: &[(u8, TableSlot)],
+        local_to_wire: Option<&[u8; MAX_TABLE_SLOTS]>,
+        out: &mut Vec<u8>,
+    ) {
+        let wire_of = |local: TableSlot| -> u8 {
+            local_to_wire
+                .and_then(|map| map.get(local.0 as usize).copied())
+                .filter(|&w| w != u8::MAX)
+                .unwrap_or(local.0)
+        };
         let base = out.len();
         let mut w = W { out, ops: 0, op_start: 0 };
         for _ in 0..HEADER_WORDS {
             w.u32(0);
         }
 
-        // DeclareTables: every changed or commanded table not yet declared in this session.
+        // DeclareTables: every forced or changed/commanded table not yet declared in this session.
+        let mut to_declare: Vec<(u8, TableSlot)> = Vec::new();
+        let mut declared_now = 0u128;
+        for &(wire_slot, local_slot) in force_declare {
+            let bit = 1u128 << wire_slot;
+            if (self.declared | declared_now) & bit == 0
+                && (store.table_meta(local_slot).is_some()
+                    || crate::table::try_desc(local_slot).is_some())
+            {
+                to_declare.push((wire_slot, local_slot));
+                declared_now |= bit;
+            }
+        }
         let mut need = 0u128;
         for t in changes.tables() {
             need |= t.slot.bit();
@@ -149,20 +208,30 @@ impl WireEncoder {
         for c in &changes.commands {
             need |= c.table.bit();
         }
-        let new = need & !self.declared;
-        if new != 0 {
-            w.begin(Op::DeclareTables, 0, new.count_ones());
-            let mut bits = new;
-            while bits != 0 {
-                let slot = bits.trailing_zeros() as u8;
-                bits &= bits - 1;
+        let mut need_bits = need;
+        while need_bits != 0 {
+            let local_slot = TableSlot(need_bits.trailing_zeros() as u8);
+            need_bits &= need_bits - 1;
+            let wire_slot = wire_of(local_slot);
+            let bit = 1u128 << wire_slot;
+            if (self.declared | declared_now) & bit == 0
+                && (store.table_meta(local_slot).is_some()
+                    || crate::table::try_desc(local_slot).is_some())
+            {
+                to_declare.push((wire_slot, local_slot));
+                declared_now |= bit;
+            }
+        }
+        if !to_declare.is_empty() {
+            w.begin(Op::DeclareTables, 0, to_declare.len() as u32);
+            for (wire_slot, local_slot) in to_declare {
                 let (key, schema_hash, storage, flags, str_w, res_w, defaults, word_effects, name) =
-                    if let Some(m) = store.table_meta(TableSlot(slot)) {
+                    if let Some(m) = store.table_meta(local_slot) {
                         (
                             m.key(),
                             m.schema_hash(),
                             m.storage(),
-                            m.flags(),
+                            m.flags() & !table_flags::HOST_SLOT,
                             m.str_words(),
                             m.resource_words(),
                             m.defaults(),
@@ -170,12 +239,12 @@ impl WireEncoder {
                             m.name(),
                         )
                     } else {
-                        let d = crate::table::desc(TableSlot(slot));
+                        let d = crate::table::desc(local_slot);
                         (
                             d.key,
                             d.schema_hash,
                             d.storage,
-                            d.flags,
+                            d.flags & !table_flags::HOST_SLOT,
                             d.str_words,
                             d.resource_words,
                             d.defaults,
@@ -188,7 +257,7 @@ impl WireEncoder {
                 w.u32(schema_hash as u32);
                 w.u32((schema_hash >> 32) as u32);
                 w.u32(
-                    slot as u32
+                    wire_slot as u32
                         | (storage as u32) << 8
                         | (flags as u32) << 16
                         | (defaults.len() as u32) << 24,
@@ -206,7 +275,7 @@ impl WireEncoder {
                 w.bytes(name.as_bytes());
             }
             w.end();
-            self.declared |= new;
+            self.declared |= declared_now;
         }
 
         w.list(Op::CreateNodes, 0, changes.created.iter().map(|n| n.0));
@@ -236,7 +305,7 @@ impl WireEncoder {
         }
 
         for t in changes.tables() {
-            let slot = t.slot.0;
+            let slot = wire_of(t.slot);
             let Some(desc) = store.table_meta(t.slot) else { continue };
             let str_words = desc.str_words();
             let str_pairs = str_words | str_words << 1;
@@ -324,7 +393,7 @@ impl WireEncoder {
             for c in &changes.commands {
                 let payload = changes.command_payload(c);
                 w.u32(c.node.0);
-                w.u32(c.table.0 as u32);
+                w.u32(wire_of(c.table) as u32);
                 w.u32(c.op);
                 w.u32(payload.len() as u32);
                 w.bytes(payload);

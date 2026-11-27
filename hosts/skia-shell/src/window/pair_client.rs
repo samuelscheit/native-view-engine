@@ -172,7 +172,6 @@ pub struct PairedRemoteApp {
     client: ReconnectingWireClient,
     endpoint_label: String,
     pending_frames: VecDeque<QueuedRemoteFrame>,
-    last_rendered: Vec<u8>,
     has_seen_frame: bool,
     resync: WireResyncState,
     last_dequeued_session_id: u64,
@@ -206,7 +205,6 @@ impl PairedRemoteApp {
             client,
             endpoint_label: config.addr,
             pending_frames: VecDeque::new(),
-            last_rendered: Vec::new(),
             has_seen_frame: false,
             resync: WireResyncState::new(),
             last_dequeued_session_id: 0,
@@ -238,7 +236,6 @@ impl PairedRemoteApp {
             client,
             endpoint_label: config.addr,
             pending_frames: VecDeque::new(),
-            last_rendered: Vec::new(),
             has_seen_frame: false,
             resync: WireResyncState::new(),
             last_dequeued_session_id: 0,
@@ -402,15 +399,12 @@ impl DesktopApp for PairedRemoteApp {
     }
 
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
-        self.drain_incoming_frames();
-        if let Some(q) = self.pending_frames.pop_front() {
-            self.last_dequeued_session_id = q.session_id;
-            self.last_dequeued_resets = q.is_keyframe || q.is_frame1;
-            self.last_rendered = q.payload;
-            &self.last_rendered
-        } else {
-            &[]
-        }
+        // Queued wire apps deliver all frames strictly via `take_queued_wire_frame`.
+        &[]
+    }
+
+    fn uses_queued_wire_frames(&self) -> bool {
+        true
     }
 
     fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
