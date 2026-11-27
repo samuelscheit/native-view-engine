@@ -13,8 +13,14 @@ use super::patterns::{
 use super::scope::{EnumQualifier, ImportScope};
 
 /// Shared per-match outer-variable scope so the same outer variable keeps a single canonical
-/// `$rN` index across every arm of the match (preventing `Edge::Top => top + 1` vs `bottom + 1`
-/// and swapped-corner false collisions).
+/// `$rN` index across every arm of the match.
+///
+/// Pre-seeding from enclosing declaration order (`enclosing_locals`) establishes declaration-order
+/// positional alpha-equivalence: same-function or same-order swapped tables (`Top => top + 1` vs
+/// `bottom + 1`, swapped corners) map to distinct `$rN` indices and never falsely collide, while
+/// two separate functions with permuted parameter declarations remain alpha-equivalent when their
+/// non-bare bodies apply identical operations to positional parameters (pure bare outer-var
+/// selectors remain rejected unconditionally via `is_bare_outer_var`).
 #[derive(Debug, Default)]
 pub(super) struct MatchOuterScope {
     outer_vars: BTreeMap<String, usize>,

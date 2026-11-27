@@ -53,8 +53,24 @@ fn per_match_outer_vars_reject_opposite_directions_and_swapped_corners() {
         "opposite-direction non-bare outer-var expressions must NOT collide"
     );
 
-    // Bare outer-var selectors stay rejected even when parameters are reordered.
-    let opposite_reordered_params = r#"
+    // Non-bare bodies with permuted parameter declarations are positionally alpha-equivalent
+    // (`(e, p0, p1, p2, p3)` -> `Top => p0 + 1.0, ...`) and therefore collide, whereas pure bare
+    // outer-var selectors remain rejected unconditionally by `is_bare_outer_var`.
+    let positional_reordered_non_bare = r#"
+        fn edge_a(e: Edge, top: f32, right: f32, bottom: f32, left: f32) -> f32 {
+            match e { Edge::Top => top + 1.0, Edge::Right => right + 1.0, Edge::Bottom => bottom + 1.0, Edge::Left => left + 1.0 }
+        }
+        fn edge_b(e: Edge, bottom: f32, left: f32, top: f32, right: f32) -> f32 {
+            match e { Edge::Top => bottom + 1.0, Edge::Right => left + 1.0, Edge::Bottom => top + 1.0, Edge::Left => right + 1.0 }
+        }
+    "#;
+    assert_eq!(
+        scan_sources(&[("a.rs", positional_reordered_non_bare)]).len(),
+        1,
+        "non-bare positionally alpha-equivalent functions with permuted param names must collide"
+    );
+
+    let bare_reordered_params = r#"
         fn edge_a(e: Edge, top: f32, right: f32, bottom: f32, left: f32) -> f32 {
             match e { Edge::Top => top, Edge::Right => right, Edge::Bottom => bottom, Edge::Left => left }
         }
@@ -63,7 +79,7 @@ fn per_match_outer_vars_reject_opposite_directions_and_swapped_corners() {
         }
     "#;
     assert!(
-        scan_sources(&[("a.rs", opposite_reordered_params)]).is_empty(),
+        scan_sources(&[("a.rs", bare_reordered_params)]).is_empty(),
         "bare outer-var selectors with reordered params must NOT collide"
     );
 

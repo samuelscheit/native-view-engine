@@ -1,5 +1,5 @@
-//! Arm normalization, free-variable scanning, and `MatchSite` construction for
-//! `Expr::Match`, `matches!`, and `if let` chains.
+//! Arm normalization and `MatchSite` construction for `Expr::Match`, `matches!`, and `if let`
+//! chains (free-variable scanning lives in `free_vars.rs`).
 
 use std::collections::{BTreeMap, BTreeSet};
 

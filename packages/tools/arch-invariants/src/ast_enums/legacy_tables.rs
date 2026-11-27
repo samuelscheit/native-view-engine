@@ -13,7 +13,9 @@ use crate::ast_layout::last_type_ident;
 use crate::{is_cfg_test_attr, line_at, Violation};
 
 use super::normalize_helpers::extract_body_mirror_atom;
-use super::patterns::{extract_arm_patterns, is_compact_discriminant_set, MirrorAtom};
+use super::patterns::{
+    extract_arm_patterns_checked, is_compact_discriminant_set, MirrorAtom, PatternExpansion,
+};
 use super::scope::ImportScope;
 
 struct FnMirrorProfile {
@@ -111,9 +113,7 @@ fn collect_fn_profiles(items: &[Item], scope: &ImportScope, out: &mut Vec<FnMirr
         match item {
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    // Rust inline `mod` blocks start a fresh lexical import scope.
-                    let mut child = ImportScope::with_crate(scope.current_crate.as_deref());
-                    child.ingest_items(sub);
+                    let child = ImportScope::child_for_inline_mod(scope, sub);
                     collect_fn_profiles(sub, &child, out);
                 }
             }
@@ -162,18 +162,25 @@ fn record_fn_profile(
             if is_cfg_test_attr(&m.attrs) {
                 return;
             }
+            let mut match_pairs = Vec::new();
             for arm in &m.arms {
                 if arm.guard.is_none()
                     && !is_cfg_test_attr(&arm.attrs)
                     && let Some(rhs) = extract_body_mirror_atom(&arm.body, self.scope, self.self_ty)
                 {
-                    for pat in extract_arm_patterns(&arm.pat, self.scope, self.self_ty) {
+                    let pats = match extract_arm_patterns_checked(&arm.pat, self.scope, self.self_ty)
+                    {
+                        PatternExpansion::Ok(v) => v,
+                        PatternExpansion::Overflow => return,
+                    };
+                    for pat in pats {
                         if let Some(lhs) = pat.mirror_atom {
-                            self.pairs.insert((lhs, rhs.clone()));
+                            match_pairs.push((lhs, rhs.clone()));
                         }
                     }
                 }
             }
+            self.pairs.extend(match_pairs);
             visit::visit_expr_match(self, m);
         }
     }

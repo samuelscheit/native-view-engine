@@ -133,6 +133,14 @@ impl ImportScope {
         }
     }
 
+    /// Creates a fresh lexical import scope for an inline `mod foo { ... }` block (Rust inline
+    /// modules do not inherit parent `use` imports, while remaining in the same crate).
+    pub fn child_for_inline_mod(parent: &Self, items: &[Item]) -> Self {
+        let mut child = Self::with_crate(parent.current_crate.as_deref());
+        child.ingest_items(items);
+        child
+    }
+
     pub fn has_block_scope_items(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|stmt| match stmt {
             Stmt::Item(item) => is_scope_item(item),
@@ -156,6 +164,7 @@ impl ImportScope {
     }
 
     fn ingest_item_refs<'a>(&mut self, items: impl Iterator<Item = &'a Item> + Clone) {
+        // Pass 1: record local module and type declarations.
         for item in items.clone() {
             match item {
                 Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
@@ -174,19 +183,18 @@ impl ImportScope {
                 _ => {}
             }
         }
-        // Two passes for `use` so `use crate::Align as Al; use Al::*;` resolves regardless of order.
+        // Pass 2: non-glob `use` imports (two passes so module aliases resolve before dependents).
         for _ in 0..2 {
             for item in items.clone() {
                 if let Item::Use(u) = item
                     && !is_cfg_test_attr(&u.attrs)
                 {
                     let mut prefix = Vec::new();
-                    self.ingest_tree(&u.tree, &mut prefix);
+                    self.ingest_tree(&u.tree, &mut prefix, false);
                 }
             }
         }
-        // Fixed-point passes for `type Alias = Target;` without letting `use other::Foo as Bar;`
-        // chain into a local `use this::Foo;`.
+        // Pass 3: fixed-point `type Alias = Target;` resolution without crossing `use` boundaries.
         for _ in 0..4 {
             let mut changed = false;
             for item in items.clone() {
@@ -198,6 +206,16 @@ impl ImportScope {
             }
             if !changed {
                 break;
+            }
+        }
+        // Pass 4: `UseTree::Glob` AFTER all aliases/types resolve so `use Al::*; use crate::Align as Al;`
+        // and `type Al = Align; use Al::*;` never pollute `glob_enums` with stale alias names.
+        for item in items {
+            if let Item::Use(u) = item
+                && !is_cfg_test_attr(&u.attrs)
+            {
+                let mut prefix = Vec::new();
+                self.ingest_tree(&u.tree, &mut prefix, true);
             }
         }
     }
@@ -218,28 +236,28 @@ impl ImportScope {
         false
     }
 
-    fn ingest_tree(&mut self, tree: &UseTree, prefix: &mut Vec<String>) {
+    fn ingest_tree(&mut self, tree: &UseTree, prefix: &mut Vec<String>, globs_only: bool) {
         match tree {
             UseTree::Path(p) => {
                 prefix.push(p.ident.to_string());
-                self.ingest_tree(&p.tree, prefix);
+                self.ingest_tree(&p.tree, prefix, globs_only);
                 prefix.pop();
             }
             UseTree::Group(g) => {
                 for item in &g.items {
-                    self.ingest_tree(item, prefix);
+                    self.ingest_tree(item, prefix, globs_only);
                 }
             }
-            UseTree::Name(n) => {
+            UseTree::Name(n) if !globs_only => {
                 let ident = n.ident.to_string();
                 self.record_import(prefix, &ident, &ident);
             }
-            UseTree::Rename(r) => {
+            UseTree::Rename(r) if !globs_only => {
                 let orig = r.ident.to_string();
                 let alias = r.rename.to_string();
                 self.record_import(prefix, &orig, &alias);
             }
-            UseTree::Glob(_) => {
+            UseTree::Glob(_) if globs_only => {
                 if let Some(last) = prefix.last()
                     && is_type_ident(last)
                 {
@@ -255,6 +273,7 @@ impl ImportScope {
                     self.has_unscoped_glob = true;
                 }
             }
+            _ => {}
         }
     }
 
@@ -267,7 +286,10 @@ impl ImportScope {
                 return;
             };
             let bound = if alias == "self" { last.as_str() } else { alias };
-            if !is_type_ident(bound) {
+            if is_type_ident(bound) {
+                let qual = self.qualifier_from_prefix(prefix);
+                self.type_aliases.insert(bound.to_string(), qual);
+            } else {
                 let origin_crate = self.resolve_module_origin_crate(prefix);
                 self.mod_imports.insert(bound.to_string(), origin_crate);
             }
@@ -306,18 +328,7 @@ impl ImportScope {
 
     fn resolve_module_origin_crate(&self, segs: &[String]) -> Option<String> {
         let first = segs.first()?.as_str();
-        if let Some(sdk) = segs.iter().find(|s| EXTERNAL_SDK_ROOTS.contains(&s.as_str())) {
-            return Some(sdk.clone());
-        }
-        if matches!(first, "crate" | "self" | "super") {
-            self.current_crate.clone()
-        } else if let Some(mapped) = self.mod_imports.get(first) {
-            mapped.clone()
-        } else if !is_type_ident(first) {
-            Some(first.to_string())
-        } else {
-            self.current_crate.clone()
-        }
+        resolve_root_crate(first, self.current_crate.as_deref(), &self.mod_imports)
     }
 
     /// Builds an `EnumQualifier` for a path whose final segment is the type name.
@@ -385,9 +396,13 @@ impl ImportScope {
         EnumQualifier::unresolved(ident)
     }
 
-    /// Unified resolver for unqualified capitalized identifiers across `Pat::Ident`, `Expr::Path`,
-    /// `Expr::Call`, and `Expr::Struct`. Returns `Some((resolved_qualifier, variant_name, is_unqual_glob_ref))`.
-    pub fn resolve_unqualified_variant(&self, name: &str) -> Option<(Option<EnumQualifier>, String, bool)> {
+    /// Unified resolver for unqualified enum variants across `Pat::Ident`, `Expr::Path`,
+    /// `Expr::Call`, and `Expr::Struct`. Only resolves when an explicit variant import or glob
+    /// import is active (never tags ordinary structs/newtypes as enum variants).
+    pub fn resolve_unqualified_variant(
+        &self,
+        name: &str,
+    ) -> Option<(Option<EnumQualifier>, String, bool)> {
         if matches!(name, "Some" | "None" | "Ok" | "Err") {
             return None;
         }
@@ -405,32 +420,31 @@ impl ImportScope {
         {
             return Some((Some(q.clone()), name.to_string(), false));
         }
-        let has_glob = !self.glob_enums.is_empty() || self.has_unscoped_glob;
-        Some((None, name.to_string(), has_glob))
+        if !self.glob_enums.is_empty() || self.has_unscoped_glob {
+            return Some((None, name.to_string(), true));
+        }
+        None
     }
 
     pub fn is_external_sdk_path(&self, path: &syn::Path) -> bool {
-        if path
-            .segments
-            .iter()
-            .any(|s| EXTERNAL_SDK_ROOTS.contains(&s.ident.to_string().as_str()))
+        let Some(first) = path.segments.first() else {
+            return false;
+        };
+        let name = first.ident.to_string();
+        if EXTERNAL_SDK_ROOTS.contains(&name.as_str()) {
+            return true;
+        }
+        if self
+            .type_aliases
+            .get(&name)
+            .is_some_and(EnumQualifier::is_external_sdk)
         {
             return true;
         }
-        if let Some(first) = path.segments.first() {
-            let name = first.ident.to_string();
-            if self
-                .type_aliases
-                .get(&name)
-                .is_some_and(EnumQualifier::is_external_sdk)
-            {
-                return true;
-            }
-            if let Some(Some(crate_name)) = self.mod_imports.get(&name)
-                && EXTERNAL_SDK_ROOTS.contains(&crate_name.as_str())
-            {
-                return true;
-            }
+        if let Some(Some(crate_name)) = self.mod_imports.get(&name)
+            && EXTERNAL_SDK_ROOTS.contains(&crate_name.as_str())
+        {
+            return true;
         }
         false
     }
@@ -447,6 +461,25 @@ fn is_scope_item(item: &Item) -> bool {
     }
 }
 
+fn resolve_root_crate(
+    first: &str,
+    current_crate: Option<&str>,
+    mod_imports: &BTreeMap<String, Option<String>>,
+) -> Option<String> {
+    if EXTERNAL_SDK_ROOTS.contains(&first) {
+        return Some(first.to_string());
+    }
+    if matches!(first, "crate" | "self" | "super") {
+        current_crate.map(ToString::to_string)
+    } else if let Some(mapped) = mod_imports.get(first) {
+        mapped.clone()
+    } else if !is_type_ident(first) {
+        Some(first.to_string())
+    } else {
+        current_crate.map(ToString::to_string)
+    }
+}
+
 fn extract_origin_crate_and_mod(
     segs: &[String],
     current_crate: Option<&str>,
@@ -456,19 +489,13 @@ fn extract_origin_crate_and_mod(
         return (None, None);
     }
     let prefix = &segs[..segs.len() - 1];
-    if let Some(sdk) = prefix.iter().find(|s| EXTERNAL_SDK_ROOTS.contains(&s.as_str())) {
-        return (Some(sdk.clone()), None);
+    let origin_crate = resolve_root_crate(prefix[0].as_str(), current_crate, mod_imports);
+    if origin_crate
+        .as_deref()
+        .is_some_and(|c| EXTERNAL_SDK_ROOTS.contains(&c))
+    {
+        return (origin_crate, None);
     }
-    let first = prefix[0].as_str();
-    let origin_crate = if matches!(first, "crate" | "self" | "super") {
-        current_crate.map(ToString::to_string)
-    } else if let Some(mapped) = mod_imports.get(first) {
-        mapped.clone()
-    } else if !is_type_ident(first) {
-        Some(first.to_string())
-    } else {
-        current_crate.map(ToString::to_string)
-    };
     let origin_mod = prefix
         .last()
         .filter(|s| !matches!(s.as_str(), "crate" | "self" | "super") && !is_type_ident(s))

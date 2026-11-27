@@ -95,10 +95,8 @@ impl FileExtractState<'_> {
             match item {
                 Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                     if let Some((_, sub)) = &m.content {
-                        // Rust inline `mod` blocks start a fresh lexical import scope.
                         self.mod_path.push(m.ident.to_string());
-                        let mut child = ImportScope::with_crate(scope.current_crate.as_deref());
-                        child.ingest_items(sub);
+                        let child = ImportScope::child_for_inline_mod(scope, sub);
                         self.extract_from_items(sub, &child, None);
                         self.mod_path.pop();
                     }
@@ -327,14 +325,10 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
                     let next_sym = format!("{}::{}", self.symbol, m.ident);
                     let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
                     let prev_locals = std::mem::take(&mut self.enclosing_locals);
-                    let mut child = ImportScope::with_crate(
-                        self.scope_stack
-                            .last()
-                            .unwrap_or(self.base_scope)
-                            .current_crate
-                            .as_deref(),
+                    let child = ImportScope::child_for_inline_mod(
+                        self.scope_stack.last().unwrap_or(self.base_scope),
+                        sub,
                     );
-                    child.ingest_items(sub);
                     self.scope_stack.push(child);
                     for it in sub {
                         self.visit_item(it);
@@ -391,6 +385,27 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
                     }
                 }
                 self.self_ty_stack.pop();
+            }
+            Item::Trait(tr) => {
+                let tr_name = tr.ident.to_string();
+                for ti in &tr.items {
+                    if let syn::TraitItem::Fn(f) = ti
+                        && !is_cfg_test_attr(&f.attrs)
+                        && let Some(block) = &f.default
+                    {
+                        let next_sym = format!("{}::{tr_name}::{}", self.symbol, f.sig.ident);
+                        let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
+                        let prev_locals = std::mem::replace(
+                            &mut self.enclosing_locals,
+                            collect_sig_params(&f.sig),
+                        );
+                        self.self_ty_stack.push(None);
+                        self.visit_block(block);
+                        self.self_ty_stack.pop();
+                        self.enclosing_locals = prev_locals;
+                        self.symbol = prev_sym;
+                    }
+                }
             }
             Item::Const(c) => {
                 let next_sym = format!("{}::const {}", self.symbol, c.ident);

@@ -271,18 +271,22 @@ fn detect_same_direction(
             .map(|arm| (arm.pat_key.as_str(), arm.body_key.as_str()))
             .collect();
 
-        // Symmetric `shared_pats` over unique shared variant heads (`a_heads ∩ b_heads`).
+        // Symmetric `shared_pats` over unique shared variant heads (`a_heads ∩ b_heads`), with
+        // head-level ratio gates (`matched_heads`) so multi-guard splits cannot inflate > 100%.
         let shared_pats = a_heads.intersection(&b_heads).count();
         let mut shared_arms = 0usize;
+        let mut matched_heads: BTreeSet<&str> = BTreeSet::new();
         let mut distinct_discriminating = BTreeSet::new();
         for arm in &a.arms {
             if b_pairs.contains(&(arm.pat_key.as_str(), arm.body_key.as_str())) {
                 shared_arms += 1;
+                matched_heads.insert(arm.variant_head.as_str());
                 if !arm.is_noop && !arm.is_bare_outer {
                     distinct_discriminating.insert(arm.body_key.as_str());
                 }
             }
         }
+        let matched_head_count = matched_heads.len();
 
         let (matched_syn_a, shared_syn_a) = compute_syn_unit_counts(&a.arms, &b_heads, &b_pairs);
         let (matched_syn_b, shared_syn_b) = compute_syn_unit_counts(&b.arms, &a_heads, &a_pairs);
@@ -299,8 +303,8 @@ fn detect_same_direction(
         let min_heads = a_heads.len().min(b_heads.len());
         if shared_arms < MIN_DUPLICATE_ARMS
             || shared_pats == 0
-            || shared_arms * 100 < shared_pats * MIN_SHARED_PAT_AGREEMENT_PCT
-            || shared_arms * 100 < min_heads * MIN_SMALLER_MATCH_COVERAGE_PCT
+            || matched_head_count * 100 < shared_pats * MIN_SHARED_PAT_AGREEMENT_PCT
+            || matched_head_count * 100 < min_heads * MIN_SMALLER_MATCH_COVERAGE_PCT
             || denom_syn_a == 0
             || denom_syn_b == 0
             || matched_syn_a * 100 < denom_syn_a * MIN_SYNTACTIC_ARM_AGREEMENT_PCT

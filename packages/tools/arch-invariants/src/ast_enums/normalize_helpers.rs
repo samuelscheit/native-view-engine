@@ -10,7 +10,7 @@ use super::normalize::NormCtx;
 use super::patterns::{
     canonical_path, lit_to_key_and_atom, member_to_string, split_enum_variant_path, MirrorAtom,
 };
-use super::scope::ImportScope;
+use super::scope::{is_type_ident, ImportScope};
 
 pub(super) fn is_rust_keyword_or_primitive(s: &str) -> bool {
     matches!(
@@ -156,12 +156,19 @@ impl NormCtx<'_> {
                 if pi.by_ref.is_none()
                     && pi.mutability.is_none()
                     && pi.subpat.is_none()
-                    && let Some((qual, variant, _)) = self.scope().resolve_unqualified_variant(&name)
+                    && is_type_ident(&name)
                 {
-                    return match qual {
-                        Some(q) => format!("{}::{variant}", q.canonical_key()),
-                        None => variant,
-                    };
+                    if let Some((qual, variant, _)) = self.scope().resolve_unqualified_variant(&name)
+                    {
+                        return match qual {
+                            Some(q) => format!("{}::{variant}", q.canonical_key()),
+                            None => variant,
+                        };
+                    }
+                    if let Some(q) = self.scope().type_aliases.get(&name) {
+                        return q.canonical_key();
+                    }
+                    return name;
                 }
                 let idx = if let Some(shared) = or_shared.as_deref_mut() {
                     *shared.entry(name.clone()).or_insert_with(|| {
@@ -229,10 +236,11 @@ impl NormCtx<'_> {
                 format!("{path}{{{}}}", parts.join(","))
             }
             Pat::Or(or) => {
-                // Rust requires identical binding names across `Pat::Or` alternatives; share `$lN`.
+                // Rust requires identical binding names across `Pat::Or` alternatives; share `$lN`
+                // and write back into any enclosing `or_shared` so `(A(x) | B(x)) | C(x)` aligns.
                 let base_locals = self.local_bindings.clone();
-                let mut shared = match or_shared {
-                    Some(existing) => existing.clone(),
+                let mut shared = match &or_shared {
+                    Some(existing) => (*existing).clone(),
                     None => BTreeMap::new(),
                 };
                 let mut cases: Vec<String> = or
@@ -244,8 +252,15 @@ impl NormCtx<'_> {
                     })
                     .collect();
                 self.local_bindings = base_locals;
-                for (name, idx) in shared {
-                    self.local_bindings.insert(name, idx);
+                if let Some(outer_shared) = or_shared {
+                    for (name, idx) in shared {
+                        outer_shared.entry(name.clone()).or_insert(idx);
+                        self.local_bindings.insert(name, idx);
+                    }
+                } else {
+                    for (name, idx) in shared {
+                        self.local_bindings.insert(name, idx);
+                    }
                 }
                 cases.sort();
                 cases.join("|")

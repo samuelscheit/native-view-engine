@@ -16,7 +16,9 @@ use crate::ast_layout::last_type_ident;
 use crate::{is_cfg_test_attr, line_at, Violation};
 
 use super::fingerprint::MIN_DUPLICATE_ARMS;
-use super::patterns::{extract_arm_patterns, is_compact_discriminant_set};
+use super::patterns::{
+    extract_arm_patterns_checked, is_compact_discriminant_set, PatternExpansion,
+};
 use super::scope::ImportScope;
 
 const EXTERNAL_BRIDGE_FN_PREFIXES: &[&str] = &[
@@ -185,9 +187,7 @@ fn scan_converters_in_items(
         match item {
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    // Rust inline `mod` blocks start a fresh lexical import scope.
-                    let mut child = ImportScope::with_crate(scope.current_crate.as_deref());
-                    child.ingest_items(sub);
+                    let child = ImportScope::child_for_inline_mod(scope, sub);
                     scan_converters_in_items(rel, raw, sub, &child, internal_enums, out);
                 }
             }
@@ -405,16 +405,15 @@ fn body_has_enum_match(
     }
     impl<'ast> Visit<'ast> for Scan<'_> {
         fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
-            let enum_arm_count: usize = m
-                .arms
-                .iter()
-                .map(|arm| {
-                    extract_arm_patterns(&arm.pat, self.scope, self.self_ty)
-                        .into_iter()
-                        .filter(|p| p.is_enum_variant)
-                        .count()
-                })
-                .sum();
+            let mut enum_arm_count = 0usize;
+            for arm in &m.arms {
+                match extract_arm_patterns_checked(&arm.pat, self.scope, self.self_ty) {
+                    PatternExpansion::Ok(pats) => {
+                        enum_arm_count += pats.into_iter().filter(|p| p.is_enum_variant).count();
+                    }
+                    PatternExpansion::Overflow => return,
+                }
+            }
             if enum_arm_count >= self.min_arms {
                 self.found = true;
             }

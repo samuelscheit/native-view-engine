@@ -99,17 +99,6 @@ pub(super) fn is_catchall_pat(pat: &Pat) -> bool {
     }
 }
 
-pub(super) fn extract_arm_patterns(
-    pat: &Pat,
-    scope: &ImportScope,
-    self_ty: Option<&str>,
-) -> Vec<ExtractedPat> {
-    match extract_arm_patterns_checked(pat, scope, self_ty) {
-        PatternExpansion::Ok(v) => v,
-        PatternExpansion::Overflow => Vec::new(),
-    }
-}
-
 pub(super) fn extract_arm_patterns_checked(
     pat: &Pat,
     scope: &ImportScope,
