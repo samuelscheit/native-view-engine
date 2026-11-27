@@ -76,15 +76,31 @@ impl<A: NveApp> RuntimeApp for NveAppAdapter<A> {
     }
 }
 
-/// Copies the optional static vtable `get_iface(id)` returns.
+/// Copies the optional static vtable `get_iface(id)` returns, or `None` when the module returns
+/// null OR leaves any slot null. Every `NveXxxApi` is a struct of non-nullable Rust fn pointers,
+/// so copying a vtable with a null slot would be undefined behaviour (and, through the
+/// `Option<T>` niche, silently read as "interface absent"). A C module must fill every slot of an
+/// interface it returns (returning 0 / empty for unsupported operations).
 ///
 /// # Safety
-/// `get_iface` follows the NVE modular C ABI: a non-null result points to a static `T`.
+/// `get_iface` follows the NVE modular C ABI: a non-null result points to a static `T`, and `T`
+/// consists solely of function pointers.
 unsafe fn optional_iface<T: Copy>(get_iface: NveGetInterfaceFn, id: u32) -> Option<T> {
+    const PTR: usize = core::mem::size_of::<*const ()>();
     // SAFETY: Caller guarantees the `nve_get_interface` contract for `id`.
-    let ptr = unsafe { get_iface(id) }.cast::<T>();
-    // SAFETY: Non-null pointers returned for `id` point to a valid static `T`.
-    (!ptr.is_null()).then(|| unsafe { *ptr })
+    let ptr = unsafe { get_iface(id) };
+    if ptr.is_null() || !core::mem::size_of::<T>().is_multiple_of(PTR) {
+        return None;
+    }
+    let slots = ptr.cast::<*const ()>();
+    for i in 0..core::mem::size_of::<T>() / PTR {
+        // SAFETY: `ptr` points to a readable `T` made of `size_of::<T>() / PTR` pointer slots.
+        if unsafe { slots.add(i).read() }.is_null() {
+            return None;
+        }
+    }
+    // SAFETY: Non-null `ptr` points to a valid static `T` whose every fn-pointer slot is non-null.
+    Some(unsafe { *ptr.cast::<T>() })
 }
 
 /// Adapts a foreign or statically linked C ABI `nve_get_interface` module to [`RuntimeApp`].

@@ -15,6 +15,15 @@ keys, and field specs.
 | `nve/host/table_reader.hpp` | C++20 | `TableReader` over any `NveTableView`-shaped struct (`std::optional` on every read; specs that do not fit the row read `nullopt`); `field()` is `consteval` and rejects invalid specs at compile time |
 | `nve/host/scene_reader.hpp` | C++20 | `SceneReader<View>` over the generated `NveSceneView`. It validates once, then does O(1) bounds-checked reads. |
 | `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue` |
+| `nve/host/runtime_session.hpp` | C++20 | `RuntimeSession` / `RuntimeSceneGuard` / `RuntimeSceneReader` over `libnve_runtime`'s `NveRuntimeApi` |
+| `nve/host/bound_table.hpp` | C++20 | `BoundTable` (a generated `NveTableDesc` resolved in one scene, O(1) node → row) and `RowRef` (row or defaults); packed `NodeId` helpers |
+| `nve/host/scene_nodes.hpp` | C++20 | `SceneTables` (every core table a view host renders) and `read_node` → `NodeData` (kind, absolute / local rects, visual, inherited typography, text, image, text input, scroll, interaction, accessibility, link) |
+| `nve/host/retained_tree.hpp` | C++20 | `RetainedTree<Adapter>`: O(changed) native-view reconciler (removals, `dirty_indices`, typography cascades, generation-checked slot reuse) |
+| `nve/host/host_session.hpp` | C++20 | `HostSession`: runtime surface + in-process / `cdylib` (hot reload) / paired app, UI-thread wake poster, `EventFactory`, app-state files |
+| `nve/host/module_loader.hpp` | C++20 | `AppModule`: `dlopen` / `LoadLibraryW` + validated `nve_get_interface` |
+| `nve/host/nve2_writer.hpp` | C++20 | `Nve2Writer`: `NVE2` frames from generated `NveTableDesc`s (C++ apps, demos, fixtures) |
+| `nve/host/core_resources.hpp` | C++20 | `ImageSrc` / `BoxShadows` resource codecs |
+| `nve/host/demo_counter_app.hpp` | C++20 | Built-in counter demo app (`nve_get_interface`) shared by every native shell and fixture |
 
 `BinWriter` records `InvalidUtf8` for strings that are not well-formed UTF-8, and `TooLarge` for a
 length above `u32`; a rejected write leaves no bytes at all. `end(mark)` records `InvalidMark`
