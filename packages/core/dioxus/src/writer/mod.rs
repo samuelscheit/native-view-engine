@@ -4,6 +4,7 @@
 
 mod attr_keys;
 mod attributes;
+mod flex_basis;
 mod flush;
 mod mutations;
 #[cfg(test)]

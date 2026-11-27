@@ -83,15 +83,9 @@ impl<T, C> QueryClient<T, C> {
     /// client will now refuse.
     pub fn invalidate_all(&self) -> Vec<QueryHandle> {
         let (active, wake, waiters) = self.inner.state.with(|s| {
-            s.wildcard_epoch = s.wildcard_epoch.wrapping_add(1);
             let mut out = Vec::with_capacity(s.active_slots.len());
             let mut waiters = Vec::new();
-            let active_len = s.active_slots.len();
-            for i in 0..active_len {
-                let slot = s.active_slots[i];
-                s.invalidate_slot(slot, &mut out, &mut waiters);
-            }
-            let _ = s.release_stream_pending(&mut waiters);
+            s.invalidate_all_slots(&mut out, &mut waiters);
             (out, s.wake_cb.clone(), waiters)
         });
         run_side_effects(wake, waiters);

@@ -123,9 +123,9 @@ impl SsrLocalPool {
     }
 
     /// Dispatches a job onto the next worker with a free render slot in round-robin order
-    /// without blocking or panicking. Scans sibling workers when the chosen one is saturated so
-    /// one busy worker never causes premature backpressure.
-    fn dispatch(&self, mut job: SsrJob) -> Result<(), SsrError> {
+    /// without blocking or panicking, returning that worker. Scans sibling workers when the chosen
+    /// one is saturated so one busy worker never causes premature backpressure.
+    fn dispatch(&self, mut job: SsrJob) -> Result<&Worker, SsrError> {
         let workers = &self.inner.workers;
         let len = workers.len();
         let start = self.inner.next_worker.fetch_add(1, Ordering::Relaxed) % len;
@@ -142,7 +142,7 @@ impl SsrLocalPool {
             };
             // A failed send hands the permit back with the job; dropping it frees the slot.
             match worker.jobs.try_send((job, permit)) {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(worker),
                 Err(TrySendError::Full((returned, _permit))) => {
                     saw_full = true;
                     job = returned;
@@ -188,8 +188,16 @@ impl SsrLocalPool {
             })
         });
 
-        self.dispatch(job)?;
+        let worker = self.dispatch(job)?;
 
-        headers_rx.await.map_err(|_| SsrError::PoolClosed)?
+        // A dropped sender with the worker's channel still open means the render task panicked
+        // (Tokio contains task panics), not that the pool shut down.
+        headers_rx.await.map_err(|_| {
+            if worker.jobs.is_closed() {
+                SsrError::PoolClosed
+            } else {
+                SsrError::Render("SSR render task panicked".into())
+            }
+        })?
     }
 }

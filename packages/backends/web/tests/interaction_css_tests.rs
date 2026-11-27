@@ -3,21 +3,21 @@
 //! `@media (hover:hover)` sticky-hover guard), base `cursor:<kw>` emission, 3-layer cascade
 //! ordering, and SSR + hydration `data-nve-hashes` deduplication.
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, LayoutProps, StyleProps,
-    ROOT_NODE_ID,
-};
+use nve_abi::{ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, LayoutProps, ROOT_NODE_ID};
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
-use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::style_patch::{Display, StylePatch};
 use nve_engine::RenderBackend;
 
 use nve_backend_web::{
     compile_node_state_rules, compile_node_state_rules_with_hover_guard, format_state_class,
-    write_style_patch_decls, StyleSheetCache, WebBackend,
+    write_style_patch_decls, WebBackend,
 };
 #[cfg(feature = "ssr")]
-use nve_backend_web::SsrDocumentOptions;
+use {
+    nve_abi::StyleProps,
+    nve_backend_web::{SsrDocumentOptions, StyleSheetCache},
+    nve_components::media::{MediaQuery, ResponsiveRule},
+};
 
 #[test]
 fn state_rule_compilation_covers_all_pseudos_compounds_and_hover_media_guard() {

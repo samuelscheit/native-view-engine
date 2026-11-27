@@ -6,7 +6,7 @@
 //! applying half a declaration.
 
 use nve_abi::num::parse_f32;
-use nve_abi::{ColorRgba, EdgeInsets};
+use nve_abi::{ColorRgba, Dimension, EdgeInsets};
 
 use crate::{parse_color, parse_px};
 
@@ -25,15 +25,20 @@ fn css_tokens(value: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
+/// Parses one box-edge length; negative lengths only where `allow_negative` (margins).
+fn parse_edge(token: &str, allow_negative: bool) -> Option<f32> {
+    parse_px(token).filter(|v| allow_negative || *v >= 0.0)
+}
+
 /// Parses a 1–4 value box-edge shorthand (`top [right [bottom [left]]]`, CSS clockwise order).
-pub(crate) fn parse_edges(value: &str) -> Option<EdgeInsets> {
+pub(crate) fn parse_edges(value: &str, allow_negative: bool) -> Option<EdgeInsets> {
     let mut vals = [0.0f32; 4];
     let mut n = 0usize;
     for token in css_tokens(value) {
         if n == 4 {
             return None;
         }
-        vals[n] = parse_px(token)?;
+        vals[n] = parse_edge(token, allow_negative)?;
         n += 1;
     }
     let [a, b, c, d] = vals;
@@ -53,9 +58,15 @@ pub(crate) fn parse_edges(value: &str) -> Option<EdgeInsets> {
 }
 
 /// Applies a single-edge longhand (`padding-top`, `marginLeft`, `margin-horizontal`, ...) to
-/// `edges`. Returns `false` when `suffix` names no edge (or the value is not a length).
-pub(crate) fn apply_edge_longhand(edges: &mut EdgeInsets, suffix: &str, value: &str) -> bool {
-    let Some(v) = parse_px(value) else {
+/// `edges`. Returns `false` when `suffix` names no edge; an invalid length (or a negative one
+/// unless `allow_negative`) leaves `edges` untouched.
+pub(crate) fn apply_edge_longhand(
+    edges: &mut EdgeInsets,
+    suffix: &str,
+    value: &str,
+    allow_negative: bool,
+) -> bool {
+    let Some(v) = parse_edge(value, allow_negative) else {
         // A recognized edge with an unparsable value is still handled (left untouched).
         return edge_targets(suffix).is_some();
     };
@@ -93,8 +104,8 @@ const BORDER_STYLES: [&str; 10] = [
 ];
 
 /// Parses `border: <width> || <style> || <color>` into `(width, color)` with CSS omitted-value
-/// rules: omitted color is `currentcolor` (`current_color`), omitted width is `medium` (3px),
-/// and an omitted, `none` or `hidden` style computes the width to 0.
+/// rules: omitted (or explicit) color `currentcolor` is `current_color`, omitted width is
+/// `medium` (3px), and an omitted, `none` or `hidden` style computes the width to 0.
 pub(crate) fn parse_border(value: &str, current_color: ColorRgba) -> Option<(f32, ColorRgba)> {
     let (mut width, mut style, mut color) = (None, None, None);
     let mut any = false;
@@ -113,7 +124,11 @@ pub(crate) fn parse_border(value: &str, current_color: ColorRgba) -> Option<(f32
         } else if style.is_none() && BORDER_STYLES.contains(&lower.as_str()) {
             style = Some(lower);
         } else if color.is_none()
-            && let Some(c) = parse_color(token)
+            && let Some(c) = if lower == "currentcolor" {
+                Some(current_color)
+            } else {
+                parse_color(token)
+            }
         {
             color = Some(c);
         } else {
@@ -132,57 +147,56 @@ pub(crate) fn parse_border(value: &str, current_color: ColorRgba) -> Option<(f32
 
 /// Parsed CSS `flex` shorthand.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct FlexShorthand<'a> {
+pub(crate) struct FlexShorthand {
     pub grow: f32,
     pub shrink: f32,
-    /// CSS `flex-basis` value (`auto`, `0%`, `280px`, ...).
-    pub basis: &'a str,
+    pub basis: Dimension,
+}
+
+impl FlexShorthand {
+    const fn new(grow: f32, shrink: f32, basis: Dimension) -> Self {
+        Self {
+            grow,
+            shrink,
+            basis,
+        }
+    }
 }
 
 /// Parses the CSS `flex` shorthand (`[<grow> <shrink>?] || <basis>`, factors adjacent, either
 /// side of the basis) per the spec's omitted-value rules: omitted shrink is `1`; omitted basis is
-/// `0%` when a grow factor is given; `<basis>` alone means `1 1 <basis>`.
-pub(crate) fn parse_flex(value: &str) -> Option<FlexShorthand<'_>> {
+/// `0%` when a grow factor is given; `<basis>` alone means `1 1 <basis>`. A third unitless number
+/// is a basis only when it is `0` (`flex: 1 1 0`).
+pub(crate) fn parse_flex(value: &str) -> Option<FlexShorthand> {
     let v = value.trim();
     match v.to_ascii_lowercase().as_str() {
-        "none" => {
-            return Some(FlexShorthand {
-                grow: 0.0,
-                shrink: 0.0,
-                basis: "auto",
-            })
-        }
-        "auto" => {
-            return Some(FlexShorthand {
-                grow: 1.0,
-                shrink: 1.0,
-                basis: "auto",
-            })
-        }
-        "initial" => {
-            return Some(FlexShorthand {
-                grow: 0.0,
-                shrink: 1.0,
-                basis: "auto",
-            })
-        }
+        "none" => return Some(FlexShorthand::new(0.0, 0.0, Dimension::Auto)),
+        "auto" => return Some(FlexShorthand::new(1.0, 1.0, Dimension::Auto)),
+        "initial" => return Some(FlexShorthand::new(0.0, 1.0, Dimension::Auto)),
         _ => {}
     }
     let mut factors = [0.0f32; 2];
     let mut n_factors = 0usize;
     let mut prev_was_factor = false;
-    let mut basis: Option<&str> = None;
+    let mut basis: Option<Dimension> = None;
     for token in css_tokens(v) {
         // A unitless number is a flex factor (`0` included); grow and shrink must be adjacent.
         if let Some(n) = parse_f32(token) {
+            if n_factors == 2 && basis.is_none() && n == 0.0 {
+                basis = Some(Dimension::Points(0.0));
+                prev_was_factor = false;
+                continue;
+            }
             if n < 0.0 || n_factors == 2 || (n_factors == 1 && !prev_was_factor) {
                 return None;
             }
             factors[n_factors] = n;
             n_factors += 1;
             prev_was_factor = true;
-        } else if basis.is_none() && is_flex_basis(token) {
-            basis = Some(token);
+        } else if basis.is_none()
+            && let Some(b) = parse_flex_basis(token)
+        {
+            basis = Some(b);
             prev_was_factor = false;
         } else {
             return None;
@@ -190,28 +204,29 @@ pub(crate) fn parse_flex(value: &str) -> Option<FlexShorthand<'_>> {
     }
     match (n_factors, basis) {
         (0, None) => None,
-        (0, Some(basis)) => Some(FlexShorthand {
-            grow: 1.0,
-            shrink: 1.0,
-            basis,
-        }),
-        (n, basis) => Some(FlexShorthand {
-            grow: factors[0],
-            shrink: if n == 2 { factors[1] } else { 1.0 },
-            basis: basis.unwrap_or("0%"),
-        }),
+        (0, Some(basis)) => Some(FlexShorthand::new(1.0, 1.0, basis)),
+        (n, basis) => Some(FlexShorthand::new(
+            factors[0],
+            if n == 2 { factors[1] } else { 1.0 },
+            basis.unwrap_or(Dimension::Percent(0.0)),
+        )),
     }
 }
 
-/// `auto`, `content`, a length (`280px`, `0`), or a percentage.
-fn is_flex_basis(token: &str) -> bool {
-    token.eq_ignore_ascii_case("auto")
-        || token.eq_ignore_ascii_case("content")
-        || parse_px(token).is_some_and(|v| v >= 0.0)
-        || token
-            .strip_suffix('%')
-            .and_then(parse_f32)
-            .is_some_and(|v| v >= 0.0)
+/// Parses a CSS `flex-basis`: `auto`, a non-negative `px` length (unitless only for `0`), or a
+/// non-negative percentage. `content` and other units are unsupported (`None`).
+pub(crate) fn parse_flex_basis(token: &str) -> Option<Dimension> {
+    let t = token.trim();
+    if t.eq_ignore_ascii_case("auto") {
+        return Some(Dimension::Auto);
+    }
+    if let Some(pct) = t.strip_suffix('%') {
+        return parse_f32(pct).filter(|v| *v >= 0.0).map(Dimension::Percent);
+    }
+    if let Some(n) = parse_f32(t) {
+        return (n == 0.0).then_some(Dimension::Points(0.0));
+    }
+    parse_px(t).filter(|v| *v >= 0.0).map(Dimension::Points)
 }
 
 #[cfg(test)]
@@ -229,26 +244,33 @@ mod tests {
 
     #[test]
     fn box_edges_follow_css_one_to_four_value_rules() {
-        assert_eq!(parse_edges("12px"), Some(EdgeInsets::all(12.0)));
-        assert_eq!(parse_edges("12px 14px"), Some(edges(12.0, 14.0, 12.0, 14.0)));
-        assert_eq!(parse_edges("12px 14px 16px"), Some(edges(12.0, 14.0, 16.0, 14.0)));
-        assert_eq!(
-            parse_edges(" 12px  14px 16px 18 "),
-            Some(edges(12.0, 14.0, 16.0, 18.0))
-        );
-        for bad in ["", "   ", "1px 2px 3px 4px 5px", "0 auto", "1em", "12px x"] {
-            assert_eq!(parse_edges(bad), None, "{bad:?}");
+        for allow_negative in [false, true] {
+            let p = |v| parse_edges(v, allow_negative);
+            assert_eq!(p("12px"), Some(EdgeInsets::all(12.0)));
+            assert_eq!(p("12PX 14Px"), Some(edges(12.0, 14.0, 12.0, 14.0)));
+            assert_eq!(p("12px 14px 16px"), Some(edges(12.0, 14.0, 16.0, 14.0)));
+            assert_eq!(p(" 12px  14px 16px 18 "), Some(edges(12.0, 14.0, 16.0, 18.0)));
+            for bad in ["", "   ", "1px 2px 3px 4px 5px", "0 auto", "1em", "12px x"] {
+                assert_eq!(p(bad), None, "{bad:?}");
+            }
         }
+        // Negative lengths: valid margins, dropped paddings (all-or-nothing).
+        assert_eq!(parse_edges("-4px 8px", true), Some(edges(-4.0, 8.0, -4.0, 8.0)));
+        assert_eq!(parse_edges("-4px 8px", false), None);
+        assert_eq!(parse_edges("4px -1", false), None);
 
         let mut e = EdgeInsets::all(1.0);
-        assert!(apply_edge_longhand(&mut e, "-top", "5px"));
-        assert!(apply_edge_longhand(&mut e, "Left", "7"));
-        assert!(apply_edge_longhand(&mut e, "-horizontal", "9px"));
-        assert!(apply_edge_longhand(&mut e, "Vertical", "2px"));
+        assert!(apply_edge_longhand(&mut e, "-top", "5px", false));
+        assert!(apply_edge_longhand(&mut e, "Left", "7", false));
+        assert!(apply_edge_longhand(&mut e, "-horizontal", "9PX", false));
+        assert!(apply_edge_longhand(&mut e, "Vertical", "2px", false));
         assert_eq!(e, edges(2.0, 9.0, 2.0, 9.0));
-        assert!(apply_edge_longhand(&mut e, "-bottom", "auto"), "handled, untouched");
+        assert!(apply_edge_longhand(&mut e, "-bottom", "auto", false), "handled, untouched");
+        assert!(apply_edge_longhand(&mut e, "-bottom", "-3px", false), "handled, untouched");
         assert_eq!(e.bottom, 2.0);
-        assert!(!apply_edge_longhand(&mut e, "-start", "3px"));
+        assert!(apply_edge_longhand(&mut e, "-bottom", "-3px", true));
+        assert_eq!(e.bottom, -3.0);
+        assert!(!apply_edge_longhand(&mut e, "-start", "3px", true));
     }
 
     #[test]
@@ -264,30 +286,80 @@ mod tests {
         assert_eq!(parse_border("4px none #1e293b", cur), Some((0.0, slate)));
         assert_eq!(parse_border("0", cur), Some((0.0, cur)));
         assert_eq!(parse_border("2px #1e293b", cur), Some((0.0, slate)), "omitted style is none");
-        for bad in ["", "1px 2px", "solid solid", "1px wavy red", "-1px solid", "1px solid #12"] {
+        assert_eq!(parse_border("1px solid currentColor", cur), Some((1.0, cur)));
+        assert_eq!(parse_border("CURRENTCOLOR dashed 2PX", cur), Some((2.0, cur)));
+        assert_eq!(
+            parse_border("1px solid rgba(30, 41, 59, 0.5)", cur),
+            Some((1.0, ColorRgba::rgba(0x1e, 0x29, 0x3b, 128)))
+        );
+        assert_eq!(parse_border("1px solid rgb(30 41 59)", cur), Some((1.0, slate)));
+        for bad in [
+            "",
+            "1px 2px",
+            "solid solid",
+            "1px wavy red",
+            "-1px solid",
+            "1px solid #12",
+            "1px solid currentcolor red",
+            "1px solid rgb(1, 2)",
+            "1px solid rgb(1, 2, 3, 4, 5)",
+        ] {
             assert_eq!(parse_border(bad, cur), None, "{bad:?}");
         }
     }
 
     #[test]
     fn flex_shorthand_follows_css_omitted_value_rules() {
-        let f = |g, s, b| Some(FlexShorthand { grow: g, shrink: s, basis: b });
-        assert_eq!(parse_flex("none"), f(0.0, 0.0, "auto"));
-        assert_eq!(parse_flex("AUTO"), f(1.0, 1.0, "auto"));
-        assert_eq!(parse_flex("initial"), f(0.0, 1.0, "auto"));
-        assert_eq!(parse_flex("1"), f(1.0, 1.0, "0%"));
-        assert_eq!(parse_flex("2 3"), f(2.0, 3.0, "0%"));
-        assert_eq!(parse_flex("2 280px"), f(2.0, 1.0, "280px"));
-        assert_eq!(parse_flex("1 1 280px"), f(1.0, 1.0, "280px"));
-        assert_eq!(parse_flex("1 1 110px"), f(1.0, 1.0, "110px"));
-        assert_eq!(parse_flex("0 0 auto"), f(0.0, 0.0, "auto"));
-        assert_eq!(parse_flex("1 0 50%"), f(1.0, 0.0, "50%"));
-        assert_eq!(parse_flex("100px"), f(1.0, 1.0, "100px"));
-        assert_eq!(parse_flex("2.5"), f(2.5, 1.0, "0%"));
-        assert_eq!(parse_flex("0"), f(0.0, 1.0, "0%"));
-        assert_eq!(parse_flex("280px 2 3"), f(2.0, 3.0, "280px"), "basis first");
-        for bad in ["", "1 2 3", "1 2 3px 4", "-1", "1 -2", "1 280px 1", "1px 2px", "x", "1 1 fit"] {
+        use Dimension::{Auto, Percent as Pct, Points as Px};
+        let f = |g, s, b| Some(FlexShorthand::new(g, s, b));
+        assert_eq!(parse_flex("none"), f(0.0, 0.0, Auto));
+        assert_eq!(parse_flex("AUTO"), f(1.0, 1.0, Auto));
+        assert_eq!(parse_flex("initial"), f(0.0, 1.0, Auto));
+        assert_eq!(parse_flex("1"), f(1.0, 1.0, Pct(0.0)));
+        assert_eq!(parse_flex("2 3"), f(2.0, 3.0, Pct(0.0)));
+        assert_eq!(parse_flex("2 280px"), f(2.0, 1.0, Px(280.0)));
+        assert_eq!(parse_flex("1 1 280px"), f(1.0, 1.0, Px(280.0)));
+        assert_eq!(parse_flex("1 1 110PX"), f(1.0, 1.0, Px(110.0)));
+        assert_eq!(parse_flex("0 0 auto"), f(0.0, 0.0, Auto));
+        assert_eq!(parse_flex("1 0 50%"), f(1.0, 0.0, Pct(50.0)));
+        assert_eq!(parse_flex("100px"), f(1.0, 1.0, Px(100.0)));
+        assert_eq!(parse_flex("2.5"), f(2.5, 1.0, Pct(0.0)));
+        assert_eq!(parse_flex("0"), f(0.0, 1.0, Pct(0.0)));
+        assert_eq!(parse_flex("280px 2 3"), f(2.0, 3.0, Px(280.0)), "basis first");
+        // A third unitless `0` is the basis.
+        assert_eq!(parse_flex("1 1 0"), f(1.0, 1.0, Px(0.0)));
+        assert_eq!(parse_flex("1 0 0"), f(1.0, 0.0, Px(0.0)));
+        assert_eq!(parse_flex("0 0 0"), f(0.0, 0.0, Px(0.0)));
+        assert_eq!(parse_flex("0px 1 1"), f(1.0, 1.0, Px(0.0)));
+        for bad in [
+            "",
+            "1 2 3",
+            "1 1 0 0",
+            "1 1 0 1px",
+            "1 2 3px 4",
+            "-1",
+            "1 -2",
+            "1 280px 1",
+            "1px 2px",
+            "x",
+            "1 1 fit",
+            "1 1 content",
+            "1 1 -5px",
+            "1 1 -5%",
+        ] {
             assert_eq!(parse_flex(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn flex_basis_accepts_auto_lengths_percentages_and_only_unitless_zero() {
+        assert_eq!(parse_flex_basis(" AUTO "), Some(Dimension::Auto));
+        assert_eq!(parse_flex_basis("280px"), Some(Dimension::Points(280.0)));
+        assert_eq!(parse_flex_basis("12PX"), Some(Dimension::Points(12.0)));
+        assert_eq!(parse_flex_basis("0"), Some(Dimension::Points(0.0)));
+        assert_eq!(parse_flex_basis("33.5%"), Some(Dimension::Percent(33.5)));
+        for bad in ["", "12", "-1px", "-1%", "content", "1em", "calc(1px)", "x%"] {
+            assert_eq!(parse_flex_basis(bad), None, "{bad:?}");
         }
     }
 }

@@ -135,6 +135,25 @@ impl CacheState {
         (released, wake)
     }
 
+    /// Wildcard `*` invalidation: bumps `wildcard_epoch` (implicitly invalidating every slot,
+    /// including inactive ones), invalidates every active slot into `active_out`, and releases
+    /// every (also inactive) `StreamPending` slot so no waiter blocks on a stream chunk the
+    /// client now refuses. Returns whether any slot was invalidated or released.
+    pub(crate) fn invalidate_all_slots(
+        &mut self,
+        active_out: &mut Vec<QueryHandle>,
+        waiters_out: &mut Vec<Waker>,
+    ) -> bool {
+        self.wildcard_epoch = self.wildcard_epoch.wrapping_add(1);
+        let active_len = self.active_slots.len();
+        for i in 0..active_len {
+            let slot = self.active_slots[i];
+            self.invalidate_slot(slot, active_out, waiters_out);
+        }
+        let (released, _) = self.release_stream_pending(waiters_out);
+        active_len > 0 || released > 0
+    }
+
     #[inline]
     pub(crate) fn debug_assert_stream_pending_count(&self) {
         debug_assert_eq!(

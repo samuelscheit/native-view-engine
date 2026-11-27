@@ -7,8 +7,8 @@ use std::borrow::Cow;
 use dioxus_core::{AttributeValue, ElementId};
 use nve_abi::{LayoutProps, NodeId, RawPropValueRef, StyleProps};
 use nve_components::{
-    apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder,
-    InputMode, MediaQuery, SvgPicture, DRAW_LIST_ATTR_PREFIX,
+    apply_typed_attr_with_ext, canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder,
+    ExtStyleDecl, InputMode, MediaQuery, SvgPicture, DRAW_LIST_ATTR_PREFIX,
 };
 use nve_engine::RenderSink;
 use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
@@ -21,10 +21,13 @@ use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
 use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
 use super::attr_keys::{canonical_a11y_attr_key, canonical_input_attr_key, sync_raw_style_prop};
+use super::flex_basis::{
+    effective_layout_ext, is_flex_basis_attr, sync_flex_basis, sync_layout_ext, typed_flex_basis,
+};
 use super::{
     mark_ext_dirty, NveMutationWriter, EXT_BACKGROUND_FILL, EXT_CURSOR, EXT_DRAW_LIST,
-    EXT_LAYOUT_EXT, EXT_NATIVE_VIEW_PROPS, EXT_RESPONSIVE_RULES, EXT_SHOW_ON, EXT_STATE_RULES,
-    EXT_SVG, EXT_TRANSFORM, EXT_TRANSITIONS,
+    EXT_NATIVE_VIEW_PROPS, EXT_RESPONSIVE_RULES, EXT_SHOW_ON, EXT_STATE_RULES, EXT_SVG,
+    EXT_TRANSFORM, EXT_TRANSITIONS,
 };
 
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
@@ -133,6 +136,12 @@ impl NveMutationWriter {
                 }
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
+                }
+                if is_flex_basis_attr(name)
+                    && let Some(rec) = self.nodes.get_mut(&node_id)
+                {
+                    let basis = typed_flex_basis(rec.extras());
+                    sync_flex_basis(&mut self.dirty_extended, rec, node_id, basis);
                 }
                 let prop_name = canonical_raw_style_key(name)
                     .or_else(|| canonical_a11y_attr_key(name))
@@ -287,15 +296,6 @@ impl NveMutationWriter {
             ext.transitions.clone_from(&typed.transitions);
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSITIONS);
         }
-        let next_layout_ext = typed
-            .layout_ext
-            .as_deref()
-            .filter(|e| !e.is_default())
-            .cloned();
-        if ext.layout_ext != next_layout_ext {
-            ext.layout_ext = next_layout_ext;
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_LAYOUT_EXT);
-        }
         if ext.transform != typed.transform {
             ext.transform = typed.transform;
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSFORM);
@@ -339,9 +339,6 @@ impl NveMutationWriter {
             ext.transitions.clear();
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSITIONS);
         }
-        if ext.layout_ext.take().is_some() {
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_LAYOUT_EXT);
-        }
         if ext.transform.take().is_some() {
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSFORM);
         }
@@ -355,12 +352,17 @@ impl NveMutationWriter {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
-        let should_recompute = rec
-            .extras
-            .as_deref_mut()
-            .is_some_and(|ext| ext.inline_style_override.take().is_some() && ext.typed_style.is_some());
-        if should_recompute {
+        let Some(ext) = rec.extras.as_deref_mut() else {
+            return;
+        };
+        if ext.inline_style_override.take().is_none() {
+            return;
+        }
+        if ext.typed_style.is_some() {
             self.recompute_typed_style(sink, node_id, true, true);
+        } else {
+            // The removed inline style owned the basis.
+            sync_flex_basis(&mut self.dirty_extended, rec, node_id, nve_abi::Dimension::Auto);
         }
     }
 
@@ -431,22 +433,29 @@ impl NveMutationWriter {
         };
 
         let mut extra_raw: Vec<(String, String)> = Vec::new();
+        let mut inline_basis = None;
         if let Some(override_css) = rec.extras().and_then(|e| e.inline_style_override.as_deref()) {
-            let _ = apply_typed_attr_with_raw(
+            let _ = apply_typed_attr_with_ext(
                 &mut next_layout,
                 &mut next_style,
                 "style",
                 override_css,
-                |raw_k, raw_v| match raw_k {
-                    "font-weight" => next_fw = Some(Cow::Owned(raw_v.to_owned())),
-                    "text-align" => next_ta = Some(Cow::Owned(raw_v.to_owned())),
-                    "box-shadow" => next_bs = Some(Cow::Owned(raw_v.to_owned())),
-                    "overflow" => next_ov = Some(Cow::Owned(raw_v.to_owned())),
-                    "object-fit" => next_of = Some(Cow::Owned(raw_v.to_owned())),
-                    other => extra_raw.push((other.to_owned(), raw_v.to_owned())),
+                |decl| match decl {
+                    ExtStyleDecl::FlexBasis(basis) => inline_basis = Some(basis),
+                    ExtStyleDecl::Raw("font-weight", v) => next_fw = Some(Cow::Owned(v.to_owned())),
+                    ExtStyleDecl::Raw("text-align", v) => next_ta = Some(Cow::Owned(v.to_owned())),
+                    ExtStyleDecl::Raw("box-shadow", v) => next_bs = Some(Cow::Owned(v.to_owned())),
+                    ExtStyleDecl::Raw("overflow", v) => next_ov = Some(Cow::Owned(v.to_owned())),
+                    ExtStyleDecl::Raw("object-fit", v) => next_of = Some(Cow::Owned(v.to_owned())),
+                    ExtStyleDecl::Raw(k, v) => extra_raw.push((k.to_owned(), v.to_owned())),
                 },
             );
         }
+        let next_layout_ext = effective_layout_ext(
+            rec.extras().and_then(|e| e.typed_style.as_ref()),
+            inline_basis,
+        );
+        sync_layout_ext(&mut self.dirty_extended, rec, node_id, next_layout_ext);
 
         if next_layout != prev_layout {
             rec.layout = next_layout;
@@ -523,12 +532,20 @@ impl NveMutationWriter {
             let mut set_fw_flag = false;
             let mut set_ta_flag = false;
             let extras_slot = &mut rec.extras;
-            let handled = apply_typed_attr_with_raw(
+            let mut parsed_basis = None;
+            let handled = apply_typed_attr_with_ext(
                 &mut rec.layout,
                 &mut rec.style,
                 name,
                 value,
-                |raw_k, raw_v| {
+                |decl| {
+                    let (raw_k, raw_v) = match decl {
+                        ExtStyleDecl::FlexBasis(basis) => {
+                            parsed_basis = Some(basis);
+                            return;
+                        }
+                        ExtStyleDecl::Raw(k, v) => (k, v),
+                    };
                     match raw_k {
                         "font-weight" => {
                             set_fw_flag = true;
@@ -568,6 +585,15 @@ impl NveMutationWriter {
             }
             if set_ta_flag {
                 rec.set_has_explicit_text_align(true);
+            }
+            // An inline `style` (no `nve_style` here) owns the whole basis: absent means `auto`.
+            let basis = if name == "style" {
+                Some(parsed_basis.unwrap_or(nve_abi::Dimension::Auto))
+            } else {
+                parsed_basis
+            };
+            if let Some(basis) = basis {
+                sync_flex_basis(&mut self.dirty_extended, rec, node_id, basis);
             }
             if handled {
                 if rec.layout != prev_layout {

@@ -1,7 +1,7 @@
 //! Zero-string-parse typed style attribute (`TypedStyle`) passed directly through Dioxus
 //! `AttributeValue::Any` into `NveMutationWriter`.
 //!
-//! Eliminates the `StyleBuf` CSS string formatting -> `apply_typed_attr_with_raw` string
+//! Eliminates the `StyleBuf` CSS string formatting -> `apply_typed_attr_with_ext` string
 //! reparsing round-trip on hot UI render paths while staying 100% compatible with optional
 //! inline `style: "..."` user overrides.
 

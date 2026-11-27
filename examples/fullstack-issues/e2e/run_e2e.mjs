@@ -11,10 +11,13 @@
  *  1. Post-stream streaming SSR hydration (strict nonce CSP, 0 mismatches/replacements, 0 RPCs).
  *  2. True mid-stream async WASM boot behind a server barrier (+ interaction while the stream is
  *     open, reactive comments slot after release, still 0 Comments/Stats RPCs).
- *  3. Mid-slot TCP split: a same-origin proxy pauses the `stats` slot chunk mid-tag while WASM
- *     boots, then releases it (0 mismatches, exactly one `stats-total`, 0 Stats RPCs).
- *  4. Truncated stream: the document ends after `seq=0` + `boot.js` (no stream-end) while the
- *     comments barrier is held; `DOMContentLoaded` releases stream-pending queries to client RPCs.
+ *  3. Mid-slot TCP splits: a same-origin proxy pauses the `stats` slot chunk inside its NVEQ
+ *     payload, its chunk `<style>`, its `<div slot>`, and between `</div>` and its ack while WASM
+ *     boots, then releases it (0 mismatches, exactly one styled `stats-total`, 0 RPCs each).
+ *  4. Truncated streams (no stream-end, comments barrier held): after `seq=0` + `boot.js`, inside
+ *     the stats chunk `<style>`, and inside the stats `<div slot>`; `DOMContentLoaded` releases
+ *     stream-pending queries to exactly one client RPC each, with whole (never truncated) CSS.
+ *  (Suites 3 + 4 live in `stream_split_suites.mjs`.)
  *  5. Pre-headers `404` (`?issue=999`) + post-headers `<ErrorBoundary>` hydration
  *     (`?comments_issue=999`) with 0 RPCs.
  *  6. Full interactive app flows (FormDecode, 422 FieldErrors, CreateIssue + Nve-Invalidate incl.
@@ -28,11 +31,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  COMMENTS_RPC,
   ISSUES_PKG_DIR,
+  STATS_RPC,
+  assert,
+  visibleJs,
   REPO_ROOT,
   WEB_SHELL_DIR,
   capturePng,
-  deepCountJs,
   evalJs,
   findChromeBinary,
   launchHeadlessChrome,
@@ -50,20 +56,10 @@ import {
   waitUntil,
   watchCspViolations,
 } from "./harness.mjs";
+import { runStreamSplitSuites } from "./stream_split_suites.mjs";
 import { startStreamProxy } from "./stream_proxy.mjs";
 
 const SESSION_COOKIE = "nve_issues_session=web-demo-session";
-const COMMENTS_RPC = "/rpc/issues.v1.Comments/List";
-const STATS_RPC = "/rpc/issues.v1.Stats/Get";
-
-function assert(cond, msg) {
-  if (!cond) throw new Error(msg);
-}
-
-/** JS predicate source: element exists and has a laid-out box. */
-const visibleJs = (sel) =>
-  `(() => { const el = document.querySelector(${JSON.stringify(sel)}); return Boolean(el && el.getBoundingClientRect().height > 0); })`;
-
 function assertStrictCsp(headers, where) {
   const csp = headers["content-security-policy"] || "";
   const scriptSrc = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("script-src ")) || "";
@@ -227,70 +223,21 @@ async function main() {
     console.log("  PASS: mounted mid-stream, interacted while open, comments slot streamed in, 0 Comments/Stats RPCs.");
 
     // -------------------------------------------------------------------------
-    // 3. Mid-slot TCP split: stats slot chunk paused mid-tag while WASM boots
+    // 3 + 4. Byte-exact mid-slot splits and truncations through the stream proxy
     // -------------------------------------------------------------------------
-    console.log("==> [3/9] Mid-slot TCP split: stats slot chunk paused mid-markup during WASM boot");
-    const statsTotalCount = deepCountJs('[testid="stats-total"],[data-testid="stats-total"]');
-    await control("stats_delay_ms=30&comments_delay_ms=0&hold_comments=0");
-    const statsCut = proxy.arm({
-      marker: '<div slot="nve-slot-stats" data-nve-slot="stats"',
-      // Inside the `stats-total` attribute value: the parser holds an unfinished start tag.
-      cutAfter: 'testid="stats-to',
+    await runStreamSplitSuites({
+      cdp,
+      proxy,
+      control,
+      commentsWaiting,
+      rpcSince,
+      rpcRequests,
+      controller,
+      waitMounted,
+      assertCleanHydration,
+      assertStrictCsp,
+      shot,
     });
-    mark = rpcRequests.length;
-    const docSplit = await navigateDocument(cdp, `${proxy.origin}/issues`, { waitLoad: false });
-    assert(docSplit.status === 200, `proxied GET /issues -> ${docSplit.status}`);
-    assertStrictCsp(docSplit.headers, "suite 3");
-    await statsCut;
-    await waitMounted("WASM mounted while the stats chunk is split mid-markup");
-    assert(proxy.isHeld(), "suite 3: proxy released before mount");
-    assert((await evalJs(cdp, "document.readyState")) === "loading", "suite 3: document finished before release");
-    assertCleanHydration(await controller(), "suite 3 (split)");
-    assert((await evalJs(cdp, statsTotalCount)) === 0, "suite 3: partial stats chunk must not surface stats-total");
-    await waitFor(cdp, "stats skeleton while the slot chunk is incomplete", visibleJs('[testid="stats-skeleton"]'));
-    await sleep(200);
-    await shot(cdp, "issues-mid-slot-split.png");
-    proxy.release();
-    await waitFor(cdp, "stats-total visible after release", visibleJs('[testid="stats-total"]'));
-    await waitFor(cdp, "DSD host removed after split stream end", `() => document.querySelector('[data-nve-dsd-host]') === null`);
-    await sleep(300);
-    const splitTotals = await evalJs(cdp, statsTotalCount);
-    assert(splitTotals === 1, `suite 3: expected exactly one stats-total, found ${splitTotals}`);
-    assertCleanHydration(await controller(), "suite 3 (released)");
-    assert(rpcSince(mark) === 0, `suite 3: expected 0 RPCs, saw ${rpcSince(mark)}`);
-    console.log("  PASS: split slot chunk never adopted early; 1 stats-total, 0 mismatches/replaced, 0 RPCs.");
-
-    // -------------------------------------------------------------------------
-    // 4. Truncated stream: document ends after seq=0 + boot.js, comments barrier held
-    // -------------------------------------------------------------------------
-    console.log("==> [4/9] Truncated stream (no stream-end) falls back to client RPCs on DOMContentLoaded");
-    await control("stats_delay_ms=30&comments_delay_ms=0&hold_comments=1");
-    const bootCut = proxy.arm({ marker: '<script type="module" async src="/pkg/issues/boot.js"></script>' });
-    mark = rpcRequests.length;
-    const docCut = await navigateDocument(cdp, `${proxy.origin}/issues`, { waitLoad: false });
-    assert(docCut.status === 200, `proxied GET /issues -> ${docCut.status}`);
-    await bootCut;
-    await waitMounted("WASM mounted on the to-be-truncated stream");
-    assert((await evalJs(cdp, "document.readyState")) === "loading", "suite 4: document finished before truncation");
-    assert((await commentsWaiting()) >= 1, "suite 4: comments barrier not held");
-    await sleep(200);
-    assert(rpcSince(mark) === 0, `suite 4: stream-pending queries fetched before DOMContentLoaded (${rpcSince(mark)})`);
-    const domReady = waitForEvent(cdp, "Page.domContentEventFired", () => true, 10000, "DOMContentLoaded after truncation");
-    proxy.truncate();
-    await domReady.promise;
-    await waitUntil("Comments/List RPC after DOMContentLoaded", () => rpcSince(mark, COMMENTS_RPC) >= 1);
-    await waitUntil("Stats/Get RPC after DOMContentLoaded", () => rpcSince(mark, STATS_RPC) >= 1);
-    await waitFor(cdp, "stats panel rendered from client RPC", visibleJs('[testid="stats-panel"]'));
-    await control("hold_comments=0");
-    await waitFor(cdp, "featured comments rendered from client RPC", visibleJs('[testid="featured-comments-panel"]'));
-    await sleep(300);
-    assert(await evalJs(cdp, `document.querySelector('[data-nve-dsd-host]') === null`), "suite 4: DSD host left behind");
-    assert(rpcSince(mark, COMMENTS_RPC) === 1, `suite 4: ${rpcSince(mark, COMMENTS_RPC)} Comments/List RPCs`);
-    assert(rpcSince(mark, STATS_RPC) === 1, `suite 4: ${rpcSince(mark, STATS_RPC)} Stats/Get RPCs`);
-    assert((await evalJs(cdp, statsTotalCount)) === 1, "suite 4: expected exactly one stats-total");
-    assertCleanHydration(await controller(), "suite 4");
-    await shot(cdp, "issues-truncated-stream.png");
-    console.log("  PASS: truncated stream cleared stream-pending on DOMContentLoaded; comments + stats via 1 RPC each.");
 
     // -------------------------------------------------------------------------
     // 5. Pre-headers 404 + post-headers ErrorBoundary hydration

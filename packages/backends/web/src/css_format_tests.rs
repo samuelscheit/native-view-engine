@@ -38,7 +38,8 @@ fn compact_lengths_drop_unit_only_when_formatted_as_zero() {
     write_compact_dim(Dimension::Auto, &mut s);
     s.push(' ');
     write_compact_num(0.75, &mut s);
-    assert_eq!(s, "33.333% 0 auto 0.75");
+    // A zero percentage keeps its unit: `0%` of an indefinite size is not the length `0`.
+    assert_eq!(s, "33.333% 0% auto 0.75");
 }
 
 #[test]

@@ -96,9 +96,10 @@ pub(crate) fn push_style_css_escaped(css: &str, out: &mut String) {
     push_raw_text_escaped(css, b"</style", out);
 }
 
-/// Appends inert data into a `<script type="...">` element, escaping every case-insensitive
-/// `</script` as `<\/script` and every `<!--` as `<\!--` so payloads can neither close the
-/// element nor enter the HTML "script data escaped" state (zero-copy when `<` is absent).
+/// Appends inert data into a `<script type="...">` element, rewriting the `<` of every
+/// case-insensitive `</script` and every `<!--` as `\u003c` so payloads can neither close the
+/// element nor enter the HTML "script data escaped" state, while string contents stay valid JSON
+/// and JavaScript (zero-copy when `<` is absent).
 #[cfg(feature = "ssr")]
 pub fn push_script_data_escaped(data: &str, out: &mut String) {
     if !data.contains('<') {
@@ -125,11 +126,10 @@ pub fn push_script_data_escaped(data: &str, out: &mut String) {
             i += 1;
             continue;
         };
-        out.push_str(&data[last..=i]);
-        out.push('\\');
-        out.push_str(&data[i + 1..i + needle_len]);
+        out.push_str(&data[last..i]);
+        out.push_str("\\u003c");
+        last = i + 1;
         i += needle_len;
-        last = i;
     }
     out.push_str(&data[last..]);
 }

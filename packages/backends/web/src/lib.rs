@@ -103,13 +103,13 @@ pub use visual_viewport::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
     KEYBOARD_INSETS_EVENT_NAME, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
-#[cfg(feature = "hydrate")]
 pub use html::push_attr_escaped;
 #[cfg(feature = "ssr")]
 pub use html::{
     push_async_boot_script, push_modulepreload_link, push_query_payload_tag,
     push_script_data_escaped, push_stylesheet_links,
 };
+#[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
 pub use layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
 pub use media_css::{

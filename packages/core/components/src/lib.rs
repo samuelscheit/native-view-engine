@@ -120,36 +120,45 @@ pub fn canonical_raw_style_key(key: &str) -> Option<&'static str> {
         "vertical-align" | "verticalAlign" => Some("vertical-align"),
         "border-collapse" | "borderCollapse" => Some("border-collapse"),
         "flex-wrap" | "flexWrap" => Some("flex-wrap"),
-        "flex-basis" | "flexBasis" => Some("flex-basis"),
         _ => None,
     }
 }
 
+/// A parsed inline declaration that lives outside the binary `LayoutProps` / `StyleProps`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExtStyleDecl<'a> {
+    /// Typed [`LayoutExt::flex_basis`] from `flex-basis` or the basis of a `flex` shorthand
+    /// (`flex: none` / `auto` / `initial` yield `Dimension::Auto`).
+    FlexBasis(Dimension),
+    /// A recognized non-ABI `style` declaration (`font-weight`, `text-align`, `box-shadow`,
+    /// `overflow`, ...) under its canonical kebab-case key, forwarded via `raw_props`.
+    Raw(&'static str, &'a str),
+}
+
 /// Parses inline/shorthand CSS-like or RN-like attribute key/value pairs directly into typed
-/// `LayoutProps` and `StyleProps` — avoiding `folly::dynamic` string parsing in C++.
+/// `LayoutProps` and `StyleProps` — avoiding `folly::dynamic` string parsing in C++. Extended
+/// declarations ([`ExtStyleDecl`]) are dropped; use [`apply_typed_attr_with_ext`] to keep them.
 pub fn apply_typed_attr(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
     key: &str,
     value: &str,
 ) -> bool {
-    apply_typed_attr_with_raw(layout, style, key, value, |_, _| {})
+    apply_typed_attr_with_ext(layout, style, key, value, |_| {})
 }
 
 /// Parses inline/shorthand CSS-like or RN-like attributes into typed `LayoutProps` and
-/// `StyleProps`, invoking `on_raw(canonical_key, value)` for recognized non-ABI inline `style`
-/// declarations (`font-weight`, `text-align`, `box-shadow`, `overflow`, `flex-basis`, including
-/// the basis of a `flex` shorthand) so callers can forward them via `raw_props` with zero ABI
-/// breakage.
-pub fn apply_typed_attr_with_raw<F>(
+/// `StyleProps`, invoking `on_ext` for every recognized declaration outside the binary ABI
+/// (typed [`ExtStyleDecl::FlexBasis`] or a raw [`ExtStyleDecl::Raw`] declaration).
+pub fn apply_typed_attr_with_ext<F>(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
     key: &str,
     value: &str,
-    mut on_raw: F,
+    mut on_ext: F,
 ) -> bool
 where
-    F: FnMut(&str, &str),
+    F: FnMut(ExtStyleDecl<'_>),
 {
     if key == "style" {
         for decl in value.split(';') {
@@ -159,16 +168,16 @@ where
                 if k.is_empty() || v.is_empty() {
                     continue;
                 }
-                if !apply_typed_attr_single(layout, style, k, v, &mut on_raw)
+                if !apply_typed_attr_single(layout, style, k, v, &mut on_ext)
                     && let Some(canonical) = canonical_raw_style_key(k)
                 {
-                    on_raw(canonical, v);
+                    on_ext(ExtStyleDecl::Raw(canonical, v));
                 }
             }
         }
         return true;
     }
-    apply_typed_attr_single(layout, style, key, value, &mut on_raw)
+    apply_typed_attr_single(layout, style, key, value, &mut on_ext)
 }
 
 fn apply_typed_attr_single<F>(
@@ -176,20 +185,21 @@ fn apply_typed_attr_single<F>(
     style: &mut StyleProps,
     key: &str,
     value: &str,
-    on_raw: &mut F,
+    on_ext: &mut F,
 ) -> bool
 where
-    F: FnMut(&str, &str),
+    F: FnMut(ExtStyleDecl<'_>),
 {
+    // CSS drops negative padding; negative margins are valid.
     if let Some(suffix) = key.strip_prefix("padding")
         && !suffix.is_empty()
     {
-        return css_shorthand::apply_edge_longhand(&mut layout.padding, suffix, value);
+        return css_shorthand::apply_edge_longhand(&mut layout.padding, suffix, value, false);
     }
     if let Some(suffix) = key.strip_prefix("margin")
         && !suffix.is_empty()
     {
-        return css_shorthand::apply_edge_longhand(&mut layout.margin, suffix, value);
+        return css_shorthand::apply_edge_longhand(&mut layout.margin, suffix, value, true);
     }
     match key {
         "width" => layout.width = parse_dim(value),
@@ -229,7 +239,12 @@ where
             if let Some(flex) = css_shorthand::parse_flex(value) {
                 layout.flex_grow = flex.grow;
                 layout.flex_shrink = flex.shrink;
-                on_raw("flex-basis", flex.basis);
+                on_ext(ExtStyleDecl::FlexBasis(flex.basis));
+            }
+        }
+        "flex-basis" | "flexBasis" => {
+            if let Some(basis) = css_shorthand::parse_flex_basis(value) {
+                on_ext(ExtStyleDecl::FlexBasis(basis));
             }
         }
         "flex-grow" | "flexGrow" => {
@@ -248,12 +263,12 @@ where
             }
         }
         "padding" => {
-            if let Some(edges) = css_shorthand::parse_edges(value) {
+            if let Some(edges) = css_shorthand::parse_edges(value, false) {
                 layout.padding = edges;
             }
         }
         "margin" => {
-            if let Some(edges) = css_shorthand::parse_edges(value) {
+            if let Some(edges) = css_shorthand::parse_edges(value, true) {
                 layout.margin = edges;
             }
         }
@@ -308,9 +323,14 @@ where
     true
 }
 
+/// Parses a CSS pixel length (`12px`, `12PX`) or a unitless RN-style number (`12`).
 pub fn parse_px(raw: &str) -> Option<f32> {
-    let s = raw.trim().strip_suffix("px").unwrap_or(raw.trim());
-    parse_f32(s)
+    let s = raw.trim();
+    let num = match s.len().checked_sub(2) {
+        Some(at) if s.is_char_boundary(at) && s[at..].eq_ignore_ascii_case("px") => &s[..at],
+        _ => s,
+    };
+    parse_f32(num)
 }
 
 pub fn parse_dim(raw: &str) -> Dimension {
@@ -345,6 +365,8 @@ pub fn parse_color(raw: &str) -> Option<ColorRgba> {
             }
             _ => None,
         }
+    } else if let Some(args) = strip_ascii_prefix(s, "rgba(").or_else(|| strip_ascii_prefix(s, "rgb(")) {
+        parse_rgb_args(args.strip_suffix(')')?)
     } else {
         match s.to_ascii_lowercase().as_str() {
             "white" => Some(ColorRgba::WHITE),
@@ -358,50 +380,95 @@ pub fn parse_color(raw: &str) -> Option<ColorRgba> {
     }
 }
 
+fn strip_ascii_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
+}
+
+/// `r, g, b[, a]` or `r g b[ / a]` (`rgb()` and `rgba()` are aliases): channels are numbers
+/// clamped to `0..=255`, alpha a number or percentage clamped to `0..=1`.
+fn parse_rgb_args(args: &str) -> Option<ColorRgba> {
+    let mut parts = args
+        .split(|c: char| c == ',' || c == '/' || c.is_ascii_whitespace())
+        .filter(|t| !t.is_empty());
+    let mut rgb = [0u8; 3];
+    for channel in &mut rgb {
+        *channel = parse_f32(parts.next()?)?.clamp(0.0, 255.0).round() as u8;
+    }
+    let alpha = match parts.next() {
+        None => 1.0,
+        Some(a) => match a.strip_suffix('%') {
+            Some(pct) => parse_f32(pct)? / 100.0,
+            None => parse_f32(a)?,
+        },
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    let [r, g, b] = rgb;
+    Some(ColorRgba::rgba(r, g, b, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nve_abi::EdgeInsets;
 
+    /// Collects every [`ExtStyleDecl`] emitted while applying `key: value`.
+    fn ext_decls(
+        l: &mut LayoutProps,
+        s: &mut StyleProps,
+        key: &str,
+        value: &str,
+    ) -> Vec<(Option<Dimension>, String)> {
+        let mut out = Vec::new();
+        assert!(apply_typed_attr_with_ext(l, s, key, value, |d| out.push(match d {
+            ExtStyleDecl::FlexBasis(b) => (Some(b), String::new()),
+            ExtStyleDecl::Raw(k, v) => (None, format!("{k}:{v}")),
+        })));
+        out
+    }
+
     #[test]
-    fn inline_style_shorthands_fill_typed_props_and_forward_flex_basis() {
+    fn inline_style_shorthands_fill_typed_props_and_typed_flex_basis() {
         let mut l = LayoutProps::default();
         let mut s = StyleProps::default();
-        let mut raw: Vec<(String, String)> = Vec::new();
-        assert!(apply_typed_attr_with_raw(
+        let decls = ext_decls(
             &mut l,
             &mut s,
             "style",
-            "padding: 14px 16px; margin: 1px 2px 3px; margin-left: 9px; paddingTop: 4px; border: 1px solid #1e293b; flex: 1 1 280px;",
-            |k, v| raw.push((k.to_owned(), v.to_owned())),
-        ));
-        let edges = |top, right, bottom, left| EdgeInsets { top, right, bottom, left };
-        assert_eq!(l.padding, edges(4.0, 16.0, 14.0, 16.0));
-        assert_eq!(l.margin, edges(1.0, 2.0, 3.0, 9.0));
-        assert_eq!((s.border_width, s.border_color), (1.0, ColorRgba::rgb(0x1e, 0x29, 0x3b)));
-        assert_eq!((l.flex_grow, l.flex_shrink), (1.0, 1.0));
-        assert_eq!(raw, vec![("flex-basis".to_owned(), "280px".to_owned())]);
-
-        // `flex: <grow>` implies basis 0%; `flex: none` resets factors and basis.
-        raw.clear();
-        assert!(apply_typed_attr_with_raw(&mut l, &mut s, "flex", "2", |k, v| raw
-            .push((k.to_owned(), v.to_owned()))));
-        assert_eq!((l.flex_grow, l.flex_shrink), (2.0, 1.0));
-        assert!(apply_typed_attr_with_raw(&mut l, &mut s, "style", "flex: none; flexBasis: 12px", |k, v| raw
-            .push((k.to_owned(), v.to_owned()))));
-        assert_eq!((l.flex_grow, l.flex_shrink), (0.0, 0.0));
-        assert_eq!(
-            raw,
-            vec![
-                ("flex-basis".to_owned(), "0%".to_owned()),
-                ("flex-basis".to_owned(), "auto".to_owned()),
-                ("flex-basis".to_owned(), "12px".to_owned()),
-            ]
+            "padding: 14px 16px; margin: 1px 2px 3px; margin-left: -9px; paddingTop: 4PX; border: 1px solid currentColor; color: rgb(30, 41, 59); flex: 1 1 280px;",
         );
+        let edges = |top, right, bottom, left| EdgeInsets { top, right, bottom, left };
+        let slate = ColorRgba::rgb(0x1e, 0x29, 0x3b);
+        assert_eq!(l.padding, edges(4.0, 16.0, 14.0, 16.0));
+        assert_eq!(l.margin, edges(1.0, 2.0, 3.0, -9.0), "negative margins are valid");
+        // `currentColor` resolves against the color in effect when `border` is parsed.
+        assert_eq!((s.border_width, s.border_color), (1.0, ColorRgba::BLACK));
+        assert_eq!(s.text_color, slate);
+        assert_eq!((l.flex_grow, l.flex_shrink), (1.0, 1.0));
+        assert_eq!(decls, vec![(Some(Dimension::Points(280.0)), String::new())]);
+
+        // `flex: <grow>` implies basis 0%; `flex: none` resets factors and basis; unitless zero.
+        let decls = ext_decls(&mut l, &mut s, "flex", "2");
+        assert_eq!((l.flex_grow, l.flex_shrink), (2.0, 1.0));
+        assert_eq!(decls, vec![(Some(Dimension::Percent(0.0)), String::new())]);
+        let decls = ext_decls(&mut l, &mut s, "style", "flex: none; flexBasis: 12px; flex-basis: 0");
+        assert_eq!((l.flex_grow, l.flex_shrink), (0.0, 0.0));
+        let bases: Vec<_> = decls.into_iter().map(|(b, _)| b.unwrap()).collect();
+        assert_eq!(
+            bases,
+            [Dimension::Auto, Dimension::Points(12.0), Dimension::Points(0.0)]
+        );
+        let decls = ext_decls(&mut l, &mut s, "style", "flex: 0 0 0");
+        assert_eq!((l.flex_grow, l.flex_shrink), (0.0, 0.0));
+        assert_eq!(decls, vec![(Some(Dimension::Points(0.0)), String::new())]);
+        // Unsupported bases (`content`, unitless non-zero, negative) emit nothing.
+        assert!(ext_decls(&mut l, &mut s, "style", "flex-basis: content; flex-basis: 12; flex-basis: -1px").is_empty());
 
         // Invalid shorthands leave every target untouched (all-or-nothing).
         let before = (l, s);
-        assert!(apply_typed_attr(&mut l, &mut s, "style", "padding: 1px 2px 3px 4px 5px; margin: 0 auto; border: 1px wavy red; flex: 1 280px 1;"));
+        assert!(ext_decls(&mut l, &mut s, "style", "padding: 1px 2px 3px 4px 5px; padding: -1px 2px; paddingTop: -4px; margin: 0 auto; border: 1px wavy red; flex: 1 280px 1; flex: 1 2 3;").is_empty());
         assert_eq!((l, s), before);
     }
 
@@ -428,6 +495,8 @@ mod tests {
     #[test]
     fn numeric_style_values_use_the_fixed_point_parser() {
         assert_eq!(parse_px("12px"), Some(12.0));
+        assert_eq!(parse_px("12PX"), Some(12.0));
+        assert_eq!(parse_px(" 12Px "), Some(12.0));
         assert_eq!(parse_px(" 12.5 "), Some(12.5));
         assert_eq!(parse_px("-0px").map(f32::to_bits), Some((-0.0f32).to_bits()));
         assert_eq!(parse_px("1e2px"), Some(100.0));
@@ -457,44 +526,51 @@ mod tests {
     fn forwards_non_abi_inline_style_declarations_as_raw_props() {
         let mut l = LayoutProps::default();
         let mut s = StyleProps::default();
-        let mut forwarded: Vec<(String, String)> = Vec::new();
-        assert!(apply_typed_attr_with_raw(
+        let raw = |decls: Vec<(Option<Dimension>, String)>| -> Vec<String> {
+            decls.into_iter().map(|(_, kv)| kv).collect()
+        };
+        let forwarded = raw(ext_decls(
             &mut l,
             &mut s,
             "style",
             "font-size: 18px; font-weight: 700; text-align: center; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); overflow: hidden; unknown-prop: 42;",
-            |k, v| forwarded.push((k.to_owned(), v.to_owned())),
         ));
         assert_eq!(s.font_size, 18.0);
         assert_eq!(
             forwarded,
-            vec![
-                ("font-weight".to_string(), "700".to_string()),
-                ("text-align".to_string(), "center".to_string()),
-                (
-                    "box-shadow".to_string(),
-                    "0 4px 12px rgba(0, 0, 0, 0.35)".to_string()
-                ),
-                ("overflow".to_string(), "hidden".to_string()),
+            [
+                "font-weight:700",
+                "text-align:center",
+                "box-shadow:0 4px 12px rgba(0, 0, 0, 0.35)",
+                "overflow:hidden",
             ]
         );
 
         // CamelCase variants inside inline style normalize to canonical kebab-case keys.
-        let mut camel_forwarded: Vec<(String, String)> = Vec::new();
-        assert!(apply_typed_attr_with_raw(
+        let camel_forwarded = raw(ext_decls(
             &mut l,
             &mut s,
             "style",
             "fontWeight: semibold; textAlign: right; boxShadow: 2px 3px 6px #00000080;",
-            |k, v| camel_forwarded.push((k.to_owned(), v.to_owned())),
         ));
         assert_eq!(
             camel_forwarded,
-            vec![
-                ("font-weight".to_string(), "semibold".to_string()),
-                ("text-align".to_string(), "right".to_string()),
-                ("box-shadow".to_string(), "2px 3px 6px #00000080".to_string()),
+            [
+                "font-weight:semibold",
+                "text-align:right",
+                "box-shadow:2px 3px 6px #00000080",
             ]
         );
+    }
+
+    #[test]
+    fn rgb_functions_parse_legacy_and_modern_syntax() {
+        assert_eq!(parse_color("rgb(30, 41, 59)"), Some(ColorRgba::rgb(30, 41, 59)));
+        assert_eq!(parse_color("RGBA(0,0,0,0.5)"), Some(ColorRgba::rgba(0, 0, 0, 128)));
+        assert_eq!(parse_color("rgb(300 -5 10.4 / 25%)"), Some(ColorRgba::rgba(255, 0, 10, 64)));
+        assert_eq!(parse_color("rgba(1, 2, 3, 2)"), Some(ColorRgba::rgb(1, 2, 3)), "alpha clamps");
+        for bad in ["rgb(1, 2)", "rgb(1, 2, 3", "rgb(1, 2, 3, 4, 5)", "rgb(a, b, c)", "rgb()"] {
+            assert_eq!(parse_color(bad), None, "{bad:?}");
+        }
     }
 }

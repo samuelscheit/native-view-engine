@@ -11,7 +11,8 @@
 import http from "node:http";
 
 /** Bytes kept unforwarded while the marker may still be arriving across chunk boundaries. */
-const markerWindow = (plan) => plan.marker.length + (plan.cutAfter?.length ?? 0) + 512;
+const markerWindow = (plan) =>
+  plan.marker.length + (plan.cutAfter?.length ?? 0) + (plan.cutBefore?.length ?? 0) + 512;
 
 export function startStreamProxy(upstreamPort) {
   let armed = null;
@@ -67,13 +68,25 @@ export function startStreamProxy(upstreamPort) {
         server,
         origin: proxyOrigin,
         /**
-         * Arms the next `GET <path>` document: the cut lands right after `cutAfter` (searched
-         * from `marker`), or right after `marker` itself. Resolves once the cut is reached.
+         * Arms the next `GET <path>` document: the cut lands right after `cutAfter` or right
+         * before `cutBefore` (both searched from `marker`), or right after `marker` itself.
+         * Resolves once the cut is reached; rejects after `timeoutMs` so a marker that drifted
+         * out of the markup fails fast instead of hanging the suite.
          */
-        arm({ path = "/issues", marker, cutAfter = "" }) {
+        arm({ path = "/issues", marker, cutAfter = "", cutBefore = "", timeoutMs = 15_000 }) {
           let onCut;
-          const held = new Promise((r) => (onCut = r));
-          armed = { path, marker, cutAfter, onCut };
+          let timer;
+          const held = new Promise((resolve, reject) => {
+            onCut = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            timer = setTimeout(() => {
+              if (armed?.onCut === onCut) armed = null;
+              reject(new Error(`stream proxy cut not reached in ${timeoutMs} ms: ${JSON.stringify({ marker, cutAfter, cutBefore })}`));
+            }, timeoutMs);
+          });
+          armed = { path, marker, cutAfter, cutBefore, onCut };
           return held;
         },
         isHeld: () => Boolean(active?.held),
@@ -103,6 +116,10 @@ function cutStream(plan, up, upstreamReq, res) {
     const text = buf.toString("latin1");
     const markerAt = text.indexOf(plan.marker);
     if (markerAt < 0) return { cut: -1, safe: Math.max(0, buf.length - markerWindow(plan)) };
+    if (plan.cutBefore) {
+      const beforeAt = text.indexOf(plan.cutBefore, markerAt);
+      return beforeAt < 0 ? { cut: -1, safe: markerAt } : { cut: beforeAt, safe: markerAt };
+    }
     if (!plan.cutAfter) return { cut: markerAt + plan.marker.length, safe: markerAt };
     const afterAt = text.indexOf(plan.cutAfter, markerAt);
     return afterAt < 0

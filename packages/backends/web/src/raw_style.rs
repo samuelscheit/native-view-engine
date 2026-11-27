@@ -1,7 +1,7 @@
 //! Raw CSS style props (`font-weight`, `text-align`, `box-shadow`, `overflow`, `flex-wrap`,
-//! `flex-basis`, object fit): one slot table routes and stores them, and values are validated at
-//! ingestion so a
-//! raw prop can only ever become one CSS declaration value.
+//! object fit): one slot table routes and stores them, and values are validated at ingestion so a
+//! raw prop can only ever become one CSS declaration value. `flex-basis` is typed
+//! (`LayoutExt::flex_basis`), never a raw prop.
 
 use nve_abi::num::{write_f64, write_i64};
 use nve_abi::RawPropValue;
@@ -69,7 +69,6 @@ enum RawStyleSlot {
     VerticalAlign,
     BorderCollapse,
     FlexWrap,
-    FlexBasis,
     ObjectFit,
 }
 
@@ -93,7 +92,6 @@ fn raw_style_slot(key: &str) -> Option<RawStyleSlot> {
         "vertical-align" | "verticalAlign" | "vertical_align" => RawStyleSlot::VerticalAlign,
         "border-collapse" | "borderCollapse" | "border_collapse" => RawStyleSlot::BorderCollapse,
         "flex-wrap" | "flexWrap" | "flex_wrap" => RawStyleSlot::FlexWrap,
-        "flex-basis" | "flexBasis" | "flex_basis" => RawStyleSlot::FlexBasis,
         _ if is_image_fit_prop(key) => RawStyleSlot::ObjectFit,
         _ => return None,
     })
@@ -150,7 +148,6 @@ pub struct RawStyleProps {
     pub vertical_align: Option<String>,
     pub border_collapse: Option<String>,
     pub flex_wrap: Option<String>,
-    pub flex_basis: Option<String>,
     pub object_fit: Option<&'static str>,
 }
 
@@ -202,7 +199,6 @@ impl RawStyleProps {
             RawStyleSlot::VerticalAlign => &mut self.vertical_align,
             RawStyleSlot::BorderCollapse => &mut self.border_collapse,
             RawStyleSlot::FlexWrap => &mut self.flex_wrap,
-            RawStyleSlot::FlexBasis => &mut self.flex_basis,
             RawStyleSlot::ObjectFit => {
                 self.object_fit = raw_prop_to_object_fit(value);
                 return true;
@@ -320,15 +316,6 @@ impl RawStyleProps {
             .filter(|v| !v.eq_ignore_ascii_case("nowrap"))
     }
 
-    /// `flex-basis` overriding the `.nve{flex:0 1 auto}` reset (layout only ever emits
-    /// `flex-grow` / `flex-shrink` longhands, so the basis is never reset by a later `flex:`).
-    #[inline]
-    pub fn effective_flex_basis(&self) -> Option<&str> {
-        self.flex_basis
-            .as_deref()
-            .filter(|v| !v.eq_ignore_ascii_case("auto"))
-    }
-
     /// Appends non-default raw style declarations into `out`.
     pub fn write_compact_into(&self, skip_typography: bool, out: &mut String) {
         if let Some(d) = self.effective_display() {
@@ -362,7 +349,6 @@ impl RawStyleProps {
             ("vertical-align:", self.effective_vertical_align()),
             ("border-collapse:", self.effective_border_collapse()),
             ("flex-wrap:", self.effective_flex_wrap()),
-            ("flex-basis:", self.effective_flex_basis()),
             ("object-fit:", self.object_fit),
         ] {
             if let Some(v) = val {

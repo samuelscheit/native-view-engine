@@ -220,7 +220,6 @@ pub fn hash_structural_style_full(
     h = fnv1a_opt_str(h, raw.effective_vertical_align());
     h = fnv1a_opt_str(h, raw.effective_border_collapse());
     h = fnv1a_opt_str(h, raw.effective_flex_wrap());
-    h = fnv1a_opt_str(h, raw.effective_flex_basis());
     h = fnv1a_opt_str(h, raw.object_fit);
     let h = hash_background_fill(h, background_fill);
     hash_layout_ext_and_transform(h, layout_ext, transform)

@@ -16,6 +16,16 @@ const __dirname = path.dirname(__filename);
 export const REPO_ROOT = path.resolve(__dirname, "../../..");
 export const WEB_SHELL_DIR = path.join(REPO_ROOT, "hosts/web-shell");
 export const ISSUES_PKG_DIR = path.join(WEB_SHELL_DIR, "pkg/issues");
+export const COMMENTS_RPC = "/rpc/issues.v1.Comments/List";
+export const STATS_RPC = "/rpc/issues.v1.Stats/Get";
+
+/** JS predicate source: element exists and has a laid-out box. */
+export const visibleJs = (sel) =>
+  `(() => { const el = document.querySelector(${JSON.stringify(sel)}); return Boolean(el && el.getBoundingClientRect().height > 0); })`;
+
+export function assert(cond, msg) {
+  if (!cond) throw new Error(msg);
+}
 
 export function parseArgs(argv) {
   let screenshotDir = "";

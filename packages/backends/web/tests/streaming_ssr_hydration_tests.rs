@@ -120,7 +120,7 @@ fn csp_style_nonce_breakout_escaping_reset_css_and_composed_path_replay() {
         .unwrap();
     assert_eq!(
         q_chunk,
-        "<script type=\"application/x-nve-query\" data-nve-seq=\"7\">AQID<\\/ScRiPt>BA==</script><template data-nve-q-ack=\"7\"></template>\n"
+        "<script type=\"application/x-nve-query\" data-nve-seq=\"7\">AQID\\u003c/ScRiPt>BA==</script><template data-nve-q-ack=\"7\"></template>\n"
     );
     let boot = sess.emit_async_boot_script("/boot.js?v=1&a=\"2\"").unwrap();
     assert_eq!(
@@ -678,4 +678,49 @@ fn truncated_tcp_split_slot_chunk_does_not_prematurely_replace_pending_fallback(
     assert_eq!(client.hydration_report().replaced_nodes, 0);
     assert_eq!(client.native_dom_instance_id(201), Some(fallback_slot_id));
     assert_eq!(client.native_dom_instance_id(202), Some(fallback_span_id));
+}
+
+#[test]
+fn truncated_chunk_style_never_seeds_its_hashes_but_a_closed_one_does() {
+    let mut sess = StreamingSsrSession::new(StreamingDocumentOptions::default(), ["feed"]);
+    let shell = sess
+        .begin_shell("<div data-nve-id=\"1\" class=\"nve\"><slot name=\"nve-slot-feed\"><div data-nve-id=\"3\" data-nve-stream-slot=\"feed\"></div></slot></div>")
+        .unwrap();
+    let hashes = ["nve-feed-a".to_owned(), "nve-feed-b".to_owned()];
+    let chunk = sess
+        .resolve_slot_with_hashes(
+            "feed",
+            "<span data-nve-id=\"10\">done</span>",
+            Some(".nve-feed-a{color:red}.nve-feed-b{padding:4px 8px}"),
+            &hashes,
+        )
+        .unwrap();
+    let style_end = chunk.find("</style>").expect("chunk CSS precedes the slot markup");
+    assert!(chunk[style_end..].contains("<div slot=\"nve-slot-feed\""));
+
+    let baseline = WebBackend::hydrate_from_streaming_html(&shell);
+    let base_seeded = baseline.hydration_report().seeded_rule_count;
+
+    // Every cut strictly inside the chunk `<style>` (attributes complete through CSS body and a
+    // partial `</style`) leaves the hashes unseeded, so the client re-inserts those rules.
+    let open_end = chunk.find("\">").unwrap() + 2;
+    for cut in [open_end, open_end + 10, style_end, style_end + 4] {
+        let html = format!("{shell}{}", &chunk[..cut]);
+        let client = WebBackend::hydrate_from_streaming_html(&html);
+        for h in &hashes {
+            assert!(
+                !client.stylesheet().contains_rule(h),
+                "truncated chunk style (cut at {cut}) must not seed {h}"
+            );
+        }
+        assert_eq!(client.hydration_report().seeded_rule_count, base_seeded);
+    }
+
+    // Control: the closed `<style>` seeds both hashes.
+    let closed = format!("{shell}{}", &chunk[..style_end + "</style>".len()]);
+    let client = WebBackend::hydrate_from_streaming_html(&closed);
+    for h in &hashes {
+        assert!(client.stylesheet().contains_rule(h), "closed chunk style seeds {h}");
+    }
+    assert_eq!(client.hydration_report().seeded_rule_count, base_seeded + 2);
 }

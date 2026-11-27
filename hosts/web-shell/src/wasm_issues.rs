@@ -106,7 +106,7 @@ fn BrowserIssuesRoot() -> Element {
 
 fn build_issues_session(
     surface_id: SurfaceId,
-    backend: WebBackend,
+    mut backend: WebBackend,
     viewport: Viewport,
     api_base: &str,
     container: Option<&web_sys::Element>,
@@ -125,8 +125,12 @@ fn build_issues_session(
     );
     // Runs synchronously AFTER `WebBackend::hydrate_into` promoted DSD into `#app` and BEFORE
     // Frame 0 renders so `QueryClient` is already hydrated with `seq=0` + any arrived chunks.
-    let stream_guard =
-        container.and_then(|el| attach_nve_query_stream(el, surface_id, client.clone()));
+    // The surface is not in `ACTIVE_SHELLS` yet, so its synchronous drains seed the owned backend.
+    let stream_guard = container.and_then(|el| {
+        attach_nve_query_stream(el, surface_id, client.clone(), &mut |hashes| {
+            backend.seed_ssr_hashes(hashes);
+        })
+    });
     let surface = DioxusSurface::new(surface_id, BrowserIssuesRoot).with_context(IssuesBootConfig {
         client,
         featured_issue_id,

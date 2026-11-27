@@ -36,16 +36,28 @@ fn attr_escaping_covers_quotes_angles_amp_and_nul() {
 #[test]
 fn script_data_escapes_close_tag_and_comment_open_case_insensitively() {
     assert_eq!(script("AQID+/=="), "AQID+/==");
-    assert_eq!(script("a</script>b"), "a<\\/script>b");
-    assert_eq!(script("a</ScRiPt b"), "a<\\/ScRiPt b");
-    assert_eq!(script("<!--x-->"), "<\\!--x-->");
-    assert_eq!(script("<!--<script></script>"), "<\\!--<script><\\/script>");
+    assert_eq!(script("a</script>b"), "a\\u003c/script>b");
+    assert_eq!(script("a</ScRiPt b"), "a\\u003c/ScRiPt b");
+    assert_eq!(script("<!--x-->"), "\\u003c!--x-->");
+    assert_eq!(script("<!--<script></script>"), "\\u003c!--<script>\\u003c/script>");
+    assert_eq!(script("</script</script"), "\\u003c/script\\u003c/script");
     // Partial needles and bare `<` pass through untouched.
     assert_eq!(script("<!-"), "<!-");
     assert_eq!(script("</scrip"), "</scrip");
     assert_eq!(script("a<b</s"), "a<b</s");
     assert_eq!(script("<"), "<");
-    assert_eq!(script("日<!--本"), "日<\\!--本");
+    assert_eq!(script("日<!--本"), "日\\u003c!--本");
+}
+
+/// The escaped form decodes back to the original inside JSON (and JS) string literals.
+#[test]
+fn script_data_escapes_stay_valid_json_string_escapes() {
+    for raw in ["</script><!--x", "a</SCRIPT>日<!--", "<!--</script>"] {
+        let escaped = script(raw);
+        assert!(!escaped.to_ascii_lowercase().contains("</script") && !escaped.contains("<!--"));
+        // `\u003c` is the only escape introduced: decoding it restores the input exactly.
+        assert_eq!(escaped.replace("\\u003c", "<"), raw);
+    }
 }
 
 #[test]
@@ -77,7 +89,7 @@ fn shared_tag_emitters_trim_skip_blank_and_escape() {
     push_query_payload_tag(3, None, "QQ==<!--</script>", &mut out);
     assert_eq!(
         out,
-        "<script type=\"application/x-nve-query\" data-nve-seq=\"3\">QQ==<\\!--<\\/script></script><template data-nve-q-ack=\"3\"></template>\n"
+        "<script type=\"application/x-nve-query\" data-nve-seq=\"3\">QQ==\\u003c!--\\u003c/script></script><template data-nve-q-ack=\"3\"></template>\n"
     );
 
     out.clear();

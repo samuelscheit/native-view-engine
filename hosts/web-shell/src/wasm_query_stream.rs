@@ -221,19 +221,27 @@ fn ingest_completed_scripts(
     }
 }
 
+/// Seeds `data-nve-hashes` of a hoisted chunk `<style>` into the surface's `StyleSheetCache`.
+type SsrHashSeeder<'a> = &'a mut dyn FnMut(&str);
+
+/// Seeder for asynchronous drains (`MutationObserver` / `DOMContentLoaded`), which run after the
+/// surface is registered in `ACTIVE_SHELLS`.
+fn registered_surface_seeder(surface_id: SurfaceId) -> impl FnMut(&str) {
+    move |hashes| crate::wasm_api::seed_surface_ssr_hashes(surface_id, hashes)
+}
+
 fn drain_dsd_host(
     host: &web_sys::Element,
     document: &web_sys::Document,
-    surface_id: SurfaceId,
+    seed: SsrHashSeeder<'_>,
     client: &ErasedQueryClient,
     state: &mut StreamIngestState,
     final_drain: bool,
 ) -> bool {
-    let ready_done = document.ready_state() != "loading";
     let mut children: Vec<(web_sys::Element, bool)> = Vec::new();
     let mut cur = host.first_element_child();
     while let Some(el) = cur {
-        let complete = ready_done || el.next_sibling().is_some();
+        let complete = is_element_complete(&el, Some(document));
         children.push((el.clone(), complete));
         cur = el.next_element_sibling();
     }
@@ -258,15 +266,21 @@ fn drain_dsd_host(
                 slots_to_remove.push(el);
             }
         } else if tag.eq_ignore_ascii_case("style") && el.has_attribute("data-nve-ssr-chunk") {
-            if finished {
+            // The server emits a chunk `<style>` strictly before its `<div slot>`, so only a next
+            // sibling proves its CSS is whole (never `readyState`, which also flips on a stream
+            // truncated mid-`<style>`). A truncated one is dropped unseeded at the final drain,
+            // so the client re-inserts those rules itself.
+            if el.next_sibling().is_some() {
                 if let Some(hashes) = el.get_attribute("data-nve-hashes")
                     && !hashes.trim().is_empty()
                 {
-                    crate::wasm_api::seed_surface_ssr_hashes(surface_id, &hashes);
+                    seed(&hashes);
                 }
                 if let Some(ref target_head) = head {
                     let _ = target_head.append_child(&el);
                 }
+            } else if final_drain {
+                el.remove();
             }
         } else if el.has_attribute("data-nve-slot")
             || (tag.eq_ignore_ascii_case("div") && el.has_attribute("slot"))
@@ -300,7 +314,6 @@ fn drain_dsd_host(
 struct StreamRuntime {
     state: StreamIngestState,
     finished: bool,
-    surface_id: SurfaceId,
     host: Option<web_sys::Element>,
     document: Option<web_sys::Document>,
     client: Option<ErasedQueryClient>,
@@ -323,7 +336,7 @@ impl StreamRuntime {
         }
     }
 
-    fn on_mutation(&mut self) {
+    fn on_mutation(&mut self, seed: SsrHashSeeder<'_>) {
         if self.finished {
             return;
         }
@@ -337,7 +350,7 @@ impl StreamRuntime {
             return;
         };
 
-        let saw_end = drain_dsd_host(&host, &doc, self.surface_id, &client, &mut self.state, false);
+        let saw_end = drain_dsd_host(&host, &doc, seed, &client, &mut self.state, false);
         let ended = saw_end
             || doc.ready_state() != "loading"
             || doc
@@ -346,11 +359,11 @@ impl StreamRuntime {
                 .flatten()
                 .is_some();
         if ended {
-            self.finish_stream();
+            self.finish_stream(seed);
         }
     }
 
-    fn finish_stream(&mut self) {
+    fn finish_stream(&mut self, seed: SsrHashSeeder<'_>) {
         if self.finished {
             return;
         }
@@ -363,14 +376,7 @@ impl StreamRuntime {
 
         if let (Some(doc), Some(client)) = (document.as_ref(), client.as_ref()) {
             if let Some(ref host_el) = host {
-                let _ = drain_dsd_host(
-                    host_el,
-                    doc,
-                    self.surface_id,
-                    client,
-                    &mut self.state,
-                    true,
-                );
+                let _ = drain_dsd_host(host_el, doc, seed, client, &mut self.state, true);
             }
             let extra = collect_query_scripts_from_document(doc, host.as_ref());
             if !extra.is_empty() {
@@ -413,12 +419,17 @@ impl Drop for QueryStreamGuard {
 
 /// Phase 1 synchronous pre-Frame-0 hydration + optional Phase 2 mid-stream observer attachment.
 ///
+/// `seed_sync` seeds chunk-style hashes during the synchronous drains here, before the surface
+/// (and its `WebBackend`) is registered in `ACTIVE_SHELLS`; later asynchronous drains seed the
+/// registered `surface_id`.
+///
 /// Returns `None` on the post-stream / Light-DOM fast path (installing zero `MutationObserver`s)
 /// or `Some(QueryStreamGuard)` when a streaming `[data-nve-dsd-host]` is still open.
 pub(crate) fn attach_nve_query_stream(
     container: &web_sys::Element,
     surface_id: SurfaceId,
     client: ErasedQueryClient,
+    seed_sync: SsrHashSeeder<'_>,
 ) -> Option<QueryStreamGuard> {
     let document = owner_or_window_document(container)?;
     let dsd_host = container.query_selector(DSD_HOST_SELECTOR).ok().flatten();
@@ -453,7 +464,7 @@ pub(crate) fn attach_nve_query_stream(
     if has_stream_end || dsd_host.is_none() {
         if let Some(host) = dsd_host {
             // Hoist + seed any chunk styles the promotion left behind before dropping the host.
-            let _ = drain_dsd_host(&host, &document, surface_id, &client, &mut state, true);
+            let _ = drain_dsd_host(&host, &document, seed_sync, &client, &mut state, true);
             host.remove();
         }
         client.finish_ssr_stream();
@@ -465,7 +476,6 @@ pub(crate) fn attach_nve_query_stream(
     let runtime = Rc::new(RefCell::new(StreamRuntime {
         state,
         finished: false,
-        surface_id,
         host: Some(host.clone()),
         document: Some(document.clone()),
         client: Some(client.clone()),
@@ -476,7 +486,7 @@ pub(crate) fn attach_nve_query_stream(
     let rt_mut = Rc::clone(&runtime);
     let on_mutation = Closure::<dyn FnMut(JsValue)>::new(move |_records: JsValue| {
         if let Ok(mut rt) = rt_mut.try_borrow_mut() {
-            rt.on_mutation();
+            rt.on_mutation(&mut registered_surface_seeder(surface_id));
         }
     });
 
@@ -503,7 +513,7 @@ pub(crate) fn attach_nve_query_stream(
     let rt_ready = Rc::clone(&runtime);
     let on_dom_ready = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
         if let Ok(mut rt) = rt_ready.try_borrow_mut() {
-            rt.finish_stream();
+            rt.finish_stream(&mut registered_surface_seeder(surface_id));
         }
     });
     let registered_dom_ready = document
@@ -522,7 +532,7 @@ pub(crate) fn attach_nve_query_stream(
             .map(|cb| cb.as_ref().clone());
         // Drain anything the parser appended between `hydrate_into` and `observe` (chunk styles,
         // completed slots, query payloads) now instead of waiting for the next mutation.
-        rt.on_mutation();
+        rt.on_mutation(seed_sync);
     }
 
     Some(QueryStreamGuard {

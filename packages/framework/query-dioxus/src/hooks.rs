@@ -52,6 +52,31 @@ struct QueryHookState<T> {
     external_wait_seq: Option<u32>,
     previous_data: Option<Shared<T>>,
     suspend_waiter: Option<SuspendWaiter>,
+    /// The boundary reference this hook holds (at most one per hook), released on key switch
+    /// and unmount.
+    boundary_record: Option<(BoundaryQuerySet, QueryHandle)>,
+}
+
+impl<T> QueryHookState<T> {
+    /// Moves this hook's single boundary reference to `handle` in `set`.
+    fn record_in_boundary(&mut self, set: BoundaryQuerySet, handle: QueryHandle) {
+        if self
+            .boundary_record
+            .as_ref()
+            .is_some_and(|(s, h)| *h == handle && s.ptr_eq(&set))
+        {
+            return;
+        }
+        self.release_boundary_record();
+        set.record(handle);
+        self.boundary_record = Some((set, handle));
+    }
+
+    fn release_boundary_record(&mut self) {
+        if let Some((set, handle)) = self.boundary_record.take() {
+            set.forget(handle);
+        }
+    }
 }
 
 /// `Copy` reactive handle returned by [`use_query`] / [`use_query_with`].
@@ -179,7 +204,8 @@ where
         // Always attribute `handle` to the nearest `<QuerySuspense>` boundary (if mounted inside
         // one) so SSR streaming dehydrates ONLY that boundary's handles.
         if let Some(boundary_set) = try_consume_context::<BoundaryQuerySet>() {
-            boundary_set.record(handle);
+            let mut state = self.state;
+            state.write().record_in_boundary(boundary_set, handle);
         }
 
         let _ver = *slot_sig.read();
@@ -333,6 +359,7 @@ where
             external_wait_seq: None,
             previous_data: None,
             suspend_waiter: None,
+            boundary_record: None,
         })
     });
 
@@ -340,6 +367,12 @@ where
     use_drop(move || {
         let (bridge, handle, waiter) = {
             let mut st = state.write();
+            // A hook unmounted by its `ErrorBoundary` keeps its reference: the boundary's error
+            // fallback renders that settled error, so it must still dehydrate (zero client
+            // refetch) and be invalidated by the boundary's reset.
+            if st.bridge.client().read::<P>(st.handle).error.is_none() {
+                st.release_boundary_record();
+            }
             (st.bridge.clone(), st.handle, st.suspend_waiter.take())
         };
         if let Some(waiter) = waiter
@@ -373,9 +406,7 @@ where
             waiter.task.cancel();
         }
         // Keep the enclosing boundary's attribution bounded to live keys only.
-        if let Some(boundary_set) = try_consume_context::<BoundaryQuerySet>() {
-            boundary_set.forget(old_handle);
-        }
+        state.write().release_boundary_record();
         let new_handle = bridge
             .client()
             .subscribe::<P>(&args, options)

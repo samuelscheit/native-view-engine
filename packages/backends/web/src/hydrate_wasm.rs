@@ -21,6 +21,9 @@ export function nve_promote_dsd_stream_host(container) {
   const shadow = host.shadowRoot || (tmpl && tmpl.content);
   // An element is parser-complete once the parser moved past it (or the document finished).
   const isComplete = (el) => doc.readyState !== 'loading' || el.nextSibling !== null;
+  // A chunk `<style>` is always followed by its `<div slot>`, so only a next sibling proves its
+  // CSS is whole: a stream truncated mid-`<style>` must never hoist (or seed) partial rules.
+  const isChunkStyleComplete = (el) => el.nextSibling !== null;
 
   let active = doc.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement) {
@@ -51,7 +54,7 @@ export function nve_promote_dsd_stream_host(container) {
   if (head) {
     const chunkStyles = host.querySelectorAll(':scope > style[data-nve-ssr-chunk]');
     for (let i = 0; i < chunkStyles.length; i++) {
-      if (isComplete(chunkStyles[i])) head.appendChild(chunkStyles[i]);
+      if (isChunkStyleComplete(chunkStyles[i])) head.appendChild(chunkStyles[i]);
     }
   }
 
@@ -136,6 +139,18 @@ extern "C" {
     fn nve_promote_dsd_stream_host(container: &web_sys::Element) -> bool;
 }
 
+/// Whether an SSR `<style>`'s rules are whole. A `data-nve-ssr-chunk` style still inside the
+/// `[data-nve-dsd-host]` is whole only once its `<div slot>` follows it (the server always emits
+/// the chunk `<style>` strictly before the slot markup); a truncated one is never seeded, so the
+/// client re-inserts those rules itself.
+fn is_ssr_style_complete(el: &web_sys::Element) -> bool {
+    !el.has_attribute("data-nve-ssr-chunk")
+        || el.next_sibling().is_some()
+        || !el
+            .parent_element()
+            .is_some_and(|p| p.has_attribute("data-nve-dsd-host"))
+}
+
 fn seed_all_ssr_styles(container: &web_sys::Element, stylesheet: &mut StyleSheetCache) -> usize {
     let mut seeded = 0usize;
     let seed_list = |list: web_sys::NodeList, sheet: &mut StyleSheetCache, count: &mut usize| {
@@ -143,6 +158,7 @@ fn seed_all_ssr_styles(container: &web_sys::Element, stylesheet: &mut StyleSheet
         for i in 0..len {
             if let Some(node) = list.item(i)
                 && let Ok(el) = node.dyn_into::<web_sys::Element>()
+                && is_ssr_style_complete(&el)
                 && let Some(hashes) = el.get_attribute("data-nve-hashes")
             {
                 *count += sheet.seed_ssr_hashes(&hashes);

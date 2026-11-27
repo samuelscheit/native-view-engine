@@ -21,8 +21,8 @@ pub use nve_dioxus::{ErrorBoundaryReset, ErrorFallback, UiErrorReport};
 pub use nve_query::{DehydrateCursor, DehydrateError};
 pub use sleep::{default_sleep_callback, SleepCallback, SleepHandle};
 pub use suspense::{
-    BoundaryQuerySet, InDeferredSuspense, QuerySuspense, QuerySuspenseProps, SsrBoundaryEntry,
-    SsrBoundaryRegistry, NVE_SUSPENSE_ATTR,
+    BoundaryKey, BoundaryQuerySet, InDeferredSuspense, QuerySuspense, QuerySuspenseProps,
+    SsrBoundaryEntry, SsrBoundaryRegistry, NVE_SUSPENSE_ATTR,
 };
 
 pub mod prelude {
@@ -36,8 +36,8 @@ pub mod prelude {
     pub use crate::hooks::{use_query, use_query_client, use_query_with, QueryOutcome, UseQuery};
     pub use crate::sleep::{default_sleep_callback, SleepCallback, SleepHandle};
     pub use crate::suspense::{
-        BoundaryQuerySet, InDeferredSuspense, QuerySuspense, SsrBoundaryEntry, SsrBoundaryRegistry,
-        NVE_SUSPENSE_ATTR,
+        BoundaryKey, BoundaryQuerySet, InDeferredSuspense, QuerySuspense, SsrBoundaryEntry,
+        SsrBoundaryRegistry, NVE_SUSPENSE_ATTR,
     };
     pub use nve_dioxus::{ErrorBoundaryReset, ErrorFallback, UiErrorReport};
     pub use nve_query::{DehydrateCursor, DehydrateError};

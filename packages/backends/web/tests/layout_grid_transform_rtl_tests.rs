@@ -2,17 +2,22 @@
 //! `flex-basis`, `aspect-ratio`, `position: sticky/absolute`, RTL `dir="rtl"` + logical inline
 //! spacing, `Transform2D` (including `:hover` patches), SSR, `render_html`, and hydration parity.
 
-use nve_abi::{ComponentKind, Dimension, LayoutProps, ROOT_NODE_ID};
-use nve_backend_web::WebBackend;
-use nve_components::interaction::{InteractionState, StateStyleRule};
-use nve_components::layout_ext::{
-    GridItemPlacement, GridTrack, GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode,
-};
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::style_patch::{Display, StylePatch};
+use nve_abi::Dimension;
+use nve_components::layout_ext::{LayoutDirection, PositionMode};
+use nve_components::style_patch::StylePatch;
 use nve_components::transform::Transform2D;
-use nve_engine::{BatchSink, RenderBackend, RenderSink};
+#[cfg(feature = "ssr")]
+use {
+    nve_abi::{ComponentKind, LayoutProps, ROOT_NODE_ID},
+    nve_backend_web::WebBackend,
+    nve_components::interaction::{InteractionState, StateStyleRule},
+    nve_components::layout_ext::{GridItemPlacement, GridTrack, GridTrackPlacement, LayoutExt},
+    nve_components::media::{MediaQuery, ResponsiveRule},
+    nve_components::style_patch::Display,
+    nve_engine::{BatchSink, RenderBackend, RenderSink},
+};
 
+#[cfg(feature = "ssr")]
 fn emit_showcase_frame<S: RenderSink>(sink: &mut S) {
     sink.begin_frame(1, 1);
     sink.create_node(2, ComponentKind::View, None);

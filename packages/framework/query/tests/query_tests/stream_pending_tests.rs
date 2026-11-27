@@ -1,4 +1,5 @@
-//! `StreamPending` lifecycle guards: `invalidate_all()` releases inactive stream-pending slots,
+//! `StreamPending` lifecycle guards: `invalidate_all()` and action `Nve-Invalidate: *` settlement
+//! release inactive stream-pending slots,
 //! late `seq > 0` chunks never land after a wildcard invalidation, `fetch_handle` followers of a
 //! stream-pending slot settled by a hydrated error fire zero RPCs, and stale data wins over a
 //! coexisting refetch error on the wire.
@@ -9,11 +10,15 @@ use core::task::{Context, Poll, Waker};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use nve_query::{DehydrateCursor, QueryClient, QueryOptions};
-use nve_rpc::{BoxFuture, RawCall, RawReply, RpcError, RpcStatus, Transport, TransportError};
+use nve_rpc::{
+    BoxFuture, CborCodec, Procedure, RawCall, RawReply, ReplyKind, RpcCodec, RpcError, RpcStatus,
+    Transport, TransportError,
+};
 
 use crate::ssr_stream_tests::{ErrorMatrixTransport, WakeCount};
-use crate::{block_on, DemoErr, GetItem, Item};
+use crate::{block_on, DemoErr, GetItem, Item, RenameInput, RenameItem};
 
 /// [`ErrorMatrixTransport`] that counts calls and can be switched to fail with a network error.
 #[derive(Clone, Default)]
@@ -25,6 +30,26 @@ struct CountingMatrix {
 impl Transport for CountingMatrix {
     fn call_raw<'a>(&'a self, req: RawCall) -> BoxFuture<'a, Result<RawReply, TransportError>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if req.name == RenameItem::NAME {
+            // Action replies carry `Nve-Invalidate: *`.
+            let input: RenameInput = CborCodec::default().decode_bounded(&req.body).unwrap();
+            let mut body = Vec::new();
+            let item = Item {
+                id: input.id,
+                title: input.title,
+                closed: false,
+            };
+            CborCodec::default().encode_into(&item, &mut body).unwrap();
+            return Box::pin(async move {
+                Ok(RawReply {
+                    http_status: 200,
+                    kind: ReplyKind::Ok,
+                    invalidated_tags: Vec::new(),
+                    invalidate_all: true,
+                    body: Bytes::from(body),
+                })
+            });
+        }
         if self.fail.load(Ordering::SeqCst) {
             return Box::pin(async { Err(TransportError::network("refetch failed")) });
         }
@@ -87,6 +112,41 @@ fn invalidate_all_releases_inactive_stream_pending_slots_and_wakes_waiters() {
 
     let remount = cli.subscribe::<GetItem>(&2, QueryOptions::default()).unwrap();
     assert!(cli.needs_fetch(remount));
+}
+
+#[test]
+fn action_wildcard_invalidation_releases_inactive_stream_pending_slots_and_refuses_late_chunks() {
+    let transport = CountingMatrix::default();
+    let cli = QueryClient::new(transport.clone());
+    assert_eq!(cli.hydrate_bytes(&pending_blob(&[1])).unwrap(), 1);
+
+    let c1 = cli.subscribe::<GetItem>(&1, QueryOptions::default()).unwrap();
+    let (wakes, w) = waker();
+    let mut wait = Box::pin(cli.wait_for_settled(c1));
+    assert!(poll_once(&mut wait, &w).is_pending());
+    cli.unsubscribe(c1);
+    assert_eq!(cli.active_slot_count(), 0, "slot is live but inactive");
+
+    let input = RenameInput {
+        id: 9,
+        title: "renamed".into(),
+    };
+    let (reply, refetch) = block_on(cli.execute_action::<RenameItem>(&input)).unwrap();
+    assert!(reply.invalidate_all, "server replied `Nve-Invalidate: *`");
+    assert!(refetch.is_empty(), "no active slot to refetch");
+
+    assert_eq!(wakes.0.load(Ordering::SeqCst), 1, "waiter woken by the action settlement");
+    assert!(poll_once(&mut wait, &w).is_ready());
+    let snap = cli.read::<GetItem>(c1);
+    assert!(!snap.is_stream_pending && !snap.is_fetching);
+    assert_eq!(cli.finish_ssr_stream(), 0, "nothing left stream-pending");
+
+    // The late stream chunk for the released slot is refused after the wildcard bump.
+    assert_eq!(cli.hydrate_stream_chunk_bytes(&settled_chunk(1)).unwrap(), 0);
+    let snap = cli.read::<GetItem>(c1);
+    assert!(snap.data.is_none() && snap.completed_seq == 0);
+    assert!(cli.needs_fetch(c1));
+    assert_eq!(transport.calls.load(Ordering::SeqCst), 1, "only the action RPC fired");
 }
 
 #[test]

@@ -131,7 +131,10 @@ pub struct SsrPageOptions {
     /// Optional ES module URL emitted as `<script type="module" async src="..."></script>`
     /// strictly after `seq=0` query hydration ack (or `<template data-nve-stream-end>` on fast path).
     pub async_boot_src: Option<String>,
-    /// Opt-in pre-hydration inline event replay snippet (`false` by default for strict zero-inline-JS CSP).
+    /// Opt-in pre-hydration inline event replay snippet (`false` by default for strict
+    /// zero-inline-JS CSP). Enabling it emits an inline `<script data-nve-replay>`, which a strict
+    /// CSP blocks unless `script-src` allows it (its hash or a per-request nonce, or a relaxed
+    /// `'unsafe-inline'`).
     pub enable_event_replay: bool,
     /// HTTP response status code (defaults to `200 OK`).
     pub status: StatusCode,

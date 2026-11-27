@@ -407,6 +407,9 @@ suite_rust_rpc_hyper_matrix() {
   cargo test --locked -p nve-http-hyper --no-default-features --doc
   cargo test --locked -p nve-http-hyper --no-default-features --features server --doc
   cargo test --locked -p nve-http-hyper --no-default-features --features client --doc
+  # Web backend feature-gate matrix: `ssr`-only (server) and `hydrate`-only (client) builds.
+  cargo check --locked -p nve-backend-web --no-default-features --features ssr --all-targets
+  cargo check --locked -p nve-backend-web --no-default-features --features hydrate --all-targets
   RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --document-private-items \
     -p nve-hash -p nve-rpc -p nve-server -p nve-http-hyper \
     -p nve-query -p nve-http-web -p nve-query-dioxus \
@@ -674,7 +677,7 @@ fi
 
 # 1b2. Rust RPC/Hyper feature matrix & rustdoc check (native, independent of WASM target)
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "Rust RPC/Hyper feature matrix & docs" suite_rust_rpc_hyper_matrix "nve-http-hyper features (--all-targets + --doc) + rustdoc -D warnings"
+  run_suite "Rust RPC/Hyper feature matrix & docs" suite_rust_rpc_hyper_matrix "nve-http-hyper + nve-backend-web feature matrices + rustdoc -D warnings"
 else
   skip_suite "Rust RPC/Hyper feature matrix & docs" "cargo not found"
 fi

@@ -438,14 +438,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let mut touched_any = false;
 
             if invalidate_all {
-                s.wildcard_epoch = s.wildcard_epoch.wrapping_add(1);
-                let active_len = s.active_slots.len();
-                for i in 0..active_len {
-                    let slot = s.active_slots[i];
-                    s.invalidate_slot(slot, &mut active, &mut waiters);
-                    invalidated_slots.push(slot);
-                    touched_any = true;
-                }
+                touched_any = s.invalidate_all_slots(&mut active, &mut waiters);
+                invalidated_slots.extend_from_slice(&s.active_slots);
             } else {
                 for &tag in tags {
                     let mut slots = Vec::new();

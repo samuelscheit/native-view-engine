@@ -1,6 +1,7 @@
 //! Deep integration tests for zero-serialization typed CSS gradients (base, `@media`, and
 //! `:hover`/`:active`) and inline `<svg>` SSR, `render_html`, RTL mirror policy, and
 //! zero-mismatch hydration parity in `nve-backend-web`.
+#![cfg(all(feature = "ssr", feature = "hydrate"))]
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, LayoutProps, StyleProps,

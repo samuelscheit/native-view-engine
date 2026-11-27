@@ -88,7 +88,7 @@ Per-crate attribution (twiggy, symbol build, `crate-attrib.py`) of the **counter
 | Keyed `for` loop | 526 | 42 |
 | `#[component]` with a prop | 744 | 100 |
 
-The studio sources contain 71 handlers, 80 `for` loops, about 225 `if` blocks and **244 interpolated `style:` strings against 76 static ones (76% dynamic)**. Even `{TEXT_PRIMARY}`, a `const`, turns a whole style attribute dynamic. That means a `format!` String allocation at render, a runtime `;`/`:` split plus `f32::from_str` in `apply_typed_attr_with_raw`, and string-diffing. Dioxus already compiles the static structure to `Template` data, so **the code is the dynamic slots and the control flow**, not the static markup.
+The studio sources contain 71 handlers, 80 `for` loops, about 225 `if` blocks and **244 interpolated `style:` strings against 76 static ones (76% dynamic)**. Even `{TEXT_PRIMARY}`, a `const`, turns a whole style attribute dynamic. That means a `format!` String allocation at render, a runtime `;`/`:` split plus `f32::from_str` in `apply_typed_attr_with_ext`, and string-diffing. Dioxus already compiles the static structure to `Template` data, so **the code is the dynamic slots and the control flow**, not the static markup.
 
 **Upper-bound experiment.** I rewrote all 244 interpolated style literals to static ones (throwaway, reverted). Studio-only went from 201,609 to **193,560 B br (−8.0 KB, −4%)**. This also drops the value computations, so the realistic saving from compile-time styles is about 4–8 KB br. Removing the runtime parser saves a few KB more (`nve_components` typed-attr parsing, `f32::from_str`, and flt2dec once CSS writing also leaves wasm).
 

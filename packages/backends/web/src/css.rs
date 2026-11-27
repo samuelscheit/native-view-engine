@@ -77,20 +77,14 @@ pub(crate) fn write_compact_num(v: f32, out: &mut String) {
     write_f32(out, v);
 }
 
-/// Appends `v` followed by `unit`, or a bare `0` when `v` formats as zero.
-#[inline]
-fn write_compact_unit(v: f32, unit: &str, out: &mut String) {
-    let start = out.len();
-    write_f32(out, v);
-    if &out[start..] != "0" {
-        out.push_str(unit);
-    }
-}
-
 /// Formats a compact CSS pixel length (`0` without unit, otherwise `{v}px`).
 #[inline]
 pub(crate) fn write_compact_px(v: f32, out: &mut String) {
-    write_compact_unit(v, "px", out);
+    let start = out.len();
+    write_f32(out, v);
+    if &out[start..] != "0" {
+        out.push_str("px");
+    }
 }
 
 /// Appends `v` followed by `unit`, always keeping the unit (full, non-compact CSS).
@@ -123,7 +117,8 @@ pub(crate) fn write_compact_dim(d: Dimension, out: &mut String) {
     match d {
         Dimension::Auto => out.push_str("auto"),
         Dimension::Points(v) => write_compact_px(v, out),
-        Dimension::Percent(v) => write_compact_unit(v, "%", out),
+        // Never unitless: `0%` of an indefinite size resolves like `auto`/`content`, unlike `0`.
+        Dimension::Percent(v) => write_full_unit(v, "%", out),
     }
 }
 

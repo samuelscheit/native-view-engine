@@ -7,6 +7,8 @@
 //! 4. Client disconnect cancels the `LocalSet` render with keepalives disabled.
 //! 5. A suspense parent unmounting mid-stream ends the stream immediately instead of at
 //!    `total_deadline`.
+//! 6. A panicking render task maps to `SsrError::Render` (HTTP 500), never `PoolClosed` (503),
+//!    and leaves the worker serving later renders.
 
 use core::time::Duration;
 use std::cell::RefCell;
@@ -286,4 +288,28 @@ async fn suspense_parent_unmounting_mid_stream_ends_stream_without_waiting_for_d
     );
     assert!(rest.contains("<template data-nve-stream-end></template>"), "{rest}");
     assert!(!rest.contains("data-nve-slot=\"vanishing\""), "{rest}");
+}
+
+#[tokio::test]
+async fn panicking_render_task_is_a_render_error_not_pool_closed() {
+    let pool = single_worker_pool(2);
+    let transport = ControlledTransport::default();
+    let res = pool
+        .render_streaming(
+            SsrPageOptions::new("Panic"),
+            StreamPlan::default(),
+            erased_ssr_query_client(transport.clone()),
+            |_| panic!("build_surface exploded"),
+        )
+        .await;
+    match res {
+        Err(SsrError::Render(msg)) => assert!(msg.contains("panicked"), "{msg}"),
+        other => panic!("expected SsrError::Render, got {:?}", other.map(|_| ())),
+    }
+
+    // The worker survives the contained panic and serves the next render.
+    let resp = render_slow(&pool, &transport, SsrPageOptions::new("After")).await;
+    transport.release("slow");
+    let html = collect_all_html(resp.expect("render after a panic").into_body()).await;
+    assert!(html.contains("</html>"), "{html}");
 }
