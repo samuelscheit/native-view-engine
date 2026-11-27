@@ -99,6 +99,7 @@ impl Default for TypedSurfaceStyle {
 }
 
 /// Typed full text visual specification emitted atomically by [`TypedStyleBuilder::text_style`].
+/// No `Default`: text color always comes from the active theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TypedTextStyle {
     pub color: ColorRgba,
@@ -106,18 +107,6 @@ pub struct TypedTextStyle {
     pub font_weight: &'static str,
     pub text_align: &'static str,
     pub opacity: f32,
-}
-
-impl Default for TypedTextStyle {
-    fn default() -> Self {
-        Self {
-            color: ColorRgba::rgb(0x0f, 0x17, 0x2a),
-            font_size: 15.0,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        }
-    }
 }
 
 /// Zero-string-format builder producing [`nve_dioxus::TypedStyle`] directly for `nve_style`.

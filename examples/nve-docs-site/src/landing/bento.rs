@@ -141,7 +141,7 @@ pub fn BentoArchitectureGrid() -> Element {
                                 key: "host-pill-{host}",
                                 style: "flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                 view {
-                                    style: "width: 6px; height: 6px; border-radius: 999px; background-color: {theme.status.accent.solid.hex()};",
+                                    style: "width: 6px; height: 6px; border-radius: 999px; background-color: {theme.status.accent.text.hex()};",
                                 }
                                 text {
                                     style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",

@@ -1,7 +1,7 @@
 //! Sticky top navbar (`accessibility_role: "banner"`) with brand, sections, `⌘K` search, theme toggle, and mobile drawer toggle.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{ColorHex, Hex};
+use nve_ui::{accent_indicator, ColorHex, Hex};
 
 use crate::route::DocsRoute;
 use crate::state::{navigate_to, use_docs_state};
@@ -115,7 +115,7 @@ pub fn DocsNavbar() -> Element {
                             {
                                 let bg = if is_active { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
                                 let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                                let border_c = if is_active { theme.status.accent.solid.hex() } else { Hex::TRANSPARENT };
+                                let border_c = if is_active { accent_indicator(&theme).hex() } else { Hex::TRANSPARENT };
                                 let tid = format!("docs-section-{sec_id}");
                                 let target_route = DocsRoute::new(&sec_route);
                                 rsx! {

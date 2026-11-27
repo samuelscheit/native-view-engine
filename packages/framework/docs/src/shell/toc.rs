@@ -1,7 +1,7 @@
 //! Sticky right "On This Page" table of contents (`accessibility_role: "complementary"`, `220px`, hidden `< 1200pt`).
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
+use nve_ui::{accent_indicator, ColorHex};
 
 use crate::state::{navigate_to_target, use_docs_state};
 
@@ -50,7 +50,7 @@ pub fn DocsToc() -> Element {
                         {
                             let is_active = active_anchor.as_deref() == Some(heading.id.as_str());
                             let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                            let rail = if is_active { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
+                            let rail = if is_active { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
                             let weight = if is_active { "600" } else { "400" };
                             let pad_h = if heading.level == 3 { "16px" } else { "8px" };
                             let href = format!("#{}", heading.id);

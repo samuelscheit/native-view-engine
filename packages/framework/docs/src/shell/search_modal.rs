@@ -1,7 +1,7 @@
 //! `⌘K` instant full-text search dialog built on `nve_ui::Dialog`, `FocusTrap`, and `nve_mdx::SearchIndex`.
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
+use nve_ui::{accent_indicator, ColorHex};
 use nve_ui::{Dialog, FocusTrap, FocusTrapAction};
 
 use crate::state::{navigate_to_target, use_docs_state};
@@ -96,7 +96,7 @@ pub fn SearchModal() -> Element {
                         accessibility_label: "Search documentation query",
                         placeholder: "Search pages, headings, APIs...",
                         value: "{query}",
-                        style: "flex-grow: 1; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; border-width: 1px; border-color: {theme.status.accent.solid.hex()}; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()}; font-size: 14px;",
+                        style: "flex-grow: 1; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; border-width: 1px; border-color: {accent_indicator(&theme).hex()}; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()}; font-size: 14px;",
                         onchange: move |ev: TextEvent| {
                             state.write().set_search_query(ev.data().value.clone());
                         },
@@ -149,7 +149,7 @@ pub fn SearchModal() -> Element {
                             {
                                 let is_selected = idx == selected_idx;
                                 let bg = if is_selected { theme.status.accent.subtle.hex() } else { theme.surface.subtle.hex() };
-                                let border_c = if is_selected { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
+                                let border_c = if is_selected { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
                                 let title_c = if is_selected { theme.text.link.hex() } else { theme.text.primary.hex() };
                                 let tid = format!("docs-search-hit-{idx}");
                                 let sel_attr = if is_selected { "true" } else { "false" };

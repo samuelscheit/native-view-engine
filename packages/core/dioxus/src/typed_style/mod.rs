@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
-use nve_abi::{Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
@@ -84,7 +84,10 @@ impl TypedStyle {
     pub fn new() -> Self {
         Self {
             layout: LayoutSnapshot::default(),
-            style: VisualSnapshot::default(),
+            // Text color and size start unset (alpha 0 / size 0, skipped by `apply`), so a
+            // surface-only style never writes an explicit black 16px `Typography` row that
+            // would block inherited text color.
+            style: VisualSnapshot { text_color: ColorRgba::TRANSPARENT, font_size: 0.0, ..VisualSnapshot::default() },
             has_layout: false,
             has_style: false,
             font_weight: None,

@@ -132,11 +132,12 @@ fn layout_actions_theme_switching_and_explicit_style_resets() {
     assert_eq!(h.raw_str(btn, "tabIndex"), Some("0"));
     assert!((h.opacity(btn) - 1.0).abs() < 1e-3);
 
-    // Focus -> border_width=2.0, blur -> explicitly resets to 0.0 (no stale focus ring).
+    // Focus -> border_width=2.0, blur -> explicitly resets to the 1px resting boundary (no stale
+    // focus ring).
     h.focus("primary-btn");
     assert_eq!(h.border_width(btn), 2.0);
     h.blur("primary-btn");
-    assert_eq!(h.border_width(btn), 0.0);
+    assert_eq!(h.border_width(btn), 1.0);
 
     // Press, Enter, Space, and IconButton Enter activation.
     h.press("primary-btn");

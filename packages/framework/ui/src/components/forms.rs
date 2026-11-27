@@ -6,7 +6,7 @@ use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::components::roles::error_text;
+use crate::components::roles::{checkbox_colors, error_indicator, error_text, switch_colors};
 use crate::theme::use_theme;
 
 /// Accessible text input with optional label, helper/error text (`aria-describedby`),
@@ -54,7 +54,7 @@ pub fn Input(
 
     let has_error = error.is_some();
     let (border_width, border_color) = if has_error {
-        (2.0, theme.status.danger.solid)
+        (2.0, error_indicator(&theme))
     } else if focused() && !disabled {
         (2.0, theme.border.focus)
     } else {
@@ -231,25 +231,7 @@ pub fn Checkbox(
         })
         .finish();
 
-    let (box_bg, box_bw, box_bc) = if focused() && !disabled {
-        (
-            if active_fill {
-                theme.status.accent.solid
-            } else {
-                theme.surface.base
-            },
-            2.0,
-            theme.border.focus,
-        )
-    } else if active_fill {
-        (theme.status.accent.solid, 1.0, theme.status.accent.solid)
-    } else {
-        (
-            theme.surface.base,
-            if theme.is_high_contrast() { 2.0 } else { 1.0 },
-            theme.border.strong,
-        )
-    };
+    let boxc = checkbox_colors(&theme, active_fill, focused() && !disabled);
 
     let box_style = TypedStyleBuilder::new()
         .width_px(20.0)
@@ -257,9 +239,9 @@ pub fn Checkbox(
         .justify_content(FlexJustify::Center)
         .align_items(FlexAlign::Center)
         .surface(TypedSurfaceStyle {
-            background: box_bg,
-            border_width: box_bw,
-            border_color: box_bc,
+            background: boxc.bg,
+            border_width: boxc.border_width,
+            border_color: boxc.border,
             border_radius: theme.radius.sm,
             opacity: 1.0,
             box_shadow: "none",
@@ -268,7 +250,7 @@ pub fn Checkbox(
 
     let mark_style = TypedStyleBuilder::new()
         .text_style(TypedTextStyle {
-            color: theme.status.accent.on_solid,
+            color: boxc.fg,
             font_size: theme.typography.ui.size,
             font_weight: "700",
             text_align: "center",
@@ -367,17 +349,7 @@ pub fn Switch(
         })
         .finish();
 
-    let (track_bg, track_bw, track_bc) = if focused() && !disabled {
-        (
-            if checked { theme.status.accent.solid } else { theme.border.strong },
-            2.0,
-            theme.border.focus,
-        )
-    } else if checked {
-        (theme.status.accent.solid, 1.0, theme.status.accent.solid)
-    } else {
-        (theme.border.strong, 1.0, theme.border.strong)
-    };
+    let (track, thumb) = switch_colors(&theme, checked, focused() && !disabled);
 
     let track_style = TypedStyleBuilder::new()
         .width_px(44.0)
@@ -391,9 +363,9 @@ pub fn Switch(
             FlexJustify::FlexStart
         })
         .surface(TypedSurfaceStyle {
-            background: track_bg,
-            border_width: track_bw,
-            border_color: track_bc,
+            background: track.bg,
+            border_width: track.border_width,
+            border_color: track.border,
             border_radius: theme.radius.full,
             opacity: 1.0,
             box_shadow: "none",
@@ -404,11 +376,7 @@ pub fn Switch(
         .width_px(18.0)
         .height_px(18.0)
         .surface(TypedSurfaceStyle {
-            background: if checked {
-                theme.status.accent.on_solid
-            } else {
-                theme.surface.base
-            },
+            background: thumb,
             border_width: 0.0,
             border_color: ColorRgba::TRANSPARENT,
             border_radius: theme.radius.full,

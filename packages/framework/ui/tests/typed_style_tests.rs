@@ -171,10 +171,11 @@ fn nve_ui_components_merge_style_overrides_and_reset_all_state_transitions_clean
     assert_eq!(h.padding(btn), EdgeInsets::all(20.0));
     assert_eq!(h.border_radius(btn), 22.0);
 
-    // Blur -> border_width resets cleanly to 0.0 and border_color to TRANSPARENT.
+    // Blur -> the border resets cleanly to the resting filled-control boundary.
     h.blur("styled-btn");
-    assert_eq!(h.border_width(btn), 0.0);
-    assert_eq!(h.border_color(btn), ColorRgba::TRANSPARENT);
+    let resting = nve_ui::button_colors(&Theme::LIGHT, ButtonVariant::Primary, false, false);
+    assert_eq!(h.border_width(btn), resting.border_width);
+    assert_eq!(h.border_color(btn), resting.border);
 
     // 3. Disabled -> opacity=0.5, re-enable -> opacity=1.0 (override stays intact throughout).
     h.press("toggle-disabled");
@@ -204,7 +205,7 @@ fn nve_ui_components_merge_style_overrides_and_reset_all_state_transitions_clean
     assert_eq!(h.border_color(inp), Theme::LIGHT.border.strong);
     h.press("toggle-error");
     assert_eq!(h.border_width(inp), 2.0);
-    assert_eq!(h.border_color(inp), Theme::LIGHT.status.danger.solid);
+    assert_eq!(h.border_color(inp), nve_ui::error_indicator(&Theme::LIGHT));
     h.press("toggle-error");
     assert_eq!(h.border_width(inp), 1.0);
     assert_eq!(h.border_color(inp), Theme::LIGHT.border.strong);

@@ -105,7 +105,9 @@ impl Accent {
         };
         let chroma = if chroma >= 0.0 { chroma.min(MAX_CHROMA) } else { 0.0 };
         let hue = if hue.is_finite() { hue % 360.0 } else { 0.0 };
+        // A tiny negative hue rounds `hue + 360` up to exactly `360.0_f32`.
         let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+        let hue = if hue >= 360.0 { 0.0 } else { hue };
         Self { hue, chroma, solid_l }
     }
 
@@ -150,7 +152,7 @@ const LIGHT: ModeProfile = ModeProfile {
     neutral_c: [0.002, 0.003, 0.004, 0.004, 0.005, 0.005, 0.006, 0.012, 0.014, 0.014, 0.016, 0.006],
     tertiary_l: 0.52,
     tone_subtle: (0.955, 0.16),
-    tone_border: (0.82, 0.45),
+    tone_border: (0.6, 0.7),
     tone_text: (0.47, 0.85),
     tone_focus: (0.55, 1.0),
     solid_l: None,
@@ -162,7 +164,7 @@ const DARK: ModeProfile = ModeProfile {
     neutral_c: [0.005, 0.005, 0.006, 0.006, 0.007, 0.008, 0.009, 0.014, 0.014, 0.014, 0.01, 0.003],
     tertiary_l: 0.745,
     tone_subtle: (0.25, 0.3),
-    tone_border: (0.42, 0.55),
+    tone_border: (0.58, 0.6),
     tone_text: (0.81, 0.7),
     tone_focus: (0.74, 1.0),
     solid_l: None,

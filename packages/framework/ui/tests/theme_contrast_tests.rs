@@ -9,7 +9,8 @@ use nve_interop::traits::UiDensity;
 use nve_interop::{ColorScheme, ContrastLevel};
 use nve_ui::{
     apca_contrast, composite, relative_luminance, wcag_contrast, Accent, AppBrand, Appearance,
-    accent_indicator, badge_colors, button_colors, error_text, selected_text, tab_colors,
+    accent_indicator, badge_colors, button_colors, calendar_day_colors, checkbox_colors, error_indicator, error_text,
+    selected_text, switch_colors, tab_colors,
     toast_tone, BadgeVariant, Breakpoint, ButtonVariant, ControlColors, Layer, Oklch, Polarity, Scale,
     Theme, ThemeConfig, ThemeMode, ToastVariant,
 };
@@ -128,10 +129,36 @@ fn every_component_variant_pairing_is_readable_in_every_preset() {
                 control(format!("{name} Tab sel={selected} focus={focused}@{sn}"), c, on);
             }
         }
+        // Stateful indicators (WCAG 1.4.11): the boundary that shows checked/on/selected must clear
+        // the non-text bar against the surface, and inner ink against its fill.
+        for (sn, on) in [("canvas", s.canvas), ("base", s.base), ("raised", s.raised), ("overlay", s.overlay)] {
+            for (active, focused) in [(false, false), (false, true), (true, false), (true, true)] {
+                let ctx = format!("{name} active={active} focus={focused}@{sn}");
+                let c = checkbox_colors(&t, active, focused);
+                rep.non_text(&format!("Checkbox boundary {ctx}"), c.border, on, bar.non_text);
+                if active {
+                    rep.text(&format!("Checkbox mark {ctx}"), c.fg, c.bg, bar.readable);
+                }
+                let (track, thumb) = switch_colors(&t, active, focused);
+                rep.non_text(&format!("Switch track boundary {ctx}"), track.border, on, bar.non_text);
+                rep.non_text(&format!("Switch thumb/track {ctx}"), thumb, track.bg, bar.non_text);
+            }
+            for (endpoint, in_range, today) in [(true, false, false), (false, true, false), (false, false, true), (false, false, false)] {
+                for focused in [false, true] {
+                    let ctx = format!("{name} Calendar end={endpoint} range={in_range} today={today} focus={focused}@{sn}");
+                    let c = calendar_day_colors(&t, endpoint, in_range, today, focused, false);
+                    rep.text(&ctx, c.fg, composite(c.bg, on), bar.readable);
+                    if endpoint || today || focused {
+                        rep.non_text(&format!("{ctx} boundary"), c.border, on, bar.non_text);
+                    }
+                }
+            }
+        }
         for (sn, bg) in [("canvas", s.canvas), ("base", s.base), ("raised", s.raised), ("overlay", s.overlay)] {
             rep.text(&format!("{name} error_text/{sn}"), error_text(&t), bg, bar.readable);
             rep.text(&format!("{name} selected_text/{sn}"), selected_text(&t), bg, bar.readable);
             rep.non_text(&format!("{name} accent_indicator/{sn}"), accent_indicator(&t), bg, bar.non_text);
+            rep.non_text(&format!("{name} error_indicator/{sn}"), error_indicator(&t), bg, bar.non_text);
         }
         for v in [ToastVariant::Info, ToastVariant::Success, ToastVariant::Warning, ToastVariant::Danger] {
             let edge = toast_tone(&t, v).text;
@@ -179,9 +206,20 @@ fn every_role_pair_meets_wcag_and_apca_in_every_preset() {
         }
         rep.text(&format!("{name} text.on_accent/accent"), t.text.on_accent, t.status.accent.solid, bar.readable);
         let st = t.status;
-        for (tn, tone) in [("accent", st.accent), ("success", st.success), ("warning", st.warning), ("danger", st.danger), ("info", st.info)] {
+        rep.check(bar.non_text == t.non_text_min(), format!("{name} non_text_min matches the contract"));
+        for (tn, tone) in [
+            ("accent", st.accent), ("success", st.success), ("warning", st.warning), ("danger", st.danger),
+            ("info", st.info), ("neutral", t.neutral_tone()),
+        ] {
             rep.text(&format!("{name} {tn}.on_solid/solid"), tone.on_solid, tone.solid, bar.readable);
             rep.text(&format!("{name} {tn}.text/subtle"), tone.text, tone.subtle, bar.readable);
+            // WCAG 1.4.11: a tone's border bounds tinted containers and filled controls.
+            rep.non_text(&format!("{name} {tn}.border/base"), tone.border, s.base, bar.non_text);
+            rep.non_text(&format!("{name} {tn}.border/subtle"), tone.border, tone.subtle, bar.non_text);
+            for (sn, on) in [("canvas", s.canvas), ("base", s.base), ("raised", s.raised), ("overlay", s.overlay)] {
+                let filled = ControlColors::solid(&t, tone);
+                rep.non_text(&format!("{name} {tn} filled boundary/{sn}"), filled.border, on, bar.non_text);
+            }
             for (sn, bg) in [("canvas", s.canvas), ("base", s.base), ("overlay", s.overlay)] {
                 rep.text(&format!("{name} {tn}.text/{sn}"), tone.text, bg, bar.readable);
             }
@@ -302,6 +340,20 @@ fn oklch_and_accent_inputs_are_sanitized() {
         assert!(rep.0.is_empty(), "{}", rep.0.join("\n"));
     }
     assert_eq!(Accent::new(-30.0, 0.1, 0.5).hue, 330.0);
+
+    // Huge finite hues are reduced in degrees before the radian wrap: black stays black and a
+    // chromatic color keeps its chroma (no saturation through NaN or grey collapse).
+    for h in [1e15_f32, -1e15, 1e20, -1e20, 1e30, -1e30, f32::MAX, f32::MIN] {
+        assert_eq!(Oklch::new(0.0, 0.2, h).to_srgb(), ColorRgba::BLACK, "black at hue {h}");
+        let c = Oklch::new(0.63, 0.2, h).to_srgb();
+        let spread = c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+        assert!(spread > 40, "hue {h} must stay chromatic, got {c:?}");
+        assert_eq!(c, Oklch::new(0.63, 0.2, h % 360.0).to_srgb(), "hue {h} ≡ its reduction");
+    }
+    for h in [-f32::MIN_POSITIVE, -1e-20, -1e-5, -360.0, 360.0, 720.0] {
+        let hue = Accent::new(h, 0.2, 0.53).hue;
+        assert!((0.0..360.0).contains(&hue), "Accent hue {h} → {hue} must lie in [0, 360)");
+    }
 }
 
 #[test]

@@ -12,8 +12,11 @@ pub const MAX_CHROMA: f32 = 0.4;
 const PI: f64 = core::f64::consts::PI;
 const LN_2: f64 = core::f64::consts::LN_2;
 
-/// Reduces `x` into `[-π, π]`.
+/// Reduces `x` into `[-π, π]` (callers pre-reduce degrees, so `|x|` stays small; non-finite → 0).
 const fn wrap_pi(x: f64) -> f64 {
+    if !x.is_finite() {
+        return 0.0;
+    }
     let tau = 2.0 * PI;
     let k = ((x + PI) / tau) as i64;
     let mut r = x - k as f64 * tau;
@@ -47,8 +50,14 @@ pub(crate) const fn cos(x: f64) -> f64 {
 
 /// `e^x` via `x = k·ln2 + r` reduction and a Taylor series on `|r| ≤ ln2/2`.
 pub(crate) const fn exp(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
     if x < -700.0 {
         return 0.0;
+    }
+    if x > 700.0 {
+        return f64::INFINITY;
     }
     let k = if x >= 0.0 {
         (x / LN_2 + 0.5) as i64
@@ -69,10 +78,17 @@ pub(crate) const fn exp(x: f64) -> f64 {
     sum * f64::from_bits(bits)
 }
 
-/// Natural log for `x > 0` via mantissa/exponent split and the `atanh` series.
+/// Natural log for `x > 0` via mantissa/exponent split and the `atanh` series. NaN stays NaN
+/// (instead of reading the `0x7ff` exponent as a huge finite value).
 pub(crate) const fn ln(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
     if x <= 0.0 {
         return f64::NEG_INFINITY;
+    }
+    if x.is_infinite() {
+        return f64::INFINITY;
     }
     let bits = x.to_bits();
     let exponent = ((bits >> 52) & 0x7ff) as i64 - 1023;
@@ -90,9 +106,9 @@ pub(crate) const fn ln(x: f64) -> f64 {
     2.0 * sum + exponent as f64 * LN_2
 }
 
-/// `x^y` for `x ≥ 0`.
+/// `x^y` for finite `x ≥ 0`; non-finite or non-positive `x` → 0.
 pub(crate) const fn powf(x: f64, y: f64) -> f64 {
-    if x <= 0.0 { 0.0 } else { exp(y * ln(x)) }
+    if !x.is_finite() || x <= 0.0 { 0.0 } else { exp(y * ln(x)) }
 }
 
 pub(crate) const fn cbrt(x: f64) -> f64 {
@@ -163,10 +179,12 @@ impl Oklch {
     pub const fn to_srgb(self) -> ColorRgba {
         // Non-finite inputs collapse to their neutral value instead of poisoning the encode.
         let l = if self.l.is_nan() { 0.0 } else { (self.l as f64).clamp(0.0, 1.0) };
-        let h = if self.h.is_finite() { self.h as f64 * PI / 180.0 } else { 0.0 };
+        // Reduce degrees first: `h · π/180` for huge finite hues would overflow the radian wrap.
+        let h = if self.h.is_finite() { (self.h % 360.0) as f64 * PI / 180.0 } else { 0.0 };
         let (ca, sa) = (cos(h), sin(h));
         // sRGB peaks near C 0.32; capping keeps the 18-step bisection precise for any input.
-        let mut c = if self.c > 0.0 { (self.c as f64).min(MAX_CHROMA as f64) } else { 0.0 };
+        // The gamut collapses to a point at L = 0 (black) and L = 1 (white).
+        let mut c = if self.c > 0.0 && l > 0.0 && l < 1.0 { (self.c as f64).min(MAX_CHROMA as f64) } else { 0.0 };
         if !in_gamut(oklab_to_linear(l, c * ca, c * sa)) {
             let (mut lo, mut hi) = (0.0, c);
             let mut i = 0;
@@ -229,7 +247,7 @@ const fn in_gamut(rgb: [f64; 3]) -> bool {
 
 /// Linear-light channel → 8-bit sRGB (IEC 61966-2-1 transfer function).
 const fn encode_channel(v: f64) -> u8 {
-    let v = v.clamp(0.0, 1.0);
+    let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
     let e = if v <= 0.003_130_8 {
         12.92 * v
     } else {

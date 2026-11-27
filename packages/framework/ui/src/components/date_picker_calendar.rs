@@ -2,14 +2,14 @@
 //! [`crate::DateRangePicker`].
 
 use dioxus_core::EventHandler;
-use nve_abi::{ColorRgba, FlexAlign, FlexJustify};
+use nve_abi::{FlexAlign, FlexJustify};
 use nve_dioxus::prelude::*;
 use nve_i18n::{CalendarDate, NameWidth};
 
 use crate::components::date_picker_grid::CalendarMonthGrid;
 use crate::positioning::ComputedPosition;
 use crate::style_buf::{TypedStyleBuilder, TypedSurfaceStyle, TypedTextStyle};
-use crate::components::roles::accent_indicator;
+use crate::components::roles::{calendar_day_colors, ControlColors};
 use crate::theme::{Layer, Theme};
 
 pub(crate) const DEFAULT_FALLBACK_DATE: CalendarDate = CalendarDate {
@@ -165,27 +165,14 @@ pub(crate) fn render_calendar_dialog(
                     let cell_date = cell.date;
                     let cell_disabled = disabled || cell.is_disabled;
                     let is_endpoint = cell.is_selected || cell.is_range_start || cell.is_range_end;
-                    let bg = if is_endpoint {
-                        theme.status.accent.solid
-                    } else if cell.is_in_range {
-                        theme.surface.subtle
-                    } else {
-                        ColorRgba::TRANSPARENT
-                    };
-                    let fg = if is_endpoint {
-                        theme.status.accent.on_solid
-                    } else if cell_disabled || !cell.in_current_month {
-                        theme.text.tertiary
-                    } else {
-                        theme.text.primary
-                    };
-                    let (border_w, border_col) = if cell.is_focused {
-                        (2.0, theme.border.focus)
-                    } else if cell.is_today {
-                        (1.0, accent_indicator(theme))
-                    } else {
-                        (0.0, ColorRgba::TRANSPARENT)
-                    };
+                    let ControlColors { bg, fg, border_width: border_w, border: border_col } = calendar_day_colors(
+                        theme,
+                        is_endpoint,
+                        cell.is_in_range,
+                        cell.is_today,
+                        cell.is_focused,
+                        cell_disabled || !cell.in_current_month,
+                    );
                     let cell_style = TypedStyleBuilder::new()
                         .width_px(34.0)
                         .height_px(34.0)

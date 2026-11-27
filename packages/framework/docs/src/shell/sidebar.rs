@@ -1,7 +1,7 @@
 //! Left navigation sidebar (`accessibility_role: "navigation"`, `260px` desktop / mobile slide-over drawer).
 
 use dioxus_core_macro::Props;
-use nve_ui::{ColorHex, Hex};
+use nve_ui::{accent_indicator, ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_mdx::NavNode;
 
@@ -188,7 +188,7 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
             let weight = if is_active { "600" } else { "400" };
             let rail_color = if is_active {
-                theme.status.accent.solid.hex()
+                accent_indicator(&theme).hex()
             } else {
                 Hex::TRANSPARENT
             };

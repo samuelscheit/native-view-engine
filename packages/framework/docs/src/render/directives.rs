@@ -2,7 +2,7 @@
 
 use dioxus_core_macro::Props;
 use crate::theme::callout_tone;
-use nve_ui::{ColorHex, Hex};
+use nve_ui::{accent_indicator, ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, CalloutKind, CardItem, DirectiveBlock, StepItem, TabItem};
 
@@ -185,7 +185,7 @@ pub fn TabsDirectiveView(
                         let is_selected = item.label == active_label;
                         let bg = if is_selected { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
                         let fg = if is_selected { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                        let border_c = if is_selected { theme.status.accent.solid.hex() } else { Hex::TRANSPARENT };
+                        let border_c = if is_selected { accent_indicator(&theme).hex() } else { Hex::TRANSPARENT };
                         let sel_attr = if is_selected { "true" } else { "false" };
                         let label = item.label.clone();
                         let label_for_press = label.clone();

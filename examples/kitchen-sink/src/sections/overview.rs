@@ -44,7 +44,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
         .border(1.0, theme.border.default)
         .cursor(CursorKind::Pointer)
         .transition(TransitionSpec::all(150))
-        .on_hover_with(|patch| patch.bg(theme.status.accent.solid).border(1.0, theme.status.accent.solid))
+        .on_hover_with(|patch| patch.bg(theme.status.accent.solid).border(1.0, theme.status.accent.text))
         .on_active_with(|patch| patch.opacity(0.85))
         .on_focus_visible_with(|patch| patch.border(2.0, theme.border.focus));
 

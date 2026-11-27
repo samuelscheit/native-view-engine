@@ -112,7 +112,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
         .border(
             1.0,
             if snap.motion_toggled {
-                theme.status.accent.solid
+                theme.status.accent.text
             } else {
                 theme.border.default
             },
@@ -126,8 +126,8 @@ pub fn MotionSection(handle: AppHandle) -> Element {
     let canvas_dl = build_canvas_draw_list(
         bar_mode(),
         alt_series(),
-        theme.status.accent.solid,
-        theme.status.success.solid,
+        theme.status.accent.text,
+        theme.status.success.text,
         theme.surface.subtle,
         theme.border.default,
     );

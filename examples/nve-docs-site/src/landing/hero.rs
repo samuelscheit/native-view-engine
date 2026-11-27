@@ -2,7 +2,7 @@
 
 use nve_abi::{FlexAlign, FlexJustify};
 use nve_docs::syntax_color;
-use nve_ui::{ColorHex, Hex};
+use nve_ui::{accent_indicator, ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 use nve_mdx::highlight_code;
@@ -63,7 +63,7 @@ pub fn LandingHero() -> Element {
     );
     let copy_label = if cli_copied { "Copied ✓" } else { "Copy" };
     let copy_fg = if cli_copied { theme.status.success.text.hex() } else { theme.text.secondary.hex() };
-    let copy_border = if cli_copied { theme.status.success.solid.hex() } else { theme.border.default.hex() };
+    let copy_border = if cli_copied { theme.status.success.text.hex() } else { theme.border.default.hex() };
 
     rsx! {
         view {
@@ -83,7 +83,7 @@ pub fn LandingHero() -> Element {
                         test_id: "landing-status-badge",
                         style: "flex-direction: row; align-items: center; gap: 8px; padding-horizontal: 12px; padding-vertical: 5px; border-radius: 999px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         view {
-                            style: "width: 7px; height: 7px; border-radius: 999px; background-color: {theme.status.success.solid.hex()};",
+                            style: "width: 7px; height: 7px; border-radius: 999px; background-color: {theme.status.success.text.hex()};",
                         }
                         text {
                             style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
@@ -301,7 +301,7 @@ fn HeroInteractiveCard() -> Element {
                             let selected = tab == id;
                             let bg = if selected { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
                             let fg = if selected { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                            let bc = if selected { theme.status.accent.solid.hex() } else { Hex::TRANSPARENT };
+                            let bc = if selected { accent_indicator(&theme).hex() } else { Hex::TRANSPARENT };
                             let sel_attr = if selected { "true" } else { "false" };
                             rsx! {
                                 pressable {
@@ -426,7 +426,7 @@ fn HeroInteractiveCard() -> Element {
                                         let is_sel = host_label == h;
                                         let bg = if is_sel { theme.status.accent.subtle.hex() } else { theme.surface.base.hex() };
                                         let fg = if is_sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                                        let bc = if is_sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
+                                        let bc = if is_sel { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
                                         let slug: String = h
                                             .chars()
                                             .map(|c| if c == ' ' { '-' } else { c.to_ascii_lowercase() })

@@ -2,7 +2,7 @@
 
 use dioxus_core_macro::Props;
 use crate::theme::syntax_color;
-use nve_ui::{ColorHex, Hex};
+use nve_ui::{accent_indicator, ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_mdx::{CodeBlock, HighlightLine, highlight_code};
 
@@ -52,7 +52,7 @@ pub fn HighlightedCodeView(
         theme.text.secondary.hex()
     };
     let copy_border = if is_copied {
-        theme.status.success.solid.hex()
+        theme.status.success.text.hex()
     } else {
         theme.border.default.hex()
     };
@@ -141,7 +141,7 @@ pub fn HighlightedCodeView(
                                 Hex::TRANSPARENT
                             };
                             let marker_color = if line.highlighted {
-                                theme.status.accent.solid.hex()
+                                accent_indicator(&theme).hex()
                             } else {
                                 Hex::TRANSPARENT
                             };

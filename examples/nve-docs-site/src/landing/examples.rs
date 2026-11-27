@@ -2,7 +2,7 @@
 //! (`/examples/studio/`, `/examples/kitchen-sink/`) and all 5 live interactive docs playgrounds.
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
+use nve_ui::{accent_indicator, ColorHex};
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 
 use crate::landing::{PillBadge, SiteFooter, resolve_example_app_href};
@@ -313,7 +313,7 @@ pub fn ExamplesGalleryPage() -> Element {
                                 let is_sel = spec.id == selected_id;
                                 let bg = if is_sel { theme.status.accent.subtle.hex() } else { theme.surface.base.hex() };
                                 let fg = if is_sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                                let bc = if is_sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
+                                let bc = if is_sel { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
                                 let id_val = spec.id;
                                 let sel_attr = if is_sel { "true" } else { "false" };
                                 rsx! {

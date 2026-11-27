@@ -42,7 +42,8 @@ impl<'a> Default for SurfaceStyle<'a> {
     }
 }
 
-/// Full text visual specification emitted atomically by [`StyleBuf::text_style`].
+/// Full text visual specification emitted atomically by [`StyleBuf::text_style`]. No `Default`:
+/// text color always comes from the active theme.
 #[derive(Debug, Clone, Copy)]
 pub struct TextStyle<'a> {
     pub color: &'a str,
@@ -50,18 +51,6 @@ pub struct TextStyle<'a> {
     pub font_weight: &'a str,
     pub text_align: &'a str,
     pub opacity: f32,
-}
-
-impl<'a> Default for TextStyle<'a> {
-    fn default() -> Self {
-        Self {
-            color: "#0f172a",
-            font_size: 15.0,
-            font_weight: "400",
-            text_align: "left",
-            opacity: 1.0,
-        }
-    }
 }
 
 /// Pre-allocated inline style builder producing canonical CSS/RN declarations accepted directly

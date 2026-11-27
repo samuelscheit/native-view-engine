@@ -2,7 +2,7 @@
 //! using `NVE_DRAW1` `<canvas>` vector charts and `nve-ui` controls — zero external JS/Chart.js.
 
 use nve_dioxus::prelude::*;
-use nve_ui::ColorHex;
+use nve_ui::{accent_indicator, ColorHex};
 use nve_docs::use_docs_state;
 use nve_ui::Switch;
 
@@ -104,7 +104,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             let sel = active_cat == cat;
                             let bg = if sel { theme.status.accent.subtle.hex() } else { theme.surface.subtle.hex() };
                             let fg = if sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
-                            let bc = if sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
+                            let bc = if sel { accent_indicator(&theme).hex() } else { theme.border.default.hex() };
                             let tid = format!("bench-filter-{}", cat.id());
                             let swatch = cat.color_idx().map(|ci| series_tone(&theme, ci).text.hex());
                             rsx! {

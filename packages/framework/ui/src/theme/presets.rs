@@ -348,4 +348,21 @@ impl Theme {
     pub const fn is_high_contrast(&self) -> bool {
         self.polarity.is_high_contrast()
     }
+
+    /// WCAG 1.4.11 minimum for non-text boundaries and indicators in this polarity.
+    pub const fn non_text_min(&self) -> f64 {
+        if self.is_high_contrast() { 4.5 } else { 3.0 }
+    }
+
+    /// Hue-less tone for idle / unclassified states, built from neutral roles so every pairing
+    /// meets the same contrast contract as the chromatic tones.
+    pub const fn neutral_tone(&self) -> Tone {
+        Tone {
+            solid: self.text.secondary,
+            on_solid: self.surface.base,
+            subtle: self.surface.subtle,
+            border: self.border.strong,
+            text: self.text.secondary,
+        }
+    }
 }
