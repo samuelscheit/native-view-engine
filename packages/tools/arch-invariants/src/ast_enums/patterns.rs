@@ -1,9 +1,10 @@
-//! Pattern extraction, canonical path/literal formatting, and shared discriminant helpers.
+//! Pattern extraction, structured `variant_head` construction, canonical path/literal formatting,
+//! and shared placeholder / discriminant helpers.
 //!
-//! Note on scope: `Pat::Slice`, `Pat::Range`, and `Pat::Const` are intentionally excluded from
+//! Scope note: `Pat::Slice`, `Pat::Range`, and `Pat::Const` are intentionally excluded from
 //! enum-variant arm expansion because they match slice/range/const patterns rather than enum
 //! variant heads (though `Pat::Slice`/`Pat::Range` are still normalized inside `if let` / nested
-//! `match` bodies via `normalize::norm_binding_pat`).
+//! `match` bodies via `normalize_helpers::norm_binding_pat`).
 
 use std::collections::BTreeSet;
 
@@ -26,10 +27,11 @@ const PRELUDE_NON_DOMAIN_ENUMS: &[&str] = &[
 const MAX_TUPLE_OR_EXPANSION: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MirrorAtom {
+pub(super) enum MirrorAtom {
     Str(String),
     Int(i128),
     Char(char),
+    Bool(bool),
     Variant {
         qualifier: Option<EnumQualifier>,
         variant: String,
@@ -46,6 +48,7 @@ impl MirrorAtom {
             Self::Str(s) => MirrorKey::Str(s.clone()),
             Self::Int(n) => MirrorKey::Int(*n),
             Self::Char(c) => MirrorKey::Char(*c),
+            Self::Bool(b) => MirrorKey::Bool(*b),
             Self::Variant { variant, .. } => MirrorKey::Variant(variant.clone()),
         }
     }
@@ -56,17 +59,26 @@ pub(super) enum MirrorKey {
     Str(String),
     Int(i128),
     Char(char),
+    Bool(bool),
     Variant(String),
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ExtractedPat {
     pub enum_qualifier: Option<EnumQualifier>,
-    pub tuple_qualifier: Option<String>,
+    pub tuple_qualifiers: Option<Vec<Option<EnumQualifier>>>,
     pub is_enum_variant: bool,
+    /// Structured head ignoring payload bindings & guards (e.g. `"Struct"`, `"lit:\"foo\""`,
+    /// `"(HybridDefaultValue::Bool,_)"`), computed at extraction time so literals or tuples never collapse.
+    pub variant_head: String,
     pub pat_key: String,
     pub mirror_atom: Option<MirrorAtom>,
     pub bindings: Vec<String>,
+}
+
+pub(super) enum PatternExpansion {
+    Ok(Vec<ExtractedPat>),
+    Overflow,
 }
 
 pub(super) fn is_catchall_pat(pat: &Pat) -> bool {
@@ -92,34 +104,56 @@ pub(super) fn extract_arm_patterns(
     scope: &ImportScope,
     self_ty: Option<&str>,
 ) -> Vec<ExtractedPat> {
+    match extract_arm_patterns_checked(pat, scope, self_ty) {
+        PatternExpansion::Ok(v) => v,
+        PatternExpansion::Overflow => Vec::new(),
+    }
+}
+
+pub(super) fn extract_arm_patterns_checked(
+    pat: &Pat,
+    scope: &ImportScope,
+    self_ty: Option<&str>,
+) -> PatternExpansion {
     match pat {
-        Pat::Or(or) => or
-            .cases
-            .iter()
-            .flat_map(|c| extract_arm_patterns(c, scope, self_ty))
-            .collect(),
-        Pat::Paren(p) => extract_arm_patterns(&p.pat, scope, self_ty),
-        Pat::Reference(r) => extract_arm_patterns(&r.pat, scope, self_ty),
-        Pat::Type(t) => extract_arm_patterns(&t.pat, scope, self_ty),
-        Pat::Lit(lit) => extract_lit_pat(&lit.lit).into_iter().collect(),
-        Pat::Path(p) => extract_path_variant(&p.path, scope, self_ty)
-            .into_iter()
-            .collect(),
+        Pat::Or(or) => {
+            let mut out = Vec::new();
+            for c in &or.cases {
+                match extract_arm_patterns_checked(c, scope, self_ty) {
+                    PatternExpansion::Ok(v) => out.extend(v),
+                    PatternExpansion::Overflow => return PatternExpansion::Overflow,
+                }
+            }
+            PatternExpansion::Ok(out)
+        }
+        Pat::Paren(p) => extract_arm_patterns_checked(&p.pat, scope, self_ty),
+        Pat::Reference(r) => extract_arm_patterns_checked(&r.pat, scope, self_ty),
+        Pat::Type(t) => extract_arm_patterns_checked(&t.pat, scope, self_ty),
+        Pat::Lit(lit) => PatternExpansion::Ok(extract_lit_pat(&lit.lit).into_iter().collect()),
+        Pat::Path(p) => PatternExpansion::Ok(
+            extract_path_variant(&p.path, scope, self_ty)
+                .into_iter()
+                .collect(),
+        ),
         Pat::Ident(pi) => extract_ident_pat(pi, scope, self_ty),
         Pat::TupleStruct(ts) => extract_tuple_struct_pat(ts, scope, self_ty),
-        Pat::Struct(ps) => extract_struct_pat(ps, scope, self_ty).into_iter().collect(),
+        Pat::Struct(ps) => PatternExpansion::Ok(
+            extract_struct_pat(ps, scope, self_ty).into_iter().collect(),
+        ),
         Pat::Tuple(tup) => extract_tuple_pat(tup, scope, self_ty),
-        _ => Vec::new(),
+        _ => PatternExpansion::Ok(Vec::new()),
     }
 }
 
 fn extract_lit_pat(lit: &Lit) -> Option<ExtractedPat> {
     let (key, atom) = lit_to_key_and_atom(lit, false)?;
+    let full = format!("lit:{key}");
     Some(ExtractedPat {
         enum_qualifier: None,
-        tuple_qualifier: None,
+        tuple_qualifiers: None,
         is_enum_variant: false,
-        pat_key: format!("lit:{key}"),
+        variant_head: full.clone(),
+        pat_key: full,
         mirror_atom: Some(atom),
         bindings: Vec::new(),
     })
@@ -129,56 +163,38 @@ fn extract_ident_pat(
     pi: &syn::PatIdent,
     scope: &ImportScope,
     self_ty: Option<&str>,
-) -> Vec<ExtractedPat> {
-    // Support `v @ Enum::Variant` / `v @ (Enum::A | Enum::B)`: extract the inner subpattern
-    // and bind `v` as `$p0` (elided automatically if unused in the arm body/guard).
+) -> PatternExpansion {
     if let Some((_, sub)) = &pi.subpat {
         let outer_name = pi.ident.to_string();
-        let mut inner = extract_arm_patterns(sub, scope, self_ty);
+        let mut inner = match extract_arm_patterns_checked(sub, scope, self_ty) {
+            PatternExpansion::Ok(v) => v,
+            PatternExpansion::Overflow => return PatternExpansion::Overflow,
+        };
         for item in &mut inner {
-            let shifted = shift_pat_placeholders(&item.pat_key, 1);
-            item.pat_key = shifted;
+            item.pat_key = shift_pat_placeholders(&item.pat_key, 1);
             item.bindings.insert(0, outer_name.clone());
         }
-        return inner;
+        return PatternExpansion::Ok(inner);
     }
     if pi.by_ref.is_some() || pi.mutability.is_some() {
-        return Vec::new();
+        return PatternExpansion::Ok(Vec::new());
     }
     let name = pi.ident.to_string();
-    if matches!(name.as_str(), "None" | "Some" | "Ok" | "Err" | "true" | "false") {
-        return Vec::new();
-    }
-    if let Some((enum_qual, orig_var)) = scope.variant_imports.get(&name) {
-        return vec![ExtractedPat {
-            enum_qualifier: Some(enum_qual.clone()),
-            tuple_qualifier: None,
-            is_enum_variant: true,
-            pat_key: orig_var.clone(),
-            mirror_atom: Some(MirrorAtom::Variant {
-                qualifier: Some(enum_qual.clone()),
-                variant: orig_var.clone(),
-            }),
-            bindings: Vec::new(),
-        }];
-    }
-    if !is_type_ident(&name) || is_unqualified_const_ident(&name) {
-        return Vec::new();
-    }
-    let qual = (scope.glob_enums.len() == 1)
-        .then(|| scope.glob_enums.iter().next().cloned())
-        .flatten();
-    vec![ExtractedPat {
+    let Some((qual, variant, _)) = scope.resolve_unqualified_variant(&name) else {
+        return PatternExpansion::Ok(Vec::new());
+    };
+    PatternExpansion::Ok(vec![ExtractedPat {
         enum_qualifier: qual.clone(),
-        tuple_qualifier: None,
+        tuple_qualifiers: None,
         is_enum_variant: true,
-        pat_key: name.clone(),
+        variant_head: variant.clone(),
+        pat_key: variant.clone(),
         mirror_atom: Some(MirrorAtom::Variant {
             qualifier: qual,
-            variant: name,
+            variant,
         }),
         bindings: Vec::new(),
-    }]
+    }])
 }
 
 fn extract_path_variant(
@@ -189,8 +205,9 @@ fn extract_path_variant(
     let (qual, variant) = split_enum_variant_path(path, scope, self_ty)?;
     Some(ExtractedPat {
         enum_qualifier: qual.clone(),
-        tuple_qualifier: None,
+        tuple_qualifiers: None,
         is_enum_variant: true,
+        variant_head: variant.clone(),
         pat_key: variant.clone(),
         mirror_atom: Some(MirrorAtom::Variant {
             qualifier: qual,
@@ -204,16 +221,16 @@ fn extract_tuple_struct_pat(
     ts: &syn::PatTupleStruct,
     scope: &ImportScope,
     self_ty: Option<&str>,
-) -> Vec<ExtractedPat> {
+) -> PatternExpansion {
     if let Some(last) = ts.path.segments.last()
         && matches!(last.ident.to_string().as_str(), "Some" | "Ok")
         && ts.elems.len() == 1
         && let Some(inner) = ts.elems.first()
     {
-        return extract_arm_patterns(inner, scope, self_ty);
+        return extract_arm_patterns_checked(inner, scope, self_ty);
     }
     let Some((qual, variant)) = split_enum_variant_path(&ts.path, scope, self_ty) else {
-        return Vec::new();
+        return PatternExpansion::Ok(Vec::new());
     };
     let mut bindings = Vec::new();
     let parts: Vec<String> = ts
@@ -221,14 +238,15 @@ fn extract_tuple_struct_pat(
         .iter()
         .map(|e| norm_subpat(e, scope, self_ty, &mut bindings))
         .collect();
-    vec![ExtractedPat {
+    PatternExpansion::Ok(vec![ExtractedPat {
         enum_qualifier: qual,
-        tuple_qualifier: None,
+        tuple_qualifiers: None,
         is_enum_variant: true,
+        variant_head: variant.clone(),
         pat_key: format!("{variant}({})", parts.join(",")),
         mirror_atom: None,
         bindings,
-    }]
+    }])
 }
 
 fn extract_struct_pat(
@@ -255,8 +273,9 @@ fn extract_struct_pat(
     }
     Some(ExtractedPat {
         enum_qualifier: qual,
-        tuple_qualifier: None,
+        tuple_qualifiers: None,
         is_enum_variant: true,
+        variant_head: variant.clone(),
         pat_key: format!("{variant}{{{}}}", parts.join(",")),
         mirror_atom: None,
         bindings,
@@ -267,11 +286,12 @@ fn extract_tuple_pat(
     tup: &syn::PatTuple,
     scope: &ImportScope,
     self_ty: Option<&str>,
-) -> Vec<ExtractedPat> {
+) -> PatternExpansion {
     #[derive(Clone)]
     struct ElemChoice {
         is_enum: bool,
-        qual: String,
+        qual: Option<EnumQualifier>,
+        head: String,
         key: String,
         bindings: Vec<String>,
     }
@@ -281,49 +301,62 @@ fn extract_tuple_pat(
         if matches!(elem, Pat::Wild(_)) {
             per_elem.push(vec![ElemChoice {
                 is_enum: false,
-                qual: "_".to_string(),
+                qual: None,
+                head: "_".to_string(),
                 key: "_".to_string(),
                 bindings: Vec::new(),
             }]);
             continue;
         }
-        let sub = extract_arm_patterns(elem, scope, self_ty);
+        let sub = match extract_arm_patterns_checked(elem, scope, self_ty) {
+            PatternExpansion::Ok(v) => v,
+            PatternExpansion::Overflow => return PatternExpansion::Overflow,
+        };
         if !sub.is_empty() {
             per_elem.push(
                 sub.into_iter()
-                    .map(|s| ElemChoice {
-                        is_enum: s.is_enum_variant,
-                        qual: s
-                            .enum_qualifier
-                            .map(|q| q.display_name())
-                            .or(s.tuple_qualifier)
-                            .unwrap_or_else(|| "_".to_string()),
-                        key: s.pat_key,
-                        bindings: s.bindings,
+                    .map(|s| {
+                        let head = match &s.enum_qualifier {
+                            Some(q) => format!("{}::{}", q.display_name(), s.variant_head),
+                            None => s.variant_head,
+                        };
+                        ElemChoice {
+                            is_enum: s.is_enum_variant,
+                            qual: s.enum_qualifier,
+                            head,
+                            key: s.pat_key,
+                            bindings: s.bindings,
+                        }
                     })
                     .collect(),
             );
         } else {
             let mut b = Vec::new();
             let k = norm_subpat(elem, scope, self_ty, &mut b);
+            let head = if b.is_empty() {
+                k.clone()
+            } else {
+                "_".to_string()
+            };
             per_elem.push(vec![ElemChoice {
                 is_enum: false,
-                qual: "_".to_string(),
+                qual: None,
+                head,
                 key: k,
                 bindings: b,
             }]);
         }
     }
 
-    // Cartesian expansion of `Pat::Or` inside tuple elements (bounded).
+    // Bounded Cartesian expansion of `Pat::Or` inside tuple elements; overflow skips the site.
     let mut combos: Vec<Vec<ElemChoice>> = vec![Vec::new()];
     for choices in per_elem {
-        let mut next = Vec::new();
+        if combos.len().saturating_mul(choices.len()) > MAX_TUPLE_OR_EXPANSION {
+            return PatternExpansion::Overflow;
+        }
+        let mut next = Vec::with_capacity(combos.len() * choices.len());
         for existing in &combos {
             for choice in &choices {
-                if next.len() >= MAX_TUPLE_OR_EXPANSION {
-                    break;
-                }
                 let mut row = existing.clone();
                 row.push(choice.clone());
                 next.push(row);
@@ -331,7 +364,7 @@ fn extract_tuple_pat(
         }
         combos = next;
         if combos.is_empty() {
-            return Vec::new();
+            return PatternExpansion::Ok(Vec::new());
         }
     }
 
@@ -341,28 +374,32 @@ fn extract_tuple_pat(
             continue;
         }
         let mut quals = Vec::with_capacity(combo.len());
+        let mut heads = Vec::with_capacity(combo.len());
         let mut keys = Vec::with_capacity(combo.len());
         let mut bindings = Vec::new();
         for c in combo {
             quals.push(c.qual);
+            heads.push(c.head);
             let offset = bindings.len();
             keys.push(shift_pat_placeholders(&c.key, offset));
             bindings.extend(c.bindings);
         }
         out.push(ExtractedPat {
             enum_qualifier: None,
-            tuple_qualifier: Some(format!("({})", quals.join(","))),
+            tuple_qualifiers: Some(quals),
             is_enum_variant: true,
+            variant_head: format!("({})", heads.join(",")),
             pat_key: format!("({})", keys.join(",")),
             mirror_atom: None,
             bindings,
         });
     }
-    out
+    PatternExpansion::Ok(out)
 }
 
-pub(super) fn shift_pat_placeholders(s: &str, offset: usize) -> String {
-    if offset == 0 || !s.contains("$p") {
+/// Shared `$p<N>` placeholder rewriter used by both `shift_pat_placeholders` and `NormCtx::finalize_pat_key`.
+pub(super) fn rewrite_pat_placeholders(s: &str, mut on_idx: impl FnMut(usize, &mut String)) -> String {
+    if !s.contains("$p") {
         return s.to_string();
     }
     let bytes = s.as_bytes();
@@ -379,7 +416,7 @@ pub(super) fn shift_pat_placeholders(s: &str, offset: usize) -> String {
                 j += 1;
             }
             if let Ok(idx) = s[i + 2..j].parse::<usize>() {
-                out.push_str(&format!("$p{}", idx + offset));
+                on_idx(idx, &mut out);
                 i = j;
                 continue;
             }
@@ -392,6 +429,15 @@ pub(super) fn shift_pat_placeholders(s: &str, offset: usize) -> String {
         }
     }
     out
+}
+
+pub(super) fn shift_pat_placeholders(s: &str, offset: usize) -> String {
+    if offset == 0 {
+        return s.to_string();
+    }
+    rewrite_pat_placeholders(s, |idx, out| {
+        out.push_str(&format!("$p{}", idx + offset));
+    })
 }
 
 fn norm_subpat(
@@ -475,20 +521,8 @@ pub(super) fn split_enum_variant_path(
         return None;
     }
     if segs.len() == 1 {
-        let name = &segs[0];
-        if matches!(name.as_str(), "Some" | "None" | "Ok" | "Err") {
-            return None;
-        }
-        if let Some((q, v)) = scope.variant_imports.get(name) {
-            return Some((Some(q.clone()), v.clone()));
-        }
-        if is_type_ident(name) && !is_unqualified_const_ident(name) {
-            let q = (scope.glob_enums.len() == 1)
-                .then(|| scope.glob_enums.iter().next().cloned())
-                .flatten();
-            return Some((q, name.clone()));
-        }
-        return None;
+        let (q, v, _) = scope.resolve_unqualified_variant(&segs[0])?;
+        return Some((q, v));
     }
     let leaf = segs.last()?.clone();
     if !is_type_ident(&leaf) || is_screaming_snake_const(&leaf) {
@@ -524,7 +558,7 @@ pub(super) fn lit_to_key_and_atom(lit: &Lit, neg: bool) -> Option<(String, Mirro
         }
         Lit::Bool(b) if !neg => {
             let s = if b.value { "true" } else { "false" };
-            Some((s.to_string(), MirrorAtom::Str(s.to_string())))
+            Some((s.to_string(), MirrorAtom::Bool(b.value)))
         }
         Lit::Byte(b) if !neg => {
             let v = i128::from(b.value());
@@ -554,7 +588,7 @@ pub(super) fn canonical_path(
         {
             return scope.resolve_single_type_ident(ty).canonical_key();
         }
-        if let Some((q, v)) = scope.variant_imports.get(single) {
+        if let Some((Some(q), v, _)) = scope.resolve_unqualified_variant(single) {
             return format!("{}::{v}", q.canonical_key());
         }
         if let Some(q) = scope.type_aliases.get(single) {

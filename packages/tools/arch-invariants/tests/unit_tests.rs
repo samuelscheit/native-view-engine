@@ -361,8 +361,11 @@ fn unit_syn_ast_checks_positive_and_negative() {
 
     let mut v_enum = Vec::new();
     ast_enums::scan_duplicate_enums_and_converters(
-        &[("core/a.rs".into(), core_a_src, &ast_a), ("core/b.rs".into(), core_b_src, &ast_b)],
-        &[("backends/skia.rs".into(), backend_src, &ast_bk)],
+        &[
+            ("core/a.rs".into(), core_a_src, &ast_a),
+            ("core/b.rs".into(), core_b_src, &ast_b),
+            ("backends/skia.rs".into(), backend_src, &ast_bk),
+        ],
         &mut v_enum,
     );
     assert_eq!(v_enum.len(), 4, "2 dup TextAlign + 1 impl From + 1 decode_align (not to_skia_align): {v_enum:?}");

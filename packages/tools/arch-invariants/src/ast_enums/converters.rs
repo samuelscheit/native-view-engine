@@ -1,10 +1,11 @@
 //! Workspace-wide duplicate `pub enum` and internal NVE->NVE enum/discriminant converter checks.
 //!
 //! Hardened across all production Rust files (`packages/`, `hosts/`, `examples/`):
-//! - Detects exact-name duplicate `pub enum`s across ANY two workspace files (including two non-core crates).
+//! - Detects exact-name duplicate `pub enum`s across ANY two workspace files (including non-core crates).
 //! - Detects structural identical-unit-variant `pub enum` duplicates (`>= 4` unit variants) under different names.
 //! - Detects `impl From`/`impl TryFrom` and body-matching enum/discriminant converters regardless of fn name,
-//!   reusing `ImportScope` for imported external SDK types and verifying actual enum-variant match bodies.
+//!   resolving `use ... as Alias;` / `type Alias = Enum;` through `ImportScope` and verifying actual
+//!   enum-variant match bodies.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,15 +39,14 @@ struct EnumDefInfo {
 }
 
 pub fn scan_duplicate_enums_and_converters(
-    core_files: &[(String, &str, &syn::File)],
-    other_files: &[(String, &str, &syn::File)],
+    files: &[(String, &str, &syn::File)],
     out: &mut Vec<Violation>,
 ) {
     let mut by_name: BTreeMap<String, Vec<EnumDefInfo>> = BTreeMap::new();
     let mut by_variants: BTreeMap<Vec<String>, Vec<EnumDefInfo>> = BTreeMap::new();
     let mut internal_enum_names = BTreeSet::new();
 
-    for (rel, _, ast) in core_files.iter().chain(other_files.iter()) {
+    for (rel, _, ast) in files {
         if is_cfg_test_attr(&ast.attrs) {
             continue;
         }
@@ -116,7 +116,7 @@ pub fn scan_duplicate_enums_and_converters(
         }
     }
 
-    for (rel, raw, ast) in core_files.iter().chain(other_files.iter()) {
+    for (rel, raw, ast) in files {
         if is_cfg_test_attr(&ast.attrs) {
             continue;
         }
@@ -185,17 +185,15 @@ fn scan_converters_in_items(
         match item {
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    if ImportScope::has_scope_items(sub) {
-                        let mut child = scope.clone();
-                        child.ingest_items(sub);
-                        scan_converters_in_items(rel, raw, sub, &child, internal_enums, out);
-                    } else {
-                        scan_converters_in_items(rel, raw, sub, scope, internal_enums, out);
-                    }
+                    // Rust inline `mod` blocks start a fresh lexical import scope.
+                    let mut child = ImportScope::with_crate(scope.current_crate.as_deref());
+                    child.ingest_items(sub);
+                    scan_converters_in_items(rel, raw, sub, &child, internal_enums, out);
                 }
             }
             Item::Impl(imp) if !is_cfg_test_attr(&imp.attrs) => {
-                let impl_ty = last_type_ident(&imp.self_ty);
+                let impl_ty = resolve_type_canonical_name(&imp.self_ty, scope)
+                    .or_else(|| last_type_ident(&imp.self_ty));
                 let mut flagged_from_impl = false;
                 if let Some((_, trait_path, _)) = &imp.trait_
                     && let Some(seg) = trait_path.segments.last()
@@ -204,7 +202,10 @@ fn scan_converters_in_items(
                     && let Some(syn::GenericArgument::Type(src_ty)) = args.args.first()
                     && !type_has_external_sdk(src_ty, scope)
                     && !type_has_external_sdk(&imp.self_ty, scope)
-                    && let (Some(s), Some(d)) = (last_type_ident(src_ty), impl_ty.clone())
+                    && let (Some(s), Some(d)) = (
+                        resolve_type_canonical_name(src_ty, scope).or_else(|| last_type_ident(src_ty)),
+                        impl_ty.clone(),
+                    )
                     && s != d
                     && internal_enums.contains(&s)
                     && internal_enums.contains(&d)
@@ -297,12 +298,12 @@ fn check_converter_fn(
         param_enums.insert(st.to_string());
     }
     for ty in &param_tys {
-        if let Some(en) = direct_internal_enum(ty, self_ty, internal_enums) {
+        if let Some(en) = direct_internal_enum(ty, self_ty, scope, internal_enums) {
             param_enums.insert(en);
         }
     }
     let mut ret_enums = BTreeSet::new();
-    if let Some(en) = direct_internal_enum(ok_ret, self_ty, internal_enums) {
+    if let Some(en) = direct_internal_enum(ok_ret, self_ty, scope, internal_enums) {
         ret_enums.insert(en);
     }
 
@@ -346,6 +347,16 @@ fn check_converter_fn(
             ),
         ));
     }
+}
+
+fn resolve_type_canonical_name(ty: &Type, scope: &ImportScope) -> Option<String> {
+    let Type::Path(tp) = ty else {
+        return None;
+    };
+    if tp.qself.is_some() {
+        return None;
+    }
+    scope.resolve_type_path(&tp.path, None).map(|q| q.type_name)
 }
 
 fn body_has_compact_int_match(block: &syn::Block, min_arms: usize) -> bool {
@@ -477,10 +488,12 @@ fn type_mentions_self(ty: &Type) -> bool {
 }
 
 /// Extracts an internal enum name ONLY when `ty` directly names an enum (or `&Enum` / `Option<Enum>` /
-/// `Result<Enum, _>`), never walking into container/slice/generic parameters like `&[Align]` or `BTreeMap<Align, u32>`.
+/// `Result<Enum, _>`), resolving `use ... as Alias;` and `type Alias = Enum;` through `ImportScope`
+/// and never walking into container/slice/generic parameters like `&[Align]` or `BTreeMap<Align, u32>`.
 fn direct_internal_enum(
     ty: &Type,
     self_ty: Option<&str>,
+    scope: &ImportScope,
     internal_enums: &BTreeSet<String>,
 ) -> Option<String> {
     let unwrapped = match ty {
@@ -502,11 +515,9 @@ fn direct_internal_enum(
     if !matches!(last.arguments, syn::PathArguments::None) {
         return None;
     }
-    let raw = last.ident.to_string();
-    let name = if raw == "Self" {
-        self_ty?.to_string()
-    } else {
-        raw
-    };
-    internal_enums.contains(&name).then_some(name)
+    let resolved = scope
+        .resolve_type_path(&tp.path, self_ty)
+        .map(|q| q.type_name)
+        .unwrap_or_else(|| last.ident.to_string());
+    internal_enums.contains(&resolved).then_some(resolved)
 }

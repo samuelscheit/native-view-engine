@@ -38,19 +38,22 @@ fn scan_with_crates(sources: &[(&str, &str, Option<&str>)]) -> Vec<super::MatchD
 
 #[test]
 fn per_match_outer_vars_reject_opposite_directions_and_swapped_corners() {
+    // Non-bare outer-var expressions (`+ 1.0`) prove `$rN` pre-seeding distinguishes opposite mappings
+    // without relying on `is_bare_outer_var`.
     let opposite_same_order = r#"
         fn edge_val(e: Edge, top: f32, right: f32, bottom: f32, left: f32) -> f32 {
-            match e { Edge::Top => top, Edge::Right => right, Edge::Bottom => bottom, Edge::Left => left }
+            match e { Edge::Top => top + 1.0, Edge::Right => right + 1.0, Edge::Bottom => bottom + 1.0, Edge::Left => left + 1.0 }
         }
         fn opposite_edge_val(e: Edge, top: f32, right: f32, bottom: f32, left: f32) -> f32 {
-            match e { Edge::Top => bottom, Edge::Right => left, Edge::Bottom => top, Edge::Left => right }
+            match e { Edge::Top => bottom + 1.0, Edge::Right => left + 1.0, Edge::Bottom => top + 1.0, Edge::Left => right + 1.0 }
         }
     "#;
     assert!(
         scan_sources(&[("a.rs", opposite_same_order)]).is_empty(),
-        "opposite-direction bare outer-var selectors must NOT collide"
+        "opposite-direction non-bare outer-var expressions must NOT collide"
     );
 
+    // Bare outer-var selectors stay rejected even when parameters are reordered.
     let opposite_reordered_params = r#"
         fn edge_a(e: Edge, top: f32, right: f32, bottom: f32, left: f32) -> f32 {
             match e { Edge::Top => top, Edge::Right => right, Edge::Bottom => bottom, Edge::Left => left }
@@ -469,10 +472,17 @@ fn cfg_any_test_nested_cfg_test_symbols_and_cross_lang_wildcards() {
             impl Enc for Align {
                 #[cfg(any(test, feature = "debug"))]
                 fn encode(&self) -> u8 {
+                    // Identical to `dup_encode`: failing to skip `#[cfg(test)]` yields 2+ hits.
                     #[cfg(test)]
                     let _ignored = match self {
-                        Self::Start => 9, Self::Center => 8, Self::End => 7, Self::Stretch => 6,
+                        Self::Start => 1, Self::Center => 2, Self::End => 3, Self::Stretch => 4,
                     };
+                    #[cfg(test)]
+                    {
+                        let _ignored_block = match self {
+                            Self::Start => 1, Self::Center => 2, Self::End => 3, Self::Stretch => 4,
+                        };
+                    }
                     match self {
                         Self::Start => 1, Self::Center => 2, Self::End => 3, Self::Stretch => 4,
                     }
@@ -554,8 +564,8 @@ fn converters_hardening_and_zero_legacy_tables_double_report() {
     let ast_b = syn::parse_file(other_b).expect("valid");
     let mut violations = Vec::new();
     scan_duplicate_enums_and_converters(
-        &[("packages/core/components/src/lib.rs".into(), core_src, &ast_core)],
         &[
+            ("packages/core/components/src/lib.rs".into(), core_src, &ast_core),
             ("examples/a/src/lib.rs".into(), other_a, &ast_a),
             ("examples/b/src/lib.rs".into(), other_b, &ast_b),
         ],

@@ -118,18 +118,12 @@ fn cross_file_enums_converters_and_match_tables() {
         }
     }
 
-    let core_refs: Vec<_> = all_owned
+    let all_refs: Vec<_> = all_owned
         .iter()
-        .filter(|f| f.rel.starts_with("packages/core/"))
         .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
         .collect();
-    let other_refs: Vec<_> = all_owned
-        .iter()
-        .filter(|f| !f.rel.starts_with("packages/core/"))
-        .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
-        .collect();
-    assert!(!core_refs.is_empty() && !other_refs.is_empty());
-    ast_enums::scan_duplicate_enums_and_converters(&core_refs, &other_refs, &mut violations);
+    assert!(!all_refs.is_empty());
+    ast_enums::scan_duplicate_enums_and_converters(&all_refs, &mut violations);
 
     assert_staged_violations(
         Stage::Post1B1D,

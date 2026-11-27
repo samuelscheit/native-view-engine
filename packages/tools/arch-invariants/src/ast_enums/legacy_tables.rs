@@ -111,13 +111,10 @@ fn collect_fn_profiles(items: &[Item], scope: &ImportScope, out: &mut Vec<FnMirr
         match item {
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    if ImportScope::has_scope_items(sub) {
-                        let mut child = scope.clone();
-                        child.ingest_items(sub);
-                        collect_fn_profiles(sub, &child, out);
-                    } else {
-                        collect_fn_profiles(sub, scope, out);
-                    }
+                    // Rust inline `mod` blocks start a fresh lexical import scope.
+                    let mut child = ImportScope::with_crate(scope.current_crate.as_deref());
+                    child.ingest_items(sub);
+                    collect_fn_profiles(sub, &child, out);
                 }
             }
             Item::Impl(imp) if !is_cfg_test_attr(&imp.attrs) => {

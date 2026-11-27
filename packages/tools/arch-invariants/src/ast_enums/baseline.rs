@@ -74,10 +74,11 @@ const MIRR: DuplicateKind = DuplicateKind::Mirrored;
 /// audited on `integration` (`f8c86332`). Shrink or delete entries whenever duplicates are collapsed.
 #[rustfmt::skip]
 pub const ALLOWLISTED_DUPLICATES: &[AllowlistedDuplicate] = &[
-    // --- Same-direction duplicates (47 hits across 46 unique symbol pairs) ---
+    // --- Same-direction duplicates (48 hits across 47 unique symbol pairs) ---
     entry(SAME, ("examples/studio-workspace/src/theme.rs", "polarity_index"), ("packages/framework/ui/src/theme/presets.rs", "Theme::preset"), "Polarity", 1, "track-theme", "Duplicate Polarity->0..3 index match"),
     entry(SAME, ("packages/backends/web/src/css_paint.rs", "write_visual_and_typography_css"), ("packages/backends/web/src/css_paint.rs", "write_visual_and_typography_css"), "Overflow", 1, "track-1b1d", "Duplicate Overflow->CSS match for overflow_x/overflow_y"),
     entry(SAME, ("packages/backends/web/src/css_paint.rs", "write_visual_and_typography_css"), ("packages/core/components/src/style_patch.rs", "Overflow::as_css"), "Overflow", 2, "track-1b1d", "Duplicate Overflow->CSS match in web css_paint vs core StylePatch"),
+    entry(SAME, ("packages/core/codegen/src/frontend/hybrid_spec/mod.rs", "rewrite_named_type"), ("packages/core/codegen/src/schema/hybrid/schema_bridge.rs", "rewrite_named_type"), "HybridType", 1, "track-codegen", "Duplicate HybridType named-type rewriter"),
     entry(SAME, ("packages/core/codegen/src/frontend/hybrid_spec/types.rs", "scalar"), ("packages/core/codegen/src/schema/hybrid/schema_bridge.rs", "parse_abi_type"), "HybridType", 1, "track-codegen", "Duplicate HybridType scalar parser table"),
     entry(SAME, ("packages/core/codegen/src/frontend/rn_spec/calls.rs", "Parser::parse_component_options_object"), ("packages/core/codegen/src/frontend/rn_spec/mod.rs", "Parser::skip_to_statement_end"), "TokenKind", 1, "track-codegen", "Duplicate TokenKind balanced-delimiter skipper"),
     entry(SAME, ("packages/core/codegen/src/frontend/rn_spec/mod.rs", "Parser::parse_export_default"), ("packages/core/codegen/src/frontend/rn_spec/mod.rs", "Parser::parse_var_statement"), "TokenKind", 1, "track-codegen", "Duplicate TokenKind balanced-delimiter loop"),

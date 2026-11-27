@@ -5,18 +5,21 @@
 //!    redundant internal NVE->NVE enum/discriminant converters (by signature AND match body),
 //!    compact discriminant matches, and core enum<->str keyword tables (`Stage::Post1B1D`).
 
-pub mod baseline;
-pub mod converters;
+mod baseline;
+mod converters;
 mod extract;
 mod extract_arms;
-pub mod fingerprint;
-pub mod legacy_tables;
+mod fingerprint;
+mod free_vars;
+mod legacy_tables;
 mod normalize;
 mod normalize_helpers;
 mod patterns;
-pub mod scope;
+mod scope;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_pass3;
 #[cfg(test)]
 mod tests_regressions;
 
@@ -31,13 +34,14 @@ pub use baseline::{
     ALLOWLISTED_DUPLICATES,
 };
 pub use converters::scan_duplicate_enums_and_converters;
-pub use extract::{extract_match_sites, MatchSite};
 pub use fingerprint::{
-    find_duplicate_match_sites, scan_duplicate_enum_match_arms,
-    scan_duplicate_enum_match_arms_with_crates, DuplicateKind, MatchDuplicate, MIN_DUPLICATE_ARMS,
+    scan_duplicate_enum_match_arms, scan_duplicate_enum_match_arms_with_crates, DuplicateKind,
+    MatchDuplicate, MIN_DUPLICATE_ARMS,
 };
 pub use legacy_tables::scan_match_tables;
-pub use scope::{EnumQualifier, ImportScope, EXTERNAL_SDK_ROOTS};
+
+use extract::MatchSite;
+use fingerprint::find_duplicate_match_sites;
 
 pub struct WorkspaceProdFile {
     pub rel: String,
@@ -107,9 +111,7 @@ pub fn collect_workspace_prod_rs(idx: &RepoIndex) -> Vec<WorkspaceProdFile> {
     parsed
 }
 
-/// Extracts and caches `Send + Sync` `MatchSite` fingerprints across the workspace,
-/// skipping `syn::parse_file` on files containing neither `"match"` nor `"if"`.
-pub fn workspace_match_sites(idx: &RepoIndex) -> &'static [MatchSite] {
+fn workspace_match_sites(idx: &RepoIndex) -> &'static [MatchSite] {
     WORKSPACE_MATCH_SITES.get_or_init(|| {
         let mut sites = Vec::new();
         let mut opaque_seed = 0usize;

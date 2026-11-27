@@ -2,27 +2,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::extract::{extract_match_sites_with_crate, MatchSite};
+use super::extract::{extract_match_sites_with_crate, MatchSite, NormalizedArm};
 use super::normalize_helpers::is_noop_body;
 use super::patterns::{MirrorAtom, MirrorKey};
 use super::scope::EnumQualifier;
 
 pub const MIN_DUPLICATE_ARMS: usize = 4;
 
-/// Minimum percentage of shared enum variants that must have identical normalized bodies
-/// (prevents cross-language coincidences like C vs Dart sharing `"bool"`/`"double"`).
+/// Minimum percentage of unique shared variant heads that must match identically.
 const MIN_SHARED_PAT_AGREEMENT_PCT: usize = 70;
 
-/// Minimum percentage of the smaller match's arms covered by identical `(pat, body)` pairs.
+/// Minimum percentage of the smaller match's unique variant heads covered by matching arms.
 const MIN_SMALLER_MATCH_COVERAGE_PCT: usize = 60;
 
-/// Minimum percentage of patterns within a single syntactic `Pat::Or` arm that must match
-/// for that syntactic arm to count as matched (prevents `0 => Zero` from counting `0|7|8|9 => Zero`
-/// as a full syntactic match).
+/// Minimum percentage of patterns within a single syntactic arm/head unit that must match.
 const MIN_ARM_INTERNAL_MATCH_PCT: usize = 75;
 
-/// Minimum percentage of shared syntactic arms (pre-`Pat::Or` expansion) that must match
-/// (set at 65% so 3/5 cross-language `Bool/Int/Float` zero-value coincidences drop while 2/3+ real duplicates match).
+/// Minimum percentage of shared syntactic units (pre-`Pat::Or` expansion, grouping multi-guard
+/// splits on the same variant head as one unit) that must match.
 const MIN_SYNTACTIC_ARM_AGREEMENT_PCT: usize = 65;
 
 /// Minimum percentage of shared domain entries that must mirror for an inverse pair.
@@ -77,7 +74,7 @@ pub fn scan_duplicate_enum_match_arms_with_crates(
     find_duplicate_match_sites(&all_sites)
 }
 
-pub fn find_duplicate_match_sites(sites: &[MatchSite]) -> Vec<MatchDuplicate> {
+pub(crate) fn find_duplicate_match_sites(sites: &[MatchSite]) -> Vec<MatchDuplicate> {
     let mut out = Vec::new();
     let mut reported_pairs = BTreeSet::new();
 
@@ -107,14 +104,6 @@ pub fn find_duplicate_match_sites(sites: &[MatchSite]) -> Vec<MatchDuplicate> {
     out
 }
 
-fn variant_head(pat_key: &str) -> &str {
-    let without_guard = pat_key.split(" if ").next().unwrap_or(pat_key);
-    let cut = without_guard
-        .find(['(', '{'])
-        .unwrap_or(without_guard.len());
-    &without_guard[..cut]
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum QualifierMatch {
     Incompatible,
@@ -123,9 +112,18 @@ enum QualifierMatch {
 }
 
 fn qualifiers_compatible(a: &MatchSite, b: &MatchSite) -> QualifierMatch {
-    if a.tuple_qualifier.is_some() || b.tuple_qualifier.is_some() {
-        return match (&a.tuple_qualifier, &b.tuple_qualifier) {
-            (Some(ta), Some(tb)) if ta == tb => QualifierMatch::ExplicitOrGlobMatched,
+    if a.tuple_qualifiers.is_some() || b.tuple_qualifiers.is_some() {
+        return match (&a.tuple_qualifiers, &b.tuple_qualifiers) {
+            (Some(ta), Some(tb))
+                if ta.len() == tb.len()
+                    && ta.iter().zip(tb).all(|(qa, qb)| match (qa, qb) {
+                        (Some(x), Some(y)) => x.compatible_with(y),
+                        (None, None) => true,
+                        _ => false,
+                    }) =>
+            {
+                QualifierMatch::ExplicitOrGlobMatched
+            }
             _ => QualifierMatch::Incompatible,
         };
     }
@@ -159,17 +157,75 @@ fn qualifiers_compatible(a: &MatchSite, b: &MatchSite) -> QualifierMatch {
     }
 }
 
+/// Syntactic arm unit for agreement accounting: multi-variant `Pat::Or` arms stay grouped by
+/// `arm_index`, while single-variant arms (including multiple guarded splits on one variant head
+/// like `Struct(n) if cond1 => ... / Struct(n) if cond2 => ...`) group by their `variant_head`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SynUnit<'a> {
+    MultiArm(usize),
+    SingleHead(&'a str),
+}
+
+fn compute_syn_unit_counts<'a>(
+    arms: &'a [NormalizedArm],
+    other_heads: &BTreeSet<&str>,
+    other_pairs: &BTreeSet<(&str, &str)>,
+) -> (usize, usize) {
+    let mut heads_per_arm: BTreeMap<usize, BTreeSet<&'a str>> = BTreeMap::new();
+    for arm in arms {
+        heads_per_arm
+            .entry(arm.arm_index)
+            .or_default()
+            .insert(arm.variant_head.as_str());
+    }
+
+    let mut unit_total: BTreeMap<SynUnit<'a>, usize> = BTreeMap::new();
+    let mut unit_matched: BTreeMap<SynUnit<'a>, usize> = BTreeMap::new();
+    let mut shared_units: BTreeSet<SynUnit<'a>> = BTreeSet::new();
+
+    for arm in arms {
+        let distinct_heads = heads_per_arm.get(&arm.arm_index).map_or(1, BTreeSet::len);
+        let unit = if distinct_heads >= 2 {
+            SynUnit::MultiArm(arm.arm_index)
+        } else {
+            SynUnit::SingleHead(arm.variant_head.as_str())
+        };
+        *unit_total.entry(unit).or_insert(0) += 1;
+        if other_heads.contains(arm.variant_head.as_str()) {
+            shared_units.insert(unit);
+        }
+        if other_pairs.contains(&(arm.pat_key.as_str(), arm.body_key.as_str())) {
+            *unit_matched.entry(unit).or_insert(0) += 1;
+        }
+    }
+
+    let matched = shared_units
+        .iter()
+        .filter(|u| {
+            let total = unit_total.get(u).copied().unwrap_or(0);
+            let m = unit_matched.get(u).copied().unwrap_or(0);
+            total > 0 && m * 100 >= total * MIN_ARM_INTERNAL_MATCH_PCT
+        })
+        .count();
+    (matched, shared_units.len())
+}
+
 fn detect_same_direction(
     sites: &[MatchSite],
     reported_pairs: &mut BTreeSet<(usize, usize)>,
     out: &mut Vec<MatchDuplicate>,
 ) {
+    // Index only non-noop arms to avoid giant quadratic postings on `()` / `None` / `continue`;
+    // every real duplicate shares >= 1 discriminating non-noop arm so `rough >= 1` is lossless.
     let mut arm_index: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
     for (idx, site) in sites.iter().enumerate() {
         if site.direction.is_none() {
             continue;
         }
         for arm in &site.arms {
+            if arm.is_noop {
+                continue;
+            }
             arm_index
                 .entry((arm.pat_key.as_str(), arm.body_key.as_str()))
                 .or_default()
@@ -177,7 +233,7 @@ fn detect_same_direction(
         }
     }
 
-    let mut candidates: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut candidates: BTreeSet<(usize, usize)> = BTreeSet::new();
     for postings in arm_index.values() {
         if postings.len() < 2 {
             continue;
@@ -186,17 +242,13 @@ fn detect_same_direction(
             for b in (a + 1)..postings.len() {
                 let (i, j) = (postings[a], postings[b]);
                 if i != j {
-                    let pair = if i < j { (i, j) } else { (j, i) };
-                    *candidates.entry(pair).or_insert(0) += 1;
+                    candidates.insert(if i < j { (i, j) } else { (j, i) });
                 }
             }
         }
     }
 
-    for ((i, j), rough) in candidates {
-        if rough < MIN_DUPLICATE_ARMS {
-            continue;
-        }
+    for (i, j) in candidates {
         let (a, b) = (&sites[i], &sites[j]);
         if a.direction != b.direction {
             continue;
@@ -206,11 +258,8 @@ fn detect_same_direction(
             continue;
         }
 
-        // Match `shared_pats` on variant head (ignoring guard/binding differences) so a guarded
-        // disagreeing variant like `Struct(name) if is_pod => ...` still counts as a shared
-        // disagreeing arm rather than vanishing from the denominator.
-        let a_heads: BTreeSet<&str> = a.arms.iter().map(|arm| variant_head(&arm.pat_key)).collect();
-        let b_heads: BTreeSet<&str> = b.arms.iter().map(|arm| variant_head(&arm.pat_key)).collect();
+        let a_heads: BTreeSet<&str> = a.arms.iter().map(|arm| arm.variant_head.as_str()).collect();
+        let b_heads: BTreeSet<&str> = b.arms.iter().map(|arm| arm.variant_head.as_str()).collect();
         let a_pairs: BTreeSet<(&str, &str)> = a
             .arms
             .iter()
@@ -222,73 +271,36 @@ fn detect_same_direction(
             .map(|arm| (arm.pat_key.as_str(), arm.body_key.as_str()))
             .collect();
 
-        let a_has_semantic_wild = a.wildcard_body.as_deref().is_some_and(|w| !is_noop_body(w));
-        let b_has_semantic_wild = b.wildcard_body.as_deref().is_some_and(|w| !is_noop_body(w));
-
-        let mut shared_pats = 0usize;
+        // Symmetric `shared_pats` over unique shared variant heads (`a_heads ∩ b_heads`).
+        let shared_pats = a_heads.intersection(&b_heads).count();
         let mut shared_arms = 0usize;
         let mut distinct_discriminating = BTreeSet::new();
-        let mut syn_total_a: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut syn_matched_a: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut shared_syn_a = BTreeSet::new();
         for arm in &a.arms {
-            *syn_total_a.entry(arm.arm_index).or_insert(0) += 1;
-            if b_heads.contains(variant_head(&arm.pat_key)) {
-                shared_pats += 1;
-                shared_syn_a.insert(arm.arm_index);
-            }
             if b_pairs.contains(&(arm.pat_key.as_str(), arm.body_key.as_str())) {
                 shared_arms += 1;
-                *syn_matched_a.entry(arm.arm_index).or_insert(0) += 1;
                 if !arm.is_noop && !arm.is_bare_outer {
                     distinct_discriminating.insert(arm.body_key.as_str());
                 }
             }
         }
 
-        let mut syn_total_b: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut syn_matched_b: BTreeMap<usize, usize> = BTreeMap::new();
-        let mut shared_syn_b = BTreeSet::new();
-        for arm in &b.arms {
-            *syn_total_b.entry(arm.arm_index).or_insert(0) += 1;
-            if a_heads.contains(variant_head(&arm.pat_key)) {
-                shared_syn_b.insert(arm.arm_index);
-            }
-            if a_pairs.contains(&(arm.pat_key.as_str(), arm.body_key.as_str())) {
-                *syn_matched_b.entry(arm.arm_index).or_insert(0) += 1;
-            }
-        }
+        let (matched_syn_a, shared_syn_a) = compute_syn_unit_counts(&a.arms, &b_heads, &b_pairs);
+        let (matched_syn_b, shared_syn_b) = compute_syn_unit_counts(&b.arms, &a_heads, &a_pairs);
 
-        let matched_syn_a = shared_syn_a
-            .iter()
-            .filter(|idx| {
-                let total = syn_total_a.get(idx).copied().unwrap_or(0);
-                let matched = syn_matched_a.get(idx).copied().unwrap_or(0);
-                total > 0 && matched * 100 >= total * MIN_ARM_INTERNAL_MATCH_PCT
-            })
-            .count();
-        let matched_syn_b = shared_syn_b
-            .iter()
-            .filter(|idx| {
-                let total = syn_total_b.get(idx).copied().unwrap_or(0);
-                let matched = syn_matched_b.get(idx).copied().unwrap_or(0);
-                total > 0 && matched * 100 >= total * MIN_ARM_INTERNAL_MATCH_PCT
-            })
-            .count();
-
-        // When both sides have distinct non-noop wildcards, count the wildcard itself as a disagreeing syntactic arm.
+        let a_has_semantic_wild = a.wildcard_body.as_deref().is_some_and(|w| !is_noop_body(w));
+        let b_has_semantic_wild = b.wildcard_body.as_deref().is_some_and(|w| !is_noop_body(w));
         let both_distinct_wild = a_has_semantic_wild
             && b_has_semantic_wild
             && a.wildcard_body != b.wildcard_body;
         let wild_penalty = usize::from(both_distinct_wild);
-        let denom_syn_a = shared_syn_a.len() + wild_penalty;
-        let denom_syn_b = shared_syn_b.len() + wild_penalty;
+        let denom_syn_a = shared_syn_a + wild_penalty;
+        let denom_syn_b = shared_syn_b + wild_penalty;
 
-        let min_arms = a.arms.len().min(b.arms.len());
+        let min_heads = a_heads.len().min(b_heads.len());
         if shared_arms < MIN_DUPLICATE_ARMS
             || shared_pats == 0
             || shared_arms * 100 < shared_pats * MIN_SHARED_PAT_AGREEMENT_PCT
-            || shared_arms * 100 < min_arms * MIN_SMALLER_MATCH_COVERAGE_PCT
+            || shared_arms * 100 < min_heads * MIN_SMALLER_MATCH_COVERAGE_PCT
             || denom_syn_a == 0
             || denom_syn_b == 0
             || matched_syn_a * 100 < denom_syn_a * MIN_SYNTACTIC_ARM_AGREEMENT_PCT
@@ -302,7 +314,6 @@ fn detect_same_direction(
             && a.wildcard_body == b.wildcard_body
             && !distinct_discriminating.is_empty();
 
-        // Only require exact whole-match agreement when neither side matched an explicit or glob qualifier.
         if qmatch == QualifierMatch::UnqualifiedOnly && !exact_whole_match {
             continue;
         }
@@ -355,7 +366,6 @@ fn detect_mirrored(
         }
         let (a, b) = (&sites[i], &sites[j]);
 
-        // O(M log M) maps on `b` (replaces O(M^2) scan and handles EnumA <-> EnumB with distinct variant names).
         let mut b_by_pair: BTreeMap<(MirrorKey, MirrorKey), Vec<(&MirrorAtom, &MirrorAtom)>> =
             BTreeMap::new();
         let mut b_lhs_by_key: BTreeMap<MirrorKey, Vec<&MirrorAtom>> = BTreeMap::new();
@@ -449,8 +459,12 @@ fn enum_qual_compatible(
     match (qa, qb) {
         (Some(a), Some(b)) => a.compatible_with(b),
         (None, None) => true,
-        (Some(q), None) => site_b.glob_enums.iter().any(|g| g.compatible_with(q)) || site_b.has_unscoped_glob,
-        (None, Some(q)) => site_a.glob_enums.iter().any(|g| g.compatible_with(q)) || site_a.has_unscoped_glob,
+        (Some(q), None) => {
+            site_b.glob_enums.iter().any(|g| g.compatible_with(q)) || site_b.has_unscoped_glob
+        }
+        (None, Some(q)) => {
+            site_a.glob_enums.iter().any(|g| g.compatible_with(q)) || site_a.has_unscoped_glob
+        }
     }
 }
 
@@ -464,6 +478,7 @@ fn mirror_atoms_compatible(
         (MirrorAtom::Str(a), MirrorAtom::Str(b)) => a == b,
         (MirrorAtom::Int(a), MirrorAtom::Int(b)) => a == b,
         (MirrorAtom::Char(a), MirrorAtom::Char(b)) => a == b,
+        (MirrorAtom::Bool(a), MirrorAtom::Bool(b)) => a == b,
         (
             MirrorAtom::Variant {
                 qualifier: qa,

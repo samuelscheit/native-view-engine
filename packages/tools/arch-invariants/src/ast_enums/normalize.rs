@@ -1,5 +1,5 @@
-//! Core expression/statement/block normalization with per-match outer-var alpha-renaming
-//! and monotonic scoped local variable tracking for `ast_enums`.
+//! Core expression/statement/block normalization with per-match outer-var alpha-renaming,
+//! monotonic scoped local variable tracking, and block-scoped `use`/`type` ingestion.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,12 +7,13 @@ use syn::{Expr, Stmt};
 
 use super::normalize_helpers::{bin_op_str, norm_generic_arg, norm_type};
 use super::patterns::{
-    canonical_path, lit_to_key_and_atom, member_to_string, split_enum_variant_path,
+    canonical_path, lit_to_key_and_atom, member_to_string, rewrite_pat_placeholders,
+    split_enum_variant_path,
 };
-use super::scope::{is_unqualified_const_ident, EnumQualifier, ImportScope};
+use super::scope::{EnumQualifier, ImportScope};
 
 /// Shared per-match outer-variable scope so the same outer variable keeps a single canonical
-/// `$rN` index across every arm of the match (preventing `Edge::Top => top` vs `Edge::Top => bottom`
+/// `$rN` index across every arm of the match (preventing `Edge::Top => top + 1` vs `bottom + 1`
 /// and swapped-corner false collisions).
 #[derive(Debug, Default)]
 pub(super) struct MatchOuterScope {
@@ -59,7 +60,8 @@ impl MatchOuterScope {
 }
 
 pub(super) struct NormCtx<'a> {
-    pub(super) scope: &'a ImportScope,
+    base_scope: &'a ImportScope,
+    scope_stack: Vec<ImportScope>,
     pub(super) self_ty: Option<&'a str>,
     pat_bindings: BTreeMap<String, usize>,
     used_pat_bindings: BTreeSet<usize>,
@@ -82,7 +84,8 @@ impl<'a> NormCtx<'a> {
             pat_bindings.insert(name.clone(), idx);
         }
         Self {
-            scope,
+            base_scope: scope,
+            scope_stack: Vec::new(),
             self_ty,
             pat_bindings,
             used_pat_bindings: BTreeSet::new(),
@@ -94,42 +97,18 @@ impl<'a> NormCtx<'a> {
         }
     }
 
+    pub(super) fn scope(&self) -> &ImportScope {
+        self.scope_stack.last().unwrap_or(self.base_scope)
+    }
+
     pub(super) fn finalize_pat_key(&self, raw_pat_key: &str, guard: Option<&str>) -> String {
-        let mut out = if !raw_pat_key.contains("$p") {
-            raw_pat_key.to_string()
-        } else {
-            let mut s = String::with_capacity(raw_pat_key.len());
-            let bytes = raw_pat_key.as_bytes();
-            let mut i = 0;
-            while i < bytes.len() {
-                if i + 2 < bytes.len()
-                    && bytes[i] == b'$'
-                    && bytes[i + 1] == b'p'
-                    && bytes[i + 2].is_ascii_digit()
-                {
-                    let mut j = i + 2;
-                    while j < bytes.len() && bytes[j].is_ascii_digit() {
-                        j += 1;
-                    }
-                    if let Ok(idx) = raw_pat_key[i + 2..j].parse::<usize>() {
-                        if self.used_pat_bindings.contains(&idx) {
-                            s.push_str(&raw_pat_key[i..j]);
-                        } else {
-                            s.push('_');
-                        }
-                        i = j;
-                        continue;
-                    }
-                }
-                if let Some(ch) = raw_pat_key[i..].chars().next() {
-                    s.push(ch);
-                    i += ch.len_utf8();
-                } else {
-                    break;
-                }
+        let mut out = rewrite_pat_placeholders(raw_pat_key, |idx, buf| {
+            if self.used_pat_bindings.contains(&idx) {
+                buf.push_str(&format!("$p{idx}"));
+            } else {
+                buf.push('_');
             }
-            s
-        };
+        });
         if let Some(g) = guard {
             out.push_str(" if ");
             out.push_str(g);
@@ -154,6 +133,14 @@ impl<'a> NormCtx<'a> {
         if block.stmts.is_empty() {
             return "()".to_string();
         }
+        let pushed_scope = if ImportScope::has_block_scope_items(&block.stmts) {
+            let mut child = self.scope().clone();
+            child.ingest_block_stmts(&block.stmts);
+            self.scope_stack.push(child);
+            true
+        } else {
+            false
+        };
         let saved_locals = self.local_bindings.clone();
         let out = if block.stmts.len() == 1 {
             match &block.stmts[0] {
@@ -165,6 +152,9 @@ impl<'a> NormCtx<'a> {
             self.norm_stmt_list(&block.stmts)
         };
         self.local_bindings = saved_locals;
+        if pushed_scope {
+            self.scope_stack.pop();
+        }
         out
     }
 
@@ -215,6 +205,16 @@ impl<'a> NormCtx<'a> {
         self.outer.resolve_outer(name)
     }
 
+    fn record_enum_path_ref(&mut self, path: &syn::Path) {
+        if let Some((qual, _)) = split_enum_variant_path(path, self.scope(), self.self_ty) {
+            if let Some(q) = qual {
+                self.referenced_enum_qualifiers.insert(q);
+            } else {
+                self.has_unqualified_enum_ref = true;
+            }
+        }
+    }
+
     pub(super) fn norm_expr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Lit(l) => lit_to_key_and_atom(&l.lit, false)
@@ -241,34 +241,26 @@ impl<'a> NormCtx<'a> {
                     if name == "self" || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
                         return self.resolve_var(&name);
                     }
-                    if let Some((q, v)) = self.scope.variant_imports.get(&name) {
-                        self.referenced_enum_qualifiers.insert(q.clone());
-                        return format!("{}::{v}", q.canonical_key());
-                    }
-                    if !matches!(name.as_str(), "None" | "Some" | "Ok" | "Err")
-                        && !is_unqualified_const_ident(&name)
+                    if let Some((qual, variant, has_glob)) =
+                        self.scope().resolve_unqualified_variant(&name)
                     {
-                        if self.scope.glob_enums.len() == 1
-                            && let Some(q) = self.scope.glob_enums.iter().next()
-                        {
-                            self.referenced_enum_qualifiers.insert(q.clone());
-                            return format!("{}::{name}", q.canonical_key());
+                        if let Some(q) = qual {
+                            let key = format!("{}::{variant}", q.canonical_key());
+                            self.referenced_enum_qualifiers.insert(q);
+                            return key;
                         }
-                        if !self.scope.glob_enums.is_empty() || self.scope.has_unscoped_glob {
+                        if has_glob {
                             self.has_unqualified_enum_ref = true;
                         }
+                        return variant;
+                    }
+                    if let Some(q) = self.scope().type_aliases.get(&name) {
+                        return q.canonical_key();
                     }
                     return name;
                 }
-                if let Some((qual, _)) = split_enum_variant_path(&p.path, self.scope, self.self_ty)
-                {
-                    if let Some(q) = qual {
-                        self.referenced_enum_qualifiers.insert(q);
-                    } else {
-                        self.has_unqualified_enum_ref = true;
-                    }
-                }
-                canonical_path(&p.path, self.scope, self.self_ty)
+                self.record_enum_path_ref(&p.path);
+                canonical_path(&p.path, self.scope(), self.self_ty)
             }
             Expr::Assign(a) => {
                 format!("({}={})", self.norm_expr(&a.left), self.norm_expr(&a.right))
@@ -295,16 +287,8 @@ impl<'a> NormCtx<'a> {
             Expr::Call(c) => {
                 let callee = match &*c.func {
                     Expr::Path(p) => {
-                        if let Some((qual, _)) =
-                            split_enum_variant_path(&p.path, self.scope, self.self_ty)
-                        {
-                            if let Some(q) = qual {
-                                self.referenced_enum_qualifiers.insert(q);
-                            } else {
-                                self.has_unqualified_enum_ref = true;
-                            }
-                        }
-                        canonical_path(&p.path, self.scope, self.self_ty)
+                        self.record_enum_path_ref(&p.path);
+                        canonical_path(&p.path, self.scope(), self.self_ty)
                     }
                     other => self.norm_expr(other),
                 };
@@ -322,15 +306,8 @@ impl<'a> NormCtx<'a> {
             }
             Expr::Repeat(r) => format!("[{};{}]", self.norm_expr(&r.expr), self.norm_expr(&r.len)),
             Expr::Struct(s) => {
-                if let Some((qual, _)) = split_enum_variant_path(&s.path, self.scope, self.self_ty)
-                {
-                    if let Some(q) = qual {
-                        self.referenced_enum_qualifiers.insert(q);
-                    } else {
-                        self.has_unqualified_enum_ref = true;
-                    }
-                }
-                let ty = canonical_path(&s.path, self.scope, self.self_ty);
+                self.record_enum_path_ref(&s.path);
+                let ty = canonical_path(&s.path, self.scope(), self.self_ty);
                 let mut fields: Vec<(String, String)> = s
                     .fields
                     .iter()

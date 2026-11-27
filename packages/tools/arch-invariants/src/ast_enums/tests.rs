@@ -577,8 +577,10 @@ fn converters_catches_structural_duplicate_enums_try_from_and_unnamed_converters
     let ast_host = syn::parse_file(host_src).expect("valid host snippet");
     let mut violations = Vec::new();
     scan_duplicate_enums_and_converters(
-        &[("packages/core/wire/src/lib.rs".into(), core_src, &ast_core)],
-        &[("hosts/skia-shell/src/pair.rs".into(), host_src, &ast_host)],
+        &[
+            ("packages/core/wire/src/lib.rs".into(), core_src, &ast_core),
+            ("hosts/skia-shell/src/pair.rs".into(), host_src, &ast_host),
+        ],
         &mut violations,
     );
     assert!(

@@ -1,18 +1,21 @@
-//! Arm normalization and `MatchSite` construction for `Expr::Match`, `matches!`, and `if let` chains.
+//! Arm normalization, free-variable scanning, and `MatchSite` construction for
+//! `Expr::Match`, `matches!`, and `if let` chains.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::spanned::Spanned;
-use syn::visit::Visit;
 use syn::{Expr, Pat};
 
 use crate::{is_cfg_test_attr, line_at};
 
 use super::extract::{MatchDirection, MatchSite, NormalizedArm};
 use super::fingerprint::MIN_DUPLICATE_ARMS;
+use super::free_vars::collect_free_vars;
 use super::normalize::{MatchOuterScope, NormCtx};
 use super::normalize_helpers::{extract_body_mirror_atom, is_bare_outer_var, is_noop_body};
-use super::patterns::{extract_arm_patterns, is_catchall_pat, ExtractedPat, MirrorAtom};
+use super::patterns::{
+    extract_arm_patterns_checked, is_catchall_pat, ExtractedPat, MirrorAtom, PatternExpansion,
+};
 use super::scope::{EnumQualifier, ImportScope};
 
 pub(super) struct SiteBuildCtx<'a> {
@@ -120,7 +123,11 @@ pub(super) fn build_match_site(
             wild_expr = Some(&arm.body);
             continue;
         }
-        for pat in extract_arm_patterns(&arm.pat, ctx.scope, ctx.self_ty) {
+        let pats = match extract_arm_patterns_checked(&arm.pat, ctx.scope, ctx.self_ty) {
+            PatternExpansion::Ok(v) => v,
+            PatternExpansion::Overflow => return None,
+        };
+        for pat in pats {
             pending.push(PendingArm {
                 arm_index,
                 pat,
@@ -159,7 +166,11 @@ pub(super) fn build_if_let_chain_site(
 
     let mut pending = Vec::new();
     for (arm_index, ((pat, _, _), body_expr)) in branches.iter().zip(&owned_blocks).enumerate() {
-        for ep in extract_arm_patterns(pat, ctx.scope, ctx.self_ty) {
+        let pats = match extract_arm_patterns_checked(pat, ctx.scope, ctx.self_ty) {
+            PatternExpansion::Ok(v) => v,
+            PatternExpansion::Overflow => return None,
+        };
+        for ep in pats {
             pending.push(PendingArm {
                 arm_index,
                 pat: ep,
@@ -185,19 +196,17 @@ fn normalize_pending_arms(
         return None;
     }
 
-    // Sort arms canonically by pattern before normalizing so per-match outer-var numbering
-    // is 100% deterministic regardless of arm ordering in source.
     pending.sort_by(|a, b| (&a.pat.pat_key, a.arm_index).cmp(&(&b.pat.pat_key, b.arm_index)));
 
     let mut referenced_idents = BTreeSet::new();
     for p in &pending {
-        collect_expr_idents(p.body, &mut referenced_idents);
+        collect_free_vars(p.body, &p.pat.bindings, &mut referenced_idents);
         if let Some(g) = p.guard {
-            collect_expr_idents(g, &mut referenced_idents);
+            collect_free_vars(g, &p.pat.bindings, &mut referenced_idents);
         }
     }
     if let Some(w) = wild_expr {
-        collect_expr_idents(w, &mut referenced_idents);
+        collect_free_vars(w, &[], &mut referenced_idents);
     }
 
     let mut outer = MatchOuterScope::new(*opaque_seed);
@@ -235,10 +244,10 @@ fn normalize_pending_arms(
                 let body_key = nctx.norm_arm_body(item.body);
                 let final_pat_key = nctx.finalize_pat_key(&item.pat.pat_key, guard_str.as_deref());
                 let mp = if item.guard.is_none() {
-                    item.pat.mirror_atom.clone().and_then(|l| {
-                        extract_body_mirror_atom(item.body, ctx.scope, ctx.self_ty)
-                            .map(|r| (l, r))
-                    })
+                    item.pat
+                        .mirror_atom
+                        .clone()
+                        .zip(extract_body_mirror_atom(item.body, ctx.scope, ctx.self_ty))
                 } else {
                     None
                 };
@@ -258,7 +267,8 @@ fn normalize_pending_arms(
                 arm_index: item.arm_index,
                 is_enum_pat: item.pat.is_enum_variant,
                 pat_qualifier: item.pat.enum_qualifier,
-                tuple_qualifier: item.pat.tuple_qualifier,
+                tuple_qualifiers: item.pat.tuple_qualifiers,
+                variant_head: item.pat.variant_head,
                 pat_key: final_pat_key,
                 body_key,
                 is_noop,
@@ -305,7 +315,10 @@ pub(super) fn build_matches_macro_site(
     }
 
     let parsed: MatchesInput = em.mac.parse_body().ok()?;
-    let mut extracted = extract_arm_patterns(&parsed.pat, ctx.scope, ctx.self_ty);
+    let mut extracted = match extract_arm_patterns_checked(&parsed.pat, ctx.scope, ctx.self_ty) {
+        PatternExpansion::Ok(v) => v,
+        PatternExpansion::Overflow => return None,
+    };
     if extracted.len() < MIN_DUPLICATE_ARMS {
         return None;
     }
@@ -313,7 +326,11 @@ pub(super) fn build_matches_macro_site(
 
     let mut referenced_idents = BTreeSet::new();
     if let Some(g) = &parsed.guard {
-        collect_expr_idents(g, &mut referenced_idents);
+        let bound: Vec<String> = extracted
+            .first()
+            .map(|p| p.bindings.clone())
+            .unwrap_or_default();
+        collect_free_vars(g, &bound, &mut referenced_idents);
     }
     let mut outer = MatchOuterScope::new(*opaque_seed);
     outer.preseed_from_referenced(ctx.enclosing_locals, &referenced_idents);
@@ -332,7 +349,8 @@ pub(super) fn build_matches_macro_site(
                 arm_index: 0,
                 is_enum_pat: true,
                 pat_qualifier: pat.enum_qualifier,
-                tuple_qualifier: pat.tuple_qualifier,
+                tuple_qualifiers: pat.tuple_qualifiers,
+                variant_head: pat.variant_head,
                 pat_key: final_pat_key,
                 body_key: "true".to_string(),
                 is_noop: false,
@@ -351,79 +369,6 @@ pub(super) fn build_matches_macro_site(
         arms,
         Some("false".to_string()),
     )
-}
-
-fn collect_expr_idents(expr: &Expr, out: &mut BTreeSet<String>) {
-    struct Scan<'a>(&'a mut BTreeSet<String>);
-    impl<'ast> Visit<'ast> for Scan<'_> {
-        fn visit_ident(&mut self, i: &'ast syn::Ident) {
-            let s = i.to_string();
-            if s == "self" || !s.starts_with(|c: char| c.is_ascii_uppercase()) {
-                self.0.insert(s);
-            }
-        }
-
-        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-            collect_token_stream_idents(mac.tokens.clone(), self.0);
-        }
-    }
-    Scan(out).visit_expr(expr);
-}
-
-fn collect_token_stream_idents(ts: proc_macro2::TokenStream, out: &mut BTreeSet<String>) {
-    for tt in ts {
-        match tt {
-            proc_macro2::TokenTree::Ident(id) => {
-                let s = id.to_string();
-                if s == "self" || !s.starts_with(|c: char| c.is_ascii_uppercase()) {
-                    out.insert(s);
-                }
-            }
-            proc_macro2::TokenTree::Group(g) => collect_token_stream_idents(g.stream(), out),
-            proc_macro2::TokenTree::Literal(lit) => {
-                if let Ok(syn::Lit::Str(ls)) = syn::parse_str::<syn::Lit>(&lit.to_string()) {
-                    collect_format_capture_idents(&ls.value(), out);
-                }
-            }
-            proc_macro2::TokenTree::Punct(_) => {}
-        }
-    }
-}
-
-fn collect_format_capture_idents(s: &str, out: &mut BTreeSet<String>) {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-                i += 2;
-                continue;
-            }
-            let start = i + 1;
-            let mut end = start;
-            while end < bytes.len() && bytes[end] != b'}' {
-                end += 1;
-            }
-            if end < bytes.len() {
-                let inner = &s[start..end];
-                let ident = inner.split(':').next().unwrap_or("");
-                if !ident.is_empty()
-                    && ident
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-                    && ident
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    out.insert(ident.to_string());
-                }
-                i = end + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
 }
 
 fn finalize_site(
@@ -445,10 +390,10 @@ fn finalize_site(
         .filter(|(l, r)| l != r && (l.is_variant() || r.is_variant()))
         .collect();
 
-    let (direction, enum_qualifier, tuple_qualifier, kept_arms) =
+    let (direction, enum_qualifier, tuple_qualifiers, kept_arms) =
         if enum_arms.len() >= MIN_DUPLICATE_ARMS {
             let eq = dominant_item(enum_arms.iter().filter_map(|a| a.pat_qualifier.clone()));
-            let tq = dominant_item(enum_arms.iter().filter_map(|a| a.tuple_qualifier.clone()));
+            let tq = dominant_item(enum_arms.iter().filter_map(|a| a.tuple_qualifiers.clone()));
             let kept = arms.into_iter().filter(|a| a.is_enum_pat).collect();
             (Some(MatchDirection::EnumToBody), eq, tq, kept)
         } else if lit_to_enum_arms.len() >= MIN_DUPLICATE_ARMS {
@@ -479,7 +424,19 @@ fn finalize_site(
     let enum_name = enum_qualifier
         .as_ref()
         .map(EnumQualifier::display_name)
-        .or_else(|| tuple_qualifier.clone())
+        .or_else(|| {
+            tuple_qualifiers.as_ref().map(|qs| {
+                let parts: Vec<String> = qs
+                    .iter()
+                    .map(|q| {
+                        q.as_ref()
+                            .map(EnumQualifier::display_name)
+                            .unwrap_or_else(|| "_".to_string())
+                    })
+                    .collect();
+                format!("({})", parts.join(","))
+            })
+        })
         .unwrap_or_else(|| "<unqualified>".to_string());
 
     Some(MatchSite {
@@ -490,7 +447,7 @@ fn finalize_site(
         direction,
         enum_name,
         enum_qualifier,
-        tuple_qualifier,
+        tuple_qualifiers,
         glob_enums: ctx.scope.glob_enums.clone(),
         has_unscoped_glob: ctx.scope.has_unscoped_glob,
         arms: kept_arms,

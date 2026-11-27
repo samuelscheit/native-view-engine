@@ -13,7 +13,6 @@ use super::extract_arms::{
     build_if_let_chain_site, build_match_site, build_matches_macro_site, collect_if_let_chain,
     SiteBuildCtx,
 };
-use super::fingerprint::MIN_DUPLICATE_ARMS;
 use super::patterns::MirrorAtom;
 use super::scope::{EnumQualifier, ImportScope};
 
@@ -28,7 +27,8 @@ pub(super) struct NormalizedArm {
     pub arm_index: usize,
     pub is_enum_pat: bool,
     pub pat_qualifier: Option<EnumQualifier>,
-    pub tuple_qualifier: Option<String>,
+    pub tuple_qualifiers: Option<Vec<Option<EnumQualifier>>>,
+    pub variant_head: String,
     pub pat_key: String,
     pub body_key: String,
     pub is_noop: bool,
@@ -39,7 +39,7 @@ pub(super) struct NormalizedArm {
 }
 
 #[derive(Debug, Clone)]
-pub struct MatchSite {
+pub(crate) struct MatchSite {
     pub file: String,
     pub symbol: String,
     pub line: usize,
@@ -47,21 +47,12 @@ pub struct MatchSite {
     pub(super) direction: Option<MatchDirection>,
     pub enum_name: String,
     pub(super) enum_qualifier: Option<EnumQualifier>,
-    pub(super) tuple_qualifier: Option<String>,
+    pub(super) tuple_qualifiers: Option<Vec<Option<EnumQualifier>>>,
     pub(super) glob_enums: BTreeSet<EnumQualifier>,
     pub(super) has_unscoped_glob: bool,
     pub(super) arms: Vec<NormalizedArm>,
     pub(super) wildcard_body: Option<String>,
     pub(super) mirror_pairs: Vec<(MirrorAtom, MirrorAtom)>,
-}
-
-pub fn extract_match_sites(
-    rel: &str,
-    raw: &str,
-    ast: &syn::File,
-    out: &mut Vec<MatchSite>,
-) {
-    extract_match_sites_with_crate(rel, raw, ast, None, &mut 0, out);
 }
 
 pub(super) fn extract_match_sites_with_crate(
@@ -104,14 +95,11 @@ impl FileExtractState<'_> {
             match item {
                 Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                     if let Some((_, sub)) = &m.content {
+                        // Rust inline `mod` blocks start a fresh lexical import scope.
                         self.mod_path.push(m.ident.to_string());
-                        if ImportScope::has_scope_items(sub) {
-                            let mut child = scope.clone();
-                            child.ingest_items(sub);
-                            self.extract_from_items(sub, &child, None);
-                        } else {
-                            self.extract_from_items(sub, scope, None);
-                        }
+                        let mut child = ImportScope::with_crate(scope.current_crate.as_deref());
+                        child.ingest_items(sub);
+                        self.extract_from_items(sub, &child, None);
                         self.mod_path.pop();
                     }
                 }
@@ -252,7 +240,7 @@ fn collect_sig_params(sig: &syn::Signature) -> Vec<String> {
     out
 }
 
-fn collect_pat_idents(pat: &Pat, out: &mut Vec<String>) {
+pub(super) fn collect_pat_idents(pat: &Pat, out: &mut Vec<String>) {
     match pat {
         Pat::Ident(pi) => {
             let name = pi.ident.to_string();
@@ -266,6 +254,12 @@ fn collect_pat_idents(pat: &Pat, out: &mut Vec<String>) {
         Pat::Tuple(t) => t.elems.iter().for_each(|p| collect_pat_idents(p, out)),
         Pat::TupleStruct(ts) => ts.elems.iter().for_each(|p| collect_pat_idents(p, out)),
         Pat::Struct(ps) => ps.fields.iter().for_each(|fp| collect_pat_idents(&fp.pat, out)),
+        Pat::Slice(s) => s.elems.iter().for_each(|p| collect_pat_idents(p, out)),
+        Pat::Or(o) => {
+            if let Some(first) = o.cases.first() {
+                collect_pat_idents(first, out);
+            }
+        }
         Pat::Paren(p) => collect_pat_idents(&p.pat, out),
         Pat::Reference(r) => collect_pat_idents(&r.pat, out),
         Pat::Type(t) => collect_pat_idents(&t.pat, out),
@@ -286,6 +280,17 @@ struct MatchExtractor<'a> {
 }
 
 impl MatchExtractor<'_> {
+    fn build_ctx(&self) -> SiteBuildCtx<'_> {
+        SiteBuildCtx {
+            rel: self.rel,
+            raw: self.raw,
+            symbol: &self.symbol,
+            scope: self.scope_stack.last().unwrap_or(self.base_scope),
+            self_ty: self.self_ty_stack.last().and_then(|o| o.as_deref()),
+            enclosing_locals: &self.enclosing_locals,
+        }
+    }
+
     fn visit_macro_body_exprs(&mut self, mac: &syn::Macro) {
         if let Ok(args) = mac.parse_body_with(
             syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated,
@@ -295,7 +300,6 @@ impl MatchExtractor<'_> {
             }
             return;
         }
-        // Handle `vec![expr; len]`.
         struct RepeatArgs(Expr, Expr);
         impl syn::parse::Parse for RepeatArgs {
             fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
@@ -318,13 +322,36 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
             return;
         }
         match item {
+            Item::Mod(m) => {
+                if let Some((_, sub)) = &m.content {
+                    let next_sym = format!("{}::{}", self.symbol, m.ident);
+                    let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
+                    let prev_locals = std::mem::take(&mut self.enclosing_locals);
+                    let mut child = ImportScope::with_crate(
+                        self.scope_stack
+                            .last()
+                            .unwrap_or(self.base_scope)
+                            .current_crate
+                            .as_deref(),
+                    );
+                    child.ingest_items(sub);
+                    self.scope_stack.push(child);
+                    for it in sub {
+                        self.visit_item(it);
+                    }
+                    self.scope_stack.pop();
+                    self.enclosing_locals = prev_locals;
+                    self.symbol = prev_sym;
+                }
+            }
             Item::Fn(f) => {
                 let next_sym = format!("{}::{}", self.symbol, f.sig.ident);
                 let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                let prev_len = self.enclosing_locals.len();
-                self.enclosing_locals.extend(collect_sig_params(&f.sig));
+                // Nested `fn` cannot capture outer locals in Rust.
+                let prev_locals =
+                    std::mem::replace(&mut self.enclosing_locals, collect_sig_params(&f.sig));
                 self.visit_block(&f.block);
-                self.enclosing_locals.truncate(prev_len);
+                self.enclosing_locals = prev_locals;
                 self.symbol = prev_sym;
             }
             Item::Impl(imp) => {
@@ -340,16 +367,24 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
                             };
                             let next_sym = format!("{}::{suffix}", self.symbol);
                             let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                            let prev_len = self.enclosing_locals.len();
-                            self.enclosing_locals.extend(collect_sig_params(&f.sig));
+                            let prev_locals = std::mem::replace(
+                                &mut self.enclosing_locals,
+                                collect_sig_params(&f.sig),
+                            );
                             self.visit_block(&f.block);
-                            self.enclosing_locals.truncate(prev_len);
+                            self.enclosing_locals = prev_locals;
                             self.symbol = prev_sym;
                         }
                         syn::ImplItem::Const(c) if !is_cfg_test_attr(&c.attrs) => {
-                            let next_sym = format!("{}::{}", self.symbol, c.ident);
+                            let suffix = match &impl_prefix {
+                                Some(p) => format!("{p}::{}", c.ident),
+                                None => c.ident.to_string(),
+                            };
+                            let next_sym = format!("{}::{suffix}", self.symbol);
                             let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
+                            let prev_locals = std::mem::take(&mut self.enclosing_locals);
                             self.visit_expr(&c.expr);
+                            self.enclosing_locals = prev_locals;
                             self.symbol = prev_sym;
                         }
                         _ => {}
@@ -360,13 +395,17 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
             Item::Const(c) => {
                 let next_sym = format!("{}::const {}", self.symbol, c.ident);
                 let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
+                let prev_locals = std::mem::take(&mut self.enclosing_locals);
                 self.visit_expr(&c.expr);
+                self.enclosing_locals = prev_locals;
                 self.symbol = prev_sym;
             }
             Item::Static(s) => {
                 let next_sym = format!("{}::static {}", self.symbol, s.ident);
                 let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
+                let prev_locals = std::mem::take(&mut self.enclosing_locals);
                 self.visit_expr(&s.expr);
+                self.enclosing_locals = prev_locals;
                 self.symbol = prev_sym;
             }
             _ => visit::visit_item(self, item),
@@ -407,28 +446,66 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
         }
     }
 
-    fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
-        if is_cfg_test_attr(&m.attrs) {
+    fn visit_expr(&mut self, expr: &'ast Expr) {
+        if expr_attrs(expr).is_some_and(is_cfg_test_attr) {
             return;
         }
-        let ctx = SiteBuildCtx {
-            rel: self.rel,
-            raw: self.raw,
-            symbol: &self.symbol,
-            scope: self.scope_stack.last().unwrap_or(self.base_scope),
-            self_ty: self.self_ty_stack.last().and_then(|o| o.as_deref()),
-            enclosing_locals: &self.enclosing_locals,
-        };
-        if let Some(site) = build_match_site(&ctx, &mut self.opaque_seed, m) {
+        visit::visit_expr(self, expr);
+    }
+
+    fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+        if is_cfg_test_attr(&arm.attrs) {
+            return;
+        }
+        let saved = self.enclosing_locals.len();
+        collect_pat_idents(&arm.pat, &mut self.enclosing_locals);
+        if let Some((_, g)) = &arm.guard {
+            self.visit_expr(g);
+        }
+        self.visit_expr(&arm.body);
+        self.enclosing_locals.truncate(saved);
+    }
+
+    fn visit_expr_closure(&mut self, cl: &'ast syn::ExprClosure) {
+        let saved = self.enclosing_locals.len();
+        for input in &cl.inputs {
+            collect_pat_idents(input, &mut self.enclosing_locals);
+        }
+        self.visit_expr(&cl.body);
+        self.enclosing_locals.truncate(saved);
+    }
+
+    fn visit_expr_for_loop(&mut self, fl: &'ast syn::ExprForLoop) {
+        self.visit_expr(&fl.expr);
+        let saved = self.enclosing_locals.len();
+        collect_pat_idents(&fl.pat, &mut self.enclosing_locals);
+        self.visit_block(&fl.body);
+        self.enclosing_locals.truncate(saved);
+    }
+
+    fn visit_expr_while(&mut self, w: &'ast syn::ExprWhile) {
+        let saved = self.enclosing_locals.len();
+        self.visit_expr(&w.cond);
+        self.visit_block(&w.body);
+        self.enclosing_locals.truncate(saved);
+    }
+
+    fn visit_expr_let(&mut self, l: &'ast syn::ExprLet) {
+        self.visit_expr(&l.expr);
+        collect_pat_idents(&l.pat, &mut self.enclosing_locals);
+    }
+
+    fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
+        let mut seed = self.opaque_seed;
+        let site = build_match_site(&self.build_ctx(), &mut seed, m);
+        self.opaque_seed = seed;
+        if let Some(site) = site {
             self.out.push(site);
         }
         visit::visit_expr_match(self, m);
     }
 
     fn visit_expr_macro(&mut self, em: &'ast syn::ExprMacro) {
-        if is_cfg_test_attr(&em.attrs) {
-            return;
-        }
         if em
             .mac
             .path
@@ -436,15 +513,10 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
             .last()
             .is_some_and(|s| s.ident == "matches")
         {
-            let ctx = SiteBuildCtx {
-                rel: self.rel,
-                raw: self.raw,
-                symbol: &self.symbol,
-                scope: self.scope_stack.last().unwrap_or(self.base_scope),
-                self_ty: self.self_ty_stack.last().and_then(|o| o.as_deref()),
-                enclosing_locals: &self.enclosing_locals,
-            };
-            if let Some(site) = build_matches_macro_site(&ctx, &mut self.opaque_seed, em) {
+            let mut seed = self.opaque_seed;
+            let site = build_matches_macro_site(&self.build_ctx(), &mut seed, em);
+            self.opaque_seed = seed;
+            if let Some(site) = site {
                 self.out.push(site);
             }
         } else {
@@ -454,39 +526,40 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
     }
 
     fn visit_expr_if(&mut self, expr_if: &'ast syn::ExprIf) {
-        if is_cfg_test_attr(&expr_if.attrs) {
-            return;
-        }
         if let Some((branches, else_body)) = collect_if_let_chain(expr_if)
-            && branches.len() >= MIN_DUPLICATE_ARMS
+            && branches.len() >= 2
         {
-            let ctx = SiteBuildCtx {
-                rel: self.rel,
-                raw: self.raw,
-                symbol: &self.symbol,
-                scope: self.scope_stack.last().unwrap_or(self.base_scope),
-                self_ty: self.self_ty_stack.last().and_then(|o| o.as_deref()),
-                enclosing_locals: &self.enclosing_locals,
-            };
-            if let Some(site) = build_if_let_chain_site(
-                &ctx,
-                &mut self.opaque_seed,
+            let mut seed = self.opaque_seed;
+            let site = build_if_let_chain_site(
+                &self.build_ctx(),
+                &mut seed,
                 expr_if.if_token.span.start().line,
                 &branches,
                 else_body,
-            ) {
+            );
+            self.opaque_seed = seed;
+            if let Some(site) = site {
                 self.out.push(site);
+                for (pat, scr, body_block) in &branches {
+                    self.visit_expr(scr);
+                    let saved = self.enclosing_locals.len();
+                    collect_pat_idents(pat, &mut self.enclosing_locals);
+                    self.visit_block(body_block);
+                    self.enclosing_locals.truncate(saved);
+                }
+                if let Some(eb) = else_body {
+                    self.visit_expr(eb);
+                }
+                return;
             }
-            for (_, scr, body_block) in &branches {
-                self.visit_expr(scr);
-                self.visit_block(body_block);
-            }
-            if let Some(eb) = else_body {
-                self.visit_expr(eb);
-            }
-            return;
         }
-        visit::visit_expr_if(self, expr_if);
+        let saved = self.enclosing_locals.len();
+        self.visit_expr(&expr_if.cond);
+        self.visit_block(&expr_if.then_branch);
+        self.enclosing_locals.truncate(saved);
+        if let Some((_, eb)) = &expr_if.else_branch {
+            self.visit_expr(eb);
+        }
     }
 }
 
@@ -502,6 +575,25 @@ fn item_attrs(item: &Item) -> Option<&[syn::Attribute]> {
         Item::Enum(x) => Some(&x.attrs),
         Item::Type(x) => Some(&x.attrs),
         Item::Use(x) => Some(&x.attrs),
+        _ => None,
+    }
+}
+
+fn expr_attrs(expr: &Expr) -> Option<&[syn::Attribute]> {
+    match expr {
+        Expr::Block(x) => Some(&x.attrs),
+        Expr::Match(x) => Some(&x.attrs),
+        Expr::If(x) => Some(&x.attrs),
+        Expr::Macro(x) => Some(&x.attrs),
+        Expr::Loop(x) => Some(&x.attrs),
+        Expr::While(x) => Some(&x.attrs),
+        Expr::ForLoop(x) => Some(&x.attrs),
+        Expr::Closure(x) => Some(&x.attrs),
+        Expr::Async(x) => Some(&x.attrs),
+        Expr::Unsafe(x) => Some(&x.attrs),
+        Expr::Const(x) => Some(&x.attrs),
+        Expr::Call(x) => Some(&x.attrs),
+        Expr::MethodCall(x) => Some(&x.attrs),
         _ => None,
     }
 }
