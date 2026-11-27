@@ -8,10 +8,13 @@ use std::task::{Poll, Waker};
 use nve_abi::{ColorRgba, METHOD_WINDOW_REQUEST_FRAME, SERVICE_WINDOW};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_engine::Viewport;
+use nve_engine::{HotPatchMsg, Viewport};
 use nve_host_services::HostServiceProvider;
 
-use super::{DesktopApp, DesktopPreviewOptions, DesktopSession, DesktopWindowHost, DioxusDesktopApp};
+use super::{
+    DesktopApp, DesktopHostError, DesktopPreviewOptions, DesktopSession, DesktopWindowHost,
+    DioxusDesktopApp,
+};
 use crate::host_services::SkiaHostServices;
 
 #[test]
@@ -137,4 +140,75 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
     let host = DesktopWindowHost::new_dioxus(host_surface, DesktopPreviewOptions::default())
         .expect("new_dioxus must construct primary session");
     assert!(host.windows.is_empty());
+}
+
+#[test]
+fn dioxus_desktop_app_reload_returns_err_and_preserves_replica_and_nve2_sync() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    type SignalSlot = Rc<RefCell<Option<Signal<u32>>>>;
+
+    #[component]
+    fn CounterRoot() -> Element {
+        let count = use_signal(|| 1u32);
+        let bump = dioxus_core::consume_context::<SignalSlot>();
+        use_hook(move || {
+            *bump.borrow_mut() = Some(count);
+        });
+        rsx! {
+            view {
+                text { "COUNT:{count()}" }
+            }
+        }
+    }
+
+    let sig_slot: SignalSlot = Rc::new(RefCell::new(None));
+    let surface = DioxusSurface::new(1, CounterRoot).with_context(Rc::clone(&sig_slot));
+    let mut session = DesktopSession::new(
+        DioxusDesktopApp::new(surface),
+        1,
+        Viewport {
+            width: 320.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+        ColorRgba::BLACK,
+        false,
+    );
+    session.render_and_rasterize().unwrap();
+    let live_before = session.replica.store().live_nodes().count();
+    let bytes_before = session.last_frame_bytes().to_vec();
+    assert!(live_before > 1, "initial frame must populate replica nodes");
+    assert!(!bytes_before.is_empty());
+
+    let reload_err = session
+        .handle_hot_patch(HotPatchMsg::DylibReload {
+            generation: 2,
+            dylib_path: "nonexistent_app.dylib".into(),
+            build_ms: 12,
+        })
+        .expect_err("in-process DioxusDesktopApp must reject dylib reload");
+    assert!(
+        matches!(reload_err, DesktopHostError::Reload(_)),
+        "expected DesktopHostError::Reload, got {reload_err:?}"
+    );
+    assert_eq!(
+        session.replica.store().live_nodes().count(),
+        live_before,
+        "failed reload must preserve replica store instead of blanking it"
+    );
+    assert_eq!(
+        session.last_frame_bytes(),
+        bytes_before.as_slice(),
+        "failed reload must preserve last_frame_bytes"
+    );
+
+    // Subsequent incremental NVE2 delta must still apply cleanly onto the preserved replica.
+    let mut sig = sig_slot.borrow().expect("root signal installed");
+    session.app_mut().surface_mut().in_root_scope(|| sig.set(2));
+    session
+        .render_and_rasterize()
+        .expect("incremental NVE2 frame after rejected reload must remain synchronized");
+    assert_eq!(session.replica.store().live_nodes().count(), live_before);
 }

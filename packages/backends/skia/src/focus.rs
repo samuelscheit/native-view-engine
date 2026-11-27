@@ -2,7 +2,7 @@
 //! composition/cursor-rect state for [`crate::SkiaBackend`] over `&NodeStore`.
 
 use nve_abi::NodeId;
-use nve_components::tables::{TextInput, Typography};
+use nve_components::tables::{is_node_display_none, InputKind, TextInput, Typography};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
@@ -53,7 +53,10 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
     #[inline]
     pub fn is_text_input(&self, store: &NodeStore, node_id: StoreNodeId) -> bool {
-        store.is_live(node_id) && store.has::<TextInput>(node_id)
+        store.is_live(node_id)
+            && store
+                .try_row::<TextInput>(node_id)
+                .is_some_and(|t| t.input_kind() != InputKind::Hidden)
     }
 
     #[inline]
@@ -186,6 +189,10 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     pub fn set_focused_node(&mut self, store: &NodeStore, node_id: Option<NodeId>) {
+        let node_id = node_id.filter(|&raw| {
+            let sid = StoreNodeId(raw);
+            store.is_live(sid) && !is_node_display_none(store, sid)
+        });
         if self.focus.focused_node == node_id {
             return;
         }
@@ -256,11 +263,11 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             return;
         };
         let id = StoreNodeId(raw);
-        if !store.is_live(id) {
+        if !store.is_live(id) || is_node_display_none(store, id) {
             self.focus = TextFocusState::default();
             return;
         }
-        if store.has::<TextInput>(id) {
+        if self.is_text_input(store, id) {
             if !raw_text_input_value(store, id).is_empty() {
                 self.focus.uncontrolled_value = None;
             }

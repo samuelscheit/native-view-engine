@@ -1105,3 +1105,46 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         ]
     );
 }
+
+#[test]
+fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
+    use nve_components::tables::{Accessibility, AriaLive, AriaRole};
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (unset, off, polite, assertive) = {
+        let mut tx = store.tx();
+        let u = tx.create();
+        let o = tx.create();
+        let p = tx.create();
+        let a = tx.create();
+        tx.set_children(NodeId::ROOT, &[u, o, p, a]);
+        tx.edit::<Accessibility>(u).live(AriaLive::Unset);
+        tx.edit::<Accessibility>(o).live(AriaLive::Off);
+        tx.edit::<Accessibility>(p).live(AriaLive::Polite);
+        tx.edit::<Accessibility>(a)
+            .role(AriaRole::Alert)
+            .live(AriaLive::Assertive);
+        tx.commit_into(&mut changes);
+        (u, o, p, a)
+    };
+
+    let mut backend = WebBackend::new();
+    backend.commit(&store, &changes).unwrap();
+    let html = backend.render_html(&store);
+    let tag_for = |id: NodeId| {
+        let needle = format!("data-nve-id=\"{}\"", id.raw());
+        html.split('<')
+            .find(|seg| seg.contains(&needle))
+            .and_then(|seg| seg.split('>').next())
+            .unwrap_or_else(|| panic!("missing element for {needle}: {html}"))
+            .to_owned()
+    };
+
+    assert!(!tag_for(unset).contains("aria-live"));
+    assert!(tag_for(off).contains("aria-live=\"off\""));
+    assert!(tag_for(polite).contains("aria-live=\"polite\""));
+    let assertive_tag = tag_for(assertive);
+    assert!(assertive_tag.contains("role=\"alert\""));
+    assert!(assertive_tag.contains("aria-live=\"assertive\""));
+}

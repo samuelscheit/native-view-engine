@@ -8,7 +8,7 @@ use nve_abi::{
     native_events_to_direct, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId,
 };
 use nve_backend_skia::SkiaBackend;
-use nve_components::tables::{Interaction, TextInput};
+use nve_components::tables::{is_node_display_none, Interaction, TextInput};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use super::session::{now_us, DesktopSession};
@@ -23,9 +23,22 @@ use super::{DesktopApp, DesktopHostError};
 const MULTI_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_MAX_DIST_SQ: f32 = 36.0; // 6.0 logical px
 
-fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(super) fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
     if !store.is_live(id) {
         return false;
+    }
+    let mut cur = id;
+    for _ in 0..256 {
+        if is_node_display_none(store, cur) {
+            return false;
+        }
+        let Some(parent) = store.parent(cur) else {
+            break;
+        };
+        if parent == cur {
+            break;
+        }
+        cur = parent;
     }
     if store.has::<TextInput>(id) {
         return true;

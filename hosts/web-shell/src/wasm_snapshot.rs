@@ -3,7 +3,7 @@
 //! `pagehide`.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use nve_backend_web::{query_has_reset_param, WebSnapshotStore};
 use wasm_bindgen::closure::Closure;
@@ -106,7 +106,7 @@ fn persist_session_snapshot_inner(
 /// Shared handle used by event callbacks and `WebAppController` to schedule or flush snapshots.
 #[derive(Clone)]
 pub(crate) struct SnapshotTrigger {
-    session: Rc<RefCell<WebAppSession>>,
+    session: Weak<RefCell<WebAppSession>>,
     container: web_sys::Element,
     app_slug: &'static str,
     schema_version: u32,
@@ -126,13 +126,15 @@ impl SnapshotTrigger {
         if let Some(id) = self.timer_id.take() {
             window.clear_timeout_with_handle(id);
         }
-        let session = Rc::clone(&self.session);
+        let session = Weak::clone(&self.session);
         let container = self.container.clone();
         let last_hash = Rc::clone(&self.last_hash);
         let timer_id = Rc::clone(&self.timer_id);
         let cb = Closure::<dyn FnMut()>::new(move || {
             timer_id.set(None);
-            if let Ok(mut guard) = session.try_borrow_mut() {
+            if let Some(session) = session.upgrade()
+                && let Ok(mut guard) = session.try_borrow_mut()
+            {
                 let _ = persist_session_snapshot_inner(&mut guard, &container, &last_hash, false);
             }
         });
@@ -156,7 +158,10 @@ impl SnapshotTrigger {
         if !force && !self.dirty.get() {
             return false;
         }
-        let Ok(mut guard) = self.session.try_borrow_mut() else {
+        let Some(session) = self.session.upgrade() else {
+            return false;
+        };
+        let Ok(mut guard) = session.try_borrow_mut() else {
             return false;
         };
         let saved = persist_session_snapshot_inner(&mut guard, &self.container, &self.last_hash, force);
@@ -190,7 +195,7 @@ pub(crate) struct SnapshotPersistenceGuard {
 impl SnapshotPersistenceGuard {
     pub(crate) fn install(
         window: &web_sys::Window,
-        session: Rc<RefCell<WebAppSession>>,
+        session: Weak<RefCell<WebAppSession>>,
         container: web_sys::Element,
         app_slug: &'static str,
         schema_version: u32,

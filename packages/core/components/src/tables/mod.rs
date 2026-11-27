@@ -66,6 +66,24 @@ pub fn register_core_tables() {
     let _ = TextInput::slot();
 }
 
+/// Returns `true` when `id` carries a [`TextInput`] row with [`InputKind::Hidden`].
+#[inline]
+pub fn is_hidden_text_input(store: &nve_store::NodeStore, id: nve_store::NodeId) -> bool {
+    store
+        .try_row::<TextInput>(id)
+        .is_some_and(|t| t.input_kind() == InputKind::Hidden)
+}
+
+/// Returns `true` when `id` is excluded from layout, paint, hit-testing, and focus
+/// (`Layout::display == Display::None` or `TextInput::input_kind == InputKind::Hidden`).
+#[inline]
+pub fn is_node_display_none(store: &nve_store::NodeStore, id: nve_store::NodeId) -> bool {
+    store
+        .try_row::<Layout>(id)
+        .is_some_and(|l| l.display() == Display::None)
+        || is_hidden_text_input(store, id)
+}
+
 /// Default cross-platform core realization priority order (`Image > TextInput > Scroll > Link > TextContent`).
 /// Backends/hosts prepend any higher-priority module tables (`Svg`, `Canvas`, `WebView`, `Video`,
 /// `Camera`, `WebHtml`, 3P tables) before installing onto a [`nve_store::NodeStore`].

@@ -169,7 +169,11 @@ impl LayoutPartialTree for LayoutView<'_> {
         }
         compute_cached_layout(self, n, inputs, |tree, n, inputs| {
             let id = tree.id_of(n);
-            let display = tree.store.row::<NveLayout>(id).display();
+            let display = if crate::is_display_none(tree.store, id) {
+                NveDisplay::None
+            } else {
+                tree.store.row::<NveLayout>(id).display()
+            };
             let has_children = !tree.store.children(id).is_empty();
             let mut out = match (display, has_children) {
                 (NveDisplay::None, _) => {

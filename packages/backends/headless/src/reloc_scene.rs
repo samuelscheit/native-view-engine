@@ -9,8 +9,8 @@ use nve_abi::{
 };
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
-    core_realization_order, write_box_shadows_css, BoxShadows, Display as NveDisplay, Image,
-    ImageFit, ImageSrc, Interaction, Layout, Overflow, TextAlign, TextContent, Typography, Visual,
+    core_realization_order, write_box_shadows_css, BoxShadows, Image, ImageFit, ImageSrc,
+    Interaction, Overflow, TextAlign, TextContent, Typography, Visual,
 };
 use nve_engine::{
     encode_scene_reloc, BackendError, LayoutRect, NveApp, RelocBuf, RelocError, SceneRelocInput,
@@ -94,10 +94,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             if event_mask != 0 {
                 flags |= SCENE_NODE_INTERACTIVE;
             }
-            if store
-                .try_row::<Layout>(id)
-                .is_some_and(|l| l.display() == NveDisplay::None)
-            {
+            if crate::is_display_none(store, id) {
                 flags |= SCENE_NODE_HIDDEN;
             }
             let (text_align, font_weight) = store

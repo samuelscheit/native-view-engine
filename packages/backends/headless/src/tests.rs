@@ -335,3 +335,74 @@ fn hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
     assert_eq!(backend.hit_test(&store, 190.0, 190.0), None);
     let _ = hidden_parent;
 }
+
+#[test]
+fn hidden_text_input_collapses_to_zero_layout_no_hit_and_auto_cursor() {
+    use nve_components::interaction::CursorKind;
+    use nve_components::tables::{InputKind, TextInput};
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(
+        1,
+        Viewport {
+            width: 320.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+    );
+
+    let (hidden_bare, hidden_sized, sibling) = {
+        let mut tx = store.tx();
+        let bare = tx.create();
+        let sized = tx.create();
+        let sib = tx.create();
+        tx.set_children(NodeId::ROOT, &[bare, sized, sib]);
+
+        tx.edit::<TextInput>(bare)
+            .input_kind(InputKind::Hidden)
+            .value("secret");
+        tx.edit::<TextInput>(sized)
+            .input_kind(InputKind::Hidden)
+            .value("secret-sized");
+        tx.edit::<Layout>(sized)
+            .width(Length::points(200.0))
+            .height(Length::points(40.0));
+        tx.edit::<Interaction>(sized)
+            .event_mask((EventMask::PRESS | EventMask::FOCUS) as u32)
+            .cursor(CursorKind::Pointer);
+        tx.edit::<Layout>(sib)
+            .width(Length::points(120.0))
+            .height(Length::points(30.0));
+        tx.edit::<Interaction>(sib)
+            .event_mask(EventMask::PRESS as u32);
+        tx.commit_into(&mut changes);
+        (bare, sized, sib)
+    };
+    backend.commit(&store, &changes).unwrap();
+
+    for id in [hidden_bare, hidden_sized] {
+        let r = backend.layout_of(id.raw()).expect("layout entry exists");
+        assert_eq!((r.width, r.height), (0.0, 0.0), "InputKind::Hidden must lay out as 0x0");
+        assert!(!backend.is_interaction_target(&store, id));
+        assert_eq!(backend.effective_cursor(&store, id), CursorKind::Auto);
+    }
+    // Sibling starts at y=0 because both hidden inputs take 0 space in flow.
+    let sib_r = backend.layout_of(sibling.raw()).expect("sibling layout");
+    assert_eq!((sib_r.x, sib_r.y, sib_r.width, sib_r.height), (0.0, 0.0, 120.0, 30.0));
+    assert_eq!(backend.hit_test(&store, 10.0, 10.0), Some(sibling.raw()));
+    assert_eq!(backend.hit_test_interaction(&store, 10.0, 10.0), Some(sibling.raw()));
+
+    // Toggling `InputKind::Hidden -> InputKind::Text` re-triggers layout via `#[effect(layout, paint, semantics)]`.
+    {
+        let mut tx = store.tx();
+        tx.edit::<TextInput>(hidden_sized).input_kind(InputKind::Text);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).unwrap();
+    let grown = backend.layout_of(hidden_sized.raw()).expect("unhidden layout");
+    assert_eq!((grown.width, grown.height), (200.0, 40.0));
+    assert!(backend.is_interaction_target(&store, hidden_sized));
+    assert_eq!(backend.layout_of(sibling.raw()).unwrap().y, 40.0);
+}

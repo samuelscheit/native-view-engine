@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use nve_abi::table::effect;
 use nve_components::tables::{
-    Direction as NveDirection, Display as NveDisplay, Layout as NveLayout,
-    Position as NvePosition, TextContent, Typography,
+    Direction as NveDirection, Layout as NveLayout, Position as NvePosition, TextContent,
+    Typography,
 };
 use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
@@ -75,10 +75,10 @@ pub struct TaffyStoreLayout {
 
 #[inline]
 fn is_out_of_flow(store: &NodeStore, id: NodeId) -> bool {
-    store.try_row::<NveLayout>(id).is_some_and(|l| {
-        l.display() != NveDisplay::None
-            && matches!(l.position(), NvePosition::Absolute | NvePosition::Fixed)
-    })
+    !crate::is_display_none(store, id)
+        && store
+            .try_row::<NveLayout>(id)
+            .is_some_and(|l| matches!(l.position(), NvePosition::Absolute | NvePosition::Fixed))
 }
 
 // Compile-time guarantee: zero `unsafe impl Send`/`Sync` needed because no `CompactLength` is stored.
@@ -362,10 +362,7 @@ impl TaffyStoreLayout {
             self.rect_gen[idx] = cur_gen;
             self.node_gens[idx] = id.generation();
 
-            let self_hidden = ancestor_hidden
-                || store
-                    .try_row::<NveLayout>(id)
-                    .is_some_and(|l| l.display() == NveDisplay::None);
+            let self_hidden = ancestor_hidden || crate::is_display_none(store, id);
 
             if !self_hidden {
                 for &child in self.hoisted[idx].iter().rev() {

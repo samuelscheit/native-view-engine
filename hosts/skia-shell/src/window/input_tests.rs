@@ -2,7 +2,8 @@ use std::path::Path;
 
 use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
 use nve_components::tables::{
-    register_core_tables, FlexDirection, Interaction, Layout, TextInput, Typography, Visual,
+    register_core_tables, Display, FlexDirection, InputKind, Interaction, Layout, TextInput,
+    Typography, Visual,
 };
 use nve_engine::Viewport;
 use nve_store::wire::WireEncoder;
@@ -11,7 +12,7 @@ use winit::event::Ime;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::clipboard::InMemoryClipboard;
-use super::input::{format_keydown_shorthand, word_bounds_at};
+use super::input::{format_keydown_shorthand, is_focusable, word_bounds_at};
 use super::{DesktopApp, DesktopHostError, DesktopSession};
 
 const FOCUS_RING_COLOR: ColorRgba = ColorRgba::rgb(56, 189, 248);
@@ -572,4 +573,117 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
         Some("hello"),
         "clipboard must remain unchanged when copying from secureTextEntry"
     );
+}
+
+#[test]
+fn hidden_input_and_display_none_nodes_have_zero_layout_paint_hit_and_reject_focus() {
+    struct HiddenInputApp {
+        store: NodeStore,
+        encoder: WireEncoder,
+        changes: ChangeSet,
+        initialized: bool,
+        frame_buf: Vec<u8>,
+    }
+
+    impl HiddenInputApp {
+        fn new() -> Self {
+            register_core_tables();
+            Self {
+                store: NodeStore::new(),
+                encoder: WireEncoder::default(),
+                changes: ChangeSet::default(),
+                initialized: false,
+                frame_buf: Vec::new(),
+            }
+        }
+    }
+
+    impl DesktopApp for HiddenInputApp {
+        fn generation(&self) -> u64 {
+            1
+        }
+
+        fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+            if !self.initialized {
+                let mut tx = self.store.tx();
+                for id in [10u32, 11, 12, 13] {
+                    let _ = tx.create_at(StoreNodeId(id));
+                }
+                // Node 10: bare TextInput { input_kind: Hidden, value: "secret" } (no Layout::display)
+                tx.edit::<TextInput>(StoreNodeId(10))
+                    .input_kind(InputKind::Hidden)
+                    .value("secret");
+                tx.edit::<Interaction>(StoreNodeId(10))
+                    .event_mask((EventMask::PRESS | EventMask::FOCUS | EventMask::BLUR) as u32);
+                // Node 11: Display::None TextInput
+                tx.edit::<TextInput>(StoreNodeId(11)).value("display-none");
+                tx.edit::<Layout>(StoreNodeId(11))
+                    .display(Display::None)
+                    .width(Length::points(180.0))
+                    .height(Length::points(36.0));
+                tx.edit::<Interaction>(StoreNodeId(11))
+                    .event_mask((EventMask::FOCUS | EventMask::BLUR) as u32);
+                // Node 12: Display::None parent containing visible-looking TextInput child 13
+                tx.edit::<Layout>(StoreNodeId(12)).display(Display::None);
+                tx.edit::<TextInput>(StoreNodeId(13)).value("under-none");
+                tx.set_children(StoreNodeId(12), &[StoreNodeId(13)]);
+                tx.set_children(
+                    StoreNodeId::ROOT,
+                    &[StoreNodeId(10), StoreNodeId(11), StoreNodeId(12)],
+                );
+                tx.commit_into(&mut self.changes);
+                self.initialized = true;
+            }
+            self.frame_buf.clear();
+            self.encoder
+                .encode(&self.store, &self.changes, &mut self.frame_buf);
+            &self.frame_buf
+        }
+
+        fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {
+            false
+        }
+
+        fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
+            false
+        }
+
+        fn reload(
+            &mut self,
+            _new_dylib_path: &Path,
+            _surface_id: SurfaceId,
+        ) -> Result<u64, DesktopHostError> {
+            Ok(1)
+        }
+    }
+
+    let mut session = DesktopSession::new(
+        HiddenInputApp::new(),
+        1,
+        Viewport {
+            width: 320.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+        ColorRgba::BLACK,
+        false,
+    );
+    session.render_and_rasterize().unwrap();
+
+    assert!(
+        session.backend().display_list().ops.is_empty(),
+        "hidden/display:none inputs must produce 0 paint ops"
+    );
+    for id in [10u32, 11, 13] {
+        let r = session.layout_of(id).expect("layout entry");
+        assert_eq!((r.width, r.height), (0.0, 0.0), "node {id} must be 0x0");
+        assert!(
+            !is_focusable(session.replica.store(), StoreNodeId(id)),
+            "node {id} must not be focusable"
+        );
+        assert!(!session.focus_node(Some(id)).unwrap(), "focus_node({id}) must be rejected");
+        assert_eq!(session.backend().focused_node(), None);
+    }
+    assert!(!session.handle_click_logical(5.0, 5.0).unwrap());
+    assert_eq!(session.backend().focused_node(), None);
 }

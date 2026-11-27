@@ -27,16 +27,6 @@ use nve_store::NodeStore;
 #[cfg(feature = "app-studio")]
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
-#[cfg(all(
-    test,
-    feature = "app-studio",
-    feature = "app-kitchen-sink",
-    feature = "dev",
-    feature = "scene-view"
-))]
-#[path = "tests.rs"]
-mod tests;
-
 /// Surface ID of the first (primary) app mounted into the page.
 pub const DEFAULT_SURFACE_ID: SurfaceId = 1;
 

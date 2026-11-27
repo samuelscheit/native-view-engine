@@ -9,8 +9,8 @@ use nve_backend_skia::{
     SkiaBackend, StateStyleRule, StylePatch, TransitionProperty, TransitionSpec,
 };
 use nve_components::tables::{
-    Interaction, Layout, Motion, StateRules, TextContent, Transform, Transitions, Typography,
-    Visual,
+    InputKind, Interaction, Layout, Motion, StateRules, TextContent, TextInput, Transform,
+    Transitions, Typography, Visual,
 };
 use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
@@ -97,4 +97,79 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
     let mut buf = PixelBuffer::new(300, 200);
     cold.rasterize(&mut buf, ColorRgba::BLACK);
     assert_ne!(buf.get_rgb(20, 20), Some((0, 0, 0)));
+}
+
+#[test]
+fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut backend = SkiaBackend::new();
+    backend.set_viewport(
+        1,
+        Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        },
+    );
+
+    let hidden = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<TextInput>(n)
+            .input_kind(InputKind::Hidden)
+            .value("secret");
+        tx.edit::<Visual>(n).background(Rgba::rgb(255, 0, 0));
+        tx.edit::<Interaction>(n)
+            .event_mask((EventMask::PRESS | EventMask::FOCUS | EventMask::BLUR) as u32);
+        tx.commit_into(&mut changes);
+        n
+    };
+    backend.commit(&store, &changes).unwrap();
+
+    let rect = backend.layout_of(hidden.raw()).expect("hidden input layout entry");
+    assert_eq!((rect.width, rect.height), (0.0, 0.0));
+    assert!(
+        backend.display_list().ops.is_empty(),
+        "InputKind::Hidden must emit 0 paint ops, got {:?}",
+        backend.display_list().ops
+    );
+    assert_eq!(backend.hit_test(&store, 1.0, 1.0), None);
+    assert_eq!(backend.hit_test_interaction(&store, 1.0, 1.0), None);
+    assert!(!backend.is_text_input(&store, hidden));
+    backend.set_focused_node(&store, Some(hidden.raw()));
+    assert_eq!(backend.focused_node(), None);
+
+    // Mutating an already-focused visible input to Hidden automatically clears focus and paint ops.
+    let visible = {
+        let mut tx = store.tx();
+        let v = tx.create();
+        tx.set_children(NodeId::ROOT, &[hidden, v]);
+        tx.edit::<TextInput>(v)
+            .input_kind(InputKind::Text)
+            .value("visible");
+        tx.edit::<Layout>(v)
+            .width(Length::points(180.0))
+            .height(Length::points(36.0));
+        tx.commit_into(&mut changes);
+        v
+    };
+    backend.commit(&store, &changes).unwrap();
+    assert!(backend.is_text_input(&store, visible));
+    backend.set_focused_node(&store, Some(visible.raw()));
+    assert_eq!(backend.focused_node(), Some(visible.raw()));
+    assert!(!backend.display_list().ops.is_empty());
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<TextInput>(visible).input_kind(InputKind::Hidden);
+        tx.commit_into(&mut changes);
+    }
+    backend.commit(&store, &changes).unwrap();
+    assert_eq!(backend.focused_node(), None);
+    assert!(!backend.is_text_input(&store, visible));
+    assert!(backend.display_list().ops.is_empty());
+    let vr = backend.layout_of(visible.raw()).expect("now-hidden layout");
+    assert_eq!((vr.width, vr.height), (0.0, 0.0));
 }

@@ -1,16 +1,53 @@
-use super::*;
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
+use crate::session::*;
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 use nve_abi::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, NveRenderNode, NveSceneRef,
+    EventMask, EventPayload, NativeEvent, NativeEventKind, NveRenderNode, NveSceneRef,
     NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
 };
+use nve_abi::NodeId;
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 use nve_canvas::Canvas;
-use nve_components::tables::{
-    DebugId, Image, ImageFit, Interaction, Overflow, TextContent, Typography, Visual,
-};
-use nve_engine::HotPatchMsg;
-use nve_store::NodeId as StoreNodeId;
+use nve_components::tables::DebugId;
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
+use nve_components::tables::{Image, ImageFit, Interaction, Overflow, TextContent, Typography, Visual};
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
+use nve_backend_web::WebBackend;
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
+use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 
-fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
+pub(crate) fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
     fn walk(store: &NodeStore, id: StoreNodeId, target: &str) -> Option<NodeId> {
         if !store.is_live(id) {
             return None;
@@ -31,6 +68,12 @@ fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
     walk(store, StoreNodeId::ROOT, target)
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
     let node_id = find_node_by_test_id(session.store(), test_id)
         .expect("expected mounted node with requested test_id");
@@ -56,6 +99,12 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         .expect("pressing test_id should trigger an incremental frame")
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 fn assert_valid_dom_html(html: &str) {
     assert!(
         html.starts_with("<div data-nve-id=\"1\""),
@@ -72,6 +121,12 @@ fn assert_valid_dom_html(html: &str) {
     }
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 fn assert_scene_view_matches_store(session: &WebAppSession) {
     let view = session.scene().view();
     // SAFETY: `session.scene().view_ptr()` stays valid while `session` is immutably borrowed.
@@ -150,6 +205,12 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
     }
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 #[test]
 fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
     let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
@@ -184,6 +245,12 @@ fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
     assert_scene_view_matches_store(&session);
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 #[test]
 fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
@@ -266,6 +333,12 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
     assert!(session.handle_hot_patch_frame(&trailing).is_err());
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 #[test]
 fn studio_workspace_mounts_interacts_and_time_travels() {
     let viewport = Viewport {
@@ -356,6 +429,12 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
     assert!(html_live.contains("Live Metrics"));
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 #[test]
 fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
@@ -377,6 +456,12 @@ fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     assert_scene_view_matches_store(&session);
 }
 
+#[cfg(all(
+    feature = "app-studio",
+    feature = "app-kitchen-sink",
+    feature = "dev",
+    feature = "scene-view"
+))]
 #[test]
 fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize() {
     let desktop_vp = Viewport {
@@ -552,6 +637,9 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
 #[test]
 fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
+    use crate::session::WebAppSession;
+    use nve_backend_web::WebBackend;
+    use nve_engine::Viewport;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};

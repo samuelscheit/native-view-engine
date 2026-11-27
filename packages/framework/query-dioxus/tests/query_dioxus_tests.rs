@@ -101,6 +101,7 @@ struct TransportState {
     defer_queries: bool,
     defer_actions: bool,
     reject_title: Option<String>,
+    transport_fail_title: Option<String>,
     pending_wakers: Vec<Waker>,
     query_calls: usize,
     action_calls: usize,
@@ -116,6 +117,7 @@ impl Default for TransportState {
             defer_queries: false,
             defer_actions: false,
             reject_title: None,
+            transport_fail_title: None,
             pending_wakers: Vec::new(),
             query_calls: 0,
             action_calls: 0,
@@ -200,6 +202,9 @@ impl Transport for AsyncDemoTransport {
                 .await;
                 let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                 g.action_calls += 1;
+                if g.transport_fail_title.as_deref() == Some(input.title.as_str()) {
+                    return Err(TransportError::network("simulated upstream unavailable"));
+                }
                 if g.reject_title.as_deref() == Some(input.title.as_str()) {
                     let mut fe = FieldErrors::new();
                     fe.push("title", "server rejected reserved title");
@@ -366,6 +371,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     let transport = AsyncDemoTransport::default();
     transport.state.lock().unwrap().defer_queries = true;
     transport.state.lock().unwrap().reject_title = Some("FORBIDDEN".into());
+    transport.state.lock().unwrap().transport_fail_title = Some("OUTAGE".into());
 
     let clock = Shared::new(ManualClock::new(1_000));
     let client = erased_query_client_with_clock(
@@ -416,7 +422,15 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     assert!(html1.contains("LOADING"), "initial frame must show LOADING: {html1}");
     assert!(html1.contains("method=\"post\""), "ActionForm emits 0-JS form: {html1}");
     assert!(html1.contains("action=\"/todos/rename\""), "{html1}");
-    assert!(html1.contains("type=\"hidden\""), "FormHiddenField emits hidden input: {html1}");
+    let hidden_tag = html1
+        .split('<')
+        .find(|seg| seg.starts_with("input ") && seg.contains("type=\"hidden\""))
+        .and_then(|seg| seg.split('>').next())
+        .unwrap_or_else(|| panic!("FormHiddenField must emit <input type=\"hidden\">: {html1}"));
+    assert!(
+        hidden_tag.contains("name=\"id\"") && hidden_tag.contains("value=\"1\""),
+        "FormHiddenField must emit name=\"id\" and value=\"1\": <{hidden_tag}>"
+    );
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     wake_flag.0.store(false, Ordering::Release);
 
@@ -492,14 +506,43 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
+    let html_field_err = web.render_html(surface.store());
     assert!(
-        web.render_html(surface.store()).contains("server rejected reserved title"),
+        html_field_err.contains("server rejected reserved title"),
         "server FieldErrors must bind inline"
     );
     let still_dirty = surface.in_root_scope(|| ctrl_sig.read().is_dirty());
     assert!(
         still_dirty,
         "failed async ActionForm submit MUST preserve dirty user draft!"
+    );
+
+    // 4b. Non-field/transport ActionForm error renders `form-error` with role="alert" & aria-live="assertive".
+    surface.in_root_scope(|| {
+        ctrl_sig.write().set_text("title", "OUTAGE");
+    });
+    let _ = render_html(&mut surface, &mut web, &mut frame);
+    assert!(surface.dispatch_events(std::slice::from_ref(&submit_ev)));
+    let _ = render_html(&mut surface, &mut web, &mut frame);
+    let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
+    let html_form_err = web.render_html(surface.store());
+    let form_err_tag = html_form_err
+        .split('<')
+        .find(|seg| seg.contains("data-testid=\"form-error\""))
+        .and_then(|seg| seg.split('>').next())
+        .unwrap_or_else(|| panic!("expected data-testid=\"form-error\" banner: {html_form_err}"));
+    assert!(
+        form_err_tag.contains("role=\"alert\"") && form_err_tag.contains("aria-live=\"assertive\""),
+        "form-error must emit role=\"alert\" and aria-live=\"assertive\": <{form_err_tag}>"
+    );
+    let hidden_tag_after = html_form_err
+        .split('<')
+        .find(|seg| seg.starts_with("input ") && seg.contains("type=\"hidden\""))
+        .and_then(|seg| seg.split('>').next())
+        .unwrap_or_else(|| panic!("FormHiddenField must remain mounted: {html_form_err}"));
+    assert!(
+        hidden_tag_after.contains("name=\"id\"") && hidden_tag_after.contains("value=\"2\""),
+        "FormHiddenField must track updated value=\"2\": <{hidden_tag_after}>"
     );
 
     // 5. ActionForm success: commits clean baseline, clears draft, invalidates tag, auto-refetches!

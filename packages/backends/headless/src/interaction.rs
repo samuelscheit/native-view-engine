@@ -8,7 +8,7 @@ use nve_components::interaction::{
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
 use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
-use nve_components::tables::{Interaction, StateRules, TextInput, Visual};
+use nve_components::tables::{InputKind, Interaction, StateRules, TextInput, Visual};
 use nve_engine::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
@@ -36,7 +36,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     /// Returns `true` when `id` participates in pointer hover/active/cursor hit-testing.
     #[inline]
     pub fn is_interaction_target(&self, store: &NodeStore, id: StoreNodeId) -> bool {
-        if !store.is_live(id) {
+        if !store.is_live(id) || is_display_none(store, id) {
             return false;
         }
         let has_inter = store.try_row::<Interaction>(id).is_some_and(|i| {
@@ -46,7 +46,10 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 || !i.state_rules().is_none()
                 || i.tab_index_set()
         });
-        has_inter || store.has::<TextInput>(id) || self.interaction.is_disabled(id.raw())
+        let has_visible_input = store
+            .try_row::<TextInput>(id)
+            .is_some_and(|t| t.input_kind() != InputKind::Hidden);
+        has_inter || has_visible_input || self.interaction.is_disabled(id.raw())
     }
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest interaction-eligible node.
@@ -149,11 +152,17 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].
     pub fn effective_cursor(&self, store: &NodeStore, id: StoreNodeId) -> CursorKind {
+        if is_display_none(store, id) {
+            return CursorKind::Auto;
+        }
         let base_cursor = store
             .try_row::<Interaction>(id)
             .map(|i| i.cursor())
             .unwrap_or(CursorKind::Auto);
-        let base = if base_cursor == CursorKind::Auto && store.has::<TextInput>(id) {
+        let has_visible_input = store
+            .try_row::<TextInput>(id)
+            .is_some_and(|t| t.input_kind() != InputKind::Hidden);
+        let base = if base_cursor == CursorKind::Auto && has_visible_input {
             CursorKind::Text
         } else {
             base_cursor
