@@ -13,7 +13,7 @@ use nve_codegen::{CodegenError, generate_module_table_header, generate_table_fil
 use nve_components::tables::{AriaRole, CORE_TABLE_DESCS, CursorKind, Typography, text_decoration};
 
 fn core_header() -> String {
-    let files = generate_table_files(CORE_TABLE_DESCS, &[]).expect("core tables");
+    let files = generate_table_files(CORE_TABLE_DESCS).expect("core tables");
     files.into_iter().find(|f| f.relative_path.ends_with(".h")).expect("C header").content
 }
 
@@ -50,14 +50,16 @@ fn every_named_field_value_is_mirrored_once() {
     assert!(h.contains(&format!("#define NVE_TYPOGRAPHY_SET_FONT_SIZE {}u", Typography::SET_FONT_SIZE)));
 }
 
-static ROLE: ValueSetDesc = ValueSetDesc { name: "Mode", values: &[("Off", 0), ("On", 1)] };
-static ROLE_OTHER: ValueSetDesc = ValueSetDesc { name: "Mode", values: &[("Off", 0), ("Auto", 1)] };
-static WIDE: ValueSetDesc = ValueSetDesc { name: "Wide", values: &[("Big", 4)] };
-static DUP: ValueSetDesc = ValueSetDesc { name: "Dup", values: &[("FooBar", 0), ("foo_bar", 1)] };
-static ARIA: ValueSetDesc = ValueSetDesc { name: "Aria", values: &[("RoleSwitch", 0)] };
-static ARIA_ROLE: ValueSetDesc = ValueSetDesc { name: "AriaRole", values: &[("Switch", 0)] };
-static TABLE_SET: ValueSetDesc = ValueSetDesc { name: "TableVisual", values: &[("Key", 0)] };
-static EMPTY: ValueSetDesc = ValueSetDesc { name: "Empty", values: &[] };
+static ROLE: ValueSetDesc = ValueSetDesc { name: "Mode", flags: false, values: &[("Off", 0), ("On", 1)] };
+static ROLE_OTHER: ValueSetDesc = ValueSetDesc { name: "Mode", flags: false, values: &[("Off", 0), ("Auto", 1)] };
+static WIDE: ValueSetDesc = ValueSetDesc { name: "Wide", flags: false, values: &[("Big", 4)] };
+static DUP: ValueSetDesc = ValueSetDesc { name: "Dup", flags: false, values: &[("FooBar", 0), ("foo_bar", 1)] };
+static ARIA: ValueSetDesc = ValueSetDesc { name: "Aria", flags: false, values: &[("RoleSwitch", 0)] };
+static ARIA_ROLE: ValueSetDesc = ValueSetDesc { name: "AriaRole", flags: false, values: &[("Switch", 0)] };
+static TABLE_SET: ValueSetDesc = ValueSetDesc { name: "TableVisual", flags: false, values: &[("Key", 0)] };
+static EMPTY: ValueSetDesc = ValueSetDesc { name: "Empty", flags: false, values: &[] };
+static TRI: ValueSetDesc = ValueSetDesc { name: "Tri", flags: false, values: &[("Off", 0), ("Max", 3)] };
+static MULTI_BIT: ValueSetDesc = ValueSetDesc { name: "Bits", flags: true, values: &[("Both", 3)] };
 
 const fn field(name: &'static str, shift: u8, bits: u8, values: &'static ValueSetDesc) -> FieldDesc {
     FieldDesc { name, kind: FieldKind::Enum, word: 0, shift, bits, effects: 0, values: Some(values) }
@@ -85,6 +87,9 @@ static DUPLICATE: TableDesc = table("nve.duplicate", &[field("a", 0, 2, &DUP)]);
 static ACROSS: TableDesc = table("nve.across", &[field("a", 0, 2, &ARIA), field("b", 2, 2, &ARIA_ROLE)]);
 static TABLE_NS: TableDesc = table("nve.table_ns", &[field("a", 0, 2, &TABLE_SET)]);
 static NO_VALUES: TableDesc = table("nve.no_values", &[field("a", 0, 2, &EMPTY)]);
+// The narrow field reuses a set the wide field already emitted: it must still be checked.
+static NARROW_REUSE: TableDesc = table("nve.narrow_reuse", &[field("wide", 0, 2, &TRI), field("narrow", 2, 1, &TRI)]);
+static NOT_A_FLAG: TableDesc = table("nve.not_a_flag", &[field("a", 0, 2, &MULTI_BIT)]);
 
 #[test]
 fn value_sets_are_deduplicated_and_validated() {
@@ -97,12 +102,40 @@ fn value_sets_are_deduplicated_and_validated() {
         (&ACROSS, "NVE_ARIA_ROLE_SWITCH"),
         (&TABLE_NS, "outside `TABLE*`"),
         (&NO_VALUES, "at least one value"),
+        (&NARROW_REUSE, "exceeds field `narrow`"),
+        (&NOT_A_FLAG, "not a single bit"),
     ] {
         match module_header(&[t]) {
             Err(CodegenError::Validation(m)) => assert!(m.contains(why), "{}: {m}", t.name),
             other => panic!("{}: expected `{why}`, got {other:?}", t.name),
         }
     }
+}
+
+/// Swift and Dart mirror the same value sets as C: every enum field set (including ones no
+/// hand-kept list named, like `CursorKind`) and every flag set, keyword-escaped.
+#[test]
+fn value_sets_reach_swift_and_dart() {
+    let files = generate_table_files(CORE_TABLE_DESCS).expect("core tables");
+    let text = |suffix: &str| &files.iter().find(|f| f.relative_path.ends_with(suffix)).expect(suffix).content;
+    let swift = text("NveTables.generated.swift");
+    let dart = text("nve_tables.generated.dart");
+    for desc in CORE_TABLE_DESCS {
+        for set in desc.fields.iter().filter_map(|f| f.values) {
+            let head = if set.flags {
+                format!("public enum Nve{} {{\n", set.name)
+            } else {
+                format!("public enum Nve{}: UInt32, Sendable, CaseIterable {{\n", set.name)
+            };
+            assert_eq!(swift.matches(&head).count(), 1, "Swift {}", set.name);
+            assert_eq!(dart.matches(&format!("abstract final class Nve{} {{", set.name)).count(), 1, "Dart {}", set.name);
+        }
+    }
+    for set in ["CursorKind", "StreamSlotRole", "BoxSizing", "Direction", "InputMode", "EventMask"] {
+        assert!(swift.contains(&format!("public enum Nve{set}")), "Swift {set}");
+    }
+    assert!(swift.contains("case none_ = 3") && swift.contains("case scaleDown = 4"), "escaped + camel");
+    assert!(swift.contains("public enum NveTypographySet {\n    public static let color: UInt32 = 0x1\n"));
 }
 
 #[test]

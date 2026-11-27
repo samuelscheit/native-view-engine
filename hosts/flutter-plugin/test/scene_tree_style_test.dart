@@ -1,3 +1,5 @@
+import 'dart:ui' show PictureRecorder;
+
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nve_flutter/nve_flutter.dart';
@@ -83,6 +85,28 @@ void main() {
       expect(t.paintOrder(r), [d, c, e, a]);
     });
 
+    test('corrupt cyclic frames terminate: parent walks, hit tests, painting, semantics', () {
+      final b = SceneBuilder();
+      final root = b.node(const Rect.fromLTWH(0, 0, 100, 100));
+      final a = b.node(const Rect.fromLTWH(0, 0, 50, 50), parent: root);
+      final c = b.node(const Rect.fromLTWH(0, 0, 20, 20), parent: a);
+      b
+        ..attach(scrollShape, a)
+        ..scrollOffset(a, 0, 5)
+        ..extraChild(c, a) // children cycle a -> c -> a
+        ..extraChild(c, c) // self loop
+        ..reparent(a, c); // parent cycle a <-> c
+      final t = b.tree();
+      expect(t.visualRect(c).isFinite, isTrue, reason: 'bounded parent walk');
+      expect(t.visualRect(a).isFinite, isTrue);
+      expect(t.deepestAt(const Offset(10, 10), (_) => true), isNotNull, reason: 'hit test terminates');
+      final recorder = PictureRecorder();
+      NveScenePainter().paint(Canvas(recorder), t, Offset.zero);
+      recorder.endRecording().dispose();
+      expect(
+          NveCanvasSemanticsAssembler().build(t, const Rect.fromLTWH(0, 0, 100, 100), (_, __) {}), isA<List<Object>>());
+    });
+
     test('empty scene has no root', () {
       final t = NveSceneTree(SceneBuilder().build());
       expect(t.root, -1);
@@ -91,14 +115,22 @@ void main() {
   });
 
   group('NveTextStyle', () {
-    test('inherits unset fields and overrides set or non-default ones', () {
+    test('inherits unset fields and overrides exactly the set ones', () {
       final b = SceneBuilder();
       final parent = b.node(const Rect.fromLTWH(0, 0, 10, 10));
       final child = b.node(Rect.zero, parent: parent);
       final plain = b.node(Rect.zero, parent: parent);
       b
-        ..bits(typographyShape, parent, TypographyTable.set,
-            NveTypographySet.fontFamily | NveTypographySet.lineHeight | NveTypographySet.textDecoration)
+        ..bits(
+            typographyShape,
+            parent,
+            TypographyTable.set,
+            NveTypographySet.color |
+                NveTypographySet.fontSize |
+                NveTypographySet.fontWeight |
+                NveTypographySet.fontFamily |
+                NveTypographySet.lineHeight |
+                NveTypographySet.textDecoration)
         ..bits(typographyShape, parent, TypographyTable.color, packRgba(255, 0, 0))
         ..f32(typographyShape, parent, TypographyTable.fontSize, 20)
         ..bits(typographyShape, parent, TypographyTable.fontWeight, 700)
@@ -106,7 +138,8 @@ void main() {
         ..length(typographyShape, parent, TypographyTable.lineHeight, 150, percent: true)
         ..bits(typographyShape, parent, TypographyTable.textDecoration,
             NveTextDecoration.underline | NveTextDecoration.lineThrough)
-        ..bits(typographyShape, child, TypographyTable.set, NveTypographySet.fontStyle | NveTypographySet.maxLines)
+        ..bits(typographyShape, child, TypographyTable.set,
+            NveTypographySet.fontStyle | NveTypographySet.maxLines | NveTypographySet.textAlign)
         ..bits(typographyShape, child, TypographyTable.fontStyle, NveFontStyle.italic)
         ..bits(typographyShape, child, TypographyTable.maxLines, 2)
         ..bits(typographyShape, child, TypographyTable.textAlign, NveTextAlign.center);
@@ -136,6 +169,36 @@ void main() {
       expect(c == p.resolve(s, typo, child), isTrue);
       expect(c.hashCode, p.resolve(s, typo, child).hashCode);
       expect(c == p, isFalse);
+    });
+
+    test('fields without their set bit never apply, and degenerate sizes fall back', () {
+      final b = SceneBuilder();
+      final parent = b.node(const Rect.fromLTWH(0, 0, 10, 10));
+      final unset = b.node(Rect.zero, parent: parent);
+      final zero = b.node(Rect.zero, parent: parent);
+      final nan = b.node(Rect.zero, parent: parent);
+      b
+        // Non-default bits under an empty `set`: an ancestor's style must flow through untouched.
+        ..bits(typographyShape, unset, TypographyTable.color, packRgba(0, 255, 0))
+        ..f32(typographyShape, unset, TypographyTable.fontSize, 40)
+        ..bits(typographyShape, unset, TypographyTable.fontWeight, 900)
+        ..bits(typographyShape, unset, TypographyTable.textAlign, NveTextAlign.center)
+        ..bits(typographyShape, unset, TypographyTable.set, NveTypographySet.maxLines)
+        ..bits(typographyShape, unset, TypographyTable.maxLines, 3)
+        ..bits(typographyShape, zero, TypographyTable.set, NveTypographySet.fontSize | NveTypographySet.lineHeight)
+        ..f32(typographyShape, zero, TypographyTable.fontSize, 0)
+        ..length(typographyShape, zero, TypographyTable.lineHeight, -4)
+        ..bits(typographyShape, nan, TypographyTable.set, NveTypographySet.fontSize)
+        ..f32(typographyShape, nan, TypographyTable.fontSize, double.nan);
+      final s = b.build();
+      final typo = s.findTable(TypographyTable.key);
+      const inherited = NveTextStyle(color: 7, fontSize: 13, fontWeight: 300);
+      final u = inherited.resolve(s, typo, unset);
+      expect((u.color, u.fontSize, u.fontWeight, u.textAlign), (7, 13, 300, NveTextAlign.start));
+      expect(u.maxLines, 3, reason: 'only the set field applies');
+      final z = inherited.resolve(s, typo, zero);
+      expect((z.fontSize, z.lineHeight), (13, null), reason: 'zero size / negative line height fall back');
+      expect(inherited.resolve(s, typo, nan).fontSize, 13, reason: 'NaN size falls back');
     });
 
     test('weight maps onto the nearest Flutter weight and colors unpack RGBA', () {

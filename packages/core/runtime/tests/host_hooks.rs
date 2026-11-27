@@ -619,15 +619,21 @@ fn rust_app_hooks_forward_through_nve_app_adapter() {
         .app(Box::new(NveAppAdapter::<CapableApp>::create(1)))
         .build();
     rt.tick(0.0).unwrap();
+    assert!(!rt.wake_bridge().is_pending(), "settled");
     let entries = [NveMapEntry::new("count", NveValue::i64(3))];
     // SAFETY: `entries` outlives the call.
     let props = unsafe { NvePropsRef::from_slice(&entries) };
     assert!(rt.set_props(props).unwrap());
+    assert!(rt.wake_bridge().take_pending(), "changed props wake the host");
     assert_eq!(rt.drain_emitted_events().unwrap().len(), 2);
     assert!(rt.drain_emitted_events().unwrap().is_empty());
     assert_eq!(rt.snapshot_state().unwrap(), b"state-v1");
     rt.restore_state(b"state-v2").unwrap();
+    assert!(rt.wake_bridge().take_pending(), "restored state wakes the host");
     assert!(rt.apply_hot_patch(&HotPatchMsg::from_bytes(&hot_patch_bytes()).unwrap()).unwrap());
+    assert!(rt.wake_bridge().take_pending(), "an applied hot patch wakes the host");
+    rt.tick(0.0).unwrap();
+    assert!(!rt.wake_bridge().is_pending(), "the woken tick renders and settles");
 }
 
 /// Minimal app with no optional capabilities.

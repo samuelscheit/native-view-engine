@@ -20,6 +20,9 @@ struct Mounted {
   CGRect frame = CGRectZero;  // absolute
   /// Child views in the order last applied to the container (reorder only when it changes).
   std::vector<const void *> order;
+  /// The node set inherited typography when last described: clearing it must re-describe the
+  /// subtree too.
+  bool typography = false;
 };
 
 /// Decodes `nve.res.image_src` (tag 0: URL, tag 1: encoded bytes) into a platform image.
@@ -33,7 +36,7 @@ id image_from_source(NSData *bytes) {
         std::string_view(reinterpret_cast<const char *>(p + 5), len));
   }
   if (p[0] == 1u) {
-    return [[NvePlatformImage alloc] initWithData:[bytes subdataWithRange:NSMakeRange(5, len)]];
+    return nve::apple::decode_image_data([bytes subdataWithRange:NSMakeRange(5, len)]);
   }
   return nil;
 }
@@ -44,7 +47,10 @@ id image_from_source(NSData *bytes) {
   __weak id<NveAppleComponentViewAdapter> _adapter;
   NveAppleResourceProvider _resources;
   std::unordered_map<uint32_t, Mounted> _views;
+  /// Decoded images by resource id; valid while the id's bytes are (see `_invalidateImages:`).
   NSMutableDictionary<NSNumber *, id> *_images;
+  uint64_t _imagesFrame;
+  uint32_t _imagesEpoch;
 }
 
 - (instancetype)initWithAdapter:(id<NveAppleComponentViewAdapter>)adapter resources:(NveAppleResourceProvider)resources {
@@ -114,8 +120,22 @@ id image_from_source(NSData *bytes) {
     if (view == nil) return nullptr;
     it = _views.emplace(node.node_id, Mounted{view, node.kind, node.semantics.secure_text_entry, CGRectZero, {}}).first;
   }
+  it->second.typography = tables.sets_typography(index);
   [adapter nveUpdateNativeView:it->second.view forNode:node image:[self _imageForResource:node.image_resource]];
   return &it->second;
+}
+
+/// Drops decoded images whose resource bytes changed: the ids in `dirty_resources`, or all of
+/// them on a new `scene_epoch` or a skipped frame (its dirty list is gone).
+- (void)_invalidateImages:(const nve::host::RuntimeSceneReader &)scene {
+  if (scene.frame_id() == _imagesFrame && scene.scene_epoch() == _imagesEpoch) return;
+  if (scene.scene_epoch() != _imagesEpoch || scene.frame_id() != _imagesFrame + 1u) {
+    [_images removeAllObjects];
+  } else {
+    for (const uint32_t id : scene.dirty_resources()) [_images removeObjectForKey:@(id)];
+  }
+  _imagesFrame = scene.frame_id();
+  _imagesEpoch = scene.scene_epoch();
 }
 
 - (NvePlatformView *)_containerFor:(NvePlatformView *)view {
@@ -180,29 +200,43 @@ id image_from_source(NSData *bytes) {
   id<NveAppleComponentViewAdapter> adapter = _adapter;
   if (adapter == nil) return;
   const SceneTables tables(scene);
-  const auto image = scene.find_table(nve::host::Key64{NVE_TABLE_IMAGE_KEY});
-  if ((image && !image->dirty_rows().empty()) || !scene.removed_ids().empty()) [_images removeAllObjects];
+  [self _invalidateImages:scene];
 
   for (const uint32_t raw : scene.removed_ids()) [self _destroy:raw];
   const bool initial = _views.empty();
   if (!initial) {
-    // Inherited typography: a dirty ancestor that sets it re-describes its whole subtree.
-    std::vector<bool> seen(scene.node_capacity(), false);
+    // Inherited typography: a dirty node that sets it now, or did when last described (clearing
+    // it), re-describes its whole subtree. `realized` dedups describes and `walked` dedups subtree
+    // walks separately, so a subtree under a dirty child described earlier in this pass is still
+    // walked. Children are raw generational `NodeId`s: resolve each to its slot index.
+    const size_t cap = scene.node_capacity();
+    std::vector<bool> realized(cap, false), walked(cap, false);
     std::vector<uint32_t> cascade;
-    for (const uint32_t index : scene.dirty_indices()) {
-      if (index >= seen.size() || seen[index] || !scene.is_live(index)) continue;
-      seen[index] = true;
+    const auto realize = [&](uint32_t index) {
+      if (realized[index]) return;
+      realized[index] = true;
       [self _realize:tables index:index];
-      if (tables.sets_typography(index)) cascade.push_back(index);
+    };
+    const auto walk = [&](uint32_t index) {
+      if (walked[index]) return;
+      walked[index] = true;
+      cascade.push_back(index);
+    };
+    for (const uint32_t index : scene.dirty_indices()) {
+      if (index >= cap || !scene.is_live(index)) continue;
+      const auto before = _views.find(tables.node_id_at(index));
+      const bool had = before != _views.end() && before->second.typography;
+      realize(index);
+      if (had || tables.sets_typography(index)) walk(index);
     }
     while (!cascade.empty()) {
       const uint32_t parent = cascade.back();
       cascade.pop_back();
-      for (const uint32_t c : scene.node_children(parent).value_or(std::span<const uint32_t>())) {
-        if (c >= seen.size() || seen[c] || !scene.is_live(c)) continue;
-        seen[c] = true;
-        [self _realize:tables index:c];
-        cascade.push_back(c);
+      for (const uint32_t raw : scene.node_children(parent).value_or(std::span<const uint32_t>())) {
+        const auto c = tables.index_of(raw);
+        if (!c || *c >= cap) continue;
+        realize(*c);
+        walk(*c);
       }
     }
   }

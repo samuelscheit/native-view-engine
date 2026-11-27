@@ -10,7 +10,7 @@ use nve_abi::schema::{
     AbiFileDescriptor,
 };
 use nve_abi::table::{
-    FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc, WordConstsDesc,
+    FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc,
 };
 use nve_hash::{Key64, PRIME1, xxh64};
 
@@ -165,13 +165,41 @@ pub struct RuntimeAbiModel<'a> {
     pub hash: U64Split,
     pub records: Vec<RecordLayout<'a>>,
     /// Host callback typedefs (`NveRuntimeWakeFn`, `NveRuntimeMeasureTextFn`).
-    pub callbacks: &'static [RuntimeFnSignature],
+    pub callbacks: Vec<RuntimeFn>,
     /// `NveRuntimeApi` function-pointer slots, in vtable order.
-    pub slots: &'static [RuntimeFnSignature],
+    pub slots: Vec<RuntimeFn>,
 }
 
+/// One runtime C signature with its validated `dart:ffi` spellings.
+#[derive(Debug)]
+pub struct RuntimeFn {
+    pub sig: &'static RuntimeFnSignature,
+    /// `dart:ffi` native function type (`ffi.Int32 Function(ffi.Pointer<ffi.Void> handle, …)`).
+    pub dart_native: String,
+    /// Dart-side `asFunction` type (`int Function(ffi.Pointer<ffi.Void> handle, …)`).
+    pub dart: String,
+}
+
+impl core::ops::Deref for RuntimeFn {
+    type Target = RuntimeFnSignature;
+    fn deref(&self) -> &RuntimeFnSignature {
+        self.sig
+    }
+}
+
+/// The opaque handle typedef every runtime slot takes (`typedef void* NveRuntimeHandle`).
+pub const RUNTIME_HANDLE: &str = "NveRuntimeHandle";
+
 impl<'a> RuntimeAbiModel<'a> {
-    pub fn new(file: &'a AbiFileDescriptor, base: &AbiModel<'a>) -> Result<Self, CodegenError> {
+    /// Validates `callbacks` / `slots` (every type a known scalar, record, handle, or callback
+    /// typedef; every parameter named) on top of `base`, whose records the runtime records may
+    /// store by value (`NveRuntimeTextStyle::font_family: NveStrSlice`).
+    pub fn new(
+        file: &'a AbiFileDescriptor,
+        base: &AbiModel<'a>,
+        callbacks: &'static [RuntimeFnSignature],
+        slots: &'static [RuntimeFnSignature],
+    ) -> Result<Self, CodegenError> {
         let records = layout_records_on(&base.records, &[file])?;
         super::validate::abi(&[file], &records)?;
         if let Some(r) = records
@@ -183,12 +211,33 @@ impl<'a> RuntimeAbiModel<'a> {
                 r.name
             )));
         }
+        let names = super::spell::dart::CNames {
+            records: base.records.iter().chain(&records).map(|r| r.name).chain([RUNTIME_HANDLE]).collect(),
+            callbacks: callbacks
+                .iter()
+                .map(|c| c.name)
+                .chain(CALLBACK_ALIASES)
+                .chain(["NveGetInterfaceFn"])
+                .collect(),
+        };
+        let spell = |sigs: &'static [RuntimeFnSignature]| -> Result<Vec<RuntimeFn>, CodegenError> {
+            sigs.iter()
+                .map(|sig| {
+                    let fail = |why: String| CodegenError::validation(format!("runtime signature `{}`: {why}", sig.name));
+                    Ok(RuntimeFn {
+                        sig,
+                        dart_native: names.c_fn(sig.ret, sig.params, false).map_err(fail)?,
+                        dart: names.c_fn(sig.ret, sig.params, true).map_err(fail)?,
+                    })
+                })
+                .collect()
+        };
         Ok(Self {
             file,
             hash: U64Split::new(nve_abi::NVE_RUNTIME_SCHEMA_HASH),
             records,
-            callbacks: nve_abi::RUNTIME_CALLBACK_TYPEDEFS,
-            slots: nve_abi::RUNTIME_API_SLOTS,
+            callbacks: spell(callbacks)?,
+            slots: spell(slots)?,
         })
     }
 }
@@ -232,58 +281,6 @@ impl TableModel<'_> {
 
 /// Validates `tables` (unique names, keys that match their names, fields every host reader
 /// accepts) and wraps them for rendering, in the given order.
-/// One `word_enum!` / flag set mirrored next to the table specs.
-#[derive(Debug)]
-pub struct ConstsModel {
-    /// `UpperCamel` (`ImageFit`); hosts prefix it (`NveImageFit`, `NVE_IMAGE_FIT_*`).
-    pub name: String,
-    pub screaming: String,
-    pub flags: bool,
-    pub entries: Vec<ConstEntry>,
-}
-
-#[derive(Debug)]
-pub struct ConstEntry {
-    pub screaming: String,
-    /// `lowerCamel`, with a trailing `_` for Swift keywords (and `none`, which shadows `Optional.none`).
-    pub swift: String,
-    pub value: u32,
-}
-
-const SWIFT_RESERVED: &[&str] = &[
-    "Any", "Self", "as", "break", "case", "catch", "class", "continue", "default", "defer", "deinit",
-    "do", "else", "enum", "extension", "fallthrough", "false", "for", "func", "guard", "if", "import",
-    "in", "init", "inout", "internal", "is", "let", "nil", "none", "operator", "private", "protocol",
-    "public", "repeat", "rethrows", "return", "self", "static", "struct", "subscript", "super",
-    "switch", "throw", "throws", "true", "try", "typealias", "var", "where", "while",
-];
-
-pub fn consts_model(descs: &[&WordConstsDesc]) -> Result<Vec<ConstsModel>, CodegenError> {
-    let mut names = BTreeSet::new();
-    let mut out = Vec::with_capacity(descs.len());
-    for d in descs {
-        if !names.insert(d.name) || d.entries.is_empty() {
-            return Err(CodegenError::validation(format!("word constants `{}`: duplicate or empty", d.name)));
-        }
-        let entries = d
-            .entries
-            .iter()
-            .map(|&(name, value)| {
-                let base = super::spell::camel(&super::spell::snake(name.trim_end_matches('_')));
-                let swift = if SWIFT_RESERVED.contains(&base.as_str()) { format!("{base}_") } else { base };
-                ConstEntry { screaming: super::spell::screaming(name.trim_end_matches('_')), swift, value }
-            })
-            .collect();
-        out.push(ConstsModel {
-            name: d.name.to_owned(),
-            screaming: super::spell::screaming(d.name),
-            flags: d.flags,
-            entries,
-        });
-    }
-    Ok(out)
-}
-
 pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>, CodegenError> {
     let mut names = BTreeSet::new();
     let mut out = Vec::with_capacity(tables.len());
@@ -330,6 +327,11 @@ pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc
         for f in t.desc.fields {
             let Some(set) = f.values else { continue };
             let err = |why: String| Err(table_error(t.desc, &format!("value set `{}`: {why}", set.name)));
+            // Every field that carries the set must hold every value, also when the set was
+            // already emitted for a wider field.
+            if let Some(&(name, _)) = set.values.iter().find(|&&(_, v)| f.bits < 32 && v >> f.bits != 0) {
+                return err(format!("value `{name}` exceeds field `{}`", f.name));
+            }
             if let Some(seen) = out.iter().find(|s| s.name == set.name) {
                 if *seen != set {
                     return err("defined twice differently".into());
@@ -345,8 +347,8 @@ pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc
                 if !ident(name) || !constants.insert(constant.clone()) {
                     return err(format!("bad or duplicate name `{name}` (NVE_{constant})"));
                 }
-                if f.bits < 32 && value >> f.bits != 0 {
-                    return err(format!("value `{name}` exceeds field `{}`", f.name));
+                if set.flags && !value.is_power_of_two() {
+                    return err(format!("flag `{name}` is not a single bit"));
                 }
             }
             out.push(set);

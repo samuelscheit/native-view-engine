@@ -9,7 +9,9 @@ using nve::apple::NodeView;
 @interface RCTNveComponentView () <UITextFieldDelegate, UIScrollViewDelegate>
 @end
 
-@implementation RCTNveComponentView
+@implementation RCTNveComponentView {
+  BOOL _updatingScrollFrame;
+}
 
 - (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload {
   [super handleNveEvent:eventName payload:payload];
@@ -70,7 +72,8 @@ using nve::apple::NodeView;
   UIFont *font = nve::apple::platform_font(node.style.font_size, node.style.font_weight, node.style.italic);
   if ([view isKindOfClass:[NveAppleImageView class]]) {
     nve::apple::update_image_view((NveAppleImageView *)view, image, node.image_fit, node.style.border_radius);
-    if (node.image_tint_rgba >> 24u) view.tintColor = nve::apple::color_from_rgba(node.image_tint_rgba);
+    // A cleared tint must clear the view's tint too, not keep the last one.
+    view.tintColor = (node.image_tint_rgba >> 24u) != 0u ? nve::apple::color_from_rgba(node.image_tint_rgba) : nil;
   } else if ([view isKindOfClass:[UILabel class]]) {
     UILabel *label = (UILabel *)view;
     NSString *next = nve::apple::nsstring_from_sv(node.text);
@@ -103,12 +106,20 @@ using nve::apple::NodeView;
 }
 
 - (void)nveUpdateScrollView:(UIView *)scrollView contentSize:(CGSize)contentSize {
-  if ([scrollView isKindOfClass:[UIScrollView class]]) ((UIScrollView *)scrollView).contentSize = contentSize;
+  if (![scrollView isKindOfClass:[UIScrollView class]]) return;
+  UIScrollView *scroll = (UIScrollView *)scrollView;
+  if (CGSizeEqualToSize(scroll.contentSize, contentSize)) return;
+  // A shrinking content size clamps the offset and fires `scrollViewDidScroll:`: that is the
+  // runtime's own layout, not a user scroll to report back.
+  _updatingScrollFrame = YES;
+  scroll.contentSize = contentSize;
+  _updatingScrollFrame = NO;
 }
 
 #pragma mark - Input
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+  if (_updatingScrollFrame) return;
   const auto nodeId = static_cast<uint32_t>(scrollView.tag);
   if (nodeId == 0u) return;
   [self.nveHost dispatchScrollOnNodeId:nodeId

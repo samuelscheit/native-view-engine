@@ -68,48 +68,59 @@ public final class NveSurfaceController: ObservableObject {
     }
 
     deinit {
-        if let dylibHandle {
-            try? session.attachApp(nil)
+        // The app's code lives in the dylib: unload it only once the runtime no longer holds it.
+        if let dylibHandle, (try? session.attachApp(nil)) != nil {
             dlclose(dylibHandle)
         }
     }
 
     // MARK: App lifecycle
 
-    /// Attaches `resolved` (detaching and closing any previous app / dylib).
+    /// Attaches `resolved`, atomically replacing any previous app: the runtime keeps the old app
+    /// running when the new interface is rejected, so the old dylib is closed only on success.
     public func attach(_ resolved: NveResolvedInterface) throws {
-        try detach()
-        do {
-            try session.attachApp(resolved.getInterface)
-        } catch {
-            if let lib = resolved.dylibHandle { dlclose(lib) }
-            throw error
-        }
-        dylibHandle = resolved.dylibHandle
-        resolutionSource = resolved.source
-        pump()
+        try swapApp(resolved, restoring: Data())
     }
 
     public func detach() throws {
         try session.attachApp(nil)
-        if let dylibHandle {
-            dlclose(dylibHandle)
-            self.dylibHandle = nil
-        }
-        resolutionSource = nil
-        lastPropsValue = nil
-        lastDirectPropsEqual = nil
+        releaseLocalApp()
     }
 
-    /// Tier-2 hot swap: snapshots app state, attaches the rebuilt dylib, restores the state.
+    /// Tier-2 hot swap: snapshots app state, swaps in the rebuilt dylib, and restores the state
+    /// before the first frame of the new app is pumped.
     public func reload(dylibPath: String, symbol: String = "nve_get_interface") throws {
         let state = (try? session.snapshotState()) ?? Data()
         guard let next = NveInterfaceResolver.resolve(symbol: symbol, dylibPath: dylibPath) else {
             throw NveRuntimeError.runtimeUnavailable
         }
-        try attach(next)
+        try swapApp(next, restoring: state)
+    }
+
+    private func swapApp(_ resolved: NveResolvedInterface, restoring state: Data) throws {
+        do {
+            try session.attachApp(resolved.getInterface)
+        } catch {
+            // Every `dlopen` holds its own reference (a reload of the same path returns the same
+            // handle), so the rejected one is released even when it equals the live handle.
+            if let lib = resolved.dylibHandle { dlclose(lib) }
+            throw error
+        }
+        releaseLocalApp()
+        dylibHandle = resolved.dylibHandle
+        resolutionSource = resolved.source
         if !state.isEmpty { try? session.restoreState(state) }
         pump()
+    }
+
+    /// Forgets the local app the runtime no longer runs (detached, replaced, or dropped by a
+    /// successful pair): closes its dylib and the props it was last sent.
+    private func releaseLocalApp() {
+        if let dylibHandle { dlclose(dylibHandle) }
+        dylibHandle = nil
+        resolutionSource = nil
+        lastPropsValue = nil
+        lastDirectPropsEqual = nil
     }
 
     public var isMounted: Bool { resolutionSource != nil }
@@ -117,8 +128,11 @@ public final class NveSurfaceController: ObservableObject {
     // MARK: Pairing
 
     /// Pairs with a remote `nve dev` server (`nve://pair?...` or `ws(s)://...`).
+    /// A successful pair atomically replaces (and drops) the attached local app; a failed one
+    /// keeps it running.
     public func pair(uri: String, token: String = "") throws {
         try session.pairConnect(uri: uri, token: token)
+        releaseLocalApp()
         isPaired = session.isPaired
     }
 
@@ -250,7 +264,8 @@ public final class NveSurfaceController: ObservableObject {
         lastTick = now
         if (try? session.tick(dt: dt)) == true { store.sync() }
         isPaired = session.isPaired
-        guard let onEvent, let batch = try? session.drainEmittedEvents(), batch.len > 0 else { return }
+        // Always drain: undrained events would pile up in the runtime while nobody listens.
+        guard let batch = try? session.drainEmittedEvents(), batch.len > 0, let onEvent else { return }
         for event in NveDirectEventWriter.decodeBatch(batch) { onEvent(event) }
     }
 }

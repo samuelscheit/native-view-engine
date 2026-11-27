@@ -6,13 +6,13 @@
 library;
 
 import 'dart:ffi' as ffi;
-import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'bin_codec.dart';
 import 'generated/nve_abi_ffi.generated.dart';
 import 'hybrid_runtime.dart';
 import 'key64.dart';
+import 'native_heap.dart';
 import 'utf8.dart';
 
 /// Owned heap byte buffer returned across hybrid C-ABI vtables and released via `free_bytes`.
@@ -63,35 +63,6 @@ typedef HybridSetPropsDirectDart = int Function(
   ffi.Pointer<NveMapEntry> entries,
   int count,
 );
-
-/// Self-contained C heap allocator so `nve_host` needs zero third-party FFI packages.
-abstract final class _NativeMem {
-  static final ffi.DynamicLibrary _libc =
-      Platform.isWindows ? ffi.DynamicLibrary.open('ucrtbase.dll') : ffi.DynamicLibrary.process();
-
-  static final ffi.Pointer<ffi.Void> Function(int, int) _calloc = _libc.lookupFunction<
-      ffi.Pointer<ffi.Void> Function(ffi.Size, ffi.Size),
-      ffi.Pointer<ffi.Void> Function(int, int)>('calloc');
-
-  static final void Function(ffi.Pointer<ffi.Void>) _free = _libc.lookupFunction<
-      ffi.Void Function(ffi.Pointer<ffi.Void>),
-      void Function(ffi.Pointer<ffi.Void>)>('free');
-
-  static ffi.Pointer<ffi.Uint8> allocZeroed(int byteCount) {
-    final size = byteCount <= 0 ? 1 : byteCount;
-    final ptr = _calloc(1, size);
-    if (ptr == ffi.nullptr) {
-      throw StateError('Failed to allocate $size native bytes');
-    }
-    return ptr.cast<ffi.Uint8>();
-  }
-
-  static void free(ffi.Pointer<ffi.NativeType> ptr) {
-    if (ptr != ffi.nullptr) {
-      _free(ptr.cast<ffi.Void>());
-    }
-  }
-}
 
 /// Chunked, zero-initialized native bump arena backing synchronous `dart:ffi` hybrid calls.
 ///
@@ -170,7 +141,7 @@ final class HybridArena {
       doubled = twice > _maxDoublingChunkBytes ? _maxDoublingChunkBytes : twice;
     }
     final nextCap = size > doubled ? size : doubled;
-    final chunk = _NativeMem.allocZeroed(nextCap);
+    final chunk = NativeHeap.zeroed<ffi.Uint8>(nextCap);
     _chunks.add(chunk);
     _current = chunk;
     _capacity = nextCap;
@@ -281,7 +252,7 @@ final class HybridArena {
     }
     _disposed = true;
     for (final chunk in _chunks) {
-      _NativeMem.free(chunk);
+      NativeHeap.free(chunk);
     }
     _chunks.clear();
     _current = ffi.nullptr;

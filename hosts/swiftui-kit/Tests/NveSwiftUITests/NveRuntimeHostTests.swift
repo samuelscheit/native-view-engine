@@ -275,6 +275,38 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertNil(store.image(resource: 9), "invalid JPEG bytes decode to nil, never crash")
     }
 
+    func testImageSourcesFollowDirtyResourcesEpochsAndFrameGaps() throws {
+        _ = buildScene()
+        let store = NveSceneStore(session: try makeSession())
+        let url = { (s: String) -> [UInt8] in [0, UInt8(s.utf8.count), 0, 0, 0] + Array(s.utf8) }
+        m.resources = [4: url("a"), 5: url("b")]
+        store.sync()
+        XCTAssertEqual(store.imageSource(4), .url("a"))
+        XCTAssertEqual(store.imageSource(5), .url("b"))
+        // Rewritten in place: only the listed id is re-read.
+        m.resources = [4: url("a2"), 5: url("b2")]
+        m.frameId = 2
+        m.dirtyResources = [4]
+        store.sync()
+        XCTAssertEqual(store.imageSource(4), .url("a2"))
+        XCTAssertEqual(store.imageSource(5), .url("b"), "ids absent from dirty_resources keep their bytes")
+        // A new scene epoch reuses ids for other bytes: everything is re-read.
+        m.resources = [4: url("a3"), 5: url("b3")]
+        m.frameId = 3
+        m.dirtyResources = []
+        m.sceneEpoch = 1
+        store.sync()
+        XCTAssertEqual(store.imageSource(5), .url("b3"))
+        // A skipped frame may have dirtied anything.
+        m.resources = [4: url("a4"), 5: url("b4")]
+        m.frameId = 5
+        store.sync()
+        XCTAssertEqual(store.imageSource(4), .url("a4"))
+        XCTAssertEqual(store.imageSource(5), .url("b4"))
+        // A 0x0 / undecodable encoded image is nil.
+        XCTAssertNil(NveImageCache().image(encoded: [0x89, 0x50, 0x4E, 0x47], key: "png-header-only"))
+    }
+
     func testControllerDrivesPropsEventsLayoutReloadAndPairing() throws {
         _ = buildScene()
         let controller = try NveSurfaceController(
@@ -296,6 +328,16 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertTrue(controller.dispatchEvent(NveEvent(surfaceId: 7, nodeId: 2, timestampUs: 1, kind: .press, payload: .point(x: 1, y: 2))))
         XCTAssertEqual(m.dispatched.last?.first?.nodeId, 2)
         XCTAssertEqual(received.map(\.nodeId), [3], "outbound events are drained after each pump")
+        controller.onEvent = nil
+        m.emitted = [NveDirectEvent()]
+        controller.pump()
+        XCTAssertTrue(m.emitted.isEmpty, "events are drained even without a listener")
+
+        // A rejected app keeps the running one (the runtime swaps atomically).
+        m.failNextWith = -1
+        XCTAssertThrowsError(try controller.attach(NveResolvedInterface(getInterface: noApp, source: .dynamicLibrary)))
+        XCTAssertEqual(controller.resolutionSource, .explicit)
+        XCTAssertEqual(m.detaches, 0, "attach swaps, it never detaches first")
 
         // Unconstrained axes take the laid-out root rect (fallback when it is empty).
         let rootRect = m.scene.rects[NodeId.root.index]
@@ -308,12 +350,17 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(m.viewports.last?.0, 320)
         XCTAssertEqual(m.viewports.last?.2, 2)
 
+        m.failNextWith = -1
+        XCTAssertThrowsError(try controller.pair(uri: "nve://pair?host=h&ws=1"))
+        XCTAssertTrue(controller.isMounted, "a failed pair keeps the local app")
         try controller.pair(uri: "nve://pair?host=h&ws=1")
         XCTAssertTrue(controller.isPaired)
+        XCTAssertFalse(controller.isMounted, "a successful pair replaced the local app")
+        XCTAssertTrue(controller.setProps(["title": "A", "count": 1]), "props are resent to the paired app")
         try controller.unpair()
         XCTAssertFalse(controller.isPaired)
         try controller.detach()
-        XCTAssertEqual(m.detaches, 2, "attach detaches first, then the explicit detach")
+        XCTAssertEqual(m.detaches, 1)
         XCTAssertFalse(controller.isMounted)
     }
 

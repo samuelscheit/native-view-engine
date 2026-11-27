@@ -126,7 +126,9 @@ using nve::apple::NodeView;
   if ([view isKindOfClass:[NveFlippedContainerView class]]) ((NveFlippedContainerView *)view).nveNodeId = node.node_id;
   if ([view isKindOfClass:[NveAppleImageView class]]) {
     nve::apple::update_image_view((NveAppleImageView *)view, image, node.image_fit, node.style.border_radius);
-    if (node.image_tint_rgba >> 24u) ((NveAppleImageView *)view).contentTintColor = nve::apple::color_from_rgba(node.image_tint_rgba);
+    // A cleared tint must clear the view's tint too, not keep the last one.
+    ((NveAppleImageView *)view).contentTintColor =
+        (node.image_tint_rgba >> 24u) != 0u ? nve::apple::color_from_rgba(node.image_tint_rgba) : nil;
   } else if ([view isKindOfClass:[NSTextField class]]) {
     NSTextField *field = (NSTextField *)view;
     if (node.kind == NodeKind::TextInput) {

@@ -39,7 +39,16 @@ public final class NveSceneStore: ObservableObject {
 
     public let session: NveRuntimeSession
     public let imageCache: NveImageCache
-    private var imageSources: [UInt32: NveImageSource] = [:]
+    /// Decoded `ImageSrc` per resource id, valid while the id's bytes are (see `sync()`).
+    private var imageSources: [UInt32: CachedImageSource] = [:]
+    private var imagesEpoch: UInt32 = 0
+    private var imagesFrame: UInt64 = 0
+
+    private struct CachedImageSource {
+        let source: NveImageSource
+        /// `imageCache` key of encoded bytes: content-derived, hashed once per resource version.
+        let encodedKey: String?
+    }
 
     public init(session: NveRuntimeSession, imageCache: NveImageCache = .shared) {
         self.session = session
@@ -56,30 +65,25 @@ public final class NveSceneStore: ObservableObject {
 
     /// Absorbs a newly published frame (call after `tick` reported a change).
     public func sync() {
-        var scrollNodes: [NodeId] = []
-        let synced: Bool = (try? session.withScene { scene in
-            let tables = NveRuntimeTables(scene: scene)
-            for raw in scene.removedIds { scrollOffsets.removeValue(forKey: NodeId(raw: raw)) }
-            if let image = tables.image, !image.dirtyRows.isEmpty || !scene.removedIds.isEmpty {
+        _ = try? session.withScene { scene in
+            // Resource ids keep their bytes unless listed in `dirtyResources`; a new scene epoch
+            // (ids reused by another app / pairing) or a skipped frame invalidates every entry.
+            if scene.sceneEpoch != imagesEpoch || scene.frameId != imagesFrame &+ 1 {
                 imageSources.removeAll(keepingCapacity: true)
+            } else {
+                for id in scene.dirtyResources { imageSources.removeValue(forKey: id) }
             }
-            if let scroll = tables.scroll {
-                for r in 0..<scroll.rowCount {
-                    guard let owner = scroll.owner(r) else { continue }
-                    let id = scroll.isSparse ? NodeId(raw: owner) : scene.nodeId(at: Int(owner))
-                    if let id, scene.index(of: id) != nil { scrollNodes.append(id) }
-                }
+            imagesEpoch = scene.sceneEpoch
+            imagesFrame = scene.frameId
+            // The runtime owns scroll offsets (incl. programmatic `requested_scroll_*`) and publishes
+            // every container's visual child shift with the frame.
+            scrollOffsets.removeAll(keepingCapacity: true)
+            for s in scene.scrollOffsets {
+                scrollOffsets[NodeId(raw: s.node_id)] = CGPoint(x: CGFloat(s.x), y: CGFloat(s.y))
             }
             lastDirtyCount = scene.dirtyIndices.count
             lastRemovedCount = scene.removedIds.count
             frameId = scene.frameId
-            return true
-        }) ?? false
-        guard synced else { return }
-        // The runtime owns scroll offsets (incl. programmatic `requested_scroll_*`); a zero delta
-        // reads the clamped current value once the scene borrow is released.
-        for id in scrollNodes {
-            if let offset = try? session.scroll(id, by: .zero) { scrollOffsets[id] = offset }
         }
     }
 
@@ -119,21 +123,25 @@ public final class NveSceneStore: ObservableObject {
         } ?? nil
     }
 
-    /// Decoded `ImageSrc` of resource `id`, cached until an `nve.image` row changes.
-    public func imageSource(_ id: UInt32) -> NveImageSource? {
+    /// Decoded `ImageSrc` of resource `id`, cached until the runtime republishes the id's bytes.
+    public func imageSource(_ id: UInt32) -> NveImageSource? { cachedImageSource(id)?.source }
+
+    private func cachedImageSource(_ id: UInt32) -> CachedImageSource? {
         if let cached = imageSources[id] { return cached }
         let bytes = try? session.withScene { try session.resource(id, in: $0).bytes }
         guard let bytes, let src = NveImageSource(resourceBytes: bytes) else { return nil }
-        imageSources[id] = src
-        return src
+        let key: String? = if case let .encoded(data) = src { "nve.res.image_src#\(Xxh64.hash(data))" } else { nil }
+        let cached = CachedImageSource(source: src, encodedKey: key)
+        imageSources[id] = cached
+        return cached
     }
 
     /// `CGImage` for an `nve.image` resource.
     public func image(resource id: UInt32) -> CGImage? {
-        switch imageSource(id) {
+        guard let cached = cachedImageSource(id) else { return nil }
+        switch cached.source {
         case let .url(url): return imageCache.image(for: url)
-        case let .encoded(bytes): return imageCache.image(encoded: bytes, key: "nve.res.image_src#\(Xxh64.hash(bytes))")
-        case nil: return nil
+        case let .encoded(bytes): return imageCache.image(encoded: bytes, key: cached.encodedKey ?? "")
         }
     }
 

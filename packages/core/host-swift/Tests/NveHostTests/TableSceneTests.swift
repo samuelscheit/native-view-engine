@@ -167,7 +167,7 @@ final class TableSceneTests: XCTestCase {
                 XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op))
                 XCTAssertNotNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 0, rows: rp, owners: op))
                 // Row index: page 0 maps node 7 -> row 0 and node 3 -> row 1 (`row + 1`).
-                var pages = [UInt32](repeating: 0, count: rowIndexPageLen)
+                var pages = [UInt32](repeating: 0, count: Int(nveRowIndexPageLen))
                 pages[7] = 1
                 pages[3] = 2
                 let dir: [UInt32] = [0, .max]
@@ -186,12 +186,19 @@ final class TableSceneTests: XCTestCase {
                         XCTAssertEqual(ix?.row(of: 0x0200_0003), 1)
                         XCTAssertNil(ix?.row(of: 0x0100_0003))  // stale generation of slot 3
                         XCTAssertNil(ix?.row(of: 1))
-                        // A row past `rowCount` and a partial page are refused.
+                        // A row past `rowCount` misses; a partial page alone is no row index.
                         let short = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 1, rows: rp, owners: op,
                                                 rowIndexDir: dp, rowIndexPages: pp)
                         XCTAssertNil(short?.row(ofNode: 3))
                         XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
                                                  rowIndexDir: dp, rowIndexPages: UnsafeBufferPointer(rebasing: pp[0..<255])))
+                    }
+                    // A partial tail page after whole ones is dropped (as in C++): unreachable.
+                    (pages + [9, 9, 9]).withUnsafeBufferPointer { pp in
+                        let tail = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
+                                               rowIndexDir: dp, rowIndexPages: pp)
+                        XCTAssertEqual(tail?.rowIndexPages.count, Int(nveRowIndexPageLen))
+                        XCTAssertEqual(tail?.row(ofNode: 3), 1)
                     }
                 }
                 XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 3, rows: rp))
