@@ -224,8 +224,8 @@ unsafe extern "C" fn recording_measure(
     unsafe {
         let s = &*style;
         (*ctx.cast::<Vec<Measured>>()).push(Measured {
-            text: text.as_str().unwrap().to_owned(),
-            family: s.font_family.as_str().unwrap().to_owned(),
+            text: text.as_str().expect("UTF-8 text").to_owned(),
+            family: s.font_family.as_str().expect("UTF-8 family").to_owned(),
             size: s.font_size,
             weight: s.font_weight,
             font_style: s.font_style,
@@ -282,8 +282,8 @@ fn c_abi_text_measurer_receives_the_resolved_inherited_typography() {
     tx.commit_into(&mut changes);
 
     let mut seen: Vec<Measured> = Vec::new();
-    // SAFETY: Live handle; `seen` outlives the measurer (cleared below).
     let ctx = (&raw mut seen).cast::<c_void>();
+    // SAFETY: Live handle; `seen` outlives the measurer (cleared below).
     assert_eq!(unsafe { (s.api.set_text_measurer)(s.h, Some(recording_measure), ctx) }, OK);
     s.submit(&encode(&store, &changes, &mut WireEncoder::default()));
     // SAFETY: Live handle.

@@ -97,7 +97,7 @@ impl<F: AsRef<str>> TextStyle<F> {
     }
 }
 
-impl<'a> TextStyle<&'a str> {
+impl TextStyle<&str> {
     /// Default typography at `font_size` (the host's default family).
     pub fn sized(font_size: f32) -> Self {
         Self {
