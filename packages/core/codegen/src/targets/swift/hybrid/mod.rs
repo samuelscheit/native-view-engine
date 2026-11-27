@@ -20,8 +20,7 @@ use types_emitter::{emit_swift_enum, emit_swift_module, emit_swift_struct, emit_
 
 use crate::error::CodegenError;
 use crate::naming::{
-    c_field_ident, escape_c_like_string, format_float_literal, swift_ident, to_camel_case,
-    to_pascal_case,
+    c_field_ident, escape_c_like_string, swift_ident, to_camel_case, to_pascal_case,
 };
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{

@@ -320,39 +320,21 @@ fn generated_kotlin_compiles_with_werror_and_round_trips_on_the_jvm() {
 /// `rustc`: the generated `overlay_view_hybrid` rlib, then the provider staticlib exporting
 /// `nve_get_interface`.
 fn build_overlay_provider(dir: &Path) -> PathBuf {
-    let (nve_abi_rlib, dep_dirs) = rust_deps::locate_nve_abi_and_dep_dirs();
-    let extern_abi = format!("nve_abi={}", nve_abi_rlib.display());
-    let rlib = dir.join("liboverlay_view_hybrid.rlib");
-    let mut lib = Command::new("rustc");
-    lib.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=overlay_view_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    rust_deps::add_dep_search_dirs(&mut lib, dir, &dep_dirs);
-    run(
-        lib.args(["--extern", &extern_abi])
-            .arg(dir.join("overlay_view_hybrid.generated.rs"))
-            .arg("-o")
-            .arg(&rlib),
-        "rustc generated overlay rlib",
+    let rustc = common::rustc::Rustc::locate();
+    let rlib = rustc.build_lib(
+        dir,
+        "overlay_view_hybrid",
+        &dir.join("overlay_view_hybrid.generated.rs"),
     );
     let provider = dir.join("overlay_provider.rs");
     std::fs::write(&provider, OVERLAY_PROVIDER_RS).expect("write provider");
     let staticlib = dir.join("liboverlay_provider.a");
-    let mut cmd = Command::new("rustc");
-    cmd.args(["--edition=2024", "--crate-type=staticlib", "-D", "warnings"]);
-    rust_deps::add_dep_search_dirs(&mut cmd, dir, &dep_dirs);
-    run(
-        cmd.args(["--extern", &extern_abi])
-            .arg("--extern")
-            .arg(format!("overlay_view_hybrid={}", rlib.display()))
-            .arg(&provider)
-            .arg("-o")
-            .arg(&staticlib),
-        "rustc overlay provider staticlib",
+    rustc.build(
+        dir,
+        &["--crate-type=staticlib"],
+        &[("overlay_view_hybrid", &rlib)],
+        &provider,
+        &staticlib,
     );
     staticlib
 }
@@ -483,98 +465,4 @@ fn overlay_jni_glue_runs_live_on_a_fake_jni_env_and_a_real_jvm() {
     });
     assert!(!checkjni_issue, "CheckJNI warnings:\n{stdout}\n{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Locates the `nve_abi` rlib and Cargo's dependency directories for `rustc` invocations, across
-/// the classic `target/<profile>/deps/` and Cargo 1.100+ per-unit `build/<pkg>/<hash>/out/`
-/// layouts (prefers an rlib built with the `wire` feature, then the newest).
-mod rust_deps {
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
-    use std::time::SystemTime;
-
-    fn is_nve_abi_rlib(path: &Path) -> bool {
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-    }
-
-    fn has_wire_feature(path: &Path) -> bool {
-        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
-        std::fs::read(path).is_ok_and(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
-    }
-
-    fn files(dir: &Path) -> Vec<PathBuf> {
-        std::fs::read_dir(dir)
-            .map(|it| it.flatten().map(|e| e.path()).collect())
-            .unwrap_or_default()
-    }
-
-    fn best(candidates: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
-        let mut ranked: Vec<(bool, SystemTime, PathBuf)> = candidates
-            .map(|p| {
-                let mtime = std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
-                (has_wire_feature(&p), mtime, p)
-            })
-            .collect();
-        ranked.sort_by_key(|(wire, mtime, _)| (*wire, *mtime));
-        ranked.pop().map(|(_, _, p)| p)
-    }
-
-    pub fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
-        let exe = std::env::current_exe().expect("current_exe");
-        let exe_dir = exe.parent().expect("test executable dir");
-        if let Some(rlib) = best(files(exe_dir).into_iter().filter(|p| is_nve_abi_rlib(p))) {
-            return (rlib, vec![exe_dir.to_path_buf()]);
-        }
-        let build_root = exe
-            .ancestors()
-            .find(|p| p.file_name().is_some_and(|n| n == "build"))
-            .expect("Cargo deps/ or build/ ancestor of the test executable");
-        let out_dirs: Vec<PathBuf> = files(build_root)
-            .into_iter()
-            .flat_map(|pkg| files(&pkg))
-            .map(|hash| hash.join("out"))
-            .filter(|out| out.is_dir())
-            .collect();
-        let rlib = best(
-            out_dirs
-                .iter()
-                .flat_map(|d| files(d))
-                .filter(|p| is_nve_abi_rlib(p)),
-        )
-        .expect("libnve_abi-*.rlib in the Cargo build dir");
-        let dep_dirs = out_dirs
-            .into_iter()
-            .filter(|d| {
-                files(d).iter().any(|p| {
-                    p.extension().is_some_and(|e| {
-                        matches!(e.to_str(), Some("rlib" | "dll" | "so" | "dylib"))
-                    })
-                })
-            })
-            .collect();
-        (rlib, dep_dirs)
-    }
-
-    /// `-L dependency=` for each dir, through a response file once there are many (Windows'
-    /// 32 KiB command-line limit).
-    pub fn add_dep_search_dirs(cmd: &mut Command, temp_dir: &Path, dep_dirs: &[PathBuf]) {
-        let args: Vec<String> = dep_dirs
-            .iter()
-            .map(|d| format!("dependency={}", d.display()))
-            .collect();
-        if args.len() <= 8 {
-            for arg in args {
-                cmd.arg("-L").arg(arg);
-            }
-            return;
-        }
-        let rsp = temp_dir.join("rustc_dep_dirs.rsp");
-        let contents: String = args.iter().map(|a| format!("-L\n{a}\n")).collect();
-        std::fs::write(&rsp, contents).expect("write rustc response file");
-        cmd.arg(format!("@{}", rsp.display()));
-    }
 }

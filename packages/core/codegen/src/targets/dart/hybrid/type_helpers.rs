@@ -315,20 +315,18 @@ fn dart_default_value_ctx(
                 other => dart_default_value_ctx(inner, Some(other), spec, in_const),
             };
         }
-        return match (d, ty) {
-            (HybridDefaultValue::Bool(b), _) => b.to_string(),
-            (HybridDefaultValue::Int(i), HybridType::F32 | HybridType::F64) => format!("{i}.0"),
-            (HybridDefaultValue::Int(i), _) => i.to_string(),
-            (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
-            (HybridDefaultValue::UInt(u), _) => u.to_string(),
-            (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => {
+        if let Some(lit) = d.format_scalar_literal(ty) {
+            return lit;
+        }
+        return match d {
+            HybridDefaultValue::String(s) => {
                 format!("'{}'", escape_dart_single_quoted_string(s))
             }
-            (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
+            HybridDefaultValue::EnumVariant { enum_name, variant } => {
                 format!("{enum_name}.{}", dart_ident(variant))
             }
-            (HybridDefaultValue::None, _) => "null".to_string(),
+            HybridDefaultValue::None => "null".to_string(),
+            _ => "null".to_string(),
         };
     }
 

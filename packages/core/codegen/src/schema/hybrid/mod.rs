@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CodegenError;
-use crate::naming::{to_pascal_case, to_snake_case};
+use crate::naming::{format_float_literal, to_pascal_case, to_snake_case};
 pub(crate) use file_spec::hash_str;
 use file_spec::{hash_method, hash_transitive_types};
 use nve_abi::{Key64, Xxh64Hasher};
@@ -294,6 +294,21 @@ impl HybridDefaultValue {
             Self::String(v) => format!("str:{v}"),
             Self::EnumVariant { enum_name, variant } => format!("enum:{enum_name}::{variant}"),
             Self::None => "none".to_string(),
+        }
+    }
+
+    /// Formats bool/int/uint/float defaults shared by targets that use plain numeric literals
+    /// (`true`/`false`, bare integers, `.0` for integer-to-float defaults, and `format_float_literal`).
+    /// Returns `None` for language-specific kinds (`String`, `EnumVariant`, `None`).
+    pub fn format_scalar_literal(&self, ty: &HybridType) -> Option<String> {
+        match (self, ty) {
+            (Self::Bool(b), _) => Some(b.to_string()),
+            (Self::Int(i), HybridType::F32 | HybridType::F64) => Some(format!("{i}.0")),
+            (Self::Int(i), _) => Some(i.to_string()),
+            (Self::UInt(u), HybridType::F32 | HybridType::F64) => Some(format!("{u}.0")),
+            (Self::UInt(u), _) => Some(u.to_string()),
+            (Self::Float(f), _) => Some(format_float_literal(*f)),
+            (Self::String(_) | Self::EnumVariant { .. } | Self::None, _) => None,
         }
     }
 }

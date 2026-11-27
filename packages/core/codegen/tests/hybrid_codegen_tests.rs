@@ -6,8 +6,6 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::rustc::{add_dep_search_dirs, locate_nve_abi_and_dep_dirs};
-
 use nve_codegen::{
     CodegenError, HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec,
     HybridFieldSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec,

@@ -58,18 +58,16 @@ pub(super) fn swift_default_value(
                 other => swift_default_value(inner, Some(other), spec),
             };
         }
-        return match (d, ty) {
-            (HybridDefaultValue::Bool(b), _) => b.to_string(),
-            (HybridDefaultValue::Int(i), HybridType::F32 | HybridType::F64) => format!("{i}.0"),
-            (HybridDefaultValue::Int(i), _) => i.to_string(),
-            (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
-            (HybridDefaultValue::UInt(u), _) => u.to_string(),
-            (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-            (HybridDefaultValue::String(s), _) => format!("\"{}\"", escape_c_like_string(s)),
-            (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
+        if let Some(lit) = d.format_scalar_literal(ty) {
+            return lit;
+        }
+        return match d {
+            HybridDefaultValue::String(s) => format!("\"{}\"", escape_c_like_string(s)),
+            HybridDefaultValue::EnumVariant { enum_name, variant } => {
                 format!("{enum_name}.{}", swift_ident(variant))
             }
-            (HybridDefaultValue::None, _) => "nil".to_string(),
+            HybridDefaultValue::None => "nil".to_string(),
+            _ => "nil".to_string(),
         };
     }
 

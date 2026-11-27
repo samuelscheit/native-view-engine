@@ -20,8 +20,7 @@ use type_helpers::*;
 
 use crate::error::CodegenError;
 use crate::naming::{
-    dart_ident, escape_dart_single_quoted_string, format_float_literal, to_camel_case,
-    to_pascal_case,
+    dart_ident, escape_dart_single_quoted_string, to_camel_case, to_pascal_case,
 };
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::CodegenError;
-use crate::naming::{escape_c_like_string, format_float_literal};
+use crate::naming::escape_c_like_string;
 use crate::schema::hybrid::{HybridDefaultValue, HybridFileSpec, HybridMethodSpec, HybridType};
 
 /// Prelude items generated code names by path, so a spec type of the same name never shadows them.
@@ -228,21 +228,19 @@ pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefault
             other => format!("Some({})", rust_prop_default_expr(inner, Some(other))),
         };
     }
-    match (def, ty) {
-        (HybridDefaultValue::Bool(b), _) => b.to_string(),
-        (HybridDefaultValue::Int(i), HybridType::F32 | HybridType::F64) => format!("{i}.0"),
-        (HybridDefaultValue::Int(i), _) => i.to_string(),
-        (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
-        (HybridDefaultValue::UInt(u), _) => u.to_string(),
-        (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-        (HybridDefaultValue::String(s), _) => format!(
+    if let Some(lit) = def.format_scalar_literal(ty) {
+        return lit;
+    }
+    match def {
+        HybridDefaultValue::String(s) => format!(
             "<::std::string::String as {FROM}<&str>>::from(\"{}\")",
             escape_c_like_string(s)
         ),
-        (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
+        HybridDefaultValue::EnumVariant { enum_name, variant } => {
             format!("{enum_name}::{variant}")
         }
-        (HybridDefaultValue::None, _) => default_expr(ty),
+        HybridDefaultValue::None => default_expr(ty),
+        _ => default_expr(ty),
     }
 }
 

@@ -147,109 +147,6 @@ fn setup_offline_dart_pkg(dir: &Path, pkg_name: &str) {
         .expect("write package_config.json");
 }
 
-fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
-    let current_exe = std::env::current_exe().expect("current_exe");
-    let exe_dir = current_exe.parent().expect("exe parent dir");
-
-    let rlib_has_wire_feature = |path: &Path| -> bool {
-        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
-        std::fs::read(path)
-            .map(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
-            .unwrap_or(false)
-    };
-    let find_best_in = |dir: &Path| -> Option<PathBuf> {
-        let mut matches: Vec<(bool, std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
-            .ok()?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-            })
-            .map(|p| {
-                let mtime = std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                (rlib_has_wire_feature(&p), mtime, p)
-            })
-            .collect();
-        matches.sort_by_key(|(has_wire, mtime, _)| (*has_wire, *mtime));
-        matches.pop().map(|(_, _, path)| path)
-    };
-
-    if let Some(rlib) = find_best_in(exe_dir) {
-        return (rlib, vec![exe_dir.to_path_buf()]);
-    }
-
-    let build_root = current_exe
-        .ancestors()
-        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("build"))
-        .expect("expected Cargo deps/ or build/ ancestor directory");
-    let mut candidates: Vec<(bool, std::time::SystemTime, PathBuf)> = Vec::new();
-    let mut dep_dirs: Vec<PathBuf> = Vec::new();
-
-    if let Ok(pkgs) = std::fs::read_dir(build_root) {
-        for pkg_entry in pkgs.filter_map(|e| e.ok()) {
-            let pkg_path = pkg_entry.path();
-            if !pkg_path.is_dir() {
-                continue;
-            }
-            let is_nve_abi = pkg_entry.file_name() == "nve-abi";
-            let Ok(hashes) = std::fs::read_dir(&pkg_path) else {
-                continue;
-            };
-            for hash_entry in hashes.filter_map(|e| e.ok()) {
-                let out_dir = hash_entry.path().join("out");
-                if !out_dir.is_dir() {
-                    continue;
-                }
-                if is_nve_abi && let Some(rlib) = find_best_in(&out_dir) {
-                    let mtime = std::fs::metadata(&rlib)
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    candidates.push((rlib_has_wire_feature(&rlib), mtime, rlib));
-                }
-                let has_lib = std::fs::read_dir(&out_dir).ok().is_some_and(|it| {
-                    it.filter_map(|e| e.ok()).any(|e| {
-                        e.path()
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .is_some_and(|ext| matches!(ext, "rlib" | "dll" | "so" | "dylib"))
-                    })
-                });
-                if has_lib {
-                    dep_dirs.push(out_dir);
-                }
-            }
-        }
-    }
-    candidates.sort_by_key(|(has_wire, mtime, _)| (*has_wire, *mtime));
-    let rlib = candidates
-        .pop()
-        .map(|(_, _, p)| p)
-        .expect("libnve_abi-*.rlib must exist");
-    (rlib, dep_dirs)
-}
-
-fn add_dep_dirs(cmd: &mut Command, temp_dir: &Path, dep_dirs: &[PathBuf]) {
-    if dep_dirs.len() <= 8 {
-        for dir in dep_dirs {
-            cmd.arg("-L").arg(format!("dependency={}", dir.display()));
-        }
-        return;
-    }
-    let rsp = temp_dir.join("rustc_deps.rsp");
-    let mut body = String::new();
-    for dir in dep_dirs {
-        body.push_str("-L\ndependency=");
-        body.push_str(&dir.to_string_lossy());
-        body.push('\n');
-    }
-    std::fs::write(&rsp, body).expect("write dep rsp");
-    cmd.arg(format!("@{}", rsp.display()));
-}
-
 #[test]
 fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse realistic spec");
@@ -688,41 +585,12 @@ fn real_cross_language_dart_vm_calls_generated_rust_cdylib_end_to_end() {
         .write_to_dir(&lib_dir)
         .unwrap();
 
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-
-    // Compile both generated Rust modules as rlibs.
-    let compile_rlib = |crate_name: &str, src_name: &str| -> PathBuf {
-        let out = dir.join(format!("lib{crate_name}.rlib"));
-        let mut cmd = Command::new("rustc");
-        cmd.args([
-            "--edition=2024",
-            "--crate-type=lib",
-            "-D",
-            "warnings",
-            "--crate-name",
-            crate_name,
-        ]);
-        add_dep_dirs(&mut cmd, &dir, &dep_dirs);
-        let st = cmd
-            .arg("--extern")
-            .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-            .arg(dir.join(src_name))
-            .arg("-o")
-            .arg(&out)
-            .output()
-            .expect("compile generated rust rlib");
-        assert!(
-            st.status.success(),
-            "rustc {crate_name} failed:\n{}",
-            String::from_utf8_lossy(&st.stderr)
-        );
-        out
-    };
-
-    let crypto_rlib = compile_rlib("crypto_hybrid", "crypto_hybrid.generated.rs");
-    let multi_rlib = compile_rlib(
+    let rustc = common::rustc::Rustc::locate();
+    let crypto_rlib = rustc.build_lib(&dir, "crypto_hybrid", &dir.join("crypto_hybrid.generated.rs"));
+    let multi_rlib = rustc.build_lib(
+        &dir,
         "multi_opt_shadow_hybrid",
-        "multi_opt_shadow_hybrid.generated.rs",
+        &dir.join("multi_opt_shadow_hybrid.generated.rs"),
     );
 
     // Build a real Rust cdylib implementing all four interfaces (`Crypto`, `VideoSurface`,
@@ -914,25 +782,15 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
         std::env::consts::DLL_SUFFIX
     );
     let cdylib_path = dir.join(&cdylib_name);
-    let mut cdylib_cmd = Command::new("rustc");
-    cdylib_cmd.args(["--edition=2024", "--crate-type=cdylib", "-D", "warnings"]);
-    add_dep_dirs(&mut cdylib_cmd, &dir, &dep_dirs);
-    let cdylib_out = cdylib_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg("--extern")
-        .arg(format!("crypto_hybrid={}", crypto_rlib.display()))
-        .arg("--extern")
-        .arg(format!("multi_opt_shadow_hybrid={}", multi_rlib.display()))
-        .arg(&provider_rs)
-        .arg("-o")
-        .arg(&cdylib_path)
-        .output()
-        .expect("build Rust cdylib");
-    assert!(
-        cdylib_out.status.success(),
-        "Rust cdylib build failed:\n{}",
-        String::from_utf8_lossy(&cdylib_out.stderr)
+    rustc.build(
+        &dir,
+        &["--crate-type=cdylib"],
+        &[
+            ("crypto_hybrid", &crypto_rlib),
+            ("multi_opt_shadow_hybrid", &multi_rlib),
+        ],
+        &provider_rs,
+        &cdylib_path,
     );
 
     setup_offline_dart_pkg(&dir, "nve_dart_e2e");

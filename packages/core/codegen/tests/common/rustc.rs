@@ -80,7 +80,9 @@ pub fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
     };
 
     let rlib_has_wire_feature = |path: &Path| -> bool {
-        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
+        // `nve_hybrid_free_bytes` is a `#[cfg(feature = "wire")]` `extern "C"` symbol in
+        // `nve_abi::hybrid`, absent from `--no-default-features` and pre-1B-1e rlibs.
+        const NEEDLE: &[u8] = b"nve_hybrid_free_bytes";
         std::fs::read(path)
             .map(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
             .unwrap_or(false)
@@ -103,7 +105,9 @@ pub fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
             })
             .collect();
         matches.sort_by_key(|(has_wire, mtime, _)| (*has_wire, *mtime));
-        matches.pop().map(|(_, _, path)| path)
+        matches
+            .pop()
+            .and_then(|(has_wire, _, path)| has_wire.then_some(path))
     };
 
     // 1. Classic Cargo layout (`target/<profile>/deps/`).
@@ -160,7 +164,8 @@ pub fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
     let nve_abi_rlib = nve_abi_candidates
         .pop()
         .map(|(_, path)| path)
-        .expect("libnve_abi-*.rlib must exist in target deps or build dir");
+        .filter(|path| rlib_has_wire_feature(path))
+        .expect("wire-enabled libnve_abi-*.rlib must exist in target deps or build dir");
     (nve_abi_rlib, dep_dirs)
 }
 

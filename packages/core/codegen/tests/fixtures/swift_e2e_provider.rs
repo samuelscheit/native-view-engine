@@ -182,7 +182,7 @@ mod edge_provider {
 
     impl EdgeHybrid for LiveEdge {
         fn mix(&mut self, a: &str, b: &[u8], meta: NveHybridValue, extra: NveHybridValue) -> String {
-            format!("{a}|{b:?}|{:?}|{:?}", meta.bin_bytes, extra.bin_bytes)
+            format!("{a}|{b:?}|{:?}|{:?}", meta.as_bytes(), extra.as_bytes())
         }
         fn pair(&mut self, xs: Vec<i32>, ys: Vec<String>) -> Bundle {
             Bundle {
@@ -215,7 +215,7 @@ mod edge_provider {
         let mut bytes = Vec::new();
         match kind {
             0 => {
-                Bundle::default().encode_bin(&mut bytes);
+                bytes = nve_abi::hybrid::encode_to_vec(&Bundle::default()).expect("encode bundle");
                 bytes.push(0); // one trailing byte
             }
             1 => bytes.extend_from_slice(&[7, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]), // count past payload
