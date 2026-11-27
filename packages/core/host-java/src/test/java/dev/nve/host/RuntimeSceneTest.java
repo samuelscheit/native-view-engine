@@ -15,6 +15,9 @@ final class RuntimeSceneTest {
     static final int TEXT_SLOT = 33;            // second `table_set` word
     static final int[] TEXT = {'h', 0xC3, 0xA9, 0xF0, 0x9F, 0x9A, 0x80};
     static final FieldSpec BG = FieldSpec.word(0, FieldKind.COLOR);
+    static final Key64 VISUAL_KEY = Key64.of("nve.visual");
+    static final Key64 TEXT_KEY = Key64.of("nve.text");
+    static final FieldSpec TEXT_FIELD = FieldSpec.word(0, FieldKind.STR);
 
     static ByteBuffer words(int... w) {
         return TableSceneTest.words(w);
@@ -53,9 +56,9 @@ final class RuntimeSceneTest {
 
     static TableReader[] tables() {
         return new TableReader[] {
-            new TableReader().attach(StandardTables.Visual.KEY, VISUAL_SLOT, 1, CAP, words(0, 0x11, 0x22, 0x33), null, words(2), 1),
+            new TableReader().attach(VISUAL_KEY, VISUAL_SLOT, 1, CAP, words(0, 0x11, 0x22, 0x33), null, words(2), 1),
             // Row 0 is owned by a stale generation of index 2; row 1 is the live CHILD.
-            new TableReader().attach(StandardTables.Text.KEY, TEXT_SLOT, 2, 2, words(0, 1, 0, 3), words((1 << 24) | 2, CHILD), null, 0),
+            new TableReader().attach(TEXT_KEY, TEXT_SLOT, 2, 2, words(0, 1, 0, 3), words((1 << 24) | 2, CHILD), null, 0),
         };
     }
 
@@ -120,10 +123,10 @@ final class RuntimeSceneTest {
 
     static void tablesAndText(Check c) {
         final RuntimeSceneReader s = scene();
-        final TableReader visual = s.findTable(StandardTables.Visual.KEY);
+        final TableReader visual = s.findTable(VISUAL_KEY);
         final TableReader text = s.tableAtSlot(TEXT_SLOT);
         c.that(visual != null && visual == s.tableAtSlot(VISUAL_SLOT) && visual == s.table(0), "visual lookup");
-        c.that(text != null && text.key().equals(StandardTables.Text.KEY), "text by slot");
+        c.that(text != null && text.key().equals(TEXT_KEY), "text by slot");
         c.that(s.tableAtSlot(5) == null && s.tableAtSlot(-1) == null && s.tableAtSlot(128) == null, "missing slots");
         c.that(s.findTable(Key64.of("nve.missing")) == null, "missing key");
         c.that(s.primaryTable(2) == text && s.primaryTable(1) == null, "primary table");
@@ -133,7 +136,7 @@ final class RuntimeSceneTest {
         c.eq(s.rowOf(text, 1), -1, "no table bit");
         c.eq(s.rowOf(text, 3), -1, "free node");
         c.eq(s.rowOf(null, 2), -1, "null table");
-        c.that(s.text(text, 1, StandardTables.Text.TEXT).equals("h\u00e9"), "string field");
+        c.that(s.text(text, 1, TEXT_FIELD).equals("h\u00e9"), "string field");
         c.that(s.text(3, 4).equals("\ud83d\ude80"), "astral text");
         c.that(s.text(7, 0).isEmpty(), "empty at end");
         c.throwsA(IndexOutOfBoundsException.class, () -> s.text(2, 1), "split char start");
@@ -146,7 +149,7 @@ final class RuntimeSceneTest {
         final TableReader[] onlyVisual = {tables()[0]};
         attach(s, rows(0, 1), words(CHILD), 1, null, 0, onlyVisual);
         c.that(s.tableAtSlot(TEXT_SLOT) == null && s.primaryTable(2) == null, "slot map reset");
-        final TableReader[] moved = {new TableReader().attach(StandardTables.Text.KEY, TEXT_SLOT, 2, 1, words(0, 3), words(CHILD), null, 0)};
+        final TableReader[] moved = {new TableReader().attach(TEXT_KEY, TEXT_SLOT, 2, 1, words(0, 3), words(CHILD), null, 0)};
         attach(s, rows(0, 1), words(CHILD), 1, null, 0, moved);
         c.eq(s.rowOf(s.tableAtSlot(TEXT_SLOT), 2), 0, "sparse index rebuilt per frame");
     }
@@ -199,7 +202,7 @@ final class RuntimeSceneTest {
         h[RuntimeSceneReader.H_TEXT_LEN] = TEXT.length;
         h[RuntimeSceneReader.H_CHILDREN_LEN] = 1;
         h[RuntimeSceneReader.H_TABLE_COUNT] = tableCount;
-        final long[][] t = {{StandardTables.Visual.KEY.value(), VISUAL_SLOT, 1, CAP, 1}, {StandardTables.Text.KEY.value(), TEXT_SLOT, 2, 2, 0}};
+        final long[][] t = {{VISUAL_KEY.value(), VISUAL_SLOT, 1, CAP, 1}, {TEXT_KEY.value(), TEXT_SLOT, 2, 2, 0}};
         for (int i = 0; i < tableCount; i++) {
             System.arraycopy(t[i], 0, h, RuntimeSceneReader.H_TABLES + i * RuntimeSceneReader.H_TABLE_STRIDE, 5);
         }
@@ -225,7 +228,7 @@ final class RuntimeSceneTest {
         final RuntimeSceneReader s = new RuntimeSceneReader().attach(header(2), slabs());
         c.eq(s.frameId(), 11, "packed frame");
         c.eq(s.tableCount(), 2, "packed tables");
-        c.that(s.text(s.tableAtSlot(TEXT_SLOT), 1, StandardTables.Text.TEXT).equals("h\u00e9"), "packed sparse string");
+        c.that(s.text(s.tableAtSlot(TEXT_SLOT), 1, TEXT_FIELD).equals("h\u00e9"), "packed sparse string");
         c.eq(s.tableAtSlot(VISUAL_SLOT).dirtyRow(0), 2, "packed dirty row");
         c.that(!s.tableAtSlot(VISUAL_SLOT).isSparse() && s.tableAtSlot(TEXT_SLOT).isSparse(), "packed owners");
         c.eq(RuntimeSceneReader.HEADER_LEN, 8 + 128 * 5, "header len");
