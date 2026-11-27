@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use nve_arch_invariants::{
     assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
     find_files_named, host_runtimes, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, purity,
-    rel_path, repo_index, rpc_dag, spec_registry, Stage, Violation,
+    rel_path, repo_index, rpc_dag, spec_registry, theme_hygiene, Stage, Violation,
 };
 
 // ============================================================================
@@ -225,9 +225,12 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
         &v_doctest,
     );
     assert_no_violations(
-        "Production Rust file size <= 650 lines across packages/ and hosts/ (monotonic ratchet)",
+        "Production Rust file size <= 650 lines across packages/, hosts/ and examples/ (monotonic ratchet)",
         &hygiene::check_production_file_sizes(idx),
     );
+    assert_no_violations("Themed UI sources use Theme tokens only", &theme_hygiene::check_theme_token_hygiene(idx));
+    assert_no_violations("Tone::solid is only a fill (WCAG 1.4.11)", &theme_hygiene::check_solid_only_as_fill(idx));
+    assert_no_violations("No theme mode scraped from the rendered tree", &theme_hygiene::check_no_theme_tree_scraping(idx));
 
     let mut v_hashes = Vec::new();
     for rel in &idx.tracked {

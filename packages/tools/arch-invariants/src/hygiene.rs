@@ -14,7 +14,7 @@ use crate::{
 
 pub const MAX_PROD_LINES: usize = 650;
 
-/// Strictly sorted monotonic allowlist of production `.rs` files > 650 lines across `packages/` and `hosts/`.
+/// Strictly sorted monotonic allowlist of production `.rs` files > 650 lines across `packages/`, `hosts/` and `examples/`.
 /// Fails if any listed file exceeds its ceiling OR drops to <= 650 lines (forcing ratchet downward to zero).
 pub const EXISTING_OVERSIZE_ALLOWLIST: &[(&str, usize)] = &[];
 
@@ -340,7 +340,7 @@ fn has_readme_doctest_attr(ast: &syn::File) -> bool {
     })
 }
 
-/// Monotonic 650-line production `.rs` file ratchet across BOTH `packages/` and `hosts/`.
+/// Monotonic 650-line production `.rs` file ratchet across `packages/`, `hosts/` and `examples/`.
 pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
     assert!(
         EXISTING_OVERSIZE_ALLOWLIST.windows(2).all(|w| w[0].0 < w[1].0),
@@ -352,7 +352,8 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
 
     let mut rs_files = idx.rs_files_under("packages");
     rs_files.extend(idx.rs_files_under("hosts"));
-    assert!(!rs_files.is_empty(), "expected Rust files under packages/ and hosts/");
+    rs_files.extend(idx.rs_files_under("examples"));
+    assert!(!rs_files.is_empty(), "expected Rust files under packages/, hosts/ and examples/");
 
     for rel in rs_files {
         if is_test_or_bench_rs(&rel) || rel.contains(".generated.") {

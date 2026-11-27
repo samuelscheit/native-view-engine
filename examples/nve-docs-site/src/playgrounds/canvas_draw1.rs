@@ -54,8 +54,8 @@ impl PaletteChoice {
         }
     }
 
-    /// `(primary, secondary, tint)` derived from `theme` with each palette's accent pair, so the
-    /// strokes stay contrast-safe on the chart well in every polarity.
+    /// `(primary, secondary, area fill)` derived from `theme` with each palette's accent pair, so
+    /// the strokes stay contrast-safe on the chart well in every polarity.
     fn colors(self, theme: &Theme) -> (ColorRgba, ColorRgba, ColorRgba) {
         let (primary, secondary) = match self {
             Self::Cyan => (Accent::CYAN, Accent::INDIGO),
@@ -64,7 +64,8 @@ impl PaletteChoice {
         };
         let primary = theme.with_accent(primary).status.accent;
         let secondary = theme.with_accent(secondary).status.accent.text;
-        (primary.text, secondary, with_alpha(primary.solid, 48))
+        let area_fill = with_alpha(primary.solid, 48);
+        (primary.text, secondary, area_fill)
     }
 }
 

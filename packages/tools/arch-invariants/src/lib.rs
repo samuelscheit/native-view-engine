@@ -15,6 +15,7 @@ pub mod hygiene;
 pub mod purity;
 pub mod rpc_dag;
 pub mod spec_registry;
+pub mod theme_hygiene;
 
 use std::collections::BTreeMap;
 use std::fs;
