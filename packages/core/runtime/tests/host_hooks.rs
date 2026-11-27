@@ -19,7 +19,7 @@ use nve_runtime::{
     nve_runtime_get_interface,
 };
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, Resource, ResourceId};
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Resource, ResourceId};
 
 const OK: i32 = NveRuntimeStatus::Ok as i32;
 const INVALID: i32 = NveRuntimeStatus::InvalidArg as i32;
@@ -284,6 +284,61 @@ fn rust_scene_guard_resource_payload_matches_store() {
     assert_eq!(kind, ImageSrc::KIND);
     assert_eq!(bytes, store.resources().encoded(id).unwrap());
     assert!(g.resource_payload(ResourceId::NONE).is_none());
+}
+
+/// Regression: the published replica `ResourceStore` lives inline in `SurfaceRuntime`; moving the
+/// runtime between publish and read must not leave `resource_payload` on the old address.
+#[test]
+fn resource_payload_survives_moving_the_runtime_after_publish() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let img = tx.create();
+    tx.edit::<Image>(img).src(Some(ImageSrc::EncodedBytes(Arc::from(&[7u8, 8, 9, 10][..]))));
+    tx.set_children(NodeId::ROOT, &[img]);
+    tx.commit_into(&mut changes);
+    let id = store.row::<Image>(img).src();
+    let want = store.resources().encoded(id).unwrap().to_vec();
+
+    let mut boxed = Box::new(RuntimeBuilder::new().build());
+    boxed.submit_nve2(&encode(&store, &changes, &mut WireEncoder::default())).unwrap();
+    boxed.tick(0.0).unwrap();
+    // Move out of the heap block, then reuse that block with junk of the same size, so a cached
+    // address into the old location would read garbage (or trip ASan / Miri).
+    let moved: SurfaceRuntime = *boxed;
+    let junk = vec![0xA5u8; size_of::<SurfaceRuntime>()];
+    let g = moved.acquire_scene().unwrap();
+    let (kind, bytes) = g.resource_payload(id).expect("published resource after move");
+    assert_eq!(kind, ImageSrc::KIND);
+    assert_eq!(bytes, want.as_slice());
+    drop(g);
+    drop(junk);
+
+    // A further move after a fresh publish still resolves the live replica.
+    let mut again = vec![moved];
+    again[0].tick(0.0).unwrap();
+    let rt = again.pop().unwrap();
+    assert_eq!(rt.acquire_scene().unwrap().resource_payload(id).unwrap().1, want.as_slice());
+}
+
+/// Dense tables publish no owners (row = node index) and no rows past `node_capacity`.
+#[test]
+fn dense_tables_publish_null_owners_and_rows_within_node_capacity() {
+    let mut rt = RuntimeBuilder::new().build();
+    let (frame, _) = text_frame();
+    rt.submit_nve2(&frame).unwrap();
+    rt.tick(0.0).unwrap();
+    let g = rt.acquire_scene().unwrap();
+    let v = g.view();
+    // SAFETY: `g` holds the reader lock for `table_count` views.
+    let tables = unsafe { std::slice::from_raw_parts(v.tables, v.table_count as usize) };
+    let layout = tables
+        .iter()
+        .find(|t| t.slot == u32::from(<Layout as NveTable>::slot().0))
+        .expect("Layout published");
+    assert!(layout.owners.is_null(), "dense tables publish null owners");
+    assert!(!layout.rows.is_null());
+    assert!(layout.row_count <= v.node_capacity, "dense rows stay within node capacity");
 }
 
 /// In-process app implementing every optional capability, exported through `export_nve_app!`.

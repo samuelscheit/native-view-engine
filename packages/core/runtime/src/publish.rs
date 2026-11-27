@@ -4,10 +4,11 @@
 use nve_abi::{
     NveLayoutRect, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH,
 };
+use nve_layout::ScrollOffsets;
 use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
 
 use crate::builder::Timer;
-use crate::state::{layout_rect_to_abi, SurfaceState};
+use crate::state::{layout_rect_to_abi, PublishedResources, SurfaceState};
 
 impl SurfaceState {
     /// Clears all borrowed pointers in `published_view` and `published_tables` so an early error,
@@ -18,7 +19,7 @@ impl SurfaceState {
             frame_id: self.frame_id,
             ..NveRuntimeSceneView::default()
         };
-        self.published_resources = core::ptr::null();
+        self.published_resources = PublishedResources::None;
         self.published_tables.clear();
         self.published_dirty_buf.clear();
         self.dirty_indices.clear();
@@ -28,10 +29,14 @@ impl SurfaceState {
     }
 
     /// Verifies that every borrowed slab pointer and every published `NveTableView` column pointer
-    /// and row count in `published_view` still matches `store` identically.
-    pub(crate) fn published_view_matches_store(&self, store: &NodeStore) -> bool {
-        if !self.published_resources.is_null()
-            && !core::ptr::eq(self.published_resources, store.resources())
+    /// and row count in `published_view` still matches `store` (whose resources are `resources`).
+    pub(crate) fn published_view_matches_store(
+        &self,
+        store: &NodeStore,
+        resources: PublishedResources,
+    ) -> bool {
+        if self.published_resources != PublishedResources::None
+            && self.published_resources != resources
         {
             return false;
         }
@@ -97,7 +102,13 @@ impl SurfaceState {
 
     /// Synchronizes dense `self.rects`, deduplicated dirty/removed scratch, and `NveTableView`s
     /// directly from `store` and `self.scene` with zero heap allocations once capacities warm.
-    pub(crate) fn publish_scene(&mut self, store: &NodeStore, changes: &ChangeSet, laid_out: bool) {
+    pub(crate) fn publish_scene(
+        &mut self,
+        store: &NodeStore,
+        resources: PublishedResources,
+        changes: &ChangeSet,
+        laid_out: bool,
+    ) {
         let t_pub = Timer::start();
         let cap = store.capacity();
         if self.rects.len() < cap {
@@ -159,8 +170,8 @@ impl SurfaceState {
 
         self.published_scroll.clear();
         let scroll = self.scene.scroll_offsets();
-        for (node_id, _) in scroll.iter() {
-            let (x, y) = scroll.visual_shift(store, NodeId(node_id));
+        for (node_id, (sx, sy)) in scroll.iter() {
+            let (x, y) = ScrollOffsets::visual_shift_with(store, NodeId(node_id), sx, sy);
             self.published_scroll.push(NveScrollOffset { node_id, x, y });
         }
         self.published_scroll.sort_unstable_by_key(|s| s.node_id);
@@ -224,7 +235,7 @@ impl SurfaceState {
             },
         };
 
-        self.published_resources = store.resources();
+        self.published_resources = resources;
         self.metrics.frame_id = self.frame_id;
         self.metrics.publish_us = t_pub.elapsed_us();
         self.metrics.dirty_nodes = self.dirty_indices.len() as u32;

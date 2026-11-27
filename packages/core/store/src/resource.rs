@@ -121,6 +121,12 @@ impl Entry {
 /// [`ResourceStore::get`] reads stay `None`.
 struct OpaqueResource;
 
+/// One shared [`OpaqueResource`] value: opaque entries differ only in their bytes.
+fn opaque_resource() -> AnyArc {
+    static OPAQUE: OnceLock<AnyArc> = OnceLock::new();
+    Arc::clone(OPAQUE.get_or_init(|| Arc::new(OpaqueResource)))
+}
+
 /// Refcounted blob store. Index `0` is reserved for [`ResourceId::NONE`].
 pub struct ResourceStore {
     entries: Vec<Entry>,
@@ -391,10 +397,10 @@ impl ResourceStore {
         bytes: &[u8],
         budget: Option<&mut crate::wire::budget::SessionBudget>,
     ) -> Result<bool, crate::wire::WireError> {
-        let i = id.0 as usize;
-        if i == 0 {
+        if id.is_none() {
             return Ok(false);
         }
+        let i = id.0 as usize;
         let needed = i.checked_add(1).ok_or(crate::wire::WireError::Budget)?;
         let budget_plan = if let Some(b) = budget.as_deref() {
             Some(crate::wire::budget::SessionBudget::bounded_target_cap(
@@ -426,7 +432,7 @@ impl ResourceStore {
                 };
                 (value, encoded)
             }
-            None => (Arc::new(OpaqueResource), exact_copy()?),
+            None => (opaque_resource(), exact_copy()?),
         };
         if let (Some((target, delta_bytes)), Some(b)) = (budget_plan, budget) {
             if target > self.entries.capacity() {

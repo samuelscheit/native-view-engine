@@ -368,8 +368,12 @@ impl NveEventBatch {
         _pad: 0,
     };
 
+    /// Borrows `events`; empty slices are `EMPTY` (NULL pointer, never a dangling one).
     #[inline]
     pub fn from_slice(events: &[NveDirectEvent]) -> Self {
+        if events.is_empty() {
+            return Self::EMPTY;
+        }
         Self {
             ptr: events.as_ptr(),
             len: events.len().min(u32::MAX as usize) as u32,

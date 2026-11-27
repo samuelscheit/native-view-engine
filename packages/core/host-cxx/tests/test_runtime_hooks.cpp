@@ -218,8 +218,27 @@ void test_scroll_offsets() {
     CHECK(none.node_id == 4u && none.x == 0.0f && none.y == 0.0f);
     CHECK(reader->scroll_offset(9u).y == 0.0f);
   }
-  view.scroll_offsets = nullptr;
+  // Unsorted or duplicate ids would break the binary search: rejected on open.
   SceneError err = SceneError::None;
+  const std::array<NveScrollOffset, 2> unsorted{NveScrollOffset{5u, 0.0f, 1.0f},
+                                                NveScrollOffset{2u, 0.0f, 2.0f}};
+  view.scroll_offsets = unsorted.data();
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::UnsortedScrollOffsets);
+  const std::array<NveScrollOffset, 2> duplicate{NveScrollOffset{3u, 0.0f, 1.0f},
+                                                 NveScrollOffset{3u, 0.0f, 2.0f}};
+  view.scroll_offsets = duplicate.data();
+  err = SceneError::None;
+  CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
+  CHECK(err == SceneError::UnsortedScrollOffsets);
+  const NveScrollOffset single{7u, 1.0f, 0.0f};
+  view.scroll_offsets = &single;
+  view.scroll_count = 1u;
+  CHECK(RuntimeSceneReader::open(&view).has_value());
+  view.scroll_count = 2u;
+
+  view.scroll_offsets = nullptr;
+  err = SceneError::None;
   CHECK(!RuntimeSceneReader::open(&view, Key64{NVE_RUNTIME_SCHEMA_HASH}, &err).has_value());
   CHECK(err == SceneError::NullSlab);
 }

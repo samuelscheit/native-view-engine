@@ -185,8 +185,13 @@ impl RuntimeApp for CAbiAppAdapter {
         let component = self.component_api.ok_or(CapabilityUnsupported)?;
         let entries = props.entries();
         let count = u32::try_from(entries.len()).map_err(|_| CapabilityUnsupported)?;
+        let ptr = if entries.is_empty() {
+            core::ptr::null()
+        } else {
+            entries.as_ptr()
+        };
         // SAFETY: `self.handle` is live and `entries` stays borrowed for the synchronous call.
-        Ok(unsafe { (component.set_props)(self.handle, entries.as_ptr(), count) != 0 })
+        Ok(unsafe { (component.set_props)(self.handle, ptr, count) != 0 })
     }
 
     fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
