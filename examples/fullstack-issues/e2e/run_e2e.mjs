@@ -163,8 +163,8 @@ async function main() {
     const h1 = await controller();
     assertCleanHydration(h1, "suite 1");
     assert(h1.adopted > 20, `suite 1: expected > 20 adopted nodes, got ${h1.adopted}`);
-    await waitFor(cdp, "stats panel visible", visibleJs('[testid="stats-panel"]'));
-    await waitFor(cdp, "featured comments visible", visibleJs('[testid="featured-comments-panel"]'));
+    await waitFor(cdp, "stats panel visible", visibleJs('[data-testid="stats-panel"]'));
+    await waitFor(cdp, "featured comments visible", visibleJs('[data-testid="featured-comments-panel"]'));
     await sleep(300);
     assert(rpcSince(mark) === 0, `suite 1: expected 0 /rpc/* requests, saw ${rpcSince(mark)}`);
     console.log(`  PASS: hydrated (adopted=${h1.adopted}, 0 mismatches/replaced), DSD host removed, 0 RPCs.`);
@@ -184,23 +184,23 @@ async function main() {
     assert(waiting >= 1, `suite 2: expected comments_waiting >= 1, got ${waiting}`);
     assert(readyState === "loading", `suite 2: expected document still loading, got ${readyState}`);
     assertCleanHydration(await controller(), "suite 2");
-    await waitFor(cdp, "stats panel rendered mid-stream", visibleJs('[testid="stats-panel"]'));
+    await waitFor(cdp, "stats panel rendered mid-stream", visibleJs('[data-testid="stats-panel"]'));
     assert(
-      await evalJs(cdp, `${visibleJs('[testid="comments-skeleton"]')}()`),
+      await evalJs(cdp, `${visibleJs('[data-testid="comments-skeleton"]')}()`),
       "suite 2: comments skeleton must stay visible while held"
     );
     assert(rpcSince(mark) === 0, `suite 2: expected 0 RPCs at mid-stream mount, saw ${rpcSince(mark)}`);
-    await evalJs(cdp, `document.querySelector('[testid="filter-open"]').click()`);
+    await evalJs(cdp, `document.querySelector('[data-testid="filter-open"]').click()`);
     await waitFor(
       cdp,
       "Open filter mid-stream shows #2 and hides #3",
-      `() => Boolean(document.querySelector('[testid="issue-row-2"]')) && !document.querySelector('[testid="issue-row-3"]')`
+      `() => Boolean(document.querySelector('[data-testid="issue-row-2"]')) && !document.querySelector('[data-testid="issue-row-3"]')`
     );
-    await evalJs(cdp, `document.querySelector('[testid="filter-all"]').click()`);
-    await waitFor(cdp, "All filter restores #3", `() => Boolean(document.querySelector('[testid="issue-row-3"]'))`);
+    await evalJs(cdp, `document.querySelector('[data-testid="filter-all"]').click()`);
+    await waitFor(cdp, "All filter restores #3", `() => Boolean(document.querySelector('[data-testid="issue-row-3"]'))`);
     assert((await commentsWaiting()) >= 1, "suite 2: stream closed before release (deadline?)");
     await control("hold_comments=0");
-    await waitFor(cdp, "featured comments render reactively after release", visibleJs('[testid="featured-comments-panel"]'));
+    await waitFor(cdp, "featured comments render reactively after release", visibleJs('[data-testid="featured-comments-panel"]'));
     await waitFor(cdp, "DSD host removed after stream end", `() => document.querySelector('[data-nve-dsd-host]') === null`);
     await sleep(300);
     assert(rpcSince(mark, COMMENTS_RPC) === 0, `suite 2: ${rpcSince(mark, COMMENTS_RPC)} Comments/List RPCs`);
@@ -222,7 +222,7 @@ async function main() {
     assertStrictCsp(doc3.headers, "suite 3");
     await waitMounted("WASM mounted on ErrorBoundary page");
     assertCleanHydration(await controller(), "suite 3");
-    await waitFor(cdp, "comments ErrorBoundary visible", visibleJs('[testid="comments-error-boundary"]'));
+    await waitFor(cdp, "comments ErrorBoundary visible", visibleJs('[data-testid="comments-error-boundary"]'));
     await sleep(300);
     assert(rpcSince(mark) === 0, `suite 3: expected 0 RPCs, saw ${rpcSince(mark)}`);
     console.log("  PASS: ?issue=999 -> 404 pre-headers; ?comments_issue=999 hydrates ErrorBoundary with 0 RPCs.");
@@ -237,18 +237,18 @@ async function main() {
     await waitFor(
       cdp,
       "3 seeded issues hydrated",
-      `() => ['1','2','3'].every((n) => document.querySelector('[testid="issue-row-' + n + '"]'))`
+      `() => ['1','2','3'].every((n) => document.querySelector('[data-testid="issue-row-' + n + '"]'))`
     );
     await sleep(150);
     await shot(cdp, "issues-desktop.png");
 
     const createCount = () => rpcRequests.filter((u) => u.includes("Issues/Create")).length;
-    const statsTotal = `(() => document.querySelector('[testid="stats-total"]')?.lastElementChild?.textContent?.trim())`;
+    const statsTotal = `(() => document.querySelector('[data-testid="stats-total"]')?.lastElementChild?.textContent?.trim())`;
     assert((await evalJs(cdp, `${statsTotal}()`)) === "3", "stats-total should start at 3");
 
     // 4a. Local 0ms FormDecode validation -> 0 RPCs.
     let before = createCount();
-    await evalJs(cdp, `document.querySelector('[testid="create-submit-btn"]').click()`);
+    await evalJs(cdp, `document.querySelector('[data-testid="create-submit-btn"]').click()`);
     await waitFor(cdp, "local FormDecode error", `() => document.body.innerText.includes("title must not be empty")`);
     await sleep(120);
     assert(createCount() === before, `local validation fired ${createCount() - before} RPCs`);
@@ -256,31 +256,31 @@ async function main() {
     // 4b. Server 422 duplicate-title FieldErrors + draft preservation, exactly 1 RPC.
     const dupTitle = "Add H0 preloaded SSR + fail-closed hydration";
     before = createCount();
-    await setInputValue(cdp, '[testid="create-title-input"]', dupTitle);
-    await evalJs(cdp, `document.querySelector('[testid="create-submit-btn"]').click()`);
+    await setInputValue(cdp, '[data-testid="create-title-input"]', dupTitle);
+    await evalJs(cdp, `document.querySelector('[data-testid="create-submit-btn"]').click()`);
     await waitFor(cdp, "server 422 FieldErrors", `() => document.body.innerText.includes("an issue with this title already exists")`);
     await sleep(120);
     assert(createCount() - before === 1, `expected 1 CreateIssue RPC on 422, saw ${createCount() - before}`);
     const draft = await evalJs(
       cdp,
-      `({ val: document.querySelector('[testid="create-title-input"]')?.value, dirty: document.querySelector('[testid="create-issue-form"]')?.getAttribute("data-nve-dirty") })`
+      `({ val: document.querySelector('[data-testid="create-title-input"]')?.value, dirty: document.querySelector('[data-testid="create-issue-form"]')?.getAttribute("data-nve-dirty") })`
     );
     assert(draft.val === dupTitle && draft.dirty === "true", `draft not preserved: ${JSON.stringify(draft)}`);
 
     // 4c. Valid CreateIssue -> Nve-Invalidate refetch of list AND live stats 3 -> 4.
     before = createCount();
-    await setInputValue(cdp, '[testid="create-title-input"]', "Live Chrome WASM Issue");
-    await evalJs(cdp, `document.querySelector('[testid="create-submit-btn"]').click()`);
+    await setInputValue(cdp, '[data-testid="create-title-input"]', "Live Chrome WASM Issue");
+    await evalJs(cdp, `document.querySelector('[data-testid="create-submit-btn"]').click()`);
     await waitFor(
       cdp,
       "created #4 via Nve-Invalidate refetch",
-      `() => document.querySelector('[testid="issue-title-4"]')?.textContent?.includes("Live Chrome WASM Issue")`
+      `() => document.querySelector('[data-testid="issue-title-4"]')?.textContent?.includes("Live Chrome WASM Issue")`
     );
     await waitFor(cdp, "stats-total updates live 3 -> 4", `() => ${statsTotal}() === "4"`);
     assert(createCount() - before === 1, `expected 1 CreateIssue RPC, saw ${createCount() - before}`);
     const reset = await evalJs(
       cdp,
-      `({ val: document.querySelector('[testid="create-title-input"]')?.value, dirty: document.querySelector('[testid="create-issue-form"]')?.getAttribute("data-nve-dirty") })`
+      `({ val: document.querySelector('[data-testid="create-title-input"]')?.value, dirty: document.querySelector('[data-testid="create-issue-form"]')?.getAttribute("data-nve-dirty") })`
     );
     assert(reset.val === "" && reset.dirty === "false", `form not reset: ${JSON.stringify(reset)}`);
 
@@ -289,13 +289,13 @@ async function main() {
     let pausedId = null;
     const closePaused = waitForEvent(cdp, "Fetch.requestPaused", (p) => Boolean(p?.requestId), 10000, "Issues/Close paused");
     try {
-      await evalJs(cdp, `document.querySelector('[testid="issue-close-4"]').click()`);
+      await evalJs(cdp, `document.querySelector('[data-testid="issue-close-4"]').click()`);
       const paused = await closePaused.promise;
       pausedId = paused.requestId;
       await waitFor(
         cdp,
         "optimistic Closed before server reply",
-        `() => document.querySelector('[testid="issue-state-4"]')?.textContent?.includes("Closed")`
+        `() => document.querySelector('[data-testid="issue-state-4"]')?.textContent?.includes("Closed")`
       );
       const finished = waitForEvent(
         cdp,
@@ -313,28 +313,28 @@ async function main() {
       if (pausedId) await cdp.send("Fetch.continueRequest", { requestId: pausedId }).catch(() => {});
       await cdp.send("Fetch.disable").catch(() => {});
     }
-    await waitFor(cdp, "confirmed Closed", `() => document.querySelector('[testid="issue-state-4"]')?.textContent?.includes("Closed")`);
-    await evalJs(cdp, `document.querySelector('[testid="filter-closed"]').click()`);
+    await waitFor(cdp, "confirmed Closed", `() => document.querySelector('[data-testid="issue-state-4"]')?.textContent?.includes("Closed")`);
+    await evalJs(cdp, `document.querySelector('[data-testid="filter-closed"]').click()`);
     await waitFor(
       cdp,
       "Closed filter shows #4, hides #2",
-      `() => Boolean(document.querySelector('[testid="issue-row-4"]')) && !document.querySelector('[testid="issue-row-2"]')`
+      `() => Boolean(document.querySelector('[data-testid="issue-row-4"]')) && !document.querySelector('[data-testid="issue-row-2"]')`
     );
-    await evalJs(cdp, `document.querySelector('[testid="filter-all"]').click()`);
-    await waitFor(cdp, "All filter restores #2", `() => Boolean(document.querySelector('[testid="issue-row-2"]'))`);
+    await evalJs(cdp, `document.querySelector('[data-testid="filter-all"]').click()`);
+    await waitFor(cdp, "All filter restores #2", `() => Boolean(document.querySelector('[data-testid="issue-row-2"]'))`);
 
     // 4e. RenameIssue (FormHiddenField) + AddComment in the detail panel.
-    await evalJs(cdp, `document.querySelector('[testid="issue-select-2"]').click()`);
-    await waitFor(cdp, "detail panel for #2", `() => Boolean(document.querySelector('[testid="rename-title-input"]'))`);
-    await setInputValue(cdp, '[testid="rename-title-input"]', "Renamed Live in Chrome");
-    await evalJs(cdp, `document.querySelector('[testid="rename-submit-btn"]').click()`);
+    await evalJs(cdp, `document.querySelector('[data-testid="issue-select-2"]').click()`);
+    await waitFor(cdp, "detail panel for #2", `() => Boolean(document.querySelector('[data-testid="rename-title-input"]'))`);
+    await setInputValue(cdp, '[data-testid="rename-title-input"]', "Renamed Live in Chrome");
+    await evalJs(cdp, `document.querySelector('[data-testid="rename-submit-btn"]').click()`);
     await waitFor(
       cdp,
       "#2 renamed",
-      `() => document.querySelector('[testid="issue-title-2"]')?.textContent?.includes("Renamed Live in Chrome")`
+      `() => document.querySelector('[data-testid="issue-title-2"]')?.textContent?.includes("Renamed Live in Chrome")`
     );
-    await setInputValue(cdp, '[testid="comment-body-input"]', "Browser E2E comment");
-    await evalJs(cdp, `document.querySelector('[testid="comment-submit-btn"]').click()`);
+    await setInputValue(cdp, '[data-testid="comment-body-input"]', "Browser E2E comment");
+    await evalJs(cdp, `document.querySelector('[data-testid="comment-submit-btn"]').click()`);
     await waitFor(cdp, "comment in detail panel", `() => document.body.innerText.includes("Browser E2E comment")`);
     await sleep(150);
     await shot(cdp, "issues-desktop-detail.png");
@@ -412,7 +412,7 @@ async function main() {
     const boundary = await evalJs(
       cdp,
       `(() => { ${boxHeightJs}
-        const el = document.querySelector('[data-nve-dsd-host] > [slot="nve-slot-comments"] [testid="comments-error-boundary"]');
+        const el = document.querySelector('[data-nve-dsd-host] > [slot="nve-slot-comments"] [data-testid="comments-error-boundary"]');
         return { slotted: Boolean(el?.closest('[slot]')?.assignedSlot), height: boxHeight(el) }; })()`
     );
     assert(boundary.slotted && boundary.height > 0, `0-JS ErrorBoundary not slotted/visible: ${JSON.stringify(boundary)}`);
