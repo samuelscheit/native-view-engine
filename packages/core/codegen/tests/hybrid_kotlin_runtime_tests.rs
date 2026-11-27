@@ -76,22 +76,9 @@ fn run(cmd: &mut Command, what: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// `javac`, `java`, and `kotlinc` (which only knows `-version`); a missing one skips the caller
-/// unless `NVE_REQUIRE_<TOOL>` is set.
+/// `kotlinc`, `javac`, and `java`; a missing one skips the caller unless `NVE_REQUIRE_<TOOL>` is set.
 fn jvm_tools_available() -> bool {
-    let kotlinc = Command::new("kotlinc")
-        .arg("-version")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !kotlinc {
-        assert!(
-            std::env::var_os("NVE_REQUIRE_KOTLINC").is_none(),
-            "`kotlinc` is required (NVE_REQUIRE_KOTLINC)"
-        );
-        eprintln!("SKIP: `kotlinc` not found");
-        return false;
-    }
-    common::require_tool("javac") && common::require_tool("java")
+    common::require_tool("kotlinc") && common::require_tool("javac") && common::require_tool("java")
 }
 
 /// Compiles the generated Kotlin of every `kotlin_specs()` spec plus the driver (`kotlinc -Werror`)

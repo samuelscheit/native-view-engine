@@ -135,6 +135,58 @@ fn generates_all_6_targets_deterministically_with_zero_json() {
     }
 }
 
+/// `#[prop] fn metadata(&self) -> NveValue` (`HybridType::Value`) keeps its true `NveValue` tags on
+/// every target's `setProps` path: never encoded through a scratch `BinWriter` into a `Bytes` value.
+#[test]
+fn value_direct_props_keep_true_tags_on_all_6_targets() {
+    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse spec");
+    let outputs = generate_hybrid_all(&spec, HybridTarget::ALL).expect("generate all 6 targets");
+    assert_eq!(outputs.len(), 6);
+    // The setProps line(s) that carry `metadata` as a value tree / inline `NveBinValue`.
+    let direct: &[(HybridTarget, &[&str])] = &[
+        (
+            HybridTarget::Rust,
+            &[r#""metadata" => props.metadata = nve_abi::hybrid::HybridCodec::decode_value_ref(value)?,"#],
+        ),
+        (HybridTarget::Cpp, &["const ::nve::host::NveValueTree _prop_tree_8(props.metadata);"]),
+        (HybridTarget::Swift, &["let _nveProp8 = try _nveTree.value(props.metadata)"]),
+        (HybridTarget::Kotlin, &["_nveW.writeMapKey(\"metadata\")", "props.metadata.writeTo(_nveW)"]),
+        (HybridTarget::Dart, &["_nveB.writeDynamicValue('metadata', metadata);"]),
+        (HybridTarget::TypeScript, &["_nve_w.writeMapKey('metadata');", "props.metadata.writeTo(_nve_w);"]),
+    ];
+    for output in &outputs {
+        let (_, expected) = direct
+            .iter()
+            .find(|(target, _)| *target == output.target)
+            .expect("every target has an expected direct-prop form");
+        let src: String = output.files.iter().map(|f| f.content.as_str()).collect();
+        let lines: Vec<&str> = src.lines().map(str::trim).collect();
+        // Consecutive lines: the map key, then the value written in place.
+        assert!(
+            lines.windows(expected.len()).any(|w| w == *expected),
+            "{:?}: `metadata` is not carried directly; expected {expected:?}",
+            output.target
+        );
+        for line in lines.iter().filter(|l| l.contains("metadata") && !l.contains("urrent")) {
+            for banned in ["Bytes", "bytes(", "encoded", "_prop_bin_", "_nveBw", "BinWriter"] {
+                assert!(
+                    !line.contains(banned),
+                    "{:?}: `metadata` (HybridType::Value) routed through `{banned}`: {line}",
+                    output.target
+                );
+            }
+        }
+        if output.target == HybridTarget::Cpp {
+            let key = lines
+                .iter()
+                .position(|l| l.contains("reinterpret_cast<const uint8_t*>(\"metadata\")"))
+                .expect("C++ setProps has a `metadata` entry");
+            assert_eq!(lines[key + 1], "entry.value = _prop_tree_8.root();");
+            assert!(!src.contains("_prop_bin_8"), "no scratch BinWriter for `metadata`");
+        }
+    }
+}
+
 #[test]
 fn schema_hash_changes_on_any_abi_mutation() {
     let base = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();

@@ -503,8 +503,20 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
 
     // Dart & TypeScript 53-bit codegen checks (positive + negative).
     let mut vd = Vec::new();
-    purity::scan_dart_53bit_safety("dart/a.rs", "const int H = 0x1234567890ABCDEF;", &mut vd);
-    assert_eq!(vd.len(), 1, "expected Dart 53-bit violation: {vd:?}");
+    purity::scan_dart_53bit_safety(
+        "dart/a.rs",
+        "const int H = 0x1234567890ABCDEF;\nconst int W = 0x12345678901234;\nstatic const int A = 0x{hash:016X};\nstatic const int B = 0x{hash:X};\nstatic const int C = 0x{hash};\nfinal int D = 0x{lo:08X} + 0x{hi:x};",
+        &mut vd,
+    );
+    assert_eq!(vd.len(), 6, "expected 6 Dart 53-bit violations: {vd:?}");
+
+    let mut vd_ok = Vec::new();
+    purity::scan_dart_53bit_safety(
+        "dart/a.rs",
+        "  static const int interfaceId = 0x{interface_id:08X};\nconst int K = 0x{k:04x};\nconst int S = 0x{s:02X};\nconst int N = 0x1234567890123;\nfinal h = BigInt.parse('0x{hash:016X}');\nfinal BigInt H = BigInt.parse('1234567890ABCDEF', radix: 16); // 0x1234567890ABCDEF",
+        &mut vd_ok,
+    );
+    assert!(vd_ok.is_empty(), "32-bit format specs, <= 13-digit literals and BigInt must pass: {vd_ok:?}");
 
     let mut vts_bad = Vec::new();
     purity::scan_ts_53bit_safety(

@@ -53,7 +53,7 @@ pub(super) fn cpp_param_type(ty: &HybridType) -> String {
         HybridType::Value => "const DynamicValue&".to_string(),
         HybridType::Struct(name) => format!("const {name}&"),
         HybridType::Optional(inner) => format!("const std::optional<{}>&", cpp_owned_type(inner)),
-        HybridType::Vec(inner) => format!("const std::vector<{}>&", cpp_owned_type(inner)),
+        HybridType::Vec(_) | HybridType::FixedArray { .. } => format!("const {}&", cpp_owned_type(ty)),
         other => cpp_owned_type(other),
     }
 }

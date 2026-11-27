@@ -183,9 +183,11 @@ pub fn require_tool(tool: &str) -> bool {
     false
 }
 
+/// Whether `tool` answers its version probe (`kotlinc` only knows `-version`; `--version` exits 1).
 pub fn tool_available(tool: &str) -> bool {
+    let probe = if tool == "kotlinc" { "-version" } else { "--version" };
     Command::new(tool)
-        .arg("--version")
+        .arg(probe)
         .output()
         .is_ok_and(|o| o.status.success())
 }

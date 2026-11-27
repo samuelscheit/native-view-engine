@@ -104,6 +104,29 @@ final class BinCodecTests: XCTestCase {
         XCTAssertThrowsError(try r.readI64()) { XCTAssertEqual($0 as? BinError, .unexpectedTag(expected: .i64, actual: .null)) }
     }
 
+    func testFixedSizeArraysRequireTheirExactCount() throws {
+        let twoNulls: [UInt8] = [6, 6, 0, 0, 0, 2, 0, 0, 0, 0, 0]
+        var exact = BinReader(twoNulls)
+        try exact.beginArray(exactly: 2)
+        XCTAssertTrue(try exact.readNull())
+        XCTAssertTrue(try exact.readNull())
+        XCTAssertTrue(exact.isAtEnd)
+        var shorter = BinReader(twoNulls)
+        XCTAssertThrowsError(try shorter.beginArray(exactly: 3)) { XCTAssertEqual($0 as? BinError, .truncated) }
+        var longer = BinReader(twoNulls)
+        XCTAssertThrowsError(try longer.beginArray(exactly: 1)) { XCTAssertEqual($0 as? BinError, .tooLarge) }
+
+        var w = BinWriter()
+        XCTAssertThrowsError(try w.beginArray(count: 1, exactly: 2)) { XCTAssertEqual($0 as? BinError, .truncated) }
+        XCTAssertThrowsError(try w.beginArray(count: 3, exactly: 2)) { XCTAssertEqual($0 as? BinError, .tooLarge) }
+        XCTAssertTrue(w.bytes.isEmpty, "rejected fixed-size arrays write nothing")
+        let m = try w.beginArray(count: 2, exactly: 2)
+        w.writeNull()
+        w.writeNull()
+        try w.end(m)
+        XCTAssertEqual(w.bytes, twoNulls)
+    }
+
     private func nested(_ depth: Int) throws -> [UInt8] {
         var w = BinWriter()
         var marks: [BinWriter.Mark] = []

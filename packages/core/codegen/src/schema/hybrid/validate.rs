@@ -401,9 +401,9 @@ fn validate_type(
             validate_type(inner, true, enum_map, struct_map, alias_names, ctx)
         }
         HybridType::FixedArray { elem, len } => {
-            if *len == 0 {
+            if *len == 0 || u32::try_from(*len).is_err() {
                 return Err(CodegenError::validation(format!(
-                    "{ctx}: fixed-size array length must be > 0"
+                    "{ctx}: fixed-size array length must be in 1..=u32::MAX (the wire count is u32)"
                 )));
             }
             validate_type(elem, false, enum_map, struct_map, alias_names, ctx)

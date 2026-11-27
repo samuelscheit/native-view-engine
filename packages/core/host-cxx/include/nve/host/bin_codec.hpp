@@ -158,6 +158,17 @@ class BinReader {
   /// `end(mark)`, no read can pass its payload, so a crafted entry never reads its parent's bytes.
   ReadMark begin_array() noexcept { return open(BinTag::Array, 1u); }
 
+  /// Opens an `Array` that must hold exactly `len` entries (a spec `[T; N]`): fewer fail with
+  /// `Truncated`, more with `TooLarge` (count 0). Close it with `end(mark)` either way.
+  ReadMark begin_array_exact(uint32_t len) noexcept {
+    ReadMark mark = begin_array();
+    if (ok() && mark.count != len) {
+      (void)fail<bool>(mark.count < len ? BinError::Truncated : BinError::TooLarge);
+      mark.count = 0u;
+    }
+    return mark;
+  }
+
   /// Opens a `Map` like `begin_array`; read each entry as `read_map_key()` then a value.
   ReadMark begin_map() noexcept { return open(BinTag::Map, 5u); }
 

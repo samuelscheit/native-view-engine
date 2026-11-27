@@ -404,27 +404,32 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
 }
 
 pub fn has_16_hex_literal(line: &str) -> bool {
+    hex_literal_digit_counts(line).any(|digits| digits == 16)
+}
+
+/// Hex-digit counts (ignoring `_` separators) of every `0x`/`0X` literal in `line`.
+pub fn hex_literal_digit_counts(line: &str) -> impl Iterator<Item = usize> + '_ {
     let bytes = line.as_bytes();
     let mut i = 0;
-    while i + 18 <= bytes.len() {
-        if bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
-            let mut j = i + 2;
-            let mut digits = 0usize;
-            while j < bytes.len() && (bytes[j].is_ascii_hexdigit() || bytes[j] == b'_') {
-                if bytes[j].is_ascii_hexdigit() {
-                    digits += 1;
+    std::iter::from_fn(move || {
+        while i + 2 < bytes.len() {
+            if bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+                let mut j = i + 2;
+                let mut digits = 0usize;
+                while j < bytes.len() && (bytes[j].is_ascii_hexdigit() || bytes[j] == b'_') {
+                    digits += usize::from(bytes[j].is_ascii_hexdigit());
+                    j += 1;
                 }
-                j += 1;
+                i = j;
+                if digits > 0 {
+                    return Some(digits);
+                }
+            } else {
+                i += 1;
             }
-            if digits == 16 {
-                return true;
-            }
-            i = j;
-        } else {
-            i += 1;
         }
-    }
-    false
+        None
+    })
 }
 
 fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {

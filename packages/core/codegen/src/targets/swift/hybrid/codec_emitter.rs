@@ -82,7 +82,10 @@ pub(super) fn swift_default_value(
         | HybridType::U64 => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::String => "\"\"".to_string(),
-        HybridType::Bytes | HybridType::Vec(_) | HybridType::FixedArray { .. } => "[]".to_string(),
+        HybridType::Bytes | HybridType::Vec(_) => "[]".to_string(),
+        HybridType::FixedArray { elem, len } => {
+            format!("Array(repeating: {}, count: {len})", swift_default_value(elem, None, spec))
+        }
         HybridType::Optional(_)
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
@@ -161,12 +164,17 @@ pub(super) fn emit_swift_bin_write(
             writeln!(out, "{indent}    {w}.writeNull()");
             writeln!(out, "{indent}}}");
         }
-        HybridType::Vec(inner) => {
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
             // Its own scope, so sibling sequences (two `Vec` fields or params) reuse the names.
             let mark = format!("_nveArray{depth}");
             let elem = format!("_nveElem{depth}");
+            // `[T]` cannot carry a spec `[T; N]`'s length: the writer rejects any other count.
+            let exactly = match ty {
+                HybridType::FixedArray { len, .. } => format!(", exactly: {len}"),
+                _ => String::new(),
+            };
             writeln!(out, "{indent}do {{");
-            writeln!(out, "{indent}    let {mark} = try {w}.beginArray(count: {expr}.count)");
+            writeln!(out, "{indent}    let {mark} = try {w}.beginArray(count: {expr}.count{exactly})");
             writeln!(out, "{indent}    for {elem} in {expr} {{");
             emit_swift_bin_write(out, &format!("{indent}        "), w, &elem, inner, depth + 1);
             writeln!(out, "{indent}    }}");
@@ -177,7 +185,6 @@ pub(super) fn emit_swift_bin_write(
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => writeln!(out, "{indent}{w}.writeNull()"),
     }
 }
@@ -224,7 +231,7 @@ pub(super) fn emit_swift_bin_read(
             writeln!(out, "{indent}    {dst} = {some}");
             writeln!(out, "{indent}}}");
         }
-        HybridType::Vec(inner) => {
+        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
             let (count, list, elem) = (
                 format!("_nveCount{depth}"),
                 format!("_nveList{depth}"),
@@ -232,7 +239,13 @@ pub(super) fn emit_swift_bin_read(
             );
             let elem_ty = swift_type(inner);
             writeln!(out, "{indent}do {{");
-            writeln!(out, "{indent}    let {count} = try {r}.beginArray()");
+            if let HybridType::FixedArray { len, .. } = ty {
+                // Any count other than `len` throws (`.truncated` / `.tooLarge`).
+                writeln!(out, "{indent}    try {r}.beginArray(exactly: {len})");
+                writeln!(out, "{indent}    let {count} = {len}");
+            } else {
+                writeln!(out, "{indent}    let {count} = try {r}.beginArray()");
+            }
             writeln!(out, "{indent}    var {list}: [{elem_ty}] = []");
             // `beginArray` bounds the count by the payload; the cap also bounds the up-front reserve.
             writeln!(out, "{indent}    {list}.reserveCapacity(Swift.min({count}, 1024))");
@@ -250,11 +263,9 @@ pub(super) fn emit_swift_bin_read(
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => {
             writeln!(out, "{indent}try {r}.skipValue()");
             match ty {
-                HybridType::FixedArray { .. } => writeln!(out, "{indent}{dst} = []"),
                 HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
                     writeln!(out, "{indent}{dst} = nil");
                 }
@@ -288,7 +299,7 @@ fn swift_direct_nve_value(tree: &str, expr: &str, ty: &HybridType) -> Option<Str
 }
 
 /// `let {dst} = <expr as a C NveValue in tree>`: scalars, strings, bytes, and dynamic values keep
-/// their own tags; `Struct` / `Vec` cross as one `NveBinValue` in `Bytes`; an absent option is
+/// their own tags; `Struct` / `Vec` / `[T; N]` cross as one `NveBinValue` in `Bytes`; an absent option is
 /// `Null` itself (never an encoded null inside `Bytes`).
 pub(super) fn emit_swift_nve_value(
     out: &mut CodeWriter,
@@ -313,7 +324,10 @@ pub(super) fn emit_swift_nve_value(
                 );
                 return;
             }
-            if !matches!(inner.as_ref(), HybridType::Struct(_) | HybridType::Vec(_)) {
+            if !matches!(
+                inner.as_ref(),
+                HybridType::Struct(_) | HybridType::Vec(_) | HybridType::FixedArray { .. }
+            ) {
                 writeln!(out, "{indent}let {dst} = {tree}.null()"); // no wire form, as below
                 return;
             }
@@ -321,11 +335,11 @@ pub(super) fn emit_swift_nve_value(
             emit_swift_encoded(out, &nested, tree, "_nveSome", inner);
             writeln!(out, "{indent}}} ?? {tree}.null()");
         }
-        HybridType::Struct(_) | HybridType::Vec(_) => {
+        HybridType::Struct(_) | HybridType::Vec(_) | HybridType::FixedArray { .. } => {
             writeln!(out, "{indent}let {dst} =");
             emit_swift_encoded(out, &nested, tree, expr, ty);
         }
-        // Types with no wire form (pointers, handles, fixed arrays) cross as `null`, like their codec.
+        // Types with no wire form (pointers, handles) cross as `null`, like their codec.
         _ => writeln!(out, "{indent}let {dst} = {tree}.null()"),
     }
 }

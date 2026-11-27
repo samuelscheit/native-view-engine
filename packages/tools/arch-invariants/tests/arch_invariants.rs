@@ -325,8 +325,7 @@ fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
         "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
         &purity::check_banned_4_letter_acronyms(idx),
     );
-    assert_staged_violations(
-        Stage::Post1B1E,
+    assert_no_violations(
         "Codegen Dart/TypeScript 53-bit integer safety & legacy wire/reloc/hybrid_rust/scene_abi path bans",
         &purity::check_codegen_hygiene_and_dart_53bit(idx),
     );

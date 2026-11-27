@@ -93,6 +93,26 @@ fn swift_files(dir: &Path) -> Vec<PathBuf> {
 /// Type-checks generated hybrid Swift against the built runtime, with `abi_header` imported the
 /// SwiftPM way: as the C module `<Stem>HybridAbi` (the end-to-end run uses a bridging header).
 pub fn typecheck_generated(host: &SwiftHost, abi_header: &Path, swift_file: &Path) {
+    let mut cmd = Command::new("swiftc");
+    cmd.args(SWIFT_STRICT)
+        .args(["-typecheck", "-parse-as-library", "-I"])
+        .arg(hybrid_abi_module_dir(host, abi_header));
+    host.search_args(&mut cmd);
+    let out = cmd
+        .arg(swift_file)
+        .output()
+        .expect("run swiftc -typecheck on generated Swift");
+    assert!(
+        out.status.success(),
+        "generated Swift {} failed swiftc -typecheck:\n{}",
+        swift_file.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Writes a module map exposing `abi_header` (`<Stem>HybridAbi.generated.h`) as the C module
+/// `<Stem>HybridAbi` and returns its directory, for `swiftc -I`.
+pub fn hybrid_abi_module_dir(host: &SwiftHost, abi_header: &Path) -> PathBuf {
     let file_name = abi_header
         .file_name()
         .and_then(|n| n.to_str())
@@ -110,19 +130,5 @@ pub fn typecheck_generated(host: &SwiftHost, abi_header: &Path, swift_file: &Pat
         ),
     )
     .expect("write hybrid module map");
-    let mut cmd = Command::new("swiftc");
-    cmd.args(SWIFT_STRICT)
-        .args(["-typecheck", "-parse-as-library", "-I"])
-        .arg(&map_dir);
-    host.search_args(&mut cmd);
-    let out = cmd
-        .arg(swift_file)
-        .output()
-        .expect("run swiftc -typecheck on generated Swift");
-    assert!(
-        out.status.success(),
-        "generated Swift {} failed swiftc -typecheck:\n{}",
-        swift_file.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    map_dir
 }

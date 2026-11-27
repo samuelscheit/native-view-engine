@@ -173,6 +173,26 @@ void test_errors() {
     CHECK(r.begin_array().count == 0u && r.error() == BinError::Truncated);
   }
   {
+    // Fixed-size arrays (`[T; N]`): exactly N entries; fewer fail `Truncated`, more `TooLarge`.
+    const std::vector<uint8_t> two_nulls = {6, 6, 0, 0, 0, 2, 0, 0, 0, 0, 0};
+    BinReader exact(two_nulls);
+    const BinReader::ReadMark m = exact.begin_array_exact(2);
+    CHECK(exact.ok() && m.count == 2u);
+    CHECK(exact.read_null() && exact.read_null());
+    exact.end(m);
+    CHECK(exact.ok() && exact.at_end());
+    BinReader shorter(two_nulls);
+    const BinReader::ReadMark s = shorter.begin_array_exact(3);
+    CHECK(s.count == 0u && shorter.error() == BinError::Truncated);
+    shorter.end(s);
+    CHECK(shorter.error() == BinError::Truncated);
+    BinReader longer(two_nulls);
+    CHECK(longer.begin_array_exact(1).count == 0u && longer.error() == BinError::TooLarge);
+    const std::vector<uint8_t> null_value = {0};
+    BinReader not_array(null_value);
+    CHECK(not_array.begin_array_exact(0).count == 0u && not_array.error() == BinError::UnexpectedTag);
+  }
+  {
     // Map entries need >= 5 bytes each: 1 entry in a 4-byte remainder is rejected.
     const std::vector<uint8_t> map_bomb = {7, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0};
     CHECK(BinReader::validate(map_bomb) == BinError::Truncated);

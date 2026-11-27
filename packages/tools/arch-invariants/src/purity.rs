@@ -1,17 +1,17 @@
-//! Staged Track 1B-1d / 1B-1e architectural debt scanners:
+//! Track 1B-1d staged debt scanners and permanent Track 1B-1e codegen guards:
 //! - `#[derive(NveTable)]` field hygiene (`#[bits(N)]`, magic sentinel defaults, split bool sentinels)
 //! - Hand-rolled `Unset` enum variants, manual `SET_*` masks, Tier-1 `encode_bytes`/`decode_bytes`
 //! - Dioxus numeric `AttributeValue::{Float,Int}` -> `String` round-trips
 //! - Platform purity (`packages/core/*` zero CSS/HTML formatters & zero `motion`/`MotionClock`)
 //! - Banned 4-letter format acronyms
-//! - Dart-web 53-bit `const int 0x...` safety & legacy codegen path bans
+//! - Dart-web / TypeScript 53-bit integer safety & legacy codegen path bans (always enforced)
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Fields, ImplItem, Item, Type};
 
 use crate::ast_layout::{has_attr_list_ident, last_type_ident};
-use crate::hygiene::has_16_hex_literal;
+use crate::hygiene::hex_literal_digit_counts;
 use crate::{
     is_binary_ext, is_cfg_test_attr, is_self_invariant_file, is_test_or_bench_rs, line_at,
     RepoIndex, Violation, DOC_EXCLUDES,
@@ -454,10 +454,7 @@ pub fn scan_dart_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
             || line.contains("static const int ")
             || line.contains("final int ")
             || (line.contains("const ") && line.contains('=') && !line.contains("BigInt"));
-        if is_dart_decl
-            && (line.contains("0x{") || has_16_hex_literal(line))
-            && !line.contains("BigInt")
-        {
+        if is_dart_decl && !line.contains("BigInt") && (has_wide_hex_literal(line) || has_wide_hex_format(line)) {
             out.push(Violation::new(
                 rel,
                 idx + 1,
@@ -466,6 +463,21 @@ pub fn scan_dart_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
             ));
         }
     }
+}
+
+/// A hex literal of >= 14 digits (> 53 bits) cannot be represented exactly by a JS Number.
+fn has_wide_hex_literal(line: &str) -> bool {
+    hex_literal_digit_counts(line).any(|digits| digits >= 14)
+}
+
+/// `0x{..}` format placeholders are JS-53-bit-safe only with an explicit <= 32-bit width
+/// (`:02X`/`:04X`/`:08X`, either case); `0x{h}`, `0x{h:X}` and `0x{h:016X}` may emit 64-bit values.
+fn has_wide_hex_format(line: &str) -> bool {
+    line.match_indices("0x{").any(|(at, _)| {
+        let placeholder = line[at + 3..].split('}').next().unwrap_or_default();
+        let spec = placeholder.rsplit_once(':').map(|(_, spec)| spec);
+        !matches!(spec, Some("02X" | "02x" | "04X" | "04x" | "08X" | "08x"))
+    })
 }
 
 pub fn scan_ts_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {

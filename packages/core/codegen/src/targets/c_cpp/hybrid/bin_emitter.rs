@@ -76,11 +76,20 @@ pub(crate) fn emit_cpp_bin_write(
             writeln!(out, "{indent}  {w}.end(_mark{d});");
             writeln!(out, "{indent}}}");
         }
+        // `std::array<T, N>` carries its length in the type: an `Array` of exactly `len` values.
+        HybridType::FixedArray { elem, len } => {
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  const auto _mark{d} = {w}.begin_array({len}u);");
+            writeln!(out, "{indent}  for (const auto& _elem{d} : {expr}) {{");
+            emit_cpp_bin_write(out, &format!("{indent}    "), w, &format!("_elem{d}"), elem);
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  {w}.end(_mark{d});");
+            writeln!(out, "{indent}}}");
+        }
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => writeln!(out, "{indent}{w}.write_null();"),
     }
 }
@@ -159,13 +168,25 @@ pub(crate) fn emit_cpp_bin_read(
             writeln!(out, "{indent}  {r}.end(_seq{d});");
             writeln!(out, "{indent}}}");
         }
+        // Any count other than `len` fails the reader (`begin_array_exact`, count 0).
+        HybridType::FixedArray { elem, len } => {
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  const auto _seq{d} = {r}.begin_array_exact({len}u);");
+            writeln!(
+                out,
+                "{indent}  for (uint32_t _i{d} = 0; _i{d} < _seq{d}.count && {r}.ok(); ++_i{d}) {{"
+            );
+            emit_cpp_bin_read(out, &format!("{indent}    "), r, &format!("{dst}[_i{d}]"), elem);
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  {r}.end(_seq{d});");
+            writeln!(out, "{indent}}}");
+        }
         // Not carried by the binary codec (they encode as `Null`): consume the value so the next
         // map key stays aligned.
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
         | HybridType::Handle(_) => writeln!(out, "{indent}{r}.skip_value();"),
     }
 }

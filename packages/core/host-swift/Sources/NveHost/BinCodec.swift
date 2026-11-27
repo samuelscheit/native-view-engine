@@ -131,6 +131,13 @@ public struct BinReader: Sendable {
     /// Element count of an array; rejects counts its payload cannot hold.
     public mutating func beginArray() throws(BinError) -> Int { try openContainer(.array, minEntryBytes: 1).count }
 
+    /// Opens an array that must hold exactly `count` values (a spec `[T; N]`): fewer throw
+    /// `.truncated`, more `.tooLarge`.
+    public mutating func beginArray(exactly count: Int) throws(BinError) {
+        let actual = try beginArray()
+        guard actual == count else { throw actual < count ? BinError.truncated : BinError.tooLarge }
+    }
+
     /// Entry count of a map; read each entry as `readMapKey()` then a value.
     public mutating func beginMap() throws(BinError) -> Int { try openContainer(.map, minEntryBytes: 5).count }
 
@@ -312,6 +319,13 @@ public struct BinWriter: Sendable {
     public mutating func beginArray(count: Int) throws(BinError) -> Mark {
         guard let n = UInt32(exactly: count) else { throw .tooLarge }
         return beginArray(n)
+    }
+
+    /// Opens an array for a fixed-size spec array (`[T; N]`) whose Swift collection holds `count`
+    /// values; throws (writing nothing) unless `count == expected`: fewer `.truncated`, more `.tooLarge`.
+    public mutating func beginArray(count: Int, exactly expected: Int) throws(BinError) -> Mark {
+        guard count == expected else { throw count < expected ? BinError.truncated : BinError.tooLarge }
+        return try beginArray(count: count)
     }
 
     /// Opens a map of `count` entries (`writeMapKey` + value each); close it with `end(_:)`.
