@@ -8,7 +8,7 @@ use syn::visit::{self, Visit};
 use crate::ast_layout::file_contains_ident;
 use crate::{RepoIndex, Violation};
 
-fn ast_calls_black_box(src: &str) -> bool {
+fn ast_file_calls_black_box(ast: &syn::File) -> bool {
     struct BlackBoxCallScan(bool);
     impl<'ast> Visit<'ast> for BlackBoxCallScan {
         fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
@@ -20,32 +20,45 @@ fn ast_calls_black_box(src: &str) -> bool {
             visit::visit_expr_call(self, node);
         }
     }
-    let Ok(ast) = syn::parse_file(src) else {
-        return false;
-    };
     let mut scan = BlackBoxCallScan(false);
-    scan.visit_file(&ast);
+    scan.visit_file(ast);
     scan.0
 }
 
-pub fn check_bench_not_stub(src: &str) -> Option<&'static str> {
-    let has_runner = file_contains_ident(src, "criterion_main")
+fn file_has_runner(src: &str) -> bool {
+    file_contains_ident(src, "criterion_main")
         || file_contains_ident(src, "criterion_group")
         || file_contains_ident(src, "Criterion")
         || file_contains_ident(src, "divan")
-        || (file_contains_ident(src, "Instant") && file_contains_ident(src, "now"));
-    let has_black_box = ast_calls_black_box(src);
-    match (has_runner, has_black_box) {
-        (false, _) => Some("Benchmark stub detected: missing real benchmark runner"),
-        (true, false) => {
-            Some("Benchmark missing `black_box(...)` call: LLVM may optimize measured work away")
+        || (file_contains_ident(src, "Instant") && file_contains_ident(src, "now"))
+}
+
+pub fn check_bench_group_not_stub(files: &[(&str, &str)]) -> Option<String> {
+    let mut parsed = Vec::with_capacity(files.len());
+    for &(path, src) in files {
+        match syn::parse_file(src) {
+            Ok(ast) => parsed.push((src, ast)),
+            Err(err) => return Some(format!("Failed to parse benchmark file `{path}`: {err}")),
         }
+    }
+    let has_runner = parsed.iter().any(|(src, _)| file_has_runner(src));
+    let has_black_box = parsed.iter().any(|(_, ast)| ast_file_calls_black_box(ast));
+    match (has_runner, has_black_box) {
+        (false, _) => Some("Benchmark stub detected: missing real benchmark runner".to_string()),
+        (true, false) => Some(
+            "Benchmark missing `black_box(...)` call: LLVM may optimize measured work away"
+                .to_string(),
+        ),
         (true, true) => None,
     }
 }
 
+pub fn check_bench_not_stub(src: &str) -> Option<String> {
+    check_bench_group_not_stub(&[("<inline>", src)])
+}
+
 pub fn check_existing_benchmarks_not_stubs(idx: &RepoIndex) -> Vec<Violation> {
-    let mut grouped: BTreeMap<String, String> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for rel in idx.rs_files_under("packages") {
         let Some(pos) = rel.find("/benches/") else {
             continue;
@@ -57,16 +70,19 @@ pub fn check_existing_benchmarks_not_stubs(idx: &RepoIndex) -> Vec<Violation> {
             rel.clone()
         };
         if let Some(src) = idx.read_text(&rel) {
-            let entry = grouped.entry(key).or_default();
-            entry.push_str(&src);
-            entry.push('\n');
+            grouped.entry(key).or_default().push((rel, src));
         }
     }
     assert!(!grouped.is_empty(), "expected benchmark targets under packages/**/benches/");
     grouped
         .iter()
-        .filter_map(|(target, combined)| {
-            check_bench_not_stub(combined).map(|reason| Violation::new(target, 1, target, reason))
+        .filter_map(|(target, files)| {
+            let refs: Vec<(&str, &str)> = files
+                .iter()
+                .map(|(p, s)| (p.as_str(), s.as_str()))
+                .collect();
+            check_bench_group_not_stub(&refs)
+                .map(|reason| Violation::new(target, 1, target, reason))
         })
         .collect()
 }

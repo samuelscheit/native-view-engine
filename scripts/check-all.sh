@@ -385,6 +385,7 @@ suite_cargo_deny() {
 suite_rust_clippy() {
   cd "$REPO_ROOT"
   cargo clippy --locked --workspace --all-targets -- -D warnings
+  cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
   if has_wasm_target; then
     cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
   fi
@@ -394,6 +395,7 @@ suite_rust_workspace() {
   cd "$REPO_ROOT"
   cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
   cargo test --workspace --exclude nve-arch-invariants
+  cargo test --locked -p nve-ui --features spatial-focus --test spatial_focus_tests
   cargo bench --no-run
   if [ "$QUICK_MODE" -eq 0 ]; then
     cargo bench --workspace

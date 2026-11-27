@@ -8,8 +8,11 @@ use ash::vk as ash_vk;
 use ash::vk::Handle as AshHandle;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use skia_safe::{
-    gpu::{direct_contexts, vk, DirectContext},
-    ColorType,
+    gpu::{
+        backend_render_targets, backend_semaphores, direct_contexts, surfaces, vk, DirectContext,
+        Protected, SurfaceOrigin,
+    },
+    ColorType, Surface,
 };
 
 use crate::gpu::{GpuSurfaceError, SwapchainExtent};
@@ -464,6 +467,12 @@ pub(super) fn create_vk_swapchain(
                 .clamp(caps.min_image_extent.height, caps.max_image_extent.height),
         }
     };
+    if vk_extent.width == 0 || vk_extent.height == 0 {
+        return Err(GpuSurfaceError::InvalidDimensions {
+            width: vk_extent.width,
+            height: vk_extent.height,
+        });
+    }
 
     let info = ash_vk::SwapchainCreateInfoKHR::default()
         .surface(params.surface)
@@ -581,4 +590,49 @@ pub(super) fn map_ash_to_skia_format(fmt: ash_vk::Format) -> vk::Format {
         ash_vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_SRGB,
         _ => vk::Format::B8G8R8A8_UNORM,
     }
+}
+
+pub(super) fn wrap_vk_swapchain_image(
+    direct_context: &mut DirectContext,
+    image: ash_vk::Image,
+    vk_extent: ash_vk::Extent2D,
+    format: ash_vk::Format,
+    color_type: ColorType,
+    queue_family_index: u32,
+    image_available: ash_vk::Semaphore,
+) -> Option<Surface> {
+    let vk_format = map_ash_to_skia_format(format);
+    // SAFETY: `image` is a live swapchain `VkImage` owned by the active swapchain for this frame.
+    let mut image_info = unsafe {
+        vk::ImageInfo::new(
+            image.as_raw() as _,
+            vk::Alloc::default(),
+            vk::ImageTiling::OPTIMAL,
+            vk::ImageLayout::UNDEFINED,
+            vk_format,
+            1,
+            queue_family_index,
+            None,
+            Protected::No,
+            vk::SharingMode::EXCLUSIVE,
+        )
+    };
+    image_info.image_usage_flags = ash_vk::ImageUsageFlags::COLOR_ATTACHMENT.as_raw();
+
+    let backend_rt = backend_render_targets::make_vk(
+        (vk_extent.width as i32, vk_extent.height as i32),
+        &image_info,
+    );
+    let mut surface = surfaces::wrap_backend_render_target(
+        direct_context,
+        &backend_rt,
+        SurfaceOrigin::TopLeft,
+        color_type,
+        None,
+        None,
+    )?;
+    // SAFETY: `image_available` is a live `VkSemaphore` kept alive inside `VulkanWindowState`.
+    let acquire_sem = unsafe { backend_semaphores::make_vk(image_available.as_raw() as _) };
+    surface.wait(&[acquire_sem], false);
+    Some(surface)
 }

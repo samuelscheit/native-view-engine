@@ -7,7 +7,7 @@ use super::*;
 
 #[test]
 fn hot_reload_helpers_cover_platform_paths_and_filters() {
-    let dylib = dylib_path_for_package("nve-example-kitchen-sink");
+    let dylib = dylib_path_for_package_in(Path::new("target"), "nve-example-kitchen-sink");
     let s = dylib.to_string_lossy();
     assert!(s.contains("nve_example_kitchen_sink"), "unexpected path: {s}");
     if cfg!(target_os = "macos") {
@@ -78,6 +78,54 @@ fn skia_shell_subprocess_resolution_and_args_reject_missing_override() {
             std::ffi::OsString::from("ws://127.0.0.1:8089"),
         ]
     );
+}
+
+#[test]
+fn child_process_guard_drop_kills_and_reaps_running_child() {
+    use std::io::Read as _;
+    use std::process::Stdio;
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = ProcessCommand::new("cmd");
+        c.args(["/C", "ping", "-n", "30", "127.0.0.1"]);
+        c
+    } else {
+        let mut c = ProcessCommand::new("sleep");
+        c.arg("30");
+        c
+    };
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sleep child");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let guard = ChildProcessGuard(Some(child));
+
+    let t0 = Instant::now();
+    drop(guard);
+
+    let mut buf = Vec::new();
+    stdout.read_to_end(&mut buf).expect("stdout pipe closes on child exit");
+    assert!(
+        t0.elapsed() < Duration::from_secs(5),
+        "ChildProcessGuard drop must terminate child promptly (took {:?})",
+        t0.elapsed()
+    );
+}
+
+#[test]
+fn deferred_skia_launch_waits_for_first_successful_rebuild() {
+    let (tx, rx) = bounded::<()>(1);
+    assert!(wait_for_skia_launch_ready(true, &rx).is_ok());
+
+    let handle = std::thread::spawn(move || wait_for_skia_launch_ready(false, &rx));
+    tx.try_send(()).expect("signal first successful rebuild");
+    assert!(handle.join().expect("join waiter").is_ok());
+
+    let (tx_drop, rx_drop) = bounded::<()>(1);
+    drop(tx_drop);
+    assert!(wait_for_skia_launch_ready(false, &rx_drop).is_err());
 }
 
 #[test]

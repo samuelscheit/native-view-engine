@@ -332,6 +332,16 @@ pub(super) fn emit_rust_param_decode(
 }
 
 pub(super) fn rust_return_encode_expr(expr: &str, ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if let (HybridType::Optional(inner), Some(suffix)) = (ty, ty.optional_pod_suffix(spec)) {
+        return match inner.as_ref() {
+            HybridType::Enum(_) => format!(
+                "match {expr} {{ Some(v) => NveHybridOpt{suffix} {{ is_some: true, value: v.to_u32() }}, None => NveHybridOpt{suffix} {{ is_some: false, value: 0 }} }}"
+            ),
+            _ => format!(
+                "match {expr} {{ Some(v) => NveHybridOpt{suffix} {{ is_some: true, value: v }}, None => NveHybridOpt{suffix} {{ is_some: false, value: Default::default() }} }}"
+            ),
+        };
+    }
     match ty {
         HybridType::Bool
         | HybridType::U8
@@ -348,26 +358,6 @@ pub(super) fn rust_return_encode_expr(expr: &str, ty: &HybridType, spec: &Hybrid
         HybridType::String => format!("NveHybridOwnedBytes::from_string({expr})"),
         HybridType::Bytes => format!("NveHybridOwnedBytes::from_vec({expr})"),
         HybridType::Value => format!("NveHybridOwnedBytes::from_vec({expr}.bin_bytes)"),
-        HybridType::Optional(inner) => {
-            if let Some(suffix) = inner.pod_opt_suffix_for(spec) {
-                match inner.as_ref() {
-                    HybridType::Enum(_) => format!(
-                        "match {expr} {{ Some(v) => NveHybridOpt{suffix} {{ is_some: true, value: v.to_u32() }}, None => NveHybridOpt{suffix} {{ is_some: false, value: 0 }} }}"
-                    ),
-                    _ => format!(
-                        "match {expr} {{ Some(v) => NveHybridOpt{suffix} {{ is_some: true, value: v }}, None => NveHybridOpt{suffix} {{ is_some: false, value: Default::default() }} }}"
-                    ),
-                }
-            } else {
-                let mut body = CodeWriter::default();
-                writeln!(body, "{{");
-                writeln!(body, "            let mut _bin = Vec::with_capacity(64);");
-                emit_bin_write_expr(&mut body, "            ", "&mut _bin", &format!("&{expr}"), ty);
-                writeln!(body, "            NveHybridOwnedBytes::from_vec(_bin)");
-                write!(body, "        }}");
-                body.into_string()
-            }
-        }
         other => {
             let mut body = CodeWriter::default();
             writeln!(body, "{{");

@@ -21,7 +21,7 @@ use nve_wire::{
     NveWireServerMetrics,
 };
 
-use crate::dev::dylib_path_for_package;
+use crate::dev::{dylib_path_for_package_in, resolve_cargo_target_dir};
 
 pub(crate) struct PairOptions {
     pub dylib: Option<PathBuf>,
@@ -216,7 +216,8 @@ pub(crate) fn resolve_dylib_path(
         };
     }
     let pkg = package.unwrap_or("nve-studio-workspace");
-    let path = dylib_path_for_package(pkg);
+    let target_dir = resolve_cargo_target_dir().unwrap_or_else(|_| PathBuf::from("target"));
+    let path = dylib_path_for_package_in(&target_dir, pkg);
     if !path.exists() {
         println!("[pair] building {pkg} -> {}...", path.display());
         let status = ProcessCommand::new("cargo")
