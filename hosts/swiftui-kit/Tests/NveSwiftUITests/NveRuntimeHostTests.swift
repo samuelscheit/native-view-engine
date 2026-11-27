@@ -92,9 +92,9 @@ final class NveRuntimeHostTests: XCTestCase {
             { (a: inout NveRuntimeApi) in a.abi_version += 1 },
             { (a: inout NveRuntimeApi) in a.schema_hash ^= 1 },
             { (a: inout NveRuntimeApi) in a.struct_size -= 8 },
-            { (a: inout NveRuntimeApi) in a.resource_bytes = nil },
+            { (a: inout NveRuntimeApi) in a.resource_payload = nil },
             { (a: inout NveRuntimeApi) in a.set_text_measurer = nil },
-            { (a: inout NveRuntimeApi) in a.encode_scene = nil },
+            { (a: inout NveRuntimeApi) in a.last_error = nil },
         ] {
             var copy = MockRuntime.api.pointee
             corrupt(&copy)
@@ -132,13 +132,6 @@ final class NveRuntimeHostTests: XCTestCase {
 
     func testComponentDevAndResourceSlotsRoundTrip() throws {
         let session = try makeSession()
-        m.measureResult = NveIntrinsicSize(width: 120, height: 44)
-        let size = try session.measure(NveSizeConstraints(min_w: 0, min_h: 0, max_w: 300, max_h: .infinity))
-        XCTAssertEqual([size.width, size.height], [120, 44])
-        m.measureResult = nil
-        XCTAssertThrowsError(try session.measure(NveSizeConstraints(min_w: 0, min_h: 0, max_w: 1, max_h: 1))) {
-            XCTAssertTrue(($0 as? NveRuntimeError)?.isMissingCapability == true)
-        }
         m.state = [1, 2, 3]
         XCTAssertEqual(try session.snapshotState(), Data([1, 2, 3]))
         try session.restoreState(Data([9, 8]))
@@ -146,10 +139,14 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertTrue(try session.applyHotPatch(Data([0x4E, 0x56, 0x50, 0x31])))
         XCTAssertEqual(m.patches, [4])
         m.resources[5] = [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62]
-        XCTAssertEqual(try session.resourceBytes(5), [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62])
-        XCTAssertEqual(NveImageSource(resourceBytes: try session.resourceBytes(5)), .url("a.b"))
-        XCTAssertThrowsError(try session.resourceBytes(6))
-        XCTAssertEqual(Array(try session.encodeScene().prefix(4)), Array("NVE2".utf8))
+        let res = try session.withScene { try session.resource(5, in: $0) }
+        XCTAssertEqual(res.bytes, [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62])
+        XCTAssertEqual(res.kind, Key64(0x1234))
+        XCTAssertEqual(NveImageSource(resourceBytes: res.bytes), .url("a.b"))
+        XCTAssertThrowsError(try session.withScene { try session.resource(6, in: $0) }) {
+            XCTAssertTrue(($0 as? NveRuntimeError)?.isMissingCapability == true, "stale id: NOT_FOUND")
+        }
+        XCTAssertEqual(m.acquires, m.releases)
         try session.pairConnect(uri: "nve://pair?host=127.0.0.1&ws=8092", token: "t")
         XCTAssertEqual(m.pairedUri, "nve://pair?host=127.0.0.1&ws=8092")
         XCTAssertTrue(session.isPaired)
@@ -175,6 +172,16 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(measurer.calls.first?.1, 17)
         XCTAssertEqual(measurer.calls.first?.2, 600)
         XCTAssertEqual(measurer.calls.first?.3, .infinity)
+        // A refused swap keeps the installed box alive (the runtime still calls it) and frees the new one.
+        let rejected = RecordingMeasurer()
+        m.failNextWith = Int32(NVE_RUNTIME_INVALID_ARG.rawValue)
+        XCTAssertThrowsError(try session.setTextMeasurer(rejected))
+        XCTAssertNotNil(try XCTUnwrap(m.measureText("again", size: 12, weight: 400, maxWidth: 50)))
+        XCTAssertEqual(measurer.calls.count, 2)
+        XCTAssertTrue(rejected.calls.isEmpty)
+        m.failNextWith = Int32(NVE_RUNTIME_INVALID_ARG.rawValue)
+        XCTAssertThrowsError(try session.setWakeHandler { XCTFail("never installed") })
+        XCTAssertNil(m.wake.0)
         try session.setTextMeasurer(nil)
         XCTAssertNil(m.measurer.0)
         let real = NveCoreTextMeasurer().measure(text: "Hello world", fontSize: 16, fontWeight: 400, maxWidth: 30)
@@ -279,10 +286,13 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(m.dispatched.last?.first?.nodeId, 2)
         XCTAssertEqual(received.map(\.nodeId), [3], "outbound events are drained after each pump")
 
-        m.measureResult = NveIntrinsicSize(width: 500, height: 80)
-        XCTAssertEqual(controller.measure(proposal: CGSize(width: 320, height: CGFloat.infinity)), CGSize(width: 320, height: 80))
-        m.measureResult = nil
-        XCTAssertEqual(controller.measure(proposal: CGSize(width: CGFloat.infinity, height: 50)), CGSize(width: 240, height: 50))
+        // Unconstrained axes take the laid-out root rect (fallback when it is empty).
+        let rootRect = m.scene.rects[NodeId.root.index]
+        let natural = rootRect.width > 0 && rootRect.height > 0
+            ? CGSize(width: CGFloat(rootRect.width), height: CGFloat(rootRect.height)) : controller.fallbackIntrinsicSize
+        XCTAssertEqual(controller.measure(proposal: CGSize(width: 320, height: CGFloat.infinity)), CGSize(width: 320, height: natural.height))
+        XCTAssertEqual(controller.measure(proposal: CGSize(width: CGFloat.infinity, height: 50)), CGSize(width: natural.width, height: 50))
+        XCTAssertEqual(controller.measure(proposal: CGSize(width: 10, height: 20)), CGSize(width: 10, height: 20))
         controller.resize(CGSize(width: 320, height: 480), scale: 2)
         XCTAssertEqual(m.viewports.last?.0, 320)
         XCTAssertEqual(m.viewports.last?.2, 2)

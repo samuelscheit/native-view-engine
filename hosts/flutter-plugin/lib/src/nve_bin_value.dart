@@ -4,10 +4,10 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'nve_bin_codec.dart';
-import 'nve_core_abi.generated.dart';
+import 'package:nve_host/nve_host.dart';
 
 export 'nve_bin_codec.dart';
-export 'nve_core_abi.generated.dart' show nveBinValueMaxDepth;
+export 'package:nve_host/nve_host.dart' show nveBinValueMaxDepth;
 
 /// Binary `NveBinValue` wire tags `0..7`.
 enum NveBinValueTag {

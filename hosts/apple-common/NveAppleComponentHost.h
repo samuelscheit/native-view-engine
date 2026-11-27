@@ -48,7 +48,7 @@ NS_ASSUME_NONNULL_BEGIN
                  contentHeight:(float)contentHeight;
 
 - (void)updateSurfaceWidth:(float)width height:(float)height scaleFactor:(float)scaleFactor;
-/// Intrinsic size: the app's `NveLayoutApi::measure` under `maxSize`, else the laid-out root.
+/// Intrinsic size: the laid-out root.
 - (BOOL)getRootLayoutSize:(CGSize *)outSize;
 
 - (nullable NvePlatformView *)nativeViewForNodeId:(uint32_t)nodeId;
@@ -58,7 +58,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-/// Dev loop, pairing, and instant boot (`NveAppleComponentHost+Session.mm`).
+/// Dev loop, pairing, and Frame-0 replay (`NveAppleComponentHost+Session.mm`).
 @interface NveAppleComponentHost (Session)
 
 /// Tier-2 hot swap: snapshots app state, attaches the rebuilt dylib, restores state. A failed
@@ -73,15 +73,8 @@ NS_ASSUME_NONNULL_BEGIN
                         error:(NSError *_Nullable *_Nullable)error;
 - (void)disconnectPaired;
 
-/// Instant boot: replays a saved Frame-0 before any app attaches and keeps its app state for
-/// `restore_state` once the live app attaches.
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t *_Nullable)outRestoreUs;
-/// Replays a raw `NVE2` keyframe (no app attached).
+/// Replays a raw `NVE2` keyframe (`submit_nve2`) while no app is attached.
 - (BOOL)replayFrame0:(NSData *)frame0;
-/// Persists `encode_scene` + `snapshot_state` atomically (`nve::host::SnapshotFile`).
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath schemaVersion:(uint32_t)schemaVersion;
 
 @end
 

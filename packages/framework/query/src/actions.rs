@@ -139,8 +139,11 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     return false;
                 }
                 let cur_inv_ver = pack_invalidation_version(s.wildcard_epoch, meta.fetch_gen);
+                // A leader (or a hydrated stream chunk) that committed data OR an error for the
+                // current epoch settled this key; never fire a duplicate RPC behind it.
                 cur_inv_ver == pre_inv_ver
-                    || (!meta.is_invalidated(s.wildcard_epoch) && meta.has_data())
+                    || (!meta.is_invalidated(s.wildcard_epoch)
+                        && (meta.has_data() || meta.has_error()))
             });
             if settled_by_leader {
                 let snap = self.read::<P>(handle);
@@ -435,14 +438,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let mut touched_any = false;
 
             if invalidate_all {
-                s.wildcard_epoch = s.wildcard_epoch.wrapping_add(1);
-                let active_len = s.active_slots.len();
-                for i in 0..active_len {
-                    let slot = s.active_slots[i];
-                    s.invalidate_slot(slot, &mut active, &mut waiters);
-                    invalidated_slots.push(slot);
-                    touched_any = true;
-                }
+                touched_any = s.invalidate_all_slots(&mut active, &mut waiters);
+                invalidated_slots.extend_from_slice(&s.active_slots);
             } else {
                 for &tag in tags {
                     let mut slots = Vec::new();

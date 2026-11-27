@@ -9,12 +9,11 @@ use nve_abi::{
 use nve_canvas::{Canvas, CanvasOp, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
 use nve_components::tables::{Image, ImageFit, ImageSrc, Interaction, TextInput};
 use nve_engine::NveApp;
-use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_store::wire::WireDecoder;
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, DocBlockKind,
-    HOST_SURFACES, PersistConfig, STATE_ARENA_FILE_NAME, StudioWorkspaceModule,
+    HOST_SURFACES, PersistConfig, STATE_FILE_NAME, StudioWorkspaceModule,
     WORKSPACE_STATE_BIN_MAGIC, WORKSPACE_STATE_BIN_VERSION, WorkbenchPreset, WorkspaceState,
     WorkspaceStore,
 };
@@ -199,27 +198,26 @@ fn nws1_v3_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
 }
 
 #[test]
-fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() {
+fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() {
     let dir = unique_test_dir("persist");
-    let cfg = PersistConfig {
-        initial_capacity: 128 * 1024,
-        compact_headroom: 64 * 1024,
-        auto_compact_every: 4,
-        sync_on_save: true,
-    };
+    assert!(
+        PersistConfig::default().sync_on_save,
+        "PersistConfig::default() must be crash-durable (sync_on_save: true)"
+    );
+    let cfg = PersistConfig::default();
 
     let mut store = WorkspaceStore::open_with_config(&dir, cfg).expect("cold open store");
     assert!(store.is_enabled());
     assert!(!store.recovery_stats().loaded_from_disk);
-    assert_eq!(store.generation(), 1);
-    assert!(dir.join(STATE_ARENA_FILE_NAME).exists());
+    assert_eq!(store.generation(), 0);
 
     let mut state = store.initial_state().clone();
-    assert!(state.create_custom_task("Ship local-first MmapOffsetArena persistence"));
-    state.send_quick_reply(ChannelKind::Engineering, "Arena commit #1 verified");
-    let out1 = store.save(&state).expect("arena commit 1");
-    assert_eq!(out1.generation, 2);
-    assert!(!out1.compacted);
+    assert!(state.create_custom_task("Ship local-first StateFile persistence"));
+    state.send_quick_reply(ChannelKind::Engineering, "StateFile commit #1 verified");
+    let out1 = store.save(&state).expect("state commit 1");
+    assert_eq!(out1.generation, 1);
+    assert!(out1.byte_len > 24);
+    assert!(dir.join(STATE_FILE_NAME).exists());
 
     state.select_view(ActiveView::Docs);
     assert!(state.toggle_doc_checklist(7));
@@ -227,92 +225,44 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
         .add_doc_block(DocBlockKind::Code, "WorkspaceStore::open(dir)")
         .expect("add code block");
     assert!(state.update_doc_block_text(4, "Updated binary CommandBuffer invariant."));
-    let out2 = store.save(&state).expect("arena commit 2");
-    assert_eq!(out2.generation, 3);
-    assert!(!out2.compacted);
-    let state_at_gen3 = state.clone();
+    let out2 = store.save(&state).expect("state commit 2");
+    assert_eq!(out2.generation, 2);
 
     state.set_accent(AccentTheme::Violet);
     state.set_radius(CornerRadiusMode::Pill);
     state.set_density(DensityMode::Compact);
-    state.select_view(ActiveView::Workbench);
-    state.set_workbench_preset(WorkbenchPreset::Mobile);
-    state.select_workbench_host("skia-metal");
-    let out3 = store.save(&state).expect("arena commit 3");
-    assert_eq!(out3.generation, 4);
-    assert!(!out3.compacted);
-    let active_slot_gen4 = out3.active_slot;
+    state.send_quick_reply(ChannelKind::Design, "Post-save message");
+    assert!(state.toggle_doc_checklist(6));
+    let out3 = store.save(&state).expect("state commit 3");
+    assert_eq!(out3.generation, 3);
+    assert_eq!(store.load_state().expect("load_state"), state);
     drop(store);
 
-    {
-        use std::io::{Seek, SeekFrom, Write};
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .open(dir.join(STATE_ARENA_FILE_NAME))
-            .expect("open state.nvemmap for torn-slot injection");
-        let slot_off = (active_slot_gen4 * ARENA_HEADER_SLOT_SIZE) as u64;
-        f.seek(SeekFrom::Start(slot_off)).unwrap();
-        f.write_all(&[0xDEu8; ARENA_HEADER_SLOT_SIZE]).unwrap();
-        f.sync_all().unwrap();
-    }
-
-    let mut store_reopened =
-        WorkspaceStore::open_with_config(&dir, cfg).expect("recover torn header slot");
-    let stats = store_reopened.recovery_stats();
-    assert!(stats.loaded_from_disk);
-    assert!(!stats.recovered_from_corrupt_arena);
-    assert_eq!(stats.generation, 3);
-    assert_eq!(store_reopened.initial_state(), &state_at_gen3);
-
-    let mut state_after_compact = store_reopened.initial_state().clone();
-    state_after_compact.set_accent(AccentTheme::Violet);
-    state_after_compact.set_radius(CornerRadiusMode::Pill);
-    state_after_compact.set_density(DensityMode::Compact);
-    state_after_compact.send_quick_reply(ChannelKind::Design, "Post-compaction message");
-    assert!(state_after_compact.toggle_doc_checklist(6));
-    let mut saw_compact = false;
-    for _ in 0..4 {
-        let out = store_reopened
-            .save(&state_after_compact)
-            .expect("arena commit triggering compaction");
-        saw_compact |= out.compacted;
-    }
-    assert!(saw_compact, "4th commit must trigger auto-compaction");
-    assert!(store_reopened.compaction_count() >= 1);
-    assert_eq!(
-        store_reopened
-            .load_state()
-            .expect("load_state after compact"),
-        state_after_compact
-    );
-    drop(store_reopened);
-
-    let store_cold =
-        WorkspaceStore::open_with_config(&dir, cfg).expect("cold restart after compaction");
+    let store_cold = WorkspaceStore::open_with_config(&dir, cfg).expect("cold restart");
     let cold_stats = store_cold.recovery_stats();
     assert!(cold_stats.loaded_from_disk);
     let restored = store_cold.initial_state();
-    assert_eq!(restored, &state_after_compact);
+    assert_eq!(restored, &state);
     assert!(
         restored
             .current
             .tasks
             .iter()
-            .any(|t| t.title == "Ship local-first MmapOffsetArena persistence")
+            .any(|t| t.title == "Ship local-first StateFile persistence")
     );
     assert!(
         restored
             .current
             .eng_messages
             .iter()
-            .any(|m| m.body == "Arena commit #1 verified")
+            .any(|m| m.body == "StateFile commit #1 verified")
     );
     assert!(
         restored
             .current
             .design_messages
             .iter()
-            .any(|m| m.body == "Post-compaction message")
+            .any(|m| m.body == "Post-save message")
     );
     assert_eq!(restored.current.studio.accent, AccentTheme::Violet);
     assert_eq!(restored.current.studio.radius, CornerRadiusMode::Pill);
@@ -340,12 +290,72 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
     );
     drop(store_cold);
 
-    std::fs::write(dir.join(STATE_ARENA_FILE_NAME), b"CORRUPTED_ARENA_BYTES")
-        .expect("corrupt arena file");
+    // Older schema version (v2 < v3) on disk rotates to `state.nve.v2` and keeps persistence active.
+    let older_env = nve_engine::StateFile::encode_envelope(2, b"legacy-v2-payload")
+        .expect("encode older v2 schema");
+    std::fs::write(dir.join(STATE_FILE_NAME), &older_env).expect("write v2 state");
+    let mut store_upgraded =
+        WorkspaceStore::open_with_config(&dir, cfg).expect("older schema rotates cleanly");
+    assert_eq!(
+        store_upgraded.recovery_stats().rotated_from_older_schema,
+        Some(2)
+    );
+    assert!(
+        dir.join(format!("{STATE_FILE_NAME}.v2")).exists(),
+        "older schema must be rotated to state.nve.v2 backup"
+    );
+    store_upgraded
+        .save(&WorkspaceState::default())
+        .expect("persistence stays active after older-schema rotation");
+    drop(store_upgraded);
+
+    // Newer schema version (v99 > v3) on disk must return SchemaMismatch WITHOUT deleting state.nve.
+    let newer_env = nve_engine::StateFile::encode_envelope(99, b"future-v99-payload")
+        .expect("encode future schema");
+    std::fs::write(dir.join(STATE_FILE_NAME), &newer_env).expect("write v99 state");
+    assert!(matches!(
+        WorkspaceStore::open_with_config(&dir, cfg),
+        Err(nve_studio_workspace::PersistError::Persistence(
+            nve_engine::PersistenceError::SchemaMismatch {
+                expected: 3,
+                actual: 99
+            }
+        ))
+    ));
+    assert!(
+        dir.join(STATE_FILE_NAME).exists(),
+        "newer schema mismatch must preserve state.nve on disk"
+    );
+    // StudioWorkspaceModule::with_services_and_persist_dir (sharing the exact open path with
+    // `with_services`) must surface the future-schema failure via `persist_open_error()`.
+    let mod_v99 = StudioWorkspaceModule::with_services_and_persist_dir(
+        1,
+        std::sync::Arc::new(nve_studio_workspace::StudioHostServices::new()),
+        &dir,
+    );
+    assert!(mod_v99.persist_store().is_none());
+    let open_err = mod_v99
+        .persist_open_error()
+        .expect("future v99 schema must populate persist_open_error()");
+    assert!(
+        open_err.contains("99"),
+        "persist_open_error must preserve schema mismatch diagnostic, got: {open_err}"
+    );
+    assert!(
+        dir.join(STATE_FILE_NAME).exists(),
+        "future v99 state.nve must remain untouched on disk"
+    );
+
+    std::fs::write(dir.join(STATE_FILE_NAME), b"CORRUPTED_STATE_BYTES")
+        .expect("corrupt state file");
     let store_corrupt =
-        WorkspaceStore::open_with_config(&dir, cfg).expect("fallback on corrupt arena");
-    assert!(store_corrupt.recovery_stats().recovered_from_corrupt_arena);
+        WorkspaceStore::open_with_config(&dir, cfg).expect("fallback on corrupt state file");
+    assert!(store_corrupt.recovery_stats().recovered_from_corrupt);
     assert_eq!(store_corrupt.initial_state(), &WorkspaceState::default());
+    assert!(
+        dir.join(format!("{STATE_FILE_NAME}.corrupt")).exists(),
+        "corrupt state.nve must be quarantined to state.nve.corrupt"
+    );
     drop(store_corrupt);
 
     let mod_dir = unique_test_dir("module-persist");
@@ -360,7 +370,7 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
         // SAFETY: `docs_entries` outlives the synchronous `set_props` call.
         assert!(app.set_props(unsafe { NvePropsRef::from_slice(&docs_entries) }));
         let _ = app.render(2);
-        assert!(app.persist_store().expect("persist store").generation() >= 2);
+        assert!(app.persist_store().expect("persist store").generation() >= 1);
     }
     {
         let app2 =
@@ -438,9 +448,11 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(h.find_by_test_id("doc-markdown-preview").is_some());
     let tree_md = h.ascii();
     assert!(tree_md.contains("# RFC-042: Zero-Copy NveSceneView"));
-    assert!(tree_md.contains(
-        "- [x] Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio"
-    ));
+    assert!(
+        tree_md.contains(
+            "- [x] Enable crash-safe Frame-0 NVE2 + StateFile local persistence in Studio"
+        )
+    );
     assert!(tree_md.contains("- [ ] Verify crash-safe .nvewal compaction"));
     h.assert_no_horizontal_overflow("docs-1280x800-with-markdown");
 
@@ -451,7 +463,7 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(md.contains("\n\n## Binary ABI Invariants\n\n"));
     assert!(md.contains("```\nnve_get_interface(NVE_IFACE_SURFACE) -> submit_frame(&[u8])\n```"));
     assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
-    assert!(md.contains("- [ ] Enable crash-safe NVERELOC"));
+    assert!(md.contains("- [ ] Enable crash-safe Frame-0 NVE2"));
 
     let mut app = common::headless_module(1);
     let _ = app.render(1);

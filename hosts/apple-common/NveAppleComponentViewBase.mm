@@ -104,17 +104,6 @@ void update_image_view(NveAppleImageView *view, NvePlatformImage *image, ImageRe
 
 - (void)disconnectPaired { [_nveHost disconnectPaired]; }
 
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t *)outRestoreUs {
-  [self propagateBoundsToNveHost];
-  return [_nveHost replayFrame0SnapshotAtPath:snapshotPath expectedSchemaVersion:expectedSchemaVersion restoreTimeUs:outRestoreUs];
-}
-
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath schemaVersion:(uint32_t)schemaVersion {
-  return [_nveHost saveSnapshotAtPath:snapshotPath schemaVersion:schemaVersion];
-}
-
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props { return [_nveHost applyPropsDictionary:props]; }
 - (void)renderNveFrame { [_nveHost renderFrame]; }
 - (void)drainNveEmittedEvents { [_nveHost drainEmittedEvents]; }

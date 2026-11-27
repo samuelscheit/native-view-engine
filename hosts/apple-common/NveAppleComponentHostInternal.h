@@ -20,6 +20,12 @@ NS_ASSUME_NONNULL_BEGIN
   BOOL _pairRequested;
   BOOL _hasReplayedFrame0;
   BOOL _pumpScheduled;
+  /// `YES` while views are being reconciled: UIKit / AppKit callbacks fired by view updates
+  /// (scrolling, text, focus) are deferred instead of re-entering the runtime.
+  BOOL _reconciling;
+  /// The scene guard held during reconcile (`resource_payload` borrows from it).
+  const nve::host::RuntimeSceneGuard *_Nullable _activeScene;
+  /// App state carried across a Tier-2 reload, restored once the new app attaches.
   std::vector<uint8_t> _pendingSnapshotState;
   nve::apple::ValueArena _arena;
 }
@@ -27,6 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Attaches `getInterface` (detaching any previous app), restores pending snapshot state, pumps.
 - (BOOL)_attachGetInterface:(NveGetInterfaceFn)getInterface error:(NSError *_Nullable *_Nullable)error;
 - (NSError *)_errorWithCode:(NSInteger)code description:(NSString *)description;
+/// Re-runs `block` on the next main-queue turn when called during reconcile; `NO` otherwise.
+- (BOOL)_deferIfReconciling:(dispatch_block_t)block;
 
 @end
 

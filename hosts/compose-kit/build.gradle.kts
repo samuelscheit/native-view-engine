@@ -62,16 +62,18 @@ dependencies {
 }
 
 val nveRepoRoot = rootProject.projectDir.resolve("../..").canonicalFile
-val nveGeneratedJavaDir =
-    nveRepoRoot.resolve("hosts/android-shell/android-app/src/dev/nve/android/generated")
+// `dev.nve.host`: the static Java host runtime plus its generated ABI / table data.
+val nveHostJavaDir = nveRepoRoot.resolve("packages/core/host-java/src/main/java")
 val nveGeneratedJavaFiles = listOf(
-    nveGeneratedJavaDir.resolve("NveCoreAbi.java"),
-    nveGeneratedJavaDir.resolve("NveSceneBuffer.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveAbi.java"),
+    nveHostJavaDir.resolve("dev/nve/host/generated/NveTables.java"),
 )
+
+android.sourceSets.getByName("main").java.srcDir(nveHostJavaDir)
 
 val generateNveAbi by tasks.registering(Exec::class) {
     group = "codegen"
-    description = "Generate NVE Core/Scene ABI bindings via nve-cli when missing."
+    description = "Generate the NVE host ABI / table Java bindings via nve-cli when missing."
     workingDir = nveRepoRoot
     commandLine("cargo", "run", "--locked", "-p", "nve-cli", "--", "codegen", "abi")
     onlyIf {

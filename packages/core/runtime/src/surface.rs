@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nve_abi::{
-    NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveRuntimeSceneView, SurfaceId,
+    Key64, NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveRuntimeSceneView,
+    SurfaceId,
 };
 use nve_components::tables::{Overflow, Scroll, Visual};
 use nve_engine::Viewport;
 use nve_layout::DynLayoutEngine;
-use nve_store::{ChangeSet, NodeId};
+use nve_store::{ChangeSet, NodeId, ResourceId};
 
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeBuilder, RuntimeError};
@@ -34,6 +35,12 @@ impl<'a> SceneReadGuard<'a> {
     pub fn view(&self) -> &NveRuntimeSceneView {
         &self.view
     }
+
+    /// Kind and canonical payload bytes of published resource `id` (`None` when stale).
+    pub fn resource_payload(&self, id: ResourceId) -> Option<(Key64, &[u8])> {
+        // SAFETY: `self` holds a scene reader lock for the returned borrow's lifetime.
+        unsafe { self.runtime.published_resource(id) }
+    }
 }
 
 impl Drop for SceneReadGuard<'_> {
@@ -47,10 +54,12 @@ impl Drop for SceneReadGuard<'_> {
 /// # Threading Contract
 /// - **Owner-thread only**: mutating, layout, and app/pairing operations (`attach_app`,
 ///   `detach_app`, `pair_connect`, `pair_disconnect`, `add_tick_hook`, `set_viewport`,
-///   `swap_layout_engine`, `submit_nve2`, `tick`, `dispatch_events`, `apply_hot_patch`,
+///   `swap_layout_engine`, `set_text_measurer`, `set_props`, `drain_emitted_events`,
+///   `snapshot_state`, `restore_state`, `submit_nve2`, `tick`, `dispatch_events`, `apply_hot_patch`,
 ///   `hit_test`, `hit_test_interaction`, `scroll_by`, and FFI `destroy`) MUST execute on the
 ///   thread that created the runtime. Cross-thread calls fail with [`RuntimeError::InvalidArg`].
-/// - **Cross-thread safe**: `acquire_scene` / `scene_acquire`, `scene_release`, `metrics`,
+/// - **Cross-thread safe**: `acquire_scene` / `scene_acquire` (+ `resource_payload` while it is
+///   held), `scene_release`, `metrics`,
 ///   `layout_engine_name`, `pair_is_connected`, `set_wake_callback`, `clear_wake_callback`, and
 ///   [`WakeBridge::trigger`].
 pub struct SurfaceRuntime {
@@ -503,8 +512,16 @@ impl SurfaceRuntime {
                     "target node is not a scroll container",
                 ));
             }
-            let (x, y, _changed) = state.scene.apply_scroll_delta(store, id, dx, dy);
-            Ok((x, y))
+            let (x, y, changed) = state.scene.apply_scroll_delta(store, id, dx, dy);
+            // The published `scroll_offsets` refresh on the next tick.
+            state.needs_publish |= changed;
+            Ok((x, y, changed))
+        })
+        .map(|(x, y, changed)| {
+            if changed {
+                self.wake.trigger();
+            }
+            (x, y)
         })
     }
 
@@ -522,11 +539,22 @@ impl SurfaceRuntime {
         })
     }
 
+    /// Kind and canonical payload of `id` in the store `published_view` borrows.
+    ///
+    /// # Safety
+    /// The caller holds a scene (or scene-bound internal) reader lock for the borrow's lifetime.
+    pub(crate) unsafe fn published_resource(&self, id: ResourceId) -> Option<(Key64, &[u8])> {
+        // SAFETY: The caller's reader lock excludes writers, so `inner` and the published
+        // `ResourceStore` (set and cleared only under the write lock) are immutable.
+        let resources = unsafe { (*self.inner.get()).state.published_resources.as_ref() }?;
+        Some((resources.kind(id)?, resources.encoded(id)?))
+    }
+
     pub fn metrics(&self) -> Result<NveRuntimeMetrics, RuntimeError> {
         self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: Reader lock held for `_guard`'s lifetime; `overlay_live_metrics` only reads
-        // immutable `u64` snapshots and atomic counters on `ReconnectingWireClient`.
+        // SAFETY: `read_guard()` prevents concurrent writes to `inner` (so `inner.pair` and
+        // `last_rx`/`last_tx` stay immutable) while `overlay_live_metrics` reads `&self` atomics.
         let inner = unsafe { &*self.inner.get() };
         let mut m = inner.state.metrics;
         if let Some(pair) = inner.pair.as_ref() {

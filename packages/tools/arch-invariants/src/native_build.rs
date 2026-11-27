@@ -37,7 +37,14 @@ const NATIVE_BUILD_SCRIPT_MARKERS: &[&str] = &[
 ];
 
 /// Classifies one file inside a core Cargo crate: `Some(reason)` when it brings native C/C++ in.
+///
+/// Sources under a crate's `tests/fixtures/` are exempt: Cargo never compiles them, they are inputs
+/// test harnesses hand to an optional system compiler to check generated headers (any build script
+/// that compiled them would itself be flagged).
 pub fn native_source_reason(rel: &str, contents: Option<&str>) -> Option<&'static str> {
+    if rel.contains("/tests/fixtures/") {
+        return None;
+    }
     if let Some(ext) = Path::new(rel).extension().and_then(|e| e.to_str())
         && NATIVE_SOURCE_EXTS
             .iter()

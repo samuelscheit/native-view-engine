@@ -239,14 +239,6 @@ class NveRnwComponentHost {
 
   /// Disconnect any active paired thin-client session and clear the visual tree.
   void disconnect_paired() noexcept;
-
-  bool replay_frame0_snapshot(
-      std::string_view snapshot_path,
-      uint32_t expected_schema_version,
-      NveSurfaceConfig config,
-      uint64_t* out_restore_us = nullptr);
-
-  bool save_snapshot(std::string_view snapshot_path, uint32_t schema_version) const;
   void reset() noexcept;
 
   void set_event_callback(nve::EventCallback cb);
@@ -280,7 +272,6 @@ class NveRnwComponentHost {
   bool is_paired() const noexcept { return session_.is_paired(); }
   bool is_paired_connected() const noexcept { return session_.is_paired_connected(); }
   uint64_t paired_frame_count() const noexcept { return session_.paired_frame_count(); }
-  bool has_replayed_frame0() const noexcept { return session_.has_replayed_frame0(); }
   uint32_t node_count() const noexcept { return session_.node_count(); }
   uint32_t surface_id() const noexcept { return session_.surface_config().surface_id; }
   const NveSurfaceConfig& surface_config() const noexcept { return session_.surface_config(); }

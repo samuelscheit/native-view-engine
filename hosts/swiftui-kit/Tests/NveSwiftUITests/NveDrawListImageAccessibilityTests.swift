@@ -1,4 +1,5 @@
 import CNveAbi
+import NveHost
 import CoreGraphics
 import Foundation
 import ImageIO

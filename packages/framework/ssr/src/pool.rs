@@ -11,17 +11,25 @@ use nve_dioxus::DioxusSurface;
 use nve_http_hyper::HttpBody;
 use nve_query_dioxus::ErasedQueryClient;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::options::{SsrLocalPoolConfig, SsrPageOptions, StreamPlan};
 use crate::render::execute_render_streaming;
 use crate::SsrError;
 
 type LocalBoxFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
-type SsrJob = Box<dyn FnOnce() -> LocalBoxFuture + Send + 'static>;
+type SsrJob = Box<dyn FnOnce(OwnedSemaphorePermit) -> LocalBoxFuture + Send + 'static>;
+
+/// One dedicated `LocalSet` worker: its job channel plus a render-slot semaphore bounding
+/// queued + actively streaming renders (a permit lives until the render finishes, hits its
+/// deadline, or the client disconnects).
+struct Worker {
+    jobs: mpsc::Sender<(SsrJob, OwnedSemaphorePermit)>,
+    render_slots: Arc<Semaphore>,
+}
 
 struct SsrLocalPoolInner {
-    workers: Vec<mpsc::Sender<SsrJob>>,
+    workers: Vec<Worker>,
     next_worker: AtomicUsize,
     queue_capacity_per_worker: usize,
 }
@@ -67,7 +75,7 @@ impl SsrLocalPool {
                 .enable_all()
                 .build()
                 .map_err(|err| SsrError::PoolInit(format!("worker {idx} runtime: {err}")))?;
-            let (tx, mut rx) = mpsc::channel::<SsrJob>(queue_capacity);
+            let (tx, mut rx) = mpsc::channel::<(SsrJob, OwnedSemaphorePermit)>(queue_capacity);
 
             std::thread::Builder::new()
                 .name(format!("nve-ssr-{idx}"))
@@ -76,8 +84,8 @@ impl SsrLocalPool {
                     rt.block_on(async move {
                         local
                             .run_until(async move {
-                                while let Some(job) = rx.recv().await {
-                                    tokio::task::spawn_local(job());
+                                while let Some((job, permit)) = rx.recv().await {
+                                    tokio::task::spawn_local(job(permit));
                                 }
                             })
                             .await;
@@ -87,7 +95,10 @@ impl SsrLocalPool {
                 })
                 .map_err(|err| SsrError::PoolInit(format!("worker {idx} thread: {err}")))?;
 
-            workers.push(tx);
+            workers.push(Worker {
+                jobs: tx,
+                render_slots: Arc::new(Semaphore::new(queue_capacity)),
+            });
         }
 
         Ok(Self {
@@ -105,30 +116,38 @@ impl SsrLocalPool {
         self.inner.workers.len()
     }
 
-    /// Bounded pending job queue capacity configured per worker thread.
+    /// Maximum queued + actively streaming renders per worker thread.
     #[inline]
     pub fn queue_capacity_per_worker(&self) -> usize {
         self.inner.queue_capacity_per_worker
     }
 
-    /// Dispatches a job factory onto the next available worker in round-robin order without
-    /// blocking or panicking. Scans remaining workers if the chosen slot is full so one busy
-    /// worker never causes premature backpressure while sibling workers have capacity.
-    fn dispatch(&self, mut job: SsrJob) -> Result<(), SsrError> {
+    /// Dispatches a job onto the next worker with a free render slot in round-robin order
+    /// without blocking or panicking, returning that worker. Scans sibling workers when the chosen
+    /// one is saturated so one busy worker never causes premature backpressure.
+    fn dispatch(&self, mut job: SsrJob) -> Result<&Worker, SsrError> {
         let workers = &self.inner.workers;
         let len = workers.len();
         let start = self.inner.next_worker.fetch_add(1, Ordering::Relaxed) % len;
         let mut saw_full = false;
 
         for offset in 0..len {
-            let idx = (start + offset) % len;
-            match workers[idx].try_send(job) {
-                Ok(()) => return Ok(()),
-                Err(TrySendError::Full(returned)) => {
+            let worker = &workers[(start + offset) % len];
+            if worker.jobs.is_closed() {
+                continue;
+            }
+            let Ok(permit) = Arc::clone(&worker.render_slots).try_acquire_owned() else {
+                saw_full = true;
+                continue;
+            };
+            // A failed send hands the permit back with the job; dropping it frees the slot.
+            match worker.jobs.try_send((job, permit)) {
+                Ok(()) => return Ok(worker),
+                Err(TrySendError::Full((returned, _permit))) => {
                     saw_full = true;
                     job = returned;
                 }
-                Err(TrySendError::Closed(returned)) => {
+                Err(TrySendError::Closed((returned, _permit))) => {
                     job = returned;
                 }
             }
@@ -162,14 +181,23 @@ impl SsrLocalPool {
     {
         let (headers_tx, headers_rx) = oneshot::channel::<Result<Response<HttpBody>, SsrError>>();
 
-        let job: SsrJob = Box::new(move || {
+        let job: SsrJob = Box::new(move |permit| {
             Box::pin(async move {
-                execute_render_streaming(page, plan, client, build_surface, headers_tx).await;
+                execute_render_streaming(page, plan, client, build_surface, headers_tx, permit)
+                    .await;
             })
         });
 
-        self.dispatch(job)?;
+        let worker = self.dispatch(job)?;
 
-        headers_rx.await.map_err(|_| SsrError::PoolClosed)?
+        // A dropped sender with the worker's channel still open means the render task panicked
+        // (Tokio contains task panics), not that the pool shut down.
+        headers_rx.await.map_err(|_| {
+            if worker.jobs.is_closed() {
+                SsrError::PoolClosed
+            } else {
+                SsrError::Render("SSR render task panicked".into())
+            }
+        })?
     }
 }

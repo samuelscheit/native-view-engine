@@ -2,7 +2,8 @@
 
 #import <Foundation/Foundation.h>
 
-#include <nve/host/nve_abi.generated.h>
+#include <nve/generated/nve_abi.generated.h>
+#include <nve/generated/nve_runtime_abi.generated.h>
 
 #include <cstdint>
 #include <deque>
@@ -46,7 +47,8 @@ NveValue nve_value_from_objc_object(id _Nullable obj, ValueArena &arena, uint32_
 id _Nonnull objc_object_from_nve_value(const NveValue &value, uint32_t depth = 0u);
 
 /// Builds `NveMapEntry` props from a dictionary, keys sorted for deterministic order.
-std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *_Nonnull props, ValueArena &arena);
+std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *_Nonnull props, ValueArena &arena,
+                                                     uint32_t depth = 0u);
 
 /// Event name (`"press"`, `"textChange"`, custom name, …) and payload dictionary of an outbound
 /// app event.

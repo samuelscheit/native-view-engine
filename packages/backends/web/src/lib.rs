@@ -83,6 +83,12 @@ pub use events::{
     is_hard_nav_anchor, resolve_delegated_node,
     should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
 };
+pub use html::push_attr_escaped;
+#[cfg(feature = "ssr")]
+pub use html::{
+    push_async_boot_script, push_modulepreload_link, push_query_payload_tag,
+    push_script_data_escaped, push_stylesheet_links,
+};
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
 pub use key_events::{
@@ -110,7 +116,9 @@ pub use ssg::{
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 #[cfg(feature = "ssr")]
-pub use ssr_stream::{PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamingShellOutput};
+pub use ssr_stream::{
+    PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamSlotState, StreamingShellOutput,
+};
 #[cfg(feature = "ssr")]
 pub use streaming::{
     sanitize_stream_slot_id, scoped_slot_hiding_css,

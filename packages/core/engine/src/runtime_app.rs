@@ -6,9 +6,7 @@
 
 use std::sync::Arc;
 
-use nve_abi::{
-    FrameId, NveDirectEvent, NveEventBatchRef, NveIntrinsicSize, NvePropsRef, NveSizeConstraints,
-};
+use nve_abi::{FrameId, NveDirectEvent, NveEventBatchRef, NvePropsRef};
 use nve_store::{ChangeSet, NodeStore, Transaction};
 
 use crate::HotPatchMsg;
@@ -23,6 +21,11 @@ pub enum AppFrame<'a> {
     /// Cross-boundary binary `NVE2` delta/keyframe slice (e.g. `NveApp`, `cdylib`, or remote wire).
     Wire(&'a [u8]),
 }
+
+/// The attached app does not implement an optional [`RuntimeApp`] capability (embedded props,
+/// outbound events, state snapshots, or hot patching).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityUnsupported;
 
 /// Framework-agnostic application contract hosted by `nve_runtime::SurfaceRuntime`.
 ///
@@ -62,39 +65,30 @@ pub trait RuntimeApp {
         false
     }
 
-    /// Applies a Tier-1 binary hot-reload patch payload. Returns `true` if the surface dirtied.
-    fn apply_hot_patch(&mut self, _patch: &HotPatchMsg) -> bool {
-        false
+    /// Applies a Tier-1 binary hot-reload patch payload. `Ok(true)` when the surface dirtied.
+    fn apply_hot_patch(&mut self, _patch: &HotPatchMsg) -> Result<bool, CapabilityUnsupported> {
+        Err(CapabilityUnsupported)
     }
 
-    /// Applies embedded-component props (`NveComponentApi::set_props`). `Some(true)` when the app
-    /// needs a re-render; `None` when the app exposes no component interface.
-    fn set_props(&mut self, _props: NvePropsRef<'_>) -> Option<bool> {
-        None
+    /// Applies embedding-host props (RN / SwiftUI / Compose / Flutter widget props). `Ok(true)`
+    /// when the app needs a re-render.
+    fn set_props(&mut self, _props: NvePropsRef<'_>) -> Result<bool, CapabilityUnsupported> {
+        Err(CapabilityUnsupported)
     }
 
-    /// Outbound component events emitted since the last drain, borrowed until the next `&mut self`
-    /// call (`NveComponentApi::drain_emitted_events`).
-    fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
-        &[]
+    /// Drains component-emitted outbound events, borrowed until the next call on `self`.
+    fn drain_emitted_events(&mut self) -> Result<&[NveDirectEvent], CapabilityUnsupported> {
+        Err(CapabilityUnsupported)
     }
 
-    /// Intrinsic size under `constraints` (`NveLayoutApi::measure`); `None` when the app exposes no
-    /// layout interface.
-    fn measure(&mut self, _constraints: NveSizeConstraints) -> Option<NveIntrinsicSize> {
-        None
+    /// Serializes app state (instant boot / Tier-2 hot swap), borrowed until the next call on `self`.
+    fn snapshot_state(&mut self) -> Result<&[u8], CapabilityUnsupported> {
+        Err(CapabilityUnsupported)
     }
 
-    /// Serialized app state for a Tier-2 hot swap, borrowed until the next `&mut self` call
-    /// (`&[]` when stateless or unsupported).
-    fn snapshot_state(&mut self) -> &[u8] {
-        &[]
-    }
-
-    /// Restores state captured by [`Self::snapshot_state`]. Returns `true` when the app applied it
-    /// (and needs a re-render); `false` when the app exposes no dev interface.
-    fn restore_state(&mut self, _state: &[u8]) -> bool {
-        false
+    /// Restores state produced by [`Self::snapshot_state`]; the runtime re-renders afterwards.
+    fn restore_state(&mut self, _state: &[u8]) -> Result<(), CapabilityUnsupported> {
+        Err(CapabilityUnsupported)
     }
 }
 

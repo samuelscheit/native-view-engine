@@ -26,6 +26,48 @@ pub struct HybridFileSpec {
 }
 
 impl HybridFileSpec {
+    /// Rewrites `Struct(name)` references that name a declared enum into `Enum(name)` and a
+    /// declared alias into `Handle(name)`. Frontends call it once every declaration is known, since
+    /// a type can be used before it is declared.
+    pub(crate) fn resolve_named_types(&mut self) {
+        let Self {
+            consts,
+            aliases,
+            enums,
+            structs,
+            modules,
+            views,
+            c_functions,
+            ..
+        } = self;
+        if enums.is_empty() && aliases.is_empty() {
+            return;
+        }
+        let enum_names: BTreeSet<&str> = enums.iter().map(|e| e.name.as_str()).collect();
+        let alias_names: BTreeSet<String> = aliases.iter().map(|a| a.name.clone()).collect();
+        let rewrite = |ty: &mut HybridType| rewrite_named_type(ty, &enum_names, &alias_names);
+        consts.iter_mut().for_each(|c| rewrite(&mut c.ty));
+        aliases.iter_mut().for_each(|a| rewrite(&mut a.target));
+        for f in structs.iter_mut().flat_map(|s| s.fields.iter_mut()) {
+            rewrite(&mut f.ty);
+        }
+        let module_methods = modules.iter_mut().flat_map(|m| m.methods.iter_mut());
+        for v in views.iter_mut() {
+            v.props.iter_mut().for_each(|p| rewrite(&mut p.ty));
+            for p in v.events.iter_mut().flat_map(|e| e.params.iter_mut()) {
+                rewrite(&mut p.ty);
+            }
+            for m in &mut v.methods {
+                m.params.iter_mut().for_each(|p| rewrite(&mut p.ty));
+                rewrite(&mut m.return_type);
+            }
+        }
+        for m in module_methods.chain(c_functions.iter_mut()) {
+            m.params.iter_mut().for_each(|p| rewrite(&mut p.ty));
+            rewrite(&mut m.return_type);
+        }
+    }
+
     pub fn find_struct(&self, name: &str) -> Option<&HybridStructSpec> {
         self.structs.iter().find(|s| s.name == name)
     }
@@ -117,7 +159,15 @@ impl HybridFileSpec {
             return;
         }
         for f in &s.fields {
-            if let HybridType::Struct(dep) = &f.ty
+            // A struct held by value, in an option, a `Vec`, or a `[T; N]` must be complete first.
+            let mut ty = &f.ty;
+            while let HybridType::Optional(inner)
+            | HybridType::Vec(inner)
+            | HybridType::FixedArray { elem: inner, .. } = ty
+            {
+                ty = inner;
+            }
+            if let HybridType::Struct(dep) = ty
                 && let Some(dep_spec) = self.find_struct(dep)
             {
                 self.visit_struct_topo(dep_spec, visited, out);
@@ -126,49 +176,49 @@ impl HybridFileSpec {
         out.push(s);
     }
 
-    /// Collects all distinct `(suffix, inner)` POD types wrapped in `HybridType::Optional(T)`
-    /// across all module and view method signatures (used to emit exact `NveHybridOpt<T>` C-ABI structs).
-    pub fn collect_pod_option_types(&self) -> Vec<(std::borrow::Cow<'static, str>, HybridType)> {
-        let mut by_suffix: BTreeMap<std::borrow::Cow<'static, str>, HybridType> = BTreeMap::new();
-        let mut record_ty = |ty: &HybridType| {
-            collect_pod_opts_in_type(ty, self, &mut by_suffix);
+    /// Every `(suffix, inner)` use of a C option `NveHybridOpt<suffix>`: an `Option<T>` of a POD
+    /// `T` as a parameter, return, or `Result` ok type of a method in `scope`. Two uses may share a
+    /// suffix; validation rejects two different `inner`s on one suffix.
+    pub fn pod_option_uses(
+        &self,
+        scope: PodOptionScope,
+    ) -> impl Iterator<Item = (Cow<'static, str>, &HybridType)> + '_ {
+        let interfaces = self.modules.iter().map(|m| &m.methods).chain(self.views.iter().map(|v| &v.methods));
+        let c_functions = match scope {
+            PodOptionScope::Interfaces => &self.c_functions[..0],
+            PodOptionScope::WithCFunctions => &self.c_functions[..],
         };
-        for m in &self.modules {
-            for method in &m.methods {
-                for p in &method.params {
-                    record_ty(&p.ty);
-                }
-                record_ty(&method.return_type);
-            }
-        }
-        for v in &self.views {
-            for method in &v.methods {
-                for p in &method.params {
-                    record_ty(&p.ty);
-                }
-                record_ty(&method.return_type);
-            }
+        interfaces
+            .flatten()
+            .chain(c_functions)
+            .flat_map(|method| method.params.iter().map(|p| &p.ty).chain([&method.return_type]))
+            .filter_map(|ty| {
+                let ty = match ty {
+                    HybridType::Result { ok, .. } => ok,
+                    other => other,
+                };
+                let HybridType::Optional(inner) = ty else { return None };
+                Some((inner.pod_opt_suffix_for(self)?, inner.as_ref()))
+            })
+    }
+
+    /// The distinct C options `NveHybridOpt<suffix>` of `scope`, by suffix.
+    pub fn collect_pod_option_types(&self, scope: PodOptionScope) -> Vec<(Cow<'static, str>, HybridType)> {
+        let mut by_suffix: BTreeMap<Cow<'static, str>, HybridType> = BTreeMap::new();
+        for (suffix, inner) in self.pod_option_uses(scope) {
+            by_suffix.entry(suffix).or_insert_with(|| inner.clone());
         }
         by_suffix.into_iter().collect()
     }
 }
 
-fn collect_pod_opts_in_type(
-    ty: &HybridType,
-    file: &HybridFileSpec,
-    out: &mut BTreeMap<std::borrow::Cow<'static, str>, HybridType>,
-) {
-    match ty {
-        HybridType::Optional(inner) => {
-            if let Some(suffix) = inner.pod_opt_suffix_for(file) {
-                out.entry(suffix).or_insert_with(|| (**inner).clone());
-            }
-        }
-        HybridType::Result { ok, .. } => collect_pod_opts_in_type(ok, file, out),
-        _ => {}
-    }
+/// Which signatures carry C options: Dart, Rust, Swift, TS, and Kotlin bind only modules and views;
+/// the C header also declares the static C functions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PodOptionScope {
+    Interfaces,
+    WithCFunctions,
 }
-
 
 pub(crate) fn hash_str(h: &mut Xxh64Hasher, s: &str) {
     h.update_u32(s.len() as u32);
@@ -263,5 +313,26 @@ pub(super) fn hash_transitive_types(
         if let Some(s) = file.find_struct(&s_name) {
             hash_struct(h, s);
         }
+    }
+}
+
+fn rewrite_named_type(ty: &mut HybridType, enums: &BTreeSet<&str>, aliases: &BTreeSet<String>) {
+    match ty {
+        HybridType::Struct(name) if enums.contains(name.as_str()) => {
+            *ty = HybridType::Enum(std::mem::take(name))
+        }
+        HybridType::Struct(name) if aliases.contains(name) => {
+            *ty = HybridType::Handle(std::mem::take(name))
+        }
+        HybridType::Optional(inner)
+        | HybridType::Vec(inner)
+        | HybridType::ConstPtr(inner)
+        | HybridType::MutPtr(inner)
+        | HybridType::FixedArray { elem: inner, .. } => rewrite_named_type(inner, enums, aliases),
+        HybridType::Result { ok, err } => {
+            rewrite_named_type(ok, enums, aliases);
+            rewrite_named_type(err, enums, aliases);
+        }
+        _ => {}
     }
 }

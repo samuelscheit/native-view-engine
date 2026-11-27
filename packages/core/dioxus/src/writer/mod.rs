@@ -3,6 +3,7 @@
 //! mirroring, zero `Box<NodeExtras>`, zero `ComponentKind`, and zero `set_raw_prop`.
 
 mod attributes;
+mod current_color;
 mod element_map;
 mod identity_attrs;
 mod mutations;
@@ -11,7 +12,7 @@ mod standalone_style;
 mod tests;
 
 use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
-use nve_abi::hash::HashMap;
+use nve_abi::hash::{HashMap, HashSet};
 use nve_abi::{EventMask, NodeId as AbiNodeId, SurfaceId};
 use nve_components::interaction::CursorKind;
 use nve_components::tables::{
@@ -47,6 +48,8 @@ pub struct NveMutationWriter {
     pub(crate) inline_styles: HashMap<NodeId, (String, u64)>,
     /// Tracks standalone CSS/style attributes (`width`, `color`, `opacity`, etc.) per node.
     pub(crate) standalone_style_attrs: HashMap<NodeId, StandaloneStyleList>,
+    /// Nodes whose winning border color is CSS `currentColor` (`current_color.rs`).
+    pub(crate) current_color_borders: HashSet<NodeId>,
     /// Recycled style lists and strings of removed nodes.
     pub(crate) buffer_pool: BufferPool,
     #[cfg(test)]
@@ -72,6 +75,7 @@ impl NveMutationWriter {
             typed_styles: HashMap::default(),
             inline_styles: HashMap::default(),
             standalone_style_attrs: HashMap::default(),
+            current_color_borders: HashSet::default(),
             buffer_pool: BufferPool::default(),
             #[cfg(test)]
             standalone_replay_count: 0,
@@ -154,6 +158,7 @@ impl NveMutationWriter {
             typed_styles,
             inline_styles,
             standalone_style_attrs,
+            current_color_borders,
             buffer_pool,
             #[cfg(test)]
             standalone_replay_count,
@@ -174,13 +179,18 @@ impl NveMutationWriter {
                 typed_styles,
                 inline_styles,
                 standalone_style_attrs,
+                current_color_borders,
                 buffer_pool,
                 #[cfg(test)]
                 standalone_replay_count,
                 #[cfg(test)]
                 inline_reapply_count,
             };
-            f(&mut mtx)
+            let out = f(&mut mtx);
+            if !mtx.current_color_borders.is_empty() {
+                mtx.resolve_current_color_borders();
+            }
+            out
         };
         tx.commit_into(changes);
         out
@@ -198,6 +208,7 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) typed_styles: &'a mut HashMap<NodeId, TypedStyle>,
     pub(crate) inline_styles: &'a mut HashMap<NodeId, (String, u64)>,
     pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, StandaloneStyleList>,
+    pub(crate) current_color_borders: &'a mut HashSet<NodeId>,
     pub(crate) buffer_pool: &'a mut BufferPool,
     #[cfg(test)]
     pub(crate) standalone_replay_count: &'a mut usize,
@@ -327,6 +338,9 @@ impl StoreMutationTx<'_, '_> {
         val: StandaloneStyleRef<'_>,
     ) {
         let pos = self.record_standalone_style(node, name, val);
+        if current_color::key_sets_border_color(name) {
+            self.refresh_current_color_border(node);
+        }
         let bits = nve_components::css_key_bits(name);
         debug_assert!(bits.is_some(), "standalone style key `{name}` must have css_key_bits");
         let bits = bits.unwrap_or(0);
@@ -394,6 +408,9 @@ impl StoreMutationTx<'_, '_> {
                 let inline = self.buffer_pool.inline(value);
                 self.inline_styles.insert(node, (inline, next_mask));
             }
+        }
+        if nve_components::mask_border_color_source(prev_mask | next_mask).is_some() {
+            self.refresh_current_color_border(node);
         }
         let dropped = nve_components::prop_bits_to_layers(prev_mask & !next_mask);
         if dropped != 0 {
@@ -528,6 +545,7 @@ impl StoreMutationTx<'_, '_> {
                 self.buffer_pool.recycle_table_list(list);
             }
             self.typed_styles.remove(&nid);
+            self.current_color_borders.remove(&nid);
             if let Some((inline, _)) = self.inline_styles.remove(&nid) {
                 self.buffer_pool.recycle_inline(inline);
             }

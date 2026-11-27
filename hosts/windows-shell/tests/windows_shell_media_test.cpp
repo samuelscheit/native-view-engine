@@ -112,32 +112,6 @@ void test_live_counter_dylib_if_configured() {
   NVE_CHECK(host.reload_dylib(dylib_env, &err_code, &err_msg));
   NVE_CHECK(err_code == 0 && find_leaf_by_text("Count: 2") != nullptr);
 
-  const std::filesystem::path snap_path =
-      std::filesystem::temp_directory_path() / "nve_win_counter_test.nvesnap";
-  std::error_code ec;
-  std::filesystem::remove(snap_path, ec);
-  NVE_CHECK(host.save_snapshot(snap_path.string(), 1u));
-  NVE_CHECK(host.update_props(nve::PropMap{{"initialCount", int64_t{0}}}));
-
-  nve::win::NveRnwComponentHost cold_counter;
-  uint64_t counter_restore_us = 0u;
-  NVE_CHECK(cold_counter.replay_frame0_snapshot(snap_path.string(), 1u, cfg, &counter_restore_us));
-  std::cout << "[windows_shell_test] Cold mmap Frame-0 restore (counter dylib): "
-            << counter_restore_us << " us\n";
-  NVE_CHECK(!cold_counter.is_valid() && cold_counter.has_replayed_frame0());
-
-  auto has_text_in = [](const nve::win::NveRnwComponentHost& h, std::string_view expected) {
-    for (const auto& flat : h.visual_tree().build_draw_order()) {
-      const auto* node = h.visual_tree().find(flat.node_id);
-      if (node != nullptr && node->is_text_leaf && node->text == expected) return true;
-    }
-    return false;
-  };
-  NVE_CHECK(has_text_in(cold_counter, "Count: 2"));
-  NVE_CHECK(cold_counter.load_dylib(dylib_env, cfg, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0 && has_text_in(cold_counter, "Count: 2"));
-  std::filesystem::remove(snap_path, ec);
-
 #if defined(_WIN32)
   const std::string shot_env = get_env_string("NVE_TEST_SCREENSHOT_PATH");
   if (!shot_env.empty()) {
@@ -146,80 +120,6 @@ void test_live_counter_dylib_if_configured() {
         host.visual_tree(), *host.text_measurer(), 640, 420, 1.0f, shot_env, &bmp_err));
   }
 #endif
-}
-
-void test_frame0_mmap_snapshot_roundtrip() {
-  namespace fs = std::filesystem;
-  const fs::path snap_path =
-      fs::temp_directory_path() / "nve_win_stateful_snapshot_test.nvesnap";
-  std::error_code ec;
-  fs::remove(snap_path, ec);
-
-  const NveSurfaceConfig cfg{.surface_id = 1, .width = 400.0f, .height = 160.0f, .scale_factor = 1.0f};
-  {
-    nve::win::NveRnwComponentHost writer;
-    NVE_CHECK(writer.load_dylib(NVE_WIN_TEST_STATEFUL_DYLIB, cfg));
-    NVE_CHECK(writer.apply_hot_patch(nve_test_patch("42")));
-    NVE_CHECK(writer.dispatch_press(3, 5.0f, 5.0f) != 0);
-    NVE_CHECK(writer.visual_tree().find(2)->text == "state=43");
-    NVE_CHECK(writer.save_snapshot(snap_path.string(), 3u));
-  }
-
-  nve::win::NveRnwComponentHost cold;
-  uint64_t restore_us = 0u;
-  NVE_CHECK(!cold.replay_frame0_snapshot(snap_path.string(), 99u, cfg, &restore_us));
-  NVE_CHECK(cold.replay_frame0_snapshot(snap_path.string(), 3u, cfg, &restore_us));
-  std::cout << "[windows_shell_test] Cold mmap Frame-0 restore (stateful dylib): "
-            << restore_us << " us\n";
-
-  NVE_CHECK(!cold.is_valid() && cold.has_replayed_frame0());
-  NVE_CHECK(cold.visual_tree().find(2) != nullptr && cold.visual_tree().find(2)->text == "state=43");
-
-  NVE_CHECK(cold.load_dylib(NVE_WIN_TEST_STATEFUL_DYLIB, cfg));
-  NVE_CHECK(cold.is_valid() && !cold.has_replayed_frame0());
-  NVE_CHECK(cold.visual_tree().find(2)->text == "state=43");
-  fs::remove(snap_path, ec);
-
-  const std::string studio_env = get_env_string("NVE_TEST_STUDIO_DYLIB");
-  if (!studio_env.empty()) {
-    const fs::path studio_snap =
-        fs::temp_directory_path() / "nve_win_studio_snapshot_test.nvesnap";
-    fs::remove(studio_snap, ec);
-    const NveSurfaceConfig studio_cfg{
-        .surface_id = 1, .width = 960.0f, .height = 640.0f, .scale_factor = 1.0f};
-
-    auto contains_text = [](const nve::win::NveRnwComponentHost& h, std::string_view needle) {
-      for (const auto& flat : h.visual_tree().build_draw_order()) {
-        const auto* node = h.visual_tree().find(flat.node_id);
-        if (node != nullptr && node->is_text_leaf && node->text.find(needle) != std::string::npos) {
-          return true;
-        }
-      }
-      return false;
-    };
-
-    {
-      nve::win::NveRnwComponentHost studio_writer;
-      NVE_CHECK(studio_writer.load_dylib(studio_env, studio_cfg));
-      NVE_CHECK(studio_writer.update_props(
-          nve::PropMap{{"accent", std::string("violet")}, {"view", std::string("metrics")}}));
-      NVE_CHECK(contains_text(studio_writer, "Live Metrics"));
-      NVE_CHECK(studio_writer.save_snapshot(studio_snap.string(), 1u));
-    }
-
-    nve::win::NveRnwComponentHost studio_cold;
-    uint64_t studio_restore_us = 0u;
-    NVE_CHECK(studio_cold.replay_frame0_snapshot(
-        studio_snap.string(), 1u, studio_cfg, &studio_restore_us));
-    std::cout << "[windows_shell_test] Cold mmap Frame-0 restore (studio-workspace): "
-              << studio_restore_us << " us\n";
-    NVE_CHECK(!studio_cold.is_valid() && studio_cold.has_replayed_frame0());
-    NVE_CHECK(contains_text(studio_cold, "Live Metrics"));
-
-    NVE_CHECK(studio_cold.load_dylib(studio_env, studio_cfg));
-    NVE_CHECK(contains_text(studio_cold, "Live Metrics"));
-    fs::remove(studio_snap, ec);
-  }
 }
 
 struct MockWinImageScrollComponent {
@@ -446,6 +346,5 @@ void test_image_scroll_and_incremental_scene_view() {
 
 void nve_test_win_live_snapshot_and_media() {
   test_live_counter_dylib_if_configured();
-  test_frame0_mmap_snapshot_roundtrip();
   test_image_scroll_and_incremental_scene_view();
 }

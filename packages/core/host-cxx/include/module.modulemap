@@ -1,0 +1,10 @@
+// Clang module of the generated NVE C ABI, so an `.xcframework` built with this directory as its
+// headers (`nve build --xcframework`) imports from Swift as `CNveAbi`. The headers are generated
+// next to it by `nve codegen abi`. This is the only definition: host-swift's `CNveAbi` target refers
+// to it (`extern module`), so both may be on one search path.
+module CNveAbi [system] {
+    header "nve/generated/nve_abi.generated.h"
+    header "nve/generated/nve_tables.generated.h"
+    header "nve/generated/nve_runtime_abi.generated.h"
+    export *
+}

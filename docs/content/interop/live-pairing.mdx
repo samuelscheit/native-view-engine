@@ -1,6 +1,6 @@
 ---
 title: "Live Pairing (NveWireFrame v2)"
-description: "Stream live NveSceneArchive keyframes, incremental CommandBuffer deltas, and compact 24-byte NveNodePatch deltas over dual-ALPN QUIC/WebTransport (h3 + nve-wire-2) with Happy-Eyeballs wss:// fallback."
+description: "Stream live NVE2 keyframes, incremental deltas, and compact 24-byte NveNodePatch deltas over dual-ALPN QUIC/WebTransport (h3 + nve-wire-2) with Happy-Eyeballs wss:// fallback."
 order: 3
 ---
 
@@ -14,7 +14,7 @@ Live Pairing lets a single workstation run your Rust `NveApp` once and stream re
 
 Every packet on the wire uses a fixed 16-byte little-endian, 8-byte aligned **`NveWireFrame`** v2 header (`magic = "NW"`, `version = 2`, `channel`, `kind`, `flags`, `sequence: u32`, `payload_len: u32`) with a strict pre-allocation `max_frame_bytes` guard and an optional 8-byte canonical **`XXH64`** trailer (`nve_engine::xxh64`):
 
-- **`SceneKeyframe`** — Ships a zero-copy `NveSceneArchive` (`RelocBuf`) keyframe already `XXH64`-verified in its 64-byte header.
+- **`SceneKeyframe`** — Ships an `NVE2` keyframe payload verified by `NveWireFrame`'s `XXH64` integrity trailer.
 - **`CommandDelta`** — Ships direct incremental `CommandBuffer` batches with zero reverse-parsing.
 - **`NodePatchDelta`** — Ships compact 24-byte `NveNodePatch` slices (also used by `NveTimelineArchive` for sub-512B widget/Live Activity updates).
 - **`SlotChunk`** — Streams out-of-order async / GenUI slot chunks on `NveWireChannel::AsyncSlot`.
@@ -27,7 +27,7 @@ Every packet on the wire uses a fixed 16-byte little-endian, 8-byte aligned **`N
 | `NveWireKind` | Channel | Direction | Purpose |
 | :--- | :--- | :--- | :--- |
 | `Hello` / `HelloAck` / `Reject` | `Control (0)` | Bidirectional | Constant-time Bearer token auth + `schema_version` + `session_id` negotiation |
-| `SceneKeyframe` / `CommandDelta` / `NodePatchDelta` | `UiScene (1)` | Host → Client | Zero-copy `NveSceneArchive`, incremental `CommandBuffer`, or 24-byte `NveNodePatch` updates |
+| `SceneKeyframe` / `CommandDelta` / `NodePatchDelta` | `UiScene (1)` | Host → Client | Full `NVE2` keyframe, incremental delta, or 24-byte `NveNodePatch` updates |
 | `SlotChunk` | `AsyncSlot (2)` | Host → Client | Out-of-order async / GenUI slot streaming |
 | `EventBatch` | `InputEvents (3)` | Client → Host | Raw binary `EventRing` batch |
 | `CrdtDelta` | `StateSync (4)` | Bidirectional | `NveCrdtDelta` (`XXH64`) state synchronization |

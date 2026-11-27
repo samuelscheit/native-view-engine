@@ -7,6 +7,7 @@ import XCTest
 extension NveTestTableView: TableViewABI {}
 extension NveTestNodeRow: NodeRowABI {}
 extension NveTestLayoutRect: LayoutRectABI {}
+extension NveTestScrollOffset: ScrollOffsetABI {}
 extension NveTestRuntimeSceneView: RuntimeSceneViewABI {}
 
 final class TableSceneTests: XCTestCase {

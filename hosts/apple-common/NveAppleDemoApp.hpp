@@ -5,7 +5,7 @@
 #pragma once
 
 #include <nve/host/nve2_builder.hpp>
-#include <nve/host/nve_abi.generated.h>
+#include <nve/generated/nve_abi.generated.h>
 
 #include <array>
 #include <cstdint>
@@ -40,6 +40,11 @@ class DemoApp {
   }
 
  private:
+  /// Borrowed UTF-8 of a slice (empty for NULL / zero length, never `std::string(nullptr, 0)`).
+  static std::string_view view(NveStrSlice s) noexcept {
+    return s.ptr != nullptr && s.len > 0u ? std::string_view(reinterpret_cast<const char *>(s.ptr), s.len)
+                                          : std::string_view();
+  }
   static DemoApp *self(NveAppHandle h) { return static_cast<DemoApp *>(h); }
   static NveAppHandle create(uint32_t surface) { return new DemoApp(surface); }
   static void destroy(NveAppHandle h) { delete self(h); }
@@ -78,17 +83,21 @@ class DemoApp {
     DemoApp *app = self(h);
     for (uint32_t i = 0; entries != nullptr && i < count; ++i) {
       const NveMapEntry &e = entries[i];
-      const std::string_view key(reinterpret_cast<const char *>(e.key.ptr), e.key.len);
-      if (key == "title" && e.value.tag == NVE_VAL_STR) {
-        std::string next(reinterpret_cast<const char *>(e.value.data.str_val.ptr), e.value.data.str_val.len);
+      if (view(e.key) == "title" && e.value.tag == NVE_VAL_STR) {
+        std::string next(view(e.value.data.str_val));
         if (next != app->title_) {
           app->title_ = std::move(next);
           app->dirty_ = true;
-          return 1u;
+        }
+      } else if (view(e.key) == "accent" && e.value.tag == NVE_VAL_I64) {
+        const uint32_t next = static_cast<uint32_t>(e.value.data.i64_val);
+        if (next != app->accent_) {
+          app->accent_ = next;
+          app->dirty_ = true;
         }
       }
     }
-    return 0u;
+    return app->dirty_ ? 1u : 0u;
   }
 
   static NveEventBatch drain_emitted_events(NveAppHandle h) {
@@ -109,7 +118,8 @@ class DemoApp {
   static void restore_state(NveAppHandle h, NveBufferSlice state) {
     DemoApp *app = self(h);
     if (state.ptr == nullptr || state.len == 0u) return;
-    app->count_ = static_cast<uint32_t>(std::strtoul(std::string(reinterpret_cast<const char *>(state.ptr), state.len).c_str(), nullptr, 10));
+    const std::string text(reinterpret_cast<const char *>(state.ptr), state.len);  // ptr checked above
+    app->count_ = static_cast<uint32_t>(std::strtoul(text.c_str(), nullptr, 10));
     app->dirty_ = true;
   }
 
@@ -139,7 +149,6 @@ class DemoApp {
     const uint8_t layout = Nve2FrameBuilder::core_slot(Key64{NVE_TABLE_LAYOUT_KEY});
     const uint8_t visual = Nve2FrameBuilder::core_slot(Key64{NVE_TABLE_VISUAL_KEY});
     const uint8_t text = Nve2FrameBuilder::core_slot(Key64{NVE_TABLE_TEXT_KEY});
-    const uint8_t typo = Nve2FrameBuilder::core_slot(Key64{NVE_TABLE_TYPOGRAPHY_KEY});
     const uint8_t interaction = Nve2FrameBuilder::core_slot(Key64{NVE_TABLE_INTERACTION_KEY});
     Nve2FrameBuilder b(1u);
     b.declare_core_tables().create_nodes({1u, kCard, kTitle, kButton, kLabel});
@@ -147,32 +156,27 @@ class DemoApp {
     std::array<uint32_t, NVE_TABLE_LAYOUT_WORDS> lay{};
     defaults(lay, NVE_TABLE_LAYOUT_DEFAULTS);
     uint32_t mask = 0u;
-    for (const NveFieldSpec f : {NVE_LAYOUT_PADDING_TOP, NVE_LAYOUT_PADDING_RIGHT, NVE_LAYOUT_PADDING_BOTTOM, NVE_LAYOUT_PADDING_LEFT}) {
+    for (const NveFieldSpec f : {NVE_TABLE_LAYOUT_PADDING_TOP, NVE_TABLE_LAYOUT_PADDING_RIGHT, NVE_TABLE_LAYOUT_PADDING_BOTTOM, NVE_TABLE_LAYOUT_PADDING_LEFT}) {
       mask |= set_field(lay, f, 0x41800000u);  // 16pt
     }
     b.patch(layout, kCard, mask, lay);
     defaults(lay, NVE_TABLE_LAYOUT_DEFAULTS);
-    b.patch(layout, kButton, set_field(lay, NVE_LAYOUT_HEIGHT, 0x42300000u), lay);  // 44pt
+    b.patch(layout, kButton, set_field(lay, NVE_TABLE_LAYOUT_HEIGHT, 0x42300000u), lay);  // 44pt
 
     std::array<uint32_t, NVE_TABLE_VISUAL_WORDS> vis{};
     defaults(vis, NVE_TABLE_VISUAL_DEFAULTS);
-    b.patch(visual, kCard, set_field(vis, NVE_VISUAL_BACKGROUND, 0xFF3B291Eu) | set_field(vis, NVE_VISUAL_BORDER_RADIUS, 0x41400000u), vis);
+    b.patch(visual, kCard, set_field(vis, NVE_TABLE_VISUAL_BACKGROUND, 0xFF3B291Eu) | set_field(vis, NVE_TABLE_VISUAL_BORDER_RADIUS, 0x41400000u), vis);
     defaults(vis, NVE_TABLE_VISUAL_DEFAULTS);
-    b.patch(visual, kButton, set_field(vis, NVE_VISUAL_BACKGROUND, 0xFFEB6325u) | set_field(vis, NVE_VISUAL_BORDER_RADIUS, 0x41000000u), vis);
+    b.patch(visual, kButton, set_field(vis, NVE_TABLE_VISUAL_BACKGROUND, 0xFFEB6325u) | set_field(vis, NVE_TABLE_VISUAL_BORDER_RADIUS, 0x41000000u), vis);
 
-    std::array<uint32_t, NVE_TABLE_TYPOGRAPHY_WORDS> ty{};
-    defaults(ty, NVE_TABLE_TYPOGRAPHY_DEFAULTS);
-    b.patch(typo, kCard,
-            set_field(ty, NVE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_COLOR | NVE_TYPOGRAPHY_SET_FONT_SIZE) |
-                set_field(ty, NVE_TYPOGRAPHY_COLOR, 0xFFF9F5F1u) | set_field(ty, NVE_TYPOGRAPHY_FONT_SIZE, 0x41900000u),
-            ty);
+    patch_card_typography(b);
 
     std::array<uint32_t, NVE_TABLE_INTERACTION_WORDS> in{};
     defaults(in, NVE_TABLE_INTERACTION_DEFAULTS);
-    b.patch(interaction, kButton, set_field(in, NVE_INTERACTION_EVENT_MASK, 1u /* EventMask::PRESS */), in);
+    b.patch(interaction, kButton, set_field(in, NVE_TABLE_INTERACTION_EVENT_MASK, 1u /* EventMask::PRESS */), in);
 
-    b.set_string(text, kTitle, NVE_TEXT_TEXT.word, title_);
-    b.set_string(text, kLabel, NVE_TEXT_TEXT.word, label());
+    b.set_string(text, kTitle, NVE_TABLE_TEXT_TEXT.word, title_);
+    b.set_string(text, kLabel, NVE_TABLE_TEXT_TEXT.word, label());
     b.set_children(1u, {kCard});
     b.set_children(kCard, {kTitle, kButton});
     b.set_children(kButton, {kLabel});
@@ -182,13 +186,27 @@ class DemoApp {
   std::vector<uint8_t> delta(uint64_t frame_id) const {
     const uint8_t text = nve::host::Nve2FrameBuilder::core_slot(nve::host::Key64{NVE_TABLE_TEXT_KEY});
     nve::host::Nve2FrameBuilder b(frame_id < 2u ? 2u : frame_id);
-    b.set_string(text, kTitle, NVE_TEXT_TEXT.word, title_);
-    b.set_string(text, kLabel, NVE_TEXT_TEXT.word, label());
+    patch_card_typography(b);
+    b.set_string(text, kTitle, NVE_TABLE_TEXT_TEXT.word, title_);
+    b.set_string(text, kLabel, NVE_TABLE_TEXT_TEXT.word, label());
     return b.finish();
   }
 
   uint32_t surface_;
+  /// Card typography: the title and label inherit color + size from it.
+  void patch_card_typography(nve::host::Nve2FrameBuilder &b) const {
+    using nve::host::set_field;
+    const uint8_t typo = nve::host::Nve2FrameBuilder::core_slot(nve::host::Key64{NVE_TABLE_TYPOGRAPHY_KEY});
+    std::array<uint32_t, NVE_TABLE_TYPOGRAPHY_WORDS> ty{};
+    defaults(ty, NVE_TABLE_TYPOGRAPHY_DEFAULTS);
+    b.patch(typo, kCard,
+            set_field(ty, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_COLOR | NVE_TYPOGRAPHY_SET_FONT_SIZE) |
+                set_field(ty, NVE_TABLE_TYPOGRAPHY_COLOR, accent_) | set_field(ty, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 0x41900000u),
+            ty);
+  }
+
   uint32_t count_ = 0u;
+  uint32_t accent_ = 0xFFF9F5F1u;
   std::string title_ = "NVE Apple Host";
   bool dirty_ = true;
   bool built_ = false;

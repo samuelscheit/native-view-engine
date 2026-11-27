@@ -105,6 +105,8 @@ final class RuntimeSceneReaderTests: XCTestCase {
         }
         XCTAssertEqual(visited, [1, 2])  // 99 is out of range and skipped
         XCTAssertEqual(s.removedIds.map(NodeId.init(raw:)), [NodeId(index: 3, generation: 2)])
+        XCTAssertEqual(s.scrollOffset(for: .root).y, 12.5)
+        XCTAssertEqual(s.scrollOffset(for: NodeId(index: 2, generation: 1)).y, 0, "no scroll entry")
     }
 
     func testRejectsHostileViews() throws {
@@ -132,6 +134,9 @@ final class RuntimeSceneReaderTests: XCTestCase {
         assertRejects(v, .nullSlab)
         v = base
         v.tables = nil
+        assertRejects(v, .nullSlab)
+        v = base
+        v.scroll_offsets = nil
         assertRejects(v, .nullSlab)
         // Counts past the address space are refused before a span is formed.
         v = base

@@ -94,19 +94,29 @@ public enum NveSceneRenderer {
         }
     }
 
-    private static func anchor(_ align: NveTextAlign) -> (UnitPoint, CGFloat) {
+    /// Horizontal position of a text block in its box: `0` leading, `0.5` center, `1` trailing.
+    private static func alignFraction(_ align: NveTextAlign) -> CGFloat {
         switch align {
-        case .center: return (.top, 0.5)
-        case .end, .right: return (.topTrailing, 1)
-        default: return (.topLeading, 0)
+        case .center: return 0.5
+        case .end, .right: return 1
+        default: return 0
         }
     }
 
+    /// Wraps within the laid-out box (the runtime measured it with the same metrics), caps at
+    /// `maxLines`, and aligns the wrapped block horizontally.
     private static func drawText(_ text: String, style: NveTextStyle, in rect: CGRect, into ctx: inout GraphicsContext) {
-        guard let color = color(style.color) else { return }
+        guard let color = color(style.color), rect.width > 0 else { return }
         let resolved = ctx.resolve(resolvedText(text, style: style, color: color))
-        let (anchor, fraction) = anchor(style.align)
-        ctx.draw(resolved, at: CGPoint(x: rect.minX + rect.width * fraction, y: rect.minY), anchor: anchor)
+        var box = rect
+        if style.maxLines > 0 {
+            let line = resolved.measure(in: CGSize(width: CGFloat.infinity, height: .infinity)).height
+            box.size.height = min(box.height, line * CGFloat(style.maxLines))
+        }
+        let used = resolved.measure(in: box.size)
+        box.origin.x += max(0, box.width - used.width) * alignFraction(style.align)
+        box.size.width = min(box.width, max(used.width, 1))
+        ctx.draw(resolved, in: box)
     }
 
     private static func drawImage(

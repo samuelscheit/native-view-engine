@@ -160,7 +160,7 @@ message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to t
 note: "[stage: PostNodeStore] Enforced as `error` immediately because `main` has 0 violations."
 ignores:
   - "**/*.generated.*"
-  - "**/dev/nve/android/generated/**"
+  - "**/dev/nve/host/generated/**"
   - "**/src/test/**"
   - "**/src/androidTest/**"
 rule:

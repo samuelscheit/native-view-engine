@@ -26,7 +26,7 @@ pub(crate) fn emit_cpp_bridge_hpp(spec: &NveExportSpec) -> String {
         sanitize_single_line_comment(name)
     );
     writeln!(out);
-    writeln!(out, "#include \"nve_abi.generated.h\"");
+    writeln!(out, "#include <nve/generated/nve_abi.generated.h>");
     writeln!(out, "#include \"nve_rn_component.hpp\"");
     writeln!(out);
     writeln!(out, "#include <array>");

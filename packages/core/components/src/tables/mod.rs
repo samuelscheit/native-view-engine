@@ -16,12 +16,12 @@ pub mod visual;
 #[cfg(test)]
 mod tests;
 
-pub use box_shadow::{parse_box_shadow, write_box_shadows_css, BoxShadow};
+pub use box_shadow::{BoxShadow, parse_box_shadow, write_box_shadows_css};
 pub use interaction::{
     Accessibility, AccessibilityMut, AccessibilityRef, AriaAutoComplete, AriaLive, AriaOrientation,
     AriaRole, AriaTriState, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
-    InteractionRef, StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
-    NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+    InteractionRef, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+    StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
 };
 pub use layout::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
@@ -38,56 +38,119 @@ pub use resources::{
     StateRules, Transitions,
 };
 pub use visual::{
-    text_decoration, FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive,
-    ResponsiveMut, ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef,
-    Transform, TransformMut, TransformRef, Typography, TypographyMut, TypographyRef, VerticalAlign,
-    Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
+    FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive, ResponsiveMut,
+    ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef, Transform, TransformMut,
+    TransformRef, Typography, TypographyMut, TypographyRef, VerticalAlign, Visibility, Visual,
+    VisualMut, VisualRef, WhiteSpace, WordBreak, text_decoration,
 };
 
-use nve_store::{NveTable, RealizationOrder, TableDesc};
+use nve_store::{NveTable, RealizationOrder};
 
-/// Descriptor (key, storage, word layout, field specs) of every core table, in
-/// [`register_core_tables`] order: the single source for generated host table mirrors.
-pub const CORE_TABLE_DESCS: &[&TableDesc] = &[
-    &Layout::DESC,
-    &GridLayout::DESC,
-    &GridItem::DESC,
-    &Visual::DESC,
-    &Typography::DESC,
-    &TextContent::DESC,
-    &Transform::DESC,
-    &Motion::DESC,
-    &Responsive::DESC,
-    &Interaction::DESC,
-    &Accessibility::DESC,
-    &DebugId::DESC,
-    &StreamBoundary::DESC,
-    &Link::DESC,
-    &Scroll::DESC,
-    &Image::DESC,
-    &TextInput::DESC,
+/// Word enums and flag sets stored in core table fields, mirrored to hosts next to the table specs
+/// (`NveImageFit`, `NVE_ARIA_ROLE_*`, `NveTypographySet`, ...).
+pub const CORE_WORD_CONSTS: &[&nve_store::__private::WordConstsDesc] = &[
+    &Overflow::DESC,
+    &Visibility::DESC,
+    &FontStyle::DESC,
+    &TextAlign::DESC,
+    &WhiteSpace::DESC,
+    &WordBreak::DESC,
+    &OverflowWrap::DESC,
+    &VerticalAlign::DESC,
+    &ScrollAxes::DESC,
+    &Scrollbars::DESC,
+    &ImageFit::DESC,
+    &InputKind::DESC,
+    &LinkTarget::DESC,
+    &AriaRole::DESC,
+    &AriaTriState::DESC,
+    &AriaLive::DESC,
+    &AriaOrientation::DESC,
+    &AriaAutoComplete::DESC,
+    &Display::DESC,
+    &Position::DESC,
+    &FlexDirection::DESC,
+    &FlexWrap::DESC,
+    &AlignItems::DESC,
+    &AlignSelf::DESC,
+    &AlignContent::DESC,
+    &JustifyContent::DESC,
+    &TYPOGRAPHY_SET,
+    &TEXT_DECORATION,
 ];
 
-/// Registers every cross-platform core table and its resource codecs in the process-global table registry.
-/// Idempotent and fast after the first call.
-pub fn register_core_tables() {
-    let _ = Layout::slot();
-    let _ = GridLayout::slot();
-    let _ = GridItem::slot();
-    let _ = Visual::slot();
-    let _ = Typography::slot();
-    let _ = TextContent::slot();
-    let _ = Transform::slot();
-    let _ = Motion::slot();
-    let _ = Responsive::slot();
-    let _ = Interaction::slot();
-    let _ = Accessibility::slot();
-    let _ = DebugId::slot();
-    let _ = StreamBoundary::slot();
-    let _ = Link::slot();
-    let _ = Scroll::slot();
-    let _ = Image::slot();
-    let _ = TextInput::slot();
+/// `Typography::set` bits.
+pub const TYPOGRAPHY_SET: nve_store::__private::WordConstsDesc = nve_store::__private::WordConstsDesc {
+    name: "TypographySet",
+    flags: true,
+    entries: &[
+        ("Color", Typography::SET_COLOR),
+        ("FontSize", Typography::SET_FONT_SIZE),
+        ("LineHeight", Typography::SET_LINE_HEIGHT),
+        ("LetterSpacing", Typography::SET_LETTER_SPACING),
+        ("FontFamily", Typography::SET_FONT_FAMILY),
+        ("MaxLines", Typography::SET_MAX_LINES),
+        ("FontWeight", Typography::SET_FONT_WEIGHT),
+        ("FontStyle", Typography::SET_FONT_STYLE),
+        ("WhiteSpace", Typography::SET_WHITE_SPACE),
+        ("WordBreak", Typography::SET_WORD_BREAK),
+        ("OverflowWrap", Typography::SET_OVERFLOW_WRAP),
+        ("TextAlign", Typography::SET_TEXT_ALIGN),
+        ("TextDecoration", Typography::SET_TEXT_DECORATION),
+        ("VerticalAlign", Typography::SET_VERTICAL_ALIGN),
+    ],
+};
+
+/// `Typography::text_decoration` bits.
+pub const TEXT_DECORATION: nve_store::__private::WordConstsDesc = nve_store::__private::WordConstsDesc {
+    name: "TextDecoration",
+    flags: true,
+    entries: &[
+        ("Underline", text_decoration::UNDERLINE as u32),
+        ("Overline", text_decoration::OVERLINE as u32),
+        ("LineThrough", text_decoration::LINE_THROUGH as u32),
+    ],
+};
+
+macro_rules! define_core_tables {
+    ($($table:ident),+ $(,)?) => {
+        /// Canonical descriptor list of all 17 cross-platform core tables.
+        pub const CORE_TABLE_DESCS: &[&nve_store::TableDesc] = &[$(&$table::DESC),+];
+
+        /// Registers every cross-platform core table and its resource codecs in the process-global
+        /// table registry. Idempotent and fast after the first call.
+        pub fn register_core_tables() {
+            $(let _ = $table::slot();)+
+        }
+    };
+}
+
+define_core_tables!(
+    Layout,
+    GridLayout,
+    GridItem,
+    Visual,
+    Typography,
+    TextContent,
+    Transform,
+    Motion,
+    Responsive,
+    Interaction,
+    Accessibility,
+    DebugId,
+    StreamBoundary,
+    Link,
+    Scroll,
+    Image,
+    TextInput,
+);
+
+/// Deterministic 64-bit XXH64 schema digest over [`CORE_TABLE_DESCS`].
+///
+/// Independent of process-global lazy table registration order or optional module tables (such as
+/// `Canvas` or `Svg`), so cold Frame-0 pre-warm always matches saved `frame0.nve2` footers.
+pub fn core_tables_schema_hash() -> u64 {
+    nve_store::tables_schema_hash(CORE_TABLE_DESCS)
 }
 
 /// Returns `true` when `id` carries a [`TextInput`] row with [`InputKind::Hidden`].

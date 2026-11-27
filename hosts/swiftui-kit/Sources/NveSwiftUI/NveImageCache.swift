@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import NveHost
 
 /// Computed image placement geometry for a destination frame and image pixel size.
 public struct NveImagePlacement: Equatable, Sendable {

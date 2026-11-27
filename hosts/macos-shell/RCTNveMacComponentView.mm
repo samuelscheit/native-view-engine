@@ -1,7 +1,7 @@
 #import "RCTNveMacComponentView.h"
 #import "NveAppleComponentHost.h"
 
-#include <nve/host/nve_tables.generated.h>
+#include <nve/generated/nve_tables.generated.h>
 
 using nve::apple::NodeKind;
 using nve::apple::NodeView;

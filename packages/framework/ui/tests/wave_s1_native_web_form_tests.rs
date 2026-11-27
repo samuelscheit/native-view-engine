@@ -4,7 +4,7 @@
 //!   emitting exact semantic tags/attrs in `WebBackend::render_ssr`, `render_html`, and hydrating
 //!   with `mismatches = 0`.
 //! - `<Form>` validation, dirty/touched tracking, PRG `303 See Other` zero-JS submission roundtrip,
-//!   `FormDraftStore` auto-save & restore across crash-atomic `MmapOffsetArena` (`NativeStateStore`)
+//!   `FormDraftStore` auto-save & restore across crash-atomic `StateFile`
 //!   reopen AND `MemorySnapshotStorage`, and automatic clear on verified submit.
 
 mod common;
@@ -21,7 +21,7 @@ use nve_ui::prelude::*;
 use nve_web_html_web::register_web_html_systems;
 use nve_ui::{
     decode_form_draft, encode_form_draft, FormDraftError, FormDraftStore,
-    NativeMmapFormDraftStorage, StringKeyValueDraftBackend, StringKeyValueFormDraftStorage,
+    NativeFileFormDraftStorage, StringKeyValueDraftBackend, StringKeyValueFormDraftStorage,
 };
 
 struct SnapshotStorageBridge(MemorySnapshotStorage);
@@ -303,16 +303,16 @@ fn interactive_accordion_and_form_validation_dirty_tracking_and_submit() {
 }
 
 #[test]
-fn form_draft_store_persists_across_mmap_offset_arena_crash_reopen_and_clears_on_submit() {
+fn form_draft_store_persists_across_state_file_crash_reopen_and_clears_on_submit() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let arena_path = std::env::temp_dir().join(format!("nve_form_draft_test_{unique}.arena"));
+    let state_path = std::env::temp_dir().join(format!("nve_form_draft_test_{unique}.nve"));
 
     // Session 1: user types dirty fields -> crash before submit!
     {
-        let storage = NativeMmapFormDraftStorage::open(&arena_path).unwrap();
+        let storage = NativeFileFormDraftStorage::open(&state_path).unwrap();
         let mut ctrl = FormController::with_persistence("checkout", storage);
         ctrl.register_text_field("email", "");
         ctrl.register_text_field("city", "");
@@ -330,9 +330,9 @@ fn form_draft_store_persists_across_mmap_offset_arena_crash_reopen_and_clears_on
         assert_eq!(err, Err(Some("network timeout".into())));
     }
 
-    // Session 2: process restarts and reopens the exact same MmapOffsetArena file.
+    // Session 2: process restarts and reopens the exact same StateFile.
     {
-        let storage = NativeMmapFormDraftStorage::open(&arena_path).unwrap();
+        let storage = NativeFileFormDraftStorage::open(&state_path).unwrap();
         let mut ctrl = FormController::with_persistence("checkout", storage);
         ctrl.register_text_field("email", "");
         ctrl.register_text_field("city", "");
@@ -354,7 +354,7 @@ fn form_draft_store_persists_across_mmap_offset_arena_crash_reopen_and_clears_on
 
     // Session 3: reopen proves draft was atomically removed on verified submit.
     {
-        let storage = NativeMmapFormDraftStorage::open(&arena_path).unwrap();
+        let storage = NativeFileFormDraftStorage::open(&state_path).unwrap();
         let mut ctrl = FormController::with_persistence("checkout", storage);
         ctrl.register_text_field("email", "");
         assert!(!ctrl.restore_draft());
@@ -362,7 +362,7 @@ fn form_draft_store_persists_across_mmap_offset_arena_crash_reopen_and_clears_on
         assert_eq!(ctrl.text_value("email"), "");
     }
 
-    let _ = std::fs::remove_file(&arena_path);
+    let _ = std::fs::remove_file(&state_path);
 }
 
 #[test]

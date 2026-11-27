@@ -5,7 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'event_codec.dart';
-import 'nve_hash.generated.dart';
+import 'package:nve_host/nve_host.dart';
 
 typedef NvePairedFrameCallback = void Function(int seq, Uint8List frameBytes);
 
@@ -88,10 +88,10 @@ abstract final class NveWireCodec {
   static const int flagXxh64 = 1 << 0;
   static const int defaultSchemaVersion = 2;
   static const int maxFrameBytes = 16 * 1024 * 1024;
-  static const NveKey64 xxh64Seed = NveKey64(0x49524532, 0x4E564557);
+  static const Key64 xxh64Seed = Key64(0x49524532, 0x4E564557);
 
-  static NveKey64 xxh64(Uint8List bytes, {NveKey64 seed = xxh64Seed}) =>
-      nveXxh64(bytes, seed);
+  static Key64 xxh64(Uint8List bytes, {Key64 seed = xxh64Seed}) =>
+      (Xxh64Hasher(seed)..update(bytes)).digest();
 
   static Uint8List encodeFrame({
     required NveWireChannel channel,
@@ -152,7 +152,7 @@ abstract final class NveWireCodec {
     }
     final bodyEnd = headerSize + len;
     if (hasCk) {
-      final expected = NveKey64.readLE(bytes, bodyEnd);
+      final expected = Key64.readLE(bytes, bodyEnd);
       final actual = xxh64(Uint8List.sublistView(bytes, 0, bodyEnd));
       if (actual != expected) {
         throw const NvePairProtocolException('NveWireFrame XXH64 checksum mismatch');

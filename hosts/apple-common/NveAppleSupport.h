@@ -19,7 +19,8 @@ typedef UIFont NvePlatformFont;
 #import "NveAppleImageCache.h"
 #import "NveAppleValueBridge.h"
 
-#include <nve/host/nve_runtime_abi.generated.h>
+#include <nve/generated/nve_abi.generated.h>
+#include <nve/generated/nve_runtime_abi.generated.h>
 
 #include <cstdint>
 #include <string>
@@ -130,10 +131,10 @@ bool open_nve_dylib(
 /// Safely `dlclose` a handle if non-null and zero the pointer.
 void close_dylib(void * _Nullable &handle) noexcept;
 
-/// `NveTextMeasureFn` for runtime layout: system font at size / CSS weight via
+/// `NveRuntimeMeasureTextFn` for runtime layout: system font at size / CSS weight via
 /// `boundingRectWithSize:` (macOS adds `NSTextFieldCell`'s 4pt horizontal inset).
-NveIntrinsicSize native_text_measure(
-    void * _Nullable ctx, NveStrSlice text, float font_size, uint16_t font_weight, float max_width);
+void native_text_measure(void *_Nullable ctx, NveStrSlice text, float font_size, uint32_t font_weight,
+                         float max_width, float *_Nonnull out_width, float *_Nonnull out_height);
 
 /// System font for `size` / CSS `weight` / italic.
 NvePlatformFont * _Nonnull platform_font(float size, uint16_t weight, bool italic);

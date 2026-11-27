@@ -1,17 +1,17 @@
-//! Staged Track 1B-1d / 1B-1e architectural debt scanners:
+//! Track 1B-1d staged debt scanners and permanent Track 1B-1e codegen guards:
 //! - `#[derive(NveTable)]` field hygiene (`#[bits(N)]`, magic sentinel defaults, split bool sentinels)
 //! - Hand-rolled `Unset` enum variants, manual `SET_*` masks, Tier-1 `encode_bytes`/`decode_bytes`
 //! - Dioxus numeric `AttributeValue::{Float,Int}` -> `String` round-trips
 //! - Platform purity (`packages/core/*` zero CSS/HTML formatters & zero `motion`/`MotionClock`)
 //! - Banned 4-letter format acronyms
-//! - Dart-web 53-bit `const int 0x...` safety & legacy codegen path bans
+//! - Dart-web / TypeScript 53-bit integer safety & legacy codegen path bans (always enforced)
 
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Fields, ImplItem, Item, Type};
 
 use crate::ast_layout::{has_attr_list_ident, last_type_ident};
-use crate::hygiene::has_16_hex_literal;
+use crate::codegen_53bit;
 use crate::{
     is_binary_ext, is_cfg_test_attr, is_self_invariant_file, is_test_or_bench_rs, line_at,
     RepoIndex, Violation, DOC_EXCLUDES,
@@ -48,6 +48,8 @@ const LEGACY_CODEGEN_PATHS: &[&str] = &[
     "packages/core/codegen/src/schema/reloc",
     "packages/core/codegen/src/frontend/hybrid_rust",
     "packages/core/codegen/src/schema/scene_abi.rs",
+    "packages/core/codegen/src/schema/hybrid/core_abi.rs",
+    "packages/core/codegen/src/targets/hash",
 ];
 
 /// Scans production Rust files under `packages/` for `#[derive(NveTable)]` field hygiene,
@@ -396,8 +398,9 @@ pub fn scan_banned_acronyms_str(rel: &str, content: &str, out: &mut Vec<Violatio
 }
 
 /// Scans `packages/core/codegen/src/targets` for Dart-web 53-bit `const int 0x...` safety and
-/// bans legacy codegen paths (`targets/**/wire.rs`, `targets/**/reloc*`, `schema/wire.rs`,
-/// `schema/reloc`, `frontend/hybrid_rust`, `schema/scene_abi.rs`).
+/// bans legacy codegen paths (`targets/**/*wire.rs`, `targets/**/reloc*`, `targets/**/*core_abi.rs`,
+/// `targets/**/scene_abi.rs`, `targets/hash`, `schema/wire.rs`, `schema/reloc`,
+/// `schema/hybrid/core_abi.rs`, `frontend/hybrid_rust`, `schema/scene_abi.rs`).
 pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut scanned = 0usize;
@@ -411,18 +414,22 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
         };
         scanned += 1;
         if rel.contains("/dart/") || rel.ends_with("/dart.rs") {
-            scan_dart_53bit_safety(&rel, &src, &mut violations);
+            codegen_53bit::scan_dart_53bit_safety(&rel, &src, &mut violations);
         }
         if rel.contains("/typescript/") || rel.ends_with("/typescript.rs") {
-            scan_ts_53bit_safety(&rel, &src, &mut violations);
+            codegen_53bit::scan_ts_53bit_safety(&rel, &src, &mut violations);
         }
         let file = rel.rsplit('/').next().unwrap_or("");
-        if file == "wire.rs" || file.starts_with("reloc") {
+        if file.ends_with("wire.rs")
+            || file.starts_with("reloc")
+            || file.ends_with("core_abi.rs")
+            || file == "scene_abi.rs"
+        {
             violations.push(Violation::new(
                 &rel,
                 1,
                 &rel,
-                "Legacy codegen target (`wire.rs` / `reloc*`) must be deleted once replaced by Track 1B-1e templates",
+                "Legacy codegen target (`*wire.rs` / `reloc*` / `*core_abi.rs` / `scene_abi.rs`) must stay deleted: host ABI data is rendered from `templates/` by `src/abi`",
             ));
         }
     }
@@ -439,43 +446,6 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
         }
     }
     violations
-}
-
-pub fn scan_dart_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
-    for (idx, line) in src.lines().enumerate() {
-        let is_dart_decl = line.contains("const int ")
-            || line.contains("static const int ")
-            || line.contains("final int ")
-            || (line.contains("const ") && line.contains('=') && !line.contains("BigInt"));
-        if is_dart_decl
-            && (line.contains("0x{") || has_16_hex_literal(line))
-            && !line.contains("BigInt")
-        {
-            out.push(Violation::new(
-                rel,
-                idx + 1,
-                line,
-                "Unsafe 64-bit integer constant in Dart-web binding (JS Number precision is 53 bits); use `(lo: u32, hi: u32)` or `BigInt`",
-            ));
-        }
-    }
-}
-
-pub fn scan_ts_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
-    for (idx, line) in src.lines().enumerate() {
-        let unsafe_ts_64 = (line.contains("Number(")
-            && (line.contains("getBigUint64") || line.contains("getBigInt64")))
-            || line.contains("4294967296")
-            || (line.contains("<< 32") && !line.contains("BigInt") && !line.contains("32n"));
-        if unsafe_ts_64 {
-            out.push(Violation::new(
-                rel,
-                idx + 1,
-                line,
-                "Unsafe 64-bit integer arithmetic in TypeScript/JS binding (JS Number precision is 53 bits); use `(lo: u32, hi: u32)` or `BigInt`",
-            ));
-        }
-    }
 }
 
 fn file_has_repr_c_struct(items: &[Item]) -> bool {

@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-#include "nve_tables.generated.h"
+#include "../generated/nve_tables.generated.h"
 #include "xxh64.hpp"
 
 namespace nve::host {
@@ -40,15 +40,15 @@ class Nve2FrameBuilder {
   /// `frame == 1` marks a keyframe (full reset); later frames are deltas.
   explicit Nve2FrameBuilder(uint64_t frame = 1u) : frame_(frame) { out_.resize(6u * 4u); }
 
-  /// Declares every generated core table at wire slot == its index in `NVE_CORE_TABLE_LIST`.
+  /// Declares every generated core table at wire slot == its index in `NVE_TABLE_LIST`.
   Nve2FrameBuilder& declare_core_tables() {
     uint8_t slot = 0u;
 #define NVE_HOST_DECLARE_CORE_TABLE(IDENT, NAME)                                                  \
   declare({Key64{NVE_TABLE_##IDENT##_KEY}, Key64{NVE_TABLE_##IDENT##_SCHEMA_HASH}, slot++,       \
-           NVE_TABLE_##IDENT##_SPARSE != 0u, static_cast<uint8_t>(NVE_TABLE_##IDENT##_FLAGS),     \
+           NVE_TABLE_##IDENT##_DENSE == 0, static_cast<uint8_t>(NVE_TABLE_##IDENT##_FLAGS),       \
            NVE_TABLE_##IDENT##_DEFAULTS, NVE_TABLE_##IDENT##_WORD_EFFECTS,                        \
            NVE_TABLE_##IDENT##_STR_WORDS, NVE_TABLE_##IDENT##_RESOURCE_WORDS, NAME});
-    NVE_CORE_TABLE_LIST(NVE_HOST_DECLARE_CORE_TABLE)
+    NVE_TABLE_LIST(NVE_HOST_DECLARE_CORE_TABLE)
 #undef NVE_HOST_DECLARE_CORE_TABLE
     return *this;
   }
@@ -60,7 +60,7 @@ class Nve2FrameBuilder {
 #define NVE_HOST_FIND_CORE_TABLE(IDENT, NAME) \
   if (Key64{NVE_TABLE_##IDENT##_KEY} == key) found = slot; \
   ++slot;
-    NVE_CORE_TABLE_LIST(NVE_HOST_FIND_CORE_TABLE)
+    NVE_TABLE_LIST(NVE_HOST_FIND_CORE_TABLE)
 #undef NVE_HOST_FIND_CORE_TABLE
     return found;
   }

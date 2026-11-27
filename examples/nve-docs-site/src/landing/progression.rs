@@ -35,8 +35,8 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         wave: "Waves 6–8",
         commit: "d131b04",
         hosts: "10 hosts",
-        title: "Hybrid Codegen, Skia GPU & MmapSnapshot",
-        summary: "6-target Nitro-style Hybrid FFI codegen, Metal/Vulkan/D3D12 Skia swapchains, NVD1 UDP/TCP/WS delta transport, and Frame-0 mmap + .nvewal cold start.",
+        title: "Hybrid Codegen, Skia GPU & Frame-0 Boot",
+        summary: "6-target Nitro-style Hybrid FFI codegen, Metal/Vulkan/D3D12 Skia swapchains, NVD1 UDP/TCP/WS delta transport, and Frame-0 NVE2 + atomic StateFile cold start.",
     },
     WaveMilestone {
         wave: "Wave 9",

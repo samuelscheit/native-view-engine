@@ -17,7 +17,14 @@ export function nve_promote_dsd_stream_host(container) {
   const host = container && container.querySelector('[data-nve-dsd-host]');
   if (!host) return false;
   const doc = container.ownerDocument || document;
-  const shadow = host.shadowRoot;
+  // Browsers without Declarative Shadow DOM keep `<template shadowrootmode>` as an inert template.
+  const tmpl = host.shadowRoot ? null : host.querySelector(':scope > template[shadowrootmode]');
+  const shadow = host.shadowRoot || (tmpl && tmpl.content);
+  // An element is parser-complete once the parser moved past it (or the document finished).
+  const isComplete = (el) => doc.readyState !== 'loading' || el.nextSibling !== null;
+  // A chunk `<style>` is always followed by its `<div slot>`, so only a next sibling proves its
+  // CSS is whole: a stream truncated mid-`<style>` must never hoist (or seed) partial rules.
+  const isChunkStyleComplete = (el) => el.nextSibling !== null;
 
   let active = doc.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement) {
@@ -46,8 +53,10 @@ export function nve_promote_dsd_stream_host(container) {
 
   const head = doc.head || doc.documentElement;
   if (head) {
-    const chunkStyles = host.querySelectorAll('style[data-nve-ssr-chunk]');
-    for (let i = 0; i < chunkStyles.length; i++) head.appendChild(chunkStyles[i]);
+    const chunkStyles = host.querySelectorAll(':scope > style[data-nve-ssr-chunk]');
+    for (let i = 0; i < chunkStyles.length; i++) {
+      if (isChunkStyleComplete(chunkStyles[i])) head.appendChild(chunkStyles[i]);
+    }
   }
 
   const moveNode = (parent, node, refNode) => {
@@ -65,14 +74,24 @@ export function nve_promote_dsd_stream_host(container) {
       const parent = slot.parentNode;
       if (!parent) continue;
       const slotId = (slot.getAttribute('name') || '').slice('nve-slot-'.length);
+      // Only a chunk directly followed by its `data-nve-slot-ack` may win (never a closed-but-
+      // unacked or truncated `<div>`); an unacked chunk stays in the hidden host for the drain.
       let winner = null;
-      const matches = [];
       for (let c = host.firstElementChild; c; c = c.nextElementSibling) {
-        if (c.getAttribute('data-nve-slot') === slotId) { matches.push(c); winner = c; }
+        const ack = c.nextElementSibling;
+        if (c.getAttribute('data-nve-slot') === slotId && ack
+            && ack.getAttribute('data-nve-slot-ack') === slotId) winner = c;
       }
       if (winner) {
         while (winner.firstChild) moveNode(parent, winner.firstChild, slot);
-        for (let j = 0; j < matches.length; j++) matches[j].remove();
+        const done = [];
+        for (let c = host.firstElementChild; c; c = c.nextElementSibling) {
+          if ((c.getAttribute('data-nve-slot-ack') === slotId
+              || c.getAttribute('data-nve-slot') === slotId) && isComplete(c)) done.push(c);
+          // The adopted markup's slot-bound query payload is now safe to ingest.
+          if (c.getAttribute('data-nve-slot-for') === slotId) c.removeAttribute('data-nve-slot-for');
+        }
+        for (let j = 0; j < done.length; j++) done[j].remove();
       } else {
         while (slot.firstChild) moveNode(parent, slot.firstChild, slot);
       }
@@ -91,10 +110,18 @@ export function nve_promote_dsd_stream_host(container) {
         moveNode(container, k, host);
       }
     }
+    if (tmpl) tmpl.remove();
   }
 
-  if (host.querySelector('template[data-nve-stream-end]') && !host.querySelector('script[type=\"application/x-nve-query\"]')) host.remove();
-  else host.setAttribute('hidden', '');
+  // Keep the (hidden) host while the stream is open or it still holds unconsumed payloads,
+  // unhoisted chunk styles, or unfinished elements for the mid-stream drain.
+  let pending = !host.querySelector(':scope > template[data-nve-stream-end]');
+  for (let c = host.firstElementChild; c && !pending; c = c.nextElementSibling) {
+    pending = !isComplete(c)
+      || c.matches('script[type=\"application/x-nve-query\"],style[data-nve-ssr-chunk],[data-nve-slot]');
+  }
+  if (pending) host.setAttribute('hidden', '');
+  else host.remove();
 
   for (let i = 0; i < scrolls.length; i++) {
     const [el, top, left] = scrolls[i];
@@ -113,15 +140,28 @@ extern "C" {
     fn nve_promote_dsd_stream_host(container: &web_sys::Element) -> bool;
 }
 
+/// Whether an SSR `<style>`'s rules are whole. A `data-nve-ssr-chunk` style still inside the
+/// `[data-nve-dsd-host]` is whole only once its `<div slot>` follows it (the server always emits
+/// the chunk `<style>` strictly before the slot markup); a truncated one is never seeded, so the
+/// client re-inserts those rules itself.
+fn is_ssr_style_complete(el: &web_sys::Element) -> bool {
+    !el.has_attribute("data-nve-ssr-chunk")
+        || el.next_sibling().is_some()
+        || !el
+            .parent_element()
+            .is_some_and(|p| p.has_attribute("data-nve-dsd-host"))
+}
+
 fn seed_all_ssr_styles(container: &web_sys::Element, stylesheet: &mut StyleSheetCache) -> usize {
     const SEL: &str = "style[data-nve-ssr],style[data-nve-ssr-chunk]";
     let before = stylesheet.rule_count();
     let mut seed_list = |list: web_sys::NodeList| {
         for i in 0..list.length() {
-            if let Some(hashes) = list
+            if let Some(el) = list
                 .item(i)
                 .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
-                .and_then(|el| el.get_attribute("data-nve-hashes"))
+                && is_ssr_style_complete(&el)
+                && let Some(hashes) = el.get_attribute("data-nve-hashes")
             {
                 stylesheet.seed_ssr_hashes(hashes.split(','));
             }

@@ -1,5 +1,6 @@
 #import "NveAppleSupport.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <dlfcn.h>
@@ -91,14 +92,17 @@ NvePlatformFont *platform_font(float size, uint16_t weight, bool italic) {
 #endif
 }
 
-NveIntrinsicSize native_text_measure(void *ctx, NveStrSlice text, float font_size, uint16_t font_weight, float max_width) {
+void native_text_measure(void *ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+                         float *out_width, float *out_height) {
   (void)ctx;
-  if (text.ptr == nullptr || text.len == 0u) return NveIntrinsicSize{0.0f, 0.0f};
+  *out_width = 0.0f;
+  *out_height = 0.0f;
+  if (text.ptr == nullptr || text.len == 0u) return;
   @autoreleasepool {
     NSString *str = [[NSString alloc] initWithBytes:text.ptr length:text.len encoding:NSUTF8StringEncoding];
-    if (str == nil) return NveIntrinsicSize{0.0f, 0.0f};
+    if (str == nil) return;
     const CGFloat limit = (max_width > 0.0f && std::isfinite(max_width)) ? static_cast<CGFloat>(max_width) : CGFLOAT_MAX;
-    NSDictionary *attrs = @{NSFontAttributeName : platform_font(font_size, font_weight, false)};
+    NSDictionary *attrs = @{NSFontAttributeName : platform_font(font_size, static_cast<uint16_t>(std::min(font_weight, 1000u)), false)};
 #if TARGET_OS_OSX
     const NSRect bounds = [str boundingRectWithSize:NSMakeSize(limit, CGFLOAT_MAX)
                                             options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
@@ -111,8 +115,8 @@ NveIntrinsicSize native_text_measure(void *ctx, NveStrSlice text, float font_siz
                                             context:nil];
     constexpr double kHorizontalSlack = 0.0;
 #endif
-    return NveIntrinsicSize{static_cast<float>(std::ceil(bounds.size.width) + kHorizontalSlack),
-                            static_cast<float>(std::ceil(bounds.size.height))};
+    *out_width = static_cast<float>(std::ceil(bounds.size.width) + kHorizontalSlack);
+    *out_height = static_cast<float>(std::ceil(bounds.size.height));
   }
 }
 

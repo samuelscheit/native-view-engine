@@ -2,7 +2,14 @@
 final class Check {
   int passed = 0;
   int failed = 0;
+  int skipped = 0;
   final List<String> failures = <String>[];
+  final List<String> skips = <String>[];
+
+  void skip(String what) {
+    skipped++;
+    skips.add(what);
+  }
 
   void that(bool cond, String what) {
     if (cond) {

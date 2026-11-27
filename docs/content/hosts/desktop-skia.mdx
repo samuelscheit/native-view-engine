@@ -36,9 +36,9 @@ order: 2
 cargo run -p nve-skia-shell -- target/debug/libnve_studio_workspace.dylib \
   --width 1280 --height 800
 
-# 2. Replay Frame-0 MmapSnapshot before dylib load & atomically save on exit
+# 2. Pre-warm Frame-0 NVE2 keyframe before dylib load & atomically save on exit
 cargo run -p nve-skia-shell -- target/debug/libnve_studio_workspace.dylib \
-  --no-ws --snapshot studio.nvesnap --schema 1
+  --no-ws --frame0 studio.frame0.nve2
 
 # 3. Headless PNG or P6 PPM screenshot (CI-safe, no window opened)
 cargo run -p nve-skia-shell -- target/debug/libnve_example_kitchen_sink.dylib \

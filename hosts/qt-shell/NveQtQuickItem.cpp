@@ -139,34 +139,6 @@ size_t NveQtQuickItem::pollPairedFrames() {
 bool NveQtQuickItem::isPaired() const noexcept { return impl_->session_.is_paired(); }
 bool NveQtQuickItem::isPairedConnected() const noexcept { return impl_->session_.is_paired_connected(); }
 
-bool NveQtQuickItem::replaySnapshot(
-    const QString& snapshotPath, uint32_t expectedSchemaVersion, uint32_t surfaceId, uint64_t* outRestoreUs) {
-  const QByteArray utf8 = snapshotPath.toUtf8();
-  impl_->session_.set_surface_config(impl_->currentSurfaceConfig(surfaceId));
-  const auto t0 = std::chrono::steady_clock::now();
-  if (!impl_->session_.replay_frame0_snapshot(
-          std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), expectedSchemaVersion)) {
-    return false;
-  }
-  impl_->finishSessionTransition(surfaceId, false, nullptr, false);
-  if (outRestoreUs) {
-    *outRestoreUs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
-  }
-  return true;
-}
-
-bool NveQtQuickItem::saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion) const {
-  const QByteArray utf8 = snapshotPath.toUtf8();
-  return impl_->session_.save_snapshot(
-      std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), schemaVersion);
-}
-
-void NveQtQuickItem::setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion) {
-  impl_->auto_snapshot_path_ = snapshotPath;
-  impl_->auto_snapshot_schema_ = schemaVersion;
-}
-
 bool NveQtQuickItem::applyProps(const nve::PropMap& props) {
   return impl_->session_.is_valid() && impl_->finishPropUpdate(impl_->session_.update_props(props, true));
 }

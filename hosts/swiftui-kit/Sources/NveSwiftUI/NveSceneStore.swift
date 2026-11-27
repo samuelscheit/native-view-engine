@@ -123,7 +123,8 @@ public final class NveSceneStore: ObservableObject {
     /// Decoded `ImageSrc` of resource `id`, cached until an `nve.image` row changes.
     public func imageSource(_ id: UInt32) -> NveImageSource? {
         if let cached = imageSources[id] { return cached }
-        guard let bytes = try? session.resourceBytes(id), let src = NveImageSource(resourceBytes: bytes) else { return nil }
+        let bytes = try? session.withScene { try session.resource(id, in: $0).bytes }
+        guard let bytes, let src = NveImageSource(resourceBytes: bytes) else { return nil }
         imageSources[id] = src
         return src
     }
@@ -132,7 +133,7 @@ public final class NveSceneStore: ObservableObject {
     public func image(resource id: UInt32) -> CGImage? {
         switch imageSource(id) {
         case let .url(url): return imageCache.image(for: url)
-        case let .encoded(bytes): return imageCache.image(encoded: bytes, key: "nve.res.image_src#\(id)#\(bytes.count)")
+        case let .encoded(bytes): return imageCache.image(encoded: bytes, key: "nve.res.image_src#\(Xxh64.hash(bytes))")
         case nil: return nil
         }
     }

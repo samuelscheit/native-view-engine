@@ -2,13 +2,13 @@
 //!
 //! Launches any compiled NVE `cdylib` (`nve_get_interface`) inside a live cross-platform
 //! `winit` window (direct Metal/Vulkan/D3D12 GPU swapchain when enabled, or zero-C++ `softbuffer`),
-//! or renders a headless PPM screenshot with optional Frame-0 `MmapSnapshot` replay & atomic save.
+//! or renders a headless PPM screenshot with optional Frame-0 `frame0.nve2` replay & save.
 //!
 //! Usage:
 //!   cargo run -p nve-skia-shell -- \
 //!     target/debug/libnve_example_kitchen_sink.dylib \
 //!     [--ws ws://127.0.0.1:8089 | --no-ws] \
-//!     [--snapshot <path.nvesnap>] [--schema <ver>] \
+//!     [--frame0 <path.nve2>] \
 //!     [--screenshot <out.ppm>] [--width W] [--height H] [--scale S] [--no-hud]
 
 mod host_services;
@@ -16,10 +16,11 @@ mod window;
 
 use std::path::PathBuf;
 
+use nve_wire::NveWireTransportKind;
 use window::{
     render_headless_screenshot, render_paired_headless_screenshot,
     run_desktop_preview_with_options, run_paired_desktop_preview, DesktopPreviewOptions,
-    LayoutEngineChoice, PairConnectConfig, PairTransport, DEFAULT_WS_URL,
+    LayoutEngineChoice, PairConnectConfig, DEFAULT_WS_URL,
 };
 
 #[derive(Debug, PartialEq)]
@@ -47,12 +48,7 @@ Options:
   --pair-transport <mode>   Live pairing transport: udp, tcp, or ws (default: ws, or inferred from URL scheme)
   --ws <url>                Connect to nve dev WebSocket hot-reload server (default: ws://127.0.0.1:8089)
   --no-ws                   Disable WebSocket hot-reload client
-  --snapshot <path.nvereloc>       Replay Frame-0 NVERELOC before dylib load & atomically save on exit
-  --instant-boot-dir <dir>         Per-user NativeInstantBootStore dir (default: auto per-app cache dir)
-  --default-frame0 <path.nvereloc> Bundled cold-start frame0.nvereloc for first launch with --instant-boot-dir
-  --no-snapshot                    Disable default instant-boot Frame-0 replay & state persistence
-  --reset-state                    Clear cached snapshot/state before launching fresh
-  --schema <ver>                   Expected snapshot app schema version (default: 1)
+  --frame0 <path.nve2>      Pre-warm Frame-0 NVE2 keyframe before dylib load & atomically refresh on exit
   --screenshot <out.png|ppm> Render headlessly to a PNG or P6 PPM file and exit (no window opened)
   --width <px>              Logical window/viewport width (default: 420)
   --height <px>             Logical window/viewport height (default: 780)
@@ -61,20 +57,20 @@ Options:
   --no-hud                  Hide the top-left hot-reload HUD banner
   -h, --help                Show this help message";
 
-fn infer_transport_from_addr(addr: &str) -> Option<PairTransport> {
+fn infer_transport_from_addr(addr: &str) -> Option<NveWireTransportKind> {
     let trimmed = addr.trim();
     let has_prefix = |p: &str| {
         trimmed.len() >= p.len()
             && trimmed.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes())
     };
     if has_prefix("quic://") || has_prefix("udp://") {
-        Some(PairTransport::Quic)
+        Some(NveWireTransportKind::Quic)
     } else if has_prefix("https://") || has_prefix("wt://") {
-        Some(PairTransport::WebTransport)
+        Some(NveWireTransportKind::WebTransport)
     } else if has_prefix("wss://") {
-        Some(PairTransport::Wss)
+        Some(NveWireTransportKind::Wss)
     } else if has_prefix("ws://") || has_prefix("tcp://") {
-        Some(PairTransport::Ws)
+        Some(NveWireTransportKind::Ws)
     } else {
         None
     }
@@ -88,7 +84,7 @@ where
     let mut dylib_path: Option<PathBuf> = None;
     let mut pair_connect: Option<String> = None;
     let mut pair_token: Option<String> = None;
-    let mut pair_transport: Option<PairTransport> = None;
+    let mut pair_transport: Option<NveWireTransportKind> = None;
     let mut explicit_ws = false;
     let mut options = DesktopPreviewOptions {
         ws_url: Some(DEFAULT_WS_URL.to_string()),
@@ -121,7 +117,12 @@ where
                 let raw = iter
                     .next()
                     .ok_or_else(|| "--pair-transport requires one of: udp, tcp, ws".to_string())?;
-                pair_transport = Some(PairTransport::parse(&raw)?);
+                pair_transport = Some(NveWireTransportKind::parse(&raw).map_err(|_| {
+                    format!(
+                        "invalid --pair-transport '{}' (expected one of: auto, quic, webtransport, wss, ws)",
+                        raw.trim()
+                    )
+                })?);
             }
             "--ws" => {
                 let url = iter
@@ -134,39 +135,11 @@ where
                 options.ws_url = None;
                 explicit_ws = true;
             }
-            "--snapshot" => {
+            "--frame0" => {
                 let path = iter
                     .next()
-                    .ok_or_else(|| "--snapshot requires a file path argument".to_string())?;
-                options.snapshot_path = Some(PathBuf::from(path));
-            }
-            "--instant-boot-dir" => {
-                let path = iter
-                    .next()
-                    .ok_or_else(|| "--instant-boot-dir requires a directory path argument".to_string())?;
-                options.instant_boot_dir = Some(PathBuf::from(path));
-            }
-            "--default-frame0" => {
-                let path = iter
-                    .next()
-                    .ok_or_else(|| "--default-frame0 requires a file path argument".to_string())?;
-                options.default_frame0_path = Some(PathBuf::from(path));
-            }
-            "--no-snapshot" => {
-                options.disable_instant_boot = true;
-                options.snapshot_path = None;
-                options.instant_boot_dir = None;
-            }
-            "--reset-state" => {
-                options.reset_state = true;
-            }
-            "--schema" => {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| "--schema requires a u32 version argument".to_string())?;
-                options.schema_version = raw
-                    .parse::<u32>()
-                    .map_err(|_| format!("invalid --schema version: '{raw}'"))?;
+                    .ok_or_else(|| "--frame0 requires a file path argument".to_string())?;
+                options.frame0_path = Some(PathBuf::from(path));
             }
             "--screenshot" => {
                 let path = iter
@@ -235,7 +208,7 @@ where
             .ok_or_else(|| "--pair-token is required when using --pair-connect".to_string())?;
         let transport = pair_transport
             .or_else(|| infer_transport_from_addr(&addr))
-            .unwrap_or(PairTransport::Auto);
+            .unwrap_or(NveWireTransportKind::Auto);
         if !explicit_ws {
             options.ws_url = None;
         }
@@ -301,10 +274,8 @@ mod tests {
             "target/debug/libapp.dylib",
             "--ws",
             "ws://127.0.0.1:9000",
-            "--snapshot",
-            "/tmp/app.nvesnap",
-            "--schema",
-            "4",
+            "--frame0",
+            "/tmp/frame0.nve2",
             "--screenshot",
             "/tmp/out.ppm",
             "--width",
@@ -324,10 +295,9 @@ mod tests {
         );
         assert_eq!(cfg.options.ws_url.as_deref(), Some("ws://127.0.0.1:9000"));
         assert_eq!(
-            cfg.options.snapshot_path,
-            Some(PathBuf::from("/tmp/app.nvesnap"))
+            cfg.options.frame0_path,
+            Some(PathBuf::from("/tmp/frame0.nve2"))
         );
-        assert_eq!(cfg.options.schema_version, 4);
         assert_eq!(cfg.screenshot_path, Some(PathBuf::from("/tmp/out.ppm")));
         assert_eq!(cfg.options.width, 960.0);
         assert_eq!(cfg.options.height, 640.0);
@@ -359,7 +329,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "127.0.0.1:8091",
                 "nve-deadbeef-12345678",
-                PairTransport::Quic,
+                NveWireTransportKind::Quic,
             ))
         );
         assert_eq!(cfg.options.ws_url, None);
@@ -381,7 +351,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "127.0.0.1:8092",
                 "tok",
-                PairTransport::Auto,
+                NveWireTransportKind::Auto,
             ))
         );
 
@@ -398,7 +368,7 @@ mod tests {
             LaunchTarget::Pair(PairConnectConfig::new(
                 "quic://127.0.0.1:8091",
                 "tok",
-                PairTransport::Quic,
+                NveWireTransportKind::Quic,
             ))
         );
     }
@@ -418,25 +388,13 @@ mod tests {
             "bogus-proto"
         ]))
         .is_err());
-        assert!(parse_args(s(&["libapp.dylib", "--schema", "abc"])).is_err());
+        assert!(parse_args(s(&["libapp.dylib", "--frame0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--width", "0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--bogus"])).is_err());
     }
 
     #[test]
-    fn parses_no_snapshot_and_reset_state_flags() {
-        let disabled = parse_args(s(&["libapp.dylib", "--no-snapshot"]))
-            .unwrap()
-            .unwrap();
-        assert!(disabled.options.disable_instant_boot);
-        assert!(!disabled.options.reset_state);
-
-        let reset = parse_args(s(&["libapp.dylib", "--reset-state"]))
-            .unwrap()
-            .unwrap();
-        assert!(!reset.options.disable_instant_boot);
-        assert!(reset.options.reset_state);
-
+    fn parses_layout_engine_flag() {
         let yoga = parse_args(s(&["libapp.dylib", "--layout", "yoga"]))
             .unwrap()
             .unwrap();

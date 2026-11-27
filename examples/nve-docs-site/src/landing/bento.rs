@@ -152,7 +152,7 @@ pub fn BentoArchitectureGrid() -> Element {
                     }
                 }
 
-                // Live Pairing + Local-First NVC1 CRDT + MmapSnapshot
+                // Live Pairing + Local-First NVC1 CRDT + Frame-0 NVE2 Boot
                 view {
                     test_id: "bento-pairing",
                     style: "flex-grow: 2; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
@@ -172,14 +172,14 @@ pub fn BentoArchitectureGrid() -> Element {
                         }
                         text {
                             style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
-                            "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, restore Frame 0 from MmapSnapshot in 82–136 µs, and converge offline state via binary NVC1 CRDTs."
+                            "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, boot Frame 0 from NVE2 keyframes + Taffy layout in < 2 ms, and converge offline state via binary NVC1 CRDTs."
                         }
                     }
                     view {
                         style: "flex-direction: row; flex-wrap: wrap; gap: 6px;",
                         PillBadge { label: "NVT1 / NVD1".to_string(), secondary: true }
                         PillBadge { label: "NVC1 CRDT".to_string(), secondary: true }
-                        PillBadge { label: "82–136 µs Cold Start".to_string() }
+                        PillBadge { label: "< 2 ms Frame-0 Boot".to_string() }
                     }
                 }
             }

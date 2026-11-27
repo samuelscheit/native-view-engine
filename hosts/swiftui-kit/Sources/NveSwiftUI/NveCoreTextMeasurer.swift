@@ -7,13 +7,28 @@ import Foundation
 public final class NveCoreTextMeasurer: NveTextMeasuring {
     public init() {}
 
-    public func measure(text: String, fontSize: CGFloat, fontWeight: UInt16, maxWidth: CGFloat) -> CGSize {
-        guard !text.isEmpty, fontSize > 0 else { return .zero }
-        guard let system = CTFontCreateUIFontForLanguage(.system, fontSize, nil) else { return .zero }
+    /// Fonts by `(size bits, weight)`: layout measures every text node with a handful of styles.
+    private var fonts: [UInt64: CTFont] = [:]
+    private let lock = NSLock()
+
+    private func font(size: CGFloat, weight: UInt16) -> CTFont? {
+        let key = UInt64(Float(size).bitPattern) << 16 | UInt64(weight)
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = fonts[key] { return cached }
+        guard let system = CTFontCreateUIFontForLanguage(.system, size, nil) else { return nil }
         let descriptor = CTFontDescriptorCreateCopyWithAttributes(
             CTFontCopyFontDescriptor(system),
-            [kCTFontTraitsAttribute: [kCTFontWeightTrait: Self.weightTrait(fontWeight)]] as CFDictionary)
-        let font = CTFontCreateWithFontDescriptor(descriptor, fontSize, nil)
+            [kCTFontTraitsAttribute: [kCTFontWeightTrait: Self.weightTrait(weight)]] as CFDictionary)
+        let font = CTFontCreateWithFontDescriptor(descriptor, size, nil)
+        fonts[key] = font
+        return font
+    }
+
+    public func measure(text: String, fontSize: CGFloat, fontWeight: UInt16, maxWidth: CGFloat) -> CGSize {
+        guard !text.isEmpty, fontSize > 0, fontSize.isFinite, let font = font(size: fontSize, weight: fontWeight) else {
+            return .zero
+        }
         let attributed = CFAttributedStringCreate(nil, text as CFString, [kCTFontAttributeName: font] as CFDictionary)!
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let constraint = CGSize(width: maxWidth.isFinite ? maxWidth : .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)

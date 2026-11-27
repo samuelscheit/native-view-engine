@@ -1,6 +1,6 @@
 #import "NveAppleSceneReconciler.h"
 
-#include <nve/host/nve_tables.generated.h>
+#include <nve/generated/nve_tables.generated.h>
 
 #include <algorithm>
 #include <unordered_map>
@@ -18,6 +18,8 @@ struct Mounted {
   NodeKind kind = NodeKind::Container;
   bool secure = false;
   CGRect frame = CGRectZero;  // absolute
+  /// Child views in the order last applied to the container (reorder only when it changes).
+  std::vector<const void *> order;
 };
 
 /// Decodes `nve.res.image_src` (tag 0: URL, tag 1: encoded bytes) into a platform image.
@@ -93,9 +95,9 @@ id image_from_source(NSData *bytes) {
 - (id)_imageForResource:(uint32_t)resourceId {
   if (resourceId == 0u) return nil;
   id cached = _images[@(resourceId)];
-  if (cached != nil) return cached == [NSNull null] ? nil : cached;
+  if (cached != nil) return cached;
   id image = _resources ? image_from_source(_resources(resourceId)) : nil;
-  _images[@(resourceId)] = image ?: [NSNull null];
+  if (image != nil) _images[@(resourceId)] = image;  // failures retry: the payload may still arrive
   return image;
 }
 
@@ -111,7 +113,7 @@ id image_from_source(NSData *bytes) {
   if (it == _views.end()) {
     NvePlatformView *view = [adapter nveCreateNativeViewForNode:node];
     if (view == nil) return nullptr;
-    it = _views.emplace(node.node_id, Mounted{view, node.kind, node.semantics.secure_text_entry, CGRectZero}).first;
+    it = _views.emplace(node.node_id, Mounted{view, node.kind, node.semantics.secure_text_entry, CGRectZero, {}}).first;
   }
   [adapter nveUpdateNativeView:it->second.view forNode:node image:[self _imageForResource:node.image_resource]];
   return &it->second;
@@ -144,20 +146,30 @@ id image_from_source(NSData *bytes) {
   const std::vector<uint32_t> kids = tables.paint_ordered_children(index);
   NvePlatformView *childContainer = [self _containerFor:m.view];
   CGSize content = m.frame.size;
-  NvePlatformView *previous = nil;
+  std::vector<const void *> order;
+  order.reserve(kids.size());
   for (const uint32_t c : kids) {
     [self _layout:tables index:c parent:&m into:childContainer];
     const auto kid = _views.find(tables.node_id_at(c));
     if (kid == _views.end()) continue;
     NvePlatformView *kv = kid->second.view;
-#if TARGET_OS_OSX
-    [childContainer addSubview:kv positioned:NSWindowAbove relativeTo:previous];
-#else
-    if (previous == nil) [childContainer sendSubviewToBack:kv]; else [childContainer insertSubview:kv aboveSubview:previous];
-#endif
-    previous = kv;
+    order.push_back((__bridge const void *)kv);
     content.width = std::max(content.width, CGRectGetMaxX(kv.frame));
     content.height = std::max(content.height, CGRectGetMaxY(kv.frame));
+  }
+  // Child `_layout`s only insert / replace *other* entries; `unordered_map` references survive rehash.
+  if (order != m.order) {
+    NvePlatformView *previous = nil;
+    for (const void *p : order) {
+      NvePlatformView *kv = (__bridge NvePlatformView *)p;
+#if TARGET_OS_OSX
+      [childContainer addSubview:kv positioned:NSWindowAbove relativeTo:previous];
+#else
+      if (previous == nil) [childContainer sendSubviewToBack:kv]; else [childContainer insertSubview:kv aboveSubview:previous];
+#endif
+      previous = kv;
+    }
+    m.order = std::move(order);
   }
   id<NveAppleComponentViewAdapter> adapter = _adapter;
   if (m.kind == NodeKind::Scroll && [adapter respondsToSelector:@selector(nveUpdateScrollView:contentSize:)]) {
@@ -175,8 +187,24 @@ id image_from_source(NSData *bytes) {
   for (const uint32_t raw : scene.removed_ids()) [self _destroy:raw];
   const bool initial = _views.empty();
   if (!initial) {
+    // Inherited typography: a dirty ancestor that sets it re-describes its whole subtree.
+    std::vector<bool> seen(scene.node_capacity(), false);
+    std::vector<uint32_t> cascade;
     for (const uint32_t index : scene.dirty_indices()) {
-      if (scene.is_live(index)) [self _realize:tables index:index];
+      if (index >= seen.size() || seen[index] || !scene.is_live(index)) continue;
+      seen[index] = true;
+      [self _realize:tables index:index];
+      if (tables.sets_typography(index)) cascade.push_back(index);
+    }
+    while (!cascade.empty()) {
+      const uint32_t parent = cascade.back();
+      cascade.pop_back();
+      for (const uint32_t c : scene.node_children(parent).value_or(std::span<const uint32_t>())) {
+        if (c >= seen.size() || seen[c] || !scene.is_live(c)) continue;
+        seen[c] = true;
+        [self _realize:tables index:c];
+        cascade.push_back(c);
+      }
     }
   }
   // Drop views whose node died without a removal record (e.g. after a keyframe reset).

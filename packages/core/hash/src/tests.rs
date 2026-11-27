@@ -168,7 +168,7 @@ fn xxh64_streaming_matches_oneshot_across_all_chunk_splits() {
                 );
             }
 
-            // Specifically test NVERELOC header split (first 24 bytes, then tail).
+            // Specifically test 24-byte header split (first 24 bytes, then tail).
             if len >= 32 {
                 let mut hasher = Xxh64Hasher::new(seed);
                 hasher.update(&slice[..24]);

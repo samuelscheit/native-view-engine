@@ -27,6 +27,14 @@ public enum BinError: Error, Equatable, Sendable {
     case invalidMark
 }
 
+extension BinError {
+    /// Throws unless `count == expected`: the element count of a fixed-size spec array (`[T; N]`),
+    /// held in Swift as `[T]`. Fewer throw `.truncated`, more `.tooLarge`.
+    public static func requireCount(_ count: Int, exactly expected: Int) throws(BinError) {
+        guard count == expected else { throw count < expected ? BinError.truncated : BinError.tooLarge }
+    }
+}
+
 /// Zero-copy cursor over `bytes`; slices share the array's storage.
 ///
 /// Every length is compared as `UInt64` against the remaining bytes before it becomes an `Int`, so
@@ -130,6 +138,12 @@ public struct BinReader: Sendable {
 
     /// Element count of an array; rejects counts its payload cannot hold.
     public mutating func beginArray() throws(BinError) -> Int { try openContainer(.array, minEntryBytes: 1).count }
+
+    /// Opens an array that must hold exactly `count` values (a spec `[T; N]`): fewer throw
+    /// `.truncated`, more `.tooLarge`.
+    public mutating func beginArray(exactly count: Int) throws(BinError) {
+        try BinError.requireCount(try beginArray(), exactly: count)
+    }
 
     /// Entry count of a map; read each entry as `readMapKey()` then a value.
     public mutating func beginMap() throws(BinError) -> Int { try openContainer(.map, minEntryBytes: 5).count }
@@ -306,6 +320,20 @@ public struct BinWriter: Sendable {
 
     /// Opens an array of `count` values; close it with `end(_:)`.
     public mutating func beginArray(_ count: UInt32) -> Mark { begin(.array, count) }
+
+    /// Opens an array of a Swift collection's `count` values; throws `.tooLarge` (writing nothing)
+    /// past `u32`.
+    public mutating func beginArray(count: Int) throws(BinError) -> Mark {
+        guard let n = UInt32(exactly: count) else { throw .tooLarge }
+        return beginArray(n)
+    }
+
+    /// Opens an array for a fixed-size spec array (`[T; N]`) whose Swift collection holds `count`
+    /// values; throws (writing nothing) unless `count == expected`: fewer `.truncated`, more `.tooLarge`.
+    public mutating func beginArray(count: Int, exactly expected: Int) throws(BinError) -> Mark {
+        try BinError.requireCount(count, exactly: expected)
+        return try beginArray(count: count)
+    }
 
     /// Opens a map of `count` entries (`writeMapKey` + value each); close it with `end(_:)`.
     public mutating func beginMap(_ count: UInt32) -> Mark { begin(.map, count) }

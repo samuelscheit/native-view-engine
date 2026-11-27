@@ -1,4 +1,4 @@
-//! `nve codegen` — Core/Scene ABI, hybrid FFI specs, React Native import, and multi-target export.
+//! `nve codegen` — host ABI data, hybrid FFI specs, React Native import, and multi-target export.
 
 use std::path::{Path, PathBuf};
 
@@ -7,7 +7,8 @@ use nve_codegen::{ExportTarget, HybridTarget, NveExportSpec};
 
 #[derive(Subcommand)]
 pub(crate) enum CodegenAction {
-    /// Regenerate (or check for drift in) all 16 Core ABI, Scene ABI, and XXH64 mirror artifacts.
+    /// Regenerate (or check for drift in) the host ABI, word-table, and XXH64 vector files of
+    /// `packages/core/host-*`.
     Abi {
         /// Verify checked-in artifacts match generated output byte-for-byte without writing files.
         #[arg(long, default_value_t = false)]
@@ -126,7 +127,9 @@ fn write_or_check_generated(
 }
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let files = nve_codegen::generate_all_abi_files();
+    use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
+    let files = nve_codegen::generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS)
+        .map_err(|e| format!("ABI codegen failed: {e}"))?;
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 
@@ -168,11 +171,11 @@ pub(crate) fn cmd_codegen(action: CodegenAction) {
             Ok(paths) => {
                 let verb = if check { "Verified" } else { "Generated" };
                 println!(
-                    "{verb} {} Core + Scene ABI + XXH64 mirror file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}){}",
+                    "{verb} {} host ABI / table / XXH64 vector file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}){}",
                     paths.len(),
                     out.display(),
-                    nve_codegen::core_abi_schema_hash(),
-                    nve_codegen::NVE_SCENE_SCHEMA_HASH,
+                    nve_abi::NVE_CORE_ABI_SCHEMA_HASH,
+                    nve_abi::NVE_SCENE_SCHEMA_HASH,
                     if check { "." } else { ":" }
                 );
                 if !check {
@@ -286,14 +289,14 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         assert!(run_codegen_abi(&tmp, true).is_err());
-        let written = run_codegen_abi(&tmp, false).expect("write all 17 ABI + hash files");
-        assert_eq!(written.len(), 17);
+        let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
+        assert_eq!(written.len(), 16);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
-        let target_file = tmp.join("hosts/web-shell/nve_core_abi.generated.ts");
+        let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");
         std::fs::write(&target_file, "// drifted\n").unwrap();
         let drift_err = run_codegen_abi(&tmp, true).unwrap_err();
-        assert!(drift_err.contains("hosts/web-shell/nve_core_abi.generated.ts"));
+        assert!(drift_err.contains("packages/core/host-ts/src/generated/nve_abi.generated.ts"));
 
         // `codegen export` JSON loading: valid specs load, broken JSON and invalid specs are refused.
         let export_json = tmp.join("export.json");

@@ -1,5 +1,5 @@
 use crate::tests::{Align, Shadows, Text, Visual};
-use crate::wire::{WireDecoder, WireEncoder, WireError, MAGIC};
+use crate::wire::{MAGIC, WireDecoder, WireEncoder, WireError};
 use crate::{ChangeSet, NodeId, NodeStore, NveTable, Rgba, Transaction};
 
 struct Pair {
@@ -43,9 +43,18 @@ impl Pair {
         let live: Vec<NodeId> = self.src.live_nodes().collect();
         assert_eq!(live, self.dst.live_nodes().collect::<Vec<_>>());
         for &n in &live {
-            assert_eq!(self.src.children(n), self.dst.children(n), "children of {n:?}");
-            assert_eq!(self.src.node(n).unwrap().tables, self.dst.node(n).unwrap().tables);
-            if let (Some(a), Some(b)) = (self.src.try_row::<Visual>(n), self.dst.try_row::<Visual>(n)) {
+            assert_eq!(
+                self.src.children(n),
+                self.dst.children(n),
+                "children of {n:?}"
+            );
+            assert_eq!(
+                self.src.node(n).unwrap().tables,
+                self.dst.node(n).unwrap().tables
+            );
+            if let (Some(a), Some(b)) =
+                (self.src.try_row::<Visual>(n), self.dst.try_row::<Visual>(n))
+            {
                 assert_eq!(a.bg(), b.bg());
                 assert_eq!(a.opacity().to_bits(), b.opacity().to_bits());
                 assert_eq!(a.align(), b.align());
@@ -130,7 +139,10 @@ fn nve2_declares_each_table_once_per_session() {
     p.frame(|tx| {
         tx.edit::<Text>(n).text("b");
     });
-    assert!(p.bytes.len() < first - 16, "second frame must not redeclare the table");
+    assert!(
+        p.bytes.len() < first - 16,
+        "second frame must not redeclare the table"
+    );
 }
 
 #[test]
@@ -138,7 +150,9 @@ fn nve2_rejects_corrupt_frames_without_panicking() {
     let mut p = Pair::new();
     p.frame(|tx| {
         let n = tx.create();
-        tx.edit::<Visual>(n).label("x").shadows(Some(Shadows(vec![1.0])));
+        tx.edit::<Visual>(n)
+            .label("x")
+            .shadows(Some(Shadows(vec![1.0])));
     });
     let good = p.bytes.clone();
     let apply = |bytes: &[u8]| {
@@ -184,7 +198,10 @@ fn nve2_rejects_corrupt_frames_without_panicking() {
     enc.encode(&s, &c, &mut bytes);
     let mut fresh = WireDecoder::default();
     let mut tx = dst.tx();
-    assert_eq!(fresh.apply(&mut tx, &bytes), Err(WireError::UndeclaredTable(Text::slot().0)));
+    assert_eq!(
+        fresh.apply(&mut tx, &bytes),
+        Err(WireError::UndeclaredTable(Text::slot().0))
+    );
 }
 
 #[test]
@@ -345,10 +362,10 @@ fn wire_rejects_dos_and_structural_corruption_vectors() {
         Err(WireError::SchemaMismatch { key: td.key.0 })
     );
 
-    // 5c. Multi-op `+1024` amplification rejected: two CreateNodes ops in one tiny frame cannot
-    //     push node index bound past a single per-frame cap.
-    let n1 = NodeId::new(1000, 0).raw().to_le_bytes();
-    let n2 = NodeId::new(1800, 0).raw().to_le_bytes();
+    // 5c. Multi-op CreateNodes cannot bypass the session slot-byte budget in one tiny frame
+    //     (300_000 * 32 B = 9.6 MiB fits, second jump to 600_000 = 19.2 MiB > 16 MiB -> Budget).
+    let n1 = NodeId::new(300_000, 0).raw().to_le_bytes();
+    let n2 = NodeId::new(600_000, 0).raw().to_le_bytes();
     let amp_frame = build_frame(
         0,
         &[
@@ -356,10 +373,7 @@ fn wire_rejects_dos_and_structural_corruption_vectors() {
             (Op::CreateNodes as u8, 0, 1, &n2),
         ],
     );
-    assert_eq!(
-        apply(&amp_frame),
-        Err(WireError::NodeExists(NodeId::new(1800, 0).raw()))
-    );
+    assert_eq!(apply(&amp_frame), Err(WireError::Budget));
 
     // 6. SetChildren with duplicate or self-cycle rejected with WireError::InvalidChildren.
     let mut create_body = Vec::new();

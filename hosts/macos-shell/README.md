@@ -15,9 +15,8 @@ shared `hosts/apple-common` host realizes its zero-copy scene as native views.
 2. **Multi-window manager (`NveMacWindowManager`)**: one runtime surface per window, modal blocking,
    close vetoes, cascading close.
 3. **Runnable desktop host (`main.mm`)**: `--dylib <path>` (Tier-2 reload keeps state), the built-in
-   demo app (`apple-common/NveAppleDemoApp.hpp`), `--pair-connect <nve://pair?...> [--pair-token]`,
-   and instant boot (`--snapshot`, `--no-snapshot`, `--reset-state`, `--schema`; env
-   `NVE_NO_SNAPSHOT`, `NVE_RESET_STATE`, `NVE_SNAPSHOT_DIR`) via `nve::host::SnapshotFile`.
+   demo app (`apple-common/NveAppleDemoApp.hpp`), and `--pair-connect <nve://pair?...> [--pair-token]`.
+   Persisted instant boot waits on runtime-owned `Frame0File` / `StateFile` slots (BACKLOG).
 
 ## Build & Test
 

@@ -6,7 +6,7 @@ use crate::frame::NveWireError;
 /// Default wire schema version negotiated during `Hello` / `HelloAck`.
 pub const DEFAULT_WIRE_SCHEMA_VERSION: u16 = 2;
 
-/// Capability flag: peer supports `NveSceneArchive` (`SceneKeyframe`) frames.
+/// Capability flag: peer supports full `NVE2` `SceneKeyframe` frames.
 pub const NVE_WIRE_CAP_SCENE_ARCHIVE: u32 = 1 << 0;
 /// Capability flag: peer supports compact `NodePatchDelta` frames.
 pub const NVE_WIRE_CAP_NODE_PATCHES: u32 = 1 << 1;

@@ -24,7 +24,7 @@ typedef UIImageView NveAppleBaseImageView;
 #define NVE_APPLE_COMPONENT_BASE_CLASS UIView
 #endif
 
-#include <nve/host/nve_runtime_abi.generated.h>
+#include <nve/generated/nve_runtime_abi.generated.h>
 
 #ifdef __cplusplus
 #import "NveAppleSceneReconciler.h"
@@ -71,11 +71,6 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
                     surfaceId:(uint32_t)surfaceId
                         error:(NSError *_Nullable *_Nullable)error;
 - (void)disconnectPaired;
-/// Instant boot from a `nve::host::SnapshotFile` before loading the app.
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t *_Nullable)outRestoreUs;
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath schemaVersion:(uint32_t)schemaVersion;
 /// Props from an `NSDictionary` (`set_props`).
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
 /// Ticks, reconciles native views, and flushes outbound events.

@@ -1,4 +1,5 @@
 import CNveAbi
+import NveHost
 import Darwin
 import Foundation
 import QuartzCore
@@ -209,19 +210,19 @@ public final class NveSurfaceController: ObservableObject {
 
     // MARK: Layout
 
-    /// SwiftUI `sizeThatFits`: the app's `NveLayoutApi::measure`, else the proposal (or
-    /// `fallbackIntrinsicSize` on unconstrained axes).
+    /// SwiftUI `sizeThatFits`: the proposal on constrained axes; unconstrained axes take the
+    /// laid-out root, else `fallbackIntrinsicSize`.
     public var fallbackIntrinsicSize = CGSize(width: 240, height: 120)
 
     public func measure(proposal: CGSize) -> CGSize {
-        let maxW = proposal.width.isFinite ? Float(proposal.width) : .infinity
-        let maxH = proposal.height.isFinite ? Float(proposal.height) : .infinity
-        if let size = try? session.measure(NveSizeConstraints(min_w: 0, min_h: 0, max_w: maxW, max_h: maxH)) {
-            return CGSize(width: min(CGFloat(size.width), proposal.width), height: min(CGFloat(size.height), proposal.height))
-        }
+        let root = (try? session.withScene { scene -> CGSize? in
+            guard let i = scene.index(of: .root), let r = scene.rect(i), r.width > 0, r.height > 0 else { return nil }
+            return CGSize(width: CGFloat(r.width), height: CGFloat(r.height))
+        }) ?? nil
+        let natural = root ?? fallbackIntrinsicSize
         return CGSize(
-            width: proposal.width.isFinite ? proposal.width : fallbackIntrinsicSize.width,
-            height: proposal.height.isFinite ? proposal.height : fallbackIntrinsicSize.height)
+            width: proposal.width.isFinite ? proposal.width : natural.width,
+            height: proposal.height.isFinite ? proposal.height : natural.height)
     }
 
     /// Propagates the hosting view's size (and display scale) to the runtime viewport.

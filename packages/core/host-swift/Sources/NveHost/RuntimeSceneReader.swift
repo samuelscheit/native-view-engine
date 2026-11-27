@@ -28,11 +28,19 @@ public protocol LayoutRectABI {
     var height: Float { get }
 }
 
+/// Shape of the generated C `NveScrollOffset` (12 bytes): the visual child shift of one scroll container.
+public protocol ScrollOffsetABI {
+    var node_id: UInt32 { get }
+    var x: Float { get }
+    var y: Float { get }
+}
+
 /// Shape of the generated C `NveRuntimeSceneView` (pointers implicitly unwrapped, as Swift imports C).
 public protocol RuntimeSceneViewABI {
     associatedtype Row: NodeRowABI
     associatedtype Rect: LayoutRectABI
     associatedtype Table: TableViewABI
+    associatedtype Scroll: ScrollOffsetABI
 
     var schema_hash: UInt64 { get }
     var frame_id: UInt64 { get }
@@ -42,6 +50,7 @@ public protocol RuntimeSceneViewABI {
     var text_slab_len: UInt32 { get }
     var children_slab_len: UInt32 { get }
     var table_count: UInt32 { get }
+    var scroll_count: UInt32 { get }
     var rows: UnsafePointer<Row>! { get }
     var rects: UnsafePointer<Rect>! { get }
     var text_slab: UnsafePointer<UInt8>! { get }
@@ -49,6 +58,7 @@ public protocol RuntimeSceneViewABI {
     var dirty_indices: UnsafePointer<UInt32>! { get }
     var removed_ids: UnsafePointer<UInt32>! { get }
     var tables: UnsafePointer<Table>! { get }
+    var scroll_offsets: UnsafePointer<Scroll>! { get }
 }
 
 public enum SceneError: Error, Equatable, Sendable {
@@ -120,6 +130,8 @@ public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
     /// Raw `NodeId`s removed on `frameId`.
     public let removedIds: UnsafeBufferPointer<UInt32>
     public let tables: UnsafeBufferPointer<View.Table>
+    /// Visual child shift of every scroll container (rects are absolute and pre-scroll).
+    public let scrollOffsets: UnsafeBufferPointer<View.Scroll>
 
     /// Validates the view behind `pointer` (as filled by `scene_acquire`).
     public static func open(_ pointer: UnsafePointer<View>?, expectedSchema: Key64) throws(SceneError) -> Self {
@@ -138,13 +150,20 @@ public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
         let dirty = try buffer(v.dirty_indices, v.dirty_count)
         let removed = try buffer(v.removed_ids, v.removed_count)
         let tables = try buffer(v.tables, v.table_count)
+        let scrolls = try buffer(v.scroll_offsets, v.scroll_count)
         guard Utf8.isValid(UnsafeRawBufferPointer(text)) else { throw .invalidUtf8 }
         for (i, t) in tables.enumerated() where TableReader(view: t) == nil {
             throw .invalidTable(index: i)
         }
         return Self(
             frameId: v.frame_id, rows: rows, rects: rects, textSlab: text, childrenSlab: children,
-            dirtyIndices: dirty, removedIds: removed, tables: tables)
+            dirtyIndices: dirty, removedIds: removed, tables: tables, scrollOffsets: scrolls)
+    }
+
+    /// Visual child shift of scroll container `id` (`(0, 0)` when it has none), O(scroll containers).
+    public func scrollOffset(for id: NodeId) -> (x: Float, y: Float) {
+        guard let s = scrollOffsets.first(where: { $0.node_id == id.raw }) else { return (0, 0) }
+        return (s.x, s.y)
     }
 
     public var nodeCapacity: Int { rows.count }

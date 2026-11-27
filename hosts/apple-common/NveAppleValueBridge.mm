@@ -32,6 +32,7 @@ NveStrSlice ValueArena::str(std::string_view s) {
 }
 
 NveBufferSlice ValueArena::bytes(const void *data, size_t len) {
+  if (data == nullptr || len == 0u) return NveBufferSlice{nullptr, 0u};
   const std::string &owned = strings_.emplace_back(static_cast<const char *>(data), len);
   return NveBufferSlice{reinterpret_cast<const uint8_t *>(owned.data()), owned.size()};
 }
@@ -75,7 +76,7 @@ NveValue nve_value_from_objc_object(id obj, ValueArena &arena, uint32_t depth) {
     v.tag = NVE_VAL_ARRAY;
     v.data.array_val = NveValueArray{items, a.count};
   } else if ([obj isKindOfClass:[NSDictionary class]]) {
-    const std::vector<NveMapEntry> entries = map_entries_from_dictionary(obj, arena);
+    const std::vector<NveMapEntry> entries = map_entries_from_dictionary(obj, arena, depth + 1u);
     NveMapEntry *stored = arena.entries(entries.size());
     std::copy(entries.begin(), entries.end(), stored);
     v.tag = NVE_VAL_MAP;
@@ -84,7 +85,7 @@ NveValue nve_value_from_objc_object(id obj, ValueArena &arena, uint32_t depth) {
   return v;
 }
 
-std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *props, ValueArena &arena) {
+std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *props, ValueArena &arena, uint32_t depth) {
   NSArray<NSString *> *keys = [props.allKeys sortedArrayUsingSelector:@selector(compare:)];
   std::vector<NveMapEntry> out;
   out.reserve(keys.count);
@@ -92,7 +93,7 @@ std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id
     if (![key isKindOfClass:[NSString class]]) continue;
     NveMapEntry e{};
     e.key = arena.str(key.UTF8String ?: "");
-    e.value = nve_value_from_objc_object(props[key], arena, 1u);
+    e.value = nve_value_from_objc_object(props[key], arena, depth + 1u);
     out.push_back(e);
   }
   return out;

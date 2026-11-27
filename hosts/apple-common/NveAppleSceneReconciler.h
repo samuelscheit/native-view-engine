@@ -27,7 +27,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-/// Returns the wire encoding of a runtime resource (`resource_bytes`), or `nil`.
+/// Returns the canonical payload of a runtime resource (`resource_payload`), or `nil`.
 typedef NSData *_Nullable (^NveAppleResourceProvider)(uint32_t resourceId);
 
 /// Incremental Apple reconciler over the zero-copy runtime scene: realizes every live node as a

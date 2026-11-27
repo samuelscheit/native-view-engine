@@ -1,22 +1,20 @@
 // C++20 live suite (links `libnve_runtime`): `Nve2FrameBuilder` frames declaring the generated
 // core tables, decoded by the runtime and read back through `RuntimeSceneReader` + the generated
-// field specs; `resource_bytes`; and an instant-boot `SnapshotFile` round trip via `encode_scene`.
+// field specs; zero-copy `resource_payload`; and the same keyframe replayed into a cold surface.
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
 #include <string_view>
 #include <vector>
 
 #include "check.h"
 #include "nve/host/nve2_builder.hpp"
 #include "nve/host/runtime_session.hpp"
-#include "nve/host/snapshot_file.hpp"
 
 using nve::host::Key64;
 using nve::host::Nve2FrameBuilder;
 using nve::host::RuntimeSession;
-using nve::host::SnapshotFile;
 using nve::host::set_field;
 
 namespace {
@@ -46,19 +44,19 @@ std::vector<uint8_t> build_scene() {
 
   std::array<uint32_t, NVE_TABLE_LAYOUT_WORDS> lay{};
   std::copy(std::begin(NVE_TABLE_LAYOUT_DEFAULTS), std::end(NVE_TABLE_LAYOUT_DEFAULTS), lay.begin());
-  const uint32_t lay_mask = set_field(lay, NVE_LAYOUT_WIDTH, 0x42C80000u) |  // 100pt (tag 0)
-                            set_field(lay, NVE_LAYOUT_HEIGHT, 0x42480000u);   // 50pt
+  const uint32_t lay_mask = set_field(lay, NVE_TABLE_LAYOUT_WIDTH, 0x42C80000u) |  // 100pt (tag 0)
+                            set_field(lay, NVE_TABLE_LAYOUT_HEIGHT, 0x42480000u);   // 50pt
   b.patch(layout, 3u, lay_mask, lay);
 
   std::array<uint32_t, NVE_TABLE_VISUAL_WORDS> vis{};
   std::copy(std::begin(NVE_TABLE_VISUAL_DEFAULTS), std::end(NVE_TABLE_VISUAL_DEFAULTS), vis.begin());
-  const uint32_t vis_mask = set_field(vis, NVE_VISUAL_BACKGROUND, 0xFF0000FFu) | set_field(vis, NVE_VISUAL_BORDER_RADIUS, 0x41000000u);
+  const uint32_t vis_mask = set_field(vis, NVE_TABLE_VISUAL_BACKGROUND, 0xFF0000FFu) | set_field(vis, NVE_TABLE_VISUAL_BORDER_RADIUS, 0x41000000u);
   b.patch(visual, 2u, vis_mask, vis);
-  b.set_string(text, 2u, NVE_TEXT_TEXT.word, "Hi");
+  b.set_string(text, 2u, NVE_TABLE_TEXT_TEXT.word, "Hi");
 
   std::array<uint32_t, NVE_TABLE_IMAGE_WORDS> img{};
   std::copy(std::begin(NVE_TABLE_IMAGE_DEFAULTS), std::end(NVE_TABLE_IMAGE_DEFAULTS), img.begin());
-  const uint32_t img_mask = set_field(img, NVE_IMAGE_SRC, 7u) | set_field(img, NVE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
+  const uint32_t img_mask = set_field(img, NVE_TABLE_IMAGE_SRC, 7u) | set_field(img, NVE_TABLE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
   b.patch(image, 3u, img_mask, img);
   b.set_children(1u, {2u, 3u});
   return b.finish();
@@ -75,27 +73,38 @@ void check_scene(const RuntimeSession& s) {
   const auto image = scene.find_table(Key64{NVE_TABLE_IMAGE_KEY});
   CHECK(vis.has_value() && text.has_value() && image.has_value());
   if (!vis || !text || !image) return;
-  CHECK(vis->color(2u, NVE_VISUAL_BACKGROUND).has_value());
-  CHECK(vis->color(2u, NVE_VISUAL_BACKGROUND)->packed == 0xFF0000FFu);
-  CHECK(vis->f32(2u, NVE_VISUAL_BORDER_RADIUS) == 8.0f);
-  CHECK(vis->f32(2u, NVE_VISUAL_OPACITY) == 1.0f);  // unpatched words keep their defaults
+  CHECK(vis->color(2u, NVE_TABLE_VISUAL_BACKGROUND).has_value());
+  CHECK(vis->color(2u, NVE_TABLE_VISUAL_BACKGROUND)->packed == 0xFF0000FFu);
+  CHECK(vis->f32(2u, NVE_TABLE_VISUAL_BORDER_RADIUS) == 8.0f);
+  CHECK(vis->f32(2u, NVE_TABLE_VISUAL_OPACITY) == 1.0f);  // unpatched words keep their defaults
   // Dense rows exist for every slot, but only nodes whose `table_set` holds the table own one:
   // ROOT has no `nve.visual`, so hosts must gate dense reads on `has_table`.
   CHECK(!scene.has_table(1u, static_cast<uint8_t>(vis->slot())) && scene.has_table(2u, static_cast<uint8_t>(vis->slot())));
   const auto text_row = text->row_of(2u | (uint32_t{scene.row(2u)->generation} << 24u));
   CHECK(text_row.has_value());
   if (text_row) {
-    const auto span = text->str(*text_row, NVE_TEXT_TEXT);
+    const auto span = text->str(*text_row, NVE_TABLE_TEXT_TEXT);
     CHECK(span.has_value() && scene.text(span->offset, span->len) == "Hi");
   }
   const auto img_row = image->row_of(3u | (uint32_t{scene.row(3u)->generation} << 24u));
   CHECK(img_row.has_value());
   if (img_row) {
-    CHECK(image->u32(*img_row, NVE_IMAGE_SRC) == 7u);
-    CHECK(image->u32(*img_row, NVE_IMAGE_FIT) == NVE_IMAGE_FIT_CONTAIN);
+    CHECK(image->u32(*img_row, NVE_TABLE_IMAGE_SRC) == 7u);
+    CHECK(image->u32(*img_row, NVE_TABLE_IMAGE_FIT) == NVE_IMAGE_FIT_CONTAIN);
   }
   const NveLayoutRect* r = scene.rect(3u);
   CHECK(r != nullptr && r->width == 100.0f && r->height == 50.0f);
+
+  // Resources borrow from the scene guard: canonical bytes + kind; stale / unknown ids miss.
+  NveRuntimeStatus st = NVE_RUNTIME_OK;
+  const auto res = guard->resource(7u, &st);
+  CHECK(st == NVE_RUNTIME_OK && res.has_value());
+  if (res) {
+    CHECK(res->kind == Key64::of("nve.res.image_src"));
+    const std::vector<uint8_t> want = image_src_url(kUrl);
+    CHECK(std::equal(res->bytes.begin(), res->bytes.end(), want.begin(), want.end()));
+  }
+  CHECK(!guard->resource(8u, &st).has_value() && st == NVE_RUNTIME_NOT_FOUND);
 }
 
 }  // namespace
@@ -112,36 +121,18 @@ int main() {
   CHECK(live->tick(0.0f, &changed) == NVE_RUNTIME_OK);
   check_scene(*live);
 
-  std::vector<uint8_t> res;
-  CHECK(live->resource_bytes(7u, res) == NVE_RUNTIME_OK);
-  CHECK(res == image_src_url(kUrl));
-  CHECK(live->resource_bytes(8u, res) == NVE_RUNTIME_NOT_FOUND && res.empty());
-
-  // Instant boot: encode -> atomic file -> decode -> replay into a cold surface.
-  SnapshotFile snap;
-  snap.schema = 3u;
-  CHECK(live->encode_scene(snap.frame0) == NVE_RUNTIME_OK && snap.frame0.size() > 24u);
-  snap.state = {1u, 2u, 3u};
-  const auto path = std::filesystem::temp_directory_path() / "nve_host_cxx_snapshot_test.nvesnap";
-  CHECK(snap.write(path));
-  CHECK(!SnapshotFile::read(path, 4u).has_value());  // stale schema is refused
-  const auto loaded = SnapshotFile::read(path, 3u);
-  CHECK(loaded.has_value() && loaded->frame0 == snap.frame0 && loaded->state == snap.state);
-  std::filesystem::remove(path);
-  auto truncated = snap.encode();
-  truncated.pop_back();
-  CHECK(!SnapshotFile::decode(truncated, 3u).has_value());
-  CHECK(!SnapshotFile::decode(std::span<const uint8_t>(), 3u).has_value());
-  CHECK(SnapshotFile::default_path("app-a") != SnapshotFile::default_path("app-b"));
+  // A truncated frame is refused whole: the published scene is unchanged.
+  std::vector<uint8_t> truncated = frame;
+  truncated.resize(truncated.size() - 4u);
+  CHECK(live->submit_nve2(truncated) != NVE_RUNTIME_OK);
+  check_scene(*live);
 
   auto cold = RuntimeSession::create(api, RuntimeSession::default_config(2u, 320.0f, 240.0f, 2.0f));
   CHECK(cold.has_value());
-  if (cold && loaded) {
-    CHECK(cold->submit_nve2(loaded->frame0) == NVE_RUNTIME_OK);
+  if (cold) {
+    CHECK(cold->submit_nve2(frame) == NVE_RUNTIME_OK);
     CHECK(cold->tick(0.0f, &changed) == NVE_RUNTIME_OK);
     check_scene(*cold);
-    std::vector<uint8_t> replayed;
-    CHECK(cold->resource_bytes(7u, replayed) == NVE_RUNTIME_OK && replayed == image_src_url(kUrl));
   }
   std::printf("nve_host_runtime_scene_builder: %s\n", g_failures == 0 ? "ok" : "FAILED");
   return g_failures;

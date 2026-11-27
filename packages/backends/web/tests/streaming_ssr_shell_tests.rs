@@ -29,7 +29,9 @@ fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 #[test]
 fn csp_style_nonce_breakout_escaping_reset_css_and_composed_path_replay() {
     assert!(
-        NVE_BASE_RESET_CSS.contains(".nve-slot,[data-nve-dsd-host]{display:contents}"),
+        NVE_BASE_RESET_CSS
+            .contains(".nve-slot,[data-nve-dsd-host]:not([hidden]){display:contents}")
+            && NVE_BASE_RESET_CSS.contains("[data-nve-dsd-host][hidden]{display:none}"),
         "base reset must include display:contents for DSD host and slot wrapper: {NVE_BASE_RESET_CSS}"
     );
     assert!(PRE_HYDRATION_REPLAY_SCRIPT_TAG.contains("composedPath"));
@@ -121,15 +123,13 @@ fn csp_style_nonce_breakout_escaping_reset_css_and_composed_path_replay() {
     let q_chunk = sess.emit_query_payload(7, "AQID</ScRiPt>BA==").unwrap();
     assert_eq!(
         q_chunk,
-        "<script type=\"application/x-nve-query\" data-nve-seq=\"7\">AQID<\\/ScRiPt>BA==</script><template data-nve-q-ack=\"7\"></template>\n"
+        "<script type=\"application/x-nve-query\" data-nve-seq=\"7\">AQID\\u003c/ScRiPt>BA==</script><template data-nve-q-ack=\"7\"></template>\n"
     );
     let boot = sess.emit_async_boot_script("/boot.js?v=1&a=\"2\"").unwrap();
     assert_eq!(
         boot,
         "<script type=\"module\" async src=\"/boot.js?v=1&amp;a=&quot;2&quot;\"></script>\n"
     );
-    let raw = sess.emit_raw_chunk("<!-- mid -->\n").unwrap();
-    assert_eq!(raw, "<!-- mid -->\n");
     let end = sess.finish().unwrap();
     assert_eq!(
         end,

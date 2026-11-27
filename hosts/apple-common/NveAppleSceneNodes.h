@@ -26,6 +26,8 @@ class SceneTables {
 
   /// Fully resolved node: kind, frame, style (incl. inherited typography), semantics, content.
   NodeView describe(uint32_t index) const;
+  /// Whether `index` sets any inherited typography (its descendants' styles depend on it).
+  bool sets_typography(uint32_t index) const noexcept { return row(typography_, index).has_value(); }
 
   /// Live children of `index` in paint order (stable by `z_index`).
   std::vector<uint32_t> paint_ordered_children(uint32_t index) const;

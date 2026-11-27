@@ -1,7 +1,7 @@
 #pragma once
 
 #include "command_decoder.hpp"
-#include "nve_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 
 #include <cstddef>
 #include <cstdint>

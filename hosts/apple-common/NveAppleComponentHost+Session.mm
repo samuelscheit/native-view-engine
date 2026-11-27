@@ -1,11 +1,6 @@
 #import "NveAppleComponentHostInternal.h"
 
-#include <nve/host/snapshot_file.hpp>
-
-#include <chrono>
 #include <string>
-
-using nve::host::SnapshotFile;
 
 @implementation NveAppleComponentHost (Session)
 
@@ -33,7 +28,11 @@ using nve::host::SnapshotFile;
 - (BOOL)connectPairedEndpoint:(NSString *)uri token:(NSString *)token surfaceId:(uint32_t)surfaceId error:(NSError **)error {
   _surfaceId = surfaceId;
   if (_appAttached) {
-    (void)_session.detach_app();
+    // Only unload the app's code once the runtime has really dropped the app.
+    if (_session.detach_app() != NVE_RUNTIME_OK) {
+      if (error) *error = [self _errorWithCode:1 description:@"Failed to detach the running app before pairing"];
+      return NO;
+    }
     _appAttached = NO;
     nve::apple::close_dylib(_dylibHandle);
   }
@@ -56,7 +55,7 @@ using nve::host::SnapshotFile;
   _pairRequested = NO;
 }
 
-#pragma mark - Instant boot
+#pragma mark - Frame-0 replay
 
 - (BOOL)replayFrame0:(NSData *)frame0 {
   if (_appAttached || frame0.length == 0) return NO;
@@ -66,35 +65,6 @@ using nve::host::SnapshotFile;
   [self syncNativeViewsFromHost];  // `submit_nve2` publishes immediately; mount it now
   _hasReplayedFrame0 = YES;
   return YES;
-}
-
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t *)outRestoreUs {
-  const auto start = std::chrono::steady_clock::now();
-  const auto file = SnapshotFile::read(snapshotPath.fileSystemRepresentation, expectedSchemaVersion);
-  if (!file) return NO;
-  NSData *frame0 = [NSData dataWithBytes:file->frame0.data() length:file->frame0.size()];
-  if (![self replayFrame0:frame0]) return NO;
-  _pendingSnapshotState = file->state;  // restored once the live app attaches
-  if (outRestoreUs != nullptr) {
-    *outRestoreUs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
-  }
-  return YES;
-}
-
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath schemaVersion:(uint32_t)schemaVersion {
-  SnapshotFile file;
-  file.schema = schemaVersion;
-  if (_session.encode_scene(file.frame0) != NVE_RUNTIME_OK || file.frame0.empty()) return NO;
-  if (_appAttached) {
-    std::span<const uint8_t> state;
-    if (_session.snapshot_state(&state) == NVE_RUNTIME_OK) file.state.assign(state.begin(), state.end());
-  } else {
-    file.state = _pendingSnapshotState;  // replayed but never attached: keep the original state
-  }
-  return file.write(snapshotPath.fileSystemRepresentation);
 }
 
 @end

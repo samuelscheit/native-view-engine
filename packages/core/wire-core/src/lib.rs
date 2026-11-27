@@ -26,12 +26,10 @@ pub use handshake::{
     DEFAULT_WIRE_SCHEMA_VERSION, NVE_WIRE_CAP_DATAGRAMS, NVE_WIRE_CAP_NODE_PATCHES,
     NVE_WIRE_CAP_SCENE_ARCHIVE, NVE_WIRE_CAP_SLOT_CHUNKS,
 };
-pub use nve_engine::{
-    NveNodePatch, NveNodePatchField, NveNodePatchValue, NveSceneArchive, NveSceneArchiveView,
-    NveSignalSnapshot, NveStateArena, NveTimelineArchive, NveTimelineArchiveView, NveTimelineEntry,
-    NveTimelineEntryInput, NveTimelinePatchInput, NveTimelineRoot,
+pub use patch::{
+    NveNodePatch, NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NveNodePatchField,
+    NVE_NODE_PATCH_DELTA_HEADER_SIZE, NVE_NODE_PATCH_FLAG_STRING_SPAN,
 };
-pub use patch::{NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NVE_NODE_PATCH_DELTA_HEADER_SIZE};
 pub use session::{
     NveWireClientSession, NveWireClientState, NveWireIngestOutcome, NveWireMetrics,
 };

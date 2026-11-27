@@ -1,5 +1,5 @@
 // Fixture app dylibs for the macOS shell tests (one variant per compile definition).
-#include <nve/host/nve_abi.generated.h>
+#include <nve/generated/nve_abi.generated.h>
 
 #include <cstdint>
 

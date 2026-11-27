@@ -10,7 +10,7 @@ use crate::optimistic::{
 };
 use crate::slab::{
     pack_invalidation_version, QuerySlotId, RawErrorWire, FLAG_HAS_DATA, FLAG_HAS_ERROR,
-    FLAG_HYDRATED, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_STREAM_PENDING,
+    FLAG_HYDRATED, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED,
 };
 use crate::types::{into_shared_any, FetchTicket, QueryHandle, Shared};
 
@@ -151,23 +151,21 @@ impl<T, C> QueryClient<T, C> {
                 return (false, None, Vec::new(), None);
             }
             let idx = ticket.handle.slot.index();
-            let meta = &mut s.metas[idx];
-            if meta.proc_id != P::ID
-                || meta.fetch_gen != ticket.fetch_gen
-                || s.wildcard_epoch != ticket.wildcard_epoch
-            {
-                let (wake, waiters) =
-                    if meta.proc_id == P::ID && meta.fetch_gen == ticket.fetch_gen {
-                        meta.flags &= !(FLAG_IS_FETCHING | FLAG_STREAM_PENDING);
-                        let waiters = core::mem::take(&mut s.payloads[idx].in_flight_waiters);
-                        let wake = s.mark_dirty(ticket.handle.slot);
-                        (wake, waiters)
-                    } else {
-                        (None, Vec::new())
-                    };
+            let same_fetch =
+                s.metas[idx].proc_id == P::ID && s.metas[idx].fetch_gen == ticket.fetch_gen;
+            if !same_fetch || s.wildcard_epoch != ticket.wildcard_epoch {
+                let (wake, waiters) = if same_fetch {
+                    s.clear_stream_pending(idx, FLAG_IS_FETCHING);
+                    let waiters = core::mem::take(&mut s.payloads[idx].in_flight_waiters);
+                    let wake = s.mark_dirty(ticket.handle.slot);
+                    (wake, waiters)
+                } else {
+                    (None, Vec::new())
+                };
                 return (false, wake, waiters, None);
             }
-            meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED | FLAG_STREAM_PENDING);
+            s.clear_stream_pending(idx, FLAG_IS_FETCHING | FLAG_HYDRATED);
+            let meta = &mut s.metas[idx];
             let payload = &mut s.payloads[idx];
             let waiters = core::mem::take(&mut payload.in_flight_waiters);
 

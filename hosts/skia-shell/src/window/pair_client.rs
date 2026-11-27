@@ -24,79 +24,6 @@ pub const DEFAULT_PAIR_WS_PATH: &str = DEFAULT_WIRE_WSS_PATH;
 /// Maximum queued wire frames retained between ticks before triggering keyframe resync.
 const MAX_PENDING_REMOTE_FRAMES: usize = 256;
 
-/// Transport protocol used by `--pair-connect`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PairTransport {
-    /// Happy-Eyeballs: QUIC first, racing `wss://` after 250ms.
-    #[default]
-    Auto,
-    /// Native raw QUIC (`nve-wire-2` ALPN).
-    Quic,
-    /// HTTP/3 WebTransport (`h3` ALPN).
-    WebTransport,
-    /// TLS WebSocket (`wss://`).
-    Wss,
-    /// Localhost plain WebSocket (`ws://`).
-    Ws,
-}
-
-impl PairTransport {
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        let s = raw.trim();
-        if s.is_empty() || s.eq_ignore_ascii_case("auto") {
-            Ok(Self::Auto)
-        } else if s.eq_ignore_ascii_case("quic") || s.eq_ignore_ascii_case("udp") {
-            Ok(Self::Quic)
-        } else if s.eq_ignore_ascii_case("wt")
-            || s.eq_ignore_ascii_case("webtransport")
-            || s.eq_ignore_ascii_case("h3")
-        {
-            Ok(Self::WebTransport)
-        } else if s.eq_ignore_ascii_case("wss") || s.eq_ignore_ascii_case("tls") {
-            Ok(Self::Wss)
-        } else if s.eq_ignore_ascii_case("ws")
-            || s.eq_ignore_ascii_case("tcp")
-            || s.eq_ignore_ascii_case("websocket")
-        {
-            Ok(Self::Ws)
-        } else {
-            Err(format!(
-                "invalid --pair-transport '{s}' (expected one of: auto, quic, webtransport, wss, ws)"
-            ))
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "AUTO",
-            Self::Quic => "QUIC",
-            Self::WebTransport => "WT/H3",
-            Self::Wss => "WSS",
-            Self::Ws => "WS",
-        }
-    }
-
-    const fn to_wire_kind(self) -> NveWireTransportKind {
-        match self {
-            Self::Auto => NveWireTransportKind::Auto,
-            Self::Quic => NveWireTransportKind::Quic,
-            Self::WebTransport => NveWireTransportKind::WebTransport,
-            Self::Wss => NveWireTransportKind::Wss,
-            Self::Ws => NveWireTransportKind::Ws,
-        }
-    }
-
-    const fn from_wire_kind(kind: NveWireTransportKind) -> Self {
-        match kind {
-            NveWireTransportKind::Auto => Self::Auto,
-            NveWireTransportKind::Quic => Self::Quic,
-            NveWireTransportKind::WebTransport => Self::WebTransport,
-            NveWireTransportKind::Wss => Self::Wss,
-            NveWireTransportKind::Ws => Self::Ws,
-        }
-    }
-}
-
 /// Connection parameters for live thin-client pairing mode (`--pair-connect`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairConnectConfig {
@@ -105,7 +32,7 @@ pub struct PairConnectConfig {
     /// Shared Bearer token printed by `nve pair`.
     pub token: String,
     /// Wire transport protocol (`auto`, `quic`, `webtransport`, `wss`, or `ws`).
-    pub transport: PairTransport,
+    pub transport: NveWireTransportKind,
     /// Optional pinned SHA-256 leaf certificate digest (auto-parsed from `nve://pair?...`).
     pub cert_sha256: Option<[u8; 32]>,
     /// WebSocket / WebTransport path.
@@ -118,7 +45,7 @@ impl PairConnectConfig {
     pub fn new(
         addr: impl Into<String>,
         token: impl Into<String>,
-        transport: PairTransport,
+        transport: NveWireTransportKind,
     ) -> Self {
         Self {
             addr: addr.into(),
@@ -140,8 +67,8 @@ impl PairConnectConfig {
         let mut uri = parse_wire_uri(&self.addr).map_err(|e| {
             DesktopHostError::Pairing(format!("invalid pair endpoint '{}': {e}", self.addr))
         })?;
-        if self.transport != PairTransport::Auto {
-            uri.transport = self.transport.to_wire_kind();
+        if self.transport != NveWireTransportKind::Auto {
+            uri.transport = self.transport;
         }
         if !self.token.trim().is_empty() {
             uri.token = self.token.clone();
@@ -172,7 +99,6 @@ pub struct PairedRemoteApp {
     client: ReconnectingWireClient,
     endpoint_label: String,
     pending_frames: VecDeque<QueuedRemoteFrame>,
-    last_rendered: Vec<u8>,
     has_seen_frame: bool,
     resync: WireResyncState,
     last_dequeued_session_id: u64,
@@ -206,7 +132,6 @@ impl PairedRemoteApp {
             client,
             endpoint_label: config.addr,
             pending_frames: VecDeque::new(),
-            last_rendered: Vec::new(),
             has_seen_frame: false,
             resync: WireResyncState::new(),
             last_dequeued_session_id: 0,
@@ -238,7 +163,6 @@ impl PairedRemoteApp {
             client,
             endpoint_label: config.addr,
             pending_frames: VecDeque::new(),
-            last_rendered: Vec::new(),
             has_seen_frame: false,
             resync: WireResyncState::new(),
             last_dequeued_session_id: 0,
@@ -252,8 +176,8 @@ impl PairedRemoteApp {
     }
 
     #[cfg(test)]
-    pub fn transport(&self) -> PairTransport {
-        PairTransport::from_wire_kind(self.client.transport_kind())
+    pub fn transport(&self) -> NveWireTransportKind {
+        self.client.transport_kind()
     }
 
     #[cfg(test)]
@@ -402,15 +326,12 @@ impl DesktopApp for PairedRemoteApp {
     }
 
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
-        self.drain_incoming_frames();
-        if let Some(q) = self.pending_frames.pop_front() {
-            self.last_dequeued_session_id = q.session_id;
-            self.last_dequeued_resets = q.is_keyframe || q.is_frame1;
-            self.last_rendered = q.payload;
-            &self.last_rendered
-        } else {
-            &[]
-        }
+        // Queued wire apps deliver all frames strictly via `take_queued_wire_frame`.
+        &[]
+    }
+
+    fn uses_queued_wire_frames(&self) -> bool {
+        true
     }
 
     fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
@@ -474,7 +395,7 @@ impl DesktopApp for PairedRemoteApp {
 
     fn remote_status_banner(&self) -> Option<String> {
         let m = self.metrics();
-        let transport = PairTransport::from_wire_kind(self.client.transport_kind());
+        let transport = self.client.transport_kind();
         if self.client.auth_rejections() > 0 {
             let reason = self
                 .client
@@ -482,7 +403,7 @@ impl DesktopApp for PairedRemoteApp {
                 .unwrap_or_else(|| "unauthorized".to_owned());
             return Some(format!(
                 "Paired {} [AUTH REJECTED] · {reason}",
-                transport.label(),
+                transport.as_str(),
             ));
         }
         let state = if self.is_connected() {
@@ -492,7 +413,7 @@ impl DesktopApp for PairedRemoteApp {
         };
         Some(format!(
             "Paired {} [{}] · seq #{} · {} B rx",
-            transport.label(),
+            transport.as_str(),
             state,
             m.last_sequence,
             m.wire_bytes_rx

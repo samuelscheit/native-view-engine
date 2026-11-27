@@ -76,6 +76,11 @@ struct SceneBuilder {
                 tables[t].rows.append(contentsOf: repeatElement(0, count: need - tables[t].rows.count))
             }
             tables[t].rows.replaceSubrange(id.index * words..<(id.index + 1) * words, with: row)
+            // Like the runtime: dense tables publish owners too (row `i` belongs to node index `i`).
+            if tables[t].owners.count <= id.index {
+                tables[t].owners.append(contentsOf: repeatElement(0, count: id.index + 1 - tables[t].owners.count))
+            }
+            tables[t].owners[id.index] = id.raw
         }
     }
 
@@ -130,7 +135,7 @@ final class MockRuntime: @unchecked Sendable {
     var hitResult: UInt32 = 0
     var scroll: [UInt32: (Float, Float)] = [:]
     var resources: [UInt32: [UInt8]] = [:]
-    var measureResult: NveIntrinsicSize?
+    var scrollOffsets: [NveScrollOffset] = []
     var state: [UInt8] = []
     var emitted: [NveDirectEvent] = []
     private var drained: [NveDirectEvent] = []
@@ -144,7 +149,7 @@ final class MockRuntime: @unchecked Sendable {
     var restored: [UInt8] = []
     var patches: [Int] = []
     var wake: (NveRuntimeWakeFn?, UnsafeMutableRawPointer?) = (nil, nil)
-    var measurer: (NveTextMeasureFn?, UnsafeMutableRawPointer?) = (nil, nil)
+    var measurer: (NveRuntimeMeasureTextFn?, UnsafeMutableRawPointer?) = (nil, nil)
 
     private var pinned: [UnsafeMutableRawPointer] = []
     private var view = NveRuntimeSceneView()
@@ -154,14 +159,14 @@ final class MockRuntime: @unchecked Sendable {
         let fresh = MockRuntime()
         scene = fresh.scene
         frameId = 1; removed = []; dirty = []; schema = NVE_RUNTIME_SCHEMA_HASH; tickChanged = true
-        failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; measureResult = nil
+        failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; scrollOffsets = []
         state = []; emitted = []; drained = []
         creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
         wake = (nil, nil); measurer = (nil, nil)
     }
 
-    private func pin<T>(_ values: [T]) -> UnsafePointer<T>? {
+    fileprivate func pin<T>(_ values: [T]) -> UnsafePointer<T>? {
         guard !values.isEmpty else { return nil }
         let p = UnsafeMutablePointer<T>.allocate(capacity: values.count)
         p.initialize(from: values, count: values.count)
@@ -174,15 +179,16 @@ final class MockRuntime: @unchecked Sendable {
             NveTableView(
                 key_lo: t.key.lo, key_hi: t.key.hi, slot: t.slot, words: UInt32(t.words),
                 row_count: UInt32(t.rows.count / t.words), dirty_count: 0,
-                rows: pin(t.rows), owners: t.sparse ? pin(t.owners) : nil, dirty_rows: nil)
+                rows: pin(t.rows), owners: pin(t.owners), dirty_rows: nil)
         }
         view = NveRuntimeSceneView(
             schema_hash: schema, frame_id: frameId, node_capacity: UInt32(scene.rows.count),
             dirty_count: UInt32(dirty.count), removed_count: UInt32(removed.count),
             text_slab_len: UInt32(scene.text.count), children_slab_len: UInt32(scene.children.count),
-            table_count: UInt32(tableViews.count), rows: pin(scene.rows), rects: pin(scene.rects),
+            table_count: UInt32(tableViews.count), scroll_count: UInt32(scrollOffsets.count), _reserved: 0,
+            rows: pin(scene.rows), rects: pin(scene.rects),
             text_slab: pin(scene.text), children_slab: pin(scene.children), dirty_indices: pin(dirty),
-            removed_ids: pin(removed), tables: pin(tableViews))
+            removed_ids: pin(removed), tables: pin(tableViews), scroll_offsets: pin(scrollOffsets))
         return view
     }
 
@@ -199,10 +205,12 @@ final class MockRuntime: @unchecked Sendable {
     }
 
     /// Fires the installed text measurer like runtime layout would.
-    func measureText(_ s: String, size: Float, weight: UInt16, maxWidth: Float) -> NveIntrinsicSize? {
+    func measureText(_ s: String, size: Float, weight: UInt32, maxWidth: Float) -> (width: Float, height: Float)? {
         guard let fn = measurer.0 else { return nil }
         var s = s
-        return s.withUTF8 { fn(measurer.1, NveStrSlice(ptr: $0.baseAddress, len: $0.count), size, weight, maxWidth) }
+        var w: Float = -1, h: Float = -1
+        s.withUTF8 { fn(measurer.1, NveStrSlice(ptr: $0.baseAddress, len: $0.count), size, weight, maxWidth, &w, &h) }
+        return (w, h)
     }
 
     static let api: UnsafePointer<NveRuntimeApi> = {
@@ -212,7 +220,12 @@ final class MockRuntime: @unchecked Sendable {
         a.schema_hash = NVE_RUNTIME_SCHEMA_HASH
         a.create = { _ in MockRuntime.shared.creates += 1; return MockRuntime.handle }
         a.destroy = { _ in MockRuntime.shared.destroys += 1 }
-        a.set_wake_callback = { _, cb, ctx in MockRuntime.shared.wake = (cb, ctx); return 0 }
+        a.set_wake_callback = { _, cb, ctx in
+            let m = MockRuntime.shared
+            let st = m.status()
+            if st == 0 { m.wake = (cb, ctx) }
+            return st
+        }
         a.set_viewport = { _, w, h, s in MockRuntime.shared.viewports.append((w, h, s)); return 0 }
         a.attach_app_interface = { _, fn in
             if fn == nil { MockRuntime.shared.detaches += 1 } else { MockRuntime.shared.attaches += 1 }
@@ -267,11 +280,6 @@ final class MockRuntime: @unchecked Sendable {
             return MockRuntime.shared.status()
         }
         a.drain_emitted_events = { _, out in out?.pointee = MockRuntime.shared.drain(); return 0 }
-        a.measure = { _, _, out in
-            guard let size = MockRuntime.shared.measureResult else { return Int32(NveRuntimeError.unsupported) }
-            out?.pointee = size
-            return 0
-        }
         a.apply_hot_patch = { _, patch, changed in
             MockRuntime.shared.patches.append(patch.len)
             changed?.pointee = 1
@@ -286,21 +294,18 @@ final class MockRuntime: @unchecked Sendable {
             MockRuntime.shared.restored = Array(UnsafeBufferPointer(start: s.ptr, count: s.len))
             return 0
         }
-        a.set_text_measurer = { _, cb, ctx in MockRuntime.shared.measurer = (cb, ctx); return 0 }
-        a.resource_bytes = { _, id, buf, cap, outLen in
-            guard let bytes = MockRuntime.shared.resources[id] else { return Int32(NveRuntimeError.notFound) }
-            outLen?.pointee = bytes.count
-            guard cap > 0 else { return 0 }
-            guard let buf, cap >= bytes.count else { return 1 }
-            bytes.withUnsafeBufferPointer { buf.update(from: $0.baseAddress!, count: bytes.count) }
-            return 0
+        a.set_text_measurer = { _, cb, ctx in
+            let m = MockRuntime.shared
+            let st = m.status()
+            if st == 0 { m.measurer = (cb, ctx) }
+            return st
         }
-        a.encode_scene = { _, buf, cap, outLen in
-            let frame: [UInt8] = Array("NVE2".utf8) + [1, 0, 0, 0]
-            outLen?.pointee = frame.count
-            guard cap > 0 else { return 0 }
-            guard let buf, cap >= frame.count else { return 1 }
-            frame.withUnsafeBufferPointer { buf.update(from: $0.baseAddress!, count: frame.count) }
+        a.resource_payload = { _, id, kind, out in
+            let m = MockRuntime.shared
+            guard m.acquires > m.releases else { return Int32(NVE_RUNTIME_INVALID_ARG.rawValue) }
+            guard let bytes = m.resources[id] else { return Int32(NveRuntimeError.notFound) }
+            kind?.pointee = 0x1234
+            out?.pointee = NveBufferSlice(ptr: m.pin(bytes), len: bytes.count)
             return 0
         }
         a.last_error = { out, cap in

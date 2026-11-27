@@ -25,6 +25,8 @@ enum class ImageResizeMode : uint8_t {
   Contain = 1,
   Stretch = 2,
   Center = 3,
+  /// CSS `scale-down`: `Center` when the image fits, else `Contain`.
+  ScaleDown = 4,
 };
 
 /// Parse `resizeMode` / `resize_mode` raw prop string (case-insensitive, defaults to `Cover`).

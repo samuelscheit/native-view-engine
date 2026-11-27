@@ -176,7 +176,7 @@ message: "Legacy event/style symbol is banned [stage: Post1B1D]; migrate to cano
 note: "[stage: Post1B1D] Enforced as `error` immediately because `main` has 0 violations."
 ignores:
   - "**/*.generated.*"
-  - "**/dev/nve/android/generated/**"
+  - "**/dev/nve/host/generated/**"
   - "**/src/test/**"
   - "**/src/androidTest/**"
 rule:

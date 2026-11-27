@@ -1,7 +1,7 @@
 #pragma once
 
 #include "nve_draw_list.hpp"
-#include "nve_hash.generated.hpp"
+#include <nve/host/xxh64.hpp>
 #include "nve_host_runtime.hpp"
 
 #include <QAccessible>

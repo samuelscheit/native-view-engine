@@ -168,7 +168,7 @@ data class NveSceneDiff(
 
 /**
  * Zero-copy, binary FFI direct `ByteBuffer` reader over 64-byte `NveRenderNode` + `NveSceneView`
- * slabs matching `packages/core/abi/src/scene.rs` and `cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h`.
+ * slabs matching `packages/core/abi/src/scene.rs` and `packages/core/host-cxx/include/nve/generated/nve_abi.generated.h`.
  */
 class NveSceneBuffer {
     companion object {

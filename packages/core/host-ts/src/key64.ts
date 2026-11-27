@@ -72,6 +72,18 @@ export class Key64 {
     return this.hi * TWO32 + this.lo;
   }
 
+  /**
+   * Signed (`i64`) value as a JS `number` when within safe integer bounds (`|v| <= 2^53 - 1`),
+   * or `null` when outside (zero `BigInt` allocation on the safe-integer fast path).
+   */
+  toSignedSafeInteger(): number | null {
+    if (this.hi <= 0x001f_ffff) return this.hi * TWO32 + this.lo;
+    if (this.hi >= 0xffe0_0000 && (this.hi !== 0xffe0_0000 || this.lo !== 0)) {
+      return (this.hi - TWO32) * TWO32 + this.lo;
+    }
+    return null;
+  }
+
   /** Signed (`i64`) value widened to the nearest double, like Rust `as f64`. */
   toSignedNumber(): number {
     const hi = this.hi >= 0x8000_0000 ? this.hi - TWO32 : this.hi;

@@ -18,7 +18,10 @@ static const uint32_t kChildren[2] = {0x01000002u, 0x02000003u};
 static const uint32_t kDirty[3] = {1u, 2u, 99u};
 static const uint32_t kRemoved[1] = {0x02000003u};
 
+static const NveTestScrollOffset kScroll[1] = {{1u, 0.0f, 12.5f}};
+
 static const NveTestRuntimeSceneView kScene = {
-    UINT64_C(0xF00DFACEC0FFEE11), 7u, 4u, 3u, 1u, 7u, 2u, 1u, kRows, kRects, kText, kChildren, kDirty, kRemoved, kTables};
+    UINT64_C(0xF00DFACEC0FFEE11), 7u, 4u, 3u, 1u, 7u, 2u, 1u, 1u, 0u,
+    kRows, kRects, kText, kChildren, kDirty, kRemoved, kTables, kScroll};
 
 const NveTestRuntimeSceneView* nve_test_scene(void) { return &kScene; }

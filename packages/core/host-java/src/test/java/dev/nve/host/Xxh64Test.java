@@ -1,17 +1,12 @@
 package dev.nve.host;
 
-import java.nio.charset.StandardCharsets;
+import dev.nve.host.generated.HashVectors;
 
-/** Golden XXH64 vectors computed by the canonical Rust {@code nve-hash} crate. */
+/** XXH64 against the golden vectors of the canonical Rust {@code nve-hash} crate. */
 final class Xxh64Test {
     private Xxh64Test() {}
 
-    static final long PRIME32 = 0x9E3779B1L;
     static final long WIRE_SEED = 0x4E56455749524532L;
-
-    static byte[] utf8(String s) {
-        return s.getBytes(StandardCharsets.UTF_8);
-    }
 
     static byte[] seq(int n) {
         final byte[] out = new byte[n];
@@ -19,38 +14,23 @@ final class Xxh64Test {
         return out;
     }
 
-    /** Official Cyan4973 xxHash sanity buffer. */
-    static byte[] cyan(int n) {
-        final byte[] out = new byte[n];
-        long gen = PRIME32;
-        for (int i = 0; i < n; i++) {
-            out[i] = (byte) (gen >>> 56);
-            gen *= Xxh64.PRIME1;
+    /** Golden vectors generated from Rust {@code nve_hash::xxh64} ({@code HashVectors.java}). */
+    static final Object[][] VECTORS = fromGenerated();
+
+    private static Object[][] fromGenerated() {
+        final HashVectors.Vector[] all = HashVectors.all();
+        final Object[][] out = new Object[all.length][];
+        for (int i = 0; i < all.length; i++) {
+            out[i] = new Object[] {all[i].label, fromHex(all[i].hex), all[i].seed, all[i].expected};
         }
         return out;
     }
 
-    static final Object[][] VECTORS = {
-        {"empty", new byte[0], 0L, 0xEF46DB3751D8E999L},
-        {"a", utf8("a"), 0L, 0xD24EC4F1A98C6E5BL},
-        {"abc", utf8("abc"), 0L, 0x44BC2CF5AD770999L},
-        {"nve.visual", utf8("nve.visual"), 0L, 0x33E73115985A4FD6L},
-        {"high_bits", new byte[] {0x00, 0x01, 0x7F, (byte) 0x80, (byte) 0xFF}, 0L, 0x8BABCAB499A141EAL},
-        {"utf8", utf8("h\u00e9llo w\u00f6rld \u2014 \u65e5\u672c\u8a9e \ud83d\ude80"), 0L, 0x72AC442FF213F592L},
-        {"seq101", seq(101), 0L, 0xFBFDF3FA1A53BC7FL},
-        {"seq101_wire", seq(101), WIRE_SEED, 0x277E092A8C3DB1BCL},
-        {"seq37_prime1", seq(37), Xxh64.PRIME1, 0x33DDB9A885FC58A4L},
-        {"seq1024", seq(1024), 0L, 0x149AA44972CDAE00L},
-        {"cyan1", cyan(1), 0L, 0xE934A84ADB052768L},
-        {"cyan4", cyan(4), 0L, 0xE244DDBCF81E29E4L},
-        {"cyan14", cyan(14), 0L, 0xB89B3598E0BD0A0AL},
-        {"cyan222", cyan(222), 0L, 0x06CC5BD930BCEC3AL},
-        {"cyan1024", cyan(1024), 0L, 0x2E307F2FE063991AL},
-        {"cyan1_p32", cyan(1), PRIME32, 0x5014607643A9B4C3L},
-        {"cyan222_p32", cyan(222), PRIME32, 0x0B105469DF89AF66L},
-        {"cyan32_p1", cyan(32), Xxh64.PRIME1, 0x6D0242B0B7E278EDL},
-        {"cyan1024_p1", cyan(1024), Xxh64.PRIME1, 0xF464C3F69A39421CL},
-    };
+    static byte[] fromHex(String hex) {
+        final byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) out[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
+        return out;
+    }
 
     static void run(Check c) {
         final int[] steps = {1, 3, 7, 13, 24, 31, 32, 33, 64, 100};

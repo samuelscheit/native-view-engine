@@ -1,7 +1,6 @@
 #pragma once
 
-#include "nve_abi.generated.h"
-#include "nve_scene_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 #include "nve_value.hpp"
 
 #include <cstddef>
@@ -173,8 +172,8 @@ std::vector<RenderedNodeSnapshot> fabric_host_snapshot_nodes(NveFabricHostHandle
 /// `host`'s internal node/text/children/dirty/removed slabs (zero snapshot materialization).
 NveSceneView fabric_host_scene_view(NveFabricHostHandle host) noexcept;
 
-/// Freeze-dry the live shadow tree inside `host` into a complete, self-contained Frame-0
-/// `CommandBuffer` suitable for zero-copy instant-boot `MmapSnapshot` persistence.
+/// Serialize the live shadow tree inside `host` into a complete, self-contained Frame-0
+/// `CommandBuffer`.
 std::vector<uint8_t> fabric_host_serialize_frame0(
     NveFabricHostHandle host,
     uint64_t frame_id = 1u);

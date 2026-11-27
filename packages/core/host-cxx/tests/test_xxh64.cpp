@@ -49,19 +49,18 @@ static_assert(Xxh64Hasher(7).update_u32(0x04030201u).update_u64(0x0c0b0a09080706
               xxh64(std::array<uint8_t, 12>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, 7));
 
 void test_runtime_vectors() {
-  std::vector<uint8_t> buf(MAX_VECTOR_LEN);
-  for (const HashVector& v : kVectors) {
-    vector_bytes(&v, buf.data());
-    const std::span<const uint8_t> bytes(buf.data(), v.len);
+  std::vector<uint8_t> buf(NVE_HASH_VECTOR_MAX_LEN);
+  for (const NveHashVector& v : NVE_HASH_VECTORS) {
+    const size_t len = vector_bytes(&v, buf.data());
+    const std::span<const uint8_t> bytes(buf.data(), len);
     CHECK(xxh64(bytes, v.seed) == v.expected);
     for (size_t step : {size_t{1}, size_t{7}, size_t{32}, size_t{33}, size_t{100}}) {
       Xxh64Hasher h(v.seed);
-      for (size_t at = 0; at < v.len; at += step) h.update(bytes.subspan(at, v.len - at < step ? v.len - at : step));
+      for (size_t at = 0; at < len; at += step) h.update(bytes.subspan(at, len - at < step ? len - at : step));
       CHECK(h.digest() == v.expected);
     }
-    if (v.input == INPUT_TEXT) {
-      CHECK(xxh64(std::string_view(v.text, v.len), v.seed) == v.expected);
-    }
+    const std::string_view text(reinterpret_cast<const char*>(buf.data()), len);
+    CHECK(xxh64(text, v.seed) == v.expected);
   }
 }
 

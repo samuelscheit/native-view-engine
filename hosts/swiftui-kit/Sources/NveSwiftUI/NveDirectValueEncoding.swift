@@ -1,5 +1,6 @@
 #if canImport(CNveAbi)
 import CNveAbi
+import NveHost
 #endif
 #if canImport(CoreFoundation)
 import CoreFoundation

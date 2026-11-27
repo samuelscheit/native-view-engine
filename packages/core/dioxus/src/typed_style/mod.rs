@@ -53,10 +53,10 @@ impl IntoAttributeValue for ShowOn {
 /// parsing any CSS strings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
-    pub layout: LayoutSnapshot,
-    pub style: VisualSnapshot,
-    pub has_layout: bool,
-    pub has_style: bool,
+    pub(crate) layout: LayoutSnapshot,
+    pub(crate) style: VisualSnapshot,
+    pub(crate) has_layout: bool,
+    pub(crate) has_style: bool,
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
     pub box_shadow: Option<Cow<'static, str>>,
@@ -106,9 +106,33 @@ impl TypedStyle {
         }
     }
 
+    /// Read-only view of the typed layout properties (mutate via builder methods so the
+    /// `has_layout` presence flag stays in sync).
+    #[inline]
+    pub const fn layout(&self) -> &LayoutSnapshot {
+        &self.layout
+    }
+
+    /// Read-only view of the typed visual style properties (mutate via builder methods so the
+    /// `has_style` presence flag and the unset text color / font size sentinels stay in sync).
+    #[inline]
+    pub const fn style(&self) -> &VisualSnapshot {
+        &self.style
+    }
+
     #[inline]
     pub(super) fn sanitize(v: f32) -> f32 {
-        if v.is_finite() { v } else { 0.0 }
+        let max = nve_abi::num::MAX_STYLE_SCALAR;
+        if v.is_finite() { v.clamp(-max, max) } else { 0.0 }
+    }
+
+    #[inline]
+    fn sanitize_dim(dim: Dimension) -> Dimension {
+        match dim {
+            Dimension::Auto => Dimension::Auto,
+            Dimension::Points(v) => Dimension::Points(Self::sanitize(v)),
+            Dimension::Percent(v) => Dimension::Percent(Self::sanitize(v)),
+        }
     }
 
     #[inline]
@@ -121,7 +145,7 @@ impl TypedStyle {
 
     #[inline]
     pub fn width(mut self, dim: Dimension) -> Self {
-        self.layout.width = dim;
+        self.layout.width = Self::sanitize_dim(dim);
         self.has_layout = true;
         self
     }
@@ -143,7 +167,7 @@ impl TypedStyle {
 
     #[inline]
     pub fn height(mut self, dim: Dimension) -> Self {
-        self.layout.height = dim;
+        self.layout.height = Self::sanitize_dim(dim);
         self.has_layout = true;
         self
     }
@@ -165,7 +189,7 @@ impl TypedStyle {
 
     #[inline]
     pub fn min_width(mut self, dim: Dimension) -> Self {
-        self.layout.min_width = dim;
+        self.layout.min_width = Self::sanitize_dim(dim);
         self.has_layout = true;
         self
     }
@@ -177,7 +201,7 @@ impl TypedStyle {
 
     #[inline]
     pub fn min_height(mut self, dim: Dimension) -> Self {
-        self.layout.min_height = dim;
+        self.layout.min_height = Self::sanitize_dim(dim);
         self.has_layout = true;
         self
     }
@@ -189,7 +213,7 @@ impl TypedStyle {
 
     #[inline]
     pub fn max_width(mut self, dim: Dimension) -> Self {
-        self.layout.max_width = dim;
+        self.layout.max_width = Self::sanitize_dim(dim);
         self.has_layout = true;
         self
     }
@@ -201,7 +225,7 @@ impl TypedStyle {
 
     #[inline]
     pub fn max_height(mut self, dim: Dimension) -> Self {
-        self.layout.max_height = dim;
+        self.layout.max_height = Self::sanitize_dim(dim);
         self.has_layout = true;
         self
     }

@@ -3,7 +3,7 @@
 #include "command_decoder.hpp"
 #include "command_encoder.hpp"
 #include "mock_jsi_recorder.hpp"
-#include "nve_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 #include "nve_host_runtime.hpp"
 #include "nve_rn_component.hpp"
 #include "nve_scene_builder.hpp"
@@ -249,7 +249,6 @@ void test_seeded_fuzz_corpus();
 void test_host_runtime_utilities_and_dylib_errors();
 void test_retained_view_reconciler();
 void test_native_host_session();
-void test_mmap_snapshot_and_session_instant_boot();
 void test_direct_scene_view_and_reconciler();
 
 } // namespace nve_test

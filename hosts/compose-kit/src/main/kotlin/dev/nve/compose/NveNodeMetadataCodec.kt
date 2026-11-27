@@ -74,7 +74,7 @@ data class NveNodeMetadata(
 /**
  * Direct-slab reader for fixed-stride 64-byte `NveNodeMeta` records + companion byte blob
  * produced by `NveAndroidMetadataPacker.cpp` (layout locked by `packages/core/abi/src/scene.rs`
- * and `nve_scene_abi.generated.h`).
+ * and the generated `nve/generated/nve_abi.generated.h`).
  */
 object NveNodeMetadataCodec {
     const val META_STRIDE: Int = 64

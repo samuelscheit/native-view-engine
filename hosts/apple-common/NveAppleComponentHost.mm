@@ -18,7 +18,9 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 @end
 
 @implementation NveAppleComponentHost {
-  NveAppleHostWakeBox *_wakeBox;
+  /// Retained `NveAppleHostWakeBox` handed to the runtime; released only once the runtime has
+  /// confirmed (by a successful clear) that no worker thread can still fire it.
+  void *_wakeCtx;
   CFTimeInterval _lastTick;
 }
 
@@ -35,25 +37,39 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
                                                            return [weakSelf _resourceBytes:resourceId];
                                                          }];
     (void)_session.set_text_measurer(&nve::apple::native_text_measure, nullptr);
-    _wakeBox = [NveAppleHostWakeBox new];
-    _wakeBox.host = self;
-    (void)_session.set_wake_callback(
+    NveAppleHostWakeBox *box = [NveAppleHostWakeBox new];
+    box.host = self;
+    _wakeCtx = (void *)CFBridgingRetain(box);
+    const NveRuntimeStatus wake = _session.set_wake_callback(
         [](void *ctx) {
-          NveAppleHostWakeBox *box = (__bridge NveAppleHostWakeBox *)ctx;
+          NveAppleHostWakeBox *b = (__bridge NveAppleHostWakeBox *)ctx;
           dispatch_async(dispatch_get_main_queue(), ^{
-            [box.host _schedulePump];
+            [b.host _schedulePump];
           });
         },
-        (__bridge void *)_wakeBox);
+        _wakeCtx);
+    if (wake != NVE_RUNTIME_OK) {  // never installed: nothing can fire it
+      CFBridgingRelease(_wakeCtx);
+      _wakeCtx = nullptr;
+    }
     [nve_host_registry() setObject:self forKey:[adapter nveHostRootView]];
   }
   return self;
 }
 
 - (void)dealloc {
+  // A NULL `set_wake_callback` drains in-flight callbacks; only then may the box die. If clearing
+  // fails (e.g. a non-owner thread), the box is leaked rather than freed under a firing worker.
+  if (_wakeCtx != nullptr && _session.clear_wake_callback() == NVE_RUNTIME_OK) CFBridgingRelease(_wakeCtx);
   // Destroy the runtime (and the app it owns) before unloading the app's code.
   _session.reset();
   nve::apple::close_dylib(_dylibHandle);
+}
+
+- (BOOL)_deferIfReconciling:(dispatch_block_t)block {
+  if (!_reconciling) return NO;
+  dispatch_async(dispatch_get_main_queue(), block);
+  return YES;
 }
 
 + (NveAppleComponentHost *)hostForRootView:(NvePlatformView *)rootView {
@@ -152,24 +168,31 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 }
 
 - (void)dispatchPressOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y {
+  if ([self _deferIfReconciling:^{ [self dispatchPressOnNodeId:nodeId x:x y:y]; }]) return;
   [self _dispatch:nve::apple::make_point_event(_surfaceId, nodeId, NVE_EVENT_PRESS, x, y)];
 }
 
 - (void)dispatchTextChangeOnNodeId:(uint32_t)nodeId text:(NSString *)text {
-  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_TEXT_CHANGE, text.UTF8String ?: "", _arena)];
+  NSString *copy = [text copy];
+  if ([self _deferIfReconciling:^{ [self dispatchTextChangeOnNodeId:nodeId text:copy]; }]) return;
+  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_TEXT_CHANGE, copy.UTF8String ?: "", _arena)];
 }
 
 - (void)dispatchSubmitOnNodeId:(uint32_t)nodeId text:(NSString *)text {
-  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_SUBMIT, text.UTF8String ?: "", _arena)];
+  NSString *copy = [text copy];
+  if ([self _deferIfReconciling:^{ [self dispatchSubmitOnNodeId:nodeId text:copy]; }]) return;
+  [self _dispatch:nve::apple::make_text_event(_surfaceId, nodeId, NVE_EVENT_SUBMIT, copy.UTF8String ?: "", _arena)];
 }
 
 - (void)dispatchFocusOnNodeId:(uint32_t)nodeId focused:(BOOL)focused {
+  if ([self _deferIfReconciling:^{ [self dispatchFocusOnNodeId:nodeId focused:focused]; }]) return;
   NveDirectEvent ev = nve::apple::make_point_event(_surfaceId, nodeId, focused ? NVE_EVENT_FOCUS : NVE_EVENT_BLUR, 0.0f, 0.0f);
   ev.payload_tag = NVE_EVENT_PAYLOAD_EMPTY;
   [self _dispatch:ev];
 }
 
 - (void)dispatchScrollOnNodeId:(uint32_t)nodeId x:(float)x y:(float)y contentWidth:(float)cw contentHeight:(float)ch {
+  if ([self _deferIfReconciling:^{ [self dispatchScrollOnNodeId:nodeId x:x y:y contentWidth:cw contentHeight:ch]; }]) return;
   [self _dispatch:nve::apple::make_scroll_event(_surfaceId, nodeId, x, y, cw, ch)];
 }
 
@@ -186,6 +209,10 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 }
 
 - (void)renderFrame {
+  if (_reconciling) {  // view updates re-entered us: tick after this reconcile finishes
+    [self _schedulePump];
+    return;
+  }
   const CFTimeInterval now = CACurrentMediaTime();
   const float dt = _lastTick == 0 ? 0.0f : static_cast<float>(std::min(now - _lastTick, 0.25));
   _lastTick = now;
@@ -214,11 +241,6 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 }
 
 - (BOOL)getRootLayoutSize:(CGSize *)outSize {
-  NveIntrinsicSize size{};
-  if (_appAttached && _session.measure(NveSizeConstraints{0.0f, 0.0f, INFINITY, INFINITY}, &size) == NVE_RUNTIME_OK) {
-    *outSize = CGSizeMake(size.width, size.height);
-    return YES;
-  }
   auto guard = _session.acquire_scene();
   if (!guard || (*guard)->rect(1u) == nullptr) return NO;
   const NveLayoutRect *r = (*guard)->rect(1u);
@@ -233,14 +255,22 @@ static NSMapTable<NvePlatformView *, NveAppleComponentHost *> *nve_host_registry
 - (void)clearNativeNodeViews { [_reconciler clearNativeNodeViews]; }
 
 - (void)syncNativeViewsFromHost {
+  if (_reconciling) return;
   auto guard = _session.acquire_scene();
-  if (guard) [_reconciler syncFromScene:guard->reader()];
+  if (!guard) return;
+  _reconciling = YES;
+  _activeScene = &*guard;
+  [_reconciler syncFromScene:guard->reader()];
+  _activeScene = nullptr;
+  _reconciling = NO;
 }
 
+/// Payload of resource `id` from the scene being reconciled (copied: it borrows the guard).
 - (NSData *)_resourceBytes:(uint32_t)resourceId {
-  std::vector<uint8_t> bytes;
-  if (_session.resource_bytes(resourceId, bytes) != NVE_RUNTIME_OK) return nil;
-  return [NSData dataWithBytes:bytes.data() length:bytes.size()];
+  if (_activeScene == nullptr) return nil;
+  const auto res = _activeScene->resource(resourceId);
+  if (!res || res->bytes.empty()) return nil;
+  return [NSData dataWithBytes:res->bytes.data() length:res->bytes.size()];
 }
 
 @end

@@ -153,6 +153,11 @@ void apply_image_resize_mode(
       image_view.layer.contentsGravity = kCAGravityResize;
       image_view.layer.masksToBounds = hasRadius;
       break;
+    case ImageResizeMode::ScaleDown:
+      image_view.imageScaling = NSImageScaleProportionallyDown;
+      image_view.layer.contentsGravity = kCAGravityCenter;
+      image_view.layer.masksToBounds = YES;
+      break;
     case ImageResizeMode::Center:
       image_view.imageScaling = NSImageScaleNone;
       image_view.layer.contentsGravity = kCAGravityCenter;
@@ -177,6 +182,14 @@ void apply_image_resize_mode(
       image_view.contentMode = UIViewContentModeCenter;
       image_view.clipsToBounds = YES;
       break;
+    case ImageResizeMode::ScaleDown: {
+      const CGSize img = image_view.image.size;
+      const CGSize box = image_view.bounds.size;
+      image_view.contentMode = (img.width > box.width || img.height > box.height) ? UIViewContentModeScaleAspectFit
+                                                                                 : UIViewContentModeCenter;
+      image_view.clipsToBounds = YES;
+      break;
+    }
   }
 #endif
 }

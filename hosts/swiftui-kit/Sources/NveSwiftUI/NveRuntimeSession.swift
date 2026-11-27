@@ -8,6 +8,7 @@ import NveHost
 extension NveTableView: @retroactive TableViewABI {}
 extension NveNodeRow: @retroactive NodeRowABI {}
 extension NveLayoutRect: @retroactive LayoutRectABI {}
+extension NveScrollOffset: @retroactive ScrollOffsetABI {}
 extension NveRuntimeSceneView: @retroactive RuntimeSceneViewABI {}
 
 /// Validated zero-copy reader over the scene borrowed from `scene_acquire`.
@@ -43,7 +44,7 @@ public protocol NveTextMeasuring: AnyObject {
 /// One `libnve_runtime` surface: RAII over `NveRuntimeApi` + `NveRuntimeHandle`.
 ///
 /// Owner-thread affinity: create and drive it from one thread (the main thread for SwiftUI);
-/// `withScene`, `metrics`, `isPaired`, and `resourceBytes` are safe from any thread.
+/// `withScene`, `resource(_:in:)`, `metrics`, and `isPaired` are safe from any thread.
 public final class NveRuntimeSession {
     public let api: UnsafePointer<NveRuntimeApi>
     public let handle: NveRuntimeHandle
@@ -66,12 +67,12 @@ public final class NveRuntimeSession {
         // optional; reading it through `Mirror` would allocate, so check each one directly.
         let slots: [Bool] = [
             a.create != nil, a.destroy != nil, a.set_wake_callback != nil, a.set_viewport != nil,
-            a.attach_app_interface != nil, a.submit_nve2 != nil, a.tick != nil, a.dispatch_events != nil,
+            a.set_text_measurer != nil, a.attach_app_interface != nil, a.set_props != nil,
+            a.drain_emitted_events != nil, a.snapshot_state != nil, a.restore_state != nil,
+            a.apply_hot_patch != nil, a.submit_nve2 != nil, a.tick != nil, a.dispatch_events != nil,
             a.hit_test != nil, a.scroll_by != nil, a.scene_acquire != nil, a.scene_release != nil,
-            a.get_metrics != nil, a.pair_connect != nil, a.pair_disconnect != nil, a.pair_is_connected != nil,
-            a.set_props != nil, a.drain_emitted_events != nil, a.measure != nil, a.apply_hot_patch != nil,
-            a.snapshot_state != nil, a.restore_state != nil, a.set_text_measurer != nil,
-            a.resource_bytes != nil, a.encode_scene != nil, a.last_error != nil,
+            a.resource_payload != nil, a.get_metrics != nil, a.pair_connect != nil,
+            a.pair_disconnect != nil, a.pair_is_connected != nil, a.last_error != nil,
         ]
         return a.abi_version == NVE_RUNTIME_ABI_VERSION
             && Int(a.struct_size) == MemoryLayout<NveRuntimeApi>.size
@@ -202,12 +203,6 @@ public final class NveRuntimeSession {
         return batch
     }
 
-    public func measure(_ constraints: NveSizeConstraints) throws -> NveIntrinsicSize {
-        var size = NveIntrinsicSize(width: 0, height: 0)
-        try check(api.pointee.measure(handle, constraints, &size))
-        return size
-    }
-
     @discardableResult
     public func applyHotPatch(_ patchNvp1: Data) throws -> Bool {
         var changed: UInt32 = 0
@@ -233,24 +228,16 @@ public final class NveRuntimeSession {
         }
     }
 
-    /// Wire encoding of resource `id` referenced by a published `Resource` field.
-    public func resourceBytes(_ id: UInt32) throws -> [UInt8] {
-        try copyOut { api.pointee.resource_bytes(handle, id, $0, $1, $2) }
-    }
-
-    /// Self-contained `NVE2` keyframe of the current scene (instant-boot Frame-0; replay with
-    /// `submitNve2` before an app attaches).
-    public func encodeScene() throws -> [UInt8] {
-        try copyOut { api.pointee.encode_scene(handle, $0, $1, $2) }
-    }
-
-    private func copyOut(_ slot: (UnsafeMutablePointer<UInt8>?, Int, UnsafeMutablePointer<Int>) -> Int32) throws -> [UInt8] {
-        var len = 0
-        try check(slot(nil, 0, &len))
-        var out = [UInt8](repeating: 0, count: len)
-        guard len > 0 else { return out }
-        try out.withUnsafeMutableBufferPointer { buf in try check(slot(buf.baseAddress, buf.count, &len)) }
-        return out
+    /// Canonical payload (and kind) of resource `id` referenced by a published `Resource` field.
+    /// `scene` proves the `scene_acquire` borrow the runtime's zero-copy slice lives in (it is only
+    /// reachable inside `withScene`); the bytes are copied out before that borrow ends.
+    public func resource(_ id: UInt32, in scene: NveRuntimeScene) throws -> (kind: Key64, bytes: [UInt8]) {
+        _ = scene
+        var kind: UInt64 = 0
+        var payload = NveBufferSlice(ptr: nil, len: 0)
+        try check(api.pointee.resource_payload(handle, id, &kind, &payload))
+        let bytes = payload.ptr.map { Array(UnsafeBufferPointer(start: $0, count: payload.len)) } ?? []
+        return (Key64(kind), bytes)
     }
 
     // MARK: Callbacks
@@ -265,10 +252,7 @@ public final class NveRuntimeSession {
                 guard let ctx else { return }
                 Unmanaged<WakeBox>.fromOpaque(ctx).takeUnretainedValue().handler()
             }, next?.toOpaque())
-        // `set_wake_callback` drains in-flight invocations of the previous box before returning.
-        wakeBox?.release()
-        wakeBox = next
-        try check(status)
+        try swapBox(&wakeBox, next, status)
     }
 
     /// Installs a host text measurer for layout (`nil` restores the built-in heuristic).
@@ -276,13 +260,25 @@ public final class NveRuntimeSession {
         let next = measurer.map { Unmanaged.passRetained(MeasurerBox($0)) }
         let status = next == nil
             ? api.pointee.set_text_measurer(handle, nil, nil)
-            : api.pointee.set_text_measurer(handle, { ctx, text, size, weight, maxWidth in
-                guard let ctx else { return NveIntrinsicSize(width: 0, height: 0) }
-                return Unmanaged<MeasurerBox>.fromOpaque(ctx).takeUnretainedValue().measure(text, size, weight, maxWidth)
+            : api.pointee.set_text_measurer(handle, { ctx, text, size, weight, maxWidth, outW, outH in
+                guard let ctx, let outW, let outH else { return }
+                let s = Unmanaged<MeasurerBox>.fromOpaque(ctx).takeUnretainedValue().measure(text, size, weight, maxWidth)
+                outW.pointee = s.width
+                outH.pointee = s.height
             }, next?.toOpaque())
-        measurerBox?.release()
-        measurerBox = next
-        try check(status)
+        try swapBox(&measurerBox, next, status)
+    }
+
+    /// Commits a callback-box swap. On success the runtime has drained in-flight calls of the old
+    /// box, so it may die; on failure the runtime still holds the old box and never saw `next`.
+    private func swapBox<Box>(_ slot: inout Unmanaged<Box>?, _ next: Unmanaged<Box>?, _ status: Int32) throws {
+        guard status == Int32(NVE_RUNTIME_OK.rawValue) else {
+            next?.release()
+            try check(status)
+            return
+        }
+        slot?.release()
+        slot = next
     }
 
     // MARK: Errors
@@ -310,11 +306,11 @@ private final class MeasurerBox {
     let measurer: NveTextMeasuring
     init(_ measurer: NveTextMeasuring) { self.measurer = measurer }
 
-    func measure(_ text: NveStrSlice, _ fontSize: Float, _ weight: UInt16, _ maxWidth: Float) -> NveIntrinsicSize {
+    func measure(_ text: NveStrSlice, _ fontSize: Float, _ weight: UInt32, _ maxWidth: Float) -> (width: Float, height: Float) {
         let string = text.ptr.map { String(decoding: UnsafeBufferPointer(start: $0, count: text.len), as: UTF8.self) } ?? ""
         let size = measurer.measure(
-            text: string, fontSize: CGFloat(fontSize), fontWeight: weight,
+            text: string, fontSize: CGFloat(fontSize), fontWeight: UInt16(clamping: weight),
             maxWidth: maxWidth.isFinite ? CGFloat(maxWidth) : .infinity)
-        return NveIntrinsicSize(width: Float(size.width), height: Float(size.height))
+        return (Float(size.width), Float(size.height))
     }
 }
