@@ -146,6 +146,15 @@ test('dense and sparse tables, bounds and invalid shapes', () => {
   assert.equal(far.rowOfNode(0x10204), null, 'empty entry in a present page');
   assert.equal(far.rowOfNode(0x203), null, 'absent page between present ones');
   assert.throws(() => TableReader.sparse({ key: VISUAL, slot: 0, words: 1, rows: words([5, 6]), owners: [7, 0x0100_0007] }), RangeError);
+  assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: 1, rowCount: 1, rows: words([5]), owners: words([7]) }), RangeError);
+  assert.throws(
+    () => new TableReader({
+      key: VISUAL, slot: 0, words: 1, rowCount: 1, rows: words([5]), owners: words([7]),
+      rowIndexDir: words([0]), rowIndexPages: words(new Array<number>(NVE_ROW_INDEX_PAGE_LEN - 1).fill(0)),
+    }),
+    RangeError,
+    'a partial page alone is no row index',
+  );
   // Hostile published indices: an entry past rowCount, a page id past the pages, a partial tail page.
   const pageWords = new Array<number>(NVE_ROW_INDEX_PAGE_LEN + 3).fill(0);
   pageWords[1] = 9;

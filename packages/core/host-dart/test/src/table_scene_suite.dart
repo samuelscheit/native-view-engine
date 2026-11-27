@@ -263,6 +263,15 @@ void runTableScene(Check c) {
   c.eq(far.rowOfNode(0x203), null, 'absent page between present ones');
   c.throwsA<ArgumentError>(
       () => TableReader.sparse(key: visual, slot: 0, words: 1, rows: words([5, 6]), owners: [7, 0x01000007]), 'shared node index');
+  c.throwsA<ArgumentError>(
+      () => TableReader(key: visual, slot: 0, words: 1, rowCount: 1, rows: words([5]), owners: words([7])), 'sparse rows without a row index');
+  c.throwsA<ArgumentError>(
+      () => TableReader(
+          key: visual, slot: 0, words: 1, rowCount: 1, rows: words([5]), owners: words([7]), //
+          rowIndexDir: words([0]), rowIndexPages: ByteData(4 * (nveRowIndexPageLen - 1))),
+      'a partial page alone is no row index');
+  c.eq(TableReader(key: visual, slot: 0, words: 1, rowCount: 0, rows: ByteData(0), owners: ByteData(0)).rowOf(1), null,
+      'empty sparse table needs no index');
   // Hostile published indices: an entry past rowCount, a page id past the pages, a partial tail page.
   final pageWords = Uint32List(nveRowIndexPageLen + 3)..[1] = 9;
   final hostile = TableReader(

@@ -133,6 +133,10 @@ final class TableReader {
     _require(rows, rowCount, words, 'rows');
     if (owners != null) {
       _require(owners, rowCount, 1, 'owners');
+      // Sparse rows without a row index (one whole page at least) could never be resolved.
+      if (rowCount > 0 && (_dir.lengthInBytes < 4 || _pageCount == 0)) {
+        throw ArgumentError('sparse table with $rowCount rows publishes no row index');
+      }
     }
     _require(dirtyRows, dirtyCount, 1, 'dirtyRows');
   }

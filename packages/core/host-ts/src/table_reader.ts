@@ -185,6 +185,10 @@ export class TableReader {
     if (Math.floor(wordsIn(init.rows) / init.words) < init.rowCount) throw new RangeError(`rows hold ${wordsIn(init.rows)} words`);
     if (init.owners && wordsIn(init.owners) < init.rowCount) throw new RangeError(`owners hold ${wordsIn(init.owners)} words`);
     if (wordsIn(init.dirtyRows) < dirtyCount) throw new RangeError(`dirtyRows hold ${wordsIn(init.dirtyRows)} words`);
+    // Sparse rows without a row index (one whole page at least) could never be resolved.
+    if (init.owners && init.rowCount > 0 && (wordsIn(init.rowIndexDir) === 0 || wordsIn(init.rowIndexPages) < NVE_ROW_INDEX_PAGE_LEN)) {
+      throw new RangeError(`sparse table with ${init.rowCount} rows publishes no row index`);
+    }
     this.key = init.key;
     this.slot = init.slot;
     this.words = init.words;

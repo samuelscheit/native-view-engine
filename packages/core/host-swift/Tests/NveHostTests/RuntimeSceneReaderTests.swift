@@ -144,6 +144,10 @@ final class RuntimeSceneReaderTests: XCTestCase {
         v = base
         v.dirty_resources = nil
         assertRejects(v, .nullSlab)
+        v = base
+        XCTAssertGreaterThan(v.moved_count, 0)
+        v.moved_indices = nil
+        assertRejects(v, .nullSlab)
         // Counts past the address space are refused before a span is formed.
         v = base
         v.node_capacity = .max
@@ -170,6 +174,14 @@ final class RuntimeSceneReaderTests: XCTestCase {
             v = base
             v.dirty_indices = odd.assumingMemoryBound(to: UInt32.self)
             v.dirty_count = 1
+            assertRejects(v, .misalignedSlab)
+            v = base
+            v.moved_indices = odd.assumingMemoryBound(to: UInt32.self)
+            v.moved_count = 1
+            assertRejects(v, .misalignedSlab)
+            v = base
+            v.dirty_resources = odd.assumingMemoryBound(to: UInt32.self)
+            v.dirty_resource_count = 1
             assertRejects(v, .misalignedSlab)
         }
     }

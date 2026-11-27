@@ -173,6 +173,11 @@ void runRuntimeIngress(Check c) {
     rejects(SceneErrorKind.invalidTable, 'table slot out of range', (v) => withTable(v, (t) => t.slot = 1000));
     rejects(SceneErrorKind.missingSlab, 'NULL row index dir with length', (v) => withTable(v, (t) => t.rowIndexDirLen = 1));
     rejects(SceneErrorKind.missingSlab, 'NULL row index pages with count', (v) => withTable(v, (t) => t.rowIndexPageCount = 1));
+    rejects(SceneErrorKind.invalidTable, 'sparse rows without a row index', (v) => withTable(v, (t) {
+          t
+            ..rowCount = 1
+            ..owners = words;
+        }));
     words.asTypedList(4).setAll(0, [1, 0, 0, 0]);
     reset();
     withTable(view.ref, (t) => t.rowCount = 1);
