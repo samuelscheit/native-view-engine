@@ -60,7 +60,8 @@ void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t>
 GtkAccessibleRole role_of(GtkWidget* w) { return gtk_accessible_get_accessible_role(GTK_ACCESSIBLE(w)); }
 
 void test_a11y_inputs_images_and_styles() {
-  const std::string tmp = (std::filesystem::temp_directory_path() / "nve_gtk_test_image.png").string();
+  const ScratchDir scratch("nve-gtk-a11y-media");
+  const std::string tmp = scratch.file("image.png");
   const std::vector<uint8_t> red = png(4, 3, h::rgba(255, 0, 0));
   { std::ofstream(tmp, std::ios::binary).write(reinterpret_cast<const char*>(red.data()), static_cast<std::streamsize>(red.size())); }
 
@@ -242,7 +243,6 @@ void test_a11y_inputs_images_and_styles() {
   flush(host);
   NVE_CHECK(host.widget_for_node_id(kImgFile) == nullptr && host.view_count() == 11u);
   NVE_CHECK(host.active_css().find(cls) == std::string::npos);
-  std::filesystem::remove(tmp);
 }
 
 /// A controlled numeric field: the app keeps digits only. Rejecting an edit republishes nothing,
