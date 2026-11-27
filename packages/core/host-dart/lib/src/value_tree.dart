@@ -52,18 +52,29 @@ final class NveValueTree {
   NveValue get root => rootPtr.ref;
 
   /// Writes a validated [DynamicValue] directly into [target] using [arena] for nested storage.
-  static void writeDynamic(HybridArena arena, NveValue target, DynamicValue value, {int depth = 0}) {
-    _writeValidated(arena, target, value.reader, depth);
+  static void writeDynamic(HybridArena arena, NveValue target, DynamicValue value) {
+    _writeValidated(arena, target, value.reader, 0);
   }
 
   /// Validates the next `NveBinValue` from [reader] and writes it directly into [target].
-  static void writeFromReader(HybridArena arena, NveValue target, BinReader reader, {int depth = 0}) {
+  static void writeFromReader(HybridArena arena, NveValue target, BinReader reader) {
     final raw = reader.readCheckedValue();
-    _writeValidated(arena, target, BinReader(raw), depth);
+    _writeValidated(arena, target, BinReader(raw), 0);
   }
 
   /// Materializes a Dart value graph directly into [target] using [arena] for nested storage.
-  static void writeObject(HybridArena arena, NveValue target, Object? value, {int depth = 0}) {
+  static void writeObject(HybridArena arena, NveValue target, Object? value) {
+    _writeObject(arena, target, value, 0);
+  }
+
+  /// Encodes a native [NveValue] tree back into a validated [DynamicValue] (`NveBinValue` bytes).
+  static DynamicValue toDynamicValue(NveValue value) {
+    final writer = BinWriter();
+    _encodeNativeValue(writer, value, 0);
+    return DynamicValue(writer.bytes);
+  }
+
+  static void _writeObject(HybridArena arena, NveValue target, Object? value, int depth) {
     if (value == null) {
       target.tag = NveValueTag.nullValue.code;
       target.data.i64Val = 0;
@@ -111,7 +122,7 @@ final class NveValueTree {
       }
       final itemsPtr = arena.allocStructArray<NveValue>(ffi.sizeOf<NveValue>(), value.length);
       for (var i = 0; i < value.length; i++) {
-        writeObject(arena, itemsPtr[i], value[i], depth: depth + 1);
+        _writeObject(arena, itemsPtr[i], value[i], depth + 1);
       }
       target.data.arrayVal
         ..ptr = itemsPtr
@@ -137,7 +148,7 @@ final class NveValueTree {
           throw ArgumentError('NveMapEntry key must be a String, got ${key.runtimeType}');
         }
         arena.writeStrSlice(entriesPtr[idx].key, key);
-        writeObject(arena, entriesPtr[idx].value, entry.value, depth: depth + 1);
+        _writeObject(arena, entriesPtr[idx].value, entry.value, depth + 1);
         idx++;
       }
       target.data.mapVal
@@ -146,13 +157,6 @@ final class NveValueTree {
       return;
     }
     throw ArgumentError('Unsupported NveValue type: ${value.runtimeType}');
-  }
-
-  /// Encodes a native [NveValue] tree back into a validated [DynamicValue] (`NveBinValue` bytes).
-  static DynamicValue toDynamicValue(NveValue value) {
-    final writer = BinWriter();
-    _encodeNativeValue(writer, value, 0);
-    return DynamicValue(writer.bytes);
   }
 
   static void _writeValidated(HybridArena arena, NveValue target, BinReader r, int depth) {
@@ -171,11 +175,8 @@ final class NveValueTree {
         target.tag = NveValueTag.f64.code;
         target.data.f64Val = r.readF64();
       case BinTag.str:
-        // Copy pre-validated UTF-8 bytes directly into the arena (no UTF-16 round-trip).
-        r.u8();
-        final len = r.u32();
         target.tag = NveValueTag.str.code;
-        arena.writeUtf8BytesSlice(target.data.strVal, r.take(len));
+        arena.writeUtf8BytesSlice(target.data.strVal, r.readStrUtf8());
       case BinTag.bytes:
         target.tag = NveValueTag.bytes.code;
         arena.writeBytesSlice(target.data.bytesVal, r.readBytes());
@@ -184,7 +185,7 @@ final class NveValueTree {
           throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
         }
         target.tag = NveValueTag.array.code;
-        r.readArrayScope((count) {
+        r.readArrayScope<void>((count) {
           if (count == 0) {
             target.data.arrayVal
               ..ptr = ffi.nullptr
@@ -204,7 +205,7 @@ final class NveValueTree {
           throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
         }
         target.tag = NveValueTag.map.code;
-        r.readMapScope((count) {
+        r.readMapScope<void>((count) {
           if (count == 0) {
             target.data.mapVal
               ..ptr = ffi.nullptr
@@ -213,8 +214,7 @@ final class NveValueTree {
           }
           final entriesPtr = arena.allocStructArray<NveMapEntry>(ffi.sizeOf<NveMapEntry>(), count);
           for (var i = 0; i < count; i++) {
-            final klen = r.u32();
-            arena.writeUtf8BytesSlice(entriesPtr[i].key, r.take(klen));
+            arena.writeUtf8BytesSlice(entriesPtr[i].key, r.readMapKeyUtf8());
             _writeValidated(arena, entriesPtr[i].value, r, depth + 1);
           }
           target.data.mapVal
@@ -259,8 +259,16 @@ final class NveValueTree {
           throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
         }
         final arr = v.data.arrayVal;
-        if (arr.len > 0 && arr.ptr == ffi.nullptr) {
-          throw const BinCodecException(BinErrorKind.truncated, 'null NveValueArray pointer');
+        if (arr.len < 0 || arr.len > 0xFFFFFFFF) {
+          throw BinCodecException(BinErrorKind.tooLarge, 'invalid NveValueArray length ${arr.len}');
+        }
+        if (arr.len > 0) {
+          if (arr.ptr == ffi.nullptr) {
+            throw const BinCodecException(BinErrorKind.truncated, 'null NveValueArray pointer');
+          }
+          if ((arr.ptr.address & 7) != 0) {
+            throw ArgumentError.value(arr.ptr.address, 'arrayVal.ptr', 'NveValueArray pointer must be 8-byte aligned');
+          }
         }
         final mark = writer.beginArray(arr.len);
         for (var i = 0; i < arr.len; i++) {
@@ -272,8 +280,16 @@ final class NveValueTree {
           throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
         }
         final map = v.data.mapVal;
-        if (map.len > 0 && map.ptr == ffi.nullptr) {
-          throw const BinCodecException(BinErrorKind.truncated, 'null NveValueMap pointer');
+        if (map.len < 0 || map.len > 0xFFFFFFFF) {
+          throw BinCodecException(BinErrorKind.tooLarge, 'invalid NveValueMap length ${map.len}');
+        }
+        if (map.len > 0) {
+          if (map.ptr == ffi.nullptr) {
+            throw const BinCodecException(BinErrorKind.truncated, 'null NveValueMap pointer');
+          }
+          if ((map.ptr.address & 7) != 0) {
+            throw ArgumentError.value(map.ptr.address, 'mapVal.ptr', 'NveValueMap pointer must be 8-byte aligned');
+          }
         }
         final mark = writer.beginMap(map.len);
         for (var i = 0; i < map.len; i++) {
@@ -292,6 +308,9 @@ final class NveValueTree {
   }
 
   static Uint8List _sliceBytes(ffi.Pointer<ffi.Uint8> ptr, int len) {
+    if (len < 0 || len > 0xFFFFFFFF) {
+      throw BinCodecException(BinErrorKind.tooLarge, 'invalid slice length $len');
+    }
     if (len == 0) {
       return Uint8List(0);
     }
@@ -388,6 +407,9 @@ final class HybridPropsBuilder {
 
   /// Materializes a [DynamicValue] losslessly into `entry.value` with its true `NveValue` tags
   /// (never double-wrapped in `NVE_VAL_BYTES`).
+  ///
+  /// Passing `null` encodes `NVE_VAL_NULL` (indistinguishable on the wire from
+  /// `DynamicValue.nullValue`; hybrid schema validation rejects `Option<NveValue>` for this reason).
   void writeDynamicValue(String key, DynamicValue? value) {
     if (value == null) {
       writeNull(key);
@@ -408,7 +430,7 @@ abstract final class HybridPropsWriter {
     if (capacity <= 0) {
       return body(ffi.nullptr, 0);
     }
-    return HybridArena.using((arena) {
+    return HybridArena.using<T>((arena) {
       final entriesPtr = arena.allocStructArray<NveMapEntry>(ffi.sizeOf<NveMapEntry>(), capacity);
       final builder = HybridPropsBuilder._(arena, entriesPtr, capacity);
       props.encodeDirect(builder);

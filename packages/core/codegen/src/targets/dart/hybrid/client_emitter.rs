@@ -3,6 +3,13 @@ use crate::writer::CodeWriter;
 use super::type_helpers::*;
 use super::*;
 
+fn return_type_needs_free_bytes(ty: &HybridType, spec: &HybridFileSpec) -> bool {
+    match ty {
+        HybridType::Result { .. } => true,
+        other => dart_native_value_type(other, spec) == "HybridOwnedBytes",
+    }
+}
+
 pub(super) fn emit_dart_client(
     out: &mut CodeWriter,
     pascal: &str,
@@ -12,21 +19,18 @@ pub(super) fn emit_dart_client(
     view: Option<&HybridViewSpec>,
     spec: &HybridFileSpec,
 ) {
-    let mut methods_body = CodeWriter::default();
-    if let Some(v) = view {
-        emit_dart_set_props(&mut methods_body, pascal, v);
-    }
-
-    for m in methods {
-        emit_dart_client_method(&mut methods_body, pascal, m, spec);
-    }
-
-    let needs_free_bytes = methods_body.contains("_freeBytes");
-    let needs_handle_guard = methods_body.contains("_nveHandle");
+    let needs_free_bytes = methods
+        .iter()
+        .any(|m| return_type_needs_free_bytes(&m.return_type, spec));
+    let needs_handle_guard = view.is_some() || !methods.is_empty();
 
     writeln!(
         out,
         "class {pascal}HybridClient implements Hybrid{pascal}Spec {{"
+    );
+    writeln!(
+        out,
+        "  static const int abiVersion = {NVE_HYBRID_ABI_VERSION};"
     );
     writeln!(
         out,
@@ -38,7 +42,6 @@ pub(super) fn emit_dart_client(
         dart_key64_const(schema_hash)
     );
     writeln!(out);
-    writeln!(out, "  final ffi.Pointer<NveHybrid{pascal}VTable> _vtable;");
     writeln!(out, "  ffi.Pointer<ffi.Void> _handle;");
     writeln!(out, "  late final HybridDestroyDart _destroy;");
     if needs_free_bytes {
@@ -46,6 +49,10 @@ pub(super) fn emit_dart_client(
     }
     if view.is_some() {
         writeln!(out, "  late final HybridSetPropsDirectDart _setPropsDirect;");
+    }
+    for (idx, m) in methods.iter().enumerate() {
+        let mp = to_pascal_case(&m.name);
+        writeln!(out, "  late final _{pascal}{mp}Dart _nveFn{idx};");
     }
     writeln!(out);
 
@@ -66,9 +73,9 @@ pub(super) fn emit_dart_client(
 
     writeln!(
         out,
-        "  {pascal}HybridClient.fromVtable(this._vtable) : _handle = ffi.nullptr {{"
+        "  {pascal}HybridClient.fromVtable(ffi.Pointer<NveHybrid{pascal}VTable> _nveVtable) : _handle = ffi.nullptr {{"
     );
-    writeln!(out, "    if (_vtable == ffi.nullptr) {{");
+    writeln!(out, "    if (_nveVtable == ffi.nullptr) {{");
     writeln!(
         out,
         "      throw const HybridException(HybridStatus.nullHandle, 'hybrid vtable for {pascal} is null');"
@@ -76,27 +83,35 @@ pub(super) fn emit_dart_client(
     writeln!(out, "    }}");
     writeln!(
         out,
-        "    hybridVerifyVtable(_vtable.ref.abiVersion, _vtable.ref.schemaHash, schemaHash, '{pascal}');"
+        "    hybridVerifyVtable(abiVersion, _nveVtable.ref.abiVersion, _nveVtable.ref.schemaHash, schemaHash, '{pascal}');"
     );
     writeln!(
         out,
-        "    _destroy = _vtable.ref.destroy.asFunction<HybridDestroyDart>();"
+        "    _destroy = _nveVtable.ref.destroy.asFunction<HybridDestroyDart>();"
     );
     if needs_free_bytes {
         writeln!(
             out,
-            "    _freeBytes = _vtable.ref.freeBytes.asFunction<HybridFreeBytesDart>();"
+            "    _freeBytes = _nveVtable.ref.freeBytes.asFunction<HybridFreeBytesDart>();"
         );
     }
     if view.is_some() {
         writeln!(
             out,
-            "    _setPropsDirect = _vtable.ref.setPropsDirect.asFunction<HybridSetPropsDirectDart>();"
+            "    _setPropsDirect = _nveVtable.ref.setPropsDirect.asFunction<HybridSetPropsDirectDart>();"
+        );
+    }
+    for (idx, m) in methods.iter().enumerate() {
+        let mp = to_pascal_case(&m.name);
+        let mfield = dart_ident(&m.name);
+        writeln!(
+            out,
+            "    _nveFn{idx} = _nveVtable.ref.{mfield}.asFunction<_{pascal}{mp}Dart>();"
         );
     }
     writeln!(
         out,
-        "    final _nveCreate = _vtable.ref.create.asFunction<HybridCreateDart>();"
+        "    final _nveCreate = _nveVtable.ref.create.asFunction<HybridCreateDart>();"
     );
     writeln!(out, "    _handle = _nveCreate();");
     writeln!(out, "    if (_handle == ffi.nullptr) {{");
@@ -129,7 +144,14 @@ pub(super) fn emit_dart_client(
         writeln!(out);
     }
 
-    out.push_str(&methods_body);
+    if let Some(v) = view {
+        emit_dart_set_props(out, pascal, v);
+    }
+
+    for (idx, m) in methods.iter().enumerate() {
+        emit_dart_client_method(out, idx, m, spec);
+    }
+
     writeln!(out, "}}");
     writeln!(out);
 }
@@ -191,6 +213,8 @@ pub(super) fn emit_dart_direct_prop_write(
             HybridType::Bytes => {
                 writeln!(out, "    _nveB.writeBytes('{key_lit}', {expr});")
             }
+            // Schema validation rejects `Option<NveValue>` because `None` and `Some(null)` both
+            // encode as `NVE_VAL_NULL`; this arm remains lossless if reached programmatically.
             HybridType::Value => {
                 writeln!(out, "    _nveB.writeDynamicValue('{key_lit}', {expr});")
             }
@@ -267,19 +291,17 @@ fn method_needs_arena(m: &HybridMethodSpec, spec: &HybridFileSpec) -> bool {
         | HybridType::F64
         | HybridType::Enum(_) => false,
         HybridType::Struct(_) if p.ty.is_pod(spec) => false,
-        HybridType::Optional(inner) if inner.is_pod(spec) => false,
+        ty if ty.optional_pod_suffix(spec).is_some() => false,
         _ => true,
     })
 }
 
 pub(super) fn emit_dart_client_method(
     out: &mut CodeWriter,
-    pascal: &str,
+    method_idx: usize,
     m: &HybridMethodSpec,
     spec: &HybridFileSpec,
 ) {
-    let mp = to_pascal_case(&m.name);
-    let mfield = dart_ident(&m.name);
     let needs_arena = method_needs_arena(m, spec);
     let ret_dart_ty = match &m.return_type {
         HybridType::Result { ok, .. } => dart_type(ok),
@@ -289,10 +311,6 @@ pub(super) fn emit_dart_client_method(
 
     writeln!(out, "  @override");
     writeln!(out, "  {} {{", dart_method_sig(m));
-    writeln!(
-        out,
-        "    final _nveFn = _vtable.ref.{mfield}.asFunction<_{pascal}{mp}Dart>();"
-    );
     let indent = if needs_arena {
         if is_void_ret {
             writeln!(out, "    HybridArena.using<void>((_nveArena) {{");
@@ -314,7 +332,7 @@ pub(super) fn emit_dart_client_method(
         {
             writeln!(
                 out,
-                "{indent}final _nveArg{idx} = ffi.Struct.create<NveHybridOpt{suffix}>();"
+                "{indent}final _nveArg{idx} = ffi.Struct.create<_NveHybridOpt{suffix}>();"
             );
             writeln!(out, "{indent}if ({pname} != null) {{");
             writeln!(out, "{indent}  _nveArg{idx}.isSome = true;");
@@ -379,7 +397,7 @@ pub(super) fn emit_dart_client_method(
 
     match &m.return_type {
         HybridType::Void => {
-            writeln!(out, "{indent}_nveFn({});", args.join(", "));
+            writeln!(out, "{indent}_nveFn{method_idx}({});", args.join(", "));
         }
         HybridType::Result { ok, .. } => {
             let has_ok = !matches!(ok.as_ref(), HybridType::Void);
@@ -397,7 +415,11 @@ pub(super) fn emit_dart_client_method(
             );
             args.push("_nveErrPtr".to_string());
 
-            writeln!(out, "{indent}final _nveStatus = _nveFn({});", args.join(", "));
+            writeln!(
+                out,
+                "{indent}final _nveStatus = _nveFn{method_idx}({});",
+                args.join(", ")
+            );
             writeln!(out, "{indent}if (_nveStatus != HybridStatus.ok.code) {{");
             writeln!(
                 out,
@@ -418,7 +440,11 @@ pub(super) fn emit_dart_client_method(
             }
         }
         other => {
-            writeln!(out, "{indent}final _nveRawRet = _nveFn({});", args.join(", "));
+            writeln!(
+                out,
+                "{indent}final _nveRawRet = _nveFn{method_idx}({});",
+                args.join(", ")
+            );
             emit_dart_return_decode(out, indent, "_nveRawRet", other, spec);
         }
     }
@@ -444,7 +470,7 @@ pub(super) fn dart_read_ptr_expr(ptr: &str, ty: &HybridType, spec: &HybridFileSp
         | HybridType::F64
         | HybridType::Enum(_) => format!("{ptr}.value"),
         HybridType::Struct(_) if ty.is_pod(spec) => format!("{ptr}.ref"),
-        HybridType::Optional(inner) if inner.is_pod(spec) => format!("{ptr}.ref"),
+        _ if ty.optional_pod_suffix(spec).is_some() => format!("{ptr}.ref"),
         _ => format!("{ptr}.ref"),
     }
 }
@@ -480,7 +506,7 @@ pub(super) fn emit_dart_return_decode(
                 "{indent}return hybridTakeDynamicValue({var}, _freeBytes);"
             )
         }
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
+        HybridType::Optional(inner) if ty.optional_pod_suffix(spec).is_some() => {
             writeln!(out, "{indent}if (!{var}.isSome) {{");
             writeln!(out, "{indent}  return null;");
             writeln!(out, "{indent}}}");

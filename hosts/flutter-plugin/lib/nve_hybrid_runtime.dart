@@ -1,26 +1,16 @@
-/// Pure-Dart (zero `package:flutter` imports) runtime barrel shared by `nve_flutter`
-/// and all `nve-codegen` generated hybrid `dart:ffi` bindings.
+/// Pure-Dart (zero `package:flutter` imports) runtime barrel used internally by `nve_flutter`.
 ///
-/// Provides one single source of truth for:
-/// - Core C-ABI FFI structs (`NveStrSlice`, `NveBufferSlice`, `NveValue`, `NveMapEntry`, ...)
-/// - Hybrid owned-bytes ABI struct (`NveHybridOwnedBytes`)
-/// - Canonical binary `NveBinValue` codec (`NveBinWriter`, `NveBinReader`, `NveHybridDynamicValue`)
-/// - Binary bump-arena direct props encoder (`NveDirectEncodable`, `NveDirectPropsBuilder`,
-///   `NveDirectPropsWriter`, `NveNativeArena`)
+/// Re-exports:
+/// - Core C-ABI FFI structs and hybrid runtime from `package:nve_host/nve_host_ffi.dart`
+/// - Flutter-plugin binary `NveBinValue` codec (`NveBinWriter`, `NveBinReader`, `NveBinValueView`)
+/// - Direct FFI bump-arena props & event writers (`NveDirectEncodable`, `NveDirectPropsBuilder`,
+///   `NveDirectPropsWriter`, `NveDirectEventWriter`, `NveNativeArena`)
+///
+/// Generated `nve-codegen` hybrid Dart clients import `package:nve_host/nve_host.dart` and
+/// `package:nve_host/nve_host_ffi.dart` directly.
 library nve_hybrid_runtime;
 
-import 'dart:ffi' as ffi;
-
+export 'package:nve_host/nve_host_ffi.dart';
 export 'src/direct_ffi.dart';
 export 'src/nve_bin_codec.dart';
 export 'src/nve_bin_value.dart';
-export 'package:nve_host/nve_host_ffi.dart';
-
-/// Owned heap byte buffer returned across hybrid C-ABI vtables and released via `free_bytes`.
-final class NveHybridOwnedBytes extends ffi.Struct {
-  external ffi.Pointer<ffi.Uint8> ptr;
-  @ffi.Size()
-  external int len;
-  @ffi.Size()
-  external int cap;
-}

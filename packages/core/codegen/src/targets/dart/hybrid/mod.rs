@@ -6,9 +6,10 @@
 //!   (`package:nve_host/nve_host.dart`) and `HybridOwnedBytes`, `HybridArena`, `NveValueTree`,
 //!   `HybridPropsEncodable`, `HybridPropsBuilder`, `HybridPropsWriter`, plus core ABI structs and
 //!   vtable typedefs (`package:nve_host/nve_host_ffi.dart`)
-//! - Emits POD `ffi.Struct`s, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
+//! - Emits POD `ffi.Struct`s, private POD `_NveHybridOpt*`, and `NveHybrid<Name>VTable`
 //! - Emits `abstract interface class Hybrid<Name>Spec` and `class <Name>HybridClient` verifying
-//!   `abiVersion` + `schemaHash` and using scoped `HybridArena.using` for leak-free FFI calls.
+//!   `abiVersion` + `schemaHash`, caching vtable function closures at construction, and using
+//!   scoped `HybridArena.using` for leak-free FFI calls.
 
 mod client_emitter;
 mod type_helpers;
@@ -41,25 +42,22 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     }
 
     for s in spec.structs_topological() {
-        emit_dart_struct(&mut body, s, spec);
+        emit_dart_struct(&mut body, s, spec)?;
     }
 
-    // POD Option FFI structs
+    // Private POD Option FFI structs (library-private to avoid cross-file export collisions)
     for (suffix, inner) in spec.collect_pod_option_types() {
+        let field_ty = dart_ffi_struct_field_type(&inner)?;
         writeln!(
             body,
-            "final class NveHybridOpt{suffix} extends ffi.Struct {{"
+            "final class _NveHybridOpt{suffix} extends ffi.Struct {{"
         );
         writeln!(body, "  @ffi.Bool()");
         writeln!(body, "  external bool isSome;");
         if let Some(ann) = dart_ffi_field_annotation(&inner) {
             writeln!(body, "  {ann}");
         }
-        writeln!(
-            body,
-            "  external {} value;",
-            dart_ffi_struct_field_type(&inner)
-        );
+        writeln!(body, "  external {field_ty} value;");
         writeln!(body, "}}");
         writeln!(body);
     }
@@ -71,6 +69,10 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     for v in &spec.views {
         emit_dart_view(&mut body, v, spec);
     }
+
+    let import_ffi = spec_needs_dart_ffi(spec);
+    let import_typed_data = spec_needs_typed_data(spec);
+    let import_host_ffi = spec_needs_nve_host_ffi(spec);
 
     let mut out = CodeWriter::with_capacity(body.len() + 512);
     writeln!(
@@ -86,17 +88,17 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
         "// ignore_for_file: no_leading_underscores_for_local_identifiers"
     );
     writeln!(out);
-    if body.contains("ffi.") {
+    if import_ffi {
         writeln!(out, "import 'dart:ffi' as ffi;");
     }
-    if body.contains("Uint8List") {
+    if import_typed_data {
         writeln!(out, "import 'dart:typed_data';");
     }
-    if body.contains("ffi.") || body.contains("Uint8List") {
+    if import_ffi || import_typed_data {
         writeln!(out);
     }
     writeln!(out, "import 'package:nve_host/nve_host.dart';");
-    if uses_nve_host_ffi(&body) {
+    if import_host_ffi {
         writeln!(out, "import 'package:nve_host/nve_host_ffi.dart';");
     }
     writeln!(out);
@@ -108,36 +110,11 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     }])
 }
 
-fn uses_nve_host_ffi(body: &str) -> bool {
-    [
-        "HybridOwnedBytes",
-        "HybridCreateNative",
-        "HybridDestroyNative",
-        "HybridAllocBytesNative",
-        "HybridFreeBytesNative",
-        "HybridSetPropsDirectNative",
-        "HybridPropsEncodable",
-        "HybridPropsBuilder",
-        "HybridPropsWriter",
-        "HybridArena",
-        "NveValueTree",
-        "NveStrSlice",
-        "NveBufferSlice",
-        "NveValue",
-        "NveMapEntry",
-    ]
-    .iter()
-    .any(|sym| body.contains(sym))
-}
-
 fn emit_dart_common(out: &mut CodeWriter, spec: &HybridFileSpec) {
+    let stem_camel = to_camel_case(&spec.stem_snake());
     writeln!(
         out,
-        "const int nveHybridAbiVersion = {NVE_HYBRID_ABI_VERSION};"
-    );
-    writeln!(
-        out,
-        "const Key64 nveHybridFileSchemaHash = {};",
+        "const Key64 {stem_camel}HybridFileSchemaHash = {};",
         dart_key64_const(spec.file_schema_hash())
     );
     writeln!(out);
@@ -180,7 +157,11 @@ fn emit_dart_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
     writeln!(out);
 }
 
-fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFileSpec) {
+fn emit_dart_struct(
+    out: &mut CodeWriter,
+    s: &HybridStructSpec,
+    spec: &HybridFileSpec,
+) -> Result<(), CodegenError> {
     if s.is_pod(spec) {
         writeln!(out, "final class NveHybrid{} extends ffi.Struct {{", s.name);
         for f in &s.fields {
@@ -188,11 +169,8 @@ fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
                 writeln!(out, "  {ann}");
             }
             let fname = dart_ident(&f.name);
-            writeln!(
-                out,
-                "  external {} {fname};",
-                dart_ffi_struct_field_type(&f.ty)
-            );
+            let field_ty = dart_ffi_struct_field_type(&f.ty)?;
+            writeln!(out, "  external {field_ty} {fname};");
         }
         writeln!(out, "}}");
         writeln!(out);
@@ -224,6 +202,25 @@ fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
             match &f.ty {
                 HybridType::Enum(_) => writeln!(out, "    _nveRaw.{fname} = {fname}.rawValue;"),
                 HybridType::Struct(_) => writeln!(out, "    _nveRaw.{fname} = {fname}.toAbi();"),
+                HybridType::FixedArray { elem, len } => {
+                    writeln!(out, "    if ({fname}.length != {len}) {{");
+                    writeln!(
+                        out,
+                        "      throw RangeError.value({fname}.length, '{fname}', 'expected fixed length {len}');"
+                    );
+                    writeln!(out, "    }}");
+                    writeln!(out, "    for (var _nveI = 0; _nveI < {len}; _nveI++) {{");
+                    match elem.as_ref() {
+                        HybridType::Enum(_) => {
+                            writeln!(out, "      _nveRaw.{fname}[_nveI] = {fname}[_nveI].rawValue;")
+                        }
+                        HybridType::Struct(_) => {
+                            writeln!(out, "      _nveRaw.{fname}[_nveI] = {fname}[_nveI].toAbi();")
+                        }
+                        _ => writeln!(out, "      _nveRaw.{fname}[_nveI] = {fname}[_nveI];"),
+                    }
+                    writeln!(out, "    }}");
+                }
                 _ => writeln!(out, "    _nveRaw.{fname} = {fname};"),
             }
         }
@@ -243,6 +240,18 @@ fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
                 }
                 HybridType::Struct(st) => {
                     writeln!(out, "    {fname}: {st}.fromAbi(_nveRaw.{fname}),")
+                }
+                HybridType::FixedArray { elem, len } => {
+                    let elem_ty = dart_type(elem);
+                    let elem_expr = match elem.as_ref() {
+                        HybridType::Enum(e) => format!("{e}.fromRaw(_nveRaw.{fname}[_nveI])"),
+                        HybridType::Struct(st) => format!("{st}.fromAbi(_nveRaw.{fname}[_nveI])"),
+                        _ => format!("_nveRaw.{fname}[_nveI]"),
+                    };
+                    writeln!(
+                        out,
+                        "    {fname}: List<{elem_ty}>.generate({len}, (_nveI) => {elem_expr}),"
+                    );
                 }
                 _ => writeln!(out, "    {fname}: _nveRaw.{fname},"),
             }
@@ -294,6 +303,7 @@ fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
     writeln!(out, "  }}");
     writeln!(out, "}}");
     writeln!(out);
+    Ok(())
 }
 
 fn emit_dart_module(out: &mut CodeWriter, m: &HybridModuleSpec, spec: &HybridFileSpec) {

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'bin_codec.dart';
 import 'key64.dart';
+import 'u64_math.dart';
 
 /// Status of a fallible hybrid FFI trampoline (Rust `NveHybridStatus`, `#[repr(i32)]`).
 enum HybridStatus {
@@ -90,6 +91,11 @@ final class DynamicValue {
 
   /// Encodes a Dart value graph (`null`, `bool`, `int`, `double`, `String`, `Uint8List`,
   /// [DynamicValue], `List<Object?>`, `Map<String, Object?>`) into a validated [DynamicValue].
+  ///
+  /// **Dart-web note:** JS represents all numbers as IEEE-754 `double`, so finite integral doubles
+  /// within ±(2^53 - 1) (e.g. `1.0`) are indistinguishable from `int` at runtime and encode as
+  /// `i64`. Negative zero (`-0.0`), non-integral doubles, infinities, `NaN`, and magnitudes beyond
+  /// ±9007199254740991 always encode as `f64` so no double is silently corrupted.
   factory DynamicValue.fromObject(Object? value) {
     if (value == null) {
       return nullValue;
@@ -145,7 +151,14 @@ final class DynamicValue {
       return;
     }
     if (value is int) {
-      writer.writeI64(value);
+      // On Dart-web, `-0.0` and huge integral doubles (`1e20`, `double.maxFinite`) satisfy
+      // `value is int`. Use `1.0 / value < 0` to detect `-0.0` reliably under dart2js static
+      // `int` promotion, and route out-of-safe-integer magnitudes to `writeF64`.
+      if (isWeb && ((value == 0 && 1.0 / value < 0) || value < -9007199254740991 || value > 9007199254740991)) {
+        writer.writeF64(value.toDouble());
+      } else {
+        writer.writeI64(value);
+      }
       return;
     }
     if (value is double) {

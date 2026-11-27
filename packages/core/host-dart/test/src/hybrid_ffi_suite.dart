@@ -467,6 +467,8 @@ void _testOwnedBytesHelpersAndCursorDecode(Check c) {
       );
       c.eq(trailErr?.kind, BinErrorKind.trailingBytes, 'hybridDecodeOwned trailingBytes kind');
       c.eq(freeCount, 7, 'freed after hybridDecodeOwned trailingBytes');
+      c.eq(freedAddrs.length, 7, 'freedAddrs count matches freeCount');
+      c.eq(freedAddrs.toSet().length, 7, 'every native buffer freed at most once (zero double-frees)');
     });
   } finally {
     freeCallable.close();

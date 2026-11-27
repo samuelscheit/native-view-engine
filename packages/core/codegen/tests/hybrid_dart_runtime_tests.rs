@@ -271,13 +271,30 @@ fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
     assert!(src.contains("_nveB.writeDynamicValue('metadata', metadata);"));
     assert!(src.contains("NveValueTree.fromDynamic(_nveArena, meta).root"));
 
-    // Pure-POD methods (`add`, `seek`) must not allocate a `HybridArena`.
+    // Pure-POD methods (`add`, `seek`) must not allocate a `HybridArena` or re-lookup `.asFunction`.
     let add_start = src.find("int add(int a, int b)").expect("add method");
     let add_end = src[add_start..].find("\n  }").expect("add end") + add_start;
     assert!(
         !src[add_start..add_end].contains("HybridArena"),
         "pure-POD method `add` must not allocate a HybridArena:\n{}",
         &src[add_start..add_end]
+    );
+    assert!(
+        !src[add_start..add_end].contains(".asFunction"),
+        "pure-POD method `add` must use cached closure instead of calling .asFunction per call:\n{}",
+        &src[add_start..add_end]
+    );
+    assert!(
+        src.contains("static const int abiVersion = "),
+        "generated client must declare static const abiVersion"
+    );
+    assert!(
+        src.contains("const Key64 cryptoHybridFileSchemaHash = "),
+        "generated file must namespace its file schema hash by stem to avoid cross-file collisions"
+    );
+    assert!(
+        src.contains("hybridVerifyVtable(abiVersion,"),
+        "generated client must pass generated abiVersion into hybridVerifyVtable"
     );
 
     // Enum-only spec must omit unused `dart:ffi` / `nve_host_ffi.dart` imports.
@@ -292,6 +309,43 @@ fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
     assert!(enum_src.contains("import 'package:nve_host/nve_host.dart';"));
     assert!(!enum_src.contains("import 'dart:ffi'"));
     assert!(!enum_src.contains("nve_host_ffi.dart"));
+
+    // Spec-driven import gating: a non-POD struct named `NveValueHolder` with a String field must
+    // NOT trigger unused `dart:ffi`, `dart:typed_data`, or `nve_host_ffi.dart` imports.
+    let deceptive_names = parse_hybrid_rust_spec(
+        "#[nve_hybrid_struct]\npub struct NveValueHolder { pub ffi_uint8_list: String }",
+    )
+    .expect("parse deceptive-names spec");
+    let deceptive_src = &generate_hybrid_target(&deceptive_names, HybridTarget::Dart)
+        .expect("generate deceptive-names dart")
+        .files[0]
+        .content;
+    assert!(deceptive_src.contains("import 'package:nve_host/nve_host.dart';"));
+    assert!(!deceptive_src.contains("import 'dart:ffi'"));
+    assert!(!deceptive_src.contains("import 'dart:typed_data'"));
+    assert!(!deceptive_src.contains("nve_host_ffi.dart"));
+
+    // FixedArray POD struct + Option<[u8; 4]> must generate cleanly with zero panics.
+    let fixed_arr_spec = parse_hybrid_rust_spec(
+        r#"
+#[nve_hybrid_struct]
+pub struct FixedBuf {
+    pub bytes: [u8; 4],
+}
+#[nve_hybrid_module(name = "FixedMod")]
+pub trait FixedModSpec {
+    fn take_fixed(&self, buf: FixedBuf, opt_arr: Option<[u8; 4]>) -> Option<[u8; 4]>;
+}
+"#,
+    )
+    .expect("parse FixedArray spec");
+    let fixed_src = &generate_hybrid_target(&fixed_arr_spec, HybridTarget::Dart)
+        .expect("generate FixedArray dart")
+        .files[0]
+        .content;
+    assert!(fixed_src.contains("@ffi.Array(4)"));
+    assert!(fixed_src.contains("external ffi.Array<ffi.Uint8> bytes;"));
+    assert!(!fixed_src.contains("NveHybridOpt"));
 }
 
 #[test]
@@ -310,6 +364,17 @@ fn strict_dart_analyzer_accepts_realistic_enum_only_and_multi_option_shadowing_s
         REALISTIC_HYBRID_SPEC,
         MULTI_OPTION_SHADOW_SPEC,
         "#[nve_hybrid_enum]\npub enum SoloKind { First = 0, Second = 2 }",
+        "#[nve_hybrid_struct]\npub struct NveValueHolder { pub ffi_uint8_list: String }",
+        r#"
+#[nve_hybrid_struct]
+pub struct FixedBuf {
+    pub bytes: [u8; 4],
+}
+#[nve_hybrid_module(name = "FixedMod")]
+pub trait FixedModSpec {
+    fn take_fixed(&self, buf: FixedBuf, opt_arr: Option<[u8; 4]>) -> Option<[u8; 4]>;
+}
+"#,
         "#[nve_hybrid_module(name = \"HandleShadow\")]\npub trait HandleShadowSpec { fn ping(&self, handle: String, vtable: i32, arena: Option<String>, builder: Option<i64>) -> i32; }",
     ] {
         let spec = parse_hybrid_rust_spec(spec_src).expect("parse spec");
@@ -616,6 +681,12 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
 
     setup_offline_dart_pkg(&dir, "nve_dart_e2e");
     std::fs::write(dir.join("analysis_options.yaml"), STRICT_ANALYSIS_OPTIONS).unwrap();
+    // Barrel re-exporting both generated hybrid files must have zero `ambiguous_export` collisions!
+    std::fs::write(
+        lib_dir.join("all_generated.dart"),
+        "export 'crypto_hybrid.generated.dart';\nexport 'multi_opt_shadow_hybrid.generated.dart';\n",
+    )
+    .unwrap();
 
     // Write the live Dart VM e2e test driver!
     let main_dart = bin_dir.join("e2e.dart");
@@ -628,6 +699,7 @@ import 'dart:typed_data';
 import 'package:nve_dart_e2e/crypto_hybrid.generated.dart';
 import 'package:nve_dart_e2e/multi_opt_shadow_hybrid.generated.dart';
 import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 void expect(bool cond, String msg) {
   if (!cond) {
@@ -719,17 +791,30 @@ void main(List<String> args) {
   expectEq(batch.length, 2, 'batchSign len');
   expectEq(batch[0].label, 'one', 'batch[0].label');
   expectEq(batch[1].label, 'two', 'batch[1].label');
+
+  // Exercise LiveCrypto::batch_sign's Err("empty batch") branch!
+  var caughtEmptyBatch = false;
+  try {
+    crypto.batchSign(const <String>[], HashAlgorithm.sha256);
+  } on HybridException catch (e) {
+    caughtEmptyBatch = e.status == HybridStatus.err && e.message == 'empty batch';
+  }
+  expect(caughtEmptyBatch, 'batchSign empty list throws HybridException("empty batch")');
   crypto.resetCache();
 
   // ---- 2. HybridType::Value across method param & return (NO NVE_VAL_BYTES double-wrapping!) ----
   final minI64 = const Key64(0, 0x80000000).toSignedInt();
   final maxI64 = const Key64(0xFFFFFFFF, 0x7FFFFFFF).toSignedInt();
+  final u64MaxBits = const Key64(0xFFFFFFFF, 0xFFFFFFFF).toSignedInt();
   final richMeta = DynamicValue.fromObject(<String, Object?>{
     'null': null,
     'flag': true,
     'min': minI64,
     'max': maxI64,
+    'u64Max': u64MaxBits,
     'f': 2.5,
+    'inf': double.infinity,
+    'ninf': double.negativeInfinity,
     'text': '\uFEFFhéllo 🚀',
     'raw': Uint8List.fromList(<int>[0x00, 0xAA, 0xFF]),
     'emptyArr': <Object?>[],
@@ -744,6 +829,9 @@ void main(List<String> args) {
   final echoed = crypto.inspectDynamic(richMeta);
   expectEq(echoed.tag, BinTag.map, 'inspectDynamic preserves MAP tag (not BYTES)');
   expectEq(echoed, richMeta, 'inspectDynamic byte-identical round-trip');
+  final echoedNan = crypto.inspectDynamic(DynamicValue.fromObject(double.nan));
+  expectEq(echoedNan.tag, BinTag.f64, 'inspectDynamic NaN tag');
+  expect((echoedNan.toObject() as double).isNaN, 'inspectDynamic NaN preserved');
   expectEq(crypto.inspectDynamic(DynamicValue.nullValue), DynamicValue.nullValue, 'inspectDynamic null');
 
   // ---- 3. Cursor shadowing + multi-Option + nested Vec<Vec<i32>> ----
@@ -892,7 +980,104 @@ void main(List<String> args) {
   expectEq(shadowView.summary(), 'empty|-1|none', 'ShadowView summary none');
   expect(shadowView.currentMeta().isNull, 'ShadowView meta null');
 
-  // ---- 6. Dispose & use-after-dispose ----
+  // Lone surrogate in view String prop rejected BEFORE crossing FFI.
+  var caughtPropUtf8 = false;
+  try {
+    video.setProps(VideoSurfaceProps(sourceUrl: 'bad-\uD800'));
+  } on BinCodecException catch (e) {
+    caughtPropUtf8 = e.kind == BinErrorKind.invalidUtf8;
+  }
+  expect(caughtPropUtf8, 'lone surrogate in String prop rejected before FFI');
+
+  // ---- 6. Negative runtime FFI checks: resolve missing, fromVtable(nullptr), ABI/schema mismatch,
+  //         and setProps non-OK status ----
+  var caughtMissingIface = false;
+  try {
+    hybridResolveInterface(lib, 0xDEADBEEF, 'Missing');
+  } on HybridException catch (e) {
+    caughtMissingIface = e.status == HybridStatus.err && e.message.contains('Missing');
+  }
+  expect(caughtMissingIface, 'hybridResolveInterface missing interface throws HybridException');
+
+  var caughtNullVtable = false;
+  try {
+    CryptoHybridClient.fromVtable(ffi.nullptr);
+  } on HybridException catch (e) {
+    caughtNullVtable = e.status == HybridStatus.nullHandle;
+  }
+  expect(caughtNullVtable, 'fromVtable(nullptr) throws HybridException(nullHandle)');
+
+  HybridArena.using<void>((arena) {
+    final fakeCryptoVt = arena.allocStruct<NveHybridCryptoVTable>(ffi.sizeOf<NveHybridCryptoVTable>());
+    fakeCryptoVt.ref
+      ..abiVersion = CryptoHybridClient.abiVersion + 1
+      ..interfaceId = CryptoHybridClient.interfaceId
+      ..schemaHash = CryptoHybridClient.schemaHash.toSignedInt();
+    var caughtAbi = false;
+    try {
+      CryptoHybridClient.fromVtable(fakeCryptoVt);
+    } on HybridException catch (e) {
+      caughtAbi = e.status == HybridStatus.schemaMismatch && e.message.contains('Crypto');
+    }
+    expect(caughtAbi, 'fromVtable ABI mismatch throws HybridException(schemaMismatch)');
+
+    fakeCryptoVt.ref
+      ..abiVersion = CryptoHybridClient.abiVersion
+      ..schemaHash = const Key64(1, 2).toSignedInt();
+    var caughtSchema = false;
+    try {
+      CryptoHybridClient.fromVtable(fakeCryptoVt);
+    } on HybridException catch (e) {
+      caughtSchema = e.status == HybridStatus.schemaMismatch && e.message.contains('Crypto');
+    }
+    expect(caughtSchema, 'fromVtable schema mismatch throws HybridException(schemaMismatch)');
+
+    // Synthetic VideoSurface vtable whose setPropsDirect returns HybridStatus.invalidArg.
+    final dummyHandle = arena.allocBytes(8).cast<ffi.Void>();
+    final createCb = ffi.NativeCallable<HybridCreateNative>.isolateLocal(
+      () => dummyHandle,
+    );
+    final destroyCb = ffi.NativeCallable<HybridDestroyNative>.isolateLocal(
+      (ffi.Pointer<ffi.Void> _) {},
+    );
+    final setPropsFailCb = ffi.NativeCallable<HybridSetPropsDirectNative>.isolateLocal(
+      (ffi.Pointer<ffi.Void> _, ffi.Pointer<NveMapEntry> __, int ___) => HybridStatus.invalidArg.code,
+      exceptionalReturn: -1,
+    );
+    try {
+      final realVideoVt = hybridResolveInterface(lib, VideoSurfaceHybridClient.interfaceId, 'VideoSurface')
+          .cast<NveHybridVideoSurfaceVTable>();
+      final fakeVideoVt =
+          arena.allocStruct<NveHybridVideoSurfaceVTable>(ffi.sizeOf<NveHybridVideoSurfaceVTable>());
+      fakeVideoVt.ref
+        ..abiVersion = VideoSurfaceHybridClient.abiVersion
+        ..interfaceId = VideoSurfaceHybridClient.interfaceId
+        ..schemaHash = VideoSurfaceHybridClient.schemaHash.toSignedInt()
+        ..create = createCb.nativeFunction
+        ..destroy = destroyCb.nativeFunction
+        ..allocBytes = realVideoVt.ref.allocBytes
+        ..freeBytes = realVideoVt.ref.freeBytes
+        ..setPropsDirect = setPropsFailCb.nativeFunction
+        ..seek = realVideoVt.ref.seek
+        ..captureFrame = realVideoVt.ref.captureFrame
+        ..currentMetadata = realVideoVt.ref.currentMetadata;
+      final failingVideo = VideoSurfaceHybridClient.fromVtable(fakeVideoVt);
+      var caughtSetProps = false;
+      try {
+        failingVideo.setProps(VideoSurfaceProps(sourceUrl: 'x'));
+      } on HybridException catch (e) {
+        caughtSetProps = e.status == HybridStatus.invalidArg;
+      }
+      expect(caughtSetProps, 'setProps non-OK status throws HybridException(invalidArg)');
+      failingVideo.dispose();
+    } finally {
+      createCb.close();
+      destroyCb.close();
+      setPropsFailCb.close();
+    }
+  });
+
+  // ---- 7. Dispose & use-after-dispose ----
   crypto.dispose();
   crypto.dispose(); // idempotent
   var caughtDisposed = false;

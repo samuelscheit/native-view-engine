@@ -140,6 +140,14 @@ final class BinReader {
     return utf8String(_length());
   }
 
+  /// Reads a `Str` value's validated UTF-8 bytes as a zero-copy view (no UTF-16 decode).
+  Uint8List readStrUtf8() {
+    _expect(BinTag.str);
+    final len = _length();
+    final at = _checkUtf8(len);
+    return Uint8List.sublistView(bytes, at, at + len);
+  }
+
   Uint8List readBytes() {
     _expect(BinTag.bytes);
     return take(_length());
@@ -160,6 +168,13 @@ final class BinReader {
   T readMapScope<T>(T Function(int count) body) => _readContainerScope(BinTag.map, 5, body);
 
   String readMapKey() => utf8String(_length());
+
+  /// Reads a map key's validated UTF-8 bytes as a zero-copy view (no UTF-16 decode).
+  Uint8List readMapKeyUtf8() {
+    final len = _length();
+    final at = _checkUtf8(len);
+    return Uint8List.sublistView(bytes, at, at + len);
+  }
 
   /// Skips one value in O(1).
   void skipValue() {
