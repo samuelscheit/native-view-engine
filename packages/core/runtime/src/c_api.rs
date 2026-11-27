@@ -484,12 +484,14 @@ unsafe extern "C" fn rt_pair_connect(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            // SAFETY: Caller guarantees `uri` points to valid UTF-8 bytes when non-empty.
+            // SAFETY: Caller guarantees `uri.ptr` points to readable memory for `uri.len` bytes
+            // when `uri.len > 0` (`NveStrSlice::as_str` validates UTF-8).
             let Ok(uri_str) = (unsafe { uri.as_str() }) else {
                 set_last_error("invalid NveStrSlice for pairing URI");
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            // SAFETY: Caller guarantees `token` points to valid UTF-8 bytes when non-empty.
+            // SAFETY: Caller guarantees `token.ptr` points to readable memory for `token.len`
+            // bytes when `token.len > 0` (`NveStrSlice::as_str` validates UTF-8).
             let Ok(token_str) = (unsafe { token.as_str() }) else {
                 set_last_error("invalid NveStrSlice for pairing token");
                 return NveRuntimeStatus::InvalidArg.as_i32();

@@ -51,6 +51,7 @@ pub struct StoreWireReplica<B: StoreBackend> {
     realization_order: RealizationOrder,
     decoder: WireDecoder,
     changes: ChangeSet,
+    has_state: bool,
     needs_keyframe: bool,
     backend: B,
 }
@@ -65,6 +66,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             realization_order,
             decoder: WireDecoder::default(),
             changes: ChangeSet::default(),
+            has_state: false,
             needs_keyframe: false,
             backend,
         }
@@ -117,11 +119,28 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         &mut self,
         wire_bytes: &[u8],
     ) -> Result<BackendApplyStats, BackendError> {
+        self.submit_nve2_inner(wire_bytes, false)
+    }
+
+    /// Decodes a full `SceneKeyframe` `NVE2` payload, unconditionally resetting prior replica state
+    /// (even when the `NVE2` header carries `frame > 1`) once the header validates.
+    pub fn submit_nve2_keyframe(
+        &mut self,
+        wire_bytes: &[u8],
+    ) -> Result<BackendApplyStats, BackendError> {
+        self.submit_nve2_inner(wire_bytes, true)
+    }
+
+    fn submit_nve2_inner(
+        &mut self,
+        wire_bytes: &[u8],
+        is_keyframe: bool,
+    ) -> Result<BackendApplyStats, BackendError> {
         let (frame, _ops) = WireDecoder::validate_header(wire_bytes)?;
-        if self.needs_keyframe && frame != 1 {
+        if !is_keyframe && self.needs_keyframe && frame != 1 {
             return Err(BackendError::NeedsKeyframe(None));
         }
-        if frame == 1 && (self.needs_keyframe || self.store.is_live(nve_store::NodeId::ROOT)) {
+        if (is_keyframe || frame == 1) && (self.needs_keyframe || self.has_state) {
             self.reset();
         }
         let apply_res = {
@@ -137,6 +156,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             self.needs_keyframe = true;
             return Err(BackendError::NeedsKeyframe(Some(err)));
         }
+        self.has_state = true;
         self.needs_keyframe = false;
         self.backend.commit(&self.store, &self.changes)
     }
@@ -156,6 +176,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             realization_order: self.realization_order,
             decoder: self.decoder,
             changes: self.changes,
+            has_state: self.has_state,
             needs_keyframe: self.needs_keyframe,
             backend: f(self.backend),
         }
@@ -168,6 +189,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             .set_realization_order(self.realization_order.clone());
         self.decoder = WireDecoder::default();
         self.changes = ChangeSet::default();
+        self.has_state = false;
         self.needs_keyframe = false;
         self.backend.reset();
     }

@@ -24,8 +24,6 @@ use nve_engine::{
 };
 use nve_layout::DynLayoutEngine;
 #[cfg(test)]
-use nve_layout::TaffyStoreLayout;
-#[cfg(test)]
 use nve_store::NodeStore;
 use nve_store::{ChangeSet, NodeId as StoreNodeId};
 use nve_svg_skia::SvgSkiaSystem;
@@ -46,16 +44,6 @@ pub(super) fn now_us() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
-}
-
-/// Creates a [`StoreWireReplica<ShellSkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`)
-/// and the default Taffy layout engine.
-#[cfg(test)]
-pub fn new_shell_skia_replica(
-    surface_id: SurfaceId,
-    viewport: Viewport,
-) -> StoreWireReplica<ShellSkiaBackend> {
-    new_shell_skia_replica_with_layout(surface_id, viewport, Box::new(TaffyStoreLayout::new()))
 }
 
 /// Creates a [`StoreWireReplica<ShellSkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`)
@@ -111,19 +99,15 @@ impl<A: DesktopApp> DesktopSession<A> {
         clear_color: ColorRgba,
         show_hud: bool,
     ) -> Self {
-        let replica = new_shell_skia_replica(surface_id, viewport);
-        let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
-        let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
-        Self::from_parts(
+        Self::new_with_layout(
             app,
-            replica,
-            PixelBuffer::new(phys_w, phys_h),
-            Vec::new(),
             surface_id,
             viewport,
             clear_color,
             show_hud,
+            LayoutEngineChoice::Taffy,
         )
+        .expect("default Taffy layout engine")
     }
 
     pub fn new_with_layout(
@@ -496,15 +480,29 @@ impl<A: DesktopApp> DesktopSession<A> {
         Ok(())
     }
 
-    /// Renders a frame from the app into `SkiaBackend` and rasterizes into `pixel_buffer`.
+    /// Renders a frame (or drains ordered queued remote frames) into `SkiaBackend` and rasterizes.
     pub fn render_and_rasterize(&mut self) -> Result<&PixelBuffer, DesktopHostError> {
-        let frame_id = self.next_frame_id;
-        self.next_frame_id += 1;
-        let bytes = self.app.render(frame_id);
-        if !bytes.is_empty() {
-            self.replica.submit_nve2_frame(bytes)?;
-            self.last_frame_bytes.clear();
-            self.last_frame_bytes.extend_from_slice(bytes);
+        let mut applied_queued = false;
+        while let Some((is_keyframe, bytes)) = self.app.take_queued_wire_frame() {
+            if !bytes.is_empty() {
+                if is_keyframe {
+                    self.replica.submit_nve2_keyframe(&bytes)?;
+                } else {
+                    self.replica.submit_nve2_frame(&bytes)?;
+                }
+                self.last_frame_bytes = bytes;
+                applied_queued = true;
+            }
+        }
+        if !applied_queued {
+            let frame_id = self.next_frame_id;
+            self.next_frame_id += 1;
+            let bytes = self.app.render(frame_id);
+            if !bytes.is_empty() {
+                self.replica.submit_nve2_frame(bytes)?;
+                self.last_frame_bytes.clear();
+                self.last_frame_bytes.extend_from_slice(bytes);
+            }
         }
         self.rasterize_current();
         Ok(&self.pixel_buffer)

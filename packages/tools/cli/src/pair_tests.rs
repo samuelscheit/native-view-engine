@@ -136,7 +136,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     };
 
     // 1. QUIC tap -> Counter: 1 across QUIC, WebTransport, and WSS.
-    quic.send_events(&make_tap(1000)).unwrap();
+    quic.send_events(make_tap(1000)).unwrap();
     let f1 = quic.recv_frame_timeout(timeout).unwrap().payload;
     assert_eq!(f1, wt.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f1, wss.recv_frame_timeout(timeout).unwrap().payload);
@@ -147,7 +147,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
         .contains("Counter: 1"));
 
     // 2. WebTransport tap -> Counter: 2 across all 3 transports.
-    wt.send_events(&make_tap(2000)).unwrap();
+    wt.send_events(make_tap(2000)).unwrap();
     let f2 = wt.recv_frame_timeout(timeout).unwrap().payload;
     assert_eq!(f2, quic.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f2, wss.recv_frame_timeout(timeout).unwrap().payload);
@@ -158,7 +158,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
         .contains("Counter: 2"));
 
     // 3. WSS tap -> Counter: 3 across all 3 transports.
-    wss.send_events(&make_tap(3000)).unwrap();
+    wss.send_events(make_tap(3000)).unwrap();
     let f3 = wss.recv_frame_timeout(timeout).unwrap().payload;
     assert_eq!(f3, quic.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f3, wt.recv_frame_timeout(timeout).unwrap().payload);

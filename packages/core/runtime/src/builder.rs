@@ -3,8 +3,8 @@
 
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use nve_abi::{
     NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
@@ -195,7 +195,7 @@ impl RuntimeBuilder {
             surface_id: self.surface_id,
             lock: SceneLock::new(),
             wake,
-            pair_connected: RwLock::new(None),
+            pair_connected: Arc::new(AtomicBool::new(false)),
             #[cfg(not(target_arch = "wasm32"))]
             owner_thread: std::thread::current().id(),
             poisoned: AtomicBool::new(false),
@@ -208,6 +208,7 @@ impl RuntimeBuilder {
                     layout_engine_name,
                     realization_order,
                     wire_decoder: WireDecoder::default(),
+                    has_replica_state: false,
                     wire_changes: ChangeSet::default(),
                     hook_changes: ChangeSet::default(),
                     merged_changes: ChangeSet::default(),

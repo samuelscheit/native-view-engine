@@ -30,7 +30,6 @@ nve-canvas-skia = { workspace = true }
 nve-svg-skia = { workspace = true }
 nve-engine = { workspace = true }
 nve-layout = { workspace = true }
-nve-runtime = { workspace = true }
 nve-layout-yoga = { workspace = true, optional = true }
 nve-backend-skia = { workspace = true }
 nve-interop = { workspace = true }

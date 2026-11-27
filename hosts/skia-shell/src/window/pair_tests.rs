@@ -144,7 +144,7 @@ impl TestPairServer {
             let mut app = RemoteServerApp::new();
             let mut frame_id = 1u64;
             let initial = app.render(frame_id);
-            let _ = server.broadcast_command_delta(frame_id as u32, &initial);
+            let _ = server.broadcast_scene_keyframe(frame_id as u32, &initial);
 
             while !stop_flag.load(Ordering::Relaxed) {
                 let mut mutated = false;
@@ -391,4 +391,107 @@ fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert!(png.len() > 100);
     let _ = std::fs::remove_file(Path::new(&out_path));
+}
+
+#[test]
+fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_keyframe() {
+    register_core_tables();
+    let token = "skia-ordered-batch-token";
+    let server = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        token,
+    ))
+    .expect("bind server");
+
+    let cfg = PairConnectConfig::new(
+        format!("ws://{}/nve-wire", server.wss_addr()),
+        token,
+        PairTransport::Ws,
+    );
+    let app = PairedRemoteApp::connect(cfg).expect("connect paired app");
+    let viewport = Viewport {
+        width: 240.0,
+        height: 160.0,
+        scale_factor: 1.0,
+    };
+    let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+
+    // Build Frame 1 (DeclareTables + CreateNodes + blue fill) and true incremental Frame 2
+    // (Patch ONLY -> green fill, NO DeclareTables/CreateNodes).
+    let mut store = NodeStore::new();
+    let mut enc = WireEncoder::default();
+    let mut f1_bytes = Vec::new();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = store.tx();
+        let _ = tx.create_at(StoreNodeId::ROOT);
+        let _ = tx.create_at(StoreNodeId(2));
+        tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+        tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+        tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
+        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+        tx.commit_into(&mut changes);
+    }
+    enc.encode(&store, &changes, &mut f1_bytes);
+
+    let mut f2_bytes = Vec::new();
+    {
+        let mut tx = store.tx();
+        tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(16, 185, 129));
+        tx.commit_into(&mut changes);
+    }
+    enc.encode(&store, &changes, &mut f2_bytes);
+
+    // Broadcast BOTH Frame 1 and Frame 2 back-to-back BEFORE a single render_and_rasterize()!
+    assert_eq!(server.broadcast_command_delta(1, &f1_bytes).unwrap(), 1);
+    assert_eq!(server.broadcast_command_delta(2, &f2_bytes).unwrap(), 1);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while session.app().frames_received() < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(session.app().frames_received() >= 2);
+
+    // A single render_and_rasterize() must drain Frame 1 AND Frame 2 in exact order -> green!
+    session.render_and_rasterize().expect("apply ordered batch");
+    assert_eq!(
+        session.pixel_buffer().get_rgb(50, 50),
+        Some((16, 185, 129)),
+        "Frame 1 must not be overwritten by Frame 2 before applying"
+    );
+
+    // Now send a SceneKeyframe whose NVE2 header has frame = 5 (> 1) with a fresh tree (node 9,
+    // yellow fill) and verify StoreWireReplica resets cleanly (node 2 gone, yellow rendered).
+    let mut store2 = NodeStore::new();
+    let mut changes2 = ChangeSet::default();
+    {
+        let mut tx = store2.tx();
+        let _ = tx.create_at(StoreNodeId::ROOT);
+        let _ = tx.create_at(StoreNodeId(9));
+        tx.set(StoreNodeId(9), Layout::WIDTH, Length::percent(100.0));
+        tx.set(StoreNodeId(9), Layout::HEIGHT, Length::percent(100.0));
+        tx.set(StoreNodeId(9), Visual::BACKGROUND, Rgba::rgb(250, 204, 21));
+        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(9)]);
+        tx.commit_into(&mut changes2);
+    }
+    let mut kf_bytes = Vec::new();
+    WireEncoder::default().encode_full(&store2, &mut kf_bytes);
+    // Patch NVE2 frame_lo (offset 8..12) from 1 to 5 to verify SceneKeyframe resets even when frame > 1.
+    kf_bytes[8..12].copy_from_slice(&5u32.to_le_bytes());
+
+    assert_eq!(server.broadcast_scene_keyframe(5, &kf_bytes).unwrap(), 1);
+    let kf_deadline = Instant::now() + Duration::from_secs(2);
+    while session.app().frames_received() < 3 && Instant::now() < kf_deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    session.render_and_rasterize().expect("apply frame-5 keyframe");
+    assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((250, 204, 21)));
+    assert!(
+        !session.store().is_live(StoreNodeId(2)),
+        "SceneKeyframe with frame > 1 must reset prior replica nodes"
+    );
+    assert!(session.store().is_live(StoreNodeId(9)));
+
+    session.app_mut().disconnect();
+    server.shutdown();
 }

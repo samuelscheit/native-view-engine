@@ -2,8 +2,8 @@
 //! reader/writer [`SceneLock`] guards, and safe Rust / shared FFI operations.
 
 use std::cell::UnsafeCell;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use nve_abi::{
     NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveRuntimeSceneView, SurfaceId,
@@ -45,18 +45,19 @@ impl Drop for SceneReadGuard<'_> {
 /// Framework-agnostic per-surface host runtime.
 ///
 /// # Threading Contract
-/// - **Owner-thread only**: mutating, layout, and app-touching operations (`attach_app`,
-///   `detach_app`, `add_tick_hook`, `set_viewport`, `swap_layout_engine`, `submit_nve2`, `tick`,
-///   `dispatch_events`, `apply_hot_patch`, `hit_test`, `hit_test_interaction`, `scroll_by`, and
-///   FFI `destroy`) MUST execute on the thread that created the runtime. Cross-thread calls fail
-///   with [`RuntimeError::InvalidArg`].
+/// - **Owner-thread only**: mutating, layout, and app/pairing operations (`attach_app`,
+///   `detach_app`, `pair_connect`, `pair_disconnect`, `add_tick_hook`, `set_viewport`,
+///   `swap_layout_engine`, `submit_nve2`, `tick`, `dispatch_events`, `apply_hot_patch`,
+///   `hit_test`, `hit_test_interaction`, `scroll_by`, and FFI `destroy`) MUST execute on the
+///   thread that created the runtime. Cross-thread calls fail with [`RuntimeError::InvalidArg`].
 /// - **Cross-thread safe**: `acquire_scene` / `scene_acquire`, `scene_release`, `metrics`,
-///   `layout_engine_name`, `set_wake_callback`, `clear_wake_callback`, and [`WakeBridge::trigger`].
+///   `layout_engine_name`, `pair_is_connected`, `set_wake_callback`, `clear_wake_callback`, and
+///   [`WakeBridge::trigger`].
 pub struct SurfaceRuntime {
     pub(crate) surface_id: SurfaceId,
     pub(crate) lock: SceneLock,
     pub(crate) wake: Arc<WakeBridge>,
-    pub(crate) pair_connected: RwLock<Option<Arc<AtomicBool>>>,
+    pub(crate) pair_connected: Arc<AtomicBool>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) owner_thread: std::thread::ThreadId,
     pub(crate) poisoned: AtomicBool,
@@ -68,7 +69,7 @@ impl Drop for SurfaceRuntime {
         // Synchronously drain and clear any installed host wake callback before dropping so
         // background wakers and any embedded pairing worker can never invoke a freed host context.
         self.wake.clear_sink();
-        self.set_pair_connected(None);
+        self.pair_connected.store(false, Ordering::Release);
     }
 }
 
@@ -160,15 +161,6 @@ impl SurfaceRuntime {
         self.wake.clear_sink();
     }
 
-    #[inline]
-    fn set_pair_connected(&self, flag: Option<Arc<AtomicBool>>) {
-        let old = {
-            let mut guard = self.pair_connected.write().unwrap_or_else(|e| e.into_inner());
-            std::mem::replace(&mut *guard, flag)
-        };
-        drop(old);
-    }
-
     pub fn attach_app(&mut self, app: Box<dyn RuntimeApp>) -> Result<(), RuntimeError> {
         self.attach_app_shared(app)
     }
@@ -180,7 +172,6 @@ impl SurfaceRuntime {
         let (had_pending, old_pair) = self.with_write(|inner| {
             let old_pair = inner.pair.take();
             if old_pair.is_some() {
-                self.set_pair_connected(None);
                 inner.state.metrics.pair_connected = 0;
             }
             inner.reset_for_app_change();
@@ -193,6 +184,8 @@ impl SurfaceRuntime {
         // Shut down any replaced pairing worker OUTSIDE the surface write lock to avoid deadlocks.
         if let Some(mut pair) = old_pair {
             pair.shutdown();
+            self.pair_connected.store(false, Ordering::Release);
+            let _ = self.wake.take_pending();
         }
         if had_pending {
             self.wake.trigger();
@@ -202,8 +195,9 @@ impl SurfaceRuntime {
 
     /// Connects this surface as a thin client to a live `nve pair` / `nve-wire` server.
     ///
-    /// Fails with [`RuntimeError::InvalidArg`] if a local app is attached or the URI/token is
-    /// invalid, or [`RuntimeError::Unsupported`] when built without `feature = "wire"` / on wasm32.
+    /// Fails with [`RuntimeError::InvalidArg`] if a local app is attached or the URI/token/cert
+    /// pin is invalid, or [`RuntimeError::Unsupported`] when built without `feature = "wire"` /
+    /// on wasm32.
     pub fn pair_connect(&mut self, uri: &str, token: &str) -> Result<(), RuntimeError> {
         self.pair_connect_shared(uri, token)
     }
@@ -216,24 +210,64 @@ impl SurfaceRuntime {
                 "nve-runtime built without wire pairing support",
             ));
         }
+        // Validate URI/token/cert pin up front BEFORE mutating or disconnecting any live session.
+        self.check_not_poisoned()?;
+        self.check_owner_thread()?;
+        let mut validated = Some(PairSession::validate_and_parse(uri, token)?);
         let old_pair = self.with_write(|inner| {
             if inner.app.is_some() {
                 return Err(RuntimeError::InvalidArg(
                     "cannot pair while an app is attached",
                 ));
             }
-            let session = PairSession::connect(uri, token, Arc::clone(&self.wake))?;
-            let flag = session.connected_flag();
-            let old_pair = inner.pair.replace(session);
+            if let Some(existing) = inner.pair.take() {
+                inner.reset_for_app_change();
+                inner.state.needs_render = false;
+                inner.state.needs_publish = false;
+                inner.state.metrics.pair_connected = 0;
+                return Ok(Some(existing));
+            }
+            // Fast path: no prior pair running; clear stale wake latch and spawn directly.
+            self.pair_connected.store(false, Ordering::Release);
+            let _ = self.wake.take_pending();
+            let Some(parsed) = validated.take() else {
+                return Err(RuntimeError::InvalidArg("invalid pairing URI"));
+            };
+            let session = PairSession::spawn_parsed(
+                parsed,
+                Arc::clone(&self.wake),
+                Arc::clone(&self.pair_connected),
+            )?;
             inner.reset_for_app_change();
             inner.state.needs_render = false;
             inner.state.needs_publish = false;
             inner.state.metrics.pair_connected = 0;
-            self.set_pair_connected(Some(flag));
-            Ok(old_pair)
+            inner.pair = Some(session);
+            Ok(None)
         })?;
-        if let Some(mut pair) = old_pair {
-            pair.shutdown();
+        if let Some(mut old) = old_pair {
+            // Join the old worker completely OUTSIDE the write lock before reusing `pair_connected`
+            // and clearing the wake latch so it can never clobber the replacement session.
+            old.shutdown();
+            self.pair_connected.store(false, Ordering::Release);
+            let _ = self.wake.take_pending();
+            let Some(parsed) = validated.take() else {
+                return Err(RuntimeError::InvalidArg("invalid pairing URI"));
+            };
+            self.with_write(|inner| {
+                if inner.app.is_some() {
+                    return Err(RuntimeError::InvalidArg(
+                        "cannot pair while an app is attached",
+                    ));
+                }
+                let session = PairSession::spawn_parsed(
+                    parsed,
+                    Arc::clone(&self.wake),
+                    Arc::clone(&self.pair_connected),
+                )?;
+                inner.pair = Some(session);
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -256,7 +290,6 @@ impl SurfaceRuntime {
         }
         let old_pair = self.with_write(|inner| {
             let old_pair = inner.pair.take();
-            self.set_pair_connected(None);
             inner.state.metrics.pair_connected = 0;
             if old_pair.is_some() {
                 inner.reset_for_app_change();
@@ -267,6 +300,10 @@ impl SurfaceRuntime {
         })?;
         if let Some(mut pair) = old_pair {
             pair.shutdown();
+            self.pair_connected.store(false, Ordering::Release);
+            // Clear any stale pending wake left by the stopped session so a future `pair_connect`
+            // does not have its initial frame wake suppressed by the coalesced wake latch.
+            let _ = self.wake.take_pending();
         }
         Ok(())
     }
@@ -277,10 +314,7 @@ impl SurfaceRuntime {
         if self.poisoned.load(Ordering::Acquire) {
             return false;
         }
-        let guard = self.pair_connected.read().unwrap_or_else(|e| e.into_inner());
-        guard
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        self.pair_connected.load(Ordering::Acquire)
     }
 
     pub fn detach_app(&mut self) -> Result<(), RuntimeError> {
@@ -289,10 +323,14 @@ impl SurfaceRuntime {
 
     pub(crate) fn detach_app_shared(&self) -> Result<(), RuntimeError> {
         self.with_write(|inner| {
-            inner.reset_for_app_change();
-            inner.app = None;
-            inner.state.needs_render = false;
-            inner.state.needs_publish = false;
+            // Only reset when a local app was actually attached so `attach_app_interface(h, NULL)`
+            // while paired never wipes the live paired replica.
+            if inner.app.is_some() {
+                inner.reset_for_app_change();
+                inner.app = None;
+                inner.state.needs_render = false;
+                inner.state.needs_publish = false;
+            }
             Ok(())
         })
     }
@@ -399,7 +437,9 @@ impl SurfaceRuntime {
                 return Ok(changed);
             }
             if let Some(pair) = inner.pair.as_ref() {
-                return Ok(pair.send_events(events));
+                let _ = pair.send_events(events);
+                // Local scene has not changed yet; the remote server will push a frame update.
+                return Ok(false);
             }
             Ok(false)
         })

@@ -275,6 +275,12 @@ pub trait DesktopApp {
         false
     }
 
+    /// Takes the next queued `(is_keyframe, wire_bytes)` frame in delivery order for paired/remote
+    /// apps so incremental `CommandDelta` batches are never overwritten before rendering.
+    fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
+        None
+    }
+
     /// Optional live status banner for remote/paired sessions (shown in HUD & window title).
     fn remote_status_banner(&self) -> Option<String> {
         None

@@ -290,7 +290,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 40.0, y: 20.0 },
         }]);
-        client.send_events(&ev_ring).expect("send EventBatch");
+        client.send_events(ev_ring).expect("send EventBatch");
     };
 
     send_press(&ws, inc_node, 1_000);

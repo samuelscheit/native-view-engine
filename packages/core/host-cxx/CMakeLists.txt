@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(nve_host_cxx LANGUAGES C CXX)
 
+# Ensure generated C ABI headers (`nve_runtime_abi.generated.h`) exist even on clean checkouts
+# when `NVE_HOST_CXX_WITH_RUNTIME=OFF`.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveCodegen.cmake")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveCodegen.cmake")
+  nve_ensure_abi_codegen()
+endif()
+
 # Header-only C11 + C++20 NVE host runtime: XXH64, little-endian codecs, table/scene readers.
 add_library(nve_host_cxx INTERFACE)
 add_library(nve::host_cxx ALIAS nve_host_cxx)
@@ -55,6 +62,9 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     set_target_properties(nve_host_runtime_session_test PROPERTIES
       CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     target_link_libraries(nve_host_runtime_session_test PRIVATE nve_host_cxx nve::runtime)
+    if(NOT NVE_RUNTIME_NO_DEFAULT_FEATURES)
+      target_compile_definitions(nve_host_runtime_session_test PRIVATE NVE_RUNTIME_TEST_HAS_WIRE=1)
+    endif()
     target_compile_options(nve_host_runtime_session_test PRIVATE ${_nve_host_warnings} ${_nve_host_sanitize})
     target_link_options(nve_host_runtime_session_test PRIVATE ${_nve_host_sanitize})
     add_test(NAME nve_host_runtime_session COMMAND nve_host_runtime_session_test)

@@ -16,7 +16,7 @@
 /* `constexpr` functions are implicitly `inline` and usable in constant expressions. */
 #define NVE_INLINE constexpr inline
 #ifndef NVE_STATIC_ASSERT
-#define NVE_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)
 #endif
 #define NVE_ALIGNOF(type) alignof(type)
 #else
@@ -24,7 +24,7 @@
 #define NVE_EXTERN_C_END
 #define NVE_INLINE static inline
 #ifndef NVE_STATIC_ASSERT
-#define NVE_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)
 #endif
 #define NVE_ALIGNOF(type) _Alignof(type)
 #endif

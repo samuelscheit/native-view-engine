@@ -27,6 +27,8 @@ namespace nve::host {
 /// Validated zero-copy reader over a borrowed `NveRuntimeSceneView`.
 class RuntimeSceneReader {
  public:
+  RuntimeSceneReader() noexcept = default;
+
   /// Validates `view` once; `error` (optional) receives the reason on failure.
   [[nodiscard]] static std::optional<RuntimeSceneReader> open(
       const NveRuntimeSceneView* view,
@@ -127,7 +129,9 @@ class RuntimeSceneReader {
 
   template <class T>
   static bool slab_ok(const T* p, uint32_t count) noexcept {
-    return count == 0u || (p != nullptr && count_fits_host(count, sizeof(T)));
+    return count == 0u ||
+           (p != nullptr && (reinterpret_cast<uintptr_t>(p) % alignof(T)) == 0u &&
+            count_fits_host(count, sizeof(T)));
   }
 
   static SceneError validate(const NveRuntimeSceneView* v, Key64 expected_schema) noexcept {
@@ -152,7 +156,7 @@ class RuntimeSceneReader {
     return at == text_.size() || (static_cast<uint8_t>(text_[at]) & 0xC0u) != 0x80u;
   }
 
-  uint64_t frame_id_;
+  uint64_t frame_id_ = 0u;
   std::span<const NveNodeRow> rows_;
   std::span<const NveLayoutRect> rects_;
   std::string_view text_;
@@ -171,16 +175,16 @@ class RuntimeSceneGuard {
   RuntimeSceneGuard(RuntimeSceneGuard&& other) noexcept
       : api_(std::exchange(other.api_, nullptr)),
         handle_(std::exchange(other.handle_, nullptr)),
-        raw_(other.raw_),
-        reader_(other.reader_) {}
+        raw_(std::exchange(other.raw_, NveRuntimeSceneView{})),
+        reader_(std::exchange(other.reader_, RuntimeSceneReader{})) {}
 
   RuntimeSceneGuard& operator=(RuntimeSceneGuard&& other) noexcept {
     if (this != &other) {
       release();
       api_ = std::exchange(other.api_, nullptr);
       handle_ = std::exchange(other.handle_, nullptr);
-      raw_ = other.raw_;
-      reader_ = other.reader_;
+      raw_ = std::exchange(other.raw_, NveRuntimeSceneView{});
+      reader_ = std::exchange(other.reader_, RuntimeSceneReader{});
     }
     return *this;
   }
@@ -193,6 +197,8 @@ class RuntimeSceneGuard {
       api_ = nullptr;
       handle_ = nullptr;
     }
+    raw_ = NveRuntimeSceneView{};
+    reader_ = RuntimeSceneReader{};
   }
 
   [[nodiscard]] bool active() const noexcept { return handle_ != nullptr; }
@@ -277,36 +283,36 @@ class RuntimeSession {
   [[nodiscard]] NveRuntimeHandle handle() const noexcept { return handle_; }
   [[nodiscard]] const NveRuntimeApi* api() const noexcept { return api_; }
 
-  [[nodiscard]] NveRuntimeStatus set_wake_callback(NveRuntimeWakeFn cb, void* ctx) const noexcept {
+  [[nodiscard]] NveRuntimeStatus set_wake_callback(NveRuntimeWakeFn cb, void* ctx) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->set_wake_callback(handle_, cb, ctx));
   }
 
-  [[nodiscard]] NveRuntimeStatus clear_wake_callback() const noexcept {
+  [[nodiscard]] NveRuntimeStatus clear_wake_callback() noexcept {
     return set_wake_callback(nullptr, nullptr);
   }
 
-  [[nodiscard]] NveRuntimeStatus set_viewport(float width, float height, float scale_factor) const noexcept {
+  [[nodiscard]] NveRuntimeStatus set_viewport(float width, float height, float scale_factor) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->set_viewport(handle_, width, height, scale_factor));
   }
 
-  [[nodiscard]] NveRuntimeStatus attach_app_interface(NveGetInterfaceFn get_iface) const noexcept {
+  [[nodiscard]] NveRuntimeStatus attach_app_interface(NveGetInterfaceFn get_iface) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->attach_app_interface(handle_, get_iface));
   }
 
-  [[nodiscard]] NveRuntimeStatus detach_app() const noexcept {
+  [[nodiscard]] NveRuntimeStatus detach_app() noexcept {
     return attach_app_interface(nullptr);
   }
 
-  [[nodiscard]] NveRuntimeStatus submit_nve2(std::span<const uint8_t> bytes) const noexcept {
+  [[nodiscard]] NveRuntimeStatus submit_nve2(std::span<const uint8_t> bytes) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     const NveBufferSlice slice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
     return static_cast<NveRuntimeStatus>(api_->submit_nve2(handle_, slice));
   }
 
-  [[nodiscard]] NveRuntimeStatus tick(float dt_s, bool* out_changed = nullptr) const noexcept {
+  [[nodiscard]] NveRuntimeStatus tick(float dt_s, bool* out_changed = nullptr) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     uint32_t changed = 0u;
     const auto st = static_cast<NveRuntimeStatus>(api_->tick(handle_, dt_s, &changed));
@@ -315,7 +321,7 @@ class RuntimeSession {
   }
 
   [[nodiscard]] NveRuntimeStatus dispatch_events(NveEventBatch batch,
-                                                 bool* out_changed = nullptr) const noexcept {
+                                                 bool* out_changed = nullptr) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     uint32_t changed = 0u;
     const auto st = static_cast<NveRuntimeStatus>(api_->dispatch_events(handle_, batch, &changed));
@@ -330,7 +336,7 @@ class RuntimeSession {
 
   [[nodiscard]] NveRuntimeStatus scroll_by(uint32_t node_id, float dx, float dy,
                                            float* out_x = nullptr,
-                                           float* out_y = nullptr) const noexcept {
+                                           float* out_y = nullptr) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->scroll_by(handle_, node_id, dx, dy, out_x, out_y));
   }
@@ -367,7 +373,7 @@ class RuntimeSession {
   }
 
   [[nodiscard]] NveRuntimeStatus pair_connect(std::string_view uri,
-                                              std::string_view token = {}) const noexcept {
+                                              std::string_view token = {}) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     const NveStrSlice uri_s{
         uri.empty() ? nullptr : reinterpret_cast<const uint8_t*>(uri.data()),
@@ -380,7 +386,7 @@ class RuntimeSession {
     return static_cast<NveRuntimeStatus>(api_->pair_connect(handle_, uri_s, tok_s));
   }
 
-  [[nodiscard]] NveRuntimeStatus pair_disconnect() const noexcept {
+  [[nodiscard]] NveRuntimeStatus pair_disconnect() noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->pair_disconnect(handle_));
   }

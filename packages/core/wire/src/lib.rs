@@ -15,6 +15,8 @@ mod client_ws;
 pub mod framing;
 #[cfg(feature = "client")]
 pub mod reconnect;
+#[cfg(feature = "client")]
+mod reconnect_loop;
 #[cfg(feature = "server")]
 pub mod server;
 #[cfg(feature = "server")]
@@ -33,7 +35,9 @@ pub use auth::verify_bearer_token;
 pub use client::NveWireClient;
 pub use nve_wire_core::*;
 #[cfg(feature = "client")]
-pub use reconnect::{ReconnectConfig, ReconnectingWireClient, WireWakeCallback};
+pub use reconnect::{
+    ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireWakeCallback,
+};
 #[cfg(feature = "server")]
 pub use server::NveWireServer;
 #[cfg(feature = "server")]

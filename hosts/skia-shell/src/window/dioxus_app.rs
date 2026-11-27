@@ -1,13 +1,12 @@
 //! Direct in-process [`DesktopApp`] adapter delegating to [`nve_dioxus::DioxusRuntimeApp`] and
-//! [`nve_runtime::WakeBridge`] for coalesced cross-thread async task wakeup in desktop windows.
+//! [`nve_engine::WakeBridge`] for coalesced cross-thread async task wakeup in desktop windows.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use nve_abi::{FrameId, NveEventBatchRef, SurfaceId};
 use nve_dioxus::{DioxusRuntimeApp, DioxusSurface};
-use nve_engine::{HotPatchMsg, Viewport};
-use nve_runtime::{RuntimeApp, WakeBridge};
+use nve_engine::{HotPatchMsg, RuntimeApp, Viewport, WakeBridge};
 
 use super::session::DesktopSession;
 use super::window_host::DesktopWindowHost;

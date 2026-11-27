@@ -489,14 +489,22 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         let mut reschedule = false;
         for sw in self.windows.values_mut() {
             let has_remote = sw.session.app().has_pending_remote_frame();
-            if has_remote && let Some(banner) = sw.session.app().remote_status_banner() {
+            let mut banner_changed = false;
+            if let Some(banner) = sw.session.app().remote_status_banner()
+                && sw.session.status_banner() != Some(banner.as_str())
+            {
                 sw.session.set_status_banner(Some(banner));
+                banner_changed = true;
             }
             let (rendered, exhausted) = Self::pump_window_async(sw, has_remote);
             reschedule |= exhausted;
             if rendered {
                 sw.sync_title();
                 sw.sync_ime_state();
+                sw.window.request_redraw();
+            } else if banner_changed {
+                sw.session.rasterize_current();
+                sw.sync_title();
                 sw.window.request_redraw();
             }
         }

@@ -14,7 +14,7 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder, TableSlot};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
-use crate::pair::{PairInboundFrame, PairSession};
+use crate::pair::{PairInboundEvent, PairSession};
 
 // Full field-by-field + little-endian proof (including `pub(crate)` `flags` and
 // `ChildSpan::{off, len}`) is enforced at compile time in `nve_store::store`.
@@ -28,7 +28,7 @@ const _: () = {
 /// Upper bound on synchronous `render_frame -> poll_async_work` pumps within a single `tick()`.
 const MAX_RENDER_PUMPS: usize = 4;
 
-/// Upper bound on paired inbound wire frames drained in a single `tick()` to prevent UI starvation.
+/// Upper bound on paired inbound wire events drained in a single `tick()` to prevent UI starvation.
 const MAX_PAIR_FRAMES_PER_TICK: usize = 64;
 
 /// Disjoint non-store surface state so `app` / `replica_store` and `state` can be borrowed
@@ -39,6 +39,7 @@ pub(crate) struct SurfaceState {
     pub(crate) layout_engine_name: &'static str,
     pub(crate) realization_order: RealizationOrder,
     pub(crate) wire_decoder: WireDecoder,
+    pub(crate) has_replica_state: bool,
     pub(crate) wire_changes: ChangeSet,
     pub(crate) hook_changes: ChangeSet,
     pub(crate) merged_changes: ChangeSet,
@@ -252,39 +253,6 @@ impl SurfaceState {
         }
         self.needs_publish = false;
     }
-
-    pub(crate) fn apply_wire_and_publish(
-        &mut self,
-        replica: &mut NodeStore,
-        bytes: &[u8],
-    ) -> Result<(), RuntimeError> {
-        // Validate the 24-byte NVE2 header BEFORE invalidating the live published view so
-        // truncated/misaligned frames fail cleanly without blanking the screen.
-        WireDecoder::validate_header(bytes)
-            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-        self.invalidate_published_view();
-        {
-            let mut tx = replica.tx();
-            self.wire_decoder
-                .apply(&mut tx, bytes)
-                .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-            tx.commit_into(&mut self.wire_changes);
-        }
-        self.metrics.wire_bytes_rx = self
-            .metrics
-            .wire_bytes_rx
-            .saturating_add(bytes.len() as u64);
-        self.frame_id = self.frame_id.wrapping_add(1).max(1);
-        let t_lay = Timer::start();
-        let laid_out = self.scene.commit(replica, &self.wire_changes);
-        self.scene
-            .reconcile_scroll_offsets_if_needed(replica, &self.wire_changes, laid_out);
-        self.metrics.layout_us = t_lay.elapsed_us();
-        let changes = std::mem::take(&mut self.wire_changes);
-        self.publish_scene(replica, &changes, laid_out);
-        self.wire_changes = changes;
-        Ok(())
-    }
 }
 
 pub(crate) struct RuntimeInner {
@@ -296,16 +264,9 @@ pub(crate) struct RuntimeInner {
 
 impl RuntimeInner {
     /// Resets `replica_store`, `wire_decoder`, `scene`, `rects`, and `published_view` when
-    /// attaching, replacing, or detaching an app so stale nodes, rects, or wire table IDs never
-    /// leak across sessions.
+    /// attaching, replacing, or detaching an app/pair or recovering from wire corruption.
     pub(crate) fn reset_for_app_change(&mut self) {
-        self.state.invalidate_published_view();
-        self.state.rects.clear();
-        self.state.scene.reset();
-        self.state.wire_decoder = WireDecoder::default();
-        self.replica_store = NodeStore::replica();
-        self.replica_store
-            .set_realization_order(self.state.realization_order.clone());
+        Self::reset_replica_and_state(&mut self.replica_store, &mut self.state);
     }
 
     #[inline]
@@ -342,6 +303,107 @@ impl RuntimeInner {
             *has_changes = true;
         } else {
             dst.merge_from(src);
+        }
+    }
+
+    fn apply_wire_into(
+        replica_store: &mut NodeStore,
+        state: &mut SurfaceState,
+        bytes: &[u8],
+        is_keyframe: bool,
+        count_wire_bytes: bool,
+        has_changes: &mut bool,
+    ) -> Result<(), RuntimeError> {
+        let (frame_num, _ops) = WireDecoder::validate_header(bytes)
+            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
+        if (is_keyframe || frame_num == 1) && state.has_replica_state {
+            Self::reset_replica_and_state(replica_store, state);
+            state.merged_changes.copy_from(&state.empty_changes);
+            *has_changes = false;
+        } else {
+            state.invalidate_published_view();
+        }
+        let apply_res = {
+            let mut tx = replica_store.tx();
+            let res = state.wire_decoder.apply(&mut tx, bytes);
+            if res.is_ok() {
+                tx.commit_into(&mut state.wire_changes);
+            }
+            res
+        };
+        if let Err(err) = apply_res {
+            return Err(RuntimeError::WireDecode(err.to_string()));
+        }
+        state.has_replica_state = true;
+        if count_wire_bytes {
+            state.metrics.wire_bytes_rx = state
+                .metrics
+                .wire_bytes_rx
+                .saturating_add(bytes.len() as u64);
+        }
+        Self::record_changes(&mut state.merged_changes, has_changes, &state.wire_changes);
+        state.needs_publish = true;
+        Ok(())
+    }
+
+    fn reset_replica_and_state(replica_store: &mut NodeStore, state: &mut SurfaceState) {
+        state.invalidate_published_view();
+        state.rects.clear();
+        state.scene.reset();
+        state.wire_decoder = WireDecoder::default();
+        state.has_replica_state = false;
+        *replica_store = NodeStore::replica();
+        replica_store.set_realization_order(state.realization_order.clone());
+    }
+
+    fn apply_wire_bytes(
+        &mut self,
+        bytes: &[u8],
+        is_keyframe: bool,
+        count_wire_bytes: bool,
+        has_changes: &mut bool,
+    ) -> Result<(), RuntimeError> {
+        Self::apply_wire_into(
+            &mut self.replica_store,
+            &mut self.state,
+            bytes,
+            is_keyframe,
+            count_wire_bytes,
+            has_changes,
+        )
+    }
+
+    fn commit_and_publish(&mut self, has_changes: bool) {
+        let (store, state) = self.split_store_and_state();
+        state.invalidate_published_view();
+        state.frame_id = state.frame_id.wrapping_add(1).max(1);
+        let t_lay = Timer::start();
+        let laid_out = if has_changes {
+            let changes = std::mem::take(&mut state.merged_changes);
+            let r = state.scene.commit(store, &changes);
+            state
+                .scene
+                .reconcile_scroll_offsets_if_needed(store, &changes, r);
+            state.merged_changes = changes;
+            r
+        } else {
+            let r = state.scene.recompute_layout(store);
+            let empty = std::mem::take(&mut state.empty_changes);
+            state
+                .scene
+                .reconcile_scroll_offsets_if_needed(store, &empty, r);
+            state.empty_changes = empty;
+            r
+        };
+        state.metrics.layout_us = t_lay.elapsed_us();
+        if has_changes {
+            let changes = std::mem::take(&mut state.merged_changes);
+            state.publish_scene(store, &changes, laid_out);
+            state.merged_changes = changes;
+        } else {
+            let empty = std::mem::take(&mut state.empty_changes);
+            state.publish_scene(store, &empty, laid_out);
+            state.empty_changes = empty;
         }
     }
 
@@ -383,28 +445,14 @@ impl RuntimeInner {
                 AppFrame::Wire(bytes) => {
                     self.state.metrics.reconcile_us = t_rec.elapsed_us();
                     if !bytes.is_empty() {
-                        WireDecoder::validate_header(bytes)
-                            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-                        self.state.invalidate_published_view();
-                        {
-                            let mut tx = self.replica_store.tx();
-                            self.state
-                                .wire_decoder
-                                .apply(&mut tx, bytes)
-                                .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-                            tx.commit_into(&mut self.state.wire_changes);
-                        }
-                        self.state.metrics.wire_bytes_rx = self
-                            .state
-                            .metrics
-                            .wire_bytes_rx
-                            .saturating_add(bytes.len() as u64);
-                        Self::record_changes(
-                            &mut self.state.merged_changes,
+                        Self::apply_wire_into(
+                            &mut self.replica_store,
+                            &mut self.state,
+                            bytes,
+                            false,
+                            true,
                             &mut has_changes,
-                            &self.state.wire_changes,
-                        );
-                        self.state.needs_publish = true;
+                        )?;
                     }
                 }
             }
@@ -413,10 +461,11 @@ impl RuntimeInner {
             }
         }
 
-        let mut pair_follow_up = false;
-        if self.pair.is_some() {
-            pair_follow_up = self.drain_pair_frames(&mut has_changes)?;
-        }
+        let pair_follow_up = if self.pair.is_some() {
+            self.drain_pair_frames(&mut has_changes)
+        } else {
+            false
+        };
 
         let needs_follow_up_wake =
             (self.state.needs_render && self.app.is_some()) || pair_follow_up;
@@ -444,37 +493,7 @@ impl RuntimeInner {
         }
 
         let changed = if has_changes || self.state.needs_publish {
-            let (store, state) = self.split_store_and_state();
-            state.invalidate_published_view();
-            state.frame_id = state.frame_id.wrapping_add(1).max(1);
-            let t_lay = Timer::start();
-            let laid_out = if has_changes {
-                let changes = std::mem::take(&mut state.merged_changes);
-                let r = state.scene.commit(store, &changes);
-                state
-                    .scene
-                    .reconcile_scroll_offsets_if_needed(store, &changes, r);
-                state.merged_changes = changes;
-                r
-            } else {
-                let r = state.scene.recompute_layout(store);
-                let empty = std::mem::take(&mut state.empty_changes);
-                state
-                    .scene
-                    .reconcile_scroll_offsets_if_needed(store, &empty, r);
-                state.empty_changes = empty;
-                r
-            };
-            state.metrics.layout_us = t_lay.elapsed_us();
-            if has_changes {
-                let changes = std::mem::take(&mut state.merged_changes);
-                state.publish_scene(store, &changes, laid_out);
-                state.merged_changes = changes;
-            } else {
-                let empty = std::mem::take(&mut state.empty_changes);
-                state.publish_scene(store, &empty, laid_out);
-                state.empty_changes = empty;
-            }
+            self.commit_and_publish(has_changes);
             true
         } else {
             false
@@ -483,73 +502,98 @@ impl RuntimeInner {
         Ok((changed, needs_follow_up_wake))
     }
 
-    fn drain_pair_frames(&mut self, has_changes: &mut bool) -> Result<bool, RuntimeError> {
+    fn reset_and_request_pair_keyframe(&mut self, session_id: u64, has_changes: &mut bool) {
+        self.reset_for_app_change();
+        self.state
+            .merged_changes
+            .copy_from(&self.state.empty_changes);
+        *has_changes = false;
+        self.state.needs_publish = true;
+        if let Some(ref mut pair) = self.pair {
+            pair.request_keyframe_once(session_id);
+        }
+    }
+
+    /// Drains bounded paired wire events, maintaining `waiting_for_keyframe` across reconnects,
+    /// queue overflows, and mid-frame/multi-frame decode failures without aborting `tick()`.
+    fn drain_pair_frames(&mut self, has_changes: &mut bool) -> bool {
         let mut drained = 0usize;
         while drained < MAX_PAIR_FRAMES_PER_TICK {
-            let Some(frame) = self.pair.as_ref().and_then(PairSession::try_recv_scene_frame) else {
+            let Some(ev) = self.pair.as_ref().and_then(PairSession::try_recv_event) else {
                 break;
             };
             drained += 1;
-            match frame {
-                PairInboundFrame::Keyframe(bytes) => {
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    WireDecoder::validate_header(&bytes)
-                        .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-                    self.reset_for_app_change();
-                    self.state.merged_changes.copy_from(&self.state.empty_changes);
-                    *has_changes = false;
+            match ev {
+                PairInboundEvent::SessionStarted {
+                    session_id,
+                    reconnected,
+                } => {
+                    if reconnected
+                        && let Some(ref mut pair) = self.pair
+                        && (self.state.has_replica_state || pair.is_waiting_for_keyframe())
                     {
-                        let mut tx = self.replica_store.tx();
-                        self.state
-                            .wire_decoder
-                            .apply(&mut tx, &bytes)
-                            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-                        tx.commit_into(&mut self.state.wire_changes);
+                        pair.enter_resync_after_reconnect(session_id);
                     }
-                    Self::record_changes(
-                        &mut self.state.merged_changes,
-                        has_changes,
-                        &self.state.wire_changes,
-                    );
-                    self.state.needs_publish = true;
                 }
-                PairInboundFrame::Delta(bytes) => {
-                    if bytes.is_empty() {
+                PairInboundEvent::Overflowed { session_id } => {
+                    self.reset_and_request_pair_keyframe(session_id, has_changes);
+                }
+                PairInboundEvent::Keyframe {
+                    session_id,
+                    payload,
+                } => {
+                    if payload.is_empty() {
                         continue;
                     }
-                    let (frame_num, _ops) = WireDecoder::validate_header(&bytes)
-                        .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-                    if frame_num == 1 && self.replica_store.is_live(nve_store::NodeId::ROOT) {
-                        self.reset_for_app_change();
-                        self.state.merged_changes.copy_from(&self.state.empty_changes);
-                        *has_changes = false;
-                    } else {
-                        self.state.invalidate_published_view();
+                    match self.apply_wire_bytes(&payload, true, false, has_changes) {
+                        Ok(()) => {
+                            if let Some(ref mut pair) = self.pair {
+                                pair.mark_synced();
+                            }
+                        }
+                        Err(_) => {
+                            self.reset_and_request_pair_keyframe(session_id, has_changes);
+                        }
                     }
-                    {
-                        let mut tx = self.replica_store.tx();
-                        self.state
-                            .wire_decoder
-                            .apply(&mut tx, &bytes)
-                            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
-                        tx.commit_into(&mut self.state.wire_changes);
+                }
+                PairInboundEvent::Delta {
+                    session_id,
+                    payload,
+                } => {
+                    if payload.is_empty() {
+                        continue;
                     }
-                    Self::record_changes(
-                        &mut self.state.merged_changes,
-                        has_changes,
-                        &self.state.wire_changes,
-                    );
-                    self.state.needs_publish = true;
+                    let waiting = self
+                        .pair
+                        .as_ref()
+                        .is_some_and(PairSession::is_waiting_for_keyframe);
+                    if waiting {
+                        // Drop deltas (and corrupt packets) while waiting for a SceneKeyframe or frame 1.
+                        let Ok((frame_num, _)) = WireDecoder::validate_header(&payload) else {
+                            continue;
+                        };
+                        if frame_num != 1 {
+                            continue;
+                        }
+                    }
+                    match self.apply_wire_bytes(&payload, false, false, has_changes) {
+                        Ok(()) => {
+                            if let Some(ref mut pair) = self.pair {
+                                pair.mark_synced();
+                            }
+                        }
+                        Err(_) => {
+                            self.reset_and_request_pair_keyframe(session_id, has_changes);
+                        }
+                    }
                 }
             }
         }
         if let Some(ref mut pair) = self.pair {
             pair.sync_metrics(&mut self.state.metrics);
-            Ok(pair.has_pending_frame())
+            pair.has_pending_frame()
         } else {
-            Ok(false)
+            false
         }
     }
 
@@ -567,9 +611,9 @@ impl RuntimeInner {
         if bytes.is_empty() {
             return Ok(());
         }
-        self.state
-            .apply_wire_and_publish(&mut self.replica_store, bytes)?;
-        self.state.needs_publish = false;
+        let mut has_changes = false;
+        self.apply_wire_bytes(bytes, false, true, &mut has_changes)?;
+        self.commit_and_publish(has_changes);
         Ok(())
     }
 }

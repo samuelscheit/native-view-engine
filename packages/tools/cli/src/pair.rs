@@ -403,9 +403,15 @@ impl<A: PairedApp> PairSession<A> {
         if frame.is_empty() || (!force && frame.as_ref() == self.last_frame.as_slice()) {
             return Ok(false);
         }
-        self.server
-            .broadcast_command_delta(self.frame_id as u32, &frame)
-            .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
+        if self.frame_id == 1 {
+            self.server
+                .broadcast_scene_keyframe(self.frame_id as u32, &frame)
+                .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
+        } else {
+            self.server
+                .broadcast_command_delta(self.frame_id as u32, &frame)
+                .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
+        }
         match frame {
             Cow::Borrowed(slice) => {
                 self.last_frame.clear();

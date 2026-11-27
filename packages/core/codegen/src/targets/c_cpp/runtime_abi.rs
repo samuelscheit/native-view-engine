@@ -54,17 +54,21 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, "extern \"C\" {{");
     writeln!(out, "#endif");
     writeln!(out);
-    writeln!(out, "#ifndef NVE_API");
-    writeln!(out, "#if defined(NVE_BUILD_SHARED_LIB)");
+    writeln!(out, "#ifndef NVE_RUNTIME_API");
+    writeln!(out, "#if defined(NVE_RUNTIME_SHARED)");
     writeln!(out, "#if defined(_WIN32)");
-    writeln!(out, "#define NVE_API __declspec(dllexport)");
-    writeln!(out, "#elif defined(__GNUC__) || defined(__clang__)");
-    writeln!(out, "#define NVE_API __attribute__((visibility(\"default\")))");
+    writeln!(out, "#if defined(NVE_BUILDING_RUNTIME) || defined(NVE_BUILD_SHARED_LIB)");
+    writeln!(out, "#define NVE_RUNTIME_API __declspec(dllexport)");
     writeln!(out, "#else");
-    writeln!(out, "#define NVE_API");
+    writeln!(out, "#define NVE_RUNTIME_API __declspec(dllimport)");
+    writeln!(out, "#endif");
+    writeln!(out, "#elif defined(__GNUC__) || defined(__clang__)");
+    writeln!(out, "#define NVE_RUNTIME_API __attribute__((visibility(\"default\")))");
+    writeln!(out, "#else");
+    writeln!(out, "#define NVE_RUNTIME_API");
     writeln!(out, "#endif");
     writeln!(out, "#else");
-    writeln!(out, "#define NVE_API");
+    writeln!(out, "#define NVE_RUNTIME_API");
     writeln!(out, "#endif");
     writeln!(out, "#endif");
     writeln!(out);
@@ -245,7 +249,10 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, " *   `set_wake_callback(h, NULL, NULL)` and `destroy(h)` drain all in-flight");
     writeln!(out, " *   invocations before returning so the host may safely free `ctx` afterward.");
     writeln!(out, " */");
-    writeln!(out, "NVE_API const NveRuntimeApi* nve_runtime_get_interface(uint32_t abi_version);");
+    writeln!(
+        out,
+        "NVE_RUNTIME_API const NveRuntimeApi* nve_runtime_get_interface(uint32_t abi_version);"
+    );
     writeln!(out);
 
     writeln!(

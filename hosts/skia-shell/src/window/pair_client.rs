@@ -3,20 +3,25 @@
 //! over QUIC (`nve-wire-2`), HTTP/3 WebTransport (`h3`), TLS WebSocket (`wss://`), or
 //! Happy-Eyeballs auto-fallback with automatic exponential-backoff reconnect & keyframe recovery.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nve_abi::{direct_event_to_native, encode_events, FrameId, SurfaceId};
+use nve_store::wire::WireDecoder;
 use nve_wire::{
     parse_wire_uri, NveWireClientConfig, NveWireKind, NveWireMetrics, NveWireTransportKind,
-    NveWireUri, ReconnectConfig, ReconnectingWireClient, DEFAULT_WIRE_WSS_PATH,
+    NveWireUri, ReconnectConfig, ReconnectingWireClient, WireInboundItem, DEFAULT_WIRE_WSS_PATH,
 };
 
 use super::{DesktopApp, DesktopHostError};
 
 /// Default WebSocket / WebTransport path served by `nve pair`.
 pub const DEFAULT_PAIR_WS_PATH: &str = DEFAULT_WIRE_WSS_PATH;
+
+/// Maximum queued wire frames retained between ticks before triggering keyframe resync.
+const MAX_PENDING_REMOTE_FRAMES: usize = 256;
 
 /// Transport protocol used by `--pair-connect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -151,11 +156,18 @@ impl PairConnectConfig {
 }
 
 /// Live thin-client [`DesktopApp`] backed directly by [`ReconnectingWireClient`].
+///
+/// Queues ordered `(is_keyframe, payload)` frames in a bounded [`VecDeque`] so incremental
+/// `CommandDelta` batches are applied sequentially without dropping intermediate mutations.
 pub struct PairedRemoteApp {
     client: ReconnectingWireClient,
     endpoint_label: String,
-    latest_frame: Vec<u8>,
-    has_unconsumed_frame: bool,
+    pending_frames: VecDeque<(bool, Vec<u8>)>,
+    last_rendered: Vec<u8>,
+    has_seen_frame: bool,
+    waiting_for_keyframe: bool,
+    resync_epoch: u64,
+    keyframe_requested_key: Option<(u64, u64)>,
 }
 
 impl PairedRemoteApp {
@@ -184,8 +196,12 @@ impl PairedRemoteApp {
         Ok(Self {
             client,
             endpoint_label: config.addr,
-            latest_frame: Vec::new(),
-            has_unconsumed_frame: false,
+            pending_frames: VecDeque::new(),
+            last_rendered: Vec::new(),
+            has_seen_frame: false,
+            waiting_for_keyframe: false,
+            resync_epoch: 0,
+            keyframe_requested_key: None,
         })
     }
 
@@ -218,12 +234,74 @@ impl PairedRemoteApp {
         self.client.metrics()
     }
 
+    fn request_keyframe_once(&mut self, session_id: u64) {
+        self.waiting_for_keyframe = true;
+        let key = (session_id, self.resync_epoch);
+        if self.keyframe_requested_key != Some(key) {
+            self.keyframe_requested_key = Some(key);
+            let _ = self.client.request_keyframe();
+        }
+    }
+
+    /// Processes one ordered [`WireInboundItem`], returning `Some(sequence)` when a scene frame
+    /// was enqueued.
+    fn ingest_item(&mut self, item: WireInboundItem) -> Option<u32> {
+        match item {
+            WireInboundItem::SessionStarted {
+                session_id,
+                reconnected,
+            } => {
+                if reconnected && (self.has_seen_frame || self.waiting_for_keyframe) {
+                    self.waiting_for_keyframe = true;
+                    self.keyframe_requested_key = Some((session_id, self.resync_epoch));
+                }
+                None
+            }
+            WireInboundItem::Overflowed { session_id } => {
+                self.pending_frames.clear();
+                self.request_keyframe_once(session_id);
+                None
+            }
+            WireInboundItem::Frame { session_id, frame } => {
+                if !matches!(
+                    frame.kind,
+                    NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
+                ) || frame.payload.is_empty()
+                {
+                    return None;
+                }
+                let is_keyframe = frame.kind == NveWireKind::SceneKeyframe;
+                let is_frame1 =
+                    WireDecoder::validate_header(&frame.payload).is_ok_and(|(num, _)| num == 1);
+                if self.waiting_for_keyframe && !is_keyframe && !is_frame1 {
+                    return None;
+                }
+                if is_keyframe || is_frame1 {
+                    self.pending_frames.clear();
+                    if self.waiting_for_keyframe {
+                        self.waiting_for_keyframe = false;
+                        self.resync_epoch = self.resync_epoch.wrapping_add(1);
+                    }
+                } else if self.pending_frames.len() >= MAX_PENDING_REMOTE_FRAMES {
+                    self.pending_frames.clear();
+                    self.request_keyframe_once(session_id);
+                    return None;
+                }
+                let seq = frame.sequence;
+                self.pending_frames.push_back((is_keyframe, frame.payload));
+                self.has_seen_frame = true;
+                Some(seq)
+            }
+        }
+    }
+
     pub fn wait_for_frame(
         &mut self,
         timeout: Duration,
     ) -> Result<(u32, Vec<u8>), DesktopHostError> {
         let deadline = Instant::now() + timeout;
-        let first = loop {
+        let mut last_seq = self.client.metrics().last_sequence;
+        while self.pending_frames.is_empty() {
             let now = Instant::now();
             if now >= deadline {
                 return Err(DesktopHostError::Pairing(format!(
@@ -231,46 +309,30 @@ impl PairedRemoteApp {
                     self.endpoint_label
                 )));
             }
-            let Some(frame) = self.client.recv_frame_timeout(deadline - now) else {
+            let Some(item) = self.client.recv_item_timeout(deadline - now) else {
                 continue;
             };
-            if matches!(
-                frame.kind,
-                NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
-            ) && !frame.payload.is_empty()
-            {
-                break (frame.sequence, frame.payload);
-            }
-        };
-        let mut latest = first;
-        while let Some(newer) = self.client.try_recv_frame() {
-            if matches!(
-                newer.kind,
-                NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
-            ) && !newer.payload.is_empty()
-            {
-                latest = (newer.sequence, newer.payload);
+            if let Some(seq) = self.ingest_item(item) {
+                last_seq = seq;
             }
         }
-        self.latest_frame = latest.1.clone();
-        self.has_unconsumed_frame = true;
-        Ok(latest)
+        while let Some(item) = self.client.try_recv_item() {
+            if let Some(seq) = self.ingest_item(item) {
+                last_seq = seq;
+            }
+        }
+        let latest = self
+            .pending_frames
+            .back()
+            .map(|(_, bytes)| bytes.clone())
+            .unwrap_or_default();
+        Ok((last_seq, latest))
     }
 
-    fn drain_incoming_frames(&mut self) -> bool {
-        let mut got_new = false;
-        while let Some(frame) = self.client.try_recv_frame() {
-            if matches!(
-                frame.kind,
-                NveWireKind::CommandDelta | NveWireKind::SceneKeyframe
-            ) && !frame.payload.is_empty()
-            {
-                self.latest_frame = frame.payload;
-                self.has_unconsumed_frame = true;
-                got_new = true;
-            }
+    fn drain_incoming_frames(&mut self) {
+        while let Some(item) = self.client.try_recv_item() {
+            let _ = self.ingest_item(item);
         }
-        got_new
     }
 
     pub fn disconnect(&mut self) {
@@ -294,12 +356,17 @@ impl DesktopApp for PairedRemoteApp {
 
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         self.drain_incoming_frames();
-        if self.has_unconsumed_frame {
-            self.has_unconsumed_frame = false;
-            &self.latest_frame
+        if let Some((_, bytes)) = self.pending_frames.pop_front() {
+            self.last_rendered = bytes;
+            &self.last_rendered
         } else {
             &[]
         }
+    }
+
+    fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
+        self.drain_incoming_frames();
+        self.pending_frames.pop_front()
     }
 
     fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
@@ -310,7 +377,7 @@ impl DesktopApp for PairedRemoteApp {
         if owned.is_empty() {
             return false;
         }
-        self.client.send_events(&encode_events(&owned)).is_ok()
+        self.client.send_events(encode_events(&owned)).is_ok()
     }
 
     fn apply_hot_patch(&mut self, _patch_nvp1: &[u8]) -> bool {
@@ -332,7 +399,7 @@ impl DesktopApp for PairedRemoteApp {
     }
 
     fn has_pending_remote_frame(&self) -> bool {
-        self.has_unconsumed_frame || self.client.has_pending_frame()
+        !self.pending_frames.is_empty() || self.client.has_pending_item()
     }
 
     fn remote_status_banner(&self) -> Option<String> {

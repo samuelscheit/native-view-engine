@@ -1,5 +1,5 @@
-//! Single-thread Tokio reconnecting wire client with exponential backoff (`100ms..=5s`),
-//! automatic `KeyframeRequest` recovery on reconnect, and synchronized wake callbacks.
+//! Single-thread Tokio reconnecting wire client with bounded channels, monotonic session tagging,
+//! terminal auth rejection, exponential backoff (`100ms..=5s`), and synchronized wake callbacks.
 //!
 //! Embedded directly inside `packages/core/runtime` (and reused by `hosts/skia-shell`) so every
 //! native host shares one client transport without multi-thread Tokio pools or duplicated loops.
@@ -7,16 +7,37 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver};
 use nve_wire_core::{NveWireFrame, NveWireMetrics, NveWireTransportKind, NveWireUri};
 use tokio::sync::{mpsc, Notify};
 
+use crate::reconnect_loop::{activate_session, reconnect_loop, OutboundCmd};
 use crate::{NveWireClient, NveWireClientConfig, NveWireTransportError};
 
 /// Callback fired on inbound frames and connection state transitions.
 pub type WireWakeCallback = Arc<dyn Fn() + Send + Sync>;
+
+/// Bounded capacity for inbound items exposed by [`ReconnectingWireClient`].
+pub(crate) const RECONNECT_INBOUND_CAP: usize = 256;
+/// Bounded capacity for outbound commands queued into [`ReconnectingWireClient`].
+pub(crate) const RECONNECT_OUTBOUND_CAP: usize = 256;
+
+/// Inbound event emitted by [`ReconnectingWireClient`] in delivery order.
+#[derive(Debug, Clone)]
+pub enum WireInboundItem {
+    /// A transport connection was established under monotonic local `session_id` (`1, 2, ...`).
+    SessionStarted { session_id: u64, reconnected: bool },
+    /// An `NveWireFrame` received on `session_id`.
+    Frame {
+        session_id: u64,
+        frame: NveWireFrame,
+    },
+    /// The bounded inbound queue overflowed on `session_id`; stale deltas were dropped and
+    /// consumers must reset / wait for a fresh `SceneKeyframe` (or `frame == 1`).
+    Overflowed { session_id: u64 },
+}
 
 /// Exponential backoff configuration for [`ReconnectingWireClient`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,30 +55,38 @@ impl Default for ReconnectConfig {
     }
 }
 
-enum OutboundCmd {
-    Events(Vec<u8>),
-    RequestKeyframe,
-}
-
-struct SharedState {
-    connected: Arc<AtomicBool>,
-    transport: AtomicU8,
-    session_id: AtomicU32,
-    reconnect_count: AtomicU64,
+pub(crate) struct SharedState {
+    pub(crate) connected: Arc<AtomicBool>,
+    pub(crate) transport: AtomicU8,
+    pub(crate) server_session_id: AtomicU32,
+    pub(crate) active_session_id: AtomicU64,
+    pub(crate) next_session_seq: AtomicU64,
+    pub(crate) reconnect_count: AtomicU64,
+    pub(crate) auth_rejections: AtomicU64,
+    pub(crate) dropped_outbound: AtomicU64,
+    pub(crate) dropped_inbound: AtomicU64,
+    pub(crate) last_error: Mutex<Option<String>>,
     metrics: Mutex<NveWireMetrics>,
     base_metrics: Mutex<NveWireMetrics>,
     wake: RwLock<Option<WireWakeCallback>>,
-    stop: AtomicBool,
-    stop_notify: Notify,
+    pub(crate) stop: AtomicBool,
+    pub(crate) stop_notify: Notify,
 }
 
 impl SharedState {
-    fn new(wake: Option<WireWakeCallback>) -> Self {
+    fn new(wake: Option<WireWakeCallback>, connected: Arc<AtomicBool>) -> Self {
+        connected.store(false, Ordering::Release);
         Self {
-            connected: Arc::new(AtomicBool::new(false)),
+            connected,
             transport: AtomicU8::new(encode_transport(NveWireTransportKind::Auto)),
-            session_id: AtomicU32::new(0),
+            server_session_id: AtomicU32::new(0),
+            active_session_id: AtomicU64::new(0),
+            next_session_seq: AtomicU64::new(1),
             reconnect_count: AtomicU64::new(0),
+            auth_rejections: AtomicU64::new(0),
+            dropped_outbound: AtomicU64::new(0),
+            dropped_inbound: AtomicU64::new(0),
+            last_error: Mutex::new(None),
             metrics: Mutex::new(NveWireMetrics::default()),
             base_metrics: Mutex::new(NveWireMetrics::default()),
             wake: RwLock::new(wake),
@@ -66,14 +95,18 @@ impl SharedState {
         }
     }
 
-    fn fire_wake(&self) {
+    pub(crate) fn fire_wake(&self) {
         let guard = self.wake.read().unwrap_or_else(|e| e.into_inner());
         if let Some(ref cb) = *guard {
             cb();
         }
     }
 
-    fn update_metrics_from(&self, client: &NveWireClient) {
+    pub(crate) fn set_last_error(&self, err: Option<String>) {
+        *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = err;
+    }
+
+    pub(crate) fn update_metrics_from(&self, client: &NveWireClient) {
         let cur = client.metrics();
         let base = *self.base_metrics.lock().unwrap_or_else(|e| e.into_inner());
         let combined = NveWireMetrics {
@@ -105,7 +138,7 @@ impl SharedState {
         *self.metrics.lock().unwrap_or_else(|e| e.into_inner()) = combined;
     }
 
-    fn checkpoint_metrics(&self) {
+    pub(crate) fn checkpoint_metrics(&self) {
         let cur = *self.metrics.lock().unwrap_or_else(|e| e.into_inner());
         *self.base_metrics.lock().unwrap_or_else(|e| e.into_inner()) = cur;
     }
@@ -114,8 +147,8 @@ impl SharedState {
 /// Auto-reconnecting `nve-wire` client driven by ONE dedicated Tokio `current_thread` runtime.
 pub struct ReconnectingWireClient {
     shared: Arc<SharedState>,
-    inbound_rx: Receiver<NveWireFrame>,
-    outbound_tx: Option<mpsc::UnboundedSender<OutboundCmd>>,
+    inbound_rx: Receiver<WireInboundItem>,
+    outbound_tx: Option<mpsc::Sender<OutboundCmd>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -128,38 +161,24 @@ impl ReconnectingWireClient {
         reconnect_cfg: ReconnectConfig,
         wake: Option<WireWakeCallback>,
     ) -> Result<Self, NveWireTransportError> {
-        let shared = Arc::new(SharedState::new(wake));
-        let (inbound_tx, inbound_rx) = unbounded();
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+        Self::spawn_with_connected_flag(
+            uri,
+            client_cfg,
+            reconnect_cfg,
+            wake,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
 
-        let w_shared = Arc::clone(&shared);
-        let worker = thread::Builder::new()
-            .name("nve-wire-client".to_owned())
-            .spawn(move || {
-                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                rt.block_on(reconnect_loop(
-                    None,
-                    uri,
-                    client_cfg,
-                    reconnect_cfg,
-                    w_shared,
-                    inbound_tx,
-                    outbound_rx,
-                ));
-            })
-            .map_err(|e| NveWireTransportError::Io(format!("spawn wire worker failed: {e}")))?;
-
-        Ok(Self {
-            shared,
-            inbound_rx,
-            outbound_tx: Some(outbound_tx),
-            worker: Some(worker),
-        })
+    /// Same as [`Self::spawn`], storing live connection state in a caller-owned `Arc<AtomicBool>`.
+    pub fn spawn_with_connected_flag(
+        uri: NveWireUri,
+        client_cfg: NveWireClientConfig,
+        reconnect_cfg: ReconnectConfig,
+        wake: Option<WireWakeCallback>,
+        connected_flag: Arc<AtomicBool>,
+    ) -> Result<Self, NveWireTransportError> {
+        Self::start_worker(uri, client_cfg, reconnect_cfg, wake, connected_flag, false)
     }
 
     /// Connects synchronously for the first handshake (propagating immediate auth/connect errors),
@@ -171,10 +190,34 @@ impl ReconnectingWireClient {
         reconnect_cfg: ReconnectConfig,
         wake: Option<WireWakeCallback>,
     ) -> Result<Self, NveWireTransportError> {
-        let shared = Arc::new(SharedState::new(wake));
-        let (inbound_tx, inbound_rx) = unbounded();
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
-        let (init_tx, init_rx) = crossbeam_channel::bounded::<Result<(), NveWireTransportError>>(1);
+        Self::start_worker(
+            uri,
+            client_cfg,
+            reconnect_cfg,
+            wake,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+    }
+
+    fn start_worker(
+        uri: NveWireUri,
+        client_cfg: NveWireClientConfig,
+        reconnect_cfg: ReconnectConfig,
+        wake: Option<WireWakeCallback>,
+        connected_flag: Arc<AtomicBool>,
+        wait_initial: bool,
+    ) -> Result<Self, NveWireTransportError> {
+        let shared = Arc::new(SharedState::new(wake, connected_flag));
+        let (inbound_tx, inbound_rx) = bounded(RECONNECT_INBOUND_CAP);
+        let inbound_drain = inbound_rx.clone();
+        let (outbound_tx, outbound_rx) = mpsc::channel(RECONNECT_OUTBOUND_CAP);
+        let (init_tx, init_rx) = if wait_initial {
+            let (tx, rx) = bounded::<Result<(), NveWireTransportError>>(1);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
         let w_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
@@ -186,59 +229,77 @@ impl ReconnectingWireClient {
                 {
                     Ok(rt) => rt,
                     Err(e) => {
-                        let _ = init_tx.send(Err(NveWireTransportError::Io(e.to_string())));
+                        if let Some(tx) = init_tx {
+                            let _ = tx.send(Err(NveWireTransportError::Io(e.to_string())));
+                        }
                         return;
                     }
                 };
                 rt.block_on(async move {
-                    match NveWireClient::connect_uri_async(&uri, &client_cfg).await {
-                        Ok(client) => {
-                            w_shared
-                                .transport
-                                .store(encode_transport(client.transport_kind()), Ordering::Release);
-                            w_shared
-                                .session_id
-                                .store(client.session_id(), Ordering::Release);
-                            w_shared.connected.store(true, Ordering::Release);
-                            w_shared.update_metrics_from(&client);
-                            let _ = init_tx.send(Ok(()));
-                            reconnect_loop(
-                                Some(client),
-                                uri,
-                                client_cfg,
-                                reconnect_cfg,
-                                w_shared,
-                                inbound_tx,
-                                outbound_rx,
-                            )
-                            .await;
+                    let initial = if let Some(tx) = init_tx {
+                        match NveWireClient::connect_uri_async(&uri, &client_cfg).await {
+                            Ok(client) => {
+                                let sid = activate_session(
+                                    &client,
+                                    false,
+                                    &w_shared,
+                                    &inbound_tx,
+                                    &inbound_drain,
+                                );
+                                let _ = tx.send(Ok(()));
+                                Some((client, sid))
+                            }
+                            Err(e) => {
+                                w_shared.set_last_error(Some(e.to_string()));
+                                if matches!(e, NveWireTransportError::Auth(_)) {
+                                    w_shared.auth_rejections.fetch_add(1, Ordering::Release);
+                                }
+                                let _ = tx.send(Err(e));
+                                return;
+                            }
                         }
-                        Err(e) => {
-                            let _ = init_tx.send(Err(e));
-                        }
-                    }
+                    } else {
+                        None
+                    };
+                    reconnect_loop(
+                        initial,
+                        uri,
+                        client_cfg,
+                        reconnect_cfg,
+                        w_shared,
+                        inbound_tx,
+                        inbound_drain,
+                        outbound_rx,
+                    )
+                    .await;
                 });
+                // Never stall `handle.join()` on in-flight blocking DNS lookup tasks.
+                rt.shutdown_background();
             })
             .map_err(|e| NveWireTransportError::Io(format!("spawn wire worker failed: {e}")))?;
 
-        match init_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
-                shared,
-                inbound_rx,
-                outbound_tx: Some(outbound_tx),
-                worker: Some(worker),
-            }),
-            Ok(Err(e)) => {
-                let _ = worker.join();
-                Err(e)
-            }
-            Err(_) => {
-                let _ = worker.join();
-                Err(NveWireTransportError::Io(
-                    "wire worker exited before handshake completed".to_owned(),
-                ))
+        if let Some(init_rx) = init_rx {
+            match init_rx.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    let _ = worker.join();
+                    return Err(e);
+                }
+                Err(_) => {
+                    let _ = worker.join();
+                    return Err(NveWireTransportError::Io(
+                        "wire worker exited before handshake completed".to_owned(),
+                    ));
+                }
             }
         }
+
+        Ok(Self {
+            shared,
+            inbound_rx,
+            outbound_tx: Some(outbound_tx),
+            worker: Some(worker),
+        })
     }
 
     #[inline]
@@ -257,9 +318,16 @@ impl ReconnectingWireClient {
         decode_transport(self.shared.transport.load(Ordering::Acquire))
     }
 
+    /// Protocol `HelloAck.session_id` assigned by the server (`0` before first handshake).
     #[inline]
     pub fn session_id(&self) -> u32 {
-        self.shared.session_id.load(Ordering::Acquire)
+        self.shared.server_session_id.load(Ordering::Acquire)
+    }
+
+    /// Monotonic client-local connection epoch (`0` when disconnected, `1, 2, ...` when connected).
+    #[inline]
+    pub fn active_session_id(&self) -> u64 {
+        self.shared.active_session_id.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -268,8 +336,36 @@ impl ReconnectingWireClient {
     }
 
     #[inline]
+    pub fn auth_rejections(&self) -> u64 {
+        self.shared.auth_rejections.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn dropped_outbound(&self) -> u64 {
+        self.shared.dropped_outbound.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn dropped_inbound(&self) -> u64 {
+        self.shared.dropped_inbound.load(Ordering::Acquire)
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.shared
+            .last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    #[inline]
     pub fn metrics(&self) -> NveWireMetrics {
         *self.shared.metrics.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[inline]
+    pub fn has_pending_item(&self) -> bool {
+        !self.inbound_rx.is_empty()
     }
 
     #[inline]
@@ -278,42 +374,111 @@ impl ReconnectingWireClient {
     }
 
     #[inline]
-    pub fn try_recv_frame(&self) -> Option<NveWireFrame> {
+    pub fn try_recv_item(&self) -> Option<WireInboundItem> {
         self.inbound_rx.try_recv().ok()
     }
 
     #[inline]
-    pub fn recv_frame_timeout(&self, timeout: Duration) -> Option<NveWireFrame> {
+    pub fn recv_item_timeout(&self, timeout: Duration) -> Option<WireInboundItem> {
         self.inbound_rx.recv_timeout(timeout).ok()
     }
 
-    pub fn send_events(&self, event_ring_bytes: &[u8]) -> Result<(), NveWireTransportError> {
+    pub fn try_recv_frame(&self) -> Option<NveWireFrame> {
+        while let Ok(item) = self.inbound_rx.try_recv() {
+            if let WireInboundItem::Frame { frame, .. } = item {
+                return Some(frame);
+            }
+        }
+        None
+    }
+
+    pub fn recv_frame_timeout(&self, timeout: Duration) -> Option<NveWireFrame> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            match self.inbound_rx.recv_timeout(deadline - now) {
+                Ok(WireInboundItem::Frame { frame, .. }) => return Some(frame),
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Queues an upstream `EventBatch` tagged with the active session ID.
+    ///
+    /// Immediately rejects and counts drops when disconnected or when the bounded outbound queue
+    /// is full so stale pre-connect / offline events are never queued for a later session.
+    pub fn send_events(
+        &self,
+        event_ring_bytes: impl Into<Vec<u8>>,
+    ) -> Result<(), NveWireTransportError> {
+        let sid = self.shared.active_session_id.load(Ordering::Acquire);
+        if sid == 0 || !self.is_connected() {
+            self.shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
+            return Err(NveWireTransportError::Io(
+                "wire client not connected".to_owned(),
+            ));
+        }
         let Some(tx) = self.outbound_tx.as_ref() else {
+            self.shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
             return Err(NveWireTransportError::Io("wire client shut down".to_owned()));
         };
-        tx.send(OutboundCmd::Events(event_ring_bytes.to_vec()))
-            .map_err(|_| NveWireTransportError::Io("wire worker channel closed".to_owned()))
+        tx.try_send(OutboundCmd::Events {
+            session_id: sid,
+            bytes: event_ring_bytes.into(),
+        })
+        .map_err(|e| {
+            self.shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    NveWireTransportError::Io("wire client outbound queue full".to_owned())
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    NveWireTransportError::Io("wire worker channel closed".to_owned())
+                }
+            }
+        })
     }
 
     pub fn request_keyframe(&self) -> Result<(), NveWireTransportError> {
+        let sid = self.shared.active_session_id.load(Ordering::Acquire);
+        if sid == 0 || !self.is_connected() {
+            return Err(NveWireTransportError::Io(
+                "wire client not connected".to_owned(),
+            ));
+        }
         let Some(tx) = self.outbound_tx.as_ref() else {
             return Err(NveWireTransportError::Io("wire client shut down".to_owned()));
         };
-        tx.send(OutboundCmd::RequestKeyframe)
-            .map_err(|_| NveWireTransportError::Io("wire worker channel closed".to_owned()))
+        tx.try_send(OutboundCmd::RequestKeyframe { session_id: sid })
+            .map_err(|_| NveWireTransportError::Io("wire worker channel unavailable".to_owned()))
     }
 
-    /// Installs or clears the wake callback, draining any in-flight invocation and dropping the
-    /// replaced callback outside the lock.
+    /// Installs or clears the wake callback, draining any in-flight invocation, dropping the
+    /// replaced callback outside the lock, and immediately firing the new callback if inbound
+    /// items or terminal auth errors are already queued.
     pub fn set_wake_callback(&self, cb: Option<WireWakeCallback>) {
+        let fire_now = cb
+            .as_ref()
+            .filter(|_| {
+                !self.inbound_rx.is_empty()
+                    || self.shared.auth_rejections.load(Ordering::Acquire) > 0
+            })
+            .cloned();
         let old = {
             let mut guard = self.shared.wake.write().unwrap_or_else(|e| e.into_inner());
             std::mem::replace(&mut *guard, cb)
         };
         drop(old);
+        if let Some(f) = fire_now {
+            f();
+        }
     }
 
-    /// Synchronously stops the worker thread and closes any active connection.
+    /// Synchronously stops the worker thread and gracefully closes any active connection.
     pub fn shutdown(&mut self) {
         self.set_wake_callback(None);
         self.shared.stop.store(true, Ordering::Release);
@@ -322,6 +487,7 @@ impl ReconnectingWireClient {
         if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }
+        self.shared.active_session_id.store(0, Ordering::Release);
         self.shared.connected.store(false, Ordering::Release);
     }
 }
@@ -332,157 +498,7 @@ impl Drop for ReconnectingWireClient {
     }
 }
 
-async fn reconnect_loop(
-    mut initial_client: Option<NveWireClient>,
-    uri: NveWireUri,
-    client_cfg: NveWireClientConfig,
-    reconnect_cfg: ReconnectConfig,
-    shared: Arc<SharedState>,
-    inbound_tx: Sender<NveWireFrame>,
-    mut outbound_rx: mpsc::UnboundedReceiver<OutboundCmd>,
-) {
-    let initial_backoff = reconnect_cfg.initial_backoff.max(Duration::from_millis(10));
-    let max_backoff = reconnect_cfg.max_backoff.max(initial_backoff);
-    let mut backoff = initial_backoff;
-    let mut had_prior_session = initial_client.is_some();
-
-    loop {
-        if shared.stop.load(Ordering::Acquire) {
-            break;
-        }
-
-        let client = if let Some(c) = initial_client.take() {
-            c
-        } else {
-            let stop_fut = shared.stop_notify.notified();
-            tokio::pin!(stop_fut);
-            stop_fut.as_mut().enable();
-            if shared.stop.load(Ordering::Acquire) {
-                break;
-            }
-            let conn_res = tokio::select! {
-                biased;
-                _ = &mut stop_fut => break,
-                res = NveWireClient::connect_uri_async(&uri, &client_cfg) => res,
-            };
-            match conn_res {
-                Ok(c) => {
-                    backoff = initial_backoff;
-                    shared
-                        .transport
-                        .store(encode_transport(c.transport_kind()), Ordering::Release);
-                    shared.session_id.store(c.session_id(), Ordering::Release);
-                    shared.connected.store(true, Ordering::Release);
-                    if had_prior_session {
-                        shared.reconnect_count.fetch_add(1, Ordering::Release);
-                        let _ = c.request_keyframe();
-                    }
-                    had_prior_session = true;
-                    shared.update_metrics_from(&c);
-                    shared.fire_wake();
-                    c
-                }
-                Err(_) => {
-                    shared.connected.store(false, Ordering::Release);
-                    let wait = backoff;
-                    backoff = backoff.saturating_mul(2).min(max_backoff);
-                    let stop_sleep = shared.stop_notify.notified();
-                    tokio::pin!(stop_sleep);
-                    stop_sleep.as_mut().enable();
-                    if shared.stop.load(Ordering::Acquire) {
-                        break;
-                    }
-                    tokio::select! {
-                        biased;
-                        _ = &mut stop_sleep => break,
-                        _ = tokio::time::sleep(wait) => continue,
-                    }
-                }
-            }
-        };
-
-        // Drive the active session purely event-driven until stopped or disconnected.
-        let mut stopped = false;
-        loop {
-            let stop_fut = shared.stop_notify.notified();
-            tokio::pin!(stop_fut);
-            stop_fut.as_mut().enable();
-            if shared.stop.load(Ordering::Acquire) {
-                stopped = true;
-                break;
-            }
-            tokio::select! {
-                biased;
-                _ = &mut stop_fut => {
-                    stopped = true;
-                    break;
-                }
-                cmd = outbound_rx.recv() => {
-                    match cmd {
-                        Some(OutboundCmd::Events(bytes)) => {
-                            if client.send_events(&bytes).is_err() {
-                                break;
-                            }
-                            shared.update_metrics_from(&client);
-                        }
-                        Some(OutboundCmd::RequestKeyframe) => {
-                            if client.request_keyframe().is_err() {
-                                break;
-                            }
-                            shared.update_metrics_from(&client);
-                        }
-                        None => {
-                            stopped = true;
-                            break;
-                        }
-                    }
-                }
-                maybe_frame = client.next_frame() => {
-                    match maybe_frame {
-                        Some(frame) => {
-                            shared.update_metrics_from(&client);
-                            if inbound_tx.send(frame).is_err() {
-                                stopped = true;
-                                break;
-                            }
-                            shared.fire_wake();
-                        }
-                        None => break,
-                    }
-                }
-            }
-        }
-
-        shared.update_metrics_from(&client);
-        shared.checkpoint_metrics();
-        client.close();
-        shared.connected.store(false, Ordering::Release);
-        while outbound_rx.try_recv().is_ok() {}
-
-        if stopped || shared.stop.load(Ordering::Acquire) {
-            break;
-        }
-        shared.fire_wake();
-
-        let wait = backoff;
-        backoff = backoff.saturating_mul(2).min(max_backoff);
-        let stop_sleep = shared.stop_notify.notified();
-        tokio::pin!(stop_sleep);
-        stop_sleep.as_mut().enable();
-        if shared.stop.load(Ordering::Acquire) {
-            break;
-        }
-        tokio::select! {
-            biased;
-            _ = &mut stop_sleep => break,
-            _ = tokio::time::sleep(wait) => {}
-        }
-    }
-
-    shared.connected.store(false, Ordering::Release);
-}
-
-const fn encode_transport(kind: NveWireTransportKind) -> u8 {
+pub(crate) const fn encode_transport(kind: NveWireTransportKind) -> u8 {
     match kind {
         NveWireTransportKind::Auto => 0,
         NveWireTransportKind::Quic => 1,
@@ -492,7 +508,7 @@ const fn encode_transport(kind: NveWireTransportKind) -> u8 {
     }
 }
 
-const fn decode_transport(raw: u8) -> NveWireTransportKind {
+pub(crate) const fn decode_transport(raw: u8) -> NveWireTransportKind {
     match raw {
         1 => NveWireTransportKind::Quic,
         2 => NveWireTransportKind::WebTransport,

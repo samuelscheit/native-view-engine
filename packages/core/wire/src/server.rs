@@ -118,14 +118,14 @@ impl SharedServerState {
         };
         let bytes = NveWireFrame::new(NveWireKind::HelloAck, 1, ack.encode().to_vec())
             .encode()
-            .expect("hello ack encode");
+            .unwrap_or_default();
         Bytes::from(bytes)
     }
 
     pub(crate) fn make_reject(reason: NveWireRejectReason, detail: &str) -> Bytes {
         let bytes = NveWireFrame::new(NveWireKind::Reject, 1, reason.encode(detail))
             .encode()
-            .expect("reject encode");
+            .unwrap_or_default();
         Bytes::from(bytes)
     }
 
@@ -150,14 +150,19 @@ impl SharedServerState {
             }
             NveWireKind::Bye => false,
             _ => {
+                // Answer KeyframeRequest ONLY to the requesting peer's channel (never broadcast,
+                // which would reset other healthy peers) using only a genuine cached SceneKeyframe.
                 if frame.kind == NveWireKind::KeyframeRequest
                     && let Some(kf) = self
                         .latest_keyframe
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .clone()
+                    && reply_tx.send(OutboundCommand::Stream(kf.clone())).is_ok()
                 {
-                    let _ = reply_tx.send(OutboundCommand::Stream(kf));
+                    self.frames_sent.fetch_add(1, Ordering::Relaxed);
+                    self.wire_bytes_tx
+                        .fetch_add(kf.len() as u64, Ordering::Relaxed);
                 }
                 let _ = self.inbound_tx.send(NveWireInboundMessage {
                     session_id,
@@ -370,9 +375,12 @@ impl NveWireServer {
     }
 
     /// Broadcasts one `NveWireFrame` to all connected peers (QUIC, WebTransport, and WSS/WS).
+    ///
+    /// Only genuine [`NveWireKind::SceneKeyframe`] frames are cached in `latest_keyframe` for
+    /// late-joining or reconnecting peers; incremental `CommandDelta` frames never overwrite it.
     pub fn broadcast_frame(&self, frame: &NveWireFrame) -> Result<usize, NveWireTransportError> {
         let encoded = Bytes::from(frame.encode()?);
-        if frame.kind == NveWireKind::SceneKeyframe || frame.kind == NveWireKind::CommandDelta {
+        if frame.kind == NveWireKind::SceneKeyframe {
             *self
                 .state
                 .latest_keyframe
@@ -395,6 +403,41 @@ impl NveWireServer {
                 .fetch_add((encoded.len() * delivered) as u64, Ordering::Relaxed);
         }
         Ok(delivered)
+    }
+
+    /// Sends one `NveWireFrame` directly to a single connected peer identified by `session_id`
+    /// without broadcasting to other peers or modifying `latest_keyframe`.
+    pub fn send_frame_to_peer(
+        &self,
+        session_id: u32,
+        frame: &NveWireFrame,
+    ) -> Result<bool, NveWireTransportError> {
+        let encoded = Bytes::from(frame.encode()?);
+        let Some(tx) = self.state.peer_sender(session_id) else {
+            return Ok(false);
+        };
+        if tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
+            self.state.frames_sent.fetch_add(1, Ordering::Relaxed);
+            self.state
+                .wire_bytes_tx
+                .fetch_add(encoded.len() as u64, Ordering::Relaxed);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Sends a targeted [`NveWireKind::SceneKeyframe`] to a single peer (e.g. in response to a
+    /// `KeyframeRequest`) without resetting other healthy peers.
+    pub fn send_scene_keyframe_to_peer(
+        &self,
+        session_id: u32,
+        sequence: u32,
+        scene_archive: &[u8],
+    ) -> Result<bool, NveWireTransportError> {
+        let frame = NveWireFrame::new(NveWireKind::SceneKeyframe, sequence, scene_archive.to_vec())
+            .with_channel(NveWireChannel::UiScene);
+        self.send_frame_to_peer(session_id, &frame)
     }
 
     /// Broadcasts an unreliable RFC 9221 datagram (falls back to stream on WSS/WS peers).
