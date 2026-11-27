@@ -7,8 +7,9 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 ### React Native Yoga (`yogacore`)
 
 - **`StyleValuePool` float-to-int overflow UB on large scalars**
-  - **Observed**: Passing finite floats with large magnitude (`|v| > 1e7f`) into Yoga style setters triggers signed integer overflow UB inside Yoga's `StyleValuePool` under UBSan.
-  - **Mitigation**: `cxx/nve-fabric-bridge/src/command_decoder.hpp` (`is_valid_scalar`) rejects non-finite values and scalars with `|v| > 1e7f` before they reach Yoga.
+  - **Observed**: `StyleValuePool::isIntegerPackable` does `static_cast<int32_t>(f)` before its range check, so any setter value with `|v| >= 2^31` (or `±inf` on number setters such as `flexGrow`) is float-cast-overflow UB (`StyleValuePool.h:182` under UBSan).
+  - **Upstream**: fixed by react/yoga#2075 (`3a201ff4`, 2026-11-26), not yet in a release (v3.2.2) nor in React Native's vendored copy.
+  - **Mitigation**: `cxx/nve-fabric-bridge/src/command_decoder.hpp` (`is_valid_scalar`) rejects non-finite values and scalars with `|v| > 1e7f` (conservative) before they reach Yoga.
 - **Detached `YGNodeRef` returns `NaN` layout metrics**
   - **Observed**: Reading `YGNodeLayoutGet{Left,Top,Width,Height}` on a node that was never laid out or was detached returns `NaN`, which triggers AppKit's `_NSViewValidateGeometry` `SIGTRAP` if forwarded into `NSView.frame`.
   - **Mitigation**: `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` sanitizes non-finite layout outputs to `0.0f`, and `hosts/apple-common/NveAppleComponentHost.mm` guards `frame` geometry.
@@ -18,9 +19,6 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **Nested `Text` wrapper/leaf split for inline literals**
   - **Observed**: `text { style: "...", "literal" }` emits a styled parent `Text` element wrapping an unstyled child `Text` leaf node, so host shells that don't inherit text styles render invisible or unstyled leaves.
   - **Mitigation**: `packages/core/dioxus/src/lib.rs` and `cxx/nve-fabric-bridge/src/fabric_adapter.cpp` propagate `text_color` and `font_size` from styled parent `Text` nodes down to unstyled child `Text` leaves; native hosts mount wrapper `Text` nodes with children as containers and leaf `Text` nodes as native text labels.
-- **Event attribute `"on"` prefix mismatch**
-  - **Observed**: `WriteMutations` delivers event attributes prefixed with `"on"` (e.g., `"onclick"`), while `VirtualDom::runtime().handle_event` expects the unprefixed name (`"click"`).
-  - **Mitigation**: `packages/core/dioxus/src/lib.rs` strips the leading `"on"` via `attr.name.get(2..)`.
 - **`anyhow` `std` feature drags backtrace printing + `rustc-demangle` into wasm**
   - **Observed**: dioxus-core depends on `anyhow` (1.0.105) with default features; `std` makes every error capture a `std::backtrace::Backtrace` whose `Debug`/`Display` printer links `rustc-demangle` (~19 KB raw, −12 KB brotli on the counter wasm), reachable through a vtable so it survives fat LTO and `-Cpanic=immediate-abort`, although wasm32-unknown-unknown never captures frames.
   - **Mitigation**: fork `samuelscheit/dioxus@nve/v0.7.10-wasm-size` (commit `6f7e0d1`, pinned by rev `e617997` in the root `[patch.crates-io]`): the dioxus workspace dep is `anyhow = { default-features = false }` and every member that needs `std` opts back in (Cargo ignores a member's `default-features = false` when the workspace dep enables defaults). no_std anyhow uses `core::error::Error`, so no backtrace or demangler is linked and `build.sh` no longer snips anything. Drop the patch once upstream takes it.
@@ -30,12 +28,13 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **`subsecond` / `tracing` look heavy in twiggy but cost 0 bytes in release**: `HotFn::try_call` short-circuits on `!cfg!(debug_assertions)` and twiggy names component bodies `<C as subsecond::HotFunction>::call_it`; tracing callsites fold away without a subscriber. No action needed.
 - **wasm-split (`0.7.x` / `0.8.0-alpha.1`) crashes under fat LTO + `codegen-units = 1`** (walrus GC assertion `!self.dead.contains(&id)`, open PR DioxusLabs/dioxus#5795), and split routes render twice under SSR hydration (discussion #5287). Mitigation: none adopted; per-panel splitting needs a pinned fixed `wasm-split-cli` or an own split tool.
 - **`Runtime::spawn(scope, fut)` skips `scope.spawned_tasks` registration**
-  - **Observed**: Calling `Runtime::current().spawn(scope, fut)` directly inserts a `LocalTask` into `Runtime.tasks` and enqueues it onto `dirty_tasks`, but does NOT register the task ID in `scope.spawned_tasks`. If `scope` unmounts before the task is polled, `remove_scope` fails to cancel the task and `VirtualDom::pop_task()` panics on `debug_assert!(self.scopes.contains(tasks.order.id.0))` (`scheduler.rs:155`).
+  - **Observed**: Calling `Runtime::current().spawn(scope, fut)` directly inserts a `LocalTask` into `Runtime.tasks` and enqueues it onto `dirty_tasks`, but does NOT register the task ID in `scope.spawned_tasks`. If `scope` unmounts before the task is polled, `remove_scope` fails to cancel the task and `VirtualDom::pop_task()` panics on `debug_assert!(self.scopes.contains(tasks.order.id.0))` (`scheduler.rs:155`); in release the future is polled after unmount and leaks until the `VirtualDom` drops. Still on main (`dioxus-vdom`). Reported: DioxusLabs/dioxus#6156 (repro: `docs/research/upstream-repros/dioxus-runtime-spawn-scope`).
   - **Mitigation**: Always spawn onto an ancestor scope via `Runtime::current().in_scope(scope, || dioxus_core::spawn(fut))` (used in `packages/framework/query-dioxus/src/bridge.rs`), which registers the task in `scope.spawned_tasks` so unmount cancels and drops it cleanly before `pop_work` runs.
 
 ### rust-analyzer (`0.4.3133`): string-parsed proc-macro output gets out-of-file spans
 
 - **Observed**: `codeLens/resolve` (impls lens) panics `line-index … invalid offset` on every `#[derive(NveAbi)]` type whose expansion is long. rust-analyzer's proc-macro server `TokenStream::from_str` (`crates/proc-macro-api/src/token_stream.rs`, `SpanLike::derive_ranged`) keeps the call-site anchor but sets each token's range to its byte offset inside the parsed string, so ranges point past the derive and often past EOF. rustc gives such tokens `Span::call_site()`.
+- **Upstream**: rust-lang/rust-analyzer#22482 (open); still on master `efc6ca7`. Contradicts `impl FromStr for TokenStream` ("All tokens in the parsed stream get `Span::call_site()` spans").
 - **Mitigation**: `packages/core/abi-macros/src/lib.rs` (`parse_at_call_site`) re-spans every parsed token to `Span::call_site()`. Any new proc-macro that emits via `str::parse::<TokenStream>()` must do the same.
 
 ### Rust `std` on `wasm32-unknown-unknown`
@@ -50,20 +49,21 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
   - **Observed**: In Xcode 27, `/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app` is absent (`open -a Simulator` fails with `Unable to find application named 'Simulator'`); the Simulator GUI lives at `/Applications/Xcode.app/Contents/Applications/DeviceHub.app`.
   - **Mitigation**: `hosts/ios-shell/run-simulator.sh` checks `$DEV_DIR/Applications/Simulator.app` first, falls back to `$DEV_DIR/../Applications/DeviceHub.app`, and keeps GUI launch non-fatal so `xcrun simctl install` and `launch` always succeed.
 - **`swift-frontend -O` leaks ~32 GB RAM compiling `Collection` with compile-time `2^32` `endIndex`**
-  - **Observed**: Under Apple Swift 6.4 (`swiftlang-6.4.0.34.1`, macOS 27.2.0), compiling a zero-sized `Collection`/`RandomAccessCollection` whose `endIndex` is a computed constant `Int(UInt32.max) + 1` under `-O` or `-Osize` (with or without `-wmo`, even if the type is unreferenced) causes `swift-frontend` to spin at 100% CPU and consume ~32 GB RSS while optimizing default `Collection` witness thunks.
+  - **Observed**: Under Apple Swift 6.4 (`swiftlang-6.4.0.34.1`, macOS 27.2.0), compiling a zero-sized `Collection`/`RandomAccessCollection` whose `endIndex` is a computed constant `Int(UInt32.max) + 1` under `-O` or `-Osize` (with or without `-wmo`, even if the type is unreferenced) causes `swift-frontend` to spin at 100% CPU and consume ~32 GB RSS (8 B per element; scales linearly). Cause: SIL `ObjectOutliner.getInitialization` eagerly allocates one slot per tail element of the `alloc_ref [tail_elems $UInt8 * 4294967296]` in the specialized `_copyCollectionToContiguousArray`. Reported: swiftlang/swift#94725 (repro: `docs/research/upstream-repros/swift-collection-endindex-oom`).
   - **Mitigation**: Keep `endIndex` as a stored `let endIndex: Int` property (`packages/core/host-swift/Tests/NveHostTests/BinCodecTests.swift`, `HugeBytes(endIndex: Int(UInt32.max) + 1)`), which drops peak `swift-frontend` RSS from ~32 GB to ~155 MB and compile time to ~1.2 s.
 
 ### GTK 4 (`gtk4 4.24.2`)
 
-- **`gtk_fixed_get_child_position` returns `(0, 0)` on unmapped widgets**
-  - **Observed**: In GTK 4.24.2, `gtk_fixed_get_child_position` delegates to `gtk_widget_compute_point`, which returns `(0, 0)` for unmapped/offscreen widgets (such as headless CTest fixtures).
+- **`gtk_fixed_get_child_position` returns the last *allocated* offset, not the put/move position**
+  - **Observed**: In GTK 4.24.2 (unchanged on main), `gtk_fixed_get_child_position` uses `gtk_widget_compute_point`, i.e. the child's allocation: it returns `(0, 0)` until the first size-allocate (e.g. headless CTest fixtures) and the old position after `gtk_fixed_move` until the next allocation. Mapping/rooting is irrelevant. The docs promise the put/move translation. Repro and drafted report: `docs/research/upstream-repros/gtk-fixed-child-position-unmapped`.
   - **Mitigation**: Read child translation from `gtk_fixed_get_child_transform` + `gsk_transform_to_translate` (see `hosts/gtk-shell/tests/gtk_shell_test.cpp`).
 
 ### Eclipse OpenJ9 (`openj9 0.59.0` / OpenJDK 25.0.3) + Android SDK `d8` (`build-tools 36.0.0`)
 
-- **Scavenger GC assertion crash (`ScavengerRootScanner.hpp:105`) during `d8` dexing**
+- **GC stack-slot assertion (`ScavengerRootScanner.hpp:105`) during `d8` dexing**
   - **Observed**: When Eclipse OpenJ9 0.59.0 is the default `java` on `PATH` on macOS arm64, Android `build-tools/36.0.0/d8` crashes inside `ForkJoinPool` (`com/android/tools/r8/internal/n30.<init>(I)V`) with `Misaligned object` / `j9mm.479 ** ASSERTION FAILED ** at .../openj9/runtime/gc_glue_java/ScavengerRootScanner.hpp:105` and hangs for ~70s writing multi-GB core/javacore/snap dumps.
-  - **Mitigation**: `hosts/android-shell/run-emulator.sh` detects OpenJ9 and automatically switches `JAVA_HOME`/`PATH` to an installed HotSpot/JBR JDK (e.g., Android Studio JBR or Adoptium Temurin) before invoking `javac`/`d8`/`apksigner`, falling back to `-JXgcpolicy:optthruput -JXdump:none` if no HotSpot JDK is installed.
+  - **Cause**: `j9localmap_LocalBitsForPC` (`runtime/stackmap/localmap.c`) always marks slot 0 of every `<init>` as an object, even after R8's `n30.<init>(I)V` legally `istore_0`s an int there; any GC in that frame scans the int. Every GC policy and `-Xint` fail; 0.59.0–0.63.0 and master affected. Reported: eclipse-openj9/openj9#25271 (repro: `docs/research/upstream-repros/openj9-d8-scavenger-assert`).
+  - **Mitigation**: `hosts/android-shell/run-emulator.sh` detects OpenJ9 and switches `JAVA_HOME`/`PATH` to an installed HotSpot/JBR JDK (e.g., Android Studio JBR or Adoptium Temurin) before invoking `javac`/`d8`/`apksigner`, and fails with a clear error when none is installed (no OpenJ9 option avoids the crash).
 
 ### iOS 27 Simulator SDK (`iPhoneSimulator27.0.sdk`)
 
@@ -110,7 +110,7 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 
 ### Browsers (Chrome 13x): synchronous events inside DOM mutations
 
-- **Removing a focused `<input>` fires `blur` synchronously, mid-mutation**
+- **Removing a focused `<input>` fires `blur` synchronously, mid-mutation** (spec violation since whatwg/html#8392; Gecko/WebKit comply; tracked as crbug 41484175, fix behind the not-yet-default `OmitBlurEventOnElementRemoval` flag)
   - **Observed**: a host that dispatches DOM events into Rust immediately gets re-entered while a frame is still being applied; with `RefCell` this is a `BorrowMutError` panic (`unreachable` under immediate-abort).
   - **Mitigation**: `hosts/web-shell` uses `try_borrow_mut` so the event waits for the next pump; a JS-side CommandBuffer interpreter must queue events raised during `apply` and flush them afterwards (prototype `nve_dom.js`, branch `t3/reduce-wasm-js-boundary`).
 
@@ -118,4 +118,5 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 
 - **`compute_leaf_layout` drops `style.aspect_ratio` under `SizingMode::ContentSize`**
   - **Observed**: When Flexbox measures a leaf item's hypothetical cross size (`compute/flexbox.rs` passes `SizingMode::ContentSize` with `known_dimensions` populated from `flex-basis`), `compute/leaf.rs` resets `aspect_ratio` to `None`, so an empty leaf with `flex-basis` + `aspect-ratio` (and `width`/`height: auto`) collapses to `0` on the cross axis.
-  - **Mitigation**: `packages/backends/headless/src/taffy_engine.rs` transfers any single known axis through `style.aspect_ratio` (minus resolved padding+border) inside the non-text leaf measure closure.
+  - **Upstream**: DioxusLabs/taffy#804 (open; still on main `497de49`; candidate fixes #1081, #1213, #1215). Also hits `flex-grow` + `aspect-ratio`.
+  - **Mitigation**: none. The former measure-closure workaround (`taffy_engine.rs`) was lost in the DOD NodeStore rewrite (`cc116031`); `taffy_store/style_view.rs` only forwards `aspect_ratio`.

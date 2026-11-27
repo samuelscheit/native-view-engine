@@ -125,11 +125,10 @@ if [[ ! -f "$LIBCXX_SHARED" ]]; then
   exit 1
 fi
 
-# Eclipse OpenJ9 (e.g. 0.59.0 on macOS arm64) hits an internal Scavenger GC assertion
-# (`ScavengerRootScanner.hpp:105`, "Misaligned object in thread ForkJoinPool") when
-# running Android build-tools `d8`. Prefer a HotSpot/JBR JDK when available; otherwise
-# disable Scavenger GC and core dumps on `d8` as a fallback.
-D8_EXTRA_JAVA_OPTS=()
+# Eclipse OpenJ9 (0.59.0–0.63.0) crashes Android build-tools `d8` with a GC stack-slot
+# assertion: its interpreter local map treats slot 0 of every constructor as an object even
+# after R8's `<init>` stores an int there (docs/UPSTREAM.md). No OpenJ9 option avoids it, so
+# switch to a HotSpot/JBR JDK and fail when none is installed.
 is_openj9_java() {
   local java_bin="$1"
   [[ -x "$java_bin" ]] && "$java_bin" -version 2>&1 | grep -qi "OpenJ9"
@@ -169,8 +168,9 @@ if command -v java >/dev/null 2>&1 && is_openj9_java "$(command -v java)"; then
     export PATH="$HOTSPOT_JAVA_HOME/bin:$PATH"
     echo "==> Detected OpenJ9 default JVM; switching to HotSpot JDK for d8/apksigner: $HOTSPOT_JAVA_HOME"
   else
-    echo "==> Warning: OpenJ9 JVM detected and no HotSpot JDK found; passing -JXgcpolicy:optthruput -JXdump:none to d8" >&2
-    D8_EXTRA_JAVA_OPTS+=(-JXgcpolicy:optthruput -JXdump:none)
+    echo "error: OpenJ9 is the default JVM and no HotSpot/JBR JDK was found; d8 crashes under OpenJ9." >&2
+    echo "       Install a HotSpot JDK (e.g. Temurin or Android Studio's JBR) or set JAVA_HOME to one." >&2
+    exit 1
   fi
 fi
 
@@ -255,7 +255,7 @@ while IFS= read -r -d '' f; do
   CLASS_FILES+=("$f")
 done < <(find "$CLASSES_DIR" -type f -name '*.class' -print0)
 
-"$D8" "${D8_EXTRA_JAVA_OPTS[@]+"${D8_EXTRA_JAVA_OPTS[@]}"}" --min-api 24 --lib "$ANDROID_JAR" --output "$DEX_DIR" "${CLASS_FILES[@]}"
+"$D8" --min-api 24 --lib "$ANDROID_JAR" --output "$DEX_DIR" "${CLASS_FILES[@]}"
 
 # 4. Package APK via aapt2 + zip + zipalign.
 STAGE_DIR="$BUILD_DIR/apk-stage"
