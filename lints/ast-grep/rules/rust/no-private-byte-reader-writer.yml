@@ -29,9 +29,9 @@ rule:
 ---
 id: rust-no-private-legacy-byte-readers
 language: rust
-severity: warning
+severity: error
 message: "Hand-written private binary reader/writer (`BinReader`/`WireReader`/`Cursor`) outside `packages/core/codec/` is banned [stage: Post1B1D]; use `#[derive(NveCodec)]`."
-note: "[stage: Post1B1D] Mirrors `HANDWRITTEN_BYTE_READERS` in `arch_invariants/enum_and_macro_hygiene.rs` (only fires when the file also defines `read_u16`/`read_u32` or calls `from_le_bytes`, avoiding text-parser false positives). Flip to `error` once Track 1B-1d migrates existing readers."
+note: "[stage: Post1B1D] Mirrors `HANDWRITTEN_BYTE_READERS` in `arch_invariants/enum_and_macro_hygiene.rs` (only fires when the file also defines `read_u16`/`read_u32` or calls `from_le_bytes`, avoiding text-parser false positives)."
 files:
   - "packages/**/*.rs"
 ignores:
@@ -72,16 +72,20 @@ rule:
 id: rust-no-private-slice-byte-readers
 language: rust
 severity: error
-message: "Hand-written private `read_u16`/`read_u32`/`read_u64` slice reader calling `from_le_bytes` outside `packages/core/codec/` is banned; use `nve_codec::ByteReader`."
-note: "[stage: Post1B1D] Catches ad-hoc free-function slice readers like `fn read_u32(buf: &[u8], pos: &mut usize)` that bypass `nve-codec`."
+message: "Direct `from_le_bytes` binary decoding outside Tier-1/ABI allowlisted crates is banned; use `nve_codec::ByteReader`."
+note: "[stage: Post1B1D] Flags all hand-rolled `from_le_bytes` calls (free fns, `pub fn`, methods, closures, signed/float types) outside the explicit Tier-1/ABI/wire allowlist."
 files:
   - "packages/**/*.rs"
 ignores:
   - "packages/core/codec/**"
   - "packages/core/hash/**"
   - "packages/core/abi/**"
+  - "packages/core/store/**"
+  - "packages/core/codegen/**"
+  - "packages/core/engine/src/mmap_arena/header.rs"
+  - "packages/core/engine/src/reloc/**"
   - "packages/tools/arch-invariants/**"
-  # Skipped on this branch to avoid conflict with Slice 1c on `main` (which already rewrote hydrate.rs).
+  # Skipped on this branch to avoid conflict with Slice 1c on `main` (which rewrote hydrate.rs).
   - "packages/framework/query/src/hydrate.rs"
   - "**/tests/**"
   - "**/benches/**"
@@ -90,48 +94,120 @@ ignores:
   - "**/tests_*.rs"
   - "**/test.rs"
 rule:
-  kind: function_item
-  has:
-    field: name
-    kind: identifier
-    regex: '^read_u(?:16|32|64)$'
-  all:
-    - has:
-        stopBy: end
-        kind: identifier
-        regex: '^from_le_bytes$'
+  kind: identifier
+  regex: '^from_le_bytes$'
+  inside:
+    kind: scoped_identifier
   not:
-    any:
-      - has:
-          kind: visibility_modifier
-          regex: '^pub$'
-      - matches: rust-in-test-code
+    matches: rust-in-test-code
 ---
 id: rust-no-swallowed-codec-write
 language: rust
 severity: error
-message: "Do not swallow fallible `nve-codec` writer results with `let _ = ...`; propagate `Result` instead."
+message: "Do not swallow fallible `nve-codec` writer results (`let _ =`, `_ =`, `.ok();`, or `debug_assert!(res.is_ok())`); propagate `Result` or use `nve_codec::write_fixed`."
 note: "Guards against silently truncating or corrupting Tier-2 binary frames by discarding `Result<(), CodecError>`."
 files:
   - "packages/**/*.rs"
   - "hosts/**/*.rs"
+  - "examples/**/*.rs"
 ignores:
   - "packages/tools/arch-invariants/**"
   - "**/tests/**"
   - "**/benches/**"
   - "**/*_tests.rs"
   - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
 rule:
-  pattern: let _ = $VAL;
-  has:
-    field: value
-    kind: call_expression
-    has:
-      field: function
-      kind: field_expression
+  any:
+    - pattern: let _ = $VAL;
       has:
-        field: field
-        kind: field_identifier
-        regex: '^(?:write_len|write_bytes|write_bytes_u16|write_bytes_u8|write_str|write_str_u16|write_str_u8|write_opt|write_value|write_zeroes|patch_u32)$'
+        field: value
+        kind: call_expression
+        has:
+          field: function
+          kind: field_expression
+          has:
+            field: field
+            kind: field_identifier
+            regex: '^(?:write_len|write_len_max|write_bytes|write_bytes_max|write_bytes_u16|write_bytes_u8|write_str_max|write_str_u16|write_str_u8|write_opt|write_value|write_zeroes|patch_u32|put_raw|put_zeroes|put_u8|put_i8|put_bool|put_u16|put_i16|put_u32|put_i32|put_u64|put_i64|put_f32|put_f32_raw|put_f64|put_f64_raw)$'
+    - pattern: _ = $VAL;
+      has:
+        kind: assignment_expression
+        has:
+          field: right
+          kind: call_expression
+          has:
+            field: function
+            kind: field_expression
+            has:
+              field: field
+              kind: field_identifier
+              regex: '^(?:write_len|write_len_max|write_bytes|write_bytes_max|write_bytes_u16|write_bytes_u8|write_str|write_str_max|write_str_u16|write_str_u8|write_opt|write_value|write_zeroes|patch_u32|put_raw|put_zeroes|put_u8|put_i8|put_bool|put_u16|put_i16|put_u32|put_i32|put_u64|put_i64|put_f32|put_f32_raw|put_f64|put_f64_raw|encode)$'
+    - pattern: $CALL.ok();
+      has:
+        kind: call_expression
+        has:
+          field: function
+          kind: field_expression
+          has:
+            field: value
+            kind: call_expression
+            has:
+              field: function
+              kind: field_expression
+              has:
+                field: field
+                kind: field_identifier
+                regex: '^(?:write_len|write_len_max|write_bytes|write_bytes_max|write_bytes_u16|write_bytes_u8|write_str|write_str_max|write_str_u16|write_str_u8|write_opt|write_value|write_zeroes|patch_u32|put_raw|put_zeroes|put_u8|put_i8|put_bool|put_u16|put_i16|put_u32|put_i32|put_u64|put_i64|put_f32|put_f32_raw|put_f64|put_f64_raw|write_u8|write_i8|write_bool|write_u16|write_i16|write_u32|write_i32|write_u64|write_i64|write_f32|write_f64|write_raw|encode)$'
+    - pattern: let $VAR = $VAL;
+      inside:
+        stopBy: end
+        kind: source_file
+        has:
+          stopBy: end
+          kind: type_identifier
+          regex: '^(?:ByteWriter|SliceWriter|ByteSink|NveEncode)$'
+      all:
+        - has:
+            field: pattern
+            kind: identifier
+            regex: '^_'
+        - has:
+            field: value
+            kind: call_expression
+            has:
+              field: function
+              kind: field_expression
+              has:
+                field: field
+                kind: field_identifier
+                regex: '^(?:write_len|write_len_max|write_bytes|write_bytes_max|write_bytes_u16|write_bytes_u8|write_str|write_str_max|write_str_u16|write_str_u8|write_opt|write_value|write_zeroes|patch_u32|write_u8|write_i8|write_bool|write_u16|write_i16|write_u32|write_i32|write_u64|write_i64|write_f32|write_f64|write_raw|encode)$'
+    - pattern: let _ = $VAL;
+      inside:
+        stopBy: end
+        kind: source_file
+        has:
+          stopBy: end
+          kind: type_identifier
+          regex: '^(?:ByteWriter|SliceWriter|ByteSink|NveEncode)$'
+      has:
+        field: value
+        kind: call_expression
+        has:
+          field: function
+          kind: field_expression
+          has:
+            field: field
+            kind: field_identifier
+            regex: '^(?:write_str|write_u8|write_i8|write_bool|write_u16|write_i16|write_u32|write_i32|write_u64|write_i64|write_f32|write_f64|write_raw|encode)$'
+    - pattern: debug_assert!($RES.is_ok())
+      inside:
+        stopBy: end
+        kind: source_file
+        has:
+          stopBy: end
+          kind: type_identifier
+          regex: '^(?:ByteWriter|SliceWriter|ByteSink|NveEncode)$'
   not:
     matches: rust-in-test-code

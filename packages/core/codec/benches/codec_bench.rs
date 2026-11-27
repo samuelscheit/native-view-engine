@@ -48,27 +48,30 @@ mod native {
         g_small.bench_function("struct_reused_roundtrip", |b| {
             b.iter(|| {
                 w.clear();
-                sample.encode(&mut w).expect("encode");
+                black_box(&sample).encode(&mut w).expect("encode");
                 let mut r = ByteReader::new(black_box(w.as_slice()));
                 let dec = BenchRecord::decode(&mut r).expect("decode");
                 r.finish().expect("finish");
                 black_box(dec)
             });
         });
+        g_small.throughput(Throughput::Bytes(40));
         g_small.bench_function("slice_writer_40b_header", |b| {
             let mut dst = [0u8; 40];
+            let fields = (1u8, 0u8, 90u16, 1920u32, 1080u32, 7680u32, 0u32, 123_456_789u64, 42u64);
             b.iter(|| {
+                let (ver, fmt, rot, width, height, stride, res, ts, handle) = black_box(fields);
                 let mut sw = SliceWriter::new(black_box(&mut dst));
-                sw.write_raw(b"NVCF").expect("magic");
-                sw.write_u8(1).expect("v");
-                sw.write_u8(0).expect("fmt");
-                sw.write_u16(90).expect("rot");
-                sw.write_u32(1920).expect("w");
-                sw.write_u32(1080).expect("h");
-                sw.write_u32(7680).expect("stride");
-                sw.write_u32(0).expect("res");
-                sw.write_u64(123_456_789).expect("ts");
-                sw.write_u64(42).expect("handle");
+                sw.write_raw(black_box(b"NVCF")).expect("magic");
+                sw.write_u8(ver).expect("v");
+                sw.write_u8(fmt).expect("fmt");
+                sw.write_u16(rot).expect("rot");
+                sw.write_u32(width).expect("w");
+                sw.write_u32(height).expect("h");
+                sw.write_u32(stride).expect("stride");
+                sw.write_u32(res).expect("res");
+                sw.write_u64(ts).expect("ts");
+                sw.write_u64(handle).expect("handle");
                 sw.finish().expect("finish");
                 black_box(dst[39])
             });

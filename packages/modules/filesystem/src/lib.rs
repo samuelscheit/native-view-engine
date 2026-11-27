@@ -11,9 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_FILESYSTEM;
 use nve_host_services::{
-    pack_typed, resolve_typed, ByteReader, ByteWriter, CodecError, HostServiceHandler,
-    HostServiceProvider, NveCodec, NveDecode, NveEncode, ServiceError, MAX_PAYLOAD_BYTES,
-    MAX_SEQ_ITEMS,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
+    NveCodec, NveDecode, NveEncode, ServiceError, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS,
 };
 
 pub use native::{native_standard_path, NativeFilesystem};
@@ -79,12 +78,7 @@ pub fn encode_standard_path_request(kind: StandardPathKind) -> Vec<u8> {
 }
 
 pub fn decode_standard_path_request(bytes: &[u8]) -> Result<StandardPathKind, ServiceError> {
-    StandardPathKind::decode_exact(bytes).map_err(|err| match err {
-        CodecError::BadEnum { raw, .. } => {
-            ServiceError::InvalidArg(format!("unknown StandardPathKind {raw}"))
-        }
-        other => ServiceError::from(other),
-    })
+    Ok(StandardPathKind::decode_exact(bytes)?)
 }
 
 pub fn encode_standard_path_response(path: &str) -> Result<Vec<u8>, ServiceError> {

@@ -301,10 +301,22 @@ impl FormController {
             self.restored_draft = false;
             return;
         }
-        if let Ok(encoded) = encode_form_draft(&self.field_values())
-            && encoded.len() <= self.max_draft_bytes
-        {
-            let _ = self.storage.save_draft(&key, &encoded);
+        match encode_form_draft(&self.field_values()) {
+            Ok(encoded) if encoded.len() <= self.max_draft_bytes => {
+                if let Err(err) = self.storage.save_draft(&key, &encoded) {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    eprintln!("[nve-ui] failed to persist form draft `{key}`: {err}");
+                    #[cfg(target_arch = "wasm32")]
+                    let _ = err;
+                }
+            }
+            Ok(_) => {}
+            Err(err) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                eprintln!("[nve-ui] failed to encode form draft `{key}`: {err}");
+                #[cfg(target_arch = "wasm32")]
+                let _ = err;
+            }
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Zero-unsafe, zero-runtime-dependency Tier-2 little-endian binary codec primitives
-//! (`ByteReader`, `ByteWriter`, `CodecError`, `NveEncode`, `NveDecode`) and `#[derive(NveCodec)]`.
+//! (`ByteReader`, `ByteWriter`, `SliceWriter`, `ByteSink`, `ByteBuf`, `CodecError`, `NveEncode`,
+//! `NveDecode`) and `#[derive(NveCodec)]`.
 //!
 //! Sits strictly below `nve-abi` in the workspace dependency DAG (depends only on zero-dep
 //! `nve-abi-macros`) so every core, framework, backend, and module crate shares one canonical,
@@ -16,6 +17,7 @@ mod writer;
 mod tests;
 
 use core::fmt;
+use core::ops::{Deref, DerefMut};
 
 /// Derives [`NveEncode`] and [`NveDecode`] for Tier-2 little-endian structs and enums.
 ///
@@ -25,7 +27,35 @@ use core::fmt;
 /// ```compile_fail
 /// use nve_codec::NveCodec;
 /// #[derive(NveCodec)]
-/// struct BadGeneric<T>(T);
+/// struct BadGeneric<T: nve_codec::NveEncode + nve_codec::NveDecode>(T);
+/// ```
+///
+/// `where` clauses are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[derive(NveCodec)]
+/// struct BadWhere(u8) where u8: Copy;
+/// ```
+///
+/// Field-level `#[nve_codec(...)]` attributes are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[derive(NveCodec)]
+/// struct BadFieldAttr {
+///     #[nve_codec(skip)]
+///     a: u8,
+/// }
+/// ```
+///
+/// Conflicting `#[nve_codec(tag = ...)]` and `= discriminant` are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[repr(u8)]
+/// #[derive(NveCodec)]
+/// enum ConflictingTag {
+///     #[nve_codec(tag = 1)]
+///     A(u8) = 2,
+/// }
 /// ```
 ///
 /// Duplicate enum tags are rejected:
@@ -43,10 +73,10 @@ use core::fmt;
 /// Out-of-range tags are rejected:
 /// ```compile_fail
 /// use nve_codec::NveCodec;
-/// #[repr(u8)]
 /// #[derive(NveCodec)]
 /// enum OutOfRange {
-///     TooBig = 256,
+///     #[nve_codec(tag = 256)]
+///     TooBig(u8),
 /// }
 /// ```
 ///
@@ -75,7 +105,7 @@ use core::fmt;
 /// #[derive(NveCodec)]
 /// enum BadUnitTag {
 ///     #[nve_codec(tag = 7)]
-///     A = 1,
+///     A,
 /// }
 /// ```
 ///
@@ -89,13 +119,13 @@ use core::fmt;
 /// }
 /// ```
 pub use nve_abi_macros::NveCodec;
-pub use reader::ByteReader;
-pub use writer::{ByteWriter, SliceWriter};
+pub use reader::{ByteReader, DEFAULT_MAX_DEPTH};
+pub use writer::{write_fixed, write_fixed_into, ByteSink, ByteWriter, SliceWriter};
 
-/// Default upper bound on element counts decoded by `NveDecode` for `Vec<T>`.
+/// Default upper bound on element counts encoded/decoded by `NveEncode`/`NveDecode` for `Vec<T>`.
 pub const DEFAULT_MAX_ITEMS: usize = 65_536;
 
-/// Default upper bound on byte/string lengths decoded by `NveDecode` (`16 MiB`).
+/// Default upper bound on byte/string lengths encoded/decoded by `NveEncode`/`NveDecode` (`16 MiB`).
 pub const DEFAULT_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Canonical quiet NaN bit pattern for `f32` (IEEE-754 little-endian deterministic encoding).
@@ -128,27 +158,30 @@ pub const fn canonical_f64_bits(v: f64) -> u64 {
     }
 }
 
-/// Typed, allocation-free error produced by [`ByteReader`], [`ByteWriter`], and `#[derive(NveCodec)]`.
+/// Typed, allocation-free error produced by [`ByteReader`], [`ByteWriter`], [`SliceWriter`],
+/// and `#[derive(NveCodec)]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
-    /// Input ended before the required number of bytes could be read.
+    /// Input ended before the required number of bytes could be read (or destination slice was full).
     Truncated { needed: usize, remaining: usize },
     /// Expected fixed magic prefix did not match.
     BadMagic,
     /// Unsupported wire or archive format version.
     BadVersion(u32),
-    /// Unknown enum discriminant or tag.
-    BadEnum { ty: &'static str, raw: u32 },
+    /// Unknown enum discriminant or tag (stored as `i64` so both `u32::MAX` and `i32::MIN` are exact).
+    BadEnum { ty: &'static str, raw: i64 },
     /// Boolean byte was neither `0` nor `1`.
     BadBool(u8),
     /// Reserved / padding field was non-zero.
     NonZeroReserved(u64),
     /// Length or element count exceeded its configured upper bound or wire integer capacity.
     LenOverflow { len: usize, max: usize },
-    /// Unexpected unread bytes remained at [`ByteReader::finish`].
+    /// Unexpected unread bytes remained at [`ByteReader::finish`] / [`SliceWriter::finish`].
     TrailingBytes(usize),
     /// Length-prefixed string slice was not valid UTF-8.
     InvalidUtf8,
+    /// Recursive container nesting (`read_vec`/`read_opt`) exceeded `ByteReader`'s max depth.
+    DepthExceeded { max: usize },
 }
 
 impl fmt::Display for CodecError {
@@ -167,11 +200,69 @@ impl fmt::Display for CodecError {
             }
             Self::TrailingBytes(n) => write!(f, "unexpected {n} trailing byte(s)"),
             Self::InvalidUtf8 => f.write_str("invalid UTF-8 string in binary payload"),
+            Self::DepthExceeded { max } => {
+                write!(f, "binary container nesting exceeded maximum depth {max}")
+            }
         }
     }
 }
 
 impl std::error::Error for CodecError {}
+
+/// Bulk-encoded binary byte buffer (`u32` length prefix + raw bytes, capped at
+/// [`DEFAULT_MAX_BYTES`] = 16 MiB and decoded in one slice copy rather than `Vec<u8>`'s
+/// element-by-element loop).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct ByteBuf(pub Vec<u8>);
+
+impl ByteBuf {
+    #[inline]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    #[inline]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl Deref for ByteBuf {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl DerefMut for ByteBuf {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl AsRef<[u8]> for ByteBuf {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for ByteBuf {
+    #[inline]
+    fn from(v: Vec<u8>) -> Self {
+        Self(v)
+    }
+}
+
+impl From<ByteBuf> for Vec<u8> {
+    #[inline]
+    fn from(b: ByteBuf) -> Self {
+        b.0
+    }
+}
 
 /// Trait for Tier-2 little-endian binary serialization into a [`ByteWriter`].
 pub trait NveEncode {
@@ -290,28 +381,44 @@ impl<const N: usize> NveDecode for [u8; N] {
 impl NveEncode for &[u8] {
     #[inline]
     fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
-        w.write_bytes(self)
+        w.write_bytes_max(self, DEFAULT_MAX_BYTES)
+    }
+}
+
+impl NveEncode for ByteBuf {
+    #[inline]
+    fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
+        w.write_bytes_max(&self.0, DEFAULT_MAX_BYTES)
+    }
+}
+
+impl NveDecode for ByteBuf {
+    const MIN_ENCODED_BYTES: usize = 4;
+
+    #[inline]
+    fn decode(r: &mut ByteReader<'_>) -> Result<Self, CodecError> {
+        Ok(Self(r.read_bytes(DEFAULT_MAX_BYTES)?.to_vec()))
     }
 }
 
 impl NveEncode for str {
     #[inline]
     fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
-        w.write_str(self)
+        w.write_str_max(self, DEFAULT_MAX_BYTES)
     }
 }
 
 impl NveEncode for &str {
     #[inline]
     fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
-        w.write_str(self)
+        w.write_str_max(self, DEFAULT_MAX_BYTES)
     }
 }
 
 impl NveEncode for String {
     #[inline]
     fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
-        w.write_str(self)
+        w.write_str_max(self, DEFAULT_MAX_BYTES)
     }
 }
 
@@ -352,7 +459,7 @@ impl<T: NveDecode> NveDecode for Option<T> {
 impl<T: NveEncode> NveEncode for [T] {
     #[inline]
     fn encode(&self, w: &mut ByteWriter) -> Result<(), CodecError> {
-        w.write_len(self.len())?;
+        w.write_len_max(self.len(), DEFAULT_MAX_ITEMS)?;
         for item in self {
             item.encode(w)?;
         }

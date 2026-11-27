@@ -227,8 +227,9 @@ impl DrawListBuilder {
 
     /// Patches the header op count in-place and returns the owned binary `NVE_DRAW1` byte buffer.
     pub fn finish(mut self) -> Vec<u8> {
-        let res = self.writer.patch_u32(11, self.op_count);
-        debug_assert!(res.is_ok());
+        self.writer
+            .patch_u32(11, self.op_count)
+            .expect("NVE_DRAW1 header always occupies 15 bytes");
         self.writer.into_bytes()
     }
 

@@ -4,7 +4,7 @@
 use std::fmt;
 use std::mem::{offset_of, size_of};
 
-use nve_codec::{ByteReader, CodecError, NveCodec, SliceWriter};
+use nve_codec::{write_fixed, ByteReader, ByteSink, CodecError, NveCodec, SliceWriter};
 
 pub const CAMERA_FRAME_MAGIC: [u8; 4] = *b"NVCF";
 pub const CAMERA_FRAME_VERSION: u8 = 1;
@@ -27,10 +27,15 @@ impl From<CodecError> for CameraCodecError {
         match err {
             CodecError::Truncated { .. } => Self::Truncated,
             CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
-            CodecError::BadEnum { ty, raw } => Self::InvalidEnum(ty, raw),
+            CodecError::BadEnum { ty, raw } => Self::InvalidEnum(ty, raw as u32),
             CodecError::NonZeroReserved(v) => Self::InvalidEnum("CameraFrameReserved", v as u32),
-            CodecError::LenOverflow { .. } => Self::PayloadTooLarge,
-            _ => Self::Truncated,
+            CodecError::LenOverflow { .. } | CodecError::DepthExceeded { .. } => {
+                Self::PayloadTooLarge
+            }
+            CodecError::BadMagic
+            | CodecError::BadVersion(_)
+            | CodecError::BadBool(_)
+            | CodecError::InvalidUtf8 => Self::Truncated,
         }
     }
 }
@@ -161,6 +166,20 @@ impl CameraFrameWireLayout {
         Ok(desc)
     }
 
+    #[inline]
+    fn write_to_sink<S: ByteSink>(&self, w: &mut S) -> Result<(), CodecError> {
+        w.put_raw(&self.magic)?;
+        w.put_u8(self.version)?;
+        w.put_u8(self.pixel_format)?;
+        w.put_u16(self.rotation_deg)?;
+        w.put_u32(self.width)?;
+        w.put_u32(self.height)?;
+        w.put_u32(self.stride_bytes)?;
+        w.put_u32(self.reserved)?;
+        w.put_u64(self.timestamp_ns)?;
+        w.put_u64(self.native_handle_id)
+    }
+
     /// Encodes this 40-byte wire layout directly into `dst` with zero heap allocations.
     #[inline]
     pub fn write_into(
@@ -168,27 +187,15 @@ impl CameraFrameWireLayout {
         dst: &mut [u8; CAMERA_FRAME_DESCRIPTOR_SIZE],
     ) -> Result<(), CodecError> {
         let mut w = SliceWriter::new(dst);
-        w.write_raw(&self.magic)?;
-        w.write_u8(self.version)?;
-        w.write_u8(self.pixel_format)?;
-        w.write_u16(self.rotation_deg)?;
-        w.write_u32(self.width)?;
-        w.write_u32(self.height)?;
-        w.write_u32(self.stride_bytes)?;
-        w.write_u32(self.reserved)?;
-        w.write_u64(self.timestamp_ns)?;
-        w.write_u64(self.native_handle_id)?;
+        self.write_to_sink(&mut w)?;
         w.finish()
     }
 
-    /// Encodes this 40-byte wire layout into canonical little-endian bytes using `SliceWriter`
+    /// Encodes this 40-byte wire layout into canonical little-endian bytes using `write_fixed`
     /// (zero heap allocations and zero `unsafe` pointer casts).
     #[inline]
     pub fn to_bytes(&self) -> [u8; CAMERA_FRAME_DESCRIPTOR_SIZE] {
-        let mut out = [0u8; CAMERA_FRAME_DESCRIPTOR_SIZE];
-        let res = self.write_into(&mut out);
-        debug_assert!(res.is_ok());
-        out
+        write_fixed::<CAMERA_FRAME_DESCRIPTOR_SIZE>(|w| self.write_to_sink(w))
     }
 }
 

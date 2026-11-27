@@ -3013,6 +3013,7 @@ dependencies = [
  "dioxus-signals",
  "nve-abi",
  "nve-backend-headless",
+ "nve-codec",
  "nve-components",
  "nve-dioxus",
  "nve-interop",
@@ -3203,6 +3204,7 @@ name = "nve-video"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
 ]
 
@@ -3220,6 +3222,7 @@ name = "nve-web-element"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
 ]
 
@@ -3237,6 +3240,7 @@ name = "nve-web-html"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-store",
 ]
 

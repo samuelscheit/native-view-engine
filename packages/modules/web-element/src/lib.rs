@@ -26,42 +26,31 @@ impl Resource for WebElementAttrs {
     const KIND: Key64 = Key64::of("nve.res.web_element_attrs");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for (k, v) in self.0.iter() {
-            out.extend_from_slice(&(k.len() as u32).to_le_bytes());
-            out.extend_from_slice(k.as_bytes());
-            out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-            out.extend_from_slice(v.as_bytes());
+        let start = out.len();
+        let res = nve_codec::ByteWriter::with_buf(out, |w| -> Result<(), nve_codec::CodecError> {
+            w.write_len_max(self.0.len(), MAX_ATTRS)?;
+            for (k, v) in self.0.iter() {
+                w.write_str_max(k, MAX_STR_BYTES)?;
+                w.write_str_max(v, MAX_STR_BYTES)?;
+            }
+            Ok(())
+        });
+        if res.is_err() {
+            out.truncate(start);
         }
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut pos = 0usize;
-        let read_u32 = |pos: &mut usize| -> Option<u32> {
-            let end = pos.checked_add(4)?;
-            let v = u32::from_le_bytes(bytes.get(*pos..end)?.try_into().ok()?);
-            *pos = end;
-            Some(v)
-        };
-        let read_str = |pos: &mut usize| -> Option<String> {
-            let len = read_u32(pos)? as usize;
-            if len > MAX_STR_BYTES {
-                return None;
-            }
-            let end = pos.checked_add(len)?;
-            let s = std::str::from_utf8(bytes.get(*pos..end)?).ok()?.to_owned();
-            *pos = end;
-            Some(s)
-        };
-        let n = read_u32(&mut pos)? as usize;
-        if n > MAX_ATTRS {
-            return None;
-        }
-        let mut out = Vec::with_capacity(n.min(32));
-        for _ in 0..n {
-            out.push((read_str(&mut pos)?, read_str(&mut pos)?));
-        }
-        (pos == bytes.len()).then(|| Self(Arc::from(out)))
+        let mut r = nve_codec::ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_ATTRS, 8, |r| {
+                let k = r.read_string(MAX_STR_BYTES)?;
+                let v = r.read_string(MAX_STR_BYTES)?;
+                Ok((k, v))
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 

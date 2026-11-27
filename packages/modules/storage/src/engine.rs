@@ -389,28 +389,27 @@ impl KvStoreManager {
 }
 
 fn write_file_header(out: &mut Vec<u8>) {
-    let mut prefix = [0u8; 8];
-    prefix[0..4].copy_from_slice(&NVK2_MAGIC);
-    prefix[4..6].copy_from_slice(&NVK2_VERSION.to_le_bytes());
-    prefix[6..8].copy_from_slice(&0u16.to_le_bytes());
-    let checksum = xxh64(&prefix, 0);
-    out.extend_from_slice(&prefix);
-    out.extend_from_slice(&checksum.to_le_bytes());
+    ByteWriter::with_buf(out, |w| {
+        let start = w.len();
+        w.write_raw(&NVK2_MAGIC);
+        w.write_u16(NVK2_VERSION);
+        w.write_u16(0);
+        let checksum = xxh64(&w.as_slice()[start..], 0);
+        w.write_u64(checksum);
+    });
 }
 
 fn encode_record_frame(kind: u8, seq_no: u64, payload: &[u8]) -> Result<Vec<u8>, ServiceError> {
-    let payload_len = u32::try_from(payload.len())
+    let mut w = ByteWriter::with_capacity(RECORD_HEADER_LEN + payload.len() + RECORD_TRAILER_LEN);
+    w.write_u8(kind);
+    w.write_raw(&[0u8; 3]);
+    w.write_u64(seq_no);
+    w.write_bytes(payload)
         .map_err(|_| ServiceError::InvalidArg("NVK2 record payload exceeds u32::MAX".into()))?;
-    let mut out = Vec::with_capacity(RECORD_HEADER_LEN + payload.len() + RECORD_TRAILER_LEN);
-    out.push(kind);
-    out.extend_from_slice(&[0u8; 3]);
-    out.extend_from_slice(&seq_no.to_le_bytes());
-    out.extend_from_slice(&payload_len.to_le_bytes());
-    out.extend_from_slice(payload);
-    let checksum = xxh64(&out, 0);
-    out.extend_from_slice(&checksum.to_le_bytes());
-    out.extend_from_slice(&NVK2_COMMIT_MARKER);
-    Ok(out)
+    let checksum = xxh64(w.as_slice(), 0);
+    w.write_u64(checksum);
+    w.write_raw(&NVK2_COMMIT_MARKER);
+    Ok(w.into_bytes())
 }
 
 struct ReplayResult {
@@ -424,28 +423,17 @@ fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
     if bytes.len() < HEADER_LEN {
         return Err(ServiceError::Codec("NVK2 header truncated".into()));
     }
-    if bytes[0..4] != NVK2_MAGIC {
-        return Err(ServiceError::Codec("invalid NVK2 file magic".into()));
-    }
-    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let mut r = ByteReader::new(bytes);
+    r.expect_magic(&NVK2_MAGIC)
+        .map_err(|_| ServiceError::Codec("invalid NVK2 file magic".into()))?;
+    let version = r.read_u16()?;
     if version != NVK2_VERSION {
         return Err(ServiceError::Codec(format!(
             "unsupported NVK2 version {version}"
         )));
     }
-    let le64 = |o: usize| {
-        u64::from_le_bytes([
-            bytes[o],
-            bytes[o + 1],
-            bytes[o + 2],
-            bytes[o + 3],
-            bytes[o + 4],
-            bytes[o + 5],
-            bytes[o + 6],
-            bytes[o + 7],
-        ])
-    };
-    let stored_hdr_crc = le64(8);
+    let _reserved = r.read_u16()?;
+    let stored_hdr_crc = r.read_u64()?;
     if xxh64(&bytes[0..8], 0) != stored_hdr_crc {
         return Err(ServiceError::Codec(
             "corrupt NVK2 file header checksum".into(),
@@ -453,65 +441,70 @@ fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
     }
 
     let mut entries = BTreeMap::new();
-    let mut cursor = HEADER_LEN;
+    let mut valid_len = HEADER_LEN;
     let mut last_seq = 0u64;
     let mut recovered_torn_tail = false;
 
-    while cursor < bytes.len() {
-        let remaining = bytes.len() - cursor;
-        if remaining < RECORD_HEADER_LEN + RECORD_TRAILER_LEN {
+    while r.remaining() > 0 {
+        let frame_start = r.pos();
+        if r.remaining() < RECORD_HEADER_LEN + RECORD_TRAILER_LEN {
             recovered_torn_tail = true;
             break;
         }
-        let kind = bytes[cursor];
-        let seq_no = le64(cursor + 4);
-        let payload_len = u32::from_le_bytes([
-            bytes[cursor + 12],
-            bytes[cursor + 13],
-            bytes[cursor + 14],
-            bytes[cursor + 15],
-        ]) as usize;
-        let Some(frame_len) = RECORD_HEADER_LEN
-            .checked_add(payload_len)
-            .and_then(|v| v.checked_add(RECORD_TRAILER_LEN))
-        else {
+        let Ok(kind) = r.read_u8() else {
             recovered_torn_tail = true;
             break;
         };
-        if frame_len > remaining {
+        if r.read_exact(3).is_err() {
             recovered_torn_tail = true;
             break;
         }
-
-        let payload_end = cursor + RECORD_HEADER_LEN + payload_len;
-        let checksum_end = payload_end + 8;
-        let frame_end = cursor + frame_len;
-
-        if bytes[checksum_end..frame_end] != NVK2_COMMIT_MARKER {
+        let Ok(seq_no) = r.read_u64() else {
+            recovered_torn_tail = true;
+            break;
+        };
+        let Ok(payload_len) = r.read_u32().map(|v| v as usize) else {
+            recovered_torn_tail = true;
+            break;
+        };
+        if payload_len
+            .checked_add(RECORD_TRAILER_LEN)
+            .is_none_or(|n| n > r.remaining())
+        {
             recovered_torn_tail = true;
             break;
         }
-        let stored_crc = le64(payload_end);
-        let computed_crc = xxh64(&bytes[cursor..payload_end], 0);
+        let Ok(payload) = r.read_exact(payload_len) else {
+            recovered_torn_tail = true;
+            break;
+        };
+        let payload_end = r.pos();
+        let Ok(stored_crc) = r.read_u64() else {
+            recovered_torn_tail = true;
+            break;
+        };
+        if r.expect_magic(&NVK2_COMMIT_MARKER).is_err() {
+            recovered_torn_tail = true;
+            break;
+        }
+        let computed_crc = xxh64(&bytes[frame_start..payload_end], 0);
         if stored_crc != computed_crc {
             recovered_torn_tail = true;
             break;
         }
-
-        let payload = &bytes[cursor + RECORD_HEADER_LEN..payload_end];
         if apply_record_payload(kind, payload, &mut entries).is_err() {
             recovered_torn_tail = true;
             break;
         }
 
         last_seq = last_seq.max(seq_no);
-        cursor = frame_end;
+        valid_len = r.pos();
     }
 
     Ok(ReplayResult {
         entries,
         last_seq,
-        valid_len: cursor,
+        valid_len,
         recovered_torn_tail,
     })
 }

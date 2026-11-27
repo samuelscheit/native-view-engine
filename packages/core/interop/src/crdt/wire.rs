@@ -78,6 +78,11 @@ impl From<CodecError> for CrdtWireError {
                 count: len,
                 max,
             },
+            CodecError::DepthExceeded { max } => Self::LimitExceeded {
+                kind: "nesting_depth",
+                count: max.saturating_add(1),
+                max,
+            },
             CodecError::BadMagic
             | CodecError::BadVersion(_)
             | CodecError::BadEnum { .. }

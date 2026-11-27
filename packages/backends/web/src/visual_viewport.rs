@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use nve_abi::{EventPayload, NativeEvent, NativeEventKind, ROOT_NODE_ID};
-use nve_codec::{ByteWriter, NveEncode};
+use nve_codec::NveEncode;
 pub use nve_components::keyboard::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
     VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
@@ -32,9 +32,9 @@ pub(crate) type KeyboardInsetsCallback = Rc<dyn Fn(KeyboardInsets)>;
 pub const KEYBOARD_INSETS_EVENT_NAME: &str = "keyboard_insets";
 
 fn encode_keyboard_insets(insets: KeyboardInsets) -> Vec<u8> {
-    let mut writer = ByteWriter::with_capacity(8);
-    let _ = insets.encode(&mut writer);
-    writer.into_bytes()
+    insets
+        .encode_to_vec()
+        .expect("KeyboardInsets fixed 8-byte encoding is infallible")
 }
 
 /// Active `window.visualViewport` listener handle detached cleanly on [`WebBackend::drop`].

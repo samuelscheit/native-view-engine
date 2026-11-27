@@ -54,17 +54,16 @@ impl VideoPlayerCommand {
     }
 
     pub fn decode(op: u32, payload: &[u8]) -> Option<Self> {
-        match op {
-            Self::OP_PLAY if payload.is_empty() => Some(Self::Play),
-            Self::OP_PAUSE if payload.is_empty() => Some(Self::Pause),
-            Self::OP_SEEK_MS if payload.len() == 8 => {
-                Some(Self::SeekMs(u64::from_le_bytes(payload.try_into().ok()?)))
-            }
-            Self::OP_SET_VOLUME if payload.len() == 4 => {
-                Some(Self::SetVolume(f32::from_le_bytes(payload.try_into().ok()?)))
-            }
-            _ => None,
-        }
+        let mut r = nve_codec::ByteReader::new(payload);
+        let cmd = match op {
+            Self::OP_PLAY => Self::Play,
+            Self::OP_PAUSE => Self::Pause,
+            Self::OP_SEEK_MS => Self::SeekMs(r.read_u64().ok()?),
+            Self::OP_SET_VOLUME => Self::SetVolume(r.read_f32_raw().ok()?),
+            _ => return None,
+        };
+        r.finish().ok()?;
+        Some(cmd)
     }
 }
 

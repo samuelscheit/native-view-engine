@@ -32,6 +32,7 @@ impl From<CodecError> for HotPatchDecodeError {
             CodecError::LenOverflow { .. } => Self::LimitExceeded,
             CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
             CodecError::BadVersion(_) | CodecError::NonZeroReserved(_) => Self::InvalidMagic,
+            CodecError::DepthExceeded { .. } => Self::LimitExceeded,
         }
     }
 }
@@ -103,31 +104,33 @@ impl HotPatchMsg {
             } => {
                 w.write_u8(1);
                 w.write_u64(*generation);
-                w.write_str(template_id)?;
+                w.write_str_max(template_id, DEFAULT_MAX_BYTES)?;
 
-                w.write_len(attr_updates.len())?;
+                w.write_len_max(attr_updates.len(), MAX_WIRE_ITEMS)?;
                 for (k, v) in attr_updates {
-                    w.write_str(k)?;
-                    w.write_str(v)?;
+                    w.write_str_max(k, DEFAULT_MAX_BYTES)?;
+                    w.write_str_max(v, DEFAULT_MAX_BYTES)?;
                 }
 
-                w.write_len(text_updates.len())?;
+                w.write_len_max(text_updates.len(), MAX_WIRE_ITEMS)?;
                 for (idx, text) in text_updates {
                     w.write_len(*idx)?;
-                    w.write_str(text)?;
+                    w.write_str_max(text, DEFAULT_MAX_BYTES)?;
                 }
 
-                w.write_opt(target_test_id.as_deref(), ByteWriter::write_str)?;
+                w.write_opt(target_test_id.as_deref(), |w, s| {
+                    w.write_str_max(s, DEFAULT_MAX_BYTES)
+                })?;
 
-                w.write_len(node_path.len())?;
+                w.write_len_max(node_path.len(), MAX_WIRE_ITEMS)?;
                 for &step in node_path {
                     w.write_len(step)?;
                 }
 
-                w.write_len(text_replacements.len())?;
+                w.write_len_max(text_replacements.len(), MAX_WIRE_ITEMS)?;
                 for (old_text, new_text) in text_replacements {
-                    w.write_str(old_text)?;
-                    w.write_str(new_text)?;
+                    w.write_str_max(old_text, DEFAULT_MAX_BYTES)?;
+                    w.write_str_max(new_text, DEFAULT_MAX_BYTES)?;
                 }
             }
             Self::DylibReload {
@@ -137,7 +140,7 @@ impl HotPatchMsg {
             } => {
                 w.write_u8(2);
                 w.write_u64(*generation);
-                w.write_str(dylib_path)?;
+                w.write_str_max(dylib_path, DEFAULT_MAX_BYTES)?;
                 w.write_u64(*build_ms);
             }
             Self::DevStatus {
@@ -145,7 +148,7 @@ impl HotPatchMsg {
                 latency_ms,
             } => {
                 w.write_u8(3);
-                w.write_str(message)?;
+                w.write_str_max(message, DEFAULT_MAX_BYTES)?;
                 w.write_u64(*latency_ms);
             }
         }
@@ -301,5 +304,23 @@ mod tests {
         bad_bool.extend_from_slice(&[0; 12]);
         bad_bool.push(7);
         assert_eq!(HotPatchMsg::from_bytes(&bad_bool), Err(HotPatchDecodeError::InvalidBool(7)));
+
+        // Encode-side cap matches decoder MAX_WIRE_ITEMS so oversized frames fail at encode time.
+        let oversized = HotPatchMsg::TemplatePatch {
+            generation: 1,
+            template_id: String::new(),
+            attr_updates: vec![],
+            text_updates: vec![],
+            target_test_id: None,
+            node_path: vec![0; MAX_WIRE_ITEMS + 1],
+            text_replacements: vec![],
+        };
+        assert_eq!(
+            oversized.to_bytes(),
+            Err(CodecError::LenOverflow {
+                len: MAX_WIRE_ITEMS + 1,
+                max: MAX_WIRE_ITEMS,
+            })
+        );
     }
 }

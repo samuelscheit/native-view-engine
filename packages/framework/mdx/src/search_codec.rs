@@ -38,7 +38,13 @@ impl From<CodecError> for SearchIndexError {
             CodecError::InvalidUtf8 => Self::InvalidUtf8,
             CodecError::NonZeroReserved(v) => Self::NonZeroReserved(v as u16),
             CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
-            _ => Self::UnexpectedEof,
+            CodecError::Truncated { .. }
+            | CodecError::BadMagic
+            | CodecError::BadVersion(_)
+            | CodecError::BadEnum { .. }
+            | CodecError::BadBool(_)
+            | CodecError::LenOverflow { .. }
+            | CodecError::DepthExceeded { .. } => Self::UnexpectedEof,
         }
     }
 }
@@ -131,39 +137,27 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
     let token_count = r.read_u32()? as usize;
     let trigram_count = r.read_u32()? as usize;
 
-    if doc_count > r.remaining() / MIN_DOC_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut docs = Vec::with_capacity(doc_count);
-    for _ in 0..doc_count {
-        docs.push(SearchDoc {
+    let docs = read_counted_vec(&mut r, doc_count, MIN_DOC_BYTES, |r| {
+        Ok(SearchDoc {
             route: r.read_string(DEFAULT_MAX_BYTES)?,
             title: r.read_string(DEFAULT_MAX_BYTES)?,
             section: r.read_string(DEFAULT_MAX_BYTES)?,
             anchor: r.read_string(DEFAULT_MAX_BYTES)?,
             excerpt: r.read_string(DEFAULT_MAX_BYTES)?,
-        });
-    }
+        })
+    })?;
 
-    if token_count > r.remaining() / MIN_TOKEN_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut tokens = Vec::with_capacity(token_count);
-    for _ in 0..token_count {
+    let tokens = read_counted_vec(&mut r, token_count, MIN_TOKEN_BYTES, |r| {
         let term = r.read_string(DEFAULT_MAX_BYTES)?;
-        let postings = read_postings(&mut r, doc_count as u32)?;
-        tokens.push((term, postings));
-    }
+        let postings = read_postings(r, doc_count as u32)?;
+        Ok((term, postings))
+    })?;
 
-    if trigram_count > r.remaining() / MIN_TRIGRAM_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut trigrams = Vec::with_capacity(trigram_count);
-    for _ in 0..trigram_count {
+    let trigrams = read_counted_vec(&mut r, trigram_count, MIN_TRIGRAM_BYTES, |r| {
         let tri = r.read_str_u8(u8::MAX as usize)?.to_owned();
-        let postings = read_postings(&mut r, doc_count as u32)?;
-        trigrams.push((tri, postings));
-    }
+        let postings = read_postings(r, doc_count as u32)?;
+        Ok((tri, postings))
+    })?;
 
     r.finish()?;
 
@@ -172,6 +166,22 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
         tokens,
         trigrams,
     })
+}
+
+fn read_counted_vec<T>(
+    r: &mut ByteReader<'_>,
+    count: usize,
+    min_elem_bytes: usize,
+    mut decode: impl FnMut(&mut ByteReader<'_>) -> Result<T, SearchIndexError>,
+) -> Result<Vec<T>, SearchIndexError> {
+    if count > r.remaining() / min_elem_bytes {
+        return Err(SearchIndexError::UnexpectedEof);
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push(decode(r)?);
+    }
+    Ok(out)
 }
 
 fn write_postings(w: &mut ByteWriter, postings: &[Posting]) -> Result<(), CodecError> {
@@ -185,17 +195,12 @@ fn write_postings(w: &mut ByteWriter, postings: &[Posting]) -> Result<(), CodecE
 
 fn read_postings(r: &mut ByteReader<'_>, doc_count: u32) -> Result<Vec<Posting>, SearchIndexError> {
     let count = r.read_u32()? as usize;
-    if count > r.remaining() / POSTING_BYTES {
-        return Err(SearchIndexError::UnexpectedEof);
-    }
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
+    read_counted_vec(r, count, POSTING_BYTES, |r| {
         let doc_id = r.read_u32()?;
         if doc_id >= doc_count {
             return Err(SearchIndexError::InvalidDocId { doc_id, doc_count });
         }
         let weight_x10 = r.read_u16()?;
-        out.push(Posting { doc_id, weight_x10 });
-    }
-    Ok(out)
+        Ok(Posting { doc_id, weight_x10 })
+    })
 }

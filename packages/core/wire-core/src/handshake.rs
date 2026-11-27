@@ -1,7 +1,7 @@
 //! Bearer-token TLS 1.3 handshake messages (`Hello`, `HelloAck`, `Reject`) and out-of-order
 //! `AsyncSlot` chunk payloads for `NveWireFrame` v2.
 
-use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, SliceWriter};
+use nve_codec::{write_fixed, ByteReader, ByteSink, ByteWriter, CodecError, NveCodec, SliceWriter};
 
 use crate::frame::NveWireError;
 
@@ -45,13 +45,16 @@ pub enum NveWireRejectReason {
 
 impl NveWireRejectReason {
     pub fn encode(self, detail: &str) -> Vec<u8> {
-        let detail_bytes = detail.as_bytes();
-        let clipped_len = detail_bytes.len().min(256);
+        let mut clipped_len = detail.len().min(256);
+        while clipped_len > 0 && !detail.is_char_boundary(clipped_len) {
+            clipped_len -= 1;
+        }
+        let detail_bytes = &detail.as_bytes()[..clipped_len];
         let mut w = ByteWriter::with_capacity(4 + clipped_len);
         w.write_u8(self as u8);
         w.write_u8(0);
         w.write_u16(clipped_len as u16);
-        w.write_raw(&detail_bytes[..clipped_len]);
+        w.write_raw(detail_bytes);
         w.into_bytes()
     }
 
@@ -163,21 +166,23 @@ impl NveWireHelloAck {
     pub const ENCODED_LEN: usize = 12;
 
     #[inline]
+    fn write_to_sink<S: ByteSink>(&self, w: &mut S) -> Result<(), CodecError> {
+        w.put_u32(self.session_id)?;
+        w.put_u16(self.schema_version)?;
+        w.put_zeroes(2)?;
+        w.put_u32(self.server_capabilities)
+    }
+
+    #[inline]
     pub fn write_into(&self, dst: &mut [u8; Self::ENCODED_LEN]) -> Result<(), CodecError> {
         let mut w = SliceWriter::new(dst);
-        w.write_u32(self.session_id)?;
-        w.write_u16(self.schema_version)?;
-        w.write_zeroes(2)?;
-        w.write_u32(self.server_capabilities)?;
+        self.write_to_sink(&mut w)?;
         w.finish()
     }
 
     #[inline]
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0u8; Self::ENCODED_LEN];
-        let res = self.write_into(&mut out);
-        debug_assert!(res.is_ok());
-        out
+        write_fixed::<{ Self::ENCODED_LEN }>(|w| self.write_to_sink(w))
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, NveWireError> {
@@ -240,5 +245,21 @@ impl<'a> NveWireSlotChunk<'a> {
             total_chunks,
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_detail_clips_on_utf8_char_boundary() {
+        let detail = "€".repeat(100);
+        assert_eq!(detail.len(), 300);
+        let bytes = NveWireRejectReason::Unauthorized.encode(&detail);
+        let (reason, decoded) = NveWireRejectReason::decode(&bytes).expect("must decode valid UTF-8");
+        assert_eq!(reason, NveWireRejectReason::Unauthorized);
+        assert_eq!(decoded.len(), 255);
+        assert_eq!(decoded, "€".repeat(85));
     }
 }

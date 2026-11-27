@@ -70,7 +70,10 @@ impl From<std::io::Error> for ServiceError {
 
 impl From<nve_codec::CodecError> for ServiceError {
     fn from(err: nve_codec::CodecError) -> Self {
-        Self::Codec(err.to_string())
+        match err {
+            nve_codec::CodecError::BadEnum { .. } => Self::InvalidArg(err.to_string()),
+            other => Self::Codec(other.to_string()),
+        }
     }
 }
 

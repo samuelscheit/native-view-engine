@@ -64,10 +64,10 @@ pub fn encode_form_draft(fields: &BTreeMap<String, String>) -> Result<Vec<u8>, C
     let mut w = ByteWriter::with_capacity(FORM_DRAFT_MAGIC.len() + 8 + payload_hint + 8);
     w.write_raw(FORM_DRAFT_MAGIC);
     w.write_u32(FORM_DRAFT_SCHEMA_VERSION);
-    w.write_len(fields.len())?;
+    w.write_len_max(fields.len(), DEFAULT_MAX_ITEMS)?;
     for (k, v) in fields {
-        w.write_str(k)?;
-        w.write_str(v)?;
+        w.write_str_max(k, DEFAULT_MAX_BYTES)?;
+        w.write_str_max(v, DEFAULT_MAX_BYTES)?;
     }
     let checksum = xxh64(w.as_slice(), 0);
     w.write_u64(checksum);
@@ -304,10 +304,10 @@ impl FormDraftStorage for NativeMmapFormDraftStorage {
 fn encode_draft_table(table: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, CodecError> {
     let mut w = ByteWriter::with_capacity(64 + table.len() * 64);
     w.write_raw(FORM_DRAFT_TABLE_MAGIC);
-    w.write_len(table.len())?;
+    w.write_len_max(table.len(), DEFAULT_MAX_ITEMS)?;
     for (k, blob) in table {
-        w.write_str(k)?;
-        w.write_bytes(blob)?;
+        w.write_str_max(k, DEFAULT_MAX_BYTES)?;
+        w.write_bytes_max(blob, DEFAULT_MAX_BYTES)?;
     }
     Ok(w.into_bytes())
 }
@@ -358,9 +358,12 @@ impl<S: FormDraftStorage> FormDraftStore<S> {
         persist_key: &str,
         fields: &BTreeMap<String, String>,
     ) -> Result<usize, FormDraftError> {
-        let encoded = encode_form_draft(fields).map_err(|_| FormDraftError::SizeLimitExceeded {
-            bytes: usize::MAX,
-            limit: self.max_bytes,
+        let encoded = encode_form_draft(fields).map_err(|err| match err {
+            CodecError::LenOverflow { len, .. } => FormDraftError::SizeLimitExceeded {
+                bytes: len,
+                limit: self.max_bytes,
+            },
+            other => FormDraftError::Persistence(other.to_string()),
         })?;
         if encoded.len() > self.max_bytes {
             return Err(FormDraftError::SizeLimitExceeded {
@@ -388,4 +391,31 @@ pub(crate) fn default_draft_storage() -> Box<dyn FormDraftStorage> {
         return Box::new(StringKeyValueFormDraftStorage::new(ls));
     }
     Box::new(MemoryFormDraftStorage::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_form_draft_enforces_decoder_byte_and_item_caps() {
+        let mut oversized_val = BTreeMap::new();
+        oversized_val.insert("body".to_owned(), "x".repeat(DEFAULT_MAX_BYTES + 1));
+        assert_eq!(
+            encode_form_draft(&oversized_val),
+            Err(CodecError::LenOverflow {
+                len: DEFAULT_MAX_BYTES + 1,
+                max: DEFAULT_MAX_BYTES,
+            })
+        );
+
+        let mut store = FormDraftStore::new(MemoryFormDraftStorage::new()).with_max_bytes(1024);
+        assert_eq!(
+            store.save_fields("k", &oversized_val),
+            Err(FormDraftError::SizeLimitExceeded {
+                bytes: DEFAULT_MAX_BYTES + 1,
+                limit: 1024,
+            })
+        );
+    }
 }

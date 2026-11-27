@@ -39,11 +39,9 @@ fn map_codec_err(err: CodecError, total_len: usize, pos: usize) -> SignalArchive
         CodecError::LenOverflow { len, .. } => SignalArchiveError::PayloadTooLarge(len),
         CodecError::BadEnum { raw, .. } => SignalArchiveError::InvalidValueTag(raw as u8),
         CodecError::BadVersion(v) => SignalArchiveError::UnsupportedFormatVersion(v),
-        CodecError::BadMagic => SignalArchiveError::InvalidMagic([0; 8]),
-        CodecError::NonZeroReserved(_) => SignalArchiveError::Truncated {
-            expected: pos,
-            actual: total_len,
-        },
+        other @ (CodecError::BadMagic
+        | CodecError::NonZeroReserved(_)
+        | CodecError::DepthExceeded { .. }) => SignalArchiveError::Codec(other),
     }
 }
 

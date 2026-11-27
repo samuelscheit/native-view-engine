@@ -1,21 +1,23 @@
 //! Global-allocator verification proving `0` heap allocations for `CameraFrameDescriptor::encode_into`,
-//! `encode`, and `decode` via `nve_codec::SliceWriter` / `ByteReader`.
+//! `encode`, and `decode` via `nve_codec::SliceWriter` / `ByteReader` using thread-local tracking.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use nve_camera::{
     CameraFrameDescriptor, CameraPixelFormat, CAMERA_FRAME_DESCRIPTOR_SIZE,
 };
 
+thread_local! {
+    static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
+}
+
 struct CountingAlloc;
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-// SAFETY: Delegates directly to `std::alloc::System` while counting allocations.
+// SAFETY: Delegates directly to `std::alloc::System` while counting allocations per thread.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().wrapping_add(1)));
         // SAFETY: Preconditions upheld by caller and delegated to `System`.
         unsafe { System.alloc(layout) }
     }
@@ -26,7 +28,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().wrapping_add(1)));
         // SAFETY: Preconditions upheld by caller and delegated to `System`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -48,7 +50,7 @@ fn camera_frame_encode_into_and_decode_allocate_zero_bytes() {
     };
     let mut buf = [0u8; CAMERA_FRAME_DESCRIPTOR_SIZE];
 
-    let before = ALLOC_COUNT.load(Ordering::SeqCst);
+    let before = THREAD_ALLOCS.with(Cell::get);
     for i in 0..64u64 {
         let cur = CameraFrameDescriptor {
             timestamp_ns: desc.timestamp_ns + i,
@@ -58,9 +60,9 @@ fn camera_frame_encode_into_and_decode_allocate_zero_bytes() {
         let decoded = CameraFrameDescriptor::decode(&buf).unwrap();
         assert_eq!(decoded, cur);
     }
-    let after = ALLOC_COUNT.load(Ordering::SeqCst);
+    let after = THREAD_ALLOCS.with(Cell::get);
     assert_eq!(
-        after - before,
+        after.wrapping_sub(before),
         0,
         "CameraFrameDescriptor::encode_into + decode must allocate 0 bytes"
     );

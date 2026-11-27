@@ -1,24 +1,25 @@
 id: rust-no-private-slice-byte-readers
 snapshots:
+  "fn decode_closure(bytes: &[u8]) -> Option<u32> {\n    let read_u32 = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);\n    Some(read_u32(0))\n}\n":
+    labels:
+    - source: from_le_bytes
+      style: primary
+      start: 84
+      end: 97
+    - source: u32::from_le_bytes
+      style: secondary
+      start: 79
+      end: 97
   "fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {\n    let s = buf.get(*pos..*pos + 4)?;\n    *pos += 4;\n    Some(u32::from_le_bytes(s.try_into().ok()?))\n}\n":
     labels:
-    - source: |-
-        fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
-            let s = buf.get(*pos..*pos + 4)?;
-            *pos += 4;
-            Some(u32::from_le_bytes(s.try_into().ok()?))
-        }
-      style: primary
-      start: 0
-      end: 161
     - source: from_le_bytes
-      style: secondary
+      style: primary
       start: 125
       end: 138
-    - source: read_u32
+    - source: u32::from_le_bytes
       style: secondary
-      start: 3
-      end: 11
+      start: 120
+      end: 138
   "fn read_u64(buf: &[u8]) -> u64 {\n    u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])\n}\n":
     labels:
     - source: |-
@@ -36,3 +37,23 @@ snapshots:
       style: secondary
       start: 3
       end: 11
+  "pub fn decode_i32(buf: &[u8]) -> i32 {\n    i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])\n}\n":
+    labels:
+    - source: from_le_bytes
+      style: primary
+      start: 48
+      end: 61
+    - source: i32::from_le_bytes
+      style: secondary
+      start: 43
+      end: 61
+  "struct Reader<'a>(&'a [u8]);\nimpl<'a> Reader<'a> {\n    fn f32(&mut self) -> f32 {\n        f32::from_le_bytes([self.0[0], self.0[1], self.0[2], self.0[3]])\n    }\n}\n":
+    labels:
+    - source: from_le_bytes
+      style: primary
+      start: 95
+      end: 108
+    - source: f32::from_le_bytes
+      style: secondary
+      start: 90
+      end: 108

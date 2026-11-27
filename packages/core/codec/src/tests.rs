@@ -211,6 +211,118 @@ fn slice_writer_patch_u32_and_write_zeroes_bounds_are_checked() {
     assert_eq!(bw.patch_u32(2, 1), Err(CodecError::Truncated { needed: 4, remaining: 2 }));
     assert!(matches!(bw.patch_u32(usize::MAX, 1), Err(CodecError::LenOverflow { .. })));
     assert!(matches!(bw.write_zeroes(usize::MAX), Err(CodecError::LenOverflow { .. })));
+
+    // Neon #1: empty writer + usize::MAX / isize::MAX + 1 and non-empty + isize::MAX must return Err, never panic.
+    assert!(matches!(ByteWriter::new().write_zeroes(usize::MAX), Err(CodecError::LenOverflow { .. })));
+    assert!(matches!(
+        ByteWriter::new().write_zeroes((isize::MAX as usize) + 1),
+        Err(CodecError::LenOverflow { .. })
+    ));
+    assert!(matches!(bw.write_zeroes(isize::MAX as usize), Err(CodecError::LenOverflow { .. })));
+
+    // write_fixed + ByteSink shared encoding path.
+    let fixed = write_fixed::<12>(|w| {
+        ByteSink::put_u32(w, 0x1122_3344)?;
+        ByteSink::put_u16(w, 0x5566)?;
+        ByteSink::put_zeroes(w, 2)?;
+        ByteSink::put_i32(w, -7)
+    });
+    let mut r = ByteReader::new(&fixed);
+    assert_eq!(r.read_u32().unwrap(), 0x1122_3344);
+    assert_eq!(r.read_u16().unwrap(), 0x5566);
+    r.expect_zero(2).unwrap();
+    assert_eq!(r.read_i32().unwrap(), -7);
+    r.finish().unwrap();
+
+    // Negative unknown i32 discriminant preserves signed i64 value in BadEnum.
+    let neg_bad = (-42i32).to_le_bytes();
+    assert_eq!(
+        SignedI32::decode_exact(&neg_bad),
+        Err(CodecError::BadEnum { ty: "SignedI32", raw: -42 })
+    );
+}
+
+#[derive(Debug, PartialEq, Eq, NveCodec)]
+#[nve_codec(crate_path = "crate")]
+struct NestedTree(Vec<NestedTree>);
+
+#[test]
+fn recursion_depth_limit_and_encode_caps_prevent_dos_and_divergence() {
+    // 1. Recursive NestedTree 256 levels deep must fail with DepthExceeded instead of stack overflow.
+    let mut deep = Vec::with_capacity(257 * 4);
+    for _ in 0..256 {
+        deep.extend_from_slice(&1u32.to_le_bytes());
+    }
+    deep.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(
+        NestedTree::decode_exact(&deep),
+        Err(CodecError::DepthExceeded { max: DEFAULT_MAX_DEPTH })
+    );
+
+    // Valid depth within DEFAULT_MAX_DEPTH round-trips cleanly.
+    let mut shallow = NestedTree(Vec::new());
+    for _ in 0..16 {
+        shallow = NestedTree(vec![shallow]);
+    }
+    let encoded_tree = shallow.encode_to_vec().unwrap();
+    assert_eq!(NestedTree::decode_exact(&encoded_tree).unwrap(), shallow);
+
+    // 2. read_opt recursion also enforces depth limit.
+    let opt_chain = [1u8; 80];
+    fn parse_opt_chain(r: &mut ByteReader<'_>) -> Result<usize, CodecError> {
+        match r.read_opt(parse_opt_chain)? {
+            Some(n) => Ok(n + 1),
+            None => Ok(0),
+        }
+    }
+    let mut r_opt = ByteReader::new(&opt_chain).with_max_depth(8);
+    assert_eq!(parse_opt_chain(&mut r_opt), Err(CodecError::DepthExceeded { max: 8 }));
+
+    // 3. Encoder enforces decoder caps (DEFAULT_MAX_ITEMS + 1 and DEFAULT_MAX_BYTES + 1).
+    let too_many_items = vec![0u8; DEFAULT_MAX_ITEMS + 1];
+    assert_eq!(
+        too_many_items.encode_to_vec(),
+        Err(CodecError::LenOverflow {
+            len: DEFAULT_MAX_ITEMS + 1,
+            max: DEFAULT_MAX_ITEMS,
+        })
+    );
+    let big_bytes = ByteBuf(vec![0x5Au8; DEFAULT_MAX_BYTES]);
+    let big_encoded = big_bytes.encode_to_vec().unwrap();
+    let big_decoded = ByteBuf::decode_exact(&big_encoded).unwrap();
+    assert_eq!(big_decoded.len(), DEFAULT_MAX_BYTES);
+
+    let too_many_bytes = ByteBuf(vec![0u8; DEFAULT_MAX_BYTES + 1]);
+    assert_eq!(
+        too_many_bytes.encode_to_vec(),
+        Err(CodecError::LenOverflow {
+            len: DEFAULT_MAX_BYTES + 1,
+            max: DEFAULT_MAX_BYTES,
+        })
+    );
+    let oversized_slice: &[u8] = &too_many_bytes;
+    assert_eq!(
+        <&[u8] as NveEncode>::encode_to_vec(&oversized_slice),
+        Err(CodecError::LenOverflow {
+            len: DEFAULT_MAX_BYTES + 1,
+            max: DEFAULT_MAX_BYTES,
+        })
+    );
+    assert_eq!(
+        oversized_slice.encode_to_vec(),
+        Err(CodecError::LenOverflow {
+            len: DEFAULT_MAX_BYTES + 1,
+            max: DEFAULT_MAX_ITEMS,
+        })
+    );
+    let oversized_str = "a".repeat(DEFAULT_MAX_BYTES + 1);
+    assert_eq!(
+        oversized_str.encode_to_vec(),
+        Err(CodecError::LenOverflow {
+            len: DEFAULT_MAX_BYTES + 1,
+            max: DEFAULT_MAX_BYTES,
+        })
+    );
 }
 
 #[test]

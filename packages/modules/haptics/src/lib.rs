@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_HAPTICS;
 use nve_host_services::{
-    pack_typed, resolve_typed, CodecError, HostServiceHandler, HostServiceProvider, NveCodec,
-    NveDecode, ServiceError,
+    pack_typed, resolve_typed, HostServiceHandler, HostServiceProvider, NveCodec, NveDecode,
+    ServiceError,
 };
 
 pub use native::NativeHaptics;
@@ -56,12 +56,7 @@ pub fn encode_impact_request(style: ImpactStyle) -> [u8; 1] {
 }
 
 pub fn decode_impact_request(bytes: &[u8]) -> Result<ImpactStyle, ServiceError> {
-    ImpactStyle::decode_exact(bytes).map_err(|err| match err {
-        CodecError::BadEnum { raw, .. } => {
-            ServiceError::InvalidArg(format!("invalid ImpactStyle {raw}"))
-        }
-        other => ServiceError::from(other),
-    })
+    Ok(ImpactStyle::decode_exact(bytes)?)
 }
 
 pub fn encode_notification_haptic_request(kind: NotificationHaptic) -> [u8; 1] {
@@ -69,12 +64,7 @@ pub fn encode_notification_haptic_request(kind: NotificationHaptic) -> [u8; 1] {
 }
 
 pub fn decode_notification_haptic_request(bytes: &[u8]) -> Result<NotificationHaptic, ServiceError> {
-    NotificationHaptic::decode_exact(bytes).map_err(|err| match err {
-        CodecError::BadEnum { raw, .. } => {
-            ServiceError::InvalidArg(format!("invalid NotificationHaptic {raw}"))
-        }
-        other => ServiceError::from(other),
-    })
+    Ok(NotificationHaptic::decode_exact(bytes)?)
 }
 
 /// Direct typed in-process backend for [`SERVICE_HAPTICS`].

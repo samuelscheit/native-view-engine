@@ -2,12 +2,18 @@
 
 use crate::{canonical_f32_bits, canonical_f64_bits, CodecError, NveDecode};
 
+/// Default maximum container nesting depth (`read_vec` / `read_opt`) guarding against
+/// stack-overflow DoS on recursive `#[derive(NveCodec)]` types.
+pub const DEFAULT_MAX_DEPTH: usize = 64;
+
 /// Strictly bounds-checked little-endian binary reader.
 #[derive(Debug, Clone)]
 pub struct ByteReader<'a> {
     data: &'a [u8],
     pos: usize,
     zero_byte_budget: usize,
+    depth: usize,
+    max_depth: usize,
 }
 
 impl<'a> ByteReader<'a> {
@@ -17,7 +23,27 @@ impl<'a> ByteReader<'a> {
             data,
             pos: 0,
             zero_byte_budget: data.len().saturating_add(64),
+            depth: 0,
+            max_depth: DEFAULT_MAX_DEPTH,
         }
+    }
+
+    /// Overrides the maximum nested container depth (default [`DEFAULT_MAX_DEPTH`] = 64).
+    #[inline]
+    pub const fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
+    #[inline]
+    fn enter_depth(&mut self) -> Result<(), CodecError> {
+        if self.depth >= self.max_depth {
+            return Err(CodecError::DepthExceeded {
+                max: self.max_depth,
+            });
+        }
+        self.depth += 1;
+        Ok(())
     }
 
     #[inline]
@@ -245,31 +271,36 @@ impl<'a> ByteReader<'a> {
         min_elem_bytes: usize,
         mut decode_item: impl FnMut(&mut Self) -> Result<T, CodecError>,
     ) -> Result<Vec<T>, CodecError> {
-        let count = self.read_len(max, min_elem_bytes)?;
-        if min_elem_bytes > 0 {
-            let mut out = Vec::with_capacity(count);
-            for _ in 0..count {
-                out.push(decode_item(self)?);
-            }
-            return Ok(out);
-        }
-        let mut out = Vec::new();
-        for i in 0..count {
-            let before = self.pos;
-            let item = decode_item(self)?;
-            if self.pos == before {
-                let remaining_items = count - i;
-                if remaining_items > self.zero_byte_budget {
-                    return Err(CodecError::LenOverflow {
-                        len: count,
-                        max: self.zero_byte_budget,
-                    });
+        self.enter_depth()?;
+        let res = (|| {
+            let count = self.read_len(max, min_elem_bytes)?;
+            if min_elem_bytes > 0 {
+                let mut out = Vec::with_capacity(count);
+                for _ in 0..count {
+                    out.push(decode_item(self)?);
                 }
-                self.zero_byte_budget -= 1;
+                return Ok(out);
             }
-            out.push(item);
-        }
-        Ok(out)
+            let mut out = Vec::new();
+            for i in 0..count {
+                let before = self.pos;
+                let item = decode_item(self)?;
+                if self.pos == before {
+                    let remaining_items = count - i;
+                    if remaining_items > self.zero_byte_budget {
+                        return Err(CodecError::LenOverflow {
+                            len: count,
+                            max: self.zero_byte_budget,
+                        });
+                    }
+                    self.zero_byte_budget -= 1;
+                }
+                out.push(item);
+            }
+            Ok(out)
+        })();
+        self.depth -= 1;
+        res
     }
 
     /// Reads an optional value tagged by a strict boolean byte (`0 = None`, `1 = Some(T)`).
@@ -279,7 +310,10 @@ impl<'a> ByteReader<'a> {
         decode_some: impl FnOnce(&mut Self) -> Result<T, CodecError>,
     ) -> Result<Option<T>, CodecError> {
         if self.read_bool()? {
-            Ok(Some(decode_some(self)?))
+            self.enter_depth()?;
+            let res = decode_some(self);
+            self.depth -= 1;
+            Ok(Some(res?))
         } else {
             Ok(None)
         }

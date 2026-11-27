@@ -197,6 +197,7 @@ pub enum SignalArchiveError {
     UnsortedOrDuplicateSlot(u64),
     TrailingBytes(usize),
     PayloadTooLarge(usize),
+    Codec(nve_codec::CodecError),
     Arena(ArenaError),
     InstantBoot(InstantBootError),
 }
@@ -246,6 +247,7 @@ impl fmt::Display for SignalArchiveError {
             }
             Self::TrailingBytes(n) => write!(f, "signal archive has {n} trailing bytes"),
             Self::PayloadTooLarge(n) => write!(f, "signal payload length {n} exceeds u32::MAX"),
+            Self::Codec(e) => write!(f, "signal archive binary codec error: {e}"),
             Self::Arena(e) => write!(f, "signal archive arena error: {e}"),
             Self::InstantBoot(e) => write!(f, "signal archive instant-boot error: {e}"),
         }

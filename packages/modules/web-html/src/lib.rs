@@ -340,39 +340,31 @@ impl Resource for DataAttrList {
     const KIND: Key64 = Key64::of("nve.res.data_attrs");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for (k, v) in self.0.iter() {
-            out.extend_from_slice(&(k.len() as u32).to_le_bytes());
-            out.extend_from_slice(k.as_bytes());
-            out.extend_from_slice(&(v.len() as u32).to_le_bytes());
-            out.extend_from_slice(v.as_bytes());
+        let start = out.len();
+        let res = nve_codec::ByteWriter::with_buf(out, |w| -> Result<(), nve_codec::CodecError> {
+            w.write_len_max(self.0.len(), MAX_DATA_ATTRS)?;
+            for (k, v) in self.0.iter() {
+                w.write_str_max(k, nve_codec::DEFAULT_MAX_BYTES)?;
+                w.write_str_max(v, nve_codec::DEFAULT_MAX_BYTES)?;
+            }
+            Ok(())
+        });
+        if res.is_err() {
+            out.truncate(start);
         }
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut pos = 0usize;
-        let take = |pos: &mut usize, n: usize| -> Option<&[u8]> {
-            let end = pos.checked_add(n)?;
-            let s = bytes.get(*pos..end)?;
-            *pos = end;
-            Some(s)
-        };
-        let u32v = |pos: &mut usize| -> Option<u32> {
-            Some(u32::from_le_bytes(take(pos, 4)?.try_into().ok()?))
-        };
-        let str_owned = |pos: &mut usize| -> Option<String> {
-            let len = u32v(pos)? as usize;
-            Some(core::str::from_utf8(take(pos, len)?).ok()?.to_owned())
-        };
-        let n = u32v(&mut pos)? as usize;
-        if n > MAX_DATA_ATTRS {
-            return None;
-        }
-        let mut out = Vec::with_capacity(n.min(32));
-        for _ in 0..n {
-            out.push((str_owned(&mut pos)?, str_owned(&mut pos)?));
-        }
-        (pos == bytes.len()).then(|| Self(Arc::from(out)))
+        let mut r = nve_codec::ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_DATA_ATTRS, 8, |r| {
+                let k = r.read_string(nve_codec::DEFAULT_MAX_BYTES)?;
+                let v = r.read_string(nve_codec::DEFAULT_MAX_BYTES)?;
+                Ok((k, v))
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 

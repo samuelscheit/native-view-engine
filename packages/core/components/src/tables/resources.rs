@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use nve_abi::Key64;
+use nve_codec::{ByteReader, ByteWriter, CodecError};
 use nve_store::Resource;
 
 use crate::interaction::{InteractionState, StateStyleRule};
@@ -21,131 +22,80 @@ const MAX_ITEMS: usize = 4096;
 const MAX_STRING_BYTES: usize = 256 * 1024;
 const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
-// ---------------------------------------------------------------------------------------------
-// Compact binary reader/writer helpers
-// ---------------------------------------------------------------------------------------------
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-    fn is_empty(&self) -> bool {
-        self.pos == self.bytes.len()
-    }
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.pos.checked_add(n)?;
-        let s = self.bytes.get(self.pos..end)?;
-        self.pos = end;
-        Some(s)
-    }
-    fn u8(&mut self) -> Option<u8> {
-        Some(self.take(1)?[0])
-    }
-    fn u16(&mut self) -> Option<u16> {
-        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
-    }
-    fn u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-    fn f32(&mut self) -> Option<f32> {
-        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-    fn count(&mut self, max: usize) -> Option<usize> {
-        let n = self.u32()? as usize;
-        (n <= max).then_some(n)
-    }
-    fn str_owned(&mut self) -> Option<String> {
-        let len = self.count(MAX_STRING_BYTES)?;
-        let raw = self.take(len)?;
-        std::str::from_utf8(raw).ok().map(str::to_owned)
-    }
-}
-
 #[inline]
-fn canon_f32_bytes(v: f32) -> [u8; 4] {
-    let v = if v.is_nan() {
-        f32::NAN
-    } else if v == 0.0 {
-        0.0
-    } else {
-        v
-    };
-    v.to_le_bytes()
+fn encode_into_or_rollback(
+    out: &mut Vec<u8>,
+    f: impl FnOnce(&mut ByteWriter) -> Result<(), CodecError>,
+) {
+    let start = out.len();
+    if ByteWriter::with_buf(out, f).is_err() {
+        out.truncate(start);
+    }
 }
 
-fn write_str(out: &mut Vec<u8>, s: &str) {
-    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-    out.extend_from_slice(s.as_bytes());
-}
-
-fn write_grid_unit(out: &mut Vec<u8>, u: GridTrackUnit) {
+fn write_grid_unit(w: &mut ByteWriter, u: GridTrackUnit) {
     match u {
-        GridTrackUnit::Auto => out.push(0),
+        GridTrackUnit::Auto => w.write_u8(0),
         GridTrackUnit::Px(v) => {
-            out.push(1);
-            out.extend_from_slice(&canon_f32_bytes(v));
+            w.write_u8(1);
+            w.write_f32(v);
         }
         GridTrackUnit::Percent(v) => {
-            out.push(2);
-            out.extend_from_slice(&canon_f32_bytes(v));
+            w.write_u8(2);
+            w.write_f32(v);
         }
         GridTrackUnit::Fr(v) => {
-            out.push(3);
-            out.extend_from_slice(&canon_f32_bytes(v));
+            w.write_u8(3);
+            w.write_f32(v);
         }
-        GridTrackUnit::MinContent => out.push(4),
-        GridTrackUnit::MaxContent => out.push(5),
+        GridTrackUnit::MinContent => w.write_u8(4),
+        GridTrackUnit::MaxContent => w.write_u8(5),
     }
 }
 
-fn read_grid_unit(r: &mut Reader<'_>) -> Option<GridTrackUnit> {
-    Some(match r.u8()? {
+fn read_grid_unit(r: &mut ByteReader<'_>) -> Result<GridTrackUnit, CodecError> {
+    Ok(match r.read_u8()? {
         0 => GridTrackUnit::Auto,
-        1 => GridTrackUnit::Px(r.f32()?),
-        2 => GridTrackUnit::Percent(r.f32()?),
-        3 => GridTrackUnit::Fr(r.f32()?),
+        1 => GridTrackUnit::Px(r.read_f32()?),
+        2 => GridTrackUnit::Percent(r.read_f32()?),
+        3 => GridTrackUnit::Fr(r.read_f32()?),
         4 => GridTrackUnit::MinContent,
         5 => GridTrackUnit::MaxContent,
-        _ => return None,
+        raw => return Err(CodecError::BadEnum { ty: "GridTrackUnit", raw: i64::from(raw) }),
     })
 }
 
-fn write_single_track(out: &mut Vec<u8>, t: GridSingleTrack) {
+fn write_single_track(w: &mut ByteWriter, t: GridSingleTrack) {
     match t {
-        GridSingleTrack::Auto => out.push(0),
+        GridSingleTrack::Auto => w.write_u8(0),
         GridSingleTrack::Px(v) => {
-            out.push(1);
-            out.extend_from_slice(&canon_f32_bytes(v));
+            w.write_u8(1);
+            w.write_f32(v);
         }
         GridSingleTrack::Percent(v) => {
-            out.push(2);
-            out.extend_from_slice(&canon_f32_bytes(v));
+            w.write_u8(2);
+            w.write_f32(v);
         }
         GridSingleTrack::Fr(v) => {
-            out.push(3);
-            out.extend_from_slice(&canon_f32_bytes(v));
+            w.write_u8(3);
+            w.write_f32(v);
         }
         GridSingleTrack::MinMax(min, max) => {
-            out.push(4);
-            write_grid_unit(out, min);
-            write_grid_unit(out, max);
+            w.write_u8(4);
+            write_grid_unit(w, min);
+            write_grid_unit(w, max);
         }
     }
 }
 
-fn read_single_track(r: &mut Reader<'_>) -> Option<GridSingleTrack> {
-    Some(match r.u8()? {
+fn read_single_track(r: &mut ByteReader<'_>) -> Result<GridSingleTrack, CodecError> {
+    Ok(match r.read_u8()? {
         0 => GridSingleTrack::Auto,
-        1 => GridSingleTrack::Px(r.f32()?),
-        2 => GridSingleTrack::Percent(r.f32()?),
-        3 => GridSingleTrack::Fr(r.f32()?),
+        1 => GridSingleTrack::Px(r.read_f32()?),
+        2 => GridSingleTrack::Percent(r.read_f32()?),
+        3 => GridSingleTrack::Fr(r.read_f32()?),
         4 => GridSingleTrack::MinMax(read_grid_unit(r)?, read_grid_unit(r)?),
-        _ => return None,
+        raw => return Err(CodecError::BadEnum { ty: "GridSingleTrack", raw: i64::from(raw) }),
     })
 }
 
@@ -166,53 +116,54 @@ impl Resource for GridTracks {
     const KIND: Key64 = Key64::of("nve.res.grid_tracks");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for &track in self.0.iter() {
-            match track {
-                GridTrack::Auto => out.push(0),
-                GridTrack::Px(v) => {
-                    out.push(1);
-                    out.extend_from_slice(&canon_f32_bytes(v));
-                }
-                GridTrack::Percent(v) => {
-                    out.push(2);
-                    out.extend_from_slice(&canon_f32_bytes(v));
-                }
-                GridTrack::Fr(v) => {
-                    out.push(3);
-                    out.extend_from_slice(&canon_f32_bytes(v));
-                }
-                GridTrack::MinMax(min, max) => {
-                    out.push(4);
-                    write_grid_unit(out, min);
-                    write_grid_unit(out, max);
-                }
-                GridTrack::Repeat(count, single) => {
-                    out.push(5);
-                    out.extend_from_slice(&count.to_le_bytes());
-                    write_single_track(out, single);
+        encode_into_or_rollback(out, |w| {
+            w.write_len_max(self.0.len(), MAX_ITEMS)?;
+            for &track in self.0.iter() {
+                match track {
+                    GridTrack::Auto => w.write_u8(0),
+                    GridTrack::Px(v) => {
+                        w.write_u8(1);
+                        w.write_f32(v);
+                    }
+                    GridTrack::Percent(v) => {
+                        w.write_u8(2);
+                        w.write_f32(v);
+                    }
+                    GridTrack::Fr(v) => {
+                        w.write_u8(3);
+                        w.write_f32(v);
+                    }
+                    GridTrack::MinMax(min, max) => {
+                        w.write_u8(4);
+                        write_grid_unit(w, min);
+                        write_grid_unit(w, max);
+                    }
+                    GridTrack::Repeat(count, single) => {
+                        w.write_u8(5);
+                        w.write_u16(count);
+                        write_single_track(w, single);
+                    }
                 }
             }
-        }
+            Ok(())
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let n = r.count(MAX_ITEMS)?;
-        let mut out = Vec::with_capacity(n.min(64));
-        for _ in 0..n {
-            let t = match r.u8()? {
-                0 => GridTrack::Auto,
-                1 => GridTrack::Px(r.f32()?),
-                2 => GridTrack::Percent(r.f32()?),
-                3 => GridTrack::Fr(r.f32()?),
-                4 => GridTrack::MinMax(read_grid_unit(&mut r)?, read_grid_unit(&mut r)?),
-                5 => GridTrack::Repeat(r.u16()?, read_single_track(&mut r)?),
-                _ => return None,
-            };
-            out.push(t);
-        }
-        r.is_empty().then(|| Self(Arc::from(out)))
+        let mut r = ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_ITEMS, 1, |r| match r.read_u8()? {
+                0 => Ok(GridTrack::Auto),
+                1 => Ok(GridTrack::Px(r.read_f32()?)),
+                2 => Ok(GridTrack::Percent(r.read_f32()?)),
+                3 => Ok(GridTrack::Fr(r.read_f32()?)),
+                4 => Ok(GridTrack::MinMax(read_grid_unit(r)?, read_grid_unit(r)?)),
+                5 => Ok(GridTrack::Repeat(r.read_u16()?, read_single_track(r)?)),
+                raw => Err(CodecError::BadEnum { ty: "GridTrack", raw: i64::from(raw) }),
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 
@@ -233,36 +184,36 @@ impl Resource for BoxShadows {
     const KIND: Key64 = Key64::of("nve.res.box_shadows");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for s in self.0.iter() {
-            out.extend_from_slice(&canon_f32_bytes(s.offset_x));
-            out.extend_from_slice(&canon_f32_bytes(s.offset_y));
-            out.extend_from_slice(&canon_f32_bytes(s.blur_radius));
-            out.extend_from_slice(&canon_f32_bytes(s.spread_radius));
-            out.extend_from_slice(&s.color.0.to_le_bytes());
-            out.push(u8::from(s.inset));
-        }
+        encode_into_or_rollback(out, |w| {
+            w.write_len_max(self.0.len(), MAX_ITEMS)?;
+            for s in self.0.iter() {
+                w.write_f32(s.offset_x);
+                w.write_f32(s.offset_y);
+                w.write_f32(s.blur_radius);
+                w.write_f32(s.spread_radius);
+                w.write_u32(s.color.0);
+                w.write_bool(s.inset);
+            }
+            Ok(())
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let n = r.count(MAX_ITEMS)?;
-        let mut out = Vec::with_capacity(n.min(16));
-        for _ in 0..n {
-            out.push(BoxShadow {
-                offset_x: r.f32()?,
-                offset_y: r.f32()?,
-                blur_radius: r.f32()?,
-                spread_radius: r.f32()?,
-                color: nve_store::Rgba(r.u32()?),
-                inset: match r.u8()? {
-                    0 => false,
-                    1 => true,
-                    _ => return None,
-                },
-            });
-        }
-        r.is_empty().then(|| Self(Arc::from(out)))
+        let mut r = ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_ITEMS, 21, |r| {
+                Ok(BoxShadow {
+                    offset_x: r.read_f32()?,
+                    offset_y: r.read_f32()?,
+                    blur_radius: r.read_f32()?,
+                    spread_radius: r.read_f32()?,
+                    color: nve_store::Rgba(r.read_u32()?),
+                    inset: r.read_bool()?,
+                })
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 
@@ -277,67 +228,71 @@ impl Resource for BackgroundFillRes {
     const KIND: Key64 = Key64::of("nve.res.background_fill");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        match &self.0 {
-            BackgroundFill::Solid(c) => {
-                out.push(0);
-                out.extend_from_slice(&c.to_u32().to_le_bytes());
-            }
-            BackgroundFill::Linear(lg) => {
-                out.push(1);
-                out.extend_from_slice(&canon_f32_bytes(lg.angle_deg));
-                out.extend_from_slice(&(lg.stops.len() as u32).to_le_bytes());
-                for s in lg.stops.iter() {
-                    out.extend_from_slice(&canon_f32_bytes(s.offset));
-                    out.extend_from_slice(&s.color.to_u32().to_le_bytes());
+        encode_into_or_rollback(out, |w| {
+            match &self.0 {
+                BackgroundFill::Solid(c) => {
+                    w.write_u8(0);
+                    w.write_u32(c.to_u32());
+                }
+                BackgroundFill::Linear(lg) => {
+                    w.write_u8(1);
+                    w.write_f32(lg.angle_deg);
+                    w.write_len_max(lg.stops.len(), MAX_ITEMS)?;
+                    for s in lg.stops.iter() {
+                        w.write_f32(s.offset);
+                        w.write_u32(s.color.to_u32());
+                    }
+                }
+                BackgroundFill::Radial(rg) => {
+                    w.write_u8(2);
+                    w.write_f32(rg.center_x);
+                    w.write_f32(rg.center_y);
+                    w.write_f32(rg.radius);
+                    w.write_len_max(rg.stops.len(), MAX_ITEMS)?;
+                    for s in rg.stops.iter() {
+                        w.write_f32(s.offset);
+                        w.write_u32(s.color.to_u32());
+                    }
                 }
             }
-            BackgroundFill::Radial(rg) => {
-                out.push(2);
-                out.extend_from_slice(&canon_f32_bytes(rg.center_x));
-                out.extend_from_slice(&canon_f32_bytes(rg.center_y));
-                out.extend_from_slice(&canon_f32_bytes(rg.radius));
-                out.extend_from_slice(&(rg.stops.len() as u32).to_le_bytes());
-                for s in rg.stops.iter() {
-                    out.extend_from_slice(&canon_f32_bytes(s.offset));
-                    out.extend_from_slice(&s.color.to_u32().to_le_bytes());
-                }
-            }
-        }
+            Ok(())
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let fill = match r.u8()? {
-            0 => BackgroundFill::Solid(nve_abi::ColorRgba::from_u32(r.u32()?)),
+        let mut r = ByteReader::new(bytes);
+        let fill = match r.read_u8().ok()? {
+            0 => BackgroundFill::Solid(nve_abi::ColorRgba::from_u32(r.read_u32().ok()?)),
             1 => {
-                let angle = r.f32()?;
-                let n = r.count(MAX_ITEMS)?;
-                let mut stops = Vec::with_capacity(n.min(64));
-                for _ in 0..n {
-                    stops.push(GradientStop::new(
-                        r.f32()?,
-                        nve_abi::ColorRgba::from_u32(r.u32()?),
-                    ));
-                }
+                let angle = r.read_f32().ok()?;
+                let stops = r
+                    .read_vec(MAX_ITEMS, 8, |r| {
+                        Ok(GradientStop::new(
+                            r.read_f32()?,
+                            nve_abi::ColorRgba::from_u32(r.read_u32()?),
+                        ))
+                    })
+                    .ok()?;
                 BackgroundFill::Linear(LinearGradient::new(angle, stops))
             }
             2 => {
-                let cx = r.f32()?;
-                let cy = r.f32()?;
-                let rad = r.f32()?;
-                let n = r.count(MAX_ITEMS)?;
-                let mut stops = Vec::with_capacity(n.min(64));
-                for _ in 0..n {
-                    stops.push(GradientStop::new(
-                        r.f32()?,
-                        nve_abi::ColorRgba::from_u32(r.u32()?),
-                    ));
-                }
+                let cx = r.read_f32().ok()?;
+                let cy = r.read_f32().ok()?;
+                let rad = r.read_f32().ok()?;
+                let stops = r
+                    .read_vec(MAX_ITEMS, 8, |r| {
+                        Ok(GradientStop::new(
+                            r.read_f32()?,
+                            nve_abi::ColorRgba::from_u32(r.read_u32()?),
+                        ))
+                    })
+                    .ok()?;
                 BackgroundFill::Radial(RadialGradient::new(cx, cy, rad, stops))
             }
             _ => return None,
         };
-        r.is_empty().then_some(Self(fill))
+        r.finish().ok()?;
+        Some(Self(fill))
     }
 }
 
@@ -358,79 +313,93 @@ impl Resource for Transitions {
     const KIND: Key64 = Key64::of("nve.res.transitions");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for t in self.0.iter() {
-            out.push(t.property as u8);
-            out.extend_from_slice(&t.duration_ms.to_le_bytes());
-            out.extend_from_slice(&t.delay_ms.to_le_bytes());
-            match t.easing {
-                EasingCurve::Linear => out.push(0),
-                EasingCurve::Ease => out.push(1),
-                EasingCurve::EaseIn => out.push(2),
-                EasingCurve::EaseOut => out.push(3),
-                EasingCurve::EaseInOut => out.push(4),
-                EasingCurve::CubicBezier(x1, y1, x2, y2) => {
-                    out.push(5);
-                    out.extend_from_slice(&canon_f32_bytes(x1));
-                    out.extend_from_slice(&canon_f32_bytes(y1));
-                    out.extend_from_slice(&canon_f32_bytes(x2));
-                    out.extend_from_slice(&canon_f32_bytes(y2));
+        encode_into_or_rollback(out, |w| {
+            w.write_len_max(self.0.len(), MAX_ITEMS)?;
+            for t in self.0.iter() {
+                w.write_u8(t.property as u8);
+                w.write_u32(t.duration_ms);
+                w.write_u32(t.delay_ms);
+                match t.easing {
+                    EasingCurve::Linear => w.write_u8(0),
+                    EasingCurve::Ease => w.write_u8(1),
+                    EasingCurve::EaseIn => w.write_u8(2),
+                    EasingCurve::EaseOut => w.write_u8(3),
+                    EasingCurve::EaseInOut => w.write_u8(4),
+                    EasingCurve::CubicBezier(x1, y1, x2, y2) => {
+                        w.write_u8(5);
+                        w.write_f32(x1);
+                        w.write_f32(y1);
+                        w.write_f32(x2);
+                        w.write_f32(y2);
+                    }
                 }
+                w.write_bool(t.reduced_motion_instant);
             }
-            out.push(u8::from(t.reduced_motion_instant));
-        }
+            Ok(())
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let n = r.count(MAX_ITEMS)?;
-        let mut out = Vec::with_capacity(n.min(32));
-        for _ in 0..n {
-            let prop = match r.u8()? {
-                0 => TransitionProperty::All,
-                1 => TransitionProperty::BackgroundColor,
-                2 => TransitionProperty::Color,
-                3 => TransitionProperty::BorderColor,
-                4 => TransitionProperty::Opacity,
-                5 => TransitionProperty::BorderRadius,
-                6 => TransitionProperty::Transform,
-                7 => TransitionProperty::Width,
-                8 => TransitionProperty::Height,
-                9 => TransitionProperty::Padding,
-                10 => TransitionProperty::Gap,
-                _ => return None,
-            };
-            let duration_ms = r.u32()?;
-            let delay_ms = r.u32()?;
-            let easing = match r.u8()? {
-                0 => EasingCurve::Linear,
-                1 => EasingCurve::Ease,
-                2 => EasingCurve::EaseIn,
-                3 => EasingCurve::EaseOut,
-                4 => EasingCurve::EaseInOut,
-                5 => EasingCurve::CubicBezier(r.f32()?, r.f32()?, r.f32()?, r.f32()?),
-                _ => return None,
-            };
-            let reduced_motion_instant = match r.u8()? {
-                0 => false,
-                1 => true,
-                _ => return None,
-            };
-            out.push(TransitionSpec {
-                property: prop,
-                duration_ms,
-                delay_ms,
-                easing,
-                reduced_motion_instant,
-            });
-        }
-        r.is_empty().then(|| Self(Arc::from(out)))
+        let mut r = ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_ITEMS, 11, |r| {
+                let prop = match r.read_u8()? {
+                    0 => TransitionProperty::All,
+                    1 => TransitionProperty::BackgroundColor,
+                    2 => TransitionProperty::Color,
+                    3 => TransitionProperty::BorderColor,
+                    4 => TransitionProperty::Opacity,
+                    5 => TransitionProperty::BorderRadius,
+                    6 => TransitionProperty::Transform,
+                    7 => TransitionProperty::Width,
+                    8 => TransitionProperty::Height,
+                    9 => TransitionProperty::Padding,
+                    10 => TransitionProperty::Gap,
+                    raw => {
+                        return Err(CodecError::BadEnum {
+                            ty: "TransitionProperty",
+                            raw: i64::from(raw),
+                        });
+                    }
+                };
+                let duration_ms = r.read_u32()?;
+                let delay_ms = r.read_u32()?;
+                let easing = match r.read_u8()? {
+                    0 => EasingCurve::Linear,
+                    1 => EasingCurve::Ease,
+                    2 => EasingCurve::EaseIn,
+                    3 => EasingCurve::EaseOut,
+                    4 => EasingCurve::EaseInOut,
+                    5 => EasingCurve::CubicBezier(
+                        r.read_f32()?,
+                        r.read_f32()?,
+                        r.read_f32()?,
+                        r.read_f32()?,
+                    ),
+                    raw => {
+                        return Err(CodecError::BadEnum {
+                            ty: "EasingCurve",
+                            raw: i64::from(raw),
+                        });
+                    }
+                };
+                let reduced_motion_instant = r.read_bool()?;
+                Ok(TransitionSpec {
+                    property: prop,
+                    duration_ms,
+                    delay_ms,
+                    easing,
+                    reduced_motion_instant,
+                })
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// ResponsiveRules & StateRules (delegate StylePatch encoding to `extended_wire::style_patch`
-// until StylePatch itself migrates to word-patches)
+// ResponsiveRules & StateRules
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -446,40 +415,43 @@ impl Resource for ResponsiveRules {
     const KIND: Key64 = Key64::of("nve.res.responsive_rules");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        let mut patch_buf = Vec::new();
-        for rule in self.0.iter() {
-            out.extend_from_slice(&rule.query.min_width_px.to_le_bytes());
-            out.extend_from_slice(&rule.query.max_width_px.to_le_bytes());
-            out.push(rule.query.flags);
-            out.push(rule.query.color_scheme);
-            out.push(rule.query.pointer);
-            out.push(0);
-            patch_buf.clear();
-            encode_patch_bytes(&rule.patch, &mut patch_buf);
-            out.extend_from_slice(&(patch_buf.len() as u32).to_le_bytes());
-            out.extend_from_slice(&patch_buf);
-        }
+        encode_into_or_rollback(out, |w| {
+            w.write_len_max(self.0.len(), MAX_ITEMS)?;
+            let mut patch_w = ByteWriter::new();
+            for rule in self.0.iter() {
+                w.write_u16(rule.query.min_width_px);
+                w.write_u16(rule.query.max_width_px);
+                w.write_u8(rule.query.flags);
+                w.write_u8(rule.query.color_scheme);
+                w.write_u8(rule.query.pointer);
+                w.write_u8(0);
+                patch_w.clear();
+                encode_patch_bytes(&rule.patch, &mut patch_w)?;
+                w.write_bytes_max(patch_w.as_slice(), MAX_STRING_BYTES)?;
+            }
+            Ok(())
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let n = r.count(MAX_ITEMS)?;
-        let mut out = Vec::with_capacity(n.min(32));
-        for _ in 0..n {
-            let query = MediaQuery {
-                min_width_px: r.u16()?,
-                max_width_px: r.u16()?,
-                flags: r.u8()?,
-                color_scheme: r.u8()?,
-                pointer: r.u8()?,
-                _pad: r.u8()?,
-            };
-            let len = r.count(MAX_STRING_BYTES)?;
-            let patch = decode_patch_bytes(r.take(len)?)?;
-            out.push(ResponsiveRule { query, patch });
-        }
-        r.is_empty().then(|| Self(Arc::from(out)))
+        let mut r = ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_ITEMS, 12, |r| {
+                let query = MediaQuery {
+                    min_width_px: r.read_u16()?,
+                    max_width_px: r.read_u16()?,
+                    flags: r.read_u8()?,
+                    color_scheme: r.read_u8()?,
+                    pointer: r.read_u8()?,
+                    _pad: r.read_u8()?,
+                };
+                let patch_raw = r.read_bytes(MAX_STRING_BYTES)?;
+                let patch = decode_patch_bytes(patch_raw).ok_or(CodecError::BadMagic)?;
+                Ok(ResponsiveRule { query, patch })
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 
@@ -496,33 +468,36 @@ impl Resource for StateRules {
     const KIND: Key64 = Key64::of("nve.res.state_rules");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        let mut patch_buf = Vec::new();
-        for rule in self.0.iter() {
-            out.push(rule.state.bits());
-            patch_buf.clear();
-            encode_patch_bytes(&rule.patch, &mut patch_buf);
-            out.extend_from_slice(&(patch_buf.len() as u32).to_le_bytes());
-            out.extend_from_slice(&patch_buf);
-        }
+        encode_into_or_rollback(out, |w| {
+            w.write_len_max(self.0.len(), MAX_ITEMS)?;
+            let mut patch_w = ByteWriter::new();
+            for rule in self.0.iter() {
+                w.write_u8(rule.state.bits());
+                patch_w.clear();
+                encode_patch_bytes(&rule.patch, &mut patch_w)?;
+                w.write_bytes_max(patch_w.as_slice(), MAX_STRING_BYTES)?;
+            }
+            Ok(())
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let n = r.count(MAX_ITEMS)?;
-        let mut out = Vec::with_capacity(n.min(32));
-        for _ in 0..n {
-            let state = InteractionState::from_bits_truncate(r.u8()?);
-            let len = r.count(MAX_STRING_BYTES)?;
-            let patch = decode_patch_bytes(r.take(len)?)?;
-            out.push(StateStyleRule { state, patch });
-        }
-        r.is_empty().then(|| Self(Arc::from(out)))
+        let mut r = ByteReader::new(bytes);
+        let out = r
+            .read_vec(MAX_ITEMS, 5, |r| {
+                let state = InteractionState::from_bits_truncate(r.read_u8()?);
+                let patch_raw = r.read_bytes(MAX_STRING_BYTES)?;
+                let patch = decode_patch_bytes(patch_raw).ok_or(CodecError::BadMagic)?;
+                Ok(StateStyleRule { state, patch })
+            })
+            .ok()?;
+        r.finish().ok()?;
+        Some(Self(Arc::from(out)))
     }
 }
 
-fn encode_patch_bytes(patch: &StylePatch, out: &mut Vec<u8>) {
-    super::style_patch_codec::encode_style_patch(patch, out);
+fn encode_patch_bytes(patch: &StylePatch, w: &mut ByteWriter) -> Result<(), CodecError> {
+    super::style_patch_codec::encode_style_patch(patch, w)
 }
 
 fn decode_patch_bytes(bytes: &[u8]) -> Option<StylePatch> {
@@ -547,21 +522,24 @@ impl Resource for AriaRelations {
     const KIND: Key64 = Key64::of("nve.res.aria_relations");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        write_str(out, &self.controls);
-        write_str(out, &self.labelled_by);
-        write_str(out, &self.described_by);
-        write_str(out, &self.active_descendant);
+        encode_into_or_rollback(out, |w| {
+            w.write_str_max(&self.controls, MAX_STRING_BYTES)?;
+            w.write_str_max(&self.labelled_by, MAX_STRING_BYTES)?;
+            w.write_str_max(&self.described_by, MAX_STRING_BYTES)?;
+            w.write_str_max(&self.active_descendant, MAX_STRING_BYTES)
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
+        let mut r = ByteReader::new(bytes);
         let rel = Self {
-            controls: r.str_owned()?,
-            labelled_by: r.str_owned()?,
-            described_by: r.str_owned()?,
-            active_descendant: r.str_owned()?,
+            controls: r.read_string(MAX_STRING_BYTES).ok()?,
+            labelled_by: r.read_string(MAX_STRING_BYTES).ok()?,
+            described_by: r.read_string(MAX_STRING_BYTES).ok()?,
+            active_descendant: r.read_string(MAX_STRING_BYTES).ok()?,
         };
-        r.is_empty().then_some(rel)
+        r.finish().ok()?;
+        Some(rel)
     }
 }
 
@@ -580,30 +558,26 @@ impl Resource for ImageSrc {
     const KIND: Key64 = Key64::of("nve.res.image_src");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        match self {
+        encode_into_or_rollback(out, |w| match self {
             Self::Url(u) => {
-                out.push(0);
-                write_str(out, u);
+                w.write_u8(0);
+                w.write_str_max(u, MAX_STRING_BYTES)
             }
             Self::EncodedBytes(b) => {
-                out.push(1);
-                out.extend_from_slice(&(b.len() as u32).to_le_bytes());
-                out.extend_from_slice(b);
+                w.write_u8(1);
+                w.write_bytes_max(b, MAX_IMAGE_BYTES)
             }
-        }
+        });
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut r = Reader::new(bytes);
-        let src = match r.u8()? {
-            0 => Self::Url(r.str_owned()?),
-            1 => {
-                let len = r.count(MAX_IMAGE_BYTES)?;
-                Self::EncodedBytes(Arc::from(r.take(len)?))
-            }
+        let mut r = ByteReader::new(bytes);
+        let src = match r.read_u8().ok()? {
+            0 => Self::Url(r.read_string(MAX_STRING_BYTES).ok()?),
+            1 => Self::EncodedBytes(Arc::from(r.read_bytes(MAX_IMAGE_BYTES).ok()?)),
             _ => return None,
         };
-        r.is_empty().then_some(src)
+        r.finish().ok()?;
+        Some(src)
     }
 }
-
