@@ -142,6 +142,18 @@ void main() {
       RuntimeEvent.press(hit ?? id, cx, cy),
     ]);
     session.tick(1 / 60);
+    session.dispatchEvents([
+      RuntimeEvent.custom(rootNodeId, 'command', value: {
+        'n': 1,
+        'list': [1.5, 'x', null, true],
+        'bin': DynamicValue(encodeDynamic({'deep': [1]})),
+      }),
+      RuntimeEvent.press(hit ?? id, cx, cy),
+    ]);
+    c.that(true, 'custom event with a structured NveValue dispatches');
+    c.throwsA<ArgumentError>(
+        () => session.dispatchEvents([const RuntimeEvent.custom(rootNodeId, 'bad', value: Object())]), 'unsupported value');
+    session.tick(1 / 60);
   } else {
     c.that(false, 'kitchen sink exposes an interactive node');
   }

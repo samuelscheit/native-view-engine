@@ -10,6 +10,7 @@ import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
 import 'key64.dart';
+import 'native_values.dart';
 import 'nve_core_abi.generated.dart';
 import 'nve_runtime_abi.generated.dart';
 import 'runtime_api.dart';
@@ -34,7 +35,15 @@ final class RuntimeEvent {
     this.keyCode = 0,
     this.name = '',
     this.text = '',
+    this.value,
   });
+
+  /// App-defined event [name] (imperative commands, custom gestures) carrying an `NveValue`
+  /// [value] (`null` / `bool` / `int` / `double` / `String` / `Uint8List` / `List` / `Map` /
+  /// `DynamicValue`).
+  const RuntimeEvent.custom(int nodeId, String name, {Object? value, int timestampUs = 0})
+      : this(NveEventKind.custom,
+            payload: NveEventPayloadTag.custom, nodeId: nodeId, name: name, value: value, timestampUs: timestampUs);
 
   const RuntimeEvent.press(int nodeId, double x, double y, {int timestampUs = 0})
       : this(NveEventKind.press, payload: NveEventPayloadTag.point, nodeId: nodeId, x: x, y: y, timestampUs: timestampUs);
@@ -103,6 +112,9 @@ final class RuntimeEvent {
   final int keyCode;
   final String name;
   final String text;
+
+  /// Structured payload marshalled into `NveDirectEvent.value` (custom events).
+  final Object? value;
 }
 
 /// Snapshot of `NveRuntimeMetrics`.
@@ -269,6 +281,8 @@ final class RuntimeSession {
     final bytes = _bytes.reserve(textBytes);
     final view = bytes.asTypedList(textBytes);
     final array = _events.reserve(events.length * ffi.sizeOf<NveDirectEvent>()).cast<NveDirectEvent>();
+    // Structured values only: plain input batches never allocate an arena.
+    final arena = events.any((e) => e.value != null) ? NativeArena() : null;
     var cursor = 0;
     void copyStr(String s, NveStrSlice out) {
       final start = cursor;
@@ -293,14 +307,27 @@ final class RuntimeSession {
         ..y = e.y
         ..width = e.width
         ..height = e.height;
-      out.value.tag = NveValueTag.nullValue.code;
       copyStr(e.name, out.name);
       copyStr(e.text, out.text);
+      if (arena == null) {
+        out.value.tag = NveValueTag.nullValue.code;
+      } else {
+        try {
+          arena.writeValue(out.value, e.value);
+        } on Object {
+          arena.dispose();
+          rethrow;
+        }
+      }
     }
     _batch.ref
       ..ptr = array
       ..len = events.length;
-    api.check(api.dispatchEvents(handle, _batch.ref, _outU32), 'dispatch_events');
+    try {
+      api.check(api.dispatchEvents(handle, _batch.ref, _outU32), 'dispatch_events');
+    } finally {
+      arena?.dispose();
+    }
     return _outU32.value != 0;
   }
 
