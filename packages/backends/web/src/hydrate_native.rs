@@ -3,7 +3,7 @@
 //! an element arena and runs the shared positional pairing (`crate::hydrate::pair_ssr_dom`) against
 //! the first committed `NodeStore`, tracking simulated DOM identities and form control values.
 
-use nve_abi::hash::HashMap;
+use nve_abi::hash::{HashMap, HashSet};
 use nve_abi::NodeId;
 use nve_components::tables::TextInput;
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
@@ -186,7 +186,9 @@ impl WebBackend {
         for removed in &changes.removed {
             dom.nodes.remove(&removed.raw());
         }
-        let deferred = |id: StoreNodeId| pass.is_some_and(|p| p.controls.iter().any(|(n, _)| *n == id));
+        let deferred: HashSet<StoreNodeId> = pass
+            .map(|p| p.controls.iter().map(|(n, _)| *n).collect())
+            .unwrap_or_default();
         for &id in changes.created.iter().chain(changes.touched.iter()) {
             if !store.is_live(id) {
                 continue;
@@ -201,8 +203,14 @@ impl WebBackend {
                     control_value: None,
                 }
             });
-            if value.is_some() && !deferred(id) {
-                node.control_value = value;
+            if let Some(value) = value
+                && self.input_sync.borrow_mut().on_backend_value_commit(
+                    id.raw(),
+                    &value,
+                    deferred.contains(&id),
+                )
+            {
+                node.control_value = Some(value);
             }
         }
     }

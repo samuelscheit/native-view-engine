@@ -304,9 +304,12 @@ impl WebBackend {
             let defer_value = self.deferred_controls.contains(&id.raw());
             #[cfg(not(feature = "hydrate"))]
             let defer_value = false;
-            self.input_sync.borrow_mut().on_backend_value_sync(id.raw(), val);
+            let write_value = self
+                .input_sync
+                .borrow_mut()
+                .on_backend_value_commit(id.raw(), val, defer_value);
             if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                if !defer_value && inp.value() != val {
+                if write_value && inp.value() != val {
                     inp.set_value(val);
                 }
                 if ti.secure() {
@@ -317,7 +320,7 @@ impl WebBackend {
                     inp.set_type(ti.input_kind().as_html_type());
                 }
             } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>()
-                && !defer_value
+                && write_value
                 && ta.value() != val
             {
                 ta.set_value(val);

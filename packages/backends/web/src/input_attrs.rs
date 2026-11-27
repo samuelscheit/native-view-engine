@@ -76,6 +76,19 @@ impl InputSyncTracker {
         }
     }
 
+    /// Commits a backend-driven control value. Adopted SSR controls still awaiting 3-way
+    /// hydration reconciliation (`deferred`) keep the user's pre-hydration DOM value, so neither
+    /// the DOM nor this echo baseline may take `value` yet (else typing the server value back
+    /// would be swallowed as an echo). Returns whether the caller should write `value` to the DOM.
+    #[inline]
+    pub fn on_backend_value_commit(&mut self, node_id: NodeId, value: &str, deferred: bool) -> bool {
+        if deferred {
+            return false;
+        }
+        self.on_backend_value_sync(node_id, value);
+        true
+    }
+
     #[inline]
     pub fn on_input_event(
         &mut self,

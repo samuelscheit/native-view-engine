@@ -49,6 +49,8 @@ mod wasm_dom;
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "hydrate"))]
+mod hydrate_tests;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

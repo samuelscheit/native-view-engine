@@ -16,7 +16,7 @@ use nve_backend_web::{
     CapturedPreHydrationEvent, PendingStreamSlot, StreamingDocumentOptions, StreamingSsrSession,
     WebBackend,
 };
-use nve_components::tables::{Accessibility, AriaRole, Interaction, TextInput};
+use nve_components::tables::{Accessibility, AriaRole, Interaction, TextContent, TextInput};
 use nve_engine::StoreBackend;
 use nve_store::{NodeId, NodeStore, Transaction};
 
@@ -456,4 +456,69 @@ fn truncated_tcp_split_slot_chunk_does_not_prematurely_replace_pending_fallback(
     assert_eq!(client.hydration_report().replaced_nodes, 0);
     assert_eq!(client.native_dom_instance_id(201), Some(fallback_slot));
     assert_eq!(client.native_dom_instance_id(202), Some(fallback_span));
+}
+
+/// `[press button, disabled?] -> label` tree with ids `offset + {2, 3}`.
+fn button_with_label(tx: &mut Transaction<'_>, offset: u32, disabled: bool) {
+    let btn = node(tx, offset + 2);
+    tx.edit::<Accessibility>(btn).role(AriaRole::Button);
+    tx.edit::<Interaction>(btn)
+        .event_mask(EventMask::PRESS as u32)
+        .disabled(disabled);
+    let lbl = text(tx, offset + 3, "Go");
+    tx.set_children(btn, &[lbl]);
+    tx.set_children(NodeId::ROOT, &[btn]);
+}
+
+fn press(node_id: u32) -> CapturedPreHydrationEvent {
+    CapturedPreHydrationEvent::Press {
+        node_id,
+        x: 1.0,
+        y: 1.0,
+        age_ms: 10,
+    }
+}
+
+#[test]
+fn pre_hydration_press_inside_disabled_button_is_dropped_not_replayed() {
+    for (disabled, expected) in [(true, 0), (false, 1)] {
+        let mut server = web();
+        let mut store = NodeStore::new();
+        commit(&mut server, &mut store, |tx| button_with_label(tx, 0, disabled));
+        let mut client = WebBackend::hydrate_from_ssr(&server.render_ssr(&store));
+        client.queue_pre_hydration_events(vec![press(3), press(2)]);
+        let mut client_store = NodeStore::new();
+        commit(&mut client, &mut client_store, |tx| button_with_label(tx, 100, disabled));
+        let events = client.drain_events();
+        assert_eq!(events.len(), expected * 2, "disabled={disabled}: {events:?}");
+        assert!(events.iter().all(|e| e.node_id == 102 && e.kind == NativeEventKind::Press));
+        assert_eq!(client.hydration_report().replayed_events, (expected * 2) as u32);
+    }
+}
+
+#[test]
+fn queued_pre_hydration_events_without_ssr_pairing_are_discarded() {
+    // No SSR root to pair against: captured SSR ids cannot be remapped, so replaying them raw
+    // would hit whatever client node happens to own that id.
+    for html in ["", "<!doctype html><html><body><div id=\"app\"></div></body></html>"] {
+        let mut client = WebBackend::hydrate_from_streaming_html(html);
+        client.queue_pre_hydration_events(vec![press(2), press(3)]);
+        let mut store = NodeStore::new();
+        commit(&mut client, &mut store, |tx| button_with_label(tx, 0, false));
+        assert!(client.drain_events().is_empty(), "html={html:?}");
+        assert_eq!(client.hydration_report().replayed_events, 0);
+    }
+
+    // Events queued after the pairing commit also carry stale SSR ids: discarded too.
+    let mut server = web();
+    let mut store = NodeStore::new();
+    commit(&mut server, &mut store, |tx| button_with_label(tx, 0, false));
+    let mut client = WebBackend::hydrate_from_ssr(&server.render_ssr(&store));
+    let mut client_store = NodeStore::new();
+    commit(&mut client, &mut client_store, |tx| button_with_label(tx, 0, false));
+    client.queue_pre_hydration_events(vec![press(2)]);
+    commit(&mut client, &mut client_store, |tx| {
+        tx.edit::<TextContent>(NodeId(3)).text("Again");
+    });
+    assert!(client.drain_events().is_empty());
 }

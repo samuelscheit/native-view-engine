@@ -157,9 +157,13 @@ fn parse_ssr_id(el: &web_sys::Element) -> Option<NodeId> {
     el.get_attribute("data-nve-id")?.parse().ok()
 }
 
-/// The promoted SSR root element: the UI child of `container` carrying the root `data-nve-id`,
-/// else its first UI child carrying any `data-nve-id`.
+/// The promoted SSR root element: `container` itself or its UI child carrying the root
+/// `data-nve-id`, else its first UI child carrying any `data-nve-id`.
 fn find_hydrate_root(container: &web_sys::Element) -> Option<web_sys::Element> {
+    // Mounts whose container IS the SSR root (`<div id="app" data-nve-id="1">`).
+    if parse_ssr_id(container) == Some(StoreNodeId::ROOT.raw()) {
+        return Some(container.clone());
+    }
     let mut first_ui: Option<web_sys::Element> = None;
     let mut cur = container.first_element_child();
     while let Some(el) = cur {

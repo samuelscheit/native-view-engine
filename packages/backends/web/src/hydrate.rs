@@ -10,7 +10,7 @@
 use nve_abi::hash::HashMap;
 use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId};
 use nve_components::reconcile::{reconcile_three_way, ConflictPolicy, ThreeWayEntry};
-use nve_components::tables::TextInput;
+use nve_components::tables::{Interaction, TextInput};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::event_replay::{
@@ -217,6 +217,9 @@ impl WebBackend {
                 ConflictPolicy::PreferLocal,
             );
             self.write_hydrated_control(*node, &decision.resolved);
+            self.input_sync
+                .borrow_mut()
+                .on_backend_value_sync(node.raw(), &decision.resolved);
             if decision.emit_upstream {
                 self.hydration_report.reconciled_dirty_controls += 1;
                 events.push(NativeEvent {
@@ -231,18 +234,22 @@ impl WebBackend {
 
         if !self.pre_hydration_events.is_empty() {
             let drained = std::mem::take(&mut self.pre_hydration_events);
-            let remapped: Vec<CapturedPreHydrationEvent> = match remap {
-                Some(map) => drained
+            // Captured events carry SSR `data-nve-id`s: without this commit's pairing remap
+            // (no SSR root, or hydration already completed) they would hit unrelated client
+            // nodes, so they are discarded instead of replayed raw.
+            let remapped: Vec<CapturedPreHydrationEvent> = remap.map_or_else(Vec::new, |map| {
+                drained
                     .into_iter()
                     .filter_map(|ev| remap_pre_hydration_event(ev, map))
-                    .collect(),
-                None => drained,
-            };
+                    .collect()
+            });
             let valid =
                 drain_valid_pre_hydration_events(remapped, |id| store.is_live(StoreNodeId(id)));
             let meta = self.node_event_meta.borrow();
             for captured in valid {
-                let target_id = resolve_replay_target(store, &meta, &captured);
+                let Some(target_id) = resolve_replay_target(store, &meta, &captured) else {
+                    continue;
+                };
                 events.push(pre_hydration_event_to_native(captured, surface_id, 0, target_id));
                 self.hydration_report.replayed_events += 1;
             }
@@ -264,13 +271,22 @@ impl WebBackend {
 
 /// Bubbles a replayed event from its (remapped) target to the nearest ancestor subscribed to its
 /// kind (`PRESS`, `KEY_DOWN`, `SUBMIT`/text input), falling back to the original target.
+/// `Press`/`Submit` are dropped (`None`) when any node on that path is `Interaction::disabled`,
+/// matching the browser, which never dispatches activation on disabled controls.
 pub(crate) fn resolve_replay_target(
     store: &NodeStore,
     meta: &HashMap<NodeId, NodeEventMeta>,
     ev: &CapturedPreHydrationEvent,
-) -> NodeId {
+) -> Option<NodeId> {
+    let activation = matches!(
+        ev,
+        CapturedPreHydrationEvent::Press { .. } | CapturedPreHydrationEvent::Submit { .. }
+    );
     let mut cur = Some(StoreNodeId(ev.node_id()));
     while let Some(nid) = cur {
+        if activation && store.try_row::<Interaction>(nid).is_some_and(|i| i.disabled()) {
+            return None;
+        }
         if let Some(m) = meta.get(&nid.raw()) {
             let matched = match ev {
                 CapturedPreHydrationEvent::Press { .. } => (m.mask & EventMask::PRESS) != 0,
@@ -280,10 +296,10 @@ pub(crate) fn resolve_replay_target(
                 }
             };
             if matched {
-                return nid.raw();
+                return Some(nid.raw());
             }
         }
         cur = store.parent(nid);
     }
-    ev.node_id()
+    Some(ev.node_id())
 }
