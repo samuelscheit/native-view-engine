@@ -52,7 +52,7 @@ public struct Xxh64Hasher: Sendable {
         if bufLen == 32 {
             flushBuffer()
         }
-        while bufLen == 0 && i + 32 <= len {
+        while bufLen == 0 && len - i >= 32 {  // `i + 32` could overflow near Int.max (arm64_32)
             stripe(bytes, i)
             i += 32
         }

@@ -342,7 +342,8 @@ export class BinWriter {
   /** Empties the buffer (keeping capacity) and invalidates every outstanding `BinMark`. */
   clear(): void {
     this.len = 0;
-    this.generation = (this.generation + 1) % MARK_GENERATIONS;
+    // Wraps to 1, never 0: a raw small number cast to `BinMark` (generation bits 0) must not match.
+    this.generation = this.generation + 1 >= MARK_GENERATIONS ? 1 : this.generation + 1;
   }
 
   // ---- raw little-endian primitives ---------------------------------------------------------
@@ -470,6 +471,7 @@ export class BinWriter {
     const pos = mark % TWO32;
     const valid =
       Number.isInteger(mark) &&
+      mark >= 0 &&
       Math.floor(mark / TWO32) === this.generation &&
       pos >= 1 &&
       pos <= this.len - 8 &&

@@ -49,6 +49,10 @@ export class Key64 {
 
   /** Writes 8 little-endian bytes at `offset`. */
   writeLE(out: Uint8Array, offset = 0): void {
+    // Checked up front so a half-fitting key never leaves 4 written bytes behind.
+    if (!(Number.isInteger(offset) && offset >= 0 && offset <= out.length - 8)) {
+      throw new RangeError(`writeLE at ${offset} outside ${out.length} bytes`);
+    }
     write32LE(out, offset, this.lo);
     write32LE(out, offset + 4, this.hi);
   }

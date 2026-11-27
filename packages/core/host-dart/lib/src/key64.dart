@@ -53,8 +53,10 @@ final class Key64 implements Comparable<Key64> {
     return negHi * two32 + lo;
   }
 
-  /// Writes 8 little-endian bytes at [offset].
+  /// Writes 8 little-endian bytes at [offset]; throws [RangeError] before writing anything when
+  /// they do not fit.
   void writeLE(List<int> out, [int offset = 0]) {
+    RangeError.checkValueInInterval(offset, 0, out.length - 8, 'offset');
     write32LE(out, offset, lo);
     write32LE(out, offset + 4, hi);
   }
@@ -79,7 +81,9 @@ final class Key64 implements Comparable<Key64> {
 int read32LE(List<int> b, int i) =>
     (b[i] & 0xFF) + (b[i + 1] & 0xFF) * 0x100 + (b[i + 2] & 0xFF) * 0x10000 + (b[i + 3] & 0xFF) * 0x1000000;
 
+/// Writes 4 little-endian bytes; throws [RangeError] before writing anything when they do not fit.
 void write32LE(List<int> out, int offset, int v) {
+  RangeError.checkValueInInterval(offset, 0, out.length - 4, 'offset');
   out[offset] = v & 0xFF;
   out[offset + 1] = (v >>> 8) & 0xFF;
   out[offset + 2] = (v >>> 16) & 0xFF;

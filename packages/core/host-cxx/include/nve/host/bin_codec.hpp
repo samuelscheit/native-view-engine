@@ -289,7 +289,7 @@ class BinWriter {
   void clear() noexcept {
     buf_.clear();
     error_ = BinError::None;
-    ++generation_;
+    if (++generation_ == 0u) generation_ = 1u;  // never 0: a zero-initialized `Mark{}` must not match
   }
 
   // ---- raw little-endian primitives -------------------------------------------------------

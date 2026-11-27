@@ -2,8 +2,8 @@
 //! every way a mirror can drift must produce a problem, and comments can never satisfy a check.
 
 use nve_arch_invariants::host_runtimes::decl::{
-    Syntax, block, check_block, contains_hex_token, declarations, declared_values,
-    forbidden_identifiers, strip_strings,
+    Syntax, block, check_block, code_block, contains_hex_token, declarations, declared_values,
+    forbidden_identifiers, strip_comments, strip_strings,
 };
 
 fn set(entries: &[(&str, i64)]) -> Vec<(String, i64)> {
@@ -245,5 +245,44 @@ fn forbidden_identifiers_respect_boundaries_comments_and_strings() {
     assert_eq!(
         strip_strings("a(\"b \\\" c\") + 'd\\'e' + f"),
         "a(\"\") + '' + f"
+    );
+}
+
+#[test]
+fn comments_cannot_spoof_or_truncate_a_block() {
+    let status = set(&[("Ok", 0), ("Err", 1)]);
+    // A commented-out copy before the real enum must not stand in for it.
+    let spoof = "// enum S { OK(0), ERR(1) }\nenum S { OK(0), ERR(1), RETIRED(2) }";
+    let body = code_block(spoof, "enum S").unwrap_or_default();
+    assert!(
+        check_block(&status, Syntax::Call, "", &[], &body)
+            .iter()
+            .any(|p| p.contains("retired")),
+        "{body}"
+    );
+    // A `}` inside a comment must not end the block before a stale entry.
+    let truncated = "enum S { OK(0), ERR(1) /* } */ RETIRED(2) }";
+    let body = code_block(truncated, "enum S").unwrap_or_default();
+    assert!(
+        check_block(&status, Syntax::Call, "", &[], &body)
+            .iter()
+            .any(|p| p.contains("retired")),
+        "{body}"
+    );
+    // `/*/` opens a comment; its `*/` is searched after the opener.
+    assert_eq!(strip_comments("a /*/ still comment */ b"), "a   b");
+    assert_eq!(
+        declarations("{ /*/ X = 1 */ Y = 2 }", Syntax::Assign),
+        set(&[("Y", 2)])
+    );
+    // A block comment separates tokens instead of fusing them.
+    assert_eq!(strip_comments("x/*c*/y"), "x y");
+    assert_eq!(
+        declarations("{ MAX/*c*/= 4 }", Syntax::Assign),
+        set(&[("MAX", 4)])
+    );
+    assert_eq!(
+        declared_values("MAX_/**/DEPTH = 64", "MAX_DEPTH"),
+        Vec::<i64>::new()
     );
 }

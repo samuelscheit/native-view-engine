@@ -229,6 +229,19 @@ void runBinCodec(Check c) {
   final before = refill.toBytes();
   expectKind(c, BinErrorKind.invalidMark, () => refill.end(stale), 'stale mark after refill');
   c.that(sameBytes(refill.bytes, before), 'stale end writes nothing');
+  // A list claiming the max VM int length must not wrap `_len + extra` negative (VM only: web ints
+  // are doubles and cannot reach it).
+  if (!identical(0, 0.0)) {
+    final maxWriter = BinWriter()..writeNull();
+    expectKind(c, BinErrorKind.tooLarge, () => maxWriter.raw(MaxIntList()), 'raw of a max-int list');
+    c.eq(maxWriter.length, 1, 'nothing written for a max-int list');
+  }
+  // Raw marks over foreign bytes on a live generation-1 writer: rejected, bytes untouched.
+  final foreign = BinWriter()..writeI64(0x01020304);
+  final foreignBefore = foreign.toBytes();
+  expectKind(c, BinErrorKind.invalidMark, () => foreign.end(0 as BinMark), 'raw mark 0 on foreign bytes');
+  expectKind(c, BinErrorKind.invalidMark, () => foreign.end((0x100000000 + 1) as BinMark), 'generation-1 mark on foreign bytes');
+  c.that(sameBytes(foreign.bytes, foreignBefore), 'foreign bytes untouched');
   // Stale after clear() + a 9-byte refill, and double end: bytes stay untouched.
   final nine = BinWriter();
   final staleNine = nine.beginArray(1);
@@ -260,9 +273,10 @@ void runBinCodec(Check c) {
   expectKind(c, BinErrorKind.invalidMark, () => same.end(old), 'stale mark on a recreated container');
   same.end(fresh);
   BinReader.validate(same.toBytes());
-  // Every generation value, across the 2^20 wrap twice: the writer starts at generation 1, so clear
-  // number k selects generation (1 + k) mod 2^20; the largest packed mark sits just below 2^52 and
-  // must stay exact on the web. The last pre-wrap mark is rejected right after the wrap.
+  // Every generation value, across the wrap twice: the writer starts at generation 1, clear number k
+  // selects 1 + k until 2^20 - 1, then wraps to 1 (never 0). The largest packed mark sits just below
+  // 2^52 and must stay exact on the web. The last pre-wrap mark is rejected right after the wrap, and
+  // raw generation-0 / negative values are rejected throughout.
   final cycling = BinWriter();
   const wrap = 0x100000;
   BinMark? lastBeforeWrap;
@@ -279,6 +293,10 @@ void runBinCodec(Check c) {
         expectKind(c, BinErrorKind.invalidMark, () => cycling.end(stale), 'pre-wrap mark after the wrap');
         wrapChecked = true;
       }
+    }
+    if (k == 1 || k == wrap - 2 || k == wrap - 1 || k == wrap) {
+      expectKind(c, BinErrorKind.invalidMark, () => cycling.end(1 as BinMark), 'raw generation-0 mark at clear $k');
+      expectKind(c, BinErrorKind.invalidMark, () => cycling.end(-0xFFFFFFFF as BinMark), 'negative mark at clear $k');
     }
     cycling.end(m);
   }
@@ -321,6 +339,21 @@ void runBinCodec(Check c) {
 final class HugeList with ListMixin<int> {
   @override
   int get length => 0x100000000;
+
+  @override
+  set length(int _) => throw UnsupportedError('fixed');
+
+  @override
+  int operator [](int index) => 0;
+
+  @override
+  void operator []=(int index, int value) => throw UnsupportedError('read-only');
+}
+
+/// A list claiming the largest VM `int` as its length (computed: no >2^53 literal reaches dart2js).
+final class MaxIntList with ListMixin<int> {
+  @override
+  int get length => (1 << 62) + ((1 << 62) - 1);
 
   @override
   set length(int _) => throw UnsupportedError('fixed');

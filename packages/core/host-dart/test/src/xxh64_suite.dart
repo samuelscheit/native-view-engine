@@ -1,6 +1,7 @@
 import 'dart:convert' show utf8;
 
 import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/src/key64.dart' show write32LE;
 
 import 'check.dart';
 
@@ -82,6 +83,12 @@ void runXxh64(Check c) {
   k.writeLE(le, 1);
   c.eq(Key64.readLE(le, 1), k, 'LE round trip at odd offset');
   c.eq(le[1], 0xD6, 'LE low byte first');
+  // A key that only half fits throws before writing anything.
+  final zeroed = List<int>.filled(9, 0);
+  c.throwsA<RangeError>(() => k.writeLE(zeroed, 2), 'writeLE past the end');
+  c.throwsA<RangeError>(() => k.writeLE(zeroed, -1), 'writeLE before the start');
+  c.throwsA<RangeError>(() => write32LE(zeroed, 6, 0xFFFFFFFF), 'write32LE past the end');
+  c.that(zeroed.every((b) => b == 0), 'rejected writes leave every byte untouched');
   c.that(const Key64(0, 1).compareTo(const Key64(0xFFFFFFFF, 0)) > 0, 'compare by hi first');
   c.eq(const Key64(5, 0).toUnsignedInt(), 5, 'small unsigned');
   c.eq(const Key64(0, 0x1FFFFF).toUnsignedInt(), 0x1FFFFF * 0x100000000, 'below 2^53 is exact everywhere');

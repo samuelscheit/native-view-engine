@@ -236,12 +236,13 @@ public struct BinWriter: Sendable {
     public init(capacity: Int = 64) { bytes.reserveCapacity(capacity) }
 
     /// Bumped by `clear()`, so marks from before it are rejected even once the buffer refills.
-    private var generation: UInt32 = 0
+    private var generation: UInt32 = 1
 
     /// Empties the buffer (keeping capacity) and invalidates every outstanding `Mark`.
     public mutating func clear() {
         bytes.removeAll(keepingCapacity: true)
         generation &+= 1
+        if generation == 0 { generation = 1 }  // never 0, like every other runtime
     }
 
     // MARK: raw little-endian primitives

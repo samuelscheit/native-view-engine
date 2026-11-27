@@ -63,7 +63,7 @@ fn check_set(
             ));
             continue;
         };
-        let Some(body) = decl::block(&text, s.marker) else {
+        let Some(body) = decl::code_block(&text, s.marker) else {
             out.push(Violation::new(
                 &s.file,
                 0,
@@ -72,7 +72,7 @@ fn check_set(
             ));
             continue;
         };
-        for problem in decl::check_block(entries, s.syntax, s.prefix, s.renames, body) {
+        for problem in decl::check_block(entries, s.syntax, s.prefix, s.renames, &body) {
             out.push(Violation::new(
                 &s.file,
                 0,
@@ -149,14 +149,9 @@ fn host_status_entries() -> Vec<(String, i64)> {
 /// `NveHybridStatus` variants as emitted by codegen (`Name = N,` lines of its enum).
 fn hybrid_status_entries(idx: &RepoIndex, out: &mut Vec<Violation>) -> Vec<(String, i64)> {
     let text = idx.read_text(HYBRID_STATUS_SOURCE).unwrap_or_default();
-    let entries: Vec<(String, i64)> = decl::block(&text, "pub enum NveHybridStatus")
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| {
-            let (name, value) = l.trim().trim_end_matches(',').split_once(" = ")?;
-            Some((name.to_owned(), value.parse().ok()?))
-        })
-        .collect();
+    let entries = decl::code_block(&text, "pub enum NveHybridStatus")
+        .map(|body| decl::declarations(&body, Syntax::Assign))
+        .unwrap_or_default();
     if entries.is_empty() {
         out.push(Violation::new(
             HYBRID_STATUS_SOURCE,
@@ -555,7 +550,7 @@ pub fn check_in_place_validators(idx: &RepoIndex) -> Vec<Violation> {
     let mut out = Vec::new();
     for &(file, signature, forbidden) in IN_PLACE_VALIDATORS {
         let text = idx.read_text(file).unwrap_or_default();
-        let Some(body) = decl::block(&text, signature) else {
+        let Some(body) = decl::code_block(&text, signature) else {
             out.push(Violation::new(
                 file,
                 0,
@@ -564,7 +559,7 @@ pub fn check_in_place_validators(idx: &RepoIndex) -> Vec<Violation> {
             ));
             continue;
         };
-        for name in decl::forbidden_identifiers(body, forbidden) {
+        for name in decl::forbidden_identifiers(&body, forbidden) {
             out.push(Violation::new(
                 file,
                 0,

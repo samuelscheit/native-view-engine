@@ -51,6 +51,14 @@ class HostRuntimesScriptTest(unittest.TestCase):
         self.assertIn("unknown suite 'bogus'", result.stderr)
         self.assertEqual([p.name for p in self.tmp.glob("nve-host-runtimes.*")], [], "temp dir leaked")
 
+    def test_suite_names_match_exactly(self) -> None:
+        env = dict(os.environ, TMPDIR=str(self.tmp))
+        env.pop("BUILD_ROOT", None)
+        for arg in ("cxx swift", "c", "xx", " ts", "all "):
+            result = _run([arg], env)
+            self.assertEqual(result.returncode, 2, f"{arg!r}: {result.stderr}")
+            self.assertIn(f"unknown suite '{arg}'", result.stderr)
+
     def test_reports_the_actual_missing_binary(self) -> None:
         self.assertEqual(_missing("java", self._fake_tools()), "javac")
         self.assertEqual(_missing("java", self._fake_tools("javac")), "java")

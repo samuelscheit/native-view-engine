@@ -50,6 +50,11 @@ test('Key64 halves, conversions and 53-bit guards', () => {
   assert.ok(Key64.readLE(le, 1).equals(k));
   assert.equal(le[1], 0xd6);
   assert.throws(() => Key64.readLE(le, 2), RangeError);
+  // A key that only half fits throws before writing anything.
+  const zeroed = new Uint8Array(9);
+  assert.throws(() => k.writeLE(zeroed, 2), RangeError);
+  assert.throws(() => k.writeLE(zeroed, -1), RangeError);
+  assert.ok(zeroed.every((b) => b === 0), 'rejected writes leave every byte untouched');
   assert.equal(String(k), 'Key64(0x33e73115985a4fd6)');
   for (const bad of [NaN, 0.5, Infinity, -Infinity, 2 ** 53]) {
     assert.throws(() => new Key64(bad, 0), RangeError, `lo ${bad}`);

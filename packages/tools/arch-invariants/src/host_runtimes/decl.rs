@@ -25,7 +25,9 @@ pub fn normalize(s: &str) -> String {
         .collect()
 }
 
-/// Removes `//` line comments and `/* */` block comments (doc comments included).
+/// Removes `//` line comments and `/* */` block comments (doc comments included). A block comment
+/// becomes one space, so `x/*c*/y` stays two tokens; its `*/` is searched after the opening `/*`,
+/// so `/*/ ... */` is one comment.
 pub fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -34,8 +36,9 @@ pub fn strip_comments(text: &str) -> String {
         let tail = &rest[i..];
         if tail.starts_with("//") {
             rest = tail.find('\n').map_or("", |n| &tail[n..]);
-        } else if tail.starts_with("/*") {
-            rest = tail.find("*/").map_or("", |n| &tail[n + 2..]);
+        } else if let Some(body) = tail.strip_prefix("/*") {
+            out.push(' ');
+            rest = body.find("*/").map_or("", |n| &body[n + 2..]);
         } else {
             out.push('/');
             rest = &tail[1..];
@@ -43,6 +46,12 @@ pub fn strip_comments(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// `block` over the comment-free `text`: a commented-out declaration can neither be found in place
+/// of the real one nor cut it short with a `}` inside a comment.
+pub fn code_block(text: &str, marker: &str) -> Option<String> {
+    block(&strip_comments(text), marker).map(str::to_owned)
 }
 
 /// The declaration starting at `marker` through the `}` that closes its first `{` (nested braces

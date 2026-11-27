@@ -301,7 +301,8 @@ final class BinWriter {
   /// Empties the buffer (keeping capacity) and invalidates every outstanding [BinMark].
   void clear() {
     _len = 0;
-    _generation = (_generation + 1) % BinMark._generations;
+    // Wraps to 1, never 0: a raw small integer cast to `BinMark` (generation bits 0) must not match.
+    _generation = _generation + 1 >= BinMark._generations ? 1 : _generation + 1;
   }
 
   /// Bumped by [clear]; marks carry it so stale ones are rejected even after a refill.
@@ -415,7 +416,8 @@ final class BinWriter {
   /// `invalidMark` and writes nothing.
   void end(BinMark mark) {
     final pos = mark._position;
-    final valid = mark._generation == _generation &&
+    final valid = mark._bits >= 0 &&
+        mark._generation == _generation &&
         pos >= 1 &&
         pos <= _len - 8 &&
         (_buf[pos - 1] == BinTag.array.index || _buf[pos - 1] == BinTag.map.index) &&
@@ -444,6 +446,7 @@ final class BinWriter {
   }
 
   void _ensure(int extra) {
+    _admit(0, extra); // before `_len + extra`, which a huge VM `int` would wrap negative
     if (_len + extra <= _buf.length) {
       return;
     }

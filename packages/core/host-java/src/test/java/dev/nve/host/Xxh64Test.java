@@ -97,11 +97,13 @@ final class Xxh64Test {
         c.binError(BinCodecException.Kind.INVALID_UTF8, () -> atomic.updateUtf8("abc\ud800"), "updateUtf8 lone surrogate");
         c.eq(atomic.digest(), before, "updateUtf8 is atomic");
         c.eq(atomic.updateUtf8("c").digest(), Xxh64.constId("abc"), "hasher usable after a rejection");
+        // OpenJ9 reports thread allocation at TLH-refill granularity (tens of KiB): warm up, then take
+        // resolution from iterations (< 2.6 B per call), as in BinCodecTest.
         final Xxh64.Hasher warm = new Xxh64.Hasher(0);
-        warm.updateUtf8("warm \u00e9 \ud83d\ude80");
+        for (int i = 0; i < 1000; i++) warm.updateUtf8("warm \u00e9 \ud83d\ude80");
         final long allocated = Alloc.bytes(() -> {
-            for (int i = 0; i < 1000; i++) warm.updateUtf8("steady \u00e9 \ud83d\ude80");
+            for (int i = 0; i < 100_000; i++) warm.updateUtf8("steady \u00e9 \ud83d\ude80");
         });
-        c.that(allocated < 1024, "updateUtf8 allocates nothing per call (" + allocated + " bytes)");
+        c.that(allocated < 256 * 1024, "updateUtf8 allocates nothing per call (" + allocated + " bytes / 100k calls)");
     }
 }

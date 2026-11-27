@@ -32,7 +32,7 @@ public final class BinWriter {
     /** Empties the buffer (keeping capacity) and invalidates every outstanding container mark. */
     public void clear() {
         len = 0;
-        generation++;
+        if (++generation == 0) generation = 1; // never 0: a raw mark (generation bits 0) must not match
     }
 
     // ---- raw little-endian primitives ---------------------------------------------------------

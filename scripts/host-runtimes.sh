@@ -120,11 +120,15 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     if [ "$arg" = "all" ]; then
       # shellcheck disable=SC2206
       suites+=($HOST_RUNTIME_SUITES)
-    elif [[ " $HOST_RUNTIME_SUITES " == *" $arg "* ]]; then
-      suites+=("$arg")
     else
-      echo "error: unknown suite '$arg' (expected: $HOST_RUNTIME_SUITES all)" >&2
-      exit 2
+      # Exact names only: a substring test would accept "cxx swift" as one argument.
+      case "$arg" in
+        cxx | swift | java | dart | ts) suites+=("$arg") ;;
+        *)
+          echo "error: unknown suite '$arg' (expected: $HOST_RUNTIME_SUITES all)" >&2
+          exit 2
+          ;;
+      esac
     fi
   done
   for s in "${suites[@]}"; do

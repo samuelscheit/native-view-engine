@@ -259,10 +259,10 @@ test('hardening: container limit, BOM, lone surrogates, stale marks, NaN counts'
     assert.throws(() => new BinWriter(bad), RangeError, `capacity ${bad}`);
   }
   assert.equal(new BinWriter(0).length, 0, 'capacity 0 is clamped up, not rejected');
-  // Every generation value, across the 2^20 wrap twice: the writer starts at generation 1, so clear
-  // number k selects generation (1 + k) mod 2^20; the largest packed mark ((2^20 - 1) * 2^32 + 1)
-  // sits just below 2^52 and must stay exact. The mark from the last pre-wrap generation is
-  // rejected right after the wrap.
+  // Every generation value, across the wrap twice: the writer starts at generation 1, clear number k
+  // selects 1 + k until 2^20 - 1, then wraps to 1 (never 0). The largest packed mark
+  // ((2^20 - 1) * 2^32 + 1) sits just below 2^52 and must stay exact. The last pre-wrap mark is
+  // rejected right after the wrap, and raw generation-0 / negative values are rejected throughout.
   const cycling = new BinWriter();
   const WRAP = 2 ** 20;
   let lastBeforeWrap: BinMark | null = null;
@@ -275,6 +275,11 @@ test('hardening: container limit, BOM, lone surrogates, stale marks, NaN counts'
       const stale = lastBeforeWrap;
       assert.ok(stale !== null);
       expectKind('invalidMark', () => cycling.end(stale), 'pre-wrap mark after the wrap');
+      assert.equal(m, (2 ** 32 + 1) as BinMark, 'wrapped to generation 1 (offset 1), not 0');
+    }
+    if (k === 1 || k === WRAP - 2 || k === WRAP - 1 || k === WRAP) {
+      expectKind('invalidMark', () => cycling.end(1 as BinMark), `raw generation-0 mark at clear ${k}`);
+      expectKind('invalidMark', () => cycling.end(-0xffff_ffff as BinMark), `negative mark at clear ${k}`);
     }
     cycling.end(m);
   }
