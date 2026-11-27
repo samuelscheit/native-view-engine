@@ -1,0 +1,22 @@
+[package]
+name = "dioxus-runtime-spawn-scope"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = ["v0710"]
+v0710 = ["dep:dioxus-core", "dep:dioxus-core-macro", "dep:dioxus-signals"]
+# DioxusLabs/dioxus main (pinned rev): dioxus-core was renamed to dioxus-vdom.
+main = ["dep:dioxus-vdom", "dep:dioxus-vdom-macro", "dep:dioxus-signals-main"]
+
+[dependencies]
+dioxus-core = { version = "=0.7.10", optional = true }
+dioxus-core-macro = { version = "=0.7.10", optional = true }
+# rsx! in debug builds (hot-reload literals) references dioxus_signals.
+dioxus-signals = { version = "=0.7.10", optional = true }
+dioxus-signals-main = { package = "dioxus-signals", git = "https://github.com/DioxusLabs/dioxus", rev = "736f4ae77ab0d940e9c115c415fc7b77c5895226", optional = true }
+dioxus-vdom = { git = "https://github.com/DioxusLabs/dioxus", rev = "736f4ae77ab0d940e9c115c415fc7b77c5895226", optional = true }
+dioxus-vdom-macro = { git = "https://github.com/DioxusLabs/dioxus", rev = "736f4ae77ab0d940e9c115c415fc7b77c5895226", optional = true }

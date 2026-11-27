@@ -1,0 +1,7 @@
+out/
+*.class
+javacore.*
+Snap.*
+core.*
+*.trc
+*.dmp

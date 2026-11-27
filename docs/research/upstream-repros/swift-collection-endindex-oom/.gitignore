@@ -1,0 +1,3 @@
+out/
+*.o
+*.sample.txt
