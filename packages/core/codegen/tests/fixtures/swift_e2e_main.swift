@@ -1,6 +1,7 @@
-// Swift <-> Rust end-to-end harness: the generated Swift clients of `realistic_hybrid.nve.rs`,
-// linked against the static `NveHost` / `NveHostAbi` runtime and the live Rust provider
-// (`swift_e2e_provider.rs`), through every success and error path.
+// Swift <-> Rust end-to-end harness: the generated Swift clients of `realistic_hybrid.nve.rs` and
+// `swift_edge_hybrid.nve.rs` (two generated files in one module), linked against the static
+// `NveHost` / `NveHostAbi` runtime and the live Rust provider (`swift_e2e_provider.rs`), through
+// every success and error path.
 import Foundation
 import NveHost
 
@@ -11,12 +12,12 @@ func check(_ ok: Bool, _ what: String, line: UInt = #line) {
     }
 }
 
-func expectError(_ expected: HybridError, _ what: String, line: UInt = #line, _ body: () throws -> Void) {
+func expectError<E: Error & Equatable>(_ expected: E, _ what: String, line: UInt = #line, _ body: () throws -> Void) {
     do {
         try body()
         check(false, "\(what): no error", line: line)
     } catch {
-        check(error as? HybridError == expected, "\(what): got \(error)", line: line)
+        check(error as? E == expected, "\(what): got \(error)", line: line)
     }
 }
 
@@ -35,26 +36,31 @@ func dynamic(_ build: (inout BinWriter) throws -> Void) throws -> DynamicValue {
 
 func run() throws {
     // Resolution and handshake failures.
-    expectError(.nullInterfaceResolver, "nil resolver") { _ = try CryptoHybridClient.resolve(getInterface: nil) }
-    expectError(.interfaceNotFound(CryptoHybridClient.interfaceId), "unknown interface") {
+    expectError(HybridError.nullInterfaceResolver, "nil resolver") { _ = try CryptoHybridClient.resolve(getInterface: nil) }
+    expectError(HybridError.interfaceNotFound(CryptoHybridClient.interfaceId), "unknown interface") {
         _ = try CryptoHybridClient.resolve(getInterface: { _ in nil })
     }
     let rawCrypto = nve_get_interface(CryptoHybridClient.interfaceId)!.assumingMemoryBound(to: NveHybridCryptoVTable.self)
     var stale = rawCrypto.pointee
     stale.schema_hash ^= 1
-    expectError(.schemaMismatch(expected: Key64(CryptoHybridClient.schemaHash), actual: Key64(stale.schema_hash)), "schema") {
+    expectError(HybridError.schemaMismatch(expected: Key64(CryptoHybridClient.schemaHash), actual: Key64(stale.schema_hash)), "schema") {
         _ = try withUnsafePointer(to: &stale) { try CryptoHybridClient(vtable: $0) }
     }
     var future = rawCrypto.pointee
     future.abi_version += 1
-    expectError(.abiVersionMismatch(expected: nveHybridAbiVersion, actual: future.abi_version), "abi version") {
+    expectError(HybridError.abiVersionMismatch(expected: CryptoHybridFile.abiVersion, actual: future.abi_version), "abi version") {
         _ = try withUnsafePointer(to: &future) { try CryptoHybridClient(vtable: $0) }
+    }
+    var dead = rawCrypto.pointee
+    dead.create = { nil }
+    expectError(HybridError.nullHandle, "null handle") {
+        _ = try withUnsafePointer(to: &dead) { try CryptoHybridClient(vtable: $0) }
     }
     var hollow = rawCrypto.pointee
     hollow.add = nil
     try withUnsafePointer(to: &hollow) { vtable in
         let partial = try CryptoHybridClient(vtable: vtable)
-        expectError(.nullFunction("add"), "null vtable entry") { _ = try partial.add(a: 1, b: 2) }
+        expectError(HybridError.nullFunction("add"), "null vtable entry") { _ = try partial.add(a: 1, b: 2) }
         check(try partial.version() == "nve-hybrid-1.0", "other entries still work")
     }
 
@@ -78,7 +84,7 @@ func run() throws {
     check(try crypto.verifyPayload(payload: payload) == true, "verifyPayload")
     payload.nonce = nil
     check(try crypto.verifyPayload(payload: payload) == false, "verifyPayload without nonce")
-    expectError(.remote("missing payload label"), "verifyPayload error") { _ = try crypto.verifyPayload(payload: SignedPayload()) }
+    expectError(HybridError.remote("missing payload label"), "verifyPayload error") { _ = try crypto.verifyPayload(payload: SignedPayload()) }
 
     check(try crypto.lookupPayload(id: 0) == nil, "lookupPayload none")
     let found = try crypto.lookupPayload(id: 7)
@@ -89,7 +95,7 @@ func run() throws {
     let batch = try crypto.batchSign(inputs: ["one", "twö 🚀", ""], algo: .sha256)
     check(batch.map(\.label) == ["one", "twö 🚀", ""], "batchSign labels")
     check(batch.map(\.header.byteLen) == [3, UInt32("twö 🚀".utf8.count), 0], "batchSign byte lengths")
-    expectError(.remote("empty batch"), "batchSign error") { _ = try crypto.batchSign(inputs: [], algo: .blake3) }
+    expectError(HybridError.remote("empty batch"), "batchSign error") { _ = try crypto.batchSign(inputs: [], algo: .blake3) }
     try crypto.resetCache()
 
     // Dynamic values cross as `NveValue` trees (true tags) and come back byte-identical.
@@ -139,7 +145,7 @@ func run() throws {
     check((0..<9).map(propShape) == ["4", "1", "3", "2", "0", "0", "5", "5", "0"], "default prop tags \((0..<9).map(propShape))")
     try video.seek(positionMs: 9876)
     check(try video.captureFrame(atPoint: FramePoint(x: 5, y: 9)) == [5, 9, 24], "captureFrame")
-    expectError(.remote("bad \u{1F600}"), "captureFrame error") { _ = try video.captureFrame(atPoint: FramePoint(x: -1, y: 0)) }
+    expectError(HybridError.remote("bad \u{1F600}"), "captureFrame error") { _ = try video.captureFrame(atPoint: FramePoint(x: -1, y: 0)) }
 
     // Present options, `Bytes`, `Vec`, and `NveValue` props: the dynamic value keeps its own tags
     // (`Map` ... never `Bytes`), while `Struct` / `Vec` props stay one `Bytes` payload.
@@ -175,8 +181,52 @@ func run() throws {
     check(empty == Cursor(mark: 1, w: [], r: nil, count: 0, tag: nil, grid: []), "transpose empty")
 }
 
+func runEdge() throws {
+    let edge = try EdgeHybridClient.resolve(getInterface: nve_get_interface)
+    let meta = try dynamic { w in
+        let map = w.beginMap(2)
+        try w.writeMapKey("🚀")
+        w.writeF64(.nan)
+        try w.writeMapKey("min")
+        w.writeI64(.min)
+        try w.end(map)
+    }
+    let text = try dynamic { try $0.writeStr("é") }
+    // Two pinned arguments and two dynamic values around a returned value: every nested scope returns.
+    check(try edge.mix(a: "é🚀", b: [1, 2, 3], meta: meta, extra: text) == "é🚀|[1, 2, 3]|\(meta.bytes)|\(text.bytes)", "mix")
+    check(try edge.mix(a: "", b: [], meta: DynamicValue(), extra: DynamicValue()) == "|[]|[0]|[0]", "mix empty")
+
+    // Sibling sequences in one struct and in one method; NaN and Int64.min survive both directions.
+    let pair = try edge.pair(xs: [1, -2, .max, .min], ys: ["a", "", "🚀"])
+    check(pair.ints == [1, -2, .max, .min] && pair.names == ["a", "", "🚀"], "pair sequences")
+    check(pair.blobs == [[], [1, 2]] && pair.notANumber.isNaN && pair.min == .min && pair.level == .high, "pair scalars")
+    let echoed = try edge.echoBundle(bundle: pair)
+    check(echoed.notANumber.bitPattern == pair.notANumber.bitPattern, "NaN bit pattern")
+    var comparable = echoed
+    comparable.notANumber = 0
+    var expected = pair
+    expected.notANumber = 0
+    check(comparable == expected, "echoBundle")
+
+    // C member names that are Swift keywords after `.` (`vtable.pointee.init`, `raw.init`).
+    check(try edge.`init`(k: Keywords(init: 41, deinit: 1.5, subscript: false)) == Keywords(init: 42, deinit: -1.5, subscript: true), "init")
+
+    // What no typed Rust value can send.
+    check(try edge.level(raw: 7) == .high && edge.level(raw: 0) == .low, "level")
+    expectError(HybridError.invalidEnum("Level", 3), "unknown enum value") { _ = try edge.level(raw: 3) }
+    try edge.fail(code: 0)
+    expectError(HybridError.status(.invalidArg), "bare status") { try edge.fail(code: 2) }
+    expectError(HybridError.status(.err), "unknown status") { try edge.fail(code: 99) }
+    expectError(BinError.trailingBytes(1), "trailing reply byte") { _ = try edge.junk(kind: 0) }
+    expectError(BinError.truncated, "count past payload") { _ = try edge.junk(kind: 1) }
+    expectError(BinError.maxDepth, "too deep") { _ = try edge.junk(kind: 2) }
+    expectError(BinError.unexpectedTag(expected: .map, actual: .null), "wrong shape") { _ = try edge.junk(kind: 3) }
+    expectError(BinError.truncated, "empty reply") { _ = try edge.junk(kind: 4) }
+}
+
 do {
     try run()
+    try runEdge()
     print("swift e2e ok")
 } catch {
     FileHandle.standardError.write(Data("FAILED: uncaught \(error)\n".utf8))

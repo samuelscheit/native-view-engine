@@ -1,6 +1,8 @@
-//! Live Rust provider of `realistic_hybrid.nve.rs` for the Swift <-> Rust end-to-end harness
-//! (`hybrid_swift_runtime_tests`). The view vtable wraps `set_props_direct` to record the C
-//! `NveValue` tags each prop arrives with, so the client can prove they are not double-wrapped.
+//! Live Rust provider of `realistic_hybrid.nve.rs` and `swift_edge_hybrid.nve.rs` for the Swift <->
+//! Rust end-to-end harness (`hybrid_swift_runtime_tests`). The view vtable wraps `set_props_direct`
+//! to record the C `NveValue` tags each prop arrives with, so the client can prove they are not
+//! double-wrapped; the edge vtable replaces entries with raw ones that send what no typed Rust
+//! value can (unknown enum values, bare error statuses, malformed replies).
 
 use std::ffi::c_void;
 use crypto_hybrid::*;
@@ -171,11 +173,85 @@ pub unsafe extern "C" fn nve_test_prop_shape(index: u32, out: *mut u8, cap: usiz
     s.len()
 }
 
+mod edge_provider {
+    use edge_hybrid::*;
+    use nve_abi::NveAppHandle;
+
+    #[derive(Default)]
+    struct LiveEdge;
+
+    impl EdgeHybrid for LiveEdge {
+        fn mix(&mut self, a: &str, b: &[u8], meta: NveHybridValue, extra: NveHybridValue) -> String {
+            format!("{a}|{b:?}|{:?}|{:?}", meta.bin_bytes, extra.bin_bytes)
+        }
+        fn pair(&mut self, xs: Vec<i32>, ys: Vec<String>) -> Bundle {
+            Bundle {
+                ints: xs,
+                names: ys,
+                blobs: vec![vec![], vec![1, 2]],
+                not_a_number: f64::NAN,
+                min: i64::MIN,
+                level: Level::High,
+            }
+        }
+        fn echo_bundle(&mut self, bundle: Bundle) -> Bundle { bundle }
+        fn init(&mut self, k: Keywords) -> Keywords {
+            Keywords { init: k.init + 1, deinit: -k.deinit, subscript: !k.subscript }
+        }
+        // Replaced by the raw entries below.
+        fn level(&mut self, _raw: u32) -> Level { Level::Low }
+        fn fail(&mut self, _code: i32) -> Result<(), String> { Ok(()) }
+        fn junk(&mut self, _kind: u32) -> Bundle { Bundle::default() }
+    }
+
+    /// Echoes the wire value, so the client sees enum values no Rust `Level` can hold.
+    unsafe extern "C" fn level_raw(_: NveAppHandle, raw: u32) -> u32 { raw }
+
+    /// Fails with status `code` and no message.
+    unsafe extern "C" fn fail_raw(_: NveAppHandle, code: i32, _: *mut NveHybridOwnedBytes) -> i32 { code }
+
+    /// A malformed `Bundle` reply per `kind`.
+    unsafe extern "C" fn junk_raw(_: NveAppHandle, kind: u32) -> NveHybridOwnedBytes {
+        let mut bytes = Vec::new();
+        match kind {
+            0 => {
+                Bundle::default().encode_bin(&mut bytes);
+                bytes.push(0); // one trailing byte
+            }
+            1 => bytes.extend_from_slice(&[7, 4, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]), // count past payload
+            2 => {
+                bytes.push(0);
+                for _ in 0..65 {
+                    // one level deeper than `NVE_BIN_VALUE_MAX_DEPTH` allows
+                    let mut outer = vec![6];
+                    outer.extend_from_slice(&(bytes.len() as u32 + 4).to_le_bytes());
+                    outer.extend_from_slice(&1u32.to_le_bytes());
+                    outer.extend_from_slice(&bytes);
+                    bytes = outer;
+                }
+            }
+            3 => bytes.push(0), // `null` where a map is expected
+            _ => {}             // nothing at all
+        }
+        NveHybridOwnedBytes::from_vec(bytes)
+    }
+
+    pub static EDGE_VTABLE: NveHybridEdgeVTable = NveHybridEdgeVTable {
+        level: level_raw,
+        fail: fail_raw,
+        junk: junk_raw,
+        ..build_edge_vtable::<LiveEdge>()
+    };
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
     match interface_id {
         NVE_HYBRID_CRYPTO_INTERFACE_ID => (&CRYPTO_VTABLE as *const NveHybridCryptoVTable).cast(),
         NVE_HYBRID_VIDEO_SURFACE_INTERFACE_ID => (&VIDEO_VTABLE as *const NveHybridVideoSurfaceVTable).cast(),
+        edge_hybrid::NVE_HYBRID_EDGE_INTERFACE_ID => {
+            (&edge_provider::EDGE_VTABLE as *const edge_hybrid::NveHybridEdgeVTable).cast()
+        }
         _ => std::ptr::null(),
     }
 }

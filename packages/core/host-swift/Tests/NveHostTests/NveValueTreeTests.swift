@@ -63,19 +63,28 @@ private func allocations(_ body: () throws -> Void) rethrows -> Int64? {
     return nve_test_alloc_count_end()
 }
 
+/// Runs `body` with a fresh tree kept alive until it returns: under `-O`, ARC may release a tree
+/// right after its last use, so every read through its pointers must happen inside this scope.
+private func withTree<R>(_ body: (NveValueTree) throws -> R) rethrows -> R {
+    let tree = NveValueTree()
+    return try withExtendedLifetime(tree) { try body(tree) }
+}
+
+private func tag(_ t: NveValueTag) -> UInt32 { UInt32(t.rawValue) }
+
 final class NveValueTreeTests: XCTestCase {
     private let golden = try? DynamicValue(bytes: Golden.fromHex(Golden.binValueHex))
 
     func testDynamicValueKeepsItsTrueTagsAndRoundTrips() throws {
         let golden = try XCTUnwrap(golden)
-        let tree = NveValueTree()
-        let root = try tree.value(golden)
-        XCTAssertEqual(root.tag, UInt32(NVE_VAL_MAP.rawValue), "a dynamic map must never cross as Bytes")
-        let items = root.data.map_val.ptr[0].value.data.array_val
-        let tags = (0..<items.len).map { items.ptr[$0].tag }
-        let expected = [NVE_VAL_I64, NVE_VAL_STR, NVE_VAL_NULL, NVE_VAL_BOOL, NVE_VAL_F64, NVE_VAL_BYTES].map { UInt32($0.rawValue) }
-        XCTAssertEqual(tags, expected)
-        XCTAssertEqual(try reencoded(root), golden.bytes)
+        try withTree { tree in
+            let root = try tree.value(golden)
+            XCTAssertEqual(root.tag, tag(NVE_VAL_MAP), "a dynamic map must never cross as Bytes")
+            let items = root.data.map_val.ptr[0].value.data.array_val
+            let tags = (0..<items.len).map { items.ptr[$0].tag }
+            XCTAssertEqual(tags, [NVE_VAL_I64, NVE_VAL_STR, NVE_VAL_NULL, NVE_VAL_BOOL, NVE_VAL_F64, NVE_VAL_BYTES].map(tag))
+            XCTAssertEqual(try reencoded(root), golden.bytes)
+        }
     }
 
     func testEdgeValues() throws {
@@ -108,11 +117,12 @@ final class NveValueTreeTests: XCTestCase {
                 try w.end(map)
             }, NVE_VAL_MAP),
         ]
-        for (name, value, tag) in cases {
-            let tree = NveValueTree()
-            let root = try tree.value(value)
-            XCTAssertEqual(root.tag, UInt32(tag.rawValue), name)
-            XCTAssertEqual(try reencoded(root), value.bytes, name)
+        for (name, value, expected) in cases {
+            try withTree { tree in
+                let root = try tree.value(value)
+                XCTAssertEqual(root.tag, tag(expected), name)
+                XCTAssertEqual(try reencoded(root), value.bytes, name)
+            }
         }
     }
 
@@ -143,46 +153,89 @@ final class NveValueTreeTests: XCTestCase {
             }
             try w.end(a)
         }
-        let tree = NveValueTree()
-        let roots = try [tree.value(deep), tree.value(wide), tree.value(deep)]
-        XCTAssertEqual(try reencoded(roots[0]), deep.bytes)
-        XCTAssertEqual(try reencoded(roots[1]), wide.bytes)
-        XCTAssertEqual(try reencoded(roots[2]), deep.bytes)
+        try withTree { tree in
+            let roots = try [tree.value(deep), tree.value(wide), tree.value(deep)]
+            XCTAssertEqual(try reencoded(roots[0]), deep.bytes)
+            XCTAssertEqual(try reencoded(roots[1]), wide.bytes)
+            XCTAssertEqual(try reencoded(roots[2]), deep.bytes)
+        }
+    }
+
+    func testOversizedRunsKeepEarlierAndLaterValuesIntact() throws {
+        try withTree { tree in
+            let small = tree.string("before")
+            let huge = [UInt8](repeating: 0x5A, count: 3 << 20)  // larger than any chunk
+            let big = tree.bytes(huge)
+            let after = tree.string("after, in the same chunk as before")
+            XCTAssertEqual(try reencoded(small), try dynamic { try $0.writeStr("before") }.bytes)
+            XCTAssertEqual(Array(UnsafeBufferPointer<UInt8>(start: big.data.bytes_val.ptr, count: big.data.bytes_val.len)), huge)
+            XCTAssertEqual(try reencoded(after), try dynamic { try $0.writeStr("after, in the same chunk as before") }.bytes)
+            // The oversized run did not retire the current chunk: `after` follows `before` in it.
+            let gap = UnsafeRawPointer(after.data.str_val.ptr) - UnsafeRawPointer(small.data.str_val.ptr)
+            XCTAssertEqual(gap, "before".utf8.count)
+        }
     }
 
     func testScalarsCopiesAndEntries() throws {
-        let tree = NveValueTree()
-        XCTAssertEqual(try reencoded(tree.null()), [0])
-        XCTAssertEqual(tree.bool(true).data.bool_val, 1)
-        XCTAssertEqual(tree.int(.min).data.i64_val, .min)
-        XCTAssertEqual(tree.float(-2.5).data.f64_val, -2.5)
+        try withTree { tree in
+            XCTAssertEqual(try reencoded(tree.null()), [0])
+            XCTAssertEqual(tree.bool(true).data.bool_val, 1)
+            XCTAssertEqual(tree.int(.min).data.i64_val, .min)
+            XCTAssertEqual(tree.float(-2.5).data.f64_val, -2.5)
 
-        var source = "mutated later é 🚀"
-        let str = tree.string(source)
-        source += "!"
-        XCTAssertEqual(try reencoded(str), try dynamic { try $0.writeStr("mutated later é 🚀") }.bytes)
-        XCTAssertEqual(tree.strSlice("").len, 0)
-        XCTAssertNil(tree.strSlice("").ptr)
+            var source = "mutated later é 🚀"
+            let str = tree.string(source)
+            source += "!"
+            XCTAssertEqual(try reencoded(str), try dynamic { try $0.writeStr("mutated later é 🚀") }.bytes)
+            XCTAssertEqual(tree.strSlice("").len, 0)
+            XCTAssertNil(tree.strSlice("").ptr)
 
-        let reversed = [UInt8]([1, 2, 3]).reversed()  // non-contiguous
-        XCTAssertEqual(try reencoded(tree.bytes(reversed)), try dynamic { try $0.writeBytes([3, 2, 1]) }.bytes)
-        XCTAssertNil(tree.bufferSlice([UInt8]()).ptr)
+            let reversed = [UInt8]([1, 2, 3]).reversed()  // non-contiguous
+            XCTAssertEqual(try reencoded(tree.bytes(reversed)), try dynamic { try $0.writeBytes([3, 2, 1]) }.bytes)
+            XCTAssertNil(tree.bufferSlice([UInt8]()).ptr)
 
-        let encoded = try tree.encoded { w in
-            let a = try w.beginArray(count: 2)
-            w.writeI64(-7)
-            try w.writeStr("x")
-            try w.end(a)
+            let encoded = try tree.encoded { w in
+                let a = try w.beginArray(count: 2)
+                w.writeI64(-7)
+                try w.writeStr("x")
+                try w.end(a)
+            }
+            XCTAssertEqual(encoded.tag, tag(NVE_VAL_BYTES), "Struct / Vec props cross as Bytes")
+            let payload = Array(UnsafeBufferPointer<UInt8>(start: encoded.data.bytes_val.ptr, count: encoded.data.bytes_val.len))
+            XCTAssertNoThrow(try BinReader.validate(payload))
+
+            for key: StaticString in ["source_url", "w", "é", "🚀", ""] {
+                let e = tree.entry(key, tree.int(1))
+                let text = String(decoding: UnsafeBufferPointer(start: e.key.ptr, count: e.key.len), as: UTF8.self)
+                XCTAssertEqual(text, key.description)
+                XCTAssertEqual(e.key.ptr == nil, e.key.len == 0)
+            }
         }
-        XCTAssertEqual(encoded.tag, UInt32(NVE_VAL_BYTES.rawValue), "Struct / Vec props cross as Bytes")
-        let payload = Array(UnsafeBufferPointer<UInt8>(start: encoded.data.bytes_val.ptr, count: encoded.data.bytes_val.len))
-        XCTAssertNoThrow(try BinReader.validate(payload))
+    }
 
-        for key: StaticString in ["source_url", "w", "é", "🚀", ""] {
-            let e = tree.entry(key, tree.int(1))
-            let text = String(decoding: UnsafeBufferPointer(start: e.key.ptr, count: e.key.len), as: UTF8.self)
-            XCTAssertEqual(text, key.description)
-            XCTAssertEqual(e.key.ptr == nil, e.key.len == 0)
+    func testEncodedReusesItsWriterAndNests() throws {
+        try withTree { tree in
+            // A nested `encoded` gets its own writer; the outer payload is not clobbered.
+            var inner = tree.null()
+            let outer = tree.encoded { w in
+                w.writeI64(1)
+                inner = tree.encoded { $0.writeI64(2) }
+                w.writeI64(3)
+            }
+            let again = tree.encoded { $0.writeBool(true) }  // the reused writer starts empty
+            func bytes(_ v: NveValue) -> [UInt8] {
+                Array(UnsafeBufferPointer<UInt8>(start: v.data.bytes_val.ptr, count: v.data.bytes_val.len))
+            }
+            var w = BinWriter()
+            w.writeI64(1)
+            w.writeI64(3)
+            XCTAssertEqual(bytes(outer), w.bytes)
+            XCTAssertEqual(bytes(inner), [2, 2, 0, 0, 0, 0, 0, 0, 0])
+            XCTAssertEqual(bytes(again), [1, 1])
+            // A throwing body leaves no partial value and the writer stays usable.
+            struct Boom: Error {}
+            XCTAssertThrowsError(try tree.encoded { w in w.writeNull(); throw Boom() })
+            XCTAssertEqual(bytes(tree.encoded { $0.writeNull() }), [0])
         }
     }
 
@@ -202,8 +255,12 @@ final class NveValueTreeTests: XCTestCase {
             XCTAssertEqual($0 as? HybridError, .abiVersionMismatch(expected: 1, actual: 2))
         }
         var w = BinWriter()
+        XCTAssertThrowsError(try w.beginArray(count: -1)) { XCTAssertEqual($0 as? BinError, .tooLarge) }
+        #if arch(x86_64) || arch(arm64)  // `Int` is 64-bit, so a count past `u32` exists
         XCTAssertThrowsError(try w.beginArray(count: Int(UInt32.max) + 1)) { XCTAssertEqual($0 as? BinError, .tooLarge) }
+        #endif
         XCTAssertTrue(w.bytes.isEmpty, "a rejected array writes nothing")
+        XCTAssertNoThrow(try w.end(w.beginArray(count: 0)))
     }
 
     func testTreeAllocatesPerChunkNotPerNode() throws {
@@ -211,12 +268,21 @@ final class NveValueTreeTests: XCTestCase {
         try XCTSkipIf(true, "allocation counts are only meaningful in optimized builds (swift test -c release)")
         #endif
         let golden = try XCTUnwrap(golden)
-        _ = try NveValueTree().value(golden)  // warm up
+        let scalar = try dynamic { $0.writeI64(.min) }
+        withTree { tree in _ = try? tree.value(golden) }  // warm up
         let count = try XCTUnwrap(try allocations {
-            let tree = NveValueTree()
-            for _ in 0..<20 { _ = try tree.value(golden) }  // ~20 * 9 nodes + 20 copies, < 1 KiB each
-            withExtendedLifetime(tree) {}
+            try withTree { tree in
+                for _ in 0..<20 { _ = try tree.value(golden) }  // ~20 * 9 nodes + 20 copies, < 1 KiB each
+            }
         })
+        XCTAssertGreaterThan(count, 0, "allocation hook is not firing")
         XCTAssertLessThanOrEqual(count, 4, "the tree object plus its doubling chunks, never one per node")
+        // Scalar dynamic values (default `null` props) point at nothing, so they reserve no chunk.
+        let scalars = try XCTUnwrap(try allocations {
+            try withTree { tree in
+                for _ in 0..<100 { _ = try tree.value(scalar); _ = try tree.value(DynamicValue()) }
+            }
+        })
+        XCTAssertLessThanOrEqual(scalars, 1, "scalar dynamic values allocated \(scalars) times")
     }
 }

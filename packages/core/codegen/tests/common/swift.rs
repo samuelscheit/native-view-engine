@@ -20,12 +20,11 @@ impl SwiftHost {
         cmd.arg("-I").arg(&self.include).arg("-I").arg(&self.modules);
     }
 
-    /// Search paths plus the static runtime libraries, for linking an executable.
-    pub fn link_args(&self, cmd: &mut Command) {
-        self.search_args(cmd);
+    /// The static runtime libraries, dependents first; pass them after the inputs that use them.
+    pub fn lib_args(&self, cmd: &mut Command) {
         cmd.arg("-L")
             .arg(&self.modules)
-            .args(["-lNveHost", "-lNveHostAbi"]);
+            .args(["-lNveHostAbi", "-lNveHost"]);
     }
 }
 
@@ -91,13 +90,30 @@ fn swift_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Type-checks generated hybrid Swift against the built runtime, importing `abi_header` the way an
-/// app does (as its bridging header).
+/// Type-checks generated hybrid Swift against the built runtime, with `abi_header` imported the
+/// SwiftPM way: as the C module `<Stem>HybridAbi` (the end-to-end run uses a bridging header).
 pub fn typecheck_generated(host: &SwiftHost, abi_header: &Path, swift_file: &Path) {
+    let file_name = abi_header
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("UTF-8 header name");
+    let module = file_name
+        .strip_suffix(".generated.h")
+        .expect("`<Stem>HybridAbi.generated.h`");
+    let map_dir = host.modules.join("c").join(module);
+    std::fs::create_dir_all(&map_dir).expect("create module map dir");
+    std::fs::write(
+        map_dir.join("module.modulemap"),
+        format!(
+            "module {module} {{\n    header \"{}\"\n    export *\n}}\n",
+            abi_header.display()
+        ),
+    )
+    .expect("write hybrid module map");
     let mut cmd = Command::new("swiftc");
     cmd.args(SWIFT_STRICT)
-        .args(["-typecheck", "-parse-as-library", "-import-objc-header"])
-        .arg(abi_header);
+        .args(["-typecheck", "-parse-as-library", "-I"])
+        .arg(&map_dir);
     host.search_args(&mut cmd);
     let out = cmd
         .arg(swift_file)

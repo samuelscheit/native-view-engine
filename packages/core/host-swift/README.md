@@ -13,12 +13,20 @@ language mode, so strict concurrency is on.
 | `HybridRuntime.swift` | `HybridStatus`, `HostStatus`, `HybridError`, `HybridEnum`, `HybridInterfaceResolver`, `DynamicValue` |
 | `NveHostAbi/NveValueTree.swift` | `NveValueTree`: the C `NveValue` graph one ABI call borrows (separate target: it imports `CNveAbi`) |
 
-Generated hybrid Swift (`nve codegen hybrid --target swift`) copies no runtime: it imports `NveHost`
+Generated hybrid Swift (`nve codegen hybrid <spec> --target swift`) copies no runtime: it imports `NveHost`
 (codec, errors, enums, dynamic values) and `NveHostAbi`. `setProps` and `NveValue` parameters build an
 `NveValueTree` that outlives the call: a `DynamicValue` becomes a lossless tree with its own tags
 (`Null` ... `Map`, never wrapped as `Bytes`), while `Struct` / `Vec` props cross as one `NveBinValue` in
-`Bytes`. The tree is a chunked bump arena (one allocation per chunk, never per node), and nothing it
-hands out moves before it is released.
+`Bytes`. The tree is a chunked bump arena (one allocation per chunk, never per node; scalar values
+allocate nothing), and nothing it hands out moves before it is released.
+
+The generated file also needs its C header, `<Stem>HybridAbi.generated.h`, with host-cxx's `include/`
+(the `CNveAbi` module) on the header search path:
+
+- **App target:** include the header from the bridging header.
+- **SwiftPM:** packages have no bridging headers, so add a C target named `<Stem>HybridAbi` whose
+  `include/` holds the header; the generated file imports it under `#if canImport(<Stem>HybridAbi)`.
+  Several generated files can share one module: their constants live in `<Stem>HybridFile`.
 
 The generated C structs conform with empty extensions, because Swift imports their fields with exactly
 the protocol's names and types (implicitly unwrapped pointers):

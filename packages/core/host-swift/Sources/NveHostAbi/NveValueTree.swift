@@ -6,7 +6,8 @@ import NveHost
 /// owns, so keep the tree alive (`withExtendedLifetime`) until the call returns.
 ///
 /// Storage is a chunked bump arena: one allocation per chunk (the chunks are linked through their
-/// first word), never one per node, and nothing moves once handed out.
+/// first word), never one per node, and nothing moves once handed out. Scalars, and dynamic values
+/// that are scalars, allocate nothing.
 public final class NveValueTree {
     /// Usable bytes of the first chunk; each further chunk doubles, up to `maxChunkBytes`.
     private static let firstChunkBytes = 1024
@@ -18,6 +19,8 @@ public final class NveValueTree {
     private var cursor = 0
     private var end = 0
     private var nextChunkBytes = NveValueTree.firstChunkBytes
+    /// Reused by `encoded`; taken out while in use, so a nested `encoded` gets its own writer.
+    private var scratch: BinWriter?
 
     public init() {}
 
@@ -53,7 +56,9 @@ public final class NveValueTree {
 
     /// `Bytes` holding one `NveBinValue` that `encode` writes (hybrid `Struct` / `Vec` props).
     public func encoded(_ encode: (inout BinWriter) throws -> Void) rethrows -> NveValue {
-        var w = BinWriter()
+        var w = scratch.take() ?? BinWriter()
+        defer { scratch = w }
+        w.clear()
         try encode(&w)
         return bytes(w.bytes)
     }
@@ -86,9 +91,11 @@ public final class NveValueTree {
     /// `v` as a lossless `NveValue` tree with its own tags (`Null` ... `Map`), never wrapped as
     /// `Bytes`. Strings, bytes, and keys point into one copy of `v`'s encoding.
     public func value(_ v: DynamicValue) throws(BinError) -> NveValue {
-        let base = v.bytes.withUnsafeBytes { copy($0) }
         var r = v.reader
-        return try build(&r, base: base)
+        switch v.tag {
+        case .null, .bool, .i64, .f64: return try build(&r, base: nil)  // nothing to point into
+        case .str, .bytes, .array, .map: return try build(&r, base: v.bytes.withUnsafeBytes { copy($0) })
+        }
     }
 
     /// `DynamicValue` is validated (at most `binValueMaxDepth` deep), so the recursion is bounded and
@@ -153,19 +160,35 @@ public final class NveValueTree {
         return reserve(bytes, alignment: MemoryLayout<T>.alignment).bindMemory(to: T.self, capacity: count)
     }
 
+    /// Chunks are `header`-aligned, so offsets aligned to any power of two up to `header` stay
+    /// aligned in memory.
     private func reserve(_ byteCount: Int, alignment: Int) -> UnsafeMutableRawPointer {
+        assert(alignment > 0 && alignment <= Self.header && alignment & (alignment - 1) == 0, "unsupported alignment \(alignment)")
         let start = (cursor + alignment - 1) & ~(alignment - 1)
         if let chunk, byteCount <= end - start {
             cursor = start + byteCount
             return chunk + start
         }
+        // No allocation this large can succeed: the same out-of-memory failure, reported up front.
+        precondition(byteCount <= Int.max - Self.header, "NveValueTree: \(byteCount) bytes exceed the address space")
+        if byteCount > nextChunkBytes, let current = chunk {
+            // Oversized: its own chunk, linked behind the current one, which keeps its free space.
+            let own = allocateChunk(usable: byteCount, previous: current.load(as: UnsafeMutableRawPointer?.self))
+            current.storeBytes(of: own, as: UnsafeMutableRawPointer?.self)
+            return own + Self.header
+        }
         let usable = max(byteCount, nextChunkBytes)
         nextChunkBytes = min(nextChunkBytes * 2, Self.maxChunkBytes)
-        let fresh = UnsafeMutableRawPointer.allocate(byteCount: Self.header + usable, alignment: Self.header)
-        fresh.storeBytes(of: chunk, as: UnsafeMutableRawPointer?.self)
+        let fresh = allocateChunk(usable: usable, previous: chunk)
         chunk = fresh
         cursor = Self.header + byteCount
         end = Self.header + usable
         return fresh + Self.header
+    }
+
+    private func allocateChunk(usable: Int, previous: UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer {
+        let fresh = UnsafeMutableRawPointer.allocate(byteCount: Self.header + usable, alignment: Self.header)
+        fresh.storeBytes(of: previous, as: UnsafeMutableRawPointer?.self)
+        return fresh
     }
 }

@@ -164,13 +164,16 @@ pub(super) fn emit_swift_bin_write(
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
+            // Its own scope, so sibling sequences (two `Vec` fields or params) reuse the names.
             let mark = format!("_nveArray{depth}");
             let elem = format!("_nveElem{depth}");
-            writeln!(out, "{indent}let {mark} = try {w}.beginArray(count: {expr}.count)");
-            writeln!(out, "{indent}for {elem} in {expr} {{");
-            emit_swift_bin_write(out, &format!("{indent}    "), w, &elem, inner, depth + 1);
+            writeln!(out, "{indent}do {{");
+            writeln!(out, "{indent}    let {mark} = try {w}.beginArray(count: {expr}.count)");
+            writeln!(out, "{indent}    for {elem} in {expr} {{");
+            emit_swift_bin_write(out, &format!("{indent}        "), w, &elem, inner, depth + 1);
+            writeln!(out, "{indent}    }}");
+            writeln!(out, "{indent}    try {w}.end({mark})");
             writeln!(out, "{indent}}}");
-            writeln!(out, "{indent}try {w}.end({mark})");
         }
         HybridType::Void
         | HybridType::Result { .. }
@@ -233,7 +236,8 @@ pub(super) fn emit_swift_bin_read(
             writeln!(out, "{indent}do {{");
             writeln!(out, "{indent}    let {count} = try {r}.beginArray()");
             writeln!(out, "{indent}    var {list}: [{elem_ty}] = []");
-            writeln!(out, "{indent}    {list}.reserveCapacity({count})");
+            // `beginArray` bounds the count by the payload; the cap also bounds the up-front reserve.
+            writeln!(out, "{indent}    {list}.reserveCapacity(Swift.min({count}, 1024))");
             writeln!(out, "{indent}    for _ in 0..<{count} {{");
             writeln!(out, "{indent}        let {elem}: {elem_ty}");
             emit_swift_bin_read(out, &format!("{indent}        "), r, &elem, inner, depth + 1);
@@ -242,12 +246,13 @@ pub(super) fn emit_swift_bin_read(
             writeln!(out, "{indent}    {dst} = {list}");
             writeln!(out, "{indent}}}");
         }
+        // Never encoded (written as `null`): consume the value so the stream stays in sync.
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
         | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
+        | HybridType::Handle(_) => writeln!(out, "{indent}try {r}.skipValue()"),
     }
 }
 
@@ -298,14 +303,20 @@ pub(super) fn emit_swift_nve_value(
                 );
                 return;
             }
+            if !matches!(inner.as_ref(), HybridType::Struct(_) | HybridType::Vec(_)) {
+                writeln!(out, "{indent}let {dst} = {tree}.null()"); // no wire form, as below
+                return;
+            }
             writeln!(out, "{indent}let {dst} = try {expr}.map {{ _nveSome in");
             emit_swift_encoded(out, &nested, tree, "_nveSome", inner);
             writeln!(out, "{indent}}} ?? {tree}.null()");
         }
-        other => {
+        HybridType::Struct(_) | HybridType::Vec(_) => {
             writeln!(out, "{indent}let {dst} =");
-            emit_swift_encoded(out, &nested, tree, expr, other);
+            emit_swift_encoded(out, &nested, tree, expr, ty);
         }
+        // Types with no wire form (pointers, handles, fixed arrays) cross as `null`, like their codec.
+        _ => writeln!(out, "{indent}let {dst} = {tree}.null()"),
     }
 }
 

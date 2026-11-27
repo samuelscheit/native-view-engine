@@ -79,14 +79,14 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
             if idx > 0 {
                 write!(out, ", ");
             }
-            let cname = c_field_ident(&f.name);
-            let fname = swift_ident(&f.name);
+            let field = swift_member(&c_field_ident(&f.name));
+            let label = swift_label(&f.name);
             match &f.ty {
-                HybridType::Enum(e) => write!(out, "{fname}: try {e}.decode(raw.{cname})"),
+                HybridType::Enum(e) => write!(out, "{label}: try {e}.decode(raw.{field})"),
                 HybridType::Struct(st) => {
-                    write!(out, "{fname}: try {st}.fromAbi(raw.{cname})")
+                    write!(out, "{label}: try {st}.fromAbi(raw.{field})")
                 }
-                _ => write!(out, "{fname}: raw.{cname}"),
+                _ => write!(out, "{label}: raw.{field}"),
             }
         }
         writeln!(out, ")");
@@ -244,7 +244,8 @@ pub(super) fn emit_swift_client(
     writeln!(out, "    public init(vtable: UnsafePointer<{vtable}>) throws {{");
     writeln!(
         out,
-        "        try HybridError.checkAbiVersion(expected: nveHybridAbiVersion, actual: vtable.pointee.abi_version)"
+        "        try HybridError.checkAbiVersion(expected: {}HybridFile.abiVersion, actual: vtable.pointee.abi_version)",
+        spec.stem_pascal()
     );
     writeln!(
         out,

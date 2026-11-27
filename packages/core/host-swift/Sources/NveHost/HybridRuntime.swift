@@ -1,4 +1,5 @@
-/// Hybrid FFI runtime shared by every generated Swift hybrid client (`nve codegen hybrid --swift`).
+/// Hybrid FFI runtime shared by every generated Swift hybrid client
+/// (`nve codegen hybrid <spec> --target swift`).
 /// The parts that build C `NveValue` graphs live in `NveHostAbi`, which imports the generated C ABI.
 
 /// Status of a fallible hybrid FFI trampoline (Rust `NveHybridStatus`, `#[repr(i32)]`).
@@ -35,7 +36,6 @@ public enum HybridError: Error, Equatable, Sendable {
     /// A wire enum value with no case in the generated enum (enum name, raw value).
     case invalidEnum(String, UInt32)
     case status(HybridStatus)
-    case codec(BinError)
     case remote(String)
 
     /// Throws `.schemaMismatch` unless a peer's schema hash equals the generated one.

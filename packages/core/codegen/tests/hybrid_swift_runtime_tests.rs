@@ -12,6 +12,7 @@ use common::swift::{SWIFT_STRICT, build_host_swift, typecheck_generated};
 use nve_codegen::{HybridTarget, generate_hybrid_target, parse_hybrid_rust_spec};
 
 const REALISTIC_HYBRID_SPEC: &str = include_str!("fixtures/realistic_hybrid.nve.rs");
+const EDGE_HYBRID_SPEC: &str = include_str!("fixtures/swift_edge_hybrid.nve.rs");
 const PROVIDER_RS: &str = include_str!("fixtures/swift_e2e_provider.rs");
 const MAIN_SWIFT: &str = include_str!("fixtures/swift_e2e_main.swift");
 
@@ -29,11 +30,20 @@ fn realistic_swift() -> String {
 }
 
 #[test]
-fn generated_swift_builds_on_the_static_host_runtime() {
+fn generated_swift_uses_the_static_host_runtime() {
     let src = realistic_swift();
-    for import in ["import CNveAbi", "import NveHost", "import NveHostAbi"] {
+    for import in [
+        "#if canImport(CryptoHybridAbi)\nimport CryptoHybridAbi\n#endif",
+        "import CNveAbi",
+        "import NveHost",
+        "import NveHostAbi",
+    ] {
         assert!(src.contains(import), "missing `{import}`");
     }
+    // Per-file constants are namespaced, so several generated files share one module.
+    assert!(src.contains("public enum CryptoHybridFile {"));
+    assert!(src.contains("expected: CryptoHybridFile.abiVersion"));
+    assert!(!src.contains("public let "), "no module-level globals");
     // No codec, error type, dynamic value, or helper is copied into generated code any more.
     for copied in [
         "NveHybridBinWriter",
@@ -66,17 +76,18 @@ fn generated_swift_builds_on_the_static_host_runtime() {
     assert!(src.contains("return try withExtendedLifetime(_nveTree) {"));
 }
 
-/// Builds the generated Rust crate and `PROVIDER_RS` into a static library exporting
+/// The specs linked into one Swift module, one Rust staticlib each crate: `(spec, stem, crate)`.
+const E2E_SPECS: [(&str, &str, &str); 2] = [
+    (REALISTIC_HYBRID_SPEC, "Crypto", "crypto_hybrid"),
+    (EDGE_HYBRID_SPEC, "Edge", "edge_hybrid"),
+];
+
+/// Builds the generated Rust crates and `PROVIDER_RS` into a static library exporting
 /// `nve_get_interface`.
 fn build_rust_provider(dir: &Path) -> PathBuf {
     let _touch = nve_abi::NveValue::null(); // links `nve_abi` into this test binary's deps
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse realistic spec");
-    generate_hybrid_target(&spec, HybridTarget::Rust)
-        .expect("generate Rust")
-        .write_to_dir(dir)
-        .expect("write generated Rust");
     let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-    let rustc = |args: &[&str], extern_crates: &[(&str, &Path)], src: &Path, out: &Path| {
+    let rustc = |args: &[&str], extern_crates: &[(&str, PathBuf)], src: &Path, out: &Path| {
         let mut cmd = Command::new("rustc");
         cmd.args(["--edition=2024", "-D", "warnings"]).args(args);
         add_dep_search_dirs(&mut cmd, dir, &dep_dirs);
@@ -91,22 +102,21 @@ fn build_rust_provider(dir: &Path) -> PathBuf {
             String::from_utf8_lossy(&res.stderr)
         );
     };
-    let hybrid_rlib = dir.join("libcrypto_hybrid.rlib");
-    rustc(
-        &["--crate-type=lib", "--crate-name=crypto_hybrid"],
-        &[("nve_abi", &nve_abi_rlib)],
-        &dir.join("crypto_hybrid.generated.rs"),
-        &hybrid_rlib,
-    );
+    let mut externs = vec![("nve_abi", nve_abi_rlib.clone())];
+    for (_, _, crate_name) in E2E_SPECS {
+        let rlib = dir.join(format!("lib{crate_name}.rlib"));
+        rustc(
+            &["--crate-type=lib", &format!("--crate-name={crate_name}")],
+            &[("nve_abi", nve_abi_rlib.clone())],
+            &dir.join(format!("{crate_name}.generated.rs")),
+            &rlib,
+        );
+        externs.push((crate_name, rlib));
+    }
     let provider = dir.join("provider.rs");
     std::fs::write(&provider, PROVIDER_RS).expect("write provider");
     let staticlib = dir.join("liblive_provider.a");
-    rustc(
-        &["--crate-type=staticlib"],
-        &[("nve_abi", &nve_abi_rlib), ("crypto_hybrid", &hybrid_rlib)],
-        &provider,
-        &staticlib,
-    );
+    rustc(&["--crate-type=staticlib"], &externs, &provider, &staticlib);
     staticlib
 }
 
@@ -116,44 +126,48 @@ fn generated_swift_calls_live_rust_provider_end_to_end() {
         return;
     }
     let dir = temp_test_dir("e2e");
-    // AddressSanitizer catches any pointer into a released `NveValueTree` or pinned buffer.
-    let asan = ["-sanitize=address"];
-    let host = build_host_swift(&dir, &asan);
+    // Optimized, so ARC may release a value tree right after its last use; AddressSanitizer then
+    // catches any read through a pointer into a released `NveValueTree` or pinned buffer.
+    let flags = ["-O", "-sanitize=address"];
+    let host = build_host_swift(&dir, &flags);
 
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse realistic spec");
-    for target in [HybridTarget::Cpp, HybridTarget::Swift] {
-        generate_hybrid_target(&spec, target)
-            .expect("generate hybrid target")
-            .write_to_dir(&dir)
-            .expect("write generated files");
+    let mut swift_files = Vec::new();
+    let mut bridge = String::new();
+    for (src, stem, _) in E2E_SPECS {
+        let spec = parse_hybrid_rust_spec(src).expect("parse hybrid spec");
+        for target in [HybridTarget::Cpp, HybridTarget::Swift, HybridTarget::Rust] {
+            generate_hybrid_target(&spec, target)
+                .expect("generate hybrid target")
+                .write_to_dir(&dir)
+                .expect("write generated files");
+        }
+        let header = dir.join(format!("{stem}HybridAbi.generated.h"));
+        let swift_file = dir.join(format!("{stem}HybridSpec.generated.swift"));
+        typecheck_generated(&host, &header, &swift_file);
+        bridge.push_str(&format!("#include \"{stem}HybridAbi.generated.h\"\n"));
+        swift_files.push(swift_file);
     }
-    let abi_header = dir.join("CryptoHybridAbi.generated.h");
-    let swift_file = dir.join("CryptoHybridSpec.generated.swift");
-    typecheck_generated(&host, &abi_header, &swift_file);
-
     let staticlib = build_rust_provider(&dir);
-    let bridge = dir.join("bridge.h");
-    std::fs::write(
-        &bridge,
-        "#include \"CryptoHybridAbi.generated.h\"\n\
-         const void* nve_get_interface(uint32_t interface_id);\n\
+    bridge.push_str(
+        "const void* nve_get_interface(uint32_t interface_id);\n\
          size_t nve_test_prop_shape(uint32_t index, uint8_t* out, size_t cap);\n",
-    )
-    .expect("write bridging header");
+    );
+    let bridge_h = dir.join("bridge.h");
+    std::fs::write(&bridge_h, bridge).expect("write bridging header");
     let main = dir.join("main.swift");
     std::fs::write(&main, MAIN_SWIFT).expect("write main.swift");
 
+    // Inputs before the libraries they use (dependents first), as static linkers resolve in order.
     let exe = dir.join("swift_e2e");
     let mut cmd = Command::new("swiftc");
     cmd.args(SWIFT_STRICT)
-        .args(asan)
+        .args(flags)
         .arg("-import-objc-header")
-        .arg(&bridge);
-    host.link_args(&mut cmd);
+        .arg(&bridge_h);
+    host.search_args(&mut cmd);
+    cmd.arg(&main).args(&swift_files).arg(&staticlib);
+    host.lib_args(&mut cmd);
     let build = cmd
-        .arg(&main)
-        .arg(&swift_file)
-        .arg(&staticlib)
         .arg("-o")
         .arg(&exe)
         .output()

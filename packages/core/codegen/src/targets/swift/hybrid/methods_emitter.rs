@@ -22,10 +22,11 @@ pub(super) fn emit_swift_client_method(
     spec: &HybridFileSpec,
 ) {
     let cname = c_field_ident(&method.name);
+    let entry = swift_member(&cname);
     writeln!(out, "    public {} {{", swift_method_sig(method));
     writeln!(
         out,
-        "        guard let _nveFn = self.vtable.pointee.{cname} else {{ throw HybridError.nullFunction(\"{cname}\") }}"
+        "        guard let _nveFn = self.vtable.pointee.{entry} else {{ throw HybridError.nullFunction(\"{cname}\") }}"
     );
 
     let mut scopes: Vec<Scope> = Vec::new();
@@ -116,11 +117,12 @@ pub(super) fn emit_swift_client_method(
 
     let has_ret = !matches!(method.return_type, HybridType::Void)
         && !matches!(&method.return_type, HybridType::Result { ok, .. } if matches!(ok.as_ref(), HybridType::Void));
-    // Pinning closures rethrow, so they need `try` only when the call's own result handling throws.
+    // Pinning closures rethrow, so they need `try` only when the call's own result handling throws;
+    // every nested closure returns its inner closure's result.
     let try_ = if return_throws(&method.return_type, spec) { "try " } else { "" };
+    let ret = if has_ret { "return " } else { "" };
     let mut indent = "        ".to_string();
-    for (idx, scope) in scopes.iter().enumerate() {
-        let ret = if idx == 0 && has_ret { "return " } else { "" };
+    for scope in &scopes {
         writeln!(out, "{indent}{ret}{try_}{}", scope.open);
         indent.push_str("    ");
         if let Some(slice) = &scope.slice {
@@ -143,8 +145,9 @@ pub(super) fn emit_swift_client_method(
             writeln!(out, "{indent}    let _nveMessage = self.takeString(_nveRawErr)");
             writeln!(
                 out,
-                "{indent}    throw _nveMessage.isEmpty ? HybridError.status(HybridStatus(rawValue: _nveStatus) ?? .err) : HybridError.remote(_nveMessage)"
+                "{indent}    if !_nveMessage.isEmpty {{ throw HybridError.remote(_nveMessage) }}"
             );
+            writeln!(out, "{indent}    try HybridStatus.check(_nveStatus)");
             writeln!(out, "{indent}}}");
             if has_ok {
                 emit_swift_return_decode(out, &indent, "_nveRawOk", ok, spec);
@@ -180,7 +183,7 @@ fn return_throws(ty: &HybridType, spec: &HybridFileSpec) -> bool {
         | HybridType::F64
         | HybridType::String
         | HybridType::Bytes => false,
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
+        HybridType::Optional(inner) if ty.optional_pod_suffix(spec).is_some() => {
             matches!(inner.as_ref(), HybridType::Enum(_) | HybridType::Struct(_))
         }
         _ => true,
@@ -215,7 +218,7 @@ fn emit_swift_return_decode(
         HybridType::Value => {
             writeln!(out, "{indent}return try DynamicValue(bytes: self.takeBytes({var}))");
         }
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
+        HybridType::Optional(inner) if ty.optional_pod_suffix(spec).is_some() => {
             writeln!(out, "{indent}guard {var}.is_some else {{ return nil }}");
             match inner.as_ref() {
                 HybridType::Enum(e) => writeln!(out, "{indent}return try {e}.decode({var}.value)"),
@@ -226,13 +229,13 @@ fn emit_swift_return_decode(
             }
         }
         other => {
-            writeln!(out, "{indent}var _nveR = BinReader(self.takeBytes({var}))");
+            // Validated up front (container bounds, depth, UTF-8, exactly one value; allocation-free),
+            // so the typed decode below only reads a well-formed reply.
+            writeln!(out, "{indent}let _nveBytes = self.takeBytes({var})");
+            writeln!(out, "{indent}try BinReader.validate(_nveBytes)");
+            writeln!(out, "{indent}var _nveR = BinReader(_nveBytes)");
             writeln!(out, "{indent}let _nveOut: {}", swift_type(other));
             emit_swift_bin_read(out, indent, "_nveR", "_nveOut", other, 0);
-            writeln!(
-                out,
-                "{indent}guard _nveR.isAtEnd else {{ throw BinError.trailingBytes(_nveR.remaining) }}"
-            );
             writeln!(out, "{indent}return _nveOut");
         }
     }

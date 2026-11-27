@@ -29,6 +29,25 @@ use crate::schema::hybrid::{
     HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
 };
 
+/// `name` after `.`: Swift reserves `init`, `self`, `Self`, `Type`, and `Protocol` there, so C field
+/// names (vtable entries, POD struct fields) that collide are backtick-escaped.
+fn swift_member(name: &str) -> String {
+    match name {
+        "init" | "self" | "Self" | "Type" | "Protocol" => format!("`{name}`"),
+        _ => name.to_string(),
+    }
+}
+
+/// `raw` as a call-site argument label: keywords are plain labels there, except `inout`, `var`,
+/// and `let`, which still need backticks.
+fn swift_label(raw: &str) -> String {
+    let ident = swift_ident(raw);
+    match ident.trim_matches('`') {
+        "inout" | "var" | "let" => ident,
+        plain => plain.to_string(),
+    }
+}
+
 /// Emits `<Stem>HybridSpec.generated.swift` targeting direct C interop with `<Stem>HybridAbi.generated.h`.
 pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
@@ -44,16 +63,24 @@ pub fn generate_hybrid_swift(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>
         "// Direct C-ABI interop against `{stem}HybridAbi.generated.h` over the static `NveHost` runtime."
     );
     writeln!(out);
+    // `<Stem>HybridAbi.generated.h` comes from an app's bridging header, or (SwiftPM, which has no
+    // bridging headers) from a C target named `<Stem>HybridAbi` that holds it.
+    writeln!(out, "#if canImport({stem}HybridAbi)");
+    writeln!(out, "import {stem}HybridAbi");
+    writeln!(out, "#endif");
     writeln!(out, "import CNveAbi");
     writeln!(out, "import NveHost");
     writeln!(out, "import NveHostAbi");
     writeln!(out);
-    writeln!(out, "public let nveHybridAbiVersion: UInt32 = {NVE_HYBRID_ABI_VERSION}");
+    // Namespaced per spec file, so several generated files can share one Swift module.
+    writeln!(out, "public enum {stem}HybridFile {{");
+    writeln!(out, "    public static let abiVersion: UInt32 = {NVE_HYBRID_ABI_VERSION}");
     writeln!(
         out,
-        "public let nveHybridFileSchemaHash: UInt64 = 0x{:016X}",
+        "    public static let schemaHash: UInt64 = 0x{:016X}",
         spec.file_schema_hash()
     );
+    writeln!(out, "}}");
     writeln!(out);
 
     for e in &spec.enums {
