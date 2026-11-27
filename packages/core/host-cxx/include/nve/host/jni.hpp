@@ -70,8 +70,9 @@ inline jstring java_string(JNIEnv* env, std::string_view s) {
 
 /// Raises `IllegalStateException(msg)` unless a Java exception is already pending (it wins).
 /// Constructs the exception with a UTF-16 `jstring` (`NewString` + `<init>(String)`) so
-/// supplementary UTF-8 characters and NUL never reach `ThrowNew`'s Modified UTF-8 parser; falls
-/// back to ASCII `ThrowNew` if constructing the UTF-16 message or exception fails.
+/// supplementary UTF-8 characters and NUL never reach `ThrowNew`'s Modified UTF-8 parser. A
+/// message that is not UTF-8 keeps its valid text, with U+FFFD for each ill-formed sequence.
+/// Falls back to ASCII `ThrowNew` only if allocating the message or exception fails.
 inline void throw_java_exception(JNIEnv* env, const char* msg) noexcept {
   if (env->ExceptionCheck()) return;
   jclass cls = env->FindClass("java/lang/IllegalStateException");
@@ -79,7 +80,10 @@ inline void throw_java_exception(JNIEnv* env, const char* msg) noexcept {
   const char* text = msg != nullptr ? msg : "NVE hybrid call failed";
   bool thrown = false;
   try {
-    jstring jmsg = java_string(env, text);
+    const std::u16string units = utf8_to_utf16_lossy(text);
+    jstring jmsg = units.size() <= static_cast<size_t>(std::numeric_limits<jsize>::max())
+                       ? env->NewString(reinterpret_cast<const jchar*>(units.data()), static_cast<jsize>(units.size()))
+                       : nullptr;
     if (jmsg != nullptr && !env->ExceptionCheck()) {
       jmethodID ctor = env->GetMethodID(cls, "<init>", "(Ljava/lang/String;)V");
       if (ctor != nullptr && !env->ExceptionCheck()) {
@@ -92,7 +96,7 @@ inline void throw_java_exception(JNIEnv* env, const char* msg) noexcept {
     }
     if (jmsg != nullptr) env->DeleteLocalRef(jmsg);
   } catch (...) {
-    // Non-UTF-8 / oversized / OOM message: fall back to an ASCII `ThrowNew` below.
+    // `std::bad_alloc` building the message: fall back to an ASCII `ThrowNew` below.
   }
   if (!thrown && !env->ExceptionCheck()) {
     env->ThrowNew(cls, "NVE hybrid call failed");

@@ -1460,11 +1460,14 @@ int main() {
         .write_to_dir(&dir)
         .unwrap();
     std::fs::write(dir.join("jni.h"), FAKE_JNI_H).unwrap();
+    std::fs::write(dir.join("jni_test_support.h"), JNI_TEST_SUPPORT_H).unwrap();
     let jni_main = dir.join("jni_main.cpp");
     std::fs::write(&jni_main, JNI_HARNESS_CPP).unwrap();
     let jni_bin = dir.join("jni_e2e_bin");
+    // ASan/UBSan: the glue borrows the direct buffer for every prop, so a dangling slice fails.
     let jni_link = Command::new("clang++")
-        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
+        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-g"])
+        .args(["-fsanitize=address,undefined", "-fno-sanitize-recover=all"])
         .arg(format!("-I{}", dir.display()))
         .arg(&jni_main)
         .arg(dir.join("CryptoHybridJni.generated.cpp"))
@@ -1494,6 +1497,7 @@ int main() {
 /// Drives the generated JNI entry points like the Kotlin client does (direct buffers, Java
 /// strings), against the live Rust provider, through every success and error path.
 const JNI_HARNESS_CPP: &str = include_str!("fixtures/jni_harness.cpp");
+const JNI_TEST_SUPPORT_H: &str = include_str!("fixtures/jni_test_support.h");
 
 #[test]
 fn explicit_interface_id_and_fixed_layout_static_asserts_work_in_hybrid_pipeline() {

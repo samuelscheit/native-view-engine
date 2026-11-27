@@ -352,6 +352,39 @@ void test_utf16_round_trips_and_rejects_lone_surrogates() {
   CHECK(nve::host::utf8_to_utf16("").has_value());
 }
 
+void test_utf16_lossy_replaces_maximal_subparts() {
+  using nve::host::utf8_to_utf16_lossy;
+  CHECK(utf8_to_utf16_lossy("bad \xF0\x9F\x98\x80") == u"bad \U0001F600");
+  CHECK(utf8_to_utf16_lossy("").empty());
+  CHECK(utf8_to_utf16_lossy("\xFF") == u"\uFFFD");
+  CHECK(utf8_to_utf16_lossy("a\xC0\xAF" "b") == u"a\uFFFD\uFFFD" "b");                // overlong lead
+  CHECK(utf8_to_utf16_lossy("\xE0\x80\xAF") == u"\uFFFD\uFFFD\uFFFD");              // overlong 3-byte
+  CHECK(utf8_to_utf16_lossy("\xED\xA0\x80") == u"\uFFFD\uFFFD\uFFFD");              // surrogate
+  CHECK(utf8_to_utf16_lossy("\xF4\x90\x80\x80") == u"\uFFFD\uFFFD\uFFFD\uFFFD");   // > U+10FFFF
+  CHECK(utf8_to_utf16_lossy("\xF0\x9F\x98") == u"\uFFFD");                          // truncated: one
+  CHECK(utf8_to_utf16_lossy("\xF0\x9F\x98x") == u"\uFFFDx");
+  CHECK(utf8_to_utf16_lossy("\xE2\x28\xA1") == u"\uFFFD(\uFFFD");
+  CHECK(utf8_to_utf16_lossy("\x80\xBF\xF5\x80") == u"\uFFFD\uFFFD\uFFFD\uFFFD");
+  // Unicode 15 §3.9, Table 3-11 (U+FFFD substitution of maximal subparts).
+  CHECK(utf8_to_utf16_lossy("\x61\xF1\x80\x80\xE1\x80\xC2\x62\x80\x63\x80\xBF\x64") ==
+        u"a\uFFFD\uFFFD\uFFFD" "b\uFFFD" "c\uFFFD\uFFFD" "d");
+  // Fuzz: never a lone surrogate, and identical to the strict decode on well-formed input.
+  uint32_t seed = 0x9E3779B9u;
+  for (int round = 0; round < 20000; ++round) {
+    std::string s(static_cast<size_t>(round % 9), '\0');
+    for (char& ch : s) {
+      seed ^= seed << 13, seed ^= seed >> 17, seed ^= seed << 5;
+      // Bias toward lead / continuation bytes so multi-byte paths are hit often.
+      ch = static_cast<char>((seed & 1u) != 0 ? 0x80u | (seed >> 8 & 0x7Fu) : seed >> 8);
+    }
+    const std::u16string lossy = utf8_to_utf16_lossy(s);
+    CHECK(nve::host::utf16_to_utf8(lossy).has_value());
+    const std::optional<std::u16string> strict = nve::host::utf8_to_utf16(s);
+    if (strict) CHECK(*strict == lossy);
+    if (!strict) CHECK(lossy.find(u'\uFFFD') != std::u16string::npos);
+  }
+}
+
 void test_bom_and_invalid_utf8_writes() {
   for (const std::string_view s : {std::string_view("\xEF\xBB\xBF"), std::string_view("\xEF\xBB\xBFx"),
                                    std::string_view("\xEF\xBB\xBF\xEF\xBB\xBFx")}) {
@@ -520,6 +553,7 @@ int main() {
   test_streaming_reads_stay_inside_their_container();
   test_checked_values_and_error_names();
   test_utf16_round_trips_and_rejects_lone_surrogates();
+  test_utf16_lossy_replaces_maximal_subparts();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_bin_codec_test: %d failure(s)\n", g_failures);
     return 1;

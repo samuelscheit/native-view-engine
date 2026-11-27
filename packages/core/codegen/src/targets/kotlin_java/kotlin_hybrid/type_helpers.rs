@@ -20,6 +20,23 @@ pub(super) fn kotlin_method_sig(m: &HybridMethodSpec) -> String {
     }
 }
 
+/// A `const val` initializer of the `u32` bits as a Kotlin `Int` (a hex literal above
+/// `Int.MAX_VALUE`, or `.toInt()` of one, is not a constant).
+pub(super) fn kotlin_int_literal(bits: u32) -> String {
+    match bits.cast_signed() {
+        i32::MIN => "Int.MIN_VALUE".to_string(),
+        v => v.to_string(),
+    }
+}
+
+/// A `const val` initializer of the `u64` bits as a Kotlin `Long`.
+pub(super) fn kotlin_long_literal(bits: u64) -> String {
+    match bits.cast_signed() {
+        i64::MIN => "Long.MIN_VALUE".to_string(),
+        v => format!("{v}L"),
+    }
+}
+
 pub(super) fn kotlin_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "Unit".to_string(),
@@ -41,7 +58,7 @@ pub(super) fn kotlin_type(ty: &HybridType) -> String {
         }
         HybridType::Result { ok, .. } => kotlin_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
-        HybridType::Value => "NveHybridDynamicValue".to_string(),
+        HybridType::Value => "DynamicValue".to_string(),
     }
 }
 
@@ -197,43 +214,57 @@ pub(super) fn kotlin_default_value(
                 format!("{name}.fromRaw(0)")
             }
         }
-        HybridType::Value => "NveHybridDynamicValue()".to_string(),
+        HybridType::Value => "DynamicValue.NULL".to_string(),
         HybridType::Void | HybridType::Result { .. } => "Unit".to_string(),
     }
 }
 
+/// Writes `expr` (of type `ty`) to `dev.nve.host.BinWriter` `w`. Locals carry the nesting `depth`,
+/// so nested sequences never shadow each other.
 pub(super) fn emit_kotlin_bin_write(
     out: &mut CodeWriter,
     indent: &str,
     w: &str,
     expr: &str,
     ty: &HybridType,
+    depth: usize,
 ) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr})"),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
-            writeln!(out, "{indent}{w}.writeLong({expr}.toLong())")
+            writeln!(out, "{indent}{w}.writeI64({expr}.toLong())")
         }
         HybridType::Usize | HybridType::I64 | HybridType::U64 => {
-            writeln!(out, "{indent}{w}.writeLong({expr})")
+            writeln!(out, "{indent}{w}.writeI64({expr})")
         }
-        HybridType::F32 => writeln!(out, "{indent}{w}.writeDouble({expr}.toDouble())"),
-        HybridType::F64 => writeln!(out, "{indent}{w}.writeDouble({expr})"),
-        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeLong({expr}.rawValue.toLong())"),
-        HybridType::String => writeln!(out, "{indent}{w}.writeString({expr})"),
+        HybridType::F32 => writeln!(out, "{indent}{w}.writeF64({expr}.toDouble())"),
+        HybridType::F64 => writeln!(out, "{indent}{w}.writeF64({expr})"),
+        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeI64({expr}.rawValue.toLong())"),
+        HybridType::String => writeln!(out, "{indent}{w}.writeStr({expr})"),
         HybridType::Bytes => writeln!(out, "{indent}{w}.writeBytes({expr})"),
         HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encodeBin({w})"),
-        HybridType::Value => writeln!(out, "{indent}{w}.writeRaw({expr}.binBytes)"),
+        HybridType::Value => writeln!(out, "{indent}{expr}.writeTo({w})"),
         HybridType::Optional(inner) => {
             writeln!(out, "{indent}if ({expr} != null) {{");
-            emit_kotlin_bin_write(out, &format!("{indent}    "), w, expr, inner);
-            writeln!(out, "{indent}}} else {{ {w}.writeNull() }}");
+            emit_kotlin_bin_write(out, &format!("{indent}    "), w, expr, inner, depth + 1);
+            writeln!(out, "{indent}}} else {{");
+            writeln!(out, "{indent}    {w}.writeNull()");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.writeArray({expr}.size) {{ aw ->");
-            writeln!(out, "{indent}    for (_el in {expr}) {{");
-            emit_kotlin_bin_write(out, &format!("{indent}        "), "aw", "_el", inner);
+            writeln!(out, "{indent}run {{");
+            writeln!(out, "{indent}    val _a{depth} = {w}.beginArray({expr}.size)");
+            writeln!(out, "{indent}    for (_e{depth} in {expr}) {{");
+            emit_kotlin_bin_write(
+                out,
+                &format!("{indent}        "),
+                w,
+                &format!("_e{depth}"),
+                inner,
+                depth + 1,
+            );
             writeln!(out, "{indent}    }}");
+            writeln!(out, "{indent}    {w}.end(_a{depth})");
             writeln!(out, "{indent}}}");
         }
         HybridType::Void
@@ -245,55 +276,62 @@ pub(super) fn emit_kotlin_bin_write(
     }
 }
 
+/// Reads a `ty` from `dev.nve.host.BinReader` `r` into `dst` (a declared `val` or `var`).
 pub(super) fn emit_kotlin_bin_read(
     out: &mut CodeWriter,
     indent: &str,
     r: &str,
     dst: &str,
     ty: &HybridType,
+    depth: usize,
 ) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool()"),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
-            writeln!(out, "{indent}{dst} = {r}.readLong().toInt()")
+            writeln!(out, "{indent}{dst} = {r}.readI64().toInt()")
         }
         HybridType::Usize | HybridType::I64 | HybridType::U64 => {
-            writeln!(out, "{indent}{dst} = {r}.readLong()")
+            writeln!(out, "{indent}{dst} = {r}.readI64()")
         }
-        HybridType::F32 => writeln!(out, "{indent}{dst} = {r}.readDouble().toFloat()"),
-        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.readDouble()"),
-        HybridType::Enum(e) => writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readLong().toInt())"),
-        HybridType::String => writeln!(out, "{indent}{dst} = {r}.readString()"),
+        HybridType::F32 => writeln!(out, "{indent}{dst} = {r}.readF64().toFloat()"),
+        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.readF64()"),
+        HybridType::Enum(e) => writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readI64().toInt())"),
+        HybridType::String => writeln!(out, "{indent}{dst} = {r}.readStr()"),
         HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.readBytes()"),
         HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}.decodeBin({r})"),
-        HybridType::Value => writeln!(
-            out,
-            "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue())"
-        ),
+        HybridType::Value => writeln!(out, "{indent}{dst} = DynamicValue.read({r})"),
         HybridType::Optional(inner) => {
-            writeln!(
+            writeln!(out, "{indent}{dst} = if ({r}.readNull()) null else {{");
+            writeln!(out, "{indent}    val _ov{depth}: {}", kotlin_type(inner));
+            emit_kotlin_bin_read(
                 out,
-                "{indent}{dst} = if ({r}.readNullIfPresent()) null else {{"
+                &format!("{indent}    "),
+                r,
+                &format!("_ov{depth}"),
+                inner,
+                depth + 1,
             );
-            writeln!(out, "{indent}    val _ov: {}", kotlin_type(inner));
-            emit_kotlin_bin_read(out, &format!("{indent}    "), r, "_ov", inner);
-            writeln!(out, "{indent}    _ov");
+            writeln!(out, "{indent}    _ov{depth}");
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
+            let elem = kotlin_type(inner);
             writeln!(out, "{indent}run {{");
-            writeln!(out, "{indent}    val _n = {r}.beginArray()");
-            writeln!(
+            writeln!(out, "{indent}    val _n{depth} = {r}.beginArray()");
+            writeln!(out, "{indent}    val _list{depth} = ArrayList<{elem}>(_n{depth})");
+            writeln!(out, "{indent}    repeat(_n{depth}) {{");
+            writeln!(out, "{indent}        val _el{depth}: {elem}");
+            emit_kotlin_bin_read(
                 out,
-                "{indent}    val _list = ArrayList<{}>(_n)",
-                kotlin_type(inner)
+                &format!("{indent}        "),
+                r,
+                &format!("_el{depth}"),
+                inner,
+                depth + 1,
             );
-            writeln!(out, "{indent}    repeat(_n) {{");
-            writeln!(out, "{indent}        val _el: {}", kotlin_type(inner));
-            emit_kotlin_bin_read(out, &format!("{indent}        "), r, "_el", inner);
-            writeln!(out, "{indent}        _list.add(_el)");
+            writeln!(out, "{indent}        _list{depth}.add(_el{depth})");
             writeln!(out, "{indent}    }}");
-            writeln!(out, "{indent}    {dst} = _list");
+            writeln!(out, "{indent}    {dst} = _list{depth}");
             writeln!(out, "{indent}}}");
         }
         HybridType::Void

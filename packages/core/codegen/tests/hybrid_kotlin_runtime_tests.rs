@@ -1,0 +1,592 @@
+//! Kotlin / JNI hybrid target, compiled and run for real:
+//! - the generated Kotlin (two specs in one package) compiles with `kotlinc -Werror` against the
+//!   static `dev.nve.host` runtime and round-trips on the JVM; its `native` methods match the JNI
+//!   glue's exports one to one;
+//! - a dedicated `OverlayView` spec (non-POD struct with `Vec` + `Option` + `NveValue` + enum, as
+//!   props, arguments, and results) runs its JNI glue live against a Rust provider, on a fake
+//!   `JNIEnv` that checks every `NveValue` tag `nativeSetProps` builds, and on a real JVM.
+
+mod common;
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use nve_codegen::{
+    GeneratedFile, HybridFileSpec, HybridTarget, generate_hybrid_target, parse_hybrid_rust_spec,
+};
+
+const REALISTIC_HYBRID_SPEC: &str = include_str!("fixtures/realistic_hybrid.nve.rs");
+const FAKE_JNI_H: &str = include_str!("fixtures/fake_jni.h");
+const JNI_TEST_SUPPORT_H: &str = include_str!("fixtures/jni_test_support.h");
+const JNI_OVERLAY_HARNESS_CPP: &str = include_str!("fixtures/jni_overlay_harness.cpp");
+const KOTLIN_MAIN_KT: &str = include_str!("fixtures/kotlin_hybrid_main.kt");
+
+const OVERLAY_SPEC: &str = r#"
+use nve_abi::NveValue;
+
+/// Overlay category with sparse discriminants.
+#[nve_hybrid_enum]
+#[repr(u32)]
+pub enum OverlayKind {
+    Caption = 0,
+    Chapter = 3,
+    Ad = 7,
+}
+
+/// Non-POD record: a `Vec`, an `Option`, a dynamic `NveValue`, and an enum.
+#[nve_hybrid_struct]
+pub struct Overlay {
+    pub kind: OverlayKind,
+    pub cues: Vec<i32>,
+    pub caption: Option<String>,
+    pub extra: NveValue,
+    pub labels: Vec<String>,
+}
+
+/// Props covering every crossing: scalars, encoded `Struct` / `Vec`, and `NveValue`.
+#[nve_hybrid_view(name = "OverlayView")]
+pub trait OverlayViewSpec {
+    #[prop]
+    fn title(&self) -> String;
+    #[prop(default = OverlayKind::Chapter)]
+    fn kind(&self) -> OverlayKind;
+    #[prop(default = None)]
+    fn overlay(&self) -> Option<Overlay>;
+    #[prop]
+    fn overlays(&self) -> Vec<Overlay>;
+    #[prop]
+    fn cues(&self) -> Vec<i32>;
+    #[prop]
+    fn extra(&self) -> NveValue;
+    #[method]
+    fn current_overlay(&self) -> Option<Overlay>;
+    #[method]
+    fn current_overlays(&self) -> Vec<Overlay>;
+    #[method]
+    fn current_extra(&self) -> NveValue;
+    #[method]
+    fn summary(&self) -> String;
+    #[method]
+    fn echo(&self, overlay: Overlay) -> Result<Overlay, String>;
+    #[event]
+    fn on_cue(&self, index: i32, overlay: Overlay);
+}
+"#;
+
+const OVERLAY_PROVIDER_RS: &str = r#"
+use std::ffi::c_void;
+use overlay_view_hybrid::*;
+
+#[derive(Default)]
+struct LiveOverlay {
+    props: OverlayViewProps,
+}
+
+impl OverlayViewHybrid for LiveOverlay {
+    fn apply_props(&mut self, props: OverlayViewProps) { self.props = props; }
+    fn current_overlay(&mut self) -> Option<Overlay> { self.props.overlay.clone() }
+    fn current_overlays(&mut self) -> Vec<Overlay> { self.props.overlays.clone() }
+    fn current_extra(&mut self) -> NveHybridValue { self.props.extra.clone() }
+    fn summary(&mut self) -> String {
+        let p = &self.props;
+        format!("{}|{:?}|{}|{}|{}", p.title, p.kind, p.overlay.is_some(), p.overlays.len(), p.cues.len())
+    }
+    fn echo(&mut self, overlay: Overlay) -> Result<Overlay, String> {
+        if overlay.caption.as_deref() == Some("fail") {
+            return Err("bad \u{1F600}".to_string());
+        }
+        Ok(Overlay {
+            kind: OverlayKind::Caption,
+            cues: overlay.cues.iter().rev().copied().collect(),
+            caption: overlay.caption.map(|c| c.to_uppercase()),
+            extra: overlay.extra,
+            labels: overlay.labels.iter().map(|l| l.to_uppercase()).collect(),
+        })
+    }
+}
+
+static VTABLE: NveHybridOverlayViewVTable = build_overlay_view_vtable::<LiveOverlay>();
+
+#[unsafe(no_mangle)]
+pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
+    if interface_id == NVE_HYBRID_OVERLAY_VIEW_INTERFACE_ID {
+        (&VTABLE as *const NveHybridOverlayViewVTable).cast()
+    } else {
+        std::ptr::null()
+    }
+}
+"#;
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+fn temp_test_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("nve_kotlin_hybrid_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp test dir");
+    dir
+}
+
+fn specs() -> (HybridFileSpec, HybridFileSpec) {
+    (
+        parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("realistic spec parses"),
+        parse_hybrid_rust_spec(OVERLAY_SPEC).expect("overlay spec parses"),
+    )
+}
+
+/// Generates `target` for `spec` into `dir`, returning the files.
+fn generate(spec: &HybridFileSpec, target: HybridTarget, dir: &Path) -> Vec<GeneratedFile> {
+    let out = generate_hybrid_target(spec, target).expect("hybrid codegen");
+    out.write_to_dir(dir).expect("write generated files");
+    out.files
+}
+
+/// Runs `cmd`, asserting success; returns stdout.
+fn run(cmd: &mut Command, what: &str) -> String {
+    let out = cmd.output().expect("start the command");
+    assert!(
+        out.status.success(),
+        "{what} failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// `javac`, `java`, and `kotlinc` (which only knows `-version`); a missing one skips the caller
+/// unless `NVE_REQUIRE_<TOOL>` is set.
+fn jvm_tools_available() -> bool {
+    let kotlinc = Command::new("kotlinc")
+        .arg("-version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !kotlinc {
+        assert!(
+            std::env::var_os("NVE_REQUIRE_KOTLINC").is_none(),
+            "`kotlinc` is required (NVE_REQUIRE_KOTLINC)"
+        );
+        eprintln!("SKIP: `kotlinc` not found");
+        return false;
+    }
+    common::require_tool("javac") && common::require_tool("java")
+}
+
+/// Compiles the generated Kotlin of both specs plus the driver (`kotlinc -Werror`) against the
+/// static `dev.nve.host` runtime (`javac --release 11 -Werror`). Returns the run classpath.
+fn build_kotlin_app(dir: &Path) -> String {
+    let (realistic, overlay) = specs();
+    let kt_dir = dir.join("kotlin");
+    for spec in [&realistic, &overlay] {
+        for file in generate(spec, HybridTarget::Kotlin, &kt_dir) {
+            if file.relative_path.ends_with(".kt") {
+                // The static runtime is reused, never re-emitted into generated code.
+                assert!(
+                    !file.content.contains("class NveBin"),
+                    "{} copies a codec",
+                    file.relative_path
+                );
+                assert!(file.content.contains("import dev.nve.host.BinWriter"));
+            }
+        }
+    }
+    std::fs::write(kt_dir.join("KotlinHybridMain.kt"), KOTLIN_MAIN_KT)
+        .expect("write Kotlin driver");
+
+    let host_classes = dir.join("host-java");
+    let host_sources: Vec<PathBuf> = walk(
+        &workspace_root().join("packages/core/host-java/src/main"),
+        "java",
+    );
+    run(
+        Command::new("javac")
+            .args(["--release", "11", "-Xlint:all", "-Werror", "-d"])
+            .arg(&host_classes)
+            .args(&host_sources),
+        "javac host-java",
+    );
+    let jar = dir.join("kotlin-hybrid.jar");
+    let kt_sources = walk(&kt_dir, "kt");
+    run(
+        Command::new("kotlinc")
+            .args(["-Werror", "-include-runtime", "-cp"])
+            .arg(&host_classes)
+            .args(&kt_sources)
+            .arg("-d")
+            .arg(&jar),
+        "kotlinc -Werror generated Kotlin",
+    );
+    std::env::join_paths([jar, host_classes])
+        .expect("classpath")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn walk(root: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root).expect("read dir").flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk(&path, ext));
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `(class, method, java parameter count)` of every `JNIEXPORT` in the generated JNI glue.
+fn jni_exports(glue: &str) -> BTreeSet<(String, String, usize)> {
+    glue.lines()
+        .filter_map(|line| line.strip_prefix("JNIEXPORT "))
+        .map(|line| {
+            let symbol = line
+                .split("Java_dev_nve_hybrid_")
+                .nth(1)
+                .expect("JNI symbol");
+            let (name, params) = symbol.split_once('(').expect("parameter list");
+            let (class, method) = name.rsplit_once('_').expect("class_method");
+            // `JNIEnv*` and `jclass` precede the Java parameters.
+            (
+                class.to_string(),
+                method.to_string(),
+                params.matches(',').count() - 1,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn generated_kotlin_compiles_with_werror_and_round_trips_on_the_jvm() {
+    if !jvm_tools_available() {
+        return;
+    }
+    let dir = temp_test_dir("codec");
+    let classpath = build_kotlin_app(&dir);
+    let stdout = run(
+        Command::new("java").args([
+            "-cp",
+            &classpath,
+            "dev.nve.hybrid.KotlinHybridMainKt",
+            "codec",
+        ]),
+        "Kotlin codec driver",
+    );
+
+    // Schema constants: `const val` literals hold the exact u32 / u64 bits.
+    let (realistic, overlay) = specs();
+    let mut expected_schema = BTreeSet::new();
+    for spec in [&realistic, &overlay] {
+        for m in &spec.modules {
+            expected_schema.insert(format!(
+                "schema {} {} {}",
+                m.name,
+                m.interface_id().cast_signed(),
+                m.schema_hash(spec).cast_signed()
+            ));
+        }
+        for v in &spec.views {
+            expected_schema.insert(format!(
+                "schema {} {} {}",
+                v.name,
+                v.interface_id().cast_signed(),
+                v.schema_hash(spec).cast_signed()
+            ));
+        }
+        expected_schema.insert(format!(
+            "file {} 1 {}",
+            spec.stem_pascal(),
+            spec.file_schema_hash().cast_signed()
+        ));
+    }
+    let printed: BTreeSet<String> = stdout
+        .lines()
+        .filter(|l| l.starts_with("schema ") || l.starts_with("file "))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(printed, expected_schema);
+
+    // Every Kotlin `native` binds to exactly one JNI export of the same arity, and vice versa.
+    let natives: BTreeSet<(String, String, usize)> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("native "))
+        .map(|l| {
+            let parts: Vec<&str> = l.split(' ').collect();
+            (
+                parts[0].to_string(),
+                parts[1].to_string(),
+                parts[2].parse().expect("arity"),
+            )
+        })
+        .collect();
+    let mut exports = BTreeSet::new();
+    for glue in walk(&dir.join("kotlin"), "cpp") {
+        exports.extend(jni_exports(
+            &std::fs::read_to_string(glue).expect("read JNI glue"),
+        ));
+    }
+    assert!(natives.len() >= 20, "too few natives: {natives:?}");
+    assert_eq!(natives, exports);
+    assert!(stdout.contains("kotlin hybrid: ok"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `rustc`: the generated `overlay_view_hybrid` rlib, then the provider staticlib exporting
+/// `nve_get_interface`.
+fn build_overlay_provider(dir: &Path) -> PathBuf {
+    let (nve_abi_rlib, dep_dirs) = rust_deps::locate_nve_abi_and_dep_dirs();
+    let extern_abi = format!("nve_abi={}", nve_abi_rlib.display());
+    let rlib = dir.join("liboverlay_view_hybrid.rlib");
+    let mut lib = Command::new("rustc");
+    lib.args([
+        "--edition=2024",
+        "--crate-type=lib",
+        "--crate-name=overlay_view_hybrid",
+        "-D",
+        "warnings",
+    ]);
+    rust_deps::add_dep_search_dirs(&mut lib, dir, &dep_dirs);
+    run(
+        lib.args(["--extern", &extern_abi])
+            .arg(dir.join("overlay_view_hybrid.generated.rs"))
+            .arg("-o")
+            .arg(&rlib),
+        "rustc generated overlay rlib",
+    );
+    let provider = dir.join("overlay_provider.rs");
+    std::fs::write(&provider, OVERLAY_PROVIDER_RS).expect("write provider");
+    let staticlib = dir.join("liboverlay_provider.a");
+    let mut cmd = Command::new("rustc");
+    cmd.args(["--edition=2024", "--crate-type=staticlib", "-D", "warnings"]);
+    rust_deps::add_dep_search_dirs(&mut cmd, dir, &dep_dirs);
+    run(
+        cmd.args(["--extern", &extern_abi])
+            .arg("--extern")
+            .arg(format!("overlay_view_hybrid={}", rlib.display()))
+            .arg(&provider)
+            .arg("-o")
+            .arg(&staticlib),
+        "rustc overlay provider staticlib",
+    );
+    staticlib
+}
+
+/// `<java.home>/include` and its platform directory (`jni_md.h`).
+fn jdk_include_dirs() -> Vec<PathBuf> {
+    let out = Command::new("java")
+        .args(["-XshowSettings:properties", "-version"])
+        .output()
+        .expect("java");
+    let props = String::from_utf8_lossy(&out.stderr);
+    let home = props
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("java.home = "))
+        .expect("java.home in -XshowSettings:properties");
+    let include = PathBuf::from(home).join("include");
+    let platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
+    vec![include.join(platform), include]
+}
+
+#[test]
+fn overlay_jni_glue_runs_live_on_a_fake_jni_env_and_a_real_jvm() {
+    let _touch = nve_abi::NveValue::null();
+    if !common::require_tool("clang++") {
+        return;
+    }
+    let (_, overlay) = specs();
+    let dir = temp_test_dir("overlay_jni");
+    for target in [HybridTarget::Rust, HybridTarget::Cpp, HybridTarget::Kotlin] {
+        generate(&overlay, target, &dir);
+    }
+    common::write_generated_c_abi_headers(&dir);
+    let staticlib = build_overlay_provider(&dir);
+    let glue = dir.join("OverlayViewHybridJni.generated.cpp");
+
+    // 1. Fake `JNIEnv` under ASan/UBSan (every borrowed slice must outlive its use): exact prop
+    //    tags, zero-copy slices, exceptions, CheckJNI, local refs.
+    let fake = dir.join("fake_jni");
+    std::fs::create_dir_all(&fake).expect("fake jni dir");
+    std::fs::write(fake.join("jni.h"), FAKE_JNI_H).expect("write fake jni.h");
+    std::fs::write(dir.join("jni_test_support.h"), JNI_TEST_SUPPORT_H).expect("write support");
+    let harness = dir.join("jni_overlay_harness.cpp");
+    std::fs::write(&harness, JNI_OVERLAY_HARNESS_CPP).expect("write harness");
+    let harness_bin = dir.join("jni_overlay_harness");
+    run(
+        Command::new("clang++")
+            .args([
+                "-std=c++20",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-g",
+                "-fsanitize=address,undefined",
+            ])
+            .arg("-fno-sanitize-recover=all")
+            .arg(format!("-I{}", fake.display()))
+            .arg(format!("-I{}", dir.display()))
+            .args([&harness, &glue, &staticlib])
+            .arg("-o")
+            .arg(&harness_bin),
+        "link the OverlayView JNI harness",
+    );
+    let stdout = run(&mut Command::new(&harness_bin), "OverlayView JNI harness");
+    assert!(stdout.contains("jni overlay harness: ok"));
+
+    // 2. A real JVM (`-Xcheck:jni`): the Kotlin client -> JNI glue -> Rust provider.
+    if cfg!(windows) || !jvm_tools_available() {
+        return;
+    }
+    let library = dir.join(if cfg!(target_os = "macos") {
+        "libnve_overlay_jni.dylib"
+    } else {
+        "libnve_overlay_jni.so"
+    });
+    let mut link = Command::new("clang++");
+    link.args([
+        "-std=c++20",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-shared",
+        "-fPIC",
+    ]);
+    for include in jdk_include_dirs() {
+        link.arg(format!("-I{}", include.display()));
+    }
+    run(
+        link.arg(format!("-I{}", dir.display()))
+            .args([&glue, &staticlib])
+            .arg("-o")
+            .arg(&library),
+        "link the OverlayView JNI library against the JDK's jni.h",
+    );
+    let classpath = build_kotlin_app(&dir.join("jvm"));
+    let out = Command::new("java")
+        .arg("-Xcheck:jni")
+        .args([
+            "-cp",
+            &classpath,
+            "dev.nve.hybrid.KotlinHybridMainKt",
+            "jni",
+        ])
+        .arg(&library)
+        .output()
+        .expect("run java");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        out.status.success() && stdout.contains("kotlin hybrid: ok"),
+        "real JVM run failed:\n{stdout}\n{stderr}"
+    );
+    // CheckJNI reports misuse as warnings: HotSpot `WARNING in native method`, OpenJ9
+    // `JVMJNCK<nnn>W` / `E` (`JVMJNCK001I` only announces the checker).
+    let checkjni_issue = stderr.lines().any(|l| {
+        l.contains("WARNING in native method")
+            || l.split_whitespace()
+                .any(|w| w.starts_with("JVMJNCK") && (w.ends_with('W') || w.ends_with('E')))
+    });
+    assert!(!checkjni_issue, "CheckJNI warnings:\n{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Locates the `nve_abi` rlib and Cargo's dependency directories for `rustc` invocations, across
+/// the classic `target/<profile>/deps/` and Cargo 1.100+ per-unit `build/<pkg>/<hash>/out/`
+/// layouts (prefers an rlib built with the `wire` feature, then the newest).
+mod rust_deps {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::SystemTime;
+
+    fn is_nve_abi_rlib(path: &Path) -> bool {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
+    }
+
+    fn has_wire_feature(path: &Path) -> bool {
+        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
+        std::fs::read(path).is_ok_and(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
+    }
+
+    fn files(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .map(|it| it.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default()
+    }
+
+    fn best(candidates: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
+        let mut ranked: Vec<(bool, SystemTime, PathBuf)> = candidates
+            .map(|p| {
+                let mtime = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                (has_wire_feature(&p), mtime, p)
+            })
+            .collect();
+        ranked.sort_by_key(|(wire, mtime, _)| (*wire, *mtime));
+        ranked.pop().map(|(_, _, p)| p)
+    }
+
+    pub fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
+        let exe = std::env::current_exe().expect("current_exe");
+        let exe_dir = exe.parent().expect("test executable dir");
+        if let Some(rlib) = best(files(exe_dir).into_iter().filter(|p| is_nve_abi_rlib(p))) {
+            return (rlib, vec![exe_dir.to_path_buf()]);
+        }
+        let build_root = exe
+            .ancestors()
+            .find(|p| p.file_name().is_some_and(|n| n == "build"))
+            .expect("Cargo deps/ or build/ ancestor of the test executable");
+        let out_dirs: Vec<PathBuf> = files(build_root)
+            .into_iter()
+            .flat_map(|pkg| files(&pkg))
+            .map(|hash| hash.join("out"))
+            .filter(|out| out.is_dir())
+            .collect();
+        let rlib = best(
+            out_dirs
+                .iter()
+                .flat_map(|d| files(d))
+                .filter(|p| is_nve_abi_rlib(p)),
+        )
+        .expect("libnve_abi-*.rlib in the Cargo build dir");
+        let dep_dirs = out_dirs
+            .into_iter()
+            .filter(|d| {
+                files(d).iter().any(|p| {
+                    p.extension().is_some_and(|e| {
+                        matches!(e.to_str(), Some("rlib" | "dll" | "so" | "dylib"))
+                    })
+                })
+            })
+            .collect();
+        (rlib, dep_dirs)
+    }
+
+    /// `-L dependency=` for each dir, through a response file once there are many (Windows'
+    /// 32 KiB command-line limit).
+    pub fn add_dep_search_dirs(cmd: &mut Command, temp_dir: &Path, dep_dirs: &[PathBuf]) {
+        let args: Vec<String> = dep_dirs
+            .iter()
+            .map(|d| format!("dependency={}", d.display()))
+            .collect();
+        if args.len() <= 8 {
+            for arg in args {
+                cmd.arg("-L").arg(arg);
+            }
+            return;
+        }
+        let rsp = temp_dir.join("rustc_dep_dirs.rsp");
+        let contents: String = args.iter().map(|a| format!("-L\n{a}\n")).collect();
+        std::fs::write(&rsp, contents).expect("write rustc response file");
+        cmd.arg(format!("@{}", rsp.display()));
+    }
+}

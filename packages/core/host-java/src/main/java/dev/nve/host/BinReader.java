@@ -1,6 +1,7 @@
 package dev.nve.host;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Bounds-checked little-endian cursor over {@code byte[]} plus the compact tagged {@code NveBinValue}
@@ -76,9 +77,7 @@ public final class BinReader {
     /** Copy of the next {@code n} bytes. */
     public byte[] bytes(int n) {
         final int at = take(n);
-        final byte[] out = new byte[n];
-        System.arraycopy(data, at, out, 0, n);
-        return out;
+        return Arrays.copyOfRange(data, at, at + n);
     }
 
     /** Next {@code n} bytes decoded as strictly validated UTF-8. */
@@ -168,9 +167,7 @@ public final class BinReader {
     public byte[] readRawValue() {
         final int start = pos;
         skipValue();
-        final byte[] out = new byte[pos - start];
-        System.arraycopy(data, start, out, 0, out.length);
-        return out;
+        return Arrays.copyOfRange(data, start, pos);
     }
 
     /** Fully validates and consumes the next value (Rust {@code BinValueView::parse} rules). */
@@ -178,11 +175,23 @@ public final class BinReader {
         checkValue(0);
     }
 
+    /** Copy of the next value, fully validated like {@link #checkValue()}. */
+    byte[] readCheckedValue() {
+        final int start = pos;
+        checkValue();
+        return Arrays.copyOfRange(data, start, pos);
+    }
+
+    /** Throws {@link BinCodecException.Kind#TRAILING_BYTES} unless every byte was consumed. */
+    public void expectEnd() {
+        if (!atEnd()) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, remaining() + " bytes");
+    }
+
     /** Throws unless {@code bytes} holds exactly one valid {@code NveBinValue}. */
     public static void validate(byte[] bytes) {
         final BinReader r = new BinReader(bytes);
         r.checkValue();
-        if (!r.atEnd()) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, r.remaining() + " bytes");
+        r.expectEnd();
     }
 
     private int take(int n) {

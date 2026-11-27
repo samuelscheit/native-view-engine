@@ -300,6 +300,7 @@ final class BinCodecTest {
         c.that(v.equals(HybridRuntime.DynamicValue.of(golden.clone())), "dynamic equals");
         c.binError(BinCodecException.Kind.TRUNCATED, () -> HybridRuntime.DynamicValue.of(Arrays.copyOf(golden, 10)), "dynamic prefix");
         c.binError(BinCodecException.Kind.TRUNCATED, () -> HybridRuntime.DynamicValue.of(new byte[0]), "dynamic empty");
+        jniBridge(c, golden);
         HybridRuntime.checkSchema(Key64.of(1L), Key64.of(1L));
         final HybridRuntime.HybridException e = c.throwsA(HybridRuntime.HybridException.class,
                 () -> HybridRuntime.checkSchema(Key64.of(1L), Key64.of(2L)), "schema mismatch");
@@ -307,6 +308,48 @@ final class BinCodecTest {
         c.that(HybridRuntime.HostStatus.fromCode(-8) == HybridRuntime.HostStatus.INTERNAL_ERROR, "host status -8");
         c.that(HybridRuntime.HostStatus.fromCode(99) == null, "unknown host status");
         c.that(HybridRuntime.HybridStatus.fromCode(4) == HybridRuntime.HybridStatus.NULL_HANDLE, "hybrid status 4");
+    }
+
+    /** The helpers generated Kotlin / Java hybrid clients cross JNI with. */
+    static void jniBridge(Check c, byte[] golden) {
+        // `read` takes exactly one value from a window, leaves the rest, and validates it.
+        final byte[] framed = new byte[golden.length + 3];
+        framed[0] = 0x55;
+        System.arraycopy(golden, 0, framed, 1, golden.length);
+        framed[golden.length + 1] = (byte) BinTag.NULL.code();
+        final BinReader r = new BinReader(framed, 1, golden.length + 1);
+        final HybridRuntime.DynamicValue v = HybridRuntime.DynamicValue.read(r);
+        c.that(Arrays.equals(v.bytes(), golden), "dynamic read bytes");
+        c.binError(BinCodecException.Kind.TRAILING_BYTES, r::expectEnd, "expectEnd with a value left");
+        c.that(r.readNull(), "value after dynamic read");
+        r.expectEnd();
+        c.binError(BinCodecException.Kind.INVALID_BOOL, () -> HybridRuntime.DynamicValue.read(new BinReader(bytes(1, 2))), "dynamic read bool 2");
+        c.binError(BinCodecException.Kind.INVALID_UTF8, () -> HybridRuntime.DynamicValue.read(new BinReader(bytes(4, 1, 0, 0, 0, 0xFF))), "dynamic read bad utf8");
+        final BinReader cut = new BinReader(Arrays.copyOf(golden, golden.length - 1));
+        c.binError(BinCodecException.Kind.TRUNCATED, () -> HybridRuntime.DynamicValue.read(cut), "dynamic read truncated");
+
+        final BinWriter w = new BinWriter();
+        final long arr = w.beginArray(2);
+        v.writeTo(w);
+        HybridRuntime.DynamicValue.NULL.writeTo(w);
+        w.end(arr);
+        final BinReader back = new BinReader(w.toByteArray());
+        c.eq(back.beginArray(), 2, "writeTo array count");
+        c.that(HybridRuntime.DynamicValue.read(back).equals(v) && back.readNull(), "writeTo round trip");
+        back.expectEnd();
+
+        final java.nio.ByteBuffer direct = w.toDirectBuffer();
+        c.that(direct.isDirect() && direct.order() == java.nio.ByteOrder.LITTLE_ENDIAN, "direct LE buffer");
+        c.eq(direct.capacity(), w.size(), "direct capacity == size");
+        c.eq(direct.position(), 0, "direct position");
+        c.eq(direct.limit(), w.size(), "direct limit");
+        final byte[] copied = new byte[direct.remaining()];
+        direct.get(copied);
+        c.that(Arrays.equals(copied, w.toByteArray()), "direct contents");
+        c.eq(HybridRuntime.directBuffer(new byte[0]).capacity(), 0, "empty direct buffer");
+        final java.nio.ByteBuffer part = HybridRuntime.directBuffer(golden, 1, 4);
+        c.that(part.capacity() == 4 && part.getInt() == 0x34, "direct window, little-endian");
+        c.eq(v.toDirectBuffer().capacity(), golden.length, "dynamic direct buffer");
     }
 
     static void utf8(Check c) {

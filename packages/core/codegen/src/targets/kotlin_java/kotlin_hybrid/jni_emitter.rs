@@ -5,6 +5,8 @@
 //! a zero value. User parameters are spelled `arg_<name>`, so they never collide with `env`,
 //! `handle`, or the generated locals.
 
+use crate::naming::escape_c_like_string;
+use crate::schema::hybrid::HybridPropSpec;
 use crate::writer::CodeWriter;
 
 use super::type_helpers::*;
@@ -27,6 +29,7 @@ pub(super) fn emit_jni_cpp(spec: &HybridFileSpec, hpp_header: &str) -> String {
     writeln!(out, "#include <optional>");
     writeln!(out, "#include <stdexcept>");
     writeln!(out, "#include <string>");
+    writeln!(out, "#include <string_view>");
     writeln!(out, "#include <nve/host/jni.hpp>");
     writeln!(out, "#include \"{hpp_header}\"");
     writeln!(out);
@@ -38,7 +41,7 @@ pub(super) fn emit_jni_cpp(spec: &HybridFileSpec, hpp_header: &str) -> String {
         emit_jni_cpp_target(&mut out, &m.name, &m.methods, None);
     }
     for v in &spec.views {
-        emit_jni_cpp_target(&mut out, &v.name, &v.methods, Some(v.props.len()));
+        emit_jni_cpp_target(&mut out, &v.name, &v.methods, Some(&v.props));
     }
     out.into_string()
 }
@@ -57,12 +60,12 @@ fn emit_jni_catch(out: &mut CodeWriter, zero: &str) {
     writeln!(out, "  }}");
 }
 
-/// The JNI entry points of one module (`view_props: None`) or view (its prop count).
+/// The JNI entry points of one module (`view_props: None`) or view (its props).
 fn emit_jni_cpp_target(
     out: &mut CodeWriter,
     name: &str,
     methods: &[HybridMethodSpec],
-    view_props: Option<usize>,
+    view_props: Option<&[HybridPropSpec]>,
 ) {
     let pascal = to_pascal_case(name);
     let upper = to_snake_case(name).to_ascii_uppercase();
@@ -152,16 +155,29 @@ fn emit_jni_cpp_target(
     writeln!(out);
 }
 
+/// Whether a prop's value crosses as its encoded `NveBinValue` bytes (Rust `decode_props_direct`
+/// parses `Struct` / `Vec` props from `NVE_VAL_BYTES`), rather than as an `NveValue`.
+fn prop_crosses_encoded(ty: &HybridType) -> bool {
+    match ty {
+        HybridType::Optional(inner) => prop_crosses_encoded(inner),
+        HybridType::Struct(_) | HybridType::Vec(_) | HybridType::FixedArray { .. } => true,
+        _ => false,
+    }
+}
+
 /// `nativeSetProps`: the Kotlin-encoded props map, forwarded as `NveMapEntry`s that borrow the
-/// direct buffer (it outlives the call), so nothing is copied.
-fn emit_jni_set_props(out: &mut CodeWriter, pascal: &str, props: usize) {
+/// direct buffer (it outlives the call). Scalars, strings, and bytes are read in place; `Struct` /
+/// `Vec` props pass their encoded bytes as a zero-copy `NVE_VAL_BYTES` slice; only containers of
+/// `Value` props (and of undeclared keys) materialize a lossless `NveValueTree`.
+fn emit_jni_set_props(out: &mut CodeWriter, pascal: &str, props: &[HybridPropSpec]) {
+    let count = props.len();
     writeln!(out, "    BinReader r(direct_buffer_span(env, props_buf));");
     writeln!(out, "    const auto map = r.begin_map();");
     writeln!(
         out,
-        "    if (map.count > {props}u) throw std::invalid_argument(\"more props than {pascal} declares\");"
+        "    if (map.count > {count}u) throw std::invalid_argument(\"more props than {pascal} declares\");"
     );
-    writeln!(out, "    std::array<NveMapEntry, {props}u> entries{{}};");
+    writeln!(out, "    std::array<NveMapEntry, {count}u> entries{{}};");
     writeln!(out, "    std::optional<NveValueTree> trees;");
     writeln!(
         out,
@@ -211,6 +227,22 @@ fn emit_jni_set_props(out: &mut CodeWriter, pascal: &str, props: usize) {
     writeln!(out, "        }}");
     writeln!(out, "        case nve::host::BinTag::Array:");
     writeln!(out, "        case nve::host::BinTag::Map: {{");
+    let encoded: Vec<String> = props
+        .iter()
+        .filter(|p| prop_crosses_encoded(&p.ty))
+        .map(|p| format!("key == \"{}\"", escape_c_like_string(&p.name)))
+        .collect();
+    if !encoded.is_empty() {
+        writeln!(out, "          if ({}) {{", encoded.join(" || "));
+        writeln!(out, "            const auto raw = r.read_raw_value();");
+        writeln!(out, "            entry.value.tag = NVE_VAL_BYTES;");
+        writeln!(
+            out,
+            "            entry.value.data.bytes_val = NveBufferSlice{{raw.data(), raw.size()}};"
+        );
+        writeln!(out, "            break;");
+        writeln!(out, "          }}");
+    }
     writeln!(out, "          if (!trees) trees.emplace();");
     writeln!(out, "          entry.value = trees->read_value(r);");
     writeln!(out, "          break;");

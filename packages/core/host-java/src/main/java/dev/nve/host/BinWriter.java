@@ -1,5 +1,6 @@
 package dev.nve.host;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 /** Little-endian writer for raw primitives and {@code NveBinValue}; reuse with {@link #clear()}. */
@@ -27,6 +28,11 @@ public final class BinWriter {
     /** Copy of the written bytes. */
     public byte[] toByteArray() {
         return Arrays.copyOf(buf, len);
+    }
+
+    /** Direct little-endian copy of the written bytes (capacity == size), for JNI. */
+    public ByteBuffer toDirectBuffer() {
+        return HybridRuntime.directBuffer(buf, 0, len);
     }
 
     /** Empties the buffer (keeping capacity) and invalidates every outstanding container mark. */

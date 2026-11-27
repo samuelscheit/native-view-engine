@@ -42,20 +42,45 @@ namespace nve::host {
   return out;
 }
 
-/// `s` as UTF-16, or `std::nullopt` when it is not well-formed UTF-8.
-[[nodiscard]] inline std::optional<std::u16string> utf8_to_utf16(std::string_view s) {
+/// `s` as UTF-16, each ill-formed subsequence replaced by one U+FFFD. Replacement follows the
+/// Unicode "maximal subpart" practice (W3C/WHATWG `TextDecoder`, Rust `from_utf8_lossy`): a
+/// truncated but otherwise valid prefix is one U+FFFD; any other invalid byte is one each.
+[[nodiscard]] inline std::u16string utf8_to_utf16_lossy(std::string_view s) {
   const auto* p = reinterpret_cast<const uint8_t*>(s.data());
-  if (nve_utf8_valid(p, s.size()) == 0) return std::nullopt;
+  const size_t n = s.size();
   std::u16string out;
-  out.reserve(s.size());
-  for (size_t i = 0; i < s.size();) {
-    const uint8_t b = p[i];
-    // Well-formed input: the lead byte gives the length, continuation bytes carry 6 bits each.
-    const size_t len = b < 0x80u ? 1u : b < 0xE0u ? 2u : b < 0xF0u ? 3u : 4u;
-    uint32_t c = len == 1u ? b : len == 2u ? (b & 0x1Fu) : len == 3u ? (b & 0x0Fu) : (b & 0x07u);
-    for (size_t k = 1; k < len; ++k) c = (c << 6) | (p[i + k] & 0x3Fu);
-    i += len;
-    if (c >= 0x10000u) {
+  out.reserve(n);
+  for (size_t i = 0; i < n;) {
+    const uint8_t b = p[i++];
+    if (b < 0x80u) {
+      out.push_back(static_cast<char16_t>(b));
+      continue;
+    }
+    // The lead byte fixes the sequence length and the valid range of the first continuation
+    // byte (which rules out overlongs, surrogates, and code points above U+10FFFF).
+    size_t need = 0;
+    uint32_t c = 0;
+    uint8_t lo = 0x80u, hi = 0xBFu;
+    if (b >= 0xC2u && b <= 0xDFu) {
+      need = 1, c = b & 0x1Fu;
+    } else if (b >= 0xE0u && b <= 0xEFu) {
+      need = 2, c = b & 0x0Fu;
+      if (b == 0xE0u) lo = 0xA0u;
+      if (b == 0xEDu) hi = 0x9Fu;
+    } else if (b >= 0xF0u && b <= 0xF4u) {
+      need = 3, c = b & 0x07u;
+      if (b == 0xF0u) lo = 0x90u;
+      if (b == 0xF4u) hi = 0x8Fu;
+    }
+    size_t got = 0;
+    while (got < need && i < n && p[i] >= lo && p[i] <= hi) {
+      c = (c << 6) | (p[i++] & 0x3Fu);
+      lo = 0x80u, hi = 0xBFu;
+      ++got;
+    }
+    if (need == 0 || got < need) {
+      out.push_back(u'\uFFFD');
+    } else if (c >= 0x10000u) {
       c -= 0x10000u;
       out.push_back(static_cast<char16_t>(0xD800u + (c >> 10)));
       out.push_back(static_cast<char16_t>(0xDC00u + (c & 0x3FFu)));
@@ -64,6 +89,12 @@ namespace nve::host {
     }
   }
   return out;
+}
+
+/// `s` as UTF-16, or `std::nullopt` when it is not well-formed UTF-8.
+[[nodiscard]] inline std::optional<std::u16string> utf8_to_utf16(std::string_view s) {
+  if (nve_utf8_valid(reinterpret_cast<const uint8_t*>(s.data()), s.size()) == 0) return std::nullopt;
+  return utf8_to_utf16_lossy(s);  // identical to a strict decode on well-formed input
 }
 
 }  // namespace nve::host
