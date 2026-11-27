@@ -83,6 +83,32 @@ final class BinCodecTest {
         c.eq(window.readI64(), 7, "skip inner, read outer");
         window.end(wo);
         c.that(window.atEnd(), "window at end");
+
+        // `end` only accepts this reader's innermost open mark, and leaves the reader unchanged
+        // when it rejects one.
+        final BinReader a = new BinReader(good);
+        final BinReader b = new BinReader(good);
+        final BinReader.ReadMark ao = a.beginArray();
+        final BinReader.ReadMark bo = b.beginArray();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> a.end(bo), "another reader's mark");
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> a.end(null), "null mark");
+        final BinReader.ReadMark ai = a.beginArray();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> a.end(ao), "outer mark before the inner one");
+        c.eq(a.readI64(), 1, "inner read after the rejected end");
+        c.binError(BinCodecException.Kind.TRUNCATED, a::readI64, "inner bounds kept after the rejected end");
+        a.end(ai);
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> a.end(ai), "inner mark closed twice");
+        c.eq(a.readI64(), 7, "outer read after the rejected double end");
+        a.end(ao);
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> a.end(ao), "outer mark closed twice at the window end");
+        c.that(a.atEnd(), "reader at end");
+        // A top-level container ending at the window end: a double `end` is still rejected.
+        final BinWriter one = new BinWriter();
+        one.end(one.beginMap(0));
+        final BinReader m = new BinReader(one.toByteArray());
+        final BinReader.ReadMark mm = m.beginMap();
+        m.end(mm);
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> m.end(mm), "empty map closed twice");
     }
 
     static void hardening(Check c, byte[] golden) {

@@ -1,7 +1,7 @@
 //! Kotlin / JNI hybrid target, compiled and run for real:
-//! - the generated Kotlin (two specs in one package) compiles with `kotlinc -Werror` against the
-//!   static `dev.nve.host` runtime and round-trips on the JVM; its `native` methods match the JNI
-//!   glue's exports one to one;
+//! - the generated Kotlin (realistic, overlay, and Kotlin-only edge specs in one package) compiles
+//!   with `kotlinc -Werror` against the static `dev.nve.host` runtime and round-trips on the JVM;
+//!   its `native` methods match the JNI glue's exports one to one, by JNI signature;
 //! - a dedicated `OverlayView` spec (non-POD struct with `Vec` + `Option` + `NveValue` + enum, as
 //!   props, arguments, and results) runs its JNI glue live against a Rust provider, on a fake
 //!   `JNIEnv` that checks every `NveValue` tag `nativeSetProps` builds, and on a real JVM.
@@ -94,8 +94,8 @@ fn jvm_tools_available() -> bool {
     common::require_tool("javac") && common::require_tool("java")
 }
 
-/// Compiles the generated Kotlin of both specs plus the driver (`kotlinc -Werror`) against the
-/// static `dev.nve.host` runtime (`javac --release 11 -Werror`). Returns the run classpath.
+/// Compiles the generated Kotlin of every `kotlin_specs()` spec plus the driver (`kotlinc -Werror`)
+/// against the static `dev.nve.host` runtime (`javac --release 11 -Werror`). Returns the classpath.
 fn build_kotlin_app(dir: &Path) -> String {
     let kt_dir = dir.join("kotlin");
     for spec in &kotlin_specs() {
@@ -163,9 +163,19 @@ fn walk(root: &Path, ext: &str) -> Vec<PathBuf> {
 /// `Buffer`. Checked on the bytecode `javac --release 11` emitted.
 fn assert_no_covariant_buffer_calls(classes: &Path) {
     let class_files = walk(classes, "class");
+    assert!(
+        !class_files.is_empty(),
+        "no host-java classes under {}",
+        classes.display()
+    );
     let disassembly = run(
         Command::new("javap").args(["-c", "-p"]).args(&class_files),
         "javap host-java",
+    );
+    // Positive anchor: `directBuffer` flips through `Buffer`, so the scan below sees real calls.
+    assert!(
+        disassembly.contains("Method java/nio/Buffer.flip:()Ljava/nio/Buffer;"),
+        "javap shows no `Buffer.flip` call: the guard would pass vacuously"
     );
     const COVARIANT: [&str; 7] = [
         "flip", "clear", "rewind", "mark", "reset", "position", "limit",
@@ -190,7 +200,7 @@ fn assert_no_covariant_buffer_calls(classes: &Path) {
     );
 }
 
-/// `<Class> <method> <return> <params,...>` (JNI C types, Java parameters only) of every
+/// `<Class> <method> <return>(<params,...>)` (JNI C types, Java parameters only) of every
 /// `JNIEXPORT` in the generated JNI glue.
 fn jni_exports(glue: &str) -> BTreeSet<String> {
     glue.lines()
@@ -208,9 +218,35 @@ fn jni_exports(glue: &str) -> BTreeSet<String> {
                 .skip(2)
                 .map(|p| p.split_whitespace().next().expect("parameter type"))
                 .collect();
-            format!("{class} {method} {ret} {}", types.join(","))
+            format!("{class} {method} {ret}({})", types.join(","))
         })
         .collect()
+}
+
+/// A parameter named `handle` shadows the client's `handle` property inside the method body, and a
+/// bare `handle` there still compiles (to the wrong value): only the exact call catches a revert.
+#[test]
+fn a_parameter_named_handle_never_replaces_the_native_handle() {
+    let spec = parse_hybrid_rust_spec(EDGE_SPEC).expect("edge spec parses");
+    let dir = temp_test_dir("handle");
+    let kt = generate(&spec, HybridTarget::Kotlin, &dir)
+        .into_iter()
+        .find(|f| f.relative_path.ends_with(".kt"))
+        .expect("generated Kotlin")
+        .content;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        kt.contains("override fun shift(handle: Int, `object`: Int?): Int {"),
+        "{kt}"
+    );
+    assert!(
+        kt.contains("return nativeShift(this.handle, handle, _nveW1.toDirectBuffer())"),
+        "{kt}"
+    );
+    assert!(
+        kt.contains("private external fun nativeShift(_nveHandle: Long, handle: Int, `object`: ByteBuffer): Int"),
+        "{kt}"
+    );
 }
 
 #[test]

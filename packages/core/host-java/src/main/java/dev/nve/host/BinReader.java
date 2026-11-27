@@ -13,9 +13,11 @@ import java.util.Arrays;
  */
 public final class BinReader {
     private final byte[] data;
-    /** Reads stop here: the window end, or the enclosing container's end while validating. */
+    /** Reads stop here: the window end, or the innermost open container's end. */
     private int limit;
     private int pos;
+    /** Containers opened by {@link #open} and not yet closed by {@link #end(ReadMark)}. */
+    private int openMarks;
     /** End offset of the container most recently opened by {@link #openContainer}. */
     private int containerEnd;
 
@@ -130,16 +132,24 @@ public final class BinReader {
         return bytes(length());
     }
 
-    /** A container being read: its entry count, and the bounds {@link #end(ReadMark)} checks and restores. */
+    /**
+     * A container being read: its entry count, and the bounds {@link #end(ReadMark)} checks and
+     * restores. Only the reader that opened it can close it, innermost first, once.
+     */
     public static final class ReadMark {
         public final int count;
+        final BinReader owner;
         final int end;
         final int outerLimit;
+        /** {@code openMarks} once this container is open: its nesting level, 1-based. */
+        final int level;
 
-        ReadMark(int count, int end, int outerLimit) {
+        ReadMark(BinReader owner, int count, int end, int outerLimit, int level) {
+            this.owner = owner;
             this.count = count;
             this.end = end;
             this.outerLimit = outerLimit;
+            this.level = level;
         }
     }
 
@@ -156,17 +166,25 @@ public final class BinReader {
         return open(BinTag.MAP, 5);
     }
 
-    /** Closes {@code mark}'s container: its payload must have been read exactly ({@code TRAILING_BYTES}). */
+    /**
+     * Closes {@code mark}'s container: it must be this reader's innermost open container
+     * ({@code INVALID_MARK}: another reader's, an outer one, or already closed; the reader is left
+     * unchanged) and its payload must have been read exactly ({@code TRAILING_BYTES}).
+     */
     public void end(ReadMark mark) {
-        limit = mark.outerLimit;
+        if (mark == null || mark.owner != this || mark.level != openMarks || mark.end != limit) {
+            throw new BinCodecException(BinCodecException.Kind.INVALID_MARK, "not this reader's innermost open container");
+        }
         if (pos != mark.end) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (mark.end - pos) + " bytes");
+        limit = mark.outerLimit;
+        openMarks--;
     }
 
     private ReadMark open(BinTag tag, int minEntryBytes) {
         final int outer = limit;
         final int count = openContainer(tag, minEntryBytes);
         limit = containerEnd;
-        return new ReadMark(count, containerEnd, outer);
+        return new ReadMark(this, count, containerEnd, outer, ++openMarks);
     }
 
     public String readMapKey() {

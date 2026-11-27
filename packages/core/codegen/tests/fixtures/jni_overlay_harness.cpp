@@ -257,7 +257,7 @@ class Harness {
     return s != nullptr ? s->units : std::u16string();
   }
 
-  jint shift(jint handle, std::optional<int32_t> object) {
+  jint shift(jint base, std::optional<int32_t> object) {
     DirectBuffer arg(encoded([&](BinWriter& w) {
       if (object) {
         w.write_i64(*object);
@@ -265,7 +265,7 @@ class Harness {
         w.write_null();
       }
     }));
-    return Java_dev_nve_hybrid_OverlayViewHybridClient_nativeShift(&env_, nullptr, handle_, handle, arg.get());
+    return Java_dev_nve_hybrid_OverlayViewHybridClient_nativeShift(&env_, nullptr, handle_, base, arg.get());
   }
 
   jbyteArray echo(const Overlay& o) {
@@ -292,7 +292,8 @@ void test_props_and_results(JNIEnv& env) {
   const DynamicValue extra = sample_extra();
   CHECK(h.current_extra() == std::vector<uint8_t>(extra.bytes().begin(), extra.bytes().end()));
   CHECK(h.summary() == std::u16string(u"Live \u2713 \U0001F600|Ad|true|3|4") + std::u16string(kSummaryTail));
-  // `u32` parameters named `handle` / `object` cross as their bits (`-1` is `u32::MAX`).
+  // `shift(base, object)`: the `u32` crosses as its bits (`-1` is `u32::MAX`), the keyword-named
+  // `Option<i32>` as an encoded buffer (`handle` as a parameter name: `edge_hybrid.nve.rs`).
   CHECK(h.shift(-1, 2) == 1 && h.shift(5, std::nullopt) == 5 && env.thrown == 0);
 
   // Absent option, empty sequence, undeclared container key, and a scalar dynamic value.

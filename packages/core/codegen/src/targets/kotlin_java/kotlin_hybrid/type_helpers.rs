@@ -93,23 +93,21 @@ pub(super) fn kotlin_type(ty: &HybridType) -> String {
         HybridType::Void => "Unit".to_string(),
         HybridType::Bool => "Boolean".to_string(),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => "Int".to_string(),
-        HybridType::Usize
-        | HybridType::I64
-        | HybridType::U64
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::Handle(_) => "Long".to_string(),
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => "Long".to_string(),
         HybridType::F32 => "Float".to_string(),
         HybridType::F64 => "Double".to_string(),
         HybridType::String => "String".to_string(),
         HybridType::Bytes => "ByteArray".to_string(),
         HybridType::Optional(inner) => format!("{}?", kotlin_type(inner)),
-        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
-            format!("List<{}>", kotlin_type(inner))
-        }
+        HybridType::Vec(inner) => format!("List<{}>", kotlin_type(inner)),
         HybridType::Result { ok, .. } => kotlin_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
         HybridType::Value => "DynamicValue".to_string(),
+        // Rejected up front by `check_kotlin_supported`; `Nothing` would fail `kotlinc` loudly.
+        HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_)
+        | HybridType::FixedArray { .. } => "Nothing".to_string(),
     }
 }
 
@@ -251,18 +249,13 @@ pub(super) fn kotlin_default_value(
     match ty {
         HybridType::Bool => "false".to_string(),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => "0".to_string(),
-        HybridType::Usize
-        | HybridType::I64
-        | HybridType::U64
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::Handle(_) => "0L".to_string(),
+        HybridType::Usize | HybridType::I64 | HybridType::U64 => "0L".to_string(),
         HybridType::F32 => "0.0f".to_string(),
         HybridType::F64 => "0.0".to_string(),
         HybridType::String => "\"\"".to_string(),
         HybridType::Bytes => "ByteArray(0)".to_string(),
         HybridType::Optional(_) => "null".to_string(),
-        HybridType::Vec(_) | HybridType::FixedArray { .. } => "emptyList()".to_string(),
+        HybridType::Vec(_) => "emptyList()".to_string(),
         HybridType::Struct(name) => format!("{name}()"),
         HybridType::Enum(name) => {
             if let Some(e) = spec.find_enum(name) {
@@ -272,7 +265,13 @@ pub(super) fn kotlin_default_value(
             }
         }
         HybridType::Value => "DynamicValue.NULL".to_string(),
-        HybridType::Void | HybridType::Result { .. } => "Unit".to_string(),
+        // Never a field / prop type, or rejected up front by `check_kotlin_supported`.
+        HybridType::Void
+        | HybridType::Result { .. }
+        | HybridType::ConstPtr(_)
+        | HybridType::MutPtr(_)
+        | HybridType::Handle(_)
+        | HybridType::FixedArray { .. } => "Unit".to_string(),
     }
 }
 
@@ -314,18 +313,18 @@ pub(super) fn emit_kotlin_bin_write(
         }
         HybridType::Vec(inner) => {
             writeln!(out, "{indent}run {{");
-            writeln!(out, "{indent}    val _a{depth} = {w}.beginArray({expr}.size)");
-            writeln!(out, "{indent}    for (_e{depth} in {expr}) {{");
+            writeln!(out, "{indent}    val _nveA{depth} = {w}.beginArray({expr}.size)");
+            writeln!(out, "{indent}    for (_nveE{depth} in {expr}) {{");
             emit_kotlin_bin_write(
                 out,
                 &format!("{indent}        "),
                 w,
-                &format!("_e{depth}"),
+                &format!("_nveE{depth}"),
                 inner,
                 depth + 1,
             );
             writeln!(out, "{indent}    }}");
-            writeln!(out, "{indent}    {w}.end(_a{depth})");
+            writeln!(out, "{indent}    {w}.end(_nveA{depth})");
             writeln!(out, "{indent}}}");
         }
         // Never values (`Void`, `Result` is unwrapped by callers) or rejected up front by
@@ -365,16 +364,16 @@ pub(super) fn emit_kotlin_bin_read(
         HybridType::Value => writeln!(out, "{indent}{dst} = DynamicValue.read({r})"),
         HybridType::Optional(inner) => {
             writeln!(out, "{indent}{dst} = if ({r}.readNull()) null else {{");
-            writeln!(out, "{indent}    val _ov{depth}: {}", kotlin_type(inner));
+            writeln!(out, "{indent}    val _nveOv{depth}: {}", kotlin_type(inner));
             emit_kotlin_bin_read(
                 out,
                 &format!("{indent}    "),
                 r,
-                &format!("_ov{depth}"),
+                &format!("_nveOv{depth}"),
                 inner,
                 depth + 1,
             );
-            writeln!(out, "{indent}    _ov{depth}");
+            writeln!(out, "{indent}    _nveOv{depth}");
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
@@ -382,25 +381,25 @@ pub(super) fn emit_kotlin_bin_read(
             // allocation before the payload proves its entries exist.
             let elem = kotlin_type(inner);
             writeln!(out, "{indent}run {{");
-            writeln!(out, "{indent}    val _a{depth} = {r}.beginArray()");
+            writeln!(out, "{indent}    val _nveA{depth} = {r}.beginArray()");
             writeln!(
                 out,
-                "{indent}    val _list{depth} = ArrayList<{elem}>(minOf(_a{depth}.count, 1024))"
+                "{indent}    val _nveList{depth} = ArrayList<{elem}>(minOf(_nveA{depth}.count, 1024))"
             );
-            writeln!(out, "{indent}    repeat(_a{depth}.count) {{");
-            writeln!(out, "{indent}        val _el{depth}: {elem}");
+            writeln!(out, "{indent}    repeat(_nveA{depth}.count) {{");
+            writeln!(out, "{indent}        val _nveEl{depth}: {elem}");
             emit_kotlin_bin_read(
                 out,
                 &format!("{indent}        "),
                 r,
-                &format!("_el{depth}"),
+                &format!("_nveEl{depth}"),
                 inner,
                 depth + 1,
             );
-            writeln!(out, "{indent}        _list{depth}.add(_el{depth})");
+            writeln!(out, "{indent}        _nveList{depth}.add(_nveEl{depth})");
             writeln!(out, "{indent}    }}");
-            writeln!(out, "{indent}    {r}.end(_a{depth})");
-            writeln!(out, "{indent}    {dst} = _list{depth}");
+            writeln!(out, "{indent}    {r}.end(_nveA{depth})");
+            writeln!(out, "{indent}    {dst} = _nveList{depth}");
             writeln!(out, "{indent}}}");
         }
         // Never values, or rejected up front by `check_kotlin_supported`.

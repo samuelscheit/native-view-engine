@@ -1,5 +1,6 @@
-// Drives the generated Kotlin hybrid clients (`CryptoHybridSpec` + `OverlayViewHybridSpec`) on a
-// real JVM, built against the static `dev.nve.host` runtime:
+// Drives the generated Kotlin hybrid clients of the realistic (`Crypto`, `VideoSurface`), overlay
+// (`OverlayView`), and Kotlin-only edge (`Edge`, `EdgeView`) specs on a real JVM, built against the
+// static `dev.nve.host` runtime:
 //   `codec`        — codec round trips, golden bytes, decode errors, defaults; prints the schema
 //                    constants and every `native` method for the Rust test to check.
 //   `jni <dylib>`  — loads the JNI glue + live Rust provider and runs OverlayView end to end.
@@ -176,7 +177,13 @@ private fun codec() {
     println("file Crypto ${CryptoHybridSchema.ABI_VERSION} ${CryptoHybridSchema.FILE_SCHEMA_HASH}")
     println("file OverlayView ${OverlayViewHybridSchema.ABI_VERSION} ${OverlayViewHybridSchema.FILE_SCHEMA_HASH}")
     println("schema Edge ${EdgeHybridClient.INTERFACE_ID} ${EdgeHybridClient.SCHEMA_HASH}")
+    println("schema EdgeView ${EdgeViewHybridClient.INTERFACE_ID} ${EdgeViewHybridClient.SCHEMA_HASH}")
     println("file Edge ${EdgeHybridSchema.ABI_VERSION} ${EdgeHybridSchema.FILE_SCHEMA_HASH}")
+
+    // Boundary integer defaults keep their exact bits.
+    val edge = EdgeViewProps()
+    check(edge.minLong == Long.MIN_VALUE && edge.minInt == Int.MIN_VALUE, "i64::MIN / i32::MIN defaults")
+    check(edge.size == 7L && edge.maxU32 == -1, "usize / u32::MAX defaults")
 
     // Fields named after Kotlin hard keywords round-trip under their escaped names.
     val keywords = Keywords(`object` = -1, `val` = "v", `is` = listOf(true, false))
@@ -187,12 +194,13 @@ private fun codec() {
         VideoSurfaceHybridClient::class.java,
         OverlayViewHybridClient::class.java,
         EdgeHybridClient::class.java,
+        EdgeViewHybridClient::class.java,
     )
     for (cls in clients) {
         for (m in cls.declaredMethods.filter { Modifier.isNative(it.modifiers) }.sortedBy { it.name }) {
             check(Modifier.isStatic(m.modifiers), "${m.name} is static (JNI receives a jclass)")
             val params = m.parameterTypes.joinToString(",") { jniType(it) }
-            println("native ${cls.simpleName} ${m.name} ${jniType(m.returnType)} $params")
+            println("native ${cls.simpleName} ${m.name} ${jniType(m.returnType)}($params)")
         }
         // The companion only forwards: a native companion method would bind `..._00024Companion_...`.
         val companion = Class.forName(cls.name + "\$Companion")
@@ -221,7 +229,9 @@ private fun jni(library: String) {
         // `limit` / `big` keep their `u32::MAX` / `u64::MAX` defaults across the boundary.
         val tail = "|4294967295|18446744073709551615"
         check(client.summary() == "Live \u2713 \uD83D\uDE00|Ad|true|3|10000$tail", "live summary: ${client.summary()}")
-        check(client.shift(-1, 2) == 1 && client.shift(5, null) == 5, "live shift (parameters `handle`, `object`)")
+        // `shift(base, object)`: a `u32` and a keyword-named `Option<i32>` (the `handle` parameter
+        // case is in the Kotlin-only `edge_hybrid.nve.rs`, compiled but not run).
+        check(client.shift(-1, 2) == 1 && client.shift(5, null) == 5, "live shift (parameters `base`, `object`)")
 
         val echoed = client.echo(overlay)
         val expected = overlay.copy(

@@ -110,3 +110,6 @@ fn emit_kotlin_common(out: &mut CodeWriter, spec: &HybridFileSpec) {
     writeln!(out, "}}");
     writeln!(out);
 }
+
+#[cfg(test)]
+mod tests;

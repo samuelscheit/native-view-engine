@@ -36,26 +36,26 @@ pub(super) fn emit_kotlin_struct(out: &mut CodeWriter, s: &HybridStructSpec, spe
     writeln!(out, ") {{");
     // Fields are read through `this.`, so a field named like the writer (`w`) never resolves to it.
     writeln!(out, "    fun encodeBin(w: BinWriter) {{");
-    writeln!(out, "        val _m = w.beginMap({})", s.fields.len());
+    writeln!(out, "        val _nveM = w.beginMap({})", s.fields.len());
     for f in &s.fields {
         let fname = kotlin_ident(&f.name);
         let key_lit = escape_kotlin_string(&f.name);
         writeln!(out, "        w.writeMapKey(\"{key_lit}\")");
         emit_kotlin_bin_write(out, "        ", "w", &format!("this.{fname}"), &f.ty, 0);
     }
-    writeln!(out, "        w.end(_m)");
+    writeln!(out, "        w.end(_nveM)");
     writeln!(out, "    }}");
     writeln!(out);
     writeln!(out, "    companion object {{");
     writeln!(out, "        fun decodeBin(r: BinReader): {} {{", s.name);
-    // `_f_<field>` never collides with the codec's `_a<d>` / `_el<d>` / `_ov<d>` locals; it uses
-    // the unescaped name (`_f_object`, never `` _f_`object` ``).
+    // `_f_<field>` never collides with the codec's `_nve*` locals; it uses the unescaped name
+    // (`_f_object`, never `` _f_`object` ``).
     for f in &s.fields {
         let def = kotlin_default_value(&f.ty, None, spec);
         writeln!(out, "            var {}: {} = {def}", field_local(&f.name), kotlin_type(&f.ty));
     }
-    writeln!(out, "            val _m = r.beginMap()");
-    writeln!(out, "            repeat(_m.count) {{");
+    writeln!(out, "            val _nveM = r.beginMap()");
+    writeln!(out, "            repeat(_nveM.count) {{");
     writeln!(out, "                when (r.readMapKey()) {{");
     for f in &s.fields {
         let key_lit = escape_kotlin_string(&f.name);
@@ -66,7 +66,7 @@ pub(super) fn emit_kotlin_struct(out: &mut CodeWriter, s: &HybridStructSpec, spe
     writeln!(out, "                    else -> r.skipValue()");
     writeln!(out, "                }}");
     writeln!(out, "            }}");
-    writeln!(out, "            r.end(_m)");
+    writeln!(out, "            r.end(_nveM)");
     write!(out, "            return {}(", s.name);
     for (idx, f) in s.fields.iter().enumerate() {
         if idx > 0 {
@@ -187,24 +187,24 @@ pub(super) fn emit_kotlin_client(
 
     // Clear the handle before destroying it, so no path can use or free it twice.
     writeln!(out, "    override fun close() {{");
-    writeln!(out, "        val h = this.handle");
+    writeln!(out, "        val _nveH = this.handle");
     writeln!(out, "        this.handle = 0L");
-    writeln!(out, "        if (h != 0L) nativeDestroy(h)");
+    writeln!(out, "        if (_nveH != 0L) nativeDestroy(_nveH)");
     writeln!(out, "    }}");
     writeln!(out);
 
     if let Some(v) = view {
         writeln!(out, "    override fun setProps(props: {pascal}Props) {{");
-        writeln!(out, "        val _w = BinWriter()");
-        writeln!(out, "        val _m = _w.beginMap({})", v.props.len());
+        writeln!(out, "        val _nveW = BinWriter()");
+        writeln!(out, "        val _nveM = _nveW.beginMap({})", v.props.len());
         for p in &v.props {
             let pname = kotlin_ident(&p.name);
             let key_lit = escape_kotlin_string(&p.name);
-            writeln!(out, "        _w.writeMapKey(\"{key_lit}\")");
-            emit_kotlin_bin_write(out, "        ", "_w", &format!("props.{pname}"), &p.ty, 0);
+            writeln!(out, "        _nveW.writeMapKey(\"{key_lit}\")");
+            emit_kotlin_bin_write(out, "        ", "_nveW", &format!("props.{pname}"), &p.ty, 0);
         }
-        writeln!(out, "        _w.end(_m)");
-        writeln!(out, "        nativeSetProps(this.handle, _w.toDirectBuffer())");
+        writeln!(out, "        _nveW.end(_nveM)");
+        writeln!(out, "        nativeSetProps(this.handle, _nveW.toDirectBuffer())");
         writeln!(out, "    }}");
         writeln!(out);
     }
@@ -212,7 +212,8 @@ pub(super) fn emit_kotlin_client(
     for m in methods {
         let jni_name = format!("native{}", to_pascal_case(&m.name));
         writeln!(out, "    override {} {{", kotlin_method_sig(m));
-        // `this.handle`: a parameter named `handle` never shadows the native handle.
+        // `this.handle`: a parameter named `handle` never shadows the native handle. Generated
+        // locals are `_nve*`, so no user parameter name collides with them.
         let mut args = vec!["this.handle".to_string()];
         for (idx, p) in m.params.iter().enumerate() {
             let pname = kotlin_ident(&p.name);
@@ -232,9 +233,9 @@ pub(super) fn emit_kotlin_client(
                 HybridType::Bytes => args.push(format!("HybridRuntime.directBuffer({pname})")),
                 HybridType::Value => args.push(format!("{pname}.toDirectBuffer()")),
                 other => {
-                    writeln!(out, "        val _w{idx} = BinWriter()");
-                    emit_kotlin_bin_write(out, "        ", &format!("_w{idx}"), &pname, other, 0);
-                    args.push(format!("_w{idx}.toDirectBuffer()"));
+                    writeln!(out, "        val _nveW{idx} = BinWriter()");
+                    emit_kotlin_bin_write(out, "        ", &format!("_nveW{idx}"), &pname, other, 0);
+                    args.push(format!("_nveW{idx}.toDirectBuffer()"));
                 }
             }
         }
@@ -260,11 +261,11 @@ pub(super) fn emit_kotlin_client(
             HybridType::Enum(e) => writeln!(out, "        return {e}.fromRaw({call})"),
             // Exactly one encoded value (a `DynamicValue` too): trailing bytes are an error.
             other => {
-                writeln!(out, "        val _r = BinReader({call})");
-                writeln!(out, "        val _out: {}", kotlin_type(other));
-                emit_kotlin_bin_read(out, "        ", "_r", "_out", other, 0);
-                writeln!(out, "        _r.expectEnd()");
-                writeln!(out, "        return _out");
+                writeln!(out, "        val _nveR = BinReader({call})");
+                writeln!(out, "        val _nveOut: {}", kotlin_type(other));
+                emit_kotlin_bin_read(out, "        ", "_nveR", "_nveOut", other, 0);
+                writeln!(out, "        _nveR.expectEnd()");
+                writeln!(out, "        return _nveOut");
             }
         }
         writeln!(out, "    }}");
