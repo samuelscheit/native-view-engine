@@ -360,23 +360,39 @@ void test_text_wrappers_are_containers() {
   CHECK(node2() == std::make_pair(NodeKind::Text, std::string("own")));
 }
 
-/// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
+/// `ControlledText`: first publish writes; synchronous answers keep accepted edits and write back
+/// transformed or rejected ones; asynchronous (paired) answers never overwrite newer typing; host
 /// writes are not edits.
 void test_controlled_text() {
   ControlledText t;
-  CHECK(t.app_published("a", ""));
-  CHECK(t.user_edited("ab") && !t.user_edited("ab"));
-  CHECK(!t.app_published("ab", "ab"));   // echo of the edit
-  CHECK(t.user_edited("abc"));
-  CHECK(!t.app_published("ab", "abc"));  // stale value while typing: keep the user's text
-  CHECK(t.app_published("ABC", "abc"));  // the app transformed the value
+  CHECK(t.app_published("1", ""));
+  // Synchronous app accepts "12" (echo republished during the dispatch, then answered).
+  CHECK(t.user_edited("12") && !t.user_edited("12"));
+  CHECK(!t.app_published("12", "12"));
+  CHECK(!t.app_answered("12") && t.app_value() == "12");
+  // A numeric field rejects "12a": nothing is republished, the answer is the old value.
+  CHECK(t.user_edited("12a"));
+  CHECK(t.app_answered("12"));           // write "12" back
+  CHECK(!t.user_edited("12"));           // the write's own change notification is no edit
+  // A transforming app ("ab" -> "AB") republishes during the dispatch: written once.
+  ControlledText up;
+  CHECK(up.app_published("", ""));
+  CHECK(up.user_edited("ab"));
+  CHECK(up.app_published("AB", "ab"));
+  CHECK(!up.app_answered("AB"));
+  // Paired: answers lag behind typing.
+  ControlledText paired;
+  CHECK(paired.app_published("", ""));
+  CHECK(paired.user_edited("a") && paired.user_edited("ab"));
+  CHECK(!paired.app_published("a", "ab"));   // stale echo of "a" while "ab" is in flight
+  CHECK(!paired.app_published("ab", "ab"));  // the latest echo
+  CHECK(paired.app_published("X", "ab"));    // a genuine app-side change
   {
-    const auto write = t.host_write();
-    CHECK(t.writing() && !t.user_edited("ABC"));
+    const auto write = paired.host_write();
+    CHECK(paired.writing() && !paired.user_edited("X"));
   }
-  CHECK(!t.writing() && !t.app_published("ABC", "ABC"));
-  CHECK(t.app_published("", "ABC"));     // the app clears the field
-  CHECK(t.user_edited("x") && !t.app_published("x", "x"));
+  CHECK(!paired.writing() && !paired.app_published("X", "X"));
+  CHECK(paired.app_published("", "X"));      // the app clears the field
 }
 
 void test_host_session_counter() {

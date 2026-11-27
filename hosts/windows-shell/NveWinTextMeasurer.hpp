@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <list>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -48,7 +49,7 @@ class DirectWriteTextMeasurer {
     if (::GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH) > 0) locale_ = locale;
   }
   ~DirectWriteTextMeasurer() {
-    for (auto& [key, fmt] : formats_) fmt->Release();
+    for (auto& [key, entry] : formats_) entry.format->Release();
     if (factory_ != nullptr) factory_->Release();
   }
   DirectWriteTextMeasurer(const DirectWriteTextMeasurer&) = delete;
@@ -66,12 +67,12 @@ class DirectWriteTextMeasurer {
     if (w.empty() || w.size() > std::numeric_limits<UINT32>::max()) return nullptr;
     IDWriteTextFormat* fmt = format(style);
     if (fmt == nullptr) return nullptr;
-    constexpr float kUnbounded = 1.0e6f;  // finite: DirectWrite metrics overflow at FLT_MAX
     const bool bounded_w = std::isfinite(max_width) && max_width > 0.0f;
     const bool bounded_h = std::isfinite(max_height) && max_height > 0.0f;
     IDWriteTextLayout* layout = nullptr;
-    if (FAILED(factory_->CreateTextLayout(w.c_str(), static_cast<UINT32>(w.size()), fmt, bounded_w ? max_width : kUnbounded,
-                                          bounded_h ? max_height : kUnbounded, &layout))) {
+    if (FAILED(factory_->CreateTextLayout(w.c_str(), static_cast<UINT32>(w.size()), fmt,
+                                          bounded_w ? std::min(max_width, kUnbounded) : kUnbounded,
+                                          bounded_h ? std::min(max_height, kUnbounded) : kUnbounded, &layout))) {
       return nullptr;
     }
     const DWRITE_TEXT_RANGE all{0u, static_cast<UINT32>(w.size())};
@@ -158,27 +159,48 @@ class DirectWriteTextMeasurer {
 
   IDWriteTextFormat* format(const TextPaint& s) const {
     const std::wstring family = s.font_family.empty() ? std::wstring(L"Segoe UI") : wide(s.font_family);
+    // Sizes are sealed finite / positive by `read_node`; bound them so the key cannot overflow.
+    const float size = std::clamp(s.font_size, 1.0f, kMaxFontSize);
     std::wstring key = family;
-    key += L'|' + std::to_wstring(std::lround(s.font_size * 100.0f)) + L'|' + std::to_wstring(s.font_weight) + L'|' +
+    key += L'|' + std::to_wstring(std::lround(size * 100.0f)) + L'|' + std::to_wstring(s.font_weight) + L'|' +
            std::to_wstring(s.font_style);
-    if (const auto it = formats_.find(key); it != formats_.end()) return it->second;
+    if (const auto it = formats_.find(key); it != formats_.end()) {
+      lru_.splice(lru_.begin(), lru_, it->second.at);
+      return it->second.format;
+    }
     const DWRITE_FONT_STYLE style = s.font_style == NVE_FONT_STYLE_ITALIC    ? DWRITE_FONT_STYLE_ITALIC
                                     : s.font_style == NVE_FONT_STYLE_OBLIQUE ? DWRITE_FONT_STYLE_OBLIQUE
                                                                              : DWRITE_FONT_STYLE_NORMAL;
     IDWriteTextFormat* fmt = nullptr;
     if (FAILED(factory_->CreateTextFormat(family.c_str(), nullptr,
                                           static_cast<DWRITE_FONT_WEIGHT>(std::clamp<int>(s.font_weight, 1, 999)), style,
-                                          DWRITE_FONT_STRETCH_NORMAL, s.font_size, locale_.c_str(), &fmt))) {
+                                          DWRITE_FONT_STRETCH_NORMAL, size, locale_.c_str(), &fmt))) {
       return nullptr;
     }
     (void)fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    formats_.emplace(std::move(key), fmt);
+    if (formats_.size() >= kMaxFormats) {  // evict the least recently used (layouts keep their own copy)
+      const auto victim = formats_.find(lru_.back());
+      victim->second.format->Release();
+      formats_.erase(victim);
+      lru_.pop_back();
+    }
+    lru_.push_front(key);
+    formats_.emplace(std::move(key), Format{fmt, lru_.begin()});
     return fmt;
   }
 
+  static constexpr float kUnbounded = 1.0e6f;  // finite: DirectWrite metrics overflow at FLT_MAX
+  static constexpr float kMaxFontSize = 4096.0f;
+  static constexpr size_t kMaxFormats = 64u;
+  struct Format {
+    IDWriteTextFormat* format = nullptr;
+    std::list<std::wstring>::iterator at;
+  };
+
   IDWriteFactory* factory_ = nullptr;
   std::wstring locale_ = L"en-us";
-  mutable std::unordered_map<std::wstring, IDWriteTextFormat*> formats_;  // family|size|weight|style
+  mutable std::unordered_map<std::wstring, Format> formats_;  // family|size|weight|style
+  mutable std::list<std::wstring> lru_;                       // most recent first
 };
 
 }  // namespace nve::win

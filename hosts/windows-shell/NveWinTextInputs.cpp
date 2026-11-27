@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace nve::win {
@@ -55,19 +56,31 @@ uint32_t WinTextInputs::node_of(HWND control) const noexcept {
 }
 
 void WinTextInputs::destroy(Field& f) {
-  if (f.hwnd != nullptr) ::DestroyWindow(f.hwnd);  // WM_NCDESTROY removes the subclass
+  // Forget the control first: `DestroyWindow` raises EN_KILLFOCUS, which must not find it.
+  const HWND hwnd = std::exchange(f.hwnd, nullptr);
+  if (hwnd != nullptr) ::DestroyWindow(hwnd);  // WM_NCDESTROY removes the subclass
   if (f.font != nullptr) ::DeleteObject(f.font);
   if (f.background != nullptr) ::DeleteObject(f.background);
   f = Field{};
 }
 
 void WinTextInputs::clear() {
+  const Busy busy(busy_);
   for (auto& [id, f] : fields_) destroy(f);
   fields_.clear();
 }
 
+void WinTextInputs::detach() {
+  clear();
+  host_ = nullptr;
+  parent_ = nullptr;
+}
+
 void WinTextInputs::sync(float scale) {
   if (host_ == nullptr || parent_ == nullptr) return;
+  // Destroying / recreating / disabling / moving controls raises EN_* notifications: those are
+  // the host's own changes, not user input (and must not re-enter the tree mid-sync).
+  const Busy busy(busy_);
   const NveWinVisualTree& tree = host_->visual_tree();
   for (auto it = fields_.begin(); it != fields_.end();) {
     const WinNodeVisual* v = tree.find(it->first);
@@ -81,12 +94,15 @@ void WinTextInputs::sync(float scale) {
   const std::vector<uint32_t> ids(tree.text_inputs().begin(), tree.text_inputs().end());
   for (const uint32_t id : ids) {
     const WinNodeVisual* v = tree.find(id);
-    const auto frame = tree.frame_of(id);
-    if (v == nullptr || !frame) continue;
+    if (v == nullptr) continue;
     Field& f = fields_[id];
     if (f.hwnd != nullptr && (f.multiline != v->input.multiline || f.secure != v->input.secure)) {
       destroy(f);  // `ES_MULTILINE` / `ES_PASSWORD` are creation styles
+      v = tree.find(id);  // (never stale: notifications are ignored while busy; re-read anyway)
+      if (v == nullptr) continue;
     }
+    const auto frame = tree.frame_of(id);
+    if (!frame) continue;
     if (f.hwnd == nullptr) create(id, f, *v);
     if (f.hwnd != nullptr) update(f, *v, *frame, scale);
   }
@@ -161,7 +177,9 @@ void WinTextInputs::update(Field& f, const WinNodeVisual& v, const PaintFrame& f
 void WinTextInputs::place(Field& f, const PaintFrame& frame, float scale) {
   const Rect& r = frame.rect;
   const Rect shown = frame.clipped ? r.intersect(frame.clip) : r;
-  const bool visible = frame.visible && frame.opacity > 0.0f && !shown.empty();
+  // Hidden (`visibility` / opacity) hides the control; merely scrolled or clipped out of view
+  // keeps it shown with an empty region, so a focused field keeps focus and its IME state.
+  const bool visible = frame.visible && frame.opacity > 0.0f;
   const RECT placed{px(r.x, scale), px(r.y, scale), px(r.right(), scale), px(r.bottom(), scale)};
   if (visible != f.visible || !::EqualRect(&placed, &f.placed)) {
     ::SetWindowPos(f.hwnd, nullptr, placed.left, placed.top, placed.right - placed.left, placed.bottom - placed.top,
@@ -169,13 +187,16 @@ void WinTextInputs::place(Field& f, const PaintFrame& frame, float scale) {
     f.placed = placed;
     f.visible = visible;
   }
-  // Partially clipped by a scroll / overflow ancestor: show only the clipped part.
+  // Clipped by a scroll / overflow ancestor: show only the visible part (control coordinates).
   const bool clipped = visible && !(shown == r);
-  if (clipped) {
-    HRGN region = ::CreateRectRgn(px(shown.x, scale) - placed.left, px(shown.y, scale) - placed.top,
-                                  px(shown.right(), scale) - placed.left, px(shown.bottom(), scale) - placed.top);
-    ::SetWindowRgn(f.hwnd, region, TRUE);  // the window owns `region`
-  } else if (f.clipped) {
+  const RECT region = shown.empty() ? RECT{0, 0, 0, 0}
+                                    : RECT{px(shown.x, scale) - placed.left, px(shown.y, scale) - placed.top,
+                                           px(shown.right(), scale) - placed.left, px(shown.bottom(), scale) - placed.top};
+  if (clipped && (!f.clipped || !::EqualRect(&region, &f.region))) {
+    HRGN rgn = ::CreateRectRgnIndirect(&region);
+    if (rgn != nullptr && ::SetWindowRgn(f.hwnd, rgn, TRUE) == 0) ::DeleteObject(rgn);  // owned by the window on success
+    f.region = region;
+  } else if (!clipped && f.clipped) {
     ::SetWindowRgn(f.hwnd, nullptr, TRUE);
   }
   f.clipped = clipped;
@@ -185,11 +206,25 @@ bool WinTextInputs::on_command(WPARAM wparam, LPARAM lparam) {
   const auto control = reinterpret_cast<HWND>(lparam);
   const uint32_t id = control != nullptr ? node_of(control) : 0u;
   if (id == 0u || host_ == nullptr) return false;
+  if (busy_) return true;  // our own sync / teardown, not the user
   Field& f = fields_.at(id);
   switch (HIWORD(wparam)) {
     case EN_CHANGE: {
+      if (f.text.writing()) return true;  // a host write
       const std::string text = control_text(control);
-      if (f.text.user_edited(text)) (void)host_->dispatch_text_change(id, text);  // re-sync is posted, not inline
+      if (!f.text.user_edited(text)) return true;
+      (void)host_->dispatch_text_change(id, text);  // overlay re-sync is posted, never inline
+      // In-process apps answer synchronously: show a transformed or rejected edit's result now
+      // (a rejecting app republishes nothing, so no later sync would revert the field).
+      const auto it = fields_.find(id);
+      const WinNodeVisual* v = host_->is_paired() ? nullptr : host_->visual_tree().find(id);
+      if (it != fields_.end() && it->second.hwnd != nullptr && v != nullptr &&
+          it->second.text.app_answered(v->input.value)) {
+        const auto write = it->second.text.host_write();
+        ::SetWindowTextW(it->second.hwnd, to_control_text(v->input.value).c_str());
+        const int end = ::GetWindowTextLengthW(it->second.hwnd);  // caret after the answer
+        ::SendMessageW(it->second.hwnd, EM_SETSEL, static_cast<WPARAM>(end), static_cast<LPARAM>(end));
+      }
       return true;
     }
     case EN_SETFOCUS: (void)host_->dispatch_focus(id, true); return true;

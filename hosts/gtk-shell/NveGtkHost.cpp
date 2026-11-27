@@ -222,7 +222,22 @@ bool NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
 }
 
 bool NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  return dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
+  const bool changed = dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
+  // In-process apps answer synchronously: write back a transformed or rejected edit (a rejecting
+  // app republishes nothing, so no reconcile would ever revert the field). Paired answers are
+  // async and arrive through `app_published`.
+  GtkNodeView* const* found = is_paired() ? nullptr : tree_.find(node_id);  // the dispatch may remove it
+  GtkNodeView* v = found != nullptr ? *found : nullptr;
+  if (v != nullptr && (v->kind == WidgetKind::Entry || v->kind == WidgetKind::TextView) &&
+      v->text.app_answered(v->text.app_value())) {
+    const auto write = v->text.host_write();
+    if (v->kind == WidgetKind::TextView) {
+      gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v->widget)), v->text.app_value().c_str(), -1);
+    } else {
+      gtk_editable_set_text(GTK_EDITABLE(v->widget), v->text.app_value().c_str());
+    }
+  }
+  return changed;
 }
 
 bool NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
@@ -239,11 +254,7 @@ bool NveGtkHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_
   // its own offsets, and mutating it mid-sync would race the scene being applied.
   if (syncing_) return false;
   // Keep the runtime's scroll offset (hit testing, programmatic scroll clamping) in step with GTK.
-  float cur_x = 0.0f;
-  float cur_y = 0.0f;
-  if (session_->runtime().scroll_by(node_id, 0.0f, 0.0f, &cur_x, &cur_y) == NVE_RUNTIME_OK) {
-    (void)session_->runtime().scroll_by(node_id, offset_x - cur_x, offset_y - cur_y, &cur_x, &cur_y);
-  }
+  (void)session_->runtime().scroll_to(node_id, offset_x, offset_y);
   return dispatch(session_->events().scroll(node_id, offset_x, offset_y, content_width, content_height));
 }
 

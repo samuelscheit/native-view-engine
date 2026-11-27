@@ -1,4 +1,8 @@
 //! `<Name>RnwComponentView.generated.hpp` (`react-native-windows` Fabric registration) emitter for `export_rn`.
+//!
+//! Targets `hosts/windows-shell`: `NveRnwComponentView.hpp` (registration) over `NveWinHost` (the
+//! runtime surface). Self-contained: it does not include the cross-platform `<Name>NveBridge`
+//! header, so a Windows build never pulls the RN Fabric C++ bridge in.
 
 use crate::writer::CodeWriter;
 
@@ -25,16 +29,23 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     );
     writeln!(
         out,
-        "// `react-native-windows` Fabric ComponentView registration targeting `hosts/windows-shell/NveRnwComponentView.hpp`."
+        "// `react-native-windows` Fabric component over `hosts/windows-shell` (`NveRnwComponentView.hpp`, `NveWinHost`)."
     );
     writeln!(out);
-    writeln!(out, "#include \"{name}NveBridge.generated.hpp\"");
     writeln!(out, "#include \"NveRnwComponentView.hpp\"");
+    writeln!(out, "#include \"NveWinHost.hpp\"");
     writeln!(out);
+    writeln!(out, "#include <functional>");
     writeln!(out, "#include <memory>");
+    writeln!(out, "#include <span>");
     writeln!(out, "#include <string>");
     writeln!(out, "#include <string_view>");
     writeln!(out, "#include <utility>");
+    writeln!(out);
+    writeln!(
+        out,
+        "extern \"C\" const void* {vtable_sym}(uint32_t interface_id);"
+    );
     writeln!(out);
     writeln!(out, "namespace nve::exported {{");
     writeln!(out);
@@ -50,113 +61,123 @@ pub(crate) fn emit_windows_rnw_component_view_hpp(spec: &NveExportSpec) -> Strin
     writeln!(out);
     writeln!(
         out,
-        "/// Portable C++20 `react-native-windows` component host controller wrapping `nve::win::NveRnwComponentHost`."
+        "/// `{name}` custom events by name; `payload_bin` is the event's `NVE_VAL_BYTES` value (empty otherwise)."
+    );
+    writeln!(out, "struct {name}RnwEventCallbacks {{");
+    for ev in &spec.events {
+        writeln!(
+            out,
+            "  std::function<void(NveBufferSlice payload_bin)> {};",
+            cpp_ident(&ev.name)
+        );
+    }
+    writeln!(out, "}};");
+    writeln!(out);
+    writeln!(
+        out,
+        "/// Typed `{name}` surface over `nve::win::NveWinHost`: runs the exported app and routes its custom"
+    );
+    writeln!(
+        out,
+        "/// events to `{name}RnwEventCallbacks` (UI thread only, like the host)."
     );
     writeln!(out, "class {name}RnwComponentView {{");
     writeln!(out, " public:");
     writeln!(
         out,
-        "  explicit {name}RnwComponentView(\n      {name}EventCallbacks callbacks = {{}},\n      std::shared_ptr<nve::win::DirectWriteTextMeasurer> measurer = nullptr)\n      : callbacks_(std::move(callbacks)), host_(std::move(measurer)) {{"
+        "  explicit {name}RnwComponentView(std::shared_ptr<nve::win::NveWinHost> host, {name}RnwEventCallbacks callbacks = {{}})"
     );
     writeln!(
         out,
-        "    host_.set_event_callback([this](const nve::DecodedEvent& ev) {{ dispatch_event(ev); }});"
+        "      : host_(std::move(host)), callbacks_(std::move(callbacks)) {{"
     );
+    writeln!(
+        out,
+        "    host_->set_event_callback([this](std::span<const NveDirectEvent> events) {{"
+    );
+    writeln!(
+        out,
+        "      for (const NveDirectEvent& ev : events) dispatch_event(ev);"
+    );
+    writeln!(out, "    }});");
     writeln!(out, "  }}");
+    writeln!(
+        out,
+        "  ~{name}RnwComponentView() {{ host_->set_event_callback({{}}); }}"
+    );
+    writeln!(
+        out,
+        "  {name}RnwComponentView(const {name}RnwComponentView&) = delete;"
+    );
+    writeln!(
+        out,
+        "  {name}RnwComponentView& operator=(const {name}RnwComponentView&) = delete;"
+    );
     writeln!(out);
     writeln!(
         out,
-        "  bool attach(\n      NveSurfaceConfig config,\n      NveGetInterfaceFn interface_override = nullptr) {{"
+        "  /// Runs the exported app (`{vtable_sym}`) unless `interface_override` names another."
     );
     writeln!(
         out,
-        "    NveGetInterfaceFn get_iface = interface_override != nullptr ? interface_override : &{vtable_sym};"
+        "  bool attach(NveGetInterfaceFn interface_override = nullptr) {{"
     );
-    writeln!(out, "    return host_.attach_interface(get_iface, config);");
+    writeln!(
+        out,
+        "    return host_->attach_interface(interface_override != nullptr ? interface_override : &{vtable_sym});"
+    );
     writeln!(out, "  }}");
-    writeln!(out);
-    writeln!(out, "  bool update_props(const {name}Props& props) {{");
     writeln!(
         out,
-        "    if (!host_.is_valid() || host_.session().bridge() == nullptr) {{"
-    );
-    writeln!(out, "      return false;");
-    writeln!(out, "    }}");
-    writeln!(
-        out,
-        "    const bool dirty = {name}NveBridge::apply_props(*host_.session().bridge(), props, true);"
-    );
-    writeln!(out, "    if (dirty) {{");
-    writeln!(out, "      (void)host_.render_frame(nullptr);");
-    writeln!(out, "    }}");
-    writeln!(out, "    (void)host_.drain_events();");
-    writeln!(out, "    return dirty;");
-    writeln!(out, "  }}");
-    writeln!(out);
-    writeln!(
-        out,
-        "  void set_surface_size(float width, float height, float scale = 0.0f) {{"
-    );
-    writeln!(out, "    host_.set_surface_size(width, height, scale);");
-    writeln!(out, "  }}");
-    writeln!(out);
-    writeln!(
-        out,
-        "  int32_t render_frame(NveFrameStats* out_stats = nullptr) {{"
-    );
-    writeln!(out, "    return host_.render_frame(out_stats);");
-    writeln!(out, "  }}");
-    writeln!(out);
-    writeln!(
-        out,
-        "  uint32_t dispatch_click_at(float surface_x, float surface_y) {{"
-    );
-    writeln!(out, "    return host_.dispatch_click_at(surface_x, surface_y);");
-    writeln!(out, "  }}");
-    writeln!(out);
-    writeln!(out, "  void set_callbacks({name}EventCallbacks callbacks) {{");
-    writeln!(out, "    callbacks_ = std::move(callbacks);");
-    writeln!(out, "  }}");
-    writeln!(out);
-    writeln!(
-        out,
-        "  nve::win::NveRnwComponentHost& host() noexcept {{ return host_; }}"
+        "  /// Component props (`NveComponentApi::set_props`)."
     );
     writeln!(
         out,
-        "  const nve::win::NveRnwComponentHost& host() const noexcept {{ return host_; }}"
+        "  bool update_props(std::span<const NveMapEntry> props) {{ return host_->apply_props(props); }}"
     );
     writeln!(
         out,
-        "  const nve::win::NveWinVisualTree& visual_tree() const noexcept {{ return host_.visual_tree(); }}"
+        "  void set_callbacks({name}RnwEventCallbacks callbacks) {{ callbacks_ = std::move(callbacks); }}"
+    );
+    writeln!(
+        out,
+        "  [[nodiscard]] nve::win::NveWinHost& host() noexcept {{ return *host_; }}"
     );
     writeln!(out);
     writeln!(out, " private:");
-    writeln!(out, "  void dispatch_event(const nve::DecodedEvent& ev) {{");
+    writeln!(out, "  void dispatch_event(const NveDirectEvent& ev) {{");
     writeln!(
         out,
-        "    const NveBufferSlice payload_bin{{ev.payload_bytes.empty() ? nullptr : ev.payload_bytes.data(), ev.payload_bytes.size()}};"
+        "    const std::string_view event(reinterpret_cast<const char*>(ev.name.ptr), ev.name.ptr != nullptr ? ev.name.len : 0u);"
+    );
+    writeln!(
+        out,
+        "    const NveBufferSlice payload_bin = ev.value.tag == NVE_VAL_BYTES ? ev.value.data.bytes_val : NveBufferSlice{{nullptr, 0u}};"
     );
     for (idx, ev) in spec.events.iter().enumerate() {
         let cb_name = cpp_ident(&ev.name);
         let short_name = strip_on_prefix(&ev.name);
-        let kw = if idx == 0 { "if" } else { "else if" };
+        let kw = if idx == 0 { "if" } else { "} else if" };
         writeln!(
             out,
-            "    {kw} (ev.name == \"{}\" || ev.name == \"{}\") {{",
+            "    {kw} (event == \"{}\" || event == \"{}\") {{",
             escape_c_like_string(&ev.name),
             escape_c_like_string(&short_name)
         );
-        writeln!(out, "      if (callbacks_.{cb_name}) {{");
-        writeln!(out, "        callbacks_.{cb_name}(payload_bin);");
-        writeln!(out, "      }}");
+        writeln!(
+            out,
+            "      if (callbacks_.{cb_name}) callbacks_.{cb_name}(payload_bin);"
+        );
+    }
+    if !spec.events.is_empty() {
         writeln!(out, "    }}");
     }
+    writeln!(out, "    (void)event;");
     writeln!(out, "    (void)payload_bin;");
     writeln!(out, "  }}");
     writeln!(out);
-    writeln!(out, "  {name}EventCallbacks callbacks_;");
-    writeln!(out, "  nve::win::NveRnwComponentHost host_;");
+    writeln!(out, "  std::shared_ptr<nve::win::NveWinHost> host_;");
+    writeln!(out, "  {name}RnwEventCallbacks callbacks_;");
     writeln!(out, "}};");
     writeln!(out);
     writeln!(

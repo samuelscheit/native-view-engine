@@ -1,11 +1,8 @@
 #include "NveGtkInternal.hpp"
 
-#include <nve/host/xxh64.hpp>
-
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -58,22 +55,16 @@ GdkTexture* decode_url(std::string_view uri) {
     GBytes* bytes = g_bytes_new_take(decoded, decoded_len);
     tex = gdk_texture_new_from_bytes(bytes, &err);
     g_bytes_unref(bytes);
-  } else if (uri.front() == '/') {
-    const std::string path(uri);
-    tex = gdk_texture_new_from_filename(path.c_str(), &err);
-  } else if (starts_with_ci(uri, "file://")) {
-    const std::string uri_str(uri);
-    gchar* filename = g_filename_from_uri(uri_str.c_str(), nullptr, &err);
-    if (err != nullptr) {
+  } else if (const auto local = host::local_image_path(uri)) {  // never a remote / UNC file
+    gchar* filename = nullptr;
+    if (starts_with_ci(uri, "file:")) {  // percent-decoded by GLib
+      const std::string uri_str(uri);
+      filename = g_filename_from_uri(uri_str.c_str(), nullptr, &err);
       g_clear_error(&err);
     }
-    if (filename != nullptr) {
-      tex = gdk_texture_new_from_filename(filename, &err);
-      g_free(filename);
-    } else {
-      const std::string fallback_path(uri.substr(7u));
-      tex = gdk_texture_new_from_filename(fallback_path.c_str(), &err);
-    }
+    const std::string path = filename != nullptr ? std::string(filename) : std::string(*local);
+    g_free(filename);
+    tex = gdk_texture_new_from_filename(path.c_str(), &err);
   }
 
   if (err != nullptr) {
@@ -265,15 +256,7 @@ GtkTextureLruCache::~GtkTextureLruCache() {
 }
 
 GdkTexture* GtkTextureLruCache::get(const host::ImageSource& src) {
-  std::string key;
-  if (src.is_url()) {
-    key.assign(src.url);
-  } else {
-    char digest[48];
-    std::snprintf(digest, sizeof(digest), "bytes:%016llx:%zu",
-                  static_cast<unsigned long long>(host::xxh64(src.encoded)), src.encoded.size());
-    key = digest;
-  }
+  const std::string key = host::image_cache_key(src);
   if (src.url.empty() && src.encoded.empty()) {
     return nullptr;
   }

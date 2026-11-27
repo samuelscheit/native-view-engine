@@ -7,7 +7,13 @@
 #include "NveWinWindowManager.hpp"
 
 #include <nve/canvas/draw_list_encoder.hpp>
+#if defined(NVE_RUNTIME_TEST_HAS_WIRE)
+#include <nve/host/testing/loopback_pair_server.hpp>
+#endif
 
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -38,7 +44,8 @@ void test_canvas_nodes() {
   const uint32_t kids[] = {kCanvas};
   w.set_children(1u, kids);
 
-  NveWinHost host;
+  const auto host_owner = make_host();
+  NveWinHost& host = *host_owner;
   NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
   NVE_CHECK(app.renders == 1u);
   const WinNodeVisual* view = host.visual_tree().find(kCanvas);
@@ -105,7 +112,8 @@ void test_scroll_containers() {
   const uint32_t kids[] = {kOuter};
   w.set_children(1u, kids);
 
-  NveWinHost host(WinHostConfig{.width = 320.0f, .height = 240.0f});
+  const auto host_owner = make_host(WinHostConfig{.width = 320.0f, .height = 240.0f});
+  NveWinHost& host = *host_owner;
   int changes = 0;
   host.set_on_change([&changes] { ++changes; });
   NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
@@ -169,7 +177,8 @@ void test_scroll_containers() {
 }
 
 void test_paired_lifecycle() {
-  NveWinHost host;
+  const auto host_owner = make_host();
+  NveWinHost& host = *host_owner;
   std::string error;
   NVE_CHECK(!host.connect_paired("not a uri", "token", &error) && !error.empty());
   NVE_CHECK(!host.is_paired() && !host.is_loaded());
@@ -188,6 +197,51 @@ void test_paired_lifecycle() {
   NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
   NVE_CHECK(node(host, 2u).text == "local again");
 }
+
+#if defined(NVE_RUNTIME_TEST_HAS_WIRE)
+/// Live paired thin client against an in-process `nve dev` server: frames arrive, the wake
+/// poster fires (from the network thread), pumping mirrors them, and a later frame updates the
+/// label in place.
+void test_paired_round_trip() {
+  h::testing::LoopbackPairServer server;
+  NVE_CHECK(server.listening());
+  const auto frame = [](uint64_t id, std::string_view label) {
+    h::Nve2Writer w;  // a full keyframe each time
+    w.create(1u);
+    text_node(w, 2u, label);
+    const uint32_t kids[] = {2u};
+    w.set_children(1u, kids);
+    const std::span<const uint8_t> bytes = w.finish(id);
+    return std::vector<uint8_t>(bytes.begin(), bytes.end());
+  };
+  server.send_keyframe(frame(1u, "Paired 1"));
+
+  const auto host_owner = make_host();
+  NveWinHost& host = *host_owner;
+  std::atomic<int> wakes{0};
+  host.set_wake_poster([&wakes] { wakes.fetch_add(1, std::memory_order_relaxed); });
+  std::string error;
+  NVE_CHECK(host.connect_paired(server.uri(), "win-token", &error));
+  const auto shows = [&host](std::string_view label) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      (void)host.pump();
+      const WinNodeVisual* v = host.visual_tree().find(2u);
+      if (v != nullptr && v->text == label) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+  };
+  NVE_CHECK(shows("Paired 1"));
+  NVE_CHECK(server.paired() && host.is_paired() && host.is_loaded() && wakes.load() > 0);
+  const int wakes_before = wakes.load();
+  server.send_keyframe(frame(2u, "Paired 2"));
+  NVE_CHECK(shows("Paired 2") && wakes.load() > wakes_before);
+  host.set_wake_poster({});
+  host.disconnect_paired();
+  NVE_CHECK(!host.is_paired());
+}
+#endif
 
 void test_window_manager() {
   NveWinWindowManager mgr;
@@ -236,5 +290,8 @@ void nve_test_win_canvas_scroll_and_windows() {
   test_canvas_nodes();
   test_scroll_containers();
   test_paired_lifecycle();
+#if defined(NVE_RUNTIME_TEST_HAS_WIRE)
+  test_paired_round_trip();
+#endif
   test_window_manager();
 }

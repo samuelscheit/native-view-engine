@@ -69,7 +69,7 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     # Retained-view host stack (`Nve2Writer`, `RetainedTree`, `HostSession`, app modules).
     include("${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveHostFixtures.cmake")
     nve_add_app_module_fixtures(nve_host_fixture)
-    foreach(_suite runtime session)
+    foreach(_suite runtime session policy)
       set(_target nve_host_${_suite}_test)
       add_executable(${_target} tests/test_host_${_suite}.cpp)
       set_target_properties(${_target} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)

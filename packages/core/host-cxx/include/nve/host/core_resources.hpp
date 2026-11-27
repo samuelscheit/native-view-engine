@@ -13,8 +13,10 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -71,6 +73,16 @@ struct ImageSource {
   std::span<const uint8_t> encoded;
   [[nodiscard]] bool is_url() const noexcept { return encoded.empty(); }
 };
+
+/// Stable decoded-image cache key shared by every host: the URL itself, or
+/// `bytes:<xxh64 hex>:<len>` for inline bytes (empty for an empty source).
+[[nodiscard]] inline std::string image_cache_key(const ImageSource& src) {
+  if (src.is_url()) return std::string(src.url);
+  char key[48];
+  std::snprintf(key, sizeof(key), "bytes:%016llx:%zu", static_cast<unsigned long long>(xxh64(src.encoded)),
+                src.encoded.size());
+  return key;
+}
 
 [[nodiscard]] inline std::optional<ImageSource> decode_image_src(std::span<const uint8_t> bytes) noexcept {
   constexpr uint32_t kMaxString = 256u * 1024u;

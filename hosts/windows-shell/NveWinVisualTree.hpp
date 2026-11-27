@@ -1,7 +1,8 @@
 // Portable retained model of one Windows host surface: `RetainedTree` mirrors the runtime scene
 // (O(changed)) into owned `WinNodeVisual`s that the Direct2D painter, hit testing, and the native
 // `EDIT` overlays read after the scene guard is released. Platform independent (built and tested on
-// every OS); only painting and overlays are Win32.
+// every OS); only painting and overlays are Win32. Floats arrive sealed by `read_node` /
+// `decode_box_shadows`; nothing here re-validates them.
 #pragma once
 
 #include <nve/canvas/canvas.hpp>
@@ -34,9 +35,19 @@ struct Rect {
   [[nodiscard]] bool contains(float px, float py) const noexcept {
     return !empty() && px >= x && px <= right() && py >= y && py <= bottom();
   }
+  [[nodiscard]] bool intersects(const Rect& o) const noexcept {
+    return !empty() && !o.empty() && x < o.right() && o.x < right() && y < o.bottom() && o.y < bottom();
+  }
   [[nodiscard]] Rect intersect(const Rect& o) const noexcept {
     const float l = std::max(x, o.x), t = std::max(y, o.y);
     return Rect{l, t, std::max(0.0f, std::min(right(), o.right()) - l), std::max(0.0f, std::min(bottom(), o.bottom()) - t)};
+  }
+  /// Smallest rect covering both (an empty side contributes nothing).
+  [[nodiscard]] Rect unite(const Rect& o) const noexcept {
+    if (o.empty()) return *this;
+    if (empty()) return o;
+    const float l = std::min(x, o.x), t = std::min(y, o.y);
+    return Rect{l, t, std::max(right(), o.right()) - l, std::max(bottom(), o.bottom()) - t};
   }
   [[nodiscard]] Rect inflate(float d) const noexcept { return Rect{x - d, y - d, width + 2.0f * d, height + 2.0f * d}; }
   friend bool operator==(const Rect&, const Rect&) noexcept = default;
@@ -63,8 +74,8 @@ struct TextPaint {
   friend bool operator==(const TextPaint&, const TextPaint&) = default;
 };
 
-/// Owned `nve.res.image_src`: a URL (`data:`, `file://`, absolute path) or encoded bytes, plus a
-/// stable cache key (the URL, or `bytes:<xxh64>:<len>`).
+/// Owned `nve.res.image_src`: a URL or encoded bytes, plus a stable cache key (the URL, or
+/// `bytes:<xxh64>:<len>`).
 struct WinImageSource {
   std::string url;
   std::vector<uint8_t> encoded;
@@ -74,25 +85,7 @@ struct WinImageSource {
   [[nodiscard]] static WinImageSource from(const host::ImageSource& src);
 };
 
-/// Owned accessibility semantics; `role` is the explicit ARIA role or the node kind's native one.
-struct WinSemantics {
-  uint8_t role = NVE_ARIA_ROLE_NONE;
-  std::string label;
-  std::string hint;
-  std::string value_text;
-  uint8_t level = 0u;
-  uint8_t checked = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t selected = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t expanded = NVE_ARIA_TRI_STATE_UNSET;
-  uint8_t pressed = NVE_ARIA_TRI_STATE_UNSET;
-  float value_now = NAN;
-  float value_min = NAN;
-  float value_max = NAN;
-  bool disabled = false;
-  bool hidden = false;
-};
-
-/// Owned `nve.text_input` row.
+/// Owned `nve.text_input` row (a secure field is single-line).
 struct WinTextInput {
   std::string value;
   std::string placeholder;
@@ -112,8 +105,12 @@ struct WinNodeVisual {
   Rect local;  // relative to the parent's (unscrolled) origin
   host::VisualStyle visual;
   std::vector<host::BoxShadow> shadows;
+  float shadow_reach = 0.0f;  // how far outer shadows paint beyond the rect
   TextPaint text_style;
   std::string text;
+  uint32_t shadows_res = 0u;  // resource ids last decoded (re-read only when changed or republished)
+  uint32_t image_res = 0u;
+  uint32_t canvas_res = 0u;
   WinImageSource image;
   uint8_t image_fit = NVE_IMAGE_FIT_COVER;
   std::vector<uint8_t> draw_list;  // `NVE_DRAW1`
@@ -121,10 +118,11 @@ struct WinNodeVisual {
   WinTextInput input;
   host::ScrollData scroll;
   host::InteractionData interaction;
-  WinSemantics semantics;
   std::string href;
-  std::vector<uint32_t> children;  // packed `NodeId`s, scene order
-  float scroll_x = 0.0f;           // published visual shift of the descendants
+  std::vector<uint32_t> children;     // packed `NodeId`s, scene order
+  std::vector<uint32_t> paint_order;  // `children` stable-sorted by `z_index`
+  Rect bounds;                        // painted area at the last sync (damage tracking)
+  float scroll_x = 0.0f;              // published visual shift of the descendants
   float scroll_y = 0.0f;
   bool synced = false;
 
@@ -149,15 +147,16 @@ struct PaintFrame {
   bool visible = true;  // resolved `visibility`
   float opacity = 1.0f; // accumulated
 
-  /// The frame of `child` under `parent` (whose frame is `*this`).
-  [[nodiscard]] PaintFrame child(const WinNodeVisual& parent, const WinNodeVisual& child) const noexcept;
+  /// The frame of `node` under a parent painted at `*this`, scrolled by `(sx, sy)`, clipping
+  /// its children when `parent_clips`.
+  [[nodiscard]] PaintFrame child(float sx, float sy, bool parent_clips, const WinNodeVisual& node) const noexcept;
   [[nodiscard]] bool hit(float px, float py) const noexcept {
     return visible && opacity > 0.0f && rect.contains(px, py) && (!clipped || clip.contains(px, py));
   }
 };
 
-/// Destination / source rectangles of an image of `iw` x `ih` pixels drawn into `dst` with
-/// `NVE_IMAGE_FIT_*` `fit`; `nullopt` when nothing is drawn.
+/// Destination / source rectangles of an `iw` x `ih` image drawn into `dst` with `NVE_IMAGE_FIT_*`
+/// `fit`; `nullopt` when nothing is drawn.
 struct ImagePlacement {
   Rect dst;
   Rect src;
@@ -186,7 +185,6 @@ class NveWinVisualTree {
   [[nodiscard]] uint32_t root_background() const noexcept { return root_background_; }
   [[nodiscard]] const Rect& root_rect() const noexcept { return root_rect_; }
   [[nodiscard]] std::span<const uint32_t> root_children() const noexcept { return root_children_; }
-  [[nodiscard]] const WinSemantics& root_semantics() const noexcept { return root_semantics_; }
   /// Live `TextInput` nodes (any order).
   [[nodiscard]] std::span<const uint32_t> text_inputs() const noexcept { return text_inputs_; }
   /// Bumped on every visible change (views, scroll offsets); hosts repaint when it moves.
@@ -194,16 +192,16 @@ class NveWinVisualTree {
   [[nodiscard]] uint64_t created_count() const noexcept { return created_; }
   [[nodiscard]] uint64_t updated_count() const noexcept { return updated_; }
   [[nodiscard]] uint64_t destroyed_count() const noexcept { return destroyed_; }
+  /// Surface area changed since the last call (old and new bounds of every changed view; the
+  /// whole surface after structural root changes); empty when nothing needs repainting.
+  [[nodiscard]] Rect take_damage() noexcept;
 
-  /// Visits every node in paint order (children stable-sorted by `z_index`):
-  /// `bool enter(const WinNodeVisual&, const PaintFrame&)` (false skips the descendants), then
-  /// always `void leave(const WinNodeVisual&, const PaintFrame&)` after them. Fully transparent
-  /// subtrees are skipped.
+  /// Visits every node in paint order: `auto state = enter(const WinNodeVisual&, const PaintFrame&)`
+  /// (`bool(state)` false skips the descendants), then always `leave(node, frame, state)` after
+  /// them. Fully transparent subtrees are skipped. Allocation-free (paint order is precomputed).
   template <class Visitor>
   void walk(Visitor&& visitor) const {
-    const PaintFrame root{root_rect_, {}, false, true, 1.0f};
-    const WinNodeVisual root_node = root_view();
-    walk_children(root_node, root, root_children_, visitor, 0u);
+    walk_children(PaintFrame{root_rect_, {}, false, true, 1.0f}, 0.0f, 0.0f, false, root_paint_order_, visitor, 0u);
   }
 
   /// Paint frame of node `id` (`nullopt` when unknown).
@@ -229,6 +227,9 @@ class NveWinVisualTree {
     uint32_t tag(const host::NodeData& node) const;
     Handle create(const host::NodeData& node);
     void update(Handle& view, const host::NodeData& node);
+    /// Geometry-only change (`moved_indices`): the parent-relative rect. Absolute rects are never
+    /// cached, so a moved container costs one update (its descendants follow in the walk).
+    void move(Handle& view, const host::NodeData& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
     void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
@@ -241,26 +242,27 @@ class NveWinVisualTree {
 
   [[nodiscard]] WinNodeVisual* find_mut(uint32_t id) noexcept;
   [[nodiscard]] std::span<const uint8_t> resource(uint32_t id, host::Key64 kind) const noexcept;
-  [[nodiscard]] WinNodeVisual root_view() const;
+  /// Whether a view must re-read resource `id` it last decoded as `prev` (new id, republished
+  /// bytes, or a non-incremental sync: `RetainedTree::resource_unchanged`).
+  [[nodiscard]] bool reread(const WinNodeVisual& v, uint32_t prev, uint32_t id) const noexcept {
+    return !v.synced || !tree_.resource_unchanged(scene_->reader(), id, prev);
+  }
   void apply_scroll_offsets(const host::RuntimeSceneReader& scene);
+  void resort(std::vector<uint32_t>& paint_order, std::span<const uint32_t> children) const;
+  void settle_damage();
 
   template <class Visitor>
-  void walk_children(const WinNodeVisual& parent, const PaintFrame& frame, std::span<const uint32_t> ids,
+  void walk_children(const PaintFrame& frame, float sx, float sy, bool clips, std::span<const uint32_t> ids,
                      Visitor& visitor, uint32_t depth) const {
-    if (depth > kMaxDepth || ids.empty()) return;
-    std::vector<const WinNodeVisual*> kids;
-    kids.reserve(ids.size());
+    if (depth > kMaxDepth) return;
     for (const uint32_t id : ids) {
-      if (const WinNodeVisual* k = find(id)) kids.push_back(k);
-    }
-    std::stable_sort(kids.begin(), kids.end(), [](const WinNodeVisual* a, const WinNodeVisual* b) {
-      return a->visual.z_index < b->visual.z_index;
-    });
-    for (const WinNodeVisual* k : kids) {
-      const PaintFrame f = frame.child(parent, *k);
+      const WinNodeVisual* k = find(id);
+      if (k == nullptr) continue;
+      const PaintFrame f = frame.child(sx, sy, clips, *k);
       if (f.opacity <= 0.0f) continue;
-      if (visitor.enter(*k, f)) walk_children(*k, f, k->children, visitor, depth + 1u);
-      visitor.leave(*k, f);
+      auto state = visitor.enter(*k, f);
+      if (static_cast<bool>(state)) walk_children(f, k->scroll_x, k->scroll_y, k->clips(), k->paint_order, visitor, depth + 1u);
+      visitor.leave(*k, f, state);
     }
   }
 
@@ -272,10 +274,14 @@ class NveWinVisualTree {
   uint32_t root_id_ = 0u;
   uint32_t root_background_ = 0u;
   Rect root_rect_;
-  WinSemantics root_semantics_;
   std::vector<uint32_t> root_children_;
+  std::vector<uint32_t> root_paint_order_;
   std::vector<uint32_t> text_inputs_;
   std::vector<uint32_t> scrolled_;  // nodes with a non-zero published offset
+  std::vector<uint32_t> touched_;   // views whose bounds must be recomputed (damage)
+  std::vector<uint32_t> resort_;    // parents whose children's z-index changed (0: root)
+  Rect damage_;
+  bool full_damage_ = false;
   uint64_t revision_ = 0u;
   uint64_t created_ = 0u;
   uint64_t updated_ = 0u;

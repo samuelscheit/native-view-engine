@@ -1,58 +1,65 @@
 ---
-title: "Windows & RNW 0.88"
-description: "Windows 11 MSVC native Win32/Direct2D/DirectWrite/WIC host, react-native-windows 0.88 Composition Fabric bridge, NveWinWindowManager, and WinSock2 PairClient."
+title: "Windows & RNW"
+description: "Native Win32/Direct2D/DirectWrite/WIC host on libnve_runtime, native EDIT text inputs, NveWinWindowManager, and the react-native-windows Composition Fabric component."
 order: 5
 ---
 
-# Windows 11 & `react-native-windows` 0.88 (`hosts/windows-shell`)
+# Windows 11 & `react-native-windows` (`hosts/windows-shell`)
 
-`hosts/windows-shell` provides both a standalone DPI-aware **Win32 + Direct2D / DirectWrite / WIC** desktop shell and an embeddable **`react-native-windows` 0.83+/0.88+ Composition Fabric** component host — built cleanly on MSVC `19.51` with zero `/W4` warnings.
+`hosts/windows-shell` is a DPI-aware **Win32 + Direct2D / DirectWrite / WIC** desktop shell on the shared C++ host stack (`nve::host_cxx` + `libnve_runtime`). An optional **`react-native-windows` 0.83+ Composition Fabric** component sits on top of it.
 
-## Architecture Components
+## Architecture
 
-1. **DirectWrite Text Measurer (`NveWinTextMeasurer.hpp`)** — RAII `nve::win::DirectWriteTextMeasurer` backed by `IDWriteFactory`, cached Segoe UI `IDWriteTextFormat`, and `IDWriteTextLayout::GetMetrics`, plugged directly into `nve::NativeHostSession::set_text_measurer(...)`.
-2. **Direct2D & WIC Media Renderer (`NveWinD2DRenderer.cpp`, `NveWinD2DMedia.cpp`)** — Renders rounded rectangles, borders, opacity layers (`ID2D1Layer`), z-order stacking, WIC-decoded images (`ImageResizeMode`), and native `NVE_DRAW1` vector draw lists (`ID2D1PathGeometry`). Supports headless `--screenshot <path.bmp>` via `ID2D1DCRenderTarget`.
-3. **Multi-Window Manager (`NveWinWindowManager.{hpp,cpp}`)** — Manages owned `HWND`s (`GWLP_HWNDPARENT`), modal parent input blocking (`EnableWindow(parent, FALSE)`), per-monitor DPI scaling (`GetDpiForWindow` / `WM_DPICHANGED`), and cancelable `WM_CLOSE` veto (`NVW1`).
-4. **WinSock2 Live Pairing (`ws2_32`)** — `cxx/nve-fabric-bridge` compiles `nve::PairClient` natively against WinSock2 (`ws2_32`), verified live cross-process (`nve.exe pair` → `nve_windows_shell.exe --pair-connect`) byte-for-byte identical across WebSocket, TCP, and UDP.
+1. **Retained model (`NveWinVisualTree`, every OS)**: `RetainedTree` mirrors the runtime's zero-copy scene into owned per-node visuals in O(changed). Geometry-only changes take the cheap `move` path, and resources are re-read only when republished. The model also provides a paint-order walk, hit testing, damage rects, and image-fit and shadow geometry.
+2. **Surface controller (`NveWinHost`, every OS)**:
+   - app sources: an in-process app, a `cdylib` with state-preserving hot reload, or a paired `nve dev` server;
+   - app-state files;
+   - presses with matching down/up targets and disabled ancestors;
+   - links: `http(s)` / `mailto` only;
+   - wheel scrolling with edge chaining, hover, cursors, and text / focus events.
+3. **DirectWrite (`NveWinTextMeasurer.hpp`)**: the runtime's text measurer, and the per-node `IDWriteTextLayout`s the painter draws.
+4. **Direct2D painter (`NveWinD2DRenderer.cpp`, `NveWinD2DMedia.cpp`)**:
+   - shadows, rounded backgrounds and clips, borders, opacity layers;
+   - WIC images from `data:` URLs, local files, and inline bytes (UNC and remote hosts are refused);
+   - `NVE_DRAW1` canvas lists and text;
+   - dirty-rect repaints, with device resources in a per-target `D2DPaintCache`;
+   - headless `--screenshot <path.bmp>`.
+5. **Native text inputs (`NveWinTextInputs`)**: one Win32 `EDIT` per `TextInput` node. The platform provides IME, clipboard and accessibility. `host::ControlledText` writes rejected or transformed edits back, Enter submits, and focus / blur events are dispatched.
+6. **Window manager (`NveWinWindowManager`)**: modal blockers, cancelable close, cascade close, and quit on the last window.
 
-## Standalone Win32 Build & Run (PowerShell)
+## Build & run (PowerShell)
 
 ```bash title="Build, test, and run on Windows 11 (MSVC + Ninja)"
-# Standalone build (requires only VS/MSVC + Windows SDK; zero RNW checkout needed)
 cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja
 cmake --build hosts/windows-shell/build
+cargo build -p nve-example-kitchen-sink
+$env:NVE_TEST_KITCHEN_SINK_DYLIB = (Resolve-Path target\debug\nve_example_kitchen_sink.dll).Path
 ctest --test-dir hosts/windows-shell/build --output-on-failure
 
-# Build the Rust Kitchen Sink DLL and launch
-cargo build -p nve-example-kitchen-sink
 .\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll
-
-# Or connect as a zero-DLL thin client over WinSock2
-.\hosts\windows-shell\build\nve_windows_shell.exe \
-  --pair-connect 127.0.0.1:8092 --pair-transport ws --pair-token dev-secret
+.\hosts\windows-shell\build\nve_windows_shell.exe --pair nve://127.0.0.1:8092 --pair-token dev-secret
 ```
 
-## Embedding in `react-native-windows` 0.88 Composition Fabric
+The model, controller and window-manager suites also build and run on macOS and Linux.
 
-Enable `-DNVE_WITH_RNW_FABRIC=ON` and point `-DRNW_GENERATED_DIR` at your RNW app's generated C++/WinRT headers (`winrt/Microsoft.ReactNative.Composition.h`):
+## Embedding in `react-native-windows` Composition Fabric
 
-```bash title="Configure with RNW 0.88 Composition Fabric"
+```bash title="Configure the RNW component (nve_rnw_component)"
 cmake -S hosts/windows-shell -B hosts/windows-shell/build-rnw -G Ninja \
   -DNVE_WITH_RNW_FABRIC=ON \
-  -DRNW_GENERATED_DIR="C:\path\to\rnw-app\Generated Files" \
-  -DRN_REACT_COMMON_DIR="C:\path\to\react-native\ReactCommon"
+  -DRNW_GENERATED_DIR="C:\path\to\rnw-app\Generated Files"
 cmake --build hosts/windows-shell/build-rnw
 ```
 
-Register your Rust component inside `IReactPackageProvider::CreatePackage` (`NveRnwComponentView.hpp`):
-
-```cpp title="Registering an NVE component in RNW Composition Fabric" highlight="3-6"
+```cpp title="Registering an NVE component in RNW Composition Fabric"
 nve::win::NveRnwComponentRegistrationConfig cfg{};
 cfg.component_name = L"NveCounterView";
 cfg.default_dylib_path = "nve_example_kitchen_sink.dll";
 nve::win::register_nve_rnw_component(packageBuilder, std::move(cfg));
 ```
 
-<Callout kind="warning" title="Windows MSVC & afd.sys notes">
-Avoid running two concurrent Ninja MSVC builds sharing `/Zi /FS` PDB servers (`mspdbsrv.exe` `C1090`), and note that NVE's UDP transport uses non-blocking sockets on Windows 11 to avoid `afd.sys` `SO_RCVTIMEO` loopback datagram drops. See [Upstream Notes](/reference/upstream-notes) for details.
+`nve codegen` `export_rn` also emits a typed `<Name>RnwComponentView.generated.hpp` (registration, typed event callbacks) over the same API.
+
+<Callout kind="warning" title="Windows MSVC notes">
+Avoid running two concurrent Ninja MSVC builds that share `/Zi /FS` PDB servers (`mspdbsrv.exe` `C1090`). See [Upstream Notes](/reference/upstream-notes).
 </Callout>

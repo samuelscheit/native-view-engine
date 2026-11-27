@@ -29,7 +29,7 @@ struct PressResult {
   uint32_t node_id = 0u;  // the pressed node (0: nothing pressable there)
   bool dispatched = false;
   bool changed = false;   // the press re-rendered the scene
-  std::string href;       // a link nobody intercepts: the window opens it natively
+  std::string href;       // a link nobody intercepts that may open natively (`host::openable_link`)
 };
 
 /// One `libnve_runtime` surface (`HostSession`) mirrored into the portable `NveWinVisualTree`:
@@ -44,7 +44,9 @@ class NveWinHost {
   using EventCallback = host::HostSession::EventSink;
   using ChangeCallback = std::function<void()>;
 
-  explicit NveWinHost(WinHostConfig config = {});
+  /// A surface over the linked `libnve_runtime` (plus, on Windows, the DirectWrite measurer);
+  /// `nullptr` with `error` set when the runtime or DirectWrite is unavailable.
+  [[nodiscard]] static std::unique_ptr<NveWinHost> create(WinHostConfig config = {}, std::string* error = nullptr);
   ~NveWinHost();
   NveWinHost(const NveWinHost&) = delete;
   NveWinHost& operator=(const NveWinHost&) = delete;
@@ -81,8 +83,18 @@ class NveWinHost {
 
   // --- Input (surface DIPs) -----------------------------------------------------------------
   bool simulate_press(uint32_t node_id, float x = 0.0f, float y = 0.0f);
-  /// Presses the topmost node under `(x, y)` that takes presses, else reports its link.
+  /// Primary button went down at `(x, y)` (the window captures the pointer); returns the press
+  /// target there (0: none).
+  uint32_t pointer_down(float x, float y);
+  /// Primary button released at `(x, y)`: presses the target only when it is the one the button
+  /// went down on (a drag off a button cancels), else reports nothing.
+  PressResult pointer_up(float x, float y);
+  /// `pointer_down` + `pointer_up` at one point (a tap).
   PressResult press_at(float x, float y);
+  /// Press target at `(x, y)`: the nearest ancestor-or-self of the topmost node that takes
+  /// presses or is an openable link; 0 when none, or when any node on its ancestor chain is
+  /// disabled (a disabled container disables its contents).
+  [[nodiscard]] uint32_t press_target(float x, float y) const;
   /// Scrolls the innermost scroll container under `(x, y)` that can still move by `(dx, dy)`
   /// (chaining outwards at its edges); `true` when one moved.
   bool wheel_at(float x, float y, float dx, float dy);
@@ -104,6 +116,8 @@ class NveWinHost {
 
   // --- Introspection ------------------------------------------------------------------------
   [[nodiscard]] const NveWinVisualTree& visual_tree() const noexcept { return tree_; }
+  /// Surface area to repaint since the last call (`NveWinVisualTree::take_damage`).
+  [[nodiscard]] Rect take_damage() noexcept { return tree_.take_damage(); }
   [[nodiscard]] size_t view_count() const noexcept { return tree_.size(); }
   [[nodiscard]] uint32_t surface_id() const noexcept { return config_.surface_id; }
   [[nodiscard]] bool is_loaded() const noexcept { return session_->has_app(); }
@@ -116,6 +130,7 @@ class NveWinHost {
 #endif
 
  private:
+  NveWinHost(WinHostConfig config, std::unique_ptr<host::HostSession> session);
   bool dispatch(const NveDirectEvent& ev);
   /// The app source changed (a new `scene_epoch`): the next sync is a full
   /// pass keeping views whose node still matches.
@@ -135,6 +150,7 @@ class NveWinHost {
   NveWinVisualTree tree_;
   ChangeCallback on_change_;
   uint32_t hovered_ = 0u;
+  uint32_t pressed_ = 0u;  // `pointer_down` target
   bool syncing_ = false;
 };
 

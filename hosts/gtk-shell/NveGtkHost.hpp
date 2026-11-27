@@ -7,6 +7,7 @@
 #include <nve/host/core_resources.hpp>
 #include <nve/host/host_session.hpp>
 #include <nve/host/retained_tree.hpp>
+#include <nve/host/urls.hpp>
 
 #include <atomic>
 #include <cstdint>

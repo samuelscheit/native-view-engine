@@ -12,6 +12,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -503,6 +504,18 @@ class RuntimeSession {
                                            float* out_y = nullptr) noexcept {
     if (!valid()) return NVE_RUNTIME_INVALID_ARG;
     return static_cast<NveRuntimeStatus>(api_->scroll_by(handle_, node_id, dx, dy, out_x, out_y));
+  }
+
+  /// Scrolls `node_id` to the absolute offset `(x, y)` (non-finite: keep that axis), clamped by the
+  /// runtime; `out_x` / `out_y` receive the applied offset. (A host-side composition of
+  /// `scroll_by`: the runtime keeps one relative scroll slot.)
+  [[nodiscard]] NveRuntimeStatus scroll_to(uint32_t node_id, float x, float y, float* out_x = nullptr,
+                                           float* out_y = nullptr) noexcept {
+    float cur_x = 0.0f, cur_y = 0.0f;
+    if (const NveRuntimeStatus st = scroll_by(node_id, 0.0f, 0.0f, &cur_x, &cur_y); st != NVE_RUNTIME_OK) return st;
+    const float dx = std::isfinite(x) ? x - cur_x : 0.0f;
+    const float dy = std::isfinite(y) ? y - cur_y : 0.0f;
+    return scroll_by(node_id, dx, dy, out_x, out_y);
   }
 
   [[nodiscard]] std::optional<RuntimeSceneGuard> acquire_scene(

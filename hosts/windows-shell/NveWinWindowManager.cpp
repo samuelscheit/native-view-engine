@@ -102,13 +102,14 @@ int NveWinWindowManager::run_message_loop() {
 
 NveWinHost* NveWinWindowManager::open_headless_window(const WinManagedWindowSpec& spec) {
   Entry entry{};
-  entry.headless_host = std::make_unique<NveWinHost>(WinHostConfig{
+  entry.headless_host = NveWinHost::create(WinHostConfig{
       .surface_id = spec.surface_id,
       .width = static_cast<float>(spec.width),
       .height = static_cast<float>(spec.height),
       .scale_factor = 1.0f,
   });
   NveWinHost* raw = entry.headless_host.get();
+  if (raw == nullptr) return nullptr;
   if (!register_entry(spec, std::move(entry))) {
     return nullptr;
   }

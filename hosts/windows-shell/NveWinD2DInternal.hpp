@@ -13,11 +13,4 @@ namespace nve::win::d2d_internal {
   return D2D1::ColorF(ch(0u), ch(8u), ch(16u), ch(24u) * alpha);
 }
 
-/// Cached (bounded LRU) WIC-decoded bitmap of `src` for render target `rt`; `nullptr` when it
-/// does not decode. Valid until `rt` is released or the entry is evicted (use it immediately).
-ID2D1Bitmap* bitmap_for(ID2D1RenderTarget* rt, const WinImageSource& src);
-
-/// Drops every cached bitmap of `rt` (before releasing it).
-void release_bitmaps(ID2D1RenderTarget* rt);
-
 }  // namespace nve::win::d2d_internal
