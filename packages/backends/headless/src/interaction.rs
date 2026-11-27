@@ -8,13 +8,12 @@ use nve_components::interaction::{
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
 use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
-use nve_components::tables::{InputKind, Interaction, StateRules, TextInput, Visual};
+use nve_components::tables::{InputKind, Interaction, StateRules, TextInput};
 use nve_engine::StoreLayoutEngine;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::{
-    is_display_none, layout_snapshot_of, node_clips_overflow, visual_snapshot_of, HeadlessBackend,
-    MAX_TREE_DEPTH,
+    is_display_none, layout_snapshot_of, visual_snapshot_of, HeadlessBackend,
 };
 
 impl<L: StoreLayoutEngine> HeadlessBackend<L> {
@@ -54,65 +53,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest interaction-eligible node.
     pub fn hit_test_interaction(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_interaction_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), false, 0)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn hit_test_interaction_rec(
-        &self,
-        store: &NodeStore,
-        id: StoreNodeId,
-        x: f32,
-        y: f32,
-        offset: (f32, f32),
-        inherited_hidden: bool,
-        depth: usize,
-    ) -> Option<NodeId> {
-        if depth > MAX_TREE_DEPTH || !store.is_live(id) || is_display_none(store, id) {
-            return None;
-        }
-        let effective_hidden = store
-            .try_row::<Visual>(id)
-            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
-        let rect = self.layout.layout_of(id)?;
-        let (stx, sty) = self.compute_sticky_delta(store, id);
-        let node_offset = (offset.0 + stx, offset.1 + sty);
-        let r_x = rect.x + node_offset.0;
-        let r_y = rect.y + node_offset.1;
-        let (px, py) = if let Some(tf) = self.effective_transform(store, id) {
-            tf.inverse_map_surface_point(x, y, r_x, r_y, rect.width, rect.height)?
-        } else {
-            (x, y)
-        };
-        let inside = rect.width > 0.0
-            && rect.height > 0.0
-            && px >= r_x
-            && px <= r_x + rect.width
-            && py >= r_y
-            && py <= r_y + rect.height;
-        if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
-            return None;
-        }
-        let (sx, sy) = self.scroll_offset(id.raw());
-        let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
-        for &cid in store.children(id).iter().rev() {
-            if let Some(hit) = self.hit_test_interaction_rec(
-                store,
-                cid,
-                px,
-                py,
-                child_offset,
-                effective_hidden,
-                depth + 1,
-            ) {
-                return Some(hit);
-            }
-        }
-        if inside && !effective_hidden && self.is_interaction_target(store, id) {
-            Some(id.raw())
-        } else {
-            None
-        }
+        self.hit_test_where(store, x, y, |id| self.is_interaction_target(store, id))
     }
 
     fn state_rules_of<'a>(&self, store: &'a NodeStore, id: StoreNodeId) -> &'a [StateStyleRule] {
@@ -147,7 +88,14 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         let base_l = layout_snapshot_of(store, id);
         let base_v = visual_snapshot_of(store, id);
         let rules = self.state_rules_of(store, id);
-        resolve_layout_and_style(&base_l, &base_v, rules, self.interaction.state(id.raw()))
+        let (layout, visual) =
+            resolve_layout_and_style(&base_l, &base_v, rules, self.interaction.state(id.raw()));
+        // State rules must not give a box-less `display: contents` node box paint either.
+        if id == StoreNodeId::ROOT || !crate::is_display_contents(store, id) {
+            (layout, visual)
+        } else {
+            (layout, crate::without_box_paint(visual))
+        }
     }
 
     /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].

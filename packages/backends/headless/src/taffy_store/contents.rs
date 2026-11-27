@@ -15,6 +15,8 @@ pub(super) struct BoxChildren {
     flattened: Vec<bool>,
     /// Reused DFS stack of the flattening walk.
     stack: Vec<NodeId>,
+    /// Reused flattened output, written to `lists` in one exact-length `extend`.
+    out: Vec<NodeId>,
 }
 
 impl BoxChildren {
@@ -28,6 +30,20 @@ impl BoxChildren {
     pub(super) fn reset(&mut self) {
         self.lists.reset();
         self.flattened.clear();
+        self.stack.clear();
+        self.out.clear();
+    }
+
+    /// Pool accounting invariant of the underlying lists; unflattened parents own no capacity.
+    #[cfg(test)]
+    pub(super) fn assert_consistent(&self) {
+        self.lists.assert_consistent();
+        for (idx, &flat) in self.flattened.iter().enumerate() {
+            assert!(
+                flat || self.lists.get(idx).is_empty(),
+                "unflattened parent {idx} keeps a list"
+            );
+        }
     }
 
     /// Forgets `idx`'s list (node slot created or removed).
@@ -45,23 +61,35 @@ impl BoxChildren {
         let flatten = children
             .iter()
             .any(|&c| crate::is_display_contents(store, c));
+        if !flatten {
+            // Return the capacity: a parent that stops flattening must not pin its peak list.
+            if self.flattened.get(idx).copied().unwrap_or(false) {
+                self.release(idx);
+            }
+            return;
+        }
         let Some(flag) = self.flattened.get_mut(idx) else {
             return;
         };
-        *flag = flatten;
-        self.lists.clear(idx);
-        if !flatten {
-            return;
-        }
+        *flag = true;
+        self.out.clear();
         self.stack.clear();
         self.stack.extend(children.iter().rev());
         while let Some(child) = self.stack.pop() {
             if crate::is_display_contents(store, child) {
                 self.stack.extend(store.children(child).iter().rev());
             } else {
-                self.lists.extend(idx, core::iter::once(child));
+                self.out.push(child);
             }
         }
+        self.lists.clear(idx);
+        self.lists.extend(idx, self.out.iter().copied());
+    }
+
+    /// Whether `parent` exposes a flattened list (some child is `display: contents`).
+    #[inline]
+    pub(super) fn is_flattened(&self, parent: NodeId) -> bool {
+        self.flattened.get(parent.index()).copied().unwrap_or(false)
     }
 
     /// Repacks the list pool once rebuilds have fragmented it.
@@ -72,7 +100,7 @@ impl BoxChildren {
     /// The children Taffy lays out under `parent`.
     #[inline]
     pub(super) fn get<'a>(&'a self, store: &'a NodeStore, parent: NodeId) -> &'a [NodeId] {
-        if self.flattened.get(parent.index()).copied().unwrap_or(false) {
+        if self.is_flattened(parent) {
             self.lists.get(parent.index())
         } else {
             store.children(parent)

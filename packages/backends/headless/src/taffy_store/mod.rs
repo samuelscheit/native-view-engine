@@ -14,7 +14,7 @@ use std::sync::Arc;
 use nve_abi::table::effect;
 use nve_components::tables::{
     Direction as NveDirection, Layout as NveLayout, Position as NvePosition, TextContent,
-    Typography,
+    TextInput, Typography,
 };
 use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
@@ -86,7 +86,10 @@ pub struct TaffyStoreLayout {
 
 #[inline]
 fn is_out_of_flow(store: &NodeStore, id: NodeId) -> bool {
+    // `display: contents` generates no box, so `position` does not take it out of flow: its
+    // children flatten into the parent box in flow (CSS Display 3 §2.5).
     !crate::is_display_none(store, id)
+        && !crate::is_display_contents(store, id)
         && store
             .try_row::<NveLayout>(id)
             .is_some_and(|l| matches!(l.position(), NvePosition::Absolute | NvePosition::Fixed))
@@ -172,16 +175,37 @@ impl TaffyStoreLayout {
     pub fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
         self.ensure_capacity(store.capacity());
 
-        let layout_dir_changed = changes.table(NveLayout::slot()).is_some_and(|td| {
-            // Direction is inherited; display (`contents`) reshapes the box tree.
-            let bits = (1u32 << NveLayout::DIRECTION.word()) | (1u32 << NveLayout::DISPLAY.word());
-            !td.detached.is_empty() || td.masks.iter().any(|&m| m & bits != 0)
+        // Direction is inherited; `display` / hidden-input changes reshape flattened box-children
+        // lists only where `display: contents` is involved (a plain `display: none` toggle needs
+        // no inheritance walk).
+        // `direction` and `display` share one packed column word (one change-mask bit), so
+        // the changed values decide.
+        let layout_bits = (1u32 << NveLayout::DIRECTION.word()) | (1u32 << NveLayout::DISPLAY.word());
+        let layout_reshaped = changes.table(NveLayout::slot()).is_some_and(|td| {
+            // A detached `Layout` row may reset `direction` and `display` alike.
+            !td.detached.is_empty()
+                || td.nodes.iter().zip(&td.masks).any(|(&id, &m)| {
+                    m & layout_bits != 0
+                        && (self.direction_changed(store, id)
+                            || self.display_change_reshapes_boxes(store, id))
+                })
+        });
+        let input_kind_bit = 1u32 << TextInput::INPUT_KIND.word();
+        let input_reshaped = changes.table(TextInput::slot()).is_some_and(|td| {
+            td.nodes
+                .iter()
+                .zip(&td.masks)
+                .filter(|&(_, &m)| m & input_kind_bit != 0)
+                .map(|(&id, _)| id)
+                .chain(td.detached.iter().copied())
+                .any(|id| self.display_change_reshapes_boxes(store, id))
         });
         if !changes.created.is_empty()
             || !changes.removed.is_empty()
             || !changes.children.is_empty()
             || changes.table(Typography::slot()).is_some()
-            || layout_dir_changed
+            || layout_reshaped
+            || input_reshaped
         {
             self.inherit_dirty = true;
         }
@@ -220,6 +244,41 @@ impl TaffyStoreLayout {
                 self.mark_dirty(store, id);
             }
         }
+    }
+
+    /// Whether `id`'s resolved direction differs from the one recorded by the last inheritance
+    /// walk (its parent's recorded direction stands in for `inherit`; a parent whose own
+    /// direction changed in the same frame triggers the walk itself).
+    fn direction_changed(&self, store: &NodeStore, id: NodeId) -> bool {
+        let parent_rtl = store
+            .parent(id)
+            .is_some_and(|p| self.resolved_rtl.get(p.index()).copied().unwrap_or(false));
+        let rtl = match store.try_row::<NveLayout>(id).map(|l| l.direction()) {
+            Some(NveDirection::Ltr) => false,
+            Some(NveDirection::Rtl) => true,
+            _ => parent_rtl,
+        };
+        self.resolved_rtl.get(id.index()).copied() != Some(rtl)
+    }
+
+    /// A `display` / hidden-input change on `id` reshapes box children only when `id` is now
+    /// `display: contents`, or was flattened into its nearest box ancestor (whose list is still
+    /// the pre-change one here).
+    fn display_change_reshapes_boxes(&self, store: &NodeStore, id: NodeId) -> bool {
+        if crate::is_display_contents(store, id) {
+            return true;
+        }
+        let mut cur = store.parent(id);
+        while let Some(anc) = cur {
+            if self.box_children.is_flattened(anc) {
+                return true;
+            }
+            if !crate::is_display_contents(store, anc) {
+                return false;
+            }
+            cur = store.parent(anc);
+        }
+        false
     }
 
     /// Marks every live node dirty (used after full replica load or measurer swap).
@@ -325,10 +384,13 @@ impl TaffyStoreLayout {
                 self.mark_dirty(store, id);
             }
             if id != root && crate::is_display_contents(store, id) {
-                // Never laid out: drop any list recorded while it still generated a box.
-                self.hoisted.clear(idx);
+                // Never laid out (Taffy only sees its nearest box ancestor's flattened list):
+                // return any list recorded while it still generated a box.
+                self.hoisted.release(idx);
+                self.box_children.release(idx);
+            } else {
+                self.box_children.rebuild(store, id);
             }
-            self.box_children.rebuild(store, id);
 
             for &child in store.children(id).iter().rev() {
                 self.inherit_stack.push((child, rtl, text));

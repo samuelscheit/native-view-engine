@@ -5,7 +5,7 @@ use nve_engine::TextMeasurer;
 use nve_store::{NodeId, NodeStore};
 
 use taffy::geometry::Size;
-use taffy::style::AvailableSpace;
+use taffy::style::{AvailableSpace, BoxSizing};
 use taffy::tree::{Cache, Layout, LayoutInput, LayoutOutput, RunMode};
 use taffy::util::ResolveOrZero;
 use taffy::{
@@ -79,7 +79,8 @@ impl<'s> LayoutView<'s> {
         };
         let text = tc.text();
         if text.is_empty() {
-            return Size::ZERO;
+            // An empty text node sizes like any other empty leaf (e.g. an `aspect-ratio` box).
+            return self.aspect_ratio_content_size(n, known, parent_width);
         }
         let resolved = self.resolved_text[ix(n)];
         let max_width = known.width.or(match available.width {
@@ -103,8 +104,13 @@ impl<'s> LayoutView<'s> {
 
     /// Taffy 0.16 drops `aspect_ratio` when sizing a leaf under `SizingMode::ContentSize` (flex
     /// item hypothetical cross size from `flex-basis` / `flex-grow`, DioxusLabs/taffy#804), so an
-    /// empty leaf collapses to 0. Transfer the single known border-box axis through the ratio and
-    /// report the content box Taffy adds padding + border back onto.
+    /// empty leaf collapses to 0. Transfer the single known axis through the ratio and report the
+    /// content box Taffy adds padding + border back onto.
+    ///
+    /// `known` is a border-box size. Like Taffy's own `InherentSize` path (`compute/leaf.rs`:
+    /// ratio applied to the style size, then the `box-sizing` adjustment added), the ratio relates
+    /// the `box-sizing` box: border-box transfers first and subtracts padding + border after;
+    /// content-box subtracts first and transfers the content size.
     fn aspect_ratio_content_size(
         &self,
         n: taffy::NodeId,
@@ -115,18 +121,33 @@ impl<'s> LayoutView<'s> {
         let Some(ratio) = style.aspect_ratio() else {
             return Size::ZERO;
         };
-        let (width, height) = match (known.width, known.height) {
-            (Some(w), None) => (w, w / ratio),
-            (None, Some(h)) => (h * ratio, h),
-            _ => return Size::ZERO,
-        };
+        let finite = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
         let no_calc = |_, _| 0.0;
         let pb = (style.padding().resolve_or_zero(parent_width, no_calc)
             + style.border().resolve_or_zero(parent_width, no_calc))
         .sum_axes();
+        let (width, height) = match (style.box_sizing(), known.width, known.height) {
+            (BoxSizing::BorderBox, Some(w), None) => {
+                let w = finite(w);
+                (w - pb.width, w / ratio - pb.height)
+            }
+            (BoxSizing::BorderBox, None, Some(h)) => {
+                let h = finite(h);
+                (h * ratio - pb.width, h - pb.height)
+            }
+            (BoxSizing::ContentBox, Some(w), None) => {
+                let cw = (finite(w) - pb.width).max(0.0);
+                (cw, cw / ratio)
+            }
+            (BoxSizing::ContentBox, None, Some(h)) => {
+                let ch = (finite(h) - pb.height).max(0.0);
+                (ch * ratio, ch)
+            }
+            _ => return Size::ZERO,
+        };
         Size {
-            width: (width - pb.width).max(0.0),
-            height: (height - pb.height).max(0.0),
+            width: finite(width),
+            height: finite(height),
         }
     }
 }

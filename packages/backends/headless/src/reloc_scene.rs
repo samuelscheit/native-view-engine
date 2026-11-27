@@ -10,7 +10,7 @@ use nve_abi::{
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
     core_realization_order, write_box_shadows_css, BoxShadows, Image, ImageFit, ImageSrc,
-    Interaction, Overflow, TextAlign, TextContent, Typography, Visual,
+    Interaction, TextAlign, TextContent, Typography,
 };
 use nve_engine::{
     encode_scene_reloc, BackendError, LayoutRect, NveApp, RelocBuf, RelocError, SceneRelocInput,
@@ -72,15 +72,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         for &(id, parent_index) in &ordered_ids {
             let (layout, style) = self.effective_layout_and_visual(store, id);
             let mut flags = 0u8;
-            if store.try_row::<Visual>(id).is_some_and(|v| {
-                matches!(
-                    v.overflow_x(),
-                    Overflow::Hidden | Overflow::Scroll | Overflow::Auto
-                ) || matches!(
-                    v.overflow_y(),
-                    Overflow::Hidden | Overflow::Scroll | Overflow::Auto
-                )
-            }) {
+            if crate::node_clips_overflow(store, id) {
                 flags |= SCENE_NODE_CLIP_CHILDREN;
             }
             if store.has::<Typography>(id) {
@@ -130,8 +122,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 .try_row::<TextContent>(id)
                 .map(|t| t.text().to_owned())
                 .unwrap_or_default();
-            let box_shadow = store
-                .try_row::<Visual>(id)
+            let box_shadow = crate::box_visual(store, id)
                 .map(|v| v.box_shadows())
                 .filter(|r| !r.is_none())
                 .and_then(|r| store.resource::<BoxShadows>(r))

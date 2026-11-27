@@ -45,8 +45,19 @@ pub(super) fn assert_matches_layout_of(
                 "hoisted list of {id:?}"
             );
         }
+        assert_eq!(
+            incremental.box_children.get(store, id),
+            fresh.box_children.get(store, id),
+            "box children of {id:?}"
+        );
+        assert_eq!(
+            incremental.box_children.is_flattened(id),
+            fresh.box_children.is_flattened(id),
+            "flattened flag of {id:?}"
+        );
     }
     incremental.hoisted.assert_consistent();
+    incremental.box_children.assert_consistent();
 }
 
 #[test]

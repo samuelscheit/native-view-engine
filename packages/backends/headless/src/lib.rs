@@ -10,6 +10,7 @@
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 mod commit;
+mod hit_test;
 mod interaction;
 pub mod reloc_scene;
 mod snapshot;
@@ -24,12 +25,7 @@ use nve_abi::{
     ColorRgba, FrameId, NativeEvent, NodeId, NveRenderNode, NveSceneTable, NveSceneView,
     SceneNodeInput, SurfaceId, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
-use nve_components::layout_ext::compute_sticky_offset;
-use nve_components::tables::{
-    Interaction, Layout as NveLayout, Overflow, Position, TextContent,
-    Transform as TransformTable, Typography, Visual,
-};
-use nve_components::transform::Transform2D;
+use nve_components::tables::{Interaction, TextContent, Typography};
 use nve_engine::{
     HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport,
 };
@@ -45,7 +41,10 @@ pub use nve_components::layout_ext::{
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
-pub(crate) use snapshot::{is_display_contents, is_display_none, length_to_dim, node_clips_overflow};
+pub(crate) use snapshot::{
+    box_visual, is_display_contents, is_display_none, length_to_dim, node_clips_overflow,
+    without_box_paint,
+};
 pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
 pub use taffy_store::{ResolvedTextStyle, TaffyStoreLayout};
 
@@ -280,150 +279,6 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         self.layout.layout_of(StoreNodeId(id))
     }
 
-    /// Computes sticky offset `(dx, dy)` for `id` against its nearest scroll ancestor.
-    pub fn compute_sticky_delta(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
-        let Some(l) = store.try_row::<NveLayout>(id) else {
-            return (0.0, 0.0);
-        };
-        if l.position() != Position::Sticky {
-            return (0.0, 0.0);
-        }
-        let Some(node_rect) = self.layout.layout_of(id) else {
-            return (0.0, 0.0);
-        };
-        let Some(parent_id) = store.parent(id) else {
-            return (0.0, 0.0);
-        };
-        let Some(cb_rect) = self.layout.layout_of(parent_id) else {
-            return (0.0, 0.0);
-        };
-
-        // Walk up to find nearest scroll container (overflow scroll/auto or non-zero scroll offset).
-        let mut scroller = parent_id;
-        let mut cur = Some(parent_id);
-        let mut scroll = (0.0f32, 0.0f32);
-        let mut steps = 0usize;
-        while let Some(anc) = cur {
-            if steps > MAX_TREE_DEPTH {
-                break;
-            }
-            steps += 1;
-            let raw = anc.raw();
-            let has_offset = self.scroll_offsets.contains_key(&raw);
-            let is_scroll = store.try_row::<Visual>(anc).is_some_and(|v| {
-                matches!(v.overflow_x(), Overflow::Scroll | Overflow::Auto)
-                    || matches!(v.overflow_y(), Overflow::Scroll | Overflow::Auto)
-            });
-            if has_offset || is_scroll {
-                scroller = anc;
-                scroll = self.scroll_offset(raw);
-                break;
-            }
-            cur = store.parent(anc);
-        }
-
-        let vp_rect = self.layout.layout_of(scroller).unwrap_or(LayoutRect {
-            x: 0.0,
-            y: 0.0,
-            width: self.viewport.width,
-            height: self.viewport.height,
-        });
-        let insets = nve_components::layout_ext::PositionInsets {
-            top: length_to_dim(l.inset_top()),
-            right: length_to_dim(l.inset_right()),
-            bottom: length_to_dim(l.inset_bottom()),
-            left: length_to_dim(l.inset_left()),
-        };
-        compute_sticky_offset(
-            (node_rect.x, node_rect.y, node_rect.width, node_rect.height),
-            (cb_rect.x, cb_rect.y, cb_rect.width, cb_rect.height),
-            (vp_rect.x, vp_rect.y, vp_rect.width, vp_rect.height),
-            scroll,
-            insets,
-        )
-    }
-
-    /// Reads the `Transform2D` of `id` from `NodeStore`'s `Transform` table, if attached.
-    pub fn effective_transform(&self, store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
-        let t = store.try_row::<TransformTable>(id)?;
-        let tf = Transform2D {
-            translate_x: t.translate_x(),
-            translate_y: t.translate_y(),
-            scale_x: t.scale_x(),
-            scale_y: t.scale_y(),
-            rotate_deg: t.rotate_deg(),
-            origin_x: t.origin_x(),
-            origin_y: t.origin_y(),
-        };
-        (!tf.is_identity()).then_some(tf)
-    }
-
-    /// Hit-tests `(x, y)` in reverse paint order for the deepest node subscribing to events.
-    pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), false, 0)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn hit_test_rec(
-        &self,
-        store: &NodeStore,
-        id: StoreNodeId,
-        x: f32,
-        y: f32,
-        offset: (f32, f32),
-        inherited_hidden: bool,
-        depth: usize,
-    ) -> Option<NodeId> {
-        if depth > MAX_TREE_DEPTH || !store.is_live(id) || is_display_none(store, id) {
-            return None;
-        }
-        let effective_hidden = store
-            .try_row::<Visual>(id)
-            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
-        let rect = self.layout.layout_of(id)?;
-        let (stx, sty) = self.compute_sticky_delta(store, id);
-        let node_offset = (offset.0 + stx, offset.1 + sty);
-        let r_x = rect.x + node_offset.0;
-        let r_y = rect.y + node_offset.1;
-        let (px, py) = if let Some(tf) = self.effective_transform(store, id) {
-            tf.inverse_map_surface_point(x, y, r_x, r_y, rect.width, rect.height)?
-        } else {
-            (x, y)
-        };
-        let inside = rect.width > 0.0
-            && rect.height > 0.0
-            && px >= r_x
-            && px <= r_x + rect.width
-            && py >= r_y
-            && py <= r_y + rect.height;
-        if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
-            return None;
-        }
-        let (sx, sy) = self.scroll_offset(id.raw());
-        let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
-        for &cid in store.children(id).iter().rev() {
-            if let Some(hit) = self.hit_test_rec(
-                store,
-                cid,
-                px,
-                py,
-                child_offset,
-                effective_hidden,
-                depth + 1,
-            ) {
-                return Some(hit);
-            }
-        }
-        let mask = store
-            .try_row::<Interaction>(id)
-            .map_or(0, |i| i.event_mask());
-        if inside && !effective_hidden && mask != 0 {
-            Some(id.raw())
-        } else {
-            None
-        }
-    }
-
     /// Publishes the latest laid-out `NodeStore` into a zero-copy `NveSceneView` with
     /// `primary_slot` and dense `NveTableView` descriptors ready for native C++/Swift/Kotlin/Dart hosts.
     ///
@@ -470,7 +325,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             }
             let rect = self.layout.layout_of(id).unwrap_or_default();
             let (bg, border_color, border_width, border_radius, opacity, z_index) =
-                if let Some(v) = store.try_row::<Visual>(id) {
+                if let Some(v) = box_visual(store, id) {
                     (
                         v.background().0,
                         v.border_color().0,

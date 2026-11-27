@@ -1,10 +1,10 @@
 use super::*;
 use nve_components::layout_ext::{GridSingleTrack, GridTrack, GridTrackUnit};
 use nve_components::tables::{
-    AlignItems as NveAlignItems, Direction as NveDirection, Display as NveDisplay,
-    FlexDirection as NveFlexDirection, GridItem, GridLayout, GridLine as NveGridLine, GridTracks,
-    JustifyContent as NveJustifyContent, Layout as NveLayout, Position as NvePosition,
-    TextContent, Typography, Visual,
+    AlignItems as NveAlignItems, BoxSizing as NveBoxSizing, Direction as NveDirection,
+    Display as NveDisplay, FlexDirection as NveFlexDirection, GridItem, GridLayout,
+    GridLine as NveGridLine, GridTracks, JustifyContent as NveJustifyContent, Layout as NveLayout,
+    Position as NvePosition, TextContent, Typography, Visual,
 };
 use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
@@ -61,7 +61,10 @@ fn taffy_store_layout_flex_grid_rtl_oof_hidden_text_and_incremental() {
         .template_columns(Some(GridTracks::new(vec![
             GridTrack::Px(120.0),
             GridTrack::Fr(1.0),
-            GridTrack::Repeat(1, GridSingleTrack::MinMax(GridTrackUnit::Px(60.0), GridTrackUnit::Fr(1.0))),
+            GridTrack::Repeat(
+                1,
+                GridSingleTrack::MinMax(GridTrackUnit::Px(60.0), GridTrackUnit::Fr(1.0)),
+            ),
         ])));
     tx.edit::<GridItem>(c1)
         .column_start(NveGridLine::Line(1))
@@ -92,20 +95,37 @@ fn taffy_store_layout_flex_grid_rtl_oof_hidden_text_and_incremental() {
 
     // Root fills viewport.
     let r_root = layout.layout_of(NodeId::ROOT).unwrap();
-    assert_eq!((r_root.x, r_root.y, r_root.width, r_root.height), (0.0, 0.0, 400.0, 600.0));
+    assert_eq!(
+        (r_root.x, r_root.y, r_root.width, r_root.height),
+        (0.0, 0.0, 400.0, 600.0)
+    );
 
     // Row respects root 10px padding.
     let r_row = layout.layout_of(row).unwrap();
-    assert_eq!((r_row.x, r_row.y, r_row.width, r_row.height), (10.0, 10.0, 380.0, 100.0));
+    assert_eq!(
+        (r_row.x, r_row.y, r_row.width, r_row.height),
+        (10.0, 10.0, 380.0, 100.0)
+    );
 
     // Text is measured via HeuristicTextMeasurer (10 chars * 20 * 0.58 = 116, height = 27).
     let r_text = layout.layout_of(text).unwrap();
-    assert!((r_text.width - 116.0).abs() <= 1.0, "text w={}", r_text.width);
-    assert!((r_text.height - 27.0).abs() <= 1.0, "text h={}", r_text.height);
+    assert!(
+        (r_text.width - 116.0).abs() <= 1.0,
+        "text w={}",
+        r_text.width
+    );
+    assert!(
+        (r_text.height - 27.0).abs() <= 1.0,
+        "text h={}",
+        r_text.height
+    );
 
     // Absolute child pinned to bottom-right of row (x = 10 + 380 - 8 - 40 = 342, y = 10 + 100 - 6 - 24 = 80).
     let r_abs = layout.layout_of(abs).unwrap();
-    assert_eq!((r_abs.x, r_abs.y, r_abs.width, r_abs.height), (342.0, 80.0, 40.0, 24.0));
+    assert_eq!(
+        (r_abs.x, r_abs.y, r_abs.width, r_abs.height),
+        (342.0, 80.0, 40.0, 24.0)
+    );
 
     // Display::None collapses to 0x0.
     let r_hid = layout.layout_of(hidden).unwrap();
@@ -139,7 +159,11 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
     let mut store = NodeStore::new();
     let mut layout = TaffyStoreLayout::new();
     let mut changes = ChangeSet::default();
-    let vp = Viewport { width: 400.0, height: 300.0, scale_factor: 1.0 };
+    let vp = Viewport {
+        width: 400.0,
+        height: 300.0,
+        scale_factor: 1.0,
+    };
 
     let (rtl_parent, child, host, abs_child) = {
         let mut tx = store.tx();
@@ -203,12 +227,12 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
 /// (DioxusLabs/taffy#804); `LayoutView::aspect_ratio_content_size` transfers the known axis.
 #[test]
 fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis() {
-    // (container direction, child edits, expected child border-box (width, height))
-    type Edit = fn(&mut nve_store::Transaction<'_>, NodeId);
-    let cases: [(NveFlexDirection, Edit, (f32, f32)); 6] = [
+    // (container direction, container + child edits, expected child border-box (width, height))
+    type Edit = fn(&mut nve_store::Transaction<'_>, NodeId, NodeId);
+    let cases: Vec<(NveFlexDirection, Edit, (f32, f32))> = vec![
         (
             NveFlexDirection::Row,
-            |tx, c| {
+            |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
                     .aspect_ratio(2.0);
@@ -217,14 +241,14 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
         ),
         (
             NveFlexDirection::Row,
-            |tx, c| {
+            |tx, _, c| {
                 tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(4.0);
             },
             (400.0, 100.0),
         ),
         (
             NveFlexDirection::Column,
-            |tx, c| {
+            |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(80.0))
                     .aspect_ratio(2.0);
@@ -234,7 +258,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
         // Padding + border: the ratio applies to the border box (Taffy's default `box-sizing`).
         (
             NveFlexDirection::Row,
-            |tx, c| {
+            |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
                     .aspect_ratio(2.0)
@@ -247,7 +271,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
         ),
         (
             NveFlexDirection::Row,
-            |tx, c| {
+            |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_grow(1.0)
                     .aspect_ratio(8.0)
@@ -259,13 +283,112 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
         // Padding + border larger than the ratio's height: the box never shrinks below them.
         (
             NveFlexDirection::Row,
-            |tx, c| {
+            |tx, _, c| {
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(40.0))
                     .aspect_ratio(4.0)
                     .padding_top(Length::points(20.0));
             },
             (40.0, 20.0),
+        ),
+        // `box-sizing: content-box`: the ratio relates the content box (Taffy `leaf.rs`
+        // InherentSize semantics); flex-basis 100 content + 20 padding = 120 border box.
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .box_sizing(NveBoxSizing::ContentBox)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0)
+                    .padding_left(Length::points(10.0))
+                    .padding_right(Length::points(10.0))
+                    .padding_top(Length::points(10.0))
+                    .padding_bottom(Length::points(10.0));
+            },
+            (120.0, 70.0),
+        ),
+        // `%` padding resolves against the container width (5% of 400 = 20).
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .box_sizing(NveBoxSizing::ContentBox)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0)
+                    .padding_left(Length::percent(5.0));
+            },
+            (120.0, 50.0),
+        ),
+        // Column `flex-grow`: the grown main (height) axis transfers to the cross (width) axis.
+        (
+            NveFlexDirection::Column,
+            |tx, container, c| {
+                tx.edit::<NveLayout>(container)
+                    .height(Length::points(300.0));
+                tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(0.5);
+            },
+            (150.0, 300.0),
+        ),
+        // `max-height` clamps the transferred cross size and, transferred back through the
+        // ratio (CSS Sizing 4 transferred max size), the main size too.
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(1.0)
+                    .max_height(Length::points(40.0));
+            },
+            (40.0, 40.0),
+        ),
+        // A transfer overflowing `f32` falls back to 0 instead of feeding Taffy `inf`.
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(f32::MIN_POSITIVE);
+            },
+            (100.0, 0.0),
+        ),
+        // Invalid ratios are no ratio at all.
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(f32::NAN);
+            },
+            (100.0, 0.0),
+        ),
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(-1.0);
+            },
+            (100.0, 0.0),
+        ),
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(f32::INFINITY);
+            },
+            (100.0, 0.0),
+        ),
+        // An empty text leaf sizes like any empty leaf.
+        (
+            NveFlexDirection::Row,
+            |tx, _, c| {
+                tx.edit::<TextContent>(c).text("");
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0);
+            },
+            (100.0, 50.0),
         ),
     ];
     for (i, (direction, edit, expected)) in cases.into_iter().enumerate() {
@@ -281,7 +404,7 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             .flex_direction(direction)
             .align_items(NveAlignItems::FlexStart)
             .width(Length::points(400.0));
-        edit(&mut tx, leaf);
+        edit(&mut tx, container, leaf);
         tx.commit_into(&mut changes);
         layout.sync_changes(&store, &changes);
         layout.compute_layout(
@@ -296,11 +419,15 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
         let r = layout.layout_of(leaf).expect("leaf laid out");
         assert_eq!((r.width, r.height), expected, "case {i}");
         let c = layout.layout_of(container).expect("container laid out");
-        let main = if direction == NveFlexDirection::Row {
-            c.height
+        let (cross, leaf_cross) = if direction == NveFlexDirection::Row {
+            (c.height, expected.1)
         } else {
-            c.width
+            (c.width, expected.0)
         };
-        assert!(main > 0.0, "case {i}: auto container must size to the leaf");
+        assert_eq!(
+            cross > 0.0,
+            leaf_cross > 0.0,
+            "case {i}: auto container must size to the leaf"
+        );
     }
 }
