@@ -15,7 +15,7 @@ use crate::ffi::{
 use crate::host::{NveHostApi, NveHostCallbacks, NveHostStatus};
 use crate::runtime::{
     NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics,
-    NveRuntimeSceneView, NveRuntimeStatus, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
+    NveRuntimeSceneView, NveRuntimeStatus, NveScrollOffset, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
 };
 use crate::scene::{
     NveNodeMeta, NveRenderNode, NveSceneView, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE,
@@ -337,41 +337,26 @@ const _: () = {
     assert!(offset_of!(NveRuntimeSceneView, text_slab_len) == 28);
     assert!(offset_of!(NveRuntimeSceneView, children_slab_len) == 32);
     assert!(offset_of!(NveRuntimeSceneView, table_count) == 36);
-    assert!(offset_of!(NveRuntimeSceneView, rows) == 40);
-    assert!(offset_of!(NveRuntimeSceneView, rects) == 40 + PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, text_slab) == 40 + 2 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, children_slab) == 40 + 3 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, dirty_indices) == 40 + 4 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, removed_ids) == 40 + 5 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, tables) == 40 + 6 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, scroll_count) == 40);
+    assert!(offset_of!(NveRuntimeSceneView, _reserved) == 44);
+    assert!(offset_of!(NveRuntimeSceneView, rows) == 48);
+    assert!(offset_of!(NveRuntimeSceneView, rects) == 48 + PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, text_slab) == 48 + 2 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, children_slab) == 48 + 3 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, dirty_indices) == 48 + 4 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, removed_ids) == 48 + 5 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, tables) == 48 + 6 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, scroll_offsets) == 48 + 7 * PTR_SIZE);
     assert!(
         size_of::<NveRuntimeSceneView>()
-            == align_up(40 + 7 * PTR_SIZE, align_of::<NveRuntimeSceneView>())
+            == align_up(48 + 8 * PTR_SIZE, align_of::<NveRuntimeSceneView>())
     );
+    assert!(size_of::<NveScrollOffset>() == 12);
+    assert!(offset_of!(NveScrollOffset, node_id) == 0);
+    assert!(offset_of!(NveScrollOffset, x) == 4);
+    assert!(offset_of!(NveScrollOffset, y) == 8);
 
-    assert!(offset_of!(NveRuntimeApi, abi_version) == 0);
-    assert!(offset_of!(NveRuntimeApi, struct_size) == 4);
-    assert!(offset_of!(NveRuntimeApi, schema_hash) == 8);
-    assert!(offset_of!(NveRuntimeApi, create) == 16);
-    assert!(offset_of!(NveRuntimeApi, destroy) == 16 + PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, set_wake_callback) == 16 + 2 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, set_viewport) == 16 + 3 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, attach_app_interface) == 16 + 4 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, submit_nve2) == 16 + 5 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, tick) == 16 + 6 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, dispatch_events) == 16 + 7 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, hit_test) == 16 + 8 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, scroll_by) == 16 + 9 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, scene_acquire) == 16 + 10 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, scene_release) == 16 + 11 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, get_metrics) == 16 + 12 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, pair_connect) == 16 + 13 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, pair_disconnect) == 16 + 14 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, pair_is_connected) == 16 + 15 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 16 * PTR_SIZE);
-    assert!(
-        size_of::<NveRuntimeApi>() == align_up(16 + 17 * PTR_SIZE, align_of::<NveRuntimeApi>())
-    );
+    // `NveRuntimeApi` slots are locked against `RUNTIME_API_SLOTS` in `runtime.rs`.
 };
 
 // Exact 64-bit ABI verification matching the checked-in C/Swift/Dart/TS/Java artifacts.
@@ -449,8 +434,8 @@ const _: () = {
     assert!(size_of::<crate::table::NveTableView>() == 48);
     assert!(align_of::<crate::table::NveTableView>() == 8);
 
-    assert!(size_of::<NveRuntimeSceneView>() == 96);
+    assert!(size_of::<NveRuntimeSceneView>() == 112);
     assert!(align_of::<NveRuntimeSceneView>() == 8);
-    assert!(size_of::<NveRuntimeApi>() == 152);
+    assert!(size_of::<NveRuntimeApi>() == 16 + 24 * 8);
     assert!(align_of::<NveRuntimeApi>() == 8);
 };

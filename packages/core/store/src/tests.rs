@@ -240,6 +240,71 @@ fn resources_dedup_refcount_and_ephemeral_in_place() {
     assert_eq!(s.resource::<Shadows>(id), Some(&Shadows(vec![2.0])));
 }
 
+#[test]
+fn encoded_borrows_canonical_bytes_and_tracks_in_place_rewrites() {
+    let bytes = |v: &[f32]| v.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>();
+    let mut s = NodeStore::new();
+    assert_eq!(s.resources().encoded(crate::ResourceId::NONE), None);
+    assert_eq!(s.resources().encoded(crate::ResourceId(99)), None, "out of range");
+
+    let mut tx = s.tx();
+    let a = tx.create();
+    tx.edit::<Visual>(a).shadows(Some(Shadows(vec![1.0, 2.0])));
+    commit_tx(tx);
+    let interned = s.row::<Visual>(a).shadows();
+    let first = s.resources().encoded(interned).unwrap();
+    assert_eq!(first, bytes(&[1.0, 2.0]).as_slice());
+    assert_eq!(first.as_ptr(), s.resources().encoded(interned).unwrap().as_ptr(), "zero-copy cache");
+
+    let mut tx = s.tx();
+    tx.edit::<Visual>(a).shadows_ephemeral(Shadows(vec![3.0]));
+    commit_tx(tx);
+    let eph = s.row::<Visual>(a).shadows();
+    assert_eq!(s.resources().encoded(eph).unwrap(), bytes(&[3.0]).as_slice(), "lazy ephemeral");
+    let mut tx = s.tx();
+    tx.edit::<Visual>(a).shadows_ephemeral(Shadows(vec![4.0, 5.0]));
+    commit_tx(tx);
+    assert_eq!(s.row::<Visual>(a).shadows(), eph, "rewritten in place");
+    assert_eq!(s.resources().encoded(eph).unwrap(), bytes(&[4.0, 5.0]).as_slice(), "cache reset");
+    let mut wire = Vec::new();
+    assert!(s.resources().encode(eph, &mut wire));
+    assert_eq!(wire, bytes(&[4.0, 5.0]));
+
+    let mut tx = s.tx();
+    tx.remove(a);
+    commit_tx(tx);
+    commit(&mut s);
+    assert_eq!(s.resources().encoded(eph), None, "released ids are stale");
+    assert_eq!(s.resources().encoded(interned), None);
+
+    let mut replica = NodeStore::replica();
+    let id = crate::ResourceId(1);
+    assert!(replica.resources.define_at(id, Shadows::KIND, true, &bytes(&[6.0])));
+    replica.resources.retain(id);
+    assert_eq!(replica.resources().encoded(id).unwrap(), bytes(&[6.0]).as_slice());
+}
+
+#[test]
+fn replica_keeps_codec_less_kinds_as_opaque_exact_bytes() {
+    let mut replica = NodeStore::replica();
+    let kind = nve_abi::Key64::of("test.module_only_kind");
+    let id = crate::ResourceId(2);
+    let payload = [9u8, 8, 7, 6, 5];
+    assert!(replica.resources.define_at(id, kind, false, &payload));
+    replica.resources.retain(id);
+    assert!(replica.resources.is_defined(id), "opaque resources satisfy Patch validation");
+    assert_eq!(replica.resources().kind(id), Some(kind));
+    assert_eq!(replica.resource::<Shadows>(id), None, "no typed view without a codec");
+    assert_eq!(replica.resources().encoded(id), Some(&payload[..]));
+    let mut wire = Vec::new();
+    assert!(replica.resources().encode(id, &mut wire), "re-encodes byte-exact");
+    assert_eq!(wire, payload);
+    // Ephemeral opaque payloads keep their bytes too (nothing could re-encode them).
+    assert!(replica.resources.define_at(crate::ResourceId(4), kind, true, &payload));
+    replica.resources.retain(crate::ResourceId(4));
+    assert_eq!(replica.resources().encoded(crate::ResourceId(4)), Some(&payload[..]));
+}
+
 fn commit_tx(tx: crate::Transaction<'_>) -> ChangeSet {
     let mut c = ChangeSet::default();
     tx.commit_into(&mut c);
@@ -1873,8 +1938,11 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
     use crate::wire::budget::{SESSION_BASE_SLOT_BYTES, WIRE_SLOT_MULTIPLIER};
     use crate::wire::{Op, WireDecoder, WireError};
 
-    // 1. ResourceStore::entries overshoot guard: Frame 1 ResourceId(290_000) (~16.24 MB) +
-    //    Frame 2 ResourceId(290_001) (+1) must clamp capacity to SessionBudget (never 2x to 580k).
+    // 1. ResourceStore::entries overshoot guard: Frame 1 at ~97% of the base budget + Frame 2 one
+    //    slot further must clamp capacity to SessionBudget (never 2x); ~120% is refused. Ids derive
+    //    from `ENTRY_BYTES` so the guard holds whatever an `Entry` weighs.
+    let rid1 =
+        (SESSION_BASE_SLOT_BYTES / 32 * 31 / crate::resource::ResourceStore::ENTRY_BYTES) as u32;
     crate::register_codec::<Shadows>();
     let mut blob = Vec::new();
     Shadows(vec![1.5]).encode(&mut blob);
@@ -1888,9 +1956,9 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
         def.extend_from_slice(&blob);
         build_wire_frame_num(fnum, &[(Op::DefineResources as u8, 0, 1, &def)])
     };
-    let rf1 = build_res(1, 290_000);
-    let rf2 = build_res(2, 290_001);
-    let rf3 = build_res(3, 350_000);
+    let rf1 = build_res(1, rid1);
+    let rf2 = build_res(2, rid1 + 1);
+    let rf3 = build_res(3, rid1 / 5 * 6);
     let mut r_store = NodeStore::replica();
     let mut r_dec = WireDecoder::default();
     let mut changes = ChangeSet::default();
@@ -1898,15 +1966,15 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
         let mut tx = r_store.tx();
         r_dec
             .apply(&mut tx, &rf1)
-            .expect("ResourceId(290_000) fits");
+            .expect("~97% of the budget fits");
         tx.commit_into(&mut changes);
     }
-    assert_eq!(r_store.resources.entries_cap(), 290_001);
+    assert_eq!(r_store.resources.entries_cap(), rid1 as usize + 1);
     {
         let mut tx = r_store.tx();
         r_dec
             .apply(&mut tx, &rf2)
-            .expect("ResourceId(290_001) fits under clamped target");
+            .expect("one more slot fits under clamped target");
         tx.commit_into(&mut changes);
     }
     let max_res_bytes = SESSION_BASE_SLOT_BYTES + (rf1.len() + rf2.len()) * WIRE_SLOT_MULTIPLIER;
@@ -1971,7 +2039,7 @@ fn node_and_resource_slabs_never_double_past_session_budget_and_account_prereser
     pre_store
         .reserve_for_frame0(500_000, 2_000_000)
         .expect("pre-reserve 500k nodes (~16 MB)");
-    let res_100k = build_res(1, 100_000); // ~5.6 MB > ~0.78 MB remaining after 16 MB pre-reserve
+    let res_100k = build_res(1, 100_000); // ~6 MB > ~0.78 MB remaining after 16 MB pre-reserve
     let mut pre_dec = WireDecoder::default();
     let mut tx = pre_store.tx();
     assert_eq!(

@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 
+use nve_abi::RuntimeFnSignature;
 use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiEnumVariantDescriptor,
     AbiFileDescriptor,
@@ -161,6 +162,10 @@ pub struct RuntimeAbiModel<'a> {
     pub file: &'a AbiFileDescriptor,
     pub hash: U64Split,
     pub records: Vec<RecordLayout<'a>>,
+    /// Host callback typedefs (`NveRuntimeWakeFn`, `NveRuntimeMeasureTextFn`).
+    pub callbacks: &'static [RuntimeFnSignature],
+    /// `NveRuntimeApi` function-pointer slots, in vtable order.
+    pub slots: &'static [RuntimeFnSignature],
 }
 
 impl<'a> RuntimeAbiModel<'a> {
@@ -180,6 +185,8 @@ impl<'a> RuntimeAbiModel<'a> {
             file,
             hash: U64Split::new(nve_abi::NVE_RUNTIME_SCHEMA_HASH),
             records,
+            callbacks: nve_abi::RUNTIME_CALLBACK_TYPEDEFS,
+            slots: nve_abi::RUNTIME_API_SLOTS,
         })
     }
 }

@@ -168,6 +168,17 @@ impl SceneLock {
         self.try_acquire_internal_read().then_some(ReadGuard(self))
     }
 
+    /// Internal reader that only succeeds while at least one `scene_acquire` reader is active:
+    /// borrows handed out under it (`resource_payload`) stay valid until that reader releases.
+    pub fn scene_bound_read_guard(&self) -> Option<ReadGuard<'_>> {
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if g.writer || g.scene_readers == 0 || g.internal_readers == u32::MAX {
+            return None;
+        }
+        g.internal_readers += 1;
+        Some(ReadGuard(self))
+    }
+
     pub fn hit_read_guard(&self) -> Option<HitReadGuard<'_>> {
         self.try_acquire_hit_read().then_some(HitReadGuard(self))
     }
