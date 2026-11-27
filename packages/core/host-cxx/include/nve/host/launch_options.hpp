@@ -15,10 +15,13 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "app_state.hpp"
+#include "utf16.hpp"
 
 namespace nve::host {
 
@@ -109,6 +112,31 @@ template <class T>
   if (!o.dylib_path.empty() && !o.pair_uri.empty()) return fail("--dylib and --pair are exclusive");
   return LaunchParse::Run;
 }
+
+#if defined(_WIN32)
+/// `wmain` entry: the UTF-16 command line, converted to UTF-8 (paths stay exact for any code
+/// page); an argument that is not valid UTF-16 is an `Error`. `extra` values are borrowed for
+/// the call only.
+[[nodiscard]] inline LaunchParse parse_launch_args(int argc, const wchar_t* const argv[], LaunchOptions& o,
+                                                   std::string* error, const LaunchExtraFlag& extra = {}) {
+  static_assert(sizeof(wchar_t) == sizeof(char16_t), "Windows wchar_t is UTF-16");
+  std::vector<std::string> utf8;
+  utf8.reserve(argc > 0 ? static_cast<size_t>(argc) : 0u);
+  for (int i = 0; i < argc; ++i) {
+    const std::wstring_view w(argv[i] != nullptr ? argv[i] : L"");
+    std::optional<std::string> s = utf16_to_utf8(std::u16string_view(reinterpret_cast<const char16_t*>(w.data()), w.size()));
+    if (!s) {
+      if (error != nullptr) *error = "argument " + std::to_string(i) + " is not valid UTF-16";
+      return LaunchParse::Error;
+    }
+    utf8.push_back(std::move(*s));
+  }
+  std::vector<const char*> args;
+  args.reserve(utf8.size());
+  for (const std::string& s : utf8) args.push_back(s.c_str());
+  return parse_launch_args(argc, args.data(), o, error, extra);
+}
+#endif
 
 /// Picks the state file after parsing (`builtin_identity` names the built-in app's file).
 inline void resolve_launch_state(LaunchOptions& o, std::string_view builtin_identity) {

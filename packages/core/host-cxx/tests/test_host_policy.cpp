@@ -96,6 +96,17 @@ void test_launch_args() {
   CHECK(parse({"--screenshot", "out.bmp", "--width", "5"}, x, nullptr, extra) == LaunchParse::Run);
   CHECK(shot == "out.bmp" && x.width == 5);
   CHECK(parse({"--screenshot"}, x, nullptr, extra) == LaunchParse::Error);
+#if defined(_WIN32)
+  // `wmain`: UTF-16 paths survive any code page; lone surrogates are rejected.
+  LaunchOptions wo;
+  const wchar_t* wargs[] = {L"shell", L"--dylib", L"C:\\Apps\\\u00e9t\u00e9\\\u65e5\u672c.dll"};
+  CHECK(parse_launch_args(3, wargs, wo, &error) == LaunchParse::Run);
+  CHECK(wo.dylib_path == "C:\\Apps\\\xC3\xA9t\xC3\xA9\\\xE6\x97\xA5\xE6\x9C\xAC.dll");
+  const wchar_t bad_arg[] = {L'-', L'-', static_cast<wchar_t>(0xD800), 0};
+  const wchar_t* bad[] = {L"shell", bad_arg};
+  LaunchOptions wb;
+  CHECK(parse_launch_args(2, bad, wb, &error) == LaunchParse::Error);
+#endif
 }
 
 void test_launch_state() {

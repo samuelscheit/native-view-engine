@@ -1,11 +1,8 @@
 #include "NveGtkInternal.hpp"
 
-#include <nve/host/xxh64.hpp>
-
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -259,15 +256,7 @@ GtkTextureLruCache::~GtkTextureLruCache() {
 }
 
 GdkTexture* GtkTextureLruCache::get(const host::ImageSource& src) {
-  std::string key;
-  if (src.is_url()) {
-    key.assign(src.url);
-  } else {
-    char digest[48];
-    std::snprintf(digest, sizeof(digest), "bytes:%016llx:%zu",
-                  static_cast<unsigned long long>(host::xxh64(src.encoded)), src.encoded.size());
-    key = digest;
-  }
+  const std::string key = host::image_cache_key(src);
   if (src.url.empty() && src.encoded.empty()) {
     return nullptr;
   }
