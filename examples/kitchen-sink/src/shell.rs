@@ -13,7 +13,7 @@ use crate::i18n_copy::copy;
 use crate::sections;
 use crate::state::{
     take_or_default_store, DensityPreset, GallerySection, KitchenSinkState, LocalePreset,
-    SharedKitchenSinkStore, ThemeMode,
+    next_theme_mode, SharedKitchenSinkStore, ThemeMode,
 };
 
 /// Shared reactive state handle passed to section components so every mutation updates both
@@ -56,6 +56,8 @@ pub fn KitchenSinkApp() -> Element {
         .map(|g| g.clone())
         .unwrap_or_default();
     let state = use_signal(|| initial_state);
+    // Root context: the module updates host environment (OS appearance) in place through it.
+    dioxus_core::use_hook(|| dioxus_core::provide_root_context(state));
     let store_sig = use_signal(|| shared_store);
     let handle = AppHandle {
         state,
@@ -148,6 +150,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
     let search_placeholder = copy("Filter components...", pseudo);
     let theme_btn_label = copy(
         match snap.theme_mode {
+            ThemeMode::System => "Theme: Auto",
             ThemeMode::Dark => "Theme: Dark",
             ThemeMode::Light => "Theme: Light",
         },
@@ -224,7 +227,7 @@ fn KitchenSinkShell(handle: AppHandle) -> Element {
                         variant: ButtonVariant::Secondary,
                         size: ButtonSize::Sm,
                         on_press: move |_| {
-                            handle.update(|st| st.theme_mode = st.theme_mode.toggle());
+                            handle.update(|st| st.theme_mode = next_theme_mode(st.theme_mode));
                         },
                         text { "{theme_btn_label}" }
                     }

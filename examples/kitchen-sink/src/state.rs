@@ -6,13 +6,42 @@ use std::sync::{Arc, Mutex};
 
 use nve_components::SpringSpec;
 use nve_i18n::{CalendarDate, Currency, LocaleId};
-use nve_ui::{DateRange, Theme, UiDensity};
+use nve_ui::{AppBrand, Appearance, DateRange, Theme, ThemeConfig, UiDensity};
+
+/// The theme control uses the shared `nve_ui` modes: `System` ("Auto") follows the OS appearance.
+pub use nve_ui::ThemeMode;
 
 /// 16-byte self-documenting ASCII magic identifying a binary Kitchen Sink state payload.
 pub const KITCHEN_SINK_STATE_MAGIC: [u8; 16] = *b"NVE_KITCHEN_SINK";
 
 /// Schema version embedded in binary Kitchen Sink state snapshots.
-pub const KITCHEN_SINK_STATE_VERSION: u32 = 1;
+pub const KITCHEN_SINK_STATE_VERSION: u32 = 2;
+
+/// Next mode of the theme button: Auto → Light → Dark → Auto.
+pub const fn next_theme_mode(mode: ThemeMode) -> ThemeMode {
+    match mode {
+        ThemeMode::System => ThemeMode::Light,
+        ThemeMode::Light => ThemeMode::Dark,
+        ThemeMode::Dark => ThemeMode::System,
+    }
+}
+
+const fn theme_mode_to_u8(mode: ThemeMode) -> u8 {
+    match mode {
+        ThemeMode::System => 0,
+        ThemeMode::Light => 1,
+        ThemeMode::Dark => 2,
+    }
+}
+
+const fn theme_mode_from_u8(raw: u8) -> Option<ThemeMode> {
+    match raw {
+        0 => Some(ThemeMode::System),
+        1 => Some(ThemeMode::Light),
+        2 => Some(ThemeMode::Dark),
+        _ => None,
+    }
+}
 
 const MAX_STR_LEN: usize = 2048;
 const MAX_MULTI_ITEMS: usize = 16;
@@ -110,42 +139,6 @@ impl GallerySection {
             Self::Overlays => "7",
             Self::Layout => "4",
             Self::Motion => "4",
-        }
-    }
-}
-
-/// Topbar color theme mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum ThemeMode {
-    #[default]
-    Dark = 0,
-    Light = 1,
-}
-
-impl ThemeMode {
-    #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Dark),
-            1 => Some(Self::Light),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub const fn toggle(self) -> Self {
-        match self {
-            Self::Dark => Self::Light,
-            Self::Light => Self::Dark,
-        }
-    }
-
-    #[inline]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Dark => "Dark",
-            Self::Light => "Light",
         }
     }
 }
@@ -333,6 +326,8 @@ impl SpringPreset {
 pub struct KitchenSinkState {
     pub active_section: GallerySection,
     pub theme_mode: ThemeMode,
+    /// Host OS appearance (runtime environment, not persisted), followed by [`ThemeMode::System`].
+    pub os: Appearance,
     pub density: DensityPreset,
     pub locale: LocalePreset,
     pub pseudo_locale: bool,
@@ -356,7 +351,8 @@ impl Default for KitchenSinkState {
     fn default() -> Self {
         Self {
             active_section: GallerySection::Overview,
-            theme_mode: ThemeMode::Dark,
+            theme_mode: ThemeMode::System,
+            os: Appearance::DARK,
             density: DensityPreset::Comfortable,
             locale: LocalePreset::EnUs,
             pseudo_locale: false,
@@ -385,11 +381,12 @@ impl Default for KitchenSinkState {
 impl KitchenSinkState {
     /// Builds the active [`Theme`] for `ThemeProvider`.
     pub fn build_theme(&self) -> Theme {
-        let base = match self.theme_mode {
-            ThemeMode::Dark => Theme::DARK,
-            ThemeMode::Light => Theme::LIGHT,
-        };
-        base.with_density(self.density.to_ui_density())
+        ThemeConfig {
+            mode: self.theme_mode,
+            density: self.density.to_ui_density(),
+            ..ThemeConfig::new(AppBrand::Default)
+        }
+        .resolve(self.os)
     }
 }
 
@@ -470,7 +467,7 @@ pub fn encode_kitchen_sink_state(state: &KitchenSinkState) -> Vec<u8> {
     out.extend_from_slice(&KITCHEN_SINK_STATE_MAGIC);
     out.extend_from_slice(&(KITCHEN_SINK_STATE_VERSION as u16).to_le_bytes());
     out.push(state.active_section as u8);
-    out.push(state.theme_mode as u8);
+    out.push(theme_mode_to_u8(state.theme_mode));
     out.push(state.density as u8);
     out.push(state.locale as u8);
 
@@ -543,7 +540,7 @@ pub fn decode_kitchen_sink_state(bytes: &[u8]) -> Option<KitchenSinkState> {
         return None;
     }
     let active_section = GallerySection::from_u8(read_u8(bytes, &mut pos)?)?;
-    let theme_mode = ThemeMode::from_u8(read_u8(bytes, &mut pos)?)?;
+    let theme_mode = theme_mode_from_u8(read_u8(bytes, &mut pos)?)?;
     let density = DensityPreset::from_u8(read_u8(bytes, &mut pos)?)?;
     let locale = LocalePreset::from_u8(read_u8(bytes, &mut pos)?)?;
     let flags = read_u8(bytes, &mut pos)?;
@@ -588,6 +585,7 @@ pub fn decode_kitchen_sink_state(bytes: &[u8]) -> Option<KitchenSinkState> {
     Some(KitchenSinkState {
         active_section,
         theme_mode,
+        os: Appearance::DARK,
         density,
         locale,
         pseudo_locale: (flags & (1 << 0)) != 0,

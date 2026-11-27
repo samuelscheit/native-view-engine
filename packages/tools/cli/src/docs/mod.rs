@@ -4,6 +4,7 @@ pub(crate) mod build;
 pub(crate) mod check;
 pub(crate) mod dev;
 pub(crate) mod examples;
+mod portal;
 
 use std::path::PathBuf;
 

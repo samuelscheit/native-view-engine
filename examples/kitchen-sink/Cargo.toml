@@ -27,6 +27,7 @@ nve-dioxus = { workspace = true }
 nve-store = { workspace = true }
 nve-interop = { workspace = true }
 nve-ui = { workspace = true }
+nve-system-env = { workspace = true }
 nve-i18n = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }

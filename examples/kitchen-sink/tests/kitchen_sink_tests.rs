@@ -67,6 +67,7 @@ fn binary_state_codec_roundtrips_all_fields_and_rejects_corruption() {
     let state = KitchenSinkState {
         active_section: GallerySection::Motion,
         theme_mode: ThemeMode::Light,
+        os: nve_ui::Appearance::DARK,
         density: DensityPreset::Spacious,
         locale: LocalePreset::ArEg,
         pseudo_locale: true,
@@ -331,4 +332,63 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
         "restored tree was:\n{}",
         rep2.backend().render_ascii_tree(rep2.store())
     );
+}
+
+#[test]
+fn os_appearance_host_events_retheme_auto_mode_in_place_and_pinned_modes_ignore_the_os_scheme() {
+    use nve_abi::{ColorScheme, ContrastLevel};
+    use nve_components::tables::Visual;
+    use nve_system_env::ThemeSnapshot;
+
+    let os = |scheme, contrast| {
+        ThemeSnapshot { color_scheme: Some(scheme), contrast, ..ThemeSnapshot::default() }.to_repr_c_bytes()
+    };
+    let root_bg = |m: &KitchenSinkModule| {
+        let store = m.surface().store();
+        store.row::<Visual>(StoreNodeId(find_node_by_test_id(store, "kitchen-sink-root"))).background()
+    };
+    let mut module = KitchenSinkModule::create(1);
+    let mut headless = HeadlessBackend::new();
+    headless.set_viewport(1, Viewport { width: 1440.0, height: 900.0, scale_factor: 1.0 });
+    module.commit_to(1, &mut headless).expect("frame 1");
+    assert!(headless.render_ascii_tree(module.surface().store()).contains("Theme: Auto"));
+    let dark = root_bg(&module);
+    press_test_id(module.surface_mut(), &mut headless, "ks-counter-inc", 2);
+
+    assert!(module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)));
+    assert!(!module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)), "same appearance is a no-op");
+    assert!(!module.dispatch_host_events(b"not a theme snapshot"), "foreign batches are ignored");
+    module.commit_to(3, &mut headless).expect("frame 3");
+    let light = root_bg(&module);
+    assert_ne!(light, dark, "Auto mode follows the OS light scheme");
+    assert!(headless.render_ascii_tree(module.surface().store()).contains("Count: 1"), "re-themed without losing state");
+
+    assert!(module.dispatch_host_events(&os(ColorScheme::Dark, ContrastLevel::High)));
+    module.commit_to(4, &mut headless).expect("frame 4");
+    let hc_dark = root_bg(&module);
+    assert!(hc_dark != dark && hc_dark != light, "high contrast resolves its own polarity");
+
+    // Auto -> Light -> Dark: a pinned scheme ignores the OS scheme.
+    assert!(module.dispatch_host_events(&os(ColorScheme::Light, ContrastLevel::Standard)));
+    press_test_id(module.surface_mut(), &mut headless, "ks-theme-toggle", 5);
+    press_test_id(module.surface_mut(), &mut headless, "ks-theme-toggle", 6);
+    assert!(headless.render_ascii_tree(module.surface().store()).contains("Theme: Dark"));
+    assert_eq!(root_bg(&module), dark, "pinned Dark under a light OS");
+}
+
+/// Native backends do not evaluate `@media` rules yet, so this covers the base (row) layout; the
+/// stacked 390px column is guarded in the browser by `run_docs_e2e.mjs` (collapsed flex items).
+#[test]
+fn two_col_cells_share_the_row_with_equal_widths() {
+    let mut module = KitchenSinkModule::create(1);
+    let mut headless = HeadlessBackend::new();
+    headless.set_viewport(1, Viewport { width: 1440.0, height: 900.0, scale_factor: 1.0 });
+    module.commit_to(1, &mut headless).expect("frame 1");
+    let [counter, cursor, buttons] = ["ks-counter-card", "ks-cursor-card", "ks-buttons-card"].map(|tid| {
+        headless.layout_of(find_node_by_test_id(module.surface().store(), tid)).unwrap_or_default()
+    });
+    assert_eq!(counter.y, cursor.y, "counter and cursor cards share one row");
+    assert!((counter.width - cursor.width).abs() < 1.0, "equal-width cells {counter:?} {cursor:?}");
+    assert!(counter.height > 60.0 && cursor.height > 60.0, "cells keep their content height");
+    assert!(buttons.y >= counter.y + counter.height, "the next row starts below the first");
 }

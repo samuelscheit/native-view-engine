@@ -746,3 +746,28 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
         session.render_html()
     );
 }
+
+#[cfg(all(feature = "app-studio", feature = "app-kitchen-sink"))]
+#[test]
+fn host_appearance_events_reach_both_apps_and_rerender_only_on_change() {
+    use nve_abi::{ColorScheme, ContrastLevel};
+    use nve_system_env::ThemeSnapshot;
+
+    let light = ThemeSnapshot { color_scheme: Some(ColorScheme::Light), contrast: ContrastLevel::Standard, ..ThemeSnapshot::default() }
+        .to_repr_c_bytes();
+    let viewport = Viewport { width: 1280.0, height: 800.0, scale_factor: 1.0 };
+    let mut sessions = [
+        ("studio", WebAppSession::new_studio_workspace(1, WebBackend::new(), viewport)),
+        ("kitchen-sink", WebAppSession::new_kitchen_sink(1, WebBackend::new(), viewport)),
+    ];
+    for (app, session) in &mut sessions {
+        session.render_initial().expect("frame 0");
+        let dark_html = session.render_html();
+        let frame = session.dispatch_host_events(&light).expect("dispatch light appearance");
+        assert!(frame.is_some(), "{app}: a new OS appearance must commit a frame");
+        assert_ne!(session.render_html(), dark_html, "{app}: light appearance must re-theme the DOM");
+    }
+    // Kitchen Sink skips unchanged environments entirely.
+    let (_, ks) = &mut sessions[1];
+    assert!(ks.dispatch_host_events(&light).expect("re-dispatch").is_none());
+}

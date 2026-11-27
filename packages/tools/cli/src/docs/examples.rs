@@ -14,7 +14,7 @@ use nve_backend_web::{
     inject_ssg_with_scripts_into_shell_html, prerender_nve_app_frame0, SsrOutput,
     PRE_HYDRATION_REPLAY_SCRIPT_TAG, WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG,
 };
-use nve_docs_site::GITHUB_REPO_URL;
+use super::portal::render_portal_wrapper_html;
 use nve_engine::Viewport;
 use nve_example_kitchen_sink::KitchenSinkModule;
 use nve_studio_workspace::StudioWorkspaceModule;
@@ -455,7 +455,7 @@ fn inject_cold_ssr_and_bootstrap(index_path: &Path, slug: &str) -> Result<(), St
         .map_err(|e| format!("failed to write {}: {e}", index_path.display()))
 }
 
-fn join_base(base_path: &str, path: &str) -> String {
+pub(super) fn join_base(base_path: &str, path: &str) -> String {
     let b = base_path.trim().trim_matches('/');
     let p = path.trim().trim_start_matches('/');
     if b.is_empty() {
@@ -469,181 +469,4 @@ fn join_base(base_path: &str, path: &str) -> String {
     } else {
         format!("/{b}/{p}")
     }
-}
-
-fn render_portal_wrapper_html(
-    spec: ExampleAppSpec,
-    base_path: &str,
-    iframe_src: Option<&str>,
-    bundle_mode: &str,
-) -> String {
-    let home_href = join_base(base_path, "");
-    let examples_href = join_base(base_path, "examples/");
-    let docs_href = join_base(base_path, "docs/");
-    let studio_href = join_base(base_path, "examples/studio/");
-    let kitchen_sink_href = join_base(base_path, "examples/kitchen-sink/");
-
-    let studio_active = if spec.slug == "studio" { "true" } else { "false" };
-    let kitchen_sink_active = if spec.slug == "kitchen-sink" { "true" } else { "false" };
-    let initial_status = if iframe_src.is_some() {
-        "Booting WASM…"
-    } else {
-        "WASM Not Built"
-    };
-
-    let main_body = match iframe_src {
-        Some(src) => format!(
-            r#"<iframe id="nve-example-frame" class="portal-frame" title="{title}" src="{src}" data-bundle-mode="{bundle_mode}"></iframe>"#,
-            title = spec.title,
-            src = src,
-            bundle_mode = bundle_mode,
-        ),
-        None => format!(
-            r#"<div class="fallback-wrap" data-nve-example-fallback="{slug}">
-  <div class="fallback-card">
-    <div class="fallback-pill">Lazy WASM Bundle Not Staged</div>
-    <h1>{title}</h1>
-    <p>{desc}</p>
-    <p class="fallback-note">This static site was built with <code>--skip-wasm</code> (or without a prebuilt <code>hosts/web-shell</code> bundle). Build and include the live WebAssembly apps locally with:</p>
-    <pre><code>./hosts/web-shell/build.sh
-cargo run --locked -p nve-cli -- docs build --web-shell-dist hosts/web-shell/dist</code></pre>
-    <div class="fallback-actions">
-      <a class="btn-primary" href="{examples_href}">← Back to Examples</a>
-      <a class="btn-secondary" href="{docs_href}">Read Documentation</a>
-    </div>
-  </div>
-</div>"#,
-            slug = spec.slug,
-            title = spec.title,
-            desc = spec.description,
-            examples_href = examples_href,
-            docs_href = docs_href,
-        ),
-    };
-
-    format!(
-        r##"<!doctype html>
-<html lang="en" data-theme="dark">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#09090b" />
-  <title>{title} — Native View Engine</title>
-  <style>
-    *, *::before, *::after {{ box-sizing: border-box; }}
-    html, body {{
-      margin: 0; padding: 0; width: 100%; height: 100%;
-      overflow: hidden;
-      background: #09090b; color: #fafafa;
-      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      -webkit-font-smoothing: antialiased;
-    }}
-    .portal-shell {{ display: flex; flex-direction: column; width: 100%; height: 100vh; }}
-    .portal-bar {{ height: 48px; flex-shrink: 0; width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; background: #111114; border-bottom: 1px solid #27272a; font-size: 13px; }}
-    .portal-left, .portal-right {{ display: flex; align-items: center; gap: 10px; min-width: 0; }}
-    .brand-pill {{ display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: #fafafa; font-weight: 700; }}
-    .brand-mark {{ padding: 2px 7px; border-radius: 6px; background: #0c2231; border: 1px solid #38bdf8; color: #38bdf8; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }}
-    .nav-link {{ padding: 5px 10px; border-radius: 7px; color: #a1a1aa; text-decoration: none; font-weight: 500; border: 1px solid transparent; }}
-    .nav-link:hover {{ color: #fafafa; background: #18181b; border-color: #27272a; }}
-    .switcher {{ display: inline-flex; align-items: center; gap: 3px; padding: 3px; border-radius: 9px; background: #09090b; border: 1px solid #27272a; }}
-    .switch-tab {{ padding: 4px 11px; border-radius: 6px; color: #a1a1aa; text-decoration: none; font-size: 12px; font-weight: 600; }}
-    .switch-tab:hover {{ color: #fafafa; }}
-    .switch-tab[data-active="true"] {{ background: #0c2231; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.55); }}
-    .status-pill {{ padding: 4px 10px; border-radius: 999px; background: #18181b; border: 1px solid #27272a; color: #a1a1aa; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
-    .status-pill[data-ready="true"] {{ color: #4ade80; border-color: rgba(74, 222, 128, 0.45); }}
-    .portal-main {{ flex: 1 1 0%; width: 100%; min-height: 0; display: flex; background: #09090b; }}
-    .portal-frame {{ width: 100%; height: 100%; border: 0; display: block; background: #0b1120; }}
-    .fallback-wrap {{ flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }}
-    .fallback-card {{ max-width: 620px; width: 100%; padding: 28px; border-radius: 14px; background: #111114; border: 1px solid #27272a; display: flex; flex-direction: column; gap: 14px; }}
-    .fallback-pill {{ align-self: flex-start; padding: 3px 10px; border-radius: 999px; background: #0c2231; border: 1px solid #38bdf8; color: #38bdf8; font-size: 11px; font-weight: 700; }}
-    .fallback-card h1 {{ margin: 0; font-size: 24px; color: #fafafa; }}
-    .fallback-card p {{ margin: 0; font-size: 14px; color: #a1a1aa; line-height: 1.55; }}
-    .fallback-card pre {{ margin: 0; padding: 14px; border-radius: 10px; background: #0c0c0f; border: 1px solid #27272a; overflow-x: auto; font-size: 12px; color: #38bdf8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
-    .fallback-actions {{ display: flex; gap: 10px; flex-wrap: wrap; padding-top: 6px; }}
-    .btn-primary {{ padding: 9px 16px; border-radius: 8px; text-decoration: none; background: #38bdf8; color: #09090b; font-size: 13px; font-weight: 700; }}
-    .btn-secondary {{ padding: 9px 16px; border-radius: 8px; text-decoration: none; background: #18181b; border: 1px solid #27272a; color: #fafafa; font-size: 13px; font-weight: 600; }}
-    @media (max-width: 720px) {{ .hide-sm {{ display: none !important; }} }}
-  </style>
-</head>
-<body>
-  <div class="portal-shell" data-nve-example="{slug}" data-bundle-mode="{bundle_mode}">
-    <header class="portal-bar" role="banner">
-      <div class="portal-left">
-        <a class="brand-pill" href="{home_href}" aria-label="Native View Engine home">
-          <span class="brand-mark">NVE</span>
-        </a>
-        <a class="nav-link" data-testid="portal-back-examples" href="{examples_href}">← Back to Examples</a>
-        <a class="nav-link hide-sm" data-testid="portal-docs-link" href="{docs_href}">Docs</a>
-      </div>
-      <div class="portal-right">
-        <nav class="switcher" aria-label="Switch live example">
-          <a class="switch-tab" data-testid="portal-switch-studio" href="{studio_href}" data-active="{studio_active}">Studio</a>
-          <a class="switch-tab" data-testid="portal-switch-kitchen-sink" href="{kitchen_sink_href}" data-active="{kitchen_sink_active}">Kitchen Sink</a>
-        </nav>
-        <button id="portal-reset" class="nav-link" data-testid="portal-reset-btn" type="button" style="background:transparent;cursor:pointer;font-family:inherit;font-size:12px;" title="Clear cached snapshot and reset workspace">Reset</button>
-        <span id="portal-status" class="status-pill hide-sm" data-ready="false">{initial_status}</span>
-        <a class="nav-link hide-sm" href="{github_url}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-      </div>
-    </header>
-    <main class="portal-main">
-      {main_body}
-    </main>
-  </div>
-  <script>
-    (() => {{
-      const frame = document.getElementById("nve-example-frame");
-      const pill = document.getElementById("portal-status");
-      const resetBtn = document.getElementById("portal-reset");
-      if (!frame || !pill) return;
-      const baseSrc = frame.getAttribute("src") || "";
-      if (new URLSearchParams(location.search).get("reset") === "1" && baseSrc && !baseSrc.includes("reset=1")) {{
-        frame.src = baseSrc + (baseSrc.includes("?") ? "&" : "?") + "reset=1";
-      }}
-      if (resetBtn) {{
-        resetBtn.addEventListener("click", () => {{
-          if (!baseSrc) return;
-          pill.textContent = "Resetting…";
-          pill.dataset.ready = "false";
-          frame.src = baseSrc + (baseSrc.includes("?") ? "&" : "?") + "reset=1";
-        }});
-      }}
-      const poll = () => {{
-        try {{
-          const doc = frame.contentDocument;
-          if (!doc) return;
-          const app = doc.getElementById("app");
-          if (app && app.dataset.nveLive === "1") {{
-            pill.textContent = "WASM Live ({bundle_mode})";
-            pill.dataset.ready = "true";
-            return;
-          }}
-          if (app && app.dataset.nveRestored === "1") {{
-            pill.textContent = "Instant Snapshot · Booting…";
-          }} else if (app && app.querySelector("[data-nve-id]")) {{
-            pill.textContent = "Instant SSR · Booting…";
-          }}
-        }} catch {{}}
-        setTimeout(poll, 150);
-      }};
-      frame.addEventListener("load", poll);
-      poll();
-    }})();
-  </script>
-</body>
-</html>
-"##,
-        title = spec.title,
-        slug = spec.slug,
-        bundle_mode = bundle_mode,
-        home_href = home_href,
-        examples_href = examples_href,
-        docs_href = docs_href,
-        studio_href = studio_href,
-        kitchen_sink_href = kitchen_sink_href,
-        studio_active = studio_active,
-        kitchen_sink_active = kitchen_sink_active,
-        initial_status = initial_status,
-        github_url = GITHUB_REPO_URL,
-        main_body = main_body,
-    )
 }

@@ -42,6 +42,7 @@ scene-view = []
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-system-env = { workspace = true }
 nve-store = { workspace = true }
 nve-components = { workspace = true }
 nve-canvas = { workspace = true, optional = true }
@@ -74,7 +75,7 @@ tungstenite = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
-web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "MutationObserver", "MutationObserverInit", "NodeList", "Performance", "ResizeObserver", "Storage", "VisibilityState"] }
+web-sys = { workspace = true, features = ["BinaryType", "BroadcastChannel", "CloseEvent", "ErrorEvent", "History", "Location", "MediaQueryList", "MutationObserver", "MutationObserverInit", "NodeList", "Performance", "ResizeObserver", "Storage", "VisibilityState"] }
 # Global allocator on wasm32: smaller (-2.5 KB brotli) and faster than std's dlmalloc
 # (docs/research/wasm-size/runtime.md).
 talc = "5.1.1"

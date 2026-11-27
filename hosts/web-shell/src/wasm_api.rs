@@ -15,6 +15,9 @@ use crate::wasm_hydrate::SsrRenderResult;
 #[cfg(feature = "dev")]
 use crate::wasm_hotreload::{connect_hot_reload, HotReloadSocket};
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
+use crate::wasm_appearance::{
+    browser_theme_snapshot, dispatch_appearance, install_appearance_listener, AppearanceListener,
+};
 #[cfg(all(feature = "dev", feature = "scene-view"))]
 use crate::wasm_pair::active_paired_scene_view_ptr;
 #[cfg(feature = "multi-window")]
@@ -50,6 +53,7 @@ struct ActiveShell {
     #[cfg(feature = "dev")]
     _hot_reload: Option<HotReloadSocket>,
     _resize_listener: Option<WindowResizeListener>,
+    _appearance_listener: Option<AppearanceListener>,
     _snapshot_guard: Option<SnapshotPersistenceGuard>,
     #[cfg(feature = "app-issues")]
     _async_wake: WebAsyncWakeGuard,
@@ -501,8 +505,20 @@ where
         if boot_rendered && let Some(t) = snapshot_trigger.as_ref() {
             t.schedule_debounced();
         }
+        // OS appearance in the same task as Frame 0: Frame 0 still matches (and hydrates) the
+        // default-appearance SSR, and the browser never paints it before the OS polarity lands.
+        dispatch_appearance(&mut guard, browser_theme_snapshot(&window));
     }
     let _ = container.set_attribute("data-nve-live", "1");
+
+    let session_for_appearance = Rc::downgrade(&session);
+    let appearance_listener = install_appearance_listener(&window, move |theme| {
+        if let Some(session) = session_for_appearance.upgrade()
+            && let Ok(mut guard) = session.try_borrow_mut()
+        {
+            dispatch_appearance(&mut guard, theme);
+        }
+    });
 
     let session_for_resize = Rc::downgrade(&session);
     let resize_listener = install_resize_listener(&window, container_for_resize, move |next_vp| {
@@ -553,6 +569,7 @@ where
                 #[cfg(feature = "dev")]
                 _hot_reload: hot_reload,
                 _resize_listener: resize_listener,
+                _appearance_listener: appearance_listener,
                 _snapshot_guard: snapshot_guard,
                 #[cfg(feature = "app-issues")]
                 _async_wake: async_wake,

@@ -33,7 +33,9 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     // the container would never scroll. `auto` only binds on the parent's main axis.
     ":where(.nve-sy>.nve){min-height:auto}",
     ":where(.nve-sx>.nve){min-width:auto}",
-    ":where(.nve-r){display:flex;flex-direction:column;width:100%;min-width:0}",
+    // The surface root fills its host: a flex host container (the web shell's `#app`) grows it
+    // to the full viewport, like native surfaces, instead of ending where the content does.
+    ":where(.nve-r){display:flex;flex-direction:column;flex:1 1 auto;width:100%;min-width:0}",
     ":where(span.nve){display:inline;color:inherit;font-size:inherit;font-weight:inherit;text-align:inherit}",
     ":where(.nve:is(strong,em,s,kbd)){display:inline}",
     ":where(br.nve){display:inline;width:auto;height:auto}",

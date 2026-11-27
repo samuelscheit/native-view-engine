@@ -199,6 +199,21 @@ impl SessionApp {
         }
     }
 
+    /// Forwards an `NVE_IFACE_HOST` host-event batch (e.g. the OS `ThemeSnapshot`) to the app.
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+            Self::Dioxus(_) => {
+                let _ = batch;
+                false
+            }
+            #[cfg(feature = "app-studio")]
+            Self::Studio(module) => module.dispatch_host_events(batch),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.dispatch_host_events(batch),
+        }
+    }
+
     fn snapshot_state(&mut self) -> Option<Vec<u8>> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
@@ -290,7 +305,7 @@ impl WebAppSession {
         viewport: Viewport,
         state_bytes: Option<&[u8]>,
     ) -> (Self, bool) {
-        // The browser reports its appearance through host events; until then the Studio defaults.
+        // Deterministic defaults: the shell delivers the OS appearance right after Frame 0.
         let services = std::sync::Arc::new(nve_studio_workspace::StudioHostServices::new());
         let mut module = StudioWorkspaceModule::with_services(surface_id, services);
         let restored = state_bytes.is_some_and(|bytes| module.try_restore_state(bytes));
@@ -543,6 +558,14 @@ impl WebAppSession {
             },
         };
         if !self.app.dispatch_events(&[ev]) {
+            return Ok(None);
+        }
+        self.render_and_submit().map(Some)
+    }
+
+    /// Forwards a host-event batch (e.g. the OS `ThemeSnapshot`); commits a frame on change.
+    pub fn dispatch_host_events(&mut self, batch: &[u8]) -> Result<Option<FrameTiming>, BackendError> {
+        if !self.app.dispatch_host_events(batch) {
             return Ok(None);
         }
         self.render_and_submit().map(Some)

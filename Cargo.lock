@@ -2666,6 +2666,7 @@ dependencies = [
  "nve-mdx",
  "nve-store",
  "nve-studio-workspace",
+ "nve-ui",
  "nve-wire",
  "serde_json",
  "tungstenite",
@@ -2864,6 +2865,7 @@ dependencies = [
  "nve-i18n",
  "nve-interop",
  "nve-store",
+ "nve-system-env",
  "nve-ui",
  "nve-web-html-web",
 ]
@@ -3328,6 +3330,7 @@ dependencies = [
  "nve-rpc",
  "nve-store",
  "nve-studio-workspace",
+ "nve-system-env",
  "nve-tv-web",
  "nve-ui",
  "nve-web-html",

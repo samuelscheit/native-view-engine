@@ -22,9 +22,12 @@ pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
+    ColorScheme, FrameId, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize, NvePropsRef,
     NveSizeConstraints, SurfaceId,
 };
+use nve_dioxus::prelude::{Signal, WritableExt};
+use nve_system_env::ThemeSnapshot;
+use nve_ui::Appearance;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{HotPatchMsg, NveApp};
 
@@ -118,10 +121,27 @@ impl KitchenSinkModule {
             return false;
         };
         if let Ok(mut guard) = self.store.lock() {
-            *guard = restored;
+            // The OS appearance is host environment, not snapshot state: keep the live one.
+            *guard = KitchenSinkState { os: guard.os, ..restored };
         }
         self.surface = create_surface(self.surface_id);
         self.mounted = false;
+        true
+    }
+
+    /// Applies the host OS appearance (followed by the `Auto` theme mode) in place: the mounted
+    /// tree's state signal is written through the root scope, so the surface is never rebuilt.
+    pub fn set_os_appearance(&mut self, os: Appearance) -> bool {
+        match self.store.lock() {
+            Ok(mut guard) if guard.os != os => guard.os = os,
+            _ => return false,
+        }
+        if self.mounted
+            && let Some(mut live) =
+                self.surface.in_root_scope(dioxus_core::try_consume_context::<Signal<KitchenSinkState>>)
+        {
+            live.write().os = os;
+        }
         true
     }
 }
@@ -153,6 +173,16 @@ impl NveApp for KitchenSinkModule {
 
     fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {
         self.surface.dispatch_direct_events(events)
+    }
+
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        let Ok(theme) = ThemeSnapshot::from_repr_c_bytes(batch) else {
+            return false;
+        };
+        self.set_os_appearance(Appearance {
+            scheme: theme.color_scheme.unwrap_or(ColorScheme::Dark),
+            contrast: theme.contrast,
+        })
     }
 
     fn measure(&mut self, constraints: NveSizeConstraints) -> NveIntrinsicSize {

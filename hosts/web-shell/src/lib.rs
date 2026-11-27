@@ -63,6 +63,8 @@ pub mod wasm_probe;
 mod wasm_snapshot;
 #[cfg(target_arch = "wasm32")]
 mod wasm_wake;
+#[cfg(target_arch = "wasm32")]
+mod wasm_appearance;
 
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
 
