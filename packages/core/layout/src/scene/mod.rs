@@ -22,7 +22,7 @@ use nve_store::{ChangeSet, NodeId, NodeStore};
 use crate::{HeuristicTextMeasurer, StoreLayoutEngine, TaffyStoreLayout, TextMeasurer};
 
 pub use scroll::{ScrollOffsets, compute_scroll_content_size};
-pub use snapshot::{is_display_none, layout_snapshot_of, length_to_dim, visual_snapshot_of};
+pub use snapshot::{layout_snapshot_of, length_to_dim, visual_snapshot_of};
 
 /// One surface's laid-out view of a `NodeStore`.
 ///

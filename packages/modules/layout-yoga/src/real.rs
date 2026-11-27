@@ -10,7 +10,7 @@ use nve_layout::{
     HeuristicTextMeasurer, MAX_TREE_DEPTH, ResolvedTextStyle, StoreLayoutEngine, TextMeasurer,
     resolve_inherited_text,
 };
-use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableSlot};
 
 use crate::YogaUnavailableError;
 use crate::ffi::{
@@ -19,16 +19,11 @@ use crate::ffi::{
     nve_yg_node_apply_layout_ext, nve_yg_node_calculate_layout, nve_yg_node_detach_and_clear,
     nve_yg_node_free, nve_yg_node_get_layout_rect, nve_yg_node_mark_dirty,
     nve_yg_node_new_with_config, nve_yg_node_set_children, nve_yg_node_set_fixed_size,
-    nve_yg_node_set_measure_hook,
 };
-use crate::measure::{RawMeasureState, preserve_scroll_child_intrinsic_size};
-
-struct YogaNodeEntry {
-    yg_node: YGNodeRef,
-    is_text: bool,
-    measure_attached: bool,
-    measure_state: Option<RawMeasureState>,
-}
+use crate::measure::{
+    RawMeasureState, YogaNodeEntry, node_depth_within_limit, preserve_scroll_child_intrinsic_size,
+    typography_measure_word_mask,
+};
 
 /// Real React Native Yoga C++20 implementation of [`StoreLayoutEngine`].
 pub struct YogaLayoutEngine {
@@ -44,9 +39,11 @@ pub struct YogaLayoutEngine {
     sync_stack: Vec<(NodeId, usize, bool)>,
     /// Reusable stack for iterative bounded rect collection `(node_id, ox, oy, depth)`.
     rect_stack: Vec<(NodeId, f32, f32, usize)>,
+    /// Monotonic per-`sync_changes` epoch used to avoid redundant FFI prop/child re-syncs.
+    sync_epoch: u32,
     /// Whether the active root's full subtree has been synced after `new` / `reset`.
     tree_seeded: bool,
-    /// Set when structure or `Typography` changed so text nodes refresh inherited font metrics.
+    /// Set when structure or layout/measure `Typography` changed so text nodes refresh metrics.
     typo_dirty: bool,
     /// `StoreLayoutEngine::compute_layout` self-gate: set by every layout-affecting change,
     /// measurer swap, caught panic, and reset; cleared only after a clean completed pass.
@@ -89,6 +86,7 @@ impl YogaLayoutEngine {
             typo_stack: Vec::new(),
             sync_stack: Vec::new(),
             rect_stack: Vec::new(),
+            sync_epoch: 0,
             tree_seeded: false,
             typo_dirty: true,
             layout_dirty: true,
@@ -96,56 +94,37 @@ impl YogaLayoutEngine {
         })
     }
 
-    fn attach_measure_hook(
-        entry: &mut YogaNodeEntry,
-        measurer: &Arc<dyn TextMeasurer>,
-        panicked: &Arc<AtomicBool>,
-    ) {
-        let state = entry.measure_state.get_or_insert_with(|| {
-            RawMeasureState::new(Arc::clone(measurer), Arc::clone(panicked))
-        });
-        let hook_ptr = state.hook_ptr();
-        // SAFETY: `entry.yg_node` is a live owned Yoga node and `hook_ptr` points into the
-        // heap-allocated `RawMeasureState` owned by `entry` (detached before free).
-        entry.measure_attached = unsafe { nve_yg_node_set_measure_hook(entry.yg_node, hook_ptr) };
+    fn next_sync_epoch(&mut self) -> u32 {
+        self.sync_epoch = self.sync_epoch.wrapping_add(1);
+        if self.sync_epoch == 0 {
+            for entry in self.nodes.values_mut() {
+                entry.synced_epoch = 0;
+                entry.children_synced_epoch = 0;
+            }
+            self.sync_epoch = 1;
+        }
+        self.sync_epoch
     }
 
-    fn detach_and_free_measure_state(entry: &mut YogaNodeEntry) {
-        // SAFETY: `entry.yg_node` is a live owned Yoga node; clearing hook before freeing
-        // `measure_state` ensures Yoga never dereferences freed user_data.
-        unsafe {
-            let _ = nve_yg_node_set_measure_hook(entry.yg_node, std::ptr::null_mut());
-        }
-        entry.measure_attached = false;
-        if let Some(state) = entry.measure_state.take() {
-            // SAFETY: Hook and context were cleared above.
-            unsafe { state.free_after_detach() };
-        }
-    }
-
-    fn ensure_node(&mut self, store: &NodeStore, id: NodeId) -> bool {
-        if !self.nodes.contains_key(&id) {
+    fn ensure_node(&mut self, store: &NodeStore, id: NodeId, epoch: u32) -> bool {
+        if let Some(entry) = self.nodes.get(&id) {
+            if epoch != 0 && entry.synced_epoch == epoch {
+                return true;
+            }
+        } else {
             // SAFETY: `self.config` is a live `YGConfigRef` owned by `self`.
             let yg_node = unsafe { nve_yg_node_new_with_config(self.config) };
             if yg_node.is_null() {
                 self.layout_dirty = true;
                 return false;
             }
-            self.nodes.insert(
-                id,
-                YogaNodeEntry {
-                    yg_node,
-                    is_text: false,
-                    measure_attached: false,
-                    measure_state: None,
-                },
-            );
+            self.nodes.insert(id, YogaNodeEntry::new(yg_node));
         }
-        self.sync_node_props(store, id);
+        self.sync_node_props(store, id, epoch);
         true
     }
 
-    fn sync_node_props(&mut self, store: &NodeStore, id: NodeId) {
+    fn sync_node_props(&mut self, store: &NodeStore, id: NodeId, epoch: u32) {
         let Some(entry) = self.nodes.get_mut(&id) else {
             return;
         };
@@ -160,7 +139,9 @@ impl YogaLayoutEngine {
                 ..Default::default()
             }
         };
-        if props.flex_shrink > 0.0 && preserve_scroll_child_intrinsic_size(store, id) {
+        let preserve = preserve_scroll_child_intrinsic_size(store, id);
+        entry.shrink_preserved = preserve;
+        if props.flex_shrink > 0.0 && preserve {
             props.flex_shrink = 0.0;
         }
         let mut ext = NveYogaLayoutExt::from_store(layout.as_ref(), visual.as_ref());
@@ -195,7 +176,7 @@ impl YogaLayoutEngine {
                 }
             });
             if !entry.measure_attached && store.children(id).is_empty() {
-                Self::attach_measure_hook(entry, &self.text_measurer, &self.measurer_panicked);
+                entry.attach_measure_hook(&self.text_measurer, &self.measurer_panicked);
             }
             if text_changed && entry.measure_attached {
                 // SAFETY: `entry.yg_node` is a live owned Yoga node.
@@ -203,14 +184,50 @@ impl YogaLayoutEngine {
             }
         } else if entry.is_text || entry.measure_state.is_some() {
             entry.is_text = false;
-            Self::detach_and_free_measure_state(entry);
+            entry.detach_and_free_measure_state();
+        }
+        if epoch != 0 {
+            entry.synced_epoch = epoch;
         }
     }
 
-    fn resync_live_children_props(&mut self, store: &NodeStore, parent: NodeId) {
+    /// Walks one table's delta in linear `O(changed rows)` time and re-syncs direct children
+    /// whose cached `shrink_preserved` flag flipped.
+    fn resync_table_delta_children(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        slot: TableSlot,
+        word_mask: u32,
+        epoch: u32,
+    ) {
+        let Some(td) = changes.table(slot) else {
+            return;
+        };
+        for (&id, &m) in td.nodes.iter().zip(&td.masks) {
+            if m & word_mask != 0 && store.is_live(id) && !store.children(id).is_empty() {
+                self.resync_children_if_shrink_changed(store, id, epoch);
+            }
+        }
+        for &id in &td.detached {
+            if store.is_live(id) && !store.children(id).is_empty() {
+                self.resync_children_if_shrink_changed(store, id, epoch);
+            }
+        }
+    }
+
+    /// Re-syncs direct children of `parent` ONLY when a child's cached `shrink_preserved` bit
+    /// actually flips (avoiding O(children) FFI fan-out when appending to a large container).
+    fn resync_children_if_shrink_changed(&mut self, store: &NodeStore, parent: NodeId, epoch: u32) {
         for &cid in store.children(parent) {
-            if self.nodes.contains_key(&cid) {
-                self.sync_node_props(store, cid);
+            let Some(entry) = self.nodes.get(&cid) else {
+                continue;
+            };
+            if epoch != 0 && entry.synced_epoch == epoch {
+                continue;
+            }
+            if preserve_scroll_child_intrinsic_size(store, cid) != entry.shrink_preserved {
+                self.sync_node_props(store, cid, epoch);
             }
         }
     }
@@ -258,10 +275,17 @@ impl YogaLayoutEngine {
         }
     }
 
-    fn sync_children_of(&mut self, store: &NodeStore, parent: NodeId) {
-        let Some(parent_yg) = self.nodes.get(&parent).map(|e| e.yg_node) else {
+    fn sync_children_of(&mut self, store: &NodeStore, parent: NodeId, epoch: u32) {
+        let Some((parent_yg, already_synced)) = self
+            .nodes
+            .get(&parent)
+            .map(|e| (e.yg_node, epoch != 0 && e.children_synced_epoch == epoch))
+        else {
             return;
         };
+        if already_synced {
+            return;
+        }
         self.child_scratch.clear();
         for &cid in store.children(parent) {
             if let Some(child_entry) = self.nodes.get(&cid) {
@@ -279,12 +303,15 @@ impl YogaLayoutEngine {
             );
         }
         if let Some(entry) = self.nodes.get_mut(&parent) {
+            if epoch != 0 {
+                entry.children_synced_epoch = epoch;
+            }
             if has_children {
                 // `nve_yg_node_set_children` cleared Yoga's measure hook so Yoga permits children.
                 entry.measure_attached = false;
             } else if entry.is_text && !entry.measure_attached {
                 // Re-attach the text measure hook when all temporary children are removed.
-                Self::attach_measure_hook(entry, &self.text_measurer, &self.measurer_panicked);
+                entry.attach_measure_hook(&self.text_measurer, &self.measurer_panicked);
                 // SAFETY: `entry.yg_node` is a live owned Yoga node with a freshly attached hook.
                 unsafe { nve_yg_node_mark_dirty(entry.yg_node) };
                 self.typo_dirty = true;
@@ -294,6 +321,7 @@ impl YogaLayoutEngine {
 
     /// Iteratively seeds `root` and all live descendants up to [`MAX_TREE_DEPTH`].
     fn sync_subtree_if_unseen(&mut self, store: &NodeStore, root: NodeId) {
+        let epoch = self.next_sync_epoch();
         self.sync_stack.clear();
         self.sync_stack.push((root, 0, false));
         while let Some((id, depth, children_pushed)) = self.sync_stack.pop() {
@@ -301,10 +329,10 @@ impl YogaLayoutEngine {
                 continue;
             }
             if children_pushed {
-                self.sync_children_of(store, id);
+                self.sync_children_of(store, id, epoch);
                 continue;
             }
-            if !self.ensure_node(store, id) {
+            if !self.ensure_node(store, id, epoch) {
                 continue;
             }
             let children = store.children(id);
@@ -314,7 +342,7 @@ impl YogaLayoutEngine {
                     self.sync_stack.push((child, depth + 1, false));
                 }
             } else {
-                self.sync_children_of(store, id);
+                self.sync_children_of(store, id, epoch);
             }
         }
     }
@@ -391,7 +419,14 @@ impl StoreLayoutEngine for YogaLayoutEngine {
 
     fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
         let layout_effect = nve_store::effect::LAYOUT | nve_store::effect::MEASURE;
-        let typo_changed = changes.table(Typography::slot()).is_some();
+        let typo_measure_mask = typography_measure_word_mask(layout_effect);
+        let typo_changed = changes.table(Typography::slot()).is_some_and(|td| {
+            !td.detached.is_empty() || td.masks.iter().any(|&m| m & typo_measure_mask != 0)
+        });
+        let scroll_axes_mask = 1u32 << Scroll::AXES.word();
+        let scroll_axes_changed = changes.table(Scroll::slot()).is_some_and(|td| {
+            !td.detached.is_empty() || td.masks.iter().any(|&m| m & scroll_axes_mask != 0)
+        });
         if !changes.created.is_empty()
             || !changes.removed.is_empty()
             || !changes.children.is_empty()
@@ -399,7 +434,8 @@ impl StoreLayoutEngine for YogaLayoutEngine {
         {
             self.typo_dirty = true;
         }
-        let any_layout_touch = changes.effects.iter().any(|&fx| fx & layout_effect != 0);
+        let any_layout_touch =
+            scroll_axes_changed || changes.effects.iter().any(|&fx| fx & layout_effect != 0);
         if !changes.created.is_empty()
             || !changes.removed.is_empty()
             || !changes.children.is_empty()
@@ -407,83 +443,82 @@ impl StoreLayoutEngine for YogaLayoutEngine {
         {
             self.layout_dirty = true;
         }
+
+        // Fast-path clean or paint-only frames with zero FFI work or epoch churn.
+        if changes.removed.is_empty()
+            && changes.created.is_empty()
+            && changes.children.is_empty()
+            && !any_layout_touch
+        {
+            return;
+        }
+
+        let epoch = self.next_sync_epoch();
+
         for &id in &changes.removed {
-            if let Some(mut entry) = self.nodes.remove(&id) {
-                // SAFETY: `entry.yg_node` is exclusively owned, detached before free, and
-                // freed before `entry.measure_state` is reclaimed.
-                unsafe {
-                    nve_yg_node_detach_and_clear(entry.yg_node);
-                    nve_yg_node_free(entry.yg_node);
-                }
-                if let Some(state) = entry.measure_state.take() {
-                    // SAFETY: `yg_node` was detached and freed above.
-                    unsafe { state.free_after_detach() };
-                }
+            if let Some(entry) = self.nodes.remove(&id) {
+                entry.detach_and_free_node();
             }
             self.computed_rects.remove(&id);
         }
+
         for &id in &changes.created {
-            if store.is_live(id) {
-                let _ = self.ensure_node(store, id);
+            if store.is_live(id) && node_depth_within_limit(store, id).is_some() {
+                let _ = self.ensure_node(store, id, epoch);
             }
         }
         // Attach children already present on newly created nodes (e.g. live engine swap or
         // snapshot hydrate where `changes.created` lists the live tree without `changes.children`).
         for &id in &changes.created {
-            if store.is_live(id) && !store.children(id).is_empty() {
-                self.sync_children_of(store, id);
+            if store.is_live(id)
+                && !store.children(id).is_empty()
+                && node_depth_within_limit(store, id).is_some_and(|d| d < MAX_TREE_DEPTH)
+            {
+                self.sync_children_of(store, id, epoch);
             }
         }
-
-        // Only parents whose `Layout` (direction), `Visual` (overflow), or `Scroll` row changed
-        // can flip `preserve_scroll_child_intrinsic_size` for their direct children.
-        let scroll_parent_candidates = changes.table(Layout::slot()).is_some()
-            || changes.table(Scroll::slot()).is_some()
-            || changes.table(Visual::slot()).is_some();
-        let layout_resync_mask =
-            (1u32 << Visual::OVERFLOW_X.word()) | (1u32 << Visual::OVERFLOW_Y.word());
-        let parent_scroll_props_changed = |id: NodeId| -> bool {
-            if !scroll_parent_candidates {
-                return false;
-            }
-            if changes
-                .table(Scroll::slot())
-                .is_some_and(|td| td.nodes.contains(&id) || td.detached.contains(&id))
-            {
-                return true;
-            }
-            if changes
-                .table(Layout::slot())
-                .is_some_and(|td| td.nodes.contains(&id) || td.detached.contains(&id))
-            {
-                return true;
-            }
-            changes.table(Visual::slot()).is_some_and(|td| {
-                td.detached.contains(&id)
-                    || td
-                        .nodes
-                        .iter()
-                        .zip(&td.masks)
-                        .any(|(&nid, &m)| nid == id && (m & layout_resync_mask != 0))
-            })
-        };
 
         for (&id, &fx) in changes.touched.iter().zip(&changes.effects) {
-            if fx & layout_effect == 0 || !store.is_live(id) {
+            if fx & layout_effect == 0
+                || !store.is_live(id)
+                || node_depth_within_limit(store, id).is_none()
+            {
                 continue;
             }
-            let _ = self.ensure_node(store, id);
-            if !store.children(id).is_empty() && parent_scroll_props_changed(id) {
-                self.resync_live_children_props(store, id);
-            }
+            let _ = self.ensure_node(store, id, epoch);
         }
+
+        // Linear O(changed rows) check over the three tables that can flip a parent's
+        // `preserve_scroll_child_intrinsic_size` result for its direct children.
+        self.resync_table_delta_children(store, changes, Scroll::slot(), scroll_axes_mask, epoch);
+        self.resync_table_delta_children(
+            store,
+            changes,
+            Layout::slot(),
+            1u32 << Layout::FLEX_DIRECTION.word(),
+            epoch,
+        );
+        self.resync_table_delta_children(
+            store,
+            changes,
+            Visual::slot(),
+            (1u32 << Visual::OVERFLOW_X.word()) | (1u32 << Visual::OVERFLOW_Y.word()),
+            epoch,
+        );
+
         for &parent in &changes.children {
-            if store.is_live(parent) {
-                let _ = self.ensure_node(store, parent);
+            if !store.is_live(parent) {
+                continue;
+            }
+            let Some(depth) = node_depth_within_limit(store, parent) else {
+                continue;
+            };
+            let _ = self.ensure_node(store, parent, epoch);
+            if depth < MAX_TREE_DEPTH {
                 if !store.children(parent).is_empty() {
-                    self.resync_live_children_props(store, parent);
+                    self.resync_children_if_shrink_changed(store, parent, epoch);
                 }
-                self.sync_children_of(store, parent);
+                self.sync_children_of(store, parent, epoch);
             }
         }
     }
@@ -500,7 +535,7 @@ impl StoreLayoutEngine for YogaLayoutEngine {
         {
             // Restore the previous root's own `Layout` width/height (undoing fixed viewport size).
             if store.is_live(prev_root) && self.nodes.contains_key(&prev_root) {
-                self.sync_node_props(store, prev_root);
+                self.sync_node_props(store, prev_root, 0);
             }
             self.tree_seeded = false;
             self.typo_dirty = true;

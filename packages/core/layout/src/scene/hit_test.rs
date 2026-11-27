@@ -6,7 +6,7 @@ use nve_abi::{EventMask, NodeId as AbiNodeId};
 use nve_components::layout_ext::compute_sticky_offset;
 use nve_components::tables::{
     Interaction, Layout as NveLayout, Overflow, Position, Scroll, Transform as TransformTable,
-    Visual, generates_box, visual_clips_overflow,
+    Visual, generates_box, is_node_display_none, visual_clips_overflow,
 };
 use nve_components::transform::Transform2D;
 use nve_engine::LayoutRect;
@@ -14,7 +14,7 @@ use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::{MAX_TREE_DEPTH, StoreLayoutEngine};
 
-use super::{LaidOutScene, is_display_none, length_to_dim};
+use super::{LaidOutScene, length_to_dim};
 
 /// Result of hit-testing one subtree.
 #[derive(Clone, Copy)]
@@ -341,7 +341,7 @@ impl<
         inherited_hidden: bool,
     ) -> Option<EnteredNode> {
         let (store, scene) = (self.store, self.scene);
-        if !store.is_live(id) || is_display_none(store, id) {
+        if !store.is_live(id) || is_node_display_none(store, id) {
             return None;
         }
         let visual = store.try_row::<Visual>(id);

@@ -53,7 +53,8 @@ Because layout traversal dominates execution time, boxing the engine for runtime
 
 - **Aliasing-sound measure contexts** — Each text node's `RawMeasureState` (`NveYogaMeasureHook` + `MeasurePayload`) is allocated once via `Box::into_raw` (`NonNull`) and mutated strictly through raw pointers derived from `hook.user_data`, so rehashing `HashMap<NodeId, YogaNodeEntry>` or mutating text never invalidates `YGNodeSetContext` under Stacked Borrows.
 - **Panic-safe measure callbacks** — `rust_measure_callback` wraps `TextMeasurer::measure_with_weight` in `catch_unwind` so a panicking measurer never unwinds into C++ Yoga, and leaves `layout_dirty = true` so the next frame retries cleanly.
-- **Graceful fallback without RN checkout** — When `RN_REACT_COMMON_DIR` is omitted, `nve-layout-yoga` still compiles cleanly on every machine; `YogaLayoutEngine::is_available()` returns `false` and `YogaLayoutEngine::new()` returns `Err(YogaUnavailableError)`.
+- **CSS Flexbox §4.5 nuance** — Yoga (`YGErrataNone`) omits CSS Flexbox §4.5 automatic `min-width: auto = min-content` clamping on overflowing flex-row items (yielding ~1–2 px shrink-ratio differences on tight overflowing rows vs. Taffy). Inside scroll containers, `preserve_scroll_child_intrinsic_size` sets `flex_shrink = 0.0` on auto-sized children along the scrolling main axis to match CSS §4.5 and React Native `<ScrollView>` content sizing.
+- **Graceful fallback without RN checkout** — When `RN_REACT_COMMON_DIR` is omitted, `nve-layout-yoga` still compiles cleanly on every machine; `YogaLayoutEngine::is_available()` returns `false` and `YogaLayoutEngine::new()` returns `Err(YogaUnavailableError)`. Set `NVE_REQUIRE_YOGA=1` in CI to fail instead of skipping parity tests when RN Yoga is absent.
 
 ```bash title="Enable real React Native Yoga in Rust and C++ builds"
 export RN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon

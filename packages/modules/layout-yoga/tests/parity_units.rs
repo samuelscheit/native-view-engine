@@ -23,6 +23,17 @@ use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 const TOL: f32 = 1.0;
 
+fn require_yoga_or_skip() -> bool {
+    if YogaLayoutEngine::is_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("NVE_REQUIRE_YOGA").is_none(),
+        "NVE_REQUIRE_YOGA is set but real React Native Yoga was not compiled in (set RN_REACT_COMMON_DIR)"
+    );
+    false
+}
+
 fn assert_parity(label: &str, id: NodeId, taffy: LayoutRect, yoga: LayoutRect) {
     assert!(
         (taffy.x - yoga.x).abs() <= TOL
@@ -53,7 +64,7 @@ fn run_pair(label: &str, vp: Viewport, store: &NodeStore, changes: &ChangeSet, i
 
 #[test]
 fn parity_gaps_wrap_align_content_align_self_content_box_border_overflow() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
     let vp = Viewport {
@@ -115,7 +126,7 @@ fn parity_gaps_wrap_align_content_align_self_content_box_border_overflow() {
 
 #[test]
 fn parity_scroll_axes_and_inherited_typography_mutation() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
     let vp = Viewport {
@@ -184,8 +195,9 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
     }
     assert!(yoga.layout_of(vchild).unwrap().height >= 179.0);
     assert!(yoga.layout_of(hchild).unwrap().width >= 359.0);
+    let h14 = yoga.layout_of(text_node).unwrap().height;
 
-    // Mutate inherited font_size + test non-finite font_size fallback parity.
+    // Mutate inherited font_size + verify non-finite fallback AND CSS `font-size: 0` parity.
     {
         let mut tx = store.tx();
         tx.edit::<Typography>(typo_parent).font_size(24.0);
@@ -195,6 +207,11 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
     yoga.sync_changes(&store, &changes);
     assert!(taffy.compute_layout(&store, NodeId::ROOT, vp));
     assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
+    let h24 = yoga.layout_of(text_node).unwrap().height;
+    assert!(
+        h24 > h14 + 5.0,
+        "inherited font_size 14 -> 24 must increase text height: h14={h14}, h24={h24}"
+    );
     assert_parity("typo_24", text_node, taffy.layout_of(text_node).unwrap(), yoga.layout_of(text_node).unwrap());
 
     {
@@ -206,12 +223,35 @@ fn parity_scroll_axes_and_inherited_typography_mutation() {
     yoga.sync_changes(&store, &changes);
     let _ = taffy.compute_layout(&store, NodeId::ROOT, vp);
     let _ = yoga.compute_layout(&store, NodeId::ROOT, vp);
+    let h_nan = yoga.layout_of(text_node).unwrap().height;
+    assert!(
+        (h_nan - h24).abs() <= TOL,
+        "NaN font_size must inherit parent 24px size: h24={h24}, h_nan={h_nan}"
+    );
     assert_parity("typo_nan_fallback", text_node, taffy.layout_of(text_node).unwrap(), yoga.layout_of(text_node).unwrap());
+
+    // CSS allows `font-size: 0` (must collapse to 0x0 instead of falling back to parent 24px).
+    {
+        let mut tx = store.tx();
+        tx.edit::<Typography>(text_node).font_size(0.0);
+        tx.commit_into(&mut changes);
+    }
+    taffy.sync_changes(&store, &changes);
+    yoga.sync_changes(&store, &changes);
+    assert!(taffy.compute_layout(&store, NodeId::ROOT, vp));
+    assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
+    let r0_taffy = taffy.layout_of(text_node).unwrap();
+    let r0_yoga = yoga.layout_of(text_node).unwrap();
+    assert!(
+        r0_taffy.height <= TOL && r0_yoga.height <= TOL,
+        "font_size 0 must measure zero height instead of inheriting parent: taffy={r0_taffy:?} yoga={r0_yoga:?}"
+    );
+    assert_parity("typo_zero", text_node, r0_taffy, r0_yoga);
 }
 
 #[test]
 fn yoga_clean_frame_self_gating_and_paint_only_skip() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
     let vp = Viewport {
@@ -269,7 +309,7 @@ fn yoga_clean_frame_self_gating_and_paint_only_skip() {
 
 #[test]
 fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
     let vp = Viewport {
@@ -322,9 +362,16 @@ fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
     assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
     assert_parity("reacquired_measure", text_id, initial_text_rect, yoga.layout_of(text_id).unwrap());
 
-    // Root switch `ROOT -> panel -> ROOT` must restore `panel`'s 180x120 size & inherited typography!
+    // Root switch `ROOT -> panel -> ROOT` must recompute default 16px while `root == panel`,
+    // then restore `panel`'s 180x120 size & inherited 20px typography!
     assert!(yoga.compute_layout(&store, panel, vp));
     assert_eq!(yoga.layout_of(panel).unwrap().width, 300.0);
+    let panel_root_text_h = yoga.layout_of(text_id).unwrap().height;
+    assert!(
+        panel_root_text_h < initial_text_rect.height - 3.0,
+        "switching root to `panel` must drop ROOT's inherited 20px font_size back to default 16px: initial={}, panel_root={panel_root_text_h}",
+        initial_text_rect.height
+    );
     assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
     let restored_panel = yoga.layout_of(panel).unwrap();
     assert_eq!((restored_panel.width, restored_panel.height), (180.0, 120.0));
@@ -360,4 +407,155 @@ fn yoga_text_reacquires_measure_hook_root_switch_and_panic_retry() {
     );
     let r = yoga.layout_of(NodeId::ROOT).unwrap();
     assert!(r.x.is_finite() && r.y.is_finite() && r.width.is_finite() && r.height.is_finite());
+}
+
+#[test]
+fn scroll_shrink_preservation_negative_and_incremental_flip_cases() {
+    if !require_yoga_or_skip() {
+        return;
+    }
+    let vp = Viewport {
+        width: 300.0,
+        height: 300.0,
+        scale_factor: 1.0,
+    };
+
+    // 1. Negative cases:
+    //    - `ScrollAxes::Vertical` on `FlexDirection::Row` -> child DOES shrink (`width < 180`)
+    //    - `ScrollAxes::None` on `Column` -> child DOES shrink (`height < 180`)
+    //    - `TextContent` inside horizontal `Row` scroll -> wraps/shrinks cleanly (does not expand)
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (vrow_child, none_child, htext, dyn_parent, dyn_child) = {
+        let mut tx = store.tx();
+
+        let vrow = tx.create();
+        tx.edit::<Layout>(vrow)
+            .width(Length::points(120.0))
+            .height(Length::points(60.0))
+            .flex_direction(FlexDirection::Row);
+        tx.edit::<Scroll>(vrow).axes(ScrollAxes::Vertical);
+        let vrow_child = tx.create();
+        tx.edit::<Layout>(vrow_child)
+            .flex_basis(Length::points(200.0))
+            .height(Length::points(40.0));
+        tx.set_children(vrow, &[vrow_child]);
+
+        let none_scroll = tx.create();
+        tx.edit::<Layout>(none_scroll)
+            .width(Length::points(120.0))
+            .height(Length::points(80.0))
+            .flex_direction(FlexDirection::Column);
+        tx.edit::<Scroll>(none_scroll).axes(ScrollAxes::None);
+        let none_child = tx.create();
+        tx.edit::<Layout>(none_child).flex_basis(Length::points(200.0));
+        tx.set_children(none_scroll, &[none_child]);
+
+        let hscroll_text = tx.create();
+        tx.edit::<Layout>(hscroll_text)
+            .width(Length::points(120.0))
+            .height(Length::points(60.0))
+            .flex_direction(FlexDirection::Row);
+        tx.edit::<Scroll>(hscroll_text).axes(ScrollAxes::Horizontal);
+        let htext = tx.create();
+        tx.edit::<TextContent>(htext)
+            .text("Long wrapping horizontal text inside scroll row");
+        tx.set_children(hscroll_text, &[htext]);
+
+        // Dynamic parent starts non-scrolling (`ScrollAxes::None`) with auto-height child wrapping
+        // two 90px blocks (180px total inside 80px viewport).
+        let dyn_parent = tx.create();
+        tx.edit::<Layout>(dyn_parent)
+            .width(Length::points(120.0))
+            .height(Length::points(80.0))
+            .flex_direction(FlexDirection::Column);
+        tx.edit::<Scroll>(dyn_parent).axes(ScrollAxes::None);
+        let dyn_child = tx.create();
+        tx.edit::<Layout>(dyn_child).flex_direction(FlexDirection::Column);
+        let b1 = tx.create();
+        tx.edit::<Layout>(b1).height(Length::points(90.0));
+        let b2 = tx.create();
+        tx.edit::<Layout>(b2).height(Length::points(90.0));
+        tx.set_children(dyn_child, &[b1, b2]);
+        tx.set_children(dyn_parent, &[dyn_child]);
+
+        tx.set_children(NodeId::ROOT, &[vrow, none_scroll, hscroll_text, dyn_parent]);
+        tx.commit_into(&mut changes);
+        (vrow_child, none_child, htext, dyn_parent, dyn_child)
+    };
+
+    let mut taffy = TaffyStoreLayout::new();
+    let mut yoga = YogaLayoutEngine::new().unwrap();
+    taffy.sync_changes(&store, &changes);
+    yoga.sync_changes(&store, &changes);
+    assert!(taffy.compute_layout(&store, NodeId::ROOT, vp));
+    assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
+
+    assert!(
+        yoga.layout_of(vrow_child).unwrap().width <= 121.0,
+        "Vertical scroll on Row must allow child to shrink: {:?}",
+        yoga.layout_of(vrow_child)
+    );
+    assert!(
+        yoga.layout_of(none_child).unwrap().height <= 81.0,
+        "ScrollAxes::None must allow child to shrink: {:?}",
+        yoga.layout_of(none_child)
+    );
+    assert!(
+        yoga.layout_of(htext).unwrap().width <= 121.0,
+        "TextContent inside horizontal scroll row must shrink/wrap within container: {:?}",
+        yoga.layout_of(htext)
+    );
+    assert_parity("vrow_child", vrow_child, taffy.layout_of(vrow_child).unwrap(), yoga.layout_of(vrow_child).unwrap());
+    assert_parity("none_child", none_child, taffy.layout_of(none_child).unwrap(), yoga.layout_of(none_child).unwrap());
+    assert_parity("htext", htext, taffy.layout_of(htext).unwrap(), yoga.layout_of(htext).unwrap());
+
+    // 2. Incremental flip: `ScrollAxes::None` -> `ScrollAxes::Vertical` must expand `dyn_child` to >= 179px.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Scroll>(dyn_parent).axes(ScrollAxes::Vertical);
+        tx.commit_into(&mut changes);
+    }
+    taffy.sync_changes(&store, &changes);
+    yoga.sync_changes(&store, &changes);
+    assert!(taffy.compute_layout(&store, NodeId::ROOT, vp));
+    assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
+    assert!(
+        yoga.layout_of(dyn_child).unwrap().height >= 179.0,
+        "enabling ScrollAxes::Vertical incrementally must preserve child intrinsic height: {:?}",
+        yoga.layout_of(dyn_child)
+    );
+    assert_parity("dyn_scroll_on", dyn_child, taffy.layout_of(dyn_child).unwrap(), yoga.layout_of(dyn_child).unwrap());
+
+    // 3. Detach `Scroll` and toggle `Visual::overflow_y(Overflow::Scroll)` incrementally.
+    {
+        let mut tx = store.tx();
+        tx.detach::<Scroll>(dyn_parent);
+        tx.edit::<Visual>(dyn_parent).overflow_y(Overflow::Hidden);
+        tx.commit_into(&mut changes);
+    }
+    taffy.sync_changes(&store, &changes);
+    yoga.sync_changes(&store, &changes);
+    let _ = taffy.compute_layout(&store, NodeId::ROOT, vp);
+    assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
+    assert!(
+        yoga.layout_of(dyn_child).unwrap().height <= 81.0,
+        "detaching Scroll + setting overflow_y=Hidden must shrink child back to 80px: {:?}",
+        yoga.layout_of(dyn_child)
+    );
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(dyn_parent).overflow_y(Overflow::Scroll);
+        tx.commit_into(&mut changes);
+    }
+    taffy.sync_changes(&store, &changes);
+    yoga.sync_changes(&store, &changes);
+    let _ = taffy.compute_layout(&store, NodeId::ROOT, vp);
+    assert!(yoga.compute_layout(&store, NodeId::ROOT, vp));
+    assert!(
+        yoga.layout_of(dyn_child).unwrap().height >= 179.0,
+        "setting Visual::overflow_y=Scroll incrementally must preserve child height: {:?}",
+        yoga.layout_of(dyn_child)
+    );
 }

@@ -7,12 +7,14 @@ use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style,
 };
 use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
-use nve_components::tables::{InputKind, Interaction, StateRules, TextInput, paint_of_box};
+use nve_components::tables::{
+    InputKind, Interaction, StateRules, TextInput, is_node_display_none, paint_of_box,
+};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::StoreLayoutEngine;
 
-use super::{LaidOutScene, is_display_none, layout_snapshot_of, visual_snapshot_of};
+use super::{LaidOutScene, layout_snapshot_of, visual_snapshot_of};
 
 impl<L: StoreLayoutEngine> LaidOutScene<L> {
     #[inline]
@@ -33,7 +35,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
     /// Returns `true` when `id` participates in pointer hover/active/cursor hit-testing.
     #[inline]
     pub fn is_interaction_target(&self, store: &NodeStore, id: StoreNodeId) -> bool {
-        if !store.is_live(id) || is_display_none(store, id) {
+        if !store.is_live(id) || is_node_display_none(store, id) {
             return false;
         }
         let has_inter = store.try_row::<Interaction>(id).is_some_and(|i| {
@@ -97,7 +99,7 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
 
     /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].
     pub fn effective_cursor(&self, store: &NodeStore, id: StoreNodeId) -> CursorKind {
-        if is_display_none(store, id) {
+        if is_node_display_none(store, id) {
             return CursorKind::Auto;
         }
         let base_cursor = store

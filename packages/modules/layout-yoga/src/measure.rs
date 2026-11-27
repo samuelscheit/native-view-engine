@@ -7,11 +7,111 @@ use std::ptr::{NonNull, addr_of, addr_of_mut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nve_components::tables::{FlexDirection, Layout, Overflow, Scroll, ScrollAxes, TextContent, Visual};
-use nve_layout::{HeuristicTextMeasurer, TextMeasurer};
-use nve_store::{NodeId, NodeStore};
+use nve_components::tables::{
+    FlexDirection, Layout, Overflow, Scroll, ScrollAxes, TextContent, Typography, Visual,
+};
+use nve_layout::{HeuristicTextMeasurer, MAX_TREE_DEPTH, TextMeasurer};
+use nve_store::{NodeId, NodeStore, NveTable};
 
-use crate::ffi::NveYogaMeasureHook;
+use crate::ffi::{
+    NveYogaMeasureHook, YGNodeRef, nve_yg_node_detach_and_clear, nve_yg_node_free,
+    nve_yg_node_set_measure_hook,
+};
+
+pub(crate) struct YogaNodeEntry {
+    pub(crate) yg_node: YGNodeRef,
+    pub(crate) is_text: bool,
+    pub(crate) measure_attached: bool,
+    pub(crate) shrink_preserved: bool,
+    pub(crate) synced_epoch: u32,
+    pub(crate) children_synced_epoch: u32,
+    pub(crate) measure_state: Option<RawMeasureState>,
+}
+
+impl YogaNodeEntry {
+    pub(crate) fn new(yg_node: YGNodeRef) -> Self {
+        Self {
+            yg_node,
+            is_text: false,
+            measure_attached: false,
+            shrink_preserved: false,
+            synced_epoch: 0,
+            children_synced_epoch: 0,
+            measure_state: None,
+        }
+    }
+
+    pub(crate) fn attach_measure_hook(
+        &mut self,
+        measurer: &Arc<dyn TextMeasurer>,
+        panicked: &Arc<AtomicBool>,
+    ) {
+        let state = self
+            .measure_state
+            .get_or_insert_with(|| RawMeasureState::new(Arc::clone(measurer), Arc::clone(panicked)));
+        let hook_ptr = state.hook_ptr();
+        // SAFETY: `self.yg_node` is a live owned Yoga node and `hook_ptr` points into the
+        // heap-allocated `RawMeasureState` owned by `self` (detached before free).
+        self.measure_attached = unsafe { nve_yg_node_set_measure_hook(self.yg_node, hook_ptr) };
+    }
+
+    pub(crate) fn detach_and_free_measure_state(&mut self) {
+        // SAFETY: `self.yg_node` is a live owned Yoga node; clearing hook before freeing
+        // `measure_state` ensures Yoga never dereferences freed user_data.
+        unsafe {
+            let _ = nve_yg_node_set_measure_hook(self.yg_node, std::ptr::null_mut());
+        }
+        self.measure_attached = false;
+        if let Some(state) = self.measure_state.take() {
+            // SAFETY: Hook and context were cleared above.
+            unsafe { state.free_after_detach() };
+        }
+    }
+
+    pub(crate) fn detach_and_free_node(mut self) {
+        // SAFETY: `self.yg_node` is exclusively owned, detached before free, and freed before
+        // `self.measure_state` is reclaimed.
+        unsafe {
+            nve_yg_node_detach_and_clear(self.yg_node);
+            nve_yg_node_free(self.yg_node);
+        }
+        if let Some(state) = self.measure_state.take() {
+            // SAFETY: `yg_node` was detached and freed above.
+            unsafe { state.free_after_detach() };
+        }
+    }
+}
+
+/// Computes `id`'s depth from the root (`None` if depth exceeds [`MAX_TREE_DEPTH`]).
+#[inline]
+pub(crate) fn node_depth_within_limit(store: &NodeStore, id: NodeId) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut cur = store.parent(id);
+    while let Some(p) = cur {
+        depth += 1;
+        if depth > MAX_TREE_DEPTH {
+            return None;
+        }
+        cur = store.parent(p);
+    }
+    Some(depth)
+}
+
+/// Bitmask of `Typography` table words whose effects include `LAYOUT` or `MEASURE`.
+#[inline]
+pub(crate) fn typography_measure_word_mask(layout_effect: u8) -> u32 {
+    Typography::DESC
+        .word_effects
+        .iter()
+        .enumerate()
+        .fold(0u32, |acc, (w, &fx)| {
+            if fx & layout_effect != 0 {
+                acc | (1u32 << w)
+            } else {
+                acc
+            }
+        })
+}
 
 const MEASURE_MODE_EXACTLY: u8 = 1;
 const MEASURE_MODE_AT_MOST: u8 = 2;

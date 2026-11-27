@@ -18,8 +18,8 @@ pub use measure::{
     HeuristicTextMeasurer, ResolvedTextStyle, TextMeasurer, resolve_inherited_text,
 };
 pub use scene::{
-    LaidOutScene, ScrollOffsets, compute_scroll_content_size, is_display_none, layout_snapshot_of,
-    length_to_dim, visual_snapshot_of,
+    LaidOutScene, ScrollOffsets, compute_scroll_content_size, layout_snapshot_of, length_to_dim,
+    visual_snapshot_of,
 };
 pub use taffy_store::TaffyStoreLayout;
 

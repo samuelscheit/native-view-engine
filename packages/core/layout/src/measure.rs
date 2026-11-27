@@ -44,7 +44,7 @@ pub fn resolve_inherited_text(
             || (set == 0 && t.font_size().to_bits() != 16.0f32.to_bits())
         {
             let raw_fs = t.font_size();
-            if raw_fs.is_finite() && raw_fs > 0.0 {
+            if raw_fs.is_finite() && raw_fs >= 0.0 {
                 parent.font_size = raw_fs;
             }
         }
@@ -94,7 +94,7 @@ impl HeuristicTextMeasurer {
 
 impl TextMeasurer for HeuristicTextMeasurer {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
-        if text.is_empty() {
+        if text.is_empty() || font_size == 0.0 {
             return (0.0, 0.0);
         }
         let fs = if font_size.is_finite() && font_size > 0.0 {

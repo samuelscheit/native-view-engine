@@ -191,7 +191,7 @@ static YGSize nve_yoga_measure_trampoline(
     float width,
     YGMeasureMode width_mode,
     float height,
-    YGMeasureMode height_mode) {
+    YGMeasureMode height_mode) noexcept {
   auto* hook = static_cast<NveYogaMeasureHook*>(YGNodeGetContext(node));
   if (!hook || !hook->callback) {
     return YGSize{0.0f, 0.0f};
@@ -260,7 +260,7 @@ static YGAlign map_align(uint8_t a) noexcept {
   }
 }
 
-YGConfigRef nve_yg_config_new(void) {
+YGConfigRef nve_yg_config_new(void) noexcept {
   YGConfigRef cfg = YGConfigNew();
   if (cfg) {
     YGConfigSetErrata(cfg, YGErrataNone);
@@ -268,23 +268,23 @@ YGConfigRef nve_yg_config_new(void) {
   return cfg;
 }
 
-void nve_yg_config_free(YGConfigRef config) {
+void nve_yg_config_free(YGConfigRef config) noexcept {
   if (config) {
     YGConfigFree(config);
   }
 }
 
-void nve_yg_config_set_point_scale_factor(YGConfigRef config, float scale) {
+void nve_yg_config_set_point_scale_factor(YGConfigRef config, float scale) noexcept {
   if (config && std::isfinite(scale) && scale > 0.0f) {
     YGConfigSetPointScaleFactor(config, scale);
   }
 }
 
-YGNodeRef nve_yg_node_new_with_config(YGConfigConstRef config) {
+YGNodeRef nve_yg_node_new_with_config(YGConfigConstRef config) noexcept {
   return YGNodeNewWithConfig(config);
 }
 
-void nve_yg_node_detach_and_clear(YGNodeRef node) {
+void nve_yg_node_detach_and_clear(YGNodeRef node) noexcept {
   if (!node) {
     return;
   }
@@ -296,7 +296,7 @@ void nve_yg_node_detach_and_clear(YGNodeRef node) {
   YGNodeSetContext(node, nullptr);
 }
 
-void nve_yg_node_free(YGNodeRef node) {
+void nve_yg_node_free(YGNodeRef node) noexcept {
   if (!node) {
     return;
   }
@@ -304,7 +304,7 @@ void nve_yg_node_free(YGNodeRef node) {
   YGNodeFree(node);
 }
 
-bool nve_yg_node_set_measure_hook(YGNodeRef node, NveYogaMeasureHook* hook) {
+bool nve_yg_node_set_measure_hook(YGNodeRef node, NveYogaMeasureHook* hook) noexcept {
   if (!node) {
     return false;
   }
@@ -325,13 +325,13 @@ bool nve_yg_node_set_measure_hook(YGNodeRef node, NveYogaMeasureHook* hook) {
   return true;
 }
 
-void nve_yg_node_mark_dirty(YGNodeRef node) {
+void nve_yg_node_mark_dirty(YGNodeRef node) noexcept {
   if (node && YGNodeHasMeasureFunc(node)) {
     YGNodeMarkDirty(node);
   }
 }
 
-void nve_yg_node_set_children(YGNodeRef parent, const YGNodeRef* children, size_t count) {
+void nve_yg_node_set_children(YGNodeRef parent, const YGNodeRef* children, size_t count) noexcept {
   if (!parent) {
     return;
   }
@@ -342,15 +342,18 @@ void nve_yg_node_set_children(YGNodeRef parent, const YGNodeRef* children, size_
   if (!children) {
     return;
   }
-  if (count > 0 && YGNodeHasMeasureFunc(parent)) {
+  // Reject arrays containing null handles before touching Yoga (YGNodeSetChildren dereferences).
+  for (size_t i = 0; i < count; ++i) {
+    if (!children[i]) {
+      return;
+    }
+  }
+  if (YGNodeHasMeasureFunc(parent)) {
     YGNodeSetMeasureFunc(parent, nullptr);
     YGNodeSetContext(parent, nullptr);
   }
   for (size_t i = 0; i < count; ++i) {
     YGNodeRef child = children[i];
-    if (!child) {
-      continue;
-    }
     if (YGNodeRef old_owner = YGNodeGetOwner(child)) {
       if (old_owner != parent) {
         YGNodeRemoveChild(old_owner, child);
@@ -360,7 +363,7 @@ void nve_yg_node_set_children(YGNodeRef parent, const YGNodeRef* children, size_
   YGNodeSetChildren(parent, children, count);
 }
 
-void nve_yg_node_apply_layout(YGNodeRef node, const NveYogaLayoutProps* props) {
+void nve_yg_node_apply_layout(YGNodeRef node, const NveYogaLayoutProps* props) noexcept {
   if (!node || !props) {
     return;
   }
@@ -431,7 +434,7 @@ void nve_yg_node_apply_layout(YGNodeRef node, const NveYogaLayoutProps* props) {
   YGNodeStyleSetMargin(node, YGEdgeLeft, sanitize_finite(props->margin_left));
 }
 
-static void apply_position_edge(YGNodeRef node, YGEdge edge, uint8_t tag, float val) {
+static void apply_position_edge(YGNodeRef node, YGEdge edge, uint8_t tag, float val) noexcept {
   if (tag == 1 && std::isfinite(val)) {
     YGNodeStyleSetPosition(node, edge, val);
   } else if (tag == 2 && std::isfinite(val)) {
@@ -441,7 +444,7 @@ static void apply_position_edge(YGNodeRef node, YGEdge edge, uint8_t tag, float 
   }
 }
 
-void nve_yg_node_apply_layout_ext(YGNodeRef node, const NveYogaLayoutExt* ext) {
+void nve_yg_node_apply_layout_ext(YGNodeRef node, const NveYogaLayoutExt* ext) noexcept {
   if (!node) {
     return;
   }
@@ -585,7 +588,7 @@ void nve_yg_node_apply_layout_ext(YGNodeRef node, const NveYogaLayoutExt* ext) {
   YGNodeStyleSetBorder(node, YGEdgeAll, sanitize_non_neg(ext->border_width));
 }
 
-void nve_yg_node_set_fixed_size(YGNodeRef node, float width, float height) {
+void nve_yg_node_set_fixed_size(YGNodeRef node, float width, float height) noexcept {
   if (!node) {
     return;
   }
@@ -593,7 +596,7 @@ void nve_yg_node_set_fixed_size(YGNodeRef node, float width, float height) {
   YGNodeStyleSetHeight(node, sanitize_non_neg(height));
 }
 
-void nve_yg_node_calculate_layout(YGNodeRef root, float avail_width, float avail_height) {
+void nve_yg_node_calculate_layout(YGNodeRef root, float avail_width, float avail_height) noexcept {
   if (!root) {
     return;
   }
@@ -601,7 +604,7 @@ void nve_yg_node_calculate_layout(YGNodeRef root, float avail_width, float avail
       root, sanitize_non_neg(avail_width), sanitize_non_neg(avail_height), YGDirectionLTR);
 }
 
-NveYogaRect nve_yg_node_get_layout_rect(YGNodeConstRef node) {
+NveYogaRect nve_yg_node_get_layout_rect(YGNodeConstRef node) noexcept {
   if (!node) {
     return NveYogaRect{0.0f, 0.0f, 0.0f, 0.0f};
   }

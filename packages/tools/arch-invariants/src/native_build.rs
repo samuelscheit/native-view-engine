@@ -136,6 +136,18 @@ pub fn check_core_zero_native_cxx_graph(graph: &PackageGraph) -> Vec<Violation> 
                         chains.insert(next.id(), next_chain);
                         queue.push_back(next.id());
                     }
+                } else if let Some(links) = next.links() {
+                    let mut chain = curr_chain.clone();
+                    chain.push(format!("{next_name} (links={links})"));
+                    let snippet = chain.join(" -> ");
+                    if seen_snippets.insert(snippet.clone()) {
+                        violations.push(Violation::new(
+                            rel_manifest(&pkg),
+                            1,
+                            snippet,
+                            "packages/core/* crates (and their workspace normal/build deps) must not directly depend on native `*-sys` (`links`) crates; move them into an opt-in packages/modules/<cap>/ crate",
+                        ));
+                    }
                 }
             }
         }
@@ -167,13 +179,25 @@ pub fn check_core_zero_native_cxx(idx: &RepoIndex) -> Vec<Violation> {
 
         let mut files = Vec::new();
         walk_files_no_symlinks(&idx.root.join(&dir), &mut files);
+        let mut visited: BTreeSet<String> = BTreeSet::new();
         for path in files {
             let rel = rel_path(&idx.root, &path);
+            visited.insert(rel.clone());
             let is_build = build_scripts.contains(&rel)
                 || Path::new(&rel).file_name().and_then(|n| n.to_str()) == Some("build.rs");
             let contents = is_build.then(|| idx.read_text(&rel)).flatten();
             if let Some(reason) = native_source_reason(&rel, contents.as_deref()) {
                 violations.push(Violation::new(&rel, 1, &rel, reason));
+            }
+        }
+        // Also inspect custom `[package] build = "../..."` scripts living outside the crate dir.
+        for build_rel in &build_scripts {
+            if visited.contains(build_rel) {
+                continue;
+            }
+            let contents = idx.read_text(build_rel);
+            if let Some(reason) = native_source_reason(build_rel, contents.as_deref()) {
+                violations.push(Violation::new(build_rel, 1, build_rel, reason));
             }
         }
     }

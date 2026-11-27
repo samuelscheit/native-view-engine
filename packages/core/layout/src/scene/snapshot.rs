@@ -2,13 +2,8 @@
 
 use nve_abi::ColorRgba;
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{Layout as NveLayout, Typography, box_visual, is_node_display_none};
+use nve_components::tables::{Layout as NveLayout, Typography, box_visual};
 use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
-
-#[inline]
-pub fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
-    is_node_display_none(store, id)
-}
 
 #[inline]
 pub fn length_to_dim(l: Length) -> nve_abi::Dimension {

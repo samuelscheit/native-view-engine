@@ -6,6 +6,7 @@
 //! When compiled with `RN_REACT_COMMON_DIR`, every Flexbox parity, text wrapping, mutation,
 //! live engine swap, and `examples/kitchen-sink` assertion executes against real RN Yoga.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use nve_abi::EventMask;
@@ -19,6 +20,42 @@ use nve_layout_yoga::YogaLayoutEngine;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 
 const PARITY_TOLERANCE_PX: f32 = 1.0;
+
+fn require_yoga_or_skip() -> bool {
+    if YogaLayoutEngine::is_available() {
+        return true;
+    }
+    assert!(
+        std::env::var_os("NVE_REQUIRE_YOGA").is_none(),
+        "NVE_REQUIRE_YOGA is set but real React Native Yoga was not compiled in (set RN_REACT_COMMON_DIR)"
+    );
+    false
+}
+
+fn collect_subtree(store: &NodeStore, root: NodeId) -> HashSet<NodeId> {
+    let mut out = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if out.insert(id) {
+            stack.extend_from_slice(store.children(id));
+        }
+    }
+    out
+}
+
+fn subtree_contains_text(store: &NodeStore, root: NodeId, needle: &str) -> bool {
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if store
+            .try_row::<TextContent>(id)
+            .is_some_and(|t| t.text().contains(needle))
+        {
+            return true;
+        }
+        stack.extend_from_slice(store.children(id));
+    }
+    false
+}
 
 fn assert_rect_parity(label: &str, id: NodeId, taffy: LayoutRect, yoga: LayoutRect) {
     assert!(
@@ -86,7 +123,7 @@ fn compare_store_taffy_vs_yoga(
 
 #[test]
 fn parity_column_row_padding_margin_gap_flex_grow() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         assert!(YogaLayoutEngine::new().is_err());
         return;
     }
@@ -174,7 +211,7 @@ fn parity_column_row_padding_margin_gap_flex_grow() {
 
 #[test]
 fn parity_justify_and_align_variants() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
 
@@ -246,7 +283,7 @@ fn parity_justify_and_align_variants() {
 
 #[test]
 fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
 
@@ -282,9 +319,32 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
 
     // Desktop 1280x800 @ 2x across all >= 346 kitchen-sink nodes (with zero app-code workarounds):
     // Yoga (`YGErrataNone`) omits CSS Flexbox §4.5 `min-width: auto = min-content` on overflowing
-    // row items, causing at most a 1.5px shrink-ratio split on the single `SidebarNavItem` row
-    // containing `"Motion, Graphics & Resilience"` + `Badge("4")` (5 nodes). Every other node
-    // must stay within `<= 1.0px`.
+    // row items, causing at most a 1.5px shrink-ratio split strictly inside the single
+    // `SidebarNavItem` row containing `"Motion, Graphics & Resilience"` + `Badge("4")`.
+    // Every node outside that pinned row subtree MUST stay within `<= 1.0px`.
+    let motion_text_id = node_ids
+        .iter()
+        .copied()
+        .find(|&id| {
+            store
+                .try_row::<TextContent>(id)
+                .is_some_and(|t| t.text().contains("Motion, Graphics & Resilience"))
+        })
+        .expect("expected SidebarNavItem text node in kitchen-sink");
+    let mut sidebar_row_root = motion_text_id;
+    while let Some(parent) = store.parent(sidebar_row_root) {
+        sidebar_row_root = parent;
+        if subtree_contains_text(store, sidebar_row_root, "4") {
+            break;
+        }
+    }
+    let pinned_sidebar_subtree = collect_subtree(store, sidebar_row_root);
+    assert!(
+        pinned_sidebar_subtree.len() >= 3 && pinned_sidebar_subtree.len() <= 10,
+        "expected compact SidebarNavItem subtree, got {} nodes",
+        pinned_sidebar_subtree.len()
+    );
+
     let mut desktop_over_1px = 0usize;
     for &id in &node_ids {
         let tr = taffy_backend.layout_of(id.raw()).unwrap();
@@ -297,19 +357,24 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
         if max_d > PARITY_TOLERANCE_PX {
             desktop_over_1px += 1;
             assert!(
+                pinned_sidebar_subtree.contains(&id),
+                "[examples/kitchen-sink desktop] unexpected node #{} outside pinned SidebarNavItem subtree diverged by {max_d}px:\n  taffy: {tr:?}\n  yoga : {yr:?}",
+                id.raw()
+            );
+            assert!(
                 max_d <= 2.0,
-                "[examples/kitchen-sink desktop] node #{} diverged by {max_d}px (> 2px CSS §4.5 bound):\n  taffy: {tr:?}\n  yoga : {yr:?}",
+                "[examples/kitchen-sink desktop] SidebarNavItem node #{} diverged by {max_d}px (> 2px CSS §4.5 bound):\n  taffy: {tr:?}\n  yoga : {yr:?}",
                 id.raw()
             );
         }
     }
     assert!(
-        desktop_over_1px <= 6,
-        "expected at most the 5 SidebarNavItem CSS §4.5 nodes > 1px on desktop, got {desktop_over_1px}"
+        desktop_over_1px <= pinned_sidebar_subtree.len(),
+        "unexpected desktop divergences: {desktop_over_1px}"
     );
 
-    // Mobile 393x852 @ 3x raw (unfiltered sidebar): verifies zero collapses/NaNs under tight
-    // 71px over-constrained rows where Yoga clamps `flex-basis` to container width (CSS §9.7).
+    // Mobile 393x852 @ 3x raw (unfiltered sidebar): verifies zero collapses/NaNs and bounded
+    // CSS §9.7 overflow-row differences across x, y, width, and height under tight 71px rows.
     let mobile_vp = Viewport {
         width: 393.0,
         height: 852.0,
@@ -320,7 +385,9 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     yoga_backend.set_viewport(1, mobile_vp);
     taffy_backend.commit(store, &empty).unwrap();
     yoga_backend.commit(store, &empty).unwrap();
+    let mut mobile_raw_x_over_1px = 0usize;
     let mut mobile_raw_width_over_1px = 0usize;
+    let mut mobile_raw_height_over_1px = 0usize;
     for &id in &node_ids {
         let tr = taffy_backend.layout_of(id.raw()).unwrap();
         let yr = yoga_backend.layout_of(id.raw()).unwrap();
@@ -329,23 +396,51 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
             "mobile raw node #{} produced non-finite rect: {yr:?}",
             id.raw()
         );
-        if (tr.width - yr.width).abs() > PARITY_TOLERANCE_PX {
+        let dx = (tr.x - yr.x).abs();
+        let dy = (tr.y - yr.y).abs();
+        let dw = (tr.width - yr.width).abs();
+        let dh = (tr.height - yr.height).abs();
+        if dx > PARITY_TOLERANCE_PX {
+            mobile_raw_x_over_1px += 1;
+            assert!(
+                dx <= 5.0,
+                "mobile raw node #{} x diverged beyond 5px CSS §9.7 bound: taffy={tr:?} yoga={yr:?}",
+                id.raw()
+            );
+        }
+        if dw > PARITY_TOLERANCE_PX {
             mobile_raw_width_over_1px += 1;
             assert!(
-                (tr.width - yr.width).abs() <= 5.0,
+                dw <= 5.0,
                 "mobile raw node #{} width diverged beyond 5px CSS §9.7 bound: taffy={tr:?} yoga={yr:?}",
                 id.raw()
             );
         }
+        if dh > PARITY_TOLERANCE_PX {
+            mobile_raw_height_over_1px += 1;
+            assert!(
+                dh <= 22.0,
+                "mobile raw node #{} height diverged beyond 1 wrapped line: taffy={tr:?} yoga={yr:?}",
+                id.raw()
+            );
+        }
         assert!(
-            (tr.height - yr.height).abs() <= 22.0,
-            "mobile raw node #{} height diverged beyond 1 wrapped line: taffy={tr:?} yoga={yr:?}",
+            dy <= 22.0,
+            "mobile raw node #{} y diverged beyond 1 wrapped line shift: taffy={tr:?} yoga={yr:?}",
             id.raw()
         );
     }
     assert!(
+        mobile_raw_x_over_1px <= 16,
+        "unexpected mobile raw x divergences: {mobile_raw_x_over_1px}"
+    );
+    assert!(
         mobile_raw_width_over_1px <= 10,
         "unexpected mobile raw width divergences: {mobile_raw_width_over_1px}"
+    );
+    assert!(
+        mobile_raw_height_over_1px <= 12,
+        "unexpected mobile raw height divergences: {mobile_raw_height_over_1px}"
     );
 
     // Restore desktop viewport for live engine swap parity checks below.
@@ -394,8 +489,6 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
         assert_rect_parity("kitchen_sink_after_swap_back_to_taffy", id, tr, fr);
     }
 
-    // Mobile 393x852 @ 3x with responsive `ShowOn(min_width(900))` hidden (real mobile shell):
-    // verify strict `<= 1.0px` parity across all 346 nodes on a mobile viewport!
     let mut mobile_surface = nve_example_kitchen_sink::create_surface(1);
     mobile_surface.reconcile(1);
     let mut hide_changes = ChangeSet::default();
@@ -455,7 +548,7 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
 
 #[test]
 fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
 
@@ -566,7 +659,7 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
 
 #[test]
 fn yoga_handles_reparenting_removal_and_reset_cleanly() {
-    if !YogaLayoutEngine::is_available() {
+    if !require_yoga_or_skip() {
         return;
     }
 
