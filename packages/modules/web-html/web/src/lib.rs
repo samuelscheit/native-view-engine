@@ -458,7 +458,56 @@ mod tests {
     use nve_backend_web::WebStoreRenderer;
     use nve_engine::StoreBackend;
     use nve_store::ChangeSet;
+    use nve_backend_web::html::FOSTER_PARENT_TRAP_TAGS;
+    use nve_backend_web::{StreamingError, WebBackend};
+    use nve_components::tables::StreamBoundary;
     use nve_web_html::{FormMethod, SemanticElement};
+
+    /// Every foster-parenting trap tag must be producible by `SemanticElement` (else 3P apps
+    /// cannot build, and placement hygiene cannot be exercised for, those parents) and must
+    /// round-trip through `parse` / `as_html_tag`.
+    #[test]
+    fn every_foster_parent_trap_tag_round_trips_through_semantic_element() {
+        for &tag in FOSTER_PARENT_TRAP_TAGS {
+            let el = SemanticElement::parse(tag);
+            assert_ne!(el, SemanticElement::Auto, "{tag} has no SemanticElement");
+            assert_eq!(el.as_html_tag(), Some(tag));
+            assert_eq!(SemanticElement::parse(&format!(" {} ", tag.to_uppercase())), el);
+        }
+        for &el in SemanticElement::ALL {
+            let parsed = el.as_html_tag().map_or(SemanticElement::Auto, SemanticElement::parse);
+            assert_eq!(parsed, el, "{el:?} must round-trip");
+        }
+        assert_eq!(SemanticElement::parse("marquee"), SemanticElement::Auto);
+    }
+
+    #[test]
+    fn stream_slot_directly_inside_semantic_tfoot_or_select_fails_placement_hygiene() {
+        for parent_el in [SemanticElement::Tfoot, SemanticElement::Select] {
+            let mut store = NodeStore::new();
+            let mut changes = ChangeSet::default();
+            {
+                let mut tx = store.tx();
+                let parent = tx.create();
+                let slot = tx.create();
+                tx.edit::<HtmlSemantics>(parent).element(parent_el);
+                tx.edit::<StreamBoundary>(slot).stream_slot("rows");
+                tx.set_children(parent, &[slot]);
+                tx.set_children(NodeId::ROOT, &[parent]);
+                tx.commit_into(&mut changes);
+            }
+            let mut web = WebBackend::new();
+            register_web_html_systems(web.table_registry_mut());
+            web.commit(&store, &changes).unwrap();
+            let tag = parent_el.as_html_tag().unwrap();
+            match web.render_ssr_streaming_shell(&store) {
+                Err(StreamingError::InvalidSlotPlacement(msg)) => {
+                    assert!(msg.contains(&format!("<{tag}>")), "{msg}");
+                }
+                other => panic!("<{tag}> parent must be rejected, got {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn web_html_and_html5_plugins_work_uniformly_on_live_and_ssr() {

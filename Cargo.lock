@@ -3263,6 +3263,7 @@ name = "nve-web-html-web"
 version = "0.1.0"
 dependencies = [
  "nve-backend-web",
+ "nve-components",
  "nve-engine",
  "nve-store",
  "nve-web-html",

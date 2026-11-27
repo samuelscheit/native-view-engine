@@ -87,6 +87,10 @@ pub(crate) fn push_script_data_escaped(data: &str, out: &mut String) {
     push_raw_text_escaped(data, b"</script", out);
 }
 
+/// Parents whose direct children the HTML5 parser foster-parents out (a streamed DSD `<slot>`
+/// placed directly inside them would be relocated, breaking out-of-order slot delivery).
+pub const FOSTER_PARENT_TRAP_TAGS: &[&str] = &["table", "tbody", "thead", "tfoot", "tr", "select"];
+
 /// HTML void elements NVE can emit (no content, no end tag).
 #[inline]
 pub fn is_void_html_tag(tag: &str) -> bool {

@@ -70,6 +70,8 @@ word_enum! {
         Section = 26,
         Button = 27,
         Label = 28,
+        Tfoot = 29,
+        Select = 30,
     }
 }
 
@@ -107,44 +109,18 @@ impl SemanticElement {
             Self::Section => "section",
             Self::Button => "button",
             Self::Label => "label",
+            Self::Tfoot => "tfoot",
+            Self::Select => "select",
         })
     }
 
+    /// Case-insensitive inverse of [`Self::as_html_tag`] (`Auto` for unknown tags).
     pub fn parse(raw: &str) -> Self {
         let s = raw.trim();
-        const TABLE: &[(&str, SemanticElement)] = &[
-            ("dialog", SemanticElement::Dialog),
-            ("details", SemanticElement::Details),
-            ("summary", SemanticElement::Summary),
-            ("form", SemanticElement::Form),
-            ("p", SemanticElement::Paragraph),
-            ("span", SemanticElement::Span),
-            ("strong", SemanticElement::Strong),
-            ("em", SemanticElement::Em),
-            ("s", SemanticElement::Strike),
-            ("code", SemanticElement::Code),
-            ("kbd", SemanticElement::Kbd),
-            ("br", SemanticElement::Br),
-            ("pre", SemanticElement::Pre),
-            ("table", SemanticElement::Table),
-            ("thead", SemanticElement::Thead),
-            ("tbody", SemanticElement::Tbody),
-            ("tr", SemanticElement::Tr),
-            ("th", SemanticElement::Th),
-            ("td", SemanticElement::Td),
-            ("nav", SemanticElement::Nav),
-            ("main", SemanticElement::Main),
-            ("article", SemanticElement::Article),
-            ("aside", SemanticElement::Aside),
-            ("header", SemanticElement::Header),
-            ("footer", SemanticElement::Footer),
-            ("section", SemanticElement::Section),
-            ("button", SemanticElement::Button),
-            ("label", SemanticElement::Label),
-        ];
-        TABLE
+        Self::ALL
             .iter()
-            .find_map(|&(name, tag)| s.eq_ignore_ascii_case(name).then_some(tag))
+            .copied()
+            .find(|e| e.as_html_tag().is_some_and(|tag| s.eq_ignore_ascii_case(tag)))
             .unwrap_or(Self::Auto)
     }
 }

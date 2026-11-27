@@ -7,6 +7,7 @@ use nve_components::tables::StreamBoundary;
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::NVE_BASE_RESET_CSS;
+use crate::html::FOSTER_PARENT_TRAP_TAGS;
 use crate::ssr::SsrOutput;
 use crate::streaming::{sanitize_stream_slot_id, StreamingError, NVE_STREAM_SLOT_PREFIX};
 use crate::stylesheet::{CssWatermark, StyleSheetCache};
@@ -95,11 +96,6 @@ pub struct SsrDeltaChunk {
     pub rule_hashes: Vec<String>,
 }
 
-#[inline]
-fn is_foster_parent_trap_tag(tag: &str) -> bool {
-    matches!(tag, "table" | "tbody" | "thead" | "tfoot" | "tr" | "select")
-}
-
 /// Mutable streaming-shell walk state threaded through `WebBackend::emit_ssr_node`.
 #[derive(Default)]
 pub(crate) struct StreamShellState<'s> {
@@ -144,7 +140,7 @@ impl StreamShellState<'_> {
             return placement(format!("streaming slot {clean_id:?} cannot be placed inside <form>"));
         }
         if let Some(&direct_parent) = self.ancestor_tags.last()
-            && is_foster_parent_trap_tag(direct_parent)
+            && FOSTER_PARENT_TRAP_TAGS.contains(&direct_parent)
         {
             return placement(format!(
                 "streaming slot {clean_id:?} cannot be a direct child of <{direct_parent}> (HTML5 foster-parenting trap)"
