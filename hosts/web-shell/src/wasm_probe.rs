@@ -28,7 +28,7 @@ thread_local! {
 }
 
 fn new_probe_web(mut web: WebBackend) -> WebBackend {
-    crate::register_shell_web_systems(&mut web);
+    crate::register_dev_web_systems(&mut web);
     web
 }
 

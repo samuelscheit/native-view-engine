@@ -197,7 +197,7 @@ impl PairedWebSession {
         viewport: Viewport,
         token: impl Into<String>,
     ) -> Self {
-        crate::register_shell_web_systems(&mut backend);
+        crate::register_dev_web_systems(&mut backend);
         backend.set_viewport(surface_id, viewport);
         nve_components::tables::register_core_tables();
         nve_web_html::register_web_html_tables();

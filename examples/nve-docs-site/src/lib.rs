@@ -9,6 +9,13 @@ pub mod landing;
 pub mod native_app;
 pub mod playgrounds;
 pub mod site;
+
+/// The docs site's web table plugins (`nve-web-html` + canvas), shared by its SSR/SSG builders and
+/// browser hydration.
+pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
+    nve_web_html_web::register_web_html_systems(registry);
+    registry.register(nve_canvas_web::CanvasWebSystem);
+}
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
@@ -96,8 +103,7 @@ pub fn create_nve_docs_surface_full(
 pub fn render_nve_docs_ssr(route: &str, base_path: &str, viewport: DocsViewport) -> SsrOutput {
     let mut surface = create_nve_docs_surface(route, base_path, viewport);
     let mut backend = WebBackend::new();
-    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
-    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+    register_web_systems(backend.table_registry_mut());
     surface
         .commit_to(1, &mut backend)
         .expect("WebBackend commit_to for docs SSR");

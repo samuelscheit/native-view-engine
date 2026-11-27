@@ -17,8 +17,6 @@ tungstenite = { workspace = true }
 nve-abi = { workspace = true }
 nve-store = { workspace = true }
 nve-components = { workspace = true }
-nve-canvas-web = { workspace = true }
-nve-web-html-web = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 dioxus-core = { workspace = true }
@@ -32,8 +30,8 @@ nve-backend-web = { workspace = true }
 nve-docs = { workspace = true }
 nve-mdx = { workspace = true }
 nve-docs-site = { version = "0.1.0", path = "../../../examples/nve-docs-site", default-features = false }
-nve-example-kitchen-sink = { workspace = true }
-nve-studio-workspace = { workspace = true }
+nve-example-kitchen-sink = { workspace = true, features = ["web"] }
+nve-studio-workspace = { workspace = true, features = ["web"] }
 
 [lints]
 workspace = true

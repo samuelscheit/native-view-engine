@@ -5,7 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Cross-platform Dioxus issue-tracker UI shared across Web WASM, Native Skia, and Headless tests via nve-query-dioxus and nve-ui."
 
+[features]
+# The issues family's web table plugins (`register_web_systems`), shared by the SSR server and
+# the browser shell so both resolve identical tags.
+web = ["dep:nve-backend-web", "dep:nve-web-html-web"]
+
 [dependencies]
+nve-backend-web = { workspace = true, optional = true }
+nve-web-html-web = { workspace = true, optional = true }
 nve-example-issues-api = { workspace = true }
 nve-rpc = { workspace = true }
 nve-query = { workspace = true }

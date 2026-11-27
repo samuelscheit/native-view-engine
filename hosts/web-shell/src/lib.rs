@@ -41,6 +41,8 @@ mod wasm_hotreload;
 pub mod wasm_hydrate;
 #[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
 pub mod wasm_issues;
+#[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
+pub mod wasm_dom_probe;
 #[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
 mod wasm_query_stream;
 #[cfg(all(target_arch = "wasm32", feature = "dev"))]
@@ -56,8 +58,10 @@ mod wasm_wake;
 
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
 
-/// Registers the shell's leaf web table systems (`nve-web-html-web` + `nve-canvas-web`) on `backend`.
-pub fn register_shell_web_systems(backend: &mut nve_backend_web::WebBackend) {
+/// Plugin set for dev sessions rendering arbitrary remote apps (pairing, probes): `nve-web-html`
+/// plus canvas. App sessions register their family's shared set (`SessionApp::register_web_systems`).
+#[cfg(feature = "dev")]
+pub fn register_dev_web_systems(backend: &mut nve_backend_web::WebBackend) {
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend.register_table_system(nve_canvas_web::CanvasWebSystem);
 }
@@ -82,6 +86,8 @@ pub use wasm_api::{start_kitchen_sink_app, start_kitchen_sink_app_on_surface};
 pub use wasm_api::{start_studio_workspace_app, start_studio_workspace_app_on_surface};
 #[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
 pub use wasm_issues::start_issues_app;
+#[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
+pub use wasm_dom_probe::{nve_probe_container_root_hydration, nve_probe_native_overlays};
 #[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
 pub use wasm_issues::{nve_probe_cross_origin_cors, nve_probe_fetch_transport};
 #[cfg(all(target_arch = "wasm32", feature = "scene-view"))]

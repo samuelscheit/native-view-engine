@@ -22,12 +22,12 @@ use crate::IssuesServer;
 
 pub const PAGE_TITLE: &str = "NVE Fullstack Issues";
 
-/// Per-request SSR backend with the same `nve-web-html` plugins the browser shell registers, so
-/// `<ActionForm>` streams real `<form action method>` markup (the 0-JS fallback) and `<form>`
-/// placement hygiene sees the true tag.
-fn issues_web_backend() -> WebBackend {
+/// Per-request SSR backend with the issues family's shared plugin set (the browser shell
+/// registers the same one), so `<ActionForm>` streams real `<form action method>` markup (the 0-JS
+/// fallback) and `<form>` placement hygiene sees the true tag.
+pub fn issues_web_backend() -> WebBackend {
     let mut backend = WebBackend::new();
-    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    nve_example_issues_client::register_web_systems(backend.table_registry_mut());
     backend
 }
 

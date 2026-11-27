@@ -381,12 +381,13 @@ fn inject_embed_topbar_hider(index_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("failed to write {}: {e}", index_path.display()))
 }
 
-/// The shell's web backend: `nve-web-html` semantic tags plus canvas, registered BEFORE the first
-/// commit so Frame-0 tags and placement checks match the browser.
-fn example_web_backend() -> nve_backend_web::WebBackend {
+/// A web backend with an app family's shared plugin set registered BEFORE the first commit, so
+/// Frame-0 tags and placement checks match the browser shell.
+fn example_web_backend(
+    register: fn(&mut nve_backend_web::WebTableRegistry),
+) -> nve_backend_web::WebBackend {
     let mut web = nve_backend_web::WebBackend::new();
-    nve_web_html_web::register_web_html_systems(web.table_registry_mut());
-    web.register_table_system(nve_canvas_web::CanvasWebSystem);
+    register(web.table_registry_mut());
     web
 }
 
@@ -403,7 +404,10 @@ fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
     let ssr = match slug {
         "studio" => {
             let (store, backend) =
-                prerender_nve_app_frame0::<StudioWorkspaceModule>(example_web_backend(), vp)
+                prerender_nve_app_frame0::<StudioWorkspaceModule>(
+                    example_web_backend(nve_studio_workspace::register_web_systems),
+                    vp,
+                )
                     .map_err(|e| {
                         format!("failed to prerender Frame-0 SSG for example '{slug}': {e}")
                     })?;
@@ -411,7 +415,7 @@ fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
         }
         "kitchen-sink" => {
             let mut app = KitchenSinkModule::create(1);
-            let mut web = example_web_backend();
+            let mut web = example_web_backend(nve_example_kitchen_sink::register_web_systems);
             web.set_viewport(1, vp);
             app.commit_to(1, &mut web)
                 .map_err(|e| format!("failed to commit kitchen-sink Frame-0 SSG: {e}"))?;

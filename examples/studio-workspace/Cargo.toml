@@ -12,8 +12,13 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["cdylib-export"]
 cdylib-export = []
+# Studio's web table plugins (`register_web_systems`) for every web host and prerenderer.
+web = ["dep:nve-backend-web", "dep:nve-canvas-web", "dep:nve-web-html-web"]
 
 [dependencies]
+nve-backend-web = { workspace = true, optional = true }
+nve-canvas-web = { workspace = true, optional = true }
+nve-web-html-web = { workspace = true, optional = true }
 nve-abi = { workspace = true }
 nve-canvas = { workspace = true }
 nve-components = { workspace = true }

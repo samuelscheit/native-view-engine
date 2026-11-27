@@ -5,6 +5,13 @@
 //! `nve-http-hyper::HyperTransport::with_background_runtime()` (Native Skia Bearer auth),
 //! and `nve-server::DirectTransport` (SSR / headless tests).
 
+/// The issues family's web table plugins (`nve-web-html` only: no canvas), registered identically
+/// by the SSR server and the browser shell so Frame-0 tags and placement checks match.
+#[cfg(feature = "web")]
+pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
+    nve_web_html_web::register_web_html_systems(registry);
+}
+
 mod detail;
 mod panels;
 

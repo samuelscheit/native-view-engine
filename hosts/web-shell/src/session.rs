@@ -78,6 +78,22 @@ enum SessionApp {
 }
 
 impl SessionApp {
+    /// Registers the hosted app family's shared web plugin set (the same function its SSR server
+    /// or prerenderer calls), so client and server resolve identical tags.
+    fn register_web_systems(&self, backend: &mut WebBackend) {
+        let registry = backend.table_registry_mut();
+        match self {
+            #[cfg(feature = "app-issues")]
+            Self::Dioxus(_) => nve_example_issues_client::register_web_systems(registry),
+            #[cfg(all(not(target_arch = "wasm32"), not(feature = "app-issues")))]
+            Self::Dioxus(_) => nve_web_html_web::register_web_html_systems(registry),
+            #[cfg(feature = "app-studio")]
+            Self::Studio(_) => nve_studio_workspace::register_web_systems(registry),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(_) => nve_example_kitchen_sink::register_web_systems(registry),
+        }
+    }
+
     fn app_slug(&self) -> Option<&'static str> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
@@ -237,7 +253,7 @@ impl WebAppSession {
         mut backend: WebBackend,
         viewport: Viewport,
     ) -> Self {
-        crate::register_shell_web_systems(&mut backend);
+        app.register_web_systems(&mut backend);
         backend.set_viewport(surface_id, viewport);
         Self {
             surface_id,
@@ -332,7 +348,7 @@ impl WebAppSession {
     /// clean mount has been decided.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn replace_backend_with_viewport(&mut self, mut backend: WebBackend, viewport: Viewport) {
-        crate::register_shell_web_systems(&mut backend);
+        self.app.register_web_systems(&mut backend);
         backend.set_viewport(self.surface_id, viewport);
         self.backend = backend;
     }

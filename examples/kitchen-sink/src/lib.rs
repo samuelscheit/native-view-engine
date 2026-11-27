@@ -11,6 +11,14 @@ mod sections;
 mod shell;
 pub mod state;
 
+/// The Kitchen Sink's web table plugins (`nve-web-html` + canvas), shared by every web host and
+/// prerenderer.
+#[cfg(feature = "web")]
+pub fn register_web_systems(registry: &mut nve_backend_web::WebTableRegistry) {
+    nve_web_html_web::register_web_html_systems(registry);
+    registry.register(nve_canvas_web::CanvasWebSystem);
+}
+
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{

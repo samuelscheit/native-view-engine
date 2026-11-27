@@ -368,6 +368,14 @@ async function main() {
     );
     console.log("  PASS: all FetchTransport browser probes.");
 
+    // Live-DOM probes on the same bundle: native top-layer overlays and container-as-root mounts.
+    for (const probeFn of ["nve_probe_native_overlays", "nve_probe_container_root_hydration"]) {
+      const report = await evalJs(cdp, `window.__nveProbeMod.${probeFn}()`);
+      console.log(`  ${probeFn}:`, report);
+      assert(String(report).startsWith("OK:"), `${probeFn} failed: ${report}`);
+    }
+    console.log("  PASS: <dialog> :modal / [popover] :popover-open + container-root hydration probes.");
+
     // -------------------------------------------------------------------------
     // 6. Real cross-origin CORS preflight
     // -------------------------------------------------------------------------

@@ -227,8 +227,7 @@ fn emit_ssr_page(
         true,
     );
     let mut backend = WebBackend::new();
-    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
-    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+    nve_docs_site::register_web_systems(backend.table_registry_mut());
     surface
         .commit_to(1, &mut backend)
         .map_err(|e| format!("SSR commit_to failed for '{public_route}': {e}"))?;
@@ -389,8 +388,7 @@ fn render_404_page(
         true,
     );
     let mut backend = WebBackend::new();
-    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
-    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+    nve_docs_site::register_web_systems(backend.table_registry_mut());
     surface
         .commit_to(1, &mut backend)
         .map_err(|e| format!("SSR 404 commit_to failed: {e}"))?;

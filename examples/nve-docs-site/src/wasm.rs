@@ -14,7 +14,6 @@ use nve_abi::{
     ROOT_NODE_ID, SurfaceId,
 };
 use nve_backend_web::{HydrationReport, WebBackend};
-use nve_canvas_web::CanvasWebSystem;
 use nve_components::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_docs::{DocsRoute, DocsViewport};
@@ -22,7 +21,6 @@ use nve_engine::{StoreBackend, Viewport};
 use nve_router::web::{BrowserHistoryBackend, WebHistoryAdapter};
 use nve_store::NodeId as StoreNodeId;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
-use nve_web_html_web::register_web_html_systems;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -394,8 +392,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         .unwrap_or_else(DocsRoute::root);
 
     let mut backend = WebBackend::hydrate_into(container.clone());
-    register_web_html_systems(backend.table_registry_mut());
-    backend.register_table_system(CanvasWebSystem);
+    crate::register_web_systems(backend.table_registry_mut());
     backend.set_viewport(
         DOCS_SURFACE_ID,
         Viewport {
