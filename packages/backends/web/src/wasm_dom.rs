@@ -50,6 +50,11 @@ impl WebBackend {
             return 0;
         };
         self.click_interceptors.borrow_mut().refresh(self.renderer.registry());
+        if self.native_event_bridges.is_stale(self.renderer.registry()) {
+            let sinks = self.event_sinks();
+            self.native_event_bridges
+                .refresh(self.renderer.registry(), &mount_root, &sinks);
+        }
 
         // 1. Notify plugins BEFORE removing destroyed DOM elements so `remove_node` sees `live_element: Some(el)`.
         self.renderer
@@ -143,8 +148,13 @@ impl WebBackend {
             Some(&self.live_elements),
             &retagged,
         );
+        // A retagged element is a fresh element: imperative plugin state must be re-applied.
+        for &id in &retagged {
+            self.renderer.queue_connected_sync_all(store, id);
+        }
         self.created_scratch = created_set;
         self.retagged_scratch = retagged;
+        let mut moved: Vec<NodeId> = Vec::new();
 
         // 5. Reconcile DOM children order (skipping plugin-owned inner HTML and removing stray Text nodes).
         for &parent in &changes.children {
@@ -173,6 +183,10 @@ impl WebBackend {
                 if cursor.as_ref() == Some(child_el) {
                     cursor = cursor.and_then(|c| c.next_element_sibling());
                 } else {
+                    // Moving a connected element removes and reinserts it (top layer exits).
+                    if child_el.is_connected() {
+                        moved.push(cid);
+                    }
                     let ref_node: Option<&web_sys::Node> = cursor.as_deref().map(AsRef::as_ref);
                     let _ = parent_el.insert_before(child_el, ref_node);
                 }
@@ -193,6 +207,9 @@ impl WebBackend {
         }
 
         // 6. Imperative plugin state that needs connected elements (`showModal()`, popovers).
+        for id in moved {
+            self.renderer.queue_connected_sync_all(store, id);
+        }
         self.renderer.sync_connected_plugins(store, &self.live_elements);
 
         // 7. Flush newly compiled CSS rules into adoptedStyleSheets / <style>.
@@ -227,7 +244,7 @@ impl WebBackend {
         let dbg = store.try_row::<DebugId>(id);
         let dom_id = dbg.map_or("", |d| d.id());
         // An adopted mount container (`<div id="app" data-nve-id="1">`) keeps its host `id`.
-        if !dom_id.is_empty() || self.mount_root.as_ref() != Some(el) {
+        if !dom_id.is_empty() || id != NodeId::ROOT || self.mount_root.as_ref() != Some(el) {
             set_or_remove_attr(el, "id", dom_id);
         }
         set_or_remove_attr(el, "data-testid", dbg.map_or("", |d| d.test_id()));

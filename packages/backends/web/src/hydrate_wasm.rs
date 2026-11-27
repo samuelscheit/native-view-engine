@@ -5,7 +5,10 @@ use nve_abi::NodeId;
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 use wasm_bindgen::JsCast;
 
-use crate::hydrate::{pair_ssr_dom, HydratedControlState, HydrationPass, HydrationReport, SsrDomTree};
+use crate::hydrate::{
+    pair_ssr_dom, ssr_select_base_value, HydratedControlState, HydrationPass, HydrationReport,
+    SsrDomTree, SsrSelectOption,
+};
 use crate::input_attrs::{read_dom_control_value, write_dom_control_value};
 use crate::{StyleSheetCache, WebBackend};
 
@@ -179,32 +182,59 @@ fn find_hydrate_root(container: &web_sys::Element) -> Option<web_sys::Element> {
     first_ui
 }
 
-/// Server-rendered `<select>` value: the last `<option selected>`'s `value` (else its text),
-/// mirroring `hydrate_native_parse` so native and browser hydration reconcile the same base.
-fn ssr_select_base_value(select: &web_sys::Element) -> String {
-    let Ok(list) = select.query_selector_all("option[selected]") else {
-        return String::new();
+/// Server-rendered `<select>` value from its markup alone (shared selectedness rules in
+/// [`crate::hydrate::ssr_select_base_value`], identical to `hydrate_native_parse`).
+fn select_markup_value(select: &web_sys::Element) -> String {
+    let mut options: Vec<SsrSelectOption> = Vec::new();
+    let mut push = |opt: &web_sys::Element, group_disabled: bool| {
+        options.push(SsrSelectOption {
+            selected: opt.has_attribute("selected"),
+            disabled: group_disabled || opt.has_attribute("disabled"),
+            value: opt.get_attribute("value"),
+            text: opt.text_content().unwrap_or_default(),
+        });
     };
-    list.length()
-        .checked_sub(1)
-        .and_then(|last| list.item(last))
-        .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
-        .map(|opt| opt.get_attribute("value").or_else(|| opt.text_content()).unwrap_or_default())
-        .unwrap_or_default()
+    let mut cur = select.first_element_child();
+    while let Some(child) = cur {
+        let tag = child.tag_name();
+        if tag.eq_ignore_ascii_case("option") {
+            push(&child, false);
+        } else if tag.eq_ignore_ascii_case("optgroup") {
+            let group_disabled = child.has_attribute("disabled");
+            let mut opt = child.first_element_child();
+            while let Some(o) = opt {
+                if o.tag_name().eq_ignore_ascii_case("option") {
+                    push(&o, group_disabled);
+                }
+                opt = o.next_element_sibling();
+            }
+        }
+        cur = child.next_element_sibling();
+    }
+    ssr_select_base_value(
+        &options,
+        select.has_attribute("multiple"),
+        select.get_attribute("size").as_deref(),
+    )
 }
 
 /// Detaches a stale SSR root that is the mount container itself: keeps `#app` connected and its
-/// `id`, drops its server UI children and SSR identity so the client root rebuilds inside it.
+/// `id`, drops its server content (text and UI children, keeping styles/scripts/templates/DSD
+/// hosts), SSR identity, and SSR `class`/`style` so the client root rebuilds inside it.
 fn demote_mount_root(mount: &web_sys::Element) {
-    let mut cur = mount.first_element_child();
-    while let Some(el) = cur {
-        cur = el.next_element_sibling();
-        if !is_ignored_dom_element(&el) {
-            el.remove();
+    let mut cur = mount.first_child();
+    while let Some(node) = cur {
+        cur = node.next_sibling();
+        let keep = node
+            .dyn_ref::<web_sys::Element>()
+            .is_some_and(is_ignored_dom_element);
+        if !keep && let Some(parent) = node.parent_node() {
+            let _ = parent.remove_child(&node);
         }
     }
-    let _ = mount.remove_attribute("data-nve-id");
-    let _ = mount.remove_attribute("data-nve-ssr-hash");
+    for attr in ["data-nve-id", "data-nve-ssr-hash", "class", "style"] {
+        let _ = mount.remove_attribute(attr);
+    }
 }
 
 /// Live browser DOM view for positional pairing.
@@ -238,7 +268,7 @@ impl SsrDomTree for LiveDom {
     fn control_state(&self, el: &web_sys::Element, tag: &str) -> HydratedControlState {
         let base = match tag {
             "textarea" => el.text_content().unwrap_or_default(),
-            "select" => ssr_select_base_value(el),
+            "select" => select_markup_value(el),
             _ => el.get_attribute("value").unwrap_or_default(),
         };
         let local = read_dom_control_value(el).unwrap_or_else(|| base.clone());

@@ -280,10 +280,25 @@ fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
         .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+/// Byte offset of the first `<body` start tag (the name must end at `>`, `/`, or whitespace, so
+/// custom elements such as `<body-shell>` never match).
+fn find_body_start_tag(html: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(rel) = find_ascii_ci(&html[from..], "<body") {
+        let at = from + rel;
+        match html.as_bytes().get(at + "<body".len()) {
+            Some(b) if *b == b'>' || *b == b'/' || b.is_ascii_whitespace() => return Some(at),
+            None => return None,
+            Some(_) => from = at + 1,
+        }
+    }
+    None
+}
+
 /// Where SSG `<style>` tags go: before `</head>`, else before `<body`, else after the doctype.
 fn style_insertion_point(html: &str) -> usize {
     find_ascii_ci(html, "</head>")
-        .or_else(|| find_ascii_ci(html, "<body"))
+        .or_else(|| find_body_start_tag(html))
         .or_else(|| {
             let doctype = find_ascii_ci(html, "<!doctype")?;
             Some(doctype + html[doctype..].find('>')? + 1)

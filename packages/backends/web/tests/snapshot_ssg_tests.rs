@@ -260,6 +260,17 @@ fn ssg_styles_never_precede_the_doctype_when_the_shell_has_no_head() {
     for (shell, prefix, before) in [
         ("<!DOCTYPE html><BODY><div id=\"app\"></div></BODY>", "<!DOCTYPE html>", "<BODY>"),
         ("<!doctype html>\n<div id=\"app\"></div>", "<!doctype html>", "\n<div id=\"app\">"),
+        // `<body-shell>` is a custom element, not `<body>`: the styles follow the doctype.
+        (
+            "<!doctype html><body-shell><div id=\"app\"></div></body-shell>",
+            "<!doctype html>",
+            "<body-shell>",
+        ),
+        (
+            "<!doctype html><body-shell></body-shell><body\tclass=\"x\"><div id=\"app\"></div></body>",
+            "<!doctype html><body-shell></body-shell>",
+            "<body\tclass=\"x\">",
+        ),
         ("<div id=\"app\"></div>", "", "<div id=\"app\">"),
     ] {
         let out = inject_ssg_with_scripts_into_shell_html(shell, "app", &ssr, "");

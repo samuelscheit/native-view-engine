@@ -702,7 +702,13 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
 
     let gate = StepGate::default();
     let surface = DioxusSurface::new(1, BurstAsyncApp).with_context(gate.clone());
-    let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new(
+        1,
+        surface,
+        nve_web_html_web::register_web_html_systems,
+        WebBackend::new(),
+        Viewport::default(),
+    );
     session.render_initial().unwrap();
 
     let waker = Waker::noop();

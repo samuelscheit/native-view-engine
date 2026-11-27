@@ -177,6 +177,11 @@ pub(crate) fn register_listener(
 
 #[cfg(target_arch = "wasm32")]
 impl RootEventDelegator {
+    /// Owns already-registered `listeners`, detaching them on drop.
+    pub(crate) fn from_listeners(listeners: Vec<DomEventListener>) -> Self {
+        Self { listeners }
+    }
+
     pub(crate) fn attach(root: web_sys::Element, backend: &crate::WebBackend) -> Self {
         let (surface_id, events, meta) =
             (&backend.surface_id, &backend.pending_events, &backend.node_event_meta);

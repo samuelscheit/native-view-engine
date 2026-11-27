@@ -72,6 +72,7 @@ fn issues_server_and_browser_session_register_identical_plugins_and_resolve_iden
     let session = WebAppSession::new(
         1,
         DioxusSurface::new(1, empty),
+        nve_web_shell::register_issues_web_systems,
         WebBackend::new(),
         Viewport::default(),
     );

@@ -7,6 +7,7 @@
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 mod overlay;
+mod semantics;
 
 pub use overlay::{should_close_dialog_on_backdrop_click, DialogRect};
 use nve_backend_web::html::write_attr as push_attr;
@@ -16,9 +17,9 @@ use nve_backend_web::{
 };
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 use nve_web_html::{
-    DataAttrList, HtmlDataAttrs, HtmlForm, HtmlFormControl, HtmlInvoker, HtmlSemantics,
-    PopoverMode, WebHtml,
+    DataAttrList, HtmlDataAttrs, HtmlForm, HtmlFormControl, HtmlInvoker, WebHtml,
 };
+pub use semantics::HtmlSemanticsWebSystem;
 
 /// Registers every `nve-web-html` live + SSR plugin onto `registry`.
 pub fn register_web_html_systems(registry: &mut WebTableRegistry) {
@@ -79,112 +80,6 @@ impl WebTableSystem for WebHtmlWebSystem {
         if let Some(row) = store.try_row::<WebHtml>(node) {
             ctx.set_inner_html(node, row.html().to_owned());
         }
-    }
-}
-
-/// `WebTableSystem` plugin for [`HtmlSemantics`] (`nve.html.semantics`).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct HtmlSemanticsWebSystem;
-
-impl WebTableSystem for HtmlSemanticsWebSystem {
-    fn slot(&self) -> TableSlot {
-        HtmlSemantics::slot()
-    }
-
-    fn priority(&self) -> u8 {
-        60
-    }
-
-    fn tag_name<'a>(&self, store: &'a NodeStore, node: NodeId) -> Option<&'a str> {
-        let row = store.try_row::<HtmlSemantics>(node)?;
-        if row.popover() != PopoverMode::None && row.element().as_html_tag().is_none() {
-            return Some("div");
-        }
-        row.element().as_html_tag()
-    }
-
-    fn write_ssr_attrs(&self, store: &NodeStore, node: NodeId, out: &mut String) {
-        let Some(row) = store.try_row::<HtmlSemantics>(node) else {
-            return;
-        };
-        if row.open() {
-            out.push_str(" open");
-        }
-        if let Some(cb) = row.closed_by().as_html_attr() {
-            push_attr("closedby", cb, out);
-        }
-        if let Some(pop) = row.popover().as_html_attr() {
-            push_attr("popover", pop, out);
-        }
-        if let Some(pa) = row.popover_action().as_html_attr() {
-            push_attr("popovertargetaction", pa, out);
-        }
-        if row.data_nve_open() {
-            push_attr("data-nve-open", "true", out);
-        }
-    }
-
-    fn commit_node(
-        &self,
-        ctx: &mut WebSystemCommitCtx<'_>,
-        store: &NodeStore,
-        node: NodeId,
-        _dirty_words: u32,
-    ) {
-        let Some(row) = store.try_row::<HtmlSemantics>(node) else {
-            return;
-        };
-        // A live `<dialog>`'s `open` state is owned by `show()` / `showModal()` / `close()`:
-        // toggling the attribute would bypass the top layer (no `:modal`, no backdrop, no inert).
-        #[cfg(target_arch = "wasm32")]
-        let live = ctx.live_element;
-        #[cfg(target_arch = "wasm32")]
-        let native_dialog = live.is_some_and(overlay::is_native_dialog);
-        #[cfg(not(target_arch = "wasm32"))]
-        let native_dialog = false;
-        if !native_dialog {
-            if row.open() {
-                ctx.set_attr(node, "open", "");
-            } else {
-                ctx.remove_attr(node, "open");
-            }
-        }
-        if let Some(cb) = row.closed_by().as_html_attr() {
-            ctx.set_attr(node, "closedby", cb);
-        } else {
-            ctx.remove_attr(node, "closedby");
-        }
-        if let Some(pop) = row.popover().as_html_attr() {
-            ctx.set_attr(node, "popover", pop);
-        } else {
-            ctx.remove_attr(node, "popover");
-        }
-        if let Some(pa) = row.popover_action().as_html_attr() {
-            ctx.set_attr(node, "popovertargetaction", pa);
-        } else {
-            ctx.remove_attr(node, "popovertargetaction");
-        }
-        if row.data_nve_open() {
-            ctx.set_attr(node, "data-nve-open", "true");
-        } else {
-            ctx.remove_attr(node, "data-nve-open");
-        }
-        #[cfg(target_arch = "wasm32")]
-        match live {
-            Some(el) if el.is_connected() => overlay::sync_overlay_state(store, node, el),
-            Some(_) => ctx.request_connected_sync(node),
-            None => {}
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn sync_connected(&self, store: &NodeStore, node: NodeId, el: &web_sys::Element) {
-        overlay::sync_overlay_state(store, node, el);
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn click_interceptor(&self) -> Option<nve_backend_web::ClickInterceptor> {
-        Some(overlay::try_dialog_backdrop_fallback)
     }
 }
 
@@ -490,7 +385,7 @@ mod tests {
     use nve_backend_web::html::FOSTER_PARENT_TRAP_TAGS;
     use nve_backend_web::{StreamingError, WebBackend};
     use nve_components::tables::StreamBoundary;
-    use nve_web_html::{FormMethod, SemanticElement};
+    use nve_web_html::{FormMethod, HtmlSemantics, SemanticElement};
 
     /// `<select>` without `<option>` children is unusable, so `SemanticElement` deliberately does
     /// not offer it; 3P plugins produce it (see [`SelectTagSystem`]).

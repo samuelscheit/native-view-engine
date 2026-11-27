@@ -1,25 +1,48 @@
 //! Heap-allocation guard for `StyleSheetCache::resolve_node`: registering a NEW structural rule
 //! costs a fixed number of allocations over resolving an already-known one, independent of how
-//! many rules the cache holds (one shared class allocation, declarations moved in).
+//! many rules the cache holds (one shared class allocation, declarations moved in), and an
+//! already-known cursor class registers with zero allocations.
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::cell::Cell;
 use std::alloc::System;
 
 use nve_backend_web::StyleSheetCache;
-use nve_components::tables::Visual;
+use nve_backend_web::state_css::format_cursor_rule;
+use nve_components::CursorKind;
+use nve_components::tables::{Interaction, Visual};
 use nve_store::{ChangeSet, NodeId, NodeStore, Rgba};
 
 struct CountingAlloc;
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+// Per-thread allocation counter (const-initialized so `try_with` never allocates or re-enters).
+// Isolates each test from the `libtest` runner and sibling test threads.
+thread_local! {
+    static ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[inline]
+fn bump_alloc_count() {
+    let _ = ALLOC_COUNT.try_with(|c| c.set(c.get().wrapping_add(1)));
+}
+
+#[inline]
+fn thread_alloc_count() -> usize {
+    ALLOC_COUNT.with(Cell::get)
+}
 
 // SAFETY: every method forwards unchanged arguments to `System`, which upholds the `GlobalAlloc` contract.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_alloc_count();
         // SAFETY: `layout` is forwarded unchanged from our caller to `System`.
         unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        bump_alloc_count();
+        // SAFETY: `layout` is forwarded unchanged from our caller to `System`.
+        unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -28,7 +51,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_alloc_count();
         // SAFETY: `ptr`/`layout` come from a prior `System` allocation per the caller contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -44,9 +67,41 @@ fn rgb(i: u32) -> Rgba {
 }
 
 fn allocations(f: impl FnOnce()) -> usize {
-    let before = ALLOC_COUNT.load(Ordering::SeqCst);
+    let before = thread_alloc_count();
     f();
-    ALLOC_COUNT.load(Ordering::SeqCst) - before
+    thread_alloc_count().wrapping_sub(before)
+}
+
+#[test]
+fn counting_alloc_observes_allocations_on_this_thread_only() {
+    let own = allocations(|| drop(std::hint::black_box(vec![1u8; 64])));
+    assert!(
+        own >= 1,
+        "CountingAlloc must observe allocations on the current thread"
+    );
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = ready_tx.send(());
+        for _ in 0..64 {
+            drop(std::hint::black_box(vec![3u8; 128]));
+        }
+        let _ = done_tx.send(());
+    });
+    ready_rx.recv().unwrap();
+    let start = thread_alloc_count();
+    // Wait without allocating on this thread.
+    while done_rx.try_recv().is_err() {
+        std::thread::yield_now();
+    }
+    let end = thread_alloc_count();
+    worker.join().unwrap();
+    assert_eq!(
+        end.wrapping_sub(start),
+        0,
+        "background allocations must not pollute this thread"
+    );
 }
 
 /// Per-probe `(new rule, known twin)` allocation counts after `prior` distinct rules.
@@ -110,4 +165,41 @@ fn registering_a_new_structural_rule_costs_fixed_allocations_independent_of_cach
         small_max <= 2 && large_max <= 2,
         "small={small:?} large={large:?}"
     );
+}
+
+#[test]
+fn known_cursor_class_registers_with_zero_allocations() {
+    let mut store = NodeStore::new();
+    let (first, twin) = {
+        let mut tx = store.tx();
+        let mut pointer = || {
+            let n = tx.create();
+            tx.edit::<Interaction>(n).cursor(CursorKind::Pointer);
+            n
+        };
+        let pair = (pointer(), pointer());
+        tx.commit_into(&mut ChangeSet::default());
+        pair
+    };
+    let mut cache = StyleSheetCache::new();
+    drop(cache.resolve_node(&store, first));
+    let rules = cache.rule_count();
+    let Some((cls, _)) = format_cursor_rule(CursorKind::Pointer) else {
+        unreachable!("Pointer has a cursor rule");
+    };
+    assert!(cache.knows_structural(cls));
+
+    // A known twin costs exactly what building its class list costs: zero registration allocs.
+    let class_list = allocations(|| {
+        let mut classes = String::new();
+        classes.push(' ');
+        classes.push_str(cls);
+        drop(std::hint::black_box(classes));
+    });
+    let twin_cost = allocations(|| drop(cache.resolve_node(&store, twin)));
+    assert_eq!(
+        twin_cost, class_list,
+        "known cursor hit must not allocate its declarations"
+    );
+    assert_eq!(cache.rule_count(), rules);
 }

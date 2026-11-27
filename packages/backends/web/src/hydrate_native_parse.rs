@@ -4,6 +4,18 @@
 use nve_abi::hash::HashMap;
 use nve_abi::{NodeId, ROOT_NODE_ID};
 
+use crate::hydrate::{ssr_select_base_value, SsrSelectOption};
+
+/// A parsed `<select>`: its list of options, resolved to the markup base value after parsing.
+struct SelectScratch {
+    idx: usize,
+    multiple: bool,
+    size: Option<String>,
+    options: Vec<SsrSelectOption>,
+    /// Arena index of the open `<option>` collecting text into `options.last()`.
+    open_option: Option<usize>,
+}
+
 #[inline]
 fn is_form_control_tag(tag: &str) -> bool {
     matches!(tag, "input" | "textarea" | "select")
@@ -225,7 +237,8 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
     };
     let mut top_level: Vec<usize> = Vec::new();
     let mut open_stack: Vec<usize> = Vec::new();
-    let mut selected_option: Vec<(usize, bool, Option<String>)> = Vec::new();
+    let mut selects: Vec<SelectScratch> = Vec::new();
+    let mut disabled_groups: Vec<usize> = Vec::new();
     let bytes = html.as_bytes();
     let mut i = 0usize;
 
@@ -246,16 +259,13 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
                         live.push_str(&decoded);
                     }
                 } else if tag == "option"
-                    && let Some(&(opt_idx, is_sel, ref opt_val)) = selected_option.last()
-                    && opt_idx == top
-                    && is_sel
-                    && opt_val.is_none()
-                    && let Some(&select_idx) = open_stack.iter().rev().nth(1)
-                    && tree.arena[select_idx].tag == "select"
+                    && let Some(sel) = selects
+                        .iter_mut()
+                        .rev()
+                        .find(|s| s.open_option == Some(top))
+                    && let Some(opt) = sel.options.last_mut()
                 {
-                    let decoded = unescape_html_text(&html[text_start..i]);
-                    tree.arena[select_idx].base_control_value = Some(decoded.clone());
-                    tree.arena[select_idx].live_control_value = Some(decoded);
+                    opt.text.push_str(&unescape_html_text(&html[text_start..i]));
                 }
             }
             continue;
@@ -292,8 +302,10 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             {
                 let closed_idx = open_stack[pos];
                 tree.arena[closed_idx].closed = true;
-                if close_name.eq_ignore_ascii_case("option") {
-                    selected_option.retain(|(idx, _, _)| *idx != closed_idx);
+                for sel in &mut selects {
+                    if sel.open_option == Some(closed_idx) {
+                        sel.open_option = None;
+                    }
                 }
                 open_stack.truncate(pos);
             }
@@ -399,20 +411,40 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
             children: Vec::new(),
         });
 
+        if tag == "select" {
+            selects.push(SelectScratch {
+                idx,
+                multiple: has_attr(&attrs, "multiple"),
+                size: attr_val(&attrs, "size").map(str::to_owned),
+                options: Vec::new(),
+                open_option: None,
+            });
+        }
         if let Some(&parent_idx) = open_stack.last() {
             tree.arena[parent_idx].children.push(idx);
-            if tag == "option" && tree.arena[parent_idx].tag == "select" {
-                let is_sel = has_attr(&attrs, "selected");
-                let opt_val = attr_val(&attrs, "value").map(str::to_owned);
-                if is_sel
-                    && let Some(ref v) = opt_val
-                {
-                    tree.arena[parent_idx].base_control_value = Some(v.clone());
-                    tree.arena[parent_idx].live_control_value = Some(v.clone());
-                }
-                if !is_void {
-                    selected_option.push((idx, is_sel, opt_val));
-                }
+            let parent_tag = tree.arena[parent_idx].tag.as_str();
+            let grandparent = open_stack.iter().rev().nth(1).copied();
+            if tag == "optgroup" && parent_tag == "select" && has_attr(&attrs, "disabled") {
+                disabled_groups.push(idx);
+            }
+            // The list of options: `select > option` and `select > optgroup > option`.
+            let owner = match parent_tag {
+                "select" if tag == "option" => Some((parent_idx, false)),
+                "optgroup" if tag == "option" => grandparent
+                    .filter(|&g| tree.arena[g].tag == "select")
+                    .map(|g| (g, disabled_groups.contains(&parent_idx))),
+                _ => None,
+            };
+            if let Some((select_idx, group_disabled)) = owner
+                && let Some(sel) = selects.iter_mut().rev().find(|s| s.idx == select_idx)
+            {
+                sel.options.push(SsrSelectOption {
+                    selected: has_attr(&attrs, "selected"),
+                    disabled: group_disabled || has_attr(&attrs, "disabled"),
+                    value: attr_val(&attrs, "value").map(str::to_owned),
+                    text: String::new(),
+                });
+                sel.open_option = (!is_void).then_some(idx);
             }
         } else {
             top_level.push(idx);
@@ -423,6 +455,11 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
         }
     }
 
+    for sel in selects {
+        let base = ssr_select_base_value(&sel.options, sel.multiple, sel.size.as_deref());
+        tree.arena[sel.idx].live_control_value = Some(base.clone());
+        tree.arena[sel.idx].base_control_value = Some(base);
+    }
     promote_dsd_in_native_tree(&mut tree, &top_level);
     tree
 }

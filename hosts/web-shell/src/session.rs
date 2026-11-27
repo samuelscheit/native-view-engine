@@ -15,6 +15,8 @@ use crate::scene::SceneMirror;
 use nve_abi::xxh64;
 use nve_backend_web::{SsrDocumentOptions, SsrOutput, WebBackend, WebSnapshotPayload};
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+use nve_backend_web::WebTableRegistry;
+#[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
 use nve_dioxus::DioxusSurface;
 #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_engine::NveApp;
@@ -69,8 +71,9 @@ pub struct AsyncPumpOutcome {
 }
 
 enum SessionApp {
+    /// A Dioxus surface plus its app family's web plugin registration.
     #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-    Dioxus(Box<DioxusSurface>),
+    Dioxus(Box<DioxusSurface>, fn(&mut WebTableRegistry)),
     #[cfg(feature = "app-studio")]
     Studio(Box<StudioWorkspaceModule>),
     #[cfg(feature = "app-kitchen-sink")]
@@ -83,10 +86,8 @@ impl SessionApp {
     fn register_web_systems(&self, backend: &mut WebBackend) {
         let registry = backend.table_registry_mut();
         match self {
-            #[cfg(feature = "app-issues")]
-            Self::Dioxus(_) => nve_example_issues_client::register_web_systems(registry),
-            #[cfg(all(not(target_arch = "wasm32"), not(feature = "app-issues")))]
-            Self::Dioxus(_) => nve_web_html_web::register_web_html_systems(registry),
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+            Self::Dioxus(_, register) => register(registry),
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => nve_studio_workspace::register_web_systems(registry),
             #[cfg(feature = "app-kitchen-sink")]
@@ -97,7 +98,7 @@ impl SessionApp {
     fn app_slug(&self) -> Option<&'static str> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(_) => None,
+            Self::Dioxus(..) => None,
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => Some("studio"),
             #[cfg(feature = "app-kitchen-sink")]
@@ -108,7 +109,7 @@ impl SessionApp {
     fn schema_version(&self) -> u32 {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(_) => 1,
+            Self::Dioxus(..) => 1,
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => STUDIO_SNAPSHOT_SCHEMA_VERSION,
             #[cfg(feature = "app-kitchen-sink")]
@@ -123,7 +124,7 @@ impl SessionApp {
     ) -> Result<(u64, BackendApplyStats), BackendError> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.commit_to_timed(frame_id, backend),
+            Self::Dioxus(surface, _) => surface.commit_to_timed(frame_id, backend),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.commit_to_timed(frame_id, backend),
             #[cfg(feature = "app-kitchen-sink")]
@@ -134,7 +135,7 @@ impl SessionApp {
     fn store(&self) -> &NodeStore {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.store(),
+            Self::Dioxus(surface, _) => surface.store(),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.surface().store(),
             #[cfg(feature = "app-kitchen-sink")]
@@ -146,7 +147,7 @@ impl SessionApp {
     fn store_mut(&mut self) -> &mut NodeStore {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.store_mut(),
+            Self::Dioxus(surface, _) => surface.store_mut(),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.surface_mut().store_mut(),
             #[cfg(feature = "app-kitchen-sink")]
@@ -158,7 +159,7 @@ impl SessionApp {
     fn last_changes(&self) -> &ChangeSet {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.last_changes(),
+            Self::Dioxus(surface, _) => surface.last_changes(),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.surface().last_changes(),
             #[cfg(feature = "app-kitchen-sink")]
@@ -169,7 +170,7 @@ impl SessionApp {
     #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     fn poll_work(&mut self, waker: &core::task::Waker) -> bool {
         match self {
-            Self::Dioxus(surface) => surface.poll_work(waker),
+            Self::Dioxus(surface, _) => surface.poll_work(waker),
             #[cfg(feature = "app-studio")]
             Self::Studio(_) => false,
             #[cfg(feature = "app-kitchen-sink")]
@@ -180,7 +181,7 @@ impl SessionApp {
     fn dispatch_events(&mut self, events: &[NativeEvent]) -> bool {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.dispatch_events(events),
+            Self::Dioxus(surface, _) => surface.dispatch_events(events),
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => {
                 let mut direct = Vec::with_capacity(events.len());
@@ -201,7 +202,7 @@ impl SessionApp {
     fn snapshot_state(&mut self) -> Option<Vec<u8>> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(_) => None,
+            Self::Dioxus(..) => None,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => Some(module.snapshot_state().to_vec()),
             #[cfg(feature = "app-kitchen-sink")]
@@ -213,7 +214,7 @@ impl SessionApp {
     fn try_restore_state(&mut self, bytes: &[u8]) -> bool {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(_) => false,
+            Self::Dioxus(..) => false,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.try_restore_state(bytes),
             #[cfg(feature = "app-kitchen-sink")]
@@ -237,14 +238,18 @@ pub struct WebAppSession {
 }
 
 impl WebAppSession {
+    /// Hosts a Dioxus `surface`; `register` installs its app family's web plugins (the same
+    /// function its SSR server calls), so client and server resolve identical tags.
     #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
     pub fn new(
         surface_id: SurfaceId,
         surface: DioxusSurface,
+        register: fn(&mut WebTableRegistry),
         backend: WebBackend,
         viewport: Viewport,
     ) -> Self {
-        Self::with_app(surface_id, SessionApp::Dioxus(Box::new(surface)), backend, viewport)
+        let app = SessionApp::Dioxus(Box::new(surface), register);
+        Self::with_app(surface_id, app, backend, viewport)
     }
 
     fn with_app(
@@ -340,7 +345,7 @@ impl WebAppSession {
                 dispatch_studio_viewport_layout(self.surface_id, module, self.backend.viewport());
             }
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            SessionApp::Dioxus(_) => {}
+            SessionApp::Dioxus(..) => {}
             #[cfg(feature = "app-kitchen-sink")]
             SessionApp::KitchenSink(_) => {}
         }
@@ -441,7 +446,7 @@ impl WebAppSession {
             let schema_version = self.schema_version();
             let mut canonical = match &self.app {
                 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-                SessionApp::Dioxus(_) => return None,
+                SessionApp::Dioxus(..) => return None,
                 #[cfg(feature = "app-studio")]
                 SessionApp::Studio(_) => {
                     let (s, ok) = Self::new_studio_workspace_with_state(

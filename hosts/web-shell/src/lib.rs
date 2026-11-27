@@ -21,6 +21,10 @@ pub mod pairing;
 #[cfg(feature = "scene-view")]
 pub mod scene;
 pub mod session;
+/// The issues family's web plugin set, exactly as the browser shell boots it (its SSR server's
+/// `issues_web_backend` must register the same tables).
+#[cfg(feature = "app-issues")]
+pub use nve_example_issues_client::register_web_systems as register_issues_web_systems;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(any(
@@ -43,6 +47,8 @@ pub mod wasm_hydrate;
 pub mod wasm_issues;
 #[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
 pub mod wasm_dom_probe;
+#[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
+pub mod wasm_overlay_probe;
 #[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
 mod wasm_query_stream;
 #[cfg(all(target_arch = "wasm32", feature = "dev"))]

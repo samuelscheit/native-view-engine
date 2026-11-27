@@ -161,7 +161,13 @@ pub fn start_issues_app(
                     featured_issue_id,
                     stream_guard,
                 });
-            WebAppSession::new(surface_id, surface, backend, viewport)
+            WebAppSession::new(
+                surface_id,
+                surface,
+                crate::register_issues_web_systems,
+                backend,
+                viewport,
+            )
         },
         mount_hook,
     )

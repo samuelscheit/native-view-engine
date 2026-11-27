@@ -196,6 +196,23 @@ pub fn Dialog(
         })
         .finish();
 
+    // Every dismissal path (close button, scrim, `Escape`, native `close`) funnels through here.
+    let mut finish_close = move |restored: Option<String>| {
+        was_open.set(false);
+        if let Some(ref fid) = restored {
+            notify_focus_scope(fid);
+        }
+        if let Some(handler) = on_focus_change {
+            handler.call(restored);
+        }
+        if let Some(handler) = on_open_change {
+            handler.call(false);
+        }
+        if let Some(handler) = on_close {
+            handler.call(());
+        }
+    };
+
     let active_focus = trap.read().active().map(str::to_owned);
     let dialog_id_for_close = dialog_id.clone();
     let dialog_table = super::html_tables::html_dialog_table(open, closedby.to_owned());
@@ -233,6 +250,16 @@ pub fn Dialog(
             nve_style: panel_style,
             style: style,
             onpress: move |ev: PressEvent| ev.stop_propagation(),
+            // Browser-initiated close (native `closedby` backdrop/`Esc`, form `method=dialog`);
+            // app-driven closes already cleared `was_open`.
+            // Never bubbles into an enclosing overlay (`close` does not bubble natively).
+            onclose: move |ev: CustomEvent| {
+                ev.stop_propagation();
+                if *was_open.peek() {
+                    let restored = trap.write().deactivate();
+                    finish_close(restored);
+                }
+            },
             onkeydown: move |ev: KeyEvent| {
                 let data = ev.data();
                 let action = trap.write().handle_key(&data.key, data.shift);
@@ -243,21 +270,7 @@ pub fn Dialog(
                             handler.call(Some(next_id));
                         }
                     }
-                    FocusTrapAction::Dismiss { restore_focus } => {
-                        was_open.set(false);
-                        if let Some(ref fid) = restore_focus {
-                            notify_focus_scope(fid);
-                        }
-                        if let Some(handler) = on_focus_change {
-                            handler.call(restore_focus);
-                        }
-                        if let Some(handler) = on_open_change {
-                            handler.call(false);
-                        }
-                        if let Some(handler) = on_close {
-                            handler.call(());
-                        }
-                    }
+                    FocusTrapAction::Dismiss { restore_focus } => finish_close(restore_focus),
                     FocusTrapAction::Ignored => {}
                 }
             },
@@ -285,19 +298,7 @@ pub fn Dialog(
                     nve_style: trigger_style.clone(),
                     onpress: move |_| {
                         let restored = trap.write().deactivate();
-                        was_open.set(false);
-                        if let Some(ref fid) = restored {
-                            notify_focus_scope(fid);
-                        }
-                        if let Some(handler) = on_focus_change {
-                            handler.call(restored);
-                        }
-                        if let Some(handler) = on_open_change {
-                            handler.call(false);
-                        }
-                        if let Some(handler) = on_close {
-                            handler.call(());
-                        }
+                        finish_close(restored);
                     },
                     text {
                         nve_style: trigger_text_style.clone(),
@@ -343,19 +344,7 @@ pub fn Dialog(
             onpress: move |_| {
                 if close_on_backdrop {
                     let restored = trap.write().deactivate();
-                    was_open.set(false);
-                    if let Some(ref fid) = restored {
-                        notify_focus_scope(fid);
-                    }
-                    if let Some(handler) = on_focus_change {
-                        handler.call(restored);
-                    }
-                    if let Some(handler) = on_open_change {
-                        handler.call(false);
-                    }
-                    if let Some(handler) = on_close {
-                        handler.call(());
-                    }
+                    finish_close(restored);
                 }
             },
             {dialog_el}
@@ -544,6 +533,13 @@ pub fn Popover(
                     accessibility_role: "dialog",
                     tab_index: -1,
                     nve_style: panel_style,
+                    // Native light dismiss / `Esc` / `popovertargetaction=hide` while open.
+                    onclose: move |ev: CustomEvent| {
+                        ev.stop_propagation();
+                        if open && let Some(handler) = on_open_change {
+                            handler.call(false);
+                        }
+                    },
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();
                         let key = data.key.as_str();

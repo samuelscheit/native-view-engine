@@ -1,13 +1,15 @@
 //! E2E-only (`issues-probes`) live-DOM probes for real Chrome: native `<dialog>` / `[popover]`
-//! top-layer state (`:modal`, `:popover-open`, `closedby` backdrop fallback) and hydration onto a
-//! mount container that IS the SSR root (`<div id="app" data-nve-id="1">`).
+//! top-layer state (`:modal`, `:popover-open`, `closedby` backdrop fallback, modality flips,
+//! moves, retags), hydration onto a mount container that IS the SSR root
+//! (`<div id="app" data-nve-id="1">`), and `<select>` SSR base-value parity.
 
-use nve_backend_web::WebBackend;
-use nve_components::tables::{Accessibility, TextContent, register_core_tables};
+use nve_backend_web::hydrate::SELECT_BASE_CASES;
+use nve_backend_web::{WebBackend, WebTableSystem};
+use nve_components::tables::{Accessibility, TextContent, TextInput, register_core_tables};
 use nve_engine::StoreBackend;
-use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable, TableSlot, Transaction};
 use nve_web_html::{
-    ClosedBy, HtmlSemantics, PopoverMode, SemanticElement, register_web_html_tables,
+    ClosedBy, HtmlDataAttrs, HtmlSemantics, PopoverMode, SemanticElement, register_web_html_tables,
 };
 use wasm_bindgen::prelude::*;
 
@@ -18,10 +20,14 @@ export function nve_probe_native_closedby() {
 export function nve_probe_click(el, x, y) {
   el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
 }
+export function nve_probe_value(el) {
+  return el.value;
+}
 ")]
 extern "C" {
     fn nve_probe_native_closedby() -> bool;
     fn nve_probe_click(el: &web_sys::Element, x: f64, y: f64);
+    fn nve_probe_value(el: &web_sys::Element) -> String;
 }
 
 type ProbeResult = Result<String, String>;
@@ -160,6 +166,7 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
         matches(&dialog, ":modal"),
         "reopened modal must match :modal",
     )?;
+    drive_overlay_resync(&mut web, &mut store, host, &dialog, &popover)?;
     // A synthetic click at the viewport corner targets the dialog itself (backdrop hit).
     nve_probe_click(&dialog, 1.0, 1.0);
     let native = nve_probe_native_closedby();
@@ -175,8 +182,162 @@ fn drive_native_overlays(host: &web_sys::Element) -> ProbeResult {
         )?;
     }
     Ok(format!(
-        "dialog :modal/close/show, popover open/hide, closedby fallback (native={native})"
+        "dialog :modal/close/show, modality flips, moves, retags, popover open/hide, closedby \
+         fallback (native={native})"
     ))
+}
+
+/// Re-sync guards on the open modal `dialog` (node 2) and `popover` (node 3): (a) modal-only
+/// edits while open, (b) a same-commit sibling insert + reorder that moves both elements, and
+/// (c) `<details open>` retagged to `<dialog>` (stale `open` dropped; modal enters `:modal`).
+fn drive_overlay_resync(
+    web: &mut WebBackend,
+    store: &mut NodeStore,
+    host: &web_sys::Element,
+    dialog: &web_sys::Element,
+    popover: &web_sys::Element,
+) -> Result<(), String> {
+    let (dialog_n, popover_n) = (NodeId(2), NodeId(3));
+    commit(web, store, |tx| {
+        tx.edit::<Accessibility>(dialog_n).modal(false);
+    })?;
+    check(
+        dialog.has_attribute("open") && !matches(dialog, ":modal"),
+        "(a) modal-only edit true->false while open must show() non-modally",
+    )?;
+    commit(web, store, |tx| {
+        tx.edit::<Accessibility>(dialog_n).modal(true);
+    })?;
+    check(
+        matches(dialog, ":modal"),
+        "(a) modal-only edit false->true while open must re-enter :modal",
+    )?;
+
+    commit(web, store, |tx| {
+        tx.edit::<HtmlSemantics>(popover_n).data_nve_open(true);
+    })?;
+    let sibling = NodeId(4);
+    commit(web, store, |tx| {
+        let _ = tx.create_at(sibling);
+        tx.edit::<TextContent>(sibling).text("sibling");
+        tx.set_children(NodeId::ROOT, &[sibling, popover_n, dialog_n]);
+    })?;
+    check(
+        matches(dialog, ":modal") && matches(popover, ":popover-open"),
+        "(b) a moved open modal <dialog> / [popover] must stay in the top layer",
+    )?;
+
+    for (n, open, label) in [
+        (NodeId(5), false, "closed"),
+        (NodeId(6), true, "open modal"),
+    ] {
+        commit(web, store, |tx| {
+            let _ = tx.create_at(n);
+            tx.edit::<HtmlSemantics>(n)
+                .element(SemanticElement::Details)
+                .open(true);
+            tx.edit::<Accessibility>(n).modal(true);
+            tx.append_child(NodeId::ROOT, n);
+        })?;
+        let selector = format!("[data-nve-id=\"{}\"]", n.raw());
+        check(
+            query(host, &selector)?
+                .matches("details[open]")
+                .unwrap_or(false),
+            "(c) <details open> renders open",
+        )?;
+        commit(web, store, |tx| {
+            tx.edit::<HtmlSemantics>(n)
+                .element(SemanticElement::Dialog)
+                .open(open);
+        })?;
+        let el = query(host, &selector)?;
+        let ok = el.tag_name().eq_ignore_ascii_case("dialog")
+            && el.has_attribute("open") == open
+            && matches(&el, ":modal") == open;
+        check(
+            ok,
+            &format!("(c) <details open> -> <dialog> {label}: no stale open mirror"),
+        )?;
+        commit(web, store, |tx| {
+            tx.edit::<HtmlSemantics>(n).open(true);
+        })?;
+        check(
+            matches(&query(host, &selector)?, ":modal"),
+            "(c) retagged <dialog> opens modally",
+        )?;
+        commit(web, store, |tx| {
+            tx.edit::<HtmlSemantics>(n).open(false);
+        })?;
+    }
+    Ok(())
+}
+
+/// Test plugin rendering any `HtmlDataAttrs` node as `<select>` (`<select>` is plugin-only).
+struct SelectProbeSystem;
+
+impl WebTableSystem for SelectProbeSystem {
+    fn slot(&self) -> TableSlot {
+        HtmlDataAttrs::slot()
+    }
+
+    fn tag_name<'a>(&self, _store: &'a NodeStore, _node: NodeId) -> Option<&'a str> {
+        Some("select")
+    }
+}
+
+/// Hydrates every shared `SELECT_BASE_CASES` `<select>` (with and without `selected`,
+/// `multiple`, `size`, disabled options / `<optgroup>`s) with the client value equal to the
+/// browser's own `select.value`: the SSR base must match it (0 dirty reconciliations).
+#[wasm_bindgen]
+pub fn nve_probe_select_hydration() -> String {
+    report(run_select_hydration())
+}
+
+fn run_select_hydration() -> ProbeResult {
+    for case in SELECT_BASE_CASES {
+        let mount = document()?
+            .create_element("div")
+            .map_err(|_| "create mount")?;
+        let _ = mount.set_attribute("data-nve-id", "1");
+        mount.set_inner_html(&format!(
+            "<select data-nve-id=\"2\" {}>{}</select>",
+            case.attrs, case.options
+        ));
+        body()?.append_child(&mount).map_err(|_| "append mount")?;
+        let result = hydrate_select_case(&mount, case.expected);
+        mount.remove();
+        result.map_err(|e| format!("{e} for {case:?}"))?;
+    }
+    Ok(format!(
+        "{} <select> base-value cases",
+        SELECT_BASE_CASES.len()
+    ))
+}
+
+fn hydrate_select_case(mount: &web_sys::Element, expected: &str) -> Result<(), String> {
+    let select = query(mount, "select")?;
+    let browser = nve_probe_value(&select);
+    check(
+        browser == expected,
+        &format!("Chrome select.value {browser:?}"),
+    )?;
+    let mut client = WebBackend::hydrate_into(mount.clone());
+    client.register_table_system(SelectProbeSystem);
+    let mut store = new_store();
+    commit(&mut client, &mut store, |tx| {
+        let _ = tx.create_at(NodeId::ROOT);
+        let _ = tx.create_at(NodeId(2));
+        tx.edit::<HtmlDataAttrs>(NodeId(2));
+        tx.edit::<TextInput>(NodeId(2)).value(expected);
+        tx.set_children(NodeId::ROOT, &[NodeId(2)]);
+    })?;
+    let report = client.hydration_report();
+    check(report.mismatches.is_empty(), "select must adopt")?;
+    check(
+        report.reconciled_dirty_controls == 0,
+        "SSR base value differs from the browser's select.value (false dirty control)",
+    )
 }
 
 /// Hydrates onto mount containers that ARE the SSR root: a matching `<div id data-nve-id="1">`
@@ -215,6 +376,12 @@ fn run_container_root_hydration() -> ProbeResult {
         let _ = mount.set_attribute("id", &mount_id);
         let _ = mount.set_attribute("data-nve-id", "1");
         mount.set_inner_html(&ssr_root.inner_html());
+        if tag == "main" {
+            // Stale SSR root content the demotion must clear: direct text, `class`, `style`.
+            let _ = mount.insert_adjacent_text("afterbegin", "stale-ssr-text");
+            let _ = mount.set_attribute("class", "ssr-root");
+            let _ = mount.set_attribute("style", "color:red");
+        }
         body()?.append_child(&mount).map_err(|_| "append mount")?;
         let result = hydrate_container_root(&mount, &mount_id, tag);
         mount.remove();
@@ -266,6 +433,16 @@ fn hydrate_container_root(mount: &web_sys::Element, mount_id: &str, tag: &str) -
         check(
             !mount.has_attribute("data-nve-id"),
             "demoted <main> drops its stale SSR id",
+        )?;
+        check(
+            !mount.has_attribute("class") && !mount.has_attribute("style"),
+            "demoted <main> drops its SSR class/style",
+        )?;
+        check(
+            mount
+                .first_child()
+                .is_some_and(|c| c.node_type() == web_sys::Node::ELEMENT_NODE),
+            "demoted <main> drops its direct SSR text",
         )?;
     }
     Ok(format!(

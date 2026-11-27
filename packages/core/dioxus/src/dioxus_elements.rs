@@ -257,6 +257,8 @@ pub mod events {
     define_event!(oncompositionupdate, "oncompositionupdate", CompositionEvent);
     define_event!(oncompositionend, "oncompositionend", CompositionEvent);
     define_event!(ontableevent, "ontableevent", TableEvent);
+    // User/browser-initiated `<dialog>` / `[popover]` closes (bridged by capability plugins).
+    define_event!(onclose, "onclose", crate::CustomEvent);
 }
 
 pub mod GlobalAttributes {

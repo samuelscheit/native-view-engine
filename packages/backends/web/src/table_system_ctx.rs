@@ -38,6 +38,17 @@ impl ClickInterceptors {
 
 #[cfg(target_arch = "wasm32")]
 impl WebStoreRenderer {
+    /// Queues [`super::WebTableSystem::sync_connected`] for every plugin table on `node` (its
+    /// element was retagged or moved, dropping imperative state such as the top layer). No
+    /// dedupe scan: `sync_connected` is idempotent and a large reorder must stay linear.
+    pub(crate) fn queue_connected_sync_all(&mut self, store: &nve_store::NodeStore, node: NodeId) {
+        for sys in self.registry.iter() {
+            if store.has_slot(node, sys.slot()) {
+                self.connected_sync.push((sys.slot(), node));
+            }
+        }
+    }
+
     /// Drains [`WebSystemCommitCtx::request_connected_sync`] once the commit has connected every
     /// element, calling [`super::WebTableSystem::sync_connected`] for still-live nodes.
     pub(crate) fn sync_connected_plugins(
@@ -288,15 +299,45 @@ impl WebSystemCommitCtx<'_> {
         }
     }
 
-    /// Automatic cleanup when `current_slot` detaches from `node`: clears all attrs, `inner_html`,
-    /// and `inline_css` owned by `current_slot` and restores any values still owned by other slots.
-    /// Queues [`super::WebTableSystem::sync_connected`] for `node` (current slot) after the commit
-    /// inserts its element into the document.
+    /// Queues [`super::WebTableSystem::sync_connected`] for `node` (current slot), run in Step 6
+    /// once child reconciliation has connected and placed every element (a Step-5 move would
+    /// otherwise evict state applied earlier, e.g. `:modal`). Duplicate requests coalesce.
     #[cfg(target_arch = "wasm32")]
     pub fn request_connected_sync(&mut self, node: NodeId) {
-        self.connected_sync.push((self.current_slot, node));
+        let entry = (self.current_slot, node);
+        if !self.connected_sync.contains(&entry) {
+            self.connected_sync.push(entry);
+        }
     }
 
+    /// Drops the current slot's mirrored `name` on `node` WITHOUT touching the live element, for
+    /// state the plugin now owns imperatively (a `<dialog>`'s `open`), so retag mirror replay
+    /// never writes the stale value back.
+    pub fn forget_attr(&mut self, node: NodeId, name: &str) {
+        if let Some(owned) = self.slot_attrs.get_mut(&(node, self.current_slot)) {
+            owned.retain(|e| e.name != name);
+            if owned.is_empty() {
+                self.slot_attrs.remove(&(node, self.current_slot));
+            }
+        }
+        if self.find_latest_other_slot_attr(node, name).is_none()
+            && let Some(list) = self.attrs.get_mut(&node)
+        {
+            list.retain(|(k, _)| k != name);
+            if list.is_empty() {
+                self.attrs.remove(&node);
+            }
+        }
+    }
+
+    /// Element tag `node` resolves to across every registered plugin and the core tables.
+    #[inline]
+    pub fn resolved_tag<'s>(&self, store: &'s nve_store::NodeStore, node: NodeId) -> &'s str {
+        self.registry.resolve_tag(store, node).0
+    }
+
+    /// Automatic cleanup when `current_slot` detaches from `node`: clears all attrs, `inner_html`,
+    /// and `inline_css` owned by `current_slot` and restores any values still owned by other slots.
     pub(crate) fn cleanup_current_slot(&mut self, node: NodeId) {
         if let Some(owned) = self.slot_attrs.remove(&(node, self.current_slot)) {
             for attr in owned {

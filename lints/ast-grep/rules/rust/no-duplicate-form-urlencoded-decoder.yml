@@ -1,7 +1,7 @@
 id: rust-no-duplicate-form-urlencoded-decoder
 language: rust
 severity: error
-message: "A `b'+' => ... b' '` arm re-implements `application/x-www-form-urlencoded` decoding."
+message: "Mapping `+` to a space re-implements `application/x-www-form-urlencoded` decoding."
 note: "Decode form bodies with `nve_rpc::FormPairs` / `nve_rpc::decode_form_urlencoded_limited` (the single bounded decoder in `packages/framework/rpc/src/form.rs`)."
 files:
   - "packages/**/*.rs"
@@ -10,5 +10,13 @@ files:
 ignores:
   - "packages/framework/rpc/src/form.rs"
 rule:
-  kind: match_arm
-  regex: "(?s)^b'\\+'\\s*=>.*b' '"
+  any:
+    # `b'+' => b' '` / `'+' => ' '` match arms.
+    - kind: match_arm
+      regex: "(?s)^b?'\\+'\\s*=>.*b?' '"
+    # `if b == b'+' { out.push(b' ') }`.
+    - kind: if_expression
+      regex: "(?s)^if\\s[^{]*==\\s*b?'\\+'\\s*\\{[^}]*b?' '"
+    # `s.replace('+', " ")` / `s.replace("+", " ")`.
+    - kind: call_expression
+      regex: "\\.replace\\(\\s*['\"]\\+['\"]\\s*,\\s*['\"] ['\"]\\s*\\)$"

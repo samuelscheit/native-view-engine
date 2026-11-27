@@ -68,6 +68,136 @@ pub(crate) struct HydratedControlState {
     pub(crate) local: String,
 }
 
+/// One `<option>` in a `<select>`'s list of options (a direct child, or a child of a direct
+/// `<optgroup>` child), as authored in SSR markup.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct SsrSelectOption {
+    /// `[selected]` (`defaultSelected`).
+    pub(crate) selected: bool,
+    /// `[disabled]` on the option or on its parent `<optgroup>`.
+    pub(crate) disabled: bool,
+    /// `value` attribute, else the option's text content.
+    pub(crate) value: Option<String>,
+    pub(crate) text: String,
+}
+
+/// `select.value` implied by SSR markup alone (the HTML selectedness setting algorithm): the
+/// first `[selected]` option for `multiple`; otherwise the last `[selected]` one, else the first
+/// enabled option when the display size is 1 (`size` absent, invalid, `0`, or `1`).
+pub(crate) fn ssr_select_base_value(
+    options: &[SsrSelectOption],
+    multiple: bool,
+    size: Option<&str>,
+) -> String {
+    let display_size_one = size
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .is_none_or(|n| n <= 1);
+    let chosen = if multiple {
+        options.iter().find(|o| o.selected)
+    } else {
+        options.iter().rev().find(|o| o.selected).or_else(|| {
+            display_size_one
+                .then(|| options.iter().find(|o| !o.disabled))
+                .flatten()
+        })
+    };
+    chosen.map_or_else(String::new, |o| match &o.value {
+        Some(v) => v.clone(),
+        // `option.value` falls back to the text with ASCII whitespace stripped and collapsed.
+        None => o
+            .text
+            .split_ascii_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    })
+}
+
+/// One `<select>` markup case with the `select.value` browsers derive from it.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct SelectBaseCase {
+    /// Attributes inside `<select …>`.
+    pub attrs: &'static str,
+    pub options: &'static str,
+    pub expected: &'static str,
+}
+
+/// Shared parity table: the headless parser (unit test) and live Chrome hydration (`issues-probes`
+/// E2E) must both derive `expected` as the SSR base value of each case.
+#[doc(hidden)]
+pub const SELECT_BASE_CASES: &[SelectBaseCase] = &[
+    SelectBaseCase {
+        attrs: "",
+        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
+        expected: "a",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<option value=\"a\">A</option><option value=\"b\" selected>B</option>",
+        expected: "b",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<option value=\"a\" selected>A</option><option value=\"b\" selected>B</option>",
+        expected: "b",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<option value=\"a\" disabled>A</option><option value=\"b\">B</option>",
+        expected: "b",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<optgroup label=\"g\" disabled><option value=\"a\">A</option></optgroup><option value=\"b\">B</option>",
+        expected: "b",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<optgroup label=\"g\"><option value=\"a\">A</option><option value=\"b\" selected>B</option></optgroup>",
+        expected: "b",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<option value=\"a\">A</option><option value=\"b\" selected disabled>B</option>",
+        expected: "b",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<option disabled value=\"a\">A</option><optgroup disabled label=\"g\"><option value=\"b\">B</option></optgroup>",
+        expected: "",
+    },
+    SelectBaseCase {
+        attrs: "",
+        options: "<option>  Hello \n  World </option><option>x</option>",
+        expected: "Hello World",
+    },
+    SelectBaseCase {
+        attrs: "multiple",
+        options: "<option value=\"a\" selected>A</option><option value=\"b\" selected>B</option>",
+        expected: "a",
+    },
+    SelectBaseCase {
+        attrs: "multiple",
+        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
+        expected: "",
+    },
+    SelectBaseCase {
+        attrs: "size=\"3\"",
+        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
+        expected: "",
+    },
+    SelectBaseCase {
+        attrs: "size=\"0\"",
+        options: "<option value=\"a\">A</option><option value=\"b\">B</option>",
+        expected: "a",
+    },
+    SelectBaseCase {
+        attrs: "size=\"1\"",
+        options: "<option value=\"a\" disabled>A</option><option value=\"b\">B</option>",
+        expected: "b",
+    },
+];
+
 /// Read-only view of an SSR-rendered element tree (live browser DOM or parsed native HTML).
 pub(crate) trait SsrDomTree {
     type El: Clone;

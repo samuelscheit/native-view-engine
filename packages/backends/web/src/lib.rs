@@ -25,6 +25,8 @@ pub mod input_attrs;
 pub mod key_events;
 pub mod layout_ext_css;
 pub mod media_css;
+#[cfg(target_arch = "wasm32")]
+pub mod native_events;
 pub mod sanitize;
 #[cfg(feature = "ssr")]
 pub mod snapshot;
@@ -50,6 +52,8 @@ pub mod visual_viewport;
 #[cfg(target_arch = "wasm32")]
 mod wasm_dom;
 
+#[cfg(test)]
+mod retag_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, feature = "hydrate"))]
@@ -83,6 +87,8 @@ pub use key_events::{
     is_text_like_input_type, parse_dom_node_id, KeyInterceptor, WebKeyDisposition,
     WebKeyEventInfo,
 };
+#[cfg(target_arch = "wasm32")]
+pub use native_events::{NativeEventBridge, NativeEventMap};
 #[cfg(all(feature = "ssr", target_arch = "wasm32"))]
 pub use snapshot::BrowserLocalStorage;
 #[cfg(feature = "ssr")]
@@ -157,6 +163,8 @@ pub struct WebBackend {
     #[cfg(target_arch = "wasm32")]
     pub(crate) click_interceptors: Rc<RefCell<table_system::ClickInterceptors>>,
     #[cfg(target_arch = "wasm32")]
+    pub(crate) native_event_bridges: native_events::NativeEventBridges,
+    #[cfg(target_arch = "wasm32")]
     pub(crate) visual_viewport_tracker: Option<visual_viewport::VisualViewportTracker>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) created_scratch: nve_abi::hash::HashSet<nve_store::NodeId>,
@@ -205,6 +213,8 @@ impl WebBackend {
             #[cfg(target_arch = "wasm32")]
             click_interceptors: Rc::default(),
             #[cfg(target_arch = "wasm32")]
+            native_event_bridges: native_events::NativeEventBridges::default(),
+            #[cfg(target_arch = "wasm32")]
             visual_viewport_tracker: None,
             #[cfg(target_arch = "wasm32")]
             created_scratch: nve_abi::hash::HashSet::default(),
@@ -217,6 +227,17 @@ impl WebBackend {
     pub fn register_table_system<S: WebTableSystem>(&mut self, system: S) -> &mut Self {
         self.renderer.registry_mut().register(system);
         self
+    }
+
+    /// Shared event-queue handles for listeners pushing into this backend.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn event_sinks(&self) -> native_events::EventSinks {
+        native_events::EventSinks {
+            surface_id: Rc::clone(&self.surface_id),
+            pending_events: Rc::clone(&self.pending_events),
+            node_event_meta: Rc::clone(&self.node_event_meta),
+            on_event: Rc::clone(&self.on_event),
+        }
     }
 
     #[inline]

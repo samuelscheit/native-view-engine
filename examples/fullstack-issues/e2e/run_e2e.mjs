@@ -13,7 +13,10 @@
  *     (`?comments_issue=999`) with 0 RPCs.
  *  4. Full interactive app flows (FormDecode, 422 FieldErrors, CreateIssue + Nve-Invalidate incl.
  *     live stats, CDP-paused optimistic CloseIssue, filters, RenameIssue, AddComment) + screenshots.
- *  5. Live `FetchTransport` 6-probe browser matrix.
+ *  5. Live `FetchTransport` 6-probe browser matrix + live-DOM probes: native `<dialog>` /
+ *     `[popover]` top layer (modality flips, moves, retags), a real nve-ui `Dialog` closed by a
+ *     TRUSTED backdrop click (native `closedBy` and the fallback path), container-root hydration,
+ *     and `<select>` SSR base-value parity.
  *  6. Real cross-origin CORS preflight.
  *  7. True 0-JS mode: DSD slots, ErrorBoundary slot, native `<form>` POST -> 303 -> GET /issues.
  */
@@ -369,12 +372,39 @@ async function main() {
     console.log("  PASS: all FetchTransport browser probes.");
 
     // Live-DOM probes on the same bundle: native top-layer overlays and container-as-root mounts.
-    for (const probeFn of ["nve_probe_native_overlays", "nve_probe_container_root_hydration"]) {
+    const probeCall = async (probeFn) => {
       const report = await evalJs(cdp, `window.__nveProbeMod.${probeFn}()`);
       console.log(`  ${probeFn}:`, report);
       assert(String(report).startsWith("OK:"), `${probeFn} failed: ${report}`);
+    };
+    for (const probeFn of [
+      "nve_probe_native_overlays",
+      "nve_probe_container_root_hydration",
+      "nve_probe_select_hydration",
+    ]) {
+      await probeCall(probeFn);
     }
-    console.log("  PASS: <dialog> :modal / [popover] :popover-open + container-root hydration probes.");
+    // Real nve-ui Dialog: a TRUSTED click on the ::backdrop (viewport corner, outside the centered
+    // dialog box) must close it and reach app state through the bridged native `close` event.
+    const trustedClick = async (x, y) => {
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+      }
+      // `close` is dispatched from a queued task: let it run before pumping.
+      await evalJs(cdp, "new Promise((r) => setTimeout(r, 50))");
+    };
+    await probeCall("nve_probe_dialog_mount");
+    await trustedClick(4, 4);
+    await probeCall("nve_probe_dialog_after_backdrop_click");
+    const hadClosedBy = await evalJs(
+      cdp,
+      "(() => { const had = 'closedBy' in HTMLDialogElement.prototype; delete HTMLDialogElement.prototype.closedBy; return had; })()"
+    );
+    console.log(`  native closedBy before delete: ${hadClosedBy}; fallback round:`);
+    await trustedClick(4, 4);
+    await probeCall("nve_probe_dialog_after_backdrop_click");
+    await evalJs(cdp, "window.__nveProbeMod.nve_probe_dialog_unmount()");
+    console.log("  PASS: top layer (flips/moves/retags), trusted backdrop Dialog close (native + fallback), container-root + <select> hydration.");
 
     // -------------------------------------------------------------------------
     // 6. Real cross-origin CORS preflight

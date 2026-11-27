@@ -129,7 +129,10 @@ impl StyleSheetCache {
         if let Some((cls, decls)) = resolved.structural_rule.take() {
             self.register_structural(&cls, decls);
         }
-        if let Some((cls, decls)) = resolved.cursor_rule.take() {
+        // Cursor classes are a tiny closed set: known hits must not allocate the declarations.
+        if let Some((cls, decls)) = resolved.cursor_rule.take()
+            && !self.knows_structural(cls)
+        {
             self.register_structural(cls, decls.to_owned());
         }
         if let Some((cls, decls)) = resolved.transition_rule.take() {

@@ -156,7 +156,13 @@ fn cap_hitting_burst_with_mid_pump_wakes_schedules_only_macrotask() {
     let surface = DioxusSurface::new(1, BurstApp)
         .with_context(gate.clone())
         .with_context(Waker::from(Arc::clone(&fw)));
-    let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new(
+        1,
+        surface,
+        nve_web_html_web::register_web_html_systems,
+        WebBackend::new(),
+        Viewport::default(),
+    );
     session.render_initial().unwrap();
 
     assert_eq!(fw.sched.lock().unwrap().on_direct_pump_enter(), Ok(()));
@@ -395,7 +401,13 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     let surface = DioxusSurface::new(1, PumpOrderApp)
         .with_context(Waker::from(Arc::clone(&fw)))
         .with_context(gates.clone());
-    let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+    let mut session = WebAppSession::new(
+        1,
+        surface,
+        nve_web_html_web::register_web_html_systems,
+        WebBackend::new(),
+        Viewport::default(),
+    );
     let waker = Waker::from(Arc::clone(&fw));
 
     let run_direct =

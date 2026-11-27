@@ -5,6 +5,36 @@ use nve_engine::StoreBackend;
 use nve_store::{ChangeSet, NodeId, NodeStore};
 
 use crate::WebBackend;
+use crate::hydrate::SELECT_BASE_CASES;
+use crate::hydrate_native_parse::parse_ssr_html_tree;
+
+/// The headless parser derives every shared [`SELECT_BASE_CASES`] base value exactly as browsers
+/// do (the live Chrome `nve_probe_select_hydration` E2E runs the same table).
+#[test]
+fn headless_select_base_value_matches_the_shared_browser_parity_table() {
+    for case in SELECT_BASE_CASES {
+        let html = format!(
+            "<div data-nve-id=\"1\"><select data-nve-id=\"2\" {}>{}</select></div>",
+            case.attrs, case.options
+        );
+        let tree = parse_ssr_html_tree(&html);
+        let select = tree
+            .arena
+            .iter()
+            .find(|n| n.tag == "select")
+            .expect("select parsed");
+        assert_eq!(
+            select.base_control_value.as_deref(),
+            Some(case.expected),
+            "{case:?}"
+        );
+        assert_eq!(
+            select.live_control_value.as_deref(),
+            Some(case.expected),
+            "{case:?}"
+        );
+    }
+}
 
 /// A dirty adopted `<input>` keeps the user's pre-hydration value through the deferred commit;
 /// the echo baseline must follow the 3-way resolved value, so typing the server value back

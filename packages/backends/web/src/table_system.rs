@@ -17,14 +17,14 @@ use std::sync::Arc;
 
 use nve_abi::hash::HashMap;
 use nve_abi::table::effect;
-use nve_components::tables::{
-    Accessibility, AriaRole, Image, Link, TextContent, TextInput, Transform, Typography, Visual,
-};
+use nve_components::tables::{Transform, Typography, Visual};
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend};
 use nve_store::{ChangeSet, NodeId, NodeStore, TableEventBus, TableSlot};
 
 #[path = "table_system_ctx.rs"]
 mod ctx;
+#[path = "table_system_registry.rs"]
+mod registry;
 #[path = "table_system_ssr.rs"]
 mod ssr;
 
@@ -36,173 +36,8 @@ pub use ctx::WebSystemCommitCtx;
 #[cfg(target_arch = "wasm32")]
 pub use ctx::ClickInterceptor;
 pub(crate) use ssr::write_core_ssr_attrs;
+pub use registry::{WebTableRegistry, WebTableSystem};
 pub use crate::sanitize::{is_safe_custom_tag, is_safe_web_attr, is_safe_web_url};
-
-/// Uniform capability plugin trait for Web DOM + SSR (implemented by `nve-*-web` and 3P modules).
-pub trait WebTableSystem: Send + Sync + 'static {
-    /// Table slot handled by this plugin (e.g. `Svg::slot()`, `WebHtml::slot()`).
-    fn slot(&self) -> TableSlot;
-
-    /// Realization priority (higher wins when a node attaches multiple plugin tables).
-    fn priority(&self) -> u8 {
-        100
-    }
-
-    /// HTML/SVG element tag to create for `node` (`None` falls back to core tag derivation).
-    fn tag_name<'a>(&self, _store: &'a NodeStore, _node: NodeId) -> Option<&'a str> {
-        None
-    }
-
-    /// Optional XML namespace URI (e.g. `Some("http://www.w3.org/2000/svg")`).
-    fn namespace(&self) -> Option<&'static str> {
-        None
-    }
-
-    /// Emits extra SSR opening-tag attributes into `out` (with leading space per attr).
-    fn write_ssr_attrs(&self, _store: &NodeStore, _node: NodeId, _out: &mut String) {}
-
-    /// Emits SSR inner HTML into `out`. Returning `true` suppresses normal child traversal.
-    fn write_ssr_inner(&self, _store: &NodeStore, _node: NodeId, _out: &mut String) -> bool {
-        false
-    }
-
-    /// Emits extra inline CSS declarations into `out` (e.g. `backdrop-filter:...;`).
-    fn write_inline_css(&self, _store: &NodeStore, _node: NodeId, _out: &mut String) {}
-
-    /// Synchronizes live/mirror DOM state when this table's row changes on `node`.
-    fn commit_node(
-        &self,
-        _ctx: &mut WebSystemCommitCtx<'_>,
-        _store: &NodeStore,
-        _node: NodeId,
-        _dirty_words: u32,
-    ) {
-    }
-
-    /// Dispatches a typed imperative command addressed to this table on `node`.
-    fn handle_command(
-        &self,
-        _ctx: &mut WebSystemCommitCtx<'_>,
-        _store: &NodeStore,
-        _node: NodeId,
-        _op: u32,
-        _payload: &[u8],
-    ) {
-    }
-
-    /// Cleans up resources when `node` detaches this table or is removed.
-    fn remove_node(&self, _ctx: &mut WebSystemCommitCtx<'_>, _node: NodeId) {}
-
-    /// Re-synchronizes imperative live DOM state (e.g. repainting a freshly created `<canvas>`)
-    /// after an element's tag was replaced without changing this table's row.
-    #[cfg(target_arch = "wasm32")]
-    fn sync_retagged_element(&self, _store: &NodeStore, _node: NodeId, _el: &web_sys::Element) {}
-
-    /// Synchronizes imperative state that needs a document-connected element (`showModal()`,
-    /// `showPopover()`), run after child reconciliation for nodes queued through
-    /// [`WebSystemCommitCtx::request_connected_sync`].
-    #[cfg(target_arch = "wasm32")]
-    fn sync_connected(&self, _store: &NodeStore, _node: NodeId, _el: &web_sys::Element) {}
-
-    /// Root-delegator click hook consulted before `Press` dispatch; `true` consumes the click.
-    #[cfg(target_arch = "wasm32")]
-    fn click_interceptor(&self) -> Option<ClickInterceptor> {
-        None
-    }
-}
-
-/// Ordered registry of [`WebTableSystem`] plugins installed on a web renderer.
-#[derive(Default)]
-pub struct WebTableRegistry {
-    systems: Vec<Arc<dyn WebTableSystem>>,
-    /// Bumped on every [`Self::register`] so live mirrors (click hooks) refresh lazily.
-    revision: u32,
-}
-
-impl WebTableRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Registers a plugin system (replaces any existing plugin for the same `TableSlot`, sorted by priority descending).
-    pub fn register<S: WebTableSystem>(&mut self, system: S) -> &mut Self {
-        let slot = system.slot();
-        self.systems.retain(|s| s.slot() != slot);
-        self.systems.push(Arc::new(system));
-        self.systems.sort_by_key(|a| std::cmp::Reverse(a.priority()));
-        self.revision = self.revision.wrapping_add(1);
-        self
-    }
-
-    #[inline]
-    pub fn revision(&self) -> u32 {
-        self.revision
-    }
-
-    #[inline]
-    pub fn get(&self, slot: TableSlot) -> Option<&Arc<dyn WebTableSystem>> {
-        self.systems.iter().find(|s| s.slot() == slot)
-    }
-
-    #[inline]
-    pub fn iter(&self) -> &[Arc<dyn WebTableSystem>] {
-        &self.systems
-    }
-
-    /// Resolves the element tag & optional namespace for `node` across registered plugins first,
-    /// then core tables (`Image > TextInput > Link > Semantics > Accessibility(Button/Heading) > TextContent > div`).
-    pub fn resolve_tag<'a>(&self, store: &'a NodeStore, node: NodeId) -> (&'a str, Option<&'static str>) {
-        for sys in &self.systems {
-            if store.has_slot(node, sys.slot())
-                && let Some(tag) = sys.tag_name(store, node)
-            {
-                return (tag, sys.namespace());
-            }
-        }
-        if store.has::<Image>(node) {
-            return ("img", None);
-        }
-        if let Some(ti) = store.try_row::<TextInput>(node) {
-            return (if ti.multiline() { "textarea" } else { "input" }, None);
-        }
-        if store.has::<Link>(node) {
-            return ("a", None);
-        }
-        if let Some(a11y) = store.try_row::<Accessibility>(node) {
-            match a11y.role() {
-                AriaRole::Button => return ("button", None),
-                AriaRole::Heading => {
-                    return (
-                        match a11y.level() {
-                            1 => "h1",
-                            3 => "h3",
-                            4 => "h4",
-                            5 => "h5",
-                            6 => "h6",
-                            _ => "h2",
-                        },
-                        None,
-                    );
-                }
-                AriaRole::Navigation => return ("nav", None),
-                AriaRole::Main => return ("main", None),
-                AriaRole::Article => return ("article", None),
-                AriaRole::Complementary => return ("aside", None),
-                AriaRole::Banner => return ("header", None),
-                AriaRole::ContentInfo => return ("footer", None),
-                AriaRole::Form => return ("form", None),
-                AriaRole::Dialog => return ("dialog", None),
-                AriaRole::Code => return ("code", None),
-                AriaRole::CodeBlock => return ("pre", None),
-                _ => {}
-            }
-        }
-        if store.has::<TextContent>(node) && store.children(node).is_empty() {
-            return ("span", None);
-        }
-        ("div", None)
-    }
-}
 
 /// Per-node retained DOM/mirror state maintained by [`WebStoreRenderer`].
 #[derive(Debug, Clone)]
@@ -479,18 +314,39 @@ impl WebStoreRenderer {
         }
         let mut mutations = 0u32;
         for tc in changes.tables() {
-            if let Some(sys) = self.registry.get(tc.slot).cloned() {
+            let owner = self.registry.get(tc.slot).cloned();
+            // Candidate 0 is the owner; candidates 1.. are plugins watching `tc.slot`, which
+            // re-commit their own rows (`dirty_words == 0`) on nodes whose watched table changed.
+            for candidate in 0..=self.registry.systems.len() {
+                let sys = match candidate.checked_sub(1) {
+                    None => match &owner {
+                        Some(sys) => Arc::clone(sys),
+                        None => continue,
+                    },
+                    Some(i) => {
+                        let sys = &self.registry.systems[i];
+                        if sys.slot() == tc.slot || !sys.watches_slot(tc.slot) {
+                            continue;
+                        }
+                        Arc::clone(sys)
+                    }
+                };
+                let slot = sys.slot();
+                let own = slot == tc.slot;
                 for (nid, mask) in tc.iter() {
+                    if !own && !store.has_slot(nid, slot) {
+                        continue;
+                    }
                     #[cfg(any(target_arch = "wasm32", test))]
                     if record_committed {
-                        self.retag_committed_scratch.insert((tc.slot, nid));
+                        self.retag_committed_scratch.insert((slot, nid));
                     }
                     let mut ctx = self.commit_ctx(
-                        tc.slot,
+                        slot,
                         #[cfg(target_arch = "wasm32")]
                         live_elements.and_then(|m| m.get(&nid.raw())),
                     );
-                    sys.commit_node(&mut ctx, store, nid, mask);
+                    sys.commit_node(&mut ctx, store, nid, if own { mask } else { 0 });
                     mutations += 1;
                 }
             }
@@ -520,8 +376,10 @@ impl WebStoreRenderer {
         mutations
     }
 
-    /// Unified Step 1 -> 1b -> 2 -> 2b -> 3 plugin commit orchestrator shared by `wasm32` live DOM
-    /// retag and native/wasm32 unit tests via [`ctx::RetagElementSink`].
+    /// Unified Step 1 -> 2 -> 2a -> 2b -> 3 plugin commit orchestrator shared by `wasm32` live DOM
+    /// retag and native/wasm32 unit tests via [`ctx::RetagElementSink`]. Step 2a replays the
+    /// FINAL mirrors onto retagged elements, so Step-2 retractions (`remove_attr`,
+    /// `forget_attr`) are never undone by a replay of the previous frame's state.
     #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn commit_plugins_active_with<E: ctx::RetagElementSink>(
         &mut self,
@@ -537,17 +395,30 @@ impl WebStoreRenderer {
             #[cfg(target_arch = "wasm32")] live_dom,
         );
         let has_retag = !retagged.is_empty() && retag_live.is_some();
-        if let Some(live) = retag_live && !retagged.is_empty() {
-            ctx::replay_retagged_mirrors(retagged, live, &self.plugin_attrs, &self.plugin_inline_css, &self.plugin_inner_html);
-        }
         mutations += self.commit_plugins_step2(
             store,
             changes,
             has_retag,
             #[cfg(target_arch = "wasm32")] live_dom,
         );
-        if let Some(live) = retag_live && !retagged.is_empty() {
-            ctx::dispatch_retagged_sync(&self.registry, store, retagged, live, &self.retag_committed_scratch, on_sync);
+        if let Some(live) = retag_live
+            && !retagged.is_empty()
+        {
+            ctx::replay_retagged_mirrors(
+                retagged,
+                live,
+                &self.plugin_attrs,
+                &self.plugin_inline_css,
+                &self.plugin_inner_html,
+            );
+            ctx::dispatch_retagged_sync(
+                &self.registry,
+                store,
+                retagged,
+                live,
+                &self.retag_committed_scratch,
+                on_sync,
+            );
         }
         mutations + self.dispatch_commands_step3(store, changes, #[cfg(target_arch = "wasm32")] live_dom)
     }
@@ -639,6 +510,8 @@ impl StoreBackend for WebStoreRenderer {
         self.write_seq = 0;
         #[cfg(any(target_arch = "wasm32", test))]
         self.retag_committed_scratch.clear();
+        #[cfg(target_arch = "wasm32")]
+        self.connected_sync.clear();
         self.events.clear();
     }
 }

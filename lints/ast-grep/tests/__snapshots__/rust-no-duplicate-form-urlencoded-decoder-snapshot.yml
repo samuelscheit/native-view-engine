@@ -9,9 +9,38 @@ snapshots:
       style: primary
       start: 84
       end: 131
+  "fn decode_if(bytes: &[u8], out: &mut Vec<u8>) {\n    for &b in bytes {\n        if b == b'+' {\n            out.push(b' ');\n        } else {\n            out.push(b);\n        }\n    }\n}\n":
+    labels:
+    - source: |-
+        if b == b'+' {
+                    out.push(b' ');
+                } else {
+                    out.push(b);
+                }
+      style: primary
+      start: 78
+      end: 172
+  "fn decode_str(s: &str) -> String {\n    s.replace('+', \" \")\n}\n":
+    labels:
+    - source: s.replace('+', " ")
+      style: primary
+      start: 39
+      end: 58
+  "fn decode_str_lit(s: &str) -> String {\n    s.replace(\"+\", \" \").trim().to_owned()\n}\n":
+    labels:
+    - source: s.replace("+", " ")
+      style: primary
+      start: 43
+      end: 62
   "fn map(b: u8) -> u8 {\n    match b {\n        b'+' => b' ',\n        b => b,\n    }\n}\n":
     labels:
     - source: b'+' => b' ',
       style: primary
       start: 44
       end: 57
+  "fn map_char(c: char) -> char {\n    match c {\n        '+' => ' ',\n        c => c,\n    }\n}\n":
+    labels:
+    - source: "'+' => ' ',"
+      style: primary
+      start: 53
+      end: 64

@@ -349,6 +349,23 @@ impl UiHarness {
         self.render();
     }
 
+    /// Dispatches a host `Custom { name }` event (e.g. a bridged native `<dialog>` `close`).
+    pub fn custom(&mut self, tid: &str, name: &str) {
+        let id = self.find(tid);
+        let ts = self.next_ts();
+        assert!(self.surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: id,
+            timestamp_us: ts,
+            kind: NativeEventKind::Custom,
+            payload: EventPayload::Custom {
+                name: name.to_owned(),
+                data: Vec::new(),
+            },
+        }]));
+        self.render();
+    }
+
     pub fn focus(&mut self, tid: &str) {
         let id = self.find(tid);
         let ts = self.next_ts();
