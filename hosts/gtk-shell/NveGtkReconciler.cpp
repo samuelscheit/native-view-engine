@@ -2,591 +2,436 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <unordered_set>
-#include <utility>
+#include <string>
 
-namespace nve {
+namespace nve::gtk {
 
-namespace gtk_internal {
+using gtk_internal::px;
 
-void unparent_all_fixed_children(GtkWidget* fixed_widget) {
-  if (fixed_widget == nullptr || !GTK_IS_FIXED(fixed_widget)) {
-    return;
+namespace {
+
+constexpr const char* kViewKey = "nve-gtk-view";
+
+std::string editable_text(const GtkNodeView& v) {
+  if (v.kind == WidgetKind::TextView) {
+    GtkTextBuffer* buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget));
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(buf, &start, &end);
+    gchar* raw = gtk_text_buffer_get_text(buf, &start, &end, FALSE);
+    std::string out = raw != nullptr ? raw : "";
+    g_free(raw);
+    return out;
   }
-  while (GtkWidget* child = gtk_widget_get_first_child(fixed_widget)) {
-    gtk_fixed_remove(GTK_FIXED(fixed_widget), child);
-  }
+  const char* raw = gtk_editable_get_text(GTK_EDITABLE(v.widget));
+  return raw != nullptr ? raw : "";
 }
 
-void detach_from_parent(GtkWidget* widget) {
-  if (widget == nullptr) {
-    return;
-  }
-  GtkWidget* parent = gtk_widget_get_parent(widget);
-  if (parent == nullptr) {
-    return;
-  }
-  if (GTK_IS_FIXED(parent)) {
-    gtk_fixed_remove(GTK_FIXED(parent), widget);
+void set_editable_text(GtkNodeView& v, const std::string& text) {
+  v.updating_programmatically = true;
+  if (v.kind == WidgetKind::TextView) {
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget)), text.c_str(), -1);
   } else {
-    gtk_widget_unparent(widget);
+    gtk_editable_set_text(GTK_EDITABLE(v.widget), text.c_str());
+  }
+  v.updating_programmatically = false;
+}
+
+void on_text_changed(GtkNodeView* v) {
+  if (v->updating_programmatically) return;
+  std::string current = editable_text(*v);
+  if (current == v->dispatched_text) return;
+  v->dispatched_text = current;
+  v->user_editing = true;
+  // May destroy `v` (the app can remove the input in response): touch nothing afterwards.
+  (void)v->host->dispatch_text_change(v->id, current);
+}
+
+void on_entry_changed(GtkEditable*, gpointer data) { on_text_changed(static_cast<GtkNodeView*>(data)); }
+void on_buffer_changed(GtkTextBuffer*, gpointer data) { on_text_changed(static_cast<GtkNodeView*>(data)); }
+
+void on_entry_activate(GtkEntry*, gpointer data) {
+  auto* v = static_cast<GtkNodeView*>(data);
+  (void)v->host->dispatch_submit(v->id, editable_text(*v));
+}
+
+void on_focus_enter(GtkEventControllerFocus*, gpointer data) {
+  auto* v = static_cast<GtkNodeView*>(data);
+  (void)v->host->dispatch_focus(v->id, true);
+}
+
+void on_focus_leave(GtkEventControllerFocus*, gpointer data) {
+  auto* v = static_cast<GtkNodeView*>(data);
+  (void)v->host->dispatch_focus(v->id, false);
+}
+
+void on_click_released(GtkGestureClick*, gint, gdouble x, gdouble y, gpointer data) {
+  auto* v = static_cast<GtkNodeView*>(data);
+  if (v->wants_press) {
+    (void)v->host->simulate_press(v->id, static_cast<float>(x), static_cast<float>(y));
+    return;
+  }
+  if (!v->href.empty()) {  // a link nobody intercepts: open it natively
+#if GTK_CHECK_VERSION(4, 10, 0)
+    GtkUriLauncher* launcher = gtk_uri_launcher_new(v->href.c_str());
+    GtkRoot* root = gtk_widget_get_root(v->widget);
+    gtk_uri_launcher_launch(launcher, GTK_IS_WINDOW(root) ? GTK_WINDOW(root) : nullptr, nullptr, nullptr, nullptr);
+    g_object_unref(launcher);
+#endif
   }
 }
 
-} // namespace gtk_internal
+void on_scroll_value_changed(GtkAdjustment*, gpointer data) {
+  auto* v = static_cast<GtkNodeView*>(data);
+  if (v->scrolling_programmatically) return;
+  GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
+  const auto x = static_cast<float>(gtk_adjustment_get_value(gtk_scrolled_window_get_hadjustment(sw)));
+  const auto y = static_cast<float>(gtk_adjustment_get_value(gtk_scrolled_window_get_vadjustment(sw)));
+  (void)v->host->dispatch_scroll(v->id, x, y, v->content_width(), v->content_height());
+}
 
-// -----------------------------------------------------------------------------
-// NveGtkHost incremental NveSceneView reconciliation
-// -----------------------------------------------------------------------------
+void on_canvas_draw(GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
+  const auto* v = static_cast<const GtkNodeView*>(data);
+  (void)render_draw_list_to_cairo(cr, static_cast<double>(width), static_cast<double>(height), v->draw_list);
+}
 
-void NveGtkHost::refresh_raw_props_from_view(const NveSceneView& view) {
-  const auto snapshots = session_.snapshot_nodes();
-  const auto raw_props = gtk_internal::extract_raw_props_by_node(snapshots);
-
-  std::unordered_map<uint32_t, GtkNodeSemantics> next_semantics;
-  next_semantics.reserve(view.node_count);
-  std::unordered_map<uint32_t, std::string> next_resize_modes;
-
-  for (uint32_t i = 0u; i < view.node_count; ++i) {
-    const NveRenderNode& node = view.nodes[i];
-    const auto rp_it = raw_props.find(node.node_id);
-    const RawPropMap* rp = (rp_it != raw_props.end()) ? &rp_it->second : nullptr;
-    const std::string_view text = scene_node_text(view, node);
-    GtkNodeSemantics sem = gtk_internal::extract_node_semantics(node, text, rp);
-
-    const auto prev_sem_it = node_semantics_.find(node.node_id);
-    const bool sem_changed = (prev_sem_it == node_semantics_.end() || prev_sem_it->second != sem);
-    next_semantics.emplace(node.node_id, sem);
-
-    std::string mode;
-    bool mode_changed = false;
-    if (node.kind == NVE_NODE_KIND_IMAGE) {
-      mode = gtk_internal::extract_image_resize_mode(rp);
-      const auto prev_mode_it = node_image_resize_modes_.find(node.node_id);
-      mode_changed =
-          (prev_mode_it == node_image_resize_modes_.end() || prev_mode_it->second != mode);
-      next_resize_modes.emplace(node.node_id, mode);
+GtkWidget* new_widget(WidgetKind kind, GtkAccessibleRole role) {
+  switch (kind) {
+    case WidgetKind::Label: {
+      GtkWidget* w = GTK_WIDGET(g_object_new(GTK_TYPE_LABEL, "label", "", "accessible-role", role, nullptr));
+      gtk_label_set_xalign(GTK_LABEL(w), 0.0f);
+      gtk_label_set_yalign(GTK_LABEL(w), 0.0f);
+      gtk_widget_set_can_target(w, FALSE);
+      return w;
     }
+    case WidgetKind::Picture: {
+      GtkWidget* w = GTK_WIDGET(g_object_new(GTK_TYPE_PICTURE, "accessible-role", role, nullptr));
+      gtk_picture_set_can_shrink(GTK_PICTURE(w), TRUE);
+      return w;
+    }
+    case WidgetKind::Entry: return GTK_WIDGET(g_object_new(GTK_TYPE_ENTRY, "accessible-role", role, nullptr));
+    case WidgetKind::TextView: {
+      GtkWidget* w = GTK_WIDGET(g_object_new(GTK_TYPE_TEXT_VIEW, "accessible-role", role, nullptr));
+      gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(w), GTK_WRAP_WORD_CHAR);
+      return w;
+    }
+    case WidgetKind::Scrolled: return GTK_WIDGET(g_object_new(GTK_TYPE_SCROLLED_WINDOW, "accessible-role", role, nullptr));
+    case WidgetKind::Canvas: return GTK_WIDGET(g_object_new(GTK_TYPE_DRAWING_AREA, "accessible-role", role, nullptr));
+    case WidgetKind::Fixed: break;
+  }
+  return GTK_WIDGET(g_object_new(GTK_TYPE_FIXED, "accessible-role", role, nullptr));
+}
 
-    if (sem_changed || mode_changed) {
-      if (node.node_id == NVE_ROOT_NODE_ID) {
-        apply_accessibility_to_widget(root_widget_, sem);
-      } else if (GtkWidget** slot = reconciler_.find(node.node_id);
-                 slot != nullptr && *slot != nullptr) {
-        GtkWidget* w = *slot;
-        if (sem_changed) {
-          apply_accessibility_to_widget(w, sem);
-          if (GTK_IS_ENTRY(w)) {
-            gtk_entry_set_placeholder_text(
-                GTK_ENTRY(w), sem.placeholder.empty() ? nullptr : sem.placeholder.c_str());
-            gtk_entry_set_visibility(GTK_ENTRY(w), sem.secure_text_entry ? FALSE : TRUE);
-          }
-          const bool interactive =
-              !sem.disabled && !gtk_internal::is_leaf_text_node(node) &&
-              (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u);
-          ensure_click_gesture(node.node_id, w, interactive);
-        }
-        if (mode_changed && GTK_IS_PICTURE(w)) {
-          apply_picture_fit(w, mode);
-        }
+#if GTK_CHECK_VERSION(4, 8, 0)
+GtkContentFit content_fit(uint8_t fit) noexcept {
+  switch (fit) {
+    case NVE_IMAGE_FIT_CONTAIN: return GTK_CONTENT_FIT_CONTAIN;
+    case NVE_IMAGE_FIT_FILL: return GTK_CONTENT_FIT_FILL;
+    case NVE_IMAGE_FIT_NONE:
+    case NVE_IMAGE_FIT_SCALE_DOWN: return GTK_CONTENT_FIT_SCALE_DOWN;
+    default: return GTK_CONTENT_FIT_COVER;
+  }
+}
+#endif
+
+}  // namespace
+
+float GtkNodeView::content_width() const noexcept {
+  return content != nullptr ? static_cast<float>(std::max(0, gtk_widget_get_width(content))) : 0.0f;
+}
+float GtkNodeView::content_height() const noexcept {
+  return content != nullptr ? static_cast<float>(std::max(0, gtk_widget_get_height(content))) : 0.0f;
+}
+
+// --- Adapter ---------------------------------------------------------------------------------
+
+uint32_t NveGtkHost::Adapter::tag(const host::NodeData& node) const {
+  const WidgetKind kind = gtk_internal::widget_kind(node, host->canvas_.has(node.index));
+  return static_cast<uint32_t>(kind) | (static_cast<uint32_t>(gtk_internal::accessible_role(node)) << 8u);
+}
+
+GtkNodeView* NveGtkHost::Adapter::create(const host::NodeData& node) {
+  auto* v = new GtkNodeView();
+  v->host = host;
+  v->id = node.id;
+  v->kind = gtk_internal::widget_kind(node, host->canvas_.has(node.index));
+  v->widget = new_widget(v->kind, gtk_internal::accessible_role(node));
+  g_object_ref_sink(v->widget);
+  g_object_set_data(G_OBJECT(v->widget), kViewKey, v);
+  const std::string generic = "nve-node-" + std::to_string(node.id);
+  gtk_widget_add_css_class(v->widget, generic.c_str());
+  gtk_widget_add_css_class(v->widget, host->scoped_class(node.id).c_str());
+  switch (v->kind) {
+    case WidgetKind::Fixed: v->content = v->widget; break;
+    case WidgetKind::Scrolled: {
+      v->content = gtk_fixed_new();
+      gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(v->widget), v->content);
+      GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
+      v->h_handler = g_signal_connect(gtk_scrolled_window_get_hadjustment(sw), "value-changed",
+                                      gtk_detail::to_gcallback(&on_scroll_value_changed), v);
+      v->v_handler = g_signal_connect(gtk_scrolled_window_get_vadjustment(sw), "value-changed",
+                                      gtk_detail::to_gcallback(&on_scroll_value_changed), v);
+      host->scroll_views_.insert(v);
+      break;
+    }
+    case WidgetKind::Entry:
+    case WidgetKind::TextView: {
+      if (v->kind == WidgetKind::Entry) {
+        v->changed_handler = g_signal_connect(v->widget, "changed", gtk_detail::to_gcallback(&on_entry_changed), v);
+        v->activate_handler = g_signal_connect(v->widget, "activate", gtk_detail::to_gcallback(&on_entry_activate), v);
+      } else {
+        v->changed_handler = g_signal_connect(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v->widget)), "changed",
+                                              gtk_detail::to_gcallback(&on_buffer_changed), v);
       }
+      v->focus = gtk_event_controller_focus_new();
+      g_signal_connect(v->focus, "enter", gtk_detail::to_gcallback(&on_focus_enter), v);
+      g_signal_connect(v->focus, "leave", gtk_detail::to_gcallback(&on_focus_leave), v);
+      gtk_widget_add_controller(v->widget, v->focus);
+      break;
     }
+    case WidgetKind::Canvas:
+      gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->widget), &on_canvas_draw, v, nullptr);
+      break;
+    case WidgetKind::Label:
+    case WidgetKind::Picture: break;
   }
-
-  node_semantics_ = std::move(next_semantics);
-  node_image_resize_modes_ = std::move(next_resize_modes);
+  return v;
 }
 
-void NveGtkHost::sync_views(bool check_raw_props) {
-  NveFabricHostHandle host = session_.active_fabric_host();
-  if (host == nullptr) {
-    return;
-  }
-
-  const NveSceneView view = session_.scene_view();
-  if (view.schema_hash != NVE_SCENE_SCHEMA_HASH) {
-    return;
-  }
-
-  for (uint32_t i = 0u; i < view.removed_count; ++i) {
-    const uint32_t rid = view.removed_ids[i];
-    node_semantics_.erase(rid);
-    node_image_srcs_.erase(rid);
-    node_image_resize_modes_.erase(rid);
-  }
-
-  bool need_raw_props = check_raw_props || !raw_props_initialized_;
-  if (!need_raw_props && view.nodes != nullptr) {
-    for (uint32_t i = 0u; i < view.dirty_count; ++i) {
-      const uint32_t idx = view.dirty_indices[i];
-      if (idx < view.node_count) {
-        const uint8_t k = view.nodes[idx].kind;
-        if (k == NVE_NODE_KIND_IMAGE || k == NVE_NODE_KIND_TEXT_INPUT) {
-          need_raw_props = true;
-          break;
-        }
-      }
-    }
-  }
-
-  syncing_views_ = true;
-  if (need_raw_props) {
-    refresh_raw_props_from_view(view);
-    raw_props_initialized_ = true;
-  }
-  (void)reconciler_.sync(view, adapter_);
-  flush_css_if_dirty();
-  syncing_views_ = false;
-}
-
-NveGtkHost::ScrollBinding* NveGtkHost::ensure_scroll_binding(uint32_t node_id, GtkWidget* widget) {
-  if (widget == nullptr || !GTK_IS_SCROLLED_WINDOW(widget)) {
-    return nullptr;
-  }
-  const auto it = scroll_bindings_.find(node_id);
-  if (it != scroll_bindings_.end() && it->second != nullptr && it->second->scrolled == widget) {
-    return it->second.get();
-  }
-  remove_scroll_binding(node_id);
-
-  auto binding = std::make_unique<ScrollBinding>();
-  binding->host = this;
-  binding->node_id = node_id;
-  binding->scrolled = widget;
-  binding->hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget));
-  binding->vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
-  if (binding->hadj != nullptr) {
-    binding->h_handler = g_signal_connect(
-        binding->hadj,
-        "value-changed",
-        gtk_detail::to_gcallback(&NveGtkHost::on_scroll_value_changed),
-        binding.get());
-  }
-  if (binding->vadj != nullptr) {
-    binding->v_handler = g_signal_connect(
-        binding->vadj,
-        "value-changed",
-        gtk_detail::to_gcallback(&NveGtkHost::on_scroll_value_changed),
-        binding.get());
-  }
-
-  ScrollBinding* raw = binding.get();
-  scroll_bindings_[node_id] = std::move(binding);
-  return raw;
-}
-
-void NveGtkHost::remove_scroll_binding(uint32_t node_id) {
-  const auto it = scroll_bindings_.find(node_id);
-  if (it == scroll_bindings_.end()) {
-    return;
-  }
-  if (it->second != nullptr) {
-    if (it->second->hadj != nullptr && it->second->h_handler != 0u &&
-        g_signal_handler_is_connected(it->second->hadj, it->second->h_handler)) {
-      g_signal_handler_disconnect(it->second->hadj, it->second->h_handler);
-    }
-    if (it->second->vadj != nullptr && it->second->v_handler != 0u &&
-        g_signal_handler_is_connected(it->second->vadj, it->second->v_handler)) {
-      g_signal_handler_disconnect(it->second->vadj, it->second->v_handler);
-    }
-  }
-  scroll_bindings_.erase(it);
-}
-
-LayoutRect NveGtkHost::layout_for_node(uint32_t node_id) const noexcept {
-  const auto it = node_layouts_.find(node_id);
-  return (it != node_layouts_.end()) ? it->second : LayoutRect{};
-}
-
-void NveGtkHost::ensure_click_gesture(uint32_t node_id, GtkWidget* widget, bool interactive) {
-  if (!interactive) {
-    remove_click_gesture(node_id, widget);
-    return;
-  }
-  const auto it = click_bindings_.find(node_id);
-  if (it != click_bindings_.end() && it->second != nullptr && it->second->gesture != nullptr) {
-    return;
-  }
-  auto binding = std::make_unique<ClickBinding>();
-  binding->host = this;
-  binding->node_id = node_id;
-  GtkGesture* click = gtk_gesture_click_new();
-  binding->gesture = click;
-  g_signal_connect(
-      click, "released", gtk_detail::to_gcallback(&NveGtkHost::on_gesture_released), binding.get());
-  gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click));
-  click_bindings_[node_id] = std::move(binding);
-}
-
-void NveGtkHost::remove_click_gesture(uint32_t node_id, GtkWidget* widget) {
-  const auto it = click_bindings_.find(node_id);
-  if (it == click_bindings_.end()) {
-    return;
-  }
-  if (widget != nullptr && it->second != nullptr && it->second->gesture != nullptr) {
-    gtk_widget_remove_controller(widget, GTK_EVENT_CONTROLLER(it->second->gesture));
-  }
-  click_bindings_.erase(it);
-}
-
-void NveGtkHost::GtkViewAdapter::update_root(
-    const NveSceneView& /*view*/,
-    const NveRenderNode& node) {
-  host->node_layouts_[NVE_ROOT_NODE_ID] = LayoutRect{node.x, node.y, node.width, node.height};
-  std::string next_root_css;
-  if (node.bg_rgba != 0u) {
-    next_root_css = "." + host->scoped_root_class() + " {\n  background-color: " +
-                    gtk_internal::format_css_rgba(node.bg_rgba) + ";\n}\n";
-  }
-  if (host->root_css_ != next_root_css) {
-    host->root_css_ = std::move(next_root_css);
-    host->css_dirty_ = true;
-  }
-  if (const GtkNodeSemantics* sem = host->find_semantics(node.node_id)) {
-    host->apply_accessibility_to_widget(host->root_widget_, *sem);
-  }
-}
-
-GtkWidget* NveGtkHost::GtkViewAdapter::create_view(
-    const NveSceneView& view,
-    const NveRenderNode& node) {
-  const std::string_view text = scene_node_text(view, node);
-  const GtkNodeSemantics default_sem = gtk_internal::extract_node_semantics(node, text, nullptr);
-  const GtkNodeSemantics& sem =
-      host->find_semantics(node.node_id) ? *host->find_semantics(node.node_id) : default_sem;
-
-  GtkWidget* widget = nullptr;
-  if (gtk_internal::is_leaf_text_node(node)) {
-    widget = GTK_WIDGET(g_object_new(
-        GTK_TYPE_LABEL, "label", "", "accessible-role", sem.gtk_role, nullptr));
-    gtk_label_set_wrap(GTK_LABEL(widget), TRUE);
-    gtk_label_set_wrap_mode(GTK_LABEL(widget), PANGO_WRAP_WORD_CHAR);
-    gtk_label_set_xalign(GTK_LABEL(widget), 0.0f);
-    gtk_label_set_yalign(GTK_LABEL(widget), 0.0f);
-    gtk_widget_set_can_target(widget, FALSE);
-  } else if (node.kind == NVE_NODE_KIND_IMAGE) {
-    widget = GTK_WIDGET(g_object_new(
-        GTK_TYPE_PICTURE, "accessible-role", sem.gtk_role, nullptr));
-    gtk_picture_set_can_shrink(GTK_PICTURE(widget), TRUE);
-  } else if (node.kind == NVE_NODE_KIND_SKIA_CANVAS) {
-    widget = GTK_WIDGET(g_object_new(
-        GTK_TYPE_DRAWING_AREA, "accessible-role", sem.gtk_role, nullptr));
-    (void)host->ensure_canvas_binding(node.node_id, widget);
-  } else if (node.kind == NVE_NODE_KIND_SCROLL_VIEW) {
-    widget = GTK_WIDGET(
-        g_object_new(GTK_TYPE_SCROLLED_WINDOW, "accessible-role", sem.gtk_role, nullptr));
-    GtkWidget* inner_fixed = gtk_fixed_new();
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(widget), inner_fixed);
-    host->scroll_contents_[widget] = inner_fixed;
-    (void)host->ensure_scroll_binding(node.node_id, widget);
-  } else if (node.kind == NVE_NODE_KIND_TEXT_INPUT) {
-    widget = GTK_WIDGET(g_object_new(GTK_TYPE_ENTRY, "accessible-role", sem.gtk_role, nullptr));
-  } else {
-    widget = GTK_WIDGET(g_object_new(GTK_TYPE_FIXED, "accessible-role", sem.gtk_role, nullptr));
-  }
-
-  g_object_ref_sink(widget);
-  const std::string generic_cls = "nve-node-" + std::to_string(node.node_id);
-  const std::string scoped_cls = host->scoped_node_class(node.node_id);
-  gtk_widget_add_css_class(widget, generic_cls.c_str());
-  gtk_widget_add_css_class(widget, scoped_cls.c_str());
-  return widget;
-}
-
-void NveGtkHost::GtkViewAdapter::update_view(
-    const NveSceneView& view,
-    GtkWidget*& widget,
-    const NveRenderNode& node) {
-  if (widget == nullptr) {
-    return;
-  }
+void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
   ++host->reconcile_update_count_;
+  GtkWidget* w = v->widget;
+  v->local = node.local;
+  gtk_widget_set_size_request(w, px(node.rect.width) > 0 ? px(node.rect.width) : -1,
+                              px(node.rect.height) > 0 ? px(node.rect.height) : -1);
+  if (GtkWidget* parent = gtk_widget_get_parent(w); parent != nullptr && GTK_IS_FIXED(parent)) {
+    gtk_fixed_move(GTK_FIXED(parent), w, static_cast<double>(node.local.x), static_cast<double>(node.local.y));
+  }
+  gtk_widget_set_opacity(w, static_cast<double>(std::clamp(node.visual.opacity, 0.0f, 1.0f)));
+  gtk_widget_set_visible(w, node.visual.visibility != NVE_VISIBILITY_HIDDEN);
+  const bool clips = node.visual.overflow_x != NVE_OVERFLOW_VISIBLE || node.visual.overflow_y != NVE_OVERFLOW_VISIBLE ||
+                     node.visual.border_radius > 0.0f;
+  gtk_widget_set_overflow(w, clips ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
+  gtk_widget_set_cursor_from_name(w, gtk_internal::cursor_name(node.interaction.cursor));
 
-  const std::string_view text = scene_node_text(view, node);
-  const GtkNodeSemantics default_sem = gtk_internal::extract_node_semantics(node, text, nullptr);
-  const GtkNodeSemantics& sem =
-      host->find_semantics(node.node_id) ? *host->find_semantics(node.node_id) : default_sem;
-
-  host->node_layouts_[node.node_id] = LayoutRect{node.x, node.y, node.width, node.height};
-
-  const int req_w = (std::isfinite(node.width) && node.width > 0.0f)
-                        ? static_cast<int>(std::lround(node.width))
-                        : -1;
-  const int req_h = (std::isfinite(node.height) && node.height > 0.0f)
-                        ? static_cast<int>(std::lround(node.height))
-                        : -1;
-  gtk_widget_set_size_request(widget, req_w, req_h);
-
-  const double clamped_opacity = static_cast<double>(node.opacity_u8) / 255.0;
-  gtk_widget_set_opacity(widget, clamped_opacity);
-
-  if (GTK_IS_LABEL(widget)) {
-    const char* current = gtk_label_get_text(GTK_LABEL(widget));
-    if (current == nullptr || text != std::string_view(current)) {
-      const std::string owned(text);
-      gtk_label_set_text(GTK_LABEL(widget), owned.c_str());
+  switch (v->kind) {
+    case WidgetKind::Label: {
+      const std::string text(node.text);
+      const char* current = gtk_label_get_text(GTK_LABEL(w));
+      if (current == nullptr || text != current) gtk_label_set_text(GTK_LABEL(w), text.c_str());
+      const host::TextStyle& t = node.text_style;
+      const bool wraps = t.white_space != NVE_WHITE_SPACE_NO_WRAP && t.white_space != NVE_WHITE_SPACE_PRE;
+      gtk_label_set_wrap(GTK_LABEL(w), wraps ? TRUE : FALSE);
+      gtk_label_set_wrap_mode(GTK_LABEL(w), PANGO_WRAP_WORD_CHAR);
+      gtk_label_set_lines(GTK_LABEL(w), t.max_lines > 0u ? static_cast<int>(t.max_lines) : -1);
+      gtk_label_set_ellipsize(GTK_LABEL(w), t.max_lines > 0u ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
+      const float xalign = t.text_align == NVE_TEXT_ALIGN_CENTER                                   ? 0.5f
+                           : (t.text_align == NVE_TEXT_ALIGN_END || t.text_align == NVE_TEXT_ALIGN_RIGHT) ? 1.0f
+                                                                                                 : 0.0f;
+      gtk_label_set_xalign(GTK_LABEL(w), xalign);
+      gtk_label_set_justify(GTK_LABEL(w), t.text_align == NVE_TEXT_ALIGN_JUSTIFY ? GTK_JUSTIFY_FILL
+                                          : xalign == 0.5f                       ? GTK_JUSTIFY_CENTER
+                                          : xalign == 1.0f                       ? GTK_JUSTIFY_RIGHT
+                                                                                 : GTK_JUSTIFY_LEFT);
+      break;
     }
-    gtk_widget_set_can_target(widget, FALSE);
-  } else if (GTK_IS_PICTURE(widget)) {
-    const auto mode_it = host->node_image_resize_modes_.find(node.node_id);
-    const std::string mode = (mode_it != host->node_image_resize_modes_.end())
-                                 ? mode_it->second
-                                 : std::string("cover");
-    host->apply_picture_fit(widget, mode);
+    case WidgetKind::Picture: host->update_image(*v, node); break;
+    case WidgetKind::Canvas: host->update_canvas(*v, node.index); break;
+    case WidgetKind::Entry:
+    case WidgetKind::TextView: host->update_text_input(*v, node); break;
+    case WidgetKind::Scrolled: host->update_scroll(*v, node); break;
+    case WidgetKind::Fixed: break;
+  }
+  v->href.assign(node.href);
+  host->update_press(*v, node);
+  host->apply_semantics(*v, node);
+  host->apply_css(*v, node);
+  v->synced = true;
+}
 
-    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
-    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
+void NveGtkHost::Adapter::update_root(const host::NodeData& node) {
+  const std::string rule = "." + host->scoped_class(node.id) + " {\n  background-color: " +
+                           (node.visual.background != 0u ? gtk_internal::css_rgba(node.visual.background)
+                                                         : std::string("transparent")) +
+                           ";\n}\n";
+  if (!gtk_widget_has_css_class(host->root_widget_, host->scoped_class(node.id).c_str())) {
+    gtk_widget_add_css_class(host->root_widget_, host->scoped_class(node.id).c_str());
+    gtk_widget_add_css_class(host->viewport_widget_, host->scoped_class(node.id).c_str());
+  }
+  host->set_css_rule(node.id, rule);
+  gtk_internal::apply_accessibility(host->root_widget_, gtk_internal::node_semantics(node));
+}
 
-    const auto src_it = host->node_image_srcs_.find(node.node_id);
-    if (src_it == host->node_image_srcs_.end() || src_it->second != text) {
-      host->node_image_srcs_[node.node_id] = std::string(text);
-      GdkTexture* tex = host->texture_cache_.get(text);
-      gtk_picture_set_paintable(
-          GTK_PICTURE(widget), tex != nullptr ? GDK_PAINTABLE(tex) : nullptr);
-    }
-  } else if (GTK_IS_DRAWING_AREA(widget)) {
-    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
-    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widget), std::max(0, req_w));
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widget), std::max(0, req_h));
+void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
+  if (v == nullptr) return;
+  host->css_dirty_ = host->css_rules_.erase(id) > 0u || host->css_dirty_;
+  host->scroll_views_.erase(v);
+  if (v->kind == WidgetKind::Scrolled) {
+    GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
+    g_signal_handler_disconnect(gtk_scrolled_window_get_hadjustment(sw), v->h_handler);
+    g_signal_handler_disconnect(gtk_scrolled_window_get_vadjustment(sw), v->v_handler);
+    gtk_internal::unparent_children(v->content);
+    gtk_scrolled_window_set_child(sw, nullptr);
+  } else if (v->kind == WidgetKind::Fixed) {
+    gtk_internal::unparent_children(v->content);
+  } else if (v->kind == WidgetKind::Entry || v->kind == WidgetKind::TextView) {
+    GObject* source = v->kind == WidgetKind::Entry ? G_OBJECT(v->widget)
+                                                   : G_OBJECT(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v->widget)));
+    g_signal_handler_disconnect(source, v->changed_handler);
+    if (v->activate_handler != 0u) g_signal_handler_disconnect(v->widget, v->activate_handler);
+    gtk_widget_remove_controller(v->widget, v->focus);
+  } else if (v->kind == WidgetKind::Canvas) {
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->widget), nullptr, nullptr, nullptr);
+  }
+  if (v->click != nullptr) gtk_widget_remove_controller(v->widget, GTK_EVENT_CONTROLLER(v->click));
+  gtk_internal::detach_from_parent(v->widget);
+  g_object_set_data(G_OBJECT(v->widget), kViewKey, nullptr);
+  g_object_unref(v->widget);
+  delete v;
+  v = nullptr;
+}
 
-    CanvasBinding* binding = host->ensure_canvas_binding(node.node_id, widget);
-    if (binding != nullptr) {
-      const auto* raw_ptr = reinterpret_cast<const uint8_t*>(text.data());
-      const size_t raw_len = text.size();
-      const bool same =
-          binding->draw_list_bytes.size() == raw_len &&
-          (raw_len == 0u ||
-           std::memcmp(binding->draw_list_bytes.data(), raw_ptr, raw_len) == 0);
-      if (!same) {
-        binding->draw_list_bytes.assign(raw_ptr, raw_ptr + raw_len);
-        ++binding->redraw_count;
-        gtk_widget_queue_draw(widget);
+void NveGtkHost::Adapter::set_children(const host::NodeData&, GtkNodeView** parent_view,
+                                       std::span<GtkNodeView** const> kids) {
+  GtkWidget* container = parent_view != nullptr ? (*parent_view)->content : host->root_widget_;
+  if (container == nullptr) return;  // leaf widgets (label, picture, ...) render no children
+  GtkWidget* prev = nullptr;
+  for (GtkNodeView** kid : kids) {
+    GtkNodeView* k = *kid;
+    const bool moved_here = gtk_widget_get_parent(k->widget) != container;
+    if (moved_here) gtk_internal::detach_from_parent(k->widget);
+    // Paint order == scene child order. (Re-inserting resets a `GtkFixed` child's position, so the
+    // position is applied afterwards, always.)
+    if (moved_here || gtk_widget_get_prev_sibling(k->widget) != prev) gtk_widget_insert_after(k->widget, container, prev);
+    gtk_fixed_move(GTK_FIXED(container), k->widget, static_cast<double>(k->local.x), static_cast<double>(k->local.y));
+    prev = k->widget;
+  }
+  // Anything after the last scene child is stale (moved away or removed from this parent).
+  while (GtkWidget* extra = prev != nullptr ? gtk_widget_get_next_sibling(prev) : gtk_widget_get_first_child(container)) {
+    gtk_fixed_remove(GTK_FIXED(container), extra);
+  }
+}
+
+// --- Per-kind bindings -------------------------------------------------------------------------
+
+void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
+  v.wants_press = node.wants(NVE_EVENT_PRESS);
+  const bool needs = !node.interaction.disabled && (v.wants_press || !v.href.empty());
+  if (v.kind == WidgetKind::Label) gtk_widget_set_can_target(v.widget, needs ? TRUE : FALSE);  // text buttons
+  if (needs && v.click == nullptr) {
+    v.click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(v.click), GDK_BUTTON_PRIMARY);
+    g_signal_connect(v.click, "released", gtk_detail::to_gcallback(&on_click_released), &v);
+    gtk_widget_add_controller(v.widget, GTK_EVENT_CONTROLLER(v.click));
+  } else if (!needs && v.click != nullptr) {
+    gtk_widget_remove_controller(v.widget, GTK_EVENT_CONTROLLER(v.click));
+    v.click = nullptr;
+  }
+  gtk_widget_set_focusable(v.widget, (node.interaction.focusable || v.kind == WidgetKind::Entry ||
+                                      v.kind == WidgetKind::TextView) ? TRUE : FALSE);
+}
+
+void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
+#if GTK_CHECK_VERSION(4, 8, 0)
+  gtk_picture_set_content_fit(GTK_PICTURE(v.widget), content_fit(node.image.fit));
+#endif
+  if (v.image_src == node.image.src && v.synced) return;
+  v.image_src = node.image.src;
+  GdkTexture* tex = nullptr;
+  std::vector<uint8_t> bytes;
+  if (node.image.src != 0u && session_->runtime().resource_bytes(node.image.src, bytes) == NVE_RUNTIME_OK) {
+    if (const auto src = host::decode_image_src(bytes)) tex = textures_.get(*src);
+  }
+  gtk_picture_set_paintable(GTK_PICTURE(v.widget), tex != nullptr ? GDK_PAINTABLE(tex) : nullptr);
+}
+
+void NveGtkHost::update_canvas(GtkNodeView& v, uint32_t index) {
+  const canvas::CanvasData c = canvas_.at(index);
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(v.widget), px(v.local.width));
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(v.widget), px(v.local.height));
+  if (v.synced && c.draw_list == v.canvas_res && c.generation == v.canvas_generation) return;
+  v.canvas_res = c.draw_list;
+  v.canvas_generation = c.generation;
+  std::vector<uint8_t> bytes;
+  if (c.draw_list == 0u || session_->runtime().resource_bytes(c.draw_list, bytes) != NVE_RUNTIME_OK) bytes.clear();
+  if (bytes == v.draw_list && v.synced) return;
+  v.draw_list = std::move(bytes);
+  ++v.redraw_count;
+  gtk_widget_queue_draw(v.widget);
+}
+
+void NveGtkHost::update_text_input(GtkNodeView& v, const host::NodeData& node) {
+  if (v.kind == WidgetKind::Entry) {
+    GtkEntry* e = GTK_ENTRY(v.widget);
+    const std::string placeholder(node.input.placeholder);
+    gtk_entry_set_placeholder_text(e, placeholder.empty() ? nullptr : placeholder.c_str());
+    gtk_entry_set_visibility(e, gtk_internal::node_semantics(node).secure ? FALSE : TRUE);
+    gtk_entry_set_max_length(e, static_cast<int>(node.input.max_length));
+    gtk_editable_set_editable(GTK_EDITABLE(e), node.input.read_only ? FALSE : TRUE);
+  } else {
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(v.widget), node.input.read_only ? FALSE : TRUE);
+  }
+  // Controlled value: adopt the app's value unless it merely echoes what the user is typing.
+  const std::string value(node.input.value);
+  if (v.user_editing && value == v.dispatched_text) {
+    v.user_editing = false;
+  } else if (!v.synced || (value != v.app_value && value != editable_text(v))) {
+    set_editable_text(v, value);
+    v.dispatched_text = value;
+    v.user_editing = false;
+  }
+  v.app_value = value;
+}
+
+void NveGtkHost::update_scroll(GtkNodeView& v, const host::NodeData& node) {
+  GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v.widget);
+  const uint8_t axes = node.kind == host::NodeKind::Scroll ? node.scroll.axes
+                       : (node.visual.overflow_x >= NVE_OVERFLOW_SCROLL && node.visual.overflow_y >= NVE_OVERFLOW_SCROLL)
+                           ? NVE_SCROLL_AXES_BOTH
+                       : node.visual.overflow_x >= NVE_OVERFLOW_SCROLL ? NVE_SCROLL_AXES_HORIZONTAL
+                                                                       : NVE_SCROLL_AXES_VERTICAL;
+  const GtkPolicyType shown = node.scroll.scrollbars == NVE_SCROLLBARS_ALWAYS  ? GTK_POLICY_ALWAYS
+                              : node.scroll.scrollbars == NVE_SCROLLBARS_NEVER ? GTK_POLICY_EXTERNAL
+                                                                               : GTK_POLICY_AUTOMATIC;
+  const bool h = axes == NVE_SCROLL_AXES_HORIZONTAL || axes == NVE_SCROLL_AXES_BOTH;
+  const bool vert = axes == NVE_SCROLL_AXES_VERTICAL || axes == NVE_SCROLL_AXES_BOTH;
+  gtk_scrolled_window_set_policy(sw, h ? shown : GTK_POLICY_NEVER, vert ? shown : GTK_POLICY_NEVER);
+  gtk_scrolled_window_set_kinetic_scrolling(sw, node.scroll.bounce ? TRUE : FALSE);
+  // Programmatic scroll (`requested_scroll_*`): apply each new target once.
+  const auto apply = [&](float target, float& last, GtkAdjustment* adj) {
+    if (std::isnan(target) || target == last) return;
+    last = target;
+    v.scrolling_programmatically = true;
+    gtk_adjustment_set_value(adj, static_cast<double>(target));
+    v.scrolling_programmatically = false;
+  };
+  apply(node.scroll.requested_x, v.requested_x, gtk_scrolled_window_get_hadjustment(sw));
+  apply(node.scroll.requested_y, v.requested_y, gtk_scrolled_window_get_vadjustment(sw));
+}
+
+void NveGtkHost::update_scroll_extents() {
+  // Content extent = union of the children's layout rects (our own record: GTK 4.24's
+  // `gtk_fixed_get_child_position` reports 0,0, see docs/UPSTREAM.md).
+  for (GtkNodeView* v : scroll_views_) {
+    float w = 0.0f;
+    float h = 0.0f;
+    for (GtkWidget* c = gtk_widget_get_first_child(v->content); c != nullptr; c = gtk_widget_get_next_sibling(c)) {
+      if (const auto* child = static_cast<const GtkNodeView*>(g_object_get_data(G_OBJECT(c), kViewKey))) {
+        w = std::max(w, child->local.x + child->local.width);
+        h = std::max(h, child->local.y + child->local.height);
       }
     }
-  } else if (GTK_IS_ENTRY(widget)) {
-    EntryBinding* binding = host->ensure_entry_binding(node.node_id, widget);
-    gtk_entry_set_placeholder_text(
-        GTK_ENTRY(widget), sem.placeholder.empty() ? nullptr : sem.placeholder.c_str());
-    gtk_entry_set_visibility(GTK_ENTRY(widget), sem.secure_text_entry ? FALSE : TRUE);
-
-    if (binding != nullptr && !binding->user_editing) {
-      const char* current = gtk_editable_get_text(GTK_EDITABLE(widget));
-      const std::string_view current_sv =
-          (current != nullptr) ? std::string_view(current) : std::string_view{};
-      if (!binding->has_synced_snapshot ||
-          (text != binding->last_snapshot_text && text != current_sv)) {
-        binding->updating_programmatically = true;
-        const std::string owned(text);
-        gtk_editable_set_text(GTK_EDITABLE(widget), owned.c_str());
-        binding->last_dispatched_text = owned;
-        binding->updating_programmatically = false;
-      }
-      binding->last_snapshot_text.assign(text.data(), text.size());
-      binding->has_synced_snapshot = true;
-    }
-  } else if (GTK_IS_FIXED(widget)) {
-    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
-    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
-  } else if (GTK_IS_SCROLLED_WINDOW(widget)) {
-    (void)host->ensure_scroll_binding(node.node_id, widget);
-    const bool clip = std::isfinite(node.border_radius) && node.border_radius > 0.0f;
-    gtk_widget_set_overflow(widget, clip ? GTK_OVERFLOW_HIDDEN : GTK_OVERFLOW_VISIBLE);
-  }
-
-  host->apply_accessibility_to_widget(widget, sem);
-
-  const bool interactive =
-      !sem.disabled && !gtk_internal::is_leaf_text_node(node) &&
-      (node.kind == NVE_NODE_KIND_PRESSABLE || (node.flags & NVE_NODE_INTERACTIVE) != 0u);
-  host->ensure_click_gesture(node.node_id, widget, interactive);
-
-  host->set_node_css(
-      node.node_id, gtk_internal::build_node_css_rule(host->scoped_node_class(node.node_id), node));
-}
-
-void NveGtkHost::GtkViewAdapter::destroy_view(uint32_t node_id, GtkWidget*& view) {
-  host->remove_click_gesture(node_id, view);
-  host->remove_scroll_binding(node_id);
-  host->remove_entry_binding(node_id, view);
-  host->remove_canvas_binding(node_id, view);
-  host->node_layouts_.erase(node_id);
-  host->node_semantics_.erase(node_id);
-  host->node_image_srcs_.erase(node_id);
-  host->node_image_resize_modes_.erase(node_id);
-  host->erase_node_css(node_id);
-
-  if (view == nullptr) {
-    return;
-  }
-
-  auto scroll_it = host->scroll_contents_.find(view);
-  if (scroll_it != host->scroll_contents_.end()) {
-    gtk_internal::unparent_all_fixed_children(scroll_it->second);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(view), nullptr);
-    host->scroll_contents_.erase(scroll_it);
-  } else if (GTK_IS_FIXED(view)) {
-    gtk_internal::unparent_all_fixed_children(view);
-  }
-
-  gtk_internal::detach_from_parent(view);
-  g_object_unref(view);
-  view = nullptr;
-}
-
-void NveGtkHost::sync_children_impl(
-    uint32_t parent_id,
-    GtkWidget** parent_view,
-    const std::vector<std::pair<uint32_t, GtkWidget*>>& resolved_children) {
-  GtkWidget* container = nullptr;
-  bool is_scroll_container = false;
-
-  if (parent_id == NVE_ROOT_NODE_ID) {
-    container = root_widget_;
-  } else if (parent_view != nullptr && *parent_view != nullptr) {
-    GtkWidget* parent = *parent_view;
-    auto scroll_it = scroll_contents_.find(parent);
-    if (scroll_it != scroll_contents_.end()) {
-      container = scroll_it->second;
-      is_scroll_container = true;
-    } else if (GTK_IS_FIXED(parent)) {
-      container = parent;
-    }
-  }
-
-  if (container == nullptr || !GTK_IS_FIXED(container)) {
-    return;
-  }
-
-  std::unordered_set<GtkWidget*> desired_set;
-  desired_set.reserve(resolved_children.size());
-  for (const auto& [_, child] : resolved_children) {
-    desired_set.insert(child);
-  }
-
-  GtkWidget* existing = gtk_widget_get_first_child(container);
-  while (existing != nullptr) {
-    GtkWidget* next = gtk_widget_get_next_sibling(existing);
-    if (desired_set.find(existing) == desired_set.end()) {
-      gtk_fixed_remove(GTK_FIXED(container), existing);
-    }
-    existing = next;
-  }
-
-  float content_max_w = 0.0f;
-  float content_max_h = 0.0f;
-  GtkWidget* prev_sibling = nullptr;
-  std::unordered_set<GtkWidget*> mounted_this_pass;
-  mounted_this_pass.reserve(resolved_children.size());
-
-  for (const auto& [cid, child] : resolved_children) {
-    if (!mounted_this_pass.insert(child).second) {
-      continue;
-    }
-    const LayoutRect rect = layout_for_node(cid);
-    const double x = std::isfinite(rect.x) ? static_cast<double>(rect.x) : 0.0;
-    const double y = std::isfinite(rect.y) ? static_cast<double>(rect.y) : 0.0;
-
-    if (std::isfinite(rect.x) && std::isfinite(rect.width)) {
-      content_max_w = std::max(content_max_w, rect.x + rect.width);
-    }
-    if (std::isfinite(rect.y) && std::isfinite(rect.height)) {
-      content_max_h = std::max(content_max_h, rect.y + rect.height);
-    }
-
-    GtkWidget* current_parent = gtk_widget_get_parent(child);
-    if (current_parent != container) {
-      gtk_internal::detach_from_parent(child);
-      gtk_fixed_put(GTK_FIXED(container), child, x, y);
-    } else {
-      gtk_fixed_move(GTK_FIXED(container), child, x, y);
-    }
-
-    if (gtk_widget_get_prev_sibling(child) != prev_sibling) {
-      gtk_widget_insert_after(child, container, prev_sibling);
-      gtk_fixed_move(GTK_FIXED(container), child, x, y);
-    }
-    prev_sibling = child;
-  }
-
-  if (is_scroll_container) {
-    const LayoutRect parent_rect = layout_for_node(parent_id);
-    const float eff_w = std::max(content_max_w, parent_rect.width);
-    const float eff_h = std::max(content_max_h, parent_rect.height);
-    const int cw = static_cast<int>(std::lround(eff_w));
-    const int ch = static_cast<int>(std::lround(eff_h));
-    gtk_widget_set_size_request(container, cw > 0 ? cw : -1, ch > 0 ? ch : -1);
-
-    const auto sbit = scroll_bindings_.find(parent_id);
-    if (sbit != scroll_bindings_.end() && sbit->second != nullptr) {
-      ScrollBinding& sb = *sbit->second;
-      sb.content_width = eff_w;
-      sb.content_height = eff_h;
-      const double view_w = std::max<double>(0.0, static_cast<double>(parent_rect.width));
-      const double view_h = std::max<double>(0.0, static_cast<double>(parent_rect.height));
-      if (sb.hadj != nullptr) {
-        const double cur_x = gtk_adjustment_get_value(sb.hadj);
-        gtk_adjustment_configure(
-            sb.hadj,
-            std::clamp(cur_x, 0.0, std::max(0.0, static_cast<double>(eff_w) - view_w)),
-            0.0,
-            std::max(static_cast<double>(eff_w), view_w),
-            20.0,
-            view_w,
-            view_w);
-      }
-      if (sb.vadj != nullptr) {
-        const double cur_y = gtk_adjustment_get_value(sb.vadj);
-        gtk_adjustment_configure(
-            sb.vadj,
-            std::clamp(cur_y, 0.0, std::max(0.0, static_cast<double>(eff_h) - view_h)),
-            0.0,
-            std::max(static_cast<double>(eff_h), view_h),
-            20.0,
-            view_h,
-            view_h);
-      }
-    }
+    gtk_widget_set_size_request(v->content, px(w), px(h));
   }
 }
 
-void NveGtkHost::on_gesture_released(
-    GtkGestureClick* gesture,
-    gint n_press,
-    gdouble x,
-    gdouble y,
-    gpointer user_data) {
-  (void)gesture;
-  (void)n_press;
-  auto* binding = static_cast<ClickBinding*>(user_data);
-  if (binding == nullptr || binding->host == nullptr) {
-    return;
-  }
-  NveGtkHost* host = binding->host;
-  const uint32_t node_id = binding->node_id;
-  (void)host->simulate_press(node_id, static_cast<float>(x), static_cast<float>(y));
+std::span<const uint8_t> NveGtkHost::canvas_draw_list_for_node_id(uint32_t node_id) const noexcept {
+  GtkNodeView* const* v = const_cast<host::RetainedTree<Adapter>&>(tree_).find(node_id);
+  return v != nullptr && *v != nullptr ? std::span<const uint8_t>((*v)->draw_list) : std::span<const uint8_t>();
 }
 
-void NveGtkHost::on_scroll_value_changed(GtkAdjustment* adjustment, gpointer user_data) {
-  (void)adjustment;
-  auto* binding = static_cast<ScrollBinding*>(user_data);
-  if (binding == nullptr || binding->host == nullptr || binding->host->syncing_views_) {
-    return;
-  }
-  NveGtkHost* host = binding->host;
-  const uint32_t node_id = binding->node_id;
-  const float ox =
-      (binding->hadj != nullptr) ? static_cast<float>(gtk_adjustment_get_value(binding->hadj)) : 0.0f;
-  const float oy =
-      (binding->vadj != nullptr) ? static_cast<float>(gtk_adjustment_get_value(binding->vadj)) : 0.0f;
-  const float cw = std::max(
-      binding->content_width,
-      (binding->hadj != nullptr) ? static_cast<float>(gtk_adjustment_get_upper(binding->hadj)) : 0.0f);
-  const float ch = std::max(
-      binding->content_height,
-      (binding->vadj != nullptr) ? static_cast<float>(gtk_adjustment_get_upper(binding->vadj)) : 0.0f);
-  (void)host->dispatch_scroll(node_id, ox, oy, cw, ch);
+uint64_t NveGtkHost::canvas_redraw_count_for_node_id(uint32_t node_id) const noexcept {
+  GtkNodeView* const* v = const_cast<host::RetainedTree<Adapter>&>(tree_).find(node_id);
+  return v != nullptr && *v != nullptr ? (*v)->redraw_count : 0u;
 }
 
-} // namespace nve
+}  // namespace nve::gtk

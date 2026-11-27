@@ -14,7 +14,7 @@
   } while (0)
 
 void nve_test_gtk_window_manager() {
-  nve::NveGtkWindowManager mgr;
+  nve::gtk::NveGtkWindowManager mgr;
   bool allow_primary = false;
   std::vector<uint32_t> closed_order;
   int all_closed_calls = 0;
@@ -26,6 +26,8 @@ void nve_test_gtk_window_manager() {
   auto* h1 = mgr.open_window({.surface_id = 1u, .title = "GTK Primary", .width = 640, .height = 420});
   auto* h2 = mgr.open_window({.surface_id = 2u, .title = "GTK Inspector", .width = 360, .height = 300});
   NVE_GTK_WM_CHECK(h1 != nullptr && h2 != nullptr && h1 != h2);
+  NVE_GTK_WM_CHECK(h1->surface_id() == 1u && h2->surface_id() == 2u);  // one runtime surface per window
+  NVE_GTK_WM_CHECK(h1->session().surface_id() == 1u && h2->session().surface_id() == 2u);
   NVE_GTK_WM_CHECK(mgr.window_count() == 2u);
   NVE_GTK_WM_CHECK(mgr.focused_surface_id() == 2u);
   NVE_GTK_WM_CHECK(mgr.open_window({.surface_id = 1u, .title = "Dup"}) == nullptr);

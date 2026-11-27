@@ -6,569 +6,333 @@
 #include <limits>
 #include <utility>
 
-namespace nve {
+namespace nve::gtk {
 
 namespace {
 
-std::atomic<uint32_t> g_next_gtk_host_id{1};
+std::atomic<uint32_t> g_next_host_id{1};
 
-} // namespace
+float positive_or(float v, float fallback) noexcept { return std::isfinite(v) && v > 0.0f ? v : fallback; }
 
-// -----------------------------------------------------------------------------
-// NveGtkHost lifecycle, Pango measurement, session & event dispatch
-// -----------------------------------------------------------------------------
+/// Pending wake on the GLib main context; dropped silently once its host is gone.
+struct WakeTicket {
+  std::weak_ptr<std::atomic<bool>> alive;
+  NveGtkHost* host;
+};
 
-NveGtkHost::NveGtkHost(NveSurfaceConfig config)
-    : host_instance_id_(g_next_gtk_host_id.fetch_add(1u, std::memory_order_relaxed)),
-      config_(config) {
-  if (config_.surface_id == 0u) {
-    config_.surface_id = 1u;
+gboolean run_wake(gpointer data) {
+  auto* ticket = static_cast<WakeTicket*>(data);
+  if (const auto alive = ticket->alive.lock(); alive && alive->load(std::memory_order_acquire)) {
+    (void)ticket->host->pump();
   }
-  if (!std::isfinite(config_.width) || config_.width <= 0.0f) {
-    config_.width = 640.0f;
-  }
-  if (!std::isfinite(config_.height) || config_.height <= 0.0f) {
-    config_.height = 420.0f;
-  }
-  if (!std::isfinite(config_.scale_factor) || config_.scale_factor <= 0.0f) {
-    config_.scale_factor = 1.0f;
-  }
+  return G_SOURCE_REMOVE;
+}
+
+void free_wake(gpointer data) { delete static_cast<WakeTicket*>(data); }
+
+}  // namespace
+
+NveGtkHost::NveGtkHost(GtkHostConfig config)
+    : host_instance_id_(g_next_host_id.fetch_add(1u, std::memory_order_relaxed)), config_(config) {
+  config_.surface_id = config_.surface_id != 0u ? config_.surface_id : 1u;
+  config_.width = positive_or(config_.width, 640.0f);
+  config_.height = positive_or(config_.height, 420.0f);
+  config_.scale_factor = positive_or(config_.scale_factor, 1.0f);
+
+  NveRuntimeConfig rc = host::RuntimeSession::default_config(config_.surface_id, config_.width, config_.height);
+  rc.scale_factor = config_.scale_factor;
+  std::string error;
+  session_ = host::HostSession::create(rc, &error);
+  if (!session_) g_error("nve-gtk-shell: %s", error.c_str());  // libnve_runtime is linked in: a bug
 
   root_widget_ = gtk_fixed_new();
   g_object_ref_sink(root_widget_);
   gtk_widget_set_hexpand(root_widget_, TRUE);
   gtk_widget_set_vexpand(root_widget_, TRUE);
   gtk_widget_add_css_class(root_widget_, "nve-root");
-  const std::string root_cls = scoped_root_class();
-  gtk_widget_add_css_class(root_widget_, root_cls.c_str());
 
   viewport_widget_ = gtk_scrolled_window_new();
   g_object_ref_sink(viewport_widget_);
-  gtk_scrolled_window_set_policy(
-      GTK_SCROLLED_WINDOW(viewport_widget_), GTK_POLICY_EXTERNAL, GTK_POLICY_EXTERNAL);
-  gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(viewport_widget_), FALSE);
-  gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(viewport_widget_), FALSE);
-  gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(viewport_widget_), 1);
-  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(viewport_widget_), 1);
-  gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(viewport_widget_), FALSE);
+  GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(viewport_widget_);
+  gtk_scrolled_window_set_policy(sw, GTK_POLICY_EXTERNAL, GTK_POLICY_EXTERNAL);
+  gtk_scrolled_window_set_propagate_natural_width(sw, FALSE);
+  gtk_scrolled_window_set_propagate_natural_height(sw, FALSE);
+  gtk_scrolled_window_set_min_content_width(sw, 1);
+  gtk_scrolled_window_set_min_content_height(sw, 1);
+  gtk_scrolled_window_set_has_frame(sw, FALSE);
   gtk_widget_set_hexpand(viewport_widget_, TRUE);
   gtk_widget_set_vexpand(viewport_widget_, TRUE);
-  gtk_widget_add_css_class(viewport_widget_, root_cls.c_str());
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(viewport_widget_), root_widget_);
+  gtk_scrolled_window_set_child(sw, root_widget_);
 
   css_provider_ = gtk_css_provider_new();
-  display_ = gtk_widget_get_display(root_widget_);
-  if (display_ == nullptr) {
-    display_ = gdk_display_get_default();
-  }
+  display_ = gdk_display_get_default();
   if (display_ != nullptr) {
     g_object_ref(display_);
-    gtk_style_context_add_provider_for_display(
-        display_, GTK_STYLE_PROVIDER(css_provider_), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    gtk_style_context_add_provider_for_display(display_, GTK_STYLE_PROVIDER(css_provider_),
+                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
   }
+  tick_id_ = gtk_widget_add_tick_callback(viewport_widget_, &NveGtkHost::on_tick, this, nullptr);
 
-  tick_callback_id_ =
-      gtk_widget_add_tick_callback(viewport_widget_, &NveGtkHost::on_tick_callback, this, nullptr);
-
-  install_pango_text_measurer();
+  (void)session_->runtime().set_text_measurer(&NveGtkHost::measure_trampoline, this);
+  install_wake_poster();
 }
 
 NveGtkHost::~NveGtkHost() {
-  if (alive_) {
-    alive_->store(false, std::memory_order_release);
-  }
-  session_.disconnect_paired();
+  alive_->store(false, std::memory_order_release);
+  session_->set_wake_poster({});
+  session_->set_event_sink({});
   detach_window_resize();
-
-  if (viewport_widget_ != nullptr && tick_callback_id_ != 0u) {
-    gtk_widget_remove_tick_callback(viewport_widget_, tick_callback_id_);
-    tick_callback_id_ = 0u;
-  }
-
-  syncing_views_ = true;
-  reconciler_.clear(adapter_);
-  click_bindings_.clear();
-  scroll_bindings_.clear();
-  entry_bindings_.clear();
-  canvas_bindings_.clear();
-  scroll_contents_.clear();
-  node_layouts_.clear();
-  node_semantics_.clear();
-  node_image_srcs_.clear();
-  node_image_resize_modes_.clear();
-  node_css_.clear();
-  texture_cache_.clear();
+  if (tick_id_ != 0u) gtk_widget_remove_tick_callback(viewport_widget_, tick_id_);
+  syncing_ = true;
+  tree_.clear(adapter_);
+  (void)session_->runtime().set_text_measurer(nullptr, nullptr);
   session_.reset();
-
-  if (display_ != nullptr && css_provider_ != nullptr) {
-    gtk_style_context_remove_provider_for_display(display_, GTK_STYLE_PROVIDER(css_provider_));
-  }
-  if (css_provider_ != nullptr) {
-    g_object_unref(css_provider_);
-    css_provider_ = nullptr;
-  }
+  textures_.clear();
   if (display_ != nullptr) {
+    gtk_style_context_remove_provider_for_display(display_, GTK_STYLE_PROVIDER(css_provider_));
     g_object_unref(display_);
-    display_ = nullptr;
   }
-  if (viewport_widget_ != nullptr) {
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(viewport_widget_), nullptr);
-    g_object_unref(viewport_widget_);
-    viewport_widget_ = nullptr;
-  }
-  if (root_widget_ != nullptr) {
-    gtk_internal::unparent_all_fixed_children(root_widget_);
-    g_object_unref(root_widget_);
-    root_widget_ = nullptr;
-  }
+  g_object_unref(css_provider_);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(viewport_widget_), nullptr);
+  g_object_unref(viewport_widget_);
+  gtk_internal::unparent_children(root_widget_);
+  g_object_unref(root_widget_);
 }
 
-void NveGtkHost::install_pango_text_measurer() {
-  session_.set_text_measurer(
-      [this](std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
-        return this->measure_text(text, font_size, max_width);
-      });
+void NveGtkHost::install_wake_poster() {
+  // Runtime wakes (paired frames, timers) arrive on any thread: hop to the GLib main context.
+  std::weak_ptr<std::atomic<bool>> alive = alive_;
+  session_->set_wake_poster([alive, this] {
+    g_main_context_invoke_full(nullptr, G_PRIORITY_DEFAULT, &run_wake, new WakeTicket{alive, this}, &free_wake);
+  });
 }
 
-NveIntrinsicSize NveGtkHost::measure_text(
-    std::string_view text,
-    float font_size,
-    float max_width) const {
-  if (text.empty() || root_widget_ == nullptr) {
-    return NveIntrinsicSize{0.0f, 0.0f};
-  }
+// --- App sources -------------------------------------------------------------------------------
 
-  PangoLayout* layout = gtk_widget_create_pango_layout(root_widget_, nullptr);
-  if (layout == nullptr) {
-    return NveIntrinsicSize{0.0f, 0.0f};
-  }
-
-  const float effective_font_size =
-      (std::isfinite(font_size) && font_size > 0.0f) ? font_size : 16.0f;
-
-  PangoContext* ctx = pango_layout_get_context(layout);
-  const PangoFontDescription* base_desc =
-      (ctx != nullptr) ? pango_context_get_font_description(ctx) : nullptr;
-  PangoFontDescription* desc = (base_desc != nullptr)
-                                   ? pango_font_description_copy(base_desc)
-                                   : pango_font_description_from_string("Sans");
-  pango_font_description_set_absolute_size(
-      desc, static_cast<double>(effective_font_size) * static_cast<double>(PANGO_SCALE));
-  pango_layout_set_font_description(layout, desc);
-  pango_font_description_free(desc);
-
-  const int text_len = static_cast<int>(
-      std::min<size_t>(text.size(), static_cast<size_t>(std::numeric_limits<int>::max())));
-  pango_layout_set_text(layout, text.data(), text_len);
-
-  if (std::isfinite(max_width) && max_width > 0.0f) {
-    const double scaled = static_cast<double>(max_width) * static_cast<double>(PANGO_SCALE);
-    const int clamped = static_cast<int>(
-        std::min(scaled, static_cast<double>(std::numeric_limits<int>::max())));
-    pango_layout_set_width(layout, clamped);
-    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
-  } else {
-    pango_layout_set_width(layout, -1);
-  }
-
-  PangoRectangle logical{};
-  pango_layout_get_pixel_extents(layout, nullptr, &logical);
-  g_object_unref(layout);
-
-  return NveIntrinsicSize{
-      static_cast<float>(std::max(0, logical.width)),
-      static_cast<float>(std::max(0, logical.height)),
-  };
+void NveGtkHost::on_app_changed() {
+  syncing_ = true;
+  tree_.clear(adapter_);  // views of the previous app (ids may be reused with other kinds)
+  syncing_ = false;
+  (void)pump();
 }
 
-bool NveGtkHost::attach_interface(NveGetInterfaceFn get_interface, uint32_t surface_id) {
-  NveSurfaceConfig next_cfg = config_;
-  if (surface_id != 0u) {
-    next_cfg.surface_id = surface_id;
-  }
-  if (!session_.attach_interface(get_interface, next_cfg)) {
-    return false;
-  }
-  config_ = next_cfg;
-  reconciler_.clear(adapter_);
-  raw_props_initialized_ = false;
-  sync_views(/*check_raw_props=*/true);
-  (void)session_.drain_events();
+bool NveGtkHost::attach_interface(NveGetInterfaceFn get_interface) {
+  if (!session_->attach(get_interface)) return false;
+  on_app_changed();
   return true;
 }
 
-bool NveGtkHost::load_dylib(
-    std::string_view path,
-    int* out_err_code,
-    std::string* out_err_msg,
-    uint32_t surface_id) {
-  NveSurfaceConfig next_cfg = config_;
-  if (surface_id != 0u) {
-    next_cfg.surface_id = surface_id;
-  }
-  if (!session_.load_dylib(path, next_cfg, out_err_code, out_err_msg)) {
-    return false;
-  }
-  config_ = next_cfg;
-  reconciler_.clear(adapter_);
-  raw_props_initialized_ = false;
-  sync_views(/*check_raw_props=*/true);
-  (void)session_.drain_events();
+bool NveGtkHost::load_dylib(std::string_view path, host::ModuleError* out_error, std::string* out_message) {
+  if (!session_->load_module(path, out_error, out_message)) return false;
+  on_app_changed();
   return true;
 }
 
-bool NveGtkHost::reload_dylib(
-    std::string_view path,
-    int* out_err_code,
-    std::string* out_err_msg) {
-  if (!session_.reload_dylib(path, out_err_code, out_err_msg)) {
-    return false;
-  }
-  raw_props_initialized_ = false;
-  sync_views(/*check_raw_props=*/true);
-  (void)session_.drain_events();
+bool NveGtkHost::reload_dylib(std::string_view path, host::ModuleError* out_error, std::string* out_message) {
+  if (!session_->reload_module(path, out_error, out_message)) return false;
+  (void)pump();  // same app identity: reconcile in place, keeping widgets
   return true;
 }
 
-bool NveGtkHost::connect_paired_endpoint(
-    std::string_view endpoint,
-    std::string_view token,
-    std::string_view transport,
-    std::string* out_error,
-    uint32_t surface_id) {
-  PairClientConfig cfg{};
-  if (!parse_pair_endpoint(endpoint, transport, cfg, out_error)) {
-    return false;
-  }
-  cfg.pairing_token.assign(token.data(), token.size());
-  return connect_paired(cfg, out_error, surface_id);
-}
-
-bool NveGtkHost::connect_paired(
-    const PairClientConfig& config,
-    std::string* out_error,
-    uint32_t surface_id) {
-  NveSurfaceConfig next_cfg = config_;
-  if (surface_id != 0u) {
-    next_cfg.surface_id = surface_id;
-  }
-
-  struct GtkPairWakePayload {
-    NveGtkHost* host{nullptr};
-    std::shared_ptr<std::atomic<bool>> alive;
-  };
-  std::shared_ptr<std::atomic<bool>> alive_ref = alive_;
-  auto wake_cb = [this, alive_ref]() {
-    if (!alive_ref || !alive_ref->load(std::memory_order_acquire)) {
-      return;
-    }
-    auto* payload = new GtkPairWakePayload{this, alive_ref};
-    g_main_context_invoke(
-        nullptr,
-        [](gpointer data) -> gboolean {
-          std::unique_ptr<GtkPairWakePayload> p(static_cast<GtkPairWakePayload*>(data));
-          if (p->alive && p->alive->load(std::memory_order_acquire) && p->host != nullptr) {
-            (void)p->host->poll_paired_frames();
-          }
-          return G_SOURCE_REMOVE;
-        },
-        payload);
-  };
-
-  if (!session_.connect_paired(config, next_cfg, std::move(wake_cb), out_error)) {
-    return false;
-  }
-  config_ = next_cfg;
-  reconciler_.clear(adapter_);
-  raw_props_initialized_ = false;
-  sync_views(/*check_raw_props=*/true);
+bool NveGtkHost::connect_paired(std::string_view uri, std::string_view token, std::string* out_error) {
+  if (!session_->pair(uri, token, out_error)) return false;
+  on_app_changed();
   return true;
 }
 
-void NveGtkHost::disconnect_paired() noexcept {
-  session_.disconnect_paired();
-}
+void NveGtkHost::disconnect_paired() noexcept { (void)session_->runtime().pair_disconnect(); }
 
-size_t NveGtkHost::poll_paired_frames() {
-  if (!session_.is_paired()) {
-    return 0u;
-  }
-  const size_t applied = session_.poll_paired_frames(nullptr);
-  if (applied > 0u) {
-    sync_views(/*check_raw_props=*/false);
-  }
-  return applied;
-}
+bool NveGtkHost::is_paired() const noexcept { return session_->runtime().pair_is_connected(); }
 
-bool NveGtkHost::replay_snapshot(
-    std::string_view path,
-    uint32_t expected_schema_version,
-    NveFrameStats* out_stats,
-    SnapshotStatus* out_status) {
-  session_.set_surface_config(config_);
-  if (!session_.replay_frame0_snapshot(path, expected_schema_version, out_stats, out_status)) {
-    return false;
-  }
-  reconciler_.clear(adapter_);
-  raw_props_initialized_ = false;
-  sync_views(/*check_raw_props=*/true);
+bool NveGtkHost::submit_frame(std::span<const uint8_t> nve2) {
+  if (session_->runtime().submit_nve2(nve2) != NVE_RUNTIME_OK) return false;
+  (void)pump();
   return true;
 }
 
-bool NveGtkHost::save_snapshot(
-    std::string_view path,
-    uint32_t schema_version,
-    std::string_view meta,
-    SnapshotStatus* out_status) const {
-  return session_.save_snapshot(path, schema_version, meta, out_status);
+// --- App state & dev loop ----------------------------------------------------------------------
+
+bool NveGtkHost::save_state(const std::string& path, uint32_t schema_version) {
+  return session_->save_state(path, schema_version);
 }
 
-bool NveGtkHost::apply_props(const PropMap& props) {
-  if (!session_.is_valid()) {
-    return false;
-  }
-  const bool dirty = session_.update_props(props, /*auto_render=*/true);
-  if (dirty) {
-    sync_views(/*check_raw_props=*/true);
-  }
-  (void)session_.drain_events();
-  return dirty;
+bool NveGtkHost::restore_state(const std::string& path, uint32_t schema_version) {
+  if (!session_->restore_state_file(path, schema_version)) return false;
+  (void)pump();
+  return true;
 }
 
-bool NveGtkHost::apply_props(const NveMapEntry* entries, uint32_t count) {
-  if (!session_.is_valid()) {
-    return false;
-  }
-  const bool dirty = session_.update_props(entries, count, /*auto_render=*/true);
-  if (dirty) {
-    sync_views(/*check_raw_props=*/true);
-  }
-  (void)session_.drain_events();
-  return dirty;
+bool NveGtkHost::apply_props(std::span<const NveMapEntry> props) {
+  const bool ok = session_->set_props(props);
+  sync_views();
+  return ok;
 }
 
 bool NveGtkHost::apply_hot_patch(std::span<const uint8_t> patch_nvp1) {
-  if (!session_.is_valid()) {
-    return false;
+  const bool changed = session_->apply_hot_patch(patch_nvp1);
+  sync_views();
+  return changed;
+}
+
+void NveGtkHost::set_event_callback(EventCallback callback) { session_->set_event_sink(std::move(callback)); }
+
+size_t NveGtkHost::pump() {
+  if (syncing_) return 0u;  // re-entrant wake from a widget signal raised during sync
+  (void)session_->pump();
+  const size_t before = static_cast<size_t>(reconcile_update_count_);
+  sync_views();
+  return static_cast<size_t>(reconcile_update_count_) - before;
+}
+
+void NveGtkHost::sync_views() {
+  if (syncing_) return;
+  syncing_ = true;
+  {
+    auto guard = session_->runtime().acquire_scene();
+    if (guard) {
+      canvas_.bind(guard->reader());
+      (void)tree_.sync(guard->reader(), tables_, adapter_);
+    }
   }
-  const bool dirty = session_.bridge()->apply_hot_patch(patch_nvp1, /*auto_render=*/true);
-  if (dirty) {
-    sync_views(/*check_raw_props=*/true);
+  update_scroll_extents();
+  flush_css();
+  syncing_ = false;
+}
+
+// --- Input -------------------------------------------------------------------------------------
+
+bool NveGtkHost::dispatch(const NveDirectEvent& ev) {
+  if (syncing_) return false;
+  const bool changed = session_->dispatch(ev);
+  sync_views();
+  return changed;
+}
+
+bool NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
+  return dispatch(session_->events().press(node_id, x, y));
+}
+
+bool NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
+  return dispatch(session_->events().text(node_id, NVE_EVENT_TEXT_CHANGE, text));
+}
+
+bool NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
+  return dispatch(session_->events().text(node_id, NVE_EVENT_SUBMIT, text));
+}
+
+bool NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
+  return dispatch(session_->events().focus(node_id, focused));
+}
+
+bool NveGtkHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width,
+                                 float content_height) {
+  // Keep the runtime's scroll offset (hit testing, programmatic scroll clamping) in step with GTK.
+  float cur_x = 0.0f;
+  float cur_y = 0.0f;
+  if (session_->runtime().scroll_by(node_id, 0.0f, 0.0f, &cur_x, &cur_y) == NVE_RUNTIME_OK) {
+    (void)session_->runtime().scroll_by(node_id, offset_x - cur_x, offset_y - cur_y, &cur_x, &cur_y);
   }
-  (void)session_.drain_events();
-  return dirty;
+  return dispatch(session_->events().scroll(node_id, offset_x, offset_y, content_width, content_height));
 }
 
-int32_t NveGtkHost::render_frame(NveFrameStats* out_stats) {
-  const int32_t rc = session_.render(out_stats);
-  if (rc == 0) {
-    sync_views(/*check_raw_props=*/false);
-  }
-  (void)session_.drain_events();
-  return rc;
-}
-
-uint32_t NveGtkHost::simulate_press(uint32_t node_id, float x, float y) {
-  if (!session_.is_valid() && !session_.is_paired()) {
-    return 0u;
-  }
-  const uint32_t dirty = session_.dispatch_press(node_id, x, y, /*auto_render=*/true);
-  if (dirty != 0u && !session_.is_paired()) {
-    sync_views(/*check_raw_props=*/false);
-  }
-  (void)session_.drain_events();
-  return dirty;
-}
-
-NveDirectEvent NveGtkHost::make_base_event(
-    uint32_t node_id,
-    EventKind kind,
-    uint8_t payload_tag) const {
-  NveDirectEvent ev{};
-  ev.surface_id = config_.surface_id;
-  ev.node_id = node_id;
-  ev.timestamp_us = current_timestamp_us();
-  ev.kind = static_cast<uint8_t>(kind);
-  ev.payload_tag = payload_tag;
-  ev.value = make_null_value();
-  return ev;
-}
-
-uint32_t NveGtkHost::dispatch_single_direct_event(const NveDirectEvent& ev) {
-  if (!session_.is_valid() && !session_.is_paired()) {
-    return 0u;
-  }
-  const uint32_t dirty =
-      session_.dispatch_events(NveEventBatch{&ev, 1u, 0u}, /*auto_render=*/true);
-  if (dirty != 0u && !session_.is_paired()) {
-    sync_views(/*check_raw_props=*/false);
-  }
-  (void)session_.drain_events();
-  return dirty;
-}
-
-uint32_t NveGtkHost::dispatch_text_change(uint32_t node_id, std::string_view text) {
-  NveDirectEvent ev = make_base_event(node_id, EventKind::TextChange, 3u);
-  ev.text = make_str_slice(text);
-  return dispatch_single_direct_event(ev);
-}
-
-uint32_t NveGtkHost::dispatch_submit(uint32_t node_id, std::string_view text) {
-  NveDirectEvent ev = make_base_event(node_id, EventKind::Custom, 5u);
-  ev.name = make_str_slice("onSubmit");
-  ev.text = make_str_slice(text);
-  ev.value = make_str_value(text);
-  return dispatch_single_direct_event(ev);
-}
-
-uint32_t NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
-  NveDirectEvent ev = make_base_event(node_id, focused ? EventKind::Focus : EventKind::Blur, 0u);
-  return dispatch_single_direct_event(ev);
-}
-
-uint32_t NveGtkHost::dispatch_scroll(
-    uint32_t node_id,
-    float offset_x,
-    float offset_y,
-    float content_width,
-    float content_height) {
-  NveDirectEvent ev = make_base_event(node_id, EventKind::Scroll, 2u);
-  ev.x = offset_x;
-  ev.y = offset_y;
-  ev.width = content_width;
-  ev.height = content_height;
-  return dispatch_single_direct_event(ev);
-}
+// --- Surface -----------------------------------------------------------------------------------
 
 void NveGtkHost::set_surface_size(float width, float height, float scale_factor) {
-  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0f || height <= 0.0f) {
-    return;
-  }
+  if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0f || height <= 0.0f) return;
   config_.width = width;
   config_.height = height;
-  if (std::isfinite(scale_factor) && scale_factor > 0.0f) {
-    config_.scale_factor = scale_factor;
-  }
-  session_.set_surface_size(config_.width, config_.height, config_.scale_factor);
-  if (session_.active_fabric_host() != nullptr) {
-    sync_views(/*check_raw_props=*/false);
-  }
+  config_.scale_factor = positive_or(scale_factor, config_.scale_factor);
+  (void)session_->runtime().set_viewport(config_.width, config_.height, config_.scale_factor);
+  (void)pump();
 }
 
 void NveGtkHost::sync_surface_size_from_widget() {
-  GtkWidget* target = (viewport_widget_ != nullptr) ? viewport_widget_ : root_widget_;
-  if (target == nullptr) {
-    return;
-  }
-  const int w = gtk_widget_get_width(target);
-  const int h = gtk_widget_get_height(target);
-  const int scale = std::max(1, gtk_widget_get_scale_factor(target));
-  if (w <= 0 || h <= 0) {
-    return;
-  }
-  if (w == last_observed_width_ && h == last_observed_height_ && scale == last_observed_scale_) {
-    return;
-  }
-  last_observed_width_ = w;
-  last_observed_height_ = h;
-  last_observed_scale_ = scale;
-  set_surface_size(
-      static_cast<float>(w), static_cast<float>(h), static_cast<float>(scale));
+  const int w = gtk_widget_get_width(viewport_widget_);
+  const int h = gtk_widget_get_height(viewport_widget_);
+  const int scale = std::max(1, gtk_widget_get_scale_factor(viewport_widget_));
+  if (w <= 0 || h <= 0 || (w == observed_w_ && h == observed_h_ && scale == observed_scale_)) return;
+  observed_w_ = w;
+  observed_h_ = h;
+  observed_scale_ = scale;
+  set_surface_size(static_cast<float>(w), static_cast<float>(h), static_cast<float>(scale));
 }
 
 void NveGtkHost::attach_window_resize(GtkWindow* window) {
   detach_window_resize();
-  if (window == nullptr) {
-    return;
-  }
+  if (window == nullptr) return;
   window_binding_.window = window;
-  window_binding_.width_handler = g_signal_connect(
-      window,
-      "notify::default-width",
-      gtk_detail::to_gcallback(&NveGtkHost::on_window_size_notify),
-      this);
-  window_binding_.height_handler = g_signal_connect(
-      window,
-      "notify::default-height",
-      gtk_detail::to_gcallback(&NveGtkHost::on_window_size_notify),
-      this);
-  window_binding_.destroy_handler = g_signal_connect(
-      window, "destroy", gtk_detail::to_gcallback(&NveGtkHost::on_window_destroy), this);
+  const GCallback notify = gtk_detail::to_gcallback(&NveGtkHost::on_window_size_notify);
+  window_binding_.width_handler = g_signal_connect(window, "notify::default-width", notify, this);
+  window_binding_.height_handler = g_signal_connect(window, "notify::default-height", notify, this);
+  window_binding_.destroy_handler =
+      g_signal_connect(window, "destroy", gtk_detail::to_gcallback(&NveGtkHost::on_window_destroy), this);
 }
 
 void NveGtkHost::detach_window_resize() {
-  if (window_binding_.window == nullptr) {
-    return;
-  }
-  if (window_binding_.width_handler != 0u) {
-    g_signal_handler_disconnect(window_binding_.window, window_binding_.width_handler);
-  }
-  if (window_binding_.height_handler != 0u) {
-    g_signal_handler_disconnect(window_binding_.window, window_binding_.height_handler);
-  }
-  if (window_binding_.destroy_handler != 0u) {
-    g_signal_handler_disconnect(window_binding_.window, window_binding_.destroy_handler);
-  }
+  if (window_binding_.window == nullptr) return;
+  g_signal_handler_disconnect(window_binding_.window, window_binding_.width_handler);
+  g_signal_handler_disconnect(window_binding_.window, window_binding_.height_handler);
+  g_signal_handler_disconnect(window_binding_.window, window_binding_.destroy_handler);
   window_binding_ = WindowBinding{};
 }
 
+NveIntrinsicSize NveGtkHost::measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint16_t font_weight,
+                                                float max_width) {
+  const std::string_view sv(reinterpret_cast<const char*>(text.ptr), text.ptr != nullptr ? text.len : 0u);
+  return static_cast<const NveGtkHost*>(ctx)->measure_text(sv, font_size, font_weight, max_width);
+}
+
+NveIntrinsicSize NveGtkHost::measure_text(std::string_view text, float font_size, uint16_t font_weight,
+                                          float max_width) const {
+  if (text.empty()) return NveIntrinsicSize{0.0f, 0.0f};
+  PangoLayout* layout = gtk_widget_create_pango_layout(root_widget_, nullptr);
+  PangoContext* ctx = pango_layout_get_context(layout);
+  const PangoFontDescription* base = ctx != nullptr ? pango_context_get_font_description(ctx) : nullptr;
+  PangoFontDescription* desc =
+      base != nullptr ? pango_font_description_copy(base) : pango_font_description_from_string("Sans");
+  pango_font_description_set_absolute_size(desc, static_cast<double>(positive_or(font_size, 16.0f)) * PANGO_SCALE);
+  pango_font_description_set_weight(desc, static_cast<PangoWeight>(std::clamp<int>(font_weight, 100, 1000)));
+  pango_layout_set_font_description(layout, desc);
+  pango_font_description_free(desc);
+  pango_layout_set_text(layout, text.data(),
+                        static_cast<int>(std::min<size_t>(text.size(), std::numeric_limits<int>::max())));
+  if (std::isfinite(max_width) && max_width > 0.0f) {
+    pango_layout_set_width(layout, static_cast<int>(std::min(static_cast<double>(max_width) * PANGO_SCALE,
+                                                             static_cast<double>(std::numeric_limits<int>::max()))));
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+  }
+  PangoRectangle logical{};
+  pango_layout_get_pixel_extents(layout, nullptr, &logical);
+  g_object_unref(layout);
+  return NveIntrinsicSize{static_cast<float>(std::max(0, logical.width)), static_cast<float>(std::max(0, logical.height))};
+}
+
 GtkWidget* NveGtkHost::widget_for_node_id(uint32_t node_id) const noexcept {
-  if (node_id == NVE_ROOT_NODE_ID) {
-    return root_widget_;
-  }
-  GtkWidget* const* found = reconciler_.find(node_id);
-  return (found != nullptr) ? *found : nullptr;
+  if (host::node_index(node_id) == host::kRootIndex) return root_widget_;
+  GtkNodeView* const* v = const_cast<host::RetainedTree<Adapter>&>(tree_).find(node_id);
+  return v != nullptr && *v != nullptr ? (*v)->widget : nullptr;
 }
 
-uint32_t NveGtkHost::node_count() const noexcept {
-  return session_.node_count();
-}
-
-void NveGtkHost::set_event_callback(EventCallback callback) {
-  session_.set_event_callback(std::move(callback));
-}
-
-gboolean NveGtkHost::on_tick_callback(
-    GtkWidget* widget,
-    GdkFrameClock* frame_clock,
-    gpointer user_data) {
-  (void)widget;
-  (void)frame_clock;
-  auto* host = static_cast<NveGtkHost*>(user_data);
-  if (host != nullptr) {
-    host->sync_surface_size_from_widget();
-  }
+gboolean NveGtkHost::on_tick(GtkWidget*, GdkFrameClock*, gpointer user_data) {
+  static_cast<NveGtkHost*>(user_data)->sync_surface_size_from_widget();
   return G_SOURCE_CONTINUE;
 }
 
-void NveGtkHost::on_window_size_notify(
-    GObject* object,
-    GParamSpec* pspec,
-    gpointer user_data) {
-  (void)pspec;
+void NveGtkHost::on_window_size_notify(GObject* object, GParamSpec*, gpointer user_data) {
   auto* host = static_cast<NveGtkHost*>(user_data);
-  if (host == nullptr || object == nullptr) {
-    return;
-  }
-  GtkWindow* win = GTK_WINDOW(object);
   int w = 0;
   int h = 0;
-  gtk_window_get_default_size(win, &w, &h);
+  gtk_window_get_default_size(GTK_WINDOW(object), &w, &h);
   if (w > 0 && h > 0) {
-    const int scale = std::max(1, gtk_widget_get_scale_factor(GTK_WIDGET(win)));
-    host->set_surface_size(
-        static_cast<float>(w), static_cast<float>(h), static_cast<float>(scale));
+    const int scale = std::max(1, gtk_widget_get_scale_factor(GTK_WIDGET(object)));
+    host->set_surface_size(static_cast<float>(w), static_cast<float>(h), static_cast<float>(scale));
   } else {
     host->sync_surface_size_from_widget();
   }
 }
 
-void NveGtkHost::on_window_destroy(GtkWidget* widget, gpointer user_data) {
-  (void)widget;
-  auto* host = static_cast<NveGtkHost*>(user_data);
-  if (host != nullptr) {
-    host->window_binding_ = WindowBinding{};
-  }
+void NveGtkHost::on_window_destroy(GtkWidget*, gpointer user_data) {
+  static_cast<NveGtkHost*>(user_data)->window_binding_ = WindowBinding{};
 }
 
-} // namespace nve
+}  // namespace nve::gtk

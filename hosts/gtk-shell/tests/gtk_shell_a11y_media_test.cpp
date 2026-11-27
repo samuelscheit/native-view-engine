@@ -1,608 +1,239 @@
-#include "NveGtkHost.hpp"
+// GTK host: accessibility (roles, construct-only role changes, states, properties), controlled
+// text inputs (entry / multiline / secure / search, IME echo, submit, focus), images (data URL,
+// inline bytes, file URL, invalid, LRU cache, fit), CSS (visual, shadows, inherited typography),
+// visibility, cursors, and removal.
+#include "gtk_test_helpers.hpp"
 
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
+#include <nve/host/core_resources.hpp>
+
 #include <filesystem>
-#include <iostream>
-#include <string>
-#include <string_view>
+#include <fstream>
 #include <vector>
-
-#define NVE_CHECK(expr)                                                                         \
-  do {                                                                                          \
-    if (!(expr)) {                                                                              \
-      std::cerr << "NVE_CHECK failed at " << __FILE__ << ":" << __LINE__ << ": " #expr << "\n"; \
-      std::abort();                                                                             \
-    }                                                                                           \
-  } while (0)
 
 namespace {
 
-bool approx_eq(double a, double b, double eps = 1.5) {
-  return std::fabs(a - b) <= eps;
-}
+using namespace nve::gtk;
+using namespace nve::gtk::test;
+namespace h = nve::host;
 
-void test_snapshot_replay_state_restore_and_atomic_save() {
-  struct TempSnapshotGuard {
-    std::filesystem::path path;
-    ~TempSnapshotGuard() {
-      std::error_code ec;
-      std::filesystem::remove(path, ec);
-    }
-  };
+constexpr uint32_t kColumn = 2u, kHeading = 3u, kCheck = 4u, kDisabled = 5u, kEntry = 6u, kSearch = 7u,
+                   kNotes = 8u, kImgUrl = 9u, kImgBytes = 10u, kImgFile = 11u, kImgBad = 12u, kHidden = 13u;
 
-  const std::filesystem::path snap_path =
-      std::filesystem::temp_directory_path() / "nve_gtk_shell_test_frame0.nvesnap";
-  TempSnapshotGuard guard{snap_path};
-  {
-    std::error_code ec;
-    std::filesystem::remove(snap_path, ec);
+std::vector<uint8_t> png(int w, int hgt, uint32_t rgba) {
+  std::vector<uint8_t> px(static_cast<size_t>(w * hgt * 4));
+  for (size_t i = 0; i < px.size(); i += 4) {
+    for (size_t c = 0; c < 4; ++c) px[i + c] = static_cast<uint8_t>(rgba >> (8u * c));
   }
-
-  NveSurfaceConfig cfg{.surface_id = 5u, .width = 480.0f, .height = 300.0f, .scale_factor = 1.0f};
-
-  {
-    nve::NveGtkHost writer_host(cfg);
-    int err_code = -1;
-    std::string err_msg;
-    NVE_CHECK(writer_host.load_dylib(NVE_TEST_STATEFUL_DYLIB, &err_code, &err_msg, 5u));
-    NVE_CHECK(err_code == 0 && err_msg.empty());
-    for (int i = 0; i < 5; ++i) {
-      NVE_CHECK(writer_host.simulate_press(3u, 8.0f, 8.0f) == 1u);
-    }
-    GtkWidget* lbl = writer_host.widget_for_node_id(2u);
-    NVE_CHECK(lbl != nullptr && GTK_IS_LABEL(lbl));
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(lbl))) == "state=5");
-
-    nve::SnapshotStatus save_status = nve::SnapshotStatus::IoError;
-    NVE_CHECK(writer_host.save_snapshot(snap_path.string(), 7u, "gtk4", &save_status));
-    NVE_CHECK(save_status == nve::SnapshotStatus::Ok && std::filesystem::exists(snap_path));
-  }
-
-  {
-    nve::NveGtkHost reader_host(cfg);
-    NVE_CHECK(!reader_host.is_loaded() && !reader_host.has_replayed_frame0() && reader_host.node_count() == 0u);
-
-    nve::SnapshotStatus mismatch_status = nve::SnapshotStatus::Ok;
-    NVE_CHECK(!reader_host.replay_snapshot(snap_path.string(), 99u, nullptr, &mismatch_status));
-    NVE_CHECK(mismatch_status == nve::SnapshotStatus::SchemaVersionMismatch);
-    NVE_CHECK(reader_host.node_count() == 0u && !reader_host.has_replayed_frame0());
-
-    NveFrameStats replay_stats{};
-    nve::SnapshotStatus replay_status = nve::SnapshotStatus::IoError;
-    NVE_CHECK(reader_host.replay_snapshot(snap_path.string(), 7u, &replay_stats, &replay_status));
-    NVE_CHECK(replay_status == nve::SnapshotStatus::Ok && replay_stats.op_count > 0u);
-    NVE_CHECK(!reader_host.is_loaded() && reader_host.has_replayed_frame0() && reader_host.node_count() == 3u);
-
-    GtkWidget* pre_dylib_label = reader_host.widget_for_node_id(2u);
-    NVE_CHECK(pre_dylib_label != nullptr && GTK_IS_LABEL(pre_dylib_label));
-    NVE_CHECK(gtk_widget_get_parent(pre_dylib_label) == reader_host.root_widget());
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(pre_dylib_label))) == "state=5");
-
-    int err_code = -1;
-    std::string err_msg;
-    NVE_CHECK(reader_host.load_dylib(NVE_TEST_STATEFUL_DYLIB, &err_code, &err_msg, 5u));
-    NVE_CHECK(err_code == 0 && err_msg.empty() && reader_host.is_loaded() && !reader_host.has_replayed_frame0());
-
-    GtkWidget* live_label = reader_host.widget_for_node_id(2u);
-    NVE_CHECK(live_label != nullptr && GTK_IS_LABEL(live_label));
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(live_label))) == "state=5");
-
-    NVE_CHECK(reader_host.simulate_press(3u, 8.0f, 8.0f) == 1u);
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(live_label))) == "state=6");
-    NVE_CHECK(reader_host.save_snapshot(snap_path.string(), 7u));
-  }
-
-  {
-    nve::NveGtkHost verify_host(cfg);
-    NVE_CHECK(verify_host.replay_snapshot(snap_path.string(), 7u));
-    GtkWidget* lbl = verify_host.widget_for_node_id(2u);
-    NVE_CHECK(lbl != nullptr && GTK_IS_LABEL(lbl));
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(lbl))) == "state=6");
-  }
-}
-
-struct MockGtkA11yImeComponent {
-  static inline MockGtkA11yImeComponent* last_instance = nullptr;
-  uint32_t surface_id{1u};
-  bool disabled_btn{false};
-  bool secure_input{false};
-  std::string input_text{"initial"};
-  int text_change_calls{0};
-  int submit_calls{0};
-  std::string last_text;
-  std::string last_submit;
-  std::vector<uint8_t> cmd_buf;
-
-  static NveAppHandle create(uint32_t sid) {
-    auto* self = new MockGtkA11yImeComponent();
-    self->surface_id = sid;
-    last_instance = self;
-    return self;
-  }
-  static void destroy(NveAppHandle h) {
-    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
-    if (last_instance == self) last_instance = nullptr;
-    delete self;
-  }
-
-  template <typename T>
-  void push(T v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
-  }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
-    self->cmd_buf.clear();
-    uint32_t ops = 0u;
-    self->push<uint32_t>(NVE_ABI_MAGIC);
-    self->push<uint16_t>(NVE_ABI_VERSION);
-    self->push<uint16_t>(0u);
-    self->push<uint32_t>(self->surface_id);
-    self->push<uint64_t>(frame_id);
-    self->push<uint32_t>(0u);
-
-    auto create_node = [&](uint32_t id, uint16_t kind) {
-      self->push<uint8_t>(NVE_OP_CREATE_NODE);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(kind);
-      self->push<uint16_t>(0u);
-      ++ops;
-    };
-    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
-      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
-      self->push<uint32_t>(parent);
-      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
-      for (uint32_t k : kids) self->push<uint32_t>(k);
-      ++ops;
-    };
-    auto set_text = [&](uint32_t id, const std::string& s) {
-      self->push<uint8_t>(NVE_OP_SET_TEXT);
-      self->push<uint32_t>(id);
-      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
-      ++ops;
-    };
-    auto set_box = [&](uint32_t id, float w, float h) {
-      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
-      self->push<uint32_t>(id);
-      self->push<uint8_t>(1u); self->push<float>(w);
-      self->push<uint8_t>(1u); self->push<float>(h);
-      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
-      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
-      self->push<float>(0.0f); self->push<float>(1.0f); self->push<float>(0.0f);
-      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
-      ++ops;
-    };
-    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
-      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
-      self->push<uint8_t>(4u);
-      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
-      ++ops;
-    };
-    auto set_raw_bool = [&](uint32_t id, std::string_view k, bool v) {
-      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
-      self->push<uint8_t>(1u);
-      self->push<uint8_t>(v ? 1u : 0u);
-      ++ops;
-    };
-
-    create_node(2u, NVE_COMP_PRESSABLE);
-    create_node(3u, NVE_COMP_TEXT);
-    create_node(4u, NVE_COMP_VIEW);
-    create_node(5u, NVE_COMP_TEXT_INPUT);
-
-    set_children(NVE_ROOT_NODE_ID, {2u, 3u, 4u, 5u});
-    set_box(2u, 140.0f, 36.0f);
-    set_box(3u, 180.0f, 24.0f);
-    set_box(4u, 100.0f, 24.0f);
-    set_box(5u, 220.0f, 32.0f);
-
-    set_raw_str(2u, "accessibilityLabel", "Publish Release");
-    set_raw_str(2u, "accessibilityHint", "Deploys current build");
-    set_raw_str(2u, "accessibilityValue", "ready");
-    set_raw_str(2u, "testID", "gtk-publish-btn");
-    set_raw_bool(2u, "accessibilityDisabled", self->disabled_btn);
-
-    set_text(3u, "Dashboard");
-    set_raw_str(3u, "role", "header");
-    set_raw_str(3u, "data-testid", "gtk-header");
-
-    set_raw_str(4u, "accessibilityRole", "checkbox");
-    set_raw_str(4u, "aria-label", "Dark Theme");
-
-    set_text(5u, self->input_text);
-    set_raw_str(5u, "placeholder", "Type UTF-8 text...");
-    set_raw_str(5u, "accessibilityLabel", "Release Note");
-    set_raw_str(5u, "testID", "gtk-note-input");
-    set_raw_bool(5u, "secureTextEntry", self->secure_input);
-
-    self->push<uint8_t>(NVE_OP_COMMIT);
-    self->push<uint8_t>(1u);
-    ++ops;
-    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
-    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
-  }
-
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    uint32_t dirty = 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::TextChange)) {
-        ++self->text_change_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_text.assign(sv.data(), sv.size());
-        dirty = 1u;
-      } else if (ev.node_id == 5u && ev.kind == static_cast<uint8_t>(nve::EventKind::Custom) &&
-                 nve::str_slice_view(ev.name) == "onSubmit") {
-        ++self->submit_calls;
-        const auto sv = nve::str_slice_view(ev.text);
-        self->last_submit.assign(sv.data(), sv.size());
-      }
-    }
-    return dirty;
-  }
-
-  static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
-    auto* self = static_cast<MockGtkA11yImeComponent*>(h);
-    for (uint32_t i = 0u; i < count; ++i) {
-      const std::string_view key = nve::str_slice_view(entries[i].key);
-      const NveValue& val = entries[i].value;
-      if (key == "disabled" && val.tag == NVE_VAL_BOOL) self->disabled_btn = val.data.bool_val != 0u;
-      if (key == "secure" && val.tag == NVE_VAL_BOOL) self->secure_input = val.data.bool_val != 0u;
-      if (key == "text" && val.tag == NVE_VAL_STR) {
-        self->input_text = std::string(nve::str_slice_view(val.data.str_val));
-      }
-    }
-    return 1u;
-  }
-
-  static const void* get_interface(uint32_t iface) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    static const NveComponentApi kComp{&set_props, nullptr};
-    if (iface == NVE_IFACE_SURFACE) return &kSurface;
-    if (iface == NVE_IFACE_COMPONENT) return &kComp;
-    return nullptr;
-  }
-};
-
-void test_accessibility_and_ime_text_input() {
-  NveSurfaceConfig cfg{.surface_id = 12u, .width = 480.0f, .height = 300.0f, .scale_factor = 1.0f};
-  nve::NveGtkHost host(cfg);
-  NVE_CHECK(host.attach_interface(&MockGtkA11yImeComponent::get_interface, 12u));
-  NVE_CHECK(MockGtkA11yImeComponent::last_instance != nullptr);
-  auto* mock = MockGtkA11yImeComponent::last_instance;
-
-  GtkWidget* btn = host.widget_for_node_id(2u);
-  GtkWidget* hdr = host.widget_for_node_id(3u);
-  GtkWidget* chk = host.widget_for_node_id(4u);
-  GtkWidget* entry = host.widget_for_node_id(5u);
-  NVE_CHECK(btn != nullptr && hdr != nullptr && chk != nullptr && entry != nullptr && GTK_IS_ENTRY(entry));
-
-  gtk_test_accessible_assert_role(btn, GTK_ACCESSIBLE_ROLE_BUTTON);
-  gtk_test_accessible_assert_property(btn, GTK_ACCESSIBLE_PROPERTY_LABEL, "Publish Release");
-  gtk_test_accessible_assert_property(btn, GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, "Deploys current build");
-  gtk_test_accessible_assert_property(btn, GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, "ready");
-  gtk_test_accessible_assert_state(btn, GTK_ACCESSIBLE_STATE_DISABLED, FALSE);
-  NVE_CHECK(gtk_widget_get_sensitive(btn) == TRUE);
-  NVE_CHECK(std::string(gtk_widget_get_name(btn)) == "gtk-publish-btn");
-
-  gtk_test_accessible_assert_role(hdr, GTK_ACCESSIBLE_ROLE_HEADING);
-  gtk_test_accessible_assert_property(hdr, GTK_ACCESSIBLE_PROPERTY_LABEL, "Dashboard");
-  NVE_CHECK(std::string(gtk_widget_get_name(hdr)) == "gtk-header");
-
-  gtk_test_accessible_assert_role(chk, GTK_ACCESSIBLE_ROLE_CHECKBOX);
-  gtk_test_accessible_assert_property(chk, GTK_ACCESSIBLE_PROPERTY_LABEL, "Dark Theme");
-
-  gtk_test_accessible_assert_role(entry, GTK_ACCESSIBLE_ROLE_TEXT_BOX);
-  gtk_test_accessible_assert_property(entry, GTK_ACCESSIBLE_PROPERTY_LABEL, "Release Note");
-  NVE_CHECK(std::string(gtk_widget_get_name(entry)) == "gtk-note-input");
-
-  const char* ph = gtk_entry_get_placeholder_text(GTK_ENTRY(entry));
-  NVE_CHECK(ph != nullptr && std::string(ph) == "Type UTF-8 text...");
-  NVE_CHECK(gtk_entry_get_visibility(GTK_ENTRY(entry)) == TRUE);
-  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "initial");
-  NVE_CHECK(mock->text_change_calls == 0);
-
-  NVE_CHECK(host.apply_props(nve::PropMap{{"text", std::string("programmatic")}}));
-  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "programmatic");
-  NVE_CHECK(mock->text_change_calls == 0);
-
-  {
-    int pos = static_cast<int>(std::string("programmatic").size());
-    gtk_editable_insert_text(GTK_EDITABLE(entry), " 日本語 café", -1, &pos);
-  }
-  NVE_CHECK(mock->text_change_calls == 1);
-  NVE_CHECK(mock->last_text == "programmatic 日本語 café");
-  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "programmatic 日本語 café");
-
-  gtk_editable_set_text(GTK_EDITABLE(entry), "日本語 café");
-  const int calls_after_replace = mock->text_change_calls;
-  NVE_CHECK(calls_after_replace >= 2 && mock->last_text == "日本語 café");
-  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "日本語 café");
-
-  NVE_CHECK(host.render_frame() == 0);
-  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "日本語 café");
-  NVE_CHECK(mock->text_change_calls == calls_after_replace);
-
-  g_signal_emit_by_name(entry, "activate");
-  NVE_CHECK(mock->submit_calls == 1 && mock->last_submit == "日本語 café");
-
-  NVE_CHECK(host.apply_props(nve::PropMap{{"disabled", true}, {"secure", true}}));
-  gtk_test_accessible_assert_state(btn, GTK_ACCESSIBLE_STATE_DISABLED, TRUE);
-  NVE_CHECK(gtk_widget_get_sensitive(btn) == FALSE);
-  NVE_CHECK(gtk_entry_get_visibility(GTK_ENTRY(entry)) == FALSE);
-}
-
-std::string make_8x8_png_data_uri(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-  std::vector<uint8_t> rgba(8u * 8u * 4u);
-  for (size_t i = 0; i < rgba.size(); i += 4u) {
-    rgba[i + 0u] = r;
-    rgba[i + 1u] = g;
-    rgba[i + 2u] = b;
-    rgba[i + 3u] = a;
-  }
-  GBytes* raw = g_bytes_new(rgba.data(), rgba.size());
-  GdkTexture* tex = gdk_memory_texture_new(8, 8, GDK_MEMORY_R8G8B8A8, raw, 8 * 4);
-  g_bytes_unref(raw);
-  NVE_CHECK(tex != nullptr);
-  GBytes* png = gdk_texture_save_to_png_bytes(tex);
+  GBytes* raw = g_bytes_new(px.data(), px.size());
+  GdkTexture* tex = gdk_memory_texture_new(w, hgt, GDK_MEMORY_R8G8B8A8, raw, static_cast<gsize>(w) * 4u);
+  GBytes* encoded = gdk_texture_save_to_png_bytes(tex);
+  gsize len = 0;
+  const auto* data = static_cast<const uint8_t*>(g_bytes_get_data(encoded, &len));
+  std::vector<uint8_t> out(data, data + len);
+  g_bytes_unref(encoded);
   g_object_unref(tex);
-  NVE_CHECK(png != nullptr);
-  gsize png_len = 0;
-  const auto* png_data = static_cast<const guchar*>(g_bytes_get_data(png, &png_len));
-  gchar* b64 = g_base64_encode(png_data, png_len);
-  std::string out = "data:image/png;base64," + std::string(b64);
-  g_free(b64);
-  g_bytes_unref(png);
+  g_bytes_unref(raw);
   return out;
 }
 
-struct MockGtkImageScrollComponent {
-  static inline MockGtkImageScrollComponent* last_instance = nullptr;
-  uint32_t surface_id{1u};
-  std::string data_uri;
-  std::string file_uri;
-  std::string resize_mode{"cover"};
-  int counter{0};
-  int scroll_events{0};
-  uint32_t last_scroll_node{0};
-  float last_scroll_x{0.0f};
-  float last_scroll_y{0.0f};
-  float last_scroll_content_h{0.0f};
-  std::vector<uint8_t> cmd_buf;
-
-  static NveAppHandle create(uint32_t sid) {
-    auto* self = new MockGtkImageScrollComponent();
-    self->surface_id = sid;
-    last_instance = self;
-    return self;
-  }
-  static void destroy(NveAppHandle h) {
-    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
-    if (last_instance == self) last_instance = nullptr;
-    delete self;
-  }
-  template <typename T>
-  void push(T v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
-  }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
-    self->cmd_buf.clear();
-    uint32_t ops = 0u;
-    self->push<uint32_t>(NVE_ABI_MAGIC);
-    self->push<uint16_t>(NVE_ABI_VERSION);
-    self->push<uint16_t>(0u);
-    self->push<uint32_t>(self->surface_id);
-    self->push<uint64_t>(frame_id);
-    self->push<uint32_t>(0u);
-
-    auto create_node = [&](uint32_t id, uint16_t kind) {
-      self->push<uint8_t>(NVE_OP_CREATE_NODE);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(kind);
-      self->push<uint16_t>(0u);
-      ++ops;
-    };
-    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
-      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
-      self->push<uint32_t>(parent);
-      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
-      for (uint32_t k : kids) self->push<uint32_t>(k);
-      ++ops;
-    };
-    auto set_text = [&](uint32_t id, const std::string& s) {
-      self->push<uint8_t>(NVE_OP_SET_TEXT);
-      self->push<uint32_t>(id);
-      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
-      ++ops;
-    };
-    auto set_box = [&](uint32_t id, float w, float h) {
-      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
-      self->push<uint32_t>(id);
-      self->push<uint8_t>(1u); self->push<float>(w);
-      self->push<uint8_t>(1u); self->push<float>(h);
-      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
-      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
-      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
-      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
-      ++ops;
-    };
-    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
-      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
-      self->push<uint8_t>(4u);
-      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
-      ++ops;
-    };
-
-    create_node(2u, NVE_COMP_VIEW);
-    create_node(3u, NVE_COMP_IMAGE);
-    create_node(4u, NVE_COMP_IMAGE);
-    create_node(5u, NVE_COMP_SCROLL_VIEW);
-    create_node(6u, NVE_COMP_VIEW);
-    create_node(7u, NVE_COMP_TEXT);
-    create_node(8u, NVE_COMP_TEXT);
-
-    set_children(NVE_ROOT_NODE_ID, {2u});
-    set_children(2u, {3u, 4u, 5u, 7u, 8u});
-    set_children(5u, {6u});
-
-    set_box(2u, 360.0f, 300.0f);
-    set_box(3u, 64.0f, 64.0f);
-    set_raw_str(3u, "src", self->data_uri);
-    set_raw_str(3u, "resizeMode", self->resize_mode);
-    set_box(4u, 48.0f, 48.0f);
-    set_raw_str(4u, "src", self->file_uri);
-    set_raw_str(4u, "resizeMode", "contain");
-    set_box(5u, 160.0f, 60.0f);
-    set_box(6u, 220.0f, 240.0f);
-    set_box(7u, 120.0f, 24.0f);
-    set_text(7u, "Step:" + std::to_string(self->counter));
-    set_box(8u, 120.0f, 24.0f);
-    set_text(8u, "StaticLabel");
-
-    self->push<uint8_t>(NVE_OP_COMMIT);
-    self->push<uint8_t>(1u);
-    ++ops;
-    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
-    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
-  }
-
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
-        ++self->scroll_events;
-        self->last_scroll_node = ev.node_id;
-        self->last_scroll_x = ev.x;
-        self->last_scroll_y = ev.y;
-        self->last_scroll_content_h = ev.height;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 7u) {
-        ++self->counter;
-        return 1u;
-      }
-    }
-    return 0u;
-  }
-
-  static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
-    auto* self = static_cast<MockGtkImageScrollComponent*>(h);
-    for (uint32_t i = 0u; i < count; ++i) {
-      if (nve::str_slice_view(entries[i].key) == "resizeMode" && entries[i].value.tag == NVE_VAL_STR) {
-        self->resize_mode = std::string(nve::str_slice_view(entries[i].value.data.str_val));
-      }
-    }
-    return 1u;
-  }
-
-  static const void* get_interface(uint32_t iface) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    static const NveComponentApi kComp{&set_props, nullptr};
-    if (iface == NVE_IFACE_SURFACE) return &kSurface;
-    if (iface == NVE_IFACE_COMPONENT) return &kComp;
-    return nullptr;
-  }
-};
-
-void test_image_picture_scroll_and_incremental_reconcile() {
-  const std::string data_uri = make_8x8_png_data_uri(220, 40, 60, 255);
-  const std::filesystem::path tmp_png =
-      std::filesystem::temp_directory_path() / "nve_gtk_img_8x8.png";
-  {
-    std::vector<uint8_t> rgba(8u * 8u * 4u, 200u);
-    GBytes* raw = g_bytes_new(rgba.data(), rgba.size());
-    GdkTexture* tex = gdk_memory_texture_new(8, 8, GDK_MEMORY_R8G8B8A8, raw, 8 * 4);
-    g_bytes_unref(raw);
-    NVE_CHECK(tex != nullptr && gdk_texture_save_to_png(tex, tmp_png.c_str()) == TRUE);
-    g_object_unref(tex);
-  }
-  gchar* uri_c = g_filename_to_uri(tmp_png.c_str(), nullptr, nullptr);
-  NVE_CHECK(uri_c != nullptr);
-  const std::string file_uri(uri_c);
-  g_free(uri_c);
-
-  NveSurfaceConfig cfg{.surface_id = 15u, .width = 360.0f, .height = 300.0f, .scale_factor = 1.0f};
-  nve::NveGtkHost host(cfg);
-  NVE_CHECK(host.attach_interface(&MockGtkImageScrollComponent::get_interface, 15u));
-  NVE_CHECK(MockGtkImageScrollComponent::last_instance != nullptr);
-  auto* mock = MockGtkImageScrollComponent::last_instance;
-  mock->data_uri = data_uri;
-  mock->file_uri = file_uri;
-  NVE_CHECK(host.render_frame() == 0);
-
-  GtkWidget* pic3 = host.widget_for_node_id(3u);
-  GtkWidget* pic4 = host.widget_for_node_id(4u);
-  GtkWidget* scroll5 = host.widget_for_node_id(5u);
-  GtkWidget* lbl7 = host.widget_for_node_id(7u);
-  NVE_CHECK(pic3 != nullptr && GTK_IS_PICTURE(pic3) && pic4 != nullptr && GTK_IS_PICTURE(pic4));
-  NVE_CHECK(scroll5 != nullptr && GTK_IS_SCROLLED_WINDOW(scroll5) && lbl7 != nullptr && GTK_IS_LABEL(lbl7));
-
-  GdkPaintable* p3 = gtk_picture_get_paintable(GTK_PICTURE(pic3));
-  GdkPaintable* p4 = gtk_picture_get_paintable(GTK_PICTURE(pic4));
-  NVE_CHECK(p3 != nullptr && GDK_IS_TEXTURE(p3) && p4 != nullptr && GDK_IS_TEXTURE(p4));
-  NVE_CHECK(gdk_texture_get_width(GDK_TEXTURE(p3)) == 8 && gdk_texture_get_height(GDK_TEXTURE(p3)) == 8);
-  NVE_CHECK(gdk_texture_get_width(GDK_TEXTURE(p4)) == 8 && gdk_texture_get_height(GDK_TEXTURE(p4)) == 8);
-  NVE_CHECK(host.texture_cache().size() == 2u);
-
-#if GTK_CHECK_VERSION(4, 8, 0)
-  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_COVER);
-  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic4)) == GTK_CONTENT_FIT_CONTAIN);
-
-  NVE_CHECK(host.apply_props(nve::PropMap{{"resizeMode", std::string("contain")}}));
-  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_CONTAIN);
-
-  NVE_CHECK(host.apply_props(nve::PropMap{{"resizeMode", std::string("stretch")}}));
-  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_FILL);
-
-  NVE_CHECK(host.apply_props(nve::PropMap{{"resizeMode", std::string("center")}}));
-  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(pic3)) == GTK_CONTENT_FIT_SCALE_DOWN);
-#endif
-
-  GtkAdjustment* vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll5));
-  GtkAdjustment* hadj = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(scroll5));
-  NVE_CHECK(vadj != nullptr && hadj != nullptr);
-  gtk_adjustment_set_value(vadj, 42.0);
-  NVE_CHECK(mock->scroll_events >= 1 && mock->last_scroll_node == 5u);
-  NVE_CHECK(approx_eq(mock->last_scroll_y, 42.0, 1.0) && mock->last_scroll_content_h >= 240.0f);
-
-  const int events_before_h = mock->scroll_events;
-  gtk_adjustment_set_value(hadj, 15.0);
-  NVE_CHECK(mock->scroll_events > events_before_h && approx_eq(mock->last_scroll_x, 15.0, 1.0));
-
-  const uint64_t updates_before = host.reconcile_update_count();
-  NVE_CHECK(host.simulate_press(7u, 4.0f, 4.0f) == 1u);
-  NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(lbl7))) == "Step:1");
-  NVE_CHECK(host.reconcile_update_count() - updates_before == 1u);
-
-  std::error_code ec;
-  std::filesystem::remove(tmp_png, ec);
+std::string data_url(const std::vector<uint8_t>& bytes) {
+  gchar* b64 = g_base64_encode(bytes.data(), bytes.size());
+  std::string url = std::string("data:image/png;base64,") + b64;
+  g_free(b64);
+  return url;
 }
 
-} // namespace
-
-void nve_test_gtk_snapshot_a11y_and_media() {
-  test_snapshot_replay_state_restore_and_atomic_save();
-  test_accessibility_and_ime_text_input();
-  test_image_picture_scroll_and_incremental_reconcile();
+void a11y(h::Nve2Writer& w, uint32_t id, uint32_t role, std::string_view label) {
+  w.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_ROLE, role);
+  if (!label.empty()) (void)w.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_LABEL, label);
 }
+
+void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t> src, std::string_view alt) {
+  w.create(id);
+  w.define_resource(res, h::kImageSrcKind, src);
+  w.set(id, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, res);
+  if (!alt.empty()) (void)w.set_str(id, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_ALT, alt);
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_WIDTH, h::length_points(32.0f));
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(16.0f));
+}
+
+GtkAccessibleRole role_of(GtkWidget* w) { return gtk_accessible_get_accessible_role(GTK_ACCESSIBLE(w)); }
+
+void test_a11y_inputs_images_and_styles() {
+  const std::string tmp = (std::filesystem::temp_directory_path() / "nve_gtk_test_image.png").string();
+  const std::vector<uint8_t> red = png(4, 3, h::rgba(255, 0, 0));
+  { std::ofstream(tmp, std::ios::binary).write(reinterpret_cast<const char*>(red.data()), static_cast<std::streamsize>(red.size())); }
+
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.create(kColumn);
+  // Inherited typography from the column.
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET,
+        NVE_TYPOGRAPHY_SET_FONT_STYLE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_TEXT_DECORATION);
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
+  (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_FONT_FAMILY, "Inter\";}");
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
+
+  text_node(w, kHeading, "Settings");
+  a11y(w, kHeading, NVE_ARIA_ROLE_HEADING, "");
+  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_LEVEL, 2u);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_MAX_LINES | NVE_TYPOGRAPHY_SET_TEXT_ALIGN);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_MAX_LINES, 1u);
+  w.set(kHeading, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TYPOGRAPHY_TEXT_ALIGN, NVE_TEXT_ALIGN_CENTER);
+
+  w.create(kCheck);
+  a11y(w, kCheck, NVE_ARIA_ROLE_CHECKBOX, "Agree");
+  (void)w.set_str(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_HINT, "Accept the terms");
+  w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_CHECKED, NVE_ARIA_TRI_STATE_TRUE);
+  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
+  w.set(kCheck, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_CURSOR, NVE_CURSOR_KIND_POINTER);
+  w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_COLOR, h::rgba(1, 2, 3));
+  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_WIDTH, 2.0f);
+  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BORDER_RADIUS, 6.0f);
+  w.set_f32(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_OPACITY, 0.5f);
+  const h::BoxShadow shadow[] = {{1.0f, 2.0f, 3.0f, 0.0f, h::rgba(0, 0, 0, 128), false}};
+  w.define_resource(50u, h::kBoxShadowsKind, h::encode_box_shadows(shadow));
+  w.set(kCheck, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_BOX_SHADOWS, 50u);
+  w.set(kCheck, NVE_TABLE_LAYOUT_DESC, NVE_LAYOUT_HEIGHT, h::length_points(20.0f));
+
+  w.create(kDisabled);
+  a11y(w, kDisabled, NVE_ARIA_ROLE_BUTTON, "Disabled");
+  w.set(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_EVENT_MASK, h::event_bit(NVE_EVENT_PRESS));
+  w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_INTERACTION_DISABLED, true);
+
+  w.create(kEntry);
+  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "hello");
+  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_PLACEHOLDER, "Name");
+  w.set_bool(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_SECURE, true);
+  w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_MAX_LENGTH, 12u);
+  w.create(kSearch);
+  w.set(kSearch, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_INPUT_KIND, NVE_INPUT_KIND_SEARCH);
+  w.create(kNotes);
+  w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_MULTILINE, true);
+  (void)w.set_str(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "a\nb");
+
+  const std::string url = data_url(png(2, 2, h::rgba(0, 255, 0)));
+  const std::string file_url = "file://" + tmp;
+  image(w, kImgUrl, 60u, h::encode_image_url(url), "Logo");
+  w.set(kImgUrl, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_FIT, NVE_IMAGE_FIT_CONTAIN);
+  image(w, kImgBytes, 61u, h::encode_image_bytes(red), "");
+  image(w, kImgFile, 62u, h::encode_image_url(file_url), "");
+  image(w, kImgBad, 63u, h::encode_image_url("data:image/png;base64,AAAA"), "");
+  text_node(w, kHidden, "hidden");
+  w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
+  w.set_bool(kHidden, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_HIDDEN, true);
+
+  const uint32_t kids[] = {kHeading, kCheck, kDisabled, kEntry, kSearch, kNotes, kImgUrl, kImgBytes, kImgFile, kImgBad, kHidden};
+  w.set_children(kColumn, kids);
+  const uint32_t root_kids[] = {kColumn};
+  w.set_children(1u, root_kids);
+
+  // Controlled inputs: echo every TextChange back as the new value.
+  app.on_event = [](ScriptedApp& a, const nve::host::testing::RecordedEvent& e) {
+    if (e.ev.kind == NVE_EVENT_TEXT_CHANGE) (void)a.w.set_str(e.ev.node_id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, e.text);
+  };
+
+  NveGtkHost host;
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  NVE_CHECK(host.view_count() == 12u);
+
+  // --- Accessibility.
+  GtkWidget* heading = host.widget_for_node_id(kHeading);
+  NVE_CHECK(role_of(heading) == GTK_ACCESSIBLE_ROLE_HEADING);
+  auto sem = host.accessibility_info_for_node_id(kHeading);
+  NVE_CHECK(sem && sem->level == 2u && sem->label == "Settings");
+  GtkWidget* check = host.widget_for_node_id(kCheck);
+  NVE_CHECK(role_of(check) == GTK_ACCESSIBLE_ROLE_CHECKBOX);
+  sem = host.accessibility_info_for_node_id(kCheck);
+  NVE_CHECK(sem && sem->label == "Agree" && sem->hint == "Accept the terms" && sem->checked == NVE_ARIA_TRI_STATE_TRUE);
+  NVE_CHECK(gtk_widget_get_sensitive(check) && !gtk_widget_get_sensitive(host.widget_for_node_id(kDisabled)));
+  NVE_CHECK(host.accessibility_info_for_node_id(kDisabled)->disabled);
+  NVE_CHECK(host.accessibility_info_for_node_id(kHidden)->hidden);
+  NVE_CHECK(!gtk_widget_get_visible(host.widget_for_node_id(kHidden)));
+  NVE_CHECK(gtk_widget_get_cursor(check) != nullptr &&
+            std::string(gdk_cursor_get_name(gtk_widget_get_cursor(check))) == "pointer");
+  NVE_CHECK(approx(gtk_widget_get_opacity(check), 0.5, 0.01));
+  NVE_CHECK(!host.accessibility_info_for_node_id(999u));
+
+  // --- Styles: visual, shadow resource, inherited + escaped typography, label layout props.
+  const std::string& css = host.active_css();
+  NVE_CHECK(css.find("border: 2px solid rgba(1, 2, 3, 1)") != std::string::npos);
+  NVE_CHECK(css.find("border-radius: 6px") != std::string::npos);
+  NVE_CHECK(css.find("box-shadow: 1px 2px 3px 0px rgba(0, 0, 0, 0.502)") != std::string::npos);
+  NVE_CHECK(css.find("font-style: italic") != std::string::npos);
+  NVE_CHECK(css.find("font-family: \"Inter\"") != std::string::npos);  // quotes / braces stripped
+  NVE_CHECK(css.find("text-decoration-line: underline") != std::string::npos);
+  NVE_CHECK(gtk_label_get_lines(GTK_LABEL(heading)) == 1 && gtk_label_get_ellipsize(GTK_LABEL(heading)) == PANGO_ELLIPSIZE_END);
+  NVE_CHECK(approx(gtk_label_get_xalign(GTK_LABEL(heading)), 0.5, 0.01));
+
+  // --- Text inputs.
+  GtkWidget* entry = host.widget_for_node_id(kEntry);
+  NVE_CHECK(GTK_IS_ENTRY(entry) && role_of(entry) == GTK_ACCESSIBLE_ROLE_TEXT_BOX);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "hello");
+  NVE_CHECK(!gtk_entry_get_visibility(GTK_ENTRY(entry)) && gtk_entry_get_max_length(GTK_ENTRY(entry)) == 12);
+  NVE_CHECK(std::string(gtk_entry_get_placeholder_text(GTK_ENTRY(entry))) == "Name");
+  NVE_CHECK(role_of(host.widget_for_node_id(kSearch)) == GTK_ACCESSIBLE_ROLE_SEARCH_BOX);
+  GtkWidget* notes = host.widget_for_node_id(kNotes);
+  NVE_CHECK(GTK_IS_TEXT_VIEW(notes) && host.accessibility_info_for_node_id(kNotes)->multiline);
+
+  // Replacing text is a native delete + insert: two TextChanges ("" then "Ada"), echoed stably.
+  gtk_editable_set_text(GTK_EDITABLE(entry), "Ada");
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 2u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "Ada");
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "Ada");  // echo does not fight the user
+  int at = 0;
+  gtk_editable_insert_text(GTK_EDITABLE(entry), "!", 1, &at);  // typing one char: one event
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u && app.last(NVE_EVENT_TEXT_CHANGE)->text == "!Ada");
+  (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TEXT_INPUT_VALUE, "reset");  // app-driven value
+  flush(host);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "reset");
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u);  // programmatic sets never echo upstream
+  g_signal_emit_by_name(entry, "activate");
+  NVE_CHECK(app.count(NVE_EVENT_SUBMIT, kEntry) == 1u && app.last(NVE_EVENT_SUBMIT)->text == "reset");
+  NVE_CHECK(host.dispatch_focus(kEntry, true) || app.count(NVE_EVENT_FOCUS, kEntry) == 1u);
+  (void)host.dispatch_focus(kEntry, false);
+  NVE_CHECK(app.count(NVE_EVENT_FOCUS, kEntry) == 1u && app.count(NVE_EVENT_BLUR, kEntry) == 1u);
+  gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(notes)), "line1\nline2", -1);
+  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "line1\nline2" && app.last(NVE_EVENT_TEXT_CHANGE)->ev.node_id == kNotes);
+
+  // --- Images.
+  const auto paintable = [&](uint32_t id) { return gtk_picture_get_paintable(GTK_PICTURE(host.widget_for_node_id(id))); };
+  NVE_CHECK(paintable(kImgUrl) != nullptr && gdk_paintable_get_intrinsic_width(paintable(kImgUrl)) == 2);
+  NVE_CHECK(paintable(kImgBytes) != nullptr && gdk_paintable_get_intrinsic_width(paintable(kImgBytes)) == 4);
+  NVE_CHECK(paintable(kImgFile) != nullptr && gdk_paintable_get_intrinsic_height(paintable(kImgFile)) == 3);
+  NVE_CHECK(paintable(kImgBad) == nullptr);
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(host.widget_for_node_id(kImgUrl))) == GTK_CONTENT_FIT_CONTAIN);
+  NVE_CHECK(gtk_picture_get_content_fit(GTK_PICTURE(host.widget_for_node_id(kImgBytes))) == GTK_CONTENT_FIT_COVER);
+  NVE_CHECK(host.accessibility_info_for_node_id(kImgUrl)->label == "Logo");
+  NVE_CHECK(host.texture_cache().size() == 3u && host.texture_cache().misses() == 4u);
+  // The same bytes under another resource id hit the cache.
+  app.w.define_resource(64u, h::kImageSrcKind, h::encode_image_bytes(red));
+  app.w.set(kImgBad, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, 64u);
+  flush(host);
+  NVE_CHECK(paintable(kImgBad) == paintable(kImgBytes) && host.texture_cache().hits() == 1u);
+
+  // --- Construct-only role change recreates the widget in place (same parent slot).
+  GtkWidget* column = host.widget_for_node_id(kColumn);
+  g_object_add_weak_pointer(G_OBJECT(check), reinterpret_cast<gpointer*>(&check));
+  app.w.set(kCheck, NVE_TABLE_ACCESSIBILITY_DESC, NVE_ACCESSIBILITY_ROLE, NVE_ARIA_ROLE_SWITCH);
+  flush(host);
+  GtkWidget* sw = host.widget_for_node_id(kCheck);
+  NVE_CHECK(check == nullptr);  // the old widget was destroyed (its address may be reused)
+  NVE_CHECK(role_of(sw) == GTK_ACCESSIBLE_ROLE_SWITCH);
+  NVE_CHECK(gtk_widget_get_parent(sw) == column && gtk_widget_get_prev_sibling(sw) == heading);
+
+  // --- Removal drops the widget and its CSS rule.
+  const std::string cls = "-node-" + std::to_string(kImgFile) + " {";
+  NVE_CHECK(host.active_css().find(cls) != std::string::npos);
+  app.w.remove(kImgFile);
+  const uint32_t fewer[] = {kHeading, kCheck, kDisabled, kEntry, kSearch, kNotes, kImgUrl, kImgBytes, kImgBad, kHidden};
+  app.w.set_children(kColumn, fewer);
+  flush(host);
+  NVE_CHECK(host.widget_for_node_id(kImgFile) == nullptr && host.view_count() == 11u);
+  NVE_CHECK(host.active_css().find(cls) == std::string::npos);
+  std::filesystem::remove(tmp);
+}
+
+}  // namespace
+
+void nve_test_gtk_a11y_and_media() { test_a11y_inputs_images_and_styles(); }

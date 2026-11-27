@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-namespace nve {
+namespace nve::gtk {
 
 /// Descriptor for opening a top-level GTK4 window managed by `NveGtkWindowManager`.
 struct GtkWindowSpec {
@@ -93,4 +93,4 @@ class NveGtkWindowManager {
   AllWindowsClosedCallback on_all_closed_;
 };
 
-} // namespace nve
+}  // namespace nve::gtk
