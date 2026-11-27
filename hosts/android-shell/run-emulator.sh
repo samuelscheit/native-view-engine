@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 
-APP_PKG="nve-example-kitchen-sink"
+APP_PKG="nve-studio-workspace"
 BUILD_ONLY=0
 AVD_NAME=""
 SCREENSHOT_PATH=""
