@@ -381,22 +381,24 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                 }
             } else {
                 let elapsed_ms = t_diff.elapsed().as_millis() as u64;
-                for (path, mut msg) in tier1_patches {
-                    generation += 1;
-                    if let HotPatchMsg::TemplatePatch {
-                        generation: ref mut g,
-                        ..
-                    } = msg
-                    {
-                        *g = generation;
-                    }
-                    broadcast_msg(&clients_for_watch, &msg);
-                    if let Some(tx) = pair_tx_for_watch
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .as_ref()
-                    {
-                        let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_bytes()));
+                for (path, messages) in tier1_patches {
+                    for mut msg in messages {
+                        generation += 1;
+                        if let HotPatchMsg::TemplatePatch {
+                            generation: ref mut g,
+                            ..
+                        } = msg
+                        {
+                            *g = generation;
+                        }
+                        broadcast_msg(&clients_for_watch, &msg);
+                        if let Some(tx) = pair_tx_for_watch
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_ref()
+                        {
+                            let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_bytes()));
+                        }
                     }
                     let status = HotPatchMsg::DevStatus {
                         message: format!(
@@ -450,7 +452,7 @@ fn classify_watch_changes(
     changed_paths: &[PathBuf],
     rsx_cache: &mut rsx_diff::RsxWatchCache,
     next_generation: u64,
-) -> (Vec<(PathBuf, HotPatchMsg)>, Option<String>) {
+) -> (Vec<(PathBuf, Vec<HotPatchMsg>)>, Option<String>) {
     if !has_built_once {
         return (Vec::new(), Some("awaiting first successful build".into()));
     }
@@ -468,7 +470,7 @@ fn classify_watch_changes(
                     let file = path.display();
                     typed_changes.extend(patch.attr_changes.iter().map(|c| format!("{file}: {c}")));
                     typed_changes.extend(patch.text_changes.iter().map(|c| format!("{file}: {c}")));
-                    tier1_patches.extend(messages.into_iter().map(|msg| (path.clone(), msg)));
+                    tier1_patches.push((path.clone(), messages));
                 }
                 rsx_diff::DiffOutcome::RequireTier2Rebuild { reason } => {
                     return (Vec::new(), Some(reason));

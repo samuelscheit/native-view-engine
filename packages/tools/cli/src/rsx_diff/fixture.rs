@@ -20,12 +20,12 @@ pub fn Card{i}(mut count: Signal<i32>, label: String) -> Element {{
         view {{
             test_id: "card-{i}",
             padding: 8.0,
-            gap: px(4.0),
-            width: pct(100.0),
+            gap: Length::points(4.0),
+            width: Length::percent(100.0),
             background_color: Rgba::rgb(15, 23, 42),
             flex_direction: FlexDirection::Row,
             opacity: 0.9,
-            text {{ font_size: 14.0, color: hex(0xf8fafc), "Card title {i}" }}
+            text {{ font_size: 14.0, color: Rgba::new(248, 250, 252, 255), "Card title {i}" }}
             if total > 3 {{
                 text {{ "Many items" }}
             }}

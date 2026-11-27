@@ -3,14 +3,40 @@
 mod eval_tests;
 mod fallback_tests;
 mod legacy;
+mod lexer_tests;
+mod lowering_tests;
+mod parser_tests;
 mod real_world_tests;
+mod surface_tests;
 mod typed_span_tests;
 
 use nve_engine::HotPatchMsg;
 
+use super::DiffOutcome;
+use super::cache::Baseline;
 use super::eval::{EvalError, TypedAttrValue, evaluate};
-use super::lexer::tokenize;
-use super::{DiffOutcome, TypedRsxPatch, diff_rsx_source};
+use super::lexer::{Lex, tokenize};
+use super::matcher::diff_rsx_typed;
+use super::parser::RsxIndex;
+use super::patch::TypedRsxPatch;
+
+/// Cold diff of two sources (fresh baseline).
+fn diff_rsx_source(
+    template_id: &str,
+    old_src: &str,
+    new_src: &str,
+    generation: u64,
+) -> DiffOutcome {
+    Baseline::new(old_src.to_owned()).diff(template_id, new_src, generation)
+}
+
+/// The typed patch of two sources, independent of string lowering.
+fn typed_patch(old_src: &str, new_src: &str) -> Result<Option<TypedRsxPatch>, String> {
+    let old_tokens = tokenize(old_src).map_err(|e| e.as_str().to_owned())?;
+    let new_tokens = tokenize(new_src).map_err(|e| e.as_str().to_owned())?;
+    let old = Lex::new(old_src, &old_tokens);
+    diff_rsx_typed(old, &RsxIndex::build(old), Lex::new(new_src, &new_tokens))
+}
 
 /// Flattened `HotPatchMsg::TemplatePatch` fields for assertions.
 #[derive(Debug)]
@@ -51,6 +77,10 @@ fn view(msg: HotPatchMsg) -> PatchView {
 fn expect_tier1(outcome: DiffOutcome) -> (TypedRsxPatch, Vec<PatchView>) {
     match outcome {
         DiffOutcome::Tier1Patch { patch, messages } => {
+            assert!(
+                messages.iter().all(|m| matches!(m, HotPatchMsg::TemplatePatch { text_updates, .. } if text_updates.is_empty())),
+                "positional text_updates are never emitted"
+            );
             (patch, messages.into_iter().map(view).collect())
         }
         other => panic!("expected Tier1Patch, got {other:?}"),
@@ -88,13 +118,14 @@ fn assert_tier2_reason(old_src: &str, new_src: &str, needle: &str) {
 
 /// Evaluates a standalone value snippet.
 fn eval_src(src: &str) -> Result<TypedAttrValue, EvalError> {
-    let lex = tokenize(src).unwrap_or_else(|e| panic!("lex {src:?}: {}", e.as_str()));
-    evaluate(&lex, 0, lex.tokens.len())
+    let tokens = tokenize(src).unwrap_or_else(|e| panic!("lex {src:?}: {}", e.as_str()));
+    let lex = Lex::new(src, &tokens);
+    evaluate(lex, 0, lex.len())
 }
 
-/// A one-element component whose `view` carries `attrs` (newline-separated `name: value,` lines).
+/// A one-element component whose `view` (test_id `box`) carries `attrs`.
 fn element_with(attrs: &str) -> String {
     format!(
-        "pub fn Demo() -> Element {{\n    let n = 1;\n    rsx! {{\n        view {{\n            test_id: \"box\",\n{attrs}\n            text {{ \"Body\" }}\n        }}\n    }}\n}}\n"
+        "pub fn Demo() -> Element {{\n    let n = 1;\n    rsx! {{\n        view {{\n            test_id: \"box\",\n            {attrs}\n            text {{ \"Body\" }}\n        }}\n    }}\n}}\n"
     )
 }

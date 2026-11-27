@@ -1,19 +1,20 @@
-//! Typed Tier-1 patch model ([`TypedRsxPatch`]) and its lossless lowering to today's
+//! Typed Tier-1 patch model ([`TypedRsxPatch`]) and its faithful lowering to today's
 //! `HotPatchMsg::TemplatePatch` wire form (CSS attribute strings).
 
 use std::fmt;
 
 use nve_engine::HotPatchMsg;
 
-use super::attrs::{AttrSpec, ValueClasses};
+use super::attrs::{AttrKind, AttrSpec, NumberRule};
 use super::eval::TypedAttrValue;
 
-/// The `rsx!` invocation a node is written in.
+/// The template (an `rsx!` invocation or a control-flow body) a node is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RsxBlockCoord {
-    /// File-order ordinal of the `rsx!` invocation (nested macros included).
+pub struct TemplateCoord {
+    /// File-order ordinal of the template.
     pub ordinal: u32,
-    /// 1-based line and char column of the `rsx` identifier in the baseline source.
+    /// 1-based line and char column of the template anchor (`rsx` identifier or body `{`) in
+    /// the baseline source.
     pub line: u32,
     pub column: u32,
 }
@@ -21,14 +22,13 @@ pub struct RsxBlockCoord {
 /// Where a typed change applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateTarget {
-    pub block: RsxBlockCoord,
-    /// Baseline token index of the element's opening `{` (attributes) or the text literal.
-    pub anchor_tok: u32,
-    /// Runtime child-index path from the outermost enclosing `rsx!` root (control-flow bodies and
-    /// direct child `rsx!` invocations continue their parent's path).
+    pub template: TemplateCoord,
+    /// Child-index path from the template root.
     pub node_path: Vec<usize>,
-    /// Static `test_id` of the element (attributes) or of the nearest enclosing element (text).
+    /// Static `test_id` of the element (attributes) or of the nearest native ancestor (text).
     pub test_id: Option<String>,
+    /// Baseline token index of the element's `{` (attributes) or the text literal.
+    pub(super) anchor_tok: u32,
 }
 
 /// One changed native-element style attribute value.
@@ -44,8 +44,6 @@ pub struct TypedAttrChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextChange {
     pub target: TemplateTarget,
-    /// File-order index of the text child among all static text children.
-    pub text_index: usize,
     pub old: String,
     pub new: String,
 }
@@ -62,77 +60,69 @@ impl TypedRsxPatch {
         self.attr_changes.is_empty() && self.text_changes.is_empty()
     }
 
-    /// Lowers to `TemplatePatch` messages: one for all text changes, then one per changed
-    /// element (so text and attribute targeting never mask each other). Fails for values the
-    /// string wire form cannot carry (theme tokens need the app's theme).
+    /// Lowers to `TemplatePatch` messages: one per changed text node (exact old -> new text,
+    /// scoped to its owner's `test_id`), then one per changed element. Fails (Tier-2) for edits
+    /// the string path cannot apply faithfully: typed-only attributes, theme tokens, values the
+    /// CSS parser would read differently, and attribute edits on elements without a static
+    /// `test_id` (the web and native consumers would otherwise patch every node).
     pub fn to_template_patches(
         &self,
         template_id: &str,
         generation: u64,
     ) -> Result<Vec<HotPatchMsg>, String> {
-        let mut messages = Vec::new();
-        if let Some(first) = self.text_changes.first() {
-            let uniform_owner = self
-                .text_changes
-                .iter()
-                .all(|c| c.target.test_id == first.target.test_id);
-            messages.push(HotPatchMsg::TemplatePatch {
-                generation,
-                template_id: template_id.to_owned(),
-                attr_updates: Vec::new(),
-                text_updates: self
-                    .text_changes
-                    .iter()
-                    .map(|c| (c.text_index, c.new.clone()))
-                    .collect(),
-                target_test_id: uniform_owner
-                    .then(|| first.target.test_id.clone())
-                    .flatten(),
-                node_path: if self.text_changes.len() == 1 {
-                    first.target.node_path.clone()
-                } else {
-                    Vec::new()
-                },
-                text_replacements: self
-                    .text_changes
-                    .iter()
-                    .map(|c| (c.old.clone(), c.new.clone()))
-                    .collect(),
-            });
+        let message = |target: &TemplateTarget, attrs, texts| HotPatchMsg::TemplatePatch {
+            generation,
+            template_id: template_id.to_owned(),
+            attr_updates: attrs,
+            text_updates: Vec::new(),
+            target_test_id: target.test_id.clone(),
+            node_path: target.node_path.clone(),
+            text_replacements: texts,
+        };
+        let mut messages: Vec<HotPatchMsg> = self
+            .text_changes
+            .iter()
+            .map(|c| message(&c.target, Vec::new(), vec![(c.old.clone(), c.new.clone())]))
+            .collect();
+
+        // Group attribute changes per element, keeping first-appearance order.
+        let mut elements: Vec<(&TemplateTarget, Vec<(String, String)>)> = Vec::new();
+        for change in &self.attr_changes {
+            let name = change.attr.name;
+            if change.target.test_id.is_none() {
+                return Err(format!(
+                    "`{name}` edit on an element without a static `test_id` cannot be targeted \
+                     until template identity lands (typed RowPatch lowering)"
+                ));
+            }
+            let update = (name.to_owned(), css_value(&change.new, change.attr)?);
+            match elements
+                .iter_mut()
+                .find(|(t, _)| t.anchor_tok == change.target.anchor_tok)
+            {
+                Some((_, updates)) => updates.push(update),
+                None => elements.push((&change.target, vec![update])),
+            }
         }
-        for element in self
-            .attr_changes
-            .chunk_by(|a, b| a.target.anchor_tok == b.target.anchor_tok)
-        {
-            let attr_updates = element
-                .iter()
-                .map(|c| Ok((c.attr.name.to_owned(), css_value(&c.new, c.attr)?)))
-                .collect::<Result<Vec<_>, String>>()?;
-            let target = &element[0].target;
-            messages.push(HotPatchMsg::TemplatePatch {
-                generation,
-                template_id: template_id.to_owned(),
-                attr_updates,
-                text_updates: Vec::new(),
-                target_test_id: target.test_id.clone(),
-                node_path: target.node_path.clone(),
-                text_replacements: Vec::new(),
-            });
-        }
+        messages.extend(
+            elements
+                .into_iter()
+                .map(|(target, updates)| message(target, updates, Vec::new())),
+        );
         Ok(messages)
     }
 }
 
 impl fmt::Display for TemplateTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let RsxBlockCoord {
+        let TemplateCoord {
             ordinal,
             line,
             column,
-        } = self.block;
+        } = self.template;
         write!(
             f,
-            "rsx#{ordinal} @{line}:{column} path {:?}",
+            "template#{ordinal} @{line}:{column} path {:?}",
             self.node_path
         )?;
         match &self.test_id {
@@ -151,70 +141,71 @@ impl fmt::Display for TypedAttrChange {
 
 impl fmt::Display for TextChange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (old, new, idx) = (&self.old, &self.new, self.text_index);
-        write!(f, "text #{idx}: {old:?} -> {new:?} ({})", self.target)
+        write!(
+            f,
+            "text: {:?} -> {:?} ({})",
+            self.old, self.new, self.target
+        )
     }
 }
 
-/// CSS text of `value` for attribute `spec`, exactly as the string attribute path parses it.
+/// CSS text of `value` for attribute `spec` such that `nve_components::css` stores exactly what
+/// the compiled app stores for the same RSX value. Float literals mirror the typed numeric path
+/// (`apply_numeric_attr`: `f32` conversion and clamps); strings pass through unchanged.
 pub fn css_value(value: &TypedAttrValue, spec: &AttrSpec) -> Result<String, String> {
-    let accepts = spec.accepts;
-    let unsupported = || format!("`{}` does not accept {value}", spec.name);
-    match value {
-        TypedAttrValue::String(s) => Ok(s.clone()),
-        TypedAttrValue::Float(v) => css_number(v.to_string(), spec).ok_or_else(unsupported),
-        TypedAttrValue::Int(v) => css_number(v.to_string(), spec).ok_or_else(unsupported),
-        TypedAttrValue::LengthPx(v) if accepts.intersects(ValueClasses::LENGTH) => {
-            Ok(format!("{v}px"))
-        }
-        TypedAttrValue::LengthPct(v) if accepts.intersects(ValueClasses::LENGTH) => {
-            Ok(format!("{v}%"))
-        }
-        TypedAttrValue::Auto if accepts.intersects(ValueClasses::LENGTH) => Ok("auto".to_owned()),
-        TypedAttrValue::Rgba { r, g, b, a } if accepts.intersects(ValueClasses::COLOR) => {
-            Ok(if *a == u8::MAX {
-                format!("#{r:02x}{g:02x}{b:02x}")
-            } else {
-                format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
-            })
-        }
-        TypedAttrValue::Enum { variant, .. } if accepts.intersects(ValueClasses::KEYWORD) => {
-            Ok(css_keyword(variant))
-        }
-        TypedAttrValue::ThemeToken(path) => Err(format!(
+    let name = spec.name;
+    if !spec.css {
+        return Err(format!(
+            "`{name}` has no string TemplatePatch form yet (typed RowPatch lowering)"
+        ));
+    }
+    let unsupported = || {
+        Err(format!(
+            "`{name}` cannot carry {value} on the string patch path"
+        ))
+    };
+    match (spec.kind, value) {
+        (_, TypedAttrValue::String(s)) => Ok(s.clone()),
+        (_, TypedAttrValue::ThemeToken(path)) => Err(format!(
             "theme token `{path}` needs the running app's theme (typed RowPatch lowering)"
         )),
-        _ => Err(unsupported()),
-    }
-}
-
-/// A bare number: unitless where the attribute takes numbers, else a `px` length.
-fn css_number(number: String, spec: &AttrSpec) -> Option<String> {
-    if spec.accepts.intersects(ValueClasses::NUMBER) {
-        Some(number)
-    } else if spec.accepts.intersects(ValueClasses::LENGTH) {
-        Some(number + "px")
-    } else {
-        None
-    }
-}
-
-/// CSS keyword of a `PascalCase` enum variant: `SpaceBetween` -> `space-between`,
-/// `NoWrap` -> `nowrap` (the one CSS keyword that is not kebab-case).
-fn css_keyword(variant: &str) -> String {
-    if variant.eq_ignore_ascii_case("nowrap") {
-        return "nowrap".to_owned();
-    }
-    let mut out = String::with_capacity(variant.len() + 4);
-    for (i, c) in variant.char_indices() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
-                out.push('-');
-            }
-            out.push(c.to_ascii_lowercase());
-        } else {
-            out.push(c);
+        (
+            AttrKind::Dimension { float: Some(rule) }
+            | AttrKind::Pixels { float: Some(rule) }
+            | AttrKind::Number(rule),
+            TypedAttrValue::Float(v),
+        ) => Ok(css_float(rule, *v)),
+        (AttrKind::Number(NumberRule::ZIndex), TypedAttrValue::Int(v)) => {
+            Ok((*v).clamp(i32::MIN.into(), i32::MAX.into()).to_string())
         }
+        (AttrKind::Dimension { .. } | AttrKind::Pixels { .. }, TypedAttrValue::LengthPx(v)) => {
+            Ok(format!("{v}px"))
+        }
+        (AttrKind::Dimension { .. }, TypedAttrValue::LengthPct(v)) => Ok(format!("{v}%")),
+        (AttrKind::Dimension { .. }, TypedAttrValue::Auto) => Ok("auto".to_owned()),
+        (AttrKind::Color, TypedAttrValue::Rgba { r, g, b, a }) => Ok(if *a == u8::MAX {
+            format!("#{r:02x}{g:02x}{b:02x}")
+        } else {
+            format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+        }),
+        (AttrKind::Keyword(kw), TypedAttrValue::Enum { ty, variant })
+            if ty.as_deref().is_none_or(|t| t == kw.ty) =>
+        {
+            match kw.css(variant) {
+                Some(Some(keyword)) => Ok(keyword.to_owned()),
+                _ => unsupported(),
+            }
+        }
+        _ => unsupported(),
     }
-    out
+}
+
+/// A float literal as the typed path stores it (`v as f32`, non-finite as `0`, then clamped).
+fn css_float(rule: NumberRule, v: f64) -> String {
+    let f = if v.is_finite() { v as f32 } else { 0.0 };
+    match rule {
+        NumberRule::Px { min } => format!("{}px", f.max(min)),
+        NumberRule::Unitless { min, max } => f.clamp(min, max).to_string(),
+        NumberRule::ZIndex => (f as i32).to_string(),
+    }
 }

@@ -159,20 +159,23 @@ fn watch_classifier_forwards_one_message_per_changed_element_for_typed_edits() {
     let dir = std::env::temp_dir().join(format!("nve-dev-watch-typed-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join("ui.rs");
-    let base = "fn ui() -> Element {\n    rsx! {\n        view { test_id: \"a\", padding: 8.0 }\n        view { test_id: \"b\", color: rgb(1, 2, 3) }\n    }\n}\n";
+    let base = "fn ui() -> Element {\n    rsx! {\n        view { test_id: \"a\", padding: 8.0 }\n        view { test_id: \"b\", opacity: 0.5 }\n    }\n}\n";
     std::fs::write(&file, base).expect("write temp rs");
     let mut cache = rsx_diff::RsxWatchCache::new();
     cache.seed_dir(&dir);
 
-    let edited = base.replace("padding: 8.0", "padding: px(-4.0)").replace("rgb(1, 2, 3)", "hex(0x0a0b0c)");
+    let edited = base.replace("padding: 8.0", "padding: 12.5").replace("0.5", "0.75");
     std::fs::write(&file, &edited).expect("rewrite temp rs");
     let (patches, reason) = classify_watch_changes(true, std::slice::from_ref(&file), &mut cache, 5);
     assert_eq!(reason, None);
-    let updates: Vec<_> = patches
+    let [(path, messages)] = patches.as_slice() else {
+        panic!("expected one file's messages: {patches:?}");
+    };
+    assert_eq!(path, &file);
+    let updates: Vec<_> = messages
         .iter()
-        .map(|(path, msg)| match msg {
+        .map(|msg| match msg {
             HotPatchMsg::TemplatePatch { attr_updates, target_test_id, .. } => {
-                assert_eq!(path, &file);
                 (target_test_id.clone(), attr_updates.clone())
             }
             other => panic!("unexpected {other:?}"),
@@ -181,13 +184,13 @@ fn watch_classifier_forwards_one_message_per_changed_element_for_typed_edits() {
     assert_eq!(
         updates,
         vec![
-            (Some("a".to_owned()), vec![("padding".to_owned(), "-4px".to_owned())]),
-            (Some("b".to_owned()), vec![("color".to_owned(), "#0a0b0c".to_owned())]),
+            (Some("a".to_owned()), vec![("padding".to_owned(), "12.5px".to_owned())]),
+            (Some("b".to_owned()), vec![("opacity".to_owned(), "0.75".to_owned())]),
         ]
     );
 
-    // A non-constant value in the next save forces Tier-2 and keeps the typed baseline.
-    std::fs::write(&file, edited.replace("px(-4.0)", "px(gap)")).expect("rewrite temp rs");
+    // A non-literal value in the next save forces Tier-2 and keeps the typed baseline.
+    std::fs::write(&file, edited.replace("12.5", "gap")).expect("rewrite temp rs");
     let (patches, reason) = classify_watch_changes(true, std::slice::from_ref(&file), &mut cache, 6);
     assert!(patches.is_empty());
     assert!(reason.is_some_and(|r| r.contains("not a Tier-1 constant")));

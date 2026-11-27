@@ -90,7 +90,7 @@ fn non_constant_or_ill_typed_values_rebuild_with_a_reason() {
         (
             "padding: 8.0,",
             "padding: compute_px(),",
-            "call outside the px/pct/rgb/rgba/hex helper allowlist",
+            "call outside the Length/Dimension/Rgba/ColorRgba constructors",
         ),
         (
             "padding: compute_px(),",
@@ -103,46 +103,47 @@ fn non_constant_or_ill_typed_values_rebuild_with_a_reason() {
         ("padding: 8.0,", "padding: +8.0,", "unary `+`"),
         ("padding: 8.0,", "padding: 1e39,", "not finite"),
         ("padding: 8.0,", "padding: ,", "empty value"),
-        ("color: rgb(1, 2, 3),", "color: rgb(1, 2, 300),", "0..=255"),
         (
-            "color: hex(0x112233),",
-            "color: hex(0x1122),",
-            "6- or 8-digit",
+            "color: Rgba::rgb(1, 2, 3),",
+            "color: Rgba::rgb(1, 2, 300),",
+            "0..=255",
+        ),
+        (
+            "color: Rgba::rgb(1, 2, 3),",
+            "color: rgb(1, 2, 3),",
+            "constructors",
+        ),
+        (
+            "width: Length::points(1.0),",
+            "width: Length::points(2),",
+            "float literal",
         ),
         (
             "padding: 8.0,",
             "padding: FlexDirection::Row,",
-            "`padding` does not accept FlexDirection::Row",
+            "value shape changed",
         ),
-        (
-            "opacity: 0.5,",
-            "opacity: true,",
-            "`opacity` does not accept true",
-        ),
-        (
-            "opacity: 0.5,",
-            "opacity: px(1.0),",
-            "`opacity` does not accept px(1.0)",
-        ),
+        ("opacity: 0.5,", "opacity: true,", "value shape changed"),
         (
             "style: \"gap: 1px;\",",
             "style: 8.0,",
-            "`style` does not accept 8.0",
+            "value shape changed",
         ),
         (
             "font_family: \"Inter\",",
             "font_family: FontFamily::Mono,",
-            "`font-family` does not accept",
+            "value shape changed",
         ),
-        (
-            "color: hex(0x112233),",
-            "color: 4.0,",
-            "`color` does not accept 4.0",
-        ),
+        ("color: Rgba::WHITE,", "color: 4.0,", "value shape changed"),
         (
             "flex_direction: FlexDirection::Row,",
             "flex_direction: AlignItems::Center,",
-            "enum type changed from `FlexDirection` to `AlignItems`",
+            "value shape changed",
+        ),
+        (
+            "display: Option::None,",
+            "display: Option::Some,",
+            "baseline value is not a Tier-1 constant",
         ),
     ];
     for (from, to, needle) in cases {

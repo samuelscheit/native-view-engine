@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use super::super::{DiffOutcome, RsxWatchCache, diff_rsx_source};
-use super::{expect_patch, expect_tier1};
+use super::super::{DiffOutcome, RsxWatchCache};
+use super::{diff_rsx_source, expect_patch, expect_tier1};
 
 pub(super) const SAMPLE_COMPONENT: &str = r##"
 use nve_dioxus::prelude::*;
@@ -50,7 +50,7 @@ fn tier1_text_only_edit_inside_rsx_emits_targeted_replacement() {
         patch.text_replacements,
         vec![("# engineering".into(), "# ergoiherg".into())]
     );
-    assert_eq!(patch.text_updates, vec![(0, "# ergoiherg".into())]);
+    assert!(patch.text_updates.is_empty());
     assert_eq!(patch.target_test_id.as_deref(), Some("channel-title"));
     assert_eq!(patch.node_path, vec![0, 0, 0]);
 }
@@ -101,24 +101,33 @@ fn tier1_multiple_edits_in_one_save_split_text_and_element_messages() {
     let (patch, messages) = expect_tier1(diff_rsx_source("demo.rs", SAMPLE_COMPONENT, &updated, 5));
     assert_eq!(patch.attr_changes.len(), 1);
     assert_eq!(patch.text_changes.len(), 2);
-    assert_eq!(messages.len(), 2, "one text message + one element message");
-
-    // Text owners differ (`channel-title` vs `cta-btn`): untargeted exact-text replacement, so the
-    // `style` edit's `test_id` can never scope the text search to the wrong subtree.
-    let text = &messages[0];
-    assert!(text.attr_updates.is_empty());
-    assert_eq!(text.target_test_id, None);
-    assert!(text.node_path.is_empty());
     assert_eq!(
-        text.text_replacements,
+        messages.len(),
+        3,
+        "one message per text node + one per element"
+    );
+
+    // Each text replacement is scoped to its own owner's subtree, never the `style` edit's.
+    let owners: Vec<_> = messages[..2]
+        .iter()
+        .map(|m| (m.target_test_id.as_deref(), m.text_replacements.clone()))
+        .collect();
+    assert_eq!(
+        owners,
         vec![
-            ("# engineering".into(), "# platform".into()),
-            ("Ship It".into(), "Deploy Now".into()),
+            (
+                Some("channel-title"),
+                vec![("# engineering".into(), "# platform".into())]
+            ),
+            (
+                Some("cta-btn"),
+                vec![("Ship It".into(), "Deploy Now".into())]
+            ),
         ]
     );
-    assert_eq!(text.text_updates.len(), 2);
+    assert!(messages[..2].iter().all(|m| m.attr_updates.is_empty()));
 
-    let attr = &messages[1];
+    let attr = &messages[2];
     assert_eq!(
         attr.attr_updates,
         vec![("style".into(), "color: #38bdf8; font-size: 18px;".into())]
