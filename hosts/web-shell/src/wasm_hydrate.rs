@@ -226,6 +226,7 @@ pub fn hydrate_studio_workspace_app_on_surface(
         ws_url,
         true,
         WebAppSession::new_studio_workspace,
+        None,
     )
 }
 
@@ -249,6 +250,7 @@ pub fn hydrate_kitchen_sink_app_on_surface(
         ws_url,
         true,
         WebAppSession::new_kitchen_sink,
+        None,
     )
 }
 

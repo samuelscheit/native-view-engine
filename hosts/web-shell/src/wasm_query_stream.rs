@@ -2,16 +2,17 @@
 //! `<script type="application/x-nve-query" data-nve-seq="N">` SSR payloads.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use base64::Engine as _;
-use nve_abi::SurfaceId;
 use nve_query_dioxus::ErasedQueryClient;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 pub(crate) use crate::query_stream_state::StreamIngestState;
+use crate::session::WebAppSession;
+use crate::wasm_api::MountedSurface;
 
 const QUERY_SCRIPT_SELECTOR: &str = "script[type=\"application/x-nve-query\"]";
 const STREAM_END_SELECTOR: &str = "template[data-nve-stream-end]";
@@ -44,6 +45,20 @@ fn remove_script_and_ack(script: &web_sys::Element, seq: Option<u64>) {
                 el.remove();
             }
         }
+    }
+}
+
+/// Seeds late `<style data-nve-ssr-chunk data-nve-hashes>` class hashes into the surface's
+/// `StyleSheetCache` so the client never re-inserts rules the stream already delivered.
+fn seed_ssr_hashes(session: &Weak<RefCell<WebAppSession>>, hashes_csv: &str) {
+    let Some(session) = session.upgrade() else {
+        return;
+    };
+    match session.try_borrow_mut() {
+        Ok(mut guard) => {
+            guard.backend_mut().seed_ssr_hashes(hashes_csv);
+        }
+        Err(_) => warn("session busy; late SSR style hashes not seeded"),
     }
 }
 
@@ -201,7 +216,7 @@ fn ingest_completed_scripts(
 fn drain_dsd_host(
     host: &web_sys::Element,
     document: &web_sys::Document,
-    surface_id: SurfaceId,
+    session: &Weak<RefCell<WebAppSession>>,
     client: &ErasedQueryClient,
     state: &mut StreamIngestState,
     final_drain: bool,
@@ -234,7 +249,7 @@ fn drain_dsd_host(
                 if let Some(hashes) = el.get_attribute("data-nve-hashes")
                     && !hashes.trim().is_empty()
                 {
-                    crate::wasm_api::seed_surface_ssr_hashes(surface_id, &hashes);
+                    seed_ssr_hashes(session, &hashes);
                 }
                 if let Some(ref target_head) = head {
                     let _ = target_head.append_child(&el);
@@ -267,7 +282,7 @@ fn drain_dsd_host(
 struct StreamRuntime {
     state: StreamIngestState,
     finished: bool,
-    surface_id: SurfaceId,
+    session: Weak<RefCell<WebAppSession>>,
     host: Option<web_sys::Element>,
     document: Option<web_sys::Document>,
     client: Option<ErasedQueryClient>,
@@ -304,7 +319,7 @@ impl StreamRuntime {
             return;
         };
 
-        let saw_end = drain_dsd_host(&host, &doc, self.surface_id, &client, &mut self.state, false);
+        let saw_end = drain_dsd_host(&host, &doc, &self.session, &client, &mut self.state, false);
         let ended = saw_end
             || doc.ready_state() != "loading"
             || doc
@@ -333,7 +348,7 @@ impl StreamRuntime {
                 let _ = drain_dsd_host(
                     host_el,
                     doc,
-                    self.surface_id,
+                    &self.session,
                     client,
                     &mut self.state,
                     true,
@@ -390,10 +405,10 @@ impl Drop for QueryStreamGuard {
 /// Returns `None` on the post-stream / Light-DOM fast path (installing zero `MutationObserver`s)
 /// or `Some(QueryStreamGuard)` when a streaming `[data-nve-dsd-host]` is still open.
 pub(crate) fn attach_nve_query_stream(
-    container: &web_sys::Element,
-    surface_id: SurfaceId,
+    mounted: &MountedSurface<'_>,
     client: ErasedQueryClient,
 ) -> Option<QueryStreamGuard> {
+    let container = mounted.container();
     let document = owner_or_window_document(container)?;
     let dsd_host = container.query_selector(DSD_HOST_SELECTOR).ok().flatten();
     let mut state = StreamIngestState::default();
@@ -446,7 +461,7 @@ pub(crate) fn attach_nve_query_stream(
     let runtime = Rc::new(RefCell::new(StreamRuntime {
         state,
         finished: false,
-        surface_id,
+        session: Rc::downgrade(mounted.session()),
         host: Some(host.clone()),
         document: Some(document.clone()),
         client: Some(client.clone()),

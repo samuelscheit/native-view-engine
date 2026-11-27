@@ -95,23 +95,28 @@ pub(crate) fn pump_surface_async_work(
     }
 }
 
-/// Seeds additional SSR structural class hashes (comma-separated, e.g. from a late mid-stream
-/// `<style data-nve-ssr-chunk data-nve-hashes="...">` moved into `document.head`) into an active
-/// surface's `StyleSheetCache` without creating any `Rc` cycle.
-#[cfg(feature = "app-issues")]
-pub(crate) fn seed_surface_ssr_hashes(surface_id: SurfaceId, hashes_csv: &str) {
-    let session = ACTIVE_SHELLS.with(|shells| {
-        shells
-            .borrow()
-            .get(&surface_id)
-            .map(|active| Rc::clone(&active.session))
-    });
-    if let Some(session) = session
-        && let Ok(mut guard) = session.try_borrow_mut()
-    {
-        guard.backend_mut().seed_ssr_hashes(hashes_csv);
+/// Proof that a surface's backend is already mounted or hydrated into `container` (with any
+/// Declarative Shadow DOM host promoted by `WebBackend::hydrate_into`) and that Frame 0 has not
+/// rendered yet. Only [`start_surface_app_inner`] constructs it, so post-mount boot work (e.g.
+/// `NVEQ` stream attachment) can never run before hydration.
+pub(crate) struct MountedSurface<'a> {
+    session: &'a Rc<RefCell<WebAppSession>>,
+    container: &'a web_sys::Element,
+}
+
+#[cfg_attr(not(feature = "app-issues"), allow(dead_code))]
+impl MountedSurface<'_> {
+    pub(crate) fn session(&self) -> &Rc<RefCell<WebAppSession>> {
+        self.session
+    }
+
+    pub(crate) fn container(&self) -> &web_sys::Element {
+        self.container
     }
 }
+
+/// Boot step run with a [`MountedSurface`] strictly before the Frame 0 boot pump.
+pub(crate) type MountHook = Box<dyn FnOnce(&MountedSurface<'_>)>;
 
 pub(crate) fn run_initial_frame_and_events(guard: &mut WebAppSession) -> Result<bool, JsValue> {
     guard
@@ -371,6 +376,7 @@ pub(crate) fn start_surface_app_inner<F>(
     ws_url: Option<String>,
     hydrate: bool,
     build_session: F,
+    mount_hook: Option<MountHook>,
 ) -> Result<WebAppController, JsValue>
 where
     F: FnOnce(SurfaceId, WebBackend, Viewport) -> WebAppSession,
@@ -433,6 +439,12 @@ where
     session_val.replace_backend_with_viewport(backend, viewport);
     session_val.apply_initial_viewport();
     let session = Rc::new(RefCell::new(session_val));
+    if let Some(hook) = mount_hook {
+        hook(&MountedSurface {
+            session: &session,
+            container: &container,
+        });
+    }
 
     let (snapshot_guard, snapshot_trigger) = if enable_persistence {
         match SnapshotPersistenceGuard::install(
@@ -582,6 +594,7 @@ pub fn start_studio_workspace_app_on_surface(
         ws_url,
         false,
         WebAppSession::new_studio_workspace,
+        None,
     )
 }
 
@@ -608,5 +621,6 @@ pub fn start_kitchen_sink_app_on_surface(
         ws_url,
         false,
         WebAppSession::new_kitchen_sink,
+        None,
     )
 }

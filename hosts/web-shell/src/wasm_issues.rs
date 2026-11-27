@@ -14,11 +14,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 #[cfg(feature = "issues-probes")]
 use bytes::Bytes;
-use nve_abi::SurfaceId;
-use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_engine::Viewport;
 #[cfg(feature = "issues-probes")]
 use nve_example_issues_api::{
     AddComment, AddCommentInput, ApiError, GetIssue, IssueFilter, ListIssues,
@@ -41,7 +38,7 @@ use nve_rpc::{
 use wasm_bindgen::prelude::*;
 
 use crate::session::{WebAppSession, DEFAULT_SURFACE_ID};
-use crate::wasm_api::{start_surface_app_inner, WebAppController};
+use crate::wasm_api::{start_surface_app_inner, MountHook, MountedSurface, WebAppController};
 use crate::wasm_query_stream::{attach_nve_query_stream, QueryStreamGuard};
 
 #[cfg(feature = "issues-probes")]
@@ -104,35 +101,17 @@ fn BrowserIssuesRoot() -> Element {
     }
 }
 
-fn build_issues_session(
-    surface_id: SurfaceId,
-    backend: WebBackend,
-    viewport: Viewport,
-    api_base: &str,
-    container: Option<&web_sys::Element>,
-    featured_issue_id: IssueId,
-) -> WebAppSession {
+fn browser_query_client(api_base: &str) -> ErasedQueryClient {
     let cfg = if api_base.trim().is_empty() {
         FetchConfig::same_origin()
     } else {
         FetchConfig::with_base_url(api_base)
     };
-    let transport = FetchTransport::with_config(cfg);
-    let client = erased_query_client_with_clock(
-        transport,
+    erased_query_client_with_clock(
+        FetchTransport::with_config(cfg),
         Shared::new(BrowserClock::new()),
         QueryClientConfig::default(),
-    );
-    // Runs synchronously AFTER `WebBackend::hydrate_into` promoted DSD into `#app` and BEFORE
-    // Frame 0 renders so `QueryClient` is already hydrated with `seq=0` + any arrived chunks.
-    let stream_guard =
-        container.and_then(|el| attach_nve_query_stream(el, surface_id, client.clone()));
-    let surface = DioxusSurface::new(surface_id, BrowserIssuesRoot).with_context(IssuesBootConfig {
-        client,
-        featured_issue_id,
-        stream_guard: Rc::new(RefCell::new(stream_guard)),
-    });
-    WebAppSession::new(surface_id, surface, backend, viewport)
+    )
 }
 
 /// Mounts the cross-platform `examples/fullstack-issues` Dioxus app onto `#<mount_id>` backed by
@@ -157,7 +136,18 @@ pub fn start_issues_app(
     });
     let search = window.as_ref().and_then(|w| w.location().search().ok());
     let featured_issue_id = parse_comments_issue_query(search.as_deref());
-    let base = api_base.unwrap_or_default();
+    let client = browser_query_client(&api_base.unwrap_or_default());
+    let stream_guard: Rc<RefCell<Option<QueryStreamGuard>>> = Rc::default();
+    // Ingests `seq=0..N` only once `WebBackend::hydrate_into` has promoted the DSD host into
+    // `#app` (`MountedSurface` proves it) and strictly before Frame 0 renders, so `QueryClient`
+    // is hydrated when `BrowserIssuesRoot` first reads its queries.
+    let mount_hook: Option<MountHook> = has_ssr.then(|| {
+        let client = client.clone();
+        let slot = Rc::clone(&stream_guard);
+        Box::new(move |mounted: &MountedSurface<'_>| {
+            *slot.borrow_mut() = attach_nve_query_stream(mounted, client);
+        }) as MountHook
+    });
     start_surface_app_inner(
         "IssuesApp",
         DEFAULT_SURFACE_ID,
@@ -165,15 +155,15 @@ pub fn start_issues_app(
         None,
         has_ssr,
         move |surface_id, backend, viewport| {
-            build_issues_session(
-                surface_id,
-                backend,
-                viewport,
-                &base,
-                container.as_ref(),
-                featured_issue_id,
-            )
+            let surface =
+                DioxusSurface::new(surface_id, BrowserIssuesRoot).with_context(IssuesBootConfig {
+                    client,
+                    featured_issue_id,
+                    stream_guard,
+                });
+            WebAppSession::new(surface_id, surface, backend, viewport)
         },
+        mount_hook,
     )
 }
 
