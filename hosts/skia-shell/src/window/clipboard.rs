@@ -11,23 +11,20 @@ pub trait ClipboardProvider: Send {
 }
 
 /// Deterministic in-memory clipboard used on headless/Linux hosts and unit tests.
+#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryClipboard {
     content: Option<String>,
 }
 
+#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 impl InMemoryClipboard {
     pub fn new() -> Self {
         Self { content: None }
     }
-
-    pub fn with_text(text: impl Into<String>) -> Self {
-        Self {
-            content: Some(text.into()),
-        }
-    }
 }
 
+#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 impl ClipboardProvider for InMemoryClipboard {
     fn get_text(&mut self) -> Option<String> {
         self.content.clone()

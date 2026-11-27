@@ -135,7 +135,6 @@ nve-secure-store = { version = "0.1.0", path = "packages/modules/secure-store" }
 nve-linking = { version = "0.1.0", path = "packages/modules/linking" }
 nve-system-env = { version = "0.1.0", path = "packages/modules/system-env" }
 nve-haptics = { version = "0.1.0", path = "packages/modules/haptics" }
-nve-skia-shell = { version = "0.1.0", path = "hosts/skia-shell" }
 nve-example-kitchen-sink = { version = "0.1.0", path = "examples/kitchen-sink", default-features = false }
 nve-studio-workspace = { version = "0.1.0", path = "examples/studio-workspace", default-features = false }
 nve-example-issues-api = { version = "0.1.0", path = "examples/fullstack-issues/api" }

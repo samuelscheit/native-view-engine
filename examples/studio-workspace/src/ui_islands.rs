@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::SurfaceId;
 use nve_interop::{
-    ArbitrationDecision, ChannelPayload, ColorScheme, FrameworkKind, GestureArbitrator,
+    ArbitrationDecision, ChannelPayload, ColorScheme, ContrastLevel, FrameworkKind,
+    GestureArbitrator,
     GestureCapabilities, GestureDisposition, LifecycleState, NveChannelBus, PointerPhase,
     PointerSample, ScrollEdgeState, SurfaceDescriptor, SurfaceEnvironment, SurfaceOrchestrator,
     ThemeContext, TOPIC_THEME,
@@ -146,7 +147,8 @@ impl IslandSandboxRuntime {
 
         let root_env = SurfaceEnvironment {
             theme: ThemeContext {
-                color_scheme: ColorScheme::Dark,
+                color_scheme: Some(ColorScheme::Dark),
+                contrast: ContrastLevel::Standard,
                 accent_rgba: 0x38BD_F8FF,
                 tokens: Default::default(),
             },

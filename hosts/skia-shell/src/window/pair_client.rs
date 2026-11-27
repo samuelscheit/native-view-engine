@@ -50,16 +50,6 @@ impl PairTransport {
         }
     }
 
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Quic => "quic",
-            Self::WebTransport => "webtransport",
-            Self::Wss => "wss",
-            Self::Ws => "ws",
-        }
-    }
-
     pub const fn label(self) -> &'static str {
         match self {
             Self::Auto => "AUTO",
@@ -114,6 +104,7 @@ impl PairConnectConfig {
         }
     }
 
+    #[cfg(test)]
     pub fn with_cert_sha256(mut self, sha256: [u8; 32]) -> Self {
         self.cert_sha256 = Some(sha256);
         self
@@ -145,6 +136,7 @@ type WakeFn = Arc<dyn Fn() + Send + Sync>;
 pub struct PairedRemoteApp {
     transport: PairTransport,
     endpoint_label: String,
+    #[cfg(test)]
     session_id: u32,
     frame_rx: Receiver<(u32, Vec<u8>)>,
     event_tx: Sender<Vec<u8>>,
@@ -183,6 +175,7 @@ impl PairedRemoteApp {
             NveWireTransportKind::Wss => PairTransport::Wss,
             NveWireTransportKind::Ws => PairTransport::Ws,
         };
+        #[cfg(test)]
         let session_id = client.session_id();
         let initial_metrics = client.metrics();
         let (frame_tx, frame_rx) = unbounded::<(u32, Vec<u8>)>();
@@ -215,6 +208,7 @@ impl PairedRemoteApp {
         Ok(Self {
             transport: active_transport,
             endpoint_label: config.addr,
+            #[cfg(test)]
             session_id,
             frame_rx,
             event_tx,
@@ -230,10 +224,12 @@ impl PairedRemoteApp {
         })
     }
 
+    #[cfg(test)]
     pub fn transport(&self) -> PairTransport {
         self.transport
     }
 
+    #[cfg(test)]
     pub fn session_id(&self) -> u32 {
         self.session_id
     }
@@ -242,6 +238,7 @@ impl PairedRemoteApp {
         self.connected.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub fn frames_received(&self) -> u64 {
         self.frames_received.load(Ordering::Relaxed)
     }

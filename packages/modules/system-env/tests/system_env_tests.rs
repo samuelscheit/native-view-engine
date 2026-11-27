@@ -19,7 +19,7 @@ fn system_env_direct_typed_bridge_retained_replay_listeners_and_native() {
     });
 
     let initial_theme = ThemeSnapshot {
-        color_scheme: ColorScheme::Dark,
+        color_scheme: Some(ColorScheme::Dark),
         contrast: ContrastLevel::High,
         reduced_motion: true,
         reduced_transparency: true,
@@ -68,7 +68,7 @@ fn system_env_direct_typed_bridge_retained_replay_listeners_and_native() {
 
     // Live updates flow directly as typed Rust structs without byte codecs.
     let updated_theme = ThemeSnapshot {
-        color_scheme: ColorScheme::Light,
+        color_scheme: Some(ColorScheme::Light),
         ..initial_theme
     };
     let ja_locale = LocaleSnapshot {

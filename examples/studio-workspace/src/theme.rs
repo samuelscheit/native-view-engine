@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use nve_interop::ColorScheme;
+use nve_interop::{ColorScheme, ContrastLevel};
 use nve_ui::{RadiiScale, SpacingScale, TypographyScale, UiDensity, UiPalette, UiTheme};
 
 use crate::state::{DensityMode, StudioConfig};
@@ -146,6 +146,7 @@ pub fn studio_ui_theme(studio: &StudioConfig) -> UiTheme {
     };
     UiTheme {
         color_scheme: ColorScheme::Dark,
+        contrast: ContrastLevel::Standard,
         palette: UiPalette {
             surface: Cow::Borrowed(PANEL_BG),
             surface_elevated: Cow::Borrowed(CARD_BG),

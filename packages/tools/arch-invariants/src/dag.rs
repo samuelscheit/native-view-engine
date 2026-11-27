@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use guppy::graph::{PackageGraph, PackageMetadata};
+use guppy::graph::{BuildTargetId, PackageGraph, PackageMetadata};
 use guppy::platform::{EnabledTernary, Platform, PlatformSpec, TargetFeatures};
 use guppy::PackageId;
 use syn::visit::Visit;
@@ -15,9 +15,6 @@ pub const APPROVED_HOST_CARGO_TOMLS: &[&str] = &[
     "hosts/skia-shell/Cargo.toml",
     "hosts/web-shell/Cargo.toml",
 ];
-
-/// Pre-existing `packages/** -> hosts/**` ratchet (removed in Milestone 3 when `skia-shell` is binary-only).
-const PENDING_CLEANUP_HOST_DEPS: &[(&str, &str)] = &[("nve-cli", "nve-skia-shell")];
 
 /// Pre-existing runtime `serde_json` allowlist (Track 1B-1e).
 const PENDING_CLEANUP_SERDE_JSON: &[(&str, &str)] = &[("nve-codegen", "Track 1B-1e")];
@@ -95,14 +92,24 @@ fn transitive_chains<'g>(
 }
 
 pub fn check_packages_to_hosts_deps(graph: &PackageGraph) -> Vec<Violation> {
-    let pending: BTreeSet<(&str, &str)> = PENDING_CLEANUP_HOST_DEPS.iter().copied().collect();
-    let mut seen_pending = BTreeSet::new();
     let mut violations = Vec::new();
 
     for pkg in graph.workspace().iter() {
         let Some(dir) = workspace_rel_dir(&pkg) else {
             continue;
         };
+        if dir == "hosts/skia-shell"
+            && pkg
+                .build_targets()
+                .any(|t| matches!(t.id(), BuildTargetId::Library))
+        {
+            violations.push(Violation::new(
+                rel_manifest(&pkg),
+                1,
+                "[lib]",
+                "`hosts/skia-shell` must be binary-only (no `[lib]` target); spawn `nve-skia-shell` as a subprocess",
+            ));
+        }
         if !dir.starts_with("packages/") {
             continue;
         }
@@ -114,32 +121,17 @@ pub fn check_packages_to_hosts_deps(graph: &PackageGraph) -> Vec<Violation> {
                 continue;
             };
             if dep_dir.starts_with("hosts/") {
-                if pending.contains(&(pkg.name(), dep.name())) {
-                    seen_pending.insert((pkg.name().to_string(), dep.name().to_string()));
-                } else {
-                    violations.push(Violation::new(
-                        rel_manifest(&pkg),
-                        1,
-                        chain.join(" -> "),
-                        format!(
-                            "Crate `{}` under packages/ must not depend on host shell `{}` ({dep_dir})",
-                            pkg.name(),
-                            dep.name()
-                        ),
-                    ));
-                }
+                violations.push(Violation::new(
+                    rel_manifest(&pkg),
+                    1,
+                    chain.join(" -> "),
+                    format!(
+                        "Crate `{}` under packages/ must not depend on host shell `{}` ({dep_dir})",
+                        pkg.name(),
+                        dep.name()
+                    ),
+                ));
             }
-        }
-    }
-
-    for &(src, dst) in PENDING_CLEANUP_HOST_DEPS {
-        if !seen_pending.contains(&(src.to_string(), dst.to_string())) {
-            violations.push(Violation::new(
-                "packages/tools/arch-invariants/src/dag.rs",
-                0,
-                format!("{src} -> {dst}"),
-                "Stale `PENDING_CLEANUP_HOST_DEPS` entry — delete it to ratchet down",
-            ));
         }
     }
     violations

@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nve_abi::SurfaceId;
-use nve_backend_skia::gpu::{FrameTelemetry, GpuBackendKind};
 use nve_engine::Viewport;
 use nve_interop::{
     SurfacePresentation, WindowDescriptor, WindowFlags, WindowHandleId, WindowManager,
@@ -182,10 +181,6 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
     }
 
-    pub fn host_services(&self) -> &Arc<SkiaHostServices> {
-        &self.host_services
-    }
-
     pub fn session(&self) -> &DesktopSession<A> {
         if let Some(wid) = self.primary_window_id
             && let Some(win) = self.windows.get(&wid)
@@ -217,60 +212,6 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             .next()
             .expect("DesktopWindowHost has no active session")
             .session
-    }
-
-    pub fn session_for_surface(&self, surface_id: SurfaceId) -> Option<&DesktopSession<A>> {
-        if let Some(wid) = self.surface_to_window.get(&surface_id)
-            && let Some(win) = self.windows.get(wid)
-        {
-            return Some(&win.session);
-        }
-        (surface_id == self.options.surface_id)
-            .then_some(self.primary_session.as_ref())
-            .flatten()
-    }
-
-    pub fn window_manager(&self) -> &WindowManager { &self.window_manager }
-    pub fn window_manager_mut(&mut self) -> &mut WindowManager { &mut self.window_manager }
-    pub fn window_count(&self) -> usize { self.windows.len() }
-    pub fn set_exit_on_primary_close(&mut self, exit: bool) { self.exit_on_primary_close = exit; }
-    pub fn event_loop_proxy(&self) -> Option<EventLoopProxy<HostWakeEvent>> { self.proxy.clone() }
-
-    pub fn set_close_veto_handler<F>(&mut self, handler: F)
-    where
-        F: FnMut(WindowHandleId, SurfaceId) -> bool + 'static,
-    {
-        self.close_veto_handler = Some(Box::new(handler));
-    }
-
-    pub fn set_secondary_app_factory<F>(&mut self, factory: F)
-    where
-        F: FnMut(SurfaceId, &WindowDescriptor) -> Result<A, DesktopHostError> + 'static,
-    {
-        self.secondary_app_factory = Some(Box::new(factory));
-    }
-
-    pub fn active_backend(&self) -> GpuBackendKind {
-        if let Some(wid) = self.primary_window_id
-            && let Some(win) = self.windows.get(&wid)
-        {
-            return win.active_backend();
-        }
-        self.primary_session
-            .as_ref()
-            .map(DesktopSession::active_backend)
-            .unwrap_or(GpuBackendKind::Softbuffer)
-    }
-
-    pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
-        if let Some(wid) = self.primary_window_id
-            && let Some(win) = self.windows.get(&wid)
-        {
-            return win.last_frame_telemetry();
-        }
-        self.primary_session
-            .as_ref()
-            .and_then(DesktopSession::last_frame_telemetry)
     }
 
     pub fn save_snapshot_if_configured(&mut self) {

@@ -49,16 +49,18 @@ use nve_engine::{BackendError, InstantBootError, RelocError};
 
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
-pub use clipboard::{default_clipboard, ClipboardProvider, InMemoryClipboard};
+#[cfg(test)]
 pub use dioxus_app::DioxusDesktopApp;
+#[cfg(test)]
 pub use hot_reload_client::HotReloadClient;
-pub use input::format_keydown_shorthand;
 pub(crate) use instant_boot::prewarm_from_options;
-pub use instant_boot::{
-    replay_instant_boot_store_into_backend, replay_snapshot_into_backend, PrewarmedSnapshot,
-};
-pub use multi_window::{CloseOutcome, HeadlessMultiWindowHost, HostWakeEvent, SurfaceWindow};
-pub use pair_client::{PairConnectConfig, PairTransport, PairedRemoteApp, DEFAULT_PAIR_WS_PATH};
+#[cfg(test)]
+pub use instant_boot::{replay_instant_boot_store_into_backend, replay_snapshot_into_backend};
+pub use multi_window::HostWakeEvent;
+pub use pair_client::{PairConnectConfig, PairTransport};
+#[cfg(test)]
+pub use pair_client::PairedRemoteApp;
+#[cfg(test)]
 pub use session::DesktopSession;
 pub use window_host::DesktopWindowHost;
 
@@ -191,6 +193,7 @@ pub trait DesktopApp {
     }
 
     /// Returns `true` when this app exposes `NVE_IFACE_HOST = 5`.
+    #[cfg(test)]
     fn has_host_interface(&self) -> bool {
         false
     }
@@ -257,11 +260,6 @@ impl HotAppSlot {
             last_saved_state: prior_state.map(|s| s.to_vec()).unwrap_or_default(),
             host_services: None,
         })
-    }
-
-    /// Returns the currently bound [`SkiaHostServices`], if any.
-    pub fn host_services(&self) -> Option<&Arc<SkiaHostServices>> {
-        self.host_services.as_ref()
     }
 }
 
@@ -351,6 +349,7 @@ impl DesktopApp for HotAppSlot {
         &self.last_saved_state
     }
 
+    #[cfg(test)]
     fn has_host_interface(&self) -> bool {
         self.instance
             .as_ref()
@@ -392,12 +391,18 @@ impl DesktopApp for HotAppSlot {
             return false;
         };
         match event {
-            SkiaHostEvent::ThemeChanged(theme)
-            | SkiaHostEvent::SystemEnv { theme, .. } => {
+            SkiaHostEvent::ThemeChanged(theme) => {
                 let theme_c = theme.to_repr_c_bytes();
                 inst.dispatch_host_events(&theme_c)
             }
-            SkiaHostEvent::LocaleChanged(_) | SkiaHostEvent::WindowLifecycle(_) => false,
+            #[cfg(test)]
+            SkiaHostEvent::SystemEnv { theme, .. } => {
+                let theme_c = theme.to_repr_c_bytes();
+                inst.dispatch_host_events(&theme_c)
+            }
+            #[cfg(test)]
+            SkiaHostEvent::LocaleChanged(_) => false,
+            SkiaHostEvent::WindowLifecycle(_) => false,
         }
     }
 }
@@ -443,21 +448,6 @@ pub fn write_pixel_buffer_screenshot(buf: &PixelBuffer, path: &Path) -> std::io:
     } else {
         write_pixel_buffer_ppm(buf, path)
     }
-}
-
-/// Opens a live cross-platform desktop preview window for the given NVE app `cdylib`.
-///
-/// Pass `ws_url = Some("ws://127.0.0.1:8089".into())` (or `Some(DEFAULT_WS_URL.into())`) to enable
-/// 2-tier WebSocket hot reload from `nve dev`, or `None` to run standalone.
-pub fn run_desktop_preview(
-    dylib_path: PathBuf,
-    ws_url: Option<String>,
-) -> Result<(), DesktopHostError> {
-    let options = DesktopPreviewOptions {
-        ws_url,
-        ..Default::default()
-    };
-    run_desktop_preview_with_options(dylib_path, options)
 }
 
 /// Opens a live cross-platform desktop preview window with custom window, snapshot, and HUD options.

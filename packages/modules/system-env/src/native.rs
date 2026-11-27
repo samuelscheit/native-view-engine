@@ -192,7 +192,7 @@ mod platform {
             }
 
             Ok(ThemeSnapshot {
-                color_scheme,
+                color_scheme: Some(color_scheme),
                 contrast,
                 reduced_motion,
                 reduced_transparency,
@@ -293,7 +293,7 @@ mod platform {
             ColorScheme::Light
         };
         Ok(ThemeSnapshot {
-            color_scheme,
+            color_scheme: Some(color_scheme),
             contrast: ContrastLevel::Standard,
             reduced_motion: false,
             reduced_transparency: false,
@@ -334,11 +334,11 @@ mod platform {
                 .any(|w| w.eq_ignore_ascii_case(b"dark"))
         });
         Ok(ThemeSnapshot {
-            color_scheme: if dark_hint {
+            color_scheme: Some(if dark_hint {
                 ColorScheme::Dark
             } else {
                 ColorScheme::Light
-            },
+            }),
             contrast: ContrastLevel::Standard,
             reduced_motion: false,
             reduced_transparency: false,

@@ -4,6 +4,7 @@
 
 extern crate self as nve_abi;
 
+pub mod appearance;
 pub mod bitflags;
 #[cfg(feature = "wire")]
 pub mod events;
@@ -18,6 +19,7 @@ pub mod style_types;
 pub mod table;
 pub mod value;
 
+pub use appearance::{ColorScheme, ContrastLevel};
 pub use nve_abi_macros::NveAbi;
 pub use nve_hash::{const_id, xxh64, Key64, Xxh64Hasher};
 

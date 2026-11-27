@@ -51,7 +51,7 @@ pub(super) fn make_memory_services() -> (TestMemoryHandles, Arc<SkiaHostServices
     let haptics = Arc::new(MemoryHaptics::new());
     let sys_env = Arc::new(MemorySystemEnv::with_initial(
         ThemeSnapshot {
-            color_scheme: ColorScheme::Light,
+            color_scheme: Some(ColorScheme::Light),
             contrast: ContrastLevel::Standard,
             reduced_motion: false,
             reduced_transparency: false,
@@ -133,7 +133,7 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
 
     // 5. SystemEnv (direct #[repr(C)] ThemeSnapshot + LocaleSnapshot across C-ABI & in-process)
     let theme = system_env.get_theme().unwrap();
-    assert_eq!(theme.color_scheme, ColorScheme::Light);
+    assert_eq!(theme.color_scheme, Some(ColorScheme::Light));
     assert_eq!(theme.accent_rgba, 0x3B82_F6FF);
     let locale = system_env.get_locale().unwrap();
     assert_eq!(locale.tag, "en-US");
@@ -421,7 +421,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     assert_eq!(primary_themes.lock().unwrap().len(), 1);
     assert_eq!(
         primary_themes.lock().unwrap()[0].color_scheme,
-        ColorScheme::Light
+        Some(ColorScheme::Light)
     );
     assert_eq!(primary_locales.lock().unwrap().len(), 1);
     assert_eq!(primary_locales.lock().unwrap()[0].tag, "en-US");
@@ -519,7 +519,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     let _ = host.simulate_theme_change(WinitTheme::Dark, 2.0);
     assert_eq!(
         primary_themes.lock().unwrap().last().unwrap().color_scheme,
-        ColorScheme::Dark
+        Some(ColorScheme::Dark)
     );
     assert_eq!(
         primary_themes
@@ -535,7 +535,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
             .get_theme()
             .unwrap()
             .color_scheme,
-        ColorScheme::Dark
+        Some(ColorScheme::Dark)
     );
 
     let rtl_locale = LocaleSnapshot {

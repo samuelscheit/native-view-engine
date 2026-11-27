@@ -7,6 +7,8 @@
 
 use std::fmt::Write as _;
 
+pub use nve_abi::ColorScheme;
+
 pub use crate::client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
@@ -27,29 +29,6 @@ pub const MEDIA_FLAG_HAS_REDUCED_MOTION: u8 = 1 << 2;
 
 /// Bitflag in [`MediaQuery::flags`] carrying the boolean `reduced_motion` predicate value.
 pub const MEDIA_FLAG_REDUCED_MOTION_VAL: u8 = 1 << 3;
-
-/// Preferred color scheme predicate.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MediaColorScheme {
-    Dark = 1,
-    Light = 2,
-}
-
-impl MediaColorScheme {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw { 1 => Some(Self::Dark), 2 => Some(Self::Light), _ => None }
-    }
-    #[inline]
-    pub const fn as_css(self) -> &'static str {
-        match self { Self::Dark => "dark", Self::Light => "light" }
-    }
-    #[inline]
-    pub const fn negated_css(self) -> &'static str {
-        match self { Self::Dark => "light", Self::Light => "dark" }
-    }
-}
 
 /// Primary pointer precision predicate.
 #[repr(u8)]
@@ -109,7 +88,7 @@ pub struct MediaQuery {
     pub min_width_px: u16,
     pub max_width_px: u16,
     pub flags: u8,
-    /// `0` = unconstrained, `1` = [`MediaColorScheme::Dark`], `2` = [`MediaColorScheme::Light`].
+    /// `0` = unconstrained, `1` = [`ColorScheme::Light`], `2` = [`ColorScheme::Dark`].
     pub color_scheme: u8,
     /// `0` = unconstrained, `1` = [`MediaPointer::Fine`], `2` = [`MediaPointer::Coarse`].
     pub pointer: u8,
@@ -171,7 +150,7 @@ impl MediaQuery {
     #[inline]
     pub const fn dark() -> Self {
         Self {
-            color_scheme: MediaColorScheme::Dark as u8,
+            color_scheme: ColorScheme::Dark as u8,
             ..Self::EMPTY
         }
     }
@@ -179,7 +158,7 @@ impl MediaQuery {
     #[inline]
     pub const fn light() -> Self {
         Self {
-            color_scheme: MediaColorScheme::Light as u8,
+            color_scheme: ColorScheme::Light as u8,
             ..Self::EMPTY
         }
     }
@@ -215,7 +194,7 @@ impl MediaQuery {
     }
 
     #[inline]
-    pub const fn and_color_scheme(mut self, scheme: MediaColorScheme) -> Self {
+    pub const fn and_color_scheme(mut self, scheme: ColorScheme) -> Self {
         self.color_scheme = scheme as u8;
         self
     }
@@ -256,8 +235,8 @@ impl MediaQuery {
     }
 
     #[inline]
-    pub const fn color_scheme_opt(&self) -> Option<MediaColorScheme> {
-        MediaColorScheme::from_u8(self.color_scheme)
+    pub const fn color_scheme_opt(&self) -> Option<ColorScheme> {
+        ColorScheme::from_u8(self.color_scheme)
     }
 
     #[inline]
@@ -320,7 +299,7 @@ impl MediaQuery {
             }
         }
         if let Some(scheme) = self.color_scheme_opt()
-            && env.dark_mode != matches!(scheme, MediaColorScheme::Dark)
+            && env.dark_mode != scheme.is_dark()
         {
             return false;
         }

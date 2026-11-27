@@ -8,7 +8,7 @@ use std::any::{Any, TypeId};
 use std::mem::{offset_of, size_of};
 use std::sync::{Arc, Mutex};
 
-pub use nve_abi::SERVICE_SYSTEM_ENV;
+pub use nve_abi::{ColorScheme, ContrastLevel, SERVICE_SYSTEM_ENV};
 use nve_host_services::{
     pack_typed, resolve_typed, BinReader, BinWriter, HostServiceHandler, HostServiceProvider,
     ServiceError, TypedEventBus, TypedEventSubscription,
@@ -25,49 +25,14 @@ pub const EVENT_LOCALE_CHANGED: u32 = 2;
 /// Exact C-ABI POD size in bytes of [`ThemeSnapshot`].
 pub const THEME_SNAPSHOT_REPR_C_LEN: usize = 12;
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ColorScheme {
-    #[default]
-    Unspecified = 0,
-    Light = 1,
-    Dark = 2,
-}
-
-impl ColorScheme {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Unspecified),
-            1 => Some(Self::Light),
-            2 => Some(Self::Dark),
-            _ => None,
-        }
-    }
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ContrastLevel {
-    #[default]
-    Standard = 0,
-    High = 1,
-}
-
-impl ContrastLevel {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Standard),
-            1 => Some(Self::High),
-            _ => None,
-        }
-    }
-}
-
 /// Direct `#[repr(C)]` system theme & display accessibility snapshot.
+///
+/// `color_scheme: Option<ColorScheme>` uses niche optimization (`size_of == 1`: `None = 0`,
+/// `Some(Light) = 1`, `Some(Dark) = 2`), preserving the exact 12-byte C-ABI layout.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ThemeSnapshot {
-    pub color_scheme: ColorScheme,
+    pub color_scheme: Option<ColorScheme>,
     pub contrast: ContrastLevel,
     pub reduced_motion: bool,
     pub reduced_transparency: bool,
@@ -90,7 +55,7 @@ const _: () = {
 impl Default for ThemeSnapshot {
     fn default() -> Self {
         Self {
-            color_scheme: ColorScheme::Light,
+            color_scheme: Some(ColorScheme::Light),
             contrast: ContrastLevel::Standard,
             reduced_motion: false,
             reduced_transparency: false,
@@ -117,7 +82,7 @@ impl ThemeSnapshot {
         let font = self.font_scale_x1000.to_ne_bytes();
         let scale = self.scale_factor_x100.to_ne_bytes();
         [
-            self.color_scheme as u8,
+            ColorScheme::opt_to_u8(self.color_scheme),
             self.contrast as u8,
             self.reduced_motion as u8,
             self.reduced_transparency as u8,
@@ -140,8 +105,8 @@ impl ThemeSnapshot {
                 bytes.len()
             )));
         }
-        let color_scheme = ColorScheme::from_u8(bytes[0])
-            .ok_or_else(|| ServiceError::Codec(format!("invalid color_scheme {}", bytes[0])))?;
+        let color_scheme = ColorScheme::opt_from_u8(bytes[0])
+            .map_err(|raw| ServiceError::Codec(format!("invalid color_scheme {raw}")))?;
         let contrast = ContrastLevel::from_u8(bytes[1])
             .ok_or_else(|| ServiceError::Codec(format!("invalid contrast {}", bytes[1])))?;
         let reduced_motion = match bytes[2] {

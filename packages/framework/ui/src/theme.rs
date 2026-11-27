@@ -7,7 +7,7 @@ use dioxus_core::{provide_context, try_consume_context, use_hook, Element};
 use dioxus_core_macro::{component, rsx, Props};
 use dioxus_signals::{ReadableExt, Signal, WritableExt};
 use nve_abi::ColorRgba;
-use nve_interop::{ColorScheme, ThemeContext};
+use nve_interop::{ColorScheme, ContrastLevel, ThemeContext};
 
 use crate::style_buf::parse_color_rgba;
 
@@ -240,6 +240,7 @@ pub enum UiDensity {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiTheme {
     pub color_scheme: ColorScheme,
+    pub contrast: ContrastLevel,
     pub palette: UiPalette,
     pub spacing: SpacingScale,
     pub radii: RadiiScale,
@@ -258,6 +259,7 @@ impl UiTheme {
     pub fn light() -> Self {
         Self {
             color_scheme: ColorScheme::Light,
+            contrast: ContrastLevel::Standard,
             palette: UiPalette {
                 surface: Cow::Borrowed("#ffffff"),
                 surface_elevated: Cow::Borrowed("#f8fafc"),
@@ -285,6 +287,7 @@ impl UiTheme {
     pub fn dark() -> Self {
         Self {
             color_scheme: ColorScheme::Dark,
+            contrast: ContrastLevel::Standard,
             palette: UiPalette {
                 surface: Cow::Borrowed("#0f172a"),
                 surface_elevated: Cow::Borrowed("#1e293b"),
@@ -311,7 +314,8 @@ impl UiTheme {
     /// High-contrast light theme meeting WCAG AAA foreground/border ratios.
     pub fn high_contrast_light() -> Self {
         Self {
-            color_scheme: ColorScheme::HighContrastLight,
+            color_scheme: ColorScheme::Light,
+            contrast: ContrastLevel::High,
             palette: UiPalette {
                 surface: Cow::Borrowed("#ffffff"),
                 surface_elevated: Cow::Borrowed("#ffffff"),
@@ -338,7 +342,8 @@ impl UiTheme {
     /// High-contrast dark theme meeting WCAG AAA foreground/border ratios.
     pub fn high_contrast_dark() -> Self {
         Self {
-            color_scheme: ColorScheme::HighContrastDark,
+            color_scheme: ColorScheme::Dark,
+            contrast: ContrastLevel::High,
             palette: UiPalette {
                 surface: Cow::Borrowed("#000000"),
                 surface_elevated: Cow::Borrowed("#0a0a0a"),
@@ -362,14 +367,21 @@ impl UiTheme {
         }
     }
 
-    /// Builds a [`UiTheme`] from an `nve_interop::ThemeContext`, honoring `color_scheme`,
-    /// `accent_rgba`, and any semantic token overrides in `ctx.tokens`.
+    /// Builds a [`UiTheme`] from an `nve_interop::ThemeContext`, resolving `color_scheme: None`
+    /// against [`ColorScheme::Light`]. Use [`Self::from_theme_context_with_system`] when the live
+    /// host system scheme is known.
     pub fn from_theme_context(ctx: &ThemeContext) -> Self {
-        let mut theme = match ctx.color_scheme {
-            ColorScheme::Light | ColorScheme::System => Self::light(),
-            ColorScheme::Dark => Self::dark(),
-            ColorScheme::HighContrastLight => Self::high_contrast_light(),
-            ColorScheme::HighContrastDark => Self::high_contrast_dark(),
+        Self::from_theme_context_with_system(ctx, ColorScheme::Light)
+    }
+
+    /// Builds a [`UiTheme`] from an `nve_interop::ThemeContext`, honoring `color_scheme` (with
+    /// `system` fallback when `None`), `contrast`, `accent_rgba`, and `ctx.tokens`.
+    pub fn from_theme_context_with_system(ctx: &ThemeContext, system: ColorScheme) -> Self {
+        let mut theme = match (ctx.resolve_color_scheme(system), ctx.contrast) {
+            (ColorScheme::Light, ContrastLevel::Standard) => Self::light(),
+            (ColorScheme::Dark, ContrastLevel::Standard) => Self::dark(),
+            (ColorScheme::Light, ContrastLevel::High) => Self::high_contrast_light(),
+            (ColorScheme::Dark, ContrastLevel::High) => Self::high_contrast_dark(),
         };
 
         if ctx.accent_rgba != 0 {
@@ -426,20 +438,14 @@ impl UiTheme {
         self
     }
 
-    /// Returns `true` for dark and high-contrast dark color schemes.
+    /// Returns `true` for dark color schemes (standard or high-contrast).
     pub fn is_dark(&self) -> bool {
-        matches!(
-            self.color_scheme,
-            ColorScheme::Dark | ColorScheme::HighContrastDark
-        )
+        self.color_scheme.is_dark()
     }
 
-    /// Returns `true` for high-contrast light or dark color schemes.
+    /// Returns `true` for high-contrast themes.
     pub fn is_high_contrast(&self) -> bool {
-        matches!(
-            self.color_scheme,
-            ColorScheme::HighContrastLight | ColorScheme::HighContrastDark
-        )
+        self.contrast.is_high()
     }
 
     /// Elevation box shadow matching the active theme polarity.
@@ -466,10 +472,8 @@ impl UiTheme {
     #[inline]
     pub const fn backdrop_scrim_rgba(&self) -> ColorRgba {
         match self.color_scheme {
-            ColorScheme::Dark | ColorScheme::HighContrastDark => ColorRgba::rgba(0x00, 0x00, 0x00, 0xb3),
-            ColorScheme::Light | ColorScheme::System | ColorScheme::HighContrastLight => {
-                ColorRgba::rgba(0x0f, 0x17, 0x2a, 0x80)
-            }
+            ColorScheme::Dark => ColorRgba::rgba(0x00, 0x00, 0x00, 0xb3),
+            ColorScheme::Light => ColorRgba::rgba(0x0f, 0x17, 0x2a, 0x80),
         }
     }
 

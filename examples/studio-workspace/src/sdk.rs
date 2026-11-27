@@ -17,8 +17,8 @@ use nve_host_services::{
     ServiceError, TypedEventBus,
 };
 use nve_system_env::{
-    ColorScheme as SdkColorScheme, LocaleSnapshot, MemorySystemEnv, SystemEnvBridge,
-    SystemEnvClient, SystemEnvEvent, ThemeSnapshot,
+    ColorScheme, LocaleSnapshot, MemorySystemEnv, SystemEnvBridge, SystemEnvClient, SystemEnvEvent,
+    ThemeSnapshot,
 };
 
 /// Synchronized host system environment snapshot (theme + locale) sourced via [`SystemEnvClient`].
@@ -32,7 +32,7 @@ impl Default for StudioSystemEnv {
     fn default() -> Self {
         Self {
             theme: ThemeSnapshot {
-                color_scheme: SdkColorScheme::Dark,
+                color_scheme: Some(ColorScheme::Dark),
                 ..ThemeSnapshot::default()
             },
             locale: LocaleSnapshot::default(),

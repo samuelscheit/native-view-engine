@@ -17,11 +17,9 @@ pub const MAX_PROD_LINES: usize = 650;
 /// Strictly sorted monotonic allowlist of production `.rs` files > 650 lines across `packages/` and `hosts/`.
 /// Fails if any listed file exceeds its ceiling OR drops to <= 650 lines (forcing ratchet downward to zero).
 pub const EXISTING_OVERSIZE_ALLOWLIST: &[(&str, usize)] = &[
-    ("hosts/skia-shell/src/window/input.rs", 800),
     ("packages/backends/skia/src/gpu/vulkan.rs", 1221),
     ("packages/backends/web/src/snapshot.rs", 690),
     ("packages/core/interop/src/gesture.rs", 927),
-    ("packages/core/interop/src/surface.rs", 947),
 ];
 
 /// Monotonic ratchet of pre-existing personal-path hits: `(path, max_hits)`.

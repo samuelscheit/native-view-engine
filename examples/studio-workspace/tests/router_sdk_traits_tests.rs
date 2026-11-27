@@ -35,8 +35,7 @@ use nve_studio_workspace::{
     StudioRoute, StudioTraitPreviewChip, StudioWorkspaceModule, WorkspaceState,
 };
 use nve_system_env::{
-    ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, SystemEnvEvent,
-    TextDirection, ThemeSnapshot,
+    ContrastLevel, LocaleSnapshot, MemorySystemEnv, SystemEnvEvent, TextDirection, ThemeSnapshot,
 };
 
 struct StudioHarness {
@@ -58,7 +57,7 @@ impl StudioHarness {
         memory.register(MemoryClipboard::new());
         memory.register(MemorySystemEnv::with_initial(
             ThemeSnapshot {
-                color_scheme: SdkColorScheme::Dark,
+                color_scheme: Some(ColorScheme::Dark),
                 ..ThemeSnapshot::default()
             },
             LocaleSnapshot::default(),
@@ -519,7 +518,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
     host_mem.register(MemoryClipboard::new());
     host_mem.register(MemorySystemEnv::with_initial(
         ThemeSnapshot {
-            color_scheme: SdkColorScheme::Light,
+            color_scheme: Some(ColorScheme::Light),
             contrast: ContrastLevel::High,
             reduced_motion: true,
             reduced_transparency: false,
@@ -583,7 +582,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
 
     // Deliver live typed theme (Dark) and locale (ar-EG RTL) updates directly with zero serialization.
     let dark_theme = ThemeSnapshot {
-        color_scheme: SdkColorScheme::Dark,
+        color_scheme: Some(ColorScheme::Dark),
         contrast: ContrastLevel::Standard,
         reduced_motion: false,
         reduced_transparency: false,
