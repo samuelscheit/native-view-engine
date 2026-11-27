@@ -20,7 +20,7 @@ typedef UIFont NvePlatformFont;
 #import "NveAppleValueBridge.h"
 
 #include <nve/generated/nve_abi.generated.h>
-#include "nve_rn_component.hpp"
+#include <nve/generated/nve_runtime_abi.generated.h>
 
 #include <cstdint>
 #include <string>
@@ -28,9 +28,17 @@ typedef UIFont NvePlatformFont;
 
 namespace nve::apple {
 
-inline constexpr uint64_t kEventMaskPress = 1ULL << 0;
+/// Native view class realized for a runtime node, derived from its attached core tables
+/// (`nve.text_input` > `nve.image` > `nve.scroll` > leaf `nve.text` > container).
+enum class NodeKind : uint8_t {
+  Container = 0,
+  Text,
+  TextInput,
+  Image,
+  Scroll,
+};
 
-/// Canonical cross-platform accessibility roles inferred from `NveRenderNode` and raw props.
+/// Canonical cross-platform accessibility roles (`nve.accessibility.role` or inferred).
 enum class A11yRole : uint8_t {
   None = 0,
   Group,
@@ -46,7 +54,7 @@ enum class A11yRole : uint8_t {
   Link,
 };
 
-/// Normalized accessibility, TextInput, and Image metadata extracted from `raw_props` + `NveRenderNode`.
+/// Accessibility + text-input semantics of one node (from `nve.accessibility`, `nve.text_input`).
 struct NodeSemantics {
   A11yRole role{A11yRole::Group};
   bool explicit_role{false};
@@ -56,12 +64,49 @@ struct NodeSemantics {
   std::string value;
   bool has_explicit_value{false};
   bool disabled{false};
-  std::string test_id;
+  bool hidden{false};
   std::string placeholder;
   bool secure_text_entry{false};
   bool multiline{false};
-  ImageResizeMode resize_mode{ImageResizeMode::Cover};
 };
+
+/// Paint style of one node resolved from `nve.visual` + inherited `nve.typography`.
+struct NodeStyle {
+  uint32_t background_rgba{0u};
+  uint32_t border_rgba{0u};
+  float border_width{0.0f};
+  float border_radius{0.0f};
+  float opacity{1.0f};
+  int32_t z_index{0};
+  bool clips_children{false};
+  bool visible{true};
+  uint32_t text_rgba{0xFF000000u};
+  float font_size{16.0f};
+  uint16_t font_weight{400u};
+  bool italic{false};
+  uint32_t text_align{0u};
+  uint32_t max_lines{0u};
+};
+
+/// One fully resolved runtime node, as handed to the platform view factory / updater.
+struct NodeView {
+  uint32_t node_id{0u};  // raw `NodeId` (index:24 | generation:8)
+  NodeKind kind{NodeKind::Container};
+  CGRect frame{};        // absolute surface coordinates
+  NodeStyle style{};
+  NodeSemantics semantics{};
+  std::string text;      // leaf text, or the text-input value
+  bool interactive{false};
+  uint32_t image_resource{0u};
+  ImageResizeMode image_fit{ImageResizeMode::Cover};
+  uint32_t image_tint_rgba{0u};
+};
+
+/// Monotonic `std::chrono::steady_clock` timestamp in microseconds.
+uint64_t current_timestamp_us() noexcept;
+
+/// Packed little-endian RGBA8888 (R in the low byte, A in the high byte) to `NSColor` / `UIColor`.
+NvePlatformColor * _Nonnull color_from_rgba(uint32_t rgba);
 
 /// Uniform error codes emitted by `open_nve_dylib` under a caller-supplied NSError domain.
 enum class DylibErrorCode : NSInteger {
@@ -73,18 +118,10 @@ enum class DylibErrorCode : NSInteger {
 struct LoadedDylib {
   void * _Nullable handle{nullptr};
   NveGetInterfaceFn _Nullable get_interface{nullptr};
-  NveModule module{};
 };
 
-/// Monotonic `std::chrono::steady_clock` timestamp in microseconds.
-uint64_t current_timestamp_us() noexcept;
-
-/// Convert packed little-endian RGBA8888 (R in low byte, A in high byte) to `NSColor` / `UIColor`.
-NvePlatformColor * _Nonnull color_from_rgba(uint32_t rgba);
-
-/// Open a Rust NVE `cdylib`, resolve `nve_get_interface`, and validate `NVE_IFACE_SURFACE`.
-/// On failure, closes any opened handle, populates `*out_error` (when non-null) with
-/// `error_domain` and `DylibErrorCode` (1/2/3), and returns `false`.
+/// `dlopen` a Rust NVE `cdylib`, resolve `nve_get_interface`, and require `NVE_IFACE_SURFACE`.
+/// On failure closes any opened handle, fills `*out_error` (code 1/2/3), and returns `false`.
 bool open_nve_dylib(
     NSString * _Nullable dylib_path,
     NSString * _Nonnull error_domain,
@@ -94,37 +131,24 @@ bool open_nve_dylib(
 /// Safely `dlclose` a handle if non-null and zero the pointer.
 void close_dylib(void * _Nullable &handle) noexcept;
 
-/// Build a native `NSString::boundingRectWithSize:` text measurer callback for Yoga.
-/// On macOS uses `NSFont` + 4pt horizontal slack for `NSTextFieldCell` insets; on iOS uses `UIFont` with 0pt slack.
-nve::TextMeasurerCallback make_native_text_measurer();
+/// `NveRuntimeMeasureTextFn` for runtime layout: system font at size / CSS weight via
+/// `boundingRectWithSize:` (macOS adds `NSTextFieldCell`'s 4pt horizontal inset).
+void native_text_measure(void *_Nullable ctx, NveStrSlice text, float font_size, uint32_t font_weight,
+                         float max_width, float *_Nonnull out_width, float *_Nonnull out_height);
 
-/// Register `make_native_text_measurer()` on `host` (no-op if `host == nullptr`).
-void install_native_text_measurer(NveFabricHostHandle _Nullable host);
+/// System font for `size` / CSS `weight` / italic.
+NvePlatformFont * _Nonnull platform_font(float size, uint16_t weight, bool italic);
 
-/// Apply platform-agnostic `CALayer` border, corner radius, and z-index properties from `NveRenderNode`.
-void apply_common_layer_style(CALayer * _Nullable layer, const NveRenderNode &node);
+/// `CALayer` background, border, corner radius, opacity, z-order, and clipping from `style`.
+void apply_common_layer_style(CALayer * _Nullable layer, const NodeStyle &style);
 
-/// Extract normalized accessibility, TextInput, and Image semantics from an `NveRenderNode`
-/// and optional `raw_props` entry.
-NodeSemantics extract_node_semantics(
-    const NveRenderNode &node,
-    std::string_view text,
-    const nve::RawPropMap * _Nullable raw_props);
+/// Native AppKit (`NSAccessibility`) / UIKit (`UIAccessibility`) semantics for a mounted view.
+void apply_node_accessibility(NvePlatformView * _Nullable view, NodeKind kind, const NodeSemantics &sem);
 
-/// Apply native AppKit (`NSAccessibility`) or UIKit (`UIAccessibility`) semantics to a mounted view.
-void apply_node_accessibility(
-    NvePlatformView * _Nullable view,
-    const NveRenderNode &node,
-    const NodeSemantics &sem);
-
-/// Returns `YES` when a native text input currently has active IME marked text composition.
+/// `YES` while a native text input has active IME marked-text composition.
 BOOL is_text_input_composing_ime(NvePlatformView * _Nullable view);
 
-/// Apply native `NSTextField` / `UITextField` placeholder, secureTextEntry, multiline, enabled state,
-/// and IME-safe text synchronization without clobbering active marked text.
-void apply_text_input_props(
-    NvePlatformView * _Nullable view,
-    std::string_view text,
-    const NodeSemantics &sem);
+/// Placeholder, secure entry, multiline, enabled state, and IME-safe text synchronization.
+void apply_text_input_props(NvePlatformView * _Nullable view, std::string_view text, const NodeSemantics &sem);
 
-} // namespace nve::apple
+}  // namespace nve::apple

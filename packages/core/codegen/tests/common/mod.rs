@@ -43,7 +43,7 @@ pub fn write_generated_c_abi_headers(dir: &Path) {
         &workspace_root().join("packages/core/host-cxx/include/nve/host"),
         &dir.join("nve/host"),
     );
-    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS, nve_components::tables::CORE_WORD_CONSTS)
         .expect("generate host ABI files");
     for file in files {
         let rel = file.relative_path.as_str();
@@ -67,7 +67,7 @@ pub fn prepare_offline_nve_host_pkg(temp_dir: &Path) -> PathBuf {
     copy_tree(&src.join("lib"), &pkg_root.join("lib"));
     std::fs::copy(src.join("pubspec.yaml"), pkg_root.join("pubspec.yaml"))
         .expect("copy nve_host pubspec");
-    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS, nve_components::tables::CORE_WORD_CONSTS)
         .expect("generate host ABI files");
     for file in files {
         if let Some(rel) = file
@@ -80,36 +80,6 @@ pub fn prepare_offline_nve_host_pkg(temp_dir: &Path) -> PathBuf {
             std::fs::write(out, &file.content).expect("write generated dart file");
         }
     }
-    pkg_root
-}
-
-/// Materializes a self-contained offline `nve_flutter` Dart package under `temp_dir/nve_flutter_pkg`
-/// from the hand-written pure-Dart runtime sources (its generated bindings come from the
-/// [`prepare_offline_nve_host_pkg`] package), so `dart analyze` succeeds on a fresh checkout.
-pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -> PathBuf {
-    let pkg_root = temp_dir.join("nve_flutter_pkg");
-    let dst_lib = pkg_root.join("lib");
-    let dst_src = dst_lib.join("src");
-    std::fs::create_dir_all(&dst_src).expect("create temp nve_flutter_pkg/lib/src");
-
-    let src_lib = workspace_root.join("hosts/flutter-plugin/lib");
-    std::fs::write(
-        pkg_root.join("pubspec.yaml"),
-        "name: nve_flutter\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
-    )
-    .expect("write temp nve_flutter pubspec.yaml");
-
-    for rel in [
-        "nve_hybrid_runtime.dart",
-        "src/direct_ffi.dart",
-        "src/event_codec.dart",
-        "src/nve_bin_codec.dart",
-        "src/nve_bin_value.dart",
-    ] {
-        std::fs::copy(src_lib.join(rel), dst_lib.join(rel))
-            .expect("copy hosts/flutter-plugin/lib file");
-    }
-
     pkg_root
 }
 

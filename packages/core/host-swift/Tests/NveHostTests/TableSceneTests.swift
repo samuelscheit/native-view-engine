@@ -3,9 +3,12 @@ import NveHost
 import XCTest
 
 // The C-imported structs satisfy the runtime protocols with empty extensions — exactly what the
-// generated `NveTableView` / `NveSceneView` conformances look like.
+// generated `NveTableView` / `NveNodeRow` / `NveLayoutRect` / `NveRuntimeSceneView` conformances look like.
 extension NveTestTableView: TableViewABI {}
-extension NveTestSceneView: SceneViewABI {}
+extension NveTestNodeRow: NodeRowABI {}
+extension NveTestLayoutRect: LayoutRectABI {}
+extension NveTestScrollOffset: ScrollOffsetABI {}
+extension NveTestRuntimeSceneView: RuntimeSceneViewABI {}
 
 final class TableSceneTests: XCTestCase {
     private let schema = Key64(0xF00D_FACE_C0FF_EE11)
@@ -18,8 +21,8 @@ final class TableSceneTests: XCTestCase {
     private let label = try! FieldSpec(word: 3, kind: .str)
     private let scale = try! FieldSpec(word: 5, kind: .f32)
 
-    private func scene() throws -> SceneReader<NveTestSceneView> {
-        try SceneReader.open(nve_test_scene(), expectedSchema: schema)
+    private func scene() throws -> RuntimeSceneReader<NveTestRuntimeSceneView> {
+        try RuntimeSceneReader.open(nve_test_scene(), expectedSchema: schema)
     }
 
     func testFieldSpecExtraction() throws {
@@ -101,7 +104,7 @@ final class TableSceneTests: XCTestCase {
         try withUnsafePointer(to: bad) { tp in
             var v = base
             v.tables = tp
-            XCTAssertThrowsError(try SceneReader.open(v, expectedSchema: schema)) {
+            XCTAssertThrowsError(try RuntimeSceneReader.open(v, expectedSchema: schema)) {
                 XCTAssertEqual($0 as? SceneError, .invalidTable(index: 0))
             }
             _ = try XCTUnwrap(Optional(tp))
@@ -148,7 +151,7 @@ final class TableSceneTests: XCTestCase {
             var v = base
             v.text_slab = bp.baseAddress
             v.text_slab_len = 7
-            let s = try SceneReader.open(v, expectedSchema: schema)
+            let s = try RuntimeSceneReader.open(v, expectedSchema: schema)
             XCTAssertEqual(s.text(offset: 0, len: 7), "\u{FEFF}\u{FEFF}x")
             XCTAssertEqual(s.text(offset: 0, len: 3), "\u{FEFF}")
             _ = try XCTUnwrap(bp.baseAddress)
@@ -176,66 +179,5 @@ final class TableSceneTests: XCTestCase {
         nullRows.words = 6
         nullRows.row_count = 2
         XCTAssertNil(TableReader(view: nullRows))
-    }
-
-    func testSceneReaderOverCMemory() throws {
-        let s = try scene()
-        XCTAssertEqual(s.frameId, 7)
-        XCTAssertEqual(s.nodeCount, 3)
-        let n0 = try XCTUnwrap(s.node(0))
-        XCTAssertEqual(s.text(offset: n0.text_offset, len: UInt32(n0.text_len)), "hé")
-        XCTAssertEqual(s.text(offset: 3, len: 4), "🚀")
-        XCTAssertNil(s.text(offset: 2, len: 1))  // splits "é"
-        XCTAssertNil(s.text(offset: 4, len: 3))  // starts mid-rocket
-        XCTAssertNil(s.text(offset: 7, len: 1))
-        XCTAssertEqual(s.text(offset: 7, len: 0), "")
-        XCTAssertNil(s.text(offset: .max, len: 2))
-        XCTAssertEqual(s.children(offset: n0.child_offset, count: UInt32(n0.child_count)).map(Array.init), [2, 3])
-        XCTAssertNil(s.children(offset: 1, count: 2))
-        XCTAssertNil(s.node(3))
-        var visited: [Int] = []
-        s.forEachDirty { index, node in
-            XCTAssertEqual(node.node_id, UInt32(index + 1))
-            visited.append(index)
-        }
-        XCTAssertEqual(visited, [0, 2])
-        XCTAssertEqual(Array(s.removedIds), [42])
-    }
-
-    func testSceneReaderRejects() throws {
-        XCTAssertThrowsError(try SceneReader<NveTestSceneView>.open(nil, expectedSchema: schema)) {
-            XCTAssertEqual($0 as? SceneError, .nullView)
-        }
-        XCTAssertThrowsError(try SceneReader.open(nve_test_scene(), expectedSchema: Key64(1))) {
-            XCTAssertEqual($0 as? SceneError, .schemaMismatch(expected: Key64(1), actual: schema))
-        }
-        let base = try XCTUnwrap(nve_test_scene()).pointee
-        var v = base
-        v.children_slab = nil
-        XCTAssertThrowsError(try SceneReader.open(v, expectedSchema: schema)) { XCTAssertEqual($0 as? SceneError, .nullSlab) }
-        v = base
-        v.node_count = 0
-        v.nodes = nil
-        XCTAssertNoThrow(try SceneReader.open(v, expectedSchema: schema))
-        let bad: [UInt8] = [0xC0, 0xAF]
-        try bad.withUnsafeBufferPointer { bp in
-            var bv = base
-            bv.text_slab = bp.baseAddress
-            bv.text_slab_len = 2
-            XCTAssertThrowsError(try SceneReader.open(bv, expectedSchema: schema)) {
-                XCTAssertEqual($0 as? SceneError, .invalidUtf8)
-            }
-            _ = try XCTUnwrap(bp.baseAddress)
-        }
-        var badTable = try XCTUnwrap(base.tables).pointee
-        badTable.words = 40
-        try withUnsafePointer(to: badTable) { tp in
-            var tv = base
-            tv.tables = tp
-            XCTAssertThrowsError(try SceneReader.open(tv, expectedSchema: schema)) {
-                XCTAssertEqual($0 as? SceneError, .invalidTable(index: 0))
-            }
-            _ = try XCTUnwrap(Optional(tp))
-        }
     }
 }
