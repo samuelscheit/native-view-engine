@@ -91,14 +91,15 @@ impl WakeBridge {
     }
 
     /// Installs or replaces the host wake sink, waiting for any in-flight invocation of a prior
-    /// sink to return before replacing it. If a wake was already pending, invokes the installed
-    /// sink once under the shared read lock.
+    /// sink to return before replacing it (dropping any replaced sink *after* releasing the lock).
+    /// If a wake was already pending, invokes the installed sink once under the shared read lock.
     pub fn set_sink(&self, cb: WakeCallback) {
-        let fire_now = {
+        let (replaced, fire_now) = {
             let mut guard = self.sink.write().unwrap_or_else(|e| e.into_inner());
-            *guard = Some(cb);
-            self.pending.load(Ordering::Acquire)
+            let old = guard.replace(cb);
+            (old, self.pending.load(Ordering::Acquire))
         };
+        drop(replaced);
         if fire_now {
             let guard = self.sink.read().unwrap_or_else(|e| e.into_inner());
             if let Some(ref installed) = *guard {
@@ -108,10 +109,13 @@ impl WakeBridge {
     }
 
     /// Clears the installed host wake sink, waiting for any in-flight callback invocation on
-    /// another thread to finish before returning.
+    /// another thread to finish before returning (dropping the removed sink *after* unlocking).
     pub fn clear_sink(&self) {
-        let mut guard = self.sink.write().unwrap_or_else(|e| e.into_inner());
-        *guard = None;
+        let removed = {
+            let mut guard = self.sink.write().unwrap_or_else(|e| e.into_inner());
+            guard.take()
+        };
+        drop(removed);
     }
 
     /// Marks the bridge dirty and fires the installed sink on the `false -> true` transition while

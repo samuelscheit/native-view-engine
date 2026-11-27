@@ -136,6 +136,9 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
             self.scroll.remove(id.raw());
         }
         for &id in changes.created.iter().chain(&changes.touched) {
+            if !store.is_live(id) {
+                continue;
+            }
             let disabled = store.try_row::<Interaction>(id).is_some_and(|i| i.disabled());
             if self.interaction.is_disabled(id.raw()) != disabled {
                 let _ = self.interaction.set_disabled(id.raw(), disabled);

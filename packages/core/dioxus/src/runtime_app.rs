@@ -14,10 +14,11 @@ use crate::DioxusSurface;
 /// Hosts an in-process [`DioxusSurface`] directly inside [`nve_runtime::SurfaceRuntime`] with
 /// zero `NVE2` wire serialization and single-bridge coalesced cross-thread async task wakeups.
 pub struct DioxusRuntimeApp {
-    surface: DioxusSurface,
-    wake: Arc<WakeBridge>,
-    waker: Waker,
+    // Declared FIRST so dropping `DioxusRuntimeApp` disables zombie wakers BEFORE `surface` drops.
     _wake_token: WakeToken,
+    waker: Waker,
+    wake: Arc<WakeBridge>,
+    surface: DioxusSurface,
     mounted: bool,
 }
 
@@ -26,10 +27,10 @@ impl DioxusRuntimeApp {
         let wake = Arc::new(WakeBridge::new());
         let (waker, wake_token) = wake.detachable_waker();
         Self {
-            surface,
-            wake,
-            waker,
             _wake_token: wake_token,
+            waker,
+            wake,
+            surface,
             mounted: false,
         }
     }
@@ -59,7 +60,6 @@ impl RuntimeApp for DioxusRuntimeApp {
             return AppFrame::Clean;
         }
         AppFrame::Direct {
-            store: self.surface.store(),
             changes: self.surface.last_changes(),
         }
     }
@@ -83,16 +83,14 @@ impl RuntimeApp for DioxusRuntimeApp {
         self.surface.poll_work(&self.waker)
     }
 
-    fn install_wake_bridge(&mut self, wake: Arc<WakeBridge>) {
+    fn install_wake_bridge(&mut self, wake: Arc<WakeBridge>) -> bool {
         let had_pending = self.wake.take_pending();
         let (waker, wake_token) = wake.detachable_waker();
         // Dropping the previous `_wake_token` immediately disables zombie wakers from prior apps.
         self._wake_token = wake_token;
         self.waker = waker;
         self.wake = wake;
-        if had_pending {
-            self.wake.trigger();
-        }
+        had_pending
     }
 
     fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {

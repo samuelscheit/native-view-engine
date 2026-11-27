@@ -17,11 +17,8 @@ use crate::wake::WakeBridge;
 pub enum AppFrame<'a> {
     /// No new tree changes were produced this frame.
     Clean,
-    /// In-process zero-serialization `NodeStore` + `ChangeSet` (e.g. `DioxusRuntimeApp`).
-    Direct {
-        store: &'a NodeStore,
-        changes: &'a ChangeSet,
-    },
+    /// In-process zero-serialization `ChangeSet` against [`RuntimeApp::direct_store`] (e.g. `DioxusRuntimeApp`).
+    Direct { changes: &'a ChangeSet },
     /// Cross-boundary binary `NVE2` delta/keyframe slice (e.g. `NveApp`, `cdylib`, or remote wire).
     Wire(&'a [u8]),
 }
@@ -57,7 +54,12 @@ pub trait RuntimeApp {
 
     /// Installs the runtime's single coalesced [`WakeBridge`] so async tasks wake the host loop
     /// directly without double-layered wake latches.
-    fn install_wake_bridge(&mut self, _wake: Arc<WakeBridge>) {}
+    ///
+    /// Returns `true` if the app had a pending wake prior to installation; callers trigger the
+    /// newly installed bridge *after* releasing any surface write lock.
+    fn install_wake_bridge(&mut self, _wake: Arc<WakeBridge>) -> bool {
+        false
+    }
 
     /// Applies a Tier-1 binary hot-reload patch payload. Returns `true` if the surface dirtied.
     fn apply_hot_patch(&mut self, _patch: &HotPatchMsg) -> bool {

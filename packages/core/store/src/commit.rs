@@ -143,3 +143,115 @@ impl Transaction<'_> {
         }
     }
 }
+
+/// Deduplicates a sorted `u32` slice in-place with zero heap allocations; returns the unique length.
+#[inline]
+fn dedup_sorted_u32(slice: &mut [u32]) -> usize {
+    if slice.len() <= 1 {
+        return slice.len();
+    }
+    let mut write = 1usize;
+    for read in 1..slice.len() {
+        if slice[read] != slice[write - 1] {
+            slice[write] = slice[read];
+            write += 1;
+        }
+    }
+    write
+}
+
+impl crate::store::NodeStore {
+    /// Populates `out` with zero-copy [`nve_abi::table::NveTableView`] entries for every
+    /// `PUBLISH_TO_SCENE` table currently allocated in this store — zero heap allocations when
+    /// `out` and `dirty_buf` have sufficient capacity.
+    ///
+    /// Dirty row indices are sorted and deduplicated per table inside `dirty_buf` (which must live
+    /// as long as `out` is read).
+    pub fn publish_table_views(
+        &self,
+        changes: &ChangeSet,
+        out: &mut Vec<nve_abi::table::NveTableView>,
+        dirty_buf: &mut Vec<u32>,
+    ) {
+        out.clear();
+        dirty_buf.clear();
+        let mut ranges = [(TableSlot(0), 0usize, 0usize); nve_abi::table::MAX_TABLE_SLOTS];
+        let mut range_len = 0usize;
+        let mut reloc_pos = 0usize;
+        for slot in self.table_slots() {
+            let Some(col) = self.columns[slot.0 as usize].as_ref() else {
+                continue;
+            };
+            if col.desc.flags() & nve_abi::table::table_flags::PUBLISH_TO_SCENE == 0 {
+                continue;
+            }
+            let start = dirty_buf.len();
+            if let Some(tc) = changes.table(slot) {
+                for &nid in &tc.nodes {
+                    if self.is_live(nid)
+                        && let Some(row_idx) = col.find_row(nid.node_index())
+                    {
+                        dirty_buf.push(row_idx as u32);
+                    }
+                }
+            }
+            while reloc_pos < changes.relocated_rows.len()
+                && changes.relocated_rows[reloc_pos].0 < slot
+            {
+                reloc_pos += 1;
+            }
+            let row_count_u32 = col.row_count() as u32;
+            while reloc_pos < changes.relocated_rows.len()
+                && changes.relocated_rows[reloc_pos].0 == slot
+            {
+                let row_idx = changes.relocated_rows[reloc_pos].1;
+                if row_idx < row_count_u32 {
+                    dirty_buf.push(row_idx);
+                }
+                reloc_pos += 1;
+            }
+            if dirty_buf.len() - start > 1 {
+                let slice = &mut dirty_buf[start..];
+                slice.sort_unstable();
+                let unique = dedup_sorted_u32(slice);
+                dirty_buf.truncate(start + unique);
+            }
+            ranges[range_len] = (slot, start, dirty_buf.len() - start);
+            range_len += 1;
+        }
+
+        for &(slot, start, dirty_count) in &ranges[..range_len] {
+            let Some(col) = self.columns[slot.0 as usize].as_ref() else {
+                continue;
+            };
+            let row_count = col.row_count();
+            let rows_ptr = if col.rows.is_empty() {
+                core::ptr::null()
+            } else {
+                col.rows.as_ptr()
+            };
+            let owners_ptr = if col.owners.is_empty() {
+                core::ptr::null()
+            } else {
+                col.owners.as_ptr()
+            };
+            let dirty_ptr = if dirty_count == 0 {
+                core::ptr::null()
+            } else {
+                // SAFETY: `start` is within `dirty_buf` (captured before pushing `dirty_count > 0` items).
+                unsafe { dirty_buf.as_ptr().add(start) }
+            };
+            out.push(nve_abi::table::NveTableView {
+                key_lo: col.desc.key().lo(),
+                key_hi: col.desc.key().hi(),
+                slot: slot.0 as u32,
+                words: col.w as u32,
+                row_count: row_count as u32,
+                dirty_count: dirty_count as u32,
+                rows: rows_ptr,
+                owners: owners_ptr,
+                dirty_rows: dirty_ptr,
+            });
+        }
+    }
+}

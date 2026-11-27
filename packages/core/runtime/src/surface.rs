@@ -6,8 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use nve_abi::{
-    NodeId as AbiNodeId, NveEventBatchRef, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView,
-    SurfaceId,
+    NodeId as AbiNodeId, NveEventBatchRef, NveRuntimeMetrics, NveRuntimeSceneView, SurfaceId,
 };
 use nve_components::tables::{Overflow, Scroll, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
@@ -45,14 +44,15 @@ impl Drop for SceneReadGuard<'_> {
 /// Framework-agnostic per-surface host runtime.
 ///
 /// # Threading Contract
-/// - **Owner-thread only**: mutating and app-touching operations (`attach_app`, `detach_app`,
-///   `add_tick_hook`, `set_viewport`, `swap_layout_engine`, `submit_nve2`, `tick`,
-///   `dispatch_events`, `apply_hot_patch`, `scroll_by`, and FFI `destroy`) MUST execute on the
-///   thread that created the runtime. Cross-thread calls fail with [`RuntimeError::InvalidArg`].
+/// - **Owner-thread only**: mutating, layout, and app-touching operations (`attach_app`,
+///   `detach_app`, `add_tick_hook`, `set_viewport`, `swap_layout_engine`, `submit_nve2`, `tick`,
+///   `dispatch_events`, `apply_hot_patch`, `hit_test`, `hit_test_interaction`, `scroll_by`, and
+///   FFI `destroy`) MUST execute on the thread that created the runtime. Cross-thread calls fail
+///   with [`RuntimeError::InvalidArg`].
 /// - **Cross-thread safe**: `acquire_scene` / `scene_acquire`, `scene_release`, `metrics`,
-///   `hit_test`, `hit_test_interaction`, `set_wake_callback`, `clear_wake_callback`, and
-///   [`WakeBridge::trigger`].
+///   `layout_engine_name`, `set_wake_callback`, `clear_wake_callback`, and [`WakeBridge::trigger`].
 pub struct SurfaceRuntime {
+    pub(crate) surface_id: SurfaceId,
     pub(crate) lock: SceneLock,
     pub(crate) wake: Arc<WakeBridge>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -128,21 +128,17 @@ impl SurfaceRuntime {
             completed: false,
         };
         let res = f(txn.inner);
-        if txn.inner.state.published_view.node_capacity > 0 {
-            let store = txn.inner.active_store();
-            let rows = store.node_rows();
-            let text = store.text_slab();
-            let children = store.children_slab();
-            let v = &txn.inner.state.published_view;
-            let rows_ok = v.node_capacity as usize == rows.len()
-                && v.rows == rows.as_ptr().cast::<NveNodeRow>();
-            let text_ok = v.text_slab_len as usize == text.len()
-                && (text.is_empty() || v.text_slab == text.as_ptr());
-            let children_ok = v.children_slab_len as usize == children.len()
-                && (children.is_empty() || v.children_slab == children.as_ptr().cast::<u32>());
-            if res.is_err() || !rows_ok || !text_ok || !children_ok {
-                txn.inner.state.invalidate_published_view();
-            }
+        // Validate every borrowed slab AND every `NveTableView` column pointer/row_count against
+        // the active store unconditionally. Non-mutating errors (e.g. `scroll_by(non_scroll)` or
+        // `submit_nve2` while app attached) keep the live view intact; any pointer/row drift
+        // invalidates `published_view` and schedules republishing so `acquire_scene` never UAFs.
+        if !txn
+            .inner
+            .state
+            .published_view_matches_store(txn.inner.active_store())
+        {
+            txn.inner.state.invalidate_published_view();
+            txn.inner.state.needs_publish = true;
         }
         txn.completed = true;
         res
@@ -169,14 +165,18 @@ impl SurfaceRuntime {
         &self,
         mut app: Box<dyn RuntimeApp>,
     ) -> Result<(), RuntimeError> {
-        app.install_wake_bridge(Arc::clone(&self.wake));
-        self.with_write(|inner| {
+        let had_pending = self.with_write(|inner| {
             inner.reset_for_app_change();
+            let pending = app.install_wake_bridge(Arc::clone(&self.wake));
             inner.app = Some(app);
             inner.state.needs_render = true;
             inner.state.needs_publish = true;
-            Ok(())
-        })
+            Ok(pending)
+        })?;
+        if had_pending {
+            self.wake.trigger();
+        }
+        Ok(())
     }
 
     pub fn detach_app(&mut self) -> Result<(), RuntimeError> {
@@ -230,6 +230,7 @@ impl SurfaceRuntime {
             let (store, state) = inner.split_store_and_state();
             state.invalidate_published_view();
             state.scene.replace_layout_engine(engine);
+            state.layout_engine_name = state.scene.layout_engine_name();
             state.frame_id = state.frame_id.wrapping_add(1).max(1);
             let mut full = ChangeSet::default();
             full.created.extend(store.live_nodes());
@@ -243,8 +244,9 @@ impl SurfaceRuntime {
     pub fn layout_engine_name(&self) -> Result<&'static str, RuntimeError> {
         self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: Reader lock held for `_guard`'s lifetime.
-        Ok(unsafe { &*self.inner.get() }.state.scene.layout_engine_name())
+        // SAFETY: Reader lock held for `_guard`'s lifetime; reads cached `&'static str` only
+        // without touching `!Sync` `StoreLayoutEngine`.
+        Ok(unsafe { &*self.inner.get() }.state.layout_engine_name)
     }
 
     pub fn submit_nve2(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
@@ -311,17 +313,20 @@ impl SurfaceRuntime {
 
     pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<AbiNodeId>, RuntimeError> {
         self.check_not_poisoned()?;
+        self.check_owner_thread()?;
         let _guard = self.lock.hit_read_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: `_guard` guarantees no writer and no other `hit_test` accesses
-        // `LaidOutScene::hit_scratch` concurrently (safe alongside `scene_acquire` readers).
+        // SAFETY: Owner-thread affinity protects `!Send`/`!Sync` `RuntimeApp::direct_store` and
+        // `StoreLayoutEngine`, and `_guard` serializes `hit_scratch` against concurrent writers.
         let inner = unsafe { &*self.inner.get() };
         Ok(inner.state.scene.hit_test(inner.active_store(), x, y))
     }
 
     pub fn hit_test_interaction(&self, x: f32, y: f32) -> Result<Option<AbiNodeId>, RuntimeError> {
         self.check_not_poisoned()?;
+        self.check_owner_thread()?;
         let _guard = self.lock.hit_read_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: `_guard` serializes `hit_scratch` against concurrent callers and releases on unwind.
+        // SAFETY: Owner-thread affinity protects `!Send`/`!Sync` `RuntimeApp` & layout engine;
+        // `_guard` serializes `hit_scratch` and releases on unwind.
         let inner = unsafe { &*self.inner.get() };
         Ok(inner
             .state

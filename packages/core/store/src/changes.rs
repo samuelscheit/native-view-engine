@@ -130,14 +130,49 @@ impl ChangeSet {
         self.merge_from(other);
     }
 
-    /// Merges `other` into `self` while preserving `Vec` capacities and keeping `relocated_rows`
-    /// ordered by `TableSlot` for linear `publish_table_views` traversal.
+    /// Merges `other` into `self` while preserving `Vec` capacities, reconciling nodes created in
+    /// `self` and removed in `other` (preventing create-then-remove resurrection across multi-pump
+    /// ticks), and keeping `relocated_rows` ordered by `TableSlot` for linear `publish_table_views`.
     pub fn merge_from(&mut self, other: &ChangeSet) {
         if other.frame > self.frame {
             self.frame = other.frame;
         }
+        if !other.removed.is_empty() {
+            // Strip nodes removed in `other` from earlier `self` lists. Nodes born in `self.created`
+            // and killed in `other.removed` never existed before this merged frame and cancel out.
+            for &rid in &other.removed {
+                if let Some(pos) = self.created.iter().position(|&c| c == rid) {
+                    self.created.remove(pos);
+                } else {
+                    self.removed.push(rid);
+                }
+            }
+            self.children.retain(|id| !other.removed.contains(id));
+            let mut write = 0usize;
+            for read in 0..self.touched.len() {
+                if !other.removed.contains(&self.touched[read]) {
+                    self.touched[write] = self.touched[read];
+                    self.effects[write] = self.effects[read];
+                    write += 1;
+                }
+            }
+            self.touched.truncate(write);
+            self.effects.truncate(write);
+            for tbl in &mut self.tables[..self.table_len.as_usize()] {
+                let mut tw = 0usize;
+                for tr in 0..tbl.nodes.len() {
+                    if !other.removed.contains(&tbl.nodes[tr]) {
+                        tbl.nodes[tw] = tbl.nodes[tr];
+                        tbl.masks[tw] = tbl.masks[tr];
+                        tw += 1;
+                    }
+                }
+                tbl.nodes.truncate(tw);
+                tbl.masks.truncate(tw);
+                tbl.detached.retain(|id| !other.removed.contains(id));
+            }
+        }
         self.created.extend_from_slice(&other.created);
-        self.removed.extend_from_slice(&other.removed);
         self.children.extend_from_slice(&other.children);
         self.touched.extend_from_slice(&other.touched);
         self.effects.extend_from_slice(&other.effects);

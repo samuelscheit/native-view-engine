@@ -4,13 +4,13 @@
 
 use nve_abi::table::NveTableView;
 use nve_abi::{
-    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView, SurfaceId,
+    FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView,
     NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_engine::LayoutRect;
 use nve_layout::{DynLayoutEngine, LaidOutScene};
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeStore, RealizationOrder};
+use nve_store::{ChangeSet, NodeStore, RealizationOrder, TableSlot};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
@@ -30,8 +30,9 @@ const MAX_RENDER_PUMPS: usize = 4;
 /// Disjoint non-store surface state so `app` / `replica_store` and `state` can be borrowed
 /// simultaneously with zero `unsafe` pointer gymnastics or `Box` moves.
 pub(crate) struct SurfaceState {
-    pub(crate) surface_id: SurfaceId,
     pub(crate) frame_id: FrameId,
+    /// Cached engine name so `layout_engine_name()` never touches `&StoreLayoutEngine` cross-thread.
+    pub(crate) layout_engine_name: &'static str,
     pub(crate) realization_order: RealizationOrder,
     pub(crate) wire_decoder: WireDecoder,
     pub(crate) wire_changes: ChangeSet,
@@ -67,6 +68,69 @@ impl SurfaceState {
         self.dirty_indices.clear();
         self.removed_ids.clear();
         self.metrics.dirty_nodes = 0;
+    }
+
+    /// Verifies that every borrowed slab pointer and every published `NveTableView` column pointer
+    /// and row count in `published_view` still matches `store` identically.
+    pub(crate) fn published_view_matches_store(&self, store: &NodeStore) -> bool {
+        let v = &self.published_view;
+        if v.node_capacity == 0 && v.table_count == 0 {
+            return true;
+        }
+        let rows = store.node_rows();
+        let text = store.text_slab();
+        let children = store.children_slab();
+        let rows_ok = v.node_capacity as usize == rows.len()
+            && if rows.is_empty() {
+                v.rows.is_null()
+            } else {
+                v.rows == rows.as_ptr().cast::<NveNodeRow>()
+            };
+        let text_ok = v.text_slab_len as usize == text.len()
+            && if text.is_empty() {
+                v.text_slab.is_null()
+            } else {
+                v.text_slab == text.as_ptr()
+            };
+        let children_ok = v.children_slab_len as usize == children.len()
+            && if children.is_empty() {
+                v.children_slab.is_null()
+            } else {
+                v.children_slab == children.as_ptr().cast::<u32>()
+            };
+        if !(rows_ok && text_ok && children_ok) {
+            return false;
+        }
+        if v.table_count as usize != self.published_tables.len() {
+            return false;
+        }
+        if !self.published_tables.is_empty() && v.tables != self.published_tables.as_ptr() {
+            return false;
+        }
+        for tv in &self.published_tables {
+            let Ok(slot_u8) = u8::try_from(tv.slot) else {
+                return false;
+            };
+            let Some((t_rows, t_owners, t_row_count)) =
+                store.table_storage(TableSlot(slot_u8))
+            else {
+                return false;
+            };
+            let rows_ptr_ok = if t_rows.is_empty() {
+                tv.rows.is_null()
+            } else {
+                tv.rows == t_rows.as_ptr()
+            };
+            let owners_ptr_ok = if t_owners.is_empty() {
+                tv.owners.is_null()
+            } else {
+                tv.owners == t_owners.as_ptr()
+            };
+            if tv.row_count as usize != t_row_count || !rows_ptr_ok || !owners_ptr_ok {
+                return false;
+            }
+        }
+        true
     }
 
     /// Synchronizes dense `self.rects`, deduplicated dirty/removed scratch, and `NveTableView`s
@@ -107,7 +171,7 @@ impl SurfaceState {
             .chain(&changes.children)
         {
             let idx = id.index();
-            if idx < cap && self.dirty_stamp[idx] != epoch {
+            if idx < cap && store.is_live(id) && self.dirty_stamp[idx] != epoch {
                 self.dirty_stamp[idx] = epoch;
                 self.dirty_indices.push(idx as u32);
             }
@@ -190,6 +254,10 @@ impl SurfaceState {
         replica: &mut NodeStore,
         bytes: &[u8],
     ) -> Result<(), RuntimeError> {
+        // Validate the 24-byte NVE2 header BEFORE invalidating the live published view so
+        // truncated/misaligned frames fail cleanly without blanking the screen.
+        WireDecoder::validate_header(bytes)
+            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
         self.invalidate_published_view();
         {
             let mut tx = replica.tx();
@@ -205,7 +273,8 @@ impl SurfaceState {
         self.frame_id = self.frame_id.wrapping_add(1).max(1);
         let t_lay = Timer::start();
         let laid_out = self.scene.commit(replica, &self.wire_changes);
-        self.scene.reconcile_scroll_offsets(replica);
+        self.scene
+            .reconcile_scroll_offsets_if_needed(replica, &self.wire_changes, laid_out);
         self.metrics.layout_us = t_lay.elapsed_us();
         let changes = std::mem::take(&mut self.wire_changes);
         self.publish_scene(replica, &changes, laid_out);
@@ -221,10 +290,12 @@ pub(crate) struct RuntimeInner {
 }
 
 impl RuntimeInner {
-    /// Resets `replica_store`, `wire_decoder`, `scene`, and `published_view` when attaching,
-    /// replacing, or detaching an app so stale nodes or wire table IDs never leak across sessions.
+    /// Resets `replica_store`, `wire_decoder`, `scene`, `rects`, and `published_view` when
+    /// attaching, replacing, or detaching an app so stale nodes, rects, or wire table IDs never
+    /// leak across sessions.
     pub(crate) fn reset_for_app_change(&mut self) {
         self.state.invalidate_published_view();
+        self.state.rects.clear();
         self.state.scene.reset();
         self.state.wire_decoder = WireDecoder::default();
         self.replica_store = NodeStore::replica();
@@ -288,19 +359,27 @@ impl RuntimeInner {
             self.state.needs_render = false;
             pumps += 1;
             let next_frame = self.state.frame_id.wrapping_add(1).max(1);
+            let has_direct_store = app.direct_store().is_some();
             let t_rec = Timer::start();
             match app.render_frame(next_frame) {
                 AppFrame::Clean => {
                     self.state.metrics.reconcile_us = t_rec.elapsed_us();
                 }
-                AppFrame::Direct { store: _, changes } => {
+                AppFrame::Direct { changes } => {
                     self.state.metrics.reconcile_us = t_rec.elapsed_us();
+                    if !has_direct_store {
+                        return Err(RuntimeError::InvalidArg(
+                            "AppFrame::Direct returned by app without direct_store()",
+                        ));
+                    }
                     Self::record_changes(&mut self.state.merged_changes, &mut has_changes, changes);
                     self.state.needs_publish = true;
                 }
                 AppFrame::Wire(bytes) => {
                     self.state.metrics.reconcile_us = t_rec.elapsed_us();
                     if !bytes.is_empty() {
+                        WireDecoder::validate_header(bytes)
+                            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
                         self.state.invalidate_published_view();
                         {
                             let mut tx = self.replica_store.tx();
@@ -361,12 +440,20 @@ impl RuntimeInner {
             let laid_out = if has_changes {
                 let changes = std::mem::take(&mut state.merged_changes);
                 let r = state.scene.commit(store, &changes);
+                state
+                    .scene
+                    .reconcile_scroll_offsets_if_needed(store, &changes, r);
                 state.merged_changes = changes;
                 r
             } else {
-                state.scene.recompute_layout(store)
+                let r = state.scene.recompute_layout(store);
+                let empty = std::mem::take(&mut state.empty_changes);
+                state
+                    .scene
+                    .reconcile_scroll_offsets_if_needed(store, &empty, r);
+                state.empty_changes = empty;
+                r
             };
-            state.scene.reconcile_scroll_offsets(store);
             state.metrics.layout_us = t_lay.elapsed_us();
             if has_changes {
                 let changes = std::mem::take(&mut state.merged_changes);

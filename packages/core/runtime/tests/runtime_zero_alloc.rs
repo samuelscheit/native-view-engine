@@ -282,7 +282,6 @@ impl RuntimeApp for DirectTestApp {
         }
         self.dirty = false;
         AppFrame::Direct {
-            store: &self.store,
             changes: &self.changes,
         }
     }

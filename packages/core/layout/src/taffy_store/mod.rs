@@ -223,6 +223,9 @@ impl TaffyStoreLayout {
             }
         }
         for &id in &changes.created {
+            if !store.is_live(id) {
+                continue;
+            }
             let idx = id.index();
             self.caches[idx].clear();
             self.boxes[idx] = UnroundedBox::default();

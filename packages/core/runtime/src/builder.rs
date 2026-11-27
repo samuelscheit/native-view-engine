@@ -177,11 +177,15 @@ impl RuntimeBuilder {
 
         let wake = Arc::new(WakeBridge::new());
         let mut app = self.app;
-        if let Some(ref mut a) = app {
-            a.install_wake_bridge(Arc::clone(&wake));
+        if let Some(ref mut a) = app
+            && a.install_wake_bridge(Arc::clone(&wake))
+        {
+            wake.trigger();
         }
+        let layout_engine_name = scene.layout_engine_name();
 
         SurfaceRuntime {
+            surface_id: self.surface_id,
             lock: SceneLock::new(),
             wake,
             #[cfg(not(target_arch = "wasm32"))]
@@ -191,8 +195,8 @@ impl RuntimeBuilder {
                 app,
                 replica_store,
                 state: SurfaceState {
-                    surface_id: self.surface_id,
                     frame_id: 0,
+                    layout_engine_name,
                     realization_order,
                     wire_decoder: WireDecoder::default(),
                     wire_changes: ChangeSet::default(),

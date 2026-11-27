@@ -15,11 +15,11 @@ use nve_components::tables::{Interaction, Layout, Scroll, TextContent, Visual};
 use nve_engine::{NveApp, Viewport};
 use nve_layout::TaffyStoreLayout;
 use nve_runtime::{
-    FrameTickHook, RuntimeBuilder, RuntimeError, SurfaceRuntime, WakeBridge,
+    AppFrame, FrameTickHook, RuntimeApp, RuntimeBuilder, RuntimeError, SurfaceRuntime, WakeBridge,
     nve_runtime_get_interface,
 };
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, Transaction};
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba, Transaction};
 
 fn get_api() -> NveRuntimeApi {
     let ptr = nve_runtime_get_interface(NVE_RUNTIME_ABI_VERSION);
@@ -132,6 +132,23 @@ unsafe extern "C" {
     fn nve_runtime_test_mini_app_get_interface(interface_id: u32) -> *const c_void;
 }
 
+unsafe extern "C" fn failing_null_surface_get_interface(_interface_id: u32) -> *const c_void {
+    std::ptr::null()
+}
+
+/// Appends an unknown opcode (`0xFF`, 0 words) to a valid `NVE2` frame while updating its 24-byte
+/// header (`ops += 1`, `words += 2`) so `WireDecoder::validate_header` SUCCEEDS and every earlier
+/// op executes (including `NodeStore` reallocations) before failing mid-frame with `UnknownOp`.
+fn append_failing_op_to_valid_nve2(frame: &mut Vec<u8>) {
+    assert!(frame.len() >= 24 && frame.len().is_multiple_of(4));
+    let ops = u32::from_le_bytes(frame[16..20].try_into().expect("4-byte ops field")) + 1;
+    let words = u32::from_le_bytes(frame[20..24].try_into().expect("4-byte words field")) + 2;
+    frame[16..20].copy_from_slice(&ops.to_le_bytes());
+    frame[20..24].copy_from_slice(&words.to_le_bytes());
+    frame.extend_from_slice(&0x0000_00FFu32.to_le_bytes());
+    frame.extend_from_slice(&0u32.to_le_bytes());
+}
+
 #[test]
 fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view() {
     let api = get_api();
@@ -139,29 +156,90 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
     let h = unsafe { (api.create)(std::ptr::null()) };
     assert!(!h.is_null());
 
-    // 1. Submit valid initial frame (16 nodes) -> published_view populated.
-    let valid = build_nve2_with_nodes(16, false);
-    let mut view = NveRuntimeSceneView::default();
+    // 1. Build a stateful `src_store` + `WireEncoder` and submit frame 1 (16 nodes).
+    let mut src_store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut enc = WireEncoder::default();
+    let container = {
+        let mut tx = src_store.tx();
+        let container = tx.create();
+        tx.edit::<Layout>(container)
+            .width(Length::points(200.0))
+            .height(Length::points(100.0));
+        let mut kids = Vec::with_capacity(16);
+        for _ in 0..16 {
+            let item = tx.create();
+            tx.edit::<Layout>(item)
+                .width(Length::points(100.0))
+                .height(Length::points(20.0));
+            tx.edit::<Visual>(item).background(Rgba::rgb(30, 41, 59));
+            kids.push(item);
+        }
+        tx.set_children(container, &kids);
+        tx.set_children(NodeId::ROOT, &[container]);
+        tx.commit_into(&mut changes);
+        container
+    };
+    let mut frame1 = Vec::new();
+    enc.encode(&src_store, &changes, &mut frame1);
+
+    let mut view1 = NveRuntimeSceneView::default();
     // SAFETY: Valid handle, slice, and stack out pointer on owner thread.
     unsafe {
         assert_eq!(
-            (api.submit_nve2)(h, NveBufferSlice::from_slice(&valid)),
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&frame1)),
             NveRuntimeStatus::Ok.as_i32()
         );
         assert_eq!(
-            (api.scene_acquire)(h, &mut view),
+            (api.scene_acquire)(h, &mut view1),
             NveRuntimeStatus::Ok.as_i32()
         );
-        assert!(!view.rows.is_null() && view.node_capacity >= 18);
+        assert!(!view1.rows.is_null() && view1.node_capacity >= 18);
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+    }
+    let orig_rows_ptr = view1.rows;
+    let orig_cap = view1.node_capacity;
+
+    // 1b. A header-invalid frame (misaligned trailing garbage) must fail BEFORE mutating store
+    //     and MUST preserve the live `published_view` intact!
+    let mut bad_header = frame1.clone();
+    bad_header.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xFF]);
+    // SAFETY: Valid handle and slice.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&bad_header)),
+            NveRuntimeStatus::Io.as_i32()
+        );
+        let mut preserved = NveRuntimeSceneView::default();
+        assert_eq!(
+            (api.scene_acquire)(h, &mut preserved),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert_eq!(
+            preserved.rows, orig_rows_ptr,
+            "header-invalid wire frame must not blank the live published_view"
+        );
+        assert_eq!(preserved.node_capacity, orig_cap);
         assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
     }
 
-    // 2. Build a large frame (256 new nodes -> forces Vec reallocation in replica_store) and
-    //    append trailing garbage bytes so `WireDecoder::apply` fails AFTER reallocating!
-    let mut malformed = build_nve2_with_nodes(256, false);
-    malformed.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xFF]);
+    // 2. Non-vacuous mid-frame reallocation failure: encode 256 NEW nodes (valid header, forces
+    //    `replica_store.nodes` reallocation!) followed by a trailing unknown op `0xFF`.
+    {
+        let mut tx = src_store.tx();
+        for _ in 0..256 {
+            let n = tx.create();
+            tx.edit::<Layout>(n)
+                .width(Length::points(10.0))
+                .height(Length::points(10.0));
+        }
+        tx.commit_into(&mut changes);
+    }
+    let mut mid_fail_frame = Vec::new();
+    enc.encode(&src_store, &changes, &mut mid_fail_frame);
+    append_failing_op_to_valid_nve2(&mut mid_fail_frame);
     // SAFETY: Valid handle and slice.
-    let rc = unsafe { (api.submit_nve2)(h, NveBufferSlice::from_slice(&malformed)) };
+    let rc = unsafe { (api.submit_nve2)(h, NveBufferSlice::from_slice(&mid_fail_frame)) };
     assert_eq!(rc, NveRuntimeStatus::Io.as_i32());
     assert!(!read_last_error(&api).is_empty());
 
@@ -175,13 +253,47 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
         );
         assert!(
             view_after_err.rows.is_null() && view_after_err.node_capacity == 0,
-            "failed wire decode must invalidate published_view rather than exposing reallocated pointers"
+            "mid-frame wire failure after reallocation must clear published_view"
         );
         assert!(view_after_err.tables.is_null() && view_after_err.table_count == 0);
         assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
     }
 
-    // 4. Attach C ABI app, render, then detach with `None` -> published_view MUST be invalidated!
+    // 3b. Subsequent valid delta recovers cleanly and proves `replica_store` genuinely grew by 256+
+    //     nodes (reallocated backing buffer) during step 2!
+    {
+        let mut tx = src_store.tx();
+        tx.edit::<Visual>(container).opacity(0.75);
+        tx.commit_into(&mut changes);
+    }
+    let mut recovery_frame = Vec::new();
+    enc.encode(&src_store, &changes, &mut recovery_frame);
+    let mut recovered = NveRuntimeSceneView::default();
+    // SAFETY: Valid handle, slice, and out pointer.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&recovery_frame)),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert_eq!(
+            (api.scene_acquire)(h, &mut recovered),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert!(!recovered.rows.is_null() && !recovered.rects.is_null() && !recovered.tables.is_null());
+        assert!(
+            recovered.node_capacity >= orig_cap + 256,
+            "expected replica_store to have grown by >= 256 nodes (was {orig_cap}, now {})",
+            recovered.node_capacity
+        );
+        assert_ne!(
+            recovered.rows, orig_rows_ptr,
+            "expected Vec<NodeRow> backing buffer to have actually reallocated"
+        );
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+    }
+
+    // 4. Attach C ABI app, verify failed attach preserves live app & view, verify `submit_nve2`
+    //    error preserves live view, then detach cleanly.
     let ev = [NveDirectEvent::press(1, 2, 100, 10.0, 10.0)];
     let mut changed = 0u32;
     let mut ev_changed = 0u32;
@@ -192,18 +304,36 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
             (api.attach_app_interface)(h, Some(nve_runtime_test_mini_app_get_interface)),
             NveRuntimeStatus::Ok.as_i32()
         );
-        // Submitting NVE2 while app is attached MUST return `InvalidArg`.
-        assert_eq!(
-            (api.submit_nve2)(h, NveBufferSlice::from_slice(&valid)),
-            NveRuntimeStatus::InvalidArg.as_i32()
-        );
         assert_eq!(
             (api.tick)(h, 0.016, &mut changed),
             NveRuntimeStatus::Ok.as_i32()
         );
         assert_eq!(changed, 1);
 
-        // Dispatch an event to the attached C ABI app and re-tick.
+        // Non-mutating errors (`submit_nve2` while app attached AND failing `attach_app_interface`)
+        // MUST preserve both the existing app and the live `published_view`!
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&frame1)),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        assert_eq!(
+            (api.attach_app_interface)(h, Some(failing_null_surface_get_interface)),
+            NveRuntimeStatus::InvalidArg.as_i32()
+        );
+        {
+            let mut intact = NveRuntimeSceneView::default();
+            assert_eq!(
+                (api.scene_acquire)(h, &mut intact),
+                NveRuntimeStatus::Ok.as_i32()
+            );
+            assert!(
+                !intact.rows.is_null() && intact.node_capacity >= 3 && intact.frame_id >= 1,
+                "failed submit_nve2 / failed attach_app_interface must not blank live published_view"
+            );
+            assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+        }
+
+        // Dispatch an event to the STILL-ATTACHED C ABI app and re-tick.
         assert_eq!(
             (api.dispatch_events)(h, NveEventBatch::from_slice(&ev), &mut ev_changed),
             NveRuntimeStatus::Ok.as_i32()
@@ -479,6 +609,23 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
             (api.scroll_by)(h, 2, f32::NAN, 0.0, &mut sx, &mut sy),
             NveRuntimeStatus::InvalidArg.as_i32()
         );
+        // Non-mutating `scroll_by` errors (`NotFound`, `InvalidArg`) MUST preserve `published_view`!
+        let mut after_scroll_err = NveRuntimeSceneView::default();
+        assert_eq!(
+            (api.scene_acquire)(h, &mut after_scroll_err),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert!(
+            !after_scroll_err.rows.is_null() && after_scroll_err.node_capacity >= 8,
+            "scroll_by validation errors must not blank published_view"
+        );
+        // Owner-thread `hit_test` MUST succeed even while `scene_acquire` reader lock is held.
+        assert_eq!(
+            (api.hit_test)(h, 20.0, 20.0, &mut u32_out),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert!(u32_out != 0);
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
     }
 
     // `set_viewport` + `tick` must advance `frame_id`.
@@ -548,8 +695,8 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
         assert_eq!((api.pair_is_connected)(h), 0);
     }
 
-    // 3. Cross-thread contract: mutating calls from another thread MUST fail with `InvalidArg`,
-    //    while `scene_acquire`/`scene_release`/`get_metrics`/`hit_test` succeed!
+    // 3. Cross-thread contract: mutating & layout/app calls (including `hit_test`) from another
+    //    thread MUST fail with `InvalidArg`, while `scene_acquire`/`scene_release`/`get_metrics` succeed!
     let h_addr = h as usize;
     std::thread::spawn(move || {
         let h_bg = h_addr as *mut c_void;
@@ -561,6 +708,11 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
         unsafe {
             assert_eq!(
                 (api.tick)(h_bg, 0.016, &mut out_changed),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert!(read_last_error(&api).contains("non-owner thread"));
+            assert_eq!(
+                (api.hit_test)(h_bg, 20.0, 20.0, &mut out_id),
                 NveRuntimeStatus::InvalidArg.as_i32()
             );
             assert!(read_last_error(&api).contains("non-owner thread"));
@@ -595,10 +747,6 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
                 NveRuntimeStatus::Ok.as_i32()
             );
             assert_eq!(out_v.frame_id, 2);
-            assert_eq!(
-                (api.hit_test)(h_bg, 20.0, 20.0, &mut out_id),
-                NveRuntimeStatus::Ok.as_i32()
-            );
             assert_eq!(
                 (api.get_metrics)(h_bg, &mut out_m),
                 NveRuntimeStatus::Ok.as_i32()
@@ -685,8 +833,16 @@ fn swap_layout_engine_bumps_frame_id_and_reconciles_scroll_offsets() {
         2,
         "swap_layout_engine must advance frame_id"
     );
+    assert!(guard.view().node_capacity >= 8 && !guard.view().rects.is_null());
+    // SAFETY: `guard` holds the reader lock and `node_capacity >= 8`.
+    let (container_rect, child0_rect) = unsafe { (*guard.view().rects.add(2), *guard.view().rects.add(3)) };
+    assert_eq!((container_rect.width, container_rect.height), (200.0, 100.0));
+    assert_eq!((child0_rect.width, child0_rect.height), (200.0, 50.0));
     assert_eq!(rt.layout_engine_name().expect("engine name"), "taffy");
     drop(guard);
+
+    // Scroll offset `(0, 50)` must remain preserved and clamped after `swap_layout_engine`.
+    assert_eq!(rt.scroll_by(2, 0.0, 0.0).expect("query scroll"), (0.0, 50.0));
 
     // Confirm scroll_by returns NotFound on a missing node in Rust API too.
     assert!(matches!(
@@ -694,4 +850,455 @@ fn swap_layout_engine_bumps_frame_id_and_reconciles_scroll_offsets() {
         Err(RuntimeError::NotFound(_))
     ));
     let _ = NativeEventKind::Press;
+}
+
+/// Direct-mode `RuntimeApp` whose `dispatch_events` reallocates the sparse `Scroll` column
+/// (`rows` + `owners`) WITHOUT modifying `node_rows`, `text_slab`, or `children_slab` (P0 #1).
+struct TableReallocInEventApp {
+    store: NodeStore,
+    changes: ChangeSet,
+    nodes: Vec<NodeId>,
+    mounted: bool,
+}
+
+impl TableReallocInEventApp {
+    fn new() -> Self {
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        let mut nodes = Vec::with_capacity(64);
+        {
+            let mut tx = store.tx();
+            for _ in 0..64 {
+                let id = tx.create();
+                tx.edit::<Layout>(id)
+                    .width(Length::points(20.0))
+                    .height(Length::points(10.0));
+                nodes.push(id);
+            }
+            // Attach sparse `Scroll` on ONLY node 0 initially (`row_count == 1`).
+            tx.edit::<Scroll>(nodes[0]);
+            tx.set_children(NodeId::ROOT, &nodes);
+            tx.commit_into(&mut changes);
+        }
+        Self {
+            store,
+            changes,
+            nodes,
+            mounted: false,
+        }
+    }
+}
+
+impl RuntimeApp for TableReallocInEventApp {
+    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+        if !self.mounted {
+            self.mounted = true;
+            AppFrame::Direct {
+                changes: &self.changes,
+            }
+        } else {
+            AppFrame::Clean
+        }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        // Attach sparse `Scroll` on all 63 remaining existing nodes: reallocates `Scroll`'s
+        // `rows` and `owners` Vecs WITHOUT reallocating `node_rows`, `text_slab`, or `children_slab`!
+        let mut tx = self.store.tx();
+        for &id in &self.nodes[1..] {
+            tx.edit::<Scroll>(id);
+        }
+        tx.commit_into(&mut self.changes);
+        true
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.store)
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.store)
+    }
+}
+
+#[test]
+fn direct_app_table_column_reallocation_in_dispatch_events_invalidates_published_view() {
+    let mut rt = RuntimeBuilder::new()
+        .viewport(Viewport {
+            width: 400.0,
+            height: 300.0,
+            scale_factor: 1.0,
+        })
+        .app(Box::new(TableReallocInEventApp::new()))
+        .build();
+
+    assert!(rt.tick(0.016).expect("initial mount tick"));
+    let (orig_node_rows, orig_scroll_rows, orig_scroll_owners) = {
+        let g = rt.acquire_scene().expect("acquire 1");
+        let v = g.view();
+        assert!(!v.tables.is_null() && v.table_count >= 1);
+        // SAFETY: `g` holds the reader lock for `table_count` entries.
+        let tables = unsafe { std::slice::from_raw_parts(v.tables, v.table_count as usize) };
+        let scr = tables
+            .iter()
+            .find(|t| t.slot == Scroll::slot().0 as u32)
+            .expect("Scroll table published");
+        assert_eq!(scr.row_count, 1);
+        assert!(!scr.rows.is_null() && !scr.owners.is_null());
+        (v.rows, scr.rows, scr.owners)
+    };
+
+    // Trigger sparse `Scroll` column reallocation during `dispatch_events` (without touching node_rows).
+    let ev = [NveDirectEvent::press(1, 2, 100, 5.0, 5.0)];
+    // SAFETY: `NveDirectEvent::press` has no borrowed pointers.
+    let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
+    assert!(rt.dispatch_events(batch).expect("dispatch_events"));
+
+    // `acquire_scene` BEFORE the next `tick` MUST return a cleared view rather than dangling pointers!
+    {
+        let g = rt.acquire_scene().expect("acquire after table realloc");
+        assert!(
+            g.view().tables.is_null() && g.view().table_count == 0 && g.view().rows.is_null(),
+            "reallocating Scroll table column in dispatch_events must invalidate published_view"
+        );
+    }
+
+    // Next `tick` republishes fresh valid `Scroll` table view with all 64 rows while `node_rows`
+    // never moved (proving the catch came strictly from `published_tables` validation!).
+    assert!(rt.tick(0.016).expect("republish tick"));
+    {
+        let g = rt.acquire_scene().expect("acquire after republish");
+        let v = g.view();
+        assert_eq!(v.rows, orig_node_rows, "node_rows must not have moved");
+        // SAFETY: `g` holds the reader lock for `table_count` entries.
+        let tables = unsafe { std::slice::from_raw_parts(v.tables, v.table_count as usize) };
+        let scr = tables
+            .iter()
+            .find(|t| t.slot == Scroll::slot().0 as u32)
+            .expect("Scroll table republished");
+        assert_eq!(scr.row_count, 64);
+        assert_ne!(scr.rows, orig_scroll_rows);
+        assert_ne!(scr.owners, orig_scroll_owners);
+    }
+}
+
+/// Direct app + `FrameTickHook` exercising create-in-app -> remove-in-hook within ONE `tick()`
+/// AND duplicate `Visual` edits across app + hook (regression test for P1 #4 and P2 #2).
+struct CreateInAppApp {
+    store: NodeStore,
+    changes: ChangeSet,
+    persistent: NodeId,
+    mounted: bool,
+}
+
+impl CreateInAppApp {
+    fn new() -> Self {
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        let persistent = {
+            let mut tx = store.tx();
+            let p = tx.create();
+            tx.edit::<Layout>(p)
+                .width(Length::points(100.0))
+                .height(Length::points(40.0));
+            tx.edit::<Visual>(p).opacity(1.0);
+            let transient = tx.create();
+            tx.edit::<Layout>(transient)
+                .width(Length::points(50.0))
+                .height(Length::points(20.0));
+            tx.edit::<Visual>(transient).opacity(0.9);
+            tx.set_children(NodeId::ROOT, &[p, transient]);
+            tx.commit_into(&mut changes);
+            p
+        };
+        Self {
+            store,
+            changes,
+            persistent,
+            mounted: false,
+        }
+    }
+}
+
+impl RuntimeApp for CreateInAppApp {
+    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+        if !self.mounted {
+            self.mounted = true;
+            AppFrame::Direct {
+                changes: &self.changes,
+            }
+        } else {
+            AppFrame::Clean
+        }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        false
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.store)
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.store)
+    }
+}
+
+struct RemoveTransientAndEditPersistentHook {
+    persistent: NodeId,
+}
+
+impl FrameTickHook for RemoveTransientAndEditPersistentHook {
+    fn tick(&mut self, tx: &mut Transaction<'_>, _dt_s: f32) -> bool {
+        let kids: Vec<NodeId> = tx.store().children(NodeId::ROOT).to_vec();
+        if kids.len() == 2 {
+            let transient = kids[1];
+            tx.set_children(NodeId::ROOT, &[self.persistent]);
+            tx.remove(transient);
+            tx.edit::<Visual>(self.persistent).opacity(0.4);
+            return true;
+        }
+        false
+    }
+}
+
+#[test]
+fn app_create_then_hook_remove_cancels_cleanly_and_deduplicates_table_dirty_rows() {
+    let app = CreateInAppApp::new();
+    let persistent = app.persistent;
+    let mut rt = RuntimeBuilder::new()
+        .viewport(Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        })
+        .app(Box::new(app))
+        .tick_hook(Box::new(RemoveTransientAndEditPersistentHook { persistent }))
+        .build();
+
+    assert!(rt.tick(0.016).expect("app+hook tick"));
+    let guard = rt.acquire_scene().expect("acquire scene");
+    let v = guard.view();
+    assert_eq!(v.removed_count, 0, "transient node born in app and removed in hook must cancel");
+    // SAFETY: `guard` holds the reader lock for `dirty_count` indices.
+    let dirty = unsafe { std::slice::from_raw_parts(v.dirty_indices, v.dirty_count as usize) };
+    for &idx in dirty {
+        // SAFETY: `idx < v.node_capacity`.
+        let row = unsafe { *v.rows.add(idx as usize) };
+        assert!(row.is_live(), "dead transient slot {idx} leaked into dirty_indices");
+    }
+    // SAFETY: `guard` holds the reader lock for `table_count` entries.
+    let tables = unsafe { std::slice::from_raw_parts(v.tables, v.table_count as usize) };
+    let vis = tables
+        .iter()
+        .find(|t| t.slot == Visual::slot().0 as u32)
+        .expect("Visual table published");
+    assert_eq!(
+        vis.dirty_count, 1,
+        "duplicate Visual edits in app + hook must deduplicate to 1 dirty row"
+    );
+}
+
+struct TwoPumpTransientApp {
+    store: NodeStore,
+    changes: ChangeSet,
+    persistent: NodeId,
+    transient_idx: usize,
+    phase: u8,
+}
+
+impl TwoPumpTransientApp {
+    fn new() -> Self {
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        let persistent = {
+            let mut tx = store.tx();
+            let p = tx.create();
+            tx.edit::<Layout>(p)
+                .width(Length::points(120.0))
+                .height(Length::points(40.0));
+            tx.edit::<Visual>(p).opacity(1.0);
+            tx.set_children(NodeId::ROOT, &[p]);
+            tx.commit_into(&mut changes);
+            p
+        };
+        Self {
+            store,
+            changes,
+            persistent,
+            transient_idx: 0,
+            phase: 0,
+        }
+    }
+}
+
+impl RuntimeApp for TwoPumpTransientApp {
+    fn poll_async_work(&mut self) -> bool {
+        if self.phase == 1 {
+            self.phase = 2;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn render_frame(&mut self, _frame_id: u64) -> AppFrame<'_> {
+        match self.phase {
+            0 => {
+                // Pump 1: create a transient node AND edit `persistent`'s `Visual`.
+                self.phase = 1;
+                let mut tx = self.store.tx();
+                let t = tx.create();
+                self.transient_idx = t.index();
+                tx.edit::<Layout>(t)
+                    .width(Length::points(40.0))
+                    .height(Length::points(20.0));
+                tx.edit::<Visual>(t).opacity(0.9);
+                tx.edit::<Visual>(self.persistent).opacity(0.7);
+                tx.set_children(NodeId::ROOT, &[self.persistent, t]);
+                tx.commit_into(&mut self.changes);
+                AppFrame::Direct {
+                    changes: &self.changes,
+                }
+            }
+            2 => {
+                // Pump 2 in the SAME `tick()`: remove the transient node AND edit `persistent`'s
+                // `Visual` a second time (producing duplicate `Visual` dirty row before dedup!).
+                self.phase = 3;
+                let transient = self.store.children(NodeId::ROOT)[1];
+                let mut tx = self.store.tx();
+                tx.set_children(NodeId::ROOT, &[self.persistent]);
+                tx.remove(transient);
+                tx.edit::<Visual>(self.persistent).opacity(0.3);
+                tx.commit_into(&mut self.changes);
+                AppFrame::Direct {
+                    changes: &self.changes,
+                }
+            }
+            _ => AppFrame::Clean,
+        }
+    }
+
+    fn dispatch_events(&mut self, _events: NveEventBatchRef<'_>) -> bool {
+        false
+    }
+
+    fn direct_store(&self) -> Option<&NodeStore> {
+        Some(&self.store)
+    }
+
+    fn direct_store_mut(&mut self) -> Option<&mut NodeStore> {
+        Some(&mut self.store)
+    }
+}
+
+#[test]
+fn two_pump_create_then_remove_and_duplicate_table_edits_are_clean_and_deduplicated() {
+    let app = TwoPumpTransientApp::new();
+    let persistent = app.persistent;
+    let mut rt = RuntimeBuilder::new()
+        .viewport(Viewport {
+            width: 300.0,
+            height: 200.0,
+            scale_factor: 1.0,
+        })
+        .app(Box::new(app))
+        .tick_hook(Box::new(RemoveTransientAndEditPersistentHook { persistent }))
+        .build();
+
+    // Single `tick()` runs Pump 1 (create transient + edit Visual) AND Pump 2 (remove transient +
+    // edit Visual again).
+    assert!(rt.tick(0.016).expect("two-pump tick"));
+    let guard = rt.acquire_scene().expect("acquire scene");
+    let v = guard.view();
+    assert_eq!(v.removed_count, 0, "transient node born and killed in same tick must cancel out");
+    // SAFETY: `guard` holds the reader lock for `dirty_count` items.
+    let dirty = unsafe { std::slice::from_raw_parts(v.dirty_indices, v.dirty_count as usize) };
+    // Every dirty index must point to a LIVE row (never the dead transient slot 3!).
+    for &idx in dirty {
+        // SAFETY: `idx < v.node_capacity`.
+        let row = unsafe { *v.rows.add(idx as usize) };
+        assert!(row.is_live(), "dead transient slot {idx} leaked into dirty_indices");
+    }
+    // `Visual` table `dirty_rows` must be deduplicated (no duplicate row index for `persistent`)!
+    // SAFETY: `guard` holds the reader lock for `table_count` entries.
+    let tables = unsafe { std::slice::from_raw_parts(v.tables, v.table_count as usize) };
+    let vis = tables
+        .iter()
+        .find(|t| t.slot == Visual::slot().0 as u32)
+        .expect("Visual table published");
+    assert_eq!(vis.dirty_count, 1, "duplicate Visual edits across pumps must deduplicate to 1 dirty row");
+    // SAFETY: `vis.dirty_count == 1` and `guard` holds the reader lock.
+    let vis_dirty = unsafe { std::slice::from_raw_parts(vis.dirty_rows, vis.dirty_count as usize) };
+    assert_eq!(vis_dirty.len(), 1);
+}
+
+struct Utf8PanickingHook;
+
+impl FrameTickHook for Utf8PanickingHook {
+    fn tick(&mut self, _tx: &mut Transaction<'_>, _dt_s: f32) -> bool {
+        #[expect(
+            clippy::panic,
+            reason = "intentional UTF-8 panic to verify rt_last_error char-boundary truncation"
+        )]
+        {
+            panic!("boom🔥é");
+        }
+    }
+}
+
+#[test]
+fn rt_last_error_handles_null_cap1_utf8_truncation_and_clears_on_ok() {
+    let api = get_api();
+    let rt = RuntimeBuilder::new()
+        .tick_hook(Box::new(Utf8PanickingHook))
+        .build();
+    let h = Box::into_raw(Box::new(rt)).cast::<c_void>();
+
+    let mut changed = 0u32;
+    // SAFETY: Valid handle on owner thread; triggers caught panic with multi-byte UTF-8 payload.
+    let tick_rc = unsafe { (api.tick)(h, 0.016, &mut changed) };
+    assert_eq!(tick_rc, NveRuntimeStatus::Panic.as_i32());
+
+    // 1. `(NULL, 0)` returns full byte length without writing.
+    // SAFETY: Null pointer with cap=0 is explicitly supported for length queries.
+    let full_len = unsafe { (api.last_error)(std::ptr::null_mut(), 0) };
+    assert!(full_len > 10);
+
+    // 2. `cap == 1` writes only NUL terminator while returning full byte length.
+    let mut tiny = [0xAAu8; 1];
+    // SAFETY: Valid 1-byte buffer.
+    let len1 = unsafe { (api.last_error)(tiny.as_mut_ptr(), tiny.len()) };
+    assert_eq!(len1, full_len);
+    assert_eq!(tiny[0], 0);
+
+    // 3. Every small truncation capacity `2..=full_len` must produce valid NUL-terminated UTF-8!
+    let mut buf = vec![0xFFu8; full_len + 2];
+    for cap in 2..=full_len {
+        buf.fill(0xFF);
+        // SAFETY: Valid buffer of length `cap`.
+        let reported = unsafe { (api.last_error)(buf.as_mut_ptr(), cap) };
+        assert_eq!(reported, full_len);
+        let nul_pos = buf[..cap]
+            .iter()
+            .position(|&b| b == 0)
+            .expect("must NUL-terminate within cap");
+        assert!(
+            std::str::from_utf8(&buf[..nul_pos]).is_ok(),
+            "rt_last_error split a multi-byte UTF-8 sequence at cap={cap}: {:?}",
+            &buf[..nul_pos]
+        );
+    }
+
+    // 4. Subsequent `Ok` C ABI call clears `last_error` back to 0 bytes.
+    // SAFETY: Valid handle; `set_wake_callback(NULL)` succeeds even on poisoned handle.
+    let clear_rc = unsafe { (api.set_wake_callback)(h, None, std::ptr::null_mut()) };
+    assert_eq!(clear_rc, NveRuntimeStatus::Ok.as_i32());
+    // SAFETY: Length query with null/0.
+    let cleared_len = unsafe { (api.last_error)(std::ptr::null_mut(), 0) };
+    assert_eq!(cleared_len, 0);
+
+    // SAFETY: Destroy handle once on owner thread.
+    unsafe { (api.destroy)(h) };
 }

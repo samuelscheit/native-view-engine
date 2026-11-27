@@ -215,22 +215,23 @@ unsafe extern "C" fn rt_attach_app_interface(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
+            if let Err(e) = rt.check_not_poisoned().and_then(|()| rt.check_owner_thread()) {
+                set_last_error(e.to_string());
+                return e.status().as_i32();
+            }
             match get_iface {
-                Some(f) => status_from_result(rt.with_write(|inner| {
-                    inner.reset_for_app_change();
+                Some(f) => {
+                    // Construct the adapter BEFORE resetting or replacing live surface state so a
+                    // failing `nve_get_interface` leaves any existing app and published view intact.
                     // SAFETY: Host guarantees `f` is a valid NVE `nve_get_interface` symbol.
                     let Some(adapter) = (unsafe {
-                        CAbiAppAdapter::from_get_interface(f, inner.state.surface_id)
+                        CAbiAppAdapter::from_get_interface(f, rt.surface_id)
                     }) else {
-                        return Err(RuntimeError::InvalidArg(
-                            "app interface returned null surface API or app handle",
-                        ));
+                        set_last_error("app interface returned null surface API or app handle");
+                        return NveRuntimeStatus::InvalidArg.as_i32();
                     };
-                    inner.app = Some(Box::new(adapter));
-                    inner.state.needs_render = true;
-                    inner.state.needs_publish = true;
-                    Ok(())
-                })),
+                    status_from_result(rt.attach_app_shared(Box::new(adapter)))
+                }
                 None => status_from_result(rt.detach_app_shared()),
             }
         },
@@ -530,8 +531,11 @@ unsafe extern "C" fn rt_last_error(out_buf: *mut u8, cap: usize) -> usize {
                 };
                 let bytes = s.as_bytes();
                 if !out_buf.is_null() && cap > 0 {
-                    let n = bytes.len().min(cap.saturating_sub(1));
-                    // SAFETY: `out_buf` is valid for `cap` bytes; `n < cap`.
+                    let mut n = bytes.len().min(cap.saturating_sub(1));
+                    while n > 0 && !s.is_char_boundary(n) {
+                        n -= 1;
+                    }
+                    // SAFETY: `out_buf` is valid for `cap` bytes; `n < cap` and on a UTF-8 boundary.
                     unsafe {
                         std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, n);
                         *out_buf.add(n) = 0;
