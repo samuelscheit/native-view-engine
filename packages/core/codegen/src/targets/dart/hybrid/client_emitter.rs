@@ -81,10 +81,13 @@ pub(super) fn emit_dart_client(
         "      throw const HybridException(HybridStatus.nullHandle, 'hybrid vtable for {pascal} is null');"
     );
     writeln!(out, "    }}");
-    writeln!(
-        out,
-        "    hybridVerifyVtable(abiVersion, _nveVtable.ref.abiVersion, _nveVtable.ref.schemaHash, schemaHash, '{pascal}');"
-    );
+    writeln!(out, "    hybridVerifyVtable(");
+    writeln!(out, "      expectedAbiVersion: abiVersion,");
+    writeln!(out, "      actualAbiVersion: _nveVtable.ref.abiVersion,");
+    writeln!(out, "      rawSchemaHash: _nveVtable.ref.schemaHash,");
+    writeln!(out, "      expectedSchemaHash: schemaHash,");
+    writeln!(out, "      name: '{pascal}',");
+    writeln!(out, "    );");
     writeln!(
         out,
         "    _destroy = _nveVtable.ref.destroy.asFunction<HybridDestroyDart>();"
@@ -341,7 +344,7 @@ pub(super) fn emit_dart_client_method(
                     writeln!(out, "{indent}  _nveArg{idx}.value = {pname}.rawValue;")
                 }
                 HybridType::Struct(_) => {
-                    writeln!(out, "{indent}  _nveArg{idx}.value = {pname}.toAbi();")
+                    writeln!(out, "{indent}  {pname}._writeAbi(_nveArg{idx}.value);")
                 }
                 _ => writeln!(out, "{indent}  _nveArg{idx}.value = {pname};"),
             }
@@ -434,7 +437,7 @@ pub(super) fn emit_dart_client_method(
             writeln!(out, "{indent}  _freeBytes(_nveErrPtr.ref);");
             writeln!(out, "{indent}}}");
             if has_ok {
-                let read_expr = dart_read_ptr_expr("_nveOkPtr", ok, spec);
+                let read_expr = dart_read_ptr_expr("_nveOkPtr", ok);
                 writeln!(out, "{indent}final _nveRawOk = {read_expr};");
                 emit_dart_return_decode(out, indent, "_nveRawOk", ok, spec);
             }
@@ -456,7 +459,7 @@ pub(super) fn emit_dart_client_method(
     writeln!(out);
 }
 
-pub(super) fn dart_read_ptr_expr(ptr: &str, ty: &HybridType, spec: &HybridFileSpec) -> String {
+pub(super) fn dart_read_ptr_expr(ptr: &str, ty: &HybridType) -> String {
     match ty {
         HybridType::Bool
         | HybridType::U8
@@ -469,8 +472,6 @@ pub(super) fn dart_read_ptr_expr(ptr: &str, ty: &HybridType, spec: &HybridFileSp
         | HybridType::F32
         | HybridType::F64
         | HybridType::Enum(_) => format!("{ptr}.value"),
-        HybridType::Struct(_) if ty.is_pod(spec) => format!("{ptr}.ref"),
-        _ if ty.optional_pod_suffix(spec).is_some() => format!("{ptr}.ref"),
         _ => format!("{ptr}.ref"),
     }
 }

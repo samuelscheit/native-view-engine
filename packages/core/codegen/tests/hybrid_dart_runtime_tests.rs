@@ -293,8 +293,8 @@ fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
         "generated file must namespace its file schema hash by stem to avoid cross-file collisions"
     );
     assert!(
-        src.contains("hybridVerifyVtable(abiVersion,"),
-        "generated client must pass generated abiVersion into hybridVerifyVtable"
+        src.contains("expectedAbiVersion: abiVersion,"),
+        "generated client must pass generated abiVersion as named arg into hybridVerifyVtable"
     );
 
     // Enum-only spec must omit unused `dart:ffi` / `nve_host_ffi.dart` imports.
@@ -325,28 +325,85 @@ fn generated_dart_uses_static_host_dart_runtime_without_double_wrapping() {
     assert!(!deceptive_src.contains("import 'dart:typed_data'"));
     assert!(!deceptive_src.contains("nve_host_ffi.dart"));
 
-    // FixedArray POD struct + Option<[u8; 4]> must generate cleanly with zero panics.
-    let fixed_arr_spec = parse_hybrid_rust_spec(
-        r#"
-#[nve_hybrid_struct]
-pub struct FixedBuf {
-    pub bytes: [u8; 4],
-}
-#[nve_hybrid_module(name = "FixedMod")]
-pub trait FixedModSpec {
-    fn take_fixed(&self, buf: FixedBuf, opt_arr: Option<[u8; 4]>) -> Option<[u8; 4]>;
-}
-"#,
+    // `*const Vec<u8>` maps to `ffi.Pointer<ffi.Void>` and must NOT import unused `dart:typed_data`.
+    let raw_buf_ptr = parse_hybrid_rust_spec(
+        "#[nve_hybrid_struct]\npub struct RawBufPtr { pub raw: *const Vec<u8> }",
     )
-    .expect("parse FixedArray spec");
+    .expect("parse RawBufPtr spec");
+    let raw_buf_src = &generate_hybrid_target(&raw_buf_ptr, HybridTarget::Dart)
+        .expect("generate RawBufPtr dart")
+        .files[0]
+        .content;
+    assert!(raw_buf_src.contains("import 'dart:ffi' as ffi;"));
+    assert!(!raw_buf_src.contains("import 'dart:typed_data'"));
+    assert!(!raw_buf_src.contains("nve_host_ffi.dart"));
+
+    // 1D POD FixedArray across struct, enum, bool, usize, u8 + Option<[u8; 4]> generates cleanly.
+    let fixed_arr_spec = parse_hybrid_rust_spec(FIXED_ARRAY_POD_SPEC).expect("parse FixedArray spec");
     let fixed_src = &generate_hybrid_target(&fixed_arr_spec, HybridTarget::Dart)
         .expect("generate FixedArray dart")
         .files[0]
         .content;
-    assert!(fixed_src.contains("@ffi.Array(4)"));
+    assert!(fixed_src.contains("void _writeAbi(NveHybridFixedPodBundle _nveDst)"));
+    assert!(fixed_src.contains("points[_nveI]._writeAbi(_nveDst.points[_nveI]);"));
+    assert!(fixed_src.contains("@ffi.Array(2)"));
+    assert!(fixed_src.contains("external ffi.Array<NveHybridFixedPoint> points;"));
+    assert!(fixed_src.contains("external ffi.Array<ffi.Uint32> kinds;"));
+    assert!(fixed_src.contains("external ffi.Array<ffi.Bool> flags;"));
+    assert!(fixed_src.contains("external ffi.Array<ffi.Size> sizes;"));
     assert!(fixed_src.contains("external ffi.Array<ffi.Uint8> bytes;"));
+    assert!(fixed_src.contains("List<FixedPoint>.generate(2,"));
     assert!(!fixed_src.contains("NveHybridOpt"));
+
+    // 2D `[[u8; 2]; 2]` in a POD struct must return Err(CodegenError) cleanly (never panic).
+    let nested_fixed = parse_hybrid_rust_spec(
+        "#[nve_hybrid_struct]\npub struct Matrix2x2 { pub cells: [[u8; 2]; 2] }",
+    )
+    .expect("parse 2D FixedArray spec");
+    let nested_err = generate_hybrid_target(&nested_fixed, HybridTarget::Dart)
+        .expect_err("2D fixed array in Dart POD struct must return CodegenError");
+    assert!(
+        nested_err.to_string().contains("fixed-array"),
+        "expected fixed-array CodegenError, got: {nested_err}"
+    );
 }
+
+const FIXED_ARRAY_POD_SPEC: &str = r#"
+#[nve_hybrid_enum]
+pub enum FixedKind {
+    Alpha = 0,
+    Beta = 1,
+    Gamma = 2,
+}
+
+#[nve_hybrid_struct]
+pub struct FixedPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[nve_hybrid_struct]
+pub struct FixedPodBundle {
+    pub points: [FixedPoint; 2],
+    pub kinds: [FixedKind; 3],
+    pub flags: [bool; 2],
+    pub sizes: [usize; 2],
+    pub bytes: [u8; 4],
+}
+
+#[nve_hybrid_module(name = "FixedMod")]
+pub trait FixedModSpec {
+    fn take_fixed(&self, buf: FixedPodBundle, opt_arr: Option<[u8; 4]>) -> Option<[u8; 4]>;
+}
+
+#[nve_hybrid_view(name = "FixedView")]
+pub trait FixedViewSpec {
+    #[prop]
+    fn bundle(&self) -> FixedPodBundle;
+    #[prop]
+    fn mask(&self) -> [u8; 4];
+}
+"#;
 
 #[test]
 fn strict_dart_analyzer_accepts_realistic_enum_only_and_multi_option_shadowing_specs() {
@@ -365,16 +422,8 @@ fn strict_dart_analyzer_accepts_realistic_enum_only_and_multi_option_shadowing_s
         MULTI_OPTION_SHADOW_SPEC,
         "#[nve_hybrid_enum]\npub enum SoloKind { First = 0, Second = 2 }",
         "#[nve_hybrid_struct]\npub struct NveValueHolder { pub ffi_uint8_list: String }",
-        r#"
-#[nve_hybrid_struct]
-pub struct FixedBuf {
-    pub bytes: [u8; 4],
-}
-#[nve_hybrid_module(name = "FixedMod")]
-pub trait FixedModSpec {
-    fn take_fixed(&self, buf: FixedBuf, opt_arr: Option<[u8; 4]>) -> Option<[u8; 4]>;
-}
-"#,
+        "#[nve_hybrid_struct]\npub struct RawBufPtr { pub raw: *const Vec<u8> }",
+        FIXED_ARRAY_POD_SPEC,
         "#[nve_hybrid_module(name = \"HandleShadow\")]\npub trait HandleShadowSpec { fn ping(&self, handle: String, vtable: i32, arena: Option<String>, builder: Option<i64>) -> i32; }",
     ] {
         let spec = parse_hybrid_rust_spec(spec_src).expect("parse spec");
@@ -394,6 +443,213 @@ pub trait FixedModSpec {
         "Generated Dart failed strict `dart analyze --fatal-infos`:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&check.stdout),
         String::from_utf8_lossy(&check.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fixed_array_pod_and_binary_codec_runtime_roundtrip() {
+    if !common::require_tool("dart") {
+        return;
+    }
+
+    let dir = temp_test_dir("fixed_array_rt");
+    let lib_dir = dir.join("lib");
+    let bin_dir = dir.join("bin");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let spec = parse_hybrid_rust_spec(FIXED_ARRAY_POD_SPEC).expect("parse FixedArray spec");
+    generate_hybrid_target(&spec, HybridTarget::Dart)
+        .expect("generate FixedArray dart")
+        .write_to_dir(&lib_dir)
+        .expect("write FixedArray dart");
+
+    setup_offline_dart_pkg(&dir, "nve_fixed_arr_rt");
+    std::fs::write(dir.join("analysis_options.yaml"), STRICT_ANALYSIS_OPTIONS).unwrap();
+
+    let driver = bin_dir.join("fixed_rt.dart");
+    std::fs::write(
+        &driver,
+        r#"
+import 'package:nve_fixed_arr_rt/fixed_mod_hybrid.generated.dart';
+import 'package:nve_host/nve_host.dart';
+
+void expect(bool cond, String msg) {
+  if (!cond) {
+    throw StateError('ASSERTION FAILED: $msg');
+  }
+}
+
+void expectEq(Object? actual, Object? expected, String msg) {
+  if (actual != expected) {
+    throw StateError('ASSERTION FAILED ($msg): expected $expected, got $actual');
+  }
+}
+
+void expectThrows<T>(void Function() fn, String msg) {
+  try {
+    fn();
+  } catch (e) {
+    if (e is T) {
+      return;
+    }
+    throw StateError('ASSERTION FAILED ($msg): expected $T, got ${e.runtimeType}: $e');
+  }
+  throw StateError('ASSERTION FAILED ($msg): expected $T, did not throw');
+}
+
+void main() {
+  const sample = FixedPodBundle(
+    points: <FixedPoint>[
+      FixedPoint(x: 1.5, y: -2.25),
+      FixedPoint(x: 100.0, y: 0.5),
+    ],
+    kinds: <FixedKind>[FixedKind.gamma, FixedKind.alpha, FixedKind.beta],
+    flags: <bool>[true, false],
+    sizes: <int>[0, 123456],
+    bytes: <int>[0x10, 0x20, 0xFE, 0xFF],
+  );
+
+  // 1. Live `toAbi()` / `fromAbi()` across [PodStruct; 2], [Enum; 3], [bool; 2], [usize; 2], [u8; 4].
+  final abi = sample.toAbi();
+  final fromAbi = FixedPodBundle.fromAbi(abi);
+  expectEq(fromAbi.points.length, 2, 'fromAbi points len');
+  expectEq(fromAbi.points[0].x, 1.5, 'fromAbi points[0].x');
+  expectEq(fromAbi.points[0].y, -2.25, 'fromAbi points[0].y');
+  expectEq(fromAbi.points[1].x, 100.0, 'fromAbi points[1].x');
+  expectEq(fromAbi.points[1].y, 0.5, 'fromAbi points[1].y');
+  expectEq(fromAbi.kinds[0], FixedKind.gamma, 'fromAbi kinds[0]');
+  expectEq(fromAbi.kinds[1], FixedKind.alpha, 'fromAbi kinds[1]');
+  expectEq(fromAbi.kinds[2], FixedKind.beta, 'fromAbi kinds[2]');
+  expectEq(fromAbi.flags[0], true, 'fromAbi flags[0]');
+  expectEq(fromAbi.flags[1], false, 'fromAbi flags[1]');
+  expectEq(fromAbi.sizes[0], 0, 'fromAbi sizes[0]');
+  expectEq(fromAbi.sizes[1], 123456, 'fromAbi sizes[1]');
+  expectEq(fromAbi.bytes[0], 0x10, 'fromAbi bytes[0]');
+  expectEq(fromAbi.bytes[3], 0xFF, 'fromAbi bytes[3]');
+
+  // 2. `toAbi()` rejects length != len with RangeError (short & long).
+  expectThrows<RangeError>(
+    () => const FixedPodBundle(
+      points: <FixedPoint>[FixedPoint(x: 0.0, y: 0.0)],
+      kinds: <FixedKind>[FixedKind.alpha, FixedKind.alpha, FixedKind.alpha],
+      flags: <bool>[false, false],
+      sizes: <int>[0, 0],
+      bytes: <int>[0, 0, 0, 0],
+    ).toAbi(),
+    'toAbi short points throws RangeError',
+  );
+  expectThrows<RangeError>(
+    () => const FixedPodBundle(
+      points: <FixedPoint>[FixedPoint(x: 0.0, y: 0.0), FixedPoint(x: 1.0, y: 1.0)],
+      kinds: <FixedKind>[FixedKind.alpha, FixedKind.alpha, FixedKind.alpha],
+      flags: <bool>[false, false, true],
+      sizes: <int>[0, 0],
+      bytes: <int>[0, 0, 0, 0],
+    ).toAbi(),
+    'toAbi long flags throws RangeError',
+  );
+
+  // 3. Binary codec round-trip (`encodeBin` / `decodeBin`) preserves every element.
+  final bw = BinWriter();
+  sample.encodeBin(bw);
+  final br = BinReader(bw.toBytes());
+  final fromBin = FixedPodBundle.decodeBin(br);
+  br.requireDone();
+  expectEq(fromBin.points[0].x, 1.5, 'fromBin points[0].x');
+  expectEq(fromBin.points[1].y, 0.5, 'fromBin points[1].y');
+  expectEq(fromBin.kinds[2], FixedKind.beta, 'fromBin kinds[2]');
+  expectEq(fromBin.flags[0], true, 'fromBin flags[0]');
+  expectEq(fromBin.sizes[1], 123456, 'fromBin sizes[1]');
+  expectEq(fromBin.bytes[2], 0xFE, 'fromBin bytes[2]');
+
+  // 4. `encodeBin()` rejects wrong length with RangeError.
+  expectThrows<RangeError>(
+    () {
+      const FixedPodBundle(
+        points: <FixedPoint>[FixedPoint(x: 0.0, y: 0.0), FixedPoint(x: 1.0, y: 1.0)],
+        kinds: <FixedKind>[FixedKind.alpha, FixedKind.alpha, FixedKind.alpha],
+        flags: <bool>[false, false],
+        sizes: <int>[0, 0],
+        bytes: <int>[1, 2, 3],
+      ).encodeBin(BinWriter());
+    },
+    'encodeBin short bytes throws RangeError',
+  );
+
+  // 5. `decodeBin()` from an empty map `{}` produces exact-length defaults valid for `toAbi()` + `encodeBin()`.
+  final emptyW = BinWriter();
+  final em = emptyW.beginMap(0);
+  emptyW.end(em);
+  final defaulted = FixedPodBundle.decodeBin(BinReader(emptyW.toBytes()));
+  expectEq(defaulted.points.length, 2, 'default points len');
+  expectEq(defaulted.kinds.length, 3, 'default kinds len');
+  expectEq(defaulted.flags.length, 2, 'default flags len');
+  expectEq(defaulted.sizes.length, 2, 'default sizes len');
+  expectEq(defaulted.bytes.length, 4, 'default bytes len');
+  defaulted.toAbi();
+  defaulted.encodeBin(BinWriter());
+
+  // Default view props also carry exact fixed-array lengths.
+  final viewProps = FixedViewProps();
+  expectEq(viewProps.bundle.points.length, 2, 'view default bundle.points len');
+  expectEq(viewProps.mask.length, 4, 'view default mask len');
+
+  // 6. `decodeBin()` rejects wire length != len with BinCodecException (truncated vs tooLarge).
+  for (final (wireLen, expectedKind) in const <(int, BinErrorKind)>[
+    (3, BinErrorKind.truncated),
+    (5, BinErrorKind.tooLarge),
+  ]) {
+    final badW = BinWriter();
+    final bm = badW.beginMap(1);
+    badW.writeMapKey('bytes');
+    final ba = badW.beginArray(wireLen);
+    for (var i = 0; i < wireLen; i++) {
+      badW.writeI64(i);
+    }
+    badW
+      ..end(ba)
+      ..end(bm);
+    var caughtKind = BinErrorKind.invalidMark;
+    try {
+      FixedPodBundle.decodeBin(BinReader(badW.toBytes()));
+    } on BinCodecException catch (e) {
+      caughtKind = e.kind;
+    }
+    expectEq(caughtKind, expectedKind, 'decodeBin bytes len=$wireLen rejects with $expectedKind');
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let analyze = Command::new("dart")
+        .args(["analyze", "--fatal-infos"])
+        .arg(&dir)
+        .output()
+        .expect("dart analyze fixed_array_rt");
+    assert!(
+        analyze.status.success(),
+        "FixedArray Dart runtime test failed strict `dart analyze --fatal-infos`:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&analyze.stdout),
+        String::from_utf8_lossy(&analyze.stderr)
+    );
+
+    let pkg_config = dir.join(".dart_tool/package_config.json");
+    let run = Command::new("dart")
+        .arg("--enable-asserts")
+        .arg(format!("--packages={}", pkg_config.display()))
+        .arg(&driver)
+        .current_dir(&dir)
+        .output()
+        .expect("run live FixedArray Dart VM test");
+    assert!(
+        run.status.success(),
+        "Live FixedArray Dart VM test failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -688,413 +944,9 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
     )
     .unwrap();
 
-    // Write the live Dart VM e2e test driver!
+    // Write the live Dart VM e2e test driver from fixtures.
     let main_dart = bin_dir.join("e2e.dart");
-    std::fs::write(
-        &main_dart,
-        r#"
-import 'dart:ffi' as ffi;
-import 'dart:typed_data';
-
-import 'package:nve_dart_e2e/crypto_hybrid.generated.dart';
-import 'package:nve_dart_e2e/multi_opt_shadow_hybrid.generated.dart';
-import 'package:nve_host/nve_host.dart';
-import 'package:nve_host/nve_host_ffi.dart';
-
-void expect(bool cond, String msg) {
-  if (!cond) {
-    throw StateError('ASSERTION FAILED: $msg');
-  }
-}
-
-void expectEq(Object? actual, Object? expected, String msg) {
-  if (actual != expected) {
-    throw StateError('ASSERTION FAILED ($msg): expected $expected, got $actual');
-  }
-}
-
-bool sameBytes(List<int> a, List<int> b) {
-  if (a.length != b.length) {
-    return false;
-  }
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-void main(List<String> args) {
-  final lib = ffi.DynamicLibrary.open(args.first);
-
-  // ---- 1. Crypto module ----
-  final crypto = CryptoHybridClient.resolve(lib);
-  expectEq(crypto.version(), '\uFEFFnve-dart-1.0', 'version preserves BOM');
-  expectEq(crypto.add(19, 23), 42, 'add');
-
-  final input = Uint8List.fromList(<int>[0x10, 0x20, 0x30]);
-  final hashed = crypto.blake3(input);
-  expect(sameBytes(hashed, <int>[0x4A, 0x7A, 0x6A]), 'blake3 xor');
-
-  final hdr = crypto.hashWith(HashAlgorithm.sha512, input);
-  expectEq(hdr.algorithm, HashAlgorithm.sha512, 'hdr.algorithm');
-  expectEq(hdr.byteLen, 3, 'hdr.byteLen');
-  expectEq(hdr.verified, true, 'hdr.verified');
-  expectEq(hdr.anchor.x, 12.5, 'hdr.anchor.x');
-  expectEq(hdr.anchor.y, -4.25, 'hdr.anchor.y');
-
-  expectEq(crypto.findNonce('hello', 100), 105, 'findNonce some');
-  expectEq(crypto.findNonce('hello', null), null, 'findNonce none');
-
-  final payload = SignedPayload(
-    header: const DigestHeader(
-      algorithm: HashAlgorithm.sha256,
-      byteLen: 8,
-      verified: true,
-      anchor: FramePoint(x: 1.0, y: 2.0),
-    ),
-    label: 'ok',
-    digest: Uint8List.fromList(<int>[1, 2, 3]),
-    tags: const <String>['alpha', 'beta'],
-    nonce: 1337,
-  );
-  expectEq(crypto.verifyPayload(payload), true, 'verifyPayload ok');
-
-  var caughtLabel = false;
-  try {
-    crypto.verifyPayload(
-      SignedPayload(
-        header: payload.header,
-        label: '',
-        digest: Uint8List(0),
-        tags: const <String>[],
-        nonce: null,
-      ),
-    );
-  } on HybridException catch (e) {
-    caughtLabel = e.status == HybridStatus.err && e.message == 'missing payload label';
-  }
-  expect(caughtLabel, 'verifyPayload err throws HybridException');
-
-  expectEq(crypto.lookupPayload(0), null, 'lookupPayload none');
-  final found = crypto.lookupPayload(7);
-  expect(found != null, 'lookupPayload some');
-  expectEq(found!.header.algorithm, HashAlgorithm.blake3, 'found.algorithm');
-  expectEq(found.header.byteLen, 28, 'found.byteLen');
-  expectEq(found.label, 'rec-7', 'found.label');
-  expect(sameBytes(found.digest, <int>[0xDE, 0xAD, 0xBE, 0xEF]), 'found.digest');
-  expectEq(found.tags.length, 2, 'found.tags len');
-  expectEq(found.nonce, 4242, 'found.nonce');
-
-  final batch = crypto.batchSign(const <String>['one', 'two'], HashAlgorithm.sha256);
-  expectEq(batch.length, 2, 'batchSign len');
-  expectEq(batch[0].label, 'one', 'batch[0].label');
-  expectEq(batch[1].label, 'two', 'batch[1].label');
-
-  // Exercise LiveCrypto::batch_sign's Err("empty batch") branch!
-  var caughtEmptyBatch = false;
-  try {
-    crypto.batchSign(const <String>[], HashAlgorithm.sha256);
-  } on HybridException catch (e) {
-    caughtEmptyBatch = e.status == HybridStatus.err && e.message == 'empty batch';
-  }
-  expect(caughtEmptyBatch, 'batchSign empty list throws HybridException("empty batch")');
-  crypto.resetCache();
-
-  // ---- 2. HybridType::Value across method param & return (NO NVE_VAL_BYTES double-wrapping!) ----
-  final minI64 = const Key64(0, 0x80000000).toSignedInt();
-  final maxI64 = const Key64(0xFFFFFFFF, 0x7FFFFFFF).toSignedInt();
-  final u64MaxBits = const Key64(0xFFFFFFFF, 0xFFFFFFFF).toSignedInt();
-  final richMeta = DynamicValue.fromObject(<String, Object?>{
-    'null': null,
-    'flag': true,
-    'min': minI64,
-    'max': maxI64,
-    'u64Max': u64MaxBits,
-    'f': 2.5,
-    'inf': double.infinity,
-    'ninf': double.negativeInfinity,
-    'text': '\uFEFFhéllo 🚀',
-    'raw': Uint8List.fromList(<int>[0x00, 0xAA, 0xFF]),
-    'emptyArr': <Object?>[],
-    'emptyMap': <String, Object?>{},
-    'arr': <Object?>[
-      1,
-      'x',
-      null,
-      <String, Object?>{'nested': false},
-    ],
-  });
-  final echoed = crypto.inspectDynamic(richMeta);
-  expectEq(echoed.tag, BinTag.map, 'inspectDynamic preserves MAP tag (not BYTES)');
-  expectEq(echoed, richMeta, 'inspectDynamic byte-identical round-trip');
-  final echoedNan = crypto.inspectDynamic(DynamicValue.fromObject(double.nan));
-  expectEq(echoedNan.tag, BinTag.f64, 'inspectDynamic NaN tag');
-  expect((echoedNan.toObject() as double).isNaN, 'inspectDynamic NaN preserved');
-  expectEq(crypto.inspectDynamic(DynamicValue.nullValue), DynamicValue.nullValue, 'inspectDynamic null');
-
-  // ---- 3. Cursor shadowing + multi-Option + nested Vec<Vec<i32>> ----
-  final cursor = Cursor(
-    mark: 1,
-    w: Uint8List.fromList(<int>[1, 2, 3]),
-    r: 'ab',
-    count: 4,
-    tag: 42,
-    grid: const <List<int>>[
-      <int>[1, 2, 3],
-      <int>[4, 5, 6],
-    ],
-  );
-  final t = crypto.transpose(cursor);
-  expectEq(t.mark, 2, 'cursor.mark');
-  expectEq(t.count, 8, 'cursor.count');
-  expectEq(t.r, 'AB', 'cursor.r');
-  expectEq(t.tag, -42, 'cursor.tag');
-  expect(sameBytes(t.w, <int>[3, 2, 1]), 'cursor.w');
-  expectEq(t.grid.length, 3, 'cursor.grid rows');
-  expectEq(t.grid[0][0], 1, 'cursor.grid[0][0]');
-  expectEq(t.grid[0][1], 4, 'cursor.grid[0][1]');
-  expectEq(t.grid[2][1], 6, 'cursor.grid[2][1]');
-
-  // Invalid UTF-8 (lone surrogate) rejected BEFORE crossing FFI.
-  var caughtUtf8 = false;
-  try {
-    crypto.batchSign(const <String>['\uD800'], HashAlgorithm.sha256);
-  } on BinCodecException catch (e) {
-    caughtUtf8 = e.kind == BinErrorKind.invalidUtf8;
-  }
-  expect(caughtUtf8, 'lone surrogate rejected before FFI');
-
-  // ---- 4. VideoSurface view: setProps with lossless HybridType::Value (NO double-wrapping!) ----
-  final video = VideoSurfaceHybridClient.resolve(lib);
-  video.setProps(
-    VideoSurfaceProps(
-      sourceUrl: 'https://nve.dev/clip.mp4',
-      muted: true,
-      quality: VideoQuality.uhd4k,
-    ),
-  );
-  video.seek(9876);
-  final frame1 = video.captureFrame(const FramePoint(x: 5.0, y: 9.0));
-  expect(sameBytes(frame1, <int>[5, 9, 24]), 'captureFrame baseline');
-
-  // Now set present Option<String>, Option<FramePoint>, Bytes, Vec<i32>, AND rich DynamicValue metadata.
-  video.setProps(
-    VideoSurfaceProps(
-      sourceUrl: 'https://nve.dev/clip.mp4',
-      muted: true,
-      quality: VideoQuality.uhd4k,
-      posterUrl: 'p.png',
-      focusPoint: const FramePoint(x: 7.0, y: 0.0),
-      drmKey: Uint8List.fromList(<int>[0xAA, 0xBB]),
-      chapters: const <int>[10, 20, 30],
-      metadata: richMeta,
-    ),
-  );
-  final frame2 = video.captureFrame(const FramePoint(x: 5.0, y: 9.0));
-  expect(sameBytes(frame2, <int>[5, 9, 24, 7, 5, 0xAA, 0xBB, 10, 20, 30]), 'captureFrame with all props');
-  final gotMeta = video.currentMetadata();
-  expectEq(gotMeta.tag, BinTag.map, 'VideoSurface.metadata arrives as MAP, never BYTES');
-  expectEq(gotMeta, richMeta, 'VideoSurface.metadata byte-identical round-trip');
-
-  // Verify scalar & array DynamicValue props too (never double-wrapped).
-  for (final sample in <DynamicValue>[
-    DynamicValue.nullValue,
-    DynamicValue.fromObject(false),
-    DynamicValue.fromObject(-999),
-    DynamicValue.fromObject(3.14),
-    DynamicValue.fromObject('hello 🚀'),
-    DynamicValue.fromObject(Uint8List.fromList(<int>[7, 8, 9])),
-    DynamicValue.fromObject(<Object?>[1, 'two', true]),
-  ]) {
-    video.setProps(VideoSurfaceProps(sourceUrl: 'x', muted: true, metadata: sample));
-    final cur = video.currentMetadata();
-    expectEq(cur.tag, sample.tag, 'metadata prop tag ${sample.tag}');
-    expectEq(cur, sample, 'metadata prop value ${sample.tag}');
-  }
-
-  // Error message with UTF-8 emoji round-trips cleanly.
-  var caughtEmoji = false;
-  try {
-    video.captureFrame(const FramePoint(x: -1.0, y: 0.0));
-  } on HybridException catch (e) {
-    caughtEmoji = e.status == HybridStatus.err && e.message == 'bad \u{1F600}';
-  }
-  expect(caughtEmoji, 'captureFrame emoji error');
-
-  // ---- 5. Multi-Option + heavy shadowing module & view ----
-  final multi = MultiOptShadowHybridClient.resolve(lib);
-  expectEq(multi.podOnly(6, 7), 42, 'podOnly');
-
-  final recIn = ShadowRecord(
-    w: 'inner',
-    r: 'opt',
-    mark: 3,
-    count: Uint8List.fromList(<int>[9]),
-    value: richMeta,
-  );
-  final rSome = multi.collide(
-    const RawPod(raw: 11),
-    'h',
-    55,
-    'ar',
-    const RawPod(raw: 22),
-    const <int>[1, 2, 3],
-    recIn,
-    richMeta,
-  );
-  expectEq(rSome.w, 'h:11|fn=55|arena=ar|builder=22|props=3|rec=inner', 'multi-opt all some');
-  expectEq(rSome.r, 'ar', 'multi-opt r');
-  expectEq(rSome.mark, 22, 'multi-opt mark');
-  expect(sameBytes(rSome.count, <int>[1, 2, 3]), 'multi-opt count');
-  expectEq(rSome.value, richMeta, 'multi-opt DynamicValue');
-
-  final rNone = multi.collide(
-    const RawPod(raw: 7),
-    'z',
-    null,
-    null,
-    null,
-    null,
-    null,
-    DynamicValue.nullValue,
-  );
-  expectEq(rNone.w, 'z:7', 'multi-opt all none');
-  expectEq(rNone.r, null, 'multi-opt none r');
-  expectEq(rNone.mark, null, 'multi-opt none mark');
-  expect(rNone.value.isNull, 'multi-opt none DynamicValue');
-
-  final shadowView = ShadowViewHybridClient.resolve(lib);
-  shadowView.setProps(
-    ShadowViewProps(
-      builder: 'my-builder',
-      optPod: const RawPod(raw: 88),
-      optRec: recIn,
-      meta: richMeta,
-    ),
-  );
-  expectEq(shadowView.summary(), 'my-builder|88|inner', 'ShadowView summary some');
-  expectEq(shadowView.currentMeta(), richMeta, 'ShadowView meta lossless');
-  shadowView.setProps(ShadowViewProps(builder: 'empty', meta: DynamicValue.nullValue));
-  expectEq(shadowView.summary(), 'empty|-1|none', 'ShadowView summary none');
-  expect(shadowView.currentMeta().isNull, 'ShadowView meta null');
-
-  // Lone surrogate in view String prop rejected BEFORE crossing FFI.
-  var caughtPropUtf8 = false;
-  try {
-    video.setProps(VideoSurfaceProps(sourceUrl: 'bad-\uD800'));
-  } on BinCodecException catch (e) {
-    caughtPropUtf8 = e.kind == BinErrorKind.invalidUtf8;
-  }
-  expect(caughtPropUtf8, 'lone surrogate in String prop rejected before FFI');
-
-  // ---- 6. Negative runtime FFI checks: resolve missing, fromVtable(nullptr), ABI/schema mismatch,
-  //         and setProps non-OK status ----
-  var caughtMissingIface = false;
-  try {
-    hybridResolveInterface(lib, 0xDEADBEEF, 'Missing');
-  } on HybridException catch (e) {
-    caughtMissingIface = e.status == HybridStatus.err && e.message.contains('Missing');
-  }
-  expect(caughtMissingIface, 'hybridResolveInterface missing interface throws HybridException');
-
-  var caughtNullVtable = false;
-  try {
-    CryptoHybridClient.fromVtable(ffi.nullptr);
-  } on HybridException catch (e) {
-    caughtNullVtable = e.status == HybridStatus.nullHandle;
-  }
-  expect(caughtNullVtable, 'fromVtable(nullptr) throws HybridException(nullHandle)');
-
-  HybridArena.using<void>((arena) {
-    final fakeCryptoVt = arena.allocStruct<NveHybridCryptoVTable>(ffi.sizeOf<NveHybridCryptoVTable>());
-    fakeCryptoVt.ref
-      ..abiVersion = CryptoHybridClient.abiVersion + 1
-      ..interfaceId = CryptoHybridClient.interfaceId
-      ..schemaHash = CryptoHybridClient.schemaHash.toSignedInt();
-    var caughtAbi = false;
-    try {
-      CryptoHybridClient.fromVtable(fakeCryptoVt);
-    } on HybridException catch (e) {
-      caughtAbi = e.status == HybridStatus.schemaMismatch && e.message.contains('Crypto');
-    }
-    expect(caughtAbi, 'fromVtable ABI mismatch throws HybridException(schemaMismatch)');
-
-    fakeCryptoVt.ref
-      ..abiVersion = CryptoHybridClient.abiVersion
-      ..schemaHash = const Key64(1, 2).toSignedInt();
-    var caughtSchema = false;
-    try {
-      CryptoHybridClient.fromVtable(fakeCryptoVt);
-    } on HybridException catch (e) {
-      caughtSchema = e.status == HybridStatus.schemaMismatch && e.message.contains('Crypto');
-    }
-    expect(caughtSchema, 'fromVtable schema mismatch throws HybridException(schemaMismatch)');
-
-    // Synthetic VideoSurface vtable whose setPropsDirect returns HybridStatus.invalidArg.
-    final dummyHandle = arena.allocBytes(8).cast<ffi.Void>();
-    final createCb = ffi.NativeCallable<HybridCreateNative>.isolateLocal(
-      () => dummyHandle,
-    );
-    final destroyCb = ffi.NativeCallable<HybridDestroyNative>.isolateLocal(
-      (ffi.Pointer<ffi.Void> _) {},
-    );
-    final setPropsFailCb = ffi.NativeCallable<HybridSetPropsDirectNative>.isolateLocal(
-      (ffi.Pointer<ffi.Void> _, ffi.Pointer<NveMapEntry> __, int ___) => HybridStatus.invalidArg.code,
-      exceptionalReturn: -1,
-    );
-    try {
-      final realVideoVt = hybridResolveInterface(lib, VideoSurfaceHybridClient.interfaceId, 'VideoSurface')
-          .cast<NveHybridVideoSurfaceVTable>();
-      final fakeVideoVt =
-          arena.allocStruct<NveHybridVideoSurfaceVTable>(ffi.sizeOf<NveHybridVideoSurfaceVTable>());
-      fakeVideoVt.ref
-        ..abiVersion = VideoSurfaceHybridClient.abiVersion
-        ..interfaceId = VideoSurfaceHybridClient.interfaceId
-        ..schemaHash = VideoSurfaceHybridClient.schemaHash.toSignedInt()
-        ..create = createCb.nativeFunction
-        ..destroy = destroyCb.nativeFunction
-        ..allocBytes = realVideoVt.ref.allocBytes
-        ..freeBytes = realVideoVt.ref.freeBytes
-        ..setPropsDirect = setPropsFailCb.nativeFunction
-        ..seek = realVideoVt.ref.seek
-        ..captureFrame = realVideoVt.ref.captureFrame
-        ..currentMetadata = realVideoVt.ref.currentMetadata;
-      final failingVideo = VideoSurfaceHybridClient.fromVtable(fakeVideoVt);
-      var caughtSetProps = false;
-      try {
-        failingVideo.setProps(VideoSurfaceProps(sourceUrl: 'x'));
-      } on HybridException catch (e) {
-        caughtSetProps = e.status == HybridStatus.invalidArg;
-      }
-      expect(caughtSetProps, 'setProps non-OK status throws HybridException(invalidArg)');
-      failingVideo.dispose();
-    } finally {
-      createCb.close();
-      destroyCb.close();
-      setPropsFailCb.close();
-    }
-  });
-
-  // ---- 7. Dispose & use-after-dispose ----
-  crypto.dispose();
-  crypto.dispose(); // idempotent
-  var caughtDisposed = false;
-  try {
-    crypto.add(1, 2);
-  } on HybridException catch (e) {
-    caughtDisposed = e.status == HybridStatus.nullHandle;
-  }
-  expect(caughtDisposed, 'use-after-dispose throws HybridException(nullHandle)');
-
-  video.dispose();
-  multi.dispose();
-  shadowView.dispose();
-}
-"#,
-    )
-    .unwrap();
+    std::fs::write(&main_dart, include_str!("fixtures/dart_hybrid_e2e.dart")).unwrap();
 
     // First verify the test driver + generated files pass strict `dart analyze --fatal-infos`.
     let analyze = Command::new("dart")

@@ -243,7 +243,7 @@ final class NveValueTree {
         writer.writeF64(v.data.f64Val);
       case NveValueTag.str:
         final s = v.data.strVal;
-        final utf8Bytes = _sliceBytes(s.ptr, s.len);
+        final utf8Bytes = checkedNativeBytes(s.ptr, s.len);
         if (!isValidUtf8(utf8Bytes)) {
           throw const BinCodecException(BinErrorKind.invalidUtf8, 'invalid UTF-8 in NveStrSlice');
         }
@@ -253,48 +253,22 @@ final class NveValueTree {
           ..raw(utf8Bytes);
       case NveValueTag.bytes:
         final b = v.data.bytesVal;
-        writer.writeBytes(_sliceBytes(b.ptr, b.len));
+        writer.writeBytes(checkedNativeBytes(b.ptr, b.len));
       case NveValueTag.array:
-        if (depth >= binValueMaxDepth) {
-          throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
-        }
         final arr = v.data.arrayVal;
-        if (arr.len < 0 || arr.len > 0xFFFFFFFF) {
-          throw BinCodecException(BinErrorKind.tooLarge, 'invalid NveValueArray length ${arr.len}');
-        }
-        if (arr.len > 0) {
-          if (arr.ptr == ffi.nullptr) {
-            throw const BinCodecException(BinErrorKind.truncated, 'null NveValueArray pointer');
-          }
-          if ((arr.ptr.address & 7) != 0) {
-            throw ArgumentError.value(arr.ptr.address, 'arrayVal.ptr', 'NveValueArray pointer must be 8-byte aligned');
-          }
-        }
+        _validateNativeContainer(arr.ptr, arr.len, depth, 'NveValueArray');
         final mark = writer.beginArray(arr.len);
         for (var i = 0; i < arr.len; i++) {
           _encodeNativeValue(writer, arr.ptr[i], depth + 1);
         }
         writer.end(mark);
       case NveValueTag.map:
-        if (depth >= binValueMaxDepth) {
-          throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
-        }
         final map = v.data.mapVal;
-        if (map.len < 0 || map.len > 0xFFFFFFFF) {
-          throw BinCodecException(BinErrorKind.tooLarge, 'invalid NveValueMap length ${map.len}');
-        }
-        if (map.len > 0) {
-          if (map.ptr == ffi.nullptr) {
-            throw const BinCodecException(BinErrorKind.truncated, 'null NveValueMap pointer');
-          }
-          if ((map.ptr.address & 7) != 0) {
-            throw ArgumentError.value(map.ptr.address, 'mapVal.ptr', 'NveValueMap pointer must be 8-byte aligned');
-          }
-        }
+        _validateNativeContainer(map.ptr, map.len, depth, 'NveValueMap');
         final mark = writer.beginMap(map.len);
         for (var i = 0; i < map.len; i++) {
           final entry = map.ptr[i];
-          final keyUtf8 = _sliceBytes(entry.key.ptr, entry.key.len);
+          final keyUtf8 = checkedNativeBytes(entry.key.ptr, entry.key.len);
           if (!isValidUtf8(keyUtf8)) {
             throw const BinCodecException(BinErrorKind.invalidUtf8, 'invalid UTF-8 in NveMapEntry key');
           }
@@ -307,17 +281,29 @@ final class NveValueTree {
     }
   }
 
-  static Uint8List _sliceBytes(ffi.Pointer<ffi.Uint8> ptr, int len) {
+  static void _validateNativeContainer(
+    ffi.Pointer<ffi.NativeType> ptr,
+    int len,
+    int depth,
+    String kind,
+  ) {
+    if (depth >= binValueMaxDepth) {
+      throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
+    }
     if (len < 0 || len > 0xFFFFFFFF) {
-      throw BinCodecException(BinErrorKind.tooLarge, 'invalid slice length $len');
+      throw BinCodecException(BinErrorKind.tooLarge, 'invalid $kind length $len');
     }
-    if (len == 0) {
-      return Uint8List(0);
+    if (len > 0) {
+      if (ptr == ffi.nullptr) {
+        throw BinCodecException(BinErrorKind.truncated, 'null $kind pointer');
+      }
+      if ((ptr.address & 7) != 0) {
+        throw BinCodecException(
+          BinErrorKind.invalidAlignment,
+          '$kind pointer 0x${ptr.address.toRadixString(16)} must be 8-byte aligned',
+        );
+      }
     }
-    if (ptr == ffi.nullptr) {
-      throw const BinCodecException(BinErrorKind.truncated, 'null slice pointer with non-zero len');
-    }
-    return ptr.asTypedList(len);
   }
 }
 

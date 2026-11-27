@@ -8,7 +8,7 @@ import 'package:nve_host/nve_host_ffi.dart';
 
 import 'check.dart';
 
-/// Synthetic POD optional struct matching codegen's `NveHybridOptU64` layout.
+/// Synthetic POD optional struct matching codegen's `_NveHybridOptU64` layout.
 final class _OptU64 extends ffi.Struct {
   @ffi.Bool()
   external bool isSome;
@@ -17,7 +17,7 @@ final class _OptU64 extends ffi.Struct {
   external int value;
 }
 
-/// Synthetic POD optional struct matching codegen's `NveHybridOptBool` layout.
+/// Synthetic POD optional struct matching codegen's `_NveHybridOptBool` layout.
 final class _OptBool extends ffi.Struct {
   @ffi.Bool()
   external bool isSome;

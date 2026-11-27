@@ -21,7 +21,7 @@ enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
 const int binValueMaxDepth = 64;
 
-enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark }
+enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark, invalidAlignment }
 
 final class BinCodecException implements Exception {
   const BinCodecException(this.kind, this.message);

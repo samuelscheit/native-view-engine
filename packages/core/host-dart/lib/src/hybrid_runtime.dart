@@ -4,7 +4,6 @@ library;
 import 'dart:typed_data';
 
 import 'bin_codec.dart';
-import 'key64.dart';
 import 'u64_math.dart';
 
 /// Status of a fallible hybrid FFI trampoline (Rust `NveHybridStatus`, `#[repr(i32)]`).
@@ -62,13 +61,6 @@ final class HybridException implements Exception {
 
   final HybridStatus status;
   final String message;
-
-  /// Throws [HybridStatus.schemaMismatch] unless a peer's schema hash equals the generated one.
-  static void checkSchema(Key64 expected, Key64 actual) {
-    if (expected != actual) {
-      throw HybridException(HybridStatus.schemaMismatch, 'expected $expected, got $actual');
-    }
-  }
 
   @override
   String toString() => 'HybridException(${status.name}): $message';

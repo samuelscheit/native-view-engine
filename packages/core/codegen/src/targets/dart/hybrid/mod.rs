@@ -191,17 +191,12 @@ fn emit_dart_struct(
 
     if s.is_pod(spec) {
         writeln!(out);
-        writeln!(out, "  NveHybrid{} toAbi() {{", s.name);
-        writeln!(
-            out,
-            "    final _nveRaw = ffi.Struct.create<NveHybrid{}>();",
-            s.name
-        );
+        writeln!(out, "  void _writeAbi(NveHybrid{} _nveDst) {{", s.name);
         for f in &s.fields {
             let fname = dart_ident(&f.name);
             match &f.ty {
-                HybridType::Enum(_) => writeln!(out, "    _nveRaw.{fname} = {fname}.rawValue;"),
-                HybridType::Struct(_) => writeln!(out, "    _nveRaw.{fname} = {fname}.toAbi();"),
+                HybridType::Enum(_) => writeln!(out, "    _nveDst.{fname} = {fname}.rawValue;"),
+                HybridType::Struct(_) => writeln!(out, "    {fname}._writeAbi(_nveDst.{fname});"),
                 HybridType::FixedArray { elem, len } => {
                     writeln!(out, "    if ({fname}.length != {len}) {{");
                     writeln!(
@@ -212,18 +207,27 @@ fn emit_dart_struct(
                     writeln!(out, "    for (var _nveI = 0; _nveI < {len}; _nveI++) {{");
                     match elem.as_ref() {
                         HybridType::Enum(_) => {
-                            writeln!(out, "      _nveRaw.{fname}[_nveI] = {fname}[_nveI].rawValue;")
+                            writeln!(out, "      _nveDst.{fname}[_nveI] = {fname}[_nveI].rawValue;")
                         }
                         HybridType::Struct(_) => {
-                            writeln!(out, "      _nveRaw.{fname}[_nveI] = {fname}[_nveI].toAbi();")
+                            writeln!(out, "      {fname}[_nveI]._writeAbi(_nveDst.{fname}[_nveI]);")
                         }
-                        _ => writeln!(out, "      _nveRaw.{fname}[_nveI] = {fname}[_nveI];"),
+                        _ => writeln!(out, "      _nveDst.{fname}[_nveI] = {fname}[_nveI];"),
                     }
                     writeln!(out, "    }}");
                 }
-                _ => writeln!(out, "    _nveRaw.{fname} = {fname};"),
+                _ => writeln!(out, "    _nveDst.{fname} = {fname};"),
             }
         }
+        writeln!(out, "  }}");
+        writeln!(out);
+        writeln!(out, "  NveHybrid{} toAbi() {{", s.name);
+        writeln!(
+            out,
+            "    final _nveRaw = ffi.Struct.create<NveHybrid{}>();",
+            s.name
+        );
+        writeln!(out, "    _writeAbi(_nveRaw);");
         writeln!(out, "    return _nveRaw;");
         writeln!(out, "  }}");
         writeln!(out);

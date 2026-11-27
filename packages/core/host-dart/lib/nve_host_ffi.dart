@@ -3,5 +3,5 @@
 library;
 
 export 'src/generated/nve_abi_ffi.generated.dart';
-export 'src/hybrid_ffi.dart';
+export 'src/hybrid_ffi.dart' hide checkedNativeBytes;
 export 'src/value_tree.dart';

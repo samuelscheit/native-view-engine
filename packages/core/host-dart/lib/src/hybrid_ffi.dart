@@ -125,23 +125,29 @@ final class HybridArena {
 
   /// Runs [body] synchronously with a scoped [HybridArena] and frees all native slabs in `finally`.
   ///
-  /// Do not pass an `async` callback: the arena is disposed before any returned `Future` completes.
+  /// Throws [StateError] if [body] returns a [Future] (the arena is disposed before async work completes).
   static T using<T>(T Function(HybridArena arena) body, {int initialChunkBytes = 4096}) {
     final arena = HybridArena(initialChunkBytes: initialChunkBytes);
     try {
       final result = body(arena);
-      assert(result is! Future<Object?>, 'HybridArena.using is synchronous; do not return a Future');
+      if (result is Future<Object?>) {
+        throw StateError('HybridArena.using is synchronous; do not return a Future');
+      }
       return result;
     } finally {
       arena.dispose();
     }
   }
 
-  /// Allocates [byteCount] zero-initialized bytes aligned to [align] (power of two in `1..=8`).
-  ffi.Pointer<ffi.Uint8> allocBytes(int byteCount, {int align = 8}) {
+  void _ensureLive() {
     if (_disposed) {
       throw StateError('HybridArena has already been disposed');
     }
+  }
+
+  /// Allocates [byteCount] zero-initialized bytes aligned to [align] (power of two in `1..=8`).
+  ffi.Pointer<ffi.Uint8> allocBytes(int byteCount, {int align = 8}) {
+    _ensureLive();
     RangeError.checkNotNegative(byteCount, 'byteCount');
     if (align <= 0 || align > 8 || (align & (align - 1)) != 0) {
       throw RangeError.value(align, 'align', 'must be a power of two in 1..=8');
@@ -178,9 +184,7 @@ final class HybridArena {
 
   /// Allocates a contiguous zero-initialized array of [count] `ffi.Struct` items.
   ffi.Pointer<T> allocStructArray<T extends ffi.Struct>(int elementSize, int count) {
-    if (_disposed) {
-      throw StateError('HybridArena has already been disposed');
-    }
+    _ensureLive();
     RangeError.checkNotNegative(count, 'count');
     if (count == 0) {
       return ffi.nullptr.cast<T>();
@@ -195,9 +199,7 @@ final class HybridArena {
   /// the resulting slice into [target]. Throws [BinCodecException] (`invalidUtf8`) on a lone
   /// UTF-16 surrogate.
   void writeStrSlice(NveStrSlice target, String value) {
-    if (_disposed) {
-      throw StateError('HybridArena has already been disposed');
-    }
+    _ensureLive();
     if (value.isEmpty) {
       target
         ..ptr = ffi.nullptr
@@ -218,9 +220,7 @@ final class HybridArena {
 
   /// Copies pre-validated UTF-8 [utf8Bytes] into this arena and writes the slice into [target].
   void writeUtf8BytesSlice(NveStrSlice target, List<int> utf8Bytes) {
-    if (_disposed) {
-      throw StateError('HybridArena has already been disposed');
-    }
+    _ensureLive();
     if (utf8Bytes.isEmpty) {
       target
         ..ptr = ffi.nullptr
@@ -236,9 +236,7 @@ final class HybridArena {
 
   /// Copies raw [bytes] into this arena and writes the slice into [target].
   void writeBytesSlice(NveBufferSlice target, List<int> bytes) {
-    if (_disposed) {
-      throw StateError('HybridArena has already been disposed');
-    }
+    _ensureLive();
     if (bytes.isEmpty) {
       target
         ..ptr = ffi.nullptr
@@ -255,9 +253,7 @@ final class HybridArena {
   /// Returns a borrowed [NveStrSlice] containing strict UTF-8 bytes of [value].
   /// An empty string returns a zero-initialized struct without allocating a native slab.
   NveStrSlice strSlice(String value) {
-    if (_disposed) {
-      throw StateError('HybridArena has already been disposed');
-    }
+    _ensureLive();
     if (value.isEmpty) {
       return ffi.Struct.create<NveStrSlice>();
     }
@@ -269,9 +265,7 @@ final class HybridArena {
   /// Returns a borrowed [NveBufferSlice] containing a copy of [bytes].
   /// An empty list returns a zero-initialized struct without allocating a native slab.
   NveBufferSlice bufferSlice(List<int> bytes) {
-    if (_disposed) {
-      throw StateError('HybridArena has already been disposed');
-    }
+    _ensureLive();
     if (bytes.isEmpty) {
       return ffi.Struct.create<NveBufferSlice>();
     }
@@ -296,9 +290,9 @@ final class HybridArena {
   }
 }
 
-/// Validates a `(ptr, len)` pair returned across the C ABI (guarding signed `ffi.Size` and
-/// `(nullptr, len != 0)`) and returns a zero-copy native view (or empty `Uint8List`).
-Uint8List _checkedNativeBytes(ffi.Pointer<ffi.Uint8> ptr, int len) {
+/// Package-internal validator for a `(ptr, len)` pair returned across the C ABI (guarding signed
+/// `ffi.Size` and `(nullptr, len != 0)`), returning a zero-copy native view (or empty `Uint8List`).
+Uint8List checkedNativeBytes(ffi.Pointer<ffi.Uint8> ptr, int len) {
   if (len < 0 || len > 0xFFFFFFFF) {
     throw BinCodecException(BinErrorKind.tooLarge, 'invalid native buffer length $len');
   }
@@ -328,13 +322,13 @@ ffi.Pointer<ffi.Void> hybridResolveInterface(
 }
 
 /// Verifies a hybrid vtable's ABI version and 64-bit schema hash against generated constants.
-void hybridVerifyVtable(
-  int expectedAbiVersion,
-  int actualAbiVersion,
-  int rawSchemaHash,
-  Key64 expectedSchemaHash,
-  String name,
-) {
+void hybridVerifyVtable({
+  required int expectedAbiVersion,
+  required int actualAbiVersion,
+  required int rawSchemaHash,
+  required Key64 expectedSchemaHash,
+  required String name,
+}) {
   if (actualAbiVersion != expectedAbiVersion) {
     throw HybridException(
       HybridStatus.schemaMismatch,
@@ -353,7 +347,7 @@ void hybridVerifyVtable(
 /// Decodes a peer-owned UTF-8 buffer (preserving leading U+FEFF) and always frees [raw].
 String hybridTakeString(HybridOwnedBytes raw, HybridFreeBytesDart freeBytes) {
   try {
-    final view = _checkedNativeBytes(raw.ptr, raw.len);
+    final view = checkedNativeBytes(raw.ptr, raw.len);
     if (view.isEmpty) {
       return '';
     }
@@ -371,9 +365,9 @@ String hybridTakeString(HybridOwnedBytes raw, HybridFreeBytesDart freeBytes) {
 /// Copies a peer-owned byte buffer into Dart memory and always frees [raw].
 Uint8List hybridTakeBytes(HybridOwnedBytes raw, HybridFreeBytesDart freeBytes) {
   try {
-    final view = _checkedNativeBytes(raw.ptr, raw.len);
+    final view = checkedNativeBytes(raw.ptr, raw.len);
     if (view.isEmpty) {
-      return Uint8List(0);
+      return view;
     }
     return Uint8List.fromList(view);
   } finally {
@@ -386,7 +380,7 @@ Uint8List hybridTakeBytes(HybridOwnedBytes raw, HybridFreeBytesDart freeBytes) {
 /// Validates and copies a peer-owned `NveBinValue` buffer into a [DynamicValue] and always frees [raw].
 DynamicValue hybridTakeDynamicValue(HybridOwnedBytes raw, HybridFreeBytesDart freeBytes) {
   try {
-    final view = _checkedNativeBytes(raw.ptr, raw.len);
+    final view = checkedNativeBytes(raw.ptr, raw.len);
     return DynamicValue(view);
   } finally {
     if (raw.ptr != ffi.nullptr) {
@@ -409,7 +403,7 @@ T hybridDecodeOwned<T>(
   T Function(BinReader reader) decode,
 ) {
   try {
-    final view = _checkedNativeBytes(raw.ptr, raw.len);
+    final view = checkedNativeBytes(raw.ptr, raw.len);
     final reader = BinReader(view);
     final result = decode(reader);
     reader.requireDone();

@@ -42,10 +42,8 @@ fn type_contains_bytes(ty: &HybridType) -> bool {
         HybridType::Bytes => true,
         HybridType::Optional(inner)
         | HybridType::Vec(inner)
-        | HybridType::ConstPtr(inner)
-        | HybridType::MutPtr(inner)
         | HybridType::FixedArray { elem: inner, .. } => type_contains_bytes(inner),
-        HybridType::Result { ok, err } => type_contains_bytes(ok) || type_contains_bytes(err),
+        HybridType::Result { ok, .. } => type_contains_bytes(ok),
         _ => false,
     }
 }
@@ -347,9 +345,12 @@ fn dart_default_value_ctx(
         HybridType::String => "''".to_string(),
         HybridType::Bytes => "Uint8List(0)".to_string(),
         HybridType::Optional(_) => "null".to_string(),
-        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
-            format!("<{}>[]", dart_type(inner))
-        }
+        HybridType::Vec(inner) => format!("<{}>[]", dart_type(inner)),
+        HybridType::FixedArray { elem, len } => format!(
+            "List<{}>.generate({len}, (_) => {})",
+            dart_type(elem),
+            dart_default_value_ctx(elem, None, spec, false),
+        ),
         HybridType::Struct(name) => {
             if let Some(s) = spec.find_struct(name) {
                 let is_const = dart_is_const_expr(ty, None, spec);
@@ -430,9 +431,30 @@ pub(super) fn emit_dart_bin_write(
             writeln!(out, "{indent}  }}");
             writeln!(out, "{indent}}}");
         }
-        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+        HybridType::Vec(inner) => {
             writeln!(out, "{indent}{{");
             writeln!(out, "{indent}  final _nveArr{d} = {w}.beginArray({expr}.length);");
+            writeln!(out, "{indent}  for (final _nveEl{d} in {expr}) {{");
+            emit_dart_bin_write(
+                out,
+                &format!("{indent}    "),
+                w,
+                &format!("_nveEl{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  {w}.end(_nveArr{d});");
+            writeln!(out, "{indent}}}");
+        }
+        HybridType::FixedArray { elem: inner, len } => {
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  if ({expr}.length != {len}) {{");
+            writeln!(
+                out,
+                "{indent}    throw RangeError.value({expr}.length, null, 'expected fixed length {len}');"
+            );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  final _nveArr{d} = {w}.beginArray({len});");
             writeln!(out, "{indent}  for (final _nveEl{d} in {expr}) {{");
             emit_dart_bin_write(
                 out,
@@ -499,7 +521,7 @@ pub(super) fn emit_dart_bin_read(
             writeln!(out, "{indent}  {dst} = _nveOv{d};");
             writeln!(out, "{indent}}}");
         }
-        HybridType::Vec(inner) | HybridType::FixedArray { elem: inner, .. } => {
+        HybridType::Vec(inner) => {
             let inner_ty = dart_type(inner);
             writeln!(
                 out,
@@ -509,6 +531,36 @@ pub(super) fn emit_dart_bin_read(
             writeln!(
                 out,
                 "{indent}  for (var _nveI{d} = 0; _nveI{d} < _nveN{d}; _nveI{d}++) {{"
+            );
+            writeln!(out, "{indent}    late final {inner_ty} _nveEl{d};");
+            emit_dart_bin_read(
+                out,
+                &format!("{indent}    "),
+                r,
+                &format!("_nveEl{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}    _nveList{d}.add(_nveEl{d});");
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  return _nveList{d};");
+            writeln!(out, "{indent}}});");
+        }
+        HybridType::FixedArray { elem: inner, len } => {
+            let inner_ty = dart_type(inner);
+            writeln!(
+                out,
+                "{indent}{dst} = {r}.readArrayScope<List<{inner_ty}>>((_nveN{d}) {{"
+            );
+            writeln!(out, "{indent}  if (_nveN{d} != {len}) {{");
+            writeln!(
+                out,
+                "{indent}    throw BinCodecException(_nveN{d} < {len} ? BinErrorKind.truncated : BinErrorKind.tooLarge, 'expected fixed length {len}, got $_nveN{d}');"
+            );
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}  final _nveList{d} = <{inner_ty}>[];");
+            writeln!(
+                out,
+                "{indent}  for (var _nveI{d} = 0; _nveI{d} < {len}; _nveI{d}++) {{"
             );
             writeln!(out, "{indent}    late final {inner_ty} _nveEl{d};");
             emit_dart_bin_read(

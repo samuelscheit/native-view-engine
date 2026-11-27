@@ -69,6 +69,28 @@ void runDynamicValue(Check c) {
     c.eq(dv.toObject(), safeInt, 'safe int $safeInt round-trips');
   }
 
+  // Exact ±2^53 (±9007199254740992) boundary:
+  // - Double literals encode as f64 on both VM and web.
+  // - Computed integer values (`±(2^53 - 1) ± 1`) encode as i64 on Dart VM and f64 on Dart-web.
+  const isWebRuntime = identical(0, 0.0);
+  for (final (label, val) in const <(String, double)>[
+    ('2^53 double', 9007199254740992.0),
+    ('-2^53 double', -9007199254740992.0),
+  ]) {
+    final dv = DynamicValue.fromObject(val);
+    c.eq(dv.tag, BinTag.f64, '$label encodes as f64');
+    c.eq(dv.toObject(), val, '$label round-trips losslessly');
+  }
+  const safeMax = 9007199254740991;
+  for (final (label, val) in <(String, int)>[
+    ('2^53 int', safeMax + 1),
+    ('-2^53 int', -safeMax - 1),
+  ]) {
+    final dv = DynamicValue.fromObject(val);
+    c.eq(dv.tag, isWebRuntime ? BinTag.f64 : BinTag.i64, '$label tag matches platform');
+    c.eq(dv.toObject(), isWebRuntime ? val.toDouble() : val, '$label round-trips');
+  }
+
   // 3. Depth limit: 64 passes, 65 fails (including when triggered through an embedded DynamicValue).
   Object? deepList(int depth) {
     Object? cur;

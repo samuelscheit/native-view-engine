@@ -59,10 +59,10 @@ void _testArenaBoundsAndZeroAllocEmptySlices(Check c) {
     }
   });
 
-  // Async callback returning Future is caught in assert-enabled builds (`--enable-asserts`).
-  c.throwsA<AssertionError>(
+  // Async callback returning Future is rejected at runtime (not just debug asserts).
+  c.throwsA<StateError>(
     () => HybridArena.using<Future<int>>((_) async => 1),
-    'HybridArena.using rejects async Future callback under --enable-asserts',
+    'HybridArena.using rejects async Future callback at runtime',
   );
 }
 
@@ -109,17 +109,35 @@ void _testVerifyVtable(Check c) {
   final rawExpected = expected.toSignedInt();
   final rawWrong = wrong.toSignedInt();
 
-  hybridVerifyVtable(1, 1, rawExpected, expected, 'SampleMod');
+  hybridVerifyVtable(
+    expectedAbiVersion: 1,
+    actualAbiVersion: 1,
+    rawSchemaHash: rawExpected,
+    expectedSchemaHash: expected,
+    name: 'SampleMod',
+  );
 
   final abiErr = c.throwsA<HybridException>(
-    () => hybridVerifyVtable(1, 2, rawExpected, expected, 'SampleMod'),
+    () => hybridVerifyVtable(
+      expectedAbiVersion: 1,
+      actualAbiVersion: 2,
+      rawSchemaHash: rawExpected,
+      expectedSchemaHash: expected,
+      name: 'SampleMod',
+    ),
     'hybridVerifyVtable ABI mismatch',
   );
   c.eq(abiErr?.status, HybridStatus.schemaMismatch, 'ABI mismatch status');
   c.that(abiErr?.message.contains('SampleMod') ?? false, 'ABI mismatch mentions interface name');
 
   final schemaErr = c.throwsA<HybridException>(
-    () => hybridVerifyVtable(1, 1, rawWrong, expected, 'SampleMod'),
+    () => hybridVerifyVtable(
+      expectedAbiVersion: 1,
+      actualAbiVersion: 1,
+      rawSchemaHash: rawWrong,
+      expectedSchemaHash: expected,
+      name: 'SampleMod',
+    ),
     'hybridVerifyVtable schema mismatch',
   );
   c.eq(schemaErr?.status, HybridStatus.schemaMismatch, 'schema mismatch status');
@@ -170,30 +188,50 @@ void _testOwnedBytesNullAndSignedSizeBounds(Check c) {
         'hybridTakeBytes rejects (nullptr, len > 0)',
       );
       c.eq(e2?.kind, BinErrorKind.truncated, 'null bytes truncated kind');
+      final e3 = c.throwsA<BinCodecException>(
+        () => hybridTakeDynamicValue(nullNonEmpty, freeFn),
+        'hybridTakeDynamicValue rejects (nullptr, len > 0)',
+      );
+      c.eq(e3?.kind, BinErrorKind.truncated, 'null dynamic truncated kind');
+      final e4 = c.throwsA<BinCodecException>(
+        () => hybridDecodeOwned<int>(nullNonEmpty, freeFn, (r) => r.readI64()),
+        'hybridDecodeOwned rejects (nullptr, len > 0)',
+      );
+      c.eq(e4?.kind, BinErrorKind.truncated, 'null decodeOwned truncated kind');
       c.eq(freedAddrs.length, 2, 'nullptr error never calls free');
 
       // Negative & >u32::MAX signed ffi.Size rejected with tooLarge AND still freed once.
       for (final badLen in const <int>[-1, 0x100000000]) {
-        final buf = arena.allocBytes(8);
         final owned = ffi.Struct.create<HybridOwnedBytes>()
-          ..ptr = buf
           ..len = badLen
           ..cap = 8;
+        owned.ptr = arena.allocBytes(8);
         final es = c.throwsA<BinCodecException>(
           () => hybridTakeString(owned, freeFn),
           'hybridTakeString rejects len=$badLen',
         );
         c.eq(es?.kind, BinErrorKind.tooLarge, 'string bad len=$badLen tooLarge');
-        final buf2 = arena.allocBytes(8);
-        owned.ptr = buf2;
+        owned.ptr = arena.allocBytes(8);
         final eb = c.throwsA<BinCodecException>(
           () => hybridTakeBytes(owned, freeFn),
           'hybridTakeBytes rejects len=$badLen',
         );
         c.eq(eb?.kind, BinErrorKind.tooLarge, 'bytes bad len=$badLen tooLarge');
+        owned.ptr = arena.allocBytes(8);
+        final ed = c.throwsA<BinCodecException>(
+          () => hybridTakeDynamicValue(owned, freeFn),
+          'hybridTakeDynamicValue rejects len=$badLen',
+        );
+        c.eq(ed?.kind, BinErrorKind.tooLarge, 'dynamic bad len=$badLen tooLarge');
+        owned.ptr = arena.allocBytes(8);
+        final eo = c.throwsA<BinCodecException>(
+          () => hybridDecodeOwned<int>(owned, freeFn, (r) => r.readI64()),
+          'hybridDecodeOwned rejects len=$badLen',
+        );
+        c.eq(eo?.kind, BinErrorKind.tooLarge, 'decodeOwned bad len=$badLen tooLarge');
       }
-      c.eq(freedAddrs.length, 6, 'all 4 bad-len non-null buffers freed once');
-      c.eq(freedAddrs.toSet().length, 6, 'all 6 freed addresses distinct');
+      c.eq(freedAddrs.length, 10, 'all 8 bad-len non-null buffers freed once');
+      c.eq(freedAddrs.toSet().length, 10, 'all 10 freed addresses distinct');
     });
   } finally {
     freeCallable.close();
@@ -302,19 +340,27 @@ void _testToDynamicValueErrorPathsAndSpecialNumbers(Check c) {
       );
     }
 
-    // Unaligned non-empty array / map pointers rejected with ArgumentError.
+    // Unaligned non-empty array / map pointers rejected with BinCodecException(invalidAlignment).
     final unalignedAddr = arena.allocBytes(64, align: 8).address + 1;
     final unalignedArr = ffi.Struct.create<NveValue>()
       ..tag = NveValueTag.array.code
       ..data.arrayVal.ptr = ffi.Pointer<NveValue>.fromAddress(unalignedAddr)
       ..data.arrayVal.len = 1;
-    c.throwsA<ArgumentError>(() => NveValueTree.toDynamicValue(unalignedArr), 'unaligned array pointer');
+    c.eq(
+      c.throwsA<BinCodecException>(() => NveValueTree.toDynamicValue(unalignedArr), 'unaligned array pointer')?.kind,
+      BinErrorKind.invalidAlignment,
+      'unaligned array error kind',
+    );
 
     final unalignedMap = ffi.Struct.create<NveValue>()
       ..tag = NveValueTag.map.code
       ..data.mapVal.ptr = ffi.Pointer<NveMapEntry>.fromAddress(unalignedAddr)
       ..data.mapVal.len = 1;
-    c.throwsA<ArgumentError>(() => NveValueTree.toDynamicValue(unalignedMap), 'unaligned map pointer');
+    c.eq(
+      c.throwsA<BinCodecException>(() => NveValueTree.toDynamicValue(unalignedMap), 'unaligned map pointer')?.kind,
+      BinErrorKind.invalidAlignment,
+      'unaligned map error kind',
+    );
 
     // Invalid UTF-8 in NveStrSlice and NveMapEntry key.
     final invalidUtf8 = arena.allocBytes(2, align: 1);
