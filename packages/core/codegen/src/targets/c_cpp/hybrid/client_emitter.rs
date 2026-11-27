@@ -1,7 +1,7 @@
 use crate::writer::CodeWriter;
 
-use super::*;
 use super::type_helpers::*;
+use super::*;
 
 pub(super) fn emit_cpp_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
     writeln!(out, "enum class {} : uint32_t {{", e.name);
@@ -48,7 +48,11 @@ pub(super) fn emit_cpp_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: 
         writeln!(out, "  }}");
         writeln!(out);
 
-        writeln!(out, "  static {} from_abi(const NveHybrid{}& raw) noexcept {{", s.name, s.name);
+        writeln!(
+            out,
+            "  static {} from_abi(const NveHybrid{}& raw) noexcept {{",
+            s.name, s.name
+        );
         writeln!(out, "    {} out{{}};", s.name);
         for f in &s.fields {
             let fname = cpp_ident(&f.name);
@@ -78,21 +82,25 @@ pub(super) fn emit_cpp_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: 
 
     // Compact binary NveBinValue encode/decode for every struct
     writeln!(out, "  void encode_bin(BinWriter& w) const {{");
-    writeln!(out, "    w.write_map({}u, [&](BinWriter& w) {{", s.fields.len());
+    writeln!(
+        out,
+        "    const auto mark = w.begin_map({}u);",
+        s.fields.len()
+    );
     for f in &s.fields {
         let fname = cpp_ident(&f.name);
         let key_lit = escape_c_like_string(&f.name);
-        writeln!(out, "      w.write_map_key(\"{key_lit}\");");
-        emit_cpp_bin_write(out, "      ", "w", &fname, &f.ty);
+        writeln!(out, "    w.write_map_key(\"{key_lit}\");");
+        emit_cpp_bin_write(out, "    ", "w", &fname, &f.ty);
     }
-    writeln!(out, "    }});");
+    writeln!(out, "    w.end(mark);");
     writeln!(out, "  }}");
     writeln!(out);
 
     writeln!(out, "  static {} decode_bin(BinReader& r) {{", s.name);
     writeln!(out, "    {} out{{}};", s.name);
     writeln!(out, "    const uint32_t count = r.begin_map();");
-    writeln!(out, "    for (uint32_t i = 0; i < count; ++i) {{");
+    writeln!(out, "    for (uint32_t i = 0; i < count && r.ok(); ++i) {{");
     writeln!(out, "      const auto key = r.read_map_key();");
     for (idx, f) in s.fields.iter().enumerate() {
         let fname = cpp_ident(&f.name);
@@ -118,7 +126,10 @@ pub(super) fn emit_cpp_module(out: &mut CodeWriter, m: &HybridModuleSpec, spec: 
     let upper = to_snake_case(&m.name).to_ascii_uppercase();
 
     // Nitro-style abstract Spec base class
-    writeln!(out, "/// Nitro-style compile-time-enforced C++20 contract for `{pascal}`.");
+    writeln!(
+        out,
+        "/// Nitro-style compile-time-enforced C++20 contract for `{pascal}`."
+    );
     writeln!(out, "class Hybrid{pascal}Spec {{");
     writeln!(out, " public:");
     writeln!(out, "  virtual ~Hybrid{pascal}Spec() = default;");
@@ -158,11 +169,17 @@ pub(super) fn emit_cpp_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hyb
     }
 
     // Nitro-style abstract Spec base class
-    writeln!(out, "/// Nitro-style compile-time-enforced C++20 view contract for `{pascal}`.");
+    writeln!(
+        out,
+        "/// Nitro-style compile-time-enforced C++20 view contract for `{pascal}`."
+    );
     writeln!(out, "class Hybrid{pascal}Spec {{");
     writeln!(out, " public:");
     writeln!(out, "  virtual ~Hybrid{pascal}Spec() = default;");
-    writeln!(out, "  virtual void setProps(const {pascal}Props& props) = 0;");
+    writeln!(
+        out,
+        "  virtual void setProps(const {pascal}Props& props) = 0;"
+    );
     for method in &v.methods {
         writeln!(out, "  virtual {} = 0;", cpp_method_signature(method));
     }
@@ -184,10 +201,19 @@ pub(super) fn emit_cpp_client(
         out,
         "/// Zero-overhead RAII C++20 client wrapping `const NveHybrid{pascal}VTable*`."
     );
-    writeln!(out, "class {pascal}Client final : public Hybrid{pascal}Spec {{");
+    writeln!(
+        out,
+        "class {pascal}Client final : public Hybrid{pascal}Spec {{"
+    );
     writeln!(out, " public:");
-    writeln!(out, "  static constexpr uint32_t kInterfaceId = NVE_HYBRID_{upper}_INTERFACE_ID;");
-    writeln!(out, "  static constexpr uint64_t kSchemaHash = NVE_HYBRID_{upper}_SCHEMA_HASH;");
+    writeln!(
+        out,
+        "  static constexpr uint32_t kInterfaceId = NVE_HYBRID_{upper}_INTERFACE_ID;"
+    );
+    writeln!(
+        out,
+        "  static constexpr uint64_t kSchemaHash = NVE_HYBRID_{upper}_SCHEMA_HASH;"
+    );
     writeln!(out);
 
     writeln!(
@@ -195,7 +221,10 @@ pub(super) fn emit_cpp_client(
         "  static {pascal}Client resolve(NveGetInterfaceFn get_iface) {{"
     );
     writeln!(out, "    if (!get_iface) {{");
-    writeln!(out, "      throw std::runtime_error(\"nve_get_interface pointer is null\");");
+    writeln!(
+        out,
+        "      throw std::runtime_error(\"nve_get_interface pointer is null\");"
+    );
     writeln!(out, "    }}");
     writeln!(
         out,
@@ -205,29 +234,53 @@ pub(super) fn emit_cpp_client(
     writeln!(out, "  }}");
     writeln!(out);
 
-    writeln!(out, "  explicit {pascal}Client(const NveHybrid{pascal}VTable* vtable) : vtable_(vtable) {{");
+    writeln!(
+        out,
+        "  explicit {pascal}Client(const NveHybrid{pascal}VTable* vtable) : vtable_(vtable) {{"
+    );
     writeln!(out, "    if (!vtable_) {{");
-    writeln!(out, "      throw std::runtime_error(\"hybrid vtable for {pascal} is null\");");
+    writeln!(
+        out,
+        "      throw std::runtime_error(\"hybrid vtable for {pascal} is null\");"
+    );
     writeln!(out, "    }}");
-    writeln!(out, "    if (vtable_->abi_version != NVE_HYBRID_ABI_VERSION || vtable_->schema_hash != kSchemaHash) {{");
-    writeln!(out, "      throw std::runtime_error(\"hybrid schema hash mismatch for {pascal}\");");
+    writeln!(
+        out,
+        "    if (vtable_->abi_version != NVE_HYBRID_ABI_VERSION || vtable_->schema_hash != kSchemaHash) {{"
+    );
+    writeln!(
+        out,
+        "      throw std::runtime_error(\"hybrid schema hash mismatch for {pascal}\");"
+    );
     writeln!(out, "    }}");
     writeln!(out, "    handle_ = vtable_->create();");
     writeln!(out, "    if (!handle_) {{");
-    writeln!(out, "      throw std::runtime_error(\"failed to create {pascal} hybrid instance\");");
+    writeln!(
+        out,
+        "      throw std::runtime_error(\"failed to create {pascal} hybrid instance\");"
+    );
     writeln!(out, "    }}");
     writeln!(out, "  }}");
     writeln!(out);
 
     writeln!(out, "  {pascal}Client(const {pascal}Client&) = delete;");
-    writeln!(out, "  {pascal}Client& operator=(const {pascal}Client&) = delete;");
+    writeln!(
+        out,
+        "  {pascal}Client& operator=(const {pascal}Client&) = delete;"
+    );
     writeln!(out);
-    writeln!(out, "  {pascal}Client({pascal}Client&& other) noexcept : vtable_(other.vtable_), handle_(other.handle_) {{");
+    writeln!(
+        out,
+        "  {pascal}Client({pascal}Client&& other) noexcept : vtable_(other.vtable_), handle_(other.handle_) {{"
+    );
     writeln!(out, "    other.vtable_ = nullptr;");
     writeln!(out, "    other.handle_ = nullptr;");
     writeln!(out, "  }}");
     writeln!(out);
-    writeln!(out, "  {pascal}Client& operator=({pascal}Client&& other) noexcept {{");
+    writeln!(
+        out,
+        "  {pascal}Client& operator=({pascal}Client&& other) noexcept {{"
+    );
     writeln!(out, "    if (this != &other) {{");
     writeln!(out, "      reset();");
     writeln!(out, "      vtable_ = other.vtable_;");
@@ -247,8 +300,14 @@ pub(super) fn emit_cpp_client(
     writeln!(out, "    handle_ = nullptr;");
     writeln!(out, "  }}");
     writeln!(out);
-    writeln!(out, "  const NveHybrid{pascal}VTable* vtable() const noexcept {{ return vtable_; }}");
-    writeln!(out, "  NveAppHandle handle() const noexcept {{ return handle_; }}");
+    writeln!(
+        out,
+        "  const NveHybrid{pascal}VTable* vtable() const noexcept {{ return vtable_; }}"
+    );
+    writeln!(
+        out,
+        "  NveAppHandle handle() const noexcept {{ return handle_; }}"
+    );
     writeln!(out);
 
     if let Some(v) = view {
@@ -260,22 +319,34 @@ pub(super) fn emit_cpp_client(
     }
 
     writeln!(out, " private:");
-    writeln!(out, "  std::string take_string(NveHybridOwnedBytes raw) const {{");
+    writeln!(
+        out,
+        "  std::string take_string(NveHybridOwnedBytes raw) const {{"
+    );
     writeln!(out, "    if (!raw.ptr || raw.len == 0) {{");
     writeln!(out, "      if (raw.ptr) {{ vtable_->free_bytes(raw); }}");
     writeln!(out, "      return {{}};");
     writeln!(out, "    }}");
-    writeln!(out, "    std::string out(reinterpret_cast<const char*>(raw.ptr), raw.len);");
+    writeln!(
+        out,
+        "    std::string out(reinterpret_cast<const char*>(raw.ptr), raw.len);"
+    );
     writeln!(out, "    vtable_->free_bytes(raw);");
     writeln!(out, "    return out;");
     writeln!(out, "  }}");
     writeln!(out);
-    writeln!(out, "  std::vector<uint8_t> take_bytes(NveHybridOwnedBytes raw) const {{");
+    writeln!(
+        out,
+        "  std::vector<uint8_t> take_bytes(NveHybridOwnedBytes raw) const {{"
+    );
     writeln!(out, "    if (!raw.ptr || raw.len == 0) {{");
     writeln!(out, "      if (raw.ptr) {{ vtable_->free_bytes(raw); }}");
     writeln!(out, "      return {{}};");
     writeln!(out, "    }}");
-    writeln!(out, "    std::vector<uint8_t> out(raw.ptr, raw.ptr + raw.len);");
+    writeln!(
+        out,
+        "    std::vector<uint8_t> out(raw.ptr, raw.ptr + raw.len);"
+    );
     writeln!(out, "    vtable_->free_bytes(raw);");
     writeln!(out, "    return out;");
     writeln!(out, "  }}");
@@ -287,7 +358,10 @@ pub(super) fn emit_cpp_client(
 }
 
 pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridViewSpec) {
-    writeln!(out, "  void setProps(const {pascal}Props& props) override {{");
+    writeln!(
+        out,
+        "  void setProps(const {pascal}Props& props) override {{"
+    );
     if v.props.is_empty() {
         writeln!(out, "    (void)props;");
         writeln!(out, "    vtable_->set_props_direct(handle_, nullptr, 0u);");
@@ -316,7 +390,14 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
             "      entry.key = NveStrSlice{{reinterpret_cast<const uint8_t*>(\"{key_lit}\"), {}u}};",
             p.name.len()
         );
-        emit_cpp_fill_nve_value(out, "      ", "entry.value", &format!("props.{pname}"), &p.ty, idx);
+        emit_cpp_fill_nve_value(
+            out,
+            "      ",
+            "entry.value",
+            &format!("props.{pname}"),
+            &p.ty,
+            idx,
+        );
         writeln!(out, "      entries.push_back(entry);");
         writeln!(out, "    }}");
     }
@@ -325,13 +406,20 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
         "    const int32_t status = vtable_->set_props_direct(handle_, entries.data(), static_cast<uint32_t>(entries.size()));"
     );
     writeln!(out, "    if (status != NVE_HYBRID_OK) {{");
-    writeln!(out, "      throw std::runtime_error(\"setProps failed on {pascal}\");");
+    writeln!(
+        out,
+        "      throw std::runtime_error(\"setProps failed on {pascal}\");"
+    );
     writeln!(out, "    }}");
     writeln!(out, "  }}");
     writeln!(out);
 }
 
-pub(super) fn emit_cpp_client_method(out: &mut CodeWriter, method: &HybridMethodSpec, spec: &HybridFileSpec) {
+pub(super) fn emit_cpp_client_method(
+    out: &mut CodeWriter,
+    method: &HybridMethodSpec,
+    spec: &HybridFileSpec,
+) {
     let cname = c_field_ident(&method.name);
     writeln!(out, "  {} override {{", cpp_method_signature(method));
 
@@ -339,13 +427,17 @@ pub(super) fn emit_cpp_client_method(out: &mut CodeWriter, method: &HybridMethod
     let mut call_args = vec!["handle_".to_string()];
     for (idx, p) in method.params.iter().enumerate() {
         let pname = cpp_ident(&p.name);
-        if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec)) {
+        if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec))
+        {
             writeln!(out, "    NveHybridOpt{suffix} _arg_{idx}{{false, {{}}}};");
             writeln!(out, "    if ({pname}.has_value()) {{");
             writeln!(out, "      _arg_{idx}.is_some = true;");
             match inner.as_ref() {
                 HybridType::Enum(_) => {
-                    writeln!(out, "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});");
+                    writeln!(
+                        out,
+                        "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});"
+                    );
                 }
                 HybridType::Struct(_) => {
                     writeln!(out, "      _arg_{idx}.value = {pname}->to_abi();");
@@ -392,7 +484,7 @@ pub(super) fn emit_cpp_client_method(out: &mut CodeWriter, method: &HybridMethod
                 let wname = format!("_arg_w_{idx}");
                 writeln!(out, "    BinWriter {wname};");
                 emit_cpp_bin_write(out, "    ", &wname, &pname, other);
-                call_args.push(format!("{wname}.slice()"));
+                call_args.push(format!("to_slice({wname})"));
             }
         }
     }
@@ -472,10 +564,21 @@ pub(super) fn emit_cpp_return_decode(
             writeln!(out, "{indent}return take_bytes({var});");
         }
         HybridType::Value => {
-            writeln!(out, "{indent}return DynamicValue{{take_bytes({var})}};");
+            writeln!(
+                out,
+                "{indent}auto _dv = DynamicValue::from_bytes(take_bytes({var}));"
+            );
+            writeln!(
+                out,
+                "{indent}if (!_dv) throw std::runtime_error(\"malformed NveBinValue\");"
+            );
+            writeln!(out, "{indent}return std::move(*_dv);");
         }
         HybridType::Optional(inner) if inner.is_pod(spec) => {
-            writeln!(out, "{indent}if (!{var}.is_some) {{ return std::nullopt; }}");
+            writeln!(
+                out,
+                "{indent}if (!{var}.is_some) {{ return std::nullopt; }}"
+            );
             match inner.as_ref() {
                 HybridType::Enum(e) => {
                     writeln!(out, "{indent}return static_cast<{e}>({var}.value);");
@@ -493,8 +596,8 @@ pub(super) fn emit_cpp_return_decode(
             writeln!(out, "{indent}BinReader _r(_bytes);");
             writeln!(out, "{indent}{} _out{{}};", cpp_owned_type(other));
             emit_cpp_bin_read(out, indent, "_r", "_out", other);
+            writeln!(out, "{indent}require_ok(_r);");
             writeln!(out, "{indent}return _out;");
         }
     }
 }
-

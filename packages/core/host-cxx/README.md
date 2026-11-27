@@ -14,7 +14,7 @@ keys, and field specs.
 | `nve/host/bin_codec.hpp` | C++20 | `BinReader` / `BinWriter`: bounds-checked LE primitives plus the tagged `NveBinValue` format, with sticky errors, no exceptions, and zero heap allocations on read |
 | `nve/host/table_reader.hpp` | C++20 | `TableReader` over any `NveTableView`-shaped struct (`std::optional` on every read; specs that do not fit the row read `nullopt`); `field()` is `consteval` and rejects invalid specs at compile time |
 | `nve/host/scene_reader.hpp` | C++20 | `SceneReader<View>` over the generated `NveSceneView`. It validates once, then does O(1) bounds-checked reads. |
-| `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue` |
+| `nve/host/hybrid_runtime.hpp` | C++20 | `HybridStatus`, `HostStatus`, `check_schema`, `DynamicValue`; with `bin_codec.hpp`, the runtime of every generated C++ hybrid client and JNI glue (`nve codegen hybrid`) |
 
 `BinWriter` records `InvalidUtf8` for strings that are not well-formed UTF-8, and `TooLarge` for a
 length above `u32`; a rejected write leaves no bytes at all. `end(mark)` records `InvalidMark`

@@ -1,7 +1,10 @@
 use crate::writer::CodeWriter;
 
-use super::*;
 use super::type_helpers::*;
+use super::*;
+use crate::targets::c_cpp::hybrid::type_helpers::{
+    cpp_owned_type, emit_cpp_bin_read, emit_cpp_bin_write,
+};
 
 pub(super) fn emit_jni_cpp(spec: &HybridFileSpec, hpp_header: &str) -> String {
     let mut out = CodeWriter::with_capacity(16 * 1024);
@@ -20,6 +23,9 @@ pub(super) fn emit_jni_cpp(spec: &HybridFileSpec, hpp_header: &str) -> String {
     writeln!(out, "#include <string>");
     writeln!(out, "#include <vector>");
     writeln!(out, "#include \"{hpp_header}\"");
+    writeln!(out);
+    // The C++ client's codec helpers and types, unqualified (this file is generated glue only).
+    writeln!(out, "using namespace nve::hybrid;");
     writeln!(out);
 
     writeln!(
@@ -77,13 +83,19 @@ pub(super) fn emit_jni_cpp_target(
     writeln!(out);
 
     // nativeCreate
-    writeln!(out, "JNIEXPORT jlong JNICALL {cls_jni}_nativeCreate(JNIEnv* env, jclass) {{");
+    writeln!(
+        out,
+        "JNIEXPORT jlong JNICALL {cls_jni}_nativeCreate(JNIEnv* env, jclass) {{"
+    );
     writeln!(out, "  try {{");
     writeln!(
         out,
         "    const auto* vt = static_cast<const NveHybrid{pascal}VTable*>(nve_get_interface(NVE_HYBRID_{upper}_INTERFACE_ID));"
     );
-    writeln!(out, "    auto* client = new nve::hybrid::{pascal}Client(vt);");
+    writeln!(
+        out,
+        "    auto* client = new nve::hybrid::{pascal}Client(vt);"
+    );
     writeln!(out, "    return reinterpret_cast<jlong>(client);");
     writeln!(out, "  }} catch (const std::exception& e) {{");
     writeln!(out, "    throw_java_exception(env, e.what());");
@@ -97,7 +109,10 @@ pub(super) fn emit_jni_cpp_target(
         out,
         "JNIEXPORT void JNICALL {cls_jni}_nativeDestroy(JNIEnv*, jclass, jlong handle) {{"
     );
-    writeln!(out, "  delete reinterpret_cast<nve::hybrid::{pascal}Client*>(handle);");
+    writeln!(
+        out,
+        "  delete reinterpret_cast<nve::hybrid::{pascal}Client*>(handle);"
+    );
     writeln!(out, "}}");
     writeln!(out);
 
@@ -106,31 +121,85 @@ pub(super) fn emit_jni_cpp_target(
             out,
             "JNIEXPORT void JNICALL {cls_jni}_nativeSetProps(JNIEnv* env, jclass, jlong handle, jobject props_buf) {{"
         );
-        writeln!(out, "  auto* client = reinterpret_cast<nve::hybrid::{pascal}Client*>(handle);");
-        writeln!(out, "  if (!client) {{ throw_java_exception(env, \"null hybrid handle\"); return; }}");
+        writeln!(
+            out,
+            "  auto* client = reinterpret_cast<nve::hybrid::{pascal}Client*>(handle);"
+        );
+        writeln!(
+            out,
+            "  if (!client) {{ throw_java_exception(env, \"null hybrid handle\"); return; }}"
+        );
         writeln!(out, "  try {{");
-        writeln!(out, "    const auto span = direct_buffer_span(env, props_buf);");
-        writeln!(out, "    nve::hybrid::BinReader r(span);");
+        writeln!(
+            out,
+            "    const auto span = direct_buffer_span(env, props_buf);"
+        );
+        // Keys and values borrow the direct buffer, which outlives the call: nothing is copied.
+        writeln!(out, "    BinReader r(span);");
         writeln!(out, "    const uint32_t count = r.begin_map();");
-        writeln!(out, "    std::vector<std::string> keys;");
-        writeln!(out, "    std::vector<std::vector<uint8_t>> raw_vals;");
         writeln!(out, "    std::vector<NveMapEntry> entries;");
-        writeln!(out, "    keys.reserve(count); raw_vals.reserve(count); entries.reserve(count);");
-        writeln!(out, "    for (uint32_t i = 0; i < count; ++i) {{");
-        writeln!(out, "      keys.emplace_back(r.read_map_key());");
-        writeln!(out, "      const uint8_t tag = r.peek_tag();");
+        writeln!(out, "    entries.reserve(count);");
+        writeln!(out, "    for (uint32_t i = 0; i < count && r.ok(); ++i) {{");
         writeln!(out, "      NveMapEntry entry{{}};");
-        writeln!(out, "      entry.key = NveStrSlice{{reinterpret_cast<const uint8_t*>(keys.back().data()), keys.back().size()}};");
-        writeln!(out, "      if (tag == NVE_VAL_BOOL) {{ entry.value.tag = NVE_VAL_BOOL; entry.value.data.bool_val = r.read_bool() ? 1u : 0u; }}");
-        writeln!(out, "      else if (tag == NVE_VAL_I64) {{ entry.value.tag = NVE_VAL_I64; entry.value.data.i64_val = r.read_i64(); }}");
-        writeln!(out, "      else if (tag == NVE_VAL_F64) {{ entry.value.tag = NVE_VAL_F64; entry.value.data.f64_val = r.read_f64(); }}");
-        writeln!(out, "      else if (tag == NVE_VAL_STR) {{ auto s = r.read_str(); raw_vals.emplace_back(s.begin(), s.end()); entry.value.tag = NVE_VAL_STR; entry.value.data.str_val = NveStrSlice{{raw_vals.back().data(), raw_vals.back().size()}}; }}");
-        writeln!(out, "      else if (tag == NVE_VAL_BYTES) {{ raw_vals.push_back(r.read_bytes()); entry.value.tag = NVE_VAL_BYTES; entry.value.data.bytes_val = NveBufferSlice{{raw_vals.back().data(), raw_vals.back().size()}}; }}");
-        writeln!(out, "      else {{ raw_vals.push_back(r.read_raw_value()); entry.value.tag = NVE_VAL_BYTES; entry.value.data.bytes_val = NveBufferSlice{{raw_vals.back().data(), raw_vals.back().size()}}; }}");
+        writeln!(out, "      const std::string_view key = r.read_map_key();");
+        writeln!(
+            out,
+            "      entry.key = NveStrSlice{{reinterpret_cast<const uint8_t*>(key.data()), key.size()}};"
+        );
+        writeln!(out, "      switch (r.peek_tag()) {{");
+        writeln!(
+            out,
+            "        case nve::host::BinTag::Bool: entry.value.tag = NVE_VAL_BOOL; entry.value.data.bool_val = r.read_bool() ? 1u : 0u; break;"
+        );
+        writeln!(
+            out,
+            "        case nve::host::BinTag::I64: entry.value.tag = NVE_VAL_I64; entry.value.data.i64_val = r.read_i64(); break;"
+        );
+        writeln!(
+            out,
+            "        case nve::host::BinTag::F64: entry.value.tag = NVE_VAL_F64; entry.value.data.f64_val = r.read_f64(); break;"
+        );
+        writeln!(out, "        case nve::host::BinTag::Str: {{");
+        writeln!(out, "          const std::string_view s = r.read_str();");
+        writeln!(out, "          entry.value.tag = NVE_VAL_STR;");
+        writeln!(
+            out,
+            "          entry.value.data.str_val = NveStrSlice{{reinterpret_cast<const uint8_t*>(s.data()), s.size()}};"
+        );
+        writeln!(out, "          break;");
+        writeln!(out, "        }}");
+        writeln!(out, "        case nve::host::BinTag::Bytes: {{");
+        writeln!(out, "          const auto b = r.read_bytes();");
+        writeln!(out, "          entry.value.tag = NVE_VAL_BYTES;");
+        writeln!(
+            out,
+            "          entry.value.data.bytes_val = NveBufferSlice{{b.data(), b.size()}};"
+        );
+        writeln!(out, "          break;");
+        writeln!(out, "        }}");
+        writeln!(
+            out,
+            "        default: {{ // null / array / map: the encoded value itself"
+        );
+        writeln!(out, "          const auto v = r.read_raw_value();");
+        writeln!(out, "          entry.value.tag = NVE_VAL_BYTES;");
+        writeln!(
+            out,
+            "          entry.value.data.bytes_val = NveBufferSlice{{v.data(), v.size()}};"
+        );
+        writeln!(out, "        }}");
+        writeln!(out, "      }}");
         writeln!(out, "      entries.push_back(entry);");
         writeln!(out, "    }}");
-        writeln!(out, "    const int32_t st = client->vtable()->set_props_direct(client->handle(), entries.data(), static_cast<uint32_t>(entries.size()));");
-        writeln!(out, "    if (st != NVE_HYBRID_OK) {{ throw_java_exception(env, \"setProps failed\"); }}");
+        writeln!(out, "    require_ok(r);");
+        writeln!(
+            out,
+            "    const int32_t st = client->vtable()->set_props_direct(client->handle(), entries.data(), static_cast<uint32_t>(entries.size()));"
+        );
+        writeln!(
+            out,
+            "    if (st != NVE_HYBRID_OK) {{ throw_java_exception(env, \"setProps failed\"); }}"
+        );
         writeln!(out, "  }} catch (const std::exception& e) {{");
         writeln!(out, "    throw_java_exception(env, e.what());");
         writeln!(out, "  }}");
@@ -152,8 +221,14 @@ pub(super) fn emit_jni_cpp_target(
         }
         writeln!(out, ") {{");
         let zero_ret = jni_cpp_zero_return(&m.return_type);
-        writeln!(out, "  auto* client = reinterpret_cast<nve::hybrid::{pascal}Client*>(handle);");
-        writeln!(out, "  if (!client) {{ throw_java_exception(env, \"null hybrid handle\"); return{zero_ret}; }}");
+        writeln!(
+            out,
+            "  auto* client = reinterpret_cast<nve::hybrid::{pascal}Client*>(handle);"
+        );
+        writeln!(
+            out,
+            "  if (!client) {{ throw_java_exception(env, \"null hybrid handle\"); return{zero_ret}; }}"
+        );
         writeln!(out, "  try {{");
 
         let mut call_args = Vec::new();
@@ -171,28 +246,58 @@ pub(super) fn emit_jni_cpp_target(
                 HybridType::F32 => call_args.push(format!("static_cast<float>({pname})")),
                 HybridType::F64 => call_args.push(format!("static_cast<double>({pname})")),
                 HybridType::Enum(e) => {
-                    call_args.push(format!("static_cast<nve::hybrid::{e}>(static_cast<uint32_t>({pname}))"));
+                    call_args.push(format!(
+                        "static_cast<nve::hybrid::{e}>(static_cast<uint32_t>({pname}))"
+                    ));
                 }
                 HybridType::String => {
-                    writeln!(out, "    const char* _cstr_{idx} = {pname} ? env->GetStringUTFChars({pname}, nullptr) : \"\";");
-                    writeln!(out, "    std::string _str_{idx}(_cstr_{idx} ? _cstr_{idx} : \"\");");
-                    writeln!(out, "    if ({pname} && _cstr_{idx}) {{ env->ReleaseStringUTFChars({pname}, _cstr_{idx}); }}");
+                    writeln!(
+                        out,
+                        "    const char* _cstr_{idx} = {pname} ? env->GetStringUTFChars({pname}, nullptr) : \"\";"
+                    );
+                    writeln!(
+                        out,
+                        "    std::string _str_{idx}(_cstr_{idx} ? _cstr_{idx} : \"\");"
+                    );
+                    writeln!(
+                        out,
+                        "    if ({pname} && _cstr_{idx}) {{ env->ReleaseStringUTFChars({pname}, _cstr_{idx}); }}"
+                    );
                     call_args.push(format!("_str_{idx}"));
                 }
                 HybridType::Bytes => {
-                    writeln!(out, "    const auto _span_{idx} = direct_buffer_span(env, {pname});");
+                    writeln!(
+                        out,
+                        "    const auto _span_{idx} = direct_buffer_span(env, {pname});"
+                    );
                     call_args.push(format!("_span_{idx}"));
                 }
                 HybridType::Value => {
-                    writeln!(out, "    const auto _span_{idx} = direct_buffer_span(env, {pname});");
-                    writeln!(out, "    NveValue _val_{idx}{{}}; _val_{idx}.tag = NVE_VAL_BYTES; _val_{idx}.data.bytes_val = NveBufferSlice{{_span_{idx}.data(), _span_{idx}.size()}};");
+                    writeln!(
+                        out,
+                        "    const auto _span_{idx} = direct_buffer_span(env, {pname});"
+                    );
+                    writeln!(
+                        out,
+                        "    NveValue _val_{idx}{{}}; _val_{idx}.tag = NVE_VAL_BYTES; _val_{idx}.data.bytes_val = NveBufferSlice{{_span_{idx}.data(), _span_{idx}.size()}};"
+                    );
                     call_args.push(format!("_val_{idx}"));
                 }
                 other => {
-                    writeln!(out, "    const auto _span_{idx} = direct_buffer_span(env, {pname});");
-                    writeln!(out, "    nve::hybrid::BinReader _r_{idx}(_span_{idx});");
-                    writeln!(out, "    {} _arg_{idx}{{}};", jni_cpp_owned_type(other));
-                    emit_jni_cpp_bin_read(out, "    ", &format!("_r_{idx}"), &format!("_arg_{idx}"), other);
+                    writeln!(
+                        out,
+                        "    const auto _span_{idx} = direct_buffer_span(env, {pname});"
+                    );
+                    writeln!(out, "    BinReader _r_{idx}(_span_{idx});");
+                    writeln!(out, "    {} _arg_{idx}{{}};", cpp_owned_type(other));
+                    emit_cpp_bin_read(
+                        out,
+                        "    ",
+                        &format!("_r_{idx}"),
+                        &format!("_arg_{idx}"),
+                        other,
+                    );
+                    writeln!(out, "    require_ok(_r_{idx});");
                     call_args.push(format!("_arg_{idx}"));
                 }
             }
@@ -214,7 +319,10 @@ pub(super) fn emit_jni_cpp_target(
             }
             HybridType::F32 => writeln!(out, "    return static_cast<jfloat>({call_expr});"),
             HybridType::F64 => writeln!(out, "    return static_cast<jdouble>({call_expr});"),
-            HybridType::Enum(_) => writeln!(out, "    return static_cast<jint>(static_cast<uint32_t>({call_expr}));"),
+            HybridType::Enum(_) => writeln!(
+                out,
+                "    return static_cast<jint>(static_cast<uint32_t>({call_expr}));"
+            ),
             HybridType::String => {
                 writeln!(out, "    const std::string _res = {call_expr};");
                 writeln!(out, "    return env->NewStringUTF(_res.c_str());");
@@ -225,13 +333,13 @@ pub(super) fn emit_jni_cpp_target(
             }
             HybridType::Value => {
                 writeln!(out, "    const auto _res = {call_expr};");
-                writeln!(out, "    return to_jbyte_array(env, _res.bin_bytes);");
+                writeln!(out, "    return to_jbyte_array(env, _res.bytes());");
             }
             other => {
                 writeln!(out, "    const auto _res = {call_expr};");
-                writeln!(out, "    nve::hybrid::BinWriter _rw;");
-                emit_jni_cpp_bin_write(out, "    ", "_rw", "_res", other);
-                writeln!(out, "    return to_jbyte_array(env, _rw.bytes());");
+                writeln!(out, "    BinWriter _rw;");
+                emit_cpp_bin_write(out, "    ", "_rw", "_res", other);
+                writeln!(out, "    return to_jbyte_array(env, checked_bytes(_rw));");
             }
         }
 
@@ -246,4 +354,3 @@ pub(super) fn emit_jni_cpp_target(
     writeln!(out, "}} // extern \"C\"");
     writeln!(out);
 }
-

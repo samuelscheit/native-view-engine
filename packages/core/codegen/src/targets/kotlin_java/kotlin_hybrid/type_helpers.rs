@@ -48,7 +48,11 @@ pub(super) fn kotlin_type(ty: &HybridType) -> String {
 pub(super) fn kotlin_jni_param_type(ty: &HybridType) -> &'static str {
     match ty {
         HybridType::Bool => "Boolean",
-        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "Int",
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::Enum(_) => "Int",
         HybridType::Usize | HybridType::I64 | HybridType::U64 => "Long",
         HybridType::F32 => "Float",
         HybridType::F64 => "Double",
@@ -65,7 +69,11 @@ pub(super) fn kotlin_jni_return_type(ty: &HybridType) -> &'static str {
     match eff {
         HybridType::Void => "Unit",
         HybridType::Bool => "Boolean",
-        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "Int",
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::Enum(_) => "Int",
         HybridType::Usize | HybridType::I64 | HybridType::U64 => "Long",
         HybridType::F32 => "Float",
         HybridType::F64 => "Double",
@@ -77,7 +85,11 @@ pub(super) fn kotlin_jni_return_type(ty: &HybridType) -> &'static str {
 pub(super) fn jni_cpp_param_type(ty: &HybridType) -> &'static str {
     match ty {
         HybridType::Bool => "jboolean",
-        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "jint",
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::Enum(_) => "jint",
         HybridType::Usize | HybridType::I64 | HybridType::U64 => "jlong",
         HybridType::F32 => "jfloat",
         HybridType::F64 => "jdouble",
@@ -94,7 +106,11 @@ pub(super) fn jni_cpp_return_type(ty: &HybridType) -> &'static str {
     match eff {
         HybridType::Void => "void",
         HybridType::Bool => "jboolean",
-        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 | HybridType::Enum(_) => "jint",
+        HybridType::U8
+        | HybridType::U16
+        | HybridType::I32
+        | HybridType::U32
+        | HybridType::Enum(_) => "jint",
         HybridType::Usize | HybridType::I64 | HybridType::U64 => "jlong",
         HybridType::F32 => "jfloat",
         HybridType::F64 => "jdouble",
@@ -121,124 +137,6 @@ pub(super) fn jni_cpp_zero_return(ty: &HybridType) -> &'static str {
         | HybridType::Enum(_) => " 0",
         HybridType::F32 | HybridType::F64 => " 0.0",
         _ => " nullptr",
-    }
-}
-
-pub(super) fn jni_cpp_owned_type(ty: &HybridType) -> String {
-    match ty {
-        HybridType::Bool => "bool".to_string(),
-        HybridType::U8 => "uint8_t".to_string(),
-        HybridType::U16 => "uint16_t".to_string(),
-        HybridType::Usize => "size_t".to_string(),
-        HybridType::I32 => "int32_t".to_string(),
-        HybridType::U32 => "uint32_t".to_string(),
-        HybridType::I64 => "int64_t".to_string(),
-        HybridType::U64 => "uint64_t".to_string(),
-        HybridType::F32 => "float".to_string(),
-        HybridType::F64 => "double".to_string(),
-        HybridType::String => "std::string".to_string(),
-        HybridType::Bytes => "std::vector<uint8_t>".to_string(),
-        HybridType::Optional(inner) => format!("std::optional<{}>", jni_cpp_owned_type(inner)),
-        HybridType::Vec(inner) => format!("std::vector<{}>", jni_cpp_owned_type(inner)),
-        HybridType::Struct(s) | HybridType::Enum(s) => format!("nve::hybrid::{s}"),
-        HybridType::Value => "nve::hybrid::DynamicValue".to_string(),
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => "void".to_string(),
-    }
-}
-
-pub(super) fn emit_jni_cpp_bin_write(
-    out: &mut CodeWriter,
-    indent: &str,
-    w: &str,
-    expr: &str,
-    ty: &HybridType,
-) {
-    match ty {
-        HybridType::Bool => writeln!(out, "{indent}{w}.write_bool({expr});"),
-        HybridType::U8
-        | HybridType::U16
-        | HybridType::Usize
-        | HybridType::I32
-        | HybridType::U32
-        | HybridType::I64
-        | HybridType::U64 => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>({expr}));");
-        }
-        HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{w}.write_f64(static_cast<double>({expr}));");
-        }
-        HybridType::Enum(_) => {
-            writeln!(out, "{indent}{w}.write_i64(static_cast<int64_t>(static_cast<uint32_t>({expr})));");
-        }
-        HybridType::String => writeln!(out, "{indent}{w}.write_str({expr});"),
-        HybridType::Bytes => writeln!(out, "{indent}{w}.write_bytes({expr});"),
-        HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encode_bin({w});"),
-        HybridType::Value => writeln!(out, "{indent}{w}.write_raw({expr}.bin_bytes);"),
-        HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({expr}.has_value()) {{");
-            emit_jni_cpp_bin_write(out, &format!("{indent}  "), w, &format!("(*{expr})"), inner);
-            writeln!(out, "{indent}}} else {{ {w}.write_null(); }}");
-        }
-        HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.write_array(static_cast<uint32_t>({expr}.size()), [&](nve::hybrid::BinWriter& _aw) {{");
-            writeln!(out, "{indent}  for (const auto& _el : {expr}) {{");
-            emit_jni_cpp_bin_write(out, &format!("{indent}    "), "_aw", "_el", inner);
-            writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}}});");
-        }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
-    }
-}
-
-pub(super) fn emit_jni_cpp_bin_read(out: &mut CodeWriter, indent: &str, r: &str, dst: &str, ty: &HybridType) {
-    match ty {
-        HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.read_bool();"),
-        HybridType::U8 => writeln!(out, "{indent}{dst} = static_cast<uint8_t>({r}.read_i64());"),
-        HybridType::U16 => writeln!(out, "{indent}{dst} = static_cast<uint16_t>({r}.read_i64());"),
-        HybridType::Usize => writeln!(out, "{indent}{dst} = static_cast<size_t>({r}.read_i64());"),
-        HybridType::I32 => writeln!(out, "{indent}{dst} = static_cast<int32_t>({r}.read_i64());"),
-        HybridType::U32 => writeln!(out, "{indent}{dst} = static_cast<uint32_t>({r}.read_i64());"),
-        HybridType::I64 => writeln!(out, "{indent}{dst} = {r}.read_i64();"),
-        HybridType::U64 => writeln!(out, "{indent}{dst} = static_cast<uint64_t>({r}.read_i64());"),
-        HybridType::F32 => writeln!(out, "{indent}{dst} = static_cast<float>({r}.read_f64());"),
-        HybridType::F64 => writeln!(out, "{indent}{dst} = {r}.read_f64();"),
-        HybridType::Enum(e) => {
-            writeln!(out, "{indent}{dst} = static_cast<nve::hybrid::{e}>(static_cast<uint32_t>({r}.read_i64()));");
-        }
-        HybridType::String => writeln!(out, "{indent}{dst} = {r}.read_str();"),
-        HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.read_bytes();"),
-        HybridType::Struct(s) => writeln!(out, "{indent}{dst} = nve::hybrid::{s}::decode_bin({r});"),
-        HybridType::Value => writeln!(out, "{indent}{dst} = nve::hybrid::DynamicValue{{{r}.read_raw_value()}};"),
-        HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({r}.read_null_if_present()) {{ {dst} = std::nullopt; }} else {{");
-            writeln!(out, "{indent}  {} _ov{{}};", jni_cpp_owned_type(inner));
-            emit_jni_cpp_bin_read(out, &format!("{indent}  "), r, "_ov", inner);
-            writeln!(out, "{indent}  {dst} = std::move(_ov);");
-            writeln!(out, "{indent}}}");
-        }
-        HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{{ const uint32_t _n = {r}.begin_array(); {dst}.reserve(_n); for (uint32_t _i = 0; _i < _n; ++_i) {{");
-            writeln!(out, "{indent}  {} _el{{}};", jni_cpp_owned_type(inner));
-            emit_jni_cpp_bin_read(out, &format!("{indent}  "), r, "_el", inner);
-            writeln!(out, "{indent}  {dst}.push_back(std::move(_el));");
-            writeln!(out, "{indent}}} }}");
-        }
-        HybridType::Void
-        | HybridType::Result { .. }
-        | HybridType::ConstPtr(_)
-        | HybridType::MutPtr(_)
-        | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => {}
     }
 }
 
@@ -304,7 +202,13 @@ pub(super) fn kotlin_default_value(
     }
 }
 
-pub(super) fn emit_kotlin_bin_write(out: &mut CodeWriter, indent: &str, w: &str, expr: &str, ty: &HybridType) {
+pub(super) fn emit_kotlin_bin_write(
+    out: &mut CodeWriter,
+    indent: &str,
+    w: &str,
+    expr: &str,
+    ty: &HybridType,
+) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr})"),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
@@ -341,7 +245,13 @@ pub(super) fn emit_kotlin_bin_write(out: &mut CodeWriter, indent: &str, w: &str,
     }
 }
 
-pub(super) fn emit_kotlin_bin_read(out: &mut CodeWriter, indent: &str, r: &str, dst: &str, ty: &HybridType) {
+pub(super) fn emit_kotlin_bin_read(
+    out: &mut CodeWriter,
+    indent: &str,
+    r: &str,
+    dst: &str,
+    ty: &HybridType,
+) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool()"),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
@@ -356,9 +266,15 @@ pub(super) fn emit_kotlin_bin_read(out: &mut CodeWriter, indent: &str, r: &str, 
         HybridType::String => writeln!(out, "{indent}{dst} = {r}.readString()"),
         HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.readBytes()"),
         HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}.decodeBin({r})"),
-        HybridType::Value => writeln!(out, "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue())"),
+        HybridType::Value => writeln!(
+            out,
+            "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue())"
+        ),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}{dst} = if ({r}.readNullIfPresent()) null else {{");
+            writeln!(
+                out,
+                "{indent}{dst} = if ({r}.readNullIfPresent()) null else {{"
+            );
             writeln!(out, "{indent}    val _ov: {}", kotlin_type(inner));
             emit_kotlin_bin_read(out, &format!("{indent}    "), r, "_ov", inner);
             writeln!(out, "{indent}    _ov");
@@ -367,7 +283,11 @@ pub(super) fn emit_kotlin_bin_read(out: &mut CodeWriter, indent: &str, r: &str, 
         HybridType::Vec(inner) => {
             writeln!(out, "{indent}run {{");
             writeln!(out, "{indent}    val _n = {r}.beginArray()");
-            writeln!(out, "{indent}    val _list = ArrayList<{}>(_n)", kotlin_type(inner));
+            writeln!(
+                out,
+                "{indent}    val _list = ArrayList<{}>(_n)",
+                kotlin_type(inner)
+            );
             writeln!(out, "{indent}    repeat(_n) {{");
             writeln!(out, "{indent}        val _el: {}", kotlin_type(inner));
             emit_kotlin_bin_read(out, &format!("{indent}        "), r, "_el", inner);
