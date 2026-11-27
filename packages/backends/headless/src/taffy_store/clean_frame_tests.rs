@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::hoisted_tests::{VP, assert_matches_layout_of};
 use crate::TaffyStoreLayout;
 use nve_components::tables::{
-    AlignSelf, FlexDirection, Layout, Overflow, Position, TextContent, Typography, Visual,
+    AlignSelf, Display, FlexDirection, Layout, Overflow, Position, TextContent, Typography, Visual,
 };
 use nve_engine::{TextMeasurer, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Transaction};
@@ -371,6 +371,13 @@ fn switching_the_layout_root_round_trips_to_fresh_layouts() {
             .width(Length::points(40.0))
             .height(Length::points(10.0));
         tx.set_children(row, &[boxed, toast]);
+        // Non-default state on slots outside the nested root: `ROOT`'s own typography and a
+        // `display: contents` sibling of `parent`, which a fresh engine laid out from
+        // `parent` never resolves.
+        tx.edit::<Typography>(NodeId::ROOT).font_size(24.0);
+        let aside = tx.create();
+        tx.edit::<Layout>(aside).display(Display::Contents);
+        tx.set_children(NodeId::ROOT, &[parent, aside]);
     }));
     let subtree = [parent, label, row, boxed, toast];
 

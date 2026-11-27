@@ -524,3 +524,40 @@ fn text_wraps_inside_a_ratio_box_whose_padding_consumes_the_transferred_width() 
         r.width
     );
 }
+
+/// A ratio whose transfer overflows `f32` (`100 × 1e38`) transfers nothing: the text wraps at
+/// the container like a ratio-less leaf instead of at a width clamped to 0.
+#[test]
+fn an_overflowing_ratio_transfer_does_not_collapse_text_to_zero_width() {
+    let mut store = NodeStore::new();
+    let mut layout = TaffyStoreLayout::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let container = tx.create();
+    let leaf = tx.create();
+    tx.set_children(NodeId::ROOT, &[container]);
+    tx.set_children(container, &[leaf]);
+    tx.edit::<NveLayout>(container)
+        .flex_direction(NveFlexDirection::Column)
+        .align_items(NveAlignItems::FlexStart)
+        .width(Length::points(400.0));
+    tx.edit::<TextContent>(leaf).text(WRAPPED);
+    tx.edit::<NveLayout>(leaf)
+        .flex_basis(Length::points(100.0))
+        .min_height(Length::points(0.0))
+        .aspect_ratio(1e38);
+    tx.commit_into(&mut changes);
+    layout.sync_changes(&store, &changes);
+    let vp = Viewport {
+        width: 400.0,
+        height: 300.0,
+        scale_factor: 1.0,
+    };
+    assert!(layout.compute_layout(&store, NodeId::ROOT, vp));
+    let (line_w, _) = layout
+        .text_measurer()
+        .measure_with_weight(WRAPPED, 16.0, 400, Some(400.0));
+    let r = layout.layout_of(leaf).expect("leaf laid out");
+    assert!(r.width.is_finite() && r.height.is_finite(), "{r:?}");
+    assert_eq!((r.width, r.height), (line_w.round(), 100.0));
+}

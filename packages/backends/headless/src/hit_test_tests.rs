@@ -427,3 +427,132 @@ fn a_contents_wrapper_z_index_never_reorders_its_children() {
         "below `under`, the overlay is exposed"
     );
 }
+
+/// Absolute `w`×`h` box at `(x, y)` in its containing block.
+fn placed(tx: &mut Transaction<'_>, x: f32, y: f32, w: f32, h: f32) -> NodeId {
+    let id = sized(tx, w, h);
+    tx.edit::<Layout>(id)
+        .position(Position::Absolute)
+        .inset_left(Length::points(x))
+        .inset_top(Length::points(y));
+    id
+}
+
+#[test]
+fn long_mixed_z_sibling_lists_hit_the_topmost_box_through_nested_scratch() {
+    let mut store = NodeStore::new();
+    store.set_realization_order(core_realization_order());
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let stack = sized(&mut tx, 200.0, 200.0);
+    // Visited first (highest `z`): a container away from the point whose own 100 mixed-`z`
+    // children all miss, so its keys are appended after (and may reallocate) the stack's
+    // before the stack's walk continues with its own keys.
+    let container = placed(&mut tx, 100.0, 100.0, 10.0, 10.0);
+    tx.edit::<Visual>(container).z_index(20);
+    let inner: Vec<NodeId> = (0..100)
+        .map(|j| {
+            // Container-relative: x 100 + j % 10, y 100 in the stack.
+            let id = placed(&mut tx, (j % 10) as f32, 0.0, 1.0, 1.0);
+            tx.edit::<Visual>(id).z_index((j * 5) % 11);
+            press(&mut tx, id);
+            id
+        })
+        .collect();
+    tx.set_children(container, &inner);
+    // 100 overlapping pressable siblings with shuffled levels `(i * 7) % 13`: level 12 is
+    // shared by i = 11, 24, …, 89, so the latest of them in DOM order (89, not the last
+    // sibling) is topmost.
+    let mut children = vec![container];
+    for i in 0..100 {
+        let id = placed(&mut tx, 0.0, 0.0, 20.0, 20.0);
+        tx.edit::<Visual>(id).z_index((i * 7) % 13);
+        press(&mut tx, id);
+        children.push(id);
+    }
+    tx.set_children(NodeId::ROOT, &[stack]);
+    tx.set_children(stack, &children);
+    tx.commit_into(&mut changes);
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(1, VP);
+    assert!(backend.commit(&store, &changes).is_ok());
+
+    let topmost = Some(children[1 + 89].raw());
+    for query in 0..2 {
+        assert_eq!(backend.hit_test(&store, 5.0, 5.0), topmost, "query {query}");
+        assert_eq!(backend.hit_test_interaction(&store, 5.0, 5.0), topmost);
+        let scratch = backend.hit_scratch.take();
+        assert!(scratch.is_empty(), "every level truncated its keys");
+        assert!(
+            scratch.capacity() >= 201,
+            "both levels' keys were held at once"
+        );
+        backend.hit_scratch.set(scratch);
+    }
+    // The inner list orders correctly too: its own topmost child under its point.
+    let inner_point = (100.5, 100.5);
+    let inner_top = (0..100)
+        .filter(|j| j % 10 == 0)
+        .max_by_key(|&j| ((j * 5) % 11, j))
+        .map(|j| inner[j].raw());
+    assert_eq!(
+        backend.hit_test(&store, inner_point.0, inner_point.1),
+        inner_top
+    );
+}
+
+/// Gives every node the same absolute rect without recursing, so a deep tree exercises only
+/// the hit walk's stack.
+struct UniformRects;
+
+impl nve_engine::StoreLayoutEngine for UniformRects {
+    fn name(&self) -> &'static str {
+        "uniform-rects"
+    }
+    fn sync_changes(&mut self, _: &NodeStore, _: &ChangeSet) {}
+    fn compute_layout(&mut self, _: &NodeStore, _: NodeId, _: Viewport) -> bool {
+        true
+    }
+    fn layout_of(&self, _: NodeId) -> Option<nve_engine::LayoutRect> {
+        Some(nve_engine::LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        })
+    }
+    fn set_text_measurer(&mut self, _: std::sync::Arc<dyn nve_engine::TextMeasurer>) {}
+    fn reset(&mut self) {}
+}
+
+#[test]
+fn a_max_depth_chain_hit_tests_on_a_small_stack() {
+    let deepest = std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            let mut store = NodeStore::new();
+            store.set_realization_order(core_realization_order());
+            let mut changes = ChangeSet::default();
+            let mut tx = store.tx();
+            let mut parent = NodeId::ROOT;
+            for _ in 0..crate::MAX_TREE_DEPTH {
+                let child = tx.create();
+                tx.set_children(parent, &[child]);
+                parent = child;
+            }
+            press(&mut tx, parent);
+            tx.commit_into(&mut changes);
+            let mut backend = HeadlessBackend::with_layout(UniformRects);
+            backend.set_viewport(1, VP);
+            assert!(backend.commit(&store, &changes).is_ok());
+            (backend.hit_test(&store, 5.0, 5.0), parent.raw())
+        })
+        .expect("spawn")
+        .join()
+        .expect("no stack overflow");
+    assert_eq!(
+        deepest.0,
+        Some(deepest.1),
+        "the node at MAX_TREE_DEPTH is hit"
+    );
+}

@@ -164,20 +164,19 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         y: f32,
         accepts: impl Fn(StoreNodeId) -> bool,
     ) -> Option<NodeId> {
+        // `Cell::take` leaves an empty, unallocated `Vec`; the walk only grows the buffer, so
+        // putting it back keeps the high-water capacity for later queries.
         let mut walk = HitWalk {
             backend: self,
             store,
             accepts,
-            scratch: None,
+            scratch: self.hit_scratch.take(),
         };
         let target = walk
             .walk(StoreNodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
             .target;
-        if let Some(scratch) = walk.scratch
-            && let Ok(mut kept) = self.hit_scratch.lock()
-        {
-            *kept = scratch;
-        }
+        debug_assert!(walk.scratch.is_empty(), "every level truncates its keys");
+        self.hit_scratch.set(walk.scratch);
         target
     }
 }
@@ -195,15 +194,16 @@ fn paint_z(store: &NodeStore, id: StoreNodeId) -> i32 {
     }
 }
 
-/// `(min, max)` paint `z-index` of `children`; `(0, 0)` without reading rows for 0–1 children.
-fn z_range(store: &NodeStore, children: &[StoreNodeId]) -> (i32, i32) {
-    if children.len() <= 1 {
-        return (0, 0);
+/// Whether every sibling paints at one `z-index` level (always for 0–1 children); stops at the
+/// first sibling on another level.
+fn single_z_level(store: &NodeStore, children: &[StoreNodeId]) -> bool {
+    match children {
+        [] | [_] => true,
+        [first, rest @ ..] => {
+            let z = paint_z(store, *first);
+            rest.iter().all(|&c| paint_z(store, c) == z)
+        }
     }
-    children.iter().fold((i32::MAX, i32::MIN), |(lo, hi), &c| {
-        let z = paint_z(store, c);
-        (lo.min(z), hi.max(z))
-    })
 }
 
 /// Sibling lists up to this length sort their `(z, index)` keys in a stack buffer; longer
@@ -215,6 +215,7 @@ const STACK_SORT_LEN: usize = 64;
 /// unlike [`paint_z`], still stacks `display: contents` nodes; see BACKLOG "Shared hit walk").
 fn fill_z_keys(store: &NodeStore, children: &[StoreNodeId], keys: &mut [(i32, u32)]) {
     for (i, (key, &c)) in keys.iter_mut().zip(children).enumerate() {
+        // Child lists hold distinct 24-bit-indexed nodes, far below `u32::MAX`.
         *key = (paint_z(store, c), i as u32);
     }
     keys.sort_unstable();
@@ -226,10 +227,10 @@ struct HitWalk<'a, L: StoreLayoutEngine, F> {
     store: &'a NodeStore,
     accepts: F,
     /// Stack-disciplined `(z, index)` keys of the mixed-`z_index` sibling lists being walked
-    /// that exceed [`STACK_SORT_LEN`] (each level truncates back to its start). Taken from the
-    /// backend on first need only, so other queries never lock (a `Mutex`'s first lock may
-    /// allocate) and the warmed buffer returns to the backend after the query.
-    scratch: Option<Vec<(i32, u32)>>,
+    /// that exceed [`STACK_SORT_LEN`]: each level appends its keys and truncates back to its
+    /// start, so a nested list may reallocate the buffer but never disturbs an outer level's
+    /// keys. Borrowed from [`HeadlessBackend::hit_scratch`] for the query.
+    scratch: Vec<(i32, u32)>,
 }
 
 impl<'a, L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'a, L, F> {
@@ -244,51 +245,76 @@ impl<'a, L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'a, L, F> {
         hidden: bool,
         depth: usize,
     ) -> Option<Hit> {
-        let visit = |walk: &mut Self, cid: StoreNodeId| {
-            let hit = walk.walk(cid, point, offset, hidden, depth);
-            (hit.target.is_some() || hit.covered).then_some(hit)
-        };
-        let (lo, hi) = z_range(self.store, children);
-        if lo == hi {
-            return children.iter().rev().find_map(|&cid| visit(self, cid));
-        }
-        if children.len() <= STACK_SORT_LEN {
-            let mut buf = [(0, 0); STACK_SORT_LEN];
-            let keys = &mut buf[..children.len()];
-            fill_z_keys(self.store, children, keys);
-            return keys
+        if single_z_level(self.store, children) {
+            return children
                 .iter()
                 .rev()
-                .find_map(|&(_, i)| visit(self, children[i as usize]));
+                .find_map(|&cid| self.child_hit(cid, point, offset, hidden, depth));
         }
-        let store = self.store;
-        let scratch = self.scratch();
-        let start = scratch.len();
-        scratch.resize(start + children.len(), (0, 0));
-        fill_z_keys(store, children, &mut scratch[start..]);
+        if children.len() <= STACK_SORT_LEN {
+            self.walk_sorted_on_stack(children, point, offset, hidden, depth)
+        } else {
+            self.walk_sorted_in_scratch(children, point, offset, hidden, depth)
+        }
+    }
+
+    /// The child's hit when it resolves the sibling walk (a target, or a covered point).
+    fn child_hit(
+        &mut self,
+        cid: StoreNodeId,
+        point: (f32, f32),
+        offset: (f32, f32),
+        hidden: bool,
+        depth: usize,
+    ) -> Option<Hit> {
+        let hit = self.walk(cid, point, offset, hidden, depth);
+        (hit.target.is_some() || hit.covered).then_some(hit)
+    }
+
+    /// Mixed levels, ≤ [`STACK_SORT_LEN`] siblings. Out of line so only frames that sort carry
+    /// the 512 B key buffer, not every level of a deep single-level walk.
+    #[inline(never)]
+    fn walk_sorted_on_stack(
+        &mut self,
+        children: &'a [StoreNodeId],
+        point: (f32, f32),
+        offset: (f32, f32),
+        hidden: bool,
+        depth: usize,
+    ) -> Option<Hit> {
+        let mut buf = [(0, 0); STACK_SORT_LEN];
+        let keys = &mut buf[..children.len()];
+        fill_z_keys(self.store, children, keys);
+        keys.iter()
+            .rev()
+            .find_map(|&(_, i)| self.child_hit(children[i as usize], point, offset, hidden, depth))
+    }
+
+    /// Mixed levels, > [`STACK_SORT_LEN`] siblings: keys live in the query's scratch, re-read by
+    /// index after every child walk (which may reallocate it).
+    #[inline(never)]
+    fn walk_sorted_in_scratch(
+        &mut self,
+        children: &'a [StoreNodeId],
+        point: (f32, f32),
+        offset: (f32, f32),
+        hidden: bool,
+        depth: usize,
+    ) -> Option<Hit> {
+        let start = self.scratch.len();
+        let end = start + children.len();
+        self.scratch.resize(end, (0, 0));
+        fill_z_keys(self.store, children, &mut self.scratch[start..]);
         let mut found = None;
-        for k in (start..start + children.len()).rev() {
-            let cid = children[self.scratch()[k].1 as usize];
-            found = visit(self, cid);
+        for k in (start..end).rev() {
+            let cid = children[self.scratch[k].1 as usize];
+            found = self.child_hit(cid, point, offset, hidden, depth);
             if found.is_some() {
                 break;
             }
         }
-        self.scratch().truncate(start);
+        self.scratch.truncate(start);
         found
-    }
-
-    fn scratch(&mut self) -> &mut Vec<(i32, u32)> {
-        let backend = self.backend;
-        self.scratch.get_or_insert_with(|| {
-            // Queries never nest and the guard is released at once; concurrent queries on
-            // other threads at worst start from an empty buffer.
-            backend
-                .hit_scratch
-                .lock()
-                .map(|mut kept| std::mem::take(&mut *kept))
-                .unwrap_or_default()
-        })
     }
 
     fn walk(

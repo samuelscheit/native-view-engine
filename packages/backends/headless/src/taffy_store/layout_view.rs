@@ -126,8 +126,9 @@ impl<'s> LayoutView<'s> {
     /// the `box-sizing` box: border-box transfers first and subtracts padding + border after;
     /// content-box subtracts first and transfers the content size.
     ///
-    /// `None` when nothing transfers (no ratio, or not exactly one known axis), as opposed to a
-    /// transferred content size clamped to 0 by padding + border.
+    /// `None` when nothing transfers (no ratio, not exactly one known axis, or a transfer that
+    /// overflows `f32`), as opposed to a transferred content size clamped to 0 by padding +
+    /// border.
     fn aspect_ratio_content_size(
         &self,
         n: taffy::NodeId,
@@ -160,9 +161,11 @@ impl<'s> LayoutView<'s> {
             }
             _ => return None,
         };
-        Some(Size {
-            width: finite(width),
-            height: finite(height),
+        // An extreme ratio overflows the transfer (`w / 1e-38`): no usable size, not a 0 one.
+        // Finite negatives (padding + border above the transferred size) clamp to an empty box.
+        (width.is_finite() && height.is_finite()).then(|| Size {
+            width: width.max(0.0),
+            height: height.max(0.0),
         })
     }
 }
