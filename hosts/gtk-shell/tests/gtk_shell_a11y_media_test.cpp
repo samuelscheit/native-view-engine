@@ -188,8 +188,19 @@ void test_a11y_inputs_images_and_styles() {
   flush(host);
   NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "reset");
   NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u);  // programmatic sets never echo upstream
+  // Shrinking the limit truncates natively: a host write, not a user edit.
+  app.w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 3u);
+  flush(host);
+  NVE_CHECK(std::string(gtk_editable_get_text(GTK_EDITABLE(entry))) == "res");
+  NVE_CHECK(app.count(NVE_EVENT_TEXT_CHANGE, kEntry) == 3u);
+  // Limits beyond GTK's range clamp to it instead of wrapping to a negative (unlimited) int.
+  app.w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 0xFFFFFFFFu);
+  flush(host);
+  NVE_CHECK(gtk_entry_get_max_length(GTK_ENTRY(entry)) == GTK_ENTRY_BUFFER_MAX_SIZE);
+  (void)app.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "reset!");
+  flush(host);
   g_signal_emit_by_name(entry, "activate");
-  NVE_CHECK(app.count(NVE_EVENT_SUBMIT, kEntry) == 1u && app.last(NVE_EVENT_SUBMIT)->text == "reset");
+  NVE_CHECK(app.count(NVE_EVENT_SUBMIT, kEntry) == 1u && app.last(NVE_EVENT_SUBMIT)->text == "reset!");
   NVE_CHECK(host.dispatch_focus(kEntry, true) || app.count(NVE_EVENT_FOCUS, kEntry) == 1u);
   (void)host.dispatch_focus(kEntry, false);
   NVE_CHECK(app.count(NVE_EVENT_FOCUS, kEntry) == 1u && app.count(NVE_EVENT_BLUR, kEntry) == 1u);

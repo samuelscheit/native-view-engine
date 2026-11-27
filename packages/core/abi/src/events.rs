@@ -60,7 +60,8 @@ impl EventMask {
         }
     }
 
-    /// Host mirror names of every bit (`NVE_EVENT_MASK_*`, via `nve.interaction.event_mask`).
+    /// Host mirror names of every subscription bit (`NVE_EVENT_MASK_*` via
+    /// `nve.interaction.event_mask`). Every bit fits the `u32` table word (checked below).
     pub const VALUES: crate::table::ValueSetDesc = crate::table::ValueSetDesc {
         name: "EventMask",
         values: &[
@@ -86,6 +87,9 @@ impl EventMask {
         ],
     };
 }
+
+// `EventMask::VALUES` narrows to the `u32` `nve.interaction.event_mask` word: no bit may be lost.
+const _: () = assert!((EventMask::PRESS | EventMask::LONG_PRESS | EventMask::SCROLL | EventMask::TEXT_CHANGE | EventMask::FOCUS | EventMask::BLUR | EventMask::LAYOUT | EventMask::CUSTOM | EventMask::COMPOSITION | EventMask::KEY_DOWN | EventMask::KEY_UP | EventMask::SUBMIT | EventMask::POINTER_DOWN | EventMask::POINTER_MOVE | EventMask::POINTER_UP | EventMask::POINTER_ENTER | EventMask::POINTER_LEAVE | EventMask::WHEEL | EventMask::TABLE_EVENT) >> 32 == 0);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EventPayload {

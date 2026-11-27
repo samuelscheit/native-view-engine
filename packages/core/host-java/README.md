@@ -8,7 +8,9 @@ every Java / Kotlin host binding.
 | `Xxh64`, `Key64` | Canonical XXH64 (unsigned 64-bit in a `long`), bit-identical to Rust `nve-hash`, plus `Key64` halves |
 | `BinReader`, `BinWriter`, `BinTag`, `BinCodecException`, `Utf8` | Bounds-checked LE primitives, the `NveBinValue` format, strict UTF-8 |
 | `FieldKind`, `FieldSpec`, `Length`, `Rgba`, `TableReader` | Reusable, allocation-free word-table reader over direct `ByteBuffer`s |
-| `SceneReader`, `SceneException` | Reusable `NveSceneView` frame reader. `attach` validates once; node fields are read by generated offsets. |
+| `RuntimeSceneReader`, `SceneException` | Reusable `NveRuntimeSceneView` frame reader over JNI direct buffers (32 B `NveNodeRow`s, 16 B `NveLayoutRect`s, text/children slabs, dirty/removed deltas, published tables, `scene_epoch`, `dirty_resources`). `attach` validates schema, slab sizes, dirty indexes, and table slots once before mutating (a rejected frame leaves the reader detached); the packed `attach(long[] header, ByteBuffer[] slabs)` takes a whole frame in one JNI crossing (`H_*` / `S_*` layout). Pooled, allocation-free in steady state. |
+| `NativeRuntime`, `RuntimeSurface`, `EventRingWriter`, `ImageSource` | JNI binding of `libnve_runtime` (implemented by `hosts/android-shell`; every call returns a non-negative `STATUS_*`, values via out arrays), the owner-thread surface (frame consumer, re-entrancy guard: in-frame `send` / `scrollBy` are deferred past scene release, structural calls throw, reader detached before release), the allocation-free `EventRing` writer (byte-checked against the Rust golden `EventRingVectors`), and the `nve.res.image_src` codec |
+| `SceneSemantics`, `AndroidKeys` | Shared host semantics: node kind from table presence, pressability, inherited `nve.typography` (cycle-capped ancestor walk); Android key codes → W3C `key` / `code` |
 | `HybridRuntime` | `HybridStatus`, `HostStatus`, `HybridException`, `checkSchema`, `DynamicValue`, `directBuffer` |
 
 Generated Kotlin / Java hybrid clients (`nve codegen hybrid --target kotlin`) import this runtime and
@@ -32,7 +34,7 @@ copy), and every result is checked with `BinReader.expectEnd()`.
 
 ## Generated data
 
-`nve codegen abi` writes `dev.nve.host.generated.{NveAbi,NveTables}` and the test-only `HashVectors` (gitignored). `GeneratedTest` checks them against this runtime.
+`nve codegen abi` writes `dev.nve.host.generated.{NveAbi,NveTables,NveRuntimeAbi,NveModuleTables}` (`NveTables` carries every field's named values, e.g. `Interaction.EVENT_MASK_PRESS`, `Typography.SET_COLOR`) and the test-only `HashVectors` / `EventRingVectors` (gitignored). `GeneratedTest` and `EventRingTest` check them against this runtime.
 
 ## Verify
 

@@ -185,10 +185,12 @@ final class MockRuntime: @unchecked Sendable {
             schema_hash: schema, frame_id: frameId, node_capacity: UInt32(scene.rows.count),
             dirty_count: UInt32(dirty.count), removed_count: UInt32(removed.count),
             text_slab_len: UInt32(scene.text.count), children_slab_len: UInt32(scene.children.count),
-            table_count: UInt32(tableViews.count), scroll_count: UInt32(scrollOffsets.count), _reserved: 0,
+            table_count: UInt32(tableViews.count), scroll_count: UInt32(scrollOffsets.count),
+            scene_epoch: 0, dirty_resource_count: 0, _reserved: 0,
             rows: pin(scene.rows), rects: pin(scene.rects),
             text_slab: pin(scene.text), children_slab: pin(scene.children), dirty_indices: pin(dirty),
-            removed_ids: pin(removed), tables: pin(tableViews), scroll_offsets: pin(scrollOffsets))
+            removed_ids: pin(removed), tables: pin(tableViews), scroll_offsets: pin(scrollOffsets),
+            dirty_resources: nil)
         return view
     }
 

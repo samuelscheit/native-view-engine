@@ -1,3 +1,3 @@
-# Keep JNI native bridge entry points intact under R8/ProGuard.
--keep class dev.nve.compose.NveJniBridge { native <methods>; }
--keep class dev.nve.compose.NveNativeBridge { *; }
+# JNI entry points of `libnve_android_shell` and the callbacks it invokes by name.
+-keep class dev.nve.host.NativeRuntime { native <methods>; }
+-keep interface dev.nve.host.NativeRuntime$TextMeasurer { *; }

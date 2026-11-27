@@ -1,6 +1,7 @@
 #include "NveWinWindowManager.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace nve::win {
 
@@ -42,14 +43,14 @@ NveWinHostWindow* NveWinWindowManager::open_window(
     return nullptr;
   }
 
-  auto win = std::make_unique<NveWinHostWindow>();
   WinHostWindowOptions opts{};
   opts.title = spec.title;
   opts.width = spec.width;
   opts.height = spec.height;
   opts.surface_id = spec.surface_id;
   opts.quit_on_destroy = false;
-  if (!win->create(instance, opts)) {
+  auto win = std::make_unique<NveWinHostWindow>(opts);
+  if (!win->create(instance)) {
     return nullptr;
   }
   if (spec.x != 0 || spec.y != 0) {
@@ -99,30 +100,26 @@ int NveWinWindowManager::run_message_loop() {
 }
 #endif
 
-NveRnwComponentHost* NveWinWindowManager::open_headless_window(const WinManagedWindowSpec& spec) {
+NveWinHost* NveWinWindowManager::open_headless_window(const WinManagedWindowSpec& spec) {
   Entry entry{};
-  entry.portable_host = std::make_unique<NveRnwComponentHost>();
-  NveRnwComponentHost* raw = entry.portable_host.get();
+  entry.headless_host = std::make_unique<NveWinHost>(WinHostConfig{
+      .surface_id = spec.surface_id,
+      .width = static_cast<float>(spec.width),
+      .height = static_cast<float>(spec.height),
+      .scale_factor = 1.0f,
+  });
+  NveWinHost* raw = entry.headless_host.get();
   if (!register_entry(spec, std::move(entry))) {
     return nullptr;
   }
   return raw;
 }
 
-NveRnwComponentHost* NveWinWindowManager::host_for_surface(uint32_t surface_id) noexcept {
-  auto it = entries_.find(surface_id);
-  if (it == entries_.end()) {
-    return nullptr;
-  }
-#if defined(_WIN32)
-  if (it->second.window != nullptr) {
-    return &it->second.window->host();
-  }
-#endif
-  return it->second.portable_host.get();
+NveWinHost* NveWinWindowManager::host_for_surface(uint32_t surface_id) noexcept {
+  return const_cast<NveWinHost*>(std::as_const(*this).host_for_surface(surface_id));
 }
 
-const NveRnwComponentHost* NveWinWindowManager::host_for_surface(uint32_t surface_id) const noexcept {
+const NveWinHost* NveWinWindowManager::host_for_surface(uint32_t surface_id) const noexcept {
   auto it = entries_.find(surface_id);
   if (it == entries_.end()) {
     return nullptr;
@@ -132,7 +129,7 @@ const NveRnwComponentHost* NveWinWindowManager::host_for_surface(uint32_t surfac
     return &it->second.window->host();
   }
 #endif
-  return it->second.portable_host.get();
+  return it->second.headless_host.get();
 }
 
 const WinManagedWindowSpec* NveWinWindowManager::spec_for_surface(uint32_t surface_id) const noexcept {
@@ -198,11 +195,11 @@ bool NveWinWindowManager::set_bounds(uint32_t surface_id, int x, int y, int widt
   it->second.spec.height = height;
 #if defined(_WIN32)
   if (it->second.window != nullptr) {
-    it->second.window->set_bounds(x, y, width, height);
+    it->second.window->set_bounds(x, y, width, height);  // WM_SIZE resizes its surface (client DIPs)
   }
 #endif
-  if (auto* host = host_for_surface(surface_id); host != nullptr && (host->is_valid() || host->is_paired())) {
-    host->set_surface_size(static_cast<float>(width), static_cast<float>(height), 1.0f);
+  if (it->second.headless_host != nullptr) {
+    it->second.headless_host->set_surface_size(static_cast<float>(width), static_cast<float>(height));
   }
   return true;
 }

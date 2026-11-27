@@ -576,6 +576,12 @@ impl Column {
 
     /// Number of addressable rows (dense: node capacity; sparse: packed rows).
     #[inline]
+    /// Rows published in `NveTableView`: dense tables stop at the store's node capacity (the
+    /// power-of-two growth tail belongs to no node) and publish no owners (row = node index).
+    pub(crate) fn published_row_count(&self, capacity: usize) -> usize {
+        if self.is_dense() { self.row_count().min(capacity) } else { self.row_count() }
+    }
+
     pub(crate) fn row_count(&self) -> usize {
         self.masks.len()
     }

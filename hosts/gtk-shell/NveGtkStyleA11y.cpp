@@ -18,6 +18,9 @@ bool operator==(const GtkNodeSemantics& a, const GtkNodeSemantics& b) noexcept {
 
 namespace {
 
+/// Longest `font-family` name emitted into CSS (real family names are far shorter).
+constexpr size_t kMaxFontFamily = 256u;
+
 GtkAccessibleRole aria_to_gtk(uint8_t role) noexcept {
   switch (role) {
     case NVE_ARIA_ROLE_BUTTON: return GTK_ACCESSIBLE_ROLE_BUTTON;
@@ -259,7 +262,12 @@ std::string build_css_rule(const std::string& selector, const host::NodeData& no
                                                   : "  font-style: normal;\n";
     if (!t.font_family.empty()) {
       std::string family(t.font_family);
-      std::erase_if(family, [](char c) { return c == '"' || c == '\\' || c == '{' || c == '}' || c == ';'; });
+      // Inside a CSS string: drop anything that could end it or the block, and control bytes.
+      std::erase_if(family, [](char c) {
+        const auto u = static_cast<unsigned char>(c);
+        return u < 0x20u || u == 0x7Fu || c == '"' || c == '\\' || c == '{' || c == '}' || c == ';';
+      });
+      if (family.size() > kMaxFontFamily) family.resize(kMaxFontFamily);
       d += "  font-family: \"" + family + "\";\n";
     }
     if (t.letter_spacing != 0.0f && std::isfinite(t.letter_spacing)) {

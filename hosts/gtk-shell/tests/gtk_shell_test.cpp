@@ -1,7 +1,9 @@
 // Core GTK host suite: the built-in counter app mirrored into widgets, Pango measurement feeding
 // layout, O(changed) reconciliation, press dispatch, outbound events, props, resize, `cdylib`
-// loading errors, state-preserving hot reload, and app-state files.
+// loading errors, state-preserving hot reload, app-state files, and (opt-in) the live Rust
+// kitchen-sink `cdylib`.
 #include "gtk_test_helpers.hpp"
+#include "NveGtkInternal.hpp"
 
 #include <nve/host/demo_counter_app.hpp>
 
@@ -173,6 +175,66 @@ void test_modules_hot_reload_and_state() {
   NVE_CHECK(host.widget_for_node_id(CounterApp::kCount) == nullptr);
 }
 
+/// Live Rust kitchen-sink `cdylib` (opt-in via `NVE_TEST_KITCHEN_SINK_DYLIB`): mirrors the real
+/// app into widgets, measures every label, presses its counter buttons, and hot-reloads in place
+/// keeping state.
+void test_live_kitchen_sink_if_configured() {
+  const char* path = std::getenv("NVE_TEST_KITCHEN_SINK_DYLIB");
+  if (path == nullptr || *path == '\0') return;
+  NveGtkHost host(GtkHostConfig{.surface_id = 1u, .width = 1280.0f, .height = 800.0f});
+  nve::host::ModuleError err = nve::host::ModuleError::None;
+  std::string msg;
+  NVE_CHECK(host.load_dylib(path, &err, &msg) && err == nve::host::ModuleError::None);
+  NVE_CHECK(host.is_loaded() && host.view_count() > 10u);
+
+  std::vector<GtkWidget*> labels;
+  const auto collect = [&](auto& self, GtkWidget* w) -> void {
+    if (GTK_IS_LABEL(w)) labels.push_back(w);
+    for (GtkWidget* c = gtk_widget_get_first_child(w); c != nullptr; c = gtk_widget_get_next_sibling(c)) self(self, c);
+  };
+  const auto find_label = [&](std::string_view text) -> GtkWidget* {
+    labels.clear();
+    collect(collect, host.root_widget());
+    for (GtkWidget* l : labels) {
+      if (label_text(l) == text) return l;
+    }
+    return nullptr;
+  };
+  // The nearest ancestor view (or the label itself) subscribed to presses.
+  const auto pressable = [](GtkWidget* w) -> uint32_t {
+    for (; w != nullptr; w = gtk_widget_get_parent(w)) {
+      const auto* v = static_cast<const GtkNodeView*>(g_object_get_data(G_OBJECT(w), kViewKey));
+      if (v != nullptr && v->wants_press) return v->id;
+    }
+    return 0u;
+  };
+
+  NVE_CHECK(find_label("NVE Kitchen Sink") != nullptr && find_label("Count: 0") != nullptr);
+  size_t measured = 0u;
+  for (GtkWidget* l : labels) {
+    // Our text views only (not GTK-internal labels such as an entry's placeholder).
+    if (g_object_get_data(G_OBJECT(l), kViewKey) == nullptr || !gtk_widget_get_visible(l) ||
+        label_text(l).empty()) {
+      continue;
+    }
+    NVE_CHECK(request_width(l) > 0 && request_height(l) >= 10);  // Pango-measured layout
+    ++measured;
+  }
+  NVE_CHECK(measured > 10u);
+  const uint32_t inc = pressable(find_label("Increment +"));
+  const uint32_t reset = pressable(find_label("Reset"));
+  NVE_CHECK(inc != 0u && reset != 0u && inc != reset);
+  NVE_CHECK(host.simulate_press(inc) && find_label("Count: 1") != nullptr);
+  NVE_CHECK(host.simulate_press(inc) && find_label("Count: 2") != nullptr);
+  NVE_CHECK(host.simulate_press(reset) && find_label("Count: 0") != nullptr);
+  for (int i = 0; i < 3; ++i) NVE_CHECK(host.simulate_press(inc));
+  NVE_CHECK(find_label("Count: 3") != nullptr);
+
+  const size_t views = host.view_count();
+  NVE_CHECK(host.reload_dylib(path, &err, &msg));
+  NVE_CHECK(find_label("Count: 3") != nullptr && host.view_count() == views);
+}
+
 }  // namespace
 
 void nve_test_gtk_a11y_and_media();
@@ -183,6 +245,7 @@ int main() {
   gtk_init();
   test_counter_widgets_measurement_and_events();
   test_modules_hot_reload_and_state();
+  test_live_kitchen_sink_if_configured();
   nve_test_gtk_a11y_and_media();
   nve_test_gtk_canvas_scroll_and_pair();
   nve_test_gtk_window_manager();

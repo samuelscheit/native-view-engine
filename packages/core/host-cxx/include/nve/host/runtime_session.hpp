@@ -68,6 +68,8 @@ class RuntimeSceneReader {
   }
 
   [[nodiscard]] uint64_t frame_id() const noexcept { return frame_id_; }
+  /// Bumped by every runtime scene reset; ids and caches from another epoch are stale.
+  [[nodiscard]] uint32_t scene_epoch() const noexcept { return scene_epoch_; }
   [[nodiscard]] uint32_t node_capacity() const noexcept { return static_cast<uint32_t>(rows_.size()); }
   [[nodiscard]] std::span<const NveNodeRow> rows() const noexcept { return rows_; }
   [[nodiscard]] std::span<const NveLayoutRect> rects() const noexcept { return rects_; }
@@ -78,6 +80,8 @@ class RuntimeSceneReader {
   [[nodiscard]] uint32_t table_count() const noexcept { return static_cast<uint32_t>(tables_.size()); }
   /// Visual scroll shifts sorted by `node_id`; subtract from descendants' (pre-scroll) rects.
   [[nodiscard]] std::span<const NveScrollOffset> scroll_offsets() const noexcept { return scroll_; }
+  /// Live resource ids (re)defined on this frame, sorted: drop host caches keyed by them.
+  [[nodiscard]] std::span<const uint32_t> dirty_resources() const noexcept { return dirty_resources_; }
 
   /// Visual shift of scroll container `node_id` (`{0, 0}` when not scrolled; O(log n)).
   [[nodiscard]] NveScrollOffset scroll_offset(uint32_t node_id) const noexcept {
@@ -148,6 +152,7 @@ class RuntimeSceneReader {
  private:
   explicit RuntimeSceneReader(const NveRuntimeSceneView& v) noexcept
       : frame_id_(v.frame_id),
+        scene_epoch_(v.scene_epoch),
         rows_(span_of(v.rows, v.node_capacity)),
         rects_(span_of(v.rects, v.node_capacity)),
         text_(v.text_slab_len > 0u
@@ -157,7 +162,8 @@ class RuntimeSceneReader {
         dirty_(span_of(v.dirty_indices, v.dirty_count)),
         removed_(span_of(v.removed_ids, v.removed_count)),
         tables_(span_of(v.tables, v.table_count)),
-        scroll_(span_of(v.scroll_offsets, v.scroll_count)) {}
+        scroll_(span_of(v.scroll_offsets, v.scroll_count)),
+        dirty_resources_(span_of(v.dirty_resources, v.dirty_resource_count)) {}
 
   template <class T>
   static std::span<const T> span_of(const T* p, uint32_t count) noexcept {
@@ -183,6 +189,7 @@ class RuntimeSceneReader {
     if (const SceneError e = check_slab(v->removed_ids, v->removed_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->tables, v->table_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->scroll_offsets, v->scroll_count); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->dirty_resources, v->dirty_resource_count); e != SceneError::None) return e;
     if (v->text_slab_len > 0u && nve_utf8_valid(v->text_slab, v->text_slab_len) == 0) {
       return SceneError::InvalidUtf8;
     }
@@ -203,6 +210,7 @@ class RuntimeSceneReader {
   }
 
   uint64_t frame_id_ = 0u;
+  uint32_t scene_epoch_ = 0u;
   std::span<const NveNodeRow> rows_;
   std::span<const NveLayoutRect> rects_;
   std::string_view text_;
@@ -211,6 +219,7 @@ class RuntimeSceneReader {
   std::span<const uint32_t> removed_;
   std::span<const NveTableView> tables_;
   std::span<const NveScrollOffset> scroll_;
+  std::span<const uint32_t> dirty_resources_;
 };
 
 /// Move-only RAII read guard pairing `scene_acquire` with `scene_release`.

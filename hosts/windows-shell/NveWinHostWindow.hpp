@@ -1,7 +1,17 @@
+// Win32 + Direct2D / DirectWrite host window and the painting API (Windows only).
 #pragma once
 
-#include "NveRnwComponentView.hpp"
-#include "nve_draw_list.hpp"
+#if !defined(_WIN32)
+#error "NveWinHostWindow.hpp is Windows-only"
+#endif
+
+#include "NveWinHost.hpp"
+#include "NveWinTextInputs.hpp"
+
+#include <nve/canvas/draw_list.hpp>
+
+#include <d2d1.h>
+#include <windows.h>
 
 #include <atomic>
 #include <cstdint>
@@ -10,148 +20,98 @@
 #include <string>
 #include <string_view>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <d2d1.h>
-#include <windows.h>
-#endif
-
 namespace nve::win {
 
-#if defined(_WIN32)
-inline constexpr UINT WM_APP_PAIR_FRAME = WM_APP + 1u;
-#endif
+/// Runtime wake (any thread) -> `NveWinHost::pump()` on the UI thread.
+inline constexpr UINT WM_APP_WAKE = WM_APP + 1u;
+/// Re-place the native `EDIT` overlays after the visual tree changed (coalesced, never inline).
+inline constexpr UINT WM_APP_SYNC_INPUTS = WM_APP + 2u;
 
-/// Options for creating a standalone Win32 + Direct2D/DirectWrite NVE host window.
 struct WinHostWindowOptions {
   std::string title{"NVE Windows Host Shell"};
-  int width{640};
-  int height{420};
-  uint32_t surface_id{1};
-  bool quit_on_destroy{true};
+  int width = 640;  // client DIPs
+  int height = 420;
+  uint32_t surface_id = 1u;
+  bool quit_on_destroy = true;
 };
 
-#if defined(_WIN32)
+/// Paints all 8 `NVE_DRAW1` opcodes into `bounds` (validated first; clip stack balanced even for
+/// corrupt payloads or unbalanced clips). `factory` builds polylines / stroke styles (nullable).
+canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
+                                                     ID2D1Factory* factory, const D2D1_RECT_F& bounds,
+                                                     std::span<const uint8_t> bytes) noexcept;
 
-/// Stream-decode and paint all 8 `NVE_DRAW1` opcodes (`Clear`, `FillRect`, `FillRoundedRect`,
-/// `FillCircle`, `StrokeLine`, `StrokePolyline`, `ClipRect`, `RestoreClip`) onto an
-/// `ID2D1RenderTarget` inside `bounds`, with a balanced `PushAxisAlignedClip`/`PopAxisAlignedClip`
-/// stack guard even on corrupt payloads or unbalanced clip streams.
-nve::DrawListDecodeResult render_draw_list_to_d2d(
-    ID2D1RenderTarget* rt,
-    ID2D1SolidColorBrush* brush,
-    const D2D1_RECT_F& bounds,
-    std::span<const uint8_t> bytes) noexcept;
+/// Paints `tree` (one `BeginDraw` / `EndDraw`) onto any render target: the window's
+/// `ID2D1HwndRenderTarget` or an offscreen `ID2D1DCRenderTarget`. `factory` created `rt`.
+HRESULT paint_visual_tree_d2d(ID2D1RenderTarget* rt, ID2D1Factory* factory, const NveWinVisualTree& tree,
+                              const DirectWriteTextMeasurer& text);
 
-/// Paint an entire reconciled `NveWinVisualTree` onto any Direct2D render target
-/// (`ID2D1HwndRenderTarget` for live windows or `ID2D1DCRenderTarget` for offscreen screenshots).
-HRESULT paint_visual_tree_d2d(
-    ID2D1RenderTarget* rt,
-    const NveWinVisualTree& tree,
-    const DirectWriteTextMeasurer& measurer);
+/// Headless: paints `tree` into a 32-bit DIB and writes `out_bmp_path` (no window needed).
+bool render_visual_tree_to_bmp(const NveWinVisualTree& tree, const DirectWriteTextMeasurer& text, uint32_t width_px,
+                               uint32_t height_px, float scale_factor, std::string_view out_bmp_path,
+                               std::string* out_error = nullptr);
 
-/// Headlessly render `tree` into a 32-bit BGRA DIB via Direct2D/DirectWrite and write a standard
-/// `.bmp` image to `out_bmp_path`. Works without an interactive desktop window for CI/testing.
-bool render_visual_tree_to_bmp(
-    const NveWinVisualTree& tree,
-    const DirectWriteTextMeasurer& measurer,
-    uint32_t width_px,
-    uint32_t height_px,
-    float scale_factor,
-    std::string_view out_bmp_path,
-    std::string* out_error = nullptr);
+/// System cursor (`IDC_*`) of an `NVE_CURSOR_KIND_*`.
+[[nodiscard]] LPCWSTR system_cursor(uint8_t kind) noexcept;
 
-/// Standalone Win32 + Direct2D/DirectWrite host window wrapping `NveRnwComponentHost`.
+/// Per-monitor-DPI-aware top-level window showing one `NveWinHost` surface: Direct2D painting,
+/// press / link / wheel / hover / cursor input, native `EDIT` text inputs, queued runtime wakes.
 class NveWinHostWindow {
  public:
-  NveWinHostWindow();
+  explicit NveWinHostWindow(WinHostWindowOptions options = {});
   ~NveWinHostWindow();
-
   NveWinHostWindow(const NveWinHostWindow&) = delete;
   NveWinHostWindow& operator=(const NveWinHostWindow&) = delete;
 
-  /// Create the Win32 window and initialize the Direct2D factory.
-  bool create(HINSTANCE instance, const WinHostWindowOptions& options = {});
-
-  /// Show and update the window.
+  /// Creates the window (hidden until `show`) and sizes the surface to its client area.
+  bool create(HINSTANCE instance);
   void show(int cmd_show = SW_SHOWDEFAULT);
+  /// Runs the thread's message loop until `WM_QUIT`.
+  static int run_message_loop();
 
-  /// Run the Win32 message loop until `WM_QUIT`.
-  int run_message_loop();
-
-  /// Attach a statically compiled NVE interface (`nve_get_interface`).
-  bool attach_interface(NveGetInterfaceFn get_interface);
-
-  /// Load an NVE Rust `.dll` into the host window.
-  bool load_dylib(
-      std::string_view path,
-      int* out_err_code = nullptr,
-      std::string* out_err_msg = nullptr);
-
-  /// Hot-reload a replacement NVE Rust `.dll`, preserving component state.
-  bool reload_dylib(
-      std::string_view path,
-      int* out_err_code = nullptr,
-      std::string* out_err_msg = nullptr);
-
-  /// Connect in zero-cdylib paired thin-client mode and wake via `PostMessageW(WM_APP_PAIR_FRAME)`.
-  bool connect_paired(
-      std::string_view endpoint,
-      std::string_view token = {},
-      std::string_view transport_override = {},
-      std::string* out_error = nullptr);
-
-  bool connect_paired(
-      const nve::PairClientConfig& pair_config,
-      std::string* out_error = nullptr);
-
-  /// Disconnect any active paired thin-client session.
-  void disconnect_paired() noexcept;
-
-  /// Render the current visual tree to a `.bmp` file via the shared Direct2D/DirectWrite painter.
+  /// Renders the current tree to a `.bmp` (client size x DPI scale).
   bool save_screenshot_bmp(std::string_view out_bmp_path, std::string* out_error = nullptr) const;
 
   void set_title(std::string_view title);
   void set_bounds(int x, int y, int width, int height);
   void focus();
   void close();
-  void set_on_close_request(std::function<bool(uint32_t)> callback);
-  void set_on_destroy(std::function<void(uint32_t)> callback);
-  uint32_t surface_id() const noexcept { return options_.surface_id; }
+  /// `WM_CLOSE`: return `false` to veto.
+  void set_on_close_request(std::function<bool(uint32_t)> callback) { on_close_request_ = std::move(callback); }
+  void set_on_destroy(std::function<void(uint32_t)> callback) { on_destroy_ = std::move(callback); }
 
-  HWND hwnd() const noexcept { return hwnd_; }
-  float dpi_scale() const noexcept;
-  NveRnwComponentHost& host() noexcept { return host_; }
-  const NveRnwComponentHost& host() const noexcept { return host_; }
+  [[nodiscard]] uint32_t surface_id() const noexcept { return options_.surface_id; }
+  [[nodiscard]] HWND hwnd() const noexcept { return hwnd_; }
+  [[nodiscard]] float dpi_scale() const noexcept;
+  [[nodiscard]] NveWinHost& host() noexcept { return host_; }
+  [[nodiscard]] const NveWinHost& host() const noexcept { return host_; }
+  [[nodiscard]] const WinTextInputs& text_inputs() const noexcept { return inputs_; }
 
  private:
   static LRESULT CALLBACK static_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT handle_message(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT handle_message(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
-  bool ensure_d2d_factory();
   bool ensure_render_target();
-  void discard_device_resources() noexcept;
-  NveSurfaceConfig current_surface_config() const noexcept;
+  void discard_render_target() noexcept;
   void on_paint();
-  void on_resize(UINT width_px, UINT height_px);
-  void on_left_button_up(int x_px, int y_px);
-  void on_mouse_wheel(int screen_x, int screen_y, short wheel_delta, bool horizontal);
+  void sync_surface_size();
+  void on_wheel(WPARAM wparam, LPARAM lparam, bool horizontal);
+  void schedule_input_sync();
+  [[nodiscard]] float dip(int device_px) const noexcept { return static_cast<float>(device_px) / dpi_scale(); }
 
-  WinHostWindowOptions options_{};
-  HWND hwnd_{nullptr};
-  std::atomic<HWND> wake_hwnd_{nullptr};
-  ID2D1Factory* d2d_factory_{nullptr};
-  ID2D1HwndRenderTarget* render_target_{nullptr};
-  NveRnwComponentHost host_{};
+  WinHostWindowOptions options_;
+  NveWinHost host_;
+  WinTextInputs inputs_;
+  HWND hwnd_ = nullptr;
+  std::atomic<HWND> wake_hwnd_{nullptr};  // read by wake posters on any thread; null once destroyed
+  ID2D1Factory* d2d_factory_ = nullptr;
+  ID2D1HwndRenderTarget* render_target_ = nullptr;
+  float pointer_x_ = -1.0f;  // last pointer position (DIPs) for WM_SETCURSOR
+  float pointer_y_ = -1.0f;
+  bool tracking_leave_ = false;
+  bool input_sync_posted_ = false;
   std::function<bool(uint32_t)> on_close_request_;
   std::function<void(uint32_t)> on_destroy_;
 };
 
-#endif // defined(_WIN32)
-
-} // namespace nve::win
+}  // namespace nve::win

@@ -534,14 +534,16 @@ impl NodeStore {
             .map(|(i, _)| TableSlot(i as u8))
     }
 
-    /// `(rows, owners, row_count)` of a table exactly as published in `NveTableView`: dense
-    /// tables have no owners (row = node index) and at most `capacity()` rows.
+    /// Dense rows (`row_count * words`) and sparse owners of a table, for scene publishing.
+    /// `(rows, owners, row_count)` exactly as published in `NveTableView`: dense tables have no
+    /// owners (row = node index) and at most `capacity()` rows.
     pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
         let c = self.columns[slot.0 as usize].as_ref()?;
+        let rc = c.published_row_count(self.capacity());
         if c.is_dense() {
-            return Some((&c.rows, &[], c.row_count().min(self.capacity())));
+            return Some((&c.rows[..rc * c.w], &[], rc));
         }
-        Some((&c.rows, &c.owners, c.row_count()))
+        Some((&c.rows, &c.owners, rc))
     }
 
     pub fn stats(&self) -> StoreStats {

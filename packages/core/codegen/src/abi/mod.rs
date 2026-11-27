@@ -6,6 +6,7 @@
 //! whichever table crate the caller links (`nve-cli` passes `nve_components::CORE_TABLE_DESCS`), so
 //! this crate never depends on a table crate. Templates are checked by `rustc` at compile time.
 
+pub mod java_host;
 pub mod layout;
 pub mod model;
 pub mod spell;
