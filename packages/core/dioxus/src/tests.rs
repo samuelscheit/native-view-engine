@@ -211,3 +211,82 @@ fn targeted_hot_patch_updates_only_addressed_node_and_text() {
     assert!(texts.iter().any(|t| t == "# design-sync"));
     assert!(!texts.iter().any(|t| t == "# engineering"));
 }
+
+/// Collects every `TextContent` under `NodeId::ROOT` in DFS order.
+fn all_text(store: &NodeStore) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![NodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if let Some(t) = store.try_row::<TextContent>(id) {
+            out.push(t.text().to_owned());
+        }
+        stack.extend(store.children(id).iter().rev());
+    }
+    out
+}
+
+#[component]
+fn ThrowingLeaf() -> Element {
+    Err(crate::error_boundary::ui_error("leaf failed"))?;
+    rsx! { text { "unreachable" } }
+}
+
+#[component]
+fn StatusBanner(status: String) -> Element {
+    if !status.is_empty() {
+        Err(crate::error_boundary::ui_error(format!("banner rejected {status}")))?;
+    }
+    rsx! { text { "status ok" } }
+}
+
+/// Three synchronous scheduler hops: the leaf throws -> (1) the inner boundary renders its
+/// fallback and its `on_error` sets the app's status signal -> (2) the app re-renders
+/// `StatusBanner`, which throws (zero edits: the last good nodes stay) -> (3) the outer boundary
+/// renders its fallback.
+#[component]
+fn CascadeApp() -> Element {
+    let mut status = use_signal(String::new);
+    rsx! {
+        view {
+            text { "sibling stays" }
+            ErrorBoundary {
+                fallback: |r: UiErrorReport, _| rsx! { text { "OUTER:{r.message}" } },
+                StatusBanner { status: status() }
+            }
+            ErrorBoundary {
+                fallback: |r: UiErrorReport, _| rsx! { text { "INNER:{r.message}" } },
+                on_error: move |r: UiErrorReport| status.set(r.message),
+                ThrowingLeaf {}
+            }
+        }
+    }
+}
+
+/// The host drive-loop contract (`WebAppSession::pump_async_work_with`, `nve-ssr`
+/// `flush_ssr_until_quiescent`): `reconcile`, then `poll_work` -> `reconcile` until idle, settles
+/// a multi-hop sync cascade within a few pumps, without any async wake-up.
+#[test]
+fn drive_loop_settles_multi_hop_sync_error_boundary_cascade_without_async_wakeups() {
+    let mut surface = DioxusSurface::new(1, CascadeApp);
+    surface.reconcile(1);
+    let noop = core::task::Waker::noop();
+    let mut pumps = 0;
+    while surface.poll_work(noop) {
+        pumps += 1;
+        assert!(pumps <= 4, "sync cascade must settle well inside MAX_PUMPS (8)");
+        surface.reconcile(1 + pumps);
+    }
+    assert!(pumps >= 1, "a 3-hop cascade needs the drive loop beyond one 2-pass reconcile");
+    let texts = all_text(surface.store());
+    assert!(texts.iter().any(|t| t == "sibling stays"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "INNER:leaf failed"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "OUTER:banner rejected leaf failed"),
+        "outer fallback must settle in the first reconcile: {texts:?}"
+    );
+    assert!(!texts.iter().any(|t| t == "unreachable" || t == "status ok"), "{texts:?}");
+
+    // Settled: a further reconcile emits no mutations.
+    surface.reconcile(99);
+    assert!(surface.last_changes().is_empty(), "{:?}", surface.last_changes());
+}

@@ -208,9 +208,14 @@ impl DioxusSurface {
             }
             // Exactly two synchronous passes: the second flushes scopes dirtied by the first (a
             // parent `ErrorBoundary` catching a render error, a `SuspenseBoundary` restoring its
-            // fallback). Never loop on `wait_for_work`: it polls spawned tasks, so one reconcile
-            // would advance async bursts unboundedly and defeat the host's `MAX_PUMPS` paint
-            // yield. Driving tasks is the host pump's job (`poll_work` / `wait_for_work`).
+            // fallback). Deeper cascades (a boundary's `on_error` re-rendering an ancestor that
+            // throws into another boundary) settle in the drive loop, before anything is painted
+            // or streamed: host pumps (`poll_work` -> commit, `MAX_PUMPS` per tick) and
+            // `nve-ssr`'s `flush_ssr_until_quiescent`. More passes here would not be safe: every
+            // pass also polls already-woken tasks, so a render-chained async burst (render wakes
+            // a task, the task dirties the scope) would advance once per pass and defeat the
+            // host's `MAX_PUMPS` paint yield; edit counts cannot tell the two apart (a re-render
+            // that throws keeps its last good nodes and emits zero edits).
             vdom.render_immediate(mtx);
             vdom.render_immediate(mtx);
             for patch in patches.drain(..) {
