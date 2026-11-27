@@ -13,8 +13,7 @@ using nve::host::TableReader;
 /// Packed RGBA of an optional color field (transparent when the read failed).
 static uint32_t packed(std::optional<nve::host::Rgba> c) noexcept { return c.value_or(nve::host::Rgba{}).packed; }
 
-SceneTables::SceneTables(const nve::host::RuntimeSceneReader &scene,
-                         std::unordered_map<uint64_t, std::vector<int32_t>> &sparse_cache)
+SceneTables::SceneTables(const nve::host::RuntimeSceneReader &scene)
     : scene_(scene),
       visual_(scene.find_table(Key64{NVE_TABLE_VISUAL_KEY})),
       typography_(scene.find_table(Key64{NVE_TABLE_TYPOGRAPHY_KEY})),
@@ -24,20 +23,7 @@ SceneTables::SceneTables(const nve::host::RuntimeSceneReader &scene,
       accessibility_(scene.find_table(Key64{NVE_TABLE_ACCESSIBILITY_KEY})),
       text_input_(scene.find_table(Key64{NVE_TABLE_TEXT_INPUT_KEY})),
       link_(scene.find_table(Key64{NVE_TABLE_LINK_KEY})),
-      interaction_(scene.find_table(Key64{NVE_TABLE_INTERACTION_KEY})),
-      sparse_(sparse_cache) {
-  // Owner maps are rebuilt for every scene borrow: sparse rows swap-remove between frames. The
-  // runtime may publish owners for dense tables too, so every table with owners gets a map.
-  for (const auto *t : {&visual_, &typography_, &text_, &image_, &scroll_, &accessibility_, &text_input_, &link_, &interaction_}) {
-    if (!t->has_value() || !(*t)->is_sparse()) continue;
-    std::vector<int32_t> &map = sparse_[(*t)->key().value];
-    map.assign(scene.node_capacity(), -1);
-    for (uint32_t r = 0; r < (*t)->row_count(); ++r) {
-      const uint32_t index = ((*t)->owner(r).value_or(0u)) & 0x00FFFFFFu;
-      if (index < map.size()) map[index] = static_cast<int32_t>(r);
-    }
-  }
-}
+      interaction_(scene.find_table(Key64{NVE_TABLE_INTERACTION_KEY})) {}
 
 std::optional<uint32_t> SceneTables::index_of(uint32_t node_id) const noexcept {
   const uint32_t index = node_id & 0x00FFFFFFu;
@@ -60,10 +46,7 @@ std::optional<uint32_t> SceneTables::row(const std::optional<TableReader> &table
       !scene_.has_table(index, static_cast<uint8_t>(table->slot()))) {
     return std::nullopt;
   }
-  if (!table->is_sparse()) return index < table->row_count() ? std::optional<uint32_t>(index) : std::nullopt;
-  const auto it = sparse_.find(table->key().value);
-  if (it == sparse_.end() || index >= it->second.size() || it->second[index] < 0) return std::nullopt;
-  return static_cast<uint32_t>(it->second[index]);
+  return table->row_of_node(index);
 }
 
 std::string_view SceneTables::string(const std::optional<TableReader> &table, uint32_t index, NveFieldSpec f) const noexcept {

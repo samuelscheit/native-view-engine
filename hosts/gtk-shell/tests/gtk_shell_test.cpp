@@ -158,6 +158,7 @@ void test_modules_hot_reload_and_state() {
 void nve_test_gtk_a11y_and_media();
 void nve_test_gtk_canvas_scroll_and_pair();
 void nve_test_gtk_window_manager();
+void nve_test_gtk_reconcile();
 
 int main() {
   gtk_init();
@@ -166,6 +167,7 @@ int main() {
   nve_test_gtk_a11y_and_media();
   nve_test_gtk_canvas_scroll_and_pair();
   nve_test_gtk_window_manager();
+  nve_test_gtk_reconcile();
   std::cout << "nve_gtk_shell_test: ok\n";
   return 0;
 }

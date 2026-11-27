@@ -396,9 +396,14 @@ const fn compute_scene_schema_hash() -> u64 {
     hash_fixed_field(&mut h, "words", "u32", offset_of!(crate::table::NveTableView, words));
     hash_fixed_field(&mut h, "row_count", "u32", offset_of!(crate::table::NveTableView, row_count));
     hash_fixed_field(&mut h, "dirty_count", "u32", offset_of!(crate::table::NveTableView, dirty_count));
-    hash_ptr_field(&mut h, "rows", "*const u32", 6);
-    hash_ptr_field(&mut h, "owners", "*const u32", 7);
-    hash_ptr_field(&mut h, "dirty_rows", "*const u32", 8);
+    hash_fixed_field(&mut h, "row_index_dir_len", "u32", offset_of!(crate::table::NveTableView, row_index_dir_len));
+    hash_fixed_field(&mut h, "row_index_page_count", "u32", offset_of!(crate::table::NveTableView, row_index_page_count));
+    hash_ptr_field(&mut h, "rows", "*const u32", 8);
+    hash_ptr_field(&mut h, "owners", "*const u32", 9);
+    hash_ptr_field(&mut h, "dirty_rows", "*const u32", 10);
+    hash_ptr_field(&mut h, "row_index_dir", "*const u32", 11);
+    hash_ptr_field(&mut h, "row_index_pages", "*const u32", 12);
+    h.update_u64(crate::table::NVE_ROW_INDEX_PAGE_BITS as u64);
 
     h.update(b";NveNodeMeta");
     h.update_u64(size_of::<NveNodeMeta>() as u64);

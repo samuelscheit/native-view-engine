@@ -51,11 +51,12 @@ if(NVE_HOST_CXX_BUILD_TESTS)
 
   if(NVE_HOST_CXX_WITH_RUNTIME)
     include("${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveRuntime.cmake")
-    foreach(_suite runtime_session runtime_hooks runtime_scene_builder)
+    foreach(_suite runtime_session runtime_hooks runtime_scene_builder retained_tree)
       set(_target nve_host_${_suite}_test)
       add_executable(${_target} tests/test_${_suite}.cpp)
       set_target_properties(${_target} PROPERTIES
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+      target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/support")
       target_link_libraries(${_target} PRIVATE nve_host_cxx nve::runtime)
       if(NOT NVE_RUNTIME_NO_DEFAULT_FEATURES)
         target_compile_definitions(${_target} PRIVATE NVE_RUNTIME_TEST_HAS_WIRE=1)

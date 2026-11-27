@@ -172,6 +172,8 @@ class NveGtkHost {
   [[nodiscard]] uint32_t host_instance_id() const noexcept { return host_instance_id_; }
   [[nodiscard]] bool is_loaded() const noexcept { return session_->has_app(); }
   [[nodiscard]] uint64_t reconcile_update_count() const noexcept { return reconcile_update_count_; }
+  /// Geometry-only `Adapter::move`s (position, size, scroll extents) since creation.
+  [[nodiscard]] uint64_t reconcile_move_count() const noexcept { return reconcile_move_count_; }
   [[nodiscard]] const GtkTextureLruCache& texture_cache() const noexcept { return textures_; }
   [[nodiscard]] std::span<const uint8_t> canvas_draw_list_for_node_id(uint32_t node_id) const noexcept;
   [[nodiscard]] uint64_t canvas_redraw_count_for_node_id(uint32_t node_id) const noexcept;
@@ -185,6 +187,7 @@ class NveGtkHost {
     uint32_t tag(const host::NodeData& node) const;
     Handle create(const host::NodeData& node);
     void update(Handle& view, const host::NodeData& node);
+    void move(Handle& view, const host::NodeData& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
     void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
@@ -208,6 +211,11 @@ class NveGtkHost {
   void apply_css(GtkNodeView& view, const host::NodeData& node);
   void update_image(GtkNodeView& view, const host::NodeData& node);
   void update_canvas(GtkNodeView& view, uint32_t index);
+  /// Position, size, and canvas content size from `node`'s geometry; marks the enclosing scroll
+  /// view's extents dirty.
+  void apply_geometry(GtkNodeView& view, const host::NodeData& node);
+  /// Queues the scroll view owning content `container` (if any) for `update_scroll_extents`.
+  void mark_scroll_extents(GtkWidget* container);
   void update_scroll(GtkNodeView& view, const host::NodeData& node);
   void update_text_input(GtkNodeView& view, const host::NodeData& node);
   void update_press(GtkNodeView& view, const host::NodeData& node);
@@ -235,12 +243,13 @@ class NveGtkHost {
   host::RetainedTree<Adapter> tree_;
   Adapter adapter_{this};
   GtkTextureLruCache textures_{64u};
-  std::unordered_set<GtkNodeView*> scroll_views_;
+  std::unordered_set<GtkNodeView*> dirty_scroll_extents_;
   std::unordered_map<uint32_t, std::string> css_rules_;
   std::string active_css_;
   bool css_dirty_ = false;
   bool syncing_ = false;
   uint64_t reconcile_update_count_ = 0u;
+  uint64_t reconcile_move_count_ = 0u;
 
   GtkWidget* viewport_widget_ = nullptr;
   GtkWidget* root_widget_ = nullptr;

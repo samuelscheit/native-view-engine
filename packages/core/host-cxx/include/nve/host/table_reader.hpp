@@ -1,7 +1,8 @@
 // NVE host runtime: zero-copy reader over one published word table (`NveTableView`).
 //
 // Dense tables: row `i` belongs to node index `i` and `owners` is empty. Sparse tables: row `r`
-// belongs to raw `NodeId` `owners[r]` (unsorted, swap-removed). Every read is bounds-checked and
+// belongs to raw `NodeId` `owners[r]` (unsorted, swap-removed), and a node's row resolves in O(1)
+// through the store's published paged row index (`row_of_node`). Every read is bounds-checked and
 // returns `std::nullopt` instead of touching memory outside the published spans.
 #pragma once
 
@@ -11,6 +12,7 @@
 #include <optional>
 #include <span>
 
+#include "../generated/nve_abi.generated.h"
 #include "table_word.h"
 #include "xxh64.hpp"
 
@@ -77,10 +79,13 @@ class TableReader {
   TableReader() = default;
 
   /// Returns `std::nullopt` when the spans cannot hold `row_count * words` rows (or the owners).
+  /// `row_index_pages` is truncated to whole `NVE_ROW_INDEX_PAGE_LEN` pages.
   [[nodiscard]] static std::optional<TableReader> make(Key64 key, uint32_t slot, uint32_t words, uint32_t row_count,
                                                        std::span<const uint32_t> rows,
                                                        std::span<const uint32_t> owners,
-                                                       std::span<const uint32_t> dirty_rows) noexcept {
+                                                       std::span<const uint32_t> dirty_rows,
+                                                       std::span<const uint32_t> row_index_dir = {},
+                                                       std::span<const uint32_t> row_index_pages = {}) noexcept {
     if (words == 0u || words > NVE_MAX_TABLE_WORDS) return std::nullopt;
     if (rows.size() / words < row_count) return std::nullopt;
     if (!owners.empty() && owners.size() < row_count) return std::nullopt;
@@ -92,29 +97,34 @@ class TableReader {
     t.rows_ = rows.first(static_cast<size_t>(row_count) * words);
     t.owners_ = owners.empty() ? owners : owners.first(row_count);
     t.dirty_rows_ = dirty_rows;
+    t.row_index_dir_ = row_index_dir;
+    t.row_index_pages_ = row_index_pages.first(row_index_pages.size() - row_index_pages.size() % kPageLen);
     return t;
   }
 
-  /// Wraps any `NveTableView`-shaped struct (`key_lo`, `key_hi`, `slot`, `words`, `row_count`,
-  /// `dirty_count`, `rows`, `owners`, `dirty_rows`), rejecting bad word counts, spans the address
-  /// space cannot hold (32-bit hosts), and null spans with non-zero counts — before forming a span.
+  /// Wraps any `NveTableView`-shaped struct, rejecting bad word counts, spans the address space
+  /// cannot hold (32-bit hosts), and null spans with non-zero counts — before forming a span.
   template <class View>
   [[nodiscard]] static std::optional<TableReader> from_view(const View& v) noexcept {
     if (v.words == 0u || v.words > NVE_MAX_TABLE_WORDS) return std::nullopt;
     const uint64_t row_words64 = static_cast<uint64_t>(v.row_count) * v.words;  // <= 2^37, exact
-    if (!count_fits_host(row_words64, sizeof(uint32_t)) || !count_fits_host(v.dirty_count, sizeof(uint32_t))) {
+    const uint64_t page_words64 = static_cast<uint64_t>(v.row_index_page_count) * kPageLen;  // <= 2^40, exact
+    if (!count_fits_host(row_words64, sizeof(uint32_t)) || !count_fits_host(v.dirty_count, sizeof(uint32_t)) ||
+        !count_fits_host(v.row_index_dir_len, sizeof(uint32_t)) || !count_fits_host(page_words64, sizeof(uint32_t))) {
       return std::nullopt;
     }
     const size_t row_words = static_cast<size_t>(row_words64);
-    if ((row_words > 0u && v.rows == nullptr) || (v.dirty_count > 0u && v.dirty_rows == nullptr)) return std::nullopt;
-    const std::span<const uint32_t> rows = row_words > 0u ? std::span<const uint32_t>(v.rows, row_words)
-                                                          : std::span<const uint32_t>();
-    const std::span<const uint32_t> owners = v.owners != nullptr && v.row_count > 0u
-                                                 ? std::span<const uint32_t>(v.owners, v.row_count)
-                                                 : std::span<const uint32_t>();
-    const std::span<const uint32_t> dirty = v.dirty_count > 0u ? std::span<const uint32_t>(v.dirty_rows, v.dirty_count)
-                                                               : std::span<const uint32_t>();
-    return make(Key64::from_halves(v.key_lo, v.key_hi), v.slot, v.words, v.row_count, rows, owners, dirty);
+    const size_t page_words = static_cast<size_t>(page_words64);
+    if ((row_words > 0u && v.rows == nullptr) || (v.dirty_count > 0u && v.dirty_rows == nullptr) ||
+        (v.row_index_dir_len > 0u && v.row_index_dir == nullptr) || (page_words > 0u && v.row_index_pages == nullptr)) {
+      return std::nullopt;
+    }
+    const auto span = [](const uint32_t* p, size_t n) {
+      return n > 0u ? std::span<const uint32_t>(p, n) : std::span<const uint32_t>();
+    };
+    return make(Key64::from_halves(v.key_lo, v.key_hi), v.slot, v.words, v.row_count, span(v.rows, row_words),
+                span(v.owners, v.owners != nullptr ? v.row_count : 0u), span(v.dirty_rows, v.dirty_count),
+                span(v.row_index_dir, v.row_index_dir_len), span(v.row_index_pages, page_words));
   }
 
   [[nodiscard]] Key64 key() const noexcept { return key_; }
@@ -191,16 +201,28 @@ class TableReader {
     return owners_.empty() ? r : owners_[r];
   }
 
-  /// Row of `owner` (raw `NodeId` for sparse tables, node index for dense ones). O(rows) sparse.
+  /// Row of node slot `index` in O(1): the slot itself (dense), else the published row index.
+  [[nodiscard]] std::optional<uint32_t> row_of_node(uint32_t index) const noexcept {
+    if (owners_.empty()) return index < row_count_ ? std::optional<uint32_t>(index) : std::nullopt;
+    const size_t dir_slot = index >> NVE_ROW_INDEX_PAGE_BITS;
+    if (dir_slot >= row_index_dir_.size()) return std::nullopt;
+    const size_t page = row_index_dir_[dir_slot];  // `NVE_ROW_INDEX_NO_PAGE` fails the bound below
+    if (page >= row_index_pages_.size() / kPageLen) return std::nullopt;
+    const uint32_t row_plus_one = row_index_pages_[page * kPageLen + (index & (kPageLen - 1u))];
+    if (row_plus_one == 0u || row_plus_one > row_count_) return std::nullopt;
+    return row_plus_one - 1u;
+  }
+
+  /// Row of `owner` (raw `NodeId` for sparse tables, node index for dense ones) in O(1).
   [[nodiscard]] std::optional<uint32_t> row_of(uint32_t owner_id) const noexcept {
-    if (owners_.empty()) return owner_id < row_count_ ? std::optional<uint32_t>(owner_id) : std::nullopt;
-    for (uint32_t r = 0; r < row_count_; ++r) {
-      if (owners_[r] == owner_id) return r;
-    }
-    return std::nullopt;
+    if (owners_.empty()) return row_of_node(owner_id);
+    const std::optional<uint32_t> r = row_of_node(owner_id & 0x00FFFFFFu);
+    return r && owners_[*r] == owner_id ? r : std::nullopt;
   }
 
  private:
+  static constexpr size_t kPageLen = NVE_ROW_INDEX_PAGE_LEN;
+
   [[nodiscard]] std::optional<uint32_t> field_word(uint32_t r, FieldSpec f) const noexcept {
     if (nve_field_fits(f, words_) == 0) return std::nullopt;
     return word(r, f.word);
@@ -213,6 +235,8 @@ class TableReader {
   std::span<const uint32_t> rows_;
   std::span<const uint32_t> owners_;
   std::span<const uint32_t> dirty_rows_;
+  std::span<const uint32_t> row_index_dir_;
+  std::span<const uint32_t> row_index_pages_;
 };
 
 }  // namespace nve::host

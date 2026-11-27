@@ -130,6 +130,20 @@ pub struct StoreStats {
     pub table_count: usize,
 }
 
+/// One table's storage exactly as published in `NveTableView`.
+#[derive(Debug, Clone, Copy)]
+pub struct TableStorage<'a> {
+    /// `row_count * words` row words (dense: indexed by node index).
+    pub rows: &'a [Word],
+    /// Sparse: raw owner `NodeId` per row. Dense: empty (row = node index, at most `capacity()`).
+    pub owners: &'a [u32],
+    pub row_count: usize,
+    /// Sparse: page per `NVE_ROW_INDEX_PAGE_LEN` node indices (`NVE_ROW_INDEX_NO_PAGE` = none).
+    pub row_index_dir: &'a [u32],
+    /// Sparse: flattened pages of `row + 1` per node index (`0` = no row).
+    pub row_index_pages: &'a [u32],
+}
+
 /// The single owner of every node, table row, child list, string, and resource.
 pub struct NodeStore {
     pub(crate) nodes: IndexVec<NodeIndex, NodeRow>,
@@ -534,14 +548,26 @@ impl NodeStore {
             .map(|(i, _)| TableSlot(i as u8))
     }
 
-    /// `(rows, owners, row_count)` of a table exactly as published in `NveTableView`: dense
-    /// tables have no owners (row = node index) and at most `capacity()` rows.
-    pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
+    /// A table's storage exactly as published in `NveTableView`.
+    pub fn table_storage(&self, slot: TableSlot) -> Option<TableStorage<'_>> {
         let c = self.columns[slot.0 as usize].as_ref()?;
         if c.is_dense() {
-            return Some((&c.rows, &[], c.row_count().min(self.capacity())));
+            return Some(TableStorage {
+                rows: &c.rows,
+                owners: &[],
+                row_count: c.row_count().min(self.capacity()),
+                row_index_dir: &[],
+                row_index_pages: &[],
+            });
         }
-        Some((&c.rows, &c.owners, c.row_count()))
+        let (row_index_dir, row_index_pages) = c.row_index();
+        Some(TableStorage {
+            rows: &c.rows,
+            owners: &c.owners,
+            row_count: c.row_count(),
+            row_index_dir,
+            row_index_pages,
+        })
     }
 
     pub fn stats(&self) -> StoreStats {

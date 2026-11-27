@@ -6,17 +6,22 @@
 //   uint32_t tag(const NodeData&);                             // view type; a change recreates it
 //   Handle create(const NodeData&);                            // every non-root node
 //   void update(Handle&, const NodeData&);                     // after create and on every change
+//   void move(Handle&, const NodeData&);                       // optional: geometry-only change
 //   void update_root(const NodeData&);                         // root node (the host's own view)
 //   void destroy(uint32_t id, Handle&);
 //   void set_children(const NodeData& parent, Handle* parent_view /* null for root */,
 //                     std::span<Handle* const> kids);           // in scene child order
 //
-// The first sync, any `frame_id` regression, and any change of `source_generation` (pass
+// The first sync, any `frame_id` that is not the next one (a regression, or a skipped frame whose
+// change sets were never seen), and any change of `source_generation` (pass
 // `HostSession::source_generation()`: a new app or pairing replaces the scene without removals)
-// visit every live node, keeping views whose node, generation and tag still match;
-// afterwards only `removed_ids`, `dirty_indices` (row, tables, children, or layout rect changed),
-// and descendants whose inherited typography changed. Views are keyed by node index and checked
-// against the packed `NodeId` generation, so a recycled slot recreates its view.
+// visit every live node, keeping views whose node, generation and tag still match. Afterwards a
+// sync costs O(changed): `removed_ids`, `dirty_indices` (created, or row, tables or children
+// changed) and descendants whose inherited typography changed get `update`; `moved_indices`
+// (only the absolute rect or parent-relative origin changed) get `move`, which receives
+// `read_geometry` data (identity and geometry only). Adapters without `move` get a full `update`
+// instead. Views are keyed by node index and checked against the packed `NodeId` generation, so a
+// recycled slot recreates its view.
 //
 // `NodeData` (and its `TextStyle::font_family`) borrows the scene: it is valid only inside the
 // adapter call. The tree itself keeps no view into the scene across syncs.
@@ -33,16 +38,25 @@
 
 namespace nve::host {
 
+/// `Adapter` repositions a view whose geometry alone changed.
+template <class Adapter>
+concept MovingAdapter = requires(Adapter& a, typename Adapter::Handle& h, const NodeData& n) { a.move(h, n); };
+
 template <class Adapter>
 class RetainedTree {
  public:
   using Handle = typename Adapter::Handle;
 
-  /// Reconciles `scene` (bound into `tables`); returns the number of views created or updated.
+  /// Reconciles `scene` (bound into `tables`); returns the number of views created or updated
+  /// (`moved()` counts the geometry-only `move`s).
   size_t sync(const RuntimeSceneReader& scene, SceneTables& tables, Adapter& adapter,
               uint64_t source_generation = 0u) {
-    const bool full = !initialized_ || scene.frame_id() < last_frame_ || source_generation != source_generation_;
-    if (!full && scene.frame_id() == last_frame_) return 0u;  // this frame is already mirrored
+    if (initialized_ && source_generation == source_generation_ && scene.frame_id() == last_frame_) {
+      moved_ = 0u;
+      return 0u;  // this frame is already mirrored
+    }
+    const bool full =
+        !initialized_ || scene.frame_id() != last_frame_ + 1u || source_generation != source_generation_;
     source_generation_ = source_generation;
     tables.bind(scene);
     if (++epoch_ == 0u) {
@@ -53,6 +67,7 @@ class RetainedTree {
     last_frame_ = scene.frame_id();
     if (entries_.size() < scene.node_capacity()) entries_.resize(scene.node_capacity());
     updated_ = 0u;
+    moved_ = 0u;
     work_.clear();
 
     if (full) {
@@ -77,9 +92,14 @@ class RetainedTree {
     // Inherited typography: a changed resolved style re-renders descendants until it stops changing.
     for (size_t q = 0; q < cascade_.size(); ++q) {
       const uint32_t i = cascade_[q];
-      if (entries_[i].stamp != epoch_ && scene.is_live(i)) visit(scene, tables, adapter, i);
+      if (i < entries_.size() && entries_[i].stamp != epoch_ && scene.is_live(i)) visit(scene, tables, adapter, i);
     }
     cascade_.clear();
+    if (!full) {
+      for (const uint32_t i : scene.moved_indices()) {
+        if (i < entries_.size() && entries_[i].stamp != epoch_ && scene.is_live(i)) move(scene, tables, adapter, i);
+      }
+    }
     // Children of every dirty node, plus the parents of views (re)created under a clean parent.
     for (const uint32_t i : work_) relink_.push_back(i);
     for (const uint32_t i : relink_) {
@@ -108,6 +128,9 @@ class RetainedTree {
                ? &entries_[i].handle
                : nullptr;
   }
+
+  /// Geometry-only `move`s of the last sync.
+  [[nodiscard]] size_t moved() const noexcept { return moved_; }
 
   [[nodiscard]] size_t size() const noexcept {
     size_t n = 0u;
@@ -185,6 +208,8 @@ class RetainedTree {
         e.id = node.id;
         e.tag = tag;
         e.live = true;
+        // A new view joins its parent and adopts its children (also when recreated by a cascade).
+        relink_.push_back(i);
         if (node.parent != 0u) relink_.push_back(node_index(node.parent));
       }
       adapter.update(e.handle, node);
@@ -192,8 +217,23 @@ class RetainedTree {
     store_applied(e, style);
     ++updated_;
     if (style_changed) {
-      for (const uint32_t child : node.children) cascade_.push_back(node_index(child));
+      for (const uint32_t child : node.children) cascade_.push_back(node_index(child));  // bounds-checked on pop
     }
+  }
+
+  /// A node whose geometry alone changed: `move` when its view is current, else a full visit.
+  void move(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
+    Entry& e = entries_[i];
+    if constexpr (MovingAdapter<Adapter>) {
+      const NodeData node = read_geometry(scene, tables, i);
+      if (i != kRootIndex && e.live && e.id == node.id) {
+        e.stamp = epoch_;
+        adapter.move(e.handle, node);
+        ++moved_;
+        return;
+      }
+    }
+    visit(scene, tables, adapter, i);
   }
 
   void sync_children(const RuntimeSceneReader& scene, const SceneTables& tables, Adapter& adapter, uint32_t i) {
@@ -217,6 +257,7 @@ class RetainedTree {
   uint64_t source_generation_ = 0u;
   uint32_t epoch_ = 0u;
   size_t updated_ = 0u;
+  size_t moved_ = 0u;
   bool initialized_ = false;
 };
 

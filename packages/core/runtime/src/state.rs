@@ -12,6 +12,7 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder, ResourceStore};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
+use crate::delta::SceneDelta;
 use crate::pair::{PairInboundEvent, PairSession};
 
 // Full field-by-field + little-endian proof (including `pub(crate)` `flags` and
@@ -44,13 +45,10 @@ pub(crate) struct SurfaceState {
     pub(crate) empty_changes: ChangeSet,
     pub(crate) scene: LaidOutScene<DynLayoutEngine>,
     pub(crate) tick_hooks: Vec<Box<dyn FrameTickHook>>,
-    pub(crate) rects: Vec<NveLayoutRect>,
+    /// Published rects and dirty / moved / removed sets.
+    pub(crate) delta: SceneDelta,
     pub(crate) published_tables: Vec<NveTableView>,
     pub(crate) published_dirty_buf: Vec<u32>,
-    pub(crate) dirty_indices: Vec<u32>,
-    pub(crate) dirty_stamp: Vec<u32>,
-    pub(crate) dirty_epoch: u32,
-    pub(crate) removed_ids: Vec<u32>,
     /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
     pub(crate) published_scroll: Vec<NveScrollOffset>,
     pub(crate) published_view: NveRuntimeSceneView,
@@ -200,7 +198,7 @@ impl RuntimeInner {
     fn reset_replica_and_state(replica_store: &mut NodeStore, state: &mut SurfaceState) {
         state.invalidate_published_view();
         state.metrics.live_nodes = 0;
-        state.rects.clear();
+        state.delta.reset();
         state.scene.reset();
         state.wire_decoder = WireDecoder::default();
         state.has_replica_state = false;
