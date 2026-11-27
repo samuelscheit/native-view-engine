@@ -188,8 +188,18 @@ where
         P::Error: core::fmt::Debug,
     {
         match self.suspend_result()? {
-            Ok(data) => Ok(data),
-            Err(err) => Err(RenderError::Error(CapturedError::from_display(err))),
+            Ok(data) => {
+                if let Some((set, handle)) = self.state.read().boundary_record.as_ref() {
+                    set.clear_errored_handle(*handle);
+                }
+                Ok(data)
+            }
+            Err(err) => {
+                if let Some((set, handle)) = self.state.read().boundary_record.as_ref() {
+                    set.retain_errored(*handle);
+                }
+                Err(RenderError::Error(CapturedError::from_display(err)))
+            }
         }
     }
 
@@ -367,12 +377,7 @@ where
     use_drop(move || {
         let (bridge, handle, waiter) = {
             let mut st = state.write();
-            // A hook unmounted by its `ErrorBoundary` keeps its reference: the boundary's error
-            // fallback renders that settled error, so it must still dehydrate (zero client
-            // refetch) and be invalidated by the boundary's reset.
-            if st.bridge.client().read::<P>(st.handle).error.is_none() {
-                st.release_boundary_record();
-            }
+            st.release_boundary_record();
             (st.bridge.clone(), st.handle, st.suspend_waiter.take())
         };
         if let Some(waiter) = waiter

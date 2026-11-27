@@ -50,6 +50,8 @@ pub(crate) const EXT_NATIVE_VIEW_PROPS: u16 = 1 << 10;
 pub(crate) struct NodeExtras {
     pub(crate) typed_style: Option<TypedStyle>,
     pub(crate) inline_style_override: Option<String>,
+    pub(crate) inline_flex_basis: Option<nve_abi::Dimension>,
+    pub(crate) attr_flex_basis: Option<nve_abi::Dimension>,
     pub(crate) font_weight: Option<Cow<'static, str>>,
     pub(crate) text_align: Option<Cow<'static, str>>,
     pub(crate) box_shadow: Option<Cow<'static, str>>,

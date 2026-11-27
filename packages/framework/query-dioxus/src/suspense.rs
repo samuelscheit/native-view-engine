@@ -50,13 +50,19 @@ impl SuspenseIdAllocator {
     }
 }
 
+#[derive(Default)]
+struct BoundaryQuerySetInner {
+    live: Vec<(QueryHandle, u32)>,
+    errored: Vec<QueryHandle>,
+}
+
 /// Context provided inside `<QuerySuspense>` so [`crate::UseQuery::suspend`] /
 /// [`crate::UseQuery::suspend_result`] record every [`QueryHandle`] belonging strictly to THAT
-/// boundary (zero sibling leakage during per-boundary SSR delta dehydration). Entries are
-/// reference-counted per recording hook, so a handle stays attributed while any hook reads it
-/// (or while the boundary's error fallback renders its settled error).
+/// boundary (zero sibling leakage during per-boundary SSR delta dehydration). Live hook
+/// references are strictly reference-counted (`record`/`forget`), while handles caught by the
+/// boundary's `<ErrorBoundary>` are tracked separately in `errored` and consumed on reset.
 #[derive(Clone, Default)]
-pub struct BoundaryQuerySet(Rc<RefCell<Vec<(QueryHandle, u32)>>>);
+pub struct BoundaryQuerySet(Rc<RefCell<BoundaryQuerySetInner>>);
 
 impl BoundaryQuerySet {
     #[inline]
@@ -64,31 +70,63 @@ impl BoundaryQuerySet {
         Self::default()
     }
 
-    /// Adds one hook's reference to `handle`.
+    /// Adds one live hook's reference to `handle`.
     pub fn record(&self, handle: QueryHandle) {
-        let mut list = self.0.borrow_mut();
-        match list.iter_mut().find(|(h, _)| *h == handle) {
+        let mut inner = self.0.borrow_mut();
+        match inner.live.iter_mut().find(|(h, _)| *h == handle) {
             Some((_, refs)) => *refs = refs.saturating_add(1),
-            None => list.push((handle, 1)),
+            None => inner.live.push((handle, 1)),
         }
     }
 
-    /// Drops one hook's reference to `handle` (key switch or unmount), removing it once no hook
-    /// in this boundary reads it.
+    /// Drops one live hook's reference to `handle` (key switch or unmount), removing it once no
+    /// live hook in this boundary reads it.
     pub fn forget(&self, handle: QueryHandle) {
-        let mut list = self.0.borrow_mut();
-        if let Some(pos) = list.iter().position(|(h, _)| *h == handle) {
-            list[pos].1 -= 1;
-            if list[pos].1 == 0 {
-                list.swap_remove(pos);
+        let mut inner = self.0.borrow_mut();
+        if let Some(pos) = inner.live.iter().position(|(h, _)| *h == handle) {
+            inner.live[pos].1 -= 1;
+            if inner.live[pos].1 == 0 {
+                inner.live.swap_remove(pos);
             }
         }
     }
 
-    /// Returns a snapshot of all [`QueryHandle`]s recorded in this boundary.
-    #[inline]
+    /// Retains `handle` in the boundary's caught-error set when [`crate::UseQuery::suspend`]
+    /// throws into `<ErrorBoundary>`, so SSR error fallback dehydration and reset invalidation
+    /// still see `handle` after `<ErrorBoundary>` unmounts the throwing hook.
+    pub fn retain_errored(&self, handle: QueryHandle) {
+        let mut inner = self.0.borrow_mut();
+        if !inner.errored.contains(&handle) {
+            inner.errored.push(handle);
+        }
+    }
+
+    /// Removes `handle` from the caught-error set once a hook in this boundary resolves `Ok(_)`.
+    pub fn clear_errored_handle(&self, handle: QueryHandle) {
+        let mut inner = self.0.borrow_mut();
+        if let Some(pos) = inner.errored.iter().position(|&h| h == handle) {
+            inner.errored.swap_remove(pos);
+        }
+    }
+
+    /// Clears all boundary-caught errored handles after `<ErrorBoundary>` reset invalidates them.
+    pub fn clear_errored(&self) {
+        self.0.borrow_mut().errored.clear();
+    }
+
+    /// Returns a deduplicated snapshot of all live and boundary-caught errored [`QueryHandle`]s.
     pub fn handles(&self) -> Vec<QueryHandle> {
-        self.0.borrow().iter().map(|&(h, _)| h).collect()
+        let inner = self.0.borrow();
+        let mut out = Vec::with_capacity(inner.live.len() + inner.errored.len());
+        for &(h, _) in &inner.live {
+            out.push(h);
+        }
+        for &h in &inner.errored {
+            if !out.contains(&h) {
+                out.push(h);
+            }
+        }
+        out
     }
 
     /// Whether `self` and `other` are the same boundary.
@@ -154,15 +192,19 @@ struct SsrBoundaryRegistryInner {
 }
 
 impl SsrBoundaryRegistryInner {
-    /// The boundary streaming `slot_id`: the one that suspended (the streaming shell rejects two
-    /// suspended boundaries sharing an ID), else the first registered with it.
-    fn streaming_entry(&mut self, slot_id: &str) -> Option<&mut SsrBoundaryEntry> {
-        let pos = self
-            .boundaries
+    /// Index of the boundary streaming `slot_id`: prefer an unflushed suspended boundary (so a
+    /// duplicate explicit ID that settled pre-headers never masks a sibling still streaming), then
+    /// any suspended boundary with `slot_id`, else the first registered with `slot_id`.
+    fn streaming_entry_pos(&self, slot_id: &str) -> Option<usize> {
+        self.boundaries
             .iter()
-            .position(|e| e.slot_id == slot_id && e.suspense_ctx.is_some())
-            .or_else(|| self.boundaries.iter().position(|e| e.slot_id == slot_id))?;
-        self.boundaries.get_mut(pos)
+            .position(|e| e.slot_id == slot_id && !e.flushed && e.suspense_ctx.is_some())
+            .or_else(|| {
+                self.boundaries
+                    .iter()
+                    .position(|e| e.slot_id == slot_id && e.suspense_ctx.is_some())
+            })
+            .or_else(|| self.boundaries.iter().position(|e| e.slot_id == slot_id))
     }
 }
 
@@ -208,16 +250,31 @@ impl SsrBoundaryRegistry {
         }
     }
 
+    /// Marks every boundary that suspended and already resolved before HTTP headers as flushed so
+    /// subsequent streaming lookups for a duplicated explicit slot ID target only the sibling
+    /// still streaming.
+    pub fn mark_settled_pre_headers(&self) {
+        let mut inner = self.inner.borrow_mut();
+        for entry in &mut inner.boundaries {
+            if !entry.flushed && entry.suspense_ctx.is_some() && !entry.is_pending() {
+                entry.flushed = true;
+            }
+        }
+    }
+
     /// Marks streaming slot `slot_id` flushed, returning `true` iff it transitioned from
     /// unflushed to flushed.
     pub fn mark_flushed(&self, slot_id: &str) -> bool {
         let mut inner = self.inner.borrow_mut();
-        match inner.streaming_entry(slot_id) {
-            Some(entry) if !entry.flushed => {
-                entry.flushed = true;
-                true
-            }
-            _ => false,
+        let Some(pos) = inner.streaming_entry_pos(slot_id) else {
+            return false;
+        };
+        let entry = &mut inner.boundaries[pos];
+        if !entry.flushed {
+            entry.flushed = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -226,9 +283,11 @@ impl SsrBoundaryRegistry {
         self.inner.borrow().boundaries.clone()
     }
 
-    /// Looks up the boundary streaming `slot_id` (the suspended one when an ID is duplicated).
+    /// Looks up the boundary streaming `slot_id` (preferring an unflushed suspended boundary).
     pub fn entry(&self, slot_id: &str) -> Option<SsrBoundaryEntry> {
-        self.inner.borrow_mut().streaming_entry(slot_id).cloned()
+        let inner = self.inner.borrow();
+        let pos = inner.streaming_entry_pos(slot_id)?;
+        inner.boundaries.get(pos).cloned()
     }
 
     /// Collects all unique [`QueryHandle`]s across unflushed suspended boundaries (the
@@ -361,10 +420,11 @@ pub fn QuerySuspense(
 }
 
 fn invalidate_boundary_handles(bridge: &Option<DioxusQueryBridge>, handles: &BoundaryQuerySet) {
-    if let Some(b) = bridge {
-        let list = handles.handles();
-        if !list.is_empty() {
-            b.client().invalidate_handles(&list);
-        }
+    let list = handles.handles();
+    if let Some(b) = bridge
+        && !list.is_empty()
+    {
+        b.client().invalidate_handles(&list);
     }
+    handles.clear_errored();
 }

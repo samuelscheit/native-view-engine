@@ -212,6 +212,10 @@ pub(crate) async fn execute_render_streaming<F>(
         return;
     }
 
+    // Mark boundaries that suspended and already resolved pre-headers as flushed so a duplicate
+    // explicit ID never masks its still-streaming sibling during `pending_handles` or delta lookup.
+    registry.mark_settled_pre_headers();
+
     // Streaming Path: build initial DSD shell + `seq=0` + optional async boot script pre-headers.
     let (mut session, mut cursor, initial_bytes) =
         match prepare_streaming_session(&page, &shell_out, &registry, &client) {
@@ -312,19 +316,19 @@ pub(crate) async fn execute_render_streaming<F>(
                         }
                         StreamSlotState::Resolved => {}
                     }
-                    let reg_ready = registry
-                        .entry(&slot.slot_id)
+                    let reg_entry = registry.entry(&slot.slot_id);
+                    let reg_ready = reg_entry
+                        .as_ref()
                         .is_none_or(|entry| entry.is_ready_to_flush());
                     if !reg_ready {
                         still_pending.push(slot);
                         continue;
                     }
 
-                    registry.mark_flushed(&slot.slot_id);
-                    let handles = registry
-                        .entry(&slot.slot_id)
+                    let handles = reg_entry
                         .map(|entry| entry.query_handles())
                         .unwrap_or_default();
+                    registry.mark_flushed(&slot.slot_id);
                     let delta_nveq = match client.dehydrate_handles_delta(&handles, &mut cursor) {
                         Ok(bytes) => bytes,
                         Err(_) => {

@@ -103,31 +103,50 @@ const BORDER_STYLES: [&str; 10] = [
     "none", "hidden", "solid", "dashed", "dotted", "double", "groove", "ridge", "inset", "outset",
 ];
 
-/// Parses `border: <width> || <style> || <color>` into `(width, color)` with CSS omitted-value
-/// rules: omitted (or explicit) color `currentcolor` is `current_color`, omitted width is
-/// `medium` (3px), and an omitted, `none` or `hidden` style computes the width to 0.
-pub(crate) fn parse_border(value: &str, current_color: ColorRgba) -> Option<(f32, ColorRgba)> {
+#[derive(Clone, Copy)]
+enum BorderColorToken {
+    Current,
+    Concrete(ColorRgba),
+}
+
+/// Parses a CSS border width token (`thin`, `medium`, `thick`, `0`, or non-negative `px`;
+/// unitless non-zero widths are rejected for consistency with `flex-basis`).
+fn parse_border_width(token: &str, lower: &str) -> Option<f32> {
+    match lower {
+        "thin" => Some(1.0),
+        "medium" => Some(3.0),
+        "thick" => Some(5.0),
+        _ => {
+            if let Some(n) = parse_f32(token) {
+                (n == 0.0).then_some(0.0)
+            } else {
+                parse_px(token).filter(|w| *w >= 0.0)
+            }
+        }
+    }
+}
+
+/// Parses `border: <width> || <style> || <color>` into `(width, color)` where `color == None`
+/// denotes `currentColor` (either omitted or explicit) so callers can resolve it after the full
+/// declaration list has updated `text_color`. Omitted width is `medium` (3px), and an omitted,
+/// `none`, or `hidden` style computes width to `0`.
+pub(crate) fn parse_border(value: &str) -> Option<(f32, Option<ColorRgba>)> {
     let (mut width, mut style, mut color) = (None, None, None);
     let mut any = false;
     for token in css_tokens(value) {
         any = true;
         let lower = token.to_ascii_lowercase();
         if width.is_none()
-            && let Some(w) = match lower.as_str() {
-                "thin" => Some(1.0),
-                "medium" => Some(3.0),
-                "thick" => Some(5.0),
-                _ => parse_px(token).filter(|w| *w >= 0.0),
-            }
+            && let Some(w) = parse_border_width(token, &lower)
         {
             width = Some(w);
         } else if style.is_none() && BORDER_STYLES.contains(&lower.as_str()) {
             style = Some(lower);
         } else if color.is_none()
             && let Some(c) = if lower == "currentcolor" {
-                Some(current_color)
+                Some(BorderColorToken::Current)
             } else {
-                parse_color(token)
+                parse_color(token).map(BorderColorToken::Concrete)
             }
         {
             color = Some(c);
@@ -142,7 +161,11 @@ pub(crate) fn parse_border(value: &str, current_color: ColorRgba) -> Option<(f32
         None | Some("none" | "hidden") => 0.0,
         Some(_) => width.unwrap_or(3.0),
     };
-    Some((width, color.unwrap_or(current_color)))
+    let resolved_color = match color {
+        Some(BorderColorToken::Concrete(c)) => Some(c),
+        Some(BorderColorToken::Current) | None => None,
+    };
+    Some((width, resolved_color))
 }
 
 /// Parsed CSS `flex` shorthand.
@@ -276,26 +299,29 @@ mod tests {
     #[test]
     fn border_shorthand_accepts_any_token_order() {
         let slate = ColorRgba::rgb(0x1e, 0x29, 0x3b);
-        let cur = ColorRgba::rgb(1, 2, 3);
-        assert_eq!(parse_border("1px solid #1e293b", cur), Some((1.0, slate)));
-        assert_eq!(parse_border("#1e293b solid 2px", cur), Some((2.0, slate)));
-        assert_eq!(parse_border("solid 1px", cur), Some((1.0, cur)), "currentcolor");
-        assert_eq!(parse_border("solid", cur), Some((3.0, cur)), "medium width");
-        assert_eq!(parse_border("thick dashed red", cur), Some((5.0, ColorRgba::rgb(239, 68, 68))));
-        assert_eq!(parse_border("none", cur), Some((0.0, cur)));
-        assert_eq!(parse_border("4px none #1e293b", cur), Some((0.0, slate)));
-        assert_eq!(parse_border("0", cur), Some((0.0, cur)));
-        assert_eq!(parse_border("2px #1e293b", cur), Some((0.0, slate)), "omitted style is none");
-        assert_eq!(parse_border("1px solid currentColor", cur), Some((1.0, cur)));
-        assert_eq!(parse_border("CURRENTCOLOR dashed 2PX", cur), Some((2.0, cur)));
+        assert_eq!(parse_border("1px solid #1e293b"), Some((1.0, Some(slate))));
+        assert_eq!(parse_border("#1e293b solid 2px"), Some((2.0, Some(slate))));
+        assert_eq!(parse_border("solid 1px"), Some((1.0, None)), "omitted color is currentColor");
+        assert_eq!(parse_border("solid"), Some((3.0, None)), "medium width + currentColor");
         assert_eq!(
-            parse_border("1px solid rgba(30, 41, 59, 0.5)", cur),
-            Some((1.0, ColorRgba::rgba(0x1e, 0x29, 0x3b, 128)))
+            parse_border("thick dashed red"),
+            Some((5.0, Some(ColorRgba::rgb(239, 68, 68))))
         );
-        assert_eq!(parse_border("1px solid rgb(30 41 59)", cur), Some((1.0, slate)));
+        assert_eq!(parse_border("none"), Some((0.0, None)));
+        assert_eq!(parse_border("4px none #1e293b"), Some((0.0, Some(slate))));
+        assert_eq!(parse_border("0"), Some((0.0, None)));
+        assert_eq!(parse_border("2px #1e293b"), Some((0.0, Some(slate))), "omitted style is none");
+        assert_eq!(parse_border("1px solid currentColor"), Some((1.0, None)));
+        assert_eq!(parse_border("CURRENTCOLOR dashed 2PX"), Some((2.0, None)));
+        assert_eq!(
+            parse_border("1px solid rgba(30, 41, 59, 0.5)"),
+            Some((1.0, Some(ColorRgba::rgba(0x1e, 0x29, 0x3b, 128))))
+        );
+        assert_eq!(parse_border("1px solid rgb(30 41 59)"), Some((1.0, Some(slate))));
         for bad in [
             "",
             "1px 2px",
+            "2 solid red",
             "solid solid",
             "1px wavy red",
             "-1px solid",
@@ -303,8 +329,9 @@ mod tests {
             "1px solid currentcolor red",
             "1px solid rgb(1, 2)",
             "1px solid rgb(1, 2, 3, 4, 5)",
+            "1px solid rgb(1, 2, 3,)",
         ] {
-            assert_eq!(parse_border(bad, cur), None, "{bad:?}");
+            assert_eq!(parse_border(bad), None, "{bad:?}");
         }
     }
 

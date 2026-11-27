@@ -212,3 +212,119 @@ fn boundary_attribution_is_reference_counted_across_switches_and_unmounts() {
     settle(&mut surface);
     assert_eq!(attributed(), set_of(&[1, 3]));
 }
+
+#[derive(Clone, Default)]
+struct ErrorLifecycleCtl {
+    show_child: Rc<RefCell<Option<Signal<bool>>>>,
+    reset_fn: Rc<RefCell<Option<ErrorBoundaryReset>>>,
+    inline_mode: Rc<RefCell<Option<Signal<bool>>>>,
+}
+
+#[component]
+fn ErrorThrowChild() -> Element {
+    let q = use_query_with::<GetItem>(1, QueryOptions::default().max_retries(0));
+    let item = q.suspend()?;
+    rsx! { text { "{item.name}" } }
+}
+
+#[component]
+fn InlineResultChild() -> Element {
+    let q = use_query_with::<GetItem>(2, QueryOptions::default().max_retries(0));
+    match q.suspend_result()? {
+        Ok(item) => rsx! { text { "{item.name}" } },
+        Err(_) => rsx! { text { "INLINE_ERR" } },
+    }
+}
+
+#[component]
+fn ErrorLifecycleApp() -> Element {
+    let client = dioxus_core::consume_context::<ErasedQueryClient>();
+    let ctl = dioxus_core::consume_context::<ErrorLifecycleCtl>();
+    let show = use_signal(|| true);
+    let inline_mode = use_signal(|| false);
+    let show_slot = ctl.show_child.clone();
+    let inline_slot = ctl.inline_mode.clone();
+    let reset_slot = ctl.reset_fn.clone();
+    use_hook(move || {
+        *show_slot.borrow_mut() = Some(show);
+        *inline_slot.borrow_mut() = Some(inline_mode);
+    });
+    rsx! {
+        QueryClientProvider {
+            client: client,
+            QuerySuspense {
+                id: Some("err_life".into()),
+                fallback: rsx! { text { "LOADING" } },
+                error_fallback: move |_report: UiErrorReport, reset: ErrorBoundaryReset| {
+                    *reset_slot.borrow_mut() = Some(reset);
+                    rsx! { text { "CAUGHT_ERR" } }
+                },
+                if show() {
+                    if inline_mode() {
+                        InlineResultChild {}
+                    } else {
+                        ErrorThrowChild {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn errored_unmount_retry_recovery_and_inline_suspend_result_do_not_leak_boundary_refs() {
+    let transport = RegTransport::new("ok");
+    transport.inner.lock().unwrap().fail_queries = true;
+    let ctl = ErrorLifecycleCtl::default();
+    let registry = SsrBoundaryRegistry::new();
+    let client = erased_query_client(transport.clone());
+    let mut surface = DioxusSurface::new(1, ErrorLifecycleApp)
+        .with_context(client.clone())
+        .with_context(registry.clone())
+        .with_context(ctl.clone());
+    let mut web = WebBackend::new();
+    let mut frame = 0;
+    let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
+    let mut settle = |surface: &mut DioxusSurface| {
+        let _ = render_once(surface, &mut web, &mut frame);
+        let _ = pump_settled(surface, &mut web, &waker, &mut frame);
+    };
+
+    // 1. Hook throws into ErrorBoundary: errored handle stays retained for SSR/reset.
+    settle(&mut surface);
+    let h1 = client.subscribe::<GetItem>(&1, QueryOptions::default().max_retries(0)).unwrap();
+    client.unsubscribe(h1);
+    assert_eq!(registry.entry("err_life").unwrap().query_handles(), vec![h1]);
+
+    // 2. Retry succeeds: errored handle is cleared on reset, live hook holds exactly 1 ref.
+    transport.inner.lock().unwrap().fail_queries = false;
+    let reset = ctl.reset_fn.borrow().clone().expect("error fallback mounted");
+    surface.in_root_scope(|| reset.reset());
+    settle(&mut surface);
+    assert_eq!(registry.entry("err_life").unwrap().query_handles(), vec![h1]);
+
+    // 3. Clean unmount drops the single live ref -> boundary set becomes completely empty (no leak).
+    let mut show = ctl.show_child.borrow().unwrap();
+    surface.in_root_scope(|| show.set(false));
+    settle(&mut surface);
+    assert!(
+        registry.entry("err_life").unwrap().query_handles().is_empty(),
+        "retry + clean unmount must leave zero leaked boundary handles"
+    );
+
+    // 4. Inline `suspend_result()` error followed by ordinary unmount must also leave zero leak.
+    transport.inner.lock().unwrap().fail_queries = true;
+    let mut inline_mode = ctl.inline_mode.borrow().unwrap();
+    surface.in_root_scope(|| {
+        inline_mode.set(true);
+        show.set(true);
+    });
+    settle(&mut surface);
+    assert_eq!(registry.entry("err_life").unwrap().query_handles().len(), 1);
+    surface.in_root_scope(|| show.set(false));
+    settle(&mut surface);
+    assert!(
+        registry.entry("err_life").unwrap().query_handles().is_empty(),
+        "unmounting an inline suspend_result() error must not leak its boundary handle"
+    );
+}

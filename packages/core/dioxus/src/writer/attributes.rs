@@ -22,7 +22,7 @@ use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_A
 
 use super::attr_keys::{canonical_a11y_attr_key, canonical_input_attr_key, sync_raw_style_prop};
 use super::flex_basis::{
-    effective_layout_ext, is_flex_basis_attr, sync_flex_basis, sync_layout_ext, typed_flex_basis,
+    is_flex_basis_attr, set_attr_flex_basis, set_inline_flex_basis, sync_effective_layout_ext,
 };
 use super::{
     mark_ext_dirty, NveMutationWriter, EXT_BACKGROUND_FILL, EXT_CURSOR, EXT_DRAW_LIST,
@@ -137,11 +137,11 @@ impl NveMutationWriter {
                 if hot_patch::is_test_id_attr_name(name) {
                     self.clear_test_id(node_id);
                 }
-                if is_flex_basis_attr(name)
-                    && let Some(rec) = self.nodes.get_mut(&node_id)
-                {
-                    let basis = typed_flex_basis(rec.extras());
-                    sync_flex_basis(&mut self.dirty_extended, rec, node_id, basis);
+                if is_flex_basis_attr(name) {
+                    if let Some(rec) = self.nodes.get_mut(&node_id) {
+                        set_attr_flex_basis(&mut self.dirty_extended, rec, node_id, None);
+                    }
+                    return;
                 }
                 let prop_name = canonical_raw_style_key(name)
                     .or_else(|| canonical_a11y_attr_key(name))
@@ -358,11 +358,11 @@ impl NveMutationWriter {
         if ext.inline_style_override.take().is_none() {
             return;
         }
+        ext.inline_flex_basis = None;
         if ext.typed_style.is_some() {
             self.recompute_typed_style(sink, node_id, true, true);
         } else {
-            // The removed inline style owned the basis.
-            sync_flex_basis(&mut self.dirty_extended, rec, node_id, nve_abi::Dimension::Auto);
+            sync_effective_layout_ext(&mut self.dirty_extended, rec, node_id);
         }
     }
 
@@ -451,11 +451,7 @@ impl NveMutationWriter {
                 },
             );
         }
-        let next_layout_ext = effective_layout_ext(
-            rec.extras().and_then(|e| e.typed_style.as_ref()),
-            inline_basis,
-        );
-        sync_layout_ext(&mut self.dirty_extended, rec, node_id, next_layout_ext);
+        set_inline_flex_basis(&mut self.dirty_extended, rec, node_id, inline_basis);
 
         if next_layout != prev_layout {
             rec.layout = next_layout;
@@ -586,14 +582,10 @@ impl NveMutationWriter {
             if set_ta_flag {
                 rec.set_has_explicit_text_align(true);
             }
-            // An inline `style` (no `nve_style` here) owns the whole basis: absent means `auto`.
-            let basis = if name == "style" {
-                Some(parsed_basis.unwrap_or(nve_abi::Dimension::Auto))
-            } else {
-                parsed_basis
-            };
-            if let Some(basis) = basis {
-                sync_flex_basis(&mut self.dirty_extended, rec, node_id, basis);
+            if name == "style" {
+                set_inline_flex_basis(&mut self.dirty_extended, rec, node_id, parsed_basis);
+            } else if let Some(basis) = parsed_basis {
+                set_attr_flex_basis(&mut self.dirty_extended, rec, node_id, Some(basis));
             }
             if handled {
                 if rec.layout != prev_layout {

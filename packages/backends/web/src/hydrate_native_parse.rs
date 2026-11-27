@@ -231,16 +231,20 @@ fn find_close_raw_tag(html: &str, from: usize, close_tag_lower: &[u8]) -> Option
     let bytes = html.as_bytes();
     let nlen = close_tag_lower.len();
     let mut i = from;
-    while i + nlen <= bytes.len() {
+    while i + nlen < bytes.len() {
         if bytes[i] == b'<'
             && bytes[i + 1] == b'/'
             && bytes[i..i + nlen].eq_ignore_ascii_case(close_tag_lower)
+            && matches!(
+                bytes[i + nlen],
+                b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | b'\x0c'
+            )
         {
             let mut end = i + nlen;
             while end < bytes.len() && bytes[end] != b'>' {
                 end += 1;
             }
-            return Some(if end < bytes.len() { end + 1 } else { bytes.len() });
+            return (end < bytes.len()).then_some(end + 1);
         }
         i += 1;
     }

@@ -143,3 +143,69 @@ fn inline_flex_basis_is_typed_layout_ext_and_resets_on_change_and_removal() {
         sink.raw_keys
     );
 }
+
+#[component]
+fn MixedFlexPrecedenceApp() -> Element {
+    let mut step = use_signal(|| 0usize);
+    let s = step();
+    let typed = TypedStyle::new().flex_basis_pct(50.0).aspect_ratio(2.0);
+    let attr_val: Option<String> = match s {
+        0..=2 => Some("1 0 200px".to_owned()),
+        _ => None,
+    };
+    let inline_val: Option<String> = match s {
+        0 => Some("padding: 4px".to_owned()),
+        1 | 3 => Some("flex-basis: 33%".to_owned()),
+        2 => None,
+        _ => Some("padding: 8px".to_owned()),
+    };
+    rsx! {
+        view {
+            // Opposite attribute declaration orders must produce identical basis at every step.
+            view { test_id: "attr_first", flex: attr_val.clone(), style: inline_val.clone() }
+            view { test_id: "style_first", style: inline_val.clone(), flex: attr_val.clone() }
+            // Typed + standalone attr + inline style composition.
+            view { test_id: "all_three", nve_style: typed, flex: attr_val, style: inline_val }
+            pressable { test_id: "cycle", onpress: move |_| step += 1 }
+        }
+    }
+}
+
+#[test]
+fn mixed_flex_attr_and_style_precedence_is_order_independent_and_removal_emits_no_raw_prop() {
+    use Dimension::{Auto, Percent as Pct, Points as Px};
+    let mut surface = DioxusSurface::new(1, MixedFlexPrecedenceApp);
+    let mut sink = ExtSink::default();
+    surface.flush_into(1, &mut sink).unwrap();
+
+    // Precedence: inline style > standalone flex attr > nve_style > auto.
+    // step 0: attr=200px, style="padding:4px" -> plain 200px, all_three 200px
+    // step 1: attr=200px, style="flex-basis:33%" -> plain 33%, all_three 33%
+    // step 2: attr=200px, style=None -> plain 200px, all_three 200px
+    // step 3: attr=None, style="flex-basis:33%" -> plain 33%, all_three 33%
+    // step 4: attr=None, style="padding:8px" -> plain Auto, all_three 50% (typed fallback)
+    let expected = [
+        (Px(200.0), Px(200.0)),
+        (Pct(33.0), Pct(33.0)),
+        (Px(200.0), Px(200.0)),
+        (Pct(33.0), Pct(33.0)),
+        (Auto, Pct(50.0)),
+    ];
+    for (frame, (plain_exp, typed_exp)) in (1u64..).zip(expected) {
+        if frame > 1 {
+            press(&mut surface, &mut sink, frame);
+        }
+        assert_eq!(sink.basis("attr_first"), plain_exp, "attr_first @ frame {frame}");
+        assert_eq!(
+            sink.basis("style_first"),
+            plain_exp,
+            "style_first must match attr_first @ frame {frame}"
+        );
+        assert_eq!(sink.basis("all_three"), typed_exp, "all_three @ frame {frame}");
+    }
+    assert!(
+        !sink.raw_keys.iter().any(|k| k.contains("flex")),
+        "removing or updating standalone flex must never emit a raw prop: {:?}",
+        sink.raw_keys
+    );
+}

@@ -1,0 +1,199 @@
+use super::*;
+use nve_abi::EdgeInsets;
+
+/// Collects every [`ExtStyleDecl`] emitted while applying `key: value`.
+fn ext_decls(
+    l: &mut LayoutProps,
+    s: &mut StyleProps,
+    key: &str,
+    value: &str,
+) -> Vec<(Option<Dimension>, String)> {
+    let mut out = Vec::new();
+    assert!(apply_typed_attr_with_ext(l, s, key, value, |d| out.push(match d {
+        ExtStyleDecl::FlexBasis(b) => (Some(b), String::new()),
+        ExtStyleDecl::Raw(k, v) => (None, format!("{k}:{v}")),
+    })));
+    out
+}
+
+#[test]
+fn inline_style_shorthands_fill_typed_props_and_typed_flex_basis() {
+    let mut l = LayoutProps::default();
+    let mut s = StyleProps::default();
+    let decls = ext_decls(
+        &mut l,
+        &mut s,
+        "style",
+        "padding: 14px 16px; margin: 1px 2px 3px; margin-left: -9px; paddingTop: 4PX; border: 1px solid currentColor; color: rgb(30, 41, 59); flex: 1 1 280px;",
+    );
+    let edges = |top, right, bottom, left| EdgeInsets { top, right, bottom, left };
+    let slate = ColorRgba::rgb(0x1e, 0x29, 0x3b);
+    assert_eq!(l.padding, edges(4.0, 16.0, 14.0, 16.0));
+    assert_eq!(l.margin, edges(1.0, 2.0, 3.0, -9.0), "negative margins are valid");
+    // `currentColor` resolves after the full `style` list, regardless of declaration order.
+    assert_eq!((s.border_width, s.border_color), (1.0, slate));
+    assert_eq!(s.text_color, slate);
+
+    // Explicit `border-color` after `border: ... currentColor` overrides `currentColor`;
+    // `border-color: currentColor` before `color` also tracks the final `color`.
+    let mut l2 = LayoutProps::default();
+    let mut s2 = StyleProps::default();
+    let _ = ext_decls(
+        &mut l2,
+        &mut s2,
+        "style",
+        "border: 2px solid; border-color: red; color: #ffffff;",
+    );
+    assert_eq!((s2.border_width, s2.border_color), (2.0, ColorRgba::rgb(239, 68, 68)));
+    let _ = ext_decls(
+        &mut l2,
+        &mut s2,
+        "style",
+        "border-color: currentColor; color: rgb(10, 20, 30);",
+    );
+    assert_eq!(s2.border_color, ColorRgba::rgb(10, 20, 30));
+    assert_eq!((l.flex_grow, l.flex_shrink), (1.0, 1.0));
+    assert_eq!(decls, vec![(Some(Dimension::Points(280.0)), String::new())]);
+
+    // `flex: <grow>` implies basis 0%; `flex: none` resets factors and basis; unitless zero.
+    let decls = ext_decls(&mut l, &mut s, "flex", "2");
+    assert_eq!((l.flex_grow, l.flex_shrink), (2.0, 1.0));
+    assert_eq!(decls, vec![(Some(Dimension::Percent(0.0)), String::new())]);
+    let decls = ext_decls(&mut l, &mut s, "style", "flex: none; flexBasis: 12px; flex-basis: 0");
+    assert_eq!((l.flex_grow, l.flex_shrink), (0.0, 0.0));
+    let bases: Vec<_> = decls.into_iter().map(|(b, _)| b.unwrap()).collect();
+    assert_eq!(
+        bases,
+        [Dimension::Auto, Dimension::Points(12.0), Dimension::Points(0.0)]
+    );
+    let decls = ext_decls(&mut l, &mut s, "style", "flex: 0 0 0");
+    assert_eq!((l.flex_grow, l.flex_shrink), (0.0, 0.0));
+    assert_eq!(decls, vec![(Some(Dimension::Points(0.0)), String::new())]);
+    // Unsupported bases (`content`, unitless non-zero, negative) emit nothing.
+    assert!(ext_decls(&mut l, &mut s, "style", "flex-basis: content; flex-basis: 12; flex-basis: -1px").is_empty());
+
+    // Invalid shorthands leave every target untouched (all-or-nothing).
+    let before = (l, s);
+    assert!(ext_decls(&mut l, &mut s, "style", "padding: 1px 2px 3px 4px 5px; padding: -1px 2px; paddingTop: -4px; margin: 0 auto; border: 1px wavy red; border: 2 solid red; flex: 1 280px 1; flex: 1 2 3;").is_empty());
+    assert_eq!((l, s), before);
+}
+
+#[test]
+fn parses_inline_style_and_colors() {
+    let mut l = LayoutProps::default();
+    let mut s = StyleProps::default();
+    assert!(apply_typed_attr(
+        &mut l,
+        &mut s,
+        "style",
+        "width: 100%; height: 64px; flex-direction: row; gap: 12; padding: 16px; background-color: #0f172a; color: #ffffff; border-radius: 8px;"
+    ));
+    assert_eq!(l.width, Dimension::Percent(100.0));
+    assert_eq!(l.height, Dimension::Points(64.0));
+    assert_eq!(l.flex_direction, FlexDirection::Row);
+    assert_eq!(l.gap, 12.0);
+    assert_eq!(l.padding, EdgeInsets::all(16.0));
+    assert_eq!(s.background, ColorRgba::rgb(15, 23, 42));
+    assert_eq!(s.text_color, ColorRgba::WHITE);
+    assert_eq!(s.border_radius, 8.0);
+}
+
+#[test]
+fn numeric_style_values_use_the_fixed_point_parser() {
+    assert_eq!(parse_px("12px"), Some(12.0));
+    assert_eq!(parse_px("12PX"), Some(12.0));
+    assert_eq!(parse_px(" 12Px "), Some(12.0));
+    assert_eq!(parse_px(" 12.5 "), Some(12.5));
+    assert_eq!(parse_px("-0px").map(f32::to_bits), Some((-0.0f32).to_bits()));
+    assert_eq!(parse_px("1e2px"), Some(100.0));
+    assert_eq!(parse_px(".5"), Some(0.5));
+    for bad in ["", "px", "12 px", "12pt", "inf", "NaN", "1e39", "0x10", "1,5px", "--1"] {
+        assert_eq!(parse_px(bad), None, "{bad:?}");
+    }
+    assert_eq!(parse_dim("33.5%"), Dimension::Percent(33.5));
+    assert_eq!(parse_dim(" 50 % "), Dimension::Percent(50.0));
+    assert_eq!(parse_dim("AUTO"), Dimension::Auto);
+    assert_eq!(parse_dim("abc%"), Dimension::Auto);
+    assert_eq!(parse_dim("7px"), Dimension::Points(7.0));
+
+    let mut l = LayoutProps::default();
+    let mut s = StyleProps::default();
+    assert!(apply_typed_attr(&mut l, &mut s, "flex-grow", "2.5"));
+    assert!(apply_typed_attr(&mut l, &mut s, "flexShrink", "0"));
+    assert!(apply_typed_attr(&mut l, &mut s, "opacity", "1.5"));
+    assert_eq!((l.flex_grow, l.flex_shrink, s.opacity), (2.5, 0.0, 1.0));
+    // Malformed numbers leave the previous value untouched.
+    assert!(apply_typed_attr(&mut l, &mut s, "flex-grow", "fast"));
+    assert!(apply_typed_attr(&mut l, &mut s, "opacity", "nan"));
+    assert_eq!((l.flex_grow, s.opacity), (2.5, 1.0));
+}
+
+#[test]
+fn forwards_non_abi_inline_style_declarations_as_raw_props() {
+    let mut l = LayoutProps::default();
+    let mut s = StyleProps::default();
+    let raw = |decls: Vec<(Option<Dimension>, String)>| -> Vec<String> {
+        decls.into_iter().map(|(_, kv)| kv).collect()
+    };
+    let forwarded = raw(ext_decls(
+        &mut l,
+        &mut s,
+        "style",
+        "font-size: 18px; font-weight: 700; text-align: center; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); overflow: hidden; unknown-prop: 42;",
+    ));
+    assert_eq!(s.font_size, 18.0);
+    assert_eq!(
+        forwarded,
+        [
+            "font-weight:700",
+            "text-align:center",
+            "box-shadow:0 4px 12px rgba(0, 0, 0, 0.35)",
+            "overflow:hidden",
+        ]
+    );
+
+    // CamelCase variants inside inline style normalize to canonical kebab-case keys.
+    let camel_forwarded = raw(ext_decls(
+        &mut l,
+        &mut s,
+        "style",
+        "fontWeight: semibold; textAlign: right; boxShadow: 2px 3px 6px #00000080;",
+    ));
+    assert_eq!(
+        camel_forwarded,
+        [
+            "font-weight:semibold",
+            "text-align:right",
+            "box-shadow:2px 3px 6px #00000080",
+        ]
+    );
+}
+
+#[test]
+fn rgb_functions_parse_legacy_and_modern_syntax() {
+    assert_eq!(parse_color("rgb(30, 41, 59)"), Some(ColorRgba::rgb(30, 41, 59)));
+    assert_eq!(parse_color("RGBA(0,0,0,0.5)"), Some(ColorRgba::rgba(0, 0, 0, 128)));
+    assert_eq!(parse_color("rgb(300 -5 10.4 / 25%)"), Some(ColorRgba::rgba(255, 0, 10, 64)));
+    assert_eq!(parse_color("rgba(1, 2, 3, 2)"), Some(ColorRgba::rgb(1, 2, 3)), "alpha clamps");
+    assert_eq!(parse_color("rgb(100%, 50%, 0%)"), Some(ColorRgba::rgb(255, 128, 0)));
+    assert_eq!(
+        parse_color("rgb(100% 50% 0% / 50%)"),
+        Some(ColorRgba::rgba(255, 128, 0, 128))
+    );
+    for bad in [
+        "rgb(1, 2)",
+        "rgb(1, 2, 3",
+        "rgb(1, 2, 3, 4, 5)",
+        "rgb(a, b, c)",
+        "rgb()",
+        "rgb(1 2, 3)",
+        "rgb(1, , 2, 3)",
+        "rgb(1, 2, 3,)",
+        "rgb(1 / 2 / 3 / 0.5)",
+        "rgb(1 2 3 0.5)",
+        "rgb(1, 2, 3 / 0.5)",
+        "rgb(100%, 128, 0)",
+    ] {
+        assert_eq!(parse_color(bad), None, "{bad:?}");
+    }
+}

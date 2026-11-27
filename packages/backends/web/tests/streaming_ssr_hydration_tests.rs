@@ -701,10 +701,17 @@ fn truncated_chunk_style_never_seeds_its_hashes_but_a_closed_one_does() {
     let baseline = WebBackend::hydrate_from_streaming_html(&shell);
     let base_seeded = baseline.hydration_report().seeded_rule_count;
 
-    // Every cut strictly inside the chunk `<style>` (attributes complete through CSS body and a
-    // partial `</style`) leaves the hashes unseeded, so the client re-inserts those rules.
+    // Every cut strictly inside the chunk `<style>` — including `</style` missing `>` and
+    // `</style ` with trailing whitespace before EOF — leaves hashes unseeded so the client
+    // re-inserts those rules.
     let open_end = chunk.find("\">").unwrap() + 2;
-    for cut in [open_end, open_end + 10, style_end, style_end + 4] {
+    for cut in [
+        open_end,
+        open_end + 10,
+        style_end,
+        style_end + 4,
+        style_end + "</style".len(),
+    ] {
         let html = format!("{shell}{}", &chunk[..cut]);
         let client = WebBackend::hydrate_from_streaming_html(&html);
         for h in &hashes {
@@ -712,6 +719,19 @@ fn truncated_chunk_style_never_seeds_its_hashes_but_a_closed_one_does() {
                 !client.stylesheet().contains_rule(h),
                 "truncated chunk style (cut at {cut}) must not seed {h}"
             );
+        }
+        assert_eq!(client.hydration_report().seeded_rule_count, base_seeded);
+    }
+
+    // Trailing whitespace after `</style` without `>` and a literal `</stylesheet>` prefix
+    // inside CSS must not close the `<style>` tag prematurely either.
+    for unclosed in [
+        format!("{shell}{}</style ", &chunk[..style_end]),
+        format!("{shell}{}</stylesheet>.after{{}}", &chunk[..style_end]),
+    ] {
+        let client = WebBackend::hydrate_from_streaming_html(&unclosed);
+        for h in &hashes {
+            assert!(!client.stylesheet().contains_rule(h), "unclosed style must not seed {h}");
         }
         assert_eq!(client.hydration_report().seeded_rule_count, base_seeded);
     }

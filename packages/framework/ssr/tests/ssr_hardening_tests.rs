@@ -313,3 +313,82 @@ async fn panicking_render_task_is_a_render_error_not_pool_closed() {
     let html = collect_all_html(resp.expect("render after a panic").into_body()).await;
     assert!(html.contains("</html>"), "{html}");
 }
+
+#[tokio::test]
+async fn duplicate_explicit_id_with_first_settled_pre_headers_still_streams_second_nveq_delta() {
+    #[component]
+    fn PanelFor(panel_key: String) -> Element {
+        let q = use_query_with::<GetPanel>(
+            panel_key,
+            nve_query::QueryOptions::default().max_retries(0),
+        );
+        let data = q.suspend()?;
+        rsx! { text { "{data.body}" } }
+    }
+
+    #[component]
+    fn DupPreHeadersApp() -> Element {
+        let client = dioxus_core::consume_context::<ErasedQueryClient>();
+        rsx! {
+            QueryClientProvider {
+                client: client,
+                view {
+                    // First boundary suspends on Frame 1, then settles before headers via
+                    // `flush_ssr_until_quiescent`.
+                    QuerySuspense {
+                        id: Some("dup".into()),
+                        fallback: rsx! { text { "Loading fast..." } },
+                        PanelFor { panel_key: "fast".to_owned() }
+                    }
+                    // Second boundary shares the explicit ID and stays pending across headers.
+                    QuerySuspense {
+                        id: Some("dup".into()),
+                        fallback: rsx! { text { "Loading slow..." } },
+                        PanelFor { panel_key: "slow".to_owned() }
+                    }
+                }
+            }
+        }
+    }
+
+    let pool = single_worker_pool(4);
+    let transport = ControlledTransport::default();
+    transport.set_ok("fast", "panel:fast");
+    transport.set_ok("slow", "panel:slow");
+    transport.gate("slow");
+
+    let mut resp = pool
+        .render_streaming(
+            SsrPageOptions::new("DupPreHeaders"),
+            StreamPlan::default().with_total_deadline(Duration::from_secs(5)),
+            erased_ssr_query_client(transport.clone()),
+            |c| DioxusSurface::new(1, DupPreHeadersApp).with_context(c),
+        )
+        .await
+        .expect("streaming response");
+    let shell = read_next_chunk(resp.body_mut()).await.expect("shell");
+    assert!(shell.contains("<slot name=\"nve-slot-dup\">"), "{shell}");
+    assert!(shell.contains("panel:fast"), "first boundary settled pre-headers: {shell}");
+
+    transport.release("slow");
+    let rest = collect_all_html(resp.into_body()).await;
+    let full = format!("{shell}{rest}");
+    assert!(rest.contains("data-nve-slot-for=\"dup\""), "second boundary must emit NVEQ delta: {rest}");
+    assert!(rest.contains("panel:slow"), "second boundary markup must stream: {rest}");
+
+    // Hydrate all NVEQ chunks into a fresh client and prove `slow` settled with zero RPCs.
+    let client_transport = ControlledTransport::default();
+    let client = erased_query_client(client_transport.clone());
+    let stats = hydrate_client_from_html(&client, &full);
+    assert!(stats.len() >= 2, "expected seq=0 and seq=1 NVEQ chunks, got {stats:?}");
+    let slow_h = client
+        .subscribe::<GetPanel>(&"slow".to_owned(), nve_query::QueryOptions::default())
+        .unwrap();
+    let snap = client.read::<GetPanel>(slow_h);
+    assert_eq!(
+        snap.data.as_ref().map(|d| d.body.as_str()),
+        Some("panel:slow"),
+        "second duplicate boundary's query must be hydrated from seq=1"
+    );
+    assert_eq!(client_transport.call_count(), 0);
+}

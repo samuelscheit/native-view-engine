@@ -75,18 +75,23 @@ export function startStreamProxy(upstreamPort) {
          */
         arm({ path = "/issues", marker, cutAfter = "", cutBefore = "", timeoutMs = 15_000 }) {
           let onCut;
+          let onMiss;
           let timer;
           const held = new Promise((resolve, reject) => {
             onCut = () => {
               clearTimeout(timer);
               resolve();
             };
+            onMiss = () => {
+              clearTimeout(timer);
+              reject(new Error(`stream proxy cut marker never appeared before EOF: ${JSON.stringify({ marker, cutAfter, cutBefore })}`));
+            };
             timer = setTimeout(() => {
               if (armed?.onCut === onCut) armed = null;
               reject(new Error(`stream proxy cut not reached in ${timeoutMs} ms: ${JSON.stringify({ marker, cutAfter, cutBefore })}`));
             }, timeoutMs);
           });
-          armed = { path, marker, cutAfter, cutBefore, onCut };
+          armed = { path, marker, cutAfter, cutBefore, onCut, onMiss };
           return held;
         },
         isHeld: () => Boolean(active?.held),
@@ -148,6 +153,7 @@ function cutStream(plan, up, upstreamReq, res) {
     if (!state.held && !truncated) {
       forwardTo(buf.length);
       res.end();
+      if (cut < 0) plan.onMiss();
     }
   });
 
