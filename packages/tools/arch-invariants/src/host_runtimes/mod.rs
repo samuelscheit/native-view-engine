@@ -426,3 +426,152 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
     }
     out
 }
+
+/// The in-place `NveBinValue` validators: `(file, function signature, identifiers they must never use)`.
+/// They check strings and skip bytes inside the input buffer; any view, slice, copy, or decode here
+/// would allocate once per value (measured guards exist for Java and Swift; this makes the
+/// guarantee mechanical for every runtime, including Dart and TS which have no allocation counter).
+const IN_PLACE_VALIDATORS: &[(&str, &str, &[&str])] = &[
+    (
+        "packages/core/host-dart/lib/src/bin_codec.dart",
+        "int _checkUtf8(int count)",
+        &[
+            "sublistView",
+            "decodeUtf8PreserveBom",
+            "decode",
+            "utf8String",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "take",
+            "toBytes",
+        ],
+    ),
+    (
+        "packages/core/host-dart/lib/src/bin_codec.dart",
+        "void _checkValue(int depth)",
+        &[
+            "sublistView",
+            "decodeUtf8PreserveBom",
+            "decode",
+            "utf8String",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "take",
+            "toBytes",
+        ],
+    ),
+    (
+        "packages/core/host-ts/src/bin_codec.ts",
+        "private checkUtf8Run(): void",
+        &[
+            "subarray",
+            "slice",
+            "decode",
+            "utf8",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "bytesView",
+        ],
+    ),
+    (
+        "packages/core/host-ts/src/bin_codec.ts",
+        "private checkAt(depth: number): void",
+        &[
+            "subarray",
+            "slice",
+            "decode",
+            "utf8",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "bytesView",
+        ],
+    ),
+    (
+        "packages/core/host-java/src/main/java/dev/nve/host/BinReader.java",
+        "private void checkUtf8Run()",
+        &[
+            "String",
+            "utf8",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "bytes",
+            "readRawValue",
+            "copyOf",
+            "arraycopy",
+        ],
+    ),
+    (
+        "packages/core/host-java/src/main/java/dev/nve/host/BinReader.java",
+        "private void checkValue(int depth)",
+        &[
+            "String",
+            "utf8",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "bytes",
+            "readRawValue",
+            "copyOf",
+            "arraycopy",
+        ],
+    ),
+    (
+        "packages/core/host-swift/Sources/NveHost/BinCodec.swift",
+        "private mutating func checkUtf8(_ count: Int)",
+        &[
+            "String",
+            "Array",
+            "utf8",
+            "take",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "readRawValue",
+        ],
+    ),
+    (
+        "packages/core/host-swift/Sources/NveHost/BinCodec.swift",
+        "private mutating func checkValue(depth: Int)",
+        &[
+            "String",
+            "Array",
+            "utf8",
+            "take",
+            "readStr",
+            "readMapKey",
+            "readBytes",
+            "readRawValue",
+        ],
+    ),
+];
+
+/// Every in-place validator exists and never calls a view / slice / copy / decode helper.
+pub fn check_in_place_validators(idx: &RepoIndex) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for &(file, signature, forbidden) in IN_PLACE_VALIDATORS {
+        let text = idx.read_text(file).unwrap_or_default();
+        let Some(body) = decl::block(&text, signature) else {
+            out.push(Violation::new(
+                file,
+                0,
+                signature,
+                "in-place validator not found (renamed? update IN_PLACE_VALIDATORS)",
+            ));
+            continue;
+        };
+        for name in decl::forbidden_identifiers(body, forbidden) {
+            out.push(Violation::new(
+                file,
+                0,
+                signature,
+                format!("in-place validator `{signature}` uses `{name}`, which views, copies, or decodes the input"),
+            ));
+        }
+    }
+    out
+}

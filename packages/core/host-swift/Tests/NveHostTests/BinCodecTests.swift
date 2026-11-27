@@ -256,7 +256,7 @@ final class BinCodecTests: XCTestCase {
         XCTAssertThrowsError(try d.end(open)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
         XCTAssertEqual(d.bytes, closed)
         // Oversized bytes are rejected before the tag (a zero-RAM collection claiming 2^32 elements).
-        guard MemoryLayout<Int>.size == 8 else { return }
+        try XCTSkipIf(MemoryLayout<Int>.size != 8, "a 2^32-element collection needs a 64-bit Int")
         var b = BinWriter()
         b.writeNull()
         XCTAssertThrowsError(try b.writeBytes(HugeBytes())) { XCTAssertEqual($0 as? BinError, .tooLarge) }
@@ -303,6 +303,30 @@ final class BinCodecTests: XCTestCase {
             }
         })
         XCTAssertEqual(writing, 0, "BinWriter reuse allocated \(writing) times in 1000 iterations")
+    }
+
+    func testWriteStrCopiesInBulk() throws {
+        #if DEBUG
+        try XCTSkipIf(true, "throughput is only meaningful in optimized builds (swift test -c release)")
+        #endif
+        // 64 KiB strings into a reused writer. Measured on Apple silicon: bulk copy ~52 GB/s, the old
+        // byte-at-a-time loop ~2 GB/s. The 8 GB/s floor sits 4x above the regression and 6.5x below
+        // the real speed, so a loaded CI machine still clears it.
+        let text = String(repeating: "abcdefgh", count: 8 * 1024)
+        var w = BinWriter(capacity: 128 * 1024)
+        try w.writeStr(text)
+        let rounds = 2000
+        let clock = ContinuousClock()
+        let elapsed = try clock.measure {
+            for _ in 0..<rounds {
+                w.clear()
+                try w.writeStr(text)
+            }
+        }
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let bytesPerSecond = Double(rounds * text.utf8.count) / max(seconds, 1e-9)
+        XCTAssertEqual(w.bytes.count, 5 + text.utf8.count)
+        XCTAssertGreaterThan(bytesPerSecond, 8e9, "writeStr throughput \(bytesPerSecond / 1e9) GB/s")
     }
 
     func testUtf8Validation() {

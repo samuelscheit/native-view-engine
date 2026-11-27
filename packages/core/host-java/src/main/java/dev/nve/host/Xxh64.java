@@ -48,7 +48,10 @@ public final class Xxh64 {
                 stripe(buf, 0);
                 bufLen = 0;
             }
-            for (; end - i >= 32; i += 32) stripe(bytes, i); // `i + 32` could overflow near Integer.MAX_VALUE
+            // `end - i >= 32`, not `i + 32 <= end`: for a window ending near Integer.MAX_VALUE the addition
+            // would overflow negative and stripe past the array. Exercising that needs a ~2 GiB array, which
+            // standard CI cannot allocate, so the overflow-free form is enforced by construction, not a test.
+            for (; end - i >= 32; i += 32) stripe(bytes, i);
             while (i < end) buf[bufLen++] = bytes[i++];
             return this;
         }

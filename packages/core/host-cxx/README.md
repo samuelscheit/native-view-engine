@@ -22,8 +22,9 @@ when the mark:
 
 - is stale: it predates `clear()`, which bumps the mark's generation;
 - is already closed;
-- does not point just past an `Array` / `Map` tag. While validating, `BinReader` bounds every child read by its container's end, as
-Rust does.
+- does not point just past an `Array` / `Map` tag.
+
+While validating, `BinReader` bounds every child read by its container's end, as Rust does.
 
 The readers are templates over the generated structs, so the node record layout is never
 hard-coded here. A codegen change to `NveRenderNode` / `NveEvent` needs no edit in this package.

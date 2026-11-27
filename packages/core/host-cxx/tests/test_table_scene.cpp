@@ -245,6 +245,21 @@ void test_scene_reader_rejects() {
   CHECK(!SceneReader<TestSceneView>::open(&v, kSchema, &err) && err == SceneError::InvalidTable);
 }
 
+void test_count_fits_with_32_bit_limits() {
+  // The address-space guard is parameterized, so this 64-bit run exercises 32-bit limits directly.
+  constexpr uint64_t kPtrdiff32 = 0x7FFFFFFFu;  // PTRDIFF_MAX on a 32-bit host
+  static_assert(nve::host::count_fits(0x1FFFFFFFu, 4u, kPtrdiff32));
+  static_assert(!nve::host::count_fits(0x20000000u, 4u, kPtrdiff32));
+  static_assert(!nve::host::count_fits(0xFFFFFFFFu, 4u, kPtrdiff32));  // u32::MAX dirty rows
+  static_assert(!nve::host::count_fits(0xFFFFFFFFu, 64u, kPtrdiff32));  // u32::MAX 64-byte nodes
+  static_assert(nve::host::count_fits(0x1FFFFFFu, 64u, kPtrdiff32));
+  static_assert(!nve::host::count_fits(1u, 0u, kPtrdiff32));  // zero-size elements are refused
+  static_assert(nve::host::count_fits(0u, 64u, 0u));
+  static_assert(!nve::host::count_fits(32ull * 0xFFFFFFFFu, 4u, kPtrdiff32));  // max table rows x 32 words
+  static_assert(nve::host::count_fits(32ull * 0xFFFFFFFFu, 4u, static_cast<uint64_t>(INT64_MAX)));
+  CHECK(nve::host::count_fits_host(0xFFFFFFFFu, 4u) == (sizeof(void*) == 8));
+}
+
 void test_scene_slab_counts_fit_the_address_space() {
   // A node slab of u32::MAX 64-byte records exceeds PTRDIFF_MAX on 32-bit hosts and must be
   // rejected before a span is formed; on 64-bit hosts the same count is representable.
@@ -267,6 +282,7 @@ int main() {
   test_table_reader_sparse_and_invalid();
   test_hostile_specs_and_views();
   test_scene_slab_counts_fit_the_address_space();
+  test_count_fits_with_32_bit_limits();
   test_scene_reader();
   test_scene_reader_rejects();
   if (g_failures != 0) {

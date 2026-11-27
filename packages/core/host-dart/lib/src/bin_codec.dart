@@ -460,7 +460,8 @@ final class BinWriter {
 }
 
 /// An open container of a [BinWriter]: payload-length offset plus the writer generation, packed as
-/// `generation * 2^32 + offset` (below 2^52, so exact on the web). Zero-cost and unforgeable.
+/// `generation * 2^32 + offset` (below 2^52, so exact on the web). Zero-cost; not constructible
+/// outside this library, though a cast (`0 as BinMark`) erases to `int`, so `end` validates any value.
 extension type const BinMark._(int _bits) {
   /// Generations wrap below 2^20 so the packed value stays a safe integer.
   static const int _generations = 0x100000;

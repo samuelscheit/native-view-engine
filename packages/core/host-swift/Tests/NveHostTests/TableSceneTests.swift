@@ -122,6 +122,25 @@ final class TableSceneTests: XCTestCase {
         XCTAssertNil(t.i32(0, try FieldSpec(word: 31, kind: .i32)))
     }
 
+    func testAddressSpaceBoundsWith32BitLimits() {
+        // Parameterized, so this 64-bit run checks what an arm64_32 host would accept.
+        let limit32 = Int(Int32.max)
+        XCTAssertNil(TableReader.fitsAddressSpace(UInt64(UInt32.max), stride: 4, limit: limit32))
+        XCTAssertNil(TableReader.fitsAddressSpace(0x2000_0000, stride: 4, limit: limit32))
+        XCTAssertEqual(TableReader.fitsAddressSpace(0x1FFF_FFFF, stride: 4, limit: limit32), 0x1FFF_FFFF)
+        XCTAssertNil(TableReader.fitsAddressSpace(UInt64(UInt32.max), stride: 64, limit: limit32))
+        XCTAssertNil(TableReader.fitsAddressSpace(32 * UInt64(UInt32.max), stride: 4, limit: limit32))
+        XCTAssertNil(TableReader.fitsAddressSpace(1, stride: 0))
+        XCTAssertNil(TableReader.fitsAddressSpace(UInt64.max, stride: 1))
+        XCTAssertEqual(TableReader.fitsAddressSpace(UInt64(UInt32.max), stride: 4), Int(exactly: UInt32.max)
+            .flatMap { MemoryLayout<Int>.size == 8 ? $0 : nil })
+        XCTAssertNil(TableReader.denseRow(.max, rowCount: limit32))
+        XCTAssertNil(TableReader.denseRow(0x8000_0000, rowCount: limit32))
+        XCTAssertEqual(TableReader.denseRow(0x7FFF_FFFE, rowCount: limit32), 0x7FFF_FFFE)
+        XCTAssertNil(TableReader.denseRow(0, rowCount: 0))
+        XCTAssertNil(TableReader.denseRow(0, rowCount: -1))
+    }
+
     func testBomIsTextNotStripped() throws {
         let text: [UInt8] = [0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 0x78]
         let base = try XCTUnwrap(nve_test_scene()).pointee

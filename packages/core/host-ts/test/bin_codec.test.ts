@@ -259,11 +259,24 @@ test('hardening: container limit, BOM, lone surrogates, stale marks, NaN counts'
     assert.throws(() => new BinWriter(bad), RangeError, `capacity ${bad}`);
   }
   assert.equal(new BinWriter(0).length, 0, 'capacity 0 is clamped up, not rejected');
-  // Generations wrap but packed marks stay exact.
+  // Every generation value, across the 2^20 wrap twice: the writer starts at generation 1, so clear
+  // number k selects generation (1 + k) mod 2^20; the largest packed mark ((2^20 - 1) * 2^32 + 1)
+  // sits just below 2^52 and must stay exact. The mark from the last pre-wrap generation is
+  // rejected right after the wrap.
   const cycling = new BinWriter();
-  for (let i = 0; i < 3000; i++) {
+  const WRAP = 2 ** 20;
+  let lastBeforeWrap: BinMark | null = null;
+  for (let k = 1; k <= 2 ** 21 + 1; k++) {
     cycling.clear();
-    cycling.end(cycling.beginArray(0));
+    const m = cycling.beginArray(0);
+    assert.ok(Number.isSafeInteger(m) && m < 2 ** 52, `mark ${m} at clear ${k}`);
+    if (k === WRAP - 2) lastBeforeWrap = m; // generation 2^20 - 1
+    if (k === WRAP - 1) {
+      const stale = lastBeforeWrap;
+      assert.ok(stale !== null);
+      expectKind('invalidMark', () => cycling.end(stale), 'pre-wrap mark after the wrap');
+    }
+    cycling.end(m);
   }
   BinReader.validate(cycling.bytes);
   // NaN / fractional / Infinity counts never poison the cursor.

@@ -225,7 +225,6 @@ public struct BinReader: Sendable {
 
 /// Little-endian writer; reuse one instance with `clear()` (keeps capacity).
 public struct BinWriter: Sendable {
-    /// Position of an open container's payload-length field.
     /// An open container: its payload-length field and the writer generation that opened it.
     public struct Mark: Sendable {
         fileprivate let lengthPosition: Int
@@ -301,8 +300,7 @@ public struct BinWriter: Sendable {
     private mutating func appendSized(_ raw: UnsafeRawBufferPointer) throws(BinError) {
         guard let len = UInt32(exactly: raw.count) else { throw .tooLarge }
         u32(len)
-        bytes.reserveCapacity(bytes.count + raw.count)
-        for b in raw { bytes.append(b) }
+        bytes.append(contentsOf: raw)  // one bulk copy (allocation-free once warm; see the release guard)
     }
 
     /// Opens an array of `count` values; close it with `end(_:)`.

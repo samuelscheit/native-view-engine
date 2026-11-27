@@ -260,13 +260,29 @@ void runBinCodec(Check c) {
   expectKind(c, BinErrorKind.invalidMark, () => same.end(old), 'stale mark on a recreated container');
   same.end(fresh);
   BinReader.validate(same.toBytes());
-  // Marks survive many clears: the packed generation wraps but stays exact on the web.
+  // Every generation value, across the 2^20 wrap twice: the writer starts at generation 1, so clear
+  // number k selects generation (1 + k) mod 2^20; the largest packed mark sits just below 2^52 and
+  // must stay exact on the web. The last pre-wrap mark is rejected right after the wrap.
   final cycling = BinWriter();
-  for (var i = 0; i < 3000; i++) {
+  const wrap = 0x100000;
+  BinMark? lastBeforeWrap;
+  var wrapChecked = false;
+  for (var k = 1; k <= 0x200001; k++) {
     cycling.clear();
     final m = cycling.beginArray(0);
+    if (k == wrap - 2) {
+      lastBeforeWrap = m; // generation 2^20 - 1
+    }
+    if (k == wrap - 1) {
+      final stale = lastBeforeWrap;
+      if (stale != null) {
+        expectKind(c, BinErrorKind.invalidMark, () => cycling.end(stale), 'pre-wrap mark after the wrap');
+        wrapChecked = true;
+      }
+    }
     cycling.end(m);
   }
+  c.that(wrapChecked, 'wrap boundary was crossed');
   BinReader.validate(cycling.toBytes());
 
   // Validation over many keys and strings (checked in place: no per-key view or string).

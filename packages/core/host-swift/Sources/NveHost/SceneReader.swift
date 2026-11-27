@@ -115,7 +115,7 @@ public struct SceneReader<View: SceneViewABI> {
 
     private static func buffer<T>(_ p: UnsafePointer<T>?, _ count: UInt32) -> UnsafeBufferPointer<T>? {
         if count == 0 { return UnsafeBufferPointer(start: nil, count: 0) }
-        guard let p, let n = Int(exactly: count), n <= Int.max / MemoryLayout<T>.stride else { return nil }
+        guard let p, let n = TableReader.fitsAddressSpace(UInt64(count), stride: MemoryLayout<T>.stride) else { return nil }
         return UnsafeBufferPointer(start: p, count: n)
     }
 }

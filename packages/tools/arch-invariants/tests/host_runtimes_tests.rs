@@ -3,6 +3,7 @@
 
 use nve_arch_invariants::host_runtimes::decl::{
     Syntax, block, check_block, contains_hex_token, declarations, declared_values,
+    forbidden_identifiers, strip_strings,
 };
 
 fn set(entries: &[(&str, i64)]) -> Vec<(String, i64)> {
@@ -223,4 +224,26 @@ fn blocks_are_brace_balanced_and_ordered_lists_reject_prepends() {
     );
     assert_eq!(block("enum S { a, b", "enum S"), None, "unbalanced block");
     assert_eq!(block("no marker here", "enum S"), None);
+}
+
+#[test]
+fn forbidden_identifiers_respect_boundaries_comments_and_strings() {
+    let body = "int _checkUtf8(int count) {\n  final at = _take(count); // never take() a view here\n  throw E('cannot sublistView');\n  return at;\n}";
+    assert_eq!(
+        forbidden_identifiers(body, &["take", "sublistView"]),
+        Vec::<String>::new()
+    );
+    let bad = "int _checkUtf8(int count) {\n  final v = Uint8List.sublistView(bytes, at, at + count);\n  return take(count).length;\n}";
+    assert_eq!(
+        forbidden_identifiers(bad, &["take", "sublistView"]),
+        vec!["sublistView", "take"]
+    );
+    assert_eq!(
+        forbidden_identifiers("x.takeUntil(); y.retake()", &["take"]),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        strip_strings("a(\"b \\\" c\") + 'd\\'e' + f"),
+        "a(\"\") + '' + f"
+    );
 }

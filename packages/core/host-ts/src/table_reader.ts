@@ -208,8 +208,7 @@ export class TableReader {
     return decodeLength(this.bits(r, f));
   }
 
-  /** `{offset, len}` of a `Str` field inside the scene text slab. */
-  /** `{offset, len}` of a `Str` field; throws `RangeError` for a non-`Str` spec or one past the row. */
+  /** `{offset, len}` of a `Str` field in the scene text slab; throws `RangeError` for a non-`Str` spec or one past the row. */
   str(r: number, f: FieldSpec): { offset: number; len: number } {
     if (f.kind !== FieldKind.Str || !f.fits(this.words)) {
       throw new RangeError(`kind ${f.kind} field at word ${f.word} is not a string in a ${this.words}-word row`);

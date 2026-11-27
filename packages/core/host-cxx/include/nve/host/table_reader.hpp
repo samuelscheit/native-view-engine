@@ -24,6 +24,17 @@ namespace detail {
 void field_spec_is_invalid();
 }  // namespace detail
 
+/// `true` when `count` elements of `elem_size` bytes stay within `max_bytes` (pass `PTRDIFF_MAX`
+/// for this host; tests pass 32-bit limits so 64-bit CI exercises 32-bit address spaces).
+[[nodiscard]] constexpr bool count_fits(uint64_t count, uint64_t elem_size, uint64_t max_bytes) noexcept {
+  return elem_size != 0u && count <= max_bytes / elem_size;
+}
+
+/// `count_fits` against this host's `PTRDIFF_MAX` (the largest valid `std::span` byte extent).
+[[nodiscard]] constexpr bool count_fits_host(uint64_t count, uint64_t elem_size) noexcept {
+  return count_fits(count, elem_size, static_cast<uint64_t>(PTRDIFF_MAX));
+}
+
 /// Compile-time `FieldSpec` literal `field(word, shift, bits, NVE_FIELD_*)`: an invalid spec
 /// (`bits` outside `1..=32`, `shift + bits > 32`, or past word 31) fails to compile.
 [[nodiscard]] consteval FieldSpec field(uint8_t word, uint8_t shift, uint8_t bits, FieldKind kind) {
@@ -91,8 +102,9 @@ class TableReader {
   [[nodiscard]] static std::optional<TableReader> from_view(const View& v) noexcept {
     if (v.words == 0u || v.words > NVE_MAX_TABLE_WORDS) return std::nullopt;
     const uint64_t row_words64 = static_cast<uint64_t>(v.row_count) * v.words;  // <= 2^37, exact
-    constexpr uint64_t kMaxElems = static_cast<uint64_t>(PTRDIFF_MAX) / sizeof(uint32_t);
-    if (row_words64 > kMaxElems || v.dirty_count > kMaxElems) return std::nullopt;
+    if (!count_fits_host(row_words64, sizeof(uint32_t)) || !count_fits_host(v.dirty_count, sizeof(uint32_t))) {
+      return std::nullopt;
+    }
     const size_t row_words = static_cast<size_t>(row_words64);
     if ((row_words > 0u && v.rows == nullptr) || (v.dirty_count > 0u && v.dirty_rows == nullptr)) return std::nullopt;
     const std::span<const uint32_t> rows = row_words > 0u ? std::span<const uint32_t>(v.rows, row_words)

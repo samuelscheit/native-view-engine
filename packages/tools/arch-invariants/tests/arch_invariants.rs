@@ -370,3 +370,14 @@ fn host_runtime_mirrors_match_rust_sources() {
         &host_runtimes::check_host_runtime_mirrors(idx),
     );
 }
+
+/// The `NveBinValue` validators of every managed host runtime check strings and skip bytes in place:
+/// no view, slice, copy, or decoded string (allocation-free validation, enforced mechanically).
+#[test]
+fn host_runtime_validators_stay_in_place() {
+    let idx = repo_index();
+    assert_no_violations(
+        "Host runtime BinReader validators never view, copy, or decode",
+        &host_runtimes::check_in_place_validators(idx),
+    );
+}

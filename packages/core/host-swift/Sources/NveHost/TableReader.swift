@@ -146,10 +146,11 @@ public struct TableReader {
     /// Wraps a generated `NveTableView`, rejecting a bad word count, counts the address space cannot
     /// hold (32-bit hosts), and null pointers with non-zero counts — all before any arithmetic can trap.
     public init?(view v: some TableViewABI) {
+        let stride = MemoryLayout<UInt32>.stride
         guard v.words >= 1, v.words <= UInt32(maxTableWords),
-              let rowCount = Int(exactly: v.row_count), let dirtyCount = Int(exactly: v.dirty_count),
-              let rowWords = Int(exactly: UInt64(v.row_count) * UInt64(v.words)),
-              rowWords <= Int.max / MemoryLayout<UInt32>.stride, dirtyCount <= Int.max / MemoryLayout<UInt32>.stride,
+              let rowWords = Self.fitsAddressSpace(UInt64(v.row_count) * UInt64(v.words), stride: stride),
+              let rowCount = Self.fitsAddressSpace(UInt64(v.row_count), stride: stride),
+              let dirtyCount = Self.fitsAddressSpace(UInt64(v.dirty_count), stride: stride),
               rowWords == 0 || v.rows != nil, dirtyCount == 0 || v.dirty_rows != nil
         else { return nil }
         self.init(
@@ -161,6 +162,18 @@ public struct TableReader {
     }
 
     public var isSparse: Bool { !owners.isEmpty }
+
+    /// `count` as an `Int` when `count` elements of `stride` bytes fit `limit` bytes (default: this
+    /// host's address space). Parameterized so 64-bit CI can check 32-bit limits (`Int32.max`).
+    public static func fitsAddressSpace(_ count: UInt64, stride: Int, limit: Int = .max) -> Int? {
+        guard stride > 0, limit >= 0, count <= UInt64(limit / stride) else { return nil }
+        return Int(count)
+    }
+
+    /// Dense-table row of node index `ownerId`, compared as `UInt64` (no `Int` trap on 32-bit hosts).
+    public static func denseRow(_ ownerId: UInt32, rowCount: Int) -> Int? {
+        UInt64(ownerId) < UInt64(max(rowCount, 0)) ? Int(ownerId) : nil
+    }
 
     /// All words of row `r` (empty when out of range).
     public func row(_ r: Int) -> UnsafeBufferPointer<UInt32> {
@@ -202,7 +215,7 @@ public struct TableReader {
     /// Row of `ownerId` (raw `NodeId` for sparse tables, node index for dense ones); O(rows) sparse.
     public func row(of ownerId: UInt32) -> Int? {
         // Compared as `UInt64`: `Int(ownerId)` would trap on 32-bit hosts for ids >= 2^31.
-        if owners.isEmpty { return UInt64(ownerId) < UInt64(rowCount) ? Int(ownerId) : nil }
+        if owners.isEmpty { return Self.denseRow(ownerId, rowCount: rowCount) }
         return owners.firstIndex(of: ownerId)
     }
 }

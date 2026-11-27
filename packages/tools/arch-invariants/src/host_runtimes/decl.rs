@@ -224,3 +224,53 @@ pub fn contains_hex_token(text: &str, needle: &str) -> bool {
     hay.match_indices(needle)
         .any(|(at, _)| !hay[at + needle.len()..].starts_with(|c: char| c.is_ascii_hexdigit()))
 }
+
+/// Removes `"..."` and `'...'` literals (backslash escapes honoured), so words inside messages are
+/// never mistaken for calls.
+pub fn strip_strings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in text.chars() {
+        match quote {
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                    out.push(c);
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// Identifiers from `forbidden` used in `body` (comments and string literals ignored, exact
+/// identifier boundaries: `take` never matches `_take` or `takeUntil`).
+pub fn forbidden_identifiers(body: &str, forbidden: &[&str]) -> Vec<String> {
+    let code = strip_strings(&strip_comments(body));
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < code.len() {
+        let at = &code[i..];
+        let boundary = code[..i].chars().next_back().is_none_or(|c| !is_ident(c));
+        if let (true, Some((name, _))) = (boundary, ident(at)) {
+            if forbidden.contains(&name) && !found.iter().any(|f| f == name) {
+                found.push(name.to_owned());
+            }
+            i += name.len();
+        } else {
+            i += at.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    found
+}
