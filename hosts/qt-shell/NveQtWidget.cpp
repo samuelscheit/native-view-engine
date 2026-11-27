@@ -34,7 +34,7 @@ void NveQtWidget::Impl::clear_views() {
 
 size_t NveQtWidget::Impl::sync_views(const host::RuntimeSceneGuard& scene) {
   canvas_.bind(scene.reader());
-  return tree_.sync(scene.reader(), tables_, adapter_, session().source_generation());
+  return tree_.sync(scene.reader(), tables_, adapter_);
 }
 
 void NveQtWidget::Impl::after_sync() {
@@ -111,6 +111,7 @@ uint64_t NveQtWidget::canvasRedrawCountForNodeId(uint32_t nodeId) const {
 size_t NveQtWidget::viewCount() const { return impl_->tree_.size(); }
 
 uint64_t NveQtWidget::reconcileUpdateCount() const noexcept { return impl_->reconcile_update_count_; }
+uint64_t NveQtWidget::reconcileMoveCount() const noexcept { return impl_->reconcile_move_count_; }
 
 const NodeSemantics& NveQtWidget::semantics() const noexcept { return impl_->root_sem_; }
 

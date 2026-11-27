@@ -159,6 +159,86 @@ void test_canvas_nodes() {
   NVE_CHECK(node->content() == NodeContent::None && widget.canvasDrawListForNodeId(kCanvas).empty());
 }
 
+/// O(changed) sync contracts: moved-only nodes are repositioned (not updated) with their
+/// geometry-derived content box (percent padding), and resources republished under the same id
+/// reach exactly their users, while new ids carrying the same bytes do not redraw.
+void test_moves_and_republished_resources() {
+  constexpr uint32_t kBox = 2u, kTop = 3u, kText = 4u, kImg = 5u, kCanvas = 6u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
+  w.create(kBox);
+  w.set(kBox, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(200.0f));
+  w.create(kTop);
+  size_node(w, kTop, 50.0f, 20.0f);
+  w.set(kTop, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 255, 255));
+  const h::BoxShadow first_shadow[] = {{2.0f, 2.0f, 0.0f, 0.0f, h::rgba(0, 0, 0), false}};
+  w.define_resource(80u, h::kBoxShadowsKind, h::encode_box_shadows(first_shadow));
+  w.set(kTop, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BOX_SHADOWS, 80u);
+  text_node(w, kText, "moving text");
+  w.set(kText, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_LEFT, h::length_percent(10.0f));
+  w.create(kImg);
+  w.define_resource(60u, h::kImageSrcKind, h::encode_image_bytes(png(4, 4, QColor(255, 0, 0))));
+  w.set(kImg, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 60u);
+  size_node(w, kImg, 16.0f, 16.0f);
+  w.create(kCanvas);
+  size_node(w, kCanvas, 40.0f, 20.0f);
+  const std::vector<uint8_t> lines = sparkline(10.0f);
+  w.define_resource(70u, kDrawListKind, lines);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 70u);
+  const uint32_t inner[] = {kTop, kText, kImg, kCanvas};
+  w.set_children(kBox, inner);
+  const uint32_t kids[] = {kBox};
+  w.set_children(1u, kids);
+
+  NveQtWidget widget;
+  QtHost& host = widget.host();
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  const auto frame = [&](uint32_t id) { return dynamic_cast<NveQtNodeWidget*>(widget.nativeWidgetForNodeId(id)); };
+  NVE_CHECK(approx(frame(kText)->content_box().x(), 20.0, 0.01) && frame(kText)->width() == 200);
+
+  // A wider container: only it is updated; the stretched text moves with a re-resolved padding.
+  uint64_t updates = widget.reconcileUpdateCount(), moves = widget.reconcileMoveCount();
+  w.set(kBox, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(300.0f));
+  flush(host);
+  NVE_CHECK(widget.reconcileUpdateCount() == updates + 1u && widget.reconcileMoveCount() >= moves + 1u);
+  NVE_CHECK(frame(kText)->width() == 300 && approx(frame(kText)->content_box().x(), 30.0, 0.01));
+  NVE_CHECK(approx(frame(kText)->content_box().width(), 270.0, 0.01) && frame(kText)->text() == "moving text");
+  // A taller first child: its later siblings move down, decoding nothing.
+  const int img_y = frame(kImg)->y();
+  const uint64_t redraws = widget.canvasRedrawCountForNodeId(kCanvas);
+  updates = widget.reconcileUpdateCount();
+  moves = widget.reconcileMoveCount();
+  w.set(kTop, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(40.0f));
+  flush(host);
+  NVE_CHECK(widget.reconcileUpdateCount() == updates + 1u && widget.reconcileMoveCount() >= moves + 3u);
+  NVE_CHECK(frame(kImg)->y() == img_y + 20 && widget.canvasRedrawCountForNodeId(kCanvas) == redraws);
+  NVE_CHECK(frame(kText)->text() == "moving text" && frame(kImg)->content() == NodeContent::Image);
+
+  // Same id, new bytes: exactly the readers re-decode (no row changed).
+  updates = widget.reconcileUpdateCount();
+  const std::vector<uint8_t> bars = sparkline(30.0f);
+  w.define_resource(70u, kDrawListKind, bars);
+  flush(host);
+  NVE_CHECK(widget.reconcileUpdateCount() == updates + 1u && widget.canvasRedrawCountForNodeId(kCanvas) == redraws + 1u);
+  const auto shown = widget.canvasDrawListForNodeId(kCanvas);
+  NVE_CHECK(std::vector<uint8_t>(shown.begin(), shown.end()) == bars);
+  w.define_resource(60u, h::kImageSrcKind, h::encode_image_bytes(png(4, 4, QColor(0, 0, 255))));
+  flush(host);
+  NVE_CHECK(same_rgb(frame(kImg)->paint().image.pixelColor(1, 1), 0, 0, 255));
+  const h::BoxShadow second_shadow[] = {{6.0f, 1.0f, 0.0f, 0.0f, h::rgba(0, 0, 0), false}};
+  w.define_resource(80u, h::kBoxShadowsKind, h::encode_box_shadows(second_shadow));
+  flush(host);
+  NVE_CHECK(frame(kTop)->visual().shadows.size() == 1u && frame(kTop)->visual().shadows[0].offset_x == 6.0f);
+  // A new id with the bytes already shown: updated, not redrawn.
+  w.define_resource(71u, kDrawListKind, bars);
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 71u);
+  w.release_resource(70u);
+  flush(host);
+  NVE_CHECK(widget.canvasRedrawCountForNodeId(kCanvas) == redraws + 1u);
+}
+
 void test_paired_lifecycle() {
   NveQtWidget widget;
   QtHost& host = widget.host();
@@ -188,5 +268,6 @@ void test_paired_lifecycle() {
 void nve_test_qt_canvas_and_pair() {
   test_qpainter_renderer();
   test_canvas_nodes();
+  test_moves_and_republished_resources();
   test_paired_lifecycle();
 }

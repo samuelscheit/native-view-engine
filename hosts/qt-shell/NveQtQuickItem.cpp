@@ -69,7 +69,7 @@ void NveQtQuickItem::Impl::clear_views() {
 
 size_t NveQtQuickItem::Impl::sync_views(const host::RuntimeSceneGuard& scene) {
   canvas_.bind(scene.reader());
-  const size_t touched = tree_.sync(scene.reader(), tables_, adapter_, session().source_generation());
+  const size_t touched = tree_.sync(scene.reader(), tables_, adapter_) + tree_.moved();
   // Scroll offsets change without dirtying their node: read them every frame.
   for (QuickNodeView* v : scrollers_) {
     const NveScrollOffset off = scene.reader().scroll_offset(v->id);
@@ -119,6 +119,11 @@ QuickNodeView* NveQtQuickItem::Impl::Adapter::create(const host::NodeData& node)
 
 void NveQtQuickItem::Impl::Adapter::update(QuickNodeView*& v, const host::NodeData& node) {
   host->update_record(*v, node);
+}
+
+void NveQtQuickItem::Impl::Adapter::move(QuickNodeView*& v, const host::NodeData& node) {
+  ++host->stats_.nodesMoved;
+  host->move_record(*v, node);
 }
 
 void NveQtQuickItem::Impl::Adapter::update_root(const host::NodeData& node) {
@@ -178,6 +183,19 @@ void NveQtQuickItem::Impl::Adapter::set_children(const host::NodeData&, QuickNod
   host->mark_dirty(parent);
 }
 
+void NveQtQuickItem::Impl::move_record(QuickNodeView& v, const host::NodeData& node) {
+  const QRectF local = qrect(node.local);
+  const QRectF content = qrect(node.content);
+  const bool repaint = local.size() != v.local.size() || content != v.paint.content_box;
+  v.local = local;
+  v.paint.content_box = content;
+  if (repaint) {
+    bump_paint(v);  // re-rasterized at the new size (text re-wraps in the new content box)
+  } else {
+    mark_dirty(v);  // the transform only
+  }
+}
+
 void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData& node) {
   bool repaint = !v.synced;
   const QRectF local = qrect(node.local);
@@ -191,11 +209,7 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
   v.visible = node.visual.visibility != NVE_VISIBILITY_HIDDEN;
   v.opacity = node.visual.opacity;
 
-  std::vector<host::BoxShadow> shadows;
-  if (auto decoded = host::decode_box_shadows(scene_resource(node.visual.box_shadows, host::kBoxShadowsKind))) {
-    shadows = std::move(*decoded);
-  }
-  BoxVisual visual = box_visual(node, std::move(shadows));
+  BoxVisual visual = resolve_visual(node, v.applied, v.paint.visual);
   const QRectF content = qrect(node.content);
   const bool overflow_clips =
       node.visual.overflow_x != NVE_OVERFLOW_VISIBLE || node.visual.overflow_y != NVE_OVERFLOW_VISIBLE;
@@ -205,7 +219,7 @@ void NveQtQuickItem::Impl::update_record(QuickNodeView& v, const host::NodeData&
     v.paint.clip_rounded = overflow_clips;
     repaint = true;
   }
-  if (const std::optional<NodeContent> repainted = resolve_content(v.paint, v.content_ids, node, canvas_)) {
+  if (const std::optional<NodeContent> repainted = resolve_content(v.paint, v.applied, node, canvas_)) {
     repaint = true;
     if (*repainted == NodeContent::Canvas) ++v.canvas_redraws;
   }

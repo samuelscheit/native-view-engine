@@ -69,7 +69,7 @@ struct QuickNodeView {
   NodeSemantics sem;
   bool synced = false;
 
-  ContentIds content_ids;  // re-resolve content only on change
+  AppliedResources applied;  // re-decode resources only on change
   uint64_t canvas_redraws = 0u;
 
   // Scene-graph bookkeeping (render side reads; GUI side bumps).
@@ -94,9 +94,13 @@ class NveQtQuickItem::Impl final : public QtHost {
     uint32_t tag(const host::NodeData&) const { return 0u; }  // one record type for every kind
     Handle create(const host::NodeData& node);
     void update(Handle& view, const host::NodeData& node);
+    /// Geometry-only change (`read_geometry` data): new box, repainted only when its size changed.
+    void move(Handle& view, const host::NodeData& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
     void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    /// Canvas draw list: a republish under the same id re-runs `update`.
+    uint32_t module_resource(const host::NodeData& node) const { return host->canvas_.at(node.index).draw_list; }
   };
 
   [[nodiscard]] QuickNodeView* find(uint32_t id) noexcept;
@@ -151,9 +155,14 @@ class NveQtQuickItem::Impl final : public QtHost {
  protected:
   void clear_views() override;
   size_t sync_views(const host::RuntimeSceneGuard& scene) override;
+  bool tree_resource_unchanged(const host::RuntimeSceneReader& scene, uint32_t id,
+                               uint32_t applied) const noexcept override {
+    return tree_.resource_unchanged(scene, id, applied);
+  }
   void after_sync() override;
 
  private:
+  void move_record(QuickNodeView& v, const host::NodeData& node);
   void update_record(QuickNodeView& v, const host::NodeData& node);
   void update_content(QuickNodeView& v, const host::NodeData& node);
   void update_input(QuickNodeView& v, const host::NodeData& node);

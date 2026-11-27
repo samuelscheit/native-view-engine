@@ -42,6 +42,8 @@ class NveQtWidget : public QWidget, public SemanticsCarrier {
   [[nodiscard]] uint64_t canvasRedrawCountForNodeId(uint32_t nodeId) const;
   [[nodiscard]] size_t viewCount() const;
   [[nodiscard]] uint64_t reconcileUpdateCount() const noexcept;
+  /// Geometry-only `move`s (nodes whose box alone changed: repositioned, nothing decoded).
+  [[nodiscard]] uint64_t reconcileMoveCount() const noexcept;
 
   [[nodiscard]] const NodeSemantics& semantics() const noexcept override;
   [[nodiscard]] QSize sizeHint() const override;

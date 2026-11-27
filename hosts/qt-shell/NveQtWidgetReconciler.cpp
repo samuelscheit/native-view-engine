@@ -197,6 +197,12 @@ void NveQtWidget::Impl::Adapter::update(QtNodeView*& v, const host::NodeData& no
   v->synced = true;
 }
 
+void NveQtWidget::Impl::Adapter::move(QtNodeView*& v, const host::NodeData& node) {
+  ++host->reconcile_move_count_;
+  host->place(*v, node);
+  host->apply_box(*v, node);
+}
+
 void NveQtWidget::Impl::Adapter::update_root(const host::NodeData& node) {
   const QColor bg = qcolor(node.visual.background);
   if (bg != host->root_background_) {
@@ -279,10 +285,27 @@ void NveQtWidget::Impl::Adapter::set_children(const host::NodeData&, QtNodeView*
 
 // --- Per-kind bindings -------------------------------------------------------------------------
 
-void NveQtWidget::Impl::update_geometry(QtNodeView& v, const host::NodeData& node) {
+void NveQtWidget::Impl::place(QtNodeView& v, const host::NodeData& node) {
   v.local = node.local;
   v.widget->setGeometry(pixel_rect(node.local));
   if (v.scroll != nullptr) v.scroll->setGeometry(0, 0, v.widget->width(), v.widget->height());
+}
+
+void NveQtWidget::Impl::apply_box(QtNodeView& v, const host::NodeData& node) {
+  if (v.frame != nullptr) {
+    v.frame->set_visual(v.visual, QRectF(node.content.x, node.content.y, node.content.width, node.content.height),
+                        v.clips);
+  } else {
+    const QString css = input_style_sheet(v.visual, node, v.text_color);
+    if (v.widget->styleSheet() != css) v.widget->setStyleSheet(css);
+  }
+  if (v.shadow != nullptr) {
+    v.shadow->set_shadow(v.visual, QRectF(node.local.x, node.local.y, node.local.width, node.local.height));
+  }
+}
+
+void NveQtWidget::Impl::update_geometry(QtNodeView& v, const host::NodeData& node) {
+  place(v, node);
   QWidget* parent = v.widget->parentWidget();
   if (v.z != node.visual.z_index) {
     v.z = node.visual.z_index;
@@ -304,30 +327,19 @@ void NveQtWidget::Impl::update_geometry(QtNodeView& v, const host::NodeData& nod
 }
 
 void NveQtWidget::Impl::update_visual(QtNodeView& v, const host::NodeData& node) {
-  std::vector<host::BoxShadow> shadows;
-  if (auto decoded = host::decode_box_shadows(scene_resource(node.visual.box_shadows, host::kBoxShadowsKind))) {
-    shadows = std::move(*decoded);
-  }
-  v.visual = box_visual(node, std::move(shadows));
-  const bool clips = node.visual.overflow_x != NVE_OVERFLOW_VISIBLE || node.visual.overflow_y != NVE_OVERFLOW_VISIBLE;
-  if (v.frame != nullptr) {
-    v.frame->set_visual(v.visual, QRectF(node.content.x, node.content.y, node.content.width, node.content.height),
-                        clips);
-  } else {
-    const QString css = input_style_sheet(v.visual, node, text_style(node.text_style).color);
-    if (v.widget->styleSheet() != css) v.widget->setStyleSheet(css);
-  }
+  v.visual = resolve_visual(node, v.applied, v.visual);
+  v.clips = node.visual.overflow_x != NVE_OVERFLOW_VISIBLE || node.visual.overflow_y != NVE_OVERFLOW_VISIBLE;
+  if (v.frame == nullptr) v.text_color = text_style(node.text_style).color;
   QWidget* parent = v.widget->parentWidget();
   if (!v.visual.has_outer_shadow()) {
     delete v.shadow;
     v.shadow = nullptr;
-    return;
-  }
-  if (v.shadow == nullptr) {
+  } else if (v.shadow == nullptr) {
     v.shadow = new NveQtShadowWidget(parent);
     if (parent != nullptr) restack_.insert(parent);
   }
-  v.shadow->set_shadow(v.visual, QRectF(node.local.x, node.local.y, node.local.width, node.local.height));
+  apply_box(v, node);
+  if (v.shadow == nullptr) return;
   v.shadow->setVisible(parent != nullptr && v.visible);
   auto* effect = qobject_cast<QGraphicsOpacityEffect*>(v.widget->graphicsEffect());
   v.shadow->setWindowOpacity(1.0);
@@ -344,7 +356,7 @@ void NveQtWidget::Impl::update_visual(QtNodeView& v, const host::NodeData& node)
 }
 
 void NveQtWidget::Impl::update_content(QtNodeView& v, const host::NodeData& node) {
-  const std::optional<NodeContent> repainted = resolve_content(v.frame->edit_paint(), v.content_ids, node, canvas_);
+  const std::optional<NodeContent> repainted = resolve_content(v.frame->edit_paint(), v.applied, node, canvas_);
   if (!repainted) return;
   if (*repainted == NodeContent::Canvas) ++v.redraw_count;
   v.frame->update();

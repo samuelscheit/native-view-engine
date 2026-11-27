@@ -109,6 +109,92 @@ void test_images_and_canvas() {
   NVE_CHECK(same_rgb(q.at(205, 10), 9, 9, 9) && item.sceneGraphStats().solidRectNodes == solid + 1u);
 }
 
+/// O(changed) sync contracts: moved-only records get a new box (and are re-rasterized only when
+/// their size changed); resources republished under the same id reach exactly their users.
+void test_moves_and_republished_resources() {
+  constexpr uint32_t kBox = 2u, kTop = 3u, kText = 4u, kImg = 5u, kCanvas = 6u;
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.set(1u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 255, 255));
+  w.set(1u, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_ALIGN_ITEMS, NVE_ALIGN_ITEMS_FLEX_START);
+  w.create(kBox);
+  w.set(kBox, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(200.0f));
+  w.create(kTop);
+  size_node(w, kTop, 50.0f, 20.0f);
+  w.set(kTop, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, h::rgba(255, 255, 255));
+  const h::BoxShadow near[] = {{4.0f, 0.0f, 0.0f, 0.0f, h::rgba(0, 0, 0), false}};
+  w.define_resource(80u, h::kBoxShadowsKind, h::encode_box_shadows(near));
+  w.set(kTop, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BOX_SHADOWS, 80u);
+  text_node(w, kText, "moving text");
+  w.set(kText, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_PADDING_LEFT, h::length_percent(10.0f));
+  image(w, kImg, 60u, h::encode_image_bytes(png(4, 4, QColor(255, 0, 0))));
+  w.create(kCanvas);
+  size_node(w, kCanvas, 40.0f, 20.0f);
+  w.define_resource(70u, c::kDrawListKind, two_rects(c::DrawColorRgba::rgb(0, 0, 255)));
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 70u);
+  const uint32_t inner[] = {kTop, kText, kImg, kCanvas};
+  w.set_children(kBox, inner);
+  const uint32_t kids[] = {kBox};
+  w.set_children(1u, kids);
+
+  QuickHarness q(QSize(400, 200));
+  ProbeItem& item = *q.item;
+  NVE_CHECK(item.host().attach_interface(&ScriptedApp::get_interface));
+  (void)q.grab();
+  NVE_CHECK(item.nodeRect(kText).width() == 200.0 && same_rgb(q.at(52, 10), 0, 0, 0));  // shadow 4px right
+
+  // A wider container: the text moves (wider: re-rasterized once), siblings keep their textures.
+  SceneGraphStats before = item.sceneGraphStats();
+  w.set(kBox, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, h::length_points(300.0f));
+  flush(item.host());
+  (void)q.grab();
+  SceneGraphStats after = item.sceneGraphStats();
+  NVE_CHECK(after.nodesMoved >= before.nodesMoved + 1u && item.nodeRect(kText).width() == 300.0);
+  NVE_CHECK(after.textRasterizations == before.textRasterizations + 1u);
+  NVE_CHECK(after.imageRasterizations == before.imageRasterizations);
+  NVE_CHECK(after.canvasRasterizations == before.canvasRasterizations);
+  // A taller first child: later siblings move down, re-rasterizing nothing.
+  const QRectF img = item.nodeRect(kImg);
+  before = after;
+  w.set(kTop, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, h::length_points(40.0f));
+  flush(item.host());
+  const QImage moved = q.grab();
+  after = item.sceneGraphStats();
+  NVE_CHECK(after.nodesMoved >= before.nodesMoved + 3u && item.nodeRect(kImg).y() == img.y() + 20.0);
+  NVE_CHECK(after.textRasterizations == before.textRasterizations);
+  NVE_CHECK(after.imageRasterizations == before.imageRasterizations);
+  NVE_CHECK(after.canvasRasterizations == before.canvasRasterizations);
+  const QRectF canvas = item.nodeRect(kCanvas);
+  const QPoint red_px = canvas.topLeft().toPoint() + QPoint(5, 5);
+  NVE_CHECK(same_rgb(moved.pixelColor(red_px), 255, 0, 0));  // drawn at its new place
+  NVE_CHECK(same_rgb(moved.pixelColor(img.center().toPoint() + QPoint(0, 20)), 255, 0, 0));
+
+  // Same id, new bytes: exactly their readers re-decode.
+  before = after;
+  w.define_resource(70u, c::kDrawListKind, two_rects(c::DrawColorRgba::rgb(0, 255, 0)));
+  w.define_resource(60u, h::kImageSrcKind, h::encode_image_bytes(png(4, 4, QColor(0, 0, 255))));
+  const h::BoxShadow far[] = {{12.0f, 0.0f, 0.0f, 0.0f, h::rgba(0, 0, 0), false}};
+  w.define_resource(80u, h::kBoxShadowsKind, h::encode_box_shadows(far));
+  flush(item.host());
+  const QImage republished = q.grab();
+  after = item.sceneGraphStats();
+  NVE_CHECK(after.canvasRasterizations == before.canvasRasterizations + 1u);
+  NVE_CHECK(after.imageRasterizations == before.imageRasterizations + 1u);
+  NVE_CHECK(after.textRasterizations == before.textRasterizations);
+  NVE_CHECK(same_rgb(republished.pixelColor(canvas.topLeft().toPoint() + QPoint(30, 5)), 0, 255, 0));
+  NVE_CHECK(same_rgb(republished.pixelColor(img.center().toPoint() + QPoint(0, 20)), 0, 0, 255));
+  NVE_CHECK(same_rgb(republished.pixelColor(60, 10), 0, 0, 0));  // the shadow now reaches 12px
+  // A new id carrying the bytes already shown: no redraw.
+  before = after;
+  w.define_resource(71u, c::kDrawListKind, two_rects(c::DrawColorRgba::rgb(0, 255, 0)));
+  w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_DRAW_LIST, 71u);
+  w.release_resource(70u);
+  flush(item.host());
+  (void)q.grab();
+  NVE_CHECK(item.sceneGraphStats().canvasRasterizations == before.canvasRasterizations);
+}
+
 void test_typography_and_accessibility() {
   constexpr uint32_t kHeading = 2u, kButton = 3u, kCheck = 4u, kSlider = 5u, kHidden = 6u, kDisabled = 7u,
                      kGroup = 8u, kInner = 9u, kSecret = 10u;
@@ -233,5 +319,6 @@ void test_typography_and_accessibility() {
 
 void nve_test_qt_quick_media_canvas_a11y() {
   test_images_and_canvas();
+  test_moves_and_republished_resources();
   test_typography_and_accessibility();
 }

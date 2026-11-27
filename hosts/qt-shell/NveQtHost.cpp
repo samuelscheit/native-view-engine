@@ -70,8 +70,8 @@ void QtHost::shutdown() noexcept {
 
 // --- App sources -------------------------------------------------------------------------------
 
-// Every source change bumps `HostSession::source_generation()`: the next sync is a full pass that
-// keeps views whose node still matches (focus survives a hot reload) and destroys the rest.
+// Every source change starts a new runtime `scene_epoch`: the next sync is a full pass that keeps
+// views whose node still matches (focus survives a hot reload) and destroys the rest.
 
 bool QtHost::attach_interface(NveGetInterfaceFn get_interface) {
   if (!session_->attach(get_interface)) return false;
@@ -258,7 +258,24 @@ std::span<const uint8_t> QtHost::scene_resource(uint32_t id, host::Key64 kind) c
   return res && res->kind == kind ? res->bytes : std::span<const uint8_t>{};
 }
 
-std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, ContentIds& ids, const host::NodeData& node,
+bool QtHost::resource_unchanged(uint32_t id, uint32_t applied) const noexcept {
+  return scene_ != nullptr && tree_resource_unchanged(scene_->reader(), id, applied);
+}
+
+BoxVisual QtHost::resolve_visual(const host::NodeData& node, AppliedResources& applied,
+                                 const BoxVisual& previous) const {
+  const uint32_t id = node.visual.box_shadows;
+  std::vector<host::BoxShadow> shadows;
+  if (resource_unchanged(id, applied.box_shadows)) {
+    shadows = previous.shadows;
+  } else if (auto decoded = host::decode_box_shadows(scene_resource(id, host::kBoxShadowsKind))) {
+    shadows = std::move(*decoded);
+  }
+  applied.box_shadows = id;
+  return box_visual(node, std::move(shadows));
+}
+
+std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, AppliedResources& ids, const host::NodeData& node,
                                                    const canvas::CanvasTable& canvas) {
   const auto become = [&paint](NodeContent kind) {
     if (kind != NodeContent::Text) paint.text.clear();
@@ -267,32 +284,33 @@ std::optional<NodeContent> QtHost::resolve_content(NodePaint& paint, ContentIds&
     paint.content = kind;
   };
   if (canvas.has(node.index)) {
-    const canvas::CanvasData c = canvas.at(node.index);
-    if (paint.content == NodeContent::Canvas && c.draw_list == ids.canvas_res && c.generation == ids.canvas_generation) {
-      return std::nullopt;
-    }
-    ids.canvas_res = c.draw_list;
-    ids.canvas_generation = c.generation;
-    const std::span<const uint8_t> bytes = scene_resource(c.draw_list, canvas::kDrawListKind);
+    const uint32_t id = canvas.at(node.index).draw_list;
+    if (paint.content == NodeContent::Canvas && resource_unchanged(id, ids.draw_list)) return std::nullopt;
+    ids.draw_list = id;
+    // A new id (or redefined bytes) may still carry the shown draw list: redraw only on new bytes.
+    const std::span<const uint8_t> bytes = scene_resource(id, canvas::kDrawListKind);
     if (paint.content == NodeContent::Canvas && std::ranges::equal(bytes, paint.draw_list)) return std::nullopt;
     become(NodeContent::Canvas);
     paint.draw_list.assign(bytes.begin(), bytes.end());
     return NodeContent::Canvas;
   }
-  ids.canvas_res = ids.canvas_generation = 0u;
+  ids.draw_list = 0u;
   if (node.kind == host::NodeKind::Image) {
     const uint32_t tint = node.image.tint_enabled ? node.image.tint : 0u;
-    if (paint.content == NodeContent::Image && ids.image_src == node.image.src && paint.fit == node.image.fit &&
-        ids.image_tint == tint) {
+    if (paint.content == NodeContent::Image && resource_unchanged(node.image.src, ids.image_src) &&
+        paint.fit == node.image.fit && ids.image_tint == tint) {
       return std::nullopt;
     }
     ids.image_src = node.image.src;
     ids.image_tint = tint;
-    QImage image;
+    QImage image;  // the cache is keyed by content (URL / encoded bytes), not resource id
     if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
       image = images_.get(*src);
     }
     if (!image.isNull() && node.image.tint_enabled) image = tinted_image(image, qcolor(tint));
+    if (paint.content == NodeContent::Image && paint.fit == node.image.fit && image.cacheKey() == paint.image.cacheKey()) {
+      return std::nullopt;  // the same decoded (untinted) image
+    }
     become(NodeContent::Image);
     paint.image = image;
     paint.fit = node.image.fit;

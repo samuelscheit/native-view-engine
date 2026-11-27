@@ -11,6 +11,8 @@
 #include <QSGNode>
 #include <QSGRendererInterface>
 
+#include <nve/host/testing/scratch_dir.hpp>
+
 #include <filesystem>
 
 namespace {
@@ -174,11 +176,8 @@ void test_qml_api_modules_hot_reload_and_state() {
   NVE_CHECK(!item.loadDylib(QStringLiteral(NVE_TEST_NO_SURFACE_MODULE)) && !item.isAppLoaded());
   NVE_CHECK(loaded_signals == 0 && path_signals == 0 && item.dylibPath().isEmpty() && !item.hotReload());
 
-  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "nve_qt_quick_app_files_test";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
-  const std::string app_path =
-      (dir / ("app" + std::filesystem::path(NVE_TEST_COUNTER_MODULE).extension().string())).string();
+  const nve::host::testing::ScratchDir dir("nve-qt-quick-app");
+  const std::string app_path = dir.file("app" + std::filesystem::path(NVE_TEST_COUNTER_MODULE).extension().string());
   const auto build = [&](const char* fixture) {
     std::filesystem::copy_file(fixture, app_path, std::filesystem::copy_options::overwrite_existing);
   };
@@ -209,14 +208,13 @@ void test_qml_api_modules_hot_reload_and_state() {
 
   // State file round trip through the host.
   QtHost& host = item.host();
-  const std::string path = (dir / "state.nvestate").string();
+  const std::string path = dir.file("state.nvestate");
   NVE_CHECK(host.save_state(path, 2u));
   q.click(q.center(CounterApp::kReset));
   NVE_CHECK(item.nodeText(CounterApp::kCount) == "Count: 0");
   NVE_CHECK(!host.restore_state(path, 1u) && host.restore_state(path, 2u));
   NVE_CHECK(item.nodeText(CounterApp::kCount) == "Count: 4");
   NVE_CHECK(host.clear_state(path) && !std::filesystem::exists(path));
-  std::filesystem::remove_all(dir);
 
   // A new surface id drops the app (and its nodes); the same id is a no-op.
   int surface_signals = 0;

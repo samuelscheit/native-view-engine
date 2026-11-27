@@ -6,11 +6,11 @@
 #include "qt_test_helpers.hpp"
 
 #include <nve/host/core_resources.hpp>
+#include <nve/host/testing/scratch_dir.hpp>
 
 #include <QAccessible>
 #include <QGraphicsOpacityEffect>
 
-#include <filesystem>
 #include <fstream>
 #include <vector>
 
@@ -43,7 +43,8 @@ void record_update(QAccessibleEvent* event) { g_events.push_back(event->type());
 void record_root(QObject*) {}
 
 void test_a11y_images_and_visuals() {
-  const std::string tmp = (std::filesystem::temp_directory_path() / "nve_qt_test_image.png").string();
+  const nve::host::testing::ScratchDir scratch("nve-qt-image");
+  const std::string tmp = scratch.file("image.png");
   const std::vector<uint8_t> red = png(4, 3, QColor(255, 0, 0));
   {
     std::ofstream out(tmp, std::ios::binary);
@@ -268,7 +269,6 @@ void test_a11y_images_and_visuals() {
   flush(host);
   NVE_CHECK(widget.nativeWidgetForNodeId(kImgFile) == nullptr && widget.viewCount() == 14u);
   widget.hide();
-  std::filesystem::remove(tmp);
 }
 
 }  // namespace

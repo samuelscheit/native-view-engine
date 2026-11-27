@@ -25,12 +25,12 @@ class QObject;
 
 namespace nve::qt {
 
-/// Scene identities behind a node's resolved content (re-resolved only when they change).
-struct ContentIds {
+/// Resource ids a view last decoded (kept per `QtHost::resource_unchanged`), plus the image tint.
+struct AppliedResources {
   uint32_t image_src = 0u;
   uint32_t image_tint = 0u;  // 0 = untinted
-  uint32_t canvas_res = 0u;
-  uint32_t canvas_generation = 0u;
+  uint32_t draw_list = 0u;
+  uint32_t box_shadows = 0u;
 };
 
 struct QtHostConfig {
@@ -115,19 +115,30 @@ class QtHost {
   void shutdown() noexcept;
   /// Drops every view (shutdown, surface recreation).
   virtual void clear_views() = 0;
-  /// Mirrors `scene` (held for the call; pass `session().source_generation()` to the tree);
-  /// returns the views created or updated.
+  /// Mirrors `scene` (held for the call) through the host's `RetainedTree`; returns the views
+  /// created or updated.
   virtual size_t sync_views(const host::RuntimeSceneGuard& scene) = 0;
+  /// The tree's `resource_unchanged(scene, id, applied)` for the scene being synced.
+  [[nodiscard]] virtual bool tree_resource_unchanged(const host::RuntimeSceneReader& scene, uint32_t id,
+                                                     uint32_t applied) const noexcept = 0;
   /// Runs after each sync with the scene released (may dispatch / pump again).
   virtual void after_sync() {}
 
   /// Payload of published resource `id` of `kind` (empty when absent); valid only in `sync_views`.
   [[nodiscard]] std::span<const uint8_t> scene_resource(uint32_t id, host::Key64 kind) const noexcept;
   [[nodiscard]] bool syncing() const noexcept { return syncing_; }
-  /// Resolves `node`'s content into `paint` (in `sync_views`): a `nve.canvas` draw list, a decoded
-  /// (cached, tinted) image, or leaf text; the content kind repainted, `nullopt` when unchanged.
-  std::optional<NodeContent> resolve_content(NodePaint& paint, ContentIds& ids, const host::NodeData& node,
+  /// In `sync_views`: whether a view may keep what it decoded from resource `applied` now that
+  /// its node reads `id` (same id, incremental sync, bytes not redefined this frame).
+  [[nodiscard]] bool resource_unchanged(uint32_t id, uint32_t applied) const noexcept;
+  /// Resolves `node`'s content into `paint` (in `sync_views`): a `nve.canvas` draw list (redrawn
+  /// on new bytes), a decoded (content-keyed cache, tinted) image, or leaf text; the content kind
+  /// repainted, `nullopt` when unchanged.
+  std::optional<NodeContent> resolve_content(NodePaint& paint, AppliedResources& applied, const host::NodeData& node,
                                              const canvas::CanvasTable& canvas);
+  /// `node`'s box visuals; box shadows are re-decoded only when their resource changed (else
+  /// taken from `previous`).
+  [[nodiscard]] BoxVisual resolve_visual(const host::NodeData& node, AppliedResources& applied,
+                                         const BoxVisual& previous) const;
   /// Mirrors the current scene without ticking.
   size_t sync();
 

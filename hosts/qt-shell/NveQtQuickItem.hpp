@@ -23,6 +23,7 @@ struct SceneGraphStats {
   uint32_t retainedNodes = 0u;      // live node wrappers in the SG tree
   uint64_t nodesUpdated = 0u;       // node wrappers whose properties were updated
   uint64_t nodesReused = 0u;        // ... of which already existed (retained across frames)
+  uint64_t nodesMoved = 0u;         // records whose box alone changed (`move`: nothing decoded)
   uint64_t textRasterizations = 0u;
   uint64_t imageRasterizations = 0u;
   uint64_t canvasRasterizations = 0u;

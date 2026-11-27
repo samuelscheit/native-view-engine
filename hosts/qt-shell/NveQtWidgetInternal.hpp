@@ -159,6 +159,8 @@ struct QtNodeView {
   bool wants_press = false;
   bool hovered = false;
   BoxVisual visual;
+  bool clips = false;   // `overflow` != visible (rounded frames mask their children)
+  QColor text_color;    // inputs: the style sheet's text color
 
   // Scroll: programmatic targets (`requested_scroll_*`) applied once, after content extents.
   float requested_x = NAN;
@@ -173,7 +175,7 @@ struct QtNodeView {
   host::ControlledText text;
   uint32_t max_length = 0u;
 
-  ContentIds content_ids;
+  AppliedResources applied;
   uint64_t redraw_count = 0u;  // canvas repaints
 };
 
@@ -189,9 +191,13 @@ class NveQtWidget::Impl final : public QtHost {
     uint32_t tag(const host::NodeData& node) const;
     Handle create(const host::NodeData& node);
     void update(Handle& view, const host::NodeData& node);
+    /// Geometry-only change (`read_geometry` data): reposition and re-box, nothing decoded.
+    void move(Handle& view, const host::NodeData& node);
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
     void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    /// Canvas draw list: a republish under the same id re-runs `update`.
+    uint32_t module_resource(const host::NodeData& node) const { return host->canvas_.at(node.index).draw_list; }
   };
 
   [[nodiscard]] QtNodeView* find(uint32_t id) noexcept;
@@ -209,15 +215,22 @@ class NveQtWidget::Impl final : public QtHost {
   NodeSemantics root_sem_;
   QColor root_background_{Qt::transparent};
   uint64_t reconcile_update_count_ = 0u;
+  uint64_t reconcile_move_count_ = 0u;
   bool tearing_down_ = false;
 
  protected:
   void clear_views() override;
   size_t sync_views(const host::RuntimeSceneGuard& scene) override;
+  bool tree_resource_unchanged(const host::RuntimeSceneReader& scene, uint32_t id,
+                               uint32_t applied) const noexcept override {
+    return tree_.resource_unchanged(scene, id, applied);
+  }
   void after_sync() override;
 
  private:
   friend struct Adapter;
+  void place(QtNodeView& v, const host::NodeData& node);
+  void apply_box(QtNodeView& v, const host::NodeData& node);
   void update_geometry(QtNodeView& v, const host::NodeData& node);
   void update_visual(QtNodeView& v, const host::NodeData& node);
   void update_content(QtNodeView& v, const host::NodeData& node);
