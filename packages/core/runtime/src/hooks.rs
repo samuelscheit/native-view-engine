@@ -56,12 +56,10 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn apply_hot_patch_shared(&self, patch: &HotPatchMsg) -> Result<bool, RuntimeError> {
-        self.with_write(|inner| {
-            let changed = with_app(inner, "app does not support hot patches (NVE_IFACE_DEV)", |app| {
+        self.render_if_changed(|inner| {
+            with_app(inner, "app does not support hot patches (NVE_IFACE_DEV)", |app| {
                 app.apply_hot_patch(patch)
-            })?;
-            inner.state.needs_render |= changed;
-            Ok(changed)
+            })
         })
     }
 
@@ -71,12 +69,10 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn set_props_shared(&self, props: NvePropsRef<'_>) -> Result<bool, RuntimeError> {
-        self.with_write(|inner| {
-            let changed = with_app(inner, "app does not support props (NVE_IFACE_COMPONENT)", |app| {
+        self.render_if_changed(|inner| {
+            with_app(inner, "app does not support props (NVE_IFACE_COMPONENT)", |app| {
                 app.set_props(props)
-            })?;
-            inner.state.needs_render |= changed;
-            Ok(changed)
+            })
         })
     }
 
@@ -120,14 +116,12 @@ impl SurfaceRuntime {
     }
 
     pub(crate) fn restore_state_shared(&self, state: &[u8]) -> Result<(), RuntimeError> {
-        self.with_write(|inner| {
+        self.render_if_changed(|inner| {
             with_app(inner, "app does not support state restore (NVE_IFACE_DEV)", |app| {
                 app.restore_state(state)
             })?;
-            inner.state.needs_render = true;
-            Ok(())
+            Ok(true)
         })?;
-        self.wake.trigger();
         Ok(())
     }
 }
