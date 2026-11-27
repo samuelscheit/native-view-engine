@@ -64,7 +64,7 @@ impl InteractionState {
 
 /// Strictly typed cross-platform pointer cursor icon (`#[repr(u8)]`).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, nve_store::WordEnum)]
 pub enum CursorKind {
     #[default]
     Auto = 0,

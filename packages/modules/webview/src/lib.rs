@@ -11,7 +11,6 @@ pub struct WebView {
     #[effect(realize, paint)]
     pub url: Str,
     #[effect(semantics)]
-    #[bits(1)]
     #[default(true)]
     pub allows_back_forward: bool,
 }

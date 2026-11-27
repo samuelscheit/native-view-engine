@@ -13,7 +13,7 @@ use core::fmt;
 /// Maps directly to canonical browser HTML `autocomplete`, Apple `UITextContentType`, and
 /// Android `AUTOFILL_HINT_*` identifiers with zero heap allocation or JSON serialization.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_store::WordEnum)]
 pub enum AutofillHint {
     Off = 0,
     Name = 1,
@@ -34,25 +34,6 @@ pub enum AutofillHint {
 }
 
 impl AutofillHint {
-    /// All supported variants in declaration order (useful for exhaustive tests and codegen).
-    pub const ALL: [Self; 16] = [
-        Self::Off,
-        Self::Name,
-        Self::GivenName,
-        Self::FamilyName,
-        Self::Email,
-        Self::Username,
-        Self::CurrentPassword,
-        Self::NewPassword,
-        Self::OneTimeCode,
-        Self::Tel,
-        Self::StreetAddress,
-        Self::PostalCode,
-        Self::Country,
-        Self::CcNumber,
-        Self::CcExp,
-        Self::CcCsc,
-    ];
 
     /// Canonical WHATWG HTML `<input autocomplete="...">` token.
     #[inline]
@@ -175,7 +156,7 @@ impl fmt::Display for AutofillHint {
 
 /// Virtual keyboard layout hint for text inputs (WHATWG HTML `inputmode` + native OS keyboards).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, nve_store::WordEnum)]
 pub enum InputMode {
     #[default]
     Text = 0,
@@ -188,16 +169,6 @@ pub enum InputMode {
 }
 
 impl InputMode {
-    /// All supported variants in declaration order.
-    pub const ALL: [Self; 7] = [
-        Self::Text,
-        Self::Email,
-        Self::Tel,
-        Self::Url,
-        Self::Numeric,
-        Self::Decimal,
-        Self::Search,
-    ];
 
     /// Canonical WHATWG HTML `<input inputmode="...">` token.
     #[inline]
@@ -276,7 +247,7 @@ mod tests {
 
     #[test]
     fn autofill_hint_html_roundtrip_and_platform_mappings() {
-        for hint in AutofillHint::ALL {
+        for &hint in AutofillHint::ALL {
             let html = hint.as_html_autocomplete();
             assert_eq!(AutofillHint::parse_html_autocomplete(html), Some(hint));
             assert_eq!(
@@ -311,7 +282,7 @@ mod tests {
 
     #[test]
     fn input_mode_html_roundtrip_and_platform_mappings() {
-        for mode in InputMode::ALL {
+        for &mode in InputMode::ALL {
             let html = mode.as_html_inputmode();
             assert_eq!(InputMode::parse_html_inputmode(html), Some(mode));
             assert_eq!(

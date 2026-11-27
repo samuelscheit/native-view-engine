@@ -310,9 +310,9 @@ pub fn write_store_node_css(
             write_compact_length(l.max_height(), out);
             out.push(';');
         }
-        if l.aspect_ratio().is_finite() && l.aspect_ratio() > 0.0 {
+        if let Some(ar) = l.aspect_ratio().filter(|&r| r.is_finite() && r > 0.0) {
             out.push_str("aspect-ratio:");
-            write_compact_num(l.aspect_ratio(), out);
+            write_compact_num(ar, out);
             out.push(';');
         }
         if !l.inset_top().is_auto() {

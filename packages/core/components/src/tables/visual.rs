@@ -1,17 +1,28 @@
 //! `Visual` (dense), `Typography` / `TextContent` (sparse), `Transform`, `Motion`, `Responsive`.
 
-use nve_store::{word_enum, Length, NveTable, Res, Rgba, Str};
+use nve_store::{word_flags, Length, NveTable, Res, Rgba, Str, WordEnum};
 
 use super::resources::{BackgroundFillRes, BoxShadows, ResponsiveRules, Transitions};
 
-word_enum! {
-    pub enum Overflow: 2 { Visible = 0, Hidden = 1, Scroll = 2, Auto = 3 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum Overflow {
+    #[default]
+    Visible = 0,
+    Hidden = 1,
+    Scroll = 2,
+    Auto = 3,
 }
 
-word_enum! {
-    /// CSS-accurate inherited visibility (`Inherit` follows parent; explicit `Visible` overrides a
-    /// `Hidden` ancestor).
-    pub enum Visibility: 2 { Inherit = 0, Visible = 1, Hidden = 2 }
+/// CSS-accurate inherited visibility (`Inherit` follows parent; explicit `Visible` overrides a
+/// `Hidden` ancestor).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum Visibility {
+    #[default]
+    Inherit = 0,
+    Visible = 1,
+    Hidden = 2,
 }
 
 impl Visibility {
@@ -46,13 +57,10 @@ pub struct Visual {
     pub z_index: i32,
     /// Overflow affects scroll-container sizing (layout) and clipping (paint).
     #[effect(layout, paint)]
-    #[bits(2)]
     pub overflow_x: Overflow,
     #[effect(layout, paint)]
-    #[bits(2)]
     pub overflow_y: Overflow,
     #[effect(paint)]
-    #[bits(2)]
     pub visibility: Visibility,
     #[effect(paint)]
     pub box_shadows: Res<BoxShadows>,
@@ -61,40 +69,79 @@ pub struct Visual {
     pub background_fill: Res<BackgroundFillRes>,
 }
 
-word_enum! {
-    pub enum FontStyle: 2 { Normal = 0, Italic = 1, Oblique = 2 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum FontStyle {
+    #[default]
+    Normal = 0,
+    Italic = 1,
+    Oblique = 2,
 }
 
-word_enum! {
-    pub enum TextAlign: 3 { Start = 0, End = 1, Left = 2, Right = 3, Center = 4, Justify = 5 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum TextAlign {
+    #[default]
+    Start = 0,
+    End = 1,
+    Left = 2,
+    Right = 3,
+    Center = 4,
+    Justify = 5,
 }
 
-word_enum! {
-    pub enum WhiteSpace: 3 {
-        Normal = 0, NoWrap = 1, Pre = 2, PreWrap = 3, PreLine = 4, BreakSpaces = 5,
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum WhiteSpace {
+    #[default]
+    Normal = 0,
+    NoWrap = 1,
+    Pre = 2,
+    PreWrap = 3,
+    PreLine = 4,
+    BreakSpaces = 5,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum WordBreak {
+    #[default]
+    Normal = 0,
+    BreakAll = 1,
+    KeepAll = 2,
+    BreakWord = 3,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum OverflowWrap {
+    #[default]
+    Normal = 0,
+    Anywhere = 1,
+    BreakWord = 2,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum VerticalAlign {
+    #[default]
+    Baseline = 0,
+    Top = 1,
+    Middle = 2,
+    Bottom = 3,
+    Sub = 4,
+    Super = 5,
+    TextTop = 6,
+    TextBottom = 7,
+}
+
+word_flags! {
+    /// `text-decoration-line` bitflags packed into 3 bits.
+    pub struct TextDecoration(u8) {
+        const UNDERLINE = 1 << 0;
+        const OVERLINE = 1 << 1;
+        const LINE_THROUGH = 1 << 2;
     }
-}
-
-word_enum! {
-    pub enum WordBreak: 2 { Normal = 0, BreakAll = 1, KeepAll = 2, BreakWord = 3 }
-}
-
-word_enum! {
-    pub enum OverflowWrap: 2 { Normal = 0, Anywhere = 1, BreakWord = 2 }
-}
-
-word_enum! {
-    pub enum VerticalAlign: 3 {
-        Baseline = 0, Top = 1, Middle = 2, Bottom = 3, Sub = 4, Super = 5, TextTop = 6,
-        TextBottom = 7,
-    }
-}
-
-/// `text-decoration-line` bits.
-pub mod text_decoration {
-    pub const UNDERLINE: u8 = 1 << 0;
-    pub const OVERLINE: u8 = 1 << 1;
-    pub const LINE_THROUGH: u8 = 1 << 2;
 }
 
 /// Inherited text styling. Only fields whose bit is in `set` are explicit; the rest inherit.
@@ -118,34 +165,25 @@ pub struct Typography {
     pub letter_spacing: f32,
     #[effect(measure)]
     pub font_family: Str,
-    /// 0 = unlimited.
+    /// Optional line clamp (`None` = unlimited).
     #[effect(measure)]
-    pub max_lines: u32,
+    pub max_lines: Option<u32>,
     #[effect(measure)]
-    #[bits(16)]
     #[default(400u16)]
     pub font_weight: u16,
     #[effect(measure)]
-    #[bits(2)]
     pub font_style: FontStyle,
     #[effect(measure)]
-    #[bits(3)]
     pub white_space: WhiteSpace,
     #[effect(measure)]
-    #[bits(2)]
     pub word_break: WordBreak,
     #[effect(measure)]
-    #[bits(2)]
     pub overflow_wrap: OverflowWrap,
     #[effect(paint)]
-    #[bits(3)]
     pub text_align: TextAlign,
-    /// `text_decoration::*` bits.
     #[effect(paint)]
-    #[bits(8)]
-    pub text_decoration: u8,
+    pub text_decoration: TextDecoration,
     #[effect(paint)]
-    #[bits(3)]
     pub vertical_align: VerticalAlign,
 }
 

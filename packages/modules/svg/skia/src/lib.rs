@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nve_abi::ColorRgba;
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
-use nve_store::{NodeId, NodeStore, NveTable, Rgba, TableSlot};
+use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 use nve_svg::{Svg, SvgPicture};
 
 pub use rasterize::rasterize_svg_picture;
@@ -257,8 +257,8 @@ impl SkiaTableSystem for SvgSkiaSystem {
         }
         let px_w = ctx.rect.width.round().max(1.0) as u32;
         let px_h = ctx.rect.height.round().max(1.0) as u32;
-        // Preserve multi-color SVG fills/strokes when `row.tint()` is transparent (matching Web).
-        let tint = (row.tint() != Rgba::TRANSPARENT).then(|| ColorRgba::from_u32(row.tint().0));
+        // Preserve multi-color SVG fills/strokes when `row.tint()` is `None` (matching Web).
+        let tint = row.tint().map(|c| ColorRgba::from_u32(c.0));
         let bmp = SvgCache::global().get_or_rasterize(pic, px_w, px_h, tint);
         let clip = ctx.clip_rect.map(|r| {
             [
@@ -284,7 +284,7 @@ impl SkiaTableSystem for SvgSkiaSystem {
 mod tests {
     use super::*;
     use nve_engine::LayoutRect;
-    use nve_store::{ChangeSet, TableEventBus};
+    use nve_store::{ChangeSet, Rgba, TableEventBus};
 
     #[test]
     fn svg_skia_system_rasterizes_and_caches_vector_shape() {
@@ -295,7 +295,7 @@ mod tests {
         tx.set_children(NodeId::ROOT, &[n]);
         tx.edit::<Svg>(n)
             .picture(Some(pic))
-            .tint(Rgba::rgb(255, 0, 0));
+            .tint(Some(Rgba::rgb(255, 0, 0)));
         let mut changes = ChangeSet::default();
         tx.commit_into(&mut changes);
 

@@ -4,9 +4,9 @@ use nve_abi::num::{write_i64, write_u64};
 use nve_abi::ColorRgba;
 use nve_components::paint::write_css_gradient;
 use nve_components::tables::{
-    text_decoration, BackgroundFillRes, BoxShadows, Image, Overflow, OverflowWrap, Scroll,
-    ScrollAxes, Scrollbars, TextAlign, TextContent, Transform, Typography, Visibility, Visual,
-    WhiteSpace, WordBreak,
+    BackgroundFillRes, BoxShadows, Image, Overflow, OverflowWrap, Scroll, ScrollAxes, Scrollbars,
+    TextAlign, TextContent, TextDecoration, Transform, Typography, Visibility, Visual, WhiteSpace,
+    WordBreak,
 };
 use nve_store::{NodeId, NodeStore, Rgba};
 
@@ -189,15 +189,15 @@ pub(super) fn write_visual_and_typography_css(
             TextAlign::Justify => out.push_str("text-align:justify;"),
         }
         let deco = t.text_decoration();
-        if deco != 0 {
+        if !deco.is_empty() {
             out.push_str("text-decoration-line:");
             let mut first = true;
-            for (bit, kw) in [
-                (text_decoration::UNDERLINE, "underline"),
-                (text_decoration::OVERLINE, "overline"),
-                (text_decoration::LINE_THROUGH, "line-through"),
+            for (flag, kw) in [
+                (TextDecoration::UNDERLINE, "underline"),
+                (TextDecoration::OVERLINE, "overline"),
+                (TextDecoration::LINE_THROUGH, "line-through"),
             ] {
-                if deco & bit != 0 {
+                if deco.contains(flag) {
                     if !first {
                         out.push(' ');
                     }
@@ -207,9 +207,9 @@ pub(super) fn write_visual_and_typography_css(
             }
             out.push(';');
         }
-        if t.max_lines() > 0 {
+        if let Some(max_lines) = t.max_lines().filter(|&n| n > 0) {
             out.push_str("display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;-webkit-line-clamp:");
-            write_u64(out, u64::from(t.max_lines()));
+            write_u64(out, u64::from(max_lines));
             out.push(';');
         }
     }

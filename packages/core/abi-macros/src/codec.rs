@@ -1,33 +1,18 @@
 //! Zero-dependency `#[derive(NveCodec)]` implementing `nve_codec::{NveEncode, NveDecode}`
 //! for Tier-2 little-endian binary structs and enums (unit-only and data-carrying).
 
-use proc_macro::{Delimiter, Spacing, TokenStream, TokenTree};
+use proc_macro::TokenStream;
 
 use crate::emit::quote_str;
 use crate::parse::parse_i128_literal;
 use crate::parse::parse_string_literal;
+pub(crate) use crate::tok::{from_stream, Delim, Tok};
 
 #[cfg(test)]
 #[path = "codec_tests.rs"]
 mod tests;
 
 const DEFAULT_CRATE_PATH: &str = "::nve_codec";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Delim {
-    Paren,
-    Bracket,
-    Brace,
-    None,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Tok {
-    Ident(String),
-    Punct(char, bool),
-    Literal(String),
-    Group(Delim, Vec<Tok>),
-}
 
 enum ItemKind {
     NamedStruct(Vec<(String, String)>),
@@ -65,27 +50,7 @@ pub(crate) fn derive_tokens(tokens: &[Tok]) -> Result<String, String> {
     Ok(emit(&parsed))
 }
 
-fn from_stream(stream: TokenStream) -> Vec<Tok> {
-    stream
-        .into_iter()
-        .map(|tt| match tt {
-            TokenTree::Ident(id) => Tok::Ident(id.to_string()),
-            TokenTree::Punct(p) => Tok::Punct(p.as_char(), p.spacing() == Spacing::Joint),
-            TokenTree::Literal(lit) => Tok::Literal(lit.to_string()),
-            TokenTree::Group(g) => {
-                let d = match g.delimiter() {
-                    Delimiter::Parenthesis => Delim::Paren,
-                    Delimiter::Bracket => Delim::Bracket,
-                    Delimiter::Brace => Delim::Brace,
-                    Delimiter::None => Delim::None,
-                };
-                Tok::Group(d, from_stream(g.stream()))
-            }
-        })
-        .collect()
-}
-
-fn is_punct(tokens: &[Tok], pos: usize, ch: char) -> bool { matches!(tokens.get(pos), Some(Tok::Punct(c, _)) if *c == ch) }
+fn is_punct(tokens: &[Tok], pos: usize, ch: char) -> bool { crate::tok::is_punct(tokens, pos, ch) }
 fn is_ident(tokens: &[Tok], pos: usize, name: &str) -> bool { matches!(tokens.get(pos), Some(Tok::Ident(s)) if s == name) }
 fn expect_ident(tokens: &[Tok], pos: &mut usize, desc: &str) -> Result<String, String> {
     match tokens.get(*pos) {

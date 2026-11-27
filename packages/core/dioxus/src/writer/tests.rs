@@ -35,8 +35,7 @@ fn direct_numeric_and_bool_attributes_avoid_string_roundtrip() {
     assert_eq!(store.try_row::<Visual>(node).unwrap().opacity(), 0.5);
     let inter = store.try_row::<Interaction>(node).unwrap();
     assert!(inter.disabled());
-    assert!(inter.tab_index_set());
-    assert_eq!(inter.tab_index(), 3);
+    assert_eq!(inter.tab_index(), Some(3));
     assert_eq!(store.primary_slot(node), Link::slot());
 }
 

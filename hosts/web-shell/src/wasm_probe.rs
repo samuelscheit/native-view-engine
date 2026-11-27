@@ -80,7 +80,7 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
 
         tx.set_str(heading, DebugId::TEST_ID, "probe-heading");
         tx.set(heading, Accessibility::ROLE, AriaRole::Heading);
-        tx.set(heading, Accessibility::LEVEL, 1u8);
+        tx.set(heading, Accessibility::LEVEL, Some(1u8));
         tx.set(heading, Typography::COLOR, Rgba::WHITE);
         tx.set(heading, Typography::FONT_SIZE, 20.0);
         tx.set(heading, Typography::FONT_WEIGHT, 700u16);

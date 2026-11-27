@@ -515,8 +515,7 @@ pub(crate) fn scroll_shift_for(
         return (0.0, 0.0);
     };
     let (sx, sy) = scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
-    let top_spacer = scroll.virtual_top_spacer();
-    if top_spacer.is_finite() && top_spacer > 0.0 {
+    if let Some(top_spacer) = scroll.virtual_top_spacer().filter(|&v| v.is_finite() && v > 0.0) {
         (sx, (sy - top_spacer).max(0.0))
     } else {
         (sx, sy)

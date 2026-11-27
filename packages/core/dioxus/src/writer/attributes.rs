@@ -11,7 +11,7 @@ use nve_components::media::MediaQuery;
 use nve_components::tables::{
     Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
     AriaTriState, DebugId, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link,
-    LinkTarget, OptAutofillHint, Responsive, TextInput, Typography, Visual,
+    LinkRel, LinkTarget, Responsive, TextInput, Typography, Visual,
 };
 use nve_store::{Length, NodeId};
 
@@ -201,15 +201,15 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Visual>(node).z_index(f as i32);
             }
             "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => {
-                self.tx.edit::<Accessibility>(node).value_now(f);
+                self.tx.edit::<Accessibility>(node).value_now(Some(f));
                 return false;
             }
             "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => {
-                self.tx.edit::<Accessibility>(node).value_min(f);
+                self.tx.edit::<Accessibility>(node).value_min(Some(f));
                 return false;
             }
             "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => {
-                self.tx.edit::<Accessibility>(node).value_max(f);
+                self.tx.edit::<Accessibility>(node).value_max(Some(f));
                 return false;
             }
             _ => return false,
@@ -223,8 +223,7 @@ impl StoreMutationTx<'_, '_> {
             "tabIndex" | "tab-index" | "tab_index" => {
                 self.tx
                     .edit::<Interaction>(node)
-                    .tab_index_set(true)
-                    .tab_index(v.clamp(i16::MIN as i64, i16::MAX as i64) as i16);
+                    .tab_index(Some(v.clamp(i16::MIN as i64, i16::MAX as i64) as i16));
             }
             "z-index" | "zIndex" => {
                 self.tx
@@ -235,12 +234,12 @@ impl StoreMutationTx<'_, '_> {
             "minlength" => {
                 self.tx
                     .edit::<TextInput>(node)
-                    .min_length(v.clamp(0, u16::MAX as i64) as u16);
+                    .min_length(Some(v.clamp(0, u16::MAX as i64) as u16));
             }
             "maxlength" => {
                 self.tx
                     .edit::<TextInput>(node)
-                    .max_length(v.clamp(0, u16::MAX as i64) as u16);
+                    .max_length(Some(v.clamp(0, u16::MAX as i64) as u16));
             }
             _ => self.apply_numeric_attr(node, name, v as f64),
         }
@@ -253,23 +252,25 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Interaction>(node).disabled(b);
             }
             "ariaChecked" | "aria-checked" | "aria_checked" => {
-                self.tx
-                    .edit::<Accessibility>(node)
-                    .checked(if b { AriaTriState::True } else { AriaTriState::False });
+                self.tx.edit::<Accessibility>(node).checked(Some(if b {
+                    AriaTriState::True
+                } else {
+                    AriaTriState::False
+                }));
             }
             "ariaSelected" | "aria-selected" | "aria_selected" => {
-                self.tx.edit::<Accessibility>(node).selected(if b {
+                self.tx.edit::<Accessibility>(node).selected(Some(if b {
                     AriaTriState::True
                 } else {
                     AriaTriState::False
-                });
+                }));
             }
             "ariaExpanded" | "aria-expanded" | "aria_expanded" => {
-                self.tx.edit::<Accessibility>(node).expanded(if b {
+                self.tx.edit::<Accessibility>(node).expanded(Some(if b {
                     AriaTriState::True
                 } else {
                     AriaTriState::False
-                });
+                }));
             }
             "ariaModal" | "aria-modal" | "aria_modal" => {
                 self.tx.edit::<Accessibility>(node).modal(b);
@@ -356,12 +357,12 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Link>(node).target(target);
             }
             "rel" => {
-                let mut rel = 0u8;
+                let mut rel = LinkRel::EMPTY;
                 for tok in value.split_ascii_whitespace() {
                     match tok {
-                        "noopener" => rel |= 1,
-                        "noreferrer" => rel |= 2,
-                        "nofollow" => rel |= 4,
+                        "noopener" => rel |= LinkRel::NOOPENER,
+                        "noreferrer" => rel |= LinkRel::NOREFERRER,
+                        "nofollow" => rel |= LinkRel::NOFOLLOW,
                         _ => {}
                     }
                 }
@@ -381,9 +382,7 @@ impl StoreMutationTx<'_, '_> {
                 }
             }
             "autocomplete" | "autoComplete" | "auto_complete" => {
-                let hint = AutofillHint::parse_html_autocomplete(value)
-                    .map(OptAutofillHint::some)
-                    .unwrap_or(OptAutofillHint::NONE);
+                let hint = AutofillHint::parse_html_autocomplete(value);
                 self.tx.edit::<TextInput>(node).autofill(hint);
             }
             "inputmode" | "inputMode" | "input_mode" => {
@@ -415,7 +414,9 @@ impl StoreMutationTx<'_, '_> {
             }
             "aria-level" | "ariaLevel" | "aria_level" => {
                 if let Ok(lvl) = value.trim().parse::<u8>() {
-                    self.tx.edit::<Accessibility>(node).level(lvl);
+                    self.tx
+                        .edit::<Accessibility>(node)
+                        .level((lvl > 0).then_some(lvl));
                 }
             }
             "ariaChecked" | "aria-checked" | "aria_checked" => {
@@ -435,26 +436,27 @@ impl StoreMutationTx<'_, '_> {
             }
             "ariaLive" | "aria-live" | "aria_live" => {
                 let live = match value.trim() {
-                    "polite" => AriaLive::Polite,
-                    "assertive" => AriaLive::Assertive,
-                    _ => AriaLive::Off,
+                    "polite" => Some(AriaLive::Polite),
+                    "assertive" => Some(AriaLive::Assertive),
+                    "off" => Some(AriaLive::Off),
+                    _ => None,
                 };
                 self.tx.edit::<Accessibility>(node).live(live);
             }
             "ariaOrientation" | "aria-orientation" | "aria_orientation" => {
                 let orient = match value.trim() {
-                    "horizontal" => AriaOrientation::Horizontal,
-                    "vertical" => AriaOrientation::Vertical,
-                    _ => AriaOrientation::Unset,
+                    "horizontal" => Some(AriaOrientation::Horizontal),
+                    "vertical" => Some(AriaOrientation::Vertical),
+                    _ => None,
                 };
                 self.tx.edit::<Accessibility>(node).orientation(orient);
             }
             "ariaAutoComplete" | "aria-autocomplete" | "aria_autocomplete" => {
                 let ac = match value.trim() {
-                    "inline" => AriaAutoComplete::Inline,
-                    "list" | "both" => AriaAutoComplete::List,
-                    "none" => AriaAutoComplete::None,
-                    _ => AriaAutoComplete::Unset,
+                    "inline" => Some(AriaAutoComplete::Inline),
+                    "list" | "both" => Some(AriaAutoComplete::List),
+                    "none" => Some(AriaAutoComplete::None),
+                    _ => None,
                 };
                 self.tx.edit::<Accessibility>(node).autocomplete(ac);
             }
@@ -562,7 +564,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Link>(node).target(LinkTarget::Default);
             }
             "rel" if self.tx.store().has::<Link>(node) => {
-                self.tx.edit::<Link>(node).rel(0);
+                self.tx.edit::<Link>(node).rel(LinkRel::EMPTY);
             }
             "src" if self.tx.store().has::<Image>(node) => {
                 self.tx.edit::<Image>(node).src(None);
@@ -592,7 +594,7 @@ impl StoreMutationTx<'_, '_> {
                 self.apply_bool_attr(node, "disabled", false);
             }
             "tabIndex" | "tab-index" | "tab_index" if self.tx.store().has::<Interaction>(node) => {
-                self.tx.edit::<Interaction>(node).tab_index_set(false).tab_index(0);
+                self.tx.edit::<Interaction>(node).tab_index(None);
             }
             "accessibilityLabel" | "aria-label" | "ariaLabel"
                 if self.tx.store().has::<Accessibility>(node) =>
@@ -605,17 +607,17 @@ impl StoreMutationTx<'_, '_> {
             "ariaChecked" | "aria-checked" | "aria_checked"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
-                self.tx.edit::<Accessibility>(node).checked(AriaTriState::Unset);
+                self.tx.edit::<Accessibility>(node).checked(None);
             }
             "ariaSelected" | "aria-selected" | "aria_selected"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
-                self.tx.edit::<Accessibility>(node).selected(AriaTriState::Unset);
+                self.tx.edit::<Accessibility>(node).selected(None);
             }
             "ariaExpanded" | "aria-expanded" | "aria_expanded"
                 if self.tx.store().has::<Accessibility>(node) =>
             {
-                self.tx.edit::<Accessibility>(node).expanded(AriaTriState::Unset);
+                self.tx.edit::<Accessibility>(node).expanded(None);
             }
             "ariaModal" | "aria-modal" | "aria_modal"
                 if self.tx.store().has::<Accessibility>(node) =>
@@ -633,12 +635,12 @@ impl StoreMutationTx<'_, '_> {
 }
 
 #[inline]
-fn parse_tri_state(s: &str) -> AriaTriState {
+fn parse_tri_state(s: &str) -> Option<AriaTriState> {
     match s.trim() {
-        "true" => AriaTriState::True,
-        "false" => AriaTriState::False,
-        "mixed" => AriaTriState::Mixed,
-        _ => AriaTriState::Unset,
+        "true" => Some(AriaTriState::True),
+        "false" => Some(AriaTriState::False),
+        "mixed" => Some(AriaTriState::Mixed),
+        _ => None,
     }
 }
 

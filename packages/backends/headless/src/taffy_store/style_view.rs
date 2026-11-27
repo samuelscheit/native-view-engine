@@ -324,8 +324,9 @@ impl CoreStyle for StyleView<'_> {
 
     #[inline]
     fn aspect_ratio(&self) -> Option<f32> {
-        let r = self.layout().aspect_ratio();
-        (r.is_finite() && r > 0.0).then_some(r)
+        self.layout()
+            .aspect_ratio()
+            .filter(|&r| r.is_finite() && r > 0.0)
     }
 
     #[inline]

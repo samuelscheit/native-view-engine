@@ -26,12 +26,11 @@ use nve_store::{NveTable, Res, Resource, Rgba};
 pub struct Svg {
     #[effect(realize, paint)]
     pub picture: Res<SvgPicture>,
-    /// Override fill/stroke tint (`Rgba::TRANSPARENT` = inherit typography color / picture colors).
+    /// Optional override fill/stroke tint (`None` = inherit typography color / picture colors).
     #[effect(paint)]
-    pub tint: Rgba,
+    pub tint: Option<Rgba>,
     /// Mirror horizontally under RTL layouts (`[dir=rtl]`).
     #[effect(paint)]
-    #[bits(1)]
     pub mirror_directional: bool,
 }
 
@@ -120,13 +119,13 @@ mod tests {
         tx.set_children(NodeId::ROOT, &[n]);
         tx.edit::<Svg>(n)
             .picture(Some(pic.clone()))
-            .tint(Rgba::rgb(10, 20, 30))
+            .tint(Some(Rgba::rgb(10, 20, 30)))
             .mirror_directional(true);
         let mut changes = ChangeSet::default();
         tx.commit_into(&mut changes);
 
         let row = store.try_row::<Svg>(n).unwrap();
-        assert_eq!(row.tint(), Rgba::rgb(10, 20, 30));
+        assert_eq!(row.tint(), Some(Rgba::rgb(10, 20, 30)));
         assert!(row.mirror_directional());
         let got = store.resource::<SvgPicture>(row.picture()).unwrap();
         assert_eq!(got.content_hash, pic.content_hash);

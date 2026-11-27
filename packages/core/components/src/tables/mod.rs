@@ -28,17 +28,16 @@ pub use layout::{
     JustifyContent, Layout, LayoutMut, LayoutRef, Position,
 };
 pub use media::{
-    Image, ImageFit, ImageMut, ImageRef, InputKind, Link, LinkMut, LinkRef, LinkTarget,
-    OptAutofillHint, Scroll, ScrollAxes, ScrollMut, ScrollRef, Scrollbars, TextInput, TextInputMut,
-    TextInputRef,
+    Image, ImageFit, ImageMut, ImageRef, InputKind, Link, LinkMut, LinkRef, LinkRel, LinkTarget,
+    Scroll, ScrollAxes, ScrollMut, ScrollRef, Scrollbars, TextInput, TextInputMut, TextInputRef,
 };
 pub use resources::{
     AriaRelations, BackgroundFillRes, BoxShadows, GridTracks, ImageSrc, ResponsiveRules,
     StateRules, Transitions,
 };
 pub use visual::{
-    text_decoration, FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive,
-    ResponsiveMut, ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef,
+    FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive, ResponsiveMut,
+    ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef, TextDecoration,
     Transform, TransformMut, TransformRef, Typography, TypographyMut, TypographyRef, VerticalAlign,
     Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
 };

@@ -1,29 +1,26 @@
 //! `#[derive(NveTable)]` schema for [`CameraPreviewTable`] (`nve.camera.preview`) — zero
 //! dependency on `nve-components` or backends.
 
-use nve_store::{word_enum, FieldKind, NveTable, Str, WordValue};
+use nve_store::{NveTable, Str, WordEnum};
 
 use crate::types::CameraFacing;
 
-impl WordValue for CameraFacing {
-    const BITS: u8 = 2;
-    const KIND: FieldKind = FieldKind::Enum;
-    #[inline(always)]
-    fn to_bits(self) -> u32 {
-        self as u32
-    }
-    #[inline(always)]
-    fn from_bits(bits: u32) -> Self {
-        Self::from_u8(bits as u8).unwrap_or(Self::Back)
-    }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum CameraTorch {
+    #[default]
+    Off = 0,
+    On = 1,
+    Auto = 2,
 }
 
-word_enum! {
-    pub enum CameraTorch: 2 { Off = 0, On = 1, Auto = 2 }
-}
-
-word_enum! {
-    pub enum CameraStabilization: 2 { Off = 0, Standard = 1, Cinematic = 2 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum CameraStabilization {
+    #[default]
+    Off = 0,
+    Standard = 1,
+    Cinematic = 2,
 }
 
 /// Camera preview surface table (`nve.camera.preview`).
@@ -33,30 +30,22 @@ pub struct CameraPreviewTable {
     #[effect(realize)]
     pub device_id: Str,
     #[effect(realize, paint)]
-    #[bits(2)]
     #[default(CameraFacing::Back)]
     pub facing: CameraFacing,
     #[effect(realize, paint)]
-    #[bits(2)]
     pub torch: CameraTorch,
     #[effect(realize, paint)]
-    #[bits(2)]
     pub stabilization: CameraStabilization,
     #[effect(realize, paint)]
-    #[bits(1)]
     pub hdr: bool,
     #[effect(realize, paint)]
-    #[bits(1)]
     pub enable_frame_processor: bool,
     #[effect(realize, paint)]
-    #[bits(1)]
-    pub audio_enabled: bool,
+    pub audio: bool,
     #[effect(realize, paint)]
-    #[bits(1)]
     #[default(true)]
     pub active: bool,
     #[effect(realize, paint)]
-    #[bits(16)]
     #[default(30u16)]
     pub fps: u16,
     #[effect(paint)]

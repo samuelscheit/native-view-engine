@@ -189,16 +189,15 @@ impl NveYogaLayoutExt {
         let (right_tag, right_val) = encode_len(l.inset_right());
         let (bottom_tag, bottom_val) = encode_len(l.inset_bottom());
         let (left_tag, left_val) = encode_len(l.inset_left());
-        let ar = l.aspect_ratio();
-        let has_ar = ar.is_finite() && ar > 0.0;
+        let ar = l.aspect_ratio().filter(|&r| r.is_finite() && r > 0.0);
         let pad_inline = l.padding_inline_logical();
         let mar_inline = l.margin_inline_logical();
         Self {
             display: u8::from(l.display() == Display::None),
             flex_basis_tag,
             flex_basis_val,
-            has_aspect_ratio: u8::from(has_ar),
-            aspect_ratio: if has_ar { ar } else { 0.0 },
+            has_aspect_ratio: u8::from(ar.is_some()),
+            aspect_ratio: ar.unwrap_or(0.0),
             position_mode: match l.position() {
                 Position::Relative => 0,
                 Position::Absolute => 1,

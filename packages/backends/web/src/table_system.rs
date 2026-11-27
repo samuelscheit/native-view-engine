@@ -149,7 +149,7 @@ impl WebTableRegistry {
                 AriaRole::Button => return ("button", None),
                 AriaRole::Heading => {
                     return (
-                        match a11y.level() {
+                        match a11y.level().unwrap_or(2) {
                             1 => "h1",
                             3 => "h3",
                             4 => "h4",

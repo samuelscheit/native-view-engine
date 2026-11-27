@@ -3,8 +3,8 @@
 use core::fmt::Write as _;
 
 use nve_components::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkTarget, Scroll,
-    TextContent, TextInput, Transform, Visibility, Visual,
+    Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkRel, LinkTarget,
+    Scroll, TextContent, TextInput, Transform, Visibility, Visual,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -42,15 +42,19 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
             LinkTarget::Blank => write_attr("target", "_blank", out),
             LinkTarget::Parent => write_attr("target", "_parent", out),
         }
-        let rel_bits = if is_blank {
-            link.rel() | 1 | 2
+        let rel_flags = if is_blank {
+            link.rel() | LinkRel::NOOPENER | LinkRel::NOREFERRER
         } else {
             link.rel()
         };
-        if rel_bits != 0 {
+        if !rel_flags.is_empty() {
             let mut rel = String::new();
-            for (bit, kw) in [(1u8, "noopener"), (2u8, "noreferrer"), (4u8, "nofollow")] {
-                if rel_bits & bit != 0 {
+            for (flag, kw) in [
+                (LinkRel::NOOPENER, "noopener"),
+                (LinkRel::NOREFERRER, "noreferrer"),
+                (LinkRel::NOFOLLOW, "nofollow"),
+            ] {
+                if rel_flags.contains(flag) {
                     if !rel.is_empty() {
                         rel.push(' ');
                     }
@@ -93,7 +97,7 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if !ph.is_empty() {
             write_attr("placeholder", ph, out);
         }
-        if let Some(ac) = ti.autofill().get() {
+        if let Some(ac) = ti.autofill() {
             write_attr("autocomplete", ac.as_html_autocomplete(), out);
         }
         if ti.input_mode() != nve_components::InputMode::Text {
@@ -105,16 +109,16 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if ti.read_only() {
             out.push_str(" readonly");
         }
-        if ti.max_length() > 0 && ti.max_length() < u16::MAX {
-            let _ = write!(out, " maxlength=\"{}\"", ti.max_length());
+        if let Some(ml) = ti.max_length().filter(|&n| n > 0) {
+            let _ = write!(out, " maxlength=\"{ml}\"");
         }
     }
     if let Some(inter) = store.try_row::<Interaction>(id) {
         if inter.disabled() {
             out.push_str(" disabled aria-disabled=\"true\"");
         }
-        if inter.tab_index_set() {
-            let _ = write!(out, " tabindex=\"{}\"", inter.tab_index());
+        if let Some(ti_idx) = inter.tab_index() {
+            let _ = write!(out, " tabindex=\"{ti_idx}\"");
         }
     }
     if let Some(a11y) = store.try_row::<Accessibility>(id) {
@@ -126,8 +130,8 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if !label.is_empty() {
             write_attr("aria-label", label, out);
         }
-        if let Some(live) = a11y.live().as_aria_str() {
-            write_attr("aria-live", live, out);
+        if let Some(live) = a11y.live() {
+            write_attr("aria-live", live.as_aria_str(), out);
         }
         if a11y.hidden() {
             write_attr("aria-hidden", "true", out);

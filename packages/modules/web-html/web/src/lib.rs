@@ -13,8 +13,7 @@ use nve_backend_web::{
 };
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 use nve_web_html::{
-    DataAttrList, HtmlDataAttrs, HtmlForm, HtmlFormControl, HtmlInvoker, HtmlSemantics,
-    PopoverMode, WebHtml,
+    DataAttrList, HtmlDataAttrs, HtmlForm, HtmlFormControl, HtmlInvoker, HtmlSemantics, WebHtml,
 };
 
 /// Registers every `nve-web-html` live + SSR plugin onto `registry`.
@@ -94,7 +93,7 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
 
     fn tag_name<'a>(&self, store: &'a NodeStore, node: NodeId) -> Option<&'a str> {
         let row = store.try_row::<HtmlSemantics>(node)?;
-        if row.popover() != PopoverMode::None && row.element().as_html_tag().is_none() {
+        if row.popover().is_some() && row.element().as_html_tag().is_none() {
             return Some("div");
         }
         row.element().as_html_tag()
@@ -107,14 +106,14 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         if row.open() {
             out.push_str(" open");
         }
-        if let Some(cb) = row.closed_by().as_html_attr() {
-            push_attr("closedby", cb, out);
+        if let Some(cb) = row.closed_by() {
+            push_attr("closedby", cb.as_html_attr(), out);
         }
-        if let Some(pop) = row.popover().as_html_attr() {
-            push_attr("popover", pop, out);
+        if let Some(pop) = row.popover() {
+            push_attr("popover", pop.as_html_attr(), out);
         }
-        if let Some(pa) = row.popover_action().as_html_attr() {
-            push_attr("popovertargetaction", pa, out);
+        if let Some(pa) = row.popover_action() {
+            push_attr("popovertargetaction", pa.as_html_attr(), out);
         }
         if row.data_nve_open() {
             push_attr("data-nve-open", "true", out);
@@ -136,18 +135,18 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         } else {
             ctx.remove_attr(node, "open");
         }
-        if let Some(cb) = row.closed_by().as_html_attr() {
-            ctx.set_attr(node, "closedby", cb);
+        if let Some(cb) = row.closed_by() {
+            ctx.set_attr(node, "closedby", cb.as_html_attr());
         } else {
             ctx.remove_attr(node, "closedby");
         }
-        if let Some(pop) = row.popover().as_html_attr() {
-            ctx.set_attr(node, "popover", pop);
+        if let Some(pop) = row.popover() {
+            ctx.set_attr(node, "popover", pop.as_html_attr());
         } else {
             ctx.remove_attr(node, "popover");
         }
-        if let Some(pa) = row.popover_action().as_html_attr() {
-            ctx.set_attr(node, "popovertargetaction", pa);
+        if let Some(pa) = row.popover_action() {
+            ctx.set_attr(node, "popovertargetaction", pa.as_html_attr());
         } else {
             ctx.remove_attr(node, "popovertargetaction");
         }
@@ -247,11 +246,11 @@ impl WebTableSystem for HtmlFormWebSystem {
         if !name.is_empty() {
             push_attr("name", name, out);
         }
-        if let Some(m) = row.method().as_html_attr() {
-            push_attr("method", m, out);
+        if let Some(m) = row.method() {
+            push_attr("method", m.as_html_attr(), out);
         }
-        if let Some(e) = row.enctype().as_html_attr() {
-            push_attr("enctype", e, out);
+        if let Some(e) = row.enctype() {
+            push_attr("enctype", e.as_html_attr(), out);
         }
         if row.novalidate() {
             out.push_str(" novalidate");
@@ -281,13 +280,13 @@ impl WebTableSystem for HtmlFormWebSystem {
                 ctx.remove_attr(node, attr);
             }
         }
-        if let Some(m) = row.method().as_html_attr() {
-            ctx.set_attr(node, "method", m);
+        if let Some(m) = row.method() {
+            ctx.set_attr(node, "method", m.as_html_attr());
         } else {
             ctx.remove_attr(node, "method");
         }
-        if let Some(e) = row.enctype().as_html_attr() {
-            ctx.set_attr(node, "enctype", e);
+        if let Some(e) = row.enctype() {
+            ctx.set_attr(node, "enctype", e.as_html_attr());
         } else {
             ctx.remove_attr(node, "enctype");
         }
@@ -332,11 +331,11 @@ impl WebTableSystem for HtmlFormControlWebSystem {
         if !fa.is_empty() && is_safe_web_url(fa) {
             push_attr("formaction", fa, out);
         }
-        if let Some(bt) = row.button_type().as_html_attr() {
-            push_attr("type", bt, out);
+        if let Some(bt) = row.button_type() {
+            push_attr("type", bt.as_html_attr(), out);
         }
-        if let Some(fm) = row.form_method().as_html_attr() {
-            push_attr("formmethod", fm, out);
+        if let Some(fm) = row.form_method() {
+            push_attr("formmethod", fm.as_html_attr(), out);
         }
     }
 
@@ -367,13 +366,13 @@ impl WebTableSystem for HtmlFormControlWebSystem {
         } else {
             ctx.remove_attr(node, "formaction");
         }
-        if let Some(bt) = row.button_type().as_html_attr() {
-            ctx.set_attr(node, "type", bt);
+        if let Some(bt) = row.button_type() {
+            ctx.set_attr(node, "type", bt.as_html_attr());
         } else {
             ctx.remove_attr(node, "type");
         }
-        if let Some(fm) = row.form_method().as_html_attr() {
-            ctx.set_attr(node, "formmethod", fm);
+        if let Some(fm) = row.form_method() {
+            ctx.set_attr(node, "formmethod", fm.as_html_attr());
         } else {
             ctx.remove_attr(node, "formmethod");
         }
@@ -486,7 +485,7 @@ mod tests {
                 )])));
             tx.edit::<HtmlForm>(form_n)
                 .action("/api/save")
-                .method(FormMethod::Post)
+                .method(Some(FormMethod::Post))
                 .novalidate(true);
             tx.commit_into(&mut changes);
         }

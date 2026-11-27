@@ -109,8 +109,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
     tx.edit::<Interaction>(n)
         .event_mask(0b101)
         .cursor(CursorKind::Pointer)
-        .tab_index_set(true)
-        .tab_index(-1)
+        .tab_index(Some(-1))
         .state_rules(Some(StateRules::new(vec![StateStyleRule {
             state: InteractionState::HOVER,
             patch: StylePatch::default().opacity(0.9),
@@ -118,7 +117,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
     tx.edit::<Accessibility>(n)
         .role(AriaRole::Button)
         .label("Submit")
-        .value_now(42.0)
+        .value_now(Some(42.0))
         .relations(Some(AriaRelations {
             controls: "panel-1".into(),
             ..Default::default()
@@ -129,7 +128,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
         .target(LinkTarget::Blank);
     tx.edit::<Scroll>(n)
         .axes(ScrollAxes::Vertical)
-        .virtual_total_height(4000.0);
+        .virtual_total_height(Some(4000.0));
     tx.edit::<Image>(n)
         .src(Some(ImageSrc::Url("https://cdn.example.com/a.png".into())))
         .fit(ImageFit::Contain)
@@ -138,8 +137,8 @@ fn core_tables_roundtrip_through_nve2_wire() {
         .value("abc")
         .placeholder("Type...")
         .multiline(true)
-        .autofill(OptAutofillHint::some(crate::AutofillHint::Email))
-        .max_length(128);
+        .autofill(Some(crate::AutofillHint::Email))
+        .max_length(Some(128));
 
     let mut changes = ChangeSet::default();
     tx.commit_into(&mut changes);
@@ -175,18 +174,18 @@ fn core_tables_roundtrip_through_nve2_wire() {
 
     let ia = dst.try_row::<Interaction>(n).unwrap();
     assert_eq!(ia.cursor(), CursorKind::Pointer);
-    assert_eq!(ia.tab_index(), -1);
+    assert_eq!(ia.tab_index(), Some(-1));
 
     let a11y = dst.try_row::<Accessibility>(n).unwrap();
     assert_eq!(a11y.role(), AriaRole::Button);
     assert_eq!(a11y.label(), "Submit");
-    assert_eq!(a11y.value_now(), 42.0);
+    assert_eq!(a11y.value_now(), Some(42.0));
 
     let ti = dst.try_row::<TextInput>(n).unwrap();
     assert_eq!(ti.value(), "abc");
     assert!(ti.multiline());
-    assert_eq!(ti.autofill().get(), Some(crate::AutofillHint::Email));
-    assert_eq!(ti.max_length(), 128);
+    assert_eq!(ti.autofill(), Some(crate::AutofillHint::Email));
+    assert_eq!(ti.max_length(), Some(128));
 
     // Primary slot derived uniformly from RealizationOrder (Image beats TextInput/Scroll/Link/TextContent).
     assert_eq!(dst.primary_slot(n), Image::slot());

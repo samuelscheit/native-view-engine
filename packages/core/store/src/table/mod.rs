@@ -1,20 +1,21 @@
 //! `NveTable` trait (implemented by `#[derive(NveTable)]`), typed property handles, and the
 //! process-global table slot registry.
 
-use core::marker::PhantomData;
+mod field;
+
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
-use nve_abi::table::{table_flags, FieldKind, Storage, TableDesc, TableKey, Word, MAX_TABLE_SLOTS};
+use nve_abi::table::{table_flags, Storage, TableDesc, TableKey, Word, MAX_TABLE_SLOTS};
+
+use crate::row::{RowRef, RowWriter};
+
+pub use field::{Prop, Res, ResProp, ScalarField, Str, StrProp, TableField};
 
 /// Maximum number of compiled static table slots (`0..MAX_STATIC_TABLE_SLOTS`).
 /// Wire-declared dynamic tables occupy the disjoint upper range
 /// `MAX_STATIC_TABLE_SLOTS..MAX_TABLE_SLOTS` so static and dynamic slots can never collide.
 pub const MAX_STATIC_TABLE_SLOTS: usize = 96;
-
-use crate::resource::Resource;
-use crate::row::{RowRef, RowWriter};
-use crate::value::WordValue;
 
 /// Process-local table slot (bit index into `NodeRow::tables`).
 #[repr(transparent)]
@@ -68,164 +69,6 @@ pub unsafe trait NveTable: 'static {
 
     /// Process-local slot, registered on first use.
     fn slot() -> TableSlot;
-}
-
-/// Marker field type: a UTF-8 string stored as two words `{ offset, len }` in the text arena.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Str;
-
-/// Marker field type: a `ResourceId` word referencing a deduplicated blob of type `R`.
-pub struct Res<R: Resource>(PhantomData<fn() -> R>);
-
-/// Field type metadata consumed by `#[derive(NveTable)]`.
-pub trait TableField {
-    const KIND: FieldKind;
-    /// Bits occupied in its (first) word.
-    const BITS: u8;
-    /// Registers codecs the field needs to cross a wire boundary.
-    #[inline]
-    fn register() {}
-}
-
-impl<T: WordValue> TableField for T {
-    const KIND: FieldKind = T::KIND;
-    const BITS: u8 = T::BITS;
-}
-
-impl TableField for Str {
-    const KIND: FieldKind = FieldKind::Str;
-    const BITS: u8 = 32;
-}
-
-impl<R: Resource> TableField for Res<R> {
-    const KIND: FieldKind = FieldKind::Resource;
-    const BITS: u8 = 32;
-    fn register() {
-        crate::resource::register_codec::<R>();
-    }
-}
-
-/// Typed handle to a packed scalar field: `tx.set(node, Visual::OPACITY, 0.5)`.
-pub struct Prop<T, V> {
-    pub(crate) word: u8,
-    pub(crate) shift: u8,
-    pub(crate) mask: u32,
-    _p: PhantomData<fn() -> (T, V)>,
-}
-
-impl<T, V> Clone for Prop<T, V> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T, V> Copy for Prop<T, V> {}
-
-impl<T: NveTable, V: WordValue> Prop<T, V> {
-    /// Constructs a scalar property handle for `T`.
-    ///
-    /// # Safety
-    ///
-    /// `(word, shift, bits)` must address a declared scalar field of `T::DESC` that does not
-    /// overlap any string or resource word.
-    #[doc(hidden)]
-    #[inline(always)]
-    pub const unsafe fn new(word: u8, shift: u8, bits: u8) -> Self {
-        let mask = if bits >= 32 { u32::MAX } else { ((1u32 << bits) - 1) << shift };
-        Self {
-            word,
-            shift,
-            mask,
-            _p: PhantomData,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn word(self) -> u8 {
-        self.word
-    }
-
-    #[inline(always)]
-    pub const fn shift(self) -> u8 {
-        self.shift
-    }
-
-    #[inline(always)]
-    pub const fn mask(self) -> u32 {
-        self.mask
-    }
-
-    #[inline(always)]
-    pub fn get(self, row: &[Word]) -> V {
-        V::from_bits((row[self.word as usize] & self.mask) >> self.shift)
-    }
-}
-
-/// Typed handle to a string field.
-pub struct StrProp<T> {
-    pub(crate) word: u8,
-    _p: PhantomData<fn() -> T>,
-}
-
-impl<T> Clone for StrProp<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T> Copy for StrProp<T> {}
-
-impl<T: NveTable> StrProp<T> {
-    /// Constructs a string property handle for `T`.
-    ///
-    /// # Safety
-    ///
-    /// `word` must have its bit set in `T::DESC.str_words`.
-    #[doc(hidden)]
-    #[inline(always)]
-    pub const unsafe fn new(word: u8) -> Self {
-        Self {
-            word,
-            _p: PhantomData,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn word(self) -> u8 {
-        self.word
-    }
-}
-
-/// Typed handle to a resource field.
-pub struct ResProp<T, R> {
-    pub(crate) word: u8,
-    _p: PhantomData<fn() -> (T, R)>,
-}
-
-impl<T, R> Clone for ResProp<T, R> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T, R> Copy for ResProp<T, R> {}
-
-impl<T: NveTable, R: Resource> ResProp<T, R> {
-    /// Constructs a resource property handle for `T`.
-    ///
-    /// # Safety
-    ///
-    /// `word` must have its bit set in `T::DESC.resource_words`.
-    #[doc(hidden)]
-    #[inline(always)]
-    pub const unsafe fn new(word: u8) -> Self {
-        Self {
-            word,
-            _p: PhantomData,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn word(self) -> u8 {
-        self.word
-    }
 }
 
 /// Owned descriptor for a runtime/wire-declared dynamic table scoped to a single
@@ -444,7 +287,7 @@ fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError>
 pub fn register_static(desc: &'static TableDesc, cell: &AtomicU8, register: fn()) -> TableSlot {
     register();
     let slot = register_locked(desc)
-        .expect("NveTable static registration must succeed (unique key and <= 64 tables)");
+        .expect("NveTable static registration must succeed (unique key and <= 96 tables)");
     cell.store(slot.0, Ordering::Release);
     slot
 }

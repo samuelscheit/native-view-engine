@@ -55,7 +55,7 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
     )));
     tx.edit::<Accessibility>(heading)
         .role(AriaRole::Heading)
-        .level(1);
+        .level(Some(1));
     tx.edit::<TextContent>(heading).text("Hello NVE2 Web");
     tx.edit::<Typography>(heading).color(Rgba::WHITE).font_size(24.0);
     tx.edit::<DebugId>(heading).test_id("hero-title");
@@ -281,7 +281,7 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     tx.edit::<Link>(link)
         .href("https://example.com")
         .target(LinkTarget::Blank);
-    tx.edit::<TextInput>(inp).max_length(u16::MAX);
+    tx.edit::<TextInput>(inp).max_length(None);
     tx.commit_into(&mut changes);
     web.commit(&store, &changes).unwrap();
 
@@ -1119,12 +1119,12 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
         let p = tx.create();
         let a = tx.create();
         tx.set_children(NodeId::ROOT, &[u, o, p, a]);
-        tx.edit::<Accessibility>(u).live(AriaLive::Unset);
-        tx.edit::<Accessibility>(o).live(AriaLive::Off);
-        tx.edit::<Accessibility>(p).live(AriaLive::Polite);
+        tx.edit::<Accessibility>(u).live(None);
+        tx.edit::<Accessibility>(o).live(Some(AriaLive::Off));
+        tx.edit::<Accessibility>(p).live(Some(AriaLive::Polite));
         tx.edit::<Accessibility>(a)
             .role(AriaRole::Alert)
-            .live(AriaLive::Assertive);
+            .live(Some(AriaLive::Assertive));
         tx.commit_into(&mut changes);
         (u, o, p, a)
     };

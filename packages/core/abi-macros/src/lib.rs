@@ -9,6 +9,8 @@ mod codec;
 mod emit;
 mod parse;
 mod table;
+mod tok;
+mod word_enum;
 
 use proc_macro::{Group, LexError, Span, TokenStream, TokenTree};
 
@@ -111,6 +113,17 @@ pub fn derive_nve_codec(input: TokenStream) -> TokenStream {
     match codec::derive(input) {
         Ok(code) => parse_at_call_site(&code)
             .unwrap_or_else(|e| compile_error(&format!("NveCodec emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Derives `nve_store::{WordValue, OptWord}` + `COUNT`/`BITS`/`ALL`/`to_word`/`from_word`
+/// for fieldless `#[repr(u8)]` contiguous `0..N` enums.
+#[proc_macro_derive(WordEnum, attributes(word_enum))]
+pub fn derive_word_enum(input: TokenStream) -> TokenStream {
+    match word_enum::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("WordEnum emit error: {e}"))),
         Err(msg) => compile_error(&msg),
     }
 }

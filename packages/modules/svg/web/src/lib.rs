@@ -12,8 +12,8 @@ pub struct SvgWebSystem;
 
 impl SvgWebSystem {
     #[inline]
-    fn resolved_tint(tint: Rgba) -> Option<ColorRgba> {
-        (tint != Rgba::TRANSPARENT).then(|| ColorRgba::from_u32(tint.0))
+    fn resolved_tint(tint: Option<Rgba>) -> Option<ColorRgba> {
+        tint.map(|c| ColorRgba::from_u32(c.0))
     }
 
     fn write_view_box_and_mirror(store: &NodeStore, node: NodeId) -> Option<(String, bool)> {

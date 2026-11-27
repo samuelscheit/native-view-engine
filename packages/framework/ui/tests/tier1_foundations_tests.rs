@@ -409,7 +409,7 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
             .store()
             .try_row::<TextInput>(id)
             .unwrap_or_else(|| panic!("expected TextInput row on {tid}"));
-        let actual_ac = ti.autofill().get().map(AutofillHint::as_html_autocomplete);
+        let actual_ac = ti.autofill().map(AutofillHint::as_html_autocomplete);
         assert_eq!(
             actual_ac,
             Some(expected_ac),

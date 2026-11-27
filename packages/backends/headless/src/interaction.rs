@@ -44,7 +44,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 || i.cursor() != CursorKind::Auto
                 || i.disabled()
                 || !i.state_rules().is_none()
-                || i.tab_index_set()
+                || i.tab_index().is_some()
         });
         let has_visible_input = store
             .try_row::<TextInput>(id)

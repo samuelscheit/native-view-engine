@@ -1,23 +1,10 @@
 //! `Interaction`, `Accessibility`, and `DebugId` sparse tables.
 
-use nve_store::{word_enum, FieldKind, NveTable, Res, Str, WordValue};
+use nve_store::{NveTable, Res, Str, WordEnum};
 
 use crate::interaction::CursorKind;
 
 use super::resources::{AriaRelations, StateRules};
-
-impl WordValue for CursorKind {
-    const BITS: u8 = 4;
-    const KIND: FieldKind = FieldKind::Enum;
-    #[inline(always)]
-    fn to_bits(self) -> u32 {
-        self as u32
-    }
-    #[inline(always)]
-    fn from_bits(bits: u32) -> Self {
-        Self::from_u8(bits as u8).unwrap_or(Self::Auto)
-    }
-}
 
 /// Interactive subscriptions, pointer cursor, focusability, and pseudo-state style rules.
 #[derive(NveTable)]
@@ -27,78 +14,73 @@ pub struct Interaction {
     #[effect(events, realize)]
     pub event_mask: u32,
     #[effect(paint)]
-    #[bits(4)]
     pub cursor: CursorKind,
     #[effect(semantics, events, paint)]
-    #[bits(1)]
     pub disabled: bool,
     #[effect(semantics, events)]
-    #[bits(1)]
     pub focusable: bool,
+    /// Optional explicit tab index (`None` = natural tab order).
     #[effect(semantics, events)]
-    #[bits(1)]
-    pub tab_index_set: bool,
-    #[effect(semantics, events)]
-    #[bits(16)]
-    pub tab_index: i16,
+    pub tab_index: Option<i16>,
     #[effect(paint)]
     pub state_rules: Res<StateRules>,
 }
 
-word_enum! {
-    /// Closed cross-platform accessibility role enum covering WAI-ARIA, Apple NSAccessibility,
-    /// Android AccessibilityNodeInfo, GTK4, and Flutter Semantics.
-    pub enum AriaRole: 6 {
-        None = 0,
-        Button = 1,
-        Link = 2,
-        Heading = 3,
-        Text = 4,
-        Image = 5,
-        TextBox = 6,
-        SearchBox = 7,
-        ScrollArea = 8,
-        Checkbox = 9,
-        Switch = 10,
-        Radio = 11,
-        Slider = 12,
-        Tab = 13,
-        TabList = 14,
-        TabPanel = 15,
-        Dialog = 16,
-        AlertDialog = 17,
-        Alert = 18,
-        Status = 19,
-        Tooltip = 20,
-        Navigation = 21,
-        Main = 22,
-        Article = 23,
-        Complementary = 24,
-        Banner = 25,
-        ContentInfo = 26,
-        Form = 27,
-        Region = 28,
-        Group = 29,
-        List = 30,
-        ListItem = 31,
-        ListBox = 32,
-        Option = 33,
-        Menu = 34,
-        MenuItem = 35,
-        Separator = 36,
-        Presentation = 37,
-        Table = 38,
-        Row = 39,
-        Cell = 40,
-        ColumnHeader = 41,
-        RowHeader = 42,
-        Code = 43,
-        CodeBlock = 44,
-        ProgressBar = 45,
-        ComboBox = 46,
-        Grid = 47,
-        GridCell = 48,
-    }
+/// Closed cross-platform accessibility role enum covering WAI-ARIA, Apple NSAccessibility,
+/// Android AccessibilityNodeInfo, GTK4, and Flutter Semantics.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum AriaRole {
+    #[default]
+    None = 0,
+    Button = 1,
+    Link = 2,
+    Heading = 3,
+    Text = 4,
+    Image = 5,
+    TextBox = 6,
+    SearchBox = 7,
+    ScrollArea = 8,
+    Checkbox = 9,
+    Switch = 10,
+    Radio = 11,
+    Slider = 12,
+    Tab = 13,
+    TabList = 14,
+    TabPanel = 15,
+    Dialog = 16,
+    AlertDialog = 17,
+    Alert = 18,
+    Status = 19,
+    Tooltip = 20,
+    Navigation = 21,
+    Main = 22,
+    Article = 23,
+    Complementary = 24,
+    Banner = 25,
+    ContentInfo = 26,
+    Form = 27,
+    Region = 28,
+    Group = 29,
+    List = 30,
+    ListItem = 31,
+    ListBox = 32,
+    Option = 33,
+    Menu = 34,
+    MenuItem = 35,
+    Separator = 36,
+    Presentation = 37,
+    Table = 38,
+    Row = 39,
+    Cell = 40,
+    ColumnHeader = 41,
+    RowHeader = 42,
+    Code = 43,
+    CodeBlock = 44,
+    ProgressBar = 45,
+    ComboBox = 46,
+    Grid = 47,
+    GridCell = 48,
 }
 
 impl AriaRole {
@@ -226,34 +208,51 @@ impl AriaRole {
     }
 }
 
-word_enum! {
-    /// Tri-state ARIA boolean attribute (`Unset` / `False` / `True` / `Mixed`).
-    pub enum AriaTriState: 2 { Unset = 0, False = 1, True = 2, Mixed = 3 }
+/// Tri-state ARIA boolean value (`False` / `True` / `Mixed`); wrap in `Option<AriaTriState>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum AriaTriState {
+    False = 0,
+    True = 1,
+    Mixed = 2,
 }
 
-word_enum! {
-    pub enum AriaLive: 2 { Unset = 0, Off = 1, Polite = 2, Assertive = 3 }
+/// WAI-ARIA `aria-live` politeness level; wrap in `Option<AriaLive>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum AriaLive {
+    Off = 0,
+    Polite = 1,
+    Assertive = 2,
 }
 
 impl AriaLive {
-    /// Canonical WAI-ARIA `aria-live` attribute token (`None` when `Unset`).
+    /// Canonical WAI-ARIA `aria-live` attribute token.
     #[inline]
-    pub const fn as_aria_str(self) -> Option<&'static str> {
+    pub const fn as_aria_str(self) -> &'static str {
         match self {
-            Self::Unset => None,
-            Self::Off => Some("off"),
-            Self::Polite => Some("polite"),
-            Self::Assertive => Some("assertive"),
+            Self::Off => "off",
+            Self::Polite => "polite",
+            Self::Assertive => "assertive",
         }
     }
 }
 
-word_enum! {
-    pub enum AriaOrientation: 2 { Unset = 0, Horizontal = 1, Vertical = 2 }
+/// WAI-ARIA `aria-orientation`; wrap in `Option<AriaOrientation>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum AriaOrientation {
+    Horizontal = 0,
+    Vertical = 1,
 }
 
-word_enum! {
-    pub enum AriaAutoComplete: 2 { Unset = 0, None = 1, Inline = 2, List = 3 }
+/// WAI-ARIA `aria-autocomplete`; wrap in `Option<AriaAutoComplete>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum AriaAutoComplete {
+    None = 0,
+    Inline = 1,
+    List = 2,
 }
 
 /// Cross-platform accessibility semantics (WAI-ARIA + Apple/Android/GTK/Flutter).
@@ -262,47 +261,33 @@ word_enum! {
 pub struct Accessibility {
     /// Drives semantic tag / native role realization.
     #[effect(semantics, realize)]
-    #[bits(6)]
     pub role: AriaRole,
-    /// `aria-level` (`1..=6`; `0` = unset).
+    /// Optional `aria-level` (`1..=6`; `None` = unset).
     #[effect(semantics, realize)]
-    #[bits(8)]
-    pub level: u8,
+    pub level: Option<u8>,
     #[effect(semantics, realize)]
-    #[bits(1)]
     pub modal: bool,
     #[effect(semantics)]
-    #[bits(2)]
-    pub live: AriaLive,
+    pub live: Option<AriaLive>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub orientation: AriaOrientation,
+    pub orientation: Option<AriaOrientation>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub autocomplete: AriaAutoComplete,
+    pub autocomplete: Option<AriaAutoComplete>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub checked: AriaTriState,
+    pub checked: Option<AriaTriState>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub selected: AriaTriState,
+    pub selected: Option<AriaTriState>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub expanded: AriaTriState,
+    pub expanded: Option<AriaTriState>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub pressed: AriaTriState,
+    pub pressed: Option<AriaTriState>,
     #[effect(semantics)]
-    #[bits(1)]
     pub hidden: bool,
     #[effect(semantics)]
-    #[bits(1)]
     pub invalid: bool,
     #[effect(semantics)]
-    #[bits(1)]
     pub multiselectable: bool,
     #[effect(semantics)]
-    #[bits(1)]
     pub busy: bool,
     #[effect(semantics)]
     pub label: Str,
@@ -310,18 +295,15 @@ pub struct Accessibility {
     pub hint: Str,
     #[effect(semantics)]
     pub value_text: Str,
-    /// `aria-valuenow`; `NaN` = unset.
+    /// Optional `aria-valuenow`.
     #[effect(semantics)]
-    #[default(f32::NAN)]
-    pub value_now: f32,
-    /// `aria-valuemin`; `NaN` = unset.
+    pub value_now: Option<f32>,
+    /// Optional `aria-valuemin`.
     #[effect(semantics)]
-    #[default(f32::NAN)]
-    pub value_min: f32,
-    /// `aria-valuemax`; `NaN` = unset.
+    pub value_min: Option<f32>,
+    /// Optional `aria-valuemax`.
     #[effect(semantics)]
-    #[default(f32::NAN)]
-    pub value_max: f32,
+    pub value_max: Option<f32>,
     #[effect(semantics)]
     pub relations: Res<AriaRelations>,
 }
@@ -338,4 +320,3 @@ pub struct DebugId {
     #[effect(semantics)]
     pub slot: Str,
 }
-

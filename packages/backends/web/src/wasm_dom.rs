@@ -3,7 +3,7 @@
 
 use nve_abi::table::effect;
 use nve_components::tables::{
-    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkTarget, TextContent,
+    Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkRel, LinkTarget, TextContent,
     TextInput, Transform, Visual,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore};
@@ -340,15 +340,19 @@ impl WebBackend {
                     let _ = el.set_attribute("target", "_parent");
                 }
             }
-            let rel_bits = if is_blank {
-                link.rel() | 1 | 2
+            let rel_flags = if is_blank {
+                link.rel() | LinkRel::NOOPENER | LinkRel::NOREFERRER
             } else {
                 link.rel()
             };
-            if rel_bits != 0 {
+            if !rel_flags.is_empty() {
                 let mut rel = String::new();
-                for (bit, kw) in [(1u8, "noopener"), (2u8, "noreferrer"), (4u8, "nofollow")] {
-                    if rel_bits & bit != 0 {
+                for (flag, kw) in [
+                    (LinkRel::NOOPENER, "noopener"),
+                    (LinkRel::NOREFERRER, "noreferrer"),
+                    (LinkRel::NOFOLLOW, "nofollow"),
+                ] {
+                    if rel_flags.contains(flag) {
                         if !rel.is_empty() {
                             rel.push(' ');
                         }
@@ -399,7 +403,7 @@ impl WebBackend {
                 ta.set_value(val);
             }
             set_or_remove_attr(el, "placeholder", ti.placeholder());
-            if let Some(ac) = ti.autofill().get() {
+            if let Some(ac) = ti.autofill() {
                 let _ = el.set_attribute("autocomplete", ac.as_html_autocomplete());
             } else {
                 let _ = el.remove_attribute("autocomplete");
@@ -419,8 +423,8 @@ impl WebBackend {
             } else {
                 let _ = el.remove_attribute("readonly");
             }
-            if ti.max_length() > 0 && ti.max_length() < u16::MAX {
-                let _ = el.set_attribute("maxlength", &ti.max_length().to_string());
+            if let Some(ml) = ti.max_length().filter(|&n| n > 0) {
+                let _ = el.set_attribute("maxlength", &ml.to_string());
             } else {
                 let _ = el.remove_attribute("maxlength");
             }
@@ -433,8 +437,8 @@ impl WebBackend {
                 let _ = el.remove_attribute("disabled");
                 let _ = el.remove_attribute("aria-disabled");
             }
-            if inter.tab_index_set() {
-                let _ = el.set_attribute("tabindex", &inter.tab_index().to_string());
+            if let Some(ti_idx) = inter.tab_index() {
+                let _ = el.set_attribute("tabindex", &ti_idx.to_string());
             } else {
                 let _ = el.remove_attribute("tabindex");
             }
@@ -447,7 +451,7 @@ impl WebBackend {
             if let Some(a11y) = store.try_row::<Accessibility>(id) {
                 set_or_remove_attr(el, "role", a11y.role().as_aria_str());
                 set_or_remove_attr(el, "aria-label", a11y.label());
-                set_or_remove_attr(el, "aria-live", a11y.live().as_aria_str().unwrap_or(""));
+                set_or_remove_attr(el, "aria-live", a11y.live().map_or("", |l| l.as_aria_str()));
                 if a11y.hidden() {
                     let _ = el.set_attribute("aria-hidden", "true");
                 } else {

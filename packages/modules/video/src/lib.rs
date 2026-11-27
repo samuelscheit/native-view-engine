@@ -11,16 +11,12 @@ pub struct VideoPlayer {
     #[effect(realize, paint)]
     pub source_uri: Str,
     #[effect(paint)]
-    #[bits(1)]
     pub autoplay: bool,
     #[effect(paint)]
-    #[bits(1)]
     pub muted: bool,
     #[effect(paint)]
-    #[bits(1)]
     pub looping: bool,
     #[effect(paint)]
-    #[bits(1)]
     #[default(true)]
     pub controls: bool,
 }

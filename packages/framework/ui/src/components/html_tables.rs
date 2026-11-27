@@ -36,16 +36,16 @@ pub(crate) fn html_invoker_table(
                 "hide" => PopoverAction::Hide,
                 _ => PopoverAction::Toggle,
             };
-            tx.edit::<HtmlSemantics>(node).popover_action(pa);
+            tx.edit::<HtmlSemantics>(node).popover_action(Some(pa));
         }
         if button_type.is_some() || name.is_some() || value.is_some() {
             let mut fc = tx.edit::<HtmlFormControl>(node);
             if let Some(ref bt) = button_type {
                 let parsed = match bt.trim() {
-                    "button" => ButtonType::Button,
-                    "submit" => ButtonType::Submit,
-                    "reset" => ButtonType::Reset,
-                    _ => ButtonType::Unset,
+                    "button" => Some(ButtonType::Button),
+                    "submit" => Some(ButtonType::Submit),
+                    "reset" => Some(ButtonType::Reset),
+                    _ => None,
                 };
                 fc = fc.button_type(parsed);
             }
@@ -81,10 +81,10 @@ pub(crate) fn html_summary_table() -> TableAttr {
 pub(crate) fn html_dialog_table(open: bool, closed_by: String) -> TableAttr {
     table_attr_fn(move |tx, node| {
         let cb = match closed_by.trim() {
-            "any" => ClosedBy::Any,
-            "closerequest" => ClosedBy::CloseRequest,
-            "none" => ClosedBy::None,
-            _ => ClosedBy::Unset,
+            "any" => Some(ClosedBy::Any),
+            "closerequest" => Some(ClosedBy::CloseRequest),
+            "none" => Some(ClosedBy::None),
+            _ => None,
         };
         tx.edit::<HtmlSemantics>(node)
             .element(SemanticElement::Dialog)
@@ -104,10 +104,10 @@ pub(crate) fn html_form_table(
     table_attr_fn(move |tx, node| {
         tx.edit::<HtmlSemantics>(node).element(SemanticElement::Form);
         let m = match method.trim() {
-            "get" | "GET" => FormMethod::Get,
-            "post" | "POST" => FormMethod::Post,
-            "dialog" | "DIALOG" => FormMethod::Dialog,
-            _ => FormMethod::Unset,
+            "get" | "GET" => Some(FormMethod::Get),
+            "post" | "POST" => Some(FormMethod::Post),
+            "dialog" | "DIALOG" => Some(FormMethod::Dialog),
+            _ => None,
         };
         let mut f = tx.edit::<HtmlForm>(node).method(m).novalidate(novalidate);
         if let Some(ref act) = action {
@@ -155,10 +155,10 @@ pub(crate) fn html_popover_table(
 ) -> TableAttr {
     table_attr_fn(move |tx, node| {
         let mode = match popover_mode.trim() {
-            "auto" => PopoverMode::Auto,
-            "manual" => PopoverMode::Manual,
-            "hint" => PopoverMode::Hint,
-            _ => PopoverMode::None,
+            "auto" => Some(PopoverMode::Auto),
+            "manual" => Some(PopoverMode::Manual),
+            "hint" => Some(PopoverMode::Hint),
+            _ => None,
         };
         tx.edit::<HtmlSemantics>(node)
             .popover(mode)

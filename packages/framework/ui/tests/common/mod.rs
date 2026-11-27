@@ -63,18 +63,20 @@ impl UiHarness {
         while let Some(id) = stack.pop() {
             if id != NodeId::ROOT {
                 if let Some(a) = store.try_row::<Accessibility>(id) {
-                    self.num_attrs
-                        .insert((id, "ariaValueNow"), format_num(a.value_now()));
-                    self.num_attrs
-                        .insert((id, "ariaValueMin"), format_num(a.value_min()));
-                    self.num_attrs
-                        .insert((id, "ariaValueMax"), format_num(a.value_max()));
+                    if let Some(v) = a.value_now() {
+                        self.num_attrs.insert((id, "ariaValueNow"), format_num(v));
+                    }
+                    if let Some(v) = a.value_min() {
+                        self.num_attrs.insert((id, "ariaValueMin"), format_num(v));
+                    }
+                    if let Some(v) = a.value_max() {
+                        self.num_attrs.insert((id, "ariaValueMax"), format_num(v));
+                    }
                 }
                 if let Some(i) = store.try_row::<Interaction>(id)
-                    && i.tab_index_set()
+                    && let Some(tab) = i.tab_index()
                 {
-                    self.num_attrs
-                        .insert((id, "tabIndex"), i.tab_index().to_string());
+                    self.num_attrs.insert((id, "tabIndex"), tab.to_string());
                 }
             }
             stack.extend_from_slice(store.children(id));
@@ -225,20 +227,20 @@ impl UiHarness {
                 Some(if i.disabled() { "true" } else { "false" })
             }
             "ariaLive" => match store.try_row::<Accessibility>(nid)?.live() {
-                AriaLive::Polite => Some("polite"),
-                AriaLive::Assertive => Some("assertive"),
-                AriaLive::Off | AriaLive::Unset => None,
+                Some(AriaLive::Polite) => Some("polite"),
+                Some(AriaLive::Assertive) => Some("assertive"),
+                Some(AriaLive::Off) | None => None,
             },
             "ariaOrientation" => match store.try_row::<Accessibility>(nid)?.orientation() {
-                AriaOrientation::Horizontal => Some("horizontal"),
-                AriaOrientation::Vertical => Some("vertical"),
-                AriaOrientation::Unset => None,
+                Some(AriaOrientation::Horizontal) => Some("horizontal"),
+                Some(AriaOrientation::Vertical) => Some("vertical"),
+                None => None,
             },
             "ariaAutoComplete" => match store.try_row::<Accessibility>(nid)?.autocomplete() {
-                AriaAutoComplete::Inline => Some("inline"),
-                AriaAutoComplete::List => Some("list"),
-                AriaAutoComplete::None => Some("none"),
-                AriaAutoComplete::Unset => None,
+                Some(AriaAutoComplete::Inline) => Some("inline"),
+                Some(AriaAutoComplete::List) => Some("list"),
+                Some(AriaAutoComplete::None) => Some("none"),
+                None => None,
             },
             "ariaControls" | "ariaLabelledBy" | "ariaDescribedBy" | "ariaActiveDescendant" => {
                 let res = store.try_row::<Accessibility>(nid)?.relations();
@@ -418,12 +420,12 @@ impl UiHarness {
     }
 }
 
-fn tri_str(v: AriaTriState) -> Option<&'static str> {
+fn tri_str(v: Option<AriaTriState>) -> Option<&'static str> {
     match v {
-        AriaTriState::True => Some("true"),
-        AriaTriState::False => Some("false"),
-        AriaTriState::Mixed => Some("mixed"),
-        AriaTriState::Unset => None,
+        Some(AriaTriState::True) => Some("true"),
+        Some(AriaTriState::False) => Some("false"),
+        Some(AriaTriState::Mixed) => Some("mixed"),
+        None => None,
     }
 }
 

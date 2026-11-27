@@ -195,9 +195,17 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     ));
-    if !dylib_path.exists() {
+    let test_mtime = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+    let dylib_stale = std::fs::metadata(&dylib_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .is_none_or(|d_mtime| test_mtime.is_some_and(|t_mtime| d_mtime < t_mtime));
+    if dylib_stale {
         let status = std::process::Command::new("cargo")
-            .args(["build", "-p", "nve-studio-workspace"])
+            .args(["build", "--locked", "-p", "nve-studio-workspace"])
             .current_dir(workspace_root)
             .status()
             .expect("build nve-studio-workspace cdylib");

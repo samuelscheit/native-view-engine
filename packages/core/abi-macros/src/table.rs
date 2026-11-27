@@ -1,25 +1,15 @@
 //! `#[derive(NveTable)]`: word-table schema → zero-cost typed rows for `nve-store`.
 //!
-//! ```ignore
-//! #[derive(NveTable)]
-//! #[nve_table(name = "nve.visual", storage = "dense")]
-//! pub struct Visual {
-//!     #[effect(paint)] pub background: Rgba,
-//!     #[effect(composite)] #[default(1.0)] pub opacity: f32,
-//!     #[effect(paint)] #[bits(2)] pub border_style: BorderStyle,
-//!     #[effect(semantics)] pub label: Str,
-//!     #[effect(paint)] pub shadows: Res<BoxShadows>,
-//! }
-//! ```
-//! Fields without `#[bits]` take whole words; `#[bits(n)]` fields pack consecutively into shared
-//! words of one effect class; `Str` takes two words. Emits `const DESC`, `Prop` constants
-//! (`Visual::OPACITY`), `VisualRef<'a>` getters and fluent `VisualMut<'a>` setters.
+//! Uses compile-time `nve_abi::table::pack_table` first-fit bin-packing over effect-matched
+//! words, supporting narrow scalars (`WordValue`), narrow `Option<T: OptWord>`, wide
+//! `Option<f32|u32|i32|Rgba>`, 64-bit scalars, `Str`, and `Res<R>`.
 
-use proc_macro::{Delimiter, TokenStream, TokenTree};
+use proc_macro::TokenStream;
 
 use crate::emit::quote_str;
-use crate::parse::{
-    expect_ident, is_delim, is_punct, parse_string_literal, parse_usize_literal, skip_vis,
+use crate::parse::{parse_string_literal, parse_usize_literal};
+use crate::tok::{
+    expect_ident, from_stream, is_ident, is_punct, render_tokens, skip_vis, Delim, Tok,
 };
 
 const S: &str = "::nve_store";
@@ -34,14 +24,12 @@ struct Field {
     name: String,
     ty: String,
     short_ty: String,
+    inner_opt_ty: Option<String>,
     class: Class,
     effects: u8,
     default: Option<String>,
     bits: Option<u32>,
     doc: Vec<String>,
-    word: u32,
-    shift: u32,
-    width: u32,
 }
 
 struct Table {
@@ -54,8 +42,12 @@ struct Table {
 }
 
 pub(crate) fn derive(input: TokenStream) -> Result<String, String> {
-    let mut t = parse(input)?;
-    layout(&mut t)?;
+    let tokens = from_stream(input);
+    derive_tokens(&tokens)
+}
+
+pub(crate) fn derive_tokens(tokens: &[Tok]) -> Result<String, String> {
+    let t = parse(tokens)?;
     Ok(emit(&t))
 }
 
@@ -68,147 +60,176 @@ fn effect_bit(name: &str) -> Result<u8, String> {
         "semantics" => 16,
         "realize" => 32,
         "events" => 64,
-        other => return Err(format!("unknown effect `{other}` (layout|measure|paint|composite|semantics|realize|events)")),
+        other => {
+            return Err(format!(
+                "unknown effect `{other}` (layout|measure|paint|composite|semantics|realize|events)"
+            ))
+        }
     })
 }
 
-fn group_inner(rest: &[TokenTree]) -> Option<Vec<TokenTree>> {
+fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
     match rest.first() {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
-            Some(g.stream().into_iter().collect())
-        }
+        Some(Tok::Group(Delim::Paren, inner)) => Some(inner.as_slice()),
         _ => None,
     }
 }
 
-fn parse(input: TokenStream) -> Result<Table, String> {
-    let tokens: Vec<TokenTree> = input.into_iter().collect();
+fn parse(tokens: &[Tok]) -> Result<Table, String> {
     let mut pos = 0;
     let (mut name, mut dense, mut flags) = (None, true, 0u8);
-    while is_punct(&tokens, pos, '#') {
-        if let Some(TokenTree::Group(g)) = tokens.get(pos + 1) {
-            let inner: Vec<_> = g.stream().into_iter().collect();
-            if matches!(inner.first(), Some(TokenTree::Ident(i)) if i.to_string() == "nve_table") {
-                let kv = group_inner(&inner[1..]).ok_or("expected `#[nve_table(...)]`")?;
-                let mut i = 0;
-                while i < kv.len() {
-                    let TokenTree::Ident(k) = &kv[i] else {
-                        return Err(format!("expected key identifier in #[nve_table], found `{}`", kv[i]));
-                    };
-                    if !is_punct(&kv, i + 1, '=') {
-                        return Err(format!("expected `=` after #[nve_table] key `{k}`"));
-                    }
-                    let TokenTree::Literal(v) = kv.get(i + 2).ok_or("expected value in #[nve_table]")? else {
-                        return Err(format!("expected string literal for #[nve_table] key `{k}`"));
-                    };
-                    let v = parse_string_literal(&v.to_string())?;
-                    match k.to_string().as_str() {
-                        "name" => name = Some(v),
-                        "storage" => {
-                            dense = match v.as_str() {
-                                "dense" => true,
-                                "sparse" => false,
-                                o => return Err(format!("storage must be dense|sparse, got `{o}`")),
-                            }
+    while is_punct(tokens, pos, '#') {
+        if let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(pos + 1)
+            && matches!(inner.first(), Some(Tok::Ident(i)) if i == "nve_table")
+        {
+            let kv = paren_inner(&inner[1..]).ok_or("expected `#[nve_table(...)]`")?;
+            let mut i = 0;
+            while i < kv.len() {
+                let Tok::Ident(k) = &kv[i] else {
+                    return Err(format!("expected key identifier in #[nve_table], found `{:?}`", kv[i]));
+                };
+                if !is_punct(kv, i + 1, '=') {
+                    return Err(format!("expected `=` after #[nve_table] key `{k}`"));
+                }
+                let Tok::Literal(v) = kv.get(i + 2).ok_or("expected value in #[nve_table]")? else {
+                    return Err(format!("expected string literal for #[nve_table] key `{k}`"));
+                };
+                let v = parse_string_literal(v)?;
+                match k.as_str() {
+                    "name" => name = Some(v),
+                    "storage" => {
+                        dense = match v.as_str() {
+                            "dense" => true,
+                            "sparse" => false,
+                            o => return Err(format!("storage must be dense|sparse, got `{o}`")),
                         }
-                        "flags" => {
-                            for f in v.split('|').map(str::trim).filter(|f| !f.is_empty()) {
-                                flags |= match f {
-                                    "host" => 1,
-                                    "publish" => 2,
-                                    "layout" => 4,
-                                    o => return Err(format!("unknown table flag `{o}` (host|publish|layout)")),
-                                };
-                            }
-                        }
-                        o => return Err(format!("unknown #[nve_table] key `{o}`")),
                     }
-                    i += 3;
-                    if i < kv.len() {
-                        if !is_punct(&kv, i, ',') {
-                            return Err(format!("expected `,` in #[nve_table], found `{}`", kv[i]));
+                    "flags" => {
+                        for f in v.split('|').map(str::trim).filter(|f| !f.is_empty()) {
+                            flags |= match f {
+                                "host" => 1,
+                                "publish" => 2,
+                                "layout" => 4,
+                                o => return Err(format!("unknown table flag `{o}` (host|publish|layout)")),
+                            };
                         }
-                        i += 1;
                     }
+                    o => return Err(format!("unknown #[nve_table] key `{o}`")),
+                }
+                i += 3;
+                if i < kv.len() {
+                    if !is_punct(kv, i, ',') {
+                        return Err(format!("expected `,` in #[nve_table], found `{:?}`", kv[i]));
+                    }
+                    i += 1;
                 }
             }
         }
         pos += 2;
     }
+
     let vis_start = pos;
-    skip_vis(&tokens, &mut pos);
-    let vis: String = tokens[vis_start..pos]
-        .iter()
-        .cloned()
-        .collect::<TokenStream>()
-        .to_string();
-    let kw = expect_ident(&tokens, &mut pos, "struct")?;
+    skip_vis(tokens, &mut pos);
+    let vis = render_tokens(&tokens[vis_start..pos]);
+    let kw = expect_ident(tokens, &mut pos, "struct")?;
     if kw != "struct" {
         return Err("#[derive(NveTable)] only supports structs".into());
     }
-    let ident = expect_ident(&tokens, &mut pos, "struct name")?;
-    let Some(TokenTree::Group(body)) = tokens.get(pos).filter(|t| is_delim(t, Delimiter::Brace)) else {
+    let ident = expect_ident(tokens, &mut pos, "struct name")?;
+    if is_punct(tokens, pos, '<') || is_ident(tokens, pos, "where") {
+        return Err(format!("#[derive(NveTable)] does not support generics on `{ident}`"));
+    }
+    let Some(Tok::Group(Delim::Brace, body)) = tokens.get(pos) else {
         return Err(format!("#[derive(NveTable)] requires named fields on `{ident}`"));
     };
     let name = name.ok_or_else(|| format!("`{ident}` needs #[nve_table(name = \"...\")]"))?;
-    Ok(Table { vis, ident, name, dense, flags, fields: parse_fields(body.stream())? })
+    let fields = parse_fields(body)?;
+    if fields.is_empty() {
+        return Err(format!("table `{ident}` must declare at least 1 field"));
+    }
+    Ok(Table { vis, ident, name, dense, flags, fields })
 }
 
-fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
-    let tokens: Vec<TokenTree> = body.into_iter().collect();
+fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
     let (mut pos, mut out) = (0, Vec::new());
     while pos < tokens.len() {
         let (mut effects, mut default, mut bits, mut doc) = (0u8, None, None, Vec::new());
-        while is_punct(&tokens, pos, '#') {
-            let Some(TokenTree::Group(g)) = tokens.get(pos + 1) else { return Err("bad attribute".into()) };
-            let inner: Vec<_> = g.stream().into_iter().collect();
-            let attr = match inner.first() { Some(TokenTree::Ident(i)) => i.to_string(), _ => String::new() };
-            match attr.as_str() {
+        while is_punct(tokens, pos, '#') {
+            let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(pos + 1) else {
+                return Err("bad attribute".into());
+            };
+            let attr = match inner.first() {
+                Some(Tok::Ident(i)) => i.as_str(),
+                _ => "",
+            };
+            match attr {
                 "effect" => {
-                    for t in group_inner(&inner[1..]).ok_or("expected `#[effect(...)]`")? {
-                        if let TokenTree::Ident(e) = t {
-                            effects |= effect_bit(&e.to_string())?;
+                    for t in paren_inner(&inner[1..]).ok_or("expected `#[effect(...)]`")? {
+                        if let Tok::Ident(e) = t {
+                            effects |= effect_bit(e)?;
                         }
                     }
                 }
                 "default" => {
-                    let g = group_inner(&inner[1..]).ok_or("expected `#[default(expr)]`")?;
-                    default = Some(g.into_iter().collect::<TokenStream>().to_string());
+                    let g = paren_inner(&inner[1..]).ok_or("expected `#[default(expr)]`")?;
+                    default = Some(render_tokens(g));
                 }
                 "bits" => {
-                    let g = group_inner(&inner[1..]).ok_or("expected `#[bits(n)]`")?;
-                    let [TokenTree::Literal(l)] = g.as_slice() else { return Err("expected integer in #[bits]".into()) };
-                    bits = Some(parse_usize_literal(&l.to_string())? as u32);
+                    let g = paren_inner(&inner[1..]).ok_or("expected `#[bits(n)]`")?;
+                    let [Tok::Literal(l)] = g else {
+                        return Err("expected integer in #[bits]".into());
+                    };
+                    let n = parse_usize_literal(l)? as u32;
+                    if n == 0 || n > 32 {
+                        return Err(format!("#[bits({n})] must be 1..=32"));
+                    }
+                    bits = Some(n);
                 }
-                "doc" => if let Some(TokenTree::Literal(l)) = inner.get(2) {
-                    doc.push(parse_string_literal(&l.to_string())?);
-                },
+                "doc" => {
+                    if let Some(Tok::Literal(l)) = inner.get(2) {
+                        doc.push(parse_string_literal(l)?);
+                    }
+                }
                 _ => {}
             }
             pos += 2;
         }
-        if pos >= tokens.len() { break; }
-        skip_vis(&tokens, &mut pos);
-        let name = expect_ident(&tokens, &mut pos, "field name")?;
-        if !is_punct(&tokens, pos, ':') { return Err(format!("expected `:` after `{name}`")); }
+        if pos >= tokens.len() {
+            break;
+        }
+        skip_vis(tokens, &mut pos);
+        let name = expect_ident(tokens, &mut pos, "field name")?;
+        if !is_punct(tokens, pos, ':') {
+            return Err(format!("expected `:` after `{name}`"));
+        }
         pos += 1;
         let start = pos;
         let mut depth = 0i32;
         while pos < tokens.len() {
             match &tokens[pos] {
-                TokenTree::Punct(p) if p.as_char() == '<' => depth += 1,
-                TokenTree::Punct(p) if p.as_char() == '>' => depth -= 1,
-                TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => break,
+                Tok::Punct('<', _) => depth += 1,
+                Tok::Punct('>', _) => depth -= 1,
+                Tok::Punct(',', _) if depth == 0 => break,
                 _ => {}
             }
             pos += 1;
         }
-        let ty_tokens: TokenStream = tokens[start..pos].iter().cloned().collect();
-        let ty = ty_tokens.to_string();
-        pos += 1;
+        let ty = render_tokens(&tokens[start..pos]);
+        if is_punct(tokens, pos, ',') {
+            pos += 1;
+        }
         let compact: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
         let outer_head = compact.split('<').next().unwrap_or(&compact);
         let outer_last = outer_head.rsplit("::").next().unwrap_or(outer_head).to_owned();
+        let inner_opt_ty = if outer_last == "Option"
+            && let Some(lt) = compact.find('<')
+            && compact.ends_with('>')
+        {
+            let inner = &compact[lt + 1..compact.len() - 1];
+            Some(inner.rsplit("::").next().unwrap_or(inner).to_owned())
+        } else {
+            None
+        };
         let class = if outer_last == "Str" && !compact.contains('<') {
             Class::Str
         } else if outer_last == "Res"
@@ -223,62 +244,74 @@ fn parse_fields(body: TokenStream) -> Result<Vec<Field>, String> {
         } else {
             Class::Scalar
         };
-        if effects == 0 { return Err(format!("field `{name}` needs #[effect(...)]")); }
+        if effects == 0 {
+            return Err(format!("field `{name}` needs #[effect(...)]"));
+        }
         if !matches!(class, Class::Scalar) && (default.is_some() || bits.is_some()) {
             return Err(format!("`{name}`: Str/Res fields take no #[default]/#[bits]"));
         }
-        out.push(Field { name, ty, short_ty: outer_last, class, effects, default, bits, doc, word: 0, shift: 0, width: 32 });
+        out.push(Field {
+            name,
+            ty,
+            short_ty: outer_last,
+            inner_opt_ty,
+            class,
+            effects,
+            default,
+            bits,
+            doc,
+        });
     }
     Ok(out)
-}
-
-fn layout(t: &mut Table) -> Result<(), String> {
-    let mut next = 0u32;
-    // Open packed word: (word, used bits, effects).
-    let mut open: Option<(u32, u32, u8)> = None;
-    for f in &mut t.fields {
-        match (&f.class, f.bits) {
-            (Class::Scalar, Some(b)) => {
-                if b == 0 || b > 32 { return Err(format!("`{}`: #[bits] must be 1..=32", f.name)); }
-                match open {
-                    Some((w, used, fx)) if used + b <= 32 && fx == f.effects => {
-                        f.word = w; f.shift = used; f.width = b;
-                        open = Some((w, used + b, fx));
-                    }
-                    _ => {
-                        f.word = next; f.shift = 0; f.width = b;
-                        open = Some((next, b, f.effects));
-                        next += 1;
-                    }
-                }
-            }
-            (Class::Str, _) => { f.word = next; next += 2; }
-            _ => { f.word = next; next += 1; }
-        }
-    }
-    if next == 0 || next > 32 {
-        return Err(format!("table `{}` has {next} words (must be 1..=32); split it", t.ident));
-    }
-    Ok(())
 }
 
 fn upper(s: &str) -> String {
     s.to_ascii_uppercase()
 }
 
-fn mask(f: &Field) -> String {
-    if f.width >= 32 { "0xFFFF_FFFFu32".into() } else { format!("0x{:X}u32", ((1u64 << f.width) - 1) << f.shift) }
+fn scalar_default_expr(short_ty: &str, expr: &str) -> (String, String) {
+    match short_ty {
+        "f32" => (format!("f32::to_bits({expr})"), "0u32".into()),
+        "f64" => (
+            format!("(f64::to_bits({expr}) as u32)"),
+            format!("((f64::to_bits({expr}) >> 32) as u32)"),
+        ),
+        "u64" => (
+            format!("(({expr}) as u64 as u32)"),
+            format!("(((({expr}) as u64) >> 32) as u32)"),
+        ),
+        "i64" => (
+            format!("((({expr}) as i64) as u64 as u32)"),
+            format!("((((({expr}) as i64) as u64) >> 32) as u32)"),
+        ),
+        "u32" | "u16" | "u8" | "i32" | "bool" => (format!("(({expr}) as u32)"), "0u32".into()),
+        "i16" => (format!("((({expr}) as i16) as u16 as u32)"), "0u32".into()),
+        "i8" => (format!("((({expr}) as i8) as u8 as u32)"), "0u32".into()),
+        "NodeId" | "ResourceId" | "SurfaceId" => (format!("(({expr}).raw())"), "0u32".into()),
+        _ => (format!("(({expr}).to_word())"), "0u32".into()),
+    }
 }
 
-fn default_bits(f: &Field) -> Option<String> {
-    let e = f.default.as_ref()?;
-    Some(match f.short_ty.as_str() {
-        "f32" => format!("f32::to_bits({e})"),
-        "u32" | "u16" | "u8" | "i32" | "bool" => format!("(({e}) as u32)"),
-        "i16" => format!("((({e}) as i16) as u16 as u32)"),
-        "NodeId" => format!("(({e}).0)"),
-        _ => format!("(({e}).to_word())"),
-    })
+fn default_pack_fields(f: &Field) -> (String, String, &'static str) {
+    let Some(expr) = f.default.as_deref() else {
+        return ("0u32".into(), "0u32".into(), "false");
+    };
+    let trimmed = expr.trim();
+    if let Some(inner_ty) = f.inner_opt_ty.as_deref() {
+        if trimmed == "None" || trimmed == "::core::option::Option::None" {
+            return ("0u32".into(), "0u32".into(), "false");
+        }
+        if let Some(inner_expr) = trimmed
+            .strip_prefix("Some(")
+            .or_else(|| trimmed.strip_prefix("::core::option::Option::Some("))
+            .and_then(|s| s.strip_suffix(')'))
+        {
+            let (lo, hi) = scalar_default_expr(inner_ty, inner_expr);
+            return (lo, hi, "true");
+        }
+    }
+    let (lo, hi) = scalar_default_expr(&f.short_ty, trimmed);
+    (lo, hi, "false")
 }
 
 fn docs(f: &Field) -> String {
@@ -288,65 +321,152 @@ fn docs(f: &Field) -> String {
 fn emit(t: &Table) -> String {
     let id = &t.ident;
     let vis = &t.vis;
-    let words = t.fields.iter().map(|f| f.word + if matches!(f.class, Class::Str) { 2 } else { 1 }).max().unwrap_or(0) as usize;
-    let mut defaults = vec![String::from("0u32"); words];
-    let mut fx = vec![0u8; words];
-    let (mut str_words, mut res_words) = (0u32, 0u32);
-    let (mut fields, mut props, mut getters, mut setters, mut regs, mut asserts) =
-        (String::new(), String::new(), String::new(), String::new(), String::new(), String::new());
-    for f in &t.fields {
-        let (w, sh, m, ty, name) = (f.word, f.shift, mask(f), &f.ty, &f.name);
+    let field_count = t.fields.len();
+    let base_flags = t.flags;
+    let storage = if t.dense { "Dense" } else { "Sparse" };
+    let name = quote_str(&t.name);
+
+    let (mut pack_inputs, mut props, mut getters, mut setters, mut regs, mut asserts) = (
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+
+    for (idx, f) in t.fields.iter().enumerate() {
+        let ty = &f.ty;
+        let fname = &f.name;
         let d = docs(f);
-        fx[w as usize] |= f.effects;
-        fields.push_str(&format!(
-            "{S}::FieldDesc {{ name: {}, kind: <{ty} as {S}::TableField>::KIND, word: {w}, shift: {sh}, bits: {}, effects: {} }},",
-            quote_str(name), if matches!(f.class, Class::Str) { 64 } else { f.width }, f.effects));
+        let cname = upper(fname);
+        let (def_lo, def_hi, def_present) = default_pack_fields(f);
+        let bits_expr = match f.bits {
+            Some(b) => format!("{b}u8"),
+            None => format!("<{ty} as {S}::TableField>::BITS"),
+        };
+
+        pack_inputs.push_str(&format!(
+            "{S}::__private::PackInput {{ \
+                name: {}, \
+                field_kind: <{ty} as {S}::TableField>::KIND, \
+                pack_kind: <{ty} as {S}::TableField>::PACK_KIND, \
+                bits: {bits_expr}, \
+                effects: {}, \
+                default_lo: {def_lo}, \
+                default_hi: {def_hi}, \
+                default_present: {def_present}, \
+            }},",
+            quote_str(fname),
+            f.effects,
+        ));
         regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
-        let cname = upper(name);
+
         match &f.class {
             Class::Scalar => {
-                if let Some(b) = default_bits(f) {
-                    defaults[w as usize].push_str(&format!(" | (({b} << {sh}) & {m})"));
-                }
                 if let Some(b) = f.bits {
-                    asserts.push_str(&format!("const _: () = assert!((<{ty} as {S}::WordValue>::BITS as u32) <= {b}, \"#[bits] narrower than the field type\");"));
+                    let is_prim_int = matches!(
+                        f.short_ty.as_str(),
+                        "u8" | "i8" | "u16" | "i16" | "u32" | "i32"
+                    );
+                    if !is_prim_int {
+                        asserts.push_str(&format!(
+                            "const _: () = assert!((<{ty} as {S}::TableField>::BITS as u32) <= {b}, \"#[bits] narrower than the field type\");"
+                        ));
+                    }
                 }
-                props.push_str(&format!("{d} pub const {cname}: {S}::Prop<{id}, {ty}> = unsafe {{ {S}::Prop::new({w}, {sh}, {}) }};", f.width));
-                let read = if f.width >= 32 { format!("self.0.word({w})") } else { format!("(self.0.word({w}) & {m}) >> {sh}") };
-                getters.push_str(&format!("{d} #[inline(always)] pub fn {name}(&self) -> {ty} {{ <{ty} as {S}::WordValue>::from_bits({read}) }}"));
-                setters.push_str(&format!("{d} #[inline(always)] pub fn {name}(mut self, v: {ty}) -> Self {{ self.0.put({w}, {sh}, {m}, <{ty} as {S}::WordValue>::to_bits(v)); self }}"));
+                props.push_str(&format!(
+                    "{d} pub const {cname}: {S}::Prop<{id}, {ty}> = {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        unsafe {{ {S}::Prop::new_wide(__F.word, __F.shift, __F.bits, __F.val_word) }} \
+                    }};"
+                ));
+                getters.push_str(&format!(
+                    "{d} #[inline(always)] pub fn {fname}(&self) -> {ty} {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                        <{ty} as {S}::ScalarField>::read_ref(self.0, __F.word as usize, __F.shift as u32, __MASK, __F.val_word as usize) \
+                    }}"
+                ));
+                setters.push_str(&format!(
+                    "{d} #[inline(always)] pub fn {fname}(mut self, v: {ty}) -> Self {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                        <{ty} as {S}::ScalarField>::write_row(v, &mut self.0, __F.word as usize, __F.shift as u32, __MASK, __F.val_word as usize); \
+                        self \
+                    }}"
+                ));
             }
             Class::Str => {
-                str_words |= 1 << w;
-                fx[w as usize + 1] |= f.effects;
-                props.push_str(&format!("{d} pub const {cname}: {S}::StrProp<{id}> = unsafe {{ {S}::StrProp::new({w}) }};"));
-                getters.push_str(&format!(
-                    "{d} #[inline(always)] pub fn {name}(&self) -> &'a str {{ self.0.str_at({w}) }} \
-                     #[doc = \"Raw `(off, len)` span into the store text slab.\"] #[inline(always)] pub fn {name}_span(&self) -> {S}::StrSpan {{ self.0.str_span_at({w}) }}"
+                props.push_str(&format!(
+                    "{d} pub const {cname}: {S}::StrProp<{id}> = {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        unsafe {{ {S}::StrProp::new(__F.word) }} \
+                    }};"
                 ));
-                setters.push_str(&format!("{d} #[inline] pub fn {name}(mut self, v: &str) -> Self {{ self.0.put_str({w}, v); self }}"));
+                getters.push_str(&format!(
+                    "{d} #[inline(always)] pub fn {fname}(&self) -> &'a str {{ \
+                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
+                        self.0.str_at(__W) \
+                    }} \
+                    #[doc = \"Raw `(off, len)` span into the store text slab.\"] \
+                    #[inline(always)] pub fn {fname}_span(&self) -> {S}::StrSpan {{ \
+                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
+                        self.0.str_span_at(__W) \
+                    }}"
+                ));
+                setters.push_str(&format!(
+                    "{d} #[inline] pub fn {fname}(mut self, v: &str) -> Self {{ \
+                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
+                        self.0.put_str(__W, v); \
+                        self \
+                    }}"
+                ));
             }
             Class::Res(r) => {
-                res_words |= 1 << w;
-                props.push_str(&format!("{d} pub const {cname}: {S}::ResProp<{id}, {r}> = unsafe {{ {S}::ResProp::new({w}) }};"));
-                getters.push_str(&format!("{d} #[inline(always)] pub fn {name}(&self) -> {S}::ResourceId {{ {S}::ResourceId(self.0.word({w})) }}"));
+                props.push_str(&format!(
+                    "{d} pub const {cname}: {S}::ResProp<{id}, {r}> = {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        unsafe {{ {S}::ResProp::new(__F.word) }} \
+                    }};"
+                ));
+                getters.push_str(&format!(
+                    "{d} #[inline(always)] pub fn {fname}(&self) -> {S}::ResourceId {{ \
+                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
+                        {S}::ResourceId(self.0.word(__W)) \
+                    }}"
+                ));
                 setters.push_str(&format!(
-                    "{d} #[inline] pub fn {name}(mut self, v: ::core::option::Option<{r}>) -> Self {{ self.0.put_resource({w}, v); self }} \
-                     #[doc = \"Ephemeral (in-place, non-deduplicated) write; for per-frame blobs.\"] #[inline] pub fn {name}_ephemeral(mut self, v: {r}) -> Self {{ self.0.put_resource_ephemeral({w}, v); self }}"));
+                    "{d} #[inline] pub fn {fname}(mut self, v: ::core::option::Option<{r}>) -> Self {{ \
+                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
+                        self.0.put_resource(__W, v); \
+                        self \
+                    }} \
+                    #[doc = \"Ephemeral (in-place, non-deduplicated) write; for per-frame blobs.\"] \
+                    #[inline] pub fn {fname}_ephemeral(mut self, v: {r}) -> Self {{ \
+                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
+                        self.0.put_resource_ephemeral(__W, v); \
+                        self \
+                    }}"
+                ));
             }
         }
     }
-    let mut flags = t.flags;
-    if fx.iter().any(|&e| e & 3 != 0) { flags |= 4; }
-    let storage = if t.dense { "Dense" } else { "Sparse" };
-    let defaults = defaults.join(", ");
-    let fx = fx.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
-    let name = quote_str(&t.name);
-    format!(r#"
+
+    format!(
+        r#"
 const _: () = {{
-    const DEFAULTS: &[{S}::Word] = &[{defaults}];
-    const WORD_EFFECTS: &[u8] = &[{fx}];
-    const FIELDS: &[{S}::FieldDesc] = &[{fields}];
+    const LAYOUT: {S}::__private::PackLayout<{field_count}> = {S}::__private::pack_table(
+        [{pack_inputs}],
+        false,
+        false,
+    );
+    const WORD_COUNT: usize = LAYOUT.word_count;
+    const DEFAULTS_ARR: [{S}::Word; WORD_COUNT] = {S}::__private::trim_words::<WORD_COUNT>(&LAYOUT.defaults);
+    const EFFECTS_ARR: [u8; WORD_COUNT] = {S}::__private::trim_bytes::<WORD_COUNT>(&LAYOUT.word_effects);
+    const FINAL_FLAGS: u8 = {S}::__private::finalize_table_flags({base_flags}, &EFFECTS_ARR);
+    const FIELDS_ARR: [{S}::FieldDesc; {field_count}] = LAYOUT.fields;
+
     unsafe impl {S}::NveTable for {id} {{
         const DESC: {S}::TableDesc = {S}::TableDesc {{
             key: {S}::__private::Key64::of({name}),
@@ -354,20 +474,24 @@ const _: () = {{
             schema_hash: {S}::__private::compute_table_schema_hash(
                 {name},
                 {S}::Storage::{storage},
-                {flags},
-                DEFAULTS,
-                WORD_EFFECTS,
-                {str_words},
-                {res_words},
-                FIELDS,
+                FINAL_FLAGS,
+                &DEFAULTS_ARR,
+                &EFFECTS_ARR,
+                LAYOUT.str_words,
+                LAYOUT.resource_words,
+                LAYOUT.events_word,
+                false,
+                &FIELDS_ARR,
             ),
             storage: {S}::Storage::{storage},
-            flags: {flags},
-            defaults: DEFAULTS,
-            word_effects: WORD_EFFECTS,
-            str_words: {str_words},
-            resource_words: {res_words},
-            fields: FIELDS,
+            flags: FINAL_FLAGS,
+            defaults: &DEFAULTS_ARR,
+            word_effects: &EFFECTS_ARR,
+            str_words: LAYOUT.str_words,
+            resource_words: LAYOUT.resource_words,
+            events_word: LAYOUT.events_word,
+            inherited: false,
+            fields: &FIELDS_ARR,
         }};
         type Ref<'a> = {id}Ref<'a>;
         type Mut<'a> = {id}Mut<'a>;
@@ -409,5 +533,6 @@ impl<'a> {id}Mut<'a> {{
     pub fn get(&self) -> {id}Ref<'_> {{ {id}Ref(self.0.as_row_ref()) }}
     {setters}
 }}
-"#)
+"#
+    )
 }

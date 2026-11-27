@@ -6,7 +6,7 @@
 /// Discriminants match `packages/modules/camera/{cxx,apple,android,web}` (`1..=3` for preview
 /// props/commands; `0 = Unknown` for enumerated devices with unspecified position).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, nve_store::WordEnum)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CameraFacing {
     Unknown = 0,
@@ -17,11 +17,6 @@ pub enum CameraFacing {
 }
 
 impl CameraFacing {
-    #[inline]
-    pub const fn to_word(self) -> u32 {
-        self as u32
-    }
-
     #[inline]
     pub const fn from_u8(v: u8) -> Option<Self> {
         match v {

@@ -81,7 +81,7 @@ impl TypedStyle {
                     .inset_bottom(dim_to_length(ext.insets.bottom))
                     .inset_left(dim_to_length(ext.insets.left));
                 if let Some(ar) = ext.aspect_ratio {
-                    row = row.aspect_ratio(ar);
+                    row = row.aspect_ratio(Some(ar));
                 }
                 if let Some(dir) = ext.direction {
                     row = row.direction(match dir {
@@ -294,7 +294,7 @@ impl TypedStyle {
                     .inset_right(Length::AUTO)
                     .inset_bottom(Length::AUTO)
                     .inset_left(Length::AUTO)
-                    .aspect_ratio(0.0)
+                    .aspect_ratio(None)
                     .direction(Direction::Inherit)
                     .padding_inline_logical(false)
                     .margin_inline_logical(false);

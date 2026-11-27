@@ -332,10 +332,10 @@ impl DocsHarness {
                 .try_row::<Link>(nid)
                 .map(|l| l.href().to_owned())
                 .filter(|s| !s.is_empty()),
-            "aria-level" => {
-                let lvl = store.try_row::<Accessibility>(nid)?.level();
-                (lvl > 0).then(|| lvl.to_string())
-            }
+            "aria-level" => store
+                .try_row::<Accessibility>(nid)?
+                .level()
+                .map(|lvl| lvl.to_string()),
             "accessibilityRole" => {
                 let r = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
                 (!r.is_empty()).then(|| r.to_owned())

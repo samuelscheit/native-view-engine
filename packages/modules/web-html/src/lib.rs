@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use nve_abi::Key64;
-use nve_store::{word_enum, NveTable, Res, Resource, Str};
+use nve_store::{NveTable, Res, Resource, Str, WordEnum};
 
 /// Trusted HTML fragment node table (`nve.web_html`).
 ///
@@ -38,39 +38,40 @@ pub struct WebHtml {
     pub html: Str,
 }
 
-word_enum! {
-    /// Structural HTML5 element tag override (`Auto` = derive from cross-platform core tables).
-    pub enum SemanticElement: 5 {
-        Auto = 0,
-        Dialog = 1,
-        Details = 2,
-        Summary = 3,
-        Form = 4,
-        Paragraph = 5,
-        Span = 6,
-        Strong = 7,
-        Em = 8,
-        Strike = 9,
-        Code = 10,
-        Kbd = 11,
-        Br = 12,
-        Pre = 13,
-        Table = 14,
-        Thead = 15,
-        Tbody = 16,
-        Tr = 17,
-        Th = 18,
-        Td = 19,
-        Nav = 20,
-        Main = 21,
-        Article = 22,
-        Aside = 23,
-        Header = 24,
-        Footer = 25,
-        Section = 26,
-        Button = 27,
-        Label = 28,
-    }
+/// Structural HTML5 element tag override (`Auto` = derive from cross-platform core tables).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum SemanticElement {
+    #[default]
+    Auto = 0,
+    Dialog = 1,
+    Details = 2,
+    Summary = 3,
+    Form = 4,
+    Paragraph = 5,
+    Span = 6,
+    Strong = 7,
+    Em = 8,
+    Strike = 9,
+    Code = 10,
+    Kbd = 11,
+    Br = 12,
+    Pre = 13,
+    Table = 14,
+    Thead = 15,
+    Tbody = 16,
+    Tr = 17,
+    Th = 18,
+    Td = 19,
+    Nav = 20,
+    Main = 21,
+    Article = 22,
+    Aside = 23,
+    Header = 24,
+    Footer = 25,
+    Section = 26,
+    Button = 27,
+    Label = 28,
 }
 
 impl SemanticElement {
@@ -149,50 +150,62 @@ impl SemanticElement {
     }
 }
 
-word_enum! {
-    pub enum ClosedBy: 2 { Unset = 0, Any = 1, CloseRequest = 2, None = 3 }
+/// HTML `<dialog closedby="...">` attribute value; wrap in `Option<ClosedBy>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum ClosedBy {
+    Any = 0,
+    CloseRequest = 1,
+    None = 2,
 }
 
 impl ClosedBy {
     #[inline]
-    pub const fn as_html_attr(self) -> Option<&'static str> {
+    pub const fn as_html_attr(self) -> &'static str {
         match self {
-            Self::Unset => None,
-            Self::Any => Some("any"),
-            Self::CloseRequest => Some("closerequest"),
-            Self::None => Some("none"),
+            Self::Any => "any",
+            Self::CloseRequest => "closerequest",
+            Self::None => "none",
         }
     }
 }
 
-word_enum! {
-    pub enum PopoverMode: 2 { None = 0, Auto = 1, Manual = 2, Hint = 3 }
+/// HTML `[popover="..."]` attribute value; wrap in `Option<PopoverMode>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum PopoverMode {
+    Auto = 0,
+    Manual = 1,
+    Hint = 2,
 }
 
 impl PopoverMode {
     #[inline]
-    pub const fn as_html_attr(self) -> Option<&'static str> {
+    pub const fn as_html_attr(self) -> &'static str {
         match self {
-            Self::None => None,
-            Self::Auto => Some("auto"),
-            Self::Manual => Some("manual"),
-            Self::Hint => Some("hint"),
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+            Self::Hint => "hint",
         }
     }
 }
 
-word_enum! {
-    pub enum PopoverAction: 2 { Unset = 0, Toggle = 1, Show = 2, Hide = 3 }
+/// HTML `[popovertargetaction="..."]` attribute value; wrap in `Option<PopoverAction>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum PopoverAction {
+    Toggle = 0,
+    Show = 1,
+    Hide = 2,
 }
 
 impl PopoverAction {
     #[inline]
-    pub const fn as_html_attr(self) -> Option<&'static str> {
+    pub const fn as_html_attr(self) -> &'static str {
         match self {
-            Self::Unset => None,
-            Self::Toggle => Some("toggle"),
-            Self::Show => Some("show"),
-            Self::Hide => Some("hide"),
+            Self::Toggle => "toggle",
+            Self::Show => "show",
+            Self::Hide => "hide",
         }
     }
 }
@@ -202,22 +215,16 @@ impl PopoverAction {
 #[nve_table(name = "nve.html.semantics", storage = "sparse", flags = "publish")]
 pub struct HtmlSemantics {
     #[effect(realize, semantics)]
-    #[bits(5)]
     pub element: SemanticElement,
     #[effect(semantics)]
-    #[bits(1)]
     pub open: bool,
     #[effect(semantics)]
-    #[bits(2)]
-    pub closed_by: ClosedBy,
+    pub closed_by: Option<ClosedBy>,
     #[effect(semantics, realize)]
-    #[bits(2)]
-    pub popover: PopoverMode,
+    pub popover: Option<PopoverMode>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub popover_action: PopoverAction,
+    pub popover_action: Option<PopoverAction>,
     #[effect(semantics)]
-    #[bits(1)]
     pub data_nve_open: bool,
 }
 
@@ -233,34 +240,42 @@ pub struct HtmlInvoker {
     pub command: Str,
 }
 
-word_enum! {
-    pub enum FormMethod: 2 { Unset = 0, Get = 1, Post = 2, Dialog = 3 }
+/// HTML `<form method="...">` / `formmethod` value; wrap in `Option<FormMethod>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum FormMethod {
+    Get = 0,
+    Post = 1,
+    Dialog = 2,
 }
 
 impl FormMethod {
     #[inline]
-    pub const fn as_html_attr(self) -> Option<&'static str> {
+    pub const fn as_html_attr(self) -> &'static str {
         match self {
-            Self::Unset => None,
-            Self::Get => Some("get"),
-            Self::Post => Some("post"),
-            Self::Dialog => Some("dialog"),
+            Self::Get => "get",
+            Self::Post => "post",
+            Self::Dialog => "dialog",
         }
     }
 }
 
-word_enum! {
-    pub enum FormEnctype: 2 { Unset = 0, UrlEncoded = 1, Multipart = 2, Plain = 3 }
+/// HTML `<form enctype="...">` value; wrap in `Option<FormEnctype>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum FormEnctype {
+    UrlEncoded = 0,
+    Multipart = 1,
+    Plain = 2,
 }
 
 impl FormEnctype {
     #[inline]
-    pub const fn as_html_attr(self) -> Option<&'static str> {
+    pub const fn as_html_attr(self) -> &'static str {
         match self {
-            Self::Unset => None,
-            Self::UrlEncoded => Some("application/x-www-form-urlencoded"),
-            Self::Multipart => Some("multipart/form-data"),
-            Self::Plain => Some("text/plain"),
+            Self::UrlEncoded => "application/x-www-form-urlencoded",
+            Self::Multipart => "multipart/form-data",
+            Self::Plain => "text/plain",
         }
     }
 }
@@ -276,28 +291,29 @@ pub struct HtmlForm {
     #[effect(semantics)]
     pub name: Str,
     #[effect(semantics)]
-    #[bits(2)]
-    pub method: FormMethod,
+    pub method: Option<FormMethod>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub enctype: FormEnctype,
+    pub enctype: Option<FormEnctype>,
     #[effect(semantics)]
-    #[bits(1)]
     pub novalidate: bool,
 }
 
-word_enum! {
-    pub enum ButtonType: 2 { Unset = 0, Button = 1, Submit = 2, Reset = 3 }
+/// HTML `<button type="...">` value; wrap in `Option<ButtonType>` for unset.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, WordEnum)]
+pub enum ButtonType {
+    Button = 0,
+    Submit = 1,
+    Reset = 2,
 }
 
 impl ButtonType {
     #[inline]
-    pub const fn as_html_attr(self) -> Option<&'static str> {
+    pub const fn as_html_attr(self) -> &'static str {
         match self {
-            Self::Unset => None,
-            Self::Button => Some("button"),
-            Self::Submit => Some("submit"),
-            Self::Reset => Some("reset"),
+            Self::Button => "button",
+            Self::Submit => "submit",
+            Self::Reset => "reset",
         }
     }
 }
@@ -315,11 +331,9 @@ pub struct HtmlFormControl {
     #[effect(semantics)]
     pub form_action: Str,
     #[effect(semantics)]
-    #[bits(2)]
-    pub button_type: ButtonType,
+    pub button_type: Option<ButtonType>,
     #[effect(semantics)]
-    #[bits(2)]
-    pub form_method: FormMethod,
+    pub form_method: Option<FormMethod>,
 }
 
 /// Custom `data-*` attribute pairs (HTML5 DOM passthrough).
@@ -404,20 +418,20 @@ mod tests {
         tx.edit::<HtmlSemantics>(n)
             .element(SemanticElement::Dialog)
             .open(true)
-            .closed_by(ClosedBy::CloseRequest)
-            .popover(PopoverMode::Auto);
+            .closed_by(Some(ClosedBy::CloseRequest))
+            .popover(Some(PopoverMode::Auto));
         tx.edit::<HtmlInvoker>(n)
             .command("show-modal")
             .command_for("dlg-1")
             .popover_target("pop-1");
         tx.edit::<HtmlForm>(n)
             .action("/submit")
-            .method(FormMethod::Post)
-            .enctype(FormEnctype::Multipart)
+            .method(Some(FormMethod::Post))
+            .enctype(Some(FormEnctype::Multipart))
             .novalidate(true);
         tx.edit::<HtmlFormControl>(n)
             .name("email")
-            .button_type(ButtonType::Submit);
+            .button_type(Some(ButtonType::Submit));
         tx.edit::<HtmlDataAttrs>(n)
             .entries(Some(DataAttrList::from_pairs(vec![
                 ("data-state".into(), "open".into()),
@@ -435,7 +449,7 @@ mod tests {
         assert!(store.try_row::<HtmlForm>(n).unwrap().novalidate());
         assert_eq!(
             store.try_row::<HtmlFormControl>(n).unwrap().button_type(),
-            ButtonType::Submit
+            Some(ButtonType::Submit)
         );
 
         let list = store

@@ -189,6 +189,11 @@ impl ResourceId {
     pub const NONE: Self = Self(0);
 
     #[inline(always)]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    #[inline(always)]
     pub const fn is_none(self) -> bool {
         self.0 == 0
     }

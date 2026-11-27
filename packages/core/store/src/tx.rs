@@ -5,15 +5,15 @@ use nve_abi::table::effect;
 
 use crate::changes::Command;
 use crate::id::{NodeId, NodeIndex, ResourceId};
+use crate::node_mut::NodeMut;
 use crate::resource::Resource;
 use crate::row::{DirtyList, RowWriter};
 use crate::span_pool::StrSpan;
 use crate::store::{
-    NodeRef, NodeRow, NodeStore, ANCESTOR_MARK, CHILDREN_DIRTY, CHILD_SEEN, CREATED, IN_FREE,
-    LIVE, PENDING_FREE,
+    NodeRow, NodeStore, ANCESTOR_MARK, CHILDREN_DIRTY, CHILD_SEEN, CREATED, IN_FREE, LIVE,
+    PENDING_FREE,
 };
-use crate::table::{NveTable, Prop, ResProp, StrProp, TableSlot};
-use crate::value::WordValue;
+use crate::table::{NveTable, Prop, ResProp, ScalarField, StrProp, TableSlot};
 
 /// Mutable frame scope over a [`NodeStore`].
 pub struct Transaction<'s> {
@@ -35,110 +35,12 @@ fn touch(node: &mut NodeRow, touched: &mut DirtyList, index: NodeIndex, fx: u8) 
     touched.push_if(index, (had == 0) & (fx != 0));
 }
 
-/// Zero-cost validated mutable handle to a single live node (2 registers: `&mut NodeStore` +
-/// `NodeIndex`).
-///
-/// Created via [`Transaction::spawn`] or [`Transaction::node_mut`], validating liveness once so
-/// multiple table edits / property writes on the same node skip repeated checks.
-pub struct NodeMut<'a> {
-    store: &'a mut NodeStore,
-    index: NodeIndex,
-}
-
-impl<'a> NodeMut<'a> {
-    #[inline(always)]
-    pub fn index(&self) -> NodeIndex {
-        self.index
-    }
-
-    #[inline(always)]
-    pub fn id(&self) -> NodeId {
-        NodeId::from_index(self.index, self.store.nodes[self.index].generation)
-    }
-
-    #[inline(always)]
-    pub fn as_ref(&self) -> NodeRef<'_> {
-        NodeRef::new_unchecked(self.store, self.index)
-    }
-
-    /// Fluent typed writer for `T` on this node (skips repeated liveness/generation checks).
-    #[inline(always)]
-    pub fn edit<T: NveTable>(&mut self) -> T::Mut<'_> {
-        T::from_row_writer(writer_at_typed::<T>(self.store, self.index))
-    }
-
-    /// Attaches `T` with its defaults (no-op if attached).
-    #[inline]
-    pub fn attach<T: NveTable>(&mut self) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index);
-        self
-    }
-
-    /// Sets one scalar property on this node.
-    #[inline(always)]
-    pub fn set<T: NveTable, V: WordValue>(&mut self, prop: Prop<T, V>, value: V) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put(
-            prop.word as usize,
-            prop.shift as u32,
-            prop.mask,
-            value.to_bits(),
-        );
-        self
-    }
-
-    /// Sets one string property on this node.
-    #[inline]
-    pub fn set_str<T: NveTable>(&mut self, prop: StrProp<T>, text: &str) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put_str(prop.word as usize, text);
-        self
-    }
-
-    /// Sets (interning) or clears one resource property on this node.
-    #[inline]
-    pub fn set_resource<T: NveTable, R: Resource>(
-        &mut self,
-        prop: ResProp<T, R>,
-        value: Option<R>,
-    ) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put_resource(prop.word as usize, value);
-        self
-    }
-
-    /// Replaces this node's ordered child list (zero heap allocations).
-    #[inline]
-    pub fn set_children(&mut self, children: &[NodeId]) -> &mut Self {
-        let id = self.id();
-        Transaction { store: self.store }.set_children(id, children);
-        self
-    }
-
-    /// Detaches table `T` from this node.
-    #[inline]
-    pub fn detach<T: NveTable>(&mut self) -> &mut Self {
-        let id = self.id();
-        Transaction { store: self.store }.detach_slot(id, T::slot());
-        self
-    }
-
-    /// Enqueues a typed imperative command on this node.
-    #[inline]
-    pub fn command<T: NveTable>(&mut self, op: u32, payload: &[u8]) -> &mut Self {
-        let id = self.id();
-        Transaction { store: self.store }.command_slot(id, T::slot(), op, payload);
-        self
-    }
-
-    /// Removes this node and its subtree.
-    #[inline]
-    pub fn remove(self) {
-        let id = self.id();
-        Transaction { store: self.store }.remove(id);
-    }
-}
-
 /// Typed writer resolving `T::slot()` and ensuring its column once before mutating words.
 #[inline]
-fn writer_at_typed<T: NveTable>(store: &mut NodeStore, index: NodeIndex) -> RowWriter<'_> {
+pub(crate) fn writer_at_typed<T: NveTable>(
+    store: &mut NodeStore,
+    index: NodeIndex,
+) -> RowWriter<'_> {
     let slot = T::slot();
     store.column_mut_typed::<T>(slot);
     writer_at_existing(store, index, slot)
@@ -207,10 +109,7 @@ impl Transaction<'_> {
     #[inline]
     pub fn spawn(&mut self) -> NodeMut<'_> {
         let index = self.alloc_slot();
-        NodeMut {
-            store: self.store,
-            index,
-        }
+        NodeMut::new(self.store, index)
     }
 
     /// Validates `id` once and returns a [`NodeMut`] handle (`None` if dead/stale).
@@ -219,10 +118,7 @@ impl Transaction<'_> {
         let index = id.node_index();
         let r = self.store.nodes.get(index)?;
         if r.flags & LIVE != 0 && r.generation == id.generation() {
-            Some(NodeMut {
-                store: self.store,
-                index,
-            })
+            Some(NodeMut::new(self.store, index))
         } else {
             None
         }
@@ -566,12 +462,18 @@ impl Transaction<'_> {
         writer_at_typed::<T>(self.store, id.node_index());
     }
 
-    /// Sets one scalar property.
+    /// Sets one scalar or wide-optional property.
     #[inline(always)]
-    pub fn set<T: NveTable, V: WordValue>(&mut self, id: NodeId, prop: Prop<T, V>, value: V) {
+    pub fn set<T: NveTable, V: ScalarField>(&mut self, id: NodeId, prop: Prop<T, V>, value: V) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
-        writer_at_typed::<T>(self.store, id.node_index())
-            .put(prop.word as usize, prop.shift as u32, prop.mask, value.to_bits());
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        value.write_row(
+            &mut w,
+            prop.word as usize,
+            prop.shift as u32,
+            prop.mask,
+            prop.val_word as usize,
+        );
     }
 
     /// Sets one string property.

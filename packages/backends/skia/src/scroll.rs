@@ -115,18 +115,16 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             let max_x = (cw - rect.width).max(0.0);
             let max_y = (ch - rect.height).max(0.0);
             let (mut sx, mut sy) = self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
-            let req_y = scroll.requested_scroll_y();
             let mut recorded_req_y = None;
-            if req_y.is_finite() {
+            if let Some(req_y) = scroll.requested_scroll_y().filter(|v| v.is_finite()) {
                 let prev_req = self.last_virtual_scroll_y.get(&id).copied();
                 if prev_req.is_none_or(|p| (p - req_y).abs() > 1e-4) {
                     sy = req_y;
                     recorded_req_y = Some(req_y);
                 }
             }
-            let req_x = scroll.requested_scroll_x();
             let mut recorded_req_x = None;
-            if req_x.is_finite() {
+            if let Some(req_x) = scroll.requested_scroll_x().filter(|v| v.is_finite()) {
                 let prev_req = self.last_virtual_scroll_x.get(&id).copied();
                 if prev_req.is_none_or(|p| (p - req_x).abs() > 1e-4) {
                     sx = req_x;
@@ -158,12 +156,14 @@ pub(crate) fn compute_scroll_content_size<L: StoreLayoutEngine>(
     let mut max_h = rect.height;
 
     if let Some(scroll) = store.try_row::<Scroll>(node_id) {
-        let vw = scroll.virtual_total_width();
-        if vw.is_finite() && vw > max_w {
+        if let Some(vw) = scroll.virtual_total_width().filter(|v| v.is_finite())
+            && vw > max_w
+        {
             max_w = vw;
         }
-        let vh = scroll.virtual_total_height();
-        if vh.is_finite() && vh > max_h {
+        if let Some(vh) = scroll.virtual_total_height().filter(|v| v.is_finite())
+            && vh > max_h
+        {
             max_h = vh;
         }
     }

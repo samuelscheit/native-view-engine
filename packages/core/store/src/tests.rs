@@ -2,11 +2,16 @@ use nve_abi::table::effect;
 
 use crate::{
     ChangeSet, Length, NodeId, NodeStore, NveTable, RealizationOrder, Res, Resource, Rgba, Str,
-    TableSlot, WordValue,
+    TableSlot, WordEnum, WordValue,
 };
 
-crate::word_enum! {
-    pub enum Align: 2 { Start = 0, Center = 1, End = 2 }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, WordEnum)]
+pub enum Align {
+    #[default]
+    Start = 0,
+    Center = 1,
+    End = 2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,10 +43,8 @@ pub struct Visual {
     #[default(Length::AUTO)]
     pub width: Length,
     #[effect(layout)]
-    #[bits(2)]
     pub align: Align,
     #[effect(layout)]
-    #[bits(1)]
     #[default(true)]
     pub wrap: bool,
     #[effect(semantics)]
@@ -527,4 +530,152 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
         "reclaimed slot must push exactly one free-list entry"
     );
     assert_eq!(store.resource::<Shadows>(id), None);
+}
+
+#[test]
+fn opt_word_wide_option_64bit_flags_and_grid_line_roundtrip_and_wire() {
+    use crate::wire::{WireDecoder, WireEncoder};
+    use crate::{word_flags, GridLine, ResourceId};
+
+    word_flags! {
+        pub struct SampleFlags(u8) {
+            const A = 1 << 0;
+            const B = 1 << 1;
+            const C = 1 << 2;
+        }
+    }
+
+    #[derive(crate::NveTable)]
+    #[nve_table(name = "test.c2_all", storage = "sparse", flags = "publish")]
+    #[allow(dead_code)]
+    pub struct C2All {
+        #[effect(paint)]
+        pub opt_bool: Option<bool>,
+        #[effect(paint)]
+        pub opt_u8: Option<u8>,
+        #[effect(paint)]
+        pub opt_i8: Option<i8>,
+        #[effect(paint)]
+        pub opt_u16: Option<u16>,
+        #[effect(paint)]
+        pub opt_i16: Option<i16>,
+        #[effect(paint)]
+        pub opt_align: Option<Align>,
+        #[effect(paint)]
+        pub opt_flags: Option<SampleFlags>,
+        #[effect(layout)]
+        pub opt_len: Option<Length>,
+        #[effect(layout)]
+        pub opt_grid: Option<GridLine>,
+        #[effect(semantics)]
+        pub opt_node: Option<NodeId>,
+        #[effect(semantics)]
+        pub opt_res: Option<ResourceId>,
+        #[effect(semantics)]
+        pub opt_surf: Option<nve_abi::SurfaceId>,
+        #[effect(paint)]
+        pub wide_f32: Option<f32>,
+        #[effect(paint)]
+        pub wide_u32: Option<u32>,
+        #[effect(paint)]
+        pub wide_i32: Option<i32>,
+        #[effect(paint)]
+        pub wide_rgba: Option<Rgba>,
+        #[effect(paint)]
+        pub wide_u64: u64,
+        #[effect(paint)]
+        pub wide_i64: i64,
+        #[effect(paint)]
+        pub wide_f64: f64,
+    }
+
+    let mut src = NodeStore::new();
+    let mut tx = src.tx();
+    let def_n = tx.create();
+    let full_n = tx.create();
+    tx.set_children(NodeId::ROOT, &[def_n, full_n]);
+    let _ = tx.edit::<C2All>(def_n);
+    tx.edit::<C2All>(full_n)
+        .opt_bool(Some(false))
+        .opt_u8(Some(u8::MAX))
+        .opt_i8(Some(i8::MIN))
+        .opt_u16(Some(u16::MAX))
+        .opt_i16(Some(i16::MIN))
+        .opt_align(Some(Align::Start))
+        .opt_flags(Some(SampleFlags::A | SampleFlags::C))
+        .opt_len(Some(Length::points(0.0)))
+        .opt_grid(Some(GridLine::Span(3)))
+        .opt_node(Some(NodeId::ROOT))
+        .opt_res(Some(ResourceId(7)))
+        .opt_surf(Some(nve_abi::SurfaceId::ROOT))
+        .wide_f32(Some(0.0))
+        .wide_u32(Some(u32::MAX))
+        .wide_i32(Some(i32::MIN))
+        .wide_rgba(Some(Rgba::TRANSPARENT))
+        .wide_u64(0x1234_5678_9ABC_DEF0)
+        .wide_i64(-0x1234_5678_9ABC_DEF0)
+        .wide_f64(core::f64::consts::PI);
+
+    // Typed `tx.set` via generated `Prop` handles (including wide & 64-bit).
+    tx.set(def_n, C2All::WIDE_F32, Some(2.5));
+    tx.set(def_n, C2All::WIDE_U64, 99u64);
+    let changes = commit_tx(tx);
+
+    // Wire roundtrip into a replica store.
+    let mut enc = WireEncoder::default();
+    let mut wire = Vec::new();
+    enc.encode(&src, &changes, &mut wire);
+
+    let mut dst = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut dst_tx = dst.tx();
+    dec.apply(&mut dst_tx, &wire).expect("NVE2 decode C2All");
+    commit_tx(dst_tx);
+
+    let d = dst.try_row::<C2All>(def_n).unwrap();
+    assert_eq!(d.opt_bool(), None);
+    assert_eq!(d.opt_u8(), None);
+    assert_eq!(d.opt_i16(), None);
+    assert_eq!(d.opt_align(), None);
+    assert_eq!(d.opt_flags(), None);
+    assert_eq!(d.opt_len(), None);
+    assert_eq!(d.opt_grid(), None);
+    assert_eq!(d.opt_node(), None);
+    assert_eq!(d.wide_f32(), Some(2.5));
+    assert_eq!(d.wide_u32(), None);
+    assert_eq!(d.wide_rgba(), None);
+    assert_eq!(d.wide_u64(), 99);
+    assert_eq!(d.wide_i64(), 0);
+    assert_eq!(d.wide_f64(), 0.0);
+
+    // Sentinel boundary values must roundtrip as `Some(...)` (never conflated with `None`).
+    let f = dst.try_row::<C2All>(full_n).unwrap();
+    assert_eq!(f.opt_bool(), Some(false));
+    assert_eq!(f.opt_u8(), Some(u8::MAX));
+    assert_eq!(f.opt_i8(), Some(i8::MIN));
+    assert_eq!(f.opt_u16(), Some(u16::MAX));
+    assert_eq!(f.opt_i16(), Some(i16::MIN));
+    assert_eq!(f.opt_align(), Some(Align::Start));
+    assert_eq!(f.opt_flags(), Some(SampleFlags::A | SampleFlags::C));
+    assert_eq!(f.opt_len(), Some(Length::points(0.0)));
+    assert_eq!(f.opt_grid(), Some(GridLine::Span(3)));
+    assert_eq!(f.opt_node(), Some(NodeId::ROOT));
+    assert_eq!(f.opt_res(), Some(ResourceId(7)));
+    assert_eq!(f.opt_surf(), Some(nve_abi::SurfaceId::ROOT));
+    assert_eq!(f.wide_f32(), Some(0.0));
+    assert_eq!(f.wide_u32(), Some(u32::MAX));
+    assert_eq!(f.wide_i32(), Some(i32::MIN));
+    assert_eq!(f.wide_rgba(), Some(Rgba::TRANSPARENT));
+    assert_eq!(f.wide_u64(), 0x1234_5678_9ABC_DEF0);
+    assert_eq!(f.wide_i64(), -0x1234_5678_9ABC_DEF0);
+    assert_eq!(f.wide_f64(), core::f64::consts::PI);
+
+    // Clearing a wide Option back to None works cleanly.
+    let mut tx2 = dst.tx();
+    tx2.edit::<C2All>(full_n).wide_f32(None).wide_rgba(None);
+    commit_tx(tx2);
+    let f2 = dst.try_row::<C2All>(full_n).unwrap();
+    assert_eq!(f2.wide_f32(), None);
+    assert_eq!(f2.wide_rgba(), None);
+    assert_eq!(f2.wide_u32(), Some(u32::MAX));
 }
