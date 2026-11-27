@@ -439,8 +439,13 @@ fn generated_c_and_cpp_abi_headers_pass_syntax_checks_on_64bit_and_i686() {
     let has_clang = common::tool_available("clang");
     let has_clangxx = common::tool_available("clang++");
     if !has_clang || !has_clangxx {
-        let required = std::env::var_os("CI").is_some()
-            || std::env::var_os("NVE_REQUIRE_CLANG").is_some();
+        let env_enabled = |name: &str| {
+            std::env::var(name).is_ok_and(|v| {
+                let trimmed = v.trim();
+                !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
+            })
+        };
+        let required = env_enabled("CI") || env_enabled("NVE_REQUIRE_CLANG");
         assert!(
             !required,
             "clang and clang++ are required when CI or NVE_REQUIRE_CLANG is set (clang={has_clang}, clang++={has_clangxx})"

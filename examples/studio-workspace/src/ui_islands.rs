@@ -8,11 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::SurfaceId;
 use nve_interop::{
-    ArbitrationDecision, ChannelPayload, ColorScheme, ContrastLevel, FrameworkKind,
-    GestureArbitrator,
-    GestureCapabilities, GestureDisposition, LifecycleState, NveChannelBus, PointerPhase,
-    PointerSample, ScrollEdgeState, SurfaceDescriptor, SurfaceEnvironment, SurfaceOrchestrator,
-    ThemeContext, TOPIC_THEME,
+    ArbitrationDecision, ArbitrationReason, ChannelPayload, ColorScheme, ContrastLevel,
+    FrameworkKind, GestureArbitrator, GestureCapabilities, GestureDisposition, LifecycleState,
+    NveChannelBus, PointerPhase, PointerSample, ScrollEdgeState, SurfaceDescriptor,
+    SurfaceEnvironment, SurfaceOrchestrator, ThemeContext, TOPIC_THEME,
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +62,15 @@ impl IslandHostKind {
             Self::Flutter => "#93c5fd",
             Self::SwiftUI => "#c4b5fd",
             Self::JetpackCompose => "#86efac",
+        }
+    }
+
+    pub const fn default_component_name(self) -> &'static str {
+        match self {
+            Self::ReactNative => "RNLiveMapView",
+            Self::Flutter => "RevenueSparkChart",
+            Self::SwiftUI => "ApplePayCheckoutCard",
+            Self::JetpackCompose => "MediaPlayerSheet",
         }
     }
 }
@@ -282,18 +290,28 @@ impl IslandSandboxRuntime {
     }
 
     pub fn initial_snapshot(&self) -> IslandsSnapshot {
+        let mut live_islands = 0usize;
         let cards = self
             .islands
             .iter()
             .map(|(host, sid, policy)| {
-                let rec = self.orchestrator.get(*sid).expect("island record exists");
+                let (component_name, lifecycle) = match self.orchestrator.get(*sid) {
+                    Some(rec) => {
+                        live_islands += 1;
+                        (rec.component_name.clone(), format_lifecycle(rec.state))
+                    }
+                    None => (
+                        host.default_component_name().into(),
+                        format_lifecycle(LifecycleState::Destroyed),
+                    ),
+                };
                 IslandCardState {
                     slug: host.slug().into(),
                     host: *host,
                     surface_id: *sid,
-                    component_name: rec.component_name.clone(),
+                    component_name,
                     mount_policy: (*policy).into(),
-                    lifecycle: format_lifecycle(rec.state).into(),
+                    lifecycle: lifecycle.into(),
                     received_messages: 0,
                 }
             })
@@ -306,7 +324,7 @@ impl IslandSandboxRuntime {
             cards,
             bus_broadcast_count: 0,
             bus_total_deliveries: 0,
-            last_bus_summary: "Bus idle (4 islands subscribed)".into(),
+            last_bus_summary: format!("Bus idle ({live_islands} islands subscribed)"),
             last_gesture_disposition: "Idle".into(),
             last_gesture_winner: None,
             last_gesture_reason: "Tap Claim / PassThrough / Defer".into(),
@@ -368,10 +386,14 @@ impl IslandSandboxRuntime {
     /// island ancestor chain `[rn_island, horizontal_rail, root_nve]` via `GestureArbitrator`.
     pub fn simulate_gesture(&mut self, mode: GestureSimMode) -> ArbitrationDecision {
         let rn_id = self.rn_surface_id();
-        let chain = self
-            .orchestrator
-            .ancestor_chain(rn_id)
-            .expect("valid island ancestor chain");
+        let Ok(chain) = self.orchestrator.ancestor_chain(rn_id) else {
+            return ArbitrationDecision {
+                innermost_disposition: GestureDisposition::PassThrough,
+                winner: None,
+                cancelled_surfaces: Vec::new(),
+                reason: ArbitrationReason::NoEligibleSurface,
+            };
+        };
 
         let edges = match mode {
             GestureSimMode::DeferToParent => ScrollEdgeState {
@@ -465,5 +487,46 @@ pub fn format_disposition(d: GestureDisposition) -> &'static str {
         GestureDisposition::Claim => "Claim",
         GestureDisposition::PassThrough => "PassThrough",
         GestureDisposition::DeferToParent => "DeferToParent",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_snapshot_handles_destroyed_cards_including_rn_without_panicking() {
+        let mut snap = IslandsSnapshot::default();
+        for card in &mut snap.cards {
+            if card.slug == "rn" || card.slug == "flutter" {
+                card.lifecycle = "Destroyed".into();
+            }
+        }
+
+        let mut rt = IslandSandboxRuntime::from_snapshot(&snap);
+        let rebuilt = rt.initial_snapshot();
+        // Root + rail + 2 surviving islands (swiftui, compose).
+        assert_eq!(rebuilt.active_surface_count, 4);
+        assert_eq!(rebuilt.last_bus_summary, "Bus idle (2 islands subscribed)");
+
+        let rn_card = rebuilt.cards.iter().find(|c| c.slug == "rn").unwrap();
+        assert_eq!(rn_card.lifecycle, "Destroyed");
+        assert_eq!(rn_card.component_name, "RNLiveMapView");
+        let flutter_card = rebuilt.cards.iter().find(|c| c.slug == "flutter").unwrap();
+        assert_eq!(flutter_card.lifecycle, "Destroyed");
+        assert_eq!(flutter_card.component_name, "RevenueSparkChart");
+        assert!(rt.toggle_island_lifecycle("rn").is_none());
+
+        for mode in [
+            GestureSimMode::Claim,
+            GestureSimMode::PassThrough,
+            GestureSimMode::DeferToParent,
+        ] {
+            let decision = rt.simulate_gesture(mode);
+            assert_eq!(decision.innermost_disposition, GestureDisposition::PassThrough);
+            assert_eq!(decision.winner, None);
+            assert!(decision.cancelled_surfaces.is_empty());
+            assert_eq!(decision.reason, ArbitrationReason::NoEligibleSurface);
+        }
     }
 }

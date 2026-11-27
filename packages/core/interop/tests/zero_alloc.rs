@@ -364,9 +364,17 @@ fn environment_update_pruning_and_override_child_zero_alloc_steady_state() {
             .insert(format!("token.{i}"), format!("#{:06x}", i * 0x1111));
     }
 
+    let mut root_theme = ThemeContext::default();
+    for i in 0..8 {
+        root_theme
+            .tokens
+            .insert(format!("root.{i}"), format!("#{:06x}", (i + 1) * 0x1010));
+    }
+
     let mut orch = SurfaceOrchestrator::new();
     let root_env = SurfaceEnvironment {
-        locale: String::new(),
+        theme: root_theme,
+        locale: "en-US".into(),
         scale_factor: 1.0,
         ..Default::default()
     };
@@ -411,13 +419,28 @@ fn environment_update_pruning_and_override_child_zero_alloc_steady_state() {
         "unchanged-root update_environment must perform 0 allocations (saw {root_noop_allocs})"
     );
 
-    // 2. Unchanged override-child update_environment performs 0 heap allocations (no parent or BTreeMap clone!).
+    // 2. Unchanged override-child update_environment & set_theme/set_scale_factor perform 0 heap allocations.
     let (child_noop_allocs, child_upd) =
         measure_allocs(|| orch.update_environment(black_box(ov_child), ov_child_env).unwrap());
     assert!(child_upd.is_empty());
     assert_eq!(
         child_noop_allocs, 0,
         "unchanged override-child update_environment must perform 0 allocations (saw {child_noop_allocs})"
+    );
+    let same_rich_theme = rich_theme.clone();
+    let (theme_noop_allocs, theme_upd) =
+        measure_allocs(|| orch.set_theme(black_box(ov_child), same_rich_theme).unwrap());
+    assert!(theme_upd.is_empty());
+    assert_eq!(
+        theme_noop_allocs, 0,
+        "no-op set_theme on override child must perform 0 allocations (saw {theme_noop_allocs})"
+    );
+    let (scale_noop_allocs, scale_upd) =
+        measure_allocs(|| orch.set_scale_factor(black_box(root), 1.0).unwrap());
+    assert!(scale_upd.is_empty());
+    assert_eq!(
+        scale_noop_allocs, 0,
+        "no-op set_scale_factor on root with rich tokens must perform 0 allocations (saw {scale_noop_allocs})"
     );
 
     // 3. Root scale change blocked by override child: compare against a standalone root with no

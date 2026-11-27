@@ -24,6 +24,7 @@ pub enum InteropError {
         to: LifecycleState,
     },
     InvalidConstraints(String),
+    InvalidEnvironment(String),
     InvalidTopic(String),
     ChannelNotFound(u32),
     SubscriptionNotFound(SubscriptionId),
@@ -61,6 +62,7 @@ impl fmt::Display for InteropError {
                 "invalid lifecycle transition for surface {surface}: {from:?} -> {to:?}"
             ),
             Self::InvalidConstraints(msg) => write!(f, "invalid size constraints: {msg}"),
+            Self::InvalidEnvironment(msg) => write!(f, "invalid environment: {msg}"),
             Self::InvalidTopic(msg) => write!(f, "invalid channel topic: {msg}"),
             Self::ChannelNotFound(id) => write!(f, "channel id {id} not found"),
             Self::SubscriptionNotFound(id) => write!(f, "subscription id {id} not found"),

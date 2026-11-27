@@ -194,7 +194,7 @@ impl SafeAreaInsets {
         {
             Ok(())
         } else {
-            Err(crate::error::InteropError::InvalidConstraints(
+            Err(crate::error::InteropError::InvalidEnvironment(
                 "safe_area insets must be finite".into(),
             ))
         }
@@ -230,12 +230,12 @@ impl SurfaceEnvironment {
     #[inline]
     pub(crate) fn validate(&self) -> Result<(), crate::error::InteropError> {
         if !self.scale_factor.is_finite() {
-            return Err(crate::error::InteropError::InvalidConstraints(
+            return Err(crate::error::InteropError::InvalidEnvironment(
                 "scale_factor must be finite".into(),
             ));
         }
         if !self.text_scale_factor.is_finite() {
-            return Err(crate::error::InteropError::InvalidConstraints(
+            return Err(crate::error::InteropError::InvalidEnvironment(
                 "text_scale_factor must be finite".into(),
             ));
         }
@@ -333,14 +333,14 @@ impl EnvironmentOverrides {
         if let Some(scale) = self.scale_factor
             && !scale.is_finite()
         {
-            return Err(crate::error::InteropError::InvalidConstraints(
+            return Err(crate::error::InteropError::InvalidEnvironment(
                 "override scale_factor must be finite".into(),
             ));
         }
         if let Some(ts) = self.text_scale_factor
             && !ts.is_finite()
         {
-            return Err(crate::error::InteropError::InvalidConstraints(
+            return Err(crate::error::InteropError::InvalidEnvironment(
                 "override text_scale_factor must be finite".into(),
             ));
         }

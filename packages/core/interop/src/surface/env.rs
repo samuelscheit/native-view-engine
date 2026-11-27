@@ -167,24 +167,26 @@ impl SurfaceOrchestrator {
         &mut self,
         surface_id: SurfaceId,
         value: T,
+        is_same: impl FnOnce(&SurfaceEnvironment, &T) -> bool,
         pin_override: impl FnOnce(&mut EnvironmentOverrides, &T),
-        mutate: impl FnOnce(&mut SurfaceEnvironment, T),
+        build_next: impl FnOnce(&SurfaceEnvironment, T) -> SurfaceEnvironment,
     ) -> Result<Vec<SurfaceId>, InteropError> {
-        let mut env = self
-            .get(surface_id)
-            .ok_or(InteropError::SurfaceNotFound(surface_id))?
-            .environment
-            .clone();
-        if let Some(rec) = self.get_mut(surface_id) {
+        let next_env = {
+            let rec = self
+                .get_mut(surface_id)
+                .ok_or(InteropError::SurfaceNotFound(surface_id))?;
             if rec.parent.is_some() {
                 pin_override(&mut rec.overrides, &value);
             } else {
                 rec.overrides = EnvironmentOverrides::default();
             }
-        }
-        mutate(&mut env, value);
+            if is_same(&rec.environment, &value) {
+                return Ok(Vec::new());
+            }
+            build_next(&rec.environment, value)
+        };
         let mut updated = Vec::new();
-        self.propagate_env_iterative(surface_id, env, Some(&mut updated));
+        self.propagate_env_iterative(surface_id, next_env, Some(&mut updated));
         Ok(updated)
     }
 
@@ -197,8 +199,20 @@ impl SurfaceOrchestrator {
         self.update_env_field(
             surface_id,
             theme,
-            |ov, t| ov.theme = Some(t.clone()),
-            |env, t| env.theme = t,
+            |env, t| env.theme == *t,
+            |ov, t| {
+                if ov.theme.as_ref() != Some(t) {
+                    ov.theme = Some(t.clone());
+                }
+            },
+            |env, theme| SurfaceEnvironment {
+                theme,
+                safe_area: env.safe_area,
+                scale_factor: env.scale_factor,
+                text_scale_factor: env.text_scale_factor,
+                locale: env.locale.clone(),
+                reduced_motion: env.reduced_motion,
+            },
         )
     }
 
@@ -212,8 +226,13 @@ impl SurfaceOrchestrator {
         self.update_env_field(
             surface_id,
             safe_area,
+            |env, sa| env.safe_area == *sa,
             |ov, &sa| ov.safe_area = Some(sa),
-            |env, sa| env.safe_area = sa,
+            |env, sa| {
+                let mut next = env.clone();
+                next.safe_area = sa;
+                next
+            },
         )
     }
 
@@ -224,15 +243,20 @@ impl SurfaceOrchestrator {
         scale_factor: f32,
     ) -> Result<Vec<SurfaceId>, InteropError> {
         if !scale_factor.is_finite() {
-            return Err(InteropError::InvalidConstraints(
+            return Err(InteropError::InvalidEnvironment(
                 "scale_factor must be finite".into(),
             ));
         }
         self.update_env_field(
             surface_id,
             scale_factor,
+            |env, sf| env.scale_factor == *sf,
             |ov, &sf| ov.scale_factor = Some(sf),
-            |env, sf| env.scale_factor = sf,
+            |env, sf| {
+                let mut next = env.clone();
+                next.scale_factor = sf;
+                next
+            },
         )
     }
 }
@@ -505,15 +529,15 @@ mod tests {
         // Non-finite scale / text_scale / safe_area rejected at every ingress.
         assert!(matches!(
             orch.set_scale_factor(root, f32::NAN),
-            Err(InteropError::InvalidConstraints(_))
+            Err(InteropError::InvalidEnvironment(_))
         ));
         assert!(matches!(
             orch.set_scale_factor(root, f32::INFINITY),
-            Err(InteropError::InvalidConstraints(_))
+            Err(InteropError::InvalidEnvironment(_))
         ));
         assert!(matches!(
             orch.set_safe_area(root, SafeAreaInsets::new(f32::NAN, 0.0, 0.0, 0.0)),
-            Err(InteropError::InvalidConstraints(_))
+            Err(InteropError::InvalidEnvironment(_))
         ));
         assert!(matches!(
             orch.update_environment(
@@ -523,7 +547,7 @@ mod tests {
                     ..Default::default()
                 }
             ),
-            Err(InteropError::InvalidConstraints(_))
+            Err(InteropError::InvalidEnvironment(_))
         ));
         assert!(matches!(
             orch.register_surface(
@@ -534,7 +558,7 @@ mod tests {
                     }
                 )
             ),
-            Err(InteropError::InvalidConstraints(_))
+            Err(InteropError::InvalidEnvironment(_))
         ));
 
         // Direct update_environment on an overridden child must replace stale pinned overrides.
