@@ -4,7 +4,6 @@
 //! and the `NVE_DRAW1` vector [`DrawList`] (`nve_store::Resource`, supporting ephemeral in-place
 //! updates for 120 Hz canvas repaints without hashing).
 
-mod base64;
 mod codec;
 mod draw_list;
 mod types;

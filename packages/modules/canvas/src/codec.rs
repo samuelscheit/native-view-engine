@@ -1,8 +1,9 @@
 //! Binary encoder (`DrawListBuilder`) and bounds-checked decoder (`DrawListDecoder`) for `NVE_DRAW1`.
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use nve_abi::ColorRgba;
 
-use super::base64::{decode_base64, encode_base64_into};
 use super::types::{
     sanitize_finite, CanvasOp, DrawListError, DrawListHeader, DrawOpcode, DRAW_LIST_ATTR_PREFIX,
     MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC, NVE_DRAW_VERSION,
@@ -224,7 +225,7 @@ impl DrawListBuilder {
         let mut out =
             String::with_capacity(DRAW_LIST_ATTR_PREFIX.len() + bytes.len().div_ceil(3) * 4);
         out.push_str(DRAW_LIST_ATTR_PREFIX);
-        encode_base64_into(&bytes, &mut out);
+        BASE64_STANDARD.encode_string(&bytes, &mut out);
         out
     }
 }
@@ -352,7 +353,12 @@ impl DrawListDecoder {
     /// Extracts raw `NVE_DRAW1` bytes from a prefixed or bare base64 attribute string.
     pub fn decode_attr_bytes(raw: &str) -> Result<Vec<u8>, DrawListError> {
         let b64 = raw.strip_prefix(DRAW_LIST_ATTR_PREFIX).unwrap_or(raw);
-        let bytes = decode_base64(b64)?;
+        if b64.is_empty() {
+            return Err(DrawListError::InvalidBase64);
+        }
+        let bytes = BASE64_STANDARD
+            .decode(b64)
+            .map_err(|_| DrawListError::InvalidBase64)?;
         let _ = Self::decode_header(&bytes)?;
         Ok(bytes)
     }

@@ -15,9 +15,9 @@ mod manifest;
 mod reload;
 mod sandbox;
 #[cfg(test)]
-mod tests_lifecycle;
+mod lifecycle_tests;
 #[cfg(test)]
-mod tests_panic;
+mod panic_tests;
 
 pub use manifest::{
     PluginCapabilities, PluginError, PluginId, PluginMetadata, PluginRequirement, PluginSourceKind,

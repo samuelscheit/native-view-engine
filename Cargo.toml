@@ -137,6 +137,7 @@ nve-secure-store = { version = "0.1.0", path = "packages/modules/secure-store" }
 nve-linking = { version = "0.1.0", path = "packages/modules/linking" }
 nve-system-env = { version = "0.1.0", path = "packages/modules/system-env" }
 nve-haptics = { version = "0.1.0", path = "packages/modules/haptics" }
+nve-tv = { version = "0.1.0", path = "packages/modules/tv" }
 nve-example-kitchen-sink = { version = "0.1.0", path = "examples/kitchen-sink", default-features = false }
 nve-studio-workspace = { version = "0.1.0", path = "examples/studio-workspace", default-features = false }
 nve-example-issues-api = { version = "0.1.0", path = "examples/fullstack-issues/api" }
@@ -173,7 +174,7 @@ futures-util = "0.3"
 subtle = "2.6.1"
 bytes = "1"
 url = "2"
-base64 = "0.22"
+base64 = "0.23"
 getrandom = "0.4.3"
 crossbeam-channel = "0.5.17"
 skia-safe = "0.157.0"

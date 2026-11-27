@@ -55,7 +55,7 @@ pub use gpu::d3d12::D3D12Swapchain;
 pub use gpu::metal::MetalSwapchainConfig;
 #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
 pub use gpu::metal::MetalSwapchain;
-pub use gpu::vulkan::{VulkanSemaphoreSyncHooks, VulkanSwapchainConfig};
+pub use gpu::vulkan::VulkanSwapchainConfig;
 #[cfg(feature = "skia-vulkan")]
 pub use gpu::vulkan::VulkanSwapchain;
 pub use gpu::{
@@ -63,7 +63,10 @@ pub use gpu::{
     GpuSurfaceError, GpuSwapchain, SoftwareFramePresenter, SwapchainExtent,
 };
 #[cfg(feature = "skia")]
-pub use gpu::{CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+pub use gpu::{
+    CpuSkiaSurface, GaneshPresenter, GpuSurface, GpuSurfaceBackend, NativeSwapchain,
+    SkiaCanvasRenderer,
+};
 pub use image_cache::{
     compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
     ImageCache, ImageDecodeError, ImageDrawPlacement,

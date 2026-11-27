@@ -105,63 +105,31 @@ fn hex_val(b: u8) -> Option<u8> {
 
 /// Decodes standard or URL-safe base64 ignoring ASCII whitespace.
 pub fn decode_base64(input: &str) -> Result<Vec<u8>, ImageDecodeError> {
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::{alphabet, Engine as _};
+
+    const LENIENT_STANDARD: GeneralPurpose = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+            .with_decode_allow_trailing_bits(true),
+    );
+
     let mut cleaned = Vec::with_capacity(input.len());
     for b in input.bytes() {
         if b.is_ascii_whitespace() {
             continue;
         }
-        cleaned.push(b);
+        cleaned.push(match b {
+            b'-' => b'+',
+            b'_' => b'/',
+            other => other,
+        });
     }
     if cleaned.is_empty() {
         return Ok(Vec::new());
     }
-    if cleaned.len() % 4 == 1 {
-        return Err(ImageDecodeError::InvalidBase64);
-    }
-    let mut out = Vec::with_capacity((cleaned.len() * 3) / 4);
-    let mut i = 0;
-    while i < cleaned.len() {
-        let rem = cleaned.len() - i;
-        let b0 = cleaned[i];
-        let b1 = cleaned[i + 1];
-        let b2 = if rem > 2 { cleaned[i + 2] } else { b'=' };
-        let b3 = if rem > 3 { cleaned[i + 3] } else { b'=' };
-
-        let v0 = b64_val(b0).ok_or(ImageDecodeError::InvalidBase64)?;
-        let v1 = b64_val(b1).ok_or(ImageDecodeError::InvalidBase64)?;
-        if b2 == b'=' {
-            if b3 != b'=' || i + 4 < cleaned.len() {
-                return Err(ImageDecodeError::InvalidBase64);
-            }
-            out.push((v0 << 2) | (v1 >> 4));
-            break;
-        }
-        let v2 = b64_val(b2).ok_or(ImageDecodeError::InvalidBase64)?;
-        if b3 == b'=' {
-            if i + 4 < cleaned.len() {
-                return Err(ImageDecodeError::InvalidBase64);
-            }
-            out.push((v0 << 2) | (v1 >> 4));
-            out.push((v1 << 4) | (v2 >> 2));
-            break;
-        }
-        let v3 = b64_val(b3).ok_or(ImageDecodeError::InvalidBase64)?;
-        out.push((v0 << 2) | (v1 >> 4));
-        out.push((v1 << 4) | (v2 >> 2));
-        out.push((v2 << 6) | v3);
-        i += 4;
-    }
-    Ok(out)
-}
-
-#[inline]
-fn b64_val(b: u8) -> Option<u8> {
-    match b {
-        b'A'..=b'Z' => Some(b - b'A'),
-        b'a'..=b'z' => Some(b - b'a' + 26),
-        b'0'..=b'9' => Some(b - b'0' + 52),
-        b'+' | b'-' => Some(62),
-        b'/' | b'_' => Some(63),
-        _ => None,
-    }
+    LENIENT_STANDARD
+        .decode(&cleaned)
+        .map_err(|_| ImageDecodeError::InvalidBase64)
 }

@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use nve_abi::xxh64;
 use nve_engine::{NativeStateStore, StateStoreConfig};
 
@@ -210,13 +212,13 @@ impl<S: StringKeyValueDraftBackend> FormDraftStorage for StringKeyValueFormDraft
     fn load_draft(&self, key: &str) -> Option<Vec<u8>> {
         let raw = self.backend.get_string(&Self::storage_key(key))?;
         let b64 = raw.strip_prefix(FORM_DRAFT_TEXT_PREFIX)?;
-        base64_decode(b64)
+        BASE64_STANDARD.decode(b64).ok()
     }
 
     fn save_draft(&mut self, key: &str, bytes: &[u8]) -> Result<(), FormDraftError> {
         let mut encoded = String::with_capacity(FORM_DRAFT_TEXT_PREFIX.len() + bytes.len().div_ceil(3) * 4);
         encoded.push_str(FORM_DRAFT_TEXT_PREFIX);
-        base64_encode_into(bytes, &mut encoded);
+        BASE64_STANDARD.encode_string(bytes, &mut encoded);
         self.backend.set_string(&Self::storage_key(key), &encoded)
     }
 
@@ -420,78 +422,4 @@ pub(crate) fn default_draft_storage() -> Box<dyn FormDraftStorage> {
         return Box::new(StringKeyValueFormDraftStorage::new(ls));
     }
     Box::new(MemoryFormDraftStorage::new())
-}
-
-const B64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode_into(bytes: &[u8], out: &mut String) {
-    let mut i = 0usize;
-    while i + 3 <= bytes.len() {
-        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8) | (bytes[i + 2] as u32);
-        out.push(B64_TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(B64_TABLE[((n >> 12) & 0x3f) as usize] as char);
-        out.push(B64_TABLE[((n >> 6) & 0x3f) as usize] as char);
-        out.push(B64_TABLE[(n & 0x3f) as usize] as char);
-        i += 3;
-    }
-    let rem = bytes.len() - i;
-    if rem == 1 {
-        let n = (bytes[i] as u32) << 16;
-        out.push(B64_TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(B64_TABLE[((n >> 12) & 0x3f) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if rem == 2 {
-        let n = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8);
-        out.push(B64_TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(B64_TABLE[((n >> 12) & 0x3f) as usize] as char);
-        out.push(B64_TABLE[((n >> 6) & 0x3f) as usize] as char);
-        out.push('=');
-    }
-}
-
-#[inline]
-fn b64_val(b: u8) -> Option<u8> {
-    match b {
-        b'A'..=b'Z' => Some(b - b'A'),
-        b'a'..=b'z' => Some(b - b'a' + 26),
-        b'0'..=b'9' => Some(b - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    let bytes = input.as_bytes();
-    if bytes.is_empty() {
-        return Some(Vec::new());
-    }
-    let (chunks, rem) = bytes.as_chunks::<4>();
-    if !rem.is_empty() {
-        return None;
-    }
-    let mut out = Vec::with_capacity(chunks.len() * 3);
-    let num_chunks = chunks.len();
-    for (idx, chunk) in chunks.iter().enumerate() {
-        let is_last = idx + 1 == num_chunks;
-        let a = b64_val(chunk[0])?;
-        let b = b64_val(chunk[1])?;
-        let pad_c = chunk[2] == b'=';
-        let pad_d = chunk[3] == b'=';
-        if ((pad_c || pad_d) && !is_last) || (pad_c && !pad_d) {
-            return None;
-        }
-        let c = if pad_c { 0 } else { b64_val(chunk[2])? };
-        let d = if pad_d { 0 } else { b64_val(chunk[3])? };
-        let n = ((a as u32) << 18) | ((b as u32) << 12) | ((c as u32) << 6) | (d as u32);
-        out.push((n >> 16) as u8);
-        if !pad_c {
-            out.push(((n >> 8) & 0xff) as u8);
-        }
-        if !pad_d {
-            out.push((n & 0xff) as u8);
-        }
-    }
-    Some(out)
 }
