@@ -152,10 +152,10 @@ std::vector<ShadowPass> outer_shadow_passes(const host::BoxShadow& s, const Rect
 
 // --- NveWinVisualTree ------------------------------------------------------------------------
 
-size_t NveWinVisualTree::sync(const host::RuntimeSceneGuard& scene, uint64_t source_generation) {
+size_t NveWinVisualTree::sync(const host::RuntimeSceneGuard& scene) {
   scene_ = &scene;
   canvas_.bind(scene.reader());
-  const size_t n = tree_.sync(scene.reader(), tables_, adapter_, source_generation);
+  const size_t n = tree_.sync(scene.reader(), tables_, adapter_);
   apply_scroll_offsets(scene.reader());
   scene_ = nullptr;
   return n;
@@ -289,31 +289,23 @@ void NveWinVisualTree::Adapter::update(Handle& handle, const host::NodeData& nod
   ++tree->revision_;
   v.parent = node.parent;
   v.local = rect_of(node.local);
-  if (!v.synced || v.visual.box_shadows != node.visual.box_shadows) {
-    auto decoded = host::decode_box_shadows(tree->resource(node.visual.box_shadows, host::kBoxShadowsKind));
-    v.shadows = decoded ? std::move(*decoded) : std::vector<host::BoxShadow>{};
-  }
+  // Resources are re-read on every update: `RetainedTree` updates a view whose resource was
+  // republished under the same id, so an id comparison would keep stale bytes.
+  auto decoded = host::decode_box_shadows(tree->resource(node.visual.box_shadows, host::kBoxShadowsKind));
+  v.shadows = decoded ? std::move(*decoded) : std::vector<host::BoxShadow>{};
   v.visual = node.visual;
   v.text_style = TextPaint::from(node.text_style);
   v.text.assign(node.text);
   if (v.kind == host::NodeKind::Image) {
     v.image_fit = node.image.fit;
-    if (!v.synced || v.image_res != node.image.src) {
-      v.image_res = node.image.src;
-      const auto src = host::decode_image_src(tree->resource(node.image.src, host::kImageSrcKind));
-      v.image = src ? WinImageSource::from(*src) : WinImageSource{};
-    }
+    const auto src = host::decode_image_src(tree->resource(node.image.src, host::kImageSrcKind));
+    v.image = src ? WinImageSource::from(*src) : WinImageSource{};
   }
   if (v.canvas) {
-    const canvas::CanvasData c = tree->canvas_.at(node.index);
-    if (!v.synced || c.draw_list != v.canvas_res || c.generation != v.canvas_generation) {
-      v.canvas_res = c.draw_list;
-      v.canvas_generation = c.generation;
-      const std::span<const uint8_t> bytes = tree->resource(c.draw_list, canvas::kDrawListKind);
-      if (!v.synced || !std::ranges::equal(bytes, v.draw_list)) {
-        v.draw_list.assign(bytes.begin(), bytes.end());
-        ++v.redraw_count;
-      }
+    const std::span<const uint8_t> bytes = tree->resource(tree->canvas_.at(node.index).draw_list, canvas::kDrawListKind);
+    if (!v.synced || !std::ranges::equal(bytes, v.draw_list)) {
+      v.draw_list.assign(bytes.begin(), bytes.end());
+      ++v.redraw_count;
     }
   }
   if (v.kind == host::NodeKind::TextInput) {

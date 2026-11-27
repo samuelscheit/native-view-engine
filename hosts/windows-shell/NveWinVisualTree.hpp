@@ -118,11 +118,8 @@ struct WinNodeVisual {
   TextPaint text_style;
   std::string text;
   WinImageSource image;
-  uint32_t image_res = 0u;
   uint8_t image_fit = NVE_IMAGE_FIT_COVER;
   std::vector<uint8_t> draw_list;  // `NVE_DRAW1`
-  uint32_t canvas_res = 0u;
-  uint32_t canvas_generation = 0u;
   uint64_t redraw_count = 0u;
   WinTextInput input;
   host::ScrollData scroll;
@@ -181,9 +178,8 @@ struct ShadowPass {
 
 class NveWinVisualTree {
  public:
-  /// Mirrors `scene` (resources are copied while its guard is held); `source_generation` is
-  /// `HostSession::source_generation()` (a change runs a full pass). Returns views created or updated.
-  size_t sync(const host::RuntimeSceneGuard& scene, uint64_t source_generation);
+  /// Mirrors `scene` (resources are copied while its guard is held). Returns views created or updated.
+  size_t sync(const host::RuntimeSceneGuard& scene);
   /// Destroys every view.
   void clear();
 
@@ -239,6 +235,8 @@ class NveWinVisualTree {
     void update_root(const host::NodeData& node);
     void destroy(uint32_t id, Handle& view);
     void set_children(const host::NodeData& parent, Handle* parent_view, std::span<Handle* const> kids);
+    /// Canvas draw list: a republish under the same id re-runs `update`.
+    uint32_t module_resource(const host::NodeData& node) const { return tree->canvas_.at(node.index).draw_list; }
   };
 
  private:

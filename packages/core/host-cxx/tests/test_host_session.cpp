@@ -25,6 +25,7 @@
 #include "nve/host/app_state.hpp"
 #include "nve/host/demo_counter_app.hpp"
 #include "nve/host/host_session.hpp"
+#include "nve/host/testing/recorder.hpp"
 
 namespace {
 
@@ -97,7 +98,7 @@ void test_module_status_mapping() {
   CHECK(!host->load_module(NVE_TEST_NO_SURFACE_MODULE, &err, &msg) && err == ModuleError::MissingSurface);
   CHECK(!host->load_module(NVE_TEST_PARTIAL_SURFACE_MODULE, &err, &msg) && err == ModuleError::MissingSurface);
   CHECK(msg.find("NVE_IFACE_SURFACE") != std::string::npos);
-  CHECK(!host->has_app() && !host->has_module() && host->source_generation() == 0u);
+  CHECK(!host->has_app() && !host->has_module());
   // Rejected modules leave no staged copy behind.
   for (const char* m : {NVE_TEST_NO_ENTRY_MODULE, NVE_TEST_NO_SURFACE_MODULE, NVE_TEST_PARTIAL_SURFACE_MODULE}) {
     CHECK(staged_copies(fs::path(m).stem().string()) == 0u);
@@ -125,9 +126,10 @@ void test_hot_reload_of_a_rebuilt_module() {
 
   // Rebuild the same path with new behaviour: the reload runs the NEW code, with the old state.
   build(NVE_TEST_COUNTER_DOUBLE_MODULE);
-  const uint64_t gen = host->source_generation();
+  const uint32_t epoch = testing::published_scene_epoch(*host);
   CHECK(host->reload_module(app.string(), &err, &msg) && err == ModuleError::None);
-  CHECK(host->source_generation() == gen + 1u && host->has_module());
+  const uint32_t reloaded = testing::published_scene_epoch(*host);
+  CHECK(reloaded != epoch && reloaded != UINT32_MAX && host->has_module());
   CHECK(count(*host) == 2);  // state carried into the new app before it went live
   CHECK(press(*host, CounterApp::kIncrement));
   CHECK(count(*host) == 4);  // a press counts 2: new code
@@ -137,7 +139,7 @@ void test_hot_reload_of_a_rebuilt_module() {
   CHECK(!host->reload_module(NVE_TEST_PARTIAL_SURFACE_MODULE, &err, &msg) && err == ModuleError::MissingSurface);
   CHECK(!host->reload_module(NVE_TEST_NO_ENTRY_MODULE, &err, &msg) && err == ModuleError::MissingEntry);
   CHECK(!host->reload_module((dir.path / "missing.so").string(), &err, &msg) && err == ModuleError::Open);
-  CHECK(host->source_generation() == gen + 1u && host->has_module());
+  CHECK(testing::published_scene_epoch(*host) == reloaded && host->has_module());
   CHECK(press(*host, CounterApp::kIncrement));
   CHECK(count(*host) == 6);
   CHECK(staged_copies(stem) == 1u);

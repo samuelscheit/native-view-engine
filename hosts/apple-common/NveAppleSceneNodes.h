@@ -5,17 +5,16 @@
 #include <nve/host/runtime_session.hpp>
 
 #include <optional>
-#include <unordered_map>
 #include <vector>
 
 namespace nve::apple {
 
 /// Published core tables of one borrowed runtime scene, read through the generated
 /// `nve_tables.generated.h` specs. Dense rows count only when the node's `table_set` holds the
-/// table; sparse rows resolve through owner maps rebuilt once per frame into reused buffers.
+/// table; sparse rows resolve in O(1) through the runtime's published row index.
 class SceneTables {
  public:
-  SceneTables(const nve::host::RuntimeSceneReader &scene, std::unordered_map<uint64_t, std::vector<int32_t>> &sparse_cache);
+  explicit SceneTables(const nve::host::RuntimeSceneReader &scene);
 
   const nve::host::RuntimeSceneReader &scene() const noexcept { return scene_; }
 
@@ -41,7 +40,6 @@ class SceneTables {
   const nve::host::RuntimeSceneReader &scene_;
   std::optional<nve::host::TableReader> visual_, typography_, text_, image_, scroll_, accessibility_, text_input_, link_,
       interaction_;
-  std::unordered_map<uint64_t, std::vector<int32_t>> &sparse_;
 };
 
 }  // namespace nve::apple

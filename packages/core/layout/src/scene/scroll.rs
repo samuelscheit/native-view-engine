@@ -224,7 +224,10 @@ impl<L: StoreLayoutEngine> LaidOutScene<L> {
                 .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
         }
 
-        let Some((_rows, owners, row_count)) = store.table_storage(Scroll::slot()) else {
+        let Some(nve_store::TableStorage {
+            owners, row_count, ..
+        }) = store.table_storage(Scroll::slot())
+        else {
             return;
         };
         if row_count == 0 {

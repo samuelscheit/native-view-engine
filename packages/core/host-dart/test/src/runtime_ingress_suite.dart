@@ -32,9 +32,18 @@ void runRuntimeIngress(Check c) {
   c.eq(ffi.sizeOf<NveLayoutRect>(), nveLayoutRectSize, 'NveLayoutRect size');
   c.eq(nveLayoutRectSize, layoutRectFloats * 4, 'layout rect floats');
   c.eq(ffi.sizeOf<NveScrollOffset>(), scrollOffsetWords * 4, 'NveScrollOffset size');
-  c.eq(ffi.sizeOf<NveTableView>(), 24 + 3 * _ptr, 'NveTableView size');
+  // 8 scalar words (incl. the row-index dir / page counts), then rows, owners, dirty_rows,
+  // row_index_dir, row_index_pages.
+  c.eq(ffi.sizeOf<NveTableView>(), 32 + 5 * _ptr, 'NveTableView size');
   final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
-  c.eq(viewSize, 56 + 9 * _ptr, 'NveRuntimeSceneView size (128 on 64-bit)');
+  c.eq(viewSize, 56 + 10 * _ptr, 'NveRuntimeSceneView size (136 on 64-bit)');
+  // The measurer's style: fixed scalars, then the family slice at 24 on every data model.
+  c.eq(ffi.sizeOf<NveRuntimeTextStyle>(), 24 + ffi.sizeOf<NveStrSlice>(), 'NveRuntimeTextStyle size');
+  c.eq(
+      _offsetOf<NveRuntimeTextStyle>(
+          ffi.sizeOf<NveRuntimeTextStyle>(), (s) => s.ref.fontFamily.ptr = ffi.Pointer.fromAddress(0x10), _ptr),
+      24,
+      'NveRuntimeTextStyle.font_family @24');
   int viewOffset(void Function(NveRuntimeSceneView v) write, [int width = 4]) =>
       _offsetOf<NveRuntimeSceneView>(viewSize, (p) => write(p.ref), width);
   c.eq(viewOffset((v) => v.schemaHash = 1, 8), 0, 'schema_hash @0');
@@ -48,9 +57,10 @@ void runRuntimeIngress(Check c) {
   c.eq(viewOffset((v) => v.rows = p.cast(), _ptr), 56, 'rows @56');
   c.eq(viewOffset((v) => v.tables = p.cast(), _ptr), 56 + 6 * _ptr, 'tables');
   c.eq(viewOffset((v) => v.scrollOffsets = p.cast(), _ptr), 56 + 7 * _ptr, 'scroll_offsets');
-  c.eq(viewOffset((v) => v.dirtyResources = p.cast(), _ptr), 56 + 8 * _ptr, 'dirty_resources is last');
+  c.eq(viewOffset((v) => v.dirtyResources = p.cast(), _ptr), 56 + 8 * _ptr, 'dirty_resources');
+  c.eq(viewOffset((v) => v.movedIndices = p.cast(), _ptr), 56 + 9 * _ptr, 'moved_indices is last');
   c.eq(_offsetOf<NveScrollOffset>(12, (s) => s.ref.y = 1, 4), 8, 'NveScrollOffset.y @8');
-  c.eq(_offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => t.ref.rows = p, _ptr), 24, 'NveTableView.rows @24');
+  c.eq(_offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => t.ref.rows = p, _ptr), 32, 'NveTableView.rows @32');
 
   // ---- untrusted ingress ----------------------------------------------------------------------
   final view = NativeHeap.zeroed<NveRuntimeSceneView>(viewSize);

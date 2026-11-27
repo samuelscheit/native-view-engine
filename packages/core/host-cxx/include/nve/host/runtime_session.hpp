@@ -106,7 +106,10 @@ class RuntimeSceneReader {
   [[nodiscard]] uint32_t node_capacity() const noexcept { return static_cast<uint32_t>(rows_.size()); }
   [[nodiscard]] std::span<const NveNodeRow> rows() const noexcept { return rows_; }
   [[nodiscard]] std::span<const NveLayoutRect> rects() const noexcept { return rects_; }
+  /// Live nodes whose content (row, tables, children) changed or that were created.
   [[nodiscard]] std::span<const uint32_t> dirty_indices() const noexcept { return dirty_; }
+  /// Live nodes, disjoint from `dirty_indices`, whose absolute rect or parent-relative origin changed.
+  [[nodiscard]] std::span<const uint32_t> moved_indices() const noexcept { return moved_; }
   [[nodiscard]] std::span<const uint32_t> removed_ids() const noexcept { return removed_; }
   [[nodiscard]] std::span<const uint32_t> children_slab() const noexcept { return children_; }
   [[nodiscard]] std::string_view text_slab() const noexcept { return text_; }
@@ -193,6 +196,7 @@ class RuntimeSceneReader {
                   : std::string_view()),
         children_(span_of(v.children_slab, v.children_slab_len)),
         dirty_(span_of(v.dirty_indices, v.dirty_count)),
+        moved_(span_of(v.moved_indices, v.moved_count)),
         removed_(span_of(v.removed_ids, v.removed_count)),
         tables_(span_of(v.tables, v.table_count)),
         scroll_(span_of(v.scroll_offsets, v.scroll_count)),
@@ -219,6 +223,7 @@ class RuntimeSceneReader {
     if (const SceneError e = check_slab(v->text_slab, v->text_slab_len); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->children_slab, v->children_slab_len); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->dirty_indices, v->dirty_count); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->moved_indices, v->moved_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->removed_ids, v->removed_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->tables, v->table_count); e != SceneError::None) return e;
     if (const SceneError e = check_slab(v->scroll_offsets, v->scroll_count); e != SceneError::None) return e;
@@ -249,6 +254,7 @@ class RuntimeSceneReader {
   std::string_view text_;
   std::span<const uint32_t> children_;
   std::span<const uint32_t> dirty_;
+  std::span<const uint32_t> moved_;
   std::span<const uint32_t> removed_;
   std::span<const NveTableView> tables_;
   std::span<const NveScrollOffset> scroll_;

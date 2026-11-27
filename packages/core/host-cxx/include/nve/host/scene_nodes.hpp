@@ -280,9 +280,10 @@ struct SceneTables {
   return s;
 }
 
-/// Decodes live node `index`. `text_style` is its resolved (inherited) style.
-[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
-                                        const TextStyle& text_style) noexcept {
+/// Decodes only the identity and geometry of live node `index`: `id`, `index`, `parent`, `kind`,
+/// `rect`, `local`, `children`. Every other field keeps its default.
+[[nodiscard]] inline NodeData read_geometry(const RuntimeSceneReader& scene, const SceneTables& t,
+                                            uint32_t index) noexcept {
   NodeData n;
   const NveNodeRow* row = scene.row(index);
   if (row == nullptr) return n;
@@ -298,6 +299,19 @@ struct SceneTables {
     n.local.y = finite_or(n.local.y - parent.y, 0.0f);
   }
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
+  // An empty text wrapper of run leaves realizes as a container (see `NodeKind`).
+  if (n.kind == NodeKind::Text && !n.children.empty() &&
+      t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene).empty()) {
+    n.kind = NodeKind::View;
+  }
+  return n;
+}
+
+/// Decodes live node `index`. `text_style` is its resolved (inherited) style.
+[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
+                                        const TextStyle& text_style) noexcept {
+  NodeData n = read_geometry(scene, t, index);
+  if (n.index != index) return n;
   n.text_style = text_style;
 
   const RowRef v = t.visual.at(index);
@@ -314,7 +328,6 @@ struct SceneTables {
                          v.bits(NVE_TABLE_VISUAL_BACKGROUND_FILL)};
 
   n.text = t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene);
-  if (n.kind == NodeKind::Text && n.text.empty() && !n.children.empty()) n.kind = NodeKind::View;
 
   if (t.image.has(index)) {
     const RowRef r = t.image.at(index);

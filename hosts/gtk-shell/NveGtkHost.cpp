@@ -116,8 +116,8 @@ void NveGtkHost::install_wake_poster() {
 
 // --- App sources -------------------------------------------------------------------------------
 
-// Every source change bumps `HostSession::source_generation()`: the next sync is a full pass that
-// keeps views whose node still matches (focus survives a hot reload) and destroys the rest.
+// Every source change starts a new `scene_epoch`: the next sync is a full pass that keeps views
+// whose node still matches (focus survives a hot reload) and destroys the rest.
 
 bool NveGtkHost::attach_interface(NveGetInterfaceFn get_interface) {
   if (!session_->attach(get_interface)) return false;
@@ -200,7 +200,7 @@ void NveGtkHost::sync_views() {
     if (guard) {
       canvas_.bind(guard->reader());
       scene_ = &*guard;
-      (void)tree_.sync(guard->reader(), tables_, adapter_, session_->source_generation());
+      (void)tree_.sync(guard->reader(), tables_, adapter_);
       scene_ = nullptr;
     }
   }

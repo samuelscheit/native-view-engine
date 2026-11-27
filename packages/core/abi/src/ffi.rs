@@ -25,6 +25,17 @@ pub const NVE_IFACE_COMPONENT: u32 = 3;
 pub const NVE_IFACE_DEV: u32 = 4;
 pub const NVE_IFACE_HOST: u32 = 5;
 
+/// Pointer of a borrowed slab published across the C ABI: NULL when empty (every zero-count slab
+/// is published as NULL, never as a dangling non-null pointer).
+#[inline]
+pub fn slab_ptr<T>(slab: &[T]) -> *const T {
+    if slab.is_empty() {
+        core::ptr::null()
+    } else {
+        slab.as_ptr()
+    }
+}
+
 /// Borrowed immutable byte slice across the C ABI.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, NveAbi)]

@@ -108,13 +108,19 @@ public protocol TableViewABI {
     var words: UInt32 { get }
     var row_count: UInt32 { get }
     var dirty_count: UInt32 { get }
+    var row_index_dir_len: UInt32 { get }
+    var row_index_page_count: UInt32 { get }
     var rows: UnsafePointer<UInt32>! { get }
     var owners: UnsafePointer<UInt32>! { get }
     var dirty_rows: UnsafePointer<UInt32>! { get }
+    var row_index_dir: UnsafePointer<UInt32>! { get }
+    var row_index_pages: UnsafePointer<UInt32>! { get }
 }
 
 /// Maximum words per table row (Rust `MAX_TABLE_WORDS`).
 public let maxTableWords = 32
+/// Node indices per published row-index page (`NVE_ROW_INDEX_PAGE_BITS` = 8).
+public let rowIndexPageLen = 256
 
 public struct TableReader {
     public let key: Key64
@@ -124,15 +130,22 @@ public struct TableReader {
     public let rows: UnsafeBufferPointer<UInt32>
     public let owners: UnsafeBufferPointer<UInt32>
     public let dirtyRows: UnsafeBufferPointer<UInt32>
+    /// Sparse tables: page of every `rowIndexPageLen` node indices (`UInt32.max` = none).
+    public let rowIndexDir: UnsafeBufferPointer<UInt32>
+    /// Sparse tables: `row + 1` per node index of each page (0 = no row).
+    public let rowIndexPages: UnsafeBufferPointer<UInt32>
 
-    /// `nil` when `rows` cannot hold `rowCount * words` words or `owners` is short.
+    /// `nil` when `rows` cannot hold `rowCount * words` words, `owners` is short, or
+    /// `rowIndexPages` is not whole pages.
     public init?(
         key: Key64, slot: UInt32, words: Int, rowCount: Int,
         rows: UnsafeBufferPointer<UInt32>, owners: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0),
-        dirtyRows: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0)
+        dirtyRows: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0),
+        rowIndexDir: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0),
+        rowIndexPages: UnsafeBufferPointer<UInt32> = .init(start: nil, count: 0)
     ) {
         guard (1...maxTableWords).contains(words), rowCount >= 0, rows.count / words >= rowCount,
-              owners.isEmpty || owners.count >= rowCount
+              owners.isEmpty || owners.count >= rowCount, rowIndexPages.count % rowIndexPageLen == 0
         else { return nil }
         self.key = key
         self.slot = slot
@@ -141,6 +154,8 @@ public struct TableReader {
         self.rows = UnsafeBufferPointer(rebasing: rows[0..<rowCount * words])
         self.owners = owners.isEmpty ? owners : UnsafeBufferPointer(rebasing: owners[0..<rowCount])
         self.dirtyRows = dirtyRows
+        self.rowIndexDir = rowIndexDir
+        self.rowIndexPages = rowIndexPages
     }
 
     /// Wraps a generated `NveTableView`, rejecting a bad word count, counts the address space cannot
@@ -151,13 +166,19 @@ public struct TableReader {
               let rowWords = Self.fitsAddressSpace(UInt64(v.row_count) * UInt64(v.words), stride: stride),
               let rowCount = Self.fitsAddressSpace(UInt64(v.row_count), stride: stride),
               let dirtyCount = Self.fitsAddressSpace(UInt64(v.dirty_count), stride: stride),
-              rowWords == 0 || v.rows != nil, dirtyCount == 0 || v.dirty_rows != nil
+              let dirLen = Self.fitsAddressSpace(UInt64(v.row_index_dir_len), stride: stride),
+              let pageWords = Self.fitsAddressSpace(
+                  UInt64(v.row_index_page_count) * UInt64(rowIndexPageLen), stride: stride),
+              rowWords == 0 || v.rows != nil, dirtyCount == 0 || v.dirty_rows != nil,
+              dirLen == 0 || v.row_index_dir != nil, pageWords == 0 || v.row_index_pages != nil
         else { return nil }
         self.init(
             key: Key64(lo: v.key_lo, hi: v.key_hi), slot: v.slot, words: Int(v.words), rowCount: rowCount,
             rows: UnsafeBufferPointer(start: rowWords > 0 ? v.rows : nil, count: rowWords),
             owners: UnsafeBufferPointer(start: rowCount > 0 ? v.owners : nil, count: v.owners == nil ? 0 : rowCount),
-            dirtyRows: UnsafeBufferPointer(start: dirtyCount > 0 ? v.dirty_rows : nil, count: dirtyCount)
+            dirtyRows: UnsafeBufferPointer(start: dirtyCount > 0 ? v.dirty_rows : nil, count: dirtyCount),
+            rowIndexDir: UnsafeBufferPointer(start: dirLen > 0 ? v.row_index_dir : nil, count: dirLen),
+            rowIndexPages: UnsafeBufferPointer(start: pageWords > 0 ? v.row_index_pages : nil, count: pageWords)
         )
     }
 
@@ -212,10 +233,26 @@ public struct TableReader {
         return owners.isEmpty ? UInt32(r) : owners[r]
     }
 
-    /// Row of `ownerId` (raw `NodeId` for sparse tables, node index for dense ones); O(rows) sparse.
+    /// Row of node slot `index` in O(1): the slot itself for dense tables, else the published
+    /// paged row index (no generation check; see `row(of:)`).
+    public func row(ofNode index: Int) -> Int? {
+        guard index >= 0 else { return nil }
+        if owners.isEmpty { return index < rowCount ? index : nil }
+        let dirSlot = index / rowIndexPageLen
+        guard dirSlot < rowIndexDir.count else { return nil }
+        let page = UInt64(rowIndexDir[dirSlot])  // `UInt32.max` (no page) fails the bound below
+        guard page < UInt64(rowIndexPages.count / rowIndexPageLen) else { return nil }
+        let rowPlusOne = rowIndexPages[Int(page) * rowIndexPageLen + index % rowIndexPageLen]
+        guard rowPlusOne != 0, UInt64(rowPlusOne) <= UInt64(rowCount) else { return nil }
+        return Int(rowPlusOne - 1)
+    }
+
+    /// Row of `ownerId` (raw `NodeId` for sparse tables, node index for dense ones) in O(1);
+    /// sparse rows must be owned by exactly that id (a recycled slot's stale id resolves to `nil`).
     public func row(of ownerId: UInt32) -> Int? {
         // Compared as `UInt64`: `Int(ownerId)` would trap on 32-bit hosts for ids >= 2^31.
         if owners.isEmpty { return Self.denseRow(ownerId, rowCount: rowCount) }
-        return owners.firstIndex(of: ownerId)
+        guard let r = row(ofNode: NodeId(raw: ownerId).index), owners[r] == ownerId else { return nil }
+        return r
     }
 }

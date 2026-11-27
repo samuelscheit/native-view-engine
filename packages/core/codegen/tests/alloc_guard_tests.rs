@@ -104,8 +104,10 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        allocs <= 11_500,
-        "all files took {allocs} allocations (ceiling 11500)"
+        // ~11.65k with the runtime ABI's `NveTableView` row index (2B-2 sync) and
+        // `NveRuntimeTextStyle` records emitted to C / Dart / Java.
+        allocs <= 12_000,
+        "all files took {allocs} allocations (ceiling 12000)"
     );
     assert!(
         bytes <= 5 * out,

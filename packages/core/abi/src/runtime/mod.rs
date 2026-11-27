@@ -27,7 +27,7 @@ pub use vtable::{
 };
 
 /// Current C ABI version expected by `nve_runtime_get_interface(uint32_t abi_version)`.
-pub const NVE_RUNTIME_ABI_VERSION: u32 = 4;
+pub const NVE_RUNTIME_ABI_VERSION: u32 = 5;
 
 /// Exact byte size of one `NveLayoutRect` record (16 bytes).
 pub const NVE_LAYOUT_RECT_SIZE: usize = 16;
@@ -325,9 +325,9 @@ pub struct NveRuntimeSceneView {
     /// Count of resource ids in `dirty_resources`.
     #[nve_abi(offset = 48)]
     pub dirty_resource_count: u32,
-    /// Reserved (zero); keeps the pointer block 8-byte aligned on every target.
+    /// Count of moved node slot indices in `moved_indices`.
     #[nve_abi(offset = 52)]
-    pub _reserved: u32,
+    pub moved_count: u32,
     /// Borrowed slice of `node_capacity` [`NveNodeRow`] headers directly from `NodeStore`.
     pub rows: *const NveNodeRow,
     /// Borrowed slice of `node_capacity` [`NveLayoutRect`] boxes indexed by `NodeIndex`.
@@ -336,7 +336,9 @@ pub struct NveRuntimeSceneView {
     pub text_slab: *const u8,
     /// Borrowed contiguous `u32` child `NodeId` slab directly from `NodeStore`.
     pub children_slab: *const u32,
-    /// Borrowed slice of `dirty_count` node indices modified on `frame_id`.
+    /// Borrowed slice of `dirty_count` live node indices whose content changed on `frame_id`:
+    /// created, or row (incl. parent), any table row, or child list changed. Disjoint from
+    /// `moved_indices`; a dirty node's rect may have changed too.
     pub dirty_indices: *const u32,
     /// Borrowed slice of `removed_count` raw `NodeId`s removed on `frame_id`.
     pub removed_ids: *const u32,
@@ -349,6 +351,10 @@ pub struct NveRuntimeSceneView {
     /// created, recycled, or rewritten in place. Host caches keyed by resource id (decoded
     /// images, draw lists) MUST drop these entries; ids absent here kept their bytes.
     pub dirty_resources: *const u32,
+    /// Borrowed slice of `moved_count` live node indices not in `dirty_indices` whose geometry
+    /// changed on `frame_id`: their absolute rect, or their origin relative to their parent's.
+    /// A host re-applies only position / size to these.
+    pub moved_indices: *const u32,
 }
 
 impl Default for NveRuntimeSceneView {
@@ -365,7 +371,7 @@ impl Default for NveRuntimeSceneView {
             scroll_count: 0,
             scene_epoch: 0,
             dirty_resource_count: 0,
-            _reserved: 0,
+            moved_count: 0,
             rows: core::ptr::null(),
             rects: core::ptr::null(),
             text_slab: core::ptr::null(),
@@ -375,6 +381,7 @@ impl Default for NveRuntimeSceneView {
             tables: core::ptr::null(),
             scroll_offsets: core::ptr::null(),
             dirty_resources: core::ptr::null(),
+            moved_indices: core::ptr::null(),
         }
     }
 }
@@ -481,9 +488,14 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "words", "u32", b"@", offset_of!(NveTableView, words));
     hash_rt_field(&mut h, "row_count", "u32", b"@", offset_of!(NveTableView, row_count));
     hash_rt_field(&mut h, "dirty_count", "u32", b"@", offset_of!(NveTableView, dirty_count));
-    hash_rt_field(&mut h, "rows", "*const u32", b"#", 6);
-    hash_rt_field(&mut h, "owners", "*const u32", b"#", 7);
-    hash_rt_field(&mut h, "dirty_rows", "*const u32", b"#", 8);
+    hash_rt_field(&mut h, "row_index_dir_len", "u32", b"@", offset_of!(NveTableView, row_index_dir_len));
+    hash_rt_field(&mut h, "row_index_page_count", "u32", b"@", offset_of!(NveTableView, row_index_page_count));
+    hash_rt_field(&mut h, "rows", "*const u32", b"#", 8);
+    hash_rt_field(&mut h, "owners", "*const u32", b"#", 9);
+    hash_rt_field(&mut h, "dirty_rows", "*const u32", b"#", 10);
+    hash_rt_field(&mut h, "row_index_dir", "*const u32", b"#", 11);
+    hash_rt_field(&mut h, "row_index_pages", "*const u32", b"#", 12);
+    h.update_u64(crate::table::NVE_ROW_INDEX_PAGE_BITS as u64);
 
     h.update(b";NveRuntimeSceneView");
     hash_rt_field(&mut h, "schema_hash", "u64", b"@", offset_of!(NveRuntimeSceneView, schema_hash));
@@ -497,7 +509,7 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "scroll_count", "u32", b"@", offset_of!(NveRuntimeSceneView, scroll_count));
     hash_rt_field(&mut h, "scene_epoch", "u32", b"@", offset_of!(NveRuntimeSceneView, scene_epoch));
     hash_rt_field(&mut h, "dirty_resource_count", "u32", b"@", offset_of!(NveRuntimeSceneView, dirty_resource_count));
-    hash_rt_field(&mut h, "_reserved", "u32", b"@", offset_of!(NveRuntimeSceneView, _reserved));
+    hash_rt_field(&mut h, "moved_count", "u32", b"@", offset_of!(NveRuntimeSceneView, moved_count));
     hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 10);
     hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 11);
     hash_rt_field(&mut h, "text_slab", "*const u8", b"#", 12);
@@ -507,6 +519,7 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "tables", "*const NveTableView", b"#", 16);
     hash_rt_field(&mut h, "scroll_offsets", "*const NveScrollOffset", b"#", 17);
     hash_rt_field(&mut h, "dirty_resources", "*const u32", b"#", 18);
+    hash_rt_field(&mut h, "moved_indices", "*const u32", b"#", 19);
 
     h.update(b";NveRuntimeApi");
     hash_rt_field(&mut h, "abi_version", "u32", b"@", offset_of!(NveRuntimeApi, abi_version));

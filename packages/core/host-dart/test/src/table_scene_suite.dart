@@ -70,16 +70,20 @@ const SceneLayout wasm32Layout = SceneLayout(
   tables: 60,
   nodeStride: nodeStride,
   tableView: TableViewLayout(
-    stride: 36,
+    stride: 52,
     keyLo: 0,
     keyHi: 4,
     slot: 8,
     words: 12,
     rowCount: 16,
     dirtyCount: 20,
-    rows: 24,
-    owners: 28,
-    dirtyRows: 32,
+    rowIndexDirLen: 24,
+    rowIndexPageCount: 28,
+    rows: 32,
+    owners: 36,
+    dirtyRows: 40,
+    rowIndexDir: 44,
+    rowIndexPages: 48,
   ),
 );
 
@@ -104,8 +108,8 @@ const SceneLayout wasm32Layout = SceneLayout(
   final removedPtr = place(asBytes(words([42])));
   final rowsPtr = place(asBytes(words(rowWords)));
   final tableRowDirtyPtr = place(asBytes(words([1])));
-  final tablePtr = place(List<int>.filled(36, 0));
   final t = wasm32Layout.tableView;
+  final tablePtr = place(List<int>.filled(t.stride, 0));
   mem
     ..setUint32(tablePtr + t.keyLo, visual.lo, Endian.little)
     ..setUint32(tablePtr + t.keyHi, visual.hi, Endian.little)
@@ -159,14 +163,14 @@ void runHardening(Check c) {
   c.eq(FieldSpec(0, FieldKind.i32, shift: 28, bits: 4).extractSigned(-1), -1, 'extractSigned(-1)');
   // Layout strides below 1 are rejected before any arithmetic (no stride-0 / negative walks).
   final (strideMem, strideView) = linearMemory();
-  for (final (node, table) in const [(0, 36), (-1, 36), (16, 0), (16, -36)]) {
+  for (final (node, table) in const [(0, 52), (-1, 52), (16, 0), (16, -52)]) {
     final bad = SceneLayout(
       schemaHash: 0, frameId: 8, nodeCount: 16, dirtyCount: 20, removedCount: 24, textSlabLen: 28, //
       childrenSlabLen: 32, tableCount: 36, nodes: 40, textSlab: 44, childrenSlab: 48, dirtyIndices: 52,
       removedIds: 56, tables: 60, nodeStride: node,
       tableView: TableViewLayout(
-        stride: table, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, //
-        dirtyRows: 32,
+        stride: table, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rowIndexDirLen: 24, //
+        rowIndexPageCount: 28, rows: 32, owners: 36, dirtyRows: 40, rowIndexDir: 44, rowIndexPages: 48,
       ),
     );
     expectScene(c, SceneErrorKind.missingSlab, () => SceneReader.fromLinearMemory(strideMem, strideView, bad, schema),

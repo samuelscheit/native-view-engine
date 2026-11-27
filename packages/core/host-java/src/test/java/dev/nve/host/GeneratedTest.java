@@ -19,8 +19,9 @@ final class GeneratedTest {
             for (FieldSpec f : t.fields()) c.that(f.fits(t.words), t.name + " field fits its row");
         }
         c.eq(NveAbi.SIZEOF_RENDER_NODE, 64, "NveRenderNode stride");
-        c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 48, "NveTableView 64-bit size");
-        c.eq(NveAbi.SIZEOF_TABLE_VIEW_32, 36, "NveTableView 32-bit size");
+        // Row-index pointers (`row_index_dir` / `row_index_pages`) published since the O(changed) sync.
+        c.eq(NveAbi.SIZEOF_TABLE_VIEW_64, 72, "NveTableView 64-bit size");
+        c.eq(NveAbi.SIZEOF_TABLE_VIEW_32, 52, "NveTableView 32-bit size");
 
         final int[] defaults = NveTables.Layout.defaults();
         final ByteBuffer rows = TableSceneTest.words(defaults);

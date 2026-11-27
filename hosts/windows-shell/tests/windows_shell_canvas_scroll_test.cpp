@@ -53,7 +53,7 @@ void test_canvas_nodes() {
   // Same bytes under a new generation: no redraw either.
   w.set(kCanvas, NVE_TABLE_CANVAS_DESC, NVE_TABLE_CANVAS_GENERATION, 2u);
   flush(host);
-  NVE_CHECK(view->redraw_count == 1u && view->canvas_generation == 2u);
+  NVE_CHECK(view->redraw_count == 1u);
   // New draw list: one redraw with the new bytes.
   const std::vector<uint8_t> second = sparkline(30.0f);
   w.define_resource(6u, kDrawListKind, second);
