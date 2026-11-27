@@ -315,18 +315,13 @@ fn dart_default_value_ctx(
                 other => dart_default_value_ctx(inner, Some(other), spec, in_const),
             };
         }
-        if let Some(lit) = d.format_scalar_literal(ty) {
-            return lit;
-        }
-        return match d {
-            HybridDefaultValue::String(s) => {
-                format!("'{}'", escape_dart_single_quoted_string(s))
-            }
-            HybridDefaultValue::EnumVariant { enum_name, variant } => {
+        return match d.scalar_literal(ty) {
+            Ok(lit) => lit,
+            Err(NonScalarDefault::String(s)) => format!("'{}'", escape_dart_single_quoted_string(s)),
+            Err(NonScalarDefault::EnumVariant { enum_name, variant }) => {
                 format!("{enum_name}.{}", dart_ident(variant))
             }
-            HybridDefaultValue::None => "null".to_string(),
-            _ => "null".to_string(),
+            Err(NonScalarDefault::None) => "null".to_string(),
         };
     }
 

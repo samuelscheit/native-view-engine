@@ -116,6 +116,9 @@ final class BinCodecTests: XCTestCase {
         var longer = BinReader(twoNulls)
         XCTAssertThrowsError(try longer.beginArray(exactly: 1)) { XCTAssertEqual($0 as? BinError, .tooLarge) }
 
+        XCTAssertNoThrow(try BinError.requireCount(2, exactly: 2))
+        XCTAssertThrowsError(try BinError.requireCount(0, exactly: 2)) { XCTAssertEqual($0 as? BinError, .truncated) }
+        XCTAssertThrowsError(try BinError.requireCount(3, exactly: 2)) { XCTAssertEqual($0 as? BinError, .tooLarge) }
         var w = BinWriter()
         XCTAssertThrowsError(try w.beginArray(count: 1, exactly: 2)) { XCTAssertEqual($0 as? BinError, .truncated) }
         XCTAssertThrowsError(try w.beginArray(count: 3, exactly: 2)) { XCTAssertEqual($0 as? BinError, .tooLarge) }

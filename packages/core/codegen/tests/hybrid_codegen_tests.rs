@@ -139,52 +139,103 @@ fn generates_all_6_targets_deterministically_with_zero_json() {
 /// every target's `setProps` path: never encoded through a scratch `BinWriter` into a `Bytes` value.
 #[test]
 fn value_direct_props_keep_true_tags_on_all_6_targets() {
+    /// Per target: the `setProps` body (from `start` up to `end`), an optional line binding the
+    /// prop's value to `{v}` (`prefix{v}suffix`), and the consecutive lines carrying it directly.
+    struct Direct {
+        target: HybridTarget,
+        start: &'static str,
+        end: &'static str,
+        bind: Option<(&'static str, &'static str)>,
+        lines: &'static [&'static str],
+    }
+    let direct = [
+        Direct {
+            target: HybridTarget::Rust,
+            start: "pub fn decode_props(",
+            end: "Ok(props)",
+            bind: None,
+            lines: &[r#""metadata" => props.metadata = nve_abi::hybrid::HybridCodec::decode_value_ref(value)?,"#],
+        },
+        Direct {
+            target: HybridTarget::Cpp,
+            start: "void setProps(const VideoSurfaceProps& props) override {",
+            end: "set_props_direct(",
+            bind: Some(("const ::nve::host::NveValueTree ", "(props.metadata);")),
+            lines: &[
+                r#"entry.key = NveStrSlice{reinterpret_cast<const uint8_t*>("metadata"), 8u};"#,
+                "entry.value = {v}.root();",
+            ],
+        },
+        Direct {
+            target: HybridTarget::Swift,
+            start: "public func setProps(_ props: VideoSurfaceProps) throws {",
+            end: "HybridStatus.check(_nveStatus)",
+            bind: Some(("let ", " = try _nveTree.value(props.metadata)")),
+            lines: &[r#"_nveTree.entry("metadata", {v}),"#],
+        },
+        Direct {
+            target: HybridTarget::Kotlin,
+            start: "override fun setProps(props: VideoSurfaceProps) {",
+            end: "nativeSetProps(",
+            bind: None,
+            lines: &["_nveW.writeMapKey(\"metadata\")", "props.metadata.writeTo(_nveW)"],
+        },
+        Direct {
+            target: HybridTarget::Dart,
+            start: "void encodeDirect(HybridPropsBuilder _nveB) {",
+            end: "\n  }\n",
+            bind: None,
+            lines: &["_nveB.writeDynamicValue('metadata', metadata);"],
+        },
+        Direct {
+            target: HybridTarget::TypeScript,
+            start: "setProps(props: VideoSurfaceProps): void {",
+            end: "wasmSetPropsBin(",
+            bind: None,
+            lines: &["_nve_w.writeMapKey('metadata');", "props.metadata.writeTo(_nve_w);"],
+        },
+    ];
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse spec");
     let outputs = generate_hybrid_all(&spec, HybridTarget::ALL).expect("generate all 6 targets");
-    assert_eq!(outputs.len(), 6);
-    // The setProps line(s) that carry `metadata` as a value tree / inline `NveBinValue`.
-    let direct: &[(HybridTarget, &[&str])] = &[
-        (
-            HybridTarget::Rust,
-            &[r#""metadata" => props.metadata = nve_abi::hybrid::HybridCodec::decode_value_ref(value)?,"#],
-        ),
-        (HybridTarget::Cpp, &["const ::nve::host::NveValueTree _prop_tree_8(props.metadata);"]),
-        (HybridTarget::Swift, &["let _nveProp8 = try _nveTree.value(props.metadata)"]),
-        (HybridTarget::Kotlin, &["_nveW.writeMapKey(\"metadata\")", "props.metadata.writeTo(_nveW)"]),
-        (HybridTarget::Dart, &["_nveB.writeDynamicValue('metadata', metadata);"]),
-        (HybridTarget::TypeScript, &["_nve_w.writeMapKey('metadata');", "props.metadata.writeTo(_nve_w);"]),
-    ];
-    for output in &outputs {
-        let (_, expected) = direct
-            .iter()
-            .find(|(target, _)| *target == output.target)
-            .expect("every target has an expected direct-prop form");
+    assert_eq!(outputs.len(), direct.len());
+    for d in &direct {
+        let output = outputs.iter().find(|o| o.target == d.target).expect("target generated");
         let src: String = output.files.iter().map(|f| f.content.as_str()).collect();
-        let lines: Vec<&str> = src.lines().map(str::trim).collect();
-        // Consecutive lines: the map key, then the value written in place.
+        let body = src
+            .split_once(d.start)
+            .and_then(|(_, rest)| rest.split_once(d.end))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("{:?}: no setProps body `{}`..`{}`", d.target, d.start, d.end));
+        let lines: Vec<&str> = body.lines().map(str::trim).collect();
+        let var = d.bind.map(|(prefix, suffix)| {
+            lines
+                .iter()
+                .find_map(|l| l.strip_prefix(prefix)?.strip_suffix(suffix))
+                .unwrap_or_else(|| panic!("{:?}: `metadata` is not bound as `{prefix}..{suffix}`", d.target))
+        });
+        let expected: Vec<String> =
+            d.lines.iter().map(|l| l.replace("{v}", var.unwrap_or_default())).collect();
         assert!(
-            lines.windows(expected.len()).any(|w| w == *expected),
+            lines.windows(expected.len()).any(|w| w == expected.as_slice()),
             "{:?}: `metadata` is not carried directly; expected {expected:?}",
-            output.target
+            d.target
         );
-        for line in lines.iter().filter(|l| l.contains("metadata") && !l.contains("urrent")) {
+        for line in lines.iter().filter(|l| l.contains("metadata") || var.is_some_and(|v| l.contains(v))) {
             for banned in ["Bytes", "bytes(", "encoded", "_prop_bin_", "_nveBw", "BinWriter"] {
                 assert!(
                     !line.contains(banned),
                     "{:?}: `metadata` (HybridType::Value) routed through `{banned}`: {line}",
-                    output.target
+                    d.target
                 );
             }
         }
-        if output.target == HybridTarget::Cpp {
-            let key = lines
-                .iter()
-                .position(|l| l.contains("reinterpret_cast<const uint8_t*>(\"metadata\")"))
-                .expect("C++ setProps has a `metadata` entry");
-            assert_eq!(lines[key + 1], "entry.value = _prop_tree_8.root();");
-            assert!(!src.contains("_prop_bin_8"), "no scratch BinWriter for `metadata`");
-        }
     }
+    // Kotlin's JNI glue rebuilds C `NveValue`s from the props buffer: `metadata` must not be among
+    // the props it re-wraps as one encoded `Bytes` value.
+    let kotlin = outputs.iter().find(|o| o.target == HybridTarget::Kotlin).expect("Kotlin output");
+    let jni = kotlin.files.iter().find(|f| f.relative_path.ends_with(".cpp")).expect("JNI glue");
+    assert!(jni.content.contains("key == \"chapters\""), "the JNI glue re-wraps encoded props by key");
+    assert!(!jni.content.contains("key == \"metadata\""), "JNI re-wraps `metadata` as Bytes");
 }
 
 #[test]

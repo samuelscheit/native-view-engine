@@ -58,16 +58,13 @@ pub(super) fn swift_default_value(
                 other => swift_default_value(inner, Some(other), spec),
             };
         }
-        if let Some(lit) = d.format_scalar_literal(ty) {
-            return lit;
-        }
-        return match d {
-            HybridDefaultValue::String(s) => format!("\"{}\"", escape_c_like_string(s)),
-            HybridDefaultValue::EnumVariant { enum_name, variant } => {
+        return match d.scalar_literal(ty) {
+            Ok(lit) => lit,
+            Err(NonScalarDefault::String(s)) => format!("\"{}\"", escape_c_like_string(s)),
+            Err(NonScalarDefault::EnumVariant { enum_name, variant }) => {
                 format!("{enum_name}.{}", swift_ident(variant))
             }
-            HybridDefaultValue::None => "nil".to_string(),
-            _ => "nil".to_string(),
+            Err(NonScalarDefault::None) => "nil".to_string(),
         };
     }
 
@@ -116,7 +113,7 @@ pub(super) fn swift_c_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> Stri
         | HybridType::U64
         | HybridType::Enum(_) => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
-        HybridType::Struct(name) if ty.is_pod(spec) => format!("{name}().toAbi()"),
+        HybridType::Struct(name) if ty.is_pod(spec) => format!("NveHybrid{name}()"),
         _ => "NveHybridOwnedBytes(ptr: nil, len: 0, cap: 0)".to_string(),
     }
 }

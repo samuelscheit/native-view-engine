@@ -7,7 +7,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::rustc::{add_dep_search_dirs, locate_nve_abi_and_dep_dirs};
+use common::rustc::Rustc;
 use common::swift::{SWIFT_STRICT, build_host_swift, typecheck_generated};
 use nve_codegen::{HybridTarget, generate_hybrid_target, parse_hybrid_rust_spec};
 
@@ -85,38 +85,19 @@ const E2E_SPECS: [(&str, &str, &str); 2] = [
 /// Builds the generated Rust crates and `PROVIDER_RS` into a static library exporting
 /// `nve_get_interface`.
 fn build_rust_provider(dir: &Path) -> PathBuf {
-    let _touch = nve_abi::NveValue::null(); // links `nve_abi` into this test binary's deps
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-    let rustc = |args: &[&str], extern_crates: &[(&str, PathBuf)], src: &Path, out: &Path| {
-        let mut cmd = Command::new("rustc");
-        cmd.args(["--edition=2024", "-D", "warnings"]).args(args);
-        add_dep_search_dirs(&mut cmd, dir, &dep_dirs);
-        for (name, path) in extern_crates {
-            cmd.arg("--extern").arg(format!("{name}={}", path.display()));
-        }
-        let res = cmd.arg(src).arg("-o").arg(out).output().expect("run rustc");
-        assert!(
-            res.status.success(),
-            "rustc {} failed:\n{}",
-            src.display(),
-            String::from_utf8_lossy(&res.stderr)
-        );
-    };
-    let mut externs = vec![("nve_abi", nve_abi_rlib.clone())];
-    for (_, _, crate_name) in E2E_SPECS {
-        let rlib = dir.join(format!("lib{crate_name}.rlib"));
-        rustc(
-            &["--crate-type=lib", &format!("--crate-name={crate_name}")],
-            &[("nve_abi", nve_abi_rlib.clone())],
-            &dir.join(format!("{crate_name}.generated.rs")),
-            &rlib,
-        );
-        externs.push((crate_name, rlib));
-    }
+    let rustc = Rustc::locate();
+    let rlibs: Vec<(&str, PathBuf)> = E2E_SPECS
+        .iter()
+        .map(|&(_, _, crate_name)| {
+            let src = dir.join(format!("{crate_name}.generated.rs"));
+            (crate_name, rustc.build_lib(dir, crate_name, &src))
+        })
+        .collect();
+    let externs: Vec<(&str, &Path)> = rlibs.iter().map(|(n, p)| (*n, p.as_path())).collect();
     let provider = dir.join("provider.rs");
     std::fs::write(&provider, PROVIDER_RS).expect("write provider");
     let staticlib = dir.join("liblive_provider.a");
-    rustc(&["--crate-type=staticlib"], &externs, &provider, &staticlib);
+    rustc.build(dir, &["--crate-type=staticlib"], &externs, &provider, &staticlib);
     staticlib
 }
 

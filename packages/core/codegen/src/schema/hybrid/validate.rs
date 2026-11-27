@@ -4,9 +4,16 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use idents::{ident_key, validate_ident, validate_top_level_ident, validate_vtable_method_ident};
+use idents::{
+    ident_key, validate_c_type_names, validate_ident, validate_top_level_ident,
+    validate_vtable_method_ident,
+};
 
 use super::*;
+
+/// Largest `[T; N]`: keeps C arrays, Swift tuples, and eager defaults small, and every length a
+/// 32-bit `Int` (e.g. watchOS `arm64_32`) on every host.
+pub const MAX_FIXED_ARRAY_LEN: usize = 65_536;
 
 impl HybridFileSpec {
     pub fn validate(&self) -> Result<(), CodegenError> {
@@ -311,7 +318,7 @@ impl HybridFileSpec {
             )?;
         }
 
-        Ok(())
+        validate_c_type_names(self)
     }
 }
 
@@ -401,9 +408,9 @@ fn validate_type(
             validate_type(inner, true, enum_map, struct_map, alias_names, ctx)
         }
         HybridType::FixedArray { elem, len } => {
-            if *len == 0 || u32::try_from(*len).is_err() {
+            if !(1..=MAX_FIXED_ARRAY_LEN).contains(len) {
                 return Err(CodegenError::validation(format!(
-                    "{ctx}: fixed-size array length must be in 1..=u32::MAX (the wire count is u32)"
+                    "{ctx}: fixed-size array length {len} must be in 1..={MAX_FIXED_ARRAY_LEN}"
                 )));
             }
             validate_type(elem, false, enum_map, struct_map, alias_names, ctx)

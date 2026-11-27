@@ -28,7 +28,7 @@ pub struct Rgba {
 }
 
 #[nve_hybrid_struct]
-pub struct Status {
+pub struct Pulse {
     pub phase: Phase,
     pub live: bool,
     pub level: u8,
@@ -36,7 +36,7 @@ pub struct Status {
 
 #[nve_hybrid_struct]
 pub struct Frame {
-    pub status: Status,
+    pub status: Pulse,
     pub history: [Phase; 2],
     pub flags: [bool; 3],
     pub pad: [u8; 40],
@@ -70,7 +70,7 @@ pub trait ShadowSpec {
     fn strict(&self, tone: Tone) -> u32;
     fn fail_always(&self, nodes: Vec<Node>) -> Result<(), String>;
     fn default(&self) -> u32;
-    fn check(&self, status: Status, maybe: Option<Status>) -> Result<Option<Status>, String>;
+    fn check(&self, status: Pulse, maybe: Option<Pulse>) -> Result<Option<Pulse>, String>;
     fn advance(&self, frame: Frame) -> Frame;
     fn toggle(&self, on: bool) -> Result<bool, String>;
 }

@@ -11,7 +11,7 @@ use syn::visit::{self, Visit};
 use syn::{Attribute, Fields, ImplItem, Item, Type};
 
 use crate::ast_layout::{has_attr_list_ident, last_type_ident};
-use crate::hygiene::hex_literal_digit_counts;
+use crate::codegen_53bit;
 use crate::{
     is_binary_ext, is_cfg_test_attr, is_self_invariant_file, is_test_or_bench_rs, line_at,
     RepoIndex, Violation, DOC_EXCLUDES,
@@ -414,10 +414,10 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
         };
         scanned += 1;
         if rel.contains("/dart/") || rel.ends_with("/dart.rs") {
-            scan_dart_53bit_safety(&rel, &src, &mut violations);
+            codegen_53bit::scan_dart_53bit_safety(&rel, &src, &mut violations);
         }
         if rel.contains("/typescript/") || rel.ends_with("/typescript.rs") {
-            scan_ts_53bit_safety(&rel, &src, &mut violations);
+            codegen_53bit::scan_ts_53bit_safety(&rel, &src, &mut violations);
         }
         let file = rel.rsplit('/').next().unwrap_or("");
         if file.ends_with("wire.rs")
@@ -446,55 +446,6 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
         }
     }
     violations
-}
-
-pub fn scan_dart_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
-    for (idx, line) in src.lines().enumerate() {
-        let is_dart_decl = line.contains("const int ")
-            || line.contains("static const int ")
-            || line.contains("final int ")
-            || (line.contains("const ") && line.contains('=') && !line.contains("BigInt"));
-        if is_dart_decl && !line.contains("BigInt") && (has_wide_hex_literal(line) || has_wide_hex_format(line)) {
-            out.push(Violation::new(
-                rel,
-                idx + 1,
-                line,
-                "Unsafe 64-bit integer constant in Dart-web binding (JS Number precision is 53 bits); use `(lo: u32, hi: u32)` or `BigInt`",
-            ));
-        }
-    }
-}
-
-/// A hex literal of >= 14 digits (> 53 bits) cannot be represented exactly by a JS Number.
-fn has_wide_hex_literal(line: &str) -> bool {
-    hex_literal_digit_counts(line).any(|digits| digits >= 14)
-}
-
-/// `0x{..}` format placeholders are JS-53-bit-safe only with an explicit <= 32-bit width
-/// (`:02X`/`:04X`/`:08X`, either case); `0x{h}`, `0x{h:X}` and `0x{h:016X}` may emit 64-bit values.
-fn has_wide_hex_format(line: &str) -> bool {
-    line.match_indices("0x{").any(|(at, _)| {
-        let placeholder = line[at + 3..].split('}').next().unwrap_or_default();
-        let spec = placeholder.rsplit_once(':').map(|(_, spec)| spec);
-        !matches!(spec, Some("02X" | "02x" | "04X" | "04x" | "08X" | "08x"))
-    })
-}
-
-pub fn scan_ts_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
-    for (idx, line) in src.lines().enumerate() {
-        let unsafe_ts_64 = (line.contains("Number(")
-            && (line.contains("getBigUint64") || line.contains("getBigInt64")))
-            || line.contains("4294967296")
-            || (line.contains("<< 32") && !line.contains("BigInt") && !line.contains("32n"));
-        if unsafe_ts_64 {
-            out.push(Violation::new(
-                rel,
-                idx + 1,
-                line,
-                "Unsafe 64-bit integer arithmetic in TypeScript/JS binding (JS Number precision is 53 bits); use `(lo: u32, hi: u32)` or `BigInt`",
-            ));
-        }
-    }
 }
 
 fn file_has_repr_c_struct(items: &[Item]) -> bool {

@@ -51,23 +51,24 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
 
     if s.is_pod(spec) {
         writeln!(out);
-        writeln!(out, "    public func toAbi() -> NveHybrid{} {{", s.name);
-        write!(out, "        NveHybrid{}(", s.name);
-        for (idx, f) in s.fields.iter().enumerate() {
-            if idx > 0 {
-                write!(out, ", ");
-            }
-            // C field names keep their spelling as labels; `self.` keeps a field named `self`
-            // from meaning the receiver.
-            let label = escape_label(&c_field_ident(&f.name));
+        // Throws when a `[T]` standing for a spec `[T; N]` holds another count (`.truncated` /
+        // `.tooLarge`, like the binary codec). `self.` keeps a field named `self` from meaning
+        // the receiver.
+        writeln!(out, "    public func toAbi() throws -> NveHybrid{} {{", s.name);
+        writeln!(out, "        var _nveRaw = NveHybrid{}()", s.name);
+        for f in &s.fields {
+            let field = format!("_nveRaw.{}", swift_member(&c_field_ident(&f.name)));
             let fname = swift_ident(&f.name);
             match &f.ty {
-                HybridType::Enum(_) => write!(out, "{label}: self.{fname}.rawValue"),
-                HybridType::Struct(_) => write!(out, "{label}: self.{fname}.toAbi()"),
-                _ => write!(out, "{label}: self.{fname}"),
+                HybridType::Enum(_) => writeln!(out, "        {field} = self.{fname}.rawValue"),
+                HybridType::Struct(_) => writeln!(out, "        {field} = try self.{fname}.toAbi()"),
+                HybridType::FixedArray { .. } => {
+                    emit_swift_fixed_to_abi(out, &field, &format!("self.{fname}"), &f.ty);
+                }
+                _ => writeln!(out, "        {field} = self.{fname}"),
             }
         }
-        writeln!(out, ")");
+        writeln!(out, "        return _nveRaw");
         writeln!(out, "    }}");
         writeln!(out);
 
@@ -87,6 +88,9 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
                 HybridType::Enum(e) => write!(out, "{label}: try {e}.decode(raw.{field})"),
                 HybridType::Struct(st) => {
                     write!(out, "{label}: try {st}.fromAbi(raw.{field})")
+                }
+                HybridType::FixedArray { .. } => {
+                    write!(out, "{label}: {}", swift_fixed_from_abi(&format!("raw.{field}"), &f.ty))
                 }
                 _ => write!(out, "{label}: raw.{field}"),
             }
@@ -114,8 +118,9 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
         "    public static func decodeBin(from r: inout BinReader) throws -> {} {{",
         s.name
     );
-    writeln!(out, "        var _nveOut = {}()", s.name);
+    // Open the map first: malformed input throws before any default (e.g. `[T; N]`) is built.
     writeln!(out, "        let _nveCount = try r.beginMap()");
+    writeln!(out, "        var _nveOut = {}()", s.name);
     writeln!(out, "        for _ in 0..<_nveCount {{");
     writeln!(out, "            switch try r.readMapKey() {{");
     for f in &s.fields {
@@ -132,6 +137,80 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
     writeln!(out, "    }}");
     writeln!(out, "}}");
     writeln!(out);
+}
+
+/// A POD `[T; N]` (nested too) in C is a homogeneous tuple of its innermost element: that
+/// element's imported Swift type and the dimensions, outermost first.
+fn swift_c_fixed_layout(ty: &HybridType) -> (&HybridType, String, Vec<usize>) {
+    let mut dims = Vec::new();
+    let mut elem = ty;
+    while let HybridType::FixedArray { elem: inner, len } = elem {
+        dims.push(*len);
+        elem = inner;
+    }
+    let c_ty = match elem {
+        HybridType::Enum(name) | HybridType::Struct(name) => format!("NveHybrid{name}"),
+        other => swift_type(other),
+    };
+    (elem, c_ty, dims)
+}
+
+/// The flat C index of `_nveI0.._nveI{k}` in an array of `dims` (row-major).
+fn swift_flat_index(dims: &[usize]) -> String {
+    let mut flat = "_nveI0".to_string();
+    for (k, len) in dims.iter().enumerate().skip(1) {
+        flat = format!("({flat} * {len} + _nveI{k})");
+    }
+    flat
+}
+
+/// Copies the `[T]` (`[[T]]`, ...) `src` into the C tuple `dst` element by element, after checking
+/// every level holds exactly its spec length.
+fn emit_swift_fixed_to_abi(out: &mut CodeWriter, dst: &str, src: &str, ty: &HybridType) {
+    let (elem, c_ty, dims) = swift_c_fixed_layout(ty);
+    writeln!(out, "        try withUnsafeMutableBytes(of: &{dst}) {{ _nveBuf in");
+    let mut indent = "            ".to_string();
+    let mut value = src.to_string();
+    for (k, len) in dims.iter().enumerate() {
+        writeln!(out, "{indent}try BinError.requireCount({value}.count, exactly: {len})");
+        writeln!(out, "{indent}for _nveI{k} in 0..<{len} {{");
+        value = format!("{value}[_nveI{k}]");
+        indent.push_str("    ");
+    }
+    let converted = match elem {
+        HybridType::Enum(_) => format!("{value}.rawValue"),
+        HybridType::Struct(_) => format!("try {value}.toAbi()"),
+        _ => value,
+    };
+    let flat = swift_flat_index(&dims);
+    writeln!(
+        out,
+        "{indent}_nveBuf.storeBytes(of: {converted}, toByteOffset: {flat} * MemoryLayout<{c_ty}>.stride, as: {c_ty}.self)"
+    );
+    for _ in &dims {
+        indent.truncate(indent.len() - 4);
+        writeln!(out, "{indent}}}");
+    }
+    writeln!(out, "        }}");
+}
+
+/// The `[T]` (`[[T]]`, ...) read element by element out of the C tuple `src`.
+fn swift_fixed_from_abi(src: &str, ty: &HybridType) -> String {
+    let (elem, c_ty, dims) = swift_c_fixed_layout(ty);
+    let load = format!(
+        "_nveBuf.load(fromByteOffset: {} * MemoryLayout<{c_ty}>.stride, as: {c_ty}.self)",
+        swift_flat_index(&dims)
+    );
+    // Only enum and struct elements validate (`try`); scalars copy as they are.
+    let (try_, mut body) = match elem {
+        HybridType::Enum(e) => ("try ", format!("try {e}.decode({load})")),
+        HybridType::Struct(s) => ("try ", format!("try {s}.fromAbi({load})")),
+        _ => ("", load),
+    };
+    for (k, len) in dims.iter().enumerate().rev() {
+        body = format!("{try_}(0..<{len}).map {{ _nveI{k} in {body} }}");
+    }
+    format!("{try_}withUnsafeBytes(of: {src}) {{ _nveBuf in {body} }}")
 }
 
 pub(super) fn emit_swift_module(out: &mut CodeWriter, m: &HybridModuleSpec, spec: &HybridFileSpec) {

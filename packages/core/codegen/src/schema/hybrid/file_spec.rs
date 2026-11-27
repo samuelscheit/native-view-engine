@@ -150,7 +150,15 @@ impl HybridFileSpec {
             return;
         }
         for f in &s.fields {
-            if let HybridType::Struct(dep) = &f.ty
+            // A struct held by value, in an option, a `Vec`, or a `[T; N]` must be complete first.
+            let mut ty = &f.ty;
+            while let HybridType::Optional(inner)
+            | HybridType::Vec(inner)
+            | HybridType::FixedArray { elem: inner, .. } = ty
+            {
+                ty = inner;
+            }
+            if let HybridType::Struct(dep) = ty
                 && let Some(dep_spec) = self.find_struct(dep)
             {
                 self.visit_struct_topo(dep_spec, visited, out);

@@ -75,9 +75,60 @@ pub(super) fn c_pod_type(ty: &HybridType) -> String {
     }
 }
 
+/// Which way a POD struct field crosses between the C++ wrapper and its C ABI struct.
+#[derive(Clone, Copy)]
+pub(super) enum AbiDirection {
+    ToAbi,
+    FromAbi,
+}
+
+/// `dst = src` for one POD field across the C ABI: enums cast, POD structs convert, and `[T; N]`
+/// (nested too) copy element by element, so a C++ wrapper is never `memcpy`d onto its C struct.
+pub(super) fn emit_cpp_abi_copy(
+    out: &mut CodeWriter,
+    indent: &str,
+    dst: &str,
+    src: &str,
+    ty: &HybridType,
+    dir: AbiDirection,
+    depth: usize,
+) {
+    match (ty, dir) {
+        (HybridType::Enum(_), AbiDirection::ToAbi) => {
+            writeln!(out, "{indent}{dst} = static_cast<uint32_t>({src});");
+        }
+        (HybridType::Enum(e), AbiDirection::FromAbi) => {
+            writeln!(out, "{indent}{dst} = static_cast<{e}>({src});");
+        }
+        (HybridType::Struct(_), AbiDirection::ToAbi) => {
+            writeln!(out, "{indent}{dst} = {src}.to_abi();");
+        }
+        (HybridType::Struct(s), AbiDirection::FromAbi) => {
+            writeln!(out, "{indent}{dst} = {s}::from_abi({src});");
+        }
+        (HybridType::FixedArray { elem, len }, _) => {
+            let i = format!("_i{depth}");
+            writeln!(out, "{indent}for (size_t {i} = 0; {i} < {len}u; ++{i}) {{");
+            let (dst, src) = (format!("{dst}[{i}]"), format!("{src}[{i}]"));
+            emit_cpp_abi_copy(out, &format!("{indent}  "), &dst, &src, elem, dir, depth + 1);
+            writeln!(out, "{indent}}}");
+        }
+        _ => writeln!(out, "{indent}{dst} = {src};"),
+    }
+}
+
 pub(super) fn c_abi_field_decl(ty: &HybridType, fname: &str) -> String {
     match ty {
-        HybridType::FixedArray { elem, len } => format!("{} {fname}[{len}]", c_pod_type(elem)),
+        // `[[T; M]; N]` is `T name[N][M]`: dimensions outermost first.
+        HybridType::FixedArray { .. } => {
+            let mut dims = String::new();
+            let mut elem = ty;
+            while let HybridType::FixedArray { elem: inner, len } = elem {
+                dims.push_str(&format!("[{len}]"));
+                elem = inner;
+            }
+            format!("{} {fname}{dims}", c_pod_type(elem))
+        }
         HybridType::ConstPtr(inner) => match inner.as_ref() {
             HybridType::Void => format!("const void* {fname}"),
             HybridType::Struct(name) => format!("const struct NveHybrid{name}* {fname}"),

@@ -40,14 +40,14 @@ pub(super) fn emit_swift_client_method(
         if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec))
         {
             let zero = swift_c_zero_value(inner, spec);
-            let value = match inner.as_ref() {
-                HybridType::Enum(_) => "_nveSome.rawValue",
-                HybridType::Struct(_) => "_nveSome.toAbi()",
-                _ => "_nveSome",
+            let (try_, value) = match inner.as_ref() {
+                HybridType::Enum(_) => ("", "_nveSome.rawValue"),
+                HybridType::Struct(_) => ("try ", "try _nveSome.toAbi()"),
+                _ => ("", "_nveSome"),
             };
             writeln!(
                 out,
-                "        let {arg} = {pname}.map {{ _nveSome in NveHybridOpt{suffix}(is_some: true, value: {value}) }} ?? NveHybridOpt{suffix}(is_some: false, value: {zero})"
+                "        let {arg} = {try_}{pname}.map {{ _nveSome in NveHybridOpt{suffix}(is_some: true, value: {value}) }} ?? NveHybridOpt{suffix}(is_some: false, value: {zero})"
             );
             call_args.push(arg);
             continue;
@@ -74,7 +74,8 @@ pub(super) fn emit_swift_client_method(
                 continue;
             }
             HybridType::Struct(_) if p.ty.is_pod(spec) => {
-                call_args.push(format!("{pname}.toAbi()"));
+                writeln!(out, "        let {arg} = try {pname}.toAbi()");
+                call_args.push(arg);
                 continue;
             }
             HybridType::String => {

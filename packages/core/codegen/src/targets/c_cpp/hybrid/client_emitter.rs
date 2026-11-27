@@ -25,28 +25,11 @@ pub(super) fn emit_cpp_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: 
         writeln!(out, "  NveHybrid{} to_abi() const noexcept {{", s.name);
         writeln!(out, "    NveHybrid{} raw{{}};", s.name);
         for f in &s.fields {
-            let fname = cpp_ident(&f.name);
-            let cname = c_field_ident(&f.name);
-            match &f.ty {
-                HybridType::Enum(_) => {
-                    writeln!(
-                        out,
-                        "    raw.{cname} = static_cast<uint32_t>(this->{fname});"
-                    );
-                }
-                HybridType::Struct(_) => {
-                    writeln!(out, "    raw.{cname} = this->{fname}.to_abi();");
-                }
-                HybridType::FixedArray { .. } => {
-                    writeln!(
-                        out,
-                        "    std::memcpy(raw.{cname}, this->{fname}.data(), sizeof(raw.{cname}));"
-                    );
-                }
-                _ => {
-                    writeln!(out, "    raw.{cname} = this->{fname};");
-                }
-            }
+            let (dst, src) = (
+                format!("raw.{}", c_field_ident(&f.name)),
+                format!("this->{}", cpp_ident(&f.name)),
+            );
+            emit_cpp_abi_copy(out, "    ", &dst, &src, &f.ty, AbiDirection::ToAbi, 0);
         }
         writeln!(out, "    return raw;");
         writeln!(out, "  }}");
@@ -59,25 +42,11 @@ pub(super) fn emit_cpp_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: 
         );
         writeln!(out, "    {} out{{}};", s.name);
         for f in &s.fields {
-            let fname = cpp_ident(&f.name);
-            let cname = c_field_ident(&f.name);
-            match &f.ty {
-                HybridType::Enum(e) => {
-                    writeln!(out, "    out.{fname} = static_cast<{e}>(raw.{cname});");
-                }
-                HybridType::Struct(st) => {
-                    writeln!(out, "    out.{fname} = {st}::from_abi(raw.{cname});");
-                }
-                HybridType::FixedArray { .. } => {
-                    writeln!(
-                        out,
-                        "    std::memcpy(out.{fname}.data(), raw.{cname}, sizeof(raw.{cname}));"
-                    );
-                }
-                _ => {
-                    writeln!(out, "    out.{fname} = raw.{cname};");
-                }
-            }
+            let (dst, src) = (
+                format!("out.{}", cpp_ident(&f.name)),
+                format!("raw.{}", c_field_ident(&f.name)),
+            );
+            emit_cpp_abi_copy(out, "    ", &dst, &src, &f.ty, AbiDirection::FromAbi, 0);
         }
         writeln!(out, "    return out;");
         writeln!(out, "  }}");
@@ -574,7 +543,8 @@ pub(super) fn emit_cpp_return_decode(
             );
             writeln!(out, "{indent}return std::move(*_nve_dv);");
         }
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
+        // Exactly the options `c_return_type` returns as `NveHybridOpt*` (never `[T; N]`).
+        HybridType::Optional(inner) if ty.optional_pod_suffix(spec).is_some() => {
             writeln!(
                 out,
                 "{indent}if (!{var}.is_some) {{ return std::nullopt; }}"

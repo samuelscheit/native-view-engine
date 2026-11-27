@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use crate::error::CodegenError;
 use crate::naming::escape_c_like_string;
-use crate::schema::hybrid::{HybridDefaultValue, HybridFileSpec, HybridMethodSpec, HybridType};
+use crate::schema::hybrid::{
+    HybridDefaultValue, HybridFileSpec, HybridMethodSpec, HybridType, NonScalarDefault,
+};
 
 /// Prelude items generated code names by path, so a spec type of the same name never shadows them.
 pub(super) const RESULT: &str = "::core::result::Result";
@@ -228,19 +230,16 @@ pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefault
             other => format!("Some({})", rust_prop_default_expr(inner, Some(other))),
         };
     }
-    if let Some(lit) = def.format_scalar_literal(ty) {
-        return lit;
-    }
-    match def {
-        HybridDefaultValue::String(s) => format!(
+    match def.scalar_literal(ty) {
+        Ok(lit) => lit,
+        Err(NonScalarDefault::String(s)) => format!(
             "<::std::string::String as {FROM}<&str>>::from(\"{}\")",
             escape_c_like_string(s)
         ),
-        HybridDefaultValue::EnumVariant { enum_name, variant } => {
+        Err(NonScalarDefault::EnumVariant { enum_name, variant }) => {
             format!("{enum_name}::{variant}")
         }
-        HybridDefaultValue::None => default_expr(ty),
-        _ => default_expr(ty),
+        Err(NonScalarDefault::None) => default_expr(ty),
     }
 }
 

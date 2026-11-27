@@ -25,7 +25,7 @@ use crate::naming::{
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{
     HybridDefaultValue, HybridEnumSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
-    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
+    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, NonScalarDefault,
 };
 
 /// `name` after `.`: Swift reserves `init`, `self`, `Self`, `Type`, and `Protocol` there, so C field

@@ -8,6 +8,7 @@
 pub mod ast_enums;
 pub mod ast_layout;
 pub mod bench;
+pub mod codegen_53bit;
 pub mod dag;
 pub mod host_runtimes;
 pub mod hot_path;

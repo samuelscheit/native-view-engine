@@ -297,20 +297,31 @@ impl HybridDefaultValue {
         }
     }
 
-    /// Formats bool/int/uint/float defaults shared by targets that use plain numeric literals
-    /// (`true`/`false`, bare integers, `.0` for integer-to-float defaults, and `format_float_literal`).
-    /// Returns `None` for language-specific kinds (`String`, `EnumVariant`, `None`).
-    pub fn format_scalar_literal(&self, ty: &HybridType) -> Option<String> {
+    /// The default as a plain literal shared by the Dart, Rust, and Swift targets (`true`, bare
+    /// integers, `.0` for an integer default of a float, `format_float_literal`), or the kind each
+    /// target spells itself.
+    pub(crate) fn scalar_literal(&self, ty: &HybridType) -> Result<String, NonScalarDefault<'_>> {
         match (self, ty) {
-            (Self::Bool(b), _) => Some(b.to_string()),
-            (Self::Int(i), HybridType::F32 | HybridType::F64) => Some(format!("{i}.0")),
-            (Self::Int(i), _) => Some(i.to_string()),
-            (Self::UInt(u), HybridType::F32 | HybridType::F64) => Some(format!("{u}.0")),
-            (Self::UInt(u), _) => Some(u.to_string()),
-            (Self::Float(f), _) => Some(format_float_literal(*f)),
-            (Self::String(_) | Self::EnumVariant { .. } | Self::None, _) => None,
+            (Self::Bool(b), _) => Ok(b.to_string()),
+            (Self::Int(i), HybridType::F32 | HybridType::F64) => Ok(format!("{i}.0")),
+            (Self::Int(i), _) => Ok(i.to_string()),
+            (Self::UInt(u), HybridType::F32 | HybridType::F64) => Ok(format!("{u}.0")),
+            (Self::UInt(u), _) => Ok(u.to_string()),
+            (Self::Float(f), _) => Ok(format_float_literal(*f)),
+            (Self::String(s), _) => Err(NonScalarDefault::String(s)),
+            (Self::EnumVariant { enum_name, variant }, _) => {
+                Err(NonScalarDefault::EnumVariant { enum_name, variant })
+            }
+            (Self::None, _) => Err(NonScalarDefault::None),
         }
     }
+}
+
+/// A prop default with no shared literal form (see [`HybridDefaultValue::scalar_literal`]).
+pub(crate) enum NonScalarDefault<'a> {
+    String(&'a str),
+    EnumVariant { enum_name: &'a str, variant: &'a str },
+    None,
 }
 
 fn default_true() -> bool {

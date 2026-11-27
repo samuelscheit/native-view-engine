@@ -39,8 +39,8 @@ impl ShadowHybrid for Shadow {
     fn default(&mut self) -> u32 {
         7
     }
-    fn check(&mut self, status: Status, maybe: Option<Status>) -> Result<Option<Status>, String> {
-        Ok(maybe.map(|m| Status { level: status.level + m.level, ..m }))
+    fn check(&mut self, status: Pulse, maybe: Option<Pulse>) -> Result<Option<Pulse>, String> {
+        Ok(maybe.map(|m| Pulse { level: status.level + m.level, ..m }))
     }
     fn advance(&mut self, frame: Frame) -> Frame {
         let mut next = frame;
@@ -223,24 +223,24 @@ fn shadow_module(node: &Node, node_bin: &[u8]) {
 /// passes are defined on entry, and invalid ones are rejected as `InvalidArg`.
 unsafe fn raw_carriers(vt: &NveHybridShadowVTable, h: nve_abi::NveAppHandle) {
     unsafe {
-        let status = NveHybridRawStatus { phase: 1, live: 1, level: 3 };
-        let zeroed = NveHybridRawStatus { phase: 0, live: 0, level: 0 };
-        let mut out = NveHybridOptStatus::default();
+        let status = NveHybridRawPulse { phase: 1, live: 1, level: 3 };
+        let zeroed = NveHybridRawPulse { phase: 0, live: 0, level: 0 };
+        let mut out = NveHybridOptPulse::default();
         let mut out_err = NveHybridOwnedBytes::EMPTY;
         // `std::nullopt` from C++ is a zeroed carrier: `phase: 0` is not a `Phase`, yet it is fine.
-        let none = NveHybridOptStatus { is_some: 0, value: zeroed };
+        let none = NveHybridOptPulse { is_some: 0, value: zeroed };
         assert_eq!((vt.check)(h, status, none, &mut out, &mut out_err), NveHybridStatus::Ok as i32);
         assert_eq!(out.is_some, 0);
-        let some = NveHybridOptStatus { is_some: 1, value: NveHybridRawStatus { phase: 2, live: 0, level: 4 } };
+        let some = NveHybridOptPulse { is_some: 1, value: NveHybridRawPulse { phase: 2, live: 0, level: 4 } };
         assert_eq!((vt.check)(h, status, some, &mut out, &mut out_err), NveHybridStatus::Ok as i32);
         assert_eq!((out.is_some, out.value.phase, out.value.live, out.value.level), (1, 2, 0, 7));
-        assert_eq!(out.value.decode(), Ok(Status { phase: Phase::Paused, live: false, level: 7 }));
+        assert_eq!(out.value.decode(), Ok(Pulse { phase: Phase::Paused, live: false, level: 7 }));
 
-        for (bad, field) in [(zeroed, "status"), (NveHybridRawStatus { phase: 99, ..status }, "status"), (NveHybridRawStatus { live: 2, ..status }, "status")] {
+        for (bad, field) in [(zeroed, "status"), (NveHybridRawPulse { phase: 99, ..status }, "status"), (NveHybridRawPulse { live: 2, ..status }, "status")] {
             assert_eq!((vt.check)(h, bad, none, &mut out, &mut out_err), NveHybridStatus::InvalidArg as i32);
             assert!(take_str(std::mem::replace(&mut out_err, NveHybridOwnedBytes::EMPTY)).starts_with(&format!("invalid hybrid argument '{field}': ")));
         }
-        let bad_some = NveHybridOptStatus { is_some: 1, value: zeroed };
+        let bad_some = NveHybridOptPulse { is_some: 1, value: zeroed };
         assert_eq!((vt.check)(h, status, bad_some, &mut out, &mut out_err), NveHybridStatus::InvalidArg as i32);
         assert!(take_str(std::mem::replace(&mut out_err, NveHybridOwnedBytes::EMPTY)).contains("Phase"));
 

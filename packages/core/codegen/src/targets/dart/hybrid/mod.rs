@@ -25,7 +25,7 @@ use crate::naming::{
 use crate::schema::export::GeneratedFile;
 use crate::schema::hybrid::{
     HybridDefaultValue, HybridEnumSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec,
-    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION,
+    HybridStructSpec, HybridType, HybridViewSpec, NVE_HYBRID_ABI_VERSION, NonScalarDefault,
 };
 
 /// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and `package:nve_host`.

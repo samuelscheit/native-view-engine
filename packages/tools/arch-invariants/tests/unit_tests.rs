@@ -3,7 +3,7 @@
 
 use guppy::graph::PackageGraph;
 use nve_arch_invariants::{
-    ast_enums, ast_layout, bench, dag, hot_path, hygiene, is_cfg_test_attr, purity,
+    ast_enums, ast_layout, bench, codegen_53bit, dag, hot_path, hygiene, is_cfg_test_attr, purity,
 };
 
 fn lib_target(name: &str, dir: &str) -> String {
@@ -501,25 +501,39 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     purity::scan_table_and_codec_hygiene("packages/core/tables/src/t.rs", tbl_src, &tbl_ast, &mut vt);
     assert_eq!(vt.len(), 6, "expected bits + default + split bool + Unset + SET_ + encode_bytes: {vt:?}");
 
-    // Dart & TypeScript 53-bit codegen checks (positive + negative).
-    let mut vd = Vec::new();
-    purity::scan_dart_53bit_safety(
-        "dart/a.rs",
-        "const int H = 0x1234567890ABCDEF;\nconst int W = 0x12345678901234;\nstatic const int A = 0x{hash:016X};\nstatic const int B = 0x{hash:X};\nstatic const int C = 0x{hash};\nfinal int D = 0x{lo:08X} + 0x{hi:x};",
-        &mut vd,
-    );
-    assert_eq!(vd.len(), 6, "expected 6 Dart 53-bit violations: {vd:?}");
-
-    let mut vd_ok = Vec::new();
-    purity::scan_dart_53bit_safety(
-        "dart/a.rs",
-        "  static const int interfaceId = 0x{interface_id:08X};\nconst int K = 0x{k:04x};\nconst int S = 0x{s:02X};\nconst int N = 0x1234567890123;\nfinal h = BigInt.parse('0x{hash:016X}');\nfinal BigInt H = BigInt.parse('1234567890ABCDEF', radix: 16); // 0x1234567890ABCDEF",
-        &mut vd_ok,
-    );
-    assert!(vd_ok.is_empty(), "32-bit format specs, <= 13-digit literals and BigInt must pass: {vd_ok:?}");
+    // Dart 53-bit codegen check: every line alone, `true` = must be flagged.
+    for (line, unsafe_) in [
+        ("const int H = 0x1234567890ABCDEF;", true),
+        ("const int W = 0x12345678901234;", true),
+        ("static const int A = 0x{hash:016X};", true),
+        ("static const int B = 0x{hash:X};", true),
+        ("static const int C = 0x{hash};", true),
+        ("final int D = 0x{lo:08X} + 0x{hi:x};", true),
+        ("static const int U = 0X{h:016X};", true),
+        ("const int E = 0x{hi:08X}{lo:08X};", true),
+        ("const int F = 0x{hi:08X}00000000;", true),
+        ("const int G = {h:#018X};", true),
+        ("const int I = {h:#x};", true),
+        ("const int J = 0x{h:016X}; // not BigInt", true),
+        ("const int L = 0x1234567890ABCDEF; // BigInt.parse elsewhere", true),
+        ("  static const int interfaceId = 0x{interface_id:08X};", false),
+        ("const int K = 0x{k:04x};", false),
+        ("const int S = 0x{s:02X};", false),
+        ("const int M = {m:#010X};", false),
+        ("const int Q = 0x{id:08X}; // 0x{wide:016X} in a comment", false),
+        ("const int N = 0x1234567890123;", false),
+        ("const String name = '{label}';", false),
+        ("const int R = 0x{{literal}};", false),
+        ("final h = BigInt.parse('0x{hash:016X}');", false),
+        ("final BigInt H = BigInt.parse('1234567890ABCDEF', radix: 16); // 0x1234567890ABCDEF", false),
+    ] {
+        let mut vd = Vec::new();
+        codegen_53bit::scan_dart_53bit_safety("dart/a.rs", line, &mut vd);
+        assert_eq!(vd.len(), usize::from(unsafe_), "{line}: {vd:?}");
+    }
 
     let mut vts_bad = Vec::new();
-    purity::scan_ts_53bit_safety(
+    codegen_53bit::scan_ts_53bit_safety(
         "typescript/a.rs",
         "const id = Number(view.getBigUint64(0, true));\nconst signed = Number(view.getBigInt64(0, true));\nconst x = hi * 4294967296 + lo;\nconst y = hi << 32;",
         &mut vts_bad,
@@ -527,12 +541,15 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     assert_eq!(vts_bad.len(), 4, "expected 4 TS 53-bit violations: {vts_bad:?}");
 
     let mut vts_ok = Vec::new();
-    purity::scan_ts_53bit_safety(
+    codegen_53bit::scan_ts_53bit_safety(
         "typescript/a.rs",
-        "const id: bigint = view.getBigUint64(0, true);\nconst hi = BigInt(h) << 32n;",
+        "const id: bigint = view.getBigUint64(0, true);\nconst hi = BigInt(h) << 32n;\nconst lo = view.getUint32(0, true); // Number(getBigUint64) would lose bits",
         &mut vts_ok,
     );
     assert!(vts_ok.is_empty(), "safe BigInt TS must pass: {vts_ok:?}");
+    let mut vts_comment = Vec::new();
+    codegen_53bit::scan_ts_53bit_safety("typescript/a.rs", "const y = hi << 32; // BigInt", &mut vts_comment);
+    assert_eq!(vts_comment.len(), 1, "a comment cannot exempt a line: {vts_comment:?}");
 
     // Multi-platform guppy CargoSet catches optional third-party features & macOS-only edges.
     let multi_json = format!(

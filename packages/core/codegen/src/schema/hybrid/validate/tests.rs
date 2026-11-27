@@ -233,3 +233,27 @@ fn enum_variants_that_collide_in_snake_case_are_duplicates() {
     });
     assert_eq!(s.validate(), Ok(()));
 }
+
+#[test]
+fn rejects_type_names_spelling_another_generated_c_type() {
+    let with_struct = |name: &str| {
+        let mut s = spec("run", "shape", "x");
+        s.modules[0].methods[0].params[0].ty =
+            HybridType::Optional(Box::new(HybridType::Struct("Shape".to_owned())));
+        let mut extra = s.structs[0].clone();
+        extra.name = name.to_owned();
+        s.structs.push(extra);
+        s
+    };
+    // `NveHybridStatus` / `NveHybridOwnedBytes` (runtime), `NveHybridProbeVTable`,
+    // `NveHybridRawShape` (Rust carrier), `NveHybridOptShape` (C option of `Shape`).
+    for name in ["Status", "ProbeVTable", "RawShape", "OptShape"] {
+        assert!(
+            error_of(&with_struct(name)).contains(&format!("collides with the generated C type 'NveHybrid{name}'")),
+            "{name}"
+        );
+    }
+    for name in ["Options", "RawData", "OptI64", "PanelVTable", "Statuses"] {
+        assert_eq!(with_struct(name).validate(), Ok(()), "{name}");
+    }
+}
