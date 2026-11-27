@@ -16,49 +16,16 @@ import android.widget.RadioButton;
 import android.widget.Switch;
 import android.widget.TextView;
 
-import dev.nve.android.generated.NveTables;
 import dev.nve.host.RuntimeSceneReader;
+import dev.nve.host.SceneSemantics;
+import dev.nve.host.SceneSemantics.Tables;
+import dev.nve.host.SceneSemantics.TextStyle;
 import dev.nve.host.TableReader;
+import dev.nve.host.generated.NveTables;
 
 /** Applies the published standard tables of one node to its Android {@link View}. */
 final class NveViewStyle {
     private NveViewStyle() {}
-
-    /** Per-frame table lookups (by key, resolved once per frame). */
-    static final class Tables {
-        TableReader visual;
-        TableReader typography;
-        TableReader text;
-        TableReader input;
-        TableReader image;
-        TableReader canvas;
-        TableReader scroll;
-        TableReader interaction;
-        TableReader accessibility;
-        TableReader debugId;
-
-        void bind(RuntimeSceneReader s) {
-            visual = s.findTable(NveTables.Visual.KEY);
-            typography = s.findTable(NveTables.Typography.KEY);
-            text = s.findTable(NveTables.Text.KEY);
-            input = s.findTable(NveTables.TextInput.KEY);
-            image = s.findTable(NveTables.Image.KEY);
-            canvas = s.findTable(NveTables.Canvas.KEY);
-            scroll = s.findTable(NveTables.Scroll.KEY);
-            interaction = s.findTable(NveTables.Interaction.KEY);
-            accessibility = s.findTable(NveTables.Accessibility.KEY);
-            debugId = s.findTable(NveTables.DebugId.KEY);
-        }
-    }
-
-    /** Inherited text style of a node (explicit `Typography` fields win, ancestors fill the rest). */
-    static final class TextStyle {
-        int color;
-        float fontSize;
-        int fontWeight;
-        boolean italic;
-        int align;
-    }
 
     static int argb(int rgba) {
         return ((rgba >>> 24) << 24) | ((rgba & 0xFF) << 16) | (((rgba >>> 8) & 0xFF) << 8) | ((rgba >>> 16) & 0xFF);
@@ -77,8 +44,8 @@ final class NveViewStyle {
         final TableReader v = t.visual;
         final int bg = v.color(row, NveTables.Visual.BACKGROUND);
         final int border = v.color(row, NveTables.Visual.BORDER_COLOR);
-        final float borderWidth = Math.max(0f, v.f32(row, NveTables.Visual.BORDER_WIDTH));
-        final float radius = Math.max(0f, v.f32(row, NveTables.Visual.BORDER_RADIUS));
+        final float borderWidth = Math.max(0f, SceneSemantics.finite(v.f32(row, NveTables.Visual.BORDER_WIDTH), 0f));
+        final float radius = Math.max(0f, SceneSemantics.finite(v.f32(row, NveTables.Visual.BORDER_RADIUS), 0f));
         if ((bg >>> 24) != 0 || ((border >>> 24) != 0 && borderWidth > 0f) || radius > 0f) {
             final GradientDrawable d = new GradientDrawable();
             d.setColor(argb(bg));
@@ -90,41 +57,14 @@ final class NveViewStyle {
             view.setBackground(null);
             view.setClipToOutline(false);
         }
-        view.setAlpha(Math.max(0f, Math.min(1f, v.f32(row, NveTables.Visual.OPACITY))));
+        view.setAlpha(Math.max(0f, Math.min(1f, SceneSemantics.finite(v.f32(row, NveTables.Visual.OPACITY), 1f))));
         view.setTranslationZ(v.i32(row, NveTables.Visual.Z_INDEX) * density);
         view.setVisibility(v.u32(row, NveTables.Visual.VISIBILITY) == NveTables.Visual.VISIBILITY_HIDDEN ? View.INVISIBLE : View.VISIBLE);
     }
 
-    /** Resolves `nve.typography` inheritance by walking ancestors (O(depth)). */
-    static TextStyle textStyle(Tables t, RuntimeSceneReader s, int index, TextStyle out) {
-        out.color = NveTables.Typography.DEFAULT_COLOR;
-        out.fontSize = Float.intBitsToFloat(NveTables.Typography.DEFAULT_FONT_SIZE);
-        out.fontWeight = NveTables.Typography.DEFAULT_FONT_WEIGHT;
-        out.italic = false;
-        out.align = NveTables.Typography.TEXT_ALIGN_START;
-        // `Typography::SET_*` bits: color, font size, font weight, font style, text align.
-        int pending = (1 << 0) | (1 << 1) | (1 << 6) | (1 << 7) | (1 << 11);
-        for (int i = index; i > 0 && pending != 0 && t.typography != null; ) {
-            final int row = s.rowOf(t.typography, i);
-            if (row >= 0) {
-                final TableReader ty = t.typography;
-                final int set = ty.u32(row, NveTables.Typography.SET) & pending;
-                if ((set & 1) != 0) out.color = ty.color(row, NveTables.Typography.COLOR);
-                if ((set & 2) != 0) out.fontSize = ty.f32(row, NveTables.Typography.FONT_SIZE);
-                if ((set & (1 << 6)) != 0) out.fontWeight = ty.u32(row, NveTables.Typography.FONT_WEIGHT);
-                if ((set & (1 << 7)) != 0) out.italic = ty.u32(row, NveTables.Typography.FONT_STYLE) == NveTables.Typography.FONT_STYLE_ITALIC;
-                if ((set & (1 << 11)) != 0) out.align = ty.u32(row, NveTables.Typography.TEXT_ALIGN);
-                pending &= ~set;
-            }
-            final int parent = s.parent(i);
-            i = parent == 0 ? 0 : s.resolve(parent);
-        }
-        return out;
-    }
-
     static void applyText(TextView tv, TextStyle st) {
         tv.setTextColor(argb(st.color));
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, Float.isFinite(st.fontSize) && st.fontSize > 0f ? st.fontSize : 16f);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_DIP, st.fontSize);  // sanitized by SceneSemantics
         tv.setTypeface(NveTextMeasurer.typeface(st.fontWeight, st.italic));
         final int h;
         switch (st.align) {

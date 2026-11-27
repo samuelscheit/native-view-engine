@@ -53,6 +53,7 @@ public final class RuntimeSurface implements AutoCloseable {
     private boolean needsFrame = true;
     private boolean inFrame;
     private boolean closeAfterFrame;
+    private boolean renderAfterFrame;
     private final java.util.ArrayList<float[]> deferredScrolls = new java.util.ArrayList<>();
 
     /** @throws IllegalStateException when the runtime cannot create the surface */
@@ -204,13 +205,13 @@ public final class RuntimeSurface implements AutoCloseable {
 
     /**
      * Ticks the runtime and hands a changed frame to the consumer. Returns {@code true} when a
-     * frame was delivered. Inside {@code onFrame} it only schedules another render.
+     * frame was delivered. Inside {@code onFrame} it only schedules a render (posted to the owner
+     * thread after the frame is released).
      */
     public boolean render() {
         if (handle == 0L) return false;
         if (inFrame) {
-            needsFrame = true;
-            onWake();
+            renderAfterFrame = true;
             return false;
         }
         out[0] = 0;
@@ -243,6 +244,10 @@ public final class RuntimeSurface implements AutoCloseable {
         }
         deferredScrolls.clear();
         if (ring.count() > 0) flush();
+        if (renderAfterFrame) {
+            renderAfterFrame = false;
+            onWake();
+        }
     }
 
     /**

@@ -11,14 +11,14 @@ import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.KeyEvent;
-import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
-import dev.nve.android.generated.NveCoreAbi;
-import dev.nve.host.NativeRuntime;
+import dev.nve.host.AndroidKeys;
 import dev.nve.host.RuntimeSurface;
+import dev.nve.host.generated.NveAbi;
+import dev.nve.host.generated.NveRuntimeAbi;
 
 /**
  * Standalone zero-Gradle Activity hosting an NVE app on native Android Views through
@@ -76,7 +76,7 @@ public final class NveMainActivity extends Activity {
             what = getApplicationInfo().nativeLibraryDir + "/libnve_app.so";
             status = surface.attachApp(what);
         }
-        if (status != NativeRuntime.STATUS_OK) {
+        if (status != NveRuntimeAbi.STATUS_OK) {
             final String err = surface.lastError();
             Log.e(TAG, "Failed to start " + what + ": " + err);
             showError("Failed to start NVE:\n" + what + "\n" + err);
@@ -114,29 +114,24 @@ public final class NveMainActivity extends Activity {
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (surface != null && event != null
                 && (event.getAction() == KeyEvent.ACTION_DOWN || event.getAction() == KeyEvent.ACTION_UP)) {
-            final int kind = event.getAction() == KeyEvent.ACTION_DOWN ? NveCoreAbi.EVENT_KEY_DOWN : NveCoreAbi.EVENT_KEY_UP;
-            final int unicode = event.getUnicodeChar();
-            final String key = unicode > 0 ? new String(Character.toChars(unicode)) : KeyEvent.keyCodeToString(event.getKeyCode());
-            surface.events().key(kind, focusedNode(), NveSceneRenderer.now(), key,
-                    KeyEvent.keyCodeToString(event.getKeyCode()), modifiers(event), event.getKeyCode(), false);
-            surface.dispatch();
+            final int kind = event.getAction() == KeyEvent.ACTION_DOWN ? NveAbi.EVENT_KEY_DOWN : NveAbi.EVENT_KEY_UP;
+            final int code = event.getKeyCode();
+            final String key = AndroidKeys.key(code, event.getUnicodeChar());
+            final String physical = AndroidKeys.code(code);
+            final int node = renderer.nodeIdOf(getCurrentFocus());  // the focused node, never a hit test
+            final int mods = modifiers(event);
+            surface.send(r -> r.key(kind, node, NveSceneRenderer.now(), key, physical, mods, code, false));
         }
         return super.dispatchKeyEvent(event);
     }
 
-    private int focusedNode() {
-        final View focused = getCurrentFocus();
-        return focused == null ? 0 : surface.hitTest(
-                (focused.getX() + focused.getWidth() / 2f) / density, (focused.getY() + focused.getHeight() / 2f) / density);
-    }
-
     /** `NVE_KEY_MOD_*`: meta, ctrl, alt, shift, repeat. */
     private static int modifiers(KeyEvent e) {
-        return (e.isMetaPressed() ? NveCoreAbi.KEY_MOD_META : 0)
-                | (e.isCtrlPressed() ? NveCoreAbi.KEY_MOD_CTRL : 0)
-                | (e.isAltPressed() ? NveCoreAbi.KEY_MOD_ALT : 0)
-                | (e.isShiftPressed() ? NveCoreAbi.KEY_MOD_SHIFT : 0)
-                | (e.getRepeatCount() > 0 ? NveCoreAbi.KEY_MOD_REPEAT : 0);
+        return (e.isMetaPressed() ? NveAbi.KEY_MOD_META : 0)
+                | (e.isCtrlPressed() ? NveAbi.KEY_MOD_CTRL : 0)
+                | (e.isAltPressed() ? NveAbi.KEY_MOD_ALT : 0)
+                | (e.isShiftPressed() ? NveAbi.KEY_MOD_SHIFT : 0)
+                | (e.getRepeatCount() > 0 ? NveAbi.KEY_MOD_REPEAT : 0);
     }
 
     private void showError(String message) {

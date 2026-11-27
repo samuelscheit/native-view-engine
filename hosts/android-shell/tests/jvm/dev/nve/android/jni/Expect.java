@@ -22,6 +22,15 @@ final class Expect {
         that(expected == null ? actual == null : expected.equals(actual), what + ": expected " + expected + ", got " + actual);
     }
 
+    void throwsAny(Runnable body, String what) {
+        try {
+            body.run();
+            that(false, what + ": no exception");
+        } catch (RuntimeException e) {
+            that(true, what);
+        }
+    }
+
     /** Prints the summary and exits non-zero on any failure. */
     void finish(String suite) {
         System.out.println(suite + ": " + passed + " checks passed, " + failed + " failed");

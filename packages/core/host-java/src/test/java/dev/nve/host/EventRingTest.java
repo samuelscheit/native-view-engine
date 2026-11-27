@@ -16,6 +16,7 @@ final class EventRingTest {
         overflowLeavesNoTrace(c);
         steadyState(c);
         imageSources(c);
+        androidKeys(c);
     }
 
     /** Writes {@code nve_abi::golden_events()} (codegen abi/java_host.rs) and compares byte-for-byte. */
@@ -97,6 +98,22 @@ final class EventRingTest {
         frames.run();  // warm the scratch and the JIT
         final long bytes = Alloc.bytes(frames);
         c.eq(bytes, 0, "steady-state ring writes allocate nothing");
+    }
+
+    static void androidKeys(Check c) {
+        c.that(AndroidKeys.key(29, 'a').equals("a") && AndroidKeys.code(29).equals("KeyA"), "letter");
+        c.that(AndroidKeys.key(29, 'A').equals("A"), "shifted letter keeps the produced character");
+        c.that(AndroidKeys.key(7, '0').equals("0") && AndroidKeys.code(16).equals("Digit9"), "digits");
+        c.that(AndroidKeys.key(66, 0).equals("Enter") && AndroidKeys.key(66, '\n').equals("Enter"), "enter (control char ignored)");
+        c.that(AndroidKeys.key(67, 0).equals("Backspace") && AndroidKeys.code(67).equals("Backspace"), "backspace");
+        c.that(AndroidKeys.key(62, ' ').equals(" ") && AndroidKeys.code(62).equals("Space"), "space");
+        c.that(AndroidKeys.key(21, 0).equals("ArrowLeft") && AndroidKeys.code(22).equals("ArrowRight"), "arrows");
+        c.that(AndroidKeys.key(59, 0).equals("Shift") && AndroidKeys.code(60).equals("ShiftRight"), "modifiers");
+        c.that(AndroidKeys.key(131, 0).equals("F1") && AndroidKeys.code(142).equals("F12"), "function keys");
+        c.that(AndroidKeys.key(9999, 0).equals("Unidentified") && AndroidKeys.code(9999).isEmpty(), "unknown key");
+        c.that(AndroidKeys.key(29, 0x1F600).equals("\ud83d\ude00"), "astral character");
+        c.that(AndroidKeys.key(9999, 0x80000041).equals("Unidentified"), "dead-key combining flag is not a character");
+        c.that(AndroidKeys.key(9999, 0x110000).equals("Unidentified"), "invalid code point");
     }
 
     static ByteBuffer image(int tag, byte[] payload, int declaredLen, int trailing) {

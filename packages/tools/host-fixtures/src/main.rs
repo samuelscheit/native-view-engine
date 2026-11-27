@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use nve_abi::{ColorRgba, EventMask};
 use nve_canvas::{Canvas, DrawList};
 use nve_components::tables::{
-    Accessibility, AlignItems, AriaRole, DebugId, FlexDirection, Image, ImageFit, ImageSrc,
-    Interaction, Layout, Scroll, ScrollAxes, TextContent, TextInput, Typography, Visual,
+    Accessibility, AlignItems, AriaRole, DebugId, FlexDirection, FontStyle, Image, ImageFit, ImageSrc,
+    Interaction, Layout, Scroll, ScrollAxes, TextAlign, TextContent, TextInput, Typography, Visual,
 };
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, Transaction};
@@ -63,6 +63,12 @@ fn showcase_keyframe(tx: &mut Transaction<'_>) -> Showcase {
         .border_width(2.0)
         .border_radius(12.0)
         .opacity(0.9);
+    // Inherited by every text descendant: color, italic, centered (the title overrides the color).
+    tx.edit::<Typography>(column)
+        .set(Typography::SET_COLOR | Typography::SET_FONT_STYLE | Typography::SET_TEXT_ALIGN)
+        .color(Rgba::rgb(1, 2, 3))
+        .font_style(FontStyle::Italic)
+        .text_align(TextAlign::Center);
 
     let title = tx.create();
     tx.edit::<TextContent>(title).text("Hello NVE");

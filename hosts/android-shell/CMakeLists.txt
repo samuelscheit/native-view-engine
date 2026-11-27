@@ -10,10 +10,10 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/cmake/NveRuntime.cmake")
 
 get_filename_component(NVE_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(NVE_HOST_JAVA_SRC "${NVE_REPO_ROOT}/packages/core/host-java/src/main/java")
-set(NVE_ANDROID_GENERATED "${CMAKE_CURRENT_SOURCE_DIR}/android-app/src/dev/nve/android/generated")
 
 # Lock the Java half of the JNI contract (packed scene frame, schema, statuses) at compile time:
-# the constants are read from the Java sources and `static_assert`ed in `NveAndroidSurface.hpp`.
+# the constants are read from the Java sources (generated ones by the `NveRuntime.cmake` codegen
+# step above) and `static_assert`ed in `NveAndroidSurface.hpp`.
 function(nve_java_constant out_var java_file pattern)
   file(READ "${java_file}" _src)
   if(NOT _src MATCHES "${pattern}")
@@ -23,15 +23,19 @@ function(nve_java_constant out_var java_file pattern)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${java_file}")
 endfunction()
 set(_nve_reader "${NVE_HOST_JAVA_SRC}/dev/nve/host/RuntimeSceneReader.java")
-set(_nve_native "${NVE_HOST_JAVA_SRC}/dev/nve/host/NativeRuntime.java")
-nve_java_constant(_schema "${_nve_reader}" "SCHEMA = Key64\\.of\\((0x[0-9A-Fa-f]+)L\\)")
+set(_nve_abi "${NVE_HOST_JAVA_SRC}/dev/nve/host/generated/NveRuntimeAbi.java")
+nve_java_constant(_schema "${_nve_abi}" "RUNTIME_SCHEMA_HASH = (0x[0-9A-Fa-f]+)L;")
+nve_java_constant(_st_busy "${_nve_abi}" "STATUS_BUSY = ([0-9]+);")
+nve_java_constant(_st_error "${_nve_abi}" "STATUS_ERROR = ([0-9]+);")
+nve_java_constant(_st_not_found "${_nve_abi}" "STATUS_NOT_FOUND = ([0-9]+);")
 nve_java_constant(_max_tables "${_nve_reader}" "MAX_TABLES = ([0-9]+);")
+nve_java_constant(_h_epoch "${_nve_reader}" "H_SCENE_EPOCH = ([0-9]+);")
+nve_java_constant(_h_dirty_res "${_nve_reader}" "H_DIRTY_RESOURCE_COUNT = ([0-9]+);")
 nve_java_constant(_h_tables "${_nve_reader}" "H_TABLES = ([0-9]+);")
 nve_java_constant(_h_stride "${_nve_reader}" "H_TABLE_STRIDE = ([0-9]+);")
+nve_java_constant(_s_dirty_res "${_nve_reader}" "S_DIRTY_RESOURCES = ([0-9]+);")
 nve_java_constant(_s_tables "${_nve_reader}" "S_TABLES = ([0-9]+);")
 nve_java_constant(_s_stride "${_nve_reader}" "S_TABLE_STRIDE = ([0-9]+);")
-nve_java_constant(_st_busy "${_nve_native}" "STATUS_BUSY = ([0-9]+);")
-nve_java_constant(_st_error "${_nve_native}" "STATUS_ERROR = ([0-9]+);")
 
 add_library(nve_android_shell SHARED
   NveAndroidRuntimeJni.cpp
@@ -41,12 +45,16 @@ add_library(nve_android_shell SHARED
 target_compile_definitions(nve_android_shell PRIVATE
   NVE_JAVA_RUNTIME_SCHEMA=${_schema}ULL
   NVE_JAVA_MAX_TABLES=${_max_tables}u
+  NVE_JAVA_H_SCENE_EPOCH=${_h_epoch}u
+  NVE_JAVA_H_DIRTY_RESOURCE_COUNT=${_h_dirty_res}u
+  NVE_JAVA_S_DIRTY_RESOURCES=${_s_dirty_res}u
   NVE_JAVA_H_TABLES=${_h_tables}u
   NVE_JAVA_H_TABLE_STRIDE=${_h_stride}u
   NVE_JAVA_S_TABLES=${_s_tables}u
   NVE_JAVA_S_TABLE_STRIDE=${_s_stride}u
   NVE_JAVA_STATUS_BUSY=${_st_busy}
   NVE_JAVA_STATUS_ERROR=${_st_error}
+  NVE_JAVA_STATUS_NOT_FOUND=${_st_not_found}
 )
 if(NOT MSVC)
   target_compile_options(nve_android_shell PRIVATE -Wall -Wextra -Werror)
@@ -94,7 +102,6 @@ if(NOT ANDROID)
     file(GLOB_RECURSE _nve_jvm_sources CONFIGURE_DEPENDS
       "${NVE_HOST_JAVA_SRC}/*.java"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/jvm/*.java")
-    list(APPEND _nve_jvm_sources "${NVE_ANDROID_GENERATED}/NveTables.java" "${NVE_ANDROID_GENERATED}/NveCoreAbi.java")
     set(NVE_JVM_CLASSES "${CMAKE_CURRENT_BINARY_DIR}/jvm-classes")
     add_custom_command(
       OUTPUT "${NVE_JVM_CLASSES}/.stamp"

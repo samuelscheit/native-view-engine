@@ -1,7 +1,8 @@
 package dev.nve.android.jni;
 
-import dev.nve.android.generated.NveTables;
 import dev.nve.host.NativeRuntime;
+import dev.nve.host.generated.NveRuntimeAbi;
+import dev.nve.host.generated.NveTables;
 import dev.nve.host.RuntimeSceneReader;
 import dev.nve.host.TableReader;
 import java.io.ByteArrayOutputStream;
@@ -36,9 +37,9 @@ public final class PairJniTest {
         final Fixtures fx = new Fixtures(Path.of(args[0]));
         final long h = NativeRuntime.create(1, 360f, 800f, 1f);
 
-        c.eq(NativeRuntime.pairConnect(h, "", "t"), NativeRuntime.STATUS_INVALID_ARG, "empty uri");
-        c.eq(NativeRuntime.pairConnect(h, "wss://127.0.0.1:443/nve-wire", "t"), NativeRuntime.STATUS_INVALID_ARG, "TLS without pin");
-        c.eq(NativeRuntime.pairConnect(h, "ws://127.0.0.1:0/nve-wire", "t"), NativeRuntime.STATUS_INVALID_ARG, "port 0");
+        c.eq(NativeRuntime.pairConnect(h, "", "t"), NveRuntimeAbi.STATUS_INVALID_ARG, "empty uri");
+        c.eq(NativeRuntime.pairConnect(h, "wss://127.0.0.1:443/nve-wire", "t"), NveRuntimeAbi.STATUS_INVALID_ARG, "TLS without pin");
+        c.eq(NativeRuntime.pairConnect(h, "ws://127.0.0.1:0/nve-wire", "t"), NveRuntimeAbi.STATUS_INVALID_ARG, "port 0");
         c.that(!NativeRuntime.lastError(h).isEmpty(), "pair errors explain themselves");
 
         final byte[] keyframe = new byte[fx.frame("showcase_1.nve2").remaining()];
@@ -60,8 +61,9 @@ public final class PairJniTest {
             String title = null;
             final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             final Fixtures.Scene scene = new Fixtures.Scene(h);
+            final int[] changed = new int[1];
             while (title == null && System.nanoTime() < deadline) {
-                if (NativeRuntime.tick(h, 0.016f) > 0) {
+                if (NativeRuntime.tick(h, 0.016f, changed) == 0 && changed[0] != 0) {
                     final RuntimeSceneReader s = scene.acquire();
                     final TableReader text = s.findTable(NveTables.Text.KEY);
                     final int r = text == null ? -1 : s.rowOf(text, s.resolve(fx.id("title")));

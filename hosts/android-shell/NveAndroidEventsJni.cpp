@@ -7,16 +7,17 @@
 #include <cstring>
 
 using nve::android::AndroidSurface;
-using nve::android::changed_or_fail;
-using nve::android::fail;
 using nve::android::release_scene;
+using nve::android::status_of;
 using nve::android::surface_of;
+using nve::android::write_out;
 
 namespace {
 
 static_assert(NVE_EVENT_PAYLOAD_EMPTY == 0 && NVE_EVENT_PAYLOAD_POINT == 1 && NVE_EVENT_PAYLOAD_SCROLL == 2 &&
                   NVE_EVENT_PAYLOAD_TEXT == 3 && NVE_EVENT_PAYLOAD_LAYOUT == 4 && NVE_EVENT_PAYLOAD_CUSTOM == 5 &&
-                  NVE_EVENT_PAYLOAD_KEY == 6 && NVE_EVENT_PAYLOAD_POINTER == 7 && NVE_EVENT_PAYLOAD_WHEEL == 8,
+                  NVE_EVENT_PAYLOAD_KEY == 6 && NVE_EVENT_PAYLOAD_POINTER == 7 && NVE_EVENT_PAYLOAD_WHEEL == 8 &&
+                  NVE_EVENT_PAYLOAD_TABLE_EVENT == 9,
               "EventRingWriter payload tags drifted from NveEventPayloadTag");
 
 constexpr size_t kEventHeaderBytes = 18u;
@@ -49,7 +50,8 @@ struct Cursor {
   }
 };
 
-/// Decodes the whole ring into `out` (borrowing strings from `ring`); `false` on any malformed byte.
+/// Decodes the whole ring (`nve_abi::encode_events`) into `out`, borrowing strings / bytes from
+/// `ring`, with `nve_abi::direct_event_to_native`'s field mapping; `false` on any malformed byte.
 bool decode_ring(const uint8_t* ring, size_t len, std::vector<NveDirectEvent>& out) {
   Cursor c{ring, len};
   uint32_t count = 0u;
@@ -87,18 +89,27 @@ bool decode_ring(const uint8_t* ring, size_t len, std::vector<NveDirectEvent>& o
         break;
       }
       case NVE_EVENT_PAYLOAD_KEY: {
+        // modifiers, is_composing, key_code, key (u16 + utf8) -> text, code (u16 + utf8) -> name
         uint8_t composing = 0u;
-        ok = c.prefixed<uint16_t>(ev.text) && c.prefixed<uint16_t>(ev.name) && c.read(ev.modifiers) &&
-             c.read(ev.key_code) && c.read(composing);
+        ok = c.read(ev.modifiers) && c.read(composing) && c.read(ev.key_code) && c.prefixed<uint16_t>(ev.text) &&
+             c.prefixed<uint16_t>(ev.name);
         ev.event_flags = composing != 0u ? NVE_EVENT_FLAG_COMPOSING : 0u;
         break;
       }
       case NVE_EVENT_PAYLOAD_POINTER:
-        ok = c.read(ev.x) && c.read(ev.y) && c.read(ev.event_flags) && c.read(ev.modifiers);
+        ok = c.read(ev.x) && c.read(ev.y) && c.read(ev.modifiers) && c.read(ev.event_flags);
         break;
       case NVE_EVENT_PAYLOAD_WHEEL:
         ok = c.read(ev.x) && c.read(ev.y) && c.read(ev.modifiers);
         break;
+      case NVE_EVENT_PAYLOAD_TABLE_EVENT: {
+        // table_key (u64) -> value i64, event_id -> key_code, payload (u32 + bytes) -> text
+        uint64_t table_key = 0u;
+        ok = c.read(table_key) && c.read(ev.key_code) && c.prefixed<uint32_t>(ev.text);
+        ev.value.tag = NVE_VAL_I64;
+        ev.value.data.i64_val = static_cast<int64_t>(table_key);
+        break;
+      }
       default:
         return false;
     }
@@ -135,51 +146,26 @@ void on_wake(void* ctx) {
   with_env(s->jvm, [&](JNIEnv* env) { env->CallVoidMethod(s->wake.target, s->wake.method); });
 }
 
-/// UTF-8 → UTF-16 (`U+FFFD` for malformed input; the runtime only hands out valid UTF-8).
-std::u16string utf16_of(const uint8_t* p, size_t n) {
-  std::u16string out;
-  out.reserve(n);
-  for (size_t i = 0u; i < n;) {
-    const uint8_t b = p[i];
-    const size_t need = b < 0x80u ? 0u : (b >> 5u) == 0x6u ? 1u : (b >> 4u) == 0xEu ? 2u : (b >> 3u) == 0x1Eu ? 3u : 4u;
-    if (need == 4u || n - i <= need) {
-      out.push_back(b < 0x80u ? static_cast<char16_t>(b) : u'\uFFFD');
-      i += 1u;
-      continue;
-    }
-    uint32_t cp = need == 0u ? b : (b & (0x3Fu >> need));
-    for (size_t k = 1u; k <= need; ++k) cp = (cp << 6u) | (p[i + k] & 0x3Fu);
-    if (cp >= 0x10000u) {
-      out.push_back(static_cast<char16_t>(0xD800u + ((cp - 0x10000u) >> 10u)));
-      out.push_back(static_cast<char16_t>(0xDC00u + ((cp - 0x10000u) & 0x3FFu)));
-    } else {
-      out.push_back(static_cast<char16_t>(cp));
-    }
-    i += need + 1u;
-  }
-  return out;
-}
-
-int32_t on_measure(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
-                   float* out_w, float* out_h) {
+/// `NveRuntimeMeasureTextFn` over `NativeRuntime.TextMeasurer`. Leaves the runtime's zeroed out
+/// slots untouched when Java fails (the runtime maps non-finite / negative sizes to 0 itself).
+void on_measure(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width, float* out_w,
+                float* out_h) {
   auto* s = static_cast<AndroidSurface*>(ctx);
-  int32_t status = 1;  // fall back to the heuristic unless Java measures
-  if (s->jvm == nullptr || s->measurer.target == nullptr) return status;
+  if (s->jvm == nullptr || s->measurer.target == nullptr || s->measure_out == nullptr) return;
   with_env(s->jvm, [&](JNIEnv* env) {
-    const std::u16string u16 = utf16_of(text.ptr, text.len);
-    jstring jtext = env->NewString(reinterpret_cast<const jchar*>(u16.data()), static_cast<jsize>(u16.size()));
+    jstring jtext = nve::android::java_string(env, text.ptr, text.len);
     if (jtext == nullptr) return;
-    const jboolean ok = env->CallBooleanMethod(s->measurer.target, s->measurer.method, jtext, font_size,
-                                               static_cast<jint>(font_weight), max_width, s->measure_out);
+    const float nan_out[2] = {NAN, NAN};
+    env->SetFloatArrayRegion(s->measure_out, 0, 2, nan_out);  // a measurer that writes nothing -> 0 x 0
+    env->CallVoidMethod(s->measurer.target, s->measurer.method, jtext, font_size, static_cast<jint>(font_weight),
+                        max_width, s->measure_out);
     env->DeleteLocalRef(jtext);
-    if (env->ExceptionCheck() || ok != JNI_TRUE) return;
+    if (env->ExceptionCheck()) return;  // cleared by `with_env`
     float wh[2] = {NAN, NAN};
     env->GetFloatArrayRegion(s->measure_out, 0, 2, wh);
     *out_w = wh[0];
     *out_h = wh[1];
-    status = 0;
   });
-  return status;
 }
 
 /// Replaces `slot` with `target`'s `name` + `sig` method; `false` (slot cleared) when it has none.
@@ -195,8 +181,12 @@ bool bind_callback(JNIEnv* env, nve::android::JavaCallback& slot, jobject target
     return false;
   }
   slot.target = env->NewGlobalRef(target);
+  if (slot.target == nullptr) {
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return false;
+  }
   slot.method = mid;
-  return slot.target != nullptr;
+  return true;
 }
 
 }  // namespace
@@ -204,14 +194,15 @@ bool bind_callback(JNIEnv* env, nve::android::JavaCallback& slot, jobject target
 extern "C" {
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_dispatchEvents(JNIEnv* env, jclass, jlong handle,
-                                                                     jobject ring, jint len) {
+                                                                     jobject ring, jint len, jintArray out_changed) {
   AndroidSurface* s = surface_of(handle);
-  if (s == nullptr) return -NVE_RUNTIME_INVALID_ARG;
+  write_out(env, out_changed, 0);
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   const auto* data = ring != nullptr ? static_cast<const uint8_t*>(env->GetDirectBufferAddress(ring)) : nullptr;
   if (data == nullptr || len < 4 || len > env->GetDirectBufferCapacity(ring) ||
       !decode_ring(data, static_cast<size_t>(len), s->events)) {
     s->last_error = "malformed EventRing (direct buffer, exact length, known payload tags required)";
-    return -NVE_RUNTIME_INVALID_ARG;
+    return NVE_RUNTIME_INVALID_ARG;
   }
   for (NveDirectEvent& ev : s->events) {
     if (ev.surface_id == 0u) ev.surface_id = s->surface_id;
@@ -220,7 +211,8 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_dispatchEvents(JNIEnv* en
   bool changed = false;
   const NveRuntimeStatus st = s->session.dispatch_events(
       NveEventBatch{s->events.data(), static_cast<uint32_t>(s->events.size()), 0u}, &changed);
-  return changed_or_fail(*s, st, changed);
+  write_out(env, out_changed, changed ? 1 : 0);
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setTextMeasurer(JNIEnv* env, jclass, jlong handle,
@@ -229,21 +221,25 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setTextMeasurer(JNIEnv* e
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   // Detach the runtime from the old target before dropping its global ref.
-  NveRuntimeStatus st = s->session.set_text_measurer(nullptr, nullptr);
-  if (st != NVE_RUNTIME_OK) return fail(*s, st);
-  if (!bind_callback(env, s->measurer, measurer, "measure", "(Ljava/lang/String;FIF[F)Z")) {
+  NveRuntimeStatus st = s->session.clear_text_measurer();
+  if (st != NVE_RUNTIME_OK) return status_of(*s, st);
+  if (!bind_callback(env, s->measurer, measurer, "measure", "(Ljava/lang/String;FIF[F)V")) {
     s->last_error = "TextMeasurer has no measure(String, float, int, float, float[]) method";
     return NVE_RUNTIME_INVALID_ARG;
   }
-  if (measurer == nullptr) return NVE_RUNTIME_OK;
+  if (measurer == nullptr) return status_of(*s, NVE_RUNTIME_OK);
   if (s->measure_out == nullptr) {
     jfloatArray local = env->NewFloatArray(2);
     s->measure_out = local != nullptr ? static_cast<jfloatArray>(env->NewGlobalRef(local)) : nullptr;
     if (local != nullptr) env->DeleteLocalRef(local);
-    if (s->measure_out == nullptr) return NVE_RUNTIME_ERROR;
+    if (s->measure_out == nullptr) {
+      if (env->ExceptionCheck()) env->ExceptionClear();
+      s->measurer.release(env);
+      s->last_error = "out of memory allocating the measurer out array";
+      return NVE_RUNTIME_ERROR;
+    }
   }
-  st = s->session.set_text_measurer(&on_measure, s);
-  return st == NVE_RUNTIME_OK ? NVE_RUNTIME_OK : fail(*s, st);
+  return status_of(*s, s->session.set_text_measurer(&on_measure, s));
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setWakeListener(JNIEnv* env, jclass, jlong handle,
@@ -252,14 +248,13 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setWakeListener(JNIEnv* e
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   // Clearing drains in-flight wakes, so the old global ref is never used after release.
   NveRuntimeStatus st = s->session.clear_wake_callback();
-  if (st != NVE_RUNTIME_OK) return fail(*s, st);
+  if (st != NVE_RUNTIME_OK) return status_of(*s, st);
   if (!bind_callback(env, s->wake, listener, "run", "()V")) {
     s->last_error = "wake listener has no run() method";
     return NVE_RUNTIME_INVALID_ARG;
   }
-  if (listener == nullptr) return NVE_RUNTIME_OK;
-  st = s->session.set_wake_callback(&on_wake, s);
-  return st == NVE_RUNTIME_OK ? NVE_RUNTIME_OK : fail(*s, st);
+  if (listener == nullptr) return status_of(*s, NVE_RUNTIME_OK);
+  return status_of(*s, s->session.set_wake_callback(&on_wake, s));
 }
 
 }  // extern "C"

@@ -7,6 +7,7 @@ import android.text.StaticLayout;
 import android.text.TextPaint;
 
 import dev.nve.host.NativeRuntime;
+import dev.nve.host.SceneSemantics;
 
 /**
  * Host text measurer backed by Android's text stack ({@link StaticLayout} over a {@link TextPaint}),
@@ -14,25 +15,31 @@ import dev.nve.host.NativeRuntime;
  * (logical points): the paint runs at the dp font size, and glyph metrics scale linearly.
  */
 final class NveTextMeasurer implements NativeRuntime.TextMeasurer {
+    /** Widest `StaticLayout` wrap width used (an int pixel width; larger means unconstrained). */
+    static final float MAX_WRAP = 1 << 20;
+
     private final TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
 
     @Override
-    public boolean measure(String text, float fontSize, int fontWeight, float maxWidth, float[] out) {
+    public void measure(String text, float fontSize, int fontWeight, float maxWidth, float[] out) {
+        paint.setTextSize(Float.isFinite(fontSize) && fontSize > 0f ? fontSize : SceneSemantics.DEFAULT_FONT_SIZE);
+        paint.setTypeface(typeface(fontWeight, false));
         if (text.isEmpty()) {
             out[0] = 0f;
-            out[1] = 0f;
-            return true;
+            out[1] = (float) Math.ceil(paint.getFontMetrics(null));  // an empty line still has a line height
+            return;
         }
-        paint.setTextSize(Float.isFinite(fontSize) && fontSize > 0f ? fontSize : 16f);
-        paint.setTypeface(typeface(fontWeight, false));
-        final int wrap;
-        if (Float.isInfinite(maxWidth)) {
-            wrap = Math.max(1, (int) Math.ceil(paint.measureText(text)));
-        } else if (maxWidth <= 0f) {
-            wrap = Math.max(1, (int) Math.ceil(longestWord(text)));  // min-content
+        // max-content when unconstrained (+Inf, NaN, or wider than any layout), min-content when not
+        // positive, else wrapped at the given width.
+        final float wrapAt;
+        if (!(maxWidth > 0f)) {
+            wrapAt = Float.isNaN(maxWidth) ? paint.measureText(text) : longestWord(text);
+        } else if (maxWidth >= MAX_WRAP) {
+            wrapAt = paint.measureText(text);
         } else {
-            wrap = Math.max(1, (int) Math.ceil(maxWidth));
+            wrapAt = maxWidth;
         }
+        final int wrap = (int) Math.max(1f, Math.min(MAX_WRAP, (float) Math.ceil(wrapAt)));
         final StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), paint, wrap)
                 .setIncludePad(false)
                 .build();
@@ -40,7 +47,6 @@ final class NveTextMeasurer implements NativeRuntime.TextMeasurer {
         for (int i = 0; i < layout.getLineCount(); i++) widest = Math.max(widest, layout.getLineWidth(i));
         out[0] = (float) Math.ceil(widest);
         out[1] = (float) Math.ceil(layout.getHeight());
-        return true;
     }
 
     private float longestWord(String text) {

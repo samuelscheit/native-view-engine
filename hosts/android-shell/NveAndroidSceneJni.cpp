@@ -3,11 +3,10 @@
 // published resource bytes.
 #include "NveAndroidSurface.hpp"
 
-#include <algorithm>
 
 using nve::android::AndroidSurface;
 using nve::android::CachedDirectBuffer;
-using nve::android::fail;
+using nve::android::status_of;
 using nve::android::surface_of;
 
 namespace nve::android {
@@ -26,6 +25,7 @@ jobject CachedDirectBuffer::sync(JNIEnv* env, const void* ptr, size_t len) {
   }
   ref_ = env->NewGlobalRef(local);
   env->DeleteLocalRef(local);
+  if (ref_ == nullptr) return nullptr;
   ptr_ = ptr;
   len_ = len;
   return ref_;
@@ -78,7 +78,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
   nve::host::SceneError scene_error = nve::host::SceneError::None;
   s->scene = s->session.acquire_scene(&st, &scene_error);
   if (!s->scene) {
-    if (st != NVE_RUNTIME_OK) return fail(*s, st);
+    if (st != NVE_RUNTIME_OK) return status_of(*s, st);
     s->last_error = "published scene failed validation (SceneError " +
                     std::to_string(static_cast<int>(scene_error)) + ")";
     return NVE_RUNTIME_ERROR;
@@ -100,6 +100,8 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
   h[5] = v.text_slab_len;
   h[6] = v.children_slab_len;
   h[7] = v.table_count;
+  h[nve::android::kHeaderSceneEpoch] = v.scene_epoch;
+  h[nve::android::kHeaderDirtyResourceCount] = v.dirty_resource_count;
   auto set_slab = [&](size_t slot, const void* ptr, size_t len) {
     env->SetObjectArrayElement(slabs, static_cast<jsize>(slot), s->slabs[slot].sync(env, ptr, len));
   };
@@ -109,6 +111,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
   set_slab(nve::android::kSlabChildren, r.children_slab().data(), bytes_of(r.children_slab()));
   set_slab(nve::android::kSlabDirty, r.dirty_indices().data(), bytes_of(r.dirty_indices()));
   set_slab(nve::android::kSlabRemoved, r.removed_ids().data(), bytes_of(r.removed_ids()));
+  set_slab(nve::android::kSlabDirtyResources, r.dirty_resources().data(), bytes_of(r.dirty_resources()));
   for (uint32_t t = 0u; t < v.table_count; ++t) {
     const NveTableView& tv = v.tables[t];
     jlong* th = h + kHeaderTables + t * kHeaderTableStride;
@@ -128,6 +131,13 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_acquireScene(JNIEnv* env,
     set_slab(slot, nullptr, 0u);
   }
   env->SetLongArrayRegion(header, 0, static_cast<jsize>(kHeaderTables + v.table_count * kHeaderTableStride), h);
+  if (env->ExceptionCheck()) {  // e.g. a slab array of the wrong element type
+    env->ExceptionClear();
+    s->scene.reset();
+    s->last_error = "acquireScene could not fill the packed frame arrays";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
+  s->last_error.clear();
   return NVE_RUNTIME_OK;
 }
 
@@ -137,23 +147,22 @@ JNIEXPORT void JNICALL Java_dev_nve_host_NativeRuntime_releaseScene(JNIEnv*, jcl
 }
 
 JNIEXPORT jobject JNICALL Java_dev_nve_host_NativeRuntime_resource(JNIEnv* env, jclass, jlong handle,
-                                                                  jint resource_id, jlongArray out_kind_flags) {
+                                                                  jint resource_id, jlongArray out_kind) {
   AndroidSurface* s = surface_of(handle);
-  if (s == nullptr || !s->scene || resource_id <= 0) return nullptr;
-  const auto id = static_cast<uint32_t>(resource_id);
-  const std::optional<nve::host::ResourceBytes> res = s->scene->reader().resource(id);
+  if (s == nullptr || !s->scene || resource_id == 0) return nullptr;
+  const std::optional<nve::host::RuntimeResource> res = s->scene->resource(static_cast<uint32_t>(resource_id));
   if (!res) return nullptr;
-  if (out_kind_flags != nullptr && env->GetArrayLength(out_kind_flags) >= 2) {
-    const jlong kf[2] = {static_cast<jlong>(res->kind.value), static_cast<jlong>(res->flags)};
-    env->SetLongArrayRegion(out_kind_flags, 0, 2, kf);
+  if (out_kind != nullptr && env->GetArrayLength(out_kind) >= 1) {
+    const jlong kind = static_cast<jlong>(res->kind.value);
+    env->SetLongArrayRegion(out_kind, 0, 1, &kind);
   }
-  if (res->bytes.empty()) {
-    static uint8_t empty = 0u;  // non-null address: some JVMs reject `NewDirectByteBuffer(NULL, 0)`
-    return env->NewDirectByteBuffer(&empty, 0);
-  }
-  if (s->resources.size() <= id) s->resources.resize(std::max<size_t>(id + 1u, s->resources.size() * 2u));
-  jobject ref = s->resources[id].sync(env, res->bytes.data(), res->bytes.size());
-  return ref != nullptr ? env->NewLocalRef(ref) : nullptr;
+  // A fresh local view per call: nothing outlives the scene guard on the native side, and the
+  // Java side never keeps it past `releaseScene` (RuntimeSurface copies or decodes in-frame).
+  static uint8_t empty = 0u;  // non-null address: some JVMs reject `NewDirectByteBuffer(NULL, 0)`
+  void* data = res->bytes.empty() ? &empty : const_cast<uint8_t*>(res->bytes.data());
+  jobject buf = env->NewDirectByteBuffer(data, static_cast<jlong>(res->bytes.size()));
+  if (buf == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+  return buf;
 }
 
 }  // extern "C"

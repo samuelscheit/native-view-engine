@@ -1,6 +1,7 @@
 package dev.nve.android.jni;
 
 import dev.nve.host.NativeRuntime;
+import dev.nve.host.generated.NveRuntimeAbi;
 import dev.nve.host.RuntimeSceneReader;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -51,13 +52,19 @@ final class Fixtures {
 
         RuntimeSceneReader acquire() {
             final int st = NativeRuntime.acquireScene(handle, header, slabs);
-            if (st != NativeRuntime.STATUS_OK) {
+            if (st != NveRuntimeAbi.STATUS_OK) {
                 throw new IllegalStateException("acquireScene " + st + ": " + NativeRuntime.lastError(handle));
             }
-            return reader.attach(header, slabs);
+            try {
+                return reader.attach(header, slabs);
+            } catch (RuntimeException e) {
+                NativeRuntime.releaseScene(handle);
+                throw e;
+            }
         }
 
         void release() {
+            reader.detach();
             NativeRuntime.releaseScene(handle);
         }
     }

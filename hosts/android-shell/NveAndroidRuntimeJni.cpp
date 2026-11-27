@@ -9,12 +9,12 @@
 #include <utility>
 
 using nve::android::AndroidSurface;
-using nve::android::changed_or_fail;
-using nve::android::fail;
 using nve::android::release_buffers;
 using nve::android::release_scene;
+using nve::android::status_of;
 using nve::android::surface_of;
 using nve::android::utf8_of;
+using nve::android::write_out;
 
 namespace nve::android {
 
@@ -23,19 +23,53 @@ void release_scene(AndroidSurface& s) noexcept { s.scene.reset(); }
 void release_buffers(AndroidSurface& s, JNIEnv* env) noexcept {
   release_scene(s);
   for (CachedDirectBuffer& b : s.slabs) b.release(env);
-  for (CachedDirectBuffer& b : s.resources) b.release(env);
-  s.resources.clear();
 }
 
-jint fail(AndroidSurface& s, NveRuntimeStatus status) {
+jint status_of(AndroidSurface& s, NveRuntimeStatus status) {
+  if (status == NVE_RUNTIME_OK) {
+    s.last_error.clear();
+    return NVE_RUNTIME_OK;
+  }
   std::string msg = s.session.last_error();
   s.last_error = msg.empty() ? "nve_runtime status " + std::to_string(static_cast<int>(status)) : std::move(msg);
   return static_cast<jint>(status);
 }
 
-jint changed_or_fail(AndroidSurface& s, NveRuntimeStatus status, bool changed) {
-  if (status != NVE_RUNTIME_OK) return -fail(s, status);
-  return changed ? 1 : 0;
+void write_out(JNIEnv* env, jintArray out, jint value) {
+  if (out != nullptr && env->GetArrayLength(out) >= 1) env->SetIntArrayRegion(out, 0, 1, &value);
+}
+
+jstring java_string(JNIEnv* env, const uint8_t* p, size_t n) {
+  std::u16string out;
+  out.reserve(n);
+  for (size_t i = 0u; i < n;) {
+    const uint8_t b = p[i];
+    const size_t need = b < 0x80u ? 0u : (b >> 5u) == 0x6u ? 1u : (b >> 4u) == 0xEu ? 2u : (b >> 3u) == 0x1Eu ? 3u : 4u;
+    bool ok = need < 4u && n - i > need;
+    uint32_t cp = need == 0u ? b : (b & (0x3Fu >> need));
+    for (size_t k = 1u; ok && k <= need; ++k) {
+      ok = (p[i + k] & 0xC0u) == 0x80u;
+      cp = (cp << 6u) | (p[i + k] & 0x3Fu);
+    }
+    // Overlong forms, surrogates, and values past U+10FFFF are malformed too.
+    static constexpr uint32_t kMin[4] = {0u, 0x80u, 0x800u, 0x10000u};
+    if (ok && need > 0u) ok = cp >= kMin[need] && cp <= 0x10FFFFu && (cp < 0xD800u || cp > 0xDFFFu);
+    if (!ok) {
+      out.push_back(u'\uFFFD');
+      i += 1u;
+      continue;
+    }
+    if (cp >= 0x10000u) {
+      out.push_back(static_cast<char16_t>(0xD800u + ((cp - 0x10000u) >> 10u)));
+      out.push_back(static_cast<char16_t>(0xDC00u + ((cp - 0x10000u) & 0x3FFu)));
+    } else {
+      out.push_back(static_cast<char16_t>(cp));
+    }
+    i += need + 1u;
+  }
+  jstring str = env->NewString(reinterpret_cast<const jchar*>(out.data()), static_cast<jsize>(out.size()));
+  if (str == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+  return str;
 }
 
 std::string utf8_of(JNIEnv* env, jstring str) {
@@ -114,14 +148,15 @@ JNIEXPORT void JNICALL Java_dev_nve_host_NativeRuntime_destroy(JNIEnv* env, jcla
   s->session.reset();
   close_library(s->app_library);
   s->wake.release(env);
-  s->measurer.release(env);
+  s->measurer.release(env);  // the runtime (and its measurer hook) is gone: no call can race this
   if (s->measure_out != nullptr && env != nullptr) env->DeleteGlobalRef(s->measure_out);
   delete s;
 }
 
 JNIEXPORT jstring JNICALL Java_dev_nve_host_NativeRuntime_lastError(JNIEnv* env, jclass, jlong handle) {
   const AndroidSurface* s = surface_of(handle);
-  return env->NewStringUTF(s != nullptr ? s->last_error.c_str() : "");
+  const std::string& msg = s != nullptr ? s->last_error : std::string();
+  return nve::android::java_string(env, reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_attachApp(JNIEnv* env, jclass, jlong handle, jstring so_path) {
@@ -144,7 +179,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_attachApp(JNIEnv* env, jc
   const NveRuntimeStatus st = s->session.attach_app_interface(get_iface);
   if (st != NVE_RUNTIME_OK) {
     dlclose(lib);  // the previous app (if any) stays attached
-    return fail(*s, st);
+    return status_of(*s, st);
   }
   // The runtime dropped the previous app instance inside `attach`: its code is unreferenced now.
   close_library(s->app_library);
@@ -158,9 +193,9 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_detachApp(JNIEnv* env, jc
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   const NveRuntimeStatus st = s->session.detach_app();
-  if (st != NVE_RUNTIME_OK) return fail(*s, st);
+  if (st != NVE_RUNTIME_OK) return status_of(*s, st);
   close_library(s->app_library);
-  return NVE_RUNTIME_OK;
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_submitFrame(JNIEnv* env, jclass, jlong handle, jobject buf,
@@ -174,7 +209,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_submitFrame(JNIEnv* env, 
   }
   release_scene(*s);
   const NveRuntimeStatus st = s->session.submit_nve2(std::span<const uint8_t>(data, static_cast<size_t>(len)));
-  return st == NVE_RUNTIME_OK ? NVE_RUNTIME_OK : fail(*s, st);
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setViewport(JNIEnv*, jclass, jlong handle, jfloat width,
@@ -183,26 +218,33 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_setViewport(JNIEnv*, jcla
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   const NveRuntimeStatus st = s->session.set_viewport(width, height, scale);
-  return st == NVE_RUNTIME_OK ? NVE_RUNTIME_OK : fail(*s, st);
+  return status_of(*s, st);
 }
 
-JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_tick(JNIEnv*, jclass, jlong handle, jfloat dt) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_tick(JNIEnv* env, jclass, jlong handle, jfloat dt,
+                                                           jintArray out_changed) {
   AndroidSurface* s = surface_of(handle);
-  if (s == nullptr) return -NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   bool changed = false;
-  const NveRuntimeStatus st = s->session.tick(dt, &changed);
-  return changed_or_fail(*s, st, changed);
+  const NveRuntimeStatus st = s->session.tick(std::isfinite(dt) && dt > 0.0f ? dt : 0.0f, &changed);
+  write_out(env, out_changed, changed ? 1 : 0);
+  return status_of(*s, st);
 }
 
-JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_hitTest(JNIEnv*, jclass, jlong handle, jfloat x, jfloat y) {
+JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_hitTest(JNIEnv* env, jclass, jlong handle, jfloat x, jfloat y,
+                                                              jintArray out_node) {
   AndroidSurface* s = surface_of(handle);
-  if (s == nullptr) return -NVE_RUNTIME_INVALID_ARG;
+  if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   uint32_t node = 0u;
-  const NveRuntimeStatus st = s->session.hit_test(x, y, &node);
-  if (st == NVE_RUNTIME_NOT_FOUND) return 0;
-  return st == NVE_RUNTIME_OK ? static_cast<jint>(node) : -fail(*s, st);
+  NveRuntimeStatus st = std::isfinite(x) && std::isfinite(y) ? s->session.hit_test(x, y, &node) : NVE_RUNTIME_NOT_FOUND;
+  if (st == NVE_RUNTIME_NOT_FOUND) {
+    node = 0u;  // a miss is not an error
+    st = NVE_RUNTIME_OK;
+  }
+  write_out(env, out_node, static_cast<jint>(node));
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_scrollBy(JNIEnv* env, jclass, jlong handle, jint node_id,
@@ -211,10 +253,15 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_scrollBy(JNIEnv* env, jcl
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_scene(*s);
   float xy[2] = {0.0f, 0.0f};
+  if (!std::isfinite(dx) || !std::isfinite(dy)) {
+    s->last_error = "scrollBy needs finite deltas";
+    return NVE_RUNTIME_INVALID_ARG;
+  }
   const NveRuntimeStatus st = s->session.scroll_by(static_cast<uint32_t>(node_id), dx, dy, &xy[0], &xy[1]);
-  if (st != NVE_RUNTIME_OK) return fail(*s, st);
-  if (out_xy != nullptr && env->GetArrayLength(out_xy) >= 2) env->SetFloatArrayRegion(out_xy, 0, 2, xy);
-  return NVE_RUNTIME_OK;
+  if (st == NVE_RUNTIME_OK && out_xy != nullptr && env->GetArrayLength(out_xy) >= 2) {
+    env->SetFloatArrayRegion(out_xy, 0, 2, xy);
+  }
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairConnect(JNIEnv* env, jclass, jlong handle, jstring uri,
@@ -223,7 +270,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairConnect(JNIEnv* env, 
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   const NveRuntimeStatus st = s->session.pair_connect(utf8_of(env, uri), utf8_of(env, token));
-  return st == NVE_RUNTIME_OK ? NVE_RUNTIME_OK : fail(*s, st);
+  return status_of(*s, st);
 }
 
 JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairDisconnect(JNIEnv* env, jclass, jlong handle) {
@@ -231,7 +278,7 @@ JNIEXPORT jint JNICALL Java_dev_nve_host_NativeRuntime_pairDisconnect(JNIEnv* en
   if (s == nullptr) return NVE_RUNTIME_INVALID_ARG;
   release_buffers(*s, env);
   const NveRuntimeStatus st = s->session.pair_disconnect();
-  return st == NVE_RUNTIME_OK ? NVE_RUNTIME_OK : fail(*s, st);
+  return status_of(*s, st);
 }
 
 JNIEXPORT jboolean JNICALL Java_dev_nve_host_NativeRuntime_pairIsConnected(JNIEnv*, jclass, jlong handle) {
