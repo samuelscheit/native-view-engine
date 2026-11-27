@@ -1,6 +1,9 @@
 //! `GET /issues`: per-request isolated streaming SSR of the shared `IssuesApp` with pre-headers
 //! critical data, out-of-order `<QuerySuspense>` slots, and a strict zero-inline-JS nonce CSP.
 
+use core::ops::ControlFlow;
+use core::time::Duration;
+
 use http::header::{HeaderValue, CONTENT_SECURITY_POLICY};
 use http::Response;
 use nve_dioxus::DioxusSurface;
@@ -20,6 +23,10 @@ use crate::auth::Actor;
 use crate::IssuesServer;
 
 pub const PAGE_TITLE: &str = "NVE Fullstack Issues";
+
+/// Upper bound on the pre-headers critical prefetch: a stalled upstream answers `503` instead of
+/// leaving the browser waiting for headers indefinitely.
+pub const CRITICAL_PREFETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Document-level CSS outside the Dioxus tree: zero body margin, full-height `#app` flex column
 /// (so the root `scrollview` fills the viewport in both DSD and hydrated modes), and the app's
@@ -44,23 +51,45 @@ pub fn content_security_policy(nonce: &str) -> String {
     )
 }
 
-/// Maps a pre-headers critical query failure onto its HTTP status (`404` for missing issues).
-fn critical_error_response<E>(err: &RpcError<E>) -> Response<HttpBody> {
-    match err {
-        RpcError::Domain { status, .. } => error_response(*status, "requested resource failed"),
-        RpcError::Protocol { status, message } => error_response(*status, message),
-        RpcError::Codec(_) | RpcError::Transport(_) => {
-            error_response(RpcStatus::Internal, "critical SSR query failed")
-        }
+/// Error page for `status`: client errors (`4xx`) carry `client_message`, server errors (`5xx`)
+/// only their generic status code (`internal`, `unavailable`), never upstream or internal detail.
+fn page_error_response(status: RpcStatus, client_message: &str) -> Response<HttpBody> {
+    if status.http_status() >= 500 {
+        error_response(status, status.code_str())
+    } else {
+        error_response(status, client_message)
     }
 }
 
-fn ssr_error_response(err: &SsrError) -> Response<HttpBody> {
+/// Maps a pre-headers critical query failure onto its HTTP status (`404` for missing issues).
+pub fn critical_error_response<E>(err: &RpcError<E>) -> Response<HttpBody> {
+    match err {
+        RpcError::Domain { status, .. } => {
+            page_error_response(*status, "requested resource failed")
+        }
+        RpcError::Protocol { status, message } => page_error_response(*status, message),
+        RpcError::Codec(_) | RpcError::Transport(_) => page_error_response(RpcStatus::Internal, ""),
+    }
+}
+
+/// Runs the pre-headers critical prefetch `fut` under `timeout`: `Break` carries the response to
+/// answer before headers instead of rendering; elapsing breaks with a generic `503`.
+pub async fn bounded_critical_prefetch(
+    timeout: Duration,
+    fut: impl Future<Output = ControlFlow<Response<HttpBody>>>,
+) -> ControlFlow<Response<HttpBody>> {
+    tokio::time::timeout(timeout, fut).await.unwrap_or_else(|_elapsed| {
+        ControlFlow::Break(page_error_response(RpcStatus::Unavailable, ""))
+    })
+}
+
+/// Maps an SSR orchestration failure onto `503` (pool saturated / closed) or `500`.
+pub fn ssr_error_response(err: &SsrError) -> Response<HttpBody> {
     let status = match err {
         SsrError::PoolOverloaded | SsrError::PoolClosed => RpcStatus::Unavailable,
         _ => RpcStatus::Internal,
     };
-    error_response(status, &err.to_string())
+    page_error_response(status, "")
 }
 
 /// Renders `/issues` for `actor`. `query` is the raw URL query (`?comments_issue=`, `?issue=`).
@@ -77,13 +106,20 @@ pub async fn render_issues_page(
 
     // Pre-headers critical data: unknown focus issue is a real `404`, and the issue list is
     // settled into `seq=0`. Stats + featured comments stay unprefetched and stream out of order.
-    if let Some(focus_id) = parse_focus_issue_query(query)
-        && let Err(err) = client.prefetch::<GetIssue>(&focus_id).await
-    {
-        return critical_error_response(&*err);
-    }
-    if let Err(err) = client.prefetch::<ListIssues>(&IssueFilter::default()).await {
-        return critical_error_response(&*err);
+    let critical = bounded_critical_prefetch(CRITICAL_PREFETCH_TIMEOUT, async {
+        if let Some(focus_id) = parse_focus_issue_query(query)
+            && let Err(err) = client.prefetch::<GetIssue>(&focus_id).await
+        {
+            return ControlFlow::Break(critical_error_response(&*err));
+        }
+        if let Err(err) = client.prefetch::<ListIssues>(&IssueFilter::default()).await {
+            return ControlFlow::Break(critical_error_response(&*err));
+        }
+        ControlFlow::Continue(())
+    })
+    .await;
+    if let ControlFlow::Break(resp) = critical {
+        return resp;
     }
 
     let nonce = match generate_csp_nonce() {

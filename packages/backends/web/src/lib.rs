@@ -104,6 +104,12 @@ pub use visual_viewport::{
     KEYBOARD_INSETS_EVENT_NAME, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 #[cfg(feature = "hydrate")]
+pub use html::push_attr_escaped;
+#[cfg(feature = "ssr")]
+pub use html::{
+    push_async_boot_script, push_modulepreload_link, push_query_payload_tag,
+    push_script_data_escaped, push_stylesheet_links,
+};
 pub use hydrate::{HydrationMismatch, HydrationReport};
 pub use layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
 pub use media_css::{
@@ -166,7 +172,9 @@ pub use ssg::{
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 #[cfg(feature = "ssr")]
-pub use ssr_stream::{PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamingShellOutput};
+pub use ssr_stream::{
+    PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamSlotState, StreamingShellOutput,
+};
 #[cfg(feature = "ssr")]
 pub use streaming::{
     decode_form_urlencoded, decode_form_urlencoded_map, sanitize_stream_slot_id,

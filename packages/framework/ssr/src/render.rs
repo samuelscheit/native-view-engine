@@ -9,20 +9,18 @@ use base64::Engine as _;
 use bytes::Bytes;
 use http::{Response, StatusCode};
 use nve_backend_web::{
-    streaming_http_headers, PendingStreamSlot, SsrDocumentOptions, StreamingDocumentOptions,
-    StreamingShellOutput, StreamingSsrSession, WebBackend, NVE_STREAM_KEEPALIVE_COMMENT,
-    PRE_HYDRATION_REPLAY_SCRIPT_TAG,
+    push_async_boot_script, push_modulepreload_link, push_query_payload_tag,
+    push_stylesheet_links, streaming_http_headers, PendingStreamSlot, SsrDocumentOptions,
+    StreamSlotState, StreamingDocumentOptions, StreamingShellOutput, StreamingSsrSession,
+    WebBackend, NVE_STREAM_KEEPALIVE_COMMENT, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
 use nve_dioxus::DioxusSurface;
-use nve_http_hyper::{ChannelBody, HttpBody};
+use nve_http_hyper::HttpBody;
 use nve_query::{nveq_entry_count, DehydrateCursor};
 use nve_query_dioxus::{ErasedQueryClient, SsrBoundaryRegistry};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
 
-use crate::options::{
-    push_async_boot_script, push_modulepreload_link, push_query_payload_tag, push_stylesheet_links,
-    SsrPageOptions, StreamPlan, FAST_PATH_HTTP_HEADERS,
-};
+use crate::options::{SsrPageOptions, StreamPlan, FAST_PATH_HTTP_HEADERS};
 use crate::SsrError;
 
 const FINAL_TRAILER_GRACE: Duration = Duration::from_millis(50);
@@ -87,7 +85,7 @@ fn render_fast_path_response(
     let mut body_scripts = String::with_capacity(dehydrated.len().saturating_mul(2) + 160);
     if nveq_entry_count(&dehydrated).unwrap_or(0) > 0 {
         let b64 = BASE64_STANDARD.encode(&dehydrated);
-        push_query_payload_tag(0, &b64, &mut body_scripts);
+        push_query_payload_tag(0, None, &b64, &mut body_scripts);
     }
     body_scripts.push_str("<template data-nve-stream-end></template>\n");
     push_async_boot_script(page.async_boot_src.as_deref(), &mut body_scripts);
@@ -133,10 +131,6 @@ fn prepare_streaming_session(
 
     let mut head_scripts = String::new();
     push_modulepreload_link(page.modulepreload_src.as_deref(), &mut head_scripts);
-    if page.enable_event_replay {
-        head_scripts.push_str(PRE_HYDRATION_REPLAY_SCRIPT_TAG);
-        head_scripts.push('\n');
-    }
 
     let expected_slots: Vec<String> = shell_out
         .pending_slots
@@ -146,6 +140,12 @@ fn prepare_streaming_session(
     let mut session = StreamingSsrSession::new(doc_opts, expected_slots);
 
     let mut initial = session.begin_shell_with_head_scripts(&shell_out.ssr.html, &head_scripts)?;
+    // The replay snippet resolves `document.getElementById('app')` synchronously, so it must run
+    // only once the parser has opened `<div id="app">` (never from `<head>`).
+    if page.enable_event_replay {
+        initial.push_str(PRE_HYDRATION_REPLAY_SCRIPT_TAG);
+        initial.push('\n');
+    }
 
     // Always emit `seq=0` + `data-nve-q-ack="0"` on the streaming path so `async_boot_src` is
     // strictly ordered after `ack=0` for deterministic mid-stream WASM hydration.
@@ -154,12 +154,7 @@ fn prepare_streaming_session(
     let seq0_b64 = BASE64_STANDARD.encode(&seq0);
     initial.push_str(&session.emit_query_payload(0, &seq0_b64)?);
 
-    if let Some(src) = page
-        .async_boot_src
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(src) = page.async_boot_src.as_deref() {
         initial.push_str(&session.emit_async_boot_script(src)?);
     }
 
@@ -178,12 +173,15 @@ async fn send_chunk_until_deadline(
     }
 }
 
+/// Runs one render on its `LocalSet` worker, holding `_render_slot` (the worker's pool capacity
+/// permit) until the response completes, hits its deadline, or the client disconnects.
 pub(crate) async fn execute_render_streaming<F>(
     page: SsrPageOptions,
     plan: StreamPlan,
     client: ErasedQueryClient,
     build_surface: F,
     headers_tx: oneshot::Sender<Result<Response<HttpBody>, SsrError>>,
+    _render_slot: OwnedSemaphorePermit,
 ) where
     F: FnOnce(ErasedQueryClient) -> DioxusSurface + Send + 'static,
 {
@@ -234,7 +232,7 @@ pub(crate) async fn execute_render_streaming<F>(
     let resp = match build_http_response(
         page.status,
         &stream_headers,
-        HttpBody::from(ChannelBody::new(rx)),
+        HttpBody::stream(rx),
     ) {
         Ok(r) => r,
         Err(err) => {
@@ -304,12 +302,20 @@ pub(crate) async fn execute_render_streaming<F>(
                         still_pending.push(slot);
                         continue;
                     }
-                    let dom_ready =
-                        backend.is_stream_slot_resolved(slot.parent_node_id, &slot.slot_id);
+                    match backend.stream_slot_state(slot.parent_node_id, &slot.slot_id) {
+                        // The suspense parent unmounted mid-stream: nothing left to flush, so
+                        // stop waiting on it (the client renders whatever replaced it).
+                        StreamSlotState::Unmounted => continue,
+                        StreamSlotState::Pending => {
+                            still_pending.push(slot);
+                            continue;
+                        }
+                        StreamSlotState::Resolved => {}
+                    }
                     let reg_ready = registry
                         .entry(&slot.slot_id)
                         .is_none_or(|entry| entry.is_ready_to_flush());
-                    if !(dom_ready && reg_ready) {
+                    if !reg_ready {
                         still_pending.push(slot);
                         continue;
                     }
@@ -331,32 +337,20 @@ pub(crate) async fn execute_render_streaming<F>(
                         &mut shell_out.style_tracker,
                     );
 
-                    // Emit `NVEQ` + `ack` strictly BEFORE `<div slot>` inside one atomic chunk.
-                    let mut chunk = String::with_capacity(
-                        delta_dom.html.len()
-                            + delta_dom.style_css.len()
-                            + delta_nveq.len().saturating_mul(2)
-                            + 192,
-                    );
-                    if nveq_entry_count(&delta_nveq).unwrap_or(0) > 0 {
-                        let b64 = BASE64_STANDARD.encode(&delta_nveq);
-                        match session.emit_query_payload(next_seq, &b64) {
-                            Ok(tag) => {
-                                chunk.push_str(&tag);
-                                next_seq = next_seq.saturating_add(1);
-                            }
-                            Err(_) => {
-                                should_break = true;
-                                continue;
-                            }
-                        }
-                    }
-                    match session.resolve_slot_delta(&slot.slot_id, &delta_dom) {
-                        Ok(slot_html) => chunk.push_str(&slot_html),
+                    // One atomic chunk: slot-bound `NVEQ` strictly BEFORE `<div slot>` + ack.
+                    let b64 = (nveq_entry_count(&delta_nveq).unwrap_or(0) > 0)
+                        .then(|| BASE64_STANDARD.encode(&delta_nveq));
+                    let payload = b64.as_deref().map(|b64| (next_seq, b64));
+                    let chunk = match session.resolve_slot_delta(&slot.slot_id, &delta_dom, payload)
+                    {
+                        Ok(chunk) => chunk,
                         Err(_) => {
                             should_break = true;
                             continue;
                         }
+                    };
+                    if payload.is_some() {
+                        next_seq = next_seq.saturating_add(1);
                     }
 
                     if !send_chunk_until_deadline(&tx, &mut deadline, Bytes::from(chunk)).await {
@@ -384,11 +378,12 @@ pub(crate) async fn execute_render_streaming<F>(
     }
 
     if let Ok(trailer) = session.finish() {
-        let end_bytes = Bytes::from(trailer);
-        if deadline.is_elapsed() {
-            let _ = tokio::time::timeout(FINAL_TRAILER_GRACE, tx.send(end_bytes)).await;
-        } else {
-            let _ = send_chunk_until_deadline(&tx, &mut deadline, end_bytes).await;
-        }
+        // Always grant the trailer at least `FINAL_TRAILER_GRACE`, measured once (no
+        // check-then-await race against a deadline that elapses in between).
+        let wait = deadline
+            .deadline()
+            .saturating_duration_since(tokio::time::Instant::now())
+            .max(FINAL_TRAILER_GRACE);
+        let _ = tokio::time::timeout(wait, tx.send(Bytes::from(trailer))).await;
     }
 }

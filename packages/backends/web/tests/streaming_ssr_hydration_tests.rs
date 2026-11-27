@@ -1,10 +1,10 @@
 #![cfg(all(feature = "ssr", feature = "hydrate"))]
 //! Comprehensive tests for Slice 1c Track B:
 //! 1. CSP `style_nonce` stamping + attribute escaping + `</style` / `</script` breakout defense.
-//! 2. `.nve-slot,[data-nve-dsd-host]{display:contents}` reset & `streaming_http_headers()`.
+//! 2. `.nve-slot,[data-nve-dsd-host]:not([hidden]){display:contents}` reset & `streaming_http_headers()`.
 //! 3. Ephemeral `<div data-nve-dsd-host>` + Option B mid-stream wire ordering helpers.
 //! 4. `render_ssr_streaming_shell` DSD placement hygiene (`<form>`, foster-parenting traps, nested slots).
-//! 5. `is_stream_slot_resolved` + `render_ssr_subtree_delta` stateful CSS deduplication.
+//! 5. `stream_slot_state` + `render_ssr_subtree_delta` stateful CSS deduplication.
 //! 6. `PRE_HYDRATION_REPLAY_SCRIPT_TAG` `composedPath` shadow-piercing capture.
 //! 7. Top-down structural positional hydration (`hydrate_from_ssr` & `hydrate_from_streaming_html`):
 //!    - Post-stream out-of-order `[slot2, slot1]` with COMPLETELY SHIFTED `NodeId`s.
@@ -19,7 +19,7 @@ use nve_abi::{
 use nve_engine::RenderBackend;
 
 use nve_backend_web::{
-    streaming_http_headers, CapturedPreHydrationEvent, PendingStreamSlot, SsrDocumentOptions,
+    streaming_http_headers, CapturedPreHydrationEvent, PendingStreamSlot, SsrDocumentOptions, StreamSlotState,
     StreamingDocumentOptions, StreamingError, StreamingSsrSession, WebBackend, ZeroJsLiveConfig,
     ZeroJsLiveSession, NVE_BASE_RESET_CSS, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
@@ -34,8 +34,10 @@ fn apply(web: &mut WebBackend, build: impl FnOnce(&mut CommandBufferBuilder)) {
 #[test]
 fn csp_style_nonce_breakout_escaping_reset_css_and_composed_path_replay() {
     assert!(
-        NVE_BASE_RESET_CSS.contains(".nve-slot,[data-nve-dsd-host]{display:contents}"),
-        "base reset must include display:contents for DSD host and slot wrapper: {NVE_BASE_RESET_CSS}"
+        NVE_BASE_RESET_CSS.contains(
+            ".nve-slot,[data-nve-dsd-host]:not([hidden]){display:contents}[data-nve-dsd-host][hidden]{display:none}"
+        ),
+        "base reset must use display:contents for slot wrappers and a visible DSD host, while a retained `hidden` host stays hidden: {NVE_BASE_RESET_CSS}"
     );
     assert!(PRE_HYDRATION_REPLAY_SCRIPT_TAG.contains("composedPath"));
     assert!(PRE_HYDRATION_REPLAY_SCRIPT_TAG.contains("getRootNode"));
@@ -108,7 +110,7 @@ fn csp_style_nonce_breakout_escaping_reset_css_and_composed_path_replay() {
     assert!(chunk.contains(
         "<style data-nve-ssr-chunk=\"s1\" nonce=\"req-nonce-42\" data-nve-hashes=\"sc1\">.c1{color:red}<\\/STYLE><img src=x></style>"
     ));
-    assert!(chunk.contains("<div slot=\"nve-slot-s1\" data-nve-slot=\"s1\" class=\"nve-slot\"><span>done</span></div>"));
+    assert!(chunk.contains("<div slot=\"nve-slot-s1\" data-nve-slot=\"s1\" class=\"nve-slot\"><span>done</span></div><template data-nve-slot-ack=\"s1\"></template>\n"));
     assert!(!chunk.contains("role="));
     assert!(!chunk.contains("tabindex="));
     assert!(!chunk.contains(" id=\""));
@@ -125,8 +127,6 @@ fn csp_style_nonce_breakout_escaping_reset_css_and_composed_path_replay() {
         boot,
         "<script type=\"module\" async src=\"/boot.js?v=1&amp;a=&quot;2&quot;\"></script>\n"
     );
-    let raw = sess.emit_raw_chunk("<!-- mid -->\n").unwrap();
-    assert_eq!(raw, "<!-- mid -->\n");
     let end = sess.finish().unwrap();
     assert_eq!(
         end,
@@ -214,6 +214,82 @@ fn dsd_placement_hygiene_rejects_form_ancestor_foster_traps_and_nested_slots() {
     ));
 }
 
+/// Builds `ROOT > <tags...> > div[data-nve-suspense] > div[data-nve-stream-slot]` (the exact
+/// `<QuerySuspense>` + `NveStreamSlot` shape) and renders the streaming shell.
+fn shell_with_suspense_under(tags: &[&str]) -> Result<String, StreamingError> {
+    let mut web = WebBackend::new();
+    apply(&mut web, |b| {
+        let mut parent = ROOT_NODE_ID;
+        let mut id = 2;
+        for tag in tags {
+            if tag.starts_with("web.") {
+                b.create_node(id, ComponentKind::Custom, Some(tag));
+            } else {
+                b.create_node(id, ComponentKind::View, None);
+                b.set_raw_prop_str(id, "semanticTag", tag);
+            }
+            b.set_children(parent, &[id]);
+            parent = id;
+            id += 1;
+        }
+        b.create_node(id, ComponentKind::View, None);
+        b.set_raw_prop_str(id, "data-nve-suspense", "qs");
+        b.create_node(id + 1, ComponentKind::View, None);
+        b.set_raw_prop_str(id + 1, "data-nve-stream-slot", "qs");
+        b.set_children(id, &[id + 1]);
+        b.set_children(parent, &[id]);
+    });
+    web.render_ssr_streaming_shell().map(|out| out.ssr.html)
+}
+
+#[test]
+fn query_suspense_wrapper_never_hides_foster_parent_or_select_traps() {
+    for (tags, needle) in [
+        (&["table"][..], "<table>"),
+        (&["table", "tbody"][..], "<tbody>"),
+        (&["table", "thead"][..], "<thead>"),
+        (&["table", "tfoot"][..], "<tfoot>"),
+        (&["table", "tbody", "tr"][..], "<tr>"),
+        (&["select"][..], "<select>"),
+        (&["select", "web.optgroup"][..], "<select>"),
+        (&["web.select", "web.optgroup"][..], "<select>"),
+        (&["form", "div"][..], "<form>"),
+    ] {
+        let res = shell_with_suspense_under(tags);
+        assert!(
+            matches!(&res, Err(StreamingError::InvalidSlotPlacement(msg)) if msg.contains(needle)),
+            "<QuerySuspense> under {tags:?} must be rejected mentioning {needle}: {res:?}"
+        );
+    }
+    // Stacked wrappers stay transparent: the nearest real ancestor is still `<tr>`.
+    let mut stacked = WebBackend::new();
+    apply(&mut stacked, |b| {
+        b.create_node(2, ComponentKind::View, None);
+        b.set_raw_prop_str(2, "semanticTag", "tr");
+        b.create_node(3, ComponentKind::View, None);
+        b.set_raw_prop_str(3, "data-nve-suspense", "outer");
+        b.create_node(4, ComponentKind::View, None);
+        b.set_raw_prop_str(4, "data-nve-suspense", "inner");
+        b.create_node(5, ComponentKind::View, None);
+        b.set_raw_prop_str(5, "data-nve-stream-slot", "inner");
+        b.set_children(4, &[5]);
+        b.set_children(3, &[4]);
+        b.set_children(2, &[3]);
+        b.set_children(ROOT_NODE_ID, &[2]);
+    });
+    assert!(matches!(
+        stacked.render_ssr_streaming_shell(),
+        Err(StreamingError::InvalidSlotPlacement(msg)) if msg.contains("<tr>")
+    ));
+
+    // Valid placements: a real element between the trap and the wrapper, or no trap at all.
+    for tags in [&["table", "tbody", "tr", "td"][..], &["div", "p"][..], &[][..]] {
+        let html = shell_with_suspense_under(tags)
+            .unwrap_or_else(|err| panic!("{tags:?} must be a valid placement: {err}"));
+        assert!(html.contains("<slot name=\"nve-slot-qs\">"), "{html}");
+    }
+}
+
 #[test]
 fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration() {
     let shared_style = StyleProps {
@@ -268,9 +344,9 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
             PendingStreamSlot { slot_id: "slot2".into(), parent_node_id: 6 },
         ]
     );
-    assert!(!server.is_stream_slot_resolved(3, "slot1"));
-    assert!(!server.is_stream_slot_resolved(6, "slot2"));
-    assert!(!server.is_stream_slot_resolved(999, "slot1"));
+    assert_eq!(server.stream_slot_state(3, "slot1"), StreamSlotState::Pending);
+    assert_eq!(server.stream_slot_state(6, "slot2"), StreamSlotState::Pending);
+    assert_eq!(server.stream_slot_state(999, "slot1"), StreamSlotState::Unmounted);
     // Shell keeps `<div data-nve-id="4" data-nve-stream-slot="slot1">` INSIDE `<slot>`.
     assert!(shell_out.ssr.html.contains("<slot name=\"nve-slot-slot1\"><div data-nve-id=\"4\""));
     assert!(shell_out.ssr.html.contains("<slot name=\"nve-slot-slot2\"><div data-nve-id=\"7\""));
@@ -291,13 +367,13 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         b.set_children(20, &[21]);
         b.set_children(6, &[20]);
     });
-    assert!(server.is_stream_slot_resolved(6, "slot2"));
-    assert!(!server.is_stream_slot_resolved(3, "slot1"));
+    assert_eq!(server.stream_slot_state(6, "slot2"), StreamSlotState::Resolved);
+    assert_eq!(server.stream_slot_state(3, "slot1"), StreamSlotState::Pending);
     let delta2 = server.render_ssr_subtree_delta(6, &mut shell_out.style_tracker);
     assert_eq!(delta2.rule_hashes.len(), 1, "only delta_only_style should be emitted: {:?}", delta2.rule_hashes);
     assert!(delta2.style_css.contains("#16a34a"));
     assert!(!delta2.style_css.contains("#0f172a"), "already-sent shell rule must NOT re-emit");
-    let chunk2 = sess.resolve_slot_delta("slot2", &delta2).unwrap();
+    let chunk2 = sess.resolve_slot_delta("slot2", &delta2, None).unwrap();
 
     // --- TEST A: MID-STREAM PARTIAL HYDRATION (slot2 arrived, slot1 STILL PENDING, no stream-end!) ---
     let mid_stream_html = format!("{shell_html}{chunk2}");
@@ -353,6 +429,17 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
     assert_eq!(mid_client.native_dom_instance_id(1020), Some(mid_slot2_box_id));
     assert_eq!(mid_client.native_dom_instance_id(1021), Some(mid_slot2_text_id));
 
+    // --- TEST A2: TCP SPLIT right after `</div>` (slot-ack not yet parsed) ---
+    // A closed `<div slot>` without its trailing ack is NOT complete: the shadow fallback stays.
+    let ack2 = "<template data-nve-slot-ack=\"slot2\"></template>";
+    let split_at = chunk2.find(ack2).expect("chunk2 carries its slot ack");
+    let split_client = WebBackend::hydrate_from_streaming_html(&format!(
+        "{shell_html}{}",
+        &chunk2[..split_at]
+    ));
+    assert!(split_client.native_dom_instance_id(8).is_some(), "fallback must stay adopted");
+    assert_eq!(split_client.native_dom_instance_id(21), None, "unacked chunk adopted early");
+
     // --- TEST B: POST-STREAM OUT-OF-ORDER [slot2, slot1] HYDRATION WITH SHIFTED NodeIds ---
     // Resolve slot1 using `delta_only_style` (already sent in slot2 -> 0 new CSS rules!).
     apply(&mut server, |b| {
@@ -361,11 +448,11 @@ fn streaming_shell_delta_css_dedup_and_shifted_id_post_and_mid_stream_hydration(
         b.set_text(30, "Slot 1 Resolved Second");
         b.set_children(3, &[30]);
     });
-    assert!(server.is_stream_slot_resolved(3, "slot1"));
+    assert_eq!(server.stream_slot_state(3, "slot1"), StreamSlotState::Resolved);
     let delta1 = server.render_ssr_subtree_delta(3, &mut shell_out.style_tracker);
     assert!(delta1.rule_hashes.is_empty(), "style already sent in slot2 must dedup");
     assert!(delta1.style_css.is_empty());
-    let chunk1 = sess.resolve_slot_delta("slot1", &delta1).unwrap();
+    let chunk1 = sess.resolve_slot_delta("slot1", &delta1, None).unwrap();
     let trailer = sess.finish().unwrap();
 
     let full_html = format!("{shell_html}{chunk2}{chunk1}{trailer}");

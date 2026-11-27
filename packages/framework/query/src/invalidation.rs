@@ -76,9 +76,11 @@ impl<T, C> QueryClient<T, C> {
         active
     }
 
-    /// O(1) wildcard `*` invalidation (`wildcard_epoch += 1`), marking active mounted queries
+    /// O(active) wildcard `*` invalidation (`wildcard_epoch += 1`), marking active mounted queries
     /// dirty and returning their handles for refetch. Any in-flight fetches started on earlier
-    /// epochs are rejected automatically on completion even on inactive slots.
+    /// epochs are rejected automatically on completion even on inactive slots, and every
+    /// (also inactive) `StreamPending` slot is released so no waiter blocks on a stream chunk the
+    /// client will now refuse.
     pub fn invalidate_all(&self) -> Vec<QueryHandle> {
         let (active, wake, waiters) = self.inner.state.with(|s| {
             s.wildcard_epoch = s.wildcard_epoch.wrapping_add(1);
@@ -89,6 +91,7 @@ impl<T, C> QueryClient<T, C> {
                 let slot = s.active_slots[i];
                 s.invalidate_slot(slot, &mut out, &mut waiters);
             }
+            let _ = s.release_stream_pending(&mut waiters);
             (out, s.wake_cb.clone(), waiters)
         });
         run_side_effects(wake, waiters);

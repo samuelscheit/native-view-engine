@@ -49,6 +49,17 @@ pub struct PendingStreamSlot {
     pub parent_node_id: NodeId,
 }
 
+/// Mid-stream state of one [`PendingStreamSlot`] (see [`WebBackend::stream_slot_state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamSlotState {
+    /// The slot placeholder is still mounted under its suspense parent.
+    Pending,
+    /// The suspense parent swapped the placeholder for resolved content.
+    Resolved,
+    /// The suspense parent itself unmounted (e.g. a conditional branch flipped mid-stream).
+    Unmounted,
+}
+
 /// Output produced by [`WebBackend::render_ssr_streaming_shell`].
 #[derive(Debug, Clone)]
 pub struct StreamingShellOutput {
@@ -66,9 +77,43 @@ pub struct SsrDeltaChunk {
     pub rule_hashes: Vec<String>,
 }
 
+/// HTML5 table-section tags whose non-cell children the parser foster-parents out of place.
 #[inline]
 fn is_foster_parent_trap_tag(tag: &str) -> bool {
-    matches!(tag, "table" | "tbody" | "thead" | "tfoot" | "tr" | "select")
+    matches!(tag, "table" | "tbody" | "thead" | "tfoot" | "tr")
+}
+
+/// One open ancestor during the streaming shell walk. `<QuerySuspense>` wrappers
+/// (`data-nve-suspense`) are transparent for placement checks: the slot's effective HTML parent
+/// is the nearest non-wrapper ancestor.
+#[derive(Clone, Copy)]
+struct AncestorTag<'a> {
+    tag: &'a str,
+    is_suspense_wrapper: bool,
+}
+
+/// Rejects `data-nve-stream-slot` placements the HTML parser cannot keep intact inside
+/// Declarative Shadow DOM.
+fn check_slot_placement(clean_id: &str, ancestors: &[AncestorTag<'_>]) -> Result<(), StreamingError> {
+    let placement = |reason: String| Err(StreamingError::InvalidSlotPlacement(reason));
+    // `<form>` association breaks across the shadow boundary; `<select>` (and `<optgroup>`
+    // inside it) drops every non-option child, anywhere below it.
+    for banned in ["form", "select"] {
+        if ancestors.iter().any(|a| a.tag == banned) {
+            return placement(format!(
+                "streaming slot {clean_id:?} cannot be placed inside <{banned}>"
+            ));
+        }
+    }
+    if let Some(parent) = ancestors.iter().rev().find(|a| !a.is_suspense_wrapper)
+        && is_foster_parent_trap_tag(parent.tag)
+    {
+        return placement(format!(
+            "streaming slot {clean_id:?} cannot be a direct child of <{}> (HTML5 foster-parenting trap)",
+            parent.tag
+        ));
+    }
+    Ok(())
 }
 
 struct OpenStreamingFrame<'a> {
@@ -84,8 +129,10 @@ impl WebBackend {
     /// so mid-stream WASM hydration sees the exact same tree depth as Client Frame 0.
     ///
     /// Enforces DSD parser hygiene and returns [`StreamingError::InvalidSlotPlacement`] when:
-    /// 1. Any ancestor of `data-nve-stream-slot` is `<form>` (Shadow DOM breaks form association).
-    /// 2. The direct parent tag is `table`/`tbody`/`thead`/`tfoot`/`tr`/`select` (HTML5 foster-parenting trap).
+    /// 1. Any ancestor of `data-nve-stream-slot` is `<form>` (Shadow DOM breaks form association)
+    ///    or `<select>` (the parser drops non-option content, also below `<optgroup>`).
+    /// 2. The nearest non-`<QuerySuspense>`-wrapper ancestor is `table`/`tbody`/`thead`/`tfoot`/`tr`
+    ///    (HTML5 foster-parenting trap).
     /// 3. A `data-nve-stream-slot` is nested inside another `data-nve-stream-slot`.
     /// 4. `data-nve-stream-slot` is placed on `ROOT_NODE_ID` or duplicates an existing slot ID.
     pub fn render_ssr_streaming_shell(&self) -> Result<StreamingShellOutput, StreamingError> {
@@ -93,7 +140,7 @@ impl WebBackend {
         let mut styles = SsrStyleCollector::new(None);
         let mut html = String::with_capacity(self.nodes.len().saturating_mul(104).max(64));
         let mut open: Vec<OpenStreamingFrame<'_>> = Vec::new();
-        let mut ancestor_tags: Vec<&str> = Vec::new();
+        let mut ancestor_tags: Vec<AncestorTag<'_>> = Vec::new();
         let mut pending_slots: Vec<PendingStreamSlot> = Vec::new();
         let mut seen_slot_ids: HashSet<String> = HashSet::default();
         let mut slot_depth = 0usize;
@@ -135,18 +182,8 @@ impl WebBackend {
                             )));
                             return false;
                         }
-                        if ancestor_tags.contains(&"form") {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "streaming slot {clean_id:?} cannot be placed inside <form>"
-                            )));
-                            return false;
-                        }
-                        if let Some(&direct_parent) = ancestor_tags.last()
-                            && is_foster_parent_trap_tag(direct_parent)
-                        {
-                            error = Some(StreamingError::InvalidSlotPlacement(format!(
-                                "streaming slot {clean_id:?} cannot be a direct child of <{direct_parent}> (HTML5 foster-parenting trap)"
-                            )));
+                        if let Err(err) = check_slot_placement(&clean_id, &ancestor_tags) {
+                            error = Some(err);
                             return false;
                         }
                         if !seen_slot_ids.insert(clean_id.clone()) {
@@ -170,7 +207,10 @@ impl WebBackend {
                     match self.open_ssr_element(id, parent, Some(root_hash), &mut styles, &mut html)
                     {
                         Some((opened_tag, wrap_code)) => {
-                            ancestor_tags.push(tag);
+                            ancestor_tags.push(AncestorTag {
+                                tag,
+                                is_suspense_wrapper: el.raw_props.contains_key("data-nve-suspense"),
+                            });
                             if wrapped_in_slot {
                                 slot_depth += 1;
                             }
@@ -229,16 +269,18 @@ impl WebBackend {
         })
     }
 
-    /// Returns `true` iff `parent_node_id` exists in `self.nodes` and NONE of its direct children
-    /// carry `data-nve-stream-slot == slot_id` (matching the `<QuerySuspense>` DOM contract where
-    /// pending state renders `<div data-nve-stream-slot="{id}">` and resolved state swaps in the
-    /// resolved children directly inside `<div data-nve-suspense="{id}">`).
-    pub fn is_stream_slot_resolved(&self, parent_node_id: NodeId, slot_id: &str) -> bool {
+    /// Classifies a pending streaming slot against the `<QuerySuspense>` DOM contract (pending
+    /// state renders `<div data-nve-stream-slot="{id}">`; resolved state swaps the resolved
+    /// children directly inside `<div data-nve-suspense="{id}">`):
+    /// [`StreamSlotState::Unmounted`] when `parent_node_id` no longer exists,
+    /// [`StreamSlotState::Pending`] while a direct child still carries `data-nve-stream-slot ==
+    /// slot_id`, [`StreamSlotState::Resolved`] otherwise.
+    pub fn stream_slot_state(&self, parent_node_id: NodeId, slot_id: &str) -> StreamSlotState {
         let Some(parent) = self.nodes.get(&parent_node_id) else {
-            return false;
+            return StreamSlotState::Unmounted;
         };
         let target_clean = sanitize_stream_slot_id(slot_id);
-        !parent.children.iter().any(|cid| {
+        let pending = parent.children.iter().any(|cid| {
             self.nodes.get(cid).is_some_and(|child| {
                 matches!(
                     child.raw_props.get("data-nve-stream-slot"),
@@ -248,7 +290,12 @@ impl WebBackend {
                                 && sanitize_stream_slot_id(raw) == target_clean)
                 )
             })
-        })
+        });
+        if pending {
+            StreamSlotState::Pending
+        } else {
+            StreamSlotState::Resolved
+        }
     }
 
     /// Walks ONLY `parent_node_id`'s direct children and emits their HTML plus ONLY newly

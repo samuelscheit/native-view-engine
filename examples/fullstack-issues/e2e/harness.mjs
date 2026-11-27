@@ -393,8 +393,81 @@ export async function openTab(debugPort) {
   await cdp.send("Runtime.enable");
   await cdp.send("Network.enable");
   await cdp.send("Log.enable");
+  await cdp.send("Audits.enable");
   return cdp;
 }
+
+const CSP_BINDING = "__nveReportCspViolation";
+
+/**
+ * Records CSP violations through three independent channels, so a silent regression in one
+ * (e.g. Chrome moving console CSP messages) cannot hide a violation:
+ * - `audits`: `Audits.issueAdded` `ContentSecurityPolicyIssue` (also fires with JS disabled),
+ * - `listener`: an in-page `securitypolicyviolation` listener installed on every new document
+ *   (CDP-injected, so the page's own strict CSP never blocks it) reporting via a CDP binding,
+ * - `log`: `Log.entryAdded` `security`-source / CSP console entries.
+ */
+export async function watchCspViolations(cdp) {
+  const audits = [];
+  const listener = [];
+  const log = [];
+  cdp.on("Audits.issueAdded", ({ issue }) => {
+    if (issue.code !== "ContentSecurityPolicyIssue") return;
+    const d = issue.details.contentSecurityPolicyIssueDetails || {};
+    const line = `${d.contentSecurityPolicyViolationType} ${d.violatedDirective} ${d.blockedURL ?? ""}`;
+    console.error("  [CSP audit]", line);
+    audits.push(line);
+  });
+  cdp.on("Runtime.bindingCalled", ({ name, payload }) => {
+    if (name !== CSP_BINDING) return;
+    console.error("  [CSP listener]", payload);
+    listener.push(payload);
+  });
+  cdp.on("Log.entryAdded", ({ entry }) => {
+    if (entry.source !== "security" && !/Content Security Policy/i.test(entry.text)) return;
+    console.error("  [CSP log]", entry.text);
+    log.push(entry.text);
+  });
+  await cdp.send("Runtime.addBinding", { name: CSP_BINDING });
+  await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `addEventListener("securitypolicyviolation", (e) => {
+      globalThis.${CSP_BINDING}?.(JSON.stringify({ directive: e.violatedDirective,
+        blocked: e.blockedURI, source: e.sourceFile, line: e.lineNumber, sample: e.sample }));
+    }, true);`,
+  });
+  return {
+    audits,
+    listener,
+    log,
+    counts: () => ({ audits: audits.length, listener: listener.length, log: log.length }),
+    clear() {
+      audits.length = 0;
+      listener.length = 0;
+      log.length = 0;
+    },
+  };
+}
+
+/** Polls a Node-side `predicate` (e.g. over recorded CDP events) until true or `timeoutMs`. */
+export async function waitUntil(desc, predicate, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  throw new Error(`Timed out waiting for: ${desc}`);
+}
+
+/** JS source counting `selector` matches across the document and every open shadow root. */
+export const deepCountJs = (selector) => `(() => {
+  let n = 0;
+  const walk = (root) => {
+    n += root.querySelectorAll(${JSON.stringify(selector)}).length;
+    for (const el of root.querySelectorAll("*")) if (el.shadowRoot) walk(el.shadowRoot);
+  };
+  walk(document);
+  return n;
+})()`;
 
 export function waitForEvent(cdp, method, predicate = () => true, timeoutMs = 15000, desc = method) {
   let timer = null;

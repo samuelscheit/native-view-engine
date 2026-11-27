@@ -53,6 +53,12 @@ impl BoundaryQuerySet {
         }
     }
 
+    /// Drops `handle` from this boundary (a hook switched keys), keeping the set bounded to the
+    /// keys its components currently read.
+    pub fn forget(&self, handle: QueryHandle) {
+        self.0.borrow_mut().retain(|&h| h != handle);
+    }
+
     /// Returns a snapshot of all [`QueryHandle`]s recorded in this boundary.
     #[inline]
     pub fn handles(&self) -> Vec<QueryHandle> {
@@ -123,30 +129,39 @@ impl SsrBoundaryRegistry {
     }
 
     /// Allocates a slot ID using `explicit_id` (sanitized) when valid or the monotonic `s0`, `s1`,
-    /// ... sequence otherwise.
+    /// ... sequence otherwise, skipping auto IDs an explicit boundary already registered.
     pub fn allocate_slot_id(&self, explicit_id: Option<&str>) -> String {
         if let Some(clean) = sanitize_slot_id(explicit_id) {
             return clean;
         }
         let mut inner = self.inner.borrow_mut();
-        let n = inner.next_auto_id;
-        inner.next_auto_id = inner.next_auto_id.wrapping_add(1);
-        format!("s{n}")
+        loop {
+            let id = format!("s{}", inner.next_auto_id);
+            inner.next_auto_id = inner.next_auto_id.wrapping_add(1);
+            if !inner.boundaries.iter().any(|e| e.slot_id == id) {
+                return id;
+            }
+        }
     }
 
-    /// Registers a top-level streaming boundary entry with its handle collector.
-    pub fn register(&self, slot_id: String, handles: Rc<RefCell<Vec<QueryHandle>>>) {
+    /// Registers a top-level streaming boundary and returns the handle collector it must record
+    /// into. A boundary reusing an already-registered `slot_id` (duplicate explicit `id`, or an
+    /// explicit `id` colliding with an earlier auto ID) shares the first boundary's collector, so
+    /// no attributed handle is ever dropped; if both suspend, the streaming shell rejects the
+    /// duplicate slot before headers.
+    pub fn register(&self, slot_id: String) -> Rc<RefCell<Vec<QueryHandle>>> {
         let mut inner = self.inner.borrow_mut();
-        if let Some(existing) = inner.boundaries.iter_mut().find(|e| e.slot_id == slot_id) {
-            existing.handles = handles;
-            return;
+        if let Some(existing) = inner.boundaries.iter().find(|e| e.slot_id == slot_id) {
+            return Rc::clone(&existing.handles);
         }
+        let handles = Rc::new(RefCell::new(Vec::new()));
         inner.boundaries.push(SsrBoundaryEntry {
             slot_id,
-            handles,
+            handles: Rc::clone(&handles),
             suspense_ctx: None,
             flushed: false,
         });
+        handles
     }
 
     /// Attaches the Dioxus [`SuspenseContext`] observed when `slot_id` suspends.
@@ -184,28 +199,9 @@ impl SsrBoundaryRegistry {
             .cloned()
     }
 
-    /// Returns all suspended boundaries whose tasks have resolved and are ready to flush.
-    pub fn ready_to_flush(&self) -> Vec<SsrBoundaryEntry> {
-        self.inner
-            .borrow()
-            .boundaries
-            .iter()
-            .filter(|e| e.is_ready_to_flush())
-            .cloned()
-            .collect()
-    }
-
-    /// Returns `true` while any suspended boundary has not yet been flushed.
-    pub fn has_pending(&self) -> bool {
-        self.inner
-            .borrow()
-            .boundaries
-            .iter()
-            .any(|e| !e.flushed && e.suspense_ctx.is_some())
-    }
-
-    /// Collects all unique [`QueryHandle`]s across unflushed suspended boundaries (used with
-    /// [`nve_query::QueryClient::dehydrate_pending_handles`] for `seq=0` mid-stream boot).
+    /// Collects all unique [`QueryHandle`]s across unflushed suspended boundaries (the
+    /// `StreamPending` set of [`nve_query::QueryClient::dehydrate_initial_stream_chunk`] for the
+    /// `seq=0` mid-stream boot payload).
     pub fn pending_handles(&self) -> Vec<QueryHandle> {
         let inner = self.inner.borrow();
         let mut out = Vec::new();
@@ -219,29 +215,6 @@ impl SsrBoundaryRegistry {
             }
         }
         out
-    }
-
-    /// Collects all unique [`QueryHandle`]s recorded across all registered boundaries.
-    pub fn all_handles(&self) -> Vec<QueryHandle> {
-        let inner = self.inner.borrow();
-        let mut out = Vec::new();
-        for entry in &inner.boundaries {
-            for &h in entry.handles.borrow().iter() {
-                if !out.contains(&h) {
-                    out.push(h);
-                }
-            }
-        }
-        out
-    }
-
-    /// Returns `true` if any registered SSR boundary has recorded at least one query handle.
-    pub fn has_active_ssr_handles(&self) -> bool {
-        self.inner
-            .borrow()
-            .boundaries
-            .iter()
-            .any(|e| !e.handles.borrow().is_empty())
     }
 }
 
@@ -265,7 +238,11 @@ pub fn QuerySuspense(
             .as_ref()
             .is_some_and(|b| b.client().mode() == QueryMode::Ssr);
 
-    let (slot_id, boundary_handles, has_enclosing_query_set) = use_hook(|| {
+    // `InDeferredSuspense(true)` is only ever provided by an outer SSR `<QuerySuspense>`, which
+    // always provides its `BoundaryQuerySet` alongside, so a nested SSR boundary records into the
+    // outer boundary's set.
+    let nested_ssr = is_ssr && in_deferred;
+    let (slot_id, boundary_handles) = use_hook(|| {
         let resolved_id = if let Some(ref reg) = registry {
             reg.allocate_slot_id(id.as_deref())
         } else if let Some(ref b) = bridge {
@@ -273,70 +250,42 @@ pub fn QuerySuspense(
         } else {
             sanitize_slot_id(id.as_deref()).unwrap_or_else(|| "s0".to_owned())
         };
-
-        if is_ssr && in_deferred {
-            if let Some(enclosing) = try_consume_context::<BoundaryQuerySet>() {
-                (resolved_id, enclosing.0, true)
-            } else {
-                let handles = Rc::new(RefCell::new(Vec::new()));
-                provide_context(BoundaryQuerySet(Rc::clone(&handles)));
-                (resolved_id, handles, false)
-            }
-        } else {
-            let handles = Rc::new(RefCell::new(Vec::new()));
-            provide_context(BoundaryQuerySet(Rc::clone(&handles)));
-            if is_ssr {
-                provide_context(InDeferredSuspense(true));
-            }
-            if let Some(ref reg) = registry {
-                reg.register(resolved_id.clone(), Rc::clone(&handles));
-            }
-            (resolved_id, handles, false)
+        if nested_ssr {
+            let enclosing = try_consume_context::<BoundaryQuerySet>().unwrap_or_default();
+            return (resolved_id, enclosing.0);
         }
+        let handles = match registry {
+            Some(ref reg) => reg.register(resolved_id.clone()),
+            None => Rc::new(RefCell::new(Vec::new())),
+        };
+        provide_context(BoundaryQuerySet(Rc::clone(&handles)));
+        if is_ssr {
+            provide_context(InDeferredSuspense(true));
+        }
+        (resolved_id, handles)
     });
 
     let bridge_for_reset = bridge.clone();
     let handles_for_reset = Rc::clone(&boundary_handles);
 
     // Nested `<QuerySuspense>` during SSR: NEVER emit a nested `NveStreamSlot` (unprojectable in
-    // Declarative Shadow DOM). When enclosed by an outer `<QuerySuspense>`, let suspension bubble
-    // directly to the outer boundary's `SuspenseContext` so the outer boundary resolves atomically
-    // once its entire subtree settles while preserving local error isolation.
-    if is_ssr && in_deferred {
-        if has_enclosing_query_set {
-            return rsx! {
-                view {
-                    "data-nve-suspense": "{slot_id}",
-                    ErrorBoundary {
-                        fallback: error_fallback,
-                        on_error: on_error,
-                        on_reset: move |reset_count: u32| {
-                            invalidate_boundary_handles(&bridge_for_reset, &handles_for_reset);
-                            if let Some(cb) = on_reset {
-                                cb.call(reset_count);
-                            }
-                        },
-                        {children}
-                    }
-                }
-            };
-        }
+    // Declarative Shadow DOM). Suspension bubbles directly to the outer boundary's
+    // `SuspenseContext` so the outer boundary resolves atomically once its entire subtree settles
+    // while preserving local error isolation.
+    if nested_ssr {
         return rsx! {
             view {
                 "data-nve-suspense": "{slot_id}",
-                SuspenseBoundary {
-                    fallback: move |_| fallback.clone(),
-                    ErrorBoundary {
-                        fallback: error_fallback,
-                        on_error: on_error,
-                        on_reset: move |reset_count: u32| {
-                            invalidate_boundary_handles(&bridge_for_reset, &handles_for_reset);
-                            if let Some(cb) = on_reset {
-                                cb.call(reset_count);
-                            }
-                        },
-                        {children}
-                    }
+                ErrorBoundary {
+                    fallback: error_fallback,
+                    on_error: on_error,
+                    on_reset: move |reset_count: u32| {
+                        invalidate_boundary_handles(&bridge_for_reset, &handles_for_reset);
+                        if let Some(cb) = on_reset {
+                            cb.call(reset_count);
+                        }
+                    },
+                    {children}
                 }
             }
         };

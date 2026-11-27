@@ -433,7 +433,10 @@ where
         build_session(surface_id, backend, viewport, valid_state.as_deref());
     let session = Rc::new(RefCell::new(session_val));
 
-    let (snapshot_guard, snapshot_trigger) = if enable_persistence {
+    // Apps without a snapshot slug (e.g. Dioxus surfaces) never persist, so skip the
+    // `visibilitychange` / `pagehide` listeners and debounce timer entirely.
+    let persists_snapshots = enable_persistence && session.borrow().app_slug().is_some();
+    let (snapshot_guard, snapshot_trigger) = if persists_snapshots {
         let (guard, trigger) = SnapshotPersistenceGuard::install(
             &window,
             Rc::clone(&session),

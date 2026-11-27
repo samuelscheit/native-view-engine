@@ -18,8 +18,8 @@ use std::collections::BTreeSet;
 
 use crate::css::NVE_BASE_RESET_CSS;
 use crate::html::{
-    push_attr_escaped, push_script_data_escaped, push_style_css_escaped, push_text_escaped,
-    write_style_nonce_attr,
+    push_async_boot_script, push_attr_escaped, push_query_payload_tag, push_style_css_escaped,
+    push_stylesheet_links, push_text_escaped, write_style_nonce_attr,
 };
 use crate::ssr_stream::{SsrDeltaChunk, StreamingShellOutput};
 use crate::WebBackend;
@@ -247,13 +247,7 @@ pub(crate) fn write_shared_styles(opts: &StreamingDocumentOptions, out: &mut Str
     out.push_str("\">");
     push_style_css_escaped(&opts.style_css, out);
     out.push_str("</style>\n");
-    for href in &opts.stylesheet_links {
-        if !href.trim().is_empty() {
-            out.push_str("<link rel=\"stylesheet\" href=\"");
-            push_attr_escaped(href.trim(), out);
-            out.push_str("\">\n");
-        }
-    }
+    push_stylesheet_links(&opts.stylesheet_links, out);
 }
 
 pub(crate) fn write_document_head(
@@ -336,9 +330,11 @@ pub(crate) fn format_light_dom_slot_chunk(
         push_style_css_escaped(css, &mut out);
         out.push_str("</style>");
     }
+    // The trailing `data-nve-slot-ack` sibling marks the slot `<div>` as parser-complete, so a
+    // TCP split right after `</div>` can never make an unfinished slot look complete.
     let _ = writeln!(
         &mut out,
-        "<div slot=\"{NVE_STREAM_SLOT_PREFIX}{clean_id}\" data-nve-slot=\"{clean_id}\" class=\"nve-slot\">{resolved_html}</div>"
+        "<div slot=\"{NVE_STREAM_SLOT_PREFIX}{clean_id}\" data-nve-slot=\"{clean_id}\" class=\"nve-slot\">{resolved_html}</div><template data-nve-slot-ack=\"{clean_id}\"></template>"
     );
     out
 }
@@ -446,14 +442,25 @@ impl StreamingSsrSession {
         ))
     }
 
-    /// Flushes a resolved [`SsrDeltaChunk`] produced by [`WebBackend::render_ssr_subtree_delta`].
+    /// Flushes a resolved [`SsrDeltaChunk`] produced by [`WebBackend::render_ssr_subtree_delta`]
+    /// as one atomic chunk: the optional `(seq, base64 NVEQ)` payload (bound to this slot via
+    /// `data-nve-slot-for`) strictly before the chunk CSS, `<div slot>`, and `data-nve-slot-ack`.
     pub fn resolve_slot_delta(
         &mut self,
         slot_id: &str,
         delta: &SsrDeltaChunk,
+        query_payload: Option<(u64, &str)>,
     ) -> Result<String, StreamingError> {
+        self.ensure_open()?;
+        let clean = sanitize_stream_slot_id(slot_id)
+            .ok_or_else(|| StreamingError::InvalidSlotId(slot_id.to_owned()))?;
+        let mut out = String::new();
+        if let Some((seq, b64)) = query_payload {
+            push_query_payload_tag(seq, Some(&clean), b64, &mut out);
+        }
         let css = (!delta.style_css.is_empty()).then_some(delta.style_css.as_str());
-        self.resolve_slot_with_hashes(slot_id, &delta.html, css, &delta.rule_hashes)
+        out.push_str(&self.resolve_slot_with_hashes(&clean, &delta.html, css, &delta.rule_hashes)?);
+        Ok(out)
     }
 
     /// Renders a resolved `WebBackend` fragment and flushes it as a Light DOM slot chunk.
@@ -467,12 +474,6 @@ impl StreamingSsrSession {
         self.resolve_slot_with_hashes(slot_id, &ssr.html, css, &ssr.rule_hashes)
     }
 
-    /// Emits a raw HTML fragment mid-stream inside the open `<div data-nve-dsd-host>` stream.
-    pub fn emit_raw_chunk(&mut self, html: &str) -> Result<String, StreamingError> {
-        self.ensure_open()?;
-        Ok(html.to_owned())
-    }
-
     /// Emits an Option B mid-stream inert query payload chunk (`<script type="application/x-nve-query"
     /// data-nve-seq="{seq}">{b64}</script><template data-nve-q-ack="{seq}"></template>\n`).
     pub fn emit_query_payload(
@@ -482,15 +483,7 @@ impl StreamingSsrSession {
     ) -> Result<String, StreamingError> {
         self.ensure_open()?;
         let mut out = String::with_capacity(base64_nveq.len() + 112);
-        let _ = write!(
-            &mut out,
-            "<script type=\"application/x-nve-query\" data-nve-seq=\"{seq}\">"
-        );
-        push_script_data_escaped(base64_nveq, &mut out);
-        let _ = writeln!(
-            &mut out,
-            "</script><template data-nve-q-ack=\"{seq}\"></template>"
-        );
+        push_query_payload_tag(seq, None, base64_nveq, &mut out);
         Ok(out)
     }
 
@@ -499,9 +492,7 @@ impl StreamingSsrSession {
     pub fn emit_async_boot_script(&mut self, src: &str) -> Result<String, StreamingError> {
         self.ensure_open()?;
         let mut out = String::with_capacity(src.len() + 48);
-        out.push_str("<script type=\"module\" async src=\"");
-        push_attr_escaped(src.trim(), &mut out);
-        out.push_str("\"></script>\n");
+        push_async_boot_script(Some(src), &mut out);
         Ok(out)
     }
 

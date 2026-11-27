@@ -30,6 +30,30 @@ fn is_element_complete(el: &web_sys::Element, document: Option<&web_sys::Documen
     el.next_sibling().is_some() || document.is_some_and(|doc| doc.ready_state() != "loading")
 }
 
+/// A slot-bound payload (`data-nve-slot-for="{id}"`) becomes ingestible only together with its
+/// markup: once that slot's `data-nve-slot-ack` is parsed, or once the DSD promotion adopted the
+/// slot (which drops the attribute). Otherwise a TCP split between the payload and `<div slot>`
+/// would hydrate data against the still-visible fallback. A payload whose slot never completes
+/// (truncated stream) is never ingested; `finish_ssr_stream` hands that query to the client.
+fn slot_payload_ready(script: &web_sys::Element) -> bool {
+    let Some(slot) = script.get_attribute("data-nve-slot-for") else {
+        return true;
+    };
+    let mut sibling = script.next_element_sibling();
+    while let Some(el) = sibling {
+        if el.get_attribute("data-nve-slot-ack").as_deref() == Some(slot.as_str()) {
+            return true;
+        }
+        sibling = el.next_element_sibling();
+    }
+    false
+}
+
+/// Parser-complete and, for slot-bound payloads, released by its completed slot markup.
+fn is_script_ingestible(script: &web_sys::Element, document: Option<&web_sys::Document>) -> bool {
+    is_element_complete(script, document) && slot_payload_ready(script)
+}
+
 fn remove_script_and_ack(script: &web_sys::Element, seq: Option<u64>) {
     let parent = script.parent_element();
     script.remove();
@@ -60,22 +84,8 @@ fn remove_stream_end_templates(document: &web_sys::Document) {
     }
 }
 
-/// Hydrates one completed `<script type="application/x-nve-query" data-nve-seq="N">` element
+/// Hydrates one ingestible `<script type="application/x-nve-query" data-nve-seq="N">` element
 /// into `client` while enforcing monotonic sequencing, chunk-count cap, and byte cap.
-///
-/// Leaves incomplete `<script>` nodes untouched until the HTML5 parser finishes them.
-pub(crate) fn hydrate_script_element(
-    script: &web_sys::Element,
-    client: &ErasedQueryClient,
-    state: &mut StreamIngestState,
-) -> bool {
-    let document = owner_or_window_document(script);
-    if !is_element_complete(script, document.as_ref()) {
-        return false;
-    }
-    hydrate_completed_script_element(script, client, state)
-}
-
 fn hydrate_completed_script_element(
     script: &web_sys::Element,
     client: &ErasedQueryClient,
@@ -172,14 +182,27 @@ fn collect_query_scripts_from_document(
     out
 }
 
+fn with_ingestible_status(
+    scripts: Vec<web_sys::Element>,
+    document: &web_sys::Document,
+) -> Vec<(web_sys::Element, bool)> {
+    scripts
+        .into_iter()
+        .map(|el| {
+            let ingestible = is_script_ingestible(&el, Some(document));
+            (el, ingestible)
+        })
+        .collect()
+}
+
 fn ingest_completed_scripts(
     scripts: Vec<(web_sys::Element, bool)>,
     client: &ErasedQueryClient,
     state: &mut StreamIngestState,
 ) {
     let mut valid: Vec<(u64, web_sys::Element)> = Vec::new();
-    for (script, complete) in scripts {
-        if !complete {
+    for (script, ingestible) in scripts {
+        if !ingestible {
             continue;
         }
         match script
@@ -227,10 +250,15 @@ fn drain_dsd_host(
 
     for (el, complete) in children {
         let tag = el.tag_name();
+        let finished = complete || final_drain;
         if tag.eq_ignore_ascii_case("template") && el.has_attribute("data-nve-stream-end") {
             saw_stream_end = true;
+        } else if tag.eq_ignore_ascii_case("template") && el.has_attribute("data-nve-slot-ack") {
+            if finished {
+                slots_to_remove.push(el);
+            }
         } else if tag.eq_ignore_ascii_case("style") && el.has_attribute("data-nve-ssr-chunk") {
-            if complete || final_drain {
+            if finished {
                 if let Some(hashes) = el.get_attribute("data-nve-hashes")
                     && !hashes.trim().is_empty()
                 {
@@ -243,13 +271,18 @@ fn drain_dsd_host(
         } else if el.has_attribute("data-nve-slot")
             || (tag.eq_ignore_ascii_case("div") && el.has_attribute("slot"))
         {
-            slots_to_remove.push(el);
+            // Hydration already rendered this slot (fallback or promoted chunk); drop the late
+            // Light-DOM duplicate only once the parser closed it, never mid-parse.
+            if finished {
+                slots_to_remove.push(el);
+            }
         } else if tag.eq_ignore_ascii_case("script")
             && el
                 .get_attribute("type")
                 .is_some_and(|t| t.eq_ignore_ascii_case("application/x-nve-query"))
         {
-            scripts.push((el, complete));
+            let ingestible = complete && slot_payload_ready(&el);
+            scripts.push((el, ingestible));
         }
     }
 
@@ -341,14 +374,7 @@ impl StreamRuntime {
             }
             let extra = collect_query_scripts_from_document(doc, host.as_ref());
             if !extra.is_empty() {
-                let with_status: Vec<(web_sys::Element, bool)> = extra
-                    .into_iter()
-                    .map(|el| {
-                        let complete = is_element_complete(&el, Some(doc));
-                        (el, complete)
-                    })
-                    .collect();
-                ingest_completed_scripts(with_status, client, &mut self.state);
+                ingest_completed_scripts(with_ingestible_status(extra, doc), client, &mut self.state);
             }
             client.finish_ssr_stream();
         }
@@ -407,17 +433,8 @@ pub(crate) fn attach_nve_query_stream(
         dsd_host.as_ref(),
     ));
 
-    if scripts.len() == 1 {
-        let _ = hydrate_script_element(&scripts[0], &client, &mut state);
-    } else if !scripts.is_empty() {
-        let with_status: Vec<(web_sys::Element, bool)> = scripts
-            .into_iter()
-            .map(|el| {
-                let complete = is_element_complete(&el, Some(&document));
-                (el, complete)
-            })
-            .collect();
-        ingest_completed_scripts(with_status, &client, &mut state);
+    if !scripts.is_empty() {
+        ingest_completed_scripts(with_ingestible_status(scripts, &document), &client, &mut state);
     }
 
     let has_stream_end = document.ready_state() != "loading"
@@ -434,10 +451,12 @@ pub(crate) fn attach_nve_query_stream(
         });
 
     if has_stream_end || dsd_host.is_none() {
-        client.finish_ssr_stream();
         if let Some(host) = dsd_host {
+            // Hoist + seed any chunk styles the promotion left behind before dropping the host.
+            let _ = drain_dsd_host(&host, &document, surface_id, &client, &mut state, true);
             host.remove();
         }
+        client.finish_ssr_stream();
         remove_stream_end_templates(&document);
         return None;
     }
@@ -501,6 +520,9 @@ pub(crate) fn attach_nve_query_stream(
         rt.dom_ready_js = registered_dom_ready
             .as_ref()
             .map(|cb| cb.as_ref().clone());
+        // Drain anything the parser appended between `hydrate_into` and `observe` (chunk styles,
+        // completed slots, query payloads) now instead of waiting for the next mutation.
+        rt.on_mutation();
     }
 
     Some(QueryStreamGuard {

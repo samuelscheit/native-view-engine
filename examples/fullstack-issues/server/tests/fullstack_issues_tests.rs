@@ -7,7 +7,9 @@
 
 use axum::Router;
 use bytes::Bytes;
-use http::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN, X_CONTENT_TYPE_OPTIONS};
+use http::header::{
+    ACCEPT, CACHE_CONTROL, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN, X_CONTENT_TYPE_OPTIONS,
+};
 use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt as _, Full};
 use hyper_util::client::legacy::Client;
@@ -419,6 +421,8 @@ async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
     let pkg_dir = tmp.join("pkg");
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(pkg_dir.join("manifest.json"), b"{\"js\":\"a.js\"}").unwrap();
+    std::fs::create_dir_all(pkg_dir.join("0123456789abcdef")).unwrap();
+    std::fs::write(pkg_dir.join("0123456789abcdef/app_bg.wasm"), b"\0asm").unwrap();
     std::fs::write(pkg_dir.join("secret.txt"), b"do not serve").unwrap();
     // Allowlisted `.json` placed OUTSIDE `pkg_dir` for end-to-end defence-in-depth verification
     // (`Component::Normal` + canonicalized containment; unit test in `assets.rs` isolates `..`).
@@ -456,6 +460,18 @@ async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
     assert_eq!(
         ok_resp.headers().get(X_CONTENT_TYPE_OPTIONS).unwrap(),
         "nosniff"
+    );
+    // The mutable manifest is never cached; content-hashed bundle files are immutable.
+    assert_eq!(ok_resp.headers().get(CACHE_CONTROL).unwrap(), "no-store");
+    let hashed = raw_client
+        .get(format!("{origin}/pkg/issues/0123456789abcdef/app_bg.wasm").parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(hashed.status(), StatusCode::OK);
+    assert_eq!(hashed.headers().get(CONTENT_TYPE).unwrap(), "application/wasm");
+    assert_eq!(
+        hashed.headers().get(CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
     );
 
     // Non-allowlisted `.txt` file -> 404.

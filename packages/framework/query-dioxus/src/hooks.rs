@@ -15,7 +15,6 @@ use dioxus_signals::{CopyValue, ReadableExt, Signal, WritableExt};
 use nve_query::{QueryHandle, QueryMode, QueryOptions, QuerySnapshot, Shared};
 use nve_rpc::{encode_args, CborCodec, Procedure, Query, RpcCodec, RpcError};
 
-pub use crate::action_hooks::{use_action, UseAction};
 use crate::bridge::{consume_bridge, DioxusQueryBridge, ErasedQueryClient};
 use crate::suspense::BoundaryQuerySet;
 
@@ -192,7 +191,14 @@ where
         }
 
         let mode = bridge.client().mode();
+        let inv_ver = snap.invalidation_version;
+        // A client fetch still in flight or a slot task still retrying (backoff sleep between
+        // attempts) means the committed error is transient: keep suspending until the retry
+        // loop succeeds or exhausts instead of tripping the enclosing `ErrorBoundary` early.
+        let retry_pending = mode == QueryMode::Client
+            && (snap.is_fetching || bridge.has_active_slot_task_for(handle, inv_ver));
         let has_current_error = snap.error.is_some()
+            && !retry_pending
             && (!snap.is_invalidated
                 || snap.completed_invalidation_version == snap.invalidation_version);
 
@@ -216,7 +222,6 @@ where
         }
 
         // Pending / fetching / `is_stream_pending` / retrying after invalidation.
-        let inv_ver = snap.invalidation_version;
         if mode == QueryMode::Client
             && !snap.is_fetching
             && !snap.is_stream_pending
@@ -366,6 +371,10 @@ where
             && waiter.alive.get()
         {
             waiter.task.cancel();
+        }
+        // Keep the enclosing boundary's attribution bounded to live keys only.
+        if let Some(boundary_set) = try_consume_context::<BoundaryQuerySet>() {
+            boundary_set.forget(old_handle);
         }
         let new_handle = bridge
             .client()

@@ -16,6 +16,7 @@ pub(crate) struct NativeHtmlNode {
     pub(crate) live_control_value: Option<String>,
     pub(crate) slot_name: Option<String>,
     pub(crate) data_nve_slot: Option<String>,
+    pub(crate) data_nve_slot_ack: Option<String>,
     pub(crate) data_nve_dsd_host: bool,
     pub(crate) is_shadow_template: bool,
     pub(crate) is_app_container: bool,
@@ -416,6 +417,9 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
                 .then(|| attr_val(&attrs, "name").map(str::to_owned))
                 .flatten(),
             data_nve_slot: attr_val(&attrs, "data-nve-slot").map(str::to_owned),
+            data_nve_slot_ack: (tag == "template")
+                .then(|| attr_val(&attrs, "data-nve-slot-ack").map(str::to_owned))
+                .flatten(),
             data_nve_dsd_host: has_attr(&attrs, "data-nve-dsd-host"),
             is_shadow_template: tag == "template" && has_attr(&attrs, "shadowrootmode"),
             is_app_container: attr_val(&attrs, "id") == Some("app"),
@@ -486,14 +490,15 @@ fn promote_dsd_in_native_tree(tree: &mut NativeSsrTree, top_level: &[usize]) {
             .copied()
             .find(|&c| tree.arena[c].is_shadow_template);
 
-        // Collect complete Light-DOM `[data-nve-slot="{id}"]` chunks (last wins).
+        // Collect acked Light-DOM `[data-nve-slot="{id}"]` chunks (last wins): only a chunk
+        // directly followed by its `data-nve-slot-ack` is complete (mirrors the browser).
         let mut slot_chunks: HashMap<String, usize> = HashMap::default();
-        for &cid in &tree.arena[h_idx].children {
-            let child = &tree.arena[cid];
-            if child.closed
-                && let Some(ref slot_id) = child.data_nve_slot
+        for pair in tree.arena[h_idx].children.windows(2) {
+            let (chunk, ack) = (&tree.arena[pair[0]], &tree.arena[pair[1]]);
+            if let Some(ref slot_id) = chunk.data_nve_slot
+                && ack.data_nve_slot_ack.as_ref() == Some(slot_id)
             {
-                slot_chunks.insert(slot_id.clone(), cid);
+                slot_chunks.insert(slot_id.clone(), pair[0]);
             }
         }
 

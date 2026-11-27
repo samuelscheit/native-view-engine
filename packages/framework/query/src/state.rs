@@ -34,6 +34,9 @@ pub(crate) struct CacheState {
     pub gc_cursor: usize,
     pub live_count: usize,
     pub subscribed_all_count: usize,
+    /// Live slots carrying `FLAG_STREAM_PENDING`; maintained exclusively through
+    /// [`Self::set_stream_pending`] / [`Self::clear_stream_pending`] / [`Self::evict_slot`].
+    pub stream_pending_count: usize,
     pub wake_cb: Option<WakeCallback>,
     pub wake_cb_id: u64,
 }
@@ -53,6 +56,7 @@ impl CacheState {
             gc_cursor: 0,
             live_count: 0,
             subscribed_all_count: 0,
+            stream_pending_count: 0,
             wake_cb: None,
             wake_cb_id: 0,
         }
@@ -84,6 +88,63 @@ impl CacheState {
             cur = meta.hash_next;
         }
         None
+    }
+
+    /// Marks slot `idx` as awaiting an SSR stream chunk (`FLAG_STREAM_PENDING | FLAG_IS_FETCHING`).
+    pub(crate) fn set_stream_pending(&mut self, idx: usize) {
+        let meta = &mut self.metas[idx];
+        if !meta.is_stream_pending() {
+            self.stream_pending_count += 1;
+        }
+        meta.flags |= FLAG_IS_FETCHING | FLAG_STREAM_PENDING;
+    }
+
+    /// Clears `FLAG_STREAM_PENDING` (plus `also_clear`) on slot `idx`, returning whether the slot
+    /// was stream-pending.
+    pub(crate) fn clear_stream_pending(&mut self, idx: usize, also_clear: u16) -> bool {
+        let meta = &mut self.metas[idx];
+        let was_pending = meta.is_stream_pending();
+        if was_pending {
+            self.stream_pending_count = self.stream_pending_count.saturating_sub(1);
+        }
+        meta.flags &= !(FLAG_STREAM_PENDING | also_clear);
+        was_pending
+    }
+
+    /// Releases every live stream-pending slot (`FLAG_STREAM_PENDING | FLAG_IS_FETCHING`),
+    /// draining its waiters and marking it dirty. O(1) when no slot is stream-pending.
+    pub(crate) fn release_stream_pending(
+        &mut self,
+        waiters_out: &mut Vec<Waker>,
+    ) -> (usize, Option<WakeCallback>) {
+        self.debug_assert_stream_pending_count();
+        let mut released = 0usize;
+        let mut wake = None;
+        if self.stream_pending_count == 0 {
+            return (released, wake);
+        }
+        for idx in 0..self.metas.len() {
+            if !self.metas[idx].is_free()
+                && self.clear_stream_pending(idx, FLAG_IS_FETCHING)
+            {
+                waiters_out.append(&mut self.payloads[idx].in_flight_waiters);
+                wake = self.mark_dirty(QuerySlotId(idx as u32));
+                released += 1;
+            }
+        }
+        (released, wake)
+    }
+
+    #[inline]
+    pub(crate) fn debug_assert_stream_pending_count(&self) {
+        debug_assert_eq!(
+            self.stream_pending_count,
+            self.metas
+                .iter()
+                .filter(|m| !m.is_free() && m.is_stream_pending())
+                .count(),
+            "stream_pending_count drifted from FLAG_STREAM_PENDING"
+        );
     }
 
     pub(crate) fn mark_dirty(&mut self, slot: QuerySlotId) -> Option<WakeCallback> {
@@ -177,6 +238,7 @@ impl CacheState {
         if (self.metas[idx].flags & FLAG_SUBSCRIBED_ALL) != 0 {
             self.subscribed_all_count = self.subscribed_all_count.saturating_sub(1);
         }
+        self.clear_stream_pending(idx, 0);
 
         let key_hash = self.metas[idx].args_hash;
         let next_in_chain = self.metas[idx].hash_next;
@@ -221,14 +283,14 @@ impl CacheState {
         waiters_out: &mut Vec<Waker>,
     ) {
         let idx = slot.index();
-        let meta = &mut self.metas[idx];
-        if meta.is_free() {
+        if self.metas[idx].is_free() {
             return;
         }
+        self.clear_stream_pending(idx, FLAG_IS_FETCHING | FLAG_HYDRATED);
+        let meta = &mut self.metas[idx];
         // Bump `fetch_gen` BEFORE refetch so slow pre-mutation replies are discarded cleanly.
         meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
         meta.flags |= FLAG_IS_INVALIDATED;
-        meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED | FLAG_STREAM_PENDING);
         let generation = meta.slot_gen;
         let is_active = meta.subscriber_count > 0;
         waiters_out.append(&mut self.payloads[idx].in_flight_waiters);

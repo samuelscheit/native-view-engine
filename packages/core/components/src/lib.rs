@@ -4,6 +4,7 @@
 
 pub mod canvas_ir;
 pub mod client_hints;
+mod css_shorthand;
 pub mod extended_wire;
 pub mod input_hints;
 pub mod interaction;
@@ -78,7 +79,7 @@ pub use transform::{
 
 use nve_abi::num::parse_f32;
 use nve_abi::{
-    ColorRgba, ComponentKind, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify,
+    ColorRgba, ComponentKind, Dimension, FlexAlign, FlexDirection, FlexJustify,
     LayoutProps, StyleProps,
 };
 
@@ -119,6 +120,7 @@ pub fn canonical_raw_style_key(key: &str) -> Option<&'static str> {
         "vertical-align" | "verticalAlign" => Some("vertical-align"),
         "border-collapse" | "borderCollapse" => Some("border-collapse"),
         "flex-wrap" | "flexWrap" => Some("flex-wrap"),
+        "flex-basis" | "flexBasis" => Some("flex-basis"),
         _ => None,
     }
 }
@@ -136,8 +138,9 @@ pub fn apply_typed_attr(
 
 /// Parses inline/shorthand CSS-like or RN-like attributes into typed `LayoutProps` and
 /// `StyleProps`, invoking `on_raw(canonical_key, value)` for recognized non-ABI inline `style`
-/// declarations (`font-weight`, `text-align`, `box-shadow`, `overflow`) so callers can forward
-/// them via `raw_props` with zero ABI breakage.
+/// declarations (`font-weight`, `text-align`, `box-shadow`, `overflow`, `flex-basis`, including
+/// the basis of a `flex` shorthand) so callers can forward them via `raw_props` with zero ABI
+/// breakage.
 pub fn apply_typed_attr_with_raw<F>(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
@@ -156,7 +159,7 @@ where
                 if k.is_empty() || v.is_empty() {
                     continue;
                 }
-                if !apply_typed_attr_single(layout, style, k, v)
+                if !apply_typed_attr_single(layout, style, k, v, &mut on_raw)
                     && let Some(canonical) = canonical_raw_style_key(k)
                 {
                     on_raw(canonical, v);
@@ -165,15 +168,29 @@ where
         }
         return true;
     }
-    apply_typed_attr_single(layout, style, key, value)
+    apply_typed_attr_single(layout, style, key, value, &mut on_raw)
 }
 
-fn apply_typed_attr_single(
+fn apply_typed_attr_single<F>(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
     key: &str,
     value: &str,
-) -> bool {
+    on_raw: &mut F,
+) -> bool
+where
+    F: FnMut(&str, &str),
+{
+    if let Some(suffix) = key.strip_prefix("padding")
+        && !suffix.is_empty()
+    {
+        return css_shorthand::apply_edge_longhand(&mut layout.padding, suffix, value);
+    }
+    if let Some(suffix) = key.strip_prefix("margin")
+        && !suffix.is_empty()
+    {
+        return css_shorthand::apply_edge_longhand(&mut layout.margin, suffix, value);
+    }
     match key {
         "width" => layout.width = parse_dim(value),
         "height" => layout.height = parse_dim(value),
@@ -208,7 +225,14 @@ fn apply_typed_attr_single(
                 _ => FlexAlign::Stretch,
             };
         }
-        "flex" | "flex-grow" | "flexGrow" => {
+        "flex" => {
+            if let Some(flex) = css_shorthand::parse_flex(value) {
+                layout.flex_grow = flex.grow;
+                layout.flex_shrink = flex.shrink;
+                on_raw("flex-basis", flex.basis);
+            }
+        }
+        "flex-grow" | "flexGrow" => {
             if let Some(v) = parse_f32(value) {
                 layout.flex_grow = v;
             }
@@ -224,25 +248,19 @@ fn apply_typed_attr_single(
             }
         }
         "padding" => {
-            if let Some(v) = parse_px(value) {
-                layout.padding = EdgeInsets::all(v);
-            }
-        }
-        "padding-horizontal" | "paddingHorizontal" => {
-            if let Some(v) = parse_px(value) {
-                layout.padding.left = v;
-                layout.padding.right = v;
-            }
-        }
-        "padding-vertical" | "paddingVertical" => {
-            if let Some(v) = parse_px(value) {
-                layout.padding.top = v;
-                layout.padding.bottom = v;
+            if let Some(edges) = css_shorthand::parse_edges(value) {
+                layout.padding = edges;
             }
         }
         "margin" => {
-            if let Some(v) = parse_px(value) {
-                layout.margin = EdgeInsets::all(v);
+            if let Some(edges) = css_shorthand::parse_edges(value) {
+                layout.margin = edges;
+            }
+        }
+        "border" => {
+            if let Some((width, color)) = css_shorthand::parse_border(value, style.text_color) {
+                style.border_width = width;
+                style.border_color = color;
             }
         }
         "background" | "background-color" | "backgroundColor" => {
@@ -343,6 +361,49 @@ pub fn parse_color(raw: &str) -> Option<ColorRgba> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nve_abi::EdgeInsets;
+
+    #[test]
+    fn inline_style_shorthands_fill_typed_props_and_forward_flex_basis() {
+        let mut l = LayoutProps::default();
+        let mut s = StyleProps::default();
+        let mut raw: Vec<(String, String)> = Vec::new();
+        assert!(apply_typed_attr_with_raw(
+            &mut l,
+            &mut s,
+            "style",
+            "padding: 14px 16px; margin: 1px 2px 3px; margin-left: 9px; paddingTop: 4px; border: 1px solid #1e293b; flex: 1 1 280px;",
+            |k, v| raw.push((k.to_owned(), v.to_owned())),
+        ));
+        let edges = |top, right, bottom, left| EdgeInsets { top, right, bottom, left };
+        assert_eq!(l.padding, edges(4.0, 16.0, 14.0, 16.0));
+        assert_eq!(l.margin, edges(1.0, 2.0, 3.0, 9.0));
+        assert_eq!((s.border_width, s.border_color), (1.0, ColorRgba::rgb(0x1e, 0x29, 0x3b)));
+        assert_eq!((l.flex_grow, l.flex_shrink), (1.0, 1.0));
+        assert_eq!(raw, vec![("flex-basis".to_owned(), "280px".to_owned())]);
+
+        // `flex: <grow>` implies basis 0%; `flex: none` resets factors and basis.
+        raw.clear();
+        assert!(apply_typed_attr_with_raw(&mut l, &mut s, "flex", "2", |k, v| raw
+            .push((k.to_owned(), v.to_owned()))));
+        assert_eq!((l.flex_grow, l.flex_shrink), (2.0, 1.0));
+        assert!(apply_typed_attr_with_raw(&mut l, &mut s, "style", "flex: none; flexBasis: 12px", |k, v| raw
+            .push((k.to_owned(), v.to_owned()))));
+        assert_eq!((l.flex_grow, l.flex_shrink), (0.0, 0.0));
+        assert_eq!(
+            raw,
+            vec![
+                ("flex-basis".to_owned(), "0%".to_owned()),
+                ("flex-basis".to_owned(), "auto".to_owned()),
+                ("flex-basis".to_owned(), "12px".to_owned()),
+            ]
+        );
+
+        // Invalid shorthands leave every target untouched (all-or-nothing).
+        let before = (l, s);
+        assert!(apply_typed_attr(&mut l, &mut s, "style", "padding: 1px 2px 3px 4px 5px; margin: 0 auto; border: 1px wavy red; flex: 1 280px 1;"));
+        assert_eq!((l, s), before);
+    }
 
     #[test]
     fn parses_inline_style_and_colors() {
