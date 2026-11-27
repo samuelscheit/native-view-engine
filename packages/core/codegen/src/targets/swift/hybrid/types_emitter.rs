@@ -57,12 +57,14 @@ pub(super) fn emit_swift_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec
             if idx > 0 {
                 write!(out, ", ");
             }
-            let cname = c_field_ident(&f.name);
+            // C field names keep their spelling as labels; `self.` keeps a field named `self`
+            // from meaning the receiver.
+            let label = escape_label(&c_field_ident(&f.name));
             let fname = swift_ident(&f.name);
             match &f.ty {
-                HybridType::Enum(_) => write!(out, "{cname}: {fname}.rawValue"),
-                HybridType::Struct(_) => write!(out, "{cname}: {fname}.toAbi()"),
-                _ => write!(out, "{cname}: {fname}"),
+                HybridType::Enum(_) => write!(out, "{label}: self.{fname}.rawValue"),
+                HybridType::Struct(_) => write!(out, "{label}: self.{fname}.toAbi()"),
+                _ => write!(out, "{label}: self.{fname}"),
             }
         }
         writeln!(out, ")");

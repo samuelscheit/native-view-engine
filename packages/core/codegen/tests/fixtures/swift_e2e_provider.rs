@@ -196,7 +196,7 @@ mod edge_provider {
         }
         fn echo_bundle(&mut self, bundle: Bundle) -> Bundle { bundle }
         fn init(&mut self, k: Keywords) -> Keywords {
-            Keywords { init: k.init + 1, deinit: -k.deinit, subscript: !k.subscript }
+            Keywords { init: k.init + 1, inout: -k.inout, deinit: -k.deinit, subscript: !k.subscript }
         }
         // Replaced by the raw entries below.
         fn level(&mut self, _raw: u32) -> Level { Level::Low }

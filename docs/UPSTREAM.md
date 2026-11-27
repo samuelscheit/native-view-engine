@@ -51,6 +51,9 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 - **`swift-frontend -O` leaks ~32 GB RAM compiling `Collection` with compile-time `2^32` `endIndex`**
   - **Observed**: Under Apple Swift 6.4 (`swiftlang-6.4.0.34.1`, macOS 27.2.0), compiling a zero-sized `Collection`/`RandomAccessCollection` whose `endIndex` is a computed constant `Int(UInt32.max) + 1` under `-O` or `-Osize` (with or without `-wmo`, even if the type is unreferenced) causes `swift-frontend` to spin at 100% CPU and consume ~32 GB RSS (8 B per element; scales linearly). Cause: SIL `ObjectOutliner.getInitialization` eagerly allocates one slot per tail element of the `alloc_ref [tail_elems $UInt8 * 4294967296]` in the specialized `_copyCollectionToContiguousArray`. Reported: swiftlang/swift#94725 (repro: `docs/research/upstream-repros/swift-collection-endindex-oom`).
   - **Mitigation**: Keep `endIndex` as a stored `let endIndex: Int` property (`packages/core/host-swift/Tests/NveHostTests/BinCodecTests.swift`, `HugeBytes(endIndex: Int(UInt32.max) + 1)`), which drops peak `swift-frontend` RSS from ~32 GB to ~155 MB and compile time to ~1.2 s.
+- **Synthesized `Equatable` warns on a `Double` field named `nan`**
+  - **Observed**: For `struct S: Equatable { var nan: Double }`, the compiler-synthesized `==` compares `lhs.nan == rhs.nan`, and the comparison lint misreads it as the static `.nan` (`<unknown>:0: warning: '.nan' == '.nan' is always false`), so `-warnings-as-errors` fails the build. Generated hybrid structs synthesize `Equatable`, so a spec field `nan: f64` hits it.
+  - **Mitigation**: Avoid a `Double` / `Float` field named `nan` (the Swift e2e fixture `packages/core/codegen/tests/fixtures/swift_edge_hybrid.nve.rs` uses `not_a_number`).
 
 ### GTK 4 (`gtk4 4.24.2`)
 

@@ -284,5 +284,21 @@ final class NveValueTreeTests: XCTestCase {
             }
         })
         XCTAssertLessThanOrEqual(scalars, 1, "scalar dynamic values allocated \(scalars) times")
+        // Medium runs (larger than the first chunk) grow the chunks geometrically, not one each.
+        let medium = [UInt8](repeating: 0xA5, count: 3000)
+        let mediums = try XCTUnwrap(allocations {
+            withTree { tree in
+                for _ in 0..<20 { _ = tree.bytes(medium) }
+            }
+        })
+        XCTAssertLessThanOrEqual(mediums, 6, "20 x 3 KB runs allocated \(mediums) times")
+        // `encoded` reuses its writer: once warm, payloads cost only arena space.
+        let encodes = try withTree { tree in
+            _ = tree.encoded { $0.writeI64(0) }  // the writer's buffer and the first chunk
+            return try XCTUnwrap(allocations {
+                for i in 0..<50 { _ = tree.encoded { $0.writeI64(Int64(i)) } }  // 450 B: same chunk
+            })
+        }
+        XCTAssertEqual(encodes, 0, "warm encoded calls allocated \(encodes) times")
     }
 }

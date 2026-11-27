@@ -8,10 +8,12 @@ pub enum Level {
     High = 7,
 }
 
-/// POD struct whose C fields are Swift member-access keywords (`raw.init` needs backticks).
+/// POD struct whose C fields are Swift keywords: `raw.init` needs backticks after `.`, and `inout`
+/// needs them even as an argument label.
 #[nve_hybrid_struct]
 pub struct Keywords {
     pub init: u32,
+    pub inout: i32,
     pub deinit: f32,
     pub subscript: bool,
 }

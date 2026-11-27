@@ -48,11 +48,6 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// Whether `tool` runs; a missing tool skips the caller, unless `CI` / `NVE_REQUIRE_<TOOL>` is set.
-fn tool_available(tool: &str) -> bool {
-    common::require_tool(tool)
-}
-
 #[test]
 fn parses_realistic_multi_item_rust_spec_accurately() {
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("spec should parse cleanly");
@@ -427,7 +422,7 @@ fn rejects_negative_and_malformed_specs() {
 
 #[test]
 fn real_compiler_verifies_c11_and_cpp20_headers() {
-    if !tool_available("clang") || !tool_available("clang++") {
+    if !common::require_tool("clang") || !common::require_tool("clang++") {
         return;
     }
 
@@ -925,7 +920,7 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
         "generated Dart must not duplicate core ABI FFI structs"
     );
 
-    if !tool_available("dart") {
+    if !common::require_tool("dart") {
         return;
     }
 
@@ -966,7 +961,7 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         NveValueArray, NveValueData, NveValueMap,
     };
 
-    if !tool_available("clang") {
+    if !common::require_tool("clang") {
         return;
     }
 
@@ -1110,7 +1105,7 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
 #[test]
 fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
     let _touch = nve_abi::NveValue::null();
-    if !tool_available("clang++") {
+    if !common::require_tool("clang++") {
         return;
     }
 
@@ -1626,7 +1621,7 @@ pub trait SafeBannerSpec {
     let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
     let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
 
-    if tool_available("clang++") {
+    if common::require_tool("clang++") {
         let dir = temp_test_dir("adversarial_cpp");
         common::write_generated_c_abi_headers(&dir);
         cpp_out.write_to_dir(&dir).unwrap();
@@ -1659,7 +1654,7 @@ void check() {
 
     // Generated Swift against the static host runtime (`common::swift`); the full Swift <-> Rust
     // run lives in `hybrid_swift_runtime_tests`.
-    if tool_available("swiftc") {
+    if common::require_tool("swiftc") {
         let dir = temp_test_dir("adversarial_swift");
         let host = common::swift::build_host_swift(&dir, &[]);
         cpp_out.write_to_dir(&dir).unwrap();
@@ -1672,7 +1667,7 @@ void check() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    if tool_available("dart") {
+    if common::require_tool("dart") {
         let dir = temp_test_dir("adversarial_dart");
         let lib_dir = dir.join("lib");
         std::fs::create_dir_all(&lib_dir).unwrap();

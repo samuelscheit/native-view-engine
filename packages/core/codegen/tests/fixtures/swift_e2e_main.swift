@@ -209,7 +209,8 @@ func runEdge() throws {
     check(comparable == expected, "echoBundle")
 
     // C member names that are Swift keywords after `.` (`vtable.pointee.init`, `raw.init`).
-    check(try edge.`init`(k: Keywords(init: 41, deinit: 1.5, subscript: false)) == Keywords(init: 42, deinit: -1.5, subscript: true), "init")
+    let keywords = try edge.`init`(k: Keywords(init: 41, `inout`: .min + 1, deinit: 1.5, subscript: false))
+    check(keywords == Keywords(init: 42, `inout`: .max, deinit: -1.5, subscript: true), "init")
 
     // What no typed Rust value can send.
     check(try edge.level(raw: 7) == .high && edge.level(raw: 0) == .low, "level")

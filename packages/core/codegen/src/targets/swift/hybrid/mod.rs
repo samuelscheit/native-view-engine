@@ -38,14 +38,18 @@ fn swift_member(name: &str) -> String {
     }
 }
 
-/// `raw` as a call-site argument label: keywords are plain labels there, except `inout`, `var`,
-/// and `let`, which still need backticks.
-fn swift_label(raw: &str) -> String {
-    let ident = swift_ident(raw);
-    match ident.trim_matches('`') {
-        "inout" | "var" | "let" => ident,
+/// `label` (an unescaped Swift name) as a call-site argument label: keywords are plain labels
+/// there, except `inout`, `var`, and `let`, which still need backticks.
+fn escape_label(label: &str) -> String {
+    match label {
+        "inout" | "var" | "let" => format!("`{label}`"),
         plain => plain.to_string(),
     }
+}
+
+/// The Swift name of spec field `raw` as a call-site argument label.
+fn swift_label(raw: &str) -> String {
+    escape_label(swift_ident(raw).trim_matches('`'))
 }
 
 /// Emits `<Stem>HybridSpec.generated.swift` targeting direct C interop with `<Stem>HybridAbi.generated.h`.

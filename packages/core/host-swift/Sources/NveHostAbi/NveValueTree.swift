@@ -9,7 +9,8 @@ import NveHost
 /// first word), never one per node, and nothing moves once handed out. Scalars, and dynamic values
 /// that are scalars, allocate nothing.
 public final class NveValueTree {
-    /// Usable bytes of the first chunk; each further chunk doubles, up to `maxChunkBytes`.
+    /// Usable bytes of the first chunk; each further chunk at least doubles (and fits twice the run
+    /// that opened it), up to `maxChunkBytes`. Runs past that get a chunk of their own.
     private static let firstChunkBytes = 1024
     private static let maxChunkBytes = 1 << 20
     /// Each chunk starts with the link to the previous one, padded to the arena's alignment.
@@ -156,14 +157,14 @@ public final class NveValueTree {
     /// Uninitialized room for `count` (> 0) values.
     private func allocate<T>(_: T.Type, _ count: Int) throws(BinError) -> UnsafeMutablePointer<T> {
         let (bytes, overflow) = MemoryLayout<T>.stride.multipliedReportingOverflow(by: count)
-        guard !overflow else { throw .tooLarge }
+        guard !overflow, bytes <= Int.max - Self.header else { throw .tooLarge }  // 32-bit `arm64_32`
         return reserve(bytes, alignment: MemoryLayout<T>.alignment).bindMemory(to: T.self, capacity: count)
     }
 
     /// Chunks are `header`-aligned, so offsets aligned to any power of two up to `header` stay
     /// aligned in memory.
     private func reserve(_ byteCount: Int, alignment: Int) -> UnsafeMutableRawPointer {
-        assert(alignment > 0 && alignment <= Self.header && alignment & (alignment - 1) == 0, "unsupported alignment \(alignment)")
+        precondition(alignment > 0 && alignment <= Self.header && alignment & (alignment - 1) == 0, "unsupported alignment \(alignment)")
         let start = (cursor + alignment - 1) & ~(alignment - 1)
         if let chunk, byteCount <= end - start {
             cursor = start + byteCount
@@ -171,14 +172,16 @@ public final class NveValueTree {
         }
         // No allocation this large can succeed: the same out-of-memory failure, reported up front.
         precondition(byteCount <= Int.max - Self.header, "NveValueTree: \(byteCount) bytes exceed the address space")
-        if byteCount > nextChunkBytes, let current = chunk {
+        if byteCount > Self.maxChunkBytes, let current = chunk {
             // Oversized: its own chunk, linked behind the current one, which keeps its free space.
             let own = allocateChunk(usable: byteCount, previous: current.load(as: UnsafeMutableRawPointer?.self))
             current.storeBytes(of: own, as: UnsafeMutableRawPointer?.self)
             return own + Self.header
         }
+        // Grows geometrically with the runs it holds, so a series of medium runs (bigger than the
+        // first chunk) costs O(log n) chunks, not one each.
         let usable = max(byteCount, nextChunkBytes)
-        nextChunkBytes = min(nextChunkBytes * 2, Self.maxChunkBytes)
+        nextChunkBytes = min(usable, Self.maxChunkBytes / 2) * 2  // never overflows
         let fresh = allocateChunk(usable: usable, previous: chunk)
         chunk = fresh
         cursor = Self.header + byteCount

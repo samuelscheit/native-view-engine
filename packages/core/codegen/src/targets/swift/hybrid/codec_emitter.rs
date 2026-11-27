@@ -246,13 +246,25 @@ pub(super) fn emit_swift_bin_read(
             writeln!(out, "{indent}    {dst} = {list}");
             writeln!(out, "{indent}}}");
         }
-        // Never encoded (written as `null`): consume the value so the stream stays in sync.
+        // Never encoded (written as `null`): consume the value so the stream stays in sync, and
+        // give `dst` its empty value so a fresh `let` is definitely initialized.
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
         | HybridType::MutPtr(_)
         | HybridType::FixedArray { .. }
-        | HybridType::Handle(_) => writeln!(out, "{indent}try {r}.skipValue()"),
+        | HybridType::Handle(_) => {
+            writeln!(out, "{indent}try {r}.skipValue()");
+            match ty {
+                HybridType::FixedArray { .. } => writeln!(out, "{indent}{dst} = []"),
+                HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
+                    writeln!(out, "{indent}{dst} = nil");
+                }
+                HybridType::Void => writeln!(out, "{indent}{dst} = ()"),
+                // `validate()` only admits `Result` as a top-level return type.
+                _ => {}
+            }
+        }
     }
 }
 
