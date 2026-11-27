@@ -108,6 +108,17 @@ pub struct FieldDesc {
     pub values: Option<&'static ValueSetDesc>,
 }
 
+/// Named `u32` constants a table field holds: the variants of a `word_enum!` (`flags == false`) or
+/// the bits of a flag word (`flags == true`), mirrored to hosts by `nve codegen abi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordConstsDesc {
+    /// `UpperCamel` type name (`ImageFit`, `TypographySet`).
+    pub name: &'static str,
+    pub flags: bool,
+    /// `(UpperCamel variant / flag name, value)`.
+    pub entries: &'static [(&'static str, u32)],
+}
+
 /// Compile-time description of a table, emitted by `#[derive(NveTable)]`.
 #[derive(Debug, Clone, Copy)]
 pub struct TableDesc {

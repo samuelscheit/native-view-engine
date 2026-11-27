@@ -138,7 +138,8 @@ fn module_table_headers() -> Result<Vec<nve_codegen::GeneratedFile>, nve_codegen
 }
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let mut files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
+    let mut files = nve_codegen::generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS)
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
     files.extend(module_table_headers().map_err(|e| format!("module table codegen failed: {e}"))?);
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")

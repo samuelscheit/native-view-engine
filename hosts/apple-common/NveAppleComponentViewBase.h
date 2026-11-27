@@ -13,6 +13,8 @@ typedef UIView NveAppleBasePlatformView;
 typedef UIImageView NveAppleBaseImageView;
 #endif
 
+// React Native Fabric glue stays opt-in (`NVE_WITH_RN_FABRIC`) so it can move into
+// `packages/modules/react-native-fabric` without touching the runtime host path.
 #if defined(NVE_WITH_RN_FABRIC) && NVE_WITH_RN_FABRIC
 #import <React/RCTViewComponentView.h>
 #define NVE_APPLE_COMPONENT_BASE_CLASS RCTViewComponentView
@@ -22,37 +24,32 @@ typedef UIImageView NveAppleBaseImageView;
 #define NVE_APPLE_COMPONENT_BASE_CLASS UIView
 #endif
 
-#include <nve/generated/nve_abi.generated.h>
+#include <nve/generated/nve_runtime_abi.generated.h>
 
 #ifdef __cplusplus
-#import "NveAppleSupport.h"
-#include "nve_native_view.hpp"
-#include <functional>
-#include <string_view>
+#import "NveAppleSceneReconciler.h"
 #endif
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class NveAppleComponentHost;
 
-/// Callback block fired whenever the embedded NVE component emits an outbound event
-/// via `NveComponentApi::drain_emitted_events`.
+/// Fired for every outbound app event (`drain_emitted_events`).
 typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString *, id> *payload);
 
-/// Shared `UIImageView` / `NSImageView` subclass caching its bound `src` string so incremental
-/// renders skip redundant image-cache lookups (and passing clicks through on macOS when non-interactive).
+/// `UIImageView` / `NSImageView` for `nve.image` nodes (macOS passes clicks through unless it has
+/// gesture recognizers).
 @interface NveAppleImageView : NveAppleBaseImageView
-@property (nonatomic, copy, nullable) NSString *nveImageSrc;
 @end
 
-/// Shared iOS & macOS component-view base class owning `NveAppleComponentHost` and forwarding
-/// all lifecycle, dylib, paired-session, snapshot, prop, event, and React Native Fabric hooks.
+/// Shared iOS & macOS view hosting one runtime surface through `NveAppleComponentHost`.
 ///
-/// `RCTNveComponentView` (UIKit) and `RCTNveMacComponentView` (AppKit) subclass this view and
-/// implement only thin platform view-factory, layout, and delegate glue.
+/// `RCTNveComponentView` (UIKit) and `RCTNveMacComponentView` (AppKit) subclass it and implement
+/// only the platform view factory / updater and input glue.
 @interface NveAppleComponentViewBase : NVE_APPLE_COMPONENT_BASE_CLASS
 
-@property (nonatomic, strong, readonly) NveAppleComponentHost *nveHost;
+/// `nil` when `libnve_runtime` is not linked into the process.
+@property (nonatomic, strong, readonly, nullable) NveAppleComponentHost *nveHost;
 @property (nonatomic, copy, nullable) NveAppleEventHandler onNveEvent;
 @property (nonatomic, readonly) uint32_t nveSurfaceId;
 @property (nonatomic, readonly) uint32_t nveNodeCount;
@@ -60,118 +57,52 @@ typedef void (^NveAppleEventHandler)(NSString *eventName, NSDictionary<NSString 
 @property (nonatomic, readonly) uint32_t nveLastReconciledRemovedCount;
 @property (nonatomic, readonly) BOOL isPaired;
 @property (nonatomic, readonly) BOOL isPairedConnected;
+@property (nonatomic, readonly) BOOL hasReplayedFrame0;
 
-/// Attach an NVE Rust component interface resolver directly (for statically-linked Rust libraries).
+/// Attach a statically linked app entry point (`nve_get_interface`).
 - (BOOL)attachNveInterface:(NveGetInterfaceFn)getInterface surfaceId:(uint32_t)surfaceId;
-
-/// Dynamically load an NVE Rust component `cdylib` exporting `nve_get_interface`.
-- (BOOL)loadNveDylibAtPath:(NSString *)dylibPath
-                 surfaceId:(uint32_t)surfaceId
-                     error:(NSError * _Nullable * _Nullable)error;
-
-/// Reload a previously-loaded `cdylib`, preserving component state via `NveDevApi::snapshot_state`/`restore_state`.
-- (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath
-                       error:(NSError * _Nullable * _Nullable)error;
-
-/// Connect in zero-cdylib paired thin-client mode using `NVT1`/`NVD1` over UDP/TCP/WebSocket.
-- (BOOL)connectPairedEndpoint:(NSString *)endpoint
+/// `dlopen` an app `cdylib` exporting `nve_get_interface`.
+- (BOOL)loadNveDylibAtPath:(NSString *)dylibPath surfaceId:(uint32_t)surfaceId error:(NSError *_Nullable *_Nullable)error;
+/// Tier-2 reload preserving app state (`snapshot_state` / `restore_state`).
+- (BOOL)reloadNveDylibAtPath:(NSString *)dylibPath error:(NSError *_Nullable *_Nullable)error;
+/// Thin-client pairing with `nve dev` through the runtime (`pair_connect`).
+- (BOOL)connectPairedEndpoint:(NSString *)uri
                         token:(NSString *)token
-                    transport:(nullable NSString *)transport
                     surfaceId:(uint32_t)surfaceId
-                        error:(NSError * _Nullable * _Nullable)error;
-
-/// Disconnect any active paired thin-client session.
+                        error:(NSError *_Nullable *_Nullable)error;
 - (void)disconnectPaired;
-
-/// Update component props from an NSDictionary via direct FFI (`set_props`) and re-render.
+/// Props from an `NSDictionary` (`set_props`).
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
-
-/// Trigger a render pass (`NveRnComponentBridge::render`), reconcile native child views, and flush events.
+/// Ticks, reconciles native views, and flushes outbound events.
 - (void)renderNveFrame;
-
-/// Flush pending outbound events from `NveComponentApi::drain_emitted_events` into `-handleNveEvent:payload:`.
 - (void)drainNveEmittedEvents;
-
-/// Programmatically dispatch a native press event on a rendered node.
 - (void)simulatePressOnNodeId:(uint32_t)nodeId atPoint:(CGPoint)point;
-
-/// Inspect the live native view mounted for a given NVE shadow `nodeId` (or `nil` if absent).
 - (nullable NveAppleBasePlatformView *)nativeViewForNodeId:(uint32_t)nodeId;
 
-/// Override point returning the NSError domain for dylib/paired load errors.
+/// Override points.
 - (NSString *)nveErrorDomain;
-
-/// Override point returning the fallback surface dimensions when `bounds` is empty.
 - (CGSize)nveDefaultSurfaceSize;
-
-/// Current display backing scale factor for this view.
 - (CGFloat)nveCurrentDisplayScale;
-
-/// Push the current view bounds and scale factor into `nveHost`.
 - (void)propagateBoundsToNveHost;
-
-/// Override point for `nve-codegen`-generated subclasses to return their statically-linked
-/// `nve_get_interface` function pointer (return `NULL` when attached manually).
+/// Codegen-generated subclasses return their statically linked `nve_get_interface` (or `NULL`).
 - (nullable NveGetInterfaceFn)defaultNveGetInterface;
-
-/// Override point for `nve-codegen`-generated subclasses to forward decoded NVE events into
-/// their typed Fabric `EventEmitter`. Default implementation forwards to `onNveEvent`.
+/// Codegen-generated subclasses forward events into typed Fabric emitters; default: `onNveEvent`.
 - (void)handleNveEvent:(NSString *)eventName payload:(NSDictionary<NSString *, id> *)payload;
 
 @end
 
 #ifdef __cplusplus
+/// The base view is the `NveAppleComponentHost` adapter; subclasses override the factory /
+/// updater and call `super` for the shared layer style + accessibility.
+@interface NveAppleComponentViewBase (NveAdapter) <NveAppleComponentViewAdapter>
+@end
+
 namespace nve::apple {
 
-/// Optional runtime hook that registers native view adapters into a `NativeViewRegistry`.
-using NativeViewRegistrar = std::function<void(nve::NativeViewRegistry &registry)>;
+/// Applies `image` (already decoded from `nve.image.src`), its `object-fit`, and corner radius.
+void update_image_view(NveAppleImageView *_Nonnull view, NvePlatformImage *_Nullable image, ImageResizeMode fit, float border_radius);
 
-/// Optional runtime hook that binds registered native view kinds to an active `FabricHost`.
-using NativeViewBinder = std::function<void(
-    NveFabricHostHandle _Nullable host,
-    nve::NativeViewRegistry &registry)>;
-
-/// Configure process-wide runtime native-view hooks used by newly created
-/// `NveAppleComponentViewBase` instances (overrides compile-time `NVE_ENABLE_NATIVE_VIEWS`
-/// defaults when set).
-void set_default_native_view_hooks(NativeViewRegistrar registrar, NativeViewBinder binder);
-
-/// Clear any process-wide runtime native-view hooks.
-void clear_default_native_view_hooks();
-
-/// Update a shared `NveAppleImageView` from `text` (`src`) + `resizeMode` + `borderRadius`
-/// with source-string caching via `shared_image_cache()`.
-void update_image_view(
-    NveAppleImageView * _Nonnull imgView,
-    std::string_view src,
-    ImageResizeMode resizeMode,
-    float borderRadius);
-
-/// Update a shared `NveAppleCanvasView` from raw binary `NVE_DRAW1` bytes carried in `text`.
-void update_canvas_view(NvePlatformView * _Nonnull view, std::string_view drawBytes);
-
-} // namespace nve::apple
-
-@interface NveAppleComponentViewBase (NveNativeViewRegistry)
-
-/// Returns the active `nve::NativeViewRegistry` attached to this view, or `nullptr` when
-/// opt-in native views are disabled and no runtime registry has been attached.
-- (nve::NativeViewRegistry * _Nullable)nativeViewRegistry;
-
-/// Attach an external (non-owning) `NativeViewRegistry` and optional host binder.
-/// Passing `nullptr` detaches any external or owned registry. Immediately binds to the
-/// currently active `FabricHost` if one is mounted.
-- (void)attachNativeViewRegistry:(nve::NativeViewRegistry * _Nullable)registry
-                          binder:(nve::apple::NativeViewBinder)binder;
-
-/// Create and own a `NativeViewRegistry` populated by `registrar` and bound by `binder`.
-- (void)installNativeViewHooksWithRegistrar:(nve::apple::NativeViewRegistrar)registrar
-                                     binder:(nve::apple::NativeViewBinder)binder;
-
-/// Re-run the configured `NativeViewBinder` against the currently active `FabricHost` (if any).
-- (void)bindNativeViewsToActiveFabricHost;
-
-@end
+}  // namespace nve::apple
 #endif
 
 NS_ASSUME_NONNULL_END
