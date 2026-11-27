@@ -268,10 +268,11 @@ pub fn Checkbox(
         })
         .finish();
 
+    // Check / minus marks (U+2713, U+2212), not ASCII letters: every host's system UI font covers them.
     let glyph = if indeterminate {
-        "-"
+        "\u{2212}"
     } else if checked {
-        "x"
+        "\u{2713}"
     } else {
         ""
     };

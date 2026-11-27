@@ -9,7 +9,7 @@ pub mod hero;
 pub mod progression;
 
 use std::sync::{Arc, OnceLock};
-use nve_ui::ColorHex;
+use nve_ui::{ColorHex, Separator};
 
 use nve_dioxus::prelude::*;
 use nve_docs::{CustomPageRegistry, DocsRoute, navigate_to, use_docs_state};
@@ -53,14 +53,19 @@ pub fn LandingPage() -> Element {
                 hero::LandingHero {}
             }
 
-            // Bento Architecture & Verified Benchmark Grid + Dev & Benchmark Progression + Live Showcase + Footer
+            // Bento Architecture & Verified Benchmark Grid + Dev & Benchmark Progression + Live
+            // Showcase + Footer. Same gutter-outside / 1180px-content structure as the hero glow
+            // above, so every section shares the hero's left edge.
             view {
                 nve_style: mobile_pad,
-                style: "width: 100%; max-width: 1180px; flex-direction: column; padding-horizontal: 32px; gap: 56px; padding-bottom: 64px;",
-                bento::BentoArchitectureGrid {}
-                progression::DevAndBenchProgression {}
-                bento::LiveExamplesStrip {}
-                SiteFooter {}
+                style: "width: 100%; flex-direction: column; align-items: center; padding-horizontal: 32px;",
+                view {
+                    style: "width: 100%; max-width: 1180px; flex-direction: column; gap: 56px; padding-bottom: 64px;",
+                    bento::BentoArchitectureGrid {}
+                    progression::DevAndBenchProgression {}
+                    bento::LiveExamplesStrip {}
+                    SiteFooter {}
+                }
             }
         }
     }
@@ -155,7 +160,7 @@ pub(crate) fn SiteFooter() -> Element {
         view {
             test_id: "landing-footer",
             accessibility_role: "contentinfo",
-            style: "width: 100%; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 16px; border-top-width: 1px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 14px; padding: 28px; background-color: {theme.surface.base.hex()};",
+            style: "width: 100%; flex-direction: column; gap: 28px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 14px; padding: 28px; background-color: {theme.surface.base.hex()};",
 
             view {
                 nve_style: mobile_col.clone(),
@@ -245,16 +250,20 @@ pub(crate) fn SiteFooter() -> Element {
                 }
             }
 
-            // Bottom hairline copyright / build note
+            // Bottom hairline + build note (a divided row inside the footer card, not a nested card)
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 16px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface.canvas.hex()};",
-                text {
-                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
-                    "Rendered 100% with Native View Engine · Semantic HTML5 SSR + Zero-Flicker WASM Hydration"
-                }
-                text {
-                    style: "font-size: 12px; font-family: monospace; color: {theme.text.link.hex()};",
-                    "nve_get_interface(1..=5) · 0 JSON"
+                style: "width: 100%; flex-direction: column; gap: 16px;",
+                Separator {}
+                view {
+                    style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
+                    text {
+                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
+                        "Rendered 100% with Native View Engine · Semantic HTML5 SSR + Zero-Flicker WASM Hydration"
+                    }
+                    text {
+                        style: "font-size: 12px; font-family: monospace; color: {theme.text.link.hex()};",
+                        "nve_get_interface(1..=5) · 0 JSON"
+                    }
                 }
             }
         }

@@ -2,7 +2,7 @@
 //! and `data-nve-island` / `data-nve-hydrate` progressive hydration attributes.
 
 use std::sync::Arc;
-use nve_ui::{ColorHex, tab_colors};
+use nve_ui::{ColorHex, Separator, tab_colors};
 
 use dioxus_core_macro::Props;
 use nve_dioxus::prelude::*;
@@ -90,12 +90,14 @@ pub fn LiveDemoView(
             ]),
             style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
 
-            // Header with title, hydration strategy badge, and Preview | Code tabs
+            // Header with title, hydration strategy badge, and Preview | Code tabs. It wraps on
+            // narrow viewports (tabs move below the title) and sits on the frame's own surface,
+            // divided from the body by one hairline instead of a second nested border box.
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                style: "width: 100%; flex-direction: row; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding-horizontal: 12px; padding-vertical: 8px;",
 
                 view {
-                    style: "flex-direction: row; align-items: center; gap: 8px;",
+                    style: "flex-direction: row; flex-wrap: wrap; flex-shrink: 1; min-width: 0px; align-items: center; gap: 8px;",
                     text {
                         style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
                         "{display_title}"
@@ -111,7 +113,7 @@ pub fn LiveDemoView(
 
                 view {
                     accessibility_role: "tablist",
-                    style: "flex-direction: row; gap: 4px;",
+                    style: "flex-direction: row; flex-shrink: 0; gap: 4px;",
                     pressable {
                         test_id: "docs-demo-tab-preview-{id}",
                         accessibility_role: "tab",
@@ -140,6 +142,8 @@ pub fn LiveDemoView(
                     }
                 }
             }
+
+            Separator {}
 
             // Live Playground preview OR syntax-highlighted source code
             if is_preview {

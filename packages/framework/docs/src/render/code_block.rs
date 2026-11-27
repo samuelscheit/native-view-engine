@@ -2,7 +2,7 @@
 
 use dioxus_core_macro::Props;
 use crate::theme::syntax_color;
-use nve_ui::{accent_indicator, ColorHex, Hex};
+use nve_ui::{accent_indicator, ColorHex, Hex, Separator};
 use nve_dioxus::prelude::*;
 use nve_mdx::{CodeBlock, HighlightLine, highlight_code};
 
@@ -74,9 +74,10 @@ pub fn HighlightedCodeView(
             accessibility_label: title.clone().or_else(|| lang_badge.clone()).unwrap_or_else(|| "Code block".to_string()),
             style: "width: 100%; min-width: 0px; overflow: hidden; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
 
-            // Top bar: optional filename title, language pill, Copy button
+            // Top bar: optional filename title, language pill, Copy button; one hairline below
+            // (the frame already draws the outer border).
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface.base.hex()};",
 
                 view {
                     style: "flex-direction: row; align-items: center; gap: 8px;",
@@ -119,6 +120,8 @@ pub fn HighlightedCodeView(
                     }
                 }
             }
+
+            Separator {}
 
             // Highlighted code lines
             scrollview {

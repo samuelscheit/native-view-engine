@@ -391,8 +391,23 @@ async function run() {
           mainW: main ? main.getBoundingClientRect().width : 0,
           tocW: toc ? toc.getBoundingClientRect().width : 0,
           hydrated: !!window.__NVE_DOCS__,
+          // Scroll content must keep its natural height: a squeezed child (content taller than
+          // its box) means the container shrank it to fit instead of scrolling.
+          squeezed: [...document.querySelectorAll(".nve-s .nve")]
+            .filter((el) => {
+              const cs = getComputedStyle(el);
+              return !el.classList.contains("nve-s") && cs.overflowY === "visible"
+                && !/^(inline|contents|table)/.test(cs.display) && el.scrollHeight > el.clientHeight + 1;
+            })
+            .map((el) => el.dataset.testid || el.textContent.trim().slice(0, 40)),
+          sidebarScrolls: (() => {
+            const s = document.querySelector('[data-testid="docs-sidebar-scroll"]');
+            return !!s && s.scrollHeight > s.clientHeight;
+          })(),
         };
       })()`);
+      assert(info.squeezed.length === 0, `SSR ${route}: scroll content squeezed below its natural height: ${info.squeezed.join(" | ")}`);
+      assert(info.sidebarScrolls, `SSR ${route}: desktop sidebar nav must overflow and scroll at 1440x900, not shrink to fit`);
 
       assert(info.hasNav, `SSR ${route}: missing <nav>`);
       assert(info.hasMain, `SSR ${route}: missing <main>`);
