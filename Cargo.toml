@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/core/hash",
+    "packages/core/codec",
     "packages/core/abi",
     "packages/core/store",
     "packages/core/abi-macros",
@@ -85,6 +86,7 @@ panic = "deny"
 
 [workspace.dependencies]
 nve-hash = { version = "0.1.0", path = "packages/core/hash" }
+nve-codec = { version = "0.1.0", path = "packages/core/codec" }
 nve-abi = { version = "0.1.0", path = "packages/core/abi" }
 nve-store = { version = "0.1.0", path = "packages/core/store" }
 nve-abi-macros = { version = "0.1.0", path = "packages/core/abi-macros" }

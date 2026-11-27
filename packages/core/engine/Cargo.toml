@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-codec = { workspace = true }
 nve-components = { workspace = true }
 nve-store = { workspace = true }
 serde = { workspace = true }

@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_SECURE_STORE;
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, BinWriter, HostServiceHandler, HostServiceProvider,
-    ServiceError,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
+    ServiceError, MAX_PAYLOAD_BYTES,
 };
 
 pub use native::NativeSecureStore;
@@ -38,16 +38,16 @@ fn validate_key(service: &str, account: &str) -> Result<(), ServiceError> {
 
 pub fn encode_key_request(service: &str, account: &str) -> Result<Vec<u8>, ServiceError> {
     validate_key(service, account)?;
-    let mut w = BinWriter::with_capacity(8 + service.len() + account.len());
+    let mut w = ByteWriter::with_capacity(8 + service.len() + account.len());
     w.write_str(service)?;
     w.write_str(account)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_key_request(bytes: &[u8]) -> Result<(String, String), ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let service = r.read_string()?;
-    let account = r.read_string()?;
+    let mut r = ByteReader::new(bytes);
+    let service = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let account = r.read_string(MAX_PAYLOAD_BYTES)?;
     r.finish()?;
     validate_key(&service, &account)?;
     Ok((service, account))
@@ -59,7 +59,7 @@ pub fn encode_set_request(
     secret: &[u8],
 ) -> Result<Vec<u8>, ServiceError> {
     validate_key(service, account)?;
-    let mut w = BinWriter::with_capacity(12 + service.len() + account.len() + secret.len());
+    let mut w = ByteWriter::with_capacity(12 + service.len() + account.len() + secret.len());
     w.write_str(service)?;
     w.write_str(account)?;
     w.write_bytes(secret)?;
@@ -67,24 +67,24 @@ pub fn encode_set_request(
 }
 
 pub fn decode_set_request(bytes: &[u8]) -> Result<(String, String, Vec<u8>), ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let service = r.read_string()?;
-    let account = r.read_string()?;
-    let secret = r.read_bytes()?.to_vec();
+    let mut r = ByteReader::new(bytes);
+    let service = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let account = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let secret = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
     r.finish()?;
     validate_key(&service, &account)?;
     Ok((service, account, secret))
 }
 
 pub fn encode_get_response(secret: Option<&[u8]>) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::with_capacity(secret.map_or(1, |s| 5 + s.len()));
-    w.write_opt_bytes(secret)?;
+    let mut w = ByteWriter::with_capacity(secret.map_or(1, |s| 5 + s.len()));
+    w.write_opt(secret, ByteWriter::write_bytes)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_get_response(bytes: &[u8]) -> Result<Option<Vec<u8>>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let secret = r.read_opt_bytes()?;
+    let mut r = ByteReader::new(bytes);
+    let secret = r.read_opt(|r| Ok(r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec()))?;
     r.finish()?;
     Ok(secret)
 }
@@ -94,7 +94,7 @@ pub fn encode_delete_response(deleted: bool) -> Vec<u8> {
 }
 
 pub fn decode_delete_response(bytes: &[u8]) -> Result<bool, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let deleted = r.read_bool()?;
     r.finish()?;
     Ok(deleted)

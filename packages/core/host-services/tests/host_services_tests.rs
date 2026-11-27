@@ -12,10 +12,10 @@ use nve_abi::{
     NVE_CHANNEL_FLAG_RETAIN, NVE_IFACE_HOST,
 };
 use nve_host_services::{
-    pack_typed, resolve_typed, validate_url, BinReader, BinWriter, FfiHostServices,
+    pack_typed, resolve_typed, validate_url, ByteReader, ByteWriter, FfiHostServices,
     HostCallbackBridge, HostServiceHandler, HostServiceProvider, HostServiceRegistry, InvokeResult,
-    MemoryHostServices, PermissionStatus, ServiceError, TypedEventBus, FFI_MAX_RESPONSE_BYTES,
-    FFI_STACK_BUF_SIZE,
+    MemoryHostServices, NveDecode, NveEncode, PermissionStatus, ServiceError, TypedEventBus,
+    FFI_MAX_RESPONSE_BYTES, FFI_STACK_BUF_SIZE, MAX_PAYLOAD_BYTES,
 };
 use nve_interop::CHANNEL_ID_THEME;
 
@@ -458,7 +458,7 @@ fn c_abi_nve_iface_host_5_roundtrip_via_host_callback_bridge() {
 
 #[test]
 fn binary_codec_primitives_and_permission_status() {
-    let mut w = BinWriter::new();
+    let mut w = ByteWriter::new();
     w.write_u8(7);
     w.write_bool(true);
     w.write_u16(512);
@@ -468,12 +468,12 @@ fn binary_codec_primitives_and_permission_status() {
     w.write_i64(-987_654_321);
     w.write_f32(1.5);
     w.write_f64(-2.25);
-    w.write_opt_str(Some("nve")).unwrap();
-    w.write_opt_bytes(None).unwrap();
-    w.write_str_vec(&["a".into(), "b".into()]).unwrap();
+    Some("nve").encode(&mut w).unwrap();
+    Option::<&[u8]>::None.encode(&mut w).unwrap();
+    vec!["a".to_string(), "b".to_string()].encode(&mut w).unwrap();
     let bytes = w.into_bytes();
 
-    let mut r = BinReader::new(&bytes);
+    let mut r = ByteReader::new(&bytes);
     assert_eq!(r.read_u8().unwrap(), 7);
     assert!(r.read_bool().unwrap());
     assert_eq!(r.read_u16().unwrap(), 512);
@@ -483,10 +483,16 @@ fn binary_codec_primitives_and_permission_status() {
     assert_eq!(r.read_i64().unwrap(), -987_654_321);
     assert_eq!(r.read_f32().unwrap(), 1.5);
     assert_eq!(r.read_f64().unwrap(), -2.25);
-    assert_eq!(r.read_opt_string().unwrap().as_deref(), Some("nve"));
-    assert_eq!(r.read_opt_bytes().unwrap(), None);
     assert_eq!(
-        r.read_string_vec().unwrap(),
+        Option::<String>::decode(&mut r).unwrap().as_deref(),
+        Some("nve")
+    );
+    assert_eq!(
+        r.read_opt(|r| Ok(r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec())).unwrap(),
+        None
+    );
+    assert_eq!(
+        Vec::<String>::decode(&mut r).unwrap(),
         vec!["a".to_string(), "b".to_string()]
     );
     r.finish().unwrap();

@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::{ColorScheme, ContrastLevel, SERVICE_SYSTEM_ENV};
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, BinWriter, HostServiceHandler, HostServiceProvider,
-    ServiceError, TypedEventBus, TypedEventSubscription,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
+    ServiceError, TypedEventBus, TypedEventSubscription, MAX_PAYLOAD_BYTES,
 };
 
 pub use native::{parse_locale_tag, NativeSystemEnv};
@@ -197,7 +197,7 @@ pub enum SystemEnvEvent {
 }
 
 fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::with_capacity(
+    let mut w = ByteWriter::with_capacity(
         18 + locale.tag.len()
             + locale.language.len()
             + locale.region.len()
@@ -213,15 +213,15 @@ fn pack_locale_ffi(locale: &LocaleSnapshot) -> Result<Vec<u8>, ServiceError> {
 }
 
 fn unpack_locale_ffi(bytes: &[u8]) -> Result<LocaleSnapshot, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let dir_raw = r.read_u8()?;
     let text_direction = TextDirection::from_u8(dir_raw)
         .ok_or_else(|| ServiceError::Codec(format!("invalid text_direction {dir_raw}")))?;
     let uses_24h_clock = r.read_bool()?;
-    let tag = r.read_string()?;
-    let language = r.read_string()?;
-    let region = r.read_string()?;
-    let timezone = r.read_string()?;
+    let tag = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let language = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let region = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let timezone = r.read_string(MAX_PAYLOAD_BYTES)?;
     r.finish()?;
     Ok(LocaleSnapshot {
         tag,

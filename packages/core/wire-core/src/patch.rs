@@ -6,6 +6,7 @@
 //! - `patches: [NveNodePatch; patch_count]` (`24 * patch_count` bytes)
 //! - `string_table: [u8; string_table_len]` (UTF-8 bytes referenced by `NveNodePatch::value_lo/hi`)
 
+use nve_codec::{ByteReader, ByteWriter};
 use nve_engine::{NveNodePatch, NveNodePatchField, NVE_NODE_PATCH_FLAG_STRING_SPAN};
 
 use crate::frame::NveWireError;
@@ -138,20 +139,20 @@ impl NveNodePatchDeltaBuilder {
         let total = NVE_NODE_PATCH_DELTA_HEADER_SIZE
             + self.patches.len() * PATCH_BYTE_SIZE
             + self.strings.len();
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(&(self.patches.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(self.strings.len() as u32).to_le_bytes());
+        let mut w = ByteWriter::with_capacity(total);
+        w.write_u32(self.patches.len() as u32);
+        w.write_u32(self.strings.len() as u32);
         for p in &self.patches {
-            out.extend_from_slice(&p.node_id.to_le_bytes());
-            out.extend_from_slice(&p.field_tag.to_le_bytes());
-            out.extend_from_slice(&p.flags.to_le_bytes());
-            out.extend_from_slice(&p.value_lo.to_le_bytes());
-            out.extend_from_slice(&p.value_hi.to_le_bytes());
-            out.extend_from_slice(&p.transition_ms.to_le_bytes());
-            out.extend_from_slice(&p.reserved.to_le_bytes());
+            w.write_u32(p.node_id);
+            w.write_u16(p.field_tag);
+            w.write_u16(p.flags);
+            w.write_u32(p.value_lo);
+            w.write_u32(p.value_hi);
+            w.write_u32(p.transition_ms);
+            w.write_u32(p.reserved);
         }
-        out.extend_from_slice(&self.strings);
-        Ok(out)
+        w.write_raw(&self.strings);
+        Ok(w.into_bytes())
     }
 }
 
@@ -170,9 +171,9 @@ impl<'a> NveNodePatchDeltaView<'a> {
                 actual: bytes.len(),
             });
         }
-        let patch_count = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        let string_table_len =
-            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+        let mut r = ByteReader::new(bytes);
+        let patch_count = r.read_u32()? as usize;
+        let string_table_len = r.read_u32()? as usize;
         if patch_count > MAX_PATCHES_PER_DELTA {
             return Err(NveWireError::InvalidPayload("patch count exceeds 65536"));
         }
@@ -196,23 +197,20 @@ impl<'a> NveNodePatchDeltaView<'a> {
         let str_start = NVE_NODE_PATCH_DELTA_HEADER_SIZE + patches_bytes;
         let string_table = &bytes[str_start..];
         let mut patches = Vec::with_capacity(patch_count);
-        for i in 0..patch_count {
-            let off = NVE_NODE_PATCH_DELTA_HEADER_SIZE + i * PATCH_BYTE_SIZE;
-            let le16 = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
-            let le32 = |o: usize| {
-                u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
-            };
+        for _ in 0..patch_count {
             let p = NveNodePatch {
-                node_id: le32(off),
-                field_tag: le16(off + 4),
-                flags: le16(off + 6),
-                value_lo: le32(off + 8),
-                value_hi: le32(off + 12),
-                transition_ms: le32(off + 16),
-                reserved: le32(off + 20),
+                node_id: r.read_u32()?,
+                field_tag: r.read_u16()?,
+                flags: r.read_u16()?,
+                value_lo: r.read_u32()?,
+                value_hi: r.read_u32()?,
+                transition_ms: r.read_u32()?,
+                reserved: r.read_u32()?,
             };
             if p.field().is_none() || p.reserved != 0 {
-                return Err(NveWireError::InvalidPayload("invalid NveNodePatch field or reserved"));
+                return Err(NveWireError::InvalidPayload(
+                    "invalid NveNodePatch field or reserved",
+                ));
             }
             if (p.flags & NVE_NODE_PATCH_FLAG_STRING_SPAN) != 0 {
                 let end = (p.value_lo as usize)

@@ -24,7 +24,7 @@ pub const DRAW_LIST_ATTR_PREFIX: &str = "nve-draw1;b64,";
 
 /// Cross-platform image scaling mode for `ComponentKind::Image` (`resizeMode` prop).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, nve_codec::NveCodec)]
 pub enum ImageResizeMode {
     #[default]
     Cover = 0,
@@ -48,13 +48,7 @@ impl ImageResizeMode {
     }
 
     pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::Cover),
-            1 => Some(Self::Contain),
-            2 => Some(Self::Stretch),
-            3 => Some(Self::Center),
-            _ => None,
-        }
+        Self::from_repr(v)
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
@@ -80,7 +74,7 @@ impl fmt::Display for ImageResizeMode {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nve_codec::NveCodec)]
 pub(super) enum DrawOpcode {
     Clear = 1,
     FillRect = 2,
@@ -94,17 +88,7 @@ pub(super) enum DrawOpcode {
 
 impl DrawOpcode {
     pub(super) fn from_u8(v: u8) -> Result<Self, DrawListError> {
-        match v {
-            1 => Ok(Self::Clear),
-            2 => Ok(Self::FillRect),
-            3 => Ok(Self::FillRoundedRect),
-            4 => Ok(Self::FillCircle),
-            5 => Ok(Self::StrokeLine),
-            6 => Ok(Self::StrokePolyline),
-            7 => Ok(Self::ClipRect),
-            8 => Ok(Self::RestoreClip),
-            other => Err(DrawListError::UnknownOpcode(other)),
-        }
+        Self::from_repr(v).ok_or(DrawListError::UnknownOpcode(v))
     }
 }
 

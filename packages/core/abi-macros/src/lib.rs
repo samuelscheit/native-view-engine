@@ -5,6 +5,7 @@
 
 extern crate proc_macro;
 
+mod codec;
 mod emit;
 mod parse;
 mod table;
@@ -100,6 +101,16 @@ pub fn derive_nve_table(input: TokenStream) -> TokenStream {
     match table::derive(input) {
         Ok(code) => parse_at_call_site(&code)
             .unwrap_or_else(|e| compile_error(&format!("NveTable emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
+}
+
+/// Derives `nve_codec::{NveEncode, NveDecode}` for Tier-2 little-endian binary structs and enums.
+#[proc_macro_derive(NveCodec, attributes(nve_codec))]
+pub fn derive_nve_codec(input: TokenStream) -> TokenStream {
+    match codec::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("NveCodec emit error: {e}"))),
         Err(msg) => compile_error(&msg),
     }
 }

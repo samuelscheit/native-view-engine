@@ -10,7 +10,8 @@ pub mod handler;
 use std::borrow::Cow;
 
 use nve_host_services::{
-    resolve_typed, BinReader, BinWriter, HostServiceProvider, ServiceError, MAX_SEQ_ITEMS,
+    resolve_typed, ByteReader, ByteWriter, HostServiceProvider, ServiceError, MAX_PAYLOAD_BYTES,
+    MAX_SEQ_ITEMS,
 };
 
 pub use engine::{KvStore, KvStoreManager, NVK2_COMMIT_MARKER, NVK2_MAGIC, NVK2_VERSION};
@@ -137,21 +138,21 @@ pub fn validate_batch(ops: &[StorageWriteOp]) -> Result<(), ServiceError> {
 
 pub fn encode_open_request(namespace: &str) -> Result<Vec<u8>, ServiceError> {
     validate_namespace(namespace)?;
-    let mut w = BinWriter::with_capacity(4 + namespace.len());
+    let mut w = ByteWriter::with_capacity(4 + namespace.len());
     w.write_str(namespace)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_open_request(bytes: &[u8]) -> Result<String, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let namespace = r.read_string()?;
+    let mut r = ByteReader::new(bytes);
+    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
     r.finish()?;
     validate_namespace(&namespace)?;
     Ok(namespace)
 }
 
 pub fn encode_open_response(info: StorageOpenInfo) -> Vec<u8> {
-    let mut w = BinWriter::with_capacity(25);
+    let mut w = ByteWriter::with_capacity(25);
     w.write_u64(info.handle);
     w.write_u64(info.key_count);
     w.write_u64(info.log_bytes);
@@ -160,7 +161,7 @@ pub fn encode_open_response(info: StorageOpenInfo) -> Vec<u8> {
 }
 
 pub fn decode_open_response(bytes: &[u8]) -> Result<StorageOpenInfo, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let handle = r.read_u64()?;
     let key_count = r.read_u64()?;
     let log_bytes = r.read_u64()?;
@@ -177,16 +178,16 @@ pub fn decode_open_response(bytes: &[u8]) -> Result<StorageOpenInfo, ServiceErro
 pub fn encode_key_request(namespace: &str, key: &[u8]) -> Result<Vec<u8>, ServiceError> {
     validate_namespace(namespace)?;
     validate_key(key)?;
-    let mut w = BinWriter::with_capacity(8 + namespace.len() + key.len());
+    let mut w = ByteWriter::with_capacity(8 + namespace.len() + key.len());
     w.write_str(namespace)?;
     w.write_bytes(key)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_key_request(bytes: &[u8]) -> Result<(String, Vec<u8>), ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let namespace = r.read_string()?;
-    let key = r.read_bytes()?.to_vec();
+    let mut r = ByteReader::new(bytes);
+    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
     r.finish()?;
     validate_namespace(&namespace)?;
     validate_key(&key)?;
@@ -201,7 +202,7 @@ pub fn encode_put_request(
     validate_namespace(namespace)?;
     validate_key(key)?;
     validate_value(value)?;
-    let mut w = BinWriter::with_capacity(12 + namespace.len() + key.len() + value.len());
+    let mut w = ByteWriter::with_capacity(12 + namespace.len() + key.len() + value.len());
     w.write_str(namespace)?;
     w.write_bytes(key)?;
     w.write_bytes(value)?;
@@ -209,10 +210,10 @@ pub fn encode_put_request(
 }
 
 pub fn decode_put_request(bytes: &[u8]) -> Result<(String, Vec<u8>, Vec<u8>), ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let namespace = r.read_string()?;
-    let key = r.read_bytes()?.to_vec();
-    let value = r.read_bytes()?.to_vec();
+    let mut r = ByteReader::new(bytes);
+    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+    let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
     r.finish()?;
     validate_namespace(&namespace)?;
     validate_key(&key)?;
@@ -221,14 +222,14 @@ pub fn decode_put_request(bytes: &[u8]) -> Result<(String, Vec<u8>, Vec<u8>), Se
 }
 
 pub fn encode_get_response(value: Option<&[u8]>) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::with_capacity(value.map_or(1, |v| 5 + v.len()));
-    w.write_opt_bytes(value)?;
+    let mut w = ByteWriter::with_capacity(value.map_or(1, |v| 5 + v.len()));
+    w.write_opt(value, ByteWriter::write_bytes)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_get_response(bytes: &[u8]) -> Result<Option<Vec<u8>>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let val = r.read_opt_bytes()?;
+    let mut r = ByteReader::new(bytes);
+    let val = r.read_opt(|r| Ok(r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec()))?;
     r.finish()?;
     Ok(val)
 }
@@ -238,7 +239,7 @@ pub fn encode_delete_response(deleted: bool) -> Vec<u8> {
 }
 
 pub fn decode_delete_response(bytes: &[u8]) -> Result<bool, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let deleted = r.read_bool()?;
     r.finish()?;
     Ok(deleted)
@@ -255,7 +256,7 @@ pub fn encode_scan_prefix_request(
             "storage prefix exceeds MAX_KEY_LEN".into(),
         ));
     }
-    let mut w = BinWriter::with_capacity(12 + namespace.len() + prefix.len());
+    let mut w = ByteWriter::with_capacity(12 + namespace.len() + prefix.len());
     w.write_str(namespace)?;
     w.write_bytes(prefix)?;
     w.write_u32(limit);
@@ -263,9 +264,9 @@ pub fn encode_scan_prefix_request(
 }
 
 pub fn decode_scan_prefix_request(bytes: &[u8]) -> Result<(String, Vec<u8>, u32), ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let namespace = r.read_string()?;
-    let prefix = r.read_bytes()?.to_vec();
+    let mut r = ByteReader::new(bytes);
+    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let prefix = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
     let limit = r.read_u32()?;
     r.finish()?;
     validate_namespace(&namespace)?;
@@ -280,7 +281,7 @@ pub fn decode_scan_prefix_request(bytes: &[u8]) -> Result<(String, Vec<u8>, u32)
 pub fn encode_scan_prefix_response(entries: &[StorageEntry]) -> Result<Vec<u8>, ServiceError> {
     let count = u32::try_from(entries.len())
         .map_err(|_| ServiceError::InvalidArg("scan response exceeds u32::MAX".into()))?;
-    let mut w = BinWriter::with_capacity(4 + entries.len() * 16);
+    let mut w = ByteWriter::with_capacity(4 + entries.len() * 16);
     w.write_u32(count);
     for entry in entries {
         w.write_bytes(&entry.key)?;
@@ -290,12 +291,12 @@ pub fn encode_scan_prefix_response(entries: &[StorageEntry]) -> Result<Vec<u8>, 
 }
 
 pub fn decode_scan_prefix_response(bytes: &[u8]) -> Result<Vec<StorageEntry>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let count = r.read_seq_len(8)?;
+    let mut r = ByteReader::new(bytes);
+    let count = r.read_len(MAX_SEQ_ITEMS, 8)?;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
-        let key = r.read_bytes()?.to_vec();
-        let value = r.read_bytes()?.to_vec();
+        let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+        let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
         entries.push(StorageEntry { key, value });
     }
     r.finish()?;
@@ -308,7 +309,7 @@ pub fn encode_commit_batch_request(
 ) -> Result<Vec<u8>, ServiceError> {
     validate_namespace(namespace)?;
     validate_batch(ops)?;
-    let mut w = BinWriter::with_capacity(8 + namespace.len() + ops.len() * 16);
+    let mut w = ByteWriter::with_capacity(8 + namespace.len() + ops.len() * 16);
     w.write_str(namespace)?;
     w.write_u32(ops.len() as u32);
     for op in ops {
@@ -330,19 +331,19 @@ pub fn encode_commit_batch_request(
 pub fn decode_commit_batch_request(
     bytes: &[u8],
 ) -> Result<(String, Vec<StorageWriteOp>), ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let namespace = r.read_string()?;
-    let count = r.read_seq_len(5)?;
+    let mut r = ByteReader::new(bytes);
+    let namespace = r.read_string(MAX_PAYLOAD_BYTES)?;
+    let count = r.read_len(MAX_SEQ_ITEMS, 5)?;
     let mut ops = Vec::with_capacity(count);
     for _ in 0..count {
         match r.read_u8()? {
             1 => {
-                let key = r.read_bytes()?.to_vec();
-                let value = r.read_bytes()?.to_vec();
+                let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+                let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
                 ops.push(StorageWriteOp::Put { key, value });
             }
             2 => {
-                let key = r.read_bytes()?.to_vec();
+                let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
                 ops.push(StorageWriteOp::Delete { key });
             }
             other => {
@@ -359,7 +360,7 @@ pub fn decode_commit_batch_request(
 }
 
 pub fn encode_compact_response(stats: CompactStats) -> Vec<u8> {
-    let mut w = BinWriter::with_capacity(24);
+    let mut w = ByteWriter::with_capacity(24);
     w.write_u64(stats.live_keys);
     w.write_u64(stats.bytes_before);
     w.write_u64(stats.bytes_after);
@@ -367,7 +368,7 @@ pub fn encode_compact_response(stats: CompactStats) -> Vec<u8> {
 }
 
 pub fn decode_compact_response(bytes: &[u8]) -> Result<CompactStats, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let live_keys = r.read_u64()?;
     let bytes_before = r.read_u64()?;
     let bytes_after = r.read_u64()?;

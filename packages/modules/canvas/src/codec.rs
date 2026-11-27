@@ -3,16 +3,27 @@
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use nve_abi::ColorRgba;
+use nve_codec::{ByteReader, ByteWriter, CodecError};
 
 use super::types::{
     sanitize_finite, CanvasOp, DrawListError, DrawListHeader, DrawOpcode, DRAW_LIST_ATTR_PREFIX,
     MAX_DRAW_OPS, MAX_POLYLINE_POINTS, NVE_DRAW_HEADER_SIZE, NVE_DRAW_MAGIC, NVE_DRAW_VERSION,
 };
 
-/// Binary flat binary encoder producing `NVE_DRAW1` byte buffers directly into a single `Vec<u8>`.
+#[inline]
+fn map_err(err: CodecError) -> DrawListError {
+    match err {
+        CodecError::BadMagic => DrawListError::BadMagic,
+        CodecError::TrailingBytes(n) => DrawListError::TrailingBytes(n),
+        CodecError::BadEnum { raw, .. } => DrawListError::UnknownOpcode(raw as u8),
+        _ => DrawListError::Truncated,
+    }
+}
+
+/// Binary flat encoder producing `NVE_DRAW1` byte buffers directly into a single `ByteWriter`.
 #[derive(Debug, Clone)]
 pub struct DrawListBuilder {
-    buf: Vec<u8>,
+    writer: ByteWriter,
     op_count: u32,
 }
 
@@ -28,12 +39,15 @@ impl DrawListBuilder {
     }
 
     pub fn with_capacity(capacity_bytes: usize) -> Self {
-        let mut buf = Vec::with_capacity(capacity_bytes.max(NVE_DRAW_HEADER_SIZE));
-        buf.extend_from_slice(&NVE_DRAW_MAGIC);
-        buf.extend_from_slice(&NVE_DRAW_VERSION.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        debug_assert_eq!(buf.len(), NVE_DRAW_HEADER_SIZE);
-        Self { buf, op_count: 0 }
+        let mut writer = ByteWriter::with_capacity(capacity_bytes.max(NVE_DRAW_HEADER_SIZE));
+        writer.write_raw(&NVE_DRAW_MAGIC);
+        writer.write_u16(NVE_DRAW_VERSION);
+        writer.write_u32(0);
+        debug_assert_eq!(writer.len(), NVE_DRAW_HEADER_SIZE);
+        Self {
+            writer,
+            op_count: 0,
+        }
     }
 
     pub fn op_count(&self) -> u32 {
@@ -45,22 +59,22 @@ impl DrawListBuilder {
     }
 
     fn write_f32(&mut self, v: f32) {
-        self.buf.extend_from_slice(&sanitize_finite(v).to_le_bytes());
+        self.writer.write_f32(sanitize_finite(v));
     }
 
     fn write_color(&mut self, c: ColorRgba) {
-        self.buf.extend_from_slice(&c.to_u32().to_le_bytes());
+        self.writer.write_u32(c.to_u32());
     }
 
     pub fn clear(&mut self, color: ColorRgba) -> &mut Self {
-        self.buf.push(DrawOpcode::Clear as u8);
+        self.writer.write_u8(DrawOpcode::Clear as u8);
         self.write_color(color);
         self.op_count = self.op_count.saturating_add(1);
         self
     }
 
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: ColorRgba) -> &mut Self {
-        self.buf.push(DrawOpcode::FillRect as u8);
+        self.writer.write_u8(DrawOpcode::FillRect as u8);
         self.write_f32(x);
         self.write_f32(y);
         self.write_f32(w);
@@ -79,7 +93,7 @@ impl DrawListBuilder {
         radius: f32,
         color: ColorRgba,
     ) -> &mut Self {
-        self.buf.push(DrawOpcode::FillRoundedRect as u8);
+        self.writer.write_u8(DrawOpcode::FillRoundedRect as u8);
         self.write_f32(x);
         self.write_f32(y);
         self.write_f32(w);
@@ -91,7 +105,7 @@ impl DrawListBuilder {
     }
 
     pub fn fill_circle(&mut self, cx: f32, cy: f32, radius: f32, color: ColorRgba) -> &mut Self {
-        self.buf.push(DrawOpcode::FillCircle as u8);
+        self.writer.write_u8(DrawOpcode::FillCircle as u8);
         self.write_f32(cx);
         self.write_f32(cy);
         self.write_f32(radius);
@@ -109,7 +123,7 @@ impl DrawListBuilder {
         width: f32,
         color: ColorRgba,
     ) -> &mut Self {
-        self.buf.push(DrawOpcode::StrokeLine as u8);
+        self.writer.write_u8(DrawOpcode::StrokeLine as u8);
         self.write_f32(x0);
         self.write_f32(y0);
         self.write_f32(x1);
@@ -127,11 +141,10 @@ impl DrawListBuilder {
         color: ColorRgba,
     ) -> &mut Self {
         let clamped = &points[..points.len().min(MAX_POLYLINE_POINTS)];
-        self.buf.push(DrawOpcode::StrokePolyline as u8);
+        self.writer.write_u8(DrawOpcode::StrokePolyline as u8);
         self.write_f32(width);
         self.write_color(color);
-        self.buf
-            .extend_from_slice(&(clamped.len() as u32).to_le_bytes());
+        self.writer.write_u32(clamped.len() as u32);
         for &(px, py) in clamped {
             self.write_f32(px);
             self.write_f32(py);
@@ -141,7 +154,7 @@ impl DrawListBuilder {
     }
 
     pub fn clip_rect(&mut self, x: f32, y: f32, w: f32, h: f32) -> &mut Self {
-        self.buf.push(DrawOpcode::ClipRect as u8);
+        self.writer.write_u8(DrawOpcode::ClipRect as u8);
         self.write_f32(x);
         self.write_f32(y);
         self.write_f32(w);
@@ -151,7 +164,7 @@ impl DrawListBuilder {
     }
 
     pub fn restore_clip(&mut self) -> &mut Self {
-        self.buf.push(DrawOpcode::RestoreClip as u8);
+        self.writer.write_u8(DrawOpcode::RestoreClip as u8);
         self.op_count = self.op_count.saturating_add(1);
         self
     }
@@ -214,8 +227,8 @@ impl DrawListBuilder {
 
     /// Patches the header op count in-place and returns the owned binary `NVE_DRAW1` byte buffer.
     pub fn finish(mut self) -> Vec<u8> {
-        self.buf[11..15].copy_from_slice(&self.op_count.to_le_bytes());
-        self.buf
+        self.writer.patch_u32(11, self.op_count);
+        self.writer.into_bytes()
     }
 
     /// Encodes the finished `NVE_DRAW1` binary buffer as a prefixed base64 string for UTF-8 RSX
@@ -236,17 +249,18 @@ pub struct DrawListDecoder;
 impl DrawListDecoder {
     /// Parses and validates only the fixed 15-byte `NVE_DRAW1` header.
     pub fn decode_header(bytes: &[u8]) -> Result<DrawListHeader, DrawListError> {
-        if bytes.len() < NVE_DRAW_HEADER_SIZE {
-            return Err(DrawListError::Truncated);
-        }
-        if bytes[0..9] != NVE_DRAW_MAGIC {
-            return Err(DrawListError::BadMagic);
-        }
-        let version = u16::from_le_bytes([bytes[9], bytes[10]]);
+        let mut r = ByteReader::new(bytes);
+        Self::decode_header_from(&mut r)
+    }
+
+    fn decode_header_from(r: &mut ByteReader<'_>) -> Result<DrawListHeader, DrawListError> {
+        r.ensure_remaining(NVE_DRAW_HEADER_SIZE).map_err(map_err)?;
+        r.expect_magic(&NVE_DRAW_MAGIC).map_err(map_err)?;
+        let version = r.read_u16().map_err(map_err)?;
         if version != NVE_DRAW_VERSION {
             return Err(DrawListError::UnsupportedVersion(version));
         }
-        let op_count = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+        let op_count = r.read_u32().map_err(map_err)?;
         if (op_count as usize) > MAX_DRAW_OPS {
             return Err(DrawListError::OpCountExceedsLimit {
                 count: op_count,
@@ -260,55 +274,55 @@ impl DrawListDecoder {
     ///
     /// Never panics on arbitrary, truncated, or adversarial inputs.
     pub fn decode(bytes: &[u8]) -> Result<Vec<CanvasOp>, DrawListError> {
-        let header = Self::decode_header(bytes)?;
-        let mut pos = NVE_DRAW_HEADER_SIZE;
+        let mut r = ByteReader::new(bytes);
+        let header = Self::decode_header_from(&mut r)?;
         let op_count = header.op_count as usize;
         // Every operation occupies at least 1 byte (its opcode tag), so reject lying op counts
         // before reserving heap memory.
-        if bytes.len() - pos < op_count {
+        if r.remaining() < op_count {
             return Err(DrawListError::Truncated);
         }
 
         let mut ops = Vec::with_capacity(op_count.min(1024));
         for _ in 0..op_count {
-            let tag = read_u8(bytes, &mut pos)?;
+            let tag = r.read_u8().map_err(map_err)?;
             let op = match DrawOpcode::from_u8(tag)? {
                 DrawOpcode::Clear => CanvasOp::Clear {
-                    color: read_color(bytes, &mut pos)?,
+                    color: read_color(&mut r)?,
                 },
                 DrawOpcode::FillRect => CanvasOp::FillRect {
-                    x: read_f32(bytes, &mut pos)?,
-                    y: read_f32(bytes, &mut pos)?,
-                    w: read_f32(bytes, &mut pos)?,
-                    h: read_f32(bytes, &mut pos)?,
-                    color: read_color(bytes, &mut pos)?,
+                    x: read_finite_f32(&mut r)?,
+                    y: read_finite_f32(&mut r)?,
+                    w: read_finite_f32(&mut r)?,
+                    h: read_finite_f32(&mut r)?,
+                    color: read_color(&mut r)?,
                 },
                 DrawOpcode::FillRoundedRect => CanvasOp::FillRoundedRect {
-                    x: read_f32(bytes, &mut pos)?,
-                    y: read_f32(bytes, &mut pos)?,
-                    w: read_f32(bytes, &mut pos)?,
-                    h: read_f32(bytes, &mut pos)?,
-                    radius: read_f32(bytes, &mut pos)?,
-                    color: read_color(bytes, &mut pos)?,
+                    x: read_finite_f32(&mut r)?,
+                    y: read_finite_f32(&mut r)?,
+                    w: read_finite_f32(&mut r)?,
+                    h: read_finite_f32(&mut r)?,
+                    radius: read_finite_f32(&mut r)?,
+                    color: read_color(&mut r)?,
                 },
                 DrawOpcode::FillCircle => CanvasOp::FillCircle {
-                    cx: read_f32(bytes, &mut pos)?,
-                    cy: read_f32(bytes, &mut pos)?,
-                    radius: read_f32(bytes, &mut pos)?,
-                    color: read_color(bytes, &mut pos)?,
+                    cx: read_finite_f32(&mut r)?,
+                    cy: read_finite_f32(&mut r)?,
+                    radius: read_finite_f32(&mut r)?,
+                    color: read_color(&mut r)?,
                 },
                 DrawOpcode::StrokeLine => CanvasOp::StrokeLine {
-                    x0: read_f32(bytes, &mut pos)?,
-                    y0: read_f32(bytes, &mut pos)?,
-                    x1: read_f32(bytes, &mut pos)?,
-                    y1: read_f32(bytes, &mut pos)?,
-                    width: read_f32(bytes, &mut pos)?,
-                    color: read_color(bytes, &mut pos)?,
+                    x0: read_finite_f32(&mut r)?,
+                    y0: read_finite_f32(&mut r)?,
+                    x1: read_finite_f32(&mut r)?,
+                    y1: read_finite_f32(&mut r)?,
+                    width: read_finite_f32(&mut r)?,
+                    color: read_color(&mut r)?,
                 },
                 DrawOpcode::StrokePolyline => {
-                    let width = read_f32(bytes, &mut pos)?;
-                    let color = read_color(bytes, &mut pos)?;
-                    let pt_count = read_u32(bytes, &mut pos)?;
+                    let width = read_finite_f32(&mut r)?;
+                    let color = read_color(&mut r)?;
+                    let pt_count = r.read_u32().map_err(map_err)?;
                     if (pt_count as usize) > MAX_POLYLINE_POINTS {
                         return Err(DrawListError::PolylinePointCountExceedsLimit {
                             count: pt_count,
@@ -318,13 +332,11 @@ impl DrawListDecoder {
                     let needed_bytes = (pt_count as usize)
                         .checked_mul(8)
                         .ok_or(DrawListError::Truncated)?;
-                    if bytes.len() - pos < needed_bytes {
-                        return Err(DrawListError::Truncated);
-                    }
+                    r.ensure_remaining(needed_bytes).map_err(map_err)?;
                     let mut points = Vec::with_capacity(pt_count as usize);
                     for _ in 0..pt_count {
-                        let px = read_f32(bytes, &mut pos)?;
-                        let py = read_f32(bytes, &mut pos)?;
+                        let px = read_finite_f32(&mut r)?;
+                        let py = read_finite_f32(&mut r)?;
                         points.push((px, py));
                     }
                     CanvasOp::StrokePolyline {
@@ -334,19 +346,17 @@ impl DrawListDecoder {
                     }
                 }
                 DrawOpcode::ClipRect => CanvasOp::ClipRect {
-                    x: read_f32(bytes, &mut pos)?,
-                    y: read_f32(bytes, &mut pos)?,
-                    w: read_f32(bytes, &mut pos)?,
-                    h: read_f32(bytes, &mut pos)?,
+                    x: read_finite_f32(&mut r)?,
+                    y: read_finite_f32(&mut r)?,
+                    w: read_finite_f32(&mut r)?,
+                    h: read_finite_f32(&mut r)?,
                 },
                 DrawOpcode::RestoreClip => CanvasOp::RestoreClip,
             };
             ops.push(op);
         }
 
-        if pos != bytes.len() {
-            return Err(DrawListError::TrailingBytes(bytes.len() - pos));
-        }
+        r.finish().map_err(map_err)?;
         Ok(ops)
     }
 
@@ -362,36 +372,18 @@ impl DrawListDecoder {
         let _ = Self::decode_header(&bytes)?;
         Ok(bytes)
     }
-
 }
 
-fn take<'a>(bytes: &'a [u8], pos: &mut usize, n: usize) -> Result<&'a [u8], DrawListError> {
-    if bytes.len().saturating_sub(*pos) < n {
-        return Err(DrawListError::Truncated);
-    }
-    let slice = &bytes[*pos..*pos + n];
-    *pos += n;
-    Ok(slice)
-}
-
-fn read_u8(bytes: &[u8], pos: &mut usize) -> Result<u8, DrawListError> {
-    Ok(take(bytes, pos, 1)?[0])
-}
-
-fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32, DrawListError> {
-    let s = take(bytes, pos, 4)?;
-    Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-}
-
-fn read_f32(bytes: &[u8], pos: &mut usize) -> Result<f32, DrawListError> {
-    let s = take(bytes, pos, 4)?;
-    let v = f32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+#[inline]
+fn read_finite_f32(r: &mut ByteReader<'_>) -> Result<f32, DrawListError> {
+    let v = r.read_f32_raw().map_err(map_err)?;
     if !v.is_finite() {
         return Err(DrawListError::NonFiniteFloat);
     }
     Ok(v)
 }
 
-fn read_color(bytes: &[u8], pos: &mut usize) -> Result<ColorRgba, DrawListError> {
-    Ok(ColorRgba::from_u32(read_u32(bytes, pos)?))
+#[inline]
+fn read_color(r: &mut ByteReader<'_>) -> Result<ColorRgba, DrawListError> {
+    Ok(ColorRgba::from_u32(r.read_u32().map_err(map_err)?))
 }

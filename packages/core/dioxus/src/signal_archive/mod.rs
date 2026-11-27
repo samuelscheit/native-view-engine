@@ -94,7 +94,7 @@ pub fn signal_slot_id(component_path: &str, signal_name: &str) -> u64 {
 
 /// Discriminant tag for archived signal values.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nve_codec::NveCodec)]
 pub enum SignalValueTag {
     Null = 0,
     Bool = 1,
@@ -109,17 +109,7 @@ pub enum SignalValueTag {
 impl SignalValueTag {
     #[inline]
     pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Null),
-            1 => Some(Self::Bool),
-            2 => Some(Self::I64),
-            3 => Some(Self::U64),
-            4 => Some(Self::F64),
-            5 => Some(Self::Str),
-            6 => Some(Self::Bytes),
-            7 => Some(Self::BinValue),
-            _ => None,
-        }
+        Self::from_repr(raw)
     }
 }
 

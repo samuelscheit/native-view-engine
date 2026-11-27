@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 pub use nve_abi::SERVICE_LINKING;
 pub use nve_host_services::validate_url;
 use nve_host_services::{
-    pack_typed, resolve_typed, BinReader, BinWriter, HostPushEvent, HostServiceHandler,
-    HostServiceProvider, ServiceError,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, HostPushEvent, HostServiceHandler,
+    HostServiceProvider, ServiceError, MAX_PAYLOAD_BYTES,
 };
 
 pub use native::NativeLinking;
@@ -33,14 +33,14 @@ pub enum LinkingEvent {
 
 pub fn encode_url_request(url: &str) -> Result<Vec<u8>, ServiceError> {
     validate_url(url)?;
-    let mut w = BinWriter::with_capacity(4 + url.len());
+    let mut w = ByteWriter::with_capacity(4 + url.len());
     w.write_str(url)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_url_request(bytes: &[u8]) -> Result<String, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let url = r.read_string()?;
+    let mut r = ByteReader::new(bytes);
+    let url = r.read_string(MAX_PAYLOAD_BYTES)?;
     r.finish()?;
     validate_url(&url)?;
     Ok(url)
@@ -51,28 +51,28 @@ pub fn encode_can_open_response(can_open: bool) -> Vec<u8> {
 }
 
 pub fn decode_can_open_response(bytes: &[u8]) -> Result<bool, ServiceError> {
-    let mut r = BinReader::new(bytes);
+    let mut r = ByteReader::new(bytes);
     let can_open = r.read_bool()?;
     r.finish()?;
     Ok(can_open)
 }
 
 pub fn encode_initial_url_response(url: Option<&str>) -> Result<Vec<u8>, ServiceError> {
-    let mut w = BinWriter::with_capacity(url.map_or(1, |u| 5 + u.len()));
-    w.write_opt_str(url)?;
+    let mut w = ByteWriter::with_capacity(url.map_or(1, |u| 5 + u.len()));
+    w.write_opt(url, ByteWriter::write_str)?;
     Ok(w.into_bytes())
 }
 
 pub fn decode_initial_url_response(bytes: &[u8]) -> Result<Option<String>, ServiceError> {
-    let mut r = BinReader::new(bytes);
-    let url = r.read_opt_string()?;
+    let mut r = ByteReader::new(bytes);
+    let url = r.read_opt(|r| r.read_string(MAX_PAYLOAD_BYTES))?;
     r.finish()?;
     Ok(url)
 }
 
 pub fn encode_url_received_event(url: &str) -> Result<Vec<u8>, ServiceError> {
     validate_url(url)?;
-    let mut w = BinWriter::with_capacity(4 + url.len());
+    let mut w = ByteWriter::with_capacity(4 + url.len());
     w.write_str(url)?;
     Ok(w.into_bytes())
 }

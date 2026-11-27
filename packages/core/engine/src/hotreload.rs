@@ -1,6 +1,8 @@
 use std::fmt;
 
-/// 4-byte wire magic identifying a binary compact binary `HotPatchMsg` frame (`NVP1`).
+use nve_codec::{ByteReader, ByteWriter, CodecError, DEFAULT_MAX_BYTES};
+
+/// 4-byte wire magic identifying a binary `HotPatchMsg` frame (`NVP1`).
 pub const HOT_PATCH_WIRE_MAGIC: [u8; 4] = *b"NVP1";
 
 /// Maximum item count accepted per vector inside a binary `NVP1` frame to prevent OOM on corrupt input.
@@ -16,6 +18,22 @@ pub enum HotPatchDecodeError {
     InvalidUtf8,
     LimitExceeded,
     TrailingBytes(usize),
+}
+
+impl From<CodecError> for HotPatchDecodeError {
+    #[inline]
+    fn from(err: CodecError) -> Self {
+        match err {
+            CodecError::Truncated { .. } => Self::Truncated,
+            CodecError::BadMagic => Self::InvalidMagic,
+            CodecError::BadEnum { raw, .. } => Self::UnknownVariant(raw as u8),
+            CodecError::BadBool(b) => Self::InvalidBool(b),
+            CodecError::InvalidUtf8 => Self::InvalidUtf8,
+            CodecError::LenOverflow { .. } => Self::LimitExceeded,
+            CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
+            CodecError::BadVersion(_) | CodecError::NonZeroReserved(_) => Self::InvalidMagic,
+        }
+    }
 }
 
 impl fmt::Display for HotPatchDecodeError {
@@ -68,77 +86,11 @@ pub enum HotPatchMsg {
     },
 }
 
-fn write_str(out: &mut Vec<u8>, s: &str) {
-    let b = s.as_bytes();
-    out.extend_from_slice(&(b.len() as u32).to_le_bytes());
-    out.extend_from_slice(b);
-}
-
-struct WireReader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> WireReader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    fn take(&mut self, n: usize) -> Result<&'a [u8], HotPatchDecodeError> {
-        if self.bytes.len().saturating_sub(self.pos) < n {
-            return Err(HotPatchDecodeError::Truncated);
-        }
-        let s = &self.bytes[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(s)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, HotPatchDecodeError> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn read_u32(&mut self) -> Result<u32, HotPatchDecodeError> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, HotPatchDecodeError> {
-        let b = self.take(8)?;
-        Ok(u64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
-    }
-
-    fn read_count(&mut self) -> Result<usize, HotPatchDecodeError> {
-        let count = self.read_u32()? as usize;
-        if count > MAX_WIRE_ITEMS {
-            return Err(HotPatchDecodeError::LimitExceeded);
-        }
-        Ok(count)
-    }
-
-    fn read_string(&mut self) -> Result<String, HotPatchDecodeError> {
-        let len = self.read_u32()? as usize;
-        let slice = self.take(len)?;
-        std::str::from_utf8(slice)
-            .map(str::to_owned)
-            .map_err(|_| HotPatchDecodeError::InvalidUtf8)
-    }
-
-    fn finish(self) -> Result<(), HotPatchDecodeError> {
-        let rem = self.bytes.len().saturating_sub(self.pos);
-        if rem != 0 {
-            return Err(HotPatchDecodeError::TrailingBytes(rem));
-        }
-        Ok(())
-    }
-}
-
 impl HotPatchMsg {
     /// Encodes this hot-patch message into compact binary `NVP1` framing.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64);
-        out.extend_from_slice(&HOT_PATCH_WIRE_MAGIC);
+        let mut w = ByteWriter::with_capacity(64);
+        w.write_raw(&HOT_PATCH_WIRE_MAGIC);
         match self {
             Self::TemplatePatch {
                 generation,
@@ -149,39 +101,33 @@ impl HotPatchMsg {
                 node_path,
                 text_replacements,
             } => {
-                out.push(1);
-                out.extend_from_slice(&generation.to_le_bytes());
-                write_str(&mut out, template_id);
+                w.write_u8(1);
+                w.write_u64(*generation);
+                let _ = w.write_str(template_id);
 
-                out.extend_from_slice(&(attr_updates.len() as u32).to_le_bytes());
+                w.write_u32(attr_updates.len() as u32);
                 for (k, v) in attr_updates {
-                    write_str(&mut out, k);
-                    write_str(&mut out, v);
+                    let _ = w.write_str(k);
+                    let _ = w.write_str(v);
                 }
 
-                out.extend_from_slice(&(text_updates.len() as u32).to_le_bytes());
+                w.write_u32(text_updates.len() as u32);
                 for (idx, text) in text_updates {
-                    out.extend_from_slice(&(*idx as u32).to_le_bytes());
-                    write_str(&mut out, text);
+                    w.write_u32(*idx as u32);
+                    let _ = w.write_str(text);
                 }
 
-                match target_test_id {
-                    Some(tid) => {
-                        out.push(1);
-                        write_str(&mut out, tid);
-                    }
-                    None => out.push(0),
-                }
+                let _ = w.write_opt(target_test_id.as_deref(), ByteWriter::write_str);
 
-                out.extend_from_slice(&(node_path.len() as u32).to_le_bytes());
+                w.write_u32(node_path.len() as u32);
                 for &step in node_path {
-                    out.extend_from_slice(&(step as u32).to_le_bytes());
+                    w.write_u32(step as u32);
                 }
 
-                out.extend_from_slice(&(text_replacements.len() as u32).to_le_bytes());
+                w.write_u32(text_replacements.len() as u32);
                 for (old_text, new_text) in text_replacements {
-                    write_str(&mut out, old_text);
-                    write_str(&mut out, new_text);
+                    let _ = w.write_str(old_text);
+                    let _ = w.write_str(new_text);
                 }
             }
             Self::DylibReload {
@@ -189,71 +135,55 @@ impl HotPatchMsg {
                 dylib_path,
                 build_ms,
             } => {
-                out.push(2);
-                out.extend_from_slice(&generation.to_le_bytes());
-                write_str(&mut out, dylib_path);
-                out.extend_from_slice(&build_ms.to_le_bytes());
+                w.write_u8(2);
+                w.write_u64(*generation);
+                let _ = w.write_str(dylib_path);
+                w.write_u64(*build_ms);
             }
             Self::DevStatus {
                 message,
                 latency_ms,
             } => {
-                out.push(3);
-                write_str(&mut out, message);
-                out.extend_from_slice(&latency_ms.to_le_bytes());
+                w.write_u8(3);
+                let _ = w.write_str(message);
+                w.write_u64(*latency_ms);
             }
         }
-        out
+        w.into_bytes()
     }
 
     /// Decodes a compact binary `NVP1` hot-patch frame.
     pub fn from_bytes(raw: &[u8]) -> Result<Self, HotPatchDecodeError> {
-        let mut r = WireReader::new(raw);
-        let magic = r.take(4)?;
-        if magic != HOT_PATCH_WIRE_MAGIC {
-            return Err(HotPatchDecodeError::InvalidMagic);
-        }
+        let mut r = ByteReader::new(raw);
+        r.expect_magic(&HOT_PATCH_WIRE_MAGIC)?;
         let variant = r.read_u8()?;
         let msg = match variant {
             1 => {
                 let generation = r.read_u64()?;
-                let template_id = r.read_string()?;
+                let template_id = r.read_string(DEFAULT_MAX_BYTES)?;
 
-                let attr_len = r.read_count()?;
-                let mut attr_updates = Vec::with_capacity(attr_len.min(1024));
-                for _ in 0..attr_len {
-                    let k = r.read_string()?;
-                    let v = r.read_string()?;
-                    attr_updates.push((k, v));
-                }
+                let attr_updates = r.read_vec(MAX_WIRE_ITEMS, 8, |r| {
+                    let k = r.read_string(DEFAULT_MAX_BYTES)?;
+                    let v = r.read_string(DEFAULT_MAX_BYTES)?;
+                    Ok((k, v))
+                })?;
 
-                let text_len = r.read_count()?;
-                let mut text_updates = Vec::with_capacity(text_len.min(1024));
-                for _ in 0..text_len {
+                let text_updates = r.read_vec(MAX_WIRE_ITEMS, 8, |r| {
                     let idx = r.read_u32()? as usize;
-                    let text = r.read_string()?;
-                    text_updates.push((idx, text));
-                }
+                    let text = r.read_string(DEFAULT_MAX_BYTES)?;
+                    Ok((idx, text))
+                })?;
 
-                let target_test_id = match r.read_u8()? {
-                    0 => None,
-                    1 => Some(r.read_string()?),
-                    other => return Err(HotPatchDecodeError::InvalidBool(other)),
-                };
+                let target_test_id = r.read_opt(|r| r.read_string(DEFAULT_MAX_BYTES))?;
 
-                let path_len = r.read_count()?;
-                let mut node_path = Vec::with_capacity(path_len.min(1024));
-                for _ in 0..path_len {
-                    node_path.push(r.read_u32()? as usize);
-                }
+                let node_path =
+                    r.read_vec(MAX_WIRE_ITEMS, 4, |r| Ok(r.read_u32()? as usize))?;
 
-                let repl_len = r.read_count()?;
-                let mut text_replacements = Vec::with_capacity(repl_len.min(1024));
-                for _ in 0..repl_len {
-                    let old_t = r.read_string()?;
-                    let new_t = r.read_string()?;
-                    text_replacements.push((old_t, new_t));
-                }
+                let text_replacements = r.read_vec(MAX_WIRE_ITEMS, 8, |r| {
+                    let old_t = r.read_string(DEFAULT_MAX_BYTES)?;
+                    let new_t = r.read_string(DEFAULT_MAX_BYTES)?;
+                    Ok((old_t, new_t))
+                })?;
 
                 Self::TemplatePatch {
                     generation,
@@ -265,24 +195,15 @@ impl HotPatchMsg {
                     text_replacements,
                 }
             }
-            2 => {
-                let generation = r.read_u64()?;
-                let dylib_path = r.read_string()?;
-                let build_ms = r.read_u64()?;
-                Self::DylibReload {
-                    generation,
-                    dylib_path,
-                    build_ms,
-                }
-            }
-            3 => {
-                let message = r.read_string()?;
-                let latency_ms = r.read_u64()?;
-                Self::DevStatus {
-                    message,
-                    latency_ms,
-                }
-            }
+            2 => Self::DylibReload {
+                generation: r.read_u64()?,
+                dylib_path: r.read_string(DEFAULT_MAX_BYTES)?,
+                build_ms: r.read_u64()?,
+            },
+            3 => Self::DevStatus {
+                message: r.read_string(DEFAULT_MAX_BYTES)?,
+                latency_ms: r.read_u64()?,
+            },
             other => return Err(HotPatchDecodeError::UnknownVariant(other)),
         };
         r.finish()?;
@@ -333,14 +254,12 @@ mod tests {
             let bin = msg.to_bytes();
             assert!(bin.starts_with(&HOT_PATCH_WIRE_MAGIC));
             assert_eq!(HotPatchMsg::from_bytes(&bin).unwrap(), *msg);
-            // Every truncated prefix must fail with Truncated (never panic)
             for cut in 0..bin.len() {
                 assert_eq!(
                     HotPatchMsg::from_bytes(&bin[..cut]),
                     Err(HotPatchDecodeError::Truncated)
                 );
             }
-            // Trailing byte must fail with TrailingBytes
             let mut extended = bin.clone();
             extended.push(0xAA);
             assert_eq!(
@@ -349,7 +268,6 @@ mod tests {
             );
         }
 
-        // Corrupt magic, unknown variant, invalid bool, invalid UTF-8, and OOM count guard.
         assert_eq!(
             HotPatchMsg::from_bytes(b"NOPE\x01"),
             Err(HotPatchDecodeError::InvalidMagic)
@@ -361,13 +279,12 @@ mod tests {
         let mut bad_oom = Vec::from(*b"NVP1");
         bad_oom.push(1);
         bad_oom.extend_from_slice(&1u64.to_le_bytes());
-        bad_oom.extend_from_slice(&0u32.to_le_bytes()); // template_id
-        bad_oom.extend_from_slice(&(u32::MAX).to_le_bytes()); // attr_updates count
+        bad_oom.extend_from_slice(&0u32.to_le_bytes());
+        bad_oom.extend_from_slice(&(u32::MAX).to_le_bytes());
         assert_eq!(
             HotPatchMsg::from_bytes(&bad_oom),
             Err(HotPatchDecodeError::LimitExceeded)
         );
-        // A JSON text frame (the removed legacy format) is rejected by magic, never parsed.
         assert_eq!(
             HotPatchMsg::from_bytes(br#"{"type":"dev_status","message":"x","latency_ms":0}"#),
             Err(HotPatchDecodeError::InvalidMagic)
@@ -381,7 +298,7 @@ mod tests {
         let mut bad_bool = Vec::from(*b"NVP1");
         bad_bool.push(1);
         bad_bool.extend_from_slice(&1u64.to_le_bytes());
-        bad_bool.extend_from_slice(&[0; 12]); // template_id, attr count, text count
+        bad_bool.extend_from_slice(&[0; 12]);
         bad_bool.push(7);
         assert_eq!(HotPatchMsg::from_bytes(&bad_bool), Err(HotPatchDecodeError::InvalidBool(7)));
     }

@@ -63,40 +63,6 @@ impl KeyboardInsets {
     pub fn effective_bottom_inset(self, safe_area_bottom: f32, os_adjusts_resize: bool) -> f32 {
         effective_bottom_inset(safe_area_bottom, self, os_adjusts_resize)
     }
-
-    /// Encodes `self` into a fixed 8-byte little-endian binary payload (binary).
-    #[inline]
-    pub fn encode_bytes(self) -> [u8; 8] {
-        let mut out = [0u8; 8];
-        let h = if self.height.is_finite() && self.height > 0.0 {
-            self.height
-        } else {
-            0.0
-        };
-        out[0..4].copy_from_slice(&h.to_le_bytes());
-        out[4..6].copy_from_slice(&self.animation_duration_ms.to_le_bytes());
-        out[6] = u8::from(self.visible);
-        out[7] = u8::from(self.interactive_dismiss);
-        out
-    }
-
-    /// Decodes a fixed 8-byte little-endian binary payload produced by [`Self::encode_bytes`].
-    #[inline]
-    pub fn decode_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != 8 {
-            return None;
-        }
-        let height = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let animation_duration_ms = u16::from_le_bytes([bytes[4], bytes[5]]);
-        let visible = bytes[6] != 0;
-        let interactive_dismiss = bytes[7] != 0;
-        Some(Self::new(
-            height,
-            visible,
-            animation_duration_ms,
-            interactive_dismiss,
-        ))
-    }
 }
 
 /// Computes the effective bottom inset (in logical points/dp) for sticky bottom UI (such as chat
@@ -231,11 +197,5 @@ mod tests {
             keyboard_insets_from_visual_viewport(844.0, 422.0, 0.0, 2.0),
             KeyboardInsets::HIDDEN
         );
-
-        // Binary 8-byte round-trip.
-        let sample = KeyboardInsets::new(294.5, true, 250, true);
-        let raw = sample.encode_bytes();
-        assert_eq!(KeyboardInsets::decode_bytes(&raw), Some(sample));
-        assert_eq!(KeyboardInsets::decode_bytes(&[1, 2, 3]), None);
     }
 }

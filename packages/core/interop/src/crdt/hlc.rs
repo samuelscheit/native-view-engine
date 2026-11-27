@@ -6,6 +6,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use nve_codec::{ByteReader, NveCodec, NveDecode};
+
 /// Fixed little-endian encoded byte length of [`OpId`] (`peer: u64` + `seq: u64`).
 pub const OP_ID_ENCODED_LEN: usize = 16;
 
@@ -14,7 +16,7 @@ pub const OP_ID_ENCODED_LEN: usize = 16;
 pub const HLC_ENCODED_LEN: usize = 18;
 
 /// Unique replica/peer identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, NveCodec)]
 pub struct PeerId(pub u64);
 
 impl PeerId {
@@ -50,7 +52,7 @@ impl fmt::Display for PeerId {
 
 /// Globally unique operation identifier `(peer, seq)` with a strict total order
 /// `(seq, peer)` suitable for Lamport/RGA tie-breaking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, NveCodec)]
 pub struct OpId {
     pub peer: PeerId,
     pub seq: u64,
@@ -108,7 +110,7 @@ impl fmt::Display for OpId {
 
 /// Hybrid Logical Clock timestamp with strict total order `(physical_ms, logical, peer_id)`
 /// and 18-byte fixed little-endian binary encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, NveCodec)]
 pub struct HlcTimestamp {
     pub physical_ms: u64,
     pub logical: u16,
@@ -154,8 +156,10 @@ impl HlcTimestamp {
 
     #[inline]
     pub fn decode_slice(bytes: &[u8]) -> Option<Self> {
-        let arr: [u8; HLC_ENCODED_LEN] = bytes.try_into().ok()?;
-        Some(Self::decode_le(arr))
+        let mut r = ByteReader::new(bytes);
+        let ts = <Self as NveDecode>::decode(&mut r).ok()?;
+        r.finish().ok()?;
+        Some(ts)
     }
 }
 

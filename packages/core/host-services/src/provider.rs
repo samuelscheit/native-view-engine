@@ -6,7 +6,8 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::codec::BinReader;
+use nve_codec::{ByteReader, NveCodec, NveDecode};
+
 use crate::error::ServiceError;
 use crate::events::TypedEventBus;
 
@@ -151,7 +152,7 @@ impl From<ResponseBuf> for Vec<u8> {
 
 /// Shared hardware/capability permission state used across Camera, Location, and Audio services.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
 pub enum PermissionStatus {
     NotDetermined = 0,
     Denied = 1,
@@ -161,13 +162,7 @@ pub enum PermissionStatus {
 
 impl PermissionStatus {
     pub const fn from_u8(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::NotDetermined),
-            1 => Some(Self::Denied),
-            2 => Some(Self::Authorized),
-            3 => Some(Self::Restricted),
-            _ => None,
-        }
+        Self::from_repr(raw)
     }
 
     pub fn encode(self) -> Vec<u8> {
@@ -175,11 +170,10 @@ impl PermissionStatus {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceError> {
-        let mut r = BinReader::new(bytes);
-        let raw = r.read_u8()?;
+        let mut r = ByteReader::new(bytes);
+        let status = <Self as NveDecode>::decode(&mut r)?;
         r.finish()?;
-        Self::from_u8(raw)
-            .ok_or_else(|| ServiceError::Codec(format!("invalid PermissionStatus {raw}")))
+        Ok(status)
     }
 }
 
@@ -232,7 +226,7 @@ pub trait HostServiceHandler: Send + Sync {
     /// Optional zero-serialization in-process typed backend hook called once on registration.
     ///
     /// Return `Some(pack_typed::<dyn MyBackend>(self))` so in-process Rust callers invoke the
-    /// typed trait directly with zero `BinWriter`/`BinReader` serialization and zero allocation.
+    /// typed trait directly with zero `ByteWriter`/`ByteReader` serialization and zero allocation.
     fn typed_backend(self: Arc<Self>) -> Option<(TypeId, Arc<dyn Any + Send + Sync>)> {
         None
     }

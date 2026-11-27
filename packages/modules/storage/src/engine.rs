@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use nve_hash::xxh64;
-use nve_host_services::{BinReader, BinWriter, ServiceError, MAX_SEQ_ITEMS};
+use nve_host_services::{ByteReader, ByteWriter, ServiceError, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS};
 
 use crate::{
     validate_batch, validate_key, validate_namespace, validate_value, CompactStats, StorageEntry,
@@ -172,7 +172,7 @@ impl KvStore {
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), ServiceError> {
         validate_key(key)?;
         validate_value(value)?;
-        let mut payload = BinWriter::with_capacity(8 + key.len() + value.len());
+        let mut payload = ByteWriter::with_capacity(8 + key.len() + value.len());
         payload.write_bytes(key)?;
         payload.write_bytes(value)?;
         let seq = self.next_seq;
@@ -189,7 +189,7 @@ impl KvStore {
         if !existed {
             return Ok(false);
         }
-        let mut payload = BinWriter::with_capacity(4 + key.len());
+        let mut payload = ByteWriter::with_capacity(4 + key.len());
         payload.write_bytes(key)?;
         let seq = self.next_seq;
         let frame = encode_record_frame(KIND_DELETE, seq, payload.as_slice())?;
@@ -225,7 +225,7 @@ impl KvStore {
         if ops.is_empty() {
             return Ok(());
         }
-        let mut payload = BinWriter::with_capacity(4 + ops.len() * 16);
+        let mut payload = ByteWriter::with_capacity(4 + ops.len() * 16);
         payload.write_u32(ops.len() as u32);
         for op in ops {
             match op {
@@ -263,7 +263,7 @@ impl KvStore {
         write_file_header(&mut compacted);
         let mut seq = 1u64;
         for (k, v) in &self.entries {
-            let mut payload = BinWriter::with_capacity(8 + k.len() + v.len());
+            let mut payload = ByteWriter::with_capacity(8 + k.len() + v.len());
             payload.write_bytes(k)?;
             payload.write_bytes(v)?;
             let frame = encode_record_frame(KIND_PUT, seq, payload.as_slice())?;
@@ -521,36 +521,36 @@ fn apply_record_payload(
     payload: &[u8],
     entries: &mut BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> Result<(), ServiceError> {
-    let mut r = BinReader::new(payload);
+    let mut r = ByteReader::new(payload);
     match kind {
         KIND_PUT => {
-            let key = r.read_bytes()?.to_vec();
-            let value = r.read_bytes()?.to_vec();
+            let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+            let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
             r.finish()?;
             validate_key(&key)?;
             validate_value(&value)?;
             entries.insert(key, value);
         }
         KIND_DELETE => {
-            let key = r.read_bytes()?.to_vec();
+            let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
             r.finish()?;
             validate_key(&key)?;
             entries.remove(&key);
         }
         KIND_BATCH => {
-            let count = r.read_seq_len(5)?;
+            let count = r.read_len(MAX_SEQ_ITEMS, 5)?;
             let mut decoded = Vec::with_capacity(count);
             for _ in 0..count {
                 match r.read_u8()? {
                     KIND_PUT => {
-                        let key = r.read_bytes()?.to_vec();
-                        let value = r.read_bytes()?.to_vec();
+                        let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
+                        let value = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
                         validate_key(&key)?;
                         validate_value(&value)?;
                         decoded.push(StorageWriteOp::Put { key, value });
                     }
                     KIND_DELETE => {
-                        let key = r.read_bytes()?.to_vec();
+                        let key = r.read_bytes(MAX_PAYLOAD_BYTES)?.to_vec();
                         validate_key(&key)?;
                         decoded.push(StorageWriteOp::Delete { key });
                     }
