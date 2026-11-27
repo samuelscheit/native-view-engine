@@ -16,7 +16,12 @@ let package = Package(
             targets: ["NveSwiftUI"]
         ),
     ],
+    dependencies: [
+        .package(name: "NveHost", path: "../../packages/core/host-swift"),
+    ],
     targets: [
+        // Generated `nve_abi.generated.h` + `nve_runtime_abi.generated.h` from
+        // `packages/core/host-cxx/include/nve/host` (run `cargo run --locked -p nve-cli -- codegen abi`).
         .target(
             name: "CNveAbi",
             path: "Sources/CNveAbi",
@@ -24,12 +29,12 @@ let package = Package(
         ),
         .target(
             name: "NveSwiftUI",
-            dependencies: ["CNveAbi"],
+            dependencies: ["CNveAbi", .product(name: "NveHost", package: "NveHost")],
             path: "Sources/NveSwiftUI"
         ),
         .testTarget(
             name: "NveSwiftUITests",
-            dependencies: ["NveSwiftUI", "CNveAbi"],
+            dependencies: ["NveSwiftUI", "CNveAbi", .product(name: "NveHost", package: "NveHost")],
             path: "Tests/NveSwiftUITests"
         ),
     ]

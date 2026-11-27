@@ -2,28 +2,6 @@ import CoreGraphics
 import Foundation
 import ImageIO
 
-/// Cross-platform image scaling mode matching `ImageResizeMode` in `canvas_ir.rs`.
-public enum NveImageResizeMode: UInt8, Equatable, Hashable, Sendable {
-    case cover = 0
-    case contain = 1
-    case stretch = 2
-    case center = 3
-
-    public static func parse(_ raw: String?) -> NveImageResizeMode {
-        guard let raw, !raw.isEmpty else { return .cover }
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "contain":
-            return .contain
-        case "stretch":
-            return .stretch
-        case "center":
-            return .center
-        default:
-            return .cover
-        }
-    }
-}
-
 /// Computed image placement geometry for a destination frame and image pixel size.
 public struct NveImagePlacement: Equatable, Sendable {
     /// Cropped region in image pixel coordinates.
@@ -33,10 +11,11 @@ public struct NveImagePlacement: Equatable, Sendable {
     /// Unclipped draw rectangle for rendering the full `CGImage` inside a clipped `GraphicsContext`.
     public let drawRect: CGRect
 
+    /// Placement for `nve.image.fit` (`NveImageFit`, CSS `object-fit`).
     public static func compute(
         destination: CGRect,
         imageSize: CGSize,
-        mode: NveImageResizeMode
+        fit: NveImageFit
     ) -> NveImagePlacement? {
         guard destination.width > 0,
               destination.height > 0,
@@ -50,9 +29,11 @@ public struct NveImagePlacement: Equatable, Sendable {
         let ih = imageSize.height
         let dw = destination.width
         let dh = destination.height
+        // `scale-down` is `none` or `contain`, whichever yields the smaller image.
+        let resolved: NveImageFit = fit == .scaleDown ? (iw > dw || ih > dh ? .contain : .none_) : fit
 
-        switch mode {
-        case .stretch:
+        switch resolved {
+        case .fill:
             return NveImagePlacement(
                 sourceRect: CGRect(x: 0, y: 0, width: iw, height: ih),
                 destRect: destination,
@@ -98,7 +79,7 @@ public struct NveImagePlacement: Equatable, Sendable {
                 drawRect: drawRect
             )
 
-        case .center:
+        case .none_, .scaleDown:
             let unclippedX = destination.minX + (dw - iw) * 0.5
             let unclippedY = destination.minY + (dh - ih) * 0.5
             let clipX0 = max(unclippedX, destination.minX)
@@ -177,24 +158,34 @@ public final class NveImageCache: @unchecked Sendable {
     /// Returns a cached `CGImage` for `source` or decodes & inserts it under bounded LRU eviction.
     public func image(for source: String) -> CGImage? {
         guard !source.isEmpty else { return nil }
+        return cached(key: source) { Self.decodeImage(from: source) }
+    }
 
+    /// Cached `CGImage` for encoded image bytes (`ImageSrc::EncodedBytes`: PNG / JPEG / HEIC / …)
+    /// stored under `key` (e.g. the resource id).
+    public func image(encoded bytes: [UInt8], key: String) -> CGImage? {
+        guard !bytes.isEmpty else { return nil }
+        return cached(key: key) {
+            guard let source = CGImageSourceCreateWithData(Data(bytes) as CFData, nil) else { return nil }
+            return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        }
+    }
+
+    private func cached(key: String, decode: () -> CGImage?) -> CGImage? {
         lock.lock()
-        if var existing = entries[source] {
+        if var existing = entries[key] {
             tick &+= 1
             existing.tick = tick
-            entries[source] = existing
+            entries[key] = existing
             lock.unlock()
             return existing.image
         }
         lock.unlock()
 
-        guard let decoded = Self.decodeImage(from: source) else {
-            return nil
-        }
-
+        guard let decoded = decode() else { return nil }
         let bytes = max(1, decoded.bytesPerRow * decoded.height)
         lock.lock()
-        insertLocked(key: source, image: decoded, bytes: bytes)
+        insertLocked(key: key, image: decoded, bytes: bytes)
         lock.unlock()
         return decoded
     }

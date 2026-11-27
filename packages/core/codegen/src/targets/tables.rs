@@ -114,13 +114,19 @@ fn swift_kind(kind: FieldKind) -> &'static str {
     }
 }
 
-/// Swift identifiers that collide with keywords get a trailing underscore.
+/// Swift keywords (plus `none`, which shadows `Optional.none` in patterns).
+const SWIFT_RESERVED: &[&str] = &[
+    "Any", "Self", "as", "break", "case", "catch", "class", "continue", "default", "defer", "deinit",
+    "do", "else", "enum", "extension", "fallthrough", "false", "for", "func", "guard", "if", "import",
+    "in", "init", "inout", "internal", "is", "let", "nil", "none", "operator", "private", "protocol",
+    "public", "repeat", "rethrows", "return", "self", "static", "struct", "subscript", "super",
+    "switch", "throw", "throws", "true", "try", "typealias", "var", "where", "while",
+];
+
+/// Swift identifiers that collide with reserved words get a trailing underscore.
 fn swift_ident(name: &str) -> String {
     let ident = to_camel_case(name.trim_end_matches('_'));
-    match ident.as_str() {
-        "self" | "default" | "none" | "static" | "true" | "false" => format!("{ident}_"),
-        _ => ident,
-    }
+    if SWIFT_RESERVED.contains(&ident.as_str()) { format!("{ident}_") } else { ident }
 }
 
 fn c_upper(name: &str) -> String {
