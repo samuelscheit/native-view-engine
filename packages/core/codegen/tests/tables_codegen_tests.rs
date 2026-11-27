@@ -54,11 +54,35 @@ fn every_core_field_is_mirrored_with_its_exact_word_layout() {
     );
 }
 
+#[test]
+fn module_header_mirrors_the_given_tables_only() {
+    use nve_codegen::targets::tables::generate_c_module_tables_h;
+    let visual = CORE_TABLE_DESCS.iter().find(|d| d.name == "nve.visual").unwrap();
+    let h = generate_c_module_tables_h("demo_cap", &[visual]);
+    assert!(h.contains("#ifndef NVE_DEMO_CAP_TABLES_GENERATED_H"));
+    assert!(h.contains("#include <nve/host/table_word.h>"));
+    assert!(h.contains("static const NveTableDesc NVE_TABLE_VISUAL_DESC = {"));
+    assert!(!h.contains("NVE_TABLE_LAYOUT_KEY"), "only the given tables");
+    assert!(!h.contains("NVE_OVERFLOW_SCROLL"), "core enums stay in the core header");
+}
+
 /// Validates every emitted spec with the host-side `nve_field_valid` / `nve_field_fits` helpers.
 fn check_program() -> String {
     let mut body = String::from("#include \"nve_tables.generated.h\"\n#include <stdio.h>\nint main(void) {\n  int bad = 0;\n");
     for desc in CORE_TABLE_DESCS {
         let t = type_upper(desc.name);
+        // `NveTableDesc` carries exactly what an `NVE2` `DeclareTables` entry needs.
+        body.push_str(&format!(
+            "  bad += NVE_TABLE_{t}_DESC.key != NVE_TABLE_{t}_KEY || NVE_TABLE_{t}_DESC.schema_hash != UINT64_C({}) || NVE_TABLE_{t}_DESC.name_len != {}u || NVE_TABLE_{t}_DESC.name[0] != 'n' || NVE_TABLE_{t}_DESC.storage != {}u || NVE_TABLE_{t}_DESC.flags != {}u || NVE_TABLE_{t}_DESC.words != NVE_TABLE_{t}_WORDS || NVE_TABLE_{t}_DESC.str_words != {}u || NVE_TABLE_{t}_DESC.resource_words != {}u || NVE_TABLE_{t}_DESC.defaults != NVE_TABLE_{t}_DEFAULTS || NVE_TABLE_{t}_DESC.word_effects[{last}] != {}u;\n",
+            desc.schema_hash,
+            desc.name.len(),
+            desc.storage as u8,
+            desc.flags,
+            desc.str_words,
+            desc.resource_words,
+            desc.word_effects[desc.word_effects.len() - 1],
+            last = desc.word_effects.len() - 1,
+        ));
         for f in desc.fields {
             let spec = format!("NVE_{t}_{}", f.name.trim_end_matches('_').to_ascii_uppercase());
             body.push_str(&format!(

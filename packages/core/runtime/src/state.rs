@@ -149,16 +149,6 @@ impl SurfaceState {
             self.rects.truncate(cap);
         }
 
-        if laid_out {
-            for idx in 1..cap {
-                let r = store
-                    .id_at(idx)
-                    .and_then(|id| self.scene.layout_of(id))
-                    .map_or(NveLayoutRect::default(), layout_rect_to_abi);
-                self.rects[idx] = r;
-            }
-        }
-
         if self.dirty_stamp.len() < cap {
             self.dirty_stamp.resize(cap, 0);
         }
@@ -169,6 +159,24 @@ impl SurfaceState {
         }
         let epoch = self.dirty_epoch;
         self.dirty_indices.clear();
+
+        // `dirty_indices` contract: every live node whose row, tables, children OR layout rect
+        // changed. Relayout moves untouched nodes (siblings, ancestors), so retained-view hosts
+        // must see them without diffing every rect themselves.
+        if laid_out {
+            for idx in 1..cap {
+                let id = store.id_at(idx);
+                let r = id
+                    .and_then(|id| self.scene.layout_of(id))
+                    .map_or(NveLayoutRect::default(), layout_rect_to_abi);
+                if id.is_some() && self.rects[idx] != r && self.dirty_stamp[idx] != epoch {
+                    self.dirty_stamp[idx] = epoch;
+                    self.dirty_indices.push(idx as u32);
+                }
+                self.rects[idx] = r;
+            }
+        }
+
         for &id in changes
             .created
             .iter()

@@ -31,6 +31,7 @@ function(nve_ensure_abi_codegen)
     "${_nve_host_include_dir}/nve_abi.generated.h"
     "${_nve_host_include_dir}/nve_runtime_abi.generated.h"
     "${_nve_host_include_dir}/nve_tables.generated.h"
+    "${_nve_repo_root}/packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h"
   )
 
   set(_nve_needs_codegen FALSE)
@@ -49,6 +50,7 @@ function(nve_ensure_abi_codegen)
       "${_nve_repo_root}/packages/core/abi/src/*.rs"
       "${_nve_repo_root}/packages/core/abi-macros/src/*.rs"
       "${_nve_repo_root}/packages/core/codegen/src/*.rs"
+      "${_nve_repo_root}/packages/modules/canvas/src/*.rs"
     )
     foreach(_src IN LISTS _nve_abi_sources)
       foreach(_hdr IN LISTS _nve_generated_headers)

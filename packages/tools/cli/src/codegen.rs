@@ -126,8 +126,23 @@ fn write_or_check_generated(
 }
 
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let files = nve_codegen::generate_all_abi_files();
+    let mut files = nve_codegen::generate_all_abi_files();
+    files.extend(module_table_files());
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
+}
+
+/// Capability-module table mirrors for C/C++ hosts. They live here (tools may link modules)
+/// because core `nve-codegen` must stay module-free.
+fn module_table_files() -> Vec<nve_codegen::GeneratedFile> {
+    use nve_store::NveTable as _;
+    vec![nve_codegen::GeneratedFile {
+        relative_path: "packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h"
+            .to_owned(),
+        content: nve_codegen::targets::tables::generate_c_module_tables_h(
+            "canvas",
+            &[&nve_canvas::Canvas::DESC],
+        ),
+    }]
 }
 
 /// Reads and validates an `NveExportSpec` JSON file. JSON parsing lives here, in the CLI, so the
