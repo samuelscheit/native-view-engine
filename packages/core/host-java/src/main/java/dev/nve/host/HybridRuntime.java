@@ -1,5 +1,6 @@
 package dev.nve.host;
 
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
@@ -68,7 +69,12 @@ public final class HybridRuntime {
      * {@code length}: JNI glue reads a direct buffer's capacity, not its limit.
      */
     public static ByteBuffer directBuffer(byte[] bytes, int offset, int length) {
-        return ByteBuffer.allocateDirect(length).order(ByteOrder.LITTLE_ENDIAN).put(bytes, offset, length).flip();
+        final ByteBuffer b = ByteBuffer.allocateDirect(length).order(ByteOrder.LITTLE_ENDIAN).put(bytes, offset, length);
+        // Through `Buffer`: `--release 11` would link the Java 9+ covariant `ByteBuffer.flip()`,
+        // which older Android runtimes lack (`NoSuchMethodError`).
+        final Buffer asBuffer = b;
+        asBuffer.flip();
+        return b;
     }
 
     public static ByteBuffer directBuffer(byte[] bytes) {
@@ -94,8 +100,9 @@ public final class HybridRuntime {
 
         /** Validated copy of {@code bytes}; throws {@link BinCodecException} when invalid. */
         public static DynamicValue of(byte[] bytes) {
-            BinReader.validate(bytes);
-            return new DynamicValue(bytes.clone());
+            final byte[] copy = bytes.clone(); // validate the copy: the caller may still mutate `bytes`
+            BinReader.validate(copy);
+            return new DynamicValue(copy);
         }
 
         /** Validated copy of the next value of {@code r}; throws {@link BinCodecException} when invalid. */

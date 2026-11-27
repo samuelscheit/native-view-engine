@@ -21,102 +21,13 @@ const FAKE_JNI_H: &str = include_str!("fixtures/fake_jni.h");
 const JNI_TEST_SUPPORT_H: &str = include_str!("fixtures/jni_test_support.h");
 const JNI_OVERLAY_HARNESS_CPP: &str = include_str!("fixtures/jni_overlay_harness.cpp");
 const KOTLIN_MAIN_KT: &str = include_str!("fixtures/kotlin_hybrid_main.kt");
-
-const OVERLAY_SPEC: &str = r#"
-use nve_abi::NveValue;
-
-/// Overlay category with sparse discriminants.
-#[nve_hybrid_enum]
-#[repr(u32)]
-pub enum OverlayKind {
-    Caption = 0,
-    Chapter = 3,
-    Ad = 7,
-}
-
-/// Non-POD record: a `Vec`, an `Option`, a dynamic `NveValue`, and an enum.
-#[nve_hybrid_struct]
-pub struct Overlay {
-    pub kind: OverlayKind,
-    pub cues: Vec<i32>,
-    pub caption: Option<String>,
-    pub extra: NveValue,
-    pub labels: Vec<String>,
-}
-
-/// Props covering every crossing: scalars, encoded `Struct` / `Vec`, and `NveValue`.
-#[nve_hybrid_view(name = "OverlayView")]
-pub trait OverlayViewSpec {
-    #[prop]
-    fn title(&self) -> String;
-    #[prop(default = OverlayKind::Chapter)]
-    fn kind(&self) -> OverlayKind;
-    #[prop(default = None)]
-    fn overlay(&self) -> Option<Overlay>;
-    #[prop]
-    fn overlays(&self) -> Vec<Overlay>;
-    #[prop]
-    fn cues(&self) -> Vec<i32>;
-    #[prop]
-    fn extra(&self) -> NveValue;
-    #[method]
-    fn current_overlay(&self) -> Option<Overlay>;
-    #[method]
-    fn current_overlays(&self) -> Vec<Overlay>;
-    #[method]
-    fn current_extra(&self) -> NveValue;
-    #[method]
-    fn summary(&self) -> String;
-    #[method]
-    fn echo(&self, overlay: Overlay) -> Result<Overlay, String>;
-    #[event]
-    fn on_cue(&self, index: i32, overlay: Overlay);
-}
-"#;
-
-const OVERLAY_PROVIDER_RS: &str = r#"
-use std::ffi::c_void;
-use overlay_view_hybrid::*;
-
-#[derive(Default)]
-struct LiveOverlay {
-    props: OverlayViewProps,
-}
-
-impl OverlayViewHybrid for LiveOverlay {
-    fn apply_props(&mut self, props: OverlayViewProps) { self.props = props; }
-    fn current_overlay(&mut self) -> Option<Overlay> { self.props.overlay.clone() }
-    fn current_overlays(&mut self) -> Vec<Overlay> { self.props.overlays.clone() }
-    fn current_extra(&mut self) -> NveHybridValue { self.props.extra.clone() }
-    fn summary(&mut self) -> String {
-        let p = &self.props;
-        format!("{}|{:?}|{}|{}|{}", p.title, p.kind, p.overlay.is_some(), p.overlays.len(), p.cues.len())
-    }
-    fn echo(&mut self, overlay: Overlay) -> Result<Overlay, String> {
-        if overlay.caption.as_deref() == Some("fail") {
-            return Err("bad \u{1F600}".to_string());
-        }
-        Ok(Overlay {
-            kind: OverlayKind::Caption,
-            cues: overlay.cues.iter().rev().copied().collect(),
-            caption: overlay.caption.map(|c| c.to_uppercase()),
-            extra: overlay.extra,
-            labels: overlay.labels.iter().map(|l| l.to_uppercase()).collect(),
-        })
-    }
-}
-
-static VTABLE: NveHybridOverlayViewVTable = build_overlay_view_vtable::<LiveOverlay>();
-
-#[unsafe(no_mangle)]
-pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
-    if interface_id == NVE_HYBRID_OVERLAY_VIEW_INTERFACE_ID {
-        (&VTABLE as *const NveHybridOverlayViewVTable).cast()
-    } else {
-        std::ptr::null()
-    }
-}
-"#;
+/// `OverlayView`: a non-POD struct (Vec + Option + NveValue + enum) as props, arguments, results.
+const OVERLAY_SPEC: &str = include_str!("fixtures/overlay_hybrid.nve.rs");
+/// The live Rust `OverlayView` provider (staticlib exporting `nve_get_interface`).
+const OVERLAY_PROVIDER_RS: &str = include_str!("fixtures/overlay_provider.rs");
+/// Kotlin-only edge cases (compiled with `kotlinc -Werror`, natives checked against the glue): a
+/// parameter named `handle` and fields / parameters named after Kotlin hard keywords.
+const EDGE_SPEC: &str = include_str!("fixtures/edge_hybrid.nve.rs");
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
@@ -134,6 +45,16 @@ fn specs() -> (HybridFileSpec, HybridFileSpec) {
         parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("realistic spec parses"),
         parse_hybrid_rust_spec(OVERLAY_SPEC).expect("overlay spec parses"),
     )
+}
+
+/// Every spec the Kotlin app compiles together in `dev.nve.hybrid`.
+fn kotlin_specs() -> [HybridFileSpec; 3] {
+    let (realistic, overlay) = specs();
+    [
+        realistic,
+        overlay,
+        parse_hybrid_rust_spec(EDGE_SPEC).expect("edge spec parses"),
+    ]
 }
 
 /// Generates `target` for `spec` into `dir`, returning the files.
@@ -176,9 +97,8 @@ fn jvm_tools_available() -> bool {
 /// Compiles the generated Kotlin of both specs plus the driver (`kotlinc -Werror`) against the
 /// static `dev.nve.host` runtime (`javac --release 11 -Werror`). Returns the run classpath.
 fn build_kotlin_app(dir: &Path) -> String {
-    let (realistic, overlay) = specs();
     let kt_dir = dir.join("kotlin");
-    for spec in [&realistic, &overlay] {
+    for spec in &kotlin_specs() {
         for file in generate(spec, HybridTarget::Kotlin, &kt_dir) {
             if file.relative_path.ends_with(".kt") {
                 // The static runtime is reused, never re-emitted into generated code.
@@ -206,6 +126,7 @@ fn build_kotlin_app(dir: &Path) -> String {
             .args(&host_sources),
         "javac host-java",
     );
+    assert_no_covariant_buffer_calls(&host_classes);
     let jar = dir.join("kotlin-hybrid.jar");
     let kt_sources = walk(&kt_dir, "kt");
     run(
@@ -237,23 +158,57 @@ fn walk(root: &Path, ext: &str) -> Vec<PathBuf> {
     out
 }
 
-/// `(class, method, java parameter count)` of every `JNIEXPORT` in the generated JNI glue.
-fn jni_exports(glue: &str) -> BTreeSet<(String, String, usize)> {
+/// Android runtimes before the Java 9 covariant `ByteBuffer` overrides (`flip`, `clear`,
+/// `position(int)`, ...) throw `NoSuchMethodError` for them: host-java must call them through
+/// `Buffer`. Checked on the bytecode `javac --release 11` emitted.
+fn assert_no_covariant_buffer_calls(classes: &Path) {
+    let class_files = walk(classes, "class");
+    let disassembly = run(
+        Command::new("javap").args(["-c", "-p"]).args(&class_files),
+        "javap host-java",
+    );
+    const COVARIANT: [&str; 7] = [
+        "flip", "clear", "rewind", "mark", "reset", "position", "limit",
+    ];
+    let offending: Vec<&str> = disassembly
+        .lines()
+        .filter(|l| {
+            l.split("Method java/nio/ByteBuffer.")
+                .nth(1)
+                .is_some_and(|m| {
+                    COVARIANT
+                        .iter()
+                        .any(|name| m.starts_with(&format!("{name}:")))
+                        && m.ends_with(")Ljava/nio/ByteBuffer;")
+                })
+        })
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "covariant ByteBuffer calls:\n{}",
+        offending.join("\n")
+    );
+}
+
+/// `<Class> <method> <return> <params,...>` (JNI C types, Java parameters only) of every
+/// `JNIEXPORT` in the generated JNI glue.
+fn jni_exports(glue: &str) -> BTreeSet<String> {
     glue.lines()
         .filter_map(|line| line.strip_prefix("JNIEXPORT "))
         .map(|line| {
-            let symbol = line
-                .split("Java_dev_nve_hybrid_")
-                .nth(1)
+            let (ret, rest) = line
+                .split_once(" JNICALL Java_dev_nve_hybrid_")
                 .expect("JNI symbol");
-            let (name, params) = symbol.split_once('(').expect("parameter list");
+            let (name, params) = rest.split_once('(').expect("parameter list");
             let (class, method) = name.rsplit_once('_').expect("class_method");
+            let params = params.split_once(')').expect("closing paren").0;
             // `JNIEnv*` and `jclass` precede the Java parameters.
-            (
-                class.to_string(),
-                method.to_string(),
-                params.matches(',').count() - 1,
-            )
+            let types: Vec<&str> = params
+                .split(", ")
+                .skip(2)
+                .map(|p| p.split_whitespace().next().expect("parameter type"))
+                .collect();
+            format!("{class} {method} {ret} {}", types.join(","))
         })
         .collect()
 }
@@ -276,9 +231,8 @@ fn generated_kotlin_compiles_with_werror_and_round_trips_on_the_jvm() {
     );
 
     // Schema constants: `const val` literals hold the exact u32 / u64 bits.
-    let (realistic, overlay) = specs();
     let mut expected_schema = BTreeSet::new();
-    for spec in [&realistic, &overlay] {
+    for spec in &kotlin_specs() {
         for m in &spec.modules {
             expected_schema.insert(format!(
                 "schema {} {} {}",
@@ -308,18 +262,12 @@ fn generated_kotlin_compiles_with_werror_and_round_trips_on_the_jvm() {
         .collect();
     assert_eq!(printed, expected_schema);
 
-    // Every Kotlin `native` binds to exactly one JNI export of the same arity, and vice versa.
-    let natives: BTreeSet<(String, String, usize)> = stdout
+    // Every Kotlin `native` binds to exactly one JNI export with the same JNI return and
+    // parameter types, and vice versa.
+    let natives: BTreeSet<String> = stdout
         .lines()
         .filter_map(|l| l.strip_prefix("native "))
-        .map(|l| {
-            let parts: Vec<&str> = l.split(' ').collect();
-            (
-                parts[0].to_string(),
-                parts[1].to_string(),
-                parts[2].parse().expect("arity"),
-            )
-        })
+        .map(str::to_string)
         .collect();
     let mut exports = BTreeSet::new();
     for glue in walk(&dir.join("kotlin"), "cpp") {
@@ -440,6 +388,7 @@ fn overlay_jni_glue_runs_live_on_a_fake_jni_env_and_a_real_jvm() {
 
     // 2. A real JVM (`-Xcheck:jni`): the Kotlin client -> JNI glue -> Rust provider.
     if cfg!(windows) || !jvm_tools_available() {
+        let _ = std::fs::remove_dir_all(&dir);
         return;
     }
     let library = dir.join(if cfg!(target_os = "macos") {
@@ -467,8 +416,10 @@ fn overlay_jni_glue_runs_live_on_a_fake_jni_env_and_a_real_jvm() {
         "link the OverlayView JNI library against the JDK's jni.h",
     );
     let classpath = build_kotlin_app(&dir.join("jvm"));
+    // HotSpot prints CheckJNI warnings to stdout unless `DisplayVMOutputToStderr`; OpenJ9 ignores
+    // unknown `-XX:` options. Both streams are scanned anyway.
     let out = Command::new("java")
-        .arg("-Xcheck:jni")
+        .args(["-Xcheck:jni", "-XX:+DisplayVMOutputToStderr"])
         .args([
             "-cp",
             &classpath,
@@ -486,14 +437,15 @@ fn overlay_jni_glue_runs_live_on_a_fake_jni_env_and_a_real_jvm() {
         out.status.success() && stdout.contains("kotlin hybrid: ok"),
         "real JVM run failed:\n{stdout}\n{stderr}"
     );
-    // CheckJNI reports misuse as warnings: HotSpot `WARNING in native method`, OpenJ9
-    // `JVMJNCK<nnn>W` / `E` (`JVMJNCK001I` only announces the checker).
-    let checkjni_issue = stderr.lines().any(|l| {
+    // CheckJNI reports misuse as warnings: HotSpot `WARNING in native method` / `WARNING: JNI
+    // local refs`, OpenJ9 `JVMJNCK<nnn>W` / `E` (`JVMJNCK001I` only announces the checker).
+    let checkjni_issue = stdout.lines().chain(stderr.lines()).any(|l| {
         l.contains("WARNING in native method")
+            || l.contains("WARNING: JNI local refs")
             || l.split_whitespace()
                 .any(|w| w.starts_with("JVMJNCK") && (w.ends_with('W') || w.ends_with('E')))
     });
-    assert!(!checkjni_issue, "CheckJNI warnings:\n{stderr}");
+    assert!(!checkjni_issue, "CheckJNI warnings:\n{stdout}\n{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

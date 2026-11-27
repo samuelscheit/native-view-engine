@@ -57,6 +57,10 @@ struct JNIEnv {
   int thrown = 0;
   int live_local_refs = 0;
   bool checkjni_error = false;
+  // OOM hooks: `NewString` returns `nullptr`, silently or with a pending `OutOfMemoryError` (as a
+  // real JVM does).
+  bool fail_new_string = false;
+  bool new_string_raises_oom = false;
   _jclass exception_class;
   _jmethodID string_ctor;
   std::vector<_jobject*> locals;
@@ -149,6 +153,15 @@ struct JNIEnv {
     std::memcpy(dst, s->units.data() + start, static_cast<size_t>(len) * sizeof(jchar));
   }
   jstring NewString(const jchar* units, jsize len) {
+    if (ExceptionCheck()) checkjni_error = true;
+    if (fail_new_string) {
+      if (new_string_raises_oom) {
+        pending = "java.lang.OutOfMemoryError";
+        pending_utf16 = u"java.lang.OutOfMemoryError";
+        ++thrown;
+      }
+      return nullptr;
+    }
     auto* s = new _jstring();
     s->units.assign(reinterpret_cast<const char16_t*>(units), static_cast<size_t>(len));
     locals.push_back(s);

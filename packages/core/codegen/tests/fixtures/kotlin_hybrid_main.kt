@@ -62,7 +62,22 @@ private fun sampleOverlay(caption: String?): Overlay = Overlay(
     caption = caption,
     extra = sampleExtra(),
     labels = listOf("", "é", "\uD83D\uDE00"),
+    `when` = -1, // u32 0xFFFFFFFF in a field named after a Kotlin keyword
 )
+
+/** The JNI C type a reflected Kotlin `native` parameter / return type binds to. */
+private fun jniType(c: Class<*>): String = when (c.name) {
+    "void" -> "void"
+    "boolean" -> "jboolean"
+    "int" -> "jint"
+    "long" -> "jlong"
+    "float" -> "jfloat"
+    "double" -> "jdouble"
+    "java.lang.String" -> "jstring"
+    "[B" -> "jbyteArray"
+    "java.nio.ByteBuffer" -> "jobject"
+    else -> "unmapped:${c.name}"
+}
 
 private fun codec() {
     // Golden bytes: FramePoint {x: 7, y: 0} = map(2) {"x": f64 7.0, "y": f64 0.0}.
@@ -133,6 +148,23 @@ private fun codec() {
     }
     expectThrows<BinCodecException>("wrong tag") { Overlay.decodeBin(BinReader(wrongTag)) }
 
+    // `u32` / enum bits above `Int.MAX_VALUE` zero-extend on the wire, like Rust and C++.
+    val high = Overlay(kind = OverlayKind.Max, `when` = -1)
+    val highBytes = encode { high.encodeBin(it) }
+    check(Overlay.decodeBin(BinReader(highBytes)) == high, "high-bit Overlay round trip")
+    val hr = BinReader(highBytes)
+    val hm = hr.beginMap()
+    val wire = HashMap<String, Long>()
+    repeat(hm.count) {
+        val key = hr.readMapKey()
+        if (key == "kind" || key == "when") wire[key] = hr.readI64() else hr.skipValue()
+    }
+    hr.end(hm)
+    hr.expectEnd()
+    check(wire["kind"] == 4294967295L && wire["when"] == 4294967295L, "u32 / enum zero-extended: $wire")
+    check(OverlayKind.Max.rawValue == -1 && OverlayKind.fromRaw(-1) == OverlayKind.Max, "u32::MAX discriminant")
+    check(OverlayViewProps().limit == -1 && OverlayViewProps().big == -1L, "u32::MAX / u64::MAX defaults")
+
     // Prop defaults from the spec.
     check(VideoSurfaceProps().playbackRate == 1.0f && VideoSurfaceProps().quality == VideoQuality.Auto, "VideoSurface defaults")
     check(!VideoSurfaceProps().muted && VideoSurfaceProps().posterUrl == null, "VideoSurface option defaults")
@@ -143,10 +175,24 @@ private fun codec() {
     println("schema OverlayView ${OverlayViewHybridClient.INTERFACE_ID} ${OverlayViewHybridClient.SCHEMA_HASH}")
     println("file Crypto ${CryptoHybridSchema.ABI_VERSION} ${CryptoHybridSchema.FILE_SCHEMA_HASH}")
     println("file OverlayView ${OverlayViewHybridSchema.ABI_VERSION} ${OverlayViewHybridSchema.FILE_SCHEMA_HASH}")
-    for (cls in listOf(CryptoHybridClient::class.java, VideoSurfaceHybridClient::class.java, OverlayViewHybridClient::class.java)) {
+    println("schema Edge ${EdgeHybridClient.INTERFACE_ID} ${EdgeHybridClient.SCHEMA_HASH}")
+    println("file Edge ${EdgeHybridSchema.ABI_VERSION} ${EdgeHybridSchema.FILE_SCHEMA_HASH}")
+
+    // Fields named after Kotlin hard keywords round-trip under their escaped names.
+    val keywords = Keywords(`object` = -1, `val` = "v", `is` = listOf(true, false))
+    check(Keywords.decodeBin(BinReader(encode { keywords.encodeBin(it) })) == keywords, "keyword fields round trip")
+
+    val clients = listOf(
+        CryptoHybridClient::class.java,
+        VideoSurfaceHybridClient::class.java,
+        OverlayViewHybridClient::class.java,
+        EdgeHybridClient::class.java,
+    )
+    for (cls in clients) {
         for (m in cls.declaredMethods.filter { Modifier.isNative(it.modifiers) }.sortedBy { it.name }) {
             check(Modifier.isStatic(m.modifiers), "${m.name} is static (JNI receives a jclass)")
-            println("native ${cls.simpleName} ${m.name} ${m.parameterCount}")
+            val params = m.parameterTypes.joinToString(",") { jniType(it) }
+            println("native ${cls.simpleName} ${m.name} ${jniType(m.returnType)} $params")
         }
         // The companion only forwards: a native companion method would bind `..._00024Companion_...`.
         val companion = Class.forName(cls.name + "\$Companion")
@@ -172,10 +218,20 @@ private fun jni(library: String) {
         check(client.currentOverlay() == overlay, "live currentOverlay")
         check(client.currentOverlays() == overlays, "live currentOverlays")
         check(client.currentExtra() == props.extra, "live currentExtra (lossless NveValue prop)")
-        check(client.summary() == "Live \u2713 \uD83D\uDE00|Ad|true|3|10000", "live summary: ${client.summary()}")
+        // `limit` / `big` keep their `u32::MAX` / `u64::MAX` defaults across the boundary.
+        val tail = "|4294967295|18446744073709551615"
+        check(client.summary() == "Live \u2713 \uD83D\uDE00|Ad|true|3|10000$tail", "live summary: ${client.summary()}")
+        check(client.shift(-1, 2) == 1 && client.shift(5, null) == 5, "live shift (parameters `handle`, `object`)")
 
         val echoed = client.echo(overlay)
-        check(echoed == overlay.copy(kind = OverlayKind.Caption, cues = overlay.cues.reversed(), caption = "CAP", labels = overlay.labels.map { it.uppercase() }), "live echo: $echoed")
+        val expected = overlay.copy(
+            kind = OverlayKind.Caption,
+            cues = overlay.cues.reversed(),
+            caption = "CAP",
+            labels = overlay.labels.map { it.uppercase() },
+            `when` = overlay.`when` xor Int.MIN_VALUE,
+        )
+        check(echoed == expected, "live echo: $echoed")
         val err = expectThrows<IllegalStateException>("echo Err") { client.echo(sampleOverlay("fail")) }
         check(err?.message == "bad \uD83D\uDE00", "echo Err message is exact UTF-16: ${err?.message}")
 
@@ -184,7 +240,7 @@ private fun jni(library: String) {
         client.setProps(OverlayViewProps(title = "t", overlay = null, extra = scalar))
         check(client.currentOverlay() == null && client.currentOverlays().isEmpty(), "live cleared props")
         check(client.currentExtra() == scalar, "live scalar extra")
-        check(client.summary() == "t|Chapter|false|0|0", "live summary after clear: ${client.summary()}")
+        check(client.summary() == "t|Chapter|false|0|0$tail", "live summary after clear: ${client.summary()}")
         client.close()
         val closed = expectThrows<IllegalStateException>("closed client") { client.summary() }
         check(closed?.message == "null hybrid handle", "closed client message: ${closed?.message}")

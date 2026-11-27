@@ -264,6 +264,26 @@ void test_throw_java_exception(JNIEnv& env) {
     CHECK(env.pending_utf16 == c.utf16);
     env.ExceptionClear();
   }
+  // `NewString` fails silently: the ASCII `ThrowNew` fallback still raises, with no leaked refs.
+  env.fail_new_string = true;
+  {
+    const int refs_before = env.live_local_refs;
+    nve::host::jni::throw_java_exception(&env, "bad \xF0\x9F\x98\x80");
+    CHECK(env.thrown == 1 && !env.checkjni_error && env.live_local_refs == refs_before);
+    CHECK(env.pending_utf16 == u"NVE hybrid call failed");
+    env.ExceptionClear();
+  }
+  // `NewString` raises `OutOfMemoryError`: it stays pending; nothing is thrown over it.
+  env.new_string_raises_oom = true;
+  {
+    const int refs_before = env.live_local_refs;
+    nve::host::jni::throw_java_exception(&env, "bad");
+    CHECK(env.thrown == 1 && !env.checkjni_error && env.live_local_refs == refs_before);
+    CHECK(env.pending_utf16 == u"java.lang.OutOfMemoryError");
+    env.ExceptionClear();
+  }
+  env.fail_new_string = false;
+  env.new_string_raises_oom = false;
   nve::host::jni::throw_java_exception(&env, nullptr);
   CHECK(env.thrown == 1 && env.pending_utf16 == u"NVE hybrid call failed");
   // A pending exception wins: nothing is thrown over it (CheckJNI would abort).

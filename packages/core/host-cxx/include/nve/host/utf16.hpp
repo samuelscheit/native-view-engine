@@ -1,5 +1,6 @@
-// NVE host runtime: strict UTF-8 <-> UTF-16 conversion, for hosts whose strings are UTF-16 (JNI's
-// `GetStringRegion` / `NewString`, which, unlike the `*UTF` calls, are not Modified UTF-8).
+// NVE host runtime: UTF-8 <-> UTF-16 conversion (strict both ways, plus a lossy U+FFFD UTF-8
+// decoder), for hosts whose strings are UTF-16 (JNI's `GetStringRegion` / `NewString`, which,
+// unlike the `*UTF` calls, are not Modified UTF-8).
 #pragma once
 
 #include <cstdint>

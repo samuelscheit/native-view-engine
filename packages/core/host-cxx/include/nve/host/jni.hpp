@@ -70,9 +70,11 @@ inline jstring java_string(JNIEnv* env, std::string_view s) {
 
 /// Raises `IllegalStateException(msg)` unless a Java exception is already pending (it wins).
 /// Constructs the exception with a UTF-16 `jstring` (`NewString` + `<init>(String)`) so
-/// supplementary UTF-8 characters and NUL never reach `ThrowNew`'s Modified UTF-8 parser. A
-/// message that is not UTF-8 keeps its valid text, with U+FFFD for each ill-formed sequence.
-/// Falls back to ASCII `ThrowNew` only if allocating the message or exception fails.
+/// supplementary characters never reach `ThrowNew`'s Modified UTF-8 parser (ART CheckJNI rejects
+/// 4-byte sequences there; `msg` is NUL-terminated, so it holds no NUL). A message that is not
+/// UTF-8 keeps its valid text, with U+FFFD for each ill-formed sequence. If building the message or
+/// exception fails, a JVM-raised error (`OutOfMemoryError`) stays pending; only a silent failure
+/// falls back to an ASCII `ThrowNew`.
 inline void throw_java_exception(JNIEnv* env, const char* msg) noexcept {
   if (env->ExceptionCheck()) return;
   jclass cls = env->FindClass("java/lang/IllegalStateException");

@@ -13,7 +13,7 @@ mod client_emitter;
 mod jni_emitter;
 mod type_helpers;
 
-use type_helpers::kotlin_long_literal;
+use type_helpers::{check_kotlin_supported, kotlin_long_literal};
 
 use crate::writer::CodeWriter;
 use client_emitter::{emit_kotlin_enum, emit_kotlin_module, emit_kotlin_struct, emit_kotlin_view};
@@ -36,6 +36,7 @@ const JNI_PACKAGE_PREFIX: &str = "Java_dev_nve_hybrid";
 /// Emits `<Stem>HybridSpec.generated.kt` and `<Stem>HybridJni.generated.cpp`.
 pub fn generate_hybrid_kotlin(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
+    check_kotlin_supported(spec)?;
     let stem = spec.stem_pascal();
     let kt_name = format!("{stem}HybridSpec.generated.kt");
     let jni_name = format!("{stem}HybridJni.generated.cpp");

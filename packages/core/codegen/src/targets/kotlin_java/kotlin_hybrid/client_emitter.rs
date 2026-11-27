@@ -7,12 +7,12 @@ pub(super) fn emit_kotlin_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
     writeln!(out, "enum class {}(val rawValue: Int) {{", e.name);
     for (idx, v) in e.variants.iter().enumerate() {
         let sep = if idx + 1 == e.variants.len() { ";" } else { "," };
-        writeln!(out, "    {}({}){sep}", v.name, v.value);
+        writeln!(out, "    {}({}){sep}", v.name, kotlin_int_literal(v.value));
     }
     writeln!(out, "    companion object {{");
     writeln!(out, "        fun fromRaw(raw: Int): {} = when (raw) {{", e.name);
     for v in &e.variants {
-        writeln!(out, "            {} -> {}", v.value, v.name);
+        writeln!(out, "            {} -> {}", kotlin_int_literal(v.value), v.name);
     }
     writeln!(
         out,
@@ -48,38 +48,31 @@ pub(super) fn emit_kotlin_struct(out: &mut CodeWriter, s: &HybridStructSpec, spe
     writeln!(out);
     writeln!(out, "    companion object {{");
     writeln!(out, "        fun decodeBin(r: BinReader): {} {{", s.name);
-    // `_f_<field>` never collides with the codec's `_n<d>` / `_el<d>` / `_ov<d>` locals.
+    // `_f_<field>` never collides with the codec's `_a<d>` / `_el<d>` / `_ov<d>` locals; it uses
+    // the unescaped name (`_f_object`, never `` _f_`object` ``).
     for f in &s.fields {
-        let fname = kotlin_ident(&f.name);
         let def = kotlin_default_value(&f.ty, None, spec);
-        writeln!(out, "            var _f_{fname}: {} = {def}", kotlin_type(&f.ty));
+        writeln!(out, "            var {}: {} = {def}", field_local(&f.name), kotlin_type(&f.ty));
     }
-    writeln!(out, "            repeat(r.beginMap()) {{");
+    writeln!(out, "            val _m = r.beginMap()");
+    writeln!(out, "            repeat(_m.count) {{");
     writeln!(out, "                when (r.readMapKey()) {{");
     for f in &s.fields {
-        let fname = kotlin_ident(&f.name);
         let key_lit = escape_kotlin_string(&f.name);
         writeln!(out, "                    \"{key_lit}\" -> {{");
-        emit_kotlin_bin_read(
-            out,
-            "                        ",
-            "r",
-            &format!("_f_{fname}"),
-            &f.ty,
-            0,
-        );
+        emit_kotlin_bin_read(out, "                        ", "r", &field_local(&f.name), &f.ty, 0);
         writeln!(out, "                    }}");
     }
     writeln!(out, "                    else -> r.skipValue()");
     writeln!(out, "                }}");
     writeln!(out, "            }}");
+    writeln!(out, "            r.end(_m)");
     write!(out, "            return {}(", s.name);
     for (idx, f) in s.fields.iter().enumerate() {
         if idx > 0 {
             write!(out, ", ");
         }
-        let fname = kotlin_ident(&f.name);
-        write!(out, "{fname} = _f_{fname}");
+        write!(out, "{} = {}", kotlin_ident(&f.name), field_local(&f.name));
     }
     writeln!(out, ")");
     writeln!(out, "        }}");
@@ -162,16 +155,17 @@ pub(super) fn emit_kotlin_client(
     writeln!(out);
     writeln!(out, "        fun create(): {pascal}HybridClient = {pascal}HybridClient(nativeCreate())");
     writeln!(out, "        @JvmStatic private external fun nativeCreate(): Long");
-    writeln!(out, "        @JvmStatic private external fun nativeDestroy(handle: Long)");
+    // `_nveHandle`: a user parameter named `handle` must not redeclare it.
+    writeln!(out, "        @JvmStatic private external fun nativeDestroy(_nveHandle: Long)");
     if view.is_some() {
         writeln!(
             out,
-            "        @JvmStatic private external fun nativeSetProps(handle: Long, propsDirectBuf: ByteBuffer)"
+            "        @JvmStatic private external fun nativeSetProps(_nveHandle: Long, _nveProps: ByteBuffer)"
         );
     }
     for m in methods {
         let jni_name = format!("native{}", to_pascal_case(&m.name));
-        let mut params = vec!["handle: Long".to_string()];
+        let mut params = vec!["_nveHandle: Long".to_string()];
         for p in &m.params {
             let pname = kotlin_ident(&p.name);
             params.push(format!("{pname}: {}", kotlin_jni_param_type(&p.ty)));
@@ -191,11 +185,11 @@ pub(super) fn emit_kotlin_client(
     writeln!(out, "    }}");
     writeln!(out);
 
+    // Clear the handle before destroying it, so no path can use or free it twice.
     writeln!(out, "    override fun close() {{");
-    writeln!(out, "        if (handle != 0L) {{");
-    writeln!(out, "            nativeDestroy(handle)");
-    writeln!(out, "            handle = 0L");
-    writeln!(out, "        }}");
+    writeln!(out, "        val h = this.handle");
+    writeln!(out, "        this.handle = 0L");
+    writeln!(out, "        if (h != 0L) nativeDestroy(h)");
     writeln!(out, "    }}");
     writeln!(out);
 

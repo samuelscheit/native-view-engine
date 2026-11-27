@@ -20,6 +20,57 @@ pub(super) fn kotlin_method_sig(m: &HybridMethodSpec) -> String {
     }
 }
 
+/// The decode local of struct field `name`: `_f_` + the unescaped Kotlin name.
+pub(super) fn field_local(name: &str) -> String {
+    format!("_f_{}", kotlin_ident(name).trim_matches('`'))
+}
+
+/// Rejects types the Kotlin / JNI target cannot carry: raw pointers, handles, and fixed arrays
+/// have no `NveBinValue` codec or JNI mapping, and an empty codec arm would corrupt map framing.
+pub(super) fn check_kotlin_supported(spec: &HybridFileSpec) -> Result<(), CodegenError> {
+    fn check(ty: &HybridType, at: &str) -> Result<(), CodegenError> {
+        match ty {
+            HybridType::ConstPtr(_)
+            | HybridType::MutPtr(_)
+            | HybridType::Handle(_)
+            | HybridType::FixedArray { .. } => Err(CodegenError::validation(format!(
+                "hybrid Kotlin target: `{at}` has type `{}`, which Kotlin / JNI cannot carry",
+                ty.canonical_signature()
+            ))),
+            HybridType::Optional(inner) | HybridType::Vec(inner) => check(inner, at),
+            HybridType::Result { ok, .. } => check(ok, at),
+            _ => Ok(()),
+        }
+    }
+    let check_methods = |owner: &str, methods: &[HybridMethodSpec]| {
+        methods.iter().try_for_each(|m| {
+            let at = format!("{owner}::{}", m.name);
+            m.params.iter().try_for_each(|p| check(&p.ty, &at))?;
+            check(&m.return_type, &at)
+        })
+    };
+    for s in &spec.structs {
+        for f in &s.fields {
+            check(&f.ty, &format!("{}.{}", s.name, f.name))?;
+        }
+    }
+    for m in &spec.modules {
+        check_methods(&m.name, &m.methods)?;
+    }
+    for v in &spec.views {
+        for p in &v.props {
+            check(&p.ty, &format!("{}.{}", v.name, p.name))?;
+        }
+        for e in &v.events {
+            for p in &e.params {
+                check(&p.ty, &format!("{}::{}", v.name, e.name))?;
+            }
+        }
+        check_methods(&v.name, &v.methods)?;
+    }
+    Ok(())
+}
+
 /// A `const val` initializer of the `u32` bits as a Kotlin `Int` (a hex literal above
 /// `Int.MAX_VALUE`, or `.toInt()` of one, is not a constant).
 pub(super) fn kotlin_int_literal(bits: u32) -> String {
@@ -171,14 +222,20 @@ pub(super) fn kotlin_default_value(
         }
         return match (d, ty) {
             (HybridDefaultValue::Bool(b), _) => b.to_string(),
-            (HybridDefaultValue::Int(i), HybridType::I64 | HybridType::U64) => format!("{i}L"),
+            // Integers keep their bits: `u32` / `u64` above the signed range and `i64::MIN` are
+            // not Kotlin literals, so they go through the signed `const` spellings.
+            (HybridDefaultValue::Int(i), HybridType::I64 | HybridType::U64 | HybridType::Usize) => {
+                kotlin_long_literal(i.cast_unsigned())
+            }
             (HybridDefaultValue::Int(i), HybridType::F32) => format!("{i}.0f"),
             (HybridDefaultValue::Int(i), HybridType::F64) => format!("{i}.0"),
-            (HybridDefaultValue::Int(i), _) => i.to_string(),
-            (HybridDefaultValue::UInt(u), HybridType::I64 | HybridType::U64) => format!("{u}L"),
+            (HybridDefaultValue::Int(i), _) => kotlin_int_literal(*i as u32),
+            (HybridDefaultValue::UInt(u), HybridType::I64 | HybridType::U64 | HybridType::Usize) => {
+                kotlin_long_literal(*u)
+            }
             (HybridDefaultValue::UInt(u), HybridType::F32) => format!("{u}.0f"),
             (HybridDefaultValue::UInt(u), HybridType::F64) => format!("{u}.0"),
-            (HybridDefaultValue::UInt(u), _) => u.to_string(),
+            (HybridDefaultValue::UInt(u), _) => kotlin_int_literal(*u as u32),
             (HybridDefaultValue::Float(f), HybridType::F32) => {
                 format!("{}f", format_float_literal(*f))
             }
@@ -231,15 +288,19 @@ pub(super) fn emit_kotlin_bin_write(
 ) {
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr})"),
-        HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
+        HybridType::U8 | HybridType::U16 | HybridType::I32 => {
             writeln!(out, "{indent}{w}.writeI64({expr}.toLong())")
         }
+        // `u32` bits live in an `Int`: zero-extend, like Rust and C++ (`0xFFFFFFFF`, never `-1`).
+        HybridType::U32 => writeln!(out, "{indent}{w}.writeI64({expr}.toLong() and 0xFFFFFFFFL)"),
         HybridType::Usize | HybridType::I64 | HybridType::U64 => {
             writeln!(out, "{indent}{w}.writeI64({expr})")
         }
         HybridType::F32 => writeln!(out, "{indent}{w}.writeF64({expr}.toDouble())"),
         HybridType::F64 => writeln!(out, "{indent}{w}.writeF64({expr})"),
-        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeI64({expr}.rawValue.toLong())"),
+        HybridType::Enum(_) => {
+            writeln!(out, "{indent}{w}.writeI64({expr}.rawValue.toLong() and 0xFFFFFFFFL)")
+        }
         HybridType::String => writeln!(out, "{indent}{w}.writeStr({expr})"),
         HybridType::Bytes => writeln!(out, "{indent}{w}.writeBytes({expr})"),
         HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encodeBin({w})"),
@@ -267,6 +328,8 @@ pub(super) fn emit_kotlin_bin_write(
             writeln!(out, "{indent}    {w}.end(_a{depth})");
             writeln!(out, "{indent}}}");
         }
+        // Never values (`Void`, `Result` is unwrapped by callers) or rejected up front by
+        // `check_kotlin_supported`.
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)
@@ -315,11 +378,16 @@ pub(super) fn emit_kotlin_bin_read(
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
+            // The reserve is capped (C++ `MAX_DECODE_RESERVE`): a crafted count cannot force a huge
+            // allocation before the payload proves its entries exist.
             let elem = kotlin_type(inner);
             writeln!(out, "{indent}run {{");
-            writeln!(out, "{indent}    val _n{depth} = {r}.beginArray()");
-            writeln!(out, "{indent}    val _list{depth} = ArrayList<{elem}>(_n{depth})");
-            writeln!(out, "{indent}    repeat(_n{depth}) {{");
+            writeln!(out, "{indent}    val _a{depth} = {r}.beginArray()");
+            writeln!(
+                out,
+                "{indent}    val _list{depth} = ArrayList<{elem}>(minOf(_a{depth}.count, 1024))"
+            );
+            writeln!(out, "{indent}    repeat(_a{depth}.count) {{");
             writeln!(out, "{indent}        val _el{depth}: {elem}");
             emit_kotlin_bin_read(
                 out,
@@ -331,9 +399,11 @@ pub(super) fn emit_kotlin_bin_read(
             );
             writeln!(out, "{indent}        _list{depth}.add(_el{depth})");
             writeln!(out, "{indent}    }}");
+            writeln!(out, "{indent}    {r}.end(_a{depth})");
             writeln!(out, "{indent}    {dst} = _list{depth}");
             writeln!(out, "{indent}}}");
         }
+        // Never values, or rejected up front by `check_kotlin_supported`.
         HybridType::Void
         | HybridType::Result { .. }
         | HybridType::ConstPtr(_)

@@ -2,8 +2,8 @@
 //! static `nve::host_cxx` runtime (`nve/host/jni.hpp`) for buffers, strings, and exceptions.
 //!
 //! Every entry point converts C++ exceptions (any kind) into a pending Java exception and returns
-//! a zero value. User parameters are spelled `arg_<name>`, so they never collide with `env`,
-//! `handle`, or the generated locals.
+//! a zero value. User parameters are spelled `arg<index>`, so they never collide with `env`,
+//! `handle`, or the generated locals, and a parameter `_x` never becomes the reserved `arg__x`.
 
 use crate::naming::escape_c_like_string;
 use crate::schema::hybrid::HybridPropSpec;
@@ -125,8 +125,8 @@ fn emit_jni_cpp_target(
             out,
             "JNIEXPORT {jni_ret} JNICALL {jni_fn}(JNIEnv* env, jclass, jlong handle"
         );
-        for p in &m.params {
-            write!(out, ", {} arg_{}", jni_cpp_param_type(&p.ty), p.name);
+        for (idx, p) in m.params.iter().enumerate() {
+            write!(out, ", {} arg{idx}", jni_cpp_param_type(&p.ty));
         }
         writeln!(out, ") {{");
         let zero = jni_cpp_zero_return(&m.return_type);
@@ -135,7 +135,7 @@ fn emit_jni_cpp_target(
             .params
             .iter()
             .enumerate()
-            .map(|(idx, p)| emit_jni_arg(out, idx, &format!("arg_{}", p.name), &p.ty))
+            .map(|(idx, p)| emit_jni_arg(out, idx, &format!("arg{idx}"), &p.ty))
             .collect();
         let effective_ret = match &m.return_type {
             HybridType::Result { ok, .. } => ok.as_ref(),

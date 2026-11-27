@@ -130,14 +130,43 @@ public final class BinReader {
         return bytes(length());
     }
 
-    /** Element count of an array; rejects counts its payload cannot hold. */
-    public int beginArray() {
-        return openContainer(BinTag.ARRAY, 1);
+    /** A container being read: its entry count, and the bounds {@link #end(ReadMark)} checks and restores. */
+    public static final class ReadMark {
+        public final int count;
+        final int end;
+        final int outerLimit;
+
+        ReadMark(int count, int end, int outerLimit) {
+            this.count = count;
+            this.end = end;
+            this.outerLimit = outerLimit;
+        }
     }
 
-    /** Entry count of a map; read each entry as {@link #readMapKey()} then a value. */
-    public int beginMap() {
-        return openContainer(BinTag.MAP, 5);
+    /**
+     * Opens an array (counts its payload cannot hold are rejected). Until {@link #end(ReadMark)}, no
+     * read can pass its payload, so a crafted entry never reads its parent's bytes.
+     */
+    public ReadMark beginArray() {
+        return open(BinTag.ARRAY, 1);
+    }
+
+    /** Opens a map like {@link #beginArray()}; read each entry as {@link #readMapKey()} then a value. */
+    public ReadMark beginMap() {
+        return open(BinTag.MAP, 5);
+    }
+
+    /** Closes {@code mark}'s container: its payload must have been read exactly ({@code TRAILING_BYTES}). */
+    public void end(ReadMark mark) {
+        limit = mark.outerLimit;
+        if (pos != mark.end) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (mark.end - pos) + " bytes");
+    }
+
+    private ReadMark open(BinTag tag, int minEntryBytes) {
+        final int outer = limit;
+        final int count = openContainer(tag, minEntryBytes);
+        limit = containerEnd;
+        return new ReadMark(count, containerEnd, outer);
     }
 
     public String readMapKey() {

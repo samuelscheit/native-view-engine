@@ -12,7 +12,9 @@ every Java / Kotlin host binding.
 | `HybridRuntime` | `HybridStatus`, `HostStatus`, `HybridException`, `checkSchema`, `DynamicValue`, `directBuffer` |
 
 Generated Kotlin / Java hybrid clients (`nve codegen hybrid --target kotlin`) import this runtime and
-never copy it: structs encode through `BinWriter` (`beginMap` / `end`) and decode through `BinReader`;
+never copy it: structs encode through `BinWriter` (`beginMap` / `end`) and decode through `BinReader`
+(`beginMap` / `beginArray` return a `ReadMark` that bounds every read until `end(mark)`, which also
+rejects unread entries);
 JNI arguments cross as `BinWriter.toDirectBuffer()` / `HybridRuntime.directBuffer` (capacity == size,
 little-endian), `NveValue` fields as `DynamicValue` (`read` validates, `writeTo` appends without a
 copy), and every result is checked with `BinReader.expectEnd()`.

@@ -14,6 +14,7 @@ jbyteArray Java_dev_nve_hybrid_OverlayViewHybridClient_nativeCurrentOverlays(JNI
 jbyteArray Java_dev_nve_hybrid_OverlayViewHybridClient_nativeCurrentExtra(JNIEnv*, jclass, jlong);
 jstring Java_dev_nve_hybrid_OverlayViewHybridClient_nativeSummary(JNIEnv*, jclass, jlong);
 jbyteArray Java_dev_nve_hybrid_OverlayViewHybridClient_nativeEcho(JNIEnv*, jclass, jlong, jobject);
+jint Java_dev_nve_hybrid_OverlayViewHybridClient_nativeShift(JNIEnv*, jclass, jlong, jint, jobject);
 }
 
 using namespace nve::hybrid;
@@ -55,12 +56,17 @@ Overlay sample_overlay(std::optional<std::string> caption) {
   o.caption = std::move(caption);
   o.extra = sample_extra();
   o.labels = {"", "\xC3\xA9", "\xF0\x9F\x98\x80"};
+  o.when = 0xFFFFFFFFu;
   return o;
 }
 
 bool same(const Overlay& a, const Overlay& b) {
-  return a.kind == b.kind && a.cues == b.cues && a.caption == b.caption && a.extra == b.extra && a.labels == b.labels;
+  return a.kind == b.kind && a.cues == b.cues && a.caption == b.caption && a.extra == b.extra &&
+         a.labels == b.labels && a.when == b.when;
 }
+
+/// `u32::MAX` / `u64::MAX` prop defaults (Rust-side, never sent here) end every summary.
+constexpr std::u16string_view kSummaryTail = u"|4294967295|18446744073709551615";
 
 struct Props {
   std::string title = "Live \xE2\x9C\x93 \xF0\x9F\x98\x80";
@@ -251,6 +257,17 @@ class Harness {
     return s != nullptr ? s->units : std::u16string();
   }
 
+  jint shift(jint handle, std::optional<int32_t> object) {
+    DirectBuffer arg(encoded([&](BinWriter& w) {
+      if (object) {
+        w.write_i64(*object);
+      } else {
+        w.write_null();
+      }
+    }));
+    return Java_dev_nve_hybrid_OverlayViewHybridClient_nativeShift(&env_, nullptr, handle_, handle, arg.get());
+  }
+
   jbyteArray echo(const Overlay& o) {
     DirectBuffer arg(encoded([&](BinWriter& w) { o.encode_bin(w); }));
     return Java_dev_nve_hybrid_OverlayViewHybridClient_nativeEcho(&env_, nullptr, handle_, arg.get());
@@ -274,7 +291,9 @@ void test_props_and_results(JNIEnv& env) {
   for (size_t i = 0; i < overlays.size() && i < full.overlays.size(); ++i) CHECK(same(overlays[i], full.overlays[i]));
   const DynamicValue extra = sample_extra();
   CHECK(h.current_extra() == std::vector<uint8_t>(extra.bytes().begin(), extra.bytes().end()));
-  CHECK(h.summary() == u"Live \u2713 \U0001F600|Ad|true|3|4");
+  CHECK(h.summary() == std::u16string(u"Live \u2713 \U0001F600|Ad|true|3|4") + std::u16string(kSummaryTail));
+  // `u32` parameters named `handle` / `object` cross as their bits (`-1` is `u32::MAX`).
+  CHECK(h.shift(-1, 2) == 1 && h.shift(5, std::nullopt) == 5 && env.thrown == 0);
 
   // Absent option, empty sequence, undeclared container key, and a scalar dynamic value.
   Props sparse;
@@ -286,7 +305,7 @@ void test_props_and_results(JNIEnv& env) {
   CHECK(!h.current_overlay().has_value() && h.current_overlays().empty());
   const auto solo = sparse.extra.bytes();
   CHECK(h.current_extra() == std::vector<uint8_t>(solo.begin(), solo.end()));
-  CHECK(h.summary() == u"t|Chapter|false|0|0");
+  CHECK(h.summary() == std::u16string(u"t|Chapter|false|0|0") + std::u16string(kSummaryTail));
   Props null_extra;
   null_extra.extra = DynamicValue();
   CHECK(h.set(null_extra) && env.thrown == 0);
@@ -305,6 +324,7 @@ void test_props_and_results(JNIEnv& env) {
     expected.cues = {-2147483647 - 1, 2147483647, -2, 1};
     expected.caption = "CAP";
     expected.labels = {"", "\xC3\x89", "\xF0\x9F\x98\x80"};
+    expected.when = 0x7FFFFFFFu;
     CHECK(same(back, expected));
   }
   const int refs_before = env.live_local_refs;

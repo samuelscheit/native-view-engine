@@ -33,6 +33,56 @@ final class BinCodecTest {
         dynamicValue(c, golden);
         utf8(c);
         hardening(c, golden);
+        streamingReadsStayInsideTheirContainer(c);
+    }
+
+    /** Mirrors host-cxx {@code test_streaming_reads_stay_inside_their_container}. */
+    static void streamingReadsStayInsideTheirContainer(Check c) {
+        // `[[1], 7]` where the inner array claims 2 elements in a payload holding 1: the second read
+        // must fail at the inner container's end, not consume the outer `7`.
+        final BinWriter w = new BinWriter();
+        final long outer = w.beginArray(2);
+        final long inner = w.beginArray(1);
+        w.writeI64(1);
+        w.end(inner);
+        w.writeI64(7);
+        w.end(outer);
+        final byte[] good = w.toByteArray();
+        final byte[] lying = good.clone();
+        lying[14] = 2; // inner count: 1 -> 2 (its payload still holds one entry)
+        final BinReader r = new BinReader(lying);
+        final BinReader.ReadMark o = r.beginArray();
+        final BinReader.ReadMark i = r.beginArray();
+        c.that(o.count == 2 && i.count == 2, "lying counts open");
+        c.eq(r.readI64(), 1, "first inner entry");
+        c.binError(BinCodecException.Kind.TRUNCATED, r::readI64, "second inner read stops at the inner end");
+
+        // A container whose entries were not all read is TRAILING_BYTES at `end`.
+        final BinReader partial = new BinReader(good);
+        final BinReader.ReadMark po = partial.beginArray();
+        partial.readRawValue();
+        c.binError(BinCodecException.Kind.TRAILING_BYTES, () -> partial.end(po), "unread entry at end");
+
+        // Exact reads close cleanly and restore the outer bounds.
+        final BinReader exact = new BinReader(good);
+        final BinReader.ReadMark eo = exact.beginArray();
+        final BinReader.ReadMark ei = exact.beginArray();
+        c.eq(exact.readI64(), 1, "inner 1");
+        c.binError(BinCodecException.Kind.TRUNCATED, exact::readI64, "nothing past the inner end");
+        exact.end(ei);
+        c.eq(exact.readI64(), 7, "outer 7 after end restores the bounds");
+        exact.end(eo);
+        c.that(exact.atEnd(), "exact reads at end");
+
+        // A skipped nested value and a window offset keep the same bounds.
+        final byte[] framed = new byte[good.length + 2];
+        System.arraycopy(good, 0, framed, 1, good.length);
+        final BinReader window = new BinReader(framed, 1, good.length);
+        final BinReader.ReadMark wo = window.beginArray();
+        window.skipValue();
+        c.eq(window.readI64(), 7, "skip inner, read outer");
+        window.end(wo);
+        c.that(window.atEnd(), "window at end");
     }
 
     static void hardening(Check c, byte[] golden) {
@@ -49,7 +99,9 @@ final class BinCodecTest {
             w.writeStr(s);
             w.end(m);
             final BinReader r = new BinReader(w.toByteArray());
-            c.that(r.beginMap() == 1 && r.readMapKey().equals(s) && r.readStr().equals(s), "BOM round trip " + s.length());
+            final BinReader.ReadMark rm = r.beginMap();
+            c.that(rm.count == 1 && r.readMapKey().equals(s) && r.readStr().equals(s), "BOM round trip " + s.length());
+            r.end(rm);
         }
         // Lone surrogates are rejected, never written as '?' or U+FFFD; the buffer stays untouched.
         for (String lone : new String[] {"\ud800", "a\udc00", "\ud83d", "\ude80\ud83d"}) {
@@ -175,9 +227,11 @@ final class BinCodecTest {
         c.that(Arrays.equals(w.toByteArray(), golden), "golden encoding");
         BinReader.validate(golden);
         final BinReader r = new BinReader(golden);
-        c.eq(r.beginMap(), 1, "map count");
+        final BinReader.ReadMark rmap = r.beginMap();
+        c.eq(rmap.count, 1, "map count");
         c.that(r.readMapKey().equals("k"), "map key");
-        c.eq(r.beginArray(), 6, "array count");
+        final BinReader.ReadMark rarr = r.beginArray();
+        c.eq(rarr.count, 6, "array count");
         c.eq(r.readI64(), 1, "i64");
         c.that(r.readStr().equals("\u00e9"), "str");
         c.that(r.readNull(), "null");
@@ -185,6 +239,8 @@ final class BinCodecTest {
         c.that(r.readBool(), "bool");
         c.that(r.readF64() == 1.5, "f64");
         c.that(Arrays.equals(r.readBytes(), new byte[] {(byte) 0xFF}), "bytes");
+        r.end(rarr);
+        r.end(rmap);
         c.that(r.atEnd(), "at end");
         w.clear();
         c.eq(w.size(), 0, "clear");
@@ -334,8 +390,10 @@ final class BinCodecTest {
         HybridRuntime.DynamicValue.NULL.writeTo(w);
         w.end(arr);
         final BinReader back = new BinReader(w.toByteArray());
-        c.eq(back.beginArray(), 2, "writeTo array count");
+        final BinReader.ReadMark backArr = back.beginArray();
+        c.eq(backArr.count, 2, "writeTo array count");
         c.that(HybridRuntime.DynamicValue.read(back).equals(v) && back.readNull(), "writeTo round trip");
+        back.end(backArr);
         back.expectEnd();
 
         final java.nio.ByteBuffer direct = w.toDirectBuffer();
