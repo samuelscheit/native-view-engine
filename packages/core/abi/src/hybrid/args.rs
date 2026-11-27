@@ -5,6 +5,8 @@
 // pattern a C caller can produce is undefined behavior on entry. Trampolines turn carriers into
 // Rust values only through these checks.
 
+use std::mem::{ManuallyDrop, MaybeUninit};
+
 use crate::{DecodeError, NveBufferSlice};
 
 /// Borrows a `Bytes` or `NveBinValue` trampoline argument, rejecting `(null, len > 0)` and
@@ -43,20 +45,41 @@ pub fn decode_opt<R, T>(
     }
 }
 
-/// Decodes a fixed-size array of carriers element-wise, without allocating; the first failing
-/// element's error wins.
-#[inline]
-pub fn decode_array<R, T: Default, const N: usize>(
+/// Decodes a fixed-size array of carriers element-wise, without allocating and without a
+/// `Default` bound; it stops at the first failing element and drops the ones decoded before it.
+pub fn decode_array<R, T, const N: usize>(
     raw: [R; N],
     mut decode: impl FnMut(R) -> Result<T, DecodeError>,
 ) -> Result<[T; N], DecodeError> {
-    let mut error = None;
-    let out = raw.map(|item| match decode(item) {
-        Ok(v) => v,
-        Err(e) => {
-            error.get_or_insert(e);
-            T::default()
+    let mut out = InitPrefix::<T, N> {
+        items: [const { MaybeUninit::uninit() }; N],
+        len: 0,
+    };
+    for (slot, item) in out.items.iter_mut().zip(raw) {
+        slot.write(decode(item)?);
+        out.len += 1;
+    }
+    // `raw` has exactly `N` items, so every slot is written; the guard must not drop them now.
+    let out = ManuallyDrop::new(out);
+    // SAFETY: All `N` slots are initialized (the loop ran `N` times without an early return), and
+    // `ManuallyDrop` hands their ownership to the returned array exactly once.
+    Ok(unsafe { std::ptr::read(&out.items) }.map(|slot| {
+        // SAFETY: Every slot is initialized, see above.
+        unsafe { slot.assume_init() }
+    }))
+}
+
+/// Slots of which the first `len` are initialized; dropping it drops exactly those.
+struct InitPrefix<T, const N: usize> {
+    items: [MaybeUninit<T>; N],
+    len: usize,
+}
+
+impl<T, const N: usize> Drop for InitPrefix<T, N> {
+    fn drop(&mut self) {
+        for slot in self.items.iter_mut().take(self.len) {
+            // SAFETY: The first `len` slots were written by `decode_array` and not moved out.
+            unsafe { slot.assume_init_drop() };
         }
-    });
-    error.map_or(Ok(out), Err)
+    }
 }

@@ -87,6 +87,11 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
       - Generated Rust names every `nve_abi` item by path and imports nothing (no unused-import scanner); trait calls are fully qualified, so a spec method named `default` compiles.
       - Runtime: `NveHybridOwnedBytes` derives `NveAbi`; null out-pointers release buffers (`store_bytes`, `fail`); empty vectors and failed `alloc_bytes` (`try_reserve_exact`) cross as `EMPTY`; slices go through `buffer_arg` / `NveBufferSlice::try_as_slice` (rejects `(null, len > 0)` and `len > isize::MAX`); `[T; N]` decodes any element type and length; direct props reject corrupt keys (`NveMapRef::try_iter`); `NveHybridStatus::ALL` feeds the host-runtime drift guard.
       - C-only records (unions, raw pointers, handles) are skipped; structs and events with `[T; N > 32]` get a written-out `Default`.
+    - Pass-3 review fixes:
+      - Decoders reserve at most 1024 elements / 64 KiB up front, so a hostile declared length (50 000 `Null`s as `Vec<[u8; 4096]>`) cannot reserve in bulk.
+      - `decode_array` needs no `Default` (`MaybeUninit` prefix with a drop guard, zero-alloc); `[[bool; 33]; 2]` crosses as a carrier.
+      - Generated Rust names prelude items by path (`::core::result::Result`, `::std::string::String`, ...) and asserts each `NveHybridRaw<X>` matches `X` in size and alignment; enum variants colliding in snake case are duplicates.
+      - `NveValueRef::try_as_str` (`Truncated` vs `InvalidUtf8`); `BinWriter::value` writes nothing after an error; `abi_bench` requires `wire`, so `--no-default-features --all-targets` builds.
   - **C++ hybrid clients on host-cxx (commit 5a-cxx)**
     - The generated C++20 hybrid header no longer carries its own copied `NveBinValue` codec prelude.
       - It includes `<nve/host/bin_codec.hpp>` / `<nve/host/hybrid_runtime.hpp>`.

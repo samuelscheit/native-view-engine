@@ -40,6 +40,7 @@ pub struct Frame {
     pub history: [Phase; 2],
     pub flags: [bool; 3],
     pub pad: [u8; 40],
+    pub grid: [[bool; 33]; 2],
 }
 
 #[nve_hybrid_struct]
@@ -71,7 +72,7 @@ pub trait ShadowSpec {
     fn default(&self) -> u32;
     fn check(&self, status: Status, maybe: Option<Status>) -> Result<Option<Status>, String>;
     fn advance(&self, frame: Frame) -> Frame;
-    fn toggle(&self, on: bool) -> bool;
+    fn toggle(&self, on: bool) -> Result<bool, String>;
 }
 
 #[nve_hybrid_view(name = "Canvas")]

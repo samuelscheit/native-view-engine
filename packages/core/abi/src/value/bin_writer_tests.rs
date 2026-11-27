@@ -190,13 +190,27 @@ fn value_tree_of_scalars_and_wide_fan_out() {
 #[test]
 fn a_failed_writer_stops_encoding() {
     let mut w = BinWriter::new();
+    w.i64(5);
+    let written = w.len();
     w.fail(DecodeError::TooLarge);
     let mut ran = false;
     w.array(|_| ran = true);
     w.map(|_| ran = true);
     w.str("ignored");
+    w.bytes(&[1, 2]);
     w.i64(1);
-    assert!(!ran, "container bodies are skipped once an error is recorded");
+    w.f64(1.0);
+    w.bool(true);
+    w.null();
+    let mut v = BinWriter::new();
+    v.str("copied");
+    let copied = v.finish().expect("encodes");
+    w.value(BinValueView::parse(&copied).expect("validates"));
+    assert!(
+        !ran,
+        "container bodies are skipped once an error is recorded"
+    );
+    assert_eq!(w.len(), written, "nothing is written after the error");
     assert_eq!(w.finish(), Err(DecodeError::TooLarge));
 }
 

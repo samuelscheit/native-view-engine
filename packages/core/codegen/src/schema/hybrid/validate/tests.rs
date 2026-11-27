@@ -208,3 +208,28 @@ fn names_that_collide_in_snake_case_are_duplicates() {
     });
     assert!(error_of(&s).contains("duplicate hybrid module/view name"));
 }
+
+#[test]
+fn enum_variants_that_collide_in_snake_case_are_duplicates() {
+    let variant = |name: &str, value: u32| HybridEnumVariant {
+        name: name.to_owned(),
+        value,
+        doc: None,
+    };
+    for clash in ["foo_bar", "FOO_BAR", "fooBar"] {
+        let mut s = spec("run", "shape", "x");
+        s.enums.push(HybridEnumSpec {
+            name: "Mode".to_owned(),
+            variants: vec![variant("FooBar", 0), variant(clash, 1)],
+            ..Default::default()
+        });
+        assert!(error_of(&s).contains("duplicate variant"), "{clash}");
+    }
+    let mut s = spec("run", "shape", "x");
+    s.enums.push(HybridEnumSpec {
+        name: "Mode".to_owned(),
+        variants: vec![variant("FooBar", 0), variant("FooBaz", 1)],
+        ..Default::default()
+    });
+    assert_eq!(s.validate(), Ok(()));
+}

@@ -7,8 +7,8 @@ use crate::writer::CodeWriter;
 
 use super::emit_doc_comments;
 use super::type_map::{
-    CodecSupport, default_expr, needs_manual_default, needs_raw, raw_c_type, raw_decode_expr,
-    raw_encode_expr, rust_owned_type,
+    CodecSupport, DEFAULT, FROM, RESULT, default_expr, needs_manual_default, needs_raw, raw_c_type,
+    raw_decode_expr, raw_encode_expr, rust_owned_type,
 };
 
 /// One field of an emitted Rust struct.
@@ -47,7 +47,7 @@ pub(super) fn emit_record(
     if !manual_default {
         return;
     }
-    writeln!(out, "impl Default for {name} {{");
+    writeln!(out, "impl {DEFAULT} for {name} {{");
     writeln!(out, "    fn default() -> Self {{");
     writeln!(out, "        Self {{");
     for f in fields {
@@ -86,7 +86,7 @@ pub(super) fn emit_rust_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
     writeln!(out, "    #[inline]");
     writeln!(
         out,
-        "    pub const fn from_u32(raw: u32) -> Option<Self> {{"
+        "    pub const fn from_u32(raw: u32) -> ::core::option::Option<Self> {{"
     );
     writeln!(out, "        match raw {{");
     for v in &e.variants {
@@ -158,7 +158,7 @@ pub(super) fn emit_rust_struct(
     writeln!(out);
     writeln!(
         out,
-        "    fn decode_fields(fields: &impl nve_abi::hybrid::HybridFields) -> Result<Self, nve_abi::DecodeError> {{"
+        "    fn decode_fields(fields: &impl nve_abi::hybrid::HybridFields) -> {RESULT}<Self, nve_abi::DecodeError> {{"
     );
     writeln!(out, "        Ok(Self {{");
     for f in &s.fields {
@@ -197,11 +197,21 @@ fn emit_raw_carrier(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
         "/// C-ABI carrier of [`{name}`]; [`{raw}::decode`] validates it."
     );
     emit_record(out, &["#[repr(C)]"], "Debug, Clone, Copy", &raw, &fields);
+    // Same C layout as `name` (`bool` / `u8`, `#[repr(u32)]` enum / `u32`), checked by rustc.
+    writeln!(out, "const _: () = {{");
+    for probe in ["size_of", "align_of"] {
+        writeln!(
+            out,
+            "    ::core::assert!(::core::mem::{probe}::<{raw}>() == ::core::mem::{probe}::<{name}>());"
+        );
+    }
+    writeln!(out, "}};");
+    writeln!(out);
 
     writeln!(out, "impl {raw} {{");
     writeln!(
         out,
-        "    pub fn decode(self) -> Result<{name}, nve_abi::DecodeError> {{"
+        "    pub fn decode(self) -> {RESULT}<{name}, nve_abi::DecodeError> {{"
     );
     writeln!(out, "        Ok({name} {{");
     for f in &s.fields {
@@ -217,7 +227,7 @@ fn emit_raw_carrier(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
     writeln!(out, "}}");
     writeln!(out);
 
-    writeln!(out, "impl From<{name}> for {raw} {{");
+    writeln!(out, "impl {FROM}<{name}> for {raw} {{");
     writeln!(out, "    fn from(value: {name}) -> Self {{");
     writeln!(out, "        Self {{");
     for f in &s.fields {

@@ -46,6 +46,17 @@ impl BinWriter {
         }
     }
 
+    /// Bytes written so far (unchanged by any write after an error is recorded).
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     #[inline]
     pub fn is_ok(&self) -> bool {
         self.error.is_none()
@@ -101,6 +112,9 @@ impl BinWriter {
     /// Copies an already validated value. Records `MaxDepthExceeded` (writing nothing) when its
     /// containers would nest deeper than `NVE_BIN_VALUE_MAX_DEPTH` at the current depth.
     pub fn value(&mut self, view: BinValueView<'_>) {
+        if self.error.is_some() {
+            return;
+        }
         // A validated view nests at most `NVE_BIN_VALUE_MAX_DEPTH` deep, so only a nested copy is walked.
         if self.depth > 0 && self.depth + container_depth(view) > NVE_BIN_VALUE_MAX_DEPTH {
             return self.fail(DecodeError::MaxDepthExceeded);

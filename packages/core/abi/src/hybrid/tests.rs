@@ -262,6 +262,21 @@ fn c_value_trees_decode_as_maps_arrays_or_encoded_bytes() {
         String::decode_value_ref(bad_str_ref),
         Err(DecodeError::InvalidUtf8)
     );
+    let null_str = NveValue {
+        tag: NveValueTag::Str as u32,
+        data: crate::value::NveValueData {
+            str_val: crate::NveStrSlice {
+                ptr: std::ptr::null(),
+                len: 5,
+            },
+        },
+    };
+    // SAFETY: A null pointer is rejected before any read.
+    let null_str_ref = unsafe { null_str.as_ref() };
+    assert_eq!(
+        String::decode_value_ref(null_str_ref),
+        Err(DecodeError::Truncated)
+    );
     let dangling = NveValue {
         tag: NveValueTag::Bytes as u32,
         data: crate::value::NveValueData {
@@ -423,6 +438,34 @@ fn raw_carriers_validate_before_becoming_rust_values() {
     );
 
     assert_eq!(decode_array([0u32, 7], mode), Ok([Mode::Idle, Mode::Busy]));
+    // Nested and longer than 32 (no `Default` bound needed).
+    let mut grid = [[1u8; 33]; 2];
+    grid[1][32] = 0;
+    let decoded = decode_array(grid, |row| decode_array(row, decode_bool));
+    assert_eq!(decoded.map(|g| (g[0][0], g[1][32])), Ok((true, false)));
+    grid[1][5] = 2;
+    assert_eq!(
+        decode_array(grid, |row| decode_array(row, decode_bool)),
+        Err(DecodeError::OutOfRange("bool"))
+    );
+    // Elements decoded before a failure are dropped exactly once (no leak, no double drop).
+    let live = std::cell::Cell::new(0i32);
+    struct Counted<'a>(&'a std::cell::Cell<i32>);
+    impl Drop for Counted<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() - 1);
+        }
+    }
+    let make = |raw: u8| {
+        decode_bool(raw).map(|_| {
+            live.set(live.get() + 1);
+            Counted(&live)
+        })
+    };
+    assert!(decode_array([1u8, 0, 9, 1], make).is_err());
+    assert_eq!(live.get(), 0);
+    let all = decode_array([1u8, 0, 1], make).map(|a| a.len());
+    assert_eq!((all.ok(), live.get()), (Some(3), 0));
     assert_eq!(
         decode_array([7u32, 3, 4], mode),
         Err(DecodeError::InvalidEnum("Mode", 3)),

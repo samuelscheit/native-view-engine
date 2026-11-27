@@ -101,6 +101,28 @@ fn generated_rust_reuses_the_static_runtime_instead_of_embedding_it() {
             !src.lines().any(|line| line.starts_with("use ")),
             "generated Rust names `nve_abi` items by path and imports nothing"
         );
+        // Prelude types and traits are named by path too, so a spec type `Result` / `String` /
+        // `Default` / ... can never shadow them. (Derives live in the macro namespace.)
+        let code = src.lines().filter(|l| {
+            let l = l.trim_start();
+            !l.starts_with("//") && !l.starts_with("#[")
+        });
+        for line in code {
+            for bare in [
+                "Result", "Option", "Vec", "String", "Box", "Default", "From", "FnOnce",
+            ] {
+                for (at, _) in line.match_indices(bare) {
+                    let before = line[..at].chars().next_back();
+                    let after = line[at + bare.len()..].chars().next();
+                    let part_of_ident =
+                        |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+                    assert!(
+                        line[..at].ends_with("::") || part_of_ident(before) || part_of_ident(after),
+                        "bare prelude name `{bare}` in generated line: {line}"
+                    );
+                }
+            }
+        }
         assert!(src.contains("nve_abi::hybrid_struct_codec!("));
         assert!(src.contains("nve_abi::hybrid_enum_codec!("));
         // `Value` props decode via the codec, which keeps the C tree's structure.

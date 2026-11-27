@@ -9,8 +9,8 @@ use crate::schema::hybrid::{HybridFileSpec, HybridMethodSpec, HybridType};
 use crate::writer::CodeWriter;
 
 use super::type_map::{
-    c_param_type, c_return_type, c_zero_value, is_by_value, raw_decode_expr, raw_encode_expr,
-    returns_owned_bytes,
+    DEFAULT, c_param_type, c_return_type, c_zero_value, is_by_value, raw_decode_expr,
+    raw_encode_expr, returns_owned_bytes,
 };
 
 const HANDLE: &str = "nve_abi::NveAppHandle";
@@ -121,7 +121,7 @@ fn emit_vtable_builder(
         upper,
         is_view,
     } = owner;
-    let bound = format!("NveHybridImpl: {pascal}Hybrid + Default + 'static");
+    let bound = format!("NveHybridImpl: {pascal}Hybrid + {DEFAULT} + 'static");
     writeln!(
         out,
         "/// The C-ABI vtable of `NveHybridImpl`; every instance it creates is a boxed `NveHybridImpl`."
@@ -137,7 +137,7 @@ fn emit_vtable_builder(
     // Qualified: a spec method named `default` must not make this call ambiguous.
     writeln!(
         out,
-        "        Box::into_raw(Box::new(<NveHybridImpl as ::core::default::Default>::default())).cast()"
+        "        ::std::boxed::Box::into_raw(::std::boxed::Box::new(<NveHybridImpl as {DEFAULT}>::default())).cast()"
     );
     writeln!(out, "    }}");
     writeln!(
@@ -151,7 +151,7 @@ fn emit_vtable_builder(
     );
     writeln!(
         out,
-        "            drop(unsafe {{ Box::from_raw(_nve_handle.cast::<NveHybridImpl>()) }});"
+        "            ::core::mem::drop(unsafe {{ ::std::boxed::Box::from_raw(_nve_handle.cast::<NveHybridImpl>()) }});"
     );
     writeln!(out, "        }}");
     writeln!(out, "    }}");
@@ -288,7 +288,7 @@ fn ret_encode(v: &str, ty: &HybridType, spec: &HybridFileSpec) -> RetEncode {
     if let (HybridType::Optional(inner), Some(suffix)) = (ty, ty.optional_pod_suffix(spec)) {
         let value = raw_encode_expr("_nve_v", inner, spec);
         return RetEncode::Value(format!(
-            "match {v} {{ Some(_nve_v) => NveHybridOpt{suffix} {{ is_some: 1, value: {value} }}, None => Default::default() }}"
+            "match {v} {{ Some(_nve_v) => NveHybridOpt{suffix} {{ is_some: 1, value: {value} }}, None => <NveHybridOpt{suffix} as {DEFAULT}>::default() }}"
         ));
     }
     RetEncode::Value(match ty {
@@ -331,7 +331,10 @@ fn emit_trampoline(
     writeln!(
         out,
         "            {}",
-        bail("NullHandle", "String::from(\"null hybrid handle\")")
+        bail(
+            "NullHandle",
+            "<::std::string::String as ::core::convert::From<&str>>::from(\"null hybrid handle\")",
+        )
     );
     writeln!(out, "        }}");
 

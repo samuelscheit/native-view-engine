@@ -48,10 +48,11 @@ impl ShadowHybrid for Shadow {
         next.flags = frame.flags.map(|f| !f);
         next.pad[39] = frame.pad[0];
         next.status.live = !frame.status.live;
+        next.grid[1][32] = !frame.grid[0][0];
         next
     }
-    fn toggle(&mut self, on: bool) -> bool {
-        !on
+    fn toggle(&mut self, on: bool) -> Result<bool, String> {
+        Ok(!on)
     }
 }
 
@@ -246,18 +247,30 @@ unsafe fn raw_carriers(vt: &NveHybridShadowVTable, h: nve_abi::NveAppHandle) {
         // Nested carriers and fixed-size arrays of enums / bools (one longer than 32).
         let mut pad = [0u8; 40];
         pad[0] = 5;
-        let frame = NveHybridRawFrame { status, history: [1, 1], flags: [1, 0, 1], pad };
+        let frame = NveHybridRawFrame { status, history: [1, 1], flags: [1, 0, 1], pad, grid: [[1; 33]; 2] };
         let next = (vt.advance)(h, frame).decode().unwrap();
         assert_eq!(next.history, [Phase::Active, Phase::Paused]);
         assert_eq!(next.flags, [false, true, false]);
         assert_eq!((next.pad[39], next.status.live), (5, false));
+        assert_eq!((next.grid[0][0], next.grid[1][32]), (true, false));
         let zero = (vt.advance)(h, NveHybridRawFrame { history: [1, 3], ..frame });
         assert_eq!(zero.status.phase, 0, "an invalid nested element returns the zero carrier");
-        assert_eq!(NveHybridRawFrame::from(Frame::default()).pad, [0; 40]);
+        let mut bad_grid = frame;
+        bad_grid.grid[1][20] = 2;
+        assert_eq!((vt.advance)(h, bad_grid).status.phase, 0, "a non-0/1 `bool` deep in a nested array is rejected");
+        let defaults = NveHybridRawFrame::from(Frame::default());
+        assert_eq!((defaults.pad, defaults.grid), ([0; 40], [[0; 33]; 2]));
 
-        assert_eq!((vt.toggle)(h, 0), 1);
-        assert_eq!((vt.toggle)(h, 1), 0);
-        assert_eq!((vt.toggle)(h, 2), 0, "a byte other than 0 / 1 is not a `bool`");
+        let mut on = 9u8;
+        assert_eq!((vt.toggle)(h, 0, &mut on, &mut out_err), NveHybridStatus::Ok as i32);
+        assert_eq!(on, 1);
+        assert_eq!((vt.toggle)(h, 1, &mut on, &mut out_err), NveHybridStatus::Ok as i32);
+        assert_eq!(on, 0);
+        // A byte other than 0 / 1 is not a `bool`: rejected, never read as `true` and negated.
+        on = 9;
+        assert_eq!((vt.toggle)(h, 2, &mut on, &mut out_err), NveHybridStatus::InvalidArg as i32);
+        assert_eq!(on, 9, "the out value is untouched");
+        assert!(take_str(std::mem::replace(&mut out_err, NveHybridOwnedBytes::EMPTY)).starts_with("invalid hybrid argument 'on': "));
     }
 }
 

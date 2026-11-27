@@ -122,23 +122,33 @@ fn bin_mismatch(view: BinValueView<'_>, expected: NveValueTag) -> DecodeError {
     }
 }
 
-/// Why a C `NveValue` did not yield the `expected` variant: the wrong tag, or the right tag over
-/// invalid contents (non-UTF-8 text, a null or oversized pointer).
+/// Why a C `NveValue` did not yield the `expected` container or bytes: the wrong tag, or the right
+/// tag over a null or oversized pointer.
 #[inline]
 fn ref_mismatch(value: NveValueRef<'_>, expected: NveValueTag) -> DecodeError {
     let found = value.raw().tag;
-    match expected {
-        _ if found != expected as u32 => DecodeError::UnexpectedTag { expected, found },
-        NveValueTag::Str => DecodeError::InvalidUtf8,
-        _ => DecodeError::Truncated,
+    if found == expected as u32 {
+        DecodeError::Truncated
+    } else {
+        DecodeError::UnexpectedTag { expected, found }
     }
 }
 
-/// Collects decoded items into an exactly sized `Vec`, stopping at the first error.
+/// Most elements a decoder reserves up front, and most bytes that reservation may take: a
+/// declared length is attacker-controlled (50 000 one-byte `Null`s claim 50 000 large elements),
+/// so growth past this is paid only by elements that actually decode.
+const MAX_DECODE_RESERVE: usize = 1024;
+const MAX_DECODE_RESERVE_BYTES: usize = 64 * 1024;
+
+/// Collects decoded items, stopping at the first error, with a bounded up-front reservation.
 fn collect_exact<T>(
     items: impl ExactSizeIterator<Item = Result<T, DecodeError>>,
 ) -> Result<Vec<T>, DecodeError> {
-    let mut out = Vec::with_capacity(items.len());
+    let reserve = items
+        .len()
+        .min(MAX_DECODE_RESERVE)
+        .min(MAX_DECODE_RESERVE_BYTES / size_of::<T>().max(1));
+    let mut out = Vec::with_capacity(reserve);
     for item in items {
         out.push(item?);
     }
@@ -287,10 +297,7 @@ impl HybridCodec for String {
     }
     #[inline]
     fn decode_value_ref(value: NveValueRef<'_>) -> Result<Self, DecodeError> {
-        value
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| ref_mismatch(value, NveValueTag::Str))
+        value.try_as_str().map(str::to_owned)
     }
 }
 

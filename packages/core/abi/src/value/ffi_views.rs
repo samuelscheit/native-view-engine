@@ -64,6 +64,15 @@ impl<'a> NveValueRef<'a> {
             })
             .flatten()
     }
+    /// Like [`Self::as_str`], but says why it fails: `UnexpectedTag`, `Truncated` (a null or
+    /// oversized pointer), or `InvalidUtf8`.
+    #[inline] pub fn try_as_str(&self) -> Result<&'a str, crate::DecodeError> {
+        if self.raw.tag != NveValueTag::Str as u32 {
+            return Err(crate::DecodeError::UnexpectedTag { expected: NveValueTag::Str, found: self.raw.tag });
+        }
+        // SAFETY: Tag checked equal to `Str` and `NveValueRef` guarantees valid nested pointers for `'a`.
+        unsafe { self.raw.data.str_val.as_str() }
+    }
     #[inline] pub fn as_bytes(&self) -> Option<&'a [u8]> {
         (self.raw.tag == NveValueTag::Bytes as u32).then(|| {
             // SAFETY: Tag checked equal to `Bytes` and `NveValueRef` guarantees valid nested pointers for `'a`.

@@ -10,7 +10,8 @@ use crate::writer::CodeWriter;
 
 use super::emit_doc_comments;
 use super::type_map::{
-    direct_nve_value_expr, rust_owned_type, rust_param_type, rust_prop_default_expr,
+    DEFAULT, RESULT, direct_nve_value_expr, rust_owned_type, rust_param_type,
+    rust_prop_default_expr,
 };
 use super::types_emitter::{RecordField, emit_record};
 use super::vtable_emitter::{VtableOwner, emit_rust_vtable};
@@ -100,7 +101,7 @@ fn emit_props(out: &mut CodeWriter, pascal: &str, v: &HybridViewSpec) {
     writeln!(out, "}}");
     writeln!(out);
 
-    writeln!(out, "impl Default for {pascal}Props {{");
+    writeln!(out, "impl {DEFAULT} for {pascal}Props {{");
     writeln!(out, "    fn default() -> Self {{");
     writeln!(out, "        Self {{");
     for p in &v.props {
@@ -123,7 +124,7 @@ fn emit_props(out: &mut CodeWriter, pascal: &str, v: &HybridViewSpec) {
     );
     writeln!(
         out,
-        "    pub fn decode_props(map: nve_abi::NveMapRef<'_>) -> Result<Self, nve_abi::DecodeError> {{"
+        "    pub fn decode_props(map: nve_abi::NveMapRef<'_>) -> {RESULT}<Self, nve_abi::DecodeError> {{"
     );
     let binding = if v.props.is_empty() {
         "props"
@@ -183,7 +184,7 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     );
     writeln!(
         out,
-        "    pub fn emit_direct<NveHybridSink: FnOnce(&nve_abi::NveDirectEvent)>(&self, surface_id: u32, node_id: u32, timestamp_us: u64, sink: NveHybridSink) -> Result<(), nve_abi::DecodeError> {{"
+        "    pub fn emit_direct<NveHybridSink: ::core::ops::FnOnce(&nve_abi::NveDirectEvent)>(&self, surface_id: u32, node_id: u32, timestamp_us: u64, sink: NveHybridSink) -> {RESULT}<(), nve_abi::DecodeError> {{"
     );
     let mut values = Vec::with_capacity(ev.params.len());
     for (idx, p) in ev.params.iter().enumerate() {
@@ -236,7 +237,7 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     );
     write!(
         out,
-        "pub fn emit_{}_{}<NveHybridSink: FnOnce(&nve_abi::NveDirectEvent)>(_nve_surface_id: u32, _nve_node_id: u32, _nve_timestamp_us: u64",
+        "pub fn emit_{}_{}<NveHybridSink: ::core::ops::FnOnce(&nve_abi::NveDirectEvent)>(_nve_surface_id: u32, _nve_node_id: u32, _nve_timestamp_us: u64",
         owner.snake,
         to_snake_case(&ev.name)
     );
@@ -245,7 +246,7 @@ fn emit_event(out: &mut CodeWriter, owner: &VtableOwner, ev: &HybridEventSpec) {
     }
     writeln!(
         out,
-        ", _nve_sink: NveHybridSink) -> Result<(), nve_abi::DecodeError> {{"
+        ", _nve_sink: NveHybridSink) -> {RESULT}<(), nve_abi::DecodeError> {{"
     );
     write!(out, "    {ev_struct} {{");
     for p in &ev.params {

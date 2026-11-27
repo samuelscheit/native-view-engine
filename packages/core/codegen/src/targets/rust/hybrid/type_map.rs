@@ -6,6 +6,11 @@ use crate::error::CodegenError;
 use crate::naming::{escape_c_like_string, format_float_literal};
 use crate::schema::hybrid::{HybridDefaultValue, HybridFileSpec, HybridMethodSpec, HybridType};
 
+/// Prelude items generated code names by path, so a spec type of the same name never shadows them.
+pub(super) const RESULT: &str = "::core::result::Result";
+pub(super) const DEFAULT: &str = "::core::default::Default";
+pub(super) const FROM: &str = "::core::convert::From";
+
 pub(super) fn rust_owned_type(ty: &HybridType) -> String {
     match ty {
         HybridType::Void => "()".to_owned(),
@@ -19,13 +24,19 @@ pub(super) fn rust_owned_type(ty: &HybridType) -> String {
         HybridType::U64 => "u64".to_owned(),
         HybridType::F32 => "f32".to_owned(),
         HybridType::F64 => "f64".to_owned(),
-        HybridType::String => "String".to_owned(),
-        HybridType::Bytes => "Vec<u8>".to_owned(),
+        HybridType::String => "::std::string::String".to_owned(),
+        HybridType::Bytes => "::std::vec::Vec<u8>".to_owned(),
         HybridType::Value => "NveHybridValue".to_owned(),
-        HybridType::Optional(inner) => format!("Option<{}>", rust_owned_type(inner)),
-        HybridType::Vec(inner) => format!("Vec<{}>", rust_owned_type(inner)),
+        HybridType::Optional(inner) => {
+            format!("::core::option::Option<{}>", rust_owned_type(inner))
+        }
+        HybridType::Vec(inner) => format!("::std::vec::Vec<{}>", rust_owned_type(inner)),
         HybridType::Result { ok, err } => {
-            format!("Result<{}, {}>", rust_owned_type(ok), rust_owned_type(err))
+            format!(
+                "{RESULT}<{}, {}>",
+                rust_owned_type(ok),
+                rust_owned_type(err)
+            )
         }
         HybridType::Struct(name) | HybridType::Enum(name) | HybridType::Handle(name) => {
             name.clone()
@@ -106,13 +117,17 @@ pub(super) fn raw_encode_expr(expr: &str, ty: &HybridType, spec: &HybridFileSpec
         return expr.to_owned();
     }
     match ty {
-        HybridType::Bool => format!("<u8 as ::core::convert::From<bool>>::from({expr})"),
+        HybridType::Bool => format!("<u8 as {FROM}<bool>>::from({expr})"),
         HybridType::Enum(_) => format!("{expr}.to_u32()"),
         HybridType::FixedArray { elem, .. } => format!(
             "{expr}.map(|_nve_e| {})",
             raw_encode_expr("_nve_e", elem, spec)
         ),
-        _ => format!("{}::from({expr})", raw_c_type(ty, spec)),
+        _ => format!(
+            "<{} as {FROM}<{}>>::from({expr})",
+            raw_c_type(ty, spec),
+            rust_owned_type(ty)
+        ),
     }
 }
 
@@ -131,7 +146,7 @@ pub(super) fn default_expr(ty: &HybridType) -> String {
         HybridType::FixedArray { elem, .. } => {
             format!("::core::array::from_fn(|_| {})", default_expr(elem))
         }
-        _ => "Default::default()".to_owned(),
+        _ => format!("{DEFAULT}::default()"),
     }
 }
 
@@ -187,16 +202,16 @@ pub(super) fn direct_nve_value_expr(expr: &str, ty: &HybridType) -> Option<Strin
     Some(match ty {
         HybridType::Bool => format!("{V}::bool({expr})"),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
-            format!("{V}::i64(i64::from({expr}))")
+            format!("{V}::i64(<i64 as {FROM}<_>>::from({expr}))")
         }
         HybridType::I64 => format!("{V}::i64({expr})"),
         HybridType::U64 => format!("{V}::i64(i64::from_ne_bytes({expr}.to_ne_bytes()))"),
         HybridType::Usize => format!(
             "{V}::i64(i64::try_from({expr}).map_err(|_| nve_abi::DecodeError::OutOfRange(\"usize\"))?)"
         ),
-        HybridType::F32 => format!("{V}::f64(f64::from({expr}))"),
+        HybridType::F32 => format!("{V}::f64(<f64 as {FROM}<f32>>::from({expr}))"),
         HybridType::F64 => format!("{V}::f64({expr})"),
-        HybridType::Enum(_) => format!("{V}::i64(i64::from({expr}.to_u32()))"),
+        HybridType::Enum(_) => format!("{V}::i64(<i64 as {FROM}<u32>>::from({expr}.to_u32()))"),
         HybridType::String => format!("{V}::from_str({expr}.as_str())"),
         HybridType::Bytes => format!("{V}::from_bytes({expr}.as_slice())"),
         _ => return None,
@@ -220,7 +235,10 @@ pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefault
         (HybridDefaultValue::UInt(u), HybridType::F32 | HybridType::F64) => format!("{u}.0"),
         (HybridDefaultValue::UInt(u), _) => u.to_string(),
         (HybridDefaultValue::Float(f), _) => format_float_literal(*f),
-        (HybridDefaultValue::String(s), _) => format!("\"{}\".to_owned()", escape_c_like_string(s)),
+        (HybridDefaultValue::String(s), _) => format!(
+            "<::std::string::String as {FROM}<&str>>::from(\"{}\")",
+            escape_c_like_string(s)
+        ),
         (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
             format!("{enum_name}::{variant}")
         }

@@ -72,7 +72,7 @@ impl HybridFileSpec {
             let mut variant_values = BTreeSet::new();
             for v in &e.variants {
                 validate_ident("enum variant", &v.name)?;
-                if !variant_names.insert(v.name.as_str()) {
+                if !variant_names.insert(ident_key(&v.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate variant '{}' in enum '{}'",
                         v.name, e.name

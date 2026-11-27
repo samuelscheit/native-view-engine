@@ -81,6 +81,7 @@ const _: () = {
     assert!(offset_of!(NveHybridOwnedBytes, len) == word);
     assert!(offset_of!(NveHybridOwnedBytes, cap) == 2 * word);
     assert!(size_of::<NveHybridStatus>() == 4);
+    assert!(align_of::<NveHybridStatus>() == 4);
 };
 
 impl NveHybridOwnedBytes {
