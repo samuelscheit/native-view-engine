@@ -119,32 +119,32 @@ impl IssueStore {
         }
     }
 
-    /// Configures an optional artificial delay on [`GetWorkspaceStats`] for streaming SSR tests.
+    /// Configures an optional artificial delay on [`nve_example_issues_api::GetWorkspaceStats`] for streaming SSR tests.
     pub fn set_stats_delay_ms(&self, delay_ms: u64) {
         self.stream_control
             .stats_delay_ms
             .store(delay_ms, Ordering::Release);
     }
 
-    /// Configures an optional artificial delay on [`ListComments`] for streaming SSR tests.
+    /// Configures an optional artificial delay on [`nve_example_issues_api::ListComments`] for streaming SSR tests.
     pub fn set_comments_delay_ms(&self, delay_ms: u64) {
         self.stream_control
             .comments_delay_ms
             .store(delay_ms, Ordering::Release);
     }
 
-    /// Opens (`true`) or closes (`false`) the deterministic async barrier before [`ListComments`].
+    /// Opens (`true`) or closes (`false`) the deterministic async barrier before [`nve_example_issues_api::ListComments`].
     pub fn set_comments_gate_open(&self, open: bool) {
         let _ = self.stream_control.comments_gate_tx.send_replace(open);
     }
 
-    /// Returns the number of [`ListComments`] RPC calls currently parked on the closed barrier.
+    /// Returns the number of [`nve_example_issues_api::ListComments`] RPC calls currently parked on the closed barrier.
     #[must_use]
     pub fn comments_waiting(&self) -> usize {
         self.stream_control.comments_waiting.load(Ordering::Acquire)
     }
 
-    /// Awaits any configured delay before resolving [`GetWorkspaceStats`].
+    /// Awaits any configured delay before resolving [`nve_example_issues_api::GetWorkspaceStats`].
     pub async fn wait_stats_hook(&self) {
         let delay_ms = self.stream_control.stats_delay_ms.load(Ordering::Acquire);
         if delay_ms > 0 {
@@ -152,7 +152,7 @@ impl IssueStore {
         }
     }
 
-    /// Awaits the deterministic barrier (when closed) and optional delay before [`ListComments`].
+    /// Awaits the deterministic barrier (when closed) and optional delay before [`nve_example_issues_api::ListComments`].
     pub async fn wait_comments_hook(&self) {
         if !*self.stream_control.comments_gate_tx.borrow() {
             let mut rx = self.stream_control.comments_gate_tx.subscribe();
