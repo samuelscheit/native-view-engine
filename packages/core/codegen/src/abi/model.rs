@@ -9,7 +9,9 @@ use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiEnumVariantDescriptor,
     AbiFileDescriptor,
 };
-use nve_abi::table::{FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc};
+use nve_abi::table::{
+    FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc, WordConstsDesc,
+};
 use nve_hash::{Key64, PRIME1, xxh64};
 
 use super::layout::{RecordLayout, layout_records};
@@ -230,6 +232,58 @@ impl TableModel<'_> {
 
 /// Validates `tables` (unique names, keys that match their names, fields every host reader
 /// accepts) and wraps them for rendering, in the given order.
+/// One `word_enum!` / flag set mirrored next to the table specs.
+#[derive(Debug)]
+pub struct ConstsModel {
+    /// `UpperCamel` (`ImageFit`); hosts prefix it (`NveImageFit`, `NVE_IMAGE_FIT_*`).
+    pub name: String,
+    pub screaming: String,
+    pub flags: bool,
+    pub entries: Vec<ConstEntry>,
+}
+
+#[derive(Debug)]
+pub struct ConstEntry {
+    pub screaming: String,
+    /// `lowerCamel`, with a trailing `_` for Swift keywords (and `none`, which shadows `Optional.none`).
+    pub swift: String,
+    pub value: u32,
+}
+
+const SWIFT_RESERVED: &[&str] = &[
+    "Any", "Self", "as", "break", "case", "catch", "class", "continue", "default", "defer", "deinit",
+    "do", "else", "enum", "extension", "fallthrough", "false", "for", "func", "guard", "if", "import",
+    "in", "init", "inout", "internal", "is", "let", "nil", "none", "operator", "private", "protocol",
+    "public", "repeat", "rethrows", "return", "self", "static", "struct", "subscript", "super",
+    "switch", "throw", "throws", "true", "try", "typealias", "var", "where", "while",
+];
+
+pub fn consts_model(descs: &[&WordConstsDesc]) -> Result<Vec<ConstsModel>, CodegenError> {
+    let mut names = BTreeSet::new();
+    let mut out = Vec::with_capacity(descs.len());
+    for d in descs {
+        if !names.insert(d.name) || d.entries.is_empty() {
+            return Err(CodegenError::validation(format!("word constants `{}`: duplicate or empty", d.name)));
+        }
+        let entries = d
+            .entries
+            .iter()
+            .map(|&(name, value)| {
+                let base = super::spell::camel(&super::spell::snake(name.trim_end_matches('_')));
+                let swift = if SWIFT_RESERVED.contains(&base.as_str()) { format!("{base}_") } else { base };
+                ConstEntry { screaming: super::spell::screaming(name.trim_end_matches('_')), swift, value }
+            })
+            .collect();
+        out.push(ConstsModel {
+            name: d.name.to_owned(),
+            screaming: super::spell::screaming(d.name),
+            flags: d.flags,
+            entries,
+        });
+    }
+    Ok(out)
+}
+
 pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>, CodegenError> {
     let mut names = BTreeSet::new();
     let mut out = Vec::with_capacity(tables.len());

@@ -51,7 +51,7 @@ if(NVE_HOST_CXX_BUILD_TESTS)
 
   if(NVE_HOST_CXX_WITH_RUNTIME)
     include("${CMAKE_CURRENT_SOURCE_DIR}/../../../cxx/cmake/NveRuntime.cmake")
-    foreach(_suite runtime_session runtime_hooks)
+    foreach(_suite runtime_session runtime_hooks runtime_scene_builder)
       set(_target nve_host_${_suite}_test)
       add_executable(${_target} tests/test_${_suite}.cpp)
       set_target_properties(${_target} PROPERTIES

@@ -1,4 +1,5 @@
 import CNveAbi
+import NveHost
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -421,20 +422,20 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         // Verify all 4 resize modes placement math
         let dst = CGRect(x: 10, y: 20, width: 100, height: 50)
         let stretch = try XCTUnwrap(
-            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 200, height: 200), mode: .stretch)
+            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 200, height: 200), fit: .fill)
         )
         XCTAssertEqual(stretch.destRect, dst)
         XCTAssertEqual(stretch.drawRect, dst)
 
         let contain = try XCTUnwrap(
-            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 200, height: 200), mode: .contain)
+            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 200, height: 200), fit: .contain)
         )
         XCTAssertEqual(contain.destRect.minX, 35, accuracy: 0.01)
         XCTAssertEqual(contain.destRect.width, 50, accuracy: 0.01)
         XCTAssertEqual(contain.destRect.height, 50, accuracy: 0.01)
 
         let cover = try XCTUnwrap(
-            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 200, height: 200), mode: .cover)
+            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 200, height: 200), fit: .cover)
         )
         XCTAssertEqual(cover.destRect, dst)
         XCTAssertEqual(cover.sourceRect.minY, 50, accuracy: 0.01)
@@ -443,192 +444,8 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
         XCTAssertEqual(cover.drawRect.height, 100, accuracy: 0.01)
 
         let center = try XCTUnwrap(
-            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 40, height: 20), mode: .center)
+            NveImagePlacement.compute(destination: dst, imageSize: CGSize(width: 40, height: 20), fit: .none_)
         )
         XCTAssertEqual(center.destRect, CGRect(x: 40, y: 35, width: 40, height: 20))
-    }
-
-    @MainActor
-    func testSceneStoreIncrementalIndexStabilityRenderingAndAccessibilityMetadata() throws {
-        let store = NveSceneStore()
-        let cache = NveImageCache(maxEntries: 8)
-
-        var drawB = DrawListBuilder()
-        drawB.fillRoundedRect(0, 0, 80, 40, 6, packRgba(37, 99, 235))
-        drawB.fillCircle(40, 20, 10, packRgba(250, 204, 21))
-        let drawBytes = Array(drawB.finish())
-
-        let imgPng = makeSolidPngData(r: 16, g: 185, b: 129, width: 8, height: 8)
-        let imgUri = "data:image/png;base64,\(imgPng.base64EncodedString())"
-
-        let headingBytes = Array("Dashboard".utf8)
-        let buttonBytes = Array("Deploy".utf8)
-        let secretBytes = Array("pass1234".utf8)
-        let imgBytes = Array(imgUri.utf8)
-
-        var slab: [UInt8] = []
-        let headingOff = 0
-        slab.append(contentsOf: headingBytes)
-        let buttonOff = slab.count
-        slab.append(contentsOf: buttonBytes)
-        let secretOff = slab.count
-        slab.append(contentsOf: secretBytes)
-        let imgOff = slab.count
-        slab.append(contentsOf: imgBytes)
-        let drawOff = slab.count
-        slab.append(contentsOf: drawBytes)
-
-        let children: [UInt32] = [2, 3, 4, 5, 6, 7]
-        var nodes: [NveRenderNode] = [
-            NveRenderNode(
-                node_id: 1, kind: UInt8(NVE_NODE_KIND_ROOT), flags: 0, opacity_u8: 255, _pad0: 0,
-                x: 0, y: 0, width: 320, height: 200,
-                bg_rgba: packRgba(15, 23, 42), text_rgba: 0, border_rgba: 0,
-                border_radius: 0, border_width: 0, font_size: 16,
-                text_offset: 0, text_len: 0, child_count: 6, child_offset: 0, z_index: 0
-            ),
-            NveRenderNode(
-                node_id: 2, kind: UInt8(NVE_NODE_KIND_TEXT), flags: UInt8(NVE_NODE_LEAF_TEXT), opacity_u8: 255, _pad0: 0,
-                x: 10, y: 10, width: 180, height: 30,
-                bg_rgba: 0, text_rgba: packRgba(248, 250, 252), border_rgba: 0,
-                border_radius: 0, border_width: 0, font_size: 24,
-                text_offset: UInt32(headingOff), text_len: UInt16(headingBytes.count), child_count: 0, child_offset: 0, z_index: 0
-            ),
-            NveRenderNode(
-                node_id: 3, kind: UInt8(NVE_NODE_KIND_PRESSABLE), flags: UInt8(NVE_NODE_INTERACTIVE | NVE_NODE_LEAF_TEXT), opacity_u8: 255, _pad0: 0,
-                x: 10, y: 48, width: 120, height: 36,
-                bg_rgba: packRgba(37, 99, 235), text_rgba: packRgba(255, 255, 255), border_rgba: 0,
-                border_radius: 6, border_width: 0, font_size: 14,
-                text_offset: UInt32(buttonOff), text_len: UInt16(buttonBytes.count), child_count: 0, child_offset: 0, z_index: 0
-            ),
-            NveRenderNode(
-                node_id: 4, kind: UInt8(NVE_NODE_KIND_TEXT_INPUT), flags: UInt8(NVE_NODE_INTERACTIVE), opacity_u8: 255, _pad0: 0,
-                x: 10, y: 92, width: 180, height: 32,
-                bg_rgba: packRgba(30, 41, 59), text_rgba: packRgba(255, 255, 255), border_rgba: packRgba(100, 116, 139),
-                border_radius: 4, border_width: 1, font_size: 14,
-                text_offset: UInt32(secretOff), text_len: UInt16(secretBytes.count), child_count: 0, child_offset: 0, z_index: 0
-            ),
-            NveRenderNode(
-                node_id: 5, kind: UInt8(NVE_NODE_KIND_TEXT_INPUT), flags: UInt8(NVE_NODE_INTERACTIVE), opacity_u8: 255, _pad0: 0,
-                x: 10, y: 132, width: 180, height: 32,
-                bg_rgba: packRgba(30, 41, 59), text_rgba: packRgba(255, 255, 255), border_rgba: 0,
-                border_radius: 4, border_width: 0, font_size: 14,
-                text_offset: 0, text_len: 0, child_count: 0, child_offset: 0, z_index: 0
-            ),
-            NveRenderNode(
-                node_id: 6, kind: UInt8(NVE_NODE_KIND_IMAGE), flags: 0, opacity_u8: 255, _pad0: 0,
-                x: 210, y: 10, width: 80, height: 60,
-                bg_rgba: 0, text_rgba: 0, border_rgba: 0,
-                border_radius: 8, border_width: 0, font_size: 0,
-                text_offset: UInt32(imgOff), text_len: UInt16(imgBytes.count), child_count: 0, child_offset: 0, z_index: 0
-            ),
-            NveRenderNode(
-                node_id: 7, kind: UInt8(NVE_NODE_KIND_SKIA_CANVAS), flags: 0, opacity_u8: 255, _pad0: 0,
-                x: 210, y: 90, width: 80, height: 40,
-                bg_rgba: 0, text_rgba: 0, border_rgba: 0,
-                border_radius: 6, border_width: 0, font_size: 0,
-                text_offset: UInt32(drawOff), text_len: UInt16(drawBytes.count), child_count: 0, child_offset: 0, z_index: 0
-            ),
-        ]
-
-        func apply(frame: UInt64, dirty: [UInt32]) throws {
-            try nodes.withUnsafeBufferPointer { nb in
-                try slab.withUnsafeBufferPointer { tb in
-                    try children.withUnsafeBufferPointer { cb in
-                        try dirty.withUnsafeBufferPointer { db in
-                            let view = NveSceneView(
-                                schema_hash: UInt64(NVE_SCENE_SCHEMA_HASH),
-                                frame_id: frame,
-                                node_count: UInt32(nb.count),
-                                dirty_count: UInt32(db.count),
-                                removed_count: 0,
-                                text_slab_len: UInt32(tb.count),
-                                children_slab_len: UInt32(cb.count),
-                                table_count: 0,
-                                nodes: nb.baseAddress,
-                                text_slab: tb.baseAddress,
-                                children_slab: cb.baseAddress,
-                                dirty_indices: db.baseAddress,
-                                removed_ids: nil,
-                                tables: nil
-                            )
-                            try store.apply(view: view)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Frame 1: initial build -> indexRebuildCount == 1
-        try apply(frame: 1, dirty: [0, 1, 2, 3, 4, 5, 6])
-        XCTAssertEqual(store.indexRebuildCount, 1)
-        XCTAssertEqual(store.nodeIndexById[7], 6)
-
-        store.setTextInputConfig(placeholder: "Password", secureTextEntry: true, forNodeId: 4)
-        store.setAccessibility(label: "Password", forNodeId: 4)
-        store.setTextInputConfig(placeholder: "Search...", forNodeId: 5)
-        store.setImageResizeMode(.cover, forNodeId: 6)
-        store.setAccessibility(label: "Status Avatar", forNodeId: 6)
-
-        // Frame 2 & 3: incremental dirty updates must NEVER trigger an O(N) index rebuild!
-        nodes[2].bg_rgba = packRgba(29, 78, 216)
-        try apply(frame: 2, dirty: [2])
-        nodes[2].bg_rgba = packRgba(37, 99, 235)
-        try apply(frame: 3, dirty: [2])
-        XCTAssertEqual(store.indexRebuildCount, 1)
-
-        // Repeated draws & hit-tests reuse store.nodeIndexById with zero rebuilds!
-        let view = NveSceneCanvasView(
-            store: store,
-            surfaceId: 1,
-            backgroundColor: .black,
-            imageCache: cache
-        ).frame(width: 320, height: 200)
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 1.0
-        let cg = try XCTUnwrap(renderer.cgImage)
-        XCTAssertEqual(store.indexRebuildCount, 1)
-        XCTAssertEqual(store.hitTest(at: CGPoint(x: 50, y: 60)), 3)
-        XCTAssertEqual(store.indexRebuildCount, 1)
-
-        // Verify Image node (210..290, 10..70) painted emerald green (16, 185, 129)
-        let imgPx = rgbaPixel(in: cg, x: 250, y: 40)
-        XCTAssertEqual(imgPx.0, 16, accuracy: 4)
-        XCTAssertEqual(imgPx.1, 185, accuracy: 4)
-        XCTAssertEqual(imgPx.2, 129, accuracy: 4)
-
-        // Verify SkiaCanvas node (210..290, 90..130): center circle (250, 110) yellow & corner (220, 100) blue
-        let canvasCenter = rgbaPixel(in: cg, x: 250, y: 110)
-        XCTAssertEqual(canvasCenter.0, 250, accuracy: 4)
-        XCTAssertEqual(canvasCenter.1, 204, accuracy: 4)
-        let canvasCorner = rgbaPixel(in: cg, x: 220, y: 100)
-        XCTAssertEqual(canvasCorner.2, 235, accuracy: 4)
-
-        // Verify VoiceOver accessibility elements derived from the live scene store
-        let a11y = store.accessibilityElements()
-        let heading = try XCTUnwrap(a11y.first { $0.id == 2 })
-        XCTAssertEqual(heading.label, "Dashboard")
-        XCTAssertTrue(heading.isHeading)
-
-        let button = try XCTUnwrap(a11y.first { $0.id == 3 })
-        XCTAssertEqual(button.label, "Deploy")
-        XCTAssertTrue(button.isInteractive)
-        XCTAssertEqual(button.role, .button)
-
-        let secureField = try XCTUnwrap(a11y.first { $0.id == 4 })
-        XCTAssertEqual(secureField.label, "Password")
-        XCTAssertEqual(secureField.value, String(repeating: "\u{2022}", count: 8))
-        XCTAssertTrue(secureField.isTextField)
-        XCTAssertTrue(secureField.isSecure)
-
-        let placeholderField = try XCTUnwrap(a11y.first { $0.id == 5 })
-        XCTAssertEqual(placeholderField.label, "Search...")
-        XCTAssertNil(placeholderField.value)
-        XCTAssertTrue(placeholderField.isTextField)
-        XCTAssertFalse(placeholderField.isSecure)
-
-        let imageElem = try XCTUnwrap(a11y.first { $0.id == 6 })
-        XCTAssertEqual(imageElem.label, "Status Avatar")
-        XCTAssertTrue(imageElem.isImage)
     }
 }

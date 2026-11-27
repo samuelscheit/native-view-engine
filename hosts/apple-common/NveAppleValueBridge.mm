@@ -2,213 +2,202 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace nve::apple {
 
-NSString * _Nonnull nsstring_from_sv(std::string_view sv) {
-  if (sv.empty()) {
-    return @"";
-  }
-  NSString *str = [[NSString alloc] initWithBytes:sv.data()
-                                           length:sv.size()
-                                         encoding:NSUTF8StringEncoding];
+namespace {
+constexpr uint32_t kMaxDepth = 32u;
+
+uint64_t now_us() noexcept {
+  return static_cast<uint64_t>([[NSDate date] timeIntervalSince1970] * 1'000'000.0);
+}
+
+NveValue null_value() noexcept {
+  NveValue v{};
+  v.tag = NVE_VAL_NULL;
+  return v;
+}
+
+std::string_view sv(NveStrSlice s) noexcept {
+  return s.ptr != nullptr ? std::string_view(reinterpret_cast<const char *>(s.ptr), s.len) : std::string_view();
+}
+}  // namespace
+
+NveStrSlice ValueArena::str(std::string_view s) {
+  const std::string &owned = strings_.emplace_back(s);
+  return NveStrSlice{reinterpret_cast<const uint8_t *>(owned.data()), owned.size()};
+}
+
+NveBufferSlice ValueArena::bytes(const void *data, size_t len) {
+  if (data == nullptr || len == 0u) return NveBufferSlice{nullptr, 0u};
+  const std::string &owned = strings_.emplace_back(static_cast<const char *>(data), len);
+  return NveBufferSlice{reinterpret_cast<const uint8_t *>(owned.data()), owned.size()};
+}
+
+NSString *nsstring_from_sv(std::string_view s) {
+  if (s.empty()) return @"";
+  NSString *str = [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
   return str ?: @"";
 }
 
-NSString * _Nullable nsstring_or_nil_from_sv(std::string_view sv) {
-  if (sv.empty()) {
-    return nil;
-  }
-  return [[NSString alloc] initWithBytes:sv.data()
-                                  length:sv.size()
-                                encoding:NSUTF8StringEncoding];
+NSString *nsstring_or_nil_from_sv(std::string_view s) {
+  return s.empty() ? nil : nsstring_from_sv(s);
 }
 
-NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uint32_t depth) {
-  if (obj == nil || obj == [NSNull null] || depth > NVE_BIN_VALUE_MAX_DEPTH) {
-    return nve::make_null_value();
-  }
-  if ([obj isKindOfClass:[NSNumber class]]) {
-    NSNumber *num = (NSNumber *)obj;
-    if (CFGetTypeID((__bridge CFTypeRef)num) == CFBooleanGetTypeID()) {
-      return nve::make_bool_value(num.boolValue ? true : false);
-    }
-    if (CFNumberIsFloatType((__bridge CFNumberRef)num)) {
-      const double d = num.doubleValue;
-      return std::isfinite(d) ? nve::make_f64_value(d) : nve::make_null_value();
-    }
-    return nve::make_i64_value(static_cast<int64_t>(num.longLongValue));
-  }
+NveValue nve_value_from_objc_object(id obj, ValueArena &arena, uint32_t depth) {
+  NveValue v = null_value();
+  if (obj == nil || obj == [NSNull null] || depth > kMaxDepth) return v;
   if ([obj isKindOfClass:[NSString class]]) {
-    NSString *str = (NSString *)obj;
-    const char *utf8 = str.UTF8String;
-    if (!utf8) {
-      return nve::make_str_value(NveStrSlice{nullptr, 0});
+    v.tag = NVE_VAL_STR;
+    v.data.str_val = arena.str(((NSString *)obj).UTF8String ?: "");
+  } else if ([obj isKindOfClass:[NSNumber class]]) {
+    NSNumber *n = obj;
+    if (CFGetTypeID((__bridge CFTypeRef)n) == CFBooleanGetTypeID()) {
+      v.tag = NVE_VAL_BOOL;
+      v.data.bool_val = n.boolValue ? 1u : 0u;
+    } else if (CFNumberIsFloatType((__bridge CFNumberRef)n)) {
+      v.tag = NVE_VAL_F64;
+      v.data.f64_val = n.doubleValue;
+    } else {
+      v.tag = NVE_VAL_I64;
+      v.data.i64_val = n.longLongValue;
     }
-    return nve::make_str_value(arena.copy_str(std::string_view(utf8)));
+  } else if ([obj isKindOfClass:[NSData class]]) {
+    NSData *d = obj;
+    v.tag = NVE_VAL_BYTES;
+    v.data.bytes_val = arena.bytes(d.bytes, d.length);
+  } else if ([obj isKindOfClass:[NSArray class]]) {
+    NSArray *a = obj;
+    NveValue *items = arena.values(a.count);
+    for (NSUInteger i = 0; i < a.count; ++i) items[i] = nve_value_from_objc_object(a[i], arena, depth + 1u);
+    v.tag = NVE_VAL_ARRAY;
+    v.data.array_val = NveValueArray{items, a.count};
+  } else if ([obj isKindOfClass:[NSDictionary class]]) {
+    const std::vector<NveMapEntry> entries = map_entries_from_dictionary(obj, arena, depth + 1u);
+    NveMapEntry *stored = arena.entries(entries.size());
+    std::copy(entries.begin(), entries.end(), stored);
+    v.tag = NVE_VAL_MAP;
+    v.data.map_val = NveValueMap{stored, entries.size()};
   }
-  if ([obj isKindOfClass:[NSData class]]) {
-    NSData *data = (NSData *)obj;
-    return nve::make_bytes_value(
-        arena.copy_bytes(static_cast<const uint8_t *>(data.bytes), data.length));
-  }
-  if ([obj isKindOfClass:[NSArray class]]) {
-    NSArray *arr = (NSArray *)obj;
-    const size_t n = arr.count;
-    NveValue *elems = n > 0 ? arena.alloc_array<NveValue>(n) : nullptr;
-    for (size_t i = 0; i < n; ++i) {
-      elems[i] = nve_value_from_objc_object(arr[i], arena, depth + 1u);
-    }
-    return nve::make_array_value(elems, n);
-  }
-  if ([obj isKindOfClass:[NSDictionary class]]) {
-    NSDictionary *dict = (NSDictionary *)obj;
-    const size_t n = dict.count;
-    NveMapEntry *entries = n > 0 ? arena.alloc_array<NveMapEntry>(n) : nullptr;
-    __block size_t idx = 0;
-    [dict enumerateKeysAndObjectsUsingBlock:^(id key, id val, BOOL *stop) {
-      (void)stop;
-      if (idx >= n) return;
-      NSString *keyStr = [key isKindOfClass:[NSString class]] ? (NSString *)key : [key description];
-      const char *kutf8 = keyStr.UTF8String;
-      entries[idx++] = NveMapEntry{
-          kutf8 ? arena.copy_str(std::string_view(kutf8)) : NveStrSlice{nullptr, 0},
-          nve_value_from_objc_object(val, arena, depth + 1u),
-      };
-    }];
-    return nve::make_map_value(entries, idx);
-  }
-  return nve::make_null_value();
+  return v;
 }
 
-id _Nonnull objc_object_from_bin_value(const nve::BinValueView &view, uint32_t depth) {
-  if (depth > NVE_BIN_VALUE_MAX_DEPTH) {
-    return [NSNull null];
+std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *props, ValueArena &arena, uint32_t depth) {
+  NSArray<NSString *> *keys = [props.allKeys sortedArrayUsingSelector:@selector(compare:)];
+  std::vector<NveMapEntry> out;
+  out.reserve(keys.count);
+  for (NSString *key in keys) {
+    if (![key isKindOfClass:[NSString class]]) continue;
+    NveMapEntry e{};
+    e.key = arena.str(key.UTF8String ?: "");
+    e.value = nve_value_from_objc_object(props[key], arena, depth + 1u);
+    out.push_back(e);
   }
-  switch (view.tag()) {
-    case NVE_VAL_NULL:
-      return [NSNull null];
-    case NVE_VAL_BOOL:
-      return [NSNumber numberWithBool:view.as_bool().value_or(false) ? YES : NO];
-    case NVE_VAL_I64:
-      return @(view.as_i64().value_or(0));
-    case NVE_VAL_F64:
-      return @(view.as_f64().value_or(0.0));
-    case NVE_VAL_STR:
-      return nsstring_from_sv(view.as_str().value_or(std::string_view{}));
-    case NVE_VAL_BYTES: {
-      const NveBufferSlice b = view.as_bytes().value_or(NveBufferSlice{nullptr, 0});
-      return (b.ptr != nullptr && b.len > 0) ? [NSData dataWithBytes:b.ptr length:b.len]
+  return out;
+}
+
+id objc_object_from_nve_value(const NveValue &v, uint32_t depth) {
+  if (depth > kMaxDepth) return [NSNull null];
+  switch (v.tag) {
+    case NVE_VAL_BOOL: return @(v.data.bool_val != 0u);
+    case NVE_VAL_I64: return @(v.data.i64_val);
+    case NVE_VAL_F64: return std::isfinite(v.data.f64_val) ? (id)@(v.data.f64_val) : (id)[NSNull null];
+    case NVE_VAL_STR: return nsstring_from_sv(sv(v.data.str_val));
+    case NVE_VAL_BYTES:
+      return v.data.bytes_val.ptr != nullptr ? [NSData dataWithBytes:v.data.bytes_val.ptr length:v.data.bytes_val.len]
                                              : [NSData data];
-    }
     case NVE_VAL_ARRAY: {
-      const size_t n = view.array_len().value_or(0);
-      NSMutableArray *arr = [NSMutableArray arrayWithCapacity:n];
-      (void)view.for_each_array([&](const nve::BinValueView &elem) {
-        [arr addObject:objc_object_from_bin_value(elem, depth + 1u)];
-      });
-      return [arr copy];
+      NSMutableArray *a = [NSMutableArray arrayWithCapacity:v.data.array_val.len];
+      for (size_t i = 0; i < v.data.array_val.len && v.data.array_val.ptr != nullptr; ++i) {
+        [a addObject:objc_object_from_nve_value(v.data.array_val.ptr[i], depth + 1u)];
+      }
+      return a;
     }
     case NVE_VAL_MAP: {
-      const size_t n = view.map_len().value_or(0);
-      NSMutableDictionary<NSString *, id> *map = [NSMutableDictionary dictionaryWithCapacity:n];
-      (void)view.for_each_map([&](std::string_view k, const nve::BinValueView &val) {
-        NSString *key = nsstring_or_nil_from_sv(k);
-        if (key != nil) {
-          map[key] = objc_object_from_bin_value(val, depth + 1u);
-        }
-      });
-      return [map copy];
-    }
-  }
-  return [NSNull null];
-}
-
-NSDictionary<NSString *, id> *payload_dictionary_from_event(const nve::DecodedEvent &ev) {
-  NSMutableDictionary<NSString *, id> *dict = [NSMutableDictionary dictionary];
-  dict[@"surfaceId"] = @(ev.surface_id);
-  dict[@"nodeId"] = @(ev.node_id);
-  dict[@"timestampUs"] = @(ev.timestamp_us);
-
-  switch (ev.kind) {
-    case nve::EventKind::Press:
-    case nve::EventKind::LongPress:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      break;
-    case nve::EventKind::Scroll:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      dict[@"contentWidth"] = @(ev.width);
-      dict[@"contentHeight"] = @(ev.height);
-      break;
-    case nve::EventKind::TextChange:
-    case nve::EventKind::Submit:
-    case nve::EventKind::CompositionStart:
-    case nve::EventKind::CompositionUpdate:
-    case nve::EventKind::CompositionEnd:
-      dict[@"text"] = nsstring_from_sv(ev.text);
-      break;
-    case nve::EventKind::KeyDown:
-    case nve::EventKind::KeyUp:
-      dict[@"key"] = nsstring_from_sv(ev.text);
-      dict[@"code"] = nsstring_from_sv(ev.code);
-      dict[@"modifiers"] = @(ev.modifiers);
-      dict[@"keyCode"] = @(ev.key_code);
-      dict[@"isComposing"] = @((ev.event_flags & NVE_EVENT_FLAG_COMPOSING) != 0u);
-      break;
-    case nve::EventKind::PointerDown:
-    case nve::EventKind::PointerMove:
-    case nve::EventKind::PointerUp:
-    case nve::EventKind::PointerEnter:
-    case nve::EventKind::PointerLeave:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      dict[@"modifiers"] = @(ev.modifiers);
-      dict[@"flags"] = @(ev.event_flags);
-      break;
-    case nve::EventKind::Wheel:
-      dict[@"deltaX"] = @(ev.x);
-      dict[@"deltaY"] = @(ev.y);
-      dict[@"modifiers"] = @(ev.modifiers);
-      break;
-    case nve::EventKind::Layout:
-      dict[@"x"] = @(ev.x);
-      dict[@"y"] = @(ev.y);
-      dict[@"width"] = @(ev.width);
-      dict[@"height"] = @(ev.height);
-      break;
-    case nve::EventKind::Custom: {
-      if (!ev.payload_bytes.empty()) {
-        const auto parsed =
-            nve::BinValueView::parse(ev.payload_bytes.data(), ev.payload_bytes.size());
-        if (parsed.has_value()) {
-          if (parsed->tag() == NVE_VAL_MAP) {
-            (void)parsed->for_each_map([&](std::string_view k, const nve::BinValueView &val) {
-              NSString *key = nsstring_or_nil_from_sv(k);
-              if (key != nil) {
-                dict[key] = objc_object_from_bin_value(val, 1u);
-              }
-            });
-          } else {
-            dict[@"value"] = objc_object_from_bin_value(*parsed, 0u);
-          }
-        } else {
-          NSString *raw = nsstring_or_nil_from_sv(std::string_view(
-              reinterpret_cast<const char *>(ev.payload_bytes.data()), ev.payload_bytes.size()));
-          if (raw != nil) {
-            dict[@"raw"] = raw;
-          }
-        }
+      NSMutableDictionary *m = [NSMutableDictionary dictionaryWithCapacity:v.data.map_val.len];
+      for (size_t i = 0; i < v.data.map_val.len && v.data.map_val.ptr != nullptr; ++i) {
+        const NveMapEntry &e = v.data.map_val.ptr[i];
+        m[nsstring_from_sv(sv(e.key))] = objc_object_from_nve_value(e.value, depth + 1u);
       }
-      break;
+      return m;
     }
-    case nve::EventKind::Focus:
-    case nve::EventKind::Blur:
-      break;
+    default: return [NSNull null];
   }
-  return [dict copy];
 }
 
-} // namespace nve::apple
+NSString *event_name(const NveDirectEvent &ev) {
+  if (ev.name.ptr != nullptr && ev.name.len > 0u) return nsstring_from_sv(sv(ev.name));
+  switch (ev.kind) {
+    case NVE_EVENT_PRESS: return @"press";
+    case NVE_EVENT_LONG_PRESS: return @"longPress";
+    case NVE_EVENT_SCROLL: return @"scroll";
+    case NVE_EVENT_TEXT_CHANGE: return @"textChange";
+    case NVE_EVENT_FOCUS: return @"focus";
+    case NVE_EVENT_BLUR: return @"blur";
+    case NVE_EVENT_LAYOUT: return @"layout";
+    case NVE_EVENT_SUBMIT: return @"submit";
+    case NVE_EVENT_KEY_DOWN: return @"keyDown";
+    case NVE_EVENT_KEY_UP: return @"keyUp";
+    default: return @"custom";
+  }
+}
+
+NSDictionary<NSString *, id> *payload_dictionary_from_event(const NveDirectEvent &ev) {
+  NSMutableDictionary *p = [NSMutableDictionary dictionary];
+  p[@"nodeId"] = @(ev.node_id);
+  p[@"surfaceId"] = @(ev.surface_id);
+  p[@"timestampUs"] = @(ev.timestamp_us);
+  switch (ev.payload_tag) {
+    case NVE_EVENT_PAYLOAD_POINT:
+      p[@"x"] = @(ev.x);
+      p[@"y"] = @(ev.y);
+      break;
+    case NVE_EVENT_PAYLOAD_SCROLL:
+    case NVE_EVENT_PAYLOAD_LAYOUT:
+      p[@"x"] = @(ev.x);
+      p[@"y"] = @(ev.y);
+      p[@"width"] = @(ev.width);
+      p[@"height"] = @(ev.height);
+      break;
+    case NVE_EVENT_PAYLOAD_TEXT:
+      p[@"text"] = nsstring_from_sv(sv(ev.text));
+      break;
+    default:
+      break;
+  }
+  if (ev.value.tag != NVE_VAL_NULL) p[@"value"] = objc_object_from_nve_value(ev.value);
+  return p;
+}
+
+NveDirectEvent make_point_event(uint32_t surface, uint32_t node, uint8_t kind, float x, float y) {
+  NveDirectEvent ev{};
+  ev.surface_id = surface;
+  ev.node_id = node;
+  ev.timestamp_us = now_us();
+  ev.kind = kind;
+  ev.payload_tag = NVE_EVENT_PAYLOAD_POINT;
+  ev.x = x;
+  ev.y = y;
+  ev.value = null_value();
+  return ev;
+}
+
+NveDirectEvent make_text_event(uint32_t surface, uint32_t node, uint8_t kind, std::string_view text, ValueArena &arena) {
+  NveDirectEvent ev = make_point_event(surface, node, kind, 0.0f, 0.0f);
+  ev.payload_tag = NVE_EVENT_PAYLOAD_TEXT;
+  ev.text = arena.str(text);
+  return ev;
+}
+
+NveDirectEvent make_scroll_event(uint32_t surface, uint32_t node, float x, float y, float content_w, float content_h) {
+  NveDirectEvent ev = make_point_event(surface, node, NVE_EVENT_SCROLL, x, y);
+  ev.payload_tag = NVE_EVENT_PAYLOAD_SCROLL;
+  ev.width = content_w;
+  ev.height = content_h;
+  return ev;
+}
+
+}  // namespace nve::apple

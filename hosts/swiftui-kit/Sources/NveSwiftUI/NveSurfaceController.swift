@@ -1,323 +1,256 @@
 import CNveAbi
+import NveHost
 import Darwin
 import Foundation
+import QuartzCore
 import SwiftUI
 
-// MARK: - Surface Controller (`nve_get_interface` Lifecycle + Direct FFI + Layout + Events)
+/// Weak controller reference handed to the runtime wake callback, which may fire on any thread;
+/// it is only dereferenced on the main queue.
+private final class WeakController: @unchecked Sendable {
+    weak var value: NveSurfaceController?
+    init(_ value: NveSurfaceController) { self.value = value }
+}
 
-/// Manages an instantiated `nve_get_interface` surface, binary FFI direct props propagation,
-/// direct event/command dispatch, intrinsic layout negotiation, and outbound event draining.
+// MARK: - Surface Controller (`libnve_runtime` surface + attached `nve_get_interface` app)
+
+/// One NVE surface hosted by `libnve_runtime`: attaches an app module (static, explicit, or
+/// `dlopen`), pairs with a remote dev server, forwards props / input / hot patches / state
+/// snapshots, drives frames from the runtime wake callback, and publishes the zero-copy scene
+/// through ``store``. Main-thread only (the runtime binds the surface to its creating thread).
 public final class NveSurfaceController: ObservableObject {
     private static var nextSurfaceId: UInt32 = 1
     private static let idLock = NSLock()
 
     public let surfaceId: UInt32
-    public let vtableSymbol: String
-    public let backend: NveRenderBackend
-
-    private var module: NveModule = NveModule(surface: nil, layout: nil, component: nil, dev: nil, host: nil)
-    private var handle: NveAppHandle?
-    private var dylibHandle: UnsafeMutableRawPointer?
+    public let session: NveRuntimeSession
+    public let store: NveSceneStore
     public private(set) var resolutionSource: NveInterfaceResolutionSource?
-    private var frameCounter: UInt64 = 0
-    private var lastPropsValue: NveBinValue?
-    private var lastDirectProps: Any?
-    private var lastDirectPropsEqual: ((Any) -> Bool)?
-    private var fallbackIntrinsicSize: CGSize = CGSize(width: 240, height: 120)
+    @Published public private(set) var isPaired = false
 
     public var onEvent: ((NveEvent) -> Void)?
 
+    private var dylibHandle: UnsafeMutableRawPointer?
+    private var lastPropsValue: NveBinValue?
+    private var lastDirectPropsEqual: ((Any) -> Bool)?
+    private var lastTick: CFTimeInterval = 0
+    private var pumpScheduled = false
+
+    /// Creates a runtime surface and, when `getInterface` / `dylibPath` / `vtableSymbol` resolves,
+    /// attaches the app. Throws when `libnve_runtime` is not linked or incompatible.
     public init(
         surfaceId: UInt32? = nil,
         vtableSymbol: String = "nve_get_interface",
-        backend: NveRenderBackend = .fabric,
         getInterface: NveGetInterfaceFn? = nil,
         dylibPath: String? = nil,
-        staticTable: NveStaticInterfaceTable = .shared
-    ) {
+        staticTable: NveStaticInterfaceTable = .shared,
+        runtimeApi: UnsafePointer<NveRuntimeApi>? = NveRuntimeSession.linkedApi(),
+        textMeasurer: NveTextMeasuring? = NveCoreTextMeasurer()
+    ) throws {
         if let surfaceId {
             self.surfaceId = surfaceId
         } else {
             Self.idLock.lock()
-            let id = Self.nextSurfaceId
+            self.surfaceId = Self.nextSurfaceId
             Self.nextSurfaceId &+= 1
             Self.idLock.unlock()
-            self.surfaceId = id
         }
-        self.vtableSymbol = vtableSymbol
-        self.backend = backend
-
+        session = try NveRuntimeSession(api: runtimeApi, surfaceId: self.surfaceId)
+        store = NveSceneStore(session: session)
+        try session.setTextMeasurer(textMeasurer)
+        let weakSelf = WeakController(self)
+        try session.setWakeHandler { DispatchQueue.main.async { weakSelf.value?.schedulePump() } }
         if let resolved = NveInterfaceResolver.resolve(
-            symbol: vtableSymbol,
-            getInterface: getInterface,
-            dylibPath: dylibPath,
-            staticTable: staticTable
-        ) {
-            attach(resolved: resolved)
+            symbol: vtableSymbol, getInterface: getInterface, dylibPath: dylibPath, staticTable: staticTable)
+        {
+            try attach(resolved)
         }
     }
 
     deinit {
-        destroy()
-    }
-
-    public var isMounted: Bool {
-        handle != nil && module.surface != nil
-    }
-
-    public func attach(getInterface: NveGetInterfaceFn) {
-        attach(
-            resolved: NveResolvedInterface(
-                module: nve_resolve_module(getInterface),
-                dylibHandle: nil,
-                source: .explicit
-            )
-        )
-    }
-
-    /// Attaches a pre-resolved static or dynamic `NveResolvedInterface`.
-    public func attach(resolved: NveResolvedInterface) {
-        destroy()
-        guard let surface = resolved.module.surface, let createFn = surface.pointee.create else {
-            if let lib = resolved.dylibHandle {
-                dlclose(lib)
-            }
-            return
+        if let dylibHandle {
+            try? session.attachApp(nil)
+            dlclose(dylibHandle)
         }
-        guard let created = createFn(surfaceId) else {
-            if let lib = resolved.dylibHandle {
-                dlclose(lib)
-            }
-            return
-        }
-        self.module = resolved.module
-        self.handle = created
-        self.dylibHandle = resolved.dylibHandle
-        self.resolutionSource = resolved.source
-        self.lastPropsValue = nil
-        self.lastDirectProps = nil
-        self.lastDirectPropsEqual = nil
     }
 
-    /// Zero-copy typed fast path for `NveDirectEncodable & Equatable` prop structs:
-    /// skips `[String: Any]` boxing, `NveBinValue` heap-tree construction, and key sorting.
+    // MARK: App lifecycle
+
+    /// Attaches `resolved` (detaching and closing any previous app / dylib).
+    public func attach(_ resolved: NveResolvedInterface) throws {
+        try detach()
+        do {
+            try session.attachApp(resolved.getInterface)
+        } catch {
+            if let lib = resolved.dylibHandle { dlclose(lib) }
+            throw error
+        }
+        dylibHandle = resolved.dylibHandle
+        resolutionSource = resolved.source
+        pump()
+    }
+
+    public func detach() throws {
+        try session.attachApp(nil)
+        if let dylibHandle {
+            dlclose(dylibHandle)
+            self.dylibHandle = nil
+        }
+        resolutionSource = nil
+        lastPropsValue = nil
+        lastDirectPropsEqual = nil
+    }
+
+    /// Tier-2 hot swap: snapshots app state, attaches the rebuilt dylib, restores the state.
+    public func reload(dylibPath: String, symbol: String = "nve_get_interface") throws {
+        let state = (try? session.snapshotState()) ?? Data()
+        guard let next = NveInterfaceResolver.resolve(symbol: symbol, dylibPath: dylibPath) else {
+            throw NveRuntimeError.runtimeUnavailable
+        }
+        try attach(next)
+        if !state.isEmpty { try? session.restoreState(state) }
+        pump()
+    }
+
+    public var isMounted: Bool { resolutionSource != nil }
+
+    // MARK: Pairing
+
+    /// Pairs with a remote `nve dev` server (`nve://pair?...` or `ws(s)://...`).
+    public func pair(uri: String, token: String = "") throws {
+        try session.pairConnect(uri: uri, token: token)
+        isPaired = session.isPaired
+    }
+
+    public func unpair() throws {
+        try session.pairDisconnect()
+        isPaired = false
+    }
+
+    // MARK: Props, input, dev loop
+
+    /// Typed props (`NveDirectEncodable & Equatable`): skipped when equal to the last push.
     @discardableResult
     public func setDirectProps<P: NveDirectEncodable & Equatable>(_ props: P) -> Bool {
-        if let eq = lastDirectPropsEqual, eq(props) {
-            return false
-        }
-        guard let needsRender = applyDirectProps(props) else {
-            return false
-        }
+        if let eq = lastDirectPropsEqual, eq(props) { return false }
+        guard let changed = push({ try NveDirectPropsWriter.withEncodedProps(props, $0) }) else { return false }
         lastPropsValue = nil
-        lastDirectProps = props
-        lastDirectPropsEqual = { other in (other as? P) == props }
-        return needsRender
+        lastDirectPropsEqual = { ($0 as? P) == props }
+        return changed
     }
 
-    /// Zero-copy typed fast path for `NveDirectEncodable` prop structs (without `Equatable` dedup).
+    /// Typed props without equality dedup.
     @discardableResult
     public func setDirectProps<P: NveDirectEncodable>(_ props: P) -> Bool {
-        guard let needsRender = applyDirectProps(props) else {
-            return false
-        }
         lastPropsValue = nil
-        lastDirectProps = nil
         lastDirectPropsEqual = nil
-        return needsRender
+        return push({ try NveDirectPropsWriter.withEncodedProps(props, $0) }) ?? false
     }
 
-    private func applyDirectProps<P: NveDirectEncodable>(_ props: P) -> Bool? {
-        guard let handle, let directFn = module.component?.pointee.set_props else {
-            return nil
-        }
-        guard let needsRender = try? NveDirectPropsWriter.withEncodedProps(props, { ptr, count in
-            directFn(handle, ptr, count)
-        }) else {
-            return nil
-        }
-
-        if needsRender != 0 {
-            renderFrame()
-        }
-        drainAndForwardEvents()
-        return needsRender != 0
-    }
-
-    /// Pushes typed props via `NveComponentApi.set_props`.
     @discardableResult
     public func setProps(_ entries: [(String, NveBinValue)]) -> Bool {
         let canonical = NveBinValue.map(entries)
-        if lastPropsValue == canonical {
-            return false
-        }
-        guard let handle, let directFn = module.component?.pointee.set_props else {
-            return false
-        }
-        guard let needsRender = try? NveDirectPropsWriter.withEntries(entries, { ptr, count in
-            directFn(handle, ptr, count)
-        }) else {
-            return false
-        }
-
+        guard lastPropsValue != canonical,
+              let changed = push({ try NveDirectPropsWriter.withEntries(entries, $0) })
+        else { return false }
         lastPropsValue = canonical
-        lastDirectProps = nil
         lastDirectPropsEqual = nil
-        if needsRender != 0 {
-            renderFrame()
-        }
-        drainAndForwardEvents()
-        return needsRender != 0
+        return changed
     }
 
-    /// Pushes `[String: Any]` props into the mounted component via direct C-ABI structs.
     @discardableResult
     public func setProps(_ props: [String: Any]) -> Bool {
-        guard let entries = try? NveBinValue.canonicalEntries(from: props) else {
-            return false
-        }
+        guard let entries = try? NveBinValue.canonicalEntries(from: props) else { return false }
         return setProps(entries)
     }
 
-    /// Dispatches a batch of typed events via `NveSurfaceApi.dispatch_events`.
+    /// Encodes props into a borrowed `NveMapEntry` array and pushes them through the runtime.
+    private func push(
+        _ encode: ((UnsafePointer<NveMapEntry>?, UInt32) throws -> Bool) throws -> Bool
+    ) -> Bool? {
+        guard let changed = try? encode({ ptr, count in
+            try session.setProps(UnsafeBufferPointer(start: ptr, count: Int(count)))
+        }) else { return nil }
+        pump()
+        return changed
+    }
+
     @discardableResult
     public func dispatchEvents(_ events: [NveEvent]) -> Bool {
-        guard !events.isEmpty, let handle, let directFn = module.surface?.pointee.dispatch_events else {
-            return false
-        }
-        guard let needsRender = try? NveDirectEventWriter.withBatch(events, { batch in
-            directFn(handle, batch)
-        }) else {
-            return false
-        }
-
-        if needsRender != 0 {
-            renderFrame()
-        }
-        drainAndForwardEvents()
-        return needsRender != 0
+        guard !events.isEmpty,
+              let changed = try? NveDirectEventWriter.withBatch(events, { try session.dispatch($0) })
+        else { return false }
+        pump()
+        return changed
     }
 
-    /// Dispatches a single typed event.
     @discardableResult
-    public func dispatchEvent(_ event: NveEvent) -> Bool {
-        dispatchEvents([event])
+    public func dispatchEvent(_ event: NveEvent) -> Bool { dispatchEvents([event]) }
+
+    /// Imperative command as a custom event carrying a typed `NveBinValue`.
+    public func dispatchCommand(name: String, value: NveBinValue, nodeId: UInt32 = 1) {
+        _ = try? NveDirectEventWriter.withCustomEvent(
+            surfaceId: surfaceId, nodeId: nodeId, timestampUs: NveEvent.nowUs(), name: name, value: value,
+            { try session.dispatch($0) })
+        pump()
     }
 
-    /// Dispatches an imperative command with a typed `NveBinValue` argument directly over the C ABI.
-    public func dispatchCommand(
-        name: String,
-        value: NveBinValue,
-        nodeId: UInt32 = 1,
-        timestampUs: UInt64 = UInt64(Date().timeIntervalSince1970 * 1_000_000)
-    ) {
-        guard let handle, let directFn = module.surface?.pointee.dispatch_events else { return }
-        guard let needsRender = try? NveDirectEventWriter.withCustomEvent(
-            surfaceId: surfaceId,
-            nodeId: nodeId,
-            timestampUs: timestampUs,
-            name: name,
-            value: value,
-            { batch in directFn(handle, batch) }
-        ) else {
-            return
-        }
-
-        if needsRender != 0 {
-            renderFrame()
-        }
-        drainAndForwardEvents()
-    }
-
-    /// Dispatches an imperative command with `[String: Any]` arguments (converted directly to
-    /// `NveValue` / `NveBinValue`, binary FFI).
     public func dispatchCommand(name: String, args: [String: Any] = [:]) {
         guard let entries = try? NveBinValue.canonicalEntries(from: args) else { return }
         dispatchCommand(name: name, value: .map(entries))
     }
 
-    /// Triggers a single frame render and returns the raw CommandBuffer bytes.
-    @discardableResult
-    public func renderFrame() -> Data {
-        guard let handle, let renderFn = module.surface?.pointee.render else { return Data() }
-        frameCounter += 1
-        let slice = renderFn(handle, frameCounter)
-        guard let ptr = slice.ptr, slice.len > 0 else { return Data() }
-        return Data(bytes: ptr, count: slice.len)
-    }
-
-    /// Applies one binary `NVP1` Tier-1 hot-patch frame (as broadcast by `nve dev`) via
-    /// `NveDevApi.apply_hot_patch`.
+    /// Applies one binary `NVP1` Tier-1 hot-patch frame (as broadcast by `nve dev`).
     @discardableResult
     public func applyHotPatch(_ patchNvp1: Data) -> Bool {
-        guard let handle, let patchFn = module.dev?.pointee.apply_hot_patch else { return false }
-        let dirty = patchNvp1.withUnsafeBytes { raw -> UInt32 in
-            let slice = NveBufferSlice(
-                ptr: raw.bindMemory(to: UInt8.self).baseAddress,
-                len: raw.count
-            )
-            return patchFn(handle, slice)
-        }
-        if dirty != 0 {
-            renderFrame()
-        }
-        return dirty != 0
+        let changed = (try? session.applyHotPatch(patchNvp1)) ?? false
+        pump()
+        return changed
     }
 
-    /// Drains all queued outbound events via `NveComponentApi.drain_emitted_events`.
-    public func drainEmittedEvents() -> [NveEvent] {
-        guard let handle, let drainFn = module.component?.pointee.drain_emitted_events else { return [] }
-        return NveDirectEventWriter.decodeBatch(drainFn(handle))
+    // MARK: Layout
+
+    /// SwiftUI `sizeThatFits`: the proposal on constrained axes; unconstrained axes take the
+    /// laid-out root, else `fallbackIntrinsicSize`.
+    public var fallbackIntrinsicSize = CGSize(width: 240, height: 120)
+
+    public func measure(proposal: CGSize) -> CGSize {
+        let root = (try? session.withScene { scene -> CGSize? in
+            guard let i = scene.index(of: .root), let r = scene.rect(i), r.width > 0, r.height > 0 else { return nil }
+            return CGSize(width: CGFloat(r.width), height: CGFloat(r.height))
+        }) ?? nil
+        let natural = root ?? fallbackIntrinsicSize
+        return CGSize(
+            width: proposal.width.isFinite ? proposal.width : natural.width,
+            height: proposal.height.isFinite ? proposal.height : natural.height)
     }
 
-    public func drainAndForwardEvents() {
-        guard let onEvent else { return }
-        for event in drainEmittedEvents() {
-            onEvent(event)
+    /// Propagates the hosting view's size (and display scale) to the runtime viewport.
+    public func resize(_ size: CGSize, scale: CGFloat = 1) {
+        guard size.width > 0, size.height > 0 else { return }
+        try? session.setViewport(size, scale: scale)
+        pump()
+    }
+
+    // MARK: Frames
+
+    private func schedulePump() {
+        guard !pumpScheduled else { return }
+        pumpScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.pumpScheduled = false
+            self?.pump()
         }
     }
 
-    /// Negotiates intrinsic size for SwiftUI's `sizeThatFits` using zero-cost `NveLayoutApi.measure`.
-    public func measure(
-        minWidth: CGFloat = 0,
-        minHeight: CGFloat = 0,
-        maxWidth: CGFloat = .infinity,
-        maxHeight: CGFloat = .infinity
-    ) -> CGSize {
-        if let handle, let measureFn = module.layout?.pointee.measure {
-            let constraints = NveSizeConstraints(
-                min_w: Float(minWidth),
-                min_h: Float(minHeight),
-                max_w: maxWidth.isFinite ? Float(maxWidth) : .infinity,
-                max_h: maxHeight.isFinite ? Float(maxHeight) : .infinity
-            )
-            let measured = measureFn(handle, constraints)
-            let clampedW = max(minWidth, min(maxWidth, CGFloat(measured.width)))
-            let clampedH = max(minHeight, min(maxHeight, CGFloat(measured.height)))
-            return CGSize(width: clampedW, height: clampedH)
-        }
-        let width = maxWidth.isFinite ? max(minWidth, maxWidth) : max(minWidth, fallbackIntrinsicSize.width)
-        let height = maxHeight.isFinite ? max(minHeight, maxHeight) : max(minHeight, fallbackIntrinsicSize.height)
-        return CGSize(width: width, height: height)
-    }
-
-    public func setFallbackIntrinsicSize(_ size: CGSize) {
-        fallbackIntrinsicSize = size
-    }
-
-    public func destroy() {
-        if let handle, let destroyFn = module.surface?.pointee.destroy {
-            destroyFn(handle)
-        }
-        handle = nil
-        resolutionSource = nil
-        lastPropsValue = nil
-        lastDirectProps = nil
-        lastDirectPropsEqual = nil
-        module = NveModule(surface: nil, layout: nil, component: nil, dev: nil, host: nil)
-        if let dylibHandle {
-            dlclose(dylibHandle)
-            self.dylibHandle = nil
-        }
+    /// Ticks the runtime, absorbs a published frame, and forwards outbound app events.
+    public func pump() {
+        let now = CACurrentMediaTime()
+        let dt = lastTick == 0 ? 0 : Float(min(now - lastTick, 0.25))
+        lastTick = now
+        if (try? session.tick(dt: dt)) == true { store.sync() }
+        isPaired = session.isPaired
+        guard let onEvent, let batch = try? session.drainEmittedEvents(), batch.len > 0 else { return }
+        for event in NveDirectEventWriter.decodeBatch(batch) { onEvent(event) }
     }
 }

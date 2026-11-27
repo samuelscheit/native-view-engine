@@ -31,6 +31,60 @@ impl EventMask {
     pub const POINTER_LEAVE: u64 = 1 << 16;
     pub const WHEEL: u64 = 1 << 17;
     pub const TABLE_EVENT: u64 = 1 << 18;
+
+    /// The subscription bit a node needs to receive `kind`. Not `1 << (kind - 1)`: the three
+    /// composition kinds share [`Self::COMPOSITION`].
+    pub const fn of(kind: NativeEventKind) -> u64 {
+        match kind {
+            NativeEventKind::Press => Self::PRESS,
+            NativeEventKind::LongPress => Self::LONG_PRESS,
+            NativeEventKind::Scroll => Self::SCROLL,
+            NativeEventKind::TextChange => Self::TEXT_CHANGE,
+            NativeEventKind::Focus => Self::FOCUS,
+            NativeEventKind::Blur => Self::BLUR,
+            NativeEventKind::Layout => Self::LAYOUT,
+            NativeEventKind::Custom => Self::CUSTOM,
+            NativeEventKind::CompositionStart
+            | NativeEventKind::CompositionUpdate
+            | NativeEventKind::CompositionEnd => Self::COMPOSITION,
+            NativeEventKind::KeyDown => Self::KEY_DOWN,
+            NativeEventKind::KeyUp => Self::KEY_UP,
+            NativeEventKind::Submit => Self::SUBMIT,
+            NativeEventKind::PointerDown => Self::POINTER_DOWN,
+            NativeEventKind::PointerMove => Self::POINTER_MOVE,
+            NativeEventKind::PointerUp => Self::POINTER_UP,
+            NativeEventKind::PointerEnter => Self::POINTER_ENTER,
+            NativeEventKind::PointerLeave => Self::POINTER_LEAVE,
+            NativeEventKind::Wheel => Self::WHEEL,
+            NativeEventKind::TableEvent => Self::TABLE_EVENT,
+        }
+    }
+
+    /// Host mirror names of every bit (`NVE_EVENT_MASK_*`, via `nve.interaction.event_mask`).
+    pub const VALUES: crate::table::ValueSetDesc = crate::table::ValueSetDesc {
+        name: "EventMask",
+        values: &[
+            ("Press", Self::PRESS as u32),
+            ("LongPress", Self::LONG_PRESS as u32),
+            ("Scroll", Self::SCROLL as u32),
+            ("TextChange", Self::TEXT_CHANGE as u32),
+            ("Focus", Self::FOCUS as u32),
+            ("Blur", Self::BLUR as u32),
+            ("Layout", Self::LAYOUT as u32),
+            ("Custom", Self::CUSTOM as u32),
+            ("Composition", Self::COMPOSITION as u32),
+            ("KeyDown", Self::KEY_DOWN as u32),
+            ("KeyUp", Self::KEY_UP as u32),
+            ("Submit", Self::SUBMIT as u32),
+            ("PointerDown", Self::POINTER_DOWN as u32),
+            ("PointerMove", Self::POINTER_MOVE as u32),
+            ("PointerUp", Self::POINTER_UP as u32),
+            ("PointerEnter", Self::POINTER_ENTER as u32),
+            ("PointerLeave", Self::POINTER_LEAVE as u32),
+            ("Wheel", Self::WHEEL as u32),
+            ("TableEvent", Self::TABLE_EVENT as u32),
+        ],
+    };
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

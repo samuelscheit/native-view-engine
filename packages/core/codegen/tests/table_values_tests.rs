@@ -13,7 +13,7 @@ use nve_codegen::{CodegenError, generate_module_table_header, generate_table_fil
 use nve_components::tables::{AriaRole, CORE_TABLE_DESCS, CursorKind, Typography, text_decoration};
 
 fn core_header() -> String {
-    let files = generate_table_files(CORE_TABLE_DESCS).expect("core tables");
+    let files = generate_table_files(CORE_TABLE_DESCS, &[]).expect("core tables");
     files.into_iter().find(|f| f.relative_path.ends_with(".h")).expect("C header").content
 }
 

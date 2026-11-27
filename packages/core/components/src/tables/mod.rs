@@ -46,6 +46,72 @@ pub use visual::{
 
 use nve_store::{NveTable, RealizationOrder};
 
+/// Word enums and flag sets stored in core table fields, mirrored to hosts next to the table specs
+/// (`NveImageFit`, `NVE_ARIA_ROLE_*`, `NveTypographySet`, ...).
+pub const CORE_WORD_CONSTS: &[&nve_store::__private::WordConstsDesc] = &[
+    &Overflow::DESC,
+    &Visibility::DESC,
+    &FontStyle::DESC,
+    &TextAlign::DESC,
+    &WhiteSpace::DESC,
+    &WordBreak::DESC,
+    &OverflowWrap::DESC,
+    &VerticalAlign::DESC,
+    &ScrollAxes::DESC,
+    &Scrollbars::DESC,
+    &ImageFit::DESC,
+    &InputKind::DESC,
+    &LinkTarget::DESC,
+    &AriaRole::DESC,
+    &AriaTriState::DESC,
+    &AriaLive::DESC,
+    &AriaOrientation::DESC,
+    &AriaAutoComplete::DESC,
+    &Display::DESC,
+    &Position::DESC,
+    &FlexDirection::DESC,
+    &FlexWrap::DESC,
+    &AlignItems::DESC,
+    &AlignSelf::DESC,
+    &AlignContent::DESC,
+    &JustifyContent::DESC,
+    &TYPOGRAPHY_SET,
+    &TEXT_DECORATION,
+];
+
+/// `Typography::set` bits.
+pub const TYPOGRAPHY_SET: nve_store::__private::WordConstsDesc = nve_store::__private::WordConstsDesc {
+    name: "TypographySet",
+    flags: true,
+    entries: &[
+        ("Color", Typography::SET_COLOR),
+        ("FontSize", Typography::SET_FONT_SIZE),
+        ("LineHeight", Typography::SET_LINE_HEIGHT),
+        ("LetterSpacing", Typography::SET_LETTER_SPACING),
+        ("FontFamily", Typography::SET_FONT_FAMILY),
+        ("MaxLines", Typography::SET_MAX_LINES),
+        ("FontWeight", Typography::SET_FONT_WEIGHT),
+        ("FontStyle", Typography::SET_FONT_STYLE),
+        ("WhiteSpace", Typography::SET_WHITE_SPACE),
+        ("WordBreak", Typography::SET_WORD_BREAK),
+        ("OverflowWrap", Typography::SET_OVERFLOW_WRAP),
+        ("TextAlign", Typography::SET_TEXT_ALIGN),
+        ("TextDecoration", Typography::SET_TEXT_DECORATION),
+        ("VerticalAlign", Typography::SET_VERTICAL_ALIGN),
+    ],
+};
+
+/// `Typography::text_decoration` bits.
+pub const TEXT_DECORATION: nve_store::__private::WordConstsDesc = nve_store::__private::WordConstsDesc {
+    name: "TextDecoration",
+    flags: true,
+    entries: &[
+        ("Underline", text_decoration::UNDERLINE as u32),
+        ("Overline", text_decoration::OVERLINE as u32),
+        ("LineThrough", text_decoration::LINE_THROUGH as u32),
+    ],
+};
+
 macro_rules! define_core_tables {
     ($($table:ident),+ $(,)?) => {
         /// Canonical descriptor list of all 17 cross-platform core tables.

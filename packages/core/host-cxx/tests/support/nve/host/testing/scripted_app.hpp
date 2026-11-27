@@ -31,6 +31,9 @@ class ScriptedApp {
   ScriptedApp() { slot() = this; }
   ~ScriptedApp() {
     if (slot() == this) slot() = nullptr;
+    // The runtime may destroy its app handle after this object (e.g. a host declared first):
+    // detach every live handle so later callbacks see no app.
+    for (Instance* inst : instances_) inst->app = nullptr;
   }
   ScriptedApp(const ScriptedApp&) = delete;
   ScriptedApp& operator=(const ScriptedApp&) = delete;
@@ -78,23 +81,40 @@ class ScriptedApp {
   }
 
  private:
+  /// One runtime app handle: owned by the runtime, pointing at its (possibly gone) app.
+  struct Instance {
+    ScriptedApp* app;
+  };
+
+  [[nodiscard]] static ScriptedApp* app_of(NveAppHandle h) noexcept {
+    return h != nullptr ? static_cast<Instance*>(h)->app : nullptr;
+  }
+
   static NveAppHandle create(uint32_t) {
     ScriptedApp* self = slot();
-    if (self != nullptr) ++self->creates;
-    return self;
+    if (self == nullptr) return nullptr;
+    ++self->creates;
+    self->instances_.push_back(new Instance{self});
+    return self->instances_.back();
   }
   static void destroy(NveAppHandle h) {
-    if (h != nullptr) ++static_cast<ScriptedApp*>(h)->destroys;
+    auto* inst = static_cast<Instance*>(h);
+    if (inst == nullptr) return;
+    if (ScriptedApp* self = inst->app) {
+      ++self->destroys;
+      std::erase(self->instances_, inst);
+    }
+    delete inst;
   }
   static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<ScriptedApp*>(h);
+    ScriptedApp* self = app_of(h);
     if (self == nullptr || !self->w.pending()) return NveBufferSlice{nullptr, 0u};
     const std::span<const uint8_t> frame = self->w.finish(frame_id);
     ++self->renders;
     return NveBufferSlice{frame.data(), frame.size()};
   }
   static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<ScriptedApp*>(h);
+    ScriptedApp* self = app_of(h);
     if (self == nullptr) return 0u;
     for (uint32_t i = 0; batch.ptr != nullptr && i < batch.len; ++i) {
       if (batch.ptr[i].node_id == kFlushNode) continue;
@@ -107,6 +127,8 @@ class ScriptedApp {
     }
     return self->w.pending() ? 1u : 0u;
   }
+
+  std::vector<Instance*> instances_;
 };
 
 }  // namespace nve::host::testing

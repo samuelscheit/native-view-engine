@@ -3,28 +3,61 @@
 #import <Foundation/Foundation.h>
 
 #include <nve/generated/nve_abi.generated.h>
-#include "nve_rn_component.hpp"
-#include "nve_value.hpp"
+#include <nve/generated/nve_runtime_abi.generated.h>
 
 #include <cstdint>
+#include <deque>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace nve::apple {
 
-/// Convert a UTF-8 `std::string_view` to a non-null `NSString` (`@""` when empty or invalid).
-NSString * _Nonnull nsstring_from_sv(std::string_view sv);
+/// Owns the backing storage of `NveValue` graphs built from Foundation objects (strings, bytes,
+/// arrays, map entries) until `reset()`; pointers stay stable while it lives.
+class ValueArena {
+ public:
+  void reset() noexcept {
+    strings_.clear();
+    values_.clear();
+    entries_.clear();
+  }
+  NveStrSlice str(std::string_view s);
+  NveBufferSlice bytes(const void *_Nonnull data, size_t len);
+  NveValue *_Nonnull values(size_t n) { return values_.emplace_back(n).data(); }
+  NveMapEntry *_Nonnull entries(size_t n) { return entries_.emplace_back(n).data(); }
 
-/// Convert a UTF-8 `std::string_view` to `NSString` (`nil` when empty).
-NSString * _Nullable nsstring_or_nil_from_sv(std::string_view sv);
+ private:
+  std::deque<std::string> strings_;
+  std::deque<std::vector<NveValue>> values_;
+  std::deque<std::vector<NveMapEntry>> entries_;
+};
 
-/// Recursively convert an Objective-C Foundation object (`NSDictionary`, `NSArray`, `NSString`,
-/// `NSNumber`, `NSData`, `NSNull`) into an arena-backed `NveValue` with direct binary FFI.
-NveValue nve_value_from_objc_object(id _Nullable obj, nve::BumpArena &arena, uint32_t depth = 0u);
+/// UTF-8 → non-null `NSString` (`@""` when empty or invalid).
+NSString *_Nonnull nsstring_from_sv(std::string_view sv);
 
-/// Recursively convert a zero-copy `BinValueView` into an Objective-C Foundation object.
-id _Nonnull objc_object_from_bin_value(const nve::BinValueView &view, uint32_t depth = 0u);
+/// UTF-8 → `NSString`, `nil` when empty.
+NSString *_Nullable nsstring_or_nil_from_sv(std::string_view sv);
 
-/// Convert a decoded NVE event into an Objective-C payload dictionary.
-NSDictionary<NSString *, id> * _Nonnull payload_dictionary_from_event(const nve::DecodedEvent &ev);
+/// Recursively converts `NSDictionary` / `NSArray` / `NSString` / `NSNumber` / `NSData` / `NSNull`
+/// into an arena-backed `NveValue` (depth-limited; unknown objects become null).
+NveValue nve_value_from_objc_object(id _Nullable obj, ValueArena &arena, uint32_t depth = 0u);
 
-} // namespace nve::apple
+/// Recursively converts a borrowed `NveValue` into Foundation objects (`NSNull` for null).
+id _Nonnull objc_object_from_nve_value(const NveValue &value, uint32_t depth = 0u);
+
+/// Builds `NveMapEntry` props from a dictionary, keys sorted for deterministic order.
+std::vector<NveMapEntry> map_entries_from_dictionary(NSDictionary<NSString *, id> *_Nonnull props, ValueArena &arena,
+                                                     uint32_t depth = 0u);
+
+/// Event name (`"press"`, `"textChange"`, custom name, …) and payload dictionary of an outbound
+/// app event.
+NSString *_Nonnull event_name(const NveDirectEvent &ev);
+NSDictionary<NSString *, id> *_Nonnull payload_dictionary_from_event(const NveDirectEvent &ev);
+
+/// Inbound host events; string payloads borrow `arena`.
+NveDirectEvent make_point_event(uint32_t surface, uint32_t node, uint8_t kind, float x, float y);
+NveDirectEvent make_text_event(uint32_t surface, uint32_t node, uint8_t kind, std::string_view text, ValueArena &arena);
+NveDirectEvent make_scroll_event(uint32_t surface, uint32_t node, float x, float y, float content_w, float content_h);
+
+}  // namespace nve::apple

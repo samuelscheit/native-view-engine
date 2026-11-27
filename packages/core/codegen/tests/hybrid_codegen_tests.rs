@@ -26,15 +26,6 @@ const REALISTIC_HYBRID_SPEC: &str = include_str!("fixtures/realistic_hybrid.nve.
 /// A functional fake `<jni.h>` (`JNIEnv` records thrown exceptions), so JNI glue compiles and runs.
 const FAKE_JNI_H: &str = include_str!("fixtures/fake_jni.h");
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .expect("workspace root 3 levels above CARGO_MANIFEST_DIR")
-        .to_path_buf()
-}
-
 fn temp_test_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "nve_hybrid_codegen_test_{}_{}",
@@ -692,9 +683,6 @@ std::string _check_shadow(const NveHybridShadowVTable* vt) {
 }
 
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
-    let flutter_plugin_root = common::prepare_offline_nve_flutter_pkg(dir, &workspace_root());
-    let canonical_plugin =
-        std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
     let host_root = common::prepare_offline_nve_host_pkg(dir);
     let canonical_host = std::fs::canonicalize(&host_root).unwrap_or(host_root);
     let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -719,12 +707,6 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
       "languageVersion": "3.4"
     }},
     {{
-      "name": "nve_flutter",
-      "rootUri": "{}",
-      "packageUri": "lib/",
-      "languageVersion": "3.4"
-    }},
-    {{
       "name": "nve_host",
       "rootUri": "{}",
       "packageUri": "lib/",
@@ -734,7 +716,6 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
 }}
 "#,
         to_file_uri(&canonical_dir),
-        to_file_uri(&canonical_plugin),
         to_file_uri(&canonical_host),
     );
     std::fs::write(dart_tool.join("package_config.json"), config)

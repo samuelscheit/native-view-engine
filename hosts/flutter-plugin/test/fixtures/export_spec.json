@@ -1,0 +1,41 @@
+{
+  "name": "NveFixtureCard",
+  "backend": "skia",
+  "rust_vtable_symbol": "nve_fixture_card_get_interface",
+  "doc": "Every prop, event-field, and command parameter kind the Flutter export emits.",
+  "props": [
+    { "name": "count", "prop_type": { "kind": "int32" }, "optional": true, "default_value": { "kind": "int", "value": 3 }, "doc": "Counter." },
+    { "name": "label", "prop_type": { "kind": "string" } },
+    { "name": "subtitle", "prop_type": { "kind": "string" }, "optional": true, "nullable": true },
+    { "name": "accent", "prop_type": { "kind": "color" }, "optional": true, "nullable": true },
+    { "name": "border", "prop_type": { "kind": "color" } },
+    { "name": "variant", "prop_type": { "kind": "string_enum", "variants": ["solid", "outline", "default"] }, "optional": true, "default_value": { "kind": "string", "value": "outline" } },
+    { "name": "size", "prop_type": { "kind": "int_enum", "variants": [0, 1, 2] }, "optional": true, "default_value": { "kind": "int", "value": 1 } },
+    { "name": "scale", "prop_type": { "kind": "double" }, "optional": true, "default_value": { "kind": "int", "value": 2 } },
+    { "name": "ratio", "prop_type": { "kind": "float" }, "optional": true, "nullable": true },
+    { "name": "enabled", "prop_type": { "kind": "bool" }, "optional": true, "default_value": { "kind": "bool", "value": true } },
+    { "name": "tags", "prop_type": { "kind": "array", "item": { "kind": "string" } } },
+    { "name": "meta", "prop_type": { "kind": "object", "fields": [{ "name": "id", "field_type": { "kind": "int32" } }] }, "optional": true, "nullable": true }
+  ],
+  "events": [
+    {
+      "name": "onChange",
+      "bubbling": "direct",
+      "payload": [
+        { "name": "count", "field_type": { "kind": "int32" } },
+        { "name": "progress", "field_type": { "kind": "double" } },
+        { "name": "done", "field_type": { "kind": "bool" } },
+        { "name": "text", "field_type": { "kind": "string" } },
+        { "name": "note", "field_type": { "kind": "string" }, "nullable": true },
+        { "name": "tint", "field_type": { "kind": "color" } },
+        { "name": "ids", "field_type": { "kind": "array", "item": { "kind": "int32" } } },
+        { "name": "extra", "field_type": { "kind": "object", "fields": [] }, "optional": true }
+      ]
+    },
+    { "name": "onReset", "bubbling": "bubbling", "payload": [] }
+  ],
+  "commands": [
+    { "name": "reset", "params": [] },
+    { "name": "setCount", "params": [{ "name": "value", "param_type": { "kind": "int32" } }, { "name": "animated", "param_type": { "kind": "bool" }, "optional": true }] }
+  ]
+}
