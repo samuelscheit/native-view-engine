@@ -18,10 +18,12 @@ namespace {
 
 // Mirrors Rust `nve_abi::table::NveTableView` / `nve_abi::scene::NveSceneView` (64-bit).
 struct TestTableView {
-  uint32_t key_lo, key_hi, slot, words, row_count, dirty_count;
+  uint32_t key_lo, key_hi, slot, words, row_count, dirty_count, row_index_dir_len, row_index_page_count;
   const uint32_t* rows;
   const uint32_t* owners;
   const uint32_t* dirty_rows;
+  const uint32_t* row_index_dir;
+  const uint32_t* row_index_pages;
 };
 
 struct TestNode {  // stand-in for the generated 64-byte `NveRenderNode`
@@ -44,7 +46,9 @@ struct TestSceneView {
 };
 
 NVE_STATIC_ASSERT(offsetof(TestTableView, dirty_count) == 20, "NveTableView.dirty_count @20");
-NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(TestTableView) == 48, "NveTableView is 48 bytes on 64-bit");
+NVE_STATIC_ASSERT(offsetof(TestTableView, row_index_page_count) == 28, "NveTableView.row_index_page_count @28");
+NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(TestTableView) == 72, "NveTableView is 72 bytes on 64-bit");
+NVE_STATIC_ASSERT(sizeof(TestTableView) == sizeof(NveTableView), "mirror matches the generated NveTableView");
 NVE_STATIC_ASSERT(offsetof(TestSceneView, frame_id) == 8, "NveSceneView.frame_id @8");
 NVE_STATIC_ASSERT(offsetof(TestSceneView, table_count) == 36, "NveSceneView.table_count @36");
 NVE_STATIC_ASSERT(offsetof(TestSceneView, nodes) == 40, "NveSceneView.nodes @40");
@@ -81,7 +85,7 @@ std::vector<uint32_t> make_rows() {
 void test_table_reader_dense() {
   const std::vector<uint32_t> rows = make_rows();
   const std::array<uint32_t, 1> dirty = {1u};
-  const TestTableView view{kVisual.lo(), kVisual.hi(), 4u, 6u, 2u, 1u, rows.data(), nullptr, dirty.data()};
+  const TestTableView view{kVisual.lo(), kVisual.hi(), 4u, 6u, 2u, 1u, 0u, 0u, rows.data(), nullptr, dirty.data(), nullptr, nullptr};
   const std::optional<TableReader> t = TableReader::from_view(view);
   CHECK(t.has_value());
   CHECK(t->key() == kVisual && t->slot() == 4u && t->words() == 6u && t->row_count() == 2u && !t->is_sparse());
@@ -108,21 +112,43 @@ void test_table_reader_dense() {
 
 void test_table_reader_sparse_and_invalid() {
   const std::vector<uint32_t> rows = make_rows();
-  const std::array<uint32_t, 2> owners = {0x00010007u, 0x00020003u};
-  const TestTableView sparse{1u, 2u, 0u, 6u, 2u, 0u, rows.data(), owners.data(), nullptr};
+  const std::array<uint32_t, 2> owners = {0x01000007u, 0x02000003u};
+  // Paged row index (`row + 1`): node 7 -> row 0, node 3 -> row 1 in page 0; node 260 sits in
+  // page 1 (directory slot 1) with a stale `row + 1` past `row_count`; directory slot 2 is
+  // `NO_PAGE`, slot 3 names a page that does not exist.
+  std::vector<uint32_t> pages(2u * NVE_ROW_INDEX_PAGE_LEN, 0u);
+  pages[7] = 1u;
+  pages[3] = 2u;
+  pages[NVE_ROW_INDEX_PAGE_LEN + 4u] = 3u;
+  const std::array<uint32_t, 4> dir = {0u, 1u, NVE_ROW_INDEX_NO_PAGE, 9u};
+  const TestTableView sparse{1u, 2u, 0u, 6u, 2u, 0u, 4u, 2u, rows.data(), owners.data(), nullptr, dir.data(), pages.data()};
   const std::optional<TableReader> t = TableReader::from_view(sparse);
   CHECK(t.has_value() && t->is_sparse());
-  CHECK(t->row_of(0x00020003u) == 1u);
+  CHECK(t->row_of_node(7u) == 0u);
+  CHECK(t->row_of_node(3u) == 1u);
+  CHECK(!t->row_of_node(4u).has_value());                            // no row
+  CHECK(!t->row_of_node(NVE_ROW_INDEX_PAGE_LEN + 4u).has_value());   // row + 1 past row_count
+  CHECK(!t->row_of_node(2u * NVE_ROW_INDEX_PAGE_LEN).has_value());   // NO_PAGE
+  CHECK(!t->row_of_node(3u * NVE_ROW_INDEX_PAGE_LEN).has_value());   // page out of range
+  CHECK(!t->row_of_node(4u * NVE_ROW_INDEX_PAGE_LEN).has_value());   // past the directory
+  CHECK(!t->row_of_node(0xFFFFFFFFu).has_value());
+  CHECK(t->row_of(0x02000003u) == 1u);
+  CHECK(!t->row_of(0x03000003u).has_value());  // same slot, other generation
   CHECK(!t->row_of(1u).has_value());
-  CHECK(t->owner(0) == 0x00010007u);
+  CHECK(t->owner(0) == 0x01000007u);
+  // Null index spans with non-zero counts are rejected before a span is formed.
+  const TestTableView null_dir{1u, 2u, 0u, 6u, 2u, 0u, 4u, 2u, rows.data(), owners.data(), nullptr, nullptr, pages.data()};
+  CHECK(!TableReader::from_view(null_dir).has_value());
+  const TestTableView null_pages{1u, 2u, 0u, 6u, 2u, 0u, 4u, 2u, rows.data(), owners.data(), nullptr, dir.data(), nullptr};
+  CHECK(!TableReader::from_view(null_pages).has_value());
 
-  const TestTableView null_rows{1u, 2u, 0u, 6u, 2u, 0u, nullptr, nullptr, nullptr};
+  const TestTableView null_rows{1u, 2u, 0u, 6u, 2u, 0u, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(null_rows).has_value());
-  const TestTableView null_dirty{1u, 2u, 0u, 6u, 2u, 3u, rows.data(), nullptr, nullptr};
+  const TestTableView null_dirty{1u, 2u, 0u, 6u, 2u, 3u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(null_dirty).has_value());
-  const TestTableView too_wide{1u, 2u, 0u, 33u, 0u, 0u, nullptr, nullptr, nullptr};
+  const TestTableView too_wide{1u, 2u, 0u, 33u, 0u, 0u, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(too_wide).has_value());
-  const TestTableView zero_words{1u, 2u, 0u, 0u, 0u, 0u, nullptr, nullptr, nullptr};
+  const TestTableView zero_words{1u, 2u, 0u, 0u, 0u, 0u, 0u, 0u, nullptr, nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(zero_words).has_value());
   CHECK(!TableReader::make(kVisual, 0u, 6u, 3u, rows, {}, {}).has_value());  // 2 rows supplied
 }
@@ -146,9 +172,9 @@ void test_hostile_specs_and_views() {
   CHECK(!t->str(0, NveFieldSpec{3, 0, 32, NVE_FIELD_U32}).has_value());
   CHECK(t->str(0, kLabel).has_value());
   // Hostile word counts are rejected before any span is formed (64-bit overflow / 32-bit hosts).
-  const TestTableView huge{1u, 2u, 0u, 0x80000001u, 0xFFFFFFFFu, 0u, rows.data(), nullptr, nullptr};
+  const TestTableView huge{1u, 2u, 0u, 0x80000001u, 0xFFFFFFFFu, 0u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr};
   CHECK(!TableReader::from_view(huge).has_value());
-  const TestTableView max_rows{1u, 2u, 0u, 32u, 0xFFFFFFFFu, 0xFFFFFFFFu, rows.data(), nullptr, rows.data()};
+  const TestTableView max_rows{1u, 2u, 0u, 32u, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u, 0u, rows.data(), nullptr, rows.data(), nullptr, nullptr};
   if constexpr (sizeof(void*) == 4) CHECK(!TableReader::from_view(max_rows).has_value());
 }
 
@@ -160,7 +186,7 @@ struct SceneFixture {
   std::vector<uint32_t> dirty{0u, 2u, 99u};
   std::vector<uint32_t> removed{42u};
   std::vector<uint32_t> rows = make_rows();
-  std::vector<TestTableView> tables{{kVisual.lo(), kVisual.hi(), 0u, 6u, 2u, 0u, rows.data(), nullptr, nullptr}};
+  std::vector<TestTableView> tables{{kVisual.lo(), kVisual.hi(), 0u, 6u, 2u, 0u, 0u, 0u, rows.data(), nullptr, nullptr, nullptr, nullptr}};
 
   TestSceneView view() const {
     return TestSceneView{kSchema.value,

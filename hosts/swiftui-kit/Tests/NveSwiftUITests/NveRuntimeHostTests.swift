@@ -196,7 +196,7 @@ final class NveRuntimeHostTests: XCTestCase {
         let ids = buildScene()
         let session = try makeSession()
         try session.withScene { scene in
-            let t = NveRuntimeTables(scene: scene, index: NveSparseRowIndex())
+            let t = NveRuntimeTables(scene: scene)
             XCTAssertEqual(t.background(ids.card.index), NveColor(Rgba(packed: SceneBuilder.rgba(255, 0, 0))))
             XCTAssertNil(t.background(ids.title.index), "no `nve.visual` attached: nothing painted")
             XCTAssertEqual(t.opacity(ids.title.index), 1, "unattached dense row reads as defaults, not zeros")

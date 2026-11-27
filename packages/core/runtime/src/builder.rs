@@ -16,6 +16,7 @@ use nve_store::wire::WireDecoder;
 use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
 use crate::app::{FrameTickHook, RuntimeApp};
+use crate::delta::SceneDelta;
 use crate::lock::SceneLock;
 use crate::state::{PublishedResources, RuntimeInner, SurfaceState};
 use crate::surface::SurfaceRuntime;
@@ -218,15 +219,9 @@ impl RuntimeBuilder {
                     empty_changes: ChangeSet::default(),
                     scene,
                     tick_hooks: self.tick_hooks,
-                    rects: Vec::new(),
+                    delta: SceneDelta::default(),
                     published_tables: Vec::new(),
                     published_dirty_buf: Vec::new(),
-                    dirty_indices: Vec::new(),
-                    dirty_stamp: Vec::new(),
-                    dirty_epoch: 0,
-                    inherit_stamp: Vec::new(),
-                    inherit_stack: Vec::new(),
-                    removed_ids: Vec::new(),
                     published_scroll: Vec::new(),
                     dirty_resources: Vec::new(),
                     published_resources: PublishedResources::None,

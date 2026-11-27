@@ -1,12 +1,8 @@
 //! Zero-copy [`NveRuntimeSceneView`] publication from the active `NodeStore`: invalidation,
 //! pointer-drift validation, and per-frame publish of rows, rects, slabs, tables, and resources.
 
-use nve_abi::{
-    NveLayoutRect, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH,
-};
-use nve_components::tables::{TextContent, TextInput, Typography};
+use nve_abi::{slab_ptr, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH};
 use nve_layout::ScrollOffsets;
-use nve_store::NveTable;
 use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
 
 use crate::builder::Timer;
@@ -25,8 +21,7 @@ impl SurfaceState {
         self.published_resources = PublishedResources::None;
         self.published_tables.clear();
         self.published_dirty_buf.clear();
-        self.dirty_indices.clear();
-        self.removed_ids.clear();
+        self.delta.clear_sets();
         self.published_scroll.clear();
         self.dirty_resources.clear();
         self.metrics.dirty_nodes = 0;
@@ -52,23 +47,10 @@ impl SurfaceState {
         let text = store.text_slab();
         let children = store.children_slab();
         let rows_ok = v.node_capacity as usize == rows.len()
-            && if rows.is_empty() {
-                v.rows.is_null()
-            } else {
-                v.rows == rows.as_ptr().cast::<NveNodeRow>()
-            };
-        let text_ok = v.text_slab_len as usize == text.len()
-            && if text.is_empty() {
-                v.text_slab.is_null()
-            } else {
-                v.text_slab == text.as_ptr()
-            };
+            && v.rows == slab_ptr(rows).cast::<NveNodeRow>();
+        let text_ok = v.text_slab_len as usize == text.len() && v.text_slab == slab_ptr(text);
         let children_ok = v.children_slab_len as usize == children.len()
-            && if children.is_empty() {
-                v.children_slab.is_null()
-            } else {
-                v.children_slab == children.as_ptr().cast::<u32>()
-            };
+            && v.children_slab == slab_ptr(children).cast::<u32>();
         if !(rows_ok && text_ok && children_ok) {
             return false;
         }
@@ -82,30 +64,26 @@ impl SurfaceState {
             let Ok(slot_u8) = u8::try_from(tv.slot) else {
                 return false;
             };
-            let Some((t_rows, t_owners, t_row_count)) =
-                store.table_storage(TableSlot(slot_u8))
-            else {
+            let Some(t) = store.table_storage(TableSlot(slot_u8)) else {
                 return false;
             };
-            let rows_ptr_ok = if t_rows.is_empty() {
-                tv.rows.is_null()
-            } else {
-                tv.rows == t_rows.as_ptr()
-            };
-            let owners_ptr_ok = if t_owners.is_empty() {
-                tv.owners.is_null()
-            } else {
-                tv.owners == t_owners.as_ptr()
-            };
-            if tv.row_count as usize != t_row_count || !rows_ptr_ok || !owners_ptr_ok {
+            // The paged row index grows (and may reallocate) as rows attach.
+            if tv.row_count as usize != t.row_count
+                || tv.rows != slab_ptr(t.rows)
+                || tv.owners != slab_ptr(t.owners)
+                || tv.row_index_dir_len as usize != t.row_index_dir.len()
+                || tv.row_index_dir != slab_ptr(t.row_index_dir)
+                || tv.row_index_pages != slab_ptr(t.row_index_pages)
+            {
                 return false;
             }
         }
         true
     }
 
-    /// Synchronizes dense `self.rects`, deduplicated dirty/removed scratch, and `NveTableView`s
-    /// directly from `store` and `self.scene` with zero heap allocations once capacities warm.
+    /// Synchronizes the published rects, the exact disjoint dirty / moved / removed sets
+    /// ([`crate::delta::SceneDelta`]), and `NveTableView`s directly from `store` and `self.scene`
+    /// with zero heap allocations once capacities warm.
     pub(crate) fn publish_scene(
         &mut self,
         store: &NodeStore,
@@ -118,59 +96,10 @@ impl SurfaceState {
             self.scene_epoch = self.scene_epoch.wrapping_add(1);
         }
         self.epoch_resources = resources;
-        let cap = store.capacity();
-        if self.rects.len() < cap {
-            self.rects.resize(cap, NveLayoutRect::default());
-        } else if self.rects.len() > cap {
-            self.rects.truncate(cap);
-        }
-
-        if self.dirty_stamp.len() < cap {
-            self.dirty_stamp.resize(cap, 0);
-        }
-        self.dirty_epoch = self.dirty_epoch.wrapping_add(1);
-        if self.dirty_epoch == 0 {
-            self.dirty_stamp.fill(0);
-            self.inherit_stamp.fill(0);
-            self.dirty_epoch = 1;
-        }
-        let epoch = self.dirty_epoch;
-        self.dirty_indices.clear();
-
-        // `dirty_indices` contract: every live node whose row, tables, children OR layout rect
-        // changed. Relayout moves untouched nodes (siblings, ancestors), so retained-view hosts
-        // must see them without diffing every rect themselves.
-        if laid_out {
-            for idx in 1..cap {
-                let id = store.id_at(idx);
-                let r = id
-                    .and_then(|id| self.scene.layout_of(id))
-                    .map_or(NveLayoutRect::default(), layout_rect_to_abi);
-                if id.is_some() && self.rects[idx] != r && self.dirty_stamp[idx] != epoch {
-                    self.dirty_stamp[idx] = epoch;
-                    self.dirty_indices.push(idx as u32);
-                }
-                self.rects[idx] = r;
-            }
-        }
-        for &id in changes
-            .created
-            .iter()
-            .chain(&changes.touched)
-            .chain(&changes.children)
-        {
-            let idx = id.index();
-            if idx < cap && store.is_live(id) && self.dirty_stamp[idx] != epoch {
-                self.dirty_stamp[idx] = epoch;
-                self.dirty_indices.push(idx as u32);
-            }
-        }
-        self.dirty_inherited_typography(store, changes, epoch);
-
-        self.removed_ids.clear();
-        for &id in &changes.removed {
-            self.removed_ids.push(id.raw());
-        }
+        let scene = &self.scene;
+        self.delta.record(store, changes, laid_out, |id| {
+            scene.layout_of(id).map(layout_rect_to_abi)
+        });
 
         store.publish_table_views(
             changes,
@@ -208,117 +137,36 @@ impl SurfaceState {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
             frame_id: self.frame_id,
             node_capacity: rows_slice.len() as u32,
-            dirty_count: self.dirty_indices.len() as u32,
-            removed_count: self.removed_ids.len() as u32,
+            dirty_count: self.delta.dirty.len() as u32,
+            removed_count: self.delta.removed.len() as u32,
             text_slab_len: text_slab.len() as u32,
             children_slab_len: children_slab.len() as u32,
             table_count: self.published_tables.len() as u32,
             scroll_count: self.published_scroll.len() as u32,
             scene_epoch: self.scene_epoch,
             dirty_resource_count: self.dirty_resources.len() as u32,
-            _reserved: 0,
-            rows: if rows_slice.is_empty() {
-                core::ptr::null()
-            } else {
-                // `NodeRow` and `NveNodeRow` are locked bit-for-bit identical in `nve_store::store`.
-                rows_slice.as_ptr().cast::<NveNodeRow>()
-            },
-            rects: if self.rects.is_empty() {
-                core::ptr::null()
-            } else {
-                self.rects.as_ptr()
-            },
-            text_slab: if text_slab.is_empty() {
-                core::ptr::null()
-            } else {
-                text_slab.as_ptr()
-            },
-            children_slab: if children_slab.is_empty() {
-                core::ptr::null()
-            } else {
-                // `NodeId` is `#[repr(transparent)]` over `u32`.
-                children_slab.as_ptr().cast::<u32>()
-            },
-            dirty_indices: if self.dirty_indices.is_empty() {
-                core::ptr::null()
-            } else {
-                self.dirty_indices.as_ptr()
-            },
-            removed_ids: if self.removed_ids.is_empty() {
-                core::ptr::null()
-            } else {
-                self.removed_ids.as_ptr()
-            },
-            tables: if self.published_tables.is_empty() {
-                core::ptr::null()
-            } else {
-                self.published_tables.as_ptr()
-            },
-            scroll_offsets: if self.published_scroll.is_empty() {
-                core::ptr::null()
-            } else {
-                self.published_scroll.as_ptr()
-            },
-            dirty_resources: if self.dirty_resources.is_empty() {
-                core::ptr::null()
-            } else {
-                self.dirty_resources.as_ptr()
-            },
+            moved_count: self.delta.moved.len() as u32,
+            // `NodeRow` and `NveNodeRow` are locked bit-for-bit identical in `nve_store::store`.
+            rows: slab_ptr(rows_slice).cast::<NveNodeRow>(),
+            rects: slab_ptr(&self.delta.rects),
+            text_slab: slab_ptr(text_slab),
+            // `NodeId` is `#[repr(transparent)]` over `u32`.
+            children_slab: slab_ptr(children_slab).cast::<u32>(),
+            dirty_indices: slab_ptr(&self.delta.dirty),
+            removed_ids: slab_ptr(&self.delta.removed),
+            tables: slab_ptr(&self.published_tables),
+            scroll_offsets: slab_ptr(&self.published_scroll),
+            dirty_resources: slab_ptr(&self.dirty_resources),
+            moved_indices: slab_ptr(&self.delta.moved),
         };
 
         self.published_resources = resources;
         self.metrics.frame_id = self.frame_id;
         self.metrics.publish_us = t_pub.elapsed_us();
-        self.metrics.dirty_nodes = self.dirty_indices.len() as u32;
+        self.metrics.dirty_nodes = self.delta.dirty.len() as u32;
         if laid_out || !changes.created.is_empty() || !changes.removed.is_empty() {
             self.metrics.live_nodes = store.stats().live_nodes as u32;
         }
         self.needs_publish = false;
-    }
-}
-
-impl SurfaceState {
-    /// `dirty_indices` covers inherited styling: when a node's `Typography` row changes, attaches,
-    /// or detaches, every text / text-input descendant that inherits from it is dirty too, so
-    /// retained hosts restyle exactly `dirty_indices` instead of walking the whole tree.
-    ///
-    /// O(union of the changed nodes' subtrees), zero allocations once the stamp / stack warm:
-    /// changed roots are stamped first and a walk never enters another root's subtree (that
-    /// root walks it), so nested changes visit each node once.
-    fn dirty_inherited_typography(&mut self, store: &NodeStore, changes: &ChangeSet, epoch: u32) {
-        let Some(typo) = changes.table(Typography::slot()) else {
-            return;
-        };
-        let cap = self.dirty_stamp.len();
-        if self.inherit_stamp.len() < cap {
-            self.inherit_stamp.resize(cap, 0);
-        }
-        let roots = || typo.nodes.iter().chain(&typo.detached).copied();
-        for id in roots() {
-            if id.index() < cap && store.is_live(id) {
-                self.inherit_stamp[id.index()] = epoch;
-            }
-        }
-        let (text, input) = (TextContent::slot(), TextInput::slot());
-        for root in roots() {
-            if !store.is_live(root) {
-                continue;
-            }
-            self.inherit_stack.clear();
-            self.inherit_stack.extend_from_slice(store.children(root));
-            while let Some(id) = self.inherit_stack.pop() {
-                let idx = id.index();
-                if idx >= cap || !store.is_live(id) || self.inherit_stamp[idx] == epoch {
-                    continue;
-                }
-                if (store.has_slot(id, text) || store.has_slot(id, input))
-                    && self.dirty_stamp[idx] != epoch
-                {
-                    self.dirty_stamp[idx] = epoch;
-                    self.dirty_indices.push(idx as u32);
-                }
-                self.inherit_stack.extend_from_slice(store.children(id));
-            }
-        }
     }
 }

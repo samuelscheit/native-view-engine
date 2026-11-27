@@ -1,6 +1,6 @@
 //! One table's storage: dense (row = node index) or paged-sparse (packed rows + owners).
 
-use nve_abi::table::{Storage, Word};
+use nve_abi::table::{NVE_ROW_INDEX_NO_PAGE, NVE_ROW_INDEX_PAGE_BITS, Storage, Word};
 
 use crate::id::{NodeId, NodeIndex};
 use crate::row::DirtyList;
@@ -8,9 +8,10 @@ use crate::table::TableMeta;
 use crate::wire::WireError;
 use crate::wire::budget::SessionBudget;
 
-const PAGE_BITS: u32 = 8;
+/// Published verbatim as `NveTableView::row_index_*`, so the page geometry is the ABI's.
+const PAGE_BITS: u32 = NVE_ROW_INDEX_PAGE_BITS;
 const PAGE: usize = 1 << PAGE_BITS;
-const NO_PAGE: u32 = u32::MAX;
+const NO_PAGE: u32 = NVE_ROW_INDEX_NO_PAGE;
 
 #[derive(Clone, Copy)]
 struct PagedPlan {
@@ -574,23 +575,22 @@ impl Column {
         self.index.set(node_index, 0);
     }
 
-    /// `(rows, owners, row_count)` exactly as published in `NveTableView`: dense tables stop at
-    /// the store's node `capacity` (the power-of-two growth tail belongs to no node) and publish
-    /// no owners (row = node index). The one source for publishing and drift validation: an
-    /// empty slice publishes a null pointer on both paths.
-    pub(crate) fn published_storage(&self, capacity: usize) -> (&[Word], &[u32], usize) {
-        if self.is_dense() {
-            let rc = self.row_count().min(capacity);
-            (&self.rows[..rc * self.w], &[], rc)
-        } else {
-            (&self.rows, &self.owners, self.row_count())
-        }
+    /// Rows published in `NveTableView`: dense tables stop at the store's node capacity (the
+    /// power-of-two growth tail belongs to no node) and publish no owners (row = node index).
+    pub(crate) fn published_row_count(&self, capacity: usize) -> usize {
+        if self.is_dense() { self.row_count().min(capacity) } else { self.row_count() }
     }
 
     /// Number of addressable rows (dense: node capacity; sparse: packed rows).
     #[inline]
     pub(crate) fn row_count(&self) -> usize {
         self.masks.len()
+    }
+
+    /// The paged node-index → `row + 1` index as `(directory, flattened pages)` (dense: empty).
+    #[inline]
+    pub(crate) fn row_index(&self) -> (&[u32], &[u32]) {
+        (&self.index.dir, self.index.pool.as_flattened())
     }
 
     #[cfg(test)]

@@ -26,40 +26,12 @@ public struct NveTextStyle: Equatable, Sendable {
     public var decoration: UInt32
 }
 
-/// Node-to-row resolution for sparse tables: `rowOf[nodeIndex]` per table key, rebuilt only when
-/// the published frame changes (buffers keep their capacity across frames).
-public final class NveSparseRowIndex {
-    private var frameId: UInt64 = .max
-    private var rows: [Key64: [Int32]] = [:]
-
-    public init() {}
-
-    func rowsFor(_ table: TableReader, capacity: Int, frameId: UInt64) -> [Int32] {
-        if frameId != self.frameId {
-            self.frameId = frameId
-            for key in rows.keys { rows[key]?.removeAll(keepingCapacity: true) }
-        }
-        if let built = rows[table.key], !built.isEmpty { return built }
-        var map = rows[table.key] ?? []
-        map.removeAll(keepingCapacity: true)
-        map.append(contentsOf: repeatElement(-1, count: capacity))
-        for r in 0..<table.rowCount {
-            guard let owner = table.owner(r) else { continue }
-            let index = NodeId(raw: owner).index
-            if index < capacity { map[index] = Int32(r) }
-        }
-        rows[table.key] = map
-        return map
-    }
-}
-
 /// The published core tables of one borrowed scene, read through the generated `NveTables` specs.
 public struct NveRuntimeTables {
     public let scene: NveRuntimeScene
     public let visual, typography, text, image, scroll, accessibility, textInput, link, interaction: TableReader?
-    private let sparse: [Key64: [Int32]]
 
-    public init(scene: NveRuntimeScene, index: NveSparseRowIndex) {
+    public init(scene: NveRuntimeScene) {
         self.scene = scene
         visual = scene.table(key: NveTables.Visual.key)
         typography = scene.table(key: NveTables.Typography.key)
@@ -70,25 +42,15 @@ public struct NveRuntimeTables {
         textInput = scene.table(key: NveTables.TextInput.key)
         link = scene.table(key: NveTables.Link.key)
         interaction = scene.table(key: NveTables.Interaction.key)
-        var sparse: [Key64: [Int32]] = [:]
-        for table in [visual, typography, text, image, scroll, accessibility, textInput, link, interaction] {
-            guard let table, table.isSparse else { continue }
-            sparse[table.key] = index.rowsFor(table, capacity: scene.nodeCapacity, frameId: scene.frameId)
-        }
-        self.sparse = sparse
     }
 
-    /// Row of node slot `index` in `table` (dense: the slot, only when the node's `table_set`
-    /// holds the table — unattached dense rows are not defaults; sparse: the owner map).
+    /// Row of node slot `index` in `table`, O(1): only when the node's `table_set` holds the table
+    /// (unattached dense rows are zeros, not defaults); sparse rows via the published row index.
     public func row(_ table: TableReader?, _ index: Int) -> Int? {
-        // A node owns a row only when its `table_set` holds the table; the runtime may publish
-        // owners for dense tables too, so owners (when present) resolve the row either way.
         guard let table, scene.isLive(index), table.slot < 128, scene.hasTable(index, slot: UInt8(table.slot)) else {
             return nil
         }
-        guard table.isSparse else { return TableReader.denseRow(UInt32(index), rowCount: table.rowCount) }
-        guard let map = sparse[table.key], map.indices.contains(index), map[index] >= 0 else { return nil }
-        return Int(map[index])
+        return table.row(ofNode: index)
     }
 
     public func string(_ table: TableReader?, _ index: Int, _ field: FieldSpec) -> String? {

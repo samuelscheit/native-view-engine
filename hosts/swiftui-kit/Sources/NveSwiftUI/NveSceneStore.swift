@@ -39,7 +39,6 @@ public final class NveSceneStore: ObservableObject {
 
     public let session: NveRuntimeSession
     public let imageCache: NveImageCache
-    private let sparseIndex = NveSparseRowIndex()
     private var imageSources: [UInt32: NveImageSource] = [:]
 
     public init(session: NveRuntimeSession, imageCache: NveImageCache = .shared) {
@@ -50,7 +49,7 @@ public final class NveSceneStore: ObservableObject {
     /// Runs `body` over the published scene; `nil` when no scene is published yet.
     public func withTables<R>(_ body: (NveRuntimeTables) -> R) -> R? {
         let result: R?? = try? session.withScene { scene in
-            scene.nodeCapacity > 1 ? body(NveRuntimeTables(scene: scene, index: sparseIndex)) : nil
+            scene.nodeCapacity > 1 ? body(NveRuntimeTables(scene: scene)) : nil
         }
         return result ?? nil
     }
@@ -59,7 +58,7 @@ public final class NveSceneStore: ObservableObject {
     public func sync() {
         var scrollNodes: [NodeId] = []
         let synced: Bool = (try? session.withScene { scene in
-            let tables = NveRuntimeTables(scene: scene, index: sparseIndex)
+            let tables = NveRuntimeTables(scene: scene)
             for raw in scene.removedIds { scrollOffsets.removeValue(forKey: NodeId(raw: raw)) }
             if let image = tables.image, !image.dirtyRows.isEmpty || !scene.removedIds.isEmpty {
                 imageSources.removeAll(keepingCapacity: true)
