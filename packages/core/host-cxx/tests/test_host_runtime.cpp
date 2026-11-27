@@ -351,8 +351,18 @@ void test_read_node_seals_floats() {
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, nan);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, -inf);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, inf);
+  constexpr uint32_t kTypoSet =
+      NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_LETTER_SPACING | NVE_TYPOGRAPHY_SET_LINE_HEIGHT;
+  const auto points = [](float v) { return std::bit_cast<uint32_t>(v) & ~uint32_t{NVE_LENGTH_TAG_MASK}; };
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, kTypoSet);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, nan);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, inf);
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, points(nan));
+  // Control: valid values on the same fields are taken.
+  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, kTypoSet);
+  w.set_f32(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 30.0f);
+  w.set_f32(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, 2.0f);
+  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, points(40.0f));
   w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_X, inf);
   w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 12.0f);
   w.set_f32(2u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_NOW, -inf);
@@ -366,14 +376,24 @@ void test_read_node_seals_floats() {
   TextStyle parent;
   parent.font_size = 18.0f;
   parent.letter_spacing = 0.5f;
+  parent.line_height = LengthValue{NVE_LENGTH_POINTS, 22.0f};
   const NodeData n = read_node(guard->reader(), t, 2u, inherit_text_style(parent, t, guard->reader(), 2u));
   CHECK(n.visual.opacity == 1.0f && n.visual.border_width == 0.0f && n.visual.border_radius == 0.0f);
   CHECK(n.text_style.font_size == 18.0f && n.text_style.letter_spacing == 0.5f);
+  CHECK(n.text_style.line_height == parent.line_height);
   CHECK(n.text_style == n.text_style);
   CHECK(std::isnan(n.scroll.requested_x) && n.scroll.requested_y == 12.0f);
   CHECK(std::isnan(n.a11y.value_now));
-  CHECK(std::isfinite(n.rect.x) && std::isfinite(n.local.y) && n.rect.width >= 0.0f);
-  CHECK(read_node(guard->reader(), t, 3u, TextStyle{}).visual.opacity == 1.0f);  // clamped
+  const NodeData ok = read_node(guard->reader(), t, 3u, inherit_text_style(parent, t, guard->reader(), 3u));
+  CHECK(ok.visual.opacity == 1.0f);  // 7 clamped
+  CHECK(ok.text_style.font_size == 30.0f && ok.text_style.letter_spacing == 2.0f);
+  CHECK(ok.text_style.line_height == (LengthValue{NVE_LENGTH_POINTS, 40.0f}));
+
+  // Box-shadow resources are sealed the same way.
+  const BoxShadow bad[] = {{nan, inf, -inf, -2.0f, 7u, false}};
+  const auto shadows = decode_box_shadows(encode_box_shadows(bad));
+  CHECK(shadows && shadows->size() == 1u);
+  CHECK((*shadows)[0] == (BoxShadow{0.0f, 0.0f, 0.0f, -2.0f, 7u, false}));
 }
 
 /// A text node with children (Dioxus `text { "a" {b} }`: empty wrapper + run leaves) is a
@@ -398,13 +418,23 @@ void test_text_wrappers_are_containers() {
     const NodeData run = read_node(guard->reader(), t, 3u, TextStyle{});
     CHECK(run.kind == NodeKind::Text && run.text == "Count: " && accessible_label(run) == "Count: ");
   }
+  const auto node2 = [&]() -> std::pair<NodeKind, std::string> {
+    auto g = h.host->runtime().acquire_scene();  // released before the next submit
+    CHECK(g.has_value());
+    SceneTables t;
+    t.bind(g->reader());
+    const NodeData n = read_node(g->reader(), t, 2u, TextStyle{});
+    return {n.kind, std::string(n.text)};
+  };
   w.set_children(2u, std::vector<uint32_t>{});
   CHECK(h.submit());
-  auto guard = h.host->runtime().acquire_scene();
-  CHECK(guard.has_value());
-  SceneTables t;
-  t.bind(guard->reader());
-  CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::Text);
+  CHECK(node2().first == NodeKind::Text);
+  // Own text plus children (NVE2 / C++ apps): stays text, its text is not dropped.
+  CHECK(w.set_str(2u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "own"));
+  w.create(5u);
+  w.set_children(2u, std::vector<uint32_t>{5u});
+  CHECK(h.submit());
+  CHECK(node2() == std::make_pair(NodeKind::Text, std::string("own")));
 }
 
 /// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
