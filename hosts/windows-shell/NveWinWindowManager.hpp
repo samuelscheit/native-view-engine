@@ -1,6 +1,10 @@
 #pragma once
 
+#include "NveWinHost.hpp"
+
+#if defined(_WIN32)
 #include "NveWinHostWindow.hpp"
+#endif
 
 #include <cstdint>
 #include <functional>
@@ -26,8 +30,8 @@ struct WinManagedWindowSpec {
   bool cascade_close{false};
 };
 
-/// Multi-window lifecycle manager mapping `surface_id -> NveWinHostWindow` (and portable
-/// `NveRnwComponentHost` on non-Windows platforms for cross-platform CTest coverage).
+/// Multi-window lifecycle manager mapping `surface_id -> NveWinHostWindow` (or a headless
+/// `NveWinHost`, on every OS, for tests and offscreen surfaces).
 ///
 /// Forces `quit_on_destroy = false` on individual Win32 windows and posts `WM_QUIT` (and sets
 /// `quit_posted()`) only when the final managed window closes.
@@ -55,10 +59,10 @@ class NveWinWindowManager {
 #endif
 
   /// Portable window registration (also usable on Windows in headless tests without creating an HWND).
-  NveRnwComponentHost* open_headless_window(const WinManagedWindowSpec& spec);
+  NveWinHost* open_headless_window(const WinManagedWindowSpec& spec);
 
-  NveRnwComponentHost* host_for_surface(uint32_t surface_id) noexcept;
-  const NveRnwComponentHost* host_for_surface(uint32_t surface_id) const noexcept;
+  NveWinHost* host_for_surface(uint32_t surface_id) noexcept;
+  const NveWinHost* host_for_surface(uint32_t surface_id) const noexcept;
   const WinManagedWindowSpec* spec_for_surface(uint32_t surface_id) const noexcept;
 
   uint32_t active_modal_blocker(uint32_t surface_id) const noexcept;
@@ -91,7 +95,7 @@ class NveWinWindowManager {
 #if defined(_WIN32)
     std::unique_ptr<NveWinHostWindow> window;
 #endif
-    std::unique_ptr<NveRnwComponentHost> portable_host;
+    std::unique_ptr<NveWinHost> headless_host;
   };
 
   void collect_cascade_post_order(uint32_t surface_id, std::vector<uint32_t>& out) const;

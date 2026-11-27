@@ -32,8 +32,36 @@ impl EventMask {
     pub const WHEEL: u64 = 1 << 17;
     pub const TABLE_EVENT: u64 = 1 << 18;
 
-    /// Host mirror names of every subscription bit (`nve.interaction.event_mask` values). Every
-    /// bit fits the `u32` table word (checked below).
+    /// The subscription bit a node needs to receive `kind`. Not `1 << (kind - 1)`: the three
+    /// composition kinds share [`Self::COMPOSITION`].
+    pub const fn of(kind: NativeEventKind) -> u64 {
+        match kind {
+            NativeEventKind::Press => Self::PRESS,
+            NativeEventKind::LongPress => Self::LONG_PRESS,
+            NativeEventKind::Scroll => Self::SCROLL,
+            NativeEventKind::TextChange => Self::TEXT_CHANGE,
+            NativeEventKind::Focus => Self::FOCUS,
+            NativeEventKind::Blur => Self::BLUR,
+            NativeEventKind::Layout => Self::LAYOUT,
+            NativeEventKind::Custom => Self::CUSTOM,
+            NativeEventKind::CompositionStart
+            | NativeEventKind::CompositionUpdate
+            | NativeEventKind::CompositionEnd => Self::COMPOSITION,
+            NativeEventKind::KeyDown => Self::KEY_DOWN,
+            NativeEventKind::KeyUp => Self::KEY_UP,
+            NativeEventKind::Submit => Self::SUBMIT,
+            NativeEventKind::PointerDown => Self::POINTER_DOWN,
+            NativeEventKind::PointerMove => Self::POINTER_MOVE,
+            NativeEventKind::PointerUp => Self::POINTER_UP,
+            NativeEventKind::PointerEnter => Self::POINTER_ENTER,
+            NativeEventKind::PointerLeave => Self::POINTER_LEAVE,
+            NativeEventKind::Wheel => Self::WHEEL,
+            NativeEventKind::TableEvent => Self::TABLE_EVENT,
+        }
+    }
+
+    /// Host mirror names of every subscription bit (`NVE_EVENT_MASK_*` via
+    /// `nve.interaction.event_mask`). Every bit fits the `u32` table word (checked below).
     pub const VALUES: crate::table::ValueSetDesc = crate::table::ValueSetDesc {
         name: "EventMask",
         flags: true,
@@ -59,7 +87,6 @@ impl EventMask {
             ("TableEvent", Self::TABLE_EVENT as u32),
         ],
     };
-
 }
 
 // `EventMask::VALUES` narrows to the `u32` `nve.interaction.event_mask` word: no bit may be lost.

@@ -14,7 +14,7 @@ use crate::surface::SurfaceRuntime;
 
 /// Runs `f` on the attached app under the write lock, mapping a missing app or capability to
 /// [`RuntimeError::Unsupported`].
-fn with_app<T>(
+pub(crate) fn with_app<T>(
     inner: &mut RuntimeInner,
     capability: &'static str,
     f: impl FnOnce(&mut dyn RuntimeApp) -> Result<T, CapabilityUnsupported>,

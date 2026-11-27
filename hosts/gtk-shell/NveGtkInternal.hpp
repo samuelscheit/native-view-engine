@@ -11,6 +11,9 @@
 
 namespace nve::gtk {
 
+/// `g_object_get_data` key of the `GtkNodeView` behind each retained widget.
+inline constexpr const char* kViewKey = "nve-gtk-view";
+
 /// Widget family realized for a node; part of the `RetainedTree` tag, so a change recreates it.
 enum class WidgetKind : uint32_t { Fixed, Label, Picture, Entry, TextView, Scrolled, Canvas };
 

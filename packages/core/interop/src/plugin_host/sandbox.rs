@@ -120,6 +120,7 @@ impl NvePluginSlot {
         .map_err(|err| match err {
             LoaderError::Io(io) => PluginError::Io(io.to_string()),
             LoaderError::Load(load) => PluginError::LibraryLoadFailed(load.to_string()),
+            LoaderError::MissingEntry(sym) => PluginError::SymbolNotFound(sym.to_string()),
             other => PluginError::LibraryLoadFailed(other.to_string()),
         })?;
         let mut slot = Self::from_in_process(

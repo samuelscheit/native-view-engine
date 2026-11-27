@@ -1,10 +1,11 @@
 // Live `libnve_runtime` tests of the retained-view host stack: `Nve2Writer` frames through the real
 // runtime decoder, `RetainedTree` + `SceneTables` decoding (kinds, styles, inherited typography,
-// resources, removal, slot reuse, relayout), `HostSession` with the built-in counter app, app
-// `cdylib` loading / hot reload / state files, and the core resource codecs.
+// resources, removal, slot reuse, relayout), `HostSession` with the built-in counter app, and the
+// core resource codecs. App modules, state files, and event-sink re-entrancy:
+// `test_host_session.cpp`.
 #include <cmath>
 #include <cstdio>
-#include <filesystem>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -338,6 +339,74 @@ void test_dense_table_rows_follow_table_set() {
   CHECK(without.visual.opacity == 1.0f && without.visual.background == 0u && !without.hidden());
 }
 
+/// App-written NaN / Inf / negative floats are sealed by `read_node`: neutral values, never NaN
+/// in a native setter, and `NodeData` / `TextStyle` equality stays reflexive.
+void test_read_node_seals_floats() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, nan);
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, -inf);
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, inf);
+  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, nan);
+  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, inf);
+  w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_X, inf);
+  w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 12.0f);
+  w.set_f32(2u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_NOW, -inf);
+  w.set_f32(3u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 7.0f);
+  w.set_children(1u, std::vector<uint32_t>{2u, 3u});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  TextStyle parent;
+  parent.font_size = 18.0f;
+  parent.letter_spacing = 0.5f;
+  const NodeData n = read_node(guard->reader(), t, 2u, inherit_text_style(parent, t, guard->reader(), 2u));
+  CHECK(n.visual.opacity == 1.0f && n.visual.border_width == 0.0f && n.visual.border_radius == 0.0f);
+  CHECK(n.text_style.font_size == 18.0f && n.text_style.letter_spacing == 0.5f);
+  CHECK(n.text_style == n.text_style);
+  CHECK(std::isnan(n.scroll.requested_x) && n.scroll.requested_y == 12.0f);
+  CHECK(std::isnan(n.a11y.value_now));
+  CHECK(std::isfinite(n.rect.x) && std::isfinite(n.local.y) && n.rect.width >= 0.0f);
+  CHECK(read_node(guard->reader(), t, 3u, TextStyle{}).visual.opacity == 1.0f);  // clamped
+}
+
+/// A text node with children (Dioxus `text { "a" {b} }`: empty wrapper + run leaves) is a
+/// container; its leaves are the text views. It becomes text again once childless.
+void test_text_wrappers_are_containers() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);
+  CHECK(w.set_str(2u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, ""));
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "Count: "));
+  CHECK(w.set_str(4u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "3"));
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  w.set_children(2u, std::vector<uint32_t>{3u, 4u});
+  CHECK(h.submit());
+  {
+    auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
+    SceneTables t;
+    t.bind(guard->reader());
+    CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::View);
+    const NodeData run = read_node(guard->reader(), t, 3u, TextStyle{});
+    CHECK(run.kind == NodeKind::Text && run.text == "Count: " && accessible_label(run) == "Count: ");
+  }
+  w.set_children(2u, std::vector<uint32_t>{});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::Text);
+}
+
 /// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
 /// writes are not edits.
 void test_controlled_text() {
@@ -357,8 +426,7 @@ void test_controlled_text() {
   CHECK(t.user_edited("x") && !t.app_published("x", "x"));
 }
 
-void test_host_session_counter_and_state(const char* counter_module, const char* no_surface,
-                                         const char* no_entry) {
+void test_host_session_counter() {
   using demo::CounterApp;
   auto host = HostSession::create(RuntimeSession::default_config(3u, 320.0f, 240.0f));
   CHECK(host != nullptr);
@@ -391,41 +459,6 @@ void test_host_session_counter_and_state(const char* counter_module, const char*
   CHECK(scene_text(*host, CounterApp::kTitle) == "Retitled");
   CHECK(host->events().press(9u, 0, 0).surface_id == 3u);
 
-  const std::string path = (std::filesystem::temp_directory_path() / "nve_host_state_test.bin").string();
-  CHECK(host->save_state(path, 7u));
-  CHECK(host->dispatch(host->events().press(CounterApp::kReset, 0.0f, 0.0f)));
-  CHECK(scene_text(*host, CounterApp::kCount) == "Count: 0");
-  CHECK(!host->restore_state_file(path, 8u));  // schema mismatch
-  CHECK(host->restore_state_file(path, 7u));
-  (void)host->pump();
-  CHECK(scene_text(*host, CounterApp::kCount) == "Count: 2");
-  {
-    std::FILE* f = std::fopen(path.c_str(), "ab");  // trailing garbage
-    if (f != nullptr) {
-      std::fputc(1, f);
-      std::fclose(f);
-    }
-  }
-  CHECK(!host->restore_state_file(path, 7u));
-  CHECK(!host->restore_state_file(path + ".missing", 7u));
-  std::filesystem::remove(path);
-
-  // `cdylib` modules: validation errors, load, and state-preserving hot reload.
-  ModuleError err = ModuleError::None;
-  std::string msg;
-  CHECK(!host->load_module("/nonexistent/libnope.so", &err, &msg) && err == ModuleError::Open && !msg.empty());
-  CHECK(!host->load_module(no_entry, &err, &msg) && err == ModuleError::MissingEntry);
-  CHECK(!host->load_module(no_surface, &err, &msg) && err == ModuleError::MissingSurface);
-  CHECK(scene_text(*host, CounterApp::kCount) == "Count: 2");  // failed loads keep the running app
-  CHECK(host->load_module(counter_module, &err, &msg) && host->has_module());
-  (void)host->pump();
-  CHECK(scene_text(*host, CounterApp::kCount) == "Count: 0");  // fresh module instance
-  CHECK(host->dispatch(host->events().press(CounterApp::kIncrement, 0.0f, 0.0f)));
-  CHECK(host->reload_module(counter_module, &err, &msg));
-  (void)host->pump();
-  CHECK(scene_text(*host, CounterApp::kCount) == "Count: 1");  // state carried across reload
-  CHECK(host->attach(&CounterApp::get_interface) && !host->has_module());
-
   // The wake poster receives runtime wakes (a state restore schedules a render) and, once
   // cleared, never again.
   int wakes = 0;
@@ -438,48 +471,6 @@ void test_host_session_counter_and_state(const char* counter_module, const char*
   host->set_wake_poster({});
   CHECK(host->runtime().restore_state(snap) == NVE_RUNTIME_OK);
   CHECK(wakes == seen);
-}
-
-void set_env(const char* name, const char* value) {
-#if defined(_WIN32)
-  _putenv_s(name, value != nullptr ? value : "");
-#else
-  if (value != nullptr) {
-    setenv(name, value, 1);
-  } else {
-    unsetenv(name);
-  }
-#endif
-}
-
-void test_app_state_paths() {
-  namespace fs = std::filesystem;
-  set_env("NVE_STATE_DISABLE", nullptr);
-  set_env("NVE_STATE_PATH", nullptr);
-  set_env("NVE_RESET_STATE", nullptr);
-  const std::string a = app_state::resolve_path("/apps/My Cool App!.dylib");
-  CHECK(a.find("my-cool-app-") != std::string::npos && a.ends_with(".nvestate"));
-  CHECK(a == app_state::resolve_path("/apps/My Cool App!.dylib"));  // stable
-  CHECK(a != app_state::resolve_path("/other/My Cool App!.dylib"));  // identity-scoped
-  CHECK(app_state::slug("") == "nve-app" && app_state::slug("???") == "nve-app");
-
-  const std::string explicit_path = (fs::temp_directory_path() / "nve_app_state_test" / "s.nvestate").string();
-  set_env("NVE_STATE_PATH", explicit_path.c_str());
-  CHECK(app_state::resolve_path("x") == explicit_path);
-  const uint8_t payload[] = {1, 2, 3};
-  CHECK(app_state::write_file(explicit_path, 9u, payload));  // creates the directory
-  CHECK(!fs::exists(explicit_path + ".tmp"));
-  CHECK(app_state::read_file(explicit_path, 9u) == std::vector<uint8_t>({1, 2, 3}));
-  CHECK(!app_state::read_file(explicit_path, 10u));
-  set_env("NVE_RESET_STATE", "yes");
-  CHECK(app_state::resolve_path("x") == explicit_path && !fs::exists(explicit_path));
-  set_env("NVE_RESET_STATE", nullptr);
-  set_env("NVE_STATE_DISABLE", "TRUE");
-  CHECK(app_state::resolve_path("x").empty());
-  CHECK(!app_state::write_file("", 1u, payload));
-  set_env("NVE_STATE_DISABLE", nullptr);
-  set_env("NVE_STATE_PATH", nullptr);
-  fs::remove_all(fs::temp_directory_path() / "nve_app_state_test");
 }
 
 void test_resource_codecs() {
@@ -517,15 +508,34 @@ void test_resource_codecs() {
 
 }  // namespace
 
+/// `event_bit` matches Rust `EventMask::of` for every kind (composition kinds share a bit).
+void test_event_bits() {
+  static_assert(event_bit(NVE_EVENT_PRESS) == 1u);
+  CHECK(event_bit(NVE_EVENT_COMPOSITION_START) == (1u << 8u));
+  CHECK(event_bit(NVE_EVENT_COMPOSITION_UPDATE) == event_bit(NVE_EVENT_COMPOSITION_END));
+  CHECK(event_bit(NVE_EVENT_KEY_DOWN) == (1u << 9u) && event_bit(NVE_EVENT_SUBMIT) == (1u << 11u));
+  CHECK(event_bit(NVE_EVENT_WHEEL) == (1u << 17u) && event_bit(NVE_EVENT_TABLE_EVENT) == (1u << 18u));
+  CHECK(event_bit(static_cast<NveEventKind>(0)) == 0u && event_bit(static_cast<NveEventKind>(22)) == 0u);
+  uint32_t all = 0u;
+  for (uint32_t k = 1u; k <= 21u; ++k) {
+    const uint32_t bit = event_bit(static_cast<NveEventKind>(k));
+    CHECK(bit != 0u && (bit & (bit - 1u)) == 0u);
+    all |= bit;
+  }
+  CHECK(all == (1u << 19u) - 1u);  // 21 kinds cover exactly the 19 mask bits
+}
+
 int main() {
+  test_event_bits();
+  test_read_node_seals_floats();
+  test_text_wrappers_are_containers();
   test_resource_codecs();
-  test_app_state_paths();
   test_writer_round_trip_and_retained_tree();
   test_font_family_survives_text_slab_growth();
   test_source_change_runs_a_full_pass();
   test_dense_table_rows_follow_table_set();
   test_controlled_text();
-  test_host_session_counter_and_state(NVE_TEST_COUNTER_MODULE, NVE_TEST_NO_SURFACE_MODULE, NVE_TEST_NO_ENTRY_MODULE);
+  test_host_session_counter();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_runtime_test: %d failure(s)\n", g_failures);
     return 1;

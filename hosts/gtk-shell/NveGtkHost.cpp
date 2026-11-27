@@ -157,15 +157,17 @@ bool NveGtkHost::submit_frame(std::span<const uint8_t> nve2) {
 
 // --- App state & dev loop ----------------------------------------------------------------------
 
-bool NveGtkHost::save_state(const std::string& path, uint32_t schema_version) {
+bool NveGtkHost::save_state(std::string_view path, uint32_t schema_version) {
   return session_->save_state(path, schema_version);
 }
 
-bool NveGtkHost::restore_state(const std::string& path, uint32_t schema_version) {
+bool NveGtkHost::restore_state(std::string_view path, uint32_t schema_version) {
   if (!session_->restore_state_file(path, schema_version)) return false;
   (void)pump();
   return true;
 }
+
+bool NveGtkHost::clear_state(std::string_view path) { return session_->clear_state_file(path); }
 
 bool NveGtkHost::apply_props(std::span<const NveMapEntry> props) {
   const bool ok = session_->set_props(props);
@@ -233,6 +235,9 @@ bool NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
 
 bool NveGtkHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width,
                                  float content_height) {
+  // Adjustments GTK clamps while sync resizes content are not user scrolls: the runtime clamps
+  // its own offsets, and mutating it mid-sync would race the scene being applied.
+  if (syncing_) return false;
   // Keep the runtime's scroll offset (hit testing, programmatic scroll clamping) in step with GTK.
   float cur_x = 0.0f;
   float cur_y = 0.0f;
