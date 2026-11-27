@@ -1,6 +1,6 @@
 // `nve.canvas` for C++ view hosts: the generated table binding and the `NVE_DRAW1` resource kind.
-// A canvas node's `draw_list` word is a `ResourceId` whose bytes (`RuntimeSession::resource_bytes`)
-// are a raw `NVE_DRAW1` buffer; `generation` bumps on every redraw request.
+// A canvas node's `draw_list` word is a `ResourceId` whose bytes (`RuntimeSceneGuard::resource`,
+// kind `kDrawListKind`) are a raw `NVE_DRAW1` buffer; `generation` bumps on every redraw request.
 #pragma once
 
 #include <cstdint>
