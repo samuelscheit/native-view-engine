@@ -20,6 +20,7 @@ members = [
     "packages/framework/router",
     "packages/framework/rpc",
     "packages/framework/server",
+    "packages/framework/ssr",
     "packages/framework/http-hyper",
     "packages/framework/http-web",
     "packages/framework/query",
@@ -70,6 +71,7 @@ nve-ui = { path = "packages/framework/ui" }
 nve-router = { path = "packages/framework/router" }
 nve-rpc = { path = "packages/framework/rpc" }
 nve-server = { path = "packages/framework/server" }
+nve-ssr = { path = "packages/framework/ssr" }
 nve-http-hyper = { path = "packages/framework/http-hyper" }
 nve-http-web = { path = "packages/framework/http-web" }
 nve-query = { path = "packages/framework/query" }

@@ -12,7 +12,8 @@ fn unit_framework_rpc_server_purity_positive_and_negative() {
             "path+file:///repo/packages/core/engine#0.1.0",
             "path+file:///repo/packages/framework/rpc#0.1.0",
             "path+file:///repo/packages/framework/server#0.1.0",
-            "path+file:///repo/packages/framework/http-hyper#0.1.0"
+            "path+file:///repo/packages/framework/http-hyper#0.1.0",
+            "path+file:///repo/packages/framework/ssr#0.1.0"
         ],
         "packages": [
             {
@@ -57,6 +58,18 @@ fn unit_framework_rpc_server_purity_positive_and_negative() {
                 "dependencies": [
                     { "name": "tokio", "kind": null, "optional": false, "target": null, "path": null },
                     { "name": "hyper", "kind": null, "optional": false, "target": null, "path": null },
+                    { "name": "axum", "kind": null, "optional": false, "target": null, "path": null },
+                    { "name": "serde_json", "kind": null, "optional": false, "target": null, "path": null }
+                ]
+            },
+            {
+                "id": "path+file:///repo/packages/framework/ssr#0.1.0",
+                "name": "nve-ssr",
+                "manifest_path": "/repo/packages/framework/ssr/Cargo.toml",
+                "targets": [],
+                "features": {},
+                "dependencies": [
+                    { "name": "tokio", "kind": null, "optional": false, "target": null, "path": null },
                     { "name": "axum", "kind": null, "optional": false, "target": null, "path": null },
                     { "name": "serde_json", "kind": null, "optional": false, "target": null, "path": null }
                 ]
@@ -112,14 +125,27 @@ fn unit_framework_rpc_server_purity_positive_and_negative() {
             .any(|v| v.path.contains("framework/http-hyper") && v.snippet.contains("serde_json")),
         "must catch serde_json in nve-http-hyper: {violations:?}"
     );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.path.contains("framework/ssr") && v.snippet.contains("axum")),
+        "must catch runtime axum in nve-ssr: {violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.path.contains("framework/ssr") && v.snippet.contains("serde_json")),
+        "must catch serde_json in nve-ssr: {violations:?}"
+    );
 
-    // Clean negative case: http-hyper MAY depend on tokio+hyper; rpc/server may have dev-only serde_json/tokio.
+    // Clean negative case: http-hyper/ssr MAY depend on tokio+hyper; rpc/server may have dev-only serde_json/tokio.
     let clean_meta = r#"{
         "workspace_root": "/repo",
         "workspace_members": [
             "path+file:///repo/packages/framework/rpc#0.1.0",
             "path+file:///repo/packages/framework/server#0.1.0",
-            "path+file:///repo/packages/framework/http-hyper#0.1.0"
+            "path+file:///repo/packages/framework/http-hyper#0.1.0",
+            "path+file:///repo/packages/framework/ssr#0.1.0"
         ],
         "packages": [
             {
@@ -152,6 +178,18 @@ fn unit_framework_rpc_server_purity_positive_and_negative() {
                     { "name": "nve-server", "kind": null, "optional": false, "target": null, "path": "/repo/packages/framework/server" },
                     { "name": "tokio", "kind": null, "optional": false, "target": null, "path": null },
                     { "name": "hyper", "kind": null, "optional": false, "target": null, "path": null },
+                    { "name": "axum", "kind": "dev", "optional": false, "target": null, "path": null }
+                ]
+            },
+            {
+                "id": "path+file:///repo/packages/framework/ssr#0.1.0",
+                "name": "nve-ssr",
+                "manifest_path": "/repo/packages/framework/ssr/Cargo.toml",
+                "targets": [],
+                "features": {},
+                "dependencies": [
+                    { "name": "nve-http-hyper", "kind": null, "optional": false, "target": null, "path": "/repo/packages/framework/http-hyper" },
+                    { "name": "tokio", "kind": null, "optional": false, "target": null, "path": null },
                     { "name": "axum", "kind": "dev", "optional": false, "target": null, "path": null }
                 ]
             }

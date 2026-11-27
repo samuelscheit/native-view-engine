@@ -244,8 +244,9 @@ pub fn check_framework_rpc_server_purity(graph: &WorkspaceGraph) -> Vec<Violatio
             }
         }
 
-        // 2. Fullstack RPC/server/query/http-* and shared example API crates ban runtime serde_json.
+        // 2. Fullstack RPC/server/query/ssr/http-* and shared example API crates ban runtime serde_json.
         let is_http_adapter = pkg.rel_dir.starts_with("packages/framework/http-");
+        let is_ssr_orchestrator = pkg.rel_dir == "packages/framework/ssr";
         let is_query_ui = pkg.rel_dir == "packages/framework/query-dioxus";
         let is_sans_io = matches!(
             pkg.rel_dir.as_str(),
@@ -254,7 +255,7 @@ pub fn check_framework_rpc_server_purity(graph: &WorkspaceGraph) -> Vec<Violatio
                 | "packages/framework/query"
                 | "examples/fullstack-issues/api"
         );
-        if !is_http_adapter && !is_query_ui && !is_sans_io {
+        if !is_http_adapter && !is_ssr_orchestrator && !is_query_ui && !is_sans_io {
             continue;
         }
         if pkg.rel_dir.starts_with("packages/framework/") {
@@ -266,19 +267,20 @@ pub fn check_framework_rpc_server_purity(graph: &WorkspaceGraph) -> Vec<Violatio
                 &pkg.rel_manifest,
                 1,
                 chain.join(" -> "),
-                "Runtime/build `serde_json` dependency is banned in fullstack RPC/server/API crates",
+                "Runtime/build `serde_json` dependency is banned in fullstack RPC/server/SSR/API crates",
             ));
         }
 
-        // 3. HTTP adapters (`packages/framework/http-*`) must stay free of runtime `axum` coupling
-        //    (axum is allowed only as a dev-dependency to verify tower_service mountability).
-        if is_http_adapter && let Some(chain) = closure.get("axum") {
+        // 3. HTTP adapters (`packages/framework/http-*`) and SSR orchestrator (`packages/framework/ssr`)
+        //    must stay free of runtime `axum` coupling (axum is allowed only as a dev-dependency to
+        //    verify tower_service / Hyper mountability).
+        if (is_http_adapter || is_ssr_orchestrator) && let Some(chain) = closure.get("axum") {
             violations.push(Violation::new(
                 &pkg.rel_manifest,
                 1,
                 chain.join(" -> "),
                 format!(
-                    "HTTP adapter `{}` must not take a runtime dependency on `axum`; expose `tower_service::Service` instead",
+                    "HTTP/SSR crate `{}` must not take a runtime dependency on `axum`; stay framework-agnostic on `http::Response<HttpBody>` / `tower_service::Service`",
                     pkg.name
                 ),
             ));

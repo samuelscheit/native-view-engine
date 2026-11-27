@@ -1,0 +1,33 @@
+[package]
+name = "nve-ssr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dedicated LocalSet streaming SSR orchestrator uniting DioxusSurface, QuerySuspense, Declarative Shadow DOM slot deltas, NVEQ v2 streaming hydration, and Hyper HttpBody."
+
+[dependencies]
+nve-dioxus = { workspace = true }
+nve-backend-web = { workspace = true, features = ["ssr"] }
+nve-query = { workspace = true }
+nve-query-dioxus = { workspace = true }
+nve-http-hyper = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+getrandom = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+dioxus-core = { workspace = true }
+dioxus-core-macro = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+minicbor = { workspace = true }
+nve-abi = { workspace = true }
+nve-rpc = { workspace = true }
+nve-server = { workspace = true }
+
+[[bench]]
+name = "ssr_bench"
+harness = false

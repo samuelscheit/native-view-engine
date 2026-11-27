@@ -2820,6 +2820,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-ssr"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "criterion",
+ "dioxus-core",
+ "dioxus-core-macro",
+ "getrandom 0.4.3",
+ "http",
+ "http-body-util",
+ "hyper",
+ "minicbor",
+ "nve-abi",
+ "nve-backend-web",
+ "nve-dioxus",
+ "nve-http-hyper",
+ "nve-query",
+ "nve-query-dioxus",
+ "nve-rpc",
+ "nve-server",
+ "tokio",
+]
+
+[[package]]
 name = "nve-storage"
 version = "0.1.0"
 dependencies = [
