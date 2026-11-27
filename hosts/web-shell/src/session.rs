@@ -40,13 +40,7 @@ fn dispatch_studio_viewport_layout(
 ) {
     if viewport.width > 0.0 && viewport.height > 0.0 {
         let layout_ev = [NveDirectEvent::layout(
-            surface_id,
-            ROOT_NODE_ID,
-            0,
-            0.0,
-            0.0,
-            viewport.width,
-            viewport.height,
+            surface_id, ROOT_NODE_ID, 0, 0.0, 0.0, viewport.width, viewport.height,
         )];
         // SAFETY: `layout_ev` is a stack-local slice containing scalar geometry and no pointers.
         let _ = module.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
@@ -200,13 +194,11 @@ impl SessionApp {
     }
 
     /// Forwards an `NVE_IFACE_HOST` host-event batch (e.g. the OS `ThemeSnapshot`) to the app.
+    #[cfg_attr(not(any(feature = "app-studio", feature = "app-kitchen-sink")), allow(unused_variables))]
     fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(_) => {
-                let _ = batch;
-                false
-            }
+            Self::Dioxus(..) => false,
             #[cfg(feature = "app-studio")]
             Self::Studio(module) => module.dispatch_host_events(batch),
             #[cfg(feature = "app-kitchen-sink")]
@@ -645,11 +637,6 @@ fn layout_event(surface_id: SurfaceId, viewport: Viewport) -> NativeEvent {
         node_id: ROOT_NODE_ID,
         timestamp_us: 0,
         kind: NativeEventKind::Layout,
-        payload: EventPayload::Layout {
-            x: 0.0,
-            y: 0.0,
-            width: viewport.width,
-            height: viewport.height,
-        },
+        payload: EventPayload::Layout { x: 0.0, y: 0.0, width: viewport.width, height: viewport.height },
     }
 }
