@@ -82,6 +82,8 @@ pub trait TableField {
     const KIND: FieldKind;
     /// Bits occupied in its (first) word.
     const BITS: u8;
+    /// Named values the field holds (`word_enum!` variants); `#[values(PATH)]` overrides it.
+    const VALUES: Option<&'static nve_abi::table::ValueSetDesc> = None;
     /// Registers codecs the field needs to cross a wire boundary.
     #[inline]
     fn register() {}
@@ -90,6 +92,7 @@ pub trait TableField {
 impl<T: WordValue> TableField for T {
     const KIND: FieldKind = T::KIND;
     const BITS: u8 = T::BITS;
+    const VALUES: Option<&'static nve_abi::table::ValueSetDesc> = T::VALUES;
 }
 
 impl TableField for Str {

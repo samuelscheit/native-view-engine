@@ -11,21 +11,6 @@ use nve_hash::{Key64, Xxh64Hasher};
 /// One row word.
 pub type Word = u32;
 
-/// One named word value of a table field: a `word_enum!` variant or a bit-mask constant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WordConstDesc {
-    pub name: &'static str,
-    pub value: Word,
-}
-
-/// A named set of word values (`Overflow`, `TypographySet`) that host codegen emits next to the
-/// table field specs, so foreign readers never hand-copy enum discriminants or flag bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WordConstGroup {
-    pub name: &'static str,
-    pub values: &'static [WordConstDesc],
-}
-
 /// Maximum words per table row (the per-row dirty mask is one `u32`).
 pub const MAX_TABLE_WORDS: usize = 32;
 
@@ -96,6 +81,16 @@ pub enum FieldKind {
     Node = 9,
 }
 
+/// Named values a field holds: the variants of a `word_enum!` or the bits of a flag set. Host
+/// mirrors emit one `NVE_<NAME>_<VALUE>` constant each, so foreign code never hand-copies them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueSetDesc {
+    /// Rust type / set name (`AriaRole`, `TextDecoration`).
+    pub name: &'static str,
+    /// `(variant, value)` pairs in declaration order.
+    pub values: &'static [(&'static str, u32)],
+}
+
 /// One field of a table row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldDesc {
@@ -109,6 +104,8 @@ pub struct FieldDesc {
     pub bits: u8,
     /// Effect class of the field's words.
     pub effects: u8,
+    /// Named values (enum variants / flag bits); not part of the schema hash.
+    pub values: Option<&'static ValueSetDesc>,
 }
 
 /// Compile-time description of a table, emitted by `#[derive(NveTable)]`.

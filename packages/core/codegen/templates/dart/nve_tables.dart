@@ -42,12 +42,12 @@ abstract final class {{ t.ident }}Table {
 {%- endfor %}
 }
 {%- endfor %}
-{%- for g in word_consts %}
+{%- for s in value_sets %}
 
-/// `{{ g.name }}` word values.
-abstract final class Nve{{ g.name }} {
-{%- for v in g.values %}
-  static const int {{ dart::variant(v.name) }} = {{ v.value }};
+/// `{{ s.name }}` field values.
+abstract final class Nve{{ s.name }} {
+{%- for (n, v) in s.values %}
+  static const int {{ dart::variant(n) }} = {{ v }};
 {%- endfor %}
 }
 {%- endfor %}

@@ -28,6 +28,7 @@ function(nve_ensure_abi_codegen)
     "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_runtime_abi.generated.h"
     "${_nve_repo_root}/packages/core/host-cxx/include/nve/generated/nve_tables.generated.h"
     "${_nve_repo_root}/packages/core/host-cxx/tests/hash_vectors.generated.h"
+    "${_nve_repo_root}/packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h"
   )
   # `codegen abi` leaves unchanged files untouched, so freshness is judged against this stamp,
   # written after every successful run, never against the outputs' timestamps.
@@ -52,7 +53,10 @@ function(nve_ensure_abi_codegen)
       "${_nve_repo_root}/packages/core/abi/src/*.rs"
       "${_nve_repo_root}/packages/core/abi-macros/src/*.rs"
       "${_nve_repo_root}/packages/core/hash/src/*.rs"
-      "${_nve_repo_root}/packages/core/components/src/tables/*.rs"
+      "${_nve_repo_root}/packages/core/store/src/value.rs"
+      "${_nve_repo_root}/packages/core/store/src/table.rs"
+      "${_nve_repo_root}/packages/core/components/src/*.rs"
+      "${_nve_repo_root}/packages/modules/canvas/src/*.rs"
       "${_nve_repo_root}/packages/core/codegen/src/*.rs"
       "${_nve_repo_root}/packages/core/codegen/templates/*"
       "${_nve_repo_root}/packages/tools/cli/src/codegen.rs"

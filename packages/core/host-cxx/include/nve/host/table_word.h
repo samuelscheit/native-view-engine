@@ -31,6 +31,23 @@ typedef struct NveFieldSpec {
   uint8_t kind;  /* NveFieldKind */
 } NveFieldSpec;
 
+/* Mirrors Rust `nve_abi::table::TableDesc` (without per-field metadata): everything an `NVE2`
+ * `DeclareTables` entry carries. Generated per table as `NVE_TABLE_<NAME>_DESC`. */
+typedef struct NveTableDesc {
+  uint64_t key;
+  uint64_t schema_hash;
+  const char* name; /* UTF-8, not NUL-terminated in the wire; `name_len` bytes */
+  uint32_t name_len;
+  uint8_t storage; /* 0 = dense, 1 = sparse */
+  uint8_t flags;   /* `table_flags` bits */
+  uint8_t words;   /* row width, 1..=32 */
+  uint8_t reserved;
+  uint32_t str_words;      /* bit `i`: word `i` starts a two-word `Str` */
+  uint32_t resource_words; /* bit `i`: word `i` holds a `ResourceId` */
+  const uint32_t* defaults;   /* `words` entries */
+  const uint8_t* word_effects; /* `words` entries */
+} NveTableDesc;
+
 /* Mirrors Rust `nve_store::Length`: f32 bits with a 2-bit unit tag in the low mantissa bits. */
 typedef enum NveLengthUnit { NVE_LENGTH_POINTS = 0, NVE_LENGTH_PERCENT = 1, NVE_LENGTH_AUTO = 2 } NveLengthUnit;
 

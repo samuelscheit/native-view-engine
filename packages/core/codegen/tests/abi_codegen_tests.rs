@@ -12,14 +12,14 @@ use nve_codegen::{
     CodegenError, GeneratedFile, generate_abi_files, generate_all_abi_files, generate_c_abi_header,
     generate_hash_vector_files, generate_table_files,
 };
-use nve_components::tables::{CORE_TABLE_DESCS, CORE_WORD_CONSTS};
+use nve_components::tables::CORE_TABLE_DESCS;
 
 fn repo_root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.."))
 }
 
 fn all_files() -> Vec<GeneratedFile> {
-    generate_all_abi_files(CORE_TABLE_DESCS, CORE_WORD_CONSTS).expect("generate every host ABI file")
+    generate_all_abi_files(CORE_TABLE_DESCS).expect("generate every host ABI file")
 }
 
 #[test]
@@ -359,6 +359,7 @@ const fn field(name: &'static str, kind: FieldKind, word: u8, shift: u8, bits: u
         shift,
         bits,
         effects: 0,
+        values: None,
     }
 }
 
@@ -383,7 +384,7 @@ const fn table(
 
 /// The validation message `t` must be rejected with, or the unexpected outcome.
 fn try_table_error(t: &TableDesc) -> Result<String, String> {
-    match generate_table_files(&[t], &[]) {
+    match generate_table_files(&[t]) {
         Err(CodegenError::Validation(msg)) => Ok(msg),
         other => Err(format!("expected a validation error, got {other:?}")),
     }
@@ -400,7 +401,7 @@ fn table_specs_are_validated_before_any_host_sees_them() {
             field("flag", FieldKind::Bool, 2, 31, 1),
         ],
     );
-    let files = generate_table_files(&[&OK], &[]).expect("valid table");
+    let files = generate_table_files(&[&OK]).expect("valid table");
     // A two-word `Str` is `bits = 64` in Rust and `(shift 0, bits 32)` on every host.
     assert!(
         files[0]
@@ -444,7 +445,7 @@ fn table_specs_are_validated_before_any_host_sees_them() {
     bad_effects.word_effects = &[0];
     assert!(table_error(&bad_effects).contains("word count"));
     assert!(
-        matches!(generate_table_files(&[&OK, &OK], &[]), Err(CodegenError::Validation(m)) if m.contains("duplicate"))
+        matches!(generate_table_files(&[&OK, &OK]), Err(CodegenError::Validation(m)) if m.contains("duplicate"))
     );
 }
 
@@ -476,7 +477,7 @@ fn generated_c_headers_compile_on_every_data_model() {
     // Degenerate table sets render valid C too: no tables at all, and a table without fields.
     static EMPTY: TableDesc = table("nve.empty", &[0, 0, 0], &[]);
     for (name, tables) in [("zero_tables", &[][..]), ("zero_fields", &[&EMPTY][..])] {
-        let files = generate_table_files(tables, &[]).expect("degenerate table set");
+        let files = generate_table_files(tables).expect("degenerate table set");
         let header = files
             .iter()
             .find(|f| f.relative_path.ends_with(".h"))

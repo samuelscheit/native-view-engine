@@ -1,23 +1,10 @@
 //! `Interaction`, `Accessibility`, `DebugId`, and `StreamBoundary` sparse tables.
 
-use nve_store::{word_enum, FieldKind, NveTable, Res, Str, WordValue};
+use nve_store::{word_enum, NveTable, Res, Str};
 
-use crate::interaction::CursorKind;
+pub use crate::interaction::CursorKind;
 
 use super::resources::{AriaRelations, StateRules};
-
-impl WordValue for CursorKind {
-    const BITS: u8 = 4;
-    const KIND: FieldKind = FieldKind::Enum;
-    #[inline(always)]
-    fn to_bits(self) -> u32 {
-        self as u32
-    }
-    #[inline(always)]
-    fn from_bits(bits: u32) -> Self {
-        Self::from_u8(bits as u8).unwrap_or(Self::Auto)
-    }
-}
 
 /// Interactive subscriptions, pointer cursor, focusability, and pseudo-state style rules.
 #[derive(NveTable)]

@@ -19,7 +19,7 @@ mod tests;
 pub use box_shadow::{BoxShadow, parse_box_shadow, write_box_shadows_css};
 pub use interaction::{
     Accessibility, AccessibilityMut, AccessibilityRef, AriaAutoComplete, AriaLive, AriaOrientation,
-    AriaRole, AriaTriState, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
+    AriaRole, AriaTriState, CursorKind, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
     InteractionRef, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
     StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
 };
@@ -78,65 +78,6 @@ define_core_tables!(
     Image,
     TextInput,
 );
-
-const fn word(name: &'static str, value: u32) -> nve_abi::table::WordConstDesc {
-    nve_abi::table::WordConstDesc { name, value }
-}
-
-/// Every `word_enum!` the core tables use, plus the `Typography::SET_*` and `text_decoration::*`
-/// bit sets: emitted next to the table field specs for foreign hosts.
-pub const CORE_WORD_CONSTS: &[nve_abi::table::WordConstGroup] = &[
-    AlignItems::WORD_CONSTS,
-    AriaAutoComplete::WORD_CONSTS,
-    AriaLive::WORD_CONSTS,
-    AriaOrientation::WORD_CONSTS,
-    AriaRole::WORD_CONSTS,
-    AriaTriState::WORD_CONSTS,
-    Display::WORD_CONSTS,
-    FlexDirection::WORD_CONSTS,
-    FontStyle::WORD_CONSTS,
-    ImageFit::WORD_CONSTS,
-    InputKind::WORD_CONSTS,
-    JustifyContent::WORD_CONSTS,
-    LinkTarget::WORD_CONSTS,
-    Overflow::WORD_CONSTS,
-    OverflowWrap::WORD_CONSTS,
-    Position::WORD_CONSTS,
-    ScrollAxes::WORD_CONSTS,
-    Scrollbars::WORD_CONSTS,
-    TextAlign::WORD_CONSTS,
-    VerticalAlign::WORD_CONSTS,
-    Visibility::WORD_CONSTS,
-    WhiteSpace::WORD_CONSTS,
-    WordBreak::WORD_CONSTS,
-    nve_abi::table::WordConstGroup {
-        name: "TypographySet",
-        values: &[
-            word("Color", Typography::SET_COLOR),
-            word("FontSize", Typography::SET_FONT_SIZE),
-            word("LineHeight", Typography::SET_LINE_HEIGHT),
-            word("LetterSpacing", Typography::SET_LETTER_SPACING),
-            word("FontFamily", Typography::SET_FONT_FAMILY),
-            word("MaxLines", Typography::SET_MAX_LINES),
-            word("FontWeight", Typography::SET_FONT_WEIGHT),
-            word("FontStyle", Typography::SET_FONT_STYLE),
-            word("WhiteSpace", Typography::SET_WHITE_SPACE),
-            word("WordBreak", Typography::SET_WORD_BREAK),
-            word("OverflowWrap", Typography::SET_OVERFLOW_WRAP),
-            word("TextAlign", Typography::SET_TEXT_ALIGN),
-            word("TextDecoration", Typography::SET_TEXT_DECORATION),
-            word("VerticalAlign", Typography::SET_VERTICAL_ALIGN),
-        ],
-    },
-    nve_abi::table::WordConstGroup {
-        name: "TextDecoration",
-        values: &[
-            word("Underline", text_decoration::UNDERLINE as u32),
-            word("Overline", text_decoration::OVERLINE as u32),
-            word("LineThrough", text_decoration::LINE_THROUGH as u32),
-        ],
-    },
-];
 
 /// Deterministic 64-bit XXH64 schema digest over [`CORE_TABLE_DESCS`].
 ///

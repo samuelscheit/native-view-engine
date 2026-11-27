@@ -1,4 +1,9 @@
+// nve-gtk-shell: runs an NVE app (built-in counter demo, a `cdylib`, or a paired `nve dev`
+// server) in a native GTK4 window, persisting the app's state across launches.
 #include "NveGtkHost.hpp"
+
+#include <nve/host/app_state.hpp>
+#include <nve/host/demo_counter_app.hpp>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <glib-unix.h>
@@ -7,322 +12,162 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace {
 
-// Minimal built-in demo NVE app when launched without `--dylib <path>`.
-class BuiltinGtkDemoApp {
- public:
-  explicit BuiltinGtkDemoApp(uint32_t sid) : surface_id_(sid) {}
+using nve::gtk::NveGtkHost;
+namespace app_state = nve::host::app_state;
 
-  static NveAppHandle create(uint32_t sid) { return new BuiltinGtkDemoApp(sid); }
-  static void destroy(NveAppHandle h) { delete static_cast<BuiltinGtkDemoApp*>(h); }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<BuiltinGtkDemoApp*>(h);
-    self->encode_frame(frame_id);
-    return NveBufferSlice{self->cmd_buf_.data(), self->cmd_buf_.size()};
-  }
-
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<BuiltinGtkDemoApp*>(h);
-    if (batch.ptr == nullptr) {
-      return 0u;
-    }
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 4u) {
-        ++self->count_;
-        return 1u;
-      }
-    }
-    return 0u;
-  }
-
-  static NveBufferSlice snapshot_state(NveAppHandle h) {
-    auto* self = static_cast<BuiltinGtkDemoApp*>(h);
-    self->state_buf_ = std::to_string(self->count_);
-    return NveBufferSlice{
-        reinterpret_cast<const uint8_t*>(self->state_buf_.data()),
-        self->state_buf_.size(),
-    };
-  }
-
-  static void restore_state(NveAppHandle h, NveBufferSlice state) {
-    auto* self = static_cast<BuiltinGtkDemoApp*>(h);
-    if (state.ptr == nullptr || state.len == 0u) {
-      return;
-    }
-    const std::string raw(reinterpret_cast<const char*>(state.ptr), state.len);
-    self->count_ = std::atoi(raw.c_str());
-  }
-
-  static const void* get_interface(uint32_t interface_id) {
-    static const NveSurfaceApi kSurface{
-        .create = &create,
-        .destroy = &destroy,
-        .render = &render,
-        .dispatch_events = &dispatch_events,
-    };
-    static const NveDevApi kDev{
-        .apply_hot_patch = nullptr,
-        .snapshot_state = &snapshot_state,
-        .restore_state = &restore_state,
-    };
-    if (interface_id == NVE_IFACE_SURFACE) {
-      return &kSurface;
-    }
-    if (interface_id == NVE_IFACE_DEV) {
-      return &kDev;
-    }
-    return nullptr;
-  }
-
- private:
-  template <typename T>
-  void push(T v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    cmd_buf_.insert(cmd_buf_.end(), p, p + sizeof(T));
-  }
-
-  void push_dim(uint8_t tag, float val) {
-    push<uint8_t>(tag);
-    push<float>(val);
-  }
-
-  void push_insets(float t, float r, float b, float l) {
-    push<float>(t);
-    push<float>(r);
-    push<float>(b);
-    push<float>(l);
-  }
-
-  void encode_frame(uint64_t frame_id) {
-    cmd_buf_.clear();
-    uint32_t ops = 0u;
-    push<uint32_t>(NVE_ABI_MAGIC);
-    push<uint16_t>(NVE_ABI_VERSION);
-    push<uint16_t>(0u);
-    push<uint32_t>(surface_id_);
-    push<uint64_t>(frame_id);
-    push<uint32_t>(0u);
-
-    auto create_node = [&](uint32_t id, uint16_t kind) {
-      push<uint8_t>(NVE_OP_CREATE_NODE);
-      push<uint32_t>(id);
-      push<uint16_t>(kind);
-      push<uint16_t>(0u);
-      ++ops;
-    };
-
-    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
-      push<uint8_t>(NVE_OP_SET_CHILDREN);
-      push<uint32_t>(parent);
-      push<uint32_t>(static_cast<uint32_t>(kids.size()));
-      for (uint32_t k : kids) {
-        push<uint32_t>(k);
-      }
-      ++ops;
-    };
-
-    auto set_text = [&](uint32_t id, const std::string& txt) {
-      push<uint8_t>(NVE_OP_SET_TEXT);
-      push<uint32_t>(id);
-      push<uint32_t>(static_cast<uint32_t>(txt.size()));
-      cmd_buf_.insert(cmd_buf_.end(), txt.begin(), txt.end());
-      ++ops;
-    };
-
-    auto set_style = [&](uint32_t id, uint32_t bg, uint32_t fg, float radius, float font_size) {
-      push<uint8_t>(NVE_OP_SET_STYLE);
-      push<uint32_t>(id);
-      push<uint32_t>(bg);
-      push<uint32_t>(fg);
-      push<uint32_t>(0u);
-      push<float>(0.0f);
-      push<float>(radius);
-      push<float>(1.0f);
-      push<float>(font_size);
-      push<int32_t>(0);
-      ++ops;
-    };
-
-    auto set_layout =
-        [&](uint32_t id, uint8_t wtag, float w, uint8_t htag, float h, float pad, float gap) {
-          push<uint8_t>(NVE_OP_SET_LAYOUT);
-          push<uint32_t>(id);
-          push_dim(wtag, w);
-          push_dim(htag, h);
-          push_dim(0u, 0.0f);
-          push_dim(0u, 0.0f);
-          push_dim(0u, 0.0f);
-          push_dim(0u, 0.0f);
-          push<uint8_t>(0u); /* Column */
-          push<uint8_t>(1u); /* Center */
-          push<uint8_t>(2u); /* Center */
-          push<float>(0.0f);
-          push<float>(1.0f);
-          push<float>(gap);
-          push_insets(pad, pad, pad, pad);
-          push_insets(0.0f, 0.0f, 0.0f, 0.0f);
-          ++ops;
-        };
-
-    create_node(2u, NVE_COMP_VIEW);
-    create_node(3u, NVE_COMP_TEXT);
-    create_node(4u, NVE_COMP_PRESSABLE);
-    create_node(5u, NVE_COMP_TEXT);
-
-    set_children(NVE_ROOT_NODE_ID, {2u});
-    set_children(2u, {3u, 4u});
-    set_children(4u, {5u});
-
-    set_layout(2u, 2u, 100.0f, 2u, 100.0f, 24.0f, 16.0f);
-    set_style(2u, 0xFF2A170Fu, 0xFFFFFFFFu, 0.0f, 16.0f);
-
-    set_text(3u, "NVE GTK4 Host Shell — Count: " + std::to_string(count_));
-    set_style(3u, 0x00000000u, 0xFFFFFFFFu, 0.0f, 22.0f);
-
-    set_layout(4u, 1u, 200.0f, 1u, 44.0f, 10.0f, 0.0f);
-    set_style(4u, 0xFFEB6325u, 0xFFFFFFFFu, 12.0f, 16.0f);
-
-    set_text(5u, "Click to Increment");
-    set_style(5u, 0x00000000u, 0xFFFFFFFFu, 0.0f, 15.0f);
-
-    push<uint8_t>(NVE_OP_COMMIT);
-    push<uint8_t>(1u);
-    ++ops;
-
-    std::memcpy(cmd_buf_.data() + 20, &ops, sizeof(uint32_t));
-  }
-
-  uint32_t surface_id_{1u};
-  int count_{0};
-  std::vector<uint8_t> cmd_buf_;
-  std::string state_buf_;
-};
-
-struct AppLaunchState {
+struct LaunchState {
   std::string dylib_path;
-  std::string pair_connect;
+  std::string pair_uri;
   std::string pair_token;
-  std::string pair_transport;
-  int width{640};
-  int height{420};
-  GtkApplication* app{nullptr};
-  std::unique_ptr<nve::NveGtkHost> host;
+  std::string state_path;
+  uint32_t schema_version = 1u;
+  bool no_state = false;
+  bool reset_state = false;
+  int width = 640;
+  int height = 420;
+  GtkApplication* app = nullptr;
+  std::unique_ptr<NveGtkHost> host;
 };
+
+void persist_state(LaunchState* s, const char* trigger) {
+  if (s->no_state || s->state_path.empty() || s->host == nullptr || s->host->is_paired()) return;
+  if (s->host->save_state(s->state_path, s->schema_version)) {
+    std::cerr << "[nve-gtk-shell] saved app state to " << s->state_path << " (" << trigger << ")\n";
+  }
+}
+
+gboolean on_close_request(GtkWindow*, gpointer data) {
+  persist_state(static_cast<LaunchState*>(data), "window-close");
+  return FALSE;
+}
 
 #if defined(__unix__) || defined(__APPLE__)
-gboolean on_unix_termination_signal(gpointer user_data) {
-  auto* state = static_cast<AppLaunchState*>(user_data);
-  if (state != nullptr && state->app != nullptr) {
-    g_application_quit(G_APPLICATION(state->app));
-  }
+gboolean on_termination_signal(gpointer data) {
+  auto* s = static_cast<LaunchState*>(data);
+  persist_state(s, "signal");
+  g_application_quit(G_APPLICATION(s->app));
   return G_SOURCE_REMOVE;
 }
 #endif
 
-void on_app_activate(GtkApplication* app, gpointer user_data) {
-  auto* state = static_cast<AppLaunchState*>(user_data);
+void attach_builtin(NveGtkHost& host) { (void)host.attach_interface(&nve::host::demo::CounterApp::get_interface); }
 
+void on_activate(GtkApplication* app, gpointer data) {
+  auto* s = static_cast<LaunchState*>(data);
   GtkWidget* window = gtk_application_window_new(app);
   gtk_window_set_title(GTK_WINDOW(window), "NVE GTK4 Host Shell");
-  gtk_window_set_default_size(GTK_WINDOW(window), state->width, state->height);
-
-  NveSurfaceConfig cfg{
+  gtk_window_set_default_size(GTK_WINDOW(window), s->width, s->height);
+  s->host = std::make_unique<NveGtkHost>(nve::gtk::GtkHostConfig{
       .surface_id = 1u,
-      .width = static_cast<float>(state->width),
-      .height = static_cast<float>(state->height),
+      .width = static_cast<float>(s->width),
+      .height = static_cast<float>(s->height),
       .scale_factor = 1.0f,
-  };
-  state->host = std::make_unique<nve::NveGtkHost>(cfg);
-  state->host->attach_window_resize(GTK_WINDOW(window));
-  gtk_window_set_child(GTK_WINDOW(window), state->host->host_widget());
-  gtk_window_present(GTK_WINDOW(window));
+  });
+  s->host->attach_window_resize(GTK_WINDOW(window));
+  g_signal_connect(window, "close-request", nve::gtk::gtk_detail::to_gcallback(&on_close_request), s);
+  gtk_window_set_child(GTK_WINDOW(window), s->host->host_widget());
 
-  if (!state->pair_connect.empty()) {
-    std::string err_msg;
-    if (!state->host->connect_paired_endpoint(
-            state->pair_connect, state->pair_token, state->pair_transport, &err_msg, 1u)) {
-      std::cerr << "Failed to connect paired client to '" << state->pair_connect
-                << "': " << err_msg << "\n";
-      (void)state->host->attach_interface(&BuiltinGtkDemoApp::get_interface, 1u);
-    } else {
-      const std::string title = "NVE GTK4 Host Shell (Paired: " + state->pair_connect + ")";
+  if (!s->pair_uri.empty()) {
+    std::string error;
+    if (s->host->connect_paired(s->pair_uri, s->pair_token, &error)) {
+      const std::string title = "NVE GTK4 Host Shell (paired: " + s->pair_uri + ")";
       gtk_window_set_title(GTK_WINDOW(window), title.c_str());
+    } else {
+      std::cerr << "[nve-gtk-shell] pairing with '" << s->pair_uri << "' failed: " << error << "\n";
+      attach_builtin(*s->host);
     }
-  } else if (!state->dylib_path.empty()) {
-    int err_code = 0;
-    std::string err_msg;
-    if (!state->host->load_dylib(state->dylib_path, &err_code, &err_msg)) {
-      std::cerr << "Failed to load NVE dylib '" << state->dylib_path << "' (code " << err_code
-                << "): " << err_msg << "\n";
-      (void)state->host->attach_interface(&BuiltinGtkDemoApp::get_interface, 1u);
+  } else if (!s->dylib_path.empty()) {
+    nve::host::ModuleError code = nve::host::ModuleError::None;
+    std::string error;
+    if (!s->host->load_dylib(s->dylib_path, &code, &error)) {
+      std::cerr << "[nve-gtk-shell] loading '" << s->dylib_path << "' failed (" << static_cast<int>(code)
+                << "): " << error << "\n";
+      attach_builtin(*s->host);
     }
   } else {
-    (void)state->host->attach_interface(&BuiltinGtkDemoApp::get_interface, 1u);
+    attach_builtin(*s->host);
   }
+
+  std::error_code ec;
+  if (!s->no_state && !s->state_path.empty() && std::filesystem::exists(s->state_path, ec) &&
+      s->host->restore_state(s->state_path, s->schema_version)) {
+    std::cerr << "[nve-gtk-shell] restored app state from " << s->state_path << "\n";
+  }
+  gtk_window_present(GTK_WINDOW(window));
 }
 
 void print_usage(const char* argv0) {
   std::cout << "Usage: " << argv0
-            << " [--dylib <path/to/libapp.so>]"
-               " [--pair-connect <host:port|url>] [--pair-token <token>]"
-               " [--pair-transport <udp|tcp|ws>]"
-               " [--width W] [--height H]\n";
+            << " [--dylib <libapp.so|.dylib>] [--pair <nve://|quic://|wt://|ws(s)://...>] [--pair-token <token>]"
+               " [--state <file>] [--no-state] [--reset-state] [--schema <ver>] [--width W] [--height H]\n"
+               "Env: NVE_STATE_DISABLE=1, NVE_STATE_PATH=<file>, NVE_RESET_STATE=1\n";
 }
 
-} // namespace
+}  // namespace
 
 int main(int argc, char* argv[]) {
-  AppLaunchState state{};
+  LaunchState s;
   for (int i = 1; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+    const auto is = [&](const char* flag) { return std::strcmp(argv[i], flag) == 0; };
+    const bool has_value = i + 1 < argc;
+    if (is("--help") || is("-h")) {
       print_usage(argv[0]);
       return 0;
+    } else if (is("--no-state")) {
+      s.no_state = true;
+    } else if (is("--reset-state")) {
+      s.reset_state = true;
+    } else if (is("--dylib") && has_value) {
+      s.dylib_path = argv[++i];
+    } else if (is("--pair") && has_value) {
+      s.pair_uri = argv[++i];
+    } else if (is("--pair-token") && has_value) {
+      s.pair_token = argv[++i];
+    } else if (is("--state") && has_value) {
+      s.state_path = argv[++i];
+    } else if (is("--schema") && has_value) {
+      s.schema_version = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (is("--width") && has_value) {
+      s.width = std::max(1, std::atoi(argv[++i]));
+    } else if (is("--height") && has_value) {
+      s.height = std::max(1, std::atoi(argv[++i]));
+    } else {
+      std::cerr << "[nve-gtk-shell] unknown argument '" << argv[i] << "'\n";
+      print_usage(argv[0]);
+      return 2;
     }
-    if (std::strcmp(argv[i], "--dylib") == 0 && i + 1 < argc) {
-      state.dylib_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--pair-connect") == 0 && i + 1 < argc) {
-      state.pair_connect = argv[++i];
-    } else if (std::strcmp(argv[i], "--pair-token") == 0 && i + 1 < argc) {
-      state.pair_token = argv[++i];
-    } else if (std::strcmp(argv[i], "--pair-transport") == 0 && i + 1 < argc) {
-      state.pair_transport = argv[++i];
-    } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
-      const int parsed = std::atoi(argv[++i]);
-      if (parsed > 0) {
-        state.width = parsed;
-      }
-    } else if (std::strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
-      const int parsed = std::atoi(argv[++i]);
-      if (parsed > 0) {
-        state.height = parsed;
-      }
-    }
+  }
+  if (!s.no_state && s.state_path.empty() && s.pair_uri.empty()) {
+    s.state_path = app_state::resolve_path(s.dylib_path.empty() ? "nve-gtk-shell-builtin" : s.dylib_path);
+  }
+  s.no_state = s.no_state || s.state_path.empty();
+  if (s.reset_state && !s.state_path.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(s.state_path, ec);
   }
 
   GtkApplication* app = gtk_application_new("dev.nve.GtkShell", G_APPLICATION_NON_UNIQUE);
-  state.app = app;
-  g_signal_connect(app, "activate", nve::gtk_detail::to_gcallback(&on_app_activate), &state);
+  s.app = app;
+  g_signal_connect(app, "activate", nve::gtk::gtk_detail::to_gcallback(&on_activate), &s);
 #if defined(__unix__) || defined(__APPLE__)
-  const guint sigint_id = g_unix_signal_add(SIGINT, &on_unix_termination_signal, &state);
-  const guint sigterm_id = g_unix_signal_add(SIGTERM, &on_unix_termination_signal, &state);
+  const guint sigint_id = g_unix_signal_add(SIGINT, &on_termination_signal, &s);
+  const guint sigterm_id = g_unix_signal_add(SIGTERM, &on_termination_signal, &s);
 #endif
   const int status = g_application_run(G_APPLICATION(app), 0, nullptr);
 #if defined(__unix__) || defined(__APPLE__)
-  if (sigint_id != 0u) g_source_remove(sigint_id);
-  if (sigterm_id != 0u) g_source_remove(sigterm_id);
+  for (const guint id : {sigint_id, sigterm_id}) {  // a fired handler already removed itself
+    if (g_main_context_find_source_by_id(nullptr, id) != nullptr) g_source_remove(id);
+  }
 #endif
-
-  // Destroy host before releasing GtkApplication.
-  state.host.reset();
-  state.app = nullptr;
+  persist_state(&s, "shutdown");
+  s.host.reset();
   g_object_unref(app);
   return status;
 }

@@ -26,7 +26,7 @@ use std::path::Path;
 
 pub use abi::{
     generate_abi_files, generate_all_abi_files, generate_c_abi_header, generate_hash_vector_files,
-    generate_table_files,
+    generate_module_table_header, generate_table_files,
 };
 pub use error::CodegenError;
 pub use frontend::{
