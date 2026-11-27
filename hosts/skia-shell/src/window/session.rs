@@ -18,8 +18,7 @@ use nve_backend_skia::{CursorKind, SkiaBackend};
 use nve_canvas_skia::CanvasSkiaSystem;
 use nve_components::tables::{core_realization_order, register_core_tables};
 use nve_engine::{
-    encode_reloc_bundle, write_reloc_atomic, HotPatchMsg, LayoutRect, NativeInstantBootStore,
-    RelocHeader, StateSaveOutcome, StateStoreConfig, StoreBackend, StoreWireReplica, VerifyMode,
+    Frame0File, Frame0Footer, Frame0Meta, HotPatchMsg, LayoutRect, StoreBackend, StoreWireReplica,
     Viewport,
 };
 #[cfg(test)]
@@ -55,8 +54,27 @@ pub fn new_shell_skia_replica(
     StoreWireReplica::new(backend, core_realization_order())
 }
 
+/// Pre-warms a cold [`StoreWireReplica<SkiaBackend>`] and [`PixelBuffer`] from a Frame-0 `frame0.nve2`
+/// file on disk, running live Taffy layout against `viewport`.
+pub(crate) fn prewarm_frame0_into_replica(
+    path: &Path,
+    expected: Frame0Meta,
+    surface_id: SurfaceId,
+    viewport: Viewport,
+    clear_color: ColorRgba,
+) -> Result<(StoreWireReplica<SkiaBackend>, PixelBuffer, Frame0Footer), DesktopHostError> {
+    let mut replica = new_shell_skia_replica(surface_id, viewport);
+    let (footer, _) = Frame0File::boot_into_replica(path, expected, &mut replica)?;
+    let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
+    let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
+    let mut pixel_buffer = PixelBuffer::new(phys_w, phys_h);
+    let (store, backend) = replica.store_and_backend_mut();
+    backend.rasterize_with_store(store, &mut pixel_buffer, clear_color);
+    Ok((replica, pixel_buffer, footer))
+}
+
 /// Window-independent controller driving rendering, hit-test -> event dispatch, 2-tier hot
-/// reload, and snapshot persistence for any [`DesktopApp`].
+/// reload, and Frame-0 `frame0.nve2` persistence for any [`DesktopApp`].
 pub struct DesktopSession<A: DesktopApp> {
     pub(super) app: A,
     pub(super) replica: StoreWireReplica<SkiaBackend>,
@@ -256,47 +274,13 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.last_telemetry.as_ref()
     }
 
-    /// Atomically persists a self-contained Frame-0 `NVE2` keyframe and live app state into an
-    /// `NVERELOC` bundle file on disk.
-    pub fn save_snapshot(
-        &mut self,
+    /// Atomically persists the current `NodeStore` as a Frame-0 `frame0.nve2` keyframe on disk.
+    pub fn save_frame0(
+        &self,
         path: &Path,
-        schema_version: u32,
-    ) -> Result<RelocHeader, DesktopHostError> {
-        let mut keyframe = Vec::new();
-        let frame0_bytes: &[u8] = if self.replica.store().live_nodes().next().is_some() {
-            nve_store::wire::WireEncoder::default()
-                .encode_full(self.replica.store(), &mut keyframe);
-            &keyframe
-        } else {
-            &self.last_frame_bytes
-        };
-        let state_bytes = self.app.snapshot_state();
-        let bundle = encode_reloc_bundle(schema_version, 0, frame0_bytes, state_bytes, &[])?;
-        let header = *bundle.view(VerifyMode::HeaderOnly)?.header();
-        write_reloc_atomic(path, &bundle)?;
-        Ok(header)
-    }
-
-    /// Exports the current pre-rendered scene (`user_frame0.nvereloc`) and live app state
-    /// (`state.nvemmap` via `MmapOffsetArena`) into `user_dir` via [`NativeInstantBootStore`].
-    pub fn save_instant_boot_checkpoint(
-        &mut self,
-        user_dir: &Path,
-        schema_version: u32,
-        app_tag: &str,
-    ) -> Result<StateSaveOutcome, DesktopHostError> {
-        let mut store =
-            NativeInstantBootStore::open(user_dir, schema_version, StateStoreConfig::default())?;
-        let scene_buf = self.replica.backend().layout_tree().export_scene_reloc(
-            self.replica.store(),
-            schema_version,
-            self.frame_counter.max(1),
-            app_tag,
-            self.clear_color,
-        )?;
-        let state_bytes = self.app.snapshot_state();
-        Ok(store.save_checkpoint(&scene_buf, state_bytes)?)
+        meta: Frame0Meta,
+    ) -> Result<Frame0Footer, DesktopHostError> {
+        Ok(Frame0File::save(path, self.replica.store(), meta)?)
     }
 
     /// Dispatches a direct typed [`SkiaHostEvent`] into the mounted app with zero serialization.

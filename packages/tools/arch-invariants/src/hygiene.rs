@@ -9,10 +9,18 @@ use syn::spanned::Spanned;
 
 use crate::{
     find_files_named, is_binary_ext, is_cfg_test_attr, is_self_invariant_file,
-    is_test_or_bench_rs, rel_path, RepoIndex, Violation, DOC_EXCLUDES,
+    is_test_or_bench_rs, rel_path, walk_files_no_symlinks, RepoIndex, Violation, DOC_EXCLUDES,
 };
 
 pub const MAX_PROD_LINES: usize = 650;
+
+/// Legacy persistence / mmap-reloc path tokens permanently retired in Track 1B-2 Slice 2A-2.
+pub const BANNED_LEGACY_PERSISTENCE_PATH_TOKENS: &[&str] = &[
+    "mmap_arena",
+    "reloc_scene",
+    "nve_snapshot",
+    "instant_boot",
+];
 
 /// Strictly sorted monotonic allowlist of production `.rs` files > 650 lines across `packages/`, `hosts/` and `examples/`.
 /// Fails if any listed file exceeds its ceiling OR drops to <= 650 lines (forcing ratchet downward to zero).
@@ -397,6 +405,57 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
                 0,
                 listed,
                 "Allowlisted file is now <= 650 lines — delete from EXISTING_OVERSIZE_ALLOWLIST",
+            ));
+        }
+    }
+    violations
+}
+
+/// Returns the matched retired legacy persistence token if `rel` re-introduces a banned path.
+pub fn is_banned_legacy_persistence_path(rel: &str) -> Option<&'static str> {
+    if is_self_invariant_file(rel) || DOC_EXCLUDES.contains(&rel) {
+        return None;
+    }
+    BANNED_LEGACY_PERSISTENCE_PATH_TOKENS
+        .iter()
+        .copied()
+        .find(|&tok| rel.contains(tok))
+}
+
+/// Bans re-introduction of deleted `mmap_arena`, `reloc_scene`, `nve_snapshot`, or `instant_boot`
+/// paths across tracked files and live workspace trees (`packages/`, `hosts/`, `cxx/`, `examples/`).
+pub fn check_banned_legacy_persistence_paths(idx: &RepoIndex) -> Vec<Violation> {
+    let mut seen = BTreeSet::new();
+    for rel in &idx.tracked {
+        if idx.root.join(rel).exists() {
+            seen.insert(rel.clone());
+        }
+    }
+    for dir in ["packages", "hosts", "cxx", "examples"] {
+        let root_dir = idx.root.join(dir);
+        if root_dir.exists() {
+            let mut files = Vec::new();
+            walk_files_no_symlinks(&root_dir, &mut files);
+            for path in files {
+                seen.insert(rel_path(&idx.root, &path));
+            }
+        }
+    }
+    assert!(
+        !seen.is_empty(),
+        "banned legacy persistence scanner must scan > 0 files"
+    );
+
+    let mut violations = Vec::new();
+    for rel in seen {
+        if let Some(tok) = is_banned_legacy_persistence_path(&rel) {
+            violations.push(Violation::new(
+                &rel,
+                0,
+                &rel,
+                format!(
+                    "Retired legacy persistence path token `{tok}` is permanently banned; use Frame-0 `NVE2` (`Frame0File`) + atomic `StateFile`"
+                ),
             ));
         }
     }

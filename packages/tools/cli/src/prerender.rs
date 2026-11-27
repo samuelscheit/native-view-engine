@@ -1,16 +1,18 @@
-//! `nve prerender` — Build-time / cold Frame-0 `frame0.nvereloc` pre-baker for native NVE apps.
+//! `nve prerender` — Build-time / cold Frame-0 `frame0.nve2` pre-baker for native NVE apps.
 //!
-//! Executes Frame 0 of the selected `NveApp` (`studio` or `kitchen-sink`) at the requested logical
-//! viewport + scale factor using `CosmicTextEngine` + `TaffyLayoutEngine`, validates the emitted
-//! `SceneRelocView` under `VerifyMode::Full`, and writes it crash-safely via atomic rename.
+//! Executes Frame 0 of the selected `NveApp` (`studio` or `kitchen-sink`), encodes its `NodeStore`
+//! into a `Frame0File` (`frame0.nve2` = `NVE2` keyframe + 40-byte footer), validates it by booting
+//! a cold `StoreWireReplica<HeadlessBackend>` at the requested viewport, and writes it atomically.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::ColorRgba;
-use nve_backend_headless::prerender_native_frame0_with_text_measurer;
+use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::CosmicTextEngine;
-use nve_engine::{write_reloc_atomic, NveApp, SceneRelocView, TextMeasurer, VerifyMode, Viewport};
+use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_engine::{
+    Frame0File, Frame0Meta, NveApp, StoreBackend, StoreWireReplica, TextMeasurer, Viewport,
+};
 use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
@@ -24,7 +26,7 @@ pub struct PrerenderOptions {
     pub scale: f32,
 }
 
-/// Summary returned after pre-baking a `frame0.nvereloc` file.
+/// Summary returned after pre-baking a `frame0.nve2` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrerenderReport {
     pub app: String,
@@ -34,8 +36,42 @@ pub struct PrerenderReport {
     pub elapsed_us: u64,
 }
 
-/// Prerenders Frame 0 for `opts.app` (`studio` | `kitchen-sink`), validates it with `VerifyMode::Full`,
-/// and atomically writes `frame0.nvereloc` to `opts.out`.
+fn prerender_module<A: NveApp>(
+    app: &mut A,
+    viewport: Viewport,
+    schema_version: u32,
+    measurer: Arc<dyn TextMeasurer>,
+) -> Result<(Vec<u8>, usize), String> {
+    register_core_tables();
+    let mut backend = HeadlessBackend::new();
+    backend.set_text_measurer(measurer);
+    backend.set_viewport(1, viewport);
+    let mut replica = StoreWireReplica::new(backend, core_realization_order());
+
+    let frame1 = app.render(1);
+    replica
+        .submit_nve2_frame(frame1)
+        .map_err(|e| format!("failed to render Frame-0 NVE2: {e}"))?;
+
+    let meta = Frame0Meta {
+        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        app_build_id: u64::from(schema_version),
+        env_hash: 0,
+    };
+    let buf = Frame0File::encode(replica.store(), meta);
+
+    // Round-trip validate into a cold replica before writing to disk.
+    let mut verify_backend = HeadlessBackend::new();
+    verify_backend.set_viewport(1, viewport);
+    let mut verify_replica = StoreWireReplica::new(verify_backend, core_realization_order());
+    let (footer, _) = Frame0File::boot_bytes_into_replica(&buf, meta, &mut verify_replica)
+        .map_err(|e| format!("generated frame0.nve2 failed validation: {e}"))?;
+
+    Ok((buf, footer.node_count as usize))
+}
+
+/// Prerenders Frame 0 for `opts.app` (`studio` | `kitchen-sink`), validates it via a cold
+/// `Frame0File::boot_bytes_into_replica`, and atomically writes `frame0.nve2` to `opts.out`.
 pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport, String> {
     if !opts.width.is_finite() || opts.width <= 0.0 {
         return Err(format!("invalid --width: {}", opts.width));
@@ -56,48 +92,26 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
     let t0 = Instant::now();
 
     let app_arg = opts.app.trim();
-    let (slug, schema_version, buf) = if app_arg.eq_ignore_ascii_case("studio")
+    let (slug, schema_version, (buf, node_count)) = if app_arg.eq_ignore_ascii_case("studio")
         || app_arg.eq_ignore_ascii_case("studio-workspace")
         || app_arg.eq_ignore_ascii_case("nve-studio-workspace")
     {
         let mut app = StudioWorkspaceModule::create(1);
-        let buf = prerender_native_frame0_with_text_measurer(
-            &mut app,
-            1,
-            viewport,
-            STUDIO_SNAPSHOT_SCHEMA_VERSION,
-            "studio",
-            ColorRgba::rgb(11, 17, 32),
-            measurer,
-        )
-        .map_err(|e| format!("failed to prerender studio Frame-0: {e}"))?;
-        ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, buf)
+        let res = prerender_module(&mut app, viewport, STUDIO_SNAPSHOT_SCHEMA_VERSION, measurer)?;
+        ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, res)
     } else if app_arg.eq_ignore_ascii_case("kitchen-sink")
         || app_arg.eq_ignore_ascii_case("nve-example-kitchen-sink")
     {
         let mut app = KitchenSinkModule::create(1);
-        let buf = prerender_native_frame0_with_text_measurer(
-            &mut app,
-            1,
-            viewport,
-            KITCHEN_SINK_STATE_VERSION,
-            "kitchen-sink",
-            ColorRgba::rgb(15, 23, 42),
-            measurer,
-        )
-        .map_err(|e| format!("failed to prerender kitchen-sink Frame-0: {e}"))?;
-        ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, buf)
+        let res = prerender_module(&mut app, viewport, KITCHEN_SINK_STATE_VERSION, measurer)?;
+        ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, res)
     } else {
         return Err(format!(
             "unsupported --app '{app_arg}' (expected 'studio' or 'kitchen-sink')"
         ));
     };
 
-    let scene = SceneRelocView::from_bytes(&buf, VerifyMode::Full)
-        .map_err(|e| format!("generated frame0.nvereloc failed Full validation: {e}"))?;
-    let node_count = scene.nodes().len();
-
-    write_reloc_atomic(&opts.out, &buf)
+    Frame0File::save_bytes(&opts.out, &buf)
         .map_err(|e| format!("failed to write '{}': {e}", opts.out.display()))?;
 
     Ok(PrerenderReport {
@@ -113,7 +127,7 @@ pub fn cmd_prerender(opts: PrerenderOptions) {
     match prerender_app_to_file(&opts) {
         Ok(report) => {
             println!(
-                "Prerendered {} Frame-0 NVERELOC -> {} ({} nodes, {} bytes, schema v{}, {} us)",
+                "Prerendered {} Frame-0 NVE2 -> {} ({} nodes, {} bytes, schema v{}, {} us)",
                 report.app,
                 opts.out.display(),
                 report.node_count,
@@ -135,11 +149,10 @@ mod tests {
 
     use super::*;
     use nve_backend_skia::SkiaBackend;
-    use nve_engine::MmapReloc;
 
     fn temp_out(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "nve_cli_prerender_{name}_{}.nvereloc",
+            "nve_cli_prerender_{name}_{}.nve2",
             std::process::id()
         ))
     }
@@ -162,19 +175,27 @@ mod tests {
             assert!(report.node_count >= 5);
             assert!(report.byte_len >= 64);
 
-            let mapped = MmapReloc::open_with_schema(&out, report.schema_version, VerifyMode::Full)
-                .expect("mmap open");
-            let scene = SceneRelocView::from_view(mapped.view()).expect("scene view");
-            assert_eq!(scene.nodes().len(), report.node_count);
-            assert_eq!(scene.viewport().width, w);
-            assert_eq!(scene.viewport().height, h);
-
+            let meta = Frame0Meta {
+                table_schema_hash: nve_store::registered_tables_schema_hash(),
+                app_build_id: u64::from(report.schema_version),
+                env_hash: 0,
+            };
             let mut skia = SkiaBackend::new();
-            skia.load_scene_reloc(&scene)
-                .expect("skia load_scene_reloc");
-            assert!(!skia.display_list().ops.is_empty());
+            skia.set_viewport(
+                1,
+                Viewport {
+                    width: w,
+                    height: h,
+                    scale_factor: 1.0,
+                },
+            );
+            let mut replica = StoreWireReplica::new(skia, core_realization_order());
+            let (footer, _) = Frame0File::boot_into_replica(&out, meta, &mut replica)
+                .expect("skia boot_into_replica");
+            assert_eq!(footer.node_count as usize, report.node_count);
+            assert!(!replica.backend().display_list().ops.is_empty());
 
-            let has_text = skia.display_list().ops.iter().any(|op| match op {
+            let has_text = replica.backend().display_list().ops.iter().any(|op| match op {
                 nve_backend_skia::PaintOp::DrawText { text, .. } => text.contains(expected_text),
                 _ => false,
             });
@@ -186,7 +207,6 @@ mod tests {
             let _ = std::fs::remove_file(Path::new(&out));
         }
 
-        // Invalid app name rejected cleanly.
         assert!(prerender_app_to_file(&PrerenderOptions {
             app: "unknown-app".into(),
             out: temp_out("bad"),

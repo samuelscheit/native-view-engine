@@ -206,6 +206,8 @@ impl WireDecoder {
                 if (count as usize) > r.remaining() / 4 {
                     return Err(WireError::Truncated);
                 }
+                tx.store_mut()
+                    .reserve_for_frame0(count as usize, r.remaining());
                 for _ in 0..count {
                     let id = r.node()?;
                     if id.index() >= max_node_index || !tx.create_at(id) {
@@ -239,6 +241,9 @@ impl WireDecoder {
                 let slot = self.local(table)?;
                 let (words_usize, str_words, resource_words) =
                     Self::slot_layout(tx.store(), slot).ok_or(WireError::UndeclaredTable(table))?;
+                let store_cap = tx.store().capacity();
+                tx.store_mut()
+                    .reserve_column_bulk(slot, count as usize, store_cap);
                 let words = words_usize as u32;
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
@@ -283,6 +288,9 @@ impl WireDecoder {
                 let slot = self.local(table)?;
                 let (_, str_words, _) =
                     Self::slot_layout(tx.store(), slot).ok_or(WireError::UndeclaredTable(table))?;
+                let store_cap = tx.store().capacity();
+                tx.store_mut()
+                    .reserve_column_bulk(slot, count as usize, store_cap);
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
                     let word_len = r.u32()?;
@@ -317,6 +325,9 @@ impl WireDecoder {
                         return Err(WireError::Truncated);
                     }
                     self.kids_scratch.clear();
+                    if self.kids_scratch.capacity() < n {
+                        self.kids_scratch.reserve(n);
+                    }
                     for _ in 0..n {
                         self.kids_scratch.push(self.live(tx, r.node()?)?);
                     }

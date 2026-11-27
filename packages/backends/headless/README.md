@@ -4,8 +4,7 @@ Pure-Rust headless `StoreBackend` (`packages/backends/headless`, **Backend layer
 
 ## Key Public API
 
-- `HeadlessBackend<L = TaffyStoreLayout>`, `TaffyStoreLayout`
-- `InteractionTracker`, `prerender_native_frame0`, `prerender_native_frame0_with_text_measurer`
+- `HeadlessBackend<L = TaffyStoreLayout>`, `TaffyStoreLayout`, `InteractionTracker`
 
 ```rust
 use nve_backend_headless::HeadlessBackend;

@@ -22,5 +22,9 @@ harness = false
 name = "taffy_hoisted_bench"
 harness = false
 
+[[bench]]
+name = "frame0_boot"
+harness = false
+
 [lints]
 workspace = true

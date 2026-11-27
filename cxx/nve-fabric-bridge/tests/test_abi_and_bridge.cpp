@@ -3,7 +3,6 @@
 #include "nve_host_runtime.hpp"
 #include "nve_pair_client.hpp"
 #include <nve/generated/nve_abi.generated.h>
-#include "nve_snapshot.hpp"
 
 #include <array>
 #include <cstddef>
@@ -36,30 +35,13 @@ static_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE, "NveRenderNode size
 static_assert(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView::removed_ids offset mismatch");
 static_assert(offsetof(NveSceneView, tables) == 40u + 5u * sizeof(void*), "NveSceneView::tables offset mismatch");
 static_assert(sizeof(NveTableView) == (sizeof(void*) == 8u ? 48u : 36u), "NveTableView size mismatch");
-static_assert(nve::kRelocHeaderSize == 64u, "NVERELOC header wire size mismatch");
-static_assert(offsetof(nve::RelocHeader, flags) == nve::kSnapshotFlagsOffset, "RelocHeader::flags offset mismatch");
 static_assert(nve::kWireHeaderSize == 16u, "NveWireFrame v2 header wire size mismatch");
 static_assert(nve::kWireTrailerSize == 8u, "NveWireFrame v2 XXH64 trailer size mismatch");
 
-// 1. Test all 10 NveOpcode variants + custom component hooks + snapshot inspection.
+// 1. Test all 10 NveOpcode variants + custom component hooks + scene inspection.
 void test_all_opcodes_and_custom_components() {
-  // Verify NVERELOC and NveWireFrame v2 headers encode and round-trip cleanly.
+  // Verify NveWireFrame v2 headers encode and round-trip cleanly.
   {
-    const uint8_t f0[4] = {0x4E, 0x56, 0x45, 0x31};
-    const auto snap = nve::encode_snapshot(
-        7u,
-        3u,
-        NveBufferSlice{f0, sizeof(f0)},
-        NveBufferSlice{nullptr, 0u});
-    assert(snap.size() >= nve::kRelocBundleMinSize);
-    assert(std::memcmp(snap.data() + nve::kSnapshotMagicOffset, nve::kRelocMagic, 8u) == 0);
-    nve::MmapSnapshot parsed;
-    assert(nve::MmapSnapshot::from_bytes(snap, parsed));
-    assert(parsed.header().app_schema_version == 7u);
-    assert(parsed.header().flags == 3u);
-    assert(parsed.bundle_root().frame0.offset == nve::kRelocBundleMinSize);
-    assert(parsed.bundle_root().frame0.len == sizeof(f0));
-
     nve::WireHello hello{};
     hello.schema_version = 2u;
     hello.capabilities = 0x0Fu;

@@ -429,9 +429,9 @@ impl NveWireServer {
     pub fn broadcast_scene_keyframe(
         &self,
         sequence: u32,
-        scene_archive: &[u8],
+        nve2_keyframe: &[u8],
     ) -> Result<usize, NveWireTransportError> {
-        let frame = NveWireFrame::new(NveWireKind::SceneKeyframe, sequence, scene_archive.to_vec())
+        let frame = NveWireFrame::new(NveWireKind::SceneKeyframe, sequence, nve2_keyframe.to_vec())
             .with_channel(NveWireChannel::UiScene);
         self.broadcast_frame(&frame)
     }

@@ -11,12 +11,9 @@ use nve_abi::{
     NveEventBatchRef,
 };
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
-use nve_engine::reloc::{
-    MmapReloc, RelocBundleView, VerifyMode, encode_reloc_bundle, write_reloc_atomic,
-};
 use nve_engine::{
-    DynLayoutEngine, LayoutRect, NveApp, StoreBackend, StoreLayoutEngine, StoreWireReplica,
-    TextMeasurer, Viewport,
+    DynLayoutEngine, Frame0File, Frame0Meta, LayoutRect, NveApp, StateFile, StoreBackend,
+    StoreLayoutEngine, StoreWireReplica, TextMeasurer, Viewport,
 };
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
@@ -25,12 +22,13 @@ use nve_studio_workspace::{
 };
 
 #[test]
-fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() {
+fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
     let snap_dir =
-        std::env::temp_dir().join(format!("nve-studio-snap-test-{}", std::process::id()));
+        std::env::temp_dir().join(format!("nve-studio-frame0-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&snap_dir);
-    std::fs::create_dir_all(&snap_dir).expect("create temp snapshot dir");
-    let snap_path = snap_dir.join("studio_workspace.nvesnap");
+    std::fs::create_dir_all(&snap_dir).expect("create temp frame0 dir");
+    let frame0_path = snap_dir.join("frame0.nve2");
+    let state_path = snap_dir.join("state.nve");
 
     let vp = Viewport {
         width: 960.0,
@@ -88,20 +86,17 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let saved_state_bytes = app.snapshot_state().to_vec();
     assert!(!saved_state_bytes.is_empty());
 
-    let mut freeze_app = common::headless_module(1);
-    freeze_app.restore_state(&saved_state_bytes);
-    let frame0_bytes = freeze_app.render(1).to_vec();
-    assert!(frame0_bytes.len() > 24);
+    let meta = Frame0Meta {
+        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        app_build_id: 1,
+        env_hash: 0,
+    };
+    let footer = Frame0File::save(&frame0_path, host.store(), meta).expect("save frame0.nve2");
+    assert!(footer.node_count > 10);
 
-    let bundle = encode_reloc_bundle(
-        1,
-        0,
-        &frame0_bytes,
-        &saved_state_bytes,
-        b"viewport=960x640@1x;app=studio-workspace",
-    )
-    .expect("encode studio NVERELOC bundle");
-    write_reloc_atomic(&snap_path, &bundle).expect("write studio NVERELOC atomically");
+    let mut state_file = StateFile::open(&state_path, 1).expect("open state.nve");
+    state_file.save(&saved_state_bytes).expect("save state.nve");
+    drop(state_file);
 
     let mut cold_backend = HeadlessBackend::new();
     cold_backend.set_viewport(1, vp);
@@ -111,22 +106,10 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     );
 
     let t0 = Instant::now();
-    let mapped =
-        MmapReloc::open_with_schema(&snap_path, 1, VerifyMode::Full).expect("cold mmap open");
-    let snap = RelocBundleView::from_view(mapped.view()).expect("parse NVERELOC bundle");
-    let t_mmap = t0.elapsed();
-
-    let base = mapped.as_bytes().as_ptr() as usize;
-    let end = base + mapped.as_bytes().len();
-    let f0_ptr = snap.frame0().as_ptr() as usize;
-    let st_ptr = snap.state().as_ptr() as usize;
-    assert!(f0_ptr >= base && f0_ptr + snap.frame0().len() <= end);
-    assert!(st_ptr >= base && st_ptr + snap.state().len() <= end);
-
-    cold_host
-        .submit_nve2_frame(snap.frame0())
-        .expect("zero-copy Frame-0 submit");
+    let (boot_footer, _) = Frame0File::boot_into_replica(&frame0_path, meta, &mut cold_host)
+        .expect("cold Frame-0 NVE2 boot");
     let t_frame0 = t0.elapsed();
+    assert_eq!(boot_footer.node_count, footer.node_count);
 
     let frame0_tree = cold_host.backend().render_ascii_tree(cold_host.store());
     assert!(frame0_tree.contains("# engineering"));
@@ -134,64 +117,49 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     assert!(frame0_tree.contains("X-Ray HUD: ON"));
     assert!(frame0_tree.contains("Snapshot 7 / 7"));
 
+    // Boot the identical frame0.nve2 at a wider viewport: live Taffy layout reflects the new width.
+    let wide_vp = Viewport {
+        width: 1440.0,
+        height: 900.0,
+        scale_factor: 2.0,
+    };
+    let mut wide_backend = HeadlessBackend::new();
+    wide_backend.set_viewport(1, wide_vp);
+    let mut wide_host = StoreWireReplica::new(
+        wide_backend,
+        nve_components::tables::core_realization_order(),
+    );
+    Frame0File::boot_into_replica(&frame0_path, meta, &mut wide_host)
+        .expect("wide viewport Frame-0 boot");
+    let root_wide = wide_host
+        .backend()
+        .layout_of(StoreNodeId::ROOT.raw())
+        .expect("root layout");
+    assert!((root_wide.width - 1440.0).abs() <= 1.0);
+
+    let reopened_state = StateFile::open(&state_path, 1).expect("reopen state.nve");
+    let restored_bytes = reopened_state
+        .load()
+        .expect("load state.nve")
+        .expect("state payload present");
     let mut cold_app = common::headless_module(1);
     let t_state_start = Instant::now();
-    cold_app.restore_state(snap.state());
+    cold_app.restore_state(&restored_bytes);
     let t_state = t_state_start.elapsed();
     assert_eq!(cold_app.state_snapshot(), expected_state);
 
     eprintln!(
-        "[studio-workspace reloc] size={} B | cold mmap open={} us | mmap+Frame0 submit={} us | state restore={} us",
-        mapped.as_bytes().len(),
-        t_mmap.as_micros(),
+        "[studio-workspace frame0] nodes={} | Frame0 boot={} us | state restore={} us",
+        boot_footer.node_count,
         t_frame0.as_micros(),
         t_state.as_micros(),
     );
 
-    if let Ok(export_path) = std::env::var("NVE_TEST_EXPORT_RUST_SNAPSHOT")
-        && !export_path.is_empty()
-    {
-        std::fs::copy(&snap_path, &export_path).expect("export rust NVERELOC for C++ test");
-    }
-    if let Ok(cpp_in) = std::env::var("NVE_TEST_CPP_SNAPSHOT_IN")
-        && !cpp_in.is_empty()
-    {
-        let cpp_mapped = MmapReloc::open_with_schema(&cpp_in, 1, VerifyMode::Full)
-            .expect("open C++-written NVERELOC");
-        let cpp_snap = RelocBundleView::from_view(cpp_mapped.view()).expect("parse C++ bundle");
-        assert_eq!(cpp_snap.meta(), b"cpp-roundtrip");
-        let mut verify_backend = HeadlessBackend::new();
-        verify_backend.set_viewport(1, vp);
-        let mut verify_host = StoreWireReplica::new(
-            verify_backend,
-            nve_components::tables::core_realization_order(),
-        );
-        verify_host
-            .submit_nve2_frame(cpp_snap.frame0())
-            .expect("submit C++-written Frame-0 into Rust HeadlessBackend");
-        let verify_tree = verify_host.backend().render_ascii_tree(verify_host.store());
-        assert!(verify_tree.contains("# engineering"));
-        assert!(verify_tree.contains("X-Ray HUD: ON"));
-        let mut verify_app = common::headless_module(1);
-        verify_app.restore_state(cpp_snap.state());
-        assert_eq!(verify_app.state_snapshot(), expected_state);
-    }
-
-    let max_mmap_us: u128 = if cfg!(target_os = "windows") {
-        25_000
-    } else {
-        5_000
-    };
-    assert!(
-        t_mmap.as_micros() < max_mmap_us,
-        "cold mmap open unexpectedly slow: {t_mmap:?} (limit {max_mmap_us} us)"
-    );
     assert!(
         t_frame0.as_millis() < 50,
-        "cold mmap + Frame-0 restore unexpectedly slow: {t_frame0:?}"
+        "cold Frame-0 NVE2 boot unexpectedly slow: {t_frame0:?}"
     );
 
-    drop(mapped);
     let _ = std::fs::remove_dir_all(&snap_dir);
 }
 

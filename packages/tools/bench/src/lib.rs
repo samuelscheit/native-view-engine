@@ -6,7 +6,6 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
-pub mod arena_mmap;
 pub mod wasm_bundle_size;
 
 pub use wasm_bundle_size::{

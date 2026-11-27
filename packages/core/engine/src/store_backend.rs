@@ -117,12 +117,27 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         &mut self,
         wire_bytes: &[u8],
     ) -> Result<BackendApplyStats, BackendError> {
+        self.submit_nve2_frame_with_hint(wire_bytes, 0)
+    }
+
+    /// Like [`Self::submit_nve2_frame`], additionally pre-sizing `NodeStore` and `ChangeSet` for
+    /// `node_count_hint` nodes before decoding a Frame-0 keyframe (`frame == 1`).
+    pub fn submit_nve2_frame_with_hint(
+        &mut self,
+        wire_bytes: &[u8],
+        node_count_hint: usize,
+    ) -> Result<BackendApplyStats, BackendError> {
         let (frame, _ops) = WireDecoder::validate_header(wire_bytes)?;
         if self.needs_keyframe && frame != 1 {
             return Err(BackendError::NeedsKeyframe(None));
         }
         if frame == 1 && (self.needs_keyframe || self.store.is_live(nve_store::NodeId::ROOT)) {
             self.reset();
+        }
+        if node_count_hint > 0 {
+            self.store
+                .reserve_for_frame0(node_count_hint, wire_bytes.len());
+            self.changes.reserve_for_frame0(node_count_hint);
         }
         let apply_res = {
             let mut tx = self.store.tx();

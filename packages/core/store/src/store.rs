@@ -282,6 +282,36 @@ impl NodeStore {
         s
     }
 
+    /// Pre-sizes core arenas (`nodes`, `created`, `touched`, `reparented`, `children`, `text`)
+    /// ahead of a bulk `NVE2` keyframe load (e.g. Frame-0 boot) so decoding `N` nodes uses O(1)
+    /// heap allocations independent of `N`.
+    pub fn reserve_for_frame0(&mut self, node_count: usize, payload_bytes: usize) {
+        let capped_nodes = node_count.min(NodeId::MAX_INDEX as usize);
+        let target_slots = capped_nodes.saturating_add(2);
+        if self.nodes.len() < target_slots {
+            self.nodes.reserve(target_slots - self.nodes.len());
+        }
+        if self.created.capacity() < capped_nodes {
+            self.created
+                .reserve(capped_nodes.saturating_sub(self.created.len()));
+        }
+        self.touched.reserve(capped_nodes.max(64));
+        self.reparented.reserve(capped_nodes.max(64));
+        self.children.reserve_data(capped_nodes.saturating_mul(2));
+        self.text.reserve_bytes(payload_bytes.min(capped_nodes.saturating_mul(128).max(4096)));
+    }
+
+    /// Pre-sizes an individual column for a bulk wire op (`Op::Patch` / `Op::SetStrings`).
+    pub(crate) fn reserve_column_bulk(
+        &mut self,
+        slot: TableSlot,
+        expected_rows: usize,
+        max_node_index: usize,
+    ) {
+        let col = self.column_mut(slot);
+        col.reserve_bulk(expected_rows, max_node_index);
+    }
+
     /// Installs the backend's ordered realization priority list used to derive
     /// `NodeRow::primary_slot` at commit.
     pub fn set_realization_order(&mut self, order: RealizationOrder) {

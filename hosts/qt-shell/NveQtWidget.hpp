@@ -120,22 +120,6 @@ class NveQtWidget : public QWidget {
   bool isPaired() const noexcept;
   bool isPairedConnected() const noexcept;
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file before any dylib loads.
-  /// Immediately reconciles retained Qt widgets from the mapped Frame-0 buffer and caches the
-  /// snapshot state for seamless restoration on the subsequent `loadDylib()` / `attachInterface()`.
-  bool replayFrame0Snapshot(
-      const QString& snapshotPath,
-      uint32_t expectedSchemaVersion = 1,
-      uint32_t surfaceId = 1,
-      uint64_t* outRestoreUs = nullptr);
-
-  /// Freeze-dries the live shadow tree into a complete Frame-0 `CommandBuffer` + `snapshot_state()`
-  /// and writes it atomically to `snapshotPath`.
-  bool saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion = 1) const;
-
-  /// Configures automatic atomic snapshot persistence on `closeEvent`. Pass empty path to disable.
-  void setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion = 1);
-
   /// Forward structured typed props to `NveComponentApi::set_props`, re-render if dirty,
   /// sync Qt views, and drain outbound events.
   bool applyProps(const nve::PropMap& props);
@@ -202,7 +186,6 @@ class NveQtWidget : public QWidget {
  protected:
   void resizeEvent(QResizeEvent* event) override;
   void paintEvent(QPaintEvent* event) override;
-  void closeEvent(QCloseEvent* event) override;
 
  private:
   class Impl;

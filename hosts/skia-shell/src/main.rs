@@ -2,13 +2,13 @@
 //!
 //! Launches any compiled NVE `cdylib` (`nve_get_interface`) inside a live cross-platform
 //! `winit` window (direct Metal/Vulkan/D3D12 GPU swapchain when enabled, or zero-C++ `softbuffer`),
-//! or renders a headless PPM screenshot with optional Frame-0 `MmapSnapshot` replay & atomic save.
+//! or renders a headless PPM screenshot with optional Frame-0 `frame0.nve2` replay & save.
 //!
 //! Usage:
 //!   cargo run -p nve-skia-shell -- \
 //!     target/debug/libnve_example_kitchen_sink.dylib \
 //!     [--ws ws://127.0.0.1:8089 | --no-ws] \
-//!     [--snapshot <path.nvesnap>] [--schema <ver>] \
+//!     [--frame0 <path.nve2>] \
 //!     [--screenshot <out.ppm>] [--width W] [--height H] [--scale S] [--no-hud]
 
 mod host_services;
@@ -47,12 +47,7 @@ Options:
   --pair-transport <mode>   Live pairing transport: udp, tcp, or ws (default: ws, or inferred from URL scheme)
   --ws <url>                Connect to nve dev WebSocket hot-reload server (default: ws://127.0.0.1:8089)
   --no-ws                   Disable WebSocket hot-reload client
-  --snapshot <path.nvereloc>       Replay Frame-0 NVERELOC before dylib load & atomically save on exit
-  --instant-boot-dir <dir>         Per-user NativeInstantBootStore dir (default: auto per-app cache dir)
-  --default-frame0 <path.nvereloc> Bundled cold-start frame0.nvereloc for first launch with --instant-boot-dir
-  --no-snapshot                    Disable default instant-boot Frame-0 replay & state persistence
-  --reset-state                    Clear cached snapshot/state before launching fresh
-  --schema <ver>                   Expected snapshot app schema version (default: 1)
+  --frame0 <path.nve2>      Pre-warm Frame-0 NVE2 keyframe before dylib load & atomically refresh on exit
   --screenshot <out.png|ppm> Render headlessly to a PNG or P6 PPM file and exit (no window opened)
   --width <px>              Logical window/viewport width (default: 420)
   --height <px>             Logical window/viewport height (default: 780)
@@ -133,39 +128,11 @@ where
                 options.ws_url = None;
                 explicit_ws = true;
             }
-            "--snapshot" => {
+            "--frame0" => {
                 let path = iter
                     .next()
-                    .ok_or_else(|| "--snapshot requires a file path argument".to_string())?;
-                options.snapshot_path = Some(PathBuf::from(path));
-            }
-            "--instant-boot-dir" => {
-                let path = iter
-                    .next()
-                    .ok_or_else(|| "--instant-boot-dir requires a directory path argument".to_string())?;
-                options.instant_boot_dir = Some(PathBuf::from(path));
-            }
-            "--default-frame0" => {
-                let path = iter
-                    .next()
-                    .ok_or_else(|| "--default-frame0 requires a file path argument".to_string())?;
-                options.default_frame0_path = Some(PathBuf::from(path));
-            }
-            "--no-snapshot" => {
-                options.disable_instant_boot = true;
-                options.snapshot_path = None;
-                options.instant_boot_dir = None;
-            }
-            "--reset-state" => {
-                options.reset_state = true;
-            }
-            "--schema" => {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| "--schema requires a u32 version argument".to_string())?;
-                options.schema_version = raw
-                    .parse::<u32>()
-                    .map_err(|_| format!("invalid --schema version: '{raw}'"))?;
+                    .ok_or_else(|| "--frame0 requires a file path argument".to_string())?;
+                options.frame0_path = Some(PathBuf::from(path));
             }
             "--screenshot" => {
                 let path = iter
@@ -294,10 +261,8 @@ mod tests {
             "target/debug/libapp.dylib",
             "--ws",
             "ws://127.0.0.1:9000",
-            "--snapshot",
-            "/tmp/app.nvesnap",
-            "--schema",
-            "4",
+            "--frame0",
+            "/tmp/frame0.nve2",
             "--screenshot",
             "/tmp/out.ppm",
             "--width",
@@ -317,10 +282,9 @@ mod tests {
         );
         assert_eq!(cfg.options.ws_url.as_deref(), Some("ws://127.0.0.1:9000"));
         assert_eq!(
-            cfg.options.snapshot_path,
-            Some(PathBuf::from("/tmp/app.nvesnap"))
+            cfg.options.frame0_path,
+            Some(PathBuf::from("/tmp/frame0.nve2"))
         );
-        assert_eq!(cfg.options.schema_version, 4);
         assert_eq!(cfg.screenshot_path, Some(PathBuf::from("/tmp/out.ppm")));
         assert_eq!(cfg.options.width, 960.0);
         assert_eq!(cfg.options.height, 640.0);
@@ -411,23 +375,8 @@ mod tests {
             "bogus-proto"
         ]))
         .is_err());
-        assert!(parse_args(s(&["libapp.dylib", "--schema", "abc"])).is_err());
+        assert!(parse_args(s(&["libapp.dylib", "--frame0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--width", "0"])).is_err());
         assert!(parse_args(s(&["libapp.dylib", "--bogus"])).is_err());
-    }
-
-    #[test]
-    fn parses_no_snapshot_and_reset_state_flags() {
-        let disabled = parse_args(s(&["libapp.dylib", "--no-snapshot"]))
-            .unwrap()
-            .unwrap();
-        assert!(disabled.options.disable_instant_boot);
-        assert!(!disabled.options.reset_state);
-
-        let reset = parse_args(s(&["libapp.dylib", "--reset-state"]))
-            .unwrap()
-            .unwrap();
-        assert!(!reset.options.disable_instant_boot);
-        assert!(reset.options.reset_state);
     }
 }

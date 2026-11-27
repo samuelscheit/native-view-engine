@@ -123,6 +123,26 @@ impl ChangeSet {
             && self.resources_released.is_empty()
     }
 
+    /// Pre-sizes top-level vectors ahead of a bulk `NVE2` keyframe commit (`Frame0File` boot).
+    pub fn reserve_for_frame0(&mut self, node_count: usize) {
+        if self.created.capacity() < node_count {
+            self.created
+                .reserve(node_count.saturating_sub(self.created.len()));
+        }
+        if self.children.capacity() < node_count {
+            self.children
+                .reserve(node_count.saturating_sub(self.children.len()));
+        }
+        if self.touched.capacity() < node_count {
+            self.touched
+                .reserve(node_count.saturating_sub(self.touched.len()));
+        }
+        if self.effects.capacity() < node_count {
+            self.effects
+                .reserve(node_count.saturating_sub(self.effects.len()));
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.created.clear();
         self.removed.clear();

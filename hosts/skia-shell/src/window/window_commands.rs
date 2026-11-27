@@ -252,7 +252,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             }
             WindowEvent::Focused(false) => {
                 if self.primary_window_id == Some(window_id) {
-                    self.save_snapshot_if_configured();
+                    self.save_frame0_if_configured();
                 }
             }
             WindowEvent::Moved(pos) => {

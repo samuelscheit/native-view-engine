@@ -393,6 +393,24 @@ fn unit_syn_ast_checks_positive_and_negative() {
     assert!(hygiene::detect_personal_endpoint_or_path("192.168.1.5", false).is_some());
     assert!(hygiene::detect_personal_endpoint_or_path("192.168.1.5", true).is_none());
     assert!(hygiene::detect_personal_endpoint_or_path("127.0.0.1", false).is_none());
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/mmap_arena/mod.rs"),
+        Some("mmap_arena")
+    );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("packages/backends/skia/src/reloc_scene.rs"),
+        Some("reloc_scene")
+    );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("cxx/nve-fabric-bridge/include/nve_snapshot.hpp"),
+        Some("nve_snapshot")
+    );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("hosts/skia-shell/src/window/instant_boot.rs"),
+        Some("instant_boot")
+    );
+    assert!(hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/persistence.rs").is_none());
+    assert!(hygiene::is_banned_legacy_persistence_path("packages/backends/headless/benches/frame0_boot.rs").is_none());
     assert!(bench::check_bench_not_stub("fn main() {}").is_some());
     assert!(
         bench::check_bench_not_stub("use std::hint::black_box; fn b(c: &mut Criterion) { let _ = 1; }")

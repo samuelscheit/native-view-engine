@@ -51,9 +51,8 @@ use nve_system_env::{SystemEnvEvent, ThemeSnapshot};
 
 pub use assets::{avatar_for_author, build_metrics_sparkline};
 pub use persist::{
-    DEFAULT_COMPACT_INTERVAL, PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats,
-    STATE_ARENA_FILE_NAME, STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION,
-    USER_FRAME0_FILE_NAME, WorkspaceStore,
+    PersistConfig, PersistError, PersistOutcome, PersistRecoveryStats, STATE_FILE_NAME,
+    STUDIO_PERSIST_ENV_VAR, STUDIO_SNAPSHOT_SCHEMA_VERSION, USER_FRAME0_FILE_NAME, WorkspaceStore,
 };
 pub use routes::{
     STUDIO_DEEP_LINK_HOST, STUDIO_DEEP_LINK_SCHEME, STUDIO_UNIVERSAL_LINK_HOST, StudioRoute,

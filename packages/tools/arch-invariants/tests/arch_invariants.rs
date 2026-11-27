@@ -221,6 +221,10 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
         "Generated-file naming & zero tracked generated/build/trace artifacts",
         &hygiene::check_generated_files_and_artifacts(idx),
     );
+    assert_no_violations(
+        "Zero retired legacy persistence paths (mmap_arena / reloc_scene / nve_snapshot / instant_boot)",
+        &hygiene::check_banned_legacy_persistence_paths(idx),
+    );
     assert_no_violations("Zero marketing buzzword `Zero-JSON`", &hygiene::check_zero_json_buzzword(idx));
     assert_no_violations(
         "No hardcoded personal endpoints, hosts, or home paths",

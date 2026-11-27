@@ -130,7 +130,6 @@ add_executable(nve_fabric_bridge_test
   tests/test_flexbox_parity.cpp
   tests/test_fuzz.cpp
   tests/test_host_runtime.cpp
-  tests/test_mmap_snapshot.cpp
   tests/test_scene_view.cpp
 )
 target_include_directories(nve_fabric_bridge_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

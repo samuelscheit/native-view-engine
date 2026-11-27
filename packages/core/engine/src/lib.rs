@@ -6,13 +6,11 @@
 
 pub mod app;
 pub mod hotreload;
-pub mod instant_boot;
 pub mod layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loader;
-pub mod mmap_arena;
+pub mod persistence;
 pub mod profiler;
-pub mod reloc;
 pub mod store_backend;
 
 pub use nve_abi as abi;
@@ -23,39 +21,15 @@ pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp}
 pub use store_backend::{StoreBackend, StoreWireReplica};
 
 pub use hotreload::HotPatchMsg;
-pub use instant_boot::{
-    default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
-    reset_instant_boot_dir, resolve_sidecar_frame0_path, InstantBootError, InstantFrame0,
-    NativeInstantBootStore, NativeStateStore, StateBlobRoot, StateRecoveryStats, StateSaveOutcome,
-    StateStoreConfig, DEFAULT_STATE_ARENA_CAPACITY, DEFAULT_STATE_ARENA_FILE,
-    DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
-};
 pub use layout::{
     BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, StoreLayoutEngine, TextMeasurer,
 };
-pub use mmap_arena::{
-    ArenaError, ArenaHeaderSlot, ArenaPod, MmapOffsetArena, OffsetPtr, OffsetSlice, OffsetStr,
-    TrustedUtf8Str,
+pub use persistence::{
+    write_file_atomic, Frame0File, Frame0Footer, Frame0Meta, Frame0Miss, PersistenceError,
+    StateFile, StateRecoveryStats, StateSaveOutcome, DEFAULT_FRAME0_FILE_NAME,
+    DEFAULT_STATE_FILE_NAME, FRAME0_FOOTER_SIZE, STATE_FILE_HEADER_SIZE, STATE_FILE_MAGIC,
 };
 pub use profiler::{FrameProfiler, FrameTiming};
-pub use reloc::{
-    compute_reloc_checksum, encode_reloc_bundle, encode_scene_reloc, encode_timeline_archive,
-    write_reloc_atomic, MmapReloc, NveNodePatch, NveNodePatchField, NveNodePatchValue,
-    NveSceneArchive, NveSceneArchiveView, NveTimelineArchive, NveTimelineArchiveView,
-    NveTimelineEntry, NveTimelineEntryInput, NveTimelinePatchInput, NveTimelineRoot, RelocBuf,
-    RelocBundleRoot, RelocBundleView, RelocError, RelocHeader, RelocLayoutProps, RelocPod,
-    RelocPtr, RelocSceneNode, RelocSceneRoot, RelocSlice, RelocStr, RelocView, RelocWriter,
-    SceneRelocInput, SceneRelocNodeInput, SceneRelocView, VerifyMode,
-    NVE_NODE_PATCH_FLAG_STRING_SPAN, RELOC_BUF_ALIGN, RELOC_HEADER_SIZE, RELOC_KIND_BUNDLE,
-    RELOC_KIND_GENERIC, RELOC_KIND_SCENE, RELOC_KIND_TIMELINE, RELOC_KIND_WORKSPACE, RELOC_MAGIC,
-    RELOC_VERSION, SCENE_NODE_CLIP_CHILDREN, SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN,
-    SCENE_NODE_INTERACTIVE,
-};
-
-/// Self-documenting alias for the memory-mapped zero-copy state arena (`MmapOffsetArena`).
-pub type NveStateArena = MmapOffsetArena;
-/// Self-documenting alias for an encoded signal/state snapshot archive (`RelocBuf`).
-pub type NveSignalSnapshot = RelocBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {

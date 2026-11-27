@@ -1,5 +1,5 @@
 //! Live loopback integration tests for `nve-wire`:
-//! - Raw QUIC (`nve-wire-2` ALPN) handshake, `NveSceneArchive` keyframe (`XXH64`), `CommandDelta`,
+//! - Raw QUIC (`nve-wire-2` ALPN) handshake, `NVE2` `SceneKeyframe` (`XXH64`), `CommandDelta`,
 //!   `NodePatchDelta` (< 512 B), `EventBatch` backchannel, and RFC 9221 datagram round-trip
 //! - Real HTTP/3 WebTransport (`h3` ALPN) handshake on the SAME UDP socket with 13-day ECDSA P-256
 //!   SHA-256 cert pinning + full stream & datagram round-trip
@@ -12,78 +12,31 @@ use std::net::SocketAddr;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use nve_abi::{
-    encode_events, ColorRgba, EventPayload, NativeEvent, NativeEventKind, NVE_PRIMARY_SLOT_NONE,
-};
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
-use nve_engine::{
-    encode_scene_reloc, LayoutRect, SceneRelocInput, SceneRelocNodeInput, SceneRelocView,
-    VerifyMode, Viewport,
-};
+use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
+use nve_components::tables::{register_core_tables, TextContent};
+use nve_store::wire::{WireDecoder, WireEncoder};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 use nve_wire::{
     format_wire_uri, generate_bearer_token, nve_wire_client_connect_uri, nve_wire_client_destroy,
     nve_wire_client_is_connected, nve_wire_client_metrics, nve_wire_client_poll_frame,
     nve_wire_client_send_events, NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NveWireChannel,
     NveWireClient, NveWireClientConfig, NveWireFrame, NveWireKind, NveWireMetricsC, NveWireServer,
-    NveWireServerConfig, NveWireTransportError, NveWireTransportKind, NVE_WIRE_OK,
+    NveWireServerConfig, NveWireTransportError, NveWireTransportKind, NVE_WIRE_FLAG_XXH64,
+    NVE_WIRE_OK,
 };
 
-fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
-    let nodes = [
-        SceneRelocNodeInput {
-            node_id: 1,
-            parent_index: -1,
-            primary_slot: NVE_PRIMARY_SLOT_NONE,
-            flags: 0,
-            text_align: 0,
-            image_resize_mode: 0,
-            font_weight: 400,
-            event_mask: 0,
-            computed_rect: LayoutRect::default(),
-            style: VisualSnapshot::default(),
-            layout: LayoutSnapshot::default(),
-            text: "",
-            tag: "",
-            image_src: "",
-            box_shadow: "",
-            draw_list: &[],
-            children: &[1],
-        },
-        SceneRelocNodeInput {
-            node_id: 2,
-            parent_index: 0,
-            primary_slot: 1,
-            flags: 0,
-            text_align: 0,
-            image_resize_mode: 0,
-            font_weight: 400,
-            event_mask: 0,
-            computed_rect: LayoutRect::default(),
-            style: VisualSnapshot::default(),
-            layout: LayoutSnapshot::default(),
-            text: "Hello QUIC/WebTransport",
-            tag: "",
-            image_src: "",
-            box_shadow: "",
-            draw_list: &[],
-            children: &[],
-        },
-    ];
-    encode_scene_reloc(&SceneRelocInput {
-        schema_version: 1,
-        surface_id: 1,
-        frame_id: 1,
-        viewport: Viewport {
-            width: 393.0,
-            height: 852.0,
-            scale_factor: 3.0,
-        },
-        clear_color: ColorRgba::rgba(11, 17, 32, 255),
-        root_node_index: 0,
-        app_tag: "nve-wire-live-test",
-        nodes: &nodes,
-    })
-    .expect("encode scene archive")
+fn build_sample_nve2_keyframe() -> Vec<u8> {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let label = tx.create();
+    tx.set_children(NodeId::ROOT, &[label]);
+    tx.edit::<TextContent>(label).text("Hello QUIC/WebTransport");
+    tx.commit_into(&mut changes);
+    let mut out = Vec::new();
+    WireEncoder::default().encode_full(&store, &mut out);
+    out
 }
 
 #[tokio::test]
@@ -106,20 +59,26 @@ async fn live_quic_nve_wire_2_roundtrip_scene_command_patch_events_and_datagram(
     assert!(client.is_connected());
     assert!(client.session_id() >= 1);
 
-    // 1. NveSceneArchive keyframe (`XXH64`-verified inside its 64B header).
-    let scene = build_sample_scene_archive();
-    assert_eq!(server.broadcast_scene_keyframe(1, scene.as_slice()).unwrap(), 1);
+    // 1. NVE2 SceneKeyframe (`XXH64`-verified by the NveWireFrame v2 trailer).
+    let scene = build_sample_nve2_keyframe();
+    assert_eq!(server.broadcast_scene_keyframe(1, &scene).unwrap(), 1);
     let kf = client
         .recv_frame_async(Duration::from_secs(2))
         .await
         .expect("receive SceneKeyframe");
     assert_eq!(kf.kind, NveWireKind::SceneKeyframe);
-    let aligned_kf = nve_engine::RelocBuf::from_bytes(&kf.payload);
-    let scene_view = SceneRelocView::from_bytes(aligned_kf.as_slice(), VerifyMode::Full)
-        .expect("verify received NveSceneArchive XXH64");
+    assert_ne!(kf.flags & NVE_WIRE_FLAG_XXH64, 0);
+    let mut replica = NodeStore::replica();
+    let mut changes = ChangeSet::default();
+    let mut tx = replica.tx();
+    WireDecoder::default()
+        .apply(&mut tx, &kf.payload)
+        .expect("decode received NVE2 SceneKeyframe");
+    tx.commit_into(&mut changes);
+    let child_id = replica.children(NodeId::ROOT)[0];
     assert_eq!(
-        scene_view.text_of(&scene_view.nodes()[1]).unwrap(),
-        "Hello QUIC/WebTransport"
+        replica.try_row::<TextContent>(child_id).map(|t| t.text()),
+        Some("Hello QUIC/WebTransport")
     );
 
     // 2. Direct incremental CommandDelta (zero reverse-parsing).

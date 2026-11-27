@@ -39,7 +39,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
     _reconciler = [[NveAppleSceneReconciler alloc] initWithAdapter:adapter];
     _pairedHost = nullptr;
     _pairedFrameCount = 0u;
-    _frame0Host = nullptr;
     _dylibHandle = nullptr;
     _surfaceId = 1;
     NvePlatformView *rootView = [adapter nveHostRootView];
@@ -57,10 +56,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   [self disconnectPaired];
   // Destroy the bridge (which calls `surface->destroy`) before closing the dylib handle.
   _bridge.reset();
-  if (_frame0Host != nullptr) {
-    nve_fabric_host_destroy(_frame0Host);
-    _frame0Host = nullptr;
-  }
   nve::apple::close_dylib(_dylibHandle);
 }
 
@@ -80,10 +75,7 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   if (_bridge) {
     return _bridge->fabric_host();
   }
-  if (_pairedHost != nullptr) {
-    return _pairedHost;
-  }
-  return _frame0Host;
+  return _pairedHost;
 }
 
 - (BOOL)isPaired {
@@ -97,10 +89,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
 - (uint32_t)nodeCount {
   NveFabricHostHandle host = [self _activeFabricHost];
   return host ? nve_fabric_host_node_count(host) : 0;
-}
-
-- (BOOL)hasReplayedFrame0 {
-  return _frame0Host != nullptr ? YES : NO;
 }
 
 - (BOOL)_installModule:(NveModule)mod
@@ -117,9 +105,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
     }
     return NO;
   }
-
-  const std::vector<uint8_t> &effectiveState =
-      !savedState.empty() ? savedState : _pendingSnapshotState;
 
   // Transactional hot-swap: construct, restore state, and render the replacement bridge BEFORE
   // tearing down the currently running bridge, dylib, or mounted native views.
@@ -147,9 +132,9 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   }
 
   nve::apple::install_native_text_measurer(nextBridge->fabric_host());
-  if (!effectiveState.empty()) {
+  if (!savedState.empty()) {
     nextBridge->restore_state(
-        NveBufferSlice{effectiveState.data(), effectiveState.size()}, /*auto_render=*/false);
+        NveBufferSlice{savedState.data(), savedState.size()}, /*auto_render=*/false);
   }
 
   NveFrameStats initialStats{};
@@ -168,11 +153,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
   // Replacement is live and verified — now atomically tear down old state and commit.
   [self disconnectPaired];
   _bridge.reset();
-  if (_frame0Host != nullptr) {
-    nve_fabric_host_destroy(_frame0Host);
-    _frame0Host = nullptr;
-  }
-  _pendingSnapshotState.clear();
   nve::apple::close_dylib(_dylibHandle);
   [_reconciler clearNativeNodeViews];
 
@@ -246,18 +226,6 @@ const void *const kNveAppleHostAssocKey = &kNveAppleHostAssocKey;
 
 - (NSUInteger)pollPairedFrames {
   return nve::apple::host_poll_paired_frames(self);
-}
-
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs {
-  return nve::apple::host_replay_frame0_snapshot(
-      self, snapshotPath, expectedSchemaVersion, outRestoreUs);
-}
-
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
-             schemaVersion:(uint32_t)schemaVersion {
-  return nve::apple::host_save_snapshot(self, snapshotPath, schemaVersion);
 }
 
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props {

@@ -184,7 +184,7 @@ pub fn default_seed_docs() -> (Vec<WorkspaceDoc>, u32, u32, u32) {
             DocBlock {
                 id: 7,
                 kind: DocBlockKind::Checklist { checked: false },
-                text: "Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio"
+                text: "Enable crash-safe Frame-0 NVE2 + StateFile local persistence in Studio"
                     .into(),
             },
         ],

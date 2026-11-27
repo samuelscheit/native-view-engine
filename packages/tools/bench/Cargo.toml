@@ -20,13 +20,11 @@ dioxus-signals = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-musli-zerocopy = "0.1.4"
 nve-backend-headless = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }
 nve-interop = { workspace = true }
 nve-layout-yoga = { workspace = true }
-rkyv = "0.8.18"
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -44,10 +42,6 @@ harness = false
 
 [[bench]]
 name = "interop"
-harness = false
-
-[[bench]]
-name = "arena_and_mmap"
 harness = false
 
 [[bench]]

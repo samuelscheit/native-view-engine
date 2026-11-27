@@ -81,6 +81,13 @@ impl Transaction<'_> {
                 continue;
             }
             let t = changes.next_table(slot);
+            let dirty_len = col.dirty.as_slice().len();
+            if t.nodes.capacity() < dirty_len {
+                t.nodes.reserve(dirty_len);
+            }
+            if t.masks.capacity() < dirty_len {
+                t.masks.reserve(dirty_len);
+            }
             for &index in col.dirty.as_slice() {
                 let node = &s.nodes[index];
                 let attached = node.flags & LIVE != 0 && node.tables.contains(slot);

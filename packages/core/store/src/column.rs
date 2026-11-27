@@ -40,6 +40,16 @@ impl PagedIndex {
         }
         self.pool[self.dir[p] as usize][n as usize & (PAGE - 1)] = row_plus_one;
     }
+
+    fn reserve_for_nodes(&mut self, max_node_index: usize) {
+        let pages = max_node_index.div_ceil(PAGE).max(1);
+        if self.dir.capacity() < pages {
+            self.dir.reserve(pages.saturating_sub(self.dir.len()));
+        }
+        if self.pool.capacity() < pages {
+            self.pool.reserve(pages.saturating_sub(self.pool.len()));
+        }
+    }
 }
 
 /// Storage + per-frame change tracking for one table in one store.
@@ -110,6 +120,33 @@ impl Column {
     #[inline(always)]
     pub(crate) fn is_dense(&self) -> bool {
         matches!(self.desc.storage(), Storage::Dense)
+    }
+
+    /// Pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs O(1)
+    /// heap allocations independent of `N`.
+    pub(crate) fn reserve_bulk(&mut self, expected_rows: usize, max_node_index: usize) {
+        if self.is_dense() {
+            let cap = max_node_index.max(expected_rows + 1).max(64);
+            if self.masks.len() < cap {
+                self.masks.resize(cap, 0);
+                self.owners.resize(cap, 0);
+                self.rows.resize(cap * self.w, 0);
+            }
+        } else {
+            let target = self.owners.len().saturating_add(expected_rows);
+            if self.owners.capacity() < target {
+                self.owners.reserve(target - self.owners.len());
+            }
+            if self.masks.capacity() < target {
+                self.masks.reserve(target - self.masks.len());
+            }
+            let word_target = target.saturating_mul(self.w);
+            if self.rows.capacity() < word_target {
+                self.rows.reserve(word_target - self.rows.len());
+            }
+            self.index.reserve_for_nodes(max_node_index);
+        }
+        self.dirty.reserve(expected_rows.max(64));
     }
 
     /// Row of a node that has this table attached.

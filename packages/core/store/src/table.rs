@@ -528,3 +528,18 @@ pub fn slot_of(key: TableKey) -> Option<TableSlot> {
 pub fn desc(slot: TableSlot) -> &'static TableDesc {
     REGISTRY.read().unwrap_or_else(|e| e.into_inner())[slot.0 as usize]
 }
+
+/// Deterministic 64-bit XXH64 digest over all currently registered static table schemas
+/// (sorted by `TableKey` so registration order never affects the hash).
+pub fn registered_tables_schema_hash() -> u64 {
+    let reg = REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+    let mut pairs: Vec<(u64, u64)> = reg.iter().map(|d| (d.key.0, d.schema_hash)).collect();
+    drop(reg);
+    pairs.sort_unstable_by_key(|&(k, _)| k);
+    let mut hasher = nve_abi::Xxh64Hasher::new(0x4E56_4554_424C_5331); // "NVETBLS1"
+    for (key, hash) in pairs {
+        hasher.update(&key.to_le_bytes());
+        hasher.update(&hash.to_le_bytes());
+    }
+    hasher.digest()
+}

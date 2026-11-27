@@ -16,7 +16,7 @@ assert!(verify_bearer_token(&token, &token));
 
 ## Dependency Invariants
 
-- **Key dependencies**: `nve-abi`, `nve-engine`, `nve-wire-core`, `quinn`, `web-transport-quinn`, `rustls`, `rcgen`, `tokio`, `tokio-rustls`, `tokio-tungstenite`, `futures-util`, `subtle`, `bytes`, `url`, `base64`, `getrandom`, `crossbeam-channel`.
+- **Key dependencies**: `nve-abi`, `nve-wire-core`, `quinn`, `web-transport-quinn`, `rustls`, `rcgen`, `tokio`, `tokio-rustls`, `tokio-tungstenite`, `futures-util`, `subtle`, `bytes`, `url`, `base64`, `getrandom`, `crossbeam-channel`.
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

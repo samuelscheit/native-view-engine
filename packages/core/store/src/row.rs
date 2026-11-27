@@ -91,6 +91,13 @@ impl DirtyList {
     }
 
     #[inline]
+    pub(crate) fn reserve(&mut self, min_cap: usize) {
+        if self.buf.len() < min_cap {
+            self.buf.resize(min_cap, NodeIndex::NULL);
+        }
+    }
+
+    #[inline]
     pub fn as_slice(&self) -> &[NodeIndex] {
         &self.buf[..self.len]
     }

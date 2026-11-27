@@ -30,14 +30,19 @@ fn wire_frame_roundtrip_and_xxh64_corruption_rejection() {
         Err(NveWireError::ChecksumMismatch { .. })
     ));
 
-    // SceneKeyframe omits redundant outer XXH64 trailer by default.
+    // SceneKeyframe (`NVE2` keyframe) carries the outer XXH64 integrity trailer by default.
     let kf = NveWireFrame::new(NveWireKind::SceneKeyframe, 1, vec![0xAA; 64]);
-    let kf_bytes = kf.encode().unwrap();
-    assert_eq!(kf_bytes.len(), NVE_WIRE_HEADER_SIZE + 64);
-    assert!(!NveWireFrameRef::decode(&kf_bytes, DEFAULT_MAX_WIRE_FRAME_BYTES)
+    let mut kf_bytes = kf.encode().unwrap();
+    assert_eq!(kf_bytes.len(), NVE_WIRE_HEADER_SIZE + 64 + 8);
+    assert!(NveWireFrameRef::decode(&kf_bytes, DEFAULT_MAX_WIRE_FRAME_BYTES)
         .unwrap()
         .header
         .has_xxh64());
+    kf_bytes[NVE_WIRE_HEADER_SIZE + 4] ^= 0x01;
+    assert!(matches!(
+        NveWireFrameRef::decode(&kf_bytes, DEFAULT_MAX_WIRE_FRAME_BYTES),
+        Err(NveWireError::ChecksumMismatch { .. })
+    ));
 }
 
 #[test]

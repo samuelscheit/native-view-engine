@@ -11,7 +11,6 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-engine = { workspace = true }
 nve-wire-core = { workspace = true }
 quinn = { workspace = true }
 web-transport-quinn = { workspace = true }
@@ -30,6 +29,7 @@ crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
 nve-components = { workspace = true }
+nve-store = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }

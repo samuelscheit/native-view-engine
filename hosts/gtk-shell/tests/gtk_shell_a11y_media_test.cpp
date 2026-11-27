@@ -23,86 +23,6 @@ bool approx_eq(double a, double b, double eps = 1.5) {
   return std::fabs(a - b) <= eps;
 }
 
-void test_snapshot_replay_state_restore_and_atomic_save() {
-  struct TempSnapshotGuard {
-    std::filesystem::path path;
-    ~TempSnapshotGuard() {
-      std::error_code ec;
-      std::filesystem::remove(path, ec);
-    }
-  };
-
-  const std::filesystem::path snap_path =
-      std::filesystem::temp_directory_path() / "nve_gtk_shell_test_frame0.nvesnap";
-  TempSnapshotGuard guard{snap_path};
-  {
-    std::error_code ec;
-    std::filesystem::remove(snap_path, ec);
-  }
-
-  NveSurfaceConfig cfg{.surface_id = 5u, .width = 480.0f, .height = 300.0f, .scale_factor = 1.0f};
-
-  {
-    nve::NveGtkHost writer_host(cfg);
-    int err_code = -1;
-    std::string err_msg;
-    NVE_CHECK(writer_host.load_dylib(NVE_TEST_STATEFUL_DYLIB, &err_code, &err_msg, 5u));
-    NVE_CHECK(err_code == 0 && err_msg.empty());
-    for (int i = 0; i < 5; ++i) {
-      NVE_CHECK(writer_host.simulate_press(3u, 8.0f, 8.0f) == 1u);
-    }
-    GtkWidget* lbl = writer_host.widget_for_node_id(2u);
-    NVE_CHECK(lbl != nullptr && GTK_IS_LABEL(lbl));
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(lbl))) == "state=5");
-
-    nve::SnapshotStatus save_status = nve::SnapshotStatus::IoError;
-    NVE_CHECK(writer_host.save_snapshot(snap_path.string(), 7u, "gtk4", &save_status));
-    NVE_CHECK(save_status == nve::SnapshotStatus::Ok && std::filesystem::exists(snap_path));
-  }
-
-  {
-    nve::NveGtkHost reader_host(cfg);
-    NVE_CHECK(!reader_host.is_loaded() && !reader_host.has_replayed_frame0() && reader_host.node_count() == 0u);
-
-    nve::SnapshotStatus mismatch_status = nve::SnapshotStatus::Ok;
-    NVE_CHECK(!reader_host.replay_snapshot(snap_path.string(), 99u, nullptr, &mismatch_status));
-    NVE_CHECK(mismatch_status == nve::SnapshotStatus::SchemaVersionMismatch);
-    NVE_CHECK(reader_host.node_count() == 0u && !reader_host.has_replayed_frame0());
-
-    NveFrameStats replay_stats{};
-    nve::SnapshotStatus replay_status = nve::SnapshotStatus::IoError;
-    NVE_CHECK(reader_host.replay_snapshot(snap_path.string(), 7u, &replay_stats, &replay_status));
-    NVE_CHECK(replay_status == nve::SnapshotStatus::Ok && replay_stats.op_count > 0u);
-    NVE_CHECK(!reader_host.is_loaded() && reader_host.has_replayed_frame0() && reader_host.node_count() == 3u);
-
-    GtkWidget* pre_dylib_label = reader_host.widget_for_node_id(2u);
-    NVE_CHECK(pre_dylib_label != nullptr && GTK_IS_LABEL(pre_dylib_label));
-    NVE_CHECK(gtk_widget_get_parent(pre_dylib_label) == reader_host.root_widget());
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(pre_dylib_label))) == "state=5");
-
-    int err_code = -1;
-    std::string err_msg;
-    NVE_CHECK(reader_host.load_dylib(NVE_TEST_STATEFUL_DYLIB, &err_code, &err_msg, 5u));
-    NVE_CHECK(err_code == 0 && err_msg.empty() && reader_host.is_loaded() && !reader_host.has_replayed_frame0());
-
-    GtkWidget* live_label = reader_host.widget_for_node_id(2u);
-    NVE_CHECK(live_label != nullptr && GTK_IS_LABEL(live_label));
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(live_label))) == "state=5");
-
-    NVE_CHECK(reader_host.simulate_press(3u, 8.0f, 8.0f) == 1u);
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(live_label))) == "state=6");
-    NVE_CHECK(reader_host.save_snapshot(snap_path.string(), 7u));
-  }
-
-  {
-    nve::NveGtkHost verify_host(cfg);
-    NVE_CHECK(verify_host.replay_snapshot(snap_path.string(), 7u));
-    GtkWidget* lbl = verify_host.widget_for_node_id(2u);
-    NVE_CHECK(lbl != nullptr && GTK_IS_LABEL(lbl));
-    NVE_CHECK(std::string(gtk_label_get_text(GTK_LABEL(lbl))) == "state=6");
-  }
-}
-
 struct MockGtkA11yImeComponent {
   static inline MockGtkA11yImeComponent* last_instance = nullptr;
   uint32_t surface_id{1u};
@@ -602,7 +522,6 @@ void test_image_picture_scroll_and_incremental_reconcile() {
 } // namespace
 
 void nve_test_gtk_snapshot_a11y_and_media() {
-  test_snapshot_replay_state_restore_and_atomic_save();
   test_accessibility_and_ime_text_input();
   test_image_picture_scroll_and_incremental_reconcile();
 }

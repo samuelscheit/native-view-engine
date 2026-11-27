@@ -1,5 +1,5 @@
 //! Compact binary little-endian binary codec (`NWS1` v2) for [`WorkspaceState`]
-//! with trailing XXH64 integrity checksum for Tier-2 hot-swaps and `MmapOffsetArena`.
+//! with trailing XXH64 integrity checksum for Tier-2 hot-swaps and `StateFile`.
 
 use nve_abi::xxh64;
 use nve_router::Routable;

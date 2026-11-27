@@ -39,8 +39,8 @@ pub use row::{DirtyList, RowRef, RowWriter};
 pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
 pub use store::{NodeRef, NodeRow, NodeStore, RealizationOrder, StoreStats};
 pub use table::{
-    desc, slot_of, NveTable, Prop, RegistryError, Res, ResProp, Str, StrProp, TableField,
-    TableSlot, MAX_STATIC_TABLE_SLOTS,
+    desc, registered_tables_schema_hash, slot_of, NveTable, Prop, RegistryError, Res, ResProp, Str,
+    StrProp, TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
 };
 pub use tx::{NodeMut, Transaction};
 pub use value::{Length, Rgba, WordValue};

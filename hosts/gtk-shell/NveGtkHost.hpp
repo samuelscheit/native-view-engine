@@ -170,22 +170,6 @@ class NveGtkHost {
   bool is_paired() const noexcept { return session_.is_paired(); }
   bool is_paired_connected() const noexcept { return session_.is_paired_connected(); }
 
-  /// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` file before any dylib loads.
-  bool replay_snapshot(
-      std::string_view path,
-      uint32_t expected_schema_version,
-      NveFrameStats* out_stats = nullptr,
-      SnapshotStatus* out_status = nullptr);
-
-  /// Freeze-dries the active shadow tree plus `NveDevApi::snapshot_state()` to `path`.
-  bool save_snapshot(
-      std::string_view path,
-      uint32_t schema_version,
-      std::string_view meta = {},
-      SnapshotStatus* out_status = nullptr) const;
-
-  bool has_replayed_frame0() const noexcept { return session_.has_replayed_frame0(); }
-
   /// Push typed props to `NveComponentApi::set_props`, sync GTK widgets if dirty,
   /// and drain outbound events.
   bool apply_props(const PropMap& props);

@@ -1,7 +1,7 @@
 //! End-to-end integration tests for `SkiaBackend` over `NodeStore`:
 //! - Interactive `:hover`/`:active`/`:focus` + `MotionDriver` visual & transform transitions
 //! - `Transform2D` + sticky positioning hit-testing and painting
-//! - `SceneRelocView` Frame-0 zero-layout instant-boot painting
+//! - `Frame0File` (`frame0.nve2`) cold-boot + live Taffy layout painting
 
 use nve_abi::{ColorRgba, EventMask};
 use nve_backend_skia::{
@@ -12,11 +12,11 @@ use nve_components::tables::{
     Display, InputKind, Interaction, Layout, Motion, StateRules, TextContent, TextInput, Transform,
     Transitions, Typography, Visual,
 };
-use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
+use nve_engine::{Frame0File, Frame0Meta, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 #[test]
-fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
+fn skia_interaction_motion_transitions_and_frame0_roundtrip() {
     let mut store = NodeStore::new();
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
@@ -86,16 +86,19 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
         .interaction_state(btn.raw())
         .contains(InteractionState::FOCUS_VISIBLE));
 
-    // Export Frame-0 NVERELOC from layout_tree and load into a cold SkiaBackend with zero layout.
-    let reloc = backend
-        .layout_tree()
-        .export_scene_reloc(&store, 1, 1, "skia-e2e", ColorRgba::BLACK)
-        .unwrap();
-    let view = SceneRelocView::from_bytes(&reloc, VerifyMode::Full).unwrap();
-    let mut cold = SkiaBackend::new();
-    cold.load_scene_reloc(&view).unwrap();
+    // Export Frame-0 NVE2 keyframe and boot into a cold SkiaBackend replica with live layout.
+    let meta = Frame0Meta {
+        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        app_build_id: 1,
+        env_hash: 0,
+    };
+    let frame0 = Frame0File::encode(&store, meta);
+    let mut cold_backend = SkiaBackend::new();
+    cold_backend.set_viewport(1, vp);
+    let mut cold = StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());
+    Frame0File::boot_bytes_into_replica(&frame0, meta, &mut cold).unwrap();
     let mut buf = PixelBuffer::new(300, 200);
-    cold.rasterize(&mut buf, ColorRgba::BLACK);
+    cold.backend().rasterize(&mut buf, ColorRgba::BLACK);
     assert_ne!(buf.get_rgb(20, 20), Some((0, 0, 0)));
 }
 
