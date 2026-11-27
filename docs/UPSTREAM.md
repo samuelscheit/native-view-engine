@@ -55,7 +55,7 @@ Known bugs, quirks, and footguns discovered in upstream dependencies or platform
 ### GTK 4 (`gtk4 4.24.2`)
 
 - **`gtk_fixed_get_child_position` returns the last *allocated* offset, not the put/move position**
-  - **Observed**: In GTK 4.24.2 (unchanged on main), `gtk_fixed_get_child_position` uses `gtk_widget_compute_point`, i.e. the child's allocation: it returns `(0, 0)` until the first size-allocate (e.g. headless CTest fixtures) and the old position after `gtk_fixed_move` until the next allocation. Mapping/rooting is irrelevant. The docs promise the put/move translation. Repro and drafted report: `docs/research/upstream-repros/gtk-fixed-child-position-unmapped`.
+  - **Observed**: In GTK 4.24.2 (unchanged on main), `gtk_fixed_get_child_position` uses `gtk_widget_compute_point`, i.e. the child's allocation: it returns `(0, 0)` until the first size-allocate (e.g. headless CTest fixtures) and the old position after `gtk_fixed_move` until the next allocation. Mapping/rooting is irrelevant. The docs promise the put/move translation. Reported: GNOME/gtk#8579 (repro: `docs/research/upstream-repros/gtk-fixed-child-position-unmapped`).
   - **Mitigation**: Read child translation from `gtk_fixed_get_child_transform` + `gsk_transform_to_translate` (see `hosts/gtk-shell/tests/gtk_shell_test.cpp`).
 
 ### Eclipse OpenJ9 (`openj9 0.59.0` / OpenJDK 25.0.3) + Android SDK `d8` (`build-tools 36.0.0`)
