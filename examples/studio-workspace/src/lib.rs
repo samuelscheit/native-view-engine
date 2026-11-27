@@ -177,7 +177,25 @@ impl StudioWorkspaceModule {
     /// A module over `host_services` (e.g. [`StudioHostServices::new`] for deterministic headless
     /// runs), persisting where [`STUDIO_PERSIST_ENV_VAR`] points when it is set.
     pub fn with_services(surface_id: SurfaceId, host_services: Arc<StudioHostServices>) -> Self {
-        let (persist_store, persist_open_error) = match WorkspaceStore::open_from_env() {
+        Self::from_persist_result(surface_id, host_services, WorkspaceStore::open_from_env())
+    }
+
+    /// A module over `host_services` that attempts to open local persistence at `dir`, surfacing
+    /// any open failure via [`Self::persist_open_error`] instead of aborting construction.
+    pub fn with_services_and_persist_dir(
+        surface_id: SurfaceId,
+        host_services: Arc<StudioHostServices>,
+        dir: impl AsRef<Path>,
+    ) -> Self {
+        Self::from_persist_result(surface_id, host_services, Some(WorkspaceStore::open(dir)))
+    }
+
+    fn from_persist_result(
+        surface_id: SurfaceId,
+        host_services: Arc<StudioHostServices>,
+        open_res: Option<Result<WorkspaceStore, PersistError>>,
+    ) -> Self {
+        let (persist_store, persist_open_error) = match open_res {
             Some(Ok(store)) => (Some(store), None),
             Some(Err(err)) => {
                 let msg = err.to_string();

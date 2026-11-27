@@ -65,7 +65,8 @@ pub fn register_codec<R: Resource>() {
     let mut reg = CODECS.write().unwrap_or_else(|e| e.into_inner());
     if let Some((_, existing)) = reg.iter().find(|(k, _)| *k == R::KIND.0) {
         assert_eq!(
-            existing.type_id, tid,
+            existing.type_id,
+            tid,
             "Resource KIND collision on {:?} between distinct Rust types",
             R::KIND
         );
@@ -255,9 +256,7 @@ impl ResourceStore {
         }
         e.refs -= 1;
         if e.refs == 0 {
-            if !e.ephemeral
-                && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(id.0)
-            {
+            if !e.ephemeral && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(id.0) {
                 self.dedup.remove(&(e.kind.0, e.hash));
             }
             if e.flags & RES_PENDING_FREE == 0 {
@@ -329,32 +328,55 @@ impl ResourceStore {
 
     /// Whether `id` holds a value (defined and not yet recycled).
     pub(crate) fn is_defined(&self, id: ResourceId) -> bool {
-        self.entries.get(id.0 as usize).is_some_and(|e| e.value.is_some())
+        self.entries
+            .get(id.0 as usize)
+            .is_some_and(|e| e.value.is_some())
     }
 
     pub(crate) fn is_ephemeral(&self, id: ResourceId) -> bool {
         self.entries.get(id.0 as usize).is_some_and(|e| e.ephemeral)
     }
 
-    /// Mirrors a resource defined by a wire frame at exactly `id` (replica stores).
-    pub(crate) fn define_at(
+    /// Fallibly mirrors a resource defined by a wire frame at exactly `id` (replica stores),
+    /// reserving backing vectors with `try_reserve` before mutating state so hostile ids cannot
+    /// trigger infallible OOM aborts.
+    pub(crate) fn try_define_at(
         &mut self,
         id: ResourceId,
         kind: Key64,
         ephemeral: bool,
         bytes: &[u8],
-    ) -> bool {
+    ) -> Result<bool, std::collections::TryReserveError> {
         let Some(c) = codec(kind) else {
-            return false;
+            return Ok(false);
         };
         let Some(value) = (c.decode)(bytes) else {
-            return false;
+            return Ok(false);
         };
         let i = id.0 as usize;
         if i == 0 {
-            return false;
+            return Ok(false);
         }
-        while self.entries.len() <= i {
+        let Some(needed) = i.checked_add(1) else {
+            return self.entries.try_reserve(usize::MAX).map(|()| false);
+        };
+        let encoded: Box<[u8]> = if ephemeral {
+            Box::new([])
+        } else {
+            let mut copy = Vec::new();
+            copy.try_reserve_exact(bytes.len())?;
+            copy.extend_from_slice(bytes);
+            copy.into_boxed_slice()
+        };
+        if self.entries.len() < needed {
+            self.entries.try_reserve(needed - self.entries.len())?;
+        }
+        self.pending_free.try_reserve(1)?;
+        self.defined.try_reserve(1)?;
+        if !ephemeral {
+            self.dedup.try_reserve(1)?;
+        }
+        while self.entries.len() < needed {
             self.entries.push(Entry {
                 kind: Key64(0),
                 refs: 0,
@@ -378,7 +400,6 @@ impl ResourceStore {
         let was_pending = e.flags & RES_PENDING_FREE != 0;
         let preserved = e.flags & (RES_IN_FREE | RES_PENDING_FREE | RES_RELEASED_THIS_FRAME);
         let hash = if ephemeral { 0 } else { xxh64(bytes, kind.0) };
-        let encoded: Box<[u8]> = if ephemeral { Box::new([]) } else { bytes.into() };
         let mut flags = RES_DEFINED_THIS_FRAME | preserved;
         if refs == 0 {
             flags |= RES_PENDING_FREE;
@@ -401,7 +422,19 @@ impl ResourceStore {
         if !already_defined {
             self.defined.push(id);
         }
-        true
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn define_at(
+        &mut self,
+        id: ResourceId,
+        kind: Key64,
+        ephemeral: bool,
+        bytes: &[u8],
+    ) -> bool {
+        self.try_define_at(id, kind, ephemeral, bytes)
+            .unwrap_or(false)
     }
 
     #[cfg(test)]

@@ -93,8 +93,12 @@ impl DirtyList {
     #[inline]
     pub(crate) fn try_reserve(
         &mut self,
-        min_cap: usize,
+        additional: usize,
     ) -> Result<(), std::collections::TryReserveError> {
+        let Some(needed) = self.len.checked_add(additional) else {
+            return self.buf.try_reserve(usize::MAX);
+        };
+        let min_cap = needed.max(64);
         if self.buf.len() < min_cap {
             self.buf.try_reserve(min_cap - self.buf.len())?;
             self.buf.resize(min_cap, NodeIndex::NULL);

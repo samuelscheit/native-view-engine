@@ -42,6 +42,25 @@ impl PagedIndex {
         self.pool[self.dir[p] as usize][n as usize & (PAGE - 1)] = row_plus_one;
     }
 
+    fn try_set(&mut self, node: NodeIndex, row_plus_one: u32) -> Result<(), WireError> {
+        let n = node.0;
+        let p = (n >> PAGE_BITS) as usize;
+        if self.dir.len() <= p {
+            let needed = p.checked_add(1).ok_or(WireError::Alloc)?;
+            self.dir
+                .try_reserve(needed - self.dir.len())
+                .map_err(|_| WireError::Alloc)?;
+            self.dir.resize(needed, NO_PAGE);
+        }
+        if self.dir[p] == NO_PAGE {
+            self.pool.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.dir[p] = self.pool.len() as u32;
+            self.pool.push([0; PAGE]);
+        }
+        self.pool[self.dir[p] as usize][n as usize & (PAGE - 1)] = row_plus_one;
+        Ok(())
+    }
+
     fn reserve_for_nodes(
         &mut self,
         max_node_index: usize,
@@ -134,20 +153,33 @@ impl Column {
     }
 
     /// Fallibly pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs
-    /// O(1) heap allocations independent of `N`, propagating [`WireError::Alloc`] on overflow or
-    /// allocation failure instead of falling through to infallible growth.
+    /// O(1) heap allocations independent of `N`, enforcing the caller's per-frame dense byte
+    /// budget and propagating [`WireError::Alloc`] on budget overrun, overflow, or OOM.
     pub(crate) fn reserve_bulk(
         &mut self,
         expected_rows: usize,
         max_node_index: usize,
+        dense_bytes_used: &mut usize,
+        dense_byte_budget: usize,
     ) -> Result<(), WireError> {
         if self.is_dense() {
-            let cap = max_node_index
-                .max(expected_rows.saturating_add(1))
-                .max(64)
-                .min(NodeId::MAX_INDEX as usize + 1);
+            let cap = max_node_index.max(64).min(NodeId::MAX_INDEX as usize + 1);
             let word_cap = cap.checked_mul(self.w).ok_or(WireError::Alloc)?;
             if self.masks.len() < cap {
+                let bytes_per_slot = self
+                    .w
+                    .checked_add(2)
+                    .and_then(|words| words.checked_mul(size_of::<u32>()))
+                    .ok_or(WireError::Alloc)?;
+                let delta_bytes = (cap - self.masks.len())
+                    .checked_mul(bytes_per_slot)
+                    .ok_or(WireError::Alloc)?;
+                let next_used = dense_bytes_used
+                    .checked_add(delta_bytes)
+                    .ok_or(WireError::Alloc)?;
+                if next_used > dense_byte_budget {
+                    return Err(WireError::Alloc);
+                }
                 self.masks
                     .try_reserve(cap - self.masks.len())
                     .map_err(|_| WireError::Alloc)?;
@@ -160,6 +192,7 @@ impl Column {
                 self.masks.resize(cap, 0);
                 self.owners.resize(cap, 0);
                 self.rows.resize(word_cap, 0);
+                *dense_bytes_used = next_used;
             }
         } else if self.owners.is_empty() {
             let target = expected_rows.min(max_node_index.saturating_add(1));
@@ -181,14 +214,10 @@ impl Column {
             }
             self.index.reserve_for_nodes(max_node_index, target)?;
         }
-        let dirty_target = self
-            .dirty
-            .as_slice()
-            .len()
-            .saturating_add(expected_rows)
-            .max(64);
+        let dirty_cap_remaining = max_node_index.saturating_sub(self.dirty.as_slice().len());
+        let dirty_additional = expected_rows.min(dirty_cap_remaining);
         self.dirty
-            .try_reserve(dirty_target)
+            .try_reserve(dirty_additional)
             .map_err(|_| WireError::Alloc)?;
         Ok(())
     }
@@ -244,6 +273,65 @@ impl Column {
         self.masks[row] = full;
         self.dirty.push_if(node_index, was == 0);
         row
+    }
+
+    /// Fallible variant of [`Self::attach`] used by [`crate::wire::WireDecoder`] so multi-op
+    /// sparse frames never fall through to infallible `Vec::push`/`resize` growth.
+    pub(crate) fn try_attach(
+        &mut self,
+        id: NodeId,
+        node_index: NodeIndex,
+    ) -> Result<usize, WireError> {
+        let full = full_mask(self.w);
+        let row = if self.is_dense() {
+            let n = node_index.as_usize();
+            if self.masks.len() <= n {
+                let cap = n
+                    .checked_add(1)
+                    .ok_or(WireError::Alloc)?
+                    .next_power_of_two()
+                    .max(64)
+                    .min(NodeId::MAX_INDEX as usize + 1);
+                let word_cap = cap.checked_mul(self.w).ok_or(WireError::Alloc)?;
+                self.masks
+                    .try_reserve(cap - self.masks.len())
+                    .map_err(|_| WireError::Alloc)?;
+                self.owners
+                    .try_reserve(cap - self.owners.len())
+                    .map_err(|_| WireError::Alloc)?;
+                self.rows
+                    .try_reserve(word_cap.saturating_sub(self.rows.len()))
+                    .map_err(|_| WireError::Alloc)?;
+                self.masks.resize(cap, 0);
+                self.owners.resize(cap, 0);
+                self.rows.resize(word_cap, 0);
+            }
+            self.dirty.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.owners[n] = id.raw();
+            n
+        } else {
+            let r = self.owners.len();
+            let next_rows = r
+                .checked_add(1)
+                .and_then(|n| n.checked_mul(self.w))
+                .ok_or(WireError::Alloc)?;
+            self.owners.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.masks.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.rows
+                .try_reserve(next_rows.saturating_sub(self.rows.len()))
+                .map_err(|_| WireError::Alloc)?;
+            self.dirty.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.index.try_set(node_index, r as u32 + 1)?;
+            self.owners.push(id.raw());
+            self.masks.push(0);
+            self.rows.resize(next_rows, 0);
+            r
+        };
+        self.rows[row * self.w..(row + 1) * self.w].copy_from_slice(self.desc.defaults());
+        let was = self.masks[row];
+        self.masks[row] = full;
+        self.dirty.push_if(node_index, was == 0);
+        Ok(row)
     }
 
     /// Removes the row of `node_index` (dense: clears owner; sparse: swap-remove preserving the

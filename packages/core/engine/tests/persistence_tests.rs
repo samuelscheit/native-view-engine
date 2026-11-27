@@ -213,9 +213,8 @@ fn state_file_atomic_roundtrip_schema_mismatch_corrupt_recovery_and_reset() {
     );
     let _ = std::fs::remove_file(&rotated_backup);
     // Restore schema 7 file for subsequent bit-flip/quarantine checks below.
-    let mut restored_v7 = StateFile::open(&path, 7);
     assert!(matches!(
-        restored_v7,
+        StateFile::open(&path, 7),
         Err(PersistenceError::SchemaMismatch {
             expected: 7,
             actual: 8
@@ -226,7 +225,6 @@ fn state_file_atomic_roundtrip_schema_mismatch_corrupt_recovery_and_reset() {
     sf_v7
         .save(b"gen-2-longer-payload")
         .expect("re-save v7 payload");
-    let _ = &mut restored_v7;
 
     // Single bit-flip in header (magic, schema_version, len), checksum, OR payload must report
     // Corrupt (never SchemaMismatch).
@@ -283,6 +281,35 @@ fn state_file_atomic_roundtrip_schema_mismatch_corrupt_recovery_and_reset() {
         write_file_atomic(Path::new(""), b"abc", true),
         Err(PersistenceError::Io(ref e)) if e.kind() == std::io::ErrorKind::InvalidInput
     ));
+
+    // Direct quarantine_corrupt() resets both generation() and recovery_stats().generation to 0.
+    let q_path = temp_file("state_quarantine.nve");
+    let q_backup = q_path.with_file_name(format!(
+        "{}.corrupt",
+        q_path.file_name().unwrap().to_str().unwrap()
+    ));
+    let _ = std::fs::remove_file(&q_path);
+    let _ = std::fs::remove_file(&q_backup);
+    {
+        let mut sf_q = StateFile::open(&q_path, 7).expect("open quarantine target");
+        sf_q.save(b"v7-payload-1").expect("save 1");
+        sf_q.save(b"v7-payload-2").expect("save 2");
+        assert_eq!(sf_q.generation(), 2);
+    }
+    let mut sf_q_reopen = StateFile::open(&q_path, 7).expect("reopen before quarantine");
+    assert_eq!(sf_q_reopen.generation(), 1);
+    assert_eq!(sf_q_reopen.recovery_stats().generation, 1);
+    sf_q_reopen
+        .quarantine_corrupt()
+        .expect("quarantine_corrupt");
+    assert_eq!(sf_q_reopen.generation(), 0);
+    assert_eq!(sf_q_reopen.recovery_stats().generation, 0);
+    assert!(!sf_q_reopen.recovery_stats().loaded_from_disk);
+    assert!(sf_q_reopen.recovery_stats().recovered_from_corrupt);
+    assert_eq!(sf_q_reopen.load().expect("load quarantined"), None);
+    assert!(!q_path.exists());
+    assert!(q_backup.exists());
+    let _ = std::fs::remove_file(&q_backup);
 
     // Reset + in-memory mode.
     let mut mem = StateFile::new_in_memory(3);
@@ -676,19 +703,19 @@ fn frame0_backend_commit_error_preserves_cache_while_corrupt_body_deletes_it() {
 #[test]
 fn hostile_padded_sparse_node_id_frame0_rejected_without_oom() {
     let meta = Frame0Meta::default_core();
-    // Pad payload with 16,384 Op::ReleaseResources entries (64 KiB) + 1 Op::CreateNodes at sparse
-    // NodeId(20_000). Because WireDecoder caps created indices by `initial_cap + 1024 + created`
-    // (NOT total byte length), this must fail cleanly without allocating sparse/dense tables.
+    // Pad payload with 16,384 Op::ReleaseResources entries (65,580 B payload -> old bytes/4 + 1024
+    // + 1 bound was 17,420). NodeId(10_000) is strictly between the new bound (1,026) and the old
+    // bound (17,420) so this regression guard is non-vacuous.
     let pad_count: u32 = 16_384;
     let mut ops_body = Vec::with_capacity((pad_count as usize + 8) * 4);
     // Op 1: ReleaseResources (opcode=5, table=0, inline_count=pad_count), len=pad_count words.
     ops_body.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
     ops_body.extend_from_slice(&pad_count.to_le_bytes());
     ops_body.resize(ops_body.len() + (pad_count as usize) * 4, 0u8);
-    // Op 2: CreateNodes (opcode=3, table=0, inline_count=1), len=1 word, NodeId(20_000).
+    // Op 2: CreateNodes (opcode=3, table=0, inline_count=1), len=1 word, NodeId(10_000).
     ops_body.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
     ops_body.extend_from_slice(&1u32.to_le_bytes());
-    ops_body.extend_from_slice(&20_000u32.to_le_bytes());
+    ops_body.extend_from_slice(&10_000u32.to_le_bytes());
 
     let total_words = 6 + (ops_body.len() / 4) as u32;
     let mut nve2 = minimal_nve2_header(1, 2, total_words);
@@ -708,6 +735,97 @@ fn hostile_padded_sparse_node_id_frame0_rejected_without_oom() {
     ));
     assert_eq!(replica.store().stats().live_nodes, 0);
     assert_eq!(replica.backend().commits, 0);
+}
+
+#[test]
+fn frame0_alloc_error_maps_to_backend_miss_and_preserves_disk_file() {
+    use nve_store::NveTable;
+
+    fn encode_decl(desc: &nve_abi::table::TableDesc, wire_slot: u8) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&desc.key.lo().to_le_bytes());
+        b.extend_from_slice(&desc.key.hi().to_le_bytes());
+        b.extend_from_slice(&(desc.schema_hash as u32).to_le_bytes());
+        b.extend_from_slice(&((desc.schema_hash >> 32) as u32).to_le_bytes());
+        let packed = (wire_slot as u32)
+            | ((desc.storage as u32) << 8)
+            | ((desc.flags as u32) << 16)
+            | ((desc.defaults.len() as u32) << 24);
+        b.extend_from_slice(&packed.to_le_bytes());
+        b.extend_from_slice(&desc.str_words.to_le_bytes());
+        b.extend_from_slice(&desc.resource_words.to_le_bytes());
+        for &d in desc.defaults {
+            b.extend_from_slice(&d.to_le_bytes());
+        }
+        b.extend_from_slice(desc.word_effects);
+        while !b.len().is_multiple_of(4) {
+            b.push(0);
+        }
+        b.extend_from_slice(&(desc.name.len() as u32).to_le_bytes());
+        b.extend_from_slice(desc.name.as_bytes());
+        while !b.len().is_multiple_of(4) {
+            b.push(0);
+        }
+        b
+    }
+
+    let _ = (<Layout as NveTable>::slot(), <Visual as NveTable>::slot());
+    let dense_per_slot =
+        (<Layout as NveTable>::DESC.words() + <Visual as NveTable>::DESC.words() + 4)
+            * size_of::<u32>();
+    assert!(dense_per_slot > 64);
+    let n_nodes: u32 = ((18 * 1024 * 1024) / (dense_per_slot - 64)) as u32;
+
+    let mut decls = encode_decl(&<Layout as NveTable>::DESC, 0);
+    decls.extend_from_slice(&encode_decl(&<Visual as NveTable>::DESC, 1));
+
+    let mut ops = Vec::new();
+    // Op 1: DeclareTables (opcode=1, count=2)
+    ops.extend_from_slice(&(1u32 | (2u32 << 16)).to_le_bytes());
+    ops.extend_from_slice(&((decls.len() / 4) as u32).to_le_bytes());
+    ops.extend_from_slice(&decls);
+    // Op 2: CreateNodes (opcode=3, extended count=n_nodes)
+    ops.extend_from_slice(&(3u32 | (0xFFFFu32 << 16)).to_le_bytes());
+    ops.extend_from_slice(&(1u32 + n_nodes).to_le_bytes());
+    ops.extend_from_slice(&n_nodes.to_le_bytes());
+    for id in 1..=n_nodes {
+        ops.extend_from_slice(&id.to_le_bytes());
+    }
+    // Op 3 & 4: Patch (opcode=6) on Layout (wire_slot=0) and Visual (wire_slot=1) for NodeId::ROOT.
+    for wire_slot in [0u32, 1u32] {
+        ops.extend_from_slice(&(6u32 | (wire_slot << 8) | (1u32 << 16)).to_le_bytes());
+        ops.extend_from_slice(&2u32.to_le_bytes());
+        ops.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
+        ops.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    let mut nve2 = minimal_nve2_header(1, 4, 6 + (ops.len() / 4) as u32);
+    nve2.extend_from_slice(&ops);
+
+    let meta = Frame0Meta::default_core();
+    let envelope = sign_frame0_payload(&nve2, n_nodes, meta);
+    let path = temp_file("alloc_budget.nve2");
+    std::fs::write(&path, &envelope).expect("write alloc frame0");
+
+    let mut replica = StoreWireReplica::new(
+        CountingBackend {
+            commits: 0,
+            last_live: 0,
+        },
+        core_realization_order(),
+    );
+    assert!(matches!(
+        Frame0File::boot_into_replica(&path, meta, &mut replica),
+        Err(Frame0Miss::Backend(ref msg)) if msg.contains("allocation")
+    ));
+    assert_eq!(replica.store().stats().live_nodes, 0);
+    assert_eq!(replica.backend().commits, 0);
+    assert!(replica.needs_keyframe());
+    assert!(
+        path.exists(),
+        "Frame0SubmitError::Alloc -> Frame0Miss::Backend must preserve the disk file"
+    );
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

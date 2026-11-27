@@ -326,6 +326,25 @@ fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() 
         dir.join(STATE_FILE_NAME).exists(),
         "newer schema mismatch must preserve state.nve on disk"
     );
+    // StudioWorkspaceModule::with_services_and_persist_dir (sharing the exact open path with
+    // `with_services`) must surface the future-schema failure via `persist_open_error()`.
+    let mod_v99 = StudioWorkspaceModule::with_services_and_persist_dir(
+        1,
+        std::sync::Arc::new(nve_studio_workspace::StudioHostServices::new()),
+        &dir,
+    );
+    assert!(mod_v99.persist_store().is_none());
+    let open_err = mod_v99
+        .persist_open_error()
+        .expect("future v99 schema must populate persist_open_error()");
+    assert!(
+        open_err.contains("99"),
+        "persist_open_error must preserve schema mismatch diagnostic, got: {open_err}"
+    );
+    assert!(
+        dir.join(STATE_FILE_NAME).exists(),
+        "future v99 state.nve must remain untouched on disk"
+    );
 
     std::fs::write(dir.join(STATE_FILE_NAME), b"CORRUPTED_STATE_BYTES")
         .expect("corrupt state file");

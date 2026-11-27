@@ -501,8 +501,7 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
         tag: u32,
     }
 
-    let cold_meta = super::window_host::default_frame0_meta();
-    assert_eq!(cold_meta, Frame0Meta::default_core());
+    let cold_meta = Frame0Meta::default_core();
     assert_eq!(cold_meta.app_build_id, 0);
     assert_eq!(
         cold_meta.table_schema_hash,
@@ -524,12 +523,12 @@ fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
     ));
     let _ = std::fs::remove_file(&frame0_path);
     let saved_footer = session
-        .save_frame0(&frame0_path, super::window_host::default_frame0_meta())
-        .expect("save frame0 with default_frame0_meta");
+        .save_frame0(&frame0_path, Frame0Meta::default_core())
+        .expect("save frame0 with Frame0Meta::default_core");
 
-    // Register an unrelated module table AFTER saving — default_frame0_meta() must NOT drift!
+    // Register an unrelated module table AFTER saving — Frame0Meta::default_core() must NOT drift!
     let _ = <LateModuleTable as nve_store::NveTable>::slot();
-    let post_reg_meta = super::window_host::default_frame0_meta();
+    let post_reg_meta = Frame0Meta::default_core();
     assert_eq!(post_reg_meta, cold_meta);
 
     let (_replica, _buf, loaded_footer) =

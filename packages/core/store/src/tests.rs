@@ -693,42 +693,418 @@ fn sparse_column_reserve_bulk_does_not_double_on_repeated_patches() {
     );
 }
 
+fn build_wire_frame(ops: &[(u8, u8, u32, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&crate::wire::MAGIC.to_le_bytes());
+    out.extend_from_slice(&crate::wire::VERSION.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u64.to_le_bytes());
+    out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for &(tag, slot, count, body) in ops {
+        let inline = count.min(0xFFFF);
+        let head = (tag as u32) | ((slot as u32) << 8) | (inline << 16);
+        let extra = usize::from(count >= 0xFFFF) * 4;
+        let padded_body = (body.len() + extra).div_ceil(4) * 4;
+        out.extend_from_slice(&head.to_le_bytes());
+        out.extend_from_slice(&((padded_body / 4) as u32).to_le_bytes());
+        if count >= 0xFFFF {
+            out.extend_from_slice(&count.to_le_bytes());
+        }
+        out.extend_from_slice(body);
+        while !out.len().is_multiple_of(4) {
+            out.push(0);
+        }
+    }
+    let words = (out.len() / 4) as u32;
+    out[20..24].copy_from_slice(&words.to_le_bytes());
+    out
+}
+
+fn encode_table_decl(desc: &nve_abi::table::TableDesc, wire_slot: u8) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&desc.key.lo().to_le_bytes());
+    b.extend_from_slice(&desc.key.hi().to_le_bytes());
+    b.extend_from_slice(&(desc.schema_hash as u32).to_le_bytes());
+    b.extend_from_slice(&((desc.schema_hash >> 32) as u32).to_le_bytes());
+    let packed = (wire_slot as u32)
+        | ((desc.storage as u32) << 8)
+        | ((desc.flags as u32) << 16)
+        | ((desc.defaults.len() as u32) << 24);
+    b.extend_from_slice(&packed.to_le_bytes());
+    b.extend_from_slice(&desc.str_words.to_le_bytes());
+    b.extend_from_slice(&desc.resource_words.to_le_bytes());
+    for &d in desc.defaults {
+        b.extend_from_slice(&d.to_le_bytes());
+    }
+    b.extend_from_slice(desc.word_effects);
+    while !b.len().is_multiple_of(4) {
+        b.push(0);
+    }
+    b.extend_from_slice(&(desc.name.len() as u32).to_le_bytes());
+    b.extend_from_slice(desc.name.as_bytes());
+    while !b.len().is_multiple_of(4) {
+        b.push(0);
+    }
+    b
+}
+
 #[test]
 fn wire_decoder_rejects_padded_sparse_node_id_and_reserve_bulk_returns_wire_error_alloc() {
-    use crate::wire::{WireDecoder, WireError};
+    use crate::wire::{Op, WireDecoder, WireError};
 
-    // 1. Padded Op::ReleaseResources must not widen Op::CreateNodes index budget.
-    let pad_count: u32 = 8_192;
-    let mut ops = Vec::new();
-    ops.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
-    ops.extend_from_slice(&pad_count.to_le_bytes());
-    ops.resize(ops.len() + (pad_count as usize) * 4, 0u8);
-    ops.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
-    ops.extend_from_slice(&1u32.to_le_bytes());
-    ops.extend_from_slice(&10_000u32.to_le_bytes());
-
-    let mut frame = Vec::new();
-    frame.extend_from_slice(&crate::wire::MAGIC.to_le_bytes());
-    frame.extend_from_slice(&crate::wire::VERSION.to_le_bytes());
-    frame.extend_from_slice(&0u16.to_le_bytes());
-    frame.extend_from_slice(&1u64.to_le_bytes());
-    frame.extend_from_slice(&2u32.to_le_bytes());
-    frame.extend_from_slice(&(6u32 + (ops.len() / 4) as u32).to_le_bytes());
-    frame.extend_from_slice(&ops);
+    // 1. Padded Op::ReleaseResources (32,812 B frame -> old bytes/4 + 1024 + 1 bound was 9,228).
+    //    NodeId(5_000) is strictly between the new bound (1,026) and the old bound (9,228) so
+    //    this test is non-vacuous and rejects padding amplification with zero node growth.
+    let pad_body = vec![0u8; 8_192 * 4];
+    let create_body = 5_000u32.to_le_bytes();
+    let frame = build_wire_frame(&[
+        (Op::ReleaseResources as u8, 0, 8_192, &pad_body),
+        (Op::CreateNodes as u8, 0, 1, &create_body),
+    ]);
 
     let mut replica = NodeStore::replica();
     let mut dec = WireDecoder::default();
     let mut tx = replica.tx();
     assert_eq!(
         dec.apply(&mut tx, &frame),
-        Err(WireError::NodeExists(10_000))
+        Err(WireError::NodeExists(5_000))
     );
+    assert_eq!(tx.store().capacity(), 1);
 
-    // 2. Overflow / un-reservable bulk request must surface WireError::Alloc cleanly.
+    // 2. Padded Op::ReleaseResources (65,536 B padding -> old bytes/20 + 1024 + 1 bound was ~4,305).
+    //    ResourceId(2_500) is strictly between the new bound (1,026) and the old bound (~4,305).
+    crate::register_codec::<Shadows>();
+    let mut shadow_blob = Vec::new();
+    Shadows(vec![1.0]).encode(&mut shadow_blob);
+    let mut def_res = Vec::new();
+    def_res.extend_from_slice(&2_500u32.to_le_bytes());
+    def_res.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
+    def_res.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
+    def_res.extend_from_slice(&0u32.to_le_bytes());
+    def_res.extend_from_slice(&(shadow_blob.len() as u32).to_le_bytes());
+    def_res.extend_from_slice(&shadow_blob);
+    let res_pad = vec![0u8; 16_384 * 4];
+    let res_frame = build_wire_frame(&[
+        (Op::ReleaseResources as u8, 0, 16_384, &res_pad),
+        (Op::DefineResources as u8, 0, 1, &def_res),
+    ]);
+    let mut res_replica = NodeStore::replica();
+    let mut res_dec = WireDecoder::default();
+    let mut res_tx = res_replica.tx();
+    assert_eq!(
+        res_dec.apply(&mut res_tx, &res_frame),
+        Err(WireError::Resource { id: 2_500, kind: 0 })
+    );
+    assert_eq!(res_tx.store().resources().slots(), 1);
+
+    // 3. Overflow / un-reservable bulk request must surface WireError::Alloc cleanly.
     let mut store = NodeStore::new();
     let sparse_slot = Text::slot();
+    let mut dense_used = 0usize;
     assert_eq!(
-        store.reserve_column_bulk(sparse_slot, usize::MAX / 2, usize::MAX / 2),
+        store.reserve_column_bulk(
+            sparse_slot,
+            usize::MAX / 2,
+            usize::MAX / 2,
+            &mut dense_used,
+            usize::MAX,
+        ),
         Err(WireError::Alloc)
+    );
+}
+
+#[test]
+fn wire_dynamic_dense_tables_forced_sparse_and_static_dense_budget_rejects_amplification() {
+    use crate::wire::{Op, WireDecoder, WireError};
+
+    // Part A: 32 wire-declared dynamic tables claiming Storage::Dense (32 words each) over 4,096
+    // nodes with 1 patched node each must stay Storage::Sparse (row_count == 1, zero dense blow-up).
+    let n_nodes: u32 = 4_096;
+    let mut create_body = Vec::with_capacity((n_nodes as usize) * 4);
+    for id in 1..=n_nodes {
+        create_body.extend_from_slice(&id.to_le_bytes());
+    }
+    let mut decls = Vec::new();
+    for i in 0..32u8 {
+        let key = nve_hash::Key64(0xCAFE_D000_0000_0000 + u64::from(i));
+        let name = format!("hostile.dyn.dense.{i:02}");
+        decls.extend_from_slice(&key.lo().to_le_bytes());
+        decls.extend_from_slice(&key.hi().to_le_bytes());
+        decls.extend_from_slice(&(0x100u32 + u32::from(i)).to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        // wire_slot = i, storage = 0 (Dense!), flags = 0, words = 32
+        let packed = u32::from(i) | (32u32 << 24);
+        decls.extend_from_slice(&packed.to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        decls.extend_from_slice(&[0u8; 32 * 4]);
+        decls.extend_from_slice(&[1u8; 32]);
+        decls.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        decls.extend_from_slice(name.as_bytes());
+        while !decls.len().is_multiple_of(4) {
+            decls.push(0);
+        }
+    }
+    let mut patch_root = Vec::new();
+    patch_root.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
+    patch_root.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(34);
+    ops.push((Op::DeclareTables as u8, 0, 32, &decls));
+    ops.push((Op::CreateNodes as u8, 0, n_nodes, &create_body));
+    for i in 0..32u8 {
+        ops.push((Op::Patch as u8, i, 1, &patch_root));
+    }
+    let dyn_frame = build_wire_frame(&ops);
+
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &dyn_frame)
+            .expect("dynamic dense tables decode safely as sparse");
+        tx.commit_into(&mut changes);
+    }
+    let dyn_cols: Vec<_> = replica
+        .columns
+        .iter()
+        .skip(crate::table::MAX_STATIC_TABLE_SLOTS)
+        .flatten()
+        .collect();
+    assert_eq!(dyn_cols.len(), 32);
+    for col in dyn_cols {
+        assert!(
+            !col.is_dense(),
+            "wire-declared dynamic table must always use sparse storage"
+        );
+        assert_eq!(
+            col.row_count(),
+            1,
+            "sparse dynamic column must allocate only 1 row, not {n_nodes}"
+        );
+    }
+
+    // Re-declaring dynamic table 0 with mismatched storage flag must still fail SchemaMismatch.
+    let mut mismatch_decl = Vec::new();
+    let key0 = nve_hash::Key64(0xCAFE_D000_0000_0000);
+    let name0 = "hostile.dyn.dense.00";
+    mismatch_decl.extend_from_slice(&key0.lo().to_le_bytes());
+    mismatch_decl.extend_from_slice(&key0.hi().to_le_bytes());
+    mismatch_decl.extend_from_slice(&0x100u32.to_le_bytes());
+    mismatch_decl.extend_from_slice(&0u32.to_le_bytes());
+    let packed_sparse = (1u32 << 8) | (32u32 << 24); // Sparse instead of originally declared Dense
+    mismatch_decl.extend_from_slice(&packed_sparse.to_le_bytes());
+    mismatch_decl.extend_from_slice(&0u32.to_le_bytes());
+    mismatch_decl.extend_from_slice(&0u32.to_le_bytes());
+    mismatch_decl.extend_from_slice(&[0u8; 32 * 4]);
+    mismatch_decl.extend_from_slice(&[1u8; 32]);
+    mismatch_decl.extend_from_slice(&(name0.len() as u32).to_le_bytes());
+    mismatch_decl.extend_from_slice(name0.as_bytes());
+    while !mismatch_decl.len().is_multiple_of(4) {
+        mismatch_decl.push(0);
+    }
+    let mismatch_frame = build_wire_frame(&[(Op::DeclareTables as u8, 0, 1, &mismatch_decl)]);
+    {
+        let mut tx = replica.tx();
+        assert_eq!(
+            dec.apply(&mut tx, &mismatch_frame),
+            Err(WireError::SchemaMismatch { key: key0.0 })
+        );
+    }
+
+    // Part B: Static Dense 32-word table amplification exceeds per-frame dense byte budget and
+    // returns WireError::Alloc BEFORE allocating the dense column.
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "test.wire.dense_budget_32w", storage = "dense")]
+    struct BigDense32 {
+        #[effect(paint)]
+        w00: u32,
+        #[effect(paint)]
+        w01: u32,
+        #[effect(paint)]
+        w02: u32,
+        #[effect(paint)]
+        w03: u32,
+        #[effect(paint)]
+        w04: u32,
+        #[effect(paint)]
+        w05: u32,
+        #[effect(paint)]
+        w06: u32,
+        #[effect(paint)]
+        w07: u32,
+        #[effect(paint)]
+        w08: u32,
+        #[effect(paint)]
+        w09: u32,
+        #[effect(paint)]
+        w10: u32,
+        #[effect(paint)]
+        w11: u32,
+        #[effect(paint)]
+        w12: u32,
+        #[effect(paint)]
+        w13: u32,
+        #[effect(paint)]
+        w14: u32,
+        #[effect(paint)]
+        w15: u32,
+        #[effect(paint)]
+        w16: u32,
+        #[effect(paint)]
+        w17: u32,
+        #[effect(paint)]
+        w18: u32,
+        #[effect(paint)]
+        w19: u32,
+        #[effect(paint)]
+        w20: u32,
+        #[effect(paint)]
+        w21: u32,
+        #[effect(paint)]
+        w22: u32,
+        #[effect(paint)]
+        w23: u32,
+        #[effect(paint)]
+        w24: u32,
+        #[effect(paint)]
+        w25: u32,
+        #[effect(paint)]
+        w26: u32,
+        #[effect(paint)]
+        w27: u32,
+        #[effect(paint)]
+        w28: u32,
+        #[effect(paint)]
+        w29: u32,
+        #[effect(paint)]
+        w30: u32,
+        #[effect(paint)]
+        w31: u32,
+    }
+    let big_slot = BigDense32::slot();
+    let big_decl = encode_table_decl(&BigDense32::DESC, 0);
+    // 250_000 nodes -> ~1.00 MiB wire -> budget ~32.8 MiB; 250_001 * 136 B = ~34.0 MiB > budget.
+    let big_n: u32 = 250_000;
+    let mut big_create = Vec::with_capacity((big_n as usize) * 4);
+    for id in 1..=big_n {
+        big_create.extend_from_slice(&id.to_le_bytes());
+    }
+    let budget_frame = build_wire_frame(&[
+        (Op::DeclareTables as u8, 0, 1, &big_decl),
+        (Op::CreateNodes as u8, 0, big_n, &big_create),
+        (Op::Patch as u8, 0, 1, &patch_root),
+    ]);
+    let mut budget_replica = NodeStore::replica();
+    let mut budget_dec = WireDecoder::default();
+    {
+        let mut tx = budget_replica.tx();
+        assert_eq!(
+            budget_dec.apply(&mut tx, &budget_frame),
+            Err(WireError::Alloc)
+        );
+    }
+    assert_eq!(
+        budget_replica.columns[big_slot.0 as usize]
+            .as_ref()
+            .map_or(0, |c| c.row_count()),
+        0,
+        "dense column must not be allocated when dense byte budget is exceeded"
+    );
+}
+
+#[test]
+fn dense_reserve_bulk_repeated_root_patches_and_empty_patch_do_not_inflate_rows() {
+    use crate::wire::{Op, WireDecoder};
+
+    let vis_slot = Visual::slot();
+    let vis_decl = encode_table_decl(&Visual::DESC, 0);
+    let create_root = NodeId::ROOT.raw().to_le_bytes();
+
+    // 1. Empty Op::Patch (count == 0) must return Ok(()) without lazily allocating the column.
+    let empty_patch_frame = build_wire_frame(&[
+        (Op::DeclareTables as u8, 0, 1, &vis_decl),
+        (Op::CreateNodes as u8, 0, 1, &create_root),
+        (Op::Patch as u8, 0, 0, &[]),
+        (Op::SetStrings as u8, 0, 0, &[]),
+    ]);
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &empty_patch_frame)
+            .expect("empty Patch/SetStrings succeeds");
+        tx.commit_into(&mut changes);
+    }
+    assert!(
+        replica.columns[vis_slot.0 as usize].is_none(),
+        "empty Op::Patch / Op::SetStrings must not allocate column"
+    );
+
+    // 2. 1,000 repeated (NodeId::ROOT, mask = 0) patches on a 1-node store must keep dense
+    //    row_count() <= 64 instead of inflating to expected_rows + 1 (1,001).
+    let repeat_count: u32 = 1_000;
+    let mut repeated_body = Vec::with_capacity((repeat_count as usize) * 8);
+    for _ in 0..repeat_count {
+        repeated_body.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
+        repeated_body.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let repeat_frame = build_wire_frame(&[
+        (Op::Patch as u8, 0, repeat_count, &repeated_body),
+        (Op::Patch as u8, 0, repeat_count, &repeated_body),
+    ]);
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &repeat_frame)
+            .expect("repeated ROOT patches succeed");
+        tx.commit_into(&mut changes);
+    }
+    let col = replica.columns[vis_slot.0 as usize]
+        .as_ref()
+        .expect("Visual dense column");
+    assert!(
+        col.row_count() <= 64,
+        "repeated patches to NodeId::ROOT must keep dense row_count() <= 64, got {}",
+        col.row_count()
+    );
+
+    // 3. Two-op sparse Patch frame exercises fallible try_writer -> try_attach + PagedIndex::try_set
+    //    on the second op when !owners.is_empty().
+    let text_slot = Text::slot();
+    let text_decl = encode_table_decl(&Text::DESC, 1);
+    let mut nodes_body = Vec::new();
+    for id in 2..=65u32 {
+        nodes_body.extend_from_slice(&id.to_le_bytes());
+    }
+    let mut op1_patch = Vec::new();
+    op1_patch.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
+    op1_patch.extend_from_slice(&0u32.to_le_bytes());
+    let mut op2_patch = Vec::new();
+    for id in 2..=65u32 {
+        op2_patch.extend_from_slice(&id.to_le_bytes());
+        op2_patch.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let two_op_sparse = build_wire_frame(&[
+        (Op::DeclareTables as u8, 0, 1, &text_decl),
+        (Op::CreateNodes as u8, 0, 64, &nodes_body),
+        (Op::Patch as u8, 1, 1, &op1_patch),
+        (Op::Patch as u8, 1, 64, &op2_patch),
+    ]);
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &two_op_sparse)
+            .expect("two-op sparse frame succeeds via try_writer -> try_attach");
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(
+        replica.columns[text_slot.0 as usize]
+            .as_ref()
+            .expect("Text sparse column")
+            .row_count(),
+        65
     );
 }

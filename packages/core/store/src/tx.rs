@@ -47,13 +47,6 @@ pub(crate) fn writer_at_typed<T: NveTable>(
     writer_at_existing(store, index, slot)
 }
 
-/// Internal writer taking an already-validated `NodeIndex` (zero redundant liveness checks).
-#[inline]
-fn writer_at(store: &mut NodeStore, index: NodeIndex, slot: TableSlot) -> RowWriter<'_> {
-    store.column_mut(slot);
-    writer_at_existing(store, index, slot)
-}
-
 #[inline]
 fn writer_at_existing(store: &mut NodeStore, index: NodeIndex, slot: TableSlot) -> RowWriter<'_> {
     let NodeStore {
@@ -93,6 +86,56 @@ fn writer_at_existing(store: &mut NodeStore, index: NodeIndex, slot: TableSlot) 
         text,
         resources,
     }
+}
+
+/// Fallible internal row writer for wire decoding: uses `try_reserve` + `Column::try_attach`
+/// whenever a node attaches `slot`, returning `WireError::Alloc` instead of aborting on OOM.
+#[inline]
+fn try_writer_at_existing(
+    store: &mut NodeStore,
+    index: NodeIndex,
+    slot: TableSlot,
+) -> Result<RowWriter<'_>, crate::wire::WireError> {
+    let NodeStore {
+        nodes,
+        columns,
+        text,
+        resources,
+        touched,
+        realization_mask,
+        ..
+    } = store;
+    let node = &mut nodes[index];
+    let col = columns[slot.0 as usize]
+        .as_mut()
+        .ok_or(crate::wire::WireError::UndeclaredTable(slot.0))?;
+    touched
+        .try_reserve(1)
+        .map_err(|_| crate::wire::WireError::Alloc)?;
+    if !node.tables.contains(slot) {
+        let id = NodeId::from_index(index, node.generation);
+        col.try_attach(id, index)?;
+        node.tables.insert(slot);
+        let realize = if realization_mask.contains(slot) {
+            effect::REALIZE
+        } else {
+            0
+        };
+        touch(node, touched, index, realize | col.desc.effects());
+    }
+    let row = col.row_of(index);
+    let w = col.w;
+    Ok(RowWriter {
+        row: &mut col.rows[row * w..(row + 1) * w],
+        mask: &mut col.masks[row],
+        dirty: &mut col.dirty,
+        node_index: index,
+        node,
+        touched,
+        desc: &col.desc,
+        text,
+        resources,
+    })
 }
 
 impl Transaction<'_> {
@@ -434,14 +477,18 @@ impl Transaction<'_> {
     // Tables
     // -----------------------------------------------------------------------------------------
 
-    /// Crate-private row writer for `slot` on `id`, attaching the table (defaults) when absent.
-    /// Sealed so external callers cannot overwrite string/resource words via raw scalar puts.
-    pub(crate) fn writer(&mut self, id: NodeId, slot: TableSlot) -> RowWriter<'_> {
-        assert!(
-            self.store.is_live(id),
-            "NodeStore: write to dead node {id:?}"
-        );
-        writer_at(self.store, id.node_index(), slot)
+    /// Fallible crate-private row writer for `slot` on `id`, attaching the table (defaults) when
+    /// absent via `try_attach`. Sealed so external callers cannot overwrite string/resource words.
+    pub(crate) fn try_writer(
+        &mut self,
+        id: NodeId,
+        slot: TableSlot,
+    ) -> Result<RowWriter<'_>, crate::wire::WireError> {
+        if !self.store.is_live(id) {
+            return Err(crate::wire::WireError::DeadNode(id.0));
+        }
+        self.store.column_mut(slot);
+        try_writer_at_existing(self.store, id.node_index(), slot)
     }
 
     /// Fluent typed writer for `T` on `id` (attaches `T` with defaults when absent).

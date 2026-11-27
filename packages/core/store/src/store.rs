@@ -199,20 +199,8 @@ impl NodeStore {
             self.created
                 .try_reserve(target_created.saturating_sub(self.created.len()))?;
         }
-        let touched_target = self
-            .touched
-            .as_slice()
-            .len()
-            .saturating_add(capped_nodes)
-            .max(64);
-        self.touched.try_reserve(touched_target)?;
-        let reparented_target = self
-            .reparented
-            .as_slice()
-            .len()
-            .saturating_add(capped_nodes)
-            .max(64);
-        self.reparented.try_reserve(reparented_target)?;
+        self.touched.try_reserve(capped_nodes)?;
+        self.reparented.try_reserve(capped_nodes)?;
         self.children.try_reserve_data(
             self.children
                 .data()
@@ -264,9 +252,16 @@ impl NodeStore {
         slot: TableSlot,
         expected_rows: usize,
         max_node_index: usize,
+        dense_bytes_used: &mut usize,
+        dense_byte_budget: usize,
     ) -> Result<(), crate::wire::WireError> {
         let col = self.column_mut(slot);
-        col.reserve_bulk(expected_rows, max_node_index)
+        col.reserve_bulk(
+            expected_rows,
+            max_node_index,
+            dense_bytes_used,
+            dense_byte_budget,
+        )
     }
 
     /// Installs the backend's ordered realization priority list used to derive

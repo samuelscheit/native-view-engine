@@ -150,8 +150,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
     ) -> Result<BackendApplyStats, Frame0SubmitError> {
         if let Err(err) = self.decode_nve2_into_replica(wire_bytes, expected_live_nodes) {
             return Err(match err {
-                BackendError::Wire(WireError::Alloc)
-                | BackendError::NeedsKeyframe(Some(WireError::Alloc)) => Frame0SubmitError::Alloc,
+                BackendError::Wire(WireError::Alloc) => Frame0SubmitError::Alloc,
                 BackendError::Wire(_) | BackendError::NeedsKeyframe(Some(_)) => {
                     Frame0SubmitError::Wire
                 }
