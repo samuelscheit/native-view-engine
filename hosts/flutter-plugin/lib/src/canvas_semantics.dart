@@ -23,7 +23,7 @@ final class NveCanvasSemanticsAssembler {
     final live = <int>{};
     final root = tree.root;
     if (root >= 0) {
-      _Collector(tree, _nodes, live, out, onTap).visit(root, Offset.zero, surface);
+      _Collector(tree, _nodes, live, out, onTap).visit(tree.walk(), root, Offset.zero, surface);
     }
     _nodes.removeWhere((id, _) => !live.contains(id));
     return out;
@@ -48,8 +48,8 @@ final class _Collector {
 
   /// `aria-hidden` prunes the subtree; [invisible] is inherited `visibility: hidden`, which a
   /// descendant's `visibility: visible` overrides (as painted).
-  void visit(int index, Offset shift, Rect clip, [bool invisible = false]) {
-    if (t.isDisplayNone(index)) {
+  void visit(NveTreeWalk w, int index, Offset shift, Rect clip, [bool invisible = false]) {
+    if (!w.enter(index) || t.isDisplayNone(index)) {
       return;
     }
     final vr = s.rowOf(t.visual, index);
@@ -74,7 +74,7 @@ final class _Collector {
     final childClip = t.clipsChildren(index) ? clip.intersect(rect) : clip;
     final childShift = shift + t.scrollShift(index);
     for (final kid in t.paintOrder(index)) {
-      visit(kid, childShift, childClip, hidden);
+      visit(w, kid, childShift, childClip, hidden);
     }
   }
 

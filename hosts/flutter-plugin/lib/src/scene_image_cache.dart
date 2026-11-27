@@ -150,8 +150,9 @@ class NveSceneImageCache {
 
   /// Synchronously fetches the cached [ui.Image] for [key] or starts one deduplicated async
   /// decode (default: [key] is an image URI; [decode] supplies other sources, e.g. inline encoded
-  /// bytes). [onDecoded] fires once, when the decode that this call started succeeds, so a
-  /// per-paint caller never piles up callbacks while a decode is in flight.
+  /// bytes). [decode] is invoked synchronously inside this call when a decode starts, so it may
+  /// copy borrowed bytes. [onDecoded] fires once, when the decode that this call started
+  /// succeeds, so a per-paint caller never piles up callbacks while a decode is in flight.
   ui.Image? resolveOrRequest(String key, {VoidCallback? onDecoded, Future<ui.Image?> Function()? decode}) {
     if (_disposed || key.isEmpty) return null;
     final cached = getCached(key);

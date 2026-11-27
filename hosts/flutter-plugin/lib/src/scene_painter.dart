@@ -65,11 +65,16 @@ final class NveScenePainter {
   final Map<_TextKey, TextPainter> _text = <_TextKey, TextPainter>{};
   final Set<_TextKey> _usedText = <_TextKey>{};
 
+  /// Content versions of inline image resources (`scene_epoch` + `dirty_resources`): the image
+  /// cache key changes exactly when a resource id's bytes do, with no per-paint hashing.
+  final ResourceVersions _resourceVersions = ResourceVersions();
+
   // Borrowed for one [paint] call only (the tree's reader is valid inside `withScene`).
   late Canvas _canvas;
   late NveSceneTree _tree;
   late Offset _origin;
   late NvePaintContext _ctx;
+  late NveTreeWalk _walk;
   bool _painting = false;
   NveSceneResources? _resources;
   VoidCallback? _onImage;
@@ -107,6 +112,8 @@ final class NveScenePainter {
     _resources = resources;
     _onImage = onImageLoaded;
     _ctx = NvePaintContext._(canvas, tree, resources);
+    _walk = tree.walk();
+    _resourceVersions.observe(s.sceneEpoch, s.frameId, s.dirtyResources);
     _typo = s.findTable(TypographyTable.key);
     _textTable = s.findTable(TextTable.key);
     _input = s.findTable(TextInputTable.key);
@@ -131,7 +138,7 @@ final class NveScenePainter {
 
   void _node(int index, Offset shift, bool parentHidden, NveTextStyle inherited) {
     final t = _tree, s = t.s;
-    if (t.isDisplayNone(index)) {
+    if (!_walk.enter(index) || t.isDisplayNone(index)) {
       return;
     }
     final v = t.visual;
@@ -297,9 +304,10 @@ final class NveScenePainter {
     final payload = _resources?.payload(id);
     final img = switch (payload == null ? null : decodeImageSource(payload)) {
       NveImageUrl(:final uri) => imageCache.resolveOrRequest(uri, onDecoded: _onImage),
-      // Resource ids are generation-tagged, so `(id, length)` names one payload; the bytes are
-      // copied only when a decode actually starts.
-      NveImageBytes(:final bytes) => imageCache.resolveOrRequest('nve-res:$id:${bytes.length}',
+      // The key is the id's content version, so rewritten bytes (even of equal length) decode
+      // anew and an old failure never sticks. `decode` runs synchronously inside this call, so
+      // the borrowed bytes are copied before the scene read ends.
+      NveImageBytes(:final bytes) => imageCache.resolveOrRequest('nve-res:${_resourceVersions.versionOf(id)}',
           onDecoded: _onImage, decode: () => NveSceneImageCache.decodeEncodedBytes(Uint8List.fromList(bytes))),
       null => null,
     };

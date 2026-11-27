@@ -3,7 +3,6 @@
 library;
 
 import 'dart:ffi' as ffi;
-import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:ui' show Offset, Size;
 
@@ -35,7 +34,7 @@ class NveCanvasController extends ChangeNotifier {
   }
 
   /// Creates a surface on `libnve_runtime` ([runtimeLibrary] path, else the platform default; iOS
-  /// and statically linked hosts use the process image) and attaches [app] when given.
+  /// uses the process image) and attaches [app] when given.
   factory NveCanvasController.open({
     String? runtimeLibrary,
     ffi.DynamicLibrary? app,
@@ -43,10 +42,7 @@ class NveCanvasController extends ChangeNotifier {
     String? defaultFontFamily,
     ValueChanged<RuntimeEvent>? onEvent,
   }) {
-    final api = runtimeLibrary != null
-        ? RuntimeApi.open(runtimeLibrary)
-        : (Platform.isIOS ? RuntimeApi.process() : RuntimeApi.open());
-    final controller = NveCanvasController(RuntimeSession(api, width: 1, height: 1, scaleFactor: 1),
+    final controller = NveCanvasController(RuntimeSession(RuntimeApi.open(runtimeLibrary), width: 1, height: 1, scaleFactor: 1),
         defaultFontFamily: defaultFontFamily, onEvent: onEvent);
     if (app != null) {
       try {
@@ -141,19 +137,40 @@ class NveCanvasController extends ChangeNotifier {
     return true;
   }
 
+  /// Restores a `RuntimeSession.snapshotState` result into the app and schedules the re-render.
+  void restoreState(Uint8List state) {
+    session.restoreState(state);
+    scheduleTick();
+  }
+
+  /// Applies one `NVP1` hot patch; `true` (and a scheduled tick) when it changed the app.
+  bool applyHotPatch(Uint8List patch) {
+    if (!session.applyHotPatch(patch)) {
+      return false;
+    }
+    scheduleTick();
+    return true;
+  }
+
   /// Sends imperative command [name] to the attached app as a `Custom` event on the root node,
   /// with [args] as its structured value (codegen `NveExportSpec.commands`).
   void sendCommand(String name, [Map<String, Object?> args = const <String, Object?>{}]) =>
       dispatch([RuntimeEvent.custom(rootNodeId, name, value: args, timestampUs: _nowUs())]);
 
-  /// Lays the surface out at [size] logical points (no-op when unchanged or empty).
+  /// Lays the surface out at [size] logical points (no-op when unchanged, empty, or with a
+  /// non-finite / non-positive [devicePixelRatio]). The new size is remembered only once the
+  /// runtime accepted it, so a refused one is retried on the next layout.
   void setViewport(Size size, double devicePixelRatio) {
-    if (size.isEmpty || !size.isFinite || (size == _viewport && devicePixelRatio == _scale)) {
+    if (size.isEmpty ||
+        !size.isFinite ||
+        !devicePixelRatio.isFinite ||
+        devicePixelRatio <= 0 ||
+        (size == _viewport && devicePixelRatio == _scale)) {
       return;
     }
+    session.setViewport(size.width, size.height, devicePixelRatio);
     _viewport = size;
     _scale = devicePixelRatio;
-    session.setViewport(size.width, size.height, devicePixelRatio);
     scheduleTick();
   }
 
@@ -224,16 +241,26 @@ class NveCanvasController extends ChangeNotifier {
       return false;
     }
     final bool published;
-    final List<RuntimeEvent> emitted;
     try {
       published = session.tick(dtSeconds);
-      emitted = session.drainEmittedEvents();
     } on RuntimeException catch (e, st) {
       _report(e, st);
       return false;
     }
+    // A failed drain must not hide the frame that was just published.
+    var emitted = const <RuntimeEvent>[];
+    try {
+      emitted = session.drainEmittedEvents();
+    } on Exception catch (e, st) {
+      _report(e, st);
+    }
     if (onAppEvent case final listener?) {
-      emitted.forEach(listener);
+      for (final event in emitted) {
+        if (isDisposed) {
+          break;
+        }
+        listener(event);
+      }
     }
     if (!published || isDisposed) {
       return false;

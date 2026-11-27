@@ -3,7 +3,7 @@
 library;
 
 import 'dart:convert';
-import 'dart:io' show zlib;
+import 'dart:io' show ZLibCodec;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -100,7 +100,14 @@ final class SceneBuilder {
 
   void scrollOffset(int index, double x, double y) => _scroll.add((index, x, y));
 
-  RuntimeSceneReader build() {
+  /// Corrupts the frame: [child] also appears in [parent]'s children slab (its own parent row is
+  /// untouched), so a walk can loop.
+  void extraChild(int parent, int child) => _children[parent].add(child);
+
+  /// Corrupts the frame: [index]'s parent row points at [parent] (children slab untouched).
+  void reparent(int index, int parent) => _parents[index] = parent;
+
+  RuntimeSceneReader build({Key64 frameId = const Key64(1, 0), int sceneEpoch = 0, List<int> dirtyResources = const []}) {
     final cap = _rects.length;
     final rows = Uint32List(cap * nodeRowWords);
     final rects = Float32List(cap * layoutRectFloats);
@@ -148,7 +155,9 @@ final class SceneBuilder {
     return RuntimeSceneReader(
       expectedSchema: _schema,
       schemaHash: _schema,
-      frameId: const Key64(1, 0),
+      frameId: frameId,
+      sceneEpoch: sceneEpoch,
+      dirtyResources: Uint32List.fromList(dirtyResources),
       nodeCapacity: cap,
       rows: rows,
       rects: rects,
@@ -161,7 +170,8 @@ final class SceneBuilder {
     );
   }
 
-  NveSceneTree tree() => NveSceneTree(build());
+  NveSceneTree tree({Key64 frameId = const Key64(1, 0), int sceneEpoch = 0, List<int> dirtyResources = const []}) =>
+      NveSceneTree(build(frameId: frameId, sceneEpoch: sceneEpoch, dirtyResources: dirtyResources));
 }
 
 /// Packed `r | g << 8 | b << 16 | a << 24`.
@@ -304,7 +314,7 @@ Uint8List makeSolidPngBytes(int r, int g, int b, {int width = 2, int height = 2}
       raw.addByte(255);
     }
   }
-  final idatPayload = Uint8List.fromList(zlib.encode(raw.toBytes()));
+  final idatPayload = Uint8List.fromList(ZLibCodec(level: 0).encode(raw.toBytes()));
 
   int crc32(List<int> tag, List<int> data) {
     var crc = 0xFFFFFFFF;
