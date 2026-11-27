@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use nve_abi::hash::HashSet;
 use nve_components::interaction::CursorKind;
 use nve_components::tables::{
-    Interaction, Motion, Responsive, ResponsiveRules, StateRules, Transitions,
+    Interaction, Motion, Responsive, ResponsiveRules, Scroll, StateRules, Transitions,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -231,6 +231,11 @@ pub fn resolve_store_node_style(
         out.classes.push_str("nve nve-r");
     } else {
         out.classes.push_str("nve");
+    }
+    // Scroll-container marker: snapshot restore, hydration DSD promotion, and `wasm_snapshot`
+    // locate scroll offsets via `.nve-s` in DOM order.
+    if store.has::<Scroll>(id) {
+        out.classes.push_str(" nve-s");
     }
 
     let mut decls = String::new();

@@ -15,7 +15,7 @@ use nve_backend_web::snapshot::{
 use nve_backend_web::ssg::{
     WebSsgDocumentOptions, inject_ssg_into_shell_html, inject_ssg_with_scripts_into_shell_html,
 };
-use nve_backend_web::{SsrOutput, WebBackend};
+use nve_backend_web::{SsrOutput, StyleSheetCache, WebBackend};
 use nve_components::tables::{Accessibility, AriaRole, Layout, Scroll, Typography};
 use nve_store::{NodeId, NodeStore, Rgba};
 use support::*;
@@ -50,6 +50,21 @@ fn hostile_ssr(style_css: &str) -> SsrOutput {
         html: "<p>ok</p>".into(),
         root_hash: 7,
     }
+}
+
+#[test]
+fn scroll_containers_carry_nve_s_marker_in_ssr_and_live_class_resolution() {
+    let (store, web) = sample_ssr_backend();
+    let html = web.render_ssr(&store).html;
+    assert_eq!(html.matches("class=\"nve nve-s").count(), 1, "{html}");
+    assert!(html.contains("data-nve-id=\"3\" class=\"nve nve-s"), "{html}");
+
+    let mut live = StyleSheetCache::new();
+    assert!(live.resolve_node(&store, NodeId(3)).classes.starts_with("nve nve-s"));
+    let heading = live.resolve_node(&store, NodeId(2)).classes;
+    assert!(!heading.split(' ').any(|c| c == "nve-s"), "{heading}");
+    let root = live.resolve_node(&store, NodeId::ROOT).classes;
+    assert!(!root.split(' ').any(|c| c == "nve-s"), "{root}");
 }
 
 #[test]
