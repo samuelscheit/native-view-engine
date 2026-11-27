@@ -179,8 +179,28 @@ const _: () = {
                 align_of::<NveValue>()
             )
     );
-    assert!(size_of::<NveDirectEvent>() == if PTR_SIZE == 8 { 96 } else { 72 });
-    assert!(align_of::<NveDirectEvent>() == align_of::<u64>());
+    assert!(
+        size_of::<NveDirectEvent>()
+            == offset_of!(NveDirectEvent, value) + size_of::<NveValue>()
+    );
+    assert!(
+        size_of::<NveDirectEvent>()
+            == if PTR_SIZE == 8 {
+                96
+            } else if align_of::<u64>() == 8 {
+                72
+            } else {
+                68
+            }
+    );
+    assert!(
+        align_of::<NveDirectEvent>()
+            == if align_of::<u64>() > PTR_ALIGN {
+                align_of::<u64>()
+            } else {
+                PTR_ALIGN
+            }
+    );
 
     assert!(offset_of!(NveEventBatch, ptr) == 0);
     assert!(offset_of!(NveEventBatch, len) == PTR_SIZE);

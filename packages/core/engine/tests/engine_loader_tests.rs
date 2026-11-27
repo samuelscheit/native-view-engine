@@ -261,7 +261,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert!(inst.dispatch_events(&tap));
     let emitted = inst.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    assert_eq!(emitted[0].node_id, NodeId::new(6, 0));
+    assert_eq!(emitted.get(0).unwrap().node_id(), NodeId::new(6, 0));
 
     let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }
         .to_bytes()

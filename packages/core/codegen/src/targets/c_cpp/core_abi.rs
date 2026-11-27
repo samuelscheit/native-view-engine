@@ -76,21 +76,7 @@ pub fn generate_c_core_abi_h() -> String {
     writeln!(out, "extern \"C\" {{");
     writeln!(out, "#endif");
     writeln!(out);
-    writeln!(out, "#ifndef NVE_STATIC_ASSERT");
-    writeln!(out, "#if defined(__cplusplus)");
-    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)");
-    writeln!(
-        out,
-        "#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L"
-    );
-    writeln!(
-        out,
-        "#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)"
-    );
-    writeln!(out, "#else");
-    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg)");
-    writeln!(out, "#endif");
-    writeln!(out, "#endif");
+    super::emit_static_assert_macro(&mut out);
     writeln!(out);
     writeln!(out, "#ifndef NVE_API");
     writeln!(out, "#if defined(NVE_BUILD_SHARED_LIB)");
@@ -263,7 +249,11 @@ pub fn generate_c_core_abi_h() -> String {
             "NveDirectEvent" => {
                 writeln!(
                     out,
-                    "NVE_STATIC_ASSERT(sizeof(void*) != 4 || sizeof(NveDirectEvent) == 72u, \"NveDirectEvent size must be 72 on 32-bit\");"
+                    "NVE_STATIC_ASSERT(sizeof(NveDirectEvent) == offsetof(NveDirectEvent, value) + sizeof(NveValue), \"NveDirectEvent size must equal offsetof(value) + sizeof(NveValue)\");"
+                );
+                writeln!(
+                    out,
+                    "NVE_STATIC_ASSERT(sizeof(void*) != 4 || sizeof(NveDirectEvent) == 72u || sizeof(NveDirectEvent) == 68u, \"NveDirectEvent size must be 72 (ARM32/wasm32) or 68 (i686) on 32-bit\");"
                 );
             }
             "NveEventBatch" => {

@@ -24,8 +24,7 @@ impl SurfaceOrchestrator {
     }
 
     /// Iteratively cascades `incoming` down `root_id`'s subtree in pre-order using an `O(depth)`
-    /// cursor stack (zero recursion, zero per-child stack environment clones) and prunes any
-    /// non-root subtree whose effective environment did not change.
+    /// cursor stack (zero recursion, zero `SurfaceEnvironment` clones on unchanged nodes).
     pub(super) fn propagate_env_iterative(
         &mut self,
         root_id: SurfaceId,
@@ -38,11 +37,8 @@ impl SurfaceOrchestrator {
             };
             rec.overrides.apply_to(&mut incoming);
             let hc = !rec.children.is_empty();
-            let changed = rec.environment != incoming;
-            if changed {
+            if rec.environment != incoming {
                 rec.environment = incoming.clone();
-            }
-            if changed {
                 if let Some(out) = updated.as_deref_mut() {
                     out.push(root_id);
                 }
@@ -102,13 +98,11 @@ impl SurfaceOrchestrator {
                 continue;
             };
 
-            let (changed, child_has_children) = if child_rec.overrides.is_empty() {
-                if child_rec.environment == parent_rec.environment {
-                    (false, false)
-                } else {
+            let child_has_children = !child_rec.children.is_empty();
+            if child_rec.overrides.is_empty() {
+                if child_rec.environment != parent_rec.environment {
                     child_rec.environment = parent_rec.environment.clone();
                     let ev_env = child_rec.environment.clone();
-                    let hc = !child_rec.children.is_empty();
                     if let Some(out) = updated.as_deref_mut() {
                         out.push(child_id);
                     }
@@ -116,16 +110,12 @@ impl SurfaceOrchestrator {
                         surface_id: child_id,
                         environment: ev_env,
                     });
-                    (true, hc)
                 }
             } else {
                 let mut next = parent_rec.environment.clone();
                 child_rec.overrides.apply_to(&mut next);
-                if child_rec.environment == next {
-                    (false, false)
-                } else {
+                if child_rec.environment != next {
                     child_rec.environment = next.clone();
-                    let hc = !child_rec.children.is_empty();
                     if let Some(out) = updated.as_deref_mut() {
                         out.push(child_id);
                     }
@@ -133,11 +123,10 @@ impl SurfaceOrchestrator {
                         surface_id: child_id,
                         environment: next,
                     });
-                    (true, hc)
                 }
-            };
+            }
 
-            if changed && child_has_children {
+            if child_has_children {
                 stack.push((child_id, 0));
             }
         }
@@ -182,5 +171,158 @@ impl SurfaceOrchestrator {
         scale_factor: f32,
     ) -> Result<Vec<SurfaceId>, InteropError> {
         self.update_env_field(surface_id, |env| env.scale_factor = scale_factor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::{EnvironmentOverrides, FrameworkKind, SurfaceDescriptor};
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 32
+        }
+    }
+
+    #[test]
+    fn propagate_env_iterative_matches_recursive_model_across_overrides_reparent_and_diverged_descendants() {
+        // Explicit regression: depth >= 2 diverged descendant under an unchanged mid node!
+        let mut orch = SurfaceOrchestrator::new();
+        let root_env = SurfaceEnvironment {
+            scale_factor: 1.0,
+            ..Default::default()
+        };
+        let root = orch
+            .register_root(FrameworkKind::Nve, "root", root_env.clone())
+            .unwrap();
+        let mid = orch
+            .register_surface(
+                SurfaceDescriptor::new(FrameworkKind::Nve, "mid").with_parent(root),
+            )
+            .unwrap();
+        let diverged_leaf = orch
+            .register_surface(
+                SurfaceDescriptor::new(FrameworkKind::Nve, "leaf")
+                    .with_parent(mid)
+                    .with_environment(SurfaceEnvironment {
+                        scale_factor: 9.0,
+                        ..Default::default()
+                    }),
+            )
+            .unwrap();
+        let _ = orch.drain_events();
+
+        // Re-propagating `root_env` leaves `root` and `mid` unchanged (0 clones) yet MUST still
+        // reconcile `diverged_leaf` back to `scale_factor = 1.0`!
+        let updated = orch.update_environment(root, root_env.clone()).unwrap();
+        assert_eq!(updated, vec![diverged_leaf]);
+        assert_eq!(orch.get(diverged_leaf).unwrap().environment.scale_factor, 1.0);
+        let events = orch.drain_events();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            SurfaceEvent::EnvironmentPropagated { surface_id, environment }
+                if *surface_id == diverged_leaf && environment.scale_factor == 1.0
+        ));
+
+        // Seeded property test covering overrides, sibling pre-order, `p > c` reparented slots,
+        // `updated` list, and `EnvironmentPropagated` events.
+        let mut rng = Lcg(0xC1_0004_E117);
+        let mut prop_orch = SurfaceOrchestrator::new();
+        let mut ids = Vec::new();
+        let r0 = prop_orch
+            .register_root(FrameworkKind::Flutter, "r0", SurfaceEnvironment::default())
+            .unwrap();
+        ids.push(r0);
+
+        for step in 1..28usize {
+            let parent = ids[(rng.next() as usize) % ids.len()];
+            let mut desc = SurfaceDescriptor::new(FrameworkKind::Nve, format!("n{step}"))
+                .with_parent(parent);
+            if rng.next().is_multiple_of(3) {
+                desc = desc.with_overrides(EnvironmentOverrides {
+                    theme: rng.next().is_multiple_of(2).then(ThemeContext::dark),
+                    scale_factor: rng.next().is_multiple_of(2).then_some(2.0),
+                    ..Default::default()
+                });
+            }
+            if rng.next().is_multiple_of(4) {
+                desc = desc.with_environment(SurfaceEnvironment {
+                    scale_factor: 3.5,
+                    locale: "ja-JP".into(),
+                    ..Default::default()
+                });
+            }
+            ids.push(prop_orch.register_surface(desc).unwrap());
+        }
+
+        // Force `p > c` slot ordering by reparenting an early child (`ids[1]`) under a newer
+        // non-descendant slot so both arms of `split_at_mut` execute during propagation.
+        let low_child = ids[1];
+        let high_parent = *ids
+            .iter()
+            .rev()
+            .find(|&&cand| {
+                cand != low_child
+                    && !prop_orch.ancestor_chain(cand).unwrap().contains(&low_child)
+            })
+            .unwrap();
+        assert!(high_parent.index() > low_child.index());
+        prop_orch.reparent(low_child, Some(high_parent)).unwrap();
+        let _ = prop_orch.drain_events();
+
+        // Snapshot pre-propagation tree to run an independent recursive reference model.
+        fn recursive_model(
+            orch: &SurfaceOrchestrator,
+            id: SurfaceId,
+            mut incoming: SurfaceEnvironment,
+            out: &mut Vec<(SurfaceId, SurfaceEnvironment)>,
+        ) {
+            let rec = orch.get(id).unwrap();
+            rec.overrides.apply_to(&mut incoming);
+            if rec.environment != incoming {
+                out.push((id, incoming.clone()));
+            }
+            for &child in &rec.children {
+                recursive_model(orch, child, incoming.clone(), out);
+            }
+        }
+
+        for round in 0..8u32 {
+            let next_env = SurfaceEnvironment {
+                theme: if round.is_multiple_of(2) {
+                    ThemeContext::dark()
+                } else {
+                    ThemeContext::default()
+                },
+                scale_factor: 1.0 + (round % 3) as f32 * 0.5,
+                locale: if round.is_multiple_of(3) { "de-DE".into() } else { "en-US".into() },
+                ..Default::default()
+            };
+            let mut expected = Vec::new();
+            recursive_model(&prop_orch, r0, next_env.clone(), &mut expected);
+
+            let updated = prop_orch.update_environment(r0, next_env).unwrap();
+            let evs: Vec<(SurfaceId, SurfaceEnvironment)> = prop_orch
+                .drain_events()
+                .into_iter()
+                .map(|ev| match ev {
+                    SurfaceEvent::EnvironmentPropagated { surface_id, environment } => {
+                        (surface_id, environment)
+                    }
+                    other => panic!("unexpected event during env propagation: {other:?}"),
+                })
+                .collect();
+
+            let expected_ids: Vec<SurfaceId> = expected.iter().map(|(id, _)| *id).collect();
+            assert_eq!(updated, expected_ids, "round {round} updated order mismatch");
+            assert_eq!(evs, expected, "round {round} emitted events mismatch");
+            for (sid, env) in &expected {
+                assert_eq!(&prop_orch.get(*sid).unwrap().environment, env);
+            }
+        }
     }
 }

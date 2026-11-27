@@ -165,17 +165,17 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
             if is_self_invariant_file(&rel) {
                 continue;
             }
-            if rel == "packages/core/abi/src/id.rs" {
-                saw_abi_id_file = true;
-            }
             if let Some(parsed) = idx.parse_rust(&rel) {
+                if rel == "packages/core/abi/src/id.rs" {
+                    saw_abi_id_file = true;
+                }
                 ast_layout::scan_handle_hygiene(&rel, &parsed.raw, &parsed.ast, &mut v_handle_hygiene);
             }
         }
     }
     assert!(
         saw_abi_id_file,
-        "handle hygiene scan must visit `packages/core/abi/src/id.rs` so it cannot pass vacuously"
+        "handle hygiene scan must visit and parse `packages/core/abi/src/id.rs` so it cannot pass vacuously"
     );
     assert_no_violations(
         "Unified NodeId/SurfaceId privacy, zero raw tuple constructors outside id.rs, and zero StoreNodeId aliases",
@@ -183,6 +183,7 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
     );
 
     let mut core_crates_scanned = 0usize;
+    let mut core_files_scanned = 0usize;
     for pkg in idx.graph.workspace().iter() {
         let Some(dir) = pkg.source().workspace_path().map(|p| p.as_str().replace('\\', "/")) else {
             continue;
@@ -194,6 +195,7 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
                     continue;
                 }
                 if let Some(parsed) = idx.parse_rust(&rel) {
+                    core_files_scanned += 1;
                     let target = if dir == "packages/core/store"
                         && rel != "packages/core/store/src/events.rs"
                     {
@@ -218,8 +220,8 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
         }
     }
     assert!(
-        core_crates_scanned > 0,
-        "bare handle parameter scan must visit packages/core/* crates so it cannot pass vacuously"
+        core_crates_scanned > 0 && core_files_scanned > 0,
+        "bare handle parameter scan must visit and parse packages/core/* source files so it cannot pass vacuously"
     );
     assert_no_violations(
         "Zero bare primitive surface_id/node_id/frame_id/interface_id parameters in core Rust APIs",

@@ -55,11 +55,35 @@ const HANDLE_WRAPPERS: &[&str] = &[
     "HashSet",
     "BTreeSet",
     "SmallVec",
+    "NonZero",
 ];
 
-const BANNED_HANDLE_NAMES: &[&str] = &["surface_id", "node_id", "frame_id", "interface_id"];
+const BANNED_HANDLE_NAMES: &[&str] = &[
+    "surface_id",
+    "surface_ids",
+    "node_id",
+    "node_ids",
+    "frame_id",
+    "frame_ids",
+    "interface_id",
+    "interface_ids",
+];
 
 const ABI_ID_PATH: &str = "packages/core/abi/src/id.rs";
+
+fn is_plain_u32_type(ty: &Type) -> bool {
+    let ty = peel_parens(ty);
+    let Type::Path(tp) = ty else {
+        return false;
+    };
+    if tp.qself.is_some() {
+        return false;
+    }
+    let Some(last) = tp.path.segments.last() else {
+        return false;
+    };
+    last.ident == "u32" && last.arguments.is_empty()
+}
 
 /// Enforces typed handle hygiene across Rust sources (`[INV:typed-domain-handles]`).
 pub fn scan_handle_hygiene(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<Violation>) {
@@ -68,28 +92,77 @@ pub fn scan_handle_hygiene(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<
         rel,
         raw,
         is_id_rs,
-        in_cfg_test: is_cfg_test_attr(&ast.attrs),
-        saw_node_id: false,
-        saw_surface_id: false,
         out,
     };
     visitor.visit_file(ast);
 
     if is_id_rs {
-        if !visitor.saw_node_id {
-            visitor.out.push(Violation::new(
+        let mut saw_node_id = false;
+        let mut saw_surface_id = false;
+        for item in &ast.items {
+            let Item::Struct(st) = item else {
+                continue;
+            };
+            if is_cfg_test_attr(&st.attrs) {
+                continue;
+            }
+            let name = st.ident.to_string();
+            if name == "NodeId" {
+                saw_node_id = true;
+            } else if name == "SurfaceId" {
+                saw_surface_id = true;
+            } else {
+                continue;
+            }
+            let ln = st.ident.span().start().line;
+            if !matches!(st.vis, Visibility::Public(_)) {
+                out.push(Violation::new(
+                    rel,
+                    ln,
+                    line_at(raw, ln),
+                    format!("`{name}` must be a top-level `pub struct` in `{ABI_ID_PATH}`"),
+                ));
+            }
+            if !has_repr_transparent(&st.attrs) {
+                out.push(Violation::new(
+                    rel,
+                    ln,
+                    line_at(raw, ln),
+                    format!("`{name}` must carry `#[repr(transparent)]` for C ABI parity"),
+                ));
+            }
+            let valid_private_u32_tuple = matches!(
+                &st.fields,
+                Fields::Unnamed(u)
+                    if u.unnamed.len() == 1
+                        && matches!(u.unnamed[0].vis, Visibility::Inherited)
+                        && is_plain_u32_type(&u.unnamed[0].ty)
+            );
+            if !valid_private_u32_tuple {
+                out.push(Violation::new(
+                    rel,
+                    ln,
+                    line_at(raw, ln),
+                    format!(
+                        "`{name}` must be a single-field tuple struct wrapping a private (`Visibility::Inherited`) `u32` so handles can only be minted via validated constructors"
+                    ),
+                ));
+            }
+        }
+        if !saw_node_id {
+            out.push(Violation::new(
                 rel,
                 1,
                 "missing `#[repr(transparent)] pub struct NodeId(u32)`",
-                "`packages/core/abi/src/id.rs` must directly declare non-test `struct NodeId` so field privacy and repr are auditable",
+                "`packages/core/abi/src/id.rs` must directly declare top-level non-test `pub struct NodeId(u32)` so field privacy and repr are auditable",
             ));
         }
-        if !visitor.saw_surface_id {
-            visitor.out.push(Violation::new(
+        if !saw_surface_id {
+            out.push(Violation::new(
                 rel,
                 1,
                 "missing `#[repr(transparent)] pub struct SurfaceId(u32)`",
-                "`packages/core/abi/src/id.rs` must directly declare non-test `struct SurfaceId` so field privacy and repr are auditable",
+                "`packages/core/abi/src/id.rs` must directly declare top-level non-test `pub struct SurfaceId(u32)` so field privacy and repr are auditable",
             ));
         }
     }
@@ -115,9 +188,6 @@ struct HandleHygieneVisitor<'a> {
     rel: &'a str,
     raw: &'a str,
     is_id_rs: bool,
-    in_cfg_test: bool,
-    saw_node_id: bool,
-    saw_surface_id: bool,
     out: &'a mut Vec<Violation>,
 }
 
@@ -158,15 +228,6 @@ impl HandleHygieneVisitor<'_> {
 }
 
 impl<'ast> Visit<'ast> for HandleHygieneVisitor<'_> {
-    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        let prev = self.in_cfg_test;
-        if is_cfg_test_attr(&node.attrs) {
-            self.in_cfg_test = true;
-        }
-        visit::visit_item_mod(self, node);
-        self.in_cfg_test = prev;
-    }
-
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
         self.check_use_tree(&node.tree);
         visit::visit_item_use(self, node);
@@ -183,45 +244,6 @@ impl<'ast> Visit<'ast> for HandleHygieneVisitor<'_> {
             ));
         }
         visit::visit_item_type(self, node);
-    }
-
-    fn visit_item_struct(&mut self, st: &'ast syn::ItemStruct) {
-        if self.is_id_rs && !self.in_cfg_test && !is_cfg_test_attr(&st.attrs) {
-            let name = st.ident.to_string();
-            if name == "NodeId" {
-                self.saw_node_id = true;
-            } else if name == "SurfaceId" {
-                self.saw_surface_id = true;
-            }
-            if matches!(name.as_str(), "NodeId" | "SurfaceId") {
-                let ln = st.ident.span().start().line;
-                if !has_repr_transparent(&st.attrs) {
-                    self.out.push(Violation::new(
-                        self.rel,
-                        ln,
-                        line_at(self.raw, ln),
-                        format!("`{name}` must carry `#[repr(transparent)]` for C ABI parity"),
-                    ));
-                }
-                let valid_private_tuple = matches!(
-                    &st.fields,
-                    Fields::Unnamed(u)
-                        if u.unnamed.len() == 1
-                            && matches!(u.unnamed[0].vis, Visibility::Inherited)
-                );
-                if !valid_private_tuple {
-                    self.out.push(Violation::new(
-                        self.rel,
-                        ln,
-                        line_at(self.raw, ln),
-                        format!(
-                            "`{name}` must be a single-field tuple struct with a private (`Visibility::Inherited`) field so handles can only be minted via validated constructors"
-                        ),
-                    ));
-                }
-            }
-        }
-        visit::visit_item_struct(self, st);
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
@@ -300,12 +322,12 @@ fn has_wasm_bindgen_attr(attrs: &[Attribute]) -> bool {
 }
 
 fn is_banned_handle_param_name(name: &str) -> bool {
-    if BANNED_HANDLE_NAMES.contains(&name) {
-        return true;
-    }
-    BANNED_HANDLE_NAMES
-        .iter()
-        .any(|&base| name.ends_with(&format!("_{base}")))
+    BANNED_HANDLE_NAMES.iter().any(|&base| {
+        name == base
+            || name
+                .strip_suffix(base)
+                .is_some_and(|prefix| prefix.ends_with('_'))
+    })
 }
 
 /// Recursively unwraps references, pointers, slices, arrays, parentheses, groups, and standard
@@ -418,7 +440,11 @@ impl<'ast> Visit<'ast> for BareHandleParamVisitor<'_> {
             }
             Item::Trait(tr) if is_cfg_test_attr(&tr.attrs) => return,
             Item::Fn(f) if is_cfg_test_attr(&f.attrs) || has_wasm_bindgen_attr(&f.attrs) => return,
-            Item::ForeignMod(fm) if is_cfg_test_attr(&fm.attrs) => return,
+            Item::ForeignMod(fm)
+                if is_cfg_test_attr(&fm.attrs) || has_wasm_bindgen_attr(&fm.attrs) =>
+            {
+                return;
+            }
             Item::Struct(s) if is_cfg_test_attr(&s.attrs) => return,
             Item::Enum(e) if is_cfg_test_attr(&e.attrs) => return,
             Item::Type(t) if is_cfg_test_attr(&t.attrs) => return,

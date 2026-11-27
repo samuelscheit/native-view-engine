@@ -26,14 +26,8 @@ pub struct NvePluginHost {
     surface_index: HashMap<SurfaceId, PluginId>,
 }
 
-impl Default for NvePluginHost {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NvePluginHost {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             next_plugin_id: 1,
             slots: HashMap::default(),
@@ -180,16 +174,17 @@ impl NvePluginHost {
                 .slots
                 .get_mut(&plugin_id)
                 .ok_or(PluginError::PluginNotFound(plugin_id))?;
-            let meta = existing.metadata().clone();
-            if surfaces.get(meta.surface_id).is_none() {
-                return Err(PluginError::SurfaceNotLive(meta.surface_id));
+            let surface_id = existing.surface_id();
+            if surfaces.get(surface_id).is_none() {
+                return Err(PluginError::SurfaceNotLive(surface_id));
             }
-            let next_gen = meta
-                .generation
+            let next_gen = existing
+                .generation()
                 .checked_add(1)
                 .ok_or(PluginError::GenerationExhausted(plugin_id))?;
+            let name = existing.metadata().name.clone();
             let state = existing.snapshot_state();
-            (meta.name, meta.surface_id, next_gen, state)
+            (name, surface_id, next_gen, state)
         };
 
         let replacement = NvePluginSlot::from_in_process(
@@ -222,16 +217,17 @@ impl NvePluginHost {
                 .slots
                 .get_mut(&plugin_id)
                 .ok_or(PluginError::PluginNotFound(plugin_id))?;
-            let meta = existing.metadata().clone();
-            if surfaces.get(meta.surface_id).is_none() {
-                return Err(PluginError::SurfaceNotLive(meta.surface_id));
+            let surface_id = existing.surface_id();
+            if surfaces.get(surface_id).is_none() {
+                return Err(PluginError::SurfaceNotLive(surface_id));
             }
-            let next_gen = meta
-                .generation
+            let next_gen = existing
+                .generation()
                 .checked_add(1)
                 .ok_or(PluginError::GenerationExhausted(plugin_id))?;
+            let name = existing.metadata().name.clone();
             let state = existing.snapshot_state();
-            (meta.name, meta.surface_id, next_gen, state)
+            (name, surface_id, next_gen, state)
         };
 
         let replacement = NvePluginSlot::from_dylib(
@@ -261,21 +257,6 @@ impl NvePluginHost {
         self.surface_index.remove(&meta.surface_id);
         drop(slot);
         Ok(meta)
-    }
-
-    /// Unloads and destroys a mounted plugin slot and its surface in `surfaces` (tolerating an
-    /// already-destroyed surface cleanly).
-    #[cfg(test)]
-    pub(crate) fn unload(
-        &mut self,
-        surfaces: &mut SurfaceOrchestrator,
-        plugin_id: PluginId,
-    ) -> Result<PluginMetadata, PluginError> {
-        let meta = self.take_for_unload(plugin_id)?;
-        match surfaces.destroy_surface(meta.surface_id) {
-            Ok(_) | Err(InteropError::SurfaceNotFound(_)) => Ok(meta),
-            Err(err) => Err(PluginError::SurfaceAllocationFailed(err.to_string())),
-        }
     }
 
     /// Removes any plugin slot bound to an already-destroyed surface in O(1) time (called by

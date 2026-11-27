@@ -183,7 +183,10 @@ fn loader_zero_copy_borrows_dylib_buffers_directly_and_handles_null_or_empty_sli
 
     let emitted = inst.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    assert_eq!(emitted.as_ptr() as usize, emitted[0].timestamp_us as usize);
+    assert_eq!(
+        emitted.as_slice().as_ptr() as usize,
+        emitted.get(0).unwrap().timestamp_us() as usize
+    );
 
     let state = inst.snapshot_state();
     assert_eq!(state.len(), 16);

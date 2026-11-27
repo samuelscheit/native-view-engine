@@ -174,6 +174,11 @@ impl NvePluginSlot {
         )
     }
 
+    #[cfg(test)]
+    pub(super) fn set_generation_for_test(&mut self, generation: u64) {
+        self.metadata.generation = generation;
+    }
+
     pub fn metadata(&self) -> &PluginMetadata {
         &self.metadata
     }

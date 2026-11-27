@@ -25,7 +25,8 @@ static_assert(sizeof(NveHostApi) == 2u * sizeof(void*), "NveHostApi vtable size 
 static_assert(offsetof(NveHostApi, dispatch_host_events) == sizeof(void*), "NveHostApi::dispatch_host_events slot mismatch");
 static_assert(sizeof(NveHostCallbacks) == 3u * sizeof(void*), "NveHostCallbacks size mismatch");
 static_assert(offsetof(NveHostCallbacks, channel_publish) == 2u * sizeof(void*), "NveHostCallbacks::channel_publish offset mismatch");
-static_assert(sizeof(NveDirectEvent) == (sizeof(void*) == 8u ? 96u : 72u), "NveDirectEvent size must not grow");
+static_assert(sizeof(NveDirectEvent) == offsetof(NveDirectEvent, value) + sizeof(NveValue), "NveDirectEvent size must equal offsetof(value) + sizeof(NveValue)");
+static_assert(sizeof(NveDirectEvent) == (sizeof(void*) == 8u ? 96u : (alignof(uint64_t) == 8u ? 72u : 68u)), "NveDirectEvent size must not grow");
 static_assert(offsetof(NveDirectEvent, modifiers) == 18u, "NveDirectEvent::modifiers offset mismatch");
 static_assert(offsetof(NveDirectEvent, event_flags) == 19u, "NveDirectEvent::event_flags offset mismatch");
 static_assert(offsetof(NveDirectEvent, key_code) == 20u, "NveDirectEvent::key_code offset mismatch");

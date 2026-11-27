@@ -18,7 +18,8 @@ pub const NVE_EVENT_FLAG_CAPTURE: u8 = 1 << 3;
 pub const NVE_EVENT_FLAG_COMPOSING: u8 = 1 << 4;
 
 /// Direct FFI event matching `struct NveDirectEvent` in `nve_abi.generated.h`
-/// (96 bytes on 64-bit, 72 bytes on 32-bit, natural `align_of::<u64>()` alignment).
+/// (96 bytes on 64-bit, 72 bytes on 32-bit 8-byte-`u64` targets such as ARMv7/wasm32,
+/// 68 bytes on 32-bit `i686`; natural `max(align_of::<u64>(), align_of::<usize>())` alignment).
 #[repr(C)]
 #[derive(Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 96)]

@@ -60,6 +60,18 @@ fn node_and_surface_id_try_new_and_from_raw_reject_null_and_overflow() {
 }
 
 #[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "24-bit"))]
+fn node_id_new_overflow_debug_panics_and_release_clamps_to_null() {
+    assert_eq!(NodeId::new(0x0100_0001, 0), NodeId::NULL);
+}
+
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "24-bit"))]
+fn surface_id_new_overflow_debug_panics_and_release_clamps_to_null() {
+    assert_eq!(SurfaceId::new(0x0100_0001, 0), SurfaceId::NULL);
+}
+
+#[test]
 fn index_zero_with_nonzero_generation_canonicalizes_to_null_at_all_ingresses() {
     let bad_node = NodeId::new(0, 1);
     assert_eq!(bad_node, NodeId::NULL);

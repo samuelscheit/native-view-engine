@@ -214,13 +214,11 @@ unsafe extern "C" {
 #[test]
 fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_healthy() {
     set_host_panic_mode(HostPanicMode::Healthy);
-    let mut surfaces = crate::SurfaceOrchestrator::new();
-    let mut host = NvePluginHost::new();
+    let mut runtime = crate::InteropRuntime::new();
 
     // Mount healthy sibling plugin first.
-    let healthy_id = host
-        .register_in_process(
-            &mut surfaces,
+    let healthy_id = runtime
+        .register_plugin_in_process(
             "healthy-sibling",
             nve_test_healthy_plugin_iface,
             PluginRequirement::SURFACE_ONLY,
@@ -230,9 +228,8 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     // 1. Panicking `create` fails registration cleanly with InteropError::Plugin(...)
     // instead of aborting the process.
     set_host_panic_mode(HostPanicMode::PanicCreate);
-    let create_err: InteropError = host
-        .register_in_process(
-            &mut surfaces,
+    let create_err: InteropError = runtime
+        .register_plugin_in_process(
             "flaky",
             nve_test_flaky_plugin_iface,
             PluginRequirement::EMBEDDED_COMPONENT,
@@ -246,26 +243,25 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
         }
         other => panic!("expected InteropError::Plugin, got {other:?}"),
     }
-    assert_eq!(host.active_count(), 1);
-    assert_eq!(surfaces.active_count(), 1);
+    assert_eq!(runtime.plugins().active_count(), 1);
+    assert_eq!(runtime.surfaces().active_count(), 1);
 
     // 2. Mount flaky plugin in healthy mode so we can trigger panics on each runtime method.
     set_host_panic_mode(HostPanicMode::Healthy);
-    let flaky_id = host
-        .register_in_process(
-            &mut surfaces,
+    let flaky_id = runtime
+        .register_plugin_in_process(
             "flaky",
             nve_test_flaky_plugin_iface,
             PluginRequirement::EMBEDDED_COMPONENT,
         )
         .expect("mount flaky plugin");
-    assert_eq!(host.active_count(), 2);
-    assert_eq!(surfaces.active_count(), 2);
+    assert_eq!(runtime.plugins().active_count(), 2);
+    assert_eq!(runtime.surfaces().active_count(), 2);
 
     // 3. Panicking `render` returns Err(InteropError::Plugin(...)).
     set_host_panic_mode(HostPanicMode::PanicRender);
-    let render_err: InteropError = host
-        .get_mut(flaky_id)
+    let render_err: InteropError = runtime
+        .plugin_mut(flaky_id)
         .unwrap()
         .render(FrameId(7))
         .unwrap_err()
@@ -276,12 +272,12 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     ));
 
     // 4. Panicking `dispatch_events`.
-    let flaky_sid = host.get(flaky_id).unwrap().surface_id();
-    let healthy_sid = host.get(healthy_id).unwrap().surface_id();
+    let flaky_sid = runtime.plugins().get(flaky_id).unwrap().surface_id();
+    let healthy_sid = runtime.plugins().get(healthy_id).unwrap().surface_id();
     set_host_panic_mode(HostPanicMode::PanicDispatchEvents);
     let direct_ev = [NveDirectEvent::press(flaky_sid, NodeId::new(2, 0), 100, 1.0, 2.0)];
-    let ev_err: InteropError = host
-        .get_mut(flaky_id)
+    let ev_err: InteropError = runtime
+        .plugin_mut(flaky_id)
         .unwrap()
         .dispatch_events(&direct_ev)
         .unwrap_err()
@@ -294,8 +290,8 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     // 5. Panicking `set_props`.
     set_host_panic_mode(HostPanicMode::PanicSetProps);
     let entries = [NveMapEntry::new("k", nve_abi::NveValue::i64(1))];
-    let props_err: InteropError = host
-        .get_mut(flaky_id)
+    let props_err: InteropError = runtime
+        .plugin_mut(flaky_id)
         .unwrap()
         .set_props(&entries)
         .unwrap_err()
@@ -308,7 +304,8 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     // 6. Optional layout/dev/component methods return safe fallbacks without leaking TLS panic.
     set_host_panic_mode(HostPanicMode::PanicMeasure);
     assert_eq!(
-        host.get_mut(flaky_id)
+        runtime
+            .plugin_mut(flaky_id)
             .unwrap()
             .measure(NveSizeConstraints::loose(200.0, 100.0)),
         None
@@ -316,33 +313,32 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
 
     set_host_panic_mode(HostPanicMode::PanicHitTest);
     assert_eq!(
-        host.get_mut(flaky_id).unwrap().hit_test(1.0, 2.0, 0),
+        runtime.plugin_mut(flaky_id).unwrap().hit_test(1.0, 2.0, 0),
         NveGestureDisposition::PassThrough
     );
 
     set_host_panic_mode(HostPanicMode::PanicDrainEvents);
-    assert!(host.get_mut(flaky_id).unwrap().drain_emitted_events().is_empty());
+    assert!(runtime.plugin_mut(flaky_id).unwrap().drain_emitted_events().is_empty());
 
     set_host_panic_mode(HostPanicMode::PanicHotPatch);
     let patch = nve_engine::HotPatchMsg::DevStatus { message: "x".into(), latency_ms: 0 }
         .to_bytes()
         .unwrap();
-    assert!(!host.get_mut(flaky_id).unwrap().apply_hot_patch(&patch));
+    assert!(!runtime.plugin_mut(flaky_id).unwrap().apply_hot_patch(&patch));
 
     set_host_panic_mode(HostPanicMode::PanicSnapshot);
-    assert!(host.get_mut(flaky_id).unwrap().snapshot_state().is_empty());
+    assert!(runtime.plugin_mut(flaky_id).unwrap().snapshot_state().is_empty());
 
     set_host_panic_mode(HostPanicMode::PanicRestore);
-    assert!(!host.get_mut(flaky_id).unwrap().restore_state(&[1, 2, 3, 4]));
+    assert!(!runtime.plugin_mut(flaky_id).unwrap().restore_state(&[1, 2, 3, 4]));
 
     // 7. Transactional hot-swap onto a plugin whose `restore_state` panics fails cleanly and
     // preserves the existing mounted plugin!
     set_host_panic_mode(HostPanicMode::Healthy);
-    assert!(host.get_mut(flaky_id).unwrap().dispatch_events(&direct_ev).unwrap()); // counter -> 11
+    assert!(runtime.plugin_mut(flaky_id).unwrap().dispatch_events(&direct_ev).unwrap()); // counter -> 11
     set_host_panic_mode(HostPanicMode::PanicRestore);
-    let swap_err = host
-        .hot_swap_in_process(
-            &surfaces,
+    let swap_err = runtime
+        .hot_swap_plugin_in_process(
             flaky_id,
             nve_test_flaky_plugin_iface,
             PluginRequirement::EMBEDDED_COMPONENT,
@@ -353,24 +349,25 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
         PluginError::PluginPanicked(ref m) if m.contains("flaky plugin exploded in restore_state")
     ));
     set_host_panic_mode(HostPanicMode::Healthy);
-    let still_live = host.get_mut(flaky_id).unwrap();
+    let still_live = runtime.plugin_mut(flaky_id).unwrap();
     assert_eq!(still_live.generation(), 1);
     assert_eq!(decode_first_text(still_live.render(FrameId(8)).unwrap()), "flaky:11");
 
     // 8. Healthy sibling plugin stayed 100% healthy throughout all flaky panics!
-    let sibling = host.get_mut(healthy_id).unwrap();
+    let sibling = runtime.plugin_mut(healthy_id).unwrap();
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     let sibling_frame = sibling.render(FrameId(1)).unwrap().to_vec();
     assert_eq!(sibling.surface_id(), healthy_sid);
     assert_eq!(decode_first_text(&sibling_frame), "healthy:ticks=2");
 
-    // 9. Panicking `destroy` during `unload` survives cleanly and leaves sibling intact.
+    // 9. Panicking `destroy` during `unload_plugin` survives cleanly and leaves sibling intact.
     set_host_panic_mode(HostPanicMode::PanicDestroy);
-    host.unload(&mut surfaces, flaky_id)
+    runtime
+        .unload_plugin(flaky_id)
         .expect("unload panicking plugin");
     set_host_panic_mode(HostPanicMode::Healthy);
-    assert_eq!(host.active_count(), 1);
-    assert_eq!(surfaces.active_count(), 1);
-    assert!(host.get_mut(healthy_id).unwrap().render(FrameId(2)).is_ok());
+    assert_eq!(runtime.plugins().active_count(), 1);
+    assert_eq!(runtime.surfaces().active_count(), 1);
+    assert!(runtime.plugin_mut(healthy_id).unwrap().render(FrameId(2)).is_ok());
 }

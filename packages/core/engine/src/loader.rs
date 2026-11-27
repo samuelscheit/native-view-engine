@@ -250,12 +250,14 @@ impl HotAppInstance {
         }
     }
 
-    /// Drains outbound component events as a direct borrowed `NveDirectEvent` slice without copying.
-    pub fn drain_emitted_events(&mut self) -> &[NveDirectEvent] {
+    /// Drains outbound component events as a canonicalizing borrowed `NveEventBatchRef` without copying.
+    pub fn drain_emitted_events(&mut self) -> nve_abi::NveEventBatchRef<'_> {
         match self.component {
-            // SAFETY: `self.handle` is live; returned slice borrows from the module's buffer until next `&mut self` call.
-            Some(api) => unsafe { (api.drain_emitted_events)(self.handle).as_slice() },
-            None => &[],
+            // SAFETY: `self.handle` is live; returned batch borrows from the module's buffer until next `&mut self` call.
+            Some(api) => unsafe {
+                nve_abi::NveEventBatchRef::from_raw((api.drain_emitted_events)(self.handle))
+            },
+            None => nve_abi::NveEventBatchRef::EMPTY,
         }
     }
 

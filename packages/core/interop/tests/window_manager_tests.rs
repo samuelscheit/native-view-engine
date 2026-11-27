@@ -9,24 +9,22 @@ use nve_interop::{
 fn surface_descriptor_defaults_to_embedded_and_supports_window_presentations() {
     let mut rt = InteropRuntime::new();
     let embedded = rt
-        .surfaces
         .register_root(FrameworkKind::Nve, "EmbeddedCard", SurfaceEnvironment::default())
         .unwrap();
-    assert_eq!(rt.surfaces.get(embedded).unwrap().presentation, SurfacePresentation::Embedded);
-    assert!(rt.surfaces.get(embedded).unwrap().presentation.is_embedded());
+    assert_eq!(rt.surfaces().get(embedded).unwrap().presentation, SurfacePresentation::Embedded);
+    assert!(rt.surfaces().get(embedded).unwrap().presentation.is_embedded());
 
     let primary_desc = WindowDescriptor::new("Main Studio", 1280.0, 800.0)
         .with_bounds(WindowRect::new(100.0, 80.0, 1280.0, 800.0))
         .with_min_size(640.0, 480.0);
     let primary_surface = rt
-        .surfaces
         .register_surface(
             SurfaceDescriptor::new(FrameworkKind::Nve, "PrimaryWindow")
                 .with_presentation(SurfacePresentation::PrimaryWindow(primary_desc.clone())),
         )
         .unwrap();
     assert_eq!(
-        rt.surfaces.get(primary_surface).unwrap().presentation,
+        rt.surfaces().get(primary_surface).unwrap().presentation,
         SurfacePresentation::PrimaryWindow(primary_desc.clone())
     );
 

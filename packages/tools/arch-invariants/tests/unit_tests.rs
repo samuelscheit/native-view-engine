@@ -593,9 +593,27 @@ fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
         "must catch missing repr(transparent) + named/multi-field shapes for both handles: {v_shape:?}"
     );
 
+    let bad_inner_and_vis_id_rs = r#"
+        #[repr(transparent)] struct NodeId(u32);
+        #[repr(transparent)] pub struct SurfaceId(std::num::NonZeroU32);
+    "#;
+    let ast_iv = syn::parse_file(bad_inner_and_vis_id_rs).unwrap();
+    let mut v_iv = Vec::new();
+    ast_layout::scan_handle_hygiene(
+        "packages/core/abi/src/id.rs",
+        bad_inner_and_vis_id_rs,
+        &ast_iv,
+        &mut v_iv,
+    );
+    assert_eq!(
+        v_iv.len(),
+        2,
+        "must catch non-pub NodeId and NonZeroU32 inner field on SurfaceId: {v_iv:?}"
+    );
+
     let cfg_test_shadow_id_rs = r#"
         #[repr(transparent)] pub struct NodeId(u32);
-        #[cfg(test)] mod tests { #[repr(transparent)] pub struct SurfaceId(u32); }
+        mod inner { #[repr(transparent)] pub struct SurfaceId(u32); }
     "#;
     let ast_miss = syn::parse_file(cfg_test_shadow_id_rs).unwrap();
     let mut v_miss = Vec::new();
@@ -603,7 +621,7 @@ fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
     assert_eq!(
         v_miss.len(),
         1,
-        "cfg(test) shadow module must not satisfy non-test SurfaceId presence check: {v_miss:?}"
+        "nested submodule must not satisfy top-level SurfaceId presence check: {v_miss:?}"
     );
 
     let good_id_rs = "#[repr(transparent)] pub struct NodeId(u32); #[repr(transparent)] pub struct SurfaceId(u32);";
@@ -655,9 +673,15 @@ fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
             node_id: Box<u32>,
             frame_id: Arc<core::num::NonZeroU64>,
             (child_node_id, _ok): (VecDeque<u32>, bool),
+            surface_ids: &[u32],
+            child_node_ids: Vec<core::num::NonZero<u32>>,
         ) {
             fn inner(node_id: &[u32], surface_id: Vec<u32>, interface_id: *mut u32) {}
             let _cl = |target_surface_id: u32| { let _ = target_surface_id; };
+        }
+        #[wasm_bindgen]
+        extern "C" {
+            fn js_import(surface_id: u32, node_ids: &[u32]);
         }
         #[wasm_bindgen]
         pub fn js_boundary(surface_id: u32, node_id: u32) {}
@@ -668,7 +692,7 @@ fn unit_handle_hygiene_and_bare_handle_params_positive_and_negative() {
     ast_layout::scan_bare_handle_params("packages/core/engine/src/p.rs", bad_params, &ast_p, &mut vp);
     assert_eq!(
         vp.len(),
-        14,
-        "expected 2 extern + 2 bare fn + 1 trait + 1 impl + 4 outer/tuple + 3 inner + 1 closure violations (0 for wasm_bindgen/typed): {vp:?}"
+        16,
+        "expected 2 extern + 2 bare fn + 1 trait + 1 impl + 6 outer/tuple/plural/NonZero<u32> + 3 inner + 1 closure violations (0 for wasm_bindgen/typed): {vp:?}"
     );
 }

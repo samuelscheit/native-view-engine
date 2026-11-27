@@ -216,7 +216,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     let pid = runtime
         .load_plugin_dynamic("aether-studio", &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("load studio cdylib as plugin");
-    let slot = runtime.plugins.get_mut(pid).unwrap();
+    let slot = runtime.plugin_mut(pid).unwrap();
     let plugin_sid = slot.surface_id();
     assert!(!plugin_sid.is_null());
     assert!(slot.capabilities().surface);
@@ -237,7 +237,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
         .hot_swap_plugin_dynamic(pid, &dylib_path, PluginRequirement::EMBEDDED_COMPONENT)
         .expect("hot-swap studio plugin");
     assert_eq!(gen2, 2);
-    let slot2 = runtime.plugins.get_mut(pid).unwrap();
+    let slot2 = runtime.plugin_mut(pid).unwrap();
     assert_eq!(slot2.surface_id(), plugin_sid);
     let pf2 = slot2.render(FrameId(2)).unwrap().to_vec();
 

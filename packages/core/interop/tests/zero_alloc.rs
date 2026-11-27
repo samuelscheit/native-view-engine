@@ -52,14 +52,12 @@ fn surface_orchestrator_lookups_reparent_and_pointer_arbitration_zero_alloc_stea
     let mut runtime = InteropRuntime::new();
     let mut ids = Vec::with_capacity(8);
     let root = runtime
-        .surfaces
         .register_root(FrameworkKind::Flutter, "Root", SurfaceEnvironment::default())
         .unwrap();
     ids.push(root);
     let mut parent = root;
     for depth in 1..8 {
         let child = runtime
-            .surfaces
             .register_child(parent, FrameworkKind::Nve, format!("Child{depth}"))
             .unwrap();
         ids.push(child);
@@ -104,13 +102,13 @@ fn surface_orchestrator_lookups_reparent_and_pointer_arbitration_zero_alloc_stea
         let mut acc = 0usize;
         for _ in 0..200 {
             for &sid in &ids {
-                acc += runtime.surfaces.get(black_box(sid)).unwrap().children.len();
-                acc += runtime.surfaces.children(black_box(sid)).unwrap().len();
+                acc += runtime.surfaces().get(black_box(sid)).unwrap().children.len();
+                acc += runtime.surfaces().children(black_box(sid)).unwrap().len();
             }
-            acc += runtime.surfaces.roots().len();
-            acc += runtime.surfaces.active_count();
+            acc += runtime.surfaces().roots().len();
+            acc += runtime.surfaces().active_count();
             let len = runtime
-                .surfaces
+                .surfaces()
                 .ancestor_chain_into(black_box(leaf), &mut chain_buf)
                 .unwrap()
                 .unwrap();
@@ -182,9 +180,7 @@ fn surface_orchestrator_lookups_reparent_and_pointer_arbitration_zero_alloc_stea
 
     // 3. Cycle-rejection path in `reparent` must walk ancestors with 0 heap allocations.
     let (reparent_allocs, reparent_res) = measure_allocs(|| {
-        runtime
-            .surfaces
-            .reparent(black_box(root), Some(black_box(leaf)))
+        runtime.reparent_surface(black_box(root), Some(black_box(leaf)))
     });
     assert_eq!(
         reparent_res,
@@ -204,7 +200,6 @@ fn inline_ancestor_cap_boundary_zero_alloc_at_32_and_heap_fallback_above_32() {
     let cap = SurfaceOrchestrator::INLINE_ANCESTOR_CAP;
     let mut runtime = InteropRuntime::new();
     let root = runtime
-        .surfaces
         .register_root(FrameworkKind::Flutter, "D0", SurfaceEnvironment::default())
         .unwrap();
     runtime
@@ -215,7 +210,6 @@ fn inline_ancestor_cap_boundary_zero_alloc_at_32_and_heap_fallback_above_32() {
     let mut at_cap = root;
     for depth in 1..(cap + 3) {
         cur = runtime
-            .surfaces
             .register_child(cur, FrameworkKind::Nve, format!("D{depth}"))
             .unwrap();
         runtime
@@ -261,7 +255,7 @@ fn inline_ancestor_cap_boundary_zero_alloc_at_32_and_heap_fallback_above_32() {
     let mut buf = [SurfaceId::NULL; SurfaceOrchestrator::INLINE_ANCESTOR_CAP];
     let (cap_allocs, (len, move_winner)) = measure_allocs(|| {
         let len = runtime
-            .surfaces
+            .surfaces()
             .ancestor_chain_into(black_box(at_cap), &mut buf)
             .unwrap()
             .unwrap();
@@ -320,13 +314,13 @@ fn inline_ancestor_cap_boundary_zero_alloc_at_32_and_heap_fallback_above_32() {
     // falls back cleanly to heap `ancestor_chain`.
     assert_eq!(
         runtime
-            .surfaces
+            .surfaces()
             .ancestor_chain_into(beyond_cap, &mut buf)
             .unwrap(),
         None
     );
     assert_eq!(
-        runtime.surfaces.ancestor_chain(beyond_cap).unwrap().len(),
+        runtime.surfaces().ancestor_chain(beyond_cap).unwrap().len(),
         cap + 3
     );
     let _ = runtime

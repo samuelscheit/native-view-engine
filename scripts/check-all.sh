@@ -441,6 +441,12 @@ suite_rust_wasm() {
   cargo check --locked -p nve-web-shell --no-default-features --features app-issues --target wasm32-unknown-unknown
   cargo check --locked -p nve-docs-site --target wasm32-unknown-unknown
   cargo check --locked -p nve-hash -p nve-rpc -p nve-server -p nve-query -p nve-http-web -p nve-query-dioxus -p nve-example-issues-api -p nve-example-issues-client --target wasm32-unknown-unknown
+  if rustup target list --installed 2>/dev/null | grep -qx "i686-linux-android"; then
+    cargo check --locked -p nve-abi --target i686-linux-android
+  fi
+  if rustup target list --installed 2>/dev/null | grep -qx "armv7-linux-androideabi"; then
+    cargo check --locked -p nve-abi --target armv7-linux-androideabi
+  fi
 }
 
 suite_rust_wasip2() {

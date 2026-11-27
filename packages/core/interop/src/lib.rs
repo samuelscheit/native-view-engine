@@ -80,9 +80,11 @@ pub use nve_abi::SurfaceId;
 
 /// Unified facade coordinating [`SurfaceOrchestrator`] and any enabled interop subsystems
 /// so teardown and arbitration stay strictly synchronized with zero leaked subscriptions or locks.
-#[derive(Default)]
+///
+/// `surfaces` and `plugins` are kept private so every destructive teardown goes exclusively
+/// through [`Self::destroy_surface_cascade`] or [`Self::unload_plugin`].
 pub struct InteropRuntime {
-    pub surfaces: SurfaceOrchestrator,
+    surfaces: SurfaceOrchestrator,
     #[cfg(feature = "layout")]
     pub layout: LayoutNegotiator,
     #[cfg(feature = "gesture")]
@@ -92,7 +94,13 @@ pub struct InteropRuntime {
     #[cfg(feature = "window")]
     pub windows: WindowManager,
     #[cfg(feature = "plugin-host")]
-    pub plugins: NvePluginHost,
+    plugins: NvePluginHost,
+}
+
+impl Default for InteropRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InteropRuntime {
@@ -110,6 +118,149 @@ impl InteropRuntime {
             #[cfg(feature = "plugin-host")]
             plugins: NvePluginHost::new(),
         }
+    }
+
+    /// Read-only view of the unified surface hierarchy.
+    #[inline]
+    pub fn surfaces(&self) -> &SurfaceOrchestrator {
+        &self.surfaces
+    }
+
+    /// Read-only view of mounted plugin slots.
+    #[cfg(feature = "plugin-host")]
+    #[inline]
+    pub fn plugins(&self) -> &NvePluginHost {
+        &self.plugins
+    }
+
+    /// Returns mutable access to one mounted plugin slot (for `render`/`dispatch_events`/`set_props`).
+    #[cfg(feature = "plugin-host")]
+    #[inline]
+    pub fn plugin_mut(&mut self, plugin_id: PluginId) -> Option<&mut NvePluginSlot> {
+        self.plugins.get_mut(plugin_id)
+    }
+
+    /// Registers a surface (root or child), inheriting environment from its parent when present.
+    pub fn register_surface(&mut self, desc: SurfaceDescriptor) -> Result<SurfaceId, InteropError> {
+        self.surfaces.register_surface(desc)
+    }
+
+    /// Convenience helper to register a root surface.
+    pub fn register_root(
+        &mut self,
+        framework: FrameworkKind,
+        component_name: impl Into<String>,
+        environment: SurfaceEnvironment,
+    ) -> Result<SurfaceId, InteropError> {
+        self.surfaces.register_root(framework, component_name, environment)
+    }
+
+    /// Convenience helper to register a child surface inheriting its parent's environment.
+    pub fn register_child(
+        &mut self,
+        parent: SurfaceId,
+        framework: FrameworkKind,
+        component_name: impl Into<String>,
+    ) -> Result<SurfaceId, InteropError> {
+        self.surfaces.register_child(parent, framework, component_name)
+    }
+
+    /// Reparents `surface_id` under `new_parent` (or promotes it to a root when `None`).
+    pub fn reparent_surface(
+        &mut self,
+        surface_id: SurfaceId,
+        new_parent: Option<SurfaceId>,
+    ) -> Result<(), InteropError> {
+        self.surfaces.reparent(surface_id, new_parent)
+    }
+
+    /// Transitions lifecycle state on a single surface (routing `Destroyed` through
+    /// [`Self::destroy_surface_cascade`] so plugins, gestures, layouts, channels, and windows stay
+    /// strictly synchronized).
+    pub fn transition_surface_state(
+        &mut self,
+        surface_id: SurfaceId,
+        state: LifecycleState,
+    ) -> Result<(), InteropError> {
+        if state == LifecycleState::Destroyed {
+            let _ = self.destroy_surface_cascade(surface_id)?;
+            return Ok(());
+        }
+        self.surfaces.transition_state(surface_id, state)
+    }
+
+    /// Cascades a lifecycle transition down `surface_id`'s subtree (routing `Destroyed` through
+    /// [`Self::destroy_surface_cascade`]).
+    pub fn propagate_lifecycle(
+        &mut self,
+        surface_id: SurfaceId,
+        state: LifecycleState,
+    ) -> Result<Vec<SurfaceId>, InteropError> {
+        if state == LifecycleState::Destroyed {
+            let torn_down = self.destroy_surface_cascade(surface_id)?;
+            return Ok(torn_down.into_iter().map(|r| r.surface_id).collect());
+        }
+        self.surfaces.propagate_lifecycle(surface_id, state)
+    }
+
+    /// Updates environment at `surface_id` and cascades down its subtree.
+    pub fn update_environment(
+        &mut self,
+        surface_id: SurfaceId,
+        environment: SurfaceEnvironment,
+    ) -> Result<Vec<SurfaceId>, InteropError> {
+        self.surfaces.update_environment(surface_id, environment)
+    }
+
+    /// Updates theme at `surface_id` and cascades down its subtree.
+    pub fn set_theme(
+        &mut self,
+        surface_id: SurfaceId,
+        theme: ThemeContext,
+    ) -> Result<Vec<SurfaceId>, InteropError> {
+        self.surfaces.set_theme(surface_id, theme)
+    }
+
+    /// Updates safe-area insets at `surface_id` and cascades down its subtree.
+    pub fn set_safe_area(
+        &mut self,
+        surface_id: SurfaceId,
+        safe_area: SafeAreaInsets,
+    ) -> Result<Vec<SurfaceId>, InteropError> {
+        self.surfaces.set_safe_area(surface_id, safe_area)
+    }
+
+    /// Updates display scale factor at `surface_id` and cascades down its subtree.
+    pub fn set_scale_factor(
+        &mut self,
+        surface_id: SurfaceId,
+        scale_factor: f32,
+    ) -> Result<Vec<SurfaceId>, InteropError> {
+        self.surfaces.set_scale_factor(surface_id, scale_factor)
+    }
+
+    /// Records the latest negotiated viewport size for `surface_id`.
+    #[cfg(feature = "layout")]
+    pub fn set_surface_viewport_size(
+        &mut self,
+        surface_id: SurfaceId,
+        size: IntrinsicSize,
+    ) -> Result<(), InteropError> {
+        self.surfaces.set_viewport_size(surface_id, size)
+    }
+
+    /// Registers a teardown hook to fire when `surface_id` is destroyed.
+    pub fn on_surface_teardown(
+        &mut self,
+        surface_id: SurfaceId,
+        hook: impl FnOnce(&TeardownRecord) + Send + 'static,
+    ) -> Result<(), InteropError> {
+        self.surfaces.register_teardown_hook(surface_id, hook)
+    }
+
+    /// Drains queued surface lifecycle/environment events.
+    pub fn drain_surface_events(&mut self) -> Vec<SurfaceEvent> {
+        self.surfaces.drain_events()
     }
 
     /// Registers an in-process plugin allocating its surface from `self.surfaces`.
@@ -167,10 +318,13 @@ impl InteropRuntime {
     #[cfg(feature = "plugin-host")]
     pub fn unload_plugin(&mut self, plugin_id: PluginId) -> Result<PluginMetadata, PluginError> {
         let meta = self.plugins.take_for_unload(plugin_id)?;
-        match self.destroy_surface_cascade(meta.surface_id) {
-            Ok(_) | Err(InteropError::SurfaceNotFound(_)) => Ok(meta),
-            Err(err) => Err(PluginError::SurfaceAllocationFailed(err.to_string())),
-        }
+        let res = self.destroy_surface_cascade(meta.surface_id);
+        debug_assert!(
+            res.is_ok(),
+            "plugin surface {:?} unexpectedly absent during unload_plugin: {res:?}",
+            meta.surface_id
+        );
+        Ok(meta)
     }
 
     /// Arbitrates a pointer event starting at `innermost_surface` by resolving its live

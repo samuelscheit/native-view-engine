@@ -97,37 +97,52 @@ mod native {
         });
 
         let env = SurfaceEnvironment::default();
-        c.bench_function("interop_surface_orchestrator_register_destroy_churn", |b| {
-            b.iter_batched(
-                SurfaceOrchestrator::new,
-                |mut churn_orch| {
-                    let mut total = 0usize;
-                    // Stay strictly below the 255-generation slot retirement ceiling so the
-                    // benchmark measures steady-state O(1) recycle without Vec growth skew.
-                    for _ in 0..64 {
-                        let id = churn_orch
-                            .register_root(FrameworkKind::Nve, "Churn", black_box(env.clone()))
-                            .expect("register churn surface");
-                        let torn = churn_orch
-                            .destroy_surface(black_box(id))
-                            .expect("destroy churn surface");
-                        total += torn.len() + churn_orch.drain_events().len();
-                    }
-                    black_box(total)
-                },
-                criterion::BatchSize::SmallInput,
-            );
-        });
+        {
+            let mut group = c.benchmark_group("interop_surface_orchestrator_churn");
+            group.throughput(criterion::Throughput::Elements(64));
+            group.bench_function("register_destroy_64_cycles", |b| {
+                b.iter_batched(
+                    || {
+                        let mut churn_orch = SurfaceOrchestrator::new();
+                        // Warm 1 cycle in setup so `slots`, `free`, and `events` buffers are hot.
+                        let warm_id = churn_orch
+                            .register_root(FrameworkKind::Nve, "Warm", env.clone())
+                            .expect("register warm churn surface");
+                        let _ = churn_orch
+                            .destroy_surface(warm_id)
+                            .expect("destroy warm churn surface");
+                        let _ = churn_orch.drain_events();
+                        churn_orch
+                    },
+                    |mut churn_orch| {
+                        let mut total = 0usize;
+                        // Stay strictly below the 255-generation slot retirement ceiling so the
+                        // benchmark measures steady-state O(1) recycle without Vec growth skew.
+                        for _ in 0..64 {
+                            let id = churn_orch
+                                .register_root(FrameworkKind::Nve, "Churn", black_box(env.clone()))
+                                .expect("register churn surface");
+                            let torn = churn_orch
+                                .destroy_surface(black_box(id))
+                                .expect("destroy churn surface");
+                            total += torn.len() + churn_orch.drain_events().len();
+                        }
+                        // Return `churn_orch` so its `Drop` is excluded from the timed measurement.
+                        (churn_orch, black_box(total))
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            });
+            group.finish();
+        }
 
         let mut runtime = InteropRuntime::new();
         let root = runtime
-            .surfaces
             .register_root(FrameworkKind::Flutter, "Root", SurfaceEnvironment::default())
             .expect("register bench root");
         let mut cur = root;
         for depth in 1..8 {
             cur = runtime
-                .surfaces
                 .register_child(cur, FrameworkKind::Nve, format!("D{depth}"))
                 .expect("register bench child");
             runtime.gestures.set_capabilities(

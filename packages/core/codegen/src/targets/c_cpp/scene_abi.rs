@@ -46,21 +46,7 @@ pub fn generate_c_scene_abi_h() -> String {
     writeln!(out, "extern \"C\" {{");
     writeln!(out, "#endif");
     writeln!(out);
-    writeln!(out, "#ifndef NVE_STATIC_ASSERT");
-    writeln!(out, "#if defined(__cplusplus)");
-    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg) static_assert((cond), msg)");
-    writeln!(
-        out,
-        "#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L"
-    );
-    writeln!(
-        out,
-        "#define NVE_STATIC_ASSERT(cond, msg) _Static_assert((cond), msg)"
-    );
-    writeln!(out, "#else");
-    writeln!(out, "#define NVE_STATIC_ASSERT(cond, msg)");
-    writeln!(out, "#endif");
-    writeln!(out, "#endif");
+    super::emit_static_assert_macro(&mut out);
     writeln!(out);
     writeln!(out, "#define NVE_SCENE_SCHEMA_HASH 0x{schema_hash:016X}ULL");
     writeln!(out, "#define NVE_RENDER_NODE_SIZE {node_size}u");

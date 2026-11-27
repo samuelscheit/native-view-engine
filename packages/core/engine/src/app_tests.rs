@@ -214,8 +214,15 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         let non_str_msg = take_last_ffi_panic().expect("non-string panic recorded");
         assert!(non_str_msg.contains("non-string panic payload"));
 
-        // 2. Normal create + verify happy path does not record any panic.
+        // 2. Normal create + verify happy path does not record any panic, AND verify non-canonical
+        // index-0 SurfaceId from C PODs is canonicalized to `SurfaceId::NULL` at FFI ingress.
         set_panic_target(PanicTarget::None);
+        let non_canonical_sid = core::mem::transmute::<u32, SurfaceId>(0x0500_0000);
+        let h_canon = (surface.create)(non_canonical_sid);
+        assert!(!h_canon.is_null());
+        assert_eq!((*(h_canon as *const PanickingTestApp)).surface_id, SurfaceId::NULL);
+        (surface.destroy)(h_canon);
+
         let handle = (surface.create)(SurfaceId::new(42, 0));
         assert!(!handle.is_null());
         assert_eq!((surface.render)(handle, FrameId(1)).as_slice(), &[0xAA, 0xBB]);
