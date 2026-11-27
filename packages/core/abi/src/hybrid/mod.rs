@@ -4,16 +4,20 @@
 //! C-ABI buffer and status types, the `NveBinValue` codec of every hybrid type ([`HybridCodec`]),
 //! and the trampoline error plumbing live here once.
 
+mod args;
 mod codec;
 #[cfg(test)]
 mod tests;
 mod value;
 
-use core::mem::{offset_of, size_of};
+use core::mem::{align_of, offset_of, size_of};
 use std::mem::ManuallyDrop;
+
+use nve_abi_macros::NveAbi;
 
 use crate::DecodeError;
 
+pub use args::{buffer_arg, decode_array, decode_bool, decode_opt};
 pub use codec::{
     HybridCodec, HybridElem, HybridFields, HybridStruct, decode_bin_arg, decode_enum,
     decode_struct_bin, decode_struct_value_ref, encode_struct, encode_to_vec,
@@ -34,12 +38,35 @@ pub enum NveHybridStatus {
     NullHandle = 4,
 }
 
+impl NveHybridStatus {
+    /// Every status, in discriminant order (the C header and host runtimes mirror this list).
+    pub const ALL: [Self; 5] = [
+        Self::Ok,
+        Self::Err,
+        Self::InvalidArg,
+        Self::SchemaMismatch,
+        Self::NullHandle,
+    ];
+
+    /// The variant name host runtimes spell (in their own case convention).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ok => "Ok",
+            Self::Err => "Err",
+            Self::InvalidArg => "InvalidArg",
+            Self::SchemaMismatch => "SchemaMismatch",
+            Self::NullHandle => "NullHandle",
+        }
+    }
+}
+
 /// Rust-allocated byte buffer returned across the C ABI.
 ///
 /// Foreign callers must release a non-empty buffer exactly once through the vtable's
 /// `free_bytes`; it is deliberately neither `Clone` nor `Copy`.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, NveAbi)]
+#[nve_abi(size_64 = 24)]
 pub struct NveHybridOwnedBytes {
     pub ptr: *mut u8,
     pub len: usize,
@@ -49,6 +76,8 @@ pub struct NveHybridOwnedBytes {
 const _: () = {
     let word = size_of::<usize>();
     assert!(size_of::<NveHybridOwnedBytes>() == 3 * word);
+    assert!(align_of::<NveHybridOwnedBytes>() == align_of::<usize>());
+    assert!(offset_of!(NveHybridOwnedBytes, ptr) == 0);
     assert!(offset_of!(NveHybridOwnedBytes, len) == word);
     assert!(offset_of!(NveHybridOwnedBytes, cap) == 2 * word);
     assert!(size_of::<NveHybridStatus>() == 4);
@@ -61,9 +90,10 @@ impl NveHybridOwnedBytes {
         cap: 0,
     };
 
+    /// Hands `v` to the C side; an empty vector is released here and crosses as [`Self::EMPTY`].
     #[inline]
     pub fn from_vec(v: Vec<u8>) -> Self {
-        if v.capacity() == 0 {
+        if v.is_empty() {
             return Self::EMPTY;
         }
         let mut v = ManuallyDrop::new(v);
@@ -110,9 +140,15 @@ impl NveHybridOwnedBytes {
     }
 }
 
-/// `alloc_bytes` of every generated vtable: a zeroed buffer of `len` bytes.
+/// `alloc_bytes` of every generated vtable: a zeroed buffer of `len` bytes, or `EMPTY` when `len`
+/// is 0 or cannot be allocated (never an abort across the C ABI).
 pub extern "C" fn nve_hybrid_alloc_bytes(len: usize) -> NveHybridOwnedBytes {
-    NveHybridOwnedBytes::from_vec(vec![0; len])
+    let mut v = Vec::new();
+    if v.try_reserve_exact(len).is_err() {
+        return NveHybridOwnedBytes::EMPTY;
+    }
+    v.resize(len, 0);
+    NveHybridOwnedBytes::from_vec(v)
 }
 
 /// `free_bytes` of every generated vtable.
@@ -124,15 +160,32 @@ pub unsafe extern "C" fn nve_hybrid_free_bytes(buf: NveHybridOwnedBytes) {
     drop(unsafe { buf.into_vec() });
 }
 
-/// Stores `value` through a trampoline out-pointer; a null pointer discards it.
+/// Stores a by-value result through a trampoline out-pointer; a null pointer discards it.
+///
+/// `Copy` keeps owning buffers out: they go through [`store_bytes`], which releases them instead.
 ///
 /// # Safety
 /// `out` must be null or valid for writes.
 #[inline]
-pub unsafe fn store<T>(out: *mut T, value: T) {
+pub unsafe fn store<T: Copy>(out: *mut T, value: T) {
     if !out.is_null() {
         // SAFETY: Non-null checked; the caller guarantees `out` is valid for writes.
         unsafe { out.write(value) };
+    }
+}
+
+/// Stores an owned buffer through a trampoline out-pointer; a null pointer releases it here.
+///
+/// # Safety
+/// `out` must be null or valid for writes, and `bytes` must come from `from_vec` (or be `EMPTY`).
+#[inline]
+pub unsafe fn store_bytes(out: *mut NveHybridOwnedBytes, bytes: NveHybridOwnedBytes) {
+    if out.is_null() {
+        // SAFETY: Forwarded caller contract; nobody else can observe the buffer.
+        drop(unsafe { bytes.into_vec() });
+    } else {
+        // SAFETY: Non-null checked; the caller guarantees `out` is valid for writes.
+        unsafe { out.write(bytes) };
     }
 }
 
@@ -142,12 +195,15 @@ pub unsafe fn store<T>(out: *mut T, value: T) {
 /// `out_err` must be null or valid for writes.
 #[inline]
 pub unsafe fn succeed(out_err: *mut NveHybridOwnedBytes) -> i32 {
-    // SAFETY: Forwarded caller contract.
-    unsafe { store(out_err, NveHybridOwnedBytes::EMPTY) };
+    if !out_err.is_null() {
+        // SAFETY: Non-null checked; the caller guarantees `out_err` is valid for writes.
+        unsafe { out_err.write(NveHybridOwnedBytes::EMPTY) };
+    }
     NveHybridStatus::Ok as i32
 }
 
-/// Stores `message` in `*out_err` and returns `status` as a trampoline result code.
+/// Stores `message` in `*out_err` (a null pointer drops it) and returns `status` as a trampoline
+/// result code.
 ///
 /// # Safety
 /// `out_err` must be null or valid for writes.
@@ -157,7 +213,9 @@ pub unsafe fn fail(
     status: NveHybridStatus,
     message: String,
 ) -> i32 {
-    // SAFETY: Forwarded caller contract.
-    unsafe { store(out_err, NveHybridOwnedBytes::from_string(message)) };
+    if !out_err.is_null() {
+        // SAFETY: Non-null checked; the caller guarantees `out_err` is valid for writes.
+        unsafe { out_err.write(NveHybridOwnedBytes::from_string(message)) };
+    }
     status as i32
 }

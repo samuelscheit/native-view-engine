@@ -42,11 +42,12 @@ impl NveHybridValue {
         }
     }
 
-    /// Encodes a C `NveValue` tree.
+    /// Encodes a C `NveValue` tree. `encode_bin_value` checks the tree as it walks it (tags,
+    /// UTF-8, pointers, depth), so its output is one well-formed value without a re-parse.
     pub fn from_ffi_ref(value: NveValueRef<'_>) -> Result<Self, DecodeError> {
         let mut w = BinWriter::with_capacity(64);
         encode_bin_value(value, &mut w);
-        Self::from_bin(w.finish()?)
+        Ok(Self { bytes: w.finish()? })
     }
 
     /// Encodes any hybrid type as a dynamic value.

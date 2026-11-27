@@ -5,6 +5,9 @@
 //! `#[repr(C)]` vtables with `extern "C"` trampolines (`build_<name>_vtable::<Impl>()`), and typed
 //! view props / events. Everything static (owned C buffers, status codes, the `NveBinValue` codec
 //! of every type, trampoline error plumbing) is the checked-in `nve_abi::hybrid` runtime.
+//!
+//! Generated code names every `nve_abi` item by its path and imports nothing, so no spec can make
+//! it emit an unused (or shadowed) import.
 
 mod type_map;
 mod types_emitter;
@@ -20,21 +23,6 @@ use crate::writer::CodeWriter;
 use type_map::CodecSupport;
 use types_emitter::{emit_pod_option_structs, emit_rust_enum, emit_rust_struct};
 use view_emitter::{emit_rust_module, emit_rust_view};
-
-/// `nve_abi` symbols generated code may use, imported only when it does.
-const ABI_IMPORTS: &[&str] = &[
-    "BinMapWriter",
-    "DecodeError",
-    "NveAppHandle",
-    "NveBufferSlice",
-    "NveDirectEvent",
-    "NveMapEntry",
-    "NveMapRef",
-    "NveStrSlice",
-    "NveValue",
-];
-/// `nve_abi::hybrid` traits generated code may use, imported only when it does.
-const RUNTIME_IMPORTS: &[&str] = &["HybridCodec", "HybridFields", "HybridStruct"];
 
 /// Emits the Rust hybrid bindings of `spec` over the `nve_abi::hybrid` runtime.
 pub fn generate_hybrid_rust(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
@@ -91,8 +79,6 @@ pub fn generate_hybrid_rust(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
         "    NveHybridOwnedBytes, NveHybridStatus, NveHybridValue, NVE_HYBRID_ABI_VERSION,"
     );
     writeln!(out, "}};");
-    emit_imports(&mut out, &body, "nve_abi", ABI_IMPORTS);
-    emit_imports(&mut out, &body, "nve_abi::hybrid", RUNTIME_IMPORTS);
     writeln!(out);
     out.push_str(&body);
 
@@ -100,33 +86,6 @@ pub fn generate_hybrid_rust(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
         relative_path: format!("{}_hybrid.generated.rs", spec.stem_snake()),
         content: out.into_string(),
     }])
-}
-
-fn emit_imports(out: &mut CodeWriter, body: &str, path: &str, candidates: &[&str]) {
-    let used: Vec<&str> = candidates
-        .iter()
-        .copied()
-        .filter(|sym| uses_ident(body, sym))
-        .collect();
-    if !used.is_empty() {
-        writeln!(out, "use {path}::{{{}}};", used.join(", "));
-    }
-}
-
-/// Whether `ident` occurs in `code` as a whole identifier outside `//` comments.
-fn uses_ident(code: &str, ident: &str) -> bool {
-    let is_ident_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    code.lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .any(|line| {
-            line.match_indices(ident).any(|(at, _)| {
-                !line[..at].chars().next_back().is_some_and(is_ident_char)
-                    && !line[at + ident.len()..]
-                        .chars()
-                        .next()
-                        .is_some_and(is_ident_char)
-            })
-        })
 }
 
 fn emit_doc_comments(out: &mut CodeWriter, indent: &str, doc: Option<&str>) {

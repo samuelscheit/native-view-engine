@@ -81,7 +81,12 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
       - Static runtime: `nve_abi::hybrid` (owned C buffers, status codes, `HybridCodec` for every hybrid type, trampoline `store` / `succeed` / `fail`), sticky-error `BinWriter`, and `NveValueTree` (bin value → borrowed C `NveValue` tree in two exactly-sized arenas).
       - Generated code keeps only spec-specific items; structs and enums get their codec from `hybrid_struct_codec!` / `hybrid_enum_codec!`.
     - Narrow integers and enum discriminants are range-checked instead of truncated; a `Value` defaults to `null` (was empty, malformed bytes); composite and `Value` event parameters cross as C trees, never wrapped in `Bytes`.
-    - Validation reserves the `_nve_` binding prefix, the `NveHybrid` type prefix, runtime type names, and vtable slot names (`create`, `destroy`, `apply_props`, ...) for methods; `Vec<u8>` must be spelled `Bytes`.
+    - Validation reserves the `_nve_` binding prefix, the `NveHybrid` / `NVE_HYBRID` / `nve_hybrid` item prefix, runtime type names, and vtable slot names (`create`, `destroy`, and for views `apply_props` / `set_props_direct`) for methods; names colliding in snake case (`getValue` / `get_value`) are duplicates; `Vec<u8>` must be spelled `Bytes`.
+    - Pass-2 review fixes:
+      - By-value structs holding a `bool` or enum cross as generated `#[repr(C)]` `NveHybridRaw<Name>` carriers (`u8` / `u32` fields) and `NveHybridOpt*` carries `is_some: u8`, so a zeroed `std::nullopt` or an undeclared discriminant is `InvalidArg`, never UB on `extern "C"` entry.
+      - Generated Rust names every `nve_abi` item by path and imports nothing (no unused-import scanner); trait calls are fully qualified, so a spec method named `default` compiles.
+      - Runtime: `NveHybridOwnedBytes` derives `NveAbi`; null out-pointers release buffers (`store_bytes`, `fail`); empty vectors and failed `alloc_bytes` (`try_reserve_exact`) cross as `EMPTY`; slices go through `buffer_arg` / `NveBufferSlice::try_as_slice` (rejects `(null, len > 0)` and `len > isize::MAX`); `[T; N]` decodes any element type and length; direct props reject corrupt keys (`NveMapRef::try_iter`); `NveHybridStatus::ALL` feeds the host-runtime drift guard.
+      - C-only records (unions, raw pointers, handles) are skipped; structs and events with `[T; N > 32]` get a written-out `Default`.
   - **C++ hybrid clients on host-cxx (commit 5a-cxx)**
     - The generated C++20 hybrid header no longer carries its own copied `NveBinValue` codec prelude.
       - It includes `<nve/host/bin_codec.hpp>` / `<nve/host/hybrid_runtime.hpp>`.

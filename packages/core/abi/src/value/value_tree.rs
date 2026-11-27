@@ -68,11 +68,11 @@ struct Counts {
 impl Counts {
     fn add(&mut self, view: BinValueView<'_>) {
         if let Some(items) = view.as_array() {
-            self.containers += 1;
+            self.containers += usize::from(items.len() > 0);
             self.elems += items.len();
             items.for_each(|item| self.add(item));
         } else if let Some(entries) = view.as_map() {
-            self.containers += 1;
+            self.containers += usize::from(entries.len() > 0);
             self.entries += entries.len();
             entries.for_each(|(_, item)| self.add(item));
         }
@@ -103,9 +103,14 @@ impl<'a> Builder<'a> {
             NveValueTag::Bytes => NveValue::from_bytes(view.as_bytes().unwrap_or_default()),
             NveValueTag::Array => {
                 let len = view.array_len().unwrap_or_default();
-                let ptr = self.elems_base.wrapping_add(self.reserved_elems);
+                // An empty container owns no arena block and queues no children.
+                let ptr = if len == 0 {
+                    std::ptr::null()
+                } else {
+                    self.pending.push(view);
+                    self.elems_base.wrapping_add(self.reserved_elems)
+                };
                 self.reserved_elems += len;
-                self.pending.push(view);
                 NveValue {
                     tag: NveValueTag::Array as u32,
                     data: NveValueData {
@@ -115,9 +120,13 @@ impl<'a> Builder<'a> {
             }
             NveValueTag::Map => {
                 let len = view.map_len().unwrap_or_default();
-                let ptr = self.entries_base.wrapping_add(self.reserved_entries);
+                let ptr = if len == 0 {
+                    std::ptr::null()
+                } else {
+                    self.pending.push(view);
+                    self.entries_base.wrapping_add(self.reserved_entries)
+                };
                 self.reserved_entries += len;
-                self.pending.push(view);
                 NveValue {
                     tag: NveValueTag::Map as u32,
                     data: NveValueData {
@@ -153,6 +162,7 @@ impl<'a> Builder<'a> {
 /// guard only makes a reallocation (which would dangle the reserved pointers) impossible.
 #[inline]
 fn push_within_capacity<T>(arena: &mut Vec<T>, value: T) {
+    debug_assert!(arena.len() < arena.capacity(), "arena sized by `Counts`");
     if arena.len() < arena.capacity() {
         arena.push(value);
     }

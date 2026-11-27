@@ -73,17 +73,16 @@ pub fn decode_struct_value_ref<S: HybridStruct>(value: NveValueRef<'_>) -> Resul
     S::decode_fields(&map)
 }
 
-/// Decodes a `#[repr(u32)]` enum discriminant.
+/// Decodes a `#[repr(u32)]` enum discriminant: `OutOfRange` past `u32`, `InvalidEnum` for an
+/// undeclared value.
 #[inline]
 pub fn decode_enum<E>(
     raw: i64,
     name: &'static str,
     from_u32: fn(u32) -> Option<E>,
 ) -> Result<E, DecodeError> {
-    u32::try_from(raw)
-        .ok()
-        .and_then(from_u32)
-        .ok_or(DecodeError::InvalidEnum(name, raw as u32))
+    let raw = u32::try_from(raw).map_err(|_| DecodeError::OutOfRange(name))?;
+    from_u32(raw).ok_or(DecodeError::InvalidEnum(name, raw))
 }
 
 impl HybridFields for BinValueView<'_> {
@@ -123,12 +122,27 @@ fn bin_mismatch(view: BinValueView<'_>, expected: NveValueTag) -> DecodeError {
     }
 }
 
+/// Why a C `NveValue` did not yield the `expected` variant: the wrong tag, or the right tag over
+/// invalid contents (non-UTF-8 text, a null or oversized pointer).
 #[inline]
 fn ref_mismatch(value: NveValueRef<'_>, expected: NveValueTag) -> DecodeError {
-    DecodeError::UnexpectedTag {
-        expected,
-        found: value.raw().tag,
+    let found = value.raw().tag;
+    match expected {
+        _ if found != expected as u32 => DecodeError::UnexpectedTag { expected, found },
+        NveValueTag::Str => DecodeError::InvalidUtf8,
+        _ => DecodeError::Truncated,
     }
+}
+
+/// Collects decoded items into an exactly sized `Vec`, stopping at the first error.
+fn collect_exact<T>(
+    items: impl ExactSizeIterator<Item = Result<T, DecodeError>>,
+) -> Result<Vec<T>, DecodeError> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(item?);
+    }
+    Ok(out)
 }
 
 #[inline]
@@ -339,7 +353,7 @@ impl<T: HybridElem> HybridCodec for Vec<T> {
         let items = view
             .as_array()
             .ok_or_else(|| bin_mismatch(view, NveValueTag::Array))?;
-        items.map(T::decode_bin).collect()
+        collect_exact(items.map(T::decode_bin))
     }
     fn decode_value_ref(value: NveValueRef<'_>) -> Result<Self, DecodeError> {
         if let Some(bytes) = value.as_bytes() {
@@ -348,11 +362,13 @@ impl<T: HybridElem> HybridCodec for Vec<T> {
         let items = value
             .as_array()
             .ok_or_else(|| ref_mismatch(value, NveValueTag::Array))?;
-        items.iter().map(T::decode_value_ref).collect()
+        collect_exact(items.iter().map(T::decode_value_ref))
     }
 }
 
-impl<T: HybridCodec + Copy + Default, const N: usize> HybridCodec for [T; N] {
+/// A fixed-size array prop arrives as a C `Array`, or as `Bytes` holding its `NveBinValue`
+/// encoding; any element type and length decode (no `Copy` / `Default` / `N <= 32` bound).
+impl<T: HybridCodec, const N: usize> HybridCodec for [T; N] {
     fn encode_bin(&self, w: &mut BinWriter) {
         w.array(|a| self.iter().for_each(|item| item.encode_bin(a.item())));
     }
@@ -363,6 +379,9 @@ impl<T: HybridCodec + Copy + Default, const N: usize> HybridCodec for [T; N] {
         fixed_array(items.map(T::decode_bin))
     }
     fn decode_value_ref(value: NveValueRef<'_>) -> Result<Self, DecodeError> {
+        if let Some(bytes) = value.as_bytes() {
+            return Self::decode_bin(BinValueView::parse(bytes)?);
+        }
         let items = value
             .as_array()
             .ok_or_else(|| ref_mismatch(value, NveValueTag::Array))?;
@@ -370,17 +389,14 @@ impl<T: HybridCodec + Copy + Default, const N: usize> HybridCodec for [T; N] {
     }
 }
 
-fn fixed_array<T: Copy + Default, const N: usize>(
+fn fixed_array<T, const N: usize>(
     items: impl ExactSizeIterator<Item = Result<T, DecodeError>>,
 ) -> Result<[T; N], DecodeError> {
     if items.len() != N {
         return Err(DecodeError::OutOfRange("fixed-size array length"));
     }
-    let mut out = [T::default(); N];
-    for (slot, item) in out.iter_mut().zip(items) {
-        *slot = item?;
-    }
-    Ok(out)
+    <[T; N]>::try_from(collect_exact(items)?)
+        .map_err(|_| DecodeError::OutOfRange("fixed-size array length"))
 }
 
 impl HybridCodec for NveHybridValue {
@@ -412,7 +428,7 @@ impl HybridElem for Vec<u8> {}
 impl HybridElem for NveHybridValue {}
 impl<T: HybridCodec> HybridElem for Option<T> {}
 impl<T: HybridElem> HybridElem for Vec<T> {}
-impl<T: HybridCodec + Copy + Default, const N: usize> HybridElem for [T; N] {}
+impl<T: HybridCodec, const N: usize> HybridElem for [T; N] {}
 
 /// Implements [`HybridCodec`] and [`HybridElem`] for a generated struct from its [`HybridStruct`].
 #[macro_export]
@@ -448,21 +464,21 @@ macro_rules! hybrid_enum_codec {
         impl $crate::hybrid::HybridCodec for $ty {
             #[inline]
             fn encode_bin(&self, w: &mut $crate::BinWriter) {
-                w.i64(i64::from(self.to_u32()))
+                w.i64(<i64 as ::core::convert::From<u32>>::from(self.to_u32()))
             }
             #[inline]
             fn decode_bin(
                 view: $crate::BinValueView<'_>,
             ) -> ::core::result::Result<Self, $crate::DecodeError> {
                 let raw = <i64 as $crate::hybrid::HybridCodec>::decode_bin(view)?;
-                $crate::hybrid::decode_enum(raw, stringify!($ty), $ty::from_u32)
+                $crate::hybrid::decode_enum(raw, ::core::stringify!($ty), $ty::from_u32)
             }
             #[inline]
             fn decode_value_ref(
                 value: $crate::NveValueRef<'_>,
             ) -> ::core::result::Result<Self, $crate::DecodeError> {
                 let raw = <i64 as $crate::hybrid::HybridCodec>::decode_value_ref(value)?;
-                $crate::hybrid::decode_enum(raw, stringify!($ty), $ty::from_u32)
+                $crate::hybrid::decode_enum(raw, ::core::stringify!($ty), $ty::from_u32)
             }
         }
         impl $crate::hybrid::HybridElem for $ty {}

@@ -173,6 +173,14 @@ impl<'a> NveMapRef<'a> {
             Some((unsafe { entry.key.as_str() }.ok()?, NveValueRef { raw: &entry.value }))
         })
     }
+    /// Like [`Self::iter`], but a key that is not valid UTF-8 (or has an invalid pointer) is an
+    /// error instead of being skipped.
+    #[inline] pub fn try_iter(&self) -> impl Iterator<Item = Result<(&'a str, NveValueRef<'a>), crate::DecodeError>> + 'a {
+        self.entries.iter().map(|entry| {
+            // SAFETY: `NveMapRef` guarantees entry key pointers remain valid for `'a`.
+            Ok((unsafe { entry.key.as_str() }?, NveValueRef { raw: &entry.value }))
+        })
+    }
 }
 
 /// Zero-copy borrowed view of a single `NveDirectEvent`.

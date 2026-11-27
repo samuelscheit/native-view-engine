@@ -8,7 +8,12 @@ use crate::naming::{escape_c_like_string, rust_ident, to_pascal_case, to_snake_c
 use crate::schema::hybrid::{HybridFileSpec, HybridMethodSpec, HybridType};
 use crate::writer::CodeWriter;
 
-use super::type_map::{c_param_type, c_return_type, c_zero_value, is_by_value};
+use super::type_map::{
+    c_param_type, c_return_type, c_zero_value, is_by_value, raw_decode_expr, raw_encode_expr,
+    returns_owned_bytes,
+};
+
+const HANDLE: &str = "nve_abi::NveAppHandle";
 
 pub(super) struct VtableOwner {
     pub(super) pascal: String,
@@ -73,32 +78,29 @@ fn emit_vtable_struct(
     writeln!(out, "    pub abi_version: u32,");
     writeln!(out, "    pub interface_id: u32,");
     writeln!(out, "    pub schema_hash: u64,");
+    writeln!(out, "    pub create: unsafe extern \"C\" fn() -> {HANDLE},");
     writeln!(
         out,
-        "    pub create: unsafe extern \"C\" fn() -> NveAppHandle,"
+        "    pub destroy: unsafe extern \"C\" fn(_nve_handle: {HANDLE}),"
     );
     writeln!(
         out,
-        "    pub destroy: unsafe extern \"C\" fn(handle: NveAppHandle),"
+        "    pub alloc_bytes: unsafe extern \"C\" fn(_nve_len: usize) -> NveHybridOwnedBytes,"
     );
     writeln!(
         out,
-        "    pub alloc_bytes: unsafe extern \"C\" fn(len: usize) -> NveHybridOwnedBytes,"
-    );
-    writeln!(
-        out,
-        "    pub free_bytes: unsafe extern \"C\" fn(buf: NveHybridOwnedBytes),"
+        "    pub free_bytes: unsafe extern \"C\" fn(_nve_buf: NveHybridOwnedBytes),"
     );
     if owner.is_view {
         writeln!(
             out,
-            "    pub set_props_direct: unsafe extern \"C\" fn(handle: NveAppHandle, entries: *const NveMapEntry, count: u32) -> i32,"
+            "    pub set_props_direct: unsafe extern \"C\" fn(_nve_handle: {HANDLE}, _nve_entries: *const nve_abi::NveMapEntry, _nve_count: u32) -> i32,"
         );
     }
     for method in methods {
         writeln!(
             out,
-            "    pub {}: unsafe extern \"C\" fn(_nve_handle: NveAppHandle{},",
+            "    pub {}: unsafe extern \"C\" fn(_nve_handle: {HANDLE}{},",
             rust_ident(&method.name),
             c_signature_tail(method, spec)
         );
@@ -130,16 +132,17 @@ fn emit_vtable_builder(
     );
     writeln!(
         out,
-        "    unsafe extern \"C\" fn _nve_create<{bound}>() -> NveAppHandle {{"
+        "    unsafe extern \"C\" fn _nve_create<{bound}>() -> {HANDLE} {{"
     );
+    // Qualified: a spec method named `default` must not make this call ambiguous.
     writeln!(
         out,
-        "        Box::into_raw(Box::new(NveHybridImpl::default())).cast()"
+        "        Box::into_raw(Box::new(<NveHybridImpl as ::core::default::Default>::default())).cast()"
     );
     writeln!(out, "    }}");
     writeln!(
         out,
-        "    unsafe extern \"C\" fn _nve_destroy<{bound}>(_nve_handle: NveAppHandle) {{"
+        "    unsafe extern \"C\" fn _nve_destroy<{bound}>(_nve_handle: {HANDLE}) {{"
     );
     writeln!(out, "        if !_nve_handle.is_null() {{");
     writeln!(
@@ -155,7 +158,7 @@ fn emit_vtable_builder(
     if *is_view {
         writeln!(
             out,
-            "    unsafe extern \"C\" fn _nve_set_props_direct<{bound}>(_nve_handle: NveAppHandle, _nve_entries: *const NveMapEntry, _nve_count: u32) -> i32 {{"
+            "    unsafe extern \"C\" fn _nve_set_props_direct<{bound}>(_nve_handle: {HANDLE}, _nve_entries: *const nve_abi::NveMapEntry, _nve_count: u32) -> i32 {{"
         );
         writeln!(out, "        if _nve_handle.is_null() {{");
         writeln!(
@@ -169,7 +172,7 @@ fn emit_vtable_builder(
         );
         writeln!(
             out,
-            "        let Some(_nve_map) = (unsafe {{ NveMapRef::try_from_raw_parts(_nve_entries, _nve_count) }}) else {{"
+            "        let Some(_nve_map) = (unsafe {{ nve_abi::NveMapRef::try_from_raw_parts(_nve_entries, _nve_count) }}) else {{"
         );
         writeln!(
             out,
@@ -187,7 +190,7 @@ fn emit_vtable_builder(
         );
         writeln!(
             out,
-            "                unsafe {{ &mut *_nve_handle.cast::<NveHybridImpl>() }}.apply_props(_nve_props);"
+            "                <NveHybridImpl as {pascal}Hybrid>::apply_props(unsafe {{ &mut *_nve_handle.cast::<NveHybridImpl>() }}, _nve_props);"
         );
         writeln!(out, "                NveHybridStatus::Ok as i32");
         writeln!(out, "            }}");
@@ -199,7 +202,7 @@ fn emit_vtable_builder(
         writeln!(out, "    }}");
     }
     for method in methods {
-        emit_trampoline(out, &bound, method, spec);
+        emit_trampoline(out, &bound, pascal, method, spec);
     }
 
     writeln!(out, "    NveHybrid{pascal}VTable {{");
@@ -242,33 +245,33 @@ fn emit_vtable_builder(
 enum ArgDecode {
     /// Passed through unchanged (scalars and POD structs by value).
     Direct,
-    /// An infallible expression.
-    Infallible(String),
     /// An expression of type `Result<_, DecodeError>`.
     Fallible(String),
 }
 
+/// Every C argument is validated before it becomes a Rust value: by-value carriers through their
+/// raw decode, slices through `buffer_arg` / `as_str` (null pointers, `isize::MAX` lengths).
 fn arg_decode(p: &str, ty: &HybridType, spec: &HybridFileSpec) -> ArgDecode {
     if let (HybridType::Optional(inner), Some(_)) = (ty, ty.optional_pod_suffix(spec)) {
-        return match inner.as_ref() {
-            HybridType::Enum(e) => ArgDecode::Fallible(format!(
-                "if {p}.is_some {{ nve_abi::hybrid::decode_enum(i64::from({p}.value), \"{e}\", {e}::from_u32).map(Some) }} else {{ Ok(None) }}"
-            )),
-            _ => ArgDecode::Infallible(format!("{p}.is_some.then_some({p}.value)")),
-        };
+        let value =
+            raw_decode_expr("_nve_v", inner, spec).unwrap_or_else(|| "Ok(_nve_v)".to_owned());
+        return ArgDecode::Fallible(format!(
+            "nve_abi::hybrid::decode_opt({p}.is_some, {p}.value, |_nve_v| {value})"
+        ));
     }
+    let buffer = format!("unsafe {{ nve_abi::hybrid::buffer_arg({p}) }}");
     match ty {
-        HybridType::Enum(e) => ArgDecode::Fallible(format!(
-            "nve_abi::hybrid::decode_enum(i64::from({p}), \"{e}\", {e}::from_u32)"
-        )),
-        _ if is_by_value(ty, spec) => ArgDecode::Direct,
+        _ if is_by_value(ty, spec) => match raw_decode_expr(p, ty, spec) {
+            Some(expr) => ArgDecode::Fallible(expr),
+            None => ArgDecode::Direct,
+        },
         HybridType::String => ArgDecode::Fallible(format!("unsafe {{ {p}.as_str() }}")),
-        HybridType::Bytes => ArgDecode::Infallible(format!("unsafe {{ {p}.as_slice() }}")),
+        HybridType::Bytes => ArgDecode::Fallible(buffer),
         HybridType::Value => ArgDecode::Fallible(format!(
             "NveHybridValue::from_ffi_ref(unsafe {{ {p}.as_ref() }})"
         )),
         _ => ArgDecode::Fallible(format!(
-            "nve_abi::hybrid::decode_bin_arg(unsafe {{ {p}.as_slice() }})"
+            "{buffer}.and_then(nve_abi::hybrid::decode_bin_arg)"
         )),
     }
 }
@@ -283,18 +286,13 @@ enum RetEncode {
 
 fn ret_encode(v: &str, ty: &HybridType, spec: &HybridFileSpec) -> RetEncode {
     if let (HybridType::Optional(inner), Some(suffix)) = (ty, ty.optional_pod_suffix(spec)) {
-        let value = if matches!(inner.as_ref(), HybridType::Enum(_)) {
-            "_nve_v.to_u32()"
-        } else {
-            "_nve_v"
-        };
+        let value = raw_encode_expr("_nve_v", inner, spec);
         return RetEncode::Value(format!(
-            "match {v} {{ Some(_nve_v) => NveHybridOpt{suffix} {{ is_some: true, value: {value} }}, None => Default::default() }}"
+            "match {v} {{ Some(_nve_v) => NveHybridOpt{suffix} {{ is_some: 1, value: {value} }}, None => Default::default() }}"
         ));
     }
     RetEncode::Value(match ty {
-        HybridType::Enum(_) => format!("{v}.to_u32()"),
-        _ if is_by_value(ty, spec) => v.to_owned(),
+        _ if is_by_value(ty, spec) => raw_encode_expr(v, ty, spec),
         HybridType::String => format!("NveHybridOwnedBytes::from_string({v})"),
         HybridType::Bytes => format!("NveHybridOwnedBytes::from_vec({v})"),
         HybridType::Value => format!("NveHybridOwnedBytes::from_vec({v}.into_bytes())"),
@@ -305,6 +303,7 @@ fn ret_encode(v: &str, ty: &HybridType, spec: &HybridFileSpec) -> RetEncode {
 fn emit_trampoline(
     out: &mut CodeWriter,
     bound: &str,
+    pascal: &str,
     method: &HybridMethodSpec,
     spec: &HybridFileSpec,
 ) {
@@ -324,7 +323,7 @@ fn emit_trampoline(
 
     writeln!(
         out,
-        "    unsafe extern \"C\" fn _nve_call_{}<{bound}>(_nve_handle: NveAppHandle{} {{",
+        "    unsafe extern \"C\" fn _nve_call_{}<{bound}>(_nve_handle: {HANDLE}{} {{",
         to_snake_case(&method.name),
         c_signature_tail(method, spec)
     );
@@ -344,7 +343,6 @@ fn emit_trampoline(
                 args.push(pname);
                 continue;
             }
-            ArgDecode::Infallible(expr) => writeln!(out, "        let _nve_arg_{idx} = {expr};"),
             ArgDecode::Fallible(expr) => {
                 let message = format!(
                     "format!(\"invalid hybrid argument '{}': {{_nve_error}}\")",
@@ -376,27 +374,36 @@ fn emit_trampoline(
         out,
         "        let _nve_instance = unsafe {{ &mut *_nve_handle.cast::<NveHybridImpl>() }};"
     );
+    // Fully qualified, so no other trait's method of the same name can be picked.
+    args.insert(0, "_nve_instance".to_owned());
     let call = format!(
-        "_nve_instance.{}({})",
+        "<NveHybridImpl as {pascal}Hybrid>::{}({})",
         rust_ident(&method.name),
         args.join(", ")
     );
     match &method.return_type {
         HybridType::Void => writeln!(out, "        {call};"),
+        HybridType::Result { ok, .. } if **ok == HybridType::Void => {
+            writeln!(out, "        match {call} {{");
+            writeln!(
+                out,
+                "            Ok(()) => unsafe {{ nve_abi::hybrid::succeed(_nve_out_err) }},"
+            );
+            emit_err_arm(out);
+        }
         HybridType::Result { ok, .. } => {
             writeln!(out, "        match {call} {{");
+            let store = if returns_owned_bytes(ok, spec) {
+                "store_bytes"
+            } else {
+                "store"
+            };
             match ret_encode("_nve_ok", ok, spec) {
-                _ if **ok == HybridType::Void => {
-                    writeln!(
-                        out,
-                        "            Ok(()) => unsafe {{ nve_abi::hybrid::succeed(_nve_out_err) }},"
-                    );
-                }
                 RetEncode::Value(expr) => {
                     writeln!(out, "            Ok(_nve_ok) => unsafe {{");
                     writeln!(
                         out,
-                        "                nve_abi::hybrid::store(_nve_out_ok, {expr});"
+                        "                nve_abi::hybrid::{store}(_nve_out_ok, {expr});"
                     );
                     writeln!(
                         out,
@@ -409,7 +416,7 @@ fn emit_trampoline(
                     writeln!(out, "                Ok(_nve_bytes) => unsafe {{");
                     writeln!(
                         out,
-                        "                    nve_abi::hybrid::store(_nve_out_ok, _nve_bytes);"
+                        "                    nve_abi::hybrid::store_bytes(_nve_out_ok, _nve_bytes);"
                     );
                     writeln!(
                         out,
@@ -423,11 +430,7 @@ fn emit_trampoline(
                     writeln!(out, "            }},");
                 }
             }
-            writeln!(
-                out,
-                "            Err(_nve_message) => unsafe {{ nve_abi::hybrid::fail(_nve_out_err, NveHybridStatus::Err, _nve_message) }},"
-            );
-            writeln!(out, "        }}");
+            emit_err_arm(out);
         }
         ret => {
             writeln!(out, "        let _nve_ret = {call};");
@@ -442,4 +445,13 @@ fn emit_trampoline(
         }
     }
     writeln!(out, "    }}");
+}
+
+/// The `Err` arm of a `Result` trampoline's match, closing the match.
+fn emit_err_arm(out: &mut CodeWriter) {
+    writeln!(
+        out,
+        "            Err(_nve_message) => unsafe {{ nve_abi::hybrid::fail(_nve_out_err, NveHybridStatus::Err, _nve_message) }},"
+    );
+    writeln!(out, "        }}");
 }

@@ -52,12 +52,86 @@ pub(super) fn rust_param_type(ty: &HybridType) -> String {
     }
 }
 
-/// C-ABI spelling of a POD type: enums cross as their `u32` discriminant.
-pub(super) fn pod_c_type(ty: &HybridType) -> String {
+/// Whether a by-value POD type has bit patterns a C caller may pass that are undefined behavior
+/// for its Rust type (`bool`, enums, and aggregates holding one), so it crosses as a raw carrier.
+pub(super) fn needs_raw(ty: &HybridType, spec: &HybridFileSpec) -> bool {
     match ty {
+        HybridType::Bool | HybridType::Enum(_) => true,
+        HybridType::Struct(name) => spec
+            .find_struct(name)
+            .is_some_and(|s| s.fields.iter().any(|f| needs_raw(&f.ty, spec))),
+        HybridType::FixedArray { elem, .. } => needs_raw(elem, spec),
+        _ => false,
+    }
+}
+
+/// C-ABI carrier of a POD type: `bool` as `u8`, enums as their `u32` discriminant, structs that
+/// hold either as their generated `NveHybridRaw<Name>`.
+pub(super) fn raw_c_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    match ty {
+        HybridType::Bool => "u8".to_owned(),
         HybridType::Enum(_) => "u32".to_owned(),
-        HybridType::FixedArray { elem, len } => format!("[{}; {len}]", pod_c_type(elem)),
+        HybridType::Struct(name) if needs_raw(ty, spec) => format!("NveHybridRaw{name}"),
+        HybridType::FixedArray { elem, len } => format!("[{}; {len}]", raw_c_type(elem, spec)),
         other => rust_owned_type(other),
+    }
+}
+
+/// `Result<T, DecodeError>` expression validating carrier `expr` into its Rust type, or `None`
+/// when the carrier already is the Rust type.
+pub(super) fn raw_decode_expr(
+    expr: &str,
+    ty: &HybridType,
+    spec: &HybridFileSpec,
+) -> Option<String> {
+    if !needs_raw(ty, spec) {
+        return None;
+    }
+    Some(match ty {
+        HybridType::Bool => format!("nve_abi::hybrid::decode_bool({expr})"),
+        HybridType::Enum(e) => format!(
+            "nve_abi::hybrid::decode_enum(<i64 as ::core::convert::From<u32>>::from({expr}), \"{e}\", {e}::from_u32)"
+        ),
+        HybridType::FixedArray { elem, .. } => format!(
+            "nve_abi::hybrid::decode_array({expr}, |_nve_e| {})",
+            raw_decode_expr("_nve_e", elem, spec)?
+        ),
+        _ => format!("{expr}.decode()"),
+    })
+}
+
+/// Carrier of Rust value `expr` (infallible: Rust values are always valid).
+pub(super) fn raw_encode_expr(expr: &str, ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if !needs_raw(ty, spec) {
+        return expr.to_owned();
+    }
+    match ty {
+        HybridType::Bool => format!("<u8 as ::core::convert::From<bool>>::from({expr})"),
+        HybridType::Enum(_) => format!("{expr}.to_u32()"),
+        HybridType::FixedArray { elem, .. } => format!(
+            "{expr}.map(|_nve_e| {})",
+            raw_encode_expr("_nve_e", elem, spec)
+        ),
+        _ => format!("{}::from({expr})", raw_c_type(ty, spec)),
+    }
+}
+
+/// Whether `#[derive(Default)]` cannot cover a field of type `ty`: std implements `Default` for
+/// `[T; N]` only up to `N = 32`.
+pub(super) fn needs_manual_default(ty: &HybridType) -> bool {
+    match ty {
+        HybridType::FixedArray { elem, len } => *len > 32 || needs_manual_default(elem),
+        _ => false,
+    }
+}
+
+/// Default value expression of a field, valid for fixed-size arrays of any length.
+pub(super) fn default_expr(ty: &HybridType) -> String {
+    match ty {
+        HybridType::FixedArray { elem, .. } => {
+            format!("::core::array::from_fn(|_| {})", default_expr(elem))
+        }
+        _ => "Default::default()".to_owned(),
     }
 }
 
@@ -72,11 +146,16 @@ pub(super) fn c_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
         return format!("NveHybridOpt{suffix}");
     }
     match ty {
-        _ if is_by_value(ty, spec) => pod_c_type(ty),
-        HybridType::String => "NveStrSlice".to_owned(),
-        HybridType::Value => "NveValue".to_owned(),
-        _ => "NveBufferSlice".to_owned(),
+        _ if is_by_value(ty, spec) => raw_c_type(ty, spec),
+        HybridType::String => "nve_abi::NveStrSlice".to_owned(),
+        HybridType::Value => "nve_abi::NveValue".to_owned(),
+        _ => "nve_abi::NveBufferSlice".to_owned(),
     }
+}
+
+/// Whether `ty` returns through an owned `NveHybridOwnedBytes` buffer.
+pub(super) fn returns_owned_bytes(ty: &HybridType, spec: &HybridFileSpec) -> bool {
+    ty.optional_pod_suffix(spec).is_none() && *ty != HybridType::Void && !is_by_value(ty, spec)
 }
 
 pub(super) fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
@@ -85,42 +164,48 @@ pub(super) fn c_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
     }
     match ty {
         HybridType::Void => "()".to_owned(),
-        _ if is_by_value(ty, spec) => pod_c_type(ty),
+        _ if is_by_value(ty, spec) => raw_c_type(ty, spec),
         _ => "NveHybridOwnedBytes".to_owned(),
     }
 }
 
 /// Value a trampoline returns when it cannot call the implementation (null handle, bad argument).
-pub(super) fn c_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> &'static str {
-    if c_return_type(ty, spec) == "NveHybridOwnedBytes" {
-        "NveHybridOwnedBytes::EMPTY"
+pub(super) fn c_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if returns_owned_bytes(ty, spec) {
+        "NveHybridOwnedBytes::EMPTY".to_owned()
     } else {
-        "Default::default()"
+        default_expr(ty)
     }
 }
 
 /// `NveValue` of an event parameter that needs no encoding (scalars, enums, strings, bytes).
+///
+/// Mirrors the `HybridCodec` of each type: `u64` bit-casts, `usize` past `i64::MAX` is an error
+/// (the enclosing function returns `Result<_, DecodeError>`).
 pub(super) fn direct_nve_value_expr(expr: &str, ty: &HybridType) -> Option<String> {
+    const V: &str = "nve_abi::NveValue";
     Some(match ty {
-        HybridType::Bool => format!("NveValue::bool({expr})"),
+        HybridType::Bool => format!("{V}::bool({expr})"),
         HybridType::U8 | HybridType::U16 | HybridType::I32 | HybridType::U32 => {
-            format!("NveValue::i64(i64::from({expr}))")
+            format!("{V}::i64(i64::from({expr}))")
         }
-        HybridType::I64 => format!("NveValue::i64({expr})"),
-        // Bit-cast, matching the `NveBinValue` codec of `u64` / `usize`.
-        HybridType::U64 | HybridType::Usize => format!("NveValue::i64({expr} as i64)"),
-        HybridType::F32 => format!("NveValue::f64(f64::from({expr}))"),
-        HybridType::F64 => format!("NveValue::f64({expr})"),
-        HybridType::Enum(_) => format!("NveValue::i64(i64::from({expr}.to_u32()))"),
-        HybridType::String => format!("NveValue::from_str({expr}.as_str())"),
-        HybridType::Bytes => format!("NveValue::from_bytes({expr}.as_slice())"),
+        HybridType::I64 => format!("{V}::i64({expr})"),
+        HybridType::U64 => format!("{V}::i64(i64::from_ne_bytes({expr}.to_ne_bytes()))"),
+        HybridType::Usize => format!(
+            "{V}::i64(i64::try_from({expr}).map_err(|_| nve_abi::DecodeError::OutOfRange(\"usize\"))?)"
+        ),
+        HybridType::F32 => format!("{V}::f64(f64::from({expr}))"),
+        HybridType::F64 => format!("{V}::f64({expr})"),
+        HybridType::Enum(_) => format!("{V}::i64(i64::from({expr}.to_u32()))"),
+        HybridType::String => format!("{V}::from_str({expr}.as_str())"),
+        HybridType::Bytes => format!("{V}::from_bytes({expr}.as_slice())"),
         _ => return None,
     })
 }
 
 pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefaultValue>) -> String {
     let Some(def) = def else {
-        return "Default::default()".to_owned();
+        return default_expr(ty);
     };
     if let HybridType::Optional(inner) = ty {
         return match def {
@@ -139,7 +224,7 @@ pub(super) fn rust_prop_default_expr(ty: &HybridType, def: Option<&HybridDefault
         (HybridDefaultValue::EnumVariant { enum_name, variant }, _) => {
             format!("{enum_name}::{variant}")
         }
-        (HybridDefaultValue::None, _) => "Default::default()".to_owned(),
+        (HybridDefaultValue::None, _) => default_expr(ty),
     }
 }
 

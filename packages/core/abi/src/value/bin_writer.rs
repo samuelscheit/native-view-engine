@@ -70,35 +70,32 @@ impl BinWriter {
 
     #[inline]
     pub fn null(&mut self) {
-        self.buf.push(NveValueTag::Null as u8);
+        self.scalar(&[NveValueTag::Null as u8]);
     }
 
     #[inline]
     pub fn bool(&mut self, v: bool) {
-        self.buf
-            .extend_from_slice(&[NveValueTag::Bool as u8, u8::from(v)]);
+        self.scalar(&[NveValueTag::Bool as u8, u8::from(v)]);
     }
 
     #[inline]
     pub fn i64(&mut self, v: i64) {
-        self.buf.push(NveValueTag::I64 as u8);
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.tagged_word(NveValueTag::I64, v.to_le_bytes());
     }
 
     #[inline]
     pub fn f64(&mut self, v: f64) {
-        self.buf.push(NveValueTag::F64 as u8);
-        self.buf.extend_from_slice(&v.to_le_bytes());
+        self.tagged_word(NveValueTag::F64, v.to_le_bytes());
     }
 
     #[inline]
     pub fn str(&mut self, s: &str) {
-        self.tagged_run(NveValueTag::Str, s.as_bytes());
+        self.tagged_run(Some(NveValueTag::Str), s.as_bytes());
     }
 
     #[inline]
     pub fn bytes(&mut self, b: &[u8]) {
-        self.tagged_run(NveValueTag::Bytes, b);
+        self.tagged_run(Some(NveValueTag::Bytes), b);
     }
 
     /// Copies an already validated value. Records `MaxDepthExceeded` (writing nothing) when its
@@ -108,7 +105,7 @@ impl BinWriter {
         if self.depth > 0 && self.depth + container_depth(view) > NVE_BIN_VALUE_MAX_DEPTH {
             return self.fail(DecodeError::MaxDepthExceeded);
         }
-        self.buf.extend_from_slice(view.as_raw_bytes());
+        self.scalar(view.as_raw_bytes());
     }
 
     /// Writes an `Array` whose elements `fill` writes, one per [`BinArrayWriter::item`].
@@ -133,29 +130,49 @@ impl BinWriter {
         self.close(header, count);
     }
 
-    /// Appends `len: u32` + `run`; an oversized run records `TooLarge` and writes nothing.
-    fn run(&mut self, run: &[u8]) -> bool {
-        let Ok(len) = u32::try_from(run.len()) else {
-            self.fail(DecodeError::TooLarge);
-            return false;
-        };
-        self.buf.extend_from_slice(&len.to_le_bytes());
-        self.buf.extend_from_slice(run);
-        true
+    /// Appends `bytes` unless an error is recorded: a failed encode stops growing the buffer.
+    #[inline]
+    fn scalar(&mut self, bytes: &[u8]) {
+        if self.error.is_none() {
+            self.buf.extend_from_slice(bytes);
+        }
     }
 
-    fn tagged_run(&mut self, tag: NveValueTag, run: &[u8]) {
-        if u32::try_from(run.len()).is_err() {
-            return self.fail(DecodeError::TooLarge);
+    #[inline]
+    fn tagged_word(&mut self, tag: NveValueTag, word: [u8; 8]) {
+        if self.error.is_none() {
+            self.buf.push(tag as u8);
+            self.buf.extend_from_slice(&word);
         }
-        self.buf.push(tag as u8);
-        self.run(run);
+    }
+
+    /// Appends `len: u32` + `run`; an oversized run records `TooLarge` and writes nothing.
+    fn run(&mut self, run: &[u8]) {
+        self.tagged_run(None, run);
+    }
+
+    fn tagged_run(&mut self, tag: Option<NveValueTag>, run: &[u8]) {
+        let Ok(len) = u32::try_from(run.len()) else {
+            return self.fail(DecodeError::TooLarge);
+        };
+        if self.error.is_some() {
+            return;
+        }
+        if let Some(tag) = tag {
+            self.buf.push(tag as u8);
+        }
+        self.buf.extend_from_slice(&len.to_le_bytes());
+        self.buf.extend_from_slice(run);
     }
 
     /// Writes the container tag and a zeroed header; returns the header offset.
+    /// Returns `None` (and skips `fill`) once an error is recorded or past the depth limit.
     fn open(&mut self, tag: NveValueTag) -> Option<usize> {
         if self.depth >= NVE_BIN_VALUE_MAX_DEPTH {
             self.fail(DecodeError::MaxDepthExceeded);
+            return None;
+        }
+        if self.error.is_some() {
             return None;
         }
         self.buf.push(tag as u8);

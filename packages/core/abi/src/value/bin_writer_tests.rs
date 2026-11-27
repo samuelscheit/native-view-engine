@@ -186,3 +186,42 @@ fn value_tree_of_scalars_and_wide_fan_out() {
         Ok(&wide[..])
     );
 }
+
+#[test]
+fn a_failed_writer_stops_encoding() {
+    let mut w = BinWriter::new();
+    w.fail(DecodeError::TooLarge);
+    let mut ran = false;
+    w.array(|_| ran = true);
+    w.map(|_| ran = true);
+    w.str("ignored");
+    w.i64(1);
+    assert!(!ran, "container bodies are skipped once an error is recorded");
+    assert_eq!(w.finish(), Err(DecodeError::TooLarge));
+}
+
+#[test]
+fn empty_containers_own_no_arena_block() {
+    let mut w = BinWriter::new();
+    w.array(|a| {
+        a.item().array(|_| {});
+        a.item().map(|_| {});
+    });
+    let bytes = w.finish().expect("encodes");
+    let tree = build_tree(&bytes);
+    let items = tree.as_value_ref().as_array().expect("array");
+    for item in items.iter() {
+        // SAFETY: Reads the union field selected by each item's tag.
+        let ptr = unsafe {
+            match item.tag() {
+                Some(NveValueTag::Array) => item.raw().data.array_val.ptr.cast::<u8>(),
+                _ => item.raw().data.map_val.ptr.cast::<u8>(),
+            }
+        };
+        assert!(ptr.is_null());
+    }
+    assert_eq!(
+        encode_bin_value_to_vec(tree.as_value_ref()).as_deref(),
+        Ok(&bytes[..])
+    );
+}

@@ -4,7 +4,7 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use idents::{validate_ident, validate_top_level_ident, validate_vtable_method_ident};
+use idents::{ident_key, validate_ident, validate_top_level_ident, validate_vtable_method_ident};
 
 use super::*;
 
@@ -113,7 +113,7 @@ impl HybridFileSpec {
             let mut field_names = BTreeSet::new();
             for f in &s.fields {
                 validate_ident("struct field", &f.name)?;
-                if !field_names.insert(f.name.as_str()) {
+                if !field_names.insert(ident_key(&f.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate field '{}' in struct '{}'",
                         f.name, s.name
@@ -155,7 +155,7 @@ impl HybridFileSpec {
         for m in &self.modules {
             validate_top_level_ident("module", &m.name)?;
             validate_ident("module trait", &m.trait_name)?;
-            if !item_names.insert(m.name.as_str()) {
+            if !item_names.insert(ident_key(&m.name)) {
                 return Err(CodegenError::validation(format!(
                     "duplicate hybrid module/view name '{}'",
                     m.name
@@ -185,7 +185,7 @@ impl HybridFileSpec {
                 )));
             }
             for method in &m.methods {
-                validate_vtable_method_ident(&format!("module '{}'", m.name), &method.name)?;
+                validate_vtable_method_ident(&format!("module '{}'", m.name), &method.name, false)?;
             }
             validate_methods(
                 &m.methods,
@@ -199,7 +199,7 @@ impl HybridFileSpec {
         for v in &self.views {
             validate_top_level_ident("view", &v.name)?;
             validate_ident("view trait", &v.trait_name)?;
-            if !item_names.insert(v.name.as_str()) {
+            if !item_names.insert(ident_key(&v.name)) {
                 return Err(CodegenError::validation(format!(
                     "duplicate hybrid module/view name '{}'",
                     v.name
@@ -232,7 +232,7 @@ impl HybridFileSpec {
             let mut member_names = BTreeSet::new();
             for p in &v.props {
                 validate_ident("prop", &p.name)?;
-                if !member_names.insert(p.name.as_str()) {
+                if !member_names.insert(ident_key(&p.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
                         p.name, v.name
@@ -252,7 +252,7 @@ impl HybridFileSpec {
             }
             for ev in &v.events {
                 validate_ident("event", &ev.name)?;
-                if !member_names.insert(ev.name.as_str()) {
+                if !member_names.insert(ident_key(&ev.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
                         ev.name, v.name
@@ -261,7 +261,7 @@ impl HybridFileSpec {
                 let mut param_names = BTreeSet::new();
                 for param in &ev.params {
                     validate_ident("event parameter", &param.name)?;
-                    if !param_names.insert(param.name.as_str()) {
+                    if !param_names.insert(ident_key(&param.name)) {
                         return Err(CodegenError::validation(format!(
                             "duplicate parameter '{}' in view '{}' event '{}'",
                             param.name, v.name, ev.name
@@ -281,8 +281,8 @@ impl HybridFileSpec {
                 }
             }
             for m in &v.methods {
-                validate_vtable_method_ident(&format!("view '{}'", v.name), &m.name)?;
-                if !member_names.insert(m.name.as_str()) {
+                validate_vtable_method_ident(&format!("view '{}'", v.name), &m.name, true)?;
+                if !member_names.insert(ident_key(&m.name)) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
                         m.name, v.name
@@ -325,7 +325,7 @@ fn validate_methods(
     let mut names = BTreeSet::new();
     for m in methods {
         validate_ident("method", &m.name)?;
-        if !names.insert(m.name.as_str()) {
+        if !names.insert(ident_key(&m.name)) {
             return Err(CodegenError::validation(format!(
                 "duplicate method '{}' in {owner}",
                 m.name
@@ -334,7 +334,7 @@ fn validate_methods(
         let mut param_names = BTreeSet::new();
         for p in &m.params {
             validate_ident("parameter", &p.name)?;
-            if !param_names.insert(p.name.as_str()) {
+            if !param_names.insert(ident_key(&p.name)) {
                 return Err(CodegenError::validation(format!(
                     "duplicate parameter '{}' in {owner} method '{}'",
                     p.name, m.name

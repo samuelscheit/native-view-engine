@@ -2,13 +2,14 @@
 //!
 //! Every constant those packages mirror by hand — host / hybrid status codes, `FieldKind`, the
 //! `NveBinValue` tags, max nesting depth, max table words, and `Length` unit tags — is rendered
-//! here from the Rust source of truth (`nve_abi`, `nve_store`, and codegen's `NveHybridStatus`)
-//! and must appear verbatim in each language. Their golden XXH64 vectors are generated from
-//! `nve_hash` by `nve codegen abi` instead, so no host carries a hand-copied digest. Matching ignores case, whitespace, and `_`, so `InternalError = -8`,
+//! here from the Rust source of truth (`nve_abi`, including `nve_abi::hybrid::NveHybridStatus::ALL`,
+//! and `nve_store`) and must appear verbatim in each language. Their golden XXH64 vectors are
+//! generated from `nve_hash` by `nve codegen abi` instead, so no host carries a hand-copied
+//! digest. Matching ignores case, whitespace, and `_`, so `InternalError = -8`,
 //! `INTERNAL_ERROR(-8)`, and `internalError(-8)` are the same entry.
 
-use nve_abi::table::{FieldKind, MAX_TABLE_WORDS};
 use nve_abi::hybrid::NveHybridStatus;
+use nve_abi::table::{FieldKind, MAX_TABLE_WORDS};
 use nve_abi::{NVE_BIN_VALUE_MAX_DEPTH, NveHostStatus, NveValueTag};
 use nve_store::Length;
 
@@ -145,23 +146,11 @@ fn host_status_entries() -> Vec<(String, i64)> {
     .collect()
 }
 
-const fn hybrid_status_name(s: NveHybridStatus) -> &'static str {
-    match s {
-        NveHybridStatus::Ok => "Ok",
-        NveHybridStatus::Err => "Err",
-        NveHybridStatus::InvalidArg => "InvalidArg",
-        NveHybridStatus::SchemaMismatch => "SchemaMismatch",
-        NveHybridStatus::NullHandle => "NullHandle",
-    }
-}
-
-/// Every `nve_abi::hybrid::NveHybridStatus` (adding a variant fails `hybrid_status_name`'s
-/// exhaustive match first).
+/// Every `nve_abi::hybrid::NveHybridStatus`, by name and code.
 fn hybrid_status_entries() -> Vec<(String, i64)> {
-    use NveHybridStatus as S;
-    [S::Ok, S::Err, S::InvalidArg, S::SchemaMismatch, S::NullHandle]
+    NveHybridStatus::ALL
         .into_iter()
-        .map(|s| (hybrid_status_name(s).to_owned(), i64::from(s as i32)))
+        .map(|s| (s.name().to_owned(), i64::from(s as i32)))
         .collect()
 }
 

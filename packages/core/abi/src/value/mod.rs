@@ -34,6 +34,7 @@ pub use ffi_events::{
     NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
     NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
+pub(crate) use ffi_types::guarded_slice;
 pub use ffi_types::{
     NveCommandSlice, NveMapEntry, NvePropEntry, NvePropSlice, NveStrSlice, NveValue,
     NveValueArray, NveValueData, NveValueMap, NveValueTag,

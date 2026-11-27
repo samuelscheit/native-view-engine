@@ -99,8 +99,6 @@ fn rejects_methods_named_like_vtable_slots() {
         "freeBytes",
         "alloc_bytes",
         "abiVersion",
-        "setPropsDirect",
-        "apply_props",
     ] {
         let message = error_of(&spec(slot, "shape", "x"));
         assert!(
@@ -138,4 +136,75 @@ fn rejects_vec_u8_in_favor_of_bytes() {
     assert!(error_of(&s).contains("Vec<u8> must be declared as Bytes"));
     s.modules[0].methods[0].params[0].ty = HybridType::Vec(Box::new(HybridType::Bytes));
     assert_eq!(s.validate(), Ok(()));
+}
+
+#[test]
+fn view_only_slots_are_free_method_names_in_modules() {
+    for name in ["apply_props", "setPropsDirect"] {
+        assert_eq!(spec(name, "shape", "x").validate(), Ok(()), "{name}");
+        let mut s = spec("run", "shape", "x");
+        s.views.push(HybridViewSpec {
+            name: "Panel".to_owned(),
+            trait_name: "PanelSpec".to_owned(),
+            methods: vec![method(name, vec![])],
+            ..Default::default()
+        });
+        assert!(
+            error_of(&s).contains("reserved hybrid vtable member"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn reserves_the_generated_item_prefix_in_every_spelling() {
+    for name in [
+        "NVE_HYBRID_ABI_VERSION",
+        "NVE_HYBRID_FILE_SCHEMA_HASH",
+        "nve_hybrid_alloc_bytes",
+    ] {
+        let mut s = spec("run", "shape", "x");
+        s.consts.push(HybridConstSpec {
+            name: name.to_owned(),
+            ty: HybridType::U32,
+            value: 1,
+            hex: false,
+            doc: None,
+        });
+        assert!(
+            error_of(&s).contains("reserved by the hybrid runtime"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn names_that_collide_in_snake_case_are_duplicates() {
+    let mut s = spec("getValue", "shape", "x");
+    s.modules[0].methods.push(method("get_value", vec![]));
+    assert!(error_of(&s).contains("duplicate method"));
+
+    let mut s = spec("run", "shape", "x");
+    s.modules[0].methods[0]
+        .params
+        .push(param("Shape", HybridType::I32));
+    assert!(error_of(&s).contains("duplicate parameter"));
+
+    let mut s = spec("run", "shape", "_x");
+    s.structs[0].fields.push(HybridFieldSpec {
+        name: "x".to_owned(),
+        ty: HybridType::I32,
+        doc: None,
+        offset: None,
+        offset_64: None,
+    });
+    assert!(error_of(&s).contains("duplicate field"));
+
+    let mut s = spec("run", "shape", "x");
+    s.modules.push(HybridModuleSpec {
+        name: "probe".to_owned(),
+        trait_name: "ProbeTwoSpec".to_owned(),
+        ..Default::default()
+    });
+    assert!(error_of(&s).contains("duplicate hybrid module/view name"));
 }
