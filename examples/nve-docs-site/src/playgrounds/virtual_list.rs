@@ -3,7 +3,7 @@
 
 use dioxus_core::Callback;
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, RowHeights, VirtualList,
     VirtualListState, use_theme,
 };
@@ -103,10 +103,10 @@ pub fn VirtualList100kDemo() -> Element {
     preview_state.set_scroll_offset(scroll_offset);
     let slice = preview_state.slice();
 
-    let accent_color = theme.palette.accent.to_string();
-    let text_primary = theme.palette.text_primary.to_string();
-    let text_muted = theme.palette.text_muted.to_string();
-    let border_color = theme.palette.border.to_string();
+    let accent_color = theme.status.accent.solid.hex().to_string();
+    let text_primary = theme.text.primary.hex().to_string();
+    let text_muted = theme.text.tertiary.hex().to_string();
+    let border_color = theme.border.default.hex().to_string();
 
     let render_row = Callback::new(move |(idx, is_selected): (usize, bool)| {
         let src_idx = current_filter.source_index(idx);
@@ -175,7 +175,7 @@ pub fn VirtualList100kDemo() -> Element {
                     }
                 }
                 text {
-                    style: "font-size: 11px; color: {theme.palette.text_muted};",
+                    style: "font-size: 11px; color: {theme.text.tertiary.hex()};",
                     "O(1) uniform windowing · 34px rows"
                 }
             }

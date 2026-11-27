@@ -13,7 +13,9 @@ use nve_router::try_use_navigator;
 use crate::config::DocsSiteConfig;
 use crate::registry::{CustomPageRegistry, PlaygroundRegistry};
 use crate::route::DocsRoute;
-use crate::theme::DocsTheme;
+use nve_ui::{Appearance, Theme, ThemeMode};
+
+use crate::theme::{docs_theme_config, system_appearance};
 
 /// Viewport width threshold (pt) below which the sidebar collapses into a slide-over drawer.
 pub const MOBILE_BREAKPOINT_PT: f32 = 960.0;
@@ -85,7 +87,10 @@ pub struct DocsAppState {
     pub custom_pages: Arc<CustomPageRegistry>,
     pub host_services: Arc<dyn HostServiceProvider>,
     pub active_route: DocsRoute,
-    pub dark_mode: bool,
+    /// User color-scheme preference ([`ThemeMode::System`] follows the OS).
+    pub theme_mode: ThemeMode,
+    /// Last known host appearance (`nve-system-env`).
+    pub appearance: Appearance,
     pub viewport: DocsViewport,
     pub mobile_drawer_open: bool,
     pub collapsed_folders: BTreeSet<String>,
@@ -128,7 +133,7 @@ impl DocsAppState {
         initial_route: DocsRoute,
         viewport: DocsViewport,
     ) -> Self {
-        let dark_mode = config.default_dark;
+        let appearance = system_appearance(host_services.as_ref(), config.default_dark);
         let search_index = Arc::new(site.search_index.clone());
         let mut collapsed_folders = BTreeSet::new();
         collect_initially_collapsed(&site.nav.items, &mut collapsed_folders);
@@ -153,7 +158,8 @@ impl DocsAppState {
             custom_pages,
             host_services,
             active_route: resolved_route,
-            dark_mode,
+            theme_mode: ThemeMode::System,
+            appearance,
             viewport,
             mobile_drawer_open: false,
             collapsed_folders,
@@ -166,9 +172,9 @@ impl DocsAppState {
         }
     }
 
-    /// Resolve the active [`DocsTheme`] palette for the current dark/light toggle.
-    pub const fn theme(&self) -> DocsTheme {
-        DocsTheme::for_dark(self.dark_mode)
+    /// Resolve the active Docs-brand [`Theme`] from the user mode and the host appearance.
+    pub const fn theme(&self) -> Theme {
+        docs_theme_config(self.theme_mode).resolve(self.appearance)
     }
 
     /// Resolve the active compiled page, falling back to the first page if not found.
@@ -212,25 +218,17 @@ impl DocsAppState {
         }
     }
 
-    /// Toggle dark/light theme mode.
+    /// Toggle to the opposite of the currently resolved scheme (pins an explicit mode).
     pub fn toggle_theme(&mut self) {
-        self.dark_mode = !self.dark_mode;
+        self.theme_mode = if self.theme().is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
     }
 
-    /// Synchronize dark/light mode with the host's `nve_system_env` capability.
-    ///
-    /// Returns `true` if `dark_mode` changed.
+    /// Synchronize the host appearance from `nve_system_env`; returns `true` if it changed.
     pub fn sync_with_system_env(&mut self) -> bool {
-        let resolved = DocsTheme::resolve_dark_from_system_env(
-            self.host_services.as_ref(),
-            self.config.default_dark,
-        );
-        if resolved != self.dark_mode {
-            self.dark_mode = resolved;
-            true
-        } else {
-            false
-        }
+        let next = system_appearance(self.host_services.as_ref(), self.config.default_dark);
+        let changed = next != self.appearance;
+        self.appearance = next;
+        changed
     }
 
     /// Toggle the mobile slide-over sidebar drawer.

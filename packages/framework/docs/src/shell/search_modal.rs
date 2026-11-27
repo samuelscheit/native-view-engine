@@ -1,6 +1,7 @@
 //! `⌘K` instant full-text search dialog built on `nve_ui::Dialog`, `FocusTrap`, and `nve_mdx::SearchIndex`.
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 use nve_ui::{Dialog, FocusTrap, FocusTrapAction};
 
 use crate::state::{navigate_to_target, use_docs_state};
@@ -68,7 +69,7 @@ pub fn SearchModal() -> Element {
             test_id: Some("docs-search-dialog".to_string()),
             style: Some(format!(
                 "min-width: 340px; max-width: 600px; width: 100%; background-color: {}; border-color: {};",
-                theme.surface, theme.border
+                theme.surface.base.hex(), theme.border.default.hex()
             )),
             on_close: move |_| {
                 state.write().close_search();
@@ -98,7 +99,7 @@ pub fn SearchModal() -> Element {
                         accessibility_label: "Search documentation query",
                         placeholder: "Search pages, headings, APIs...",
                         value: "{query}",
-                        style: "flex-grow: 1; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; border-width: 1px; border-color: {theme.accent}; background-color: {theme.canvas}; color: {theme.text}; font-size: 14px;",
+                        style: "flex-grow: 1; padding-horizontal: 12px; padding-vertical: 10px; border-radius: 8px; border-width: 1px; border-color: {theme.status.accent.solid.hex()}; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()}; font-size: 14px;",
                         onchange: move |ev: TextEvent| {
                             state.write().set_search_query(ev.data().value.clone());
                         },
@@ -119,12 +120,12 @@ pub fn SearchModal() -> Element {
                         test_id: "docs-search-close",
                         accessibility_role: "button",
                         accessibility_label: "Close search dialog",
-                        style: "padding-horizontal: 10px; padding-vertical: 8px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                        style: "padding-horizontal: 10px; padding-vertical: 8px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         onpress: move |_| {
                             state.write().close_search();
                         },
                         text {
-                            style: "font-size: 12px; color: {theme.muted};",
+                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                             "Esc"
                         }
                     }
@@ -140,9 +141,9 @@ pub fn SearchModal() -> Element {
                     if hit_count == 0 {
                         view {
                             test_id: "docs-search-empty",
-                            style: "padding: 20px; border-radius: 8px; background-color: {theme.surface_subtle}; align-items: center;",
+                            style: "padding: 20px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; align-items: center;",
                             text {
-                                style: "font-size: 13px; color: {theme.muted};",
+                                style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                                 "No matching results for \"{query}\"."
                             }
                         }
@@ -150,9 +151,9 @@ pub fn SearchModal() -> Element {
                         for (idx, hit) in hits.into_iter().enumerate() {
                             {
                                 let is_selected = idx == selected_idx;
-                                let bg = if is_selected { theme.accent_surface } else { theme.surface_subtle };
-                                let border_c = if is_selected { theme.accent } else { theme.border };
-                                let title_c = if is_selected { theme.accent } else { theme.text };
+                                let bg = if is_selected { theme.status.accent.subtle.hex() } else { theme.surface.subtle.hex() };
+                                let border_c = if is_selected { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
+                                let title_c = if is_selected { theme.status.accent.solid.hex() } else { theme.text.primary.hex() };
                                 let tid = format!("docs-search-hit-{idx}");
                                 let sel_attr = if is_selected { "true" } else { "false" };
                                 let hit_route = config.docs_route_for_content(&hit.route);
@@ -181,16 +182,16 @@ pub fn SearchModal() -> Element {
                                                 "{hit.title}"
                                             }
                                             view {
-                                                style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                                                style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                                 text {
-                                                    style: "font-size: 11px; color: {theme.accent_alt};",
+                                                    style: "font-size: 11px; color: {theme.status.info.text.hex()};",
                                                     "{section_badge}"
                                                 }
                                             }
                                         }
                                         if !hit.excerpt.is_empty() {
                                             text {
-                                                style: "font-size: 12px; color: {theme.muted};",
+                                                style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                                                 "{hit.excerpt}"
                                             }
                                         }

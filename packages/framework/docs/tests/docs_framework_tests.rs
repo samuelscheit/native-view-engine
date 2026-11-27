@@ -10,12 +10,15 @@ use nve_backend_headless::HeadlessBackend;
 use nve_backend_web::WebBackend;
 use nve_web_html_web::register_web_html_systems;
 use nve_docs::{
-    DocsAppState, DocsRoute, DocsTheme, DocsViewport, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT,
+    DocsAppState, DocsRoute, DocsViewport, callout_tone, docs_theme_config, syntax_color,
+    system_appearance, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT,
     create_docs_surface, create_docs_surface_at_route,
 };
 use nve_clipboard::ClipboardClient;
 use nve_host_services::{HostServiceProvider, MemoryHostServices};
-use nve_mdx::TokenKind;
+use nve_interop::ContrastLevel;
+use nve_mdx::{CalloutKind, TokenKind};
+use nve_ui::{AppBrand, Appearance, Polarity, Theme, ThemeMode, wcag_contrast};
 use nve_router::Routable;
 use nve_system_env::{ColorScheme, MemorySystemEnv, ThemeSnapshot};
 
@@ -54,15 +57,16 @@ fn route_normalization_and_routable_roundtrip() {
 }
 
 #[test]
-fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
-    let dark = DocsTheme::dark();
-    let light = DocsTheme::light();
-    assert_eq!(dark.canvas, "#09090b");
-    assert_eq!(dark.surface, "#111114");
-    assert_eq!(dark.accent, "#38bdf8");
-    assert_eq!(light.canvas, "#ffffff");
-    assert_eq!(light.surface, "#fafafa");
-    assert_eq!(light.accent, "#0284c7");
+fn docs_theme_follows_os_with_docs_brand_and_syntax_and_callout_tones() {
+    let dark = docs_theme_config(ThemeMode::System).resolve(Appearance::DARK);
+    let light = docs_theme_config(ThemeMode::System).resolve(Appearance::LIGHT);
+    assert_eq!(dark, Theme::preset(Polarity::Dark, AppBrand::Docs));
+    assert_eq!(light, Theme::preset(Polarity::Light, AppBrand::Docs));
+    assert_eq!(dark.surface.canvas, ColorRgba::rgb(0x09, 0x09, 0x0b));
+    assert_eq!(light.surface.base, ColorRgba::WHITE);
+    assert_ne!(dark.status.accent.solid, Theme::preset(Polarity::Dark, AppBrand::Studio).status.accent.solid);
+    // An explicit user mode overrides the OS.
+    assert!(!docs_theme_config(ThemeMode::Light).resolve(Appearance::DARK).is_dark());
 
     let all_kinds = [
         TokenKind::Plain,
@@ -78,15 +82,17 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
         TokenKind::DiffAdd,
         TokenKind::DiffDel,
     ];
-    for kind in all_kinds {
-        assert!(dark.token_color(kind).starts_with('#'));
-        assert!(light.token_color(kind).starts_with('#'));
+    for theme in [dark, light] {
+        for kind in all_kinds {
+            let c = syntax_color(&theme.syntax, kind);
+            assert!(wcag_contrast(c, theme.surface.sunken) >= 4.5, "{kind:?} readable on code well");
+        }
+        for kind in [CalloutKind::Tip, CalloutKind::Info, CalloutKind::Warning, CalloutKind::Danger, CalloutKind::Note] {
+            let tone = callout_tone(&theme, kind);
+            assert!(wcag_contrast(tone.colors.text, tone.colors.subtle) >= 4.5, "{kind:?} callout title");
+        }
     }
-
-    let ui_dark = dark.to_ui_theme();
-    assert!(ui_dark.is_dark());
-    assert_eq!(ui_dark.palette.surface.as_ref(), "#09090b");
-    assert_eq!(ui_dark.palette.accent.as_ref(), "#38bdf8");
+    assert_eq!(callout_tone(&dark, CalloutKind::Danger).colors, dark.status.danger);
 
     let mem = Arc::new(MemoryHostServices::new());
     let sys_env = Arc::new(MemorySystemEnv::new());
@@ -95,19 +101,23 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
         color_scheme: Some(ColorScheme::Light),
         ..ThemeSnapshot::default()
     });
-    assert!(!DocsTheme::from_system_env(mem.as_ref(), true).is_dark);
+    assert_eq!(system_appearance(mem.as_ref(), true), Appearance::LIGHT);
 
     sys_env.set_theme(ThemeSnapshot {
         color_scheme: Some(ColorScheme::Dark),
+        contrast: ContrastLevel::High,
         ..ThemeSnapshot::default()
     });
-    assert!(DocsTheme::from_system_env(mem.as_ref(), false).is_dark);
+    assert_eq!(
+        system_appearance(mem.as_ref(), false),
+        Appearance { scheme: ColorScheme::Dark, contrast: ContrastLevel::High }
+    );
 
     sys_env.set_theme(ThemeSnapshot {
         color_scheme: None,
         ..ThemeSnapshot::default()
     });
-    assert!(DocsTheme::from_system_env(mem.as_ref(), true).is_dark);
+    assert_eq!(system_appearance(mem.as_ref(), true), Appearance::DARK);
 
     let mut app_state = DocsAppState::new(
         build_config(),
@@ -117,13 +127,19 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
         DocsRoute::root(),
         DocsViewport::desktop_default(),
     );
-    assert!(app_state.dark_mode);
+    assert_eq!(app_state.theme_mode, ThemeMode::System);
+    assert!(app_state.theme().is_dark());
     sys_env.set_theme(ThemeSnapshot {
         color_scheme: Some(ColorScheme::Light),
         ..ThemeSnapshot::default()
     });
     assert!(app_state.sync_with_system_env());
-    assert!(!app_state.dark_mode);
+    assert!(!app_state.theme().is_dark(), "System mode follows the OS switch");
+    assert!(!app_state.sync_with_system_env());
+    // The user toggle pins the opposite scheme and survives later OS changes.
+    app_state.toggle_theme();
+    assert_eq!(app_state.theme_mode, ThemeMode::Dark);
+    assert!(app_state.theme().is_dark());
 }
 
 #[test]
@@ -352,28 +368,30 @@ fn cmd_k_search_modal_filters_nvs2_index_and_navigates() {
 }
 
 #[test]
-fn theme_toggle_updates_canvas_and_surface_colors() {
+fn theme_follows_os_then_toggle_pins_canvas_and_surface_colors() {
+    // The harness host reports a light OS appearance: System mode follows it on mount.
     let mut h = DocsHarness::mount("/", DocsViewport::desktop_default());
-    let root_id = h.find("docs-root");
-    let nav_id = h.find("docs-navbar");
-
-    assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("dark"));
-    assert_eq!(h.bg(root_id), ColorRgba::rgb(0x09, 0x09, 0x0b));
-    assert_eq!(h.bg(nav_id), ColorRgba::rgb(0x11, 0x11, 0x14));
-
-    // Toggle to light mode
-    h.press("docs-theme-toggle");
+    let dark = Theme::preset(Polarity::Dark, AppBrand::Docs);
+    let light = Theme::preset(Polarity::Light, AppBrand::Docs);
     let root_id = h.find("docs-root");
     let nav_id = h.find("docs-navbar");
     assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("light"));
-    assert_eq!(h.bg(root_id), ColorRgba::rgb(0xff, 0xff, 0xff));
-    assert_eq!(h.bg(nav_id), ColorRgba::rgb(0xfa, 0xfa, 0xfa));
+    assert_eq!(h.bg(root_id), light.surface.canvas);
+    assert_eq!(h.bg(nav_id), light.surface.base);
 
-    // Toggle back to dark mode
+    // Toggle pins dark mode.
     h.press("docs-theme-toggle");
     let root_id = h.find("docs-root");
+    let nav_id = h.find("docs-navbar");
     assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("dark"));
-    assert_eq!(h.bg(root_id), ColorRgba::rgb(0x09, 0x09, 0x0b));
+    assert_eq!(h.bg(root_id), dark.surface.canvas);
+    assert_eq!(h.bg(nav_id), dark.surface.base);
+
+    // Toggle back to light mode.
+    h.press("docs-theme-toggle");
+    let root_id = h.find("docs-root");
+    assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("light"));
+    assert_eq!(h.bg(root_id), light.surface.canvas);
 }
 
 #[test]

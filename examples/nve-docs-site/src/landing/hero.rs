@@ -1,6 +1,8 @@
 //! Split 2-column Hero section with Live Interactive NVE Preview Card (`RSX Code` | `Live UI` | `Binary IR`).
 
 use nve_abi::{FlexAlign, FlexJustify};
+use nve_docs::syntax_color;
+use nve_ui::{ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 use nve_mdx::highlight_code;
@@ -60,8 +62,8 @@ pub fn LandingHero() -> Element {
             .align_items(FlexAlign::Stretch),
     );
     let copy_label = if cli_copied { "Copied ✓" } else { "Copy" };
-    let copy_fg = if cli_copied { theme.success } else { theme.muted };
-    let copy_border = if cli_copied { theme.success } else { theme.border };
+    let copy_fg = if cli_copied { theme.status.success.text.hex() } else { theme.text.secondary.hex() };
+    let copy_border = if cli_copied { theme.status.success.solid.hex() } else { theme.border.default.hex() };
 
     rsx! {
         view {
@@ -79,16 +81,16 @@ pub fn LandingHero() -> Element {
                     style: "flex-direction: row; align-items: center;",
                     view {
                         test_id: "landing-status-badge",
-                        style: "flex-direction: row; align-items: center; gap: 8px; padding-horizontal: 12px; padding-vertical: 5px; border-radius: 999px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                        style: "flex-direction: row; align-items: center; gap: 8px; padding-horizontal: 12px; padding-vertical: 5px; border-radius: 999px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         view {
-                            style: "width: 7px; height: 7px; border-radius: 999px; background-color: {theme.success};",
+                            style: "width: 7px; height: 7px; border-radius: 999px; background-color: {theme.status.success.solid.hex()};",
                         }
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {theme.text};",
+                            style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
                             "v0.1"
                         }
                         text {
-                            style: "font-size: 12px; color: {theme.muted};",
+                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                             "· 10 Native & Web Hosts · Direct Binary ABI"
                         }
                     }
@@ -102,7 +104,7 @@ pub fn LandingHero() -> Element {
                     style: "width: 100%; flex-direction: column; gap: 4px;",
                     text {
                         nve_style: h1_resp,
-                        style: "font-size: 44px; font-weight: 800; color: {theme.text};",
+                        style: "font-size: 44px; font-weight: 800; color: {theme.text.primary.hex()};",
                         "Native-speed UI in Rust. One binary ABI, 10 hosts."
                     }
                 }
@@ -111,7 +113,7 @@ pub fn LandingHero() -> Element {
                 text {
                     test_id: "landing-hero-subtitle",
                     nve_style: sub_resp,
-                    style: "font-size: 17px; color: {theme.muted}; line-height: 1.55;",
+                    style: "font-size: 17px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
                     "Write declarative UI once with Rust rsx! and fine-grained signals. Every frame crosses the host boundary as one flat binary CommandBuffer and 64-byte cache-line NveSceneView — zero JS VM, direct binary bridge, sub-second hot reload."
                 }
 
@@ -126,12 +128,12 @@ pub fn LandingHero() -> Element {
                         accessibility_role: "link",
                         accessibility_label: "Read the Docs Quickstart",
                         "href": "{docs_href}",
-                        style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 18px; padding-vertical: 11px; border-radius: 9px; background-color: {theme.accent}; border-width: 1px; border-color: {theme.accent};",
+                        style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 18px; padding-vertical: 11px; border-radius: 9px; background-color: {theme.status.accent.solid.hex()}; border-width: 1px; border-color: {theme.status.accent.solid.hex()};",
                         onpress: move |_| {
                             navigate_to(state, DocsRoute::new("/docs/getting-started/quickstart"));
                         },
                         text {
-                            style: "font-size: 14px; font-weight: 700; color: {theme.accent_fg};",
+                            style: "font-size: 14px; font-weight: 700; color: {theme.text.on_accent.hex()};",
                             "Read the Docs →"
                         }
                     }
@@ -149,9 +151,9 @@ pub fn LandingHero() -> Element {
                                 )]),
                             ));
                         }),
-                        style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 18px; padding-vertical: 11px; border-radius: 9px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                        style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 18px; padding-vertical: 11px; border-radius: 9px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         text {
-                            style: "font-size: 14px; font-weight: 600; color: {theme.text};",
+                            style: "font-size: 14px; font-weight: 600; color: {theme.text.primary.hex()};",
                             "Launch Live Studio →"
                         }
                     }
@@ -161,12 +163,12 @@ pub fn LandingHero() -> Element {
                         accessibility_role: "link",
                         accessibility_label: "Explore Examples Gallery",
                         "href": "{examples_href}",
-                        style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 14px; padding-vertical: 11px; border-radius: 9px; background-color: transparent; border-width: 1px; border-color: {theme.border};",
+                        style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 14px; padding-vertical: 11px; border-radius: 9px; background-color: transparent; border-width: 1px; border-color: {theme.border.default.hex()};",
                         onpress: move |_| {
                             navigate_to(state, DocsRoute::new("/examples"));
                         },
                         text {
-                            style: "font-size: 14px; font-weight: 500; color: {theme.muted};",
+                            style: "font-size: 14px; font-weight: 500; color: {theme.text.secondary.hex()};",
                             "Examples Gallery"
                         }
                     }
@@ -175,16 +177,16 @@ pub fn LandingHero() -> Element {
                 // One-click copyable CLI command bar
                 view {
                     test_id: "landing-cli-bar",
-                    style: "width: 100%; max-width: 440px; flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding-horizontal: 14px; padding-vertical: 9px; border-radius: 10px; background-color: {theme.code_bg}; border-width: 1px; border-color: {theme.border};",
+                    style: "width: 100%; max-width: 440px; flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding-horizontal: 14px; padding-vertical: 9px; border-radius: 10px; background-color: {theme.surface.sunken.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: row; align-items: center; gap: 8px; min-width: 0;",
                         text {
-                            style: "font-size: 13px; font-family: monospace; font-weight: 700; color: {theme.accent};",
+                            style: "font-size: 13px; font-family: monospace; font-weight: 700; color: {theme.text.link.hex()};",
                             "$"
                         }
                         text {
                             test_id: "landing-cli-text",
-                            style: "font-size: 13px; font-family: monospace; color: {theme.text};",
+                            style: "font-size: 13px; font-family: monospace; color: {theme.text.primary.hex()};",
                             "{CLI_DEV_CMD}"
                         }
                     }
@@ -192,7 +194,7 @@ pub fn LandingHero() -> Element {
                         test_id: "landing-cli-copy",
                         accessibility_role: "button",
                         accessibility_label: "Copy cargo dev command",
-                        style: "flex-shrink: 0; padding-horizontal: 10px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {copy_border};",
+                        style: "flex-shrink: 0; padding-horizontal: 10px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {copy_border};",
                         onpress: move |_| {
                             let _ = state.write().copy_code("landing-cli", CLI_DEV_CMD);
                         },
@@ -271,12 +273,12 @@ fn HeroInteractiveCard() -> Element {
         view {
             test_id: "landing-hero-preview",
             nve_style: card_resp,
-            style: "width: 540px; max-width: 100%; align-self: flex-start; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
+            style: "width: 540px; max-width: 100%; align-self: flex-start; flex-shrink: 0; flex-direction: column; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; overflow: hidden;",
 
             // Card chrome header: window dots + switchable mode tabs (stacked on mobile)
             view {
                 nve_style: card_header_resp,
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                 view {
                     style: "flex-direction: row; align-items: center; gap: 6px;",
@@ -284,7 +286,7 @@ fn HeroInteractiveCard() -> Element {
                     view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: #f59e0b;" }
                     view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: #22c55e;" }
                     text {
-                        style: "font-size: 12px; font-family: monospace; color: {theme.muted}; padding-horizontal: 6px;",
+                        style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()}; padding-horizontal: 6px;",
                         "telemetry_counter.rs"
                     }
                 }
@@ -293,13 +295,13 @@ fn HeroInteractiveCard() -> Element {
                 view {
                     accessibility_role: "tablist",
                     nve_style: tablist_resp,
-                    style: "flex-direction: row; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-direction: row; align-items: center; gap: 4px; padding: 3px; border-radius: 8px; background-color: {theme.surface.canvas.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     for (id, label, tid) in tabs {
                         {
                             let selected = tab == id;
-                            let bg = if selected { theme.accent_surface } else { "transparent" };
-                            let fg = if selected { theme.accent } else { theme.muted };
-                            let bc = if selected { theme.accent } else { "transparent" };
+                            let bg = if selected { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
+                            let fg = if selected { theme.text.link.hex() } else { theme.text.secondary.hex() };
+                            let bc = if selected { theme.status.accent.solid.hex() } else { Hex::TRANSPARENT };
                             let sel_attr = if selected { "true" } else { "false" };
                             rsx! {
                                 pressable {
@@ -326,7 +328,7 @@ fn HeroInteractiveCard() -> Element {
             view {
                 test_id: "hero-preview-body",
                 accessibility_role: "tabpanel",
-                style: "width: 100%; min-height: 236px; flex-direction: column; justify-content: space-between; padding: 18px; gap: 16px; background-color: {theme.code_bg};",
+                style: "width: 100%; min-height: 236px; flex-direction: column; justify-content: space-between; padding: 18px; gap: 16px; background-color: {theme.surface.sunken.hex()};",
 
                 if tab == "code" {
                     view {
@@ -337,7 +339,7 @@ fn HeroInteractiveCard() -> Element {
                                 key: "hero-rsx-ln-{line.line_no}",
                                 style: "width: 100%; flex-direction: row; align-items: center; gap: 10px;",
                                 text {
-                                    style: "min-width: 18px; font-size: 11px; font-family: monospace; color: {theme.muted}; text-align: right;",
+                                    style: "min-width: 18px; font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()}; text-align: right;",
                                     "{line.line_no}"
                                 }
                                 view {
@@ -345,7 +347,7 @@ fn HeroInteractiveCard() -> Element {
                                     style: "flex-direction: row; flex-grow: 1;",
                                     for (ti, tok) in line.tokens.into_iter().enumerate() {
                                         {
-                                            let c = theme.token_color(tok.kind);
+                                            let c = syntax_color(&theme.syntax, tok.kind).hex();
                                             rsx! {
                                                 text {
                                                     key: "hero-rsx-{line.line_no}-{ti}",
@@ -367,39 +369,39 @@ fn HeroInteractiveCard() -> Element {
                             style: "flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                             PillBadge { label: format!("NVE1 Frame #{seq_val}"), accent: true }
                             text {
-                                style: "font-size: 11px; font-family: monospace; color: {theme.success};",
+                                style: "font-size: 11px; font-family: monospace; color: {theme.status.success.text.hex()};",
                                 "{frame_bytes} B · 0 JSON bytes"
                             }
                         }
                         view {
-                            style: "width: 100%; flex-direction: column; gap: 6px; padding: 12px; border-radius: 10px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            style: "width: 100%; flex-direction: column; gap: 6px; padding: 12px; border-radius: 10px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             text {
-                                style: "font-size: 12px; font-family: monospace; color: {theme.accent};",
+                                style: "font-size: 12px; font-family: monospace; color: {theme.text.link.hex()};",
                                 "HDR   4E 56 45 31 00 01 {seq_hex}   ; magic='NVE1' ver=1"
                             }
                             text {
-                                style: "font-size: 12px; font-family: monospace; color: {theme.syntax.keyword};",
+                                style: "font-size: 12px; font-family: monospace; color: {theme.syntax.keyword.hex()};",
                                 "OP_01 CREATE_NODE   id=1 kind=View  style=flex-col"
                             }
                             text {
-                                style: "font-size: 12px; font-family: monospace; color: {theme.syntax.string_lit};",
+                                style: "font-size: 12px; font-family: monospace; color: {theme.syntax.string.hex()};",
                                 "OP_02 SET_TEXT      id=2 utf8=\"{payload_text}\""
                             }
                             text {
-                                style: "font-size: 12px; font-family: monospace; color: {theme.syntax.number};",
+                                style: "font-size: 12px; font-family: monospace; color: {theme.syntax.number.hex()};",
                                 "OP_03 SET_PROP_I32  id=3 key=count  val=0x{count_hex}"
                             }
                             text {
-                                style: "font-size: 12px; font-family: monospace; color: {theme.accent_alt};",
+                                style: "font-size: 12px; font-family: monospace; color: {theme.status.info.text.hex()};",
                                 "OP_04 SCENE_NODE    size=64B align=64 dirty=1"
                             }
                             text {
-                                style: "font-size: 12px; font-family: monospace; color: {theme.muted};",
+                                style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                 "OP_05 COMMIT_FRAME  encode=2.02us decode=1.81us"
                             }
                         }
                         text {
-                            style: "font-size: 12px; color: {theme.muted};",
+                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                             "Live state reflects the Live UI tab — click + or switch host target and inspect the updated binary opcodes."
                         }
                     }
@@ -414,7 +416,7 @@ fn HeroInteractiveCard() -> Element {
                             nve_style: host_row_resp,
                             style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                             text {
-                                style: "font-size: 11px; font-weight: 700; color: {theme.muted};",
+                                style: "font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()};",
                                 "RENDER TARGET"
                             }
                             view {
@@ -422,9 +424,9 @@ fn HeroInteractiveCard() -> Element {
                                 for h in hosts {
                                     {
                                         let is_sel = host_label == h;
-                                        let bg = if is_sel { theme.accent_surface } else { theme.surface };
-                                        let fg = if is_sel { theme.accent } else { theme.muted };
-                                        let bc = if is_sel { theme.accent } else { theme.border };
+                                        let bg = if is_sel { theme.status.accent.subtle.hex() } else { theme.surface.base.hex() };
+                                        let fg = if is_sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
+                                        let bc = if is_sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
                                         let slug: String = h
                                             .chars()
                                             .map(|c| if c == ' ' { '-' } else { c.to_ascii_lowercase() })
@@ -453,19 +455,19 @@ fn HeroInteractiveCard() -> Element {
 
                         // Live counter interactive surface
                         view {
-                            style: "width: 100%; flex-direction: column; gap: 14px; padding: 18px; border-radius: 12px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            style: "width: 100%; flex-direction: column; gap: 14px; padding: 18px; border-radius: 12px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                             view {
                                 style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
                                 view {
                                     style: "flex-direction: column; gap: 3px;",
                                     text {
-                                        style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
+                                        style: "font-size: 11px; font-weight: 600; color: {theme.text.secondary.hex()};",
                                         "LIVE NVE SIGNAL WIDGET"
                                     }
                                     text {
                                         test_id: "hero-live-count",
-                                        style: "font-size: 26px; font-weight: 800; color: {theme.text};",
+                                        style: "font-size: 26px; font-weight: 800; color: {theme.text.primary.hex()};",
                                         "Count: {count_val}"
                                     }
                                 }
@@ -478,13 +480,13 @@ fn HeroInteractiveCard() -> Element {
                                     test_id: "hero-live-inc",
                                     accessibility_role: "button",
                                     accessibility_label: "Increment hero counter",
-                                    style: "padding-horizontal: 14px; padding-vertical: 8px; border-radius: 8px; background-color: {theme.accent}; border-width: 1px; border-color: {theme.accent};",
+                                    style: "padding-horizontal: 14px; padding-vertical: 8px; border-radius: 8px; background-color: {theme.status.accent.solid.hex()}; border-width: 1px; border-color: {theme.status.accent.solid.hex()};",
                                     onpress: move |_| {
                                         counter += 1;
                                         frame_seq += 1;
                                     },
                                     text {
-                                        style: "font-size: 13px; font-weight: 700; color: {theme.accent_fg};",
+                                        style: "font-size: 13px; font-weight: 700; color: {theme.text.on_accent.hex()};",
                                         "+ Increment"
                                     }
                                 }
@@ -492,13 +494,13 @@ fn HeroInteractiveCard() -> Element {
                                     test_id: "hero-live-dec",
                                     accessibility_role: "button",
                                     accessibility_label: "Decrement hero counter",
-                                    style: "padding-horizontal: 12px; padding-vertical: 8px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                    style: "padding-horizontal: 12px; padding-vertical: 8px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                     onpress: move |_| {
                                         counter -= 1;
                                         frame_seq += 1;
                                     },
                                     text {
-                                        style: "font-size: 13px; font-weight: 600; color: {theme.text};",
+                                        style: "font-size: 13px; font-weight: 600; color: {theme.text.primary.hex()};",
                                         "- 1"
                                     }
                                 }
@@ -506,13 +508,13 @@ fn HeroInteractiveCard() -> Element {
                                     test_id: "hero-live-reset",
                                     accessibility_role: "button",
                                     accessibility_label: "Reset hero counter",
-                                    style: "padding-horizontal: 12px; padding-vertical: 8px; border-radius: 8px; background-color: transparent; border-width: 1px; border-color: {theme.border};",
+                                    style: "padding-horizontal: 12px; padding-vertical: 8px; border-radius: 8px; background-color: transparent; border-width: 1px; border-color: {theme.border.default.hex()};",
                                     onpress: move |_| {
                                         counter.set(0);
                                         frame_seq += 1;
                                     },
                                     text {
-                                        style: "font-size: 13px; font-weight: 500; color: {theme.muted};",
+                                        style: "font-size: 13px; font-weight: 500; color: {theme.text.secondary.hex()};",
                                         "Reset"
                                     }
                                 }
@@ -521,14 +523,14 @@ fn HeroInteractiveCard() -> Element {
 
                         // Zero-copy live telemetry bar
                         view {
-                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding-horizontal: 10px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding-horizontal: 10px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             text {
                                 test_id: "hero-live-frame",
-                                style: "font-size: 11px; font-family: monospace; color: {theme.muted};",
+                                style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                 "Frame #{seq_val} · {frame_bytes} B NVE1 · 64B NveRenderNode"
                             }
                             text {
-                                style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.success};",
+                                style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.status.success.text.hex()};",
                                 "0.98 ns ABI"
                             }
                         }

@@ -1,6 +1,7 @@
 //! Sticky right "On This Page" table of contents (`accessibility_role: "complementary"`, `220px`, hidden `< 1200pt`).
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 
 use crate::state::{navigate_to_target, use_docs_state};
 
@@ -29,17 +30,17 @@ pub fn DocsToc() -> Element {
             nve_show_on: ShowOn(MediaQuery::min_width(1200)),
             accessibility_role: "complementary",
             accessibility_label: "On this page",
-            style: "width: 220px; height: 100%; flex-shrink: 0; flex-direction: column; padding: 20px; gap: 10px; background-color: {theme.canvas}; border-width: 1px; border-color: {theme.border};",
+            style: "width: 220px; height: 100%; flex-shrink: 0; flex-direction: column; padding: 20px; gap: 10px; background-color: {theme.surface.canvas.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
             text {
                 test_id: "docs-toc-title",
-                style: "font-size: 12px; font-weight: 700; color: {theme.text};",
+                style: "font-size: 12px; font-weight: 700; color: {theme.text.primary.hex()};",
                 "On This Page"
             }
 
             if headings.is_empty() {
                 text {
-                    style: "font-size: 12px; color: {theme.muted};",
+                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                     "No sections"
                 }
             } else {
@@ -48,8 +49,8 @@ pub fn DocsToc() -> Element {
                     for heading in headings {
                         {
                             let is_active = active_anchor.as_deref() == Some(heading.id.as_str());
-                            let fg = if is_active { theme.accent } else { theme.muted };
-                            let rail = if is_active { theme.accent } else { theme.border };
+                            let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
+                            let rail = if is_active { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
                             let weight = if is_active { "600" } else { "400" };
                             let pad_h = if heading.level == 3 { "16px" } else { "8px" };
                             let href = format!("#{}", heading.id);

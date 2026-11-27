@@ -3,7 +3,7 @@
 
 use nve_dioxus::prelude::*;
 use nve_router::{GuardDecision, QueryParams, Routable, RouterState, guard_fn};
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
+use nve_ui::{ColorHex, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
 
 pub const ROUTER_SANDBOX_SOURCE: &str = r#"use nve_router::{GuardDecision, Routable, RouterState, guard_fn};
 
@@ -115,7 +115,7 @@ pub fn RouterSandboxDemo() -> Element {
 
             // Live URL bar + stack depth telemetry
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; border-radius: 8px; background-color: {theme.palette.surface_elevated}; border-width: 1px; border-color: {theme.palette.border};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; border-radius: 8px; background-color: {theme.surface.raised.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                 view {
                     style: "flex-direction: row; align-items: center; gap: 8px;",
                     Badge {
@@ -124,11 +124,11 @@ pub fn RouterSandboxDemo() -> Element {
                     }
                     text {
                         test_id: "pg-router-path",
-                        style: "font-size: 14px; font-weight: 700; color: {theme.palette.text_primary};",
+                        style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
                         "{current_path}"
                     }
                     text {
-                        style: "font-size: 12px; color: {theme.palette.text_secondary};",
+                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                         "({current_title})"
                     }
                 }
@@ -256,7 +256,7 @@ pub fn RouterSandboxDemo() -> Element {
                 }
                 text {
                     test_id: "pg-router-status",
-                    style: "font-size: 12px; color: {theme.palette.text_secondary};",
+                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                     "{last_event}"
                 }
             }
@@ -265,7 +265,7 @@ pub fn RouterSandboxDemo() -> Element {
             view {
                 style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: center;",
                 text {
-                    style: "font-size: 11px; font-weight: 600; color: {theme.palette.text_muted};",
+                    style: "font-size: 11px; font-weight: 600; color: {theme.text.tertiary.hex()};",
                     "Stack:"
                 }
                 for (i, seg) in stack_trail.into_iter().enumerate() {

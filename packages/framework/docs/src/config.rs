@@ -73,7 +73,8 @@ pub struct DocsSiteConfig {
     /// Optional route prefix under which compiled MDX docs pages live (e.g. `""` for standalone
     /// docs sites, or `"/docs"` when mounted alongside a `/` landing page and `/examples` gallery).
     pub docs_prefix: String,
-    /// Whether the site defaults to Fumadocs/Linear dark mode when the host reports `Unspecified`.
+    /// Fallback scheme when the host's `nve-system-env` reports no color scheme (the site
+    /// otherwise follows the OS appearance).
     pub default_dark: bool,
     /// Top-bar section switcher tabs (e.g. `Docs`, `Examples`, `Benchmarks`).
     pub sections: Vec<DocsNavSection>,

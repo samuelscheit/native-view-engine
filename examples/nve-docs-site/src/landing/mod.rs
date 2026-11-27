@@ -9,6 +9,7 @@ pub mod hero;
 pub mod progression;
 
 use std::sync::{Arc, OnceLock};
+use nve_ui::ColorHex;
 
 use nve_dioxus::prelude::*;
 use nve_docs::{CustomPageRegistry, DocsRoute, navigate_to, use_docs_state};
@@ -42,7 +43,7 @@ pub fn LandingPage() -> Element {
     rsx! {
         view {
             test_id: "landing-page",
-            style: "width: 100%; flex-direction: column; align-items: center; background-color: {theme.canvas}; color: {theme.text};",
+            style: "width: 100%; flex-direction: column; align-items: center; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()};",
 
             // Subtle top ambient gradient layer for the Hero section
             view {
@@ -76,11 +77,11 @@ pub(crate) fn PillBadge(
     let theme = state.read().theme();
 
     let (bg, border, fg) = if accent {
-        (theme.accent_surface, theme.accent, theme.accent)
+        (theme.status.accent.subtle.hex(), theme.status.accent.solid.hex(), theme.status.accent.solid.hex())
     } else if secondary {
-        (theme.surface_subtle, theme.border, theme.accent_alt)
+        (theme.surface.subtle.hex(), theme.border.default.hex(), theme.status.info.text.hex())
     } else {
-        (theme.surface_subtle, theme.border, theme.muted)
+        (theme.surface.subtle.hex(), theme.border.default.hex(), theme.text.secondary.hex())
     };
 
     rsx! {
@@ -154,7 +155,7 @@ pub(crate) fn SiteFooter() -> Element {
         view {
             test_id: "landing-footer",
             accessibility_role: "contentinfo",
-            style: "width: 100%; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 16px; border-top-width: 1px; border-width: 1px; border-color: {theme.border}; border-radius: 14px; padding: 28px; background-color: {theme.surface};",
+            style: "width: 100%; flex-direction: column; gap: 28px; padding-top: 32px; padding-bottom: 16px; border-top-width: 1px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 14px; padding: 28px; background-color: {theme.surface.base.hex()};",
 
             view {
                 nve_style: mobile_col.clone(),
@@ -166,19 +167,19 @@ pub(crate) fn SiteFooter() -> Element {
                     view {
                         style: "flex-direction: row; align-items: center; gap: 8px;",
                         view {
-                            style: "padding-horizontal: 7px; padding-vertical: 3px; border-radius: 6px; background-color: {theme.accent_surface}; border-width: 1px; border-color: {theme.accent};",
+                            style: "padding-horizontal: 7px; padding-vertical: 3px; border-radius: 6px; background-color: {theme.status.accent.subtle.hex()}; border-width: 1px; border-color: {theme.status.accent.border.hex()};",
                             text {
-                                style: "font-size: 11px; font-weight: 700; color: {theme.accent};",
+                                style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
                                 "NVE"
                             }
                         }
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Native View Engine"
                         }
                     }
                     text {
-                        style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                        style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                         "Binary Rust + C++20 multi-backend UI runtime driving real native views, GPU Skia canvases, and Web WASM SSR from one binary ABI."
                     }
                 }
@@ -192,7 +193,7 @@ pub(crate) fn SiteFooter() -> Element {
                             key: "footer-col-{heading}",
                             style: "flex-direction: column; gap: 10px; min-width: 136px;",
                             text {
-                                style: "font-size: 12px; font-weight: 700; color: {theme.text};",
+                                style: "font-size: 12px; font-weight: 700; color: {theme.text.primary.hex()};",
                                 "{heading}"
                             }
                             view {
@@ -231,7 +232,7 @@ pub(crate) fn SiteFooter() -> Element {
                                                     }
                                                 },
                                                 text {
-                                                    style: "font-size: 13px; color: {theme.muted};",
+                                                    style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                                                     "{label}"
                                                 }
                                             }
@@ -246,13 +247,13 @@ pub(crate) fn SiteFooter() -> Element {
 
             // Bottom hairline copyright / build note
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 16px; border-width: 1px; border-color: {theme.border}; border-radius: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.canvas};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 16px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 8px; padding-horizontal: 14px; padding-vertical: 10px; background-color: {theme.surface.canvas.hex()};",
                 text {
-                    style: "font-size: 12px; color: {theme.muted};",
+                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                     "Rendered 100% with Native View Engine · Semantic HTML5 SSR + Zero-Flicker WASM Hydration"
                 }
                 text {
-                    style: "font-size: 12px; font-family: monospace; color: {theme.accent};",
+                    style: "font-size: 12px; font-family: monospace; color: {theme.text.link.hex()};",
                     "nve_get_interface(1..=5) · 0 JSON"
                 }
             }

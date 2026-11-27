@@ -1,6 +1,8 @@
 //! Syntax-highlighted code blocks using `nve_mdx::highlight_code`, line numbers, highlighted-line accent, and clipboard copy.
 
 use dioxus_core_macro::Props;
+use crate::theme::syntax_color;
+use nve_ui::{ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_mdx::{CodeBlock, HighlightLine, highlight_code};
 
@@ -45,14 +47,14 @@ pub fn HighlightedCodeView(
 
     let copy_label = if is_copied { "Copied" } else { "Copy" };
     let copy_fg = if is_copied {
-        theme.success
+        theme.status.success.solid.hex()
     } else {
-        theme.muted
+        theme.text.secondary.hex()
     };
     let copy_border = if is_copied {
-        theme.success
+        theme.status.success.solid.hex()
     } else {
-        theme.border
+        theme.border.default.hex()
     };
     let copy_tid = format!("docs-code-copy-{block_key}");
     let frame_tid = format!("docs-code-block-{block_key}");
@@ -70,25 +72,25 @@ pub fn HighlightedCodeView(
             test_id: "{frame_tid}",
             accessibility_role: "codeblock",
             accessibility_label: title.clone().or_else(|| lang_badge.clone()).unwrap_or_else(|| "Code block".to_string()),
-            style: "width: 100%; min-width: 0px; overflow: hidden; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.code_bg};",
+            style: "width: 100%; min-width: 0px; overflow: hidden; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
 
             // Top bar: optional filename title, language pill, Copy button
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                 view {
                     style: "flex-direction: row; align-items: center; gap: 8px;",
                     if let Some(ref fname) = title {
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {theme.text};",
+                            style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
                             "{fname}"
                         }
                     }
                     if let Some(ref lang_label) = lang_badge {
                         view {
-                            style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             text {
-                                style: "font-size: 11px; font-weight: 600; color: {theme.accent_alt};",
+                                style: "font-size: 11px; font-weight: 600; color: {theme.status.info.text.hex()};",
                                 "{lang_label}"
                             }
                         }
@@ -107,7 +109,7 @@ pub fn HighlightedCodeView(
                             )]),
                         ));
                     }),
-                    style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {copy_border};",
+                    style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {copy_border};",
                     onpress: move |_| {
                         let _ = state.write().copy_code(&key_for_copy, &code_for_copy);
                     },
@@ -126,7 +128,7 @@ pub fn HighlightedCodeView(
                     view {
                         style: "padding-horizontal: 14px;",
                         text {
-                            style: "font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain};",
+                            style: "font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain.hex()};",
                             "{code}"
                         }
                     }
@@ -134,14 +136,14 @@ pub fn HighlightedCodeView(
                     for line in lines {
                         {
                             let line_bg = if line.highlighted {
-                                theme.code_line_highlight
+                                theme.status.accent.subtle.hex()
                             } else {
-                                "transparent"
+                                Hex::TRANSPARENT
                             };
                             let marker_color = if line.highlighted {
-                                theme.accent
+                                theme.status.accent.solid.hex()
                             } else {
-                                "transparent"
+                                Hex::TRANSPARENT
                             };
                             let line_no_str = line.line_no.to_string();
                             let is_highlighted = line.highlighted;
@@ -180,7 +182,7 @@ pub fn HighlightedCodeView(
 
                                     if display_line_numbers {
                                         text {
-                                            style: "min-width: 26px; flex-shrink: 0; font-size: 12px; font-family: monospace; color: {theme.muted}; text-align: right;",
+                                            style: "min-width: 26px; flex-shrink: 0; font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()}; text-align: right;",
                                             "{line_no_str}"
                                         }
                                     }
@@ -190,13 +192,13 @@ pub fn HighlightedCodeView(
                                         style: "display: block; flex-direction: row; flex-grow: 1; white-space: pre; line-height: 1.55;",
                                         if line.tokens.is_empty() {
                                             text {
-                                                style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain};",
+                                                style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {theme.syntax.plain.hex()};",
                                                 " "
                                             }
                                         } else {
                                             for (tok_idx, span) in line.tokens.into_iter().enumerate() {
                                                 {
-                                                    let tok_color = theme.token_color(span.kind);
+                                                    let tok_color = syntax_color(&theme.syntax, span.kind).hex();
                                                     let tok_kind: &'static str = span.kind.as_str();
                                                     rsx! {
                                                         text {

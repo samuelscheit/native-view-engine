@@ -13,6 +13,7 @@ pub use sidebar::{DocsSidebar, route_test_id_slug};
 pub use toc::DocsToc;
 
 use nve_abi::EdgeInsets;
+use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_ui::ThemeProvider;
 
@@ -25,7 +26,7 @@ pub fn DocsShell() -> Element {
     let mut state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
-    let ui_theme = theme.to_ui_theme();
+    let ui_theme = theme;
     let viewport = snap.viewport;
     let mobile_drawer_open = snap.mobile_drawer_open;
     let viewport_mode = viewport.mode_label();
@@ -38,7 +39,7 @@ pub fn DocsShell() -> Element {
         None
     };
     let page_toc_enabled = page.as_ref().is_none_or(|p| p.frontmatter.toc);
-    let color_scheme_attr = if theme.is_dark { "dark" } else { "light" };
+    let color_scheme_attr = if theme.is_dark() { "dark" } else { "light" };
     drop(snap);
 
     let article_container_style = TypedStyle::new()
@@ -63,7 +64,7 @@ pub fn DocsShell() -> Element {
                     ("route".to_owned(), active_route.clone()),
                     ("viewport-mode".to_owned(), viewport_mode.to_owned()),
                 ]),
-                style: "width: 100%; height: 100%; flex-direction: column; background-color: {theme.canvas}; color: {theme.text};",
+                style: "width: 100%; height: 100%; flex-direction: column; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()};",
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();
                     let is_k = data.key.eq_ignore_ascii_case("k");
@@ -90,13 +91,13 @@ pub fn DocsShell() -> Element {
                 // Body row: Full-bleed custom page OR 3-column Fumadocs layout
                 view {
                     test_id: "docs-body",
-                    style: "flex-grow: 1; flex-shrink: 1; width: 100%; flex-direction: row; background-color: {theme.canvas};",
+                    style: "flex-grow: 1; flex-shrink: 1; width: 100%; flex-direction: row; background-color: {theme.surface.canvas.hex()};",
 
                     if let Some(render_custom) = custom_page {
                         scrollview {
                             test_id: "docs-custom-scroll",
                             accessibility_role: "main",
-                            style: "flex-grow: 1; flex-shrink: 1; width: 100%; height: 100%; flex-direction: column; align-items: center; background-color: {theme.canvas};",
+                            style: "flex-grow: 1; flex-shrink: 1; width: 100%; height: 100%; flex-direction: column; align-items: center; background-color: {theme.surface.canvas.hex()};",
                             {render_custom()}
                         }
                     } else {
@@ -106,7 +107,7 @@ pub fn DocsShell() -> Element {
                         scrollview {
                             test_id: "docs-main-scroll",
                             accessibility_role: "main",
-                            style: "flex-grow: 1; flex-shrink: 1; min-width: 0px; height: 100%; flex-direction: column; background-color: {theme.canvas};",
+                            style: "flex-grow: 1; flex-shrink: 1; min-width: 0px; height: 100%; flex-direction: column; background-color: {theme.surface.canvas.hex()};",
                             view {
                                 test_id: "docs-article-container",
                                 nve_style: article_container_style,
@@ -118,9 +119,9 @@ pub fn DocsShell() -> Element {
                                 } else {
                                     view {
                                         test_id: "docs-empty-page",
-                                        style: "padding: 24px; border-width: 1px; border-color: {theme.border}; border-radius: 10px; background-color: {theme.surface};",
+                                        style: "padding: 24px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 10px; background-color: {theme.surface.base.hex()};",
                                         text {
-                                            style: "font-size: 16px; color: {theme.muted};",
+                                            style: "font-size: 16px; color: {theme.text.secondary.hex()};",
                                             "No documentation pages found for this route."
                                         }
                                     }

@@ -1,6 +1,7 @@
 //! Block-level `nve-mdx` AST renderer (headings, paragraphs, lists/checklists, GFM tables, blockquotes, rules).
 
 use dioxus_core_macro::Props;
+use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, ListItem, TableAlign};
 
@@ -71,7 +72,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
                     }
                     if clamped == 2 {
                         view {
-                            style: "width: 100%; height: 1px; background-color: {theme.border};",
+                            style: "width: 100%; height: 1px; background-color: {theme.border.default.hex()};",
                         }
                     }
                 }
@@ -121,9 +122,9 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         Block::Blockquote { blocks, .. } => rsx! {
             view {
                 accessibility_role: "blockquote",
-                style: "width: 100%; min-width: 0px; flex-direction: row; gap: 12px; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 6px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; min-width: 0px; flex-direction: row; gap: 12px; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 6px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                 view {
-                    style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {theme.accent_alt};",
+                    style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {theme.status.info.text.hex()};",
                 }
                 view {
                     style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 8px;",
@@ -137,7 +138,7 @@ fn BlockView(block: Block, scope_key: String) -> Element {
         Block::ThematicBreak { .. } => rsx! {
             view {
                 accessibility_role: "separator",
-                style: "width: 100%; height: 1px; background-color: {theme.border}; margin: 6px;",
+                style: "width: 100%; height: 1px; background-color: {theme.border.default.hex()}; margin: 6px;",
             }
         },
         Block::Directive(dir) => rsx! {
@@ -173,9 +174,9 @@ fn ListView(ordered: bool, start: usize, items: Vec<ListItem>, scope_prefix: Str
                         None => "•".to_string(),
                     };
                     let marker_color = match item.checked {
-                        Some(true) => theme.success,
-                        Some(false) => theme.muted,
-                        None => theme.accent,
+                        Some(true) => theme.status.success.solid.hex(),
+                        Some(false) => theme.text.secondary.hex(),
+                        None => theme.status.accent.solid.hex(),
                     };
                     let checked_attr = item.checked.map(|c| if c { "true" } else { "false" }.to_string());
 
@@ -252,7 +253,7 @@ fn TableView(
     rsx! {
         view {
             test_id: "docs-table-wrap-{scope_key}",
-            style: "width: 100%; min-width: 0px; overflow-x: auto; border-radius: 8px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+            style: "width: 100%; min-width: 0px; overflow-x: auto; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
             view {
                 test_id: "docs-table-{scope_key}",
                 nve_table: html_semantic(SemanticElement::Table),
@@ -267,7 +268,7 @@ fn TableView(
                         view {
                             nve_table: html_semantic(SemanticElement::Tr),
                             accessibility_role: "row",
-                            style: "width: 100%; flex-direction: row; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            style: "width: 100%; flex-direction: row; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             for (col_idx, cell) in headers.into_iter().enumerate() {
                                 {
                                     let ta = align_css(col_idx);
@@ -299,16 +300,16 @@ fn TableView(
                         for (row_idx, row) in rows.into_iter().enumerate() {
                             {
                                 let row_bg = if row_idx % 2 == 1 {
-                                    theme.canvas
+                                    theme.surface.canvas.hex()
                                 } else {
-                                    theme.surface
+                                    theme.surface.base.hex()
                                 };
                                 rsx! {
                                     view {
                                         key: "{scope_key}-tr-{row_idx}",
                                         nve_table: html_semantic(SemanticElement::Tr),
                                         accessibility_role: "row",
-                                        style: "width: 100%; flex-direction: row; background-color: {row_bg}; border-width: 1px; border-color: {theme.border};",
+                                        style: "width: 100%; flex-direction: row; background-color: {row_bg}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                         for (col_idx, cell) in row.into_iter().enumerate() {
                                             {
                                                 let ta = align_css(col_idx);

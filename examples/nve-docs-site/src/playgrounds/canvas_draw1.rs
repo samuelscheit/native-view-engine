@@ -5,7 +5,7 @@ use nve_abi::ColorRgba;
 use nve_canvas::{Canvas, DrawList};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, use_theme};
+use nve_ui::{ColorHex, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, use_theme};
 
 pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
@@ -167,7 +167,7 @@ pub fn CanvasDraw1Demo() -> Element {
                     }
                 }
                 text {
-                    style: "font-size: 11px; color: {theme.palette.text_muted};",
+                    style: "font-size: 11px; color: {theme.text.tertiary.hex()};",
                     "Binary vector stream"
                 }
             }
@@ -179,7 +179,7 @@ pub fn CanvasDraw1Demo() -> Element {
                 nve_table: table_attr_fn(move |tx, node| {
                     tx.edit::<Canvas>(node).draw_list_ephemeral(draw_list.clone());
                 }),
-                style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.palette.border}; background-color: #0c0d12;",
+                style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: #0c0d12;",
             }
 
             // Controls row: Shape mode | Palette | Stroke width

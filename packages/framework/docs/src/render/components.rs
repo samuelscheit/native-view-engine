@@ -2,6 +2,7 @@
 //! `Cards`, `Card`, `LiveDemo`, `Badge`, `Kbd`, `ApiTable`, `CodeGroup`).
 
 use dioxus_core_macro::Props;
+use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::{
     Block, CalloutKind, CardItem, ComponentNode, HydrateStrategy, PropValue, StepItem, TabItem,
@@ -188,16 +189,16 @@ pub fn ComponentBlockView(comp: ComponentNode, scope_key: String) -> Element {
             rsx! {
                 view {
                     test_id: "docs-api-table-{scope_key}",
-                    style: "width: 100%; min-width: 0px; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+                    style: "width: 100%; min-width: 0px; flex-direction: column; gap: 10px; padding: 14px; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
                     if let Some(t) = title {
                         text {
-                            style: "font-size: 14px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "{t}"
                         }
                     }
                     if let Some(c) = caption {
                         text {
-                            style: "font-size: 12px; color: {theme.muted};",
+                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                             "{c}"
                         }
                     }
@@ -217,9 +218,9 @@ pub fn ComponentBlockView(comp: ComponentNode, scope_key: String) -> Element {
             let tag_label = format!("<{}>", comp.name);
             rsx! {
                 view {
-                    style: "width: 100%; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+                    style: "width: 100%; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
                     text {
-                        style: "font-size: 12px; font-weight: 600; color: {theme.muted};",
+                        style: "font-size: 12px; font-weight: 600; color: {theme.text.secondary.hex()};",
                         "{tag_label}"
                     }
                     BlocksView {
@@ -245,11 +246,11 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
                 .or_else(|| prop_str(&comp, "variant"))
                 .unwrap_or("accent");
             let (bg, border, fg) = match tone {
-                "success" | "tip" => (theme.surface_subtle, theme.success, theme.success),
-                "warning" => (theme.surface_subtle, theme.warning, theme.warning),
-                "danger" | "error" => (theme.surface_subtle, theme.danger, theme.danger),
-                "muted" | "neutral" => (theme.surface_subtle, theme.border, theme.muted),
-                _ => (theme.accent_surface, theme.accent, theme.accent),
+                "success" | "tip" => (theme.surface.subtle.hex(), theme.status.success.solid.hex(), theme.status.success.solid.hex()),
+                "warning" => (theme.surface.subtle.hex(), theme.status.warning.solid.hex(), theme.status.warning.solid.hex()),
+                "danger" | "error" => (theme.surface.subtle.hex(), theme.status.danger.solid.hex(), theme.status.danger.solid.hex()),
+                "muted" | "neutral" => (theme.surface.subtle.hex(), theme.border.default.hex(), theme.text.secondary.hex()),
+                _ => (theme.status.accent.subtle.hex(), theme.status.accent.solid.hex(), theme.status.accent.solid.hex()),
             };
             rsx! {
                 view {
@@ -266,9 +267,9 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             rsx! {
                 view {
                     nve_table: crate::render::html_semantic(nve_web_html::SemanticElement::Kbd),
-                    style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     text {
-                        style: "display: inline; font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text};",
+                        style: "display: inline; font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text.primary.hex()};",
                         "{keys}"
                     }
                 }
@@ -278,7 +279,7 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             let tag_label = format!("<{} />", comp.name);
             rsx! {
                 text {
-                    style: "display: inline; font-size: 13px; color: {theme.muted};",
+                    style: "display: inline; font-size: 13px; color: {theme.text.secondary.hex()};",
                     "{tag_label}"
                 }
             }

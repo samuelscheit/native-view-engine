@@ -15,6 +15,7 @@ pub use inlines::InlinesView;
 pub use live_demo::LiveDemoView;
 
 use dioxus_core_macro::Props;
+use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, CompiledPage};
 
@@ -72,15 +73,15 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
             // Article header (badge, H1 title, description, tags)
             view {
                 test_id: "docs-article-header",
-                style: "width: 100%; flex-direction: column; gap: 10px; padding-vertical: 8px; border-width: 1px; border-color: {theme.border}; border-radius: 10px; padding-horizontal: 18px; background-color: {theme.surface};",
+                style: "width: 100%; flex-direction: column; gap: 10px; padding-vertical: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 10px; padding-horizontal: 18px; background-color: {theme.surface.base.hex()};",
 
                 if let Some(badge_txt) = page_badge {
                     view {
                         style: "flex-direction: row;",
                         view {
-                            style: "padding-horizontal: 8px; padding-vertical: 2px; border-radius: 999px; background-color: {theme.accent_surface}; border-width: 1px; border-color: {theme.accent};",
+                            style: "padding-horizontal: 8px; padding-vertical: 2px; border-radius: 999px; background-color: {theme.status.accent.subtle.hex()}; border-width: 1px; border-color: {theme.status.accent.border.hex()};",
                             text {
-                                style: "font-size: 11px; font-weight: 600; color: {theme.accent};",
+                                style: "font-size: 11px; font-weight: 600; color: {theme.text.link.hex()};",
                                 "{badge_txt}"
                             }
                         }
@@ -92,7 +93,7 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
                     accessibility_role: "heading",
                     "aria-level": "1",
                     text {
-                        style: "font-size: 32px; font-weight: 700; color: {theme.text};",
+                        style: "font-size: 32px; font-weight: 700; color: {theme.text.primary.hex()};",
                         "{page.title}"
                     }
                 }
@@ -100,7 +101,7 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
                 if !page.description.is_empty() {
                     text {
                         test_id: "docs-page-description",
-                        style: "font-size: 15px; color: {theme.muted};",
+                        style: "font-size: 15px; color: {theme.text.secondary.hex()};",
                         "{page.description}"
                     }
                 }
@@ -111,9 +112,9 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
                         for tag in page_tags {
                             view {
                                 key: "tag-{tag}",
-                                style: "padding-horizontal: 8px; padding-vertical: 2px; border-radius: 999px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                style: "padding-horizontal: 8px; padding-vertical: 2px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                 text {
-                                    style: "font-size: 11px; color: {theme.muted};",
+                                    style: "font-size: 11px; color: {theme.text.secondary.hex()};",
                                     "#{tag}"
                                 }
                             }

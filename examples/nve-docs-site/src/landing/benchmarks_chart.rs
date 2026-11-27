@@ -2,6 +2,7 @@
 //! using `NVE_DRAW1` `<canvas>` vector charts and `nve-ui` controls — zero external JS/Chart.js.
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 use nve_docs::use_docs_state;
 use nve_ui::Switch;
 
@@ -48,7 +49,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
         .map(|(spec, entry)| (entry.median_ns, spec.color_idx))
         .collect();
     let bar_draw_list =
-        build_bar_chart_draw_list(&bar_values, is_log, bar_canvas_w, bar_canvas_h, theme.is_dark);
+        build_bar_chart_draw_list(&bar_values, is_log, bar_canvas_w, bar_canvas_h, theme.is_dark());
 
     let max_bar_ns = filtered_bars
         .iter()
@@ -94,18 +95,18 @@ pub fn BenchmarkProgressionDashboard() -> Element {
             // Purple-Garden-style Controls Bar: Category pills | Log scale switch | Table view toggle
             view {
                 test_id: "bench-controls-bar",
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 16px; border-radius: 12px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 16px; border-radius: 12px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                 view {
                     style: "flex-direction: row; align-items: center; flex-wrap: wrap; gap: 6px;",
                     for cat in BenchCategory::ALL {
                         {
                             let sel = active_cat == cat;
-                            let bg = if sel { theme.accent_surface } else { theme.surface_subtle };
-                            let fg = if sel { theme.accent } else { theme.muted };
-                            let bc = if sel { theme.accent } else { theme.border };
+                            let bg = if sel { theme.status.accent.subtle.hex() } else { theme.surface.subtle.hex() };
+                            let fg = if sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
+                            let bc = if sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
                             let tid = format!("bench-filter-{}", cat.id());
-                            let swatch = cat.color_idx().map(|ci| category_swatch_hex(ci, theme.is_dark));
+                            let swatch = cat.color_idx().map(|ci| category_swatch_hex(ci, theme.is_dark()));
                             rsx! {
                                 pressable {
                                     key: "cat-{cat.id()}",
@@ -141,10 +142,10 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                         test_id: "bench-table-toggle",
                         accessibility_role: "button",
                         "aria-pressed": if is_table { "true" } else { "false" },
-                        style: "flex-shrink: 0; padding-horizontal: 12px; padding-vertical: 6px; border-radius: 7px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                        style: "flex-shrink: 0; padding-horizontal: 12px; padding-vertical: 6px; border-radius: 7px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         onpress: move |_| table_view.set(!is_table),
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {theme.text};",
+                            style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
                             "{view_toggle_label}"
                         }
                     }
@@ -154,18 +155,18 @@ pub fn BenchmarkProgressionDashboard() -> Element {
             // Latest Run Comparison Panel (NVE_DRAW1 Bar Chart OR Structured Table)
             view {
                 test_id: "bench-latest-panel",
-                style: "width: 100%; flex-direction: column; gap: 14px; padding: 20px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; flex-direction: column; gap: 14px; padding: 20px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                 view {
                     style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                     view {
                         style: "flex-direction: column; gap: 2px;",
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Latest Verified Baseline Comparison (benchmarks/baseline.json)"
                         }
                         text {
-                            style: "font-size: 12px; color: {theme.muted};",
+                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                             "{BASELINE_MACHINE} · Snapshot {BASELINE_GENERATED_AT} · {BASELINE_BENCHMARKS.len()} tracked benchmarks"
                         }
                     }
@@ -180,19 +181,19 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                     view {
                         test_id: "bench-latest-table",
                         accessibility_role: "table",
-                        style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
+                        style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; overflow: hidden;",
                         view {
                             accessibility_role: "row",
-                            style: "width: 100%; flex-direction: row; padding: 9px 12px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
-                            text { style: "flex-grow: 3; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.muted};", "BENCHMARK" }
-                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.muted};", "SUITE" }
-                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.muted}; text-align: right;", "MEDIAN" }
-                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.muted}; text-align: right;", "MEAN" }
-                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.muted}; text-align: right;", "TOL." }
+                            style: "width: 100%; flex-direction: row; padding: 9px 12px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                            text { style: "flex-grow: 3; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()};", "BENCHMARK" }
+                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()};", "SUITE" }
+                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()}; text-align: right;", "MEDIAN" }
+                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()}; text-align: right;", "MEAN" }
+                            text { style: "flex-grow: 1; flex-basis: 0%; font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()}; text-align: right;", "TOL." }
                         }
                         for (idx, (spec, entry)) in filtered_bars.iter().enumerate() {
                             {
-                                let row_bg = if idx % 2 == 0 { theme.canvas } else { theme.surface };
+                                let row_bg = if idx % 2 == 0 { theme.surface.canvas.hex() } else { theme.surface.base.hex() };
                                 let med_str = format_ns(entry.median_ns);
                                 let mean_str = format_ns(entry.mean_ns);
                                 let tol_str = format!("±{:.0}%", entry.tolerance_pct);
@@ -200,12 +201,12 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                     view {
                                         key: "bt-row-{spec.baseline_key}",
                                         accessibility_role: "row",
-                                        style: "width: 100%; flex-direction: row; align-items: center; padding: 8px 12px; background-color: {row_bg}; border-width: 1px; border-color: {theme.border};",
-                                        text { style: "flex-grow: 3; flex-basis: 0%; font-size: 12px; font-family: monospace; color: {theme.text};", "{entry.name}" }
-                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; color: {theme.muted};", "{entry.suite}" }
-                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; font-family: monospace; font-weight: 700; color: {theme.accent}; text-align: right;", "{med_str}" }
-                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; font-family: monospace; color: {theme.muted}; text-align: right;", "{mean_str}" }
-                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; font-family: monospace; color: {theme.muted}; text-align: right;", "{tol_str}" }
+                                        style: "width: 100%; flex-direction: row; align-items: center; padding: 8px 12px; background-color: {row_bg}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                                        text { style: "flex-grow: 3; flex-basis: 0%; font-size: 12px; font-family: monospace; color: {theme.text.primary.hex()};", "{entry.name}" }
+                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; color: {theme.text.secondary.hex()};", "{entry.suite}" }
+                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; font-family: monospace; font-weight: 700; color: {theme.text.link.hex()}; text-align: right;", "{med_str}" }
+                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()}; text-align: right;", "{mean_str}" }
+                                        text { style: "flex-grow: 1; flex-basis: 0%; font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()}; text-align: right;", "{tol_str}" }
                                     }
                                 }
                             }
@@ -219,9 +220,9 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             view {
                                 test_id: "bench-bar-yaxis",
                                 style: "width: 58px; flex-shrink: 0; flex-direction: column; justify-content: space-between; padding-vertical: 10px; align-items: flex-end;",
-                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_ns(max_bar_ns)}" }
-                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_ns(mid_bar_ns)}" }
-                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{lo_bar_label}" }
+                                text { style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};", "{format_ns(max_bar_ns)}" }
+                                text { style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};", "{format_ns(mid_bar_ns)}" }
+                                text { style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};", "{lo_bar_label}" }
                             }
                             view {
                                 test_id: "bench-latest-canvas",
@@ -231,7 +232,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                     tx.edit::<nve_canvas::Canvas>(node)
                                         .draw_list_ephemeral(bar_draw_list.clone());
                                 }),
-                                style: "width: {bar_canvas_w}px; max-width: 100%; flex-grow: 1; height: {bar_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
+                                style: "width: {bar_canvas_w}px; max-width: 100%; flex-grow: 1; height: {bar_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()};",
                             }
                         }
                         view {
@@ -242,7 +243,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                 for (bar_idx, (spec, _)) in filtered_bars.iter().enumerate() {
                                     text {
                                         key: "bar-tick-{spec.short_label}",
-                                        style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
+                                        style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                         "#{bar_idx + 1}"
                                     }
                                 }
@@ -253,18 +254,18 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px;",
                             for (bar_idx, (spec, entry)) in filtered_bars.iter().enumerate() {
                                 {
-                                    let swatch = category_swatch_hex(spec.color_idx, theme.is_dark);
+                                    let swatch = category_swatch_hex(spec.color_idx, theme.is_dark());
                                     let ordinal = bar_idx + 1;
                                     rsx! {
                                         view {
                                             key: "bar-lbl-{spec.short_label}",
-                                            style: "flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                            style: "flex-shrink: 0; flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                             view {
                                                 style: "width: 7px; height: 7px; border-radius: 999px; background-color: {swatch}; flex-shrink: 0;",
                                             }
-                                            text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "#{ordinal}" }
-                                            text { style: "font-size: 11px; color: {theme.muted};", "{spec.short_label}" }
-                                            text { style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.text};", "{format_ns(entry.median_ns)}" }
+                                            text { style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};", "#{ordinal}" }
+                                            text { style: "font-size: 11px; color: {theme.text.secondary.hex()};", "{spec.short_label}" }
+                                            text { style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.text.primary.hex()};", "{format_ns(entry.median_ns)}" }
                                         }
                                     }
                                 }
@@ -290,7 +291,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                     is_log,
                                     line_canvas_w,
                                     line_canvas_h,
-                                    theme.is_dark,
+                                    theme.is_dark(),
                                     series.color_idx,
                                 );
                                 let first_pt = series.points.first().map(|p| p.value).unwrap_or(0.0);
@@ -309,18 +310,18 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                     view {
                                         key: "prog-{series.id}",
                                         test_id: "bench-card-{series.id}",
-                                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; gap: 10px; padding: 18px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; gap: 10px; padding: 18px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                                         view {
                                             style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: flex-start; gap: 10px;",
                                             view {
                                                 style: "flex-direction: column; gap: 3px; min-width: 0; flex-shrink: 1;",
                                                 text {
-                                                    style: "font-size: 14px; font-weight: 700; color: {theme.text};",
+                                                    style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
                                                     "{series.title}"
                                                 }
                                                 text {
-                                                    style: "font-size: 12px; color: {theme.muted};",
+                                                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                                                     "{series.subtitle}"
                                                 }
                                             }
@@ -328,7 +329,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                                 style: "flex-shrink: 0; flex-direction: column; align-items: flex-end; gap: 4px;",
                                                 PillBadge { label: series.delta_badge.to_string(), accent: true }
                                                 text {
-                                                    style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.success};",
+                                                    style: "font-size: 11px; font-family: monospace; font-weight: 700; color: {theme.status.success.text.hex()};",
                                                     "{start_str} → {end_str}"
                                                 }
                                             }
@@ -338,8 +339,8 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                             style: "width: 100%; flex-direction: row; align-items: stretch; gap: 8px;",
                                             view {
                                                 style: "width: 56px; flex-shrink: 0; flex-direction: column; justify-content: space-between; padding-vertical: 10px; align-items: flex-end;",
-                                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_val(max_pt, series.unit)}" }
-                                                text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{lo_label}" }
+                                                text { style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};", "{format_val(max_pt, series.unit)}" }
+                                                text { style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};", "{lo_label}" }
                                             }
                                             view {
                                                 test_id: "bench-canvas-{series.id}",
@@ -349,7 +350,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                                     tx.edit::<nve_canvas::Canvas>(node)
                                                         .draw_list_ephemeral(draw_list.clone());
                                                 }),
-                                                style: "width: {line_canvas_w}px; max-width: 100%; flex-grow: 1; height: {line_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
+                                                style: "width: {line_canvas_w}px; max-width: 100%; flex-grow: 1; height: {line_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()};",
                                             }
                                         }
 
@@ -361,7 +362,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                                 for pt in series.points {
                                                     text {
                                                         key: "pt-{series.id}-{pt.label}",
-                                                        style: "font-size: 10px; font-family: monospace; color: {theme.muted};",
+                                                        style: "font-size: 10px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                                         "{pt.label}"
                                                     }
                                                 }

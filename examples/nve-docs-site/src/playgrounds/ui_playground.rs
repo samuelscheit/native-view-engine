@@ -2,7 +2,7 @@
 //! Badge, Tabs, and Toast notifications inside `nve-docs`.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{
+use nve_ui::{ColorHex, 
     Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Checkbox, Input, Switch, TabList,
     TabPanel, TabTrigger, TabsRoot, ToastOptions, ToastProvider, ToastVariant, use_theme,
     use_toast,
@@ -89,7 +89,7 @@ fn UiPlaygroundInner() -> Element {
                 }
                 text {
                     test_id: "pg-ui-surface-echo",
-                    style: "font-size: 12px; color: {theme.palette.text_secondary};",
+                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                     "Target: {surface_name}"
                 }
             }

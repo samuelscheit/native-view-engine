@@ -2,6 +2,7 @@
 //! and `data-nve-island` / `data-nve-hydrate` progressive hydration attributes.
 
 use std::sync::Arc;
+use nve_ui::{ColorHex, Hex};
 
 use dioxus_core_macro::Props;
 use nve_dioxus::prelude::*;
@@ -68,24 +69,24 @@ pub fn LiveDemoView(
     let hydrate_str = hydrate.as_str();
 
     let prev_bg = if is_preview {
-        theme.accent_surface
+        theme.status.accent.subtle.hex()
     } else {
-        "transparent"
+        Hex::TRANSPARENT
     };
     let prev_fg = if is_preview {
-        theme.accent
+        theme.status.accent.solid.hex()
     } else {
-        theme.muted
+        theme.text.secondary.hex()
     };
     let code_bg = if !is_preview {
-        theme.accent_surface
+        theme.status.accent.subtle.hex()
     } else {
-        "transparent"
+        Hex::TRANSPARENT
     };
     let code_fg = if !is_preview {
-        theme.accent
+        theme.status.accent.solid.hex()
     } else {
-        theme.muted
+        theme.text.secondary.hex()
     };
 
     let group_for_preview = tab_group.clone();
@@ -105,22 +106,22 @@ pub fn LiveDemoView(
                 ("nve-island".to_owned(), id.clone()),
                 ("nve-hydrate".to_owned(), hydrate_str.to_owned()),
             ]),
-            style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
+            style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.base.hex()};",
 
             // Header with title, hydration strategy badge, and Preview | Code tabs
             view {
-                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 12px; padding-vertical: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
                 view {
                     style: "flex-direction: row; align-items: center; gap: 8px;",
                     text {
-                        style: "font-size: 13px; font-weight: 700; color: {theme.text};",
+                        style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
                         "{display_title}"
                     }
                     view {
-                        style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                        style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         text {
-                            style: "font-size: 10px; font-weight: 600; color: {theme.accent_alt};",
+                            style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
                             "{hydrate_str}"
                         }
                     }
@@ -162,7 +163,7 @@ pub fn LiveDemoView(
             if is_preview {
                 view {
                     test_id: "docs-demo-preview-{id}",
-                    style: "width: 100%; min-height: {min_height}px; padding: 16px; background-color: {theme.canvas};",
+                    style: "width: 100%; min-height: {min_height}px; padding: 16px; background-color: {theme.surface.canvas.hex()};",
                     if let Some(registered) = entry {
                         PlaygroundHost {
                             key: "playground-{id}",
@@ -170,7 +171,7 @@ pub fn LiveDemoView(
                         }
                     } else {
                         text {
-                            style: "font-size: 13px; color: {theme.muted};",
+                            style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                             "Interactive demo '{id}' is not registered in PlaygroundRegistry."
                         }
                     }

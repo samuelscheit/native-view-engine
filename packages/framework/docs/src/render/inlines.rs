@@ -1,6 +1,7 @@
 //! Inline `nve-mdx` AST renderer (text, emphasis, strong, strikethrough, inline code, links, images, components).
 
 use dioxus_core_macro::Props;
+use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::Inline;
 
@@ -45,7 +46,7 @@ pub fn InlinesView(
     let base_path = snap.config.base_path.clone();
     drop(snap);
 
-    let text_color = color_override.unwrap_or_else(|| theme.text.to_string());
+    let text_color = color_override.unwrap_or_else(|| theme.text.primary.hex().to_string());
     let base_weight = if bold { "700" } else { "400" };
     let lh = line_height.unwrap_or_else(|| {
         if font_size >= 18 {
@@ -128,14 +129,14 @@ fn InlineNodeView(
         Inline::Strikethrough(children) => rsx! {
             text {
                 nve_table: html_semantic(SemanticElement::Strike),
-                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; text-decoration: line-through; color: {theme.muted};",
+                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; text-decoration: line-through; color: {theme.text.secondary.hex()};",
                 for (idx, child) in children.into_iter().enumerate() {
                     InlineNodeView {
                         key: "del-{idx}",
                         inline: child,
                         font_size: font_size,
                         base_weight: base_weight.clone(),
-                        text_color: theme.muted.to_string(),
+                        text_color: theme.text.secondary.hex().to_string(),
                         base_path: base_path.clone(),
                     }
                 }
@@ -147,7 +148,7 @@ fn InlineNodeView(
                 text {
                     test_id: "docs-inline-code",
                     accessibility_role: "code",
-                    style: "display: inline; font-size: {code_size}px; font-family: monospace; color: {theme.accent}; padding-horizontal: 4px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    style: "display: inline; font-size: {code_size}px; font-family: monospace; color: {theme.text.link.hex()}; padding-horizontal: 4px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     "{code}"
                 }
             }
@@ -186,7 +187,7 @@ fn InlineNodeView(
                     accessibility_role: "link",
                     accessibility_label: title.unwrap_or_else(|| display.clone()),
                     "href": "{href}",
-                    style: "display: inline; font-size: {font_size}px; font-weight: 500; color: {theme.accent}; text-decoration: underline;",
+                    style: "display: inline; font-size: {font_size}px; font-weight: 500; color: {theme.text.link.hex()}; text-decoration: underline;",
                     onpress: move |_| {
                         if let Some((route, anchor)) = internal_target.clone() {
                             navigate_to_target(state, route, anchor);
@@ -199,13 +200,13 @@ fn InlineNodeView(
                                 inline: child,
                                 font_size: font_size,
                                 base_weight: "500".to_string(),
-                                text_color: theme.accent.to_string(),
+                                text_color: theme.status.accent.solid.hex().to_string(),
                                 base_path: base_path.clone(),
                             }
                         }
                     } else {
                         text {
-                            style: "display: inline; font-size: {font_size}px; font-weight: 500; color: {theme.accent};",
+                            style: "display: inline; font-size: {font_size}px; font-weight: 500; color: {theme.text.link.hex()};",
                             "{display}"
                         }
                     }
@@ -219,14 +220,14 @@ fn InlineNodeView(
                 pressable {
                     accessibility_role: "link",
                     "href": "{href}",
-                    style: "display: inline; font-size: {font_size}px; color: {theme.accent}; text-decoration: underline;",
+                    style: "display: inline; font-size: {font_size}px; color: {theme.text.link.hex()}; text-decoration: underline;",
                     onpress: move |_| {
                         if let Some((route, anchor)) = internal_target.clone() {
                             navigate_to_target(state, route, anchor);
                         }
                     },
                     text {
-                        style: "display: inline; font-size: {font_size}px; color: {theme.accent};",
+                        style: "display: inline; font-size: {font_size}px; color: {theme.text.link.hex()};",
                         "{url}"
                     }
                 }
@@ -244,7 +245,7 @@ fn InlineNodeView(
                     alt: "{alt}",
                     accessibility_label: "{label}",
                     resize_mode: "contain",
-                    style: "max-width: 100%; border-radius: 8px; border-width: 1px; border-color: {theme.border};",
+                    style: "max-width: 100%; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()};",
                 }
             }
         }

@@ -1,6 +1,7 @@
 //! Bento Architecture & Verified Benchmark Grid + Interactive Live Examples Showcase Strip.
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 
 use crate::landing::{PillBadge, resolve_example_app_href};
@@ -42,14 +43,14 @@ pub fn BentoArchitectureGrid() -> Element {
                 view {
                     style: "flex-direction: column; gap: 6px; max-width: 760px;",
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.accent};",
+                        style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
                         "ARCHITECTURE & MEASURED BASELINES"
                     }
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text};",
+                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
                             "Zero-VM performance, measured on real silicon."
                         }
                     }
@@ -58,12 +59,12 @@ pub fn BentoArchitectureGrid() -> Element {
                     test_id: "landing-bento-bench-link",
                     accessibility_role: "link",
                     "href": "{bench_href}",
-                    style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     onpress: move |_| {
                         navigate_to(state, DocsRoute::new("/docs/reference/benchmarks"));
                     },
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {theme.accent};",
+                        style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
                         "Full Criterion & C++20 Benchmarks →"
                     }
                 }
@@ -110,23 +111,23 @@ pub fn BentoArchitectureGrid() -> Element {
                 // 10 Host Targets Matrix
                 view {
                     test_id: "bento-hosts",
-                    style: "flex-grow: 3; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-grow: 3; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: column; gap: 8px;",
                         view {
                             style: "flex-direction: row; justify-content: space-between; align-items: center; gap: 8px;",
                             text {
-                                style: "font-size: 11px; font-weight: 700; color: {theme.accent};",
+                                style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
                                 "10 NATIVE, GPU & WEB HOSTS"
                             }
                             PillBadge { label: "One Binary ABI".to_string(), accent: true }
                         }
                         text {
-                            style: "font-size: 19px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 19px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Real platform views everywhere — from one Rust core."
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                             "Native accessibility, IME, scrolling physics, and GPU swapchains across desktop, mobile, embedded, and zero-flicker Web SSR."
                         }
                     }
@@ -138,12 +139,12 @@ pub fn BentoArchitectureGrid() -> Element {
                         for host in HOST_TARGETS {
                             view {
                                 key: "host-pill-{host}",
-                                style: "flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                style: "flex-direction: row; align-items: center; gap: 6px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                 view {
-                                    style: "width: 6px; height: 6px; border-radius: 999px; background-color: {theme.accent};",
+                                    style: "width: 6px; height: 6px; border-radius: 999px; background-color: {theme.status.accent.solid.hex()};",
                                 }
                                 text {
-                                    style: "font-size: 12px; font-weight: 600; color: {theme.text};",
+                                    style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
                                     "{host}"
                                 }
                             }
@@ -154,23 +155,23 @@ pub fn BentoArchitectureGrid() -> Element {
                 // Live Pairing + Local-First NVC1 CRDT + MmapSnapshot
                 view {
                     test_id: "bento-pairing",
-                    style: "flex-grow: 2; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-grow: 2; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: column; gap: 8px;",
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {theme.accent_alt};",
+                            style: "font-size: 11px; font-weight: 700; color: {theme.status.info.text.hex()};",
                             "LIVE PAIRING & LOCAL-FIRST SYNC"
                         }
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text};",
+                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
                             "5.18 KB/s"
                         }
                         text {
-                            style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "NVT1/NVD1 Streaming + NVC1 CRDTs"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                             "Stream 60fps binary deltas to zero-cdylib thin clients over UDP/WS, restore Frame 0 from MmapSnapshot in 82–136 µs, and converge offline state via binary NVC1 CRDTs."
                         }
                     }
@@ -201,23 +202,23 @@ fn BentoMetricCard(
     rsx! {
         view {
             test_id: "{test_id}",
-            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 16px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
             view {
                 style: "flex-direction: column; gap: 8px;",
                 text {
-                    style: "font-size: 11px; font-weight: 700; color: {theme.accent};",
+                    style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
                     "{eyebrow}"
                 }
                 text {
-                    style: "font-size: 30px; font-weight: 800; color: {theme.text};",
+                    style: "font-size: 30px; font-weight: 800; color: {theme.text.primary.hex()};",
                     "{metric}"
                 }
                 text {
-                    style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                    style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
                     "{title}"
                 }
                 text {
-                    style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                    style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                     "{body}"
                 }
             }
@@ -263,14 +264,14 @@ pub fn LiveExamplesStrip() -> Element {
                 view {
                     style: "flex-direction: column; gap: 6px;",
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.accent};",
+                        style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
                         "LIVE INTERACTIVE DEMOS"
                     }
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text};",
+                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
                             "Launch full NVE apps — lazy-loaded on demand."
                         }
                     }
@@ -279,12 +280,12 @@ pub fn LiveExamplesStrip() -> Element {
                     test_id: "landing-examples-all-link",
                     accessibility_role: "link",
                     "href": "{examples_href}",
-                    style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     onpress: move |_| {
                         navigate_to(state, DocsRoute::new("/examples"));
                     },
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {theme.accent};",
+                        style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
                         "Explore Examples Gallery →"
                     }
                 }
@@ -297,7 +298,7 @@ pub fn LiveExamplesStrip() -> Element {
                 // Card 1: Aether Workspace + NVE Studio
                 view {
                     test_id: "showcase-card-studio",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: column; gap: 10px;",
                         view {
@@ -307,11 +308,11 @@ pub fn LiveExamplesStrip() -> Element {
                             PillBadge { label: "NVC1 CRDT".to_string() }
                         }
                         text {
-                            style: "font-size: 18px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 18px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Aether Workspace + NVE Studio"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                             "Flagship Linear × Notion workspace with live X-Ray layout inspection, time-travel CommandBuffer scrubbing, and NVE_DRAW1 telemetry canvas."
                         }
                     }
@@ -327,9 +328,9 @@ pub fn LiveExamplesStrip() -> Element {
                                 )]),
                             ));
                         }),
-                        style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.accent}; border-width: 1px; border-color: {theme.accent};",
+                        style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.status.accent.solid.hex()}; border-width: 1px; border-color: {theme.status.accent.solid.hex()};",
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.accent_fg};",
+                            style: "font-size: 13px; font-weight: 700; color: {theme.text.on_accent.hex()};",
                             "Launch Studio WASM →"
                         }
                     }
@@ -338,7 +339,7 @@ pub fn LiveExamplesStrip() -> Element {
                 // Card 2: Kitchen Sink Component Gallery
                 view {
                     test_id: "showcase-card-kitchen-sink",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: column; gap: 10px;",
                         view {
@@ -348,11 +349,11 @@ pub fn LiveExamplesStrip() -> Element {
                             PillBadge { label: "nve-i18n".to_string() }
                         }
                         text {
-                            style: "font-size: 18px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 18px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "NVE Kitchen Sink Gallery"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                             "Interactive showcase of every nve-ui component, theme/density/locale switching, 1k VirtualList, Canvas draw lists, and ErrorBoundary recovery."
                         }
                     }
@@ -368,9 +369,9 @@ pub fn LiveExamplesStrip() -> Element {
                                 )]),
                             ));
                         }),
-                        style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                        style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Launch Kitchen Sink WASM →"
                         }
                     }
@@ -379,7 +380,7 @@ pub fn LiveExamplesStrip() -> Element {
                 // Card 3: 5 Embedded Docs Playgrounds
                 view {
                     test_id: "showcase-card-playgrounds",
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 18px; padding: 22px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: column; gap: 10px;",
                         view {
@@ -388,11 +389,11 @@ pub fn LiveExamplesStrip() -> Element {
                             PillBadge { label: "SSR + Hydrate".to_string() }
                         }
                         text {
-                            style: "font-size: 18px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 18px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Embedded Docs Playgrounds"
                         }
                         text {
-                            style: "font-size: 13px; color: {theme.muted}; line-height: 1.5;",
+                            style: "font-size: 13px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                             "Hydrated directly inside documentation articles with zero mismatches — test components, routing, vector draw lists, and CRDT convergence."
                         }
                     }
@@ -407,12 +408,12 @@ pub fn LiveExamplesStrip() -> Element {
                                         key: "showcase-pg-{route}",
                                         accessibility_role: "link",
                                         "href": "{href}",
-                                        style: "padding-horizontal: 9px; padding-vertical: 5px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                        style: "padding-horizontal: 9px; padding-vertical: 5px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                         onpress: move |_| {
                                             navigate_to(state, target.clone());
                                         },
                                         text {
-                                            style: "font-size: 12px; font-weight: 600; color: {theme.accent};",
+                                            style: "font-size: 12px; font-weight: 600; color: {theme.text.link.hex()};",
                                             "{label} →"
                                         }
                                     }

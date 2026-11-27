@@ -1,6 +1,7 @@
 //! Sticky top navbar (`accessibility_role: "banner"`) with brand, sections, `⌘K` search, theme toggle, and mobile drawer toggle.
 
 use nve_dioxus::prelude::*;
+use nve_ui::{ColorHex, Hex};
 
 use crate::route::DocsRoute;
 use crate::state::{navigate_to, use_docs_state};
@@ -40,8 +41,8 @@ pub fn DocsNavbar() -> Element {
         .collect();
     drop(snap);
 
-    let theme_label = if theme.is_dark { "Light" } else { "Dark" };
-    let theme_hint = if theme.is_dark {
+    let theme_label = if theme.is_dark() { "Light" } else { "Dark" };
+    let theme_hint = if theme.is_dark() {
         "Switch to light theme"
     } else {
         "Switch to dark theme"
@@ -54,7 +55,7 @@ pub fn DocsNavbar() -> Element {
             test_id: "docs-navbar",
             accessibility_role: "banner",
             accessibility_label: "{site_title} navigation",
-            style: "width: 100%; height: 56px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 16px; gap: 12px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; z-index: 50;",
+            style: "width: 100%; height: 56px; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 16px; gap: 12px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; z-index: 50;",
 
             // Left cluster: mobile drawer toggle + brand mark + section tabs
             view {
@@ -67,12 +68,12 @@ pub fn DocsNavbar() -> Element {
                     accessibility_label: "Toggle navigation sidebar",
                     aria_expanded: "{menu_expanded}",
                     aria_controls: "docs-sidebar-drawer",
-                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface_subtle};",
+                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.subtle.hex()};",
                     onpress: move |_| {
                         state.write().toggle_mobile_drawer();
                     },
                     text {
-                        style: "font-size: 13px; font-weight: 600; color: {theme.text};",
+                        style: "font-size: 13px; font-weight: 600; color: {theme.text.primary.hex()};",
                         "{menu_label}"
                     }
                 }
@@ -88,16 +89,16 @@ pub fn DocsNavbar() -> Element {
                         navigate_to(state, DocsRoute::root());
                     },
                     view {
-                        style: "padding-horizontal: 7px; padding-vertical: 3px; border-radius: 6px; background-color: {theme.accent_surface}; border-width: 1px; border-color: {theme.accent};",
+                        style: "padding-horizontal: 7px; padding-vertical: 3px; border-radius: 6px; background-color: {theme.status.accent.subtle.hex()}; border-width: 1px; border-color: {theme.status.accent.border.hex()};",
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {theme.accent};",
+                            style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
                             "{brand_mark}"
                         }
                     }
                     text {
                         test_id: "docs-brand-title",
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
-                        style: "font-size: 15px; font-weight: 700; color: {theme.text};",
+                        style: "font-size: 15px; font-weight: 700; color: {theme.text.primary.hex()};",
                         "{site_title}"
                     }
                 }
@@ -112,9 +113,9 @@ pub fn DocsNavbar() -> Element {
                         style: "flex-direction: row; align-items: center; gap: 4px; margin: 0px;",
                         for (sec_id, sec_label, sec_route, sec_href, sec_badge, is_active) in sections {
                             {
-                                let bg = if is_active { theme.accent_surface } else { "transparent" };
-                                let fg = if is_active { theme.accent } else { theme.muted };
-                                let border_c = if is_active { theme.accent } else { "transparent" };
+                                let bg = if is_active { theme.status.accent.subtle.hex() } else { Hex::TRANSPARENT };
+                                let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
+                                let border_c = if is_active { theme.status.accent.solid.hex() } else { Hex::TRANSPARENT };
                                 let tid = format!("docs-section-{sec_id}");
                                 let target_route = DocsRoute::new(&sec_route);
                                 rsx! {
@@ -133,9 +134,9 @@ pub fn DocsNavbar() -> Element {
                                         }
                                         if let Some(badge_txt) = sec_badge {
                                             view {
-                                                style: "padding-horizontal: 5px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                                style: "padding-horizontal: 5px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                                 text {
-                                                    style: "font-size: 10px; font-weight: 600; color: {theme.accent_alt};",
+                                                    style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
                                                     "{badge_txt}"
                                                 }
                                             }
@@ -156,25 +157,25 @@ pub fn DocsNavbar() -> Element {
                     test_id: "docs-search-trigger",
                     accessibility_role: "button",
                     accessibility_label: "Search documentation (Command K)",
-                    style: "flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    style: "flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     onpress: move |_| {
                         state.write().open_search();
                     },
                     text {
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
-                        style: "font-size: 13px; color: {theme.muted};",
+                        style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                         "Search docs..."
                     }
                     text {
                         nve_show_on: ShowOn(MediaQuery::max_width(959)),
-                        style: "font-size: 13px; color: {theme.muted};",
+                        style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                         "Search"
                     }
                     view {
                         nve_show_on: ShowOn(MediaQuery::min_width(960)),
-                        style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                        style: "padding-horizontal: 6px; padding-vertical: 2px; border-radius: 4px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         text {
-                            style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
+                            style: "font-size: 11px; font-weight: 600; color: {theme.text.secondary.hex()};",
                             "⌘K"
                         }
                     }
@@ -184,12 +185,12 @@ pub fn DocsNavbar() -> Element {
                     test_id: "docs-theme-toggle",
                     accessibility_role: "button",
                     accessibility_label: "{theme_hint}",
-                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     onpress: move |_| {
                         state.write().toggle_theme();
                     },
                     text {
-                        style: "font-size: 12px; font-weight: 600; color: {theme.text};",
+                        style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
                         "{theme_label}"
                     }
                 }
@@ -201,9 +202,9 @@ pub fn DocsNavbar() -> Element {
                         accessibility_role: "link",
                         accessibility_label: "GitHub repository",
                         "href": "{repo_url}",
-                        style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                        style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {theme.muted};",
+                            style: "font-size: 12px; font-weight: 600; color: {theme.text.secondary.hex()};",
                             "GitHub"
                         }
                     }

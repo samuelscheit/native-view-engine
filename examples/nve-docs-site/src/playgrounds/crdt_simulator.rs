@@ -6,7 +6,7 @@ use nve_interop::crdt::{
     NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OpId, OrSet, PeerId, PnCounter,
     VersionVector,
 };
-use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
+use nve_ui::{ColorHex, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Switch, use_theme};
 
 pub const CRDT_SIMULATOR_SOURCE: &str = r#"use nve_interop::crdt::{
     NveCrdtDelta, CrdtRecord, CrdtValue, HlcClock, LwwRegister, OrSet, PeerId, PnCounter,
@@ -273,11 +273,11 @@ pub fn CrdtSimulatorDemo() -> Element {
                 // Peer A
                 view {
                     test_id: "pg-crdt-peer-a",
-                    style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background-color: {theme.palette.surface_elevated}; border-width: 1px; border-color: {theme.palette.border};",
+                    style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background-color: {theme.surface.raised.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: row; justify-content: space-between; align-items: center;",
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.palette.accent};",
+                            style: "font-size: 13px; font-weight: 700; color: {theme.status.accent.solid.hex()};",
                             "Peer A (iOS · id=1)"
                         }
                         Badge {
@@ -287,12 +287,12 @@ pub fn CrdtSimulatorDemo() -> Element {
                     }
                     text {
                         test_id: "pg-crdt-a-title",
-                        style: "font-size: 12px; color: {theme.palette.text_primary};",
+                        style: "font-size: 12px; color: {theme.text.primary.hex()};",
                         "LWW Title: {a_title}"
                     }
                     text {
                         test_id: "pg-crdt-a-votes",
-                        style: "font-size: 12px; color: {theme.palette.text_secondary};",
+                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                         "PN-Counter: {a_votes} · OR-Set: [{a_tags}]"
                     }
                     view {
@@ -319,11 +319,11 @@ pub fn CrdtSimulatorDemo() -> Element {
                 // Peer B
                 view {
                     test_id: "pg-crdt-peer-b",
-                    style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background-color: {theme.palette.surface_elevated}; border-width: 1px; border-color: {theme.palette.border};",
+                    style: "flex-grow: 1; min-width: 220px; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background-color: {theme.surface.raised.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                     view {
                         style: "flex-direction: row; justify-content: space-between; align-items: center;",
                         text {
-                            style: "font-size: 13px; font-weight: 700; color: {theme.palette.success};",
+                            style: "font-size: 13px; font-weight: 700; color: {theme.status.success.solid.hex()};",
                             "Peer B (Web · id=2)"
                         }
                         Badge {
@@ -333,12 +333,12 @@ pub fn CrdtSimulatorDemo() -> Element {
                     }
                     text {
                         test_id: "pg-crdt-b-title",
-                        style: "font-size: 12px; color: {theme.palette.text_primary};",
+                        style: "font-size: 12px; color: {theme.text.primary.hex()};",
                         "LWW Title: {b_title}"
                     }
                     text {
                         test_id: "pg-crdt-b-votes",
-                        style: "font-size: 12px; color: {theme.palette.text_secondary};",
+                        style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                         "PN-Counter: {b_votes} · OR-Set: [{b_tags}]"
                     }
                     view {

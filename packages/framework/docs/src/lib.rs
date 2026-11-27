@@ -35,7 +35,9 @@ pub use state::{
     DocsAppState, DocsViewport, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT, navigate_to,
     navigate_to_target, use_docs_state,
 };
-pub use theme::{CalloutTone, DocsTheme, SyntaxPalette};
+pub use theme::{
+    CalloutTone, callout_tone, docs_theme_config, syntax_color, system_appearance,
+};
 
 /// Root Dioxus component for a mounted `nve-docs` documentation application.
 ///

@@ -31,6 +31,10 @@ pub use tokens::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hex(pub ColorRgba);
 
+impl Hex {
+    pub const TRANSPARENT: Self = Self(ColorRgba::TRANSPARENT);
+}
+
 impl fmt::Display for Hex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ColorRgba { r, g, b, a } = self.0;

@@ -1,6 +1,7 @@
 //! Page breadcrumbs, "Edit this page on GitHub" link, and Prev/Next pagination cards.
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 
 use crate::route::DocsRoute;
 use crate::state::{navigate_to, use_docs_state};
@@ -30,7 +31,7 @@ pub fn Breadcrumbs() -> Element {
             for (idx, (label, route)) in trail.into_iter().enumerate() {
                 {
                     let is_last = idx == last_idx;
-                    let fg = if is_last { theme.text } else { theme.muted };
+                    let fg = if is_last { theme.text.primary.hex() } else { theme.text.secondary.hex() };
                     let weight = if is_last { "600" } else { "400" };
                     let href = if route.is_empty() {
                         String::new()
@@ -45,7 +46,7 @@ pub fn Breadcrumbs() -> Element {
                             style: "flex-direction: row; align-items: center; gap: 6px;",
                             if idx > 0 {
                                 text {
-                                    style: "font-size: 12px; color: {theme.muted};",
+                                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                                     "/"
                                 }
                             }
@@ -92,7 +93,7 @@ pub fn PageFooter() -> Element {
     rsx! {
         view {
             test_id: "docs-page-footer",
-            style: "width: 100%; flex-direction: column; gap: 16px; padding-vertical: 20px; border-width: 1px; border-color: {theme.border}; border-radius: 10px; padding-horizontal: 16px; background-color: {theme.surface};",
+            style: "width: 100%; flex-direction: column; gap: 16px; padding-vertical: 20px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 10px; padding-horizontal: 16px; background-color: {theme.surface.base.hex()};",
 
             if let Some(url) = edit_url {
                 pressable {
@@ -102,7 +103,7 @@ pub fn PageFooter() -> Element {
                     "href": "{url}",
                     style: "flex-direction: row; align-items: center; gap: 6px;",
                     text {
-                        style: "font-size: 12px; font-weight: 500; color: {theme.accent};",
+                        style: "font-size: 12px; font-weight: 500; color: {theme.text.link.hex()};",
                         "Edit this page on GitHub ↗"
                     }
                 }
@@ -123,16 +124,16 @@ pub fn PageFooter() -> Element {
                                     accessibility_role: "link",
                                     accessibility_label: "Previous page: {prev.title}",
                                     "href": "{prev_href}",
-                                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                     onpress: move |_| {
                                         navigate_to(state, prev_route.clone());
                                     },
                                     text {
-                                        style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
+                                        style: "font-size: 11px; font-weight: 600; color: {theme.text.secondary.hex()};",
                                         "← Previous"
                                     }
                                     text {
-                                        style: "font-size: 14px; font-weight: 600; color: {theme.text};",
+                                        style: "font-size: 14px; font-weight: 600; color: {theme.text.primary.hex()};",
                                         "{prev.title}"
                                     }
                                 }
@@ -152,16 +153,16 @@ pub fn PageFooter() -> Element {
                                     accessibility_role: "link",
                                     accessibility_label: "Next page: {next.title}",
                                     "href": "{next_href}",
-                                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; align-items: flex-end; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                    style: "flex-grow: 1; min-width: 0px; flex-direction: column; align-items: flex-end; gap: 4px; padding: 12px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                     onpress: move |_| {
                                         navigate_to(state, next_route.clone());
                                     },
                                     text {
-                                        style: "font-size: 11px; font-weight: 600; color: {theme.muted};",
+                                        style: "font-size: 11px; font-weight: 600; color: {theme.text.secondary.hex()};",
                                         "Next →"
                                     }
                                     text {
-                                        style: "font-size: 14px; font-weight: 600; color: {theme.text};",
+                                        style: "font-size: 14px; font-weight: 600; color: {theme.text.primary.hex()};",
                                         "{next.title}"
                                     }
                                 }

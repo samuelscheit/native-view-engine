@@ -2,6 +2,7 @@
 //! (`/examples/studio/`, `/examples/kitchen-sink/`) and all 5 live interactive docs playgrounds.
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 use nve_docs::{DocsRoute, navigate_to, use_docs_state};
 
 use crate::landing::{PillBadge, SiteFooter, resolve_example_app_href};
@@ -95,7 +96,7 @@ pub fn ExamplesGalleryPage() -> Element {
     rsx! {
         view {
             test_id: "examples-gallery-page",
-            style: "width: 100%; flex-direction: column; align-items: center; background-color: {theme.canvas}; color: {theme.text};",
+            style: "width: 100%; flex-direction: column; align-items: center; background-color: {theme.surface.canvas.hex()}; color: {theme.text.primary.hex()};",
 
             view {
                 nve_style: outer_resp,
@@ -116,12 +117,12 @@ pub fn ExamplesGalleryPage() -> Element {
                         "aria-level": "1",
                         text {
                             nve_style: h1_resp,
-                            style: "font-size: 40px; font-weight: 800; color: {theme.text};",
+                            style: "font-size: 40px; font-weight: 800; color: {theme.text.primary.hex()};",
                             "Interactive Examples & Live Playgrounds"
                         }
                     }
                     text {
-                        style: "font-size: 16px; color: {theme.muted}; line-height: 1.55;",
+                        style: "font-size: 16px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
                         "Run full NVE applications compiled to WebAssembly on demand — keeping the landing page and documentation ultra-fast — or experiment directly inside the live embedded playgrounds below."
                     }
                 }
@@ -134,7 +135,7 @@ pub fn ExamplesGalleryPage() -> Element {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 20px; font-weight: 700; color: {theme.text};",
+                            style: "font-size: 20px; font-weight: 700; color: {theme.text.primary.hex()};",
                             "Standalone Live WASM Applications"
                         }
                     }
@@ -146,26 +147,26 @@ pub fn ExamplesGalleryPage() -> Element {
                         // Studio App Card
                         view {
                             test_id: "example-card-studio",
-                            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             view {
                                 style: "flex-direction: column; gap: 12px;",
                                 view {
                                     style: "flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                                     text {
-                                        style: "font-size: 11px; font-weight: 700; color: {theme.accent};",
+                                        style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
                                         "FLAGSHIP WORKBENCH"
                                     }
                                     text {
-                                        style: "font-size: 11px; font-family: monospace; color: {theme.muted};",
+                                        style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                         "/examples/studio/"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 22px; font-weight: 800; color: {theme.text};",
+                                    style: "font-size: 22px; font-weight: 800; color: {theme.text.primary.hex()};",
                                     "Aether Workspace + NVE Studio"
                                 }
                                 text {
-                                    style: "font-size: 14px; color: {theme.muted}; line-height: 1.55;",
+                                    style: "font-size: 14px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
                                     "Full multi-pane issue tracker, docs workbench, live X-Ray layout & FFI inspector, 100,000-row virtualized table, binary NVC1 CRDT sync, and NVE_DRAW1 telemetry canvas running in WebAssembly."
                                 }
                                 view {
@@ -191,14 +192,14 @@ pub fn ExamplesGalleryPage() -> Element {
                                             )]),
                                         ));
                                     }),
-                                    style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.accent}; border-width: 1px; border-color: {theme.accent};",
+                                    style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.status.accent.solid.hex()}; border-width: 1px; border-color: {theme.status.accent.solid.hex()};",
                                     text {
-                                        style: "font-size: 14px; font-weight: 700; color: {theme.accent_fg};",
+                                        style: "font-size: 14px; font-weight: 700; color: {theme.text.on_accent.hex()};",
                                         "Launch Live Studio →"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 12px; font-family: monospace; color: {theme.muted};",
+                                    style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                     "Lazy-loaded · Portal Bar"
                                 }
                             }
@@ -207,26 +208,26 @@ pub fn ExamplesGalleryPage() -> Element {
                         // Kitchen Sink Gallery Card
                         view {
                             test_id: "example-card-kitchen-sink",
-                            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 20px; padding: 24px; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             view {
                                 style: "flex-direction: column; gap: 12px;",
                                 view {
                                     style: "flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;",
                                     text {
-                                        style: "font-size: 11px; font-weight: 700; color: {theme.accent_alt};",
+                                        style: "font-size: 11px; font-weight: 700; color: {theme.status.info.text.hex()};",
                                         "COMPONENT GALLERY"
                                     }
                                     text {
-                                        style: "font-size: 11px; font-family: monospace; color: {theme.muted};",
+                                        style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                         "/examples/kitchen-sink/"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 22px; font-weight: 800; color: {theme.text};",
+                                    style: "font-size: 22px; font-weight: 800; color: {theme.text.primary.hex()};",
                                     "NVE Kitchen Sink Gallery"
                                 }
                                 text {
-                                    style: "font-size: 14px; color: {theme.muted}; line-height: 1.55;",
+                                    style: "font-size: 14px; color: {theme.text.secondary.hex()}; line-height: 1.55;",
                                     "Interactive showcase of every nve-ui component and engine primitive: Dark/Light themes, UiDensity, live nve-i18n locales & RTL, overlays, 1k VirtualList, NVE_DRAW1 Canvas, and UiErrorBoundary recovery."
                                 }
                                 view {
@@ -251,14 +252,14 @@ pub fn ExamplesGalleryPage() -> Element {
                                             )]),
                                         ));
                                     }),
-                                    style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                    style: "padding-horizontal: 18px; padding-vertical: 10px; border-radius: 9px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                     text {
-                                        style: "font-size: 14px; font-weight: 700; color: {theme.text};",
+                                        style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
                                         "Launch Kitchen Sink →"
                                     }
                                 }
                                 text {
-                                    style: "font-size: 12px; font-family: monospace; color: {theme.muted};",
+                                    style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                     "Lazy-loaded · Portal Bar"
                                 }
                             }
@@ -279,12 +280,12 @@ pub fn ExamplesGalleryPage() -> Element {
                                 accessibility_role: "heading",
                                 "aria-level": "2",
                                 text {
-                                    style: "font-size: 20px; font-weight: 700; color: {theme.text};",
+                                    style: "font-size: 20px; font-weight: 700; color: {theme.text.primary.hex()};",
                                     "Live Embedded Playgrounds"
                                 }
                             }
                             text {
-                                style: "font-size: 13px; color: {theme.muted};",
+                                style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                                 "Select any subsystem below to interact immediately in-page, or open its full technical guide."
                             }
                         }
@@ -292,12 +293,12 @@ pub fn ExamplesGalleryPage() -> Element {
                             test_id: "examples-open-guide-link",
                             accessibility_role: "link",
                             "href": "{selected_guide_href}",
-                            style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                            style: "padding-horizontal: 12px; padding-vertical: 7px; border-radius: 8px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             onpress: move |_| {
                                 navigate_to(state, selected_guide_route.clone());
                             },
                             text {
-                                style: "font-size: 13px; font-weight: 600; color: {theme.accent};",
+                                style: "font-size: 13px; font-weight: 600; color: {theme.text.link.hex()};",
                                 "Open Full Guide →"
                             }
                         }
@@ -310,9 +311,9 @@ pub fn ExamplesGalleryPage() -> Element {
                         for spec in &PLAYGROUND_SPECS {
                             {
                                 let is_sel = spec.id == selected_id;
-                                let bg = if is_sel { theme.accent_surface } else { theme.surface };
-                                let fg = if is_sel { theme.accent } else { theme.muted };
-                                let bc = if is_sel { theme.accent } else { theme.border };
+                                let bg = if is_sel { theme.status.accent.subtle.hex() } else { theme.surface.base.hex() };
+                                let fg = if is_sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
+                                let bc = if is_sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
                                 let id_val = spec.id;
                                 let sel_attr = if is_sel { "true" } else { "false" };
                                 rsx! {
@@ -338,18 +339,18 @@ pub fn ExamplesGalleryPage() -> Element {
                     // Active live playground preview card
                     view {
                         test_id: "examples-live-stage",
-                        style: "width: 100%; flex-direction: column; border-radius: 14px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border}; overflow: hidden;",
+                        style: "width: 100%; flex-direction: column; border-radius: 14px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()}; overflow: hidden;",
 
                         view {
-                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding-horizontal: 18px; padding-vertical: 12px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding-horizontal: 18px; padding-vertical: 12px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             view {
                                 style: "flex-direction: column; gap: 2px;",
                                 text {
-                                    style: "font-size: 14px; font-weight: 700; color: {theme.text};",
+                                    style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
                                     "{selected_spec.title}"
                                 }
                                 text {
-                                    style: "font-size: 12px; color: {theme.muted};",
+                                    style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                                     "{selected_spec.summary}"
                                 }
                             }
@@ -362,7 +363,7 @@ pub fn ExamplesGalleryPage() -> Element {
                         }
 
                         view {
-                            style: "width: 100%; padding: 20px; background-color: {theme.canvas};",
+                            style: "width: 100%; padding: 20px; background-color: {theme.surface.canvas.hex()};",
                             if let Some(entry) = selected_entry {
                                 {(entry.render)()}
                             }

@@ -2,6 +2,7 @@
 //! interactive Purple-Garden-style `NVE_DRAW1` Benchmark Progression Dashboard.
 
 use nve_dioxus::prelude::*;
+use nve_ui::ColorHex;
 use nve_docs::use_docs_state;
 
 use crate::landing::PillBadge;
@@ -97,19 +98,19 @@ pub fn DevAndBenchProgression() -> Element {
                 view {
                     style: "flex-direction: column; gap: 6px; max-width: 720px;",
                     text {
-                        style: "font-size: 12px; font-weight: 700; color: {theme.accent};",
+                        style: "font-size: 12px; font-weight: 700; color: {theme.text.link.hex()};",
                         "DEVELOPMENT & BENCHMARK PROGRESSION"
                     }
                     view {
                         accessibility_role: "heading",
                         "aria-level": "2",
                         text {
-                            style: "font-size: 28px; font-weight: 800; color: {theme.text};",
+                            style: "font-size: 28px; font-weight: 800; color: {theme.text.primary.hex()};",
                             "14 engineering waves, continuously measured."
                         }
                     }
                     text {
-                        style: "font-size: 14px; color: {theme.muted}; line-height: 1.5;",
+                        style: "font-size: 14px; color: {theme.text.secondary.hex()}; line-height: 1.5;",
                         "Every latency and payload breakthrough below is tracked directly from benchmarks/baseline.json and rendered natively via binary NVE_DRAW1 vector canvases."
                     }
                 }
@@ -134,26 +135,26 @@ pub fn DevAndBenchProgression() -> Element {
                         for m in row {
                             view {
                                 key: "wave-{m.wave}",
-                                style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 10px; padding: 16px; border-radius: 12px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+                                style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; justify-content: space-between; gap: 10px; padding: 16px; border-radius: 12px; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                 view {
                                     style: "flex-direction: column; gap: 7px;",
                                     view {
                                         style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px;",
                                         text {
-                                            style: "font-size: 11px; font-weight: 700; color: {theme.accent};",
+                                            style: "font-size: 11px; font-weight: 700; color: {theme.text.link.hex()};",
                                             "{m.wave}"
                                         }
                                         text {
-                                            style: "font-size: 11px; font-family: monospace; color: {theme.muted};",
+                                            style: "font-size: 11px; font-family: monospace; color: {theme.text.secondary.hex()};",
                                             "{m.commit}"
                                         }
                                     }
                                     text {
-                                        style: "font-size: 14px; font-weight: 700; color: {theme.text};",
+                                        style: "font-size: 14px; font-weight: 700; color: {theme.text.primary.hex()};",
                                         "{m.title}"
                                     }
                                     text {
-                                        style: "font-size: 12px; color: {theme.muted}; line-height: 1.45;",
+                                        style: "font-size: 12px; color: {theme.text.secondary.hex()}; line-height: 1.45;",
                                         "{m.summary}"
                                     }
                                 }

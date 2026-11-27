@@ -1,6 +1,7 @@
 //! Left navigation sidebar (`accessibility_role: "navigation"`, `260px` desktop / mobile slide-over drawer).
 
 use dioxus_core_macro::Props;
+use nve_ui::{ColorHex, Hex};
 use nve_dioxus::prelude::*;
 use nve_mdx::NavNode;
 
@@ -45,25 +46,25 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
             nve_show_on: desktop_show_on,
             accessibility_role: "navigation",
             accessibility_label: "Documentation sidebar",
-            style: "width: 260px; height: 100%; flex-shrink: 0; flex-direction: column; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
+            style: "width: 260px; height: 100%; flex-shrink: 0; flex-direction: column; background-color: {theme.surface.base.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
 
             if mobile_overlay {
                 view {
-                    style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 14px; padding-vertical: 12px; border-width: 1px; border-color: {theme.border};",
+                    style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 14px; padding-vertical: 12px; border-width: 1px; border-color: {theme.border.default.hex()};",
                     text {
-                        style: "font-size: 13px; font-weight: 700; color: {theme.text};",
+                        style: "font-size: 13px; font-weight: 700; color: {theme.text.primary.hex()};",
                         "Navigation"
                     }
                     pressable {
                         test_id: "docs-sidebar-close",
                         accessibility_role: "button",
                         accessibility_label: "Close navigation drawer",
-                        style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                        style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                         onpress: move |_| {
                             state.write().set_mobile_drawer(false);
                         },
                         text {
-                            style: "font-size: 12px; color: {theme.muted};",
+                            style: "font-size: 12px; color: {theme.text.secondary.hex()};",
                             "Close"
                         }
                     }
@@ -77,13 +78,13 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
                 // Show section tabs inside mobile drawer
                 if mobile_overlay && !sections.is_empty() {
                     view {
-                        style: "flex-direction: column; gap: 4px; padding-vertical: 6px; border-width: 1px; border-color: {theme.border}; border-radius: 8px; padding-horizontal: 8px; background-color: {theme.surface_subtle};",
+                        style: "flex-direction: column; gap: 4px; padding-vertical: 6px; border-width: 1px; border-color: {theme.border.default.hex()}; border-radius: 8px; padding-horizontal: 8px; background-color: {theme.surface.subtle.hex()};",
                         for sec in sections {
                             {
                                 let sec_route = DocsRoute::new(&sec.default_route);
                                 let sec_href = sec_route.href(&base_path);
                                 let is_active = sec.matches_route(&active_route);
-                                let fg = if is_active { theme.accent } else { theme.text };
+                                let fg = if is_active { theme.text.link.hex() } else { theme.text.primary.hex() };
                                 rsx! {
                                     pressable {
                                         key: "mobile-sec-{sec.id}",
@@ -156,11 +157,11 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                 view {
                     style: "width: 100%; padding-vertical: 6px; gap: 4px;",
                     view {
-                        style: "width: 100%; height: 1px; background-color: {theme.border};",
+                        style: "width: 100%; height: 1px; background-color: {theme.border.default.hex()};",
                     }
                     if let Some(lbl) = title {
                         text {
-                            style: "font-size: 11px; font-weight: 700; color: {theme.muted}; padding-horizontal: 6px;",
+                            style: "font-size: 11px; font-weight: 700; color: {theme.text.secondary.hex()}; padding-horizontal: 6px;",
                             "{lbl}"
                         }
                     }
@@ -180,16 +181,16 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             drop(snap);
 
             let bg = if is_active {
-                theme.accent_surface
+                theme.status.accent.subtle.hex()
             } else {
-                "transparent"
+                Hex::TRANSPARENT
             };
-            let fg = if is_active { theme.accent } else { theme.muted };
+            let fg = if is_active { theme.text.link.hex() } else { theme.text.secondary.hex() };
             let weight = if is_active { "600" } else { "400" };
             let rail_color = if is_active {
-                theme.accent
+                theme.status.accent.solid.hex()
             } else {
-                "transparent"
+                Hex::TRANSPARENT
             };
 
             rsx! {
@@ -214,9 +215,9 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                     }
                     if let Some(badge_text) = badge {
                         view {
-                            style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             text {
-                                style: "font-size: 10px; font-weight: 600; color: {theme.accent_alt};",
+                                style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
                                 "{badge_text}"
                             }
                         }
@@ -234,14 +235,14 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                     "href": "{href}",
                     style: "width: 100%; flex-direction: row; align-items: center; justify-content: space-between; padding-vertical: 6px; padding-horizontal: 10px; border-radius: 6px;",
                     text {
-                        style: "font-size: 13px; color: {theme.muted};",
+                        style: "font-size: 13px; color: {theme.text.secondary.hex()};",
                         "{title} ↗"
                     }
                     if let Some(badge_text) = badge {
                         view {
-                            style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                            style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                             text {
-                                style: "font-size: 10px; font-weight: 600; color: {theme.accent_alt};",
+                                style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
                                 "{badge_text}"
                             }
                         }
@@ -272,9 +273,9 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
             let chevron = if is_collapsed { "▸" } else { "▾" };
             let expanded_str = if is_collapsed { "false" } else { "true" };
             let header_fg = if is_index_active {
-                theme.accent
+                theme.status.accent.solid.hex()
             } else {
-                theme.text
+                theme.text.primary.hex()
             };
             let folder_tid = format!("docs-sidebar-folder-{slug}");
             let slug_for_toggle = slug.clone();
@@ -298,7 +299,7 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                         view {
                             style: "flex-direction: row; align-items: center; gap: 6px;",
                             text {
-                                style: "font-size: 11px; color: {theme.muted};",
+                                style: "font-size: 11px; color: {theme.text.secondary.hex()};",
                                 "{chevron}"
                             }
                             text {
@@ -308,9 +309,9 @@ fn SidebarNodeView(node: NavNode, depth: usize) -> Element {
                         }
                         if let Some(badge_text) = badge {
                             view {
-                                style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
+                                style: "padding-horizontal: 6px; padding-vertical: 1px; border-radius: 999px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
                                 text {
-                                    style: "font-size: 10px; font-weight: 600; color: {theme.accent_alt};",
+                                    style: "font-size: 10px; font-weight: 600; color: {theme.status.info.text.hex()};",
                                     "{badge_text}"
                                 }
                             }
