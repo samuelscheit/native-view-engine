@@ -24,6 +24,7 @@ const EXISTING_HOT_PATH_FILES: &[&str] = &[
     "packages/backends/headless/src/slot_map.rs",
 ];
 
+/// Enforces [INV:zero-fnv1a].
 #[test]
 fn zero_fnv1a_repo_wide() {
     let idx = repo_index();
@@ -186,6 +187,7 @@ pub fn has_16_hex_literal(line: &str) -> bool {
     false
 }
 
+/// Enforces [INV:no-noderow-heap-fields].
 #[test]
 fn hot_path_perf_and_utf8_guards() {
     let idx = repo_index();
@@ -316,6 +318,7 @@ pub fn scan_hot_path_str(rel: &str, src: &str, is_hot_file: bool, out: &mut Vec<
     }
 }
 
+/// Enforces [INV:codegen-hygiene].
 #[test]
 fn codegen_hygiene_and_dart_js_53bit_safety() {
     let idx = repo_index();
@@ -430,6 +433,7 @@ pub fn scan_codegen_target_str(rel: &str, src: &str, out: &mut Vec<Violation>) {
     }
 }
 
+/// Enforces [INV:core-platform-purity] and [INV:no-legacy-acronyms].
 #[test]
 fn platform_purity_and_banned_4_letter_acronyms() {
     let idx = repo_index();

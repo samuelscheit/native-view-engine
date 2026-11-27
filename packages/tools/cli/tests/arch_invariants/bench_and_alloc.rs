@@ -6,6 +6,7 @@ use crate::support::{
 };
 use crate::Stage;
 
+/// Enforces [INV:bench-and-alloc-guards].
 /// Active immediately today: every existing `benches/*.rs` file across `packages/` must use a
 /// real benchmark harness AND `black_box` (zero empty/no-op benchmark stubs).
 #[test]

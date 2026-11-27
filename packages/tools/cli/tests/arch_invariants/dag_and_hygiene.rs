@@ -53,6 +53,7 @@ const PERSONAL_SCAN_EXTS: &[&str] = &[
     ".md",
 ];
 
+/// Enforces [INV:backlog-open-only].
 #[test]
 fn backlog_is_open_only() {
     let idx = repo_index();
@@ -78,6 +79,7 @@ fn backlog_is_open_only() {
     assert_no_violations("Open-only docs/BACKLOG.md", &violations);
 }
 
+/// Enforces [INV:generated-files-hygiene].
 #[test]
 fn generated_files_naming_and_zero_tracked_artifacts() {
     let idx = repo_index();
@@ -378,6 +380,7 @@ fn every_packages_crate_has_non_empty_readme() {
     );
 }
 
+/// Enforces [INV:max-650-lines].
 #[test]
 fn production_rust_files_max_650_lines_with_ratchet() {
     let idx = repo_index();

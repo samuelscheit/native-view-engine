@@ -51,6 +51,8 @@ const MAGIC_SENTINEL_DEFAULTS: &[&str] = &[
 
 const HANDWRITTEN_BYTE_READERS: &[&str] = &["ByteReader", "BinReader", "WireReader", "Cursor"];
 
+/// Enforces [INV:no-redundant-bits-attr], [INV:no-opt-wrapper-types],
+/// [INV:no-duplicate-enums-or-converters], and [INV:no-private-byte-readers].
 #[test]
 fn zero_boilerplate_macros_and_converters() {
     let idx = repo_index();

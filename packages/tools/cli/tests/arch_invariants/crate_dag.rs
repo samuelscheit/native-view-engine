@@ -26,6 +26,7 @@ const PENDING_CLEANUP_HOST_DEPS: &[(&str, &str)] = &[("nve-cli", "nve-skia-shell
 /// Minimal tracked `serde_json` runtime dependency cleanup list (Track 1B-1e).
 const PENDING_CLEANUP_SERDE_JSON: &[(&str, &str)] = &[("nve-codegen", "Track 1B-1e")];
 
+/// Enforces [INV:module-and-host-boundaries].
 #[test]
 fn no_sdk_library_crates_in_hosts() {
     let idx = repo_index();
@@ -91,6 +92,7 @@ pub fn check_packages_to_hosts_deps(graph: &WorkspaceGraph) -> Vec<Violation> {
     violations
 }
 
+/// Enforces [INV:core-zero-dioxus].
 #[test]
 fn core_crates_zero_dioxus_dependency() {
     let idx = repo_index();
@@ -154,6 +156,7 @@ pub fn check_core_zero_platform_crates(graph: &WorkspaceGraph) -> Vec<Violation>
     violations
 }
 
+/// Enforces [INV:zero-runtime-serde-json].
 #[test]
 fn core_backends_modules_zero_serde_json_runtime_dependency() {
     let idx = repo_index();
@@ -204,6 +207,7 @@ pub fn check_zero_serde_json(graph: &WorkspaceGraph) -> Vec<Violation> {
     violations
 }
 
+/// Enforces [INV:zero-fnv1a].
 #[test]
 fn zero_fnv_crate_dependency_workspace_wide() {
     let idx = repo_index();
@@ -397,6 +401,7 @@ fn module_root_spec_purity_and_no_unscoped_skia_dev_deps() {
     );
 }
 
+/// Enforces [INV:module-and-host-boundaries].
 #[test]
 fn no_core_or_backend_depends_on_modules_and_no_web_backend_auto_reg() {
     let idx = repo_index();

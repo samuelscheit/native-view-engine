@@ -44,6 +44,7 @@ const BANNED_LEGACY_SYMBOLS_1B1D: &[&str] = &[
     "StylePatch",
 ];
 
+/// Enforces [INV:typed-domain-handles].
 #[test]
 fn bare_primitive_domain_fields_in_core_structs() {
     let idx = repo_index();
@@ -312,6 +313,7 @@ pub fn iter_keyword_statements<'a>(clean: &'a str, kw: &str, terminator: u8) -> 
     results
 }
 
+/// Enforces [INV:abi-repr-c-locks].
 #[test]
 fn repr_c_abi_layout_asserts_and_cache_line_locks() {
     let idx = repo_index();
@@ -550,6 +552,7 @@ fn has_const_size_of_eq(
     false
 }
 
+/// Enforces [INV:no-legacy-nodestore-symbols] and [INV:no-legacy-event-style-symbols].
 #[test]
 fn legacy_regression_bans_post_nodestore_and_1b1d() {
     let idx = repo_index();

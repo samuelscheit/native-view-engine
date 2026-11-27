@@ -32,6 +32,7 @@ mod arch_inv {
     pub mod enum_and_macro_hygiene;
     pub mod perf_hashing_codegen_purity;
     pub mod rpc_server_purity_tests;
+    pub mod spec_registry;
     pub mod types_abi_and_regressions;
     pub mod unit_tests;
 }
