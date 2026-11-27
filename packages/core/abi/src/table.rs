@@ -87,6 +87,9 @@ pub enum FieldKind {
 pub struct ValueSetDesc {
     /// Rust type / set name (`AriaRole`, `TextDecoration`).
     pub name: &'static str,
+    /// `true` for a bit-flag set (values combine with `|`), `false` for enum variants (exactly
+    /// one value at a time). Hosts mirror flags as namespaced masks and variants as enums.
+    pub flags: bool,
     /// `(variant, value)` pairs in declaration order.
     pub values: &'static [(&'static str, u32)],
 }
@@ -106,17 +109,6 @@ pub struct FieldDesc {
     pub effects: u8,
     /// Named values (enum variants / flag bits); not part of the schema hash.
     pub values: Option<&'static ValueSetDesc>,
-}
-
-/// Named `u32` constants a table field holds: the variants of a `word_enum!` (`flags == false`) or
-/// the bits of a flag word (`flags == true`), mirrored to hosts by `nve codegen abi`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WordConstsDesc {
-    /// `UpperCamel` type name (`ImageFit`, `TypographySet`).
-    pub name: &'static str,
-    pub flags: bool,
-    /// `(UpperCamel variant / flag name, value)`.
-    pub entries: &'static [(&'static str, u32)],
 }
 
 /// Compile-time description of a table, emitted by `#[derive(NveTable)]`.

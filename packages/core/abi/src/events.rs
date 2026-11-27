@@ -36,6 +36,7 @@ impl EventMask {
     /// bit fits the `u32` table word (checked below).
     pub const VALUES: crate::table::ValueSetDesc = crate::table::ValueSetDesc {
         name: "EventMask",
+        flags: true,
         values: &[
             ("Press", Self::PRESS as u32),
             ("LongPress", Self::LONG_PRESS as u32),

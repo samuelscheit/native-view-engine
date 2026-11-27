@@ -55,8 +55,7 @@ pub use value::{Length, Rgba, WordValue};
 pub mod __private {
     pub use crate::table::register_static;
     pub use nve_abi::table::{
-        FieldDesc, FieldKind, Storage, TableDesc, ValueSetDesc, WordConstsDesc,
-        compute_table_schema_hash,
+        FieldDesc, FieldKind, Storage, TableDesc, ValueSetDesc, compute_table_schema_hash,
     };
     pub use nve_hash::{Key64, const_id};
 }
