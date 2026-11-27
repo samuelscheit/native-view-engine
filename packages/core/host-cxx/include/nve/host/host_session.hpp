@@ -109,6 +109,7 @@ class HostSession {
   }
 
   ~HostSession() {
+    *alive_ = false;  // a `pump` whose sink destroys the session stops touching it
     (void)runtime_.clear_wake_callback();  // drains in-flight wakes before `wake_` dies
   }
   HostSession(const HostSession&) = delete;
@@ -130,7 +131,9 @@ class HostSession {
     if (wake_) (void)runtime_.set_wake_callback(&HostSession::on_wake, this);
   }
 
-  void set_event_sink(EventSink sink) { sink_ = std::move(sink); }
+  void set_event_sink(EventSink sink) {
+    sink_ = sink ? std::make_shared<const EventSink>(std::move(sink)) : nullptr;
+  }
 
   /// Runs an in-process app (`nve_get_interface` linked into the host).
   bool attach(NveGetInterfaceFn get_interface) {
@@ -159,13 +162,15 @@ class HostSession {
       if (out_error != nullptr) *out_error = runtime_.last_error();
       return false;
     }
-    on_source_changed(false, false);
+    on_source_changed(false, false, true);
     return true;
   }
 
-  /// Leaves paired mode (no-op when not paired).
+  /// Leaves paired mode, stopping the pairing worker whether it is connected, still connecting,
+  /// or reconnecting (no-op when not paired).
   void unpair() {
-    if (!runtime_.pair_is_connected()) return;
+    if (!paired_) return;
+    paired_ = false;
     (void)runtime_.pair_disconnect();
   }
 
@@ -174,7 +179,9 @@ class HostSession {
   ///
   /// The sink may re-enter the session (dispatch, pump, attach, reload, `set_event_sink`): it
   /// gets an owned deep copy of the batch that no nested pump reuses, through a copy of the sink
-  /// that replacing it cannot destroy mid-call.
+  /// that replacing it cannot destroy mid-call. It may even destroy the session: `pump` (and the
+  /// `dispatch` / `set_props` / `apply_hot_patch` that called it) then touches no member again.
+  /// Steady state allocates nothing: the batch slabs are reused.
   bool pump(float dt_s = 0.0f) {
     bool changed = false;
     const bool ok = runtime_.tick(dt_s, &changed) == NVE_RUNTIME_OK;
@@ -182,10 +189,12 @@ class HostSession {
     if (sink_ && runtime_.drain_emitted_events(&out) == NVE_RUNTIME_OK && out.ptr != nullptr && out.len != 0u) {
       OwnedEvents batch = std::exchange(drained_, OwnedEvents{});  // a nested pump gets its own
       batch.assign(std::span<const NveDirectEvent>(out.ptr, out.len));
-      const EventSink sink = sink_;
-      sink(batch.events());
+      const std::shared_ptr<bool> alive = alive_;
+      const std::shared_ptr<const EventSink> sink = sink_;  // survives `set_event_sink` / `~HostSession`
+      (*sink)(batch.events());
+      if (!*alive) return ok && changed;  // the sink destroyed the session
       batch.clear();
-      drained_ = std::move(batch);  // keeps the event vector's capacity for the next batch
+      drained_ = std::move(batch);  // keeps the slabs' capacity for the next batch
     }
     return ok && changed;
   }
@@ -252,9 +261,11 @@ class HostSession {
     return true;
   }
 
-  void on_source_changed(bool attached, bool module) noexcept {
+  /// Any successful source switch replaces the previous source, pairing included.
+  void on_source_changed(bool attached, bool module, bool paired = false) noexcept {
     attached_ = attached;
     module_ = module;
+    paired_ = paired;
   }
 
   static void on_wake(void* ctx) {
@@ -264,11 +275,14 @@ class HostSession {
 
   RuntimeSession runtime_;  // owns the app and its staged module
   WakePoster wake_;
-  EventSink sink_;
+  std::shared_ptr<const EventSink> sink_;
   OwnedEvents drained_;
   EventFactory events_;
+  /// `false` once the destructor ran; `pump` holds a copy across its sink call.
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
   bool attached_ = false;
   bool module_ = false;
+  bool paired_ = false;  // a pairing worker runs (connected, connecting, or reconnecting)
 };
 
 }  // namespace nve::host
