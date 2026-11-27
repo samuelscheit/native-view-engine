@@ -26,6 +26,32 @@ use crate::options::{
 use crate::SsrError;
 
 const FINAL_TRAILER_GRACE: Duration = Duration::from_millis(50);
+const MAX_SSR_SYNC_FOLLOWUP_PASSES: usize = 16;
+
+/// Drains immediately ready synchronous follow-ups (e.g., a cached/in-memory waterfall step
+/// resolving on first poll before re-suspending on an async step, or a `SuspenseBoundary`
+/// mounting its fallback) strictly within `nve-ssr` without leaking `wait_for_work()` polling into
+/// `DioxusSurface::flush_into` on interactive hosts.
+fn flush_ssr_until_quiescent(
+    surface: &mut DioxusSurface,
+    backend: &mut WebBackend,
+    frame_id: &mut u64,
+) -> Result<(), SsrError> {
+    surface
+        .flush_into(*frame_id, backend)
+        .map_err(|err| SsrError::Render(err.to_string()))?;
+    let noop = core::task::Waker::noop();
+    for _ in 0..MAX_SSR_SYNC_FOLLOWUP_PASSES {
+        if !surface.poll_work(noop) {
+            break;
+        }
+        *frame_id = frame_id.saturating_add(1);
+        surface
+            .flush_into(*frame_id, backend)
+            .map_err(|err| SsrError::Render(err.to_string()))?;
+    }
+    Ok(())
+}
 
 fn build_http_response(
     status: StatusCode,
@@ -164,9 +190,10 @@ pub(crate) async fn execute_render_streaming<F>(
     let registry = SsrBoundaryRegistry::new();
     let mut surface = build_surface(client.clone()).with_context(registry.clone());
     let mut backend = WebBackend::new();
+    let mut frame_id: u64 = 1;
 
-    if let Err(err) = surface.flush_into(1, &mut backend) {
-        let _ = headers_tx.send(Err(SsrError::Render(err.to_string())));
+    if let Err(err) = flush_ssr_until_quiescent(&mut surface, &mut backend, &mut frame_id) {
+        let _ = headers_tx.send(Err(err));
         return;
     }
 
@@ -223,7 +250,6 @@ pub(crate) async fn execute_render_streaming<F>(
 
     let mut pending_slots: Vec<PendingStreamSlot> = core::mem::take(&mut shell_out.pending_slots);
     let mut next_seq: u64 = 1;
-    let mut frame_id: u64 = 1;
 
     let deadline = tokio::time::sleep(plan.total_deadline);
     tokio::pin!(deadline);
@@ -265,7 +291,7 @@ pub(crate) async fn execute_render_streaming<F>(
             }
             _ = surface.wait_for_work() => {
                 frame_id = frame_id.saturating_add(1);
-                if surface.flush_into(frame_id, &mut backend).is_err() {
+                if flush_ssr_until_quiescent(&mut surface, &mut backend, &mut frame_id).is_err() {
                     break;
                 }
 

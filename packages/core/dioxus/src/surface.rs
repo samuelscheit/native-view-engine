@@ -225,21 +225,14 @@ impl DioxusSurface {
         let mut tx = writer.begin_tx(sink, surface_id, frame_id);
         if !*initialized {
             vdom.rebuild(&mut tx);
+            // Flush any scopes dirtied during initial mount (e.g. an ErrorBoundary catching a
+            // child's initial render error/panic) so frame 1 immediately emits the fallback UI.
+            vdom.render_immediate(&mut tx);
             *initialized = true;
-        }
-        // Drain dirty scopes and synchronous follow-ups (e.g., an ErrorBoundary catching a render
-        // error/panic, or a SuspenseBoundary restoring its fallback after a sequential waterfall
-        // re-suspends) until quiescent, bounded against pathological infinite render loops.
-        const MAX_IMMEDIATE_PASSES: usize = 16;
-        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
-        for _ in 0..MAX_IMMEDIATE_PASSES {
-            let has_dirty = matches!(
-                core::future::Future::poll(core::pin::pin!(vdom.wait_for_work()), &mut cx),
-                core::task::Poll::Ready(())
-            );
-            if !has_dirty {
-                break;
-            }
+        } else {
+            vdom.render_immediate(&mut tx);
+            // Flush any follow-up scopes queued during render (e.g. an ErrorBoundary catching a
+            // child's `Result::Err` or panic during an incremental update).
             vdom.render_immediate(&mut tx);
         }
         for patch in pending_hot_patches.drain(..) {

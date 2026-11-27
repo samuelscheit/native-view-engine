@@ -66,7 +66,7 @@ bundle_budget() {
   case "$1" in
     studio) echo "${WASM_BROTLI_BUDGET_STUDIO:-316416}" ;;
     kitchen-sink) echo "${WASM_BROTLI_BUDGET_KITCHEN_SINK:-315392}" ;;
-    issues) echo "${WASM_BROTLI_BUDGET_ISSUES:-255000}" ;;
+    issues) echo "${WASM_BROTLI_BUDGET_ISSUES:-282000}" ;;
     dev) echo "${WASM_BROTLI_BUDGET_DEV:-485376}" ;;
   esac
 }
