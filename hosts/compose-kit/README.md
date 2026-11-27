@@ -1,15 +1,30 @@
 # `dev.nve.compose` — Native View Engine Host Kit for Jetpack Compose
 
-Android Library Gradle module (`dev.nve.compose`) for embedding **Native View Engine (NVE)** Rust components inside Jetpack Compose and Android `ComponentActivity` hosts with binary FFI.
+Android Library Gradle module (`dev.nve.compose`) for embedding **Native View Engine (NVE)** apps inside Jetpack Compose and Android `ComponentActivity` hosts through `libnve_runtime`.
 
 ## Architecture
 
-- **`NveSceneBuffer.kt`**: Zero-copy, zero-GC direct `ByteBuffer` reader over 64-byte `NveRenderNode` + `NveNodeMeta` + `NveSceneView` slabs (`SCHEMA_HASH = 0x6D45E53E0D9535D1`), with schema/bounds/UTF-8 validation and incremental dirty-index diffing.
-- **`NveBinValue.kt`**: Compact little-endian binary `NveBinValue` encoder and zero-copy `NveBinValueView` (tags `0..7`, O(1) container skipping, max depth `64`) replacing JSON for props, commands, and channel messages.
-- **`NveEventRingCodec.kt`**: Binary `EventRing` encoder & decoder matching `packages/core/abi/src/events.rs` for press, long-press, scroll, text change, focus/blur, layout, and custom binary events.
-- **`NveSurfaceState.kt` & `NveNativeBridge.kt`**: Pluggable `NveBridgeBackend`, reactive `NveSurfaceState`, `NveSurfaceController`, and binary `NveChannelClient`.
-- **`NveSurfaceComposable.kt`**: `@Composable fun NveSurface(...)`, `rememberNveSurfaceController(...)`, and `NveSurfaceView` (`onMeasure` intrinsic sizing, `onSizeChanged` viewport forwarding, and `requestDisallowInterceptTouchEvent` gesture arbitration).
-- **`NveHostActivity.kt`**: Reusable `ComponentActivity` host wiring Android lifecycle transitions (attach/detach/re-attach/dispose), viewport resize, `surfaceId` preservation, and Tier-2 `.so` hot-reload.
+Compose binds to `libnve_runtime` through the shared `dev.nve:nve-host-java` runtime (included
+build of `packages/core/host-java`) and `libnve_android_shell` (JNI):
+
+- **`NveSurfaceController.kt`**: `NveRuntimeHost` (`NativeRuntimeHost` over `RuntimeSurface`; JVM
+  fakes in tests), `NveSource` (app `.so`, hot-reloadable, or `nve pair` pairing), the observable
+  `NveSceneSnapshot`, and input → `EventRing` events (press, text change, submit, focus / blur,
+  scroll — which also syncs the runtime's scroll offsets for hit testing).
+- **`NveScene.kt`**: `NveSceneCapture` copies each acquired frame (`RuntimeSceneReader` over the
+  generated `NveTables` specs) into an immutable snapshot: kinds from table presence, parent-relative
+  rects, `nve.visual` boxes, inherited `nve.typography`, `nve.text_input`, images
+  (`ImageSource`) and canvas draw lists copied out of the frame (reused while their resource id is
+  unchanged and not ephemeral), and accessibility / test-id semantics.
+- **`NveSurface.kt`** / **`NveText.kt`**: `@Composable fun NveSurface(controller, modifier)` draws the
+  snapshot (`BasicText`, `BasicTextField`, `Image`, `Canvas` + `NveDrawListRenderer`, scroll
+  containers, boxes) and installs `NveComposeTextMeasurer`, so runtime layout measures text with
+  Compose's own `TextMeasurer`.
+- **`NveHostActivity.kt`**: reusable `ComponentActivity` for the bundled `libnve_app.so`,
+  `nve_app_path`, or `pair_connect` / `pair_token`.
+
+Props, commands, and app → host emitted events are not part of the runtime ABI (Model A apps own
+their state); they are tracked in `docs/BACKLOG.md`.
 
 ## Build & Test
 
@@ -32,50 +47,23 @@ JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home \
 ## Usage Example
 
 ```kotlin
-package com.example.app
+class MainActivity : ComponentActivity() {
+    private lateinit var controller: NveSurfaceController
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import dev.nve.compose.NveRenderBackend
-import dev.nve.compose.NveSurface
-import dev.nve.compose.rememberNveSurfaceController
-
-@Composable
-fun CounterScreen() {
-    var count by remember { mutableIntStateOf(0) }
-    val controller = rememberNveSurfaceController(
-        componentName = "NveCounterCard",
-        vtableSymbol = "nve_get_interface",
-        backend = NveRenderBackend.FABRIC,
-    )
-
-    Column {
-        NveSurface(
-            componentName = "NveCounterCard",
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp),
-            vtableSymbol = "nve_get_interface",
-            backend = NveRenderBackend.FABRIC,
-            props = mapOf(
-                "title" to "Compose + NVE",
-                "count" to count,
-            ),
-            controller = controller,
-            onEvent = { event ->
-                if (event.name == "onIncrement") {
-                    count += 1
-                }
-            },
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val d = resources.displayMetrics.density
+        val main = Handler(Looper.getMainLooper())
+        controller = NveSurfaceController(
+            NativeRuntimeHost(1, 360f, 800f, d, Executor { main.post(it) }),
         )
+        controller.start(NveSource.App(applicationInfo.nativeLibraryDir + "/libnve_app.so"))
+        setContent { NveSurface(controller, Modifier.fillMaxSize()) }
+    }
+
+    override fun onDestroy() {
+        controller.close()
+        super.onDestroy()
     }
 }
 ```
