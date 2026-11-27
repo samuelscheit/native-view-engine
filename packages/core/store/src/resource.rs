@@ -7,6 +7,7 @@
 //! `NVE2` wire framing copies the exact slab words verbatim.
 
 use std::any::TypeId;
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 
 use nve_abi::Key64;
@@ -118,7 +119,9 @@ pub struct ResourceStore {
     words: SpanPool<u32>,
     children: SpanPool<ResourceId>,
     dedup: FxHashMap<(u64, u64), ResourceId>,
-    free: Vec<u32>,
+    /// FIFO so a freed slot is reused as late as possible, maximizing the window in which a stale
+    /// `ResourceId` still meets its own (bumped) generation instead of a recycled one.
+    free: VecDeque<u32>,
     pending_free: Vec<u32>,
     pub(crate) defined: Vec<ResourceId>,
     pub(crate) released: Vec<ResourceId>,
@@ -137,7 +140,7 @@ impl Default for ResourceStore {
             words: SpanPool::default(),
             children: SpanPool::default(),
             dedup: FxHashMap::default(),
-            free: Vec::new(),
+            free: VecDeque::new(),
             pending_free: Vec::new(),
             defined: Vec::new(),
             released: Vec::new(),
@@ -191,7 +194,7 @@ impl ResourceStore {
     }
 
     fn slot(&mut self) -> Option<ResourceId> {
-        while let Some(i) = self.free.pop() {
+        while let Some(i) = self.free.pop_front() {
             if let Some(e) = self.entries.get_mut(i as usize) {
                 let was_in_free = e.flags & RES_IN_FREE != 0;
                 e.flags &= !RES_IN_FREE;

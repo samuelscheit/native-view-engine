@@ -6,8 +6,7 @@ use nve_abi::define_bitflags;
 use nve_store::{RowPatch, RowPatchView};
 
 use crate::snapshots::{
-    apply_patch_to_layout, apply_patch_to_visual, apply_patch_view_to_layout,
-    apply_patch_view_to_visual, LayoutSnapshot, VisualSnapshot,
+    apply_patch_view_to_layout, apply_patch_view_to_visual, LayoutSnapshot, VisualSnapshot,
 };
 use crate::tables::{Interaction, StateRulesView};
 pub use crate::tracker::InteractionTracker;
@@ -222,57 +221,6 @@ pub fn visit_state_rules_in_cascade<'a>(
     }
 }
 
-/// Merges all matching [`StateStyleRule`]s for `state` into a single effective [`RowPatch`] in
-/// deterministic cascade order (`Hover < Focus < FocusVisible < Active < Disabled`, preserving
-/// declaration order for ties). Uses a zero-allocation stack sort for up to 16 rules.
-pub fn resolve_patch(rules: &[StateStyleRule], state: InteractionState) -> RowPatch {
-    if rules.is_empty() || state.is_empty() {
-        return RowPatch::new();
-    }
-
-    let mut merged = RowPatch::new();
-    if rules.len() <= STACK_RULE_CAP {
-        let mut indices = [0usize; STACK_RULE_CAP];
-        let mut count = 0usize;
-        for (idx, rule) in rules.iter().enumerate() {
-            if !rule.patch.is_empty() && rule.state.matches(state) {
-                indices[count] = idx;
-                count += 1;
-            }
-        }
-        if count == 0 {
-            return merged;
-        }
-        let matched = &mut indices[..count];
-        for i in 1..matched.len() {
-            let cur = matched[i];
-            let cur_key = rules[cur].state.cascade_order();
-            let mut j = i;
-            while j > 0 && rules[matched[j - 1]].state.cascade_order() > cur_key {
-                matched[j] = matched[j - 1];
-                j -= 1;
-            }
-            matched[j] = cur;
-        }
-        for &idx in matched.iter() {
-            merged.merge(&rules[idx].patch);
-        }
-    } else {
-        let mut matched: Vec<usize> = rules
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, rule)| {
-                (!rule.patch.is_empty() && rule.state.matches(state)).then_some(idx)
-            })
-            .collect();
-        matched.sort_by_key(|&idx| rules[idx].state.cascade_order());
-        for idx in matched {
-            merged.merge(&rules[idx].patch);
-        }
-    }
-    merged
-}
-
 /// Merges all matching rules from a zero-copy [`StateRulesView`] in deterministic cascade order.
 pub fn resolve_patch_from_view(rules: StateRulesView<'_>, state: InteractionState) -> RowPatch {
     let mut merged = RowPatch::new();
@@ -280,23 +228,8 @@ pub fn resolve_patch_from_view(rules: StateRulesView<'_>, state: InteractionStat
     merged
 }
 
-/// Resolves the effective [`VisualSnapshot`] for `base` after applying all matching `rules` for
-/// `state` in deterministic cascade order.
-pub fn resolve_style(
-    base: &VisualSnapshot,
-    rules: &[StateStyleRule],
-    state: InteractionState,
-) -> VisualSnapshot {
-    let patch = resolve_patch(rules, state);
-    if patch.is_empty() {
-        return *base;
-    }
-    let mut resolved = *base;
-    apply_patch_to_visual(&patch, &mut resolved);
-    resolved
-}
-
-/// Zero-alloc counterpart to [`resolve_style`] reading directly from [`StateRulesView`].
+/// Resolves the effective [`VisualSnapshot`] for `base` after applying every rule matching `state`
+/// in deterministic cascade order (zero allocations).
 pub fn resolve_style_from_view(
     base: &VisualSnapshot,
     rules: StateRulesView<'_>,
@@ -309,26 +242,8 @@ pub fn resolve_style_from_view(
     resolved
 }
 
-/// Resolves both [`LayoutSnapshot`] and [`VisualSnapshot`] after applying all matching `rules` for
-/// `state` in deterministic cascade order.
-pub fn resolve_layout_and_style(
-    base_layout: &LayoutSnapshot,
-    base_style: &VisualSnapshot,
-    rules: &[StateStyleRule],
-    state: InteractionState,
-) -> (LayoutSnapshot, VisualSnapshot) {
-    let patch = resolve_patch(rules, state);
-    if patch.is_empty() {
-        return (*base_layout, *base_style);
-    }
-    let mut layout = *base_layout;
-    let mut style = *base_style;
-    apply_patch_to_layout(&patch, &mut layout);
-    apply_patch_to_visual(&patch, &mut style);
-    (layout, style)
-}
-
-/// Zero-alloc counterpart to [`resolve_layout_and_style`] reading directly from [`StateRulesView`].
+/// Resolves both [`LayoutSnapshot`] and [`VisualSnapshot`] after applying every rule matching
+/// `state` in deterministic cascade order (zero allocations).
 pub fn resolve_layout_and_style_from_view(
     base_layout: &LayoutSnapshot,
     base_style: &VisualSnapshot,
@@ -344,19 +259,8 @@ pub fn resolve_layout_and_style_from_view(
     (layout, style)
 }
 
-/// Resolves the effective [`CursorKind`] for `base` after applying all matching `rules` for
-/// `state` in deterministic cascade order.
-pub fn resolve_cursor(
-    base: CursorKind,
-    rules: &[StateStyleRule],
-    state: InteractionState,
-) -> CursorKind {
-    resolve_patch(rules, state)
-        .get_prop(Interaction::CURSOR)
-        .unwrap_or(base)
-}
-
-/// Zero-alloc counterpart to [`resolve_cursor`] reading directly from [`StateRulesView`].
+/// Resolves the effective [`CursorKind`] for `base` after applying every rule matching `state` in
+/// deterministic cascade order (zero allocations).
 pub fn resolve_cursor_from_view(
     base: CursorKind,
     rules: StateRulesView<'_>,

@@ -176,6 +176,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
     assert_eq!(sh0.offset_y, 4.0);
     assert_eq!(sh0.blur_radius, 12.0);
     assert_eq!(sh0.spread_radius, 0.0);
+    assert_eq!(sh0.color, Rgba::new(0, 0, 0, 64), "rgba(0,0,0,0.25) -> alpha 64");
     assert!(!sh0.inset);
 
     // 2. GridTracks exact field equality

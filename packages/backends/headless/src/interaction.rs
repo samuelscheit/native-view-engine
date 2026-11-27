@@ -4,14 +4,13 @@
 
 use nve_abi::NodeId;
 use nve_components::interaction::{
-    resolve_cursor_from_view, resolve_layout_and_style_from_view, resolve_patch_from_view,
-    resolve_style_from_view, visit_state_rules_in_cascade, CursorKind, FocusModality,
-    InteractionState, InteractionTracker,
+    resolve_cursor_from_view, resolve_layout_and_style_from_view, resolve_style_from_view,
+    visit_state_rules_in_cascade, CursorKind, FocusModality, InteractionState, InteractionTracker,
 };
 use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{InputKind, Interaction, StateRules, StateRulesView, TextInput, Visual};
 use nve_engine::StoreLayoutEngine;
-use nve_store::{NodeStore, RowPatch, RowPatchView};
+use nve_store::{NodeStore, RowPatchView};
 
 use crate::{
     is_display_none, layout_snapshot_of, node_clips_overflow, visual_snapshot_of, HeadlessBackend,
@@ -136,12 +135,6 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     ) {
         let rules = self.state_rules_of(store, id);
         visit_state_rules_in_cascade(rules, self.interaction.state(id), f);
-    }
-
-    /// Resolves the effective merged [`RowPatch`] for `id` under its current [`InteractionState`].
-    pub fn effective_patch(&self, store: &NodeStore, id: NodeId) -> RowPatch {
-        let rules = self.state_rules_of(store, id);
-        resolve_patch_from_view(rules, self.interaction.state(id))
     }
 
     /// Resolves the effective [`VisualSnapshot`] for `id` with active pseudo-state rules applied.

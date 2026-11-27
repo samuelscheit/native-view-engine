@@ -548,6 +548,18 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
         "steady-state wire-origin ResourceStore::get (OnceLock cached) must allocate 0 bytes"
     );
 
+    // Up to 8 temporary handles stay inline in `TempResources` (dedup hits on a warm store).
+    let (allocs_temp, ()) = measure_allocs(|| {
+        let mut tx = store.tx();
+        tx.with_temp_resources(|res| {
+            for _ in 0..8 {
+                assert!(!res.intern(&BenchBlob).is_none());
+            }
+        });
+        tx.commit_into(&mut changes);
+    });
+    assert_eq!(allocs_temp, 0, "TempResources with <= 8 temporaries must allocate 0 bytes");
+
     let (allocs_apply_patch, ()) = measure_allocs(|| {
         let mut tx = store.tx();
         tx.apply_row_patch(nodes[0], nested_pv);

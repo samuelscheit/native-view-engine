@@ -19,7 +19,9 @@ impl ResourceStore {
     /// Single-epoch multi-source iterative cycle check over `self.child_scratch`.
     ///
     /// Returns `true` iff any node in `self.child_scratch` reaches `target_idx` OR the per-frame
-    /// visit `budget` is exhausted (bounding worst-case CPU on hostile wire redefinitions).
+    /// `budget` of inspected edges is exhausted (bounding worst-case CPU on hostile wire
+    /// redefinitions over dense DAGs). Each node is marked before it is pushed, so it is expanded
+    /// at most once.
     pub(super) fn reaches_child_scratch_budgeted(
         &mut self,
         target_idx: usize,
@@ -37,37 +39,45 @@ impl ResourceStore {
             self.visit_marks.resize(self.entries.len(), 0);
         }
         let epoch = self.visit_epoch;
-        self.work_stack.clear();
-        for &cid in &self.child_scratch {
-            if cid.index() == target_idx {
+        let Self {
+            entries,
+            children,
+            child_scratch,
+            work_stack,
+            visit_marks,
+            ..
+        } = self;
+        work_stack.clear();
+        // Inspects one edge: `true` when it reaches `target_idx` or exhausts `budget`; otherwise
+        // marks and schedules an unvisited live child.
+        let mut edge = |kid: ResourceId, work_stack: &mut Vec<ResourceId>| -> bool {
+            let Some(left) = budget.checked_sub(1) else {
+                return true;
+            };
+            *budget = left;
+            let idx = kid.index();
+            if idx == target_idx {
                 return true;
             }
-            if !cid.is_none() {
-                self.work_stack.push(cid);
+            let live = entries.get(idx).is_some_and(|e| {
+                (e.flags & RES_OCCUPIED) != 0 && e.generation == kid.generation()
+            });
+            if live && !kid.is_none() && visit_marks[idx] != epoch {
+                visit_marks[idx] = epoch;
+                work_stack.push(kid);
+            }
+            false
+        };
+        for &cid in child_scratch.iter() {
+            if edge(cid, work_stack) {
+                return true;
             }
         }
-        while let Some(cur) = self.work_stack.pop() {
-            let idx = cur.index();
-            let Some(e) = self.entries.get(idx) else {
-                continue;
-            };
-            if (e.flags & RES_OCCUPIED) == 0 || e.generation != cur.generation() {
-                continue;
-            }
-            if self.visit_marks[idx] == epoch {
-                continue;
-            }
-            if *budget == 0 {
-                return true;
-            }
-            *budget -= 1;
-            self.visit_marks[idx] = epoch;
-            for &kid in self.children.get(e.children) {
-                if kid.index() == target_idx {
+        while let Some(cur) = work_stack.pop() {
+            let span = entries[cur.index()].children;
+            for &kid in children.get(span) {
+                if edge(kid, work_stack) {
                     return true;
-                }
-                if !kid.is_none() {
-                    self.work_stack.push(kid);
                 }
             }
         }
@@ -137,7 +147,7 @@ impl ResourceStore {
         self.child_scratch.sort_unstable();
         self.child_scratch.dedup();
         if i < self.entries.len() && (self.entries[i].flags & RES_OCCUPIED) != 0 {
-            if self.entries[i].generation != g && self.entries[i].refs > 0 {
+            if self.entries[i].generation != g {
                 return false;
             }
             if self.reaches_child_scratch_budgeted(i, cycle_budget) {
@@ -156,7 +166,7 @@ impl ResourceStore {
             self.entries.resize_with(i + 1, Entry::default);
             for skipped in old_len..i {
                 self.entries[skipped].flags |= RES_IN_FREE;
-                self.free.push(skipped as u32);
+                self.free.push_back(skipped as u32);
             }
         }
         let prev_flags = self.entries[i].flags;
@@ -276,7 +286,7 @@ impl ResourceStore {
                 self.children.free(children);
                 if (e.flags & RES_IN_FREE) == 0 {
                     e.flags |= RES_IN_FREE;
-                    self.free.push(i);
+                    self.free.push_back(i);
                 }
             }
         }

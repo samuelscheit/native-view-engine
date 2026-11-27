@@ -4,13 +4,24 @@ use std::mem::{align_of, size_of};
 
 use nve_abi::{ColorRgba, NodeId};
 use nve_components::interaction::{
-    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
-    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+    resolve_cursor_from_view, resolve_layout_and_style_from_view, resolve_patch_from_view,
+    resolve_style_from_view, CursorKind, FocusModality, InteractionState, InteractionTracker,
+    StateStyleRule,
 };
 use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
-use nve_components::tables::{Display, Visual};
+use nve_components::tables::{Display, StateRules, StateRulesView, Visual};
 use nve_components::{RowPatch, StylePatchExt};
-use nve_store::Rgba;
+use nve_store::{FlatResource, Rgba, ValidatedWords};
+
+fn flat(rules: &[StateStyleRule]) -> Vec<u32> {
+    let mut words = Vec::new();
+    assert!(StateRules::new(rules.to_vec()).write_words(&mut words));
+    words
+}
+
+fn view(words: &[u32]) -> StateRulesView<'_> {
+    StateRules::view(ValidatedWords::try_new(words).expect("valid StateRules"))
+}
 
 #[test]
 fn interaction_state_layout_bitops_and_cascade_ordering() {
@@ -150,25 +161,27 @@ fn unified_row_patch_resolves_cascade_priority_compounds_and_large_rule_lists() 
                 .cursor(CursorKind::Pointer),
         ),
     ];
+    let rules_words = flat(&rules);
+    let rules = view(&rules_words);
 
     // No state -> unchanged base.
-    assert_eq!(resolve_style(&base, &rules, InteractionState::NONE), base);
-    assert_eq!(resolve_cursor(CursorKind::Auto, &rules, InteractionState::NONE), CursorKind::Auto);
+    assert_eq!(resolve_style_from_view(&base, rules, InteractionState::NONE), base);
+    assert_eq!(resolve_cursor_from_view(CursorKind::Auto, rules, InteractionState::NONE), CursorKind::Auto);
 
     // Hover only.
-    let s_hover = resolve_style(&base, &rules, InteractionState::HOVER);
+    let s_hover = resolve_style_from_view(&base, rules, InteractionState::HOVER);
     assert_eq!(s_hover.background, ColorRgba::rgb(59, 130, 246));
-    assert_eq!(resolve_cursor(CursorKind::Auto, &rules, InteractionState::HOVER), CursorKind::Pointer);
+    assert_eq!(resolve_cursor_from_view(CursorKind::Auto, rules, InteractionState::HOVER), CursorKind::Pointer);
 
     // Hover + Focus: Focus border color layers on top of Hover background.
-    let s_hf = resolve_style(&base, &rules, InteractionState::HOVER | InteractionState::FOCUS);
+    let s_hf = resolve_style_from_view(&base, rules, InteractionState::HOVER | InteractionState::FOCUS);
     assert_eq!(s_hf.background, ColorRgba::rgb(59, 130, 246));
     assert_eq!(s_hf.border_color, ColorRgba::rgb(99, 102, 241));
 
     // Hover + Focus + FocusVisible: compound `HOVER | FOCUS_VISIBLE` beats both single HOVER and single FOCUS_VISIBLE.
-    let s_hfv = resolve_style(
+    let s_hfv = resolve_style_from_view(
         &base,
-        &rules,
+        rules,
         InteractionState::HOVER | InteractionState::FOCUS | InteractionState::FOCUS_VISIBLE,
     );
     assert_eq!(s_hfv.background, ColorRgba::rgb(14, 165, 233));
@@ -176,27 +189,27 @@ fn unified_row_patch_resolves_cascade_priority_compounds_and_large_rule_lists() 
     assert_eq!(s_hfv.border_color, ColorRgba::rgb(250, 204, 21));
 
     // Active beats Hover | FocusVisible on overlapping fields (background + cursor), preserving border.
-    let s_act = resolve_style(
+    let s_act = resolve_style_from_view(
         &base,
-        &rules,
+        rules,
         InteractionState::HOVER | InteractionState::FOCUS_VISIBLE | InteractionState::ACTIVE,
     );
     assert_eq!(s_act.background, ColorRgba::rgb(30, 64, 175));
     assert_eq!(s_act.border_width, 3.0);
     assert_eq!(
-        resolve_cursor(
+        resolve_cursor_from_view(
             CursorKind::Auto,
-            &rules,
+            rules,
             InteractionState::HOVER | InteractionState::ACTIVE
         ),
         CursorKind::Grabbing
     );
 
     // Disabled beats everything on overlapping fields.
-    let s_dis = resolve_style(&base, &rules, InteractionState::ALL);
+    let s_dis = resolve_style_from_view(&base, rules, InteractionState::ALL);
     assert_eq!(s_dis.background, ColorRgba::rgb(100, 100, 100));
     assert_eq!(s_dis.opacity, 0.4);
-    assert_eq!(resolve_cursor(CursorKind::Pointer, &rules, InteractionState::ALL), CursorKind::NotAllowed);
+    assert_eq!(resolve_cursor_from_view(CursorKind::Pointer, rules, InteractionState::ALL), CursorKind::NotAllowed);
 
     // Layout + style resolution helper applies layout fields too.
     let layout_rules = [StateStyleRule::new(
@@ -204,7 +217,7 @@ fn unified_row_patch_resolves_cascade_priority_compounds_and_large_rule_lists() 
         RowPatch::new().gap(12.0).padding(8.0).opacity(0.9),
     )];
     let (l_res, s_res) =
-        resolve_layout_and_style(&LayoutSnapshot::default(), &base, &layout_rules, InteractionState::HOVER);
+        resolve_layout_and_style_from_view(&LayoutSnapshot::default(), &base, view(&flat(&layout_rules)), InteractionState::HOVER);
     assert_eq!(l_res.gap, 12.0);
     assert_eq!(l_res.padding.top, 8.0);
     assert_eq!(s_res.opacity, 0.9);
@@ -217,7 +230,7 @@ fn unified_row_patch_resolves_cascade_priority_compounds_and_large_rule_lists() 
             RowPatch::new().bg(ColorRgba::rgb(i, i, i)),
         ));
     }
-    let patch = resolve_patch(&many, InteractionState::HOVER);
+    let patch = resolve_patch_from_view(view(&flat(&many)), InteractionState::HOVER);
     assert_eq!(patch.get_prop(Visual::BACKGROUND), Some(Rgba::rgb(19, 19, 19)));
 }
 

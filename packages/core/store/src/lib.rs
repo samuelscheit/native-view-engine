@@ -30,6 +30,7 @@ mod span_pool;
 mod store;
 mod table;
 mod tx;
+mod tx_tree;
 mod value;
 pub mod wire;
 
@@ -62,8 +63,8 @@ pub use table::{
     desc, slot_of, HasEvents, NveTable, Prop, RegistryError, Res, ResProp, ScalarField, Str,
     StrProp, TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
 };
-pub use node_mut::{NodeMut, ScopedTx, TempResources};
-pub use tx::Transaction;
+pub use node_mut::{NodeMut, TempResources};
+pub use tx::{Transaction, TxCore};
 pub use value::{GridLine, Length, OptWord, Rgba, WordValue};
 
 #[doc(hidden)]
@@ -95,3 +96,5 @@ mod table_packing_tests;
 mod table_wire_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wire_resource_tests;

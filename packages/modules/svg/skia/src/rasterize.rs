@@ -1,8 +1,9 @@
 //! Analytical 4-subscanline antialiased polygon filler (`NonZero` & `EvenOdd`), adaptive
-//! quadratic/cubic Bezier flattening, and per-shape SDF stroke rasterization for [`SvgPicture`].
+//! quadratic/cubic Bezier flattening, and per-shape SDF stroke rasterization for
+//! [`SvgPictureView`].
 
 use nve_abi::ColorRgba;
-use nve_svg::{FillRule, SvgPicture, SvgPictureView, VectorPathCmd};
+use nve_svg::{FillRule, SvgPictureView, VectorPathCmd};
 
 use super::{CachedSvgBitmap, MAX_SVG_RASTER_DIM};
 
@@ -10,52 +11,8 @@ const SUBSCANLINES: usize = 4;
 const MAX_CURVE_SUBDIV_DEPTH: u8 = 8;
 const CURVE_FLATNESS_TOL_SQ: f32 = 0.0625; // (0.25 px)^2
 
-/// Rasterizes `picture` into a fresh premultiplied RGBA8888 [`CachedSvgBitmap`] of `(px_w, px_h)`.
-pub fn rasterize_svg_picture(
-    picture: &SvgPicture,
-    px_w: u32,
-    px_h: u32,
-    tint: Option<ColorRgba>,
-) -> CachedSvgBitmap {
-    let w = px_w.clamp(1, MAX_SVG_RASTER_DIM);
-    let h = px_h.clamp(1, MAX_SVG_RASTER_DIM);
-    let mut premul_rgba = vec![0u8; (w as usize) * (h as usize) * 4];
-    let Some((scale, ox, oy)) = picture.view_box_transform(0.0, 0.0, w as f32, h as f32) else {
-        return CachedSvgBitmap {
-            width: w,
-            height: h,
-            premul_rgba,
-        };
-    };
-
-    for shape in picture.shapes.iter() {
-        if shape.path.is_empty() {
-            continue;
-        }
-        let (fill, stroke) = shape.effective_colors(tint);
-        rasterize_shape_cmds(
-            shape.path.iter().copied(),
-            fill,
-            stroke,
-            shape.stroke_width,
-            shape.fill_rule,
-            scale,
-            ox,
-            oy,
-            w,
-            h,
-            &mut premul_rgba,
-        );
-    }
-
-    CachedSvgBitmap {
-        width: w,
-        height: h,
-        premul_rgba,
-    }
-}
-
-/// Zero-copy counterpart to [`rasterize_svg_picture`] reading directly from [`SvgPictureView`].
+/// Rasterizes `picture` into a fresh premultiplied RGBA8888 [`CachedSvgBitmap`] of `(px_w, px_h)`,
+/// reading the validated flat words directly.
 pub fn rasterize_svg_picture_view(
     picture: SvgPictureView<'_>,
     px_w: u32,

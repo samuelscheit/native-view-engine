@@ -4,10 +4,7 @@
 use nve_abi::hash::HashSet;
 use nve_abi::NodeId;
 
-use crate::interaction::{
-    resolve_cursor, resolve_style, CursorKind, FocusModality, InteractionState, StateStyleRule,
-};
-use crate::snapshots::VisualSnapshot;
+use crate::interaction::{FocusModality, InteractionState};
 
 /// Reusable O(1) stateful interaction tracker for native backends (`HeadlessBackend`, `SkiaBackend`).
 ///
@@ -289,27 +286,5 @@ impl InteractionTracker {
         self.focused = None;
         self.focus_modality = FocusModality::Pointer;
         self.disabled.clear();
-    }
-
-    /// Resolves effective [`VisualSnapshot`] for `id` in its current tracked state.
-    #[inline]
-    pub fn resolve_style(
-        &self,
-        id: NodeId,
-        base: &VisualSnapshot,
-        rules: &[StateStyleRule],
-    ) -> VisualSnapshot {
-        resolve_style(base, rules, self.state(id))
-    }
-
-    /// Resolves effective [`CursorKind`] for `id` in its current tracked state.
-    #[inline]
-    pub fn resolve_cursor(
-        &self,
-        id: NodeId,
-        base: CursorKind,
-        rules: &[StateStyleRule],
-    ) -> CursorKind {
-        resolve_cursor(base, rules, self.state(id))
     }
 }

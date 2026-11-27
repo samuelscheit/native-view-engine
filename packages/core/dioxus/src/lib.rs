@@ -34,8 +34,7 @@ pub use error_boundary::{
 };
 pub use nve_components::input_hints::{AutofillHint, InputMode};
 pub use nve_components::interaction::{
-    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
-    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+    CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
 pub use nve_components::layout_ext::{
     compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,

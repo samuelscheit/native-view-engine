@@ -15,7 +15,7 @@ use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 use nve_svg::{Svg, SvgPicture, SvgPictureView};
 
-pub use rasterize::{rasterize_svg_picture, rasterize_svg_picture_view};
+pub use rasterize::rasterize_svg_picture_view;
 
 /// Default maximum cached SVG bitmaps in [`SvgCache`].
 pub const DEFAULT_SVG_CACHE_MAX_ENTRIES: usize = 512;
@@ -61,6 +61,9 @@ impl CachedSvgBitmap {
 
 struct CacheEntry {
     bitmap: Arc<CachedSvgBitmap>,
+    /// Canonical flat words the bitmap was rendered from: a hit must match them exactly, so a
+    /// 64-bit `content_hash` collision can never serve another picture's pixels.
+    words: Arc<[u32]>,
     last_used: u64,
 }
 
@@ -101,39 +104,48 @@ impl SvgCache {
         GLOBAL.get_or_init(|| Self::new(DEFAULT_SVG_CACHE_MAX_ENTRIES, DEFAULT_SVG_CACHE_MAX_BYTES))
     }
 
-    fn get_or_rasterize_with(
+    /// Returns the cached bitmap of `picture` at `(px_w, px_h, tint)`, rasterizing on a miss.
+    pub fn get_or_rasterize_view(
         &self,
-        content_hash: u64,
+        picture: SvgPictureView<'_>,
         px_w: u32,
         px_h: u32,
         tint: Option<ColorRgba>,
-        render: impl FnOnce(u32, u32) -> CachedSvgBitmap,
     ) -> Arc<CachedSvgBitmap> {
         let w = px_w.clamp(1, MAX_SVG_RASTER_DIM);
         let h = px_h.clamp(1, MAX_SVG_RASTER_DIM);
-        let key = SvgCacheKey::new(content_hash, w, h, tint);
+        let key = SvgCacheKey::new(picture.content_hash(), w, h, tint);
+        let words = picture.words();
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(prev_tick) = inner.entries.get(&key).map(|e| e.last_used) {
+            let clock = inner.clock.wrapping_add(1);
+            let hit = inner
+                .entries
+                .get_mut(&key)
+                .filter(|e| *e.words == *words)
+                .map(|e| (std::mem::replace(&mut e.last_used, clock), Arc::clone(&e.bitmap)));
+            if let Some((prev_tick, bitmap)) = hit {
                 inner.lru.remove(&prev_tick);
-                inner.clock = inner.clock.wrapping_add(1);
-                let tick = inner.clock;
-                inner.lru.insert(tick, key);
+                inner.clock = clock;
+                inner.lru.insert(clock, key);
                 inner.hits += 1;
-                let entry = inner.entries.get_mut(&key).expect("key checked above");
-                entry.last_used = tick;
-                return Arc::clone(&entry.bitmap);
+                return bitmap;
             }
         }
 
-        let bitmap = Arc::new(render(w, h));
+        let bitmap = Arc::new(rasterize_svg_picture_view(picture, w, h, tint));
         let bytes = bitmap.byte_len();
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.misses += 1;
         if let Some(existing) = inner.entries.get(&key) {
-            return Arc::clone(&existing.bitmap);
+            // Same picture raced in, or a hash collision: never overwrite, serve our own render.
+            return if *existing.words == *words {
+                Arc::clone(&existing.bitmap)
+            } else {
+                bitmap
+            };
         }
         while !inner.entries.is_empty()
             && (inner.entries.len() >= self.max_entries
@@ -155,34 +167,11 @@ impl SvgCache {
             key,
             CacheEntry {
                 bitmap: Arc::clone(&bitmap),
+                words: Arc::from(words),
                 last_used: tick,
             },
         );
         bitmap
-    }
-
-    pub fn get_or_rasterize(
-        &self,
-        picture: &SvgPicture,
-        px_w: u32,
-        px_h: u32,
-        tint: Option<ColorRgba>,
-    ) -> Arc<CachedSvgBitmap> {
-        self.get_or_rasterize_with(picture.content_hash, px_w, px_h, tint, |w, h| {
-            rasterize_svg_picture(picture, w, h, tint)
-        })
-    }
-
-    pub fn get_or_rasterize_view(
-        &self,
-        picture: SvgPictureView<'_>,
-        px_w: u32,
-        px_h: u32,
-        tint: Option<ColorRgba>,
-    ) -> Arc<CachedSvgBitmap> {
-        self.get_or_rasterize_with(picture.content_hash(), px_w, px_h, tint, |w, h| {
-            rasterize_svg_picture_view(picture, w, h, tint)
-        })
     }
 }
 

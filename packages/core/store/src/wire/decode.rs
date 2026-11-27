@@ -98,6 +98,15 @@ impl WireDecoder {
         table::try_desc(slot).map(|d| (d.words(), d.str_words, d.resource_words))
     }
 
+    /// Declared resource kind of `word` in `slot`, falling back to the static registry before the
+    /// replica lazily allocates the column on its first `Op::Patch`.
+    fn slot_resource_kind(store: &NodeStore, slot: TableSlot, word: usize) -> Option<Key64> {
+        match store.table_meta(slot) {
+            Some(m) => m.resource_kind(word),
+            None => table::try_desc(slot).and_then(|d| d.resource_kind(word)),
+        }
+    }
+
     fn local(&self, wire: u8) -> Result<TableSlot, WireError> {
         match self.map.get(wire as usize) {
             Some(&s) if s != u8::MAX => Ok(TableSlot(s)),
@@ -295,9 +304,7 @@ impl WireDecoder {
                         vals[i] = r.u32()?;
                         let res = ResourceId(vals[i]);
                         if resource_words & (1 << i) != 0 && !res.is_none() {
-                            if let Some(expected) =
-                                tx.store().table_meta(slot).and_then(|m| m.resource_kind(i))
-                            {
+                            if let Some(expected) = Self::slot_resource_kind(tx.store(), slot, i) {
                                 if tx.store().resources.kind(res) != Some(expected) {
                                     return Err(WireError::Resource { id: res.0, kind: expected.0 });
                                 }

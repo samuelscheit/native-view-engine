@@ -1215,13 +1215,20 @@ fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_ne
     use nve_store::wire::{WireDecoder, WireEncoder};
     use nve_store::{Length, NodeStore};
 
+    let decls = |patch: &RowPatch, store: Option<&NodeStore>, css: &mut String| {
+        let mut words = Vec::new();
+        assert!(nve_store::FlatResource::write_words(patch, &mut words));
+        let view = nve_store::RowPatchView::from_words(&words).expect("valid RowPatch words");
+        crate::patch_css::write_row_patch_view_decls(view, store, css);
+    };
+
     // 1. Single-side padding & margin are emitted (never silently dropped).
     let mut single_side = RowPatch::new();
     single_side
         .set(Layout::PADDING_TOP, Length::points(12.0))
         .set(Layout::MARGIN_LEFT, Length::points(-4.0));
     let mut css = String::new();
-    crate::patch_css::write_row_patch_decls(&single_side, None, &mut css);
+    decls(&single_side, None, &mut css);
     assert!(css.contains("padding-top:12px;"), "got: {css}");
     assert!(css.contains("margin-left:-4px;"), "got: {css}");
 
@@ -1232,7 +1239,7 @@ fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_ne
         .margin(6.0)
         .margin_inline_end(10.0);
     css.clear();
-    crate::patch_css::write_row_patch_decls(&combo, None, &mut css);
+    decls(&combo, None, &mut css);
     assert!(css.contains("padding-top:8px;"), "got: {css}");
     assert!(css.contains("padding-bottom:8px;"), "got: {css}");
     assert!(css.contains("padding-inline-start:16px;"), "got: {css}");
@@ -1246,13 +1253,13 @@ fn patch_css_emits_single_side_padding_margin_logical_combo_overflow_axes_and_ne
         .set(Visual::OVERFLOW_X, Overflow::Hidden)
         .set(Visual::OVERFLOW_Y, Overflow::Auto);
     css.clear();
-    crate::patch_css::write_row_patch_decls(&ov_xy, None, &mut css);
+    decls(&ov_xy, None, &mut css);
     assert!(css.contains("overflow-x:hidden;overflow-y:auto;"), "got: {css}");
 
     let mut ov_y_only = RowPatch::new();
     ov_y_only.set(Visual::OVERFLOW_Y, Overflow::Scroll);
     css.clear();
-    crate::patch_css::write_row_patch_decls(&ov_y_only, None, &mut css);
+    decls(&ov_y_only, None, &mut css);
     assert!(css.contains("overflow-y:scroll;"), "got: {css}");
     assert!(!css.contains("overflow-x:"), "got: {css}");
 

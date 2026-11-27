@@ -130,6 +130,36 @@ mod tests {
         tampered_coord[2] = 999.0f32.to_bits();
         assert!(!SvgPicture::validate(&tampered_coord), "tampered viewBox with stale hash must fail");
 
+        // `update_f32` folds NaN/±Inf to the hash of `0.0`: swapping any zero float for a
+        // non-finite one keeps the stored hash, so validation must reject non-finite words.
+        let zero = 0.0f32.to_bits();
+        let zero_positions: Vec<usize> =
+            (2..words.len()).filter(|&i| words[i] == zero).collect();
+        assert!(zero_positions.len() >= 3, "fixture has zero viewBox origin + zero stroke width");
+        for &i in &zero_positions {
+            for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut poisoned = words.clone();
+                poisoned[i] = poison.to_bits();
+                assert!(!SvgPicture::validate(&poisoned), "non-finite word {i} must fail");
+            }
+        }
+        // Degenerate extents and negative stroke widths are rejected too (on write and on read).
+        // Fixtures carry a correctly recomputed hash, so only the new checks can reject them.
+        let rehashed = |view_box: (f32, f32, f32, f32), shapes: Arc<[VectorShape]>| SvgPicture {
+            content_hash: compute_svg_content_hash(view_box, &shapes),
+            view_box,
+            shapes,
+        };
+        let zero_extent = rehashed((0.0, 0.0, 0.0, 24.0), rich.shapes.clone());
+        assert!(!zero_extent.write_words(&mut Vec::new()), "zero-width viewBox must not intern");
+        let mut neg_shapes = rich.shapes.to_vec();
+        neg_shapes[0].stroke_width = -1.0;
+        let neg_stroke = rehashed(rich.view_box, Arc::from(neg_shapes));
+        assert!(!neg_stroke.write_words(&mut Vec::new()), "negative stroke width must not intern");
+        let mut ok_shapes = rich.shapes.to_vec();
+        ok_shapes[0].stroke_width = 3.0;
+        assert!(rehashed(rich.view_box, Arc::from(ok_shapes)).write_words(&mut Vec::new()));
+
         // End-to-end wire test: legitimate SvgPicture passes, tampered wire payload is rejected on replica.
         let mut prod = NodeStore::new();
         let mut tx = prod.tx();

@@ -615,6 +615,9 @@ fn resource_id_lifecycle_rejects_zombie_cross_kind_and_aba_reuse() {
         let other_id = tx.store_mut().resources.intern(&OtherBlob(999));
         // Release zombie_id in the SAME frame (refs: 1 -> 0, evicted from dedup, still pending_free).
         tx.edit::<PatchBox>(n1).child_blob(None);
+        let reinterned = tx.store_mut().resources.intern(&ChildBlob(vec![77]));
+        assert_ne!(reinterned, zombie_id, "released zombie must be evicted from dedup");
+        tx.store_mut().resources.release(reinterned);
 
         // 1. Same-frame zombie resurrection MUST be rejected across all local APIs.
         assert!(!tx.set_resource_id(n1, PatchBox::CHILD_BLOB, zombie_id));

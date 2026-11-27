@@ -9,7 +9,7 @@ use nve_components::tables::ResponsiveRulesView;
 use nve_store::NodeStore;
 
 use crate::css::format_content_class;
-pub use crate::patch_css::{write_row_patch_decls, write_row_patch_view_decls};
+pub use crate::patch_css::write_row_patch_view_decls;
 
 /// Formats [`ColorScheme`] as a CSS `prefers-color-scheme` keyword.
 #[inline]

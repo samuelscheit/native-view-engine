@@ -1,4 +1,4 @@
-//! CSS declaration emission for table-generic [`RowPatch`] and zero-copy [`RowPatchView`].
+//! CSS declaration emission for zero-copy table-generic [`RowPatchView`]s.
 
 use nve_abi::num::{write_i64, write_u64};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets};
@@ -9,7 +9,7 @@ use nve_components::tables::{
 };
 use nve_components::transform::Transform2D;
 use nve_store::{
-    prop_written, GridLine, Length, NodeStore, NveTable, ResourceId, RowPatch, RowPatchView, Word,
+    prop_written, GridLine, Length, NodeStore, NveTable, ResourceId, RowPatchView, Word,
 };
 
 use crate::css::{
@@ -590,9 +590,4 @@ impl_write_patch_decls!(
     write_row_patch_view_decls,
     "Emits compact CSS declarations for every patched field in a zero-copy [`RowPatchView`], resolving embedded child resources (`BackgroundFillRes`, `GridTracks`) from `store` when given.",
     RowPatchView<'_>
-);
-impl_write_patch_decls!(
-    write_row_patch_decls,
-    "Emits compact CSS declarations for every patched field in an owned [`RowPatch`].",
-    &RowPatch
 );

@@ -28,7 +28,7 @@ pub(crate) fn write_css_color(color: ColorRgba, out: &mut String) {
 
 /// Polygon fill rule matching SVG `fill-rule` (`nonzero` / `evenodd`).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, nve_codec::NveCodec)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum FillRule {
     #[default]
     NonZero = 0,
@@ -46,17 +46,12 @@ impl FillRule {
 }
 
 /// Typed vector path segment command in `SvgPicture` viewBox coordinate space.
-#[derive(Debug, Clone, Copy, PartialEq, nve_codec::NveCodec)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VectorPathCmd {
-    #[nve_codec(tag = 0)]
     MoveTo(f32, f32),
-    #[nve_codec(tag = 1)]
     LineTo(f32, f32),
-    #[nve_codec(tag = 2)]
     QuadTo(f32, f32, f32, f32),
-    #[nve_codec(tag = 3)]
     CubicTo(f32, f32, f32, f32, f32, f32),
-    #[nve_codec(tag = 4)]
     Close,
 }
 

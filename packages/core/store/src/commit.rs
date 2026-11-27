@@ -14,7 +14,7 @@ impl Transaction<'_> {
     /// per-frame tracking. Removed node indices and released resources are recycled afterwards, so
     /// ids seen in this frame never alias within it.
     pub fn commit_into(self, changes: &mut ChangeSet) {
-        let s = self.store;
+        let s = self.core.store;
         changes.clear();
         s.frame += 1;
         changes.frame = s.frame;

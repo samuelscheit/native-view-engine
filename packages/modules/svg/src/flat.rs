@@ -30,6 +30,12 @@ const CMD_CLOSE: u32 = 4;
 pub struct SvgPictureView<'a>(&'a [u32]);
 
 impl<'a> SvgPictureView<'a> {
+    /// Canonical flat words backing this view (the cache identity of the picture).
+    #[inline(always)]
+    pub fn words(self) -> &'a [u32] {
+        self.0
+    }
+
     #[inline(always)]
     pub fn content_hash(self) -> u64 {
         let lo = u64::from(self.0.first().copied().unwrap_or(0));
@@ -412,11 +418,23 @@ impl FlatResource for SvgPicture {
                 }
             }
         }
+        // Producers intern exactly what replicas accept (finite geometry, matching hash).
+        if !Self::validate(&out[start..]) {
+            out.truncate(start);
+            return false;
+        }
         true
     }
 
     fn validate(words: &[u32]) -> bool {
-        if words.len() < 7 {
+        let finite = |w: &u32| f32::from_bits(*w).is_finite();
+        if words.len() < 7 || !words[2..6].iter().all(finite) {
+            return false;
+        }
+        // `Xxh64Hasher::update_f32` folds NaN/±Inf into `0`, so only finite, positive-extent
+        // pictures make `content_hash` a faithful identity.
+        let (vw, vh) = (f32::from_bits(words[4]), f32::from_bits(words[5]));
+        if !(vw > 0.0 && vh > 0.0) {
             return false;
         }
         let stored_hash = u64::from(words[0]) | (u64::from(words[1]) << 32);
@@ -457,7 +475,11 @@ impl FlatResource for SvgPicture {
             } else {
                 h.update(&[0]);
             }
-            h.update_f32(f32::from_bits(hdr[3]));
+            let stroke_width = f32::from_bits(hdr[3]);
+            if !(stroke_width.is_finite() && stroke_width >= 0.0) {
+                return false;
+            }
+            h.update_f32(stroke_width);
             let fill_rule = if (flags & FLAG_EVEN_ODD) != 0 {
                 FillRule::EvenOdd
             } else {
@@ -480,7 +502,7 @@ impl FlatResource for SvgPicture {
                 let Some(next) = pos.checked_add(step) else {
                     return false;
                 };
-                if next > words.len() {
+                if next > words.len() || !words[pos + 1..next].iter().all(finite) {
                     return false;
                 }
                 match tag {

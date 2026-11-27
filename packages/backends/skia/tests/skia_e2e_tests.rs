@@ -422,6 +422,9 @@ fn skia_hover_solid_bg_and_explicit_none_clear_base_gradient_and_hostile_40_tabl
     h_skia.commit(&h_rep, &hr_changes).unwrap();
     let h_rect = h_skia.layout_of(hn).unwrap();
     h_skia.pointer_move(&h_rep, h_rect.x + 5.0, h_rect.y + 5.0);
-    let merged = h_skia.layout_tree().effective_patch(&h_rep, hn);
+    let mut merged = RowPatch::new();
+    h_skia
+        .layout_tree()
+        .visit_effective_state_patches(&h_rep, hn, |p| merged.merge_view(p));
     assert_eq!(merged.table_count(), 40);
 }
