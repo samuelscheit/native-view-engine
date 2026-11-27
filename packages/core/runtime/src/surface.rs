@@ -145,11 +145,7 @@ impl SurfaceRuntime {
         // the active store unconditionally. Non-mutating errors (e.g. `scroll_by(non_scroll)` or
         // `submit_nve2` while app attached) keep the live view intact; any pointer/row drift
         // invalidates `published_view` and schedules republishing so `acquire_scene` never UAFs.
-        if !txn
-            .inner
-            .state
-            .published_view_matches_store(txn.inner.active_store())
-        {
+        if !txn.inner.published_view_is_current() {
             txn.inner.state.invalidate_published_view();
             txn.inner.state.needs_publish = true;
         }
@@ -378,7 +374,7 @@ impl SurfaceRuntime {
 
     pub fn swap_layout_engine(&mut self, engine: DynLayoutEngine) -> Result<(), RuntimeError> {
         self.with_write(|inner| {
-            let (store, state) = inner.split_store_and_state();
+            let (store, resources, state) = inner.split_store_and_state();
             state.invalidate_published_view();
             state.scene.replace_layout_engine(engine);
             state.layout_engine_name = state.scene.layout_engine_name();
@@ -387,7 +383,7 @@ impl SurfaceRuntime {
             full.created.extend(store.live_nodes());
             let laid_out = state.scene.commit(store, &full);
             state.scene.reconcile_scroll_offsets(store);
-            state.publish_scene(store, &full, laid_out);
+            state.publish_scene(store, resources, &full, laid_out);
             Ok(())
         })
     }
@@ -496,7 +492,7 @@ impl SurfaceRuntime {
             return Err(RuntimeError::InvalidArg("scroll deltas must be finite"));
         }
         self.with_write(|inner| {
-            let (store, state) = inner.split_store_and_state();
+            let (store, _, state) = inner.split_store_and_state();
             let id = NodeId(node_id);
             if !store.is_live(id) {
                 return Err(RuntimeError::NotFound("scroll target node is not live"));
@@ -546,7 +542,7 @@ impl SurfaceRuntime {
     pub(crate) unsafe fn published_resource(&self, id: ResourceId) -> Option<(Key64, &[u8])> {
         // SAFETY: The caller's reader lock excludes writers, so `inner` and the published
         // `ResourceStore` (set and cleared only under the write lock) are immutable.
-        let resources = unsafe { (*self.inner.get()).state.published_resources.as_ref() }?;
+        let resources = unsafe { &*self.inner.get() }.published_resources()?;
         Some((resources.kind(id)?, resources.encoded(id)?))
     }
 

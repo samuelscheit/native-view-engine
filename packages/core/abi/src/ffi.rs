@@ -40,7 +40,11 @@ impl NveBufferSlice {
         len: 0,
     };
 
+    /// Borrows `s`; empty slices are `EMPTY` (NULL pointer, never a dangling one).
     pub fn from_slice(s: &[u8]) -> Self {
+        if s.is_empty() {
+            return Self::EMPTY;
+        }
         Self {
             ptr: s.as_ptr(),
             len: s.len(),

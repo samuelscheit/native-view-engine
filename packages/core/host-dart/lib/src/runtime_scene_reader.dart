@@ -182,7 +182,7 @@ final class RuntimeSceneReader {
 
   // ---- scroll offsets ------------------------------------------------------------------------
 
-  /// Number of published scroll containers with a non-zero visual shift.
+  /// Number of published scroll containers (a scrolled-back container may publish a zero shift).
   int get scrollCount => _scroll.length ~/ scrollOffsetWords;
 
   /// Visual child shift `(x, y)` of live node [index] (children paint and hit-test at

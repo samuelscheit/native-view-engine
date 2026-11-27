@@ -60,6 +60,12 @@ impl ScrollOffsets {
     #[inline]
     pub fn visual_shift(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
         let (sx, sy) = self.get(id.raw());
+        Self::visual_shift_with(store, id, sx, sy)
+    }
+
+    /// [`Self::visual_shift`] for an offset `(sx, sy)` already read (e.g. from [`Self::iter`]).
+    #[inline]
+    pub fn visual_shift_with(store: &NodeStore, id: StoreNodeId, sx: f32, sy: f32) -> (f32, f32) {
         if let Some(scroll) = store.try_row::<Scroll>(id) {
             let top_spacer = scroll.virtual_top_spacer();
             if top_spacer.is_finite() && top_spacer > 0.0 {
