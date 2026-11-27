@@ -292,6 +292,11 @@ impl TaffyStoreLayout {
         for c in &mut self.caches {
             c.clear();
         }
+        // Inherited state restarts from defaults: the walk below the (possibly new) root
+        // re-resolves its subtree, and slots outside it read like a fresh engine's.
+        self.resolved_rtl.fill(false);
+        self.resolved_text.fill(ResolvedTextStyle::default());
+        self.was_contents.fill(false);
         // Every cache was dropped: nothing an unwound pass left behind can be hit.
         self.pass_root = None;
         self.inherit_dirty = true;

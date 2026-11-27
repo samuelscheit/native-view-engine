@@ -75,12 +75,16 @@ impl<'s> LayoutView<'s> {
     ) -> Size<f32> {
         let id = self.id_of(n);
         let Some(tc) = self.store.try_row::<TextContent>(id) else {
-            return self.aspect_ratio_content_size(n, known, parent_width);
+            return self
+                .aspect_ratio_content_size(n, known, parent_width)
+                .unwrap_or(Size::ZERO);
         };
         let text = tc.text();
         if text.is_empty() {
             // An empty text node sizes like any other empty leaf (e.g. an `aspect-ratio` box).
-            return self.aspect_ratio_content_size(n, known, parent_width);
+            return self
+                .aspect_ratio_content_size(n, known, parent_width)
+                .unwrap_or(Size::ZERO);
         }
         let resolved = self.resolved_text[ix(n)];
         // `aspect-ratio` is a floor for text too (Taffy drops it here, see below): the ratio's
@@ -89,7 +93,9 @@ impl<'s> LayoutView<'s> {
         let ratio = self.aspect_ratio_content_size(n, known, parent_width);
         let max_width = known
             .width
-            .or((ratio.width > 0.0).then_some(ratio.width))
+            // Without a known width a transfer comes from the known height; it bounds the lines
+            // even when padding leaves it 0 wide.
+            .or(ratio.map(|r| r.width))
             .or(match available.width {
                 AvailableSpace::Definite(w) => Some(w),
                 AvailableSpace::MinContent => Some(0.0),
@@ -103,9 +109,10 @@ impl<'s> LayoutView<'s> {
         );
         let safe_w = if mw.is_finite() && mw >= 0.0 { mw } else { 0.0 };
         let safe_h = if mh.is_finite() && mh >= 0.0 { mh } else { 0.0 };
+        let floor = ratio.unwrap_or(Size::ZERO);
         Size {
-            width: known.width.unwrap_or(safe_w.max(ratio.width)),
-            height: known.height.unwrap_or(safe_h.max(ratio.height)),
+            width: known.width.unwrap_or(safe_w.max(floor.width)),
+            height: known.height.unwrap_or(safe_h.max(floor.height)),
         }
     }
 
@@ -118,16 +125,17 @@ impl<'s> LayoutView<'s> {
     /// ratio applied to the style size, then the `box-sizing` adjustment added), the ratio relates
     /// the `box-sizing` box: border-box transfers first and subtracts padding + border after;
     /// content-box subtracts first and transfers the content size.
+    ///
+    /// `None` when nothing transfers (no ratio, or not exactly one known axis), as opposed to a
+    /// transferred content size clamped to 0 by padding + border.
     fn aspect_ratio_content_size(
         &self,
         n: taffy::NodeId,
         known: Size<Option<f32>>,
         parent_width: Option<f32>,
-    ) -> Size<f32> {
+    ) -> Option<Size<f32>> {
         let style = self.style(n);
-        let Some(ratio) = style.aspect_ratio() else {
-            return Size::ZERO;
-        };
+        let ratio = style.aspect_ratio()?;
         let finite = |v: f32| if v.is_finite() && v >= 0.0 { v } else { 0.0 };
         let no_calc = |_, _| 0.0;
         let pb = (style.padding().resolve_or_zero(parent_width, no_calc)
@@ -150,12 +158,12 @@ impl<'s> LayoutView<'s> {
                 let ch = (finite(h) - pb.height).max(0.0);
                 (ch * ratio, ch)
             }
-            _ => return Size::ZERO,
+            _ => return None,
         };
-        Size {
+        Some(Size {
             width: finite(width),
             height: finite(height),
-        }
+        })
     }
 }
 

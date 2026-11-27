@@ -70,7 +70,7 @@ impl ElementMap {
         if el.0 >= MAX_ELEMENTS {
             return;
         }
-        let raw = el.0 as u32; // < 2^24 (checked above)
+        let raw = el.0 as u32; // < MAX_ELEMENTS <= UNBOUND (const-asserted)
         if let Some(prev) = self.element_of(node)
             && prev != el
         {

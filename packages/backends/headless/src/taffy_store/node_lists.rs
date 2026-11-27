@@ -157,10 +157,7 @@ impl NodeLists {
         self.pool.push(first_overflow);
         self.pool.extend(ids);
         let new_len = self.pool.len() - new_start;
-        if new_start
-            .checked_add(new_len)
-            .is_none_or(|end| end > MAX_POOL_LEN)
-        {
+        if self.pool.len() > MAX_POOL_LEN {
             // Beyond `u32` offsets (> 4 Gi node ids, unreachable before memory runs out): keep
             // the list as filled so far and drop the excess ids rather than corrupt offsets.
             debug_assert!(false, "node list pool exceeds u32 offsets");

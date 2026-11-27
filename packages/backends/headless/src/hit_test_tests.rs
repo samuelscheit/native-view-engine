@@ -272,61 +272,158 @@ fn hits_on_overflowing_children_bubble_to_unclipped_boxes_only() {
     assert_eq!(backend.hit_test(&store, 10.0, 50.0), None, "clipped away");
 }
 
+/// `stack` (200×100) holding `under` (200×50, press handler) and `overlay` (absolute at the
+/// stack's origin, 100×100, translucent background, no handler), arranged by the caller.
+struct OverlayFixture {
+    store: NodeStore,
+    changes: ChangeSet,
+    backend: HeadlessBackend,
+    stack: NodeId,
+    under: NodeId,
+    overlay: NodeId,
+}
+
+impl OverlayFixture {
+    fn new(arrange: impl FnOnce(&mut Transaction<'_>, NodeId, NodeId, NodeId)) -> Self {
+        let mut store = NodeStore::new();
+        store.set_realization_order(core_realization_order());
+        let mut changes = ChangeSet::default();
+        let mut tx = store.tx();
+        let stack = sized(&mut tx, 200.0, 100.0);
+        let under = sized(&mut tx, 200.0, 50.0);
+        let overlay = sized(&mut tx, 100.0, 100.0);
+        tx.edit::<Layout>(overlay)
+            .position(Position::Absolute)
+            .inset_left(Length::points(0.0))
+            .inset_top(Length::points(0.0));
+        tx.edit::<Visual>(overlay)
+            .background(Rgba::new(0, 0, 0, 128));
+        press(&mut tx, under);
+        tx.set_children(NodeId::ROOT, &[stack]);
+        arrange(&mut tx, stack, under, overlay);
+        tx.commit_into(&mut changes);
+        let mut backend = HeadlessBackend::new();
+        backend.set_viewport(1, VP);
+        assert!(backend.commit(&store, &changes).is_ok());
+        Self {
+            store,
+            changes,
+            backend,
+            stack,
+            under,
+            overlay,
+        }
+    }
+
+    fn edit(&mut self, edit: impl FnOnce(&mut Transaction<'_>)) {
+        let mut tx = self.store.tx();
+        edit(&mut tx);
+        tx.commit_into(&mut self.changes);
+        assert!(self.backend.commit(&self.store, &self.changes).is_ok());
+    }
+
+    /// `(hit_test, hit_test_interaction)` at `(x, y)`, asserted equal (both targets subscribe).
+    fn hit(&self, x: f32, y: f32) -> Option<nve_abi::NodeId> {
+        let hit = self.backend.hit_test(&self.store, x, y);
+        let interaction = self.backend.hit_test_interaction(&self.store, x, y);
+        assert_eq!(
+            hit, interaction,
+            "hit_test vs hit_test_interaction at ({x}, {y})"
+        );
+        hit
+    }
+}
+
+/// A `display: contents` wrapper with a press handler.
+fn contents_wrapper(tx: &mut Transaction<'_>, child: NodeId) -> NodeId {
+    let wrapper = tx.create();
+    tx.edit::<Layout>(wrapper).display(Display::Contents);
+    press(tx, wrapper);
+    tx.set_children(wrapper, &[child]);
+    wrapper
+}
+
 #[test]
 fn a_handler_less_overlay_occludes_siblings_painted_below_it() {
-    let mut store = NodeStore::new();
-    store.set_realization_order(core_realization_order());
-    let mut changes = ChangeSet::default();
-    let mut tx = store.tx();
-    // `stack` (200×100) → [`under` (200×50, press handler), `overlay` (absolute, 100×100, no
-    // handler, painted last)].
-    let stack = sized(&mut tx, 200.0, 100.0);
-    let under = sized(&mut tx, 200.0, 50.0);
-    let overlay = sized(&mut tx, 100.0, 100.0);
-    tx.edit::<Layout>(overlay)
-        .position(Position::Absolute)
-        .inset_left(Length::points(0.0))
-        .inset_top(Length::points(0.0));
-    tx.edit::<Visual>(overlay)
-        .background(Rgba::new(0, 0, 0, 128));
-    press(&mut tx, under);
-    tx.set_children(NodeId::ROOT, &[stack]);
-    tx.set_children(stack, &[under, overlay]);
-    tx.commit_into(&mut changes);
-    let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, VP);
-    assert!(backend.commit(&store, &changes).is_ok());
-
-    let hits = |b: &HeadlessBackend, store: &NodeStore, x, y| {
-        (b.hit_test(store, x, y), b.hit_test_interaction(store, x, y))
-    };
+    let mut f = OverlayFixture::new(|tx, stack, under, overlay| {
+        tx.set_children(stack, &[under, overlay]);
+    });
+    let (stack, under, overlay) = (f.stack, f.under, f.overlay);
     // Covered by the overlay: nothing below it receives the hit.
-    assert_eq!(hits(&backend, &store, 10.0, 10.0), (None, None));
+    assert_eq!(f.hit(10.0, 10.0), None);
     // Beside the overlay: `under` is exposed.
-    let exposed = Some(under.raw());
-    assert_eq!(hits(&backend, &store, 150.0, 10.0), (exposed, exposed));
+    assert_eq!(f.hit(150.0, 10.0), Some(under.raw()));
 
     // The covered hit bubbles from the overlay to its ancestors, never sideways.
-    let mut tx = store.tx();
-    press(&mut tx, stack);
-    tx.commit_into(&mut changes);
-    assert!(backend.commit(&store, &changes).is_ok());
-    let bubbled = Some(stack.raw());
-    assert_eq!(hits(&backend, &store, 10.0, 10.0), (bubbled, bubbled));
-    assert_eq!(hits(&backend, &store, 150.0, 10.0), (exposed, exposed));
+    f.edit(|tx| press(tx, stack));
+    assert_eq!(f.hit(10.0, 10.0), Some(stack.raw()));
+    assert_eq!(f.hit(150.0, 10.0), Some(under.raw()));
 
     // `z-index` reorders painting, and so occlusion: raised above the overlay, `under` is hit
     // through it; a negative level drops the overlay below `under` the same way.
     for (node, z) in [(under, 1), (under, 0), (overlay, -1)] {
-        let mut tx = store.tx();
-        tx.edit::<Visual>(node).z_index(z);
-        tx.commit_into(&mut changes);
-        assert!(backend.commit(&store, &changes).is_ok());
-        let expected = if z == 0 { bubbled } else { exposed };
-        assert_eq!(
-            hits(&backend, &store, 10.0, 10.0),
-            (expected, expected),
-            "{node:?} at z {z}"
-        );
+        f.edit(|tx| {
+            tx.edit::<Visual>(node).z_index(z);
+        });
+        let expected = if z == 0 { stack } else { under };
+        assert_eq!(f.hit(10.0, 10.0), Some(expected.raw()), "{node:?} at z {z}");
     }
+}
+
+#[test]
+fn an_invisible_overlay_occludes_nothing() {
+    let mut f = OverlayFixture::new(|tx, stack, under, overlay| {
+        tx.set_children(stack, &[under, overlay]);
+    });
+    let (under, overlay) = (f.under, f.overlay);
+    f.edit(|tx| {
+        tx.edit::<Visual>(overlay).visibility(Visibility::Hidden);
+    });
+    assert_eq!(f.hit(10.0, 10.0), Some(under.raw()));
+}
+
+#[test]
+fn an_overlay_in_a_contents_wrapper_bubbles_to_the_wrapper_never_to_a_lower_sibling() {
+    let mut wrapper = NodeId::ROOT;
+    let mut f = OverlayFixture::new(|tx, stack, under, overlay| {
+        wrapper = contents_wrapper(tx, overlay);
+        tx.set_children(stack, &[under, wrapper]);
+    });
+    assert_eq!(f.hit(10.0, 10.0), Some(wrapper.raw()));
+    assert_eq!(f.hit(150.0, 10.0), Some(f.under.raw()));
+
+    // Without the wrapper's handler the hit still stops at the overlay.
+    f.edit(|tx| {
+        tx.edit::<Interaction>(wrapper).event_mask(0);
+    });
+    assert_eq!(f.hit(10.0, 10.0), None);
+}
+
+#[test]
+fn a_contents_wrapper_z_index_never_reorders_its_children() {
+    // Painted last at level 0, the wrapped overlay stays above `under` whatever the wrapper's
+    // own `z_index` (it generates no box, so it does not stack).
+    let mut wrapper = NodeId::ROOT;
+    let mut f = OverlayFixture::new(|tx, stack, under, overlay| {
+        wrapper = contents_wrapper(tx, overlay);
+        tx.set_children(stack, &[under, wrapper]);
+    });
+    f.edit(|tx| {
+        tx.edit::<Visual>(wrapper).z_index(-1);
+    });
+    assert_eq!(f.hit(10.0, 10.0), Some(wrapper.raw()));
+
+    // Painted first, the wrapped overlay stays below `under` despite `z_index: 1`.
+    let mut wrapper = NodeId::ROOT;
+    let f = OverlayFixture::new(|tx, stack, under, overlay| {
+        wrapper = contents_wrapper(tx, overlay);
+        tx.edit::<Visual>(wrapper).z_index(1);
+        tx.set_children(stack, &[wrapper, under]);
+    });
+    assert_eq!(f.hit(10.0, 10.0), Some(f.under.raw()));
+    assert_eq!(
+        f.hit(10.0, 70.0),
+        Some(wrapper.raw()),
+        "below `under`, the overlay is exposed"
+    );
 }

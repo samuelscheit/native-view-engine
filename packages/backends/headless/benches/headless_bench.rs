@@ -1,8 +1,13 @@
 //! Criterion benchmarks for `nve-backend-headless`: 256-node `HeadlessBackend::commit`
-//! (Taffy flexbox layout + `NveSceneView` publication) and coordinate `hit_test`.
+//! (Taffy flexbox layout + `NveSceneView` publication), coordinate `hit_test`, and hit testing
+//! through wide sibling lists with one shared or many distinct `z_index` levels.
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../tests/support/z_siblings.rs"]
+mod z_siblings;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
@@ -74,7 +79,33 @@ mod native {
         });
     }
 
-    criterion_group!(benches, bench_headless_commit_and_hit_test);
+    /// Worst case for sibling ordering: the hit lands on the sibling visited last.
+    fn bench_hit_test_z_siblings(c: &mut Criterion) {
+        let mut group = c.benchmark_group("headless_hit_test_z_siblings");
+        for n in [64, 1_000, 4_000] {
+            for (shape, distinct_z) in [("uniform", false), ("distinct", true)] {
+                let fixture = super::z_siblings::ZSiblings::new(n, distinct_z);
+                assert!(fixture.hit_bottom(), "{shape}/{n}: wrong target");
+                let (x, y) = super::z_siblings::ZSiblings::BOTTOM;
+                group.bench_function(format!("{shape}/{n}"), |b| {
+                    b.iter(|| {
+                        black_box(fixture.backend.hit_test(
+                            &fixture.store,
+                            black_box(x),
+                            black_box(y),
+                        ))
+                    });
+                });
+            }
+        }
+        group.finish();
+    }
+
+    criterion_group!(
+        benches,
+        bench_headless_commit_and_hit_test,
+        bench_hit_test_z_siblings
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

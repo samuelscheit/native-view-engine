@@ -82,6 +82,10 @@ pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     text_dirty_marks: Vec<u64>,
     text_dirty_epoch: u64,
     pub(crate) walk_stack: Vec<(StoreNodeId, usize)>,
+    /// `(z, index)` sort keys reused across hit-test queries (mixed-`z_index` sibling lists
+    /// longer than the walk's stack buffer). A `Mutex`, not a `RefCell`, so hit testing through
+    /// `&self` keeps the backend `Sync`.
+    pub(crate) hit_scratch: std::sync::Mutex<Vec<(i32, u32)>>,
 }
 
 impl Default for HeadlessBackend<TaffyStoreLayout> {
@@ -119,6 +123,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             text_dirty_marks: Vec::new(),
             text_dirty_epoch: 0,
             walk_stack: Vec::new(),
+            hit_scratch: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -193,6 +198,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             text_dirty_marks: self.text_dirty_marks,
             text_dirty_epoch: self.text_dirty_epoch,
             walk_stack: self.walk_stack,
+            hit_scratch: self.hit_scratch,
         }
     }
 

@@ -229,7 +229,6 @@ word word word word word word word word word word word word word word word word"
 
 /// Taffy 0.16 drops `aspect_ratio` for leaves sized under `SizingMode::ContentSize`
 /// (DioxusLabs/taffy#804); `LayoutView::aspect_ratio_content_size` transfers the known axis.
-
 #[test]
 fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis() {
     // (container direction, container + child edits, expected child border-box (width, height))
@@ -480,4 +479,48 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             "case {i}: auto container must size to the leaf"
         );
     }
+}
+
+/// A ratio transfer that padding clamps to a 0-wide content box still bounds the text's lines:
+/// the text wraps at 0 (one word per line) instead of falling back to the 400 px container.
+#[test]
+fn text_wraps_inside_a_ratio_box_whose_padding_consumes_the_transferred_width() {
+    let mut store = NodeStore::new();
+    let mut layout = TaffyStoreLayout::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let container = tx.create();
+    let leaf = tx.create();
+    tx.set_children(NodeId::ROOT, &[container]);
+    tx.set_children(container, &[leaf]);
+    tx.edit::<NveLayout>(container)
+        .flex_direction(NveFlexDirection::Column)
+        .align_items(NveAlignItems::FlexStart)
+        .width(Length::points(400.0));
+    tx.edit::<TextContent>(leaf).text(WRAPPED);
+    // Border-box height 25 → width 50 through the ratio, all of it padding (`min-height: 0`
+    // keeps the automatic minimum size from growing the item back to its content).
+    tx.edit::<NveLayout>(leaf)
+        .flex_basis(Length::points(25.0))
+        .min_height(Length::points(0.0))
+        .aspect_ratio(2.0)
+        .padding_left(Length::points(50.0));
+    tx.commit_into(&mut changes);
+    layout.sync_changes(&store, &changes);
+    let vp = Viewport {
+        width: 400.0,
+        height: 300.0,
+        scale_factor: 1.0,
+    };
+    assert!(layout.compute_layout(&store, NodeId::ROOT, vp));
+    let (word_w, _) = layout
+        .text_measurer()
+        .measure_with_weight(WRAPPED, 16.0, 400, Some(0.0));
+    let r = layout.layout_of(leaf).expect("leaf laid out");
+    assert_eq!((r.width, r.height), ((50.0 + word_w).round(), 25.0));
+    assert!(
+        r.width < 100.0,
+        "wrapped at 0, not at the container: {}",
+        r.width
+    );
 }

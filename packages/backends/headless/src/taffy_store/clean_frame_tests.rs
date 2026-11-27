@@ -393,8 +393,24 @@ fn switching_the_layout_root_round_trips_to_fresh_layouts() {
         let mut fresh = TaffyStoreLayout::new();
         fresh.set_text_measurer(Arc::clone(&f.measurer));
         assert!(fresh.compute_layout(&f.store, parent, VP));
+        // Inherited state matches a fresh engine on every slot, including `ROOT` and the
+        // slots outside the nested root.
+        for idx in 0..f.store.capacity() {
+            assert_eq!(
+                (
+                    f.layout.resolved_rtl[idx],
+                    f.layout.resolved_text[idx],
+                    f.layout.was_contents[idx],
+                ),
+                (
+                    fresh.resolved_rtl[idx],
+                    fresh.resolved_text[idx],
+                    fresh.was_contents[idx],
+                ),
+                "inherited state of slot {idx}"
+            );
+        }
         for id in subtree {
-            assert_eq!(f.layout.resolved_rtl(id), fresh.resolved_rtl(id), "{id:?}");
             assert_eq!(f.layout.layout_of(id), fresh.layout_of(id), "{id:?}");
             assert_eq!(
                 f.layout.hoisted.get(id.index()),
@@ -414,4 +430,14 @@ fn switching_the_layout_root_round_trips_to_fresh_layouts() {
         f.assert_matches_fresh();
         assert!(!f.frame(), "settled again");
     }
+}
+
+#[test]
+fn invalidating_everything_disarms_an_unwound_pass() {
+    let mut f = Fixture::new();
+    f.layout.pass_root = Some(f.parent);
+    f.layout.invalidate_all(&f.store);
+    assert_eq!(f.layout.pass_root, None);
+    assert!(f.frame(), "invalidation reopens the pass");
+    f.assert_matches_fresh();
 }

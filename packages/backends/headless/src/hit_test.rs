@@ -19,9 +19,7 @@ use nve_components::transform::Transform2D;
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
-use crate::{
-    HeadlessBackend, MAX_TREE_DEPTH, box_visual, generates_box, is_display_none, length_to_dim,
-};
+use crate::{HeadlessBackend, MAX_TREE_DEPTH, generates_box, is_display_none, length_to_dim};
 
 /// Result of hit-testing one subtree.
 #[derive(Clone, Copy)]
@@ -166,66 +164,60 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         y: f32,
         accepts: impl Fn(StoreNodeId) -> bool,
     ) -> Option<NodeId> {
-        HitWalk {
+        let mut walk = HitWalk {
             backend: self,
             store,
             accepts,
+            scratch: None,
+        };
+        let target = walk
+            .walk(StoreNodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
+            .target;
+        if let Some(scratch) = walk.scratch
+            && let Ok(mut kept) = self.hit_scratch.lock()
+        {
+            *kept = scratch;
         }
-        .walk(StoreNodeId::ROOT, (x, y), (0.0, 0.0), false, 0)
-        .target
+        target
     }
 }
 
-/// Paint `z-index` of a sibling: box-less (`display: contents`) nodes paint at level 0.
+/// Paint `z-index` of a sibling. Only boxes stack: a `display: contents` node's own `z_index`
+/// is ignored (level 0). Its children are ordered among themselves only, not with the box
+/// parent's other children, so a contents wrapper acts as a z-order barrier. CSS would sort them
+/// with their box parent's stacking context. The default `z_index == 0` never reads `Layout`.
+#[inline]
 fn paint_z(store: &NodeStore, id: StoreNodeId) -> i32 {
-    box_visual(store, id).map_or(0, |v| v.z_index())
-}
-
-/// One parent's children in reverse paint order (topmost first): descending `z-index` level,
-/// later siblings first within a level. This mirrors the renderers' stable ascending
-/// `z_index` sort (Skia display list, reloc scene, and hit test) without allocating: each
-/// level costs one scan, and nearly every list has a single level.
-struct TopmostFirst<'a> {
-    store: &'a NodeStore,
-    children: &'a [StoreNodeId],
-    level: Option<i32>,
-    pos: usize,
-}
-
-impl<'a> TopmostFirst<'a> {
-    fn new(store: &'a NodeStore, children: &'a [StoreNodeId]) -> Self {
-        Self {
-            store,
-            children,
-            level: children.iter().map(|&c| paint_z(store, c)).max(),
-            pos: children.len(),
-        }
+    match store.try_row::<Visual>(id).map_or(0, |v| v.z_index()) {
+        0 => 0,
+        z if generates_box(store, id) => z,
+        _ => 0,
     }
 }
 
-impl Iterator for TopmostFirst<'_> {
-    type Item = StoreNodeId;
-
-    fn next(&mut self) -> Option<StoreNodeId> {
-        loop {
-            let level = self.level?;
-            while self.pos > 0 {
-                self.pos -= 1;
-                let child = self.children[self.pos];
-                if paint_z(self.store, child) == level {
-                    return Some(child);
-                }
-            }
-            let store = self.store;
-            self.level = self
-                .children
-                .iter()
-                .map(|&c| paint_z(store, c))
-                .filter(|&z| z < level)
-                .max();
-            self.pos = self.children.len();
-        }
+/// `(min, max)` paint `z-index` of `children`; `(0, 0)` without reading rows for 0–1 children.
+fn z_range(store: &NodeStore, children: &[StoreNodeId]) -> (i32, i32) {
+    if children.len() <= 1 {
+        return (0, 0);
     }
+    children.iter().fold((i32::MAX, i32::MIN), |(lo, hi), &c| {
+        let z = paint_z(store, c);
+        (lo.min(z), hi.max(z))
+    })
+}
+
+/// Sibling lists up to this length sort their `(z, index)` keys in a stack buffer; longer
+/// mixed-`z_index` lists use the query's reusable scratch.
+const STACK_SORT_LEN: usize = 64;
+
+/// Fills `keys` with `(paint z, child index)`. The pairs are unique, so `sort_unstable` (which
+/// never allocates) yields a stable `z_index` order, as in Skia's paint and hit order (which,
+/// unlike [`paint_z`], still stacks `display: contents` nodes; see BACKLOG "Shared hit walk").
+fn fill_z_keys(store: &NodeStore, children: &[StoreNodeId], keys: &mut [(i32, u32)]) {
+    for (i, (key, &c)) in keys.iter_mut().zip(children).enumerate() {
+        *key = (paint_z(store, c), i as u32);
+    }
+    keys.sort_unstable();
 }
 
 /// One hit-test query: the backend's geometry, the store, and the target predicate.
@@ -233,11 +225,74 @@ struct HitWalk<'a, L: StoreLayoutEngine, F> {
     backend: &'a HeadlessBackend<L>,
     store: &'a NodeStore,
     accepts: F,
+    /// Stack-disciplined `(z, index)` keys of the mixed-`z_index` sibling lists being walked
+    /// that exceed [`STACK_SORT_LEN`] (each level truncates back to its start). Taken from the
+    /// backend on first need only, so other queries never lock (a `Mutex`'s first lock may
+    /// allocate) and the warmed buffer returns to the backend after the query.
+    scratch: Option<Vec<(i32, u32)>>,
 }
 
-impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
+impl<'a, L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'a, L, F> {
+    /// Walks `children` topmost first (reverse paint order: descending `z_index`, later
+    /// siblings first). Returns the first child hit that resolves the walk: a target, or a
+    /// covered point that occludes every sibling painted below it.
+    fn walk_children(
+        &mut self,
+        children: &'a [StoreNodeId],
+        point: (f32, f32),
+        offset: (f32, f32),
+        hidden: bool,
+        depth: usize,
+    ) -> Option<Hit> {
+        let visit = |walk: &mut Self, cid: StoreNodeId| {
+            let hit = walk.walk(cid, point, offset, hidden, depth);
+            (hit.target.is_some() || hit.covered).then_some(hit)
+        };
+        let (lo, hi) = z_range(self.store, children);
+        if lo == hi {
+            return children.iter().rev().find_map(|&cid| visit(self, cid));
+        }
+        if children.len() <= STACK_SORT_LEN {
+            let mut buf = [(0, 0); STACK_SORT_LEN];
+            let keys = &mut buf[..children.len()];
+            fill_z_keys(self.store, children, keys);
+            return keys
+                .iter()
+                .rev()
+                .find_map(|&(_, i)| visit(self, children[i as usize]));
+        }
+        let store = self.store;
+        let scratch = self.scratch();
+        let start = scratch.len();
+        scratch.resize(start + children.len(), (0, 0));
+        fill_z_keys(store, children, &mut scratch[start..]);
+        let mut found = None;
+        for k in (start..start + children.len()).rev() {
+            let cid = children[self.scratch()[k].1 as usize];
+            found = visit(self, cid);
+            if found.is_some() {
+                break;
+            }
+        }
+        self.scratch().truncate(start);
+        found
+    }
+
+    fn scratch(&mut self) -> &mut Vec<(i32, u32)> {
+        let backend = self.backend;
+        self.scratch.get_or_insert_with(|| {
+            // Queries never nest and the guard is released at once; concurrent queries on
+            // other threads at worst start from an empty buffer.
+            backend
+                .hit_scratch
+                .lock()
+                .map(|mut kept| std::mem::take(&mut *kept))
+                .unwrap_or_default()
+        })
+    }
+
     fn walk(
-        &self,
+        &mut self,
         id: StoreNodeId,
         point: (f32, f32),
         offset: (f32, f32),
@@ -290,19 +345,15 @@ impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
             ((px, py), child_offset, inside)
         };
 
-        // Reverse paint order (`z-index`, then DOM order): the first child subtree covering the
-        // point occludes every sibling painted below it, handler or not (a plain overlay or modal backdrop swallows
-        // the hit; it then bubbles to this node).
+        // The first child subtree covering the point occludes every sibling painted below it,
+        // handler or not: a plain overlay or modal backdrop swallows the hit, which then
+        // bubbles to this node.
         let mut covered = inside && !hidden;
-        for cid in TopmostFirst::new(store, store.children(id)) {
-            let hit = self.walk(cid, child_point, child_offset, hidden, depth + 1);
-            if hit.target.is_some() {
-                return hit;
-            }
-            if hit.covered {
-                covered = true;
-                break;
-            }
+        let children = store.children(id);
+        match self.walk_children(children, child_point, child_offset, hidden, depth + 1) {
+            Some(hit) if hit.target.is_some() => return hit,
+            Some(_) => covered = true,
+            None => {}
         }
         Hit {
             target: (covered && (self.accepts)(id)).then_some(id.raw()),
