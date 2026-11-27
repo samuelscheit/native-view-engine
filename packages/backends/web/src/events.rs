@@ -6,14 +6,14 @@ use nve_abi::NodeId;
 pub use crate::input_attrs::{ImeCompositionGuard, InputSyncTracker, IME_PROCESS_KEY_CODE};
 
 #[cfg(target_arch = "wasm32")]
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use nve_abi::hash::HashMap;
 #[cfg(target_arch = "wasm32")]
 use nve_abi::{
-    pack_key_modifiers, EventMask, EventPayload, NativeEvent, NativeEventKind, SurfaceId,
+    pack_key_modifiers, EventMask, EventPayload, NativeEvent, NativeEventKind,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
@@ -91,15 +91,7 @@ pub(crate) fn now_us() -> u64 {
 
 #[cfg(target_arch = "wasm32")]
 fn read_dom_input_value(el: &web_sys::Element) -> String {
-    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-        inp.value()
-    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
-        ta.value()
-    } else if let Some(sel) = el.dyn_ref::<web_sys::HtmlSelectElement>() {
-        sel.value()
-    } else {
-        String::new()
-    }
+    crate::input_attrs::read_dom_control_value(el).unwrap_or_default()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -185,26 +177,26 @@ fn register_listener(
 
 #[cfg(target_arch = "wasm32")]
 impl RootEventDelegator {
-    pub(crate) fn attach(
-        root: web_sys::Element,
-        surface_id: Rc<Cell<SurfaceId>>,
-        events: Rc<RefCell<Vec<NativeEvent>>>,
-        meta: Rc<RefCell<HashMap<NodeId, NodeEventMeta>>>,
-        input_sync: Rc<RefCell<InputSyncTracker>>,
-        ime: Rc<ImeCompositionGuard>,
-        on_event: Rc<RefCell<Option<RenderCallback>>>,
-    ) -> Self {
+    pub(crate) fn attach(root: web_sys::Element, backend: &crate::WebBackend) -> Self {
+        let (surface_id, events, meta) =
+            (&backend.surface_id, &backend.pending_events, &backend.node_event_meta);
+        let (input_sync, ime, on_event) =
+            (&backend.input_sync, &backend.ime_guard, &backend.on_event);
         let mut listeners: Vec<DomEventListener> = Vec::new();
         let root_target: web_sys::EventTarget = root.clone().into();
 
-        // Click -> NativeEventKind::Press
+        // Click -> plugin click hooks (e.g. `<dialog closedby>` backdrop fallback), else Press.
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
+            let hooks = Rc::clone(&backend.click_interceptors);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+                if ev.dyn_ref::<web_sys::MouseEvent>().is_some_and(|me| hooks.borrow().consume(me)) {
+                    return;
+                }
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
                 let press_ev = if let Some((id, _, _target_el)) = chain
@@ -256,12 +248,12 @@ impl RootEventDelegator {
         // Input -> NativeEventKind::TextChange
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let sync = Rc::clone(&input_sync);
-            let ime_g = Rc::clone(&ime);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let sync = Rc::clone(input_sync);
+            let ime_g = Rc::clone(ime);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 if ime_g.should_suppress_input() {
                     return;
@@ -292,11 +284,11 @@ impl RootEventDelegator {
         // Composition start / update / end
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let ime_g = Rc::clone(&ime);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let ime_g = Rc::clone(ime);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
@@ -310,11 +302,11 @@ impl RootEventDelegator {
         }
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let ime_g = Rc::clone(&ime);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let ime_g = Rc::clone(ime);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
@@ -337,12 +329,12 @@ impl RootEventDelegator {
         }
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let sync = Rc::clone(&input_sync);
-            let ime_g = Rc::clone(&ime);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let sync = Rc::clone(input_sync);
+            let ime_g = Rc::clone(ime);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
@@ -374,10 +366,10 @@ impl RootEventDelegator {
         // Focus / Blur
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
@@ -400,11 +392,11 @@ impl RootEventDelegator {
         }
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let ime_g = Rc::clone(&ime);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let ime_g = Rc::clone(ime);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
@@ -440,10 +432,10 @@ impl RootEventDelegator {
         // Scroll (capture phase since `scroll` does not bubble in DOM)
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());
@@ -481,11 +473,11 @@ impl RootEventDelegator {
         // KeyDown (attached to window so global shortcuts like Cmd+K / Escape always reach ROOT)
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let ime_g = Rc::clone(&ime);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let ime_g = Rc::clone(ime);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let key_target: web_sys::EventTarget = web_sys::window()
                 .map(Into::into)
                 .unwrap_or_else(|| root_target.clone());
@@ -583,10 +575,10 @@ impl RootEventDelegator {
         // Form Submit -> NativeEventKind::Submit
         {
             let r = root.clone();
-            let evs = Rc::clone(&events);
-            let m = Rc::clone(&meta);
-            let sid = Rc::clone(&surface_id);
-            let notify = Rc::clone(&on_event);
+            let evs = Rc::clone(events);
+            let m = Rc::clone(meta);
+            let sid = Rc::clone(surface_id);
+            let notify = Rc::clone(on_event);
             let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
                 let Some(el) = target_to_element(ev.target()) else { return };
                 let chain = collect_ancestors(&el, &r, &m.borrow());

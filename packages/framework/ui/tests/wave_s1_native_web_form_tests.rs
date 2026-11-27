@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::UiHarness;
-use nve_backend_web::{
-    decode_form_urlencoded_map, MemorySnapshotStorage, SnapshotStorage, WebBackend,
-};
+use nve_backend_web::{MemorySnapshotStorage, SnapshotStorage, WebBackend};
 use nve_dioxus::elements::backend::StoreBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -401,8 +399,8 @@ fn form_draft_store_works_with_memory_snapshot_storage_and_rejects_corruption_pl
 
     // 3. PRG 303 zero-JS form submission roundtrip decoding URL-encoded form body.
     let encoded_post = "email=ada%40nve.dev&bio=Hello+from+zero-JS+PRG&intent=create";
-    let decoded = decode_form_urlencoded_map(encoded_post);
-    assert_eq!(decoded.get("email").map(String::as_str), Some("ada@nve.dev"));
-    assert_eq!(decoded.get("bio").map(String::as_str), Some("Hello from zero-JS PRG"));
-    assert_eq!(decoded.get("intent").map(String::as_str), Some("create"));
+    let decoded = nve_rpc::FormPairs::from_urlencoded_limited(encoded_post, 16).unwrap();
+    assert_eq!(decoded.get("email"), Some("ada@nve.dev"));
+    assert_eq!(decoded.get("bio"), Some("Hello from zero-JS PRG"));
+    assert_eq!(decoded.get("intent"), Some("create"));
 }

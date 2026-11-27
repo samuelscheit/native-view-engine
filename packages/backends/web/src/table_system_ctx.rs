@@ -3,7 +3,57 @@
 use nve_abi::hash::HashMap;
 use nve_store::{NodeId, TableEventBus, TableSlot};
 
+#[cfg(target_arch = "wasm32")]
+use crate::table_system::WebStoreRenderer;
 use crate::table_system::WebTableRegistry;
+
+/// Click hook returned by [`super::WebTableSystem::click_interceptor`]; `true` consumes the click.
+#[cfg(target_arch = "wasm32")]
+pub type ClickInterceptor = fn(&web_sys::MouseEvent) -> bool;
+
+/// Registry click hooks mirrored into the root event delegator, refreshed per registry revision.
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+pub(crate) struct ClickInterceptors {
+    revision: u32,
+    hooks: Vec<ClickInterceptor>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ClickInterceptors {
+    pub(crate) fn refresh(&mut self, registry: &WebTableRegistry) {
+        if self.revision != registry.revision() {
+            self.revision = registry.revision();
+            self.hooks.clear();
+            self.hooks
+                .extend(registry.iter().iter().filter_map(|sys| sys.click_interceptor()));
+        }
+    }
+
+    /// Runs every hook in priority order until one consumes the click.
+    pub(crate) fn consume(&self, ev: &web_sys::MouseEvent) -> bool {
+        self.hooks.iter().any(|hook| hook(ev))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebStoreRenderer {
+    /// Drains [`WebSystemCommitCtx::request_connected_sync`] once the commit has connected every
+    /// element, calling [`super::WebTableSystem::sync_connected`] for still-live nodes.
+    pub(crate) fn sync_connected_plugins(
+        &mut self,
+        store: &nve_store::NodeStore,
+        live: &HashMap<u32, web_sys::Element>,
+    ) {
+        for (slot, node) in self.connected_sync.drain(..) {
+            if store.is_live(node)
+                && let (Some(sys), Some(el)) = (self.registry.get(slot), live.get(&node.raw()))
+            {
+                sys.sync_connected(store, node, el);
+            }
+        }
+    }
+}
 
 /// Attribute value owned by a single `(NodeId, TableSlot)` tagged with its global write sequence.
 pub(crate) struct OwnedAttr {
@@ -32,6 +82,8 @@ pub struct WebSystemCommitCtx<'a> {
     pub(crate) write_seq: &'a mut u64,
     #[cfg(target_arch = "wasm32")]
     pub live_element: Option<&'a web_sys::Element>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) connected_sync: &'a mut Vec<(TableSlot, NodeId)>,
 }
 
 impl WebSystemCommitCtx<'_> {
@@ -238,6 +290,13 @@ impl WebSystemCommitCtx<'_> {
 
     /// Automatic cleanup when `current_slot` detaches from `node`: clears all attrs, `inner_html`,
     /// and `inline_css` owned by `current_slot` and restores any values still owned by other slots.
+    /// Queues [`super::WebTableSystem::sync_connected`] for `node` (current slot) after the commit
+    /// inserts its element into the document.
+    #[cfg(target_arch = "wasm32")]
+    pub fn request_connected_sync(&mut self, node: NodeId) {
+        self.connected_sync.push((self.current_slot, node));
+    }
+
     pub(crate) fn cleanup_current_slot(&mut self, node: NodeId) {
         if let Some(owned) = self.slot_attrs.remove(&(node, self.current_slot)) {
             for attr in owned {

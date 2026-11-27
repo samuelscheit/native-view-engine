@@ -1,11 +1,27 @@
-//! CSS `@media` condition and De Morgan negation tests for `nve_backend_web::media_css`.
+//! CSS `@media` condition and De Morgan negation tests for `nve_backend_web::media_css`, and the
+//! base reset's native overlay rules.
 
 use nve_abi::ColorScheme;
 use nve_backend_web::media_css::{
     color_scheme_as_css, color_scheme_negated_css, write_media_css_condition,
     write_negated_media_css_conditions,
 };
+use nve_backend_web::NVE_BASE_RESET_CSS;
 use nve_components::media::{MediaEnv, MediaPointer, MediaQuery};
+
+#[test]
+fn base_reset_css_hides_closed_dialog_and_popover_without_hiding_open_states() {
+    assert!(
+        NVE_BASE_RESET_CSS
+            .contains(".nve:is(dialog:not([open]),[popover]:not(:popover-open)){display:none}"),
+        "base reset must keep UA display:none on closed <dialog> and [popover]: {NVE_BASE_RESET_CSS}"
+    );
+    assert!(NVE_BASE_RESET_CSS.contains("dialog.nve::backdrop{"), "dialog::backdrop styled");
+    // Open dialogs and open popovers must never be hidden unconditionally.
+    for forbidden in ["dialog[open]{display:none", ":popover-open{display:none", "dialog{display:none"] {
+        assert!(!NVE_BASE_RESET_CSS.contains(forbidden), "{forbidden}");
+    }
+}
 
 struct XorShift64(u64);
 impl XorShift64 {

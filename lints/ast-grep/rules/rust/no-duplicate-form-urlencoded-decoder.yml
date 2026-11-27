@@ -1,0 +1,14 @@
+id: rust-no-duplicate-form-urlencoded-decoder
+language: rust
+severity: error
+message: "A `b'+' => ... b' '` arm re-implements `application/x-www-form-urlencoded` decoding."
+note: "Decode form bodies with `nve_rpc::FormPairs` / `nve_rpc::decode_form_urlencoded_limited` (the single bounded decoder in `packages/framework/rpc/src/form.rs`)."
+files:
+  - "packages/**/*.rs"
+  - "hosts/**/*.rs"
+  - "examples/**/*.rs"
+ignores:
+  - "packages/framework/rpc/src/form.rs"
+rule:
+  kind: match_arm
+  regex: "(?s)^b'\\+'\\s*=>.*b' '"

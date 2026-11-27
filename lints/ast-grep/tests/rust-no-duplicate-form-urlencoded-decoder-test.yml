@@ -1,0 +1,33 @@
+id: rust-no-duplicate-form-urlencoded-decoder
+valid:
+  - |
+    fn sign(b: u8) -> bool {
+        match b {
+            b'+' => true,
+            _ => false,
+        }
+    }
+  - |
+    fn sign_digit(b: Option<u8>) -> (bool, usize) {
+        match b {
+            Some(b'+') => (false, 1),
+            _ => (false, 0),
+        }
+    }
+invalid:
+  - |
+    fn decode(bytes: &[u8], out: &mut Vec<u8>, i: usize) {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+            }
+            b => out.push(b),
+        }
+    }
+  - |
+    fn map(b: u8) -> u8 {
+        match b {
+            b'+' => b' ',
+            b => b,
+        }
+    }

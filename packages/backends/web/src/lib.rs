@@ -70,7 +70,6 @@ pub use event_replay::{
     drain_valid_pre_hydration_events, pre_hydration_event_to_native,
     pre_hydration_replay_script_tag, CapturedPreHydrationEvent, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
-pub use input_attrs::{decode_form_urlencoded, decode_form_urlencoded_map};
 pub use events::{
     is_hard_nav_anchor, resolve_delegated_node,
     should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
@@ -110,6 +109,8 @@ pub use table_system::{
     is_safe_custom_tag, is_safe_web_attr, is_safe_web_url, RealizedWebNode, WebStoreRenderer,
     WebSystemCommitCtx, WebTableRegistry, WebTableSystem,
 };
+#[cfg(target_arch = "wasm32")]
+pub use table_system::ClickInterceptor;
 pub use visual_viewport::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KEYBOARD_INSETS_EVENT_NAME,
     VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
@@ -145,6 +146,8 @@ pub struct WebBackend {
     pub(crate) live_elements: HashMap<NodeId, web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) delegated_events: Option<events::RootEventDelegator>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) click_interceptors: Rc<RefCell<table_system::ClickInterceptors>>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) visual_viewport_tracker: Option<visual_viewport::VisualViewportTracker>,
     #[cfg(target_arch = "wasm32")]
@@ -190,6 +193,8 @@ impl WebBackend {
             live_elements: HashMap::default(),
             #[cfg(target_arch = "wasm32")]
             delegated_events: None,
+            #[cfg(target_arch = "wasm32")]
+            click_interceptors: Rc::default(),
             #[cfg(target_arch = "wasm32")]
             visual_viewport_tracker: None,
             #[cfg(target_arch = "wasm32")]

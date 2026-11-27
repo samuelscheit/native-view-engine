@@ -30,7 +30,11 @@ mod ssr;
 
 #[cfg(test)]
 pub(crate) use ctx::RetagElementSink;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use ctx::ClickInterceptors;
 pub use ctx::WebSystemCommitCtx;
+#[cfg(target_arch = "wasm32")]
+pub use ctx::ClickInterceptor;
 pub(crate) use ssr::write_core_ssr_attrs;
 pub use crate::sanitize::{is_safe_custom_tag, is_safe_web_attr, is_safe_web_url};
 
@@ -93,12 +97,26 @@ pub trait WebTableSystem: Send + Sync + 'static {
     /// after an element's tag was replaced without changing this table's row.
     #[cfg(target_arch = "wasm32")]
     fn sync_retagged_element(&self, _store: &NodeStore, _node: NodeId, _el: &web_sys::Element) {}
+
+    /// Synchronizes imperative state that needs a document-connected element (`showModal()`,
+    /// `showPopover()`), run after child reconciliation for nodes queued through
+    /// [`WebSystemCommitCtx::request_connected_sync`].
+    #[cfg(target_arch = "wasm32")]
+    fn sync_connected(&self, _store: &NodeStore, _node: NodeId, _el: &web_sys::Element) {}
+
+    /// Root-delegator click hook consulted before `Press` dispatch; `true` consumes the click.
+    #[cfg(target_arch = "wasm32")]
+    fn click_interceptor(&self) -> Option<ClickInterceptor> {
+        None
+    }
 }
 
 /// Ordered registry of [`WebTableSystem`] plugins installed on a web renderer.
 #[derive(Default)]
 pub struct WebTableRegistry {
     systems: Vec<Arc<dyn WebTableSystem>>,
+    /// Bumped on every [`Self::register`] so live mirrors (click hooks) refresh lazily.
+    revision: u32,
 }
 
 impl WebTableRegistry {
@@ -112,7 +130,13 @@ impl WebTableRegistry {
         self.systems.retain(|s| s.slot() != slot);
         self.systems.push(Arc::new(system));
         self.systems.sort_by_key(|a| std::cmp::Reverse(a.priority()));
+        self.revision = self.revision.wrapping_add(1);
         self
+    }
+
+    #[inline]
+    pub fn revision(&self) -> u32 {
+        self.revision
     }
 
     #[inline]
@@ -210,6 +234,9 @@ pub struct WebStoreRenderer {
     /// `retagged` is non-empty) so Step 2b skips already-committed slots in O(1).
     #[cfg(any(target_arch = "wasm32", test))]
     retag_committed_scratch: nve_abi::hash::HashSet<(TableSlot, NodeId)>,
+    /// `(slot, node)` pairs queued by [`WebSystemCommitCtx::request_connected_sync`].
+    #[cfg(target_arch = "wasm32")]
+    connected_sync: Vec<(TableSlot, NodeId)>,
     pub events: TableEventBus,
     pub composite_fast_lane_hits: u64,
     pub full_style_rebuilds: u64,
@@ -406,6 +433,8 @@ impl WebStoreRenderer {
             write_seq: &mut self.write_seq,
             #[cfg(target_arch = "wasm32")]
             live_element,
+            #[cfg(target_arch = "wasm32")]
+            connected_sync: &mut self.connected_sync,
         }
     }
 

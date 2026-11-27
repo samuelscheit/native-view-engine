@@ -28,15 +28,7 @@ impl WebBackend {
             container.set_inner_html("");
         }
         let mut backend = Self::new();
-        let delegator = RootEventDelegator::attach(
-            container.clone(),
-            std::rc::Rc::clone(&backend.surface_id),
-            std::rc::Rc::clone(&backend.pending_events),
-            std::rc::Rc::clone(&backend.node_event_meta),
-            std::rc::Rc::clone(&backend.input_sync),
-            std::rc::Rc::clone(&backend.ime_guard),
-            std::rc::Rc::clone(&backend.on_event),
-        );
+        let delegator = RootEventDelegator::attach(container.clone(), &backend);
         backend.delegated_events = Some(delegator);
         backend.mount_root = Some(container);
         backend.attach_visual_viewport_listener();
@@ -57,6 +49,7 @@ impl WebBackend {
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
             return 0;
         };
+        self.click_interceptors.borrow_mut().refresh(self.renderer.registry());
 
         // 1. Notify plugins BEFORE removing destroyed DOM elements so `remove_node` sees `live_element: Some(el)`.
         self.renderer
@@ -97,8 +90,9 @@ impl WebBackend {
             self.sync_full_element(store, id, &el);
         }
 
-        // Ensure ROOT is mounted into `mount_root`.
+        // Ensure ROOT is mounted into `mount_root` (unless the mount container IS the adopted root).
         if let Some(root_el) = self.live_elements.get(&NodeId::ROOT.raw())
+            && root_el != &mount_root
             && root_el.parent_element().as_ref() != Some(&mount_root)
         {
             let _ = mount_root.append_child(root_el);
@@ -198,7 +192,10 @@ impl WebBackend {
             }
         }
 
-        // 6. Flush newly compiled CSS rules into adoptedStyleSheets / <style>.
+        // 6. Imperative plugin state that needs connected elements (`showModal()`, popovers).
+        self.renderer.sync_connected_plugins(store, &self.live_elements);
+
+        // 7. Flush newly compiled CSS rules into adoptedStyleSheets / <style>.
         self.stylesheet.flush_to_dom(&doc);
         plugin_muts
     }
@@ -227,15 +224,14 @@ impl WebBackend {
             let _ = el.set_attribute("style", &inline);
         }
 
-        if let Some(dbg) = store.try_row::<DebugId>(id) {
-            set_or_remove_attr(el, "id", dbg.id());
-            set_or_remove_attr(el, "data-testid", dbg.test_id());
-            set_or_remove_attr(el, "slot", dbg.slot());
-        } else {
-            let _ = el.remove_attribute("id");
-            let _ = el.remove_attribute("data-testid");
-            let _ = el.remove_attribute("slot");
+        let dbg = store.try_row::<DebugId>(id);
+        let dom_id = dbg.map_or("", |d| d.id());
+        // An adopted mount container (`<div id="app" data-nve-id="1">`) keeps its host `id`.
+        if !dom_id.is_empty() || self.mount_root.as_ref() != Some(el) {
+            set_or_remove_attr(el, "id", dom_id);
         }
+        set_or_remove_attr(el, "data-testid", dbg.map_or("", |d| d.test_id()));
+        set_or_remove_attr(el, "slot", dbg.map_or("", |d| d.slot()));
         let boundary = store.try_row::<StreamBoundary>(id);
         set_or_remove_attr(el, NVE_STREAM_SLOT_ATTR, boundary.map_or("", |b| b.stream_slot()));
         set_or_remove_attr(el, NVE_SUSPENSE_ATTR, boundary.map_or("", |b| b.suspense()));
@@ -314,10 +310,10 @@ impl WebBackend {
                 .input_sync
                 .borrow_mut()
                 .on_backend_value_commit(id.raw(), val, defer_value);
+            if write_value {
+                crate::input_attrs::write_dom_control_value(el, val);
+            }
             if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                if write_value && inp.value() != val {
-                    inp.set_value(val);
-                }
                 if ti.secure() {
                     inp.set_type("password");
                 } else if ti.input_kind() == nve_components::tables::InputKind::Text {
@@ -325,11 +321,6 @@ impl WebBackend {
                 } else {
                     inp.set_type(ti.input_kind().as_html_type());
                 }
-            } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>()
-                && write_value
-                && ta.value() != val
-            {
-                ta.set_value(val);
             }
             set_or_remove_attr(el, "placeholder", ti.placeholder());
             if let Some(ac) = ti.autofill().get() {

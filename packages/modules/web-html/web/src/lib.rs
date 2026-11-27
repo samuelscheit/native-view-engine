@@ -6,6 +6,9 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+mod overlay;
+
+pub use overlay::{should_close_dialog_on_backdrop_click, DialogRect};
 use nve_backend_web::html::write_attr as push_attr;
 use nve_backend_web::{
     is_safe_custom_tag, is_safe_web_attr, is_safe_web_url, WebSystemCommitCtx, WebTableRegistry,
@@ -131,10 +134,20 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         let Some(row) = store.try_row::<HtmlSemantics>(node) else {
             return;
         };
-        if row.open() {
-            ctx.set_attr(node, "open", "");
-        } else {
-            ctx.remove_attr(node, "open");
+        // A live `<dialog>`'s `open` state is owned by `show()` / `showModal()` / `close()`:
+        // toggling the attribute would bypass the top layer (no `:modal`, no backdrop, no inert).
+        #[cfg(target_arch = "wasm32")]
+        let live = ctx.live_element;
+        #[cfg(target_arch = "wasm32")]
+        let native_dialog = live.is_some_and(overlay::is_native_dialog);
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_dialog = false;
+        if !native_dialog {
+            if row.open() {
+                ctx.set_attr(node, "open", "");
+            } else {
+                ctx.remove_attr(node, "open");
+            }
         }
         if let Some(cb) = row.closed_by().as_html_attr() {
             ctx.set_attr(node, "closedby", cb);
@@ -156,6 +169,22 @@ impl WebTableSystem for HtmlSemanticsWebSystem {
         } else {
             ctx.remove_attr(node, "data-nve-open");
         }
+        #[cfg(target_arch = "wasm32")]
+        match live {
+            Some(el) if el.is_connected() => overlay::sync_overlay_state(store, node, el),
+            Some(_) => ctx.request_connected_sync(node),
+            None => {}
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn sync_connected(&self, store: &NodeStore, node: NodeId, el: &web_sys::Element) {
+        overlay::sync_overlay_state(store, node, el);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn click_interceptor(&self) -> Option<nve_backend_web::ClickInterceptor> {
+        Some(overlay::try_dialog_backdrop_fallback)
     }
 }
 
@@ -463,13 +492,33 @@ mod tests {
     use nve_components::tables::StreamBoundary;
     use nve_web_html::{FormMethod, SemanticElement};
 
-    /// Every foster-parenting trap tag must be producible by `SemanticElement` (else 3P apps
-    /// cannot build, and placement hygiene cannot be exercised for, those parents) and must
-    /// round-trip through `parse` / `as_html_tag`.
+    /// `<select>` without `<option>` children is unusable, so `SemanticElement` deliberately does
+    /// not offer it; 3P plugins produce it (see [`SelectTagSystem`]).
+    const PLUGIN_ONLY_TRAP_TAGS: &[&str] = &["select"];
+
+    /// Test-only plugin rendering any node carrying `HtmlDataAttrs` as `<select>`.
+    struct SelectTagSystem;
+
+    impl WebTableSystem for SelectTagSystem {
+        fn slot(&self) -> TableSlot {
+            HtmlDataAttrs::slot()
+        }
+
+        fn tag_name<'a>(&self, _store: &'a NodeStore, _node: NodeId) -> Option<&'a str> {
+            Some("select")
+        }
+    }
+
+    /// Every foster-parenting trap tag `SemanticElement` offers round-trips through `parse` /
+    /// `as_html_tag`; the rest are exactly the documented plugin-only tags.
     #[test]
     fn every_foster_parent_trap_tag_round_trips_through_semantic_element() {
         for &tag in FOSTER_PARENT_TRAP_TAGS {
             let el = SemanticElement::parse(tag);
+            if PLUGIN_ONLY_TRAP_TAGS.contains(&tag) {
+                assert_eq!(el, SemanticElement::Auto, "{tag} must stay plugin-only");
+                continue;
+            }
             assert_ne!(el, SemanticElement::Auto, "{tag} has no SemanticElement");
             assert_eq!(el.as_html_tag(), Some(tag));
             assert_eq!(SemanticElement::parse(&format!(" {} ", tag.to_uppercase())), el);
@@ -482,15 +531,19 @@ mod tests {
     }
 
     #[test]
-    fn stream_slot_directly_inside_semantic_tfoot_or_select_fails_placement_hygiene() {
-        for parent_el in [SemanticElement::Tfoot, SemanticElement::Select] {
+    fn stream_slot_directly_inside_semantic_tfoot_or_plugin_select_fails_placement_hygiene() {
+        for tag in ["tfoot", "select"] {
             let mut store = NodeStore::new();
             let mut changes = ChangeSet::default();
             {
                 let mut tx = store.tx();
                 let parent = tx.create();
                 let slot = tx.create();
-                tx.edit::<HtmlSemantics>(parent).element(parent_el);
+                if tag == "select" {
+                    tx.edit::<HtmlDataAttrs>(parent).entries(None);
+                } else {
+                    tx.edit::<HtmlSemantics>(parent).element(SemanticElement::Tfoot);
+                }
                 tx.edit::<StreamBoundary>(slot).stream_slot("rows");
                 tx.set_children(parent, &[slot]);
                 tx.set_children(NodeId::ROOT, &[parent]);
@@ -498,8 +551,8 @@ mod tests {
             }
             let mut web = WebBackend::new();
             register_web_html_systems(web.table_registry_mut());
+            web.table_registry_mut().register(SelectTagSystem);
             web.commit(&store, &changes).unwrap();
-            let tag = parent_el.as_html_tag().unwrap();
             match web.render_ssr_streaming_shell(&store) {
                 Err(StreamingError::InvalidSlotPlacement(msg)) => {
                     assert!(msg.contains(&format!("<{tag}>")), "{msg}");

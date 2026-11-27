@@ -13,17 +13,19 @@ use std::thread;
 use nve_backend_web::{
     DEFAULT_MAX_LIVE_UPDATES, FormActionResponse, NVE_LIVE_SINK_IFRAME_NAME,
     StreamingDocumentOptions, StreamingError, StreamingMode, StreamingSsrSession, ZeroJsLiveConfig,
-    ZeroJsLiveSession, decode_form_urlencoded, decode_form_urlencoded_map, scoped_slot_hiding_css,
+    ZeroJsLiveSession, scoped_slot_hiding_css,
     slot_placeholder_html, streaming_http_headers,
 };
 use nve_store::{NodeId, NodeStore};
 use support::*;
 
 #[test]
-fn decode_form_urlencoded_handles_utf8_plus_repeated_keys_and_malformed_percent() {
-    let pairs = decode_form_urlencoded(
+fn zero_js_form_bodies_decode_through_the_single_nve_rpc_decoder() {
+    let pairs = nve_rpc::decode_form_urlencoded_limited(
         "name=Ada+Lovelace&note=Caf%C3%A9+%F0%9F%9A%80&tag=rust&tag=web&empty=&flag&bad=%ZZ%2",
-    );
+        16,
+    )
+    .unwrap();
     assert_eq!(
         pairs,
         vec![
@@ -36,9 +38,10 @@ fn decode_form_urlencoded_handles_utf8_plus_repeated_keys_and_malformed_percent(
             ("bad".into(), "%ZZ%2".into()),
         ]
     );
-    let map = decode_form_urlencoded_map("a=1&b=hello+world&a=2");
-    assert_eq!(map.get("a").map(String::as_str), Some("2"));
-    assert_eq!(map.get("b").map(String::as_str), Some("hello world"));
+    let form = nve_rpc::FormPairs::from_urlencoded_limited("a=1&b=hello+world&a=2", 16).unwrap();
+    assert_eq!(form.get("a"), Some("2"));
+    assert_eq!(form.get("b"), Some("hello world"));
+    assert!(nve_rpc::decode_form_urlencoded_limited("a=1&b=2&c=3", 2).is_err());
 }
 
 #[test]
@@ -239,7 +242,11 @@ fn stage2_zero_js_live_session_end_to_end_over_real_loopback_tcp_with_compaction
             } else if request_line.starts_with("POST /action") {
                 let mut body = vec![0u8; content_len];
                 reader.read_exact(&mut body).unwrap();
-                let params = decode_form_urlencoded_map(&String::from_utf8_lossy(&body));
+                let params = nve_rpc::FormPairs::from_urlencoded_limited(
+                    &String::from_utf8_lossy(&body),
+                    16,
+                )
+                .unwrap();
                 let delta: i32 = params
                     .get("delta")
                     .and_then(|s| s.parse().ok())

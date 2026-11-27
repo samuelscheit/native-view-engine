@@ -9,6 +9,11 @@ nve-backend-web = { workspace = true }
 nve-store = { workspace = true }
 nve-web-html = { workspace = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+nve-components = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = ["DomRect", "HtmlDialogElement", "MouseEvent"] }
+
 [dev-dependencies]
 nve-backend-web = { workspace = true, features = ["ssr"] }
 nve-components = { workspace = true }

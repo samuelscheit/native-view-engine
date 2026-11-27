@@ -42,6 +42,9 @@ web-sys = { workspace = true, features = [
     "VisualViewport",
 ] }
 
+[dev-dependencies]
+nve-rpc = { workspace = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
 

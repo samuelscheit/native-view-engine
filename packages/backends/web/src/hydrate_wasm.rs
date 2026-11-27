@@ -6,6 +6,7 @@ use nve_store::{NodeId as StoreNodeId, NodeStore};
 use wasm_bindgen::JsCast;
 
 use crate::hydrate::{pair_ssr_dom, HydratedControlState, HydrationPass, HydrationReport, SsrDomTree};
+use crate::input_attrs::{read_dom_control_value, write_dom_control_value};
 use crate::{StyleSheetCache, WebBackend};
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
@@ -178,23 +179,32 @@ fn find_hydrate_root(container: &web_sys::Element) -> Option<web_sys::Element> {
     first_ui
 }
 
-fn read_dom_control_value(el: &web_sys::Element) -> Option<String> {
-    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-        return Some(inp.value());
-    }
-    el.dyn_ref::<web_sys::HtmlTextAreaElement>().map(web_sys::HtmlTextAreaElement::value)
+/// Server-rendered `<select>` value: the last `<option selected>`'s `value` (else its text),
+/// mirroring `hydrate_native_parse` so native and browser hydration reconcile the same base.
+fn ssr_select_base_value(select: &web_sys::Element) -> String {
+    let Ok(list) = select.query_selector_all("option[selected]") else {
+        return String::new();
+    };
+    list.length()
+        .checked_sub(1)
+        .and_then(|last| list.item(last))
+        .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        .map(|opt| opt.get_attribute("value").or_else(|| opt.text_content()).unwrap_or_default())
+        .unwrap_or_default()
 }
 
-pub(crate) fn write_dom_control_value(el: &web_sys::Element, val: &str) {
-    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-        if inp.value() != val {
-            inp.set_value(val);
+/// Detaches a stale SSR root that is the mount container itself: keeps `#app` connected and its
+/// `id`, drops its server UI children and SSR identity so the client root rebuilds inside it.
+fn demote_mount_root(mount: &web_sys::Element) {
+    let mut cur = mount.first_element_child();
+    while let Some(el) = cur {
+        cur = el.next_element_sibling();
+        if !is_ignored_dom_element(&el) {
+            el.remove();
         }
-    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>()
-        && ta.value() != val
-    {
-        ta.set_value(val);
     }
+    let _ = mount.remove_attribute("data-nve-id");
+    let _ = mount.remove_attribute("data-nve-ssr-hash");
 }
 
 /// Live browser DOM view for positional pairing.
@@ -226,10 +236,10 @@ impl SsrDomTree for LiveDom {
     }
 
     fn control_state(&self, el: &web_sys::Element, tag: &str) -> HydratedControlState {
-        let base = if tag == "textarea" {
-            el.text_content().unwrap_or_default()
-        } else {
-            el.get_attribute("value").unwrap_or_default()
+        let base = match tag {
+            "textarea" => el.text_content().unwrap_or_default(),
+            "select" => ssr_select_base_value(el),
+            _ => el.get_attribute("value").unwrap_or_default(),
         };
         let local = read_dom_control_value(el).unwrap_or_else(|| base.clone());
         HydratedControlState { base, local }
@@ -268,7 +278,11 @@ impl WebBackend {
             &mut self.hydration_report,
         );
         for el in pairing.stale {
-            el.remove();
+            if self.mount_root.as_ref() == Some(&el) {
+                demote_mount_root(&el);
+            } else {
+                el.remove();
+            }
         }
         for (node, el) in pairing.adopted {
             let raw = node.raw();

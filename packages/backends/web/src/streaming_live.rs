@@ -1,5 +1,5 @@
-//! Stage-2 Opt-In Zero-JS Interactive Live Mode ([`ZeroJsLiveSession`]); form bodies decode via
-//! [`crate::decode_form_urlencoded`].
+//! Stage-2 Opt-In Zero-JS Interactive Live Mode ([`ZeroJsLiveSession`]); servers decode its form
+//! bodies with `nve_rpc::FormPairs` (the single `application/x-www-form-urlencoded` decoder).
 
 use std::collections::BTreeSet;
 

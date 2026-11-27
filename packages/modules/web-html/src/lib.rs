@@ -71,7 +71,6 @@ word_enum! {
         Button = 27,
         Label = 28,
         Tfoot = 29,
-        Select = 30,
     }
 }
 
@@ -110,7 +109,6 @@ impl SemanticElement {
             Self::Button => "button",
             Self::Label => "label",
             Self::Tfoot => "tfoot",
-            Self::Select => "select",
         })
     }
 

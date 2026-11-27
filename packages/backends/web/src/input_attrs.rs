@@ -1,8 +1,7 @@
-//! Web IME composition guard, controlled-input echo suppression (`InputSyncTracker`), and
-//! `application/x-www-form-urlencoded` form submission decoder.
+//! Web IME composition guard, controlled-input echo suppression (`InputSyncTracker`), and live
+//! `<input>` / `<textarea>` / `<select>` `.value` access.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
 
 use nve_abi::hash::HashMap;
 use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
@@ -210,57 +209,35 @@ pub fn web_composition_cancel_on_blur(
     })
 }
 
-/// Pure `application/x-www-form-urlencoded` decoder preserving pair order and repeated keys
-/// (`+` spaces, `%XX` multi-byte UTF-8, empty values, bare keys; malformed `%` kept literally).
-pub fn decode_form_urlencoded(body: &str) -> Vec<(String, String)> {
-    body.split('&')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let (k, v) = segment.split_once('=').unwrap_or((segment, ""));
-            (percent_decode_plus(k), percent_decode_plus(v))
-        })
-        .collect()
-}
-
-/// Map form of [`decode_form_urlencoded`] (last value wins for repeated keys).
-pub fn decode_form_urlencoded_map(body: &str) -> BTreeMap<String, String> {
-    decode_form_urlencoded(body).into_iter().collect()
-}
-
-fn percent_decode_plus(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                    out.push((hi << 4) | lo);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
+/// Live `.value` of an `<input>`, `<textarea>`, or `<select>` (`None` for any other element).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn read_dom_control_value(el: &web_sys::Element) -> Option<String> {
+    use wasm_bindgen::JsCast;
+    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        Some(inp.value())
+    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        Some(ta.value())
+    } else {
+        el.dyn_ref::<web_sys::HtmlSelectElement>().map(web_sys::HtmlSelectElement::value)
     }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
-#[inline]
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+/// Writes `.value` on a live `<input>`, `<textarea>`, or `<select>` only when it differs, so an
+/// unchanged value never resets the caret or selection.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn write_dom_control_value(el: &web_sys::Element, val: &str) {
+    use wasm_bindgen::JsCast;
+    if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        if inp.value() != val {
+            inp.set_value(val);
+        }
+    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        if ta.value() != val {
+            ta.set_value(val);
+        }
+    } else if let Some(sel) = el.dyn_ref::<web_sys::HtmlSelectElement>()
+        && sel.value() != val
+    {
+        sel.set_value(val);
     }
 }

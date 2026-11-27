@@ -1,0 +1,17 @@
+id: rust-no-duplicate-form-urlencoded-decoder
+snapshots:
+  "fn decode(bytes: &[u8], out: &mut Vec<u8>, i: usize) {\n    match bytes[i] {\n        b'+' => {\n            out.push(b' ');\n        }\n        b => out.push(b),\n    }\n}\n":
+    labels:
+    - source: |-
+        b'+' => {
+                    out.push(b' ');
+                }
+      style: primary
+      start: 84
+      end: 131
+  "fn map(b: u8) -> u8 {\n    match b {\n        b'+' => b' ',\n        b => b,\n    }\n}\n":
+    labels:
+    - source: b'+' => b' ',
+      style: primary
+      start: 44
+      end: 57
