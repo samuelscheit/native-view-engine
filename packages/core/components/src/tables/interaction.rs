@@ -347,8 +347,46 @@ pub const NVE_STREAM_SLOT_ATTR: &str = "data-nve-stream-slot";
 /// the pending stream slot to resolved content.
 pub const NVE_SUSPENSE_ATTR: &str = "data-nve-suspense";
 
-/// Streaming SSR boundary markers ([`NVE_STREAM_SLOT_ATTR`], [`NVE_SUSPENSE_ATTR`]) consumed by
-/// web streaming shell rendering, slot resolution checks, and structural hydration.
+/// DOM attribute distinguishing replaceable output slots from stable input slots.
+pub const NVE_STREAM_SLOT_ROLE_ATTR: &str = "data-nve-slot-role";
+
+word_enum! {
+    /// Role of a streaming slot boundary ([`NVE_STREAM_SLOT_ROLE_ATTR`]).
+    pub enum StreamSlotRole: 2 {
+        /// No role (not a stream slot, or role never set): no attribute emitted.
+        None = 0,
+        /// Replaceable async/live output slot (receives out-of-order Light DOM chunks).
+        Output = 1,
+        /// Stable input slot hosting active `<Form>` / `<input>` controls (never overwritten live).
+        Input = 2,
+    }
+}
+
+impl StreamSlotRole {
+    /// The [`NVE_STREAM_SLOT_ROLE_ATTR`] value, `None` for [`Self::None`].
+    #[inline]
+    pub const fn as_attr(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Output => Some("output"),
+            Self::Input => Some("input"),
+        }
+    }
+
+    /// Parses an [`NVE_STREAM_SLOT_ROLE_ATTR`] value; unknown values are [`Self::None`].
+    #[inline]
+    pub fn from_attr(value: &str) -> Self {
+        match value {
+            "output" => Self::Output,
+            "input" => Self::Input,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Streaming SSR boundary markers ([`NVE_STREAM_SLOT_ATTR`], [`NVE_SUSPENSE_ATTR`],
+/// [`NVE_STREAM_SLOT_ROLE_ATTR`]) consumed by web streaming shell rendering, slot resolution
+/// checks, and structural hydration.
 #[derive(NveTable)]
 #[nve_table(name = "nve.stream_boundary", storage = "sparse", flags = "publish")]
 pub struct StreamBoundary {
@@ -356,5 +394,8 @@ pub struct StreamBoundary {
     pub stream_slot: Str,
     #[effect(semantics)]
     pub suspense: Str,
+    #[effect(semantics)]
+    #[bits(2)]
+    pub slot_role: StreamSlotRole,
 }
 

@@ -5,7 +5,8 @@
 use nve_abi::table::effect;
 use nve_components::tables::{
     Accessibility, DebugId, Image, ImageSrc, Interaction, Link, LinkTarget, StreamBoundary,
-    TextContent, TextInput, Transform, Visual, NVE_STREAM_SLOT_ATTR, NVE_SUSPENSE_ATTR,
+    TextContent, TextInput, Transform, Visual, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR,
+    NVE_SUSPENSE_ATTR,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore};
 use wasm_bindgen::JsCast;
@@ -238,6 +239,11 @@ impl WebBackend {
         let boundary = store.try_row::<StreamBoundary>(id);
         set_or_remove_attr(el, NVE_STREAM_SLOT_ATTR, boundary.map_or("", |b| b.stream_slot()));
         set_or_remove_attr(el, NVE_SUSPENSE_ATTR, boundary.map_or("", |b| b.suspense()));
+        set_or_remove_attr(
+            el,
+            NVE_STREAM_SLOT_ROLE_ATTR,
+            boundary.and_then(|b| b.slot_role().as_attr()).unwrap_or(""),
+        );
 
         if let Some(link) = store.try_row::<Link>(id) {
             let href = link.href();

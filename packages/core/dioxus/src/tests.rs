@@ -3,8 +3,8 @@
 
 use nve_abi::{ColorRgba, EventPayload, NativeEvent, NativeEventKind};
 use nve_components::tables::{
-    Accessibility, AriaRole, DebugId, Interaction, Layout, TextContent, TextInput, Typography,
-    Visual,
+    Accessibility, AriaRole, DebugId, Interaction, Layout, StreamBoundary, TextContent, TextInput,
+    Typography, Visual,
 };
 use nve_engine::HotPatchMsg;
 use nve_store::wire::WireDecoder;
@@ -289,4 +289,57 @@ fn drive_loop_settles_multi_hop_sync_error_boundary_cascade_without_async_wakeup
     // Settled: a further reconcile emits no mutations.
     surface.reconcile(99);
     assert!(surface.last_changes().is_empty(), "{:?}", surface.last_changes());
+}
+
+#[component]
+fn SlotRoleApp() -> Element {
+    let mut phase = use_signal(|| 0u8);
+    let p = phase();
+    rsx! {
+        view {
+            pressable { test_id: "next", onpress: move |_| phase += 1, text { "next" } }
+            if p == 0 {
+                NveStreamSlot { slot_id: "draft", role: StreamSlotRole::Input, test_id: "slot",
+                    text { "form" }
+                }
+            } else if p == 1 {
+                NveStreamSlot { slot_id: "draft", test_id: "slot", text { "out" } }
+            }
+        }
+    }
+}
+
+#[test]
+fn stream_slot_role_is_a_typed_boundary_column_that_updates_and_clears() {
+    let mut surface = DioxusSurface::new(1, SlotRoleApp);
+    surface.reconcile(1);
+    let role = |s: &DioxusSurface| {
+        let slot = find_by_test_id(s.store(), "slot");
+        let b = s.store().try_row::<StreamBoundary>(slot).expect("boundary row");
+        (b.stream_slot().to_owned(), b.slot_role())
+    };
+    assert_eq!(role(&surface), ("draft".to_owned(), StreamSlotRole::Input));
+
+    let press = |s: &mut DioxusSurface, frame| {
+        let btn = find_by_test_id(s.store(), "next");
+        assert!(s.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: btn.raw(),
+            timestamp_us: 0,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 1.0, y: 1.0 },
+        }]));
+        s.reconcile(frame);
+    };
+    press(&mut surface, 2);
+    assert_eq!(role(&surface), ("draft".to_owned(), StreamSlotRole::Output));
+
+    press(&mut surface, 3);
+    let mut stack = vec![NodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        assert!(!surface.store().has::<StreamBoundary>(id), "slot removed: no boundary left");
+        stack.extend_from_slice(surface.store().children(id));
+    }
+    assert_eq!(StreamSlotRole::from_attr("bogus"), StreamSlotRole::None);
+    assert_eq!(StreamSlotRole::None.as_attr(), None);
 }

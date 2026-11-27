@@ -77,7 +77,8 @@ async fn render(
     let resp = pool
         .render_streaming(
             SsrPageOptions::new("Forms", web_backend),
-            StreamPlan::default(),
+            // Bare `NveStreamSlot`s stay pending until the deadline by contract.
+            StreamPlan::default().with_total_deadline(core::time::Duration::from_millis(50)),
             erased_ssr_query_client(transport),
             move |c| DioxusSurface::new(1, app).with_context(c),
         )
@@ -118,4 +119,37 @@ async fn action_form_streams_form_tag_and_pending_slot_inside_form_fails_before_
         !bare.contains("action=\"/notes/save\""),
         "bare WebBackend::new has no HtmlForm plugin; the builder must stay mandatory: {bare}"
     );
+}
+
+#[component]
+fn InputSlotFormApp() -> Element {
+    let client = dioxus_core::consume_context::<ErasedQueryClient>();
+    rsx! {
+        QueryClientProvider {
+            client: client,
+            NveStreamSlot {
+                slot_id: "draft",
+                role: StreamSlotRole::Input,
+                ActionForm::<SaveNote> {
+                    action: "/notes/save".to_owned(),
+                    text { "Save note" }
+                }
+            }
+            NveStreamSlot { slot_id: "feed", text { "Feed" } }
+        }
+    }
+}
+
+#[tokio::test]
+async fn input_stream_slot_role_reaches_ssr_html() {
+    let pool = SsrLocalPool::with_config(SsrLocalPoolConfig::default().with_worker_count(1))
+        .expect("pool init");
+    let html = render(&pool, web_backend, InputSlotFormApp, ControlledTransport::default())
+        .await
+        .expect("input slot page renders");
+    assert_eq!(html.matches("data-nve-slot-role=\"input\"").count(), 1, "{html}");
+    assert_eq!(html.matches("data-nve-slot-role=\"output\"").count(), 1, "{html}");
+    let input_at = html.find("data-nve-slot-role=\"input\"").expect("input role");
+    let form_at = html.find("<form ").expect("form");
+    assert!(input_at < form_at, "the input slot wraps the form: {html}");
 }

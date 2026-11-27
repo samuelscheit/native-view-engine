@@ -5,33 +5,12 @@ use dioxus_core_macro::Props;
 
 use crate::prelude::*;
 
-pub use nve_components::tables::{NVE_STREAM_SLOT_ATTR, NVE_SUSPENSE_ATTR};
-
-/// Raw DOM attribute distinguishing mutable output slots from stable input slots.
-pub const NVE_STREAM_SLOT_ROLE_ATTR: &str = "data-nve-slot-role";
+pub use nve_components::tables::{
+    StreamSlotRole, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+};
 
 /// Prefix applied to Declarative Shadow DOM `<slot name="nve-slot-{id}">` markers.
 pub const NVE_STREAM_SLOT_NAME_PREFIX: &str = "nve-slot-";
-
-/// Role of a streaming slot boundary in Stage-1 async SSR and Stage-2 Zero-JS Live Mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StreamSlotRole {
-    /// Replaceable async/live output slot (receives out-of-order Light DOM chunks).
-    #[default]
-    Output,
-    /// Stable input slot hosting active `<Form>` / `<input>` controls (never overwritten live).
-    Input,
-}
-
-impl StreamSlotRole {
-    #[inline]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Output => "output",
-            Self::Input => "input",
-        }
-    }
-}
 
 /// Declarative async/streaming slot boundary emitting `data-nve-stream-slot="{slot_id}"` around
 /// fallback children so `nve-backend-web` emits `<slot name="nve-slot-{slot_id}">...</slot>` inside
@@ -39,17 +18,17 @@ impl StreamSlotRole {
 #[component]
 pub fn NveStreamSlot(
     slot_id: String,
-    #[props(default)] role: StreamSlotRole,
+    #[props(default = StreamSlotRole::Output)] role: StreamSlotRole,
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let role_str = role.as_str();
+    let role_attr = role.as_attr();
     rsx! {
         view {
             test_id: test_id,
             "data-nve-stream-slot": "{slot_id}",
-            "data-nve-slot-role": "{role_str}",
+            "data-nve-slot-role": role_attr,
             style: style,
             {children}
         }

@@ -5,7 +5,7 @@ use core::fmt::Write as _;
 use nve_components::tables::{
     Accessibility, DebugId, Image, ImageSrc, Interaction, Layout, Link, LinkTarget, Scroll,
     StreamBoundary, TextContent, TextInput, Transform, Visibility, Visual, NVE_STREAM_SLOT_ATTR,
-    NVE_SUSPENSE_ATTR,
+    NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
 };
 use nve_store::{NodeId, NodeStore};
 
@@ -40,6 +40,9 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
             if !val.is_empty() {
                 write_attr(name, val, out);
             }
+        }
+        if let Some(role) = boundary.slot_role().as_attr() {
+            write_attr(NVE_STREAM_SLOT_ROLE_ATTR, role, out);
         }
     }
     if let Some(link) = store.try_row::<Link>(id) {

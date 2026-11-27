@@ -1,7 +1,10 @@
 //! Identity (`DebugId`: `testID`/`id`/`slot`) and streaming SSR boundary (`StreamBoundary`:
-//! `data-nve-stream-slot`/`data-nve-suspense`) string attributes.
+//! `data-nve-stream-slot`/`data-nve-suspense`/`data-nve-slot-role`) string attributes.
 
-use nve_components::tables::{DebugId, NVE_STREAM_SLOT_ATTR, NVE_SUSPENSE_ATTR, StreamBoundary};
+use nve_components::tables::{
+    DebugId, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR, StreamBoundary,
+    StreamSlotRole,
+};
 use nve_store::NodeId;
 
 use super::StoreMutationTx;
@@ -28,16 +31,16 @@ impl StoreMutationTx<'_, '_> {
                     _ => row.test_id(v),
                 };
             }
-            NVE_STREAM_SLOT_ATTR | NVE_SUSPENSE_ATTR => {
+            NVE_STREAM_SLOT_ATTR | NVE_SUSPENSE_ATTR | NVE_STREAM_SLOT_ROLE_ATTR => {
                 if value.is_none() && !self.tx.store().has::<StreamBoundary>(node) {
                     return true;
                 }
                 let row = self.tx.edit::<StreamBoundary>(node);
-                if name == NVE_STREAM_SLOT_ATTR {
-                    row.stream_slot(v);
-                } else {
-                    row.suspense(v);
-                }
+                match name {
+                    NVE_STREAM_SLOT_ATTR => row.stream_slot(v),
+                    NVE_SUSPENSE_ATTR => row.suspense(v),
+                    _ => row.slot_role(StreamSlotRole::from_attr(v)),
+                };
             }
             _ => return false,
         }
