@@ -315,6 +315,30 @@ test('js_value: maxDepth nesting limit (arrays, maps, cyclic objects, embedded D
   DynamicValue.NULL.writeTo(wScalar);
   for (const m of marks.reverse()) wScalar.end(m);
   BinReader.validate(wScalar.bytes);
+
+  // `writeJsValue` respects enclosing `BinWriter.containerDepth` (no silent depth-65 output)
+  const wJsReject = new BinWriter();
+  wJsReject.beginMap(1);
+  wJsReject.writeMapKey('deep');
+  expectKind(
+    'maxDepth',
+    () => writeJsValue(wJsReject, nestedArray(BIN_VALUE_MAX_DEPTH, 1)),
+    'writeJsValue depth-64 inside open map exceeds maxDepth',
+  );
+  const wJsOk = new BinWriter();
+  const mJsOk = wJsOk.beginMap(1);
+  wJsOk.writeMapKey('ok');
+  writeJsValue(wJsOk, nestedArray(BIN_VALUE_MAX_DEPTH - 1, 1));
+  wJsOk.end(mJsOk);
+  assert.equal(BinReader.validate(wJsOk.bytes), BIN_VALUE_MAX_DEPTH);
+
+  const wJsLeaf = new BinWriter();
+  const leafMarks: BinMark[] = [];
+  for (let i = 0; i < BIN_VALUE_MAX_DEPTH; i += 1) leafMarks.push(wJsLeaf.beginArray(1));
+  expectKind('maxDepth', () => writeJsValue(wJsLeaf, []), 'empty array at containerDepth 64 rejected');
+  writeJsValue(wJsLeaf, 42);
+  for (const m of leafMarks.reverse()) wJsLeaf.end(m);
+  assert.equal(BinReader.validate(wJsLeaf.bytes), BIN_VALUE_MAX_DEPTH);
 });
 
 test('js_value: trailingBytes, nested container slack, container escape, and EOF-before-maxDepth', () => {
@@ -422,9 +446,11 @@ test('hybrid_runtime: DynamicValue.read/writeTo, checked ints, readResultOk, and
   let bump = 16;
   const live = new Map<number, number>();
   const freedPtrs: number[] = [];
+  let allocCount = 0;
   const wasm: HybridWasmExports = {
     memory,
     nve_hybrid_alloc(len: number): number {
+      allocCount += 1;
       const ptr = bump;
       bump += (len + 7) & ~7;
       live.set(ptr, len);
@@ -484,6 +510,52 @@ test('hybrid_runtime: DynamicValue.read/writeTo, checked ints, readResultOk, and
   wasm.nve_hybrid_free(copiedPtr, 4);
   assert.equal(live.size, 0);
 
+  // wasmSetPropsBin with an aliased wasm.memory.buffer view across memory.grow():
+  // input view detaches (byteLength becomes 0), yet cached length is passed to setPropsFn and free!
+  const aliasedPropsOff = 1040;
+  new Uint8Array(wasm.memory.buffer, aliasedPropsOff, 4).set(Uint8Array.of(0x11, 0x22, 0x33, 0x44));
+  const aliasedPropsView = new Uint8Array(wasm.memory.buffer, aliasedPropsOff, 4);
+  let sawPropsLen = -1;
+  let sawPropsBytes = new Uint8Array(0);
+  wasmSetPropsBin(growOnAllocWasm, 'Demo', handle, aliasedPropsView, (_h, ptr, len) => {
+    assert.equal(aliasedPropsView.byteLength, 0, 'aliased payload must be detached by memory.grow()');
+    sawPropsLen = len;
+    sawPropsBytes = new Uint8Array(wasm.memory.buffer, ptr, len).slice();
+    return HybridStatus.Ok;
+  });
+  assert.equal(sawPropsLen, 4);
+  assert.deepEqual(sawPropsBytes, Uint8Array.of(0x11, 0x22, 0x33, 0x44));
+  assert.equal(live.size, 0, 'wasmSetPropsBin freed aliased payload with cached len 4');
+
+  // wasmCallBin with an aliased wasm.memory.buffer view across memory.grow():
+  // input view detaches (byteLength becomes 0), yet cached length is passed to callFn and free!
+  const aliasedReqOff = 1056;
+  new Uint8Array(wasm.memory.buffer, aliasedReqOff, 4).set(Uint8Array.of(0x55, 0x66, 0x77, 0x88));
+  const aliasedReqView = new Uint8Array(wasm.memory.buffer, aliasedReqOff, 4);
+  let sawReqLen = -1;
+  const aliasedResp = wasmCallBin(
+    growOnAllocWasm,
+    'Demo',
+    handle,
+    aliasedReqView,
+    (_h, reqPtr, reqLen, outLenPtr) => {
+      assert.equal(aliasedReqView.byteLength, 0, 'aliased req must be detached by memory.grow()');
+      sawReqLen = reqLen;
+      assert.deepEqual(
+        new Uint8Array(wasm.memory.buffer, reqPtr, reqLen),
+        Uint8Array.of(0x55, 0x66, 0x77, 0x88),
+      );
+      const out = Uint8Array.of(0xfe, 0xed);
+      const rp = wasm.nve_hybrid_alloc(out.length);
+      new Uint8Array(wasm.memory.buffer, rp, out.length).set(out);
+      new DataView(wasm.memory.buffer).setUint32(outLenPtr, out.length, true);
+      return rp;
+    },
+  );
+  assert.equal(sawReqLen, 4);
+  assert.deepEqual(aliasedResp, Uint8Array.of(0xfe, 0xed));
+  assert.equal(live.size, 0, 'wasmCallBin freed aliased req with cached len 4');
+
   // wasmCopyIn rejects oversized payload (> u32) BEFORE calling alloc
   let allocCalled = false;
   const neverAllocWasm: HybridWasmExports = {
@@ -509,16 +581,15 @@ test('hybrid_runtime: DynamicValue.read/writeTo, checked ints, readResultOk, and
   expectHybridStatus(HybridStatus.Err, () => wasmCopyIn(oobAllocWasm, Uint8Array.of(1, 2)), 'OOB alloc ptr');
   assert.equal(badFreeCalls, 0, 'must never pass OOB alloc ptr to free');
 
-  // wasmCopyIn frees valid ptr when .set(src) throws (e.g. detached caller ArrayBuffer)
+  // wasmCopyIn frees valid ptr when .set(src) throws (non-vacuous: alloc runs and ptr is freed)
   const detached = new Uint8Array(new ArrayBuffer(4));
   structuredClone(detached.buffer, { transfer: [detached.buffer] });
-  const fakeDetachedSrc = new Proxy(detached, {
-    get(target, prop, receiver) {
-      if (prop === 'byteLength') return 4;
-      return Reflect.get(target, prop, receiver);
-    },
-  });
-  assert.throws(() => wasmCopyIn(wasm, fakeDetachedSrc));
+  Object.defineProperty(detached, 'byteLength', { value: 4 });
+  const allocsBefore = allocCount;
+  const freesBefore = freedPtrs.length;
+  assert.throws(() => wasmCopyIn(wasm, detached), TypeError);
+  assert.equal(allocCount, allocsBefore + 1, 'must reach nve_hybrid_alloc before .set(src) throws');
+  assert.equal(freedPtrs.length, freesBefore + 1, 'must free allocated ptr when .set(src) throws');
   assert.equal(live.size, 0, 'wasmCopyIn freed valid ptr after .set() threw');
 
   // wasmCallBin frees both reqPtr and outLenPtr when callFn throws

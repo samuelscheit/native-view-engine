@@ -22,7 +22,7 @@ pub fn generate_export_web_component(
     let tag_name = web_component_tag(&spec.name);
     let element_js = GeneratedFile {
         relative_path: format!("{tag_name}.generated.js"),
-        content: emit_web_component_js(spec, &tag_name),
+        content: emit_web_component_js(spec, &tag_name)?,
     };
     let types_dts = GeneratedFile {
         relative_path: format!("{tag_name}.generated.d.ts"),
@@ -37,7 +37,7 @@ pub fn generate_export_web_component(
     })
 }
 
-fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
+fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> Result<String, CodegenError> {
     let name = &spec.name;
     let elem_class = format!("{name}Element");
     let wasm_pkg = format!("./pkg/{}_web.js", to_snake_case(name));
@@ -119,7 +119,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out, "    this._surface = null;");
     writeln!(out, "    this._props = {{");
     for prop in &spec.props {
-        if let Some(def) = js_default_literal(prop) {
+        if let Some(def) = js_default_literal(prop)? {
             writeln!(
                 out,
                 "      '{}': {def},",
@@ -184,7 +184,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     for prop in &spec.props {
         let attr = to_kebab_case(&prop.name);
         let key = escape_ts_single_quoted(&prop.name);
-        let parse_expr = js_parse_attr_expr(prop);
+        let parse_expr = js_parse_attr_expr(prop)?;
         writeln!(out, "      case '{}':", escape_ts_single_quoted(&attr));
         writeln!(out, "        this._props['{key}'] = {parse_expr};");
         writeln!(out, "        this._syncProps();");
@@ -287,7 +287,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out);
     writeln!(out, "define{name}();");
 
-    out.into_string()
+    Ok(out.into_string())
 }
 
 fn emit_web_component_dts(spec: &NveExportSpec, tag_name: &str) -> String {
@@ -430,28 +430,74 @@ fn dom_event_name(ev: &EventSpec) -> String {
     to_kebab_case(&strip_on_prefix(&ev.name))
 }
 
-fn js_default_literal(prop: &PropSpec) -> Option<String> {
-    let def = prop.default_value.as_ref()?;
-    match (&prop.prop_type, def) {
-        (_, DefaultValue::Null) => Some("null".to_owned()),
-        (_, DefaultValue::Bool(b)) => Some(if *b { "true" } else { "false" }.to_owned()),
-        (PropType::Float | PropType::Double, DefaultValue::Int(i)) => Some(format!("{i}.0")),
-        (_, DefaultValue::Int(i)) => {
+/// Renders a prop's JS default literal, rejecting out-of-range integer defaults on `Int32` /
+/// `IntEnum` props so `number`-typed properties never receive a `bigint` literal.
+///
+/// - Only `PropType::Mixed` emits a `...n` BigInt literal (when `|i| > 2^53 - 1`).
+/// - `Float` / `Double` with `DefaultValue::Int(i)` emit `{i}.0` (JS `number`). Note that whole
+///   floats like `1.0` satisfy `Number.isSafeInteger`, so `encodeJsValue` writes `BinTag.I64` and
+///   Rust's `BinValueView::as_number()` / `BinReader::readF64()` widens them to `f64` losslessly.
+fn js_default_literal(prop: &PropSpec) -> Result<Option<String>, CodegenError> {
+    let Some(def) = prop.default_value.as_ref() else {
+        return Ok(None);
+    };
+    let lit = match (&prop.prop_type, def) {
+        (_, DefaultValue::Null) => "null".to_owned(),
+        (_, DefaultValue::Bool(b)) => if *b { "true" } else { "false" }.to_owned(),
+        (PropType::Float | PropType::Double, DefaultValue::Int(i)) => format!("{i}.0"),
+        (PropType::Int32, DefaultValue::Int(i)) => {
+            let v = i32::try_from(*i).map_err(|_| {
+                CodegenError::validation(format!(
+                    "web component prop '{}' (Int32) default {i} exceeds i32 range",
+                    prop.name
+                ))
+            })?;
+            v.to_string()
+        }
+        (PropType::IntEnum { variants }, DefaultValue::Int(i)) => {
+            let v = i32::try_from(*i).map_err(|_| {
+                CodegenError::validation(format!(
+                    "web component prop '{}' (IntEnum) default {i} exceeds i32 range",
+                    prop.name
+                ))
+            })?;
+            if !variants.is_empty() && !variants.contains(&v) {
+                return Err(CodegenError::validation(format!(
+                    "web component prop '{}' (IntEnum) default {v} is not in variants {variants:?}",
+                    prop.name
+                )));
+            }
+            v.to_string()
+        }
+        (PropType::Mixed, DefaultValue::Int(i)) => {
             const MAX_SAFE_INT: i64 = (1i64 << 53) - 1;
             if (-MAX_SAFE_INT..=MAX_SAFE_INT).contains(i) {
-                Some(i.to_string())
+                i.to_string()
             } else {
-                Some(format!("{i}n"))
+                format!("{i}n")
             }
         }
-        (_, DefaultValue::Float(f)) => Some(format_float_literal(*f)),
-        (_, DefaultValue::String(s)) => Some(format!("'{}'", escape_ts_single_quoted(s))),
-    }
+        (_, DefaultValue::Int(i)) => {
+            return Err(CodegenError::validation(format!(
+                "web component prop '{}' ({:?}) does not accept integer default {i}",
+                prop.name, prop.prop_type
+            )));
+        }
+        (_, DefaultValue::Float(f)) => format_float_literal(*f),
+        (_, DefaultValue::String(s)) => format!("'{}'", escape_ts_single_quoted(s)),
+    };
+    Ok(Some(lit))
 }
 
-fn js_parse_attr_expr(prop: &PropSpec) -> String {
-    let fallback = js_default_literal(prop).unwrap_or_else(|| "undefined".to_owned());
-    match &prop.prop_type {
+/// Generates the HTML-attribute parser expression for `attributeChangedCallback`.
+///
+/// Removing an attribute (`newValue === null`) restores the prop's declared default when one
+/// exists — including `Bool` props with `default = true`, which intentionally revert to `true` on
+/// attribute removal instead of `false`. Non-defaulted `Bool` props treat removal as `false`
+/// (standard HTML boolean attribute semantics), and other non-defaulted props revert to `undefined`.
+fn js_parse_attr_expr(prop: &PropSpec) -> Result<String, CodegenError> {
+    let fallback = js_default_literal(prop)?.unwrap_or_else(|| "undefined".to_owned());
+    let expr = match &prop.prop_type {
         PropType::Bool => {
             if prop.default_value.is_some() {
                 format!("newValue === null ? {fallback} : newValue !== 'false'")
@@ -469,7 +515,8 @@ fn js_parse_attr_expr(prop: &PropSpec) -> String {
             "newValue === null ? {fallback} : newValue.split(',').map((s) => s.trim()).filter(Boolean)"
         ),
         _ => format!("newValue === null ? {fallback} : newValue"),
-    }
+    };
+    Ok(expr)
 }
 
 fn dts_type(ty: &PropType) -> String {

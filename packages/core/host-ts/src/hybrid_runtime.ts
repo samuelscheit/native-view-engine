@@ -51,17 +51,15 @@ export class DynamicValue {
 
   /** Validated copy of `bytes`; throws `BinCodecError` when invalid. */
   static of(bytes: Uint8Array): DynamicValue {
-    const r = new BinReader(bytes);
-    r.checkValue();
-    r.requireEnd();
-    return new DynamicValue(bytes.slice(), r.lastCheckedDepth);
+    const maxDepth = BinReader.validate(bytes);
+    return new DynamicValue(bytes.slice(), maxDepth);
   }
 
   /** Reads, validates, and copies the next value from `r`. */
   static read(r: BinReader): DynamicValue {
-    const baseDepth = r.currentDepth;
-    const raw = r.readCheckedValue().slice();
-    return new DynamicValue(raw, r.lastCheckedDepth - baseDepth);
+    const start = r.position;
+    const maxDepth = r.checkValue();
+    return new DynamicValue(r.bytes.slice(start, r.position), maxDepth);
   }
 
   /** Copy of the encoded bytes. */
@@ -109,8 +107,6 @@ export interface HybridWasmExports {
   nve_hybrid_free(ptr: number, len: number): void;
 }
 
-const I64_MIN = -(2n ** 63n);
-const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
 
 /** Writes a safe integer checked against `[min, max]` as an `NveBinValue` `i64`. */
@@ -122,12 +118,6 @@ export function writeIntInRange(w: BinWriter, value: number, min: number, max: n
     throw new RangeError(`integer ${value} outside [${min}, ${max}]`);
   }
   w.writeI64Bits(Key64.fromSafeInteger(value));
-}
-
-/** Writes a signed `i64` `bigint`, rejecting values outside `[-2^63, 2^63 - 1]`. */
-export function writeI64Checked(w: BinWriter, value: bigint): void {
-  if (value < I64_MIN || value > I64_MAX) throw new RangeError(`${value} is outside i64`);
-  w.writeI64(value);
 }
 
 /** Writes an unsigned `u64` `bigint`, rejecting values outside `[0, 2^64 - 1]`. */
@@ -218,14 +208,16 @@ export function wasmSetPropsBin(
   setPropsFn: (handle: number, ptr: number, len: number) => number,
 ): void {
   if (handle === 0) throw new HybridError(HybridStatus.NullHandle, `${name} client is disposed`);
+  // Cache length before `wasmCopyIn` so `memory.grow()` detaching an aliased view cannot zero it.
+  const payloadLen = payload.byteLength;
   const ptr = wasmCopyIn(wasm, payload);
   try {
-    const status = setPropsFn(handle, ptr, payload.byteLength);
+    const status = setPropsFn(handle, ptr, payloadLen);
     if (status !== HybridStatus.Ok) {
       throw new HybridError(toHybridStatus(status), `setProps failed on ${name} (status ${status})`);
     }
   } finally {
-    if (ptr !== 0) wasm.nve_hybrid_free(ptr, payload.byteLength);
+    if (ptr !== 0) wasm.nve_hybrid_free(ptr, payloadLen);
   }
 }
 
@@ -238,6 +230,8 @@ export function wasmCallBin(
   callFn: (handle: number, reqPtr: number, reqLen: number, outLenPtr: number) => number,
 ): Uint8Array {
   if (handle === 0) throw new HybridError(HybridStatus.NullHandle, `${name} client is disposed`);
+  // Cache length before `wasmCopyIn` so `memory.grow()` detaching an aliased view cannot zero it.
+  const reqLen = req.byteLength;
   const reqPtr = wasmCopyIn(wasm, req);
   let outLenPtr = 0;
   try {
@@ -251,7 +245,7 @@ export function wasmCallBin(
     // Register for `finally` cleanup only after verifying `rawOutLenPtr` is in linear-memory bounds.
     outLenPtr = rawOutLenPtr;
     new DataView(wasm.memory.buffer).setUint32(outLenPtr, 0, true);
-    const respPtr = callFn(handle, reqPtr, req.byteLength, outLenPtr) >>> 0;
+    const respPtr = callFn(handle, reqPtr, reqLen, outLenPtr) >>> 0;
     // Re-read `wasm.memory.buffer` after the call in case WASM grew linear memory.
     const mem = wasm.memory.buffer;
     const respLen = new DataView(mem).getUint32(outLenPtr, true);
@@ -284,7 +278,7 @@ export function wasmCallBin(
       wasm.nve_hybrid_free(respPtr, respLen);
     }
   } finally {
-    if (reqPtr !== 0) wasm.nve_hybrid_free(reqPtr, req.byteLength);
+    if (reqPtr !== 0) wasm.nve_hybrid_free(reqPtr, reqLen);
     if (outLenPtr !== 0) wasm.nve_hybrid_free(outLenPtr, 4);
   }
 }

@@ -84,16 +84,6 @@ export class BinReader {
     return this.pos === this.limit;
   }
 
-  /** Current container nesting depth inside `readArray` / `readMap` scopes. */
-  get currentDepth(): number {
-    return this.depth;
-  }
-
-  /** Deepest container level observed by the last `checkValue()` call. */
-  get lastCheckedDepth(): number {
-    return this.maxDepthSeen;
-  }
-
   // ---- raw little-endian primitives ---------------------------------------------------------
 
   u8(): number {
@@ -261,23 +251,34 @@ export class BinReader {
     if (!this.atEnd) throw new BinCodecError('trailingBytes', `${this.remaining} bytes`);
   }
 
-  /** Fully validates and consumes the next value (Rust `BinValueView::parse` rules). */
-  checkValue(): void {
+  /**
+   * Fully validates and consumes the next value (Rust `BinValueView::parse` rules).
+   * Returns the value's own maximum container nesting depth (`0` for scalars).
+   */
+  checkValue(): number {
     this.maxDepthSeen = this.depth;
     this.checkAt(this.depth);
+    return this.maxDepthSeen - this.depth;
   }
 
-  /** Throws unless `bytes` holds exactly one valid `NveBinValue`. */
-  static validate(bytes: Uint8Array): void {
+  /**
+   * Throws unless `bytes` holds exactly one valid `NveBinValue`.
+   * Returns the value's maximum container nesting depth (`0` for scalars).
+   */
+  static validate(bytes: Uint8Array): number {
     const r = new BinReader(bytes);
-    r.checkValue();
+    const maxDepth = r.checkValue();
     r.requireEnd();
+    return maxDepth;
   }
 
   private inContainer<T>(tag: BinTag, minEntryBytes: number, body: (count: number) => T): T {
-    // Check tag/EOF/header before depth so truncated or mismatched inputs report their true error.
-    const [count, end] = this.openContainer(tag, minEntryBytes);
+    // Match Rust `validate_value_at` check order: tag -> depth -> header/EOF.
+    const actual = this.peekTag();
+    if (actual !== tag) throw new BinCodecError('unexpectedTag', `expected ${tag}, got ${actual}`);
     if (this.depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${this.depth}`);
+    this.pos += 1;
+    const [count, end] = this.openContainerPayload(minEntryBytes);
     const outer = this.limit;
     this.limit = end;
     this.depth += 1;
@@ -319,6 +320,11 @@ export class BinReader {
   /** `[count, end]` of a container. */
   private openContainer(tag: BinTag, minEntryBytes: number): [number, number] {
     this.expect(tag);
+    return this.openContainerPayload(minEntryBytes);
+  }
+
+  /** `[count, end]` after the container tag byte has been consumed. */
+  private openContainerPayload(minEntryBytes: number): [number, number] {
     const payload = this.length();
     if (payload < 4) throw this.truncated(4);
     const end = this.pos + payload;
@@ -351,10 +357,12 @@ export class BinReader {
         this.checkUtf8Run();
         return;
       default: {
+        // Match Rust `validate_value_at` check order: tag -> depth -> header/EOF.
         if (depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${depth}`);
-        if (depth + 1 > this.maxDepthSeen) this.maxDepthSeen = depth + 1;
         const isMap = tag === BinTag.Map;
-        const [count, end] = this.openContainer(tag, isMap ? 5 : 1);
+        this.pos += 1;
+        const [count, end] = this.openContainerPayload(isMap ? 5 : 1);
+        if (depth + 1 > this.maxDepthSeen) this.maxDepthSeen = depth + 1;
         // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
         const outer = this.limit;
         this.limit = end;
@@ -550,7 +558,7 @@ export class BinWriter {
       this.view.getUint32(pos, true) === 0;
     if (!valid) throw new BinCodecError('invalidMark', `mark ${mark} of ${this.len}`);
     this.view.setUint32(pos, this.len - pos - 4, true);
-    if (this.openDepth > 0) this.openDepth -= 1;
+    this.openDepth -= 1;
   }
 
   private begin(tag: BinTag, count: number): BinMark {
@@ -574,4 +582,13 @@ export class BinWriter {
     this.buf = grown;
     this.view = new DataView(grown.buffer);
   }
+}
+
+const I64_MIN = -(2n ** 63n);
+const I64_MAX = 2n ** 63n - 1n;
+
+/** Writes a signed `i64` `bigint`, rejecting values outside `[-2^63, 2^63 - 1]`. */
+export function writeI64Checked(w: BinWriter, value: bigint): void {
+  if (value < I64_MIN || value > I64_MAX) throw new RangeError(`${value} is outside i64`);
+  w.writeI64(value);
 }

@@ -5,8 +5,14 @@
  * in `i64` range is written as `i64`, and an `i64` reads back as a `number` only when it is a safe
  * integer (`-(2^53 - 1) ..= 2^53 - 1`), otherwise as a `bigint`. Any other number is an `f64`.
  */
-import { BIN_VALUE_MAX_DEPTH, BinCodecError, BinReader, BinTag, BinWriter } from './bin_codec.ts';
-import { writeI64Checked } from './hybrid_runtime.ts';
+import {
+  BIN_VALUE_MAX_DEPTH,
+  BinCodecError,
+  BinReader,
+  BinTag,
+  BinWriter,
+  writeI64Checked,
+} from './bin_codec.ts';
 import { Key64 } from './key64.ts';
 
 /** A value `writeJsValue` accepts and `readJsValue` returns. */
@@ -26,7 +32,7 @@ export type JsBinValue =
  * outside `i64`, and `BinCodecError('maxDepth')` past `BIN_VALUE_MAX_DEPTH` nested containers.
  */
 export function writeJsValue(w: BinWriter, value: unknown): void {
-  writeAt(w, value, 0);
+  writeAt(w, value, w.containerDepth);
 }
 
 function writeAt(w: BinWriter, value: unknown, depth: number): void {

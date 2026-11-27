@@ -13,7 +13,8 @@ pub(super) fn ts_param_ident(raw: &str) -> String {
         | "extends" | "false" | "finally" | "for" | "function" | "if" | "implements" | "import"
         | "in" | "instanceof" | "interface" | "let" | "new" | "null" | "package" | "private"
         | "protected" | "public" | "return" | "static" | "super" | "switch" | "this" | "throw"
-        | "true" | "try" | "typeof" | "var" | "void" | "while" | "with" | "yield" => {
+        | "true" | "try" | "typeof" | "undefined" | "var" | "void" | "while" | "with"
+        | "yield" => {
             format!("{ident}_")
         }
         _ => ident,
@@ -102,7 +103,7 @@ pub(super) fn emit_ts_bin_write(
         // Preserves the true `NveValue` tag directly (never double-wrapped in `Bytes`).
         HybridType::Value => writeln!(out, "{indent}{expr}.writeTo({w});"),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({expr} !== null && {expr} !== undefined) {{");
+            writeln!(out, "{indent}if ({expr} !== null && {expr} !== void 0) {{");
             emit_ts_bin_write(out, &format!("{indent}  "), w, expr, inner);
             writeln!(out, "{indent}}} else {{");
             writeln!(out, "{indent}  {w}.writeNull();");

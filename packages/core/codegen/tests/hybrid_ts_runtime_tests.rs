@@ -196,6 +196,59 @@ fn generated_web_component_reuses_host_ts_and_emits_typed_defaults() {
             "generated web component JS must not contain `{banned}`"
         );
     }
+
+    // Out-of-range Int32 / IntEnum defaults and integer defaults on non-numeric props are rejected
+    // rather than silently emitting `bigint` (`...n`) on `number`/non-`Mixed` props.
+    for bad_prop in [
+        PropSpec {
+            name: "badI32".to_owned(),
+            prop_type: PropType::Int32,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Int(i64::MAX)),
+            doc: None,
+        },
+        PropSpec {
+            name: "badI32Edge".to_owned(),
+            prop_type: PropType::Int32,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Int(i64::from(i32::MAX) + 1)),
+            doc: None,
+        },
+        PropSpec {
+            name: "badEnumRange".to_owned(),
+            prop_type: PropType::IntEnum { variants: vec![0, 1] },
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Int(i64::MAX)),
+            doc: None,
+        },
+        PropSpec {
+            name: "badEnumVariant".to_owned(),
+            prop_type: PropType::IntEnum { variants: vec![0, 1] },
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Int(2)),
+            doc: None,
+        },
+        PropSpec {
+            name: "badStrInt".to_owned(),
+            prop_type: PropType::String,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Int(1)),
+            doc: None,
+        },
+    ] {
+        let mut bad_spec = NveExportSpec::new("BadWidget", ExportBackend::Skia);
+        bad_spec.props.push(bad_prop);
+        assert!(
+            export_web_component(&bad_spec).is_err(),
+            "expected validation error for invalid default on {}",
+            bad_spec.props[0].name
+        );
+    }
 }
 
 #[test]
@@ -243,6 +296,7 @@ pub trait EmptyViewSpec {
         class: bool,
         arguments: u32,
         eval: String,
+        undefined: Option<i32>,
         wasm_call_bin: i32,
         read_int_in_range: u16,
     ) -> Result<i32, String>;
@@ -808,14 +862,15 @@ const emptyClient = new EmptyViewHybridClient({
   nve_hybrid_empty_view_ping_bin: (_h, reqPtr, reqLen, olp) => {
     const r = new BinReader(readWasmReq(reqPtr, reqLen));
     const sum = r.readArray((n) => {
-      assert.equal(n, 6);
+      assert.equal(n, 7);
       const a = Number(r.readI64());
       const b = r.readBool();
       const c = Number(r.readI64());
       const d = r.readStr();
+      const u = r.readNull() ? 0 : Number(r.readI64());
       const e = Number(r.readI64());
       const f = Number(r.readI64());
-      return a + (b ? 1 : 0) + c + d.length + e + f;
+      return a + (b ? 1 : 0) + c + d.length + u + e + f;
     });
     r.requireEnd();
     const w = new BinWriter();
@@ -825,7 +880,8 @@ const emptyClient = new EmptyViewHybridClient({
   },
 });
 emptyClient.setProps({});
-assert.equal(emptyClient.ping(1, true, 2, 'ok', 10, 20), 36);
+assert.equal(emptyClient.ping(1, true, 2, 'ok', 5, 10, 20), 41);
+assert.equal(emptyClient.ping(1, true, 2, 'ok', null, 10, 20), 36);
 emptyClient.dispose();
 
 // --- Batcher module with sibling Vec + FixedArray parameters ---
@@ -968,6 +1024,14 @@ fn real_node_and_tsc_verify_web_component_53_bit_safe_codec() {
             doc: None,
         },
         PropSpec {
+            name: "enabled".to_owned(),
+            prop_type: PropType::Bool,
+            optional: true,
+            nullable: false,
+            default_value: Some(DefaultValue::Bool(true)),
+            doc: None,
+        },
+        PropSpec {
             name: "note".to_owned(),
             prop_type: PropType::String,
             optional: true,
@@ -1044,6 +1108,7 @@ export type TickDetail = LedgerWidgetEventMap['ledger-tick'];
 export function checkProps(el: LedgerWidgetElement): LedgerWidgetProps {
   const s: string = el.title;
   const sc: number = el.scale;
+  const en: boolean = el.enabled;
   const n: string | null = el.note;
   const sub: string | undefined = el.subtitle;
   const b: string | null | undefined = el.badge;
@@ -1051,7 +1116,7 @@ export function checkProps(el: LedgerWidgetElement): LedgerWidgetProps {
   el.subtitle = undefined;
   el.badge = null;
   el.note = null;
-  return { title: s, scale: sc, note: n, subtitle: sub, badge: b, meta: { tag } };
+  return { title: s, scale: sc, enabled: en, note: n, subtitle: sub, badge: b, meta: { tag } };
 }
 "#,
     )
@@ -1146,6 +1211,12 @@ el.attributeChangedCallback('scale', '1', '2.5');
 assert.equal(el.scale, 2.5);
 el.attributeChangedCallback('scale', '2.5', null);
 assert.equal(el.scale, 1.0);
+// Removing a `Bool` attribute with `default = true` intentionally restores `true`
+assert.equal(el.enabled, true);
+el.attributeChangedCallback('enabled', null, 'false');
+assert.equal(el.enabled, false);
+el.attributeChangedCallback('enabled', 'false', null);
+assert.equal(el.enabled, true);
 // Removing a non-defaulted optional attribute sets `undefined`
 el.attributeChangedCallback('subtitle', null, 'sub');
 assert.equal(el.subtitle, 'sub');
