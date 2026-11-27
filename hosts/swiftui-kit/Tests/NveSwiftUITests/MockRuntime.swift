@@ -149,7 +149,8 @@ final class MockRuntime: @unchecked Sendable {
     var hitResult: UInt32 = 0
     var scroll: [UInt32: (Float, Float)] = [:]
     var resources: [UInt32: [UInt8]] = [:]
-    var scrollOffsets: [NveScrollOffset] = []
+    var sceneEpoch: UInt32 = 0
+    var dirtyResources: [UInt32] = []
     var state: [UInt8] = []
     var emitted: [NveDirectEvent] = []
     private var drained: [NveDirectEvent] = []
@@ -173,7 +174,7 @@ final class MockRuntime: @unchecked Sendable {
         let fresh = MockRuntime()
         scene = fresh.scene
         frameId = 1; removed = []; dirty = []; schema = NVE_RUNTIME_SCHEMA_HASH; tickChanged = true
-        failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; scrollOffsets = []
+        failNextWith = nil; lastError = ""; hitResult = 0; scroll = [:]; resources = [:]; sceneEpoch = 0; dirtyResources = []
         state = []; emitted = []; drained = []
         creates = 0; destroys = 0; acquires = 0; releases = 0; ticks = 0; attaches = 0; detaches = 0
         propCounts = []; dispatched = []; viewports = []; pairedUri = ""; paired = false; restored = []; patches = []
@@ -198,16 +199,18 @@ final class MockRuntime: @unchecked Sendable {
                 rows: pin(t.rows), owners: pin(t.owners), dirty_rows: nil,
                 row_index_dir: pin(dir), row_index_pages: pin(pages))
         }
+        // Like the runtime: every scroll container's offset, sorted by node id.
+        let scrollOffsets = scroll.keys.sorted().map { NveScrollOffset(node_id: $0, x: scroll[$0]!.0, y: scroll[$0]!.1) }
         view = NveRuntimeSceneView(
             schema_hash: schema, frame_id: frameId, node_capacity: UInt32(scene.rows.count),
             dirty_count: UInt32(dirty.count), removed_count: UInt32(removed.count),
             text_slab_len: UInt32(scene.text.count), children_slab_len: UInt32(scene.children.count),
             table_count: UInt32(tableViews.count), scroll_count: UInt32(scrollOffsets.count),
-            scene_epoch: 0, dirty_resource_count: 0, moved_count: 0,
+            scene_epoch: sceneEpoch, dirty_resource_count: UInt32(dirtyResources.count), moved_count: 0,
             rows: pin(scene.rows), rects: pin(scene.rects),
             text_slab: pin(scene.text), children_slab: pin(scene.children), dirty_indices: pin(dirty),
             removed_ids: pin(removed), tables: pin(tableViews), scroll_offsets: pin(scrollOffsets),
-            dirty_resources: nil, moved_indices: nil)
+            dirty_resources: pin(dirtyResources), moved_indices: nil)
         return view
     }
 

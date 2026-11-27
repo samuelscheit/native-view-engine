@@ -110,7 +110,9 @@ public enum NveSceneRenderer {
         let resolved = ctx.resolve(resolvedText(text, style: style, color: color))
         var box = rect
         if style.maxLines > 0 {
-            let line = resolved.measure(in: CGSize(width: CGFloat.infinity, height: .infinity)).height
+            // One line of this style: the text itself may hold line breaks.
+            let probe = ctx.resolve(resolvedText("Ag", style: style, color: color))
+            let line = probe.measure(in: CGSize(width: CGFloat.infinity, height: .infinity)).height
             box.size.height = min(box.height, line * CGFloat(style.maxLines))
         }
         let used = resolved.measure(in: box.size)
