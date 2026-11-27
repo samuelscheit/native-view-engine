@@ -500,6 +500,7 @@ fn semantic_html5_ssr_and_document_emission_cover_all_tags_and_metadata() {
         head_extra: Some("<link rel=\"icon\" href=\"/icon.svg\">".into()),
         body_scripts: Some("<script type=\"module\" src=\"/app.js\"></script>".into()),
         enable_event_replay: false,
+        style_nonce: None,
     });
     assert!(doc.starts_with("<!doctype html>"));
     assert!(doc.contains("<title>NVE Docs</title>"));

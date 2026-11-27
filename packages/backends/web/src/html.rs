@@ -42,6 +42,59 @@ pub(crate) fn write_attr(name: &str, val: &str, out: &mut String) {
     out.push('"');
 }
 
+/// Appends ` nonce="..."` (attribute-escaped) when an opt-in non-empty CSP style nonce is set.
+#[cfg(feature = "ssr")]
+pub(crate) fn write_style_nonce_attr(nonce: Option<&str>, out: &mut String) {
+    if let Some(n) = nonce.filter(|s| !s.is_empty()) {
+        write_attr("nonce", n, out);
+    }
+}
+
+/// Escapes any case-insensitive `</tag` breakout sequence inside raw-text `<style>` / `<script>`
+/// blocks as `<\/tag` (zero-overhead pass-through when `<` is absent).
+#[cfg(feature = "ssr")]
+fn push_raw_text_escaped(text: &str, needle_lower: &[u8], out: &mut String) {
+    if !text.contains('<') {
+        out.push_str(text);
+        return;
+    }
+    let bytes = text.as_bytes();
+    let nlen = needle_lower.len();
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i + nlen <= bytes.len() {
+        if bytes[i] == b'<'
+            && bytes[i + 1] == b'/'
+            && bytes[i..i + nlen].eq_ignore_ascii_case(needle_lower)
+        {
+            out.push_str(&text[last..i]);
+            out.push_str("<\\/");
+            out.push_str(&text[i + 2..i + nlen]);
+            i += nlen;
+            last = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&text[last..]);
+}
+
+/// Appends CSS text into a `<style>` element, escaping any case-insensitive `</style` sequence
+/// so untrusted/edge CSS content can never break out of the `<style>` element.
+#[cfg(feature = "ssr")]
+#[inline]
+pub(crate) fn push_style_css_escaped(css: &str, out: &mut String) {
+    push_raw_text_escaped(css, b"</style", out);
+}
+
+/// Appends inert data into a `<script type="...">` element, escaping any case-insensitive
+/// `</script` sequence so data payloads can never break out of the `<script>` element.
+#[cfg(feature = "ssr")]
+#[inline]
+pub(crate) fn push_script_data_escaped(data: &str, out: &mut String) {
+    push_raw_text_escaped(data, b"</script", out);
+}
+
 /// HTML void elements NVE can emit (no content, no end tag).
 #[inline]
 pub(crate) fn is_void_html_tag(tag: &str) -> bool {

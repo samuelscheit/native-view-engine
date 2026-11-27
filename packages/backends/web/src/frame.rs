@@ -32,7 +32,7 @@ use crate::dom::{raw_prop_route, RawPropRoute};
 use crate::events::now_us;
 use crate::events::NodeEventMeta;
 #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-use crate::hydrate::NativeSsrNode;
+use crate::hydrate_native::NativeAdoptedNode;
 #[cfg(any(
     feature = "nv-blur",
     feature = "nv-webview",
@@ -86,10 +86,7 @@ impl WebBackend {
                 dirty_styles.append(&mut self.pending_responsive_dirty);
             }
             if self.hydrating {
-                let hydrated_seen = std::mem::take(&mut self.frame_hydrated_seen);
-                self.finalize_hydration(&hydrated_seen, &mut dirty_styles);
-                self.frame_hydrated_seen = hydrated_seen;
-                self.frame_hydrated_seen.clear();
+                self.finalize_hydration(&mut dirty_styles);
             }
         }
 
@@ -164,8 +161,6 @@ impl RenderSink for WebBackend {
         self.frame_mutations = 0;
         self.frame_replaced_existing = false;
         self.frame_dirty_styles.clear();
-        #[cfg(feature = "hydrate")]
-        self.frame_hydrated_seen.clear();
         #[cfg(target_arch = "wasm32")]
         {
             self.frame_dirty_canvases.clear();
@@ -197,14 +192,9 @@ impl RenderSink for WebBackend {
             mirror.tag = "svg";
         }
         #[cfg(feature = "hydrate")]
-        let adopting_ssr = self.hydrating && self.has_ssr_dom_node(node_id);
+        let skip_dom = self.hydrating;
         #[cfg(not(feature = "hydrate"))]
-        let adopting_ssr = false;
-        #[cfg(feature = "hydrate")]
-        if adopting_ssr {
-            mirror.has_inline_style = self.hydrated_inline_nodes.contains(&node_id);
-            self.frame_hydrated_seen.push(node_id);
-        }
+        let skip_dom = false;
         self.nodes.insert(node_id, mirror);
         #[cfg(any(
             feature = "nv-blur",
@@ -232,7 +222,7 @@ impl RenderSink for WebBackend {
                 mask: EventMask::NONE,
             },
         );
-        if !adopting_ssr {
+        if !skip_dom {
             #[cfg(target_arch = "wasm32")]
             {
                 let replaced_old = self.dom_nodes.remove(&node_id);
@@ -272,12 +262,11 @@ impl RenderSink for WebBackend {
             {
                 let new_id = self.next_native_instance_id;
                 self.next_native_instance_id += 1;
-                self.native_ssr_nodes.insert(
+                self.native_adopted_nodes.insert(
                     node_id,
-                    NativeSsrNode {
+                    NativeAdoptedNode {
                         tag: eff_tag,
                         instance_id: new_id,
-                        has_inline_style: false,
                         control_value: None,
                     },
                 );
@@ -312,7 +301,7 @@ impl RenderSink for WebBackend {
             el.remove();
         }
         #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-        self.native_ssr_nodes.remove(&node_id);
+        self.native_adopted_nodes.remove(&node_id);
         self.frame_mutations += 1;
     }
 
@@ -329,7 +318,15 @@ impl RenderSink for WebBackend {
             self.frame_dirty_styles.extend_from_slice(&adopted);
         }
         #[cfg(target_arch = "wasm32")]
-        self.reconcile_dom_children(parent_id, &adopted);
+        {
+            #[cfg(feature = "hydrate")]
+            let skip_dom = self.hydrating;
+            #[cfg(not(feature = "hydrate"))]
+            let skip_dom = false;
+            if !skip_dom {
+                self.reconcile_dom_children(parent_id, &adopted);
+            }
+        }
         if let Some(p) = self.nodes.get_mut(&parent_id) {
             p.children = adopted;
         }
@@ -452,14 +449,16 @@ impl RenderSink for WebBackend {
                 #[cfg(target_arch = "wasm32")]
                 {
                     #[cfg(feature = "hydrate")]
-                    let skip_upgrade = self.hydrating;
+                    let skip_dom = self.hydrating;
                     #[cfg(not(feature = "hydrate"))]
-                    let skip_upgrade = false;
-                    if tag_changed && !skip_upgrade {
-                        self.upgrade_dom_element_tag(node_id);
-                        self.frame_dirty_styles.push(node_id);
-                    } else {
-                        self.sync_dom_raw_prop(node_id, key, &value);
+                    let skip_dom = false;
+                    if !skip_dom {
+                        if tag_changed {
+                            self.upgrade_dom_element_tag(node_id);
+                            self.frame_dirty_styles.push(node_id);
+                        } else {
+                            self.sync_dom_raw_prop(node_id, key, &value);
+                        }
                     }
                     if key == "tint"
                         && self.nodes.get(&node_id).is_some_and(|n| n.svg.is_some())

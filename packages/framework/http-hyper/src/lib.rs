@@ -6,7 +6,9 @@ pub mod client;
 #[cfg(feature = "server")]
 pub mod server;
 
-pub use body::{collect_body_limited, collect_body_limited_timeout, BodyReadError};
+pub use body::{
+    collect_body_limited, collect_body_limited_timeout, BodyReadError, ChannelBody, HttpBody,
+};
 #[cfg(feature = "client")]
 pub use client::{
     HyperTransport, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_RESPONSE_BYTES,

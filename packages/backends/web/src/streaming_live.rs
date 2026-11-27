@@ -196,19 +196,23 @@ impl ZeroJsLiveSession {
         };
 
         let mut out = String::with_capacity(shadow_shell_html.len() + live_css.len() + 512);
-        write_document_head(&self.opts, &live_css, &mut out);
+        write_document_head(&self.opts, &live_css, None, &mut out);
         if self.config.mode == StreamingMode::ZeroJsLiveStream {
             out.push_str(NVE_LIVE_SINK_IFRAME_HTML);
             out.push('\n');
-            out.push_str("<div id=\"app\" data-nve-stream-host=\"live\">\n<template shadowrootmode=\"open\">\n");
+            out.push_str(
+                "<div id=\"app\" data-nve-stream-host=\"live\">\n<div data-nve-dsd-host>\n<template shadowrootmode=\"open\">\n",
+            );
             write_shared_styles(&self.opts, &mut out);
             out.push_str(shadow_shell_html);
             out.push_str("\n</template>\n");
         } else {
-            out.push_str("<div id=\"app\" data-nve-stream-host=\"prg-fallback\">\n<template shadowrootmode=\"open\">\n");
+            out.push_str(
+                "<div id=\"app\" data-nve-stream-host=\"prg-fallback\">\n<div data-nve-dsd-host>\n<template shadowrootmode=\"open\">\n",
+            );
             write_shared_styles(&self.opts, &mut out);
             out.push_str(shadow_shell_html);
-            out.push_str("\n</template>\n</div>\n</body>\n</html>\n");
+            out.push_str("\n</template>\n<template data-nve-stream-end></template></div></div>\n</body>\n</html>\n");
             self.closed = true;
         }
         Ok(out)
@@ -235,8 +239,14 @@ impl ZeroJsLiveSession {
         }
 
         let is_new_output = self.known_output_slots.insert(clean.clone());
-        let slot_html =
-            format_light_dom_slot_chunk(&clean, updated_html, extra_style_css, is_new_output);
+        let slot_html = format_light_dom_slot_chunk(
+            &clean,
+            updated_html,
+            extra_style_css,
+            &[],
+            self.opts.style_nonce.as_deref(),
+            is_new_output,
+        );
         self.live_update_count += 1;
         let update_index = self.live_update_count;
 
@@ -244,7 +254,7 @@ impl ZeroJsLiveSession {
         let closing_html = if compaction_triggered {
             self.compaction_required = true;
             self.closed = true;
-            Some("</div>\n</body>\n</html>\n".to_owned())
+            Some("<template data-nve-stream-end></template></div></div>\n</body>\n</html>\n".to_owned())
         } else {
             None
         };
@@ -268,7 +278,7 @@ impl ZeroJsLiveSession {
             return None;
         }
         self.closed = true;
-        Some("</div>\n</body>\n</html>\n".to_owned())
+        Some("<template data-nve-stream-end></template></div></div>\n</body>\n</html>\n".to_owned())
     }
 }
 

@@ -47,6 +47,7 @@ pub const NVE_BASE_RESET_CSS: &str = concat!(
     ":where(th.nve){text-align:left}",
     ".nve:is(dialog:not([open]),[popover]:not(:popover-open)){display:none}",
     "dialog.nve::backdrop{background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}",
+    ".nve-slot,[data-nve-dsd-host]{display:contents}",
     "[dir=\"rtl\"] [data-nve-mirror=\"directional\"],[dir=\"rtl\"][data-nve-mirror=\"directional\"]{transform:scaleX(-1)}"
 );
 

@@ -43,7 +43,7 @@ pub const SNAPSHOT_BOOTSTRAP_MAX_BYTES: usize = 900;
 ///    `nve:state:<app>:v<ver>` exists and header/UTF-16 slice lengths validate exactly).
 /// 3. Injects `<style data-nve-base>` and `<style data-nve-ssr data-nve-hashes="...">`, sets
 ///    `#app.innerHTML`, marks `data-nve-restored="1"`, and restores `.nve-s` scroll offsets.
-/// 4. Paired immediately with [`PRE_HYDRATION_REPLAY_SCRIPT_TAG`] (`<script data-nve-replay>`) so
+/// 4. Paired immediately with [`crate::PRE_HYDRATION_REPLAY_SCRIPT_TAG`] (`<script data-nve-replay>`) so
 ///    pre-hydration clicks, shortcuts, and form inputs are preserved and replayed on WASM boot.
 pub const WEB_SHELL_SNAPSHOT_BOOT_SCRIPT_TAG: &str = concat!(
     "<script data-nve-snapshot-boot>",

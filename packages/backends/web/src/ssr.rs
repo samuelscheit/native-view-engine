@@ -6,19 +6,20 @@ use std::collections::BTreeMap;
 
 use nve_abi::hash::HashSet;
 use nve_abi::{ComponentKind, NodeId, RawPropValue, ROOT_NODE_ID};
+use nve_engine::Xxh64Hasher;
 
 use crate::css::{resolve_semantic_tag, NVE_BASE_RESET_CSS};
 use crate::dom::is_truthy_raw_prop;
 use crate::event_replay::PRE_HYDRATION_REPLAY_SCRIPT_TAG;
-use crate::html::{close_html_element, is_void_html_tag, push_attr_escaped, push_text_escaped, write_attr};
+use crate::html::{
+    close_html_element, is_void_html_tag, push_attr_escaped, push_style_css_escaped,
+    push_text_escaped, write_attr, write_style_nonce_attr,
+};
 use crate::media_css::CompiledMediaRule;
 use crate::state_css::CompiledStateRule;
 use crate::stylesheet::{resolve_node_style, MAX_DYNAMIC_RULES};
 use crate::tree::Visit;
 use crate::WebBackend;
-
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Output produced by [`WebBackend::render_ssr`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,84 +42,165 @@ pub struct SsrDocumentOptions {
     pub head_extra: Option<String>,
     pub body_scripts: Option<String>,
     pub enable_event_replay: bool,
+    /// Optional per-request CSP `nonce` stamped onto emitted `<style>` tags.
+    pub style_nonce: Option<String>,
 }
 
-
-#[inline]
-fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
+impl SsrDocumentOptions {
+    /// Sets an opt-in per-request CSP `nonce` stamped onto emitted `<style>` elements.
+    pub fn with_style_nonce(mut self, nonce: impl Into<String>) -> Self {
+        let n = nonce.into();
+        self.style_nonce = (!n.is_empty()).then_some(n);
+        self
     }
-    hash
+}
+
+/// Reusable Option 5 Hybrid CSS collector shared by [`WebBackend::render_ssr`],
+/// [`WebBackend::render_ssr_streaming_shell`], and [`WebBackend::render_ssr_subtree_delta`].
+pub(crate) struct SsrStyleCollector<'a> {
+    pub(crate) rules: BTreeMap<String, String>,
+    pub(crate) media_rules: Vec<CompiledMediaRule>,
+    pub(crate) media_seen: HashSet<String>,
+    pub(crate) state_rules: Vec<CompiledStateRule>,
+    pub(crate) state_seen: HashSet<String>,
+    pub(crate) already_sent: Option<&'a HashSet<String>>,
+}
+
+impl<'a> SsrStyleCollector<'a> {
+    pub(crate) fn new(already_sent: Option<&'a HashSet<String>>) -> Self {
+        Self {
+            rules: BTreeMap::new(),
+            media_rules: Vec::new(),
+            media_seen: HashSet::default(),
+            state_rules: Vec::new(),
+            state_seen: HashSet::default(),
+            already_sent,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_already_sent(&self, cls: &str) -> bool {
+        self.already_sent.is_some_and(|s| s.contains(cls))
+    }
+
+    #[inline]
+    pub(crate) fn can_insert_new(&self) -> bool {
+        let sent_len = self.already_sent.map_or(0, HashSet::len);
+        sent_len + self.rules.len() + self.media_rules.len() + self.state_rules.len()
+            < MAX_DYNAMIC_RULES
+    }
+
+    #[inline]
+    pub(crate) fn contains_rule(&self, cls: &str) -> bool {
+        self.is_already_sent(cls) || self.rules.contains_key(cls)
+    }
+
+    /// Finalizes collected rules in deterministic cascade order:
+    /// 1. Base structural rules (`.s...`, `.nve-c-...`, `.nve-t-...`),
+    /// 2. `@media` responsive rules,
+    /// 3. Interactive pseudo-state rules (`Hover < Focus < FocusVisible < Active < Disabled`).
+    pub(crate) fn finish(mut self) -> (String, Vec<String>) {
+        self.state_rules.sort_by_key(|r| r.state.cascade_order());
+
+        let total_rules = self.rules.len() + self.media_rules.len() + self.state_rules.len();
+        let mut style_css = String::with_capacity(total_rules.saturating_mul(64));
+        let mut rule_hashes = Vec::with_capacity(total_rules);
+        for (cls, decls) in self.rules {
+            let _ = writeln!(&mut style_css, ".{cls}{{{decls}}}");
+            rule_hashes.push(cls);
+        }
+        for rule in self.media_rules {
+            rule.write_css_rule_into(&mut style_css);
+            style_css.push('\n');
+            rule_hashes.push(rule.class_name);
+        }
+        for rule in self.state_rules {
+            rule.write_css_rule_into(&mut style_css);
+            style_css.push('\n');
+            rule_hashes.push(rule.class_name);
+        }
+        (style_css, rule_hashes)
+    }
 }
 
 impl WebBackend {
-    /// Computes a deterministic structural hash of the current tree for `data-nve-ssr-hash`.
-    fn compute_ssr_tree_hash(&self) -> u64 {
-        let mut hash = FNV1A_OFFSET_BASIS;
+    /// Computes a deterministic `xxh64` structural hash of the current tree for `data-nve-ssr-hash`.
+    pub(crate) fn compute_ssr_tree_hash(&self) -> u64 {
+        let mut hasher = Xxh64Hasher::new(0);
         self.walk(ROOT_NODE_ID, |id, _, step| {
             if step == Visit::Exit {
-                hash = fnv1a_step(hash, &[0xFF]);
+                hasher.update(&[0xFF]);
                 return false;
             }
-            let Some(el) = self.nodes.get(&id) else { return false };
+            let Some(el) = self.nodes.get(&id) else {
+                return false;
+            };
             let sem = resolve_semantic_tag(el.kind, &el.raw_props);
             let tag = if el.kind == ComponentKind::Custom {
                 self.effective_html_tag(id, el)
             } else {
                 sem.tag
             };
-            hash = fnv1a_step(hash, &id.to_le_bytes());
-            hash = fnv1a_step(hash, tag.as_bytes());
-            hash = fnv1a_step(hash, &[u8::from(sem.wrap_code)]);
+            hasher.update(&id.to_le_bytes());
+            hasher.update(tag.as_bytes());
+            hasher.update(&[0x00, u8::from(sem.wrap_code)]);
             if let Some(t) = &el.text {
-                hash = fnv1a_step(hash, t.as_bytes());
+                hasher.update(t.as_bytes());
             }
+            hasher.update(&[0x01]);
             true
         });
-        hash
+        hasher.finish()
     }
 
     /// Writes the start tag, attributes, an open `<code>` wrapper and the text of a childless
-    /// node; `Some((tag, wrap_code))` when the element has content to close.
-    #[allow(clippy::too_many_arguments)]
-    fn open_ssr_element(
+    /// node; returns `Some((tag, wrap_code))` when the element has content to close.
+    pub(crate) fn open_ssr_element(
         &self,
         id: NodeId,
         parent: Option<NodeId>,
-        root_hash: u64,
-        rules: &mut BTreeMap<String, String>,
-        media_rules: &mut Vec<CompiledMediaRule>,
-        media_seen: &mut HashSet<String>,
-        state_rules: &mut Vec<CompiledStateRule>,
-        state_seen: &mut HashSet<String>,
+        root_hash: Option<u64>,
+        styles: &mut SsrStyleCollector<'_>,
         out: &mut String,
     ) -> Option<(&str, bool)> {
         let el = self.nodes.get(&id)?;
         let parent = parent.and_then(|pid| self.nodes.get(&pid));
         let sem = resolve_semantic_tag(el.kind, &el.raw_props);
-        let tag = if el.kind == ComponentKind::Custom { self.effective_html_tag(id, el) } else { sem.tag };
-        let allow_new = rules.len() + media_rules.len() + state_rules.len() < MAX_DYNAMIC_RULES;
+        let tag = if el.kind == ComponentKind::Custom {
+            self.effective_html_tag(id, el)
+        } else {
+            sem.tag
+        };
+        let allow_new = styles.can_insert_new();
         #[allow(unused_mut)]
-        let mut resolved = resolve_node_style(el, parent, allow_new, |cls| rules.contains_key(cls));
-        if let Some((cls, decls)) = resolved.structural_rule {
-            rules.entry(cls).or_insert(decls);
+        let mut resolved = resolve_node_style(el, parent, allow_new, |cls| styles.contains_rule(cls));
+        if let Some((cls, decls)) = resolved.structural_rule
+            && !styles.is_already_sent(&cls)
+        {
+            styles.rules.entry(cls).or_insert(decls);
         }
-        if let Some((cls, decls)) = resolved.cursor_rule {
-            rules.entry(cls.to_owned()).or_insert_with(|| decls.to_owned());
+        if let Some((cls, decls)) = resolved.cursor_rule
+            && !styles.is_already_sent(cls)
+        {
+            styles.rules.entry(cls.to_owned()).or_insert_with(|| decls.to_owned());
         }
-        if let Some((cls, decls)) = resolved.transition_rule {
-            rules.entry(cls).or_insert(decls);
+        if let Some((cls, decls)) = resolved.transition_rule
+            && !styles.is_already_sent(&cls)
+        {
+            styles.rules.entry(cls).or_insert(decls);
         }
         for media_rule in resolved.media_rules {
-            if media_seen.insert(media_rule.class_name.clone()) {
-                media_rules.push(media_rule);
+            if !styles.is_already_sent(&media_rule.class_name)
+                && styles.media_seen.insert(media_rule.class_name.clone())
+            {
+                styles.media_rules.push(media_rule);
             }
         }
         for state_rule in resolved.state_rules {
-            if state_seen.insert(state_rule.class_name.clone()) {
-                state_rules.push(state_rule);
+            if !styles.is_already_sent(&state_rule.class_name)
+                && styles.state_seen.insert(state_rule.class_name.clone())
+            {
+                styles.state_rules.push(state_rule);
             }
         }
         #[cfg(any(
@@ -150,8 +232,10 @@ impl WebBackend {
         let _ = write!(out, "{id}");
         out.push('"');
 
-        if id == ROOT_NODE_ID {
-            let _ = write!(out, " data-nve-ssr-hash=\"{root_hash:016x}\"");
+        if id == ROOT_NODE_ID
+            && let Some(h) = root_hash
+        {
+            let _ = write!(out, " data-nve-ssr-hash=\"{h:016x}\"");
         }
 
         write_attr("class", &resolved.class_name, out);
@@ -283,9 +367,13 @@ impl WebBackend {
         crate::paint_svg::write_svg_open_attrs_html(el, out);
 
         out.push('>');
-        if is_void_html_tag(tag) { return None; }
+        if is_void_html_tag(tag) {
+            return None;
+        }
 
-        if sem.wrap_code { out.push_str("<code>"); }
+        if sem.wrap_code {
+            out.push_str("<code>");
+        }
         if el.svg.is_some() && el.children.is_empty() {
             crate::paint_svg::write_svg_inner_html(el, out);
         } else if let Some(t) = el.text.as_deref().filter(|_| el.children.is_empty()) {
@@ -299,26 +387,12 @@ impl WebBackend {
     /// FocusVisible < Active < Disabled`) so overrides always win in the cascade.
     pub fn render_ssr(&self) -> SsrOutput {
         let root_hash = self.compute_ssr_tree_hash();
-        let mut rules: BTreeMap<String, String> = BTreeMap::new();
-        let mut media_rules: Vec<CompiledMediaRule> = Vec::new();
-        let mut media_seen: HashSet<String> = HashSet::default();
-        let mut state_rules: Vec<CompiledStateRule> = Vec::new();
-        let mut state_seen: HashSet<String> = HashSet::default();
+        let mut styles = SsrStyleCollector::new(None);
         let mut html = String::with_capacity(self.nodes.len().saturating_mul(96).max(64));
         let mut open: Vec<(&str, bool)> = Vec::new();
         self.walk(ROOT_NODE_ID, |id, parent, step| match step {
             Visit::Enter => self
-                .open_ssr_element(
-                    id,
-                    parent,
-                    root_hash,
-                    &mut rules,
-                    &mut media_rules,
-                    &mut media_seen,
-                    &mut state_rules,
-                    &mut state_seen,
-                    &mut html,
-                )
+                .open_ssr_element(id, parent, Some(root_hash), &mut styles, &mut html)
                 .map(|closing| open.push(closing))
                 .is_some(),
             Visit::Exit => {
@@ -331,29 +405,7 @@ impl WebBackend {
             }
         });
 
-        state_rules.sort_by_key(|r| r.state.cascade_order());
-
-        let total_rules = rules.len() + media_rules.len() + state_rules.len();
-        let mut style_css = String::with_capacity(total_rules.saturating_mul(64));
-        let mut rule_hashes = Vec::with_capacity(total_rules);
-        // 1. Emit ALL base structural rules FIRST.
-        for (cls, decls) in rules {
-            let _ = writeln!(&mut style_css, ".{cls}{{{decls}}}");
-            rule_hashes.push(cls);
-        }
-        // 2. Emit ALL `@media` rules AFTER base structural rules so responsive overrides win.
-        for rule in media_rules {
-            rule.write_css_rule_into(&mut style_css);
-            style_css.push('\n');
-            rule_hashes.push(rule.class_name);
-        }
-        // 3. Emit ALL interactive pseudo-state rules LAST in deterministic priority order.
-        for rule in state_rules {
-            rule.write_css_rule_into(&mut style_css);
-            style_css.push('\n');
-            rule_hashes.push(rule.class_name);
-        }
-
+        let (style_css, rule_hashes) = styles.finish();
         SsrOutput {
             base_css: NVE_BASE_RESET_CSS,
             style_css,
@@ -364,7 +416,8 @@ impl WebBackend {
     }
 
     /// Emits a complete standalone HTML5 document with `<style data-nve-base>`,
-    /// `<style data-nve-ssr data-nve-hashes="...">`, OpenGraph/SEO metadata, and SSR markup.
+    /// `<style data-nve-ssr data-nve-hashes="...">`, opt-in CSP `nonce="..."`, OpenGraph/SEO
+    /// metadata, and SSR markup.
     pub fn render_ssr_document(&self, opts: &SsrDocumentOptions) -> String {
         let ssr = self.render_ssr();
         let lang = opts
@@ -372,6 +425,7 @@ impl WebBackend {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("en");
+        let nonce = opts.style_nonce.as_deref();
 
         let mut out = String::with_capacity(
             ssr.base_css.len() + ssr.style_css.len() + ssr.html.len() + 512,
@@ -407,9 +461,13 @@ impl WebBackend {
             out.push_str("\">\n");
         }
 
-        out.push_str("<style data-nve-base>");
-        out.push_str(ssr.base_css);
-        out.push_str("</style>\n<style data-nve-ssr data-nve-hashes=\"");
+        out.push_str("<style data-nve-base");
+        write_style_nonce_attr(nonce, &mut out);
+        out.push('>');
+        push_style_css_escaped(ssr.base_css, &mut out);
+        out.push_str("</style>\n<style data-nve-ssr");
+        write_style_nonce_attr(nonce, &mut out);
+        out.push_str(" data-nve-hashes=\"");
         for (idx, h) in ssr.rule_hashes.iter().enumerate() {
             if idx > 0 {
                 out.push(',');
@@ -417,7 +475,7 @@ impl WebBackend {
             out.push_str(h);
         }
         out.push_str("\">");
-        out.push_str(&ssr.style_css);
+        push_style_css_escaped(&ssr.style_css, &mut out);
         out.push_str("</style>\n");
 
         if let Some(extra) = opts.head_extra.as_deref().filter(|s| !s.is_empty()) {

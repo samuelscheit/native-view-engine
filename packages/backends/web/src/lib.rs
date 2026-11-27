@@ -23,6 +23,12 @@ mod hot_patch;
 mod html;
 #[cfg(feature = "hydrate")]
 mod hydrate;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
+mod hydrate_native;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
+mod hydrate_native_parse;
+#[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
+mod hydrate_wasm;
 mod input_attrs;
 mod layout_ext_css;
 mod media_css;
@@ -44,6 +50,8 @@ mod snapshot;
 mod ssg;
 #[cfg(feature = "ssr")]
 mod ssr;
+#[cfg(feature = "ssr")]
+mod ssr_stream;
 #[cfg(feature = "ssr")]
 pub mod streaming;
 #[cfg(feature = "ssr")]
@@ -158,13 +166,15 @@ pub use ssg::{
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 #[cfg(feature = "ssr")]
+pub use ssr_stream::{PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamingShellOutput};
+#[cfg(feature = "ssr")]
 pub use streaming::{
-    decode_form_urlencoded, decode_form_urlencoded_map, encode_http_chunk,
-    sanitize_stream_slot_id, scoped_slot_hiding_css, slot_placeholder_html, stream_slot_name,
-    streaming_http_headers, FormActionResponse, LiveUpdateChunk, StreamingDocumentOptions,
-    StreamingError, StreamingMode, StreamingSsrSession, ZeroJsLiveConfig, ZeroJsLiveSession,
-    DEFAULT_MAX_LIVE_UPDATES, HTTP_CHUNK_TERMINATOR, NVE_LIVE_SINK_IFRAME_HTML,
-    NVE_LIVE_SINK_IFRAME_NAME, NVE_STREAM_KEEPALIVE_COMMENT, NVE_STREAM_SLOT_PREFIX,
+    decode_form_urlencoded, decode_form_urlencoded_map, sanitize_stream_slot_id,
+    scoped_slot_hiding_css, slot_placeholder_html, stream_slot_name, streaming_http_headers,
+    FormActionResponse, LiveUpdateChunk, StreamingDocumentOptions, StreamingError, StreamingMode,
+    StreamingSsrSession, ZeroJsLiveConfig, ZeroJsLiveSession, DEFAULT_MAX_LIVE_UPDATES,
+    NVE_LIVE_SINK_IFRAME_HTML, NVE_LIVE_SINK_IFRAME_NAME, NVE_STREAM_KEEPALIVE_COMMENT,
+    NVE_STREAM_SLOT_PREFIX,
 };
 pub use style_hash::{
     format_structural_class, hash_structural_style, is_inheriting_leaf_text,
@@ -184,8 +194,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nve_abi::hash::HashMap;
-#[cfg(feature = "hydrate")]
-use nve_abi::hash::HashSet;
 #[cfg(target_arch = "wasm32")]
 use nve_abi::Dimension;
 use nve_abi::{ComponentKind, EventMask, NativeEvent, NodeId, SurfaceId, ROOT_NODE_ID};
@@ -201,10 +209,10 @@ use crate::events::RootEventDelegator;
 use crate::visual_viewport::KeyboardInsetsCallback;
 #[cfg(target_arch = "wasm32")]
 use crate::visual_viewport::VisualViewportTracker;
-#[cfg(feature = "hydrate")]
-use crate::hydrate::HydratedControlState;
 #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-use crate::hydrate::NativeSsrNode;
+use crate::hydrate_native::NativeAdoptedNode;
+#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
+use crate::hydrate_native_parse::NativeSsrTree;
 
 pub(crate) type RenderCallback = Rc<dyn Fn()>;
 
@@ -217,8 +225,6 @@ pub struct WebBackend {
     pub(crate) frame_mutations: u32,
     pub(crate) frame_replaced_existing: bool,
     pub(crate) frame_dirty_styles: Vec<NodeId>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) frame_hydrated_seen: Vec<NodeId>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) frame_dirty_canvases: Vec<NodeId>,
     #[cfg(target_arch = "wasm32")]
@@ -243,22 +249,18 @@ pub struct WebBackend {
     pub(crate) on_keyboard_insets: Rc<RefCell<Option<KeyboardInsetsCallback>>>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydrating: bool,
-    #[cfg(feature = "hydrate")]
-    pub(crate) hydrated_dom_tags: HashMap<NodeId, String>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) hydrated_inline_nodes: HashSet<NodeId>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) hydrated_controls: HashMap<NodeId, HydratedControlState>,
     #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
-    pub(crate) hydrated_children: HashMap<NodeId, Vec<NodeId>>,
+    pub(crate) hydrate_root: Option<web_sys::Element>,
     #[cfg(feature = "hydrate")]
     pub(crate) pending_pre_hydration_events: Vec<CapturedPreHydrationEvent>,
     #[cfg(feature = "hydrate")]
     pub(crate) pending_responsive_dirty: Vec<NodeId>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_report: HydrationReport,
+    #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
+    pub(crate) native_hydrate_tree: Option<NativeSsrTree>,
     #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-    pub(crate) native_ssr_nodes: HashMap<NodeId, NativeSsrNode>,
+    pub(crate) native_adopted_nodes: HashMap<NodeId, NativeAdoptedNode>,
     #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
     pub(crate) next_native_instance_id: u64,
     #[cfg(target_arch = "wasm32")]
@@ -321,8 +323,6 @@ impl WebBackend {
             frame_mutations: 0,
             frame_replaced_existing: false,
             frame_dirty_styles: Vec::new(),
-            #[cfg(feature = "hydrate")]
-            frame_hydrated_seen: Vec::new(),
             #[cfg(target_arch = "wasm32")]
             frame_dirty_canvases: Vec::new(),
             #[cfg(target_arch = "wasm32")]
@@ -347,22 +347,18 @@ impl WebBackend {
             on_keyboard_insets: Rc::new(RefCell::new(None)),
             #[cfg(feature = "hydrate")]
             hydrating: false,
-            #[cfg(feature = "hydrate")]
-            hydrated_dom_tags: HashMap::default(),
-            #[cfg(feature = "hydrate")]
-            hydrated_inline_nodes: HashSet::default(),
-            #[cfg(feature = "hydrate")]
-            hydrated_controls: HashMap::default(),
             #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
-            hydrated_children: HashMap::default(),
+            hydrate_root: None,
             #[cfg(feature = "hydrate")]
             pending_pre_hydration_events: Vec::new(),
             #[cfg(feature = "hydrate")]
             pending_responsive_dirty: Vec::new(),
             #[cfg(feature = "hydrate")]
             hydration_report: HydrationReport::default(),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
+            native_hydrate_tree: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-            native_ssr_nodes: HashMap::default(),
+            native_adopted_nodes: HashMap::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
             next_native_instance_id: 1,
             #[cfg(target_arch = "wasm32")]

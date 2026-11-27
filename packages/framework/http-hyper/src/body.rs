@@ -1,10 +1,150 @@
-//! Streaming bounded HTTP body reader with zero-allocation single-frame fast path and deadlines.
+//! Streaming bounded HTTP body reader (zero-allocation single-frame fast path with deadlines)
+//! and zero-dependency streaming response body primitives ([`ChannelBody`], [`HttpBody`]).
 
+use core::convert::Infallible;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use core::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use http_body_util::BodyExt as _;
-use hyper::body::Body;
+use http_body_util::{BodyExt as _, Full};
+use hyper::body::{Body, Frame, SizeHint};
+use tokio::sync::mpsc;
+
+/// Streaming HTTP response body backed by a bounded [`tokio::sync::mpsc::Receiver<Bytes>`].
+///
+/// Dropping the body (e.g., when a client closes its TCP connection mid-stream) drops the
+/// receiver, closing the channel so the producer task's `tx.closed()` / `tx.send(...)` wakes and
+/// terminates promptly without leaking background work.
+#[derive(Debug)]
+pub struct ChannelBody {
+    rx: mpsc::Receiver<Bytes>,
+    ended: bool,
+}
+
+impl ChannelBody {
+    /// Wraps a bounded `tokio::sync::mpsc::Receiver<Bytes>` as a streaming [`Body`].
+    #[inline]
+    pub fn new(rx: mpsc::Receiver<Bytes>) -> Self {
+        Self { rx, ended: false }
+    }
+}
+
+impl Body for ChannelBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        if self.ended {
+            return Poll::Ready(None);
+        }
+        loop {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(chunk)) => {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    return Poll::Ready(Some(Ok(Frame::data(chunk))));
+                }
+                Poll::Ready(None) => {
+                    self.ended = true;
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    #[inline]
+    fn is_end_stream(&self) -> bool {
+        self.ended
+    }
+}
+
+/// Unified HTTP response body supporting both zero-overhead buffered [`Full<Bytes>`] responses
+/// (preserving exact `Content-Length`) and backpressured streaming [`ChannelBody`] responses
+/// (allowing Hyper to drive HTTP/1.1 chunked framing or HTTP/2 `DATA` frames automatically).
+#[derive(Debug)]
+pub enum HttpBody {
+    Full(Full<Bytes>),
+    Stream(ChannelBody),
+}
+
+impl Default for HttpBody {
+    #[inline]
+    fn default() -> Self {
+        Self::Full(Full::new(Bytes::new()))
+    }
+}
+
+impl HttpBody {
+    /// Constructs a buffered [`HttpBody::Full`] response body with zero extra allocation.
+    #[inline]
+    pub fn full(bytes: Bytes) -> Self {
+        Self::Full(Full::new(bytes))
+    }
+
+    /// Constructs a streaming [`HttpBody::Stream`] backed by a bounded `mpsc::Receiver<Bytes>`.
+    #[inline]
+    pub fn stream(rx: mpsc::Receiver<Bytes>) -> Self {
+        Self::Stream(ChannelBody::new(rx))
+    }
+}
+
+impl From<Full<Bytes>> for HttpBody {
+    #[inline]
+    fn from(full: Full<Bytes>) -> Self {
+        Self::Full(full)
+    }
+}
+
+impl From<Bytes> for HttpBody {
+    #[inline]
+    fn from(bytes: Bytes) -> Self {
+        Self::full(bytes)
+    }
+}
+
+impl From<ChannelBody> for HttpBody {
+    #[inline]
+    fn from(stream: ChannelBody) -> Self {
+        Self::Stream(stream)
+    }
+}
+
+impl Body for HttpBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.get_mut() {
+            Self::Full(full) => Pin::new(full).poll_frame(cx),
+            Self::Stream(stream) => Pin::new(stream).poll_frame(cx),
+        }
+    }
+
+    #[inline]
+    fn is_end_stream(&self) -> bool {
+        match self {
+            Self::Full(full) => full.is_end_stream(),
+            Self::Stream(stream) => stream.is_end_stream(),
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            Self::Full(full) => full.size_hint(),
+            Self::Stream(stream) => stream.size_hint(),
+        }
+    }
+}
 
 /// Failure returned when reading an HTTP stream exceeds byte limits, times out, or errors out.
 #[derive(Debug, Clone, PartialEq, Eq)]

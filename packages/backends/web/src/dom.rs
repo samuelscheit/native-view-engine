@@ -136,29 +136,30 @@ impl WebBackend {
         }
 
         #[cfg(target_arch = "wasm32")]
-        if let Some(dom_el) = self.dom_nodes.get(&node_id) {
-            if is_input {
-                #[cfg(feature = "hydrate")]
-                if self.hydrating && self.hydrated_controls.contains_key(&node_id) {
-                    // Defer live DOM `.value` write to 3-way `StateReconciler` in `finalize_hydration`.
-                    return;
-                }
-                self.input_sync.borrow_mut().on_backend_value_sync(node_id, text);
-                if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>()
-                    && inp.value() != text
-                {
-                    inp.set_value(text);
-                } else if let Some(ta) = dom_el.dyn_ref::<web_sys::HtmlTextAreaElement>()
-                    && ta.value() != text
-                {
-                    ta.set_value(text);
-                }
-            } else if !has_children {
-                // Text shows only while the node has no element children (it returns when
-                // `SetChildren` empties the node, see `reconcile_dom_children`).
-                let target = self.text_or_child_mount_target(dom_el, wrap_code);
-                if target.text_content().as_deref() != Some(text) {
-                    target.set_text_content(Some(text));
+        {
+            #[cfg(feature = "hydrate")]
+            if self.hydrating {
+                return;
+            }
+            if let Some(dom_el) = self.dom_nodes.get(&node_id) {
+                if is_input {
+                    self.input_sync.borrow_mut().on_backend_value_sync(node_id, text);
+                    if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>()
+                        && inp.value() != text
+                    {
+                        inp.set_value(text);
+                    } else if let Some(ta) = dom_el.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                        && ta.value() != text
+                    {
+                        ta.set_value(text);
+                    }
+                } else if !has_children {
+                    // Text shows only while the node has no element children (it returns when
+                    // `SetChildren` empties the node, see `reconcile_dom_children`).
+                    let target = self.text_or_child_mount_target(dom_el, wrap_code);
+                    if target.text_content().as_deref() != Some(text) {
+                        target.set_text_content(Some(text));
+                    }
                 }
             }
         }
@@ -281,16 +282,6 @@ impl WebBackend {
         let wrap_code = parent_mirror.is_some_and(|n| n.wrap_code);
         let container = self.text_or_child_mount_target(parent_dom, wrap_code);
 
-        #[cfg(feature = "hydrate")]
-        let prev_children: &[NodeId] = if self.hydrating {
-            self.hydrated_children
-                .get(&parent_id)
-                .map(Vec::as_slice)
-                .unwrap_or_else(|| parent_mirror.map(|n| n.children.as_slice()).unwrap_or(&[]))
-        } else {
-            parent_mirror.map(|n| n.children.as_slice()).unwrap_or(&[])
-        };
-        #[cfg(not(feature = "hydrate"))]
         let prev_children: &[NodeId] = parent_mirror.map(|n| n.children.as_slice()).unwrap_or(&[]);
 
         let had_text = parent_mirror
@@ -463,11 +454,6 @@ impl WebBackend {
             RawPropValue::Bool(false) => remove_attr_if_present(dom_el, attr_key),
             RawPropValue::String(s) => {
                 if key == "value" {
-                    #[cfg(feature = "hydrate")]
-                    if self.hydrating && self.hydrated_controls.contains_key(&node_id) {
-                        // Defer live DOM `.value` write to 3-way `StateReconciler` in `finalize_hydration`.
-                        return;
-                    }
                     self.input_sync.borrow_mut().on_backend_value_sync(node_id, s);
                     if let Some(inp) = dom_el.dyn_ref::<web_sys::HtmlInputElement>() {
                         if inp.value() != *s {

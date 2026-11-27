@@ -11,12 +11,11 @@ use nve_abi::{CommandBufferBuilder, ComponentKind, RawPropValue, ROOT_NODE_ID};
 use nve_engine::RenderBackend;
 
 use crate::{
-    decode_form_urlencoded, decode_form_urlencoded_map, encode_http_chunk,
-    scoped_slot_hiding_css, should_close_dialog_on_backdrop_click, slot_placeholder_html,
-    streaming_http_headers, FormActionResponse, StreamingDocumentOptions, StreamingError,
-    StreamingMode, StreamingSsrSession, WebBackend, ZeroJsLiveConfig, ZeroJsLiveSession,
-    DEFAULT_MAX_LIVE_UPDATES, HTTP_CHUNK_TERMINATOR, NVE_BASE_RESET_CSS,
-    NVE_LIVE_SINK_IFRAME_NAME,
+    decode_form_urlencoded, decode_form_urlencoded_map, scoped_slot_hiding_css,
+    should_close_dialog_on_backdrop_click, slot_placeholder_html, streaming_http_headers,
+    FormActionResponse, StreamingDocumentOptions, StreamingError, StreamingMode,
+    StreamingSsrSession, WebBackend, ZeroJsLiveConfig, ZeroJsLiveSession,
+    DEFAULT_MAX_LIVE_UPDATES, NVE_BASE_RESET_CSS, NVE_LIVE_SINK_IFRAME_NAME,
 };
 
 fn build_semantic_frame() -> Vec<u8> {
@@ -263,12 +262,13 @@ fn stage2_http11_gracefully_negotiates_to_prg_303_and_rejects_input_slot_overwri
     assert_eq!(StreamingMode::negotiate(true, false), StreamingMode::AsyncSsrWithPrgFallback);
     assert_eq!(StreamingMode::negotiate(true, true), StreamingMode::ZeroJsLiveStream);
 
-    let h1_headers = streaming_http_headers(false);
-    assert!(h1_headers.contains(&("Transfer-Encoding", "chunked")));
-    assert!(h1_headers.contains(&("X-Accel-Buffering", "no")));
-    assert!(h1_headers.contains(&("Cache-Control", "no-cache, no-transform")));
-    let h2_headers = streaming_http_headers(true);
-    assert!(!h2_headers.iter().any(|(k, _)| *k == "Transfer-Encoding"));
+    let headers = streaming_http_headers();
+    assert!(headers.contains(&("Content-Type", "text/html; charset=utf-8")));
+    assert!(headers.contains(&("Cache-Control", "private, no-store, no-transform")));
+    assert!(headers.contains(&("Vary", "Cookie, Authorization")));
+    assert!(headers.contains(&("X-Content-Type-Options", "nosniff")));
+    assert!(headers.contains(&("X-Accel-Buffering", "no")));
+    assert!(!headers.iter().any(|(k, _)| *k == "Transfer-Encoding"));
 
     // HTTP/1.1 request degrades cleanly to closed PRG shell.
     let cfg_h1 = ZeroJsLiveConfig::negotiated(false, true)
@@ -330,6 +330,15 @@ fn stage2_zero_js_live_session_end_to_end_over_real_loopback_tcp_with_compaction
     let server_writer = Arc::clone(&stream_writer);
     let server_counter = Arc::clone(&counter);
 
+    const CHUNK_END: &str = "0\r\n\r\n";
+    let frame_chunk = |payload: &str| -> String {
+        if payload.is_empty() {
+            String::new()
+        } else {
+            format!("{:x}\r\n{payload}\r\n", payload.len())
+        }
+    };
+
     let server_handle = thread::spawn(move || {
         // Expect 1 GET /live + 4 POST /action requests (3 live 204s + 1 compacted 303).
         for _ in 0..5 {
@@ -354,10 +363,10 @@ fn stage2_zero_js_live_session_end_to_end_over_real_loopback_tcp_with_compaction
 
             if request_line.starts_with("GET /live") {
                 let mut header_block = String::from("HTTP/1.1 200 OK\r\n");
-                for (k, v) in streaming_http_headers(false) {
+                for (k, v) in streaming_http_headers() {
                     header_block.push_str(&format!("{k}: {v}\r\n"));
                 }
-                header_block.push_str("\r\n");
+                header_block.push_str("Transfer-Encoding: chunked\r\n\r\n");
                 conn.write_all(header_block.as_bytes()).unwrap();
 
                 let mut sess = server_session.lock().unwrap();
@@ -368,8 +377,8 @@ fn stage2_zero_js_live_session_end_to_end_over_real_loopback_tcp_with_compaction
                         "<form method=\"post\" action=\"/action\" target=\"{target}\"><button type=\"submit\" name=\"delta\" value=\"1\">+1</button></form>{slot_html}"
                     ))
                     .unwrap();
-                conn.write_all(encode_http_chunk(&shell).as_bytes()).unwrap();
-                conn.write_all(encode_http_chunk(sess.keepalive_comment()).as_bytes())
+                conn.write_all(frame_chunk(&shell).as_bytes()).unwrap();
+                conn.write_all(frame_chunk(sess.keepalive_comment()).as_bytes())
                     .unwrap();
                 conn.flush().unwrap();
                 *server_writer.lock().unwrap() = Some(conn);
@@ -391,11 +400,11 @@ fn stage2_zero_js_live_session_end_to_end_over_real_loopback_tcp_with_compaction
                             .push_slot_update("counter", &format!("<span>{}</span>", *val), None)
                             .unwrap();
                         let triggered = update.compaction_triggered;
-                        let chunk = encode_http_chunk(&update.into_combined_html());
+                        let chunk = frame_chunk(&update.into_combined_html());
                         if let Some(ref mut live_conn) = *server_writer.lock().unwrap() {
                             live_conn.write_all(chunk.as_bytes()).unwrap();
                             if triggered {
-                                live_conn.write_all(HTTP_CHUNK_TERMINATOR.as_bytes()).unwrap();
+                                live_conn.write_all(CHUNK_END.as_bytes()).unwrap();
                             }
                             live_conn.flush().unwrap();
                         }
@@ -457,16 +466,18 @@ fn stage2_zero_js_live_session_end_to_end_over_real_loopback_tcp_with_compaction
     server_handle.join().unwrap();
 
     assert!(raw_stream.contains("X-Accel-Buffering: no"));
-    assert!(raw_stream.contains("Cache-Control: no-cache, no-transform"));
-    assert!(raw_stream.contains("Transfer-Encoding: chunked"));
+    assert!(raw_stream.contains("Cache-Control: private, no-store, no-transform"));
+    assert!(raw_stream.contains("Vary: Cookie, Authorization"));
+    assert!(raw_stream.contains("X-Content-Type-Options: nosniff"));
+    assert!(raw_stream.contains("<div data-nve-dsd-host>"));
     assert!(raw_stream.contains("<template shadowrootmode=\"open\">"));
     assert!(raw_stream.contains(&format!("name=\"{NVE_LIVE_SINK_IFRAME_NAME}\"")));
     assert!(raw_stream.contains("[data-nve-slot=\"counter\"]:has(~ [data-nve-slot=\"counter\"]){display:none!important}"));
     assert!(raw_stream.contains("<!-- nve-keepalive -->"));
-    assert!(raw_stream.contains("<div slot=\"nve-slot-counter\" data-nve-slot=\"counter\"><span>1</span></div>"));
-    assert!(raw_stream.contains("<div slot=\"nve-slot-counter\" data-nve-slot=\"counter\"><span>2</span></div>"));
-    assert!(raw_stream.contains("<div slot=\"nve-slot-counter\" data-nve-slot=\"counter\"><span>3</span></div>"));
-    assert!(raw_stream.contains("</body>\n</html>\n"));
-    assert!(raw_stream.ends_with(HTTP_CHUNK_TERMINATOR));
+    assert!(raw_stream.contains("<div slot=\"nve-slot-counter\" data-nve-slot=\"counter\" class=\"nve-slot\"><span>1</span></div>"));
+    assert!(raw_stream.contains("<div slot=\"nve-slot-counter\" data-nve-slot=\"counter\" class=\"nve-slot\"><span>2</span></div>"));
+    assert!(raw_stream.contains("<div slot=\"nve-slot-counter\" data-nve-slot=\"counter\" class=\"nve-slot\"><span>3</span></div>"));
+    assert!(raw_stream.contains("<template data-nve-stream-end></template></div></div>\n</body>\n</html>\n"));
+    assert!(raw_stream.ends_with(CHUNK_END));
     assert!(!raw_stream.contains("<script"), "Stage-2 zero-JS live stream must contain zero <script tags");
 }

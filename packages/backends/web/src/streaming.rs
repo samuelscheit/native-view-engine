@@ -1,10 +1,12 @@
 //! 2-Stage Zero-JS Declarative Shadow DOM `<slot>` Streaming & Zero-Reload Live Updates:
 //!
-//! - **Stage 1 ([`StreamingSsrSession`])**: Out-of-order async SSR streaming using
-//!   `<template shadowrootmode="open">` + `<slot name="nve-slot-{id}">{fallback}</slot>`.
-//!   Resolved Light DOM `<div slot="nve-slot-{id}" data-nve-slot="{id}">...</div>` chunks stream
-//!   in any completion order, then the document closes cleanly (`</div></body></html>`) with zero
-//!   infinite spinner so `DOMContentLoaded` fires and WASM hydrates seamlessly.
+//! - **Stage 1 ([`StreamingSsrSession`])**: Out-of-order async SSR streaming using an inner
+//!   ephemeral `<div data-nve-dsd-host>` carrying `<template shadowrootmode="open">` +
+//!   `<slot name="nve-slot-{id}">{fallback}</slot>` inside `<div id="app">`.
+//!   Resolved Light DOM `<div slot="nve-slot-{id}" data-nve-slot="{id}" class="nve-slot">...</div>`
+//!   chunks stream in any completion order, optionally interleaved with Option B mid-stream query
+//!   payloads (`<script type="application/x-nve-query">`) and async module boot scripts, then the
+//!   document closes cleanly (`<template data-nve-stream-end></template></div></div></body></html>`).
 //! - **Stage 2 ([`ZeroJsLiveSession`])**: Opt-in zero-JS interactive live mode over HTTP/2+
 //!   chunked DSD using a hidden `<iframe name="nve-sink">` (`204 No Content` form actions),
 //!   strictly per-slot scoped `[data-nve-slot="X"]:has(~ [data-nve-slot="X"]){display:none!important}`,
@@ -15,7 +17,11 @@ use core::fmt::{self, Write as _};
 use std::collections::BTreeSet;
 
 use crate::css::NVE_BASE_RESET_CSS;
-use crate::html::{push_attr_escaped, push_text_escaped};
+use crate::html::{
+    push_attr_escaped, push_script_data_escaped, push_style_css_escaped, push_text_escaped,
+    write_style_nonce_attr,
+};
+use crate::ssr_stream::{SsrDeltaChunk, StreamingShellOutput};
 use crate::WebBackend;
 
 pub use crate::streaming_live::{
@@ -38,9 +44,6 @@ pub const NVE_STREAM_KEEPALIVE_COMMENT: &str = "<!-- nve-keepalive -->\n";
 /// Default hard cap on live slot updates before cleanly closing the stream and flipping form
 /// targets off `nve-sink` for a single PRG `303 See Other` DOM compaction reload.
 pub const DEFAULT_MAX_LIVE_UPDATES: usize = 150;
-
-/// HTTP/1.1 chunked transfer terminator.
-pub const HTTP_CHUNK_TERMINATOR: &str = "0\r\n\r\n";
 
 /// Negotiated streaming delivery strategy for an incoming HTTP request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,32 +73,21 @@ impl StreamingMode {
 
 /// Required response headers for streaming Declarative Shadow DOM responses.
 ///
-/// Omits the hop-by-hop `Transfer-Encoding: chunked` header on HTTP/2+ (RFC 9113) while always
-/// disabling reverse-proxy buffering (`X-Accel-Buffering: no`) and transform proxies
-/// (`Cache-Control: no-cache, no-transform`).
-pub fn streaming_http_headers(is_http2_or_higher: bool) -> Vec<(&'static str, &'static str)> {
-    let mut headers = vec![
+/// Leaves wire framing (`Transfer-Encoding: chunked` on HTTP/1.1, `DATA` frames on HTTP/2+)
+/// entirely to Hyper while disabling shared caching, transform/buffering proxies, and MIME sniffing.
+#[inline]
+pub const fn streaming_http_headers() -> [(&'static str, &'static str); 5] {
+    [
         ("Content-Type", "text/html; charset=utf-8"),
+        ("Cache-Control", "private, no-store, no-transform"),
+        ("Vary", "Cookie, Authorization"),
+        ("X-Content-Type-Options", "nosniff"),
         ("X-Accel-Buffering", "no"),
-        ("Cache-Control", "no-cache, no-transform"),
-    ];
-    if !is_http2_or_higher {
-        headers.push(("Transfer-Encoding", "chunked"));
-    }
-    headers
+    ]
 }
 
-/// Frames `payload` as a single HTTP/1.1 chunked transfer-encoding chunk (`<hex>\r\n<data>\r\n`).
-pub fn encode_http_chunk(payload: &str) -> String {
-    if payload.is_empty() {
-        return String::new();
-    }
-    let mut out = String::with_capacity(payload.len() + 16);
-    let _ = write!(&mut out, "{:x}\r\n{payload}\r\n", payload.len());
-    out
-}
-
-/// Errors produced by [`StreamingSsrSession`] and [`ZeroJsLiveSession`].
+/// Errors produced by [`StreamingSsrSession`], [`ZeroJsLiveSession`], and
+/// [`WebBackend::render_ssr_streaming_shell`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamingError {
     ShellNotStarted,
@@ -103,6 +95,7 @@ pub enum StreamingError {
     StreamClosed,
     InvalidSlotId(String),
     ImmutableInputSlot(String),
+    InvalidSlotPlacement(String),
 }
 
 impl fmt::Display for StreamingError {
@@ -114,6 +107,9 @@ impl fmt::Display for StreamingError {
             Self::InvalidSlotId(id) => write!(f, "invalid streaming slot id: {id:?}"),
             Self::ImmutableInputSlot(id) => {
                 write!(f, "refused to overwrite immutable input slot {id:?}")
+            }
+            Self::InvalidSlotPlacement(reason) => {
+                write!(f, "invalid streaming slot placement: {reason}")
             }
         }
     }
@@ -173,6 +169,8 @@ pub struct StreamingDocumentOptions {
     pub stylesheet_links: Vec<String>,
     pub head_extra: Option<String>,
     pub body_scripts: Option<String>,
+    /// Optional per-request CSP `nonce` stamped onto every emitted `<style>` tag.
+    pub style_nonce: Option<String>,
 }
 
 impl Default for StreamingDocumentOptions {
@@ -187,6 +185,7 @@ impl Default for StreamingDocumentOptions {
             stylesheet_links: Vec::new(),
             head_extra: None,
             body_scripts: None,
+            style_nonce: None,
         }
     }
 }
@@ -203,20 +202,50 @@ impl StreamingDocumentOptions {
             ..Default::default()
         }
     }
+
+    /// Populates `base_css`, `style_css`, and `rule_hashes` from a [`StreamingShellOutput`].
+    pub fn from_streaming_shell(title: impl Into<String>, shell: &StreamingShellOutput) -> Self {
+        Self {
+            title: title.into(),
+            base_css: shell.ssr.base_css,
+            style_css: shell.ssr.style_css.clone(),
+            rule_hashes: shell.ssr.rule_hashes.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Sets an opt-in per-request CSP `nonce` stamped onto every emitted `<style>` element.
+    pub fn with_style_nonce(mut self, nonce: impl Into<String>) -> Self {
+        let n = nonce.into();
+        self.style_nonce = (!n.is_empty()).then_some(n);
+        self
+    }
+
+    /// Sets extra raw HTML appended inside `<head>` (e.g. `<link rel="modulepreload" ...>`).
+    pub fn with_head_extra(mut self, extra: impl Into<String>) -> Self {
+        let e = extra.into();
+        self.head_extra = (!e.is_empty()).then_some(e);
+        self
+    }
 }
 
 pub(crate) fn write_shared_styles(opts: &StreamingDocumentOptions, out: &mut String) {
-    out.push_str("<style data-nve-base>");
-    out.push_str(opts.base_css);
-    out.push_str("</style>\n<style data-nve-ssr data-nve-hashes=\"");
+    let nonce = opts.style_nonce.as_deref();
+    out.push_str("<style data-nve-base");
+    write_style_nonce_attr(nonce, out);
+    out.push('>');
+    push_style_css_escaped(opts.base_css, out);
+    out.push_str("</style>\n<style data-nve-ssr");
+    write_style_nonce_attr(nonce, out);
+    out.push_str(" data-nve-hashes=\"");
     for (idx, h) in opts.rule_hashes.iter().enumerate() {
         if idx > 0 {
             out.push(',');
         }
-        out.push_str(h);
+        push_attr_escaped(h, out);
     }
     out.push_str("\">");
-    out.push_str(&opts.style_css);
+    push_style_css_escaped(&opts.style_css, out);
     out.push_str("</style>\n");
     for href in &opts.stylesheet_links {
         if !href.trim().is_empty() {
@@ -230,6 +259,7 @@ pub(crate) fn write_shared_styles(opts: &StreamingDocumentOptions, out: &mut Str
 pub(crate) fn write_document_head(
     opts: &StreamingDocumentOptions,
     live_slot_css: &str,
+    head_scripts: Option<&str>,
     out: &mut String,
 ) {
     let lang = opts
@@ -237,6 +267,7 @@ pub(crate) fn write_document_head(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("en");
+    let nonce = opts.style_nonce.as_deref();
     out.push_str("<!doctype html>\n<html lang=\"");
     push_attr_escaped(lang, out);
     out.push_str("\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>");
@@ -249,13 +280,21 @@ pub(crate) fn write_document_head(
     }
     write_shared_styles(opts, out);
     if !live_slot_css.is_empty() {
-        out.push_str("<style data-nve-live-slots>");
-        out.push_str(live_slot_css);
+        out.push_str("<style data-nve-live-slots");
+        write_style_nonce_attr(nonce, out);
+        out.push('>');
+        push_style_css_escaped(live_slot_css, out);
         out.push_str("</style>\n");
     }
     if let Some(extra) = opts.head_extra.as_deref().filter(|s| !s.is_empty()) {
         out.push_str(extra);
         if !extra.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if let Some(scripts) = head_scripts.filter(|s| !s.is_empty()) {
+        out.push_str(scripts);
+        if !scripts.ends_with('\n') {
             out.push('\n');
         }
     }
@@ -266,24 +305,40 @@ pub(crate) fn format_light_dom_slot_chunk(
     clean_id: &str,
     resolved_html: &str,
     extra_style_css: Option<&str>,
+    rule_hashes: &[String],
+    style_nonce: Option<&str>,
     extra_live_rule: bool,
 ) -> String {
-    let mut out = String::with_capacity(resolved_html.len() + 128);
+    let mut out = String::with_capacity(resolved_html.len() + 160);
     if extra_live_rule {
+        out.push_str("<style data-nve-live-slot=\"");
+        out.push_str(clean_id);
+        out.push('"');
+        write_style_nonce_attr(style_nonce, &mut out);
         let _ = write!(
             &mut out,
-            "<style data-nve-live-slot=\"{clean_id}\">[data-nve-slot=\"{clean_id}\"]:has(~ [data-nve-slot=\"{clean_id}\"]){{display:none!important}}</style>"
+            ">[data-nve-slot=\"{clean_id}\"]:has(~ [data-nve-slot=\"{clean_id}\"]){{display:none!important}}</style>"
         );
     }
     if let Some(css) = extra_style_css.filter(|s| !s.trim().is_empty()) {
-        let _ = write!(
-            &mut out,
-            "<style data-nve-ssr-chunk=\"{clean_id}\">{css}</style>"
-        );
+        out.push_str("<style data-nve-ssr-chunk=\"");
+        out.push_str(clean_id);
+        out.push('"');
+        write_style_nonce_attr(style_nonce, &mut out);
+        out.push_str(" data-nve-hashes=\"");
+        for (idx, h) in rule_hashes.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            push_attr_escaped(h, &mut out);
+        }
+        out.push_str("\">");
+        push_style_css_escaped(css, &mut out);
+        out.push_str("</style>");
     }
     let _ = writeln!(
         &mut out,
-        "<div slot=\"{NVE_STREAM_SLOT_PREFIX}{clean_id}\" data-nve-slot=\"{clean_id}\">{resolved_html}</div>"
+        "<div slot=\"{NVE_STREAM_SLOT_PREFIX}{clean_id}\" data-nve-slot=\"{clean_id}\" class=\"nve-slot\">{resolved_html}</div>"
     );
     out
 }
@@ -317,16 +372,40 @@ impl StreamingSsrSession {
         }
     }
 
-    /// Emits the immediate TTFB HTML shell with `<template shadowrootmode="open">` and embedded
-    /// `<style data-nve-base>` / `<style data-nve-ssr>` so fallbacks paint immediately with 0 JS.
+    fn ensure_open(&self) -> Result<(), StreamingError> {
+        if !self.shell_started {
+            return Err(StreamingError::ShellNotStarted);
+        }
+        if self.closed {
+            return Err(StreamingError::StreamClosed);
+        }
+        Ok(())
+    }
+
+    /// Emits the immediate TTFB HTML shell with an ephemeral `<div data-nve-dsd-host>` inside
+    /// Light-DOM `<div id="app">`, keeping `#app` permanently Light DOM.
     pub fn begin_shell(&mut self, shadow_shell_html: &str) -> Result<String, StreamingError> {
+        self.begin_shell_with_head_scripts(shadow_shell_html, "")
+    }
+
+    /// Emits the immediate TTFB HTML shell with additional `<head>` tags (`<link rel="modulepreload">`,
+    /// etc.) right before `</head>`, and opens `<div id="app"><div data-nve-dsd-host><template shadowrootmode="open">`.
+    pub fn begin_shell_with_head_scripts(
+        &mut self,
+        shadow_shell_html: &str,
+        head_scripts: &str,
+    ) -> Result<String, StreamingError> {
         if self.shell_started {
             return Err(StreamingError::ShellAlreadyStarted);
         }
         self.shell_started = true;
-        let mut out = String::with_capacity(shadow_shell_html.len() + self.opts.style_css.len() + 512);
-        write_document_head(&self.opts, "", &mut out);
-        out.push_str("<div id=\"app\" data-nve-stream-host=\"ssr\">\n<template shadowrootmode=\"open\">\n");
+        let mut out = String::with_capacity(
+            shadow_shell_html.len() + self.opts.style_css.len() + head_scripts.len() + 512,
+        );
+        write_document_head(&self.opts, "", Some(head_scripts), &mut out);
+        out.push_str(
+            "<div id=\"app\" data-nve-stream-host=\"ssr\">\n<div data-nve-dsd-host>\n<template shadowrootmode=\"open\">\n",
+        );
         write_shared_styles(&self.opts, &mut out);
         out.push_str(shadow_shell_html);
         out.push_str("\n</template>\n");
@@ -340,17 +419,41 @@ impl StreamingSsrSession {
         resolved_html: &str,
         extra_style_css: Option<&str>,
     ) -> Result<String, StreamingError> {
-        if !self.shell_started {
-            return Err(StreamingError::ShellNotStarted);
-        }
-        if self.closed {
-            return Err(StreamingError::StreamClosed);
-        }
+        self.resolve_slot_with_hashes(slot_id, resolved_html, extra_style_css, &[])
+    }
+
+    /// Flushes a resolved slot chunk carrying explicit Option 5 Hybrid CSS `rule_hashes` for
+    /// zero-duplicate hydration seeding.
+    pub fn resolve_slot_with_hashes(
+        &mut self,
+        slot_id: &str,
+        resolved_html: &str,
+        extra_style_css: Option<&str>,
+        rule_hashes: &[String],
+    ) -> Result<String, StreamingError> {
+        self.ensure_open()?;
         let clean = sanitize_stream_slot_id(slot_id)
             .ok_or_else(|| StreamingError::InvalidSlotId(slot_id.to_owned()))?;
         self.pending_slots.remove(&clean);
         self.resolved_order.push(clean.clone());
-        Ok(format_light_dom_slot_chunk(&clean, resolved_html, extra_style_css, false))
+        Ok(format_light_dom_slot_chunk(
+            &clean,
+            resolved_html,
+            extra_style_css,
+            rule_hashes,
+            self.opts.style_nonce.as_deref(),
+            false,
+        ))
+    }
+
+    /// Flushes a resolved [`SsrDeltaChunk`] produced by [`WebBackend::render_ssr_subtree_delta`].
+    pub fn resolve_slot_delta(
+        &mut self,
+        slot_id: &str,
+        delta: &SsrDeltaChunk,
+    ) -> Result<String, StreamingError> {
+        let css = (!delta.style_css.is_empty()).then_some(delta.style_css.as_str());
+        self.resolve_slot_with_hashes(slot_id, &delta.html, css, &delta.rule_hashes)
     }
 
     /// Renders a resolved `WebBackend` fragment and flushes it as a Light DOM slot chunk.
@@ -361,7 +464,45 @@ impl StreamingSsrSession {
     ) -> Result<String, StreamingError> {
         let ssr = backend.render_ssr();
         let css = (!ssr.style_css.is_empty()).then_some(ssr.style_css.as_str());
-        self.resolve_slot(slot_id, &ssr.html, css)
+        self.resolve_slot_with_hashes(slot_id, &ssr.html, css, &ssr.rule_hashes)
+    }
+
+    /// Emits a raw HTML fragment mid-stream inside the open `<div data-nve-dsd-host>` stream.
+    pub fn emit_raw_chunk(&mut self, html: &str) -> Result<String, StreamingError> {
+        self.ensure_open()?;
+        Ok(html.to_owned())
+    }
+
+    /// Emits an Option B mid-stream inert query payload chunk (`<script type="application/x-nve-query"
+    /// data-nve-seq="{seq}">{b64}</script><template data-nve-q-ack="{seq}"></template>\n`).
+    pub fn emit_query_payload(
+        &mut self,
+        seq: u64,
+        base64_nveq: &str,
+    ) -> Result<String, StreamingError> {
+        self.ensure_open()?;
+        let mut out = String::with_capacity(base64_nveq.len() + 112);
+        let _ = write!(
+            &mut out,
+            "<script type=\"application/x-nve-query\" data-nve-seq=\"{seq}\">"
+        );
+        push_script_data_escaped(base64_nveq, &mut out);
+        let _ = writeln!(
+            &mut out,
+            "</script><template data-nve-q-ack=\"{seq}\"></template>"
+        );
+        Ok(out)
+    }
+
+    /// Emits an Option B async ES module boot script (`<script type="module" async src="..."></script>\n`)
+    /// so WASM can boot and hydrate mid-stream while slower slots continue resolving.
+    pub fn emit_async_boot_script(&mut self, src: &str) -> Result<String, StreamingError> {
+        self.ensure_open()?;
+        let mut out = String::with_capacity(src.len() + 48);
+        out.push_str("<script type=\"module\" async src=\"");
+        push_attr_escaped(src.trim(), &mut out);
+        out.push_str("\"></script>\n");
+        Ok(out)
     }
 
     #[inline]
@@ -389,18 +530,14 @@ impl StreamingSsrSession {
         self.closed
     }
 
-    /// Closes the DSD host and HTML document cleanly (`</div></body></html>`) so `DOMContentLoaded`
-    /// fires with zero infinite spinner and WASM can hydrate seamlessly.
+    /// Closes the ephemeral DSD host, `#app` container, and HTML document cleanly
+    /// (`<template data-nve-stream-end></template></div></div>\n</body>\n</html>\n`) so
+    /// `DOMContentLoaded` fires with zero infinite spinner and WASM detects stream completion.
     pub fn finish(&mut self) -> Result<String, StreamingError> {
-        if !self.shell_started {
-            return Err(StreamingError::ShellNotStarted);
-        }
-        if self.closed {
-            return Err(StreamingError::StreamClosed);
-        }
+        self.ensure_open()?;
         self.closed = true;
-        let mut out = String::with_capacity(64);
-        out.push_str("</div>\n");
+        let mut out = String::with_capacity(96);
+        out.push_str("<template data-nve-stream-end></template></div></div>\n");
         if let Some(scripts) = self.opts.body_scripts.as_deref().filter(|s| !s.is_empty()) {
             out.push_str(scripts);
             if !scripts.ends_with('\n') {

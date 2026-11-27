@@ -80,9 +80,11 @@ pub fn resolve_semantic_tag(
             "table" => return SemanticTag { tag: "table", wrap_code: false },
             "thead" => return SemanticTag { tag: "thead", wrap_code: false },
             "tbody" => return SemanticTag { tag: "tbody", wrap_code: false },
+            "tfoot" => return SemanticTag { tag: "tfoot", wrap_code: false },
             "tr" => return SemanticTag { tag: "tr", wrap_code: false },
             "th" => return SemanticTag { tag: "th", wrap_code: false },
             "td" => return SemanticTag { tag: "td", wrap_code: false },
+            "select" => return SemanticTag { tag: "select", wrap_code: false },
             _ => {}
         }
     }

@@ -19,7 +19,7 @@
 use nve_abi::{NveDirectEvent, NveEventBatchRef, ROOT_NODE_ID};
 use nve_engine::{BackendError, NveApp, RenderBackend, Viewport};
 
-use crate::html::{push_attr_escaped, push_text_escaped};
+use crate::html::{push_attr_escaped, push_style_css_escaped, push_text_escaped};
 use crate::snapshot::snapshot_and_replay_script_tags;
 use crate::ssr::SsrOutput;
 use crate::WebBackend;
@@ -129,7 +129,7 @@ impl WebBackend {
         }
 
         out.push_str("<style data-nve-base>");
-        out.push_str(ssr.base_css);
+        push_style_css_escaped(ssr.base_css, &mut out);
         out.push_str("</style>\n<style data-nve-ssr data-nve-hashes=\"");
         for (idx, h) in ssr.rule_hashes.iter().enumerate() {
             if idx > 0 {
@@ -138,7 +138,7 @@ impl WebBackend {
             out.push_str(h);
         }
         out.push_str("\">");
-        out.push_str(&ssr.style_css);
+        push_style_css_escaped(&ssr.style_css, &mut out);
         out.push_str("</style>\n");
 
         if let Some(extra) = opts.head_extra.as_deref().filter(|s| !s.is_empty()) {
@@ -191,14 +191,14 @@ pub fn inject_ssg_with_scripts_into_shell_html(
     let mut style_tags = String::new();
     if !shell_html.contains("<style data-nve-base") {
         style_tags.push_str("<style data-nve-base>");
-        style_tags.push_str(ssr.base_css);
+        push_style_css_escaped(ssr.base_css, &mut style_tags);
         style_tags.push_str("</style>\n");
     }
     if !shell_html.contains("<style data-nve-ssr") {
         style_tags.push_str("<style data-nve-ssr data-nve-hashes=\"");
         style_tags.push_str(&hashes_csv);
         style_tags.push_str("\">");
-        style_tags.push_str(&ssr.style_css);
+        push_style_css_escaped(&ssr.style_css, &mut style_tags);
         style_tags.push_str("</style>\n");
     }
 
