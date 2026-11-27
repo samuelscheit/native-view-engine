@@ -5,9 +5,10 @@ use nve_abi::table::effect;
 
 use crate::changes::Command;
 use crate::id::{NodeId, NodeIndex, ResourceId};
-use crate::node_mut::NodeMut;
-use crate::resource::Resource;
+use crate::node_mut::{NodeMut, TempResources};
+use crate::resource::FlatResource;
 use crate::row::{DirtyList, RowWriter};
+use crate::row_patch::RowPatchView;
 use crate::span_pool::StrSpan;
 use crate::store::{
     NodeRow, NodeStore, ANCESTOR_MARK, CHILDREN_DIRTY, CHILD_SEEN, CREATED, IN_FREE, LIVE,
@@ -490,9 +491,17 @@ impl Transaction<'_> {
         }
     }
 
+    /// Opens a leak-free temporary resource scope for building nested resources (e.g.
+    /// `ResponsiveRules` / `StateRules` embedding child `BackgroundFillRes` / `GridTracks`).
+    #[inline]
+    pub fn with_temp_resources<R>(&mut self, f: impl FnOnce(&mut TempResources<'_>) -> R) -> R {
+        let mut scope = TempResources::new(self.store);
+        f(&mut scope)
+    }
+
     /// Sets (interned) or clears one resource property.
     #[inline]
-    pub fn set_resource<T: NveTable, R: Resource>(
+    pub fn set_resource<T: NveTable, R: FlatResource>(
         &mut self,
         id: NodeId,
         prop: ResProp<T, R>,
@@ -500,9 +509,66 @@ impl Transaction<'_> {
     ) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
         let mut w = writer_at_typed::<T>(self.store, id.node_index());
-        w.put_resource(prop.word as usize, value);
+        w.put_resource(prop.word as usize, value.as_ref());
         if prop.explicit_bit != u8::MAX {
             w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
+    }
+
+    /// Points one resource property at an already-interned [`ResourceId`] (or `ResourceId::NONE`).
+    #[inline]
+    pub fn set_resource_id<T: NveTable, R: FlatResource>(
+        &mut self,
+        id: NodeId,
+        prop: ResProp<T, R>,
+        rid: ResourceId,
+    ) {
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        w.put_resource_id(prop.word as usize, rid);
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
+    }
+
+    /// Applies every table operation in `patch` onto live node `id`, attaching touched tables on
+    /// demand and validating string/resource word invariants against each table's descriptor.
+    pub fn apply_row_patch(&mut self, id: NodeId, patch: RowPatchView<'_>) {
+        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        for table in patch.tables() {
+            let Some(slot) = crate::table::slot_of(table.key()) else {
+                continue;
+            };
+            let mut w = writer_at(self.store, id.node_index(), slot);
+            let words_len = w.desc.words();
+            let str_mask = w.desc.str_words() | (w.desc.str_words() << 1);
+            let res_mask = w.desc.resource_words();
+            let inherited = w.desc.inherited();
+            for op in table.ops() {
+                let wi = op.word() as usize;
+                if wi >= words_len {
+                    continue;
+                }
+                let bit = 1u32 << wi;
+                if (str_mask & bit) != 0 {
+                    continue;
+                }
+                let is_res = (res_mask & bit) != 0;
+                if op.is_resource() != is_res {
+                    continue;
+                }
+                if is_res {
+                    let rid = ResourceId(op.set_bits());
+                    if rid.is_none() || w.resources.is_defined(rid) {
+                        w.put_resource_id(wi, rid);
+                    }
+                } else if wi == 0 && inherited {
+                    let merged = op.clear_mask().apply(w.words()[0], op.set_bits());
+                    w.put_explicit_word(merged);
+                } else {
+                    w.put(wi, 0, op.clear_mask().raw(), op.set_bits());
+                }
+            }
         }
     }
 

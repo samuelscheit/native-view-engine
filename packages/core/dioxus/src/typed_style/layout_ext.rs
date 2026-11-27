@@ -5,7 +5,7 @@ use nve_abi::Dimension;
 use nve_components::layout_ext::{
     GridTrack, GridTrackPlacement, LayoutDirection, PositionMode,
 };
-use nve_components::style_patch::Display;
+use nve_components::tables::Display;
 use nve_components::transform::Transform2D;
 
 use super::TypedStyle;

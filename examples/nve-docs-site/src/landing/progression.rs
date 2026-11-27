@@ -84,7 +84,7 @@ pub fn DevAndBenchProgression() -> Element {
 
     let milestone_rows: Vec<&[WaveMilestone]> = WAVE_MILESTONES.chunks(4).collect();
     let mobile_col = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+        .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
 
     rsx! {
         view {

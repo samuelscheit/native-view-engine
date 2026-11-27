@@ -10,7 +10,6 @@ pub mod interaction;
 pub mod layout;
 pub mod media;
 pub mod resources;
-pub(crate) mod style_patch_codec;
 pub mod visual;
 
 #[cfg(test)]
@@ -32,8 +31,11 @@ pub use media::{
     Scroll, ScrollAxes, ScrollMut, ScrollRef, Scrollbars, TextInput, TextInputMut, TextInputRef,
 };
 pub use resources::{
-    AriaRelations, BackgroundFillRes, BoxShadows, GridTracks, ImageSrc, ResponsiveRules,
-    StateRules, Transitions,
+    AriaRelations, AriaRelationsView, BackgroundFillRes, BackgroundFillView, BoxShadows,
+    BoxShadowsIter, BoxShadowsView, GradientStopsIter, GradientStopsView, GridTracks,
+    GridTracksIter, GridTracksView, ImageSrc, ImageSrcView, ResponsiveRules, ResponsiveRulesIter,
+    ResponsiveRulesView, StateRules, StateRulesIter, StateRulesView, Transitions, TransitionsIter,
+    TransitionsView,
 };
 pub use visual::{
     FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive, ResponsiveMut,

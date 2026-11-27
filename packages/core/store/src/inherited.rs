@@ -8,6 +8,7 @@ use nve_abi::table::Word;
 
 use crate::id::NodeId;
 use crate::row::RowRef;
+use crate::row_patch::RowPatchView;
 use crate::span_pool::{StrArena, StrSpan};
 use crate::store::{NodeRef, NodeStore};
 use crate::table::{NveTable, Prop};
@@ -223,5 +224,12 @@ impl<'a, T: InheritedTable> ResolvedRow<'a, T> {
         if prop.explicit_bit < 32 {
             words[0] |= 1u32 << prop.explicit_bit;
         }
+    }
+
+    /// Applies any table-`T` word overrides from `patch` directly onto this resolved snapshot
+    /// (preserving `StrSpan` soundness and setting explicit bits in word `0`).
+    #[inline]
+    pub fn apply_patch(&mut self, patch: RowPatchView<'_>) -> bool {
+        patch.apply_table::<T>(self.words.as_mut())
     }
 }

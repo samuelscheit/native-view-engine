@@ -106,8 +106,8 @@ impl IslandHydrationScheduler {
             };
             let mut island_id: Option<&str> = None;
             let mut trigger = HydrateTrigger::Load;
-            for (k, v) in list.0.iter() {
-                match k.as_str() {
+            for (k, v) in list.iter() {
+                match k {
                     "data-nve-island" | "nve-island" => {
                         let trimmed = v.trim();
                         if !trimmed.is_empty() {

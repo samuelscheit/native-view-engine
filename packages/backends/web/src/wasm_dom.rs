@@ -371,7 +371,8 @@ impl WebBackend {
 
         if let Some(img) = store.try_row::<Image>(id) {
             if !img.src().is_none()
-                && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(img.src())
+                && let Some(nve_components::tables::ImageSrcView::Url(url)) =
+                    store.resource::<ImageSrc>(img.src())
                 && is_safe_web_url(url)
             {
                 let _ = el.set_attribute("src", url);

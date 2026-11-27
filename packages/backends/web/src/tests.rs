@@ -1,11 +1,11 @@
 use nve_abi::ColorRgba;
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
 use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::style_patch::StylePatch;
 use nve_components::tables::{
     Accessibility, AriaRole, DebugId, FlexDirection, Interaction, Layout, Link, Responsive,
     ResponsiveRules, StateRules, TextContent, Transform, Typography, Visual,
 };
+use nve_components::{RowPatch, StylePatchExt};
 use nve_engine::{HotPatchMsg, StoreBackend};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
@@ -42,14 +42,14 @@ fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
         .state_rules(Some(StateRules(
             vec![StateStyleRule::new(
                 InteractionState::HOVER,
-                StylePatch::new().bg(ColorRgba::rgb(30, 64, 175)),
+                RowPatch::new().bg(ColorRgba::rgb(30, 64, 175)),
             )]
             .into(),
         )));
     tx.edit::<Responsive>(card1).rules(Some(ResponsiveRules(
         vec![ResponsiveRule::new(
             MediaQuery::expanded(),
-            StylePatch::new().gap(24.0),
+            RowPatch::new().gap(24.0),
         )]
         .into(),
     )));

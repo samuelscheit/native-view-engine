@@ -460,7 +460,7 @@ impl StoreMutationTx<'_, '_> {
                     .and_then(|a| {
                         let r = a.relations();
                         (!r.is_none())
-                            .then(|| self.tx.store().resource::<AriaRelations>(r).cloned())
+                            .then(|| self.tx.store().resource::<AriaRelations>(r).map(|v| v.to_owned()))
                             .flatten()
                     })
                     .unwrap_or_default();

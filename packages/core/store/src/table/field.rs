@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use nve_abi::table::{FieldKind, OptEncoding, PackKind, Word, NO_VAL_WORD};
 
-use crate::resource::Resource;
+use crate::resource::FlatResource;
 use crate::row::{RowRef, RowWriter};
 use crate::table::NveTable;
 use crate::value::{Rgba, WordValue};
@@ -13,8 +13,8 @@ use crate::value::{Rgba, WordValue};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Str;
 
-/// Marker field type: a `ResourceId` word referencing a deduplicated blob of type `R`.
-pub struct Res<R: Resource>(PhantomData<fn() -> R>);
+/// Marker field type: a `ResourceId` word referencing a deduplicated flat-word blob of type `R`.
+pub struct Res<R: FlatResource>(PhantomData<fn() -> R>);
 
 /// Field type metadata consumed by `#[derive(NveTable)]` and compile-time `pack_table`.
 pub trait TableField {
@@ -25,13 +25,10 @@ pub trait TableField {
     const BITS: u8;
     /// Word packing layout shape (`Scalar`, `WideOpt`, `Wide64`, `Str`, `Resource`).
     const PACK_KIND: PackKind;
-    /// Registers codecs the field needs to cross a wire boundary.
-    #[inline]
-    fn register() {}
 }
 
-/// Uniform read/write codec for scalar, narrow `Option<T: OptWord>`, wide `Option<f32|u32|i32|Rgba>`,
-/// and 64-bit (`u64`/`i64`/`f64`) table fields.
+/// Uniform read/write/patch codec for scalar, narrow `Option<T: OptWord>`, wide
+/// `Option<f32|u32|i32|Rgba>`, and 64-bit (`u64`/`i64`/`f64`) table fields.
 pub trait ScalarField: TableField + Copy {
     fn read_row(row: &[Word], word: usize, shift: u32, mask: u32, val_word: usize) -> Self;
     fn write_row(
@@ -41,6 +38,15 @@ pub trait ScalarField: TableField + Copy {
         shift: u32,
         mask: u32,
         val_word: usize,
+    );
+    /// Emits `(word_idx, clear_mask, set_bits)` masked patch operations for [`crate::RowPatch`].
+    fn encode_patch_ops(
+        self,
+        word: usize,
+        shift: u32,
+        mask: u32,
+        val_word: usize,
+        emit: &mut dyn FnMut(usize, u32, u32),
     );
 
     #[inline(always)]
@@ -72,6 +78,19 @@ impl<T: WordValue> ScalarField for T {
         _val_word: usize,
     ) {
         writer.put(word, shift, mask, self.to_masked_bits(mask.count_ones()));
+    }
+
+    #[inline(always)]
+    fn encode_patch_ops(
+        self,
+        word: usize,
+        shift: u32,
+        mask: u32,
+        _val_word: usize,
+        emit: &mut dyn FnMut(usize, u32, u32),
+    ) {
+        let bits = self.to_masked_bits(mask.count_ones());
+        emit(word, mask, (bits << shift) & mask);
     }
 }
 
@@ -117,6 +136,23 @@ macro_rules! impl_wide_opt_field {
                     writer.put(word, shift, mask, present);
                     writer.put(val_word, 0, u32::MAX, bits);
                 }
+
+                #[inline(always)]
+                fn encode_patch_ops(
+                    self,
+                    word: usize,
+                    shift: u32,
+                    mask: u32,
+                    val_word: usize,
+                    emit: &mut dyn FnMut(usize, u32, u32),
+                ) {
+                    let (present, bits) = match self {
+                        Some(v) => (1u32, <$ty as WordValue>::to_bits(v)),
+                        None => (0u32, 0u32),
+                    };
+                    emit(word, mask, (present << shift) & mask);
+                    emit(val_word, u32::MAX, bits);
+                }
             }
         )+
     };
@@ -148,6 +184,18 @@ impl ScalarField for u64 {
         writer.put(word, 0, u32::MAX, self as u32);
         writer.put(word + 1, 0, u32::MAX, (self >> 32) as u32);
     }
+    #[inline(always)]
+    fn encode_patch_ops(
+        self,
+        word: usize,
+        _shift: u32,
+        _mask: u32,
+        _val_word: usize,
+        emit: &mut dyn FnMut(usize, u32, u32),
+    ) {
+        emit(word, u32::MAX, self as u32);
+        emit(word + 1, u32::MAX, (self >> 32) as u32);
+    }
 }
 
 impl TableField for i64 {
@@ -172,6 +220,17 @@ impl ScalarField for i64 {
         val_word: usize,
     ) {
         (self as u64).write_row(writer, word, shift, mask, val_word);
+    }
+    #[inline(always)]
+    fn encode_patch_ops(
+        self,
+        word: usize,
+        shift: u32,
+        mask: u32,
+        val_word: usize,
+        emit: &mut dyn FnMut(usize, u32, u32),
+    ) {
+        (self as u64).encode_patch_ops(word, shift, mask, val_word, emit);
     }
 }
 
@@ -198,6 +257,17 @@ impl ScalarField for f64 {
     ) {
         self.to_bits().write_row(writer, word, shift, mask, val_word);
     }
+    #[inline(always)]
+    fn encode_patch_ops(
+        self,
+        word: usize,
+        shift: u32,
+        mask: u32,
+        val_word: usize,
+        emit: &mut dyn FnMut(usize, u32, u32),
+    ) {
+        self.to_bits().encode_patch_ops(word, shift, mask, val_word, emit);
+    }
 }
 
 impl TableField for Str {
@@ -207,14 +277,11 @@ impl TableField for Str {
     const PACK_KIND: PackKind = PackKind::Str;
 }
 
-impl<R: Resource> TableField for Res<R> {
+impl<R: FlatResource> TableField for Res<R> {
     const KIND: FieldKind = FieldKind::Resource;
     const OPT_ENCODING: OptEncoding = OptEncoding::Required;
     const BITS: u8 = 32;
     const PACK_KIND: PackKind = PackKind::Resource;
-    fn register() {
-        crate::resource::register_codec::<R>();
-    }
 }
 
 /// Typed handle to a packed scalar or wide-optional field: `tx.set(node, Visual::OPACITY, 0.5)`.
@@ -389,7 +456,7 @@ impl<T, R> Clone for ResProp<T, R> {
 }
 impl<T, R> Copy for ResProp<T, R> {}
 
-impl<T: NveTable, R: Resource> ResProp<T, R> {
+impl<T: NveTable, R: FlatResource> ResProp<T, R> {
     /// Constructs a resource property handle for `T`.
     ///
     /// # Safety

@@ -3,7 +3,7 @@
 
 use nve_abi::{ColorRgba, NodeId};
 
-use crate::style_patch::VisualSnapshot as StyleProps;
+use crate::snapshots::VisualSnapshot as StyleProps;
 
 use crate::media::MediaEnv;
 use crate::motion::{

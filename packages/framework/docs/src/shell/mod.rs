@@ -49,7 +49,7 @@ pub fn DocsShell() -> Element {
         .gap(20.0)
         .at(
             MediaQuery::max_width(959),
-            ResponsiveStylePatch::new().padding_insets(EdgeInsets::symmetric(20.0, 16.0)),
+            RowPatch::new().padding_insets(EdgeInsets::symmetric(20.0, 16.0)),
         );
 
     rsx! {

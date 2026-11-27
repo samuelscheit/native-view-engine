@@ -189,8 +189,7 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
         desktop
             .surface
             .node_responsive_rules(desktop.find("docs-article-container"))
-            .iter()
-            .any(|r| r.query == MediaQuery::max_width(959))
+            .is_some_and(|rules| rules.iter().any(|(q, _)| q == MediaQuery::max_width(959)))
     );
     assert!(desktop.maybe_find("docs-sidebar-drawer").is_none());
 

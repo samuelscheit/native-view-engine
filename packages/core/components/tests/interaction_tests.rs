@@ -7,8 +7,10 @@ use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
-use nve_components::media::ResponsiveStylePatch;
-use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
+use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_components::tables::{Display, Visual};
+use nve_components::{RowPatch, StylePatchExt};
+use nve_store::Rgba;
 
 #[test]
 fn interaction_state_layout_bitops_and_cascade_ordering() {
@@ -96,9 +98,8 @@ fn cursor_kind_roundtrips_u8_and_css_keywords() {
 }
 
 #[test]
-fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists() {
-    // ResponsiveStylePatch is a direct alias for StylePatch.
-    let _: StylePatch = ResponsiveStylePatch::new().display(Display::None).cursor(CursorKind::Wait);
+fn unified_row_patch_resolves_cascade_priority_compounds_and_large_rule_lists() {
+    let _ = RowPatch::new().display(Display::None).cursor(CursorKind::Wait);
 
     let base = VisualSnapshot {
         background: ColorRgba::rgb(10, 10, 10),
@@ -115,36 +116,36 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
     let rules = [
         StateStyleRule::new(
             InteractionState::DISABLED,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(100, 100, 100))
                 .opacity(0.4)
                 .cursor(CursorKind::NotAllowed),
         ),
         StateStyleRule::new(
             InteractionState::ACTIVE,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(30, 64, 175))
                 .cursor(CursorKind::Grabbing),
         ),
         StateStyleRule::new(
             InteractionState::HOVER | InteractionState::FOCUS_VISIBLE,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(14, 165, 233))
                 .border(3.0, ColorRgba::rgb(250, 204, 21)),
         ),
         StateStyleRule::new(
             InteractionState::FOCUS_VISIBLE,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(56, 189, 248))
                 .border(2.0, ColorRgba::rgb(56, 189, 248)),
         ),
         StateStyleRule::new(
             InteractionState::FOCUS,
-            StylePatch::new().border_color(ColorRgba::rgb(99, 102, 241)),
+            RowPatch::new().border_color(ColorRgba::rgb(99, 102, 241)),
         ),
         StateStyleRule::new(
             InteractionState::HOVER,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(59, 130, 246))
                 .cursor(CursorKind::Pointer),
         ),
@@ -200,7 +201,7 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
     // Layout + style resolution helper applies layout fields too.
     let layout_rules = [StateStyleRule::new(
         InteractionState::HOVER,
-        StylePatch::new().gap(12.0).padding(8.0).opacity(0.9),
+        RowPatch::new().gap(12.0).padding(8.0).opacity(0.9),
     )];
     let (l_res, s_res) =
         resolve_layout_and_style(&LayoutSnapshot::default(), &base, &layout_rules, InteractionState::HOVER);
@@ -213,11 +214,11 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
     for i in 0..20u8 {
         many.push(StateStyleRule::new(
             InteractionState::HOVER,
-            StylePatch::new().bg(ColorRgba::rgb(i, i, i)),
+            RowPatch::new().bg(ColorRgba::rgb(i, i, i)),
         ));
     }
     let patch = resolve_patch(&many, InteractionState::HOVER);
-    assert_eq!(patch.background, Some(ColorRgba::rgb(19, 19, 19)));
+    assert_eq!(patch.get_prop(Visual::BACKGROUND), Some(Rgba::rgb(19, 19, 19)));
 }
 
 #[test]

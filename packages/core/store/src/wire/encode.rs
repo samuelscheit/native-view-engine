@@ -2,6 +2,7 @@
 
 use crate::changes::ChangeSet;
 use crate::id::ResourceId;
+use crate::resource::words_as_le_bytes;
 use crate::span_pool::StrSpan;
 use crate::store::NodeStore;
 use crate::table::TableSlot;
@@ -130,6 +131,19 @@ impl WireEncoder {
             }
         }
 
+        // Expand transitive child resources so keyframes define every dependency before its parent.
+        let mut cursor = 0usize;
+        let res_store = store.resources();
+        while cursor < changes.resources_defined.len() {
+            let rid = changes.resources_defined[cursor];
+            cursor += 1;
+            for &cid in res_store.children_of(rid) {
+                if !cid.is_none() && seen_res.insert(cid) {
+                    changes.resources_defined.push(cid);
+                }
+            }
+        }
+
         self.encode(store, &changes, out);
     }
 
@@ -212,25 +226,36 @@ impl WireEncoder {
         w.list(Op::CreateNodes, 0, changes.created.iter().map(|n| n.raw()));
 
         if !changes.resources_defined.is_empty() {
-            w.begin(Op::DefineResources, 0, changes.resources_defined.len() as u32);
             let res = store.resources();
-            for &id in &changes.resources_defined {
+            let has_children = changes
+                .resources_defined
+                .iter()
+                .any(|&id| !res.children_of(id).is_empty());
+            let ordered_buf: Vec<ResourceId>;
+            let emit_order: &[ResourceId] = if !has_children {
+                &changes.resources_defined
+            } else {
+                ordered_buf = topo_sort_defined_resources(&changes.resources_defined, res);
+                &ordered_buf
+            };
+            w.begin(Op::DefineResources, 0, emit_order.len() as u32);
+            for &id in emit_order {
                 let kind = res.kind(id).unwrap_or_default();
+                let children = res.children_of(id);
+                let raw_words = res.raw_words(id).unwrap_or(&[]);
+                let raw_bytes = words_as_le_bytes(raw_words);
+                let byte_len =
+                    u32::try_from(raw_bytes.len()).expect("NVE2 resource payload exceeds u32::MAX");
                 w.u32(id.0);
                 w.u32(kind.lo());
                 w.u32(kind.hi());
                 w.u32(res.is_ephemeral(id) as u32);
-                let len_at = w.out.len();
-                w.u32(0);
-                let start = w.out.len();
-                assert!(
-                    res.encode(id, w.out),
-                    "NVE2 encode: missing registered codec for resource {id:?} (kind {kind:?})"
-                );
-                let len = u32::try_from(w.out.len() - start)
-                    .expect("NVE2 resource payload exceeds u32::MAX");
-                w.out[len_at..len_at + 4].copy_from_slice(&len.to_le_bytes());
-                w.out.resize(pad4(w.out.len()), 0);
+                w.u32(children.len() as u32);
+                for &cid in children {
+                    w.u32(cid.0);
+                }
+                w.u32(byte_len);
+                w.out.extend_from_slice(raw_bytes);
             }
             w.end();
         }
@@ -346,4 +371,43 @@ impl WireEncoder {
             out[base + i * 4..base + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
         }
     }
+}
+
+/// Iterative post-order topological sort of newly defined resources so children always precede
+/// their parent in `Op::DefineResources`.
+fn topo_sort_defined_resources(
+    defined: &[ResourceId],
+    res: &crate::resource::ResourceStore,
+) -> Vec<ResourceId> {
+    use rustc_hash::FxHashMap;
+    // Map each defined id -> state (`0` = unvisited, `1` = on stack, `2` = emitted).
+    let mut state: FxHashMap<ResourceId, u8> =
+        FxHashMap::with_capacity_and_hasher(defined.len(), Default::default());
+    for &id in defined {
+        state.insert(id, 0);
+    }
+    let mut out = Vec::with_capacity(defined.len());
+    let mut stack: Vec<(ResourceId, usize)> = Vec::with_capacity(defined.len());
+    for &root in defined {
+        if state.get(&root).copied() != Some(0) {
+            continue;
+        }
+        state.insert(root, 1);
+        stack.push((root, 0));
+        while let Some((cur, idx)) = stack.last_mut() {
+            let kids = res.children_of(*cur);
+            if *idx < kids.len() {
+                let kid = kids[*idx];
+                *idx += 1;
+                if state.get(&kid).copied() == Some(0) {
+                    state.insert(kid, 1);
+                    stack.push((kid, 0));
+                }
+            } else if let Some((done, _)) = stack.pop() {
+                state.insert(done, 2);
+                out.push(done);
+            }
+        }
+    }
+    out
 }

@@ -7,10 +7,10 @@ use std::sync::Arc;
 use nve_abi::{
     ColorRgba, FrameId, NveDirectEvent, NveEventBatchRef, SurfaceId, ROOT_NODE_ID,
 };
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
+use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
-    core_realization_order, write_box_shadows_css, BoxShadows, Image, ImageFit, ImageSrc,
-    Interaction, Overflow, TextAlign, TextContent, Typography, Visual,
+    core_realization_order, BoxShadows, Image, ImageFit, ImageSrc, ImageSrcView, Interaction,
+    Overflow, TextAlign, TextContent, Typography, Visual,
 };
 use nve_engine::{
     encode_scene_reloc, BackendError, LayoutRect, NveApp, RelocBuf, RelocError, SceneRelocInput,
@@ -120,7 +120,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                         ImageFit::ScaleDown => 4,
                     };
                     let url = match store.resource::<ImageSrc>(img.src()) {
-                        Some(ImageSrc::Url(u)) => u.clone(),
+                        Some(ImageSrcView::Url(u)) => u.to_owned(),
                         _ => String::new(),
                     };
                     (url, rm)
@@ -135,10 +135,15 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 .map(|v| v.box_shadows())
                 .filter(|r| !r.is_none())
                 .and_then(|r| store.resource::<BoxShadows>(r))
-                .filter(|bs| !bs.0.is_empty())
+                .filter(|bs| !bs.is_empty())
                 .map(|bs| {
                     let mut css = String::new();
-                    write_box_shadows_css(&mut css, &bs.0);
+                    for (i, s) in bs.iter().enumerate() {
+                        if i > 0 {
+                            css.push_str(", ");
+                        }
+                        s.write_css_into(&mut css);
+                    }
                     css
                 })
                 .unwrap_or_default();

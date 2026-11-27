@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use nve_abi::ColorRgba;
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
-use nve_svg::{Svg, SvgPicture};
+use nve_svg::{Svg, SvgPicture, SvgPictureView};
 
-pub use rasterize::rasterize_svg_picture;
+pub use rasterize::{rasterize_svg_picture, rasterize_svg_picture_view};
 
 /// Default maximum cached SVG bitmaps in [`SvgCache`].
 pub const DEFAULT_SVG_CACHE_MAX_ENTRIES: usize = 512;
@@ -101,16 +101,17 @@ impl SvgCache {
         GLOBAL.get_or_init(|| Self::new(DEFAULT_SVG_CACHE_MAX_ENTRIES, DEFAULT_SVG_CACHE_MAX_BYTES))
     }
 
-    pub fn get_or_rasterize(
+    fn get_or_rasterize_with(
         &self,
-        picture: &SvgPicture,
+        content_hash: u64,
         px_w: u32,
         px_h: u32,
         tint: Option<ColorRgba>,
+        render: impl FnOnce(u32, u32) -> CachedSvgBitmap,
     ) -> Arc<CachedSvgBitmap> {
         let w = px_w.clamp(1, MAX_SVG_RASTER_DIM);
         let h = px_h.clamp(1, MAX_SVG_RASTER_DIM);
-        let key = SvgCacheKey::new(picture.content_hash, w, h, tint);
+        let key = SvgCacheKey::new(content_hash, w, h, tint);
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -126,7 +127,7 @@ impl SvgCache {
             }
         }
 
-        let bitmap = Arc::new(rasterize_svg_picture(picture, w, h, tint));
+        let bitmap = Arc::new(render(w, h));
         let bytes = bitmap.byte_len();
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -158,6 +159,30 @@ impl SvgCache {
             },
         );
         bitmap
+    }
+
+    pub fn get_or_rasterize(
+        &self,
+        picture: &SvgPicture,
+        px_w: u32,
+        px_h: u32,
+        tint: Option<ColorRgba>,
+    ) -> Arc<CachedSvgBitmap> {
+        self.get_or_rasterize_with(picture.content_hash, px_w, px_h, tint, |w, h| {
+            rasterize_svg_picture(picture, w, h, tint)
+        })
+    }
+
+    pub fn get_or_rasterize_view(
+        &self,
+        picture: SvgPictureView<'_>,
+        px_w: u32,
+        px_h: u32,
+        tint: Option<ColorRgba>,
+    ) -> Arc<CachedSvgBitmap> {
+        self.get_or_rasterize_with(picture.content_hash(), px_w, px_h, tint, |w, h| {
+            rasterize_svg_picture_view(picture, w, h, tint)
+        })
     }
 }
 
@@ -259,7 +284,7 @@ impl SkiaTableSystem for SvgSkiaSystem {
         let px_h = ctx.rect.height.round().max(1.0) as u32;
         // Preserve multi-color SVG fills/strokes when `row.tint()` is `None` (matching Web).
         let tint = row.tint().map(|c| ColorRgba::from_u32(c.0));
-        let bmp = SvgCache::global().get_or_rasterize(pic, px_w, px_h, tint);
+        let bmp = SvgCache::global().get_or_rasterize_view(pic, px_w, px_h, tint);
         let clip = ctx.clip_rect.map(|r| {
             [
                 r.x.floor() as i32,

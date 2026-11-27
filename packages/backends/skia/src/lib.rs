@@ -86,14 +86,15 @@ pub use nve_components::paint::{
     lerp_color_premul, sample_gradient_stops, write_css_gradient, BackgroundFill, GradientStop,
     LinearGradient, RadialGradient,
 };
-pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
+pub use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+pub use nve_components::tables::{parse_box_shadow, BoxShadow, Display};
 pub use nve_components::transform::Transform2D;
+pub use nve_components::{RowPatch, StylePatchExt};
 #[cfg(feature = "yoga")]
 pub use nve_layout_yoga::{YogaLayoutEngine, YogaUnavailableError};
 pub use raster::{
-    draw_hud_banner, parse_box_shadow, rasterize_display_list, rasterize_display_list_bitmap,
-    rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, BoxShadow,
-    PixelBuffer,
+    draw_hud_banner, rasterize_display_list, rasterize_display_list_bitmap,
+    rasterize_display_list_with_plugins, rasterize_display_list_with_text_engine, PixelBuffer,
 };
 pub use table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 pub use text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};

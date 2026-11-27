@@ -42,10 +42,12 @@ pub use nve_components::layout_ext::{
     PositionInsets, PositionMode,
 };
 pub use nve_components::media::{
-    Display, FlexWrap, MediaEnv, MediaPointer, MediaQuery, Overflow,
-    ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH,
+    MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, MEDIA_FLAG_HAS_MAX_WIDTH,
     MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
+pub use nve_components::tables::{Display, FlexWrap, Overflow, TextAlign};
+pub use nve_components::{LayoutSnapshot, StylePatchExt, VisualSnapshot};
+pub use nve_store::RowPatch;
 pub use nve_components::motion::{
     lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
     EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
@@ -82,8 +84,9 @@ pub use traits::{
     BUILTIN_TRAIT_COUNT, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 pub use typed_style::{
-    parse_flex_align, parse_flex_direction, parse_flex_justify, ShowOn, TypedStyle,
-    NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
+    parse_flex_align, parse_flex_direction, parse_flex_justify, PendingResponsiveRule,
+    PendingStateRule, PendingStylePatch, ShowOn, TypedStyle, NVE_SHOW_ON_ATTR,
+    NVE_TYPED_STYLE_ATTR,
 };
 pub use writer::{NveMutationWriter, StoreMutationTx};
 
@@ -129,7 +132,9 @@ pub mod prelude {
         TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitScope, TraitStore,
         TraitSwitch, UiDensity, VerticalSizeClass,
     };
-    pub use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
+    pub use crate::typed_style::{
+        PendingStylePatch, ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
+    };
     pub use crate::{BlurEvent, BlurEventData, CustomEvent, CustomEventData, DioxusSurface};
     pub use dioxus_core;
     pub use dioxus_core::{
@@ -146,9 +151,10 @@ pub mod prelude {
         GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
         PositionMode,
     };
-    pub use nve_components::media::{
-        Display, MediaQuery, ResponsiveRule, ResponsiveStylePatch, StylePatch,
-    };
+    pub use nve_components::media::{MediaQuery, ResponsiveRule};
+    pub use nve_components::tables::Display;
+    pub use nve_components::StylePatchExt;
+    pub use nve_store::RowPatch;
     pub use nve_components::input_hints::{AutofillHint, InputMode};
     pub use nve_components::motion::{EasingCurve, TransitionProperty, TransitionSpec};
     pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};

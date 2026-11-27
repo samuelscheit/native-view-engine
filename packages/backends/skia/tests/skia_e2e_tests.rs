@@ -6,7 +6,7 @@
 use nve_abi::{ColorRgba, EventMask, FrameId, SurfaceId};
 use nve_backend_skia::{
     CursorKind, EasingCurve, FocusModality, InteractionState, MotionPreference, PixelBuffer,
-    SkiaBackend, StateStyleRule, StylePatch, TransitionProperty, TransitionSpec,
+    RowPatch, SkiaBackend, StateStyleRule, StylePatchExt, TransitionProperty, TransitionSpec,
 };
 use nve_components::tables::{
     Display, InputKind, Interaction, Layout, Motion, StateRules, TextContent, TextInput, Transform,
@@ -29,7 +29,7 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
 
     let rules = vec![StateStyleRule::new(
         InteractionState::HOVER,
-        StylePatch::new()
+        RowPatch::new()
             .bg(ColorRgba::rgb(59, 130, 246))
             .cursor(CursorKind::Pointer),
     )];

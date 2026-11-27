@@ -295,8 +295,7 @@ fn register_locked(desc: &'static TableDesc) -> Result<TableSlot, RegistryError>
 /// Slot of a compiled table; caches it in the table's `static` slot cell. Used by the derive.
 #[doc(hidden)]
 #[cold]
-pub fn register_static(desc: &'static TableDesc, cell: &AtomicU8, register: fn()) -> TableSlot {
-    register();
+pub fn register_static(desc: &'static TableDesc, cell: &AtomicU8) -> TableSlot {
     let slot = register_locked(desc)
         .expect("NveTable static registration must succeed (unique key and <= 96 tables)");
     cell.store(slot.0, Ordering::Release);

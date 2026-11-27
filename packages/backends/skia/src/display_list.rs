@@ -7,9 +7,8 @@ use std::collections::HashMap;
 
 use nve_abi::{ColorRgba, NodeId};
 use nve_backend_headless::HeadlessBackend;
-use nve_components::style_patch::Display;
 use nve_components::tables::{
-    BackgroundFillRes, BoxShadows, Display as NveDisplay, Image, ImageSrc, Layout, Overflow,
+    BackgroundFillRes, BoxShadows, Display, Image, ImageSrc, ImageSrcView, Layout, Overflow,
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
 use nve_engine::{LayoutRect, StoreLayoutEngine};
@@ -185,11 +184,12 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         return;
     }
     let patch = layout_tree.effective_patch(store, id);
-    if patch.display == Some(Display::None)
-        || (patch.display.is_none()
+    let patched_display = patch.get_prop(Layout::DISPLAY);
+    if patched_display == Some(Display::None)
+        || (patched_display.is_none()
             && store
                 .try_row::<Layout>(id)
-                .is_some_and(|l| l.display() == NveDisplay::None))
+                .is_some_and(|l| l.display() == Display::None))
     {
         return;
     }
@@ -241,7 +241,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         if !shadow_res.is_none()
             && let Some(shadows) = store.resource::<BoxShadows>(shadow_res)
         {
-            for sh in shadows.0.iter() {
+            for sh in shadows.iter() {
                 let shadow_bounds = LayoutRect {
                     x: rect.x + sh.offset_x - sh.spread_radius,
                     y: rect.y + sh.offset_y - sh.spread_radius,
@@ -267,18 +267,20 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     // 2. Background gradient or solid fill
     if !effective_hidden && in_clip {
         let mut painted_gradient = false;
-        if let Some(v) = store.try_row::<Visual>(id) {
-            let fill_res = v.background_fill();
-            if !fill_res.is_none()
-                && let Some(fill) = store.resource::<BackgroundFillRes>(fill_res)
-            {
-                ops.push(PaintOp::FillRoundedRectGradient {
-                    rect,
-                    radius,
-                    gradient: fill.0.clone(),
-                });
-                painted_gradient = true;
-            }
+        let fill_res = patch
+            .get_res_id(Visual::BACKGROUND_FILL)
+            .filter(|rid| !rid.is_none())
+            .or_else(|| store.try_row::<Visual>(id).map(|v| v.background_fill()))
+            .filter(|rid| !rid.is_none());
+        if let Some(fill_res) = fill_res
+            && let Some(fill) = store.resource::<BackgroundFillRes>(fill_res)
+        {
+            ops.push(PaintOp::FillRoundedRectGradient {
+                rect,
+                radius,
+                gradient: fill.to_owned(),
+            });
+            painted_gradient = true;
         }
         if !painted_gradient && style.background.a > 0 {
             ops.push(PaintOp::FillRoundedRect {
@@ -305,13 +307,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     let typo = resolved_typo.get();
     let effective_weight = typo.font_weight();
     let effective_align = map_text_align(typo.text_align());
-    let color_override = patch.text_color.is_some() || motion.has_active_color(id);
+    let color_override = patch.get_prop(Typography::COLOR).is_some() || motion.has_active_color(id);
     let effective_color = if color_override {
         style.text_color
     } else {
         ColorRgba::from_u32(typo.color().0)
     };
-    let font_size_override = patch.font_size.is_some();
+    let font_size_override = patch.get_prop(Typography::FONT_SIZE).is_some();
     let effective_font_size = if font_size_override {
         style.font_size
     } else {
@@ -323,13 +325,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         if let Some(img) = store.try_row::<Image>(id) {
             let src_res = img.src();
             if !src_res.is_none()
-                && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(src_res)
+                && let Some(ImageSrcView::Url(url)) = store.resource::<ImageSrc>(src_res)
                 && !url.is_empty()
             {
                 ops.push(PaintOp::DrawImage {
                     rect,
                     radius,
-                    src: url.clone(),
+                    src: url.to_owned(),
                     fit: img.fit(),
                 });
             }

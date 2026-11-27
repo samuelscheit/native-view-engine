@@ -6,8 +6,8 @@ use nve_abi::{
     pack_key_modifiers, EventMask, FrameId, NveDirectEvent, NveEventBatchRef, NveMapEntry,
     NvePropsRef, NveValue, SurfaceId, ROOT_NODE_ID,
 };
-use nve_canvas::{Canvas, CanvasOp, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
-use nve_components::tables::{Image, ImageFit, ImageSrc, Interaction, TextInput};
+use nve_canvas::{Canvas, CanvasOpRef, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
+use nve_components::tables::{Image, ImageFit, ImageSrc, ImageSrcView, Interaction, TextInput};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::NveApp;
 use nve_store::wire::WireDecoder;
@@ -34,7 +34,7 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     );
     for (_, img) in &board_images {
         match store.resource::<ImageSrc>(img.src()) {
-            Some(ImageSrc::Url(src)) => {
+            Some(ImageSrcView::Url(src)) => {
                 assert!(
                     src.starts_with("data:image/png;base64,"),
                     "expected PNG data URI src, got {src}"
@@ -86,12 +86,11 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
         .expect("Canvas DrawList resource");
     assert!(
         dl.ops()
-            .iter()
-            .any(|op| matches!(op, CanvasOp::StrokePolyline { points, .. } if points.len() >= 8)),
-        "expected telemetry StrokePolyline op in Canvas draw list, got {:?}",
-        dl.ops()
+            .any(|op| matches!(op, CanvasOpRef::StrokePolyline { points, .. } if points.len() >= 8)),
+        "expected telemetry StrokePolyline op in Canvas draw list, got {} ops",
+        dl.len()
     );
-    let raw_bytes = dl.to_nve_draw1_bytes();
+    let raw_bytes = dl.to_owned().to_nve_draw1_bytes();
     assert!(raw_bytes.starts_with(&NVE_DRAW_MAGIC));
     assert!(DrawListDecoder::decode(&raw_bytes).expect("decode NVE_DRAW1").len() >= 7);
     assert!(h.html().contains("<canvas "));

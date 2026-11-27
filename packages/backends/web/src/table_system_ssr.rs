@@ -68,7 +68,8 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
     }
     if let Some(img) = store.try_row::<Image>(id) {
         if !img.src().is_none()
-            && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(img.src())
+            && let Some(nve_components::tables::ImageSrcView::Url(url)) =
+                store.resource::<ImageSrc>(img.src())
             && is_safe_web_url(url)
         {
             write_attr("src", url, out);

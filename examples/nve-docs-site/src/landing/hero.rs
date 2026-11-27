@@ -42,19 +42,19 @@ pub fn LandingHero() -> Element {
 
     let hero_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new().flex_col().padding_xy(0.0, 28.0),
+        RowPatch::new().flex_col().padding_xy(0.0, 28.0),
     );
     let h1_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new().font_size(32.0),
+        RowPatch::new().font_size(32.0),
     );
     let sub_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new().font_size(15.0),
+        RowPatch::new().font_size(15.0),
     );
     let cta_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new()
+        RowPatch::new()
             .width_pct(100.0)
             .flex_col()
             .align_items(FlexAlign::Stretch),
@@ -230,24 +230,24 @@ fn HeroInteractiveCard() -> Element {
 
     let card_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new().width_pct(100.0),
+        RowPatch::new().width_pct(100.0),
     );
     let card_header_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new()
+        RowPatch::new()
             .flex_col()
             .align_items(FlexAlign::FlexStart)
             .gap(10.0),
     );
     let tablist_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new()
+        RowPatch::new()
             .width_pct(100.0)
             .justify_content(FlexJustify::SpaceBetween),
     );
     let host_row_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new()
+        RowPatch::new()
             .flex_col()
             .align_items(FlexAlign::FlexStart)
             .gap(6.0),

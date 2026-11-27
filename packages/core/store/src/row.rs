@@ -3,7 +3,7 @@
 use nve_abi::table::Word;
 
 use crate::id::{NodeIndex, ResourceId};
-use crate::resource::{Resource, ResourceStore};
+use crate::resource::{FlatResource, ResourceStore};
 use crate::span_pool::{StrArena, StrSpan};
 use crate::store::NodeRow;
 use crate::table::TableMeta;
@@ -280,7 +280,7 @@ impl<'a> RowWriter<'a> {
     /// Writes (interning + deduplicating) or clears a resource field at `word`.
     #[doc(hidden)]
     #[inline]
-    pub fn put_resource<R: Resource>(&mut self, word: usize, value: Option<R>) {
+    pub fn put_resource<R: FlatResource>(&mut self, word: usize, value: Option<&R>) {
         assert!(
             word < 32 && (self.desc.resource_words() & (1u32 << word)) != 0,
             "RowWriter::put_resource: word {word} is not a declared resource word on `{}`",
@@ -293,10 +293,30 @@ impl<'a> RowWriter<'a> {
         self.swap_resource(word, id);
     }
 
+    /// Writes a resource via a zero-alloc flat-word closure into `ResourceStore`'s scratch buffer.
+    #[doc(hidden)]
+    #[inline]
+    pub fn put_resource_with<R: FlatResource>(
+        &mut self,
+        word: usize,
+        write: impl FnOnce(&mut Vec<u32>) -> bool,
+    ) {
+        assert!(
+            word < 32 && (self.desc.resource_words() & (1u32 << word)) != 0,
+            "RowWriter::put_resource_with: word {word} is not a declared resource word on `{}`",
+            self.desc.name()
+        );
+        let id = self
+            .resources
+            .try_intern_with::<R>(write)
+            .unwrap_or(ResourceId::NONE);
+        self.swap_resource(word, id);
+    }
+
     /// Writes an ephemeral (non-deduplicated, rewritten-in-place) resource at `word`.
     #[doc(hidden)]
     #[inline]
-    pub fn put_resource_ephemeral<R: Resource>(&mut self, word: usize, value: R) {
+    pub fn put_resource_ephemeral<R: FlatResource>(&mut self, word: usize, value: &R) {
         assert!(
             word < 32 && (self.desc.resource_words() & (1u32 << word)) != 0,
             "RowWriter::put_resource_ephemeral: word {word} is not a declared resource word on `{}`",
@@ -304,22 +324,58 @@ impl<'a> RowWriter<'a> {
         );
         let old = ResourceId(self.row[word]);
         let id = self.resources.set_ephemeral(old, value);
-        if id == old {
+        if id == old && !id.is_none() {
             self.mark(word, 1);
         } else {
             self.swap_resource(word, id);
         }
     }
 
-    /// Typed value of the resource field at `word`.
+    /// Writes an ephemeral resource via a zero-alloc flat-word closure into `ResourceStore`.
+    #[doc(hidden)]
     #[inline]
-    pub fn resource<R: Resource>(&self, word: usize) -> Option<&R> {
-        self.resources.get(ResourceId(self.row[word]))
+    pub fn put_resource_ephemeral_with<R: FlatResource>(
+        &mut self,
+        word: usize,
+        write: impl FnOnce(&mut Vec<u32>) -> bool,
+    ) {
+        assert!(
+            word < 32 && (self.desc.resource_words() & (1u32 << word)) != 0,
+            "RowWriter::put_resource_ephemeral_with: word {word} is not a declared resource word on `{}`",
+            self.desc.name()
+        );
+        let old = ResourceId(self.row[word]);
+        let id = self
+            .resources
+            .try_set_ephemeral_with::<R>(old, write)
+            .unwrap_or(ResourceId::NONE);
+        if id == old && !id.is_none() {
+            self.mark(word, 1);
+        } else {
+            self.swap_resource(word, id);
+        }
     }
 
-    /// Points a resource field at an existing id (replica apply), taking a reference to it.
+    /// Zero-copy typed view of the resource field at `word`.
     #[inline]
-    pub(crate) fn put_resource_id(&mut self, word: usize, id: ResourceId) {
+    pub fn resource<R: FlatResource>(&self, word: usize) -> Option<R::View<'_>> {
+        self.resources.get::<R>(ResourceId(self.row[word]))
+    }
+
+    /// Points a resource field at an existing defined id (or `ResourceId::NONE`), taking a ref.
+    #[doc(hidden)]
+    #[inline]
+    pub fn put_resource_id(&mut self, word: usize, id: ResourceId) {
+        assert!(
+            word < 32 && (self.desc.resource_words() & (1u32 << word)) != 0,
+            "RowWriter::put_resource_id: word {word} is not a declared resource word on `{}`",
+            self.desc.name()
+        );
+        assert!(
+            id.is_none() || self.resources.is_defined(id),
+            "RowWriter::put_resource_id: undefined ResourceId {id:?} on `{}`",
+            self.desc.name()
+        );
         if ResourceId(self.row[word]) == id {
             return;
         }

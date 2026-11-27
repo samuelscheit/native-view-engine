@@ -3,7 +3,8 @@
 
 use nve_abi::{ColorRgba, EventMask, SurfaceId};
 use nve_backend_headless::{
-    CursorKind, FocusModality, HeadlessBackend, InteractionState, StateStyleRule, StylePatch,
+    CursorKind, FocusModality, HeadlessBackend, InteractionState, RowPatch, StateStyleRule,
+    StylePatchExt,
 };
 use nve_components::tables::{Interaction, Layout, StateRules, TextInput, Visual};
 use nve_engine::{StoreBackend, Viewport};
@@ -26,17 +27,17 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     let rules = vec![
         StateStyleRule::new(
             InteractionState::HOVER,
-            StylePatch::new()
+            RowPatch::new()
                 .bg(ColorRgba::rgb(30, 64, 175))
                 .cursor(CursorKind::Pointer),
         ),
         StateStyleRule::new(
             InteractionState::ACTIVE,
-            StylePatch::new().bg(ColorRgba::rgb(29, 78, 216)),
+            RowPatch::new().bg(ColorRgba::rgb(29, 78, 216)),
         ),
         StateStyleRule::new(
             InteractionState::DISABLED,
-            StylePatch::new()
+            RowPatch::new()
                 .opacity(0.4)
                 .cursor(CursorKind::NotAllowed),
         ),

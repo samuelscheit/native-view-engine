@@ -314,7 +314,10 @@ impl DocsHarness {
                 return None;
             }
             let list = store.resource::<DataAttrList>(res)?;
-            return list.0.iter().find(|(k, _)| k == dk).map(|(_, v)| v.clone());
+            return list
+                .iter()
+                .find(|(k, _)| *k == dk)
+                .map(|(_, v)| v.to_owned());
         }
         match key {
             "viewport-mode" => {
@@ -323,10 +326,9 @@ impl DocsHarness {
                     return None;
                 }
                 let list = store.resource::<DataAttrList>(res)?;
-                list.0
-                    .iter()
-                    .find(|(k, _)| k == "viewport-mode")
-                    .map(|(_, v)| v.clone())
+                list.iter()
+                    .find(|(k, _)| *k == "viewport-mode")
+                    .map(|(_, v)| v.to_owned())
             }
             "href" => store
                 .try_row::<Link>(nid)

@@ -5,11 +5,13 @@ use std::mem::{align_of, offset_of, size_of};
 
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::media::{
-    ColorScheme, FlexWrap, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
-    ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
-    MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
+    ColorScheme, FlexWrap, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule, RowPatch,
+    TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION,
+    MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
+use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_components::tables::{Layout, Typography, Visual};
+use nve_components::StylePatchExt;
 
 #[test]
 fn media_query_repr_c_8_byte_abi_layout_and_raw_validation() {
@@ -91,10 +93,10 @@ fn size_class_and_custom_breakpoints_partition_widths_with_zero_gap_or_overlap()
 }
 
 #[test]
-fn responsive_style_patch_applies_all_26_fields() {
-    assert!(ResponsiveStylePatch::new().is_empty());
+fn responsive_row_patch_applies_all_26_fields() {
+    assert!(RowPatch::new().is_empty());
 
-    let full_patch = ResponsiveStylePatch::new()
+    let full_patch = RowPatch::new()
         .flex_direction(FlexDirection::RowReverse)
         .justify_content(FlexJustify::SpaceBetween)
         .align_items(FlexAlign::Baseline)
@@ -151,8 +153,8 @@ fn responsive_style_patch_applies_all_26_fields() {
     assert_eq!(style.opacity, 0.92);
     assert_eq!(style.font_size, 18.5);
     assert_eq!(style.z_index, 42);
-    assert_eq!(rule.patch.flex_wrap, Some(FlexWrap::Wrap));
-    assert_eq!(rule.patch.overflow, Some(Overflow::Auto));
-    assert_eq!(rule.patch.text_align, Some(TextAlign::Center));
-    assert_eq!(rule.patch.font_weight, Some(700));
+    assert_eq!(rule.patch.get_prop(Layout::FLEX_WRAP), Some(FlexWrap::Wrap));
+    assert_eq!(rule.patch.get_prop(Visual::OVERFLOW_X), Some(Overflow::Auto));
+    assert_eq!(rule.patch.get_prop(Typography::TEXT_ALIGN), Some(TextAlign::Center));
+    assert_eq!(rule.patch.get_prop(Typography::FONT_WEIGHT), Some(700));
 }

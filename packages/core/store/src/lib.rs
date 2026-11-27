@@ -23,7 +23,9 @@ mod id;
 mod inherited;
 mod node_mut;
 mod resource;
+mod resource_ingress;
 mod row;
+mod row_patch;
 mod span_pool;
 mod store;
 mod table;
@@ -40,15 +42,24 @@ pub use nve_abi::table::{
     effect, table_flags, FieldDesc, FieldKind, OptEncoding, Storage, TableDesc, TableKey, Word,
 };
 pub use nve_abi_macros::{NveTable, WordEnum};
-pub use resource::{register_codec, Resource, ResourceStore};
+pub use resource::{words_as_le_bytes, FlatResource, ResourceStore};
+pub use resource_ingress::{
+    padded_word_len, read_bytes_words, read_fixed_str_pack, read_str_words, validate_bytes_words,
+    validate_fixed_str_pack, validate_str_words, write_bytes_words, write_fixed_str_pack,
+    write_str_words,
+};
 pub use row::{DirtyList, RowRef, RowWriter};
+pub use row_patch::{
+    prop_written, RowPatch, RowPatchView, TableOpsIter, TableOpsView, WordMask, WordOp, WordOpKind,
+    WordOpsIter, MAX_PATCH_TABLES, WORD_OP_RESOURCE, WORD_OP_SCALAR,
+};
 pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
 pub use store::{NodeRef, NodeRow, NodeStore, RealizationOrder, StoreStats};
 pub use table::{
     desc, slot_of, NveTable, Prop, RegistryError, Res, ResProp, ScalarField, Str, StrProp,
     TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
 };
-pub use node_mut::NodeMut;
+pub use node_mut::{NodeMut, TempResources};
 pub use tx::Transaction;
 pub use value::{GridLine, Length, OptWord, Rgba, WordValue};
 
@@ -71,6 +82,8 @@ pub mod __private {
 
 #[cfg(test)]
 mod inherited_edge_tests;
+#[cfg(test)]
+mod row_patch_tests;
 #[cfg(test)]
 mod inherited_tests;
 #[cfg(test)]

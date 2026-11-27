@@ -18,6 +18,7 @@ pub mod hydrate;
 pub mod input_attrs;
 pub mod layout_ext_css;
 pub mod media_css;
+pub mod patch_css;
 pub mod sanitize;
 #[cfg(feature = "ssr")]
 pub mod snapshot;

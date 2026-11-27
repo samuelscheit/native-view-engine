@@ -55,13 +55,15 @@ use crate::NodeId;
 ///
 /// Valid resource field via `Res<R>` (positive control):
 /// ```
-/// use nve_store::{NveTable, Res, Resource};
+/// use nve_store::{FlatResource, NveTable, Res};
 /// use nve_abi::Key64;
-/// struct Blob(Vec<u8>);
-/// impl Resource for Blob {
+/// struct Blob(Vec<u32>);
+/// impl FlatResource for Blob {
 ///     const KIND: Key64 = Key64::of("doctest.blob");
-///     fn encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.0); }
-///     fn decode(bytes: &[u8]) -> Option<Self> { Some(Self(bytes.to_vec())) }
+///     type View<'a> = &'a [u32];
+///     fn write_words(&self, out: &mut Vec<u32>) -> bool { out.extend_from_slice(&self.0); true }
+///     fn validate(_words: &[u32]) -> bool { true }
+///     fn view(words: &[u32]) -> &[u32] { words }
 /// }
 /// #[derive(NveTable)]
 /// #[nve_table(name = "doctest.res_ok", storage = "sparse")]

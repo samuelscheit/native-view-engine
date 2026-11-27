@@ -399,9 +399,9 @@ impl WebTableSystem for HtmlDataAttrsWebSystem {
         let Some(list) = store.resource::<DataAttrList>(row.entries()) else {
             return;
         };
-        for (k, v) in list.0.iter() {
+        for (k, v) in list.iter() {
             let full: std::borrow::Cow<'_, str> = if k.starts_with("data-") {
-                std::borrow::Cow::Borrowed(k.as_str())
+                std::borrow::Cow::Borrowed(k)
             } else {
                 std::borrow::Cow::Owned(format!("data-{k}"))
             };
@@ -423,9 +423,9 @@ impl WebTableSystem for HtmlDataAttrsWebSystem {
         };
         let list = store.resource::<DataAttrList>(row.entries());
         if let Some(list) = list {
-            for (k, v) in list.0.iter() {
+            for (k, v) in list.iter() {
                 let full: std::borrow::Cow<'_, str> = if k.starts_with("data-") {
-                    std::borrow::Cow::Borrowed(k.as_str())
+                    std::borrow::Cow::Borrowed(k)
                 } else {
                     std::borrow::Cow::Owned(format!("data-{k}"))
                 };
@@ -436,7 +436,7 @@ impl WebTableSystem for HtmlDataAttrsWebSystem {
         }
         ctx.retain_slot_attrs(node, |existing| {
             list.is_some_and(|l| {
-                l.0.iter().any(|(k, v)| {
+                l.iter().any(|(k, v)| {
                     let matches_name = if k.starts_with("data-") {
                         k == existing
                     } else {

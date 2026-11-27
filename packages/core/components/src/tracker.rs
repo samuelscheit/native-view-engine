@@ -7,7 +7,7 @@ use nve_abi::NodeId;
 use crate::interaction::{
     resolve_cursor, resolve_style, CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
-use crate::style_patch::VisualSnapshot;
+use crate::snapshots::VisualSnapshot;
 
 /// Reusable O(1) stateful interaction tracker for native backends (`HeadlessBackend`, `SkiaBackend`).
 ///

@@ -1,8 +1,8 @@
 use nve_abi::table::effect;
 
 use crate::{
-    ChangeSet, Length, NodeId, NodeStore, NveTable, RealizationOrder, Res, Resource, Rgba, Str,
-    TableSlot, WordEnum, WordValue,
+    ChangeSet, FlatResource, Length, NodeId, NodeStore, NveTable, RealizationOrder, Res, Rgba,
+    Str, TableSlot, WordEnum, WordValue,
 };
 
 #[repr(u8)]
@@ -17,15 +17,31 @@ pub enum Align {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shadows(pub Vec<f32>);
 
-impl Resource for Shadows {
-    const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.shadows");
-    fn encode(&self, out: &mut Vec<u8>) {
-        for v in &self.0 {
+impl Shadows {
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.0.len() * 4);
+        for &v in &self.0 {
             out.extend_from_slice(&v.to_le_bytes());
         }
+        out
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self(bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()))
+}
+
+impl FlatResource for Shadows {
+    const KIND: nve_abi::Key64 = nve_abi::Key64::of("test.shadows");
+    type View<'a> = Vec<f32>;
+
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.extend(self.0.iter().map(|&v| v.to_bits()));
+        true
+    }
+
+    fn validate(_words: &[u32]) -> bool {
+        true
+    }
+
+    fn view<'a>(words: &'a [u32]) -> Self::View<'a> {
+        words.iter().map(|&w| f32::from_bits(w)).collect()
     }
 }
 
@@ -176,7 +192,7 @@ fn resources_dedup_refcount_and_ephemeral_in_place() {
     let (ra, rb) = (s.row::<Visual>(a).shadows(), s.row::<Visual>(b).shadows());
     assert_eq!(ra, rb, "deduplicated");
     assert_eq!(c.resources_defined, vec![ra]);
-    assert_eq!(s.resource::<Shadows>(ra), Some(&Shadows(vec![1.0, 2.0])));
+    assert_eq!(s.resource::<Shadows>(ra), Some(vec![1.0, 2.0]));
 
     let mut tx = s.tx();
     tx.edit::<Visual>(a).shadows(None);
@@ -198,7 +214,7 @@ fn resources_dedup_refcount_and_ephemeral_in_place() {
     assert_eq!(s.row::<Visual>(a).shadows(), id, "rewritten in place");
     assert_eq!(c.resources_defined, vec![id]);
     assert_eq!(c.table(Visual::slot()).unwrap().masks, vec![1 << 6]);
-    assert_eq!(s.resource::<Shadows>(id), Some(&Shadows(vec![2.0])));
+    assert_eq!(s.resource::<Shadows>(id), Some(vec![2.0]));
 }
 
 fn commit_tx(tx: crate::Transaction<'_>) -> ChangeSet {
@@ -387,17 +403,19 @@ fn publish_table_views_and_table_event_bus_roundtrip() {
 
 #[test]
 fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
-    crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();
-    let mut encoded = Vec::new();
-    Shadows(vec![1.0, 2.0]).encode(&mut encoded);
+    let encoded = Shadows(vec![1.0, 2.0]).to_le_bytes();
 
     // Repeatedly defining + reclaiming the same unreferenced resource id across many frames must
     // preserve `RES_IN_FREE` and never grow `free` unboundedly.
     for _ in 0..20 {
-        assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded));
+        assert!(store
+            .resources
+            .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &encoded));
         // Duplicate define_at in the same frame must not push a duplicate into `pending_free`.
-        assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded));
+        assert!(store
+            .resources
+            .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &encoded));
         assert_eq!(
             store.resources.pending_free_len(),
             1,
@@ -405,6 +423,7 @@ fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
         );
         store.resources.end_frame();
         assert_eq!(store.stats().resources_live, 0);
+        assert_eq!(store.resources.words_live(), 0);
         assert!(
             store.resources.free_len() <= 1,
             "free list must not grow on repeated replica recycle: len={}",
@@ -415,29 +434,28 @@ fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
 
 #[test]
 fn replica_define_at_retain_not_clobbered_by_intern() {
-    crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();
-    let mut enc_a = Vec::new();
-    Shadows(vec![1.0, 2.0]).encode(&mut enc_a);
-    let mut enc_b = Vec::new();
-    Shadows(vec![9.0, 8.0]).encode(&mut enc_b);
+    let enc_a = Shadows(vec![1.0, 2.0]).to_le_bytes();
 
     // Frame 1: define unreferenced id=1 -> end_frame moves it onto `free` with `RES_IN_FREE`.
-    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a));
+    assert!(store
+        .resources
+        .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc_a));
     store.resources.end_frame();
 
     // Frame 2: wire redefines id=1 AND retains it (still carries `RES_IN_FREE` until popped).
-    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a));
+    assert!(store
+        .resources
+        .define_at(crate::ResourceId(1), Shadows::KIND, false, &[], &enc_a));
     store.resources.retain(crate::ResourceId(1));
     store.resources.end_frame();
-    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(&Shadows(vec![1.0, 2.0])));
+    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(vec![1.0, 2.0]));
 
     // Local `intern` pops id=1 from `free`, must see it is live and skip it instead of clobbering!
-    let local_id = store.resources.intern(Shadows(vec![9.0, 8.0]));
+    let local_id = store.resources.intern(&Shadows(vec![9.0, 8.0]));
     assert_ne!(local_id, crate::ResourceId(1), "live replica resource slot must not be clobbered");
-    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(&Shadows(vec![1.0, 2.0])));
-    assert_eq!(store.resource::<Shadows>(local_id), Some(&Shadows(vec![9.0, 8.0])));
-    let _ = enc_b;
+    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(vec![1.0, 2.0]));
+    assert_eq!(store.resource::<Shadows>(local_id), Some(vec![9.0, 8.0]));
 }
 
 #[test]
@@ -471,49 +489,54 @@ fn install_dynamic_table_rejects_static_slot_and_schema_mismatch() {
 }
 
 #[test]
-#[should_panic(expected = "distinct Rust types")]
-fn intern_type_mismatch_on_kind_collision_panics() {
+fn intern_distinct_rust_types_with_same_kind_do_not_alias() {
     #[derive(Debug, PartialEq)]
     struct CollideA(u32);
     #[derive(Debug, PartialEq)]
     struct CollideB(u32);
     const SHARED_KIND: nve_hash::Key64 = nve_hash::Key64(nve_hash::const_id("test.collide.kind"));
-    impl Resource for CollideA {
+    impl FlatResource for CollideA {
         const KIND: nve_hash::Key64 = SHARED_KIND;
-        fn encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.0.to_le_bytes()); }
-        fn decode(b: &[u8]) -> Option<Self> {
-            b.try_into().ok().map(|a| Self(u32::from_le_bytes(a)))
-        }
+        type View<'a> = u32;
+        fn write_words(&self, out: &mut Vec<u32>) -> bool { out.push(self.0); true }
+        fn validate(w: &[u32]) -> bool { w.len() == 1 }
+        fn view(w: &[u32]) -> u32 { w[0] }
     }
-    impl Resource for CollideB {
+    impl FlatResource for CollideB {
         const KIND: nve_hash::Key64 = SHARED_KIND;
-        fn encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.0.to_le_bytes()); }
-        fn decode(b: &[u8]) -> Option<Self> {
-            b.try_into().ok().map(|a| Self(u32::from_le_bytes(a)))
-        }
+        type View<'a> = u32;
+        fn write_words(&self, out: &mut Vec<u32>) -> bool { out.push(self.0); true }
+        fn validate(w: &[u32]) -> bool { w.len() == 1 }
+        fn view(w: &[u32]) -> u32 { w[0] }
     }
 
     let mut store = NodeStore::new();
-    let _ = store.resources.intern(CollideA(42));
-    // Identical bytes + identical KIND, different Rust type -> must miss dedup and panic in register_codec.
-    let _ = store.resources.intern(CollideB(42));
+    let id_a = store.resources.intern(&CollideA(42));
+    // Identical words + identical KIND, different Rust type -> must NOT alias and must keep type isolation.
+    let id_b = store.resources.intern(&CollideB(42));
+    assert_ne!(id_a, id_b);
+    assert_eq!(store.resource::<CollideA>(id_a), Some(42));
+    assert_eq!(store.resource::<CollideB>(id_a), None);
+    assert_eq!(store.resource::<CollideB>(id_b), Some(42));
+    assert_eq!(store.resource::<CollideA>(id_b), None);
 }
 
 #[test]
 fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free() {
-    crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();
-    let mut enc_a = Vec::new();
-    Shadows(vec![1.0, 2.0]).encode(&mut enc_a);
-    let mut enc_b = Vec::new();
-    Shadows(vec![3.0, 4.0]).encode(&mut enc_b);
+    let enc_a = Shadows(vec![1.0, 2.0]).to_le_bytes();
+    let enc_b = Shadows(vec![3.0, 4.0]).to_le_bytes();
 
     let id = crate::ResourceId(1);
     // Same-frame define_at -> retain -> define_at -> release must preserve RES_PENDING_FREE.
-    assert!(store.resources.define_at(id, Shadows::KIND, false, &enc_a));
+    assert!(store
+        .resources
+        .define_at(id, Shadows::KIND, false, &[], &enc_a));
     assert_eq!(store.resources.pending_free_len(), 1);
     store.resources.retain(id);
-    assert!(store.resources.define_at(id, Shadows::KIND, false, &enc_b));
+    assert!(store
+        .resources
+        .define_at(id, Shadows::KIND, false, &[], &enc_b));
     store.resources.release(id);
     assert_eq!(
         store.resources.pending_free_len(),
@@ -524,6 +547,7 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
     store.resources.end_frame();
     assert_eq!(store.resources.pending_free_len(), 0);
     assert_eq!(store.stats().resources_live, 0);
+    assert_eq!(store.resources.words_live(), 0);
     assert_eq!(
         store.resources.free_len(),
         1,

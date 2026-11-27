@@ -1,13 +1,17 @@
 //! Standalone vector SVG capability (`packages/modules/svg`).
 //!
 //! Pure-spec root crate with zero backend dependencies: defines [`Svg`] (`#[derive(NveTable)]`),
-//! [`SvgPicture`] (`nve_store::Resource`), path parser, and deterministic inline SVG formatter.
+//! [`SvgPicture`] (`nve_store::FlatResource`), path parser, and deterministic inline SVG formatter.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+mod flat;
 pub mod path_parser;
 mod picture;
 
+pub use flat::{
+    SvgPictureView, VectorPathCmdsIter, VectorShapeView, VectorShapesIter,
+};
 pub use picture::{
     compute_svg_content_hash, parse_svg_path_data, write_path_data_into, FillRule, SvgPicture,
     VectorPathCmd, VectorShape, MAX_SVG_PATH_COMMANDS, MAX_SVG_PATH_INPUT_BYTES,
@@ -16,9 +20,8 @@ pub use picture::{
 use std::sync::Arc;
 
 pub use nve_abi::ColorRgba;
-use nve_abi::Key64;
 use nve_codec::{ByteReader, ByteWriter, CodecError, NveDecode, NveEncode};
-use nve_store::{NveTable, Res, Resource, Rgba};
+use nve_store::{NveTable, Res, Rgba};
 
 /// Vector SVG node table (`nve.svg`).
 #[derive(NveTable)]
@@ -90,25 +93,10 @@ pub fn decode_svg_picture(bytes: &[u8]) -> Result<SvgPicture, CodecError> {
     Ok(SvgPicture::new(vb, shapes))
 }
 
-impl Resource for SvgPicture {
-    const KIND: Key64 = Key64::of("nve.res.svg_picture");
-
-    fn encode(&self, out: &mut Vec<u8>) {
-        let start = out.len();
-        if ByteWriter::with_buf(out, |w| encode_svg_picture(self, w)).is_err() {
-            out.truncate(start);
-        }
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        decode_svg_picture(bytes).ok()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_store::{ChangeSet, NodeId, NodeStore};
+    use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore};
 
     #[test]
     fn svg_table_and_picture_resource_roundtrip() {
@@ -128,13 +116,16 @@ mod tests {
         assert_eq!(row.tint(), Some(Rgba::rgb(10, 20, 30)));
         assert!(row.mirror_directional());
         let got = store.resource::<SvgPicture>(row.picture()).unwrap();
-        assert_eq!(got.content_hash, pic.content_hash);
+        assert_eq!(got.content_hash(), pic.content_hash);
+        assert_eq!(got.view_box(), pic.view_box);
+        assert_eq!(got.shape_count(), 1);
 
-        // Wire round-trip via Resource encode/decode
-        let mut buf = Vec::new();
-        pic.encode(&mut buf);
-        assert_eq!(SvgPicture::decode(&buf).unwrap().content_hash, pic.content_hash);
-        assert!(SvgPicture::decode(&[]).is_none());
+        let mut words = Vec::new();
+        assert!(pic.write_words(&mut words));
+        assert!(SvgPicture::validate(&words));
+        assert_eq!(SvgPicture::view(&words).content_hash(), pic.content_hash);
+        assert!(!SvgPicture::validate(&[]));
+        assert!(!SvgPicture::validate(&[0, 0, 0, 0, 0, 0, 99999]));
     }
 
     #[test]
@@ -227,9 +218,9 @@ mod tests {
                 max: MAX_SVG_SHAPES,
             })
         );
-        let mut out_rollback = vec![0xDE, 0xAD];
-        too_many_shapes.encode(&mut out_rollback);
-        assert_eq!(out_rollback, vec![0xDE, 0xAD], "failed Resource::encode must leave zero partial bytes");
+        let mut out_rollback = vec![0xDEAD_BEEFu32];
+        assert!(!too_many_shapes.write_words(&mut out_rollback));
+        assert_eq!(out_rollback, vec![0xDEAD_BEEFu32], "failed FlatResource::write_words must leave zero partial words");
 
         let too_many_cmds = SvgPicture::new(
             (0.0, 0.0, 10.0, 10.0),

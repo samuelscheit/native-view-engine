@@ -1,7 +1,7 @@
 //! Value-type layout/visual snapshots and visibility/overflow helpers over `NodeStore`.
 
 use nve_abi::ColorRgba;
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
+use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
     is_node_display_none, Layout as NveLayout, Overflow, Typography, Visual,
 };

@@ -16,8 +16,8 @@ use std::hint::black_box;
 use criterion::{criterion_group, BatchSize, Criterion};
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{
-    ChangeSet, GridLine, InheritedTable, Length, NodeId, NodeStore, NveTable, ResolvedRow, Rgba,
-    Str, WordEnum,
+    ChangeSet, FlatResource, GridLine, InheritedTable, Length, NodeId, NodeStore, NveTable, Res,
+    ResolvedRow, Rgba, RowPatch, Str, WordEnum,
 };
 
 #[repr(u8)]
@@ -54,12 +54,32 @@ struct BenchBox {
     stamp: u64,
 }
 
+#[derive(Debug, Clone)]
+struct BenchBlob;
+
+impl FlatResource for BenchBlob {
+    const KIND: nve_abi::Key64 = nve_abi::Key64::of("bench.store_blob");
+    type View<'a> = &'a [u32];
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.push(1);
+        true
+    }
+    fn validate(words: &[u32]) -> bool {
+        !words.is_empty()
+    }
+    fn view(words: &[u32]) -> &[u32] {
+        words
+    }
+}
+
 #[allow(dead_code)]
 #[derive(NveTable)]
 #[nve_table(name = "bench.label", storage = "sparse", flags = "publish")]
 struct BenchLabel {
     #[effect(measure, paint)]
     text: Str,
+    #[effect(paint)]
+    blob: Res<BenchBlob>,
 }
 
 #[allow(dead_code)]
@@ -407,13 +427,85 @@ fn bench_inherited_resolve(c: &mut Criterion) {
     });
 }
 
+fn bench_flat_resources_and_row_patch(c: &mut Criterion) {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (n_dedup, n_eph) = {
+        let mut tx = store.tx();
+        let a = tx.create();
+        let b = tx.create();
+        tx.edit::<BenchLabel>(a).blob_with(|out| {
+            out.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            true
+        });
+        tx.edit::<BenchLabel>(b).blob_ephemeral_with(|out| {
+            out.extend_from_slice(&[10, 20, 30, 40]);
+            true
+        });
+        tx.commit_into(&mut changes);
+        (a, b)
+    };
+
+    c.bench_function("flat_resource_dedup_hit_with", |b| {
+        b.iter(|| {
+            let mut tx = store.tx();
+            tx.edit::<BenchLabel>(n_dedup).blob_with(|out| {
+                out.extend_from_slice(black_box(&[1, 2, 3, 4, 5, 6, 7, 8]));
+                true
+            });
+            tx.commit_into(&mut changes);
+            black_box(store.row::<BenchLabel>(n_dedup).blob())
+        });
+    });
+
+    let mut tick = 0u32;
+    c.bench_function("flat_resource_ephemeral_in_place", |b| {
+        b.iter(|| {
+            tick = tick.wrapping_add(1);
+            let mut tx = store.tx();
+            tx.edit::<BenchLabel>(n_eph).blob_ephemeral_with(|out| {
+                out.extend_from_slice(&[tick, tick + 1, tick + 2, tick + 3]);
+                true
+            });
+            tx.commit_into(&mut changes);
+            black_box(
+                store
+                    .resource::<BenchBlob>(store.row::<BenchLabel>(n_eph).blob())
+                    .expect("ephemeral blob")[0],
+            )
+        });
+    });
+
+    let mut patch_words = Vec::new();
+    let mut rp = RowPatch::new();
+    rp.set(BenchBox::OPACITY, 0.4)
+        .set(BenchBox::BG, Rgba::rgb(12, 34, 56))
+        .set(BenchBox::OPT_ALIGN, Some(BenchAlign::End))
+        .set(BenchBox::OPT_TINT, Some(Rgba::rgb(9, 8, 7)))
+        .set(BenchBox::STAMP, 0xDEAD_BEEF_1234_5678u64);
+    assert!(rp.write_words(&mut patch_words));
+
+    let pv = RowPatch::view(&patch_words);
+    let n = BenchBox::DESC.words();
+    let mut base = [0u32; 16];
+    base[..n].copy_from_slice(BenchBox::DESC.defaults);
+    c.bench_function("row_patch_view_apply_table", |b| {
+        b.iter(|| {
+            let mut dst = base;
+            pv.apply_table::<BenchBox>(black_box(&mut dst[..n]));
+            black_box(dst[0])
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_str_arena_read,
     bench_row_write_and_commit,
     bench_subtree_remove,
     bench_nve2_roundtrip,
-    bench_inherited_resolve
+    bench_inherited_resolve,
+    bench_flat_resources_and_row_patch
 );
 }
 

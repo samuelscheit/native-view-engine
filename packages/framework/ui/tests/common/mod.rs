@@ -156,7 +156,7 @@ impl UiHarness {
             .and_then(|v| {
                 let r = v.box_shadows();
                 (!r.is_none())
-                    .then(|| store.resource::<BoxShadows>(r).map(|b| !b.0.is_empty()))
+                    .then(|| store.resource::<BoxShadows>(r).map(|b| !b.is_empty()))
                     .flatten()
             })
             .unwrap_or(false)
@@ -185,10 +185,9 @@ impl UiHarness {
             }
             let list = store.resource::<DataAttrList>(res)?;
             return list
-                .0
                 .iter()
-                .find(|(k, _)| k == data_key || k == key)
-                .map(|(_, v)| v.as_str());
+                .find(|(k, _)| *k == data_key || *k == key)
+                .map(|(_, v)| v);
         }
         match key {
             "testID" => store
@@ -249,10 +248,10 @@ impl UiHarness {
                 }
                 let rel = store.resource::<AriaRelations>(res)?;
                 let val = match key {
-                    "ariaControls" => rel.controls.as_str(),
-                    "ariaLabelledBy" => rel.labelled_by.as_str(),
-                    "ariaDescribedBy" => rel.described_by.as_str(),
-                    _ => rel.active_descendant.as_str(),
+                    "ariaControls" => rel.controls(),
+                    "ariaLabelledBy" => rel.labelled_by(),
+                    "ariaDescribedBy" => rel.described_by(),
+                    _ => rel.active_descendant(),
                 };
                 (!val.is_empty()).then_some(val)
             }

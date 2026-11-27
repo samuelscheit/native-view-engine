@@ -6,7 +6,10 @@ use nve_components::layout_ext::{
     compute_sticky_offset, GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit,
     LayoutDirection, LayoutExt, LogicalInlineEdges, PositionInsets, PositionMode,
 };
-use nve_components::style_patch::{Display, StylePatch};
+use nve_components::snapshots::transform_from_patch;
+use nve_components::tables::{Display, GridLayout, GridTracks};
+use nve_components::{RowPatch, StylePatchExt};
+use nve_store::NodeStore;
 use nve_components::transform::{affine_concat, lerp_transform_2d, Transform2D};
 
 fn assert_close(actual: f32, expected: f32, eps: f32, label: &str) {
@@ -216,10 +219,27 @@ fn sticky_offset_clamps_before_during_and_after_containing_block() {
 }
 
 #[test]
-fn style_patch_merges_and_applies_extended_layout_and_transform() {
-    let p1 = StylePatch::new()
+fn row_patch_merges_and_applies_extended_layout_and_transform() {
+    let mut store = NodeStore::new();
+    let (cols1, cols3) = {
+        let mut tx = store.tx();
+        let n1 = tx.create();
+        let n3 = tx.create();
+        tx.edit::<GridLayout>(n1)
+            .template_columns(Some(GridTracks::new(vec![GridTrack::repeat_minmax_zero_fr(1)])));
+        tx.edit::<GridLayout>(n3)
+            .template_columns(Some(GridTracks::new(vec![GridTrack::repeat_minmax_zero_fr(3)])));
+        let mut ch = nve_store::ChangeSet::default();
+        tx.commit_into(&mut ch);
+        (
+            store.row::<GridLayout>(n1).template_columns(),
+            store.row::<GridLayout>(n3).template_columns(),
+        )
+    };
+
+    let p1 = RowPatch::new()
         .display_grid()
-        .grid_cols([GridTrack::repeat_minmax_zero_fr(1)])
+        .grid_cols_id(cols1)
         .flex_basis_px(120.0)
         .aspect_ratio(16.0 / 9.0)
         .position(PositionMode::Sticky)
@@ -227,17 +247,17 @@ fn style_patch_merges_and_applies_extended_layout_and_transform() {
         .direction(LayoutDirection::Rtl)
         .padding_inline_start(16.0)
         .translate(4.0, 8.0);
-    let p2 = StylePatch::new()
-        .grid_cols([GridTrack::repeat_minmax_zero_fr(3)])
-        .scale(1.1);
+    let p2 = RowPatch::new().grid_cols_id(cols3).scale(1.1);
     let mut merged = p1;
     merged.merge(&p2);
 
     let mut ext = LayoutExt::default();
     merged.apply_layout_ext_to(&mut ext);
     assert_eq!(ext.display, Display::Grid);
+    assert_eq!(merged.get_res_id(GridLayout::TEMPLATE_COLUMNS), Some(cols3));
+    let view = store.resource::<GridTracks>(cols3).unwrap();
     assert_eq!(
-        ext.grid.as_deref().unwrap().template_columns,
+        view.iter().collect::<Vec<_>>(),
         vec![GridTrack::repeat_minmax_zero_fr(3)]
     );
     assert_eq!(ext.flex_basis, Dimension::Points(120.0));
@@ -246,5 +266,9 @@ fn style_patch_merges_and_applies_extended_layout_and_transform() {
     assert_eq!(ext.insets.top, Dimension::Points(12.0));
     assert_eq!(ext.direction, Some(LayoutDirection::Rtl));
     assert_eq!(ext.padding_inline.start, Some(16.0));
-    assert_eq!(merged.transform, Some(Transform2D::scale(1.1)));
+    let tf = transform_from_patch(&merged).unwrap();
+    assert_eq!(tf.translate_x, 4.0);
+    assert_eq!(tf.translate_y, 8.0);
+    assert_eq!(tf.scale_x, 1.1);
+    assert_eq!(tf.scale_y, 1.1);
 }

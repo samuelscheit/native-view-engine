@@ -6,9 +6,11 @@
 //! devices never suffer sticky `:hover` states.
 
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_components::tables::StateRulesView;
+use nve_store::NodeStore;
 
-use crate::media_css::write_style_patch_decls;
 use crate::css::format_content_class;
+use crate::media_css::{write_row_patch_decls, write_row_patch_view_decls};
 
 /// One compiled, content-addressed CSS interactive pseudo-state rule
 /// (`nve-s-<8hex>`).
@@ -120,6 +122,41 @@ pub fn format_state_class(state: InteractionState, decls: &str) -> String {
     format_content_class("nve-s-", &[&[state.bits(), 0], decls.as_bytes()])
 }
 
+/// Compiles a zero-copy [`StateRulesView`] into content-addressed [`CompiledStateRule`]s in
+/// deterministic cascade order.
+pub fn compile_node_state_rules_view(
+    rules: StateRulesView<'_>,
+    store: Option<&NodeStore>,
+    guard_hover_media: bool,
+    out: &mut Vec<CompiledStateRule>,
+) {
+    if rules.is_empty() {
+        return;
+    }
+    let mut ordered: Vec<(InteractionState, nve_store::RowPatchView<'_>)> = rules
+        .iter()
+        .filter(|(s, p)| !s.is_empty() && !p.is_empty())
+        .collect();
+    ordered.sort_by_key(|(s, _)| s.cascade_order());
+
+    for (state, patch) in ordered {
+        let mut decls = String::new();
+        write_row_patch_view_decls(patch, store, &mut decls);
+        if decls.is_empty() {
+            continue;
+        }
+        let class_name = format_state_class(state, &decls);
+        if !out.iter().any(|existing| existing.class_name == class_name) {
+            out.push(CompiledStateRule {
+                class_name,
+                state,
+                decls,
+                guard_hover_media,
+            });
+        }
+    }
+}
+
 /// Compiles a node's [`StateStyleRule`] slice into content-addressed [`CompiledStateRule`]s in
 /// deterministic cascade order (`Hover < Focus < FocusVisible < Active < Disabled`, preserving
 /// declaration order for ties) with `@media (hover:hover)` sticky-hover guarding enabled.
@@ -146,7 +183,7 @@ pub fn compile_node_state_rules_with_hover_guard(
     for idx in ordered {
         let rule = &rules[idx];
         let mut decls = String::new();
-        write_style_patch_decls(&rule.patch, &mut decls);
+        write_row_patch_decls(&rule.patch, None, &mut decls);
         if decls.is_empty() {
             continue;
         }

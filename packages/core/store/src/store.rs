@@ -7,7 +7,7 @@ use nve_abi::table::{TableDesc, Word, MAX_TABLE_SLOTS};
 
 use crate::column::Column;
 use crate::id::{IndexVec, NodeId, NodeIndex, ResourceId, TableSet};
-use crate::resource::{Resource, ResourceStore};
+use crate::resource::{FlatResource, ResourceStore};
 use crate::row::{DirtyList, RowRef};
 use crate::span_pool::{ChildSpan, SpanPool, StrArena, StrSpan};
 use crate::table::{self, NveTable, OwnedTableDesc, TableMeta, TableSlot};
@@ -209,8 +209,8 @@ impl<'a> NodeRef<'a> {
     }
 
     #[inline(always)]
-    pub fn resource<R: Resource>(self, id: ResourceId) -> Option<&'a R> {
-        self.store.resources.get(id)
+    pub fn resource<R: FlatResource>(self, id: ResourceId) -> Option<R::View<'a>> {
+        self.store.resources.get::<R>(id)
     }
 
     #[inline(always)]
@@ -436,8 +436,8 @@ impl NodeStore {
     }
 
     #[inline]
-    pub fn resource<R: Resource>(&self, id: ResourceId) -> Option<&R> {
-        self.resources.get(id)
+    pub fn resource<R: FlatResource>(&self, id: ResourceId) -> Option<R::View<'_>> {
+        self.resources.get::<R>(id)
     }
 
     /// Descriptor of a compiled/static table slot used in this store.

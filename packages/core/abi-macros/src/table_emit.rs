@@ -130,11 +130,9 @@ pub(super) fn emit(t: &Table) -> String {
         mut props,
         mut getters,
         mut setters,
-        mut regs,
         mut resolve_stmts,
         mut inherit_only_stmts,
     ) = (
-        String::new(),
         String::new(),
         String::new(),
         String::new(),
@@ -191,7 +189,6 @@ pub(super) fn emit(t: &Table) -> String {
             f.effects,
             f.no_inherit,
         ));
-        regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
 
         if inherited {
             let bit_check = if idx == 0 {
@@ -377,14 +374,35 @@ pub(super) fn emit(t: &Table) -> String {
                 setters.push_str(&format!(
                     "{d} #[inline] pub fn {fname}(mut self, v: ::core::option::Option<{r}>) -> Self {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                        self.0.put_resource(__F.word as usize, v); \
+                        self.0.put_resource(__F.word as usize, v.as_ref()); \
+                        {set_explicit_stmt} \
+                        self \
+                    }} \
+                    #[doc = \"Assigns an already-interned `{r}` `ResourceId` (or `ResourceId::NONE` to clear).\"] \
+                    #[inline] pub fn {fname}_id(mut self, rid: {S}::ResourceId) -> Self {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        self.0.put_resource_id(__F.word as usize, rid); \
+                        {set_explicit_stmt} \
+                        self \
+                    }} \
+                    #[doc = \"Zero-alloc scratch writer for `{fname}` (`FlatResource` words written directly into `ResourceStore`).\"] \
+                    #[inline] pub fn {fname}_with(mut self, f: impl ::core::ops::FnOnce(&mut ::std::vec::Vec<u32>) -> bool) -> Self {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        self.0.put_resource_with::<{r}>(__F.word as usize, f); \
                         {set_explicit_stmt} \
                         self \
                     }} \
                     #[doc = \"Ephemeral (in-place, non-deduplicated) write; for per-frame blobs.\"] \
                     #[inline] pub fn {fname}_ephemeral(mut self, v: {r}) -> Self {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                        self.0.put_resource_ephemeral(__F.word as usize, v); \
+                        self.0.put_resource_ephemeral(__F.word as usize, &v); \
+                        {set_explicit_stmt} \
+                        self \
+                    }} \
+                    #[doc = \"Zero-alloc ephemeral (in-place, non-deduplicated) scratch writer.\"] \
+                    #[inline] pub fn {fname}_ephemeral_with(mut self, f: impl ::core::ops::FnOnce(&mut ::std::vec::Vec<u32>) -> bool) -> Self {{ \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        self.0.put_resource_ephemeral_with::<{r}>(__F.word as usize, f); \
                         {set_explicit_stmt} \
                         self \
                     }}"
@@ -394,7 +412,7 @@ pub(super) fn emit(t: &Table) -> String {
                         "#[doc = \"Clears explicit `{fname}`, releasing the resource so it inherits from its parent.\"] \
                         #[inline] pub fn clear_{fname}(mut self) -> Self {{ \
                             const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                            self.0.put_resource::<{r}>(__F.word as usize, ::core::option::Option::None); \
+                            self.0.put_resource_id(__F.word as usize, {S}::ResourceId::NONE); \
                             self.0.clear_explicit_bit({idx}u32, __F.effects); \
                             self \
                         }}"
@@ -507,7 +525,7 @@ const _: () = {{
             static DESC: {S}::TableDesc = <{id} as {S}::NveTable>::DESC;
             let s = CELL.load(::core::sync::atomic::Ordering::Acquire);
             if s != u8::MAX {{ {S}::TableSlot(s) }} else {{
-                {S}::__private::register_static(&DESC, &CELL, || {{ {regs} }})
+                {S}::__private::register_static(&DESC, &CELL)
             }}
         }}
     }}

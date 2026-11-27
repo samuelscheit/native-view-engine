@@ -5,7 +5,7 @@
 use nve_abi::num::{write_f32, write_u64};
 use nve_abi::ColorRgba;
 
-use crate::style_patch::VisualSnapshot;
+use crate::snapshots::VisualSnapshot;
 
 pub use crate::motion_clock::{
     MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack, TimedTransition,

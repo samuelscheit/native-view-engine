@@ -29,7 +29,6 @@ use transform::{
 };
 
 pub use pixel_buffer::PixelBuffer;
-pub use shadow::{parse_box_shadow, BoxShadow};
 
 pub(crate) fn fill_rounded_rect(
     buf: &mut PixelBuffer,

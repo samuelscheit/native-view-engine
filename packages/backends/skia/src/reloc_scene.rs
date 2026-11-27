@@ -1,13 +1,13 @@
 //! Zero-copy `SceneRelocView` (`NVERELOC` Frame-0) painting directly into [`SkiaBackend`]'s
 //! retained [`DisplayList`] with zero layout computation.
 
-use nve_components::tables::ImageFit;
+use nve_abi::ColorRgba;
+use nve_components::tables::{parse_box_shadow, ImageFit};
 use nve_engine::{
     BackendError, LayoutRect, SceneRelocView, StoreLayoutEngine,
 };
 
 use crate::display_list::{intersect_rects, intersects_clip};
-use crate::raster::parse_box_shadow;
 use crate::text::TextAlign;
 use crate::{PaintOp, SkiaBackend, MAX_HIT_TEST_DEPTH};
 
@@ -99,6 +99,10 @@ fn emit_reloc_node(
         .map_err(|e| BackendError::Internal(e.to_string()))?;
     if !box_shadow.is_empty() {
         for sh in parse_box_shadow(box_shadow) {
+            let color = ColorRgba::from_u32(sh.color.0);
+            if sh.inset || color.a == 0 {
+                continue;
+            }
             ops.push(PaintOp::DrawShadow {
                 rect,
                 radius,
@@ -106,7 +110,7 @@ fn emit_reloc_node(
                 offset_y: sh.offset_y,
                 blur_radius: sh.blur_radius,
                 spread_radius: sh.spread_radius,
-                color: sh.color,
+                color,
             });
         }
     }

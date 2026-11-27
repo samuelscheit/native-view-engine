@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Resource, Rgba};
+use nve_store::{ChangeSet, FlatResource, Length, NodeId, NodeStore, NveTable, Rgba, RowPatch};
 
 use crate::interaction::{CursorKind, InteractionState, StateStyleRule};
 use crate::layout_ext::GridTrack;
 use crate::media::{MediaQuery, ResponsiveRule};
 use crate::motion::TransitionSpec;
 use crate::paint::{BackgroundFill, GradientStop};
-use crate::style_patch::StylePatch;
+use crate::style_ext::StylePatchExt;
 
 use super::*;
 
@@ -103,7 +103,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
     tx.edit::<Responsive>(n)
         .rules(Some(ResponsiveRules::new(vec![ResponsiveRule {
             query: MediaQuery::min_width(768),
-            patch: StylePatch::default().opacity(0.5),
+            patch: RowPatch::new().opacity(0.5),
         }])));
     tx.edit::<Interaction>(n)
         .event_mask(0b101)
@@ -111,7 +111,7 @@ fn core_tables_roundtrip_through_nve2_wire() {
         .tab_index(Some(-1))
         .state_rules(Some(StateRules::new(vec![StateStyleRule {
             state: InteractionState::HOVER,
-            patch: StylePatch::default().opacity(0.9),
+            patch: RowPatch::new().opacity(0.9),
         }])));
     tx.edit::<Accessibility>(n)
         .role(Some(AriaRole::Button))
@@ -165,8 +165,8 @@ fn core_tables_roundtrip_through_nve2_wire() {
     assert_eq!(v.opacity(), 0.75);
     assert_eq!(v.visibility(), Visibility::Hidden);
     let shadows = dst.resource::<BoxShadows>(v.box_shadows()).unwrap();
-    assert_eq!(shadows.0.len(), 1);
-    assert_eq!(shadows.0[0].blur_radius, 12.0);
+    assert_eq!(shadows.len(), 1);
+    assert_eq!(shadows.get(0).unwrap().blur_radius, 12.0);
 
     let typo = dst.try_row::<Typography>(n).unwrap();
     assert!(typo.is_font_size_explicit());
@@ -200,25 +200,35 @@ fn core_tables_roundtrip_through_nve2_wire() {
 }
 
 #[test]
-fn resource_decoders_reject_truncated_and_corrupt_inputs() {
-    let empty: &[u8] = &[];
-    assert!(GridTracks::decode(empty).is_none());
-    assert!(BoxShadows::decode(empty).is_none());
-    assert!(BackgroundFillRes::decode(empty).is_none());
-    assert!(Transitions::decode(empty).is_none());
-    assert!(ResponsiveRules::decode(empty).is_none());
-    assert!(StateRules::decode(empty).is_none());
-    assert!(AriaRelations::decode(empty).is_none());
-    assert!(ImageSrc::decode(empty).is_none());
+fn resource_validators_reject_truncated_and_corrupt_inputs() {
+    let empty: &[u32] = &[];
+    assert!(!GridTracks::validate(empty));
+    assert!(!BoxShadows::validate(empty));
+    assert!(!BackgroundFillRes::validate(empty));
+    assert!(!Transitions::validate(empty));
+    assert!(!ResponsiveRules::validate(empty));
+    assert!(!StateRules::validate(empty));
+    assert!(!AriaRelations::validate(empty));
+    assert!(!ImageSrc::validate(empty));
 
-    // Oversized length prefix
-    let huge = [0xFFu8, 0xFF, 0xFF, 0x7F];
-    assert!(GridTracks::decode(&huge).is_none());
-    assert!(BoxShadows::decode(&huge).is_none());
+    // Oversized length prefix & bad discriminants
+    let huge = [0x7FFF_FFFFu32];
+    assert!(!GridTracks::validate(&huge));
+    assert!(!BoxShadows::validate(&huge));
+    assert!(!Transitions::validate(&huge));
+    assert!(!ResponsiveRules::validate(&huge));
+    assert!(!StateRules::validate(&huge));
+    assert!(!BackgroundFillRes::validate(&[99, 0]));
+    assert!(!ImageSrc::validate(&[2, 0]));
+    // Non-zero padding byte in UTF-8 string word
+    assert!(!ImageSrc::validate(&[0, 1, 0x00FF_0061]));
+    // Invalid UTF-8 in AriaRelations
+    assert!(!AriaRelations::validate(&[1, 0, 0, 0, 0x0000_00FF]));
 
     // EncodedBytes roundtrip
     let img = ImageSrc::EncodedBytes(Arc::from([1u8, 2, 3, 4]));
     let mut buf = Vec::new();
-    img.encode(&mut buf);
-    assert_eq!(ImageSrc::decode(&buf), Some(img));
+    assert!(img.write_words(&mut buf));
+    assert!(ImageSrc::validate(&buf));
+    assert_eq!(ImageSrc::view(&buf), ImageSrcView::EncodedBytes(&[1, 2, 3, 4]));
 }

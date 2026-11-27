@@ -6,16 +6,19 @@ mod builders;
 mod layout_ext;
 mod paint;
 
-pub use builders::{parse_flex_align, parse_flex_direction, parse_flex_justify};
+pub use builders::{
+    parse_flex_align, parse_flex_direction, parse_flex_justify, PendingResponsiveRule,
+    PendingStateRule, PendingStylePatch,
+};
 
 use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
 use nve_abi::{Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::{CursorKind, StateStyleRule};
+use nve_components::interaction::CursorKind;
 use nve_components::layout_ext::LayoutExt;
-use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::media::MediaQuery;
 use nve_components::motion::TransitionSpec;
 use nve_components::paint::BackgroundFill;
 use nve_components::transform::Transform2D;
@@ -66,9 +69,9 @@ pub struct TypedStyle {
     pub transform: Option<Transform2D>,
     pub background_fill: Option<BackgroundFill>,
     pub show_on: Option<MediaQuery>,
-    pub responsive: Vec<ResponsiveRule>,
+    pub responsive: Vec<PendingResponsiveRule>,
     pub cursor: Option<CursorKind>,
-    pub state_rules: Vec<StateStyleRule>,
+    pub state_rules: Vec<PendingStateRule>,
     pub transitions: Vec<TransitionSpec>,
 }
 

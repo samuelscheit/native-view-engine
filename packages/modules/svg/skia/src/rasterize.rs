@@ -2,7 +2,7 @@
 //! quadratic/cubic Bezier flattening, and per-shape SDF stroke rasterization for [`SvgPicture`].
 
 use nve_abi::ColorRgba;
-use nve_svg::{FillRule, SvgPicture, VectorPathCmd, VectorShape};
+use nve_svg::{FillRule, SvgPicture, SvgPictureView, VectorPathCmd};
 
 use super::{CachedSvgBitmap, MAX_SVG_RASTER_DIM};
 
@@ -29,7 +29,68 @@ pub fn rasterize_svg_picture(
     };
 
     for shape in picture.shapes.iter() {
-        rasterize_shape(shape, scale, ox, oy, w, h, tint, &mut premul_rgba);
+        if shape.path.is_empty() {
+            continue;
+        }
+        let (fill, stroke) = shape.effective_colors(tint);
+        rasterize_shape_cmds(
+            shape.path.iter().copied(),
+            fill,
+            stroke,
+            shape.stroke_width,
+            shape.fill_rule,
+            scale,
+            ox,
+            oy,
+            w,
+            h,
+            &mut premul_rgba,
+        );
+    }
+
+    CachedSvgBitmap {
+        width: w,
+        height: h,
+        premul_rgba,
+    }
+}
+
+/// Zero-copy counterpart to [`rasterize_svg_picture`] reading directly from [`SvgPictureView`].
+pub fn rasterize_svg_picture_view(
+    picture: SvgPictureView<'_>,
+    px_w: u32,
+    px_h: u32,
+    tint: Option<ColorRgba>,
+) -> CachedSvgBitmap {
+    let w = px_w.clamp(1, MAX_SVG_RASTER_DIM);
+    let h = px_h.clamp(1, MAX_SVG_RASTER_DIM);
+    let mut premul_rgba = vec![0u8; (w as usize) * (h as usize) * 4];
+    let Some((scale, ox, oy)) = picture.view_box_transform(0.0, 0.0, w as f32, h as f32) else {
+        return CachedSvgBitmap {
+            width: w,
+            height: h,
+            premul_rgba,
+        };
+    };
+
+    for shape in picture.shapes() {
+        if shape.cmd_count() == 0 {
+            continue;
+        }
+        let (fill, stroke) = shape.effective_colors(tint);
+        rasterize_shape_cmds(
+            shape.cmds(),
+            fill,
+            stroke,
+            shape.stroke_width(),
+            shape.fill_rule(),
+            scale,
+            ox,
+            oy,
+            w,
+            h,
+            &mut premul_rgba,
+        );
     }
 
     CachedSvgBitmap {
@@ -54,46 +115,53 @@ struct Subpath {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rasterize_shape(
-    shape: &VectorShape,
+fn rasterize_shape_cmds(
+    cmds: impl IntoIterator<Item = VectorPathCmd>,
+    fill: Option<ColorRgba>,
+    stroke: Option<ColorRgba>,
+    stroke_width: f32,
+    fill_rule: FillRule,
     scale: f32,
     ox: f32,
     oy: f32,
     w: u32,
     h: u32,
-    tint: Option<ColorRgba>,
     out: &mut [u8],
 ) {
-    if shape.path.is_empty() {
+    let subpaths = flatten_subpaths(cmds, scale, ox, oy);
+    if subpaths.is_empty() {
         return;
     }
-    let subpaths = flatten_subpaths(&shape.path, scale, ox, oy);
-    let (fill, stroke) = shape.effective_colors(tint);
 
     if let Some(fill_color) = fill
         && fill_color.a > 0
     {
-        rasterize_fill(&subpaths, shape.fill_rule, fill_color, w, h, out);
+        rasterize_fill(&subpaths, fill_rule, fill_color, w, h, out);
     }
 
     if let Some(stroke_color) = stroke
         && stroke_color.a > 0
-        && shape.stroke_width.is_finite()
-        && shape.stroke_width > 0.0
+        && stroke_width.is_finite()
+        && stroke_width > 0.0
     {
-        let half_w = (shape.stroke_width * scale * 0.5).max(0.5);
+        let half_w = (stroke_width * scale * 0.5).max(0.5);
         rasterize_stroke(&subpaths, half_w, stroke_color, w, h, out);
     }
 }
 
-fn flatten_subpaths(cmds: &[VectorPathCmd], scale: f32, ox: f32, oy: f32) -> Vec<Subpath> {
+fn flatten_subpaths(
+    cmds: impl IntoIterator<Item = VectorPathCmd>,
+    scale: f32,
+    ox: f32,
+    oy: f32,
+) -> Vec<Subpath> {
     let tx = |x: f32| x * scale + ox;
     let ty = |y: f32| y * scale + oy;
     let mut subpaths: Vec<Subpath> = Vec::new();
     let mut cur: Vec<(f32, f32)> = Vec::new();
     let mut last = (0.0f32, 0.0f32);
 
-    for &cmd in cmds {
+    for cmd in cmds {
         match cmd {
             VectorPathCmd::MoveTo(x, y) => {
                 if cur.len() >= 2 {

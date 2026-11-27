@@ -40,10 +40,9 @@ pub fn data_attr_in_store(store: &NodeStore, id: NodeId, key: &str) -> Option<St
     let res = store.try_row::<HtmlDataAttrs>(id)?.entries();
     let list = store.resource::<DataAttrList>(res)?;
     let stripped = key.strip_prefix("data-").unwrap_or(key);
-    list.0
-        .iter()
-        .find(|(k, _)| k == key || k == stripped)
-        .map(|(_, v)| v.clone())
+    list.iter()
+        .find(|(k, _)| *k == key || *k == stripped)
+        .map(|(_, v)| v.to_owned())
 }
 
 pub fn live_node_ids(store: &NodeStore) -> Vec<NodeId> {

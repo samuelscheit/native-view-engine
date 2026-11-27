@@ -9,7 +9,8 @@ use std::cell::Cell;
 
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{
-    ChangeSet, GridLine, Length, NodeId, NodeStore, NveTable, ResolvedRow, Rgba, Str, WordEnum,
+    ChangeSet, FlatResource, GridLine, Length, NodeId, NodeStore, NveTable, Res, ResolvedRow,
+    Rgba, RowPatch, Str, WordEnum,
 };
 
 thread_local! {
@@ -114,12 +115,32 @@ struct BenchBox {
     stamp: u64,
 }
 
+#[derive(Debug, Clone)]
+struct BenchBlob;
+
+impl FlatResource for BenchBlob {
+    const KIND: nve_abi::Key64 = nve_abi::Key64::of("bench.blob");
+    type View<'a> = &'a [u32];
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.push(1);
+        true
+    }
+    fn validate(words: &[u32]) -> bool {
+        !words.is_empty()
+    }
+    fn view(words: &[u32]) -> &[u32] {
+        words
+    }
+}
+
 #[allow(dead_code)]
 #[derive(NveTable)]
 #[nve_table(name = "bench.label", storage = "sparse", flags = "publish")]
 struct BenchLabel {
     #[effect(measure, paint)]
     text: Str,
+    #[effect(paint)]
+    blob: Res<BenchBlob>,
 }
 
 #[allow(dead_code)]
@@ -389,5 +410,57 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     assert_eq!(
         allocs_inherit, 0,
         "steady-state ResolvedRow inheritance walk + clear/set explicit bit must allocate 0 bytes"
+    );
+
+    // 7. Flat ResourceStore dedup hit + ephemeral in-place rewrite + RowPatchView::apply_table = 0 allocs.
+    let mut patch_words = Vec::with_capacity(32);
+    let mut rp = RowPatch::new();
+    rp.set(BenchBox::OPACITY, 0.35)
+        .set(BenchBox::BG, Rgba::rgb(99, 88, 77))
+        .set(BenchBox::OPT_ALIGN, Some(BenchAlign::End))
+        .set(BenchBox::OPT_TINT, Some(Rgba::rgb(1, 2, 3)))
+        .set(BenchBox::STAMP, 0xCAFE_BABE_1234_5678u64);
+    assert!(rp.write_words(&mut patch_words));
+    {
+        let mut tx = store.tx();
+        tx.edit::<BenchLabel>(nodes[0]).blob_with(|out| {
+            out.extend_from_slice(&[1, 2, 3, 4]);
+            true
+        });
+        tx.edit::<BenchLabel>(nodes[2]).blob_ephemeral_with(|out| {
+            out.extend_from_slice(&[10, 20, 30, 40]);
+            true
+        });
+        tx.commit_into(&mut changes);
+    }
+    let (allocs_flat_res, flat_acc) = measure_allocs(|| {
+        // Dedup hit via `blob_with` on a second node.
+        let mut tx = store.tx();
+        tx.edit::<BenchLabel>(nodes[1]).blob_with(|out| {
+            out.extend_from_slice(&[1, 2, 3, 4]);
+            true
+        });
+        // Ephemeral in-place rewrite within same size class (4 words).
+        tx.edit::<BenchLabel>(nodes[2]).blob_ephemeral_with(|out| {
+            out.extend_from_slice(&[50, 60, 70, 80]);
+            true
+        });
+        tx.commit_into(&mut changes);
+
+        // Zero-copy view read + branchless RowPatchView::apply_table.
+        let view = store
+            .resource::<BenchBlob>(store.row::<BenchLabel>(nodes[2]).blob())
+            .unwrap();
+        let mut row_buf = [0u32; 16];
+        let n = BenchBox::DESC.words();
+        row_buf[..n].copy_from_slice(BenchBox::DESC.defaults);
+        let pv = RowPatch::view(&patch_words);
+        pv.apply_table::<BenchBox>(&mut row_buf[..n]);
+        u64::from(view[0]).wrapping_add(u64::from(row_buf[0]))
+    });
+    assert!(flat_acc > 0);
+    assert_eq!(
+        allocs_flat_res, 0,
+        "steady-state flat ResourceStore dedup hit, ephemeral in-place rewrite, and RowPatchView::apply_table must allocate 0 bytes"
     );
 }

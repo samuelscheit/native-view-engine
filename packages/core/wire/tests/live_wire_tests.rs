@@ -16,7 +16,7 @@ use nve_abi::{
     encode_events, ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId,
     SurfaceId, NVE_PRIMARY_SLOT_NONE,
 };
-use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
+use nve_components::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::{
     encode_scene_reloc, LayoutRect, SceneRelocInput, SceneRelocNodeInput, SceneRelocView,
     VerifyMode, Viewport,

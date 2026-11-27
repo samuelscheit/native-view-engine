@@ -6,15 +6,12 @@
 //! 0% CSS injection surface.
 
 pub use nve_abi::ColorScheme;
+pub use nve_store::RowPatch;
 
 pub use crate::client_hints::{
     ClientHintsSnapshot, SSR_ACCEPT_CH_HEADER, SSR_CRITICAL_CH_HEADER, SSR_VARY_HEADER,
 };
-pub use crate::style_patch::{Display, FlexWrap, Overflow, StylePatch, TextAlign};
-
-/// Backwards-compatible alias for the unified [`StylePatch`] shared by responsive `@media` and
-/// interactive pseudo-state rules.
-pub type ResponsiveStylePatch = StylePatch;
+pub use crate::tables::{Display, FlexWrap, Overflow, TextAlign};
 
 /// Bitflag in [`MediaQuery::flags`] indicating [`MediaQuery::min_width_px`] is active.
 pub const MEDIA_FLAG_HAS_MIN_WIDTH: u8 = 1 << 0;
@@ -307,16 +304,16 @@ impl MediaQuery {
     }
 }
 
-/// One conditional responsive style rule pairing a [`MediaQuery`] with a [`StylePatch`].
+/// One conditional responsive style rule pairing a [`MediaQuery`] with a table-generic [`RowPatch`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResponsiveRule {
     pub query: MediaQuery,
-    pub patch: StylePatch,
+    pub patch: RowPatch,
 }
 
 impl ResponsiveRule {
     #[inline]
-    pub const fn new(query: MediaQuery, patch: StylePatch) -> Self {
+    pub const fn new(query: MediaQuery, patch: RowPatch) -> Self {
         Self { query, patch }
     }
 }

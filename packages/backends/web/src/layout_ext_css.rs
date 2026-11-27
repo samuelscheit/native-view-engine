@@ -4,7 +4,7 @@
 
 use nve_abi::Dimension;
 use nve_components::layout_ext::{GridTrack, LayoutExt, PositionMode};
-use nve_components::style_patch::Display;
+use nve_components::tables::Display;
 use nve_components::transform::Transform2D;
 
 use crate::css::{canonical_f32, write_compact_dim, write_compact_num, write_compact_px};
@@ -18,6 +18,11 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
         Display::Flex => {}
         Display::Grid => out.push_str("display:grid;"),
         Display::None => out.push_str("display:none;"),
+        Display::Block => out.push_str("display:block;"),
+        Display::Inline => out.push_str("display:inline;"),
+        Display::InlineBlock => out.push_str("display:inline-block;"),
+        Display::InlineFlex => out.push_str("display:inline-flex;"),
+        Display::Contents => out.push_str("display:contents;"),
     }
     if ext.flex_basis != Dimension::Auto {
         out.push_str("flex-basis:");

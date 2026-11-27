@@ -4,13 +4,13 @@
 
 use nve_abi::NodeId;
 use nve_components::interaction::{
-    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
-    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+    resolve_cursor_from_view, resolve_layout_and_style_from_view, resolve_patch_from_view,
+    resolve_style_from_view, CursorKind, FocusModality, InteractionState, InteractionTracker,
 };
-use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
-use nve_components::tables::{InputKind, Interaction, StateRules, TextInput, Visual};
+use nve_components::snapshots::{LayoutSnapshot, VisualSnapshot};
+use nve_components::tables::{InputKind, Interaction, StateRules, StateRulesView, TextInput, Visual};
 use nve_engine::StoreLayoutEngine;
-use nve_store::NodeStore;
+use nve_store::{NodeStore, RowPatch};
 
 use crate::{
     is_display_none, layout_snapshot_of, node_clips_overflow, visual_snapshot_of, HeadlessBackend,
@@ -115,27 +115,26 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         }
     }
 
-    fn state_rules_of<'a>(&self, store: &'a NodeStore, id: NodeId) -> &'a [StateStyleRule] {
+    fn state_rules_of<'a>(&self, store: &'a NodeStore, id: NodeId) -> StateRulesView<'a> {
         store
             .try_row::<Interaction>(id)
             .map(|i| i.state_rules())
             .filter(|res| !res.is_none())
             .and_then(|res| store.resource::<StateRules>(res))
-            .map(|r| &*r.0)
-            .unwrap_or(&[])
+            .unwrap_or(StateRulesView::EMPTY)
     }
 
-    /// Resolves the effective merged [`StylePatch`] for `id` under its current [`InteractionState`].
-    pub fn effective_patch(&self, store: &NodeStore, id: NodeId) -> StylePatch {
+    /// Resolves the effective merged [`RowPatch`] for `id` under its current [`InteractionState`].
+    pub fn effective_patch(&self, store: &NodeStore, id: NodeId) -> RowPatch {
         let rules = self.state_rules_of(store, id);
-        resolve_patch(rules, self.interaction.state(id))
+        resolve_patch_from_view(rules, self.interaction.state(id))
     }
 
     /// Resolves the effective [`VisualSnapshot`] for `id` with active pseudo-state rules applied.
     pub fn effective_visual(&self, store: &NodeStore, id: NodeId) -> VisualSnapshot {
         let base = visual_snapshot_of(store, id);
         let rules = self.state_rules_of(store, id);
-        resolve_style(&base, rules, self.interaction.state(id))
+        resolve_style_from_view(&base, rules, self.interaction.state(id))
     }
 
     /// Resolves both [`LayoutSnapshot`] and [`VisualSnapshot`] for `id` with active state rules.
@@ -147,7 +146,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         let base_l = layout_snapshot_of(store, id);
         let base_v = visual_snapshot_of(store, id);
         let rules = self.state_rules_of(store, id);
-        resolve_layout_and_style(&base_l, &base_v, rules, self.interaction.state(id))
+        resolve_layout_and_style_from_view(&base_l, &base_v, rules, self.interaction.state(id))
     }
 
     /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].
@@ -168,7 +167,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             base_cursor
         };
         let rules = self.state_rules_of(store, id);
-        resolve_cursor(base, rules, self.interaction.state(id))
+        resolve_cursor_from_view(base, rules, self.interaction.state(id))
     }
 
     #[inline]

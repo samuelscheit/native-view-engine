@@ -3,8 +3,8 @@
 
 use crate::wire::{WireDecoder, WireEncoder};
 use crate::{
-    effect, ChangeSet, InheritedTable, Length, NodeId, NodeStore, NveTable, Res, ResolvedRow,
-    Resource, Rgba, Str, WordEnum,
+    effect, ChangeSet, FlatResource, InheritedTable, Length, NodeId, NodeStore, NveTable, Res,
+    ResolvedRow, Rgba, Str, WordEnum,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, WordEnum)]
@@ -19,14 +19,18 @@ enum TestAlign {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TestBlob(u32);
 
-impl Resource for TestBlob {
+impl FlatResource for TestBlob {
     const KIND: nve_hash::Key64 = nve_hash::Key64::of("test.inherited.blob");
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.0.to_le_bytes());
+    type View<'a> = u32;
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.push(self.0);
+        true
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let arr: [u8; 4] = bytes.try_into().ok()?;
-        Some(Self(u32::from_le_bytes(arr)))
+    fn validate(words: &[u32]) -> bool {
+        words.len() == 1
+    }
+    fn view(words: &[u32]) -> u32 {
+        words[0]
     }
 }
 
@@ -150,7 +154,7 @@ fn multi_level_inheritance_explicit_default_override_and_clear() {
         assert!(pt.underline());
         assert_eq!(pt.weight(), 700);
         assert_eq!(pt.tag64(), 0x1122_3344_5566_7788);
-        assert_eq!(store.resource::<TestBlob>(pt.blob()), Some(&TestBlob(99)));
+        assert_eq!(store.resource::<TestBlob>(pt.blob()), Some(99));
 
         // Child's explicit table defaults override grandparent/parent, while unset fields inherit.
         let ct = c_r.get();
@@ -248,7 +252,7 @@ fn multi_level_inheritance_explicit_default_override_and_clear() {
         let gp_r = ResolvedRow::<TestInherited>::resolve(&store, grandparent, &root_r);
         let p_r2 = ResolvedRow::<TestInherited>::resolve(&store, parent, &gp_r);
         assert_eq!(p_r2.get().font_family(), "JetBrains Mono");
-        assert_eq!(store.resource::<TestBlob>(p_r2.get().blob()), Some(&TestBlob(7)));
+        assert_eq!(store.resource::<TestBlob>(p_r2.get().blob()), Some(7));
     }
 
     // Clear string + resource reverts them back to grandparent.
@@ -262,7 +266,7 @@ fn multi_level_inheritance_explicit_default_override_and_clear() {
         let gp_r = ResolvedRow::<TestInherited>::resolve(&store, grandparent, &root_r);
         let p_r3 = ResolvedRow::<TestInherited>::resolve(&store, parent, &gp_r);
         assert_eq!(p_r3.get().font_family(), "Inter");
-        assert_eq!(store.resource::<TestBlob>(p_r3.get().blob()), Some(&TestBlob(99)));
+        assert_eq!(store.resource::<TestBlob>(p_r3.get().blob()), Some(99));
     }
 }
 

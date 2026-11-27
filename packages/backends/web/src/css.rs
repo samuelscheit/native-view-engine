@@ -415,28 +415,18 @@ pub fn write_store_node_css(
     if let Some(gl) = store.try_row::<GridLayout>(id) {
         if !gl.template_columns().is_none()
             && let Some(tracks) = store.resource::<GridTracks>(gl.template_columns())
-            && !tracks.0.is_empty()
+            && !tracks.is_empty()
         {
             out.push_str("grid-template-columns:");
-            for (i, t) in tracks.0.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
-                }
-                t.write_css_into(out);
-            }
+            tracks.write_css_into(out);
             out.push(';');
         }
         if !gl.template_rows().is_none()
             && let Some(tracks) = store.resource::<GridTracks>(gl.template_rows())
-            && !tracks.0.is_empty()
+            && !tracks.is_empty()
         {
             out.push_str("grid-template-rows:");
-            for (i, t) in tracks.0.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
-                }
-                t.write_css_into(out);
-            }
+            tracks.write_css_into(out);
             out.push(';');
         }
     }

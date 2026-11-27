@@ -1,18 +1,20 @@
 //! Direct `TypedStyle` application and diff-clearing onto `NodeStore` word tables.
 
+use std::sync::Arc;
+
 use nve_abi::{Dimension, FlexAlign, FlexDirection, FlexJustify};
-use nve_components::interaction::CursorKind;
+use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::layout_ext::{LayoutDirection, PositionMode};
-use nve_components::style_patch::Display;
+use nve_components::media::ResponsiveRule;
 use nve_components::tables::{
-    self, AlignItems, BackgroundFillRes, BoxShadows, Direction, Display as TableDisplay,
+    self, AlignItems, BackgroundFillRes, BoxShadows, Direction, Display,
     FlexDirection as TableFlexDir, GridItem, GridLayout, GridLine as TableGridLine, GridTracks,
     Image, ImageFit, Interaction, JustifyContent, Layout, Motion, Overflow, Position, Responsive,
     ResponsiveRules, StateRules, TextAlign, Transform, Transitions, Typography, Visual,
 };
-use nve_store::{Length, NodeId, Rgba, Transaction};
+use nve_store::{Length, NodeId, Rgba, RowPatch, TempResources, Transaction};
 
-use super::{pack_media_query, TypedStyle};
+use super::{pack_media_query, PendingStylePatch, TypedStyle};
 
 impl TypedStyle {
     /// Writes only the `{Layout, Visual, Typography}` tables selected by `layers` into `node`
@@ -65,11 +67,7 @@ impl TypedStyle {
             if let Some(ref ext) = self.layout_ext {
                 let mut row = tx
                     .edit::<Layout>(node)
-                    .display(match ext.display {
-                        Display::Flex => TableDisplay::Flex,
-                        Display::Grid => TableDisplay::Grid,
-                        Display::None => TableDisplay::None,
-                    })
+                    .display(ext.display)
                     .position(match ext.position {
                         PositionMode::Relative => Position::Relative,
                         PositionMode::Absolute => Position::Absolute,
@@ -231,26 +229,64 @@ impl TypedStyle {
         }
 
         if self.cursor.is_some() || !self.state_rules.is_empty() {
-            let mut inter = tx.edit::<Interaction>(node);
             if let Some(c) = self.cursor {
-                inter = inter.cursor(c);
+                tx.edit::<Interaction>(node).cursor(c);
             }
             if !self.state_rules.is_empty() {
-                inter = inter.state_rules(Some(StateRules(self.state_rules.clone().into())));
+                if self.state_rules.iter().any(|r| r.patch.has_pending_resources()) {
+                    tx.with_temp_resources(|scope| {
+                        let rules: Arc<[StateStyleRule]> = self
+                            .state_rules
+                            .iter()
+                            .map(|r| StateStyleRule::new(r.state, lower_pending_patch(&r.patch, scope)))
+                            .collect();
+                        scope
+                            .tx()
+                            .edit::<Interaction>(node)
+                            .state_rules(Some(StateRules(rules)));
+                    });
+                } else {
+                    let rules: Arc<[StateStyleRule]> = self
+                        .state_rules
+                        .iter()
+                        .map(|r| StateStyleRule::new(r.state, r.patch.patch.clone()))
+                        .collect();
+                    tx.edit::<Interaction>(node)
+                        .state_rules(Some(StateRules(rules)));
+                }
             }
-            let _ = inter;
         }
 
         if self.show_on.is_some() || !self.responsive.is_empty() {
-            let mut resp = tx.edit::<Responsive>(node);
             if let Some(q) = self.show_on {
                 let (w, env) = pack_media_query(q);
-                resp = resp.show_on_widths(w).show_on_env(env);
+                tx.edit::<Responsive>(node)
+                    .show_on_widths(w)
+                    .show_on_env(env);
             }
             if !self.responsive.is_empty() {
-                resp = resp.rules(Some(ResponsiveRules(self.responsive.clone().into())));
+                if self.responsive.iter().any(|r| r.patch.has_pending_resources()) {
+                    tx.with_temp_resources(|scope| {
+                        let rules: Arc<[ResponsiveRule]> = self
+                            .responsive
+                            .iter()
+                            .map(|r| ResponsiveRule::new(r.query, lower_pending_patch(&r.patch, scope)))
+                            .collect();
+                        scope
+                            .tx()
+                            .edit::<Responsive>(node)
+                            .rules(Some(ResponsiveRules(rules)));
+                    });
+                } else {
+                    let rules: Arc<[ResponsiveRule]> = self
+                        .responsive
+                        .iter()
+                        .map(|r| ResponsiveRule::new(r.query, r.patch.patch.clone()))
+                        .collect();
+                    tx.edit::<Responsive>(node)
+                        .rules(Some(ResponsiveRules(rules)));
+                }
             }
-            let _ = resp;
         }
 
         if !self.transitions.is_empty() {
@@ -275,7 +311,7 @@ impl TypedStyle {
             tx.detach::<GridItem>(node);
             if next.is_some_and(|n| n.has_layout) {
                 tx.edit::<Layout>(node)
-                    .display(TableDisplay::Flex)
+                    .display(Display::Flex)
                     .position(Position::Relative)
                     .flex_basis(Length::AUTO)
                     .inset_top(Length::AUTO)
@@ -373,6 +409,23 @@ impl TypedStyle {
             tx.detach::<Motion>(node);
         }
     }
+}
+
+fn lower_pending_patch(pending: &PendingStylePatch, scope: &mut TempResources<'_>) -> RowPatch {
+    let mut patch = pending.patch.clone();
+    if let Some(ref fill) = pending.background_fill {
+        let id = scope.intern(&BackgroundFillRes(fill.clone()));
+        patch.set_res_id(Visual::BACKGROUND_FILL, id);
+    }
+    if let Some(ref cols) = pending.grid_template_columns {
+        let id = scope.intern(&GridTracks(cols.clone()));
+        patch.set_res_id(GridLayout::TEMPLATE_COLUMNS, id);
+    }
+    if let Some(ref rows) = pending.grid_template_rows {
+        let id = scope.intern(&GridTracks(rows.clone()));
+        patch.set_res_id(GridLayout::TEMPLATE_ROWS, id);
+    }
+    patch
 }
 
 #[inline]

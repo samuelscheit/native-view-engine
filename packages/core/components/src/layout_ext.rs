@@ -6,7 +6,7 @@
 use nve_abi::num::{write_f32, write_i64, write_u64};
 use nve_abi::{Dimension, EdgeInsets};
 
-use crate::style_patch::Display;
+use crate::tables::Display;
 
 #[inline]
 fn sanitize(v: f32) -> f32 {

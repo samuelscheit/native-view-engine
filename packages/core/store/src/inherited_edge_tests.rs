@@ -7,21 +7,25 @@ use nve_abi::Key64;
 use crate::span_pool::StrSpan;
 use crate::wire::{WireDecoder, WireEncoder, WireError};
 use crate::{
-    effect, ChangeSet, InheritedTable, NodeId, NodeStore, NveTable, Res, ResolvedRow, Resource,
+    effect, ChangeSet, FlatResource, InheritedTable, NodeId, NodeStore, NveTable, Res, ResolvedRow,
     Rgba, Str,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EdgeBlob(u32);
 
-impl Resource for EdgeBlob {
+impl FlatResource for EdgeBlob {
     const KIND: Key64 = Key64::of("test.inherited.edge_blob");
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.0.to_le_bytes());
+    type View<'a> = u32;
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        out.push(self.0);
+        true
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let arr: [u8; 4] = bytes.try_into().ok()?;
-        Some(Self(u32::from_le_bytes(arr)))
+    fn validate(words: &[u32]) -> bool {
+        words.len() == 1
+    }
+    fn view(words: &[u32]) -> u32 {
+        words[0]
     }
 }
 
@@ -227,7 +231,7 @@ fn sibling_wide_opts_no_inherit_clear_wide_opt_u64_and_node_mut_str_res() {
     assert_eq!(p_r.get().local_opt(), Some(77));
     assert_eq!(p_r.get().local_str(), "parent-only");
     assert_eq!(p_r.get().font_family(), "Fira Code");
-    assert_eq!(store.resource::<EdgeBlob>(p_r.get().blob()), Some(&EdgeBlob(42)));
+    assert_eq!(store.resource::<EdgeBlob>(p_r.get().blob()), Some(42));
 
     // Unattached child inherits inherited fields, NEVER #[no_inherit] fields!
     let uc_r = ResolvedRow::<EdgeInherited>::resolve(&store, unattached_child, &p_r);

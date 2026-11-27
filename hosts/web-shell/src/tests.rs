@@ -498,7 +498,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         .expect("image src resource");
     assert!(matches!(
         src,
-        nve_components::tables::ImageSrc::Url(u) if u.starts_with("data:image/png;base64,")
+        nve_components::tables::ImageSrcView::Url(u) if u.starts_with("data:image/png;base64,")
     ));
     assert!(!avatar.alt().is_empty());
 
@@ -618,9 +618,9 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         .resource::<nve_canvas::DrawList>(canvas_row.draw_list())
         .expect("metrics-sparkline-canvas DrawList resource");
     assert!(
-        dl.op_count() > 3,
+        dl.len() > 3,
         "expected direct typed DrawList ops on metrics canvas, got {}",
-        dl.op_count()
+        dl.len()
     );
 
     // 7. Dynamic viewport resize across 620pt mobile breakpoint and back to desktop.

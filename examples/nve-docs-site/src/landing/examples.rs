@@ -73,13 +73,13 @@ pub fn ExamplesGalleryPage() -> Element {
 
     let outer_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new().padding_xy(16.0, 40.0),
+        RowPatch::new().padding_xy(16.0, 40.0),
     );
     let mobile_col = TypedStyle::new()
-        .at(MediaQuery::max_width(959), ResponsiveStylePatch::new().flex_col());
+        .at(MediaQuery::max_width(959), RowPatch::new().flex_col());
     let h1_resp = TypedStyle::new().at(
         MediaQuery::max_width(959),
-        ResponsiveStylePatch::new().font_size(30.0),
+        RowPatch::new().font_size(30.0),
     );
 
     let studio_href = resolve_example_app_href(&config.base_path, "/examples/studio");

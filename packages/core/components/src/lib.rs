@@ -19,8 +19,9 @@ pub mod motion_clock;
 mod motion_tests;
 pub mod paint;
 pub mod reconcile;
+pub mod snapshots;
 pub mod spring;
-pub mod style_patch;
+pub mod style_ext;
 pub mod tables;
 mod tracker;
 pub mod transform;
@@ -30,8 +31,10 @@ pub use client_hints::{
 };
 pub use input_hints::{AutofillHint, InputMode};
 pub use interaction::{
-    resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
-    FocusModality, InteractionState, InteractionTracker, StateStyleRule,
+    resolve_cursor, resolve_cursor_from_view, resolve_layout_and_style,
+    resolve_layout_and_style_from_view, resolve_patch, resolve_patch_from_view, resolve_style,
+    resolve_style_from_view, CursorKind, FocusModality, InteractionState, InteractionTracker,
+    StateStyleRule,
 };
 pub use keyboard::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
@@ -43,30 +46,34 @@ pub use layout_ext::{
     PositionInsets, PositionMode,
 };
 pub use media::{
-    ColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, ResponsiveStylePatch,
-    MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION,
-    MEDIA_FLAG_REDUCED_MOTION_VAL,
+    ColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, MEDIA_FLAG_HAS_MAX_WIDTH,
+    MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
 pub use motion::{
     lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for,
     EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
     TimedTransition, TransitionProperty, TransitionSpec,
 };
+pub use nve_store::{RowPatch, RowPatchView};
 pub use paint::{
     lerp_color_premul, normalize_stops, sample_gradient_stops, sample_normalized_stops,
-    stops_are_normalized, write_css_color, write_css_gradient, BackgroundFill, GradientStop,
-    LinearGradient, RadialGradient,
+    stops_are_normalized, write_css_color, write_css_gradient, write_css_gradient_view,
+    BackgroundFill, GradientStop, LinearGradient, RadialGradient,
 };
 pub use reconcile::{
     reconcile_three_way, ConflictPolicy, DivergenceKind, LogicalClock, ReconcileBatch,
     ReconcileDecision, StateReconciler, ThreeWayEntry,
 };
+pub use snapshots::{
+    apply_patch_to_layout, apply_patch_to_layout_ext, apply_patch_to_visual,
+    apply_patch_view_to_layout, apply_patch_view_to_layout_ext, apply_patch_view_to_visual,
+    transform_from_patch, transform_from_patch_view, LayoutSnapshot, VisualSnapshot,
+};
 pub use spring::{
     MotionPreference, SpringSpec, SpringState, DEFAULT_REST_DISPLACEMENT, DEFAULT_REST_VELOCITY,
 };
-pub use style_patch::{
-    Display, FlexWrap, LayoutSnapshot, Overflow, StylePatch, TextAlign, VisualSnapshot,
-};
+pub use style_ext::StylePatchExt;
+pub use tables::{Display, FlexWrap, Overflow, TextAlign};
 pub use transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
 };

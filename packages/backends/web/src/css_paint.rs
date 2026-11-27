@@ -2,7 +2,7 @@
 
 use nve_abi::num::{write_i64, write_u64};
 use nve_abi::ColorRgba;
-use nve_components::paint::write_css_gradient;
+use nve_components::paint::write_css_gradient_view;
 use nve_components::tables::{
     BackgroundFillRes, BoxShadows, Image, Overflow, OverflowWrap, Scroll, ScrollAxes, Scrollbars,
     TextAlign, TextContent, TextDecoration, Transform, Typography, Visibility, Visual, WhiteSpace,
@@ -23,7 +23,7 @@ pub(super) fn write_visual_and_typography_css(
             && let Some(fill) = store.resource::<BackgroundFillRes>(v.background_fill())
         {
             out.push_str("background:");
-            write_css_gradient(&fill.0, out);
+            write_css_gradient_view(fill, out);
             out.push(';');
         } else if v.background() != Rgba::TRANSPARENT {
             out.push_str("background:");
@@ -69,10 +69,10 @@ pub(super) fn write_visual_and_typography_css(
         }
         if !v.box_shadows().is_none()
             && let Some(shadows) = store.resource::<BoxShadows>(v.box_shadows())
-            && !shadows.0.is_empty()
+            && !shadows.is_empty()
         {
             out.push_str("box-shadow:");
-            for (i, sh) in shadows.0.iter().enumerate() {
+            for (i, sh) in shadows.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }

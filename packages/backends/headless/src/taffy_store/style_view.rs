@@ -6,8 +6,8 @@ use nve_components::tables::{
     AlignContent as NveAlignContent, AlignItems as NveAlignItems, AlignSelf as NveAlignSelf,
     BoxSizing as NveBoxSizing, Display as NveDisplay, FlexDirection as NveFlexDirection,
     FlexWrap as NveFlexWrap, GridItem, GridLayout, GridLine as NveGridLine, GridTracks,
-    JustifyContent as NveJustifyContent, Layout as NveLayout, Overflow as NveOverflow,
-    Position as NvePosition, Visual,
+    GridTracksIter, JustifyContent as NveJustifyContent, Layout as NveLayout,
+    Overflow as NveOverflow, Position as NvePosition, Visual,
 };
 use nve_store::{Length, NodeId, NodeStore};
 
@@ -176,13 +176,13 @@ impl GenericRepetition for WordRepetition {
 }
 
 #[derive(Clone)]
-pub(super) struct GridTrackIter<'a>(core::slice::Iter<'a, GridTrack>);
+pub(super) struct GridTrackIter<'a>(GridTracksIter<'a>);
 
 impl Iterator for GridTrackIter<'_> {
     type Item = GenericGridTemplateComponent<String, WordRepetition>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let &t = self.0.next()?;
+        let t = self.0.next()?;
         Some(match t {
             GridTrack::Auto => GenericGridTemplateComponent::Single(MinMax {
                 min: MinTrackSizingFunction::auto(),
@@ -492,13 +492,13 @@ impl GridContainerStyle for StyleView<'_> {
     fn grid_template_rows(&self) -> Option<Self::TemplateTrackList<'_>> {
         let g = self.store.try_row::<GridLayout>(self.id)?;
         let res = self.store.resource::<GridTracks>(g.template_rows())?;
-        (!res.0.is_empty()).then(|| GridTrackIter(res.0.iter()))
+        (!res.is_empty()).then(|| GridTrackIter(res.iter()))
     }
 
     fn grid_template_columns(&self) -> Option<Self::TemplateTrackList<'_>> {
         let g = self.store.try_row::<GridLayout>(self.id)?;
         let res = self.store.resource::<GridTracks>(g.template_columns())?;
-        (!res.0.is_empty()).then(|| GridTrackIter(res.0.iter()))
+        (!res.is_empty()).then(|| GridTrackIter(res.iter()))
     }
 
     fn grid_auto_rows(&self) -> Self::AutoTrackList<'_> {

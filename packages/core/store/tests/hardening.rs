@@ -1,7 +1,10 @@
 //! Regression tests for `nve-store` soundness, invariants, generational safety, and resource lifecycle.
 
 use nve_abi::Key64;
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Resource, Rgba, Str, StrArena, StrSpan};
+use nve_store::{
+    read_bytes_words, validate_bytes_words, write_bytes_words, ChangeSet, FlatResource, Length,
+    NodeId, NodeStore, NveTable, Rgba, Str, StrArena, StrSpan,
+};
 
 #[allow(dead_code)]
 #[derive(NveTable)]
@@ -26,28 +29,40 @@ struct HardNote {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EphemeralBlob(Vec<u8>);
 
-impl Resource for EphemeralBlob {
+impl FlatResource for EphemeralBlob {
     const KIND: Key64 = Key64::of("hardening.res.ephemeral_blob");
+    type View<'a> = &'a [u8];
 
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.0);
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        write_bytes_words(out, &self.0, 64 * 1024)
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self(bytes.to_vec()))
+    fn validate(words: &[u32]) -> bool {
+        let mut pos = 0;
+        validate_bytes_words(words, &mut pos, 64 * 1024) && pos == words.len()
+    }
+    fn view(words: &[u32]) -> &[u8] {
+        let mut pos = 0;
+        read_bytes_words(words, &mut pos).unwrap_or(&[])
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DedupBlob(Vec<u8>);
 
-impl Resource for DedupBlob {
+impl FlatResource for DedupBlob {
     const KIND: Key64 = Key64::of("hardening.res.dedup_blob");
+    type View<'a> = &'a [u8];
 
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.0);
+    fn write_words(&self, out: &mut Vec<u32>) -> bool {
+        write_bytes_words(out, &self.0, 64 * 1024)
     }
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self(bytes.to_vec()))
+    fn validate(words: &[u32]) -> bool {
+        let mut pos = 0;
+        validate_bytes_words(words, &mut pos, 64 * 1024) && pos == words.len()
+    }
+    fn view(words: &[u32]) -> &[u8] {
+        let mut pos = 0;
+        read_bytes_words(words, &mut pos).unwrap_or(&[])
     }
 }
 
@@ -174,13 +189,14 @@ fn build_single_op_frame(op: u8, table: u8, count: u16, body: &[u8]) -> Vec<u8> 
 fn replica_unreferenced_define_resources_reclaimed_at_end_frame() {
     use nve_store::wire::{Op, WireDecoder};
 
-    nve_store::register_codec::<EphemeralBlob>();
-    // Op::DefineResources: id=1, kind_lo, kind_hi, ephemeral=0, len=4, bytes=[1,2,3,4]
+    // Op::DefineResources: id=1, kind_lo, kind_hi, flags=0, child_count=0, byte_len=8, words=[4, 0x04030201]
     let mut body = Vec::new();
     body.extend_from_slice(&1u32.to_le_bytes());
     body.extend_from_slice(&(EphemeralBlob::KIND.0 as u32).to_le_bytes());
     body.extend_from_slice(&((EphemeralBlob::KIND.0 >> 32) as u32).to_le_bytes());
-    body.extend_from_slice(&0u32.to_le_bytes()); // ephemeral = false
+    body.extend_from_slice(&0u32.to_le_bytes()); // flags = 0 (non-ephemeral)
+    body.extend_from_slice(&0u32.to_le_bytes()); // child_count = 0
+    body.extend_from_slice(&8u32.to_le_bytes()); // byte_len = 8 (2 words)
     body.extend_from_slice(&4u32.to_le_bytes());
     body.extend_from_slice(&[1, 2, 3, 4]);
     let buf = build_single_op_frame(Op::DefineResources as u8, 0, 1, &body);
@@ -386,7 +402,7 @@ fn dedup_resource_and_ephemeral_in_place_reuse() {
     assert_eq!(rid1, rid2, "uniquely owned ephemeral resource reuses id in place");
     assert_eq!(
         store.resource::<EphemeralBlob>(rid2),
-        Some(&EphemeralBlob(vec![30, 40, 50]))
+        Some(&[30u8, 40, 50][..])
     );
     // Dedup resource sanity.
     let _ = (Rgba::BLACK, DedupBlob(vec![1]));

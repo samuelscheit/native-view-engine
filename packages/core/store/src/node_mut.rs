@@ -1,10 +1,71 @@
 //! Validated mutable handle ([`NodeMut`]) for zero-check chained edits on a single live node.
 
-use crate::id::{NodeId, NodeIndex};
-use crate::resource::Resource;
+use crate::id::{NodeId, NodeIndex, ResourceId};
+use crate::resource::FlatResource;
 use crate::store::{NodeRef, NodeStore};
 use crate::table::{NveTable, Prop, ResProp, ScalarField, StrProp};
 use crate::tx::{writer_at_typed, Transaction};
+
+/// Scoped RAII arena for temporary child resources interned while assembling parent resources
+/// (e.g. `BackgroundFillRes` / `GridTracks` referenced inside `StateRules` / `ResponsiveRules`).
+///
+/// Releases every temporary handle automatically on drop so children owned by a newly interned
+/// parent drop cleanly to `refs == 1` and abandoned temporaries are reclaimed at `end_frame`.
+pub struct TempResources<'a> {
+    store: &'a mut NodeStore,
+    temps: Vec<ResourceId>,
+}
+
+impl<'a> TempResources<'a> {
+    #[inline]
+    pub(crate) fn new(store: &'a mut NodeStore) -> Self {
+        Self {
+            store,
+            temps: Vec::new(),
+        }
+    }
+
+    /// Interns `value`, scheduling its temporary handle for automatic release when this scope ends.
+    #[inline]
+    pub fn intern<R: FlatResource>(&mut self, value: &R) -> ResourceId {
+        let id = self.store.resources.intern(value);
+        if !id.is_none() {
+            self.temps.push(id);
+        }
+        id
+    }
+
+    /// Interns via a zero-alloc scratch closure, scheduling its temporary handle for release.
+    #[inline]
+    pub fn intern_with<R: FlatResource>(
+        &mut self,
+        write: impl FnOnce(&mut Vec<u32>) -> bool,
+    ) -> ResourceId {
+        let id = self
+            .store
+            .resources
+            .try_intern_with::<R>(write)
+            .unwrap_or(ResourceId::NONE);
+        if !id.is_none() {
+            self.temps.push(id);
+        }
+        id
+    }
+
+    /// Reborrows a [`Transaction`] to attach parent resources referencing the temporary ids.
+    #[inline]
+    pub fn tx(&mut self) -> Transaction<'_> {
+        Transaction { store: self.store }
+    }
+}
+
+impl Drop for TempResources<'_> {
+    fn drop(&mut self) {
+        while let Some(id) = self.temps.pop() {
+            self.store.resources.release(id);
+        }
+    }
+}
 
 /// Zero-cost validated mutable handle to a single live node (2 registers: `&mut NodeStore` +
 /// `NodeIndex`).
@@ -80,13 +141,28 @@ impl<'a> NodeMut<'a> {
 
     /// Sets (interning) or clears one resource property on this node.
     #[inline]
-    pub fn set_resource<T: NveTable, R: Resource>(
+    pub fn set_resource<T: NveTable, R: FlatResource>(
         &mut self,
         prop: ResProp<T, R>,
         value: Option<R>,
     ) -> &mut Self {
         let mut w = writer_at_typed::<T>(self.store, self.index);
-        w.put_resource(prop.word as usize, value);
+        w.put_resource(prop.word as usize, value.as_ref());
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
+        self
+    }
+
+    /// Points one resource property on this node at an already-interned [`ResourceId`].
+    #[inline]
+    pub fn set_resource_id<T: NveTable, R: FlatResource>(
+        &mut self,
+        prop: ResProp<T, R>,
+        rid: ResourceId,
+    ) -> &mut Self {
+        let mut w = writer_at_typed::<T>(self.store, self.index);
+        w.put_resource_id(prop.word as usize, rid);
         if prop.explicit_bit != u8::MAX {
             w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
         }

@@ -24,6 +24,7 @@ pub struct WireDecoder {
     next_dynamic_slot: TableSlot,
     dynamic_exhausted: bool,
     kids_scratch: Vec<NodeId>,
+    res_children_scratch: Vec<ResourceId>,
 }
 
 impl Default for WireDecoder {
@@ -34,6 +35,7 @@ impl Default for WireDecoder {
             next_dynamic_slot: TableSlot((MAX_TABLE_SLOTS - 1) as u8),
             dynamic_exhausted: false,
             kids_scratch: Vec::new(),
+            res_children_scratch: Vec::new(),
         }
     }
 }
@@ -80,6 +82,7 @@ impl WireDecoder {
         self.next_dynamic_slot = TableSlot((MAX_TABLE_SLOTS - 1) as u8);
         self.dynamic_exhausted = false;
         self.kids_scratch.clear();
+        self.res_children_scratch.clear();
     }
 
     fn slot_layout(store: &NodeStore, slot: TableSlot) -> Option<(usize, u32, u32)> {
@@ -140,7 +143,7 @@ impl WireDecoder {
             .store()
             .resources
             .slots()
-            .saturating_add(bytes.len() / 20)
+            .saturating_add(bytes.len() / 24)
             .saturating_add(1024);
         let mut r = R {
             b: bytes,
@@ -214,8 +217,8 @@ impl WireDecoder {
                 }
             }
             Op::DefineResources => {
-                // Minimum entry size: id + kind_lo + kind_hi + ephemeral + len = 20 bytes.
-                if (count as usize) > r.remaining() / 20 {
+                // Minimum entry size: id + kind_lo + kind_hi + flags + child_count + byte_len = 24 bytes.
+                if (count as usize) > r.remaining() / 24 {
                     return Err(WireError::Truncated);
                 }
                 for _ in 0..count {
@@ -224,10 +227,31 @@ impl WireDecoder {
                         return Err(WireError::Resource { id, kind: 0 });
                     }
                     let kind = Key64::from_halves(r.u32()?, r.u32()?);
-                    let ephemeral = r.u32()? != 0;
+                    let flags = r.u32()?;
+                    if (flags & !1u32) != 0 {
+                        return Err(WireError::Resource { id, kind: kind.0 });
+                    }
+                    let ephemeral = (flags & 1) != 0;
+                    let child_count = r.u32()? as usize;
+                    if child_count > r.remaining() / 4 {
+                        return Err(WireError::Truncated);
+                    }
+                    self.res_children_scratch.clear();
+                    for _ in 0..child_count {
+                        self.res_children_scratch.push(ResourceId(r.u32()?));
+                    }
                     let len = r.u32()? as usize;
+                    if !len.is_multiple_of(4) {
+                        return Err(WireError::Resource { id, kind: kind.0 });
+                    }
                     let blob = r.bytes(len)?;
-                    if !tx.store_mut().resources.define_at(ResourceId(id), kind, ephemeral, blob) {
+                    if !tx.store_mut().resources.define_at(
+                        ResourceId(id),
+                        kind,
+                        ephemeral,
+                        &self.res_children_scratch,
+                        blob,
+                    ) {
                         return Err(WireError::Resource { id, kind: kind.0 });
                     }
                 }

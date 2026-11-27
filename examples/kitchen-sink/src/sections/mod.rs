@@ -45,8 +45,5 @@ pub fn responsive_two_col() -> TypedStyle {
         .width_pct(100.0)
         .flex_row()
         .gap(14.0)
-        .at(
-            MediaQuery::max_width(767),
-            ResponsiveStylePatch::new().flex_col(),
-        )
+        .at(MediaQuery::max_width(767), RowPatch::new().flex_col())
 }

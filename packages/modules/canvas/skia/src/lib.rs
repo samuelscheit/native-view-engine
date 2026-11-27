@@ -7,7 +7,7 @@
 
 use nve_abi::ColorRgba;
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableSystem};
-use nve_canvas::{Canvas, CanvasOp, DrawList};
+use nve_canvas::{Canvas, CanvasOpRef, DrawList};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 
 /// `SkiaTableSystem` plugin painting [`Canvas`] (`nve.canvas`) draw lists onto `PixelBuffer`.
@@ -140,9 +140,9 @@ impl SkiaTableSystem for CanvasSkiaSystem {
         for op in dl.ops() {
             let clip = clips.top();
             match op {
-                CanvasOp::Clear { color } => {
+                CanvasOpRef::Clear { color } => {
                     if color.a == 0 {
-                        clear_rect_overwrite(ctx.buffer, clip, *color);
+                        clear_rect_overwrite(ctx.buffer, clip, color);
                     } else {
                         fill_rect(
                             ctx.buffer,
@@ -152,25 +152,25 @@ impl SkiaTableSystem for CanvasSkiaSystem {
                             ctx.rect.width,
                             ctx.rect.height,
                             0.0,
-                            *color,
+                            color,
                             ctx.opacity,
                         );
                     }
                 }
-                CanvasOp::FillRect { x, y, w, h, color } => {
+                CanvasOpRef::FillRect { x, y, w, h, color } => {
                     fill_rect(
                         ctx.buffer,
                         clip,
-                        ox + *x * scale,
-                        oy + *y * scale,
-                        *w * scale,
-                        *h * scale,
+                        ox + x * scale,
+                        oy + y * scale,
+                        w * scale,
+                        h * scale,
                         0.0,
-                        *color,
+                        color,
                         ctx.opacity,
                     );
                 }
-                CanvasOp::FillRoundedRect {
+                CanvasOpRef::FillRoundedRect {
                     x,
                     y,
                     w,
@@ -181,16 +181,16 @@ impl SkiaTableSystem for CanvasSkiaSystem {
                     fill_rect(
                         ctx.buffer,
                         clip,
-                        ox + *x * scale,
-                        oy + *y * scale,
-                        *w * scale,
-                        *h * scale,
-                        *radius * scale,
-                        *color,
+                        ox + x * scale,
+                        oy + y * scale,
+                        w * scale,
+                        h * scale,
+                        radius * scale,
+                        color,
                         ctx.opacity,
                     );
                 }
-                CanvasOp::FillCircle {
+                CanvasOpRef::FillCircle {
                     cx,
                     cy,
                     radius,
@@ -199,14 +199,14 @@ impl SkiaTableSystem for CanvasSkiaSystem {
                     fill_circle(
                         ctx.buffer,
                         clip,
-                        ox + *cx * scale,
-                        oy + *cy * scale,
-                        *radius * scale,
-                        *color,
+                        ox + cx * scale,
+                        oy + cy * scale,
+                        radius * scale,
+                        color,
                         ctx.opacity,
                     );
                 }
-                CanvasOp::StrokeLine {
+                CanvasOpRef::StrokeLine {
                     x0,
                     y0,
                     x1,
@@ -217,69 +217,72 @@ impl SkiaTableSystem for CanvasSkiaSystem {
                     stroke_line(
                         ctx.buffer,
                         clip,
-                        ox + *x0 * scale,
-                        oy + *y0 * scale,
-                        ox + *x1 * scale,
-                        oy + *y1 * scale,
-                        *width * scale,
-                        *color,
+                        ox + x0 * scale,
+                        oy + y0 * scale,
+                        ox + x1 * scale,
+                        oy + y1 * scale,
+                        width * scale,
+                        color,
                         ctx.opacity,
                     );
                 }
-                CanvasOp::StrokePolyline {
+                CanvasOpRef::StrokePolyline {
                     points,
                     width,
                     color,
                 } => {
                     if points.len() == 1 {
-                        let (px, py) = points[0];
-                        fill_circle(
-                            ctx.buffer,
-                            clip,
-                            ox + px * scale,
-                            oy + py * scale,
-                            (*width * scale * 0.5).max(0.5),
-                            *color,
-                            ctx.opacity,
-                        );
-                    } else {
-                        for seg in points.windows(2) {
-                            let (x0, y0) = seg[0];
-                            let (x1, y1) = seg[1];
-                            stroke_line(
+                        if let Some((px, py)) = points.get(0) {
+                            fill_circle(
                                 ctx.buffer,
                                 clip,
-                                ox + x0 * scale,
-                                oy + y0 * scale,
-                                ox + x1 * scale,
-                                oy + y1 * scale,
-                                *width * scale,
-                                *color,
+                                ox + px * scale,
+                                oy + py * scale,
+                                (width * scale * 0.5).max(0.5),
+                                color,
                                 ctx.opacity,
                             );
                         }
+                    } else {
+                        let mut iter = points.iter();
+                        if let Some(mut prev) = iter.next() {
+                            for cur in iter {
+                                stroke_line(
+                                    ctx.buffer,
+                                    clip,
+                                    ox + prev.0 * scale,
+                                    oy + prev.1 * scale,
+                                    ox + cur.0 * scale,
+                                    oy + cur.1 * scale,
+                                    width * scale,
+                                    color,
+                                    ctx.opacity,
+                                );
+                                prev = cur;
+                            }
+                        }
                     }
                 }
-                CanvasOp::ClipRect { x, y, w, h } => {
+                CanvasOpRef::ClipRect { x, y, w, h } => {
                     let next = if x.is_finite()
                         && y.is_finite()
                         && w.is_finite()
                         && h.is_finite()
-                        && *w > 0.0
-                        && *h > 0.0
+                        && w > 0.0
+                        && h > 0.0
                     {
                         ClipRectPx {
-                            x0: ((ox + *x * scale).floor() as i32).clamp(0, bw),
-                            y0: ((oy + *y * scale).floor() as i32).clamp(0, bh),
-                            x1: ((ox + (*x + *w) * scale).ceil() as i32).clamp(0, bw),
-                            y1: ((oy + (*y + *h) * scale).ceil() as i32).clamp(0, bh),
+                            x0: ((ox + x * scale).floor() as i32).clamp(0, bw),
+                            y0: ((oy + y * scale).floor() as i32).clamp(0, bh),
+                            x1: ((ox + (x + w) * scale).ceil() as i32).clamp(0, bw),
+                            y1: ((oy + (y + h) * scale).ceil() as i32).clamp(0, bh),
                         }
                     } else {
                         ClipRectPx::default()
                     };
                     clips.push(clip.intersect(next));
                 }
-                CanvasOp::RestoreClip => {
+                CanvasOpRef::RestoreClip => {
                     clips.pop();
                 }
             }
@@ -439,6 +442,7 @@ fn stroke_line(
 mod tests {
     use super::*;
     use nve_canvas::DrawListRecorder;
+    use nve_canvas::CanvasOp;
     use nve_engine::LayoutRect;
     use nve_store::{ChangeSet, Rgba, TableEventBus};
 

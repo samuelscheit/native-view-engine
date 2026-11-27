@@ -401,6 +401,77 @@ pub fn write_css_gradient(fill: &BackgroundFill, out: &mut String) {
     }
 }
 
+/// Formats a canonical, injection-free CSS value directly from a zero-copy [`crate::tables::BackgroundFillView`].
+pub fn write_css_gradient_view(fill: crate::tables::BackgroundFillView<'_>, out: &mut String) {
+    match fill {
+        crate::tables::BackgroundFillView::Solid(c) => write_css_color(c, out),
+        crate::tables::BackgroundFillView::Linear { angle_deg, stops } => {
+            let angle = if angle_deg.is_finite() { angle_deg } else { 180.0 };
+            out.push_str("linear-gradient(");
+            write_f32(out, angle);
+            out.push_str("deg");
+            write_css_stops_view(stops, out);
+            out.push(')');
+        }
+        crate::tables::BackgroundFillView::Radial {
+            center_x,
+            center_y,
+            radius,
+            stops,
+        } => {
+            let cx = if center_x.is_finite() { center_x.clamp(0.0, 1.0) * 100.0 } else { 50.0 };
+            let cy = if center_y.is_finite() { center_y.clamp(0.0, 1.0) * 100.0 } else { 50.0 };
+            let r_pct = if radius.is_finite() { radius.max(0.0) * 50.0 } else { 50.0 };
+            out.push_str("radial-gradient(");
+            write_f32(out, r_pct);
+            out.push_str("% ");
+            write_f32(out, r_pct);
+            out.push_str("% at ");
+            write_f32(out, cx);
+            out.push_str("% ");
+            write_f32(out, cy);
+            out.push('%');
+            write_css_stops_view(stops, out);
+            out.push(')');
+        }
+    }
+}
+
+fn write_css_stops_view(stops: crate::tables::GradientStopsView<'_>, out: &mut String) {
+    if stops.is_empty() {
+        out.push_str(",transparent 0%,transparent 100%");
+        return;
+    }
+    if stops.len() == 1 {
+        if let Some(first) = stops.get(0) {
+            out.push(',');
+            write_css_color(first.color, out);
+            out.push_str(" 0%,");
+            write_css_color(first.color, out);
+            out.push_str(" 100%");
+        }
+        return;
+    }
+    let mut prev = 0.0f32;
+    let mut normalized = true;
+    for s in stops.iter() {
+        if !s.offset.is_finite() || s.offset < 0.0 || s.offset > 1.0 || s.offset < prev {
+            normalized = false;
+            break;
+        }
+        prev = s.offset;
+    }
+    if normalized {
+        for s in stops.iter() {
+            write_single_css_stop(s, out);
+        }
+    } else {
+        for s in normalize_stops(stops.to_vec()) {
+            write_single_css_stop(s, out);
+        }
+    }
+}
+
 fn write_css_stops(stops: &[GradientStop], out: &mut String) {
     if stops.is_empty() {
         out.push_str(",transparent 0%,transparent 100%");

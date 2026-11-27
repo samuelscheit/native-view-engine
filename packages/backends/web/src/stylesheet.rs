@@ -6,14 +6,14 @@ use std::collections::BTreeMap;
 use nve_abi::hash::HashSet;
 use nve_components::interaction::CursorKind;
 use nve_components::tables::{
-    Interaction, Motion, Responsive, ResponsiveRules, StateRules, Transitions,
+    Interaction, Motion, Responsive, ResponsiveRules, ResponsiveRulesView, StateRules, Transitions,
 };
 use nve_store::{NodeId, NodeStore};
 
 use crate::css::{format_content_class, write_store_node_css};
-use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
-use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
-use crate::transition_css::compile_node_transitions;
+use crate::media_css::{compile_node_media_rules_view, CompiledMediaRule};
+use crate::state_css::{compile_node_state_rules_view, format_cursor_rule, CompiledStateRule};
+use crate::transition_css::compile_node_transitions_view;
 
 /// Maximum number of deduplicated dynamic CSS rules emitted before falling back to inline styles.
 pub const MAX_DYNAMIC_RULES: usize = 8192;
@@ -257,7 +257,7 @@ pub fn resolve_store_node_style(
             && let Some(rules) = store.resource::<StateRules>(sr_res)
         {
             let start = out.state_rules.len();
-            compile_node_state_rules(&rules.0, &mut out.state_rules);
+            compile_node_state_rules_view(rules, Some(store), true, &mut out.state_rules);
             for compiled in &out.state_rules[start..] {
                 out.classes.push(' ');
                 out.classes.push_str(&compiled.class_name);
@@ -267,16 +267,15 @@ pub fn resolve_store_node_style(
 
     if let Some(resp) = store.try_row::<Responsive>(id) {
         let rr_res = resp.rules();
-        let rules_slice: &[nve_components::media::ResponsiveRule] = if !rr_res.is_none() {
+        let rules_view = if !rr_res.is_none() {
             store
                 .resource::<ResponsiveRules>(rr_res)
-                .map(|r| &*r.0)
-                .unwrap_or(&[])
+                .unwrap_or(ResponsiveRulesView::EMPTY)
         } else {
-            &[]
+            ResponsiveRulesView::EMPTY
         };
         let start = out.media_rules.len();
-        compile_node_media_rules(resp.show_on(), rules_slice, &mut out.media_rules);
+        compile_node_media_rules_view(resp.show_on(), rules_view, Some(store), &mut out.media_rules);
         for compiled in &out.media_rules[start..] {
             out.classes.push(' ');
             out.classes.push_str(&compiled.class_name);
@@ -287,7 +286,7 @@ pub fn resolve_store_node_style(
         let tr_res = motion.transitions();
         if !tr_res.is_none()
             && let Some(specs) = store.resource::<Transitions>(tr_res)
-            && let Some(tr) = compile_node_transitions(&specs.0)
+            && let Some(tr) = compile_node_transitions_view(specs)
         {
             out.classes.push(' ');
             out.classes.push_str(&tr.class_name);

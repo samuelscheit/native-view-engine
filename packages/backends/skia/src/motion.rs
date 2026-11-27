@@ -8,7 +8,7 @@ use nve_components::motion::{
     lerp_style_property, resolve_transition_for, MotionPreference, TimedTransition,
     TransitionProperty, TransitionSpec,
 };
-use nve_components::style_patch::VisualSnapshot;
+use nve_components::snapshots::VisualSnapshot;
 use nve_components::tables::{Motion, Transitions};
 use nve_components::transform::{lerp_transform_2d, Transform2D};
 use nve_engine::StoreLayoutEngine;
@@ -346,7 +346,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 let specs = if !res.is_none() {
                     store
                         .resource::<Transitions>(res)
-                        .map(|t| t.0.to_vec())
+                        .map(|t| t.to_vec())
                         .unwrap_or_default()
                 } else {
                     Vec::new()
