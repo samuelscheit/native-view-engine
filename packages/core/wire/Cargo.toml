@@ -3,33 +3,38 @@ name = "nve-wire"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Unified dual-ALPN QUIC / WebTransport + WSS Happy-Eyeballs wire transport and C ABI for NVE"
+description = "Unified dual-ALPN QUIC / WebTransport + WSS Happy-Eyeballs wire transport for NVE"
 
 [lib]
 name = "nve_wire"
-crate-type = ["rlib", "staticlib", "cdylib"]
+crate-type = ["rlib"]
+
+[features]
+default = ["client", "server"]
+client = ["dep:url"]
+server = ["dep:rcgen", "dep:base64", "dep:getrandom"]
 
 [dependencies]
-nve-abi = { workspace = true }
-nve-engine = { workspace = true }
 nve-wire-core = { workspace = true }
 quinn = { workspace = true }
 web-transport-quinn = { workspace = true }
 rustls = { workspace = true }
-rcgen = { workspace = true }
+rcgen = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 subtle = { workspace = true }
 bytes = { workspace = true }
-url = { workspace = true }
-base64 = { workspace = true }
-getrandom = { workspace = true }
+url = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
+nve-abi = { workspace = true }
 nve-components = { workspace = true }
+nve-engine = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }

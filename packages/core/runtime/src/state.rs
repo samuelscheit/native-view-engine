@@ -14,6 +14,7 @@ use nve_store::{ChangeSet, NodeStore, RealizationOrder, TableSlot};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
+use crate::pair::{PairInboundFrame, PairSession};
 
 // Full field-by-field + little-endian proof (including `pub(crate)` `flags` and
 // `ChildSpan::{off, len}`) is enforced at compile time in `nve_store::store`.
@@ -26,6 +27,9 @@ const _: () = {
 
 /// Upper bound on synchronous `render_frame -> poll_async_work` pumps within a single `tick()`.
 const MAX_RENDER_PUMPS: usize = 4;
+
+/// Upper bound on paired inbound wire frames drained in a single `tick()` to prevent UI starvation.
+const MAX_PAIR_FRAMES_PER_TICK: usize = 64;
 
 /// Disjoint non-store surface state so `app` / `replica_store` and `state` can be borrowed
 /// simultaneously with zero `unsafe` pointer gymnastics or `Box` moves.
@@ -285,6 +289,7 @@ impl SurfaceState {
 
 pub(crate) struct RuntimeInner {
     pub(crate) app: Option<Box<dyn RuntimeApp>>,
+    pub(crate) pair: Option<PairSession>,
     pub(crate) replica_store: NodeStore,
     pub(crate) state: SurfaceState,
 }
@@ -408,7 +413,13 @@ impl RuntimeInner {
             }
         }
 
-        let needs_follow_up_wake = self.state.needs_render && self.app.is_some();
+        let mut pair_follow_up = false;
+        if self.pair.is_some() {
+            pair_follow_up = self.drain_pair_frames(&mut has_changes)?;
+        }
+
+        let needs_follow_up_wake =
+            (self.state.needs_render && self.app.is_some()) || pair_follow_up;
 
         if !self.state.tick_hooks.is_empty() {
             let (store, state) = self.split_store_mut_and_state();
@@ -472,10 +483,85 @@ impl RuntimeInner {
         Ok((changed, needs_follow_up_wake))
     }
 
+    fn drain_pair_frames(&mut self, has_changes: &mut bool) -> Result<bool, RuntimeError> {
+        let mut drained = 0usize;
+        while drained < MAX_PAIR_FRAMES_PER_TICK {
+            let Some(frame) = self.pair.as_ref().and_then(PairSession::try_recv_scene_frame) else {
+                break;
+            };
+            drained += 1;
+            match frame {
+                PairInboundFrame::Keyframe(bytes) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    WireDecoder::validate_header(&bytes)
+                        .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
+                    self.reset_for_app_change();
+                    self.state.merged_changes.copy_from(&self.state.empty_changes);
+                    *has_changes = false;
+                    {
+                        let mut tx = self.replica_store.tx();
+                        self.state
+                            .wire_decoder
+                            .apply(&mut tx, &bytes)
+                            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
+                        tx.commit_into(&mut self.state.wire_changes);
+                    }
+                    Self::record_changes(
+                        &mut self.state.merged_changes,
+                        has_changes,
+                        &self.state.wire_changes,
+                    );
+                    self.state.needs_publish = true;
+                }
+                PairInboundFrame::Delta(bytes) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    let (frame_num, _ops) = WireDecoder::validate_header(&bytes)
+                        .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
+                    if frame_num == 1 && self.replica_store.is_live(nve_store::NodeId::ROOT) {
+                        self.reset_for_app_change();
+                        self.state.merged_changes.copy_from(&self.state.empty_changes);
+                        *has_changes = false;
+                    } else {
+                        self.state.invalidate_published_view();
+                    }
+                    {
+                        let mut tx = self.replica_store.tx();
+                        self.state
+                            .wire_decoder
+                            .apply(&mut tx, &bytes)
+                            .map_err(|e| RuntimeError::WireDecode(e.to_string()))?;
+                        tx.commit_into(&mut self.state.wire_changes);
+                    }
+                    Self::record_changes(
+                        &mut self.state.merged_changes,
+                        has_changes,
+                        &self.state.wire_changes,
+                    );
+                    self.state.needs_publish = true;
+                }
+            }
+        }
+        if let Some(ref mut pair) = self.pair {
+            pair.sync_metrics(&mut self.state.metrics);
+            Ok(pair.has_pending_frame())
+        } else {
+            Ok(false)
+        }
+    }
+
     pub(crate) fn submit_nve2(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
         if self.app.is_some() {
             return Err(RuntimeError::InvalidArg(
                 "cannot submit NVE2 wire frames while an app is attached",
+            ));
+        }
+        if self.pair.is_some() {
+            return Err(RuntimeError::InvalidArg(
+                "cannot submit NVE2 wire frames while a pair session is attached",
             ));
         }
         if bytes.is_empty() {

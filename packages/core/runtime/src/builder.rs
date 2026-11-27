@@ -3,7 +3,7 @@
 
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
 
 use nve_abi::{
@@ -60,8 +60,12 @@ pub enum RuntimeError {
     SceneBusy,
     /// Invalid binary `NVE2` wire frame payload.
     WireDecode(String),
+    /// Transport or runtime I/O failure (e.g. pairing client spawn/connect failure).
+    Io(String),
     /// Invalid argument or owner-thread contract violation.
     InvalidArg(&'static str),
+    /// Feature or capability not compiled into this build (e.g. wire pairing disabled).
+    Unsupported(&'static str),
     /// Target node was missing, stale, or not scrollable.
     NotFound(&'static str),
     /// A previous mutating operation panicked and invalidated the surface state.
@@ -72,8 +76,9 @@ impl RuntimeError {
     pub const fn status(&self) -> NveRuntimeStatus {
         match self {
             Self::SceneBusy => NveRuntimeStatus::Busy,
-            Self::WireDecode(_) => NveRuntimeStatus::Io,
+            Self::WireDecode(_) | Self::Io(_) => NveRuntimeStatus::Io,
             Self::InvalidArg(_) => NveRuntimeStatus::InvalidArg,
+            Self::Unsupported(_) => NveRuntimeStatus::Unsupported,
             Self::NotFound(_) => NveRuntimeStatus::NotFound,
             Self::Poisoned => NveRuntimeStatus::Panic,
         }
@@ -85,7 +90,9 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::SceneBusy => f.write_str("runtime scene is currently locked by an active reader"),
             Self::WireDecode(msg) => write!(f, "NVE2 wire decode failed: {msg}"),
+            Self::Io(msg) => write!(f, "runtime I/O error: {msg}"),
             Self::InvalidArg(msg) => write!(f, "invalid runtime argument: {msg}"),
+            Self::Unsupported(msg) => write!(f, "unsupported runtime operation: {msg}"),
             Self::NotFound(msg) => write!(f, "runtime target not found: {msg}"),
             Self::Poisoned => f.write_str("runtime surface was poisoned by a prior panic"),
         }
@@ -188,11 +195,13 @@ impl RuntimeBuilder {
             surface_id: self.surface_id,
             lock: SceneLock::new(),
             wake,
+            pair_connected: RwLock::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             owner_thread: std::thread::current().id(),
             poisoned: AtomicBool::new(false),
             inner: UnsafeCell::new(RuntimeInner {
                 app,
+                pair: None,
                 replica_store,
                 state: SurfaceState {
                     frame_id: 0,

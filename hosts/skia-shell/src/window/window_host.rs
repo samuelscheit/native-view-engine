@@ -85,16 +85,18 @@ impl DesktopWindowHost<HotAppSlot> {
                 options.clear_color,
                 options.show_hud,
             )
+            .with_layout_choice(options.layout_engine)
         } else {
             let mut app = HotAppSlot::load(&dylib_path, options.surface_id)?;
             let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
-            DesktopSession::new(
+            DesktopSession::new_with_layout(
                 app,
                 options.surface_id,
                 initial_viewport,
                 options.clear_color,
                 options.show_hud,
-            )
+                options.layout_engine,
+            )?
         };
         let _ = session.notify_viewport_resize();
         session.render_and_rasterize()?;
@@ -130,13 +132,14 @@ impl DesktopWindowHost<PairedRemoteApp> {
         };
         let initial_timeout = pair_config.initial_frame_timeout;
         let app = PairedRemoteApp::connect(pair_config)?;
-        let mut session = DesktopSession::new(
+        let mut session = DesktopSession::new_with_layout(
             app,
             options.surface_id,
             initial_viewport,
             options.clear_color,
             options.show_hud,
-        );
+            options.layout_engine,
+        )?;
         let _ = session.notify_viewport_resize();
         session.app_mut().wait_for_frame(initial_timeout)?;
         if let Some(banner) = session.app().remote_status_banner() {

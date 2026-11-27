@@ -12,7 +12,6 @@ pub use dioxus_elements as elements;
 pub mod error_boundary;
 mod events;
 pub mod hot_patch;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_app;
 pub mod signal_archive;
 pub mod stream_slot;
@@ -62,7 +61,6 @@ pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
 pub use nve_components::transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime_app::DioxusRuntimeApp;
 pub use signal_archive::{
     reconcile_signal_entry, signal_slot_id, BinValueSlot, HydrationReport, SignalArchive,

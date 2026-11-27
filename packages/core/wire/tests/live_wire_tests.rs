@@ -5,11 +5,11 @@
 //!   SHA-256 cert pinning + full stream & datagram round-trip
 //! - Happy-Eyeballs automatic fallback: UDP/QUIC blocked (dead port) -> connects via `wss://`
 //!   within ~250ms and completes full `NveWireFrame` round-trip
-//! - Constant-time Bearer token rejection & C ABI lifecycle test
+//! - Constant-time Bearer token rejection & automatic exponential-backoff reconnect + keyframe test
 
-use std::ffi::CString;
 use std::net::SocketAddr;
-use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
@@ -21,11 +21,10 @@ use nve_engine::{
     VerifyMode, Viewport,
 };
 use nve_wire::{
-    format_wire_uri, generate_bearer_token, nve_wire_client_connect_uri, nve_wire_client_destroy,
-    nve_wire_client_is_connected, nve_wire_client_metrics, nve_wire_client_poll_frame,
-    nve_wire_client_send_events, NveNodePatchDeltaBuilder, NveNodePatchDeltaView, NveWireChannel,
-    NveWireClient, NveWireClientConfig, NveWireFrame, NveWireKind, NveWireMetricsC, NveWireServer,
-    NveWireServerConfig, NveWireTransportError, NveWireTransportKind, NVE_WIRE_OK,
+    generate_bearer_token, parse_wire_uri, NveNodePatchDeltaBuilder, NveNodePatchDeltaView,
+    NveWireChannel, NveWireClient, NveWireClientConfig, NveWireFrame, NveWireKind, NveWireServer,
+    NveWireServerConfig, NveWireTransportError, NveWireTransportKind, ReconnectConfig,
+    ReconnectingWireClient,
 };
 
 fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
@@ -292,76 +291,104 @@ async fn live_happy_eyeballs_falls_back_to_wss_when_udp_blocked_and_rejects_bad_
 }
 
 #[test]
-fn c_abi_client_connect_poll_send_events_and_destroy() {
+fn reconnecting_wire_client_recovers_after_server_restart_with_keyframe() {
     let token = generate_bearer_token();
-    let server = NveWireServer::bind_sync(NveWireServerConfig::new(
+    let server1 = NveWireServer::bind_sync(NveWireServerConfig::new(
         "127.0.0.1:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
         token.clone(),
     ))
-    .expect("bind sync server");
+    .expect("bind server 1");
+    let ws_addr = server1.wss_addr();
+    let uri = parse_wire_uri(&format!("ws://{ws_addr}/nve-wire")).expect("parse ws uri");
 
-    let cert_hash = server.cert_sha256();
-    let uri = format_wire_uri(
-        "127.0.0.1",
-        server.quic_addr().port(),
-        server.wss_addr().port(),
-        &token,
-        Some(&cert_hash),
-        393,
-        852,
-    );
-    let c_uri = CString::new(uri).unwrap();
-    let c_name = CString::new("c-abi-test").unwrap();
-    let mut handle = ptr::null_mut();
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wakes_cb = Arc::clone(&wakes);
+    let mut client = ReconnectingWireClient::connect_sync(
+        uri,
+        NveWireClientConfig::new(token.clone(), "reconnect-test"),
+        ReconnectConfig {
+            initial_backoff: Duration::from_millis(30),
+            max_backoff: Duration::from_millis(200),
+        },
+        Some(Arc::new(move || {
+            wakes_cb.fetch_add(1, Ordering::Release);
+        })),
+    )
+    .expect("initial connect_sync");
+    assert!(client.is_connected());
+    assert_eq!(client.reconnect_count(), 0);
 
-    // SAFETY: Calling our C ABI with valid C strings and output pointer.
-    let status = unsafe {
-        nve_wire_client_connect_uri(c_uri.as_ptr(), ptr::null(), c_name.as_ptr(), 250, &mut handle)
-    };
-    assert_eq!(status, NVE_WIRE_OK);
-    assert!(!handle.is_null());
-    // SAFETY: `handle` is a live client handle returned by `nve_wire_client_connect_uri` until `destroy` below.
-    assert!(unsafe { nve_wire_client_is_connected(handle) });
+    // 1. Initial frame roundtrip + upstream event send.
+    server1.broadcast_command_delta(1, b"frame-before-drop").unwrap();
+    let f1 = client
+        .recv_frame_timeout(Duration::from_secs(2))
+        .expect("receive frame 1");
+    assert_eq!(f1.kind, NveWireKind::CommandDelta);
+    assert_eq!(f1.payload, b"frame-before-drop");
+    assert!(wakes.load(Ordering::Acquire) >= 1);
 
-    server.broadcast_command_delta(9, b"c-abi-delta").unwrap();
+    client.send_events(b"ev-before-drop").unwrap();
+    let in1 = server1
+        .recv_inbound_timeout(Duration::from_secs(2))
+        .expect("server1 receives event");
+    assert_eq!(in1.frame.payload, b"ev-before-drop");
 
-    let mut kind = 0u8;
-    let mut seq = 0u32;
-    let mut buf = [0u8; 64];
-    let mut len = 0usize;
-    let mut got = false;
-    for _ in 0..40 {
-        // SAFETY: `handle` is live and all out-pointers/buffer point to valid writable stack memory.
-        let st = unsafe {
-            nve_wire_client_poll_frame(handle, &mut kind, &mut seq, buf.as_mut_ptr(), buf.len(), &mut len)
-        };
-        if st == NVE_WIRE_OK {
-            got = true;
-            break;
+    // 2. Kill server 1 -> client detects disconnect.
+    server1.shutdown();
+    drop(server1);
+    let drop_deadline = Instant::now() + Duration::from_secs(3);
+    while client.is_connected() && Instant::now() < drop_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!client.is_connected(), "client should detect server shutdown");
+
+    // 3. Restart server 2 on the EXACT SAME TCP port (retry briefly while OS releases socket).
+    let bind_deadline = Instant::now() + Duration::from_secs(3);
+    let server2 = loop {
+        match NveWireServer::bind_sync(NveWireServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            ws_addr,
+            token.clone(),
+        )) {
+            Ok(s) => break s,
+            Err(_) if Instant::now() < bind_deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("failed to rebind server2 on {ws_addr}: {e}"),
         }
+    };
+
+    // 4. Client automatically reconnects AND sends `KeyframeRequest`!
+    let reconnect_deadline = Instant::now() + Duration::from_secs(5);
+    while (!client.is_connected() || client.reconnect_count() < 1)
+        && Instant::now() < reconnect_deadline
+    {
         std::thread::sleep(Duration::from_millis(15));
     }
-    assert!(got, "C ABI poll_frame should receive CommandDelta");
-    assert_eq!(kind, NveWireKind::CommandDelta as u8);
-    assert_eq!(seq, 9);
-    assert_eq!(&buf[..len], b"c-abi-delta");
+    assert!(client.is_connected(), "client failed to reconnect");
+    assert!(client.reconnect_count() >= 1);
 
-    let ev = b"evt-batch";
-    // SAFETY: `handle` is live and `ev` is a readable slice of `ev.len()` bytes.
-    let send_status = unsafe { nve_wire_client_send_events(handle, ev.as_ptr(), ev.len()) };
-    assert_eq!(send_status, NVE_WIRE_OK);
-    let inbound = server
+    let kf_req = server2
         .recv_inbound_timeout(Duration::from_secs(2))
-        .expect("server receives C ABI EventBatch");
-    assert_eq!(inbound.frame.payload, ev);
+        .expect("server2 must receive KeyframeRequest on reconnect");
+    assert_eq!(kf_req.frame.kind, NveWireKind::KeyframeRequest);
 
-    let mut metrics = NveWireMetricsC::default();
-    // SAFETY: `handle` is live and `metrics` is a valid writable out-pointer.
-    assert_eq!(unsafe { nve_wire_client_metrics(handle, &mut metrics) }, NVE_WIRE_OK);
-    assert_eq!(metrics.command_deltas_received, 1);
-    assert_eq!(metrics.events_sent, 1);
+    // 5. Server 2 pushes recovery keyframe -> client receives it cleanly with cumulative metrics.
+    server2
+        .broadcast_scene_keyframe(2, b"post-reconnect-keyframe")
+        .unwrap();
+    let f2 = client
+        .recv_frame_timeout(Duration::from_secs(2))
+        .expect("receive recovery keyframe");
+    assert_eq!(f2.kind, NveWireKind::SceneKeyframe);
+    assert_eq!(f2.payload, b"post-reconnect-keyframe");
 
-    // SAFETY: `handle` is destroyed once at the end of the test.
-    unsafe { nve_wire_client_destroy(handle) };
+    let metrics = client.metrics();
+    assert!(metrics.frames_received >= 2);
+    assert!(metrics.events_sent >= 1);
+
+    client.shutdown();
+    assert!(!client.is_connected());
+    server2.shutdown();
 }

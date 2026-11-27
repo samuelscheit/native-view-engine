@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use window::{
     render_headless_screenshot, render_paired_headless_screenshot,
     run_desktop_preview_with_options, run_paired_desktop_preview, DesktopPreviewOptions,
-    PairConnectConfig, PairTransport, DEFAULT_WS_URL,
+    LayoutEngineChoice, PairConnectConfig, PairTransport, DEFAULT_WS_URL,
 };
 
 #[derive(Debug, PartialEq)]
@@ -57,6 +57,7 @@ Options:
   --width <px>              Logical window/viewport width (default: 420)
   --height <px>             Logical window/viewport height (default: 780)
   --scale <factor>          HiDPI scale factor for headless rendering (default: 1.0)
+  --layout <taffy|yoga>     Layout engine (default: taffy; yoga requires `--features yoga`)
   --no-hud                  Hide the top-left hot-reload HUD banner
   -h, --help                Show this help message";
 
@@ -208,6 +209,12 @@ where
                     return Err(format!("--scale must be positive, got '{raw}'"));
                 }
                 options.scale_factor = val;
+            }
+            "--layout" => {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| "--layout requires one of: taffy, yoga".to_string())?;
+                options.layout_engine = LayoutEngineChoice::parse(&raw)?;
             }
             "--no-hud" => {
                 options.show_hud = false;
@@ -429,5 +436,15 @@ mod tests {
             .unwrap();
         assert!(!reset.options.disable_instant_boot);
         assert!(reset.options.reset_state);
+
+        let yoga = parse_args(s(&["libapp.dylib", "--layout", "yoga"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(yoga.options.layout_engine, LayoutEngineChoice::Yoga);
+        let taffy = parse_args(s(&["libapp.dylib", "--layout", "taffy"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(taffy.options.layout_engine, LayoutEngineChoice::Taffy);
+        assert!(parse_args(s(&["libapp.dylib", "--layout", "bogus"])).is_err());
     }
 }

@@ -47,6 +47,7 @@ use nve_backend_skia::gpu::GpuBackendKind;
 use nve_backend_skia::raster::PixelBuffer;
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::{BackendError, InstantBootError, RelocError};
+use nve_layout::{DynLayoutEngine, TaffyStoreLayout};
 
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
@@ -79,6 +80,7 @@ pub enum DesktopHostError {
     Window(String),
     Surface(String),
     Reload(String),
+    Layout(String),
 }
 
 impl fmt::Display for DesktopHostError {
@@ -94,6 +96,7 @@ impl fmt::Display for DesktopHostError {
             Self::Window(msg) => write!(f, "window error: {msg}"),
             Self::Surface(msg) => write!(f, "softbuffer surface error: {msg}"),
             Self::Reload(msg) => write!(f, "hot reload error: {msg}"),
+            Self::Layout(msg) => write!(f, "layout engine error: {msg}"),
         }
     }
 }
@@ -130,6 +133,48 @@ impl From<std::io::Error> for DesktopHostError {
     }
 }
 
+/// Pluggable layout engine selected by `--layout <taffy|yoga>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutEngineChoice {
+    #[default]
+    Taffy,
+    Yoga,
+}
+
+impl LayoutEngineChoice {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let s = raw.trim();
+        if s.eq_ignore_ascii_case("taffy") {
+            Ok(Self::Taffy)
+        } else if s.eq_ignore_ascii_case("yoga") {
+            Ok(Self::Yoga)
+        } else {
+            Err(format!("invalid --layout '{s}' (expected 'taffy' or 'yoga')"))
+        }
+    }
+
+    pub fn build_layout_engine(self) -> Result<DynLayoutEngine, DesktopHostError> {
+        match self {
+            Self::Taffy => Ok(Box::new(TaffyStoreLayout::new())),
+            Self::Yoga => {
+                #[cfg(feature = "yoga")]
+                {
+                    nve_layout_yoga::YogaLayoutEngine::new()
+                        .map(|engine| Box::new(engine) as DynLayoutEngine)
+                        .map_err(|err| DesktopHostError::Layout(err.to_string()))
+                }
+                #[cfg(not(feature = "yoga"))]
+                {
+                    Err(DesktopHostError::Layout(
+                        "layout engine 'yoga' requires building nve-skia-shell with `--features yoga`"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+    }
+}
+
 /// Configuration for the live desktop preview window and optional instant-boot store/snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesktopPreviewOptions {
@@ -142,6 +187,7 @@ pub struct DesktopPreviewOptions {
     pub surface_id: SurfaceId,
     pub show_hud: bool,
     pub preferred_backend: GpuBackendKind,
+    pub layout_engine: LayoutEngineChoice,
     pub vsync: bool,
     pub snapshot_path: Option<PathBuf>,
     pub instant_boot_dir: Option<PathBuf>,
@@ -163,6 +209,7 @@ impl Default for DesktopPreviewOptions {
             surface_id: 1,
             show_hud: true,
             preferred_backend: GpuBackendKind::platform_preferred(),
+            layout_engine: LayoutEngineChoice::Taffy,
             vsync: true,
             snapshot_path: None,
             instant_boot_dir: None,

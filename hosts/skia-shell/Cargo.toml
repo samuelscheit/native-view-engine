@@ -18,6 +18,8 @@ skia-metal = ["skia", "nve-backend-skia/skia-metal"]
 skia-vulkan = ["skia", "nve-backend-skia/skia-vulkan"]
 # Windows Direct3D 12 + DXGI hardware GPU swapchain & offscreen context
 skia-d3d = ["skia", "nve-backend-skia/skia-d3d"]
+# Opt-in Yoga layout engine (`--layout yoga`)
+yoga = ["dep:nve-layout-yoga"]
 
 [dependencies]
 nve-abi = { workspace = true }
@@ -27,9 +29,12 @@ nve-canvas = { workspace = true }
 nve-canvas-skia = { workspace = true }
 nve-svg-skia = { workspace = true }
 nve-engine = { workspace = true }
+nve-layout = { workspace = true }
+nve-runtime = { workspace = true }
+nve-layout-yoga = { workspace = true, optional = true }
 nve-backend-skia = { workspace = true }
 nve-interop = { workspace = true }
-nve-wire = { workspace = true }
+nve-wire = { workspace = true, features = ["client"] }
 nve-host-services = { workspace = true }
 nve-clipboard = { workspace = true }
 nve-filesystem = { workspace = true }
@@ -44,6 +49,7 @@ crossbeam-channel = { workspace = true }
 
 [dev-dependencies]
 nve-dioxus = { workspace = true }
+nve-wire = { workspace = true, features = ["client", "server"] }
 
 [lints]
 workspace = true

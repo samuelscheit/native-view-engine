@@ -10,9 +10,10 @@ pub mod app;
 pub mod builder;
 pub mod c_api;
 mod lock;
+mod pair;
 mod state;
 pub mod surface;
-pub mod wake;
+pub use nve_engine::wake;
 
 pub use app::{AppFrame, CAbiAppAdapter, FrameTickHook, NveAppAdapter, RuntimeApp};
 pub use builder::{RuntimeBuilder, RuntimeError};

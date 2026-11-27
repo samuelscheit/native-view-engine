@@ -97,6 +97,7 @@ impl NveWireClient {
         let stats = Arc::new(ClientStats::new());
 
         let stats_w = stats.clone();
+        let notify_w = inbound_notify.clone();
         tokio::spawn(async move {
             while let Some(cmd) = out_rx.recv().await {
                 match cmd {
@@ -111,7 +112,8 @@ impl NveWireClient {
                     }
                 }
             }
-            stats_w.connected.store(false, Ordering::Relaxed);
+            stats_w.connected.store(false, Ordering::Release);
+            notify_w.notify_waiters();
         });
 
         let max_len = config.max_frame_bytes;
@@ -131,7 +133,8 @@ impl NveWireClient {
                     _ => {}
                 }
             }
-            stats_r.connected.store(false, Ordering::Relaxed);
+            stats_r.connected.store(false, Ordering::Release);
+            notify_r.notify_waiters();
         });
 
         Ok(Self::from_parts(

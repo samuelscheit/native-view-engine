@@ -14,11 +14,9 @@ dioxus-core = { workspace = true }
 dioxus-signals = { workspace = true }
 dioxus-core-macro = { workspace = true }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-nve-runtime = { workspace = true }
-
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
+nve-runtime = { workspace = true }
 
 [[bench]]
 name = "dioxus_bench"

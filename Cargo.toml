@@ -102,7 +102,7 @@ nve-codegen = { version = "0.1.0", path = "packages/core/codegen" }
 nve-interop = { version = "0.1.0", path = "packages/core/interop" }
 nve-host-services = { version = "0.1.0", path = "packages/core/host-services" }
 nve-wire-core = { version = "0.1.0", path = "packages/core/wire-core" }
-nve-wire = { version = "0.1.0", path = "packages/core/wire" }
+nve-wire = { version = "0.1.0", path = "packages/core/wire", default-features = false }
 nve-ui = { version = "0.1.0", path = "packages/framework/ui" }
 nve-router = { version = "0.1.0", path = "packages/framework/router" }
 nve-rpc = { version = "0.1.0", path = "packages/framework/rpc" }

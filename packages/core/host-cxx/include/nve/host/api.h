@@ -15,19 +15,24 @@
 #define NVE_EXTERN_C_END }
 /* `constexpr` functions are implicitly `inline` and usable in constant expressions. */
 #define NVE_INLINE constexpr inline
+#ifndef NVE_STATIC_ASSERT
 #define NVE_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#endif
 #define NVE_ALIGNOF(type) alignof(type)
 #else
 #define NVE_EXTERN_C_BEGIN
 #define NVE_EXTERN_C_END
 #define NVE_INLINE static inline
+#ifndef NVE_STATIC_ASSERT
 #define NVE_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
 #define NVE_ALIGNOF(type) _Alignof(type)
 #endif
 
 #define NVE_OFFSETOF(type, member) offsetof(type, member)
 
 /* Symbol visibility for functions exported across the C ABI (`nve_get_interface`, host shims). */
+#ifndef NVE_API
 #if defined(_WIN32)
 #if defined(NVE_BUILDING_LIBRARY)
 #define NVE_API __declspec(dllexport)
@@ -38,6 +43,7 @@
 #define NVE_API __attribute__((visibility("default")))
 #else
 #define NVE_API
+#endif
 #endif
 
 /* The binary ABI is little-endian only; refuse to compile anywhere else. */

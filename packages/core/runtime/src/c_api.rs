@@ -473,8 +473,8 @@ unsafe extern "C" fn rt_get_metrics(
 
 unsafe extern "C" fn rt_pair_connect(
     handle: NveRuntimeHandle,
-    _uri: NveStrSlice,
-    _token: NveStrSlice,
+    uri: NveStrSlice,
+    token: NveStrSlice,
 ) -> i32 {
     runtime_catch_unwind(
         "nve_runtime::pair_connect",
@@ -484,12 +484,17 @@ unsafe extern "C" fn rt_pair_connect(
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            if let Err(e) = rt.check_owner_thread() {
-                set_last_error(e.to_string());
-                return e.status().as_i32();
-            }
-            set_last_error("nve-runtime built without wire pairing support");
-            NveRuntimeStatus::Unsupported.as_i32()
+            // SAFETY: Caller guarantees `uri` points to valid UTF-8 bytes when non-empty.
+            let Ok(uri_str) = (unsafe { uri.as_str() }) else {
+                set_last_error("invalid NveStrSlice for pairing URI");
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            // SAFETY: Caller guarantees `token` points to valid UTF-8 bytes when non-empty.
+            let Ok(token_str) = (unsafe { token.as_str() }) else {
+                set_last_error("invalid NveStrSlice for pairing token");
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            status_from_result(rt.pair_connect_shared(uri_str, token_str))
         },
     )
 }
@@ -503,22 +508,18 @@ unsafe extern "C" fn rt_pair_disconnect(handle: NveRuntimeHandle) -> i32 {
             let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
                 return NveRuntimeStatus::InvalidArg.as_i32();
             };
-            if let Err(e) = rt.check_owner_thread() {
-                set_last_error(e.to_string());
-                return e.status().as_i32();
-            }
-            set_last_error("nve-runtime built without wire pairing support");
-            NveRuntimeStatus::Unsupported.as_i32()
+            status_from_result(rt.pair_disconnect_shared())
         },
     )
 }
 
 unsafe extern "C" fn rt_pair_is_connected(handle: NveRuntimeHandle) -> u32 {
     runtime_catch_unwind("nve_runtime::pair_is_connected", 0, || {
-        if handle.is_null() {
+        // SAFETY: `handle` checked non-null inside `borrow_runtime`.
+        let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
             return 0;
-        }
-        0
+        };
+        u32::from(rt.pair_is_connected())
     })
 }
 

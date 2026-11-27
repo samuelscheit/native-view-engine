@@ -681,18 +681,30 @@ fn c_abi_all_entry_points_null_handles_validation_scroll_viewport_and_threading(
         );
     }
 
-    // Pairing unsupported stubs still guard panics and return Unsupported on owner thread.
+    // Pairing validation & feature-gated status contracts on owner thread.
     // SAFETY: Valid handle.
     unsafe {
-        assert_eq!(
-            (api.pair_connect)(h, NveStrSlice::EMPTY, NveStrSlice::EMPTY),
-            NveRuntimeStatus::Unsupported.as_i32()
-        );
-        assert_eq!(
-            (api.pair_disconnect)(h),
-            NveRuntimeStatus::Unsupported.as_i32()
-        );
-        assert_eq!((api.pair_is_connected)(h), 0);
+        #[cfg(all(feature = "wire", not(target_arch = "wasm32")))]
+        {
+            assert_eq!(
+                (api.pair_connect)(h, NveStrSlice::EMPTY, NveStrSlice::EMPTY),
+                NveRuntimeStatus::InvalidArg.as_i32()
+            );
+            assert_eq!((api.pair_disconnect)(h), NveRuntimeStatus::Ok.as_i32());
+            assert_eq!((api.pair_is_connected)(h), 0);
+        }
+        #[cfg(not(all(feature = "wire", not(target_arch = "wasm32"))))]
+        {
+            assert_eq!(
+                (api.pair_connect)(h, NveStrSlice::EMPTY, NveStrSlice::EMPTY),
+                NveRuntimeStatus::Unsupported.as_i32()
+            );
+            assert_eq!(
+                (api.pair_disconnect)(h),
+                NveRuntimeStatus::Unsupported.as_i32()
+            );
+            assert_eq!((api.pair_is_connected)(h), 0);
+        }
     }
 
     // 3. Cross-thread contract: mutating & layout/app calls (including `hit_test`) from another

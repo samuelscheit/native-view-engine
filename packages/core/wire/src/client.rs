@@ -201,6 +201,7 @@ impl NveWireClient {
 
         let conn_write = conn.clone();
         let stats_w = stats.clone();
+        let notify_w = inbound_notify.clone();
         tokio::spawn(async move {
             let _ep = endpoint;
             while let Some(cmd) = out_rx.recv().await {
@@ -219,7 +220,8 @@ impl NveWireClient {
                     }
                 }
             }
-            stats_w.connected.store(false, Ordering::Relaxed);
+            stats_w.connected.store(false, Ordering::Release);
+            notify_w.notify_waiters();
         });
 
         let conn_dgram = conn.clone();
@@ -245,7 +247,8 @@ impl NveWireClient {
                 let _ = inbound_tx.send(frame);
                 notify_r.notify_waiters();
             }
-            stats_r.connected.store(false, Ordering::Relaxed);
+            stats_r.connected.store(false, Ordering::Release);
+            notify_r.notify_waiters();
         });
 
         Ok(Self::from_parts(
@@ -313,6 +316,7 @@ impl NveWireClient {
 
         let sess_write = session.clone();
         let stats_w = stats.clone();
+        let notify_w = inbound_notify.clone();
         tokio::spawn(async move {
             while let Some(cmd) = out_rx.recv().await {
                 match cmd {
@@ -330,7 +334,8 @@ impl NveWireClient {
                     }
                 }
             }
-            stats_w.connected.store(false, Ordering::Relaxed);
+            stats_w.connected.store(false, Ordering::Release);
+            notify_w.notify_waiters();
         });
 
         let sess_dgram = session.clone();
@@ -356,7 +361,8 @@ impl NveWireClient {
                 let _ = inbound_tx.send(frame);
                 notify_r.notify_waiters();
             }
-            stats_r.connected.store(false, Ordering::Relaxed);
+            stats_r.connected.store(false, Ordering::Release);
+            notify_r.notify_waiters();
         });
 
         Ok(Self::from_parts(
@@ -480,10 +486,27 @@ impl NveWireClient {
         self.inbound_rx.recv_timeout(timeout).ok()
     }
 
+    pub async fn next_frame(&self) -> Option<NveWireFrame> {
+        loop {
+            let notified = self.inbound_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Ok(frame) = self.inbound_rx.try_recv() {
+                return Some(frame);
+            }
+            if !self.stats.connected.load(Ordering::Acquire) {
+                return self.inbound_rx.try_recv().ok();
+            }
+            notified.await;
+        }
+    }
+
     pub async fn recv_frame_async(&self, timeout: Duration) -> Option<NveWireFrame> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.inbound_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Ok(frame) = self.inbound_rx.try_recv() {
                 return Some(frame);
             }
@@ -494,12 +517,13 @@ impl NveWireClient {
     }
 
     pub fn close(&self) {
-        self.stats.connected.store(false, Ordering::Relaxed);
+        self.stats.connected.store(false, Ordering::Release);
         let bye = NveWireFrame::new(NveWireKind::Bye, self.alloc_seq(), Vec::new());
         if let Ok(encoded) = bye.encode() {
             let _ = self.outbound_tx.send(ClientOut::Stream(Bytes::from(encoded)));
         }
         let _ = self.outbound_tx.send(ClientOut::Close);
+        self.inbound_notify.notify_waiters();
     }
 }
 

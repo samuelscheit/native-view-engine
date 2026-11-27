@@ -22,6 +22,9 @@ use nve_engine::{
     RelocHeader, StateSaveOutcome, StateStoreConfig, StoreBackend, StoreWireReplica, VerifyMode,
     Viewport,
 };
+use nve_layout::DynLayoutEngine;
+#[cfg(test)]
+use nve_layout::TaffyStoreLayout;
 #[cfg(test)]
 use nve_store::NodeStore;
 use nve_store::{ChangeSet, NodeId as StoreNodeId};
@@ -31,8 +34,11 @@ use super::clipboard::{default_clipboard, ClipboardProvider};
 use super::hot_reload_client::resolve_dylib_path;
 #[cfg(test)]
 use super::write_pixel_buffer_ppm;
-use super::{write_pixel_buffer_screenshot, DesktopApp, DesktopHostError};
+use super::{write_pixel_buffer_screenshot, DesktopApp, DesktopHostError, LayoutEngineChoice};
 use crate::host_services::SkiaHostEvent;
+
+/// Shell Skia backend parameterized over a pluggable [`DynLayoutEngine`] (Taffy default or Yoga opt-in).
+pub type ShellSkiaBackend = SkiaBackend<DynLayoutEngine>;
 
 #[inline]
 pub(super) fn now_us() -> u64 {
@@ -42,13 +48,25 @@ pub(super) fn now_us() -> u64 {
         .unwrap_or(0)
 }
 
-/// Creates a [`StoreWireReplica<SkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`).
+/// Creates a [`StoreWireReplica<ShellSkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`)
+/// and the default Taffy layout engine.
+#[cfg(test)]
 pub fn new_shell_skia_replica(
     surface_id: SurfaceId,
     viewport: Viewport,
-) -> StoreWireReplica<SkiaBackend> {
+) -> StoreWireReplica<ShellSkiaBackend> {
+    new_shell_skia_replica_with_layout(surface_id, viewport, Box::new(TaffyStoreLayout::new()))
+}
+
+/// Creates a [`StoreWireReplica<ShellSkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`)
+/// and an explicit pluggable [`DynLayoutEngine`].
+pub fn new_shell_skia_replica_with_layout(
+    surface_id: SurfaceId,
+    viewport: Viewport,
+    layout: DynLayoutEngine,
+) -> StoreWireReplica<ShellSkiaBackend> {
     register_core_tables();
-    let mut backend = SkiaBackend::new();
+    let mut backend = SkiaBackend::with_layout(layout);
     backend.register_table_system(CanvasSkiaSystem);
     backend.register_table_system(SvgSkiaSystem);
     backend.set_viewport(surface_id, viewport);
@@ -59,7 +77,8 @@ pub fn new_shell_skia_replica(
 /// reload, and snapshot persistence for any [`DesktopApp`].
 pub struct DesktopSession<A: DesktopApp> {
     pub(super) app: A,
-    pub(super) replica: StoreWireReplica<SkiaBackend>,
+    pub(super) replica: StoreWireReplica<ShellSkiaBackend>,
+    layout_choice: LayoutEngineChoice,
     pub(super) surface_id: SurfaceId,
     next_frame_id: FrameId,
     pub(super) viewport: Viewport,
@@ -84,6 +103,7 @@ pub struct DesktopSession<A: DesktopApp> {
 }
 
 impl<A: DesktopApp> DesktopSession<A> {
+    #[cfg(test)]
     pub fn new(
         app: A,
         surface_id: SurfaceId,
@@ -106,10 +126,40 @@ impl<A: DesktopApp> DesktopSession<A> {
         )
     }
 
+    pub fn new_with_layout(
+        app: A,
+        surface_id: SurfaceId,
+        viewport: Viewport,
+        clear_color: ColorRgba,
+        show_hud: bool,
+        layout_choice: LayoutEngineChoice,
+    ) -> Result<Self, DesktopHostError> {
+        let layout = layout_choice.build_layout_engine()?;
+        let replica = new_shell_skia_replica_with_layout(surface_id, viewport, layout);
+        let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
+        let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
+        Ok(Self::from_parts(
+            app,
+            replica,
+            PixelBuffer::new(phys_w, phys_h),
+            Vec::new(),
+            surface_id,
+            viewport,
+            clear_color,
+            show_hud,
+        )
+        .with_layout_choice(layout_choice))
+    }
+
+    pub fn with_layout_choice(mut self, layout_choice: LayoutEngineChoice) -> Self {
+        self.layout_choice = layout_choice;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         app: A,
-        replica: StoreWireReplica<SkiaBackend>,
+        replica: StoreWireReplica<ShellSkiaBackend>,
         pixel_buffer: PixelBuffer,
         last_frame_bytes: Vec<u8>,
         surface_id: SurfaceId,
@@ -128,6 +178,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         Self {
             app,
             replica,
+            layout_choice: LayoutEngineChoice::Taffy,
             surface_id,
             next_frame_id: 1,
             viewport,
@@ -161,7 +212,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     #[cfg(test)]
-    pub fn backend(&self) -> &SkiaBackend {
+    pub fn backend(&self) -> &ShellSkiaBackend {
         self.replica.backend()
     }
 
@@ -545,7 +596,9 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let resolved = resolve_dylib_path(dylib_path);
                 match self.app.reload(&resolved, self.surface_id) {
                     Ok(new_gen) => {
-                        self.replica = new_shell_skia_replica(self.surface_id, self.viewport);
+                        let layout = self.layout_choice.build_layout_engine()?;
+                        self.replica =
+                            new_shell_skia_replica_with_layout(self.surface_id, self.viewport, layout);
                         self.last_frame_bytes.clear();
                         let swap_ms = t0.elapsed().as_millis();
                         self.status_banner = Some(format!(

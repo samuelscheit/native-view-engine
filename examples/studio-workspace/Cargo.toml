@@ -38,7 +38,7 @@ dioxus-core-macro = { workspace = true }
 serde = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-nve-wire = { workspace = true }
+nve-wire = { workspace = true, features = ["client", "server"] }
 
 [dev-dependencies]
 nve-backend-headless = { workspace = true }

@@ -62,13 +62,20 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                             height: desc.bounds.height,
                             scale_factor: self.options.scale_factor.max(1.0),
                         };
-                        let mut session = DesktopSession::new(
+                        let mut session = match DesktopSession::new_with_layout(
                             app,
                             surface_id,
                             vp,
                             self.options.clear_color,
                             self.options.show_hud,
-                        );
+                            self.options.layout_engine,
+                        ) {
+                            Ok(s) => s,
+                            Err(err) => {
+                                eprintln!("[nve-skia-shell] secondary layout engine failed: {err}");
+                                return;
+                            }
+                        };
                         let _ = session.notify_viewport_resize();
                         let _ = session.render_and_rasterize();
                         if let Err(err) = self.spawn_os_window(event_loop, surface_id, presentation, session) {

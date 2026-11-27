@@ -12,14 +12,18 @@ pub mod loader;
 pub mod mmap_arena;
 pub mod profiler;
 pub mod reloc;
+pub mod runtime_app;
 pub mod store_backend;
+pub mod wake;
 
 pub use nve_abi as abi;
 use nve_abi::{DecodeError, FrameId, NodeId, SurfaceId};
 use nve_store::{ChangeSet, NodeStore};
 
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
+pub use runtime_app::{AppFrame, FrameTickHook, RuntimeApp};
 pub use store_backend::{StoreBackend, StoreWireReplica};
+pub use wake::{WakeBridge, WakeCallback, WakeToken};
 
 pub use hotreload::HotPatchMsg;
 pub use instant_boot::{

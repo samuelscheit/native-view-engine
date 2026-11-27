@@ -70,7 +70,7 @@ nve-example-issues-api = { workspace = true, optional = true }
 nve-example-issues-client = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-nve-wire = { workspace = true }
+nve-wire = { workspace = true, features = ["client", "server"] }
 tungstenite = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

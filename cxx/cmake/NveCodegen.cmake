@@ -27,6 +27,7 @@ function(nve_ensure_abi_codegen)
   set(_nve_generated_headers
     "${_nve_include_dir}/nve_abi.generated.h"
     "${_nve_include_dir}/nve_scene_abi.generated.h"
+    "${_nve_repo_root}/packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
   )
 
   set(_nve_needs_codegen FALSE)

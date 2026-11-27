@@ -1,18 +1,17 @@
-//! Direct zero-serialization [`nve_runtime::RuntimeApp`] adapter over [`DioxusSurface`] with
-//! single-bridge coalesced async task wakeup via [`nve_runtime::WakeBridge`].
+//! Direct zero-serialization [`nve_engine::RuntimeApp`] adapter over [`DioxusSurface`] with
+//! single-bridge coalesced async task wakeup via [`nve_engine::WakeBridge`].
 
 use std::sync::Arc;
 use std::task::Waker;
 
 use nve_abi::{FrameId, NveEventBatchRef};
-use nve_engine::HotPatchMsg;
-use nve_runtime::{AppFrame, RuntimeApp, WakeBridge, WakeToken};
+use nve_engine::{AppFrame, HotPatchMsg, RuntimeApp, WakeBridge, WakeToken};
 use nve_store::NodeStore;
 
 use crate::DioxusSurface;
 
-/// Hosts an in-process [`DioxusSurface`] directly inside [`nve_runtime::SurfaceRuntime`] with
-/// zero `NVE2` wire serialization and single-bridge coalesced cross-thread async task wakeups.
+/// Hosts an in-process [`DioxusSurface`] directly inside any `SurfaceRuntime` with zero `NVE2`
+/// wire serialization and single-bridge coalesced cross-thread async task wakeups.
 pub struct DioxusRuntimeApp {
     // Declared FIRST so dropping `DioxusRuntimeApp` disables zombie wakers BEFORE `surface` drops.
     _wake_token: WakeToken,
@@ -98,7 +97,7 @@ impl RuntimeApp for DioxusRuntimeApp {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
@@ -132,7 +131,7 @@ mod tests {
     impl OneShotState {
         fn send(&self, value: &str) {
             let waker = {
-                let mut g = self.inner.lock().unwrap();
+                let mut g = self.inner.lock().expect("oneshot lock");
                 g.0 = Some(value.to_owned());
                 g.1.take()
             };
@@ -148,7 +147,7 @@ mod tests {
         type Output = String;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let mut g = self.0.inner.lock().unwrap();
+            let mut g = self.0.inner.lock().expect("oneshot lock");
             if let Some(val) = g.0.take() {
                 Poll::Ready(val)
             } else {

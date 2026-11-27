@@ -8,7 +8,6 @@ use std::time::Instant;
 
 use nve_abi::{ColorRgba, SurfaceId};
 use nve_backend_skia::raster::PixelBuffer;
-use nve_backend_skia::SkiaBackend;
 use nve_engine::{
     default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
     reset_instant_boot_dir, resolve_sidecar_frame0_path, MmapReloc, NativeInstantBootStore,
@@ -16,13 +15,13 @@ use nve_engine::{
     Viewport, RELOC_KIND_BUNDLE, RELOC_KIND_SCENE,
 };
 
-use super::session::new_shell_skia_replica;
-use super::{DesktopHostError, DesktopPreviewOptions};
+use super::session::{new_shell_skia_replica_with_layout, ShellSkiaBackend};
+use super::{DesktopHostError, DesktopPreviewOptions, LayoutEngineChoice};
 
 /// Pre-warmed Frame-0 backend state decoded directly from a zero-copy `NVERELOC` scene or
 /// [`NativeInstantBootStore`] prior to loading any app `cdylib`.
 pub struct PrewarmedSnapshot {
-    pub replica: StoreWireReplica<SkiaBackend>,
+    pub replica: StoreWireReplica<ShellSkiaBackend>,
     pub pixel_buffer: PixelBuffer,
     pub frame0_bytes: Vec<u8>,
     pub state_bytes: Vec<u8>,
@@ -78,7 +77,8 @@ pub(crate) fn resolve_default_instant_boot_options(
 }
 
 /// Opens an `NVERELOC` file (`SceneRelocView` or `RelocBundleView`) with schema validation,
-/// renders Frame 0 straight into a [`SkiaBackend`], and rasterizes before any app `cdylib` loads.
+/// renders Frame 0 straight into a [`ShellSkiaBackend`], and rasterizes before any app `cdylib` loads.
+#[cfg(test)]
 pub fn replay_snapshot_into_backend(
     path: &Path,
     schema_version: u32,
@@ -86,10 +86,29 @@ pub fn replay_snapshot_into_backend(
     viewport: Viewport,
     clear_color: ColorRgba,
 ) -> Result<PrewarmedSnapshot, DesktopHostError> {
+    replay_snapshot_into_backend_with_layout(
+        path,
+        schema_version,
+        surface_id,
+        viewport,
+        clear_color,
+        LayoutEngineChoice::Taffy,
+    )
+}
+
+pub fn replay_snapshot_into_backend_with_layout(
+    path: &Path,
+    schema_version: u32,
+    surface_id: SurfaceId,
+    viewport: Viewport,
+    clear_color: ColorRgba,
+    layout_choice: LayoutEngineChoice,
+) -> Result<PrewarmedSnapshot, DesktopHostError> {
     let t0 = Instant::now();
     let mapped = MmapReloc::open_with_schema(path, schema_version, VerifyMode::Full)?;
     let view = mapped.view();
-    let mut replica = new_shell_skia_replica(surface_id, viewport);
+    let layout = layout_choice.build_layout_engine()?;
+    let mut replica = new_shell_skia_replica_with_layout(surface_id, viewport, layout);
 
     let (frame0_bytes, state_bytes) = match view.header().content_kind {
         RELOC_KIND_SCENE => {
@@ -131,8 +150,9 @@ pub fn replay_snapshot_into_backend(
 }
 
 /// Opens a [`NativeInstantBootStore`] (`user_frame0.nvereloc` -> bundled `frame0.nvereloc` +
-/// `state.nvemmap`), paints Frame 0 straight into [`SkiaBackend`] with zero layout work, and
+/// `state.nvemmap`), paints Frame 0 straight into [`ShellSkiaBackend`] with zero layout work, and
 /// returns both the rasterized Frame 0 and restored per-user state bytes before `cdylib` boot.
+#[cfg(test)]
 pub fn replay_instant_boot_store_into_backend(
     user_dir: &Path,
     default_frame0_path: Option<&Path>,
@@ -141,6 +161,26 @@ pub fn replay_instant_boot_store_into_backend(
     viewport: Viewport,
     clear_color: ColorRgba,
 ) -> Result<PrewarmedSnapshot, DesktopHostError> {
+    replay_instant_boot_store_into_backend_with_layout(
+        user_dir,
+        default_frame0_path,
+        schema_version,
+        surface_id,
+        viewport,
+        clear_color,
+        LayoutEngineChoice::Taffy,
+    )
+}
+
+pub fn replay_instant_boot_store_into_backend_with_layout(
+    user_dir: &Path,
+    default_frame0_path: Option<&Path>,
+    schema_version: u32,
+    surface_id: SurfaceId,
+    viewport: Viewport,
+    clear_color: ColorRgba,
+    layout_choice: LayoutEngineChoice,
+) -> Result<PrewarmedSnapshot, DesktopHostError> {
     let t0 = Instant::now();
     let mut store =
         NativeInstantBootStore::open(user_dir, schema_version, StateStoreConfig::default())?;
@@ -148,7 +188,8 @@ pub fn replay_instant_boot_store_into_backend(
         store = store.with_default_frame0_path(default_path);
     }
 
-    let mut replica = new_shell_skia_replica(surface_id, viewport);
+    let layout = layout_choice.build_layout_engine()?;
+    let mut replica = new_shell_skia_replica_with_layout(surface_id, viewport, layout);
     let mut used_user_frame0 = false;
     let mut has_frame0 = false;
     if let Some(frame0) = store.load_frame0(VerifyMode::Full) {
@@ -185,13 +226,14 @@ pub(crate) fn prewarm_from_options(
     viewport: Viewport,
 ) -> Option<PrewarmedSnapshot> {
     if let Some(boot_dir) = options.instant_boot_dir.as_deref() {
-        return match replay_instant_boot_store_into_backend(
+        return match replay_instant_boot_store_into_backend_with_layout(
             boot_dir,
             options.default_frame0_path.as_deref(),
             options.schema_version,
             options.surface_id,
             viewport,
             options.clear_color,
+            options.layout_engine,
         ) {
             Ok(p) => {
                 if !p.has_frame0 && p.state_bytes.is_empty() {
@@ -229,12 +271,13 @@ pub(crate) fn prewarm_from_options(
         };
     }
     let snap_path = options.snapshot_path.as_deref().filter(|p| p.exists())?;
-    match replay_snapshot_into_backend(
+    match replay_snapshot_into_backend_with_layout(
         snap_path,
         options.schema_version,
         options.surface_id,
         viewport,
         options.clear_color,
+        options.layout_engine,
     ) {
         Ok(p) => {
             eprintln!(

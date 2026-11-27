@@ -2,7 +2,7 @@
 //! reader/writer [`SceneLock`] guards, and safe Rust / shared FFI operations.
 
 use std::cell::UnsafeCell;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use nve_abi::{
@@ -16,6 +16,7 @@ use nve_store::{ChangeSet, NodeId};
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeBuilder, RuntimeError};
 use crate::lock::SceneLock;
+use crate::pair::{PairSession, WIRE_PAIRING_SUPPORTED};
 use crate::state::RuntimeInner;
 use crate::wake::{WakeBridge, WakeCallback};
 
@@ -55,6 +56,7 @@ pub struct SurfaceRuntime {
     pub(crate) surface_id: SurfaceId,
     pub(crate) lock: SceneLock,
     pub(crate) wake: Arc<WakeBridge>,
+    pub(crate) pair_connected: RwLock<Option<Arc<AtomicBool>>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) owner_thread: std::thread::ThreadId,
     pub(crate) poisoned: AtomicBool,
@@ -64,8 +66,9 @@ pub struct SurfaceRuntime {
 impl Drop for SurfaceRuntime {
     fn drop(&mut self) {
         // Synchronously drain and clear any installed host wake callback before dropping so
-        // background wakers can never invoke a freed host context pointer after `destroy`.
+        // background wakers and any embedded pairing worker can never invoke a freed host context.
         self.wake.clear_sink();
+        self.set_pair_connected(None);
     }
 }
 
@@ -157,6 +160,15 @@ impl SurfaceRuntime {
         self.wake.clear_sink();
     }
 
+    #[inline]
+    fn set_pair_connected(&self, flag: Option<Arc<AtomicBool>>) {
+        let old = {
+            let mut guard = self.pair_connected.write().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *guard, flag)
+        };
+        drop(old);
+    }
+
     pub fn attach_app(&mut self, app: Box<dyn RuntimeApp>) -> Result<(), RuntimeError> {
         self.attach_app_shared(app)
     }
@@ -165,18 +177,110 @@ impl SurfaceRuntime {
         &self,
         mut app: Box<dyn RuntimeApp>,
     ) -> Result<(), RuntimeError> {
-        let had_pending = self.with_write(|inner| {
+        let (had_pending, old_pair) = self.with_write(|inner| {
+            let old_pair = inner.pair.take();
+            if old_pair.is_some() {
+                self.set_pair_connected(None);
+                inner.state.metrics.pair_connected = 0;
+            }
             inner.reset_for_app_change();
             let pending = app.install_wake_bridge(Arc::clone(&self.wake));
             inner.app = Some(app);
             inner.state.needs_render = true;
             inner.state.needs_publish = true;
-            Ok(pending)
+            Ok((pending, old_pair))
         })?;
+        // Shut down any replaced pairing worker OUTSIDE the surface write lock to avoid deadlocks.
+        if let Some(mut pair) = old_pair {
+            pair.shutdown();
+        }
         if had_pending {
             self.wake.trigger();
         }
         Ok(())
+    }
+
+    /// Connects this surface as a thin client to a live `nve pair` / `nve-wire` server.
+    ///
+    /// Fails with [`RuntimeError::InvalidArg`] if a local app is attached or the URI/token is
+    /// invalid, or [`RuntimeError::Unsupported`] when built without `feature = "wire"` / on wasm32.
+    pub fn pair_connect(&mut self, uri: &str, token: &str) -> Result<(), RuntimeError> {
+        self.pair_connect_shared(uri, token)
+    }
+
+    pub(crate) fn pair_connect_shared(&self, uri: &str, token: &str) -> Result<(), RuntimeError> {
+        if !WIRE_PAIRING_SUPPORTED {
+            self.check_not_poisoned()?;
+            self.check_owner_thread()?;
+            return Err(RuntimeError::Unsupported(
+                "nve-runtime built without wire pairing support",
+            ));
+        }
+        let old_pair = self.with_write(|inner| {
+            if inner.app.is_some() {
+                return Err(RuntimeError::InvalidArg(
+                    "cannot pair while an app is attached",
+                ));
+            }
+            let session = PairSession::connect(uri, token, Arc::clone(&self.wake))?;
+            let flag = session.connected_flag();
+            let old_pair = inner.pair.replace(session);
+            inner.reset_for_app_change();
+            inner.state.needs_render = false;
+            inner.state.needs_publish = false;
+            inner.state.metrics.pair_connected = 0;
+            self.set_pair_connected(Some(flag));
+            Ok(old_pair)
+        })?;
+        if let Some(mut pair) = old_pair {
+            pair.shutdown();
+        }
+        Ok(())
+    }
+
+    /// Disconnects any active embedded `nve-wire` pairing session and invalidates its scene view.
+    ///
+    /// Idempotent when already disconnected; returns [`RuntimeError::Unsupported`] when built
+    /// without `feature = "wire"` or on `wasm32`.
+    pub fn pair_disconnect(&mut self) -> Result<(), RuntimeError> {
+        self.pair_disconnect_shared()
+    }
+
+    pub(crate) fn pair_disconnect_shared(&self) -> Result<(), RuntimeError> {
+        if !WIRE_PAIRING_SUPPORTED {
+            self.check_not_poisoned()?;
+            self.check_owner_thread()?;
+            return Err(RuntimeError::Unsupported(
+                "nve-runtime built without wire pairing support",
+            ));
+        }
+        let old_pair = self.with_write(|inner| {
+            let old_pair = inner.pair.take();
+            self.set_pair_connected(None);
+            inner.state.metrics.pair_connected = 0;
+            if old_pair.is_some() {
+                inner.reset_for_app_change();
+                inner.state.needs_render = false;
+                inner.state.needs_publish = false;
+            }
+            Ok(old_pair)
+        })?;
+        if let Some(mut pair) = old_pair {
+            pair.shutdown();
+        }
+        Ok(())
+    }
+
+    /// Returns whether an embedded pairing session is currently connected (cross-thread safe).
+    #[inline]
+    pub fn pair_is_connected(&self) -> bool {
+        if self.poisoned.load(Ordering::Acquire) {
+            return false;
+        }
+        let guard = self.pair_connected.read().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
     }
 
     pub fn detach_app(&mut self) -> Result<(), RuntimeError> {
@@ -287,14 +391,17 @@ impl SurfaceRuntime {
         events: NveEventBatchRef<'_>,
     ) -> Result<bool, RuntimeError> {
         self.with_write(|inner| {
-            let changed = inner
-                .app
-                .as_mut()
-                .is_some_and(|app| app.dispatch_events(events));
-            if changed {
-                inner.state.needs_render = true;
+            if let Some(app) = inner.app.as_mut() {
+                let changed = app.dispatch_events(events);
+                if changed {
+                    inner.state.needs_render = true;
+                }
+                return Ok(changed);
             }
-            Ok(changed)
+            if let Some(pair) = inner.pair.as_ref() {
+                return Ok(pair.send_events(events));
+            }
+            Ok(false)
         })
     }
 
@@ -392,6 +499,8 @@ impl SurfaceRuntime {
         self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
         // SAFETY: Reader lock held for `_guard`'s lifetime.
-        Ok(unsafe { &*self.inner.get() }.state.metrics)
+        let mut m = unsafe { &*self.inner.get() }.state.metrics;
+        m.pair_connected = u32::from(self.pair_is_connected());
+        Ok(m)
     }
 }

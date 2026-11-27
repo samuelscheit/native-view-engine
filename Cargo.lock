@@ -3065,6 +3065,7 @@ dependencies = [
  "nve-engine",
  "nve-layout",
  "nve-store",
+ "nve-wire",
 ]
 
 [[package]]
@@ -3103,7 +3104,10 @@ dependencies = [
  "nve-haptics",
  "nve-host-services",
  "nve-interop",
+ "nve-layout",
+ "nve-layout-yoga",
  "nve-linking",
+ "nve-runtime",
  "nve-secure-store",
  "nve-store",
  "nve-svg-skia",

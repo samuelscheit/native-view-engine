@@ -2,18 +2,35 @@
 //! (`h3` + `nve-wire-2`) QUIC/WSS `rustls` configuration.
 
 use std::sync::{Arc, Once};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
+#[cfg(feature = "server")]
+use std::time::SystemTime;
 
+#[cfg(feature = "server")]
 use base64::Engine as _;
+#[cfg(feature = "server")]
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+#[cfg(feature = "client")]
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::crypto::CryptoProvider;
+#[cfg(feature = "client")]
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
+#[cfg(any(feature = "client", feature = "server"))]
+use rustls::pki_types::CertificateDer;
+#[cfg(feature = "server")]
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+#[cfg(feature = "client")]
+use rustls::pki_types::{ServerName, UnixTime};
+#[cfg(feature = "client")]
 use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+#[cfg(feature = "client")]
 use subtle::ConstantTimeEq;
 
-use nve_wire_core::{format_cert_hash_hex, DEFAULT_WIRE_QUIC_ALPN};
+#[cfg(feature = "server")]
+use nve_wire_core::format_cert_hash_hex;
+use nve_wire_core::DEFAULT_WIRE_QUIC_ALPN;
 
+#[cfg(any(feature = "client", feature = "server"))]
 use crate::NveWireTransportError;
 
 /// HTTP/3 WebTransport ALPN identifier.
@@ -39,6 +56,7 @@ pub fn ensure_crypto_provider() -> Arc<CryptoProvider> {
 }
 
 /// Generated 13-day ECDSA P-256 TLS certificate with precomputed SHA-256 DER fingerprint.
+#[cfg(feature = "server")]
 #[derive(Clone)]
 pub struct NveDevCertificate {
     pub cert_der: CertificateDer<'static>,
@@ -46,6 +64,7 @@ pub struct NveDevCertificate {
     pub sha256: [u8; 32],
 }
 
+#[cfg(feature = "server")]
 impl NveDevCertificate {
     /// Generates a fresh 13-day ECDSA P-256 self-signed certificate covering `localhost`,
     /// `127.0.0.1`, `::1`, and any additional `extra_sans` hostnames/IPs.
@@ -120,6 +139,7 @@ pub fn build_quic_transport_config() -> Arc<quinn::TransportConfig> {
 }
 
 /// Builds a dual-ALPN (`h3` WebTransport + `nve-wire-2` raw QUIC) `quinn::ServerConfig`.
+#[cfg(feature = "server")]
 pub fn build_dual_alpn_quic_server_config(
     cert: &NveDevCertificate,
 ) -> Result<quinn::ServerConfig, NveWireTransportError> {
@@ -144,6 +164,7 @@ pub fn build_dual_alpn_quic_server_config(
 }
 
 /// Builds a TLS 1.3 `rustls::ServerConfig` for `wss://` WebSocket fallback.
+#[cfg(feature = "server")]
 pub fn build_wss_server_config(
     cert: &NveDevCertificate,
 ) -> Result<Arc<rustls::ServerConfig>, NveWireTransportError> {
@@ -159,6 +180,7 @@ pub fn build_wss_server_config(
 }
 
 /// Builds a `rustls::ClientConfig` pinned to a specific leaf certificate SHA-256 digest.
+#[cfg(feature = "client")]
 pub fn build_pinned_client_tls_config(
     expected_sha256: [u8; 32],
     alpn_protocols: Vec<Vec<u8>>,
@@ -179,6 +201,7 @@ pub fn build_pinned_client_tls_config(
 }
 
 /// Builds a raw QUIC (`nve-wire-2`) `quinn::ClientConfig` pinned to `expected_sha256`.
+#[cfg(feature = "client")]
 pub fn build_quic_client_config(
     expected_sha256: [u8; 32],
 ) -> Result<quinn::ClientConfig, NveWireTransportError> {
@@ -193,12 +216,14 @@ pub fn build_quic_client_config(
     Ok(cfg)
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug)]
 struct PinnedCertSha256Verifier {
     provider: Arc<CryptoProvider>,
     expected_sha256: [u8; 32],
 }
 
+#[cfg(feature = "client")]
 impl ServerCertVerifier for PinnedCertSha256Verifier {
     fn verify_server_cert(
         &self,
