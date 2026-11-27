@@ -10,7 +10,13 @@ use nve_dioxus::DioxusSurface;
 use nve_docs::DocsViewport;
 use nve_engine::{HotPatchMsg, NveApp};
 
-use crate::create_nve_docs_surface_on;
+use std::sync::Arc;
+
+use nve_system_env::NativeSystemEnv;
+use nve_ui::ThemeMode;
+
+use crate::site::{embedded_compiled_site, nve_docs_site_config};
+use crate::{create_nve_docs_surface_with_host, docs_host_services, surface_theme_mode};
 
 /// Native host module exporting the embedded `nve-docs-site` application over `nve_get_interface`.
 pub struct DocsSiteModule {
@@ -23,15 +29,34 @@ pub struct DocsSiteModule {
 
 impl DocsSiteModule {
     fn rebuild_surface(&mut self) {
-        self.surface = create_nve_docs_surface_on(self.surface_id, &self.route, "", self.viewport);
+        let mode = surface_theme_mode(&self.surface);
+        self.surface = create_native_surface(self.surface_id, &self.route, self.viewport, mode);
     }
+}
+
+/// Mounts the docs on the host OS appearance (`NativeSystemEnv`); `default_dark` only applies when
+/// the OS reports no scheme.
+fn create_native_surface(
+    surface_id: SurfaceId,
+    route: &str,
+    viewport: DocsViewport,
+    theme_mode: ThemeMode,
+) -> DioxusSurface {
+    create_nve_docs_surface_with_host(
+        surface_id,
+        embedded_compiled_site(),
+        route,
+        viewport,
+        nve_docs_site_config("").with_theme_mode(theme_mode),
+        docs_host_services(Arc::new(NativeSystemEnv::new())),
+    )
 }
 
 impl NveApp for DocsSiteModule {
     fn create(surface_id: SurfaceId) -> Self {
         let route = "/".to_string();
         let viewport = DocsViewport::desktop_default();
-        let surface = create_nve_docs_surface_on(surface_id, &route, "", viewport);
+        let surface = create_native_surface(surface_id, &route, viewport, ThemeMode::System);
         Self {
             surface_id,
             route,

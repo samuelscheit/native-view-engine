@@ -18,7 +18,7 @@ use nve_clipboard::ClipboardClient;
 use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_interop::ContrastLevel;
 use nve_mdx::{CalloutKind, TokenKind};
-use nve_ui::{AppBrand, Appearance, Polarity, Theme, ThemeMode, wcag_contrast};
+use nve_ui::{AppBrand, Appearance, Polarity, Theme, ThemeMode, relative_luminance, wcag_contrast};
 use nve_router::Routable;
 use nve_system_env::{ColorScheme, MemorySystemEnv, ThemeSnapshot};
 
@@ -82,14 +82,23 @@ fn docs_theme_follows_os_with_docs_brand_and_syntax_and_callout_tones() {
         TokenKind::DiffAdd,
         TokenKind::DiffDel,
     ];
-    for theme in [dark, light] {
+    // Light elevation reads canvas (tinted) → base (white card).
+    assert!(relative_luminance(light.surface.canvas) < relative_luminance(light.surface.base));
+    for p in Polarity::ALL {
+        let theme = Theme::preset(p, AppBrand::Docs);
+        let min = if theme.is_high_contrast() { 7.0 } else { 4.5 };
         for kind in all_kinds {
             let c = syntax_color(&theme.syntax, kind);
-            assert!(wcag_contrast(c, theme.surface.sunken) >= 4.5, "{kind:?} readable on code well");
+            // Code well and highlighted lines (`accent.subtle`).
+            for (bg_name, bg) in [("code well", theme.surface.sunken), ("highlighted line", theme.status.accent.subtle)] {
+                let r = wcag_contrast(c, bg);
+                assert!(r >= min, "{p:?} {kind:?} on {bg_name}: {r:.2} < {min}");
+            }
         }
         for kind in [CalloutKind::Tip, CalloutKind::Info, CalloutKind::Warning, CalloutKind::Danger, CalloutKind::Note] {
             let tone = callout_tone(&theme, kind);
-            assert!(wcag_contrast(tone.colors.text, tone.colors.subtle) >= 4.5, "{kind:?} callout title");
+            let r = wcag_contrast(tone.colors.text, tone.colors.subtle);
+            assert!(r >= min, "{p:?} {kind:?} callout title: {r:.2} < {min}");
         }
     }
     assert_eq!(callout_tone(&dark, CalloutKind::Danger).colors, dark.status.danger);
@@ -438,7 +447,11 @@ fn theme_follows_os_then_toggle_pins_canvas_and_surface_colors() {
 
     // Toggle pins dark mode.
     h.press("docs-theme-toggle");
-    // A pinned mode survives a later OS change (here: OS confirms Light).
+    // A pinned scheme survives a later OS change while the OS contrast preference still applies.
+    h.set_os_theme(ColorScheme::Light, ContrastLevel::High);
+    let root_id = h.find("docs-root");
+    assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("dark"));
+    assert_eq!(h.bg(root_id), Theme::preset(Polarity::HighContrastDark, AppBrand::Docs).surface.canvas);
     h.set_os_theme(ColorScheme::Light, ContrastLevel::Standard);
     let root_id = h.find("docs-root");
     let nav_id = h.find("docs-navbar");

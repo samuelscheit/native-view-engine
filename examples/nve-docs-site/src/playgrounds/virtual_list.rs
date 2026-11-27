@@ -103,20 +103,16 @@ pub fn VirtualList100kDemo() -> Element {
     preview_state.set_scroll_offset(scroll_offset);
     let slice = preview_state.slice();
 
-    let accent_color = theme.status.accent.text.hex().to_string();
-    let text_primary = theme.text.primary.hex().to_string();
-    let text_muted = theme.text.tertiary.hex().to_string();
-    let border_color = theme.border.default.hex().to_string();
+    let accent_color = theme.status.accent.text.hex();
+    let text_primary = theme.text.primary.hex();
+    let text_muted = theme.text.tertiary.hex();
+    let border_color = theme.border.default.hex();
 
     let render_row = Callback::new(move |(idx, is_selected): (usize, bool)| {
         let src_idx = current_filter.source_index(idx);
         let (kind_tag, subsystem) = RowFilter::tag_for(src_idx);
         let latency_us = 110 + ((src_idx * 37) % 240);
-        let row_fg = if is_selected {
-            accent_color.as_str()
-        } else {
-            text_primary.as_str()
-        };
+        let row_fg = if is_selected { accent_color } else { text_primary };
         let weight = if is_selected { "700" } else { "500" };
 
         rsx! {

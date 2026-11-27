@@ -122,7 +122,7 @@ pub fn DocsSidebar(mobile_overlay: bool) -> Element {
             view {
                 test_id: "docs-sidebar-overlay",
                 nve_show_on: ShowOn(MediaQuery::max_width(959)),
-                style: "width: 100%; height: 100%; flex-direction: row; z-index: 400; background-color: rgba(0, 0, 0, 0.55);",
+                style: "width: 100%; height: 100%; flex-direction: row; z-index: 400; background-color: {theme.scrim.hex()};",
                 {panel}
                 pressable {
                     test_id: "docs-sidebar-backdrop",

@@ -40,6 +40,7 @@ pub fn DocsShell() -> Element {
     };
     let page_toc_enabled = page.as_ref().is_none_or(|p| p.frontmatter.toc);
     let color_scheme_attr = if theme.is_dark() { "dark" } else { "light" };
+    let theme_mode_attr = snap.theme_mode.as_str();
     drop(snap);
 
     let article_container_style = TypedStyle::new()
@@ -61,6 +62,7 @@ pub fn DocsShell() -> Element {
                 accessibility_label: "{site_title}",
                 nve_table: crate::render::html_data_attrs(vec![
                     ("theme".to_owned(), color_scheme_attr.to_owned()),
+                    ("theme-mode".to_owned(), theme_mode_attr.to_owned()),
                     ("route".to_owned(), active_route.clone()),
                     ("viewport-mode".to_owned(), viewport_mode.to_owned()),
                 ]),

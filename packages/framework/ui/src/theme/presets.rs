@@ -50,6 +50,25 @@ impl ThemeMode {
             Self::Dark => ColorScheme::Dark,
         }
     }
+
+    /// Stable token for persistence and DOM attributes (`system` / `light` / `dark`).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`].
+    pub fn parse(token: &str) -> Option<Self> {
+        match token {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
 }
 
 /// The host's current appearance (`nve-system-env` / trait environment).

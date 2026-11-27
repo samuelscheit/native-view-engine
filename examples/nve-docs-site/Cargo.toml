@@ -46,6 +46,7 @@ web-sys = { workspace = true, features = [
     "HtmlElement",
     "KeyboardEvent",
     "Location",
+    "MediaQueryList",
     "MouseEvent",
     "Performance",
     "Window",

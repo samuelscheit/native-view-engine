@@ -1,6 +1,7 @@
 //! Inline `nve-mdx` AST renderer (text, emphasis, strong, strikethrough, inline code, links, images, components).
 
 use dioxus_core_macro::Props;
+use nve_abi::ColorRgba;
 use nve_ui::ColorHex;
 use nve_dioxus::prelude::*;
 use nve_mdx::Inline;
@@ -37,7 +38,7 @@ pub fn InlinesView(
     inlines: Vec<Inline>,
     #[props(default = 15)] font_size: u32,
     #[props(default)] bold: bool,
-    #[props(default)] color_override: Option<String>,
+    #[props(default)] color_override: Option<ColorRgba>,
     #[props(default)] line_height: Option<String>,
 ) -> Element {
     let state = use_docs_state();
@@ -46,7 +47,7 @@ pub fn InlinesView(
     let base_path = snap.config.base_path.clone();
     drop(snap);
 
-    let text_color = color_override.unwrap_or_else(|| theme.text.primary.hex().to_string());
+    let text_color = color_override.unwrap_or(theme.text.primary);
     let base_weight = if bold { "700" } else { "400" };
     let lh = line_height.unwrap_or_else(|| {
         if font_size >= 18 {
@@ -68,7 +69,7 @@ pub fn InlinesView(
                     inline: inline,
                     font_size: font_size,
                     base_weight: base_weight.to_string(),
-                    text_color: text_color.clone(),
+                    text_color,
                     base_path: base_path.clone(),
                 }
             }
@@ -81,7 +82,7 @@ fn InlineNodeView(
     inline: Inline,
     font_size: u32,
     base_weight: String,
-    text_color: String,
+    text_color: ColorRgba,
     base_path: String,
 ) -> Element {
     let state = use_docs_state();
@@ -90,21 +91,21 @@ fn InlineNodeView(
     match inline {
         Inline::Text(content) => rsx! {
             text {
-                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; color: {text_color};",
+                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; color: {text_color.hex()};",
                 "{content}"
             }
         },
         Inline::Strong(children) => rsx! {
             text {
                 nve_table: html_semantic(SemanticElement::Strong),
-                style: "display: inline; font-size: {font_size}px; font-weight: 700; color: {text_color};",
+                style: "display: inline; font-size: {font_size}px; font-weight: 700; color: {text_color.hex()};",
                 for (idx, child) in children.into_iter().enumerate() {
                     InlineNodeView {
                         key: "strong-{idx}",
                         inline: child,
                         font_size: font_size,
                         base_weight: "700".to_string(),
-                        text_color: text_color.clone(),
+                        text_color,
                         base_path: base_path.clone(),
                     }
                 }
@@ -113,14 +114,14 @@ fn InlineNodeView(
         Inline::Emphasis(children) => rsx! {
             text {
                 nve_table: html_semantic(SemanticElement::Em),
-                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; font-style: italic; color: {text_color};",
+                style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; font-style: italic; color: {text_color.hex()};",
                 for (idx, child) in children.into_iter().enumerate() {
                     InlineNodeView {
                         key: "em-{idx}",
                         inline: child,
                         font_size: font_size,
                         base_weight: base_weight.clone(),
-                        text_color: text_color.clone(),
+                        text_color,
                         base_path: base_path.clone(),
                     }
                 }
@@ -136,7 +137,7 @@ fn InlineNodeView(
                         inline: child,
                         font_size: font_size,
                         base_weight: base_weight.clone(),
-                        text_color: theme.text.secondary.hex().to_string(),
+                        text_color: theme.text.secondary,
                         base_path: base_path.clone(),
                     }
                 }
@@ -200,7 +201,7 @@ fn InlineNodeView(
                                 inline: child,
                                 font_size: font_size,
                                 base_weight: "500".to_string(),
-                                text_color: theme.text.link.hex().to_string(),
+                                text_color: theme.text.link,
                                 base_path: base_path.clone(),
                             }
                         }

@@ -10,7 +10,7 @@ use crate::landing::PillBadge;
 use crate::landing::benchmarks_data::{
     BASELINE_BENCHMARKS, BASELINE_GENERATED_AT, BASELINE_MACHINE, BenchCategory,
     EmbeddedBaselineEntry, LATEST_BARS, LatestBarSpec, PROGRESSION_SERIES, ProgressionSeries,
-    bar_chart_lo_bound, build_bar_chart_draw_list, build_line_chart_draw_list, category_swatch_hex,
+    bar_chart_lo_bound, build_bar_chart_draw_list, build_line_chart_draw_list, series_tone,
     format_ns, format_val, line_chart_lo_bound, lookup_baseline,
 };
 
@@ -49,7 +49,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
         .map(|(spec, entry)| (entry.median_ns, spec.color_idx))
         .collect();
     let bar_draw_list =
-        build_bar_chart_draw_list(&bar_values, is_log, bar_canvas_w, bar_canvas_h, theme.is_dark());
+        build_bar_chart_draw_list(&bar_values, is_log, bar_canvas_w, bar_canvas_h, &theme);
 
     let max_bar_ns = filtered_bars
         .iter()
@@ -106,7 +106,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             let fg = if sel { theme.text.link.hex() } else { theme.text.secondary.hex() };
                             let bc = if sel { theme.status.accent.solid.hex() } else { theme.border.default.hex() };
                             let tid = format!("bench-filter-{}", cat.id());
-                            let swatch = cat.color_idx().map(|ci| category_swatch_hex(ci, theme.is_dark()));
+                            let swatch = cat.color_idx().map(|ci| series_tone(&theme, ci).text.hex());
                             rsx! {
                                 pressable {
                                     key: "cat-{cat.id()}",
@@ -254,7 +254,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                             style: "width: 100%; flex-direction: row; flex-wrap: wrap; gap: 6px;",
                             for (bar_idx, (spec, entry)) in filtered_bars.iter().enumerate() {
                                 {
-                                    let swatch = category_swatch_hex(spec.color_idx, theme.is_dark());
+                                    let swatch = series_tone(&theme, spec.color_idx).text.hex();
                                     let ordinal = bar_idx + 1;
                                     rsx! {
                                         view {
@@ -291,7 +291,7 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                     is_log,
                                     line_canvas_w,
                                     line_canvas_h,
-                                    theme.is_dark(),
+                                    &theme,
                                     series.color_idx,
                                 );
                                 let first_pt = series.points.first().map(|p| p.value).unwrap_or(0.0);

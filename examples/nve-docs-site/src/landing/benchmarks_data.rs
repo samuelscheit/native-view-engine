@@ -3,6 +3,7 @@
 
 use nve_abi::ColorRgba;
 use nve_canvas::DrawList;
+use nve_ui::{Theme, Tone, with_alpha};
 
 include!(concat!(
     env!("OUT_DIR"),
@@ -58,17 +59,21 @@ impl BenchCategory {
     }
 }
 
-pub(crate) fn category_swatch_hex(color_idx: u8, dark: bool) -> &'static str {
-    match (color_idx, dark) {
-        (0, true) => "#38bdf8",
-        (0, false) => "#0284c7",
-        (1, true) => "#818cf8",
-        (1, false) => "#4f46e5",
-        (2, true) => "#34d399",
-        (2, false) => "#059669",
-        (_, true) => "#fbbf24",
-        (_, false) => "#d97706",
+/// Categorical series tone (info, accent, success, warning) of the active theme. Charts paint the
+/// tone's `text` color, which clears 3:1 against the chart well in every polarity.
+pub(crate) const fn series_tone(theme: &Theme, color_idx: u8) -> Tone {
+    match color_idx {
+        0 => theme.status.info,
+        1 => theme.status.accent,
+        2 => theme.status.success,
+        _ => theme.status.warning,
     }
+}
+
+/// `(stroke, halo)` of a chart series.
+const fn series_color(theme: &Theme, color_idx: u8) -> (ColorRgba, ColorRgba) {
+    let ink = series_tone(theme, color_idx).text;
+    (ink, with_alpha(ink, 0x26))
 }
 
 pub(crate) fn bar_chart_lo_bound(min_v: f64, log_scale: bool) -> f64 {
@@ -317,36 +322,14 @@ fn scale_norm(val: f64, min_v: f64, max_v: f64, log_scale: bool) -> f32 {
     }
 }
 
-fn series_color(idx: u8, dark: bool) -> (ColorRgba, ColorRgba) {
-    match (idx, dark) {
-        (0, true) => (ColorRgba::rgb(56, 189, 248), ColorRgba::rgba(56, 189, 248, 38)),
-        (0, false) => (ColorRgba::rgb(2, 132, 199), ColorRgba::rgba(2, 132, 199, 32)),
-        (1, true) => (ColorRgba::rgb(129, 140, 248), ColorRgba::rgba(129, 140, 248, 38)),
-        (1, false) => (ColorRgba::rgb(79, 70, 229), ColorRgba::rgba(79, 70, 229, 30)),
-        (2, true) => (ColorRgba::rgb(52, 211, 153), ColorRgba::rgba(52, 211, 153, 36)),
-        (2, false) => (ColorRgba::rgb(5, 150, 105), ColorRgba::rgba(5, 150, 105, 30)),
-        (_, true) => (ColorRgba::rgb(251, 191, 36), ColorRgba::rgba(251, 191, 36, 36)),
-        (_, false) => (ColorRgba::rgb(217, 119, 6), ColorRgba::rgba(217, 119, 6, 30)),
-    }
-}
-
 pub(crate) fn build_bar_chart_draw_list(
     values: &[(f64, u8)],
     log_scale: bool,
     width: f32,
     height: f32,
-    dark: bool,
+    theme: &Theme,
 ) -> DrawList {
-    let bg = if dark {
-        ColorRgba::rgb(12, 12, 15)
-    } else {
-        ColorRgba::rgb(248, 250, 252)
-    };
-    let grid = if dark {
-        ColorRgba::rgba(148, 163, 184, 34)
-    } else {
-        ColorRgba::rgba(100, 116, 139, 38)
-    };
+    let (bg, grid) = (theme.surface.sunken, theme.border.subtle);
 
     let mut dl = DrawList::with_capacity(values.len() * 2 + 6);
     dl.clear(bg);
@@ -386,7 +369,7 @@ pub(crate) fn build_bar_chart_draw_list(
         let bh = (plot_h * norm).max(6.0);
         let x = pad_x + idx as f32 * slot_w + (slot_w - bar_w) * 0.5;
         let y = pad_top + plot_h - bh;
-        let (solid, tint) = series_color(cidx, dark);
+        let (solid, tint) = series_color(theme, cidx);
         dl.fill_rounded_rect(x - 2.0, y - 2.0, bar_w + 4.0, bh + 2.0, 7.0, tint);
         dl.fill_rounded_rect(x, y, bar_w, bh, 6.0, solid);
     }
@@ -399,20 +382,11 @@ pub(crate) fn build_line_chart_draw_list(
     log_scale: bool,
     width: f32,
     height: f32,
-    dark: bool,
+    theme: &Theme,
     color_idx: u8,
 ) -> DrawList {
-    let bg = if dark {
-        ColorRgba::rgb(12, 12, 15)
-    } else {
-        ColorRgba::rgb(248, 250, 252)
-    };
-    let grid = if dark {
-        ColorRgba::rgba(148, 163, 184, 34)
-    } else {
-        ColorRgba::rgba(100, 116, 139, 38)
-    };
-    let (stroke, tint) = series_color(color_idx, dark);
+    let (bg, grid) = (theme.surface.sunken, theme.border.subtle);
+    let (stroke, tint) = series_color(theme, color_idx);
 
     let mut dl = DrawList::with_capacity(points.len() * 3 + 8);
     dl.clear(bg);

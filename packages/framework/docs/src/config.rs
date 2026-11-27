@@ -1,6 +1,7 @@
 //! Site configuration and top-bar navigation sections for `nve-docs`.
 
 use nve_mdx::normalize_route;
+use nve_ui::ThemeMode;
 
 use crate::route::DocsRoute;
 
@@ -76,6 +77,9 @@ pub struct DocsSiteConfig {
     /// Fallback scheme when the host's `nve-system-env` reports no color scheme (the site
     /// otherwise follows the OS appearance).
     pub default_dark: bool,
+    /// Initial user color-scheme preference ([`ThemeMode::System`] follows the OS). Hosts that
+    /// rebuild the surface (route reloads) pass the previous mode to keep a user toggle.
+    pub theme_mode: ThemeMode,
     /// Top-bar section switcher tabs (e.g. `Docs`, `Examples`, `Benchmarks`).
     pub sections: Vec<DocsNavSection>,
 }
@@ -91,6 +95,7 @@ impl Default for DocsSiteConfig {
             base_path: String::new(),
             docs_prefix: String::new(),
             default_dark: true,
+            theme_mode: ThemeMode::System,
             sections: Vec::new(),
         }
     }
@@ -142,6 +147,11 @@ impl DocsSiteConfig {
 
     pub fn with_default_dark(mut self, default_dark: bool) -> Self {
         self.default_dark = default_dark;
+        self
+    }
+
+    pub fn with_theme_mode(mut self, theme_mode: ThemeMode) -> Self {
+        self.theme_mode = theme_mode;
         self
     }
 

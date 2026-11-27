@@ -5,16 +5,20 @@ use nve_abi::ColorRgba;
 use nve_canvas::{Canvas, DrawList};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
-use nve_ui::{ColorHex, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, use_theme};
+use nve_ui::{
+    Accent, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, ColorHex, Theme, use_theme,
+    with_alpha,
+};
 
-pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_abi::ColorRgba;
-use nve_dioxus::prelude::*;
+pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_dioxus::prelude::*;
+use nve_ui::{use_theme, with_alpha};
 
+let theme = use_theme();
 let mut dl = DrawList::builder();
-dl.clear(ColorRgba::rgb(12, 14, 22))
-  .fill_rounded_rect(18.0, 20.0, 140.0, 74.0, 12.0, ColorRgba::rgba(56, 189, 248, 44))
-  .stroke_polyline(&[(24.0, 118.0), (110.0, 76.0), (210.0, 96.0), (320.0, 42.0)], 2.5, ColorRgba::rgb(56, 189, 248))
-  .fill_circle(320.0, 42.0, 7.0, ColorRgba::rgb(129, 140, 248));
+dl.clear(theme.surface.sunken)
+  .fill_rounded_rect(18.0, 20.0, 140.0, 74.0, 12.0, with_alpha(theme.status.accent.solid, 44))
+  .stroke_polyline(&[(24.0, 118.0), (110.0, 76.0), (210.0, 96.0), (320.0, 42.0)], 2.5, theme.status.accent.text)
+  .fill_circle(320.0, 42.0, 7.0, theme.status.info.text);
 
 let list = dl.finish();
 rsx! {
@@ -38,35 +42,41 @@ enum PaletteChoice {
     Emerald,
 }
 
+/// Pink partner hue for the violet palette.
+const PINK: Accent = Accent::new(350.0, 0.17, 0.76);
+
 impl PaletteChoice {
-    fn colors(self) -> (ColorRgba, ColorRgba, ColorRgba, &'static str) {
+    const fn label(self) -> &'static str {
         match self {
-            Self::Cyan => (
-                ColorRgba::rgb(56, 189, 248),
-                ColorRgba::rgb(129, 140, 248),
-                ColorRgba::rgba(56, 189, 248, 48),
-                "Cyber Cyan",
-            ),
-            Self::Violet => (
-                ColorRgba::rgb(167, 139, 250),
-                ColorRgba::rgb(244, 114, 182),
-                ColorRgba::rgba(167, 139, 250, 48),
-                "Linear Violet",
-            ),
-            Self::Emerald => (
-                ColorRgba::rgb(52, 211, 153),
-                ColorRgba::rgb(56, 189, 248),
-                ColorRgba::rgba(52, 211, 153, 48),
-                "Emerald",
-            ),
+            Self::Cyan => "Cyber Cyan",
+            Self::Violet => "Linear Violet",
+            Self::Emerald => "Emerald",
         }
+    }
+
+    /// `(primary, secondary, tint)` derived from `theme` with each palette's accent pair, so the
+    /// strokes stay contrast-safe on the chart well in every polarity.
+    fn colors(self, theme: &Theme) -> (ColorRgba, ColorRgba, ColorRgba) {
+        let (primary, secondary) = match self {
+            Self::Cyan => (Accent::CYAN, Accent::INDIGO),
+            Self::Violet => (Accent::VIOLET, PINK),
+            Self::Emerald => (Accent::GREEN, Accent::CYAN),
+        };
+        let primary = theme.with_accent(primary).status.accent;
+        let secondary = theme.with_accent(secondary).status.accent.text;
+        (primary.text, secondary, with_alpha(primary.solid, 48))
     }
 }
 
-fn build_scene_draw_list(mode: SceneMode, palette: PaletteChoice, stroke_width: f32) -> (DrawList, u32, usize) {
-    let (primary, secondary, tint, _) = palette.colors();
-    let bg = ColorRgba::rgb(12, 13, 18);
-    let grid = ColorRgba::rgba(148, 163, 184, 42);
+fn build_scene_draw_list(
+    theme: &Theme,
+    mode: SceneMode,
+    palette: PaletteChoice,
+    stroke_width: f32,
+) -> (DrawList, u32, usize) {
+    let (primary, secondary, tint) = palette.colors(theme);
+    let bg = theme.surface.sunken;
+    let grid = theme.border.subtle;
 
     let mut dl = DrawList::with_capacity(24);
     dl.clear(bg);
@@ -103,7 +113,7 @@ fn build_scene_draw_list(mode: SceneMode, palette: PaletteChoice, stroke_width: 
                 let y = 134.0 - h;
                 let color = if idx % 2 == 0 { primary } else { secondary };
                 dl.fill_rounded_rect(x, y, 36.0, h, 6.0, color);
-                dl.stroke_line(x, y, x + 36.0, y, stroke_width, ColorRgba::WHITE);
+                dl.stroke_line(x, y, x + 36.0, y, stroke_width, theme.surface.base);
             }
         }
         SceneMode::Geometry => {
@@ -137,8 +147,8 @@ pub fn CanvasDraw1Demo() -> Element {
     let mut palette = use_signal(|| PaletteChoice::Cyan);
     let mut stroke_w = use_signal(|| 2.5f32);
 
-    let (draw_list, op_count, byte_len) = build_scene_draw_list(mode(), palette(), stroke_w());
-    let (_, _, _, palette_name) = palette().colors();
+    let (draw_list, op_count, byte_len) = build_scene_draw_list(&theme, mode(), palette(), stroke_w());
+    let palette_name = palette().label();
 
     rsx! {
         view {
@@ -179,7 +189,7 @@ pub fn CanvasDraw1Demo() -> Element {
                 nve_table: table_attr_fn(move |tx, node| {
                     tx.edit::<Canvas>(node).draw_list_ephemeral(draw_list.clone());
                 }),
-                style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: #0c0d12;",
+                style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.border.default.hex()}; background-color: {theme.surface.sunken.hex()};",
             }
 
             // Controls row: Shape mode | Palette | Stroke width

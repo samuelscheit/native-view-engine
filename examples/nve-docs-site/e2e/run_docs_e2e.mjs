@@ -210,6 +210,13 @@ class CdpSession {
     await this.send("Runtime.enable");
     await this.send("DOM.enable");
     await this.send("Network.enable");
+    // Pin the OS appearance: the hydrated docs follow `prefers-color-scheme` live.
+    await this.send("Emulation.setEmulatedMedia", {
+      features: [
+        { name: "prefers-color-scheme", value: "dark" },
+        { name: "prefers-contrast", value: "no-preference" },
+      ],
+    });
   }
 
   send(method, params = {}) {
@@ -484,7 +491,8 @@ async function run() {
     await cdp.eval(`document.querySelector('[data-testid="docs-theme-toggle"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === false`, 4000, "light theme switch");
     const lightBg = await cdp.eval(`getComputedStyle(document.querySelector('[data-testid="docs-root"]')).backgroundColor`);
-    assert(lightBg === "rgb(255, 255, 255)", `Expected light canvas rgb(255, 255, 255), got ${lightBg}`);
+    // `Theme::preset(Polarity::Light, AppBrand::Docs).surface.canvas` (#f6f6f8).
+    assert(lightBg === "rgb(246, 246, 248)", `Expected light canvas rgb(246, 246, 248), got ${lightBg}`);
     await cdp.capturePng(path.join(shotsDir, "landing-desktop-light.png"));
     console.log(`    ✓ Landing light mode verified (landing-desktop-light.png captured)`);
 

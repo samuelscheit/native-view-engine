@@ -19,9 +19,8 @@ use nve_docs::{
 use nve_clipboard::MemoryClipboard;
 use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::{CompileOptions, CompiledSite, SiteSource, compile_site_with_validation};
-use nve_components::tables::{Typography, is_subtree_display_none};
 use nve_system_env::{ColorScheme, ContrastLevel, MemorySystemEnv, ThemeSnapshot};
-use nve_ui::{composite, wcag_contrast};
+use nve_ui::audit::text_contrast_violations;
 
 pub const RUST_SNIPPET: &str =
     "fn main() {\n    let surface = create_docs_surface();\n    println!(\"ready\");\n}";
@@ -246,48 +245,12 @@ impl DocsHarness {
         self.render();
     }
 
-    /// Every visible text run whose effective (inherited) color is below `min` WCAG contrast
-    /// against its effective painted background (translucent ancestors composited). Runs under a
-    /// faded (`opacity < 1`, i.e. disabled) or hidden ancestor are exempt, as in WCAG 1.4.3.
+    /// [`nve_ui::audit::text_contrast_violations`] on the mounted tree, formatted.
     pub fn text_contrast_violations(&self, min: f64) -> Vec<String> {
-        let store = self.surface.store();
-        let mut out = Vec::new();
-        for id in store.live_nodes() {
-            let Some(text) = store.try_row::<TextContent>(id) else { continue };
-            if text.text().trim().is_empty() || is_subtree_display_none(store, id) {
-                continue;
-            }
-            let mut fg = None;
-            let mut layers = Vec::new();
-            let mut faded = false;
-            let mut cur = Some(id);
-            while let Some(n) = cur {
-                if fg.is_none()
-                    && let Some(t) = store.try_row::<Typography>(n)
-                    && t.set() & Typography::SET_COLOR != 0
-                {
-                    fg = Some(ColorRgba::from_u32(t.color().0));
-                }
-                if let Some(v) = store.try_row::<Visual>(n) {
-                    faded |= v.opacity() < 1.0;
-                    let bg = ColorRgba::from_u32(v.background().0);
-                    if bg.a > 0 {
-                        layers.push(bg);
-                    }
-                }
-                cur = store.parent(n);
-            }
-            if faded {
-                continue;
-            }
-            let bg = layers.iter().rev().fold(ColorRgba::WHITE, |under, &over| composite(over, under));
-            let fg = composite(fg.unwrap_or(ColorRgba::BLACK), bg);
-            let ratio = wcag_contrast(fg, bg);
-            if ratio < min {
-                out.push(format!("{:?}: {ratio:.2} (fg {fg:?} on {bg:?})", text.text()));
-            }
-        }
-        out
+        text_contrast_violations(self.surface.store(), min)
+            .into_iter()
+            .map(|v| format!("{:?}: {:.2} (fg {:?} on {:?})", v.text, v.ratio, v.fg, v.bg))
+            .collect()
     }
 
     pub fn render(&mut self) {

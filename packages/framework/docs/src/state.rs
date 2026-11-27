@@ -135,6 +135,7 @@ impl DocsAppState {
         viewport: DocsViewport,
     ) -> Self {
         let appearance = system_appearance(host_services.as_ref(), config.default_dark);
+        let theme_mode = config.theme_mode;
         let search_index = Arc::new(site.search_index.clone());
         let mut collapsed_folders = BTreeSet::new();
         collect_initially_collapsed(&site.nav.items, &mut collapsed_folders);
@@ -159,7 +160,7 @@ impl DocsAppState {
             custom_pages,
             host_services,
             active_route: resolved_route,
-            theme_mode: ThemeMode::System,
+            theme_mode,
             appearance,
             viewport,
             mobile_drawer_open: false,

@@ -11,8 +11,10 @@ spatial-focus = ["dep:nve-tv"]
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-components = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
+nve-store = { workspace = true }
 nve-i18n = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false }
 nve-tv = { workspace = true, optional = true }

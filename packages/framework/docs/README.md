@@ -5,7 +5,7 @@ Reusable documentation site framework (`packages/framework/docs`, **Framework la
 ## Key Public API
 
 - `DocsApp`, `create_docs_surface`, `create_docs_surface_at_route`, `create_docs_surface_with_pages`
-- `DocsSiteConfig`, `DocsNavSection`, `DocsRoute`, `DocsTheme`, `DocsAppState`
+- `DocsSiteConfig`, `DocsNavSection`, `DocsRoute`, `DocsAppState` (themed by the unified OKLCH `nve_ui::Theme` with `AppBrand::Docs`, following the OS appearance live)
 - `DocsShell`, `DocsNavbar`, `DocsSidebar`, `DocsToc`, `Breadcrumbs`, `SearchModal`, `PlaygroundRegistry`
 
 ```rust

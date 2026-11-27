@@ -67,7 +67,7 @@ pub fn SearchModal() -> Element {
             close_on_escape: true,
             close_on_backdrop: true,
             test_id: Some("docs-search-dialog".to_string()),
-            style: Some("min-width: 340px; max-width: 600px; width: 100%;".to_string()),
+            style: is_open.then(|| "min-width: 340px; max-width: 600px; width: 100%;".to_owned()),
             on_close: move |_| {
                 state.write().close_search();
             },

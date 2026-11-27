@@ -282,9 +282,9 @@ fn HeroInteractiveCard() -> Element {
 
                 view {
                     style: "flex-direction: row; align-items: center; gap: 6px;",
-                    view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: #ef4444;" }
-                    view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: #f59e0b;" }
-                    view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: #22c55e;" }
+                    view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: {theme.status.danger.solid.hex()};" }
+                    view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: {theme.status.warning.solid.hex()};" }
+                    view { style: "width: 9px; height: 9px; border-radius: 999px; background-color: {theme.status.success.solid.hex()};" }
                     text {
                         style: "font-size: 12px; font-family: monospace; color: {theme.text.secondary.hex()}; padding-horizontal: 6px;",
                         "telemetry_counter.rs"
