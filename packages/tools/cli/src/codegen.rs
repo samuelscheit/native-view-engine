@@ -126,9 +126,21 @@ fn write_or_check_generated(
     Ok(touched)
 }
 
+/// Capability-module table mirrors for C/C++ hosts. They are generated here (tools may link
+/// modules) because core `nve-codegen` stays module-free.
+fn module_table_headers() -> Result<Vec<nve_codegen::GeneratedFile>, nve_codegen::CodegenError> {
+    use nve_store::NveTable as _;
+    Ok(vec![nve_codegen::generate_module_table_header(
+        "canvas",
+        &[&nve_canvas::Canvas::DESC],
+        "packages/modules/canvas/cxx/include/nve/canvas/nve_canvas_tables.generated.h".to_owned(),
+    )?])
+}
+
 pub(crate) fn run_codegen_abi(out_root: &Path, check: bool) -> Result<Vec<PathBuf>, String> {
-    let files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
+    let mut files = nve_codegen::generate_all_abi_files(nve_components::tables::CORE_TABLE_DESCS)
         .map_err(|e| format!("ABI codegen failed: {e}"))?;
+    files.extend(module_table_headers().map_err(|e| format!("module table codegen failed: {e}"))?);
     write_or_check_generated(&files, out_root, check, "cargo nve codegen abi")
 }
 

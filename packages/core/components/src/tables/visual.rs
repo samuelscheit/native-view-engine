@@ -95,6 +95,16 @@ pub mod text_decoration {
     pub const UNDERLINE: u8 = 1 << 0;
     pub const OVERLINE: u8 = 1 << 1;
     pub const LINE_THROUGH: u8 = 1 << 2;
+
+    /// Host mirror names (`NVE_TEXT_DECORATION_*`).
+    pub const VALUES: nve_store::ValueSetDesc = nve_store::ValueSetDesc {
+        name: "TextDecoration",
+        values: &[
+            ("Underline", UNDERLINE as u32),
+            ("Overline", OVERLINE as u32),
+            ("LineThrough", LINE_THROUGH as u32),
+        ],
+    };
 }
 
 /// Inherited text styling. Only fields whose bit is in `set` are explicit; the rest inherit.
@@ -103,6 +113,7 @@ pub mod text_decoration {
 pub struct Typography {
     /// Bit `Typography::SET_*` set: the field is explicit on this node.
     #[effect(measure, paint)]
+    #[values(Typography::SET_VALUES)]
     pub set: u32,
     #[effect(paint)]
     #[default(Rgba::BLACK)]
@@ -143,6 +154,7 @@ pub struct Typography {
     /// `text_decoration::*` bits.
     #[effect(paint)]
     #[bits(8)]
+    #[values(text_decoration::VALUES)]
     pub text_decoration: u8,
     #[effect(paint)]
     #[bits(3)]
@@ -164,6 +176,27 @@ impl Typography {
     pub const SET_TEXT_ALIGN: u32 = 1 << 11;
     pub const SET_TEXT_DECORATION: u32 = 1 << 12;
     pub const SET_VERTICAL_ALIGN: u32 = 1 << 13;
+
+    /// Host mirror names (`NVE_TYPOGRAPHY_SET_*`).
+    pub const SET_VALUES: nve_store::ValueSetDesc = nve_store::ValueSetDesc {
+        name: "TypographySet",
+        values: &[
+            ("Color", Self::SET_COLOR),
+            ("FontSize", Self::SET_FONT_SIZE),
+            ("LineHeight", Self::SET_LINE_HEIGHT),
+            ("LetterSpacing", Self::SET_LETTER_SPACING),
+            ("FontFamily", Self::SET_FONT_FAMILY),
+            ("MaxLines", Self::SET_MAX_LINES),
+            ("FontWeight", Self::SET_FONT_WEIGHT),
+            ("FontStyle", Self::SET_FONT_STYLE),
+            ("WhiteSpace", Self::SET_WHITE_SPACE),
+            ("WordBreak", Self::SET_WORD_BREAK),
+            ("OverflowWrap", Self::SET_OVERFLOW_WRAP),
+            ("TextAlign", Self::SET_TEXT_ALIGN),
+            ("TextDecoration", Self::SET_TEXT_DECORATION),
+            ("VerticalAlign", Self::SET_VERTICAL_ALIGN),
+        ],
+    };
 }
 
 /// Text run content. Presence makes a node a text leaf (DOM inline text, `UILabel`, measured

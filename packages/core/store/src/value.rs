@@ -1,6 +1,6 @@
 //! Values that pack into (part of) one row word.
 
-use nve_abi::table::FieldKind;
+use nve_abi::table::{FieldKind, ValueSetDesc};
 
 /// A value stored in `BITS` bits of one row word.
 ///
@@ -9,6 +9,8 @@ use nve_abi::table::FieldKind;
 pub trait WordValue: Copy {
     const BITS: u8;
     const KIND: FieldKind;
+    /// Named values (set by `word_enum!`), mirrored to hosts as `NVE_<TYPE>_<VARIANT>`.
+    const VALUES: Option<&'static ValueSetDesc> = None;
     fn to_bits(self) -> u32;
     fn from_bits(bits: u32) -> Self;
 }
@@ -275,6 +277,20 @@ impl WordValue for Length {
     }
 }
 
+/// The [`ValueSetDesc`] of a hand-written fieldless enum [`WordValue`] (one whose type also needs
+/// derives or methods `word_enum!` cannot carry): `const VALUES = value_set!(Mode { A, B });`.
+/// The list must name every variant: a missing one fails the exhaustive `match` at compile time.
+#[macro_export]
+macro_rules! value_set {
+    ($ty:ident { $($variant:ident),+ $(,)? }) => {{
+        const _: fn($ty) = |v| match v { $($ty::$variant)|+ => {} };
+        Some(&$crate::__private::ValueSetDesc {
+            name: stringify!($ty),
+            values: &[$((stringify!($variant), $ty::$variant as u32)),+],
+        })
+    }};
+}
+
 /// Declares a fieldless `#[repr(u8)]` enum as a packed [`WordValue`] with const `to_word`.
 ///
 /// Out-of-range bits decode to the first (default) variant.
@@ -310,6 +326,11 @@ macro_rules! word_enum {
         impl $crate::WordValue for $name {
             const BITS: u8 = $bits;
             const KIND: $crate::__private::FieldKind = $crate::__private::FieldKind::Enum;
+            const VALUES: Option<&'static $crate::__private::ValueSetDesc> =
+                Some(&$crate::__private::ValueSetDesc {
+                    name: stringify!($name),
+                    values: &[$((stringify!($variant), $value)),+],
+                });
             #[inline(always)]
             fn to_bits(self) -> u32 { self as u32 }
             #[inline(always)]

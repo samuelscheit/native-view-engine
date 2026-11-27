@@ -359,6 +359,7 @@ const fn field(name: &'static str, kind: FieldKind, word: u8, shift: u8, bits: u
         shift,
         bits,
         effects: 0,
+        values: None,
     }
 }
 

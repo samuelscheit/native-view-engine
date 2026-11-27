@@ -9,7 +9,7 @@ use nve_abi::schema::{
     AbiAliasDescriptor, AbiConstDescriptor, AbiEnumDescriptor, AbiEnumVariantDescriptor,
     AbiFileDescriptor,
 };
-use nve_abi::table::{FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc};
+use nve_abi::table::{FieldDesc, FieldKind, MAX_TABLE_WORDS, Storage, TableDesc, ValueSetDesc};
 use nve_hash::{Key64, PRIME1, xxh64};
 
 use super::layout::{RecordLayout, layout_records};
@@ -257,6 +257,39 @@ pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>,
             key: U64Split::new(desc.key.0),
             schema: U64Split::new(desc.schema_hash),
         });
+    }
+    Ok(out)
+}
+
+/// Distinct named value sets (`word_enum!` variants, `#[values]` flag bits) the fields of
+/// `tables` carry, in first-use order. Sets sharing a name must be identical; names must spell
+/// unique identifiers and every value must fit its field.
+pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc>, CodegenError> {
+    let ident = |s: &str| {
+        s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut out: Vec<&'static ValueSetDesc> = Vec::new();
+    for t in tables {
+        for f in t.desc.fields {
+            let Some(set) = f.values else { continue };
+            let mut names = BTreeSet::new();
+            for &(name, value) in set.values {
+                if !ident(set.name) || !ident(name) || !names.insert(super::spell::screaming(name)) {
+                    return Err(table_error(t.desc, &format!("value set `{}`: bad or duplicate name `{name}`", set.name)));
+                }
+                if f.bits < 32 && value >> f.bits != 0 {
+                    return Err(table_error(t.desc, &format!("`{}` value `{name}` exceeds field `{}`", set.name, f.name)));
+                }
+            }
+            match out.iter().find(|s| s.name == set.name) {
+                Some(seen) if *seen != set => {
+                    return Err(table_error(t.desc, &format!("value set `{}` defined twice differently", set.name)));
+                }
+                Some(_) => {}
+                None => out.push(set),
+            }
+        }
     }
     Ok(out)
 }

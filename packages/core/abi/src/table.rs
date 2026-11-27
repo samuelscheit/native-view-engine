@@ -81,6 +81,16 @@ pub enum FieldKind {
     Node = 9,
 }
 
+/// Named values a field holds: the variants of a `word_enum!` or the bits of a flag set. Host
+/// mirrors emit one `NVE_<NAME>_<VALUE>` constant each, so foreign code never hand-copies them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueSetDesc {
+    /// Rust type / set name (`AriaRole`, `TextDecoration`).
+    pub name: &'static str,
+    /// `(variant, value)` pairs in declaration order.
+    pub values: &'static [(&'static str, u32)],
+}
+
 /// One field of a table row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldDesc {
@@ -94,6 +104,8 @@ pub struct FieldDesc {
     pub bits: u8,
     /// Effect class of the field's words.
     pub effects: u8,
+    /// Named values (enum variants / flag bits); not part of the schema hash.
+    pub values: Option<&'static ValueSetDesc>,
 }
 
 /// Compile-time description of a table, emitted by `#[derive(NveTable)]`.

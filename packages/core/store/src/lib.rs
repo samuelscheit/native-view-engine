@@ -37,7 +37,7 @@ pub use id::{Idx, IndexVec, NodeId, NodeIndex, ResourceId, TableSet, TableSetIte
 pub use node_mut::NodeMut;
 pub use node_ref::NodeRef;
 pub use nve_abi::table::{
-    FieldDesc, FieldKind, Storage, TableDesc, TableKey, Word, effect, table_flags,
+    FieldDesc, FieldKind, Storage, TableDesc, TableKey, ValueSetDesc, Word, effect, table_flags,
 };
 pub use nve_abi_macros::NveTable;
 pub use resource::{Resource, ResourceStore, register_codec};
@@ -54,7 +54,9 @@ pub use value::{Length, Rgba, WordValue};
 #[doc(hidden)]
 pub mod __private {
     pub use crate::table::register_static;
-    pub use nve_abi::table::{FieldDesc, FieldKind, Storage, TableDesc, compute_table_schema_hash};
+    pub use nve_abi::table::{
+        FieldDesc, FieldKind, Storage, TableDesc, ValueSetDesc, compute_table_schema_hash,
+    };
     pub use nve_hash::{Key64, const_id};
 }
 
