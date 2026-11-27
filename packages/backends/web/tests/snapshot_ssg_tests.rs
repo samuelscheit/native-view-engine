@@ -242,6 +242,49 @@ fn inject_ssg_replaces_nested_same_tag_mount_content_and_places_scripts_after_mo
 }
 
 #[test]
+fn ssg_bootstrap_scripts_follow_the_mount_even_when_head_loads_a_module_script() {
+    let ssr = hostile_ssr("");
+    let shell = "<!doctype html><html><head><script type=\"module\" src=\"/main.js\"></script></head><body><div id=\"app\"></div></body></html>";
+    let out = inject_ssg_with_scripts_into_shell_html(shell, "app", &ssr, "<script data-nve-snapshot-boot>B</script>");
+    let head_end = out.find("</head>").unwrap();
+    let boot = out.find("<script data-nve-snapshot-boot>").unwrap();
+    let mount_close = out.find("<p>ok</p></div>").unwrap() + "<p>ok</p></div>".len();
+    assert!(boot > head_end && boot >= mount_close, "boot script must follow the mount: {out}");
+    assert_eq!(out.matches("<script type=\"module\"").count(), 1, "{out}");
+}
+
+#[test]
+fn ssg_styles_never_precede_the_doctype_when_the_shell_has_no_head() {
+    let ssr = hostile_ssr("");
+    // (shell, exact prefix kept ahead of the styles, element the styles must precede)
+    for (shell, prefix, before) in [
+        ("<!DOCTYPE html><BODY><div id=\"app\"></div></BODY>", "<!DOCTYPE html>", "<BODY>"),
+        ("<!doctype html>\n<div id=\"app\"></div>", "<!doctype html>", "\n<div id=\"app\">"),
+        ("<div id=\"app\"></div>", "", "<div id=\"app\">"),
+    ] {
+        let out = inject_ssg_with_scripts_into_shell_html(shell, "app", &ssr, "");
+        let style = out.find("<style data-nve-base>").unwrap();
+        assert_eq!(&out[..style], prefix, "styles must sit right after the doctype: {out}");
+        assert!(out[style..].contains(before), "{out}");
+    }
+}
+
+#[test]
+fn ssg_script_injection_is_idempotent_for_replay_only_and_custom_scripts() {
+    let ssr = hostile_ssr("");
+    let shell = "<html><head></head><body><div id=\"app\"></div></body></html>";
+    for scripts in [
+        nve_backend_web::PRE_HYDRATION_REPLAY_SCRIPT_TAG.to_owned(),
+        "<script>window.custom = 1</script>\n".to_owned(),
+    ] {
+        let once = inject_ssg_with_scripts_into_shell_html(shell, "app", &ssr, &scripts);
+        let twice = inject_ssg_with_scripts_into_shell_html(&once, "app", &ssr, &scripts);
+        assert_eq!(twice, once, "re-injection must not duplicate {scripts}");
+        assert_eq!(once.matches(scripts.trim()).count(), 1, "{once}");
+    }
+}
+
+#[test]
 fn ssg_style_payloads_escape_breakouts_and_always_emit_one_ssr_anchor() {
     let (store, web) = sample_ssr_backend();
     for style_css in ["", ".x{}</StYlE><script>alert(1)</script>"] {

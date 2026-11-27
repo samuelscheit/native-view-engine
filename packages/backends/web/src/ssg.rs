@@ -224,8 +224,9 @@ fn find_mount_element(html: &str, mount_id: &str) -> Option<(usize, usize, usize
 /// Injects build-time Frame-0 SSG `<style data-nve-base>`, `<style data-nve-ssr data-nve-hashes>`,
 /// `#<mount_id>` inner HTML, and caller-provided bootstrap `<script>` tags into a host shell HTML
 /// template. Idempotent: style tags and bootstrap scripts already present in the shell are not
-/// duplicated. Bootstrap scripts go before the first `<script type="module"`, else right after
-/// the mount element, else before `</body>`.
+/// duplicated. Styles go before `</head>`, else before `<body`, else right after the doctype
+/// (never ahead of it: that forces quirks mode). Bootstrap scripts go right after the mount
+/// element (they look it up by id, so never into `<head>`), else before `</body>`.
 pub fn inject_ssg_with_scripts_into_shell_html(
     shell_html: &str,
     mount_id: &str,
@@ -241,31 +242,51 @@ pub fn inject_ssg_with_scripts_into_shell_html(
         push_ssr_style_tag(ssr, None, &mut style_tags);
         style_tags.push('\n');
     }
-    let head_end = shell_html.find("</head>").unwrap_or(0);
+    let style_at = style_insertion_point(shell_html);
     let mut out = String::with_capacity(
         shell_html.len() + style_tags.len() + ssr.html.len() + bootstrap_scripts.len() + 2,
     );
-    out.push_str(&shell_html[..head_end]);
+    out.push_str(&shell_html[..style_at]);
     out.push_str(&style_tags);
-    out.push_str(&shell_html[head_end..]);
+    out.push_str(&shell_html[style_at..]);
 
     let mount_close_end = find_mount_element(&out, mount_id).map(|(start, end, after)| {
         out.replace_range(start..end, &ssr.html);
         after - (end - start) + ssr.html.len()
     });
 
-    if bootstrap_scripts.is_empty() || out.contains("data-nve-snapshot-boot") {
+    let scripts = bootstrap_scripts.trim();
+    let already_booted =
+        scripts.contains("data-nve-snapshot-boot") && out.contains("data-nve-snapshot-boot");
+    if scripts.is_empty() || already_booted || out.contains(scripts) {
         return out;
     }
-    let (at, scripts) = if let Some(idx) = out.find("<script type=\"module\"") {
-        (idx, format!("{bootstrap_scripts}\n"))
-    } else if let Some(after_mount) = mount_close_end {
-        (after_mount, format!("\n{bootstrap_scripts}"))
-    } else if let Some(idx) = out.find("</body>") {
-        (idx, format!("{bootstrap_scripts}\n"))
+    let (at, block) = if let Some(after_mount) = mount_close_end {
+        (after_mount, format!("\n{scripts}"))
+    } else if let Some(idx) = find_ascii_ci(&out, "</body>") {
+        (idx, format!("{scripts}\n"))
     } else {
-        (out.len(), format!("\n{bootstrap_scripts}"))
+        (out.len(), format!("\n{scripts}"))
     };
-    out.insert_str(at, &scripts);
+    out.insert_str(at, &block);
     out
+}
+
+/// Byte offset of the first ASCII-case-insensitive occurrence of `needle` in `haystack`.
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// Where SSG `<style>` tags go: before `</head>`, else before `<body`, else after the doctype.
+fn style_insertion_point(html: &str) -> usize {
+    find_ascii_ci(html, "</head>")
+        .or_else(|| find_ascii_ci(html, "<body"))
+        .or_else(|| {
+            let doctype = find_ascii_ci(html, "<!doctype")?;
+            Some(doctype + html[doctype..].find('>')? + 1)
+        })
+        .unwrap_or(0)
 }
