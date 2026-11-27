@@ -223,8 +223,13 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
     assert_eq!((r_abs.x, r_abs.y), (12.0, 14.0));
 }
 
+/// Long text that wraps to many lines at 100–200 px.
+const WRAPPED: &str = "word word word word word word word word word word word word word word word word \
+word word word word word word word word word word word word word word word word";
+
 /// Taffy 0.16 drops `aspect_ratio` for leaves sized under `SizingMode::ContentSize`
 /// (DioxusLabs/taffy#804); `LayoutView::aspect_ratio_content_size` transfers the known axis.
+
 #[test]
 fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis() {
     // (container direction, container + child edits, expected child border-box (width, height))
@@ -390,16 +395,28 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
             },
             (100.0, 50.0),
         ),
-        // Wrapped text taller than the ratio's height keeps its own height.
+        // Wrapped text taller than the ratio's height keeps its own (measured) height.
         (
             NveFlexDirection::Row,
             |tx, _, c| {
-                tx.edit::<TextContent>(c).text(&"word ".repeat(80));
+                tx.edit::<TextContent>(c).text(WRAPPED);
                 tx.edit::<NveLayout>(c)
                     .flex_basis(Length::points(100.0))
                     .aspect_ratio(8.0);
             },
             (100.0, -1.0),
+        ),
+        // Column: the height is known, so the width transferred through the ratio (200) bounds
+        // the lines instead of the 400 px container.
+        (
+            NveFlexDirection::Column,
+            |tx, _, c| {
+                tx.edit::<TextContent>(c).text(WRAPPED);
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0);
+            },
+            (200.0, 100.0),
         ),
         // An empty text leaf sizes like any empty leaf.
         (
@@ -440,13 +457,14 @@ fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis
         );
         let r = layout.layout_of(leaf).expect("leaf laid out");
         if expected.1 < 0.0 {
-            // Content-sized: taller than the ratio's 12.5 px floor.
-            assert_eq!(r.width, expected.0, "case {i}");
-            assert!(
-                r.height > 12.5,
-                "case {i}: wrapped text height {}",
-                r.height
-            );
+            // Content-sized: the text's height wrapped at the expected width (several lines,
+            // far above the ratio's 12.5 px floor).
+            let (_, h) =
+                layout
+                    .text_measurer()
+                    .measure_with_weight(WRAPPED, 16.0, 400, Some(expected.0));
+            assert!(h > 2.0 * 16.0 * 1.25, "case {i}: wraps to several lines");
+            assert_eq!((r.width, r.height), (expected.0, h.round()), "case {i}");
         } else {
             assert_eq!((r.width, r.height), expected, "case {i}");
         }

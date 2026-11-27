@@ -190,9 +190,11 @@ fn hover_state_rules_and_transforms_never_give_a_contents_node_a_box() {
     let mut f = fixture();
     let wrapper = f.wrapper;
     let mut tx = f.store.tx();
+    let hover_text = ColorRgba::rgb(220, 38, 38);
     let hover = StylePatch::new()
         .bg(ColorRgba::rgb(30, 64, 175))
-        .opacity(0.0);
+        .opacity(0.0)
+        .text_color(hover_text);
     tx.edit::<Interaction>(wrapper).state_rules(Some(StateRules(
         vec![StateStyleRule::new(InteractionState::HOVER, hover)].into(),
     )));
@@ -208,6 +210,8 @@ fn hover_state_rules_and_transforms_never_give_a_contents_node_a_box() {
             .contains(InteractionState::HOVER)
     );
     let visual = f.backend.effective_visual(&f.store, wrapper);
+    // The rule applied (inherited text paint is kept) while box paint was stripped.
+    assert_eq!(visual.text_color, hover_text);
     assert_eq!(
         (visual.background, visual.opacity),
         (ColorRgba::TRANSPARENT, 1.0)
@@ -266,4 +270,63 @@ fn hits_on_overflowing_children_bubble_to_unclipped_boxes_only() {
     tx.commit_into(&mut changes);
     assert!(backend.commit(&store, &changes).is_ok());
     assert_eq!(backend.hit_test(&store, 10.0, 50.0), None, "clipped away");
+}
+
+#[test]
+fn a_handler_less_overlay_occludes_siblings_painted_below_it() {
+    let mut store = NodeStore::new();
+    store.set_realization_order(core_realization_order());
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    // `stack` (200×100) → [`under` (200×50, press handler), `overlay` (absolute, 100×100, no
+    // handler, painted last)].
+    let stack = sized(&mut tx, 200.0, 100.0);
+    let under = sized(&mut tx, 200.0, 50.0);
+    let overlay = sized(&mut tx, 100.0, 100.0);
+    tx.edit::<Layout>(overlay)
+        .position(Position::Absolute)
+        .inset_left(Length::points(0.0))
+        .inset_top(Length::points(0.0));
+    tx.edit::<Visual>(overlay)
+        .background(Rgba::new(0, 0, 0, 128));
+    press(&mut tx, under);
+    tx.set_children(NodeId::ROOT, &[stack]);
+    tx.set_children(stack, &[under, overlay]);
+    tx.commit_into(&mut changes);
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(1, VP);
+    assert!(backend.commit(&store, &changes).is_ok());
+
+    let hits = |b: &HeadlessBackend, store: &NodeStore, x, y| {
+        (b.hit_test(store, x, y), b.hit_test_interaction(store, x, y))
+    };
+    // Covered by the overlay: nothing below it receives the hit.
+    assert_eq!(hits(&backend, &store, 10.0, 10.0), (None, None));
+    // Beside the overlay: `under` is exposed.
+    let exposed = Some(under.raw());
+    assert_eq!(hits(&backend, &store, 150.0, 10.0), (exposed, exposed));
+
+    // The covered hit bubbles from the overlay to its ancestors, never sideways.
+    let mut tx = store.tx();
+    press(&mut tx, stack);
+    tx.commit_into(&mut changes);
+    assert!(backend.commit(&store, &changes).is_ok());
+    let bubbled = Some(stack.raw());
+    assert_eq!(hits(&backend, &store, 10.0, 10.0), (bubbled, bubbled));
+    assert_eq!(hits(&backend, &store, 150.0, 10.0), (exposed, exposed));
+
+    // `z-index` reorders painting, and so occlusion: raised above the overlay, `under` is hit
+    // through it; a negative level drops the overlay below `under` the same way.
+    for (node, z) in [(under, 1), (under, 0), (overlay, -1)] {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(node).z_index(z);
+        tx.commit_into(&mut changes);
+        assert!(backend.commit(&store, &changes).is_ok());
+        let expected = if z == 0 { bubbled } else { exposed };
+        assert_eq!(
+            hits(&backend, &store, 10.0, 10.0),
+            (expected, expected),
+            "{node:?} at z {z}"
+        );
+    }
 }

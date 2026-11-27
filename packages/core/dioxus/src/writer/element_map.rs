@@ -40,6 +40,10 @@ const UNBOUND: u32 = u32::MAX;
 /// larger id is a corrupt mutation stream: refusing it caps `el_to_node` at 64 MiB instead of
 /// letting one bogus id `resize` the table to gigabytes.
 const MAX_ELEMENTS: usize = 1 << NodeId::INDEX_BITS;
+const _: () = assert!(
+    MAX_ELEMENTS <= UNBOUND as usize,
+    "valid ids never collide with UNBOUND"
+);
 
 #[derive(Debug, Default)]
 pub(crate) struct ElementMap {
@@ -63,9 +67,10 @@ impl ElementMap {
     pub(crate) fn bind(&mut self, el: ElementId, node: NodeId) {
         // Refused ids stay unbound, so later mutations naming them resolve to no node and are
         // skipped like any other unknown id.
-        let Some(raw) = u32::try_from(el.0).ok().filter(|_| el.0 < MAX_ELEMENTS) else {
+        if el.0 >= MAX_ELEMENTS {
             return;
-        };
+        }
+        let raw = el.0 as u32; // < 2^24 (checked above)
         if let Some(prev) = self.element_of(node)
             && prev != el
         {

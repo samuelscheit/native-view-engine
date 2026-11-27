@@ -157,8 +157,10 @@ impl NodeLists {
         self.pool.push(first_overflow);
         self.pool.extend(ids);
         let new_len = self.pool.len() - new_start;
-        let new_cap = new_len.max(cap.saturating_mul(2));
-        if new_start + new_cap > MAX_POOL_LEN {
+        if new_start
+            .checked_add(new_len)
+            .is_none_or(|end| end > MAX_POOL_LEN)
+        {
             // Beyond `u32` offsets (> 4 Gi node ids, unreachable before memory runs out): keep
             // the list as filled so far and drop the excess ids rather than corrupt offsets.
             debug_assert!(false, "node list pool exceeds u32 offsets");
@@ -172,6 +174,10 @@ impl NodeLists {
             self.spans[idx].len = narrow(len);
             return;
         }
+        // Doubling headroom is clamped to the offset bound; the ids themselves fit.
+        let new_cap = new_len
+            .max(cap.saturating_mul(2))
+            .min(MAX_POOL_LEN - new_start);
         self.pool.resize(new_start + new_cap, NodeId::NULL);
         self.spans[idx] = ListSpan {
             start: narrow(new_start),

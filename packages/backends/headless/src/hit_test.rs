@@ -13,14 +13,14 @@ use nve_abi::NodeId;
 use nve_components::layout_ext::compute_sticky_offset;
 use nve_components::tables::{
     Interaction, Layout as NveLayout, Overflow, Position, Transform as TransformTable, Visual,
+    visual_clips_overflow,
 };
 use nve_components::transform::Transform2D;
 use nve_engine::{LayoutRect, StoreLayoutEngine};
 use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::{
-    HeadlessBackend, MAX_TREE_DEPTH, generates_box, is_display_contents, is_display_none,
-    length_to_dim, node_clips_overflow,
+    HeadlessBackend, MAX_TREE_DEPTH, box_visual, generates_box, is_display_none, length_to_dim,
 };
 
 /// Result of hit-testing one subtree.
@@ -43,7 +43,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         let mut cur = store.parent(id);
         for _ in 0..MAX_TREE_DEPTH {
             let anc = cur?;
-            if anc == StoreNodeId::ROOT || !is_display_contents(store, anc) {
+            if generates_box(store, anc) {
                 return Some(anc);
             }
             cur = store.parent(anc);
@@ -55,10 +55,18 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     /// block and scroll container are the nearest *box* ancestors (`display: contents` ancestors
     /// have neither a rect nor a scroll port); a contents node itself never sticks.
     pub fn compute_sticky_delta(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+        if !generates_box(store, id) {
+            return (0.0, 0.0);
+        }
+        self.sticky_delta_of_box(store, id)
+    }
+
+    /// [`Self::compute_sticky_delta`] for a node known to generate a box.
+    fn sticky_delta_of_box(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
         let Some(l) = store.try_row::<NveLayout>(id) else {
             return (0.0, 0.0);
         };
-        if l.position() != Position::Sticky || is_display_contents(store, id) {
+        if l.position() != Position::Sticky {
             return (0.0, 0.0);
         }
         let Some(node_rect) = self.layout.layout_of(id) else {
@@ -123,6 +131,11 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         if !generates_box(store, id) {
             return None;
         }
+        Self::transform_of_box(store, id)
+    }
+
+    /// [`Self::effective_transform`] for a node known to generate a box.
+    fn transform_of_box(store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
         let t = store.try_row::<TransformTable>(id)?;
         let tf = Transform2D {
             translate_x: t.translate_x(),
@@ -163,6 +176,58 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 }
 
+/// Paint `z-index` of a sibling: box-less (`display: contents`) nodes paint at level 0.
+fn paint_z(store: &NodeStore, id: StoreNodeId) -> i32 {
+    box_visual(store, id).map_or(0, |v| v.z_index())
+}
+
+/// One parent's children in reverse paint order (topmost first): descending `z-index` level,
+/// later siblings first within a level. This mirrors the renderers' stable ascending
+/// `z_index` sort (Skia display list, reloc scene, and hit test) without allocating: each
+/// level costs one scan, and nearly every list has a single level.
+struct TopmostFirst<'a> {
+    store: &'a NodeStore,
+    children: &'a [StoreNodeId],
+    level: Option<i32>,
+    pos: usize,
+}
+
+impl<'a> TopmostFirst<'a> {
+    fn new(store: &'a NodeStore, children: &'a [StoreNodeId]) -> Self {
+        Self {
+            store,
+            children,
+            level: children.iter().map(|&c| paint_z(store, c)).max(),
+            pos: children.len(),
+        }
+    }
+}
+
+impl Iterator for TopmostFirst<'_> {
+    type Item = StoreNodeId;
+
+    fn next(&mut self) -> Option<StoreNodeId> {
+        loop {
+            let level = self.level?;
+            while self.pos > 0 {
+                self.pos -= 1;
+                let child = self.children[self.pos];
+                if paint_z(self.store, child) == level {
+                    return Some(child);
+                }
+            }
+            let store = self.store;
+            self.level = self
+                .children
+                .iter()
+                .map(|&c| paint_z(store, c))
+                .filter(|&z| z < level)
+                .max();
+            self.pos = self.children.len();
+        }
+    }
+}
+
 /// One hit-test query: the backend's geometry, the store, and the target predicate.
 struct HitWalk<'a, L: StoreLayoutEngine, F> {
     backend: &'a HeadlessBackend<L>,
@@ -183,7 +248,8 @@ impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
         if depth > MAX_TREE_DEPTH || !store.is_live(id) || is_display_none(store, id) {
             return MISS;
         }
-        let hidden = store.try_row::<Visual>(id).map_or(inherited_hidden, |v| {
+        let visual = store.try_row::<Visual>(id);
+        let hidden = visual.as_ref().map_or(inherited_hidden, |v| {
             v.visibility().resolve(inherited_hidden)
         });
         let (child_point, child_offset, inside) = if !generates_box(store, id) {
@@ -192,10 +258,10 @@ impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
             let Some(rect) = backend.layout.layout_of(id) else {
                 return MISS;
             };
-            let (stx, sty) = backend.compute_sticky_delta(store, id);
+            let (stx, sty) = backend.sticky_delta_of_box(store, id);
             let r_x = rect.x + offset.0 + stx;
             let r_y = rect.y + offset.1 + sty;
-            let (px, py) = match backend.effective_transform(store, id) {
+            let (px, py) = match HeadlessBackend::<L>::transform_of_box(store, id) {
                 Some(tf) => match tf.inverse_map_surface_point(
                     point.0,
                     point.1,
@@ -215,7 +281,8 @@ impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
                 && px <= r_x + rect.width
                 && py >= r_y
                 && py <= r_y + rect.height;
-            if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
+            let clips = visual.as_ref().is_some_and(visual_clips_overflow);
+            if !inside && id != StoreNodeId::ROOT && clips {
                 return MISS;
             }
             let (sx, sy) = backend.scroll_offset(id.raw());
@@ -223,13 +290,19 @@ impl<L: StoreLayoutEngine, F: Fn(StoreNodeId) -> bool> HitWalk<'_, L, F> {
             ((px, py), child_offset, inside)
         };
 
+        // Reverse paint order (`z-index`, then DOM order): the first child subtree covering the
+        // point occludes every sibling painted below it, handler or not (a plain overlay or modal backdrop swallows
+        // the hit; it then bubbles to this node).
         let mut covered = inside && !hidden;
-        for &cid in store.children(id).iter().rev() {
+        for cid in TopmostFirst::new(store, store.children(id)) {
             let hit = self.walk(cid, child_point, child_offset, hidden, depth + 1);
             if hit.target.is_some() {
                 return hit;
             }
-            covered |= hit.covered;
+            if hit.covered {
+                covered = true;
+                break;
+            }
         }
         Hit {
             target: (covered && (self.accepts)(id)).then_some(id.raw()),

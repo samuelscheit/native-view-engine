@@ -83,11 +83,18 @@ impl<'s> LayoutView<'s> {
             return self.aspect_ratio_content_size(n, known, parent_width);
         }
         let resolved = self.resolved_text[ix(n)];
-        let max_width = known.width.or(match available.width {
-            AvailableSpace::Definite(w) => Some(w),
-            AvailableSpace::MinContent => Some(0.0),
-            AvailableSpace::MaxContent => None,
-        });
+        // `aspect-ratio` is a floor for text too (Taffy drops it here, see below): the ratio's
+        // transferred size wins until wrapped text needs more. A width transferred from a known
+        // height also bounds the line length, so text wraps inside the ratio box.
+        let ratio = self.aspect_ratio_content_size(n, known, parent_width);
+        let max_width = known
+            .width
+            .or((ratio.width > 0.0).then_some(ratio.width))
+            .or(match available.width {
+                AvailableSpace::Definite(w) => Some(w),
+                AvailableSpace::MinContent => Some(0.0),
+                AvailableSpace::MaxContent => None,
+            });
         let (mw, mh) = self.measurer.measure_with_weight(
             text,
             resolved.font_size,
@@ -96,9 +103,6 @@ impl<'s> LayoutView<'s> {
         );
         let safe_w = if mw.is_finite() && mw >= 0.0 { mw } else { 0.0 };
         let safe_h = if mh.is_finite() && mh >= 0.0 { mh } else { 0.0 };
-        // `aspect-ratio` is a floor for text too (Taffy drops it here, see below): the ratio's
-        // transferred size wins until wrapped text needs more.
-        let ratio = self.aspect_ratio_content_size(n, known, parent_width);
         Size {
             width: known.width.unwrap_or(safe_w.max(ratio.width)),
             height: known.height.unwrap_or(safe_h.max(ratio.height)),

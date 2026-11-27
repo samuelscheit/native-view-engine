@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::hoisted_tests::{VP, assert_matches_layout_of};
 use crate::TaffyStoreLayout;
 use nve_components::tables::{
-    AlignSelf, FlexDirection, Layout, Overflow, TextContent, Typography, Visual,
+    AlignSelf, FlexDirection, Layout, Overflow, Position, TextContent, Typography, Visual,
 };
 use nve_engine::{TextMeasurer, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Transaction};
@@ -347,22 +347,71 @@ fn a_fault_while_measuring_a_fixed_box_never_drops_fixed_subtrees() {
 }
 
 #[test]
-fn switching_the_layout_root_re_resolves_inheritance() {
+fn switching_the_layout_root_round_trips_to_fresh_layouts() {
     let mut f = Fixture::new();
-    let (parent, label) = (f.parent, f.label);
+    let (parent, label, boxed) = (f.parent, f.label, f.boxed);
+    // A `position: fixed` toast below an intermediate container (`row`): hoisted to whichever
+    // node is the layout root.
+    let row = f.store.parent(boxed).expect("row");
+    let mut toast = NodeId::ROOT;
     assert!(f.commit(|tx| {
-        tx.edit::<Layout>(NodeId::ROOT)
-            .direction(nve_components::tables::Direction::Rtl);
+        // An absolute, viewport-sized `parent` is laid out under `ROOT` with exactly the inputs
+        // of a root pass (known size = available space = parent size = viewport), so both share
+        // its cache key: a cache entry left from the nested pass would be hit on the way back.
+        tx.edit::<Layout>(parent)
+            .position(Position::Absolute)
+            .inset_left(Length::points(0.0))
+            .inset_top(Length::points(0.0))
+            .width(Length::points(VP.width))
+            .height(Length::points(VP.height));
+        toast = tx.create();
+        tx.edit::<Layout>(toast)
+            .position(Position::Fixed)
+            .inset_top(Length::points(7.0))
+            .width(Length::points(40.0))
+            .height(Length::points(10.0));
+        tx.set_children(row, &[boxed, toast]);
     }));
-    assert!(f.layout.resolved_rtl(label), "inherits the root's rtl");
+    let subtree = [parent, label, row, boxed, toast];
 
-    // Laid out from `parent`, nothing above it is inherited: exactly what a fresh engine does.
-    assert!(f.layout.compute_layout(&f.store, parent, VP));
-    let mut fresh = TaffyStoreLayout::new();
-    fresh.set_text_measurer(Arc::clone(&f.measurer));
-    assert!(fresh.compute_layout(&f.store, parent, VP));
-    for id in [parent, label] {
-        assert_eq!(f.layout.resolved_rtl(id), fresh.resolved_rtl(id), "{id:?}");
-        assert_eq!(f.layout.layout_of(id), fresh.layout_of(id), "{id:?}");
+    // Round 1 keeps every inherited value, so only the root switch itself can invalidate;
+    // round 2 flips the root's `direction`, which nothing below `parent` inherits when nested.
+    for round in 0..2 {
+        if round == 1 {
+            assert!(f.commit(|tx| {
+                tx.edit::<Layout>(NodeId::ROOT)
+                    .direction(nve_components::tables::Direction::Rtl);
+            }));
+            assert!(f.layout.resolved_rtl(label), "inherits the root's rtl");
+        }
+        assert_eq!(f.layout.hoisted.get(NodeId::ROOT.index()), &[parent, toast]);
+        f.assert_matches_fresh();
+
+        // Laid out from `parent`: the toast hoists to `parent` and nothing above `parent` is
+        // inherited, exactly as in a fresh engine.
+        assert!(f.layout.compute_layout(&f.store, parent, VP));
+        let mut fresh = TaffyStoreLayout::new();
+        fresh.set_text_measurer(Arc::clone(&f.measurer));
+        assert!(fresh.compute_layout(&f.store, parent, VP));
+        for id in subtree {
+            assert_eq!(f.layout.resolved_rtl(id), fresh.resolved_rtl(id), "{id:?}");
+            assert_eq!(f.layout.layout_of(id), fresh.layout_of(id), "{id:?}");
+            assert_eq!(
+                f.layout.hoisted.get(id.index()),
+                fresh.hoisted.get(id.index()),
+                "hoisted list of {id:?}"
+            );
+        }
+        assert_eq!(f.layout.hoisted.get(parent.index()), &[toast]);
+
+        // Back to the root: no cache, rect, hoisted, or box-children list of the nested pass
+        // survives.
+        assert!(f.layout.compute_layout(&f.store, NodeId::ROOT, VP));
+        assert!(
+            f.layout.hoisted.get(parent.index()).is_empty(),
+            "round {round}"
+        );
+        f.assert_matches_fresh();
+        assert!(!f.frame(), "settled again");
     }
 }

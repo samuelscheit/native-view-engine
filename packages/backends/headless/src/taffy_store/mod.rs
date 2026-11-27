@@ -292,6 +292,8 @@ impl TaffyStoreLayout {
         for c in &mut self.caches {
             c.clear();
         }
+        // Every cache was dropped: nothing an unwound pass left behind can be hit.
+        self.pass_root = None;
         self.inherit_dirty = true;
         self.layout_dirty = true;
     }
@@ -429,9 +431,12 @@ impl TaffyStoreLayout {
         // downstream, so it is not part of the key.
         let vp_key = (root, viewport.width, viewport.height);
         if self.last_viewport != Some(vp_key) {
-            if self.last_viewport.map(|(r, _, _)| r) != Some(root) {
-                // Inheritance is resolved from the root down: a new root needs a fresh walk.
-                self.inherit_dirty = true;
+            if self.last_viewport.is_some_and(|(r, _, _)| r != root) {
+                // A new root re-resolves inheritance from itself down and re-hoists fixed boxes
+                // to itself. Caches (keyed by size inputs only) and hoisted lists recorded under
+                // the old root would otherwise be hit or walked again: e.g. a node laid out with
+                // root-pass inputs under the new root would keep the old root's fixed boxes.
+                self.invalidate_all(store);
             }
             self.caches[root.index()].clear();
             self.last_viewport = Some(vp_key);

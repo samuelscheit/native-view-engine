@@ -94,11 +94,12 @@ pub fn is_display_contents(store: &nve_store::NodeStore, id: nve_store::NodeId) 
     store
         .try_row::<Layout>(id)
         .is_some_and(|l| l.display() == Display::Contents)
-        && !is_node_display_none(store, id)
+        && !is_hidden_text_input(store, id)
 }
 
 /// Whether `id` generates a box: every node except non-root `display: contents` nodes (the
-/// layout root always generates the viewport box).
+/// layout root always generates the viewport box). `display: none` nodes are *not* excluded here:
+/// they and their subtree are skipped separately via [`is_node_display_none`].
 #[inline]
 pub fn generates_box(store: &nve_store::NodeStore, id: nve_store::NodeId) -> bool {
     id == nve_store::NodeId::ROOT || !is_display_contents(store, id)
@@ -116,8 +117,15 @@ pub fn box_visual(store: &nve_store::NodeStore, id: nve_store::NodeId) -> Option
 /// Whether `id`'s box clips its descendants (`overflow` hidden / scroll / auto on either axis).
 #[inline]
 pub fn node_clips_overflow(store: &nve_store::NodeStore, id: nve_store::NodeId) -> bool {
+    box_visual(store, id).is_some_and(|v| visual_clips_overflow(&v))
+}
+
+/// Whether a box with this [`Visual`] row clips its descendants; for callers that already know
+/// the node generates a box.
+#[inline]
+pub fn visual_clips_overflow(v: &VisualRef<'_>) -> bool {
     let clips = |o: Overflow| matches!(o, Overflow::Hidden | Overflow::Scroll | Overflow::Auto);
-    box_visual(store, id).is_some_and(|v| clips(v.overflow_x()) || clips(v.overflow_y()))
+    clips(v.overflow_x()) || clips(v.overflow_y())
 }
 
 /// `v` resolved for `id` (e.g. after state rules) with box paint dropped when `id` generates no

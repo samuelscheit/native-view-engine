@@ -43,6 +43,9 @@ fn sticky_clamping_overflow_clipping_and_transform_hit_test() {
         .inset_top(Length::points(0.0))
         .flex_shrink(0.0)
         .height(Length::points(40.0));
+    // Paint order is DOM order plus `z-index` (position does not stack): the stuck header must
+    // paint, and so hit-test, above the later `body` it overlaps once scrolled.
+    tx.edit::<Visual>(sticky_hdr).z_index(1);
     tx.edit::<Interaction>(sticky_hdr)
         .event_mask(EventMask::PRESS as u32);
 

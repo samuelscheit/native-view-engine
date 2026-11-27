@@ -200,9 +200,9 @@ impl NveYogaLayoutExt {
             aspect_ratio: if has_ar { ar } else { 0.0 },
             position_mode: match l.position() {
                 Position::Relative => 0,
-                // Yoga has no viewport-fixed positioning: a fixed box is laid out as absolute
-                // (correct when its containing block is the root, as for the headless engine's
-                // root-hoisted fixed boxes).
+                // Yoga has no `position: fixed` and this adapter does not hoist: a fixed box is
+                // laid out as absolute against its parent, which matches CSS only when that
+                // parent is the layout root (known gap, see `docs/quality-audit.md`).
                 Position::Absolute | Position::Fixed => 1,
                 Position::Sticky => 2,
             },
