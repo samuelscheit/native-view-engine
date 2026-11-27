@@ -2,9 +2,14 @@
  * Zero-copy reader over one published word table (`NveTableView`).
  *
  * Dense tables: row `i` belongs to node index `i` (`owners === null`). Sparse tables: row `r`
- * belongs to raw `NodeId` `owners[r]` (unsorted). Out-of-range reads throw `RangeError`.
+ * belongs to raw `NodeId` `owners[r]` (unsorted), found in O(1) through the published paged
+ * node-index → row index. Out-of-range reads throw `RangeError`.
  */
+import { NVE_ROW_INDEX_NO_PAGE, NVE_ROW_INDEX_PAGE_BITS, NVE_ROW_INDEX_PAGE_LEN } from './generated/nve_abi.generated.ts';
 import { Key64 } from './key64.ts';
+
+/** Low bits of a raw `NodeId` holding its slot index (`index: 24 | generation: 8`). */
+export const NODE_INDEX_MASK = 0xff_ffff;
 
 /** How a field's bits are interpreted (Rust `nve_abi::table::FieldKind`). */
 export const FieldKind = {
@@ -113,6 +118,10 @@ export interface TableReaderInit {
   readonly owners?: DataView | null;
   readonly dirtyRows?: DataView;
   readonly dirtyCount?: number;
+  /** Sparse tables: page of every `NVE_ROW_INDEX_PAGE_LEN` node indices (`NVE_ROW_INDEX_NO_PAGE` = none). */
+  readonly rowIndexDir?: DataView;
+  /** Sparse tables: `row + 1` per node index of each page (`0` = no row); a partial tail page is dropped. */
+  readonly rowIndexPages?: DataView;
 }
 
 function wordsIn(view: DataView | null | undefined): number {
@@ -128,6 +137,42 @@ export class TableReader {
   private readonly rows: DataView;
   private readonly owners: DataView | null;
   private readonly dirty: DataView | null;
+  private readonly dir: DataView | null;
+  private readonly pages: DataView | null;
+  private readonly pageCount: number;
+
+  /**
+   * A sparse table a host assembles itself (recorded or synthetic scenes): row `r` is owned by raw
+   * `NodeId` `owners[r]`, and the row index the runtime publishes is built here. Throws
+   * `RangeError` when two rows share a node index.
+   */
+  static sparse(init: Omit<TableReaderInit, 'rowCount' | 'owners' | 'rowIndexDir' | 'rowIndexPages'> & { readonly owners: readonly number[] }): TableReader {
+    const dir: number[] = [];
+    const pages: Uint32Array[] = [];
+    init.owners.forEach((owner, r) => {
+      const index = owner & NODE_INDEX_MASK;
+      const dirSlot = index >>> NVE_ROW_INDEX_PAGE_BITS;
+      while (dir.length <= dirSlot) dir.push(NVE_ROW_INDEX_NO_PAGE);
+      if (dir[dirSlot] === NVE_ROW_INDEX_NO_PAGE) {
+        dir[dirSlot] = pages.length;
+        pages.push(new Uint32Array(NVE_ROW_INDEX_PAGE_LEN));
+      }
+      const page = pages[dir[dirSlot]!]!;
+      const entry = index & (NVE_ROW_INDEX_PAGE_LEN - 1);
+      if (page[entry] !== 0) throw new RangeError(`rows ${page[entry]! - 1} and ${r} share node index ${index}`);
+      page[entry] = r + 1;
+    });
+    const flat = new Uint32Array(pages.length * NVE_ROW_INDEX_PAGE_LEN);
+    pages.forEach((p, i) => flat.set(p, i * NVE_ROW_INDEX_PAGE_LEN));
+    const view = (a: Uint32Array) => new DataView(a.buffer, a.byteOffset, a.byteLength);
+    return new TableReader({
+      ...init,
+      rowCount: init.owners.length,
+      owners: view(Uint32Array.from(init.owners)),
+      rowIndexDir: view(Uint32Array.from(dir)),
+      rowIndexPages: view(flat),
+    });
+  }
 
   /** Throws `RangeError` when `words` is outside `1..=32` or a view is shorter than its count. */
   constructor(init: TableReaderInit) {
@@ -148,6 +193,10 @@ export class TableReader {
     this.rows = init.rows;
     this.owners = init.owners ?? null;
     this.dirty = init.dirtyRows ?? null;
+    this.dir = init.rowIndexDir ?? null;
+    this.pages = init.rowIndexPages ?? null;
+    // Whole pages only (like C++ `TableReader::make`): a partial tail page is unreachable.
+    this.pageCount = Math.floor(wordsIn(init.rowIndexPages) / NVE_ROW_INDEX_PAGE_LEN);
   }
 
   get isSparse(): boolean {
@@ -222,13 +271,30 @@ export class TableReader {
     return this.owners ? this.owners.getUint32(r * 4, true) : r;
   }
 
-  /** Row of `ownerId` (raw `NodeId` sparse, node index dense), or `null`; O(rows) sparse. */
+  /**
+   * Row of node slot `index`, or `null`; O(1). Sparse rows resolve through the row index
+   * (`row_index_dir` page → `row + 1` entry), without checking the owner's generation.
+   */
+  rowOfNode(index: number): number | null {
+    if (!this.owners) return isIntIn(index, 0, this.rowCount - 1) ? index : null;
+    if (!isIntIn(index, 0, NODE_INDEX_MASK) || !this.dir || !this.pages) return null;
+    const dirSlot = index >>> NVE_ROW_INDEX_PAGE_BITS;
+    if (dirSlot >= wordsIn(this.dir)) return null;
+    const page = this.dir.getUint32(dirSlot * 4, true);
+    if (page === NVE_ROW_INDEX_NO_PAGE || page >= this.pageCount) return null;
+    const rowPlusOne = this.pages.getUint32((page * NVE_ROW_INDEX_PAGE_LEN + (index & (NVE_ROW_INDEX_PAGE_LEN - 1))) * 4, true);
+    return rowPlusOne === 0 || rowPlusOne > this.rowCount ? null : rowPlusOne - 1;
+  }
+
+  /**
+   * Row of `ownerId` (raw `NodeId` sparse, node index dense), or `null`; O(1). A sparse row must be
+   * owned by exactly `ownerId`: a recycled slot's stale id resolves to `null`.
+   */
   rowOf(ownerId: number): number | null {
-    if (!this.owners) return isIntIn(ownerId, 0, this.rowCount - 1) ? ownerId : null;
-    for (let r = 0; r < this.rowCount; r++) {
-      if (this.owners.getUint32(r * 4, true) === ownerId) return r;
-    }
-    return null;
+    if (!this.owners) return this.rowOfNode(ownerId);
+    if (!isIntIn(ownerId, 0, 0xffff_ffff)) return null;
+    const r = this.rowOfNode(ownerId & NODE_INDEX_MASK);
+    return r !== null && this.owners.getUint32(r * 4, true) === ownerId ? r : null;
   }
 
   dirtyRow(i: number): number {

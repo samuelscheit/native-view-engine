@@ -22,7 +22,7 @@ Generated files follow the `.generated.<ext>` convention (and the Java `dev.nve.
 | Language | Generated files | Static runtime |
 | :--- | :--- | :--- |
 | C / C++20 / Objective-C | `host-cxx/include/nve/generated/nve_abi.generated.h` (Core + Scene, `static_assert`s for LP64 / ILP32 / i386 System V), `nve_tables.generated.h` | `nve::host_cxx` (CMake) |
-| Swift | `CNveAbi` (imports the host-cxx header in place), `NveTables.generated.swift` | `NveHost` (SwiftPM) |
+| Swift | `CNveAbi` (imports the host-cxx header in place), `NveAbiConsts.generated.swift` + `NveTables.generated.swift` (pure Swift) | `NveHost` (SwiftPM) |
 | Java / Kotlin | `dev.nve.host.generated.{NveAbi,NveTables}` | `dev.nve.host` |
 | Dart | `nve_abi_const.generated.dart` + `nve_tables.generated.dart` (web-safe), `nve_abi_ffi.generated.dart` (`dart:ffi`) | `package:nve_host` |
 | TypeScript | `nve_abi.generated.ts`, `nve_tables.generated.ts` | `@nve/host` |

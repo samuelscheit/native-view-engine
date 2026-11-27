@@ -55,6 +55,7 @@ templates! {
     CAbi: "c/nve_abi.h" => m: AbiModel<'a>;
     CRuntimeAbi: "c/nve_runtime_abi.h" => m: RuntimeAbiModel<'a>;
     CVectors: "c/hash_vectors.h" => vectors: [HashVector];
+    SwiftAbiConsts: "swift/NveAbiConsts.swift" => m: AbiModel<'a>;
     SwiftVectors: "swift/HashVectors.swift" => vectors: [HashVector];
     JavaAbi: "java/NveAbi.java" => m: AbiModel<'a>;
     JavaTables: "java/NveTables.java" => tables: [TableModel<'a>];
@@ -107,14 +108,18 @@ pub fn generate_c_abi_header() -> Result<String, CodegenError> {
     Ok(render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?.content)
 }
 
-/// Every Core + Scene ABI file (C, Java, Dart const + `dart:ffi`, TypeScript) plus the C runtime
-/// ABI header.
+/// Every Core + Scene ABI file (C, Swift constants, Java, Dart const + `dart:ffi`, TypeScript)
+/// plus the C runtime ABI header.
 pub fn generate_abi_files() -> Result<Vec<GeneratedFile>, CodegenError> {
     let m = abi_model()?;
     let runtime = runtime_abi_model(&m)?;
     Ok(vec![
         render(&CAbi { m: &m }, C_ABI_HEADER.to_owned())?,
         render(&CRuntimeAbi { m: &runtime }, C_RUNTIME_ABI_HEADER.to_owned())?,
+        render(
+            &SwiftAbiConsts { m: &m },
+            format!("{SWIFT}/Sources/NveHost/NveAbiConsts.generated.swift"),
+        )?,
         render(
             &JavaAbi { m: &m },
             format!("{JAVA}/main/java/dev/nve/host/generated/NveAbi.java"),

@@ -135,14 +135,10 @@ final class SceneBuilder {
         final index = owners?[r] ?? r;
         words.setAll(r * shape.words, t.rows[index] ?? shape.defaults);
       }
-      tables.add(TableReader(
-        key: shape.key,
-        slot: t.slot,
-        words: shape.words,
-        rowCount: count,
-        rows: ByteData.sublistView(words),
-        owners: owners == null ? null : ByteData.sublistView(Uint32List.fromList(owners)),
-      ));
+      tables.add(owners == null
+          ? TableReader(key: shape.key, slot: t.slot, words: shape.words, rowCount: count, rows: ByteData.sublistView(words))
+          : TableReader.sparse(
+              key: shape.key, slot: t.slot, words: shape.words, rows: ByteData.sublistView(words), owners: owners));
     }
     final scroll = Uint32List(_scroll.length * 3);
     final scrollF = Float32List.sublistView(scroll);

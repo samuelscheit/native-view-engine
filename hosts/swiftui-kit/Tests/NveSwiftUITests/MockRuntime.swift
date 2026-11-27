@@ -3,6 +3,8 @@ import Foundation
 import NveHost
 @testable import NveSwiftUI
 
+private let pageLen = Int(nveRowIndexPageLen)
+
 /// Builds a published runtime scene in Swift memory: node rows / rects / slabs plus word-table
 /// rows written through the generated `NveTables` field specs.
 struct SceneBuilder {
@@ -83,15 +85,15 @@ struct SceneBuilder {
     /// owner wins, as an edit replaces it): `(row_index_dir, row_index_pages)`.
     func rowIndex(_ table: Table) -> ([UInt32], [UInt32]) {
         guard table.sparse else { return ([], []) }
-        var dir = [UInt32](repeating: .max, count: (rows.count + rowIndexPageLen - 1) / rowIndexPageLen)
+        var dir = [UInt32](repeating: .max, count: (rows.count + pageLen - 1) / pageLen)
         var pages: [UInt32] = []
         for (r, owner) in table.owners.enumerated() {
             let index = NodeId(raw: owner).index
-            if dir[index / rowIndexPageLen] == .max {
-                dir[index / rowIndexPageLen] = UInt32(pages.count / rowIndexPageLen)
-                pages.append(contentsOf: repeatElement(0, count: rowIndexPageLen))
+            if dir[index / pageLen] == .max {
+                dir[index / pageLen] = UInt32(pages.count / pageLen)
+                pages.append(contentsOf: repeatElement(0, count: pageLen))
             }
-            pages[Int(dir[index / rowIndexPageLen]) * rowIndexPageLen + index % rowIndexPageLen] = UInt32(r + 1)
+            pages[Int(dir[index / pageLen]) * pageLen + index % pageLen] = UInt32(r + 1)
         }
         return (dir, pages)
     }
@@ -192,7 +194,7 @@ final class MockRuntime: @unchecked Sendable {
             return NveTableView(
                 key_lo: t.key.lo, key_hi: t.key.hi, slot: t.slot, words: UInt32(t.words),
                 row_count: UInt32(t.rows.count / t.words), dirty_count: 0,
-                row_index_dir_len: UInt32(dir.count), row_index_page_count: UInt32(pages.count / rowIndexPageLen),
+                row_index_dir_len: UInt32(dir.count), row_index_page_count: UInt32(pages.count / pageLen),
                 rows: pin(t.rows), owners: pin(t.owners), dirty_rows: nil,
                 row_index_dir: pin(dir), row_index_pages: pin(pages))
         }

@@ -168,7 +168,7 @@ final class TableSceneTests: XCTestCase {
                 XCTAssertNil(t?.row(of: 0x0200_0003))  // no published row index: nothing resolves
                 XCTAssertEqual(t?.owner(0), 0x0100_0007)
                 // Row index: page 0 maps node 7 -> row 0 and node 3 -> row 1 (`row + 1`).
-                var pages = [UInt32](repeating: 0, count: rowIndexPageLen)
+                var pages = [UInt32](repeating: 0, count: Int(nveRowIndexPageLen))
                 pages[7] = 1
                 pages[3] = 2
                 let dir: [UInt32] = [0, .max]
@@ -185,12 +185,15 @@ final class TableSceneTests: XCTestCase {
                         XCTAssertEqual(ix?.row(of: 0x0200_0003), 1)
                         XCTAssertNil(ix?.row(of: 0x0100_0003))  // stale generation of slot 3
                         XCTAssertNil(ix?.row(of: 1))
-                        // A row past `rowCount` and a partial page are refused.
+                        // A row past `rowCount` misses; a partial page is dropped (as in C++), so
+                        // nothing in it resolves.
                         let short = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 1, rows: rp, owners: op,
                                                 rowIndexDir: dp, rowIndexPages: pp)
                         XCTAssertNil(short?.row(ofNode: 3))
-                        XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
-                                                 rowIndexDir: dp, rowIndexPages: UnsafeBufferPointer(rebasing: pp[0..<255])))
+                        let partial = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
+                                                  rowIndexDir: dp, rowIndexPages: UnsafeBufferPointer(rebasing: pp[0..<255]))
+                        XCTAssertEqual(partial?.rowIndexPages.count, 0)
+                        XCTAssertNil(partial?.row(ofNode: 3))
                     }
                 }
                 XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 3, rows: rp))

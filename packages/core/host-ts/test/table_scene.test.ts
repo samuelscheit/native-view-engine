@@ -5,6 +5,7 @@ import {
   FieldKind,
   Key64,
   LengthUnit,
+  NVE_ROW_INDEX_PAGE_LEN,
   SceneError,
   SceneReader,
   TableReader,
@@ -41,7 +42,10 @@ const WASM32: SceneLayout = {
   schemaHash: 0, frameId: 8, nodeCount: 16, dirtyCount: 20, removedCount: 24, textSlabLen: 28,
   childrenSlabLen: 32, tableCount: 36, nodes: 40, textSlab: 44, childrenSlab: 48, dirtyIndices: 52,
   removedIds: 56, tables: 60, nodeStride: NODE_STRIDE,
-  tableView: { stride: 36, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, dirtyRows: 32 },
+  tableView: {
+    stride: 52, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, dirtyRows: 32,
+    rowIndexDirLen: 36, rowIndexPageCount: 40, rowIndexDir: 44, rowIndexPages: 48,
+  },
 };
 
 /** One frame in a 4 KiB linear memory; returns [memory, viewPtr]. */
@@ -73,7 +77,7 @@ function linearMemory(tableWords = 6): [ArrayBuffer, DataView, number] {
   const removedPtr = place(asBytes(words([42])));
   const rowsPtr = place(asBytes(words(ROWS)));
   const rowDirtyPtr = place(asBytes(words([1])));
-  const t = place(new Uint8Array(36));
+  const t = place(new Uint8Array(52));
   const tl = WASM32.tableView;
   for (const [off, v] of [
     [tl.keyLo, VISUAL.lo], [tl.keyHi, VISUAL.hi], [tl.slot, 3], [tl.words, tableWords], [tl.rowCount, 2],
@@ -132,11 +136,29 @@ test('dense and sparse tables, bounds and invalid shapes', () => {
   assert.throws(() => t.str(0, field(5, FieldKind.Str)), RangeError);
   assert.throws(() => t.dirtyRow(1), RangeError);
 
-  const sp = new TableReader({ key: VISUAL, slot: 0, words: 2, rowCount: 2, rows: words([1, 2, 3, 4]), owners: words([0x0001_0007, 0x0002_0003]) });
+  const sp = TableReader.sparse({ key: VISUAL, slot: 0, words: 2, rows: words([1, 2, 3, 4]), owners: [0x0100_0007, 0x0200_0003] });
+  assert.equal(sp.rowOfNode(3), 1);
+  assert.equal(sp.rowOf(0x0100_0003), null, 'stale generation of a live slot');
+  assert.equal(sp.owner(0), 0x0100_0007);
+  // Rows spread over pages: node 7 (directory slot 0) and node 0x10203 (directory slot 0x102).
+  const far = TableReader.sparse({ key: VISUAL, slot: 0, words: 1, rows: words([5, 6]), owners: [7, 0x10203] });
+  assert.equal(far.rowOfNode(0x10203), 1);
+  assert.equal(far.rowOfNode(0x10204), null, 'empty entry in a present page');
+  assert.equal(far.rowOfNode(0x203), null, 'absent page between present ones');
+  assert.throws(() => TableReader.sparse({ key: VISUAL, slot: 0, words: 1, rows: words([5, 6]), owners: [7, 0x0100_0007] }), RangeError);
+  // Hostile published indices: an entry past rowCount, a page id past the pages, a partial tail page.
+  const pageWords = new Array<number>(NVE_ROW_INDEX_PAGE_LEN + 3).fill(0);
+  pageWords[1] = 9;
+  const hostile = new TableReader({
+    key: VISUAL, slot: 0, words: 1, rowCount: 1, rows: words([5]), owners: words([1]),
+    rowIndexDir: words([0, 1]), rowIndexPages: words(pageWords),
+  });
+  assert.equal(hostile.rowOfNode(1), null, 'row + 1 past rowCount');
+  assert.equal(hostile.rowOfNode(NVE_ROW_INDEX_PAGE_LEN), null, 'partial tail page is unreachable');
+  for (const bad of [NaN, 0.5, -1, 2 ** 32]) assert.equal(hostile.rowOf(bad), null, `sparse rowOf ${bad}`);
   assert.ok(sp.isSparse);
-  assert.equal(sp.rowOf(0x0002_0003), 1);
+  assert.equal(sp.rowOf(0x0200_0003), 1);
   assert.equal(sp.rowOf(1), null);
-  assert.equal(sp.owner(0), 0x0001_0007);
   assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: 2, rowCount: 3, rows: words([1, 2, 3, 4]) }), RangeError);
   assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: 33, rowCount: 0, rows: words([]) }), RangeError);
   assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: 0, rowCount: 0, rows: words([]) }), RangeError);
@@ -259,7 +281,7 @@ test('hardening: specs, NaN / fractional / Infinity arguments, hostile tables, B
     );
   }
   // Layout strides below 1 are rejected before any arithmetic.
-  for (const [node, table] of [[0, 36], [-1, 36], [NaN, 36], [16, 0], [16, -36], [16, 0.5]] as const) {
+  for (const [node, table] of [[0, 52], [-1, 52], [NaN, 52], [16, 0], [16, -52], [16, 0.5]] as const) {
     const bad: SceneLayout = { ...WASM32, nodeStride: node, tableView: { ...WASM32.tableView, stride: table } };
     expectScene('missingSlab', () => SceneReader.fromLinearMemory(memory, viewPtr, bad, SCHEMA), `strides ${node}/${table}`);
   }

@@ -70,7 +70,7 @@ const SceneLayout wasm32Layout = SceneLayout(
   tables: 60,
   nodeStride: nodeStride,
   tableView: TableViewLayout(
-    stride: 36,
+    stride: 52,
     keyLo: 0,
     keyHi: 4,
     slot: 8,
@@ -80,6 +80,10 @@ const SceneLayout wasm32Layout = SceneLayout(
     rows: 24,
     owners: 28,
     dirtyRows: 32,
+    rowIndexDirLen: 36,
+    rowIndexPageCount: 40,
+    rowIndexDir: 44,
+    rowIndexPages: 48,
   ),
 );
 
@@ -104,7 +108,7 @@ const SceneLayout wasm32Layout = SceneLayout(
   final removedPtr = place(asBytes(words([42])));
   final rowsPtr = place(asBytes(words(rowWords)));
   final tableRowDirtyPtr = place(asBytes(words([1])));
-  final tablePtr = place(List<int>.filled(36, 0));
+  final tablePtr = place(List<int>.filled(52, 0));
   final t = wasm32Layout.tableView;
   mem
     ..setUint32(tablePtr + t.keyLo, visual.lo, Endian.little)
@@ -159,14 +163,14 @@ void runHardening(Check c) {
   c.eq(FieldSpec(0, FieldKind.i32, shift: 28, bits: 4).extractSigned(-1), -1, 'extractSigned(-1)');
   // Layout strides below 1 are rejected before any arithmetic (no stride-0 / negative walks).
   final (strideMem, strideView) = linearMemory();
-  for (final (node, table) in const [(0, 36), (-1, 36), (16, 0), (16, -36)]) {
+  for (final (node, table) in const [(0, 52), (-1, 52), (16, 0), (16, -52)]) {
     final bad = SceneLayout(
       schemaHash: 0, frameId: 8, nodeCount: 16, dirtyCount: 20, removedCount: 24, textSlabLen: 28, //
       childrenSlabLen: 32, tableCount: 36, nodes: 40, textSlab: 44, childrenSlab: 48, dirtyIndices: 52,
       removedIds: 56, tables: 60, nodeStride: node,
       tableView: TableViewLayout(
         stride: table, keyLo: 0, keyHi: 4, slot: 8, words: 12, rowCount: 16, dirtyCount: 20, rows: 24, owners: 28, //
-        dirtyRows: 32,
+        dirtyRows: 32, rowIndexDirLen: 36, rowIndexPageCount: 40, rowIndexDir: 44, rowIndexPages: 48,
       ),
     );
     expectScene(c, SceneErrorKind.missingSlab, () => SceneReader.fromLinearMemory(strideMem, strideView, bad, schema),
@@ -244,11 +248,28 @@ void runTableScene(Check c) {
   c.throwsA<RangeError>(() => t.dirtyRow(1), 'dirty oob');
 
   // Sparse and invalid tables.
-  final sp = TableReader(key: visual, slot: 0, words: 2, rowCount: 2, rows: words([1, 2, 3, 4]), owners: words([0x00010007, 0x00020003]));
+  final sp = TableReader.sparse(key: visual, slot: 0, words: 2, rows: words([1, 2, 3, 4]), owners: [0x01000007, 0x02000003]);
   c.that(sp.isSparse, 'sparse');
-  c.eq(sp.rowOf(0x00020003), 1, 'sparse rowOf');
+  c.eq(sp.rowOf(0x02000003), 1, 'sparse rowOf');
+  c.eq(sp.rowOfNode(3), 1, 'sparse rowOfNode');
+  c.eq(sp.rowOf(0x01000003), null, 'stale generation of a live slot misses');
   c.eq(sp.rowOf(1), null, 'sparse miss');
-  c.eq(sp.owner(0), 0x00010007, 'sparse owner');
+  c.eq(sp.rowOfNode(-1), null, 'negative node index');
+  c.eq(sp.owner(0), 0x01000007, 'sparse owner');
+  // Rows spread over pages: node 7 (page of slot 0) and node 0x10203 (directory slot 0x102).
+  final far = TableReader.sparse(key: visual, slot: 0, words: 1, rows: words([5, 6]), owners: [7, 0x10203]);
+  c.eq(far.rowOfNode(0x10203), 1, 'far page row');
+  c.eq(far.rowOfNode(0x10204), null, 'empty entry in a present page');
+  c.eq(far.rowOfNode(0x203), null, 'absent page between present ones');
+  c.throwsA<ArgumentError>(
+      () => TableReader.sparse(key: visual, slot: 0, words: 1, rows: words([5, 6]), owners: [7, 0x01000007]), 'shared node index');
+  // Hostile published indices: an entry past rowCount, a page id past the pages, a partial tail page.
+  final pageWords = Uint32List(nveRowIndexPageLen + 3)..[1] = 9;
+  final hostile = TableReader(
+      key: visual, slot: 0, words: 1, rowCount: 1, rows: words([5]), owners: words([1]), //
+      rowIndexDir: words([0, 1]), rowIndexPages: ByteData.sublistView(pageWords));
+  c.eq(hostile.rowOfNode(1), null, 'row + 1 past rowCount misses');
+  c.eq(hostile.rowOfNode(nveRowIndexPageLen), null, 'partial tail page is unreachable');
   c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 2, rowCount: 3, rows: words([1, 2, 3, 4])), 'short rows');
   c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 33, rowCount: 0, rows: ByteData(0)), '33 words');
   c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 0, rowCount: 0, rows: ByteData(0)), '0 words');

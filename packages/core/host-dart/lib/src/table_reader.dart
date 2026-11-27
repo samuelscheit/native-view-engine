@@ -1,12 +1,17 @@
 /// Zero-copy reader over one published word table (`NveTableView`).
 ///
 /// Dense tables: row `i` belongs to node index `i` (`owners == null`). Sparse tables: row `r`
-/// belongs to raw `NodeId` `owners[r]` (unsorted). Out-of-range reads throw [RangeError].
+/// belongs to raw `NodeId` `owners[r]` (unsorted), found in O(1) through the published paged
+/// node-index → row index. Out-of-range reads throw [RangeError].
 library;
 
 import 'dart:typed_data';
 
+import 'generated/nve_abi_const.generated.dart' show nveRowIndexNoPage, nveRowIndexPageBits, nveRowIndexPageLen;
 import 'key64.dart';
+
+/// Low bits of a raw `NodeId` holding its slot index (`index: 24 | generation: 8`).
+const int nodeIndexMask = 0xFFFFFF;
 
 /// How a field's bits are interpreted (Rust `nve_abi::table::FieldKind`; `index` is the wire value).
 enum FieldKind { u32, i32, f32, boolean, enumeration, color, length, str, resource, node }
@@ -109,9 +114,15 @@ final class TableReader {
     ByteData? owners,
     ByteData? dirtyRows,
     this.dirtyCount = 0,
+    ByteData? rowIndexDir,
+    ByteData? rowIndexPages,
   })  : _rows = rows,
         _owners = owners,
-        _dirty = dirtyRows ?? ByteData(0) {
+        _dirty = dirtyRows ?? ByteData(0),
+        _dir = rowIndexDir ?? ByteData(0),
+        // Whole pages only (like C++ `TableReader::make`): a partial tail page is unreachable.
+        _pageCount = (rowIndexPages?.lengthInBytes ?? 0) ~/ (4 * nveRowIndexPageLen),
+        _pages = rowIndexPages ?? ByteData(0) {
     if (words < 1 || words > maxTableWords) {
       throw ArgumentError.value(words, 'words', 'must be in 1..=$maxTableWords');
     }
@@ -145,6 +156,58 @@ final class TableReader {
   final ByteData _rows;
   final ByteData? _owners;
   final ByteData _dirty;
+  final ByteData _dir;
+  final ByteData _pages;
+  final int _pageCount;
+
+  /// A sparse table a host assembles itself (recorded or synthetic scenes): row `r` is owned by
+  /// raw `NodeId` `owners[r]`, and the row index the runtime publishes is built here. Throws
+  /// [ArgumentError] when two rows share a node index.
+  factory TableReader.sparse({
+    required Key64 key,
+    required int slot,
+    required int words,
+    required ByteData rows,
+    required List<int> owners,
+    ByteData? dirtyRows,
+    int dirtyCount = 0,
+  }) {
+    final dir = <int>[];
+    final pages = <Uint32List>[];
+    for (var r = 0; r < owners.length; r++) {
+      final index = owners[r] & nodeIndexMask;
+      final dirSlot = index >> nveRowIndexPageBits;
+      while (dir.length <= dirSlot) {
+        dir.add(nveRowIndexNoPage);
+      }
+      if (dir[dirSlot] == nveRowIndexNoPage) {
+        dir[dirSlot] = pages.length;
+        pages.add(Uint32List(nveRowIndexPageLen));
+      }
+      final page = pages[dir[dirSlot]];
+      final entry = index & (nveRowIndexPageLen - 1);
+      if (page[entry] != 0) {
+        throw ArgumentError('rows ${page[entry] - 1} and $r share node index $index');
+      }
+      page[entry] = r + 1;
+    }
+    final flat = Uint32List(pages.length * nveRowIndexPageLen);
+    for (var p = 0; p < pages.length; p++) {
+      flat.setAll(p * nveRowIndexPageLen, pages[p]);
+    }
+    return TableReader(
+      key: key,
+      slot: slot,
+      words: words,
+      rowCount: owners.length,
+      rows: rows,
+      owners: ByteData.sublistView(Uint32List.fromList(owners)),
+      dirtyRows: dirtyRows,
+      dirtyCount: dirtyCount,
+      rowIndexDir: ByteData.sublistView(Uint32List.fromList(dir)),
+      rowIndexPages: ByteData.sublistView(flat),
+    );
+  }
 
   bool get isSparse => _owners != null;
 
@@ -190,18 +253,36 @@ final class TableReader {
     return owners == null ? r : owners.getUint32(r * 4, Endian.little);
   }
 
-  /// Row of [ownerId] (raw `NodeId` sparse, node index dense), or `null`; O(rows) sparse.
+  /// Row of node slot [index], or `null`; O(1). Sparse rows resolve through the row index
+  /// (`row_index_dir` page → `row + 1` entry), without checking the owner's generation.
+  int? rowOfNode(int index) {
+    if (index < 0) {
+      return null;
+    }
+    if (_owners == null) {
+      return index < rowCount ? index : null;
+    }
+    final dirSlot = index >> nveRowIndexPageBits;
+    if (dirSlot >= _dir.lengthInBytes ~/ 4) {
+      return null;
+    }
+    final page = _dir.getUint32(dirSlot * 4, Endian.little);
+    if (page == nveRowIndexNoPage || page >= _pageCount) {
+      return null;
+    }
+    final rowPlusOne = _pages.getUint32((page * nveRowIndexPageLen + (index & (nveRowIndexPageLen - 1))) * 4, Endian.little);
+    return rowPlusOne == 0 || rowPlusOne > rowCount ? null : rowPlusOne - 1;
+  }
+
+  /// Row of [ownerId] (raw `NodeId` sparse, node index dense), or `null`; O(1). A sparse row must
+  /// be owned by exactly [ownerId]: a recycled slot's stale id resolves to `null`.
   int? rowOf(int ownerId) {
     final owners = _owners;
     if (owners == null) {
-      return ownerId >= 0 && ownerId < rowCount ? ownerId : null;
+      return rowOfNode(ownerId);
     }
-    for (var r = 0; r < rowCount; r++) {
-      if (owners.getUint32(r * 4, Endian.little) == ownerId) {
-        return r;
-      }
-    }
-    return null;
+    final r = rowOfNode(ownerId & nodeIndexMask);
+    return r != null && owners.getUint32(r * 4, Endian.little) == ownerId ? r : null;
   }
 
   int dirtyRow(int i) {

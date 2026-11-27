@@ -659,6 +659,9 @@ RuntimeSceneReader readRuntimeScene(NveRuntimeSceneView v) {
         owners: t.owners.address == 0 ? null : ByteData.sublistView(u32s(t.owners, t.rowCount, 'table $i owners')),
         dirtyRows: ByteData.sublistView(u32s(t.dirtyRows, t.dirtyCount, 'table $i dirtyRows')),
         dirtyCount: t.dirtyCount,
+        rowIndexDir: ByteData.sublistView(u32s(t.rowIndexDir, t.rowIndexDirLen, 'table $i rowIndexDir')),
+        rowIndexPages: ByteData.sublistView(
+            u32s(t.rowIndexPages, t.rowIndexPageCount * nveRowIndexPageLen, 'table $i rowIndexPages')),
       );
     } on ArgumentError catch (e) {
       throw SceneException(SceneErrorKind.invalidTable, 'table $i: ${e.message}');
@@ -684,5 +687,6 @@ RuntimeSceneReader readRuntimeScene(NveRuntimeSceneView v) {
             .asTypedList(v.scrollCount * scrollOffsetWords),
     sceneEpoch: v.sceneEpoch,
     dirtyResources: u32s(v.dirtyResources, v.dirtyResourceCount, 'dirtyResources'),
+    movedIndices: u32s(v.movedIndices, v.movedCount, 'movedIndices'),
   );
 }

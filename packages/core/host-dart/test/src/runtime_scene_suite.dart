@@ -51,13 +51,12 @@ final class _Frame {
     );
   }
 
-  TableReader textTable() => TableReader(
+  TableReader textTable() => TableReader.sparse(
         key: TextTable.key,
         slot: _textSlot,
         words: TextTable.words,
-        rowCount: 1,
         rows: ByteData.sublistView(Uint32List.fromList([0, 6])),
-        owners: ByteData.sublistView(Uint32List.fromList([2 | (5 << 24)])),
+        owners: [2 | (5 << 24)],
       );
 
   RuntimeSceneReader open({
@@ -185,7 +184,7 @@ void runRuntimeScene(Check c) {
   c.eq(s.rowOf(null, 2), -1, 'absent table');
   c.eq(visual.color(2, VisualTable.background).packed, 0xFF2010F0, 'dense color');
   final text = s.tableAtSlot(_textSlot)!;
-  c.eq(s.rowOf(text, 2), 0, 'sparse row via owner index');
+  c.eq(s.rowOf(text, 2), 0, 'sparse row via the published row index');
   c.eq(s.rowOf(text, 1), -1, 'sparse table not attached');
   c.eq(s.str(text, 0, TextTable.text), 'héllo', 'str field decodes UTF-8');
   c.eq(s.text(0, 0), '', 'empty text');

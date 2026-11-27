@@ -32,9 +32,10 @@ void runRuntimeIngress(Check c) {
   c.eq(ffi.sizeOf<NveLayoutRect>(), nveLayoutRectSize, 'NveLayoutRect size');
   c.eq(nveLayoutRectSize, layoutRectFloats * 4, 'layout rect floats');
   c.eq(ffi.sizeOf<NveScrollOffset>(), scrollOffsetWords * 4, 'NveScrollOffset size');
-  c.eq(ffi.sizeOf<NveTableView>(), 24 + 3 * _ptr, 'NveTableView size');
+  c.eq(ffi.sizeOf<NveTableView>(), 32 + 5 * _ptr, 'NveTableView size (72 on 64-bit, 52 on 32-bit)');
   final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
-  c.eq(viewSize, 56 + 9 * _ptr, 'NveRuntimeSceneView size (128 on 64-bit)');
+  // 56 + 10 pointers is a multiple of 8 on both data models: no tail padding after `moved_indices`.
+  c.eq(viewSize, 56 + 10 * _ptr, 'NveRuntimeSceneView size (136 on 64-bit, 96 on 32-bit)');
   int viewOffset(void Function(NveRuntimeSceneView v) write, [int width = 4]) =>
       _offsetOf<NveRuntimeSceneView>(viewSize, (p) => write(p.ref), width);
   c.eq(viewOffset((v) => v.schemaHash = 1, 8), 0, 'schema_hash @0');
@@ -44,13 +45,21 @@ void runRuntimeIngress(Check c) {
   c.eq(viewOffset((v) => v.scrollCount = 1), 40, 'scroll_count @40');
   c.eq(viewOffset((v) => v.sceneEpoch = 1), 44, 'scene_epoch @44');
   c.eq(viewOffset((v) => v.dirtyResourceCount = 1), 48, 'dirty_resource_count @48');
+  c.eq(viewOffset((v) => v.movedCount = 1), 52, 'moved_count @52');
   final p = ffi.Pointer<ffi.Uint32>.fromAddress(0x10);
   c.eq(viewOffset((v) => v.rows = p.cast(), _ptr), 56, 'rows @56');
   c.eq(viewOffset((v) => v.tables = p.cast(), _ptr), 56 + 6 * _ptr, 'tables');
   c.eq(viewOffset((v) => v.scrollOffsets = p.cast(), _ptr), 56 + 7 * _ptr, 'scroll_offsets');
-  c.eq(viewOffset((v) => v.dirtyResources = p.cast(), _ptr), 56 + 8 * _ptr, 'dirty_resources is last');
+  c.eq(viewOffset((v) => v.dirtyResources = p.cast(), _ptr), 56 + 8 * _ptr, 'dirty_resources');
+  c.eq(viewOffset((v) => v.movedIndices = p.cast(), _ptr), 56 + 9 * _ptr, 'moved_indices is last');
   c.eq(_offsetOf<NveScrollOffset>(12, (s) => s.ref.y = 1, 4), 8, 'NveScrollOffset.y @8');
-  c.eq(_offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => t.ref.rows = p, _ptr), 24, 'NveTableView.rows @24');
+  int tableOffset(void Function(NveTableView t) write, [int width = 4]) =>
+      _offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => write(t.ref), width);
+  c.eq(tableOffset((t) => t.rowIndexDirLen = 1), 24, 'NveTableView.row_index_dir_len @24');
+  c.eq(tableOffset((t) => t.rowIndexPageCount = 1), 28, 'NveTableView.row_index_page_count @28');
+  c.eq(tableOffset((t) => t.rows = p, _ptr), 32, 'NveTableView.rows @32');
+  c.eq(tableOffset((t) => t.rowIndexDir = p, _ptr), 32 + 3 * _ptr, 'NveTableView.row_index_dir');
+  c.eq(tableOffset((t) => t.rowIndexPages = p, _ptr), 32 + 4 * _ptr, 'NveTableView.row_index_pages is last');
 
   // NveRuntimeConfig / NveRuntimeMetrics (Rust `layout_asserts.rs`) and the NveRuntimeApi vtable.
   c.eq(ffi.sizeOf<NveRuntimeConfig>(), 24, 'NveRuntimeConfig size');
@@ -124,6 +133,7 @@ void runRuntimeIngress(Check c) {
     rejects(SceneErrorKind.missingSlab, 'NULL tables with count', (v) => v.tableCount = 1);
     rejects(SceneErrorKind.missingSlab, 'NULL scroll offsets with count', (v) => v.scrollCount = 1);
     rejects(SceneErrorKind.missingSlab, 'NULL dirty resources with count', (v) => v.dirtyResourceCount = 1);
+    rejects(SceneErrorKind.missingSlab, 'NULL moved indices with count', (v) => v.movedCount = 1);
     reset();
     view.ref
       ..sceneEpoch = 9
@@ -161,10 +171,60 @@ void runRuntimeIngress(Check c) {
         }));
     rejects(SceneErrorKind.missingSlab, 'NULL dirty rows with count', (v) => withTable(v, (t) => t.dirtyCount = 1));
     rejects(SceneErrorKind.invalidTable, 'table slot out of range', (v) => withTable(v, (t) => t.slot = 1000));
+    rejects(SceneErrorKind.missingSlab, 'NULL row index dir with length', (v) => withTable(v, (t) => t.rowIndexDirLen = 1));
+    rejects(SceneErrorKind.missingSlab, 'NULL row index pages with count', (v) => withTable(v, (t) => t.rowIndexPageCount = 1));
     words.asTypedList(4).setAll(0, [1, 0, 0, 0]);
     reset();
     withTable(view.ref, (t) => t.rowCount = 1);
     c.eq(readRuntimeScene(view.ref).tables.length, 1, 'well-formed table view reads');
+
+    // Moved indices are validated like dirty ones and read zero-copy.
+    words.asTypedList(2).setAll(0, [1, 0]);
+    reset();
+    view.ref
+      ..nodeCapacity = 2
+      ..rows = NativeHeap.zeroed<NveNodeRow>(2 * ffi.sizeOf<NveNodeRow>())
+      ..rects = NativeHeap.zeroed<NveLayoutRect>(2 * ffi.sizeOf<NveLayoutRect>())
+      ..movedCount = 1
+      ..movedIndices = words;
+    try {
+      c.eq(readRuntimeScene(view.ref).movedIndices.join(','), '1', 'moved indices');
+      words[0] = 2;
+      final e = c.throwsA<SceneException>(() => readRuntimeScene(view.ref), 'moved index >= capacity');
+      c.eq(e?.kind, SceneErrorKind.missingSlab, 'moved index >= capacity kind');
+    } finally {
+      NativeHeap.free(view.ref.rows);
+      NativeHeap.free(view.ref.rects);
+    }
+
+    // A sparse table resolves rows through the published row index in O(1): node index 300 lives
+    // in directory slot 1 -> page 0, entry 300 & 255 = 44 holds `row + 1`.
+    final index = NativeHeap.zeroed<ffi.Uint32>(4 * (2 + nveRowIndexPageLen));
+    try {
+      final ix = index.asTypedList(2 + nveRowIndexPageLen);
+      ix[0] = nveRowIndexNoPage;
+      ix[1] = 0;
+      ix[2 + 44] = 2;
+      words.asTypedList(4).setAll(0, [11, 22, 0xAB000005, 300 | (3 << 24)]);
+      reset();
+      withTable(view.ref, (t) {
+        t
+          ..rowCount = 2
+          ..owners = words + 2
+          ..rowIndexDirLen = 2
+          ..rowIndexPageCount = 1
+          ..rowIndexDir = index
+          ..rowIndexPages = index + 2;
+      });
+      final sparse = readRuntimeScene(view.ref).tables.single;
+      c.eq(sparse.rowOfNode(300), 1, 'sparse row of node 300');
+      c.eq(sparse.rowOf(300 | (3 << 24)), 1, 'sparse row of its live id');
+      c.eq(sparse.rowOf(300 | (2 << 24)), null, 'stale generation misses');
+      c.eq(sparse.rowOfNode(5), null, 'NO_PAGE directory slot misses');
+      c.eq(sparse.rowOfNode(512), null, 'directory slot past the end misses');
+    } finally {
+      NativeHeap.free(index);
+    }
   } finally {
     NativeHeap.free(view);
     NativeHeap.free(table);
