@@ -169,7 +169,15 @@ impl RepoIndex {
 
     pub fn parse_rust(&self, rel: &str) -> Option<ParsedRustFile> {
         let raw = self.read_text(rel)?;
-        let ast = syn::parse_file(&raw).expect("workspace Rust file must parse with syn");
+        let ast = syn::parse_file(&raw)
+            .map_err(|e| {
+                format!(
+                    "{rel}:{}:{}: {e}",
+                    e.span().start().line,
+                    e.span().start().column
+                )
+            })
+            .expect("workspace Rust file must parse with syn");
         Some(ParsedRustFile { raw, ast })
     }
 
@@ -178,7 +186,15 @@ impl RepoIndex {
         if !raw.contains(needle) {
             return None;
         }
-        let ast = syn::parse_file(&raw).expect("workspace Rust file must parse with syn");
+        let ast = syn::parse_file(&raw)
+            .map_err(|e| {
+                format!(
+                    "{rel}:{}:{}: {e}",
+                    e.span().start().line,
+                    e.span().start().column
+                )
+            })
+            .expect("workspace Rust file must parse with syn");
         Some(ParsedRustFile { raw, ast })
     }
 

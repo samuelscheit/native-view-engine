@@ -3,7 +3,7 @@ use nve_engine::LayoutRect;
 
 use super::d3d12::D3D12SwapchainConfig;
 use super::metal::MetalSwapchainConfig;
-use super::vulkan::{VulkanSemaphoreSyncHooks, VulkanSwapchainConfig};
+use super::vulkan::VulkanSwapchainConfig;
 use super::*;
 use crate::{DisplayList, PaintOp};
 
@@ -179,10 +179,6 @@ fn swapchain_configs_validate_dimensions_and_clamp_buffer_counts() {
 
     let d3d = D3D12SwapchainConfig::from_surface_config(odd_hidpi).unwrap();
     assert_eq!(d3d.buffer_count, 2);
-
-    let hooks = VulkanSemaphoreSyncHooks::default();
-    assert_eq!(hooks.image_available_semaphore, 0);
-    assert_eq!(hooks.render_finished_semaphore, 0);
 }
 
 #[test]

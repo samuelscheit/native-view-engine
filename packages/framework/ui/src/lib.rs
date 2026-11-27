@@ -9,7 +9,13 @@ pub mod form_draft;
 pub mod history;
 pub mod positioning;
 #[cfg(feature = "spatial-focus")]
-pub mod spatial_focus;
+pub mod spatial_focus {
+    //! Re-exports the canonical 2D geometric spatial focus engine from `nve-tv`.
+    pub use nve_tv::{
+        FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
+        SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
+    };
+}
 pub mod style_buf;
 pub mod theme;
 

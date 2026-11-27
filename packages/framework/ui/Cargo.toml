@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 default = ["virtual-list", "spatial-focus"]
 virtual-list = []
-spatial-focus = []
+spatial-focus = ["dep:nve-tv"]
 
 [dependencies]
 nve-abi = { workspace = true }
@@ -15,7 +15,9 @@ nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
 nve-i18n = { workspace = true }
 nve-interop = { version = "0.1.0", path = "../../core/interop", default-features = false }
+nve-tv = { workspace = true, optional = true }
 nve-web-html = { workspace = true }
+base64 = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
 dioxus-signals = { workspace = true }

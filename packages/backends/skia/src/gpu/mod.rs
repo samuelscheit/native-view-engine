@@ -18,6 +18,8 @@
 #[cfg(feature = "skia")]
 pub mod cpu_surface;
 pub mod d3d12;
+#[cfg(feature = "skia")]
+pub mod ganesh;
 pub mod metal;
 pub mod select;
 #[cfg(feature = "skia")]
@@ -45,6 +47,8 @@ use nve_store::{NodeStore, TableEventBus};
 /// Skia GPU/CPU/software frame presenters so `PaintOp::Plugin` (`Svg`, `Canvas`, 3P) renders.
 pub type SkiaPluginContext<'a> = (&'a NodeStore, &'a SkiaTableRegistry, &'a mut TableEventBus);
 
+#[cfg(feature = "skia")]
+pub use ganesh::{GaneshPresenter, NativeSwapchain};
 pub use select::GpuSwapchain;
 #[cfg(feature = "skia")]
 pub use select::GpuSurface;
