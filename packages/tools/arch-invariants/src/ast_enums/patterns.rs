@@ -1,26 +1,18 @@
-//! Pattern extraction, `use` import resolution, and canonical path/literal helpers for `ast_enums`.
+//! Pattern extraction, canonical path/literal formatting, and shared discriminant helpers.
+//!
+//! Note on scope: `Pat::Slice`, `Pat::Range`, and `Pat::Const` are intentionally excluded from
+//! enum-variant arm expansion because they match slice/range/const patterns rather than enum
+//! variant heads (though `Pat::Slice`/`Pat::Range` are still normalized inside `if let` / nested
+//! `match` bodies via `normalize::norm_binding_pat`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use syn::{Item, Lit, Pat, UseTree};
+use syn::{Lit, Pat};
 
-use crate::is_cfg_test_attr;
-
-pub const EXTERNAL_SDK_ROOTS: &[&str] = &[
-    "taffy",
-    "skia_safe",
-    "web_sys",
-    "accesskit",
-    "winit",
-    "parley",
-    "cosmic_text",
-    "vk",
-    "ash",
-    "ash_vk",
-    "windows",
-    "objc2",
-    "gtk4",
-];
+use super::scope::{
+    is_screaming_snake_const, is_type_ident, is_unqualified_const_ident, EnumQualifier,
+    ImportScope,
+};
 
 const PRELUDE_NON_DOMAIN_ENUMS: &[&str] = &[
     "Option",
@@ -31,13 +23,15 @@ const PRELUDE_NON_DOMAIN_ENUMS: &[&str] = &[
     "Cow",
 ];
 
+const MAX_TUPLE_OR_EXPANSION: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MirrorAtom {
     Str(String),
     Int(i128),
     Char(char),
     Variant {
-        qualifier: Option<String>,
+        qualifier: Option<EnumQualifier>,
         variant: String,
     },
 }
@@ -45,13 +39,6 @@ pub enum MirrorAtom {
 impl MirrorAtom {
     pub(super) fn is_variant(&self) -> bool {
         matches!(self, Self::Variant { .. })
-    }
-
-    pub(super) fn variant_key(&self) -> Option<&str> {
-        match self {
-            Self::Variant { variant, .. } => Some(variant.as_str()),
-            _ => None,
-        }
     }
 
     pub(super) fn key_ignoring_qualifier(&self) -> MirrorKey {
@@ -72,92 +59,10 @@ pub(super) enum MirrorKey {
     Variant(String),
 }
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct ImportScope {
-    /// Imported type name -> canonical SDK-prefixed name (e.g. `AlignItems` -> `taffy::AlignItems`).
-    pub sdk_types: BTreeMap<String, String>,
-    /// Explicitly imported enum variant -> `(EnumType, VariantName)`.
-    pub variant_imports: BTreeMap<String, (String, String)>,
-    /// `use path::Enum::*;` -> `Enum`.
-    pub glob_enums: BTreeSet<String>,
-    /// True if scope has a wildcard import from a module (`use super::*;`, `use crate::foo::*;`).
-    pub has_unscoped_glob: bool,
-}
-
-impl ImportScope {
-    pub(super) fn ingest_items(&mut self, items: &[Item]) {
-        for item in items {
-            if let Item::Use(u) = item
-                && !is_cfg_test_attr(&u.attrs)
-            {
-                let mut prefix = Vec::new();
-                self.ingest_tree(&u.tree, &mut prefix);
-            }
-        }
-    }
-
-    pub(super) fn ingest_tree(&mut self, tree: &UseTree, prefix: &mut Vec<String>) {
-        match tree {
-            UseTree::Path(p) => {
-                prefix.push(p.ident.to_string());
-                self.ingest_tree(&p.tree, prefix);
-                prefix.pop();
-            }
-            UseTree::Group(g) => {
-                for item in &g.items {
-                    self.ingest_tree(item, prefix);
-                }
-            }
-            UseTree::Name(n) => {
-                let ident = n.ident.to_string();
-                self.record_import(prefix, &ident, &ident);
-            }
-            UseTree::Rename(r) => {
-                let orig = r.ident.to_string();
-                let alias = r.rename.to_string();
-                self.record_import(prefix, &orig, &alias);
-            }
-            UseTree::Glob(_) => {
-                if let Some(last) = prefix.last()
-                    && is_type_ident(last)
-                {
-                    let qual = canonical_qualifier_from_segments(prefix);
-                    self.glob_enums.insert(qual);
-                } else {
-                    self.has_unscoped_glob = true;
-                }
-            }
-        }
-    }
-
-    fn record_import(&mut self, prefix: &[String], orig: &str, alias: &str) {
-        if orig == "self" || !is_type_ident(orig) {
-            return;
-        }
-        let sdk_root = prefix
-            .iter()
-            .find(|s| EXTERNAL_SDK_ROOTS.contains(&s.as_str()))
-            .cloned();
-        if let Some(parent) = prefix.last()
-            && is_type_ident(parent)
-            && !is_screaming_const(orig)
-        {
-            let enum_qual = match sdk_root {
-                Some(sdk) => format!("{sdk}::{parent}"),
-                None => parent.clone(),
-            };
-            self.variant_imports
-                .insert(alias.to_string(), (enum_qual, orig.to_string()));
-        } else if let Some(sdk) = sdk_root {
-            self.sdk_types
-                .insert(alias.to_string(), format!("{sdk}::{orig}"));
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct ExtractedPat {
-    pub enum_qualifier: Option<String>,
+    pub enum_qualifier: Option<EnumQualifier>,
+    pub tuple_qualifier: Option<String>,
     pub is_enum_variant: bool,
     pub pat_key: String,
     pub mirror_atom: Option<MirrorAtom>,
@@ -196,22 +101,23 @@ pub(super) fn extract_arm_patterns(
         Pat::Paren(p) => extract_arm_patterns(&p.pat, scope, self_ty),
         Pat::Reference(r) => extract_arm_patterns(&r.pat, scope, self_ty),
         Pat::Type(t) => extract_arm_patterns(&t.pat, scope, self_ty),
-        Pat::Lit(lit) => extract_lit_pat(&lit.lit, false).into_iter().collect(),
+        Pat::Lit(lit) => extract_lit_pat(&lit.lit).into_iter().collect(),
         Pat::Path(p) => extract_path_variant(&p.path, scope, self_ty)
             .into_iter()
             .collect(),
-        Pat::Ident(pi) => extract_ident_variant(pi, scope).into_iter().collect(),
+        Pat::Ident(pi) => extract_ident_pat(pi, scope, self_ty),
         Pat::TupleStruct(ts) => extract_tuple_struct_pat(ts, scope, self_ty),
         Pat::Struct(ps) => extract_struct_pat(ps, scope, self_ty).into_iter().collect(),
-        Pat::Tuple(tup) => extract_tuple_pat(tup, scope, self_ty).into_iter().collect(),
+        Pat::Tuple(tup) => extract_tuple_pat(tup, scope, self_ty),
         _ => Vec::new(),
     }
 }
 
-fn extract_lit_pat(lit: &Lit, neg: bool) -> Option<ExtractedPat> {
-    let (key, atom) = lit_to_key_and_atom(lit, neg)?;
+fn extract_lit_pat(lit: &Lit) -> Option<ExtractedPat> {
+    let (key, atom) = lit_to_key_and_atom(lit, false)?;
     Some(ExtractedPat {
         enum_qualifier: None,
+        tuple_qualifier: None,
         is_enum_variant: false,
         pat_key: format!("lit:{key}"),
         mirror_atom: Some(atom),
@@ -219,17 +125,34 @@ fn extract_lit_pat(lit: &Lit, neg: bool) -> Option<ExtractedPat> {
     })
 }
 
-fn extract_ident_variant(pi: &syn::PatIdent, scope: &ImportScope) -> Option<ExtractedPat> {
-    if pi.by_ref.is_some() || pi.mutability.is_some() || pi.subpat.is_some() {
-        return None;
+fn extract_ident_pat(
+    pi: &syn::PatIdent,
+    scope: &ImportScope,
+    self_ty: Option<&str>,
+) -> Vec<ExtractedPat> {
+    // Support `v @ Enum::Variant` / `v @ (Enum::A | Enum::B)`: extract the inner subpattern
+    // and bind `v` as `$p0` (elided automatically if unused in the arm body/guard).
+    if let Some((_, sub)) = &pi.subpat {
+        let outer_name = pi.ident.to_string();
+        let mut inner = extract_arm_patterns(sub, scope, self_ty);
+        for item in &mut inner {
+            let shifted = shift_pat_placeholders(&item.pat_key, 1);
+            item.pat_key = shifted;
+            item.bindings.insert(0, outer_name.clone());
+        }
+        return inner;
+    }
+    if pi.by_ref.is_some() || pi.mutability.is_some() {
+        return Vec::new();
     }
     let name = pi.ident.to_string();
     if matches!(name.as_str(), "None" | "Some" | "Ok" | "Err" | "true" | "false") {
-        return None;
+        return Vec::new();
     }
     if let Some((enum_qual, orig_var)) = scope.variant_imports.get(&name) {
-        return Some(ExtractedPat {
+        return vec![ExtractedPat {
             enum_qualifier: Some(enum_qual.clone()),
+            tuple_qualifier: None,
             is_enum_variant: true,
             pat_key: orig_var.clone(),
             mirror_atom: Some(MirrorAtom::Variant {
@@ -237,16 +160,17 @@ fn extract_ident_variant(pi: &syn::PatIdent, scope: &ImportScope) -> Option<Extr
                 variant: orig_var.clone(),
             }),
             bindings: Vec::new(),
-        });
+        }];
     }
-    if !is_type_ident(&name) || is_screaming_const(&name) {
-        return None;
+    if !is_type_ident(&name) || is_unqualified_const_ident(&name) {
+        return Vec::new();
     }
     let qual = (scope.glob_enums.len() == 1)
         .then(|| scope.glob_enums.iter().next().cloned())
         .flatten();
-    Some(ExtractedPat {
+    vec![ExtractedPat {
         enum_qualifier: qual.clone(),
+        tuple_qualifier: None,
         is_enum_variant: true,
         pat_key: name.clone(),
         mirror_atom: Some(MirrorAtom::Variant {
@@ -254,7 +178,7 @@ fn extract_ident_variant(pi: &syn::PatIdent, scope: &ImportScope) -> Option<Extr
             variant: name,
         }),
         bindings: Vec::new(),
-    })
+    }]
 }
 
 fn extract_path_variant(
@@ -265,6 +189,7 @@ fn extract_path_variant(
     let (qual, variant) = split_enum_variant_path(path, scope, self_ty)?;
     Some(ExtractedPat {
         enum_qualifier: qual.clone(),
+        tuple_qualifier: None,
         is_enum_variant: true,
         pat_key: variant.clone(),
         mirror_atom: Some(MirrorAtom::Variant {
@@ -298,6 +223,7 @@ fn extract_tuple_struct_pat(
         .collect();
     vec![ExtractedPat {
         enum_qualifier: qual,
+        tuple_qualifier: None,
         is_enum_variant: true,
         pat_key: format!("{variant}({})", parts.join(",")),
         mirror_atom: None,
@@ -329,6 +255,7 @@ fn extract_struct_pat(
     }
     Some(ExtractedPat {
         enum_qualifier: qual,
+        tuple_qualifier: None,
         is_enum_variant: true,
         pat_key: format!("{variant}{{{}}}", parts.join(",")),
         mirror_atom: None,
@@ -340,46 +267,101 @@ fn extract_tuple_pat(
     tup: &syn::PatTuple,
     scope: &ImportScope,
     self_ty: Option<&str>,
-) -> Option<ExtractedPat> {
-    let mut any_enum = false;
-    let mut quals = Vec::new();
-    let mut keys = Vec::new();
-    let mut bindings = Vec::new();
+) -> Vec<ExtractedPat> {
+    #[derive(Clone)]
+    struct ElemChoice {
+        is_enum: bool,
+        qual: String,
+        key: String,
+        bindings: Vec<String>,
+    }
+
+    let mut per_elem: Vec<Vec<ElemChoice>> = Vec::with_capacity(tup.elems.len());
     for elem in &tup.elems {
         if matches!(elem, Pat::Wild(_)) {
-            quals.push("_".to_string());
-            keys.push("_".to_string());
+            per_elem.push(vec![ElemChoice {
+                is_enum: false,
+                qual: "_".to_string(),
+                key: "_".to_string(),
+                bindings: Vec::new(),
+            }]);
             continue;
         }
         let sub = extract_arm_patterns(elem, scope, self_ty);
-        if sub.len() == 1 {
-            let s = &sub[0];
-            if s.is_enum_variant {
-                any_enum = true;
-            }
-            quals.push(s.enum_qualifier.clone().unwrap_or_else(|| "_".to_string()));
-            let offset = bindings.len();
-            let shifted = shift_pat_placeholders(&s.pat_key, offset);
-            bindings.extend(s.bindings.iter().cloned());
-            keys.push(shifted);
+        if !sub.is_empty() {
+            per_elem.push(
+                sub.into_iter()
+                    .map(|s| ElemChoice {
+                        is_enum: s.is_enum_variant,
+                        qual: s
+                            .enum_qualifier
+                            .map(|q| q.display_name())
+                            .or(s.tuple_qualifier)
+                            .unwrap_or_else(|| "_".to_string()),
+                        key: s.pat_key,
+                        bindings: s.bindings,
+                    })
+                    .collect(),
+            );
         } else {
-            quals.push("_".to_string());
-            keys.push(norm_subpat(elem, scope, self_ty, &mut bindings));
+            let mut b = Vec::new();
+            let k = norm_subpat(elem, scope, self_ty, &mut b);
+            per_elem.push(vec![ElemChoice {
+                is_enum: false,
+                qual: "_".to_string(),
+                key: k,
+                bindings: b,
+            }]);
         }
     }
-    if !any_enum {
-        return None;
+
+    // Cartesian expansion of `Pat::Or` inside tuple elements (bounded).
+    let mut combos: Vec<Vec<ElemChoice>> = vec![Vec::new()];
+    for choices in per_elem {
+        let mut next = Vec::new();
+        for existing in &combos {
+            for choice in &choices {
+                if next.len() >= MAX_TUPLE_OR_EXPANSION {
+                    break;
+                }
+                let mut row = existing.clone();
+                row.push(choice.clone());
+                next.push(row);
+            }
+        }
+        combos = next;
+        if combos.is_empty() {
+            return Vec::new();
+        }
     }
-    Some(ExtractedPat {
-        enum_qualifier: Some(format!("({})", quals.join(","))),
-        is_enum_variant: true,
-        pat_key: format!("({})", keys.join(",")),
-        mirror_atom: None,
-        bindings,
-    })
+
+    let mut out = Vec::new();
+    for combo in combos {
+        if !combo.iter().any(|c| c.is_enum) {
+            continue;
+        }
+        let mut quals = Vec::with_capacity(combo.len());
+        let mut keys = Vec::with_capacity(combo.len());
+        let mut bindings = Vec::new();
+        for c in combo {
+            quals.push(c.qual);
+            let offset = bindings.len();
+            keys.push(shift_pat_placeholders(&c.key, offset));
+            bindings.extend(c.bindings);
+        }
+        out.push(ExtractedPat {
+            enum_qualifier: None,
+            tuple_qualifier: Some(format!("({})", quals.join(","))),
+            is_enum_variant: true,
+            pat_key: format!("({})", keys.join(",")),
+            mirror_atom: None,
+            bindings,
+        });
+    }
+    out
 }
 
-fn shift_pat_placeholders(s: &str, offset: usize) -> String {
+pub(super) fn shift_pat_placeholders(s: &str, offset: usize) -> String {
     if offset == 0 || !s.contains("$p") {
         return s.to_string();
     }
@@ -432,13 +414,17 @@ fn norm_subpat(
                 && pi.mutability.is_none()
                 && pi.subpat.is_none()
                 && is_type_ident(&name)
-                && !is_screaming_const(&name)
+                && !is_unqualified_const_ident(&name)
             {
                 return name;
             }
             let idx = bindings.len();
             bindings.push(name);
-            format!("$p{idx}")
+            if let Some((_, sub)) = &pi.subpat {
+                format!("$p{idx}@{}", norm_subpat(sub, scope, self_ty, bindings))
+            } else {
+                format!("$p{idx}")
+            }
         }
         Pat::Path(p) => canonical_path(&p.path, scope, self_ty),
         Pat::Tuple(t) => {
@@ -458,6 +444,23 @@ fn norm_subpat(
                 .collect();
             format!("{name}({})", inner.join(","))
         }
+        Pat::Struct(ps) => {
+            let name = canonical_path(&ps.path, scope, self_ty);
+            let mut fields: Vec<(String, &Pat)> = ps
+                .fields
+                .iter()
+                .map(|fp| (member_to_string(&fp.member), &*fp.pat))
+                .collect();
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut parts: Vec<String> = fields
+                .into_iter()
+                .map(|(f, p)| format!("{f}:{}", norm_subpat(p, scope, self_ty, bindings)))
+                .collect();
+            if ps.rest.is_some() {
+                parts.push("..".to_string());
+            }
+            format!("{name}{{{}}}", parts.join(","))
+        }
         _ => "_".to_string(),
     }
 }
@@ -466,7 +469,7 @@ pub(super) fn split_enum_variant_path(
     path: &syn::Path,
     scope: &ImportScope,
     self_ty: Option<&str>,
-) -> Option<(Option<String>, String)> {
+) -> Option<(Option<EnumQualifier>, String)> {
     let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     if segs.is_empty() {
         return None;
@@ -479,7 +482,7 @@ pub(super) fn split_enum_variant_path(
         if let Some((q, v)) = scope.variant_imports.get(name) {
             return Some((Some(q.clone()), v.clone()));
         }
-        if is_type_ident(name) && !is_screaming_const(name) {
+        if is_type_ident(name) && !is_unqualified_const_ident(name) {
             let q = (scope.glob_enums.len() == 1)
                 .then(|| scope.glob_enums.iter().next().cloned())
                 .flatten();
@@ -488,34 +491,14 @@ pub(super) fn split_enum_variant_path(
         return None;
     }
     let leaf = segs.last()?.clone();
-    if !is_type_ident(&leaf) || is_screaming_const(&leaf) {
+    if !is_type_ident(&leaf) || is_screaming_snake_const(&leaf) {
         return None;
     }
-    let raw_parent = &segs[segs.len() - 2];
-    let parent = if raw_parent == "Self" {
-        self_ty?.to_string()
-    } else if is_type_ident(raw_parent) {
-        raw_parent.clone()
-    } else {
-        return None;
-    };
-    if PRELUDE_NON_DOMAIN_ENUMS.contains(&parent.as_str()) {
+    let type_segs = &segs[..segs.len() - 1];
+    let qual = scope.resolve_type_segments(type_segs, self_ty)?;
+    if PRELUDE_NON_DOMAIN_ENUMS.contains(&qual.type_name.as_str()) {
         return None;
     }
-    let sdk = segs
-        .iter()
-        .find(|s| EXTERNAL_SDK_ROOTS.contains(&s.as_str()))
-        .cloned()
-        .or_else(|| {
-            scope
-                .sdk_types
-                .get(&parent)
-                .and_then(|s| s.split("::").next().map(ToString::to_string))
-        });
-    let qual = match sdk {
-        Some(s) => format!("{s}::{parent}"),
-        None => parent,
-    };
     Some((Some(qual), leaf))
 }
 
@@ -555,55 +538,49 @@ pub(super) fn lit_to_key_and_atom(lit: &Lit, neg: bool) -> Option<(String, Mirro
     }
 }
 
-fn canonical_qualifier_from_segments(segs: &[String]) -> String {
-    let last = segs.last().cloned().unwrap_or_default();
-    if let Some(sdk) = segs.iter().find(|s| EXTERNAL_SDK_ROOTS.contains(&s.as_str())) {
-        format!("{sdk}::{last}")
-    } else {
-        last
-    }
-}
-
 pub(super) fn canonical_path(
     path: &syn::Path,
     scope: &ImportScope,
     self_ty: Option<&str>,
 ) -> String {
-    let mut segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-    if segs.first().is_some_and(|s| s == "Self")
-        && let Some(ty) = self_ty
-    {
-        segs[0] = ty.to_string();
-    }
-    while segs
-        .first()
-        .is_some_and(|s| matches!(s.as_str(), "crate" | "self" | "super"))
-    {
-        segs.remove(0);
-    }
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     if segs.is_empty() {
         return String::new();
     }
     if segs.len() == 1 {
-        if let Some(mapped) = scope.sdk_types.get(&segs[0]) {
-            return mapped.clone();
+        let single = &segs[0];
+        if single == "Self"
+            && let Some(ty) = self_ty
+        {
+            return scope.resolve_single_type_ident(ty).canonical_key();
         }
-        return segs[0].clone();
+        if let Some((q, v)) = scope.variant_imports.get(single) {
+            return format!("{}::{v}", q.canonical_key());
+        }
+        if let Some(q) = scope.type_aliases.get(single) {
+            return q.canonical_key();
+        }
+        return single.clone();
     }
-    let sdk = segs
-        .iter()
-        .find(|s| EXTERNAL_SDK_ROOTS.contains(&s.as_str()))
-        .cloned()
-        .or_else(|| {
-            scope
-                .sdk_types
-                .get(&segs[segs.len() - 2])
-                .and_then(|s| s.split("::").next().map(ToString::to_string))
-        });
-    let tail = format!("{}::{}", segs[segs.len() - 2], segs[segs.len() - 1]);
-    match sdk {
-        Some(s) if !tail.starts_with(&format!("{s}::")) => format!("{s}::{tail}"),
-        _ => tail,
+    let last = &segs[segs.len() - 1];
+    let parent_segs = &segs[..segs.len() - 1];
+    if let Some(q) = scope.resolve_type_segments(parent_segs, self_ty) {
+        return format!("{}::{last}", q.canonical_key());
+    }
+    if let Some(q) = scope.resolve_type_segments(&segs, self_ty) {
+        return q.canonical_key();
+    }
+    let mut trimmed = segs;
+    while trimmed
+        .first()
+        .is_some_and(|s| matches!(s.as_str(), "crate" | "self" | "super"))
+    {
+        trimmed.remove(0);
+    }
+    if trimmed.len() >= 2 {
+        format!("{}::{}", trimmed[trimmed.len() - 2], trimmed[trimmed.len() - 1])
+    } else {
+        trimmed.into_iter().next().unwrap_or_default()
     }
 }
 
@@ -614,13 +591,13 @@ pub(super) fn member_to_string(m: &syn::Member) -> String {
     }
 }
 
-pub(super) fn is_type_ident(s: &str) -> bool {
-    s.starts_with(|c: char| c.is_ascii_uppercase())
-}
-
-pub(super) fn is_screaming_const(s: &str) -> bool {
-    s.len() >= 2
-        && s.contains('_')
-        && s.bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+/// Shared compact `0..N` integer-discriminant check used by both `converters.rs` and `legacy_tables.rs`.
+pub(super) fn is_compact_discriminant_set(vals: &[i128], min_arms: usize) -> bool {
+    let unique: BTreeSet<i128> = vals.iter().copied().collect();
+    if unique.len() < min_arms {
+        return false;
+    }
+    let min = *unique.first().unwrap_or(&0);
+    let max = *unique.last().unwrap_or(&0);
+    min >= 0 && max <= 255 && (max - min) <= (unique.len() as i128 * 2 + 4)
 }

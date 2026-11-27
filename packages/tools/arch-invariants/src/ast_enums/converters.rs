@@ -1,9 +1,10 @@
 //! Workspace-wide duplicate `pub enum` and internal NVE->NVE enum/discriminant converter checks.
 //!
-//! Hardened beyond `packages/core` + `packages/backends`:
-//! - Scans all production Rust files across `packages/`, `hosts/`, and `examples/`.
-//! - Detects both exact-name `pub enum` duplicates AND structural identical-variant-set (`>= 4` unit variants) duplicates.
-//! - Detects `impl From`/`impl TryFrom` and body-matching enum/discriminant converters regardless of function name prefix.
+//! Hardened across all production Rust files (`packages/`, `hosts/`, `examples/`):
+//! - Detects exact-name duplicate `pub enum`s across ANY two workspace files (including two non-core crates).
+//! - Detects structural identical-unit-variant `pub enum` duplicates (`>= 4` unit variants) under different names.
+//! - Detects `impl From`/`impl TryFrom` and body-matching enum/discriminant converters regardless of fn name,
+//!   reusing `ImportScope` for imported external SDK types and verifying actual enum-variant match bodies.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +15,8 @@ use crate::ast_layout::last_type_ident;
 use crate::{is_cfg_test_attr, line_at, Violation};
 
 use super::fingerprint::MIN_DUPLICATE_ARMS;
-use super::patterns::EXTERNAL_SDK_ROOTS;
+use super::patterns::{extract_arm_patterns, is_compact_discriminant_set};
+use super::scope::ImportScope;
 
 const EXTERNAL_BRIDGE_FN_PREFIXES: &[&str] = &[
     "to_taffy_",
@@ -42,29 +44,24 @@ pub fn scan_duplicate_enums_and_converters(
 ) {
     let mut by_name: BTreeMap<String, Vec<EnumDefInfo>> = BTreeMap::new();
     let mut by_variants: BTreeMap<Vec<String>, Vec<EnumDefInfo>> = BTreeMap::new();
-    let mut core_enum_names = BTreeSet::new();
     let mut internal_enum_names = BTreeSet::new();
 
-    for (is_core, files) in [(true, core_files), (false, other_files)] {
-        for (rel, _, ast) in files {
-            if is_cfg_test_attr(&ast.attrs) {
-                continue;
-            }
-            collect_pub_enums(
-                rel,
-                &ast.items,
-                is_core,
-                &mut by_name,
-                &mut by_variants,
-                &mut core_enum_names,
-                &mut internal_enum_names,
-            );
+    for (rel, _, ast) in core_files.iter().chain(other_files.iter()) {
+        if is_cfg_test_attr(&ast.attrs) {
+            continue;
         }
+        collect_pub_enums(
+            rel,
+            &ast.items,
+            &mut by_name,
+            &mut by_variants,
+            &mut internal_enum_names,
+        );
     }
 
     let mut reported_enum_locs = BTreeSet::new();
     for (name, defs) in &by_name {
-        if !core_enum_names.contains(name) {
+        if name.ends_with("Error") {
             continue;
         }
         let distinct: BTreeSet<&str> = defs.iter().map(|d| d.file.as_str()).collect();
@@ -123,17 +120,17 @@ pub fn scan_duplicate_enums_and_converters(
         if is_cfg_test_attr(&ast.attrs) {
             continue;
         }
-        scan_converters_in_items(rel, raw, &ast.items, &internal_enum_names, out);
+        let mut scope = ImportScope::default();
+        scope.ingest_items(&ast.items);
+        scan_converters_in_items(rel, raw, &ast.items, &scope, &internal_enum_names, out);
     }
 }
 
 fn collect_pub_enums(
     rel: &str,
     items: &[Item],
-    is_core: bool,
     by_name: &mut BTreeMap<String, Vec<EnumDefInfo>>,
     by_variants: &mut BTreeMap<Vec<String>, Vec<EnumDefInfo>>,
-    core_names: &mut BTreeSet<String>,
     internal_names: &mut BTreeSet<String>,
 ) {
     for item in items {
@@ -162,24 +159,13 @@ fn collect_pub_enums(
                     let key: Vec<String> = unit_variants.into_iter().collect();
                     by_variants.entry(key).or_default().push(info);
                 }
-                if is_core {
-                    core_names.insert(name.clone());
-                }
                 if !name.ends_with("Error") {
                     internal_names.insert(name);
                 }
             }
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    collect_pub_enums(
-                        rel,
-                        sub,
-                        is_core,
-                        by_name,
-                        by_variants,
-                        core_names,
-                        internal_names,
-                    );
+                    collect_pub_enums(rel, sub, by_name, by_variants, internal_names);
                 }
             }
             _ => {}
@@ -191,6 +177,7 @@ fn scan_converters_in_items(
     rel: &str,
     raw: &str,
     items: &[Item],
+    scope: &ImportScope,
     internal_enums: &BTreeSet<String>,
     out: &mut Vec<Violation>,
 ) {
@@ -198,7 +185,13 @@ fn scan_converters_in_items(
         match item {
             Item::Mod(m) if !is_cfg_test_attr(&m.attrs) => {
                 if let Some((_, sub)) = &m.content {
-                    scan_converters_in_items(rel, raw, sub, internal_enums, out);
+                    if ImportScope::has_scope_items(sub) {
+                        let mut child = scope.clone();
+                        child.ingest_items(sub);
+                        scan_converters_in_items(rel, raw, sub, &child, internal_enums, out);
+                    } else {
+                        scan_converters_in_items(rel, raw, sub, scope, internal_enums, out);
+                    }
                 }
             }
             Item::Impl(imp) if !is_cfg_test_attr(&imp.attrs) => {
@@ -209,8 +202,8 @@ fn scan_converters_in_items(
                     && (seg.ident == "From" || seg.ident == "TryFrom")
                     && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
                     && let Some(syn::GenericArgument::Type(src_ty)) = args.args.first()
-                    && !type_has_external_sdk(src_ty)
-                    && !type_has_external_sdk(&imp.self_ty)
+                    && !type_has_external_sdk(src_ty, scope)
+                    && !type_has_external_sdk(&imp.self_ty, scope)
                     && let (Some(s), Some(d)) = (last_type_ident(src_ty), impl_ty.clone())
                     && s != d
                     && internal_enums.contains(&s)
@@ -238,11 +231,11 @@ fn scan_converters_in_items(
                             continue;
                         }
                         check_converter_fn(
-                            rel,
-                            raw,
+                            (rel, raw),
                             &f.sig,
                             &f.block,
                             impl_ty.as_deref(),
+                            scope,
                             internal_enums,
                             out,
                         );
@@ -250,7 +243,7 @@ fn scan_converters_in_items(
                 }
             }
             Item::Fn(f) if !is_cfg_test_attr(&f.attrs) => {
-                check_converter_fn(rel, raw, &f.sig, &f.block, None, internal_enums, out);
+                check_converter_fn((rel, raw), &f.sig, &f.block, None, scope, internal_enums, out);
             }
             _ => {}
         }
@@ -258,11 +251,11 @@ fn scan_converters_in_items(
 }
 
 fn check_converter_fn(
-    rel: &str,
-    raw: &str,
+    (rel, raw): (&str, &str),
     sig: &syn::Signature,
     block: &syn::Block,
     self_ty: Option<&str>,
+    scope: &ImportScope,
     internal_enums: &BTreeSet<String>,
     out: &mut Vec<Violation>,
 ) {
@@ -273,7 +266,7 @@ fn check_converter_fn(
     let syn::ReturnType::Type(_, ret_ty) = &sig.output else {
         return;
     };
-    if type_has_external_sdk(ret_ty) {
+    if type_has_external_sdk(ret_ty, scope) {
         return;
     }
 
@@ -283,7 +276,7 @@ fn check_converter_fn(
         match input {
             syn::FnArg::Receiver(_) => takes_self = true,
             syn::FnArg::Typed(pat_ty) => {
-                if type_has_external_sdk(&pat_ty.ty) {
+                if type_has_external_sdk(&pat_ty.ty, scope) {
                     return;
                 }
                 param_tys.push(&*pat_ty.ty);
@@ -304,10 +297,14 @@ fn check_converter_fn(
         param_enums.insert(st.to_string());
     }
     for ty in &param_tys {
-        collect_internal_enums_in_type(ty, self_ty, internal_enums, &mut param_enums);
+        if let Some(en) = direct_internal_enum(ty, self_ty, internal_enums) {
+            param_enums.insert(en);
+        }
     }
     let mut ret_enums = BTreeSet::new();
-    collect_internal_enums_in_type(ok_ret, self_ty, internal_enums, &mut ret_enums);
+    if let Some(en) = direct_internal_enum(ok_ret, self_ty, internal_enums) {
+        ret_enums.insert(en);
+    }
 
     let single_disc = param_tys.len() == 1 && is_discriminant_type(param_tys[0]);
     let any_disc = param_tys.iter().any(|ty| is_discriminant_type(ty));
@@ -335,7 +332,8 @@ fn check_converter_fn(
         && !ret_enums.is_empty()
         && param_enums != ret_enums
         && (is_named_converter
-            || (param_tys.len() + usize::from(takes_self) == 1 && body_has_enum_match(block, 3)));
+            || (param_tys.len() + usize::from(takes_self) == 1
+                && body_has_enum_match(block, scope, self_ty, 3)));
 
     if is_redundant_disc || distinct_e2e {
         let ln = sig.ident.span().start().line;
@@ -357,21 +355,17 @@ fn body_has_compact_int_match(block: &syn::Block, min_arms: usize) -> bool {
     }
     impl<'ast> Visit<'ast> for Scan {
         fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
-            let mut vals = BTreeSet::new();
+            let mut vals = Vec::new();
             for arm in &m.arms {
                 if let Pat::Lit(l) = &arm.pat
                     && let syn::Lit::Int(i) = &l.lit
                     && let Ok(v) = i.base10_parse::<i128>()
                 {
-                    vals.insert(v);
+                    vals.push(v);
                 }
             }
-            if vals.len() >= self.min_arms {
-                let min = vals.first().copied().unwrap_or(0);
-                let max = vals.last().copied().unwrap_or(0);
-                if min >= 0 && max <= 255 && (max - min) <= (vals.len() as i128 * 2 + 4) {
-                    self.found = true;
-                }
+            if is_compact_discriminant_set(&vals, self.min_arms) {
+                self.found = true;
             }
             if !self.found {
                 visit::visit_expr_match(self, m);
@@ -386,19 +380,31 @@ fn body_has_compact_int_match(block: &syn::Block, min_arms: usize) -> bool {
     s.found
 }
 
-fn body_has_enum_match(block: &syn::Block, min_arms: usize) -> bool {
-    struct Scan {
+fn body_has_enum_match(
+    block: &syn::Block,
+    scope: &ImportScope,
+    self_ty: Option<&str>,
+    min_arms: usize,
+) -> bool {
+    struct Scan<'a> {
+        scope: &'a ImportScope,
+        self_ty: Option<&'a str>,
         min_arms: usize,
         found: bool,
     }
-    impl<'ast> Visit<'ast> for Scan {
+    impl<'ast> Visit<'ast> for Scan<'_> {
         fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
-            let non_wild = m
+            let enum_arm_count: usize = m
                 .arms
                 .iter()
-                .filter(|a| !matches!(a.pat, Pat::Wild(_)))
-                .count();
-            if non_wild >= self.min_arms {
+                .map(|arm| {
+                    extract_arm_patterns(&arm.pat, self.scope, self.self_ty)
+                        .into_iter()
+                        .filter(|p| p.is_enum_variant)
+                        .count()
+                })
+                .sum();
+            if enum_arm_count >= self.min_arms {
                 self.found = true;
             }
             if !self.found {
@@ -407,6 +413,8 @@ fn body_has_enum_match(block: &syn::Block, min_arms: usize) -> bool {
         }
     }
     let mut s = Scan {
+        scope,
+        self_ty,
         min_arms,
         found: false,
     };
@@ -439,23 +447,19 @@ fn type_is_collection_or_ref(ty: &Type) -> bool {
     }
 }
 
-fn type_has_external_sdk(ty: &Type) -> bool {
-    struct ExtScan(bool);
-    impl<'ast> Visit<'ast> for ExtScan {
+fn type_has_external_sdk(ty: &Type, scope: &ImportScope) -> bool {
+    struct ExtScan<'a>(&'a ImportScope, bool);
+    impl<'ast> Visit<'ast> for ExtScan<'_> {
         fn visit_path(&mut self, p: &'ast syn::Path) {
-            if p.segments.len() >= 2
-                && p.segments
-                    .iter()
-                    .any(|s| EXTERNAL_SDK_ROOTS.contains(&s.ident.to_string().as_str()))
-            {
-                self.0 = true;
+            if self.0.is_external_sdk_path(p) {
+                self.1 = true;
             }
             visit::visit_path(self, p);
         }
     }
-    let mut s = ExtScan(false);
+    let mut s = ExtScan(scope, false);
     s.visit_type(ty);
-    s.0
+    s.1
 }
 
 fn type_mentions_self(ty: &Type) -> bool {
@@ -472,28 +476,37 @@ fn type_mentions_self(ty: &Type) -> bool {
     s.0
 }
 
-fn collect_internal_enums_in_type(
+/// Extracts an internal enum name ONLY when `ty` directly names an enum (or `&Enum` / `Option<Enum>` /
+/// `Result<Enum, _>`), never walking into container/slice/generic parameters like `&[Align]` or `BTreeMap<Align, u32>`.
+fn direct_internal_enum(
     ty: &Type,
     self_ty: Option<&str>,
     internal_enums: &BTreeSet<String>,
-    out: &mut BTreeSet<String>,
-) {
-    struct EnumScan<'a>(Option<&'a str>, &'a BTreeSet<String>, &'a mut BTreeSet<String>);
-    impl<'ast> Visit<'ast> for EnumScan<'_> {
-        fn visit_path(&mut self, p: &'ast syn::Path) {
-            if let Some(last) = p.segments.last() {
-                let raw = last.ident.to_string();
-                let name = if raw == "Self" {
-                    self.0.unwrap_or(&raw).to_string()
-                } else {
-                    raw
-                };
-                if self.1.contains(&name) {
-                    self.2.insert(name);
-                }
+) -> Option<String> {
+    let unwrapped = match ty {
+        Type::Reference(r) => {
+            if matches!(&*r.elem, Type::Slice(_) | Type::Array(_)) {
+                return None;
             }
-            visit::visit_path(self, p);
+            unwrap_option_or_result(&r.elem)
         }
+        other => unwrap_option_or_result(other),
+    };
+    let Type::Path(tp) = unwrapped else {
+        return None;
+    };
+    if tp.qself.is_some() {
+        return None;
     }
-    EnumScan(self_ty, internal_enums, out).visit_type(ty);
+    let last = tp.path.segments.last()?;
+    if !matches!(last.arguments, syn::PathArguments::None) {
+        return None;
+    }
+    let raw = last.ident.to_string();
+    let name = if raw == "Self" {
+        self_ty?.to_string()
+    } else {
+        raw
+    };
+    internal_enums.contains(&name).then_some(name)
 }

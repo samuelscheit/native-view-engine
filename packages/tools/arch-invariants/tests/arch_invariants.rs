@@ -112,28 +112,28 @@ fn cross_file_enums_converters_and_match_tables() {
     let all_owned = ast_enums::collect_workspace_prod_rs(idx);
     let mut violations = Vec::new();
 
-    for (rel, parsed) in &all_owned {
-        if rel.starts_with("packages/") {
-            ast_enums::scan_match_tables(rel, &parsed.raw, &parsed.ast, &mut violations);
+    for f in &all_owned {
+        if f.rel.starts_with("packages/") {
+            ast_enums::scan_match_tables(&f.rel, &f.parsed.raw, &f.parsed.ast, &mut violations);
         }
     }
 
     let core_refs: Vec<_> = all_owned
         .iter()
-        .filter(|(r, _)| r.starts_with("packages/core/"))
-        .map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast))
+        .filter(|f| f.rel.starts_with("packages/core/"))
+        .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
         .collect();
     let other_refs: Vec<_> = all_owned
         .iter()
-        .filter(|(r, _)| !r.starts_with("packages/core/"))
-        .map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast))
+        .filter(|f| !f.rel.starts_with("packages/core/"))
+        .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
         .collect();
     assert!(!core_refs.is_empty() && !other_refs.is_empty());
     ast_enums::scan_duplicate_enums_and_converters(&core_refs, &other_refs, &mut violations);
 
     assert_staged_violations(
         Stage::Post1B1D,
-        "Cross-file duplicate enums, redundant NVE->NVE converters, mirrored <-> match pairs, discriminant matches, core str tables",
+        "Cross-file duplicate enums, redundant NVE->NVE converters, discriminant matches, core str tables",
         &violations,
     );
 }

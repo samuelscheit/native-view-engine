@@ -346,26 +346,31 @@ fn zero_false_positives_on_distinct_bodies_guards_noops_small_prelude_and_distin
         "different enum type qualifiers sharing variant names must NOT collide"
     );
 
-    // Noop-only overlaps (ignoring 4 variants with `{}` while handling different variants) must NOT flag.
+    // Noop-only overlaps (4 separate `=> {}` arms satisfying 100% agreement & coverage gates so
+    // ONLY `distinct_discriminating` rejects it) must NOT flag.
     let noop_only = r#"
         fn handle_a(e: Ev) {
             match e {
-                Ev::A | Ev::B | Ev::C | Ev::D => {}
+                Ev::A => {}
+                Ev::B => {}
+                Ev::C => {}
+                Ev::D => {}
                 Ev::E => run_e(),
-                Ev::F => run_f(),
             }
         }
         fn handle_b(e: Ev) {
             match e {
-                Ev::A | Ev::B | Ev::C | Ev::D => {}
+                Ev::A => {}
+                Ev::B => {}
+                Ev::C => {}
+                Ev::D => {}
                 Ev::E => other_e(),
-                Ev::F => other_f(),
             }
         }
     "#;
     assert!(
         scan_sources(&[("a.rs", noop_only)]).is_empty(),
-        "noop-only arm overlaps must NOT flag"
+        "noop-only arm overlaps (4/5 separate noop arms) must NOT flag"
     );
 
     // Guarded vs unguarded arms must NOT collide.

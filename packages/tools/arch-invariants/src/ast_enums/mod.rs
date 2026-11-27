@@ -8,12 +8,19 @@
 pub mod baseline;
 pub mod converters;
 mod extract;
+mod extract_arms;
 pub mod fingerprint;
 pub mod legacy_tables;
 mod normalize;
+mod normalize_helpers;
 mod patterns;
+pub mod scope;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_regressions;
+
+use std::sync::OnceLock;
 
 use crate::{
     is_cfg_test_attr, is_self_invariant_file, is_test_or_bench_rs, ParsedRustFile, RepoIndex,
@@ -26,46 +33,116 @@ pub use baseline::{
 pub use converters::scan_duplicate_enums_and_converters;
 pub use extract::{extract_match_sites, MatchSite};
 pub use fingerprint::{
-    find_duplicate_match_sites, scan_duplicate_enum_match_arms, DuplicateKind, MatchDuplicate,
-    MIN_DUPLICATE_ARMS,
+    find_duplicate_match_sites, scan_duplicate_enum_match_arms,
+    scan_duplicate_enum_match_arms_with_crates, DuplicateKind, MatchDuplicate, MIN_DUPLICATE_ARMS,
 };
 pub use legacy_tables::scan_match_tables;
-pub use patterns::EXTERNAL_SDK_ROOTS;
+pub use scope::{EnumQualifier, ImportScope, EXTERNAL_SDK_ROOTS};
 
-/// Collects and parses all production `.rs` files across `packages/`, `hosts/`, and `examples/`,
-/// skipping tests, benches, generated files, and `arch-invariants` itself.
-pub fn collect_workspace_prod_rs(idx: &RepoIndex) -> Vec<(String, ParsedRustFile)> {
-    let mut paths = idx.rs_files_under("packages");
-    paths.extend(idx.rs_files_under("hosts"));
-    paths.extend(idx.rs_files_under("examples"));
-    paths.sort();
-    paths.dedup();
+pub struct WorkspaceProdFile {
+    pub rel: String,
+    pub crate_name: Option<String>,
+    pub parsed: ParsedRustFile,
+}
 
+static WORKSPACE_PROD_INDEX: OnceLock<Vec<(String, Option<String>)>> = OnceLock::new();
+static WORKSPACE_MATCH_SITES: OnceLock<Vec<MatchSite>> = OnceLock::new();
+
+fn workspace_prod_paths(idx: &RepoIndex) -> &'static [(String, Option<String>)] {
+    WORKSPACE_PROD_INDEX.get_or_init(|| {
+        let mut pkg_prefixes: Vec<(String, String)> = idx
+            .graph
+            .workspace()
+            .iter()
+            .filter_map(|pkg| {
+                let dir = pkg.source().workspace_path()?.as_str().replace('\\', "/");
+                let prefix = format!("{}/", dir.trim_end_matches('/'));
+                let crate_ident = pkg.name().replace('-', "_");
+                Some((prefix, crate_ident))
+            })
+            .collect();
+        // Longest directory prefix first so nested crates (e.g. `packages/modules/tv/web/`) win over parents.
+        pkg_prefixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+
+        let mut paths = idx.rs_files_under("packages");
+        paths.extend(idx.rs_files_under("hosts"));
+        paths.extend(idx.rs_files_under("examples"));
+        paths.sort();
+        paths.dedup();
+
+        paths
+            .into_iter()
+            .filter(|rel| {
+                !is_test_or_bench_rs(rel)
+                    && !is_self_invariant_file(rel)
+                    && !rel.contains(".generated.")
+            })
+            .map(|rel| {
+                let crate_name = pkg_prefixes
+                    .iter()
+                    .find(|(prefix, _)| rel.starts_with(prefix.as_str()))
+                    .map(|(_, name)| name.clone());
+                (rel, crate_name)
+            })
+            .collect()
+    })
+}
+
+/// Parses all production `.rs` files across `packages/`, `hosts/`, and `examples/`
+/// (skipping tests, benches, generated files, `arch-invariants`, and `#![cfg(test)]` files),
+/// reusing `RepoIndex::text_cache` for zero duplicate disk I/O.
+pub fn collect_workspace_prod_rs(idx: &RepoIndex) -> Vec<WorkspaceProdFile> {
     let mut parsed = Vec::new();
-    for rel in paths {
-        if is_test_or_bench_rs(&rel)
-            || is_self_invariant_file(&rel)
-            || rel.contains(".generated.")
-        {
-            continue;
-        }
-        if let Some(pf) = idx.parse_rust(&rel)
+    for (rel, crate_name) in workspace_prod_paths(idx) {
+        if let Some(pf) = idx.parse_rust(rel)
             && !is_cfg_test_attr(&pf.ast.attrs)
         {
-            parsed.push((rel, pf));
+            parsed.push(WorkspaceProdFile {
+                rel: rel.clone(),
+                crate_name: crate_name.clone(),
+                parsed: pf,
+            });
         }
     }
     parsed
 }
 
+/// Extracts and caches `Send + Sync` `MatchSite` fingerprints across the workspace,
+/// skipping `syn::parse_file` on files containing neither `"match"` nor `"if"`.
+pub fn workspace_match_sites(idx: &RepoIndex) -> &'static [MatchSite] {
+    WORKSPACE_MATCH_SITES.get_or_init(|| {
+        let mut sites = Vec::new();
+        let mut opaque_seed = 0usize;
+        for (rel, crate_name) in workspace_prod_paths(idx) {
+            let Some(raw) = idx.read_text(rel) else {
+                continue;
+            };
+            if !raw.contains("match") && !raw.contains("if") {
+                continue;
+            }
+            let Some(pf) = idx.parse_rust(rel) else {
+                continue;
+            };
+            if is_cfg_test_attr(&pf.ast.attrs) {
+                continue;
+            }
+            extract::extract_match_sites_with_crate(
+                rel,
+                &pf.raw,
+                &pf.ast,
+                crate_name.as_deref(),
+                &mut opaque_seed,
+                &mut sites,
+            );
+        }
+        sites
+    })
+}
+
 /// Runs the workspace-wide duplicate enum match/assignment fingerprinter and evaluates against
 /// `ALLOWLISTED_DUPLICATES` (ratcheted: new hits AND stale allowlist entries fail immediately).
 pub fn check_duplicate_enum_match_arms(idx: &RepoIndex) -> DuplicateMatchReport {
-    let owned = collect_workspace_prod_rs(idx);
-    let refs: Vec<(&str, &str, &syn::File)> = owned
-        .iter()
-        .map(|(r, p)| (r.as_str(), p.raw.as_str(), &p.ast))
-        .collect();
-    let dups = scan_duplicate_enum_match_arms(&refs);
+    let sites = workspace_match_sites(idx);
+    let dups = find_duplicate_match_sites(sites);
     evaluate_duplicates_with_ratchet(&dups, ALLOWLISTED_DUPLICATES)
 }

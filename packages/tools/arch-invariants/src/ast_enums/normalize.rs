@@ -1,27 +1,82 @@
-//! Body / expression / block / macro normalization with per-arm alpha-renaming for `ast_enums`.
+//! Core expression/statement/block normalization with per-match outer-var alpha-renaming
+//! and monotonic scoped local variable tracking for `ast_enums`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proc_macro2::{TokenStream, TokenTree};
-use syn::{Expr, Lit, Pat, Stmt, Type};
+use syn::{Expr, Stmt};
 
+use super::normalize_helpers::{bin_op_str, norm_generic_arg, norm_type};
 use super::patterns::{
-    canonical_path, lit_to_key_and_atom, member_to_string, split_enum_variant_path, ImportScope,
-    MirrorAtom,
+    canonical_path, lit_to_key_and_atom, member_to_string, split_enum_variant_path,
 };
+use super::scope::{is_unqualified_const_ident, EnumQualifier, ImportScope};
+
+/// Shared per-match outer-variable scope so the same outer variable keeps a single canonical
+/// `$rN` index across every arm of the match (preventing `Edge::Top => top` vs `Edge::Top => bottom`
+/// and swapped-corner false collisions).
+#[derive(Debug, Default)]
+pub(super) struct MatchOuterScope {
+    outer_vars: BTreeMap<String, usize>,
+    next_opaque: usize,
+}
+
+impl MatchOuterScope {
+    pub(super) fn new(opaque_seed: usize) -> Self {
+        Self {
+            outer_vars: BTreeMap::new(),
+            next_opaque: opaque_seed,
+        }
+    }
+
+    pub(super) fn next_opaque_seed(&self) -> usize {
+        self.next_opaque
+    }
+
+    pub(super) fn preseed_from_referenced(
+        &mut self,
+        enclosing_locals: &[String],
+        referenced: &BTreeSet<String>,
+    ) {
+        for name in enclosing_locals {
+            if referenced.contains(name) && !self.outer_vars.contains_key(name) {
+                let idx = self.outer_vars.len();
+                self.outer_vars.insert(name.clone(), idx);
+            }
+        }
+    }
+
+    pub(super) fn resolve_outer(&mut self, name: &str) -> String {
+        let next = self.outer_vars.len();
+        let idx = *self.outer_vars.entry(name.to_string()).or_insert(next);
+        format!("$r{idx}")
+    }
+
+    pub(super) fn fresh_opaque(&mut self, tag: &str) -> String {
+        let id = self.next_opaque;
+        self.next_opaque += 1;
+        format!("$opaque_{tag}#{id}")
+    }
+}
 
 pub(super) struct NormCtx<'a> {
-    scope: &'a ImportScope,
-    self_ty: Option<&'a str>,
+    pub(super) scope: &'a ImportScope,
+    pub(super) self_ty: Option<&'a str>,
     pat_bindings: BTreeMap<String, usize>,
     used_pat_bindings: BTreeSet<usize>,
-    local_bindings: BTreeMap<String, usize>,
-    outer_vars: BTreeMap<String, usize>,
-    pub referenced_enum_qualifiers: BTreeSet<String>,
+    pub(super) local_bindings: BTreeMap<String, usize>,
+    pub(super) next_local: usize,
+    pub(super) outer: &'a mut MatchOuterScope,
+    pub referenced_enum_qualifiers: BTreeSet<EnumQualifier>,
+    pub has_unqualified_enum_ref: bool,
 }
 
 impl<'a> NormCtx<'a> {
-    pub(super) fn new(scope: &'a ImportScope, self_ty: Option<&'a str>, pat_vars: &[String]) -> Self {
+    pub(super) fn new(
+        scope: &'a ImportScope,
+        self_ty: Option<&'a str>,
+        pat_vars: &[String],
+        outer: &'a mut MatchOuterScope,
+    ) -> Self {
         let mut pat_bindings = BTreeMap::new();
         for (idx, name) in pat_vars.iter().enumerate() {
             pat_bindings.insert(name.clone(), idx);
@@ -32,8 +87,10 @@ impl<'a> NormCtx<'a> {
             pat_bindings,
             used_pat_bindings: BTreeSet::new(),
             local_bindings: BTreeMap::new(),
-            outer_vars: BTreeMap::new(),
+            next_local: 0,
+            outer,
             referenced_enum_qualifiers: BTreeSet::new(),
+            has_unqualified_enum_ref: false,
         }
     }
 
@@ -97,16 +154,23 @@ impl<'a> NormCtx<'a> {
         if block.stmts.is_empty() {
             return "()".to_string();
         }
-        if block.stmts.len() == 1 {
-            if let Stmt::Expr(e, _) = &block.stmts[0] {
-                return self.norm_arm_body(e);
+        let saved_locals = self.local_bindings.clone();
+        let out = if block.stmts.len() == 1 {
+            match &block.stmts[0] {
+                Stmt::Expr(e, _) => self.norm_arm_body(e),
+                Stmt::Macro(sm) => self.norm_macro(&sm.mac),
+                _ => self.norm_stmt_list(&block.stmts),
             }
-            if let Stmt::Macro(sm) = &block.stmts[0] {
-                return self.norm_macro(&sm.mac);
-            }
-        }
-        let mut parts = Vec::with_capacity(block.stmts.len());
-        for stmt in &block.stmts {
+        } else {
+            self.norm_stmt_list(&block.stmts)
+        };
+        self.local_bindings = saved_locals;
+        out
+    }
+
+    fn norm_stmt_list(&mut self, stmts: &[Stmt]) -> String {
+        let mut parts = Vec::with_capacity(stmts.len());
+        for stmt in stmts {
             match stmt {
                 Stmt::Local(local) => {
                     let init_str = local
@@ -121,7 +185,7 @@ impl<'a> NormCtx<'a> {
                             }
                         })
                         .unwrap_or_default();
-                    let pat_str = self.bind_local_pat(&local.pat);
+                    let pat_str = self.norm_binding_pat(&local.pat);
                     parts.push(format!("let {pat_str}={init_str}"));
                 }
                 Stmt::Expr(e, _) => parts.push(self.norm_expr(e)),
@@ -138,44 +202,24 @@ impl<'a> NormCtx<'a> {
         }
     }
 
-    fn bind_local_pat(&mut self, pat: &Pat) -> String {
-        match pat {
-            Pat::Ident(pi) => {
-                let name = pi.ident.to_string();
-                let idx = self.local_bindings.len();
-                self.local_bindings.insert(name, idx);
-                format!("$l{idx}")
-            }
-            Pat::Wild(_) => "_".to_string(),
-            Pat::Type(t) => self.bind_local_pat(&t.pat),
-            Pat::Paren(p) => self.bind_local_pat(&p.pat),
-            Pat::Reference(r) => self.bind_local_pat(&r.pat),
-            Pat::Tuple(t) => {
-                let ps: Vec<String> = t.elems.iter().map(|e| self.bind_local_pat(e)).collect();
-                format!("({})", ps.join(","))
-            }
-            _ => "_".to_string(),
+    /// Resolves local variables first (so `let` shadowing a pattern binding resolves to `$lN`),
+    /// then pattern bindings (`$pN`), then per-match outer variables (`$rN`).
+    pub(super) fn resolve_var(&mut self, name: &str) -> String {
+        if let Some(&idx) = self.local_bindings.get(name) {
+            return format!("$l{idx}");
         }
-    }
-
-    fn resolve_var(&mut self, name: &str) -> String {
         if let Some(&idx) = self.pat_bindings.get(name) {
             self.used_pat_bindings.insert(idx);
             return format!("$p{idx}");
         }
-        if let Some(&idx) = self.local_bindings.get(name) {
-            return format!("$l{idx}");
-        }
-        let next = self.outer_vars.len();
-        let idx = *self.outer_vars.entry(name.to_string()).or_insert(next);
-        format!("$r{idx}")
+        self.outer.resolve_outer(name)
     }
 
     pub(super) fn norm_expr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Lit(l) => lit_to_key_and_atom(&l.lit, false)
                 .map(|(k, _)| k)
-                .unwrap_or_else(|| "lit".to_string()),
+                .unwrap_or_else(|| self.outer.fresh_opaque("lit")),
             Expr::Unary(u) => {
                 if matches!(u.op, syn::UnOp::Neg(_))
                     && let Expr::Lit(l) = &*u.expr
@@ -199,14 +243,30 @@ impl<'a> NormCtx<'a> {
                     }
                     if let Some((q, v)) = self.scope.variant_imports.get(&name) {
                         self.referenced_enum_qualifiers.insert(q.clone());
-                        return format!("{q}::{v}");
+                        return format!("{}::{v}", q.canonical_key());
+                    }
+                    if !matches!(name.as_str(), "None" | "Some" | "Ok" | "Err")
+                        && !is_unqualified_const_ident(&name)
+                    {
+                        if self.scope.glob_enums.len() == 1
+                            && let Some(q) = self.scope.glob_enums.iter().next()
+                        {
+                            self.referenced_enum_qualifiers.insert(q.clone());
+                            return format!("{}::{name}", q.canonical_key());
+                        }
+                        if !self.scope.glob_enums.is_empty() || self.scope.has_unscoped_glob {
+                            self.has_unqualified_enum_ref = true;
+                        }
                     }
                     return name;
                 }
-                if let Some((Some(q), _)) =
-                    split_enum_variant_path(&p.path, self.scope, self.self_ty)
+                if let Some((qual, _)) = split_enum_variant_path(&p.path, self.scope, self.self_ty)
                 {
-                    self.referenced_enum_qualifiers.insert(q);
+                    if let Some(q) = qual {
+                        self.referenced_enum_qualifiers.insert(q);
+                    } else {
+                        self.has_unqualified_enum_ref = true;
+                    }
                 }
                 canonical_path(&p.path, self.scope, self.self_ty)
             }
@@ -235,10 +295,14 @@ impl<'a> NormCtx<'a> {
             Expr::Call(c) => {
                 let callee = match &*c.func {
                     Expr::Path(p) => {
-                        if let Some((Some(q), _)) =
+                        if let Some((qual, _)) =
                             split_enum_variant_path(&p.path, self.scope, self.self_ty)
                         {
-                            self.referenced_enum_qualifiers.insert(q);
+                            if let Some(q) = qual {
+                                self.referenced_enum_qualifiers.insert(q);
+                            } else {
+                                self.has_unqualified_enum_ref = true;
+                            }
                         }
                         canonical_path(&p.path, self.scope, self.self_ty)
                     }
@@ -258,10 +322,13 @@ impl<'a> NormCtx<'a> {
             }
             Expr::Repeat(r) => format!("[{};{}]", self.norm_expr(&r.expr), self.norm_expr(&r.len)),
             Expr::Struct(s) => {
-                if let Some((Some(q), _)) =
-                    split_enum_variant_path(&s.path, self.scope, self.self_ty)
+                if let Some((qual, _)) = split_enum_variant_path(&s.path, self.scope, self.self_ty)
                 {
-                    self.referenced_enum_qualifiers.insert(q);
+                    if let Some(q) = qual {
+                        self.referenced_enum_qualifiers.insert(q);
+                    } else {
+                        self.has_unqualified_enum_ref = true;
+                    }
                 }
                 let ty = canonical_path(&s.path, self.scope, self.self_ty);
                 let mut fields: Vec<(String, String)> = s
@@ -286,8 +353,10 @@ impl<'a> NormCtx<'a> {
             }
             Expr::Block(b) => self.norm_block_expr(&b.block),
             Expr::If(i) => {
+                let saved = self.local_bindings.clone();
                 let cond = self.norm_expr(&i.cond);
                 let then_b = self.norm_block_expr(&i.then_branch);
+                self.local_bindings = saved;
                 let else_b = i
                     .else_branch
                     .as_ref()
@@ -295,6 +364,25 @@ impl<'a> NormCtx<'a> {
                     .unwrap_or_default();
                 format!("if {cond}{{{then_b}}}{else_b}")
             }
+            Expr::Loop(l) => format!("loop{{{}}}", self.norm_block_expr(&l.body)),
+            Expr::While(w) => {
+                let saved = self.local_bindings.clone();
+                let cond = self.norm_expr(&w.cond);
+                let body = self.norm_block_expr(&w.body);
+                self.local_bindings = saved;
+                format!("while {cond}{{{body}}}")
+            }
+            Expr::ForLoop(fl) => {
+                let iter = self.norm_expr(&fl.expr);
+                let saved = self.local_bindings.clone();
+                let pat = self.norm_binding_pat(&fl.pat);
+                let body = self.norm_block_expr(&fl.body);
+                self.local_bindings = saved;
+                format!("for {pat} in {iter}{{{body}}}")
+            }
+            Expr::Async(a) => format!("async{{{}}}", self.norm_block_expr(&a.block)),
+            Expr::Const(c) => format!("const{{{}}}", self.norm_block_expr(&c.block)),
+            Expr::TryBlock(tb) => format!("try{{{}}}", self.norm_block_expr(&tb.block)),
             Expr::Return(r) => match &r.expr {
                 Some(e) => format!("return {}", self.norm_expr(e)),
                 None => "return".to_string(),
@@ -317,275 +405,53 @@ impl<'a> NormCtx<'a> {
                 format!("{s}{op}{e}")
             }
             Expr::Closure(cl) => {
-                let ps: Vec<String> = cl.inputs.iter().map(|p| self.bind_local_pat(p)).collect();
-                format!("|{}|{}", ps.join(","), self.norm_expr(&cl.body))
+                let saved = self.local_bindings.clone();
+                let ps: Vec<String> = cl
+                    .inputs
+                    .iter()
+                    .map(|p| self.norm_binding_pat(p))
+                    .collect();
+                let body = self.norm_expr(&cl.body);
+                self.local_bindings = saved;
+                format!("|{}|{body}", ps.join(","))
             }
             Expr::Match(m) => {
                 let scr = self.norm_expr(&m.expr);
                 let mut arms: Vec<String> = m
                     .arms
                     .iter()
-                    .map(|a| format!("{}={}", norm_pat_compact(&a.pat), self.norm_expr(&a.body)))
+                    .map(|a| {
+                        let saved = self.local_bindings.clone();
+                        let p = self.norm_binding_pat(&a.pat);
+                        let g = a
+                            .guard
+                            .as_ref()
+                            .map(|(_, g)| format!(" if {}", self.norm_expr(g)))
+                            .unwrap_or_default();
+                        let b = self.norm_expr(&a.body);
+                        self.local_bindings = saved;
+                        format!("{p}{g}={b}")
+                    })
                     .collect();
                 arms.sort();
                 format!("match {scr}{{{}}}", arms.join(","))
             }
             Expr::Unsafe(u) => format!("unsafe{{{}}}", self.norm_block_expr(&u.block)),
             Expr::Await(a) => format!("{}.await", self.norm_expr(&a.base)),
-            Expr::Let(l) => format!("let {}={}", self.bind_local_pat(&l.pat), self.norm_expr(&l.expr)),
-            _ => "other".to_string(),
-        }
-    }
-
-    fn norm_macro(&mut self, mac: &syn::Macro) -> String {
-        let name = canonical_path(&mac.path, self.scope, self.self_ty);
-        let fmt_arg_idx = match mac.path.segments.last().map(|s| s.ident.to_string()).as_deref() {
-            Some("write" | "writeln") => Some(1usize),
-            Some("format" | "format_args" | "print" | "println" | "eprint" | "eprintln") => Some(0usize),
-            _ => None,
-        };
-        if let Ok(args) = mac.parse_body_with(
-            syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated,
-        ) {
-            let norm_args: Vec<String> = args
-                .iter()
-                .enumerate()
-                .map(|(idx, e)| {
-                    if fmt_arg_idx == Some(idx)
-                        && let Expr::Lit(l) = e
-                        && let Lit::Str(s) = &l.lit
-                    {
-                        return format!("{:?}", self.norm_format_str(&s.value()));
-                    }
-                    self.norm_expr(e)
-                })
-                .collect();
-            return format!("{name}!({})", norm_args.join(","));
-        }
-        let body = self.norm_token_stream(mac.tokens.clone());
-        format!("{name}!({body})")
-    }
-
-    fn norm_format_str(&mut self, s: &str) -> String {
-        let bytes = s.as_bytes();
-        let mut out = String::with_capacity(s.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'{' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-                    out.push_str("{{");
-                    i += 2;
-                    continue;
-                }
-                let start = i + 1;
-                let mut end = start;
-                while end < bytes.len() && bytes[end] != b'}' {
-                    end += 1;
-                }
-                if end < bytes.len() {
-                    let inner = &s[start..end];
-                    let (ident, spec) = match inner.find(':') {
-                        Some(colon) => (&inner[..colon], &inner[colon..]),
-                        None => (inner, ""),
-                    };
-                    if !ident.is_empty()
-                        && ident
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
-                        && ident
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    {
-                        out.push('{');
-                        out.push_str(&self.resolve_var(ident));
-                        out.push_str(spec);
-                        out.push('}');
-                        i = end + 1;
-                        continue;
-                    }
-                }
+            Expr::Let(l) => {
+                let val = self.norm_expr(&l.expr);
+                let pat = self.norm_binding_pat(&l.pat);
+                format!("let {pat}={val}")
             }
-            if let Some(ch) = s[i..].chars().next() {
-                out.push(ch);
-                i += ch.len_utf8();
-            } else {
-                break;
+            Expr::Infer(_) => "_".to_string(),
+            Expr::RawAddr(ra) => {
+                let kind = match ra.mutability {
+                    syn::PointerMutability::Mut(_) => "mut",
+                    syn::PointerMutability::Const(_) => "const",
+                };
+                format!("&raw {kind} {}", self.norm_expr(&ra.expr))
             }
+            _ => self.outer.fresh_opaque("expr"),
         }
-        out
-    }
-
-    fn norm_token_stream(&mut self, ts: TokenStream) -> String {
-        let mut out = String::new();
-        for tt in ts {
-            match tt {
-                TokenTree::Ident(id) => {
-                    let s = id.to_string();
-                    if s.starts_with(|c: char| c.is_ascii_uppercase())
-                        || matches!(
-                            s.as_str(),
-                            "true" | "false" | "if" | "else" | "match" | "let" | "in" | "as"
-                        )
-                    {
-                        out.push_str(&s);
-                    } else {
-                        out.push_str(&self.resolve_var(&s));
-                    }
-                    out.push(' ');
-                }
-                TokenTree::Group(g) => {
-                    out.push('(');
-                    out.push_str(&self.norm_token_stream(g.stream()));
-                    out.push(')');
-                }
-                TokenTree::Literal(l) => {
-                    out.push_str(&l.to_string());
-                    out.push(' ');
-                }
-                TokenTree::Punct(p) => out.push(p.as_char()),
-            }
-        }
-        out.trim().to_string()
-    }
-}
-
-pub(super) fn extract_body_mirror_atom(
-    expr: &Expr,
-    scope: &ImportScope,
-    self_ty: Option<&str>,
-) -> Option<MirrorAtom> {
-    match expr {
-        Expr::Lit(l) => lit_to_key_and_atom(&l.lit, false).map(|(_, a)| a),
-        Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => match &*u.expr {
-            Expr::Lit(l) => lit_to_key_and_atom(&l.lit, true).map(|(_, a)| a),
-            _ => None,
-        },
-        Expr::Path(p) => {
-            let (q, v) = split_enum_variant_path(&p.path, scope, self_ty)?;
-            Some(MirrorAtom::Variant {
-                qualifier: q,
-                variant: v,
-            })
-        }
-        Expr::Call(c) => {
-            if let Expr::Path(p) = &*c.func
-                && let Some(last) = p.path.segments.last()
-                && matches!(last.ident.to_string().as_str(), "Some" | "Ok")
-                && c.args.len() == 1
-            {
-                return extract_body_mirror_atom(c.args.first()?, scope, self_ty);
-            }
-            None
-        }
-        Expr::Return(r) => r
-            .expr
-            .as_deref()
-            .and_then(|e| extract_body_mirror_atom(e, scope, self_ty)),
-        Expr::Block(b) if b.label.is_none() && b.block.stmts.len() == 1 => {
-            if let Stmt::Expr(e, _) = &b.block.stmts[0] {
-                extract_body_mirror_atom(e, scope, self_ty)
-            } else {
-                None
-            }
-        }
-        Expr::Paren(p) => extract_body_mirror_atom(&p.expr, scope, self_ty),
-        Expr::Group(g) => extract_body_mirror_atom(&g.expr, scope, self_ty),
-        _ => None,
-    }
-}
-
-pub(super) fn is_noop_body(body: &str) -> bool {
-    matches!(
-        body,
-        "" | "()"
-            | "continue"
-            | "break"
-            | "return"
-            | "None"
-            | "Option::None"
-            | "return None"
-            | "Ok(())"
-            | "return Ok(())"
-            | "unreachable!()"
-            | "todo!()"
-            | "unimplemented!()"
-    )
-}
-
-fn norm_type(ty: &Type) -> String {
-    match ty {
-        Type::Path(tp) => tp
-            .path
-            .segments
-            .last()
-            .map(|s| s.ident.to_string())
-            .unwrap_or_else(|| "_".to_string()),
-        Type::Reference(r) => format!("&{}", norm_type(&r.elem)),
-        Type::Slice(s) => format!("[{}]", norm_type(&s.elem)),
-        Type::Tuple(t) => {
-            let es: Vec<String> = t.elems.iter().map(norm_type).collect();
-            format!("({})", es.join(","))
-        }
-        _ => "_".to_string(),
-    }
-}
-
-fn norm_generic_arg(arg: &syn::GenericArgument) -> String {
-    match arg {
-        syn::GenericArgument::Type(t) => norm_type(t),
-        _ => "_".to_string(),
-    }
-}
-
-fn norm_pat_compact(pat: &Pat) -> String {
-    match pat {
-        Pat::Wild(_) => "_".to_string(),
-        Pat::Ident(pi) => pi.ident.to_string(),
-        Pat::Path(p) => p
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("::"),
-        Pat::Lit(l) => lit_to_key_and_atom(&l.lit, false)
-            .map(|(k, _)| k)
-            .unwrap_or_else(|| "lit".to_string()),
-        _ => "_".to_string(),
-    }
-}
-
-fn bin_op_str(op: &syn::BinOp) -> &'static str {
-    match op {
-        syn::BinOp::Add(_) => "+",
-        syn::BinOp::Sub(_) => "-",
-        syn::BinOp::Mul(_) => "*",
-        syn::BinOp::Div(_) => "/",
-        syn::BinOp::Rem(_) => "%",
-        syn::BinOp::And(_) => "&&",
-        syn::BinOp::Or(_) => "||",
-        syn::BinOp::BitXor(_) => "^",
-        syn::BinOp::BitAnd(_) => "&",
-        syn::BinOp::BitOr(_) => "|",
-        syn::BinOp::Shl(_) => "<<",
-        syn::BinOp::Shr(_) => ">>",
-        syn::BinOp::Eq(_) => "==",
-        syn::BinOp::Lt(_) => "<",
-        syn::BinOp::Le(_) => "<=",
-        syn::BinOp::Ne(_) => "!=",
-        syn::BinOp::Ge(_) => ">=",
-        syn::BinOp::Gt(_) => ">",
-        syn::BinOp::AddAssign(_) => "+=",
-        syn::BinOp::SubAssign(_) => "-=",
-        syn::BinOp::MulAssign(_) => "*=",
-        syn::BinOp::DivAssign(_) => "/=",
-        syn::BinOp::RemAssign(_) => "%=",
-        syn::BinOp::BitXorAssign(_) => "^=",
-        syn::BinOp::BitAndAssign(_) => "&=",
-        syn::BinOp::BitOrAssign(_) => "|=",
-        syn::BinOp::ShlAssign(_) => "<<=",
-        syn::BinOp::ShrAssign(_) => ">>=",
-        _ => "?",
     }
 }

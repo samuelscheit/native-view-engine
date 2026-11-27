@@ -347,8 +347,8 @@ fn unit_syn_ast_checks_positive_and_negative() {
         }
         pub fn to_skia_align(a: TextAlign) -> skia_safe::textlayout::TextAlign { unreachable!() }
         impl TextAlign {
-            pub fn fwd(self) -> &'static str { match self { Self::Left => "l", Self::Center => "c", Self::Right => "r" } }
-            pub fn rev(s: &str) -> Option<Self> { match s { "l" => Some(Self::Left), "c" => Some(Self::Center), "r" => Some(Self::Right), _ => None } }
+            pub fn fwd(self) -> &'static str { match self { Self::Left => "l", Self::Center => "c", Self::Right => "r", Self::Justify => "j" } }
+            pub fn rev(s: &str) -> Option<Self> { match s { "l" => Some(Self::Left), "c" => Some(Self::Center), "r" => Some(Self::Right), "j" => Some(Self::Justify), _ => None } }
         }
     "#;
     let ast_a = syn::parse_file(core_a_src).unwrap();
@@ -370,7 +370,10 @@ fn unit_syn_ast_checks_positive_and_negative() {
 
     let mut v_match = Vec::new();
     ast_enums::scan_match_tables("backends/skia.rs", backend_src, &ast_bk, &mut v_match);
-    assert_eq!(v_match.len(), 2, "expected 1 mirrored fwd/rev + 1 compact int decode_align: {v_match:?}");
+    assert_eq!(v_match.len(), 1, "expected 1 compact int decode_align: {v_match:?}");
+
+    let dups = ast_enums::scan_duplicate_enum_match_arms(&[("backends/skia.rs", backend_src, &ast_bk)]);
+    assert_eq!(dups.len(), 1, "expected 1 mirrored fwd/rev from fingerprint scanner: {dups:?}");
 
     let abi_a = syn::parse_file("#[derive(NveAbi)] #[nve_abi(size = 64)] #[repr(C)] pub struct NveRenderNode { pub x: u32 }\n#[repr(C)] pub struct NveApi { pub f: usize }").unwrap();
     let abi_b = syn::parse_file("const _: () = { assert!(size_of::<NveApi>() == 8); assert!(align_of::<NveApi>() == 8); assert!(offset_of!(NveApi, f) == 0); };").unwrap();
