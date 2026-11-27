@@ -250,7 +250,7 @@ fn reports_parse_errors_at_their_source_location() {
         "#[nve_hybrid_module] pub trait T {{ fn f(&self) -> {}u8; }}",
         "*const ".repeat(200)
     );
-    assert!(location(&deep).2.contains("nests deeper than 128 levels"));
+    assert!(location(&deep).2.contains("maximum type nesting depth exceeded"));
     assert!(
         location("#[nve_hybrid_enum] pub enum E { A = 4294967296 }")
             .2
@@ -558,6 +558,23 @@ fn unsupported_forms_are_located_errors() {
         ("#[nve_hybrid_struct]\n#[repr(align(8))]\n#[repr(align(16))]\npub struct S { pub x: u8 }".into(), "`align(N)` is given twice"),
         ("#[nve_hybrid_enum]\n#[repr(u8)]\npub enum E { A = 255, B }".into(), "does not fit `#[repr(u8)]`"),
         ("extern \"system\" {}".into(), "only the `extern \"C\"` ABI"),
+        // `cfg` is never evaluated, so it is rejected wherever it appears.
+        ("#[cfg(test)]\n#[nve_hybrid_const]\npub const X: u32 = 1;".into(), "`#[cfg]` is not evaluated"),
+        ("#![cfg_attr(x, y)]\n#[nve_hybrid_const]\npub const X: u32 = 1;".into(), "`#[cfg_attr]` is not evaluated"),
+        (module("    #[cfg(x)] fn f(&self);"), "`#[cfg]` is not evaluated"),
+        ("#[nve_hybrid_struct]\npub struct S {\n    #[cfg(x)] pub x: u8,\n}".into(), "`#[cfg]` is not evaluated"),
+        ("#[nve_hybrid_enum]\npub enum E {\n    #[cfg_attr(x, y)] A,\n}".into(), "`#[cfg_attr]` is not evaluated"),
+        // Only the namespace may be an inner attribute.
+        ("#[nve_hybrid_module]\npub trait T {\n    #![nve_hybrid_view]\n}".into(), "must be an outer attribute"),
+        // Member attributes are single identifiers; tool attributes stay harmless.
+        (view("    #[doc::prop] fn x(&self) -> i32;"), "unexpected attribute `#[doc::prop]`"),
+        (view("    #[a::prop] fn x(&self) -> i32;"), "unexpected attribute `#[a::prop]`"),
+        (view("    #[event = 1] fn on_x(&self);"), "this attribute takes no arguments"),
+        (module("    fn f(&'static self);"), "no lifetime"),
+        (module("    fn f(&'a mut self);"), "no lifetime"),
+        (module("    fn f(&self, a @ _: u32);"), "no `ref`, `mut`, or `@`"),
+        ("#[nve_hybrid_enum]\n#[repr(u8)]\n#[repr(u8)]\npub enum E { A }".into(), "`repr(u8)` is given twice"),
+        ("#[nve_hybrid_enum]\n#[repr(u8)]\n#[repr(u16)]\npub enum E { A }".into(), "conflicting integer reprs"),
     ];
     for (source, expected) in &cases {
         let (line, col, message) =
@@ -586,8 +603,8 @@ fn unsupported_forms_are_located_errors() {
     );
 }
 
-/// Runs `f` on a thread with a 2 MiB stack (the default for spawned threads), so a recursion the
-/// nesting pre-check misses overflows here instead of passing on a large main-thread stack.
+/// Runs `f` on a thread with a 2 MiB stack (the default for spawned threads): the parser never
+/// recurses on its caller's stack, so a small one must be enough.
 fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
@@ -597,8 +614,8 @@ fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
         .expect("no stack overflow")
 }
 
-/// Every prefix / infix / postfix / keyword / group form, 100k deep, is rejected before `syn`
-/// (or the AST's recursive `Drop` / spans) can overflow a 2 MiB stack.
+/// Every prefix / infix / postfix / keyword / group form, 100k deep, is rejected by the path bound
+/// before `syn` runs, whatever the caller's stack (here 2 MiB).
 #[test]
 fn deep_nesting_of_every_form_is_rejected_on_a_small_stack() {
     let deep = 100_000;
@@ -656,7 +673,7 @@ fn deep_nesting_of_every_form_is_rejected_on_a_small_stack() {
     for (i, result) in results.into_iter().enumerate() {
         let message = result.unwrap_or_else(|e| panic!("form #{i}: {e}"));
         assert!(
-            message.contains("nests deeper than 128 levels"),
+            message.contains("nesting too deep"),
             "form #{i}: {message}"
         );
     }
@@ -684,7 +701,7 @@ fn nesting_under_the_bound_and_long_flat_specs_still_parse() {
         "*const ".repeat(60)
     ))
     .expect("60 *const");
-    let not_nesting = |e: String| assert!(!e.contains("nests deeper"), "{e}");
+    let not_nesting = |e: String| assert!(!e.contains("nesting too deep"), "{e}");
     not_nesting(
         ok(format!(
             "#[nve_hybrid_struct]\npub struct S {{ pub x: [u8; {}1{}] }}",
@@ -767,4 +784,151 @@ fn block_docs_and_prop_default_ranges() {
         )
         .is_ok()
     );
+}
+
+/// Every recursive form, including every trick that defeated the old grammar heuristics
+/// (`union` / `use<>` / lifetime / `<u8, u8>` / closure-pipe / nested-attribute resets), parses,
+/// lowers, and drops on its sized stack: no form overflows, whatever its grammar.
+#[test]
+fn every_recursive_form_parses_on_its_sized_stack() {
+    let n = 600;
+    let rep = |s: &str| s.repeat(n);
+    let types = [
+        rep("*const ") + "u8",
+        rep("&") + "u8",
+        rep("&'struct ") + "u8",
+        rep("&'union mut ") + "u8",
+        rep("Option<") + "u8" + &rep(">"),
+        rep("(") + "u8" + &rep(")"),
+        rep("(u8, ") + "u8" + &rep(")"),
+        rep("[") + "u8" + &rep("; 1]"),
+        rep("fn() -> ") + "u8",
+        rep("fn(") + "u8" + &rep(")"),
+        rep("extern \"C\" fn() -> ") + "u8",
+        rep("impl use<> + Fn() -> ") + "u8",
+        rep("for<'a, 'b> fn() -> ") + "u8",
+        rep("dyn Fn() -> ") + "u8",
+    ];
+    let exprs = [
+        rep("-") + "1",
+        rep("!") + "1",
+        rep("*") + "1",
+        rep("&mut ") + "1",
+        rep("return ") + "1",
+        rep("|| ") + "1",
+        rep("|x,| ") + "1",
+        rep("|| |x,| ") + "1",
+        rep("|&_,|- ") + "1",
+        rep("a | |x,| ") + "1",
+        rep("move || ") + "1",
+        rep("|| { ") + "1" + &rep("}"),
+        rep("a = ") + "1",
+        rep("union = ") + "1",
+        rep("union + ") + "1",
+        rep("union.union = ") + "1",
+        rep("if union {} else ") + "{}",
+        rep("f::<u8, u8> = ") + "1",
+        rep("a += ") + "1",
+        "1".to_owned() + &rep(" + 1"),
+        "a".to_owned() + &rep(".b"),
+        "f".to_owned() + &rep("()"),
+        rep("f(") + "1" + &rep(")"),
+        rep("f(1, 2, ") + "1" + &rep(")"),
+        rep("[1, ") + "1" + &rep("]"),
+        "a".to_owned() + &rep("[0]"),
+        "a".to_owned() + &rep("?"),
+        "x".to_owned() + &rep(".await"),
+        "1".to_owned() + &rep(" as u8"),
+        rep("if a { 1 } else ") + "{ 1 }",
+        rep("match a { _ => ") + "1" + &rep(" }"),
+        rep("loop { break ") + "1" + &rep(" }"),
+        rep("'a: loop { ") + &rep("}"),
+        rep("while a { ") + &rep(" }"),
+        rep("for x in a { ") + &rep(" }"),
+        rep("{ let a = ") + "1" + &rep("; a }"),
+        rep("unsafe { ") + &rep("}"),
+        rep("async move ") + "{}",
+        rep("const { ") + "1" + &rep(" }"),
+        rep("S { x: ") + "1" + &rep(" }"),
+        rep("a::<") + "u8" + &rep(">"),
+        rep("become ") + "1",
+        rep("yield ") + "1",
+        rep("..") + "1",
+        rep("1..=") + "1",
+        rep("x @ ") + "1",
+        rep("#[a] ") + "1",
+    ];
+    let mut sources: Vec<String> = types
+        .iter()
+        .map(|ty| format!("#[nve_hybrid_struct]\npub struct S {{ pub x: {ty} }}"))
+        .collect();
+    sources.extend(exprs.iter().map(|e| format!("#[nve_hybrid_const]\npub const X: u32 = {e};")));
+    sources.push(rep("#[a = ") + "1" + &rep("]") + "\npub struct S;");
+    sources.push(rep("mod m { ") + &rep("}"));
+    sources.push(format!("fn f() {{ let {} = 1; }}", rep("(") + "x" + &rep(",)")));
+    sources.push(rep("m!(") + &rep(")") + ";");
+    for (i, source) in sources.iter().enumerate() {
+        // Rejected or accepted, but always an orderly result, never a depth or stack failure.
+        if let Err(e) = parse_hybrid_rust_spec(source) {
+            assert!(!e.to_string().contains("nesting too deep"), "form #{i}: {e}");
+        }
+    }
+}
+
+/// The path bound is exact at its cap (16 Ki tokens): at the cap the spec reaches `syn` (on a
+/// 1 GiB stack), one token more is a located error before it.
+#[test]
+fn the_path_bound_cap_is_exact() {
+    // `# [..] pub const X : u32 = 1 (+ 1)* ;` has a path bound of 10 + 2k tokens.
+    let at_cap = format!("#[nve_hybrid_const]\npub const X: u32 = 1{};", " + 1".repeat((16 * 1024 - 10) / 2));
+    let message = parse_hybrid_rust_spec(&at_cap).expect_err("not a literal").to_string();
+    assert!(!message.contains("nesting too deep"), "{message}");
+    let over = at_cap.replacen("= 1", "= -1", 1);
+    let message = parse_hybrid_rust_spec(&over).expect_err("over the cap").to_string();
+    assert!(message.contains("nesting too deep"), "{message}");
+}
+
+/// Long flat specs never trip the bound: hundreds of `extern "C"` blocks, items, and consts.
+#[test]
+fn long_flat_specs_parse() {
+    let blocks: String = (0..300)
+        .map(|i| format!("extern \"C\" {{\n    #[nve_hybrid_c_fn]\n    pub fn f{i}(a: u32) -> u32;\n}}\n"))
+        .collect();
+    let spec = parse_hybrid_rust_spec(&blocks).expect("300 extern blocks");
+    assert_eq!(spec.c_functions.len(), 300);
+    let consts: String = (0..1000)
+        .map(|i| format!("/// Doc {i}.\n#[nve_hybrid_const]\npub const C{i}: u32 = {i};\n"))
+        .collect();
+    assert_eq!(parse_hybrid_rust_spec(&consts).expect("1000 consts").consts.len(), 1000);
+}
+
+/// `///` Markdown survives verbatim; only `/** */` line decoration is stripped.
+#[test]
+fn line_docs_keep_markdown_and_block_docs_keep_indentation() {
+    let spec = parse_hybrid_rust_spec(
+        "/// * bullet\n/// **bold** and *em*\n#[nve_hybrid_const]\npub const X: u32 = 1;\n\
+         /**\n * Title.\n *\n *     code();\n * * nested bullet\n */\n#[nve_hybrid_const]\npub const Y: u32 = 2;",
+    )
+    .expect("docs");
+    assert_eq!(spec.consts[0].doc.as_deref(), Some("* bullet\n**bold** and *em*"));
+    assert_eq!(spec.consts[1].doc.as_deref(), Some("Title.\n\n    code();\n* nested bullet"));
+}
+
+/// `usize` defaults fit `u32` (32-bit hosts); negative defaults never fit unsigned props.
+#[test]
+fn unsigned_and_usize_prop_defaults_are_range_checked() {
+    let prop = |ty: &str, default: &str| {
+        parse_hybrid_rust_spec(&format!(
+            "#[nve_hybrid_view]\npub trait V {{ #[prop(default = {default})] fn x(&self) -> {ty}; }}"
+        ))
+    };
+    for (ty, default) in [("usize", "4294967295"), ("usize", "0"), ("u8", "255"), ("u16", "65535")] {
+        prop(ty, default).unwrap_or_else(|e| panic!("{ty} = {default}: {e}"));
+    }
+    for (ty, default) in [("usize", "4294967296"), ("usize", "-1"), ("u8", "-1"), ("u16", "-1"), ("u8", "256")] {
+        assert!(
+            matches!(prop(ty, default), Err(CodegenError::Validation(_))),
+            "{ty} = {default} must be rejected"
+        );
+    }
 }

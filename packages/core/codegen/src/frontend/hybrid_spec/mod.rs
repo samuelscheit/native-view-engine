@@ -15,11 +15,14 @@
 //!
 //! Docs come from outer `///` and `/** */` comments. Unannotated enums, structs, unions, consts,
 //! and aliases are ignored; everything else (impls, bodies, generics, variadics, `async`, tuple
-//! structs, non-unit variants, `packed`, raw identifiers, deep nesting, ...) is a located error.
+//! structs, non-unit variants, `packed`, raw identifiers, `cfg`, ...) is a located error.
+//!
+//! Parsing runs on worker threads whose stack is sized from the input ([`stack`]), so no input
+//! can overflow a stack, and the caller's `proc_macro2` span table is never touched.
 
 mod attrs;
-mod depth;
 mod items;
+mod stack;
 mod types;
 
 use std::path::Path;
@@ -35,18 +38,14 @@ use types::{convert_type, error_at, ident, is_hex, syn_error, unsigned};
 
 /// Parses a declarative Rust `.rs` hybrid specification source string into a validated
 /// [`HybridFileSpec`].
-///
-/// Side effect: releases the calling thread's `proc_macro2` span table afterwards, so a
-/// `proc_macro2::Span` the caller created earlier on the same thread must not be used again.
 pub fn parse_hybrid_rust_spec(source: &str) -> Result<HybridFileSpec, CodegenError> {
-    let file = parse_tokens(source);
-    // Spans of this parse are no longer needed: free their per-thread source map (the CLI and
-    // tests parse many specs in one thread).
-    proc_macro2::extra::invalidate_current_thread_spans();
-    let mut file = file?;
-    file.resolve_named_types();
-    file.validate()?;
-    Ok(file)
+    let body = source.strip_prefix('\u{feff}').unwrap_or(source);
+    stack::on_sized_stack(body, |body| {
+        let mut file = parse_tokens(body)?;
+        file.resolve_named_types();
+        file.validate()?;
+        Ok(file)
+    })
 }
 
 /// Reads and parses a `.rs` hybrid specification file on disk.
@@ -56,18 +55,9 @@ pub fn parse_hybrid_rust_spec_file(path: &Path) -> Result<HybridFileSpec, Codege
     parse_hybrid_rust_spec(&source)
 }
 
-fn parse_tokens(source: &str) -> Result<HybridFileSpec, CodegenError> {
-    let body = source.strip_prefix('\u{feff}').unwrap_or(source);
-    let tokens: proc_macro2::TokenStream = body.parse().map_err(|e: proc_macro2::LexError| {
-        let start = e.span().start();
-        CodegenError::parse(
-            start.line,
-            start.column + 1,
-            format!("{e}: unbalanced delimiter or unterminated string / comment"),
-        )
-    })?;
-    depth::check_nesting(tokens.clone())?;
-    let ast: syn::File = syn::parse2(tokens).map_err(|e| syn_error(&e, body))?;
+/// Lowers `body` (on a [`stack::on_sized_stack`] thread: `syn` recurses).
+fn parse_tokens(body: &str) -> Result<HybridFileSpec, CodegenError> {
+    let ast: syn::File = syn::parse2(stack::lex(body)?).map_err(|e| syn_error(&e, body))?;
     let mut file = HybridFileSpec::default();
     attrs::check_markers(
         &ast.attrs,
@@ -86,12 +76,7 @@ const NAMESPACE: &str = "nve_hybrid_namespace";
 /// `#[nve_hybrid_namespace(name = "...")]` (inner or outer) sets the file namespace; a second,
 /// different namespace anywhere in the file is an error.
 fn apply_namespace(attrs: &[Attribute], file: &mut HybridFileSpec) -> Result<(), CodegenError> {
-    for attr in attrs.iter().filter(|a| {
-        a.path()
-            .segments
-            .last()
-            .is_some_and(|s| s.ident == NAMESPACE)
-    }) {
+    for attr in attrs.iter().filter(|a| attrs::is_named(a, NAMESPACE)) {
         match Args::parse(attr, keys::NAMESPACE)?.string("name")? {
             Some(name) => match &file.namespace {
                 Some(prev) if *prev != name => {

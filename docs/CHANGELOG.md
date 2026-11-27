@@ -41,6 +41,15 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
   - **Drift guard**: `nve-arch-invariants` checks every mirrored constant and golden XXH64 digest against `nve_abi`, `nve_store`, and `nve_hash`. A second check keeps the binary-value validators allocation-free (no view, copy, or decode).
   - **Codegen: 8,323 lines deleted**: deleted the dead `reloc` and `wire` codegen (6,746 lines) and the `nve codegen wire` subcommand; neither had live consumers. Replaced the hand-written `frontend/hybrid_rust` lexer and parser (1,577 lines) with `frontend/hybrid_spec` on `syn` 2 (800 lines). Its output is byte-identical to the old parser's on every fixture. `nve codegen abi` went from 21 to 16 artifacts here; Batch 2A (commit 3) then reorganized it into the 15 host files listed below.
   - **Zero runtime `serde_json` in core**: `NveExportSpec` JSON loading moved into `nve-cli`. `PENDING_CLEANUP_SERDE_JSON` and `PENDING_CLEANUP_PERSONAL_PATHS` are empty.
+  - **Hybrid spec frontend Pass-3 (commit 4e)**
+    - **Sound stack bound:** the grammar heuristics in `depth.rs` are gone, along with their 10 known bypasses and false rejections.
+      - `stack.rs` computes a grammar-free *path bound*: tokens consumed along the deepest group path.
+      - Each `syn` recursion cycle consumes a token, so the bound limits recursion depth.
+      - Parse, lowering and drop run on a worker thread with 64 KiB of stack per bounded token, twice the measured debug worst case (32 KB, `&&..&u8`).
+      - The cap is 16 Ki tokens (realistic fixture: 155). The caller's `proc_macro2` span table is never touched.
+    - **Rejected:** `cfg` / `cfg_attr` anywhere, inner non-namespace markers, multi-segment member attributes (`#[doc::prop]`), and receivers with lifetimes.
+    - **Docs:** `///` Markdown is kept verbatim; only `/** */` decoration is stripped.
+    - **Defaults:** `usize` prop defaults must fit `u32`; signed `u8` / `u16` defaults are range-checked.
   - **Batch 2A Pass-2 fixes (commit 4d)**
     - **CI** installs i686 / armv7 Android targets for the rustc layout cross-check.
     - **Alignment:**

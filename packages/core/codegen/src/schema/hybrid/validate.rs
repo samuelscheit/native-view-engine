@@ -264,7 +264,10 @@ impl HybridFileSpec {
                         &enum_map,
                         &struct_map,
                         &alias_names,
-                        &format!("view '{}' event '{}' param '{}'", v.name, ev.name, param.name),
+                        &format!(
+                            "view '{}' event '{}' param '{}'",
+                            v.name, ev.name, param.name
+                        ),
                     )?;
                 }
             }
@@ -300,11 +303,12 @@ impl HybridFileSpec {
     }
 }
 
-
 fn validate_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
-        return Err(CodegenError::validation(format!("{kind} name cannot be empty")));
+        return Err(CodegenError::validation(format!(
+            "{kind} name cannot be empty"
+        )));
     };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(CodegenError::validation(format!(
@@ -492,13 +496,21 @@ fn validate_default_value(
         (HybridDefaultValue::Int(_), HybridType::I64 | HybridType::F32 | HybridType::F64) => true,
         (HybridDefaultValue::Int(v), HybridType::U32) => u32::try_from(*v).is_ok(),
         (HybridDefaultValue::Int(v), HybridType::U64) => *v >= 0,
+        (HybridDefaultValue::Int(v), HybridType::U8) => u8::try_from(*v).is_ok(),
+        (HybridDefaultValue::Int(v), HybridType::U16) => u16::try_from(*v).is_ok(),
+        // `usize` is 32-bit on wasm32 / ILP32 hosts, so a default must fit `u32` everywhere.
+        (HybridDefaultValue::Int(v), HybridType::Usize) => u32::try_from(*v).is_ok(),
+        (HybridDefaultValue::UInt(v), HybridType::Usize) => u32::try_from(*v).is_ok(),
         (HybridDefaultValue::UInt(v), HybridType::U8) => u8::try_from(*v).is_ok(),
         (HybridDefaultValue::UInt(v), HybridType::U16) => u16::try_from(*v).is_ok(),
         (HybridDefaultValue::UInt(v), HybridType::U32) => u32::try_from(*v).is_ok(),
         (HybridDefaultValue::UInt(v), HybridType::I32) => i32::try_from(*v).is_ok(),
         (HybridDefaultValue::UInt(v), HybridType::I64) => i64::try_from(*v).is_ok(),
         (HybridDefaultValue::UInt(_), HybridType::U64 | HybridType::F32 | HybridType::F64) => true,
-        #[expect(clippy::cast_possible_truncation, reason = "the narrowing is what is being checked")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing is what is being checked"
+        )]
         (HybridDefaultValue::Float(v), HybridType::F32) => (*v as f32).is_finite(),
         (HybridDefaultValue::Float(v), HybridType::F64) => v.is_finite(),
         (HybridDefaultValue::String(_), HybridType::String) => true,
@@ -585,4 +597,3 @@ fn detect_recursive_value_structs(
     }
     Ok(())
 }
-

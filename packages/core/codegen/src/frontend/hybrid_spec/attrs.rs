@@ -36,7 +36,7 @@ fn outer(attrs: &[Attribute]) -> impl Iterator<Item = &Attribute> {
     attrs.iter().filter(|a| matches!(a.style, AttrStyle::Outer))
 }
 
-fn is_named(a: &Attribute, name: &str) -> bool {
+pub(super) fn is_named(a: &Attribute, name: &str) -> bool {
     a.path().segments.last().is_some_and(|s| s.ident == name)
 }
 
@@ -49,8 +49,21 @@ pub(super) fn has(attrs: &[Attribute], name: &str) -> bool {
     find(attrs, name).is_some()
 }
 
-/// The `nve_hybrid_*` markers in `attrs` (any style) are known, valid on this item kind
-/// (`allowed`, described as `what`), and each given at most once.
+/// `#[cfg]` / `#[cfg_attr]` would silently keep or drop declarations: the frontend never
+/// evaluates them, so they are rejected everywhere.
+fn reject_cfg(a: &Attribute) -> Result<(), CodegenError> {
+    match a.path().get_ident() {
+        Some(i) if i == "cfg" || i == "cfg_attr" => Err(error_at(
+            a.span(),
+            format!("`#[{i}]` is not evaluated in hybrid specs; remove it"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The `nve_hybrid_*` markers in `attrs` are known, valid on this item kind (`allowed`,
+/// described as `what`), outer (only the namespace may be inner), and each given at most once.
+/// `cfg` is rejected.
 pub(super) fn check_markers(
     attrs: &[Attribute],
     allowed: &[&str],
@@ -58,6 +71,7 @@ pub(super) fn check_markers(
 ) -> Result<(), CodegenError> {
     let mut seen: Vec<String> = Vec::new();
     for a in attrs {
+        reject_cfg(a)?;
         let Some(seg) = a.path().segments.last() else {
             continue;
         };
@@ -80,6 +94,12 @@ pub(super) fn check_markers(
                 format!("`#[{name}]` is not valid on {what}"),
             ));
         }
+        if matches!(a.style, AttrStyle::Inner(_)) && name != "nve_hybrid_namespace" {
+            return Err(error_at(
+                a.span(),
+                format!("`#![{name}]` must be an outer attribute: `#[{name}]`"),
+            ));
+        }
         if seen.contains(&name) {
             return Err(error_at(seg.span(), format!("`#[{name}]` is given twice")));
         }
@@ -88,11 +108,9 @@ pub(super) fn check_markers(
     Ok(())
 }
 
-/// Standard Rust attributes that are harmless on any spec member or field.
+/// Standard single-identifier Rust attributes that are harmless on any spec member or field.
 const STANDARD_ATTRS: &[&str] = &[
     "doc",
-    "cfg",
-    "cfg_attr",
     "allow",
     "warn",
     "deny",
@@ -100,9 +118,10 @@ const STANDARD_ATTRS: &[&str] = &[
     "expect",
     "deprecated",
     "must_use",
-    "rustfmt",
-    "clippy",
 ];
+
+/// Tool namespaces whose attributes (`#[rustfmt::skip]`, `#[clippy::...]`) are harmless.
+const TOOL_NAMESPACES: &[&str] = &["rustfmt", "clippy"];
 
 /// The attributes on a trait member / record field / variant: standard Rust attributes, plus each
 /// of `allowed` at most once. Anything else (`#[porp]`, a misplaced `#[offset]`) is an error.
@@ -113,18 +132,25 @@ pub(super) fn check_member_attrs(
 ) -> Result<(), CodegenError> {
     let mut seen: Vec<String> = Vec::new();
     for a in attrs {
-        let Some(first) = a.path().segments.first() else {
-            continue;
-        };
-        if STANDARD_ATTRS.iter().any(|s| first.ident == *s) {
+        reject_cfg(a)?;
+        let path = a.path();
+        let tool = path.segments.len() > 1
+            && path
+                .segments
+                .first()
+                .is_some_and(|s| TOOL_NAMESPACES.iter().any(|t| s.ident == *t));
+        if tool
+            || path
+                .get_ident()
+                .is_some_and(|i| STANDARD_ATTRS.iter().any(|s| i == *s))
+        {
             continue;
         }
-        let name = a
-            .path()
-            .segments
-            .last()
-            .map(|s| s.ident.to_string())
-            .unwrap_or_default();
+        // Member attributes are single identifiers: `#[doc::prop]` is not `#[prop]`.
+        let name = path
+            .get_ident()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| quote_path(path));
         if !allowed.contains(&name.as_str()) {
             return Err(error_at(
                 a.span(),
@@ -156,19 +182,31 @@ pub(super) fn docs(attrs: &[Attribute]) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-/// One doc attribute's text: trimmed, and for a multi-line `/** ... */` comment each line's leading
-/// ` * ` decoration removed.
+/// One doc attribute's text, trimmed. A `///` line is kept verbatim (`* bullet`, `**bold**`); in a
+/// multi-line `/** ... */` comment each line's leading ` * ` / ` *` decoration is removed, and only
+/// it, so Markdown and code-block indentation after it survive.
 fn doc_text(raw: &str) -> String {
+    if !raw.contains('\n') {
+        return raw.trim().to_owned();
+    }
     let lines: Vec<&str> = raw
         .lines()
         .map(|l| {
-            let t = l.trim();
-            t.strip_prefix("* ")
-                .or_else(|| t.strip_prefix('*'))
-                .unwrap_or(t)
+            let t = l.trim_start();
+            match t.strip_prefix("* ") {
+                Some(rest) => rest.trim_end(),
+                None if t.trim_end() == "*" => "",
+                None => t.trim_end(),
+            }
         })
         .collect();
     lines.join("\n").trim().to_owned()
+}
+
+/// `a::b` for an attribute path in an error message.
+fn quote_path(path: &syn::Path) -> String {
+    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    segments.join("::")
 }
 
 /// One attribute's `key = value` arguments, parsed once.
@@ -183,6 +221,12 @@ impl Args {
         let mut entries: Vec<(String, Expr)> = Vec::new();
         match &attr.meta {
             Meta::Path(_) => {}
+            Meta::NameValue(nv) if allowed.is_empty() => {
+                return Err(error_at(
+                    nv.eq_token.span,
+                    "this attribute takes no arguments",
+                ));
+            }
             Meta::NameValue(nv) => {
                 return Err(error_at(
                     nv.eq_token.span,
@@ -294,6 +338,9 @@ pub(super) fn repr(attrs: &[Attribute]) -> Result<Repr, CodegenError> {
             match key.as_str() {
                 "C" => Ok(()),
                 "u8" | "u16" | "u32" | "i32" => match &out.int {
+                    Some(prev) if *prev == key => {
+                        Err(meta.error(format!("`repr({key})` is given twice")))
+                    }
                     Some(prev) => {
                         Err(meta.error(format!("conflicting integer reprs `{prev}` and `{key}`")))
                     }

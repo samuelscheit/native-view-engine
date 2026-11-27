@@ -186,6 +186,11 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
         .unwrap_or_else(|| strip_spec_suffix(&trait_name));
     let explicit_interface_id = args.u32("interface_id")?;
     let doc = attrs::docs(&t.attrs);
+    let (member_attrs, what): (&[&str], _) = if module.is_some() {
+        (&["optional"], "a module member")
+    } else {
+        (&["prop", "event", "method"], "a view member")
+    };
     let mut methods = Vec::new();
     let (mut props, mut events) = (Vec::new(), Vec::new());
     for item in &t.items {
@@ -201,16 +206,6 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
                 "hybrid trait methods are declarations only (no default body)",
             ));
         }
-        let member_attrs: &[&str] = if module.is_some() {
-            &["optional"]
-        } else {
-            &["prop", "event", "method"]
-        };
-        let what = if module.is_some() {
-            "a module member"
-        } else {
-            "a view member"
-        };
         attrs::check_member_attrs(&f.attrs, member_attrs, what).map_err(|e| {
             // Name the real mistake for view-only / module-only member attributes.
             match (module.is_some(), attrs::find(&f.attrs, "prop").or(attrs::find(&f.attrs, "event"))) {
@@ -250,12 +245,7 @@ pub(super) fn parse_trait(t: &syn::ItemTrait) -> Result<TraitSpec, CodegenError>
             ));
         }
         if module.is_some() {
-            if let Some(a) = prop.or(event) {
-                return Err(error_at(
-                    attrs::span(a),
-                    "#[prop] / #[event] are only valid inside #[nve_hybrid_view], not #[nve_hybrid_module]",
-                ));
-            }
+            // (`check_member_attrs` already rejected `#[prop]` / `#[event]` here.)
             methods.push(HybridMethodSpec {
                 optional: attrs::has(&f.attrs, "optional"),
                 ..sig
@@ -403,8 +393,16 @@ pub(super) fn signature(
             FnArg::Receiver(r) if receiver == Receiver::Forbidden => {
                 return Err(error_at(r.span(), "C functions cannot take `self`"));
             }
-            FnArg::Receiver(r) if r.colon_token.is_some() || r.reference.is_none() => {
-                return Err(error_at(r.span(), "members take `&self` or `&mut self`"));
+            FnArg::Receiver(r)
+                if r.colon_token.is_some()
+                    || r.reference
+                        .as_ref()
+                        .is_none_or(|(_, lifetime)| lifetime.is_some()) =>
+            {
+                return Err(error_at(
+                    r.span(),
+                    "members take `&self` or `&mut self` (no lifetime)",
+                ));
             }
             FnArg::Receiver(_) => has_self = true,
             FnArg::Typed(t) => {

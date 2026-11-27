@@ -4,9 +4,11 @@ use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, ExprUnary, GenericArgument, Ident, Lit, PathArguments, Type, UnOp};
 
-use super::depth::MAX_NESTING;
 use crate::error::CodegenError;
 use crate::schema::hybrid::{HybridDefaultValue, HybridType};
+
+/// Maximum type nesting (`Option<Vec<...>>`): lowered types and their recursive walks stay shallow.
+const MAX_NESTING: usize = 128;
 
 /// A parse error located at `span` (1-based line, 1-based column).
 pub(super) fn error_at(span: Span, message: impl Into<String>) -> CodegenError {
