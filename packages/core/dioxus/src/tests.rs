@@ -282,7 +282,7 @@ fn drive_loop_settles_multi_hop_sync_error_boundary_cascade_without_async_wakeup
     assert!(texts.iter().any(|t| t == "INNER:leaf failed"), "{texts:?}");
     assert!(
         texts.iter().any(|t| t == "OUTER:banner rejected leaf failed"),
-        "outer fallback must settle in the first reconcile: {texts:?}"
+        "outer fallback must settle once the drive loop finishes the cascade: {texts:?}"
     );
     assert!(!texts.iter().any(|t| t == "unreachable" || t == "status ok"), "{texts:?}");
 

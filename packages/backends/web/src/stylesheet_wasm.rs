@@ -5,7 +5,7 @@
 //! `base reset -> structural (.nve-c-*) -> @media (.nve-m-*) -> state tiers (Hover < Focus < FocusVisible < Active < Disabled)`.
 
 use crate::css::NVE_BASE_RESET_CSS;
-use crate::stylesheet::{CachedRule, StyleSheetCache, STATE_TIER_COUNT};
+use crate::stylesheet::{StyleSheetCache, STATE_TIER_COUNT};
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
 export function nve_mount_adopted_sheets(doc, base, structural, media, s0, s1, s2, s3, s4) {
@@ -117,7 +117,7 @@ impl StyleSheetCache {
 
         let structural = std::mem::take(&mut self.pending_structural);
         let media = std::mem::take(&mut self.pending_media);
-        let mut states: [Vec<CachedRule>; STATE_TIER_COUNT] = Default::default();
+        let mut states: [Vec<String>; STATE_TIER_COUNT] = Default::default();
         for (dst, src) in states.iter_mut().zip(self.pending_state.iter_mut()) {
             *dst = std::mem::take(src);
         }
@@ -262,13 +262,13 @@ fn create_style_el(doc: &web_sys::Document) -> Option<web_sys::Element> {
     Some(el)
 }
 
-fn insert_rules(sheet: &web_sys::CssStyleSheet, rules: &[CachedRule]) {
+fn insert_rules(sheet: &web_sys::CssStyleSheet, rules: &[String]) {
     for rule in rules {
-        nve_append_css_rule(sheet, &rule.css_rule);
+        nve_append_css_rule(sheet, rule);
     }
 }
 
-fn append_fallback_rules(doc: &web_sys::Document, tier: &str, rules: &[CachedRule]) {
+fn append_fallback_rules(doc: &web_sys::Document, tier: &str, rules: &[String]) {
     if rules.is_empty() {
         return;
     }
@@ -286,7 +286,7 @@ fn append_fallback_rules(doc: &web_sys::Document, tier: &str, rules: &[CachedRul
     };
     let mut text = el.text_content().unwrap_or_default();
     for rule in rules {
-        text.push_str(&rule.css_rule);
+        text.push_str(rule);
     }
     el.set_text_content(Some(&text));
 }

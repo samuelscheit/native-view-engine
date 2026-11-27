@@ -90,7 +90,7 @@ fn slot_delta_allocations_do_not_scale_with_previously_sent_rules() {
     let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let small = delta_allocations_after(10);
     let large = delta_allocations_after(1_000);
-    // Equal up to amortized container growth (one `BTreeMap` node split / `Vec` doubling).
+    // Equal up to amortized container growth (`Vec` / hash-set doubling).
     assert!(
         large <= small + 3,
         "delta after 1000 sent rules allocated {large}, after 10 allocated {small}: \

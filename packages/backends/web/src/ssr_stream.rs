@@ -38,7 +38,7 @@ impl SsrStyleTracker {
 
     #[inline]
     pub fn contains(&self, class_name: &str) -> bool {
-        self.sheet.structural.contains_key(class_name)
+        self.sheet.knows_structural(class_name)
             || self.sheet.media_seen.contains(class_name)
             || self.sheet.state_seen.contains(class_name)
     }
