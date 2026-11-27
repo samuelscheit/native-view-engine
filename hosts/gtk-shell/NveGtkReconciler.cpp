@@ -27,21 +27,18 @@ std::string editable_text(const GtkNodeView& v) {
 }
 
 void set_editable_text(GtkNodeView& v, const std::string& text) {
-  v.updating_programmatically = true;
+  const auto write = v.text.host_write();
   if (v.kind == WidgetKind::TextView) {
     gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget)), text.c_str(), -1);
   } else {
     gtk_editable_set_text(GTK_EDITABLE(v.widget), text.c_str());
   }
-  v.updating_programmatically = false;
 }
 
 void on_text_changed(GtkNodeView* v) {
-  if (v->updating_programmatically) return;
+  if (v->text.writing()) return;
   std::string current = editable_text(*v);
-  if (current == v->dispatched_text) return;
-  v->dispatched_text = current;
-  v->user_editing = true;
+  if (!v->text.user_edited(current)) return;
   // May destroy `v` (the app can remove the input in response): touch nothing afterwards.
   (void)v->host->dispatch_text_change(v->id, current);
 }
@@ -157,8 +154,6 @@ GtkNodeView* NveGtkHost::Adapter::create(const host::NodeData& node) {
   v->widget = new_widget(v->kind, gtk_internal::accessible_role(node));
   g_object_ref_sink(v->widget);
   g_object_set_data(G_OBJECT(v->widget), kViewKey, v);
-  const std::string generic = "nve-node-" + std::to_string(node.id);
-  gtk_widget_add_css_class(v->widget, generic.c_str());
   gtk_widget_add_css_class(v->widget, host->scoped_class(node.id).c_str());
   switch (v->kind) {
     case WidgetKind::Fixed: v->content = v->widget; break;
@@ -370,14 +365,7 @@ void NveGtkHost::update_text_input(GtkNodeView& v, const host::NodeData& node) {
   }
   // Controlled value: adopt the app's value unless it merely echoes what the user is typing.
   const std::string value(node.input.value);
-  if (v.user_editing && value == v.dispatched_text) {
-    v.user_editing = false;
-  } else if (!v.synced || (value != v.app_value && value != editable_text(v))) {
-    set_editable_text(v, value);
-    v.dispatched_text = value;
-    v.user_editing = false;
-  }
-  v.app_value = value;
+  if (v.text.app_published(value, editable_text(v))) set_editable_text(v, value);
 }
 
 void NveGtkHost::update_scroll(GtkNodeView& v, const host::NodeData& node) {

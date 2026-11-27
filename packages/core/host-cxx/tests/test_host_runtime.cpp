@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "check.h"
+#include "nve/host/controlled_text.hpp"
 #include "nve/host/core_resources.hpp"
 #include "nve/host/demo_counter_app.hpp"
 #include "nve/host/host_session.hpp"
@@ -32,6 +33,7 @@ struct Recorder {
     uint32_t image_src = 0u;
     std::string value;
     std::string label;
+    std::string family;  // owned copy: the scene's text slab moves between frames
     std::vector<uint32_t> children;
     uint32_t attached_to = 0u;  // parent view id the adapter linked this view under (1 = root)
     int updates = 0;
@@ -56,6 +58,7 @@ struct Recorder {
     h->kind = n.kind;
     h->text = std::string(n.text);
     h->style = n.text_style;
+    h->family = std::string(n.text_style.font_family);
     h->style.font_family = {};  // do not keep a view into the scene
     h->local = n.local;
     h->background = n.visual.background;
@@ -99,7 +102,7 @@ struct Harness {
   size_t sync() {
     auto guard = host->runtime().acquire_scene();
     if (!guard) return 0u;
-    return tree.sync(guard->reader(), tables, rec);
+    return tree.sync(guard->reader(), tables, rec, host->source_generation());
   }
 };
 
@@ -239,6 +242,121 @@ std::string scene_text(HostSession& host, uint32_t id) {
   return std::string(read_node(guard->reader(), t, node_index(id), TextStyle{}).text);
 }
 
+/// The tree must never keep a view into the scene's text slab across frames: growing the slab
+/// (re)allocates it, and a stale `font_family` compare would read freed memory (ASan).
+void test_font_family_survives_text_slab_growth() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  const std::string family = "Inter Display Variable Family";  // beyond any SSO buffer
+  w.create(1u);
+  w.create(2u);
+  w.create(3u);
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, NVE_TYPOGRAPHY_SET_FONT_FAMILY);
+  CHECK(w.set_str(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, family));
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "child"));
+  w.set_children(2u, std::vector<uint32_t>{3u});
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  CHECK(h.submit());
+  CHECK(h.sync() >= 2u);
+  CHECK(h.rec.views[3].family == family);
+  const auto slab = [&] {
+    auto g = h.host->runtime().acquire_scene();
+    return g ? static_cast<const void*>(g->reader().text_slab().data()) : nullptr;
+  };
+  const void* const slab_before = slab();
+  // Grow the slab far past its capacity with unrelated text, then rewrite the same family.
+  const std::string filler(4096, 'x');
+  for (uint32_t id = 10u; id < 74u; ++id) {
+    w.create(id);
+    CHECK(w.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, filler + std::to_string(id)));
+  }
+  CHECK(h.submit());
+  CHECK(slab() != slab_before);  // the scenario under test: the slab really moved
+  (void)h.sync();
+  CHECK(w.set_str(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, family));
+  CHECK(h.submit());
+  (void)h.sync();
+  CHECK(h.rec.views[3].family == family);
+  // A real change still cascades to the untouched child.
+  CHECK(w.set_str(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "Mono"));
+  CHECK(h.submit());
+  CHECK(h.sync() >= 2u);
+  CHECK(h.rec.views[3].family == "Mono");
+}
+
+/// Attaching another app replaces the scene without removals: the session's source generation
+/// makes the next sync a full pass that destroys the old app's extra views and refreshes the rest.
+void test_source_change_runs_a_full_pass() {
+  using nve::host::demo::CounterApp;
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
+  w.create(40u);
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "old"));
+  w.set_children(2u, std::vector<uint32_t>{3u, 40u});
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  CHECK(h.submit());
+  CHECK(h.sync() == 4u);  // root + 3 views
+  CHECK(h.rec.views.count(40u) == 1u && h.rec.views[3].text == "old");
+  const uint64_t before = h.host->source_generation();
+  CHECK(h.host->attach(&CounterApp::get_interface));
+  CHECK(h.host->source_generation() == before + 1u);
+  (void)h.host->pump();
+  CHECK(h.sync() > 0u);
+  CHECK(h.rec.views.count(40u) == 0u);  // only the old app had node 40
+  CHECK(h.rec.views[CounterApp::kTitle].text == "NVE native host");
+  CHECK(h.rec.views[CounterApp::kTitle].attached_to == CounterApp::kColumn);  // relinked
+  // A failed attach leaves the running app (and the generation) untouched.
+  CHECK(!h.host->attach(nullptr));
+  CHECK(h.host->source_generation() == before + 1u && h.host->has_app());
+}
+
+/// A dense table (`nve.visual`) stores a zeroed row at every index: nodes without the table must
+/// read the table defaults (opacity 1), not that row (opacity 0 hid every text node).
+void test_dense_table_rows_follow_table_set() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
+  w.set(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BACKGROUND, rgba(1, 2, 3));
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 0.25f);
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "no visual row"));
+  w.set_children(1u, std::vector<uint32_t>{2u, 3u});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  CHECK(t.visual.has(2u) && t.visual.at(2u).present());
+  CHECK(!t.visual.has(3u) && !t.visual.at(3u).present());
+  CHECK(t.visual.at(3u).f32(NVE_TABLE_VISUAL_OPACITY) == 1.0f);
+  const NodeData with = read_node(guard->reader(), t, 2u, TextStyle{});
+  const NodeData without = read_node(guard->reader(), t, 3u, TextStyle{});
+  CHECK(with.visual.opacity == 0.25f && with.visual.background == rgba(1, 2, 3));
+  CHECK(without.visual.opacity == 1.0f && without.visual.background == 0u && !without.hidden());
+}
+
+/// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
+/// writes are not edits.
+void test_controlled_text() {
+  ControlledText t;
+  CHECK(t.app_published("a", ""));
+  CHECK(t.user_edited("ab") && !t.user_edited("ab"));
+  CHECK(!t.app_published("ab", "ab"));   // echo of the edit
+  CHECK(t.user_edited("abc"));
+  CHECK(!t.app_published("ab", "abc"));  // stale value while typing: keep the user's text
+  CHECK(t.app_published("ABC", "abc"));  // the app transformed the value
+  {
+    const auto write = t.host_write();
+    CHECK(t.writing() && !t.user_edited("ABC"));
+  }
+  CHECK(!t.writing() && !t.app_published("ABC", "ABC"));
+  CHECK(t.app_published("", "ABC"));     // the app clears the field
+  CHECK(t.user_edited("x") && !t.app_published("x", "x"));
+}
+
 void test_host_session_counter_and_state(const char* counter_module, const char* no_surface,
                                          const char* no_entry) {
   using demo::CounterApp;
@@ -308,11 +426,18 @@ void test_host_session_counter_and_state(const char* counter_module, const char*
   CHECK(scene_text(*host, CounterApp::kCount) == "Count: 1");  // state carried across reload
   CHECK(host->attach(&CounterApp::get_interface) && !host->has_module());
 
-  // Wake poster installs and clears without leaking callbacks.
+  // The wake poster receives runtime wakes (a state restore schedules a render) and, once
+  // cleared, never again.
   int wakes = 0;
   host->set_wake_poster([&wakes] { ++wakes; });
+  const std::vector<uint8_t> snap = host->snapshot_state();
+  CHECK(!snap.empty() && host->runtime().restore_state(snap) == NVE_RUNTIME_OK);
+  CHECK(wakes >= 1);
+  (void)host->pump();
+  const int seen = wakes;
   host->set_wake_poster({});
-  CHECK(wakes >= 0);
+  CHECK(host->runtime().restore_state(snap) == NVE_RUNTIME_OK);
+  CHECK(wakes == seen);
 }
 
 void set_env(const char* name, const char* value) {
@@ -396,6 +521,10 @@ int main() {
   test_resource_codecs();
   test_app_state_paths();
   test_writer_round_trip_and_retained_tree();
+  test_font_family_survives_text_slab_growth();
+  test_source_change_runs_a_full_pass();
+  test_dense_table_rows_follow_table_set();
+  test_controlled_text();
   test_host_session_counter_and_state(NVE_TEST_COUNTER_MODULE, NVE_TEST_NO_SURFACE_MODULE, NVE_TEST_NO_ENTRY_MODULE);
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_runtime_test: %d failure(s)\n", g_failures);

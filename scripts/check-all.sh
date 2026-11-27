@@ -626,14 +626,24 @@ suite_swiftui_kit() {
     --scratch-path "$BUILD_ROOT/swiftui-kit"
 }
 
+# Live runtime widget tests need libnve_runtime + the kitchen sink; the export fixture's generated
+# widget (gitignored `test/generated/`) is analyzed against the plugin API, then removed.
 suite_flutter_plugin() {
-  cd "$REPO_ROOT/hosts/flutter-plugin"
-  flutter pub get
-  flutter analyze
-  flutter test
+  local generated="$REPO_ROOT/hosts/flutter-plugin/test/generated"
+  host_runtime_ffi_libs || return 1
+  rm -rf "$BUILD_ROOT/flutter-export" "$generated"
+  cargo run --locked -q -p nve-cli -- codegen export "$REPO_ROOT/hosts/flutter-plugin/test/fixtures/export_spec.json" \
+    --target flutter --out "$BUILD_ROOT/flutter-export" || return 1
+  mkdir -p "$generated"
+  cp "$BUILD_ROOT"/flutter-export/flutter/*.generated.dart "$generated/"
+  local status=0
+  # `&&`, not `set -e`: errexit is ignored inside a subshell that is the left side of `||`.
+  (cd "$REPO_ROOT/hosts/flutter-plugin" && flutter pub get && flutter analyze --fatal-infos && flutter test) || status=1
+  rm -rf "$generated"
   if [ "$FLUTTER_BUILD_EXISTED" -eq 0 ] && [ -d "$FLUTTER_BUILD_DIR" ]; then
     rm -rf "$FLUTTER_BUILD_DIR"
   fi
+  return "$status"
 }
 
 # --- Execution --------------------------------------------------------------

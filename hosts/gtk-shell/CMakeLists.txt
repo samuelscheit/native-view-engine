@@ -59,3 +59,4 @@ target_compile_definitions(nve_gtk_shell_test PRIVATE
 target_link_libraries(nve_gtk_shell_test PRIVATE nve_gtk_shell_lib nve::host_test_support)
 add_dependencies(nve_gtk_shell_test nve_gtk_fixture_counter nve_gtk_fixture_no_surface nve_gtk_fixture_no_entry)
 add_test(NAME gtk_shell_test COMMAND nve_gtk_shell_test)
+nve_host_sanitize(nve_gtk_shell_lib nve_gtk_shell nve_gtk_shell_test)

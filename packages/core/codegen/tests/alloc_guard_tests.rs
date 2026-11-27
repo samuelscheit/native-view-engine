@@ -85,8 +85,8 @@ fn table_files_allocation_ceiling() {
     );
     assert!(
         // Java `NveTables` names every field value (`{FIELD}_{VALUE}`, ~650 constants).
-        allocs <= 4_400,
-        "tables took {allocs} allocations (ceiling 4400)"
+        allocs <= 5_400,
+        "tables took {allocs} allocations (ceiling 5400)"
     );
     assert!(
         bytes <= 5 * out,
@@ -104,8 +104,8 @@ fn every_host_file_allocation_ceiling() {
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
     assert!(
-        allocs <= 9_000,
-        "all files took {allocs} allocations (ceiling 9000)"
+        allocs <= 11_500,
+        "all files took {allocs} allocations (ceiling 11500)"
     );
     assert!(
         bytes <= 5 * out,

@@ -534,6 +534,32 @@ fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
 }
 
 #[test]
+fn replica_mirrors_unregistered_resource_kinds_as_opaque_bytes() {
+    let mut store = NodeStore::replica();
+    let kind = nve_abi::Key64::of("nve.res.test_unlinked_module_kind");
+    let bytes = [7u8, 0, 1, 2, 3];
+    for (id, ephemeral) in [(1, false), (2, true)] {
+        let rid = crate::ResourceId(id);
+        assert!(store.resources.define_at(rid, kind, ephemeral, &bytes), "unknown kind is kept, not rejected");
+        store.resources.retain(rid);
+        assert_eq!(store.resources.kind(rid), Some(kind));
+        assert!(store.resources.is_defined(rid));
+        assert_eq!(store.resource::<Shadows>(rid), None, "opaque bytes never downcast to a typed value");
+        let mut out = Vec::new();
+        assert!(store.resources.encode(rid, &mut out), "opaque entries re-encode their exact bytes");
+        assert_eq!(out, bytes);
+    }
+    assert!(!store.resources.define_at(crate::ResourceId(0), kind, false, &bytes), "id 0 stays reserved");
+
+    // Redefining an opaque slot with a decodable known kind clears the opaque flag.
+    crate::register_codec::<Shadows>();
+    let mut enc = Vec::new();
+    Shadows(vec![4.0]).encode(&mut enc);
+    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &enc));
+    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(&Shadows(vec![4.0])));
+}
+
+#[test]
 fn replica_define_at_retain_not_clobbered_by_intern() {
     crate::register_codec::<Shadows>();
     let mut store = NodeStore::replica();

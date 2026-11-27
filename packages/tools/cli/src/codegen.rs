@@ -306,7 +306,7 @@ mod tests {
 
         assert!(run_codegen_abi(&tmp, true).is_err());
         let written = run_codegen_abi(&tmp, false).expect("write every host ABI file");
-        assert_eq!(written.len(), 20, "core + canvas module mirrors + Java host files");
+        assert_eq!(written.len(), 21, "core + canvas module mirrors + Java host files");
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("packages/core/host-ts/src/generated/nve_abi.generated.ts");

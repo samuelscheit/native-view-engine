@@ -42,11 +42,15 @@ struct EventFactory {
     ev.value.tag = NVE_VAL_NULL;
     return ev;
   }
-  [[nodiscard]] NveDirectEvent press(uint32_t node, float x, float y) const noexcept {
-    NveDirectEvent ev = base(node, NVE_EVENT_PRESS, NVE_EVENT_PAYLOAD_POINT);
+  /// Point event (`Press`, `Pointer*`) at node-local `(x, y)`.
+  [[nodiscard]] NveDirectEvent pointer(uint32_t node, NveEventKind kind, float x, float y) const noexcept {
+    NveDirectEvent ev = base(node, kind, NVE_EVENT_PAYLOAD_POINT);
     ev.x = x;
     ev.y = y;
     return ev;
+  }
+  [[nodiscard]] NveDirectEvent press(uint32_t node, float x, float y) const noexcept {
+    return pointer(node, NVE_EVENT_PRESS, x, y);
   }
   /// `text` must outlive the dispatch.
   [[nodiscard]] NveDirectEvent text(uint32_t node, NveEventKind kind, std::string_view text) const noexcept {
@@ -99,6 +103,10 @@ class HostSession {
   [[nodiscard]] uint32_t surface_id() const noexcept { return events_.surface_id; }
   [[nodiscard]] bool has_app() const noexcept { return attached_ || runtime_.pair_is_connected(); }
   [[nodiscard]] bool has_module() const noexcept { return module_.loaded(); }
+  /// Bumped whenever the scene's source changes (attach, module load / reload, pair, unpair): the
+  /// runtime then replaces the scene without removals, so `RetainedTree::sync` takes it to run a
+  /// full pass.
+  [[nodiscard]] uint64_t source_generation() const noexcept { return source_generation_; }
   [[nodiscard]] std::string last_error() const { return runtime_.last_error(); }
 
   /// Installs (or with `{}` removes) the UI-thread wake poster.
@@ -113,10 +121,11 @@ class HostSession {
   /// Runs an in-process app (`nve_get_interface` linked into the host).
   bool attach(NveGetInterfaceFn get_interface) {
     if (get_interface == nullptr) return false;
-    (void)runtime_.pair_disconnect();
+    // A successful attach replaces any paired source; a failed one leaves everything running.
     if (runtime_.attach_app_interface(get_interface) != NVE_RUNTIME_OK) return false;
     module_.close();  // the previous module's app is gone
     attached_ = true;
+    ++source_generation_;
     return true;
   }
 
@@ -124,14 +133,14 @@ class HostSession {
   bool load_module(std::string_view path, ModuleError* out_error = nullptr, std::string* out_message = nullptr) {
     AppModule next = AppModule::open(path, out_error, out_message);
     if (!next.loaded()) return false;
-    (void)runtime_.pair_disconnect();
     if (runtime_.attach_app_interface(next.get_interface()) != NVE_RUNTIME_OK) {
-      if (out_error != nullptr) *out_error = ModuleError::MissingSurface;
+      if (out_error != nullptr) *out_error = ModuleError::Attach;
       if (out_message != nullptr) *out_message = runtime_.last_error();
       return false;
     }
     module_ = std::move(next);
     attached_ = true;
+    ++source_generation_;
     return true;
   }
 
@@ -151,7 +160,15 @@ class HostSession {
     }
     module_.close();
     attached_ = false;
+    ++source_generation_;
     return true;
+  }
+
+  /// Leaves paired mode (no-op when not paired).
+  void unpair() {
+    if (!runtime_.pair_is_connected()) return;
+    (void)runtime_.pair_disconnect();
+    ++source_generation_;
   }
 
   /// Advances the runtime (renders the app / applies paired frames) and forwards the app's
@@ -224,6 +241,7 @@ class HostSession {
   WakePoster wake_;
   EventSink sink_;
   EventFactory events_;
+  uint64_t source_generation_ = 0u;
   bool attached_ = false;
 };
 
