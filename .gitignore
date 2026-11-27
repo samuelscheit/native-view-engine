@@ -25,10 +25,11 @@ packages/modules/*/android/build/
 .idea/
 *.swp
 
-# Prebuilt caches & local traces
+# Prebuilt caches, local traces & harness session logs
 /.nve-cache
 *.perfetto.json
 *.trace.json
+.agents/improvements.md
 
 # Generated host ABI / table / XXH64-vector files (regenerated via `cargo run --locked -p nve-cli -- codegen abi`)
 *.generated.*

@@ -15,6 +15,7 @@ impl SurfaceState {
         self.published_view = NveRuntimeSceneView {
             schema_hash: NVE_RUNTIME_SCHEMA_HASH,
             frame_id: self.frame_id,
+            scene_epoch: self.scene_epoch,
             ..NveRuntimeSceneView::default()
         };
         self.published_resources = PublishedResources::None;
@@ -22,6 +23,7 @@ impl SurfaceState {
         self.published_dirty_buf.clear();
         self.delta.clear_sets();
         self.published_scroll.clear();
+        self.dirty_resources.clear();
         self.metrics.dirty_nodes = 0;
     }
 
@@ -109,6 +111,20 @@ impl SurfaceState {
         }
         self.published_scroll.sort_unstable_by_key(|s| s.node_id);
 
+        // Resource ids whose bytes changed this frame (created, recycled from the free list, or an
+        // ephemeral rewrite in place): host caches keyed by id drop exactly these.
+        self.dirty_resources.clear();
+        let store_resources = store.resources();
+        self.dirty_resources.extend(
+            changes
+                .resources_defined
+                .iter()
+                .filter(|&&id| store_resources.is_live(id))
+                .map(|id| id.0),
+        );
+        self.dirty_resources.sort_unstable();
+        self.dirty_resources.dedup();
+
         let rows_slice = store.node_rows();
         let text_slab = store.text_slab();
         let children_slab = store.children_slab();
@@ -123,6 +139,8 @@ impl SurfaceState {
             children_slab_len: children_slab.len() as u32,
             table_count: self.published_tables.len() as u32,
             scroll_count: self.published_scroll.len() as u32,
+            scene_epoch: self.scene_epoch,
+            dirty_resource_count: self.dirty_resources.len() as u32,
             moved_count: self.delta.moved.len() as u32,
             // `NodeRow` and `NveNodeRow` are locked bit-for-bit identical in `nve_store::store`.
             rows: slab_ptr(rows_slice).cast::<NveNodeRow>(),
@@ -134,6 +152,7 @@ impl SurfaceState {
             removed_ids: slab_ptr(&self.delta.removed),
             tables: slab_ptr(&self.published_tables),
             scroll_offsets: slab_ptr(&self.published_scroll),
+            dirty_resources: slab_ptr(&self.dirty_resources),
             moved_indices: slab_ptr(&self.delta.moved),
         };
 

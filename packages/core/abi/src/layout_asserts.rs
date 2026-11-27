@@ -342,19 +342,22 @@ const _: () = {
     assert!(offset_of!(NveRuntimeSceneView, children_slab_len) == 32);
     assert!(offset_of!(NveRuntimeSceneView, table_count) == 36);
     assert!(offset_of!(NveRuntimeSceneView, scroll_count) == 40);
-    assert!(offset_of!(NveRuntimeSceneView, moved_count) == 44);
-    assert!(offset_of!(NveRuntimeSceneView, rows) == 48);
-    assert!(offset_of!(NveRuntimeSceneView, rects) == 48 + PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, text_slab) == 48 + 2 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, children_slab) == 48 + 3 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, dirty_indices) == 48 + 4 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, removed_ids) == 48 + 5 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, tables) == 48 + 6 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, scroll_offsets) == 48 + 7 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeSceneView, moved_indices) == 48 + 8 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, scene_epoch) == 44);
+    assert!(offset_of!(NveRuntimeSceneView, dirty_resource_count) == 48);
+    assert!(offset_of!(NveRuntimeSceneView, moved_count) == 52);
+    assert!(offset_of!(NveRuntimeSceneView, rows) == 56);
+    assert!(offset_of!(NveRuntimeSceneView, rects) == 56 + PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, text_slab) == 56 + 2 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, children_slab) == 56 + 3 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, dirty_indices) == 56 + 4 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, removed_ids) == 56 + 5 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, tables) == 56 + 6 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, scroll_offsets) == 56 + 7 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, dirty_resources) == 56 + 8 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeSceneView, moved_indices) == 56 + 9 * PTR_SIZE);
     assert!(
         size_of::<NveRuntimeSceneView>()
-            == align_up(48 + 9 * PTR_SIZE, align_of::<NveRuntimeSceneView>())
+            == align_up(56 + 10 * PTR_SIZE, align_of::<NveRuntimeSceneView>())
     );
     assert!(size_of::<NveScrollOffset>() == 12);
     assert!(offset_of!(NveScrollOffset, node_id) == 0);
@@ -439,7 +442,7 @@ const _: () = {
     assert!(size_of::<crate::table::NveTableView>() == 72);
     assert!(align_of::<crate::table::NveTableView>() == 8);
 
-    assert!(size_of::<NveRuntimeSceneView>() == 120);
+    assert!(size_of::<NveRuntimeSceneView>() == 136);
     assert!(align_of::<NveRuntimeSceneView>() == 8);
     assert!(size_of::<crate::runtime::NveRuntimeApi>() == 16 + 24 * 8);
     assert!(align_of::<crate::runtime::NveRuntimeApi>() == 8);

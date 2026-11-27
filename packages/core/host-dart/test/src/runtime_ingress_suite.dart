@@ -34,7 +34,7 @@ void runRuntimeIngress(Check c) {
   c.eq(ffi.sizeOf<NveScrollOffset>(), scrollOffsetWords * 4, 'NveScrollOffset size');
   c.eq(ffi.sizeOf<NveTableView>(), 24 + 3 * _ptr, 'NveTableView size');
   final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
-  c.eq(viewSize, 48 + 8 * _ptr, 'NveRuntimeSceneView size (112 on 64-bit)');
+  c.eq(viewSize, 56 + 9 * _ptr, 'NveRuntimeSceneView size (128 on 64-bit)');
   int viewOffset(void Function(NveRuntimeSceneView v) write, [int width = 4]) =>
       _offsetOf<NveRuntimeSceneView>(viewSize, (p) => write(p.ref), width);
   c.eq(viewOffset((v) => v.schemaHash = 1, 8), 0, 'schema_hash @0');
@@ -42,10 +42,13 @@ void runRuntimeIngress(Check c) {
   c.eq(viewOffset((v) => v.nodeCapacity = 1), 16, 'node_capacity @16');
   c.eq(viewOffset((v) => v.tableCount = 1), 36, 'table_count @36');
   c.eq(viewOffset((v) => v.scrollCount = 1), 40, 'scroll_count @40');
+  c.eq(viewOffset((v) => v.sceneEpoch = 1), 44, 'scene_epoch @44');
+  c.eq(viewOffset((v) => v.dirtyResourceCount = 1), 48, 'dirty_resource_count @48');
   final p = ffi.Pointer<ffi.Uint32>.fromAddress(0x10);
-  c.eq(viewOffset((v) => v.rows = p.cast(), _ptr), 48, 'rows @48');
-  c.eq(viewOffset((v) => v.tables = p.cast(), _ptr), 48 + 6 * _ptr, 'tables');
-  c.eq(viewOffset((v) => v.scrollOffsets = p.cast(), _ptr), 48 + 7 * _ptr, 'scroll_offsets is last');
+  c.eq(viewOffset((v) => v.rows = p.cast(), _ptr), 56, 'rows @56');
+  c.eq(viewOffset((v) => v.tables = p.cast(), _ptr), 56 + 6 * _ptr, 'tables');
+  c.eq(viewOffset((v) => v.scrollOffsets = p.cast(), _ptr), 56 + 7 * _ptr, 'scroll_offsets');
+  c.eq(viewOffset((v) => v.dirtyResources = p.cast(), _ptr), 56 + 8 * _ptr, 'dirty_resources is last');
   c.eq(_offsetOf<NveScrollOffset>(12, (s) => s.ref.y = 1, 4), 8, 'NveScrollOffset.y @8');
   c.eq(_offsetOf<NveTableView>(ffi.sizeOf<NveTableView>(), (t) => t.ref.rows = p, _ptr), 24, 'NveTableView.rows @24');
 
@@ -78,6 +81,19 @@ void runRuntimeIngress(Check c) {
     rejects(SceneErrorKind.missingSlab, 'NULL dirty indices with count', (v) => v.dirtyCount = 1);
     rejects(SceneErrorKind.missingSlab, 'NULL tables with count', (v) => v.tableCount = 1);
     rejects(SceneErrorKind.missingSlab, 'NULL scroll offsets with count', (v) => v.scrollCount = 1);
+    rejects(SceneErrorKind.missingSlab, 'NULL dirty resources with count', (v) => v.dirtyResourceCount = 1);
+    reset();
+    view.ref
+      ..sceneEpoch = 9
+      ..dirtyResourceCount = 2
+      ..dirtyResources = words;
+    words[0] = 3;
+    words[1] = 7;
+    final withResources = readRuntimeScene(view.ref);
+    c.eq(withResources.sceneEpoch, 9, 'scene epoch');
+    c.eq(withResources.dirtyResources.toList().join(','), '3,7', 'dirty resources');
+    words[0] = 0;
+    words[1] = 0;
     rejects(SceneErrorKind.missingSlab, 'scroll slab with id 0', (v) {
       v
         ..scrollCount = 1

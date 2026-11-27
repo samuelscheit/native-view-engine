@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <utility>
 
 namespace nve::gtk {
 
@@ -10,7 +11,6 @@ using gtk_internal::px;
 
 namespace {
 
-constexpr const char* kViewKey = "nve-gtk-view";
 constexpr const char* kScrollOwnerKey = "nve-gtk-scroll-owner";  // on a scroll view's content `GtkFixed`
 
 std::string editable_text(const GtkNodeView& v) {
@@ -42,6 +42,13 @@ void on_text_changed(GtkNodeView* v) {
   if (!v->text.user_edited(current)) return;
   // May destroy `v` (the app can remove the input in response): touch nothing afterwards.
   (void)v->host->dispatch_text_change(v->id, current);
+}
+
+/// Disconnects every handler bound to `v` before dropping the widget's controller: a controller
+/// mid-emission (or still referenced by GTK) must never call back into a freed view.
+void remove_controller(GtkNodeView& v, GtkEventController* controller) {
+  g_signal_handlers_disconnect_by_data(controller, &v);
+  gtk_widget_remove_controller(v.widget, controller);
 }
 
 void on_entry_changed(GtkEditable*, gpointer data) { on_text_changed(static_cast<GtkNodeView*>(data)); }
@@ -275,11 +282,11 @@ void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
                                                    : G_OBJECT(gtk_text_view_get_buffer(GTK_TEXT_VIEW(v->widget)));
     g_signal_handler_disconnect(source, v->changed_handler);
     if (v->activate_handler != 0u) g_signal_handler_disconnect(v->widget, v->activate_handler);
-    gtk_widget_remove_controller(v->widget, v->focus);
+    remove_controller(*v, v->focus);
   } else if (v->kind == WidgetKind::Canvas) {
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(v->widget), nullptr, nullptr, nullptr);
   }
-  if (v->click != nullptr) gtk_widget_remove_controller(v->widget, GTK_EVENT_CONTROLLER(v->click));
+  if (v->click != nullptr) remove_controller(*v, GTK_EVENT_CONTROLLER(v->click));
   gtk_internal::detach_from_parent(v->widget);
   g_object_set_data(G_OBJECT(v->widget), kViewKey, nullptr);
   g_object_unref(v->widget);
@@ -324,7 +331,7 @@ void NveGtkHost::update_press(GtkNodeView& v, const host::NodeData& node) {
     g_signal_connect(v.click, "released", gtk_detail::to_gcallback(&on_click_released), &v);
     gtk_widget_add_controller(v.widget, GTK_EVENT_CONTROLLER(v.click));
   } else if (!needs && v.click != nullptr) {
-    gtk_widget_remove_controller(v.widget, GTK_EVENT_CONTROLLER(v.click));
+    remove_controller(v, GTK_EVENT_CONTROLLER(v.click));
     v.click = nullptr;
   }
   gtk_widget_set_focusable(v.widget, (node.interaction.focusable || v.kind == WidgetKind::Entry ||
@@ -335,13 +342,17 @@ void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
 #if GTK_CHECK_VERSION(4, 8, 0)
   gtk_picture_set_content_fit(GTK_PICTURE(v.widget), content_fit(node.image.fit));
 #endif
-  if (v.image_src == node.image.src && v.synced) return;
-  v.image_src = node.image.src;
+  // Only dirty nodes get here: resolve by content (the cache keys URL / encoded bytes), since a
+  // resource id can be republished with new bytes. `GtkPicture` refs its paintable, so a later
+  // cache eviction cannot free a shown texture.
   GdkTexture* tex = nullptr;
   if (const auto src = host::decode_image_src(scene_resource(node.image.src, host::kImageSrcKind))) {
     tex = textures_.get(*src);
   }
-  gtk_picture_set_paintable(GTK_PICTURE(v.widget), tex != nullptr ? GDK_PAINTABLE(tex) : nullptr);
+  GdkPaintable* paintable = tex != nullptr ? GDK_PAINTABLE(tex) : nullptr;
+  if (gtk_picture_get_paintable(GTK_PICTURE(v.widget)) != paintable) {
+    gtk_picture_set_paintable(GTK_PICTURE(v.widget), paintable);
+  }
 }
 
 void NveGtkHost::apply_geometry(GtkNodeView& v, const host::NodeData& node) {
@@ -385,7 +396,12 @@ void NveGtkHost::update_text_input(GtkNodeView& v, const host::NodeData& node) {
     const std::string placeholder(node.input.placeholder);
     gtk_entry_set_placeholder_text(e, placeholder.empty() ? nullptr : placeholder.c_str());
     gtk_entry_set_visibility(e, gtk_internal::node_semantics(node).secure ? FALSE : TRUE);
-    gtk_entry_set_max_length(e, static_cast<int>(node.input.max_length));
+    {
+      // Shrinking the limit truncates the shown text and emits "changed": a host write, not an
+      // edit. GTK accepts 0 (unlimited) ..= 65535.
+      const auto write = v.text.host_write();
+      gtk_entry_set_max_length(e, static_cast<int>(std::min<uint32_t>(node.input.max_length, GTK_ENTRY_BUFFER_MAX_SIZE)));
+    }
     gtk_editable_set_editable(GTK_EDITABLE(e), node.input.read_only ? FALSE : TRUE);
   } else {
     gtk_text_view_set_editable(GTK_TEXT_VIEW(v.widget), node.input.read_only ? FALSE : TRUE);
@@ -413,9 +429,9 @@ void NveGtkHost::update_scroll(GtkNodeView& v, const host::NodeData& node) {
   const auto apply = [&](float target, float& last, GtkAdjustment* adj) {
     if (std::isnan(target) || target == last) return;
     last = target;
-    v.scrolling_programmatically = true;
+    const bool prev = std::exchange(v.scrolling_programmatically, true);
     gtk_adjustment_set_value(adj, static_cast<double>(target));
-    v.scrolling_programmatically = false;
+    v.scrolling_programmatically = prev;
   };
   apply(node.scroll.requested_x, v.requested_x, gtk_scrolled_window_get_hadjustment(sw));
   apply(node.scroll.requested_y, v.requested_y, gtk_scrolled_window_get_vadjustment(sw));

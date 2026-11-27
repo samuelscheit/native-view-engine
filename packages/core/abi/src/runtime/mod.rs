@@ -273,8 +273,16 @@ pub struct NveRuntimeSceneView {
     /// Number of [`NveScrollOffset`]s in `scroll_offsets`.
     #[nve_abi(offset = 40)]
     pub scroll_count: u32,
-    /// Count of moved node slot indices in `moved_indices`.
+    /// Bumped whenever the runtime discards its scene (app attach / swap / detach, pairing
+    /// connect / disconnect, keyframe or wire-error reset): every node id, resource id, and host
+    /// cache from an earlier epoch is stale, even if the same ids reappear.
     #[nve_abi(offset = 44)]
+    pub scene_epoch: u32,
+    /// Count of resource ids in `dirty_resources`.
+    #[nve_abi(offset = 48)]
+    pub dirty_resource_count: u32,
+    /// Count of moved node slot indices in `moved_indices`.
+    #[nve_abi(offset = 52)]
     pub moved_count: u32,
     /// Borrowed slice of `node_capacity` [`NveNodeRow`] headers directly from `NodeStore`.
     pub rows: *const NveNodeRow,
@@ -295,6 +303,10 @@ pub struct NveRuntimeSceneView {
     /// Borrowed slice of `scroll_count` [`NveScrollOffset`]s sorted by `node_id`; scroll
     /// containers that are absent have a zero shift.
     pub scroll_offsets: *const NveScrollOffset,
+    /// Borrowed slice of `dirty_resource_count` live resource ids (re)defined on `frame_id`:
+    /// created, recycled, or rewritten in place. Host caches keyed by resource id (decoded
+    /// images, draw lists) MUST drop these entries; ids absent here kept their bytes.
+    pub dirty_resources: *const u32,
     /// Borrowed slice of `moved_count` live node indices not in `dirty_indices` whose geometry
     /// changed on `frame_id`: their absolute rect, or their origin relative to their parent's.
     /// A host re-applies only position / size to these.
@@ -313,6 +325,8 @@ impl Default for NveRuntimeSceneView {
             children_slab_len: 0,
             table_count: 0,
             scroll_count: 0,
+            scene_epoch: 0,
+            dirty_resource_count: 0,
             moved_count: 0,
             rows: core::ptr::null(),
             rects: core::ptr::null(),
@@ -322,6 +336,7 @@ impl Default for NveRuntimeSceneView {
             removed_ids: core::ptr::null(),
             tables: core::ptr::null(),
             scroll_offsets: core::ptr::null(),
+            dirty_resources: core::ptr::null(),
             moved_indices: core::ptr::null(),
         }
     }
@@ -431,6 +446,8 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "children_slab_len", "u32", b"@", offset_of!(NveRuntimeSceneView, children_slab_len));
     hash_rt_field(&mut h, "table_count", "u32", b"@", offset_of!(NveRuntimeSceneView, table_count));
     hash_rt_field(&mut h, "scroll_count", "u32", b"@", offset_of!(NveRuntimeSceneView, scroll_count));
+    hash_rt_field(&mut h, "scene_epoch", "u32", b"@", offset_of!(NveRuntimeSceneView, scene_epoch));
+    hash_rt_field(&mut h, "dirty_resource_count", "u32", b"@", offset_of!(NveRuntimeSceneView, dirty_resource_count));
     hash_rt_field(&mut h, "moved_count", "u32", b"@", offset_of!(NveRuntimeSceneView, moved_count));
     hash_rt_field(&mut h, "rows", "*const NveNodeRow", b"#", 10);
     hash_rt_field(&mut h, "rects", "*const NveLayoutRect", b"#", 11);
@@ -440,7 +457,8 @@ const fn compute_runtime_schema_hash() -> u64 {
     hash_rt_field(&mut h, "removed_ids", "*const u32", b"#", 15);
     hash_rt_field(&mut h, "tables", "*const NveTableView", b"#", 16);
     hash_rt_field(&mut h, "scroll_offsets", "*const NveScrollOffset", b"#", 17);
-    hash_rt_field(&mut h, "moved_indices", "*const u32", b"#", 18);
+    hash_rt_field(&mut h, "dirty_resources", "*const u32", b"#", 18);
+    hash_rt_field(&mut h, "moved_indices", "*const u32", b"#", 19);
 
     h.update(b";NveRuntimeApi");
     hash_rt_field(&mut h, "abi_version", "u32", b"@", offset_of!(NveRuntimeApi, abi_version));

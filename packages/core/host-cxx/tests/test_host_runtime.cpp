@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -256,6 +257,74 @@ void test_dense_table_rows_follow_table_set() {
   CHECK(without.visual.opacity == 1.0f && without.visual.background == 0u && !without.hidden());
 }
 
+/// App-written NaN / Inf / negative floats are sealed by `read_node`: neutral values, never NaN
+/// in a native setter, and `NodeData` / `TextStyle` equality stays reflexive.
+void test_read_node_seals_floats() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  for (uint32_t id = 1u; id <= 3u; ++id) w.create(id);
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, nan);
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, -inf);
+  w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, inf);
+  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, nan);
+  w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, inf);
+  w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_X, inf);
+  w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 12.0f);
+  w.set_f32(2u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_NOW, -inf);
+  w.set_f32(3u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 7.0f);
+  w.set_children(1u, std::vector<uint32_t>{2u, 3u});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  TextStyle parent;
+  parent.font_size = 18.0f;
+  parent.letter_spacing = 0.5f;
+  const NodeData n = read_node(guard->reader(), t, 2u, inherit_text_style(parent, t, guard->reader(), 2u));
+  CHECK(n.visual.opacity == 1.0f && n.visual.border_width == 0.0f && n.visual.border_radius == 0.0f);
+  CHECK(n.text_style.font_size == 18.0f && n.text_style.letter_spacing == 0.5f);
+  CHECK(n.text_style == n.text_style);
+  CHECK(std::isnan(n.scroll.requested_x) && n.scroll.requested_y == 12.0f);
+  CHECK(std::isnan(n.a11y.value_now));
+  CHECK(std::isfinite(n.rect.x) && std::isfinite(n.local.y) && n.rect.width >= 0.0f);
+  CHECK(read_node(guard->reader(), t, 3u, TextStyle{}).visual.opacity == 1.0f);  // clamped
+}
+
+/// A text node with children (Dioxus `text { "a" {b} }`: empty wrapper + run leaves) is a
+/// container; its leaves are the text views. It becomes text again once childless.
+void test_text_wrappers_are_containers() {
+  Harness h;
+  if (!h.host) return;
+  Nve2Writer& w = h.w;
+  for (uint32_t id = 1u; id <= 4u; ++id) w.create(id);
+  CHECK(w.set_str(2u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, ""));
+  CHECK(w.set_str(3u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "Count: "));
+  CHECK(w.set_str(4u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "3"));
+  w.set_children(1u, std::vector<uint32_t>{2u});
+  w.set_children(2u, std::vector<uint32_t>{3u, 4u});
+  CHECK(h.submit());
+  {
+    auto guard = h.host->runtime().acquire_scene();
+    CHECK(guard.has_value());
+    SceneTables t;
+    t.bind(guard->reader());
+    CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::View);
+    const NodeData run = read_node(guard->reader(), t, 3u, TextStyle{});
+    CHECK(run.kind == NodeKind::Text && run.text == "Count: " && accessible_label(run) == "Count: ");
+  }
+  w.set_children(2u, std::vector<uint32_t>{});
+  CHECK(h.submit());
+  auto guard = h.host->runtime().acquire_scene();
+  CHECK(guard.has_value());
+  SceneTables t;
+  t.bind(guard->reader());
+  CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::Text);
+}
+
 /// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host
 /// writes are not edits.
 void test_controlled_text() {
@@ -454,6 +523,8 @@ void test_event_bits() {
 
 int main() {
   test_event_bits();
+  test_read_node_seals_floats();
+  test_text_wrappers_are_containers();
   test_resource_codecs();
   test_app_state_paths();
   test_writer_round_trip_and_retained_tree();

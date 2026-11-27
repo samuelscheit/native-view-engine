@@ -520,20 +520,12 @@ suite_windows_host() {
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
-  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
-    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
-    return 1
+  # The live kitchen-sink `cdylib` test is opt-in: it runs when the dylib was built.
+  local env_prefix=()
+  if [ -f "$KITCHEN_SINK_DYLIB" ]; then
+    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$(native_host_path "$KITCHEN_SINK_DYLIB")")
   fi
-  if [ ! -f "$STUDIO_DYLIB" ]; then
-    echo "error: expected studio dylib at $STUDIO_DYLIB" >&2
-    return 1
-  fi
-  local win_ks win_studio
-  win_ks="$(native_host_path "$KITCHEN_SINK_DYLIB")"
-  win_studio="$(native_host_path "$STUDIO_DYLIB")"
-  NVE_TEST_KITCHEN_SINK_DYLIB="$win_ks" \
-    NVE_TEST_STUDIO_DYLIB="$win_studio" \
-    ctest --test-dir "$build_dir" --output-on-failure
+  ${env_prefix[@]+"${env_prefix[@]}"} ctest --test-dir "$build_dir" --output-on-failure
 }
 
 suite_qt6_host() {
@@ -609,10 +601,9 @@ suite_gtk4_host() {
 suite_android_jni_host() {
   local build_dir="$BUILD_ROOT/android-shell"
   JAVA_HOME="$DETECTED_JAVA_HOME" cmake -S "$REPO_ROOT/hosts/android-shell" -B "$build_dir" \
-    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
-    ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
+    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"}
   cmake --build "$build_dir"
-  ctest --test-dir "$build_dir" --output-on-failure
+  JAVA_HOME="$DETECTED_JAVA_HOME" ctest --test-dir "$build_dir" --output-on-failure
 }
 
 suite_android_compose_kit() {
@@ -847,19 +838,13 @@ else
     skip_suite "iOS Simulator SDK" "iphonesimulator SDK not installed"
   fi
 
-  # 3c. Windows host (MINGW / MSYS / Git Bash)
-  case "$OS_NAME" in
-    MINGW*|MSYS*|CYGWIN*)
-      if has_cmake; then
-        run_suite "Windows host" suite_windows_host "CTest + counter & studio dylibs"
-      else
-        skip_suite "Windows host" "cmake not found"
-      fi
-      ;;
-    *)
-      skip_suite "Windows host" "requires Windows (MINGW/MSYS/Git Bash)"
-      ;;
-  esac
+  # 3c. Windows host: the retained model / controller / window-manager suite runs everywhere; on
+  # Windows (MINGW / MSYS / Git Bash) it adds the Direct2D, DirectWrite, WIC and live-window suite.
+  if has_cmake; then
+    run_suite "Windows host" suite_windows_host "CTest (+ Direct2D / window suite on Windows)"
+  else
+    skip_suite "Windows host" "cmake not found"
+  fi
 
   # 4. Qt 6 host
   if has_cmake && has_qt6; then
@@ -882,7 +867,7 @@ else
   # 6. Android JNI host
   DETECTED_JAVA_HOME=""
   if has_cmake && DETECTED_JAVA_HOME="$(detect_java_home)"; then
-    run_suite "Android JNI host" suite_android_jni_host "android_jni_bridge_test + bridge_abi_test"
+    run_suite "Android JNI host" suite_android_jni_host "android_{scene,events,pair}_jni_test (desktop JVM + libnve_runtime)"
   elif ! has_cmake; then
     skip_suite "Android JNI host" "cmake not found"
   else

@@ -551,11 +551,12 @@ impl NodeStore {
     /// A table's storage exactly as published in `NveTableView`.
     pub fn table_storage(&self, slot: TableSlot) -> Option<TableStorage<'_>> {
         let c = self.columns[slot.0 as usize].as_ref()?;
+        let rc = c.published_row_count(self.capacity());
         if c.is_dense() {
             return Some(TableStorage {
-                rows: &c.rows,
+                rows: &c.rows[..rc * c.w],
                 owners: &[],
-                row_count: c.row_count().min(self.capacity()),
+                row_count: rc,
                 row_index_dir: &[],
                 row_index_pages: &[],
             });
@@ -564,7 +565,7 @@ impl NodeStore {
         Some(TableStorage {
             rows: &c.rows,
             owners: &c.owners,
-            row_count: c.row_count(),
+            row_count: rc,
             row_index_dir,
             row_index_pages,
         })

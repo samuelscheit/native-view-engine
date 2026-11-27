@@ -208,6 +208,7 @@ impl RuntimeBuilder {
                 replica_store,
                 state: SurfaceState {
                     frame_id: 0,
+                    scene_epoch: 0,
                     layout_engine_name,
                     realization_order,
                     wire_decoder: WireDecoder::default(),
@@ -222,6 +223,7 @@ impl RuntimeBuilder {
                     published_tables: Vec::new(),
                     published_dirty_buf: Vec::new(),
                     published_scroll: Vec::new(),
+                    dirty_resources: Vec::new(),
                     published_resources: PublishedResources::None,
                     published_view: NveRuntimeSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,

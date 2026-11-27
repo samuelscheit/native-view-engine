@@ -1,299 +1,184 @@
+// DirectWrite text layout and measurement for the Windows host (Windows only).
+//
+// `DirectWriteTextMeasurer` is installed as the runtime's text measurer (`measure_trampoline`
+// matches `NveRuntimeMeasureTextFn`) and builds the `IDWriteTextLayout`s the Direct2D painter
+// draws, so measured and painted text agree (family / size / weight / style / wrapping).
 #pragma once
 
-#include <nve/generated/nve_abi.generated.h>
-#include "nve_rn_component.hpp"
+#if !defined(_WIN32)
+#error "NveWinTextMeasurer.hpp is Windows-only"
+#endif
+
+#include "NveWinVisualTree.hpp"
+
+#include <nve/host/utf16.hpp>
+
+#include <dwrite.h>
+#include <dwrite_1.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <limits>
-#include <memory>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <utility>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <dwrite.h>
-#include <windows.h>
-#endif
+#include <vector>
 
 namespace nve::win {
 
-/// Configuration for native Windows DirectWrite text measurement & layout.
-struct TextMeasurerOptions {
-  std::string font_family{"Segoe UI"};
-  std::string locale{"en-US"};
-};
+/// UTF-8 -> UTF-16 (`wchar_t`); invalid sequences become U+FFFD.
+[[nodiscard]] inline std::wstring wide(std::string_view utf8) {
+  const std::u16string u16 = host::utf8_to_utf16_lossy(utf8);
+  return std::wstring(u16.begin(), u16.end());
+}
 
-/// RAII DirectWrite text measurer (with a portable compile-time fallback on non-Windows hosts
-/// so shared host headers and unit tests can be syntax-checked cross-platform).
+/// UTF-16 (`wchar_t`) -> UTF-8; empty for lone surrogates.
+[[nodiscard]] inline std::string narrow(std::wstring_view w) {
+  const std::u16string u16(w.begin(), w.end());
+  return host::utf16_to_utf8(u16).value_or(std::string());
+}
+
 class DirectWriteTextMeasurer {
  public:
-  explicit DirectWriteTextMeasurer(TextMeasurerOptions options = {})
-      : options_(std::move(options)) {
-#if defined(_WIN32)
-    font_family_w_ = utf8_to_wide(options_.font_family.empty() ? "Segoe UI" : options_.font_family);
-    locale_w_ = utf8_to_wide(options_.locale.empty() ? "en-US" : options_.locale);
-    IDWriteFactory* raw_factory = nullptr;
-    const HRESULT hr = ::DWriteCreateFactory(
-        DWRITE_FACTORY_TYPE_SHARED,
-        __uuidof(IDWriteFactory),
-        reinterpret_cast<IUnknown**>(&raw_factory));
-    if (SUCCEEDED(hr) && raw_factory != nullptr) {
-      factory_ = raw_factory;
-    }
-#endif
+  DirectWriteTextMeasurer() {
+    (void)::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown**>(&factory_));
+    wchar_t locale[LOCALE_NAME_MAX_LENGTH] = {};
+    if (::GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH) > 0) locale_ = locale;
   }
-
-  ~DirectWriteTextMeasurer() { release_resources(); }
-
+  ~DirectWriteTextMeasurer() {
+    for (auto& [key, fmt] : formats_) fmt->Release();
+    if (factory_ != nullptr) factory_->Release();
+  }
   DirectWriteTextMeasurer(const DirectWriteTextMeasurer&) = delete;
   DirectWriteTextMeasurer& operator=(const DirectWriteTextMeasurer&) = delete;
 
-  DirectWriteTextMeasurer(DirectWriteTextMeasurer&& other) noexcept
-      : options_(std::move(other.options_))
-#if defined(_WIN32)
-        ,
-        font_family_w_(std::move(other.font_family_w_)),
-        locale_w_(std::move(other.locale_w_)),
-        factory_(other.factory_),
-        format_cache_(std::move(other.format_cache_))
-#endif
-  {
-#if defined(_WIN32)
-    other.factory_ = nullptr;
-    other.format_cache_.clear();
-#endif
-  }
+  [[nodiscard]] bool valid() const noexcept { return factory_ != nullptr; }
+  [[nodiscard]] IDWriteFactory* factory() const noexcept { return factory_; }
 
-  DirectWriteTextMeasurer& operator=(DirectWriteTextMeasurer&& other) noexcept {
-    if (this != &other) {
-      release_resources();
-      options_ = std::move(other.options_);
-#if defined(_WIN32)
-      font_family_w_ = std::move(other.font_family_w_);
-      locale_w_ = std::move(other.locale_w_);
-      factory_ = other.factory_;
-      format_cache_ = std::move(other.format_cache_);
-      other.factory_ = nullptr;
-      other.format_cache_.clear();
-#endif
-    }
-    return *this;
-  }
-
-  bool is_valid() const noexcept {
-#if defined(_WIN32)
-    return factory_ != nullptr;
-#else
-    return true;
-#endif
-  }
-
-  const TextMeasurerOptions& options() const noexcept { return options_; }
-
-#if defined(_WIN32)
-  IDWriteFactory* factory() const noexcept { return factory_; }
-
-  static std::wstring utf8_to_wide(std::string_view utf8) {
-    if (utf8.empty()) {
-      return {};
-    }
-    if (utf8.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-      return {};
-    }
-    const int needed = ::MultiByteToWideChar(
-        CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (needed <= 0) {
-      return {};
-    }
-    std::wstring wide(static_cast<size_t>(needed), L'\0');
-    const int written = ::MultiByteToWideChar(
-        CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), needed);
-    if (written <= 0) {
-      return {};
-    }
-    return wide;
-  }
-
-  /// Create a DirectWrite `IDWriteTextLayout` using the shared factory and cached Segoe UI
-  /// `IDWriteTextFormat`. Caller owns the returned COM reference (`Release()`).
-  bool create_text_layout(
-      std::string_view text,
-      float font_size,
-      float max_width,
-      float max_height,
-      IDWriteTextLayout** out_layout) const {
-    if (out_layout == nullptr) {
-      return false;
-    }
-    *out_layout = nullptr;
-    if (factory_ == nullptr || text.empty()) {
-      return false;
-    }
-
-    const float sanitized_font = sanitize_font_size(font_size);
-    const std::wstring wide = utf8_to_wide(text);
-    if (wide.empty() || wide.size() > static_cast<size_t>(std::numeric_limits<UINT32>::max())) {
-      return false;
-    }
-
-    // Use a large finite bound instead of FLT_MAX so DirectWrite layout metrics never overflow.
-    constexpr float kUnconstrainedExtent = 1000000.0f;
-    const bool has_max_w = (max_width > 0.0f && std::isfinite(max_width));
-    const bool has_max_h = (max_height > 0.0f && std::isfinite(max_height));
-    const float layout_w = has_max_w ? max_width : kUnconstrainedExtent;
-    const float layout_h = has_max_h ? max_height : kUnconstrainedExtent;
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    IDWriteTextFormat* fmt = get_or_create_format_locked(sanitized_font);
-    if (fmt == nullptr) {
-      return false;
-    }
-
+  /// Layout of `text` styled by `style` in a `max_width` x `max_height` box (<= 0 / non-finite:
+  /// unconstrained); the caller `Release()`s it. `nullptr` for empty text or DirectWrite failure.
+  [[nodiscard]] IDWriteTextLayout* create_layout(std::string_view text, const TextPaint& style, float max_width,
+                                                 float max_height) const {
+    if (factory_ == nullptr || text.empty()) return nullptr;
+    const std::wstring w = wide(text);
+    if (w.empty() || w.size() > std::numeric_limits<UINT32>::max()) return nullptr;
+    IDWriteTextFormat* fmt = format(style);
+    if (fmt == nullptr) return nullptr;
+    constexpr float kUnbounded = 1.0e6f;  // finite: DirectWrite metrics overflow at FLT_MAX
+    const bool bounded_w = std::isfinite(max_width) && max_width > 0.0f;
+    const bool bounded_h = std::isfinite(max_height) && max_height > 0.0f;
     IDWriteTextLayout* layout = nullptr;
-    const HRESULT hr = factory_->CreateTextLayout(
-        wide.c_str(),
-        static_cast<UINT32>(wide.size()),
-        fmt,
-        layout_w,
-        layout_h,
-        &layout);
-    if (FAILED(hr) || layout == nullptr) {
-      return false;
+    if (FAILED(factory_->CreateTextLayout(w.c_str(), static_cast<UINT32>(w.size()), fmt, bounded_w ? max_width : kUnbounded,
+                                          bounded_h ? max_height : kUnbounded, &layout))) {
+      return nullptr;
     }
-
-    (void)layout->SetWordWrapping(
-        has_max_w ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
-    *out_layout = layout;
-    return true;
-  }
-#endif
-
-  /// Measure UTF-8 text in logical DIPs (1/96 in), honoring `max_width` word wrapping when
-  /// `max_width > 0` and finite. Empty text always returns `{0, 0}`.
-  NveIntrinsicSize measure(std::string_view text, float font_size, float max_width) const {
-    if (text.empty()) {
-      return NveIntrinsicSize{0.0f, 0.0f};
-    }
-
-    const float sanitized_font = sanitize_font_size(font_size);
-
-#if defined(_WIN32)
-    IDWriteTextLayout* layout = nullptr;
-    if (create_text_layout(text, sanitized_font, max_width, 1000000.0f, &layout)) {
-      DWRITE_TEXT_METRICS metrics{};
-      const HRESULT hr = layout->GetMetrics(&metrics);
-      layout->Release();
-      if (SUCCEEDED(hr)) {
-        const float raw_w =
-            std::max(metrics.width, metrics.widthIncludingTrailingWhitespace);
-        float out_w = (std::isfinite(raw_w) && raw_w > 0.0f) ? std::ceil(raw_w) + 1.0f : 0.0f;
-        if (max_width > 0.0f && std::isfinite(max_width) && out_w > max_width) {
-          out_w = max_width;
-        }
-        const float out_h =
-            (std::isfinite(metrics.height) && metrics.height > 0.0f) ? std::ceil(metrics.height)
-                                                                     : 0.0f;
-        return NveIntrinsicSize{out_w, out_h};
+    const DWRITE_TEXT_RANGE all{0u, static_cast<UINT32>(w.size())};
+    (void)layout->SetWordWrapping(style.wraps() && bounded_w ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
+    (void)layout->SetTextAlignment(alignment(style.text_align));
+    if ((style.text_decoration & NVE_TEXT_DECORATION_UNDERLINE) != 0u) (void)layout->SetUnderline(TRUE, all);
+    if ((style.text_decoration & NVE_TEXT_DECORATION_LINE_THROUGH) != 0u) (void)layout->SetStrikethrough(TRUE, all);
+    if (style.letter_spacing != 0.0f) {
+      IDWriteTextLayout1* l1 = nullptr;
+      if (SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1), reinterpret_cast<void**>(&l1)))) {
+        (void)l1->SetCharacterSpacing(0.0f, style.letter_spacing, 0.0f, all);
+        l1->Release();
       }
     }
-#endif
-
-    // Portable / fallback glyph metric approximation.
-    const float char_width = sanitized_font * 0.55f;
-    const float line_height = std::ceil(sanitized_font * 1.35f);
-    const float intrinsic_w = std::ceil(static_cast<float>(text.size()) * char_width + 2.0f);
-    const bool has_max_w = (max_width > 0.0f && std::isfinite(max_width));
-    const float out_w = has_max_w ? std::min(intrinsic_w, max_width) : intrinsic_w;
-    float out_h = line_height;
-    if (has_max_w && out_w > 0.0f && intrinsic_w > out_w) {
-      out_h = std::ceil(intrinsic_w / out_w) * line_height;
+    if (const float lh = line_height(style); lh > 0.0f) {
+      (void)layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lh, lh * 0.8f);
     }
-    return NveIntrinsicSize{out_w, out_h};
+    if (style.max_lines > 0u) clamp_lines(layout, style.max_lines);
+    return layout;
+  }
+
+  /// Measured size in DIPs (the runtime's `NveRuntimeMeasureTextFn` contract).
+  [[nodiscard]] NveIntrinsicSize measure(std::string_view text, float font_size, uint16_t font_weight,
+                                         float max_width) const {
+    TextPaint style;
+    style.font_size = std::isfinite(font_size) && font_size > 0.0f ? font_size : 16.0f;
+    style.font_weight = font_weight;
+    IDWriteTextLayout* layout = create_layout(text, style, max_width, 0.0f);
+    if (layout == nullptr) return NveIntrinsicSize{0.0f, 0.0f};
+    DWRITE_TEXT_METRICS m{};
+    const HRESULT hr = layout->GetMetrics(&m);
+    layout->Release();
+    if (FAILED(hr)) return NveIntrinsicSize{0.0f, 0.0f};
+    float w = std::ceil(std::max(m.width, m.widthIncludingTrailingWhitespace));
+    if (std::isfinite(max_width) && max_width > 0.0f) w = std::min(w, max_width);
+    return NveIntrinsicSize{std::isfinite(w) ? w : 0.0f, std::isfinite(m.height) ? std::ceil(m.height) : 0.0f};
+  }
+
+  static void measure_trampoline(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width,
+                                 float* out_width, float* out_height) {
+    const std::string_view sv(reinterpret_cast<const char*>(text.ptr), text.ptr != nullptr ? text.len : 0u);
+    const NveIntrinsicSize s = static_cast<const DirectWriteTextMeasurer*>(ctx)->measure(
+        sv, font_size, static_cast<uint16_t>(std::clamp<uint32_t>(font_weight, 1u, 1000u)), max_width);
+    *out_width = s.width;
+    *out_height = s.height;
   }
 
  private:
-  static float sanitize_font_size(float font_size) noexcept {
-    return (std::isfinite(font_size) && font_size > 0.0f) ? font_size : 16.0f;
+  static DWRITE_TEXT_ALIGNMENT alignment(uint8_t align) noexcept {
+    switch (align) {
+      case NVE_TEXT_ALIGN_CENTER: return DWRITE_TEXT_ALIGNMENT_CENTER;
+      case NVE_TEXT_ALIGN_END:
+      case NVE_TEXT_ALIGN_RIGHT: return DWRITE_TEXT_ALIGNMENT_TRAILING;
+      case NVE_TEXT_ALIGN_JUSTIFY: return DWRITE_TEXT_ALIGNMENT_JUSTIFIED;
+      default: return DWRITE_TEXT_ALIGNMENT_LEADING;
+    }
   }
 
-  void release_resources() noexcept {
-#if defined(_WIN32)
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [_, fmt] : format_cache_) {
-      if (fmt != nullptr) {
-        fmt->Release();
-      }
-    }
-    format_cache_.clear();
-    if (factory_ != nullptr) {
-      factory_->Release();
-      factory_ = nullptr;
-    }
-#endif
+  static float line_height(const TextPaint& s) noexcept {
+    const float v = s.line_height.value;
+    if (!(std::isfinite(v) && v > 0.0f)) return 0.0f;
+    if (s.line_height.unit == NVE_LENGTH_POINTS) return v;
+    if (s.line_height.unit == NVE_LENGTH_PERCENT) return s.font_size * v / 100.0f;
+    return 0.0f;
   }
 
-#if defined(_WIN32)
-  IDWriteTextFormat* get_or_create_format_locked(float font_size) const {
-    if (factory_ == nullptr) {
-      return nullptr;
+  /// Ellipsizes after `max_lines` lines: the layout box ends at that line and trims with "...".
+  void clamp_lines(IDWriteTextLayout* layout, uint32_t max_lines) const {
+    UINT32 count = 0u;
+    (void)layout->GetLineMetrics(nullptr, 0u, &count);
+    if (count <= max_lines) return;
+    std::vector<DWRITE_LINE_METRICS> lines(count);
+    if (FAILED(layout->GetLineMetrics(lines.data(), count, &count))) return;
+    float h = 0.0f;
+    for (uint32_t i = 0; i < max_lines && i < count; ++i) h += lines[i].height;
+    (void)layout->SetMaxHeight(std::min(layout->GetMaxHeight(), h));
+    IDWriteInlineObject* ellipsis = nullptr;
+    if (SUCCEEDED(factory_->CreateEllipsisTrimmingSign(layout, &ellipsis))) {
+      const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0u, 0u};
+      (void)layout->SetTrimming(&trimming, ellipsis);
+      ellipsis->Release();
     }
-    const uint32_t key = static_cast<uint32_t>(std::lround(font_size * 100.0f));
-    auto it = format_cache_.find(key);
-    if (it != format_cache_.end()) {
-      return it->second;
-    }
+  }
 
+  IDWriteTextFormat* format(const TextPaint& s) const {
+    const std::wstring family = s.font_family.empty() ? std::wstring(L"Segoe UI") : wide(s.font_family);
+    std::wstring key = family;
+    key += L'|' + std::to_wstring(std::lround(s.font_size * 100.0f)) + L'|' + std::to_wstring(s.font_weight) + L'|' +
+           std::to_wstring(s.font_style);
+    if (const auto it = formats_.find(key); it != formats_.end()) return it->second;
+    const DWRITE_FONT_STYLE style = s.font_style == NVE_FONT_STYLE_ITALIC    ? DWRITE_FONT_STYLE_ITALIC
+                                    : s.font_style == NVE_FONT_STYLE_OBLIQUE ? DWRITE_FONT_STYLE_OBLIQUE
+                                                                             : DWRITE_FONT_STYLE_NORMAL;
     IDWriteTextFormat* fmt = nullptr;
-    const HRESULT hr = factory_->CreateTextFormat(
-        font_family_w_.c_str(),
-        nullptr,
-        DWRITE_FONT_WEIGHT_REGULAR,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        font_size,
-        locale_w_.c_str(),
-        &fmt);
-    if (FAILED(hr) || fmt == nullptr) {
+    if (FAILED(factory_->CreateTextFormat(family.c_str(), nullptr,
+                                          static_cast<DWRITE_FONT_WEIGHT>(std::clamp<int>(s.font_weight, 1, 999)), style,
+                                          DWRITE_FONT_STRETCH_NORMAL, s.font_size, locale_.c_str(), &fmt))) {
       return nullptr;
     }
-    (void)fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     (void)fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    format_cache_.emplace(key, fmt);
+    formats_.emplace(std::move(key), fmt);
     return fmt;
   }
-#endif
 
-  TextMeasurerOptions options_;
-#if defined(_WIN32)
-  std::wstring font_family_w_;
-  std::wstring locale_w_;
-  IDWriteFactory* factory_{nullptr};
-  mutable std::mutex mutex_;
-  mutable std::unordered_map<uint32_t, IDWriteTextFormat*> format_cache_;
-#endif
+  IDWriteFactory* factory_ = nullptr;
+  std::wstring locale_ = L"en-us";
+  mutable std::unordered_map<std::wstring, IDWriteTextFormat*> formats_;  // family|size|weight|style
 };
 
-/// Build a `nve::TextMeasurerCallback` backed by a shared `DirectWriteTextMeasurer` instance,
-/// ready to pass directly into `nve::NativeHostSession::set_text_measurer(...)`.
-inline nve::TextMeasurerCallback make_directwrite_text_measurer(
-    std::shared_ptr<DirectWriteTextMeasurer> measurer = nullptr) {
-  if (!measurer) {
-    measurer = std::make_shared<DirectWriteTextMeasurer>();
-  }
-  return [measurer = std::move(measurer)](
-             std::string_view text, float font_size, float max_width) -> NveIntrinsicSize {
-    return measurer->measure(text, font_size, max_width);
-  };
-}
-
-} // namespace nve::win
+}  // namespace nve::win

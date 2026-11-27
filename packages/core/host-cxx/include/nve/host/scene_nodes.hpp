@@ -5,8 +5,14 @@
 // `NveNodeRow::primary_slot`), absolute and parent-relative rects, visual style, inherited
 // typography, text, image, text input, scroll, interaction, accessibility, and link fields.
 // String views borrow the scene and are valid only while its `RuntimeSceneGuard` is held.
+//
+// Floats are sealed here, once, for every host: app-written NaN / Inf / negative extents become
+// the field's neutral value (sizes 0, opacity 1, inherited typography, "no request" NaN for
+// programmatic scroll and absent a11y values), so no native setter ever sees them and `NodeData`
+// equality stays reflexive.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -19,7 +25,9 @@
 
 namespace nve::host {
 
-/// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`.
+/// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`. A text
+/// node with children is a `View`: a Dioxus `text { "Count: " {n} }` publishes an empty wrapper
+/// whose runs are child text leaves, so only leaves are realized as text (labels hold no children).
 enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 
 /// Subscription bit of `kind` in `nve.interaction.event_mask` (Rust `EventMask::of`; the three
@@ -49,6 +57,14 @@ enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
     case NVE_EVENT_TABLE_EVENT: return NVE_EVENT_MASK_TABLE_EVENT;
   }
   return 0u;
+}
+
+/// `v` when finite, else `fallback`.
+[[nodiscard]] inline float finite_or(float v, float fallback) noexcept { return std::isfinite(v) ? v : fallback; }
+/// A size / thickness: finite and non-negative, else 0.
+[[nodiscard]] inline float extent(float v) noexcept { return std::isfinite(v) && v > 0.0f ? v : 0.0f; }
+[[nodiscard]] inline NveLayoutRect sealed_rect(NveLayoutRect r) noexcept {
+  return NveLayoutRect{finite_or(r.x, 0.0f), finite_or(r.y, 0.0f), extent(r.width), extent(r.height)};
 }
 
 /// Fully resolved (inherited) text style.
@@ -228,9 +244,18 @@ struct SceneTables {
   const uint32_t set = r.bits(NVE_TABLE_TYPOGRAPHY_SET);
   TextStyle s = parent;
   if ((set & NVE_TYPOGRAPHY_SET_COLOR) != 0u) s.color = r.bits(NVE_TABLE_TYPOGRAPHY_COLOR);
-  if ((set & NVE_TYPOGRAPHY_SET_FONT_SIZE) != 0u) s.font_size = r.f32(NVE_TABLE_TYPOGRAPHY_FONT_SIZE);
-  if ((set & NVE_TYPOGRAPHY_SET_LINE_HEIGHT) != 0u) s.line_height = r.length(NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT);
-  if ((set & NVE_TYPOGRAPHY_SET_LETTER_SPACING) != 0u) s.letter_spacing = r.f32(NVE_TABLE_TYPOGRAPHY_LETTER_SPACING);
+  // Invalid values keep the inherited one.
+  if ((set & NVE_TYPOGRAPHY_SET_FONT_SIZE) != 0u) {
+    const float size = r.f32(NVE_TABLE_TYPOGRAPHY_FONT_SIZE);
+    if (extent(size) > 0.0f) s.font_size = size;
+  }
+  if ((set & NVE_TYPOGRAPHY_SET_LINE_HEIGHT) != 0u) {
+    const LengthValue lh = r.length(NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT);
+    if (std::isfinite(lh.value) && lh.value >= 0.0f) s.line_height = lh;
+  }
+  if ((set & NVE_TYPOGRAPHY_SET_LETTER_SPACING) != 0u) {
+    s.letter_spacing = finite_or(r.f32(NVE_TABLE_TYPOGRAPHY_LETTER_SPACING), s.letter_spacing);
+  }
   if ((set & NVE_TYPOGRAPHY_SET_FONT_FAMILY) != 0u) s.font_family = r.str(NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, scene);
   if ((set & NVE_TYPOGRAPHY_SET_MAX_LINES) != 0u) s.max_lines = r.bits(NVE_TABLE_TYPOGRAPHY_MAX_LINES);
   if ((set & NVE_TYPOGRAPHY_SET_FONT_WEIGHT) != 0u) {
@@ -265,13 +290,15 @@ struct SceneTables {
   n.id = make_node_id(index, row->generation);
   n.parent = index == kRootIndex ? 0u : row->parent;
   n.kind = t.kind_of(row->primary_slot);
-  n.rect = *scene.rect(index);
+  n.rect = sealed_rect(*scene.rect(index));
   n.local = n.rect;
   if (const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr) {
-    n.local.x -= p->x;
-    n.local.y -= p->y;
+    const NveLayoutRect parent = sealed_rect(*p);
+    n.local.x -= parent.x;
+    n.local.y -= parent.y;
   }
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
+  if (n.kind == NodeKind::Text && !n.children.empty()) n.kind = NodeKind::View;  // text wrapper of run leaves
   return n;
 }
 
@@ -285,9 +312,9 @@ struct SceneTables {
   const RowRef v = t.visual.at(index);
   n.visual = VisualStyle{v.bits(NVE_TABLE_VISUAL_BACKGROUND),
                          v.bits(NVE_TABLE_VISUAL_BORDER_COLOR),
-                         v.f32(NVE_TABLE_VISUAL_BORDER_WIDTH),
-                         v.f32(NVE_TABLE_VISUAL_BORDER_RADIUS),
-                         v.f32(NVE_TABLE_VISUAL_OPACITY),
+                         extent(v.f32(NVE_TABLE_VISUAL_BORDER_WIDTH)),
+                         extent(v.f32(NVE_TABLE_VISUAL_BORDER_RADIUS)),
+                         std::clamp(finite_or(v.f32(NVE_TABLE_VISUAL_OPACITY), 1.0f), 0.0f, 1.0f),
                          v.i32(NVE_TABLE_VISUAL_Z_INDEX),
                          static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_OVERFLOW_X)),
                          static_cast<uint8_t>(v.bits(NVE_TABLE_VISUAL_OVERFLOW_Y)),
@@ -324,8 +351,8 @@ struct SceneTables {
                           static_cast<uint8_t>(r.bits(NVE_TABLE_SCROLL_SCROLLBARS)),
                           r.boolean(NVE_TABLE_SCROLL_PAGING),
                           r.boolean(NVE_TABLE_SCROLL_BOUNCE),
-                          r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_X),
-                          r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y)};
+                          finite_or(r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_X), NAN),
+                          finite_or(r.f32(NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y), NAN)};
   }
   if (t.interaction.has(index)) {
     const RowRef r = t.interaction.at(index);
@@ -347,9 +374,9 @@ struct SceneTables {
                                r.str(NVE_TABLE_ACCESSIBILITY_LABEL, scene),
                                r.str(NVE_TABLE_ACCESSIBILITY_HINT, scene),
                                r.str(NVE_TABLE_ACCESSIBILITY_VALUE_TEXT, scene),
-                               r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_NOW),
-                               r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MIN),
-                               r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MAX)};
+                               finite_or(r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_NOW), NAN),
+                               finite_or(r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MIN), NAN),
+                               finite_or(r.f32(NVE_TABLE_ACCESSIBILITY_VALUE_MAX), NAN)};
   }
   n.href = t.link.at(index).str(NVE_TABLE_LINK_HREF, scene);
   return n;

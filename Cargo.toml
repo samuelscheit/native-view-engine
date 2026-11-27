@@ -31,6 +31,7 @@ members = [
     "packages/framework/mdx",
     "packages/framework/docs",
     "packages/tools/cli",
+    "packages/tools/host-fixtures",
     "packages/tools/arch-invariants",
     "packages/tools/bench",
     "packages/modules/blur",

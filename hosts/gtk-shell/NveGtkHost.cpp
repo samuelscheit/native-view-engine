@@ -233,6 +233,9 @@ bool NveGtkHost::dispatch_focus(uint32_t node_id, bool focused) {
 
 bool NveGtkHost::dispatch_scroll(uint32_t node_id, float offset_x, float offset_y, float content_width,
                                  float content_height) {
+  // Adjustments GTK clamps while sync resizes content are not user scrolls: the runtime clamps
+  // its own offsets, and mutating it mid-sync would race the scene being applied.
+  if (syncing_) return false;
   // Keep the runtime's scroll offset (hit testing, programmatic scroll clamping) in step with GTK.
   float cur_x = 0.0f;
   float cur_y = 0.0f;

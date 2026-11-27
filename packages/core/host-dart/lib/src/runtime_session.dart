@@ -624,5 +624,7 @@ RuntimeSceneReader readRuntimeScene(NveRuntimeSceneView v) {
         : require(v.scrollOffsets, v.scrollCount, 'scrollOffsets')
             .cast<ffi.Uint32>()
             .asTypedList(v.scrollCount * scrollOffsetWords),
+    sceneEpoch: v.sceneEpoch,
+    dirtyResources: u32s(v.dirtyResources, v.dirtyResourceCount, 'dirtyResources'),
   );
 }
