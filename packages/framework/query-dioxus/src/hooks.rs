@@ -245,12 +245,19 @@ where
             if !active_for_ver {
                 spawn_query_fetch::<P>(bridge, handle, snap.invalidation_version);
             }
-        } else if !fetched_for_key
-            || ((snap.is_fetching || active_for_ver) && last_inv_ver != snap.invalidation_version)
-        {
+        } else if !fetched_for_key {
             let mut st = state.write();
             st.fetched_for_key = true;
-            st.last_invalidation_ver = snap.invalidation_version;
+            if !snap.is_invalidated || active_for_ver {
+                st.last_invalidation_ver = snap.invalidation_version;
+            } else {
+                // Slot is invalidated with a non-bridge-owned external fetch in flight; keep
+                // `last_invalidation_ver` behind so if the external fetch is cancelled, this hook
+                // still refetches once `is_fetching` drops back to false.
+                st.last_invalidation_ver = snap.invalidation_version.wrapping_sub(1);
+            }
+        } else if active_for_ver && last_inv_ver != snap.invalidation_version {
+            state.write().last_invalidation_ver = snap.invalidation_version;
         }
     }
 

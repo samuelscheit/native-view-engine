@@ -72,17 +72,27 @@ impl WakeScheduler {
         Some((ScheduleKind::Microtask, token))
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_pumping(&self) -> bool {
+        self.pumping
+    }
+
     /// Enters a scheduled microtask or macrotask callback. Returns `false` if the host has shut
-    /// down, a pump is already active, or `token` was superseded (e.g. a queued microtask upgraded
-    /// to a macrotask paint yield).
+    /// down, `token` was superseded (e.g. a queued microtask upgraded to a macrotask paint yield),
+    /// or a pump is already active (in which case a matching active token clears `pending` and
+    /// folds into `woken_during_pump` so pump exit reschedules instead of wedging).
     pub(crate) fn on_scheduled_tick_enter(&mut self, token: u64) -> bool {
-        if !self.alive || self.pumping {
+        if !self.alive {
             return false;
         }
         if self.pending.map(|(_, t)| t) != Some(token) {
             return false;
         }
         self.pending = None;
+        if self.pumping {
+            self.woken_during_pump = true;
+            return false;
+        }
         self.pumping = true;
         self.woken_during_pump = false;
         true
@@ -111,7 +121,12 @@ impl WakeScheduler {
             PumpNext::Done => woken.then_some(ScheduleKind::Microtask),
         };
         match desired {
-            None => None,
+            None => {
+                // Settled pump (`PumpNext::Done` with no mid-pump wakes) drained all ready work,
+                // so invalidate any obsolete pre-existing pending microtask/macrotask token.
+                self.pending = None;
+                None
+            }
             Some(ScheduleKind::Macrotask) => {
                 if matches!(self.pending, Some((ScheduleKind::Macrotask, _))) {
                     return None;
@@ -137,7 +152,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::task::{Poll, Wake, Waker};
 
@@ -158,6 +173,7 @@ mod tests {
     struct TestFrameWaker {
         sched: Mutex<WakeScheduler>,
         queues: Mutex<Queues>,
+        mid_pump_wakes: AtomicUsize,
     }
 
     impl TestFrameWaker {
@@ -165,6 +181,7 @@ mod tests {
             Arc::new(Self {
                 sched: Mutex::new(WakeScheduler::new()),
                 queues: Mutex::new(Queues::default()),
+                mid_pump_wakes: AtomicUsize::new(0),
             })
         }
 
@@ -201,7 +218,13 @@ mod tests {
         }
 
         fn wake_by_ref(self: &Arc<Self>) {
-            let item = self.sched.lock().unwrap().on_wake();
+            let item = {
+                let mut sched = self.sched.lock().unwrap();
+                if sched.is_pumping() {
+                    self.mid_pump_wakes.fetch_add(1, Ordering::AcqRel);
+                }
+                sched.on_wake()
+            };
             self.enqueue(item);
         }
     }
@@ -226,6 +249,7 @@ mod tests {
         #[component]
         fn BurstApp() -> Element {
             let gate = dioxus_core::consume_context::<StepGate>();
+            let outer_waker = dioxus_core::consume_context::<Waker>();
             let mut count = use_signal(|| 0u32);
             let gate_for_task = gate.clone();
             use_hook(move || {
@@ -246,17 +270,21 @@ mod tests {
             });
             let cur = count();
             if cur > 0 && cur < 24 {
+                // Exercise the real mid-pump wake path (e.g. a cache/fetch wake firing during
+                // `pump_async_work` iterations 0..MAX_PUMPS) directly against `TestFrameWaker`!
+                outer_waker.wake_by_ref();
                 gate.trigger();
             }
             rsx! { text { "BURST:{cur}" } }
         }
 
+        let fw = TestFrameWaker::new();
         let gate = StepGate::default();
-        let surface = DioxusSurface::new(1, BurstApp).with_context(gate.clone());
+        let surface = DioxusSurface::new(1, BurstApp)
+            .with_context(gate.clone())
+            .with_context(Waker::from(Arc::clone(&fw)));
         let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
         session.render_initial().unwrap();
-
-        let fw = TestFrameWaker::new();
         // Initial boot pump arms the task's waker cleanly.
         assert!(fw.sched.lock().unwrap().on_direct_pump_enter());
         let init_out = session.pump_async_work(&Waker::from(Arc::clone(&fw))).unwrap();
@@ -273,8 +301,13 @@ mod tests {
         assert!(fw.queues.lock().unwrap().macrotasks.is_empty());
 
         // Running that microtask hits MAX_PUMPS (8) WHILE every step wakes `fw`:
-        // MUST schedule 1 macrotask (paint yield) and 0 microtasks!
+        // MUST absorb >= 8 mid-pump wakes and schedule 1 macrotask (paint yield) + 0 microtasks!
         assert!(fw.run_tick(first_tok, &mut session));
+        assert!(
+            fw.mid_pump_wakes.load(Ordering::Acquire) >= 8,
+            "test must exercise mid-pump wakes on TestFrameWaker (saw {})",
+            fw.mid_pump_wakes.load(Ordering::Acquire)
+        );
         {
             let q = fw.queues.lock().unwrap();
             assert_eq!(
@@ -340,7 +373,28 @@ mod tests {
         assert!(s.on_scheduled_tick_enter(tok3));
         assert_eq!(s.on_pump_exit(PumpNext::Done), None);
 
-        // 4. Re-entrancy (`PumpNext::Microtask`) schedules microtask; shutdown cancels all future ticks.
+        // 4. Settled direct pump (`Done` with no mid-pump wakes) clears stale pending microtask
+        //    or macrotask so the obsolete callback is skipped and future wakes run immediately.
+        let (km, stale_micro) = s.on_wake().unwrap();
+        assert_eq!(km, ScheduleKind::Microtask);
+        assert!(s.on_direct_pump_enter());
+        assert_eq!(s.on_pump_exit(PumpNext::Done), None);
+        assert!(!s.on_scheduled_tick_enter(stale_micro));
+        let (k_fresh, tok_fresh) = s.on_wake().expect("cleared pending allows immediate wake");
+        assert_eq!(k_fresh, ScheduleKind::Microtask);
+
+        // 5. Re-entrant scheduled tick arriving while `pumping == true` (e.g. nested event-loop
+        //    spin) clears `pending` and folds into `woken_during_pump` so exit reschedules.
+        assert!(s.on_direct_pump_enter());
+        assert!(!s.on_scheduled_tick_enter(tok_fresh));
+        let (k_re, tok_re) = s
+            .on_pump_exit(PumpNext::Done)
+            .expect("re-entrant tick arriving mid-pump must reschedule instead of wedging");
+        assert_eq!(k_re, ScheduleKind::Microtask);
+        assert!(s.on_scheduled_tick_enter(tok_re));
+        assert_eq!(s.on_pump_exit(PumpNext::Done), None);
+
+        // 6. Re-entrancy (`PumpNext::Microtask`) schedules microtask; shutdown cancels all future ticks.
         assert!(s.on_direct_pump_enter());
         let (k4, tok4) = s.on_pump_exit(PumpNext::Microtask).unwrap();
         assert_eq!(k4, ScheduleKind::Microtask);

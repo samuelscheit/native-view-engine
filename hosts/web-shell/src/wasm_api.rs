@@ -436,75 +436,37 @@ where
     let trigger_for_events = snapshot_trigger.clone();
     session.borrow_mut().backend_mut().set_render_callback(move || {
         if let Ok(mut guard) = session_for_events.try_borrow_mut() {
-            match guard.pump_events() {
-                Ok(ev_frame) => {
-                    #[cfg(feature = "app-issues")]
-                    let async_rendered = wake_for_events
-                        .run_direct_pump(|waker| match guard.pump_async_work(waker) {
-                            Ok(outcome) => (
-                                if outcome.hit_cap {
-                                    PumpNext::Macrotask
-                                } else {
-                                    PumpNext::Done
-                                },
-                                outcome.timing.is_some(),
-                            ),
-                            Err(err) => {
-                                web_sys::console::error_1(&JsValue::from_str(&format!(
-                                    "[NVE Web] {err}"
-                                )));
-                                (PumpNext::Done, false)
-                            }
-                        })
-                        .unwrap_or(false);
-                    #[cfg(not(feature = "app-issues"))]
-                    let async_rendered = false;
-                    if (ev_frame.is_some() || async_rendered)
-                        && let Some(t) = trigger_for_events.as_ref()
-                    {
-                        t.schedule_debounced();
-                    }
-                }
+            #[cfg(feature = "app-issues")]
+            let rendered = wake_for_events.run_event_pump(&mut guard);
+            #[cfg(not(feature = "app-issues"))]
+            let rendered = match guard.pump_events() {
+                Ok(f) => f.is_some(),
                 Err(err) => {
                     web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                    false
                 }
+            };
+            if rendered && let Some(t) = trigger_for_events.as_ref() {
+                t.schedule_debounced();
             }
         }
     });
 
     {
         let mut guard = session.borrow_mut();
-        guard
-            .render_initial()
-            .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
-        // Immediately pump any pre-hydration events / reconciled dirty controls queued during
-        // Frame-0 hydration handoff (and arm the async Dioxus scheduler waker when enabled).
-        let replayed_frame = guard
-            .pump_events()
-            .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?;
         #[cfg(feature = "app-issues")]
-        let async_rendered = async_wake
-            .run_direct_pump(|waker| match guard.pump_async_work(waker) {
-                Ok(outcome) => (
-                    if outcome.hit_cap {
-                        PumpNext::Macrotask
-                    } else {
-                        PumpNext::Done
-                    },
-                    Ok(outcome.timing.is_some()),
-                ),
-                Err(err) => (
-                    PumpNext::Done,
-                    Err(JsValue::from_str(&format!("initial async pump failed: {e}", e = err))),
-                ),
-            })
-            .transpose()?
-            .unwrap_or(false);
+        let boot_rendered = async_wake.run_boot_pump(&mut guard)?;
         #[cfg(not(feature = "app-issues"))]
-        let async_rendered = false;
-        if (replayed_frame.is_some() || async_rendered)
-            && let Some(t) = snapshot_trigger.as_ref()
-        {
+        let boot_rendered = {
+            guard
+                .render_initial()
+                .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
+            guard
+                .pump_events()
+                .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?
+                .is_some()
+        };
+        if boot_rendered && let Some(t) = snapshot_trigger.as_ref() {
             t.schedule_debounced();
         }
     }

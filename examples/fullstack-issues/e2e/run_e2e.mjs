@@ -434,6 +434,8 @@ function waitForEvent(cdp, method, predicate = () => true, timeoutMs = 15000, de
     };
     cdp.on(method, handler);
   });
+  // Suppress unhandledRejection if a timeout fires before the caller attaches `await`.
+  promise.catch(() => {});
   return { promise, cancel };
 }
 

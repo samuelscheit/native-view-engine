@@ -420,8 +420,8 @@ async fn static_wasm_asset_handler_enforces_extension_allowlist_and_nosniff() {
     std::fs::create_dir_all(&pkg_dir).unwrap();
     std::fs::write(pkg_dir.join("manifest.json"), b"{\"js\":\"a.js\"}").unwrap();
     std::fs::write(pkg_dir.join("secret.txt"), b"do not serve").unwrap();
-    // Allowlisted `.json` placed OUTSIDE `pkg_dir` so traversal & symlink tests actually fail
-    // if `resolve_safe_subpath`'s `..` or `canonicalize`/`starts_with` checks are removed.
+    // Allowlisted `.json` placed OUTSIDE `pkg_dir` for end-to-end defence-in-depth verification
+    // (`Component::Normal` + canonicalized containment; unit test in `lib.rs` isolates `..`).
     std::fs::write(tmp.join("outside.json"), b"{\"secret\":true}").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(tmp.join("outside.json"), pkg_dir.join("escape.json")).unwrap();

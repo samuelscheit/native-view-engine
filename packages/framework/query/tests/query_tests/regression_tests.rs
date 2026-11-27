@@ -574,10 +574,10 @@ fn concurrent_multithreaded_leader_cancel_never_causes_follower_to_return_none()
         ));
 
         let follower_thread = std::thread::spawn(move || {
-            b_follower.wait();
             let waker = Waker::from(Arc::new(NotifyThread(std::thread::current())));
             let mut cx = Context::from_waker(&waker);
             let mut fut = Box::pin(c_follower.fetch_handle::<GetItem>(h));
+            b_follower.wait();
             loop {
                 match Pin::as_mut(&mut fut).poll(&mut cx) {
                     Poll::Ready(res) => return res,

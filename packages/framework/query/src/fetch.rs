@@ -285,3 +285,102 @@ impl<T, C> QueryClient<T, C> {
         wake_out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use nve_rpc::{procedures, BoxFuture, CborCodec, RawCall, RawReply, Transport, TransportError};
+
+    use super::FetchStart;
+    use crate::{QueryClient, QueryOptions};
+
+    procedures! {
+        query FetchA = "fetch.v1.Test/A" (u64) -> u64, ();
+        query FetchB = "fetch.v1.Test/B" (u64) -> u64, ();
+    }
+
+    #[derive(Clone, Default)]
+    struct DummyTransport;
+
+    impl Transport for DummyTransport {
+        fn call_raw<'a>(&'a self, _req: RawCall) -> BoxFuture<'a, Result<RawReply, TransportError>> {
+            Box::pin(async { Err(TransportError::network("unused")) })
+        }
+    }
+
+    #[test]
+    fn begin_fetch_or_wait_snapshot_transitions_atomically_across_cancel_and_complete() {
+        let clock = crate::Shared::new(crate::ManualClock::new(1_000));
+        let client = QueryClient::with_clock(
+            DummyTransport,
+            CborCodec::default(),
+            clock.clone(),
+            crate::QueryClientConfig::default(),
+        );
+        let h = client
+            .subscribe::<FetchA>(&1, QueryOptions::default().gc_time_ms(0))
+            .unwrap();
+
+        // 1. Cold slot starts atomically and marks slot in-flight.
+        let ticket1 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Started(ticket, call) => {
+                assert_eq!(call.name, <FetchA as nve_rpc::Procedure>::NAME);
+                ticket
+            }
+            _ => panic!("expected FetchStart::Started on cold slot"),
+        };
+
+        // 2. Concurrent follower sees exact pre-wait `(completed_seq=0, inv_ver)` in one lock.
+        let expected_inv_ver = client.read::<FetchA>(h).invalidation_version;
+        match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Wait {
+                completed_seq,
+                inv_ver,
+            } => {
+                assert_eq!(completed_seq, 0);
+                assert_eq!(inv_ver, expected_inv_ver);
+            }
+            _ => panic!("expected FetchStart::Wait while in-flight"),
+        }
+
+        // 3. Mismatched procedure returns Unavailable even while slot is live & in-flight.
+        assert!(matches!(
+            client.begin_fetch_or_wait_snapshot::<FetchB>(h),
+            FetchStart::Unavailable
+        ));
+
+        // 4. Immediately after leader cancel, next caller atomically takes over (`Started`, never
+        //    `Unavailable` or stale `Wait`).
+        client.cancel_fetch_ticket(ticket1);
+        let ticket2 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Started(ticket, _) => ticket,
+            _ => panic!("expected atomic takeover FetchStart::Started after cancel"),
+        };
+
+        // 5. Completing ticket2 bumps `completed_seq` to 1; a subsequent fetch exposes `1` to waiters.
+        let reply = nve_rpc::CallReply {
+            value: 42u64,
+            raw_body: bytes::Bytes::from_static(&[0x18, 0x2a]),
+            invalidated_tags: Vec::new(),
+            invalidate_all: false,
+        };
+        assert!(client.complete_fetch::<FetchA>(ticket2, Ok(reply)));
+        let ticket3 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Started(ticket, _) => ticket,
+            _ => panic!("expected Started after prior fetch completed"),
+        };
+        match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Wait { completed_seq, .. } => assert_eq!(completed_seq, 1),
+            _ => panic!("expected Wait with completed_seq=1"),
+        }
+        client.cancel_fetch_ticket(ticket3);
+
+        // 6. Evicted handle returns Unavailable.
+        client.unsubscribe(h);
+        clock.advance(1);
+        assert_eq!(client.gc_sweep(64), 1);
+        assert!(matches!(
+            client.begin_fetch_or_wait_snapshot::<FetchA>(h),
+            FetchStart::Unavailable
+        ));
+    }
+}

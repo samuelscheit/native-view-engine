@@ -312,3 +312,31 @@ where
         hyper::service::Service::call(self, req)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_safe_subpath;
+
+    #[test]
+    fn resolve_safe_subpath_rejects_parent_dir_even_inside_root() {
+        let tmp = std::env::temp_dir().join(format!(
+            "nve-issues-subpath-unit-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let pkg = tmp.join("pkg");
+        let sub = pkg.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(pkg.join("manifest.json"), b"{}").unwrap();
+        std::fs::write(tmp.join("outside.json"), b"{}").unwrap();
+
+        assert!(resolve_safe_subpath(&pkg, "manifest.json").is_some());
+        // Resolves INSIDE `pkg` after canonicalization, so this fails unless `Component::Normal`
+        // explicitly rejects `..` components.
+        assert!(resolve_safe_subpath(&pkg, "sub/../manifest.json").is_none());
+        assert!(resolve_safe_subpath(&pkg, "../outside.json").is_none());
+        assert!(resolve_safe_subpath(&pkg, "sub\\manifest.json").is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

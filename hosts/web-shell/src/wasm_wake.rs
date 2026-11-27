@@ -122,12 +122,42 @@ impl WebAsyncWakeGuard {
         Self { inner, waker }
     }
 
-    #[inline]
-    pub(crate) fn run_direct_pump<R>(
+    /// Runs Frame-0 render, pre-hydration event replay, and initial async pump inside a single
+    /// direct-pump window so mount-time wakes coalesce cleanly without spawning a redundant tick.
+    pub(crate) fn run_boot_pump(
         &self,
-        f: impl FnOnce(&Waker) -> (PumpNext, R),
-    ) -> Option<R> {
-        self.inner.run_direct_pump(&self.waker, f)
+        guard: &mut crate::session::WebAppSession,
+    ) -> Result<bool, JsValue> {
+        self.inner
+            .run_direct_pump(&self.waker, |waker| {
+                if let Err(e) = guard.render_initial() {
+                    return (
+                        PumpNext::Done,
+                        Err(JsValue::from_str(&format!("initial frame failed: {e}"))),
+                    );
+                }
+                let replayed = match guard.pump_events() {
+                    Ok(f) => f.is_some(),
+                    Err(e) => {
+                        return (
+                            PumpNext::Done,
+                            Err(JsValue::from_str(&format!("post-hydration event pump failed: {e}"))),
+                        );
+                    }
+                };
+                match guard.pump_async_work(waker) {
+                    Ok(out) => (
+                        if out.hit_cap { PumpNext::Macrotask } else { PumpNext::Done },
+                        Ok(replayed || out.timing.is_some()),
+                    ),
+                    Err(e) => (
+                        PumpNext::Done,
+                        Err(JsValue::from_str(&format!("initial async pump failed: {e}"))),
+                    ),
+                }
+            })
+            .transpose()
+            .map(|opt| opt.unwrap_or(false))
     }
 
     #[inline]
@@ -148,12 +178,30 @@ pub(crate) struct AsyncWakeHandle {
 
 #[cfg(feature = "app-issues")]
 impl AsyncWakeHandle {
-    #[inline]
-    pub(crate) fn run_direct_pump<R>(
-        &self,
-        f: impl FnOnce(&Waker) -> (PumpNext, R),
-    ) -> Option<R> {
-        self.inner.run_direct_pump(&self.waker, f)
+    /// Pumps DOM events and any spawned async work inside one direct-pump window so task-spawning
+    /// clicks never allocate a wasted microtask closure before synchronous draining.
+    pub(crate) fn run_event_pump(&self, guard: &mut crate::session::WebAppSession) -> bool {
+        self.inner
+            .run_direct_pump(&self.waker, |waker| {
+                let ev = match guard.pump_events() {
+                    Ok(f) => f.is_some(),
+                    Err(err) => {
+                        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                        return (PumpNext::Done, false);
+                    }
+                };
+                match guard.pump_async_work(waker) {
+                    Ok(out) => (
+                        if out.hit_cap { PumpNext::Macrotask } else { PumpNext::Done },
+                        ev || out.timing.is_some(),
+                    ),
+                    Err(err) => {
+                        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                        (PumpNext::Done, ev)
+                    }
+                }
+            })
+            .unwrap_or(false)
     }
 }
 
