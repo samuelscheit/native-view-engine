@@ -1,0 +1,103 @@
+error[E0277]: the trait bound `ResourceId: OptWord` is not satisfied
+ --> tests/ui/bad_opt_res_id.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^ the trait `OptWord` is not implemented for `ResourceId`
+  |
+  = help: the following other types implement trait `OptWord`:
+            NodeId
+            NonZero<u16>
+            NonZero<u32>
+            NonZero<u8>
+            SurfaceId
+            bool
+            i16
+            i8
+          and $N others
+  = note: required for `Option<ResourceId>` to implement `WordValue`
+  = note: required for `Option<ResourceId>` to implement `TableField`
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `ResourceId: OptWord` is not satisfied
+ --> tests/ui/bad_opt_res_id.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^ the trait `OptWord` is not implemented for `ResourceId`
+  |
+  = help: the following other types implement trait `OptWord`:
+            NodeId
+            NonZero<u16>
+            NonZero<u32>
+            NonZero<u8>
+            SurfaceId
+            bool
+            i16
+            i8
+          and $N others
+  = note: required for `Option<ResourceId>` to implement `WordValue`
+  = note: required for `Option<ResourceId>` to implement `ScalarField`
+note: required by a bound in `Prop::<T, V>::new_wide`
+ --> src/table/field.rs
+  |
+  | impl<T: NveTable, V: ScalarField> Prop<T, V> {
+  |                      ^^^^^^^^^^^ required by this bound in `Prop::<T, V>::new_wide`
+...
+  |     pub const unsafe fn new_wide(word: u8, shift: u8, bits: u8, val_word: u8) -> Self {
+  |                         -------- required by a bound in this associated function
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `ResourceId: OptWord` is not satisfied
+ --> tests/ui/bad_opt_res_id.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^ the trait `OptWord` is not implemented for `ResourceId`
+  |
+  = help: the following other types implement trait `OptWord`:
+            NodeId
+            NonZero<u16>
+            NonZero<u32>
+            NonZero<u8>
+            SurfaceId
+            bool
+            i16
+            i8
+          and $N others
+  = note: required for `Option<ResourceId>` to implement `WordValue`
+  = note: required for `Option<ResourceId>` to implement `TableField`
+note: required by a bound in `read_ref`
+ --> src/table/field.rs
+  |
+  | pub trait ScalarField: TableField + Copy {
+  |                        ^^^^^^^^^^ required by this bound in `ScalarField::read_ref`
+...
+  |     fn read_ref(row: RowRef<'_>, word: usize, shift: u32, mask: u32, val_word: usize) -> Self {
+  |        -------- required by a bound in this associated function
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `ResourceId: OptWord` is not satisfied
+ --> tests/ui/bad_opt_res_id.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^ the trait `OptWord` is not implemented for `ResourceId`
+  |
+  = help: the following other types implement trait `OptWord`:
+            NodeId
+            NonZero<u16>
+            NonZero<u32>
+            NonZero<u8>
+            SurfaceId
+            bool
+            i16
+            i8
+          and $N others
+  = note: required for `Option<ResourceId>` to implement `WordValue`
+  = note: required for `Option<ResourceId>` to implement `TableField`
+note: required by a bound in `write_row`
+ --> src/table/field.rs
+  |
+  | pub trait ScalarField: TableField + Copy {
+  |                        ^^^^^^^^^^ required by this bound in `ScalarField::write_row`
+  |     fn read_row(row: &[Word], word: usize, shift: u32, mask: u32, val_word: usize) -> Self;
+  |     fn write_row(
+  |        --------- required by a bound in this associated function
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

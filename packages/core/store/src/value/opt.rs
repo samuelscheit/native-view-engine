@@ -3,6 +3,8 @@
 //! Every `OptWord` encoding guarantees that bit pattern `0` represents `None`, so all-zero
 //! default table words decode cleanly to `None` with zero per-field initialization cost.
 
+use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
+
 use nve_abi::table::{FieldKind, OptEncoding};
 use nve_abi::SurfaceId;
 
@@ -67,22 +69,6 @@ use crate::NodeId;
 /// let _ = ResOk::KEY;
 /// ```
 ///
-/// Rejecting raw `ResourceId` scalar field (must use refcounted `Res<R>`):
-/// ```compile_fail,E0277
-/// use nve_store::{NveTable, ResourceId};
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_res", storage = "sparse")]
-/// struct BadRes { #[effect(paint)] raw: ResourceId }
-/// ```
-///
-/// Rejecting raw `Option<ResourceId>` field (must use refcounted `Res<R>`):
-/// ```compile_fail,E0277
-/// use nve_store::{NveTable, ResourceId};
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_opt_res", storage = "sparse")]
-/// struct BadOptRes { #[effect(paint)] raw: Option<ResourceId> }
-/// ```
-///
 /// Valid integer narrowing `#[bits(N)]` (positive control):
 /// ```
 /// use nve_store::NveTable;
@@ -95,74 +81,9 @@ use crate::NodeId;
 /// assert_eq!(<BitsOk as NveTable>::DESC.words(), 1);
 /// ```
 ///
-/// Rejecting out-of-range signed narrowed `#[bits(4)] #[default(8i8)]` at compile time:
-/// ```compile_fail,E0080
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_narrow_i8", storage = "sparse")]
-/// struct BadNarrowI8 { #[effect(paint)] #[bits(4)] #[default(8i8)] x: i8 }
-/// ```
-///
-/// Rejecting out-of-range unsigned narrowed `#[bits(4)] #[default(16u8)]` at compile time:
-/// ```compile_fail,E0080
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_narrow_u8", storage = "sparse")]
-/// struct BadNarrowU8 { #[effect(paint)] #[bits(4)] #[default(16u8)] x: u8 }
-/// ```
-///
-/// Rejecting ill-typed defaults (`#[default(true)]` on `u8`, `#[default(Some(2.5))]` on `Option<u32>`):
-/// ```compile_fail,E0308
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_def_ty", storage = "sparse")]
-/// struct BadDefTy { #[effect(paint)] #[default(true)] x: u8 }
-/// ```
-/// ```compile_fail,E0308
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_opt_def_ty", storage = "sparse")]
-/// struct BadOptDefTy { #[effect(paint)] #[default(Some(2.5))] x: Option<u32> }
-/// ```
-///
-/// Rejecting redundant `#[bits(8)]` on `u8`:
-/// ```compile_fail
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_bits_u8", storage = "sparse")]
-/// struct BadBitsU8 { #[effect(paint)] #[bits(8)] x: u8 }
-/// ```
-///
-/// Rejecting `#[bits(1)]` on `bool`:
-/// ```compile_fail
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_bits_bool", storage = "sparse")]
-/// struct BadBitsBool { #[effect(paint)] #[bits(1)] x: bool }
-/// ```
-///
-/// Rejecting `#[bits(4)]` on `Option<u8>`:
-/// ```compile_fail
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.bad_bits_opt", storage = "sparse")]
-/// struct BadBitsOpt { #[effect(paint)] #[bits(4)] x: Option<u8> }
-/// ```
-///
-/// Rejecting a table exceeding 32 words at const-eval time:
-/// ```compile_fail
-/// use nve_store::NveTable;
-/// #[derive(NveTable)]
-/// #[nve_table(name = "doctest.too_wide", storage = "sparse")]
-/// struct TooWide {
-///     #[effect(paint)] w00: u64, #[effect(paint)] w01: u64, #[effect(paint)] w02: u64,
-///     #[effect(paint)] w03: u64, #[effect(paint)] w04: u64, #[effect(paint)] w05: u64,
-///     #[effect(paint)] w06: u64, #[effect(paint)] w07: u64, #[effect(paint)] w08: u64,
-///     #[effect(paint)] w09: u64, #[effect(paint)] w10: u64, #[effect(paint)] w11: u64,
-///     #[effect(paint)] w12: u64, #[effect(paint)] w13: u64, #[effect(paint)] w14: u64,
-///     #[effect(paint)] w15: u64, #[effect(paint)] w16: u64,
-/// }
-/// ```
+/// Exact compile-failure diagnostics (error codes and messages) for raw `ResourceId`, narrowed
+/// default overflow, ill-typed defaults, magic sentinels, split-bool pairs, `WordEnum`, and >32
+/// word tables are snapshot-tested via `trybuild` in `tests/compile_fail_ui.rs`.
 pub trait OptWord: Copy {
     const OPT_BITS: u8;
     const OPT_KIND: FieldKind;
@@ -239,6 +160,33 @@ pub const fn opt_node_to_word(v: Option<NodeId>) -> u32 {
     match v {
         Some(id) if !id.is_null() => id.raw(),
         _ => 0,
+    }
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub const fn opt_nz_u8_to_word(v: Option<NonZeroU8>) -> u32 {
+    match v {
+        Some(n) => n.get() as u32,
+        None => 0,
+    }
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub const fn opt_nz_u16_to_word(v: Option<NonZeroU16>) -> u32 {
+    match v {
+        Some(n) => n.get() as u32,
+        None => 0,
+    }
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub const fn opt_nz_u32_to_word(v: Option<NonZeroU32>) -> u32 {
+    match v {
+        Some(n) => n.get(),
+        None => 0,
     }
 }
 
@@ -367,6 +315,54 @@ impl OptWord for NodeId {
     }
 }
 
+impl OptWord for NonZeroU8 {
+    const OPT_BITS: u8 = 8;
+    const OPT_KIND: FieldKind = FieldKind::U32;
+    const OPT_ENCODING: OptEncoding = OptEncoding::ZeroNiche;
+
+    #[inline(always)]
+    fn opt_to_bits(v: Option<Self>) -> u32 {
+        opt_nz_u8_to_word(v)
+    }
+
+    #[inline(always)]
+    fn opt_from_bits(bits: u32) -> Option<Self> {
+        NonZeroU8::new(bits as u8)
+    }
+}
+
+impl OptWord for NonZeroU16 {
+    const OPT_BITS: u8 = 16;
+    const OPT_KIND: FieldKind = FieldKind::U32;
+    const OPT_ENCODING: OptEncoding = OptEncoding::ZeroNiche;
+
+    #[inline(always)]
+    fn opt_to_bits(v: Option<Self>) -> u32 {
+        opt_nz_u16_to_word(v)
+    }
+
+    #[inline(always)]
+    fn opt_from_bits(bits: u32) -> Option<Self> {
+        NonZeroU16::new(bits as u16)
+    }
+}
+
+impl OptWord for NonZeroU32 {
+    const OPT_BITS: u8 = 32;
+    const OPT_KIND: FieldKind = FieldKind::U32;
+    const OPT_ENCODING: OptEncoding = OptEncoding::ZeroNiche;
+
+    #[inline(always)]
+    fn opt_to_bits(v: Option<Self>) -> u32 {
+        opt_nz_u32_to_word(v)
+    }
+
+    #[inline(always)]
+    fn opt_from_bits(bits: u32) -> Option<Self> {
+        NonZeroU32::new(bits)
+    }
+}
+
 impl OptWord for SurfaceId {
     const OPT_BITS: u8 = 32;
     const OPT_KIND: FieldKind = FieldKind::U32;
@@ -435,6 +431,26 @@ mod tests {
         assert_eq!(
             <Option<SurfaceId> as WordValue>::from_bits(Some(SurfaceId::ROOT).to_bits()),
             Some(SurfaceId::ROOT)
+        );
+
+        assert_eq!(<Option<NonZeroU8> as WordValue>::from_bits(0), None);
+        assert_eq!(
+            <Option<NonZeroU8> as WordValue>::from_bits(NonZeroU8::new(7).to_bits()),
+            NonZeroU8::new(7)
+        );
+        assert_eq!(<Option<NonZeroU16> as WordValue>::from_bits(0), None);
+        assert_eq!(
+            <Option<NonZeroU16> as WordValue>::from_bits(NonZeroU16::new(3).to_bits()),
+            NonZeroU16::new(3)
+        );
+        assert_eq!(
+            <Option<NonZeroU16> as WordValue>::from_bits(NonZeroU16::new(u16::MAX).to_bits()),
+            NonZeroU16::new(u16::MAX)
+        );
+        assert_eq!(<Option<NonZeroU32> as WordValue>::from_bits(0), None);
+        assert_eq!(
+            <Option<NonZeroU32> as WordValue>::from_bits(NonZeroU32::new(u32::MAX).to_bits()),
+            NonZeroU32::new(u32::MAX)
         );
     }
 }

@@ -47,6 +47,7 @@ struct Table {
     name: String,
     dense: bool,
     flags: u8,
+    inherited: bool,
     fields: Vec<Field>,
 }
 
@@ -111,9 +112,99 @@ fn natural_int_bits(short_ty: &str, full_ty: &str) -> Option<u32> {
     }
 }
 
+fn strip_outer_parens(mut toks: &[Tok]) -> &[Tok] {
+    while let [Tok::Group(Delim::Paren, inner)] = toks {
+        toks = inner.as_slice();
+    }
+    toks
+}
+
+fn trailing_two_path_idents(mut toks: &[Tok]) -> Option<(&str, &str)> {
+    toks = strip_outer_parens(toks);
+    let negated = if is_punct(toks, 0, '-') {
+        toks = strip_outer_parens(&toks[1..]);
+        true
+    } else {
+        false
+    };
+    let mut segs: Vec<&str> = Vec::new();
+    let mut i = 0;
+    if is_punct(toks, 0, ':') && is_punct(toks, 1, ':') {
+        i = 2;
+    }
+    while i < toks.len() {
+        let Tok::Ident(id) = &toks[i] else {
+            return None;
+        };
+        segs.push(id.as_str());
+        i += 1;
+        if i == toks.len() {
+            break;
+        }
+        if is_punct(toks, i, ':') && is_punct(toks, i + 1, ':') {
+            i += 2;
+        } else {
+            return None;
+        }
+    }
+    if segs.len() < 2 {
+        return None;
+    }
+    let ty = segs[segs.len() - 2];
+    let item = segs[segs.len() - 1];
+    if negated && !matches!((ty, item), ("f32" | "f64", "INFINITY")) {
+        return None;
+    }
+    Some((ty, item))
+}
+
+fn check_no_magic_sentinel(field_name: &str, toks: &[Tok]) -> Result<(), String> {
+    if let Some((ty, item)) = trailing_two_path_idents(toks) {
+        let banned = matches!(
+            (ty, item),
+            ("f32" | "f64", "NAN" | "INFINITY" | "NEG_INFINITY")
+                | ("u8" | "u16" | "u32" | "u64", "MAX")
+                | ("i8" | "i16" | "i32" | "i64", "MIN")
+        );
+        if banned {
+            return Err(format!(
+                "field `{field_name}`: magic sentinel default `{}` is forbidden; use `Option<T>` instead",
+                render_tokens(toks)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_no_split_bool_pairs(fields: &[Field]) -> Result<(), String> {
+    for f in fields {
+        if f.short_ty != "bool" || f.inner_opt_short.is_some() {
+            continue;
+        }
+        let base = f
+            .name
+            .strip_suffix("_enabled")
+            .or_else(|| f.name.strip_suffix("_set"))
+            .or_else(|| f.name.strip_suffix("_present"))
+            .or_else(|| f.name.strip_suffix("_specified"))
+            .or_else(|| f.name.strip_prefix("has_"));
+        if let Some(base) = base
+            && !base.is_empty()
+            && fields.iter().any(|other| other.name == base)
+        {
+            return Err(format!(
+                "field `{}`: split-bool sentinel pair with `{base}` is forbidden; use `Option<T>` or `#[nve_table(inherited)]` instead",
+                f.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse(tokens: &[Tok]) -> Result<Table, String> {
     let mut pos = 0;
-    let (mut name, mut dense, mut flags) = (None, true, 0u8);
+    let (mut name, mut dense, mut flags, mut inherited, mut events_ty) =
+        (None, true, 0u8, false, None::<String>);
     while is_punct(tokens, pos, '#') {
         if let Some(Tok::Group(Delim::Bracket, inner)) = tokens.get(pos + 1)
             && matches!(inner.first(), Some(Tok::Ident(i)) if i == "nve_table")
@@ -127,41 +218,88 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
                         kv[i]
                     ));
                 };
-                if !is_punct(kv, i + 1, '=') {
-                    return Err(format!("expected `=` after #[nve_table] key `{k}`"));
-                }
-                let Tok::Literal(v) = kv.get(i + 2).ok_or("expected value in #[nve_table]")? else {
-                    return Err(format!(
-                        "expected string literal for #[nve_table] key `{k}`"
-                    ));
-                };
-                let v = parse_string_literal(v)?;
                 match k.as_str() {
-                    "name" => name = Some(v),
-                    "storage" => {
-                        dense = match v.as_str() {
-                            "dense" => true,
-                            "sparse" => false,
-                            o => return Err(format!("storage must be dense|sparse, got `{o}`")),
+                    "inherited" => {
+                        if is_punct(kv, i + 1, '=') {
+                            return Err(
+                                "#[nve_table]: `inherited` is a bare flag, not `key = value`"
+                                    .into(),
+                            );
                         }
+                        if inherited {
+                            return Err("#[nve_table]: duplicate `inherited` flag".into());
+                        }
+                        inherited = true;
+                        i += 1;
                     }
-                    "flags" => {
-                        for f in v.split('|').map(str::trim).filter(|f| !f.is_empty()) {
-                            flags |= match f {
-                                "host" => 1,
-                                "publish" => 2,
-                                "layout" => 4,
-                                o => {
-                                    return Err(format!(
-                                        "unknown table flag `{o}` (host|publish|layout)"
-                                    ))
+                    "events" => {
+                        if !is_punct(kv, i + 1, '=') {
+                            return Err("expected `=` after #[nve_table] key `events`".into());
+                        }
+                        i += 2;
+                        let start = i;
+                        let mut depth = 0i32;
+                        while i < kv.len() {
+                            match &kv[i] {
+                                Tok::Punct('<', _) => depth += 1,
+                                Tok::Punct('>', _) => depth -= 1,
+                                Tok::Punct(',', _) if depth == 0 => break,
+                                _ => {}
+                            }
+                            i += 1;
+                        }
+                        if i == start {
+                            return Err(
+                                "#[nve_table]: `events = <EnumType>` requires an event enum type"
+                                    .into(),
+                            );
+                        }
+                        events_ty = Some(render_tokens(&kv[start..i]));
+                    }
+                    key => {
+                        if !is_punct(kv, i + 1, '=') {
+                            return Err(format!("expected `=` after #[nve_table] key `{key}`"));
+                        }
+                        let Tok::Literal(v) =
+                            kv.get(i + 2).ok_or("expected value in #[nve_table]")?
+                        else {
+                            return Err(format!(
+                                "expected string literal for #[nve_table] key `{key}`"
+                            ));
+                        };
+                        let v = parse_string_literal(v)?;
+                        match key {
+                            "name" => name = Some(v),
+                            "storage" => {
+                                dense = match v.as_str() {
+                                    "dense" => true,
+                                    "sparse" => false,
+                                    o => {
+                                        return Err(format!(
+                                            "storage must be dense|sparse, got `{o}`"
+                                        ))
+                                    }
                                 }
-                            };
+                            }
+                            "flags" => {
+                                for f in v.split('|').map(str::trim).filter(|f| !f.is_empty()) {
+                                    flags |= match f {
+                                        "host" => 1,
+                                        "publish" => 2,
+                                        "layout" => 4,
+                                        o => {
+                                            return Err(format!(
+                                                "unknown table flag `{o}` (host|publish|layout)"
+                                            ))
+                                        }
+                                    };
+                                }
+                            }
+                            o => return Err(format!("unknown #[nve_table] key `{o}`")),
                         }
+                        i += 3;
                     }
-                    o => return Err(format!("unknown #[nve_table] key `{o}`")),
                 }
-                i += 3;
                 if i < kv.len() {
                     if !is_punct(kv, i, ',') {
                         return Err(format!(
@@ -174,6 +312,15 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
             }
         }
         pos += 2;
+    }
+
+    if inherited && events_ty.is_some() {
+        return Err("#[nve_table]: cannot combine `inherited` and `events`".into());
+    }
+    if let Some(ev) = events_ty {
+        return Err(format!(
+            "#[nve_table(events = {ev})]: EventEnum table support lands in C5"
+        ));
     }
 
     let vis_start = pos;
@@ -199,12 +346,20 @@ fn parse(tokens: &[Tok]) -> Result<Table, String> {
     if fields.is_empty() {
         return Err(format!("table `{ident}` must declare at least 1 field"));
     }
+    if inherited && fields.len() > 32 {
+        return Err(format!(
+            "#[nve_table(inherited)] table `{ident}` supports at most 32 fields (u32 explicit mask), got {}",
+            fields.len()
+        ));
+    }
+    check_no_split_bool_pairs(&fields)?;
     Ok(Table {
         vis,
         ident,
         name,
         dense,
         flags,
+        inherited,
         fields,
     })
 }
@@ -313,6 +468,9 @@ fn parse_fields(tokens: &[Tok]) -> Result<Vec<Field>, String> {
             return Err(format!(
                 "`{name}`: Str/Res fields take no #[default]/#[bits]"
             ));
+        }
+        if let Some(ref toks) = default_toks {
+            check_no_magic_sentinel(&name, toks)?;
         }
         if let Some(n) = bits {
             match natural_int_bits(&outer_last, &compact) {

@@ -8,7 +8,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, GridLine, Length, NodeId, NodeStore, NveTable, Rgba, Str, WordEnum};
+use nve_store::{
+    ChangeSet, GridLine, Length, NodeId, NodeStore, NveTable, ResolvedRow, Rgba, Str, WordEnum,
+};
 
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
@@ -69,7 +71,11 @@ fn measure_allocs<R>(f: impl FnOnce() -> R) -> (usize, R) {
 
 #[test]
 fn counting_alloc_positive_probe_detects_heap_allocation() {
-    let (allocs, v) = measure_allocs(|| Vec::<u32>::with_capacity(64));
+    let (allocs, v) = measure_allocs(|| {
+        let mut buf = Vec::<u32>::with_capacity(std::hint::black_box(64));
+        buf.push(std::hint::black_box(1));
+        std::hint::black_box(buf)
+    });
     assert!(allocs >= 1, "CountingAlloc must detect heap allocations (saw {allocs})");
     drop(v);
 }
@@ -114,6 +120,25 @@ struct BenchBox {
 struct BenchLabel {
     #[effect(measure, paint)]
     text: Str,
+}
+
+#[allow(dead_code)]
+#[derive(NveTable)]
+#[nve_table(name = "bench.typo", storage = "sparse", flags = "publish", inherited)]
+struct BenchTypo {
+    #[effect(paint)]
+    #[default(Rgba::BLACK)]
+    color: Rgba,
+    #[effect(measure)]
+    #[default(16.0)]
+    font_size: f32,
+    #[effect(measure)]
+    #[default(400u16)]
+    font_weight: u16,
+    #[effect(measure)]
+    font_family: Str,
+    #[effect(measure)]
+    max_lines: Option<u32>,
 }
 
 #[test]
@@ -323,5 +348,45 @@ fn steady_state_hot_paths_perform_zero_heap_allocations() {
     assert_eq!(
         allocs_tree, 0,
         "steady-state set_children + subtree remove + commit_into must allocate 0 bytes"
+    );
+
+    // 6. Steady-state branchless ResolvedRow<BenchTypo> inheritance walk + clear_color/color toggle.
+    {
+        let mut tx = store.tx();
+        tx.edit::<BenchTypo>(nodes[0])
+            .color(Rgba::WHITE)
+            .font_size(22.0)
+            .font_weight(700)
+            .font_family("Inter")
+            .max_lines(Some(3));
+        for &n in &nodes[1..32] {
+            tx.edit::<BenchTypo>(n).color(Rgba::BLACK);
+        }
+        tx.commit_into(&mut changes);
+    }
+    let (allocs_inherit, resolved_sum) = measure_allocs(|| {
+        let root_r = ResolvedRow::<BenchTypo>::root(&store);
+        let p_r = ResolvedRow::<BenchTypo>::resolve(&store, nodes[0], &root_r);
+        let mut acc = 0u64;
+        for &n in &nodes[1..] {
+            let r = ResolvedRow::<BenchTypo>::resolve(&store, n, &p_r);
+            let t = r.get();
+            acc = acc
+                .wrapping_add(u64::from(t.color().0))
+                .wrapping_add(u64::from(t.font_size().to_bits()))
+                .wrapping_add(u64::from(t.font_weight()))
+                .wrapping_add(t.font_family().len() as u64)
+                .wrapping_add(u64::from(t.max_lines().unwrap_or(0)));
+        }
+        let mut tx = store.tx();
+        tx.edit::<BenchTypo>(nodes[1]).clear_color();
+        tx.edit::<BenchTypo>(nodes[1]).color(Rgba::BLACK);
+        tx.commit_into(&mut changes);
+        acc
+    });
+    assert!(resolved_sum > 0);
+    assert_eq!(
+        allocs_inherit, 0,
+        "steady-state ResolvedRow inheritance walk + clear/set explicit bit must allocate 0 bytes"
     );
 }

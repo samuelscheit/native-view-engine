@@ -186,16 +186,7 @@ impl StoreMutationTx<'_, '_> {
                 self.tx.edit::<Visual>(node).opacity(f.clamp(0.0, 1.0));
             }
             "font-size" | "fontSize" => {
-                let cur_set = self
-                    .tx
-                    .store()
-                    .try_row::<Typography>(node)
-                    .map_or(0, |t| t.set())
-                    | Typography::SET_FONT_SIZE;
-                self.tx
-                    .edit::<Typography>(node)
-                    .font_size(f.max(1.0))
-                    .set(cur_set);
+                self.tx.edit::<Typography>(node).font_size(f.max(1.0));
             }
             "z-index" | "zIndex" => {
                 self.tx.edit::<Visual>(node).z_index(f as i32);

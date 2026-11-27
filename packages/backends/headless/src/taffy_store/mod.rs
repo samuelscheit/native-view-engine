@@ -15,7 +15,7 @@ use nve_components::tables::{
     Typography,
 };
 use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
+use nve_store::{ChangeSet, InheritedTable, Length, NodeId, NodeStore, NveTable, ResolvedRow, Rgba};
 
 use taffy::geometry::Size;
 use taffy::style::AvailableSpace;
@@ -65,8 +65,8 @@ pub struct TaffyStoreLayout {
     layout_gen: u64,
     last_viewport: Option<(NodeId, f32, f32)>,
     measurer: Arc<dyn TextMeasurer>,
-    /// Reusable stack for inheritance walk (`(node_id, parent_rtl, parent_text)`).
-    inherit_stack: Vec<(NodeId, bool, ResolvedTextStyle)>,
+    /// Reusable stack for inheritance walk (`(node_id, parent_rtl, parent_typo_words)`).
+    inherit_stack: Vec<(NodeId, bool, <Typography as InheritedTable>::Words)>,
     /// Reusable stack for fused rounding + absolute origin accumulation (`(id, px, py, hidden)`).
     round_stack: Vec<(NodeId, f32, f32, bool)>,
     /// Set when any structural / direction / typography change requires inheritance propagation.
@@ -244,9 +244,9 @@ impl TaffyStoreLayout {
         self.inherit_dirty = false;
         self.inherit_stack.clear();
         self.inherit_stack
-            .push((root, false, ResolvedTextStyle::default()));
+            .push((root, false, <Typography as InheritedTable>::default_words()));
 
-        while let Some((id, parent_rtl, parent_text)) = self.inherit_stack.pop() {
+        while let Some((id, parent_rtl, parent_typo_words)) = self.inherit_stack.pop() {
             let idx = id.index();
             let rtl = if let Some(l) = store.try_row::<NveLayout>(id) {
                 match l.direction() {
@@ -258,26 +258,18 @@ impl TaffyStoreLayout {
                 parent_rtl
             };
 
-            let mut text = parent_text;
-            if let Some(t) = store.try_row::<Typography>(id) {
-                let set = t.set();
-                if set & Typography::SET_COLOR != 0 || (set == 0 && t.color() != Rgba::BLACK) {
-                    text.color = t.color();
-                }
-                if set & Typography::SET_FONT_SIZE != 0
-                    || (set == 0 && t.font_size().to_bits() != 16.0f32.to_bits())
-                {
-                    text.font_size = t.font_size();
-                }
-                if set & Typography::SET_FONT_WEIGHT != 0 || (set == 0 && t.font_weight() != 400) {
-                    text.font_weight = t.font_weight();
-                }
-                if set & Typography::SET_LINE_HEIGHT != 0
-                    || (set == 0 && t.line_height() != Length::AUTO)
-                {
-                    text.line_height = t.line_height();
-                }
+            let mut typo_words = parent_typo_words;
+            if let Some(own) = store.words(id, Typography::slot()) {
+                Typography::resolve_inherited_words(own, &parent_typo_words, &mut typo_words);
             }
+            let resolved_typo = ResolvedRow::<Typography>::from_words(typo_words, store);
+            let t = resolved_typo.get();
+            let text = ResolvedTextStyle {
+                color: t.color(),
+                font_size: t.font_size(),
+                font_weight: t.font_weight(),
+                line_height: t.line_height(),
+            };
 
             let dir_changed = self.resolved_rtl[idx] != rtl;
             let text_measure_changed = self.resolved_text[idx].font_size.to_bits()
@@ -293,7 +285,7 @@ impl TaffyStoreLayout {
             }
 
             for &child in store.children(id).iter().rev() {
-                self.inherit_stack.push((child, rtl, text));
+                self.inherit_stack.push((child, rtl, typo_words));
             }
         }
     }

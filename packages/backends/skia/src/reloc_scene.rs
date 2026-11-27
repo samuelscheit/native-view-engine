@@ -6,7 +6,7 @@ use nve_engine::{
     BackendError, LayoutRect, SceneRelocView, StoreLayoutEngine,
 };
 
-use crate::display_list::{intersect_rects, intersects_clip, InheritedTextStyle};
+use crate::display_list::{intersect_rects, intersects_clip};
 use crate::raster::parse_box_shadow;
 use crate::text::TextAlign;
 use crate::{PaintOp, SkiaBackend, MAX_HIT_TEST_DEPTH};
@@ -52,7 +52,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             view,
             view.root().root_node_index as usize,
             clip_bounds,
-            InheritedTextStyle::default(),
+            (400u16, TextAlign::default()),
             &mut sort_scratch,
             &mut self.display_list.ops,
             0,
@@ -65,7 +65,7 @@ fn emit_reloc_node(
     view: &SceneRelocView<'_>,
     idx: usize,
     clip_bounds: LayoutRect,
-    inherited_text: InheritedTextStyle,
+    inherited_text: (u16, TextAlign),
     sort_scratch: &mut Vec<u32>,
     ops: &mut Vec<PaintOp>,
     depth: usize,
@@ -130,12 +130,12 @@ fn emit_reloc_node(
     let effective_weight = if node.font_weight != 400 {
         node.font_weight
     } else {
-        inherited_text.font_weight.unwrap_or(400)
+        inherited_text.0
     };
     let effective_align = if node.text_align != 0 {
         decode_text_align(node.text_align)
     } else {
-        inherited_text.text_align.unwrap_or_default()
+        inherited_text.1
     };
 
     if in_clip {
@@ -166,12 +166,7 @@ fn emit_reloc_node(
         }
     }
 
-    let child_inherited = InheritedTextStyle {
-        font_weight: Some(effective_weight),
-        text_align: Some(effective_align),
-        text_color: Some(style.text_color),
-        font_size: Some(style.font_size),
-    };
+    let child_inherited = (effective_weight, effective_align);
 
     let children = view
         .children_of(node)

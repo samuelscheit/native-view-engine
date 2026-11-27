@@ -158,30 +158,19 @@ impl TypedStyle {
             if self.has_style {
                 let s = &self.style;
                 if s.text_color.a > 0 || s.font_size > 0.0 {
-                    let mut cur_set = tx
-                        .store()
-                        .try_row::<Typography>(node)
-                        .map_or(0, |t| t.set());
                     let mut typo = tx.edit::<Typography>(node);
                     if s.text_color.a > 0 {
-                        cur_set |= Typography::SET_COLOR;
                         typo = typo.color(Rgba(s.text_color.to_u32()));
                     }
                     if s.font_size > 0.0 {
-                        cur_set |= Typography::SET_FONT_SIZE;
                         typo = typo.font_size(s.font_size);
                     }
-                    let _ = typo.set(cur_set);
+                    let _ = typo;
                 }
             }
             if let Some(ref fw) = self.font_weight {
                 let w = nve_components::parse_font_weight(fw);
-                let cur_set = tx
-                    .store()
-                    .try_row::<Typography>(node)
-                    .map_or(0, |t| t.set())
-                    | Typography::SET_FONT_WEIGHT;
-                tx.edit::<Typography>(node).font_weight(w).set(cur_set);
+                tx.edit::<Typography>(node).font_weight(w);
             }
             if let Some(ref ta) = self.text_align {
                 let align = match ta.trim() {
@@ -311,38 +300,27 @@ impl TypedStyle {
             let clear_size =
                 self.style.font_size > 0.0 && next.is_none_or(|n| n.style.font_size <= 0.0);
             if (clear_color || clear_size) && tx.store().has::<Typography>(node) {
-                let mut cur_set = tx
-                    .store()
-                    .try_row::<Typography>(node)
-                    .map_or(0, |t| t.set());
                 let mut typo = tx.edit::<Typography>(node);
                 if clear_color {
-                    cur_set &= !Typography::SET_COLOR;
-                    typo = typo.color(Rgba::BLACK);
+                    typo = typo.clear_color();
                 }
                 if clear_size {
-                    cur_set &= !Typography::SET_FONT_SIZE;
-                    typo = typo.font_size(16.0);
+                    typo = typo.clear_font_size();
                 }
-                let _ = typo.set(cur_set);
+                let _ = typo;
             }
         }
         if self.font_weight.is_some()
             && next.is_none_or(|n| n.font_weight.is_none())
             && tx.store().has::<Typography>(node)
         {
-            let cur_set = tx
-                .store()
-                .try_row::<Typography>(node)
-                .map_or(0, |t| t.set())
-                & !Typography::SET_FONT_WEIGHT;
-            tx.edit::<Typography>(node).font_weight(400).set(cur_set);
+            tx.edit::<Typography>(node).clear_font_weight();
         }
         if self.text_align.is_some()
             && next.is_none_or(|n| n.text_align.is_none())
             && tx.store().has::<Typography>(node)
         {
-            tx.edit::<Typography>(node).text_align(TextAlign::Start);
+            tx.edit::<Typography>(node).clear_text_align();
         }
         if self.box_shadow.is_some()
             && next.is_none_or(|n| n.box_shadow.is_none())

@@ -270,6 +270,8 @@ impl WireDecoder {
                         bits &= bits - 1;
                         if resource_words & (1 << i) != 0 {
                             w.put_resource_id(i, ResourceId(vals[i]));
+                        } else if i == 0 && w.desc.word_effects()[0] == 0 {
+                            w.put_explicit_word(vals[0]);
                         } else {
                             w.put(i, 0, u32::MAX, vals[i]);
                         }

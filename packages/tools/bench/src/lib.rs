@@ -92,11 +92,6 @@ impl RowFeedFixture {
 
                 tx.create_at(text_id);
                 tx.set_str(text_id, TextContent::TEXT, &format!("Row #{i} — NVE Bench"));
-                tx.set(
-                    text_id,
-                    Typography::SET,
-                    Typography::SET_COLOR | Typography::SET_FONT_SIZE,
-                );
                 tx.set(text_id, Typography::COLOR, Rgba::WHITE);
                 tx.set(text_id, Typography::FONT_SIZE, 14.0f32);
 
@@ -172,11 +167,6 @@ pub fn build_node_tree_cmd(node_count: usize, _frame_id: FrameId) -> Vec<u8> {
                 tx.set(nid, Interaction::EVENT_MASK, EventMask::PRESS as u32);
             } else {
                 tx.set_str(nid, TextContent::TEXT, &format!("Node #{i}"));
-                tx.set(
-                    nid,
-                    Typography::SET,
-                    Typography::SET_COLOR | Typography::SET_FONT_SIZE,
-                );
                 tx.set(nid, Typography::COLOR, Rgba::rgb(226, 232, 240));
                 tx.set(nid, Typography::FONT_SIZE, 14.0f32);
             }
@@ -232,21 +222,11 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
         tx.set(card, Visual::BORDER_RADIUS, 16.0f32);
 
         tx.create_at(eyebrow);
-        tx.set(
-            eyebrow,
-            Typography::SET,
-            Typography::SET_COLOR | Typography::SET_FONT_SIZE,
-        );
         tx.set(eyebrow, Typography::COLOR, Rgba::rgb(56, 189, 248));
         tx.set(eyebrow, Typography::FONT_SIZE, 14.0f32);
         tx.set_str(eyebrow, TextContent::TEXT, "NATIVE VIEW ENGINE");
 
         tx.create_at(headline);
-        tx.set(
-            headline,
-            Typography::SET,
-            Typography::SET_COLOR | Typography::SET_FONT_SIZE,
-        );
         tx.set(headline, Typography::COLOR, Rgba::WHITE);
         tx.set(headline, Typography::FONT_SIZE, 24.0f32);
         tx.set_str(headline, TextContent::TEXT, "Card Benchmark Scene");
@@ -262,11 +242,6 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
         tx.set(button, Interaction::EVENT_MASK, EventMask::PRESS as u32);
 
         tx.create_at(btn_label);
-        tx.set(
-            btn_label,
-            Typography::SET,
-            Typography::SET_COLOR | Typography::SET_FONT_SIZE,
-        );
         tx.set(btn_label, Typography::COLOR, Rgba::WHITE);
         tx.set(btn_label, Typography::FONT_SIZE, 16.0f32);
         tx.set_str(btn_label, TextContent::TEXT, "Action");

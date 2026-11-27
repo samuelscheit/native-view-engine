@@ -280,9 +280,9 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     tx.edit::<TextContent>(txt).text("safe");
     tx.edit::<Typography>(txt)
         .font_family("Inter;}</style><script>alert(1)</script>")
-        .max_lines(Some(0));
+        .max_lines(core::num::NonZeroU16::new(0));
     tx.edit::<TextContent>(txt_clamped).text("clamped");
-    tx.edit::<Typography>(txt_clamped).max_lines(Some(3));
+    tx.edit::<Typography>(txt_clamped).max_lines(core::num::NonZeroU16::new(3));
     tx.edit::<Link>(link)
         .href("https://example.com")
         .target(LinkTarget::Blank);
@@ -297,7 +297,12 @@ fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
     assert!(doc.contains("rel=\"noopener noreferrer\""));
     assert!(!doc.contains("maxlength=\"65535\""));
     assert!(doc.contains("maxlength=\"0\""), "Some(0) max_length must be emitted: {doc}");
-    assert!(!doc.contains("-webkit-line-clamp:0;"), "Some(0) max_lines must not emit broken CSS clamp: {doc}");
+    assert!(!doc.contains("-webkit-line-clamp:0;"), "None max_lines must not emit broken CSS clamp: {doc}");
+    assert_eq!(
+        doc.matches("display:-webkit-box").count(),
+        1,
+        "companion -webkit-box layout CSS must emit only for the clamped node: {doc}"
+    );
     assert!(doc.contains("-webkit-line-clamp:3;"), "Some(3) max_lines must emit clamp: {doc}");
 
     // Plain relative paths, query paths, data: srcset, multi-URL ping, data-nve-* prefix,

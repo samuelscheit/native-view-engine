@@ -546,29 +546,13 @@ fn write_parsed_decl(tx: &mut Transaction<'_>, id: NodeId, decl: ParsedDecl) {
         ParsedDecl::OverflowY(ov) => { tx.edit::<Visual>(id).overflow_y(ov); }
         ParsedDecl::BoxShadow(bs) => { tx.edit::<Visual>(id).box_shadows(bs); }
         ParsedDecl::ZIndex(z) => { tx.edit::<Visual>(id).z_index(z); }
-        ParsedDecl::Color(c) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_COLOR;
-            row.color(c).set(set);
-        }
+        ParsedDecl::Color(c) => { tx.edit::<Typography>(id).color(c); }
         ParsedDecl::OverflowWrap(ow) => { tx.edit::<Typography>(id).overflow_wrap(ow); }
         ParsedDecl::WordBreak(wb) => { tx.edit::<Typography>(id).word_break(wb); }
         ParsedDecl::WhiteSpace(ws) => { tx.edit::<Typography>(id).white_space(ws); }
-        ParsedDecl::LineHeight(lh) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_LINE_HEIGHT;
-            row.line_height(lh).set(set);
-        }
-        ParsedDecl::FontSize(v) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_FONT_SIZE;
-            row.font_size(v).set(set);
-        }
-        ParsedDecl::FontWeight(w) => {
-            let row = tx.edit::<Typography>(id);
-            let set = row.get().set() | Typography::SET_FONT_WEIGHT;
-            row.font_weight(w).set(set);
-        }
+        ParsedDecl::LineHeight(lh) => { tx.edit::<Typography>(id).line_height(lh); }
+        ParsedDecl::FontSize(v) => { tx.edit::<Typography>(id).font_size(v); }
+        ParsedDecl::FontWeight(w) => { tx.edit::<Typography>(id).font_weight(w); }
         ParsedDecl::TextAlign(ta) => { tx.edit::<Typography>(id).text_align(ta); }
     }
 }

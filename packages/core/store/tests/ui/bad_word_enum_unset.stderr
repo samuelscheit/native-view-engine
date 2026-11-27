@@ -1,0 +1,7 @@
+error: #[derive(WordEnum)] on `BadWordEnumUnset` bans `Unset` sentinel variants; model optionality with `Option<BadWordEnumUnset>`
+ --> tests/ui/bad_word_enum_unset.rs:4:23
+  |
+4 | #[derive(Clone, Copy, WordEnum)]
+  |                       ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `WordEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

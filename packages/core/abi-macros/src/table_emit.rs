@@ -1,7 +1,7 @@
 //! Code emission for `#[derive(NveTable)]`.
 
 use crate::emit::quote_str;
-use crate::tok::render_tokens;
+use crate::tok::render_expr_tokens;
 
 use super::{upper, Class, Field, Table, S};
 
@@ -38,34 +38,38 @@ fn narrow_opt_default_expr(inner_short: &str, inner_full: &str, opt_ident: &str)
         "i8" => format!("{S}::__private::opt_i8_to_word({opt_ident})"),
         "u16" => format!("{S}::__private::opt_u16_to_word({opt_ident})"),
         "i16" => format!("{S}::__private::opt_i16_to_word({opt_ident})"),
+        "NonZeroU8" => format!("{S}::__private::opt_nz_u8_to_word({opt_ident})"),
+        "NonZeroU16" => format!("{S}::__private::opt_nz_u16_to_word({opt_ident})"),
+        "NonZeroU32" => format!("{S}::__private::opt_nz_u32_to_word({opt_ident})"),
         "NodeId" => format!("{S}::__private::opt_node_to_word({opt_ident})"),
         "SurfaceId" => format!("{S}::__private::opt_surf_to_word({opt_ident})"),
         _ => format!("<{inner_full}>::opt_to_word({opt_ident})"),
     }
 }
 
-/// Emits a single-evaluated, concretely typed `const __NVE_DEF_{idx}: {ty} = ...;` binding (plus
-/// a compile-time narrowed `#[bits(N)]` range assertion when applicable) and returns
+/// Emits a single-evaluated, concretely typed `const __NVE_DEF_{idx}_{FIELD}: {ty} = ...;` binding
+/// (plus a compile-time narrowed `#[bits(N)]` range assertion naming the field) and returns
 /// `(default_lo, default_hi, default_present)`.
 fn emit_field_default(idx: usize, f: &Field, def_consts: &mut String) -> (String, String, String) {
     let Some(toks) = f.default_toks.as_deref() else {
         return ("0u32".into(), "0u32".into(), "false".into());
     };
-    let expr = render_tokens(toks);
+    let expr = render_expr_tokens(toks);
     let ty = &f.ty;
-    let ident = format!("__NVE_DEF_{idx}");
+    let fname = &f.name;
+    let ident = format!("__NVE_DEF_{idx}_{}", upper(fname));
     def_consts.push_str(&format!("const {ident}: {ty} = ({expr});\n"));
 
     if let Some(n) = f.bits {
         match f.short_ty.as_str() {
             "u8" | "u16" | "u32" => {
                 def_consts.push_str(&format!(
-                    "const _: () = assert!(({ident} as u64) < (1u64 << {n}), \"default value overflows #[bits({n})] unsigned range\");\n"
+                    "const _: () = assert!(({ident} as u64) < (1u64 << {n}), \"default for `{fname}` overflows #[bits({n})] unsigned range\");\n"
                 ));
             }
             "i8" | "i16" | "i32" => {
                 def_consts.push_str(&format!(
-                    "const _: () = assert!(({ident} as i64) >= -(1i64 << ({n} - 1)) && ({ident} as i64) < (1i64 << ({n} - 1)), \"default value overflows #[bits({n})] signed range\");\n"
+                    "const _: () = assert!(({ident} as i64) >= -(1i64 << ({n} - 1)) && ({ident} as i64) < (1i64 << ({n} - 1)), \"default for `{fname}` overflows #[bits({n})] signed range\");\n"
                 ));
             }
             _ => {}
@@ -109,7 +113,17 @@ pub(super) fn emit(t: &Table) -> String {
     let storage = if t.dense { "Dense" } else { "Sparse" };
     let name = quote_str(&t.name);
 
-    let (mut def_consts, mut pack_inputs, mut props, mut getters, mut setters, mut regs) = (
+    let inherited = t.inherited;
+    let (
+        mut def_consts,
+        mut pack_inputs,
+        mut props,
+        mut getters,
+        mut setters,
+        mut regs,
+        mut resolve_stmts,
+    ) = (
+        String::new(),
         String::new(),
         String::new(),
         String::new(),
@@ -117,6 +131,13 @@ pub(super) fn emit(t: &Table) -> String {
         String::new(),
         String::new(),
     );
+
+    if inherited {
+        getters.push_str(
+            "#[doc = \"Raw explicit-override bitmask (`word 0`); bit `i` is set iff field `i` was explicitly written.\"] \
+            #[inline(always)] pub fn explicit_mask(&self) -> u32 { self.0.word(0) }",
+        );
+    }
 
     for (idx, f) in t.fields.iter().enumerate() {
         let ty = &f.ty;
@@ -127,6 +148,16 @@ pub(super) fn emit(t: &Table) -> String {
         let bits_expr = match f.bits {
             Some(b) => format!("{b}u8"),
             None => format!("<{ty} as {S}::TableField>::BITS"),
+        };
+        let prop_explicit_suffix = if inherited {
+            format!(".with_explicit({idx}u8, __F.effects)")
+        } else {
+            String::new()
+        };
+        let set_explicit_stmt = if inherited {
+            format!("self.0.set_explicit_bit({idx}u32, __F.effects);")
+        } else {
+            String::new()
         };
 
         pack_inputs.push_str(&format!(
@@ -146,12 +177,53 @@ pub(super) fn emit(t: &Table) -> String {
         ));
         regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
 
+        if inherited {
+            let bit_check = if idx == 0 {
+                "(self.0.word(0) & 1u32) != 0".to_owned()
+            } else {
+                format!("(self.0.word(0) & (1u32 << {idx})) != 0")
+            };
+            getters.push_str(&format!(
+                "#[doc = \"True iff `{fname}` was explicitly written on this row (rather than inherited).\"] \
+                #[inline(always)] pub fn is_{fname}_explicit(&self) -> bool {{ {bit_check} }}"
+            ));
+
+            let mask_bit = if idx == 0 {
+                "__exp & 1".to_owned()
+            } else {
+                format!("(__exp >> {idx}) & 1")
+            };
+            resolve_stmts.push_str(&format!(
+                "{{ \
+                    const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                    const __W: usize = __F.word as usize; \
+                    const __W1: usize = if __F.bits == 64 {{ __F.word as usize + 1 }} else {{ 0 }}; \
+                    const __VW: usize = if __F.val_word == {S}::__private::NO_VAL_WORD {{ 0 }} else {{ __F.val_word as usize }}; \
+                    const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                    let __m = 0u32.wrapping_sub({mask_bit}); \
+                    if __F.val_word != {S}::__private::NO_VAL_WORD {{ \
+                        let __fm = __MASK & __m; \
+                        out[__W] = (out[__W] & !__fm) | (own[__W] & __fm); \
+                        out[__VW] = (own[__VW] & __m) | (parent[__VW] & !__m); \
+                    }} else if __F.bits == 64 {{ \
+                        out[__W] = (own[__W] & __m) | (parent[__W] & !__m); \
+                        out[__W1] = (own[__W1] & __m) | (parent[__W1] & !__m); \
+                    }} else if __F.bits == 32 {{ \
+                        out[__W] = (own[__W] & __m) | (parent[__W] & !__m); \
+                    }} else {{ \
+                        let __fm = __MASK & __m; \
+                        out[__W] = (out[__W] & !__fm) | (own[__W] & __fm); \
+                    }} \
+                }}"
+            ));
+        }
+
         match &f.class {
             Class::Scalar => {
                 props.push_str(&format!(
                     "{d} pub const {cname}: {S}::Prop<{id}, {ty}> = {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                        unsafe {{ {S}::Prop::new_wide(__F.word, __F.shift, __F.bits, __F.val_word) }} \
+                        unsafe {{ {S}::Prop::new_wide(__F.word, __F.shift, __F.bits, __F.val_word){prop_explicit_suffix} }} \
                     }};"
                 ));
                 getters.push_str(&format!(
@@ -166,15 +238,35 @@ pub(super) fn emit(t: &Table) -> String {
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
                         const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
                         <{ty} as {S}::ScalarField>::write_row(v, &mut self.0, __F.word as usize, __F.shift as u32, __MASK, __F.val_word as usize); \
+                        {set_explicit_stmt} \
                         self \
                     }}"
                 ));
+                if inherited {
+                    setters.push_str(&format!(
+                        "#[doc = \"Clears explicit `{fname}`, resetting it to default so it inherits from its parent.\"] \
+                        #[inline(always)] pub fn clear_{fname}(mut self) -> Self {{ \
+                            const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                            const __MASK: u32 = if __F.bits >= 32 {{ u32::MAX }} else {{ ((1u32 << __F.bits) - 1) << __F.shift }}; \
+                            let __def = <{ty} as {S}::ScalarField>::read_row( \
+                                <{id} as {S}::NveTable>::DESC.defaults, \
+                                __F.word as usize, \
+                                __F.shift as u32, \
+                                __MASK, \
+                                __F.val_word as usize, \
+                            ); \
+                            <{ty} as {S}::ScalarField>::write_row(__def, &mut self.0, __F.word as usize, __F.shift as u32, __MASK, __F.val_word as usize); \
+                            self.0.clear_explicit_bit({idx}u32, __F.effects); \
+                            self \
+                        }}"
+                    ));
+                }
             }
             Class::Str => {
                 props.push_str(&format!(
                     "{d} pub const {cname}: {S}::StrProp<{id}> = {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                        unsafe {{ {S}::StrProp::new(__F.word) }} \
+                        unsafe {{ {S}::StrProp::new(__F.word){prop_explicit_suffix} }} \
                     }};"
                 ));
                 getters.push_str(&format!(
@@ -190,17 +282,29 @@ pub(super) fn emit(t: &Table) -> String {
                 ));
                 setters.push_str(&format!(
                     "{d} #[inline] pub fn {fname}(mut self, v: &str) -> Self {{ \
-                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
-                        self.0.put_str(__W, v); \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        self.0.put_str(__F.word as usize, v); \
+                        {set_explicit_stmt} \
                         self \
                     }}"
                 ));
+                if inherited {
+                    setters.push_str(&format!(
+                        "#[doc = \"Clears explicit `{fname}`, resetting it to empty so it inherits from its parent.\"] \
+                        #[inline] pub fn clear_{fname}(mut self) -> Self {{ \
+                            const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                            self.0.put_str(__F.word as usize, \"\"); \
+                            self.0.clear_explicit_bit({idx}u32, __F.effects); \
+                            self \
+                        }}"
+                    ));
+                }
             }
             Class::Res(r) => {
                 props.push_str(&format!(
                     "{d} pub const {cname}: {S}::ResProp<{id}, {r}> = {{ \
                         const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
-                        unsafe {{ {S}::ResProp::new(__F.word) }} \
+                        unsafe {{ {S}::ResProp::new(__F.word){prop_explicit_suffix} }} \
                     }};"
                 ));
                 getters.push_str(&format!(
@@ -211,35 +315,84 @@ pub(super) fn emit(t: &Table) -> String {
                 ));
                 setters.push_str(&format!(
                     "{d} #[inline] pub fn {fname}(mut self, v: ::core::option::Option<{r}>) -> Self {{ \
-                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
-                        self.0.put_resource(__W, v); \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        self.0.put_resource(__F.word as usize, v); \
+                        {set_explicit_stmt} \
                         self \
                     }} \
                     #[doc = \"Ephemeral (in-place, non-deduplicated) write; for per-frame blobs.\"] \
                     #[inline] pub fn {fname}_ephemeral(mut self, v: {r}) -> Self {{ \
-                        const __W: usize = <{id} as {S}::NveTable>::DESC.fields[{idx}].word as usize; \
-                        self.0.put_resource_ephemeral(__W, v); \
+                        const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                        self.0.put_resource_ephemeral(__F.word as usize, v); \
+                        {set_explicit_stmt} \
                         self \
                     }}"
                 ));
+                if inherited {
+                    setters.push_str(&format!(
+                        "#[doc = \"Clears explicit `{fname}`, releasing the resource so it inherits from its parent.\"] \
+                        #[inline] pub fn clear_{fname}(mut self) -> Self {{ \
+                            const __F: {S}::FieldDesc = <{id} as {S}::NveTable>::DESC.fields[{idx}]; \
+                            self.0.put_resource::<{r}>(__F.word as usize, ::core::option::Option::None); \
+                            self.0.clear_explicit_bit({idx}u32, __F.effects); \
+                            self \
+                        }}"
+                    ));
+                }
             }
         }
     }
 
+    let inherited_impl = if inherited {
+        format!(
+            r#"
+    unsafe impl {S}::InheritedTable for {id} {{
+        type Words = [{S}::Word; __NVE_WORD_COUNT];
+
+        #[inline(always)]
+        fn default_words() -> Self::Words {{
+            __NVE_DEFAULTS_ARR
+        }}
+
+        #[inline]
+        fn resolve_inherited_arrays(own: &Self::Words, parent: &Self::Words, out: &mut Self::Words) {{
+            let __exp = own[0];
+            *out = *parent;
+            out[0] = __exp | parent[0];
+            {resolve_stmts}
+        }}
+
+        #[inline]
+        fn resolve_inherited_words(own: &[{S}::Word], parent: &Self::Words, out: &mut Self::Words) -> bool {{
+            let Some(__own) = own.get(..__NVE_WORD_COUNT).and_then(|s| <&[{S}::Word; __NVE_WORD_COUNT]>::try_from(s).ok()) else {{
+                return false;
+            }};
+            Self::resolve_inherited_arrays(__own, parent, out);
+            true
+        }}
+    }}
+"#
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         r#"
 const _: () = {{
-    {def_consts}
-    const LAYOUT: {S}::__private::PackLayout<{field_count}> = {S}::__private::pack_table(
-        [{pack_inputs}],
-        false,
-        false,
-    );
-    const WORD_COUNT: usize = LAYOUT.word_count;
-    const DEFAULTS_ARR: [{S}::Word; WORD_COUNT] = {S}::__private::trim_words::<WORD_COUNT>(&LAYOUT.defaults);
-    const EFFECTS_ARR: [u8; WORD_COUNT] = {S}::__private::trim_bytes::<WORD_COUNT>(&LAYOUT.word_effects);
-    const FINAL_FLAGS: u8 = {S}::__private::finalize_table_flags({base_flags}, &EFFECTS_ARR);
-    const FIELDS_ARR: [{S}::FieldDesc; {field_count}] = LAYOUT.fields;
+    const __NVE_LAYOUT: {S}::__private::PackLayout<{field_count}> = {{
+        {def_consts}
+        {S}::__private::pack_table(
+            [{pack_inputs}],
+            {inherited},
+            false,
+        )
+    }};
+    const __NVE_WORD_COUNT: usize = __NVE_LAYOUT.word_count;
+    const __NVE_DEFAULTS_ARR: [{S}::Word; __NVE_WORD_COUNT] = {S}::__private::trim_words::<__NVE_WORD_COUNT>(&__NVE_LAYOUT.defaults);
+    const __NVE_EFFECTS_ARR: [u8; __NVE_WORD_COUNT] = {S}::__private::trim_bytes::<__NVE_WORD_COUNT>(&__NVE_LAYOUT.word_effects);
+    const __NVE_FINAL_FLAGS: u8 = {S}::__private::finalize_table_flags({base_flags}, &__NVE_EFFECTS_ARR);
+    const __NVE_FIELDS_ARR: [{S}::FieldDesc; {field_count}] = __NVE_LAYOUT.fields;
 
     unsafe impl {S}::NveTable for {id} {{
         const DESC: {S}::TableDesc = {S}::TableDesc {{
@@ -248,24 +401,24 @@ const _: () = {{
             schema_hash: {S}::__private::compute_table_schema_hash(
                 {name},
                 {S}::Storage::{storage},
-                FINAL_FLAGS,
-                &DEFAULTS_ARR,
-                &EFFECTS_ARR,
-                LAYOUT.str_words,
-                LAYOUT.resource_words,
-                LAYOUT.events_word,
-                false,
-                &FIELDS_ARR,
+                __NVE_FINAL_FLAGS,
+                &__NVE_DEFAULTS_ARR,
+                &__NVE_EFFECTS_ARR,
+                __NVE_LAYOUT.str_words,
+                __NVE_LAYOUT.resource_words,
+                __NVE_LAYOUT.events_word,
+                {inherited},
+                &__NVE_FIELDS_ARR,
             ),
             storage: {S}::Storage::{storage},
-            flags: FINAL_FLAGS,
-            defaults: &DEFAULTS_ARR,
-            word_effects: &EFFECTS_ARR,
-            str_words: LAYOUT.str_words,
-            resource_words: LAYOUT.resource_words,
-            events_word: LAYOUT.events_word,
-            inherited: false,
-            fields: &FIELDS_ARR,
+            flags: __NVE_FINAL_FLAGS,
+            defaults: &__NVE_DEFAULTS_ARR,
+            word_effects: &__NVE_EFFECTS_ARR,
+            str_words: __NVE_LAYOUT.str_words,
+            resource_words: __NVE_LAYOUT.resource_words,
+            events_word: __NVE_LAYOUT.events_word,
+            inherited: {inherited},
+            fields: &__NVE_FIELDS_ARR,
         }};
         type Ref<'a> = {id}Ref<'a>;
         type Mut<'a> = {id}Mut<'a>;
@@ -283,6 +436,7 @@ const _: () = {{
             }}
         }}
     }}
+    {inherited_impl}
 
     // Force eager const evaluation of `pack_table` & `DESC` at every derive site.
     let _ = <{id} as {S}::NveTable>::DESC;

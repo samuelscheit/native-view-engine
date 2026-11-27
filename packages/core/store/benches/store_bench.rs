@@ -15,7 +15,10 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, BatchSize, Criterion};
 use nve_store::wire::{WireDecoder, WireEncoder};
-use nve_store::{ChangeSet, GridLine, Length, NodeId, NodeStore, NveTable, Rgba, Str, WordEnum};
+use nve_store::{
+    ChangeSet, GridLine, InheritedTable, Length, NodeId, NodeStore, NveTable, ResolvedRow, Rgba,
+    Str, WordEnum,
+};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, WordEnum)]
@@ -57,6 +60,25 @@ struct BenchBox {
 struct BenchLabel {
     #[effect(measure, paint)]
     text: Str,
+}
+
+#[allow(dead_code)]
+#[derive(NveTable)]
+#[nve_table(name = "bench.typo", storage = "sparse", flags = "publish", inherited)]
+struct BenchTypo {
+    #[effect(paint)]
+    #[default(Rgba::BLACK)]
+    color: Rgba,
+    #[effect(measure)]
+    #[default(16.0)]
+    font_size: f32,
+    #[effect(measure)]
+    #[default(400u16)]
+    font_weight: u16,
+    #[effect(measure)]
+    font_family: Str,
+    #[effect(measure)]
+    max_lines: Option<u32>,
 }
 
 fn bench_str_arena_read(c: &mut Criterion) {
@@ -152,21 +174,22 @@ fn bench_row_write_and_commit(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("opt_wide_64_grid_read_1000_nodes", |b| {
-        // Populate non-default OptWord/WideOpt/Wide64/GridLine values so this benchmark runs
-        // standalone even when `opt_wide_64_grid_write_1000_nodes` is filtered out.
-        {
-            let mut tx = store.tx();
-            for (i, &n) in nodes.iter().enumerate() {
-                tx.edit::<BenchBox>(n)
-                    .grid_col(if i & 1 == 0 { GridLine::Span(2) } else { GridLine::Line(3) })
-                    .opt_align(if i & 1 == 0 { Some(BenchAlign::Center) } else { None })
-                    .opt_tint(if i & 1 == 0 { Some(Rgba::rgb(12, 34, 56)) } else { None })
-                    .opt_ratio(Some(1.777))
-                    .stamp((i as u64) << 32 | i as u64);
-            }
-            tx.commit_into(&mut changes);
+    // Populate non-default OptWord/WideOpt/Wide64/GridLine values once so the read benchmark
+    // works standalone when filtered out without mutating inside the benchmark closure.
+    {
+        let mut tx = store.tx();
+        for (i, &n) in nodes.iter().enumerate() {
+            tx.edit::<BenchBox>(n)
+                .grid_col(if i & 1 == 0 { GridLine::Span(2) } else { GridLine::Line(3) })
+                .opt_align(if i & 1 == 0 { Some(BenchAlign::Center) } else { None })
+                .opt_tint(if i & 1 == 0 { Some(Rgba::rgb(12, 34, 56)) } else { None })
+                .opt_ratio(Some(1.777))
+                .stamp((i as u64) << 32 | i as u64);
         }
+        tx.commit_into(&mut changes);
+    }
+
+    c.bench_function("opt_wide_64_grid_read_1000_nodes", |b| {
         b.iter(|| {
             let mut acc = 0u64;
             for &n in &nodes {
@@ -325,12 +348,70 @@ fn bench_nve2_roundtrip(c: &mut Criterion) {
     let _ = &mut reversed;
 }
 
+fn bench_inherited_resolve(c: &mut Criterion) {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (parent, nodes): (NodeId, Vec<NodeId>) = {
+        let mut tx = store.tx();
+        let p = tx.create();
+        tx.edit::<BenchTypo>(p)
+            .color(Rgba::WHITE)
+            .font_size(20.0)
+            .font_weight(700)
+            .font_family("Inter")
+            .max_lines(Some(2));
+        let ids: Vec<NodeId> = (0..1000)
+            .map(|i| {
+                let n = tx.create();
+                if i % 3 == 0 {
+                    tx.edit::<BenchTypo>(n).color(Rgba::rgb(i as u8, 128, 255));
+                }
+                n
+            })
+            .collect();
+        tx.set_children(NodeId::ROOT, &[p]);
+        tx.set_children(p, &ids);
+        tx.commit_into(&mut changes);
+        (p, ids)
+    };
+
+    c.bench_function("inherited_resolved_row_1000_nodes", |b| {
+        b.iter(|| {
+            let root_r = ResolvedRow::<BenchTypo>::root(&store);
+            let p_r = ResolvedRow::<BenchTypo>::resolve(&store, black_box(parent), &root_r);
+            let mut acc = 0u64;
+            for &n in &nodes {
+                let r = ResolvedRow::<BenchTypo>::resolve(&store, black_box(n), &p_r);
+                let t = r.get();
+                acc = acc
+                    .wrapping_add(u64::from(t.color().0))
+                    .wrapping_add(u64::from(t.font_size().to_bits()))
+                    .wrapping_add(u64::from(t.font_weight()));
+            }
+            black_box(acc)
+        });
+    });
+
+    let p_words = ResolvedRow::<BenchTypo>::resolve(&store, parent, &ResolvedRow::root(&store))
+        .into_words();
+    let c_words = ResolvedRow::<BenchTypo>::resolve(&store, nodes[0], &ResolvedRow::root(&store))
+        .into_words();
+    c.bench_function("inherited_resolve_arrays_branchless", |b| {
+        b.iter(|| {
+            let mut out = <BenchTypo as InheritedTable>::default_words();
+            BenchTypo::resolve_inherited_arrays(black_box(&c_words), black_box(&p_words), &mut out);
+            black_box(out)
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_str_arena_read,
     bench_row_write_and_commit,
     bench_subtree_remove,
-    bench_nve2_roundtrip
+    bench_nve2_roundtrip,
+    bench_inherited_resolve
 );
 }
 

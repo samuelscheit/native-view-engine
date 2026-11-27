@@ -40,14 +40,14 @@ use std::time::Instant;
 
 use nve_abi::{ColorRgba, NativeEvent, NodeId, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
-use nve_components::tables::ImageFit;
+use nve_components::tables::{ImageFit, Typography};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer,
     Viewport,
 };
-use nve_store::{ChangeSet, NodeStore, Rgba, TableEventBus};
+use nve_store::{ChangeSet, NodeStore, ResolvedRow, Rgba, TableEventBus};
 
-use display_list::{emit_node_into, InheritedTextStyle};
+use display_list::emit_node_into;
 
 pub use focus::TextFocusState;
 pub use font::{bitmap_font_metrics, BitmapFontMetrics, BitmapFontTextMeasurer};
@@ -373,7 +373,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             (0.0, 0.0),
             false,
             false,
-            InheritedTextStyle::default(),
+            ResolvedRow::<Typography>::root(store),
             &mut self.sort_scratch,
             &mut self.display_list.ops,
             NodeId::ROOT,

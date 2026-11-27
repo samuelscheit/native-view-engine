@@ -144,13 +144,11 @@ word_flags! {
     }
 }
 
-/// Inherited text styling. Only fields whose bit is in `set` are explicit; the rest inherit.
+/// Inherited text styling. Hidden word 0 tracks per-field explicit overrides via
+/// `#[nve_table(inherited)]`; unset fields inherit branchlessly through `ResolvedRow<Typography>`.
 #[derive(NveTable)]
-#[nve_table(name = "nve.typography", storage = "sparse", flags = "publish")]
+#[nve_table(name = "nve.typography", storage = "sparse", flags = "publish", inherited)]
 pub struct Typography {
-    /// Bit `Typography::SET_*` set: the field is explicit on this node.
-    #[effect(measure, paint)]
-    pub set: u32,
     #[effect(paint)]
     #[default(Rgba::BLACK)]
     pub color: Rgba,
@@ -165,9 +163,9 @@ pub struct Typography {
     pub letter_spacing: f32,
     #[effect(measure)]
     pub font_family: Str,
-    /// Optional line clamp (`None` = unlimited).
+    /// Optional positive line clamp (`None` = unlimited; `0` is unrepresentable by type).
     #[effect(measure)]
-    pub max_lines: Option<u32>,
+    pub max_lines: Option<core::num::NonZeroU16>,
     #[effect(measure)]
     #[default(400u16)]
     pub font_weight: u16,
@@ -185,23 +183,6 @@ pub struct Typography {
     pub text_decoration: TextDecoration,
     #[effect(paint)]
     pub vertical_align: VerticalAlign,
-}
-
-impl Typography {
-    pub const SET_COLOR: u32 = 1 << 0;
-    pub const SET_FONT_SIZE: u32 = 1 << 1;
-    pub const SET_LINE_HEIGHT: u32 = 1 << 2;
-    pub const SET_LETTER_SPACING: u32 = 1 << 3;
-    pub const SET_FONT_FAMILY: u32 = 1 << 4;
-    pub const SET_MAX_LINES: u32 = 1 << 5;
-    pub const SET_FONT_WEIGHT: u32 = 1 << 6;
-    pub const SET_FONT_STYLE: u32 = 1 << 7;
-    pub const SET_WHITE_SPACE: u32 = 1 << 8;
-    pub const SET_WORD_BREAK: u32 = 1 << 9;
-    pub const SET_OVERFLOW_WRAP: u32 = 1 << 10;
-    pub const SET_TEXT_ALIGN: u32 = 1 << 11;
-    pub const SET_TEXT_DECORATION: u32 = 1 << 12;
-    pub const SET_VERTICAL_ALIGN: u32 = 1 << 13;
 }
 
 /// Text run content. Presence makes a node a text leaf (DOM inline text, `UILabel`, measured

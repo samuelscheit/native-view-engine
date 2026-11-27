@@ -123,95 +123,109 @@ pub(super) fn write_visual_and_typography_css(
     }
 
     if let Some(t) = store.try_row::<Typography>(id) {
-        let set = t.set();
-        if set & Typography::SET_COLOR != 0 || (set == 0 && t.color() != Rgba::BLACK) {
+        if t.is_color_explicit() {
             out.push_str("color:");
             write_compact_color(ColorRgba::from_u32(t.color().0), out);
             out.push(';');
         }
-        if set & Typography::SET_FONT_SIZE != 0
-            || (set == 0 && (t.font_size() - 16.0).abs() > 1e-4)
-        {
+        if t.is_font_size_explicit() {
             out.push_str("font-size:");
             write_compact_px(t.font_size(), out);
             out.push(';');
         }
-        if set & Typography::SET_FONT_WEIGHT != 0 || (set == 0 && t.font_weight() != 400) {
+        if t.is_font_weight_explicit() {
             out.push_str("font-weight:");
             write_u64(out, u64::from(t.font_weight()));
             out.push(';');
         }
-        if !t.line_height().is_auto() {
+        if t.is_line_height_explicit() {
             out.push_str("line-height:");
-            if t.line_height().is_points() {
+            if t.line_height().is_auto() {
+                out.push_str("normal");
+            } else if t.line_height().is_points() {
                 write_compact_px(t.line_height().value(), out);
             } else {
                 write_compact_num(t.line_height().value() / 100.0, out);
             }
             out.push(';');
         }
-        if t.letter_spacing() != 0.0 {
+        if t.is_letter_spacing_explicit() {
             out.push_str("letter-spacing:");
             write_compact_px(t.letter_spacing(), out);
             out.push(';');
         }
-        match t.overflow_wrap() {
-            OverflowWrap::Normal => {}
-            OverflowWrap::BreakWord => out.push_str("overflow-wrap:break-word;"),
-            OverflowWrap::Anywhere => out.push_str("overflow-wrap:anywhere;"),
-        }
-        match t.word_break() {
-            WordBreak::Normal => {}
-            WordBreak::BreakAll => out.push_str("word-break:break-all;"),
-            WordBreak::KeepAll => out.push_str("word-break:keep-all;"),
-            WordBreak::BreakWord => out.push_str("word-break:break-word;"),
-        }
-        match t.white_space() {
-            WhiteSpace::Normal => {}
-            WhiteSpace::NoWrap => out.push_str("white-space:nowrap;"),
-            WhiteSpace::Pre => out.push_str("white-space:pre;"),
-            WhiteSpace::PreWrap => out.push_str("white-space:pre-wrap;"),
-            WhiteSpace::PreLine => out.push_str("white-space:pre-line;"),
-            WhiteSpace::BreakSpaces => out.push_str("white-space:break-spaces;"),
-        }
-        let family = t.font_family();
-        if is_safe_font_family(family) {
-            out.push_str("font-family:");
-            out.push_str(family.trim());
-            out.push(';');
-        }
-        match t.text_align() {
-            TextAlign::Start => {}
-            TextAlign::End => out.push_str("text-align:end;"),
-            TextAlign::Left => out.push_str("text-align:left;"),
-            TextAlign::Right => out.push_str("text-align:right;"),
-            TextAlign::Center => out.push_str("text-align:center;"),
-            TextAlign::Justify => out.push_str("text-align:justify;"),
-        }
-        let deco = t.text_decoration();
-        if !deco.is_empty() {
-            out.push_str("text-decoration-line:");
-            let mut first = true;
-            for (flag, kw) in [
-                (TextDecoration::UNDERLINE, "underline"),
-                (TextDecoration::OVERLINE, "overline"),
-                (TextDecoration::LINE_THROUGH, "line-through"),
-            ] {
-                if deco.contains(flag) {
-                    if !first {
-                        out.push(' ');
-                    }
-                    out.push_str(kw);
-                    first = false;
-                }
+        if t.is_overflow_wrap_explicit() {
+            match t.overflow_wrap() {
+                OverflowWrap::Normal => out.push_str("overflow-wrap:normal;"),
+                OverflowWrap::BreakWord => out.push_str("overflow-wrap:break-word;"),
+                OverflowWrap::Anywhere => out.push_str("overflow-wrap:anywhere;"),
             }
-            out.push(';');
         }
-        // CSS `-webkit-line-clamp` requires a positive integer (`>= 1`); `0` is ignored while
-        // `-webkit-box` + `overflow:hidden` would still alter layout.
-        if let Some(max_lines) = t.max_lines().filter(|&n| n > 0) {
+        if t.is_word_break_explicit() {
+            match t.word_break() {
+                WordBreak::Normal => out.push_str("word-break:normal;"),
+                WordBreak::BreakAll => out.push_str("word-break:break-all;"),
+                WordBreak::KeepAll => out.push_str("word-break:keep-all;"),
+                WordBreak::BreakWord => out.push_str("word-break:break-word;"),
+            }
+        }
+        if t.is_white_space_explicit() {
+            match t.white_space() {
+                WhiteSpace::Normal => out.push_str("white-space:normal;"),
+                WhiteSpace::NoWrap => out.push_str("white-space:nowrap;"),
+                WhiteSpace::Pre => out.push_str("white-space:pre;"),
+                WhiteSpace::PreWrap => out.push_str("white-space:pre-wrap;"),
+                WhiteSpace::PreLine => out.push_str("white-space:pre-line;"),
+                WhiteSpace::BreakSpaces => out.push_str("white-space:break-spaces;"),
+            }
+        }
+        if t.is_font_family_explicit() {
+            let family = t.font_family();
+            if is_safe_font_family(family) {
+                out.push_str("font-family:");
+                out.push_str(family.trim());
+                out.push(';');
+            }
+        }
+        if t.is_text_align_explicit() {
+            match t.text_align() {
+                TextAlign::Start => out.push_str("text-align:start;"),
+                TextAlign::End => out.push_str("text-align:end;"),
+                TextAlign::Left => out.push_str("text-align:left;"),
+                TextAlign::Right => out.push_str("text-align:right;"),
+                TextAlign::Center => out.push_str("text-align:center;"),
+                TextAlign::Justify => out.push_str("text-align:justify;"),
+            }
+        }
+        if t.is_text_decoration_explicit() {
+            let deco = t.text_decoration();
+            if deco.is_empty() {
+                out.push_str("text-decoration-line:none;");
+            } else {
+                out.push_str("text-decoration-line:");
+                let mut first = true;
+                for (flag, kw) in [
+                    (TextDecoration::UNDERLINE, "underline"),
+                    (TextDecoration::OVERLINE, "overline"),
+                    (TextDecoration::LINE_THROUGH, "line-through"),
+                ] {
+                    if deco.contains(flag) {
+                        if !first {
+                            out.push(' ');
+                        }
+                        out.push_str(kw);
+                        first = false;
+                    }
+                }
+                out.push(';');
+            }
+        }
+        // `Typography::max_lines` is `Option<NonZeroU16>`, guaranteeing `>= 1` by type.
+        if t.is_max_lines_explicit()
+            && let Some(max_lines) = t.max_lines()
+        {
             out.push_str("display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;-webkit-line-clamp:");
-            write_u64(out, u64::from(max_lines));
+            write_u64(out, u64::from(max_lines.get()));
             out.push(';');
         }
     }

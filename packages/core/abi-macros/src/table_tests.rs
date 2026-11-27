@@ -68,17 +68,123 @@ fn derive_nve_table_parses_option_defaults_on_tokens_and_emits_opt_to_word() {
     "#;
     let out = derive_tokens(&lex(src)).expect("valid Opts table");
     assert!(
-        out.contains("const __NVE_DEF_0: Option < f32 > = (Some (1.5));"),
+        out.contains("const __NVE_DEF_0_WF: Option < f32 > = (Some (1.5));"),
         "unexpected output:\n{out}"
     );
-    assert!(out.contains("default_present: ::core::option::Option::is_some(&__NVE_DEF_0)"));
+    assert!(out.contains("default_present: ::core::option::Option::is_some(&__NVE_DEF_0_WF)"));
     assert!(
-        out.contains("const __NVE_DEF_1: Option < u32 > = (:: core :: option :: Option :: None);"),
+        out.contains("const __NVE_DEF_1_WN: Option < u32 > = (:: core :: option :: Option :: None);"),
         "unexpected output:\n{out}"
     );
-    assert!(out.contains("opt_bool_to_word(__NVE_DEF_2)"));
-    assert!(out.contains("<Dir>::opt_to_word(__NVE_DEF_3)"));
-    assert!(out.contains("const __NVE_DEF_4: i8 = (- 3i8);"));
-    assert!(out.contains("overflows #[bits(4)] signed range"));
+    assert!(out.contains("opt_bool_to_word(__NVE_DEF_2_OB)"));
+    assert!(out.contains("<Dir>::opt_to_word(__NVE_DEF_3_OE)"));
+    assert!(out.contains("const __NVE_DEF_4_NARROW_I: i8 = (- 3i8);"));
+    assert!(out.contains("default for `narrow_i` overflows #[bits(4)] signed range"));
     assert!(out.contains("bits: 4u8"));
+}
+
+#[test]
+fn derive_nve_table_rejects_magic_sentinels_split_bools_and_inherited_conflicts() {
+    let cases = [
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(f32::NAN)] x: f32 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(::core::f64::INFINITY)] x: f64 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(-f32::INFINITY)] x: f32 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(f32::NEG_INFINITY)] x: f32 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default((u32::MAX))] x: u32 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(u8::MAX)] x: u8 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(i32::MIN)] x: i32 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] #[default(i64::MIN)] x: i64 }",
+            "magic sentinel default",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] color_enabled: bool, #[effect(paint)] color: u32 }",
+            "split-bool sentinel pair",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] color_set: bool, #[effect(paint)] color: u32 }",
+            "split-bool sentinel pair",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] color_present: bool, #[effect(paint)] color: u32 }",
+            "split-bool sentinel pair",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] color_specified: bool, #[effect(paint)] color: u32 }",
+            "split-bool sentinel pair",
+        ),
+        (
+            "#[nve_table(name = \"t.a\")] struct T { #[effect(paint)] has_color: bool, #[effect(paint)] color: u32 }",
+            "split-bool sentinel pair",
+        ),
+        (
+            "#[nve_table(name = \"t.a\", inherited, events = MyEvent)] struct T { #[effect(paint)] x: u32 }",
+            "cannot combine `inherited` and `events`",
+        ),
+        (
+            "#[nve_table(name = \"t.a\", inherited = \"true\")] struct T { #[effect(paint)] x: u32 }",
+            "bare flag",
+        ),
+    ];
+    for (src, expected) in cases {
+        let err = derive_tokens(&lex(src)).expect_err(&format!("expected error for: {src}"));
+        assert!(
+            err.contains(expected),
+            "for `{src}`, expected `{expected}`, got `{err}`"
+        );
+    }
+
+    // 33 fields on an inherited table exceeds the u32 explicit mask.
+    let mut fields = String::new();
+    for i in 0..33 {
+        fields.push_str(&format!("#[effect(paint)] f{i}: bool, "));
+    }
+    let too_many = format!("#[nve_table(name = \"t.many\", inherited)] struct Many {{ {fields} }}");
+    let err = derive_tokens(&lex(&too_many)).expect_err("expected >32 inherited fields error");
+    assert!(err.contains("at most 32 fields"), "got: {err}");
+}
+
+#[test]
+fn derive_nve_table_emits_inherited_table_explicit_helpers_and_branchless_resolve() {
+    let src = r#"
+        #[nve_table(name = "t.typo", storage = "sparse", flags = "publish", inherited)]
+        pub struct Typo {
+            #[effect(paint)] #[default(Rgba::BLACK)] pub color: Rgba,
+            #[effect(measure)] pub family: Str,
+            #[effect(measure)] pub max_lines: Option<u32>,
+        }
+    "#;
+    let out = derive_tokens(&lex(src)).expect("valid inherited table");
+    assert!(out.contains("inherited: true"), "missing inherited: true");
+    assert!(out.contains("unsafe impl ::nve_store::InheritedTable for Typo"));
+    assert!(out.contains("pub fn explicit_mask(&self) -> u32"));
+    assert!(out.contains("pub fn is_color_explicit(&self) -> bool"));
+    assert!(out.contains("pub fn is_family_explicit(&self) -> bool"));
+    assert!(out.contains("pub fn clear_color(mut self) -> Self"));
+    assert!(out.contains("pub fn clear_family(mut self) -> Self"));
+    assert!(out.contains(".with_explicit(0u8, __F.effects)"));
+    assert!(out.contains("self.0.set_explicit_bit(0u32, __F.effects);"));
+    assert!(out.contains("self.0.clear_explicit_bit(0u32, __F.effects);"));
+    assert!(out.contains("fn resolve_inherited_arrays("));
 }

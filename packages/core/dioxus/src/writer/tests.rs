@@ -857,6 +857,14 @@ fn text_input_minlength_and_maxlength_preserve_zero_and_map_negative_to_none() {
     assert_eq!(ti.max_length(), Some(0));
 
     writer.with_transaction(|mtx| {
+        mtx.set_attribute("minlength", None, &AttributeValue::Int(100_000), ElementId(1));
+        mtx.set_attribute("maxlength", None, &AttributeValue::Int(100_000), ElementId(1));
+    });
+    let ti = writer.store().try_row::<TextInput>(n1).unwrap();
+    assert_eq!(ti.min_length(), Some(u16::MAX));
+    assert_eq!(ti.max_length(), Some(u16::MAX));
+
+    writer.with_transaction(|mtx| {
         mtx.set_attribute("minlength", None, &AttributeValue::Int(-5), ElementId(1));
         mtx.set_attribute("maxlength", None, &AttributeValue::Int(-1), ElementId(1));
     });

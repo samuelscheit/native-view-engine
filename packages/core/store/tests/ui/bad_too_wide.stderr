@@ -1,0 +1,24 @@
+error[E0080]: evaluation panicked: table exceeds 32 words; split it
+ --> tests/ui/bad_too_wide.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^ evaluation of `_::__NVE_LAYOUT` failed inside this call
+  |
+note: inside `nve_store::__private::pack_table::<17>`
+ --> $RUST/core/src/panic.rs
+  |
+  |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+  |
+ ::: $WORKSPACE/packages/core/abi/src/table.rs
+  |
+  |                 assert!(next_word + 2 <= MAX_TABLE_WORDS, "table exceeds 32 words; split it");
+  |                 ----------------------------------------------------------------------------- in this macro invocation
+
+note: erroneous constant encountered
+ --> tests/ui/bad_too_wide.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^
+  |
+  = note: this note originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -474,13 +474,20 @@ impl Transaction<'_> {
             prop.mask,
             prop.val_word as usize,
         );
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
     }
 
     /// Sets one string property.
     #[inline]
     pub fn set_str<T: NveTable>(&mut self, id: NodeId, prop: StrProp<T>, text: &str) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
-        writer_at_typed::<T>(self.store, id.node_index()).put_str(prop.word as usize, text);
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        w.put_str(prop.word as usize, text);
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
     }
 
     /// Sets (interned) or clears one resource property.
@@ -492,8 +499,11 @@ impl Transaction<'_> {
         value: Option<R>,
     ) {
         assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
-        writer_at_typed::<T>(self.store, id.node_index())
-            .put_resource(prop.word as usize, value);
+        let mut w = writer_at_typed::<T>(self.store, id.node_index());
+        w.put_resource(prop.word as usize, value);
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
     }
 
     /// Detaches table `T` from `id`, releasing its strings and resources.

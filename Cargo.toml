@@ -186,6 +186,7 @@ wasm-bindgen = "0.2.130"
 js-sys = "0.3.107"
 web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlElement", "CssStyleDeclaration", "Window", "Text", "Node", "MouseEvent", "EventTarget", "Event", "WebSocket", "MessageEvent", "console"] }
 criterion = "0.8.2"
+trybuild = "1.0"
 
 # Fast incremental builds: keep workspace crates unoptimized while optimizing heavy deps once.
 [profile.dev]

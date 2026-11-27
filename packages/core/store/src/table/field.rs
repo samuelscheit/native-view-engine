@@ -222,6 +222,8 @@ pub struct Prop<T, V> {
     pub(crate) word: u8,
     pub(crate) shift: u8,
     pub(crate) val_word: u8,
+    pub(crate) explicit_bit: u8,
+    pub(crate) field_effects: u8,
     pub(crate) mask: u32,
     _p: PhantomData<fn() -> (T, V)>,
 }
@@ -265,9 +267,20 @@ impl<T: NveTable, V: ScalarField> Prop<T, V> {
             word,
             shift,
             val_word,
+            explicit_bit: u8::MAX,
+            field_effects: 0,
             mask,
             _p: PhantomData,
         }
+    }
+
+    /// Attaches inherited explicit-bit metadata for `#[nve_table(inherited)]` tables.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub const fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
+        self.explicit_bit = bit;
+        self.field_effects = field_effects;
+        self
     }
 
     #[inline(always)]
@@ -305,6 +318,8 @@ impl<T: NveTable, V: ScalarField> Prop<T, V> {
 /// Typed handle to a string field.
 pub struct StrProp<T> {
     pub(crate) word: u8,
+    pub(crate) explicit_bit: u8,
+    pub(crate) field_effects: u8,
     _p: PhantomData<fn() -> T>,
 }
 
@@ -326,8 +341,19 @@ impl<T: NveTable> StrProp<T> {
     pub const unsafe fn new(word: u8) -> Self {
         Self {
             word,
+            explicit_bit: u8::MAX,
+            field_effects: 0,
             _p: PhantomData,
         }
+    }
+
+    /// Attaches inherited explicit-bit metadata for `#[nve_table(inherited)]` tables.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub const fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
+        self.explicit_bit = bit;
+        self.field_effects = field_effects;
+        self
     }
 
     #[inline(always)]
@@ -339,6 +365,8 @@ impl<T: NveTable> StrProp<T> {
 /// Typed handle to a resource field.
 pub struct ResProp<T, R> {
     pub(crate) word: u8,
+    pub(crate) explicit_bit: u8,
+    pub(crate) field_effects: u8,
     _p: PhantomData<fn() -> (T, R)>,
 }
 
@@ -360,8 +388,19 @@ impl<T: NveTable, R: Resource> ResProp<T, R> {
     pub const unsafe fn new(word: u8) -> Self {
         Self {
             word,
+            explicit_bit: u8::MAX,
+            field_effects: 0,
             _p: PhantomData,
         }
+    }
+
+    /// Attaches inherited explicit-bit metadata for `#[nve_table(inherited)]` tables.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub const fn with_explicit(mut self, bit: u8, field_effects: u8) -> Self {
+        self.explicit_bit = bit;
+        self.field_effects = field_effects;
+        self
     }
 
     #[inline(always)]

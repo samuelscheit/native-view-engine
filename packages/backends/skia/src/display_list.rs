@@ -13,7 +13,7 @@ use nve_components::tables::{
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
 use nve_engine::{LayoutRect, StoreLayoutEngine};
-use nve_store::{NodeStore, Rgba};
+use nve_store::{NodeStore, ResolvedRow, Rgba};
 
 use crate::motion::MotionDriver;
 use crate::scroll::compute_scroll_content_size;
@@ -154,14 +154,6 @@ fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct InheritedTextStyle {
-    pub(crate) font_weight: Option<u16>,
-    pub(crate) text_align: Option<TextAlign>,
-    pub(crate) text_color: Option<ColorRgba>,
-    pub(crate) font_size: Option<f32>,
-}
-
 #[inline]
 fn map_text_align(align: NveTextAlign) -> TextAlign {
     match align {
@@ -184,7 +176,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     offset: (f32, f32),
     in_transform: bool,
     inherited_hidden: bool,
-    inherited_text: InheritedTextStyle,
+    parent_typo: ResolvedRow<'_, Typography>,
     sort_scratch: &mut Vec<NodeId>,
     ops: &mut Vec<PaintOp>,
     id: NodeId,
@@ -307,35 +299,23 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         }
     }
 
-    // 4. Typography resolution (inheriting from parent; state/responsive/motion overrides win)
-    let typo = store.try_row::<Typography>(id);
-    let effective_weight = typo
-        .filter(|t| t.set() & Typography::SET_FONT_WEIGHT != 0 || t.font_weight() != 400)
-        .map(|t| t.font_weight())
-        .or(inherited_text.font_weight)
-        .unwrap_or(400);
-    let effective_align = typo
-        .filter(|t| t.text_align() != NveTextAlign::Start)
-        .map(|t| map_text_align(t.text_align()))
-        .or(inherited_text.text_align)
-        .unwrap_or_default();
-    let effective_color = if patch.text_color.is_some() || motion.has_active_color(id) {
+    // 4. Typography resolution (branchless inheritance via `ResolvedRow<Typography>`;
+    //    state/responsive/motion overrides win).
+    let resolved_typo = ResolvedRow::<Typography>::resolve(store, id, &parent_typo);
+    let typo = resolved_typo.get();
+    let effective_weight = typo.font_weight();
+    let effective_align = map_text_align(typo.text_align());
+    let color_override = patch.text_color.is_some() || motion.has_active_color(id);
+    let effective_color = if color_override {
         style.text_color
     } else {
-        typo.filter(|t| t.set() & Typography::SET_COLOR != 0 || t.color() != Rgba::BLACK)
-            .map(|t| ColorRgba::from_u32(t.color().0))
-            .or(inherited_text.text_color)
-            .unwrap_or(style.text_color)
+        ColorRgba::from_u32(typo.color().0)
     };
-    let effective_font_size = if patch.font_size.is_some() {
+    let font_size_override = patch.font_size.is_some();
+    let effective_font_size = if font_size_override {
         style.font_size
     } else {
-        typo.filter(|t| {
-            t.set() & Typography::SET_FONT_SIZE != 0 || (t.font_size() - 16.0).abs() > 1e-4
-        })
-        .map(|t| t.font_size())
-        .or(inherited_text.font_size)
-        .unwrap_or(style.font_size)
+        typo.font_size()
     };
 
     // 5. Leaf & specialized core tables: Image, TextInput, TextContent, and registered SkiaTableSystems
@@ -413,12 +393,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
 
             let (sx, sy) = scroll_shift_for(store, scroll_offsets, id);
             let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
-            let child_inherited = InheritedTextStyle {
-                font_weight: Some(effective_weight),
-                text_align: Some(effective_align),
-                text_color: Some(effective_color),
-                font_size: Some(effective_font_size),
-            };
+            let mut child_typo = resolved_typo;
+            if color_override {
+                child_typo.override_prop(Typography::COLOR, Rgba(effective_color.to_u32()));
+            }
+            if font_size_override {
+                child_typo.override_prop(Typography::FONT_SIZE, effective_font_size);
+            }
 
             let has_z_order = children.len() > 1
                 && children
@@ -445,7 +426,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                         child_offset,
                         any_tf,
                         effective_hidden,
-                        child_inherited,
+                        child_typo,
                         sort_scratch,
                         ops,
                         cid,
@@ -466,7 +447,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
                         child_offset,
                         any_tf,
                         effective_hidden,
-                        child_inherited,
+                        child_typo,
                         sort_scratch,
                         ops,
                         cid,

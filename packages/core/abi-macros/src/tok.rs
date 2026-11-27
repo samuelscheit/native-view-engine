@@ -77,7 +77,7 @@ pub(crate) fn paren_inner(rest: &[Tok]) -> Option<&[Tok]> {
     }
 }
 
-pub(crate) fn render_tokens(tokens: &[Tok]) -> String {
+fn render_tokens_impl(tokens: &[Tok], paren_invisible: bool) -> String {
     let mut out = String::new();
     for (idx, t) in tokens.iter().enumerate() {
         if idx > 0 {
@@ -94,15 +94,31 @@ pub(crate) fn render_tokens(tokens: &[Tok]) -> String {
                     Delim::Paren => ("(", ")"),
                     Delim::Bracket => ("[", "]"),
                     Delim::Brace => ("{", "}"),
-                    Delim::None => ("", ""),
+                    Delim::None => {
+                        if paren_invisible && !inner.is_empty() {
+                            ("(", ")")
+                        } else {
+                            ("", "")
+                        }
+                    }
                 };
                 out.push_str(l);
-                out.push_str(&render_tokens(inner));
+                out.push_str(&render_tokens_impl(inner, paren_invisible));
                 out.push_str(r);
             }
         }
     }
     out
+}
+
+pub(crate) fn render_tokens(tokens: &[Tok]) -> String {
+    render_tokens_impl(tokens, false)
+}
+
+/// Renders expression tokens while parenthesizing invisible `Delim::None` macro-metavar groups so
+/// `macro_rules!` expansions such as `#[default($a * 2)]` preserve operator precedence.
+pub(crate) fn render_expr_tokens(tokens: &[Tok]) -> String {
+    render_tokens_impl(tokens, true)
 }
 
 #[cfg(test)]

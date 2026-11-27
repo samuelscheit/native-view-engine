@@ -93,7 +93,6 @@ fn core_tables_roundtrip_through_nve2_wire() {
             ],
         ))));
     tx.edit::<Typography>(n)
-        .set(Typography::SET_FONT_SIZE | Typography::SET_FONT_WEIGHT)
         .font_size(20.0)
         .font_weight(700)
         .font_family("Inter");
@@ -168,6 +167,15 @@ fn core_tables_roundtrip_through_nve2_wire() {
     let shadows = dst.resource::<BoxShadows>(v.box_shadows()).unwrap();
     assert_eq!(shadows.0.len(), 1);
     assert_eq!(shadows.0[0].blur_radius, 12.0);
+
+    let typo = dst.try_row::<Typography>(n).unwrap();
+    assert!(typo.is_font_size_explicit());
+    assert!(typo.is_font_weight_explicit());
+    assert!(typo.is_font_family_explicit());
+    assert!(!typo.is_color_explicit());
+    assert_eq!(typo.font_size(), 20.0);
+    assert_eq!(typo.font_weight(), 700);
+    assert_eq!(typo.font_family(), "Inter");
 
     let tc = dst.try_row::<TextContent>(n).unwrap();
     assert_eq!(tc.text(), "Hello NVE2");

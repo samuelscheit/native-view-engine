@@ -1,0 +1,7 @@
+error: #[nve_table]: cannot combine `inherited` and `events`
+ --> tests/ui/bad_inherited_events.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

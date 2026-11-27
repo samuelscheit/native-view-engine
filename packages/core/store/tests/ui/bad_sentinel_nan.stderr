@@ -1,0 +1,7 @@
+error: field `x`: magic sentinel default `f32 :: NAN` is forbidden; use `Option<T>` instead
+ --> tests/ui/bad_sentinel_nan.rs:3:10
+  |
+3 | #[derive(NveTable)]
+  |          ^^^^^^^^
+  |
+  = note: this error originates in the derive macro `NveTable` (in Nightly builds, run with -Z macro-backtrace for more info)

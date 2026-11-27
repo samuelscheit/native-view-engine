@@ -61,13 +61,20 @@ impl<'a> NodeMut<'a> {
             prop.mask,
             prop.val_word as usize,
         );
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
         self
     }
 
     /// Sets one string property on this node.
     #[inline]
     pub fn set_str<T: NveTable>(&mut self, prop: StrProp<T>, text: &str) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put_str(prop.word as usize, text);
+        let mut w = writer_at_typed::<T>(self.store, self.index);
+        w.put_str(prop.word as usize, text);
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
         self
     }
 
@@ -78,7 +85,11 @@ impl<'a> NodeMut<'a> {
         prop: ResProp<T, R>,
         value: Option<R>,
     ) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put_resource(prop.word as usize, value);
+        let mut w = writer_at_typed::<T>(self.store, self.index);
+        w.put_resource(prop.word as usize, value);
+        if prop.explicit_bit != u8::MAX {
+            w.set_explicit_bit(prop.explicit_bit as u32, prop.field_effects);
+        }
         self
     }
 

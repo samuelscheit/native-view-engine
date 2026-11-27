@@ -120,16 +120,80 @@ pub struct RowWriter<'a> {
 
 impl<'a> RowWriter<'a> {
     #[inline(always)]
-    fn mark(&mut self, word: usize, changed: u32) {
+    fn mark_with_effects(&mut self, word: usize, changed: u32, effect_bits: u8) {
         let was = *self.mask;
         *self.mask = was | (changed << word);
         self.dirty
             .push_if(self.node_index, (was == 0) & (changed != 0));
-        let fx = self.desc.word_effects()[word] & 0u8.wrapping_sub(changed as u8);
+        let fx = effect_bits & 0u8.wrapping_sub(changed as u8);
         let had = self.node.effects;
         self.node.effects = had | fx;
         self.touched
             .push_if(self.node_index, (had == 0) & (fx != 0));
+    }
+
+    #[inline(always)]
+    fn mark(&mut self, word: usize, changed: u32) {
+        let effect_bits = self.desc.word_effects()[word];
+        self.mark_with_effects(word, changed, effect_bits);
+    }
+
+    /// Branchlessly sets explicit bit `bit` (`0..32`) in word 0 (`__explicit: u32`) of an
+    /// inherited table and attributes `field_effects` whenever the bit flips `0 -> 1` (including
+    /// when writing the table's default value to override an ancestor).
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn set_explicit_bit(&mut self, bit: u32, field_effects: u8) {
+        debug_assert!(bit < 32);
+        let bit_mask = 1u32 << bit;
+        let old = self.row[0];
+        let new = old | bit_mask;
+        self.row[0] = new;
+        self.mark_with_effects(0, (old != new) as u32, field_effects);
+    }
+
+    /// Branchlessly clears explicit bit `bit` (`0..32`) in word 0 (`__explicit: u32`) of an
+    /// inherited table and attributes `field_effects` whenever the bit flips `1 -> 0`.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn clear_explicit_bit(&mut self, bit: u32, field_effects: u8) {
+        debug_assert!(bit < 32);
+        let bit_mask = 1u32 << bit;
+        let old = self.row[0];
+        let new = old & !bit_mask;
+        self.row[0] = new;
+        self.mark_with_effects(0, (old != new) as u32, field_effects);
+    }
+
+    /// Applies a wire patch to word 0 (`__explicit: u32`) of an inherited table, ORing the exact
+    /// field effects of every flipped bit into the node's effects.
+    #[inline]
+    pub(crate) fn put_explicit_word(&mut self, new_mask: u32) {
+        let old = self.row[0];
+        let diff = old ^ new_mask;
+        if diff == 0 {
+            return;
+        }
+        self.row[0] = new_mask;
+        let fx = if let Some(sd) = self.desc.as_static()
+            && sd.inherited
+        {
+            let mut acc = 0u8;
+            let mut d = diff;
+            while d != 0 {
+                let b = d.trailing_zeros() as usize;
+                d &= d - 1;
+                if let Some(f) = sd.fields.get(b) {
+                    acc |= f.effects;
+                }
+            }
+            acc
+        } else if self.desc.word_effects()[0] == 0 {
+            self.desc.effects()
+        } else {
+            self.desc.word_effects()[0]
+        };
+        self.mark_with_effects(0, 1, fx);
     }
 
     /// Writes `bits` into `word` under `mask` (`bits` already shifted into place by the caller's

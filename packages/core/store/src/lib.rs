@@ -20,6 +20,7 @@ mod column;
 mod commit;
 pub mod events;
 mod id;
+mod inherited;
 mod node_mut;
 mod resource;
 mod row;
@@ -33,6 +34,7 @@ pub mod wire;
 pub use changes::{ChangeSet, Command, TableChanges};
 pub use events::{TableEventBus, TypedTableEvent};
 pub use id::{Idx, IndexVec, NodeId, NodeIndex, ResourceId, TableSet, TableSetIter};
+pub use inherited::{InheritedTable, ResolvedRow};
 pub use nve_abi::SurfaceId;
 pub use nve_abi::table::{
     effect, table_flags, FieldDesc, FieldKind, OptEncoding, Storage, TableDesc, TableKey, Word,
@@ -55,17 +57,23 @@ pub mod __private {
     pub use crate::table::register_static;
     pub use crate::value::{
         bitflags_width, opt_bool_to_word, opt_i16_to_word, opt_i8_to_word, opt_node_to_word,
-        opt_surf_to_word, opt_u16_to_word, opt_u8_to_word,
+        opt_nz_u16_to_word, opt_nz_u32_to_word, opt_nz_u8_to_word, opt_surf_to_word,
+        opt_u16_to_word, opt_u8_to_word,
     };
     pub use nve_abi::define_bitflags;
     pub use nve_abi::table::{
         compute_table_schema_hash, finalize_table_flags, pack_table, trim_bytes, trim_words,
         FieldDesc, FieldKind, OptEncoding, PackInput, PackKind, PackLayout, Storage, TableDesc,
+        NO_VAL_WORD,
     };
     pub use nve_hash::{const_id, Key64};
 }
 
 #[cfg(test)]
+mod inherited_tests;
+#[cfg(test)]
 mod table_packing_tests;
+#[cfg(test)]
+mod table_wire_tests;
 #[cfg(test)]
 mod tests;

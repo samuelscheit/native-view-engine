@@ -11,8 +11,9 @@ use nve_abi::SurfaceId;
 pub use grid_line::GridLine;
 pub use length::Length;
 pub use opt::{
-    opt_bool_to_word, opt_i16_to_word, opt_i8_to_word, opt_node_to_word, opt_surf_to_word,
-    opt_u16_to_word, opt_u8_to_word, OptWord,
+    opt_bool_to_word, opt_i16_to_word, opt_i8_to_word, opt_node_to_word, opt_nz_u16_to_word,
+    opt_nz_u32_to_word, opt_nz_u8_to_word, opt_surf_to_word, opt_u16_to_word, opt_u8_to_word,
+    OptWord,
 };
 
 /// A value stored in `BITS` bits of one row word.
@@ -173,8 +174,8 @@ impl WordValue for i8 {
     }
     #[inline(always)]
     fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
-        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
-        let shift = 32 - bit_width.clamp(1, 8);
+        debug_assert!((1..=8).contains(&bit_width), "i8 bit_width {bit_width} must be in 1..=8");
+        let shift = 32 - bit_width;
         (((bits << shift) as i32) >> shift) as i8
     }
 }
@@ -227,8 +228,8 @@ impl WordValue for i16 {
     }
     #[inline(always)]
     fn from_masked_bits(bits: u32, bit_width: u32) -> Self {
-        debug_assert!((1..=32).contains(&bit_width), "bit_width {bit_width} must be in 1..=32");
-        let shift = 32 - bit_width.clamp(1, 16);
+        debug_assert!((1..=16).contains(&bit_width), "i16 bit_width {bit_width} must be in 1..=16");
+        let shift = 32 - bit_width;
         (((bits << shift) as i32) >> shift) as i16
     }
 }

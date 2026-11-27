@@ -212,6 +212,11 @@ impl<'a> NodeRef<'a> {
     pub fn resource<R: Resource>(self, id: ResourceId) -> Option<&'a R> {
         self.store.resources.get(id)
     }
+
+    #[inline(always)]
+    pub(crate) fn text_arena(self) -> &'a StrArena {
+        &self.store.text
+    }
 }
 
 /// The single owner of every node, table row, child list, string, and resource.
@@ -406,6 +411,11 @@ impl NodeStore {
     #[inline]
     pub fn text(&self, span: StrSpan) -> &str {
         self.text.str(span)
+    }
+
+    #[inline(always)]
+    pub(crate) fn text_arena(&self) -> &StrArena {
+        &self.text
     }
 
     /// The contiguous UTF-8 text slab (published as `NveSceneView::text_slab`).
