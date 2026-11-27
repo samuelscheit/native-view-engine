@@ -376,9 +376,10 @@ const _: () = {
     assert!(offset_of!(NveRuntimeApi, restore_state) == 16 + 21 * PTR_SIZE);
     assert!(offset_of!(NveRuntimeApi, set_text_measurer) == 16 + 22 * PTR_SIZE);
     assert!(offset_of!(NveRuntimeApi, resource_bytes) == 16 + 23 * PTR_SIZE);
-    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 24 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, encode_scene) == 16 + 24 * PTR_SIZE);
+    assert!(offset_of!(NveRuntimeApi, last_error) == 16 + 25 * PTR_SIZE);
     assert!(
-        size_of::<NveRuntimeApi>() == align_up(16 + 25 * PTR_SIZE, align_of::<NveRuntimeApi>())
+        size_of::<NveRuntimeApi>() == align_up(16 + 26 * PTR_SIZE, align_of::<NveRuntimeApi>())
     );
 };
 
@@ -459,6 +460,6 @@ const _: () = {
 
     assert!(size_of::<NveRuntimeSceneView>() == 96);
     assert!(align_of::<NveRuntimeSceneView>() == 8);
-    assert!(size_of::<NveRuntimeApi>() == 216);
+    assert!(size_of::<NveRuntimeApi>() == 224);
     assert!(align_of::<NveRuntimeApi>() == 8);
 };

@@ -403,3 +403,38 @@ fn resource_bytes_copies_published_image_sources() {
         unsafe { (s.api.resource_bytes)(s.handle, resource_id, std::ptr::null_mut(), 0, std::ptr::null_mut()) };
     assert_eq!(null_len, NveRuntimeStatus::InvalidArg.as_i32());
 }
+
+#[test]
+fn encode_scene_replays_as_instant_boot_frame0_into_a_fresh_runtime() {
+    let live = Surface::new();
+    live.attach(nve_runtime_test_component_app_get_interface);
+    assert!(live.tick());
+    assert_eq!(live.set_label("persisted"), (OK, 1));
+    assert!(live.tick());
+
+    let mut len = 0usize;
+    // SAFETY: Live handle; `cap = 0` only sizes.
+    assert_eq!(unsafe { (live.api.encode_scene)(live.handle, std::ptr::null_mut(), 0, &mut len) }, OK);
+    assert!(len > 24, "a keyframe carries the NVE2 header plus ops");
+    let mut frame0 = vec![0u8; len];
+    // SAFETY: Buffer valid for `len` bytes.
+    assert_eq!(unsafe { (live.api.encode_scene)(live.handle, frame0.as_mut_ptr(), len, &mut len) }, OK);
+    assert_eq!(&frame0[..4], b"NVE2");
+    let mut small = vec![0u8; 8];
+    // SAFETY: Buffer valid for 8 bytes; rejected as too small.
+    let too_small = unsafe { (live.api.encode_scene)(live.handle, small.as_mut_ptr(), small.len(), &mut len) };
+    assert_eq!(too_small, NveRuntimeStatus::InvalidArg.as_i32());
+
+    // Cold start: replay Frame-0 before any app attaches; the scene is complete immediately.
+    let cold = Surface::new();
+    // SAFETY: Live handle; `frame0` outlives the call.
+    assert_eq!(unsafe { (cold.api.submit_nve2)(cold.handle, NveBufferSlice::from_slice(&frame0)) }, OK);
+    cold.tick(); // `submit_nve2` already published the replayed frame
+    assert_eq!(cold.label(), "persisted");
+    assert_eq!(cold.rect_height(3), live.rect_height(3), "layout state replays too");
+    // Encoding is a pure read: available while a reader holds the scene.
+    cold.with_scene(|_| {
+        // SAFETY: Live handle; sizing only.
+        assert_eq!(unsafe { (cold.api.encode_scene)(cold.handle, std::ptr::null_mut(), 0, &mut len) }, OK);
+    });
+}

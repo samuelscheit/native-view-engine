@@ -378,6 +378,14 @@ void test_runtime_scene_reader_and_session_mock() {
     for (uint8_t i = 0u; i < 4u; ++i) out[i] = static_cast<uint8_t>(0xA0u + i);
     return NVE_RUNTIME_OK;
   };
+  mock_api.encode_scene = [](NveRuntimeHandle, uint8_t* out, size_t cap, size_t* out_len) -> int32_t {
+    *out_len = 8u;
+    if (cap == 0u) return NVE_RUNTIME_OK;
+    if (cap < 8u || out == nullptr) return NVE_RUNTIME_INVALID_ARG;
+    const uint8_t frame[8] = {'N', 'V', 'E', '2', 1u, 0u, 0u, 0u};
+    for (size_t i = 0u; i < 8u; ++i) out[i] = frame[i];
+    return NVE_RUNTIME_OK;
+  };
   mock_api.last_error = [](uint8_t*, size_t) -> size_t { return 0u; };
 
   {
@@ -407,6 +415,7 @@ void test_runtime_scene_reader_and_session_mock() {
     std::vector<uint8_t> bytes;
     CHECK(sess->resource_bytes(7u, bytes) == NVE_RUNTIME_OK && bytes.size() == 4u && bytes[3] == 0xA3u);
     CHECK(sess->resource_bytes(8u, bytes) == NVE_RUNTIME_NOT_FOUND && bytes.empty());
+    CHECK(sess->encode_scene(bytes) == NVE_RUNTIME_OK && bytes.size() == 8u && bytes[3] == '2');
   }
   CHECK(state.destroys == 1);
   state.destroys = 0;

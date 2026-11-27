@@ -94,6 +94,7 @@ final class NveRuntimeHostTests: XCTestCase {
             { (a: inout NveRuntimeApi) in a.struct_size -= 8 },
             { (a: inout NveRuntimeApi) in a.resource_bytes = nil },
             { (a: inout NveRuntimeApi) in a.set_text_measurer = nil },
+            { (a: inout NveRuntimeApi) in a.encode_scene = nil },
         ] {
             var copy = MockRuntime.api.pointee
             corrupt(&copy)
@@ -148,6 +149,7 @@ final class NveRuntimeHostTests: XCTestCase {
         XCTAssertEqual(try session.resourceBytes(5), [0, 3, 0, 0, 0, 0x61, 0x2E, 0x62])
         XCTAssertEqual(NveImageSource(resourceBytes: try session.resourceBytes(5)), .url("a.b"))
         XCTAssertThrowsError(try session.resourceBytes(6))
+        XCTAssertEqual(Array(try session.encodeScene().prefix(4)), Array("NVE2".utf8))
         try session.pairConnect(uri: "nve://pair?host=127.0.0.1&ws=8092", token: "t")
         XCTAssertEqual(m.pairedUri, "nve://pair?host=127.0.0.1&ws=8092")
         XCTAssertTrue(session.isPaired)
@@ -189,7 +191,8 @@ final class NveRuntimeHostTests: XCTestCase {
         try session.withScene { scene in
             let t = NveSceneTables(scene: scene, index: NveSparseRowIndex())
             XCTAssertEqual(t.background(ids.card.index), NveColor(Rgba(packed: SceneBuilder.rgba(255, 0, 0))))
-            XCTAssertNil(t.background(ids.title.index), "transparent default paints nothing")
+            XCTAssertNil(t.background(ids.title.index), "no `nve.visual` attached: nothing painted")
+            XCTAssertEqual(t.opacity(ids.title.index), 1, "unattached dense row reads as defaults, not zeros")
             XCTAssertEqual(t.borderRadius(ids.card.index), 8)
             XCTAssertEqual(t.opacity(ids.root.index), 1, "dense default opacity is 1")
             XCTAssertEqual(t.zIndex(ids.card.index), 1)

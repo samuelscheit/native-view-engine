@@ -15,7 +15,7 @@ use crate::builder::RuntimeError;
 use crate::surface::SurfaceRuntime;
 
 thread_local! {
-    static RESOURCE_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static COPY_OUT_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Shared slot body: panic containment, handle validation, and error-to-status mapping.
@@ -148,19 +148,43 @@ pub(super) unsafe extern "C" fn rt_resource_bytes(
     out_len: *mut usize,
 ) -> i32 {
     runtime_call("nve_runtime::resource_bytes", handle, |rt| {
-        RESOURCE_SCRATCH.with_borrow_mut(|scratch| {
-            scratch.clear();
-            rt.resource_bytes(resource_id, scratch)?;
-            write_required(out_len, scratch.len())?;
-            if cap == 0 {
-                return Ok(());
-            }
-            if out_buf.is_null() || cap < scratch.len() {
-                return Err(RuntimeError::InvalidArg("resource_bytes buffer too small"));
-            }
-            // SAFETY: `out_buf` is writable for `cap >= scratch.len()` bytes per the checks above.
-            unsafe { std::ptr::copy_nonoverlapping(scratch.as_ptr(), out_buf, scratch.len()) };
-            Ok(())
-        })
+        copy_out(out_buf, cap, out_len, |scratch| rt.resource_bytes(resource_id, scratch))
+    })
+}
+
+/// Copies a full `NVE2` keyframe of the current scene (instant-boot Frame-0) into
+/// `out_buf[..cap]`; same sizing contract as [`rt_resource_bytes`].
+pub(super) unsafe extern "C" fn rt_encode_scene(
+    handle: NveRuntimeHandle,
+    out_buf: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> i32 {
+    runtime_call("nve_runtime::encode_scene", handle, |rt| {
+        copy_out(out_buf, cap, out_len, |scratch| rt.encode_scene(scratch))
+    })
+}
+
+/// Shared copy-out contract: `fill` encodes into a reused thread-local buffer, `out_len` always
+/// receives the full length, `cap = 0` only sizes, a too-small buffer is `InvalidArg`.
+fn copy_out(
+    out_buf: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+    fill: impl FnOnce(&mut Vec<u8>) -> Result<(), RuntimeError>,
+) -> Result<(), RuntimeError> {
+    COPY_OUT_SCRATCH.with_borrow_mut(|scratch| {
+        scratch.clear();
+        fill(scratch)?;
+        write_required(out_len, scratch.len())?;
+        if cap == 0 {
+            return Ok(());
+        }
+        if out_buf.is_null() || cap < scratch.len() {
+            return Err(RuntimeError::InvalidArg("output buffer too small"));
+        }
+        // SAFETY: `out_buf` is writable for `cap >= scratch.len()` bytes per the checks above.
+        unsafe { std::ptr::copy_nonoverlapping(scratch.as_ptr(), out_buf, scratch.len()) };
+        Ok(())
     })
 }

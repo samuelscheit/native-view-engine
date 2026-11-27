@@ -12,6 +12,7 @@ use nve_abi::{
 use nve_engine::HotPatchMsg;
 use nve_layout::{HeuristicTextMeasurer, TextMeasurer};
 use nve_store::ResourceId;
+use nve_store::wire::WireEncoder;
 
 use crate::builder::RuntimeError;
 use crate::surface::SurfaceRuntime;
@@ -183,6 +184,18 @@ impl SurfaceRuntime {
         if !resources.is_live(ResourceId(id)) || !resources.encode(ResourceId(id), out) {
             return Err(RuntimeError::NotFound("resource is not live or has no codec"));
         }
+        Ok(())
+    }
+
+    /// Appends a self-contained `NVE2` keyframe of the active store (every table declaration and
+    /// live node): the Frame-0 of an instant-boot snapshot, replayed later via `submit_nve2`
+    /// before an app attaches. Cross-thread safe (shared read lock).
+    pub fn encode_scene(&self, out: &mut Vec<u8>) -> Result<(), RuntimeError> {
+        self.check_not_poisoned()?;
+        let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
+        // SAFETY: The shared read lock above excludes writers for the guard's lifetime.
+        let inner = unsafe { &*self.inner.get() };
+        WireEncoder::default().encode_full(inner.active_store(), out);
         Ok(())
     }
 }

@@ -78,10 +78,14 @@ public struct NveSceneTables {
         self.sparse = sparse
     }
 
-    /// Row of node slot `index` in `table` (dense: the slot; sparse: the owner map).
+    /// Row of node slot `index` in `table` (dense: the slot, only when the node's `table_set`
+    /// holds the table — unattached dense rows are not defaults; sparse: the owner map).
     public func row(_ table: TableReader?, _ index: Int) -> Int? {
         guard let table, scene.isLive(index) else { return nil }
-        guard table.isSparse else { return TableReader.denseRow(UInt32(index), rowCount: table.rowCount) }
+        guard table.isSparse else {
+            guard table.slot < 128, scene.hasTable(index, slot: UInt8(table.slot)) else { return nil }
+            return TableReader.denseRow(UInt32(index), rowCount: table.rowCount)
+        }
         guard let map = sparse[table.key], map.indices.contains(index), map[index] >= 0 else { return nil }
         return Int(map[index])
     }

@@ -375,6 +375,12 @@ pub struct NveRuntimeApi {
         cap: usize,
         out_len: *mut usize,
     ) -> i32,
+    pub encode_scene: unsafe extern "C" fn(
+        handle: NveRuntimeHandle,
+        out_buf: *mut u8,
+        cap: usize,
+        out_len: *mut usize,
+    ) -> i32,
     pub last_error: unsafe extern "C" fn(out_buf: *mut u8, cap: usize) -> usize,
 }
 

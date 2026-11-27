@@ -68,5 +68,13 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     target_compile_options(nve_host_runtime_session_test PRIVATE ${_nve_host_warnings} ${_nve_host_sanitize})
     target_link_options(nve_host_runtime_session_test PRIVATE ${_nve_host_sanitize})
     add_test(NAME nve_host_runtime_session COMMAND nve_host_runtime_session_test)
+
+    add_executable(nve_host_runtime_scene_builder_test tests/test_runtime_scene_builder.cpp)
+    set_target_properties(nve_host_runtime_scene_builder_test PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_link_libraries(nve_host_runtime_scene_builder_test PRIVATE nve_host_cxx nve::runtime)
+    target_compile_options(nve_host_runtime_scene_builder_test PRIVATE ${_nve_host_warnings} ${_nve_host_sanitize})
+    target_link_options(nve_host_runtime_scene_builder_test PRIVATE ${_nve_host_sanitize})
+    add_test(NAME nve_host_runtime_scene_builder COMMAND nve_host_runtime_scene_builder_test)
   endif()
 endif()

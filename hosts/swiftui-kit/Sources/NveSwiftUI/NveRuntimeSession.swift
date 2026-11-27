@@ -71,7 +71,7 @@ public final class NveRuntimeSession {
             a.get_metrics != nil, a.pair_connect != nil, a.pair_disconnect != nil, a.pair_is_connected != nil,
             a.set_props != nil, a.drain_emitted_events != nil, a.measure != nil, a.apply_hot_patch != nil,
             a.snapshot_state != nil, a.restore_state != nil, a.set_text_measurer != nil,
-            a.resource_bytes != nil, a.last_error != nil,
+            a.resource_bytes != nil, a.encode_scene != nil, a.last_error != nil,
         ]
         return a.abi_version == NVE_RUNTIME_ABI_VERSION
             && Int(a.struct_size) == MemoryLayout<NveRuntimeApi>.size
@@ -235,13 +235,21 @@ public final class NveRuntimeSession {
 
     /// Wire encoding of resource `id` referenced by a published `Resource` field.
     public func resourceBytes(_ id: UInt32) throws -> [UInt8] {
+        try copyOut { api.pointee.resource_bytes(handle, id, $0, $1, $2) }
+    }
+
+    /// Self-contained `NVE2` keyframe of the current scene (instant-boot Frame-0; replay with
+    /// `submitNve2` before an app attaches).
+    public func encodeScene() throws -> [UInt8] {
+        try copyOut { api.pointee.encode_scene(handle, $0, $1, $2) }
+    }
+
+    private func copyOut(_ slot: (UnsafeMutablePointer<UInt8>?, Int, UnsafeMutablePointer<Int>) -> Int32) throws -> [UInt8] {
         var len = 0
-        try check(api.pointee.resource_bytes(handle, id, nil, 0, &len))
+        try check(slot(nil, 0, &len))
         var out = [UInt8](repeating: 0, count: len)
         guard len > 0 else { return out }
-        try out.withUnsafeMutableBufferPointer { buf in
-            try check(api.pointee.resource_bytes(handle, id, buf.baseAddress, buf.count, &len))
-        }
+        try out.withUnsafeMutableBufferPointer { buf in try check(slot(buf.baseAddress, buf.count, &len)) }
         return out
     }
 

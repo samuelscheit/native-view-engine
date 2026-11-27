@@ -19,7 +19,7 @@ use crate::surface::SurfaceRuntime;
 
 mod component_slots;
 use component_slots::{
-    rt_apply_hot_patch, rt_drain_emitted_events, rt_measure, rt_resource_bytes, rt_restore_state,
+    rt_apply_hot_patch, rt_drain_emitted_events, rt_encode_scene, rt_measure, rt_resource_bytes, rt_restore_state,
     rt_set_props, rt_set_text_measurer, rt_snapshot_state,
 };
 
@@ -585,6 +585,7 @@ static RUNTIME_API: NveRuntimeApi = NveRuntimeApi {
     restore_state: rt_restore_state,
     set_text_measurer: rt_set_text_measurer,
     resource_bytes: rt_resource_bytes,
+    encode_scene: rt_encode_scene,
     last_error: rt_last_error,
 };
 

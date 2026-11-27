@@ -143,18 +143,37 @@ pub fn generate_c_tables_h() -> String {
     writeln!(out);
     writeln!(out, "#include \"table_word.h\"");
     writeln!(out);
+    writeln!(out, "/* X-macro over every core table: `X(IDENT, \"reverse.dns.name\")`. */");
+    write!(out, "#define NVE_CORE_TABLE_LIST(X)");
+    for desc in t::CORE_TABLE_DESCS {
+        write!(out, " \\\n  X({}, \"{}\")", c_upper(&table_type_name(desc)), desc.name);
+    }
+    writeln!(out);
+    writeln!(out);
     for desc in t::CORE_TABLE_DESCS {
         let upper = c_upper(&table_type_name(desc));
         writeln!(out, "/* `{}` ({:?}) */", desc.name, desc.storage);
+        writeln!(out, "#define NVE_TABLE_{upper}_NAME \"{}\"", desc.name);
         writeln!(out, "#define NVE_TABLE_{upper}_KEY UINT64_C(0x{:016X})", desc.key.0);
+        writeln!(out, "#define NVE_TABLE_{upper}_SCHEMA_HASH UINT64_C(0x{:016X})", desc.schema_hash);
         writeln!(out, "#define NVE_TABLE_{upper}_WORDS {}u", desc.defaults.len());
         writeln!(out, "#define NVE_TABLE_{upper}_SPARSE {}u", u8::from(desc.storage == Storage::Sparse));
+        writeln!(out, "#define NVE_TABLE_{upper}_FLAGS {}u", desc.flags);
+        writeln!(out, "#define NVE_TABLE_{upper}_STR_WORDS 0x{:08X}u", desc.str_words);
+        writeln!(out, "#define NVE_TABLE_{upper}_RESOURCE_WORDS 0x{:08X}u", desc.resource_words);
         let defaults: Vec<String> = desc.defaults.iter().map(|w| format!("0x{w:08X}u")).collect();
         writeln!(
             out,
             "static const uint32_t NVE_TABLE_{upper}_DEFAULTS[{}] = {{{}}};",
             defaults.len(),
             defaults.join(", ")
+        );
+        let effects: Vec<String> = desc.word_effects.iter().map(|e| format!("{e}u")).collect();
+        writeln!(
+            out,
+            "static const uint8_t NVE_TABLE_{upper}_WORD_EFFECTS[{}] = {{{}}};",
+            effects.len(),
+            effects.join(", ")
         );
         for f in desc.fields {
             writeln!(

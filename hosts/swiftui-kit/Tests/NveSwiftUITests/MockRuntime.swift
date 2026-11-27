@@ -70,9 +70,10 @@ struct SceneBuilder {
             tables[t].owners.append(id.raw)
             tables[t].rows.append(contentsOf: row)
         } else {
+            // Like the runtime: unattached dense rows are zero, not defaults.
             let need = (id.index + 1) * words
             if tables[t].rows.count < need {
-                for _ in stride(from: tables[t].rows.count, to: need, by: words) { tables[t].rows.append(contentsOf: defaults) }
+                tables[t].rows.append(contentsOf: repeatElement(0, count: need - tables[t].rows.count))
             }
             tables[t].rows.replaceSubrange(id.index * words..<(id.index + 1) * words, with: row)
         }
@@ -292,6 +293,14 @@ final class MockRuntime: @unchecked Sendable {
             guard cap > 0 else { return 0 }
             guard let buf, cap >= bytes.count else { return 1 }
             bytes.withUnsafeBufferPointer { buf.update(from: $0.baseAddress!, count: bytes.count) }
+            return 0
+        }
+        a.encode_scene = { _, buf, cap, outLen in
+            let frame: [UInt8] = Array("NVE2".utf8) + [1, 0, 0, 0]
+            outLen?.pointee = frame.count
+            guard cap > 0 else { return 0 }
+            guard let buf, cap >= frame.count else { return 1 }
+            frame.withUnsafeBufferPointer { buf.update(from: $0.baseAddress!, count: frame.count) }
             return 0
         }
         a.last_error = { out, cap in

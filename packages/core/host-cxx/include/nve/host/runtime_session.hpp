@@ -247,7 +247,8 @@ class RuntimeSession {
            api->drain_emitted_events != nullptr && api->measure != nullptr &&
            api->apply_hot_patch != nullptr && api->snapshot_state != nullptr &&
            api->restore_state != nullptr && api->set_text_measurer != nullptr &&
-           api->resource_bytes != nullptr && api->last_error != nullptr;
+           api->resource_bytes != nullptr && api->encode_scene != nullptr &&
+           api->last_error != nullptr;
   }
 
   [[nodiscard]] static std::optional<RuntimeSession> create(
@@ -457,15 +458,17 @@ class RuntimeSession {
 
   /// Replaces `out` with the wire encoding of resource `id` (`ImageSrc`, `BoxShadows`, …).
   [[nodiscard]] NveRuntimeStatus resource_bytes(uint32_t id, std::vector<uint8_t>& out) const {
-    out.clear();
-    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
-    size_t len = 0u;
-    auto st = static_cast<NveRuntimeStatus>(api_->resource_bytes(handle_, id, nullptr, 0u, &len));
-    if (st != NVE_RUNTIME_OK || len == 0u) return st;
-    out.resize(len);
-    st = static_cast<NveRuntimeStatus>(api_->resource_bytes(handle_, id, out.data(), out.size(), &len));
-    if (st != NVE_RUNTIME_OK) out.clear();
-    return st;
+    return copy_out(out, [&](uint8_t* buf, size_t cap, size_t* len) {
+      return api_->resource_bytes(handle_, id, buf, cap, len);
+    });
+  }
+
+  /// Replaces `out` with a self-contained `NVE2` keyframe of the current scene (instant-boot
+  /// Frame-0; replay it with `submit_nve2` before an app attaches).
+  [[nodiscard]] NveRuntimeStatus encode_scene(std::vector<uint8_t>& out) const {
+    return copy_out(out, [&](uint8_t* buf, size_t cap, size_t* len) {
+      return api_->encode_scene(handle_, buf, cap, len);
+    });
   }
 
   [[nodiscard]] std::string last_error() const {
@@ -482,6 +485,20 @@ class RuntimeSession {
  private:
   [[nodiscard]] static NveBufferSlice slice_of(std::span<const uint8_t> bytes) noexcept {
     return NveBufferSlice{bytes.empty() ? nullptr : bytes.data(), bytes.size()};
+  }
+
+  /// Two-call copy-out slots: size with `cap = 0`, then fill.
+  template <class Slot>
+  [[nodiscard]] NveRuntimeStatus copy_out(std::vector<uint8_t>& out, Slot&& slot) const {
+    out.clear();
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    size_t len = 0u;
+    auto st = static_cast<NveRuntimeStatus>(slot(nullptr, 0u, &len));
+    if (st != NVE_RUNTIME_OK || len == 0u) return st;
+    out.resize(len);
+    st = static_cast<NveRuntimeStatus>(slot(out.data(), out.size(), &len));
+    if (st != NVE_RUNTIME_OK) out.clear();
+    return st;
   }
 
   RuntimeSession(const NveRuntimeApi* api, NveRuntimeHandle handle) noexcept

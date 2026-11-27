@@ -62,5 +62,6 @@ pub const NVE_RUNTIME_API_METHODS: &[NveRuntimeMethod] = &[
         "int32_t",
         "NveRuntimeHandle handle, uint32_t resource_id, uint8_t* out_buf, size_t cap, size_t* out_len",
     ),
+    rt_method("encode_scene", "int32_t", "NveRuntimeHandle handle, uint8_t* out_buf, size_t cap, size_t* out_len"),
     rt_method("last_error", "size_t", "uint8_t* out_buf, size_t cap"),
 ];
