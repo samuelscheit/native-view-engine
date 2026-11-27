@@ -8,8 +8,11 @@ use crate::spatial_focus::RemoteInput;
 pub const GAMEPAD_HOLD_DELAY_US: u64 = 400_000;
 /// Auto-repeat spacing for a held button.
 pub const GAMEPAD_REPEAT_INTERVAL_US: u64 = 120_000;
-/// Left-stick deflection treated as a D-Pad press.
+/// Left-stick deflection that presses a D-Pad direction.
 pub const GAMEPAD_AXIS_THRESHOLD: f32 = 0.5;
+/// Deflection below which a stick-held direction releases (hysteresis against jitter around
+/// [`GAMEPAD_AXIS_THRESHOLD`]).
+pub const GAMEPAD_AXIS_RELEASE: f32 = 0.3;
 
 /// Standard-mapping buttons the repeater tracks (`buttons[0..16]`).
 const TRACKED_BUTTONS: usize = 16;
@@ -44,18 +47,23 @@ pub struct GamepadFrame {
 }
 
 impl GamepadFrame {
-    /// Folds left-stick deflection into the D-Pad bits and drops unmapped buttons.
+    /// D-Pad bits pressed by the left stick: only the dominant axis counts (a diagonal never
+    /// fires two moves), and a direction the stick already holds (`stick_held`) stays pressed
+    /// until it falls below [`GAMEPAD_AXIS_RELEASE`].
     #[inline]
-    fn effective_mask(&self) -> u32 {
-        let mut mask = self.pressed;
-        let deflect = |v: f32, neg: u32, pos: u32| match v {
-            v if v <= -GAMEPAD_AXIS_THRESHOLD => 1 << neg,
-            v if v >= GAMEPAD_AXIS_THRESHOLD => 1 << pos,
-            _ => 0,
+    fn stick_mask(&self, stick_held: u32) -> u32 {
+        let (value, neg, pos) = if self.axis_x.abs() >= self.axis_y.abs() {
+            (self.axis_x, DPAD_LEFT, DPAD_RIGHT)
+        } else {
+            (self.axis_y, DPAD_UP, DPAD_DOWN)
         };
-        mask |= deflect(self.axis_x, DPAD_LEFT, DPAD_RIGHT);
-        mask |= deflect(self.axis_y, DPAD_UP, DPAD_DOWN);
-        mask & MAPPED_MASK
+        let bit = if value < 0.0 { 1 << neg } else { 1 << pos };
+        let threshold = if stick_held & bit != 0 {
+            GAMEPAD_AXIS_RELEASE
+        } else {
+            GAMEPAD_AXIS_THRESHOLD
+        };
+        if value.abs() >= threshold { bit } else { 0 }
     }
 }
 
@@ -75,6 +83,8 @@ const MAPPED_MASK: u32 = {
 #[derive(Debug, Clone, Default)]
 pub struct GamepadRepeater {
     held: u32,
+    /// D-Pad bits currently pressed by the left stick (hysteresis state).
+    stick: u32,
     next_repeat_us: [u64; TRACKED_BUTTONS],
 }
 
@@ -82,6 +92,7 @@ impl GamepadRepeater {
     pub const fn new() -> Self {
         Self {
             held: 0,
+            stick: 0,
             next_repeat_us: [0; TRACKED_BUTTONS],
         }
     }
@@ -94,7 +105,8 @@ impl GamepadRepeater {
 
     /// Consumes one frame, emitting fresh presses and due auto-repeats in button order.
     pub fn update(&mut self, frame: GamepadFrame, now_us: u64, mut emit: impl FnMut(RemoteInput)) {
-        let mask = frame.effective_mask();
+        self.stick = frame.stick_mask(self.stick);
+        let mask = (frame.pressed | self.stick) & MAPPED_MASK;
         let mut bits = mask;
         while bits != 0 {
             let index = bits.trailing_zeros();
@@ -105,12 +117,11 @@ impl GamepadRepeater {
             if !(fresh || repeat_due) {
                 continue;
             }
-            self.next_repeat_us[slot] = now_us
-                + if fresh {
-                    GAMEPAD_HOLD_DELAY_US
-                } else {
-                    GAMEPAD_REPEAT_INTERVAL_US
-                };
+            self.next_repeat_us[slot] = now_us.saturating_add(if fresh {
+                GAMEPAD_HOLD_DELAY_US
+            } else {
+                GAMEPAD_REPEAT_INTERVAL_US
+            });
             if let Some(action) = standard_gamepad_button(index) {
                 emit(RemoteInput {
                     action,
@@ -125,5 +136,6 @@ impl GamepadRepeater {
     /// Forgets held buttons (gamepad disconnected).
     pub fn reset(&mut self) {
         self.held = 0;
+        self.stick = 0;
     }
 }

@@ -23,6 +23,22 @@ pub fn register_platform_keys(platform: WebTvPlatform) -> usize {
     }
 }
 
+/// Xbox Edge / WebView2 deliver gamepad presses as keyboard events too
+/// (`navigator.gamepadInputEmulation = "keyboard"`): `false` switches that off while the Gamepad
+/// API poller runs, so one press is not dispatched twice. Returns `false` where the property
+/// does not exist (every other browser, native).
+pub fn set_xbox_gamepad_emulation(keyboard: bool) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        wasm::set_gamepad_input_emulation(if keyboard { "keyboard" } else { "gamepad" })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = keyboard;
+        false
+    }
+}
+
 /// Hands Back on the root screen to the platform: `webOS.platformBack()` on webOS,
 /// `tizen.application.getCurrentApplication().exit()` on Tizen. Returns `false` when the runtime
 /// offers no such API (desktop browsers, other platforms, native).
@@ -70,6 +86,16 @@ mod wasm {
         method(&app, "exit")?.call0(&app).ok()
     }
 
+    pub(super) fn set_gamepad_input_emulation(mode: &str) -> bool {
+        let Some(navigator) = global_path(&["navigator"]) else {
+            return false;
+        };
+        let property = JsValue::from_str("gamepadInputEmulation");
+        Reflect::has(&navigator, &property).unwrap_or(false)
+            && Reflect::set(&navigator, &property, &JsValue::from_str(mode)).unwrap_or(false)
+    }
+
+    /// `registerKeyBatch` (Tizen 4+), else one `registerKey` per name (Tizen 2.3-3).
     pub(super) fn register_tizen_keys() -> Option<usize> {
         let device = global_path(&["tizen", "tvinputdevice"])?;
         let supported: Array = method(&device, "getSupportedKeys")?
@@ -86,9 +112,19 @@ mod wasm {
                 names.push(&JsValue::from_str(&name));
             }
         }
-        method(&device, "registerKeyBatch")?
-            .call1(&device, &names)
-            .ok()?;
-        Some(names.length() as usize)
+        if names.length() == 0 {
+            return Some(0);
+        }
+        if let Some(batch) = method(&device, "registerKeyBatch") {
+            batch.call1(&device, &names).ok()?;
+            return Some(names.length() as usize);
+        }
+        let single = method(&device, "registerKey")?;
+        Some(
+            names
+                .iter()
+                .filter(|name| single.call1(&device, name).is_ok())
+                .count(),
+        )
     }
 }

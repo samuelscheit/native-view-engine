@@ -49,6 +49,8 @@ pub mod wasm_issues;
 pub mod wasm_dom_probe;
 #[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
 pub mod wasm_overlay_probe;
+#[cfg(all(target_arch = "wasm32", feature = "issues-probes"))]
+pub mod wasm_tv_probe;
 #[cfg(all(target_arch = "wasm32", feature = "app-issues"))]
 mod wasm_query_stream;
 #[cfg(all(target_arch = "wasm32", feature = "dev"))]

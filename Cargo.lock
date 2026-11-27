@@ -3327,6 +3327,7 @@ dependencies = [
  "nve-rpc",
  "nve-store",
  "nve-studio-workspace",
+ "nve-tv-web",
  "nve-ui",
  "nve-web-html",
  "nve-web-html-web",

@@ -389,16 +389,17 @@ impl WebBackend {
                 set_or_remove_attr(el, "role", a11y.role().as_aria_str());
                 set_or_remove_attr(el, "aria-label", a11y.label());
                 set_or_remove_attr(el, "aria-live", a11y.live().as_aria_str().unwrap_or(""));
-                if a11y.hidden() {
-                    let _ = el.set_attribute("aria-hidden", "true");
-                } else {
-                    let _ = el.remove_attribute("aria-hidden");
+                for (attr, on) in [("aria-hidden", a11y.hidden()), ("aria-modal", a11y.modal())] {
+                    if on {
+                        let _ = el.set_attribute(attr, "true");
+                    } else {
+                        let _ = el.remove_attribute(attr);
+                    }
                 }
             } else {
-                let _ = el.remove_attribute("role");
-                let _ = el.remove_attribute("aria-label");
-                let _ = el.remove_attribute("aria-live");
-                let _ = el.remove_attribute("aria-hidden");
+                for attr in ["role", "aria-label", "aria-live", "aria-hidden", "aria-modal"] {
+                    let _ = el.remove_attribute(attr);
+                }
             }
         }
         if store.children(id).is_empty()

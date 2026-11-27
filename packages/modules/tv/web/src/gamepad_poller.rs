@@ -1,15 +1,16 @@
-//! Opt-in W3C Gamepad poller: a `requestAnimationFrame` loop that runs only between
-//! `gamepadconnected` and the last `gamepaddisconnected` (zero idle CPU), feeding
-//! [`nve_tv::GamepadRepeater`] edges into the controller.
+//! Opt-in W3C Gamepad poller: a `requestAnimationFrame` loop that runs only while a
+//! standard-mapping gamepad is connected (zero idle CPU), feeding [`nve_tv::GamepadRepeater`]
+//! edges into the controller. Zero Rust heap traffic per frame once warm.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use nve_tv::{GamepadFrame, GamepadRepeater};
+use nve_tv::{GamepadFrame, GamepadRepeater, RemoteInput};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::Inner;
+use crate::rules::{MAX_GAMEPADS, absent_pad_slots};
 
 type FrameCallback = Closure<dyn FnMut(f64)>;
 type EventCallback = Closure<dyn FnMut(web_sys::Event)>;
@@ -20,9 +21,13 @@ const POLLED_BUTTONS: u32 = 16;
 struct LoopState {
     controller: Weak<Inner>,
     running: Cell<bool>,
+    /// `true` while [`tick`] runs (the rAF closure must not be freed under its own feet).
+    in_tick: Cell<bool>,
     /// Pending `requestAnimationFrame` id (cancelled on drop).
     frame_id: Cell<Option<i32>>,
     repeaters: RefCell<Vec<GamepadRepeater>>,
+    /// Reused per-frame input buffer.
+    inputs: RefCell<Vec<RemoteInput>>,
     /// rAF callback, created once and reused across connect / disconnect cycles.
     frame: RefCell<Option<FrameCallback>>,
 }
@@ -40,12 +45,18 @@ impl GamepadPoller {
         let state = Rc::new(LoopState {
             controller,
             running: Cell::new(false),
+            in_tick: Cell::new(false),
             frame_id: Cell::new(None),
             repeaters: RefCell::new(Vec::new()),
+            inputs: RefCell::new(Vec::new()),
             frame: RefCell::new(None),
         });
         let on_connect = Rc::clone(&state);
-        let connected = EventCallback::new(move |_: web_sys::Event| start(&on_connect));
+        let connected = EventCallback::new(move |_: web_sys::Event| {
+            if any_connected() {
+                start(&on_connect);
+            }
+        });
         let on_disconnect = Rc::clone(&state);
         let disconnected = EventCallback::new(move |_: web_sys::Event| {
             if !any_connected() {
@@ -87,25 +98,45 @@ impl Drop for GamepadPoller {
         if let Some(id) = self.state.frame_id.take() {
             let _ = self.window.cancel_animation_frame(id);
         }
-        // Drop may run inside this very callback (last controller handle released mid-tick):
-        // hand the closure to the JS GC instead of freeing it under its own feet.
-        if let Some(frame) = self.state.frame.borrow_mut().take() {
+        let frame = self.state.frame.borrow_mut().take();
+        if let Some(frame) = frame
+            && self.state.in_tick.get()
+        {
+            // Dropped from inside this very callback (e.g. an action handler disabled the
+            // gamepad): hand the running closure to the JS GC instead of freeing it.
             let _ = frame.into_js_value();
         }
     }
 }
 
-fn gamepads() -> impl Iterator<Item = web_sys::Gamepad> {
-    web_sys::window()
-        .and_then(|w| w.navigator().get_gamepads().ok())
-        .into_iter()
-        .flat_map(|pads| pads.to_vec())
-        .filter_map(|pad| pad.dyn_into::<web_sys::Gamepad>().ok())
-        .filter(web_sys::Gamepad::connected)
+/// Every connected standard-mapping pad with an index below [`MAX_GAMEPADS`], without
+/// collecting `navigator.getGamepads()` into a Rust `Vec`.
+fn for_each_standard_pad(mut f: impl FnMut(&web_sys::Gamepad)) {
+    let Some(pads) = web_sys::window().and_then(|w| w.navigator().get_gamepads().ok()) else {
+        return;
+    };
+    for i in 0..pads.length() {
+        if let Ok(pad) = pads.get(i).dyn_into::<web_sys::Gamepad>()
+            && pad.connected()
+            && pad.mapping() == web_sys::GamepadMappingType::Standard
+            && (pad.index() as usize) < MAX_GAMEPADS
+        {
+            f(&pad);
+        }
+    }
 }
 
+/// Only standard-mapping pads keep the loop alive (unmapped HID devices never spin rAF).
 fn any_connected() -> bool {
-    gamepads().next().is_some()
+    let mut any = false;
+    for_each_standard_pad(|_| any = true);
+    any
+}
+
+fn document_hidden() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .is_some_and(|d| d.hidden())
 }
 
 fn start(state: &Rc<LoopState>) {
@@ -126,6 +157,10 @@ fn start(state: &Rc<LoopState>) {
 
 fn stop(state: &LoopState) {
     state.running.set(false);
+    release_held(state);
+}
+
+fn release_held(state: &LoopState) {
     state
         .repeaters
         .borrow_mut()
@@ -143,6 +178,15 @@ fn request_frame(state: &LoopState) {
     }
 }
 
+/// Clears [`LoopState::in_tick`] however the tick ends.
+struct TickGuard<'a>(&'a Cell<bool>);
+
+impl Drop for TickGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
 fn tick(state: &LoopState, now_ms: f64) {
     state.frame_id.set(None);
     if !state.running.get() {
@@ -152,23 +196,43 @@ fn tick(state: &LoopState, now_ms: f64) {
         stop(state);
         return;
     };
-    let now_us = (now_ms * 1000.0) as u64;
-    let mut inputs = Vec::new();
-    {
-        let mut repeaters = state.repeaters.borrow_mut();
-        for pad in gamepads().filter(|p| p.mapping() == web_sys::GamepadMappingType::Standard) {
-            let slot = pad.index() as usize;
-            if repeaters.len() <= slot {
-                repeaters.resize_with(slot + 1, GamepadRepeater::new);
-            }
-            repeaters[slot].update(frame_of(&pad), now_us, |input| inputs.push(input));
+    state.in_tick.set(true);
+    let _in_tick = TickGuard(&state.in_tick);
+    if document_hidden() {
+        // Background tab: held buttons must not fire a burst of repeats on return.
+        release_held(state);
+    } else {
+        let now_us = (now_ms * 1000.0) as u64;
+        let mut inputs = std::mem::take(&mut *state.inputs.borrow_mut());
+        poll_into(state, now_us, &mut inputs);
+        for input in inputs.drain(..) {
+            // DOM focus moves with every input: re-read it so a second input in the same frame
+            // never resyncs the engine back to the pre-move node.
+            let _ = controller.dispatch(input, crate::dom::active_node(), "");
         }
+        *state.inputs.borrow_mut() = inputs;
     }
-    let hint = crate::dom::active_node();
-    for input in inputs {
-        let _ = controller.dispatch(input, hint, "");
+    drop(controller);
+    if state.running.get() {
+        request_frame(state);
     }
-    request_frame(state);
+}
+
+fn poll_into(state: &LoopState, now_us: u64, inputs: &mut Vec<RemoteInput>) {
+    let mut repeaters = state.repeaters.borrow_mut();
+    let mut present = 0u64;
+    for_each_standard_pad(|pad| {
+        let slot = pad.index() as usize;
+        present |= 1u64 << slot;
+        if repeaters.len() <= slot {
+            repeaters.resize_with(slot + 1, GamepadRepeater::new);
+        }
+        repeaters[slot].update(frame_of(pad), now_us, |input| inputs.push(input));
+    });
+    // A pad that disconnected while others stay connected must not keep held buttons.
+    for slot in absent_pad_slots(present, repeaters.len()) {
+        repeaters[slot].reset();
+    }
 }
 
 fn frame_of(pad: &web_sys::Gamepad) -> GamepadFrame {

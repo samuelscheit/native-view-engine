@@ -1,10 +1,9 @@
 //! Deep edge-case unit tests for 2D geometric `SpatialFocusEngine`.
 
 use nve_store::NodeId;
-use nve_tv::{FocusOutcome, RemoteInput};
 use nve_ui::{
-    FocusDirection, RemoteAction, ScrollRegion, SpatialFocusEngine, SpatialFocusGroupId,
-    SpatialFocusNode, SpatialRect,
+    FocusDirection, FocusOutcome, RemoteAction, RemoteInput, ScrollRegion, SpatialFocusEngine,
+    SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
 };
 
 fn n(index: u32) -> NodeId {

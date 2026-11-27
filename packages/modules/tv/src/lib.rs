@@ -26,7 +26,8 @@ pub use geometry::{ScrollAdjustment, ScrollRegion, SpatialRect};
 pub use nve_store::NodeId;
 pub use overscan::TvOverscanInsets;
 pub use spatial_focus::{
-    FocusOutcome, RemoteInput, SpatialFocusEngine, SpatialFocusGroupId, SpatialFocusNode,
+    FocusOutcome, GROUP_MEMORY_CAPACITY, RemoteInput, SpatialFocusEngine, SpatialFocusGroupId,
+    SpatialFocusNode,
 };
 pub use throttle::{DEFAULT_REPEAT_INTERVAL_US, RepeatThrottle};
 pub use web_keys::{TextInputContext, WebKeyInput, WebTvPlatform, map_web_tv_key};

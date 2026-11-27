@@ -238,9 +238,8 @@ fn handle_input_throttles_repeats_per_action_and_reports_outcomes() {
         FocusOutcome::Throttled
     );
     // A different action is never throttled by Right's window.
-    let select = input(RemoteAction::Select, true, 30);
     assert_eq!(
-        engine.handle_input(select),
+        engine.handle_input(input(RemoteAction::Select, false, 30)),
         FocusOutcome::Action(RemoteAction::Select)
     );
     assert_eq!(

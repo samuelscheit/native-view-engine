@@ -16,7 +16,8 @@
  *  5. Live `FetchTransport` 6-probe browser matrix + live-DOM probes: native `<dialog>` /
  *     `[popover]` top layer (modality flips, moves, retags), a real nve-ui `Dialog` closed by a
  *     TRUSTED backdrop click (native `closedBy` and the fallback path), container-root hydration,
- *     and `<select>` SSR base-value parity.
+ *     `<select>` SSR base-value parity, and a live `nve-tv-web` `WebTvController` driven by
+ *     TRUSTED key presses (explicit neighbors, arrow-owning widgets, modal trap, Select, re-entrancy).
  *  6. Real cross-origin CORS preflight.
  *  7. True 0-JS mode: DSD slots, ErrorBoundary slot, native `<form>` POST -> 303 -> GET /issues.
  */
@@ -51,6 +52,85 @@ const STATS_RPC = "/rpc/issues.v1.Stats/Get";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
+}
+
+const TV_KEY_CODES = { ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Enter: 13, Escape: 27, Select: 41 };
+
+/**
+ * Live `nve-tv-web` `WebTvController` on a mounted `WebBackend` (`wasm_tv_probe.rs`): TRUSTED CDP
+ * keys run the backend's window keydown listener, the controller, and its real DOM layer.
+ */
+async function runTvControllerProbe(cdp, probeCall) {
+  await probeCall("nve_probe_tv_mount");
+  await evalJs(
+    cdp,
+    `(() => {
+      window.__nveTvKeys = [];
+      window.__nveTvClicks = { open: 0, cancel: 0 };
+      addEventListener("keydown", (e) => window.__nveTvKeys.push({ key: e.key, prevented: e.defaultPrevented, trusted: e.isTrusted }));
+      document.getElementById("tv-open").addEventListener("click", () => {
+        window.__nveTvClicks.open += 1;
+        document.getElementById("tv-dialog").showModal();
+      });
+      document.getElementById("tv-cancel").addEventListener("click", () => { window.__nveTvClicks.cancel += 1; });
+      return true;
+    })()`
+  );
+  const focusId = (id) => evalJs(cdp, `document.getElementById(${JSON.stringify(id)}).focus()`);
+  /** Sends one trusted key press; returns focus + the page's view of the keydown. */
+  const sendKey = async (key) => {
+    const vk = TV_KEY_CODES[key];
+    const down = { key, code: key === "Select" ? "" : key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+    // Enter carries text so the browser's own activation (keypress -> click) can run.
+    const keyDown = key === "Enter" ? { type: "keyDown", text: "\r", unmodifiedText: "\r" } : { type: "rawKeyDown" };
+    await cdp.send("Input.dispatchKeyEvent", { ...keyDown, ...down });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...down });
+    const s = await evalJs(cdp, `({ active: document.activeElement?.id ?? "", last: window.__nveTvKeys.at(-1) })`);
+    assert(s.last?.key === key && s.last.trusted, `TV ${key}: trusted keydown not observed: ${JSON.stringify(s)}`);
+    return s;
+  };
+  const press = async (key, expectActive, expectPrevented) => {
+    const s = await sendKey(key);
+    assert(s.active === expectActive, `TV ${key}: expected focus #${expectActive}, got #${s.active}`);
+    assert(s.last.prevented === expectPrevented, `TV ${key}: defaultPrevented ${s.last.prevented}, expected ${expectPrevented}`);
+  };
+  // Click / programmatic focus, then the DOM-focused node's own `data-nve-next-down` wins.
+  await focusId("tv-b");
+  await press("ArrowDown", "tv-f", true);
+  await press("ArrowLeft", "tv-e", true);
+  await press("ArrowUp", "tv-b", true);
+  // Disabled and `visibility: hidden` buttons are never candidates: the edge eats the key.
+  await focusId("tv-c");
+  await press("ArrowRight", "tv-c", true);
+  // ARIA tablist owns Left / Right (not prevented, focus stays); Down leaves it.
+  await focusId("tv-tab1");
+  await press("ArrowRight", "tv-tab1", false);
+  await press("ArrowDown", "tv-select", true);
+  // Native <select> owns Up / Down; Right leaves it.
+  await press("ArrowDown", "tv-select", false);
+  await press("ArrowRight", "tv-open", true);
+  // Enter on the focused button: native activation (not prevented) opens the modal dialog.
+  const enter = await sendKey("Enter");
+  const opened = await evalJs(
+    cdp,
+    `({ modal: document.getElementById("tv-dialog").matches(":modal"), clicks: window.__nveTvClicks.open })`
+  );
+  assert(opened.modal && opened.clicks === 1 && !enter.last.prevented, `TV Enter: native activation failed: ${JSON.stringify({ opened, enter })}`);
+  // The modal dialog traps focus.
+  await focusId("tv-ok");
+  await press("ArrowRight", "tv-cancel", true);
+  await press("ArrowRight", "tv-cancel", true);
+  await press("ArrowUp", "tv-cancel", true);
+  // A remote OK key (`Select`) synthesizes the click; Escape (Back, unhandled) closes natively.
+  await press("Select", "tv-cancel", true);
+  const clicks = await evalJs(cdp, "window.__nveTvClicks.cancel");
+  assert(clicks === 1, `TV Select: expected 1 synthetic click, got ${clicks}`);
+  const escape = await sendKey("Escape");
+  const open = await evalJs(cdp, `document.getElementById("tv-dialog").open`);
+  assert(!open && !escape.last.prevented, `TV Escape must close the dialog natively: ${JSON.stringify({ open, escape })}`);
+  await probeCall("nve_probe_tv_reentrancy");
+  await probeCall("nve_probe_tv_unmount");
+  console.log("  PASS: live WebTvController (next-* after click focus, skips, tablist/select arrows, native Enter, modal trap, Select click, Escape, re-entrancy, uninstall).");
 }
 
 /** JS predicate source: element exists and has a laid-out box. */
@@ -405,6 +485,8 @@ async function main() {
     await probeCall("nve_probe_dialog_after_backdrop_click");
     await evalJs(cdp, "window.__nveProbeMod.nve_probe_dialog_unmount()");
     console.log("  PASS: top layer (flips/moves/retags), trusted backdrop Dialog close (native + fallback), container-root + <select> hydration.");
+
+    await runTvControllerProbe(cdp, probeCall);
 
     // -------------------------------------------------------------------------
     // 6. Real cross-origin CORS preflight

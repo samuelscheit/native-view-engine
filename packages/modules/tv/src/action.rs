@@ -18,6 +18,12 @@ impl FocusDirection {
     pub const fn slot(self) -> usize {
         self as usize
     }
+
+    /// `true` for Left / Right.
+    #[inline]
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
 }
 
 /// A decimal remote digit, sealed to `0..=9` at construction.
@@ -153,6 +159,22 @@ impl RemoteAction {
         }
     }
 
+    /// `true` when holding the key should repeat the action (moves, channel zapping, seeking,
+    /// digit entry). Holding Select / Back / play-pause / colors fires once: their OS
+    /// auto-repeats are dropped.
+    #[inline]
+    pub const fn auto_repeats(self) -> bool {
+        matches!(
+            self,
+            Self::Move(_)
+                | Self::ChannelUp
+                | Self::ChannelDown
+                | Self::FastForward
+                | Self::Rewind
+                | Self::Digit(_)
+        )
+    }
+
     /// Returns the focus direction of a [`Self::Move`].
     #[inline]
     pub const fn direction(self) -> Option<FocusDirection> {
@@ -176,7 +198,7 @@ impl RemoteAction {
             "Escape" | "Esc" | "Back" | "GoBack" | "BrowserBack" | "XF86Back" => Self::Back,
             "MediaPlayPause" => Self::PlayPause,
             "MediaPlay" => Self::Play,
-            "MediaPause" => Self::Pause,
+            "MediaPause" | "Pause" => Self::Pause,
             "MediaStop" => Self::Stop,
             "MediaFastForward" => Self::FastForward,
             "MediaRewind" => Self::Rewind,

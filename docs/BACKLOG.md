@@ -46,7 +46,7 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - Fix `compose-kit` 15 missing JNI exports in `hosts/android-shell`, `swiftui-kit` empty `NveSurfaceRepresentable` + `TextInput`/IME, `windows-shell` keyboard/IME/UIA, and bind `NVE_IFACE_HOST = 5` across native hosts (Apple, Android, Qt, GTK, Windows) directly against `libnve_runtime` (zero throwaway C++/JNI/Swift rewrites).
 
 - [ ] **TV, Watch & Spatial Platform Backends — Web TV D-Pad Dogfood & Live Verification**
-  - Engine (`nve-tv`), backend key interceptor, and `nve-tv-web` controller are landed; remaining: install `WebTvController` in an example app, live Chrome E2E (arrow focus across shelves, `<dialog>` trap, Select activation, gamepad), on-device Tizen/webOS key-code validation, and Android TV host forwarding of Back (consumed by the Activity).
+  - Engine (`nve-tv`), backend key interceptor, and `nve-tv-web` controller are landed and live-probed in Chrome with trusted keys (E2E suite 5: shelves, `data-nve-next-*`, ARIA / `<select>` arrow ownership, `<dialog>` trap, Select activation, re-entrancy); remaining: install `WebTvController` in an example app, a live gamepad E2E (CDP has no gamepad input: inject `navigator.getGamepads`), on-device Tizen/webOS key-code validation, and Android TV host forwarding of Back (consumed by the Activity).
 
 - [ ] **Dense writer side tables**: `NveMutationWriter`'s four sparse per-node `HashMap`s (`attached_tables`, `typed_styles`, `inline_styles`, `standalone_style_attrs`) become dense generation-checked per-slot tables like `writer/element_map.rs` `ElementMap` (one indexed load per attribute write), or disappear with Track 1B-1d's typed attribute routing; keep `tests/writer_zero_alloc.rs` at 0 allocations.
 

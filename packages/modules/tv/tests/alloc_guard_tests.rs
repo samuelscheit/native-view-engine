@@ -185,3 +185,40 @@ fn gamepad_repeater_and_user_agent_detection_allocate_nothing() {
         "gamepad polling + UA detection must not allocate"
     );
 }
+
+#[test]
+fn warm_replace_nodes_snapshots_with_override_and_wrap_hits_allocate_nothing() {
+    let mut engine = grid_200();
+    let snapshot: Vec<SpatialFocusNode> = engine.nodes().to_vec();
+    for _ in 0..12 {
+        let _ = engine.move_focus(FocusDirection::Down);
+    }
+    let id = |index: u32| NodeId::new(index, 3);
+    let (allocs, (overrides, wraps, moved)) = allocations(|| {
+        let (mut overrides, mut wraps, mut moved) = (0usize, 0usize, 0usize);
+        for step in 0..500u32 {
+            // The just-in-time DOM path: a fresh layout snapshot before every move.
+            engine.replace_nodes(snapshot.iter().copied());
+            let row = step % 10;
+            engine.set_focus(id(row * 20 + 20));
+            overrides += usize::from(
+                engine.move_focus(FocusDirection::Right) == Some(id(row * 20 + 1)),
+            );
+            engine.set_focus(id(step % 20 + 1));
+            wraps += usize::from(
+                engine
+                    .move_focus(FocusDirection::Up)
+                    .is_some_and(|n| n.index() > 100),
+            );
+            moved += usize::from(engine.move_focus(FocusDirection::Right).is_some());
+        }
+        (overrides, wraps, moved)
+    });
+    assert_eq!(overrides, 500, "every row-end Right takes the explicit override");
+    assert_eq!(
+        wraps, 500,
+        "every top-row Up wraps into the bottom shelf (its group memory may pick the row)"
+    );
+    assert!(moved > 400, "moved {moved}");
+    assert_eq!(allocs, 0, "warm replace_nodes + move_focus must not allocate");
+}

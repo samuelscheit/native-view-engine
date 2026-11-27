@@ -17,17 +17,22 @@ nve-abi = { workspace = true }
 js-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = [
+    "CssStyleDeclaration",
+    "Document",
     "DomRect",
+    "Element",
     "FocusOptions",
     "Gamepad",
     "GamepadButton",
     "GamepadMappingType",
+    "HtmlElement",
     "HtmlInputElement",
     "Navigator",
     "NodeList",
     "Performance",
     "ScrollIntoViewOptions",
     "ScrollLogicalPosition",
+    "Window",
 ] }
 
 [lints]

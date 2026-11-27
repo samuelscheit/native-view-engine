@@ -4,10 +4,10 @@ Standalone opt-in TV input module (`packages/modules/tv`, **Capability Module la
 
 ## Key Public API
 
-- `SpatialFocusEngine` keyed by `nve_store::NodeId` (dense reused arena, explicit `with_next` overrides, per-group focus memory, modal traps, wrap-around), `SpatialFocusNode`, `SpatialFocusGroupId`, `RemoteInput` / `FocusOutcome`
-- `RemoteAction` (`#[repr(u8)]`, dense `code()` / `from_code()`, W3C `key_name()`), `FocusDirection`, `DecimalDigit`
+- `SpatialFocusEngine` keyed by `nve_store::NodeId` (dense reused arena, explicit `with_next` overrides incl. self-pinning, bounded-LRU per-group focus memory, eligible-only modal traps that pull stray focus in, wrap-around, viewport-first initial focus, `would_admit` pre-check), `SpatialFocusNode`, `SpatialFocusGroupId`, `RemoteInput` / `FocusOutcome`
+- `RemoteAction` (`#[repr(u8)]`, dense `code()` / `from_code()`, W3C `key_name()`, `auto_repeats()`), `FocusDirection`, `DecimalDigit`
 - `map_web_tv_key` + `WebTvPlatform` (HbbTV / Tizen / webOS / Android TV & Fire TV / Xbox / PlayStation) + `TextInputContext`
-- `RepeatThrottle`, `GamepadRepeater`, `SpatialRect`, `ScrollRegion`, `ScrollAdjustment`, `TvOverscanInsets`
+- `RepeatThrottle` (non-repeating actions never repeat), `GamepadRepeater` (dominant-axis stick with press / release hysteresis), `SpatialRect`, `ScrollRegion`, `ScrollAdjustment`, `TvOverscanInsets`
 
 ```rust
 use nve_tv::{

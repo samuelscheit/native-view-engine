@@ -16,8 +16,8 @@ pub mod positioning;
 pub mod spatial_focus {
     //! Re-exports the canonical 2D geometric spatial focus engine from `nve-tv`.
     pub use nve_tv::{
-        FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
-        SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
+        FocusDirection, FocusOutcome, RemoteAction, RemoteInput, ScrollAdjustment, ScrollRegion,
+        SpatialFocusEngine, SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
     };
 }
 pub mod style_buf;
@@ -66,10 +66,7 @@ pub use positioning::{
     PositionOptions, Rect, Side, Size, Viewport,
 };
 #[cfg(feature = "spatial-focus")]
-pub use spatial_focus::{
-    FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
-    SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
-};
+pub use spatial_focus::*;
 pub use nve_dioxus::TypedStyle;
 pub use style_buf::{
     parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,
@@ -134,10 +131,7 @@ pub mod prelude {
         Point, PositionOptions, Rect, Side, Size, Viewport,
     };
     #[cfg(feature = "spatial-focus")]
-    pub use crate::spatial_focus::{
-        FocusDirection, RemoteAction, ScrollAdjustment, ScrollRegion, SpatialFocusEngine,
-        SpatialFocusGroupId, SpatialFocusNode, SpatialRect,
-    };
+    pub use crate::spatial_focus::*;
     pub use crate::style_buf::{
         parse_color_rgba, StyleBuf, SurfaceStyle, TextStyle, TypedStyleBuilder, TypedSurfaceStyle,
         TypedTextStyle,

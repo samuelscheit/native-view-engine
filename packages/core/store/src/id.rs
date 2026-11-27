@@ -222,6 +222,12 @@ impl NodeId {
         Self((generation as u32) << Self::INDEX_BITS | (index & Self::MAX_INDEX))
     }
 
+    /// Rebuilds an id from its packed wire / DOM value ([`Self::raw`]).
+    #[inline(always)]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
     #[inline(always)]
     pub const fn from_index(index: NodeIndex, generation: u8) -> Self {
         Self::new(index.0, generation)

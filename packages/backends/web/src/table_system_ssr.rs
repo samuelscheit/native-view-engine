@@ -146,6 +146,9 @@ pub(crate) fn write_core_ssr_attrs(store: &NodeStore, id: NodeId, out: &mut Stri
         if a11y.hidden() {
             write_attr("aria-hidden", "true", out);
         }
+        if a11y.modal() {
+            write_attr("aria-modal", "true", out);
+        }
     }
 }
 

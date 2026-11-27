@@ -1121,7 +1121,7 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
         tx.set_children(NodeId::ROOT, &[u, o, p, a]);
         tx.edit::<Accessibility>(u).live(AriaLive::Unset);
         tx.edit::<Accessibility>(o).live(AriaLive::Off);
-        tx.edit::<Accessibility>(p).live(AriaLive::Polite);
+        tx.edit::<Accessibility>(p).live(AriaLive::Polite).modal(true);
         tx.edit::<Accessibility>(a)
             .role(AriaRole::Alert)
             .live(AriaLive::Assertive);
@@ -1144,6 +1144,9 @@ fn ssr_emits_aria_live_for_off_polite_assertive_and_omits_unset() {
     assert!(!tag_for(unset).contains("aria-live"));
     assert!(tag_for(off).contains("aria-live=\"off\""));
     assert!(tag_for(polite).contains("aria-live=\"polite\""));
+    // `Accessibility::modal` -> `aria-modal`: the focus-trap fallback where `:modal` is unsupported.
+    assert!(tag_for(polite).contains("aria-modal=\"true\""));
+    assert!(!tag_for(off).contains("aria-modal"));
     let assertive_tag = tag_for(assertive);
     assert!(assertive_tag.contains("role=\"alert\""));
     assert!(assertive_tag.contains("aria-live=\"assertive\""));

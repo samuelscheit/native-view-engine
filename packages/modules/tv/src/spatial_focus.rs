@@ -5,9 +5,12 @@
 //! warm [`SpatialFocusEngine::move_focus`] is one branch-light linear scan with zero heap traffic.
 //!
 //! Behavior:
-//! - Explicit per-direction overrides (`next_up` / `next_down` / ...) win over geometry.
-//! - Per-group focus memory: re-entering a shelf restores its previously focused card.
-//! - Modal focus traps: a group containing a `traps_focus` node confines movement to that group.
+//! - Explicit per-direction overrides (`next_up` / `next_down` / ...) win over geometry; an
+//!   override naming the node itself pins focus in that direction.
+//! - Per-group focus memory (bounded LRU): re-entering a shelf restores its previously focused card.
+//! - Modal focus traps: a group containing an eligible `traps_focus` node confines movement to
+//!   that group; focus left outside an active trap is pulled into it on the next move.
+//! - Initial focus prefers nodes inside the viewport (no jump-scroll on scrolled pages).
 //! - Optional axis wrap-around and per-action auto-repeat throttling.
 
 use nve_store::NodeId;
@@ -104,13 +107,20 @@ pub enum FocusOutcome {
 /// Arena slot sentinel for "no node at this index".
 const EMPTY_SLOT: u32 = u32::MAX;
 
+/// Groups whose last focused node is remembered; the least recently focused group is evicted
+/// beyond this (long-lived apps visit unbounded numbers of dynamic shelves).
+pub const GROUP_MEMORY_CAPACITY: usize = 64;
+
 /// Pure-Rust, deterministic 2D geometric spatial focus engine.
 #[derive(Debug, Clone, Default)]
 pub struct SpatialFocusEngine {
     nodes: Vec<SpatialFocusNode>,
     slot_by_index: Vec<u32>,
+    /// Least recently focused group first.
     group_memory: Vec<(SpatialFocusGroupId, NodeId)>,
     focused: Option<NodeId>,
+    /// Visible area in node-rect coordinates, preferred by initial focus.
+    viewport: Option<SpatialRect>,
     wrap_axis: bool,
     throttle: RepeatThrottle,
 }
@@ -137,19 +147,34 @@ impl SpatialFocusEngine {
     }
 
     #[inline]
+    pub fn throttle(&self) -> &RepeatThrottle {
+        &self.throttle
+    }
+
+    #[inline]
     pub fn throttle_mut(&mut self) -> &mut RepeatThrottle {
         &mut self.throttle
     }
 
-    /// Inserts `node`, replacing any node registered at the same `NodeId::index()` (a newer
-    /// generation supersedes a stale one). [`NodeId::NULL`] is ignored.
+    /// Sets the visible area (same coordinate space as node rects) that initial focus prefers.
+    #[inline]
+    pub fn set_viewport(&mut self, viewport: Option<SpatialRect>) {
+        self.viewport = viewport;
+    }
+
+    /// Inserts `node`. A node already registered at the same `NodeId::index()` is replaced
+    /// whatever its generation; when the replaced id differs, focus and group memory that
+    /// referenced it are cleared. [`NodeId::NULL`] is ignored.
     pub fn register(&mut self, node: SpatialFocusNode) {
         if node.id.is_null() {
             return;
         }
         let index = node.id.index();
         if let Some(pos) = self.slot_at(index) {
-            self.nodes[pos] = node;
+            let replaced = std::mem::replace(&mut self.nodes[pos], node).id;
+            if replaced != node.id {
+                self.forget(replaced);
+            }
             return;
         }
         if index >= self.slot_by_index.len() {
@@ -166,7 +191,8 @@ impl SpatialFocusEngine {
     }
 
     /// Replaces every registered node while keeping focus, group memory, and buffer capacity
-    /// (just-in-time layout snapshots). Stale focus / memory ids are validated lazily.
+    /// (just-in-time layout snapshots). Stale focus / memory ids are validated lazily (memory of
+    /// groups outside the snapshot, e.g. behind an open modal, survives).
     pub fn replace_nodes<I: IntoIterator<Item = SpatialFocusNode>>(&mut self, nodes: I) {
         self.clear_nodes();
         self.register_all(nodes);
@@ -180,12 +206,17 @@ impl SpatialFocusEngine {
         if let Some(moved) = self.nodes.get(pos) {
             self.slot_by_index[moved.id.index()] = arena_slot(pos);
         }
+        self.forget(id);
+        Some(removed)
+    }
+
+    /// Drops focus and group memory referencing `id`.
+    fn forget(&mut self, id: NodeId) {
         if self.focused == Some(id) {
             self.focused = None;
         }
         self.group_memory
             .retain(|&(_, remembered)| remembered != id);
-        Some(removed)
     }
 
     /// Removes every node, focus, group memory, and throttle state.
@@ -260,7 +291,16 @@ impl SpatialFocusEngine {
         };
 
         let trap = self.active_trap(&current);
+        if matches!(trap, FocusTrapFilter::None)
+            && self.nodes.iter().any(|n| n.traps_focus && n.is_eligible())
+        {
+            // Focus sits behind an active trap (e.g. a modal opened over it): enter the trap.
+            return self.focus_initial();
+        }
         let explicit = current.next[direction.slot()];
+        if explicit == current.id {
+            return None;
+        }
         let target = match self.node(explicit) {
             Some(node) if node.is_eligible() && trap.allows(node) => *node,
             _ => {
@@ -274,6 +314,13 @@ impl SpatialFocusEngine {
         };
         self.commit_focus(&target);
         Some(target.id)
+    }
+
+    /// Returns `true` when [`Self::handle_input`] would not drop `input` as a throttled repeat.
+    #[inline]
+    pub fn would_admit(&self, input: &RemoteInput) -> bool {
+        self.throttle
+            .would_admit(input.action, input.repeat, input.timestamp_us)
     }
 
     /// Dispatches timestamped input: throttles auto-repeat, moves focus on directional actions,
@@ -322,25 +369,38 @@ impl SpatialFocusEngine {
         self.nodes.clear();
     }
 
+    /// Focuses `node` and moves its group to the most recently used end of the bounded memory.
     fn commit_focus(&mut self, node: &SpatialFocusNode) {
         self.focused = Some(node.id);
         let Some(group) = node.group else { return };
-        match self.group_memory.iter_mut().find(|(g, _)| *g == group) {
-            Some(entry) => entry.1 = node.id,
-            None => self.group_memory.push((group, node.id)),
+        if let Some(last) = self.group_memory.last_mut()
+            && last.0 == group
+        {
+            last.1 = node.id;
+            return;
         }
+        if let Some(i) = self.group_memory.iter().position(|(g, _)| *g == group) {
+            self.group_memory.remove(i);
+        } else if self.group_memory.len() >= GROUP_MEMORY_CAPACITY {
+            self.group_memory.remove(0);
+        }
+        self.group_memory.push((group, node.id));
     }
 
+    /// Top-left-most eligible node (trapping nodes only while a trap is active), preferring
+    /// nodes that intersect the viewport.
     fn focus_initial(&mut self) -> Option<NodeId> {
         let has_trapping = self.nodes.iter().any(|n| n.is_eligible() && n.traps_focus);
+        let viewport = self.viewport;
+        let hidden = |n: &SpatialFocusNode| viewport.is_some_and(|v| !v.intersects(&n.rect));
         let initial = self
             .nodes
             .iter()
             .filter(|n| n.is_eligible() && (!has_trapping || n.traps_focus))
             .min_by(|a, b| {
-                a.rect
-                    .y
-                    .total_cmp(&b.rect.y)
+                hidden(a)
+                    .cmp(&hidden(b))
+                    .then_with(|| a.rect.y.total_cmp(&b.rect.y))
                     .then_with(|| a.rect.x.total_cmp(&b.rect.x))
                     .then_with(|| a.id.cmp(&b.id))
             })
@@ -356,7 +416,7 @@ impl SpatialFocusEngine {
                     || self
                         .nodes
                         .iter()
-                        .any(|n| n.group == Some(g) && n.traps_focus) =>
+                        .any(|n| n.group == Some(g) && n.traps_focus && n.is_eligible()) =>
             {
                 FocusTrapFilter::Group(g)
             }

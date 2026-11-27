@@ -53,6 +53,8 @@ pub mod visual_viewport;
 mod wasm_dom;
 
 #[cfg(test)]
+mod key_events_tests;
+#[cfg(test)]
 mod retag_tests;
 #[cfg(test)]
 mod tests;
@@ -84,8 +86,8 @@ pub use events::{
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
 pub use key_events::{
-    is_text_like_input_type, parse_dom_node_id, KeyInterceptor, WebKeyDisposition,
-    WebKeyEventInfo,
+    parse_dom_node_id, ArrowAxes, InterceptorId, WebKeyDisposition, WebKeyEventInfo,
+    ARROW_OWNER_SELECTOR,
 };
 #[cfg(target_arch = "wasm32")]
 pub use native_events::{NativeEventBridge, NativeEventMap};
@@ -268,41 +270,32 @@ impl WebBackend {
     /// Registers a `keydown` interceptor. Interceptors run in registration order after IME
     /// suppression and surface scoping, before Enter-submit and the default `KeyDown` event; the
     /// first non-[`WebKeyDisposition::PassThrough`] result stops dispatch.
-    pub fn add_key_interceptor<F>(&mut self, interceptor: F)
+    pub fn add_key_interceptor<F>(&mut self, interceptor: F) -> InterceptorId
     where
         F: FnMut(&WebKeyEventInfo<'_>) -> WebKeyDisposition + 'static,
     {
-        self.key_interceptors.borrow_mut().push(Box::new(interceptor));
+        self.key_interceptors.borrow_mut().push(Box::new(interceptor))
+    }
+
+    /// Unregisters an interceptor (also from inside a running one); returns `false` when unknown.
+    pub fn remove_key_interceptor(&mut self, id: InterceptorId) -> bool {
+        // Bind first: the interceptor (and whatever it owns) drops after the borrow ends.
+        let removed = self.key_interceptors.borrow_mut().remove(id);
+        removed.is_some()
     }
 
     /// Runs the registered key interceptors for `info` (the live listener's path; also used for
-    /// headless replay). Re-entrant calls from inside an interceptor pass through.
+    /// headless replay). No borrow is held while an interceptor runs: a nested call from inside
+    /// one skips the interceptors already running.
     pub fn intercept_key(&self, info: &WebKeyEventInfo<'_>) -> WebKeyDisposition {
-        self.key_interceptors
-            .try_borrow_mut()
-            .map_or(WebKeyDisposition::PassThrough, |mut hooks| hooks.dispatch(info))
+        key_events::KeyInterceptors::try_dispatch(&self.key_interceptors, info)
     }
 
-    /// Moves DOM focus to the live element of `node`. Returns `false` when it is not mounted.
+    /// Element this backend is mounted into (`None` before mount).
     #[cfg(target_arch = "wasm32")]
-    pub fn focus_node(&self, node: nve_store::NodeId) -> bool {
-        use wasm_bindgen::JsCast;
-        self.live_elements
-            .get(&node.raw())
-            .and_then(|el| el.dyn_ref::<web_sys::HtmlElement>())
-            .is_some_and(|el| el.focus().is_ok())
-    }
-
-    /// Scrolls every scroll container of `node`'s live element the minimum needed to show it.
-    #[cfg(target_arch = "wasm32")]
-    pub fn scroll_node_into_view(&self, node: nve_store::NodeId) -> bool {
-        self.live_elements.get(&node.raw()).is_some_and(|el| {
-            let opts = web_sys::ScrollIntoViewOptions::new();
-            opts.set_block(web_sys::ScrollLogicalPosition::Nearest);
-            opts.set_inline(web_sys::ScrollLogicalPosition::Nearest);
-            el.scroll_into_view_with_scroll_into_view_options(&opts);
-            true
-        })
+    #[inline]
+    pub fn mount_root(&self) -> Option<&web_sys::Element> {
+        self.mount_root.as_ref()
     }
 
     #[inline]

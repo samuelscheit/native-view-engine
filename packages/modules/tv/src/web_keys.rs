@@ -1,12 +1,15 @@
 //! Zero-allocation `KeyboardEvent` -> [`RemoteAction`] normalizer for TV browsers and WebViews.
 //!
 //! Resolution order:
-//! 0. Text-input / IME guard: composition, command modifiers, and editing keys inside text
-//!    controls pass through untouched.
+//! 0. Text-input / IME guard: composition (`Process`, `Dead`, `Compose`, keyCode 229), command
+//!    modifiers, and editing keys inside text controls pass through untouched.
 //! 1. Exact W3C `KeyboardEvent.key` (plus common TV aliases).
-//! 2. W3C `KeyboardEvent.code` (only when `key` is not a printable character).
+//! 2. W3C `KeyboardEvent.code`, only when `key` is missing / `"Unidentified"`: a named non-TV
+//!    key (`CapsLock`, NumLock-off `Insert` on `Numpad0`, ...) is never remapped by position.
 //! 3. Platform-scoped legacy `keyCode` tables, so ambiguous codes resolve per vendor (Android
-//!    `19` is `DPAD_UP`, everywhere else it is CE-HTML `VK_PAUSE`).
+//!    `19` is `DPAD_UP`, everywhere else it is CE-HTML `VK_PAUSE`). Same `Unidentified` gate,
+//!    except for vendor-named keys (webOS `PageUp` / `PageDown` channel keys, Xbox `Gamepad*`,
+//!    Tizen `XF86*`).
 //!
 //! Pure Rust (no `web-sys`): browser glue lives in `nve-tv-web`.
 
@@ -53,6 +56,22 @@ impl WebTvPlatform {
         }
     }
 
+    /// Tier 3 for a named `key` the W3C table does not know: only this platform's own key
+    /// names fall back to its `keyCode` table.
+    fn map_named_key(self, key: &str, key_code: u32) -> Option<RemoteAction> {
+        let vendor_named = match self {
+            Self::WebOs => matches!(key, "PageUp" | "PageDown"),
+            Self::Xbox => key.starts_with("Gamepad"),
+            Self::Tizen => key.starts_with("XF86"),
+            Self::Standard | Self::AndroidTv | Self::PlayStation => false,
+        };
+        if vendor_named {
+            self.map_key_code(key_code)
+        } else {
+            None
+        }
+    }
+
     /// Tier-3 legacy `keyCode` lookup for this platform.
     pub const fn map_key_code(self, key_code: u32) -> Option<RemoteAction> {
         match self {
@@ -88,6 +107,13 @@ impl TextInputContext {
         }
     }
 
+    /// Returns `true` when `action` should first release the focused text control (blur it,
+    /// closing the on-screen keyboard) instead of reaching the app: Back / Escape.
+    #[inline]
+    pub const fn blurs_on(self, action: RemoteAction) -> bool {
+        !matches!(self, Self::None) && matches!(action, RemoteAction::Back)
+    }
+
     /// Returns `true` when `action` must stay with the focused text control.
     #[inline]
     pub const fn keeps(self, action: RemoteAction) -> bool {
@@ -121,7 +147,11 @@ pub struct WebKeyInput<'a> {
 
 /// Normalizes one `keydown` to a [`RemoteAction`], or `None` when it must pass through.
 pub fn map_web_tv_key(platform: WebTvPlatform, input: &WebKeyInput<'_>) -> Option<RemoteAction> {
-    if input.is_composing || input.key_code == IME_PROCESS_KEY_CODE || input.command_modifier {
+    if input.is_composing
+        || input.key_code == IME_PROCESS_KEY_CODE
+        || input.command_modifier
+        || matches!(input.key, "Process" | "Dead" | "Compose")
+    {
         return None;
     }
     let action = resolve_key(platform, input)?;
@@ -132,17 +162,10 @@ fn resolve_key(platform: WebTvPlatform, input: &WebKeyInput<'_>) -> Option<Remot
     if let Some(action) = RemoteAction::from_key_name(input.key) {
         return Some(action);
     }
-    if is_printable_character(input.key) {
-        return None;
+    if input.key.is_empty() || input.key == "Unidentified" {
+        return from_code_name(input.code).or_else(|| platform.map_key_code(input.key_code));
     }
-    from_code_name(input.code).or_else(|| platform.map_key_code(input.key_code))
-}
-
-/// A single non-control character: typed text that must never be remapped by `code`/`keyCode`.
-#[inline]
-fn is_printable_character(key: &str) -> bool {
-    let mut chars = key.chars();
-    matches!((chars.next(), chars.next()), (Some(c), None) if !c.is_control())
+    platform.map_named_key(input.key, input.key_code)
 }
 
 /// Tier 2: W3C `KeyboardEvent.code` physical key names.
@@ -237,7 +260,8 @@ const fn web_os_key_code(key_code: u32) -> Option<RemoteAction> {
     }
 }
 
-/// Android TV / Fire TV WebViews leaking raw `android.view.KeyEvent` codes.
+/// Android TV / Fire TV WebViews leaking raw `android.view.KeyEvent` codes. `96..=105` are
+/// `KEYCODE_BUTTON_*` gamepad keys there, never the desktop numpad digits.
 const fn android_key_code(key_code: u32) -> Option<RemoteAction> {
     match key_code {
         19 => UP,
@@ -246,6 +270,7 @@ const fn android_key_code(key_code: u32) -> Option<RemoteAction> {
         22 => RIGHT,
         23 | 96 => Some(RemoteAction::Select),
         4 | 97 => Some(RemoteAction::Back),
+        98..=105 => None,
         82 => Some(RemoteAction::Menu),
         85 => Some(RemoteAction::PlayPause),
         126 => Some(RemoteAction::Play),

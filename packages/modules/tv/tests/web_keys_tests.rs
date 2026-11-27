@@ -367,3 +367,102 @@ fn tier0_multiline_input_keeps_every_arrow() {
         TextInputContext::None
     );
 }
+
+#[test]
+fn named_non_tv_keys_never_fall_back_to_code_or_key_code() {
+    let android = WebTvPlatform::AndroidTv;
+    // Phone / tablet Android browsers match `AndroidTv`: their named keys keep their meaning.
+    for (key, key_code) in [
+        ("CapsLock", 20),
+        ("HangulMode", 21),
+        ("KanaMode", 21),
+        ("BrowserForward", 167),
+        ("BrowserSearch", 166),
+        ("F15", 126),
+        ("F16", 127),
+        ("Meta", 93),
+    ] {
+        assert_eq!(keyed(android, key, key_code), None, "{key}");
+        assert_eq!(keyed(WebTvPlatform::Standard, key, key_code), None, "{key}");
+    }
+    // NumLock-off numpad keys report navigation names on numpad codes: not digits.
+    for (key, code) in [
+        ("Insert", "Numpad0"),
+        ("End", "Numpad1"),
+        ("Clear", "Numpad5"),
+        ("Home", "Numpad7"),
+        ("PageUp", "Numpad9"),
+    ] {
+        let input = WebKeyInput {
+            key,
+            code,
+            ..WebKeyInput::default()
+        };
+        assert_eq!(
+            map_web_tv_key(WebTvPlatform::Standard, &input),
+            None,
+            "{key}"
+        );
+    }
+    // Vendor-named keys still reach their platform table.
+    assert_eq!(
+        keyed(WebTvPlatform::Tizen, "XF86RaiseChannel", 427),
+        Some(RemoteAction::ChannelUp)
+    );
+    assert_eq!(
+        keyed(WebTvPlatform::Tizen, "XF86Back", 10009),
+        Some(RemoteAction::Back)
+    );
+    assert_eq!(
+        keyed(WebTvPlatform::Standard, "XF86RaiseChannel", 427),
+        None
+    );
+    assert_eq!(
+        keyed(WebTvPlatform::Standard, "PageUp", 33),
+        None,
+        "PageUp scrolls on desktop"
+    );
+    assert_eq!(keyed(WebTvPlatform::WebOs, "GamepadA", 195), None);
+}
+
+#[test]
+fn composition_keys_pause_key_and_android_gamepad_codes() {
+    for key in ["Dead", "Process", "Compose"] {
+        for platform in [WebTvPlatform::Standard, WebTvPlatform::AndroidTv] {
+            assert_eq!(keyed(platform, key, 186), None, "{key}");
+        }
+    }
+    assert_eq!(
+        keyed(WebTvPlatform::AndroidTv, "Pause", 19),
+        Some(RemoteAction::Pause)
+    );
+    assert_eq!(
+        keyed(WebTvPlatform::Standard, "Pause", 19),
+        Some(RemoteAction::Pause)
+    );
+    for key_code in 98..=105 {
+        assert_eq!(
+            legacy(WebTvPlatform::AndroidTv, key_code),
+            None,
+            "{key_code}"
+        );
+    }
+    assert_eq!(
+        legacy(WebTvPlatform::Standard, 101),
+        Some(digit(5)),
+        "desktop numpad 5"
+    );
+}
+
+#[test]
+fn back_releases_text_controls_before_reaching_the_app() {
+    assert!(TextInputContext::SingleLine.blurs_on(RemoteAction::Back));
+    assert!(TextInputContext::MultiLine.blurs_on(RemoteAction::Back));
+    assert!(!TextInputContext::None.blurs_on(RemoteAction::Back));
+    assert!(!TextInputContext::SingleLine.blurs_on(RemoteAction::Select));
+    assert_eq!(
+        in_text("Escape", TextInputContext::SingleLine),
+        Some(RemoteAction::Back),
+        "Escape still maps; the controller blurs instead of dispatching"
+    );
+}
