@@ -3,6 +3,61 @@
 
 use std::sync::Arc;
 
+use nve_components::tables::Typography;
+use nve_store::{Length, NodeId, NodeStore, Rgba};
+
+/// Inherited typography resolved once per layout pass for every node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedTextStyle {
+    pub color: Rgba,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub line_height: Length,
+}
+
+impl Default for ResolvedTextStyle {
+    fn default() -> Self {
+        Self {
+            color: Rgba::BLACK,
+            font_size: HeuristicTextMeasurer::DEFAULT_FONT_SIZE,
+            font_weight: 400,
+            line_height: Length::AUTO,
+        }
+    }
+}
+
+/// Resolves one node's inherited [`ResolvedTextStyle`] from its parent's resolved typography and
+/// any explicit fields on `id`'s [`Typography`] row. Shared by every layout engine so invalid
+/// (`<= 0` or non-finite) font sizes fall back identically across Taffy and Yoga.
+#[inline]
+pub fn resolve_inherited_text(
+    store: &NodeStore,
+    id: NodeId,
+    mut parent: ResolvedTextStyle,
+) -> ResolvedTextStyle {
+    if let Some(t) = store.try_row::<Typography>(id) {
+        let set = t.set();
+        if set & Typography::SET_COLOR != 0 || (set == 0 && t.color() != Rgba::BLACK) {
+            parent.color = t.color();
+        }
+        if set & Typography::SET_FONT_SIZE != 0
+            || (set == 0 && t.font_size().to_bits() != 16.0f32.to_bits())
+        {
+            let raw_fs = t.font_size();
+            if raw_fs.is_finite() && raw_fs > 0.0 {
+                parent.font_size = raw_fs;
+            }
+        }
+        if set & Typography::SET_FONT_WEIGHT != 0 || (set == 0 && t.font_weight() != 400) {
+            parent.font_weight = t.font_weight();
+        }
+        if set & Typography::SET_LINE_HEIGHT != 0 || (set == 0 && t.line_height() != Length::AUTO) {
+            parent.line_height = t.line_height();
+        }
+    }
+    parent
+}
+
 /// Pluggable text measurement provider used by layout engines to size intrinsic text nodes
 /// (including multi-line and width-constrained wrapping).
 pub trait TextMeasurer: Send + Sync {
@@ -60,10 +115,10 @@ impl TextMeasurer for HeuristicTextMeasurer {
                 (0.0, explicit_lines * line_h)
             }
             Some(mw) => {
-                // Allow a sub-millipixel tolerance so float32 add/sub round-trips of padding +
-                // border (e.g. `(6.38 + 18.0) - 18.0 = 6.3799992 < 6.3800001`) never spuriously
-                // wrap a fitting line onto an extra line.
-                let wrap_eps = (mw * 1e-4).max(1e-3);
+                // Allow a few-ULP float32 tolerance (~1e-5 relative/absolute) so padding+border
+                // add/sub round-trips (e.g. `(6.38_f32 + 18.0) - 18.0 = 6.3799992 < 6.3800001`)
+                // do not spuriously wrap an exact-fit single line onto two lines.
+                let wrap_eps = (mw * 1e-5).max(1e-5);
                 for line in text.split('\n') {
                     let raw_w = line.chars().count() as f32 * char_w;
                     if raw_w > mw + wrap_eps {

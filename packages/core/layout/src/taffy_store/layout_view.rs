@@ -16,12 +16,12 @@ use taffy::{
     compute_oof_layout,
 };
 
-use crate::TextMeasurer;
+use crate::{ResolvedTextStyle, TextMeasurer};
 
 use super::contents::BoxChildren;
 use super::node_lists::NodeLists;
 use super::style_view::StyleView;
-use super::{ResolvedTextStyle, UnroundedBox};
+use super::UnroundedBox;
 
 pub(super) struct LayoutView<'s> {
     pub(super) store: &'s NodeStore,

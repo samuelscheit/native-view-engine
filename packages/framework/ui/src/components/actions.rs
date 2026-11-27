@@ -320,7 +320,6 @@ pub fn Badge(
 
     let pill_style = TypedStyleBuilder::new()
         .flex_row()
-        .flex_shrink(0.0)
         .align_items(FlexAlign::Center)
         .justify_content(FlexJustify::Center)
         .padding_xy(theme.spacing.sm, theme.spacing.xs)

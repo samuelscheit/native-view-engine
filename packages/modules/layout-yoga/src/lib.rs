@@ -14,6 +14,8 @@
 #[cfg(nve_has_rn_yoga)]
 mod ffi;
 #[cfg(nve_has_rn_yoga)]
+mod measure;
+#[cfg(nve_has_rn_yoga)]
 mod real;
 
 use std::fmt;
@@ -30,6 +32,11 @@ impl YogaUnavailableError {
         Self {
             message: "React Native Yoga was not compiled into nve-layout-yoga; set RN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon and rebuild",
         }
+    }
+
+    #[cfg(nve_has_rn_yoga)]
+    pub(crate) const fn with_message(message: &'static str) -> Self {
+        Self { message }
     }
 
     pub const fn message(&self) -> &'static str {

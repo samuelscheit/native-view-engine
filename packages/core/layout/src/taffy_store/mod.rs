@@ -18,8 +18,11 @@ use nve_components::tables::{
 };
 use nve_engine::{LayoutRect, Viewport};
 
-use crate::{HeuristicTextMeasurer, StoreLayoutEngine, TextMeasurer};
-use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
+use crate::{
+    HeuristicTextMeasurer, ResolvedTextStyle, StoreLayoutEngine, TextMeasurer,
+    resolve_inherited_text,
+};
+use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 
 use taffy::compute_root_layout;
 use taffy::geometry::Size;
@@ -36,26 +39,6 @@ pub(super) struct UnroundedBox {
     pub(super) y: f32,
     pub(super) w: f32,
     pub(super) h: f32,
-}
-
-/// Inherited typography resolved once per layout pass for every node.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ResolvedTextStyle {
-    pub color: Rgba,
-    pub font_size: f32,
-    pub font_weight: u16,
-    pub line_height: Length,
-}
-
-impl Default for ResolvedTextStyle {
-    fn default() -> Self {
-        Self {
-            color: Rgba::BLACK,
-            font_size: 16.0,
-            font_weight: 400,
-            line_height: Length::AUTO,
-        }
-    }
 }
 
 /// Direct Taffy 0.16 layout engine reading `NodeStore` word columns zero-copy.
@@ -360,26 +343,7 @@ impl TaffyStoreLayout {
                 parent_rtl
             };
 
-            let mut text = parent_text;
-            if let Some(t) = store.try_row::<Typography>(id) {
-                let set = t.set();
-                if set & Typography::SET_COLOR != 0 || (set == 0 && t.color() != Rgba::BLACK) {
-                    text.color = t.color();
-                }
-                if set & Typography::SET_FONT_SIZE != 0
-                    || (set == 0 && t.font_size().to_bits() != 16.0f32.to_bits())
-                {
-                    text.font_size = t.font_size();
-                }
-                if set & Typography::SET_FONT_WEIGHT != 0 || (set == 0 && t.font_weight() != 400) {
-                    text.font_weight = t.font_weight();
-                }
-                if set & Typography::SET_LINE_HEIGHT != 0
-                    || (set == 0 && t.line_height() != Length::AUTO)
-                {
-                    text.line_height = t.line_height();
-                }
-            }
+            let text = resolve_inherited_text(store, id, parent_text);
 
             let dir_changed = self.resolved_rtl[idx] != rtl;
             let text_measure_changed = self.resolved_text[idx].font_size.to_bits()

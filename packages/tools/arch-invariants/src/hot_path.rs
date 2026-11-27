@@ -311,8 +311,8 @@ fn is_per_node_downcast_scope(rel: &str) -> bool {
         )
 }
 
-/// Scans production Rust files in per-node hot scopes (`backends/**`, `core/{abi,components,tables}`,
-/// `engine/src/layout.rs`, and hot store files) for banned `Any::downcast_ref` / `.downcast_ref`.
+/// Scans production Rust files in per-node hot scopes (`backends/**`, `core/{abi,components,tables,layout}`,
+/// and hot store files) for banned `Any::downcast_ref` / `.downcast_ref`.
 pub fn check_zero_per_node_downcast_ref(idx: &RepoIndex) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut scanned = 0usize;

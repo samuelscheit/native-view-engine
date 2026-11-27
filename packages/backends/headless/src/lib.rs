@@ -34,7 +34,6 @@ pub use nve_components::layout_ext::{
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use nve_layout::{layout_snapshot_of, visual_snapshot_of};
-pub(crate) use nve_layout::is_display_none;
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
 pub(crate) use nve_components::tables::{box_visual, node_clips_overflow};
 

@@ -285,6 +285,84 @@ impl NveYogaLayoutExt {
     }
 }
 
+const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+
+    assert!(size_of::<NveYogaMeasureHook>() == 2 * size_of::<usize>());
+    assert!(offset_of!(NveYogaMeasureHook, callback) == 0);
+    assert!(offset_of!(NveYogaMeasureHook, user_data) == size_of::<usize>());
+
+    assert!(size_of::<NveYogaRect>() == 16);
+    assert!(align_of::<NveYogaRect>() == 4);
+    assert!(offset_of!(NveYogaRect, x) == 0);
+    assert!(offset_of!(NveYogaRect, y) == 4);
+    assert!(offset_of!(NveYogaRect, width) == 8);
+    assert!(offset_of!(NveYogaRect, height) == 12);
+
+    assert!(size_of::<NveYogaLayoutProps>() == 100);
+    assert!(align_of::<NveYogaLayoutProps>() == 4);
+    assert!(offset_of!(NveYogaLayoutProps, width_tag) == 0);
+    assert!(offset_of!(NveYogaLayoutProps, width_val) == 4);
+    assert!(offset_of!(NveYogaLayoutProps, height_tag) == 8);
+    assert!(offset_of!(NveYogaLayoutProps, height_val) == 12);
+    assert!(offset_of!(NveYogaLayoutProps, min_width_tag) == 16);
+    assert!(offset_of!(NveYogaLayoutProps, min_width_val) == 20);
+    assert!(offset_of!(NveYogaLayoutProps, min_height_tag) == 24);
+    assert!(offset_of!(NveYogaLayoutProps, min_height_val) == 28);
+    assert!(offset_of!(NveYogaLayoutProps, max_width_tag) == 32);
+    assert!(offset_of!(NveYogaLayoutProps, max_width_val) == 36);
+    assert!(offset_of!(NveYogaLayoutProps, max_height_tag) == 40);
+    assert!(offset_of!(NveYogaLayoutProps, max_height_val) == 44);
+    assert!(offset_of!(NveYogaLayoutProps, flex_direction) == 48);
+    assert!(offset_of!(NveYogaLayoutProps, justify_content) == 49);
+    assert!(offset_of!(NveYogaLayoutProps, align_items) == 50);
+    assert!(offset_of!(NveYogaLayoutProps, _reserved) == 51);
+    assert!(offset_of!(NveYogaLayoutProps, flex_grow) == 52);
+    assert!(offset_of!(NveYogaLayoutProps, flex_shrink) == 56);
+    assert!(offset_of!(NveYogaLayoutProps, row_gap) == 60);
+    assert!(offset_of!(NveYogaLayoutProps, column_gap) == 64);
+    assert!(offset_of!(NveYogaLayoutProps, pad_top) == 68);
+    assert!(offset_of!(NveYogaLayoutProps, pad_right) == 72);
+    assert!(offset_of!(NveYogaLayoutProps, pad_bottom) == 76);
+    assert!(offset_of!(NveYogaLayoutProps, pad_left) == 80);
+    assert!(offset_of!(NveYogaLayoutProps, margin_top) == 84);
+    assert!(offset_of!(NveYogaLayoutProps, margin_right) == 88);
+    assert!(offset_of!(NveYogaLayoutProps, margin_bottom) == 92);
+    assert!(offset_of!(NveYogaLayoutProps, margin_left) == 96);
+
+    assert!(size_of::<NveYogaLayoutExt>() == 92);
+    assert!(align_of::<NveYogaLayoutExt>() == 4);
+    assert!(offset_of!(NveYogaLayoutExt, display) == 0);
+    assert!(offset_of!(NveYogaLayoutExt, flex_basis_tag) == 1);
+    assert!(offset_of!(NveYogaLayoutExt, flex_basis_val) == 4);
+    assert!(offset_of!(NveYogaLayoutExt, has_aspect_ratio) == 8);
+    assert!(offset_of!(NveYogaLayoutExt, aspect_ratio) == 12);
+    assert!(offset_of!(NveYogaLayoutExt, position_mode) == 16);
+    assert!(offset_of!(NveYogaLayoutExt, top_tag) == 17);
+    assert!(offset_of!(NveYogaLayoutExt, top_val) == 20);
+    assert!(offset_of!(NveYogaLayoutExt, right_tag) == 24);
+    assert!(offset_of!(NveYogaLayoutExt, right_val) == 28);
+    assert!(offset_of!(NveYogaLayoutExt, bottom_tag) == 32);
+    assert!(offset_of!(NveYogaLayoutExt, bottom_val) == 36);
+    assert!(offset_of!(NveYogaLayoutExt, left_tag) == 40);
+    assert!(offset_of!(NveYogaLayoutExt, left_val) == 44);
+    assert!(offset_of!(NveYogaLayoutExt, direction) == 48);
+    assert!(offset_of!(NveYogaLayoutExt, has_pad_start) == 49);
+    assert!(offset_of!(NveYogaLayoutExt, pad_start) == 52);
+    assert!(offset_of!(NveYogaLayoutExt, has_pad_end) == 56);
+    assert!(offset_of!(NveYogaLayoutExt, pad_end) == 60);
+    assert!(offset_of!(NveYogaLayoutExt, has_mar_start) == 64);
+    assert!(offset_of!(NveYogaLayoutExt, mar_start) == 68);
+    assert!(offset_of!(NveYogaLayoutExt, has_mar_end) == 72);
+    assert!(offset_of!(NveYogaLayoutExt, mar_end) == 76);
+    assert!(offset_of!(NveYogaLayoutExt, flex_wrap) == 80);
+    assert!(offset_of!(NveYogaLayoutExt, align_content) == 81);
+    assert!(offset_of!(NveYogaLayoutExt, align_self) == 82);
+    assert!(offset_of!(NveYogaLayoutExt, box_sizing) == 83);
+    assert!(offset_of!(NveYogaLayoutExt, overflow) == 84);
+    assert!(offset_of!(NveYogaLayoutExt, border_width) == 88);
+};
+
 unsafe extern "C" {
     pub fn nve_yg_config_new() -> YGConfigRef;
     pub fn nve_yg_config_free(config: YGConfigRef);
@@ -292,8 +370,7 @@ unsafe extern "C" {
     pub fn nve_yg_node_new_with_config(config: YGConfigRef) -> YGNodeRef;
     pub fn nve_yg_node_detach_and_clear(node: YGNodeRef);
     pub fn nve_yg_node_free(node: YGNodeRef);
-    pub fn nve_yg_node_set_is_text(node: YGNodeRef, is_text: bool);
-    pub fn nve_yg_node_set_measure_hook(node: YGNodeRef, hook: *mut NveYogaMeasureHook);
+    pub fn nve_yg_node_set_measure_hook(node: YGNodeRef, hook: *mut NveYogaMeasureHook) -> bool;
     pub fn nve_yg_node_mark_dirty(node: YGNodeRef);
     pub fn nve_yg_node_set_children(
         parent: YGNodeRef,

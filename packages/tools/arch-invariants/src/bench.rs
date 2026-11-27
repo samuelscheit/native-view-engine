@@ -135,7 +135,10 @@ pub fn check_crate_benchmarks_and_alloc_guards(idx: &RepoIndex) -> BenchAllocRep
                 &dir,
                 "Crate must ship at least one real colocated benchmark (`[[bench]]` or non-stub `benches/*.rs`)",
             );
-            if dir == "packages/core/store" {
+            if matches!(
+                dir.as_str(),
+                "packages/core/store" | "packages/core/layout" | "packages/core/runtime"
+            ) {
                 report.active_nodestore.push(v.clone());
             }
             if is_core_or_backend {
@@ -160,7 +163,13 @@ pub fn check_crate_benchmarks_and_alloc_guards(idx: &RepoIndex) -> BenchAllocRep
                     &dir,
                     "Crate under packages/{core,backends,framework}/* must ship a `GlobalAlloc`/`CountingAlloc` guard",
                 );
-                if dir == "packages/core/store" || dir == "packages/backends/headless" {
+                if matches!(
+                    dir.as_str(),
+                    "packages/core/store"
+                        | "packages/core/layout"
+                        | "packages/core/runtime"
+                        | "packages/backends/headless"
+                ) {
                     report.active_nodestore.push(v.clone());
                 }
                 report.alloc_guards.push(v);

@@ -386,18 +386,31 @@ pub fn check_core_backend_module_deps(graph: &PackageGraph) -> Vec<Violation> {
         let Some(dir) = workspace_rel_dir(&pkg) else {
             continue;
         };
-        if !dir.starts_with("packages/core/") && !dir.starts_with("packages/backends/") {
+        let is_core = dir.starts_with("packages/core/");
+        if !is_core && !dir.starts_with("packages/backends/") {
             continue;
         }
         for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL) {
-            if let Ok(dep) = graph.metadata(dep_id)
-                && workspace_rel_dir(&dep).is_some_and(|d| d.starts_with("packages/modules/"))
-            {
+            let Ok(dep) = graph.metadata(dep_id) else {
+                continue;
+            };
+            let Some(dep_dir) = workspace_rel_dir(&dep) else {
+                continue;
+            };
+            if dep_dir.starts_with("packages/modules/") {
                 violations.push(Violation::new(
                     rel_manifest(&pkg),
                     1,
                     chain.join(" -> "),
                     "Core crates and backends must have zero dependencies on optional packages/modules/*",
+                ));
+            }
+            if is_core && dep_dir.starts_with("packages/backends/") {
+                violations.push(Violation::new(
+                    rel_manifest(&pkg),
+                    1,
+                    chain.join(" -> "),
+                    "Core crates (packages/core/*) must have zero dependencies on backends (packages/backends/*)",
                 ));
             }
         }

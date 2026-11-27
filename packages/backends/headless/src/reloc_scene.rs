@@ -86,7 +86,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             if event_mask != 0 {
                 flags |= SCENE_NODE_INTERACTIVE;
             }
-            if crate::is_display_none(store, id) {
+            if nve_components::tables::is_node_display_none(store, id) {
                 flags |= SCENE_NODE_HIDDEN;
             }
             let (text_align, font_weight) = store
