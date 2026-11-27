@@ -1,91 +1,38 @@
-//! Integration tests for `InteractionTracker`, `effective_style`, `active_cursor`,
-//! disabled prop sync, and unmount cleanup inside `HeadlessBackend`.
+//! Deep integration tests for `:hover`, `:focus`, `:focus-visible`, `:active`, `:disabled`,
+//! and [`CursorKind`] resolution inside [`HeadlessBackend`] over `NodeStore` word tables.
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask, LayoutProps,
-    RawPropValue, StyleProps, ROOT_NODE_ID,
-};
+use nve_abi::{ColorRgba, EventMask};
 use nve_backend_headless::{
-    CursorKind, HeadlessBackend, InteractionState, StateStyleRule, StylePatch, TaffyLayoutEngine,
+    CursorKind, FocusModality, HeadlessBackend, InteractionState, StateStyleRule, StylePatch,
 };
-use nve_engine::{RenderBackend, Viewport};
-
-fn build_scene() -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, 1);
-    // Node 2: Pressable button at (10, 10, 120x40) containing child Text node 3.
-    b.create_node(2, ComponentKind::Pressable, None);
-    b.set_layout(
-        2,
-        &LayoutProps {
-            width: Dimension::Points(120.0),
-            height: Dimension::Points(40.0),
-            margin: EdgeInsets { left: 10.0, top: 10.0, ..Default::default() },
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        2,
-        &StyleProps {
-            background: ColorRgba::rgb(37, 99, 235),
-            border_radius: 6.0,
-            ..Default::default()
-        },
-    );
-    b.set_event_mask(2, EventMask::PRESS);
-
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_text(3, "Save");
-    b.set_children(2, &[3]);
-
-    // Node 4: Splitter View at (10, 60, 120x20) with no event_mask, only explicit cursor.
-    b.create_node(4, ComponentKind::View, None);
-    b.set_layout(
-        4,
-        &LayoutProps {
-            width: Dimension::Points(120.0),
-            height: Dimension::Points(20.0),
-            margin: EdgeInsets { left: 10.0, top: 10.0, ..Default::default() },
-            ..Default::default()
-        },
-    );
-
-    // Node 5: TextInput at (10, 90, 120x30).
-    b.create_node(5, ComponentKind::TextInput, None);
-    b.set_layout(
-        5,
-        &LayoutProps {
-            width: Dimension::Points(120.0),
-            height: Dimension::Points(30.0),
-            margin: EdgeInsets { left: 10.0, top: 10.0, ..Default::default() },
-            ..Default::default()
-        },
-    );
-
-    b.set_children(ROOT_NODE_ID, &[2, 4, 5]);
-    b.commit(true);
-    b.finish().to_vec()
-}
+use nve_components::tables::{Interaction, Layout, StateRules, TextInput, Visual};
+use nve_engine::{StoreBackend, Viewport};
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
 #[test]
-fn headless_backend_tracks_pointer_touch_focus_disabled_unmount_and_cursors() {
+fn headless_interaction_hover_active_focus_disabled_and_cursor() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, Viewport { width: 300.0, height: 200.0, scale_factor: 1.0 });
-    backend.submit_frame(&build_scene()).unwrap();
+    backend.set_viewport(
+        1,
+        Viewport {
+            width: 400.0,
+            height: 300.0,
+            scale_factor: 1.0,
+        },
+    );
 
-    let btn_rules = vec![
+    let rules = vec![
         StateStyleRule::new(
             InteractionState::HOVER,
-            StylePatch::new().bg(ColorRgba::rgb(59, 130, 246)),
-        ),
-        StateStyleRule::new(
-            InteractionState::FOCUS_VISIBLE,
-            StylePatch::new().border(2.0, ColorRgba::rgb(56, 189, 248)),
+            StylePatch::new()
+                .bg(ColorRgba::rgb(30, 64, 175))
+                .cursor(CursorKind::Pointer),
         ),
         StateStyleRule::new(
             InteractionState::ACTIVE,
-            StylePatch::new()
-                .bg(ColorRgba::rgb(29, 78, 216))
-                .cursor(CursorKind::Grabbing),
+            StylePatch::new().bg(ColorRgba::rgb(29, 78, 216)),
         ),
         StateStyleRule::new(
             InteractionState::DISABLED,
@@ -94,67 +41,69 @@ fn headless_backend_tracks_pointer_touch_focus_disabled_unmount_and_cursors() {
                 .cursor(CursorKind::NotAllowed),
         ),
     ];
-    backend.set_node_cursor(4, Some(CursorKind::RowResize));
-    backend.set_node_state_rules(2, btn_rules);
 
-    // Idle state: base style & Auto cursor.
-    assert_eq!(backend.active_cursor(), CursorKind::Auto);
-    assert_eq!(backend.effective_style(2).unwrap().background, ColorRgba::rgb(37, 99, 235));
+    let mut tx = store.tx();
+    let btn = tx.create();
+    let input = tx.create();
+    tx.set_children(NodeId::ROOT, &[btn, input]);
 
-    // Moving pointer onto Pressable (even over its child Text) resolves to node 2.
-    assert_eq!(backend.pointer_move(50.0, 25.0), vec![2]);
-    assert_eq!(backend.interaction_state(2), InteractionState::HOVER);
-    assert_eq!(backend.active_cursor(), CursorKind::Pointer);
-    assert_eq!(backend.effective_style(2).unwrap().background, ColorRgba::rgb(59, 130, 246));
+    tx.edit::<Layout>(btn)
+        .width(Length::points(120.0))
+        .height(Length::points(40.0));
+    tx.edit::<Visual>(btn).background(Rgba::rgb(15, 23, 42));
+    tx.edit::<Interaction>(btn)
+        .event_mask(EventMask::PRESS as u32)
+        .cursor(CursorKind::Pointer)
+        .state_rules(Some(StateRules(rules.into())));
 
-    // Pressing activates node 2 and switches cursor to Grabbing.
-    assert_eq!(backend.pointer_down(50.0, 25.0), vec![2]);
-    assert_eq!(backend.effective_style(2).unwrap().background, ColorRgba::rgb(29, 78, 216));
-    assert_eq!(backend.active_cursor(), CursorKind::Grabbing);
+    tx.edit::<Layout>(input)
+        .width(Length::points(200.0))
+        .height(Length::points(36.0));
+    tx.edit::<TextInput>(input).placeholder("Search...");
+    tx.commit_into(&mut changes);
 
-    // Dragging onto splitter View (node 4, event_mask=0, explicit cursor) cancels press on 2 and hovers 4!
-    assert_eq!(backend.pointer_move(50.0, 70.0), vec![2, 4]);
-    assert_eq!(backend.interaction_state(2), InteractionState::NONE);
-    assert_eq!(backend.interaction_state(4), InteractionState::HOVER);
-    assert_eq!(backend.active_cursor(), CursorKind::RowResize);
+    backend.commit(&store, &changes).unwrap();
 
-    // Hovering TextInput defaults to CursorKind::Text.
-    assert_eq!(backend.pointer_move(50.0, 105.0), vec![4, 5]);
-    assert_eq!(backend.active_cursor(), CursorKind::Text);
+    // Base state: pointer on btn, text cursor on input.
+    assert_eq!(backend.effective_cursor(&store, btn), CursorKind::Pointer);
+    assert_eq!(backend.effective_cursor(&store, input), CursorKind::Text);
+    assert_eq!(
+        backend.effective_visual(&store, btn).background,
+        ColorRgba::rgb(15, 23, 42)
+    );
 
-    // Touch tap clears hover (no sticky hover on hybrid devices).
-    assert_eq!(backend.touch_tap(50.0, 25.0), vec![5]);
-    assert_eq!(backend.active_cursor(), CursorKind::Auto);
+    // Hover btn -> hover rule activates.
+    let dirty = backend.dispatch_pointer_move(&store, 50.0, 20.0);
+    assert_eq!(dirty, vec![btn.raw()]);
+    assert!(backend.interaction_state(btn.raw()).contains(InteractionState::HOVER));
+    assert_eq!(
+        backend.effective_visual(&store, btn).background,
+        ColorRgba::rgb(30, 64, 175)
+    );
 
-    // Focus pointer vs keyboard drives FOCUS vs FOCUS_VISIBLE.
-    assert_eq!(backend.focus_pointer(Some(2)), vec![2]);
-    assert_eq!(backend.effective_style(2).unwrap().border_width, 0.0);
-    assert_eq!(backend.focus_keyboard(Some(2)), vec![2]);
-    assert_eq!(backend.effective_style(2).unwrap().border_width, 2.0);
-    assert_eq!(backend.effective_style(2).unwrap().border_color, ColorRgba::rgb(56, 189, 248));
+    // Pointer down -> active rule overrides hover.
+    let _ = backend.dispatch_pointer_down(&store, 50.0, 20.0);
+    assert_eq!(
+        backend.effective_visual(&store, btn).background,
+        ColorRgba::rgb(29, 78, 216)
+    );
+    let _ = backend.dispatch_pointer_up(&store, 50.0, 20.0);
 
-    // Raw prop `disabled: true` automatically syncs InteractionTracker::DISABLED, blurs focus,
-    // and updates active cursor on hover to NotAllowed.
-    let mut b_dis = CommandBufferBuilder::new(1, 2);
-    b_dis.set_raw_prop(2, "disabled", &RawPropValue::Bool(true));
-    b_dis.commit(false);
-    backend.submit_frame(b_dis.finish()).unwrap();
-    assert_eq!(backend.interaction_state(2), InteractionState::DISABLED);
-    assert_eq!(backend.effective_style(2).unwrap().opacity, 0.4);
-    assert_eq!(backend.pointer_move(50.0, 25.0), vec![2]);
-    assert_eq!(backend.active_cursor(), CursorKind::NotAllowed);
+    // Keyboard focus -> focus + focus-visible.
+    let _ = backend.dispatch_focus(Some(btn.raw()), FocusModality::Keyboard);
+    assert!(backend
+        .interaction_state(btn.raw())
+        .contains(InteractionState::FOCUS_VISIBLE));
 
-    // Layout engine swap preserves interaction state & rules.
-    let mut backend = backend.swap_layout_engine(TaffyLayoutEngine::new());
-    assert_eq!(backend.active_cursor(), CursorKind::NotAllowed);
-    assert_eq!(backend.effective_style(2).unwrap().opacity, 0.4);
+    // Disable via NodeStore Interaction table -> disabled rule + NotAllowed cursor.
+    let mut tx = store.tx();
+    tx.edit::<Interaction>(btn).disabled(true);
+    tx.commit_into(&mut changes);
+    backend.commit(&store, &changes).unwrap();
 
-    // Unmounting hovered/disabled node 2 clears tracker state cleanly!
-    let mut b_rm = CommandBufferBuilder::new(1, 3);
-    b_rm.remove_node(2);
-    b_rm.commit(true);
-    backend.submit_frame(b_rm.finish()).unwrap();
-    assert_eq!(backend.interaction_state(2), InteractionState::NONE);
-    assert_eq!(backend.active_cursor(), CursorKind::Auto);
-    assert!(backend.pointer_leave().is_empty());
+    assert!(backend
+        .interaction_state(btn.raw())
+        .contains(InteractionState::DISABLED));
+    assert_eq!(backend.effective_cursor(&store, btn), CursorKind::NotAllowed);
+    assert!((backend.effective_visual(&store, btn).opacity - 0.4).abs() < 1e-4);
 }

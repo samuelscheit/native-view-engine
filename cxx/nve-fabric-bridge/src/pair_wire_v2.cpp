@@ -37,8 +37,6 @@ inline void write_u64_le(uint8_t* p, uint64_t v) noexcept {
   write_u32_le(p + 4, static_cast<uint32_t>((v >> 32) & 0xFFFFFFFFULL));
 }
 
-inline uint64_t rotl64(uint64_t x, unsigned r) noexcept { return (x << r) | (x >> (64u - r)); }
-
 } // namespace
 
 // =============================================================================
@@ -46,74 +44,6 @@ inline uint64_t rotl64(uint64_t x, unsigned r) noexcept { return (x << r) | (x >
 // =============================================================================
 
 namespace wire_v2 {
-
-uint64_t xxh64(std::span<const uint8_t> data, uint64_t seed) noexcept {
-  constexpr uint64_t P1 = 0x9E3779B185EBCA87ULL;
-  constexpr uint64_t P2 = 0xC2B2AE3D27D4EB4FULL;
-  constexpr uint64_t P3 = 0x165667B19E3779F9ULL;
-  constexpr uint64_t P4 = 0x85EBCA77C2B2AE63ULL;
-  constexpr uint64_t P5 = 0x27D4EB2F165667C5ULL;
-
-  const uint8_t* p = data.data();
-  const size_t len = data.size();
-  const uint8_t* const end = p + len;
-  uint64_t h64 = 0;
-
-  auto round = [](uint64_t acc, uint64_t input) noexcept {
-    acc += input * P2;
-    acc = rotl64(acc, 31);
-    acc *= P1;
-    return acc;
-  };
-  auto merge_round = [&](uint64_t acc, uint64_t val) noexcept {
-    acc ^= round(0, val);
-    return acc * P1 + P4;
-  };
-
-  if (len >= 32u) {
-    const uint8_t* const limit = end - 32u;
-    uint64_t v1 = seed + P1 + P2;
-    uint64_t v2 = seed + P2;
-    uint64_t v3 = seed;
-    uint64_t v4 = seed - P1;
-    do {
-      v1 = round(v1, read_u64_le(p)); p += 8;
-      v2 = round(v2, read_u64_le(p)); p += 8;
-      v3 = round(v3, read_u64_le(p)); p += 8;
-      v4 = round(v4, read_u64_le(p)); p += 8;
-    } while (p <= limit);
-    h64 = rotl64(v1, 1) + rotl64(v2, 7) + rotl64(v3, 12) + rotl64(v4, 18);
-    h64 = merge_round(h64, v1);
-    h64 = merge_round(h64, v2);
-    h64 = merge_round(h64, v3);
-    h64 = merge_round(h64, v4);
-  } else {
-    h64 = seed + P5;
-  }
-
-  h64 += static_cast<uint64_t>(len);
-  while (p + 8u <= end) {
-    h64 ^= round(0, read_u64_le(p));
-    h64 = rotl64(h64, 27) * P1 + P4;
-    p += 8;
-  }
-  if (p + 4u <= end) {
-    h64 ^= static_cast<uint64_t>(read_u32_le(p)) * P1;
-    h64 = rotl64(h64, 23) * P2 + P3;
-    p += 4;
-  }
-  while (p < end) {
-    h64 ^= static_cast<uint64_t>(*p++) * P5;
-    h64 = rotl64(h64, 11) * P1;
-  }
-
-  h64 ^= h64 >> 33;
-  h64 *= P2;
-  h64 ^= h64 >> 29;
-  h64 *= P3;
-  h64 ^= h64 >> 32;
-  return h64;
-}
 
 bool constant_time_eq(std::string_view a, std::string_view b) noexcept {
   const size_t min_len = std::min(a.size(), b.size());
@@ -147,7 +77,7 @@ std::vector<uint8_t> encode_frame(
   }
   if (has_ck) {
     const size_t body_len = kWireHeaderSize + payload.size();
-    const uint64_t digest = xxh64(std::span<const uint8_t>(out.data(), body_len));
+    const uint64_t digest = xxh64(std::span<const uint8_t>(out.data(), body_len), kWireXxh64Seed);
     write_u64_le(out.data() + body_len, digest);
   }
   return out;
@@ -182,7 +112,7 @@ bool decode_frame(std::span<const uint8_t> bytes, WireFrameView& out, size_t max
   const size_t payload_end = kWireHeaderSize + static_cast<size_t>(hdr.payload_len);
   if (hdr.has_xxh64()) {
     const uint64_t expected = read_u64_le(bytes.data() + payload_end);
-    const uint64_t actual = xxh64(bytes.subspan(0, payload_end));
+    const uint64_t actual = xxh64(bytes.subspan(0, payload_end), kWireXxh64Seed);
     if (actual != expected) return false;
   }
   out.header = hdr;

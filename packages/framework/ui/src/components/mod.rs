@@ -15,6 +15,7 @@ pub mod dropdown;
 pub mod error_boundary;
 pub mod form_view;
 pub mod forms;
+pub(crate) mod html_tables;
 pub mod keyboard_avoiding;
 pub mod layout;
 pub mod overlays;

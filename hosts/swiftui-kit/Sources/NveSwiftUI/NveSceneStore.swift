@@ -470,12 +470,13 @@ public final class NveSceneStore: ObservableObject {
                         removed_count: 0,
                         text_slab_len: UInt32(textBuf.count),
                         children_slab_len: UInt32(childBuf.count),
-                        _pad: 0,
+                        table_count: 0,
                         nodes: nodesBuf.baseAddress,
                         text_slab: textBuf.baseAddress,
                         children_slab: childBuf.baseAddress,
                         dirty_indices: nil,
-                        removed_ids: nil
+                        removed_ids: nil,
+                        tables: nil
                     )
                     guard let reader = try? NveSceneReader(view: view) else {
                         return nil

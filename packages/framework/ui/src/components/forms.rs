@@ -137,7 +137,7 @@ pub fn Input(
             textinput {
                 id: id,
                 test_id: test_id,
-                name: name,
+                nve_table: super::html_tables::html_form_control_name(name),
                 input_type: input_type,
                 required: required,
                 value: "{value}",

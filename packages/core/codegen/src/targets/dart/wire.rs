@@ -10,8 +10,7 @@ use crate::schema::wire::{
     EVENT_ENTRY_NODE_ID_OFFSET, EVENT_ENTRY_PAYLOAD_TAG_OFFSET, EVENT_ENTRY_SURFACE_ID_OFFSET,
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
-    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
     NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
@@ -47,68 +46,6 @@ pub fn generate_dart_wire_codecs() -> String {
     writeln!(
         s,
         "const String nveWireCodecsSchemaHashHex = '0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X}';\n"
-    )
-    .unwrap();
-
-    // FNV-1a64
-    writeln!(s, "// ============================================================================").unwrap();
-    writeln!(s, "// Canonical 64-bit FNV-1a").unwrap();
-    writeln!(s, "// ============================================================================\n").unwrap();
-    writeln!(s, "const int nveWireFnv1a64OffsetBasis = 0x{FNV1A_OFFSET_BASIS:016X};").unwrap();
-    writeln!(s, "const int nveWireFnv1a64Prime = 0x{FNV1A_PRIME:016X};\n").unwrap();
-    writeln!(
-        s,
-        r#"final class NveWireFnv1a64Vector {{
-  const NveWireFnv1a64Vector({{
-    required this.label,
-    required this.bytes,
-    required this.expected,
-  }});
-
-  final String label;
-  final List<int> bytes;
-  final int expected;
-}}
-
-const List<NveWireFnv1a64Vector> nveWireFnv1a64TestVectors = <NveWireFnv1a64Vector>["#
-    )
-    .unwrap();
-    for vec in FNV1A64_TEST_VECTORS {
-        writeln!(
-            s,
-            "  NveWireFnv1a64Vector(label: '{}', bytes: <int>[{}], expected: 0x{:016X}),",
-            vec.label,
-            format_dart_bytes(vec.bytes),
-            vec.expected
-        )
-        .unwrap();
-    }
-    writeln!(
-        s,
-        r#"];
-
-int nveWireFnv1a64Update(int hash, List<int> bytes, [int start = 0, int? end]) {{
-  final int limit = end ?? bytes.length;
-  int h = hash;
-  for (int i = start; i < limit; i++) {{
-    h ^= bytes[i] & 0xFF;
-    h = h * nveWireFnv1a64Prime;
-  }}
-  return h;
-}}
-
-int nveWireFnv1a64(List<int> bytes) =>
-    nveWireFnv1a64Update(nveWireFnv1a64OffsetBasis, bytes);
-
-bool nveWireVerifyFnv1a64TestVectors() {{
-  for (final vector in nveWireFnv1a64TestVectors) {{
-    if (nveWireFnv1a64(vector.bytes) != vector.expected) {{
-      return false;
-    }}
-  }}
-  return true;
-}}
-"#
     )
     .unwrap();
 

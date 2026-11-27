@@ -48,7 +48,7 @@ const STREAM_SUBJECTS: &[&str] = &[
 ];
 const STREAM_DETAILS: &[&str] = &[
     "Zero per-frame heap allocation; deterministic O(log N) prefix sum slice.",
-    "Verified < 256B binary delta payload with FNV-1a integrity check.",
+    "Verified < 256B binary delta payload with XXH64 integrity check.",
     "Consistent cross-backend rect geometry across Taffy and Yoga engines.",
     "Hot-swap preserves full time-travel cursor and active virtual scroll offset.",
 ];

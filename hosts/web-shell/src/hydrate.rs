@@ -5,8 +5,9 @@
 
 use nve_abi::hash::HashMap;
 
-use nve_abi::{NodeId, RawPropValue};
-use nve_backend_web::WebBackend;
+use nve_abi::NodeId;
+use nve_store::NodeStore;
+use nve_web_html::HtmlDataAttrs;
 
 #[cfg(all(test, feature = "app-studio", feature = "app-kitchen-sink"))]
 #[path = "hydrate_tests.rs"]
@@ -81,23 +82,37 @@ impl IslandHydrationScheduler {
         Self::default()
     }
 
-    /// Discovers every node stamped with `data-nve-island` in `backend` (deterministic `NodeId`
+    /// Discovers every node stamped with `data-nve-island` in `store` (deterministic `NodeId`
     /// order), parsing `data-nve-hydrate` (defaulting to [`HydrateTrigger::Load`]).
-    pub fn discover_from_backend(backend: &WebBackend) -> Self {
+    pub fn discover_from_store(store: &NodeStore) -> Self {
         let mut discovered: Vec<(NodeId, String, HydrateTrigger)> = Vec::new();
-        for (node_id, el) in backend.iter_nodes() {
-            if let Some(RawPropValue::String(island_id)) = el.raw_props.get("data-nve-island")
-                && !island_id.trim().is_empty()
-            {
-                let trigger = el
-                    .raw_props
-                    .get("data-nve-hydrate")
-                    .and_then(|v| match v {
-                        RawPropValue::String(s) => HydrateTrigger::parse(s),
-                        _ => None,
-                    })
-                    .unwrap_or(HydrateTrigger::Load);
-                discovered.push((node_id, island_id.trim().to_owned(), trigger));
+        for node_id in store.live_nodes() {
+            let Some(attrs) = store.try_row::<HtmlDataAttrs>(node_id) else {
+                continue;
+            };
+            let Some(list) = store.resource::<nve_web_html::DataAttrList>(attrs.entries()) else {
+                continue;
+            };
+            let mut island_id: Option<&str> = None;
+            let mut trigger = HydrateTrigger::Load;
+            for (k, v) in list.0.iter() {
+                match k.as_str() {
+                    "data-nve-island" | "nve-island" => {
+                        let trimmed = v.trim();
+                        if !trimmed.is_empty() {
+                            island_id = Some(trimmed);
+                        }
+                    }
+                    "data-nve-hydrate" | "nve-hydrate" => {
+                        if let Some(parsed) = HydrateTrigger::parse(v) {
+                            trigger = parsed;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(id) = island_id {
+                discovered.push((node_id.raw(), id.to_owned(), trigger));
             }
         }
         discovered.sort_unstable_by_key(|(id, _, _)| *id);

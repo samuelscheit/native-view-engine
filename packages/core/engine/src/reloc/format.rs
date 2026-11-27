@@ -8,7 +8,7 @@ use std::mem::{align_of, offset_of, size_of};
 use std::ops::Deref;
 use std::path::Path;
 
-use crate::hash::Xxh64Hasher;
+use nve_abi::Xxh64Hasher;
 use crate::mmap_arena::ArenaPod;
 
 use super::view::{write_reloc_atomic, RelocView};
@@ -263,7 +263,7 @@ pub fn compute_reloc_checksum(bytes: &[u8]) -> u64 {
     let mut h = Xxh64Hasher::new(0);
     h.update(&bytes[0..CHECKSUM_OFFSET]);
     h.update(&bytes[CHECKSUM_END..]);
-    h.finish()
+    h.digest()
 }
 
 #[repr(C, align(64))]

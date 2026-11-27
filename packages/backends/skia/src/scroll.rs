@@ -1,194 +1,183 @@
-//! `ScrollView` content bounds, offset clamping, and virtualized scroll reconciliation for
+//! `Scroll` table content bounds, offset clamping, and virtualized scroll reconciliation for
 //! [`crate::SkiaBackend`].
 
-use nve_abi::{ComponentKind, NodeId, ROOT_NODE_ID};
-use nve_backend_headless::{HeadlessBackend, HeadlessNode};
-use nve_engine::LayoutEngine;
+use nve_abi::NodeId;
+use nve_backend_headless::HeadlessBackend;
+use nve_components::tables::Scroll;
+use nve_engine::StoreLayoutEngine;
+use nve_store::{NodeId as StoreNodeId, NodeStore, NveTable};
 
-use crate::display_list::parse_px_raw_prop;
 use crate::{SkiaBackend, MAX_HIT_TEST_DEPTH};
 
-impl<L: LayoutEngine> SkiaBackend<L> {
-    /// Returns the stored `(scroll_x, scroll_y)` offset for a `ScrollView` node.
+struct ScrollReconcileEntry {
+    raw: NodeId,
+    x: f32,
+    y: f32,
+    v_scroll_x: Option<f32>,
+    v_scroll_y: Option<f32>,
+}
+
+impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn scroll_offset(&self, node_id: NodeId) -> (f32, f32) {
         self.scroll_offsets.get(&node_id).copied().unwrap_or((0.0, 0.0))
     }
 
-    /// Computes `(content_width, content_height)` for a `ScrollView` node (taking into account
-    /// both measured descendant extents and optional virtualized `virtual-total-height`).
-    pub fn scroll_content_size(&self, node_id: NodeId) -> Option<(f32, f32)> {
-        compute_scroll_content_size(&self.layout_tree, node_id)
+    pub fn scroll_content_size(&self, store: &NodeStore, node_id: StoreNodeId) -> Option<(f32, f32)> {
+        compute_scroll_content_size(store, &self.layout_tree, node_id)
     }
 
-    /// Sets the scroll offset of `node_id`, clamping it against `[0..=content - viewport]`,
+    /// Sets the scroll offset of `node_id`, clamping against `[0..=content - viewport]`,
     /// rebuilds the retained [`crate::DisplayList`] if changed, and returns the clamped `(x, y)`.
-    pub fn set_scroll_offset(&mut self, node_id: NodeId, x: f32, y: f32) -> (f32, f32) {
-        let Some(node) = self.layout_tree.node(node_id) else {
+    pub fn set_scroll_offset(
+        &mut self,
+        store: &NodeStore,
+        node_id: StoreNodeId,
+        x: f32,
+        y: f32,
+    ) -> (f32, f32) {
+        let Some(rect) = self.layout_tree.layout_of(node_id.raw()) else {
             return (0.0, 0.0);
         };
-        let rect = node.computed_rect;
-        let (cw, ch) = compute_scroll_content_size(&self.layout_tree, node_id)
+        let (cw, ch) = compute_scroll_content_size(store, &self.layout_tree, node_id)
             .unwrap_or((rect.width, rect.height));
         let max_x = (cw - rect.width).max(0.0);
         let max_y = (ch - rect.height).max(0.0);
         let clamped_x = if x.is_finite() { x.clamp(0.0, max_x) } else { 0.0 };
         let clamped_y = if y.is_finite() { y.clamp(0.0, max_y) } else { 0.0 };
 
-        let prev = self.scroll_offsets.get(&node_id).copied().unwrap_or((0.0, 0.0));
-        self.scroll_offsets.insert(node_id, (clamped_x, clamped_y));
+        let raw = node_id.raw();
+        let prev = self.scroll_offsets.get(&raw).copied().unwrap_or((0.0, 0.0));
+        self.scroll_offsets.insert(raw, (clamped_x, clamped_y));
+        self.layout_tree.set_scroll_offset(raw, clamped_x, clamped_y);
         if (prev.0 - clamped_x).abs() > 1e-4 || (prev.1 - clamped_y).abs() > 1e-4 {
-            self.rebuild_display_list();
+            self.rebuild_display_list(store);
         }
         (clamped_x, clamped_y)
     }
 
-    /// Applies an incremental scroll delta `(dx, dy)` to `node_id`, clamping against content
-    /// bounds and rebuilding the display list when the offset changes.
-    pub fn apply_scroll_delta(&mut self, node_id: NodeId, dx: f32, dy: f32) -> (f32, f32) {
-        let (cur_x, cur_y) = self.scroll_offset(node_id);
+    pub fn apply_scroll_delta(
+        &mut self,
+        store: &NodeStore,
+        node_id: StoreNodeId,
+        dx: f32,
+        dy: f32,
+    ) -> (f32, f32) {
+        let (cur_x, cur_y) = self.scroll_offset(node_id.raw());
         let nx = cur_x + if dx.is_finite() { dx } else { 0.0 };
         let ny = cur_y + if dy.is_finite() { dy } else { 0.0 };
-        self.set_scroll_offset(node_id, nx, ny)
+        self.set_scroll_offset(store, node_id, nx, ny)
     }
 
-    pub(crate) fn visual_scroll_shift(&self, node: &HeadlessNode) -> (f32, f32) {
-        if node.kind != ComponentKind::ScrollView {
-            return (0.0, 0.0);
-        }
-        let (sx, sy) = self.scroll_offsets.get(&node.id).copied().unwrap_or((0.0, 0.0));
-        if let Some(top_spacer) = parse_px_raw_prop(node.raw_props.get("virtual-top-spacer")) {
-            // Virtualized ScrollView mounts children starting at `virtual-top-spacer`.
-            (sx, (sy - top_spacer).max(0.0))
-        } else {
-            (sx, sy)
-        }
+    pub(crate) fn visual_scroll_shift(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+        crate::display_list::scroll_shift_for(store, &self.scroll_offsets, id)
     }
 
-    pub(crate) fn reconcile_scroll_offsets(&mut self) {
-        // Prune scroll state for removed nodes.
+    pub(crate) fn reconcile_scroll_offsets(&mut self, store: &NodeStore) {
         self.scroll_offsets
-            .retain(|id, _| self.layout_tree.node(*id).is_some());
+            .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
+        self.last_virtual_scroll_x
+            .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
         self.last_virtual_scroll_y
-            .retain(|id, _| self.layout_tree.node(*id).is_some());
+            .retain(|&raw, _| store.is_live(StoreNodeId(raw)));
 
-        // Sync virtual-scroll-y updates initiated by the app (e.g. Jump 50k buttons) and re-clamp.
-        let mut updates: Vec<(NodeId, f32, f32, Option<f32>)> = Vec::new();
-        self.collect_scroll_reconcile(ROOT_NODE_ID, &mut updates, 0);
-        for (id, x, y, v_scroll) in updates {
-            if let Some(vs) = v_scroll {
-                self.last_virtual_scroll_y.insert(id, vs);
+        if store.table_desc(Scroll::slot()).is_none() {
+            return;
+        }
+
+        let mut updates: Vec<ScrollReconcileEntry> = Vec::new();
+        self.collect_scroll_reconcile(store, StoreNodeId::ROOT, &mut updates, 0);
+        for entry in updates {
+            if let Some(vx) = entry.v_scroll_x {
+                self.last_virtual_scroll_x.insert(entry.raw, vx);
             }
-            if x != 0.0 || y != 0.0 || self.scroll_offsets.contains_key(&id) {
-                self.scroll_offsets.insert(id, (x, y));
+            if let Some(vy) = entry.v_scroll_y {
+                self.last_virtual_scroll_y.insert(entry.raw, vy);
+            }
+            if entry.x != 0.0 || entry.y != 0.0 || self.scroll_offsets.contains_key(&entry.raw) {
+                self.scroll_offsets.insert(entry.raw, (entry.x, entry.y));
+                self.layout_tree
+                    .set_scroll_offset(entry.raw, entry.x, entry.y);
             }
         }
     }
 
     fn collect_scroll_reconcile(
         &self,
-        id: NodeId,
-        out: &mut Vec<(NodeId, f32, f32, Option<f32>)>,
+        store: &NodeStore,
+        id: StoreNodeId,
+        out: &mut Vec<ScrollReconcileEntry>,
         depth: usize,
     ) {
-        if depth > MAX_HIT_TEST_DEPTH {
+        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) {
             return;
         }
-        let Some(node) = self.layout_tree.node(id) else {
-            return;
-        };
-        if node.kind == ComponentKind::ScrollView {
-            let rect = node.computed_rect;
-            let (cw, ch) = compute_scroll_content_size(&self.layout_tree, id)
+        if let Some(scroll) = store.try_row::<Scroll>(id)
+            && let Some(rect) = self.layout_tree.layout_of(id.raw())
+        {
+            let (cw, ch) = compute_scroll_content_size(store, &self.layout_tree, id)
                 .unwrap_or((rect.width, rect.height));
             let max_x = (cw - rect.width).max(0.0);
             let max_y = (ch - rect.height).max(0.0);
-            let (mut sx, mut sy) = self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
-            let v_scroll = parse_px_raw_prop(node.raw_props.get("virtual-scroll-y"));
-            if let Some(app_vy) = v_scroll {
-                let prev_vy = self.last_virtual_scroll_y.get(&id).copied();
-                if prev_vy.is_none_or(|p| (p - app_vy).abs() > 0.5) {
-                    sy = app_vy;
+            let raw = id.raw();
+            let (mut sx, mut sy) = self.scroll_offsets.get(&raw).copied().unwrap_or((0.0, 0.0));
+            let req_y = scroll.requested_scroll_y();
+            let mut recorded_req_y = None;
+            if req_y.is_finite() {
+                let prev_req = self.last_virtual_scroll_y.get(&raw).copied();
+                if prev_req.is_none_or(|p| (p - req_y).abs() > 1e-4) {
+                    sy = req_y;
+                    recorded_req_y = Some(req_y);
                 }
             }
-            sx = sx.clamp(0.0, max_x);
-            sy = sy.clamp(0.0, max_y);
-            out.push((id, sx, sy, v_scroll));
+            let req_x = scroll.requested_scroll_x();
+            let mut recorded_req_x = None;
+            if req_x.is_finite() {
+                let prev_req = self.last_virtual_scroll_x.get(&raw).copied();
+                if prev_req.is_none_or(|p| (p - req_x).abs() > 1e-4) {
+                    sx = req_x;
+                    recorded_req_x = Some(req_x);
+                }
+            }
+            out.push(ScrollReconcileEntry {
+                raw,
+                x: sx.clamp(0.0, max_x),
+                y: sy.clamp(0.0, max_y),
+                v_scroll_x: recorded_req_x,
+                v_scroll_y: recorded_req_y,
+            });
         }
-        for &child in &node.children {
-            self.collect_scroll_reconcile(child, out, depth + 1);
+        for &cid in store.children(id) {
+            self.collect_scroll_reconcile(store, cid, out, depth + 1);
         }
     }
 }
 
-pub(crate) fn compute_scroll_content_size<L: LayoutEngine>(
+/// Computes `(content_width, content_height)` for a `Scroll` node.
+pub(crate) fn compute_scroll_content_size<L: StoreLayoutEngine>(
+    store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
-    scroll_id: NodeId,
+    node_id: StoreNodeId,
 ) -> Option<(f32, f32)> {
-    let node = layout_tree.node(scroll_id)?;
-    let origin_x = node.computed_rect.x;
-    let origin_y = node.computed_rect.y;
-    let mut max_w = node.computed_rect.width.max(0.0);
-    let mut max_h = node.computed_rect.height.max(0.0);
+    let rect = layout_tree.layout_of(node_id.raw())?;
+    let mut max_w = rect.width;
+    let mut max_h = rect.height;
 
-    fn walk<L: LayoutEngine>(
-        tree: &HeadlessBackend<L>,
-        id: NodeId,
-        origin_x: f32,
-        origin_y: f32,
-        max_w: &mut f32,
-        max_h: &mut f32,
-        depth: usize,
-    ) {
-        if depth > MAX_HIT_TEST_DEPTH {
-            return;
+    if let Some(scroll) = store.try_row::<Scroll>(node_id) {
+        let vw = scroll.virtual_total_width();
+        if vw.is_finite() && vw > max_w {
+            max_w = vw;
         }
-        let Some(n) = tree.node(id) else {
-            return;
-        };
-        let r = n.computed_rect;
-        let right = (r.x + r.width) - origin_x;
-        let bottom = (r.y + r.height) - origin_y;
-        if right.is_finite() && right > *max_w {
-            *max_w = right;
-        }
-        if bottom.is_finite() && bottom > *max_h {
-            *max_h = bottom;
-        }
-        // Do not descend through nested ScrollViews for outer content bounds (their own content clips).
-        if n.kind != ComponentKind::ScrollView {
-            for &child in &n.children {
-                walk(tree, child, origin_x, origin_y, max_w, max_h, depth + 1);
-            }
+        let vh = scroll.virtual_total_height();
+        if vh.is_finite() && vh > max_h {
+            max_h = vh;
         }
     }
 
-    for &child in &node.children {
-        walk(
-            layout_tree,
-            child,
-            origin_x,
-            origin_y,
-            &mut max_w,
-            &mut max_h,
-            0,
-        );
+    for &cid in store.children(node_id) {
+        if let Some(cr) = layout_tree.layout_of(cid.raw()) {
+            max_w = max_w.max((cr.x - rect.x) + cr.width);
+            max_h = max_h.max((cr.y - rect.y) + cr.height);
+        }
     }
-
-    if !node.children.is_empty() {
-        max_w = (max_w + node.layout.padding.right.max(0.0)).max(node.computed_rect.width);
-        max_h = (max_h + node.layout.padding.bottom.max(0.0)).max(node.computed_rect.height);
-    }
-
-    if let Some(virtual_h) = parse_px_raw_prop(node.raw_props.get("virtual-total-height"))
-        && virtual_h > max_h
-    {
-        max_h = virtual_h;
-    }
-    if let Some(virtual_w) = parse_px_raw_prop(node.raw_props.get("virtual-total-width"))
-        && virtual_w > max_w
-    {
-        max_w = virtual_w;
-    }
-
-    Some((max_w, max_h))
+    Some((max_w.max(0.0), max_h.max(0.0)))
 }

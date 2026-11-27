@@ -1,20 +1,23 @@
-//! Deep parity & integration test suite comparing pure-Rust `TaffyLayoutEngine` against
-//! real React Native Yoga (`YogaLayoutEngine`).
+//! Deep parity tests comparing [`YogaLayoutEngine`] (real React Native Yoga C++20)
+//! against [`TaffyStoreLayout`] directly over [`NodeStore`].
 //!
 //! When compiled without `RN_REACT_COMMON_DIR`, tests verify the clean `YogaUnavailableError`
 //! fallback path so `cargo test --workspace` always succeeds on every machine.
 //! When compiled with `RN_REACT_COMMON_DIR`, every Flexbox parity, text wrapping, mutation,
-//! live engine swap, and `examples/kitchen-sink` CommandBuffer assertion executes against real RN Yoga.
+//! live engine swap, and `examples/kitchen-sink` assertion executes against real RN Yoga.
 
 use std::sync::Arc;
 
-use nve_abi::{
-    CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask, FlexAlign,
-    FlexDirection, FlexJustify, LayoutProps, NodeId, StyleProps, ROOT_NODE_ID,
+use nve_abi::EventMask;
+use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
+use nve_components::tables::{
+    AlignItems, FlexDirection, Interaction, JustifyContent, Layout, TextContent, Typography,
 };
-use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
-use nve_engine::{DynLayoutEngine, LayoutEngine, LayoutRect, RenderBackend, TextMeasurer, Viewport};
+use nve_engine::{
+    DynLayoutEngine, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer, Viewport,
+};
 use nve_layout_yoga::YogaLayoutEngine;
+use nve_store::{ChangeSet, Length, NodeId, NodeStore};
 
 const PARITY_TOLERANCE_PX: f32 = 1.0;
 
@@ -24,14 +27,26 @@ fn assert_rect_parity(label: &str, id: NodeId, taffy: LayoutRect, yoga: LayoutRe
             && (taffy.y - yoga.y).abs() <= PARITY_TOLERANCE_PX
             && (taffy.width - yoga.width).abs() <= PARITY_TOLERANCE_PX
             && (taffy.height - yoga.height).abs() <= PARITY_TOLERANCE_PX,
-        "[{label}] node #{id} diverged beyond {PARITY_TOLERANCE_PX}px:\n  taffy: {taffy:?}\n  yoga : {yoga:?}"
+        "[{label}] node #{} diverged beyond {PARITY_TOLERANCE_PX}px:\n  taffy: {taffy:?}\n  yoga : {yoga:?}",
+        id.raw()
     );
 }
 
-fn compare_frame_taffy_vs_yoga(
+fn live_node_ids(store: &NodeStore) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut stack = vec![NodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        out.push(id);
+        stack.extend_from_slice(store.children(id));
+    }
+    out
+}
+
+fn compare_store_taffy_vs_yoga(
     label: &str,
     viewport: Viewport,
-    command_bytes: &[u8],
+    store: &NodeStore,
+    changes: &ChangeSet,
     node_ids: &[NodeId],
     custom_measurer: Option<Arc<dyn TextMeasurer>>,
 ) {
@@ -47,19 +62,19 @@ fn compare_frame_taffy_vs_yoga(
     taffy_backend.set_viewport(1, viewport);
     yoga_backend.set_viewport(1, viewport);
 
-    taffy_backend.submit_frame(command_bytes).unwrap();
-    yoga_backend.submit_frame(command_bytes).unwrap();
+    taffy_backend.commit(store, changes).unwrap();
+    yoga_backend.commit(store, changes).unwrap();
 
     assert_eq!(taffy_backend.name(), "headless-taffy");
     assert_eq!(yoga_backend.name(), "headless-yoga");
 
     for &id in node_ids {
         let tr = taffy_backend
-            .layout_of(id)
-            .unwrap_or_else(|| panic!("[{label}] missing taffy rect for node #{id}"));
+            .layout_of(id.raw())
+            .unwrap_or_else(|| panic!("[{label}] missing taffy rect for node #{}", id.raw()));
         let yr = yoga_backend
-            .layout_of(id)
-            .unwrap_or_else(|| panic!("[{label}] missing yoga rect for node #{id}"));
+            .layout_of(id.raw())
+            .unwrap_or_else(|| panic!("[{label}] missing yoga rect for node #{}", id.raw()));
         assert_rect_parity(label, id, tr, yr);
     }
 }
@@ -77,111 +92,77 @@ fn parity_column_row_padding_margin_gap_flex_grow() {
         scale_factor: 2.0,
     };
 
-    let mut b = CommandBufferBuilder::new(1, 1);
-    // Root column container with padding and gap
-    b.create_node(2, ComponentKind::View, None);
-    b.set_layout(
-        2,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            height: Dimension::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            padding: EdgeInsets {
-                top: 20.0,
-                right: 16.0,
-                bottom: 24.0,
-                left: 16.0,
-            },
-            gap: 12.0,
-            ..Default::default()
-        },
-    );
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (n2, n3, n4, n5, n6, n7, n8);
+    {
+        let mut tx = store.tx();
+        n2 = tx.create();
+        tx.edit::<Layout>(n2)
+            .width(Length::percent(100.0))
+            .height(Length::percent(100.0))
+            .flex_direction(FlexDirection::Column)
+            .padding_top(Length::points(20.0))
+            .padding_right(Length::points(16.0))
+            .padding_bottom(Length::points(24.0))
+            .padding_left(Length::points(16.0))
+            .row_gap(Length::points(12.0))
+            .column_gap(Length::points(12.0));
 
-    // Header row with flex_grow children (1:2 ratio) + margin
-    b.create_node(3, ComponentKind::View, None);
-    b.set_layout(
-        3,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            height: Dimension::Points(64.0),
-            flex_direction: FlexDirection::Row,
-            gap: 8.0,
-            ..Default::default()
-        },
-    );
+        n3 = tx.create();
+        tx.edit::<Layout>(n3)
+            .width(Length::percent(100.0))
+            .height(Length::points(64.0))
+            .flex_direction(FlexDirection::Row)
+            .row_gap(Length::points(8.0))
+            .column_gap(Length::points(8.0));
 
-    b.create_node(4, ComponentKind::View, None);
-    b.set_layout(
-        4,
-        &LayoutProps {
-            height: Dimension::Points(48.0),
-            flex_grow: 1.0,
-            margin: EdgeInsets {
-                top: 4.0,
-                left: 6.0,
-                right: 0.0,
-                bottom: 0.0,
-            },
-            ..Default::default()
-        },
-    );
+        n4 = tx.create();
+        tx.edit::<Layout>(n4)
+            .height(Length::points(48.0))
+            .flex_grow(1.0)
+            .margin_top(Length::points(4.0))
+            .margin_left(Length::points(6.0));
 
-    b.create_node(5, ComponentKind::View, None);
-    b.set_layout(
-        5,
-        &LayoutProps {
-            height: Dimension::Points(48.0),
-            flex_grow: 2.0,
-            ..Default::default()
-        },
-    );
+        n5 = tx.create();
+        tx.edit::<Layout>(n5)
+            .height(Length::points(48.0))
+            .flex_grow(2.0);
 
-    // Flexible body filling remaining column height
-    b.create_node(6, ComponentKind::View, None);
-    b.set_layout(
-        6,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            flex_grow: 1.0,
-            padding: EdgeInsets::all(10.0),
-            justify_content: FlexJustify::Center,
-            align_items: FlexAlign::Center,
-            ..Default::default()
-        },
-    );
+        n6 = tx.create();
+        tx.edit::<Layout>(n6)
+            .width(Length::percent(100.0))
+            .flex_grow(1.0)
+            .padding_top(Length::points(10.0))
+            .padding_right(Length::points(10.0))
+            .padding_bottom(Length::points(10.0))
+            .padding_left(Length::points(10.0))
+            .justify_content(JustifyContent::Center)
+            .align_items(AlignItems::Center);
 
-    b.create_node(7, ComponentKind::Pressable, None);
-    b.set_layout(
-        7,
-        &LayoutProps {
-            width: Dimension::Points(140.0),
-            height: Dimension::Points(44.0),
-            ..Default::default()
-        },
-    );
+        n7 = tx.create();
+        tx.edit::<Layout>(n7)
+            .width(Length::points(140.0))
+            .height(Length::points(44.0));
 
-    // Footer with fixed height
-    b.create_node(8, ComponentKind::View, None);
-    b.set_layout(
-        8,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            height: Dimension::Points(56.0),
-            ..Default::default()
-        },
-    );
+        n8 = tx.create();
+        tx.edit::<Layout>(n8)
+            .width(Length::percent(100.0))
+            .height(Length::points(56.0));
 
-    b.set_children(3, &[4, 5]);
-    b.set_children(6, &[7]);
-    b.set_children(2, &[3, 6, 8]);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
+        tx.set_children(n3, &[n4, n5]);
+        tx.set_children(n6, &[n7]);
+        tx.set_children(n2, &[n3, n6, n8]);
+        tx.set_children(NodeId::ROOT, &[n2]);
+        tx.commit_into(&mut changes);
+    }
 
-    compare_frame_taffy_vs_yoga(
+    compare_store_taffy_vs_yoga(
         "column_row_padding_margin_gap_flex_grow",
         viewport,
-        b.finish(),
-        &[ROOT_NODE_ID, 2, 3, 4, 5, 6, 7, 8],
+        &store,
+        &changes,
+        &[NodeId::ROOT, n2, n3, n4, n5, n6, n7, n8],
         None,
     );
 }
@@ -199,77 +180,75 @@ fn parity_justify_and_align_variants() {
     };
 
     let justifies = [
-        FlexJustify::FlexStart,
-        FlexJustify::Center,
-        FlexJustify::FlexEnd,
-        FlexJustify::SpaceBetween,
-        FlexJustify::SpaceAround,
-        FlexJustify::SpaceEvenly,
+        JustifyContent::FlexStart,
+        JustifyContent::Center,
+        JustifyContent::FlexEnd,
+        JustifyContent::SpaceBetween,
+        JustifyContent::SpaceAround,
+        JustifyContent::SpaceEvenly,
     ];
     let aligns = [
-        FlexAlign::FlexStart,
-        FlexAlign::Center,
-        FlexAlign::FlexEnd,
-        FlexAlign::Stretch,
+        AlignItems::FlexStart,
+        AlignItems::Center,
+        AlignItems::FlexEnd,
+        AlignItems::Stretch,
     ];
 
     for justify in justifies {
         for align in aligns {
-            let mut b = CommandBufferBuilder::new(1, 1);
-            b.create_node(2, ComponentKind::View, None);
-            b.set_layout(
-                2,
-                &LayoutProps {
-                    width: Dimension::Points(320.0),
-                    height: Dimension::Points(180.0),
-                    flex_direction: FlexDirection::Row,
-                    justify_content: justify,
-                    align_items: align,
-                    padding: EdgeInsets::symmetric(10.0, 12.0),
-                    ..Default::default()
-                },
-            );
+            let mut store = NodeStore::new();
+            let mut changes = ChangeSet::default();
+            let mut ids = Vec::with_capacity(5);
+            ids.push(NodeId::ROOT);
+            {
+                let mut tx = store.tx();
+                let container = tx.create();
+                tx.edit::<Layout>(container)
+                    .width(Length::points(320.0))
+                    .height(Length::points(180.0))
+                    .flex_direction(FlexDirection::Row)
+                    .justify_content(justify)
+                    .align_items(align)
+                    .padding_top(Length::points(10.0))
+                    .padding_bottom(Length::points(10.0))
+                    .padding_left(Length::points(12.0))
+                    .padding_right(Length::points(12.0));
+                ids.push(container);
 
-            for i in 0..3u32 {
-                let id = 10 + i;
-                b.create_node(id, ComponentKind::View, None);
-                b.set_layout(
-                    id,
-                    &LayoutProps {
-                        width: Dimension::Points(50.0 + (i as f32) * 10.0),
-                        height: if align == FlexAlign::Stretch {
-                            Dimension::Auto
+                let mut kids = Vec::with_capacity(3);
+                for i in 0..3u32 {
+                    let kid = tx.create();
+                    tx.edit::<Layout>(kid)
+                        .width(Length::points(50.0 + (i as f32) * 10.0))
+                        .height(if align == AlignItems::Stretch {
+                            Length::AUTO
                         } else {
-                            Dimension::Points(30.0 + (i as f32) * 10.0)
-                        },
-                        ..Default::default()
-                    },
-                );
+                            Length::points(30.0 + (i as f32) * 10.0)
+                        });
+                    kids.push(kid);
+                    ids.push(kid);
+                }
+                tx.set_children(container, &kids);
+                tx.set_children(NodeId::ROOT, &[container]);
+                tx.commit_into(&mut changes);
             }
-            b.set_children(2, &[10, 11, 12]);
-            b.set_children(ROOT_NODE_ID, &[2]);
-            b.commit(true);
 
             let label = format!("justify={justify:?}_align={align:?}");
-            compare_frame_taffy_vs_yoga(
-                &label,
-                viewport,
-                b.finish(),
-                &[ROOT_NODE_ID, 2, 10, 11, 12],
-                None,
-            );
+            compare_store_taffy_vs_yoga(&label, viewport, &store, &changes, &ids, None);
         }
     }
 }
 
 #[test]
-fn parity_examples_kitchen_sink_command_buffer_and_live_swap() {
+fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     if !YogaLayoutEngine::is_available() {
         return;
     }
 
     let mut surface = nve_example_kitchen_sink::create_surface(1);
-    let (_, _, cmd_bytes) = surface.render_frame(1);
+    surface.reconcile(1);
+    let store = surface.store();
+    let changes = surface.last_changes();
 
     let viewport = Viewport {
         width: 393.0,
@@ -279,14 +258,14 @@ fn parity_examples_kitchen_sink_command_buffer_and_live_swap() {
 
     let mut taffy_backend = HeadlessBackend::new();
     taffy_backend.set_viewport(1, viewport);
-    taffy_backend.submit_frame(&cmd_bytes).unwrap();
+    taffy_backend.commit(store, changes).unwrap();
 
     let mut yoga_backend =
         HeadlessBackend::with_layout(YogaLayoutEngine::new().expect("real RN Yoga available"));
     yoga_backend.set_viewport(1, viewport);
-    yoga_backend.submit_frame(&cmd_bytes).unwrap();
+    yoga_backend.commit(store, changes).unwrap();
 
-    let mut node_ids: Vec<NodeId> = taffy_backend.nodes().keys().copied().collect();
+    let mut node_ids = live_node_ids(store);
     node_ids.sort_unstable();
     assert!(
         node_ids.len() >= 20,
@@ -295,37 +274,43 @@ fn parity_examples_kitchen_sink_command_buffer_and_live_swap() {
     );
 
     for &id in &node_ids {
-        let tr = taffy_backend.layout_of(id).unwrap();
-        let yr = yoga_backend.layout_of(id).unwrap();
+        let tr = taffy_backend.layout_of(id.raw()).unwrap();
+        let yr = yoga_backend.layout_of(id.raw()).unwrap();
         assert_rect_parity("examples/kitchen-sink", id, tr, yr);
     }
 
-    // Live swap Taffy -> Yoga -> Box<dyn LayoutEngine> -> Taffy and verify all rects stay in parity!
-    let swapped_to_yoga: HeadlessBackend<YogaLayoutEngine> =
+    let mut full_changes = ChangeSet::default();
+    full_changes.created = node_ids.clone();
+
+    // Live swap Taffy -> Yoga -> Box<dyn StoreLayoutEngine> -> Taffy and verify all rects stay in parity!
+    let mut swapped_to_yoga: HeadlessBackend<YogaLayoutEngine> =
         taffy_backend.swap_layout_engine(YogaLayoutEngine::new().unwrap());
+    swapped_to_yoga.commit(store, &full_changes).unwrap();
     assert_eq!(swapped_to_yoga.layout_engine().name(), "yoga");
     for &id in &node_ids {
-        let sr = swapped_to_yoga.layout_of(id).unwrap();
-        let yr = yoga_backend.layout_of(id).unwrap();
-        assert_rect_parity("counter_after_swap_to_yoga", id, sr, yr);
+        let sr = swapped_to_yoga.layout_of(id.raw()).unwrap();
+        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        assert_rect_parity("kitchen_sink_after_swap_to_yoga", id, sr, yr);
     }
 
     let boxed_yoga: DynLayoutEngine = Box::new(YogaLayoutEngine::new().unwrap());
-    let swapped_to_dyn: HeadlessBackend<DynLayoutEngine> =
+    let mut swapped_to_dyn: HeadlessBackend<DynLayoutEngine> =
         swapped_to_yoga.swap_layout_engine(boxed_yoga);
+    swapped_to_dyn.commit(store, &full_changes).unwrap();
     assert_eq!(swapped_to_dyn.layout_engine().name(), "yoga");
     for &id in &node_ids {
-        let dr = swapped_to_dyn.layout_of(id).unwrap();
-        let yr = yoga_backend.layout_of(id).unwrap();
-        assert_rect_parity("counter_after_swap_to_dyn_yoga", id, dr, yr);
+        let dr = swapped_to_dyn.layout_of(id.raw()).unwrap();
+        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        assert_rect_parity("kitchen_sink_after_swap_to_dyn_yoga", id, dr, yr);
     }
 
-    let swapped_back_taffy: HeadlessBackend<TaffyLayoutEngine> =
-        swapped_to_dyn.swap_layout_engine(TaffyLayoutEngine::new());
+    let mut swapped_back_taffy: HeadlessBackend<TaffyStoreLayout> =
+        swapped_to_dyn.swap_layout_engine(TaffyStoreLayout::new());
+    swapped_back_taffy.commit(store, &full_changes).unwrap();
     for &id in &node_ids {
-        let tr = swapped_back_taffy.layout_of(id).unwrap();
-        let yr = yoga_backend.layout_of(id).unwrap();
-        assert_rect_parity("counter_after_swap_back_to_taffy", id, tr, yr);
+        let tr = swapped_back_taffy.layout_of(id.raw()).unwrap();
+        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        assert_rect_parity("kitchen_sink_after_swap_back_to_taffy", id, tr, yr);
     }
 }
 
@@ -341,7 +326,6 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
         scale_factor: 1.0,
     };
 
-    // Deterministic word-wrapping custom TextMeasurer: 10px per char, 20px per line.
     let measurer: Arc<dyn TextMeasurer> =
         Arc::new(|text: &str, font_size: f32, max_width: Option<f32>| {
             if text.is_empty() {
@@ -360,56 +344,46 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
             }
         });
 
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.set_layout(
-        2,
-        &LayoutProps {
-            width: Dimension::Points(120.0),
-            flex_direction: FlexDirection::Column,
-            padding: EdgeInsets::all(10.0), // content width = 100.0
-            gap: 8.0,
-            ..Default::default()
-        },
-    );
+    let mut store = NodeStore::new();
+    let mut changes1 = ChangeSet::default();
+    let (n2, n3, n4);
+    {
+        let mut tx = store.tx();
+        n2 = tx.create();
+        tx.edit::<Layout>(n2)
+            .width(Length::points(120.0))
+            .flex_direction(FlexDirection::Column)
+            .padding_top(Length::points(10.0))
+            .padding_right(Length::points(10.0))
+            .padding_bottom(Length::points(10.0))
+            .padding_left(Length::points(10.0))
+            .row_gap(Length::points(8.0))
+            .column_gap(Length::points(8.0));
 
-    // 25 chars * (20 * 0.5 = 10px) = 250px -> wraps in 100px content box to 3 lines * 25px = 75px!
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_style(
-        3,
-        &StyleProps {
-            font_size: 20.0,
-            ..Default::default()
-        },
-    );
-    b.set_text(3, "1234567890123456789012345");
+        n3 = tx.create();
+        tx.edit::<Typography>(n3).font_size(20.0);
+        tx.edit::<TextContent>(n3).text("1234567890123456789012345");
 
-    // Sibling below text verifies wrapped height pushes sibling down identically!
-    b.create_node(4, ComponentKind::Pressable, None);
-    b.set_layout(
-        4,
-        &LayoutProps {
-            width: Dimension::Points(80.0),
-            height: Dimension::Points(32.0),
-            ..Default::default()
-        },
-    );
-    b.set_event_mask(4, EventMask::PRESS);
+        n4 = tx.create();
+        tx.edit::<Layout>(n4)
+            .width(Length::points(80.0))
+            .height(Length::points(32.0));
+        tx.edit::<Interaction>(n4).event_mask(EventMask::PRESS as u32);
 
-    b.set_children(2, &[3, 4]);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    let frame1 = b.into_bytes();
+        tx.set_children(n2, &[n3, n4]);
+        tx.set_children(NodeId::ROOT, &[n2]);
+        tx.commit_into(&mut changes1);
+    }
 
-    compare_frame_taffy_vs_yoga(
+    compare_store_taffy_vs_yoga(
         "custom_text_wrapping_frame1",
         viewport,
-        &frame1,
-        &[ROOT_NODE_ID, 2, 3, 4],
+        &store,
+        &changes1,
+        &[NodeId::ROOT, n2, n3, n4],
         Some(Arc::clone(&measurer)),
     );
 
-    // Verify the exact wrapped dimensions on both engines and dynamic update on frame 2.
     let mut taffy = HeadlessBackend::new();
     let mut yoga = HeadlessBackend::with_layout(YogaLayoutEngine::new().unwrap());
     taffy.set_text_measurer(Arc::clone(&measurer));
@@ -417,36 +391,37 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
     taffy.set_viewport(1, viewport);
     yoga.set_viewport(1, viewport);
 
-    taffy.submit_frame(&frame1).unwrap();
-    yoga.submit_frame(&frame1).unwrap();
+    taffy.commit(&store, &changes1).unwrap();
+    yoga.commit(&store, &changes1).unwrap();
 
-    let y_text_1 = yoga.layout_of(3).unwrap();
+    let y_text_1 = yoga.layout_of(n3.raw()).unwrap();
     assert!((y_text_1.width - 100.0).abs() <= 1.0, "got {y_text_1:?}");
     assert!((y_text_1.height - 75.0).abs() <= 1.0, "got {y_text_1:?}");
-    let y_sib_1 = yoga.layout_of(4).unwrap();
-    // 10 (pad_top) + 75 (wrapped text) + 8 (gap) = 93
+    let y_sib_1 = yoga.layout_of(n4.raw()).unwrap();
     assert!((y_sib_1.y - 93.0).abs() <= 1.0, "got {y_sib_1:?}");
 
-    // Frame 2: shorten text to 5 chars -> 50px -> 1 line = 25px, sibling moves up to y = 10 + 25 + 8 = 43!
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_text(3, "Short");
-    b2.commit(true);
-    let frame2 = b2.into_bytes();
+    // Frame 2: shorten text to 5 chars -> 50px -> 1 line = 25px, sibling moves up to y = 43!
+    let mut changes2 = ChangeSet::default();
+    {
+        let mut tx = store.tx();
+        tx.edit::<TextContent>(n3).text("Short");
+        tx.commit_into(&mut changes2);
+    }
 
-    taffy.submit_frame(&frame2).unwrap();
-    yoga.submit_frame(&frame2).unwrap();
+    taffy.commit(&store, &changes2).unwrap();
+    yoga.commit(&store, &changes2).unwrap();
 
-    for id in [ROOT_NODE_ID, 2, 3, 4] {
+    for id in [NodeId::ROOT, n2, n3, n4] {
         assert_rect_parity(
             "custom_text_wrapping_frame2",
             id,
-            taffy.layout_of(id).unwrap(),
-            yoga.layout_of(id).unwrap(),
+            taffy.layout_of(id.raw()).unwrap(),
+            yoga.layout_of(id.raw()).unwrap(),
         );
     }
-    let y_text_2 = yoga.layout_of(3).unwrap();
+    let y_text_2 = yoga.layout_of(n3.raw()).unwrap();
     assert!((y_text_2.height - 25.0).abs() <= 1.0, "got {y_text_2:?}");
-    let y_sib_2 = yoga.layout_of(4).unwrap();
+    let y_sib_2 = yoga.layout_of(n4.raw()).unwrap();
     assert!((y_sib_2.y - 43.0).abs() <= 1.0, "got {y_sib_2:?}");
 }
 
@@ -463,62 +438,75 @@ fn yoga_handles_reparenting_removal_and_reset_cleanly() {
         scale_factor: 1.0,
     };
 
-    engine.upsert_node(ROOT_NODE_ID, ComponentKind::Root);
-    engine.upsert_node(2, ComponentKind::View);
-    engine.upsert_node(3, ComponentKind::View);
-    engine.upsert_node(4, ComponentKind::View);
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let (n2, n3, n4);
+    {
+        let mut tx = store.tx();
+        n2 = tx.create();
+        tx.edit::<Layout>(n2)
+            .width(Length::points(100.0))
+            .height(Length::points(100.0))
+            .padding_top(Length::points(10.0))
+            .padding_right(Length::points(10.0))
+            .padding_bottom(Length::points(10.0))
+            .padding_left(Length::points(10.0));
+        n3 = tx.create();
+        tx.edit::<Layout>(n3)
+            .width(Length::points(100.0))
+            .height(Length::points(100.0))
+            .padding_top(Length::points(20.0))
+            .padding_right(Length::points(20.0))
+            .padding_bottom(Length::points(20.0))
+            .padding_left(Length::points(20.0));
+        n4 = tx.create();
+        tx.edit::<Layout>(n4)
+            .width(Length::points(30.0))
+            .height(Length::points(30.0));
+        tx.set_children(n2, &[n4]);
+        tx.set_children(NodeId::ROOT, &[n2, n3]);
+        tx.commit_into(&mut changes);
+    }
 
-    engine.set_layout(
-        2,
-        &LayoutProps {
-            width: Dimension::Points(100.0),
-            height: Dimension::Points(100.0),
-            padding: EdgeInsets::all(10.0),
-            ..Default::default()
-        },
-    );
-    engine.set_layout(
-        3,
-        &LayoutProps {
-            width: Dimension::Points(100.0),
-            height: Dimension::Points(100.0),
-            padding: EdgeInsets::all(20.0),
-            ..Default::default()
-        },
-    );
-    engine.set_layout(
-        4,
-        &LayoutProps {
-            width: Dimension::Points(30.0),
-            height: Dimension::Points(30.0),
-            ..Default::default()
-        },
-    );
+    engine.sync_changes(&store, &changes);
+    engine.compute_layout(&store, NodeId::ROOT, viewport);
+    assert_eq!(engine.layout_of(n4).unwrap().x, 10.0);
+    assert_eq!(engine.layout_of(n4).unwrap().y, 10.0);
 
-    engine.set_children(2, &[4]);
-    engine.set_children(ROOT_NODE_ID, &[2, 3]);
-    engine.compute_layout(ROOT_NODE_ID, viewport);
-    assert_eq!(engine.layout_of(4).unwrap().x, 10.0);
-    assert_eq!(engine.layout_of(4).unwrap().y, 10.0);
-
-    // Reparent node 4 from node 2 -> node 3 without removing it from 2 first.
-    engine.set_children(3, &[4]);
-    engine.set_children(2, &[]);
-    engine.compute_layout(ROOT_NODE_ID, viewport);
-    let r4 = engine.layout_of(4).unwrap();
+    // Reparent node 4 from node 2 -> node 3.
+    {
+        let mut tx = store.tx();
+        tx.set_children(n2, &[]);
+        tx.set_children(n3, &[n4]);
+        tx.commit_into(&mut changes);
+    }
+    engine.sync_changes(&store, &changes);
+    engine.compute_layout(&store, NodeId::ROOT, viewport);
+    let r4 = engine.layout_of(n4).unwrap();
     assert_eq!(r4.x, 20.0);
-    assert_eq!(r4.y, 120.0); // node 3 starts at y=100, padding top=20
+    assert_eq!(r4.y, 120.0);
 
     // Remove node 4 and verify layout_of returns None.
-    engine.remove_node(4);
-    engine.set_children(3, &[]);
-    engine.compute_layout(ROOT_NODE_ID, viewport);
-    assert!(engine.layout_of(4).is_none());
+    {
+        let mut tx = store.tx();
+        tx.remove(n4);
+        tx.commit_into(&mut changes);
+    }
+    engine.sync_changes(&store, &changes);
+    engine.compute_layout(&store, NodeId::ROOT, viewport);
+    assert!(engine.layout_of(n4).is_none());
 
     // Reset clears everything cleanly and allows rebuilding.
     engine.reset();
-    assert!(engine.layout_of(ROOT_NODE_ID).is_none());
-    engine.upsert_node(ROOT_NODE_ID, ComponentKind::Root);
-    engine.compute_layout(ROOT_NODE_ID, viewport);
-    assert_eq!(engine.layout_of(ROOT_NODE_ID).unwrap().width, 300.0);
+    assert!(engine.layout_of(NodeId::ROOT).is_none());
+    let mut fresh = NodeStore::new();
+    let mut c_fresh = ChangeSet::default();
+    {
+        let tx = fresh.tx();
+        tx.commit_into(&mut c_fresh);
+    }
+    c_fresh.created.push(NodeId::ROOT);
+    engine.sync_changes(&fresh, &c_fresh);
+    engine.compute_layout(&fresh, NodeId::ROOT, viewport);
+    assert_eq!(engine.layout_of(NodeId::ROOT).unwrap().width, 300.0);
 }

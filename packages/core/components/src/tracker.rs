@@ -2,11 +2,12 @@
 //! (`HeadlessBackend`, `SkiaBackend`).
 
 use nve_abi::hash::HashSet;
-use nve_abi::{NodeId, StyleProps};
+use nve_abi::NodeId;
 
 use crate::interaction::{
     resolve_cursor, resolve_style, CursorKind, FocusModality, InteractionState, StateStyleRule,
 };
+use crate::style_patch::VisualSnapshot;
 
 /// Reusable O(1) stateful interaction tracker for native backends (`HeadlessBackend`, `SkiaBackend`).
 ///
@@ -290,14 +291,14 @@ impl InteractionTracker {
         self.disabled.clear();
     }
 
-    /// Resolves effective [`StyleProps`] for `id` in its current tracked state.
+    /// Resolves effective [`VisualSnapshot`] for `id` in its current tracked state.
     #[inline]
     pub fn resolve_style(
         &self,
         id: NodeId,
-        base: &StyleProps,
+        base: &VisualSnapshot,
         rules: &[StateStyleRule],
-    ) -> StyleProps {
+    ) -> VisualSnapshot {
         resolve_style(base, rules, self.state(id))
     }
 

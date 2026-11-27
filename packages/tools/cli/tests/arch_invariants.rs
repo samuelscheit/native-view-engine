@@ -37,8 +37,8 @@ mod arch_inv {
     pub mod unit_tests;
 }
 
-/// Flip to `true` when the `NodeStore` / `NVE2` / `nve-hash` branch lands on `main`.
-pub const ENFORCE_POST_NODESTORE: bool = false;
+/// Enforced unconditionally now that `NodeStore` / `NVE2` / `nve-hash` have landed.
+pub const ENFORCE_POST_NODESTORE: bool = true;
 
 /// Flip to `true` when Track 1B-1d (`NveEvent`, macro upgrades, core/motion purity) lands.
 pub const ENFORCE_POST_1B1D: bool = false;
@@ -48,7 +48,6 @@ pub const ENFORCE_POST_1B1E: bool = false;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    PostNodeStore,
     Post1B1D,
     Post1B1E,
 }
@@ -56,7 +55,6 @@ pub enum Stage {
 impl Stage {
     pub fn label(self) -> &'static str {
         match self {
-            Self::PostNodeStore => "post-NodeStore (ENFORCE_POST_NODESTORE)",
             Self::Post1B1D => "post-1B-1d (ENFORCE_POST_1B1D)",
             Self::Post1B1E => "post-1B-1e (ENFORCE_POST_1B1E)",
         }
@@ -64,7 +62,6 @@ impl Stage {
 
     pub fn is_enforced(self) -> bool {
         let compiled = match self {
-            Self::PostNodeStore => ENFORCE_POST_NODESTORE,
             Self::Post1B1D => ENFORCE_POST_1B1D,
             Self::Post1B1E => ENFORCE_POST_1B1E,
         };
@@ -79,7 +76,6 @@ impl Stage {
             return true;
         }
         let needle = match self {
-            Self::PostNodeStore => "nodestore",
             Self::Post1B1D => "1b1d",
             Self::Post1B1E => "1b1e",
         };

@@ -229,10 +229,10 @@ fn import_rn_handles_ts_edge_cases_comments_keywords_unions_and_negative_default
     );
     assert_eq!(metrics_ev.payload.len(), 2);
 
-    // Rust keywords escaped properly (`r#type`) & RawPropValue encoding present
+    // Rust keywords escaped properly (`r#type`) & NveValue binary encoding present
     assert!(out.rust_module.content.contains("pub r#type:"));
-    assert!(out.rust_module.content.contains("RawPropValue::I64"));
-    assert!(out.rust_module.content.contains("RawPropValue::F64"));
+    assert!(out.rust_module.content.contains("NveValue::i64"));
+    assert!(out.rust_module.content.contains("NveValue::f64"));
     assert!(out.rust_module.content.contains("pub fn decode_event"));
     assert_balanced_delimiters(&out.rust_module.relative_path, &out.rust_module.content);
 
@@ -251,6 +251,36 @@ fn import_rn_handles_ts_edge_cases_comments_keywords_unions_and_negative_default
         .contains("nve::fabric_host_enqueue_custom_event"));
     assert!(out.cpp_adapter.content.contains("default_"));
     assert_balanced_delimiters(&out.cpp_adapter.relative_path, &out.cpp_adapter.content);
+}
+
+#[test]
+fn import_rn_array_of_objects_preencodes_buffers_and_propagates_decode_error() {
+    let ts_spec = r#"
+    import type { ViewProps } from 'react-native';
+    import type { Float } from 'react-native/Libraries/Types/CodegenTypes';
+    import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNativeComponent';
+
+    export interface NativeProps extends ViewProps {
+      points: ReadonlyArray<{ label: string; score: Float }>;
+      optPoints?: ReadonlyArray<{ label: string; score: Float }>;
+    }
+
+    export default codegenNativeComponent<NativeProps>('NveSeries');
+    "#;
+
+    let out = import_rn_source(ts_spec).expect("import NveSeries");
+    let rs = &out.rust_module.content;
+    assert!(rs.contains("pub fn encode_props(&self) -> Result<Vec<u8>, DecodeError>"));
+    assert!(rs.contains("pub fn to_bin_bytes(&self) -> Result<Vec<u8>, DecodeError>"));
+    assert!(
+        rs.contains("let encoded_items: Vec<Vec<u8>> ="),
+        "Array<Object> must pre-encode element buffers before building Vec<NveValue>: {rs}"
+    );
+    assert!(
+        !rs.contains("encode_bin_value_to_vec(unsafe { NveValueRef::from_raw(&map_val) }).unwrap_or_default()"),
+        "import_rn must propagate DecodeError instead of swallowing via unwrap_or_default"
+    );
+    assert_balanced_delimiters(&out.rust_module.relative_path, rs);
 }
 
 #[test]

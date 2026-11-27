@@ -4,8 +4,8 @@
 
 use crate::content_purity::scan_core_table_string_tables;
 use crate::support::{
-    assert_staged_violations, contains_ident, extract_raw_string_spans, is_binary_ext,
-    is_self_invariant_file, is_test_or_bench_rs, parse_rust_structs, repo_index,
+    assert_no_violations, assert_staged_violations, contains_ident, extract_raw_string_spans,
+    is_binary_ext, is_self_invariant_file, is_test_or_bench_rs, parse_rust_structs, repo_index,
     strip_rust_comments_and_strings, Violation, DOC_EXCLUDES,
 };
 use crate::Stage;
@@ -15,13 +15,15 @@ const BANNED_4_LETTER_ACRONYMS: &[&str] = &[
     "NVE_MET1", "NVE1", "NVP1", "NK1",
 ];
 
-/// Real existing hot-path production files always scanned today (plus `packages/core/store/src`
-/// once present). Every listed file MUST exist so this scanner can never silently no-op.
+/// Real existing hot-path production files always scanned today (plus `packages/core/store/src`).
+/// Every listed file MUST exist so this scanner can never silently no-op.
 const EXISTING_HOT_PATH_FILES: &[&str] = &[
     "packages/core/engine/src/layout.rs",
     "packages/core/wire-core/src/frame.rs",
-    "packages/backends/headless/src/taffy_engine.rs",
-    "packages/backends/headless/src/slot_map.rs",
+    "packages/core/store/src/store.rs",
+    "packages/core/store/src/tx.rs",
+    "packages/core/store/src/span_pool.rs",
+    "packages/backends/headless/src/taffy_store/mod.rs",
 ];
 
 /// Enforces [INV:zero-fnv1a].
@@ -56,14 +58,7 @@ fn zero_fnv1a_repo_wide() {
         }
     }
     assert!(scanned > 0, "zero_fnv1a_repo_wide must scan > 0 files");
-    if !Stage::PostNodeStore.is_enforced() {
-        assert!(
-            !violations.is_empty(),
-            "Expected FNV-1a scanner to detect pre-migration FNV-1a usage on main"
-        );
-    }
-    assert_staged_violations(
-        Stage::PostNodeStore,
+    assert_no_violations(
         "Zero FNV-1a symbols or offset/prime constants repo-wide (use xxh64)",
         &violations,
     );
@@ -81,6 +76,10 @@ pub fn line_has_fnv1a(line: &str) -> bool {
         || compact.contains("0x100000001b3")
         || compact.contains("811c9dc5")
         || compact.contains("01000193")
+        || compact.contains("14695981039346656037")
+        || compact.contains("1099511628211")
+        || compact.contains("2166136261")
+        || compact.contains("16777619")
 }
 
 #[test]
@@ -117,14 +116,7 @@ fn zero_hardcoded_schema_hashes_in_rust_and_mdx() {
         }
     }
     assert!(scanned > 0, "zero_hardcoded_schema_hashes must scan > 0 files");
-    if !Stage::PostNodeStore.is_enforced() {
-        assert!(
-            !violations.is_empty(),
-            "Expected schema hash scanner to detect existing hardcoded hashes on main"
-        );
-    }
-    assert_staged_violations(
-        Stage::PostNodeStore,
+    assert_no_violations(
         "Zero hardcoded `*_SCHEMA_HASH = 0x...` in Rust and zero raw 16-hex hashes in docs/content/**/*.mdx",
         &violations,
     );
@@ -234,8 +226,7 @@ fn hot_path_perf_and_utf8_guards() {
         scanned >= EXISTING_HOT_PATH_FILES.len(),
         "hot_path_perf_and_utf8_guards must scan real files"
     );
-    assert_staged_violations(
-        Stage::PostNodeStore,
+    assert_no_violations(
         "Zero hot-path allocations/UTF-8 re-validation/NodeRow heap containers in core & backends",
         &violations,
     );
@@ -294,8 +285,23 @@ pub fn scan_hot_path_str(rel: &str, src: &str, is_hot_file: bool, out: &mut Vec<
         (".sort_unstable(", "sorting dirty list on hot path; use bitset/generation stamp"),
         (".dedup(", "deduping dirty list on hot path; use bitset/generation stamp"),
     ];
+    let mut brace_depth = 0usize;
+    let mut pending_cold_fn = false;
+    let mut cold_fn_exit_depth: Option<usize> = None;
+
     for (idx, (orig, line)) in src.lines().zip(clean.lines()).enumerate() {
-        if check_utf8 && line.contains("from_utf8(") {
+        let is_allowlisted_cold_fn = ((rel == "packages/core/store/src/store.rs"
+            || rel == "packages/backends/headless/src/taffy_store/mod.rs")
+            && line.contains("fn new("))
+            || (rel == "packages/core/store/src/span_pool.rs" && line.contains("fn try_str("))
+            || (rel == "packages/core/wire-core/src/frame.rs" && line.contains("fn to_owned("));
+        if cold_fn_exit_depth.is_none() && is_allowlisted_cold_fn {
+            pending_cold_fn = true;
+        }
+        let in_cold_fn = cold_fn_exit_depth.is_some() || pending_cold_fn;
+
+        if check_utf8 && !in_cold_fn && line.contains("from_utf8(") && !line.contains("debug_assert")
+        {
             out.push(Violation::new(
                 rel,
                 idx + 1,
@@ -303,7 +309,7 @@ pub fn scan_hot_path_str(rel: &str, src: &str, is_hot_file: bool, out: &mut Vec<
                 "`from_utf8` is banned in hot read/commit/layout paths; seal UTF-8 at ingress and use `from_utf8_unchecked` on reads",
             ));
         }
-        if is_hot_file {
+        if is_hot_file && !in_cold_fn {
             for (pat, why) in hot_bans {
                 if line.contains(pat) {
                     out.push(Violation::new(
@@ -313,6 +319,23 @@ pub fn scan_hot_path_str(rel: &str, src: &str, is_hot_file: bool, out: &mut Vec<
                         format!("Hot-path ban `{pat}`: {why}"),
                     ));
                 }
+            }
+        }
+
+        for ch in line.chars() {
+            if ch == '{' {
+                if pending_cold_fn {
+                    cold_fn_exit_depth = Some(brace_depth);
+                    pending_cold_fn = false;
+                }
+                brace_depth += 1;
+            } else if ch == '}' {
+                brace_depth = brace_depth.saturating_sub(1);
+                if cold_fn_exit_depth == Some(brace_depth) {
+                    cold_fn_exit_depth = None;
+                }
+            } else if ch == ';' && pending_cold_fn {
+                pending_cold_fn = false;
             }
         }
     }

@@ -17,7 +17,7 @@ let mut peer_b = PeerReplica::new(PeerId(2));
 peer_a.edit_title("Zero-Copy Engine");
 peer_b.vote_delta(1);
 
-// Encode binary NVC1 delta with FNV-1a64 integrity checksum & merge deterministically:
+// Encode binary NVC1 delta with XXH64 integrity checksum & merge deterministically:
 let packet_bytes = peer_a.encode_delta_packet();
 let decoded = NveCrdtDelta::decode(&packet_bytes)?;
 peer_b.apply_packet(&decoded);"#;

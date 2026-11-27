@@ -3,18 +3,17 @@ name = "nve-camera"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Optional NVE VisionCamera v5 adapter, typed CameraPreview NativeViewSpec, 40B repr(C) CameraFrameWireLayout, and Nitro bridge bindings"
+description = "Optional NVE camera preview NveTable schema, 40B repr(C) CameraFrameWireLayout, and Nitro bridge bindings"
 
 [features]
 default = ["spec"]
-spec = ["dep:nve-components"]
-interop = ["spec", "dep:nve-interop"]
+spec = []
 nitro = []
 serde = ["dep:serde"]
 
 [dependencies]
-nve-components = { workspace = true, optional = true }
-nve-interop = { path = "../../core/interop", optional = true, default-features = false, features = ["native-view"] }
+nve-abi = { workspace = true }
+nve-store = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]

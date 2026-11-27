@@ -1,7 +1,7 @@
 //! Compact binary little-endian binary codec (`NWS1` v2) for [`WorkspaceState`]
 //! with trailing XXH64 integrity checksum for Tier-2 hot-swaps and `MmapOffsetArena`.
 
-use nve_engine::xxh64;
+use nve_abi::xxh64;
 use nve_router::Routable;
 use nve_system_env::{ColorScheme, ContrastLevel, LocaleSnapshot, TextDirection, ThemeSnapshot};
 
@@ -23,7 +23,7 @@ use super::WorkspaceState;
 /// 4-byte ASCII magic identifying a binary `WorkspaceState` snapshot (`NWS1`).
 pub const WORKSPACE_STATE_BIN_MAGIC: [u8; 4] = *b"NWS1";
 
-/// Current binary schema version for `NWS1` (v2: Docs + Workbench + trailing FNV-1a64 checksum).
+/// Current binary schema version for `NWS1` (v2: Docs + Workbench + trailing XXH64 checksum).
 pub const WORKSPACE_STATE_BIN_VERSION: u16 = 2;
 
 const HEADER_LEN: usize = 4 + 2;
@@ -298,7 +298,7 @@ fn decode_snapshot(r: &mut BinReader<'_>) -> Option<WorkspaceSnapshot> {
 
 impl WorkspaceState {
     /// Encodes the full workspace state into compact binary `NWS1` v2 binary format
-    /// terminated by an 8-byte little-endian FNV-1a64 integrity checksum.
+    /// terminated by an 8-byte little-endian XXH64 integrity checksum.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = BinWriter::with_capacity(2048 + self.history.len() * 768);
         w.buf.extend_from_slice(&WORKSPACE_STATE_BIN_MAGIC);
@@ -505,7 +505,7 @@ mod tests {
     use crate::state::{ChannelKind, DocBlockKind, WorkbenchPreset};
 
     #[test]
-    fn binary_nws1_v2_roundtrip_and_fnv64_corruption_rejection() {
+    fn binary_nws1_v2_roundtrip_and_xxh64_corruption_rejection() {
         let mut state = WorkspaceState::default();
         state.set_accent(AccentTheme::Violet);
         state.set_radius(CornerRadiusMode::Pill);

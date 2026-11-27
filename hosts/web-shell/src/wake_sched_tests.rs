@@ -5,8 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Wake, Waker};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, RawPropValue};
+use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_web::WebBackend;
+use nve_components::tables::DebugId;
+use nve_store::NodeId as StoreNodeId;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::Viewport;
@@ -188,13 +190,13 @@ fn cap_hitting_burst_with_mid_pump_wakes_schedules_only_macrotask() {
             "MAX_PUMPS cap hit must schedule a macrotask continuation"
         );
     }
-    assert!(!session.backend().render_html().contains("BURST:24"));
+    assert!(!session.render_html().contains("BURST:24"));
 
     for _ in 0..8 {
         let next_tok = {
             let mut q = fw.queues.lock().unwrap();
             assert!(
-                q.microtasks.is_empty() || session.backend().render_html().contains("BURST:24"),
+                q.microtasks.is_empty() || session.render_html().contains("BURST:24"),
                 "intermediate cap-hitting ticks must yield via macrotasks, not microtasks"
             );
             q.macrotasks.pop_front().or_else(|| q.microtasks.pop_front())
@@ -204,7 +206,7 @@ fn cap_hitting_burst_with_mid_pump_wakes_schedules_only_macrotask() {
         };
         assert!(fw.run_tick(tok, &mut session));
     }
-    assert!(session.backend().render_html().contains("BURST:24"));
+    assert!(session.render_html().contains("BURST:24"));
     assert!(fw.queues.lock().unwrap().microtasks.is_empty());
     assert!(fw.queues.lock().unwrap().macrotasks.is_empty());
 }
@@ -410,14 +412,18 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
         };
 
     let find = |session: &WebAppSession, tid: &str| {
-        session
-            .backend()
-            .iter_nodes()
-            .find_map(|(id, el)| {
-                matches!(el.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid)
-                    .then_some(id)
-            })
-            .unwrap()
+        let store = session.store();
+        let mut stack = vec![StoreNodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != StoreNodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == tid
+            {
+                return id.raw();
+            }
+            stack.extend_from_slice(store.children(id));
+        }
+        panic!("missing node test_id={tid}");
     };
 
     run_direct(&mut session, &fw, true);
@@ -425,7 +431,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
 
     // 1. Task-spawning click drained synchronously -> 0 trailing microtasks despite mid-pump wake.
     let spawn_btn = find(&session, "spawn-btn");
-    session.backend().push_event(NativeEvent {
+    session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id: spawn_btn,
         timestamp_us: 1,
@@ -433,7 +439,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
         payload: EventPayload::Point { x: 1.0, y: 1.0 },
     });
     run_direct(&mut session, &fw, false);
-    assert!(session.backend().render_html().contains("CLICKS:1:ASYNC:1"));
+    assert!(session.render_html().contains("CLICKS:1:ASYNC:1"));
     assert!(fw.mid_pump_wakes.load(Ordering::Acquire) >= 1);
     assert!(
         fw.queues.lock().unwrap().microtasks.is_empty(),
@@ -444,7 +450,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     //    `on_before_poll` clears it before settling, so 0 trailing microtasks are queued!
     //    (Fails right here if `on_before_poll` is hoisted once before the loop.)
     let rw_btn = find(&session, "render-wake-btn");
-    session.backend().push_event(NativeEvent {
+    session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id: rw_btn,
         timestamp_us: 2,
@@ -452,7 +458,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
         payload: EventPayload::Point { x: 1.0, y: 1.0 },
     });
     run_direct(&mut session, &fw, false);
-    assert!(session.backend().render_html().contains("RW:0"));
+    assert!(session.render_html().contains("RW:0"));
     assert!(fw.queues.lock().unwrap().microtasks.is_empty());
 
     let wakes_before_rw = fw.mid_pump_wakes.load(Ordering::Acquire);
@@ -484,7 +490,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
         2,
         "sub-test #2 must execute iteration 0 (render) plus settling iteration 1"
     );
-    assert!(session.backend().render_html().contains("RW:1"));
+    assert!(session.render_html().contains("RW:1"));
     assert!(
         fw.mid_pump_wakes.load(Ordering::Acquire) > wakes_before_rw,
         "iteration 0 render_and_submit must fire a mid-pump wake"
@@ -497,7 +503,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     // 3. Wake fired DURING the final settling `poll_work()` (returning `false`) MUST survive and
     //    schedule exactly 1 follow-up microtask! (Fails if `on_before_poll` is moved after poll.)
     let fp_btn = find(&session, "final-poll-wake-btn");
-    session.backend().push_event(NativeEvent {
+    session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id: fp_btn,
         timestamp_us: 3,
@@ -532,7 +538,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
         tw.wake();
     }
     assert!(fw.run_tick(tok2, &mut session));
-    assert!(session.backend().render_html().contains("FINAL:true"));
+    assert!(session.render_html().contains("FINAL:true"));
     assert!(
         fw.queues.lock().unwrap().microtasks.is_empty(),
         "settling final tick must leave zero trailing microtasks"

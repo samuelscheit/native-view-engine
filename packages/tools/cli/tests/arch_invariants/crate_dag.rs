@@ -5,10 +5,9 @@ use std::collections::BTreeSet;
 
 use crate::json_meta::{DepKind, WorkspaceGraph};
 use crate::support::{
-    assert_no_violations, assert_staged_violations, contains_ident, find_files_named, rel_path,
-    repo_index, strip_rust_comments_and_strings, Violation,
+    assert_no_violations, contains_ident, find_files_named, rel_path, repo_index,
+    strip_rust_comments_and_strings, Violation,
 };
-use crate::Stage;
 
 /// Shared platform-specific crates forbidden in core crates and module root specs.
 pub const BANNED_PLATFORM_CRATES: &[&str] = &["web-sys", "js-sys", "wasm-bindgen", "skia-safe"];
@@ -408,16 +407,7 @@ fn no_core_or_backend_depends_on_modules_and_no_web_backend_auto_reg() {
     let mut violations = check_core_backend_module_deps(&idx.graph);
     violations.extend(scan_web_backend_new_auto_reg());
 
-    if !Stage::PostNodeStore.is_enforced() {
-        assert!(
-            violations
-                .iter()
-                .any(|v| v.path == "packages/backends/web/Cargo.toml"),
-            "Expected scanner to detect current `nve-camera` dep in packages/backends/web/Cargo.toml; if removed, promote this check!"
-        );
-    }
-    assert_staged_violations(
-        Stage::PostNodeStore,
+    assert_no_violations(
         "Zero core/backend dependencies on packages/modules/* and zero WebBackend::new() module special-casing",
         &violations,
     );

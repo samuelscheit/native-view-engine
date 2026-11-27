@@ -117,7 +117,7 @@ pub enum CrdtWireFrame {
 }
 
 impl CrdtWireFrame {
-    /// Encodes a compact binary `NVCD` anti-entropy vector-clock digest with trailing FNV-1a64.
+    /// Encodes a compact binary `NVCD` anti-entropy vector-clock digest with trailing XXH64.
     pub fn encode_digest(sender: PeerId, vv: &VersionVector) -> Result<Vec<u8>, CrdtWireError> {
         if vv.len() > MAX_VV_ENTRIES {
             return Err(CrdtWireError::LimitExceeded {

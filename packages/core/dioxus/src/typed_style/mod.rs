@@ -1,28 +1,25 @@
 //! Zero-string-parse typed style attribute (`TypedStyle`) passed directly through Dioxus
-//! `AttributeValue::Any` into `NveMutationWriter`.
-//!
-//! Eliminates the `StyleBuf` CSS string formatting -> `apply_typed_attr_with_raw` string
-//! reparsing round-trip on hot UI render paths while staying 100% compatible with optional
-//! inline `style: "..."` user overrides.
+//! `AttributeValue::Any` into `NveMutationWriter`, writing straight into `NodeStore` word tables.
 
+mod apply;
+mod builders;
 mod layout_ext;
 mod paint;
+
+pub use builders::{parse_flex_align, parse_flex_direction, parse_flex_justify};
 
 use std::borrow::Cow;
 use std::rc::Rc;
 
 use dioxus_core::{AttributeValue, IntoAttributeValue};
-use nve_abi::{
-    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
-    StyleProps,
-};
-use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_abi::{Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_components::interaction::{CursorKind, StateStyleRule};
 use nve_components::layout_ext::LayoutExt;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::motion::TransitionSpec;
 use nve_components::paint::BackgroundFill;
-use nve_components::style_patch::StylePatch;
 use nve_components::transform::Transform2D;
+use nve_components::{LayoutSnapshot, VisualSnapshot};
 
 /// Attribute wire name recognized by [`crate::NveMutationWriter`] for direct [`TypedStyle`] props.
 pub const NVE_TYPED_STYLE_ATTR: &str = "nve_style";
@@ -51,14 +48,13 @@ impl IntoAttributeValue for ShowOn {
 
 /// Direct binary layout + visual style payload forwarded via Dioxus `AttributeValue::Any`.
 ///
-/// Copies `LayoutProps`, `StyleProps`, optional raw style fields (`font-weight`, `text-align`,
-/// `box-shadow`, `overflow`, `object-fit`), lazy extended layout (`LayoutExt`), `Transform2D`,
-/// and optional responsive `@media` / interactive pseudo-state / transition rules straight into
-/// `NodeRecord` inside `NveMutationWriter` without formatting or parsing any CSS.
+/// Writes directly into `NodeStore` word tables (`Layout`, `Visual`, `Typography`, `Transform`,
+/// `Interaction`, `Responsive`, `Motion`, `GridLayout`, `GridItem`) without formatting or
+/// parsing any CSS strings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStyle {
-    pub layout: LayoutProps,
-    pub style: StyleProps,
+    pub layout: LayoutSnapshot,
+    pub style: VisualSnapshot,
     pub has_layout: bool,
     pub has_style: bool,
     pub font_weight: Option<Cow<'static, str>>,
@@ -84,13 +80,11 @@ impl Default for TypedStyle {
 }
 
 impl TypedStyle {
-    /// Creates an empty `TypedStyle` with default ABI `LayoutProps`/`StyleProps` and both
-    /// `has_layout` and `has_style` cleared.
     #[inline]
     pub fn new() -> Self {
         Self {
-            layout: LayoutProps::default(),
-            style: StyleProps::default(),
+            layout: LayoutSnapshot::default(),
+            style: VisualSnapshot::default(),
             has_layout: false,
             has_style: false,
             font_weight: None,
@@ -350,244 +344,6 @@ impl TypedStyle {
         self.has_layout = true;
         self
     }
-
-    // --- Visual style ---
-
-    #[inline]
-    pub fn bg(mut self, color: ColorRgba) -> Self {
-        self.style.background = color;
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn background(self, color: ColorRgba) -> Self {
-        self.bg(color)
-    }
-
-    #[inline]
-    pub fn color(mut self, color: ColorRgba) -> Self {
-        self.style.text_color = color;
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn text_color(self, color: ColorRgba) -> Self {
-        self.color(color)
-    }
-
-    #[inline]
-    pub fn border(mut self, width: f32, color: ColorRgba) -> Self {
-        self.style.border_width = Self::sanitize(width).max(0.0);
-        self.style.border_color = color;
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn border_width(mut self, width: f32) -> Self {
-        self.style.border_width = Self::sanitize(width).max(0.0);
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn border_color(mut self, color: ColorRgba) -> Self {
-        self.style.border_color = color;
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn radius(mut self, radius: f32) -> Self {
-        self.style.border_radius = Self::sanitize(radius).max(0.0);
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn border_radius(self, radius: f32) -> Self {
-        self.radius(radius)
-    }
-
-    #[inline]
-    pub fn opacity(mut self, opacity: f32) -> Self {
-        self.style.opacity = Self::sanitize(opacity).clamp(0.0, 1.0);
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn font_size(mut self, px: f32) -> Self {
-        self.style.font_size = Self::sanitize(px).max(1.0);
-        self.has_style = true;
-        self
-    }
-
-    #[inline]
-    pub fn z_index(mut self, z: i32) -> Self {
-        self.style.z_index = z;
-        self.has_style = true;
-        self
-    }
-
-    // --- Non-ABI raw style fields ---
-
-    #[inline]
-    pub fn font_weight(mut self, weight: impl Into<Cow<'static, str>>) -> Self {
-        self.font_weight = Some(weight.into());
-        self
-    }
-
-    #[inline]
-    pub fn text_align(mut self, align: impl Into<Cow<'static, str>>) -> Self {
-        self.text_align = Some(align.into());
-        self
-    }
-
-    #[inline]
-    pub fn box_shadow(mut self, shadow: impl Into<Cow<'static, str>>) -> Self {
-        self.box_shadow = Some(shadow.into());
-        self
-    }
-
-    #[inline]
-    pub fn overflow(mut self, mode: impl Into<Cow<'static, str>>) -> Self {
-        self.overflow = Some(mode.into());
-        self
-    }
-
-    #[inline]
-    pub fn object_fit(mut self, mode: impl Into<Cow<'static, str>>) -> Self {
-        self.object_fit = Some(mode.into());
-        self
-    }
-
-    // --- Declarative responsive visibility & `@media` style rules ---
-
-    #[inline]
-    pub fn show_on(mut self, query: MediaQuery) -> Self {
-        self.show_on = Some(query);
-        self
-    }
-
-    #[inline]
-    pub fn at(mut self, query: MediaQuery, patch: StylePatch) -> Self {
-        self.responsive.push(ResponsiveRule::new(query, patch));
-        self
-    }
-
-    #[inline]
-    pub fn at_with(
-        self,
-        query: MediaQuery,
-        build: impl FnOnce(StylePatch) -> StylePatch,
-    ) -> Self {
-        self.at(query, build(StylePatch::new()))
-    }
-
-    #[inline]
-    pub fn on_compact(self, patch: StylePatch) -> Self {
-        self.at(MediaQuery::compact(), patch)
-    }
-
-    #[inline]
-    pub fn on_medium(self, patch: StylePatch) -> Self {
-        self.at(MediaQuery::medium(), patch)
-    }
-
-    #[inline]
-    pub fn on_expanded(self, patch: StylePatch) -> Self {
-        self.at(MediaQuery::expanded(), patch)
-    }
-
-    // --- Interactive pseudo-state rules & typed pointer cursor ---
-
-    #[inline]
-    pub fn cursor(mut self, cursor: CursorKind) -> Self {
-        self.cursor = Some(cursor);
-        self
-    }
-
-    #[inline]
-    pub fn on_state(mut self, state: InteractionState, patch: StylePatch) -> Self {
-        self.state_rules.push(StateStyleRule::new(state, patch));
-        self
-    }
-
-    #[inline]
-    pub fn on_state_with(
-        self,
-        state: InteractionState,
-        build: impl FnOnce(StylePatch) -> StylePatch,
-    ) -> Self {
-        self.on_state(state, build(StylePatch::new()))
-    }
-
-    #[inline]
-    pub fn on_hover(self, patch: StylePatch) -> Self {
-        self.on_state(InteractionState::HOVER, patch)
-    }
-
-    #[inline]
-    pub fn on_hover_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
-        self.on_state_with(InteractionState::HOVER, build)
-    }
-
-    #[inline]
-    pub fn on_active(self, patch: StylePatch) -> Self {
-        self.on_state(InteractionState::ACTIVE, patch)
-    }
-
-    #[inline]
-    pub fn on_active_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
-        self.on_state_with(InteractionState::ACTIVE, build)
-    }
-
-    #[inline]
-    pub fn on_focus(self, patch: StylePatch) -> Self {
-        self.on_state(InteractionState::FOCUS, patch)
-    }
-
-    #[inline]
-    pub fn on_focus_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
-        self.on_state_with(InteractionState::FOCUS, build)
-    }
-
-    #[inline]
-    pub fn on_focus_visible(self, patch: StylePatch) -> Self {
-        self.on_state(InteractionState::FOCUS_VISIBLE, patch)
-    }
-
-    #[inline]
-    pub fn on_focus_visible_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
-        self.on_state_with(InteractionState::FOCUS_VISIBLE, build)
-    }
-
-    #[inline]
-    pub fn on_disabled(self, patch: StylePatch) -> Self {
-        self.on_state(InteractionState::DISABLED, patch)
-    }
-
-    #[inline]
-    pub fn on_disabled_with(self, build: impl FnOnce(StylePatch) -> StylePatch) -> Self {
-        self.on_state_with(InteractionState::DISABLED, build)
-    }
-
-    // --- Declarative style transitions ---
-
-    #[inline]
-    pub fn transition(mut self, spec: TransitionSpec) -> Self {
-        self.transitions.push(spec);
-        self
-    }
-
-    #[inline]
-    pub fn transitions(mut self, specs: &[TransitionSpec]) -> Self {
-        self.transitions.extend_from_slice(specs);
-        self
-    }
 }
 
 impl IntoAttributeValue for TypedStyle {
@@ -597,38 +353,11 @@ impl IntoAttributeValue for TypedStyle {
     }
 }
 
-/// Parses a CSS/RN `flex-direction` keyword into [`FlexDirection`] with zero allocations.
 #[inline]
-pub fn parse_flex_direction(value: &str) -> FlexDirection {
-    match value.trim() {
-        "row" => FlexDirection::Row,
-        "column-reverse" | "columnReverse" => FlexDirection::ColumnReverse,
-        "row-reverse" | "rowReverse" => FlexDirection::RowReverse,
-        _ => FlexDirection::Column,
-    }
-}
-
-/// Parses a CSS/RN `justify-content` keyword into [`FlexJustify`] with zero allocations.
-#[inline]
-pub fn parse_flex_justify(value: &str) -> FlexJustify {
-    match value.trim() {
-        "center" => FlexJustify::Center,
-        "flex-end" | "end" => FlexJustify::FlexEnd,
-        "space-between" | "spaceBetween" => FlexJustify::SpaceBetween,
-        "space-around" | "spaceAround" => FlexJustify::SpaceAround,
-        "space-evenly" | "spaceEvenly" => FlexJustify::SpaceEvenly,
-        _ => FlexJustify::FlexStart,
-    }
-}
-
-/// Parses a CSS/RN `align-items` keyword into [`FlexAlign`] with zero allocations.
-#[inline]
-pub fn parse_flex_align(value: &str) -> FlexAlign {
-    match value.trim() {
-        "flex-start" | "start" => FlexAlign::FlexStart,
-        "center" => FlexAlign::Center,
-        "flex-end" | "end" => FlexAlign::FlexEnd,
-        "baseline" => FlexAlign::Baseline,
-        _ => FlexAlign::Stretch,
-    }
+pub(crate) fn pack_media_query(q: MediaQuery) -> (u32, u32) {
+    let widths = u32::from(q.min_width_px) | (u32::from(q.max_width_px) << 16);
+    let env = u32::from(q.flags)
+        | ((q.color_scheme as u32) << 8)
+        | ((q.pointer as u32) << 16);
+    (widths, env)
 }

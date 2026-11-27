@@ -15,9 +15,11 @@ cdylib-export = []
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-canvas = { workspace = true }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
+nve-store = { workspace = true }
 nve-interop = { workspace = true }
 nve-ui = { workspace = true }
 nve-i18n = { workspace = true }
@@ -29,3 +31,6 @@ dioxus-core-macro = { workspace = true }
 nve-backend-headless = { workspace = true }
 nve-backend-skia = { workspace = true }
 nve-backend-web = { workspace = true }
+nve-canvas-skia = { workspace = true }
+nve-canvas-web = { workspace = true }
+nve-web-html-web = { workspace = true }

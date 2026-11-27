@@ -1,11 +1,13 @@
-//! Little-endian `NVS1` binary encoder, bounds-checked decoder, and FNV-1a64 checksum.
+//! Little-endian `NVS2` binary encoder and bounds-checked decoder with an XXH64 trailer.
 
 use std::fmt;
 
+use nve_hash::xxh64;
+
 use crate::search::{Posting, SearchDoc, SearchIndex};
 
-pub const NVS1_MAGIC: &[u8; 4] = b"NVS1";
-pub const NVS1_VERSION: u16 = 1;
+pub const NVS2_MAGIC: &[u8; 4] = b"NVS2";
+pub const NVS2_VERSION: u16 = 1;
 
 const HEADER_BYTES: usize = 20;
 const CHECKSUM_BYTES: usize = 8;
@@ -14,7 +16,7 @@ const MIN_TOKEN_BYTES: usize = 8;
 const MIN_TRIGRAM_BYTES: usize = 5;
 const POSTING_BYTES: usize = 6;
 
-/// Typed decoding error for `NVS1` binary buffers (never panics).
+/// Typed decoding error for `NVS2` binary buffers (never panics).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchIndexError {
     TooShort,
@@ -30,41 +32,31 @@ pub enum SearchIndexError {
 impl fmt::Display for SearchIndexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TooShort => write!(f, "NVS1 buffer too short"),
-            Self::InvalidMagic(m) => write!(f, "invalid NVS1 magic: {m:?}"),
-            Self::UnsupportedVersion(v) => write!(f, "unsupported NVS1 version: {v}"),
+            Self::TooShort => write!(f, "NVS2 buffer too short"),
+            Self::InvalidMagic(m) => write!(f, "invalid NVS2 magic: {m:?}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported NVS2 version: {v}"),
             Self::ChecksumMismatch { expected, actual } => write!(
                 f,
-                "NVS1 checksum mismatch: expected {expected:#018x}, got {actual:#018x}"
+                "NVS2 checksum mismatch: expected {expected:#018x}, got {actual:#018x}"
             ),
-            Self::UnexpectedEof => write!(f, "unexpected end of NVS1 buffer"),
-            Self::InvalidUtf8 => write!(f, "invalid UTF-8 string in NVS1 buffer"),
+            Self::UnexpectedEof => write!(f, "unexpected end of NVS2 buffer"),
+            Self::InvalidUtf8 => write!(f, "invalid UTF-8 string in NVS2 buffer"),
             Self::InvalidDocId { doc_id, doc_count } => {
                 write!(f, "posting doc_id {doc_id} out of range (doc_count={doc_count})")
             }
-            Self::TrailingBytes(n) => write!(f, "NVS1 buffer has {n} unexpected trailing bytes"),
+            Self::TrailingBytes(n) => write!(f, "NVS2 buffer has {n} unexpected trailing bytes"),
         }
     }
 }
 
 impl std::error::Error for SearchIndexError {}
 
-/// Standard 64-bit FNV-1a checksum.
-pub fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
-}
-
 pub(crate) fn encode_index(index: &SearchIndex) -> Vec<u8> {
     let mut buf = Vec::with_capacity(
         HEADER_BYTES + index.docs.len() * 64 + index.tokens.len() * 16 + CHECKSUM_BYTES,
     );
-    buf.extend_from_slice(NVS1_MAGIC);
-    buf.extend_from_slice(&NVS1_VERSION.to_le_bytes());
+    buf.extend_from_slice(NVS2_MAGIC);
+    buf.extend_from_slice(&NVS2_VERSION.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&(index.docs.len() as u32).to_le_bytes());
     buf.extend_from_slice(&(index.tokens.len() as u32).to_le_bytes());
@@ -91,7 +83,7 @@ pub(crate) fn encode_index(index: &SearchIndex) -> Vec<u8> {
         write_postings(&mut buf, postings);
     }
 
-    let checksum = fnv1a64(&buf);
+    let checksum = xxh64(&buf, 0);
     buf.extend_from_slice(&checksum.to_le_bytes());
     buf
 }
@@ -101,18 +93,18 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
         return Err(SearchIndexError::TooShort);
     }
     let magic: [u8; 4] = bytes[0..4].try_into().unwrap();
-    if &magic != NVS1_MAGIC {
+    if &magic != NVS2_MAGIC {
         return Err(SearchIndexError::InvalidMagic(magic));
     }
     let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != NVS1_VERSION {
+    if version != NVS2_VERSION {
         return Err(SearchIndexError::UnsupportedVersion(version));
     }
 
     let payload_len = bytes.len() - CHECKSUM_BYTES;
     let payload = &bytes[..payload_len];
     let expected_ck = u64::from_le_bytes(bytes[payload_len..].try_into().unwrap());
-    let actual_ck = fnv1a64(payload);
+    let actual_ck = xxh64(payload, 0);
     if expected_ck != actual_ck {
         return Err(SearchIndexError::ChecksumMismatch {
             expected: expected_ck,

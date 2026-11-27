@@ -40,7 +40,7 @@ pub(super) fn c_core_type(ty: &HybridType) -> String {
 /// `packages/core/abi/src/schema.rs`.
 pub fn generate_c_core_abi_h() -> String {
     let spec = core_abi_spec();
-    let schema_hash = spec.file_schema_hash();
+    let schema_hash = crate::schema::hybrid::core_abi::core_abi_schema_hash();
     let mut out = String::with_capacity(8 * 1024);
 
     let _ = writeln!(

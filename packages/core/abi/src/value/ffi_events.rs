@@ -19,7 +19,7 @@ pub const NVE_EVENT_FLAG_COMPOSING: u8 = 1 << 4;
 
 /// Direct FFI event matching `struct NveDirectEvent` in `nve_abi.generated.h`
 /// (96 bytes on 64-bit, 72 bytes on 32-bit, align 8).
-#[repr(C)]
+#[repr(C, align(8))]
 #[derive(Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 96)]
 pub struct NveDirectEvent {
@@ -316,6 +316,32 @@ impl NveDirectEvent {
             name: NveStrSlice::from_str(name),
             value,
             ..Self::empty(surface_id, node_id, timestamp_us, NativeEventKind::Custom)
+        }
+    }
+
+    /// Zero-copy direct event for a module/table return event (`NativeEventKind::TableEvent`).
+    ///
+    /// Packs `table_key` inline in `value` (`NveValue::i64`), `event_id` in `key_code`, and
+    /// borrows `payload` bytes in `text` with zero struct-size growth.
+    #[inline]
+    pub const fn table_event(
+        surface_id: u32,
+        node_id: u32,
+        timestamp_us: u64,
+        table_key: crate::Key64,
+        event_id: u32,
+        payload: &[u8],
+    ) -> Self {
+        Self {
+            kind: NativeEventKind::TableEvent as u8,
+            payload_tag: NveEventPayloadTag::TableEvent as u8,
+            key_code: event_id,
+            text: NveStrSlice {
+                ptr: payload.as_ptr(),
+                len: payload.len(),
+            },
+            value: NveValue::i64(table_key.0 as i64),
+            ..Self::empty(surface_id, node_id, timestamp_us, NativeEventKind::TableEvent)
         }
     }
 }

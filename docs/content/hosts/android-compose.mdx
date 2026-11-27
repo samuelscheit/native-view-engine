@@ -14,7 +14,7 @@ Android hosts read NVE's 64-byte `NveRenderNode` slabs straight from native C++ 
 
 - Each scene slab (`nodes`, `text_slab`, `children_slab`, `dirty_indices`, `removed_ids`) plus the fixed-stride 64-byte `NveNodeMeta` record slab and companion `meta_blob` slab is wrapped in a `GlobalRef` `java.nio.ByteBuffer` via `NewDirectByteBuffer`.
 - `CachedDirectBuffer::sync` re-allocates the `DirectByteBuffer` **only** when a native slab pointer or capacity grows; empty slabs bind to a non-null sentinel with capacity `0` to avoid ART null-address quirks.
-- Generated bindings live in package **`dev.nve.android.generated`**: `dev.nve.android.generated.NveCoreAbi` and `dev.nve.android.generated.NveSceneBuffer` (verifying `SCHEMA_HASH = 0x6D45E53E0D9535D1`).
+- Generated bindings live in package **`dev.nve.android.generated`**: `dev.nve.android.generated.NveCoreAbi` and `dev.nve.android.generated.NveSceneBuffer` (verifying compile-time XXH64 `NVE_SCENE_SCHEMA_HASH` / `NVE_CORE_ABI_SCHEMA_HASH`).
 - **`NveCanvasView.java`** paints layout rects, rounded borders, images, text, and `NVE_DRAW1` vector draw lists directly onto `android.graphics.Canvas`, while dispatching native touches and `TextInput` IME changes back via `NveEventBatch` / `DirectByteBuffer`.
 - **TalkBack accessibility (`NveNodeMeta`)** — `NveAndroidMetadataPacker.cpp` packs sparse accessibility metadata (`accessibilityLabel`, `accessibilityRole`, `accessibilityHint`, ARIA states) exclusively for dirty nodes into fixed-stride 64-byte `NveNodeMeta` records plus a companion `meta_blob` slab, consumed directly by Android's `AccessibilityNodeProvider`.
 - **Live pairing (`NveAndroidPairJni.cpp`)** — Connects the Android shell to `cargo nve pair` over UDP/TCP/WS without re-pushing `.so` binaries.

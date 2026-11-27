@@ -413,6 +413,101 @@ fn gpu_surface_error_displays_clearly() {
         .contains("drawable"));
 }
 
+#[test]
+fn pixel_buffer_transparent_rgba_preserves_alpha_and_avoids_black_box() {
+    let mut buf = PixelBuffer::new_transparent_rgba(8, 8);
+    // Paint a single 50% alpha red pixel at (2, 2); untouched pixels must stay alpha = 0.
+    buf.blend_pixel(2, 2, ColorRgba::rgb(255, 0, 0), 0.5);
+    let mut rgba = Vec::new();
+    buf.write_rgba8_into(&mut rgba);
+    // Untouched corner (0, 0) is fully transparent (0, 0, 0, 0).
+    assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
+    // Blended pixel at (2, 2) has straight RGB (255, 0, 0) and ~128 alpha (zero black halo!).
+    let off = (2 * 8 + 2) * 4;
+    assert_eq!(rgba[off], 255);
+    assert_eq!(rgba[off + 1], 0);
+    assert_eq!(rgba[off + 2], 0);
+    assert!((126..=130).contains(&rgba[off + 3]), "alpha={}", rgba[off + 3]);
+
+    // Resizing from 0x0 must preserve explicit alpha tracking (`has_alpha`).
+    let mut from_zero = PixelBuffer::new_transparent_rgba(0, 0);
+    from_zero.resize(4, 4);
+    from_zero.blend_pixel(1, 1, ColorRgba::rgb(0, 255, 0), 0.5);
+    from_zero.write_rgba8_into(&mut rgba);
+    assert_eq!(&rgba[0..4], &[0, 0, 0, 0], "untouched corner after 0x0->4x4 resize stays transparent");
+    let off2 = (4 + 1) * 4;
+    assert_eq!(rgba[off2 + 1], 255);
+    assert!((126..=130).contains(&rgba[off2 + 3]));
+}
+
+#[cfg(feature = "skia")]
+#[test]
+fn cpu_skia_surface_plugin_preserves_transparent_background() {
+    use nve_store::{ChangeSet, NodeId, NveTable, Rgba, TableEventBus, TableSlot};
+    use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
+
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "skia.test.icon", storage = "sparse")]
+    struct TestIcon {
+        #[effect(paint)]
+        tag: u32,
+    }
+    struct IconSys;
+    impl SkiaTableSystem for IconSys {
+        fn slot(&self) -> TableSlot {
+            TestIcon::slot()
+        }
+        fn paint_node(&self, ctx: &mut SkiaSystemPaintCtx<'_>, _: &NodeStore, _: NodeId) {
+            // Paint only a 4x4 red square inside a 20x20 plugin rect; outer pixels stay transparent.
+            for y in 8..12 {
+                for x in 8..12 {
+                    ctx.buffer.blend_pixel(x, y, ColorRgba::rgb(255, 0, 0), 1.0);
+                }
+            }
+        }
+    }
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let n = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<TestIcon>(n).tag(1);
+        tx.commit_into(&mut changes);
+        n
+    };
+    let mut registry = SkiaTableRegistry::new();
+    registry.register(IconSys);
+    let mut events = TableEventBus::new();
+
+    let dl = DisplayList {
+        ops: vec![PaintOp::Plugin {
+            node_id: n,
+            rect: LayoutRect { x: 10.0, y: 10.0, width: 20.0, height: 20.0 },
+            inherited_text_color: Rgba::WHITE,
+        }],
+    };
+    let mut surface = CpuSkiaSurface::new(40, 40).unwrap();
+    let renderer = SkiaCanvasRenderer::new();
+    GpuSurfaceBackend::render_display_list_with_plugins(
+        &mut surface,
+        &renderer,
+        &dl,
+        1.0,
+        ColorRgba::rgb(0, 200, 100),
+        Some((&store, &registry, &mut events)),
+    )
+    .unwrap();
+    let mut out = PixelBuffer::new(40, 40);
+    surface.copy_to_pixel_buffer(&mut out).unwrap();
+    // Inside the 4x4 painted square: red.
+    assert_eq!(out.get_rgb(20, 20), Some((255, 0, 0)));
+    // Inside the 20x20 plugin rect but outside the 4x4 icon: green clear color shows through (NOT black!).
+    assert_eq!(out.get_rgb(12, 12), Some((0, 200, 100)));
+}
+
 #[cfg(feature = "skia")]
 #[path = "parity_tests.rs"]
 mod parity_tests;

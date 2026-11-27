@@ -41,7 +41,7 @@ use nve_abi::{encode_bin_value_to_vec, BinValueView, DecodeError, NveValueRef};
 use nve_components::reconcile::{
     reconcile_three_way, ConflictPolicy, ReconcileDecision, ThreeWayEntry,
 };
-use nve_engine::hash::Xxh64Hasher;
+use nve_abi::Xxh64Hasher;
 use nve_engine::{ArenaError, InstantBootError};
 
 /// Reconciles one signal slot during hot-reload using 3-way merge (`ConflictPolicy::PreferLocal`).
@@ -89,7 +89,7 @@ pub fn signal_slot_id(component_path: &str, signal_name: &str) -> u64 {
     h.update(component_path.as_bytes());
     h.update(&[0u8]);
     h.update(signal_name.as_bytes());
-    h.finish()
+    h.digest()
 }
 
 /// Discriminant tag for archived signal values.

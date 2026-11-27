@@ -1,433 +1,839 @@
-//! Unit tests for `NveMutationWriter` & `MutationTx`: string CSS forwarding, direct `TypedStyle`
-//! parity, `nve_style` + `style` override merging (order-independent), inherited text-prop
-//! updates, and direct `RenderSink` transition delivery.
+//! Focused unit tests for `NveMutationWriter` numeric/bool attributes, child mutations, and
+//! `primary_slot` realization.
 
-use dioxus_core::{AttributeValue, ElementId, IntoAttributeValue, WriteMutations};
-use nve_abi::{
-    ColorRgba, Command, CommandDecoder, ComponentKind, Dimension, EdgeInsets, FlexAlign,
-    FlexDirection, FlexJustify, LayoutProps, NodeId, RawPropValue, StyleProps,
-};
-use nve_components::motion::{EasingCurve, TransitionProperty, TransitionSpec};
-use nve_engine::{BackendApplyStats, BackendError, BatchSink, RenderSink};
-
-use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+use dioxus_core::{AttributeValue, ElementId, WriteMutations};
+use nve_components::tables::{Interaction, Layout, Link, TextContent, Visual};
+use nve_store::{Length, NodeId, NveTable};
 
 use super::NveMutationWriter;
 
-fn decode_cmds(bytes: &[u8]) -> Vec<Command> {
-    CommandDecoder::new(bytes)
-        .expect("valid header")
-        .decode_all()
-        .expect("valid command buffer")
-        .1
-}
-
-fn has_raw_str(cmds: &[Command], nid: NodeId, k: &str, expected: &str) -> bool {
-    cmds.iter().any(|c| {
-        matches!(
-            c,
-            Command::SetRawProp {
-                node_id,
-                key,
-                value: RawPropValue::String(v)
-            } if *node_id == nid && key == k && v == expected
-        )
-    })
-}
-
-fn last_layout(cmds: &[Command], nid: NodeId) -> Option<LayoutProps> {
-    cmds.iter().rev().find_map(|c| match c {
-        Command::SetLayout { node_id, layout } if *node_id == nid => Some(*layout),
-        _ => None,
-    })
-}
-
-fn last_style(cmds: &[Command], nid: NodeId) -> Option<StyleProps> {
-    cmds.iter().rev().find_map(|c| match c {
-        Command::SetStyle { node_id, style } if *node_id == nid => Some(*style),
-        _ => None,
-    })
-}
-
-#[derive(Default)]
-struct TransitionSink {
-    transitions: Vec<(NodeId, Vec<TransitionSpec>)>,
-}
-
-impl RenderSink for TransitionSink {
-    fn begin_frame(&mut self, _: nve_abi::SurfaceId, _: nve_abi::FrameId) {
-        self.transitions.clear();
-    }
-    fn create_node(&mut self, _: NodeId, _: ComponentKind, _: Option<&str>) {}
-    fn remove_node(&mut self, _: NodeId) {}
-    fn set_children(&mut self, _: NodeId, _: &[NodeId]) {}
-    fn set_text(&mut self, _: NodeId, _: &str) {}
-    fn set_layout(&mut self, _: NodeId, _: &LayoutProps) {}
-    fn set_style(&mut self, _: NodeId, _: &StyleProps) {}
-    fn set_raw_prop(&mut self, _: NodeId, _: &str, _: nve_abi::RawPropValueRef<'_>) {}
-    fn set_event_mask(&mut self, _: NodeId, _: u64) {}
-    fn dispatch_command(&mut self, _: NodeId, _: &str, _: &[u8]) {}
-    fn set_transitions(&mut self, node_id: NodeId, transitions: &[TransitionSpec]) {
-        self.transitions.push((node_id, transitions.to_vec()));
-    }
-    fn commit_frame(&mut self, _: bool) -> Result<BackendApplyStats, BackendError> {
-        Ok(BackendApplyStats::default())
-    }
-}
-
 #[test]
-fn inline_style_forwards_font_weight_text_align_box_shadow_and_inherits_text_props() {
+fn direct_numeric_and_bool_attributes_avoid_string_roundtrip() {
     let mut writer = NveMutationWriter::new(1);
-    let mut sink = BatchSink::new(1);
-    let tx = writer.begin_tx(&mut sink, 1, 1);
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(1));
+        mtx.set_attribute("height", None, &AttributeValue::Int(80), ElementId(1));
+        mtx.set_attribute("opacity", None, &AttributeValue::Float(0.5), ElementId(1));
+        mtx.set_attribute("disabled", None, &AttributeValue::Bool(true), ElementId(1));
+        mtx.set_attribute("tabIndex", None, &AttributeValue::Int(3), ElementId(1));
+        mtx.set_attribute(
+            "href",
+            None,
+            &AttributeValue::Text("https://example.com".into()),
+            ElementId(1),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
 
-    let card_id = tx.writer.alloc_node(tx.sink, ComponentKind::View, None);
-    tx.writer.apply_str_attr(
-        tx.sink,
-        card_id,
-        "style",
-        "background-color: #1e293b; border-radius: 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);",
-    );
-
-    let parent_text = tx.writer.alloc_node(tx.sink, ComponentKind::Text, None);
-    tx.writer.apply_str_attr(
-        tx.sink,
-        parent_text,
-        "style",
-        "font-size: 18px; font-weight: 700; text-align: center; color: #ffffff;",
-    );
-    let leaf_text = tx.writer.alloc_node(tx.sink, ComponentKind::Text, None);
-    tx.writer.record_text(leaf_text, "Title");
-    tx.sink.set_text(leaf_text, "Title");
-
-    tx.writer.nodes.get_mut(&parent_text).unwrap().children.push(leaf_text);
-    tx.writer.nodes.get_mut(&leaf_text).unwrap().set_parent(Some(parent_text));
-    tx.writer.dirty_children.push(parent_text);
-
-    tx.finish_frame(true).unwrap();
-    let cmds = decode_cmds(sink.bytes());
-
-    assert!(has_raw_str(&cmds, card_id, "box-shadow", "0 4px 12px rgba(0, 0, 0, 0.35)"));
-    assert!(has_raw_str(&cmds, parent_text, "font-weight", "700"));
-    assert!(has_raw_str(&cmds, parent_text, "text-align", "center"));
-    assert!(has_raw_str(&cmds, leaf_text, "font-weight", "700"));
-    assert!(has_raw_str(&cmds, leaf_text, "text-align", "center"));
+    let node = writer.resolve_el(ElementId(1)).unwrap();
+    let store = writer.store();
+    assert_eq!(store.children(NodeId::ROOT), &[node]);
+    assert_eq!(store.try_row::<Layout>(node).unwrap().width(), Length::points(240.0));
+    assert_eq!(store.try_row::<Layout>(node).unwrap().height(), Length::points(80.0));
+    assert_eq!(store.try_row::<Visual>(node).unwrap().opacity(), 0.5);
+    let inter = store.try_row::<Interaction>(node).unwrap();
+    assert!(inter.disabled());
+    assert!(inter.tab_index_set());
+    assert_eq!(inter.tab_index(), 3);
+    assert_eq!(store.primary_slot(node), Link::slot());
 }
 
 #[test]
-fn typed_style_matches_string_css_identically_including_leaf_text_inheritance() {
-    // 1. Render via string CSS.
-    let mut str_writer = NveMutationWriter::new(1);
-    let mut str_sink = BatchSink::new(1);
-    let str_tx = str_writer.begin_tx(&mut str_sink, 1, 1);
-    let s_card = str_tx.writer.alloc_node(str_tx.sink, ComponentKind::View, None);
-    str_tx.writer.apply_str_attr(
-        str_tx.sink,
-        s_card,
-        "style",
-        "width: 100%; height: 48px; min-width: 120px; max-width: 560px; flex-direction: row; justify-content: space-between; align-items: center; flex-grow: 1; flex-shrink: 0; gap: 8px; padding-horizontal: 16px; padding-vertical: 10px; margin: 4px; background-color: #1e293b; border-width: 2px; border-color: #60a5fa; border-radius: 10px; opacity: 0.85; z-index: 900; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); overflow: hidden;",
-    );
-    let s_parent = str_tx.writer.alloc_node(str_tx.sink, ComponentKind::Text, None);
-    str_tx.writer.apply_str_attr(
-        str_tx.sink,
-        s_parent,
-        "style",
-        "color: #f8fafc; font-size: 18px; font-weight: 700; text-align: center; opacity: 0.9;",
-    );
-    let s_leaf = str_tx.writer.alloc_node(str_tx.sink, ComponentKind::Text, None);
-    str_tx.writer.record_text(s_leaf, "Heading");
-    str_tx.sink.set_text(s_leaf, "Heading");
-    str_tx.writer.nodes.get_mut(&s_parent).unwrap().children.push(s_leaf);
-    str_tx.writer.nodes.get_mut(&s_leaf).unwrap().set_parent(Some(s_parent));
-    str_tx.writer.dirty_children.push(s_parent);
-    str_tx.finish_frame(true).unwrap();
-    let str_cmds = decode_cmds(str_sink.bytes());
-
-    // 2. Render via direct `TypedStyle` (zero CSS string formatting/parsing).
-    let mut typed_writer = NveMutationWriter::new(1);
-    let mut typed_sink = BatchSink::new(1);
-    let mut typed_tx = typed_writer.begin_tx(&mut typed_sink, 1, 1);
-    let t_card = typed_tx.writer.alloc_node(typed_tx.sink, ComponentKind::View, None);
-    let card_el = ElementId(10);
-    typed_tx.writer.bind_element_id(t_card, card_el);
-    let card_typed = TypedStyle::new()
-        .width_pct(100.0)
-        .height_px(48.0)
-        .min_width_px(120.0)
-        .max_width_px(560.0)
-        .flex_row()
-        .justify_content(FlexJustify::SpaceBetween)
-        .align_items(FlexAlign::Center)
-        .flex_grow(1.0)
-        .flex_shrink(0.0)
-        .gap(8.0)
-        .padding_xy(16.0, 10.0)
-        .margin(4.0)
-        .bg(ColorRgba::rgb(0x1e, 0x29, 0x3b))
-        .border(2.0, ColorRgba::rgb(0x60, 0xa5, 0xfa))
-        .radius(10.0)
-        .opacity(0.85)
-        .z_index(900)
-        .box_shadow("0 4px 16px rgba(0, 0, 0, 0.45)")
-        .overflow("hidden")
-        .object_fit("cover");
-    let card_attr_val = card_typed.into_value();
-    typed_tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &card_attr_val, card_el);
-
-    let t_parent = typed_tx.writer.alloc_node(typed_tx.sink, ComponentKind::Text, None);
-    let parent_el = ElementId(11);
-    typed_tx.writer.bind_element_id(t_parent, parent_el);
-    let text_typed = TypedStyle::new()
-        .color(ColorRgba::rgb(0xf8, 0xfa, 0xfc))
-        .font_size(18.0)
-        .font_weight("700")
-        .text_align("center")
-        .opacity(0.9);
-    let text_attr_val = text_typed.into_value();
-    typed_tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &text_attr_val, parent_el);
-
-    let t_leaf = typed_tx.writer.alloc_node(typed_tx.sink, ComponentKind::Text, None);
-    typed_tx.writer.record_text(t_leaf, "Heading");
-    typed_tx.sink.set_text(t_leaf, "Heading");
-    typed_tx.writer.nodes.get_mut(&t_parent).unwrap().children.push(t_leaf);
-    typed_tx.writer.nodes.get_mut(&t_leaf).unwrap().set_parent(Some(t_parent));
-    typed_tx.writer.dirty_children.push(t_parent);
-    typed_tx.finish_frame(true).unwrap();
-    let typed_cmds = decode_cmds(typed_sink.bytes());
-
-    assert_eq!(last_layout(&typed_cmds, t_card), last_layout(&str_cmds, s_card));
-    assert_eq!(last_style(&typed_cmds, t_card), last_style(&str_cmds, s_card));
-    assert_eq!(last_style(&typed_cmds, t_parent), last_style(&str_cmds, s_parent));
-    assert_eq!(last_style(&typed_cmds, t_leaf), last_style(&str_cmds, s_leaf));
-
-    assert!(has_raw_str(&typed_cmds, t_card, "box-shadow", "0 4px 16px rgba(0, 0, 0, 0.45)"));
-    assert!(has_raw_str(&typed_cmds, t_card, "overflow", "hidden"));
-    assert!(has_raw_str(&typed_cmds, t_card, "object-fit", "cover"));
-    assert!(has_raw_str(&typed_cmds, t_parent, "font-weight", "700"));
-    assert!(has_raw_str(&typed_cmds, t_parent, "text-align", "center"));
-    assert!(has_raw_str(&typed_cmds, t_leaf, "font-weight", "700"));
-    assert!(has_raw_str(&typed_cmds, t_leaf, "text-align", "center"));
-
-    // Frame 2: changing parent text weight & align propagates cleanly to unstyled leaf text.
-    let mut typed_tx2 = typed_writer.begin_tx(&mut typed_sink, 1, 2);
-    let updated_text = TypedStyle::new()
-        .color(ColorRgba::rgb(0x94, 0xa3, 0xb8))
-        .font_size(14.0)
-        .font_weight("400")
-        .text_align("right")
-        .opacity(1.0);
-    let updated_val = updated_text.into_value();
-    typed_tx2.set_attribute(NVE_TYPED_STYLE_ATTR, None, &updated_val, parent_el);
-    typed_tx2.finish_frame(true).unwrap();
-    let cmds2 = decode_cmds(typed_sink.bytes());
-
-    assert_eq!(
-        last_style(&cmds2, t_leaf).unwrap().text_color,
-        ColorRgba::rgb(0x94, 0xa3, 0xb8)
-    );
-    assert_eq!(last_style(&cmds2, t_leaf).unwrap().font_size, 14.0);
-    assert!(has_raw_str(&cmds2, t_leaf, "font-weight", "400"));
-    assert!(has_raw_str(&cmds2, t_leaf, "text-align", "right"));
-}
-
-#[test]
-fn typed_style_merges_with_inline_style_override_deterministically_in_either_order() {
-    let base = TypedStyle::new()
-        .flex_row()
-        .gap(8.0)
-        .padding(12.0)
-        .bg(ColorRgba::rgb(0x25, 0x63, 0xeb))
-        .border(1.0, ColorRgba::rgb(0xcb, 0xd5, 0xe1))
-        .radius(8.0)
-        .box_shadow("none");
-    let override_css = "padding: 24px; background-color: #ef4444; box-shadow: 0 2px 6px #00000040;";
-
-    // Order A: nve_style first, style second.
-    let mut w_a = NveMutationWriter::new(1);
-    let mut s_a = BatchSink::new(1);
-    let mut tx_a = w_a.begin_tx(&mut s_a, 1, 1);
-    let nid_a = tx_a.writer.alloc_node(tx_a.sink, ComponentKind::View, None);
-    let el_a = ElementId(1);
-    tx_a.writer.bind_element_id(nid_a, el_a);
-    tx_a.set_attribute(NVE_TYPED_STYLE_ATTR, None, &base.clone().into_value(), el_a);
-    tx_a.set_attribute("style", None, &AttributeValue::Text(override_css.into()), el_a);
-    tx_a.finish_frame(true).unwrap();
-    let cmds_a = decode_cmds(s_a.bytes());
-
-    // Order B: style first, nve_style second.
-    let mut w_b = NveMutationWriter::new(1);
-    let mut s_b = BatchSink::new(1);
-    let mut tx_b = w_b.begin_tx(&mut s_b, 1, 1);
-    let nid_b = tx_b.writer.alloc_node(tx_b.sink, ComponentKind::View, None);
-    let el_b = ElementId(1);
-    tx_b.writer.bind_element_id(nid_b, el_b);
-    tx_b.set_attribute("style", None, &AttributeValue::Text(override_css.into()), el_b);
-    tx_b.set_attribute(NVE_TYPED_STYLE_ATTR, None, &base.clone().into_value(), el_b);
-    tx_b.finish_frame(true).unwrap();
-    let cmds_b = decode_cmds(s_b.bytes());
-
-    let lay_a = last_layout(&cmds_a, nid_a).unwrap();
-    let lay_b = last_layout(&cmds_b, nid_b).unwrap();
-    assert_eq!(lay_a, lay_b);
-    assert_eq!(lay_a.flex_direction, FlexDirection::Row);
-    assert_eq!(lay_a.gap, 8.0);
-    assert_eq!(lay_a.padding, EdgeInsets::all(24.0));
-
-    let st_a = last_style(&cmds_a, nid_a).unwrap();
-    let st_b = last_style(&cmds_b, nid_b).unwrap();
-    assert_eq!(st_a, st_b);
-    assert_eq!(st_a.background, ColorRgba::rgb(0xef, 0x44, 0x44));
-    assert_eq!(st_a.border_width, 1.0);
-    assert_eq!(st_a.border_radius, 8.0);
-    assert!(has_raw_str(&cmds_a, nid_a, "box-shadow", "0 2px 6px #00000040"));
-    assert!(has_raw_str(&cmds_b, nid_b, "box-shadow", "0 2px 6px #00000040"));
-
-    // Frame 2: update nve_style (e.g. focused border=2px) while style override stays untouched.
-    let mut tx_a2 = w_a.begin_tx(&mut s_a, 1, 2);
-    let focused = base.clone().border(2.0, ColorRgba::rgb(0x60, 0xa5, 0xfa));
-    tx_a2.set_attribute(NVE_TYPED_STYLE_ATTR, None, &focused.into_value(), el_a);
-    tx_a2.finish_frame(true).unwrap();
-    let cmds_a2 = decode_cmds(s_a.bytes());
-    let st_a2 = last_style(&cmds_a2, nid_a).unwrap();
-    assert_eq!(st_a2.border_width, 2.0);
-    assert_eq!(st_a2.border_color, ColorRgba::rgb(0x60, 0xa5, 0xfa));
-    assert_eq!(st_a2.background, ColorRgba::rgb(0xef, 0x44, 0x44));
-    assert_eq!(w_a.nodes[&nid_a].layout.padding, EdgeInsets::all(24.0));
-
-    // Frame 3: remove inline style override (`AttributeValue::None`) -> cleanly restores base TypedStyle!
-    let mut tx_a3 = w_a.begin_tx(&mut s_a, 1, 3);
-    tx_a3.set_attribute("style", None, &AttributeValue::None, el_a);
-    tx_a3.finish_frame(true).unwrap();
-    let cmds_a3 = decode_cmds(s_a.bytes());
-    assert_eq!(last_layout(&cmds_a3, nid_a).unwrap().padding, EdgeInsets::all(12.0));
-    assert_eq!(
-        last_style(&cmds_a3, nid_a).unwrap().background,
-        ColorRgba::rgb(0x25, 0x63, 0xeb)
-    );
-    assert!(has_raw_str(&cmds_a3, nid_a, "box-shadow", "none"));
-    assert!(!cmds_a3.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp { key, .. } if key == "style"
-    )));
-}
-
-#[test]
-fn typed_style_sanitizes_non_finite_values_and_none_style_is_noop() {
-    let ts = TypedStyle::new()
-        .width_px(f32::NAN)
-        .height_pct(150.0)
-        .gap(-5.0)
-        .opacity(2.0);
-    assert_eq!(ts.layout.width, Dimension::Points(0.0));
-    assert_eq!(ts.layout.height, Dimension::Percent(100.0));
-    assert_eq!(ts.layout.gap, 0.0);
-    assert_eq!(ts.style.opacity, 1.0);
-
+fn remove_node_cleans_up_subtree_and_id_maps() {
     let mut writer = NveMutationWriter::new(1);
-    let mut sink = BatchSink::new(1);
-    let mut tx = writer.begin_tx(&mut sink, 1, 1);
-    let nid = tx.writer.alloc_node(tx.sink, ComponentKind::View, None);
-    let el = ElementId(1);
-    tx.writer.bind_element_id(nid, el);
-    tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &ts.into_value(), el);
-    tx.set_attribute("style", None, &AttributeValue::None, el);
-    tx.finish_frame(true).unwrap();
-    let cmds = decode_cmds(sink.bytes());
-    assert!(!cmds.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp { key, .. } if key == "style" || key == NVE_TYPED_STYLE_ATTR
-    )));
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.create_text_node("hello", ElementId(2));
+        mtx.append_children(ElementId(1), 1);
+        mtx.append_children(ElementId(0), 1);
+    });
+
+    let parent = writer.resolve_el(ElementId(1)).unwrap();
+    let child = writer.resolve_el(ElementId(2)).unwrap();
+    assert_eq!(writer.store().try_row::<TextContent>(child).unwrap().text(), "hello");
+    assert_eq!(writer.store().children(parent), &[child]);
+
+    writer.with_transaction(|mtx| {
+        mtx.remove_node(ElementId(1));
+    });
+    assert!(writer.resolve_el(ElementId(1)).is_none());
+    assert!(writer.resolve_el(ElementId(2)).is_none());
+    assert!(writer.store().children(NodeId::ROOT).is_empty());
 }
 
 #[test]
-fn typed_style_streams_zero_serialization_transitions_into_render_sink() {
-    let t1 = TransitionSpec::new(TransitionProperty::BackgroundColor, 150)
-        .easing(EasingCurve::EaseOut);
-    let t2 = TransitionSpec::new(TransitionProperty::Opacity, 220)
-        .easing(EasingCurve::EaseInOut)
-        .delay_ms(20);
-    let ts = TypedStyle::new()
-        .bg(ColorRgba::rgb(30, 41, 59))
-        .transition(t1)
-        .transitions(&[t2]);
+fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_attrs() {
+    use std::cell::Cell;
+    use std::rc::Rc;
 
-    let mut writer = NveMutationWriter::new(1);
-    let mut sink = TransitionSink::default();
-    let mut tx = writer.begin_tx(&mut sink, 1, 1);
-    let nid = tx.writer.alloc_node(tx.sink, ComponentKind::Pressable, None);
-    let el = ElementId(1);
-    tx.writer.bind_element_id(nid, el);
-    tx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &ts.into_value(), el);
-    tx.finish_frame(true).unwrap();
+    use crate::table_attr::{TableAttr, TableWriter};
+    use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
 
-    assert_eq!(writer.node_transitions(nid), &[t1, t2]);
-    assert_eq!(sink.transitions, vec![(nid, vec![t1, t2])]);
-
-    // Clearing TypedStyle emits empty transitions slice directly into RenderSink.
-    let mut tx2 = writer.begin_tx(&mut sink, 1, 2);
-    tx2.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, el);
-    tx2.finish_frame(true).unwrap();
-    assert!(writer.node_transitions(nid).is_empty());
-    assert_eq!(sink.transitions, vec![(nid, vec![])]);
-}
-
-#[test]
-fn node_record_size_budget() {
-    use core::mem::size_of;
-    let sz = size_of::<super::NodeRecord>();
-    println!(
-        "NodeRecord={sz} LayoutProps={} StyleProps={}",
-        size_of::<LayoutProps>(),
-        size_of::<StyleProps>(),
-    );
-    assert!(sz <= 200, "NodeRecord grew to {sz} bytes (budget <= 200)");
-}
-
-#[test]
-fn dioxus_surface_new_with_props_and_new_with_context_render_cleanly() {
-    use crate::prelude::*;
-    use crate::DioxusSurface;
-    use dioxus_core::consume_context;
-
-    #[derive(Clone, PartialEq)]
-    struct GreetingProps {
-        title: String,
+    struct WriterA {
+        val: u32,
+        clears: Rc<Cell<u32>>,
     }
-
-    fn props_root(props: GreetingProps) -> Element {
-        rsx! {
-            text { "{props.title}" }
+    impl TableWriter for WriterA {
+        fn write_to(&self, tx: &mut nve_store::Transaction<'_>, node: NodeId) {
+            tx.edit::<Visual>(node).z_index(self.val as i32);
+        }
+        fn clear_from(&self, tx: &mut nve_store::Transaction<'_>, node: NodeId) {
+            self.clears.set(self.clears.get() + 1);
+            tx.detach::<Visual>(node);
         }
     }
 
-    #[derive(Clone)]
-    struct ThemeLabel(&'static str);
-
-    fn context_root() -> Element {
-        let label = consume_context::<ThemeLabel>();
-        rsx! {
-            text { "{label.0}" }
+    struct WriterB;
+    impl TableWriter for WriterB {
+        fn write_to(&self, tx: &mut nve_store::Transaction<'_>, node: NodeId) {
+            tx.edit::<Link>(node).href("https://example.com");
         }
     }
 
-    let mut props_surface = DioxusSurface::new_with_props(
-        1,
-        props_root,
-        GreetingProps {
-            title: "typed-props-ok".into(),
-        },
-    );
-    let (_, _, f1) = props_surface.render_frame(1);
-    let cmds1 = decode_cmds(&f1);
-    assert!(cmds1
-        .iter()
-        .any(|c| matches!(c, Command::SetText { text, .. } if text == "typed-props-ok")));
+    let clears = Rc::new(Cell::new(0));
+    let mut writer = NveMutationWriter::new(1);
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.set_attribute(
+            "nve_table",
+            None,
+            &AttributeValue::Any(Rc::new(TableAttr::new(WriterA {
+                val: 1,
+                clears: Rc::clone(&clears),
+            }))),
+            ElementId(1),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
+    assert_eq!(clears.get(), 0);
 
-    let mut ctx_surface =
-        DioxusSurface::new_with_context(2, context_root, ThemeLabel("typed-ctx-ok"));
-    let (_, _, f2) = ctx_surface.render_frame(1);
-    let cmds2 = decode_cmds(&f2);
-    assert!(cmds2
+    // Re-rendering with the same TableWriter type must NOT invoke clear_from (no detach+reattach).
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "nve_table",
+            None,
+            &AttributeValue::Any(Rc::new(TableAttr::new(WriterA {
+                val: 2,
+                clears: Rc::clone(&clears),
+            }))),
+            ElementId(1),
+        );
+    });
+    assert_eq!(clears.get(), 0, "same TableWriter type must not clear_from on re-render");
+    let node = writer.resolve_el(ElementId(1)).unwrap();
+    assert_eq!(writer.store().try_row::<Visual>(node).unwrap().z_index(), 2);
+
+    // Switching to a different TableWriter type DOES call clear_from on the previous writer.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "nve_table",
+            None,
+            &AttributeValue::Any(Rc::new(TableAttr::new(WriterB))),
+            ElementId(1),
+        );
+    });
+    assert_eq!(clears.get(), 1);
+
+    // Clearing inline `style` must preserve standalone `width` attribute while dropping inline bg.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(1));
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("background-color: #ff0000;".into()),
+            ElementId(1),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(node).unwrap().width(),
+        Length::points(240.0)
+    );
+    assert_ne!(
+        writer.store().try_row::<Visual>(node).unwrap().background(),
+        nve_store::Rgba::TRANSPARENT
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("style", None, &AttributeValue::None, ElementId(1));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(node).unwrap().width(),
+        Length::points(240.0),
+        "clearing `style` must preserve standalone `width`"
+    );
+    assert!(
+        !writer.store().has::<Visual>(node),
+        "clearing `style` must drop inline-only Visual table"
+    );
+
+    // TypedStyle with `has_layout == false` and `layout_ext.is_some()` detaches Layout when cleared.
+    let ext_only = TypedStyle::new().position_absolute();
+    assert!(!ext_only.has_layout && ext_only.layout_ext.is_some());
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(2));
+        mtx.set_attribute(
+            NVE_TYPED_STYLE_ATTR,
+            None,
+            &AttributeValue::Any(Rc::new(ext_only)),
+            ElementId(2),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
+    let node2 = writer.resolve_el(ElementId(2)).unwrap();
+    assert!(writer.store().has::<Layout>(node2));
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, ElementId(2));
+    });
+    assert!(
+        !writer.store().has::<Layout>(node2),
+        "clearing layout_ext-only TypedStyle must detach Layout"
+    );
+
+    // Standalone `width: 240.0` must survive `nve_style` update/clear AND inline `style` updates,
+    // while non-style numeric attributes (`unknown_num`, `ariaValueNow`) are NOT recorded.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(3));
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(3));
+        mtx.set_attribute("unknown_num", None, &AttributeValue::Float(99.0), ElementId(3));
+        mtx.set_attribute("ariaValueNow", None, &AttributeValue::Float(50.0), ElementId(3));
+        mtx.set_attribute(
+            NVE_TYPED_STYLE_ATTR,
+            None,
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(100.0).height_px(50.0))),
+            ElementId(3),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
+    let node3 = writer.resolve_el(ElementId(3)).unwrap();
+    let recorded_keys: Vec<&str> = writer
+        .standalone_style_attrs
+        .get(&node3)
+        .expect("standalone width recorded")
         .iter()
-        .any(|c| matches!(c, Command::SetText { text, .. } if text == "typed-ctx-ok")));
+        .map(|(k, _)| k.as_str())
+        .collect();
+    assert_eq!(
+        recorded_keys,
+        vec!["width"],
+        "only handled style attributes must be recorded in standalone_style_attrs"
+    );
+    assert_eq!(
+        writer.store().try_row::<Layout>(node3).unwrap().width(),
+        Length::points(240.0),
+        "standalone width must be replayed on nve_style apply/update"
+    );
+    // Inline `style` update must also replay standalone width over TypedStyle's 100px width.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("background-color: #00ff00;".into()),
+            ElementId(3),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(node3).unwrap().width(),
+        Length::points(240.0),
+        "inline `style` update must preserve standalone width over TypedStyle"
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            NVE_TYPED_STYLE_ATTR,
+            None,
+            &AttributeValue::Any(Rc::new(TypedStyle::new().bg(nve_abi::ColorRgba::rgb(10, 20, 30)))),
+            ElementId(3),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(node3).unwrap().width(),
+        Length::points(240.0),
+        "standalone width must survive nve_style update that drops typed layout"
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(NVE_TYPED_STYLE_ATTR, None, &AttributeValue::None, ElementId(3));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(node3).unwrap().width(),
+        Length::points(240.0),
+        "standalone width must survive nve_style clear"
+    );
+}
+
+#[test]
+fn inline_style_update_clears_dropped_declarations_and_skips_redundant_dirtying() {
+    use std::rc::Rc;
+
+    use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+    use nve_store::NveTable as _;
+
+    let mut writer = NveMutationWriter::new(1);
+
+    // Node A (no TypedStyle, no standalone): updating style clears dropped Layout/Visual props.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 300px; background-color: #00ff00;".into()),
+            ElementId(1),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
+    let node_a = writer.resolve_el(ElementId(1)).unwrap();
+    assert_eq!(
+        writer.store().try_row::<Layout>(node_a).unwrap().width(),
+        Length::points(300.0)
+    );
+    assert_eq!(
+        writer.store().try_row::<Visual>(node_a).unwrap().background().0,
+        nve_abi::ColorRgba::rgb(0, 255, 0).to_u32()
+    );
+
+    // Re-applying the exact same inline style string is a no-op (zero dirtying).
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 300px; background-color: #00ff00;".into()),
+            ElementId(1),
+        );
+    });
+    assert!(
+        writer.last_changes().table(Layout::slot()).is_none(),
+        "identical inline style must not dirty Layout"
+    );
+    assert!(
+        writer.last_changes().table(Visual::slot()).is_none(),
+        "identical inline style must not dirty Visual"
+    );
+
+    // Updating to opacity-only must clear dropped width and background-color.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("opacity: 0.5;".into()),
+            ElementId(1),
+        );
+    });
+    assert!(
+        !writer.store().has::<Layout>(node_a),
+        "dropped width must detach Layout when no TypedStyle or standalone layout exists"
+    );
+    let vis_a = writer.store().try_row::<Visual>(node_a).unwrap();
+    assert_eq!(
+        vis_a.background(),
+        nve_store::Rgba::TRANSPARENT,
+        "dropped background-color must clear to default"
+    );
+    assert!((vis_a.opacity() - 0.5).abs() < 1e-6);
+
+    // Node B (with TypedStyle + standalone width):
+    // 1) Initial pure-Visual inline style must preserve standalone width WITHOUT dirtying Layout.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(2));
+        mtx.set_attribute(
+            NVE_TYPED_STYLE_ATTR,
+            None,
+            &AttributeValue::Any(Rc::new(
+                TypedStyle::new()
+                    .width_px(100.0)
+                    .height_px(50.0)
+                    .bg(nve_abi::ColorRgba::rgb(10, 20, 30)),
+            )),
+            ElementId(2),
+        );
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(2));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let node_b = writer.resolve_el(ElementId(2)).unwrap();
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("opacity: 0.5;".into()),
+            ElementId(2),
+        );
+    });
+    assert!(
+        writer.last_changes().table(Layout::slot()).is_none(),
+        "initial pure-Visual inline style on node with standalone width must not dirty Layout"
+    );
+    assert_eq!(
+        writer.store().try_row::<Layout>(node_b).unwrap().width(),
+        Length::points(240.0)
+    );
+    assert!((writer.store().try_row::<Visual>(node_b).unwrap().opacity() - 0.5).abs() < 1e-6);
+
+    // 2) Updating inline style to override width & bg, then dropping them restores TypedStyle + standalone.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 300px; background-color: #00ff00;".into()),
+            ElementId(2),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(node_b).unwrap().width(),
+        Length::points(300.0)
+    );
+    assert_eq!(
+        writer.store().try_row::<Visual>(node_b).unwrap().background().0,
+        nve_abi::ColorRgba::rgb(0, 255, 0).to_u32()
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("opacity: 0.25;".into()),
+            ElementId(2),
+        );
+    });
+    let lay_b = writer.store().try_row::<Layout>(node_b).unwrap();
+    assert_eq!(
+        lay_b.width(),
+        Length::points(240.0),
+        "dropped inline width must restore standalone width over TypedStyle"
+    );
+    assert_eq!(
+        lay_b.height(),
+        Length::points(50.0),
+        "TypedStyle height must be preserved across inline style update"
+    );
+    let vis_b = writer.store().try_row::<Visual>(node_b).unwrap();
+    assert_eq!(
+        vis_b.background().0,
+        nve_abi::ColorRgba::rgb(10, 20, 30).to_u32(),
+        "dropped inline bg must restore TypedStyle bg"
+    );
+    assert!((vis_b.opacity() - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn canonical_style_precedence_standalone_clear_composite_fast_lane_and_invalid_key_reset() {
+    use std::rc::Rc;
+
+    use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+    use nve_abi::table::effect;
+    use nve_components::tables::Typography;
+    use nve_store::NveTable as _;
+
+    let mut writer = NveMutationWriter::new(1);
+
+    // 1. Canonical precedence: `style="width: 100px;"` then standalone `width="240"` -> inline 100px wins
+    //    immediately and survives identical re-apply and additive `style` updates.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 100px;".into()),
+            ElementId(1),
+        );
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(1));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n1 = writer.resolve_el(ElementId(1)).unwrap();
+    assert_eq!(
+        writer.store().try_row::<Layout>(n1).unwrap().width(),
+        Length::points(100.0),
+        "inline style must beat standalone width even when standalone is set after style"
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 100px;".into()),
+            ElementId(1),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n1).unwrap().width(),
+        Length::points(100.0)
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 100px; opacity: 0.5;".into()),
+            ElementId(1),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n1).unwrap().width(),
+        Length::points(100.0)
+    );
+    assert!((writer.store().try_row::<Visual>(n1).unwrap().opacity() - 0.5).abs() < 1e-6);
+
+    // 2. Updating `style="opacity: 0.5;"` -> `style="opacity: 0.25;"` preserves `effect::COMPOSITE`
+    //    fast lane without dirtying `Layout` or `Typography`.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(2));
+        mtx.set_attribute(
+            NVE_TYPED_STYLE_ATTR,
+            None,
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(80.0))),
+            ElementId(2),
+        );
+        mtx.set_attribute("color", None, &AttributeValue::Text("#112233".into()), ElementId(2));
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("opacity: 0.5;".into()),
+            ElementId(2),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n2 = writer.resolve_el(ElementId(2)).unwrap();
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("opacity: 0.25;".into()),
+            ElementId(2),
+        );
+    });
+    assert!((writer.store().try_row::<Visual>(n2).unwrap().opacity() - 0.25).abs() < 1e-6);
+    assert!(
+        writer.last_changes().table(Layout::slot()).is_none(),
+        "opacity-only style update must not dirty Layout"
+    );
+    assert!(
+        writer.last_changes().table(Typography::slot()).is_none(),
+        "opacity-only style update must not dirty Typography"
+    );
+    let idx = writer
+        .last_changes()
+        .touched
+        .iter()
+        .position(|&id| id == n2)
+        .expect("n2 must be in touched");
+    assert_eq!(
+        writer.last_changes().effects[idx],
+        effect::COMPOSITE,
+        "opacity-only inline style update must emit strictly effect::COMPOSITE"
+    );
+
+    // 3. Standalone `clear_attr("width")` clears stale 240px and falls back to inline / TypedStyle / default.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(2));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n2).unwrap().width(),
+        Length::points(240.0)
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::None, ElementId(2));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n2).unwrap().width(),
+        Length::points(80.0),
+        "clearing standalone width must fall back to TypedStyle width"
+    );
+    // Clearing standalone width with no TypedStyle or inline width detaches Layout cleanly.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(3));
+        mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(3));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n3 = writer.resolve_el(ElementId(3)).unwrap();
+    assert_eq!(
+        writer.store().try_row::<Layout>(n3).unwrap().width(),
+        Length::points(240.0)
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::None, ElementId(3));
+    });
+    assert!(
+        !writer.store().has::<Layout>(n3),
+        "clearing sole standalone width must detach Layout"
+    );
+
+    // 4. Invalidated inline key (`width: 100px;` -> `width: invalid;`) resets Layout.width cleanly.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 100px;".into()),
+            ElementId(3),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n3).unwrap().width(),
+        Length::points(100.0)
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: invalid;".into()),
+            ElementId(3),
+        );
+    });
+    assert!(
+        !writer.store().has::<Layout>(n3),
+        "invalidated inline width must reset/detach Layout cleanly"
+    );
+    // And with TypedStyle underneath, `width: invalid;` restores TypedStyle's 80px instead of clobbering to Auto.
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: 150px;".into()),
+            ElementId(2),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n2).unwrap().width(),
+        Length::points(150.0)
+    );
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("width: invalid;".into()),
+            ElementId(2),
+        );
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n2).unwrap().width(),
+        Length::points(80.0),
+        "invalidated inline width must restore underlying TypedStyle width"
+    );
+}
+
+#[test]
+fn standalone_invalid_reset_empty_style_clear_noop_and_shorthand_order_preservation() {
+    use std::rc::Rc;
+
+    use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
+    use nve_components::tables::Typography;
+    use nve_store::NveTable as _;
+
+    let mut writer = NveMutationWriter::new(1);
+
+    // 1. Standalone invalid value on untouched node must NOT record junk in standalone_style_attrs.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(1));
+        mtx.set_attribute(
+            NVE_TYPED_STYLE_ATTR,
+            None,
+            &AttributeValue::Any(Rc::new(TypedStyle::new().width_px(80.0))),
+            ElementId(1),
+        );
+        mtx.set_attribute("width", None, &AttributeValue::Text("invalid".into()), ElementId(1));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n1 = writer.resolve_el(ElementId(1)).unwrap();
+    assert!(
+        !writer.standalone_style_attrs.contains_key(&n1),
+        "invalid standalone attr on untouched node must not insert junk into standalone_style_attrs"
+    );
+    assert_eq!(
+        writer.store().try_row::<Layout>(n1).unwrap().width(),
+        Length::points(80.0)
+    );
+
+    // 2. Standalone width="200px" -> width="invalid" restores TypedStyle (80px);
+    //    standalone Float(200.0) -> width="invalid" also restores TypedStyle (80px).
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::Text("200px".into()), ElementId(1));
+    });
+    assert_eq!(writer.store().try_row::<Layout>(n1).unwrap().width(), Length::points(200.0));
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::Text("invalid".into()), ElementId(1));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n1).unwrap().width(),
+        Length::points(80.0),
+        "standalone string width=\"200px\" -> \"invalid\" must restore TypedStyle width"
+    );
+    assert!(!writer.standalone_style_attrs.contains_key(&n1));
+
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::Float(200.0), ElementId(1));
+    });
+    assert_eq!(writer.store().try_row::<Layout>(n1).unwrap().width(), Length::points(200.0));
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("width", None, &AttributeValue::Text("invalid".into()), ElementId(1));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n1).unwrap().width(),
+        Length::points(80.0),
+        "standalone Float(200.0) -> \"invalid\" must restore TypedStyle width"
+    );
+
+    // 3. Clearing empty or invalid-only inline `style` emits zero dirtying on Layout/Visual/Typography.
+    for empty_or_invalid in ["", "width: invalid;"] {
+        writer.with_transaction(|mtx| {
+            mtx.set_attribute(
+                "style",
+                None,
+                &AttributeValue::Text(empty_or_invalid.into()),
+                ElementId(1),
+            );
+        });
+        writer.with_transaction(|mtx| {
+            mtx.set_attribute("style", None, &AttributeValue::None, ElementId(1));
+        });
+        assert!(
+            writer.last_changes().table(Layout::slot()).is_none(),
+            "clearing `{empty_or_invalid}` must not dirty Layout"
+        );
+        assert!(
+            writer.last_changes().table(Visual::slot()).is_none(),
+            "clearing `{empty_or_invalid}` must not dirty Visual"
+        );
+        assert!(
+            writer.last_changes().table(Typography::slot()).is_none(),
+            "clearing `{empty_or_invalid}` must not dirty Typography"
+        );
+    }
+
+    // 4. Shorthand-vs-longhand order preservation on in-place standalone update:
+    //    padding={16.0}, paddingHorizontal={4.0}, then padding={24.0} -> top/bottom=24, left/right=4.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(2));
+        mtx.set_attribute("padding", None, &AttributeValue::Float(16.0), ElementId(2));
+        mtx.set_attribute("paddingHorizontal", None, &AttributeValue::Float(4.0), ElementId(2));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n2 = writer.resolve_el(ElementId(2)).unwrap();
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("padding", None, &AttributeValue::Float(24.0), ElementId(2));
+    });
+    let lay = writer.store().try_row::<Layout>(n2).unwrap();
+    assert_eq!(lay.padding_top(), Length::points(24.0));
+    assert_eq!(lay.padding_bottom(), Length::points(24.0));
+    assert_eq!(
+        lay.padding_left(),
+        Length::points(4.0),
+        "updating earlier shorthand `padding` must preserve later longhand `paddingHorizontal`"
+    );
+    assert_eq!(lay.padding_right(), Length::points(4.0));
+
+    // 5. History-independent shorthand/longhand rank:
+    //    (a) Clear `padding` then re-set `padding=24` -> `paddingHorizontal=4` MUST still win on left/right!
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("padding", None, &AttributeValue::None, ElementId(2));
+    });
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("padding", None, &AttributeValue::Float(24.0), ElementId(2));
+    });
+    let lay = writer.store().try_row::<Layout>(n2).unwrap();
+    assert_eq!(lay.padding_top(), Length::points(24.0));
+    assert_eq!(lay.padding_bottom(), Length::points(24.0));
+    assert_eq!(
+        lay.padding_left(),
+        Length::points(4.0),
+        "re-setting cleared shorthand `padding` must stay ranked before `paddingHorizontal`"
+    );
+    assert_eq!(lay.padding_right(), Length::points(4.0));
+
+    //    (b) Invalidate `padding="invalid"` then re-set `padding="20px"` -> `paddingHorizontal=4` MUST still win!
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("padding", None, &AttributeValue::Text("invalid".into()), ElementId(2));
+    });
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("padding", None, &AttributeValue::Text("20px".into()), ElementId(2));
+    });
+    let lay = writer.store().try_row::<Layout>(n2).unwrap();
+    assert_eq!(lay.padding_top(), Length::points(20.0));
+    assert_eq!(lay.padding_bottom(), Length::points(20.0));
+    assert_eq!(
+        lay.padding_left(),
+        Length::points(4.0),
+        "re-setting invalidated shorthand `padding` must stay ranked before `paddingHorizontal`"
+    );
+    assert_eq!(lay.padding_right(), Length::points(4.0));
+
+    // 6. Non-overlapping standalone `opacity` update with trailing `backgroundColor` + `boxShadow`
+    //    and non-overlapping inline `style="background-color: #112233;"` emits strictly effect::COMPOSITE.
+    use nve_abi::table::effect;
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(3));
+        mtx.set_attribute("opacity", None, &AttributeValue::Float(0.5), ElementId(3));
+        mtx.set_attribute(
+            "backgroundColor",
+            None,
+            &AttributeValue::Text("rgba(10, 20, 30, 0.5)".into()),
+            ElementId(3),
+        );
+        mtx.set_attribute(
+            "boxShadow",
+            None,
+            &AttributeValue::Text("0 2px 4px #000000".into()),
+            ElementId(3),
+        );
+        mtx.set_attribute(
+            "style",
+            None,
+            &AttributeValue::Text("background-color: #112233;".into()),
+            ElementId(3),
+        );
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n3 = writer.resolve_el(ElementId(3)).unwrap();
+    writer.standalone_replay_count = 0;
+    writer.inline_reapply_count = 0;
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("opacity", None, &AttributeValue::Float(0.25), ElementId(3));
+    });
+    assert_eq!(
+        writer.standalone_replay_count, 0,
+        "non-overlapping standalone opacity update must perform zero trailing standalone replays"
+    );
+    assert_eq!(
+        writer.inline_reapply_count, 0,
+        "non-overlapping standalone opacity update must perform zero inline style re-applies"
+    );
+    let vis3 = writer.store().try_row::<Visual>(n3).unwrap();
+    assert!((vis3.opacity() - 0.25).abs() < 1e-6);
+    assert_eq!(
+        vis3.background().0,
+        nve_abi::ColorRgba::rgb(0x11, 0x22, 0x33).to_u32(),
+        "inline background-color must remain intact across standalone opacity update"
+    );
+    assert!(writer.last_changes().table(Layout::slot()).is_none());
+    let idx = writer
+        .last_changes()
+        .touched
+        .iter()
+        .position(|&id| id == n3)
+        .expect("n3 must be in touched");
+    assert_eq!(
+        writer.last_changes().effects[idx],
+        effect::COMPOSITE,
+        "non-overlapping standalone opacity update must emit strictly effect::COMPOSITE"
+    );
+
+    // 7. Single-source `css_key_rank` clear-then-reset parity for `flex`/`flexGrow` and `background`/`backgroundColor`.
+    writer.with_transaction(|mtx| {
+        mtx.create_placeholder(ElementId(4));
+        mtx.set_attribute("flex", None, &AttributeValue::Float(1.0), ElementId(4));
+        mtx.set_attribute("flexGrow", None, &AttributeValue::Float(3.0), ElementId(4));
+        mtx.set_attribute("background", None, &AttributeValue::Text("#ff0000".into()), ElementId(4));
+        mtx.set_attribute("backgroundColor", None, &AttributeValue::Text("#00ff00".into()), ElementId(4));
+        mtx.append_children(ElementId(0), 1);
+    });
+    let n4 = writer.resolve_el(ElementId(4)).unwrap();
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("flex", None, &AttributeValue::None, ElementId(4));
+        mtx.set_attribute("background", None, &AttributeValue::None, ElementId(4));
+    });
+    writer.with_transaction(|mtx| {
+        mtx.set_attribute("flex", None, &AttributeValue::Float(2.0), ElementId(4));
+        mtx.set_attribute("background", None, &AttributeValue::Text("#0000ff".into()), ElementId(4));
+    });
+    assert_eq!(
+        writer.store().try_row::<Layout>(n4).unwrap().flex_grow(),
+        3.0,
+        "re-setting cleared `flex` shorthand must stay ranked before `flexGrow`"
+    );
+    assert_eq!(
+        writer.store().try_row::<Visual>(n4).unwrap().background().0,
+        nve_abi::ColorRgba::rgb(0x00, 0xff, 0x00).to_u32(),
+        "re-setting cleared `background` shorthand must stay ranked before `backgroundColor`"
+    );
 }

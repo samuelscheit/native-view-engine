@@ -203,45 +203,9 @@ fn real_hardware_metal_swapchain_offscreen_renders_with_cpu_parity_and_hidpi_res
 }
 
 fn sample_image_canvas_clip_display_list() -> DisplayList {
-    use nve_components::canvas_ir::{CanvasOp, DrawList, ImageResizeMode};
+    use nve_components::tables::ImageFit;
 
     const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
-
-    let mut canvas_ops = CanvasOp::sparkline(
-        &[10.0, 40.0, 20.0, 75.0, 55.0, 95.0],
-        160.0,
-        60.0,
-        ColorRgba::rgb(56, 189, 248),
-        ColorRgba::rgb(17, 24, 39),
-    );
-    canvas_ops.push(CanvasOp::FillCircle {
-        cx: 30.0,
-        cy: 80.0,
-        radius: 10.0,
-        color: ColorRgba::rgb(16, 185, 129),
-    });
-    canvas_ops.push(CanvasOp::StrokeLine {
-        x0: 60.0,
-        y0: 80.0,
-        x1: 140.0,
-        y1: 80.0,
-        width: 4.0,
-        color: ColorRgba::rgb(239, 68, 68),
-    });
-    canvas_ops.push(CanvasOp::ClipRect {
-        x: 10.0,
-        y: 100.0,
-        w: 25.0,
-        h: 20.0,
-    });
-    canvas_ops.push(CanvasOp::FillRect {
-        x: 10.0,
-        y: 100.0,
-        w: 80.0,
-        h: 20.0,
-        color: ColorRgba::rgb(250, 204, 21),
-    });
-    canvas_ops.push(CanvasOp::RestoreClip);
 
     DisplayList {
         ops: vec![
@@ -276,19 +240,39 @@ fn sample_image_canvas_clip_display_list() -> DisplayList {
                 },
                 radius: 12.0,
                 src: AVATAR_MAYA.to_string(),
-                resize_mode: ImageResizeMode::Cover,
+                fit: ImageFit::Cover,
             },
-            // 3. Real zero-serialization DrawList CustomSkiaCanvas at (110, 10, 160x130).
-            PaintOp::CustomSkiaCanvas {
-                node_id: 99,
+            // 3. Secondary clipped card at (110, 10, 160x130) with yellow accent inside clip.
+            PaintOp::FillRoundedRect {
                 rect: LayoutRect {
                     x: 110.0,
                     y: 10.0,
                     width: 160.0,
-                    height: 130.0,
+                    height: 60.0,
                 },
-                ops: DrawList::from_ops(canvas_ops),
+                radius: 0.0,
+                color: ColorRgba::rgb(17, 24, 39),
             },
+            PaintOp::PushClip {
+                rect: LayoutRect {
+                    x: 120.0,
+                    y: 110.0,
+                    width: 25.0,
+                    height: 20.0,
+                },
+                radius: 0.0,
+            },
+            PaintOp::FillRoundedRect {
+                rect: LayoutRect {
+                    x: 120.0,
+                    y: 110.0,
+                    width: 80.0,
+                    height: 20.0,
+                },
+                radius: 0.0,
+                color: ColorRgba::rgb(250, 204, 21),
+            },
+            PaintOp::PopClip,
         ],
     }
 }
@@ -326,49 +310,21 @@ fn assert_image_canvas_clip_parity(label: &str, buf: &PixelBuffer) {
         "{label}: DrawImage rounded corner not clipped"
     );
 
-    // 3. CustomSkiaCanvas NVE_DRAW1:
-    // Sparkline background inside (110..270, 10..70)
+    // 3. Secondary card background + clipped yellow interior.
     assert_eq!(
         buf.get_rgb(120, 20),
         Some((17, 24, 39)),
-        "{label}: sparkline bg mismatch"
+        "{label}: card bg mismatch"
     );
-    // Sparkline cyan curve pixels present
-    let mut cyan_hits = 0usize;
-    for y in 10..70 {
-        for x in 110..270 {
-            let (r, g, b) = buf.get_rgb(x, y).unwrap();
-            if r <= 80 && g >= 160 && b >= 220 {
-                cyan_hits += 1;
-            }
-        }
-    }
-    assert!(
-        cyan_hits >= 25,
-        "{label}: expected sparkline cyan stroke pixels, found {cyan_hits}"
-    );
-    // FillCircle green center at (110 + 30, 10 + 80) = (140, 90)
-    assert_eq!(
-        buf.get_rgb(140, 90),
-        Some((16, 185, 129)),
-        "{label}: NVE_DRAW1 FillCircle mismatch"
-    );
-    // StrokeLine red midpoint at (110 + 100, 10 + 80) = (210, 90)
-    assert_eq!(
-        buf.get_rgb(210, 90),
-        Some((239, 68, 68)),
-        "{label}: NVE_DRAW1 StrokeLine mismatch"
-    );
-    // ClipRect inside yellow at (110 + 20, 10 + 110) = (130, 120), clipped outside at (160, 120)
     assert_eq!(
         buf.get_rgb(130, 120),
         Some((250, 204, 21)),
-        "{label}: NVE_DRAW1 clipped FillRect interior mismatch"
+        "{label}: clipped yellow interior mismatch"
     );
     assert_eq!(
         buf.get_rgb(160, 120),
         Some((0, 0, 0)),
-        "{label}: NVE_DRAW1 ClipRect leaked past clip boundary"
+        "{label}: PushClip leaked past right boundary"
     );
 }
 

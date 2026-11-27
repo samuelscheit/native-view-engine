@@ -2,9 +2,10 @@
 
 use std::ffi::c_void;
 
-use nve_abi::{Dimension, FlexAlign, FlexDirection, FlexJustify, LayoutProps};
-use nve_components::layout_ext::{LayoutDirection, LayoutExt, PositionMode};
-use nve_components::style_patch::Display;
+use nve_components::tables::{
+    AlignItems, Display, FlexDirection, JustifyContent, LayoutDirection, LayoutRef, Position,
+};
+use nve_store::{Length, LengthKind};
 
 #[repr(C)]
 pub struct YGConfig {
@@ -36,7 +37,7 @@ pub struct NveYogaMeasureHook {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NveYogaLayoutProps {
     pub width_tag: u8,
     pub width_val: f32,
@@ -104,65 +105,33 @@ pub struct NveYogaLayoutExt {
     pub mar_end: f32,
 }
 
-impl From<&LayoutExt> for NveYogaLayoutExt {
-    fn from(ext: &LayoutExt) -> Self {
-        let (flex_basis_tag, flex_basis_val) = encode_dim(ext.flex_basis);
-        let (top_tag, top_val) = encode_dim(ext.insets.top);
-        let (right_tag, right_val) = encode_dim(ext.insets.right);
-        let (bottom_tag, bottom_val) = encode_dim(ext.insets.bottom);
-        let (left_tag, left_val) = encode_dim(ext.insets.left);
-        Self {
-            display: u8::from(ext.display == Display::None),
-            flex_basis_tag,
-            flex_basis_val,
-            has_aspect_ratio: u8::from(ext.aspect_ratio.is_some()),
-            aspect_ratio: ext.aspect_ratio.unwrap_or(0.0),
-            position_mode: match ext.position {
-                PositionMode::Relative => 0,
-                PositionMode::Absolute => 1,
-                PositionMode::Sticky => 2,
-            },
-            top_tag,
-            top_val,
-            right_tag,
-            right_val,
-            bottom_tag,
-            bottom_val,
-            left_tag,
-            left_val,
-            direction: match ext.direction {
-                None => 0,
-                Some(LayoutDirection::Ltr) => 1,
-                Some(LayoutDirection::Rtl) => 2,
-            },
-            has_pad_start: u8::from(ext.padding_inline.start.is_some()),
-            pad_start: ext.padding_inline.start.unwrap_or(0.0),
-            has_pad_end: u8::from(ext.padding_inline.end.is_some()),
-            pad_end: ext.padding_inline.end.unwrap_or(0.0),
-            has_mar_start: u8::from(ext.margin_inline.start.is_some()),
-            mar_start: ext.margin_inline.start.unwrap_or(0.0),
-            has_mar_end: u8::from(ext.margin_inline.end.is_some()),
-            mar_end: ext.margin_inline.end.unwrap_or(0.0),
-        }
+#[inline]
+fn encode_len(l: Length) -> (u8, f32) {
+    match l.kind() {
+        LengthKind::Auto => (0, 0.0),
+        LengthKind::Px => (1, l.value()),
+        LengthKind::Percent => (2, l.value()),
     }
 }
 
-fn encode_dim(d: Dimension) -> (u8, f32) {
-    match d {
-        Dimension::Auto => (0, 0.0),
-        Dimension::Points(v) => (1, v),
-        Dimension::Percent(v) => (2, v),
+#[inline]
+fn len_px(l: Length) -> f32 {
+    match l.kind() {
+        LengthKind::Px => l.value(),
+        _ => 0.0,
     }
 }
 
-impl From<&LayoutProps> for NveYogaLayoutProps {
-    fn from(l: &LayoutProps) -> Self {
-        let (width_tag, width_val) = encode_dim(l.width);
-        let (height_tag, height_val) = encode_dim(l.height);
-        let (min_width_tag, min_width_val) = encode_dim(l.min_width);
-        let (min_height_tag, min_height_val) = encode_dim(l.min_height);
-        let (max_width_tag, max_width_val) = encode_dim(l.max_width);
-        let (max_height_tag, max_height_val) = encode_dim(l.max_height);
+impl NveYogaLayoutProps {
+    pub fn from_store_layout(l: &LayoutRef<'_>) -> Self {
+        let (width_tag, width_val) = encode_len(l.width());
+        let (height_tag, height_val) = encode_len(l.height());
+        let (min_width_tag, min_width_val) = encode_len(l.min_width());
+        let (min_height_tag, min_height_val) = encode_len(l.min_height());
+        let (max_width_tag, max_width_val) = encode_len(l.max_width());
+        let (max_height_tag, max_height_val) = encode_len(l.max_height());
+        let pad_inline = l.padding_inline_logical();
+        let mar_inline = l.margin_inline_logical();
         Self {
             width_tag,
             width_val,
@@ -176,39 +145,86 @@ impl From<&LayoutProps> for NveYogaLayoutProps {
             max_width_val,
             max_height_tag,
             max_height_val,
-            flex_direction: match l.flex_direction {
+            flex_direction: match l.flex_direction() {
                 FlexDirection::Column => 0,
                 FlexDirection::Row => 1,
                 FlexDirection::ColumnReverse => 2,
                 FlexDirection::RowReverse => 3,
             },
-            justify_content: match l.justify_content {
-                FlexJustify::FlexStart => 0,
-                FlexJustify::Center => 1,
-                FlexJustify::FlexEnd => 2,
-                FlexJustify::SpaceBetween => 3,
-                FlexJustify::SpaceAround => 4,
-                FlexJustify::SpaceEvenly => 5,
+            justify_content: match l.justify_content() {
+                JustifyContent::FlexStart => 0,
+                JustifyContent::Center => 1,
+                JustifyContent::FlexEnd => 2,
+                JustifyContent::SpaceBetween => 3,
+                JustifyContent::SpaceAround => 4,
+                JustifyContent::SpaceEvenly => 5,
             },
-            align_items: match l.align_items {
-                FlexAlign::Stretch => 0,
-                FlexAlign::FlexStart => 1,
-                FlexAlign::Center => 2,
-                FlexAlign::FlexEnd => 3,
-                FlexAlign::Baseline => 4,
+            align_items: match l.align_items() {
+                AlignItems::Stretch => 0,
+                AlignItems::FlexStart => 1,
+                AlignItems::Center => 2,
+                AlignItems::FlexEnd => 3,
+                AlignItems::Baseline => 4,
             },
             _reserved: 0,
-            flex_grow: l.flex_grow,
-            flex_shrink: l.flex_shrink,
-            gap: l.gap,
-            pad_top: l.padding.top,
-            pad_right: l.padding.right,
-            pad_bottom: l.padding.bottom,
-            pad_left: l.padding.left,
-            margin_top: l.margin.top,
-            margin_right: l.margin.right,
-            margin_bottom: l.margin.bottom,
-            margin_left: l.margin.left,
+            flex_grow: l.flex_grow(),
+            flex_shrink: l.flex_shrink(),
+            gap: len_px(l.row_gap()).max(len_px(l.column_gap())),
+            pad_top: len_px(l.padding_top()),
+            pad_right: if pad_inline { 0.0 } else { len_px(l.padding_right()) },
+            pad_bottom: len_px(l.padding_bottom()),
+            pad_left: if pad_inline { 0.0 } else { len_px(l.padding_left()) },
+            margin_top: len_px(l.margin_top()),
+            margin_right: if mar_inline { 0.0 } else { len_px(l.margin_right()) },
+            margin_bottom: len_px(l.margin_bottom()),
+            margin_left: if mar_inline { 0.0 } else { len_px(l.margin_left()) },
+        }
+    }
+}
+
+impl NveYogaLayoutExt {
+    pub fn from_store_layout(l: &LayoutRef<'_>) -> Self {
+        let (flex_basis_tag, flex_basis_val) = encode_len(l.flex_basis());
+        let (top_tag, top_val) = encode_len(l.inset_top());
+        let (right_tag, right_val) = encode_len(l.inset_right());
+        let (bottom_tag, bottom_val) = encode_len(l.inset_bottom());
+        let (left_tag, left_val) = encode_len(l.inset_left());
+        let ar = l.aspect_ratio();
+        let has_ar = ar.is_finite() && ar > 0.0;
+        let pad_inline = l.padding_inline_logical();
+        let mar_inline = l.margin_inline_logical();
+        Self {
+            display: u8::from(l.display() == Display::None),
+            flex_basis_tag,
+            flex_basis_val,
+            has_aspect_ratio: u8::from(has_ar),
+            aspect_ratio: if has_ar { ar } else { 0.0 },
+            position_mode: match l.position() {
+                Position::Relative => 0,
+                Position::Absolute => 1,
+                Position::Sticky => 2,
+            },
+            top_tag,
+            top_val,
+            right_tag,
+            right_val,
+            bottom_tag,
+            bottom_val,
+            left_tag,
+            left_val,
+            direction: match l.direction() {
+                LayoutDirection::Inherit => 0,
+                LayoutDirection::Ltr => 1,
+                LayoutDirection::Rtl => 2,
+            },
+            has_pad_start: u8::from(pad_inline),
+            pad_start: if pad_inline { len_px(l.padding_left()) } else { 0.0 },
+            has_pad_end: u8::from(pad_inline),
+            pad_end: if pad_inline { len_px(l.padding_right()) } else { 0.0 },
+            has_mar_start: u8::from(mar_inline),
+            mar_start: if mar_inline { len_px(l.margin_left()) } else { 0.0 },
+            has_mar_end: u8::from(mar_inline),
+            mar_end: if mar_inline { len_px(l.margin_right()) } else { 0.0 },
         }
     }
 }

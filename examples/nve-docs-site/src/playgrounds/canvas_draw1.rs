@@ -2,7 +2,9 @@
 //! rendered by `<skia_canvas>` across Skia GPU, HTML5 Canvas2D, CoreGraphics, and Flutter/Compose.
 
 use nve_abi::ColorRgba;
+use nve_canvas::{Canvas, DrawList};
 use nve_dioxus::prelude::*;
+use nve_dioxus::table_attr_fn;
 use nve_ui::{Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, use_theme};
 
 pub const CANVAS_DRAW1_SOURCE: &str = r#"use nve_abi::ColorRgba;
@@ -171,10 +173,12 @@ pub fn CanvasDraw1Demo() -> Element {
             }
 
             // Live SkiaCanvas / HTML5 Canvas2D surface
-            canvas {
+            view {
                 test_id: "pg-canvas-surface",
                 accessibility_label: "Interactive NVE_DRAW1 vector canvas",
-                draw_list: CanvasDrawList(draw_list),
+                nve_table: table_attr_fn(move |tx, node| {
+                    tx.edit::<Canvas>(node).draw_list_ephemeral(draw_list.clone());
+                }),
                 style: "width: 100%; height: 152px; border-radius: 8px; border-width: 1px; border-color: {theme.palette.border}; background-color: #0c0d12;",
             }
 

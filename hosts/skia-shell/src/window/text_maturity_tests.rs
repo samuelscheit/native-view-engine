@@ -1,12 +1,13 @@
 use std::path::Path;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, NodeId, RawPropValue, StyleProps,
-    SurfaceId, ROOT_NODE_ID,
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
+use nve_backend_skia::{grapheme_count, is_grapheme_boundary};
+use nve_components::tables::{
+    register_core_tables, FlexDirection, Interaction, Layout, TextInput, Typography, Visual,
 };
-use nve_backend_skia::is_grapheme_boundary;
-use nve_engine::{RenderBackend, Viewport};
+use nve_engine::Viewport;
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 use winit::event::Ime;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -21,15 +22,24 @@ struct TextMaturityApp {
     single_val: String,
     multi_val: String,
     events_log: Vec<(NodeId, NativeEventKind, String)>,
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    initialized: bool,
     frame_buf: Vec<u8>,
 }
 
 impl TextMaturityApp {
     fn new(single: &str, multi: &str) -> Self {
+        register_core_tables();
         Self {
             single_val: single.to_owned(),
             multi_val: multi.to_owned(),
             events_log: Vec::new(),
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            initialized: false,
             frame_buf: Vec::new(),
         }
     }
@@ -40,85 +50,67 @@ impl DesktopApp for TextMaturityApp {
         1
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(1, frame_id);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Percent(100.0),
-                height: Dimension::Percent(100.0),
-                padding: EdgeInsets::all(12.0),
-                gap: 10.0,
-                flex_direction: FlexDirection::Column,
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            2,
-            &StyleProps {
-                background: ColorRgba::rgb(15, 23, 42),
-                ..Default::default()
-            },
-        );
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        let mut tx = self.store.tx();
+        if !self.initialized {
+            for id in [1u32, 2, 10, 11] {
+                let _ = tx.create_at(StoreNodeId(id));
+            }
+            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let p12 = Length::points(12.0);
+            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p12);
+            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p12);
+            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p12);
+            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p12);
+            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(10.0));
+            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(10.0));
+            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
-        // Node 10: single-line TextInput
-        b.create_node(10, ComponentKind::TextInput, None);
-        b.set_layout(
-            10,
-            &LayoutProps {
-                width: Dimension::Points(340.0),
-                height: Dimension::Points(36.0),
-                padding: EdgeInsets::symmetric(0.0, 10.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            10,
-            &StyleProps {
-                background: ColorRgba::rgb(30, 41, 59),
-                text_color: ColorRgba::WHITE,
-                font_size: 16.0,
-                ..Default::default()
-            },
-        );
-        b.set_raw_prop(10, "value", &RawPropValue::String(self.single_val.clone()));
-        b.set_event_mask(
-            10,
-            EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION,
-        );
+            // Node 10: single-line TextInput
+            tx.attach::<TextInput>(StoreNodeId(10));
+            tx.set(StoreNodeId(10), Layout::WIDTH, Length::points(340.0));
+            tx.set(StoreNodeId(10), Layout::HEIGHT, Length::points(36.0));
+            tx.set(StoreNodeId(10), Layout::PADDING_LEFT, Length::points(10.0));
+            tx.set(StoreNodeId(10), Layout::PADDING_RIGHT, Length::points(10.0));
+            tx.set(StoreNodeId(10), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+            tx.set(StoreNodeId(10), Typography::COLOR, Rgba::WHITE);
+            tx.set(StoreNodeId(10), Typography::FONT_SIZE, 16.0);
+            tx.set(
+                StoreNodeId(10),
+                Interaction::EVENT_MASK,
+                (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION)
+                    as u32,
+            );
 
-        // Node 11: multiline TextInput
-        b.create_node(11, ComponentKind::TextInput, None);
-        b.set_layout(
-            11,
-            &LayoutProps {
-                width: Dimension::Points(340.0),
-                height: Dimension::Points(60.0),
-                padding: EdgeInsets::symmetric(0.0, 10.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            11,
-            &StyleProps {
-                background: ColorRgba::rgb(30, 41, 59),
-                text_color: ColorRgba::WHITE,
-                font_size: 16.0,
-                ..Default::default()
-            },
-        );
-        b.set_raw_prop(11, "value", &RawPropValue::String(self.multi_val.clone()));
-        b.set_raw_prop(11, "multiline", &RawPropValue::Bool(true));
-        b.set_event_mask(
-            11,
-            EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION,
-        );
+            // Node 11: multiline TextInput
+            tx.attach::<TextInput>(StoreNodeId(11));
+            tx.set(StoreNodeId(11), Layout::WIDTH, Length::points(340.0));
+            tx.set(StoreNodeId(11), Layout::HEIGHT, Length::points(60.0));
+            tx.set(StoreNodeId(11), Layout::PADDING_LEFT, Length::points(10.0));
+            tx.set(StoreNodeId(11), Layout::PADDING_RIGHT, Length::points(10.0));
+            tx.set(StoreNodeId(11), Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+            tx.set(StoreNodeId(11), Typography::COLOR, Rgba::WHITE);
+            tx.set(StoreNodeId(11), Typography::FONT_SIZE, 16.0);
+            tx.set(StoreNodeId(11), TextInput::MULTILINE, true);
+            tx.set(
+                StoreNodeId(11),
+                Interaction::EVENT_MASK,
+                (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE | EventMask::COMPOSITION)
+                    as u32,
+            );
 
-        b.set_children(2, &[10, 11]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+            tx.set_children(StoreNodeId(2), &[StoreNodeId(10), StoreNodeId(11)]);
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            self.initialized = true;
+        }
+        tx.set_str(StoreNodeId(10), TextInput::VALUE, &self.single_val);
+        tx.set_str(StoreNodeId(11), TextInput::VALUE, &self.multi_val);
+        tx.commit_into(&mut self.changes);
+        self.frame_buf.clear();
+        self.encoder
+            .encode(&self.store, &self.changes, &mut self.frame_buf);
         &self.frame_buf
     }
 
@@ -201,15 +193,15 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
     let none = ModifiersState::empty();
     let shift = ModifiersState::SHIFT;
 
-    assert_eq!(session.backend().caret_byte_index(), initial.len());
-    assert_eq!(session.backend().caret_grapheme_index(), 4);
+    assert_eq!(session.backend().focus_state().caret_byte_index, initial.len());
+    assert_eq!(grapheme_count(&initial[..session.backend().focus_state().caret_byte_index]), 4);
 
     // ArrowLeft moves over the entire `e\u{0301}` combining cluster in ONE step.
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::ArrowLeft), None, none)
         .unwrap());
     assert_eq!(
-        session.backend().caret_byte_index(),
+        session.backend().focus_state().caret_byte_index,
         initial.len() - accent.len()
     );
 
@@ -217,7 +209,7 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::ArrowLeft), None, shift)
         .unwrap());
-    assert_eq!(session.backend().selected_text().as_deref(), Some(wave));
+    assert_eq!(session.selected_text().as_deref(), Some(wave));
 
     // Backspace deletes the selected `👋🏽` cleanly without corrupting neighbors.
     assert!(session
@@ -242,31 +234,31 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
         .handle_keyboard_input(&Key::Named(NamedKey::Backspace), None, none)
         .unwrap());
     assert_eq!(session.app().single_val, "");
-    assert_eq!(session.backend().caret_byte_index(), 0);
+    assert_eq!(session.backend().focus_state().caret_byte_index, 0);
 }
 
 #[test]
 fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
     let mut session = new_session("hello world_42 test", "line one\nline two");
-    let r10 = session.backend().layout_of(10).unwrap();
+    let r10 = session.layout_of(10).unwrap();
     let click_x = r10.x + 28.0;
     let click_y = r10.y + r10.height * 0.5;
 
     // Click 1: caret placement.
     session.handle_click_logical(click_x, click_y).unwrap();
     session.handle_pointer_up_logical();
-    assert_eq!(session.backend().selection_range(), None);
+    assert_eq!(session.backend().focus_state().selection_range(), None);
 
     // Click 2: double-click word select ("hello").
     session.handle_click_logical(click_x, click_y).unwrap();
     session.handle_pointer_up_logical();
-    assert_eq!(session.backend().selected_text().as_deref(), Some("hello"));
+    assert_eq!(session.selected_text().as_deref(), Some("hello"));
 
     // Click 3: triple-click paragraph/line select (entire line!).
     session.handle_click_logical(click_x, click_y).unwrap();
     session.handle_pointer_up_logical();
     assert_eq!(
-        session.backend().selected_text().as_deref(),
+        session.selected_text().as_deref(),
         Some("hello world_42 test")
     );
 
@@ -281,7 +273,9 @@ fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
 
     // Paste with CRLF + CR into multiline (node 11) normalizes line endings to `\n`.
     session.focus_node(Some(11)).unwrap();
-    session.backend_mut().select_all_text();
+    session
+        .handle_keyboard_input(&Key::Character("a".into()), None, ModifiersState::SUPER)
+        .unwrap();
     assert!(session
         .handle_keyboard_input(&Key::Character("v".into()), None, ModifiersState::SUPER)
         .unwrap());
@@ -306,14 +300,14 @@ fn bidi_visual_navigation_and_backspace_never_panic_or_split_clusters() {
             .handle_keyboard_input(&Key::Named(NamedKey::ArrowLeft), None, none)
             .unwrap();
         let val = session.app().single_val.clone();
-        assert!(is_grapheme_boundary(&val, session.backend().caret_byte_index()));
+        assert!(is_grapheme_boundary(&val, session.backend().focus_state().caret_byte_index));
     }
     for _ in 0..30 {
         let _ = session
             .handle_keyboard_input(&Key::Named(NamedKey::ArrowRight), None, none)
             .unwrap();
         let val = session.app().single_val.clone();
-        assert!(is_grapheme_boundary(&val, session.backend().caret_byte_index()));
+        assert!(is_grapheme_boundary(&val, session.backend().focus_state().caret_byte_index));
     }
 
     // Backspace across the entire mixed LTR+RTL string deletes one grapheme at a time cleanly.
@@ -327,7 +321,7 @@ fn bidi_visual_navigation_and_backspace_never_panic_or_split_clusters() {
             .unwrap());
         let val = &session.app().single_val;
         assert!(val.len() < before_len);
-        assert!(is_grapheme_boundary(val, session.backend().caret_byte_index()));
+        assert!(is_grapheme_boundary(val, session.backend().focus_state().caret_byte_index));
     }
 }
 
@@ -378,7 +372,7 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
         .handle_ime(&Ime::Preedit("zhong".into(), Some((0, 5))))
         .unwrap());
     assert!(session.focus_node(None).unwrap());
-    assert_eq!(session.backend().ime_preedit(), None);
+    assert_eq!(session.backend().focus_state().ime_preedit.as_deref(), None);
     assert_eq!(session.ime_cursor_rect_logical(), None);
     assert_eq!(
         session.app().events_log,

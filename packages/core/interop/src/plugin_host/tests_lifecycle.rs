@@ -1,14 +1,45 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    CommandBufferBuilder, CommandDecoder, ComponentKind, NveAppHandle, NveBufferSlice,
-    NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch, NveGestureDisposition,
-    NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi,
-    NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
-    ROOT_NODE_ID,
+    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
+    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
+use nve_components::tables::TextContent;
+use nve_store::wire::{WireDecoder, WireEncoder};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 
 use super::*;
+
+fn encode_text_frame(label: &str) -> Vec<u8> {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let n = tx.create();
+    tx.edit::<TextContent>(n).text(label);
+    tx.set_children(NodeId::ROOT, &[n]);
+    tx.commit_into(&mut changes);
+    let mut enc = WireEncoder::default();
+    let mut out = Vec::new();
+    enc.encode(&store, &changes, &mut out);
+    out
+}
+
+fn decode_first_text(bytes: &[u8]) -> String {
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    let mut tx = replica.tx();
+    dec.apply(&mut tx, bytes).expect("decode nve2");
+    tx.commit_into(&mut changes);
+    let child = replica.children(NodeId::ROOT)[0];
+    replica
+        .try_row::<TextContent>(child)
+        .expect("TextContent attached")
+        .text()
+        .to_owned()
+}
 
 // ---- Test Plugin V1: full capability plugin (SURFACE + LAYOUT + COMPONENT + DEV) ----
 struct MockPluginState {
@@ -48,14 +79,9 @@ unsafe extern "C" fn p_destroy(handle: NveAppHandle) {
     }
 }
 
-unsafe extern "C" fn p_render(handle: NveAppHandle, frame_id: u64) -> NveBufferSlice {
+unsafe extern "C" fn p_render(handle: NveAppHandle, _frame_id: u64) -> NveBufferSlice {
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    let mut b = CommandBufferBuilder::new(st.surface_id, frame_id);
-    b.create_node(2, ComponentKind::Text, None);
-    b.set_text(2, &format!("{}:count={}", st.version_tag, st.counter));
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    st.frame_buf = b.into_bytes();
+    st.frame_buf = encode_text_frame(&format!("{}:count={}", st.version_tag, st.counter));
     NveBufferSlice::from_slice(&st.frame_buf)
 }
 
@@ -260,9 +286,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert!(slot.set_props(&props).unwrap());
     assert!(slot.dispatch_events(&[]).unwrap()); // counter -> 43
     let f1 = slot.render(1).unwrap().to_vec();
-    let (hdr1, cmds1) = CommandDecoder::new(&f1).unwrap().decode_all().unwrap();
-    assert_eq!(hdr1.surface_id, 20_001);
-    assert!(format!("{cmds1:?}").contains("v1:count=43"));
+    assert_eq!(decode_first_text(&f1), "v1:count=43");
 
     // 5. Failed hot-swap (broken plugin returning null handle or missing surface)
     // must NOT crash or destroy v1!
@@ -286,8 +310,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     let still_v1 = host.get_mut(p_full).unwrap();
     assert_eq!(still_v1.generation(), 1);
     let f_after_fail = still_v1.render(2).unwrap().to_vec();
-    let (_, cmds_fail) = CommandDecoder::new(&f_after_fail).unwrap().decode_all().unwrap();
-    assert!(format!("{cmds_fail:?}").contains("v1:count=43"));
+    assert_eq!(decode_first_text(&f_after_fail), "v1:count=43");
 
     // 6. Valid hot-swap v1 -> v2 preserves isolated surface_id (20_001) and counter=43!
     let gen2 = host
@@ -303,9 +326,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert_eq!(v2_slot.surface_id(), 20_001);
     assert_eq!(v2_slot.generation(), 2);
     let f2 = v2_slot.render(3).unwrap().to_vec();
-    let (hdr2, cmds2) = CommandDecoder::new(&f2).unwrap().decode_all().unwrap();
-    assert_eq!(hdr2.surface_id, 20_001);
-    assert!(format!("{cmds2:?}").contains("v2:count=43"));
+    assert_eq!(decode_first_text(&f2), "v2:count=43");
 
     // 7. Duplicate name rejected; unload cleans up cleanly.
     assert!(matches!(

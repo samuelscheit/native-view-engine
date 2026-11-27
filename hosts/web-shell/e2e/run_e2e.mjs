@@ -349,9 +349,9 @@ async function waitForCondition(cdp, description, fnSource, timeoutMs = 15000) {
       innerWidth: window.innerWidth,
       innerHeight: window.innerHeight,
       appRect: document.getElementById('app')?.getBoundingClientRect()?.toJSON(),
-      viewportMode: document.querySelector('[testid="workspace-root"]')?.getAttribute('viewport-mode'),
-      hasMobileTopBar: Boolean(document.querySelector('[testid="mobile-top-bar"]')),
-      hasDesktopSidebar: Boolean(document.querySelector('[testid="desktop-sidebar"]')),
+      viewportMode: document.querySelector('[data-testid="workspace-root"]')?.getAttribute('data-viewport-mode'),
+      hasMobileTopBar: Boolean(document.querySelector('[data-testid="mobile-top-bar"]')),
+      hasDesktopSidebar: Boolean(document.querySelector('[data-testid="desktop-sidebar"]')),
       status: document.getElementById('nve-status')?.textContent,
       text: document.getElementById('app')?.innerText?.slice(0, 400),
     }))()`
@@ -820,7 +820,7 @@ async function main() {
       cdp,
       "Image avatar <img> loaded with naturalWidth > 0 and object-fit: cover",
       () => {
-        const img = document.querySelector('img[testid="task-avatar-1"]');
+        const img = document.querySelector('img[data-testid="task-avatar-1"]');
         if (!img) return false;
         const style = getComputedStyle(img);
         return img.complete && img.naturalWidth > 0 && style.objectFit === "cover" && Boolean(img.alt);
@@ -829,7 +829,7 @@ async function main() {
     const avatarInfo = await evalJs(
       cdp,
       `(() => {
-        const img = document.querySelector('img[testid="task-avatar-1"]');
+        const img = document.querySelector('img[data-testid="task-avatar-1"]');
         return { naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, objectFit: getComputedStyle(img).objectFit, alt: img.alt };
       })()`
     );
@@ -838,7 +838,7 @@ async function main() {
     // 1b. Board TextInput live search filter + clear
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="board-search-input"]')`,
+      `document.querySelector('[data-testid="board-search-input"]')`,
       "AppKit",
       "board-search-input"
     );
@@ -852,7 +852,7 @@ async function main() {
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="board-search-clear"]')`,
+      `document.querySelector('[data-testid="board-search-clear"]')`,
       "board-search-clear"
     );
     await waitForCondition(
@@ -864,7 +864,7 @@ async function main() {
     // 1c. Board TextInput composer + Enter submit creates AET-105
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="board-new-task-input"]')`,
+      `document.querySelector('[data-testid="board-new-task-input"]')`,
       "Ship Web Canvas E2E",
       "board-new-task-input"
     );
@@ -881,7 +881,7 @@ async function main() {
     // 1d. Click task status pill on AET-101 -> advances In Progress -> Done
     await clickElement(
       cdp,
-      `document.querySelector('[testid="task-status-1"]')`,
+      `document.querySelector('[data-testid="task-status-1"]')`,
       "task-status-1"
     );
     await waitForCondition(
@@ -898,18 +898,18 @@ async function main() {
     await waitForCondition(
       cdp,
       "Cmd+K opened command palette via real CDP keyboard event",
-      () => Boolean(document.querySelector('[testid="command-palette"]'))
+      () => Boolean(document.querySelector('[data-testid="command-palette"]'))
     );
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="palette-input"]')`,
+      `document.querySelector('[data-testid="palette-input"]')`,
       "Accent:",
       "palette-input"
     );
     await waitForCondition(
       cdp,
       "Command palette filtered to Accent options",
-      () => (document.querySelector('[testid="command-palette"]')?.innerText || "").includes("Violet")
+      () => (document.querySelector('[data-testid="command-palette"]')?.innerText || "").includes("Violet")
     );
     await pressKey(cdp, { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 });
     await pressKey(cdp, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
@@ -917,7 +917,7 @@ async function main() {
       cdp,
       "Command palette ArrowDown + Enter applied Accent -> Violet and closed",
       () => {
-        const pal = document.querySelector('[testid="command-palette"]');
+        const pal = document.querySelector('[data-testid="command-palette"]');
         const text = document.getElementById("app")?.innerText || "";
         return !pal && text.includes("Accent -> Violet");
       }
@@ -927,20 +927,20 @@ async function main() {
     await waitForCondition(
       cdp,
       "Ctrl+K re-opened command palette",
-      () => Boolean(document.querySelector('[testid="command-palette"]'))
+      () => Boolean(document.querySelector('[data-testid="command-palette"]'))
     );
     await pressKey(cdp, { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await waitForCondition(
       cdp,
       "Escape closed command palette",
-      () => !document.querySelector('[testid="command-palette"]')
+      () => !document.querySelector('[data-testid="command-palette"]')
     );
     console.log("    PASS Cmd+K / Ctrl+K palette (open, filter, ArrowDown, Enter, Escape)");
 
     // 1f. `# engineering` channel view + chat composer TextInput Enter submit
     await clickElement(
       cdp,
-      `document.querySelector('[testid="nav-engineering"]')`,
+      `document.querySelector('[data-testid="nav-engineering"]')`,
       "nav-engineering"
     );
     await waitForCondition(
@@ -953,7 +953,7 @@ async function main() {
     );
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="chat-composer-input"]')`,
+      `document.querySelector('[data-testid="chat-composer-input"]')`,
       "Live from Web WASM!",
       "chat-composer-input"
     );
@@ -965,44 +965,44 @@ async function main() {
     );
 
     // 1g. Islands view `<Island>` bus broadcast & gesture arbitration
-    await clickElement(cdp, `document.querySelector('[testid="nav-islands"]')`, "nav-islands");
+    await clickElement(cdp, `document.querySelector('[data-testid="nav-islands"]')`, "nav-islands");
     await waitForCondition(
       cdp,
       "Islands view rendered",
-      () => Boolean(document.querySelector('[testid="islands-summary"]'))
+      () => Boolean(document.querySelector('[data-testid="islands-summary"]'))
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="island-bus-theme"]')`,
+      `document.querySelector('[data-testid="island-bus-theme"]')`,
       "island-bus-theme"
     );
     await waitForCondition(
       cdp,
       "Islands NveChannelBus theme broadcast recorded",
-      () => (document.querySelector('[testid="islands-summary"]')?.innerText || "").includes("Bus: 1 tx")
+      () => (document.querySelector('[data-testid="islands-summary"]')?.innerText || "").includes("Bus: 1 tx")
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="island-gesture-claim"]')`,
+      `document.querySelector('[data-testid="island-gesture-claim"]')`,
       "island-gesture-claim"
     );
     await waitForCondition(
       cdp,
       "Islands GestureArbitrator Claim recorded",
-      () => (document.querySelector('[testid="islands-gesture-readout"]')?.innerText || "").includes("Claim | winner:")
+      () => (document.querySelector('[data-testid="islands-gesture-readout"]')?.innerText || "").includes("Claim | winner:")
     );
     console.log("    PASS Islands view (NveChannelBus broadcast + GestureArbitrator Claim)");
 
     // 1h. 100k Stream view jump #50k and #99,999
-    await clickElement(cdp, `document.querySelector('[testid="nav-stream"]')`, "nav-stream");
+    await clickElement(cdp, `document.querySelector('[data-testid="nav-stream"]')`, "nav-stream");
     await waitForCondition(
       cdp,
       "100k Stream view rendered",
-      () => Boolean(document.querySelector('[testid="stream-viewport"]'))
+      () => Boolean(document.querySelector('[data-testid="stream-viewport"]'))
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="stream-jump-50k"]')`,
+      `document.querySelector('[data-testid="stream-jump-50k"]')`,
       "stream-jump-50k"
     );
     await waitForCondition(
@@ -1012,7 +1012,7 @@ async function main() {
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="stream-jump-end"]')`,
+      `document.querySelector('[data-testid="stream-jump-end"]')`,
       "stream-jump-end"
     );
     await waitForCondition(
@@ -1023,19 +1023,19 @@ async function main() {
     console.log("    PASS 100k Stream view (#50k -> STR-50000, #99,999 -> STR-99999)");
 
     // 1i. Metrics view `<canvas>` NVE_DRAW1 non-blank painted pixel verification
-    await clickElement(cdp, `document.querySelector('[testid="nav-metrics"]')`, "nav-metrics");
+    await clickElement(cdp, `document.querySelector('[data-testid="nav-metrics"]')`, "nav-metrics");
     await waitForCondition(
       cdp,
       "Metrics <canvas> rendered with NVE_DRAW1 draw ops",
       () => {
-        const c = document.querySelector('canvas[testid="metrics-sparkline-canvas"]');
+        const c = document.querySelector('canvas[data-testid="metrics-sparkline-canvas"]');
         return Boolean(c && c.width > 0 && c.height > 0 && Number(c.getAttribute("data-nve-draw-ops")) > 0);
       }
     );
     const canvasCheck = await evalJs(
       cdp,
       `(() => {
-        const c = document.querySelector('canvas[testid="metrics-sparkline-canvas"]');
+        const c = document.querySelector('canvas[data-testid="metrics-sparkline-canvas"]');
         const ctx = c.getContext('2d');
         const img = ctx.getImageData(0, 0, c.width, c.height).data;
         let nonTransparent = 0;
@@ -1067,19 +1067,19 @@ async function main() {
     );
 
     // 1j. X-Ray toggle + deterministic time-travel Undo / First
-    await clickElement(cdp, `document.querySelector('[testid="toggle-xray"]')`, "toggle-xray");
+    await clickElement(cdp, `document.querySelector('[data-testid="toggle-xray"]')`, "toggle-xray");
     await waitForCondition(
       cdp,
       "X-Ray HUD toggled ON",
       () => (document.getElementById("app")?.innerText || "").includes("X-Ray HUD: ON")
     );
-    await clickElement(cdp, `document.querySelector('[testid="tt-undo"]')`, "tt-undo");
+    await clickElement(cdp, `document.querySelector('[data-testid="tt-undo"]')`, "tt-undo");
     await waitForCondition(
       cdp,
       "Time-travel Undo restored X-Ray HUD: OFF",
       () => (document.getElementById("app")?.innerText || "").includes("X-Ray HUD: OFF")
     );
-    await clickElement(cdp, `document.querySelector('[testid="tt-first"]')`, "tt-first");
+    await clickElement(cdp, `document.querySelector('[data-testid="tt-first"]')`, "tt-first");
     await waitForCondition(
       cdp,
       "Time-travel << #1 restored Issue Board",
@@ -1107,9 +1107,9 @@ async function main() {
       cdp,
       "Studio Workspace dynamically collapsed to mobile layout (mobile-top-bar visible)",
       () => {
-        const topBar = document.querySelector('[testid="mobile-top-bar"]');
-        const desktopSidebar = document.querySelector('[testid="desktop-sidebar"]');
-        const center = document.querySelector('[testid="center-workspace"]');
+        const topBar = document.querySelector('[data-testid="mobile-top-bar"]');
+        const desktopSidebar = document.querySelector('[data-testid="desktop-sidebar"]');
+        const center = document.querySelector('[data-testid="center-workspace"]');
         if (!topBar || desktopSidebar || !center) return false;
         const tbRect = topBar.getBoundingClientRect();
         const cwRect = center.getBoundingClientRect();
@@ -1119,8 +1119,8 @@ async function main() {
     const mobileMetrics = await evalJs(
       cdp,
       `(() => {
-        const tb = document.querySelector('[testid="mobile-top-bar"]').getBoundingClientRect();
-        const cw = document.querySelector('[testid="center-workspace"]').getBoundingClientRect();
+        const tb = document.querySelector('[data-testid="mobile-top-bar"]').getBoundingClientRect();
+        const cw = document.querySelector('[data-testid="center-workspace"]').getBoundingClientRect();
         return {
           innerWidth: window.innerWidth,
           topBar: { w: Math.round(tb.width), h: Math.round(tb.height) },
@@ -1143,8 +1143,8 @@ async function main() {
       cdp,
       "Studio Workspace restored 3-column desktop layout after resize back to 1280x800",
       () =>
-        Boolean(document.querySelector('[testid="desktop-sidebar"]')) &&
-        !document.querySelector('[testid="mobile-top-bar"]')
+        Boolean(document.querySelector('[data-testid="desktop-sidebar"]')) &&
+        !document.querySelector('[data-testid="mobile-top-bar"]')
     );
     console.log(
       `    PASS Mobile Portrait Resize (393x852 mobile-top-bar=${mobileMetrics.topBar.w}x${mobileMetrics.topBar.h}, center=${mobileMetrics.center.w}x${mobileMetrics.center.h}, restored desktop)`
@@ -1192,7 +1192,7 @@ async function main() {
 
     const findButtonByText = (label) =>
       `Array.from(document.querySelectorAll('#app button')).find((b) => b.innerText.trim() === ${JSON.stringify(label)})`;
-    const findByTestId = (tid) => `document.querySelector('#app [testid="${tid}"]')`;
+    const findByTestId = (tid) => `document.querySelector('#app [data-testid="${tid}"]')`;
 
     // Click Increment + twice -> Count: 1 -> Count: 2
     await clickElement(cdp, findByTestId("ks-counter-inc"), "Kitchen Sink Increment + (1st click)");
@@ -1270,20 +1270,20 @@ async function main() {
       "StudioWorkspaceApp remounted with nav-docs and nav-workbench",
       () =>
         window.__nveController?.app_name === "StudioWorkspaceApp" &&
-        Boolean(document.querySelector('[testid="nav-docs"]')) &&
-        Boolean(document.querySelector('[testid="nav-workbench"]'))
+        Boolean(document.querySelector('[data-testid="nav-docs"]')) &&
+        Boolean(document.querySelector('[data-testid="nav-workbench"]'))
     );
 
-    await clickElement(cdp, `document.querySelector('[testid="nav-docs"]')`, "nav-docs");
+    await clickElement(cdp, `document.querySelector('[data-testid="nav-docs"]')`, "nav-docs");
     await waitForCondition(
       cdp,
       "Docs view rendered seeded RFC-042 and Release Checklist docs",
       () => {
-        const hdr = document.querySelector('[testid="docs-header"]')?.innerText || "";
-        const list = document.querySelector('[testid="docs-blocks-list"]')?.innerText || "";
+        const hdr = document.querySelector('[data-testid="docs-header"]')?.innerText || "";
+        const list = document.querySelector('[data-testid="docs-blocks-list"]')?.innerText || "";
         return (
-          Boolean(document.querySelector('[testid="doc-tab-1"]')) &&
-          Boolean(document.querySelector('[testid="doc-tab-2"]')) &&
+          Boolean(document.querySelector('[data-testid="doc-tab-1"]')) &&
+          Boolean(document.querySelector('[data-testid="doc-tab-2"]')) &&
           hdr.includes("7 blocks | 1/2 checks") &&
           list.includes("RFC-042: Zero-Copy NveSceneView") &&
           list.includes("Enable crash-safe NVERELOC + MmapOffsetArena local persistence in Studio")
@@ -1292,7 +1292,7 @@ async function main() {
     );
 
     // Switch to second seeded doc and back to RFC-042.
-    await clickElement(cdp, `document.querySelector('[testid="doc-tab-2"]')`, "doc-tab-2");
+    await clickElement(cdp, `document.querySelector('[data-testid="doc-tab-2"]')`, "doc-tab-2");
     await waitForCondition(
       cdp,
       "Switched to Release Checklist: v1.0 seeded doc",
@@ -1301,32 +1301,32 @@ async function main() {
         return text.includes("Pre-Flight Gates") && text.includes("8 blocks | 2/3 checks");
       }
     );
-    await clickElement(cdp, `document.querySelector('[testid="doc-tab-1"]')`, "doc-tab-1");
+    await clickElement(cdp, `document.querySelector('[data-testid="doc-tab-1"]')`, "doc-tab-1");
     await waitForCondition(
       cdp,
       "Switched back to RFC-042 seeded doc",
-      () => (document.querySelector('[testid="docs-header"]')?.innerText || "").includes("7 blocks | 1/2 checks")
+      () => (document.querySelector('[data-testid="docs-header"]')?.innerText || "").includes("7 blocks | 1/2 checks")
     );
 
     // Add a new block via the Docs composer.
     const addedBlockDraft = "Stream binary NVD1 deltas over WebSocket";
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="doc-new-block-input"]')`,
+      `document.querySelector('[data-testid="doc-new-block-input"]')`,
       addedBlockDraft,
       "doc-new-block-input"
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="doc-new-block-submit"]')`,
+      `document.querySelector('[data-testid="doc-new-block-submit"]')`,
       "doc-new-block-submit"
     );
     await waitForCondition(
       cdp,
       "New block #16 appended to RFC-042 doc",
       () => {
-        const hdr = document.querySelector('[testid="docs-header"]')?.innerText || "";
-        const blk = document.querySelector('[testid="doc-block-16"]')?.innerText || "";
+        const hdr = document.querySelector('[data-testid="docs-header"]')?.innerText || "";
+        const blk = document.querySelector('[data-testid="doc-block-16"]')?.innerText || "";
         return hdr.includes("8 blocks | 1/2 checks") && blk.includes("Stream binary NVD1 deltas over WebSocket");
       }
     );
@@ -1335,43 +1335,43 @@ async function main() {
     const editedBlockText = "Verified binary NVD1 WebSocket streaming";
     await clickElement(
       cdp,
-      `document.querySelector('[testid="doc-block-edit-16"]')`,
+      `document.querySelector('[data-testid="doc-block-edit-16"]')`,
       "doc-block-edit-16"
     );
     await waitForCondition(
       cdp,
       "Inline editor opened for block #16",
-      () => Boolean(document.querySelector('[testid="doc-block-input-16"]'))
+      () => Boolean(document.querySelector('[data-testid="doc-block-input-16"]'))
     );
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="doc-block-input-16"]')`,
+      `document.querySelector('[data-testid="doc-block-input-16"]')`,
       editedBlockText,
       "doc-block-input-16"
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="doc-block-save-16"]')`,
+      `document.querySelector('[data-testid="doc-block-save-16"]')`,
       "doc-block-save-16"
     );
     await waitForCondition(
       cdp,
       "Edited block #16 saved and inline input closed",
       () =>
-        !document.querySelector('[testid="doc-block-input-16"]') &&
-        (document.querySelector('[testid="doc-block-16"]')?.innerText || "").includes(
+        !document.querySelector('[data-testid="doc-block-input-16"]') &&
+        (document.querySelector('[data-testid="doc-block-16"]')?.innerText || "").includes(
           "Verified binary NVD1 WebSocket streaming"
         )
     );
 
     // Toggle unchecked checklist item #7 -> [x] (2/2 checks).
-    await clickElement(cdp, `document.querySelector('[testid="doc-check-7"]')`, "doc-check-7");
+    await clickElement(cdp, `document.querySelector('[data-testid="doc-check-7"]')`, "doc-check-7");
     await waitForCondition(
       cdp,
       "Checklist item #7 toggled to [x] (2/2 checks)",
       () => {
-        const hdr = document.querySelector('[testid="docs-header"]')?.innerText || "";
-        const chk = document.querySelector('[testid="doc-check-7"]')?.innerText || "";
+        const hdr = document.querySelector('[data-testid="docs-header"]')?.innerText || "";
+        const chk = document.querySelector('[data-testid="doc-check-7"]')?.innerText || "";
         return chk.includes("[x]") && hdr.includes("2/2 checks");
       }
     );
@@ -1379,8 +1379,8 @@ async function main() {
     // Reorder block #16 up above block #7 and verify DOM order changed.
     const orderBefore = await evalJs(
       cdp,
-      `Array.from(document.querySelectorAll('[testid="docs-blocks-list"] [testid^="doc-block-"]'))
-        .map((el) => el.getAttribute('testid'))
+      `Array.from(document.querySelectorAll('[data-testid="docs-blocks-list"] [data-testid^="doc-block-"]'))
+        .map((el) => el.getAttribute('data-testid'))
         .filter((id) => /^doc-block-\\d+$/.test(id))`
     );
     if (!(orderBefore.indexOf("doc-block-7") >= 0 && orderBefore.indexOf("doc-block-7") < orderBefore.indexOf("doc-block-16"))) {
@@ -1388,7 +1388,7 @@ async function main() {
     }
     await clickElement(
       cdp,
-      `document.querySelector('[testid="doc-block-up-16"]')`,
+      `document.querySelector('[data-testid="doc-block-up-16"]')`,
       "doc-block-up-16"
     );
     await waitForCondition(
@@ -1396,9 +1396,9 @@ async function main() {
       "Block #16 reordered above block #7",
       () => {
         const ids = Array.from(
-          document.querySelectorAll('[testid="docs-blocks-list"] [testid^="doc-block-"]')
+          document.querySelectorAll('[data-testid="docs-blocks-list"] [data-testid^="doc-block-"]')
         )
-          .map((el) => el.getAttribute("testid"))
+          .map((el) => el.getAttribute("data-testid"))
           .filter((id) => /^doc-block-\d+$/.test(id));
         const idx16 = ids.indexOf("doc-block-16");
         const idx7 = ids.indexOf("doc-block-7");
@@ -1407,12 +1407,12 @@ async function main() {
     );
 
     // Export Markdown and assert full structure, checked item, edited text, and reordered sequence.
-    await clickElement(cdp, `document.querySelector('[testid="doc-export-md"]')`, "doc-export-md");
+    await clickElement(cdp, `document.querySelector('[data-testid="doc-export-md"]')`, "doc-export-md");
     await waitForCondition(
       cdp,
       "Markdown export preview rendered with edited & reordered blocks",
       () => {
-        const md = document.querySelector('[testid="doc-markdown-preview"]')?.innerText || "";
+        const md = document.querySelector('[data-testid="doc-markdown-preview"]')?.innerText || "";
         return (
           md.includes("MARKDOWN EXPORT") &&
           md.includes("# RFC-042: Zero-Copy NveSceneView") &&
@@ -1423,7 +1423,7 @@ async function main() {
     );
     const mdText = await evalJs(
       cdp,
-      `document.querySelector('[testid="doc-markdown-preview"]')?.innerText || ''`
+      `document.querySelector('[data-testid="doc-markdown-preview"]')?.innerText || ''`
     );
     const editedPos = mdText.indexOf(editedBlockText);
     const checkPos = mdText.indexOf("- [x] Enable crash-safe NVERELOC");
@@ -1442,21 +1442,21 @@ async function main() {
     console.log("==> [5/7] Testing Studio Workbench View (ActiveView::Workbench)...");
     await clickElement(
       cdp,
-      `document.querySelector('[testid="nav-workbench"]')`,
+      `document.querySelector('[data-testid="nav-workbench"]')`,
       "nav-workbench"
     );
     await waitForCondition(
       cdp,
       "Workbench view rendered with 3 viewport presets and 9 connected host cards",
       () => {
-        const grid = document.querySelector('[testid="wb-viewport-grid"]');
-        const hosts = document.querySelectorAll('[testid^="wb-host-"]');
+        const grid = document.querySelector('[data-testid="wb-viewport-grid"]');
+        const hosts = document.querySelectorAll('[data-testid^="wb-host-"]');
         return (
-          grid?.getAttribute("workbench-preset") === "all" &&
-          Boolean(document.querySelector('[testid="wb-frame-desktop"]')) &&
-          Boolean(document.querySelector('[testid="wb-frame-tablet"]')) &&
-          Boolean(document.querySelector('[testid="wb-frame-mobile"]')) &&
-          Boolean(document.querySelector('[testid="wb-telemetry-banner"]')) &&
+          grid?.getAttribute("data-workbench-preset") === "all" &&
+          Boolean(document.querySelector('[data-testid="wb-frame-desktop"]')) &&
+          Boolean(document.querySelector('[data-testid="wb-frame-tablet"]')) &&
+          Boolean(document.querySelector('[data-testid="wb-frame-mobile"]')) &&
+          Boolean(document.querySelector('[data-testid="wb-telemetry-banner"]')) &&
           hosts.length === 9
         );
       }
@@ -1468,7 +1468,7 @@ async function main() {
         const readRect = (el) => {
           const r = el.getBoundingClientRect();
           return {
-            id: el.getAttribute('testid'),
+            id: el.getAttribute('data-testid'),
             left: Math.round(r.left),
             top: Math.round(r.top),
             right: Math.round(r.right),
@@ -1478,8 +1478,8 @@ async function main() {
           };
         };
         const frames = ['wb-frame-desktop', 'wb-frame-tablet', 'wb-frame-mobile']
-          .map((id) => readRect(document.querySelector('[testid="' + id + '"]')));
-        const hosts = Array.from(document.querySelectorAll('[testid^="wb-host-"]')).map(readRect);
+          .map((id) => readRect(document.querySelector('[data-testid="' + id + '"]')));
+        const hosts = Array.from(document.querySelectorAll('[data-testid^="wb-host-"]')).map(readRect);
         return { frames, hosts };
       })()`
     );
@@ -1492,59 +1492,59 @@ async function main() {
       ["wb-preset-tablet", "tablet", "wb-frame-tablet", ["wb-frame-desktop", "wb-frame-mobile"]],
       ["wb-preset-mobile", "mobile", "wb-frame-mobile", ["wb-frame-desktop", "wb-frame-tablet"]],
     ]) {
-      await clickElement(cdp, `document.querySelector('[testid="${btnId}"]')`, btnId);
+      await clickElement(cdp, `document.querySelector('[data-testid="${btnId}"]')`, btnId);
       await waitForCondition(
         cdp,
         `Workbench preset switched to ${presetName}`,
         `() => {
-          const grid = document.querySelector('[testid="wb-viewport-grid"]');
-          const active = document.querySelector('[testid="${expectedFrame}"]');
+          const grid = document.querySelector('[data-testid="wb-viewport-grid"]');
+          const active = document.querySelector('[data-testid="${expectedFrame}"]');
           const absentOk = ${JSON.stringify(absentFrames)}.every(
-            (id) => !document.querySelector('[testid="' + id + '"]')
+            (id) => !document.querySelector('[data-testid="' + id + '"]')
           );
           if (!grid || !active || !absentOk) return false;
           const r = active.getBoundingClientRect();
-          return grid.getAttribute('workbench-preset') === ${JSON.stringify(presetName)} && r.width > 120 && r.height > 60;
+          return grid.getAttribute('data-workbench-preset') === ${JSON.stringify(presetName)} && r.width > 120 && r.height > 60;
         }`
       );
     }
 
-    await clickElement(cdp, `document.querySelector('[testid="wb-preset-all"]')`, "wb-preset-all");
+    await clickElement(cdp, `document.querySelector('[data-testid="wb-preset-all"]')`, "wb-preset-all");
     await waitForCondition(
       cdp,
       "Workbench preset restored to all (3) frames",
       () =>
-        document.querySelector('[testid="wb-viewport-grid"]')?.getAttribute("workbench-preset") ===
+        document.querySelector('[data-testid="wb-viewport-grid"]')?.getAttribute("data-workbench-preset") ===
           "all" &&
-        Boolean(document.querySelector('[testid="wb-frame-desktop"]')) &&
-        Boolean(document.querySelector('[testid="wb-frame-tablet"]')) &&
-        Boolean(document.querySelector('[testid="wb-frame-mobile"]'))
+        Boolean(document.querySelector('[data-testid="wb-frame-desktop"]')) &&
+        Boolean(document.querySelector('[data-testid="wb-frame-tablet"]')) &&
+        Boolean(document.querySelector('[data-testid="wb-frame-mobile"]'))
     );
 
     // Toggle device chrome off/on and select a host card to verify interactivity.
     await clickElement(
       cdp,
-      `document.querySelector('[testid="wb-toggle-chrome"]')`,
+      `document.querySelector('[data-testid="wb-toggle-chrome"]')`,
       "wb-toggle-chrome (off)"
     );
     await waitForCondition(
       cdp,
       "Workbench device chrome toggled off",
-      () => !(document.querySelector('[testid="wb-frame-desktop"]')?.innerText || "").includes("1280x800")
+      () => !(document.querySelector('[data-testid="wb-frame-desktop"]')?.innerText || "").includes("1280x800")
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="wb-toggle-chrome"]')`,
+      `document.querySelector('[data-testid="wb-toggle-chrome"]')`,
       "wb-toggle-chrome (on)"
     );
     await waitForCondition(
       cdp,
       "Workbench device chrome restored",
-      () => (document.querySelector('[testid="wb-frame-desktop"]')?.innerText || "").includes("1280x800")
+      () => (document.querySelector('[data-testid="wb-frame-desktop"]')?.innerText || "").includes("1280x800")
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid^="wb-host-"]')`,
+      `document.querySelector('[data-testid^="wb-host-"]')`,
       "workbench first host card"
     );
     console.log(
@@ -1672,8 +1672,8 @@ async function main() {
         const ctrl = window.__nveController;
         const pre = window.__nveSsrPreHydrate;
         const rootAfter = document.querySelector('#app [data-nve-id="1"]');
-        const searchAfter = document.querySelector('[testid="board-search-input"]');
-        const statusAfter = document.querySelector('[testid="task-status-1"]');
+        const searchAfter = document.querySelector('[data-testid="board-search-input"]');
+        const statusAfter = document.querySelector('[data-testid="task-status-1"]');
         const invalidStyleAttrs = document.querySelectorAll('[font-weight],[text-align],[box-shadow]').length;
         return {
           isHydrated: ctrl.is_hydrated(),
@@ -1710,7 +1710,7 @@ async function main() {
     // 7a. Verify preserved <input> focus & element identity across keyed SetChildren updates.
     await typeIntoInput(
       cdp,
-      `document.querySelector('[testid="board-search-input"]')`,
+      `document.querySelector('[data-testid="board-search-input"]')`,
       "AppKit",
       "hydrated board-search-input"
     );
@@ -1719,7 +1719,7 @@ async function main() {
       "Hydrated search filtered board to AET-102 while preserving <input> focus",
       () => {
         const text = document.getElementById("app")?.innerText || "";
-        const inp = document.querySelector('[testid="board-search-input"]');
+        const inp = document.querySelector('[data-testid="board-search-input"]');
         return (
           text.includes("AET-102") &&
           !text.includes("AET-101") &&
@@ -1730,7 +1730,7 @@ async function main() {
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="board-search-clear"]')`,
+      `document.querySelector('[data-testid="board-search-clear"]')`,
       "hydrated board-search-clear"
     );
     await waitForCondition(
@@ -1740,7 +1740,7 @@ async function main() {
     );
     await clickElement(
       cdp,
-      `document.querySelector('[testid="task-status-1"]')`,
+      `document.querySelector('[data-testid="task-status-1"]')`,
       "hydrated task-status-1"
     );
     await waitForCondition(
@@ -1820,13 +1820,13 @@ async function main() {
         document.body.appendChild(host);
         // First pass mounts SSR HTML + hydrates; capture pre-hydrate nodes from a second clean hydration pass.
         const firstMismatches = window.__nveWasmMod.run_semantic_style_hydration_probe('nve-style-probe');
-        const cardBefore = host.querySelector('article[testid="probe-card"]');
-        const headingBefore = host.querySelector('h1[testid="probe-heading"]');
-        const linkBefore = host.querySelector('a[testid="probe-link"]');
+        const cardBefore = host.querySelector('article[data-testid="probe-card"]');
+        const headingBefore = host.querySelector('h1[data-testid="probe-heading"]');
+        const linkBefore = host.querySelector('a[data-testid="probe-link"]');
         const secondMismatches = window.__nveWasmMod.run_semantic_style_hydration_probe('nve-style-probe');
-        const cardAfter = host.querySelector('article[testid="probe-card"]');
-        const headingAfter = host.querySelector('h1[testid="probe-heading"]');
-        const linkAfter = host.querySelector('a[testid="probe-link"]');
+        const cardAfter = host.querySelector('article[data-testid="probe-card"]');
+        const headingAfter = host.querySelector('h1[data-testid="probe-heading"]');
+        const linkAfter = host.querySelector('a[data-testid="probe-link"]');
         const cardStyle = cardAfter ? getComputedStyle(cardAfter) : null;
         const headingStyle = headingAfter ? getComputedStyle(headingAfter) : null;
         const res = {
@@ -1878,11 +1878,12 @@ async function main() {
         const all = (id) => host.querySelectorAll('[data-nve-id="' + id + '"]');
         const n = (id) => all(id)[0];
         const id = (el) => el?.getAttribute('data-nve-id');
+        const root = host.firstElementChild;
         const res = {
           connected: host.isConnected && document.getElementById('nve-hostile-probe') === host,
-          rootTag: host.tagName,
-          rootId: host.getAttribute('data-nve-id'),
-          rootChildren: [...host.children].map(id).join(','),
+          rootTag: root?.tagName,
+          rootId: root?.getAttribute('data-nve-id'),
+          rootChildren: root ? [...root.children].map(id).join(',') : '',
           counts: [2, 3, 4, 5, 6, 7, 8].map((i) => all(i).length).join(','),
           movedParent: id(n(6)?.parentElement),
           keptChildParent: id(n(7)?.parentElement),
@@ -2094,7 +2095,7 @@ async function main() {
       //     then block .wasm and assert <script data-nve-snapshot-boot> overrides default Board SSG with mutated Docs at 0ms!
       await typeIntoInput(
         cdp,
-        `document.querySelector('[testid="board-new-task-input"]')`,
+        `document.querySelector('[data-testid="board-new-task-input"]')`,
         "Zero-MS Snapshot Task",
         "snapshot board-new-task-input"
       );
@@ -2104,13 +2105,13 @@ async function main() {
         "Mutated Studio added AET-105 Zero-MS Snapshot Task",
         () => (document.getElementById("app")?.innerText || "").includes("Zero-MS Snapshot Task")
       );
-      await clickElement(cdp, `document.querySelector('[testid="task-status-1"]')`, "snapshot task-status-1");
+      await clickElement(cdp, `document.querySelector('[data-testid="task-status-1"]')`, "snapshot task-status-1");
       await waitForCondition(
         cdp,
         "Mutated Studio advanced AET-101 to Done (2)",
         () => (document.getElementById("app")?.innerText || "").includes("Done (2)")
       );
-      await clickElement(cdp, `document.querySelector('[testid="nav-docs"]')`, "snapshot nav-docs");
+      await clickElement(cdp, `document.querySelector('[data-testid="nav-docs"]')`, "snapshot nav-docs");
       await waitForCondition(
         cdp,
         "Mutated Studio switched to Docs view",
@@ -2178,7 +2179,7 @@ async function main() {
           "0ms snapshot painted while .wasm request is paused mid-flight",
           () =>
             document.getElementById("app")?.dataset.nveRestored === "1" &&
-            Boolean(document.querySelector('[testid="doc-tab-2"]')) &&
+            Boolean(document.querySelector('[data-testid="doc-tab-2"]')) &&
             window.__nveController === undefined
         );
         await evalJs(
@@ -2188,7 +2189,7 @@ async function main() {
             return Boolean(window.__nveSnapRootBefore);
           })()`
         );
-        await clickElement(cdp, `document.querySelector('[testid="doc-tab-2"]')`, "pre-hydration doc-tab-2");
+        await clickElement(cdp, `document.querySelector('[data-testid="doc-tab-2"]')`, "pre-hydration doc-tab-2");
       } finally {
         for (const requestId of pausedWasmRequests) {
           await cdp.send("Fetch.continueRequest", { requestId }).catch(() => {});
@@ -2239,7 +2240,7 @@ async function main() {
         throw new Error(`Snapshot hydration invariant failed: ${JSON.stringify(snapHydrateStats)}`);
       }
 
-      await clickElement(cdp, `document.querySelector('[testid="nav-board"]')`, "restored nav-board");
+      await clickElement(cdp, `document.querySelector('[data-testid="nav-board"]')`, "restored nav-board");
       await waitForCondition(
         cdp,
         "Restored Studio NWS1 preserved Board task AET-105 and Done (2)",
@@ -2373,6 +2374,7 @@ async function main() {
       );
       console.log("    PASS ?reset=1 clean clear (0-mismatch cold SSG fallback) + corrupt localStorage automatic recovery");
     } finally {
+      ssgServer.closeAllConnections?.();
       await new Promise((resolve) => ssgServer.close(() => resolve()));
       fs.rmSync(ssgTmpDir, { recursive: true, force: true });
     }

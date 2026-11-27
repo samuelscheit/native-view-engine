@@ -1,176 +1,89 @@
-//! Scroll-aware, clip-aware, and z-index-ordered hit testing for [`crate::SkiaBackend`].
-//!
-//! Eliminates per-node `children.clone()` heap allocations via a stack buffer for z-ordered
-//! containers up to 64 children (with an automatic `Vec` fallback for larger z-ordered siblings).
+//! Z-ordered, clip-aware, scroll-shifted, sticky-clamped, `Transform2D`-mapped hit testing for
+//! [`crate::SkiaBackend`] directly over `&NodeStore`.
 
-use nve_abi::{ComponentKind, EventMask, NodeId, ROOT_NODE_ID};
-use nve_backend_headless::HeadlessNode;
-use nve_engine::{LayoutEngine, LayoutRect};
+use nve_abi::{EventMask, NodeId};
+use nve_components::tables::{Display, Interaction, Layout, Scroll, Visual};
+use nve_engine::{LayoutRect, StoreLayoutEngine};
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use crate::display_list::{intersect_rects, offset_rect, point_in_rect, should_clip_children};
 use crate::{SkiaBackend, MAX_HIT_TEST_DEPTH};
 
-const INLINE_Z_SORT_CAPACITY: usize = 64;
-
-#[inline]
-fn is_focusable_node(node: &HeadlessNode) -> bool {
-    node.kind == ComponentKind::TextInput
-        || (node.event_mask & (EventMask::FOCUS | EventMask::TEXT_CHANGE)) != 0
-}
-
 #[derive(Clone, Copy)]
 enum HitTargetFilter {
-    Interactive,
-    Focusable,
-    Interaction,
+    EventSubscribed,
+    InteractionEligible,
 }
 
 impl HitTargetFilter {
-    #[inline]
-    fn matches<L: LayoutEngine>(self, layout_tree: &nve_backend_headless::HeadlessBackend<L>, node: &HeadlessNode) -> bool {
+    fn matches<L: StoreLayoutEngine>(
+        self,
+        backend: &SkiaBackend<L>,
+        store: &NodeStore,
+        id: StoreNodeId,
+    ) -> bool {
         match self {
-            Self::Interactive => node.event_mask != 0,
-            Self::Focusable => is_focusable_node(node),
-            Self::Interaction => layout_tree.is_interaction_target(node),
+            Self::EventSubscribed => store
+                .try_row::<Interaction>(id)
+                .is_some_and(|i| i.event_mask() != 0),
+            Self::InteractionEligible => backend.layout_tree.is_interaction_target(store, id),
         }
     }
 }
 
-impl<L: LayoutEngine> SkiaBackend<L> {
-    /// Scroll-aware and clip-aware interactive hit test at logical coordinates `(x, y)`.
-    pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
+impl<L: StoreLayoutEngine> SkiaBackend<L> {
+    pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
         self.hit_test_filtered(
-            ROOT_NODE_ID,
+            store,
+            StoreNodeId::ROOT,
             x,
             y,
             (0.0, 0.0),
             None,
-            HitTargetFilter::Interactive,
+            false,
+            HitTargetFilter::EventSubscribed,
             0,
         )
     }
 
-    /// Scroll-aware, clip-aware, and z-order-aware focusable hit test (`TextInput` or any node
-    /// subscribed to `EventMask::FOCUS | EventMask::TEXT_CHANGE`) at logical coordinates `(x, y)`.
-    pub fn hit_test_focusable(&self, x: f32, y: f32) -> Option<NodeId> {
+    pub fn hit_test_interaction(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
         self.hit_test_filtered(
-            ROOT_NODE_ID,
+            store,
+            StoreNodeId::ROOT,
             x,
             y,
             (0.0, 0.0),
             None,
-            HitTargetFilter::Focusable,
+            false,
+            HitTargetFilter::InteractionEligible,
             0,
         )
     }
 
-    /// Scroll-aware, clip-aware, and z-order-aware interaction hit test for hover/active/cursor
-    /// state (matches interactive nodes, `Pressable`/`TextInput`, disabled nodes, and any node
-    /// declaring `state_rules` or an explicit `cursor`).
-    pub fn hit_test_interaction(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_filtered(
-            ROOT_NODE_ID,
-            x,
-            y,
-            (0.0, 0.0),
-            None,
-            HitTargetFilter::Interaction,
-            0,
-        )
+    pub fn hit_test_scroll_container(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
+        self.hit_test_scroll_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), None, false, 0)
     }
 
-    /// Finds the deepest `ScrollView` (or node subscribed to `EventMask::SCROLL`) enclosing `(x, y)`.
-    pub fn hit_test_scroll_view(&self, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_scroll_rec(ROOT_NODE_ID, x, y, (0.0, 0.0), None, 0)
-    }
-
-    /// Returns `true` if any retained node subscribes to `EventMask::KEY_DOWN` or `EventMask::CUSTOM`.
-    pub fn has_custom_event_listener(&self) -> bool {
-        self.find_event_mask_rec(ROOT_NODE_ID, EventMask::KEY_DOWN | EventMask::CUSTOM, 0)
-            .is_some()
-    }
-
-    /// Returns the first retained node subscribed to `EventMask::KEY_DOWN` or `EventMask::CUSTOM`,
-    /// falling back to `ROOT_NODE_ID` when no specific node declares keyboard/custom listeners.
-    pub fn find_custom_event_target(&self) -> NodeId {
-        self.find_event_mask_rec(ROOT_NODE_ID, EventMask::KEY_DOWN | EventMask::CUSTOM, 0)
-            .unwrap_or(ROOT_NODE_ID)
-    }
-
-    /// Resolves the nearest ancestor (including `start`) subscribed to `EventMask::KEY_DOWN` or
-    /// `EventMask::CUSTOM`, falling back to [`Self::find_custom_event_target`].
-    pub fn find_custom_event_target_from(&self, start: NodeId) -> NodeId {
-        let mask = EventMask::KEY_DOWN | EventMask::CUSTOM;
-        let mut cursor = Some(start);
-        let mut steps = 0usize;
-        while let Some(id) = cursor {
-            if steps > MAX_HIT_TEST_DEPTH {
-                break;
-            }
-            steps += 1;
-            let Some(node) = self.layout_tree.node(id) else {
-                break;
-            };
-            if (node.event_mask & mask) != 0 {
-                return id;
-            }
-            cursor = node.parent;
-        }
-        self.find_custom_event_target()
-    }
-
-    fn find_event_mask_rec(&self, id: NodeId, mask: u64, depth: usize) -> Option<NodeId> {
-        if depth > MAX_HIT_TEST_DEPTH {
-            return None;
-        }
-        let node = self.layout_tree.node(id)?;
-        for &child in node.children.iter().rev() {
-            if let Some(found) = self.find_event_mask_rec(child, mask, depth + 1) {
-                return Some(found);
-            }
-        }
-        if (node.event_mask & mask) != 0 {
-            Some(id)
-        } else {
-            None
-        }
-    }
-
-    /// Invokes `visit` on `children` in reverse paint order (topmost z-index first), using a
-    /// stack buffer for up to 64 children to avoid per-node heap allocations.
-    fn visit_children_topmost_first<F, R>(&self, children: &[NodeId], mut visit: F) -> Option<R>
-    where
-        F: FnMut(NodeId) -> Option<R>,
-    {
-        let has_z_order = children.len() > 1
+    fn visit_children_topmost_first(
+        store: &NodeStore,
+        children: &[StoreNodeId],
+        mut visit: impl FnMut(StoreNodeId) -> Option<NodeId>,
+    ) -> Option<NodeId> {
+        let has_z = children.len() > 1
             && children
                 .iter()
-                .any(|&cid| self.layout_tree.node(cid).is_some_and(|c| c.style.z_index != 0));
-        if !has_z_order {
-            for &child in children.iter().rev() {
-                if let Some(hit) = visit(child) {
-                    return Some(hit);
-                }
-            }
-            return None;
-        }
-
-        if children.len() <= INLINE_Z_SORT_CAPACITY {
-            let mut stack_buf = [0u32; INLINE_Z_SORT_CAPACITY];
-            let slice = &mut stack_buf[..children.len()];
-            slice.copy_from_slice(children);
-            slice.sort_by_key(|&cid| self.layout_tree.node(cid).map_or(0, |c| c.style.z_index));
-            for &child in slice.iter().rev() {
-                if let Some(hit) = visit(child) {
+                .any(|&cid| store.try_row::<Visual>(cid).is_some_and(|v| v.z_index() != 0));
+        if !has_z {
+            for &cid in children.iter().rev() {
+                if let Some(hit) = visit(cid) {
                     return Some(hit);
                 }
             }
         } else {
-            let mut sorted = Vec::with_capacity(children.len());
-            sorted.extend_from_slice(children);
-            sorted.sort_by_key(|&cid| self.layout_tree.node(cid).map_or(0, |c| c.style.z_index));
-            for &child in sorted.iter().rev() {
-                if let Some(hit) = visit(child) {
+            let mut sorted: Vec<StoreNodeId> = children.to_vec();
+            sorted.sort_by_key(|&cid| store.try_row::<Visual>(cid).map_or(0, |v| v.z_index()));
+            for cid in sorted.into_iter().rev() {
+                if let Some(hit) = visit(cid) {
                     return Some(hit);
                 }
             }
@@ -181,32 +94,32 @@ impl<L: LayoutEngine> SkiaBackend<L> {
     #[allow(clippy::too_many_arguments)]
     fn hit_test_filtered(
         &self,
-        id: NodeId,
+        store: &NodeStore,
+        id: StoreNodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
         clip: Option<LayoutRect>,
+        inherited_hidden: bool,
         filter: HitTargetFilter,
         depth: usize,
     ) -> Option<NodeId> {
-        if depth > MAX_HIT_TEST_DEPTH {
+        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) {
             return None;
         }
-        let node = self.layout_tree.node(id)?;
-        if node.style.opacity <= 0.001
-            || node
-                .layout_ext
-                .as_deref()
-                .is_some_and(|e| e.display == nve_components::style_patch::Display::None)
+        if store
+            .try_row::<Layout>(id)
+            .is_some_and(|l| l.display() == Display::None)
         {
             return None;
         }
-
-        let (stx, sty) = self
-            .layout_tree
-            .compute_sticky_delta(id, &self.scroll_offsets);
+        let is_vis_hidden = store
+            .try_row::<Visual>(id)
+            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
+        let rect = self.layout_tree.layout_of(id.raw())?;
+        let (stx, sty) = self.layout_tree.compute_sticky_delta(store, id);
         let node_offset = (offset.0 + stx, offset.1 + sty);
-        let visual_rect = offset_rect(node.computed_rect, node_offset);
+        let visual_rect = offset_rect(rect, node_offset);
         if let Some(c) = clip
             && !point_in_rect(x, y, c)
         {
@@ -215,7 +128,7 @@ impl<L: LayoutEngine> SkiaBackend<L> {
 
         let effective_tf = self
             .motion
-            .resolve_animated_transform(id, self.layout_tree.effective_transform(id));
+            .resolve_animated_transform(id.raw(), self.layout_tree.effective_transform(store, id));
         let (px, py) = if let Some(tf) = effective_tf
             && !tf.is_identity()
         {
@@ -232,8 +145,8 @@ impl<L: LayoutEngine> SkiaBackend<L> {
         };
         let inside_self = point_in_rect(px, py, visual_rect);
 
-        let clips = should_clip_children(node);
-        if !inside_self && id != ROOT_NODE_ID && clips {
+        let clips = should_clip_children(store, id);
+        if !inside_self && id != StoreNodeId::ROOT && clips {
             return None;
         }
 
@@ -245,9 +158,8 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             match next {
                 Some(c) if point_in_rect(px, py, c) => Some(c),
                 _ => {
-                    // Point is outside clipped region; children cannot be hit.
-                    return if inside_self && filter.matches(&self.layout_tree, node) {
-                        Some(id)
+                    return if inside_self && !is_vis_hidden && filter.matches(self, store, id) {
+                        Some(id.raw())
                     } else {
                         None
                     };
@@ -259,49 +171,70 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             clip
         };
 
-        let (sx, sy) = self.visual_scroll_shift(node);
+        let (sx, sy) = self.visual_scroll_shift(store, id);
         let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
 
-        if let Some(hit) = self.visit_children_topmost_first(&node.children, |child| {
-            self.hit_test_filtered(child, px, py, child_offset, child_clip, filter, depth + 1)
+        if let Some(hit) = Self::visit_children_topmost_first(store, store.children(id), |child| {
+            self.hit_test_filtered(
+                store,
+                child,
+                px,
+                py,
+                child_offset,
+                child_clip,
+                is_vis_hidden,
+                filter,
+                depth + 1,
+            )
         }) {
             return Some(hit);
         }
 
-        if inside_self && filter.matches(&self.layout_tree, node) {
-            Some(id)
+        if inside_self && !is_vis_hidden && filter.matches(self, store, id) {
+            Some(id.raw())
         } else {
             None
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn hit_test_scroll_rec(
         &self,
-        id: NodeId,
+        store: &NodeStore,
+        id: StoreNodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
         clip: Option<LayoutRect>,
+        inherited_hidden: bool,
         depth: usize,
     ) -> Option<NodeId> {
-        if depth > MAX_HIT_TEST_DEPTH {
+        if depth > MAX_HIT_TEST_DEPTH || !store.is_live(id) {
             return None;
         }
-        let node = self.layout_tree.node(id)?;
-        if node.style.opacity <= 0.001 {
+        if store
+            .try_row::<Layout>(id)
+            .is_some_and(|l| l.display() == Display::None)
+        {
             return None;
         }
-        let visual_rect = offset_rect(node.computed_rect, offset);
+        let is_vis_hidden = store
+            .try_row::<Visual>(id)
+            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
+        let rect = self.layout_tree.layout_of(id.raw())?;
+        let visual_rect = offset_rect(rect, offset);
         let inside_self =
             point_in_rect(x, y, visual_rect) && clip.is_none_or(|c| point_in_rect(x, y, c));
-        if !inside_self && id != ROOT_NODE_ID {
+        if !inside_self && id != StoreNodeId::ROOT {
             return None;
         }
 
-        let is_scrollable =
-            node.kind == ComponentKind::ScrollView || (node.event_mask & EventMask::SCROLL) != 0;
+        let is_scrollable = store.has::<Scroll>(id)
+            || store
+                .try_row::<Interaction>(id)
+                .is_some_and(|i| (u64::from(i.event_mask()) & EventMask::SCROLL) != 0);
 
-        let child_clip = if should_clip_children(node) {
+        let child_clip = if should_clip_children(store, id) {
             match clip {
                 Some(prev) => intersect_rects(prev, visual_rect),
                 None => Some(visual_rect),
@@ -310,19 +243,29 @@ impl<L: LayoutEngine> SkiaBackend<L> {
             clip
         };
 
-        let (sx, sy) = self.visual_scroll_shift(node);
+        let (sx, sy) = self.visual_scroll_shift(store, id);
         let child_offset = (offset.0 - sx, offset.1 - sy);
 
         if child_clip.is_none_or(|c| point_in_rect(x, y, c))
-            && let Some(hit) = self.visit_children_topmost_first(&node.children, |child| {
-                self.hit_test_scroll_rec(child, x, y, child_offset, child_clip, depth + 1)
-            })
+            && let Some(hit) =
+                Self::visit_children_topmost_first(store, store.children(id), |child| {
+                    self.hit_test_scroll_rec(
+                        store,
+                        child,
+                        x,
+                        y,
+                        child_offset,
+                        child_clip,
+                        is_vis_hidden,
+                        depth + 1,
+                    )
+                })
         {
             return Some(hit);
         }
 
-        if inside_self && is_scrollable {
-            Some(id)
+        if inside_self && !is_vis_hidden && is_scrollable {
+            Some(id.raw())
         } else {
             None
         }

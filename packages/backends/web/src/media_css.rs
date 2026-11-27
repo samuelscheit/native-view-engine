@@ -4,22 +4,16 @@
 //! Accepts strictly typed Rust structs/slices directly from `nve_components::media` with zero
 //! JSON, zero wire serialization, and 0% CSS injection surface.
 
-use core::fmt::Write as _;
-
 use nve_abi::num::{write_i64, write_u64};
-use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify, NodeId};
+use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::layout_ext::GridTrack;
 use nve_components::media::{MediaQuery, ResponsiveRule};
 use nve_components::style_patch::StylePatch;
 
 use crate::css::{
-    canonical_f32, write_compact_color, write_compact_dim, write_compact_edges, write_compact_num,
-    write_compact_px,
+    canonical_f32, format_content_class, write_compact_color, write_compact_dim,
+    write_compact_edges, write_compact_num, write_compact_px,
 };
-use crate::WebBackend;
-
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// One compiled, content-addressed CSS `@media` rule (`@media <condition>{.<class_name>{<decls>}}`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,25 +43,9 @@ impl CompiledMediaRule {
     }
 }
 
-#[inline]
-fn fnv1a_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-    }
-    hash
-}
-
 /// Formats a deterministic content-addressed class token `nve-m-<8hex>` for `(condition, decls)`.
 pub fn format_media_class(condition: &str, decls: &str) -> String {
-    let mut h = FNV1A_OFFSET_BASIS;
-    h = fnv1a_bytes(h, condition.as_bytes());
-    h = fnv1a_bytes(h, &[0]);
-    h = fnv1a_bytes(h, decls.as_bytes());
-    let h32 = (h ^ (h >> 32)) as u32;
-    let mut out = String::with_capacity(14);
-    let _ = write!(&mut out, "nve-m-{h32:08x}");
-    out
+    format_content_class("nve-m-", &[condition.as_bytes(), &[0], decls.as_bytes()])
 }
 
 /// Appends compact CSS shorthand for `padding`/`margin`, explicitly emitting `{prop}:0;` for
@@ -81,7 +59,10 @@ fn write_override_edges(prop: &str, e: EdgeInsets, out: &mut String) {
         out.push_str(prop);
         out.push_str(":0;");
     } else {
-        write_compact_edges(prop, e, out);
+        out.push_str(prop);
+        out.push(':');
+        write_compact_edges(e, out);
+        out.push(';');
     }
 }
 
@@ -399,38 +380,3 @@ pub fn compile_node_media_rules(
     }
 }
 
-impl WebBackend {
-    pub(crate) fn flush_or_queue_responsive_dirty(&mut self, dirty: Vec<NodeId>) {
-        if dirty.is_empty() {
-            return;
-        }
-        #[cfg(feature = "hydrate")]
-        if self.hydrating {
-            self.pending_responsive_dirty.extend(dirty);
-            return;
-        }
-        self.flush_dirty_styles(&dirty);
-    }
-
-    /// Directly attaches or clears a zero-serialization [`MediaQuery`] visibility predicate on `id`.
-    pub fn set_node_show_on(&mut self, id: NodeId, query: Option<MediaQuery>) {
-        let Some(node) = self.nodes.get_mut(&id) else {
-            return;
-        };
-        if node.show_on != query {
-            node.show_on = query;
-            self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-
-    /// Directly replaces the zero-serialization [`ResponsiveRule`] list on `id`.
-    pub fn set_node_responsive_rules(&mut self, id: NodeId, rules: Vec<ResponsiveRule>) {
-        let Some(node) = self.nodes.get_mut(&id) else {
-            return;
-        };
-        if node.responsive_rules != rules {
-            node.responsive_rules = rules;
-            self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-}

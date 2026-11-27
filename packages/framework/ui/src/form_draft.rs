@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use nve_engine::{xxh64, NativeStateStore, StateStoreConfig};
+use nve_abi::xxh64;
+use nve_engine::{NativeStateStore, StateStoreConfig};
 
 pub use crate::form_controller::FormController;
 

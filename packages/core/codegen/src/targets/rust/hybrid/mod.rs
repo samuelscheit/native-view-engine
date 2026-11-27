@@ -95,7 +95,7 @@ fn emit_common_rust_abi(out: &mut String, spec: &HybridFileSpec) {
     writeln!(out, "pub const NVE_HYBRID_ABI_VERSION: u32 = {NVE_HYBRID_ABI_VERSION};").unwrap();
     writeln!(
         out,
-        "/// File-wide deterministic FNV-1a 64-bit schema hash across all declared hybrid items."
+        "/// File-wide deterministic XXH64 schema hash across all declared hybrid items."
     )
     .unwrap();
     writeln!(

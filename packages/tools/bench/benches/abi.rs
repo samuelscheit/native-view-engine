@@ -1,17 +1,21 @@
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
-    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, CommandDecoder,
-    CommandRef, DecodeError, NveLayoutApi, NveMapEntry, NveSceneRef, NveSceneTable,
-    NveSizeConstraints, NveSurfaceApi, NveValue, SceneNodeInput, NVE_IFACE_LAYOUT,
-    NVE_IFACE_SURFACE, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT,
-    NVE_NODE_KIND_TEXT, NVE_NODE_LEAF_TEXT,
+    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, NveLayoutApi, NveMapEntry,
+    NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi, NveValue, SceneNodeInput,
+    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
+    NVE_PRIMARY_SLOT_NONE,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
+use nve_components::tables::{register_core_tables, TextContent};
+use nve_store::wire::WireDecoder;
+use nve_store::{ChangeSet, NodeStore, NveTable};
 
-fn bench_command_buffer_codec(c: &mut Criterion) {
-    let mut encode_group = c.benchmark_group("abi/command_buffer_encode");
+fn bench_nve2_wire_codec(c: &mut Criterion) {
+    register_core_tables();
+
+    let mut encode_group = c.benchmark_group("abi/nve2_wire_encode");
     for &nodes in &[100usize, 1_000, 10_000] {
         encode_group.throughput(Throughput::Elements(nodes as u64));
         encode_group.bench_with_input(BenchmarkId::from_parameter(nodes), &nodes, |b, &n| {
@@ -20,78 +24,26 @@ fn bench_command_buffer_codec(c: &mut Criterion) {
     }
     encode_group.finish();
 
-    let mut decode_group = c.benchmark_group("abi/command_buffer_decode");
+    let mut decode_group = c.benchmark_group("abi/nve2_wire_decode");
     for &nodes in &[100usize, 1_000, 10_000] {
         let encoded = build_node_tree_cmd(nodes, 1);
         decode_group.throughput(Throughput::Bytes(encoded.len() as u64));
         decode_group.bench_with_input(BenchmarkId::from_parameter(nodes), &encoded, |b, bytes| {
-            b.iter(|| {
-                let decoded = CommandDecoder::new(black_box(bytes))
-                    .unwrap()
-                    .decode_all()
-                    .unwrap();
-                black_box(decoded)
-            });
+            b.iter_batched(
+                || (NodeStore::replica(), WireDecoder::default(), ChangeSet::default()),
+                |(mut store, mut dec, mut changes)| {
+                    {
+                        let mut tx = store.tx();
+                        dec.apply(&mut tx, black_box(bytes)).unwrap();
+                        tx.commit_into(&mut changes);
+                    }
+                    black_box(changes.created.len())
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
     decode_group.finish();
-
-    let mut stream_group = c.benchmark_group("abi/command_buffer_decode_streaming");
-    for &nodes in &[100usize, 1_000, 10_000] {
-        let encoded = build_node_tree_cmd(nodes, 1);
-        stream_group.throughput(Throughput::Bytes(encoded.len() as u64));
-        stream_group.bench_with_input(BenchmarkId::from_parameter(nodes), &encoded, |b, bytes| {
-            b.iter(|| {
-                let mut acc = 0u64;
-                let hdr = CommandDecoder::new(black_box(bytes))
-                    .unwrap()
-                    .for_each(|cmd| {
-                        match cmd {
-                            CommandRef::CreateNode { node_id, .. }
-                            | CommandRef::RemoveNode { node_id }
-                            | CommandRef::SetLayout { node_id, .. }
-                            | CommandRef::SetStyle { node_id, .. }
-                            | CommandRef::SetEventMask { node_id, .. } => {
-                                acc = acc.wrapping_add(node_id as u64);
-                            }
-                            CommandRef::SetChildren {
-                                parent_id,
-                                children,
-                            } => {
-                                acc = acc.wrapping_add(parent_id as u64);
-                                for cid in children {
-                                    acc = acc.wrapping_add(cid as u64);
-                                }
-                            }
-                            CommandRef::SetText { node_id, text } => {
-                                acc = acc.wrapping_add(node_id as u64 + text.len() as u64);
-                            }
-                            CommandRef::SetRawProp { node_id, key, .. } => {
-                                acc = acc.wrapping_add(node_id as u64 + key.len() as u64);
-                            }
-                            CommandRef::DispatchCommand {
-                                node_id,
-                                command_name,
-                                payload,
-                            } => {
-                                acc = acc.wrapping_add(
-                                    node_id as u64
-                                        + command_name.len() as u64
-                                        + payload.len() as u64,
-                                );
-                            }
-                            CommandRef::Commit { sync_mount } => {
-                                acc = acc.wrapping_add(u64::from(sync_mount));
-                            }
-                        }
-                        Ok::<(), DecodeError>(())
-                    })
-                    .unwrap();
-                black_box((hdr, acc))
-            });
-        });
-    }
-    stream_group.finish();
 }
 
 fn bench_event_ring_codec(c: &mut Criterion) {
@@ -213,6 +165,8 @@ fn bench_zero_copy_value_read(c: &mut Criterion) {
 }
 
 fn bench_scene_view_read(c: &mut Criterion) {
+    register_core_tables();
+    let text_slot = TextContent::slot().0;
     let mut group = c.benchmark_group("abi/scene");
 
     let mut table = NveSceneTable::with_capacity(1000);
@@ -230,12 +184,10 @@ fn bench_scene_view_read(c: &mut Criterion) {
         table
             .upsert_node(SceneNodeInput {
                 node_id: id,
-                kind: if id == 1 {
-                    NVE_NODE_KIND_ROOT
-                } else if id % 4 == 0 {
-                    NVE_NODE_KIND_PRESSABLE
+                primary_slot: if id == 1 || id % 4 == 0 {
+                    NVE_PRIMARY_SLOT_NONE
                 } else {
-                    NVE_NODE_KIND_TEXT
+                    text_slot
                 },
                 flags: if id % 4 == 0 {
                     NVE_NODE_INTERACTIVE
@@ -266,7 +218,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
         table
             .upsert_node(SceneNodeInput {
                 node_id: id,
-                kind: NVE_NODE_KIND_TEXT,
+                primary_slot: text_slot,
                 flags: NVE_NODE_LEAF_TEXT,
                 opacity_u8: 240,
                 x: 12.0,
@@ -322,7 +274,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
 
 criterion_group!(
     abi_benches,
-    bench_command_buffer_codec,
+    bench_nve2_wire_codec,
     bench_event_ring_codec,
     bench_ffi_interface_overhead,
     bench_zero_copy_value_read,

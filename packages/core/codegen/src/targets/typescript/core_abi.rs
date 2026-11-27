@@ -14,7 +14,7 @@ use crate::schema::hybrid::core_abi::{
 /// `packages/core/abi/src/schema.rs`.
 pub fn generate_ts_core_abi() -> String {
     let spec = core_abi_spec();
-    let schema_hash = spec.file_schema_hash();
+    let schema_hash = crate::schema::hybrid::core_abi::core_abi_schema_hash();
     let mut out = String::with_capacity(4 * 1024);
 
     let _ = writeln!(
@@ -126,13 +126,11 @@ pub fn generate_ts_scene_view() -> String {
     let _ = writeln!(out, "  CLIP_BOUNDS: 1 << 2,");
     let _ = writeln!(out, "}} as const;");
     let _ = writeln!(out);
-    let _ = writeln!(out, "export const NVE_NODE_KIND = {{");
     for c in &spec.consts {
-        if let Some(suffix) = c.name.strip_prefix("NVE_NODE_KIND_") {
-            let _ = writeln!(out, "  {suffix}: {},", c.value);
+        if c.name == "NVE_PRIMARY_SLOT_NONE" {
+            let _ = writeln!(out, "export const NVE_PRIMARY_SLOT_NONE = 0x{:02X} as const;", c.value);
         }
     }
-    let _ = writeln!(out, "}} as const;");
     let _ = writeln!(out);
     let _ = writeln!(out, "export const NVE_META_FLAG = {{");
     for c in &spec.consts {
@@ -185,11 +183,13 @@ pub fn generate_ts_scene_view() -> String {
     let _ = writeln!(out, "  readonly removedCount: number;");
     let _ = writeln!(out, "  readonly textSlabLen: number;");
     let _ = writeln!(out, "  readonly childrenSlabLen: number;");
+    let _ = writeln!(out, "  readonly tableCount: number;");
     let _ = writeln!(out, "  readonly nodesPtr: number;");
     let _ = writeln!(out, "  readonly textSlabPtr: number;");
     let _ = writeln!(out, "  readonly childrenSlabPtr: number;");
     let _ = writeln!(out, "  readonly dirtyIndicesPtr: number;");
     let _ = writeln!(out, "  readonly removedIdsPtr: number;");
+    let _ = writeln!(out, "  readonly tablesPtr: number;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out);
     let _ = writeln!(
@@ -204,6 +204,8 @@ pub fn generate_ts_scene_view() -> String {
     let _ = writeln!(out, "export class NveSceneViewReader {{");
     let _ = writeln!(out, "  readonly frameId: bigint;");
     let _ = writeln!(out, "  readonly nodeCount: number;");
+    let _ = writeln!(out, "  readonly tableCount: number;");
+    let _ = writeln!(out, "  readonly tablesPtr: number;");
     let _ = writeln!(out, "  readonly textSlab: Uint8Array;");
     let _ = writeln!(out, "  readonly childrenSlab: Uint32Array;");
     let _ = writeln!(out, "  readonly dirtyIndices: Uint32Array;");
@@ -222,6 +224,8 @@ pub fn generate_ts_scene_view() -> String {
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out, "    this.frameId = layout.frameId;");
     let _ = writeln!(out, "    this.nodeCount = layout.nodeCount;");
+    let _ = writeln!(out, "    this.tableCount = layout.tableCount;");
+    let _ = writeln!(out, "    this.tablesPtr = layout.tablesPtr;");
     let _ = writeln!(
         out,
         "    this.nodesView = new DataView(memoryBuffer, layout.nodesPtr, layout.nodeCount * NVE_RENDER_NODE_STRIDE);"
@@ -252,7 +256,7 @@ pub fn generate_ts_scene_view() -> String {
         out,
         "  static fromWasm32Pointer(memoryBuffer: ArrayBuffer, viewPtr: number): NveSceneViewReader {{"
     );
-    let _ = writeln!(out, "    const hdr = new DataView(memoryBuffer, viewPtr, 60);");
+    let _ = writeln!(out, "    const hdr = new DataView(memoryBuffer, viewPtr, 64);");
     let _ = writeln!(out, "    return new NveSceneViewReader(memoryBuffer, {{");
     let _ = writeln!(out, "      schemaHash: hdr.getBigUint64(0, true),");
     let _ = writeln!(out, "      frameId: hdr.getBigUint64(8, true),");
@@ -261,16 +265,18 @@ pub fn generate_ts_scene_view() -> String {
     let _ = writeln!(out, "      removedCount: hdr.getUint32(24, true),");
     let _ = writeln!(out, "      textSlabLen: hdr.getUint32(28, true),");
     let _ = writeln!(out, "      childrenSlabLen: hdr.getUint32(32, true),");
+    let _ = writeln!(out, "      tableCount: hdr.getUint32(36, true),");
     let _ = writeln!(out, "      nodesPtr: hdr.getUint32(40, true),");
     let _ = writeln!(out, "      textSlabPtr: hdr.getUint32(44, true),");
     let _ = writeln!(out, "      childrenSlabPtr: hdr.getUint32(48, true),");
     let _ = writeln!(out, "      dirtyIndicesPtr: hdr.getUint32(52, true),");
     let _ = writeln!(out, "      removedIdsPtr: hdr.getUint32(56, true),");
+    let _ = writeln!(out, "      tablesPtr: hdr.getUint32(60, true),");
     let _ = writeln!(out, "    }});");
     let _ = writeln!(out, "  }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "  nodeId(idx: number): number {{ return this.nodesView.getUint32(idx * NVE_RENDER_NODE_STRIDE + NVE_NODE_OFFSET.NODE_ID, true); }}");
-    let _ = writeln!(out, "  kind(idx: number): number {{ return this.nodesView.getUint8(idx * NVE_RENDER_NODE_STRIDE + NVE_NODE_OFFSET.KIND); }}");
+    let _ = writeln!(out, "  primarySlot(idx: number): number {{ return this.nodesView.getUint8(idx * NVE_RENDER_NODE_STRIDE + NVE_NODE_OFFSET.PRIMARY_SLOT); }}");
     let _ = writeln!(out, "  flags(idx: number): number {{ return this.nodesView.getUint8(idx * NVE_RENDER_NODE_STRIDE + NVE_NODE_OFFSET.FLAGS); }}");
     let _ = writeln!(out, "  opacityU8(idx: number): number {{ return this.nodesView.getUint8(idx * NVE_RENDER_NODE_STRIDE + NVE_NODE_OFFSET.OPACITY_U8); }}");
     let _ = writeln!(out, "  opacity(idx: number): number {{ return this.opacityU8(idx) / 255.0; }}");

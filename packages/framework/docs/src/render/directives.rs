@@ -101,7 +101,17 @@ pub fn CalloutView(
         view {
             test_id: "docs-callout-{scope_key}",
             accessibility_role: "note",
-            "data-callout-kind": "{kind.as_str()}",
+            nve_table: {
+                let kind_str = kind.as_str().to_owned();
+                nve_dioxus::table_attr_fn(move |tx, node| {
+                    tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                        nve_web_html::DataAttrList::from_pairs(vec![(
+                            "data-callout-kind".to_owned(),
+                            kind_str.clone(),
+                        )]),
+                    ));
+                })
+            },
             style: "width: 100%; flex-direction: row; gap: 12px; padding: 14px; border-radius: 10px; background-color: {tone.bg}; border-width: 1px; border-color: {tone.border};",
             view {
                 style: "width: 3px; flex-shrink: 0; border-radius: 2px; background-color: {tone.border};",
@@ -187,7 +197,17 @@ pub fn TabsDirectiveView(
                                 test_id: "{trigger_tid}",
                                 accessibility_role: "tab",
                                 aria_selected: "{sel_attr}",
-                                "data-tab-label": "{label_tid}",
+                                nve_table: {
+                                    let lbl = label_tid.clone();
+                                    nve_dioxus::table_attr_fn(move |tx, node| {
+                                        tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                            nve_web_html::DataAttrList::from_pairs(vec![(
+                                                "data-tab-label".to_owned(),
+                                                lbl.clone(),
+                                            )]),
+                                        ));
+                                    })
+                                },
                                 style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 6px; background-color: {bg}; border-width: 1px; border-color: {border_c};",
                                 onpress: move |_| {
                                     state.write().set_active_tab(group_for_press.clone(), label_for_press.clone());

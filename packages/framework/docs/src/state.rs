@@ -285,7 +285,7 @@ impl DocsAppState {
         self.search_selected = 0;
     }
 
-    /// Execute a live query against the `NVS1` [`SearchIndex`].
+    /// Execute a live query against the `NVS2` [`SearchIndex`].
     ///
     /// When the query is empty, returns the first `limit` pages as suggested quick-jumps.
     pub fn search_hits(&self, limit: usize) -> Vec<SearchHit> {

@@ -8,4 +8,5 @@ license.workspace = true
 nve-abi = { workspace = true }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
+nve-store = { workspace = true }
 taffy = { workspace = true }

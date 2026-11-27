@@ -99,7 +99,14 @@ pub fn HighlightedCodeView(
                     test_id: "{copy_tid}",
                     accessibility_role: "button",
                     accessibility_label: "Copy code to clipboard",
-                    "data-code-copy": "true",
+                    nve_table: nve_dioxus::table_attr_fn(|tx, node| {
+                        tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                            nve_web_html::DataAttrList::from_pairs(vec![(
+                                "data-code-copy".to_owned(),
+                                "true".to_owned(),
+                            )]),
+                        ));
+                    }),
                     style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {copy_border};",
                     onpress: move |_| {
                         let _ = state.write().copy_code(&key_for_copy, &code_for_copy);
@@ -137,12 +144,34 @@ pub fn HighlightedCodeView(
                                 "transparent"
                             };
                             let line_no_str = line.line_no.to_string();
-                            let hl_attr = if line.highlighted { Some("true".to_string()) } else { None };
+                            let is_highlighted = line.highlighted;
 
                             rsx! {
                                 view {
                                     key: "{block_key}-ln-{line.line_no}",
-                                    "data-line-highlighted": hl_attr,
+                                    nve_table: nve_dioxus::table_attr_fn_with_clear(
+                                        move |tx, node| {
+                                            if is_highlighted {
+                                                tx.edit::<nve_web_html::HtmlDataAttrs>(node)
+                                                    .entries(Some(
+                                                        nve_web_html::DataAttrList::from_pairs(
+                                                            vec![(
+                                                                "data-line-highlighted".to_owned(),
+                                                                "true".to_owned(),
+                                                            )],
+                                                        ),
+                                                    ));
+                                            } else if tx
+                                                .store()
+                                                .has::<nve_web_html::HtmlDataAttrs>(node)
+                                            {
+                                                tx.detach::<nve_web_html::HtmlDataAttrs>(node);
+                                            }
+                                        },
+                                        |tx, node| {
+                                            tx.detach::<nve_web_html::HtmlDataAttrs>(node);
+                                        },
+                                    ),
                                     style: "width: 100%; flex-direction: row; align-items: center; padding-horizontal: 10px; padding-vertical: 2px; gap: 8px; background-color: {line_bg};",
 
                                     view {
@@ -168,11 +197,26 @@ pub fn HighlightedCodeView(
                                             for (tok_idx, span) in line.tokens.into_iter().enumerate() {
                                                 {
                                                     let tok_color = theme.token_color(span.kind);
-                                                    let tok_kind = span.kind.as_str();
+                                                    let tok_kind: &'static str = span.kind.as_str();
                                                     rsx! {
                                                         text {
                                                             key: "{block_key}-ln-{line.line_no}-tok-{tok_idx}",
-                                                            "data-token": "{tok_kind}",
+                                                            nve_table: nve_dioxus::table_attr_fn_with_clear(
+                                                                move |tx, node| {
+                                                                    tx.edit::<nve_web_html::HtmlDataAttrs>(node)
+                                                                        .entries(Some(
+                                                                            nve_web_html::DataAttrList::from_pairs(
+                                                                                vec![(
+                                                                                    "data-token".to_owned(),
+                                                                                    tok_kind.to_owned(),
+                                                                                )],
+                                                                            ),
+                                                                        ));
+                                                                },
+                                                                |tx, node| {
+                                                                    tx.detach::<nve_web_html::HtmlDataAttrs>(node);
+                                                                },
+                                                            ),
                                                             style: "display: inline; font-size: 13px; font-family: monospace; white-space: pre; color: {tok_color};",
                                                             "{span.text}"
                                                         }

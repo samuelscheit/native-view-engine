@@ -265,7 +265,7 @@ pub fn InlineComponentView(comp: ComponentNode) -> Element {
             let keys = prop_str(&comp, "keys").unwrap_or("").to_string();
             rsx! {
                 view {
-                    "semanticTag": "kbd",
+                    nve_table: crate::render::html_semantic(nve_web_html::SemanticElement::Kbd),
                     style: "display: inline-flex; align-items: center; vertical-align: baseline; padding-horizontal: 6px; padding-vertical: 1px; border-radius: 4px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                     text {
                         style: "display: inline; font-size: 11px; font-weight: 600; font-family: monospace; color: {theme.text};",

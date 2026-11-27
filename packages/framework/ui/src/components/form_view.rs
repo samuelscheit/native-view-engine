@@ -151,28 +151,24 @@ pub fn Form(
         })
         .finish();
 
-    let method_str = method.as_html_method();
     let ctrl_read = active_ctrl.read();
-    let dirty_flag = if ctrl_read.is_dirty() { "true" } else { "false" };
-    let restored_flag = if ctrl_read.has_restored_draft() {
-        "true"
-    } else {
-        "false"
-    };
+    let form_table = super::html_tables::html_form_table(
+        method.as_html_method().to_owned(),
+        action,
+        target,
+        novalidate,
+        ctrl_read.is_dirty(),
+        ctrl_read.has_restored_draft(),
+    );
     let form_error = ctrl_read.form_error().map(str::to_owned);
     drop(ctrl_read);
 
     rsx! {
-        form {
+        view {
             id: id,
             test_id: test_id,
-            method: "{method_str}",
-            action: action,
-            target: target,
-            novalidate: novalidate,
+            nve_table: form_table,
             accessibility_role: "form",
-            "data-nve-dirty": "{dirty_flag}",
-            "data-nve-draft-restored": "{restored_flag}",
             nve_style: form_style,
             style: style,
             onsubmit: move |_: SubmitEvent| {
@@ -280,7 +276,7 @@ pub fn FormHiddenField(name: String, value: String) -> Element {
     }
     rsx! {
         textinput {
-            name: name,
+            nve_table: super::html_tables::html_form_control_name(Some(name)),
             input_type: "hidden",
             value: "{value}",
             style: "display: none;",

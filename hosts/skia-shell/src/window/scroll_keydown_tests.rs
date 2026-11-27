@@ -1,11 +1,12 @@
 use std::path::Path;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EventMask, FlexDirection, FrameId,
-    LayoutProps, NativeEventKind, StyleProps, SurfaceId,
-    ROOT_NODE_ID,
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
+use nve_components::tables::{
+    register_core_tables, FlexDirection, Interaction, Layout, Overflow, Scroll, Visual,
 };
 use nve_engine::Viewport;
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 
 use super::input::format_keydown_shorthand;
 use super::{DesktopApp, DesktopHostError, DesktopSession};
@@ -14,7 +15,27 @@ struct MockScrollAndKeyApp {
     scroll_events: Vec<(u32, f32, f32, f32, f32)>,
     keydown_payloads: Vec<(u32, String)>,
     palette_open: bool,
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    initialized: bool,
     frame_buf: Vec<u8>,
+}
+
+impl MockScrollAndKeyApp {
+    fn new() -> Self {
+        register_core_tables();
+        Self {
+            scroll_events: Vec::new(),
+            keydown_payloads: Vec::new(),
+            palette_open: false,
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            initialized: false,
+            frame_buf: Vec::new(),
+        }
+    }
 }
 
 impl DesktopApp for MockScrollAndKeyApp {
@@ -22,50 +43,51 @@ impl DesktopApp for MockScrollAndKeyApp {
         1
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(1, frame_id);
-        b.create_node(2, ComponentKind::ScrollView, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Points(200.0),
-                height: Dimension::Points(100.0),
-                flex_direction: FlexDirection::Column,
-                ..Default::default()
-            },
-        );
-        b.set_event_mask(2, EventMask::SCROLL | EventMask::KEY_DOWN | EventMask::CUSTOM);
-        for (id, color) in [
-            (10u32, ColorRgba::rgb(239, 68, 68)),
-            (11u32, ColorRgba::rgb(16, 185, 129)),
-            (12u32, ColorRgba::rgb(37, 99, 235)),
-        ] {
-            b.create_node(id, ComponentKind::View, None);
-            b.set_layout(
-                id,
-                &LayoutProps {
-                    width: Dimension::Points(200.0),
-                    height: Dimension::Points(80.0),
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        let mut tx = self.store.tx();
+        if !self.initialized {
+            let _ = tx.create_at(StoreNodeId::ROOT);
+            let _ = tx.create_at(StoreNodeId(2));
+            tx.attach::<Scroll>(StoreNodeId(2));
+            tx.set(StoreNodeId(2), Layout::WIDTH, Length::points(200.0));
+            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::points(100.0));
+            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(StoreNodeId(2), Visual::OVERFLOW_Y, Overflow::Scroll);
+            tx.set(
+                StoreNodeId(2),
+                Interaction::EVENT_MASK,
+                (EventMask::SCROLL | EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
             );
-            b.set_style(
-                id,
-                &StyleProps {
-                    background: if self.palette_open {
-                        ColorRgba::rgb(250, 204, 21)
-                    } else {
-                        color
-                    },
-                    ..Default::default()
-                },
+            for id in [10u32, 11, 12] {
+                let nid = StoreNodeId(id);
+                let _ = tx.create_at(nid);
+                tx.set(nid, Layout::WIDTH, Length::points(200.0));
+                tx.set(nid, Layout::HEIGHT, Length::points(80.0));
+                tx.set(nid, Layout::FLEX_SHRINK, 0.0);
+            }
+            tx.set_children(
+                StoreNodeId(2),
+                &[StoreNodeId(10), StoreNodeId(11), StoreNodeId(12)],
             );
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            self.initialized = true;
         }
-        b.set_children(2, &[10, 11, 12]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+        for (id, color) in [
+            (10u32, Rgba::rgb(239, 68, 68)),
+            (11u32, Rgba::rgb(16, 185, 129)),
+            (12u32, Rgba::rgb(37, 99, 235)),
+        ] {
+            let bg = if self.palette_open {
+                Rgba::rgb(250, 204, 21)
+            } else {
+                color
+            };
+            tx.set(StoreNodeId(id), Visual::BACKGROUND, bg);
+        }
+        tx.commit_into(&mut self.changes);
+        self.frame_buf.clear();
+        self.encoder
+            .encode(&self.store, &self.changes, &mut self.frame_buf);
         &self.frame_buf
     }
 
@@ -125,12 +147,7 @@ fn desktop_session_forwards_wheel_scroll_and_typed_keydown_events() {
         height: 160.0,
         scale_factor: 1.0,
     };
-    let app = MockScrollAndKeyApp {
-        scroll_events: Vec::new(),
-        keydown_payloads: Vec::new(),
-        palette_open: false,
-        frame_buf: Vec::new(),
-    };
+    let app = MockScrollAndKeyApp::new();
     let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::BLACK, false);
     session.render_and_rasterize().unwrap();
 

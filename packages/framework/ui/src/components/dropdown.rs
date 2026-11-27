@@ -285,6 +285,40 @@ pub fn DropdownMenu(
         });
     }
 
+    let menu_trigger_invoker = super::html_tables::html_invoker_table(
+        Some("button".to_owned()),
+        None,
+        None,
+        Some("toggle-popover".to_owned()),
+        Some(menu_id.clone()),
+        Some(menu_id.clone()),
+        Some("toggle".to_owned()),
+    );
+    let mut menu_data = Vec::new();
+    if let Some(ref p) = pos_placement {
+        menu_data.push(("placement".to_owned(), p.clone()));
+    }
+    if let Some(ref x) = pos_x {
+        menu_data.push(("x".to_owned(), x.clone()));
+    }
+    if let Some(ref y) = pos_y {
+        menu_data.push(("y".to_owned(), y.clone()));
+    }
+    if let Some(ref f) = pos_flipped {
+        menu_data.push(("flipped".to_owned(), f.clone()));
+    }
+    if let Some(ref s) = pos_shifted {
+        menu_data.push(("shifted".to_owned(), s.clone()));
+    }
+    if let Some(ref ax) = pos_arrow_x {
+        menu_data.push(("arrow-x".to_owned(), ax.clone()));
+    }
+    if let Some(ref ay) = pos_arrow_y {
+        menu_data.push(("arrow-y".to_owned(), ay.clone()));
+    }
+    let menu_popover_table =
+        super::html_tables::html_popover_table(popover_mode.to_owned(), open, menu_data);
+
     rsx! {
         view {
             test_id: "{base_id}",
@@ -292,11 +326,7 @@ pub fn DropdownMenu(
             style: style,
             pressable {
                 test_id: "{trigger_id}",
-                button_type: "button",
-                popovertarget: "{menu_id}",
-                popovertargetaction: "toggle",
-                command: "toggle-popover",
-                commandfor: "{menu_id}",
+                nve_table: menu_trigger_invoker,
                 accessibility_role: "button",
                 aria_expanded: "{aria_expanded}",
                 aria_controls: "{menu_id}",
@@ -330,17 +360,9 @@ pub fn DropdownMenu(
                 view {
                     id: "{menu_id}",
                     test_id: "{menu_id}",
-                    popover: "{popover_mode}",
-                    "data-nve-open": "{aria_expanded}",
+                    nve_table: menu_popover_table,
                     accessibility_role: "menu",
                     tab_index: -1,
-                    "data-placement": pos_placement,
-                    "data-x": pos_x,
-                    "data-y": pos_y,
-                    "data-flipped": pos_flipped,
-                    "data-shifted": pos_shifted,
-                    "data-arrow-x": pos_arrow_x,
-                    "data-arrow-y": pos_arrow_y,
                     nve_style: menu_style,
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();

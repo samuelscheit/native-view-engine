@@ -1,13 +1,14 @@
-//! Composable, zero-cost-monomorphizable and runtime-switchable layout engine abstractions.
+//! Composable, zero-cost-monomorphizable and runtime-switchable `NodeStore` layout engine
+//! abstractions (`StoreLayoutEngine`, `DynLayoutEngine`, `TextMeasurer`).
 //!
 //! Backends such as `HeadlessBackend<L>` and `SkiaBackend<L>` are generic over
-//! [`LayoutEngine`] (defaulting to Taffy for zero dynamic-dispatch overhead) while also
-//! supporting dynamic runtime switching via [`DynLayoutEngine`] (`Box<dyn LayoutEngine>`).
+//! [`StoreLayoutEngine`] (defaulting to `TaffyStoreLayout` for zero dynamic-dispatch overhead)
+//! while also supporting dynamic runtime switching via [`DynLayoutEngine`]
+//! (`Box<dyn StoreLayoutEngine>`).
 
 use std::sync::Arc;
 
-use nve_abi::{ComponentKind, LayoutProps, NodeId, StyleProps};
-use nve_components::layout_ext::LayoutExt;
+use nve_store::{ChangeSet, NodeId, NodeStore};
 
 use crate::{LayoutRect, Viewport};
 
@@ -135,103 +136,54 @@ impl BuiltinLayout {
     }
 }
 
-/// Core layout engine trait implemented by Taffy (`nve-backend-headless`), real React Native
-/// Yoga (`nve-layout-yoga`), custom layout engines, and [`DynLayoutEngine`] (`Box<dyn LayoutEngine>`).
+/// Direct `NodeStore` layout engine trait implemented by `TaffyStoreLayout`
+/// (`nve-backend-headless`), real React Native Yoga (`nve-layout-yoga`), custom layout engines,
+/// and [`DynLayoutEngine`] (`Box<dyn StoreLayoutEngine>`).
 ///
-/// Computed rectangles returned by [`LayoutEngine::layout_of`] are expressed in surface-space
-/// (root-relative absolute) coordinates in logical points.
-pub trait LayoutEngine: Send {
+/// Computed rectangles returned by [`StoreLayoutEngine::layout_of`] are expressed in
+/// surface-space (root-relative absolute) coordinates in logical points.
+pub trait StoreLayoutEngine: Send {
     /// Human-readable engine identifier (e.g. `"taffy"`, `"yoga"`).
     fn name(&self) -> &'static str;
 
-    /// Creates a node if absent or updates its [`ComponentKind`] if present.
-    fn upsert_node(&mut self, id: NodeId, kind: ComponentKind);
+    /// Invalidates cached layout entries for every layout/measure/structural change in `changes`.
+    fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet);
 
-    /// Removes a node from the layout tree if present.
-    fn remove_node(&mut self, id: NodeId);
+    /// Computes layout for `root` at `viewport` directly from `store` word columns.
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport);
 
-    /// Applies Flexbox geometry properties (`LayoutProps`) to a node.
-    fn set_layout(&mut self, id: NodeId, layout: &LayoutProps);
-
-    /// Applies extended zero-serialization layout properties (`flex-basis`, `aspect-ratio`,
-    /// `position` + insets, CSS Grid, and RTL logical layout) to a node.
-    fn set_layout_ext(&mut self, _id: NodeId, _ext: Option<&LayoutExt>) {}
-
-    /// Applies visual style properties (`StyleProps`) relevant to layout (e.g. `font_size`).
-    fn set_style(&mut self, id: NodeId, style: &StyleProps);
-
-    /// Applies non-ABI raw style/layout hints relevant to layout (e.g. `flex-wrap`, `font-weight`).
-    fn set_raw_layout_prop(&mut self, _id: NodeId, _key: &str, _value: &str) {}
-
-    /// Updates a node's text payload used for intrinsic text measurement.
-    fn set_text(&mut self, id: NodeId, text: &str);
-
-    /// Replaces the ordered child list of `parent`.
-    fn set_children(&mut self, parent: NodeId, children: &[NodeId]);
-
-    /// Installs the [`TextMeasurer`] used for intrinsic text sizing and invalidates cached text measurements.
-    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>);
-
-    /// Computes layout for the tree rooted at `root` within `viewport`.
-    fn compute_layout(&mut self, root: NodeId, viewport: Viewport);
-
-    /// Returns the computed surface-space (root-relative) [`LayoutRect`] for `id`, if available.
+    /// Returns the absolute rounded layout rect of `id` from the latest pass, if live.
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect>;
 
-    /// Clears all nodes and cached layout results while retaining the installed [`TextMeasurer`].
+    /// Installs a custom text measurer and invalidates cached text measurements.
+    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>);
+
+    /// Clears all cached layout state.
     fn reset(&mut self);
 }
 
-/// Type alias for a runtime-switchable boxed layout engine.
-pub type DynLayoutEngine = Box<dyn LayoutEngine>;
+/// Type alias for a runtime-switchable boxed `NodeStore` layout engine.
+pub type DynLayoutEngine = Box<dyn StoreLayoutEngine>;
 
-impl<L: LayoutEngine + ?Sized> LayoutEngine for Box<L> {
+impl<L: StoreLayoutEngine + ?Sized> StoreLayoutEngine for Box<L> {
     fn name(&self) -> &'static str {
         (**self).name()
     }
 
-    fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
-        (**self).upsert_node(id, kind);
+    fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
+        (**self).sync_changes(store, changes);
     }
 
-    fn remove_node(&mut self, id: NodeId) {
-        (**self).remove_node(id);
-    }
-
-    fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
-        (**self).set_layout(id, layout);
-    }
-
-    fn set_layout_ext(&mut self, id: NodeId, ext: Option<&LayoutExt>) {
-        (**self).set_layout_ext(id, ext);
-    }
-
-    fn set_style(&mut self, id: NodeId, style: &StyleProps) {
-        (**self).set_style(id, style);
-    }
-
-    fn set_raw_layout_prop(&mut self, id: NodeId, key: &str, value: &str) {
-        (**self).set_raw_layout_prop(id, key, value);
-    }
-
-    fn set_text(&mut self, id: NodeId, text: &str) {
-        (**self).set_text(id, text);
-    }
-
-    fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
-        (**self).set_children(parent, children);
-    }
-
-    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
-        (**self).set_text_measurer(measurer);
-    }
-
-    fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
-        (**self).compute_layout(root, viewport);
+    fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
+        (**self).compute_layout(store, root, viewport);
     }
 
     fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
         (**self).layout_of(id)
+    }
+
+    fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
+        (**self).set_text_measurer(measurer);
     }
 
     fn reset(&mut self) {

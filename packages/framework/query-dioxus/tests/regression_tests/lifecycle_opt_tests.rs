@@ -17,8 +17,8 @@ use nve_rpc::Tag64;
 use nve_ui::prelude::*;
 
 use crate::{
-    count_allocs, pump_settled, render_once, GetItem, Item, NoopFlagWaker, RegTransport,
-    RenameItem, RenameItemInput,
+    count_allocs, find_by_test_id, new_web_backend, pump_settled, render_once, GetItem, Item,
+    NoopFlagWaker, RegTransport, RenameItem, RenameItemInput,
 };
 
 #[test]
@@ -108,14 +108,14 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
     let mut surface = DioxusSurface::new(1, SharedRoot)
         .with_context(client.clone())
         .with_context(Rc::clone(&flags_slot));
-    let mut web = WebBackend::new();
+    let mut web = new_web_backend();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("A:LOAD_A"));
-    assert!(web.render_html().contains("B:LOAD_B"));
+    assert!(web.render_html(surface.store()).contains("A:LOAD_A"));
+    assert!(web.render_html(surface.store()).contains("B:LOAD_B"));
 
     // Unmount SiblingA (starter of shared fetch) while request is pending.
     let (mut show_a, _, mut show_provider) = flags_slot.borrow().unwrap();
@@ -127,23 +127,14 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
     transport.release_all();
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert!(
-        web.render_html().contains("B:Initial"),
+        web.render_html(surface.store()).contains("B:Initial"),
         "surviving sibling must not be stranded when starter unmounts: {}",
-        web.render_html()
+        web.render_html(surface.store())
     );
 
     // Defer action, click RowAction (which applies optimistic patch AND unmounts itself!).
     transport.inner.lock().unwrap().defer_actions = true;
-    let btn = web
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "row-opt-btn"
-            )
-            .then_some(id)
-        })
-        .unwrap();
+    let btn = find_by_test_id(surface.store(), "row-opt-btn");
     assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
         surface_id: 1,
         node_id: btn,
@@ -154,9 +145,9 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert!(
-        web.render_html().contains("B:OptimisticName"),
+        web.render_html(surface.store()).contains("B:OptimisticName"),
         "optimistic patch must remain visible after triggering row unmounts: {}",
-        web.render_html()
+        web.render_html(surface.store())
     );
 
     // Release server action -> completes and settles server value even though RowAction unmounted!
@@ -164,9 +155,9 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().action_calls, 1);
     assert!(
-        web.render_html().contains("B:RenamedOnServer"),
+        web.render_html(surface.store()).contains("B:RenamedOnServer"),
         "action must complete after triggering row unmounts: {}",
-        web.render_html()
+        web.render_html(surface.store())
     );
 
     // Unmount provider cleanly -> active slots drop to 0 and detached wake callback never panics.
@@ -255,13 +246,13 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
     let mut surface = DioxusSurface::new(1, WrapRoot)
         .with_context(client.clone())
         .with_context(Rc::clone(&slot));
-    let mut web = WebBackend::new();
+    let mut web = new_web_backend();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("VAL:Base"));
+    assert!(web.render_html(surface.store()).contains("VAL:Base"));
 
     let (bridge, _, mut raw_sig) = slot.borrow().clone().unwrap();
     assert_eq!(bridge.live_signal_count(), 1);
@@ -291,16 +282,7 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
 
     // Click KillProvider: applies optimistic patch, spawns task, and IMMEDIATELY unmounts provider
     // before the spawned future's first poll -> pre-spawn OptimisticDropGuard MUST roll back!
-    let btn = web
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "unmount-provider-btn"
-            )
-            .then_some(id)
-        })
-        .unwrap();
+    let btn = find_by_test_id(surface.store(), "unmount-provider-btn");
     assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
         surface_id: 1,
         node_id: btn,
@@ -389,25 +371,14 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
     }
 
     let mut surface = DioxusSurface::new(1, Root).with_context(client);
-    let mut web = WebBackend::new();
+    let mut web = new_web_backend();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
-    let find = |web: &WebBackend, tid: &str| {
-        web.iter_nodes()
-            .find_map(|(id, el)| {
-                matches!(
-                    el.raw_props.get("testID"),
-                    Some(nve_abi::RawPropValue::String(s)) if s == tid
-                )
-                .then_some(id)
-            })
-            .unwrap()
-    };
 
     // 1. Trigger UseAction::run() and immediately unmount RunRow before first task poll.
-    let run_btn = find(&web, "run-and-unmount-btn");
+    let run_btn = find_by_test_id(surface.store(), "run-and-unmount-btn");
     assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
         surface_id: 1,
         node_id: run_btn,
@@ -421,8 +392,8 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
     assert_eq!(transport.inner.lock().unwrap().name, "FromRun");
 
     // 2. Submit ActionForm and unmount FormRow in the SAME event batch before first task poll.
-    let form_id = find(&web, "unmount-action-form");
-    let hide_btn = find(&web, "hide-form-btn");
+    let form_id = find_by_test_id(surface.store(), "unmount-action-form");
+    let hide_btn = find_by_test_id(surface.store(), "hide-form-btn");
     assert!(surface.dispatch_events(&[
         nve_abi::NativeEvent {
             surface_id: 1,

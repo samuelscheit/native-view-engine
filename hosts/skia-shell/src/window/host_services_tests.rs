@@ -7,9 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, FrameId, NveHostStatus, SurfaceId,
-    METHOD_WINDOW_REQUEST_FRAME, ROOT_NODE_ID, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
+    ColorRgba, FrameId, NveHostStatus, SurfaceId, METHOD_WINDOW_REQUEST_FRAME, SERVICE_SYSTEM_ENV,
+    SERVICE_WINDOW,
 };
+use nve_components::tables::register_core_tables;
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_engine::Viewport;
 use nve_filesystem::{FilesystemClient, MemoryFilesystem, StandardPathKind};
@@ -300,12 +303,19 @@ impl DesktopApp for HostAwareMockApp {
         1
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(self.surface_id, frame_id);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        register_core_tables();
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        {
+            let mut tx = store.tx();
+            let _ = tx.create_at(StoreNodeId::ROOT);
+            let _ = tx.create_at(StoreNodeId(2));
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.commit_into(&mut changes);
+        }
+        self.frame_buf.clear();
+        WireEncoder::default().encode(&store, &changes, &mut self.frame_buf);
         &self.frame_buf
     }
 

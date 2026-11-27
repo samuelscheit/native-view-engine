@@ -2,12 +2,15 @@
 
 use nve_abi::ColorRgba;
 
-/// Contiguous `0x00RRGGBB` pixel buffer suitable for direct blitting into `softbuffer`.
+/// Contiguous `0x00RRGGBB` pixel buffer suitable for direct blitting into `softbuffer`,
+/// with an optional alpha channel (`has_alpha == true` only for offscreen RGBA compositing).
 #[derive(Debug, Clone)]
 pub struct PixelBuffer {
     width: u32,
     height: u32,
     pixels: Vec<u32>,
+    alpha: Vec<u8>,
+    has_alpha: bool,
 }
 
 impl PixelBuffer {
@@ -17,6 +20,50 @@ impl PixelBuffer {
             width,
             height,
             pixels: vec![0; len],
+            alpha: Vec::new(),
+            has_alpha: false,
+        }
+    }
+
+    /// Creates an alpha-tracking transparent RGBA pixel buffer cleared to `(0, 0, 0, 0)`.
+    pub fn new_transparent_rgba(width: u32, height: u32) -> Self {
+        let len = (width as usize).saturating_mul(height as usize);
+        Self {
+            width,
+            height,
+            pixels: vec![0; len],
+            alpha: vec![0; len],
+            has_alpha: true,
+        }
+    }
+
+    /// Resizes (reusing existing capacity) and clears this buffer to transparent `(0, 0, 0, 0)`.
+    pub fn reset_transparent_rgba(&mut self, width: u32, height: u32) {
+        let len = (width as usize).saturating_mul(height as usize);
+        self.width = width;
+        self.height = height;
+        self.has_alpha = true;
+        self.pixels.clear();
+        self.pixels.resize(len, 0);
+        self.alpha.clear();
+        self.alpha.resize(len, 0);
+    }
+
+    /// Writes contiguous unpremultiplied `RGBA8888` bytes into `out` (reusing `out`'s capacity).
+    pub fn write_rgba8_into(&self, out: &mut Vec<u8>) {
+        let len = self.pixels.len();
+        out.clear();
+        out.reserve(len * 4);
+        if self.has_alpha {
+            for (&px, &a) in self.pixels.iter().zip(self.alpha.iter()) {
+                let (r, g, b) = Self::unpack_rgb(px);
+                out.extend_from_slice(&[r, g, b, a]);
+            }
+        } else {
+            for &px in &self.pixels {
+                let (r, g, b) = Self::unpack_rgb(px);
+                out.extend_from_slice(&[r, g, b, 255]);
+            }
         }
     }
 
@@ -28,6 +75,9 @@ impl PixelBuffer {
         self.height = height;
         let len = (width as usize).saturating_mul(height as usize);
         self.pixels.resize(len, 0);
+        if self.has_alpha {
+            self.alpha.resize(len, 0);
+        }
     }
 
     #[inline]
@@ -67,6 +117,30 @@ impl PixelBuffer {
     pub fn clear(&mut self, color: ColorRgba) {
         let packed = Self::pack_rgb(color.r, color.g, color.b);
         self.pixels.fill(packed);
+        if self.has_alpha {
+            self.alpha.fill(color.a);
+        }
+    }
+
+    /// Overwrites pixels (and alpha, when alpha-tracking is active) inside `[x0, x1) x [y0, y1)`.
+    pub fn fill_rect_rgba(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: ColorRgba) {
+        let sx0 = x0.clamp(0, self.width as i32) as usize;
+        let sx1 = x1.clamp(0, self.width as i32) as usize;
+        let sy0 = y0.clamp(0, self.height as i32) as usize;
+        let sy1 = y1.clamp(0, self.height as i32) as usize;
+        if sx0 >= sx1 || sy0 >= sy1 {
+            return;
+        }
+        let packed = Self::pack_rgb(color.r, color.g, color.b);
+        let stride = self.width as usize;
+        let has_alpha = self.has_alpha;
+        for py in sy0..sy1 {
+            let row = py * stride;
+            self.pixels[row + sx0..row + sx1].fill(packed);
+            if has_alpha {
+                self.alpha[row + sx0..row + sx1].fill(color.a);
+            }
+        }
     }
 
     #[inline]
@@ -83,6 +157,9 @@ impl PixelBuffer {
         if x < self.width && y < self.height {
             let idx = (y as usize) * (self.width as usize) + (x as usize);
             self.pixels[idx] = Self::pack_rgb(r, g, b);
+            if self.has_alpha {
+                self.alpha[idx] = 255;
+            }
         }
     }
 
@@ -99,6 +176,25 @@ impl PixelBuffer {
         let idx = (y as usize) * (self.width as usize) + (x as usize);
         if eff_a >= 255 {
             self.pixels[idx] = Self::pack_rgb(color.r, color.g, color.b);
+            if self.has_alpha {
+                self.alpha[idx] = 255;
+            }
+            return;
+        }
+        if self.has_alpha {
+            let dst_a = self.alpha[idx] as u32;
+            let inv_a = 255 - eff_a;
+            let dst_w = (dst_a * inv_a + 127) / 255;
+            let out_a = eff_a + dst_w; // >= 1 since eff_a >= 1
+            let dst = self.pixels[idx];
+            let dr = (dst >> 16) & 0xFF;
+            let dg = (dst >> 8) & 0xFF;
+            let db = dst & 0xFF;
+            let r = ((color.r as u32 * eff_a + dr * dst_w + out_a / 2) / out_a).min(255);
+            let g = ((color.g as u32 * eff_a + dg * dst_w + out_a / 2) / out_a).min(255);
+            let b = ((color.b as u32 * eff_a + db * dst_w + out_a / 2) / out_a).min(255);
+            self.pixels[idx] = (r << 16) | (g << 8) | b;
+            self.alpha[idx] = out_a.min(255) as u8;
             return;
         }
         let dst = self.pixels[idx];
@@ -128,6 +224,33 @@ impl PixelBuffer {
             return;
         }
         let row_offset = (y as usize) * (self.width as usize);
+        if self.has_alpha {
+            if eff_a >= 255 {
+                self.pixels[row_offset + start..row_offset + end]
+                    .fill(Self::pack_rgb(color.r, color.g, color.b));
+                self.alpha[row_offset + start..row_offset + end].fill(255);
+            } else {
+                let sr = color.r as u32 * eff_a;
+                let sg = color.g as u32 * eff_a;
+                let sb = color.b as u32 * eff_a;
+                let inv_a = 255 - eff_a;
+                for idx in (row_offset + start)..(row_offset + end) {
+                    let dst_a = self.alpha[idx] as u32;
+                    let dst_w = (dst_a * inv_a + 127) / 255;
+                    let out_a = eff_a + dst_w;
+                    let dst = self.pixels[idx];
+                    let dr = (dst >> 16) & 0xFF;
+                    let dg = (dst >> 8) & 0xFF;
+                    let db = dst & 0xFF;
+                    let r = ((sr + dr * dst_w + out_a / 2) / out_a).min(255);
+                    let g = ((sg + dg * dst_w + out_a / 2) / out_a).min(255);
+                    let b = ((sb + db * dst_w + out_a / 2) / out_a).min(255);
+                    self.pixels[idx] = (r << 16) | (g << 8) | b;
+                    self.alpha[idx] = out_a.min(255) as u8;
+                }
+            }
+            return;
+        }
         let slice = &mut self.pixels[row_offset + start..row_offset + end];
         if eff_a >= 255 {
             slice.fill(Self::pack_rgb(color.r, color.g, color.b));

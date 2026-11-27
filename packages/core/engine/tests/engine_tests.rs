@@ -7,16 +7,17 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    CommandBufferBuilder, DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice,
-    NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch, NveEventBatchRef,
-    NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
-    NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    DecodeError, FrameId, NativeEvent, NodeId, NveBufferSlice, NveComponentApi, NveDevApi,
+    NveDirectEvent, NveEventBatch, NveEventBatchRef, NveGestureDisposition, NveHostApi,
+    NveHostCallbacks, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_engine::{
     BackendApplyStats, BackendError, FrameProfiler, FrameTiming, HotPatchMsg, LayoutRect, NveApp,
-    RenderBackend, SurfaceRunner, Viewport,
+    StoreBackend, StoreWireReplica, SurfaceRunner, Viewport,
 };
+use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
 // ============================================================================
 // 1. Hot-reload protocol serialization / deserialization & patch routing
@@ -95,7 +96,9 @@ fn hot_patch_msg_rejects_json_and_malformed_frames() {
 
 // Local NveApp exported via `export_nve_app!` for testing patch routing and C ABI null safety.
 struct RoutingTestApp {
-    surface_id: SurfaceId,
+    store: NodeStore,
+    changes: ChangeSet,
+    encoder: nve_store::wire::WireEncoder,
     patches_received: Vec<HotPatchMsg>,
     state: Vec<u8>,
     frame_buf: Vec<u8>,
@@ -104,21 +107,27 @@ struct RoutingTestApp {
 
 impl NveApp for RoutingTestApp {
     fn create(surface_id: SurfaceId) -> Self {
-        let mut b = CommandBufferBuilder::new(surface_id, 1);
-        b.commit(true);
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        store.tx().commit_into(&mut changes);
+        let mut encoder = nve_store::wire::WireEncoder::default();
+        let mut frame_buf = Vec::new();
+        encoder.encode(&store, &changes, &mut frame_buf);
         Self {
-            surface_id,
+            store,
+            changes,
+            encoder,
             patches_received: Vec::new(),
             state: b"initial".to_vec(),
-            frame_buf: b.into_bytes(),
+            frame_buf,
             emitted: vec![NveDirectEvent::press(surface_id, 2, 10, 1.0, 2.0)],
         }
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(self.surface_id, frame_id);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        self.store.tx().commit_into(&mut self.changes);
+        self.encoder
+            .encode(&self.store, &self.changes, &mut self.frame_buf);
         &self.frame_buf
     }
 
@@ -404,7 +413,7 @@ struct StubBackend {
     fail_next: bool,
 }
 
-impl RenderBackend for StubBackend {
+impl StoreBackend for StubBackend {
     fn name(&self) -> &'static str {
         "stub"
     }
@@ -413,13 +422,17 @@ impl RenderBackend for StubBackend {
         self.viewport = viewport;
     }
 
-    fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError> {
+    fn commit(
+        &mut self,
+        _store: &NodeStore,
+        changes: &ChangeSet,
+    ) -> Result<BackendApplyStats, BackendError> {
         if self.fail_next {
             self.fail_next = false;
             return Err(BackendError::Decode(DecodeError::Truncated));
         }
         Ok(BackendApplyStats {
-            op_count: command_bytes.len() as u32,
+            op_count: (changes.created.len() + changes.touched.len()) as u32,
             mutation_count: 3,
             decode_us: 11,
             layout_us: 22,
@@ -435,6 +448,8 @@ impl RenderBackend for StubBackend {
     fn layout_of(&self, _node_id: NodeId) -> Option<LayoutRect> {
         None
     }
+
+    fn reset(&mut self) {}
 }
 
 #[test]
@@ -459,16 +474,34 @@ fn surface_runner_sequences_frames_records_profiler_and_propagates_errors() {
     let f2 = runner.next_frame_id();
     assert_eq!((f1, f2), (1, 2));
 
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    store.tx().commit_into(&mut changes);
+
     let t1 = runner
-        .submit_recorded_frame(f1, 13, 4, &[1, 2, 3, 4])
+        .commit_store(f1, 13, &store, &changes)
         .expect("frame 1 ok");
-    assert_eq!(t1.total_us(), 13 + 4 + 11 + 22 + 5 + 9);
+    assert_eq!(t1.total_us(), 13 + 11 + 22 + 5 + 9);
     assert_eq!(runner.profiler().frames().len(), 1);
 
     runner.backend_mut().fail_next = true;
-    let err = runner.submit_recorded_frame(f2, 1, 1, &[]).unwrap_err();
+    let err = runner.commit_store(f2, 1, &store, &changes).unwrap_err();
     assert!(matches!(err, BackendError::Decode(DecodeError::Truncated)));
     assert_eq!(runner.profiler().frames().len(), 1);
+
+    // StoreWireReplica roundtrip over NVE2 bytes
+    let mut enc = nve_store::wire::WireEncoder::default();
+    let mut wire = Vec::new();
+    enc.encode(&store, &changes, &mut wire);
+    let mut replica = StoreWireReplica::new(
+        StubBackend {
+            viewport: vp,
+            fail_next: false,
+        },
+        RealizationOrder::new(),
+    );
+    let stats = replica.submit_nve2_frame(&wire).expect("nve2 ok");
+    assert_eq!(stats.mutation_count, 3);
 }
 
 // ============================================================================

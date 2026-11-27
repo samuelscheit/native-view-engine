@@ -1,5 +1,5 @@
 //! `cargo nve docs build` — emits static Semantic HTML5 + Option 5 CSS pages for every route,
-//! binary `search.nvs1`, `sitemap.xml`, `.nojekyll`, `404.html`, and optional `wasm32`
+//! binary `search.nvs2`, `sitemap.xml`, `.nojekyll`, `404.html`, and optional `wasm32`
 //! progressive hydration bundle.
 
 use std::env;
@@ -49,24 +49,24 @@ const DOCS_HEAD_CHROME: &str = concat!(
     "-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}",
     "#app{width:100%;height:100%;}",
     "#app>[data-nve-id=\"1\"]{width:100%;height:100%;}",
-    "[testid=\"docs-root\"]{width:100%;height:100vh;overflow:hidden;}",
-    "[testid=\"docs-body\"]{min-height:0;overflow:hidden;flex:1 1 0%;}",
-    "[testid=\"docs-navbar\"]{border-top:0!important;border-left:0!important;border-right:0!important;}",
-    "[testid=\"docs-sidebar-desktop\"]{border-top:0!important;border-left:0!important;border-bottom:0!important;min-height:0;height:100%;}",
-    "[testid=\"docs-sidebar-scroll\"]{min-height:0;overflow-y:auto;scrollbar-width:thin;}",
-    "[testid=\"docs-toc\"]{border-top:0!important;border-right:0!important;border-bottom:0!important;min-height:0;height:100%;overflow-y:auto;}",
-    "[testid=\"docs-main-scroll\"]{min-height:0;height:100%;overflow-y:auto;align-items:center!important;scrollbar-width:thin;}",
-    "[testid=\"docs-custom-scroll\"]{min-height:0;width:100%;height:100%;overflow-y:auto;overflow-x:hidden;align-items:center!important;scrollbar-width:thin;}",
-    "[testid=\"docs-article-container\"]{flex-shrink:0!important;padding-bottom:64px!important;}",
-    "[testid=\"landing-page\"],[testid=\"examples-gallery-page\"]{flex-shrink:0!important;}",
-    "[testid=\"landing-hero-glow\"]{background:radial-gradient(ellipse 68% 58% at 50% 0%,rgba(56,189,248,0.11),transparent 72%);}",
-    "[data-theme=\"light\"] [testid=\"landing-hero-glow\"]{background:radial-gradient(ellipse 68% 58% at 50% 0%,rgba(2,132,199,0.08),transparent 72%);}",
-    "[testid=\"landing-hero-h1\"] span,[testid=\"examples-hero-h1\"] span{letter-spacing:-0.03em;line-height:1.1;}",
-    "[testid=\"docs-sidebar-overlay\"]{position:fixed!important;inset:0!important;z-index:400!important;}",
-    "[testid=\"docs-search-dialog-backdrop\"]{position:fixed!important;inset:0!important;z-index:1000!important;}",
-    "[testid=\"docs-inlines\"] a{text-underline-offset:3px;}",
-    "[testid=\"landing-cta-row\"] a,[testid=\"hero-tab-live\"],[testid=\"hero-tab-code\"],[testid=\"hero-tab-ir\"],[testid=\"landing-cli-copy\"],[testid^=\"examples-pg-tab-\"],[testid^=\"hero-host-\"]{white-space:nowrap!important;}",
-    "[testid=\"bench-bar-legend\"],[testid=\"bento-host-pills\"],[testid=\"bench-controls-bar\"]{flex-wrap:wrap!important;}",
+    "[data-testid=\"docs-root\"]{width:100%;height:100vh;overflow:hidden;}",
+    "[data-testid=\"docs-body\"]{min-height:0;overflow:hidden;flex:1 1 0%;}",
+    "[data-testid=\"docs-navbar\"]{border-top:0!important;border-left:0!important;border-right:0!important;}",
+    "[data-testid=\"docs-sidebar-desktop\"]{border-top:0!important;border-left:0!important;border-bottom:0!important;min-height:0;height:100%;}",
+    "[data-testid=\"docs-sidebar-scroll\"]{min-height:0;overflow-y:auto;scrollbar-width:thin;}",
+    "[data-testid=\"docs-toc\"]{border-top:0!important;border-right:0!important;border-bottom:0!important;min-height:0;height:100%;overflow-y:auto;}",
+    "[data-testid=\"docs-main-scroll\"]{min-height:0;height:100%;overflow-y:auto;align-items:center!important;scrollbar-width:thin;}",
+    "[data-testid=\"docs-custom-scroll\"]{min-height:0;width:100%;height:100%;overflow-y:auto;overflow-x:hidden;align-items:center!important;scrollbar-width:thin;}",
+    "[data-testid=\"docs-article-container\"]{flex-shrink:0!important;padding-bottom:64px!important;}",
+    "[data-testid=\"landing-page\"],[data-testid=\"examples-gallery-page\"]{flex-shrink:0!important;}",
+    "[data-testid=\"landing-hero-glow\"]{background:radial-gradient(ellipse 68% 58% at 50% 0%,rgba(56,189,248,0.11),transparent 72%);}",
+    "[data-theme=\"light\"] [data-testid=\"landing-hero-glow\"]{background:radial-gradient(ellipse 68% 58% at 50% 0%,rgba(2,132,199,0.08),transparent 72%);}",
+    "[data-testid=\"landing-hero-h1\"] span,[data-testid=\"examples-hero-h1\"] span{letter-spacing:-0.03em;line-height:1.1;}",
+    "[data-testid=\"docs-sidebar-overlay\"]{position:fixed!important;inset:0!important;z-index:400!important;}",
+    "[data-testid=\"docs-search-dialog-backdrop\"]{position:fixed!important;inset:0!important;z-index:1000!important;}",
+    "[data-testid=\"docs-inlines\"] a{text-underline-offset:3px;}",
+    "[data-testid=\"landing-cta-row\"] a,[data-testid=\"hero-tab-live\"],[data-testid=\"hero-tab-code\"],[data-testid=\"hero-tab-ir\"],[data-testid=\"landing-cli-copy\"],[data-testid^=\"examples-pg-tab-\"],[data-testid^=\"hero-host-\"]{white-space:nowrap!important;}",
+    "[data-testid=\"bench-bar-legend\"],[data-testid=\"bento-host-pills\"],[data-testid=\"bench-controls-bar\"]{flex-wrap:wrap!important;}",
     "a,button,[role=\"button\"],[role=\"link\"],[role=\"tab\"]{cursor:pointer;}",
     "a:hover,button:hover,[role=\"button\"]:hover,[role=\"link\"]:hover,[role=\"tab\"]:hover{opacity:0.92;}",
     "a{color:inherit;text-decoration:none;}",
@@ -105,10 +105,10 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
     let site_cfg = nve_docs_site::nve_docs_site_config(&base_path);
     let has_wasm = !opts.skip_wasm;
 
-    // 1. Emit binary NVS1 search index.
+    // 1. Emit binary NVS2 search index.
     let search_bytes = site.search_index.encode();
-    fs::write(opts.out.join("search.nvs1"), &search_bytes)
-        .map_err(|e| format!("failed to write search.nvs1: {e}"))?;
+    fs::write(opts.out.join("search.nvs2"), &search_bytes)
+        .map_err(|e| format!("failed to write search.nvs2: {e}"))?;
 
     // 2. Emit .nojekyll for GitHub Pages.
     fs::write(opts.out.join(".nojekyll"), b"")
@@ -227,24 +227,29 @@ fn emit_ssr_page(
         true,
     );
     let mut backend = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
     surface
-        .flush_into(1, &mut backend)
-        .map_err(|e| format!("SSR flush_into failed for '{public_route}': {e}"))?;
+        .commit_to(1, &mut backend)
+        .map_err(|e| format!("SSR commit_to failed for '{public_route}': {e}"))?;
 
-    let ssr_preview = backend.render_ssr();
+    let ssr_preview = backend.render_ssr(surface.store());
     let css_bytes = ssr_preview.base_css.len() + ssr_preview.style_css.len();
 
     let canonical = canonical_url_for(site_url, public_route);
-    let doc_html = backend.render_ssr_document(&SsrDocumentOptions {
-        title: title.to_string(),
-        description: description.map(str::to_string),
-        canonical_url: Some(canonical),
-        og_image: None,
-        lang: Some("en".to_string()),
-        head_extra: Some(DOCS_HEAD_CHROME.to_string()),
-        body_scripts: body_scripts.map(str::to_string),
-        enable_event_replay: body_scripts.is_some(),
-    });
+    let doc_html = backend.render_ssr_document(
+        surface.store(),
+        &SsrDocumentOptions {
+            title: title.to_string(),
+            description: description.map(str::to_string),
+            canonical_url: Some(canonical),
+            og_image: None,
+            lang: Some("en".to_string()),
+            head_extra: Some(DOCS_HEAD_CHROME.to_string()),
+            body_scripts: body_scripts.map(str::to_string),
+            enable_event_replay: body_scripts.is_some(),
+        },
+    );
 
     let out_file = route_output_path(out_dir, public_route);
     if let Some(parent) = out_file.parent() {
@@ -265,7 +270,7 @@ fn print_build_summary(out: &Path, s: &BuildSummary) {
         s.examples.kitchen_sink_mode,
     );
     println!(
-        "  HTML: {:.1} KiB | CSS (inlined across pages): {:.1} KiB | search.nvs1: {:.1} KiB",
+        "  HTML: {:.1} KiB | CSS (inlined across pages): {:.1} KiB | search.nvs2: {:.1} KiB",
         s.total_html_bytes as f64 / 1024.0,
         s.total_css_bytes as f64 / 1024.0,
         s.search_index_bytes as f64 / 1024.0
@@ -383,19 +388,24 @@ fn render_404_page(
         true,
     );
     let mut backend = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
     surface
-        .flush_into(1, &mut backend)
-        .map_err(|e| format!("SSR 404 flush_into failed: {e}"))?;
-    Ok(backend.render_ssr_document(&SsrDocumentOptions {
-        title: "Native View Engine — Documentation".to_string(),
-        description: Some("Native View Engine documentation".to_string()),
-        canonical_url: Some(format!("{site_url}/")),
-        og_image: None,
-        lang: Some("en".to_string()),
-        head_extra: Some(DOCS_HEAD_CHROME.to_string()),
-        body_scripts: body_scripts.map(str::to_string),
-        enable_event_replay: body_scripts.is_some(),
-    }))
+        .commit_to(1, &mut backend)
+        .map_err(|e| format!("SSR 404 commit_to failed: {e}"))?;
+    Ok(backend.render_ssr_document(
+        surface.store(),
+        &SsrDocumentOptions {
+            title: "Native View Engine — Documentation".to_string(),
+            description: Some("Native View Engine documentation".to_string()),
+            canonical_url: Some(format!("{site_url}/")),
+            og_image: None,
+            lang: Some("en".to_string()),
+            head_extra: Some(DOCS_HEAD_CHROME.to_string()),
+            body_scripts: body_scripts.map(str::to_string),
+            enable_event_replay: body_scripts.is_some(),
+        },
+    ))
 }
 
 fn find_workspace_root() -> PathBuf {

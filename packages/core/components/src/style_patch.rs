@@ -2,12 +2,76 @@
 //! responsive `@media` rules (`ResponsiveRule`) and interactive pseudo-state rules
 //! (`StateStyleRule`) with zero duplication and zero string serialization.
 
-use std::fmt::Write as _;
+use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 
-use nve_abi::{
-    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
-    StyleProps,
-};
+/// Resolved value-type snapshot of core visual + typography properties (used by motion
+/// interpolation and pseudo-state resolution; derived directly from `NodeStore` word tables).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisualSnapshot {
+    pub background: ColorRgba,
+    pub text_color: ColorRgba,
+    pub border_color: ColorRgba,
+    pub border_width: f32,
+    pub border_radius: f32,
+    pub opacity: f32,
+    pub font_size: f32,
+    pub z_index: i32,
+}
+
+impl Default for VisualSnapshot {
+    fn default() -> Self {
+        Self {
+            background: ColorRgba::TRANSPARENT,
+            text_color: ColorRgba::BLACK,
+            border_color: ColorRgba::TRANSPARENT,
+            border_width: 0.0,
+            border_radius: 0.0,
+            opacity: 1.0,
+            font_size: 16.0,
+            z_index: 0,
+        }
+    }
+}
+
+/// Resolved value-type snapshot of core box-layout properties (derived from `tables::Layout`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutSnapshot {
+    pub width: Dimension,
+    pub height: Dimension,
+    pub min_width: Dimension,
+    pub min_height: Dimension,
+    pub max_width: Dimension,
+    pub max_height: Dimension,
+    pub flex_direction: FlexDirection,
+    pub justify_content: FlexJustify,
+    pub align_items: FlexAlign,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub gap: f32,
+    pub padding: EdgeInsets,
+    pub margin: EdgeInsets,
+}
+
+impl Default for LayoutSnapshot {
+    fn default() -> Self {
+        Self {
+            width: Dimension::Auto,
+            height: Dimension::Auto,
+            min_width: Dimension::Auto,
+            min_height: Dimension::Auto,
+            max_width: Dimension::Auto,
+            max_height: Dimension::Auto,
+            flex_direction: FlexDirection::Column,
+            justify_content: FlexJustify::FlexStart,
+            align_items: FlexAlign::Stretch,
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            gap: 0.0,
+            padding: EdgeInsets::default(),
+            margin: EdgeInsets::default(),
+        }
+    }
+}
 
 use crate::interaction::CursorKind;
 use crate::layout_ext::{
@@ -423,7 +487,7 @@ impl StylePatch {
     }
 
     /// Applies all present visual style overrides onto `style` (paint-only fast path).
-    pub fn apply_style_to(&self, style: &mut StyleProps) {
+    pub fn apply_style_to(&self, style: &mut VisualSnapshot) {
         if let Some(v) = self.background { style.background = v; }
         if let Some(v) = self.text_color { style.text_color = v; }
         if let Some(v) = self.border_width { style.border_width = v; }
@@ -435,7 +499,7 @@ impl StylePatch {
     }
 
     /// Applies all present layout overrides onto `layout`.
-    pub fn apply_layout_to(&self, layout: &mut LayoutProps) {
+    pub fn apply_layout_to(&self, layout: &mut LayoutSnapshot) {
         if let Some(v) = self.flex_direction { layout.flex_direction = v; }
         if let Some(v) = self.justify_content { layout.justify_content = v; }
         if let Some(v) = self.align_items { layout.align_items = v; }
@@ -452,30 +516,9 @@ impl StylePatch {
         if let Some(v) = self.margin { layout.margin = v; }
     }
 
-    /// Applies all present layout and visual overrides onto `layout` and `style` (native path).
-    pub fn apply_to(&self, layout: &mut LayoutProps, style: &mut StyleProps) {
+    /// Applies all present layout and visual overrides onto `layout` and `style`.
+    pub fn apply_to(&self, layout: &mut LayoutSnapshot, style: &mut VisualSnapshot) {
         self.apply_layout_to(layout);
         self.apply_style_to(style);
-    }
-
-    /// Applies layout/style overrides and invokes `on_raw` for non-ABI CSS properties
-    /// (`flex-wrap`, `overflow`, `text-align`, `font-weight`, `display`, `cursor`).
-    pub fn apply_to_with_raw<F: FnMut(&str, &str)>(
-        &self,
-        layout: &mut LayoutProps,
-        style: &mut StyleProps,
-        mut on_raw: F,
-    ) {
-        self.apply_to(layout, style);
-        if let Some(w) = self.flex_wrap { on_raw("flex-wrap", w.as_css()); }
-        if let Some(o) = self.overflow { on_raw("overflow", o.as_css()); }
-        if let Some(a) = self.text_align { on_raw("text-align", a.as_css()); }
-        if let Some(fw) = self.font_weight {
-            let mut buf = String::with_capacity(4);
-            let _ = write!(&mut buf, "{fw}");
-            on_raw("font-weight", &buf);
-        }
-        if let Some(d) = self.display { on_raw("display", d.as_css()); }
-        if let Some(c) = self.cursor { on_raw("cursor", c.to_css_keyword()); }
     }
 }

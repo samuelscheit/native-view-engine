@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_draw_list.hpp"
+#include "nve_hash.generated.hpp"
 #include "nve_host_runtime.hpp"
 
 #include <QAccessible>
@@ -591,16 +592,6 @@ inline QColor qcolorFromRgba(uint32_t rgba) noexcept {
 
 inline QColor qcolorFromDrawColor(nve::DrawColorRgba c) noexcept {
   return QColor(c.r, c.g, c.b, c.a);
-}
-
-/// Fast 64-bit FNV-1a hash for `NVE_DRAW1` byte streams (used for GPU canvas texture caching).
-inline uint64_t hashDrawListBytes(std::span<const uint8_t> bytes) noexcept {
-  uint64_t h = 14695981039346656037ull;
-  for (uint8_t b : bytes) {
-    h ^= static_cast<uint64_t>(b);
-    h *= 1099511628211ull;
-  }
-  return h;
 }
 
 /// Stream-decode and paint all 8 `NVE_DRAW1` opcodes (`Clear`, `FillRect`, `FillRoundedRect`,

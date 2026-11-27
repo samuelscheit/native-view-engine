@@ -12,7 +12,7 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
-use crate::hash::Xxh64Hasher;
+use nve_abi::Xxh64Hasher;
 
 use super::ArenaError;
 
@@ -76,7 +76,7 @@ pub fn compute_slot_checksum(slot_bytes: &[u8; ARENA_HEADER_SLOT_SIZE]) -> u64 {
     let mut h = Xxh64Hasher::new(0);
     h.update(&slot_bytes[0..CHECKSUM_OFFSET]);
     h.update(&slot_bytes[CHECKSUM_END..ARENA_HEADER_SLOT_SIZE]);
-    h.finish()
+    h.digest()
 }
 
 /// Serializes an [`ArenaHeaderSlot`] in little-endian wire order and populates `header_checksum`.

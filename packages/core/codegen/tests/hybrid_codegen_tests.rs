@@ -1684,16 +1684,18 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
     assert_eq!(render_node.fields.len(), 20);
 
     // Cross-check both deterministic schema hashes against `packages/core/abi`
-    assert_eq!(core.file_schema_hash(), nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
+    assert_eq!(nve_codegen::core_abi_schema_hash(), nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
+    assert_ne!(core.file_schema_hash(), 0);
+    assert_eq!(core.file_schema_hash(), nve_codegen::core_abi_spec().file_schema_hash());
     assert_eq!(
         nve_codegen::compute_scene_schema_hash(&scene),
         nve_abi::NVE_SCENE_SCHEMA_HASH
     );
 
-    // Verify all 15 Core ABI + Scene ABI + Wire Codec files are deterministic, obey naming
+    // Verify all 21 Core ABI + Scene ABI + Wire Codec + XXH64 mirror files are deterministic, obey naming
     // invariants, and match any materialized files on disk byte-for-byte.
     let all = nve_codegen::generate_all_abi_files();
-    assert_eq!(all.len(), 15);
+    assert_eq!(all.len(), 21);
     assert_eq!(all, nve_codegen::generate_all_abi_files());
     common::assert_generated_file_naming_and_optional_disk_parity(&all, &root, false);
 }

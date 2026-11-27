@@ -4,9 +4,9 @@
 
 id: no-legacy-nodestore-symbols-rust
 language: rust
-severity: warning
-message: "Legacy NodeStore symbol is banned [stage: PostNodeStore]; migrate to typed NodeStore tables/handles."
-note: "[stage: PostNodeStore] Synced with `BANNED_LEGACY_SYMBOLS_NODESTORE` in `arch_invariants`. Flip to `error` once NodeStore lands."
+severity: error
+message: "Legacy NodeStore symbol is banned; migrate to typed NodeStore tables/handles."
+note: "Synced with `BANNED_LEGACY_SYMBOLS_NODESTORE` in `arch_invariants`."
 ignores:
   - "packages/tools/cli/tests/arch_invariants/**"
   - "**/tests/**"

@@ -2,6 +2,7 @@ use std::fmt;
 use std::mem::{align_of, offset_of, size_of};
 
 use nve_abi_macros::NveAbi;
+use nve_hash::Xxh64Hasher;
 
 use crate::NodeId;
 
@@ -19,8 +20,6 @@ pub const NVE_NODE_META_ALIGN: usize = 4;
 pub const NVE_META_FLAG_DISABLED: u32 = 1 << 0;
 pub const NVE_META_FLAG_SECURE_TEXT_ENTRY: u32 = 1 << 1;
 pub const NVE_META_FLAG_MULTILINE: u32 = 1 << 2;
-pub const NVE_META_FLAG_HAS_DRAW_LIST: u32 = 1 << 3;
-pub const NVE_META_FLAG_DRAW_LIST_CORRUPT: u32 = 1 << 4;
 pub const NVE_META_FLAG_ACCESSIBILITY_HIDDEN: u32 = 1 << 5;
 pub const NVE_META_RESIZE_MODE_SHIFT: u32 = 8;
 pub const NVE_META_RESIZE_MODE_MASK: u32 = 0x3;
@@ -32,25 +31,9 @@ pub const NVE_NODE_INTERACTIVE: u8 = 1 << 1;
 /// Node clips its children to its rounded/rectangular bounds.
 pub const NVE_NODE_CLIP_BOUNDS: u8 = 1 << 2;
 
-/// Compact `u8` component kind discriminants stored in `NveRenderNode::kind`.
-pub const NVE_NODE_KIND_ROOT: u8 = 0;
-pub const NVE_NODE_KIND_VIEW: u8 = 1;
-pub const NVE_NODE_KIND_TEXT: u8 = 2;
-pub const NVE_NODE_KIND_SCROLL_VIEW: u8 = 3;
-pub const NVE_NODE_KIND_IMAGE: u8 = 4;
-pub const NVE_NODE_KIND_TEXT_INPUT: u8 = 5;
-pub const NVE_NODE_KIND_PRESSABLE: u8 = 6;
-pub const NVE_NODE_KIND_SKIA_CANVAS: u8 = 7;
-pub const NVE_NODE_KIND_CUSTOM: u8 = 255;
-
-/// Converts a `ComponentKind` `u16` discriminant to its compact `u8` scene-node kind.
-#[inline]
-pub const fn component_kind_to_scene_u8(kind: u16) -> u8 {
-    match kind {
-        0..=7 => kind as u8,
-        _ => NVE_NODE_KIND_CUSTOM,
-    }
-}
+/// Sentinel `NveRenderNode::primary_slot` value meaning plain container with no realizing table.
+/// Any value in `0..128` is a uniform `TableSlot` index into `NveSceneView::tables` / `factories[]`.
+pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
 
 /// One 64-byte (single cache line) zero-decode render node shared across all host ABIs.
 #[repr(C, align(64))]
@@ -60,9 +43,9 @@ pub struct NveRenderNode {
     /// Stable node identifier (`NVE_ROOT_NODE_ID == 1`).
     #[nve_abi(offset = 0)]
     pub node_id: u32,
-    /// Compact `NVE_NODE_KIND_*` component discriminant.
+    /// Highest-priority realizing `TableSlot` (`0..127`), or `NVE_PRIMARY_SLOT_NONE` (`0xFF`) for a plain container.
     #[nve_abi(offset = 4)]
-    pub kind: u8,
+    pub primary_slot: u8,
     /// Bitmask of `NVE_NODE_LEAF_TEXT`, `NVE_NODE_INTERACTIVE`, `NVE_NODE_CLIP_BOUNDS`.
     #[nve_abi(offset = 5)]
     pub flags: u8,
@@ -124,7 +107,7 @@ const _: () = {
     assert!(size_of::<NveRenderNode>() == NVE_RENDER_NODE_SIZE);
     assert!(align_of::<NveRenderNode>() == NVE_RENDER_NODE_ALIGN);
     assert!(offset_of!(NveRenderNode, node_id) == 0);
-    assert!(offset_of!(NveRenderNode, kind) == 4);
+    assert!(offset_of!(NveRenderNode, primary_slot) == 4);
     assert!(offset_of!(NveRenderNode, flags) == 5);
     assert!(offset_of!(NveRenderNode, opacity_u8) == 6);
     assert!(offset_of!(NveRenderNode, _pad0) == 7);
@@ -151,7 +134,7 @@ impl NveRenderNode {
     pub const fn zeroed() -> Self {
         Self {
             node_id: 0,
-            kind: NVE_NODE_KIND_VIEW,
+            primary_slot: NVE_PRIMARY_SLOT_NONE,
             flags: 0,
             opacity_u8: 255,
             _pad0: 0,
@@ -205,7 +188,7 @@ impl NveRenderNode {
     #[inline]
     pub fn bit_eq(&self, other: &Self) -> bool {
         self.node_id == other.node_id
-            && self.kind == other.kind
+            && self.primary_slot == other.primary_slot
             && self.flags == other.flags
             && self.opacity_u8 == other.opacity_u8
             && self._pad0 == other._pad0
@@ -252,9 +235,9 @@ pub struct NveSceneView {
     /// Element count (`u32` entries) of `children_slab`.
     #[nve_abi(offset = 32)]
     pub children_slab_len: u32,
-    /// Explicit 8-byte pointer alignment padding.
+    /// Number of published `NveTableView` entries in `tables`.
     #[nve_abi(offset = 36)]
-    pub _pad: u32,
+    pub table_count: u32,
     /// Contiguous array of `node_count` `NveRenderNode` entries.
     pub nodes: *const NveRenderNode,
     /// Contiguous UTF-8 text byte slab.
@@ -265,6 +248,8 @@ pub struct NveSceneView {
     pub dirty_indices: *const u32,
     /// Node IDs removed during `frame_id`.
     pub removed_ids: *const u32,
+    /// Contiguous array of `table_count` zero-copy [`crate::table::NveTableView`] entries.
+    pub tables: *const crate::table::NveTableView,
 }
 
 const _: () = {
@@ -275,7 +260,7 @@ const _: () = {
     assert!(offset_of!(NveSceneView, removed_count) == 24);
     assert!(offset_of!(NveSceneView, text_slab_len) == 28);
     assert!(offset_of!(NveSceneView, children_slab_len) == 32);
-    assert!(offset_of!(NveSceneView, _pad) == 36);
+    assert!(offset_of!(NveSceneView, table_count) == 36);
     assert!(offset_of!(NveSceneView, nodes) == 40);
 };
 
@@ -314,11 +299,7 @@ pub struct NveNodeMeta {
     #[nve_abi(offset = 40)]
     pub test_id_offset: u32,
     #[nve_abi(offset = 44)]
-    pub draw_list_offset: u32,
-    #[nve_abi(offset = 48)]
-    pub draw_list_len: u32,
-    #[nve_abi(offset = 52)]
-    pub _reserved: [u32; 3],
+    pub _reserved: [u32; 5],
 }
 
 const _: () = {
@@ -338,118 +319,108 @@ const _: () = {
     assert!(offset_of!(NveNodeMeta, placeholder_len) == 36);
     assert!(offset_of!(NveNodeMeta, test_id_len) == 38);
     assert!(offset_of!(NveNodeMeta, test_id_offset) == 40);
-    assert!(offset_of!(NveNodeMeta, draw_list_offset) == 44);
-    assert!(offset_of!(NveNodeMeta, draw_list_len) == 48);
-    assert!(offset_of!(NveNodeMeta, _reserved) == 52);
+    assert!(offset_of!(NveNodeMeta, _reserved) == 44);
 };
 
 // ============================================================================
-// Deterministic FNV-1a 64-bit Schema Hash (must match `nve-codegen::abi_schema`)
+// Deterministic XXH64 Schema Hash (must match `nve-codegen::compute_scene_schema_hash`)
 // ============================================================================
 
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-const fn fnv1a_bytes(mut h: u64, bytes: &[u8]) -> u64 {
-    let mut i = 0;
-    while i < bytes.len() {
-        h ^= bytes[i] as u64;
-        h = h.wrapping_mul(FNV1A_PRIME);
-        i += 1;
-    }
-    h
+const fn hash_field(h: &mut Xxh64Hasher, name: &str, ty: &str, sep: &[u8], v: usize) {
+    h.update(b"|");
+    h.update(name.as_bytes());
+    h.update(b":");
+    h.update(ty.as_bytes());
+    h.update(sep);
+    h.update_u64(v as u64);
 }
 
-const fn fnv1a_u64(h: u64, v: u64) -> u64 {
-    fnv1a_bytes(h, &v.to_le_bytes())
+const fn hash_fixed_field(h: &mut Xxh64Hasher, name: &str, ty: &str, offset: usize) {
+    hash_field(h, name, ty, b"@", offset);
 }
 
-const fn hash_fixed_field(h: u64, name: &str, ty: &str, offset: usize) -> u64 {
-    let h = fnv1a_bytes(h, b"|");
-    let h = fnv1a_bytes(h, name.as_bytes());
-    let h = fnv1a_bytes(h, b":");
-    let h = fnv1a_bytes(h, ty.as_bytes());
-    let h = fnv1a_bytes(h, b"@");
-    fnv1a_u64(h, offset as u64)
-}
-
-const fn hash_ptr_field(h: u64, name: &str, ty: &str, field_index: usize) -> u64 {
-    let h = fnv1a_bytes(h, b"|");
-    let h = fnv1a_bytes(h, name.as_bytes());
-    let h = fnv1a_bytes(h, b":");
-    let h = fnv1a_bytes(h, ty.as_bytes());
-    let h = fnv1a_bytes(h, b"#");
-    fnv1a_u64(h, field_index as u64)
+const fn hash_ptr_field(h: &mut Xxh64Hasher, name: &str, ty: &str, field_index: usize) {
+    hash_field(h, name, ty, b"#", field_index);
 }
 
 const fn compute_scene_schema_hash() -> u64 {
-    let mut h = FNV1A_OFFSET_BASIS;
-    h = fnv1a_bytes(h, b"NveRenderNode");
-    h = fnv1a_u64(h, size_of::<NveRenderNode>() as u64);
-    h = hash_fixed_field(h, "node_id", "u32", offset_of!(NveRenderNode, node_id));
-    h = hash_fixed_field(h, "kind", "u8", offset_of!(NveRenderNode, kind));
-    h = hash_fixed_field(h, "flags", "u8", offset_of!(NveRenderNode, flags));
-    h = hash_fixed_field(h, "opacity_u8", "u8", offset_of!(NveRenderNode, opacity_u8));
-    h = hash_fixed_field(h, "_pad0", "u8", offset_of!(NveRenderNode, _pad0));
-    h = hash_fixed_field(h, "x", "f32", offset_of!(NveRenderNode, x));
-    h = hash_fixed_field(h, "y", "f32", offset_of!(NveRenderNode, y));
-    h = hash_fixed_field(h, "width", "f32", offset_of!(NveRenderNode, width));
-    h = hash_fixed_field(h, "height", "f32", offset_of!(NveRenderNode, height));
-    h = hash_fixed_field(h, "bg_rgba", "u32", offset_of!(NveRenderNode, bg_rgba));
-    h = hash_fixed_field(h, "text_rgba", "u32", offset_of!(NveRenderNode, text_rgba));
-    h = hash_fixed_field(h, "border_rgba", "u32", offset_of!(NveRenderNode, border_rgba));
-    h = hash_fixed_field(h, "border_radius", "f32", offset_of!(NveRenderNode, border_radius));
-    h = hash_fixed_field(h, "border_width", "f32", offset_of!(NveRenderNode, border_width));
-    h = hash_fixed_field(h, "font_size", "f32", offset_of!(NveRenderNode, font_size));
-    h = hash_fixed_field(h, "text_offset", "u32", offset_of!(NveRenderNode, text_offset));
-    h = hash_fixed_field(h, "text_len", "u16", offset_of!(NveRenderNode, text_len));
-    h = hash_fixed_field(h, "child_count", "u16", offset_of!(NveRenderNode, child_count));
-    h = hash_fixed_field(h, "child_offset", "u32", offset_of!(NveRenderNode, child_offset));
-    h = hash_fixed_field(h, "z_index", "i32", offset_of!(NveRenderNode, z_index));
+    let mut h = Xxh64Hasher::new(0);
+    h.update(b"NveRenderNode");
+    h.update_u64(size_of::<NveRenderNode>() as u64);
+    hash_fixed_field(&mut h, "node_id", "u32", offset_of!(NveRenderNode, node_id));
+    hash_fixed_field(&mut h, "primary_slot", "u8", offset_of!(NveRenderNode, primary_slot));
+    hash_fixed_field(&mut h, "flags", "u8", offset_of!(NveRenderNode, flags));
+    hash_fixed_field(&mut h, "opacity_u8", "u8", offset_of!(NveRenderNode, opacity_u8));
+    hash_fixed_field(&mut h, "_pad0", "u8", offset_of!(NveRenderNode, _pad0));
+    hash_fixed_field(&mut h, "x", "f32", offset_of!(NveRenderNode, x));
+    hash_fixed_field(&mut h, "y", "f32", offset_of!(NveRenderNode, y));
+    hash_fixed_field(&mut h, "width", "f32", offset_of!(NveRenderNode, width));
+    hash_fixed_field(&mut h, "height", "f32", offset_of!(NveRenderNode, height));
+    hash_fixed_field(&mut h, "bg_rgba", "u32", offset_of!(NveRenderNode, bg_rgba));
+    hash_fixed_field(&mut h, "text_rgba", "u32", offset_of!(NveRenderNode, text_rgba));
+    hash_fixed_field(&mut h, "border_rgba", "u32", offset_of!(NveRenderNode, border_rgba));
+    hash_fixed_field(&mut h, "border_radius", "f32", offset_of!(NveRenderNode, border_radius));
+    hash_fixed_field(&mut h, "border_width", "f32", offset_of!(NveRenderNode, border_width));
+    hash_fixed_field(&mut h, "font_size", "f32", offset_of!(NveRenderNode, font_size));
+    hash_fixed_field(&mut h, "text_offset", "u32", offset_of!(NveRenderNode, text_offset));
+    hash_fixed_field(&mut h, "text_len", "u16", offset_of!(NveRenderNode, text_len));
+    hash_fixed_field(&mut h, "child_count", "u16", offset_of!(NveRenderNode, child_count));
+    hash_fixed_field(&mut h, "child_offset", "u32", offset_of!(NveRenderNode, child_offset));
+    hash_fixed_field(&mut h, "z_index", "i32", offset_of!(NveRenderNode, z_index));
 
-    h = fnv1a_bytes(h, b";NveSceneView");
-    h = hash_fixed_field(h, "schema_hash", "u64", offset_of!(NveSceneView, schema_hash));
-    h = hash_fixed_field(h, "frame_id", "u64", offset_of!(NveSceneView, frame_id));
-    h = hash_fixed_field(h, "node_count", "u32", offset_of!(NveSceneView, node_count));
-    h = hash_fixed_field(h, "dirty_count", "u32", offset_of!(NveSceneView, dirty_count));
-    h = hash_fixed_field(h, "removed_count", "u32", offset_of!(NveSceneView, removed_count));
-    h = hash_fixed_field(h, "text_slab_len", "u32", offset_of!(NveSceneView, text_slab_len));
-    h = hash_fixed_field(
-        h,
+    h.update(b";NveSceneView");
+    hash_fixed_field(&mut h, "schema_hash", "u64", offset_of!(NveSceneView, schema_hash));
+    hash_fixed_field(&mut h, "frame_id", "u64", offset_of!(NveSceneView, frame_id));
+    hash_fixed_field(&mut h, "node_count", "u32", offset_of!(NveSceneView, node_count));
+    hash_fixed_field(&mut h, "dirty_count", "u32", offset_of!(NveSceneView, dirty_count));
+    hash_fixed_field(&mut h, "removed_count", "u32", offset_of!(NveSceneView, removed_count));
+    hash_fixed_field(&mut h, "text_slab_len", "u32", offset_of!(NveSceneView, text_slab_len));
+    hash_fixed_field(
+        &mut h,
         "children_slab_len",
         "u32",
         offset_of!(NveSceneView, children_slab_len),
     );
-    h = hash_fixed_field(h, "_pad", "u32", offset_of!(NveSceneView, _pad));
-    h = hash_ptr_field(h, "nodes", "*const NveRenderNode", 8);
-    h = hash_ptr_field(h, "text_slab", "*const u8", 9);
-    h = hash_ptr_field(h, "children_slab", "*const u32", 10);
-    h = hash_ptr_field(h, "dirty_indices", "*const u32", 11);
-    h = hash_ptr_field(h, "removed_ids", "*const u32", 12);
+    hash_fixed_field(&mut h, "table_count", "u32", offset_of!(NveSceneView, table_count));
+    hash_ptr_field(&mut h, "nodes", "*const NveRenderNode", 8);
+    hash_ptr_field(&mut h, "text_slab", "*const u8", 9);
+    hash_ptr_field(&mut h, "children_slab", "*const u32", 10);
+    hash_ptr_field(&mut h, "dirty_indices", "*const u32", 11);
+    hash_ptr_field(&mut h, "removed_ids", "*const u32", 12);
+    hash_ptr_field(&mut h, "tables", "*const NveTableView", 13);
 
-    h = fnv1a_bytes(h, b";NveNodeMeta");
-    h = fnv1a_u64(h, size_of::<NveNodeMeta>() as u64);
-    h = hash_fixed_field(h, "node_id", "u32", offset_of!(NveNodeMeta, node_id));
-    h = hash_fixed_field(h, "flags", "u32", offset_of!(NveNodeMeta, flags));
-    h = hash_fixed_field(h, "label_offset", "u32", offset_of!(NveNodeMeta, label_offset));
-    h = hash_fixed_field(h, "label_len", "u16", offset_of!(NveNodeMeta, label_len));
-    h = hash_fixed_field(h, "role_len", "u16", offset_of!(NveNodeMeta, role_len));
-    h = hash_fixed_field(h, "role_offset", "u32", offset_of!(NveNodeMeta, role_offset));
-    h = hash_fixed_field(h, "hint_offset", "u32", offset_of!(NveNodeMeta, hint_offset));
-    h = hash_fixed_field(h, "hint_len", "u16", offset_of!(NveNodeMeta, hint_len));
-    h = hash_fixed_field(h, "state_desc_len", "u16", offset_of!(NveNodeMeta, state_desc_len));
-    h = hash_fixed_field(h, "state_desc_offset", "u32", offset_of!(NveNodeMeta, state_desc_offset));
-    h = hash_fixed_field(h, "placeholder_offset", "u32", offset_of!(NveNodeMeta, placeholder_offset));
-    h = hash_fixed_field(h, "placeholder_len", "u16", offset_of!(NveNodeMeta, placeholder_len));
-    h = hash_fixed_field(h, "test_id_len", "u16", offset_of!(NveNodeMeta, test_id_len));
-    h = hash_fixed_field(h, "test_id_offset", "u32", offset_of!(NveNodeMeta, test_id_offset));
-    h = hash_fixed_field(h, "draw_list_offset", "u32", offset_of!(NveNodeMeta, draw_list_offset));
-    h = hash_fixed_field(h, "draw_list_len", "u32", offset_of!(NveNodeMeta, draw_list_len));
-    h = hash_fixed_field(h, "_reserved", "[u32;3]", offset_of!(NveNodeMeta, _reserved));
-    h
+    h.update(b";NveTableView");
+    hash_fixed_field(&mut h, "key_lo", "u32", offset_of!(crate::table::NveTableView, key_lo));
+    hash_fixed_field(&mut h, "key_hi", "u32", offset_of!(crate::table::NveTableView, key_hi));
+    hash_fixed_field(&mut h, "slot", "u32", offset_of!(crate::table::NveTableView, slot));
+    hash_fixed_field(&mut h, "words", "u32", offset_of!(crate::table::NveTableView, words));
+    hash_fixed_field(&mut h, "row_count", "u32", offset_of!(crate::table::NveTableView, row_count));
+    hash_fixed_field(&mut h, "dirty_count", "u32", offset_of!(crate::table::NveTableView, dirty_count));
+    hash_ptr_field(&mut h, "rows", "*const u32", 6);
+    hash_ptr_field(&mut h, "owners", "*const u32", 7);
+    hash_ptr_field(&mut h, "dirty_rows", "*const u32", 8);
+
+    h.update(b";NveNodeMeta");
+    h.update_u64(size_of::<NveNodeMeta>() as u64);
+    hash_fixed_field(&mut h, "node_id", "u32", offset_of!(NveNodeMeta, node_id));
+    hash_fixed_field(&mut h, "flags", "u32", offset_of!(NveNodeMeta, flags));
+    hash_fixed_field(&mut h, "label_offset", "u32", offset_of!(NveNodeMeta, label_offset));
+    hash_fixed_field(&mut h, "label_len", "u16", offset_of!(NveNodeMeta, label_len));
+    hash_fixed_field(&mut h, "role_len", "u16", offset_of!(NveNodeMeta, role_len));
+    hash_fixed_field(&mut h, "role_offset", "u32", offset_of!(NveNodeMeta, role_offset));
+    hash_fixed_field(&mut h, "hint_offset", "u32", offset_of!(NveNodeMeta, hint_offset));
+    hash_fixed_field(&mut h, "hint_len", "u16", offset_of!(NveNodeMeta, hint_len));
+    hash_fixed_field(&mut h, "state_desc_len", "u16", offset_of!(NveNodeMeta, state_desc_len));
+    hash_fixed_field(&mut h, "state_desc_offset", "u32", offset_of!(NveNodeMeta, state_desc_offset));
+    hash_fixed_field(&mut h, "placeholder_offset", "u32", offset_of!(NveNodeMeta, placeholder_offset));
+    hash_fixed_field(&mut h, "placeholder_len", "u16", offset_of!(NveNodeMeta, placeholder_len));
+    hash_fixed_field(&mut h, "test_id_len", "u16", offset_of!(NveNodeMeta, test_id_len));
+    hash_fixed_field(&mut h, "test_id_offset", "u32", offset_of!(NveNodeMeta, test_id_offset));
+    hash_fixed_field(&mut h, "_reserved", "[u32;5]", offset_of!(NveNodeMeta, _reserved));
+    h.digest()
 }
 
-/// Deterministic FNV-1a 64-bit hash of the `NveRenderNode` + `NveSceneView` schema layout.
+/// Deterministic XXH64 hash of the `NveRenderNode` + `NveSceneView` schema layout.
 /// Verified at runtime across every language boundary to make ABI drift impossible.
 pub const NVE_SCENE_SCHEMA_HASH: u64 = compute_scene_schema_hash();
 
@@ -461,6 +432,8 @@ pub enum SceneError {
         actual: u64,
     },
     NullBufferPointer(&'static str),
+    UnalignedBufferPointer(&'static str),
+    BufferLengthOverflow(&'static str),
     TextOutOfBounds {
         node_id: u32,
         offset: u32,
@@ -497,7 +470,7 @@ impl std::error::Error for SceneError {}
 #[derive(Debug, Clone, Copy)]
 pub struct SceneNodeInput<'a> {
     pub node_id: NodeId,
-    pub kind: u8,
+    pub primary_slot: u8,
     pub flags: u8,
     pub opacity_u8: u8,
     pub x: f32,
@@ -519,7 +492,7 @@ impl<'a> Default for SceneNodeInput<'a> {
     fn default() -> Self {
         Self {
             node_id: 0,
-            kind: NVE_NODE_KIND_VIEW,
+            primary_slot: NVE_PRIMARY_SLOT_NONE,
             flags: 0,
             opacity_u8: 255,
             x: 0.0,

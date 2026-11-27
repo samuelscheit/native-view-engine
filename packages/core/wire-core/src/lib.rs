@@ -39,7 +39,7 @@ pub use uri::{
     DEFAULT_WIRE_WSS_PATH, DEFAULT_WIRE_WSS_PORT,
 };
 
-/// Self-documenting alias for an encoded incremental `CommandBuffer` frame batch.
+/// Self-documenting alias for an encoded incremental `NVE2` frame batch.
 pub type NveCommandBatch = Vec<u8>;
 /// Self-documenting alias for an encoded `EventRing` input event batch.
 pub type NveEventBatch = Vec<u8>;

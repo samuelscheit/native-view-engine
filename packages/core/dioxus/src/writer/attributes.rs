@@ -1,620 +1,646 @@
-//! Attribute application, direct zero-string-parse [`TypedStyle`] patching, deterministic
-//! `nve_style` + inline `style` override merging, extended-prop dirty tracking, and ARIA key
-//! canonicalization.
-
-use std::borrow::Cow;
+//! Direct zero-string-parse attribute application onto `NodeStore` word tables.
+//!
+//! - Matches `AttributeValue::Float`/`Int`/`Bool` directly without string formatting/reparsing.
+//! - Matches `TypedStyle`, `MediaQuery`, and extensible [`TableAttr`] directly via `AttributeValue::Any`.
+//! - Routes inline `style` and CSS shorthands straight into `nve_components::apply_css_attr_to_tx`.
+//! - Zero `set_raw_prop`, zero `ComponentKind`, zero module-specific downcasts.
 
 use dioxus_core::{AttributeValue, ElementId};
-use nve_abi::{LayoutProps, NodeId, RawPropValueRef, StyleProps};
-use nve_components::{
-    apply_typed_attr_with_raw, canonical_raw_style_key, AutofillHint, DrawList, DrawListDecoder,
-    InputMode, MediaQuery, SvgPicture, DRAW_LIST_ATTR_PREFIX,
+use nve_components::input_hints::{AutofillHint, InputMode};
+use nve_components::media::MediaQuery;
+use nve_components::tables::{
+    Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaRole,
+    AriaTriState, DebugId, Image, ImageFit, ImageSrc, InputKind, Interaction, Layout, Link,
+    LinkTarget, OptAutofillHint, Responsive, TextInput, Typography, Visual,
 };
-use nve_engine::RenderSink;
-use nve_interop::native_view::NATIVE_VIEW_KIND_PROP_KEY;
+use nve_store::{Length, NodeId};
 
-use crate::hot_patch;
-use crate::native_view::{
-    NativeHandleAttr, NativeTypedPropsAttr, NATIVE_VIEW_HANDLE_ATTR, NATIVE_VIEW_KIND_ATTR,
-};
-use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
-use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
+use crate::table_attr::TableAttr;
+use crate::typed_style::{pack_media_query, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
 
-use super::attr_keys::{canonical_a11y_attr_key, canonical_input_attr_key, sync_raw_style_prop};
-use super::{
-    mark_ext_dirty, NveMutationWriter, EXT_BACKGROUND_FILL, EXT_CURSOR, EXT_DRAW_LIST,
-    EXT_LAYOUT_EXT, EXT_NATIVE_VIEW_PROPS, EXT_RESPONSIVE_RULES, EXT_SHOW_ON, EXT_STATE_RULES,
-    EXT_SVG, EXT_TRANSFORM, EXT_TRANSITIONS,
-};
+use super::{StandaloneStyleVal, StoreMutationTx};
 
 const NVE_SHOW_ON_KEBAB_ATTR: &str = "nve-show-on";
 
-impl NveMutationWriter {
-    pub(super) fn set_attribute_impl<S: RenderSink>(
+impl StoreMutationTx<'_, '_> {
+    pub(super) fn set_attribute_impl(
         &mut self,
-        sink: &mut S,
         name: &'static str,
         value: &AttributeValue,
         id: ElementId,
     ) {
-        let Some(node_id) = self.resolve_el(id) else {
+        let Some(node) = self.resolve_el(id) else {
             return;
         };
-        if name == NATIVE_VIEW_KIND_ATTR {
-            if let AttributeValue::Text(kind_str) = value {
-                let was_deferred = self
-                    .nodes
-                    .get(&node_id)
-                    .is_some_and(super::NodeRecord::deferred_native_create);
-                if was_deferred {
-                    self.ensure_native_node_created(sink, node_id, Some(kind_str));
-                    sink.set_raw_prop(
-                        node_id,
-                        NATIVE_VIEW_KIND_PROP_KEY,
-                        RawPropValueRef::String(kind_str),
-                    );
-                } else if let Some(rec) = self.nodes.get_mut(&node_id)
-                    && rec.extras().and_then(|e| e.native_kind.as_deref()) != Some(kind_str.as_str())
-                {
-                    rec.extras_mut().native_kind = Some(kind_str.clone());
-                    sink.set_raw_prop(
-                        node_id,
-                        NATIVE_VIEW_KIND_PROP_KEY,
-                        RawPropValueRef::String(kind_str),
-                    );
-                }
-            }
-            return;
-        }
-        if self
-            .nodes
-            .get(&node_id)
-            .is_some_and(super::NodeRecord::deferred_native_create)
-        {
-            self.ensure_native_node_created(sink, node_id, None);
-        }
+
         match value {
-            AttributeValue::Text(s) => self.apply_str_attr(sink, node_id, name, s),
-            AttributeValue::Float(f) => {
-                let mut s = String::new();
-                nve_abi::num::write_f64(&mut s, *f);
-                self.apply_str_attr(sink, node_id, name, &s);
-            }
-            AttributeValue::Int(i) => {
-                let mut s = String::new();
-                nve_abi::num::write_i64(&mut s, *i);
-                self.apply_str_attr(sink, node_id, name, &s);
-            }
-            AttributeValue::Bool(b) => {
-                let prop_name = canonical_a11y_attr_key(name)
-                    .or_else(|| canonical_input_attr_key(name))
-                    .unwrap_or(name);
-                sink.set_raw_prop(node_id, prop_name, RawPropValueRef::Bool(*b));
-            }
-            AttributeValue::None => {
-                if name == "style" {
-                    self.clear_inline_style(sink, node_id);
-                    return;
-                }
-                if name == NVE_TYPED_STYLE_ATTR {
-                    self.clear_typed_style(sink, node_id);
-                    return;
-                }
-                if name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR {
-                    if let Some(rec) = self.nodes.get_mut(&node_id)
-                        && let Some(ext) = rec.extras.as_deref_mut()
-                    {
-                        ext.explicit_show_on = None;
-                        let next = ext.typed_style.as_ref().and_then(|t| t.show_on);
-                        if ext.show_on != next {
-                            ext.show_on = next;
-                            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
-                        }
-                    }
-                    return;
-                }
-                if matches!(name, "drawList" | "draw_list") {
-                    if let Some(rec) = self.nodes.get_mut(&node_id)
-                        && let Some(ext) = rec.extras.as_deref_mut()
-                        && ext.draw_list.take().is_some()
-                    {
-                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_DRAW_LIST);
-                    }
-                    return;
-                }
-                if name == NVE_SVG_PICTURE_ATTR || name == "picture" {
-                    if let Some(rec) = self.nodes.get_mut(&node_id)
-                        && let Some(ext) = rec.extras.as_deref_mut()
-                        && ext.svg_picture.take().is_some()
-                    {
-                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SVG);
-                    }
-                    return;
-                }
-                if hot_patch::is_test_id_attr_name(name) {
-                    self.clear_test_id(node_id);
-                }
-                let prop_name = canonical_raw_style_key(name)
-                    .or_else(|| canonical_a11y_attr_key(name))
-                    .or_else(|| canonical_input_attr_key(name))
-                    .unwrap_or(name);
-                sink.set_raw_prop(node_id, prop_name, RawPropValueRef::Null);
-            }
             AttributeValue::Any(any) => {
                 if name == NVE_TYPED_STYLE_ATTR
-                    && let Some(typed) = any.as_any().downcast_ref::<TypedStyle>()
+                    && let Some(ts) = any.as_any().downcast_ref::<TypedStyle>()
                 {
-                    if self
-                        .nodes
-                        .get(&node_id)
-                        .and_then(|rec| rec.extras())
-                        .is_some_and(|ext| ext.typed_style.as_ref() == Some(typed))
-                    {
-                        return;
+                    if let Some(prev) = self.typed_styles.get(&node) {
+                        prev.clear_diff_from(Some(ts), self.tx, node);
                     }
-                    self.apply_typed_style(sink, node_id, typed.clone());
-                } else if (name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR)
-                    && let Some(query) = any
-                        .as_any()
-                        .downcast_ref::<MediaQuery>()
-                        .copied()
-                        .or_else(|| any.as_any().downcast_ref::<ShowOn>().map(|s| s.0))
+                    ts.apply_to_tx(self.tx, node);
+                    self.typed_styles.insert(node, ts.clone());
+                    self.replay_standalone_and_inline(node, nve_components::STYLE_LAYER_ALL);
+                    return;
+                }
+                if (name == NVE_SHOW_ON_ATTR || name == NVE_SHOW_ON_KEBAB_ATTR)
+                    && let Some(&q) = any.as_any().downcast_ref::<MediaQuery>()
                 {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        let ext = rec.extras_mut();
-                        ext.explicit_show_on = Some(query);
-                        if ext.show_on != Some(query) {
-                            ext.show_on = Some(query);
-                            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
+                    let (w, env) = pack_media_query(q);
+                    self.tx
+                        .edit::<Responsive>(node)
+                        .show_on_widths(w)
+                        .show_on_env(env);
+                    return;
+                }
+                if let Some(table_attr) = any.as_any().downcast_ref::<TableAttr>() {
+                    let list = self.attached_tables.entry(node).or_default();
+                    if let Some((_, prev)) = list.iter_mut().find(|(k, _)| *k == name) {
+                        if !prev.same_writer_kind(table_attr) {
+                            prev.clear_from(self.tx, node);
                         }
+                        *prev = table_attr.clone();
+                    } else {
+                        list.push((name, table_attr.clone()));
                     }
-                } else if let Some(draw_list) = any.as_any().downcast_ref::<DrawList>() {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        let ext = rec.extras_mut();
-                        if ext
-                            .draw_list
-                            .as_ref()
-                            .is_some_and(|prev| prev.ptr_eq(draw_list) || prev == draw_list)
-                        {
-                            return;
-                        }
-                        ext.draw_list = Some(draw_list.clone());
-                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_DRAW_LIST);
-                    }
-                } else if let Some(typed_nv) = any.as_any().downcast_ref::<NativeTypedPropsAttr>() {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        let ext = rec.extras_mut();
-                        if ext.native_props.as_ref() == Some(&typed_nv.0) {
-                            return;
-                        }
-                        ext.native_props = Some(typed_nv.0.clone());
-                        mark_ext_dirty(
-                            &mut self.dirty_extended,
-                            ext,
-                            node_id,
-                            EXT_NATIVE_VIEW_PROPS,
-                        );
-                    }
-                } else if name == NATIVE_VIEW_HANDLE_ATTR
-                    && let Some(handle_attr) = any.as_any().downcast_ref::<NativeHandleAttr>()
-                {
-                    let surface_id = self.surface_id;
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        let ext = rec.extras_mut();
-                        if let Some(prev) = ext.native_handle_binder.take()
-                            && !handle_attr
-                                .0
-                                .as_ref()
-                                .is_some_and(|next| next.ptr_eq(&prev))
-                        {
-                            prev.unbind();
-                        }
-                        if let Some(ref binder) = handle_attr.0 {
-                            binder.bind(surface_id, node_id);
-                            ext.native_handle_binder = Some(binder.clone());
-                        }
-                    }
-                } else if let Some(svg) = any
-                    .as_any()
-                    .downcast_ref::<SvgPicture>()
-                    .or_else(|| any.as_any().downcast_ref::<SvgPictureAttr>().map(|a| &a.0))
-                {
-                    if let Some(rec) = self.nodes.get_mut(&node_id) {
-                        let ext = rec.extras_mut();
-                        if ext
-                            .svg_picture
-                            .as_ref()
-                            .is_some_and(|prev| prev.ptr_eq(svg) || prev == svg)
-                        {
-                            return;
-                        }
-                        ext.svg_picture = Some(svg.clone());
-                        mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SVG);
-                    }
-                } else if let Some(hint) = any.as_any().downcast_ref::<AutofillHint>() {
-                    sink.set_raw_prop(
-                        node_id,
-                        "autocomplete",
-                        RawPropValueRef::String(hint.as_html_autocomplete()),
-                    );
-                } else if let Some(mode) = any.as_any().downcast_ref::<InputMode>() {
-                    sink.set_raw_prop(
-                        node_id,
-                        "inputmode",
-                        RawPropValueRef::String(mode.as_html_inputmode()),
-                    );
+                    table_attr.write_to(self.tx, node);
+                    return;
+                }
+                // Fallback: allow TypedStyle or MediaQuery even if passed on custom attribute name.
+                if let Some(ts) = any.as_any().downcast_ref::<TypedStyle>() {
+                    ts.apply_to_tx(self.tx, node);
+                } else if let Some(&q) = any.as_any().downcast_ref::<MediaQuery>() {
+                    let (w, env) = pack_media_query(q);
+                    self.tx
+                        .edit::<Responsive>(node)
+                        .show_on_widths(w)
+                        .show_on_env(env);
                 }
             }
+            AttributeValue::Float(f) => self.apply_numeric_attr(node, name, *f),
+            AttributeValue::Int(i) => self.apply_int_attr(node, name, *i),
+            AttributeValue::Bool(b) => self.apply_bool_attr(node, name, *b),
+            AttributeValue::Text(s) => self.apply_str_attr(node, name, s),
+            AttributeValue::None => self.clear_attr(node, name),
             AttributeValue::Listener(_) => {}
         }
     }
 
-    /// Applies a [`TypedStyle`] directly into `NodeRecord` with zero string formatting and zero
-    /// CSS parsing when no inline `style` override is present.
-    pub(crate) fn apply_typed_style<S: RenderSink>(
-        &mut self,
-        sink: &mut S,
-        node_id: NodeId,
-        typed: TypedStyle,
-    ) {
-        let Some(rec) = self.nodes.get_mut(&node_id) else {
-            return;
-        };
-        let ext = rec.extras_mut();
-        let reset_layout = ext.typed_style.as_ref().is_some_and(|t| t.has_layout)
-            || ext.inline_style_override.is_some();
-        let reset_style = ext.typed_style.as_ref().is_some_and(|t| t.has_style)
-            || ext.inline_style_override.is_some();
-
-        let next_show = ext.explicit_show_on.or(typed.show_on);
-        if ext.show_on != next_show {
-            ext.show_on = next_show;
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
-        }
-        if ext.responsive_rules != typed.responsive {
-            ext.responsive_rules.clone_from(&typed.responsive);
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_RESPONSIVE_RULES);
-        }
-        if ext.cursor != typed.cursor {
-            ext.cursor = typed.cursor;
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_CURSOR);
-        }
-        if ext.state_rules != typed.state_rules {
-            ext.state_rules.clone_from(&typed.state_rules);
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_STATE_RULES);
-        }
-        if ext.transitions != typed.transitions {
-            ext.transitions.clone_from(&typed.transitions);
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSITIONS);
-        }
-        let next_layout_ext = typed
-            .layout_ext
-            .as_deref()
-            .filter(|e| !e.is_default())
-            .cloned();
-        if ext.layout_ext != next_layout_ext {
-            ext.layout_ext = next_layout_ext;
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_LAYOUT_EXT);
-        }
-        if ext.transform != typed.transform {
-            ext.transform = typed.transform;
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSFORM);
-        }
-        if ext.background_fill != typed.background_fill {
-            ext.background_fill = typed.background_fill.clone();
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
-        }
-        ext.typed_style = Some(typed);
-        self.recompute_typed_style(sink, node_id, reset_layout, reset_style);
-    }
-
-    fn clear_typed_style<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
-        let Some(rec) = self.nodes.get_mut(&node_id) else {
-            return;
-        };
-        let Some(ext) = rec.extras.as_deref_mut() else {
-            return;
-        };
-        let Some(prev) = ext.typed_style.take() else {
-            return;
-        };
-        let reset_layout = prev.has_layout || ext.inline_style_override.is_some();
-        let reset_style = prev.has_style || ext.inline_style_override.is_some();
-        if ext.show_on != ext.explicit_show_on {
-            ext.show_on = ext.explicit_show_on;
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_SHOW_ON);
-        }
-        if !ext.responsive_rules.is_empty() {
-            ext.responsive_rules.clear();
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_RESPONSIVE_RULES);
-        }
-        if ext.cursor.take().is_some() {
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_CURSOR);
-        }
-        if !ext.state_rules.is_empty() {
-            ext.state_rules.clear();
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_STATE_RULES);
-        }
-        if !ext.transitions.is_empty() {
-            ext.transitions.clear();
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSITIONS);
-        }
-        if ext.layout_ext.take().is_some() {
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_LAYOUT_EXT);
-        }
-        if ext.transform.take().is_some() {
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_TRANSFORM);
-        }
-        if ext.background_fill.take().is_some() {
-            mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
-        }
-        self.recompute_typed_style(sink, node_id, reset_layout, reset_style);
-    }
-
-    fn clear_inline_style<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
-        let Some(rec) = self.nodes.get_mut(&node_id) else {
-            return;
-        };
-        let should_recompute = rec
-            .extras
-            .as_deref_mut()
-            .is_some_and(|ext| ext.inline_style_override.take().is_some() && ext.typed_style.is_some());
-        if should_recompute {
-            self.recompute_typed_style(sink, node_id, true, true);
+    #[inline]
+    fn apply_numeric_attr(&mut self, node: NodeId, name: &str, v: f64) {
+        if self.apply_numeric_attr_untracked(node, name, v) {
+            self.finish_standalone_style(node, name, StandaloneStyleVal::Float(v));
         }
     }
 
-    fn recompute_typed_style<S: RenderSink>(
-        &mut self,
-        sink: &mut S,
-        node_id: NodeId,
-        reset_layout: bool,
-        reset_style: bool,
-    ) {
-        let Some(rec) = self.nodes.get_mut(&node_id) else {
-            return;
-        };
-        let prev_layout = rec.layout;
-        let prev_style = rec.style;
-
-        let (
-            mut next_layout,
-            mut next_style,
-            typed_has_style,
-            mut next_fw,
-            mut next_ta,
-            mut next_bs,
-            mut next_ov,
-            mut next_of,
-        ) = if let Some(typed) = rec.extras().and_then(|e| e.typed_style.as_ref()) {
-            (
-                if typed.has_layout {
-                    typed.layout
-                } else if reset_layout {
-                    LayoutProps::default()
-                } else {
-                    prev_layout
-                },
-                if typed.has_style {
-                    typed.style
-                } else if reset_style {
-                    StyleProps::default()
-                } else {
-                    prev_style
-                },
-                typed.has_style,
-                typed.font_weight.clone(),
-                typed.text_align.clone(),
-                typed.box_shadow.clone(),
-                typed.overflow.clone(),
-                typed.object_fit.clone(),
-            )
-        } else {
-            (
-                if reset_layout {
-                    LayoutProps::default()
-                } else {
-                    prev_layout
-                },
-                if reset_style {
-                    StyleProps::default()
-                } else {
-                    prev_style
-                },
-                false,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-        };
-
-        let mut extra_raw: Vec<(String, String)> = Vec::new();
-        if let Some(override_css) = rec.extras().and_then(|e| e.inline_style_override.as_deref()) {
-            let _ = apply_typed_attr_with_raw(
-                &mut next_layout,
-                &mut next_style,
-                "style",
-                override_css,
-                |raw_k, raw_v| match raw_k {
-                    "font-weight" => next_fw = Some(Cow::Owned(raw_v.to_owned())),
-                    "text-align" => next_ta = Some(Cow::Owned(raw_v.to_owned())),
-                    "box-shadow" => next_bs = Some(Cow::Owned(raw_v.to_owned())),
-                    "overflow" => next_ov = Some(Cow::Owned(raw_v.to_owned())),
-                    "object-fit" => next_of = Some(Cow::Owned(raw_v.to_owned())),
-                    other => extra_raw.push((other.to_owned(), raw_v.to_owned())),
-                },
-            );
+    /// Applies a numeric attribute directly to the store. Returns `true` iff `name` is a style
+    /// attribute that should be preserved across `style`/`nve_style` clears/updates.
+    #[inline]
+    pub(crate) fn apply_numeric_attr_untracked(&mut self, node: NodeId, name: &str, v: f64) -> bool {
+        let f = if v.is_finite() { v as f32 } else { 0.0 };
+        match name {
+            "width" => {
+                self.tx.edit::<Layout>(node).width(Length::points(f.max(0.0)));
+            }
+            "height" => {
+                self.tx.edit::<Layout>(node).height(Length::points(f.max(0.0)));
+            }
+            "min-width" | "minWidth" => {
+                self.tx
+                    .edit::<Layout>(node)
+                    .min_width(Length::points(f.max(0.0)));
+            }
+            "min-height" | "minHeight" => {
+                self.tx
+                    .edit::<Layout>(node)
+                    .min_height(Length::points(f.max(0.0)));
+            }
+            "max-width" | "maxWidth" => {
+                self.tx
+                    .edit::<Layout>(node)
+                    .max_width(Length::points(f.max(0.0)));
+            }
+            "max-height" | "maxHeight" => {
+                self.tx
+                    .edit::<Layout>(node)
+                    .max_height(Length::points(f.max(0.0)));
+            }
+            "flex" | "flex-grow" | "flexGrow" => {
+                self.tx.edit::<Layout>(node).flex_grow(f.max(0.0));
+            }
+            "flex-shrink" | "flexShrink" => {
+                self.tx.edit::<Layout>(node).flex_shrink(f.max(0.0));
+            }
+            "gap" => {
+                let l = Length::points(f.max(0.0));
+                self.tx.edit::<Layout>(node).row_gap(l).column_gap(l);
+            }
+            "row-gap" | "rowGap" => {
+                self.tx.edit::<Layout>(node).row_gap(Length::points(f.max(0.0)));
+            }
+            "column-gap" | "columnGap" => {
+                self.tx
+                    .edit::<Layout>(node)
+                    .column_gap(Length::points(f.max(0.0)));
+            }
+            "padding" => {
+                let l = Length::points(f.max(0.0));
+                self.tx
+                    .edit::<Layout>(node)
+                    .padding_top(l)
+                    .padding_right(l)
+                    .padding_bottom(l)
+                    .padding_left(l);
+            }
+            "padding-horizontal" | "paddingHorizontal" => {
+                let l = Length::points(f.max(0.0));
+                self.tx.edit::<Layout>(node).padding_left(l).padding_right(l);
+            }
+            "padding-vertical" | "paddingVertical" => {
+                let l = Length::points(f.max(0.0));
+                self.tx.edit::<Layout>(node).padding_top(l).padding_bottom(l);
+            }
+            "margin" => {
+                let l = Length::points(f);
+                self.tx
+                    .edit::<Layout>(node)
+                    .margin_top(l)
+                    .margin_right(l)
+                    .margin_bottom(l)
+                    .margin_left(l);
+            }
+            "border-width" | "borderWidth" => {
+                self.tx.edit::<Visual>(node).border_width(f.max(0.0));
+            }
+            "border-radius" | "borderRadius" => {
+                self.tx.edit::<Visual>(node).border_radius(f.max(0.0));
+            }
+            "opacity" => {
+                self.tx.edit::<Visual>(node).opacity(f.clamp(0.0, 1.0));
+            }
+            "font-size" | "fontSize" => {
+                let cur_set = self
+                    .tx
+                    .store()
+                    .try_row::<Typography>(node)
+                    .map_or(0, |t| t.set())
+                    | Typography::SET_FONT_SIZE;
+                self.tx
+                    .edit::<Typography>(node)
+                    .font_size(f.max(1.0))
+                    .set(cur_set);
+            }
+            "z-index" | "zIndex" => {
+                self.tx.edit::<Visual>(node).z_index(f as i32);
+            }
+            "ariaValueNow" | "aria-valuenow" | "aria_valuenow" => {
+                self.tx.edit::<Accessibility>(node).value_now(f);
+                return false;
+            }
+            "ariaValueMin" | "aria-valuemin" | "aria_valuemin" => {
+                self.tx.edit::<Accessibility>(node).value_min(f);
+                return false;
+            }
+            "ariaValueMax" | "aria-valuemax" | "aria_valuemax" => {
+                self.tx.edit::<Accessibility>(node).value_max(f);
+                return false;
+            }
+            _ => return false,
         }
+        true
+    }
 
-        if next_layout != prev_layout {
-            rec.layout = next_layout;
-            self.dirty_layout.push(node_id);
-        }
-        if next_style != prev_style {
-            rec.style = next_style;
-            rec.set_has_explicit_style(true);
-            self.dirty_style.push(node_id);
-        } else if typed_has_style {
-            rec.set_has_explicit_style(true);
-        }
-
-        let has_any_raw_style = next_fw.is_some()
-            || next_ta.is_some()
-            || next_bs.is_some()
-            || next_ov.is_some()
-            || next_of.is_some()
-            || rec.extras.is_some();
-        let (fw_changed, ta_changed, has_fw, has_ta) = if has_any_raw_style {
-            let ext = rec.extras_mut();
-            let fw_c = sync_raw_style_prop(sink, node_id, "font-weight", &mut ext.font_weight, next_fw);
-            let ta_c = sync_raw_style_prop(sink, node_id, "text-align", &mut ext.text_align, next_ta);
-            let _ = sync_raw_style_prop(sink, node_id, "box-shadow", &mut ext.box_shadow, next_bs);
-            let _ = sync_raw_style_prop(sink, node_id, "overflow", &mut ext.overflow, next_ov);
-            let _ = sync_raw_style_prop(sink, node_id, "object-fit", &mut ext.object_fit, next_of);
-            (fw_c, ta_c, ext.font_weight.is_some(), ext.text_align.is_some())
-        } else {
-            (false, false, false, false)
-        };
-        rec.set_has_explicit_font_weight(has_fw);
-        rec.set_has_explicit_text_align(has_ta);
-
-        for (k, v) in extra_raw {
-            sink.set_raw_prop(node_id, &k, RawPropValueRef::String(&v));
-        }
-
-        if fw_changed || ta_changed {
-            self.dirty_text_props.push(node_id);
+    #[inline]
+    fn apply_int_attr(&mut self, node: NodeId, name: &str, v: i64) {
+        match name {
+            "tabIndex" | "tab-index" | "tab_index" => {
+                self.tx
+                    .edit::<Interaction>(node)
+                    .tab_index_set(true)
+                    .tab_index(v.clamp(i16::MIN as i64, i16::MAX as i64) as i16);
+            }
+            "z-index" | "zIndex" => {
+                self.tx
+                    .edit::<Visual>(node)
+                    .z_index(v.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+                self.finish_standalone_style(node, name, StandaloneStyleVal::Int(v));
+            }
+            "minlength" => {
+                self.tx
+                    .edit::<TextInput>(node)
+                    .min_length(v.clamp(0, u16::MAX as i64) as u16);
+            }
+            "maxlength" => {
+                self.tx
+                    .edit::<TextInput>(node)
+                    .max_length(v.clamp(0, u16::MAX as i64) as u16);
+            }
+            _ => self.apply_numeric_attr(node, name, v as f64),
         }
     }
 
-    pub(crate) fn apply_str_attr<S: RenderSink>(
-        &mut self,
-        sink: &mut S,
-        node_id: NodeId,
-        name: &str,
-        value: &str,
-    ) {
-        if hot_patch::is_test_id_attr_name(name) {
-            self.record_test_id(node_id, value);
+    #[inline]
+    fn apply_bool_attr(&mut self, node: NodeId, name: &str, b: bool) {
+        match name {
+            "disabled" | "ariaDisabled" | "aria-disabled" | "aria_disabled" => {
+                self.tx.edit::<Interaction>(node).disabled(b);
+            }
+            "ariaChecked" | "aria-checked" | "aria_checked" => {
+                self.tx
+                    .edit::<Accessibility>(node)
+                    .checked(if b { AriaTriState::True } else { AriaTriState::False });
+            }
+            "ariaSelected" | "aria-selected" | "aria_selected" => {
+                self.tx.edit::<Accessibility>(node).selected(if b {
+                    AriaTriState::True
+                } else {
+                    AriaTriState::False
+                });
+            }
+            "ariaExpanded" | "aria-expanded" | "aria_expanded" => {
+                self.tx.edit::<Accessibility>(node).expanded(if b {
+                    AriaTriState::True
+                } else {
+                    AriaTriState::False
+                });
+            }
+            "ariaModal" | "aria-modal" | "aria_modal" => {
+                self.tx.edit::<Accessibility>(node).modal(b);
+            }
+            "ariaInvalid" | "aria-invalid" | "aria_invalid" => {
+                self.tx.edit::<Accessibility>(node).invalid(b);
+            }
+            "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable" => {
+                self.tx.edit::<Accessibility>(node).multiselectable(b);
+            }
+            "multiline" => {
+                self.tx.edit::<TextInput>(node).multiline(b);
+            }
+            "secureTextEntry" | "secure_text_entry" => {
+                self.tx.edit::<TextInput>(node).secure(b);
+            }
+            "readOnly" | "read_only" | "readonly" => {
+                self.tx.edit::<TextInput>(node).read_only(b);
+            }
+            "required" => {
+                self.tx.edit::<TextInput>(node).required(b);
+            }
+            _ => {}
         }
+    }
+
+    pub(crate) fn apply_str_attr(&mut self, node: NodeId, name: &str, value: &str) {
         if name == "style" {
-            let trimmed = value.trim();
-            if let Some(rec) = self.nodes.get_mut(&node_id) {
-                let next_override = (!trimmed.is_empty()).then(|| trimmed.to_owned());
-                if rec.extras().is_some_and(|e| e.typed_style.is_some()) {
-                    let ext = rec.extras_mut();
-                    if ext.inline_style_override != next_override {
-                        ext.inline_style_override = next_override;
-                        self.recompute_typed_style(sink, node_id, true, true);
-                    }
-                    return;
-                }
-                if next_override.is_some() || rec.extras.is_some() {
-                    rec.extras_mut().inline_style_override = next_override;
-                }
-            }
+            self.apply_inline_style_attr(node, value);
+            return;
         }
-        if let Some(rec) = self.nodes.get_mut(&node_id) {
-            let prev_layout = rec.layout;
-            let prev_style = rec.style;
-            let mut text_prop_changed = false;
-            let mut set_fw_flag = false;
-            let mut set_ta_flag = false;
-            let extras_slot = &mut rec.extras;
-            let handled = apply_typed_attr_with_raw(
-                &mut rec.layout,
-                &mut rec.style,
-                name,
-                value,
-                |raw_k, raw_v| {
-                    match raw_k {
-                        "font-weight" => {
-                            set_fw_flag = true;
-                            let e = extras_slot.get_or_insert_with(Box::default);
-                            if e.font_weight.as_deref() != Some(raw_v) {
-                                e.font_weight = Some(Cow::Owned(raw_v.to_owned()));
-                                text_prop_changed = true;
-                            }
-                        }
-                        "text-align" => {
-                            set_ta_flag = true;
-                            let e = extras_slot.get_or_insert_with(Box::default);
-                            if e.text_align.as_deref() != Some(raw_v) {
-                                e.text_align = Some(Cow::Owned(raw_v.to_owned()));
-                                text_prop_changed = true;
-                            }
-                        }
-                        "box-shadow" => {
-                            extras_slot.get_or_insert_with(Box::default).box_shadow =
-                                Some(Cow::Owned(raw_v.to_owned()));
-                        }
-                        "overflow" => {
-                            extras_slot.get_or_insert_with(Box::default).overflow =
-                                Some(Cow::Owned(raw_v.to_owned()));
-                        }
-                        "object-fit" => {
-                            extras_slot.get_or_insert_with(Box::default).object_fit =
-                                Some(Cow::Owned(raw_v.to_owned()));
-                        }
-                        _ => {}
-                    }
-                    sink.set_raw_prop(node_id, raw_k, RawPropValueRef::String(raw_v));
-                },
-            );
-            if set_fw_flag {
-                rec.set_has_explicit_font_weight(true);
+        match nve_components::apply_css_attr_layers_status_to_tx(
+            self.tx,
+            node,
+            name,
+            value,
+            nve_components::STYLE_LAYER_ALL,
+        ) {
+            nve_components::CssAttrResult::Applied(_) => {
+                self.finish_standalone_style(node, name, StandaloneStyleVal::Str(value.to_owned()));
+                return;
             }
-            if set_ta_flag {
-                rec.set_has_explicit_text_align(true);
-            }
-            if handled {
-                if rec.layout != prev_layout {
-                    self.dirty_layout.push(node_id);
-                }
-                if rec.style != prev_style {
-                    rec.set_has_explicit_style(true);
-                    self.dirty_style.push(node_id);
-                }
-                if text_prop_changed {
-                    self.dirty_text_props.push(node_id);
+            nve_components::CssAttrResult::Invalid(layer) => {
+                debug_assert!(layer != 0, "invalid CSS attr `{name}` must carry a non-zero layer");
+                if self.remove_standalone_style(node, name) {
+                    self.rebuild_style_layers_mask(node, layer);
                 }
                 return;
             }
-            if let Some(canonical) = canonical_raw_style_key(name) {
-                match canonical {
-                    "font-weight" => {
-                        rec.set_has_explicit_font_weight(true);
-                        rec.extras_mut().font_weight = Some(Cow::Owned(value.to_owned()));
-                        self.dirty_text_props.push(node_id);
+            nve_components::CssAttrResult::Unknown => {}
+        }
+        match name {
+            "testID" | "data-testid" | "test_id" => {
+                self.tx.edit::<DebugId>(node).test_id(value);
+            }
+            "id" => {
+                self.tx.edit::<DebugId>(node).id(value);
+            }
+            "slot" => {
+                self.tx.edit::<DebugId>(node).slot(value);
+            }
+            "src" => {
+                self.tx
+                    .edit::<Image>(node)
+                    .src(Some(ImageSrc::Url(value.to_owned())));
+            }
+            "alt" => {
+                self.tx.edit::<Image>(node).alt(value);
+            }
+            "resizeMode" | "resize_mode" | "object-fit" | "objectFit" => {
+                let fit = match value.trim().to_ascii_lowercase().as_str() {
+                    "contain" => ImageFit::Contain,
+                    "stretch" | "fill" => ImageFit::Fill,
+                    "center" | "none" => ImageFit::None,
+                    "scale-down" | "scaledown" => ImageFit::ScaleDown,
+                    _ => ImageFit::Cover,
+                };
+                self.tx.edit::<Image>(node).fit(fit);
+            }
+            "href" => {
+                self.tx.edit::<Link>(node).href(value);
+            }
+            "target" => {
+                let target = match value.trim() {
+                    "_blank" => LinkTarget::Blank,
+                    "_self" => LinkTarget::Self_,
+                    "_parent" => LinkTarget::Parent,
+                    _ => LinkTarget::Default,
+                };
+                self.tx.edit::<Link>(node).target(target);
+            }
+            "rel" => {
+                let mut rel = 0u8;
+                for tok in value.split_ascii_whitespace() {
+                    match tok {
+                        "noopener" => rel |= 1,
+                        "noreferrer" => rel |= 2,
+                        "nofollow" => rel |= 4,
+                        _ => {}
                     }
-                    "text-align" => {
-                        rec.set_has_explicit_text_align(true);
-                        rec.extras_mut().text_align = Some(Cow::Owned(value.to_owned()));
-                        self.dirty_text_props.push(node_id);
-                    }
-                    "box-shadow" => {
-                        rec.extras_mut().box_shadow = Some(Cow::Owned(value.to_owned()));
-                    }
-                    "overflow" => {
-                        rec.extras_mut().overflow = Some(Cow::Owned(value.to_owned()));
-                    }
-                    _ => {}
+                }
+                self.tx.edit::<Link>(node).rel(rel);
+            }
+            "value" => {
+                self.tx.edit::<TextInput>(node).value(value);
+            }
+            "placeholder" => {
+                self.tx.edit::<TextInput>(node).placeholder(value);
+            }
+            "type" | "input_type" => {
+                let kind = InputKind::parse(value).unwrap_or(InputKind::Text);
+                self.tx.edit::<TextInput>(node).input_kind(kind);
+                if kind == InputKind::Password {
+                    self.tx.edit::<TextInput>(node).secure(true);
                 }
             }
+            "autocomplete" | "autoComplete" | "auto_complete" => {
+                let hint = AutofillHint::parse_html_autocomplete(value)
+                    .map(OptAutofillHint::some)
+                    .unwrap_or(OptAutofillHint::NONE);
+                self.tx.edit::<TextInput>(node).autofill(hint);
+            }
+            "inputmode" | "inputMode" | "input_mode" => {
+                let mode = InputMode::parse_html_inputmode(value).unwrap_or(InputMode::Text);
+                self.tx.edit::<TextInput>(node).input_mode(mode);
+            }
+            "pattern" => {
+                self.tx.edit::<TextInput>(node).pattern(value);
+            }
+            "multiline" | "secureTextEntry" | "secure_text_entry" | "readOnly" | "read_only"
+            | "readonly" | "required" | "disabled" => {
+                let b = matches!(value.trim(), "" | "true" | "1");
+                self.apply_bool_attr(node, name, b);
+            }
+            "minlength" | "maxlength" | "tabIndex" | "tab-index" | "tab_index" => {
+                if let Ok(i) = value.trim().parse::<i64>() {
+                    self.apply_int_attr(node, name, i);
+                }
+            }
+            "accessibilityLabel" | "aria-label" | "ariaLabel" => {
+                self.tx.edit::<Accessibility>(node).label(value);
+            }
+            "accessibilityHint" => {
+                self.tx.edit::<Accessibility>(node).hint(value);
+            }
+            "accessibilityRole" | "role" => {
+                let role = AriaRole::parse(value);
+                self.tx.edit::<Accessibility>(node).role(role);
+            }
+            "aria-level" | "ariaLevel" | "aria_level" => {
+                if let Ok(lvl) = value.trim().parse::<u8>() {
+                    self.tx.edit::<Accessibility>(node).level(lvl);
+                }
+            }
+            "ariaChecked" | "aria-checked" | "aria_checked" => {
+                self.tx
+                    .edit::<Accessibility>(node)
+                    .checked(parse_tri_state(value));
+            }
+            "ariaSelected" | "aria-selected" | "aria_selected" => {
+                self.tx
+                    .edit::<Accessibility>(node)
+                    .selected(parse_tri_state(value));
+            }
+            "ariaExpanded" | "aria-expanded" | "aria_expanded" => {
+                self.tx
+                    .edit::<Accessibility>(node)
+                    .expanded(parse_tri_state(value));
+            }
+            "ariaLive" | "aria-live" | "aria_live" => {
+                let live = match value.trim() {
+                    "polite" => AriaLive::Polite,
+                    "assertive" => AriaLive::Assertive,
+                    _ => AriaLive::Off,
+                };
+                self.tx.edit::<Accessibility>(node).live(live);
+            }
+            "ariaOrientation" | "aria-orientation" | "aria_orientation" => {
+                let orient = match value.trim() {
+                    "horizontal" => AriaOrientation::Horizontal,
+                    "vertical" => AriaOrientation::Vertical,
+                    _ => AriaOrientation::Unset,
+                };
+                self.tx.edit::<Accessibility>(node).orientation(orient);
+            }
+            "ariaAutoComplete" | "aria-autocomplete" | "aria_autocomplete" => {
+                let ac = match value.trim() {
+                    "inline" => AriaAutoComplete::Inline,
+                    "list" | "both" => AriaAutoComplete::List,
+                    "none" => AriaAutoComplete::None,
+                    _ => AriaAutoComplete::Unset,
+                };
+                self.tx.edit::<Accessibility>(node).autocomplete(ac);
+            }
+            "ariaControls" | "aria-controls" | "aria_controls" | "ariaLabelledBy"
+            | "aria-labelledby" | "aria_labelledby" | "ariaDescribedBy" | "aria-describedby"
+            | "aria_describedby" | "ariaActiveDescendant" | "aria-activedescendant"
+            | "aria_activedescendant" => {
+                let mut rel = self
+                    .tx
+                    .store()
+                    .try_row::<Accessibility>(node)
+                    .and_then(|a| {
+                        let r = a.relations();
+                        (!r.is_none())
+                            .then(|| self.tx.store().resource::<AriaRelations>(r).cloned())
+                            .flatten()
+                    })
+                    .unwrap_or_default();
+                match name {
+                    "ariaControls" | "aria-controls" | "aria_controls" => {
+                        rel.controls = value.to_owned();
+                    }
+                    "ariaLabelledBy" | "aria-labelledby" | "aria_labelledby" => {
+                        rel.labelled_by = value.to_owned();
+                    }
+                    "ariaDescribedBy" | "aria-describedby" | "aria_describedby" => {
+                        rel.described_by = value.to_owned();
+                    }
+                    _ => {
+                        rel.active_descendant = value.to_owned();
+                    }
+                }
+                self.tx.edit::<Accessibility>(node).relations(Some(rel));
+            }
+            "ariaModal" | "aria-modal" | "aria_modal" | "ariaInvalid" | "aria-invalid"
+            | "aria_invalid" | "ariaDisabled" | "aria-disabled" | "aria_disabled"
+            | "ariaMultiSelectable" | "aria-multiselectable" | "aria_multiselectable" => {
+                let b = matches!(value.trim(), "true" | "1");
+                self.apply_bool_attr(node, name, b);
+            }
+            "ariaValueNow" | "aria-valuenow" | "aria_valuenow" | "ariaValueMin"
+            | "aria-valuemin" | "aria_valuemin" | "ariaValueMax" | "aria-valuemax"
+            | "aria_valuemax" => {
+                if let Ok(v) = value.trim().parse::<f64>() {
+                    self.apply_numeric_attr(node, name, v);
+                }
+            }
+            _ => {}
         }
-        // Decode legacy `nve-draw1;b64,...` string attributes directly into binary `RawPropValueRef::Bytes`.
-        if value.starts_with(DRAW_LIST_ATTR_PREFIX)
-            && let Ok(raw_draw_bytes) = DrawListDecoder::decode_attr_bytes(value)
-        {
-            sink.set_raw_prop(node_id, name, RawPropValueRef::Bytes(&raw_draw_bytes));
+    }
+
+    fn clear_attr(&mut self, node: NodeId, name: &str) {
+        if self.remove_standalone_style(node, name) {
+            let layer = nve_components::css_attr_layer(name);
+            debug_assert!(layer != 0, "removed standalone style `{name}` must have a non-zero layer");
+            self.rebuild_style_layers_mask(node, layer);
             return;
         }
-        let prop_name = canonical_raw_style_key(name)
-            .or_else(|| canonical_a11y_attr_key(name))
-            .or_else(|| canonical_input_attr_key(name))
-            .unwrap_or(name);
-        sink.set_raw_prop(node_id, prop_name, RawPropValueRef::String(value));
+        if let Some(list) = self.attached_tables.get_mut(&node)
+            && let Some(pos) = list.iter().position(|(k, _)| *k == name)
+        {
+            let (_, prev) = list.swap_remove(pos);
+            prev.clear_from(self.tx, node);
+            if list.is_empty() {
+                self.attached_tables.remove(&node);
+            }
+            return;
+        }
+        match name {
+            "style" => {
+                if let Some((_, prev_mask)) = self.inline_styles.remove(&node) {
+                    let layers = nve_components::prop_bits_to_layers(prev_mask);
+                    if layers != 0 {
+                        self.rebuild_style_layers_mask(node, layers);
+                    }
+                }
+            }
+            NVE_TYPED_STYLE_ATTR => {
+                if let Some(prev) = self.typed_styles.remove(&node) {
+                    prev.clear_diff_from(None, self.tx, node);
+                }
+                self.replay_standalone_and_inline(node, nve_components::STYLE_LAYER_ALL);
+            }
+            NVE_SHOW_ON_ATTR | NVE_SHOW_ON_KEBAB_ATTR => {
+                if self.tx.store().has::<Responsive>(node) {
+                    self.tx
+                        .edit::<Responsive>(node)
+                        .show_on_widths(0)
+                        .show_on_env(0);
+                }
+            }
+            "testID" | "data-testid" | "test_id" if self.tx.store().has::<DebugId>(node) => {
+                self.tx.edit::<DebugId>(node).test_id("");
+            }
+            "id" if self.tx.store().has::<DebugId>(node) => {
+                self.tx.edit::<DebugId>(node).id("");
+            }
+            "slot" if self.tx.store().has::<DebugId>(node) => {
+                self.tx.edit::<DebugId>(node).slot("");
+            }
+            "href" if self.tx.store().has::<Link>(node) => {
+                self.tx.edit::<Link>(node).href("");
+            }
+            "target" if self.tx.store().has::<Link>(node) => {
+                self.tx.edit::<Link>(node).target(LinkTarget::Default);
+            }
+            "rel" if self.tx.store().has::<Link>(node) => {
+                self.tx.edit::<Link>(node).rel(0);
+            }
+            "src" if self.tx.store().has::<Image>(node) => {
+                self.tx.edit::<Image>(node).src(None);
+            }
+            "alt" if self.tx.store().has::<Image>(node) => {
+                self.tx.edit::<Image>(node).alt("");
+            }
+            "value" if self.tx.store().has::<TextInput>(node) => {
+                self.tx.edit::<TextInput>(node).value("");
+            }
+            "placeholder" if self.tx.store().has::<TextInput>(node) => {
+                self.tx.edit::<TextInput>(node).placeholder("");
+            }
+            "required" if self.tx.store().has::<TextInput>(node) => {
+                self.tx.edit::<TextInput>(node).required(false);
+            }
+            "readOnly" | "read_only" | "readonly" if self.tx.store().has::<TextInput>(node) => {
+                self.tx.edit::<TextInput>(node).read_only(false);
+            }
+            "multiline" if self.tx.store().has::<TextInput>(node) => {
+                self.tx.edit::<TextInput>(node).multiline(false);
+            }
+            "secureTextEntry" | "secure_text_entry" if self.tx.store().has::<TextInput>(node) => {
+                self.tx.edit::<TextInput>(node).secure(false);
+            }
+            "disabled" | "ariaDisabled" | "aria-disabled" | "aria_disabled" => {
+                self.apply_bool_attr(node, "disabled", false);
+            }
+            "tabIndex" | "tab-index" | "tab_index" if self.tx.store().has::<Interaction>(node) => {
+                self.tx.edit::<Interaction>(node).tab_index_set(false).tab_index(0);
+            }
+            "accessibilityLabel" | "aria-label" | "ariaLabel"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).label("");
+            }
+            "accessibilityRole" | "role" if self.tx.store().has::<Accessibility>(node) => {
+                self.tx.edit::<Accessibility>(node).role(AriaRole::None);
+            }
+            "ariaChecked" | "aria-checked" | "aria_checked"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).checked(AriaTriState::Unset);
+            }
+            "ariaSelected" | "aria-selected" | "aria_selected"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).selected(AriaTriState::Unset);
+            }
+            "ariaExpanded" | "aria-expanded" | "aria_expanded"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).expanded(AriaTriState::Unset);
+            }
+            "ariaModal" | "aria-modal" | "aria_modal"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).modal(false);
+            }
+            "ariaInvalid" | "aria-invalid" | "aria_invalid"
+                if self.tx.store().has::<Accessibility>(node) =>
+            {
+                self.tx.edit::<Accessibility>(node).invalid(false);
+            }
+            _ => {}
+        }
     }
 }
+
+#[inline]
+fn parse_tri_state(s: &str) -> AriaTriState {
+    match s.trim() {
+        "true" => AriaTriState::True,
+        "false" => AriaTriState::False,
+        "mixed" => AriaTriState::Mixed,
+        _ => AriaTriState::Unset,
+    }
+}
+

@@ -1,8 +1,8 @@
 //! Shared deterministic fixtures for `nve-bench` Criterion benchmarks and WASM bundle
 //! size reporting.
 //!
-//! Keeps command buffers, event batches, Dioxus surfaces, modular FFI modules, and
-//! `hosts/web-shell/pkg` size metrics DRY across every benchmark group.
+//! Keeps `NVE2` frames, `NodeStore` fixtures, event batches, Dioxus surfaces, modular FFI
+//! modules, and `hosts/web-shell/pkg` size metrics DRY across every benchmark group.
 
 pub mod arena_mmap;
 pub mod wasm_bundle_size;
@@ -15,14 +15,18 @@ pub use wasm_bundle_size::{
 };
 
 use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    EventPayload, FlexAlign, FlexDirection, FlexJustify, FrameId, LayoutProps, NativeEvent,
-    NativeEventKind, NveEventBatchRef, NveGestureDisposition, NveIntrinsicSize,
-    NveSizeConstraints, RawPropValue, StyleProps, SurfaceId, ROOT_NODE_ID,
+    EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NveEventBatchRef,
+    NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
+};
+use nve_components::tables::{
+    register_core_tables, AlignItems, FlexDirection, Interaction, JustifyContent, Layout,
+    TextContent, Typography, Visual,
 };
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{NveApp, Viewport};
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 
 pub const DEFAULT_VIEWPORT: Viewport = Viewport {
     width: 393.0,
@@ -30,232 +34,251 @@ pub const DEFAULT_VIEWPORT: Viewport = Viewport {
     scale_factor: 2.0,
 };
 
-/// Builds a flat row-list `CommandBuffer` with `row_count` rows (2 nodes per row: View + Text).
-/// When `total_nodes` is desired directly, pass `total_nodes / 2`.
-pub fn build_row_tree_cmd(row_count: usize, frame_id: FrameId) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, frame_id);
-    let mut root_children = Vec::with_capacity(row_count);
-    let mut next_id = ROOT_NODE_ID + 1;
-
-    let row_layout = LayoutProps {
-        width: Dimension::Percent(100.0),
-        height: Dimension::Points(48.0),
-        flex_direction: FlexDirection::Row,
-        justify_content: FlexJustify::SpaceBetween,
-        align_items: FlexAlign::Center,
-        padding: EdgeInsets::symmetric(8.0, 16.0),
-        gap: 12.0,
-        ..Default::default()
-    };
-    let row_style = StyleProps {
-        background: ColorRgba::rgb(30, 41, 59),
-        text_color: ColorRgba::WHITE,
-        border_color: ColorRgba::rgb(51, 65, 85),
-        border_width: 1.0,
-        border_radius: 8.0,
-        opacity: 1.0,
-        font_size: 16.0,
-        z_index: 0,
-    };
-
-    for i in 0..row_count {
-        let row_id = next_id;
-        let text_id = next_id + 1;
-        next_id += 2;
-
-        b.create_node(row_id, ComponentKind::View, None);
-        b.set_layout(row_id, &row_layout);
-        b.set_style(row_id, &row_style);
-        b.set_event_mask(row_id, EventMask::PRESS);
-
-        b.create_node(text_id, ComponentKind::Text, None);
-        b.set_text(text_id, &format!("Row #{i} — NVE Bench"));
-        b.set_style(
-            text_id,
-            &StyleProps {
-                text_color: ColorRgba::WHITE,
-                font_size: 14.0,
-                ..Default::default()
-            },
-        );
-        b.set_children(row_id, &[text_id]);
-        root_children.push(row_id);
-    }
-
-    b.set_children(ROOT_NODE_ID, &root_children);
-    b.commit(true);
-    b.into_bytes()
+/// Stateful row-list `NodeStore` + `WireEncoder` fixture for initial + incremental `NVE2` benches.
+pub struct RowFeedFixture {
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    row_count: usize,
+    initialized: bool,
 }
 
-/// Builds a `CommandBuffer` containing `node_count` created nodes with varied opcodes
-/// (layout, style, text, raw props, event mask, children, commit).
-pub fn build_node_tree_cmd(node_count: usize, frame_id: FrameId) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, frame_id);
+impl RowFeedFixture {
+    pub fn new(row_count: usize) -> Self {
+        register_core_tables();
+        Self {
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            row_count,
+            initialized: false,
+        }
+    }
+
+    pub fn encode_initial(&mut self, out: &mut Vec<u8>) {
+        out.clear();
+        self.store = NodeStore::new();
+        self.encoder = WireEncoder::default();
+        let mut root_children = Vec::with_capacity(self.row_count);
+        let mut next_id = ROOT_NODE_ID + 1;
+
+        {
+            let mut tx = self.store.tx();
+            for i in 0..self.row_count {
+                let row_id = StoreNodeId(next_id);
+                let text_id = StoreNodeId(next_id + 1);
+                next_id += 2;
+
+                tx.create_at(row_id);
+                tx.set(row_id, Layout::WIDTH, Length::percent(100.0));
+                tx.set(row_id, Layout::HEIGHT, Length::points(48.0));
+                tx.set(row_id, Layout::FLEX_DIRECTION, FlexDirection::Row);
+                tx.set(row_id, Layout::JUSTIFY_CONTENT, JustifyContent::SpaceBetween);
+                tx.set(row_id, Layout::ALIGN_ITEMS, AlignItems::Center);
+                tx.set(row_id, Layout::PADDING_TOP, Length::points(8.0));
+                tx.set(row_id, Layout::PADDING_BOTTOM, Length::points(8.0));
+                tx.set(row_id, Layout::PADDING_LEFT, Length::points(16.0));
+                tx.set(row_id, Layout::PADDING_RIGHT, Length::points(16.0));
+                tx.set(row_id, Layout::ROW_GAP, Length::points(12.0));
+                tx.set(row_id, Layout::COLUMN_GAP, Length::points(12.0));
+                tx.set(row_id, Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+                tx.set(row_id, Visual::BORDER_COLOR, Rgba::rgb(51, 65, 85));
+                tx.set(row_id, Visual::BORDER_WIDTH, 1.0f32);
+                tx.set(row_id, Visual::BORDER_RADIUS, 8.0f32);
+                tx.set(row_id, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+
+                tx.create_at(text_id);
+                tx.set_str(text_id, TextContent::TEXT, &format!("Row #{i} — NVE Bench"));
+                tx.set(
+                    text_id,
+                    Typography::SET,
+                    Typography::SET_COLOR | Typography::SET_FONT_SIZE,
+                );
+                tx.set(text_id, Typography::COLOR, Rgba::WHITE);
+                tx.set(text_id, Typography::FONT_SIZE, 14.0f32);
+
+                tx.set_children(row_id, &[text_id]);
+                root_children.push(row_id);
+            }
+            tx.set_children(StoreNodeId::ROOT, &root_children);
+            tx.commit_into(&mut self.changes);
+        }
+
+        self.encoder.encode(&self.store, &self.changes, out);
+        self.initialized = true;
+    }
+
+    pub fn encode_patch(&mut self, frame_id: FrameId, updates: usize, out: &mut Vec<u8>) {
+        if !self.initialized {
+            self.encode_initial(out);
+            return;
+        }
+        out.clear();
+        if self.row_count > 0 {
+            let count = updates.min(self.row_count);
+            let mut tx = self.store.tx();
+            for i in 0..count {
+                let idx = ((frame_id as usize * 7 + i) % self.row_count) as u32;
+                let text_id = StoreNodeId(ROOT_NODE_ID + 1 + idx * 2 + 1);
+                tx.set_str(
+                    text_id,
+                    TextContent::TEXT,
+                    &format!("Row #{idx} — Frame {frame_id}"),
+                );
+            }
+            tx.commit_into(&mut self.changes);
+        } else {
+            self.store.tx().commit_into(&mut self.changes);
+        }
+        self.encoder.encode(&self.store, &self.changes, out);
+    }
+}
+
+/// Builds a flat row-list `NVE2` frame with `row_count` rows (2 nodes per row: container + text).
+pub fn build_row_tree_cmd(row_count: usize, _frame_id: FrameId) -> Vec<u8> {
+    let mut feed = RowFeedFixture::new(row_count);
+    let mut out = Vec::with_capacity(row_count.saturating_mul(160).max(4096));
+    feed.encode_initial(&mut out);
+    out
+}
+
+/// Builds an `NVE2` frame containing `node_count` created nodes across core word tables.
+pub fn build_node_tree_cmd(node_count: usize, _frame_id: FrameId) -> Vec<u8> {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
     let mut root_children = Vec::with_capacity(node_count);
 
-    let layout = LayoutProps {
-        width: Dimension::Percent(100.0),
-        height: Dimension::Points(32.0),
-        flex_direction: FlexDirection::Row,
-        padding: EdgeInsets::all(8.0),
-        gap: 6.0,
-        ..Default::default()
-    };
-    let style = StyleProps {
-        background: ColorRgba::rgb(15, 23, 42),
-        text_color: ColorRgba::rgb(226, 232, 240),
-        border_radius: 6.0,
-        font_size: 14.0,
-        ..Default::default()
-    };
-
-    for i in 0..node_count {
-        let nid = ROOT_NODE_ID + 1 + i as u32;
-        if i % 2 == 0 {
-            b.create_node(nid, ComponentKind::View, None);
-            b.set_layout(nid, &layout);
-            b.set_style(nid, &style);
-            b.set_event_mask(nid, EventMask::PRESS);
-        } else {
-            b.create_node(nid, ComponentKind::Text, None);
-            b.set_text(nid, &format!("Node #{i}"));
-            b.set_raw_prop(nid, "index", &RawPropValue::I64(i as i64));
+    {
+        let mut tx = store.tx();
+        for i in 0..node_count {
+            let nid = StoreNodeId(ROOT_NODE_ID + 1 + i as u32);
+            tx.create_at(nid);
+            if i % 2 == 0 {
+                tx.set(nid, Layout::WIDTH, Length::percent(100.0));
+                tx.set(nid, Layout::HEIGHT, Length::points(32.0));
+                tx.set(nid, Layout::FLEX_DIRECTION, FlexDirection::Row);
+                tx.set(nid, Layout::PADDING_TOP, Length::points(8.0));
+                tx.set(nid, Layout::PADDING_BOTTOM, Length::points(8.0));
+                tx.set(nid, Layout::PADDING_LEFT, Length::points(8.0));
+                tx.set(nid, Layout::PADDING_RIGHT, Length::points(8.0));
+                tx.set(nid, Layout::ROW_GAP, Length::points(6.0));
+                tx.set(nid, Layout::COLUMN_GAP, Length::points(6.0));
+                tx.set(nid, Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
+                tx.set(nid, Visual::BORDER_RADIUS, 6.0f32);
+                tx.set(nid, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            } else {
+                tx.set_str(nid, TextContent::TEXT, &format!("Node #{i}"));
+                tx.set(
+                    nid,
+                    Typography::SET,
+                    Typography::SET_COLOR | Typography::SET_FONT_SIZE,
+                );
+                tx.set(nid, Typography::COLOR, Rgba::rgb(226, 232, 240));
+                tx.set(nid, Typography::FONT_SIZE, 14.0f32);
+            }
+            root_children.push(nid);
         }
-        root_children.push(nid);
+        tx.set_children(StoreNodeId::ROOT, &root_children);
+        tx.commit_into(&mut changes);
     }
 
-    b.set_children(ROOT_NODE_ID, &root_children);
-    b.commit(true);
-    b.into_bytes()
+    let mut enc = WireEncoder::default();
+    let mut out = Vec::with_capacity(node_count.saturating_mul(96).max(1024));
+    enc.encode(&store, &changes, &mut out);
+    out
 }
 
-/// Builds a styled multi-element card scene suitable for Skia display-list + raster benchmarks.
-pub fn build_card_scene_cmd(frame_id: FrameId) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, frame_id);
+/// Builds a styled multi-element card scene `NVE2` frame suitable for Skia display-list + raster benchmarks.
+pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
+    register_core_tables();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
 
-    // Outer background container
-    b.create_node(2, ComponentKind::View, None);
-    b.set_layout(
-        2,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            height: Dimension::Percent(100.0),
-            padding: EdgeInsets::all(24.0),
-            gap: 16.0,
-            flex_direction: FlexDirection::Column,
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        2,
-        &StyleProps {
-            background: ColorRgba::rgb(15, 23, 42),
-            ..Default::default()
-        },
-    );
+    {
+        let mut tx = store.tx();
+        let outer = StoreNodeId(2);
+        let card = StoreNodeId(3);
+        let eyebrow = StoreNodeId(4);
+        let headline = StoreNodeId(5);
+        let button = StoreNodeId(6);
+        let btn_label = StoreNodeId(7);
 
-    // Card surface
-    b.create_node(3, ComponentKind::View, None);
-    b.set_layout(
-        3,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            padding: EdgeInsets::all(20.0),
-            gap: 10.0,
-            flex_direction: FlexDirection::Column,
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        3,
-        &StyleProps {
-            background: ColorRgba::rgb(30, 41, 59),
-            border_color: ColorRgba::rgb(56, 189, 248),
-            border_width: 2.0,
-            border_radius: 16.0,
-            ..Default::default()
-        },
-    );
+        tx.create_at(outer);
+        tx.set(outer, Layout::WIDTH, Length::percent(100.0));
+        tx.set(outer, Layout::HEIGHT, Length::percent(100.0));
+        tx.set(outer, Layout::PADDING_TOP, Length::points(24.0));
+        tx.set(outer, Layout::PADDING_BOTTOM, Length::points(24.0));
+        tx.set(outer, Layout::PADDING_LEFT, Length::points(24.0));
+        tx.set(outer, Layout::PADDING_RIGHT, Length::points(24.0));
+        tx.set(outer, Layout::ROW_GAP, Length::points(16.0));
+        tx.set(outer, Layout::FLEX_DIRECTION, FlexDirection::Column);
+        tx.set(outer, Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
-    // Header label
-    b.create_node(4, ComponentKind::Text, None);
-    b.set_style(
-        4,
-        &StyleProps {
-            text_color: ColorRgba::rgb(56, 189, 248),
-            font_size: 14.0,
-            ..Default::default()
-        },
-    );
-    b.set_text(4, "NATIVE VIEW ENGINE");
+        tx.create_at(card);
+        tx.set(card, Layout::WIDTH, Length::percent(100.0));
+        tx.set(card, Layout::PADDING_TOP, Length::points(20.0));
+        tx.set(card, Layout::PADDING_BOTTOM, Length::points(20.0));
+        tx.set(card, Layout::PADDING_LEFT, Length::points(20.0));
+        tx.set(card, Layout::PADDING_RIGHT, Length::points(20.0));
+        tx.set(card, Layout::ROW_GAP, Length::points(10.0));
+        tx.set(card, Layout::FLEX_DIRECTION, FlexDirection::Column);
+        tx.set(card, Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+        tx.set(card, Visual::BORDER_COLOR, Rgba::rgb(56, 189, 248));
+        tx.set(card, Visual::BORDER_WIDTH, 2.0f32);
+        tx.set(card, Visual::BORDER_RADIUS, 16.0f32);
 
-    // Headline
-    b.create_node(5, ComponentKind::Text, None);
-    b.set_style(
-        5,
-        &StyleProps {
-            text_color: ColorRgba::WHITE,
-            font_size: 24.0,
-            ..Default::default()
-        },
-    );
-    b.set_text(5, "Card Benchmark Scene");
+        tx.create_at(eyebrow);
+        tx.set(
+            eyebrow,
+            Typography::SET,
+            Typography::SET_COLOR | Typography::SET_FONT_SIZE,
+        );
+        tx.set(eyebrow, Typography::COLOR, Rgba::rgb(56, 189, 248));
+        tx.set(eyebrow, Typography::FONT_SIZE, 14.0f32);
+        tx.set_str(eyebrow, TextContent::TEXT, "NATIVE VIEW ENGINE");
 
-    // Action button
-    b.create_node(6, ComponentKind::Pressable, None);
-    b.set_layout(
-        6,
-        &LayoutProps {
-            width: Dimension::Points(160.0),
-            height: Dimension::Points(48.0),
-            justify_content: FlexJustify::Center,
-            align_items: FlexAlign::Center,
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        6,
-        &StyleProps {
-            background: ColorRgba::rgb(37, 99, 235),
-            border_radius: 12.0,
-            opacity: 0.92,
-            ..Default::default()
-        },
-    );
-    b.set_event_mask(6, EventMask::PRESS);
+        tx.create_at(headline);
+        tx.set(
+            headline,
+            Typography::SET,
+            Typography::SET_COLOR | Typography::SET_FONT_SIZE,
+        );
+        tx.set(headline, Typography::COLOR, Rgba::WHITE);
+        tx.set(headline, Typography::FONT_SIZE, 24.0f32);
+        tx.set_str(headline, TextContent::TEXT, "Card Benchmark Scene");
 
-    b.create_node(7, ComponentKind::Text, None);
-    b.set_style(
-        7,
-        &StyleProps {
-            text_color: ColorRgba::WHITE,
-            font_size: 16.0,
-            ..Default::default()
-        },
-    );
-    b.set_text(7, "Action");
+        tx.create_at(button);
+        tx.set(button, Layout::WIDTH, Length::points(160.0));
+        tx.set(button, Layout::HEIGHT, Length::points(48.0));
+        tx.set(button, Layout::JUSTIFY_CONTENT, JustifyContent::Center);
+        tx.set(button, Layout::ALIGN_ITEMS, AlignItems::Center);
+        tx.set(button, Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
+        tx.set(button, Visual::BORDER_RADIUS, 12.0f32);
+        tx.set(button, Visual::OPACITY, 0.92f32);
+        tx.set(button, Interaction::EVENT_MASK, EventMask::PRESS as u32);
 
-    b.set_children(6, &[7]);
-    b.set_children(3, &[4, 5, 6]);
-    b.set_children(2, &[3]);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    b.into_bytes()
-}
+        tx.create_at(btn_label);
+        tx.set(
+            btn_label,
+            Typography::SET,
+            Typography::SET_COLOR | Typography::SET_FONT_SIZE,
+        );
+        tx.set(btn_label, Typography::COLOR, Rgba::WHITE);
+        tx.set(btn_label, Typography::FONT_SIZE, 16.0f32);
+        tx.set_str(btn_label, TextContent::TEXT, "Action");
 
-/// Builds an incremental patch updating `updates` text nodes inside a `row_count` row tree.
-pub fn build_row_patch_cmd(frame_id: FrameId, row_count: usize, updates: usize) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::new(1, frame_id);
-    if row_count > 0 {
-        let count = updates.min(row_count);
-        for i in 0..count {
-            let idx = ((frame_id as usize * 7 + i) % row_count) as u32;
-            let text_id = ROOT_NODE_ID + 1 + idx * 2 + 1;
-            b.set_text(text_id, &format!("Row #{idx} — Frame {frame_id}"));
-        }
+        tx.set_children(button, &[btn_label]);
+        tx.set_children(card, &[eyebrow, headline, button]);
+        tx.set_children(outer, &[card]);
+        tx.set_children(StoreNodeId::ROOT, &[outer]);
+        tx.commit_into(&mut changes);
     }
-    b.commit(true);
-    b.into_bytes()
+
+    let mut enc = WireEncoder::default();
+    let mut out = Vec::with_capacity(2048);
+    enc.encode(&store, &changes, &mut out);
+    out
 }
 
 /// Builds a mixed batch of `NativeEvent` payloads for EventRing benchmarks.
@@ -298,10 +321,11 @@ pub fn build_event_batch(count: usize) -> Vec<NativeEvent> {
                     surface_id: 1,
                     node_id,
                     timestamp_us: ts,
-                    kind: NativeEventKind::Custom,
-                    payload: EventPayload::Custom {
-                        name: "onGesture".into(),
-                        data: vec![1, 2, 3, 4],
+                    kind: NativeEventKind::TableEvent,
+                    payload: EventPayload::TableEvent {
+                        table_key: nve_hash::xxh64(b"nve.gesture", 0),
+                        event_id: 1,
+                        payload: vec![1, 2, 3, 4],
                     },
                 },
             }
@@ -352,11 +376,16 @@ pub struct BenchFfiApp {
 
 impl NveApp for BenchFfiApp {
     fn create(surface_id: SurfaceId) -> Self {
-        let mut b = CommandBufferBuilder::new(surface_id, 1);
-        b.commit(true);
+        register_core_tables();
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        store.tx().commit_into(&mut changes);
+        let mut enc = WireEncoder::default();
+        let mut frame_buf = Vec::with_capacity(64);
+        enc.encode(&store, &changes, &mut frame_buf);
         Self {
             surface_id,
-            frame_buf: b.into_bytes(),
+            frame_buf,
         }
     }
 

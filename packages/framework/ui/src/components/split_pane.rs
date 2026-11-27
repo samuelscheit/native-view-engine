@@ -501,7 +501,7 @@ pub fn SplitPane(
             style: style,
             view {
                 test_id: "{primary_id}",
-                "data-collapsed": "{collapsed_attr}",
+                nve_table: super::html_tables::html_data_attrs(vec![("collapsed".to_owned(), collapsed_attr.to_owned())]),
                 nve_style: primary_style,
                 {primary}
             }

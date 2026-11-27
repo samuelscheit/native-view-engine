@@ -12,16 +12,17 @@ use nve_backend_skia::SkiaBackend;
 use nve_engine::{
     default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
     reset_instant_boot_dir, resolve_sidecar_frame0_path, MmapReloc, NativeInstantBootStore,
-    RelocBundleView, RelocError, RenderBackend, SceneRelocView, StateStoreConfig, VerifyMode,
+    RelocBundleView, RelocError, SceneRelocView, StateStoreConfig, StoreWireReplica, VerifyMode,
     Viewport, RELOC_KIND_BUNDLE, RELOC_KIND_SCENE,
 };
 
+use super::session::new_shell_skia_replica;
 use super::{DesktopHostError, DesktopPreviewOptions};
 
 /// Pre-warmed Frame-0 backend state decoded directly from a zero-copy `NVERELOC` scene or
 /// [`NativeInstantBootStore`] prior to loading any app `cdylib`.
 pub struct PrewarmedSnapshot {
-    pub backend: SkiaBackend,
+    pub replica: StoreWireReplica<SkiaBackend>,
     pub pixel_buffer: PixelBuffer,
     pub frame0_bytes: Vec<u8>,
     pub state_bytes: Vec<u8>,
@@ -88,20 +89,19 @@ pub fn replay_snapshot_into_backend(
     let t0 = Instant::now();
     let mapped = MmapReloc::open_with_schema(path, schema_version, VerifyMode::Full)?;
     let view = mapped.view();
-    let mut backend = SkiaBackend::new();
-    backend.set_viewport(surface_id, viewport);
+    let mut replica = new_shell_skia_replica(surface_id, viewport);
 
     let (frame0_bytes, state_bytes) = match view.header().content_kind {
         RELOC_KIND_SCENE => {
             let scene = SceneRelocView::from_view(view)?;
-            backend.render_reloc_scene(scene)?;
+            replica.backend_mut().load_scene_reloc(&scene)?;
             (Vec::new(), Vec::new())
         }
         RELOC_KIND_BUNDLE => {
             let bundle = RelocBundleView::from_view(view)?;
             let frame0 = bundle.frame0();
             if !frame0.is_empty() {
-                backend.submit_frame(frame0)?;
+                replica.submit_nve2_frame(frame0)?;
             }
             (frame0.to_vec(), bundle.state().to_vec())
         }
@@ -116,11 +116,11 @@ pub fn replay_snapshot_into_backend(
     let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
     let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
     let mut pixel_buffer = PixelBuffer::new(phys_w, phys_h);
-    backend.rasterize(&mut pixel_buffer, clear_color);
+    replica.backend().rasterize(&mut pixel_buffer, clear_color);
     let restore_us = t0.elapsed().as_micros() as u64;
 
     Ok(PrewarmedSnapshot {
-        backend,
+        replica,
         pixel_buffer,
         frame0_bytes,
         state_bytes,
@@ -148,14 +148,13 @@ pub fn replay_instant_boot_store_into_backend(
         store = store.with_default_frame0_path(default_path);
     }
 
-    let mut backend = SkiaBackend::new();
-    backend.set_viewport(surface_id, viewport);
+    let mut replica = new_shell_skia_replica(surface_id, viewport);
     let mut used_user_frame0 = false;
     let mut has_frame0 = false;
     if let Some(frame0) = store.load_frame0(VerifyMode::Full) {
         used_user_frame0 = frame0.is_user_cached();
         let scene = frame0.scene_view(VerifyMode::Full)?;
-        backend.render_reloc_scene(scene)?;
+        replica.backend_mut().load_scene_reloc(&scene)?;
         has_frame0 = true;
     }
 
@@ -166,11 +165,11 @@ pub fn replay_instant_boot_store_into_backend(
     let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
     let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
     let mut pixel_buffer = PixelBuffer::new(phys_w, phys_h);
-    backend.rasterize(&mut pixel_buffer, clear_color);
+    replica.backend().rasterize(&mut pixel_buffer, clear_color);
     let restore_us = t0.elapsed().as_micros() as u64;
 
     Ok(PrewarmedSnapshot {
-        backend,
+        replica,
         pixel_buffer,
         frame0_bytes: Vec::new(),
         state_bytes,
@@ -259,10 +258,10 @@ pub(crate) fn prewarm_from_options(
 mod tests {
     use super::*;
     use crate::window::{DesktopApp, DesktopSession, DesktopWindowHost};
-    use nve_abi::{
-        CommandBufferBuilder, ComponentKind, Dimension, FrameId, LayoutProps, StyleProps,
-        ROOT_NODE_ID,
-    };
+    use nve_abi::FrameId;
+    use nve_components::tables::{register_core_tables, Layout, Visual};
+    use nve_store::wire::WireEncoder;
+    use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 
     struct CountingTestApp {
         count: u32,
@@ -284,27 +283,24 @@ mod tests {
         fn generation(&self) -> u64 {
             1
         }
-        fn render(&mut self, frame_id: FrameId) -> &[u8] {
-            let mut b = CommandBufferBuilder::new(1, frame_id);
-            b.create_node(2, ComponentKind::View, None);
-            b.set_children(ROOT_NODE_ID, &[2]);
-            b.set_layout(
-                2,
-                &LayoutProps {
-                    width: Dimension::Points(200.0),
-                    height: Dimension::Points(100.0),
-                    ..Default::default()
-                },
-            );
-            b.set_style(
-                2,
-                &StyleProps {
-                    background: ColorRgba::rgb(37, 99, 235),
-                    ..Default::default()
-                },
-            );
-            b.commit(true);
-            self.buf = b.finish().to_vec();
+        fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+            register_core_tables();
+            let mut store = NodeStore::new();
+            let mut changes = ChangeSet::default();
+            {
+                let mut tx = store.tx();
+                let root = StoreNodeId::ROOT;
+                let n2 = StoreNodeId(2);
+                let _ = tx.create_at(root);
+                let _ = tx.create_at(n2);
+                tx.set(n2, Layout::WIDTH, Length::points(200.0));
+                tx.set(n2, Layout::HEIGHT, Length::points(100.0));
+                tx.set(n2, Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
+                tx.set_children(root, &[n2]);
+                tx.commit_into(&mut changes);
+            }
+            self.buf.clear();
+            WireEncoder::default().encode(&store, &changes, &mut self.buf);
             &self.buf
         }
         fn dispatch_events(&mut self, _events: nve_abi::NveEventBatchRef<'_>) -> bool {

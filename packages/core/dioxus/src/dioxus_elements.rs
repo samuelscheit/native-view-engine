@@ -1,8 +1,8 @@
 //! Native-first `dioxus_elements` schema for Dioxus 0.7 `rsx!{}` without `dioxus-html` bloat.
 //!
-//! Supports both native names (`view`, `text`, `pressable`, `scrollview`, `image`, `textinput`,
-//! `skia_canvas`) and familiar HTML aliases (`div`, `span`, `button`) with typed layout/style
-//! attributes, component props, accessibility attributes, and native event bindings.
+//! Supports both native names (`view`, `text`, `pressable`, `scrollview`, `image`, `textinput`)
+//! and familiar HTML aliases (`div`, `span`, `p`, `button`, `a`, `input`, `form`, `dialog`,
+//! `details`, `summary`), plus uniform extensible `nve_table` attachment for capability modules.
 
 #![allow(non_upper_case_globals, non_snake_case, non_camel_case_types)]
 
@@ -51,6 +51,13 @@ pub struct CompositionEventData {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TableEventData {
+    pub table_key: u64,
+    pub event_id: u32,
+    pub payload: Vec<u8>,
+}
+
 pub type PressEvent = Event<PressEventData>;
 pub type TextEvent = Event<TextEventData>;
 pub type ScrollEvent = Event<ScrollEventData>;
@@ -58,6 +65,7 @@ pub type FocusEvent = Event<FocusEventData>;
 pub type KeyEvent = Event<KeyEventData>;
 pub type SubmitEvent = Event<SubmitEventData>;
 pub type CompositionEvent = Event<CompositionEventData>;
+pub type TableEvent = Event<TableEventData>;
 
 macro_rules! define_attrs {
     ($($ident:ident => $name:literal),* $(,)?) => {
@@ -72,7 +80,6 @@ macro_rules! define_a11y_attrs {
         define_attrs! {
             id => "id",
             slot => "slot",
-            popover => "popover",
             test_id => "testID",
             accessibility_label => "accessibilityLabel",
             accessibility_role => "accessibilityRole",
@@ -111,6 +118,7 @@ macro_rules! define_element {
                 style => "style",
                 nve_style => "nve_style",
                 nve_show_on => "nve-show-on",
+                nve_table => "nve_table",
                 width => "width",
                 height => "height",
                 min_width => "min-width",
@@ -152,49 +160,22 @@ pub mod elements {
     define_element!(text, "text");
     define_element!(span, "span");
     define_element!(p, "p");
+    define_element!(a, "a", {
+        href => "href",
+        target => "target",
+        rel => "rel",
+    });
     define_element!(pressable, "pressable", {
-        command => "command",
-        commandfor => "commandfor",
-        popovertarget => "popovertarget",
-        popovertargetaction => "popovertargetaction",
         r#type => "type",
         button_type => "type",
         name => "name",
         value => "value",
-        form => "form",
-        formaction => "formaction",
-        formmethod => "formmethod",
     });
     define_element!(button, "button", {
-        command => "command",
-        commandfor => "commandfor",
-        popovertarget => "popovertarget",
-        popovertargetaction => "popovertargetaction",
         r#type => "type",
         button_type => "type",
         name => "name",
         value => "value",
-        form => "form",
-        formaction => "formaction",
-        formmethod => "formmethod",
-    });
-    define_element!(dialog, "dialog", {
-        open => "open",
-        closedby => "closedby",
-    });
-    define_element!(details, "details", {
-        open => "open",
-        name => "name",
-    });
-    define_element!(summary, "summary");
-    define_element!(form, "form", {
-        method => "method",
-        action => "action",
-        target => "target",
-        novalidate => "novalidate",
-        enctype => "enctype",
-        name => "name",
-        autocomplete => "autocomplete",
     });
     define_element!(scrollview, "scrollview");
     define_element!(image, "image", {
@@ -215,7 +196,6 @@ pub mod elements {
         minlength => "minlength",
         maxlength => "maxlength",
         pattern => "pattern",
-        form => "form",
         autocomplete => "autocomplete",
         input_mode => "inputmode",
         inputmode => "inputmode",
@@ -233,23 +213,9 @@ pub mod elements {
         minlength => "minlength",
         maxlength => "maxlength",
         pattern => "pattern",
-        form => "form",
         autocomplete => "autocomplete",
         input_mode => "inputmode",
         inputmode => "inputmode",
-    });
-    define_element!(skia_canvas, "skia-canvas", {
-        draw_list => "drawList",
-    });
-    define_element!(canvas, "skia-canvas", {
-        draw_list => "drawList",
-    });
-    define_element!(svg, "svg", {
-        picture => "svg_picture",
-        svg_picture => "svg_picture",
-        view_box => "viewBox",
-        tint => "tint",
-        mirror => "data-nve-mirror",
     });
 
     pub mod completions {
@@ -290,6 +256,7 @@ pub mod events {
     define_event!(oncompositionstart, "oncompositionstart", CompositionEvent);
     define_event!(oncompositionupdate, "oncompositionupdate", CompositionEvent);
     define_event!(oncompositionend, "oncompositionend", CompositionEvent);
+    define_event!(ontableevent, "ontableevent", TableEvent);
 }
 
 pub mod GlobalAttributes {
@@ -298,12 +265,12 @@ pub mod GlobalAttributes {
         style => "style",
         nve_style => "nve_style",
         nve_show_on => "nve-show-on",
-        svg_picture => "svg_picture",
+        nve_table => "nve_table",
     }
     define_a11y_attrs!();
 }
 
 /// Engine backend traits re-exported for downstream UI crates and headless surface harnesses.
 pub mod backend {
-    pub use nve_engine::{BackendApplyStats, BackendError, LayoutRect, RenderBackend, Viewport};
+    pub use nve_engine::{BackendApplyStats, BackendError, LayoutRect, StoreBackend, Viewport};
 }

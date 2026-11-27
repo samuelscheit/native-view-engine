@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use nve_abi::BinValueView;
-use nve_engine::hash::Xxh64Hasher;
+use nve_abi::Xxh64Hasher;
 use nve_engine::{NativeStateStore, StateSaveOutcome};
 
 use super::{
@@ -23,7 +23,7 @@ fn compute_container_checksum(bytes: &[u8]) -> u64 {
     let mut h = Xxh64Hasher::new(0);
     h.update(&bytes[0..CHECKSUM_OFFSET]);
     h.update(&bytes[CHECKSUM_END..]);
-    h.finish()
+    h.digest()
 }
 
 #[inline]

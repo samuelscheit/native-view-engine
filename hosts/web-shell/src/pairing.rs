@@ -9,7 +9,8 @@ use nve_abi::{
     SurfaceId, ROOT_NODE_ID,
 };
 use nve_backend_web::WebBackend;
-use nve_engine::{BackendError, RenderBackend, SurfaceRunner, Viewport};
+use nve_engine::{BackendError, StoreBackend, StoreWireReplica, Viewport};
+use nve_store::NodeStore;
 use nve_wire_core::{
     NveWireClientSession, NveWireClientState, NveWireIngestOutcome, DEFAULT_MAX_WIRE_FRAME_BYTES,
 };
@@ -177,11 +178,12 @@ impl PairClientMachine {
 }
 
 /// Cross-target paired thin-client web session binding [`PairClientMachine`] directly to
-/// `SurfaceRunner<WebBackend>` (plus, with `scene-view`, a zero-copy [`SceneMirror`]; zero local
+/// `StoreWireReplica<WebBackend>` (plus, with `scene-view`, a zero-copy [`SceneMirror`]; zero local
 /// app VDOM).
 pub struct PairedWebSession {
+    surface_id: SurfaceId,
     client: PairClientMachine,
-    runner: SurfaceRunner<WebBackend>,
+    replica: StoreWireReplica<WebBackend>,
     viewport: Viewport,
     outbound_queue: VecDeque<Vec<u8>>,
     #[cfg(feature = "scene-view")]
@@ -191,13 +193,22 @@ pub struct PairedWebSession {
 impl PairedWebSession {
     pub fn new(
         surface_id: SurfaceId,
-        backend: WebBackend,
+        mut backend: WebBackend,
         viewport: Viewport,
         token: impl Into<String>,
     ) -> Self {
+        crate::register_shell_web_systems(&mut backend);
+        backend.set_viewport(surface_id, viewport);
+        nve_components::tables::register_core_tables();
+        nve_web_html::register_web_html_tables();
+        let replica = StoreWireReplica::new(
+            backend,
+            nve_components::tables::core_realization_order(),
+        );
         Self {
+            surface_id,
             client: PairClientMachine::new(token),
-            runner: SurfaceRunner::new(surface_id, viewport, backend),
+            replica,
             viewport,
             outbound_queue: VecDeque::new(),
             #[cfg(feature = "scene-view")]
@@ -206,11 +217,23 @@ impl PairedWebSession {
     }
 
     pub fn backend(&self) -> &WebBackend {
-        self.runner.backend()
+        self.replica.backend()
     }
 
     pub fn backend_mut(&mut self) -> &mut WebBackend {
-        self.runner.backend_mut()
+        self.replica.backend_mut()
+    }
+
+    pub fn store(&self) -> &NodeStore {
+        self.replica.store()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.replica.store().live_nodes().count()
+    }
+
+    pub fn render_html(&self) -> String {
+        self.replica.backend().render_html(self.replica.store())
     }
 
     pub fn client(&self) -> &PairClientMachine {
@@ -246,7 +269,7 @@ impl PairedWebSession {
         let outcome = self.client.on_binary_message(raw)?;
         for (seq, cmd_bytes) in outcome.frames {
             self.apply_remote_frame(u64::from(seq), &cmd_bytes)
-                .map_err(|e| format!("WebBackend submit_frame failed for seq {seq}: {e}"))?;
+                .map_err(|e| format!("WebBackend submit_nve2_frame failed for seq {seq}: {e}"))?;
         }
         for msg in outcome.outbound {
             if !msg.is_empty() {
@@ -271,7 +294,7 @@ impl PairedWebSession {
 
     /// Drains pending browser DOM events from `WebBackend` into one `NveWireKind::EventBatch` frame.
     pub fn drain_dom_events_as_wire_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
-        let events = self.runner.backend_mut().drain_events();
+        let events = self.replica.backend_mut().drain_events();
         if events.is_empty() || !self.client.is_connected() {
             return Ok(None);
         }
@@ -283,11 +306,9 @@ impl PairedWebSession {
         &mut self,
         viewport: Viewport,
     ) -> Result<Option<Vec<u8>>, String> {
-        let surface_id = self.runner.surface_id();
+        let surface_id = self.surface_id;
         self.viewport = viewport;
-        self.runner.backend_mut().set_viewport(surface_id, viewport);
-        #[cfg(target_arch = "wasm32")]
-        self.runner.backend().repaint_all_canvases();
+        self.replica.backend_mut().set_viewport(surface_id, viewport);
 
         if !self.client.is_connected()
             || !viewport.width.is_finite()
@@ -323,7 +344,7 @@ impl PairedWebSession {
         if !self.client.is_connected() || key.is_empty() {
             return Ok(None);
         }
-        let surface_id = self.runner.surface_id();
+        let surface_id = self.surface_id;
         let ev = NativeEvent {
             surface_id,
             node_id: ROOT_NODE_ID,
@@ -353,11 +374,12 @@ impl PairedWebSession {
         if command_bytes.is_empty() {
             return Ok(());
         }
-        let _ = self
-            .runner
-            .submit_recorded_frame(frame_id.max(1), 0, 0, command_bytes)?;
+        let _ = self.replica.submit_nve2_frame(command_bytes)?;
         #[cfg(feature = "scene-view")]
-        self.scene.sync(self.runner.backend(), frame_id.max(1));
+        self.scene
+            .sync(self.replica.store(), self.replica.last_changes(), frame_id.max(1));
+        #[cfg(not(feature = "scene-view"))]
+        let _ = frame_id;
         Ok(())
     }
 }

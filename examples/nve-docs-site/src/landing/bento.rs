@@ -319,7 +319,14 @@ pub fn LiveExamplesStrip() -> Element {
                         test_id: "showcase-launch-studio",
                         accessibility_role: "link",
                         "href": "{studio_href}",
-                        "data-nve-hard-nav": "true",
+                        nve_table: nve_dioxus::table_attr_fn(|tx, node| {
+                            tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                nve_web_html::DataAttrList::from_pairs(vec![(
+                                    "data-nve-hard-nav".to_owned(),
+                                    "true".to_owned(),
+                                )]),
+                            ));
+                        }),
                         style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.accent}; border-width: 1px; border-color: {theme.accent};",
                         text {
                             style: "font-size: 13px; font-weight: 700; color: {theme.accent_fg};",
@@ -353,7 +360,14 @@ pub fn LiveExamplesStrip() -> Element {
                         test_id: "showcase-launch-kitchen-sink",
                         accessibility_role: "link",
                         "href": "{kitchen_sink_href}",
-                        "data-nve-hard-nav": "true",
+                        nve_table: nve_dioxus::table_attr_fn(|tx, node| {
+                            tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                nve_web_html::DataAttrList::from_pairs(vec![(
+                                    "data-nve-hard-nav".to_owned(),
+                                    "true".to_owned(),
+                                )]),
+                            ));
+                        }),
                         style: "width: 100%; justify-content: center; align-items: center; padding-vertical: 10px; padding-horizontal: 14px; border-radius: 8px; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                         text {
                             style: "font-size: 13px; font-weight: 700; color: {theme.text};",

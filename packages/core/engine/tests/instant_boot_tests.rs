@@ -3,7 +3,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nve_abi::{ColorRgba, ComponentKind, LayoutProps, StyleProps};
+use nve_abi::{ColorRgba, NVE_PRIMARY_SLOT_NONE};
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::{
     encode_scene_reloc, LayoutRect, NativeInstantBootStore, NativeStateStore, SceneRelocInput,
@@ -41,7 +42,7 @@ fn make_sample_scene(schema_version: u32, title: &str) -> Vec<u8> {
     let nodes = [SceneRelocNodeInput {
         node_id: 1,
         parent_index: -1,
-        kind: ComponentKind::Root,
+        primary_slot: NVE_PRIMARY_SLOT_NONE,
         flags: 0,
         text_align: 0,
         image_resize_mode: 0,
@@ -53,13 +54,13 @@ fn make_sample_scene(schema_version: u32, title: &str) -> Vec<u8> {
             width: 800.0,
             height: 600.0,
         },
-        style: StyleProps {
+        style: VisualSnapshot {
             background: ColorRgba::rgb(15, 23, 42),
             text_color: ColorRgba::WHITE,
             font_size: 20.0,
             ..Default::default()
         },
-        layout: LayoutProps::default(),
+        layout: LayoutSnapshot::default(),
         text: title,
         tag: "root",
         image_src: "",

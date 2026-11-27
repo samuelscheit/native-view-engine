@@ -9,7 +9,7 @@ use skia_safe::{AlphaType, Canvas, ColorType, ImageInfo, Surface};
 use super::skia_renderer::{to_skia_color, SkiaCanvasRenderer};
 use super::{
     FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceError,
-    SwapchainExtent,
+    SkiaPluginContext, SwapchainExtent,
 };
 use crate::raster::PixelBuffer;
 use crate::DisplayList;
@@ -62,6 +62,16 @@ pub trait GpuSurfaceBackend {
         scale_factor: f32,
         clear_color: ColorRgba,
     ) -> Result<(), GpuSurfaceError>;
+    fn render_display_list_with_plugins(
+        &mut self,
+        renderer: &SkiaCanvasRenderer,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        _plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        self.render_display_list(renderer, display_list, scale_factor, clear_color)
+    }
     fn copy_to_pixel_buffer(&mut self, target: &mut PixelBuffer) -> Result<(), GpuSurfaceError>;
 }
 
@@ -152,9 +162,27 @@ impl GpuSurfaceBackend for CpuSkiaSurface {
         scale_factor: f32,
         clear_color: ColorRgba,
     ) -> Result<(), GpuSurfaceError> {
+        GpuSurfaceBackend::render_display_list_with_plugins(
+            self,
+            renderer,
+            display_list,
+            scale_factor,
+            clear_color,
+            None,
+        )
+    }
+
+    fn render_display_list_with_plugins(
+        &mut self,
+        renderer: &SkiaCanvasRenderer,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
         let canvas = self.surface.canvas();
         canvas.clear(to_skia_color(clear_color));
-        renderer.paint_display_list(display_list, canvas, scale_factor);
+        renderer.paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
         Ok(())
     }
 
@@ -254,6 +282,24 @@ impl GpuFramePresenter for CpuSkiaSurface {
         clear_color: ColorRgba,
         hud_banner: Option<&str>,
     ) -> Result<(), GpuSurfaceError> {
+        GpuFramePresenter::render_display_list_with_plugins(
+            self,
+            display_list,
+            scale_factor,
+            clear_color,
+            hud_banner,
+            None,
+        )
+    }
+
+    fn render_display_list_with_plugins(
+        &mut self,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
         if self.state != FrameLifecycleState::Begun {
             return Err(GpuSurfaceError::InvalidFrameState {
                 expected: FrameLifecycleState::Begun.as_str(),
@@ -264,7 +310,7 @@ impl GpuFramePresenter for CpuSkiaSurface {
         let canvas = self.surface.canvas();
         canvas.clear(to_skia_color(clear_color));
         self.renderer
-            .paint_display_list(display_list, canvas, scale_factor);
+            .paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
         if let Some(banner) = hud_banner {
             self.renderer.paint_hud_banner(canvas, scale_factor, banner);
         }

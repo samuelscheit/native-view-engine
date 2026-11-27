@@ -2,13 +2,13 @@
 
 use std::mem::{align_of, size_of};
 
-use nve_abi::{ColorRgba, LayoutProps, StyleProps};
+use nve_abi::ColorRgba;
 use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
 use nve_components::media::ResponsiveStylePatch;
-use nve_components::style_patch::{Display, StylePatch};
+use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 
 #[test]
 fn interaction_state_layout_bitops_and_cascade_ordering() {
@@ -100,7 +100,7 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
     // ResponsiveStylePatch is a direct alias for StylePatch.
     let _: StylePatch = ResponsiveStylePatch::new().display(Display::None).cursor(CursorKind::Wait);
 
-    let base = StyleProps {
+    let base = VisualSnapshot {
         background: ColorRgba::rgb(10, 10, 10),
         text_color: ColorRgba::WHITE,
         border_width: 1.0,
@@ -203,7 +203,7 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
         StylePatch::new().gap(12.0).padding(8.0).opacity(0.9),
     )];
     let (l_res, s_res) =
-        resolve_layout_and_style(&LayoutProps::default(), &base, &layout_rules, InteractionState::HOVER);
+        resolve_layout_and_style(&LayoutSnapshot::default(), &base, &layout_rules, InteractionState::HOVER);
     assert_eq!(l_res.gap, 12.0);
     assert_eq!(l_res.padding.top, 8.0);
     assert_eq!(s_res.opacity, 0.9);

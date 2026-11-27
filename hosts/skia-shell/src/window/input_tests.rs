@@ -1,18 +1,20 @@
 use std::path::Path;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, NodeId, RawPropValue, StyleProps,
-    SurfaceId, ROOT_NODE_ID,
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
+use nve_components::tables::{
+    register_core_tables, FlexDirection, Interaction, Layout, TextInput, Typography, Visual,
 };
-use nve_backend_skia::FOCUS_RING_COLOR;
-use nve_engine::{RenderBackend, Viewport};
+use nve_engine::Viewport;
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 use winit::event::Ime;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::clipboard::InMemoryClipboard;
 use super::input::{format_keydown_shorthand, word_bounds_at};
 use super::{DesktopApp, DesktopHostError, DesktopSession};
+
+const FOCUS_RING_COLOR: ColorRgba = ColorRgba::rgb(56, 189, 248);
 
 struct MockTextInputApp {
     title_value: String,
@@ -22,11 +24,16 @@ struct MockTextInputApp {
     text_changes: Vec<(NodeId, String)>,
     submits: Vec<(NodeId, String)>,
     keydowns: Vec<(NodeId, String)>,
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    initialized: bool,
     frame_buf: Vec<u8>,
 }
 
 impl MockTextInputApp {
     fn new(has_custom_listener: bool) -> Self {
+        register_core_tables();
         Self {
             title_value: String::new(),
             password_value: "pw".to_string(),
@@ -35,6 +42,10 @@ impl MockTextInputApp {
             text_changes: Vec::new(),
             submits: Vec::new(),
             keydowns: Vec::new(),
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            initialized: false,
             frame_buf: Vec::new(),
         }
     }
@@ -45,120 +56,78 @@ impl DesktopApp for MockTextInputApp {
         1
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(1, frame_id);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Percent(100.0),
-                height: Dimension::Percent(100.0),
-                padding: EdgeInsets::all(12.0),
-                gap: 10.0,
-                flex_direction: FlexDirection::Column,
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            2,
-            &StyleProps {
-                background: ColorRgba::rgb(15, 23, 42),
-                ..Default::default()
-            },
-        );
-        if self.has_custom_listener {
-            b.set_event_mask(2, EventMask::KEY_DOWN | EventMask::CUSTOM);
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        let mut tx = self.store.tx();
+        if !self.initialized {
+            for id in [1u32, 2, 10, 11, 12] {
+                let _ = tx.create_at(StoreNodeId(id));
+            }
+            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let p12 = Length::points(12.0);
+            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p12);
+            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p12);
+            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p12);
+            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p12);
+            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(10.0));
+            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(10.0));
+            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
+            if self.has_custom_listener {
+                tx.set(
+                    StoreNodeId(2),
+                    Interaction::EVENT_MASK,
+                    (EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
+                );
+            }
+
+            for id in [10u32, 11, 12] {
+                let nid = StoreNodeId(id);
+                tx.attach::<TextInput>(nid);
+                tx.set(nid, Layout::WIDTH, Length::points(260.0));
+                tx.set(nid, Layout::HEIGHT, Length::points(36.0));
+                tx.set(nid, Layout::PADDING_LEFT, Length::points(10.0));
+                tx.set(nid, Layout::PADDING_RIGHT, Length::points(10.0));
+                tx.set(nid, Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+                tx.set(nid, Typography::COLOR, Rgba::rgb(241, 245, 249));
+                tx.set(nid, Typography::FONT_SIZE, 14.0);
+            }
+            tx.set(StoreNodeId(10), Visual::BORDER_COLOR, Rgba::rgb(71, 85, 105));
+            tx.set(StoreNodeId(10), Visual::BORDER_WIDTH, 1.0);
+            tx.set(StoreNodeId(10), Visual::BORDER_RADIUS, 6.0);
+            tx.set_str(StoreNodeId(10), TextInput::PLACEHOLDER, "Search...");
+            tx.set(
+                StoreNodeId(10),
+                Interaction::EVENT_MASK,
+                (EventMask::FOCUS
+                    | EventMask::BLUR
+                    | EventMask::TEXT_CHANGE
+                    | EventMask::SUBMIT
+                    | EventMask::KEY_DOWN
+                    | EventMask::CUSTOM) as u32,
+            );
+
+            tx.set(StoreNodeId(11), Visual::BORDER_RADIUS, 6.0);
+            tx.set(StoreNodeId(11), TextInput::SECURE, true);
+            tx.set(
+                StoreNodeId(11),
+                Interaction::EVENT_MASK,
+                (EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE) as u32,
+            );
+
+            tx.set_children(
+                StoreNodeId(2),
+                &[StoreNodeId(10), StoreNodeId(11), StoreNodeId(12)],
+            );
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            self.initialized = true;
         }
-
-        // Node 10: controlled primary TextInput
-        b.create_node(10, ComponentKind::TextInput, None);
-        b.set_layout(
-            10,
-            &LayoutProps {
-                width: Dimension::Points(260.0),
-                height: Dimension::Points(36.0),
-                padding: EdgeInsets::symmetric(0.0, 10.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            10,
-            &StyleProps {
-                background: ColorRgba::rgb(30, 41, 59),
-                border_color: ColorRgba::rgb(71, 85, 105),
-                border_width: 1.0,
-                border_radius: 6.0,
-                text_color: ColorRgba::rgb(241, 245, 249),
-                font_size: 14.0,
-                ..Default::default()
-            },
-        );
-        b.set_raw_prop(10, "placeholder", &RawPropValue::String("Search...".into()));
-        b.set_raw_prop(10, "value", &RawPropValue::String(self.title_value.clone()));
-        b.set_event_mask(
-            10,
-            EventMask::FOCUS
-                | EventMask::BLUR
-                | EventMask::TEXT_CHANGE
-                | EventMask::SUBMIT
-                | EventMask::KEY_DOWN
-                | EventMask::CUSTOM,
-        );
-
-        // Node 11: controlled secure TextInput
-        b.create_node(11, ComponentKind::TextInput, None);
-        b.set_layout(
-            11,
-            &LayoutProps {
-                width: Dimension::Points(260.0),
-                height: Dimension::Points(36.0),
-                padding: EdgeInsets::symmetric(0.0, 10.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            11,
-            &StyleProps {
-                background: ColorRgba::rgb(30, 41, 59),
-                border_radius: 6.0,
-                text_color: ColorRgba::rgb(241, 245, 249),
-                font_size: 14.0,
-                ..Default::default()
-            },
-        );
-        b.set_raw_prop(
-            11,
-            "value",
-            &RawPropValue::String(self.password_value.clone()),
-        );
-        b.set_raw_prop(11, "secureTextEntry", &RawPropValue::Bool(true));
-        b.set_event_mask(11, EventMask::FOCUS | EventMask::BLUR | EventMask::TEXT_CHANGE);
-
-        // Node 12: uncontrolled TextInput (no `value` prop)
-        b.create_node(12, ComponentKind::TextInput, None);
-        b.set_layout(
-            12,
-            &LayoutProps {
-                width: Dimension::Points(260.0),
-                height: Dimension::Points(36.0),
-                padding: EdgeInsets::symmetric(0.0, 10.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            12,
-            &StyleProps {
-                background: ColorRgba::rgb(30, 41, 59),
-                text_color: ColorRgba::rgb(241, 245, 249),
-                font_size: 14.0,
-                ..Default::default()
-            },
-        );
-
-        b.set_children(2, &[10, 11, 12]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+        tx.set_str(StoreNodeId(10), TextInput::VALUE, &self.title_value);
+        tx.set_str(StoreNodeId(11), TextInput::VALUE, &self.password_value);
+        tx.commit_into(&mut self.changes);
+        self.frame_buf.clear();
+        self.encoder
+            .encode(&self.store, &self.changes, &mut self.frame_buf);
         &self.frame_buf
     }
 
@@ -261,8 +230,8 @@ fn format_keydown_shorthand_produces_compact_strings() {
 #[test]
 fn click_focus_and_blur_transitions_emit_events_and_update_focus_ring_pixels() {
     let mut session = new_text_session(false);
-    let r10 = session.backend().layout_of(10).unwrap();
-    let r11 = session.backend().layout_of(11).unwrap();
+    let r10 = session.layout_of(10).unwrap();
+    let r11 = session.layout_of(11).unwrap();
 
     // Click node 10 -> Focus(10) and sky-blue focus ring painted.
     assert!(session
@@ -317,7 +286,7 @@ fn click_focus_and_blur_transitions_emit_events_and_update_focus_ring_pixels() {
 #[test]
 fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_submit() {
     let mut session = new_text_session(false);
-    let r10 = session.backend().layout_of(10).unwrap();
+    let r10 = session.layout_of(10).unwrap();
     session
         .handle_click_logical(r10.x + 15.0, r10.y + 15.0)
         .unwrap();
@@ -361,7 +330,7 @@ fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_sub
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::Home), None, none)
         .unwrap());
-    assert_eq!(session.backend().caret_byte_index(), 0);
+    assert_eq!(session.backend().focus_state().caret_byte_index, 0);
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::Delete), None, none)
         .unwrap());
@@ -371,7 +340,7 @@ fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_sub
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::ArrowRight), None, none)
         .unwrap());
-    assert_eq!(session.backend().caret_char_index(), 1);
+    assert_eq!(session.backend().focus_state().caret_byte_index, 1);
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::End), None, none)
         .unwrap());
@@ -384,11 +353,11 @@ fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_sub
     assert!(session
         .handle_keyboard_input(&Key::Character("a".into()), None, cmd)
         .unwrap());
-    assert_eq!(session.backend().selection_range(), Some((0, "afe 🚀!".len())));
+    assert_eq!(session.backend().focus_state().selection_range(), Some((0, "afe 🚀!".len())));
     assert!(session
         .handle_keyboard_input(&Key::Character("done".into()), Some("done"), none)
         .unwrap());
-    assert_eq!(session.backend().selection_range(), None);
+    assert_eq!(session.backend().focus_state().selection_range(), None);
     assert_eq!(session.app().title_value, "done");
 
     // Enter emits typed Submit on the focused TextInput node.
@@ -401,7 +370,7 @@ fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_sub
 #[test]
 fn cjk_ime_preedit_commit_and_escape_behavior() {
     let mut session = new_text_session(true);
-    let r10 = session.backend().layout_of(10).unwrap();
+    let r10 = session.layout_of(10).unwrap();
     session
         .handle_click_logical(r10.x + 15.0, r10.y + 15.0)
         .unwrap();
@@ -417,14 +386,14 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
     assert!(session
         .handle_ime(&Ime::Preedit("にほん".to_string(), Some((0, "にほん".len()))))
         .unwrap());
-    assert_eq!(session.backend().ime_preedit(), Some("にほん"));
+    assert_eq!(session.backend().focus_state().ime_preedit.as_deref(), Some("にほん"));
     assert_eq!(session.app().text_changes.len(), changes_before);
 
     // Pressing Escape while IME preedit is active cancels preedit without blurring.
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::Escape), None, none)
         .unwrap());
-    assert_eq!(session.backend().ime_preedit(), None);
+    assert_eq!(session.backend().focus_state().ime_preedit.as_deref(), None);
     assert_eq!(session.focused_node(), Some(10));
 
     // Re-enter IME composition and Commit CJK text -> emits TextChange and clears preedit.
@@ -434,9 +403,9 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
     assert!(session
         .handle_ime(&Ime::Commit("漢字".to_string()))
         .unwrap());
-    assert_eq!(session.backend().ime_preedit(), None);
+    assert_eq!(session.backend().focus_state().ime_preedit.as_deref(), None);
     assert_eq!(session.app().title_value, "NVE 漢字");
-    assert_eq!(session.backend().caret_byte_index(), "NVE 漢字".len());
+    assert_eq!(session.backend().focus_state().caret_byte_index, "NVE 漢字".len());
 
     // Cmd+K while focused forwards binary keydown shortcut instead of typing 'k'.
     assert!(session
@@ -460,7 +429,7 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
 #[test]
 fn uncontrolled_text_input_updates_value_and_caret_locally() {
     let mut session = new_text_session(false);
-    let r12 = session.backend().layout_of(12).unwrap();
+    let r12 = session.layout_of(12).unwrap();
     session
         .handle_click_logical(r12.x + 15.0, r12.y + 15.0)
         .unwrap();
@@ -470,14 +439,14 @@ fn uncontrolled_text_input_updates_value_and_caret_locally() {
     assert!(session
         .handle_keyboard_input(&Key::Character("hi".into()), Some("hi"), none)
         .unwrap());
-    assert_eq!(session.backend().text_input_value(12).as_deref(), Some("hi"));
-    assert_eq!(session.backend().caret_byte_index(), 2);
+    assert_eq!(session.backend().text_input_value(session.store(), StoreNodeId(12)).as_deref(), Some("hi"));
+    assert_eq!(session.backend().focus_state().caret_byte_index, 2);
 
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::Backspace), None, none)
         .unwrap());
-    assert_eq!(session.backend().text_input_value(12).as_deref(), Some("h"));
-    assert_eq!(session.backend().caret_byte_index(), 1);
+    assert_eq!(session.backend().text_input_value(session.store(), StoreNodeId(12)).as_deref(), Some("h"));
+    assert_eq!(session.backend().focus_state().caret_byte_index, 1);
 }
 
 
@@ -488,7 +457,7 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     assert_eq!(word_bounds_at("hello world_42!", 15), (14, 15));
 
     let mut session = new_text_session(false);
-    let r10 = session.backend().layout_of(10).unwrap();
+    let r10 = session.layout_of(10).unwrap();
     let mid_y = r10.y + r10.height * 0.5;
     let none = ModifiersState::empty();
     let shift = ModifiersState::SHIFT;
@@ -508,7 +477,7 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
             .handle_keyboard_input(&Key::Named(NamedKey::ArrowLeft), None, shift)
             .unwrap());
     }
-    assert_eq!(session.backend().selected_text().as_deref(), Some("world"));
+    assert_eq!(session.selected_text().as_deref(), Some("world"));
     assert!(session
         .handle_keyboard_input(&Key::Character("c".into()), None, cmd)
         .unwrap());
@@ -522,13 +491,13 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     session
         .handle_keyboard_input(&Key::Named(NamedKey::Home), None, none)
         .unwrap();
-    assert_eq!(session.backend().selection_range(), None);
+    assert_eq!(session.backend().focus_state().selection_range(), None);
     for _ in 0..5 {
         session
             .handle_keyboard_input(&Key::Named(NamedKey::ArrowRight), None, shift)
             .unwrap();
     }
-    assert_eq!(session.backend().selected_text().as_deref(), Some("hello"));
+    assert_eq!(session.selected_text().as_deref(), Some("hello"));
     assert!(session
         .handle_keyboard_input(&Key::Character("x".into()), None, cmd)
         .unwrap());
@@ -554,19 +523,20 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     session
         .handle_keyboard_input(&Key::Named(NamedKey::Home), None, shift)
         .unwrap();
-    assert_eq!(session.backend().selection_range(), Some((0, " world hello".len())));
+    assert_eq!(session.backend().focus_state().selection_range(), Some((0, " world hello".len())));
     session
         .handle_keyboard_input(&Key::Named(NamedKey::ArrowRight), None, none)
         .unwrap();
-    assert_eq!(session.backend().selection_range(), None);
-    assert_eq!(session.backend().caret_byte_index(), " world hello".len());
+    assert_eq!(session.backend().focus_state().selection_range(), None);
+    assert_eq!(session.backend().focus_state().caret_byte_index, " world hello".len());
 
     // Mouse press near start + drag to far right forms a non-empty range selection.
     session.handle_click_logical(r10.x + 10.0, mid_y).unwrap();
-    assert_eq!(session.backend().caret_byte_index(), 0);
+    assert_eq!(session.backend().focus_state().caret_byte_index, 0);
     assert!(session.handle_pointer_move_logical(r10.x + 220.0, mid_y).unwrap());
     let drag_range = session
         .backend()
+        .focus_state()
         .selection_range()
         .expect("drag should create non-empty range selection");
     assert_eq!(drag_range.0, 0);
@@ -575,7 +545,7 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
 
     // Subsequent pointer move after mouse up does NOT change selection.
     assert!(!session.handle_pointer_move_logical(r10.x + 12.0, mid_y).unwrap());
-    assert_eq!(session.backend().selection_range(), Some(drag_range));
+    assert_eq!(session.backend().focus_state().selection_range(), Some(drag_range));
 
     // Double-click over "world" selects the whole word "world".
     let word_x = r10.x + 28.0;
@@ -583,10 +553,10 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     session.handle_pointer_up_logical();
     session.handle_click_logical(word_x, mid_y).unwrap();
     session.handle_pointer_up_logical();
-    assert_eq!(session.backend().selected_text().as_deref(), Some("world"));
+    assert_eq!(session.selected_text().as_deref(), Some("world"));
 
     // Secure input (node 11) must refuse Cmd+C so password plaintext never leaks to clipboard.
-    let r11 = session.backend().layout_of(11).unwrap();
+    let r11 = session.layout_of(11).unwrap();
     session
         .handle_click_logical(r11.x + 15.0, r11.y + 15.0)
         .unwrap();

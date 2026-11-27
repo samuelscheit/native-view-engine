@@ -1,22 +1,24 @@
-//! Retained `DisplayList` compilation, culling, `box-shadow` emission, `ScrollView` overlay
-//! scrollbars, inherited text weight/alignment propagation, and zero-allocation z-index sorting
-//! for [`crate::SkiaBackend`].
+//! Retained `DisplayList` compilation directly from `NodeStore` word tables:
+//! culling, `box-shadow` & gradient emission, `Scroll` overlay scrollbars, `Image`, `TextInput`,
+//! inherited typography propagation, zero-allocation z-index sorting, and uniform
+//! `SkiaTableRegistry` plugin dispatch (`PaintOp::Plugin`).
 
 use std::collections::HashMap;
 
-use nve_abi::{ColorRgba, ComponentKind, NodeId, RawPropValue, StyleProps};
-use nve_backend_headless::{HeadlessBackend, HeadlessNode};
-use nve_components::canvas_ir::{DrawList, DrawListDecoder, ImageResizeMode};
-use nve_components::paint::BackgroundFill;
-use nve_components::parse_color;
-use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign};
-use nve_engine::{LayoutEngine, LayoutRect};
+use nve_abi::{ColorRgba, NodeId};
+use nve_backend_headless::HeadlessBackend;
+use nve_components::style_patch::Display;
+use nve_components::tables::{
+    BackgroundFillRes, BoxShadows, Display as NveDisplay, Image, ImageSrc, Layout, Overflow,
+    Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
+};
+use nve_engine::{LayoutRect, StoreLayoutEngine};
+use nve_store::{NodeId as StoreNodeId, NodeStore, Rgba};
 
-use crate::image_cache::ImageCache;
 use crate::motion::MotionDriver;
-use crate::raster::parse_box_shadow;
 use crate::scroll::compute_scroll_content_size;
-use crate::text::{parse_font_weight, CosmicTextEngine, TextAlign, DEFAULT_FONT_WEIGHT};
+use crate::table_system::SkiaTableRegistry;
+use crate::text::{CosmicTextEngine, TextAlign};
 use crate::text_input::emit_text_input_ops;
 use crate::{PaintOp, TextFocusState, SCROLLBAR_THUMB_COLOR};
 
@@ -36,12 +38,7 @@ pub(crate) fn offset_rect(rect: LayoutRect, offset: (f32, f32)) -> LayoutRect {
 
 #[inline]
 pub(crate) fn point_in_rect(x: f32, y: f32, r: LayoutRect) -> bool {
-    r.width > 0.0
-        && r.height > 0.0
-        && x >= r.x
-        && x <= r.x + r.width
-        && y >= r.y
-        && y <= r.y + r.height
+    r.width > 0.0 && r.height > 0.0 && x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
 }
 
 #[inline]
@@ -63,154 +60,39 @@ pub(crate) fn intersect_rects(a: LayoutRect, b: LayoutRect) -> Option<LayoutRect
 }
 
 #[inline]
-pub(crate) fn intersects_clip(clip: LayoutRect, rect: LayoutRect, outset: f32) -> bool {
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return false;
-    }
-    let x0 = rect.x - outset;
-    let y0 = rect.y - outset;
-    let x1 = rect.x + rect.width + outset;
-    let y1 = rect.y + rect.height + outset;
-    x1 > clip.x && y1 > clip.y && x0 < clip.x + clip.width && y0 < clip.y + clip.height
+pub(crate) fn intersects_clip(clip: LayoutRect, r: LayoutRect, pad: f32) -> bool {
+    let x0 = r.x - pad;
+    let y0 = r.y - pad;
+    let x1 = r.x + r.width + pad;
+    let y1 = r.y + r.height + pad;
+    x1 > clip.x && x0 < clip.x + clip.width && y1 > clip.y && y0 < clip.y + clip.height
 }
 
-pub(crate) fn parse_px_raw_prop(val: Option<&RawPropValue>) -> Option<f32> {
-    match val? {
-        RawPropValue::F64(v) if v.is_finite() => Some(*v as f32),
-        RawPropValue::I64(v) => Some(*v as f32),
-        RawPropValue::String(s) => {
-            let trimmed = s.trim().trim_end_matches("px").trim();
-            let v = trimmed.parse::<f32>().ok()?;
-            v.is_finite().then_some(v)
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn extract_font_weight(node: &HeadlessNode) -> Option<u16> {
-    let raw = node
-        .raw_props
-        .get("font-weight")
-        .or_else(|| node.raw_props.get("fontWeight"))?;
-    match raw {
-        RawPropValue::I64(n) => Some((*n).clamp(100, 900) as u16),
-        RawPropValue::F64(n) if n.is_finite() => Some((n.round() as i64).clamp(100, 900) as u16),
-        RawPropValue::String(s) => parse_font_weight(s),
-        _ => None,
-    }
-}
-
-pub(crate) fn extract_text_align(node: &HeadlessNode) -> Option<TextAlign> {
-    let raw = node
-        .raw_props
-        .get("text-align")
-        .or_else(|| node.raw_props.get("textAlign"))?;
-    match raw {
-        RawPropValue::String(s) => TextAlign::parse(s),
-        _ => None,
-    }
-}
-
-pub(crate) fn should_clip_children(node: &HeadlessNode) -> bool {
-    if node.kind == ComponentKind::ScrollView {
+#[inline]
+pub(crate) fn should_clip_children(store: &NodeStore, id: StoreNodeId) -> bool {
+    if store.has::<Scroll>(id) {
         return true;
     }
-    if let Some(RawPropValue::String(ov)) = node.raw_props.get("overflow") {
-        let lower = ov.trim().to_ascii_lowercase();
-        if matches!(lower.as_str(), "hidden" | "clip" | "scroll" | "auto") {
-            return true;
-        }
-    }
-    if let Some(RawPropValue::Bool(true)) = node.raw_props.get("clip") {
-        return true;
-    }
-    false
+    store.try_row::<Visual>(id).is_some_and(|v| {
+        matches!(
+            v.overflow_x(),
+            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+        ) || matches!(
+            v.overflow_y(),
+            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+        )
+    })
 }
 
-fn extract_image_src(node: &HeadlessNode) -> Option<String> {
-    let raw = node.raw_props.get("src")?;
-    match raw {
-        RawPropValue::String(s) if !s.is_empty() => Some(s.clone()),
-        RawPropValue::Bytes(bytes) if !bytes.is_empty() => {
-            ImageCache::shared().register_png_bytes(bytes).ok()
-        }
-        _ => None,
-    }
-}
-
-fn extract_image_resize_mode(node: &HeadlessNode) -> ImageResizeMode {
-    let raw = node
-        .raw_props
-        .get("resizeMode")
-        .or_else(|| node.raw_props.get("resize_mode"));
-    match raw {
-        Some(RawPropValue::String(s)) => ImageResizeMode::parse(s).unwrap_or_default(),
-        Some(RawPropValue::I64(n)) => ImageResizeMode::from_u8(*n as u8).unwrap_or_default(),
-        _ => ImageResizeMode::default(),
-    }
-}
-
-fn extract_canvas_ops(node: &HeadlessNode) -> DrawList {
-    // Fast path: O(1) Arc clone with ZERO base64 and ZERO NVE_DRAW1 binary decoding.
-    if let Some(ref dl) = node.draw_list {
-        return dl.clone();
-    }
-    let Some(raw) = node
-        .raw_props
-        .get("drawList")
-        .or_else(|| node.raw_props.get("draw_list"))
-    else {
-        return DrawList::empty();
-    };
-    DrawListDecoder::decode_raw_prop(raw)
-        .map(DrawList::from_ops)
-        .unwrap_or_default()
-}
-
-fn emit_box_shadows(
-    node: &HeadlessNode,
-    border_radius: f32,
-    rect: LayoutRect,
-    clip_bounds: LayoutRect,
-    ops: &mut Vec<PaintOp>,
-) {
-    let Some(RawPropValue::String(raw_shadow)) = node
-        .raw_props
-        .get("box-shadow")
-        .or_else(|| node.raw_props.get("boxShadow"))
-    else {
-        return;
-    };
-    let radius = border_radius.max(0.0);
-    for sh in parse_box_shadow(raw_shadow) {
-        let shadow_bounds = LayoutRect {
-            x: rect.x + sh.offset_x - sh.spread_radius,
-            y: rect.y + sh.offset_y - sh.spread_radius,
-            width: rect.width + sh.spread_radius * 2.0,
-            height: rect.height + sh.spread_radius * 2.0,
-        };
-        if intersects_clip(clip_bounds, shadow_bounds, sh.blur_radius * 1.5 + 1.0) {
-            ops.push(PaintOp::DrawShadow {
-                rect,
-                radius,
-                offset_x: sh.offset_x,
-                offset_y: sh.offset_y,
-                blur_radius: sh.blur_radius,
-                spread_radius: sh.spread_radius,
-                color: sh.color,
-            });
-        }
-    }
-}
-
-fn emit_scrollview_scrollbars<L: LayoutEngine>(
+fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
+    store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
     scroll_offsets: &HashMap<NodeId, (f32, f32)>,
-    id: NodeId,
+    id: StoreNodeId,
     rect: LayoutRect,
     ops: &mut Vec<PaintOp>,
 ) {
-    let Some((cw, ch)) = compute_scroll_content_size(layout_tree, id) else {
+    let Some((cw, ch)) = compute_scroll_content_size(store, layout_tree, id) else {
         return;
     };
     let has_v = ch > rect.height + 0.5;
@@ -218,7 +100,7 @@ fn emit_scrollview_scrollbars<L: LayoutEngine>(
     if !has_v && !has_h {
         return;
     }
-    let (sx, sy) = scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
+    let (sx, sy) = scroll_offsets.get(&id.raw()).copied().unwrap_or((0.0, 0.0));
     let corner_gap = if has_v && has_h {
         SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
     } else {
@@ -230,7 +112,8 @@ fn emit_scrollview_scrollbars<L: LayoutEngine>(
         && rect.width > SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN * 2.0
     {
         let track_h = (rect.height - SCROLLBAR_MARGIN * 2.0 - corner_gap).max(1.0);
-        let thumb_h = ((rect.height / ch) * track_h).clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
+        let thumb_h =
+            ((rect.height / ch) * track_h).clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
         let max_sy = (ch - rect.height).max(1.0);
         let ratio_y = (sy / max_sy).clamp(0.0, 1.0);
         let thumb_y = rect.y + SCROLLBAR_MARGIN + ratio_y * (track_h - thumb_h);
@@ -252,7 +135,8 @@ fn emit_scrollview_scrollbars<L: LayoutEngine>(
         && rect.height > SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN * 2.0
     {
         let track_w = (rect.width - SCROLLBAR_MARGIN * 2.0 - corner_gap).max(1.0);
-        let thumb_w = ((rect.width / cw) * track_w).clamp(SCROLLBAR_MIN_THUMB.min(track_w), track_w);
+        let thumb_w =
+            ((rect.width / cw) * track_w).clamp(SCROLLBAR_MIN_THUMB.min(track_w), track_w);
         let max_sx = (cw - rect.width).max(1.0);
         let ratio_x = (sx / max_sx).clamp(0.0, 1.0);
         let thumb_x = rect.x + SCROLLBAR_MARGIN + ratio_x * (track_w - thumb_w);
@@ -270,7 +154,6 @@ fn emit_scrollview_scrollbars<L: LayoutEngine>(
     }
 }
 
-/// Inherited text formatting propagated from parent `ComponentKind::Text` containers to leaves.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct InheritedTextStyle {
     pub(crate) font_weight: Option<u16>,
@@ -280,300 +163,315 @@ pub(crate) struct InheritedTextStyle {
 }
 
 #[inline]
-fn map_patch_text_align(align: PatchTextAlign) -> TextAlign {
+fn map_text_align(align: NveTextAlign) -> TextAlign {
     match align {
-        PatchTextAlign::Left | PatchTextAlign::Justify => TextAlign::Left,
-        PatchTextAlign::Center => TextAlign::Center,
-        PatchTextAlign::Right => TextAlign::Right,
+        NveTextAlign::Start | NveTextAlign::Left | NveTextAlign::Justify => TextAlign::Left,
+        NveTextAlign::Center => TextAlign::Center,
+        NveTextAlign::End | NveTextAlign::Right => TextAlign::Right,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_node_into<L: LayoutEngine>(
+pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
+    store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
     scroll_offsets: &HashMap<NodeId, (f32, f32)>,
     focus: &TextFocusState,
     motion: &MotionDriver,
+    table_registry: &SkiaTableRegistry,
     text_engine: &CosmicTextEngine,
     clip_bounds: LayoutRect,
     offset: (f32, f32),
     in_transform: bool,
+    inherited_hidden: bool,
     inherited_text: InheritedTextStyle,
-    sort_scratch: &mut Vec<NodeId>,
+    sort_scratch: &mut Vec<StoreNodeId>,
     ops: &mut Vec<PaintOp>,
-    id: NodeId,
+    id: StoreNodeId,
 ) {
-    let Some(node) = layout_tree.node(id) else {
+    if !store.is_live(id) {
         return;
-    };
-
-    let patch = layout_tree.effective_patch(id);
+    }
+    let patch = layout_tree.effective_patch(store, id);
     if patch.display == Some(Display::None)
         || (patch.display.is_none()
-            && node
-                .layout_ext
-                .as_deref()
-                .is_some_and(|e| e.display == Display::None))
+            && store
+                .try_row::<Layout>(id)
+                .is_some_and(|l| l.display() == NveDisplay::None))
     {
         return;
     }
+    let effective_hidden = store
+        .try_row::<Visual>(id)
+        .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
 
-    let mut style = node.style;
-    if !patch.is_empty() {
-        patch.apply_style_to(&mut style);
-    }
-    motion.apply_animated_style(id, &mut style);
-    if node.kind == ComponentKind::Text && !node.has_explicit_style {
-        if patch.text_color.is_none()
-            && let Some(c) = inherited_text.text_color
-        {
-            style.text_color = c;
-        }
-        if patch.font_size.is_none()
-            && let Some(fs) = inherited_text.font_size
-        {
-            style.font_size = fs;
-        }
-    }
+    let Some(base_rect) = layout_tree.layout_of(id.raw()) else {
+        return;
+    };
+    let (stx, sty) = layout_tree.compute_sticky_delta(store, id);
+    let node_offset = (offset.0 + stx, offset.1 + sty);
+    let rect = offset_rect(base_rect, node_offset);
 
-    let opacity = style.opacity.clamp(0.0, 1.0);
-    if opacity <= 0.001 {
+    let mut style = layout_tree.effective_visual(store, id);
+    motion.apply_animated_style(id.raw(), &mut style);
+    if style.opacity <= 0.001 {
         return;
     }
 
-    let (stx, sty) = layout_tree.compute_sticky_delta(id, scroll_offsets);
-    let node_offset = (offset.0 + stx, offset.1 + sty);
-    let rect = offset_rect(node.computed_rect, node_offset);
+    let effective_tf = motion.resolve_animated_transform(
+        id.raw(),
+        layout_tree.effective_transform(store, id),
+    );
+    let has_tf = effective_tf.is_some_and(|t| !t.is_identity());
+    let any_tf = in_transform || has_tf;
 
-    let effective_tf = motion.resolve_animated_transform(id, patch.transform.or(node.transform));
-    let pushed_transform = effective_tf.is_some_and(|tf| !tf.is_identity());
-    let transform_op_idx = ops.len();
+    let opacity_op_idx = ops.len();
+    let pushed_opacity = style.opacity < 0.999;
+    if pushed_opacity {
+        ops.push(PaintOp::SaveOpacity(style.opacity));
+    }
+
+    let tf_op_idx = ops.len();
     if let Some(tf) = effective_tf
-        && pushed_transform
+        && has_tf
     {
         ops.push(PaintOp::PushTransform {
             matrix: tf.to_surface_matrix_2d(rect.x, rect.y, rect.width, rect.height),
         });
     }
-    let node_in_transform = in_transform || pushed_transform;
 
-    let pushed_opacity = opacity < 0.999;
-    let opacity_op_idx = ops.len();
-    if pushed_opacity {
-        ops.push(PaintOp::SaveOpacity(opacity));
-    }
-
-    let in_clip = node_in_transform || intersects_clip(clip_bounds, rect, 0.0);
     let radius = style.border_radius.max(0.0);
+    let in_clip = any_tf || intersects_clip(clip_bounds, rect, 1.0);
 
-    // Emit outer box-shadows before background fill so shadows render behind the box.
-    emit_box_shadows(node, radius, rect, clip_bounds, ops);
-
-    if in_clip {
-        match patch.background_fill.as_ref().or(node.background_fill.as_ref()) {
-            Some(fill @ (BackgroundFill::Linear(_) | BackgroundFill::Radial(_))) => {
-                ops.push(PaintOp::FillRoundedRectGradient {
-                    rect,
-                    radius,
-                    gradient: fill.clone(),
-                });
-            }
-            Some(BackgroundFill::Solid(c)) => {
-                if c.a > 0 {
-                    ops.push(PaintOp::FillRoundedRect {
+    // 1. Box shadows
+    if !effective_hidden && let Some(v) = store.try_row::<Visual>(id) {
+        let shadow_res = v.box_shadows();
+        if !shadow_res.is_none()
+            && let Some(shadows) = store.resource::<BoxShadows>(shadow_res)
+        {
+            for sh in shadows.0.iter() {
+                let shadow_bounds = LayoutRect {
+                    x: rect.x + sh.offset_x - sh.spread_radius,
+                    y: rect.y + sh.offset_y - sh.spread_radius,
+                    width: rect.width + sh.spread_radius * 2.0,
+                    height: rect.height + sh.spread_radius * 2.0,
+                };
+                if any_tf || intersects_clip(clip_bounds, shadow_bounds, sh.blur_radius * 1.5 + 1.0)
+                {
+                    ops.push(PaintOp::DrawShadow {
                         rect,
                         radius,
-                        color: *c,
+                        offset_x: sh.offset_x,
+                        offset_y: sh.offset_y,
+                        blur_radius: sh.blur_radius,
+                        spread_radius: sh.spread_radius,
+                        color: ColorRgba::from_u32(sh.color.0),
                     });
                 }
             }
-            None if style.background.a > 0 => {
-                ops.push(PaintOp::FillRoundedRect {
+        }
+    }
+
+    // 2. Background gradient or solid fill
+    if !effective_hidden && in_clip {
+        let mut painted_gradient = false;
+        if let Some(v) = store.try_row::<Visual>(id) {
+            let fill_res = v.background_fill();
+            if !fill_res.is_none()
+                && let Some(fill) = store.resource::<BackgroundFillRes>(fill_res)
+            {
+                ops.push(PaintOp::FillRoundedRectGradient {
                     rect,
                     radius,
-                    color: style.background,
+                    gradient: fill.0.clone(),
                 });
+                painted_gradient = true;
             }
-            None => {}
         }
-    }
-    if style.border_width > 0.0
-        && style.border_color.a > 0
-        && (node_in_transform || intersects_clip(clip_bounds, rect, style.border_width * 0.5))
-    {
-        ops.push(PaintOp::StrokeRoundedRect {
-            rect,
-            radius,
-            width: style.border_width,
-            color: style.border_color,
-        });
-    }
-
-    let own_weight = patch.font_weight.or_else(|| extract_font_weight(node));
-    let own_align = patch
-        .text_align
-        .map(map_patch_text_align)
-        .or_else(|| extract_text_align(node));
-    let effective_weight = own_weight
-        .or(inherited_text.font_weight)
-        .unwrap_or(DEFAULT_FONT_WEIGHT);
-    let effective_align = own_align.or(inherited_text.text_align).unwrap_or_default();
-
-    if in_clip {
-        if node.kind == ComponentKind::Image
-            && let Some(src) = extract_image_src(node)
-        {
-            ops.push(PaintOp::DrawImage {
+        if !painted_gradient && style.background.a > 0 {
+            ops.push(PaintOp::FillRoundedRect {
                 rect,
                 radius,
-                src,
-                resize_mode: extract_image_resize_mode(node),
+                color: style.background,
             });
         }
-        if node.kind == ComponentKind::TextInput {
-            emit_text_input_ops(
-                node,
-                &style,
-                effective_weight,
-                effective_align,
+
+        // 3. Border stroke
+        if style.border_width > 0.0 && style.border_color.a > 0 {
+            ops.push(PaintOp::StrokeRoundedRect {
                 rect,
+                radius,
+                width: style.border_width,
+                color: style.border_color,
+            });
+        }
+    }
+
+    // 4. Typography resolution (inheriting from parent; state/responsive/motion overrides win)
+    let typo = store.try_row::<Typography>(id);
+    let effective_weight = typo
+        .filter(|t| t.set() & Typography::SET_FONT_WEIGHT != 0 || t.font_weight() != 400)
+        .map(|t| t.font_weight())
+        .or(inherited_text.font_weight)
+        .unwrap_or(400);
+    let effective_align = typo
+        .filter(|t| t.text_align() != NveTextAlign::Start)
+        .map(|t| map_text_align(t.text_align()))
+        .or(inherited_text.text_align)
+        .unwrap_or_default();
+    let effective_color = if patch.text_color.is_some() || motion.has_active_color(id.raw()) {
+        style.text_color
+    } else {
+        typo.filter(|t| t.set() & Typography::SET_COLOR != 0 || t.color() != Rgba::BLACK)
+            .map(|t| ColorRgba::from_u32(t.color().0))
+            .or(inherited_text.text_color)
+            .unwrap_or(style.text_color)
+    };
+    let effective_font_size = if patch.font_size.is_some() {
+        style.font_size
+    } else {
+        typo.filter(|t| {
+            t.set() & Typography::SET_FONT_SIZE != 0 || (t.font_size() - 16.0).abs() > 1e-4
+        })
+        .map(|t| t.font_size())
+        .or(inherited_text.font_size)
+        .unwrap_or(style.font_size)
+    };
+
+    // 5. Leaf & specialized core tables: Image, TextInput, TextContent, and registered SkiaTableSystems
+    if !effective_hidden && in_clip {
+        if let Some(img) = store.try_row::<Image>(id) {
+            let src_res = img.src();
+            if !src_res.is_none()
+                && let Some(ImageSrc::Url(url)) = store.resource::<ImageSrc>(src_res)
+                && !url.is_empty()
+            {
+                ops.push(PaintOp::DrawImage {
+                    rect,
+                    radius,
+                    src: url.clone(),
+                    fit: img.fit(),
+                });
+            }
+        }
+
+        if store.has::<TextInput>(id) {
+            emit_text_input_ops(
+                store,
+                id,
+                rect,
+                radius,
+                effective_color,
+                effective_font_size,
+                effective_weight,
                 focus,
                 text_engine,
                 ops,
             );
-        } else if let Some(text) = node.text.as_deref()
-            && !text.is_empty()
-            && style.font_size > 0.0
-            && style.text_color.a > 0
+        } else if let Some(tc) = store.try_row::<TextContent>(id) {
+            let text = tc.text();
+            if !text.is_empty() && effective_font_size > 0.0 && effective_color.a > 0 {
+                ops.push(PaintOp::DrawText {
+                    rect,
+                    text: text.to_owned(),
+                    font_size: effective_font_size,
+                    font_weight: effective_weight,
+                    text_align: effective_align,
+                    color: effective_color,
+                });
+            }
+        }
+
+        // Uniform plugin dispatch (`nve-svg-skia`, `nve-canvas-skia`, 3P crates).
+        if table_registry
+            .iter()
+            .iter()
+            .any(|sys| store.has_slot(id, sys.slot()))
         {
-            ops.push(PaintOp::DrawText {
-                rect,
-                text: text.to_owned(),
-                font_size: style.font_size,
-                font_weight: effective_weight,
-                text_align: effective_align,
-                color: style.text_color,
-            });
-        }
-        if let Some(ref picture) = node.svg {
-            let tint = match node.raw_props.get("tint") {
-                Some(RawPropValue::String(raw)) => parse_color(raw),
-                _ if style.text_color != StyleProps::default().text_color
-                    && style.text_color.a > 0 =>
-                {
-                    Some(style.text_color)
-                }
-                _ => None,
-            };
-            ops.push(PaintOp::DrawSvg {
-                rect,
-                picture: picture.clone(),
-                tint,
-            });
-        }
-        if node.kind == ComponentKind::SkiaCanvas {
-            let canvas_ops = extract_canvas_ops(node);
-            ops.push(PaintOp::CustomSkiaCanvas {
+            ops.push(PaintOp::Plugin {
                 node_id: id,
                 rect,
-                ops: canvas_ops,
+                inherited_text_color: Rgba(effective_color.to_u32()),
             });
         }
     }
 
-    let child_inherited = if node.kind == ComponentKind::Text {
-        InheritedTextStyle {
-            font_weight: own_weight.or(inherited_text.font_weight),
-            text_align: own_align.or(inherited_text.text_align),
-            text_color: patch.text_color.or(inherited_text.text_color),
-            font_size: patch.font_size.or(inherited_text.font_size),
-        }
-    } else {
-        InheritedTextStyle::default()
-    };
-
-    let children = &node.children;
+    // 6. Children (with clip, scroll shift, and z-index sorting)
+    let children = store.children(id);
     if !children.is_empty() {
-        let clips = match patch.overflow {
-            Some(Overflow::Visible) => node.kind == ComponentKind::ScrollView,
-            Some(Overflow::Hidden | Overflow::Scroll | Overflow::Auto) => true,
-            None => should_clip_children(node),
-        };
-        let next_clip = if clips {
+        let clips = should_clip_children(store, id);
+        let next_clip = if clips && !any_tf {
             intersect_rects(clip_bounds, rect)
         } else {
             Some(clip_bounds)
         };
-
         if let Some(child_clip) = next_clip {
             let clip_op_idx = ops.len();
             if clips {
                 ops.push(PaintOp::PushClip { rect, radius });
             }
 
-            let child_offset = if node.kind == ComponentKind::ScrollView {
-                let (sx, sy) = scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
-                let visual_sy = if let Some(top_spacer) =
-                    parse_px_raw_prop(node.raw_props.get("virtual-top-spacer"))
-                {
-                    (sy - top_spacer).max(0.0)
-                } else {
-                    sy
-                };
-                (node_offset.0 - sx, node_offset.1 - visual_sy)
-            } else {
-                node_offset
+            let (sx, sy) = scroll_shift_for(store, scroll_offsets, id);
+            let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
+            let child_inherited = InheritedTextStyle {
+                font_weight: Some(effective_weight),
+                text_align: Some(effective_align),
+                text_color: Some(effective_color),
+                font_size: Some(effective_font_size),
             };
 
             let has_z_order = children.len() > 1
                 && children
                     .iter()
-                    .any(|&cid| layout_tree.node(cid).is_some_and(|c| c.style.z_index != 0));
+                    .any(|&cid| store.try_row::<Visual>(cid).is_some_and(|v| v.z_index() != 0));
             if has_z_order {
                 let start = sort_scratch.len();
                 sort_scratch.extend_from_slice(children);
-                sort_scratch[start..]
-                    .sort_by_key(|&cid| layout_tree.node(cid).map_or(0, |c| c.style.z_index));
+                sort_scratch[start..].sort_by_key(|&cid| {
+                    store.try_row::<Visual>(cid).map_or(0, |v| v.z_index())
+                });
                 let end = sort_scratch.len();
                 for i in start..end {
-                    let child = sort_scratch[i];
+                    let cid = sort_scratch[i];
                     emit_node_into(
+                        store,
                         layout_tree,
                         scroll_offsets,
                         focus,
                         motion,
+                        table_registry,
                         text_engine,
                         child_clip,
                         child_offset,
-                        node_in_transform,
+                        any_tf,
+                        effective_hidden,
                         child_inherited,
                         sort_scratch,
                         ops,
-                        child,
+                        cid,
                     );
                 }
                 sort_scratch.truncate(start);
             } else {
-                for &child in children {
+                for &cid in children {
                     emit_node_into(
+                        store,
                         layout_tree,
                         scroll_offsets,
                         focus,
                         motion,
+                        table_registry,
                         text_engine,
                         child_clip,
                         child_offset,
-                        node_in_transform,
+                        any_tf,
+                        effective_hidden,
                         child_inherited,
                         sort_scratch,
                         ops,
-                        child,
+                        cid,
                     );
                 }
-            }
-
-            if node.kind == ComponentKind::ScrollView && in_clip {
-                emit_scrollview_scrollbars(layout_tree, scroll_offsets, id, rect, ops);
             }
 
             if clips {
@@ -586,6 +484,18 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
         }
     }
 
+    // 7. Scrollbars for `Scroll` containers
+    if !effective_hidden && in_clip && store.has::<Scroll>(id) {
+        emit_scrollview_scrollbars(store, layout_tree, scroll_offsets, id, rect, ops);
+    }
+
+    if has_tf {
+        if ops.len() == tf_op_idx + 1 {
+            ops.pop();
+        } else {
+            ops.push(PaintOp::PopTransform);
+        }
+    }
     if pushed_opacity {
         if ops.len() == opacity_op_idx + 1 {
             ops.pop();
@@ -593,12 +503,22 @@ pub(crate) fn emit_node_into<L: LayoutEngine>(
             ops.push(PaintOp::Restore);
         }
     }
+}
 
-    if pushed_transform {
-        if ops.len() == transform_op_idx + 1 {
-            ops.pop();
-        } else {
-            ops.push(PaintOp::PopTransform);
-        }
+#[inline]
+pub(crate) fn scroll_shift_for(
+    store: &NodeStore,
+    scroll_offsets: &HashMap<NodeId, (f32, f32)>,
+    id: StoreNodeId,
+) -> (f32, f32) {
+    let Some(scroll) = store.try_row::<Scroll>(id) else {
+        return (0.0, 0.0);
+    };
+    let (sx, sy) = scroll_offsets.get(&id.raw()).copied().unwrap_or((0.0, 0.0));
+    let top_spacer = scroll.virtual_top_spacer();
+    if top_spacer.is_finite() && top_spacer > 0.0 {
+        (sx, (sy - top_spacer).max(0.0))
+    } else {
+        (sx, sy)
     }
 }

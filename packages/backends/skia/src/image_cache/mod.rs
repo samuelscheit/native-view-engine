@@ -19,7 +19,7 @@ mod tests;
 use std::fmt;
 
 use nve_abi::ColorRgba;
-use nve_components::canvas_ir::ImageResizeMode;
+use nve_components::tables::ImageFit;
 use nve_engine::LayoutRect;
 
 pub use data_uri::{decode_base64, decode_image_uri};
@@ -209,7 +209,7 @@ pub fn compute_image_placement(
     dst_rect: LayoutRect,
     img_w: u32,
     img_h: u32,
-    resize_mode: ImageResizeMode,
+    fit: ImageFit,
 ) -> Option<ImageDrawPlacement> {
     if dst_rect.width <= 0.0 || dst_rect.height <= 0.0 || img_w == 0 || img_h == 0 {
         return None;
@@ -219,8 +219,19 @@ pub fn compute_image_placement(
     let dw = dst_rect.width;
     let dh = dst_rect.height;
 
-    match resize_mode {
-        ImageResizeMode::Stretch => Some(ImageDrawPlacement {
+    let effective_fit = match fit {
+        ImageFit::ScaleDown => {
+            if iw > dw || ih > dh {
+                ImageFit::Contain
+            } else {
+                ImageFit::None
+            }
+        }
+        other => other,
+    };
+
+    match effective_fit {
+        ImageFit::Fill => Some(ImageDrawPlacement {
             src_x: 0.0,
             src_y: 0.0,
             src_w: iw,
@@ -230,7 +241,7 @@ pub fn compute_image_placement(
             dst_w: dw,
             dst_h: dh,
         }),
-        ImageResizeMode::Contain => {
+        ImageFit::Contain => {
             let scale = (dw / iw).min(dh / ih);
             let out_w = (iw * scale).max(0.0);
             let out_h = (ih * scale).max(0.0);
@@ -245,7 +256,7 @@ pub fn compute_image_placement(
                 dst_h: out_h,
             })
         }
-        ImageResizeMode::Cover => {
+        ImageFit::Cover => {
             let scale = (dw / iw).max(dh / ih);
             let src_w = (dw / scale).clamp(0.0, iw);
             let src_h = (dh / scale).clamp(0.0, ih);
@@ -260,7 +271,7 @@ pub fn compute_image_placement(
                 dst_h: dh,
             })
         }
-        ImageResizeMode::Center => {
+        ImageFit::None | ImageFit::ScaleDown => {
             let unclipped_x = dst_rect.x + (dw - iw) * 0.5;
             let unclipped_y = dst_rect.y + (dh - ih) * 0.5;
             let clip_x0 = unclipped_x.max(dst_rect.x);

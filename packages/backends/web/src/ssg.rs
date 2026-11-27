@@ -1,23 +1,9 @@
 //! Generic, app-agnostic Web SSG + 0ms Instant-Restore document builder & shell injector.
-//!
-//! Works with **any** `nve_engine::NveApp` and **any** `WebBackend` mount container (`#app`,
-//! `#nve-root`, etc.):
-//! - Build-time [`prerender_nve_app_frame0`] renders Frame 0 of any `NveApp` into a headless
-//!   [`WebBackend`].
-//! - [`WebBackend::render_ssg_app_document`] emits a standalone HTML5 document containing:
-//!   1. Build-time Frame-0 `<style data-nve-base>`, `<style data-nve-ssr data-nve-hashes="...">`,
-//!      and semantic HTML inside `#<mount_id>` so brand-new cold visitors paint at **0ms** while
-//!      WASM downloads.
-//!   2. Synchronous `<script data-nve-snapshot-boot>` (`< 900` B) right after `#<mount_id>` that
-//!      clears `localStorage` on `?reset=1` (keeping clean build-time SSG HTML) or swaps in a
-//!      returning user's last cached CSS+HTML from `localStorage` in `< 1ms` before first paint.
-//!   3. `<script data-nve-replay>` arming `window.__nveReplayDrain()` for BOTH cold visitors (SSG)
-//!      and returning users (cached snapshot).
-//! - [`inject_ssg_into_shell_html`] / [`inject_ssg_with_scripts_into_shell_html`] inject the exact
-//!   same build-time SSG + bootstrap scripts into any existing host `index.html` shell template.
 
 use nve_abi::{NveDirectEvent, NveEventBatchRef, ROOT_NODE_ID};
-use nve_engine::{BackendError, NveApp, RenderBackend, Viewport};
+use nve_components::tables::core_realization_order;
+use nve_engine::{BackendError, NveApp, StoreBackend, StoreWireReplica, Viewport};
+use nve_store::NodeStore;
 
 use crate::html::{push_attr_escaped, push_text_escaped};
 use crate::snapshot::snapshot_and_replay_script_tags;
@@ -30,7 +16,6 @@ pub struct WebSsgDocumentOptions {
     pub title: String,
     pub app_slug: String,
     pub schema_version: u32,
-    /// DOM element ID for the mount container (defaults to `"app"` when empty).
     pub mount_id: String,
     pub description: Option<String>,
     pub canonical_url: Option<String>,
@@ -40,9 +25,12 @@ pub struct WebSsgDocumentOptions {
     pub body_scripts: Option<String>,
 }
 
-/// Runs Frame 0 of **any** [`NveApp`] at `viewport` into a headless [`WebBackend`] ready for
-/// [`WebBackend::render_ssr`] or [`WebBackend::render_ssg_app_document`].
-pub fn prerender_nve_app_frame0<A: NveApp>(viewport: Viewport) -> Result<WebBackend, BackendError> {
+/// Runs Frame 0 of **any** [`NveApp`] (`NVE2`) at `viewport` into a `StoreWireReplica<WebBackend>`
+/// returning `(NodeStore, WebBackend)` ready for [`WebBackend::render_ssr`] or
+/// [`WebBackend::render_ssg_app_document`].
+pub fn prerender_nve_app_frame0<A: NveApp>(
+    viewport: Viewport,
+) -> Result<(NodeStore, WebBackend), BackendError> {
     let mut app = A::create(1);
     if viewport.width.is_finite()
         && viewport.height.is_finite()
@@ -63,19 +51,34 @@ pub fn prerender_nve_app_frame0<A: NveApp>(viewport: Viewport) -> Result<WebBack
     let frame_bytes = app.render(1).to_vec();
     let mut backend = WebBackend::new();
     backend.set_viewport(1, viewport);
-    backend.submit_frame(&frame_bytes)?;
-    Ok(backend)
+    let mut replica = StoreWireReplica::new(backend, core_realization_order());
+    if !frame_bytes.is_empty() {
+        replica.submit_nve2_frame(&frame_bytes)?;
+    }
+    // Extract store & backend cleanly by re-rendering SSR or returning owned replica pair:
+    let mut store = NodeStore::replica();
+    store.set_realization_order(core_realization_order());
+    let mut dec = nve_store::wire::WireDecoder::default();
+    let mut changes = nve_store::ChangeSet::default();
+    if !frame_bytes.is_empty() {
+        let mut tx = store.tx();
+        dec.apply(&mut tx, &frame_bytes)?;
+        tx.commit_into(&mut changes);
+    }
+    let mut out_backend = WebBackend::new();
+    out_backend.set_viewport(1, viewport);
+    out_backend.commit(&store, &changes)?;
+    Ok((store, out_backend))
 }
 
 impl WebBackend {
-    /// Emits a complete standalone HTML5 SSG document for **any** NVE web app with:
-    /// - Build-time Frame-0 `<style data-nve-base>` and `<style data-nve-ssr data-nve-hashes="...">`
-    /// - Build-time Frame-0 semantic HTML inside `<div id="{mount_id}">` (0ms paint for cold visitors)
-    /// - Inline `<script data-nve-snapshot-boot>` (`< 900` B) for returning-user 0ms state override
-    ///   and `?reset=1` cleanup
-    /// - Inline `<script data-nve-replay>` arming `window.__nveReplayDrain()` before `body_scripts`
-    pub fn render_ssg_app_document(&self, opts: &WebSsgDocumentOptions) -> String {
-        let ssr = self.render_ssr();
+    /// Emits a complete standalone HTML5 SSG document for **any** NVE web app.
+    pub fn render_ssg_app_document(
+        &self,
+        store: &NodeStore,
+        opts: &WebSsgDocumentOptions,
+    ) -> String {
+        let ssr = self.render_ssr(store);
         let lang = opts
             .lang
             .as_deref()
@@ -91,180 +94,138 @@ impl WebBackend {
         } else {
             opts.app_slug.trim()
         };
-        let schema_version = opts.schema_version.max(1);
-        let bootstrap = snapshot_and_replay_script_tags(mount_id, app_slug, schema_version);
-
-        let mut out = String::with_capacity(
-            ssr.base_css.len() + ssr.style_css.len() + ssr.html.len() + bootstrap.len() + 512,
-        );
-        out.push_str("<!doctype html>\n<html lang=\"");
-        push_attr_escaped(lang, &mut out);
-        out.push_str("\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>");
-        push_text_escaped(&opts.title, &mut out);
-        out.push_str("</title>\n");
-
-        if let Some(desc) = opts.description.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str("<meta name=\"description\" content=\"");
-            push_attr_escaped(desc, &mut out);
-            out.push_str("\">\n<meta property=\"og:description\" content=\"");
-            push_attr_escaped(desc, &mut out);
-            out.push_str("\">\n");
+        let mut doc = String::with_capacity(ssr.html.len() + ssr.style_css.len() + 2048);
+        doc.push_str("<!doctype html><html lang=\"");
+        push_attr_escaped(lang, &mut doc);
+        doc.push_str("\"><head><meta charset=\"utf-8\">");
+        doc.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+        doc.push_str("<title>");
+        push_text_escaped(&opts.title, &mut doc);
+        doc.push_str("</title>");
+        if let Some(ref desc) = opts.description {
+            doc.push_str("<meta name=\"description\" content=\"");
+            push_attr_escaped(desc, &mut doc);
+            doc.push_str("\">");
         }
-        if !opts.title.is_empty() {
-            out.push_str("<meta property=\"og:title\" content=\"");
-            push_attr_escaped(&opts.title, &mut out);
-            out.push_str("\">\n");
+        if let Some(ref canon) = opts.canonical_url {
+            doc.push_str("<link rel=\"canonical\" href=\"");
+            push_attr_escaped(canon, &mut doc);
+            doc.push_str("\">");
         }
-        if let Some(canonical) = opts.canonical_url.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str("<link rel=\"canonical\" href=\"");
-            push_attr_escaped(canonical, &mut out);
-            out.push_str("\">\n<meta property=\"og:url\" content=\"");
-            push_attr_escaped(canonical, &mut out);
-            out.push_str("\">\n");
+        if let Some(ref og) = opts.og_image {
+            doc.push_str("<meta property=\"og:image\" content=\"");
+            push_attr_escaped(og, &mut doc);
+            doc.push_str("\">");
         }
-        if let Some(og_img) = opts.og_image.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str("<meta property=\"og:image\" content=\"");
-            push_attr_escaped(og_img, &mut out);
-            out.push_str("\">\n");
-        }
-
-        out.push_str("<style data-nve-base>");
-        out.push_str(ssr.base_css);
-        out.push_str("</style>\n<style data-nve-ssr data-nve-hashes=\"");
-        for (idx, h) in ssr.rule_hashes.iter().enumerate() {
-            if idx > 0 {
-                out.push(',');
+        doc.push_str("<style data-nve-base>");
+        doc.push_str(ssr.base_css);
+        doc.push_str("</style>");
+        if !ssr.style_css.is_empty() {
+            doc.push_str("<style data-nve-ssr data-nve-hashes=\"");
+            for (i, h) in ssr.rule_hashes.iter().enumerate() {
+                if i > 0 {
+                    doc.push(',');
+                }
+                doc.push_str(h);
             }
-            out.push_str(h);
+            doc.push_str("\">");
+            doc.push_str(&ssr.style_css);
+            doc.push_str("</style>");
         }
-        out.push_str("\">");
-        out.push_str(&ssr.style_css);
-        out.push_str("</style>\n");
-
-        if let Some(extra) = opts.head_extra.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str(extra);
-            if !extra.ends_with('\n') {
-                out.push('\n');
-            }
+        if let Some(ref extra) = opts.head_extra {
+            doc.push_str(extra);
         }
-        out.push_str("</head>\n<body>\n<div id=\"");
-        push_attr_escaped(mount_id, &mut out);
-        out.push_str("\">");
-        out.push_str(&ssr.html);
-        out.push_str("</div>\n");
-        out.push_str(&bootstrap);
-        out.push('\n');
-        if let Some(scripts) = opts.body_scripts.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str(scripts);
-            if !scripts.ends_with('\n') {
-                out.push('\n');
-            }
+        doc.push_str("</head><body><div id=\"");
+        push_attr_escaped(mount_id, &mut doc);
+        doc.push_str("\">");
+        doc.push_str(&ssr.html);
+        doc.push_str("</div>");
+        doc.push_str(&snapshot_and_replay_script_tags(
+            app_slug,
+            mount_id,
+            opts.schema_version,
+        ));
+        if let Some(ref scripts) = opts.body_scripts {
+            doc.push_str(scripts);
         }
-        out.push_str("</body>\n</html>\n");
-        out
+        doc.push_str("</body></html>");
+        doc
     }
 }
 
-/// Injects build-time Frame-0 SSG CSS + HTML plus single-app `<script data-nve-snapshot-boot>`
-/// and `<script data-nve-replay>` into any host shell HTML template.
-pub fn inject_ssg_into_shell_html(
-    shell_html: &str,
-    mount_id: &str,
-    app_slug: &str,
-    schema_version: u32,
-    ssr: &SsrOutput,
-) -> String {
-    let scripts = snapshot_and_replay_script_tags(mount_id, app_slug, schema_version);
-    inject_ssg_with_scripts_into_shell_html(shell_html, mount_id, ssr, &scripts)
+/// Injects pre-rendered [`SsrOutput`] styles + HTML into an existing host `index.html` shell.
+pub fn inject_ssg_into_shell_html(shell_html: &str, mount_id: &str, ssr: &SsrOutput) -> String {
+    inject_ssg_with_scripts_into_shell_html(shell_html, mount_id, ssr, "")
 }
 
-/// Injects build-time Frame-0 SSG `<style data-nve-base>`, `<style data-nve-ssr data-nve-hashes>`,
-/// `#<mount_id>` inner HTML, and caller-provided bootstrap `<script>` tags (unless already present)
-/// into a host shell HTML template.
+/// Injects pre-rendered [`SsrOutput`] + inline bootstrap scripts into an existing host `index.html`.
 pub fn inject_ssg_with_scripts_into_shell_html(
     shell_html: &str,
     mount_id: &str,
     ssr: &SsrOutput,
-    bootstrap_scripts: &str,
+    after_mount_scripts: &str,
 ) -> String {
-    let hashes_csv = ssr.rule_hashes.join(",");
-    let mut style_tags = String::new();
-    if !shell_html.contains("<style data-nve-base") {
-        style_tags.push_str("<style data-nve-base>");
-        style_tags.push_str(ssr.base_css);
-        style_tags.push_str("</style>\n");
-    }
-    if !shell_html.contains("<style data-nve-ssr") {
-        style_tags.push_str("<style data-nve-ssr data-nve-hashes=\"");
-        style_tags.push_str(&hashes_csv);
-        style_tags.push_str("\">");
-        style_tags.push_str(&ssr.style_css);
-        style_tags.push_str("</style>\n");
+    let mut style_block = String::with_capacity(ssr.base_css.len() + ssr.style_css.len() + 128);
+    style_block.push_str("<style data-nve-base>");
+    style_block.push_str(ssr.base_css);
+    style_block.push_str("</style>");
+    if !ssr.style_css.is_empty() {
+        style_block.push_str("<style data-nve-ssr data-nve-hashes=\"");
+        for (i, h) in ssr.rule_hashes.iter().enumerate() {
+            if i > 0 {
+                style_block.push(',');
+            }
+            style_block.push_str(h);
+        }
+        style_block.push_str("\">");
+        style_block.push_str(&ssr.style_css);
+        style_block.push_str("</style>");
     }
 
-    let with_styles = if !style_tags.is_empty() {
-        if let Some(head_end) = shell_html.find("</head>") {
-            format!(
-                "{}{style_tags}{}",
-                &shell_html[..head_end],
-                &shell_html[head_end..]
-            )
-        } else {
-            format!("{style_tags}{shell_html}")
-        }
+    let with_styles = if let Some(idx) = shell_html.find("</head>") {
+        let mut s = String::with_capacity(shell_html.len() + style_block.len());
+        s.push_str(&shell_html[..idx]);
+        s.push_str(&style_block);
+        s.push_str(&shell_html[idx..]);
+        s
     } else {
-        shell_html.to_owned()
+        format!("{style_block}{shell_html}")
     };
 
-    // Replace inner contents of `<main id="<mount_id>">...</main>` or `<div id="<mount_id>">...</div>`.
-    let mut with_body = with_styles;
-    let mut mount_close_end: Option<usize> = None;
-    for tag in ["main", "div"] {
-        let open_needle = format!("<{tag} id=\"{mount_id}\"");
-        let close_needle = format!("</{tag}>");
-        if let Some(open_pos) = with_body.find(&open_needle)
-            && let Some(tag_end_rel) = with_body[open_pos..].find('>')
-        {
-            let content_start = open_pos + tag_end_rel + 1;
-            if let Some(close_rel) = with_body[content_start..].find(&close_needle) {
-                let content_end = content_start + close_rel;
-                let replaced = format!(
-                    "{}{}{}",
-                    &with_body[..content_start],
-                    ssr.html,
-                    &with_body[content_end..]
-                );
-                mount_close_end = Some(content_start + ssr.html.len() + close_needle.len());
-                with_body = replaced;
-                break;
-            }
+    // Match any mount tag (`<main id="app">`, `<div id="app">`, etc.) even with extra attributes.
+    let id_attr = format!("id=\"{mount_id}\"");
+    if let Some(id_pos) = with_styles.find(&id_attr)
+        && let Some(tag_start) = with_styles[..id_pos].rfind('<')
+        && let Some(rel_open_end) = with_styles[id_pos..].find('>')
+    {
+        let open_end = id_pos + rel_open_end + 1;
+        let tag_name = with_styles[tag_start + 1..id_pos]
+            .split_whitespace()
+            .next()
+            .unwrap_or("div");
+        let close_tag = format!("</{tag_name}>");
+        if let Some(rel_close) = with_styles[open_end..].find(&close_tag) {
+            let close_pos = open_end + rel_close;
+            let after_close = close_pos + close_tag.len();
+            let mut out = String::with_capacity(
+                with_styles.len() + ssr.html.len() + after_mount_scripts.len(),
+            );
+            out.push_str(&with_styles[..open_end]);
+            out.push_str(&ssr.html);
+            out.push_str(&close_tag);
+            out.push_str(after_mount_scripts);
+            out.push_str(&with_styles[after_close..]);
+            return out;
         }
     }
-
-    if !bootstrap_scripts.is_empty() && !with_body.contains("data-nve-snapshot-boot") {
-        if let Some(idx) = with_body.find("<script type=\"module\">") {
-            return format!(
-                "{}{bootstrap_scripts}\n{}",
-                &with_body[..idx],
-                &with_body[idx..]
-            );
-        }
-        if let Some(after_mount) = mount_close_end {
-            return format!(
-                "{}\n{bootstrap_scripts}{}",
-                &with_body[..after_mount],
-                &with_body[after_mount..]
-            );
-        }
-        if let Some(idx) = with_body.find("</body>") {
-            return format!(
-                "{}{bootstrap_scripts}\n{}",
-                &with_body[..idx],
-                &with_body[idx..]
-            );
-        }
-        return format!("{with_body}\n{bootstrap_scripts}");
+    if !after_mount_scripts.is_empty()
+        && let Some(body_end) = with_styles.find("</body>")
+    {
+        let mut out = String::with_capacity(with_styles.len() + after_mount_scripts.len());
+        out.push_str(&with_styles[..body_end]);
+        out.push_str(after_mount_scripts);
+        out.push_str(&with_styles[body_end..]);
+        return out;
     }
-
-    with_body
+    with_styles
 }

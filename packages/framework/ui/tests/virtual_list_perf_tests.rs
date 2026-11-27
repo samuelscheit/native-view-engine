@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use common::UiHarness;
 use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
-use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
@@ -356,7 +355,7 @@ fn virtual_list_zero_allocation_guards() {
         "Dioxus Signal::write() notification must stay tiny O(1) (< 4 KiB), got {notify_bytes} B"
     );
 
-    // Measure pure DioxusSurface scroll dispatch + render_frame at N=100 vs N=100,000
+    // Measure pure DioxusSurface scroll dispatch + commit_to at N=100 vs N=100,000
     // (1,000x larger dataset!) to prove strictly O(viewport) allocation independent of N.
     let mut harness_100 = UiHarness::new(Live100RowVirtualListApp);
     let vlist_100_id = harness_100.find("live-vlist-100");
@@ -373,12 +372,14 @@ fn virtual_list_zero_allocation_guards() {
                 content_height: 4_400.0,
             },
         }]));
-        let (_, _, bytes) = harness_100.surface.render_frame(2);
-        black_box(bytes.len())
+        harness_100
+            .surface
+            .commit_to(2, &mut harness_100.backend)
+            .expect("commit 100 scroll frame");
     });
 
     let vlist_100k_id = harness.find("live-vlist");
-    let (scroll_100k_stats, frame_bytes) = measure_allocs(|| {
+    let (scroll_100k_stats, _) = measure_allocs(|| {
         assert!(harness.surface.dispatch_events(&[NativeEvent {
             surface_id: 1,
             node_id: vlist_100k_id,
@@ -391,13 +392,11 @@ fn virtual_list_zero_allocation_guards() {
                 content_height: 5_000_000.0,
             },
         }]));
-        let (_, _, bytes) = harness.surface.render_frame(10);
-        bytes
+        harness
+            .surface
+            .commit_to(10, &mut harness.backend)
+            .expect("commit 100k scroll frame");
     });
-    harness
-        .backend
-        .submit_frame(&frame_bytes)
-        .expect("submit 100k scroll frame");
 
     // 100k-row DioxusSurface scroll+render must match 100-row O(viewport) footprint within 16 KiB
     // and stay well under 256 KiB (proving zero 1.2 MB Fenwick tree clone!).

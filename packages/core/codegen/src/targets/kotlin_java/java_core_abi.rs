@@ -14,7 +14,7 @@ use crate::schema::hybrid::core_abi::{
 /// directly from `packages/core/abi/src/schema.rs`.
 pub fn generate_java_core_abi() -> String {
     let spec = core_abi_spec();
-    let schema_hash = spec.file_schema_hash();
+    let schema_hash = crate::schema::hybrid::core_abi::core_abi_schema_hash();
     let mut out = String::with_capacity(4 * 1024);
 
     let _ = writeln!(
@@ -156,10 +156,10 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "    public static final int FLAG_INTERACTIVE = 1 << 1;");
     let _ = writeln!(out, "    public static final int FLAG_CLIP_BOUNDS = 1 << 2;");
     let _ = writeln!(out);
-    let _ = writeln!(out, "    // Compact uint8 NveRenderNode::kind discriminants");
+    let _ = writeln!(out, "    // Sentinel NveRenderNode::primary_slot value (plain container)");
     for c in &spec.consts {
-        if let Some(suffix) = c.name.strip_prefix("NVE_NODE_KIND_") {
-            let _ = writeln!(out, "    public static final int KIND_{suffix} = {};", c.value);
+        if c.name == "NVE_PRIMARY_SLOT_NONE" {
+            let _ = writeln!(out, "    public static final int PRIMARY_SLOT_NONE = 0x{:02X};", c.value);
         }
     }
     let _ = writeln!(out);
@@ -200,17 +200,19 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "    private int removedCount;");
     let _ = writeln!(out, "    private int textSlabLen;");
     let _ = writeln!(out, "    private int childrenSlabLen;");
+    let _ = writeln!(out, "    private int tableCount;");
     let _ = writeln!(out, "    private ByteBuffer nodesBuf;");
     let _ = writeln!(out, "    private ByteBuffer textSlabBuf;");
     let _ = writeln!(out, "    private ByteBuffer childrenSlabBuf;");
     let _ = writeln!(out, "    private ByteBuffer dirtyIndicesBuf;");
     let _ = writeln!(out, "    private ByteBuffer removedIdsBuf;");
+    let _ = writeln!(out, "    private ByteBuffer tablesBuf;");
     let _ = writeln!(out, "    private byte[] textScratch = new byte[256];");
     let _ = writeln!(out);
     let _ = writeln!(out, "    /**");
     let _ = writeln!(
         out,
-        "     * Rebinds this reusable reader to the latest frame's direct buffers without copying."
+        "     * Rebinds this reusable reader to the latest frame's direct buffers without table views."
     );
     let _ = writeln!(out, "     */");
     let _ = writeln!(out, "    public void attach(");
@@ -226,6 +228,33 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "            ByteBuffer childrenSlabBuf,");
     let _ = writeln!(out, "            ByteBuffer dirtyIndicesBuf,");
     let _ = writeln!(out, "            ByteBuffer removedIdsBuf) {{");
+    let _ = writeln!(
+        out,
+        "        attach(schemaHash, frameId, nodeCount, dirtyCount, removedCount, textSlabLen, childrenSlabLen, 0, nodesBuf, textSlabBuf, childrenSlabBuf, dirtyIndicesBuf, removedIdsBuf, null);"
+    );
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "    /**");
+    let _ = writeln!(
+        out,
+        "     * Rebinds this reusable reader to the latest frame's direct buffers without copying."
+    );
+    let _ = writeln!(out, "     */");
+    let _ = writeln!(out, "    public void attach(");
+    let _ = writeln!(out, "            long schemaHash,");
+    let _ = writeln!(out, "            long frameId,");
+    let _ = writeln!(out, "            int nodeCount,");
+    let _ = writeln!(out, "            int dirtyCount,");
+    let _ = writeln!(out, "            int removedCount,");
+    let _ = writeln!(out, "            int textSlabLen,");
+    let _ = writeln!(out, "            int childrenSlabLen,");
+    let _ = writeln!(out, "            int tableCount,");
+    let _ = writeln!(out, "            ByteBuffer nodesBuf,");
+    let _ = writeln!(out, "            ByteBuffer textSlabBuf,");
+    let _ = writeln!(out, "            ByteBuffer childrenSlabBuf,");
+    let _ = writeln!(out, "            ByteBuffer dirtyIndicesBuf,");
+    let _ = writeln!(out, "            ByteBuffer removedIdsBuf,");
+    let _ = writeln!(out, "            ByteBuffer tablesBuf) {{");
     let _ = writeln!(out, "        if (schemaHash != SCHEMA_HASH) {{");
     let _ = writeln!(
         out,
@@ -238,6 +267,7 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "        this.removedCount = Math.max(0, removedCount);");
     let _ = writeln!(out, "        this.textSlabLen = Math.max(0, textSlabLen);");
     let _ = writeln!(out, "        this.childrenSlabLen = Math.max(0, childrenSlabLen);");
+    let _ = writeln!(out, "        this.tableCount = Math.max(0, tableCount);");
     let _ = writeln!(
         out,
         "        this.nodesBuf = nodesBuf != null ? nodesBuf.order(ByteOrder.LITTLE_ENDIAN) : null;"
@@ -258,6 +288,10 @@ pub fn generate_java_scene_buffer() -> String {
         out,
         "        this.removedIdsBuf = removedIdsBuf != null ? removedIdsBuf.order(ByteOrder.LITTLE_ENDIAN) : null;"
     );
+    let _ = writeln!(
+        out,
+        "        this.tablesBuf = tablesBuf != null ? tablesBuf.order(ByteOrder.LITTLE_ENDIAN) : null;"
+    );
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "    public long frameId() {{ return frameId; }}");
@@ -266,6 +300,8 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "    public int removedCount() {{ return removedCount; }}");
     let _ = writeln!(out, "    public int textSlabLen() {{ return textSlabLen; }}");
     let _ = writeln!(out, "    public int childrenSlabLen() {{ return childrenSlabLen; }}");
+    let _ = writeln!(out, "    public int tableCount() {{ return tableCount; }}");
+    let _ = writeln!(out, "    public ByteBuffer tablesBuf() {{ return tablesBuf; }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "    public int dirtyIndex(int i) {{");
     let _ = writeln!(out, "        return dirtyIndicesBuf.getInt(i << 2);");
@@ -276,7 +312,7 @@ pub fn generate_java_scene_buffer() -> String {
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "    public int nodeId(int idx) {{ return nodesBuf.getInt(idx * NODE_STRIDE + OFFSET_NODE_ID); }}");
-    let _ = writeln!(out, "    public int kind(int idx) {{ return nodesBuf.get(idx * NODE_STRIDE + OFFSET_KIND) & 0xFF; }}");
+    let _ = writeln!(out, "    public int primarySlot(int idx) {{ return nodesBuf.get(idx * NODE_STRIDE + OFFSET_PRIMARY_SLOT) & 0xFF; }}");
     let _ = writeln!(out, "    public int flags(int idx) {{ return nodesBuf.get(idx * NODE_STRIDE + OFFSET_FLAGS) & 0xFF; }}");
     let _ = writeln!(out, "    public int opacityU8(int idx) {{ return nodesBuf.get(idx * NODE_STRIDE + OFFSET_OPACITY_U8) & 0xFF; }}");
     let _ = writeln!(out, "    public float opacity(int idx) {{ return opacityU8(idx) / 255.0f; }}");

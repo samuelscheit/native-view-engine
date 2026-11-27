@@ -9,7 +9,7 @@ use nve_abi::schema::{
     NveEnumSchema, NveSchema, NveStructSchema, NveUnionSchema,
 };
 use nve_abi::{
-    NveAbi, NveBufferSlice, NveNodeMeta, NveRenderNode, NveSceneView, NveValueData, Opcode,
+    NativeEventKind, NveAbi, NveBufferSlice, NveNodeMeta, NveRenderNode, NveSceneView, NveValueData,
 };
 
 /// Custom aligned POD struct exercising all `#[nve_abi(...)]` struct & field options.
@@ -91,7 +91,7 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     assert_eq!(core.namespace, Some("NveCoreAbi"));
     assert_eq!(core.consts.len(), 13);
     assert_eq!(core.aliases.len(), 4);
-    assert_eq!(core.enums.len(), 6);
+    assert_eq!(core.enums.len(), 4);
     assert_eq!(core.records.len(), 17);
     assert_eq!(core.modules.len(), 5);
     assert_eq!(core.c_functions.len(), 5);
@@ -104,8 +104,8 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
 
     let scene = scene_abi_descriptor();
     assert_eq!(scene.namespace, Some("NveSceneAbi"));
-    assert_eq!(scene.consts.len(), 24);
-    assert_eq!(scene.records.len(), 3);
+    assert_eq!(scene.consts.len(), 14);
+    assert_eq!(scene.records.len(), 4);
 
     let render = <NveRenderNode as NveStructSchema>::SCHEMA;
     assert_eq!(render.size, size_of::<NveRenderNode>());
@@ -126,9 +126,9 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     assert_eq!(meta.size, size_of::<NveNodeMeta>());
     assert_eq!(meta.align, align_of::<NveNodeMeta>());
     assert_eq!(meta.expected_size, Some(64));
-    assert_eq!(meta.fields.len(), 17);
-    assert_eq!(meta.fields[16].name, "_reserved");
-    assert_eq!(meta.fields[16].offset, offset_of!(NveNodeMeta, _reserved));
+    assert_eq!(meta.fields.len(), 15);
+    assert_eq!(meta.fields[14].name, "_reserved");
+    assert_eq!(meta.fields[14].offset, offset_of!(NveNodeMeta, _reserved));
 
     let union_desc = <NveValueData as NveUnionSchema>::SCHEMA;
     assert_eq!(union_desc.size, size_of::<NveValueData>());
@@ -150,7 +150,7 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
         AbiItemDescriptor::Union(<NveValueData as NveUnionSchema>::SCHEMA)
     );
     assert_eq!(
-        <Opcode as NveSchema>::ITEM,
-        AbiItemDescriptor::Enum(<Opcode as NveEnumSchema>::SCHEMA)
+        <NativeEventKind as NveSchema>::ITEM,
+        AbiItemDescriptor::Enum(<NativeEventKind as NveEnumSchema>::SCHEMA)
     );
 }

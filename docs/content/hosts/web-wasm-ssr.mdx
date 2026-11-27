@@ -16,7 +16,7 @@ Naive WASM DOM engines rewrite inline `element.style.cssText` on every node muta
 
 1. **Deferred end-of-frame `dirty_styles` flush** — Multiple `SetLayout`/`SetStyle` ops touching one node coalesce into a single style flush at `Opcode::Commit`.
 2. **Static `.nve` base reset** — One `<style data-nve-base>` sheet handles box-sizing, flex defaults, and `font-family: inherit`, while `.nve-tl` handles Dioxus parent-to-leaf text style inheritance cleanly.
-3. **Content-addressed structural class cache (`.s<base36(fnv1a64)>`)** — Deterministic CSS declarations are hashed with FNV-1a64 and inserted once into a batched `CSSStyleSheet` (`replaceSync`/`insertRule`, capped at `MAX_DYNAMIC_RULES = 4096`). On NVE Studio Frame 0, this cuts CSS bytes by **-86.3%**, reduces DOM flush crossings from **723 → 269**, and achieves **~95%+** browser style-sharing hits.
+3. **Content-addressed structural class cache (`.s<base36(xxh64)>`)** — Deterministic CSS declarations are hashed with XXH64 and inserted once into a batched `CSSStyleSheet` (`replaceSync`/`insertRule`, capped at `MAX_DYNAMIC_RULES = 4096`). On NVE Studio Frame 0, this cuts CSS bytes by **-86.3%**, reduces DOM flush crossings from **723 → 269**, and achieves **~95%+** browser style-sharing hits.
 4. **Volatile inline escape hatch** — High-cardinality continuous values (`VirtualList` spacers `> 2048px`, fractional coordinates, animated opacity) bypass the rule table and write directly to inline styles so the stylesheet never thrashes.
 5. **Keyed minimal-diff `SetChildren`** — O(N) head/tail-trimmed DOM reconciliation replaces full child wipes, preserving focused inputs, IME composition, and scroll offsets.
 

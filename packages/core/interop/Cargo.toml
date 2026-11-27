@@ -7,7 +7,6 @@ license.workspace = true
 [features]
 default = [
     "crdt",
-    "native-view",
     "traits",
     "window",
     "plugin-host",
@@ -17,7 +16,6 @@ default = [
     "reconcile",
 ]
 crdt = []
-native-view = []
 traits = []
 window = []
 plugin-host = []
@@ -32,13 +30,16 @@ nve-components = { workspace = true }
 nve-engine = { workspace = true }
 serde = { workspace = true }
 
+[dev-dependencies]
+nve-store = { workspace = true }
+
 [[test]]
 name = "crdt_property_tests"
 required-features = ["crdt"]
 
 [[test]]
-name = "traits_and_native_view_tests"
-required-features = ["traits", "native-view"]
+name = "traits_tests"
+required-features = ["traits"]
 
 [[test]]
 name = "reconcile_crdt_tests"

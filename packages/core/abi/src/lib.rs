@@ -1,12 +1,10 @@
-//! Zero-copy `#[repr(C)]` raw-memory ABI (`nve_get_interface`, `NveSceneView`, `NveValue`,
-//! `NvePropSlice`, `NveCommandSlice`, `NveEventBatch`), plus optional binary wire codecs
-//! (`CommandBuffer`, `EventRing`, `NveBinValue`) gated behind `feature = "wire"`.
+//! Zero-copy `#[repr(C)]` raw-memory ABI (`nve_get_interface`, `NveSceneView`, `NveTableView`,
+//! `NveValue`, `NvePropSlice`, `NveCommandSlice`, `NveEventBatch`), plus optional binary wire
+//! codecs (`EventRing`, `NveBinValue`) gated behind `feature = "wire"`.
 
 extern crate self as nve_abi;
 
 pub mod bitflags;
-#[cfg(feature = "wire")]
-pub mod codec;
 #[cfg(feature = "wire")]
 pub mod events;
 pub mod ffi;
@@ -16,27 +14,23 @@ mod layout_asserts;
 pub mod num;
 pub mod scene;
 pub mod schema;
+pub mod style_types;
+pub mod table;
 pub mod value;
 
 pub use nve_abi_macros::NveAbi;
+pub use nve_hash::{const_id, xxh64, Key64, Xxh64Hasher};
 
-#[cfg(feature = "wire")]
-pub use codec::{
-    ChildIdIter, ColorRgba, Command, CommandBufferBuilder, CommandBufferHeader, CommandDecoder,
-    CommandRef, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
-    RawPropValue, RawPropValueRef, StyleProps, NVE_ABI_MAGIC, NVE_ABI_VERSION,
-};
 #[cfg(feature = "wire")]
 pub use events::{
     decode_events, direct_event_to_native, encode_events, native_events_to_direct,
     pack_key_modifiers, EventMask, EventPayload, NativeEvent,
 };
 pub use ffi::{
-    ComponentKind, DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi,
-    NveDevApi, NveEventPayloadTag, NveFrameStats, NveGestureDisposition, NveGetInterfaceFn,
-    NveIntrinsicSize, NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, Opcode,
-    NVE_CORE_ABI_SCHEMA_HASH, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    DecodeError, NativeEventKind, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi,
+    NveEventPayloadTag, NveFrameStats, NveGestureDisposition, NveGetInterfaceFn, NveIntrinsicSize,
+    NveLayoutApi, NveSizeConstraints, NveSurfaceApi, NveSurfaceConfig, NVE_CORE_ABI_SCHEMA_HASH,
+    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 pub use host::{
     NveHostApi, NveHostCallbacks, NveHostChannelPublishFn, NveHostInvokeFn, NveHostStatus,
@@ -45,16 +39,14 @@ pub use host::{
     SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 pub use scene::{
-    component_kind_to_scene_u8, NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable,
-    NveSceneView, SceneError, SceneNodeInput, NVE_META_FLAG_ACCESSIBILITY_HIDDEN,
-    NVE_META_FLAG_DISABLED, NVE_META_FLAG_DRAW_LIST_CORRUPT, NVE_META_FLAG_HAS_DRAW_LIST,
+    NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneError,
+    SceneNodeInput, NVE_META_FLAG_ACCESSIBILITY_HIDDEN, NVE_META_FLAG_DISABLED,
     NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY, NVE_META_RESIZE_MODE_MASK,
-    NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_CUSTOM,
-    NVE_NODE_KIND_IMAGE, NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT, NVE_NODE_KIND_SCROLL_VIEW,
-    NVE_NODE_KIND_SKIA_CANVAS, NVE_NODE_KIND_TEXT, NVE_NODE_KIND_TEXT_INPUT, NVE_NODE_KIND_VIEW,
-    NVE_NODE_LEAF_TEXT, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE, NVE_RENDER_NODE_ALIGN,
+    NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
+    NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE, NVE_PRIMARY_SLOT_NONE, NVE_RENDER_NODE_ALIGN,
     NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
 };
+pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]
 pub use value::{
     encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinMapIter, BinValueView,

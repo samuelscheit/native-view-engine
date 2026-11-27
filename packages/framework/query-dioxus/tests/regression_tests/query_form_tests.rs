@@ -15,7 +15,10 @@ use nve_query_dioxus::prelude::*;
 use nve_rpc::Tag64;
 use nve_ui::prelude::*;
 
-use crate::{pump_settled, render_once, GetItem, NoopFlagWaker, RegTransport};
+use crate::{
+    find_by_test_id, new_web_backend, pump_settled, render_once, GetItem, NoopFlagWaker,
+    RegTransport,
+};
 
 #[test]
 fn invalidated_query_failure_does_not_loop_and_retry_uses_sleep_backoff() {
@@ -64,7 +67,7 @@ fn invalidated_query_failure_does_not_loop_and_retry_uses_sleep_backoff() {
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("ITEM:Alpha:ERR:false"));
+    assert!(web.render_html(surface.store()).contains("ITEM:Alpha:ERR:false"));
     assert_eq!(*recorded_delays.lock().unwrap(), vec![250, 500]);
     assert_eq!(transport.inner.lock().unwrap().query_calls, 3);
 
@@ -82,7 +85,7 @@ fn invalidated_query_failure_does_not_loop_and_retry_uses_sleep_backoff() {
         "invalidated failing query must stop after initial attempt + 2 retries, not loop forever"
     );
     assert_eq!(*recorded_delays.lock().unwrap(), vec![250, 500]);
-    assert!(web.render_html().contains("ITEM:Alpha:ERR:true"));
+    assert!(web.render_html(surface.store()).contains("ITEM:Alpha:ERR:true"));
 }
 
 #[test]
@@ -129,12 +132,12 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
     let mut surface = DioxusSurface::new(1, MultiFormRoot)
         .with_context(submitted_ctx)
         .with_context(Rc::clone(&ctrl_slot));
-    let mut web = WebBackend::new();
+    let mut web = new_web_backend();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
 
     let _ = render_once(&mut surface, &mut web, &mut frame);
-    let ssr1 = web.render_ssr().html;
+    let ssr1 = web.render_ssr(surface.store()).html;
     assert!(ssr1.contains("value=\"first-a\""), "{ssr1}");
     assert_eq!(
         pump_settled(&mut surface, &mut web, &waker, &mut frame),
@@ -142,16 +145,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         "3-field Form must settle with 0 spurious async re-renders!"
     );
 
-    let form_id = web
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "multi-form"
-            )
-            .then_some(id)
-        })
-        .unwrap();
+    let form_id = find_by_test_id(surface.store(), "multi-form");
     let submit_ev = nve_abi::NativeEvent {
         surface_id: 1,
         node_id: form_id,
@@ -171,7 +165,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         active_sig.set(fresh);
     });
     let _ = render_once(&mut surface, &mut web, &mut frame);
-    let ssr2 = web.render_ssr().html;
+    let ssr2 = web.render_ssr(surface.store()).html;
     assert!(
         ssr2.contains("value=\"swapped-a\""),
         "swapped controller value must render: {ssr2}"

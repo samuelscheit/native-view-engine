@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use nve_engine::xxh64;
+use nve_abi::xxh64;
 
 use super::hlc::{HLC_ENCODED_LEN, HlcTimestamp, OP_ID_ENCODED_LEN, OpId, PeerId, VersionVector};
 

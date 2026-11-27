@@ -12,16 +12,18 @@ use nve_abi::{
 };
 #[cfg(feature = "scene-view")]
 use crate::scene::SceneMirror;
-use nve_backend_web::{WebBackend, WebSnapshotPayload};
+use nve_abi::xxh64;
+use nve_backend_web::{SsrDocumentOptions, SsrOutput, WebBackend, WebSnapshotPayload};
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
 use nve_dioxus::DioxusSurface;
-#[cfg(feature = "dev")]
-use nve_engine::HotPatchMsg;
 #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
 use nve_engine::NveApp;
-use nve_engine::{xxh64, BackendError, FrameTiming, RenderBackend, SurfaceRunner, Viewport};
+use nve_engine::{BackendApplyStats, BackendError, FrameTiming, StoreBackend, Viewport};
 #[cfg(feature = "app-kitchen-sink")]
 use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
+#[cfg(feature = "scene-view")]
+use nve_store::ChangeSet;
+use nve_store::NodeStore;
 #[cfg(feature = "app-studio")]
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
@@ -38,25 +40,11 @@ mod tests;
 /// Surface ID of the first (primary) app mounted into the page.
 pub const DEFAULT_SURFACE_ID: SurfaceId = 1;
 
-/// Outcome of handling one `nve dev` WebSocket `HotPatchMsg`.
 #[cfg(feature = "dev")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HotReloadAction {
-    /// Tier-1 template/style patch applied live without reloading the page.
-    TemplatePatched {
-        generation: u64,
-        template_id: String,
-        mutations: u32,
-    },
-    /// Tier-2 dylib/WASM rebuild finished; browser shell should log and reload cleanly.
-    ReloadPage {
-        generation: u64,
-        dylib_path: String,
-        build_ms: u64,
-    },
-    /// Status heartbeat from `nve dev`.
-    DevStatus { message: String, latency_ms: u64 },
-}
+#[path = "session_hot_reload.rs"]
+mod hot_reload;
+#[cfg(feature = "dev")]
+pub use hot_reload::HotReloadAction;
 
 /// Result of one bounded [`WebAppSession::pump_async_work_with`] tick.
 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
@@ -101,18 +89,53 @@ impl SessionApp {
         }
     }
 
-    fn flush_into_timed<S: nve_engine::RenderSink>(
+    fn commit_to_timed<B: StoreBackend>(
         &mut self,
         frame_id: FrameId,
-        sink: &mut S,
-    ) -> Result<(u64, nve_engine::BackendApplyStats), BackendError> {
+        backend: &mut B,
+    ) -> Result<(u64, BackendApplyStats), BackendError> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.flush_into_timed(frame_id, sink),
+            Self::Dioxus(surface) => surface.commit_to_timed(frame_id, backend),
             #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.flush_into_timed(frame_id, sink),
+            Self::Studio(module) => module.commit_to_timed(frame_id, backend),
             #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.flush_into_timed(frame_id, sink),
+            Self::KitchenSink(module) => module.commit_to_timed(frame_id, backend),
+        }
+    }
+
+    fn store(&self) -> &NodeStore {
+        match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+            Self::Dioxus(surface) => surface.store(),
+            #[cfg(feature = "app-studio")]
+            Self::Studio(module) => module.surface().store(),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.surface().store(),
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn store_mut(&mut self) -> &mut NodeStore {
+        match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+            Self::Dioxus(surface) => surface.store_mut(),
+            #[cfg(feature = "app-studio")]
+            Self::Studio(module) => module.surface_mut().store_mut(),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.surface_mut().store_mut(),
+        }
+    }
+
+    #[cfg(feature = "scene-view")]
+    fn last_changes(&self) -> &ChangeSet {
+        match self {
+            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
+            Self::Dioxus(surface) => surface.last_changes(),
+            #[cfg(feature = "app-studio")]
+            Self::Studio(module) => module.surface().last_changes(),
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(module) => module.surface().last_changes(),
         }
     }
 
@@ -146,18 +169,6 @@ impl SessionApp {
         }
     }
 
-    #[cfg(feature = "dev")]
-    fn apply_hot_patch(&mut self, msg: &HotPatchMsg) -> bool {
-        match self {
-            #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
-            Self::Dioxus(surface) => surface.apply_hot_patch(msg),
-            #[cfg(feature = "app-studio")]
-            Self::Studio(module) => module.apply_hot_patch(msg),
-            #[cfg(feature = "app-kitchen-sink")]
-            Self::KitchenSink(module) => module.apply_hot_patch(msg),
-        }
-    }
-
     fn snapshot_state(&mut self) -> Option<Vec<u8>> {
         match self {
             #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
@@ -183,17 +194,17 @@ impl SessionApp {
 }
 
 /// Cross-target session binding an NVE app (`DioxusSurface`, `StudioWorkspaceModule`, or
-/// `KitchenSinkModule`) to a `SurfaceRunner<WebBackend>` (plus, with `scene-view`, a zero-copy
+/// `KitchenSinkModule`) directly to a [`WebBackend`] (plus, with `scene-view`, a zero-copy
 /// [`SceneMirror`]).
 ///
 /// Runs identically in browser WASM (`web-dom-wasm`) and in host unit tests (`web-dom-mirror`).
 pub struct WebAppSession {
+    surface_id: SurfaceId,
+    frame_id: FrameId,
     app: SessionApp,
-    runner: SurfaceRunner<WebBackend>,
+    backend: WebBackend,
     #[cfg(feature = "scene-view")]
     scene: SceneMirror,
-    #[cfg(feature = "dev")]
-    scene_frame_id: FrameId,
 }
 
 impl WebAppSession {
@@ -210,16 +221,18 @@ impl WebAppSession {
     fn with_app(
         surface_id: SurfaceId,
         app: SessionApp,
-        backend: WebBackend,
+        mut backend: WebBackend,
         viewport: Viewport,
     ) -> Self {
+        crate::register_shell_web_systems(&mut backend);
+        backend.set_viewport(surface_id, viewport);
         Self {
+            surface_id,
+            frame_id: 0,
             app,
-            runner: SurfaceRunner::new(surface_id, viewport, backend),
+            backend,
             #[cfg(feature = "scene-view")]
             scene: SceneMirror::new(),
-            #[cfg(feature = "dev")]
-            scene_frame_id: 0,
         }
     }
 
@@ -299,11 +312,31 @@ impl WebAppSession {
     }
 
     pub fn backend(&self) -> &WebBackend {
-        self.runner.backend()
+        &self.backend
     }
 
     pub fn backend_mut(&mut self) -> &mut WebBackend {
-        self.runner.backend_mut()
+        &mut self.backend
+    }
+
+    pub fn store(&self) -> &NodeStore {
+        self.app.store()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.app.store().live_nodes().count()
+    }
+
+    pub fn render_html(&self) -> String {
+        self.backend.render_html(self.app.store())
+    }
+
+    pub fn render_ssr(&self) -> SsrOutput {
+        self.backend.render_ssr(self.app.store())
+    }
+
+    pub fn render_ssr_document(&self, opts: &SsrDocumentOptions) -> String {
+        self.backend.render_ssr_document(self.app.store(), opts)
     }
 
     /// Captures the app's binary state payload, if supported.
@@ -320,7 +353,7 @@ impl WebAppSession {
     /// debounced & lifecycle snapshot hooks skip redundant work when state has not changed.
     pub fn snapshot_fingerprint(&mut self, scroll_offsets: &[(u32, u32)]) -> Option<(Vec<u8>, u64)> {
         let state_bytes = self.snapshot_state()?;
-        let vp = self.runner.backend().viewport();
+        let vp = self.backend.viewport();
         let mut buf = Vec::with_capacity(state_bytes.len() + 12 + scroll_offsets.len() * 8);
         buf.extend_from_slice(&state_bytes);
         buf.extend_from_slice(&vp.width.to_bits().to_le_bytes());
@@ -359,8 +392,8 @@ impl WebAppSession {
         }
         #[cfg(any(feature = "app-studio", feature = "app-kitchen-sink"))]
         {
-            let surface_id = self.runner.surface_id();
-            let viewport = self.runner.backend().viewport();
+            let surface_id = self.surface_id;
+            let viewport = self.backend.viewport();
             let schema_version = self.schema_version();
             let mut canonical = match &self.app {
                 #[cfg(any(not(target_arch = "wasm32"), feature = "app-issues"))]
@@ -393,15 +426,21 @@ impl WebAppSession {
                 }
             };
             canonical.render_initial().ok()?;
-            let ssr = canonical.backend().render_ssr();
+            let ssr = canonical.render_ssr();
             Some(WebSnapshotPayload::from_ssr(&ssr, schema_version, scroll_offsets))
         }
     }
 
-    /// The zero-copy scene mirror of this session's `WebBackend` tree.
+    /// The zero-copy scene mirror of this session's `NodeStore` tree.
     #[cfg(feature = "scene-view")]
     pub fn scene(&self) -> &SceneMirror {
         &self.scene
+    }
+
+    /// Safe zero-copy [`nve_abi::NveSceneRef`] over the current scene mirror and `NodeStore` text slab.
+    #[cfg(feature = "scene-view")]
+    pub fn scene_ref(&self) -> nve_abi::NveSceneRef<'_> {
+        self.scene.as_ref_with_store(self.app.store())
     }
 
     /// Renders and mounts the initial frame.
@@ -415,8 +454,8 @@ impl WebAppSession {
         &mut self,
         viewport: Viewport,
     ) -> Result<Option<FrameTiming>, BackendError> {
-        let surface_id = self.runner.surface_id();
-        self.runner.backend_mut().set_viewport(surface_id, viewport);
+        let surface_id = self.surface_id;
+        self.backend.set_viewport(surface_id, viewport);
         if !(viewport.width.is_finite()
             && viewport.height.is_finite()
             && viewport.width > 0.0
@@ -429,8 +468,6 @@ impl WebAppSession {
         } else {
             None
         };
-        #[cfg(target_arch = "wasm32")]
-        self.runner.backend().repaint_all_canvases();
         Ok(timing)
     }
 
@@ -442,7 +479,7 @@ impl WebAppSession {
         meta: bool,
         ctrl: bool,
     ) -> Result<Option<FrameTiming>, BackendError> {
-        let surface_id = self.runner.surface_id();
+        let surface_id = self.surface_id;
         let ev = NativeEvent {
             surface_id,
             node_id: ROOT_NODE_ID,
@@ -464,7 +501,7 @@ impl WebAppSession {
 
     /// Drains pending DOM events, dispatches them to the app, and commits an incremental frame if handled.
     pub fn pump_events(&mut self) -> Result<Option<FrameTiming>, BackendError> {
-        let events = self.runner.backend_mut().drain_events();
+        let events = self.backend.drain_events();
         if events.is_empty() {
             return Ok(None);
         }
@@ -504,69 +541,29 @@ impl WebAppSession {
         })
     }
 
-    /// Decodes and applies one binary `NVP1` hot-patch frame from `nve dev`.
-    #[cfg(feature = "dev")]
-    pub fn handle_hot_patch_frame(&mut self, raw: &[u8]) -> Result<HotReloadAction, String> {
-        let msg = HotPatchMsg::from_bytes(raw).map_err(|e| format!("invalid NVP1 frame: {e}"))?;
-        self.handle_hot_patch(msg)
-    }
-
-    /// Applies one decoded `HotPatchMsg` from `nve dev`.
-    #[cfg(feature = "dev")]
-    pub fn handle_hot_patch(&mut self, msg: HotPatchMsg) -> Result<HotReloadAction, String> {
-        match msg {
-            ref msg @ HotPatchMsg::TemplatePatch {
-                generation,
-                ref template_id,
-                ..
-            } => {
-                let template_id = template_id.clone();
-                let _ = self.app.apply_hot_patch(msg);
-                let mutations = self.runner.backend_mut().apply_template_patch(msg);
-                let next_frame = self.scene_frame_id.wrapping_add(1).max(1);
-                self.sync_scene(next_frame);
-                Ok(HotReloadAction::TemplatePatched {
-                    generation,
-                    template_id,
-                    mutations,
-                })
-            }
-            HotPatchMsg::DylibReload {
-                generation,
-                dylib_path,
-                build_ms,
-            } => Ok(HotReloadAction::ReloadPage {
-                generation,
-                dylib_path,
-                build_ms,
-            }),
-            HotPatchMsg::DevStatus {
-                message,
-                latency_ms,
-            } => Ok(HotReloadAction::DevStatus {
-                message,
-                latency_ms,
-            }),
-        }
-    }
-
-    #[cfg_attr(not(any(feature = "scene-view", feature = "dev")), allow(unused_variables))]
+    #[cfg_attr(not(feature = "scene-view"), allow(unused_variables))]
     fn sync_scene(&mut self, frame_id: FrameId) {
-        #[cfg(feature = "dev")]
-        {
-            self.scene_frame_id = frame_id;
-        }
         #[cfg(feature = "scene-view")]
-        self.scene.sync(self.runner.backend(), frame_id);
+        self.scene
+            .sync(self.app.store(), self.app.last_changes(), frame_id);
     }
 
     fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
-        let app = &mut self.app;
-        let timing = self
-            .runner
-            .flush_direct(|frame_id, backend| app.flush_into_timed(frame_id, backend))?;
-        self.sync_scene(timing.frame_id);
-        Ok(timing)
+        self.frame_id = self.frame_id.wrapping_add(1).max(1);
+        let frame_id = self.frame_id;
+        let (reconcile_us, stats) = self.app.commit_to_timed(frame_id, &mut self.backend)?;
+        self.sync_scene(frame_id);
+        Ok(FrameTiming {
+            frame_id,
+            op_count: stats.op_count,
+            mutation_count: stats.mutation_count,
+            reconcile_us,
+            encode_us: 0,
+            decode_us: stats.decode_us,
+            layout_us: stats.layout_us,
+            diff_us: stats.diff_us,
+            mount_us: stats.mount_us,
+        })
     }
 }
 

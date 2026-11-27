@@ -40,6 +40,7 @@ yoga = ["dep:nve-layout-yoga"]
 nve-abi = { workspace = true }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
+nve-store = { workspace = true }
 nve-backend-headless = { workspace = true }
 cosmic-text = { workspace = true }
 unicode-segmentation = { workspace = true }

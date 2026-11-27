@@ -11,10 +11,41 @@ pub struct NveSceneRef<'a> {
     pub(super) children_slab: &'a [u32],
     pub(super) dirty_indices: &'a [u32],
     pub(super) removed_ids: &'a [u32],
+    pub(super) tables: &'a [crate::table::NveTableView],
+}
+
+/// Validates non-null, alignment, and `isize::MAX` byte-length invariants before forming a slice.
+///
+/// # Safety
+/// When `len > 0`, `ptr` must point to `len` initialized, immutable `T` elements for `'a`.
+#[inline]
+unsafe fn guarded_slice<'a, T>(
+    ptr: *const T,
+    len: u32,
+    field: &'static str,
+) -> Result<&'a [T], SceneError> {
+    let count = len as usize;
+    if count == 0 {
+        return Ok(&[]);
+    }
+    if ptr.is_null() {
+        return Err(SceneError::NullBufferPointer(field));
+    }
+    if !(ptr as usize).is_multiple_of(std::mem::align_of::<T>()) {
+        return Err(SceneError::UnalignedBufferPointer(field));
+    }
+    let byte_len = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(SceneError::BufferLengthOverflow(field))?;
+    if byte_len > isize::MAX as usize {
+        return Err(SceneError::BufferLengthOverflow(field));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(ptr, count) })
 }
 
 impl<'a> NveSceneRef<'a> {
-    /// Validates `view.schema_hash` and non-null pointer invariants, returning a zero-copy reader.
+    /// Validates `view.schema_hash`, alignment, byte-length bounds, and non-null pointer
+    /// invariants, returning a zero-copy reader.
     ///
     /// # Safety
     /// Every non-empty pointer in `view` must remain valid and immutable for `'a` and cover at
@@ -26,48 +57,15 @@ impl<'a> NveSceneRef<'a> {
                 actual: view.schema_hash,
             });
         }
-        let nodes = if view.node_count == 0 {
-            &[]
-        } else {
-            if view.nodes.is_null() {
-                return Err(SceneError::NullBufferPointer("nodes"));
-            }
-            unsafe { std::slice::from_raw_parts(view.nodes, view.node_count as usize) }
-        };
-        let text_slab = if view.text_slab_len == 0 {
-            &[]
-        } else {
-            if view.text_slab.is_null() {
-                return Err(SceneError::NullBufferPointer("text_slab"));
-            }
-            unsafe { std::slice::from_raw_parts(view.text_slab, view.text_slab_len as usize) }
-        };
-        let children_slab = if view.children_slab_len == 0 {
-            &[]
-        } else {
-            if view.children_slab.is_null() {
-                return Err(SceneError::NullBufferPointer("children_slab"));
-            }
-            unsafe {
-                std::slice::from_raw_parts(view.children_slab, view.children_slab_len as usize)
-            }
-        };
-        let dirty_indices = if view.dirty_count == 0 {
-            &[]
-        } else {
-            if view.dirty_indices.is_null() {
-                return Err(SceneError::NullBufferPointer("dirty_indices"));
-            }
-            unsafe { std::slice::from_raw_parts(view.dirty_indices, view.dirty_count as usize) }
-        };
-        let removed_ids = if view.removed_count == 0 {
-            &[]
-        } else {
-            if view.removed_ids.is_null() {
-                return Err(SceneError::NullBufferPointer("removed_ids"));
-            }
-            unsafe { std::slice::from_raw_parts(view.removed_ids, view.removed_count as usize) }
-        };
+        let nodes = unsafe { guarded_slice(view.nodes, view.node_count, "nodes")? };
+        let text_slab = unsafe { guarded_slice(view.text_slab, view.text_slab_len, "text_slab")? };
+        let children_slab =
+            unsafe { guarded_slice(view.children_slab, view.children_slab_len, "children_slab")? };
+        let dirty_indices =
+            unsafe { guarded_slice(view.dirty_indices, view.dirty_count, "dirty_indices")? };
+        let removed_ids =
+            unsafe { guarded_slice(view.removed_ids, view.removed_count, "removed_ids")? };
+        let tables = unsafe { guarded_slice(view.tables, view.table_count, "tables")? };
 
         Ok(Self {
             frame_id: view.frame_id,
@@ -76,6 +74,7 @@ impl<'a> NveSceneRef<'a> {
             children_slab,
             dirty_indices,
             removed_ids,
+            tables,
         })
     }
 
@@ -121,6 +120,19 @@ impl<'a> NveSceneRef<'a> {
     #[inline]
     pub const fn children_slab(&self) -> &'a [u32] {
         self.children_slab
+    }
+
+    #[inline]
+    pub const fn tables(&self) -> &'a [crate::table::NveTableView] {
+        self.tables
+    }
+
+    #[inline]
+    pub fn table_by_key(&self, key: crate::Key64) -> Option<&'a crate::table::NveTableView> {
+        let (lo, hi) = (key.lo(), key.hi());
+        self.tables
+            .iter()
+            .find(|t| t.key_lo == lo && t.key_hi == hi)
     }
 
     #[inline]

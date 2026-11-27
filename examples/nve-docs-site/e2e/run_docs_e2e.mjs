@@ -25,7 +25,7 @@ const MIME_TYPES = {
   ".xml": "application/xml; charset=utf-8",
   ".png": "image/png",
   ".svg": "image/svg+xml",
-  ".nvs1": "application/octet-stream",
+  ".nvs2": "application/octet-stream",
 };
 
 function parseArgs(argv) {
@@ -325,9 +325,9 @@ async function run() {
       const info = await ssrCdp.eval(`(() => {
         const main = document.querySelector("main");
         const h1 = document.querySelector("h1");
-        const root = document.querySelector('[testid="docs-root"]');
+        const root = document.querySelector('[data-testid="docs-root"]');
         const bg = root ? getComputedStyle(root).backgroundColor : getComputedStyle(document.body).backgroundColor;
-        const sidebar = document.querySelector('[testid="docs-sidebar-desktop"]');
+        const sidebar = document.querySelector('[data-testid="docs-sidebar-desktop"]');
         return {
           hasMain: !!main,
           h1Text: h1 ? h1.textContent.trim() : "",
@@ -360,10 +360,10 @@ async function run() {
         const article = document.querySelector("article");
         const h1 = document.querySelector("h1");
         const code = document.querySelector("pre, code");
-        const root = document.querySelector('[testid="docs-root"]');
+        const root = document.querySelector('[data-testid="docs-root"]');
         const bg = root ? getComputedStyle(root).backgroundColor : getComputedStyle(document.body).backgroundColor;
-        const sidebar = document.querySelector('[testid="docs-sidebar-desktop"]');
-        const toc = document.querySelector('[testid="docs-toc"]');
+        const sidebar = document.querySelector('[data-testid="docs-sidebar-desktop"]');
+        const toc = document.querySelector('[data-testid="docs-toc"]');
         return {
           hasNav: !!nav,
           hasMain: !!main,
@@ -462,134 +462,134 @@ async function run() {
     await cdp.capturePng(path.join(shotsDir, "landing-desktop-dark.png"));
 
     // Interactive Hero Preview Card checks (Live UI increment -> RSX Code -> Binary IR -> Live UI)
-    await cdp.eval(`document.querySelector('[testid="hero-live-inc"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="hero-live-inc"]').click()`);
     await cdp.waitFor(
-      `document.querySelector('[testid="hero-live-count"]')?.textContent?.includes("Count: 4")`,
+      `document.querySelector('[data-testid="hero-live-count"]')?.textContent?.includes("Count: 4")`,
       4000,
       "hero live counter increment"
     );
-    await cdp.eval(`document.querySelector('[testid="hero-tab-code"]').click()`);
-    await cdp.waitFor(`!!document.querySelector('[testid="hero-panel-code"]')`, 4000, "hero RSX Code tab");
-    await cdp.eval(`document.querySelector('[testid="hero-tab-ir"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="hero-tab-code"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[data-testid="hero-panel-code"]')`, 4000, "hero RSX Code tab");
+    await cdp.eval(`document.querySelector('[data-testid="hero-tab-ir"]').click()`);
     await cdp.waitFor(
-      `document.querySelector('[testid="hero-panel-ir"]')?.textContent?.includes("Count: 4")`,
+      `document.querySelector('[data-testid="hero-panel-ir"]')?.textContent?.includes("Count: 4")`,
       4000,
       "hero Binary IR live sync"
     );
-    await cdp.eval(`document.querySelector('[testid="hero-tab-live"]').click()`);
-    await cdp.waitFor(`!!document.querySelector('[testid="hero-panel-live"]')`, 4000, "hero Live UI restore");
+    await cdp.eval(`document.querySelector('[data-testid="hero-tab-live"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[data-testid="hero-panel-live"]')`, 4000, "hero Live UI restore");
     console.log("    ✓ Hero Preview Card tabs (Live UI -> RSX Code -> Binary IR) verified");
 
     // Theme toggle Dark -> Light -> Screenshot 2 -> Dark
-    await cdp.eval(`document.querySelector('[testid="docs-theme-toggle"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-theme-toggle"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === false`, 4000, "light theme switch");
-    const lightBg = await cdp.eval(`getComputedStyle(document.querySelector('[testid="docs-root"]')).backgroundColor`);
+    const lightBg = await cdp.eval(`getComputedStyle(document.querySelector('[data-testid="docs-root"]')).backgroundColor`);
     assert(lightBg === "rgb(255, 255, 255)", `Expected light canvas rgb(255, 255, 255), got ${lightBg}`);
     await cdp.capturePng(path.join(shotsDir, "landing-desktop-light.png"));
     console.log(`    ✓ Landing light mode verified (landing-desktop-light.png captured)`);
 
-    await cdp.eval(`document.querySelector('[testid="docs-theme-toggle"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-theme-toggle"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === true`, 4000, "dark theme restore");
 
     // Development & Benchmark Progression Dashboard: scroll to controls + charts, capture screenshot, test Log scale + category pills + Table view
-    await cdp.eval(`document.querySelector('[testid="bench-controls-bar"]').scrollIntoView({ block: "start" })`);
+    await cdp.eval(`document.querySelector('[data-testid="bench-controls-bar"]').scrollIntoView({ block: "start" })`);
     await new Promise((r) => setTimeout(r, 200));
-    await cdp.waitFor(`!!document.querySelector('[testid="bench-latest-canvas"]')`, 4000, "benchmark NVE_DRAW1 canvas");
+    await cdp.waitFor(`!!document.querySelector('[data-testid="bench-latest-canvas"]')`, 4000, "benchmark NVE_DRAW1 canvas");
     await cdp.capturePng(path.join(shotsDir, "landing-benchmarks.png"));
 
-    const yaxisBefore = await cdp.eval(`document.querySelector('[testid="bench-bar-yaxis"]')?.textContent || ""`);
-    await cdp.eval(`document.querySelector('[testid="bench-log-scale"]').click()`);
+    const yaxisBefore = await cdp.eval(`document.querySelector('[data-testid="bench-bar-yaxis"]')?.textContent || ""`);
+    await cdp.eval(`document.querySelector('[data-testid="bench-log-scale"]').click()`);
     await cdp.waitFor(
-      `(document.querySelector('[testid="bench-bar-yaxis"]')?.textContent || "") !== ${JSON.stringify(yaxisBefore)}`,
+      `(document.querySelector('[data-testid="bench-bar-yaxis"]')?.textContent || "") !== ${JSON.stringify(yaxisBefore)}`,
       4000,
       "benchmark Log scale toggle"
     );
-    await cdp.eval(`document.querySelector('[testid="bench-filter-web-wasm"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="bench-filter-web-wasm"]').click()`);
     await cdp.waitFor(
-      `!!document.querySelector('[testid="bench-card-web-ssr-payload"]') && !document.querySelector('[testid="bench-card-cmdbuf-encode"]')`,
+      `!!document.querySelector('[data-testid="bench-card-web-ssr-payload"]') && !document.querySelector('[data-testid="bench-card-cmdbuf-encode"]')`,
       4000,
       "benchmark Web & WASM category filter"
     );
-    await cdp.eval(`document.querySelector('[testid="bench-filter-all"]').click()`);
-    await cdp.waitFor(`!!document.querySelector('[testid="bench-card-cmdbuf-encode"]')`, 4000, "benchmark All filter restore");
-    await cdp.eval(`document.querySelector('[testid="bench-table-toggle"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="bench-filter-all"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[data-testid="bench-card-cmdbuf-encode"]')`, 4000, "benchmark All filter restore");
+    await cdp.eval(`document.querySelector('[data-testid="bench-table-toggle"]').click()`);
     await cdp.waitFor(
-      `!!document.querySelector('[testid="bench-latest-table"]') && !document.querySelector('[testid="bench-latest-canvas"]')`,
+      `!!document.querySelector('[data-testid="bench-latest-table"]') && !document.querySelector('[data-testid="bench-latest-canvas"]')`,
       4000,
       "benchmark Table view toggle"
     );
-    await cdp.eval(`document.querySelector('[testid="bench-table-toggle"]').click()`);
-    await cdp.waitFor(`!!document.querySelector('[testid="bench-latest-canvas"]')`, 4000, "benchmark Chart view restore");
+    await cdp.eval(`document.querySelector('[data-testid="bench-table-toggle"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[data-testid="bench-latest-canvas"]')`, 4000, "benchmark Chart view restore");
     console.log("    ✓ Development & Benchmark Progression dashboard (Log scale, category pills, Table view, landing-benchmarks.png) verified");
 
     // SPA navigation from Landing -> Examples Gallery (/examples)
     await cdp.eval(`window.__SPA_ALIVE__ = "yes";`);
-    await cdp.eval(`document.querySelector('[testid="docs-section-examples"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-section-examples"]').click()`);
     await cdp.waitFor(`location.pathname.endsWith("/examples")`, 5000, "SPA pushState to /examples");
     assert((await cdp.eval(`window.__SPA_ALIVE__`)) === "yes", "Examples nav reloaded the page!");
-    await cdp.waitFor(`!!document.querySelector('[testid="examples-gallery-page"]')`, 4000, "examples gallery mount");
+    await cdp.waitFor(`!!document.querySelector('[data-testid="examples-gallery-page"]')`, 4000, "examples gallery mount");
     await cdp.capturePng(path.join(shotsDir, "examples-gallery.png"));
     console.log("    ✓ SPA navigation to /examples verified (examples-gallery.png captured)");
 
     // Switch live embedded playground on /examples
-    await cdp.eval(`document.querySelector('[testid="examples-pg-tab-crdt-simulator"]').click()`);
-    await cdp.waitFor(`!!document.querySelector('[testid="pg-crdt-convergence"]')`, 4000, "gallery CRDT tab");
+    await cdp.eval(`document.querySelector('[data-testid="examples-pg-tab-crdt-simulator"]').click()`);
+    await cdp.waitFor(`!!document.querySelector('[data-testid="pg-crdt-convergence"]')`, 4000, "gallery CRDT tab");
 
     // SPA navigation from Examples -> Docs (/docs) -> /docs/guides/ui-components
-    await cdp.eval(`document.querySelector('[testid="docs-section-docs"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-section-docs"]').click()`);
     await cdp.waitFor(`location.pathname.endsWith("/docs")`, 5000, "SPA pushState to /docs");
     assert((await cdp.eval(`window.__SPA_ALIVE__`)) === "yes", "Docs nav reloaded the page!");
-    await cdp.eval(`document.querySelector('[testid="docs-nav-guides-ui-components"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-nav-guides-ui-components"]').click()`);
     await cdp.waitFor(
-      `location.pathname.endsWith("/docs/guides/ui-components") && !!document.querySelector('[testid="pg-ui-root"]')`,
+      `location.pathname.endsWith("/docs/guides/ui-components") && !!document.querySelector('[data-testid="pg-ui-root"]')`,
       5000,
       "SPA sidebar nav to /docs/guides/ui-components"
     );
-    await cdp.eval(`document.querySelector('[testid="pg-ui-btn-primary"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="pg-ui-btn-primary"]').click()`);
     await cdp.waitFor(
-      `document.querySelector('[testid="pg-ui-count-badge"]')?.textContent?.includes("Actions: 1")`,
+      `document.querySelector('[data-testid="pg-ui-count-badge"]')?.textContent?.includes("Actions: 1")`,
       4000,
       "UI playground button click"
     );
-    await cdp.eval(`document.querySelector('[testid="pg-vlist-jump-75000"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="pg-vlist-jump-75000"]').click()`);
     await cdp.waitFor(
-      `document.querySelector('[testid="pg-vlist-selected"]')?.textContent?.includes("#75000")`,
+      `document.querySelector('[data-testid="pg-vlist-selected"]')?.textContent?.includes("#75000")`,
       4000,
       "VirtualList jump to #75000"
     );
     console.log("    ✓ Docs /docs/guides/ui-components + UI Playground + 100k VirtualList verified");
 
-    // ⌘K Search Modal + real NVS1 query -> /docs/guides/local-first-crdt
+    // ⌘K Search Modal + real NVS2 query -> /docs/guides/local-first-crdt
     await cdp.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`);
-    await cdp.waitFor(`!!document.querySelector('[testid="docs-search-dialog"]')`, 4000, "⌘K search modal open");
+    await cdp.waitFor(`!!document.querySelector('[data-testid="docs-search-dialog"]')`, 4000, "⌘K search modal open");
     await cdp.eval(`(() => {
-      const inp = document.querySelector('[testid="docs-search-input"]');
+      const inp = document.querySelector('[data-testid="docs-search-input"]');
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
       setter.call(inp, "CRDT");
       inp.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
     await cdp.waitFor(
-      `document.querySelector('[testid="docs-search-hit-0"]')?.textContent?.toLowerCase()?.includes("crdt")`,
+      `document.querySelector('[data-testid="docs-search-hit-0"]')?.textContent?.toLowerCase()?.includes("crdt")`,
       4000,
-      "NVS1 search filtering for CRDT"
+      "NVS2 search filtering for CRDT"
     );
-    await cdp.eval(`document.querySelector('[testid="docs-search-hit-0"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-search-hit-0"]').click()`);
     await cdp.waitFor(
-      `location.pathname.endsWith("/docs/guides/local-first-crdt") && !document.querySelector('[testid="docs-search-dialog"]')`,
+      `location.pathname.endsWith("/docs/guides/local-first-crdt") && !document.querySelector('[data-testid="docs-search-dialog"]')`,
       5000,
       "search hit navigation to /docs/guides/local-first-crdt"
     );
     assert((await cdp.eval(`window.__SPA_ALIVE__`)) === "yes", "Search navigation reloaded the page!");
 
-    await cdp.eval(`document.querySelector('[testid="pg-crdt-a-edit"]').click()`);
-    await cdp.eval(`document.querySelector('[testid="pg-crdt-b-edit"]').click()`);
-    await cdp.eval(`document.querySelector('[testid="pg-crdt-sync"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="pg-crdt-a-edit"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="pg-crdt-b-edit"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="pg-crdt-sync"]').click()`);
     await cdp.waitFor(
-      `document.querySelector('[testid="pg-crdt-convergence"]')?.textContent?.includes("Converged") && !document.querySelector('[testid="pg-crdt-bytes"]')?.textContent?.includes("0 B")`,
+      `document.querySelector('[data-testid="pg-crdt-convergence"]')?.textContent?.includes("Converged") && !document.querySelector('[data-testid="pg-crdt-bytes"]')?.textContent?.includes("0 B")`,
       4000,
       "CRDT simulator NVC1 sync"
     );
-    console.log("    ✓ ⌘K NVS1 search + CRDT binary NVC1 convergence passed with 0 reloads");
+    console.log("    ✓ ⌘K NVS2 search + CRDT binary NVC1 convergence passed with 0 reloads");
 
     assert(cdp.consoleErrors.length === 0, `Desktop console errors: ${cdp.consoleErrors.join(" | ")}`);
     assert(cdp.pageErrors.length === 0, `Desktop page errors: ${cdp.pageErrors.join(" | ")}`);
@@ -608,10 +608,10 @@ async function run() {
       "mobile landing hydration & responsive switch"
     );
     const mobInfo = await mobCdp.eval(`(() => {
-      const toggle = document.querySelector('[testid="docs-mobile-menu-toggle"]');
+      const toggle = document.querySelector('[data-testid="docs-mobile-menu-toggle"]');
       return {
         hasMenuToggle: !!toggle && getComputedStyle(toggle).display !== "none",
-        hasLanding: !!document.querySelector('[testid="landing-page"]'),
+        hasLanding: !!document.querySelector('[data-testid="landing-page"]'),
         mismatches: window.__NVE_DOCS__.mismatches,
         overflowX: document.documentElement.scrollWidth - window.innerWidth,
       };
@@ -622,8 +622,8 @@ async function run() {
     assert(mobInfo.overflowX <= 2, `Mobile horizontal overflow: ${mobInfo.overflowX}px`);
     await mobCdp.capturePng(path.join(shotsDir, "landing-mobile.png"));
 
-    await mobCdp.eval(`document.querySelector('[testid="docs-mobile-menu-toggle"]').click()`);
-    await mobCdp.waitFor(`!!document.querySelector('[testid="docs-sidebar-drawer"]')`, 4000, "mobile drawer open");
+    await mobCdp.eval(`document.querySelector('[data-testid="docs-mobile-menu-toggle"]').click()`);
+    await mobCdp.waitFor(`!!document.querySelector('[data-testid="docs-sidebar-drawer"]')`, 4000, "mobile drawer open");
     assert(mobCdp.consoleErrors.length === 0, `Mobile console errors: ${mobCdp.consoleErrors.join(" | ")}`);
     assert(mobCdp.pageErrors.length === 0, `Mobile page errors: ${mobCdp.pageErrors.join(" | ")}`);
     mobCdp.close();
@@ -635,9 +635,9 @@ async function run() {
     await mobNoJs.send("Emulation.setScriptExecutionDisabled", { value: true });
     await mobNoJs.navigate(`${origin}/docs/reference/benchmarks/`);
     const noJsBench = await mobNoJs.eval(`(() => {
-      const sidebar = document.querySelector('[testid="docs-sidebar-desktop"]');
-      const toc = document.querySelector('[testid="docs-toc"]');
-      const toggle = document.querySelector('[testid="docs-mobile-menu-toggle"]');
+      const sidebar = document.querySelector('[data-testid="docs-sidebar-desktop"]');
+      const toc = document.querySelector('[data-testid="docs-toc"]');
+      const toggle = document.querySelector('[data-testid="docs-mobile-menu-toggle"]');
       return {
         sidebarDisplay: sidebar ? getComputedStyle(sidebar).display : "missing",
         sidebarWidth: sidebar ? sidebar.getBoundingClientRect().width : -1,
@@ -749,7 +749,7 @@ async function run() {
         new Promise((_, rej) => setTimeout(() => rej(new Error(`Timed out intercepting nve_docs_site.js for ${label}`)), 8000)),
       ]);
       await rCdp.waitFor(
-        `typeof window.__nveReplayDrain === "function" && !!document.querySelector('[testid="docs-mobile-menu-toggle"]')`,
+        `typeof window.__nveReplayDrain === "function" && !!document.querySelector('[data-testid="docs-mobile-menu-toggle"]')`,
         8000,
         `${label} SSR DOM & replay script ready`
       );
@@ -780,8 +780,8 @@ async function run() {
     }
 
     const menuReplay = await runThrottledReplayScenario(
-      `document.querySelector('[testid="docs-mobile-menu-toggle"]').click()`,
-      `!!document.querySelector('[testid="docs-sidebar-drawer"]')`,
+      `document.querySelector('[data-testid="docs-mobile-menu-toggle"]').click()`,
+      `!!document.querySelector('[data-testid="docs-sidebar-drawer"]')`,
       "mobile-drawer-replayed.png",
       "throttled-WASM mobile Menu tap replay"
     );
@@ -789,7 +789,7 @@ async function run() {
 
     const cmdKReplay = await runThrottledReplayScenario(
       `window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))`,
-      `!!document.querySelector('[testid="docs-search-dialog"]')`,
+      `!!document.querySelector('[data-testid="docs-search-dialog"]')`,
       null,
       "throttled-WASM Meta+K replay"
     );
@@ -803,7 +803,7 @@ async function run() {
     await deskBench.capturePng(path.join(shotsDir, "desktop-benchmarks.png"));
     await deskBench.eval(`window.__nveSpaMarker = 42;`);
     const beforePath = await deskBench.eval(`location.pathname`);
-    await deskBench.eval(`document.querySelector('[testid="docs-nav-getting-started-quickstart"]').click()`);
+    await deskBench.eval(`document.querySelector('[data-testid="docs-nav-getting-started-quickstart"]').click()`);
     await deskBench.waitFor(
       `location.pathname !== ${JSON.stringify(beforePath)} && location.pathname.includes("/getting-started/quickstart")`,
       5000,
@@ -820,7 +820,7 @@ async function run() {
     const { cdp: layoutCdp } = await createPageCdp(chrome.debugPort);
     const layoutExpr = `(() => {
       const docOverflow = document.documentElement.scrollWidth - window.innerWidth;
-      const main = document.querySelector('[testid="docs-main-scroll"]');
+      const main = document.querySelector('[data-testid="docs-main-scroll"]');
       const mainOverflow = main ? main.scrollWidth - main.clientWidth : 0;
       const cellOverlaps = [];
       const textOverflows = [];
@@ -856,7 +856,7 @@ async function run() {
         });
       }
       const danglingPunct = [];
-      for (const code of document.querySelectorAll('[testid="docs-inline-code"]')) {
+      for (const code of document.querySelectorAll('[data-testid="docs-inline-code"]')) {
         const cRects = code.getClientRects();
         if (!cRects.length) continue;
         const cFirst = cRects[0];
@@ -950,7 +950,7 @@ async function run() {
       );
       await exCdp.eval(`(() => {
         const doc = document.getElementById("nve-example-frame").contentDocument;
-        const btn = doc.querySelector('[testid="ks-counter-inc"]')
+        const btn = doc.querySelector('[data-testid="ks-counter-inc"]')
           || Array.from(doc.querySelectorAll("#app [data-nve-id]")).find((el) => el.textContent && el.textContent.trim() === "Increment +");
         if (!btn) throw new Error("Kitchen Sink Increment + button not found");
         btn.click();

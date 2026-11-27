@@ -302,10 +302,19 @@ fn StudioWorkspaceShell(
             view {
                 test_id: "workspace-root",
                 accessibility_label: "Aether Studio Workspace",
-                "layout-engine": "{layout_engine_str}",
-                "viewport-mode": "{viewport_mode_str}",
-                "size-class": "{size_class_str}",
-                "active-route": "{route_path}",
+                nve_table: {
+                    let pairs = vec![
+                        ("layout-engine".to_owned(), layout_engine_str.to_owned()),
+                        ("viewport-mode".to_owned(), viewport_mode_str.to_owned()),
+                        ("size-class".to_owned(), size_class_str.to_owned()),
+                        ("active-route".to_owned(), route_path.clone()),
+                    ];
+                    nve_dioxus::table_attr_fn(move |tx, node| {
+                        tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                            nve_web_html::DataAttrList::from_pairs(pairs.clone()),
+                        ));
+                    })
+                },
                 style: "width: 100%; height: 100%; flex-direction: {root_flex_dir}; background-color: {CANVAS_BG};",
 
                 // 1A. MOBILE PORTRAIT CHROME (`SizeClass::Compact`)

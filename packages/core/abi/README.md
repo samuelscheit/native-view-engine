@@ -5,20 +5,26 @@ Zero-copy `#[repr(C)]` C ABI and binary wire definitions (`packages/core/abi`, *
 ## Key Public API
 
 - `ffi::{NveAppHandle, NveComponentApi, NveDevApi, NveBufferSlice}`, `host::{NveHostApi, NveHostCallbacks, NveHostStatus}`
-- `scene::{NveRenderNode, NveSceneView, NveSceneTable, NveNodeMeta}`
-- `codec::{CommandBufferBuilder, CommandDecoder, ColorRgba, Dimension, EdgeInsets}`, `events`, `schema`, `NveAbi`
+- `scene::{NveRenderNode, NveSceneView, NveSceneTable, NveNodeMeta, NVE_PRIMARY_SLOT_NONE}`
+- `table::{NveTableView, TableDesc, FieldDesc, FieldKind, compute_table_schema_hash}`
+- `value::{NveValue, NveValueRef, NveDirectEvent, BinValueView}`, `events`, `schema`, `NveAbi`
 
 ```rust
-use nve_abi::{CommandBufferBuilder, ComponentKind};
+use nve_abi::{NveSceneTable, SceneNodeInput, NVE_PRIMARY_SLOT_NONE};
 
-let mut builder = CommandBufferBuilder::new(1, 1);
-builder.create_node(1, ComponentKind::View, None);
-let bytes = builder.finish();
+let mut table = NveSceneTable::new();
+table.begin_frame(1);
+table.upsert_node(SceneNodeInput {
+    node_id: 1,
+    primary_slot: NVE_PRIMARY_SLOT_NONE,
+    ..SceneNodeInput::default()
+})?;
+let view = table.as_view();
 ```
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi-macros`, `serde`, `rustc-hash`.
+- **Depends on**: `nve-abi-macros`, `nve-hash`, `serde`, `rustc-hash`.
 - **Must NOT depend on**: `dioxus*`, `serde_json`, `web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

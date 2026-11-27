@@ -2,13 +2,13 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::MultiBackendHarness;
+use common::{find_in_store, register_studio_tables, MultiBackendHarness};
 use nve_abi::{
     pack_key_modifiers, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveValue, RawPropValue, ROOT_NODE_ID,
+    NveSizeConstraints, NveValue, ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_engine::{NveApp, RenderBackend, Viewport};
+use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_interop::{NvePluginHost, PluginRequirement};
 use nve_studio_workspace::{
     fuzzy_score, AccentTheme, ActiveView, LayoutEngineMode, StudioWorkspaceModule,
@@ -32,8 +32,8 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
 
     let root_id = h.find_by_test_id("workspace-root").unwrap();
     assert_eq!(
-        h.headless.node(root_id).unwrap().raw_props.get("viewport-mode"),
-        Some(&RawPropValue::String("mobile-portrait".into()))
+        h.data_attr(root_id, "viewport-mode").as_deref(),
+        Some("mobile-portrait")
     );
 
     let center_id = h.find_by_test_id("center-workspace").unwrap();
@@ -94,6 +94,7 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
     let resize_mobile = [NveDirectEvent::layout(1, ROOT_NODE_ID, 1000, 0.0, 0.0, 393.0, 852.0)];
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&resize_mobile) }));
     assert!(app.state_snapshot().is_mobile_portrait());
+    register_studio_tables();
     let mobile_frame = app.render(2).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
@@ -104,8 +105,9 @@ fn responsive_mobile_portrait_layout_at_393pt_collapses_drawers_without_crushing
             scale_factor: 3.0,
         },
     );
-    host.submit_frame(&mobile_frame).unwrap();
-    assert!(host.render_ascii_tree().contains("Studio OFF"));
+    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    rep.submit_nve2_frame(&mobile_frame).unwrap();
+    assert!(rep.backend().render_ascii_tree(rep.store()).contains("Studio OFF"));
 
     let measured_mobile = app.measure(NveSizeConstraints {
         min_w: 0.0,
@@ -219,6 +221,7 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
     assert_eq!(slot2.surface_id(), 50_000);
     let pf2 = slot2.render(2).unwrap().to_vec();
 
+    register_studio_tables();
     let mut verify_host = HeadlessBackend::new();
     verify_host.set_viewport(
         50_000,
@@ -228,8 +231,10 @@ fn live_pairing_binary_delta_and_dynamic_plugin_host_with_studio_cdylib() {
             scale_factor: 1.0,
         },
     );
-    verify_host.submit_frame(&pf2).unwrap();
-    let tree = verify_host.render_ascii_tree();
+    let mut verify_rep =
+        StoreWireReplica::new(verify_host, nve_components::tables::core_realization_order());
+    verify_rep.submit_nve2_frame(&pf2).unwrap();
+    let tree = verify_rep.backend().render_ascii_tree(verify_rep.store());
     assert!(tree.contains("100k Stream"));
     assert!(tree.contains("Active: Yoga (C++20)"));
 }
@@ -250,15 +255,17 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
         height: 640.0,
         scale_factor: 1.0,
     };
+    register_studio_tables();
     let mut app = StudioWorkspaceModule::create(1);
-    let mut host = HeadlessBackend::new();
-    host.set_viewport(1, vp);
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(1, vp);
+    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
     let f1 = app.render(1).to_vec();
-    host.submit_frame(&f1).unwrap();
+    host.submit_nve2_frame(&f1).unwrap();
     assert!(!app.state_snapshot().palette.open);
 
     let send_keydown = |app: &mut StudioWorkspaceModule,
-                        host: &mut HeadlessBackend,
+                        host: &mut StoreWireReplica<HeadlessBackend>,
                         key: &str,
                         meta: bool,
                         ctrl: bool,
@@ -278,32 +285,28 @@ fn cmd_k_command_palette_fuzzy_filtering_keyboard_navigation_and_execution() {
             "keydown {key:?} not handled"
         );
         let frame = app.render(fid).to_vec();
-        host.submit_frame(&frame).unwrap();
+        host.submit_nve2_frame(&frame).unwrap();
     };
 
     let type_in = |app: &mut StudioWorkspaceModule,
-                   host: &mut HeadlessBackend,
+                   host: &mut StoreWireReplica<HeadlessBackend>,
                    tid: &str,
                    text: &str,
                    fid: u64| {
-        let nid = host
-            .nodes()
-            .values()
-            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
-            .id;
+        let nid = find_in_store(host.store(), tid)
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let ev = [NveDirectEvent::text_change(1, nid, fid * 16_000, text)];
         assert!(
             app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }),
             "text change on '{tid}' not handled"
         );
         let frame = app.render(fid).to_vec();
-        host.submit_frame(&frame).unwrap();
+        host.submit_nve2_frame(&frame).unwrap();
     };
 
     send_keydown(&mut app, &mut host, "k", true, false, 2);
     assert!(app.state_snapshot().palette.open);
-    assert!(host.render_ascii_tree().contains("CMD+K PALETTE"));
+    assert!(host.backend().render_ascii_tree(host.store()).contains("CMD+K PALETTE"));
 
     send_keydown(&mut app, &mut host, "Escape", false, false, 3);
     assert!(!app.state_snapshot().palette.open);
@@ -387,9 +390,10 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     h.press("chat-composer-send");
     assert!(h.ascii().contains("PNG avatars + Cmd+K contrast look crisp."));
 
+    register_studio_tables();
     let mut app = StudioWorkspaceModule::create(1);
-    let mut host = HeadlessBackend::new();
-    host.set_viewport(
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(
         1,
         Viewport {
             width: 960.0,
@@ -397,15 +401,11 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
             scale_factor: 1.0,
         },
     );
+    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
     let f1 = app.render(1).to_vec();
-    host.submit_frame(&f1).unwrap();
+    host.submit_nve2_frame(&f1).unwrap();
 
-    let new_task_nid = host
-        .nodes()
-        .values()
-        .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == "board-new-task-input"))
-        .unwrap()
-        .id;
+    let new_task_nid = find_in_store(host.store(), "board-new-task-input").unwrap();
     let ev_type = [NveDirectEvent::text_change(
         1,
         new_task_nid,
@@ -414,7 +414,7 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     )];
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_type) }));
     let f2 = app.render(2).to_vec();
-    host.submit_frame(&f2).unwrap();
+    host.submit_nve2_frame(&f2).unwrap();
 
     let ev_submit = [NveDirectEvent::submit(1, new_task_nid, 32_000, "")];
     assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev_submit) }));
@@ -423,13 +423,8 @@ fn text_input_chat_composer_board_search_create_time_travel_and_snapshot_roundtr
     let eng_entries = [NveMapEntry::new("view", NveValue::from_str("engineering"))];
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&eng_entries) }));
     let f4 = app.render(4).to_vec();
-    host.submit_frame(&f4).unwrap();
-    let chat_nid = host
-        .nodes()
-        .values()
-        .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == "chat-composer-input"))
-        .unwrap()
-        .id;
+    host.submit_nve2_frame(&f4).unwrap();
+    let chat_nid = find_in_store(host.store(), "chat-composer-input").unwrap();
     let ev_chat = [NveDirectEvent::text_change(
         1,
         chat_nid,

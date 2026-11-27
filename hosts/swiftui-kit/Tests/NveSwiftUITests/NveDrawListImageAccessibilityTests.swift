@@ -544,12 +544,13 @@ final class NveDrawListImageAccessibilityTests: XCTestCase {
                                 removed_count: 0,
                                 text_slab_len: UInt32(tb.count),
                                 children_slab_len: UInt32(cb.count),
-                                _pad: 0,
+                                table_count: 0,
                                 nodes: nb.baseAddress,
                                 text_slab: tb.baseAddress,
                                 children_slab: cb.baseAddress,
                                 dirty_indices: db.baseAddress,
-                                removed_ids: nil
+                                removed_ids: nil,
+                                tables: nil
                             )
                             try store.apply(view: view)
                         }

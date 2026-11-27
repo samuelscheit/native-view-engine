@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use nve_backend_web::WebBackend;
+use nve_components::tables::DebugId;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_engine::RenderBackend;
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 use nve_query::{ManualClock, QueryClientConfig, QueryOptions, Shared};
 use nve_query_dioxus::prelude::*;
 use nve_rpc::{
@@ -247,11 +248,30 @@ impl std::task::Wake for FlagWaker {
     }
 }
 
+fn new_web_backend() -> WebBackend {
+    let mut web = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(web.table_registry_mut());
+    web
+}
+
+fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
+    let mut stack = vec![StoreNodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if id != StoreNodeId::ROOT
+            && let Some(dbg) = store.try_row::<DebugId>(id)
+            && dbg.test_id() == tid
+        {
+            return id.raw();
+        }
+        stack.extend_from_slice(store.children(id));
+    }
+    panic!("{tid} present");
+}
+
 fn render_html(surface: &mut DioxusSurface, web: &mut WebBackend, frame: &mut u64) -> String {
     *frame += 1;
-    let (_, _, buf) = surface.render_frame(*frame);
-    web.submit_frame(&buf).unwrap();
-    web.render_html()
+    surface.commit_to(*frame, web).unwrap();
+    web.render_html(surface.store())
 }
 
 fn pump_all_async(
@@ -266,8 +286,7 @@ fn pump_all_async(
             return rendered;
         }
         *frame += 1;
-        let (_, _, buf) = surface.render_frame(*frame);
-        web.submit_frame(&buf).unwrap();
+        surface.commit_to(*frame, web).unwrap();
         rendered += 1;
     }
     assert!(
@@ -350,7 +369,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     );
 
     let mut frame = 0u64;
-    let mut web = WebBackend::new();
+    let mut web = new_web_backend();
     let wake_flag = Arc::new(FlagWaker(AtomicBool::new(false), AtomicUsize::new(0)));
     let waker = Waker::from(Arc::clone(&wake_flag));
 
@@ -410,7 +429,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     );
     let pumped = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     assert!(pumped >= 1, "expected at least 1 async frame after background wake");
-    let html2 = web.render_html();
+    let html2 = web.render_html(surface.store());
     assert!(
         html2.contains("TODO:1:Ship async wake"),
         "async query result must render without any user input: {html2}"
@@ -428,27 +447,18 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     assert!(
         html_switching.contains("TODO:1:Ship async wake")
-            && web.render_html().contains("TODO:1:Ship async wake"),
+            && web.render_html(surface.store()).contains("TODO:1:Ship async wake"),
         "keep_previous_data must retain previous key's data while new key fetches: {}",
-        web.render_html()
+        web.render_html(surface.store())
     );
     transport.release_queries();
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("TODO:2:Verify ActionForm"));
+    assert!(web.render_html(surface.store()).contains("TODO:2:Verify ActionForm"));
     assert_eq!(client.active_slot_count(), 1);
 
     // 3. ActionForm local 0ms `FormDecode` validation (empty title -> 0 network calls, inline error!).
     let actions_before = transport.state.lock().unwrap().action_calls;
-    let form_node = web
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "rename-form"
-            )
-            .then_some(id)
-        })
-        .expect("rename-form present");
+    let form_node = find_by_test_id(surface.store(), "rename-form");
     let submit_ev = nve_abi::NativeEvent {
         surface_id: 1,
         node_id: form_node,
@@ -464,7 +474,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
         "local FormDecode error must NOT fire a network RPC call"
     );
     assert!(
-        web.render_html().contains("title must not be empty"),
+        web.render_html(surface.store()).contains("title must not be empty"),
         "local FormDecode error must render inline"
     );
 
@@ -477,7 +487,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
     assert!(
-        web.render_html().contains("server rejected reserved title"),
+        web.render_html(surface.store()).contains("server rejected reserved title"),
         "server FieldErrors must bind inline"
     );
     let still_dirty = surface.in_root_scope(|| ctrl_sig.read().is_dirty());
@@ -494,7 +504,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     assert!(surface.dispatch_events(&[submit_ev]));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
-    let html_done = web.render_html();
+    let html_done = web.render_html(surface.store());
     assert!(
         html_done.contains("TODO:2:Shipped Cleanly"),
         "successful ActionForm must invalidate tag and auto-refetch Todo #2: {html_done}"
@@ -575,25 +585,16 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
     }
 
     let mut frame = 0u64;
-    let mut web = WebBackend::new();
+    let mut web = new_web_backend();
     let wake_flag = Arc::new(FlagWaker(AtomicBool::new(false), AtomicUsize::new(0)));
     let waker = Waker::from(Arc::clone(&wake_flag));
     let mut surface = DioxusSurface::new(1, OptRoot).with_context(client);
 
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("OPT:Ship async wake:ERR:false"));
+    assert!(web.render_html(surface.store()).contains("OPT:Ship async wake:ERR:false"));
 
-    let btn = web
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "opt-fail-btn"
-            )
-            .then_some(id)
-        })
-        .expect("opt-fail-btn present");
+    let btn = find_by_test_id(surface.store(), "opt-fail-btn");
 
     // Click triggers `run_optimistic`: synchronous patch appears immediately while RPC is in flight!
     let press_ev = nve_abi::NativeEvent {
@@ -606,7 +607,7 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
     assert!(surface.dispatch_events(&[press_ev]));
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
-    let mid = web.render_html();
+    let mid = web.render_html(surface.store());
     assert!(
         mid.contains("OPT:OPTIMISTIC_FLASH:ERR:false"),
         "optimistic patch must render while action RPC is still pending: {mid}"
@@ -615,7 +616,7 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
     // Release server rejection -> rolls back optimistic patch and exposes action error.
     transport.release_actions();
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
-    let after = web.render_html();
+    let after = web.render_html(surface.store());
     assert!(
         after.contains("OPT:Ship async wake:ERR:true"),
         "rejected optimistic action must roll back title and expose error: {after}"

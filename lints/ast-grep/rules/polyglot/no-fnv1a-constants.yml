@@ -7,9 +7,9 @@
 
 id: no-fnv1a-constants-rust
 language: rust
-severity: warning
-message: "FNV-1a magic constant is banned [stage: PostNodeStore]; standardize on `const fn xxh64` (`nve-hash` / `nve-abi`)."
-note: "[stage: PostNodeStore] Matches 32-bit and 64-bit hex/decimal FNV-1a constants. Flip to `error` when NodeStore/nve-hash lands."
+severity: error
+message: "FNV-1a magic constant is banned; standardize on `const fn xxh64` (`nve-hash` / `nve-abi`)."
+note: "Matches 32-bit and 64-bit hex/decimal FNV-1a constants in Rust sources."
 ignores:
   - "packages/tools/cli/tests/arch_invariants/**"
   - "**/tests/**"

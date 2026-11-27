@@ -34,7 +34,7 @@ void test_mmap_snapshot_and_session_instant_boot() {
 
   TempDirGuard tmp("core");
 
-  // 12a. Canonical XXH64 golden vector check (exact match with Rust `nve_engine::xxh64`).
+  // 12a. Canonical XXH64 golden vector check (exact match with Rust `nve_hash::xxh64`).
   {
     assert(nve::xxh64(nullptr, 0u, 0u) == 0xEF46DB3751D8E999ULL);
     assert(nve::xxh64(reinterpret_cast<const uint8_t*>("a"), 1u, 0u) == 0xD24EC4F1A98C6E5BULL);
@@ -46,10 +46,10 @@ void test_mmap_snapshot_and_session_instant_boot() {
     }
     assert(nve::xxh64(seq.data(), seq.size(), 0u) == 0x149AA44972CDAE00ULL);
     // Verify streaming split at byte 24 matches one-shot digest.
-    nve::detail::Xxh64Hasher stream(0u);
+    nve::Xxh64Hasher stream(0u);
     stream.update(seq.data(), 24u);
     stream.update(seq.data() + 24u, seq.size() - 24u);
-    assert(stream.finish() == 0x149AA44972CDAE00ULL);
+    assert(stream.digest() == 0x149AA44972CDAE00ULL);
   }
 
   // 12b. Atomic write -> mmap open -> 8-byte alignment + true zero-copy pointer-in-region proof.

@@ -1,16 +1,39 @@
-//! Dev/E2E-only (`dev` feature) semantic HTML5 + `RawStyleProps` hydration probe: mounts a
-//! hand-built CommandBuffer as SSR HTML into `#<mount_id>` and hydrates it in place.
+//! Dev/E2E-only (`dev` feature) semantic HTML5 + typed table hydration probe: mounts a
+//! hand-built `NodeStore` frame as SSR HTML into `#<mount_id>` and hydrates it in place.
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, EdgeInsets, EventMask, LayoutProps,
-    RawPropValue, StyleProps, ROOT_NODE_ID,
-};
+use std::cell::RefCell;
+
+use nve_abi::EventMask;
 use nve_backend_web::WebBackend;
-use nve_engine::RenderBackend;
+use nve_canvas::Canvas;
+use nve_components::tables::{
+    register_core_tables, Accessibility, AriaRole, BoxShadow, BoxShadows, DebugId, FlexWrap,
+    Interaction, Layout, Link, TextAlign, TextContent, TextInput, Typography, Visual,
+};
+use nve_engine::StoreBackend;
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+use nve_web_html::{register_web_html_tables, DataAttrList, HtmlDataAttrs};
 use wasm_bindgen::prelude::*;
 
-/// Hydrates a semantic HTML5 + `RawStyleProps` (`box-shadow`/`font-weight`/`text-align`)
-/// CommandBuffer into `#<mount_id>`, returning the mismatch count (0 on clean hydration).
+fn new_probe_store() -> NodeStore {
+    register_core_tables();
+    register_web_html_tables();
+    NodeStore::new()
+}
+
+thread_local! {
+    /// Keeps the most recent probe `WebBackend` alive while E2E inspects its DOM &
+    /// `adoptedStyleSheets` (replacing it drops the previous backend cleanly).
+    static LAST_PROBE_BACKEND: RefCell<Option<WebBackend>> = const { RefCell::new(None) };
+}
+
+fn new_probe_web(mut web: WebBackend) -> WebBackend {
+    crate::register_shell_web_systems(&mut web);
+    web
+}
+
+/// Hydrates a semantic HTML5 + typed table (`box_shadows`/`font_weight`/`text_align`)
+/// `NodeStore` into `#<mount_id>`, returning the mismatch count (0 on clean hydration).
 #[wasm_bindgen]
 pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsValue> {
     let doc = web_sys::window()
@@ -20,66 +43,73 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
         .get_element_by_id(mount_id)
         .ok_or_else(|| JsValue::from_str(&format!("mount '#{mount_id}' not found")))?;
 
-    let mut b = CommandBufferBuilder::new(99, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.set_raw_prop(2, "testID", &RawPropValue::String("probe-card".into()));
-    b.set_raw_prop(2, "accessibilityRole", &RawPropValue::String("article".into()));
-    b.set_raw_prop(
-        2,
-        "box-shadow",
-        &RawPropValue::String("0 8px 24px rgba(0, 0, 0, 0.45)".into()),
-    );
-    b.set_layout(
-        2,
-        &LayoutProps {
-            padding: EdgeInsets::all(12.0),
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        2,
-        &StyleProps {
-            background: ColorRgba::rgb(17, 24, 39),
-            border_radius: 10.0,
-            ..Default::default()
-        },
-    );
+    let mut store = new_probe_store();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = store.tx();
+        let root = NodeId::ROOT;
+        let card = NodeId(2);
+        let heading = NodeId(3);
+        let link = NodeId(4);
+        let _ = tx.create_at(root);
+        let _ = tx.create_at(card);
+        let _ = tx.create_at(heading);
+        let _ = tx.create_at(link);
 
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_raw_prop(3, "testID", &RawPropValue::String("probe-heading".into()));
-    b.set_raw_prop(3, "accessibilityRole", &RawPropValue::String("heading".into()));
-    b.set_raw_prop(3, "ariaLevel", &RawPropValue::I64(1));
-    b.set_raw_prop(3, "font-weight", &RawPropValue::String("700".into()));
-    b.set_raw_prop(3, "text-align", &RawPropValue::String("center".into()));
-    b.set_style(
-        3,
-        &StyleProps {
-            text_color: ColorRgba::WHITE,
-            font_size: 20.0,
-            ..Default::default()
-        },
-    );
-    b.set_text(3, "Semantic SSR Heading");
+        tx.set_str(card, DebugId::TEST_ID, "probe-card");
+        tx.set(card, Accessibility::ROLE, AriaRole::Article);
+        let p = Length::points(12.0);
+        tx.set(card, Layout::PADDING_TOP, p);
+        tx.set(card, Layout::PADDING_RIGHT, p);
+        tx.set(card, Layout::PADDING_BOTTOM, p);
+        tx.set(card, Layout::PADDING_LEFT, p);
+        tx.set(card, Visual::BACKGROUND, Rgba::rgb(17, 24, 39));
+        tx.set(card, Visual::BORDER_RADIUS, 10.0);
+        tx.set_resource(
+            card,
+            Visual::BOX_SHADOWS,
+            Some(BoxShadows::new([BoxShadow {
+                offset_x: 0.0,
+                offset_y: 8.0,
+                blur_radius: 24.0,
+                spread_radius: 0.0,
+                color: Rgba::new(0, 0, 0, 115),
+                inset: false,
+            }])),
+        );
 
-    b.create_node(4, ComponentKind::Pressable, None);
-    b.set_raw_prop(4, "testID", &RawPropValue::String("probe-link".into()));
-    b.set_raw_prop(4, "accessibilityRole", &RawPropValue::String("link".into()));
-    b.set_raw_prop(4, "href", &RawPropValue::String("/docs/ssr".into()));
-    b.set_event_mask(4, EventMask::PRESS);
-    b.set_text(4, "Docs Link");
+        tx.set_str(heading, DebugId::TEST_ID, "probe-heading");
+        tx.set(heading, Accessibility::ROLE, AriaRole::Heading);
+        tx.set(heading, Accessibility::LEVEL, 1u8);
+        tx.set(heading, Typography::COLOR, Rgba::WHITE);
+        tx.set(heading, Typography::FONT_SIZE, 20.0);
+        tx.set(heading, Typography::FONT_WEIGHT, 700u16);
+        tx.set(heading, Typography::TEXT_ALIGN, TextAlign::Center);
+        tx.set_str(heading, TextContent::TEXT, "Semantic SSR Heading");
 
-    b.set_children(2, &[3, 4]);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    let frame = b.finish().to_vec();
+        tx.set_str(link, DebugId::TEST_ID, "probe-link");
+        tx.set(link, Accessibility::ROLE, AriaRole::Link);
+        tx.set_str(link, Link::HREF, "/docs/ssr");
+        tx.set(link, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+        tx.set_str(link, TextContent::TEXT, "Docs Link");
+
+        tx.set_children(card, &[heading, link]);
+        tx.set_children(root, &[card]);
+        tx.commit_into(&mut changes);
+    }
 
     // 1. Server render SSR HTML + styles into container if empty.
-    if container.query_selector("[data-nve-ssr-hash]").ok().flatten().is_none() {
-        let mut server = WebBackend::new();
+    if container
+        .query_selector("[data-nve-ssr-hash]")
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        let mut server = new_probe_web(WebBackend::new());
         server
-            .submit_frame(&frame)
+            .commit(&store, &changes)
             .map_err(|e| JsValue::from_str(&format!("probe server render failed: {e}")))?;
-        let ssr = server.render_ssr();
+        let ssr = server.render_ssr(&store);
         if let Ok(style_el) = doc.create_element("style") {
             let _ = style_el.set_attribute("data-nve-ssr", "");
             let _ = style_el.set_attribute("data-nve-hashes", &ssr.rule_hashes.join(","));
@@ -92,11 +122,12 @@ pub fn run_semantic_style_hydration_probe(mount_id: &str) -> Result<usize, JsVal
     }
 
     // 2. Hydrate in-place and return mismatch count.
-    let mut client = WebBackend::hydrate_into(container);
+    let mut client = new_probe_web(WebBackend::hydrate_into(container));
     client
-        .submit_frame(&frame)
+        .commit(&store, &changes)
         .map_err(|e| JsValue::from_str(&format!("probe hydrate failed: {e}")))?;
     let mismatches = client.hydration_report().mismatches.len();
+    LAST_PROBE_BACKEND.with(|slot| *slot.borrow_mut() = Some(client));
     Ok(mismatches)
 }
 
@@ -107,63 +138,89 @@ fn mount_probe_container(mount_id: &str) -> Result<web_sys::Element, JsValue> {
         .ok_or_else(|| JsValue::from_str(&format!("mount '#{mount_id}' not found")))
 }
 
-fn apply_probe_frame(web: &mut WebBackend, build: impl FnOnce(&mut CommandBufferBuilder)) -> Result<(), JsValue> {
-    let mut b = CommandBufferBuilder::new(98, 1);
-    build(&mut b);
-    b.commit(true);
-    web.submit_frame(b.finish())
-        .map(|_| ())
-        .map_err(|e| JsValue::from_str(&format!("hostile probe frame failed: {e}")))
-}
-
-/// Mounts a live `WebBackend` into `#<mount_id>` and applies hostile CommandBuffers the live DOM
-/// path must survive: create/remove/retag/re-parent of the root container, cycles, repeats and
-/// moves, reserved raw-prop keys, CSS-only raw props and CSS-injecting values, non-secure inputs,
-/// empty draw lists, and text set on a node with children. The E2E inspects the resulting DOM.
+/// Mounts a live `WebBackend` into `#<mount_id>` and applies hostile transactions the live DOM
+/// path must survive: reserved attributes, non-secure inputs, empty draw lists, child
+/// reparenting/moves, and text set on a node with children.
 #[wasm_bindgen]
 pub fn run_hostile_frame_probe(mount_id: &str) -> Result<(), JsValue> {
-    use ComponentKind as K;
-    let s = |v: &str| RawPropValue::String(v.into());
-    let mut web = WebBackend::mount_into(mount_probe_container(mount_id)?);
-    apply_probe_frame(&mut web, |b| {
-        b.create_node(2, K::View, None);
-        b.set_text(2, "parent text");
-        b.set_raw_prop(2, "flex-wrap", &s("wrap"));
-        b.set_raw_prop(2, "font-weight", &s("700"));
-        b.set_raw_prop(2, "style", &s("color: rgb(255, 0, 0)"));
-        b.set_raw_prop(2, "class", &s("evil"));
-        b.set_raw_prop(2, "data-nve-id", &s("99"));
-        b.set_raw_prop(2, "box-shadow", &s("red;} .nve{display:none"));
-        b.create_node(3, K::TextInput, None);
-        b.set_raw_prop(3, "testID", &s("probe-input"));
-        b.create_node(4, K::SkiaCanvas, None);
-        b.set_raw_prop(4, "drawList", &RawPropValue::Bytes(Vec::new()));
-        b.create_node(5, K::Text, None);
-        b.set_text(5, "child of two");
-        b.create_node(6, K::Text, None);
-        b.set_text(6, "own text");
-        b.create_node(7, K::Text, None);
-        b.set_text(7, "kept child");
-        b.create_node(8, K::View, None);
-        b.set_children(ROOT_NODE_ID, &[2, 3, 4, 6, 8]);
-        b.set_children(2, &[5]);
-        b.set_children(6, &[7]);
-    })?;
-    apply_probe_frame(&mut web, |b| {
-        b.create_node(ROOT_NODE_ID, K::Text, None);
-        b.set_raw_prop(ROOT_NODE_ID, "accessibilityRole", &s("navigation"));
-        b.set_raw_prop(ROOT_NODE_ID, "data-nve-id", &s("7"));
-        b.set_children(5, &[2]);
-        b.set_children(2, &[5, 5, ROOT_NODE_ID, 2]);
-        b.set_children(8, &[6, 6]);
-        b.set_children(5, &[ROOT_NODE_ID]);
-        b.remove_node(ROOT_NODE_ID);
-        b.set_raw_prop(3, "secureTextEntry", &RawPropValue::Bool(true));
-        b.set_raw_prop(3, "secureTextEntry", &RawPropValue::Bool(false));
-        b.set_text(6, "replaced own text");
-        b.set_text(2, "restored text");
-    })?;
-    apply_probe_frame(&mut web, |b| b.set_children(2, &[]))
+    let mut web = new_probe_web(WebBackend::mount_into(mount_probe_container(mount_id)?));
+    let mut store = new_probe_store();
+    let mut changes = ChangeSet::default();
+
+    {
+        let mut tx = store.tx();
+        let root = NodeId::ROOT;
+        let n2 = NodeId(2);
+        let n3 = NodeId(3);
+        let n4 = NodeId(4);
+        let n5 = NodeId(5);
+        let n6 = NodeId(6);
+        let n7 = NodeId(7);
+        let n8 = NodeId(8);
+        for id in [root, n2, n3, n4, n5, n6, n7, n8] {
+            let _ = tx.create_at(id);
+        }
+
+        tx.set_str(n2, TextContent::TEXT, "parent text");
+        tx.set(n2, Layout::FLEX_WRAP, FlexWrap::Wrap);
+        tx.set(n2, Typography::FONT_WEIGHT, 700u16);
+        tx.set_resource(
+            n2,
+            HtmlDataAttrs::ENTRIES,
+            Some(DataAttrList::from_pairs(vec![
+                ("style".into(), "color: rgb(255, 0, 0)".into()),
+                ("class".into(), "evil".into()),
+                ("data-nve-id".into(), "99".into()),
+            ])),
+        );
+
+        tx.attach::<TextInput>(n3);
+        tx.set_str(n3, DebugId::TEST_ID, "probe-input");
+
+        tx.attach::<Canvas>(n4);
+
+        tx.set_str(n5, TextContent::TEXT, "child of two");
+        tx.set_str(n6, TextContent::TEXT, "own text");
+        tx.set_str(n7, TextContent::TEXT, "kept child");
+
+        tx.set_children(root, &[n2, n3, n4, n6, n8]);
+        tx.set_children(n2, &[n5]);
+        tx.set_children(n6, &[n7]);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes)
+        .map_err(|e| JsValue::from_str(&format!("hostile probe frame 1 failed: {e}")))?;
+
+    {
+        let mut tx = store.tx();
+        tx.set(NodeId::ROOT, Accessibility::ROLE, AriaRole::Navigation);
+        tx.set_resource(
+            NodeId::ROOT,
+            HtmlDataAttrs::ENTRIES,
+            Some(DataAttrList::from_pairs(vec![(
+                "data-nve-id".into(),
+                "7".into(),
+            )])),
+        );
+        tx.set_children(NodeId(8), &[NodeId(6)]);
+        tx.set(NodeId(3), TextInput::SECURE, true);
+        tx.set(NodeId(3), TextInput::SECURE, false);
+        tx.set_str(NodeId(6), TextContent::TEXT, "replaced own text");
+        tx.set_str(NodeId(2), TextContent::TEXT, "restored text");
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes)
+        .map_err(|e| JsValue::from_str(&format!("hostile probe frame 2 failed: {e}")))?;
+
+    {
+        let mut tx = store.tx();
+        tx.set_children(NodeId(2), &[]);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes)
+        .map_err(|e| JsValue::from_str(&format!("hostile probe frame 3 failed: {e}")))?;
+    LAST_PROBE_BACKEND.with(|slot| *slot.borrow_mut() = Some(web));
+    Ok(())
 }
 
 /// Panics with `message`, so the E2E can check that a release bundle prints the panic message and

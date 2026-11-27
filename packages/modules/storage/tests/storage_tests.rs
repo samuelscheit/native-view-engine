@@ -11,7 +11,7 @@ use nve_storage::{
     decode_commit_batch_request, decode_compact_response, decode_get_response, decode_key_request,
     decode_open_request, decode_open_response, decode_put_request, decode_scan_prefix_request,
     decode_scan_prefix_response, KvStore, MemoryStorage, NativeStorage, StorageClient,
-    StorageEntry, StorageWriteOp, NVK1_MAGIC,
+    StorageEntry, StorageWriteOp, NVK2_MAGIC,
 };
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
@@ -123,7 +123,7 @@ fn nvk1_storage_persistence_atomic_batch_rollback_prefix_scan_and_compaction() {
     }
 
     let raw = fs::read(root.join("app_state.nvk1")).unwrap();
-    assert_eq!(&raw[0..4], &NVK1_MAGIC);
+    assert_eq!(&raw[0..4], &NVK2_MAGIC);
 
     {
         let native = HostServiceRegistry::new().with_handler(NativeStorage::with_root_dir(&root));

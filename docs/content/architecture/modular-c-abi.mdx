@@ -16,7 +16,7 @@ Hosts resolve `nve_get_interface` once via `dlsym` / `GetProcAddress` (or direct
 
 ## The 5 Standard Interfaces
 
-Defined in `packages/core/abi/src/ffi.rs` and `packages/core/abi/src/host.rs`, locked by `NVE_CORE_ABI_SCHEMA_HASH = 0x053543B32C5D959C`:
+Defined in `packages/core/abi/src/ffi.rs` and `packages/core/abi/src/host.rs`, locked at compile time by the 64-bit XXH64 `NVE_CORE_ABI_SCHEMA_HASH`:
 
 | ID | Constant | C Struct | Required? | Functions |
 | :--- | :--- | :--- | :--- | :--- |

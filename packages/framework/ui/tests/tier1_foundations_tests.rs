@@ -11,12 +11,14 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue};
+use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId as AbiNodeId};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_web::{InputSyncTracker, WebBackend};
-use nve_dioxus::elements::backend::{RenderBackend, Viewport};
+use nve_components::tables::{DebugId, TextContent, TextInput};
+use nve_dioxus::elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
+use nve_store::NodeId;
 use nve_ui::prelude::*;
 
 use common::UiHarness;
@@ -55,45 +57,51 @@ impl DualHarness {
 
     fn render(&mut self) {
         self.frame_id += 1;
-        let (_, _, bytes) = self.surface.render_frame(self.frame_id);
+        self.surface.reconcile(self.frame_id);
+        let store = self.surface.store();
+        let changes = self.surface.last_changes();
         self.headless
-            .submit_frame(&bytes)
-            .expect("headless submit_frame succeeded");
+            .commit(store, changes)
+            .expect("headless commit succeeded");
         self.web
-            .submit_frame(&bytes)
-            .expect("web submit_frame succeeded");
+            .commit(store, changes)
+            .expect("web commit succeeded");
     }
 
-    fn maybe_find(&self, tid: &str) -> Option<NodeId> {
-        self.headless.nodes().values().find_map(|n| {
-            match n.raw_props.get("testID") {
-                Some(RawPropValue::String(s)) if s == tid => Some(n.id),
-                _ => None,
+    fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+        let store = self.surface.store();
+        let mut stack = vec![NodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != NodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == tid
+            {
+                return Some(id.raw());
             }
-        })
+            stack.extend_from_slice(store.children(id));
+        }
+        None
     }
 
-    fn find(&self, tid: &str) -> NodeId {
+    fn find(&self, tid: &str) -> AbiNodeId {
         self.maybe_find(tid)
             .unwrap_or_else(|| panic!("expected node with testID='{tid}'"))
     }
 
     fn collect_text(&self, id: NodeId) -> String {
-        let Some(node) = self.headless.node(id) else {
-            return String::new();
-        };
+        let store = self.surface.store();
         let mut out = String::new();
-        if let Some(t) = node.text.as_deref() {
-            out.push_str(t);
+        if let Some(tc) = store.try_row::<TextContent>(id) {
+            out.push_str(tc.text());
         }
-        for &cid in &node.children {
+        for &cid in store.children(id) {
             out.push_str(&self.collect_text(cid));
         }
         out
     }
 
     fn text_of(&self, tid: &str) -> String {
-        self.collect_text(self.find(tid))
+        self.collect_text(NodeId(self.find(tid)))
     }
 
     fn next_ts(&mut self) -> u64 {
@@ -222,9 +230,9 @@ fn error_boundary_isolates_result_and_throw_errors_preserves_sibling_and_resets_
     assert!(h.text_of("fb-loc").contains("tier1_foundations_tests.rs:"));
     assert_eq!(h.text_of("fb-resets"), "0");
 
-    let ssr_err = h.web.render_ssr().html;
+    let ssr_err = h.web.render_ssr(h.surface.store()).html;
     assert!(ssr_err.contains("checkout cart parse failed"));
-    assert!(h.web.render_html().contains("checkout cart parse failed"));
+    assert!(h.web.render_html(h.surface.store()).contains("checkout cart parse failed"));
 
     // Telemetry callback fired exactly once with structured report.
     TELEMETRY_LOG.with(|l| {
@@ -248,7 +256,7 @@ fn error_boundary_isolates_result_and_throw_errors_preserves_sibling_and_resets_
     assert_eq!(h.text_of("healthy-child"), "Healthy child mountedTrigger event error");
     assert_eq!(h.text_of("sibling-count"), "1");
     RESET_LOG.with(|l| assert_eq!(*l.borrow(), vec![1]));
-    let ssr_recovered = h.web.render_ssr().html;
+    let ssr_recovered = h.web.render_ssr(h.surface.store()).html;
     assert!(ssr_recovered.contains("Healthy child mounted"));
     assert!(!ssr_recovered.contains("checkout cart parse failed"));
 
@@ -314,7 +322,7 @@ fn error_boundary_catches_real_subtree_panic_and_recovers_via_default_themed_ret
     assert!(h.maybe_find("panic-child-ok").is_none());
     assert!(h.maybe_find("eb-panic").is_some());
     assert!(h.text_of("eb-panic-message").contains("Encountered panic"));
-    assert!(h.web.render_ssr().html.contains("role=\"alert\""));
+    assert!(h.web.render_ssr(h.surface.store()).html.contains("role=\"alert\""));
 
     TELEMETRY_LOG.with(|l| {
         let log = l.borrow();
@@ -390,27 +398,23 @@ fn AutofillFormApp() -> Element {
 fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keydown() {
     let mut h = DualHarness::new(AutofillFormApp);
 
-    // 1. Verify canonical raw props on HeadlessBackend across nve_ui::Input, <text_input>, <input>.
+    // 1. Verify canonical typed TextInput autofill/input_mode across nve_ui::Input, <text_input>, <input>.
     let check_raw = |tid: &str, expected_ac: &str, expected_im: Option<&str>| {
         let id = h.find(tid);
-        let props = &h.headless.node(id).unwrap().raw_props;
+        let ti = h
+            .surface
+            .store()
+            .try_row::<TextInput>(NodeId(id))
+            .unwrap_or_else(|| panic!("expected TextInput row on {tid}"));
+        let actual_ac = ti.autofill().get().map(AutofillHint::as_html_autocomplete);
         assert_eq!(
-            props.get("autocomplete"),
-            Some(&RawPropValue::String(expected_ac.to_owned())),
+            actual_ac,
+            Some(expected_ac),
             "autocomplete mismatch on {tid}"
         );
-        match expected_im {
-            Some(m) => assert_eq!(
-                props.get("inputmode"),
-                Some(&RawPropValue::String(m.to_owned())),
-                "inputmode mismatch on {tid}"
-            ),
-            None => assert!(
-                matches!(props.get("inputmode"), None | Some(RawPropValue::Null)),
-                "expected absent/null inputmode on {tid}, got {:?}",
-                props.get("inputmode")
-            ),
-        }
+        let actual_im =
+            (ti.input_mode() != InputMode::Text).then(|| ti.input_mode().as_html_inputmode());
+        assert_eq!(actual_im, expected_im, "inputmode mismatch on {tid}");
     };
     check_raw("field-email", "email", Some("email"));
     check_raw("field-password", "current-password", None);
@@ -419,8 +423,8 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
     check_raw("raw-cc", "cc-number", Some("numeric"));
 
     // 2. Verify WebBackend emits canonical HTML attributes in BOTH render_ssr() and render_html().
-    let ssr = h.web.render_ssr().html;
-    let html = h.web.render_html();
+    let ssr = h.web.render_ssr(h.surface.store()).html;
+    let html = h.web.render_html(h.surface.store());
     for markup in [&ssr, &html] {
         assert!(markup.contains("autocomplete=\"email\""), "missing email autocomplete in {markup}");
         assert!(markup.contains("inputmode=\"email\""), "missing email inputmode in {markup}");
@@ -443,7 +447,7 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
 
     // Password manager fills email via `change`-only event (zero keydown, zero input).
     let email_val = sync_tracker
-        .on_change_event(email_id, "sam@nve.dev".into(), false)
+        .on_change_event(email_id, "sam@nve.dev".into())
         .expect("change-only autofill emits TextChange");
     h.text_change("field-email", &email_val);
 
@@ -452,7 +456,7 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
         .on_input_event(pw_id, "s3cr3t!".into(), false)
         .expect("input autofill emits TextChange");
     assert_eq!(
-        sync_tracker.on_change_event(pw_id, "s3cr3t!".into(), false),
+        sync_tracker.on_change_event(pw_id, "s3cr3t!".into()),
         None,
         "duplicate change event after identical input must be deduplicated"
     );
@@ -460,12 +464,12 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
 
     // iOS/Android SMS OTP suggestion inserts code with zero keydown.
     let otp_val = sync_tracker
-        .on_change_event(otp_id, "492817".into(), false)
+        .on_change_event(otp_id, "492817".into())
         .expect("OTP autofill emits TextChange");
     h.text_change("field-otp", &otp_val);
 
     let tel_val = sync_tracker
-        .on_change_event(tel_id, "+14155550199".into(), false)
+        .on_change_event(tel_id, "+14155550199".into())
         .expect("tel autofill emits TextChange");
     h.text_change("raw-tel", &tel_val);
 
@@ -530,8 +534,8 @@ fn keyboard_insets_and_avoiding_view_handle_visual_viewport_and_zero_double_padd
 
     // 1. Keyboard closed: both views respect safe_area.bottom (34.0) with no extra padding.
     assert_eq!(h.text_of("kb-readout"), "false:0:34:34");
-    assert_eq!(h.backend.node(h.find("ios-composer")).unwrap().layout.padding.bottom, 34.0);
-    assert_eq!(h.backend.node(h.find("android-composer")).unwrap().layout.padding.bottom, 34.0);
+    assert_eq!(h.padding(h.find("ios-composer")).bottom, 34.0);
+    assert_eq!(h.padding(h.find("android-composer")).bottom, 34.0);
     assert_eq!(UNRELATED_RENDERS.with(Cell::get), 1);
 
     // 2. Web `visualViewport` shrinks (layout=844, visual=508 -> 336px keyboard).
@@ -545,8 +549,8 @@ fn keyboard_insets_and_avoiding_view_handle_visual_viewport_and_zero_double_padd
 
     // iOS/overlay uses max(34, 336) = 336 (NOT 370); Android adjustResize uses 0 (zero double-padding).
     assert_eq!(h.text_of("kb-readout"), "true:336:336:0");
-    assert_eq!(h.backend.node(h.find("ios-composer")).unwrap().layout.padding.bottom, 336.0);
-    assert_eq!(h.backend.node(h.find("android-composer")).unwrap().layout.padding.bottom, 0.0);
+    assert_eq!(h.padding(h.find("ios-composer")).bottom, 336.0);
+    assert_eq!(h.padding(h.find("android-composer")).bottom, 0.0);
     // Unrelated sibling never re-rendered when KeyboardInsets changed.
     assert_eq!(UNRELATED_RENDERS.with(Cell::get), 1);
 
@@ -555,8 +559,8 @@ fn keyboard_insets_and_avoiding_view_handle_visual_viewport_and_zero_double_padd
         assert!(store.set::<KeyboardInsets>(KeyboardInsets::new(18.0, true, 0, true)));
     });
     h.render();
-    assert_eq!(h.backend.node(h.find("ios-composer")).unwrap().layout.padding.bottom, 34.0);
-    assert_eq!(h.backend.node(h.find("android-composer")).unwrap().layout.padding.bottom, 0.0);
+    assert_eq!(h.padding(h.find("ios-composer")).bottom, 34.0);
+    assert_eq!(h.padding(h.find("android-composer")).bottom, 0.0);
 
     // 4. Web `visualViewport` restores to full height -> keyboard dismissed -> safe_area.bottom=34.
     assert!(web.update_visual_viewport(844.0, 844.0, 0.0, 1.0));
@@ -565,7 +569,7 @@ fn keyboard_insets_and_avoiding_view_handle_visual_viewport_and_zero_double_padd
     });
     h.render();
     assert_eq!(h.text_of("kb-readout"), "false:0:34:34");
-    assert_eq!(h.backend.node(h.find("ios-composer")).unwrap().layout.padding.bottom, 34.0);
-    assert_eq!(h.backend.node(h.find("android-composer")).unwrap().layout.padding.bottom, 34.0);
+    assert_eq!(h.padding(h.find("ios-composer")).bottom, 34.0);
+    assert_eq!(h.padding(h.find("android-composer")).bottom, 34.0);
     assert_eq!(UNRELATED_RENDERS.with(Cell::get), 1);
 }

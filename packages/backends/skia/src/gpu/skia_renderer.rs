@@ -1,22 +1,25 @@
 //! Skia `Canvas` display-list renderer (`--features skia`).
 
 use nve_abi::ColorRgba;
-use nve_components::canvas_ir::CanvasOp;
 use skia_safe::{
-    canvas::SrcRectConstraint, font_style::{Slant, Weight as SkiaWeight, Width as SkiaWidth},
+    canvas::SrcRectConstraint,
+    font_style::{Slant, Weight as SkiaWeight, Width as SkiaWidth},
     images, AlphaType, BlurStyle, Canvas, ClipOp, Color, ColorType, Data, FilterMode, Font,
-    FontMgr, FontStyle, ImageInfo, MaskFilter, Matrix, MipmapMode, Paint, PaintCap, PaintJoin,
-    PaintStyle, PathBuilder, RRect, Rect, SamplingOptions, Typeface,
+    FontMgr, FontStyle, ImageInfo, MaskFilter, Matrix, MipmapMode, Paint, PaintStyle, RRect, Rect,
+    SamplingOptions, Typeface,
 };
 
 #[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
 pub(crate) use super::cpu_surface::read_surface_to_pixel_buffer;
 pub use super::cpu_surface::{CpuSkiaSurface, GpuSurfaceBackend};
 use super::sanitize_scale_factor;
-use super::skia_graphics::{draw_cached_svg, draw_rounded_rect_gradient, SkiaSvgPictureCache};
+use super::skia_graphics::draw_rounded_rect_gradient;
 use crate::image_cache::{compute_image_placement, ImageCache};
+use crate::raster::PixelBuffer;
+use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry};
 use crate::text::{TextAlign, LINE_HEIGHT_MULTIPLIER};
 use crate::{DisplayList, PaintOp};
+use nve_store::{NodeStore, TableEventBus};
 
 const PREFERRED_SANS_FAMILIES: &[&str] = &[
     ".AppleSystemUIFont",
@@ -42,7 +45,6 @@ pub(crate) fn to_skia_color(c: ColorRgba) -> Color {
 pub struct SkiaCanvasRenderer {
     font_mgr: FontMgr,
     default_typeface: Option<Typeface>,
-    svg_pictures: SkiaSvgPictureCache,
 }
 
 impl Default for SkiaCanvasRenderer {
@@ -61,7 +63,6 @@ impl SkiaCanvasRenderer {
         Self {
             font_mgr,
             default_typeface,
-            svg_pictures: SkiaSvgPictureCache::default(),
         }
     }
 
@@ -71,11 +72,6 @@ impl SkiaCanvasRenderer {
 
     pub fn default_typeface(&self) -> Option<&Typeface> {
         self.default_typeface.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn svg_picture_cache_stats(&self) -> (u64, u64, usize) {
-        self.svg_pictures.stats()
     }
 
     fn make_font(&self, font_size: f32) -> Font {
@@ -117,6 +113,45 @@ impl SkiaCanvasRenderer {
         canvas: &Canvas,
         scale_factor: f32,
     ) {
+        self.paint_display_list_inner(display_list, canvas, scale_factor, None);
+    }
+
+    /// Paints `display_list` onto `canvas`, also dispatching [`PaintOp::Plugin`] nodes through
+    /// `registry` against `store` (rasterizing plugin rects and compositing onto `canvas`).
+    pub fn paint_display_list_with_plugins(
+        &self,
+        display_list: &DisplayList,
+        canvas: &Canvas,
+        scale_factor: f32,
+        store: &NodeStore,
+        registry: &SkiaTableRegistry,
+        events: &mut TableEventBus,
+    ) {
+        self.paint_display_list_inner(
+            display_list,
+            canvas,
+            scale_factor,
+            Some((store, registry, events)),
+        );
+    }
+
+    pub(crate) fn paint_display_list_opt_plugins(
+        &self,
+        display_list: &DisplayList,
+        canvas: &Canvas,
+        scale_factor: f32,
+        plugins: Option<super::SkiaPluginContext<'_>>,
+    ) {
+        self.paint_display_list_inner(display_list, canvas, scale_factor, plugins);
+    }
+
+    fn paint_display_list_inner(
+        &self,
+        display_list: &DisplayList,
+        canvas: &Canvas,
+        scale_factor: f32,
+        mut plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut TableEventBus)>,
+    ) {
         let scale = sanitize_scale_factor(scale_factor);
         let saved = canvas.save();
         if (scale - 1.0).abs() > f32::EPSILON {
@@ -139,6 +174,8 @@ impl SkiaCanvasRenderer {
         image_paint.set_anti_alias(true);
 
         let mut save_depth = 0usize;
+        let mut plugin_buf = PixelBuffer::new_transparent_rgba(0, 0);
+        let mut plugin_rgba: Vec<u8> = Vec::new();
 
         for op in &display_list.ops {
             match op {
@@ -307,7 +344,7 @@ impl SkiaCanvasRenderer {
                     rect,
                     radius,
                     src,
-                    resize_mode,
+                    fit,
                 } => {
                     if rect.width <= 0.0 || rect.height <= 0.0 {
                         continue;
@@ -316,7 +353,7 @@ impl SkiaCanvasRenderer {
                         continue;
                     };
                     let Some(placement) =
-                        compute_image_placement(*rect, decoded.width, decoded.height, *resize_mode)
+                        compute_image_placement(*rect, decoded.width, decoded.height, *fit)
                     else {
                         continue;
                     };
@@ -376,133 +413,64 @@ impl SkiaCanvasRenderer {
                     );
                     canvas.restore();
                 }
-                PaintOp::DrawSvg {
+                PaintOp::Plugin {
+                    node_id,
                     rect,
-                    picture,
-                    tint,
+                    inherited_text_color,
                 } => {
-                    draw_cached_svg(&self.svg_pictures, canvas, *rect, picture, *tint);
-                }
-                PaintOp::CustomSkiaCanvas { rect, ops, .. } => {
-                    if rect.width <= 0.0 || rect.height <= 0.0 || ops.is_empty() {
-                        continue;
-                    }
-                    let outer_saved = canvas.save();
-                    let bounds = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
-                    canvas.clip_rect(bounds, ClipOp::Intersect, true);
-                    canvas.translate((rect.x, rect.y));
-
-                    let mut vec_fill = Paint::default();
-                    vec_fill.set_anti_alias(true);
-                    vec_fill.set_style(PaintStyle::Fill);
-
-                    let mut vec_stroke = Paint::default();
-                    vec_stroke.set_anti_alias(true);
-                    vec_stroke.set_style(PaintStyle::Stroke);
-                    vec_stroke.set_stroke_cap(PaintCap::Round);
-                    vec_stroke.set_stroke_join(PaintJoin::Round);
-
-                    let mut local_clip_depth = 0usize;
-
-                    for cop in ops {
-                        match cop {
-                            CanvasOp::Clear { color } => {
-                                if color.a > 0 {
-                                    vec_fill.set_color(to_skia_color(*color));
-                                    canvas.draw_rect(
-                                        Rect::from_xywh(0.0, 0.0, rect.width, rect.height),
-                                        &vec_fill,
-                                    );
-                                }
-                            }
-                            CanvasOp::FillRect { x, y, w, h, color } => {
-                                if *w > 0.0 && *h > 0.0 && color.a > 0 {
-                                    vec_fill.set_color(to_skia_color(*color));
-                                    canvas.draw_rect(Rect::from_xywh(*x, *y, *w, *h), &vec_fill);
-                                }
-                            }
-                            CanvasOp::FillRoundedRect {
-                                x,
-                                y,
-                                w,
-                                h,
-                                radius,
-                                color,
-                            } => {
-                                if *w > 0.0 && *h > 0.0 && color.a > 0 {
-                                    vec_fill.set_color(to_skia_color(*color));
-                                    let r = Rect::from_xywh(*x, *y, *w, *h);
-                                    let cr = radius.max(0.0).min(*w * 0.5).min(*h * 0.5);
-                                    canvas.draw_rrect(RRect::new_rect_xy(r, cr, cr), &vec_fill);
-                                }
-                            }
-                            CanvasOp::FillCircle {
-                                cx,
-                                cy,
-                                radius,
-                                color,
-                            } => {
-                                if *radius > 0.0 && color.a > 0 {
-                                    vec_fill.set_color(to_skia_color(*color));
-                                    canvas.draw_circle((*cx, *cy), *radius, &vec_fill);
-                                }
-                            }
-                            CanvasOp::StrokeLine {
-                                x0,
-                                y0,
-                                x1,
-                                y1,
-                                width,
-                                color,
-                            } => {
-                                if *width > 0.0 && color.a > 0 {
-                                    vec_stroke.set_stroke_width(*width);
-                                    vec_stroke.set_color(to_skia_color(*color));
-                                    canvas.draw_line((*x0, *y0), (*x1, *y1), &vec_stroke);
-                                }
-                            }
-                            CanvasOp::StrokePolyline {
-                                points,
-                                width,
-                                color,
-                            } => {
-                                if *width > 0.0 && color.a > 0 && !points.is_empty() {
-                                    if points.len() == 1 {
-                                        vec_fill.set_color(to_skia_color(*color));
-                                        let (px, py) = points[0];
-                                        canvas.draw_circle((px, py), (*width * 0.5).max(0.5), &vec_fill);
-                                    } else {
-                                        let mut pb = PathBuilder::new();
-                                        pb.move_to(points[0]);
-                                        for &pt in &points[1..] {
-                                            pb.line_to(pt);
-                                        }
-                                        let path = pb.detach();
-                                        vec_stroke.set_stroke_width(*width);
-                                        vec_stroke.set_color(to_skia_color(*color));
-                                        canvas.draw_path(&path, &vec_stroke);
-                                    }
-                                }
-                            }
-                            CanvasOp::ClipRect { x, y, w, h } => {
-                                canvas.save();
-                                canvas.clip_rect(
-                                    Rect::from_xywh(*x, *y, w.max(0.0), h.max(0.0)),
-                                    ClipOp::Intersect,
-                                    true,
+                    if let Some((store, registry, ref mut events)) = plugins
+                        && rect.width.is_finite()
+                        && rect.height.is_finite()
+                        && rect.width > 0.0
+                        && rect.height > 0.0
+                    {
+                        let max_dim = (rect.width * scale).max(rect.height * scale);
+                        let eff_scale = if max_dim > 4096.0 {
+                            scale * (4096.0 / max_dim)
+                        } else {
+                            scale
+                        };
+                        let pw = (rect.width * eff_scale).round().clamp(1.0, 4096.0) as u32;
+                        let ph = (rect.height * eff_scale).round().clamp(1.0, 4096.0) as u32;
+                        plugin_buf.reset_transparent_rgba(pw, ph);
+                        let mut ctx = SkiaSystemPaintCtx {
+                            buffer: &mut plugin_buf,
+                            rect: nve_engine::LayoutRect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: pw as f32,
+                                height: ph as f32,
+                            },
+                            clip_rect: None,
+                            scale_factor: eff_scale,
+                            opacity: 1.0,
+                            inherited_text_color: *inherited_text_color,
+                            events,
+                        };
+                        if registry.paint_node(&mut ctx, store, *node_id) > 0 {
+                            plugin_buf.write_rgba8_into(&mut plugin_rgba);
+                            let info = ImageInfo::new(
+                                (pw as i32, ph as i32),
+                                ColorType::RGBA8888,
+                                AlphaType::Unpremul,
+                                None,
+                            );
+                            if let Some(img) = images::raster_from_data(
+                                &info,
+                                Data::new_copy(&plugin_rgba),
+                                (pw as usize) * 4,
+                            ) {
+                                let dst = Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
+                                canvas.draw_image_rect_with_sampling_options(
+                                    &img,
+                                    None,
+                                    dst,
+                                    SamplingOptions::new(FilterMode::Linear, MipmapMode::None),
+                                    &image_paint,
                                 );
-                                local_clip_depth += 1;
-                            }
-                            CanvasOp::RestoreClip => {
-                                if local_clip_depth > 0 {
-                                    canvas.restore();
-                                    local_clip_depth -= 1;
-                                }
                             }
                         }
                     }
-
-                    canvas.restore_to_count(outer_saved);
                 }
             }
         }

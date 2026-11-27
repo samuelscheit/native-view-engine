@@ -3,8 +3,10 @@
 //! sparkline & bar chart, and live `UiErrorBoundary` subtree error catch + Retry recovery.
 
 use nve_abi::ColorRgba;
-use nve_components::DrawListBuilder;
+use nve_canvas::{Canvas, DrawList};
+use nve_components::MotionClock;
 use nve_dioxus::prelude::*;
+use nve_dioxus::table_attr_fn;
 use nve_ui::{
     ui_error, use_theme, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
     CardVariant, ErrorBoundary as UiErrorBoundary, ErrorBoundaryReset, ErrorFallback,
@@ -43,14 +45,14 @@ fn build_canvas_draw_list(
     success: ColorRgba,
     bg: ColorRgba,
     grid: ColorRgba,
-) -> String {
+) -> DrawList {
     let samples = if alt_series { &SPARKLINE_B } else { &SPARKLINE_A };
-    let mut builder = DrawListBuilder::with_capacity(512);
+    let mut dl = DrawList::with_capacity(24);
     if bar_mode {
-        builder.clear(bg);
+        dl.clear(bg);
         for line in 1..4 {
             let y = line as f32 * 24.0;
-            builder.stroke_line(8.0, y, 312.0, y, 1.0, grid);
+            dl.stroke_line(8.0, y, 312.0, y, 1.0, grid);
         }
         let bar_w = 13.0;
         let gap = 5.5;
@@ -59,13 +61,13 @@ fn build_canvas_draw_list(
             let h = (val / 100.0 * 78.0).max(4.0);
             let y = 92.0 - h;
             let color = if i % 2 == 0 { accent } else { success };
-            builder.fill_rounded_rect(x, y, bar_w, h, 3.0, color);
+            dl.fill_rounded_rect(x, y, bar_w, h, 3.0, color);
         }
     } else {
-        builder.sparkline(samples, 320.0, 100.0, accent, bg);
-        builder.fill_circle(308.0, 100.0 - (samples[15] / 100.0 * 88.0), 4.0, success);
+        dl.sparkline(samples, 320.0, 100.0, accent, bg);
+        dl.fill_circle(308.0, 100.0 - (samples[15] / 100.0 * 88.0), 4.0, success);
     }
-    builder.to_attr_string()
+    dl.finish()
 }
 
 #[component]
@@ -123,7 +125,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                 .reduced_motion_instant(true),
         );
 
-    let canvas_attr = build_canvas_draw_list(
+    let canvas_dl = build_canvas_draw_list(
         bar_mode(),
         alt_series(),
         colors.accent,
@@ -131,6 +133,9 @@ pub fn MotionSection(handle: AppHandle) -> Element {
         colors.surface_subtle,
         colors.border,
     );
+    let canvas_table = table_attr_fn(move |tx, node| {
+        tx.edit::<Canvas>(node).draw_list_ephemeral(canvas_dl.clone());
+    });
 
     let custom_fallback = ErrorFallback::from(move |report: UiErrorReport, reset: ErrorBoundaryReset| {
         let loc_text = report
@@ -252,11 +257,11 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                             }
                         }
 
-                        canvas {
+                        view {
                             test_id: "ks-draw1-canvas",
                             accessibility_label: "Live NVE_DRAW1 telemetry visualization",
                             accessibility_role: "image",
-                            draw_list: "{canvas_attr}",
+                            nve_table: canvas_table,
                             style: "width: 100%; height: 100px; border-radius: 8px;",
                         }
 

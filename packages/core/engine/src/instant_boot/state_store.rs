@@ -4,7 +4,7 @@ use std::fs;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 
-use crate::hash::xxh64;
+use nve_abi::xxh64;
 use crate::mmap_arena::{ArenaError, MmapOffsetArena, OffsetPtr, ARENA_DATA_START};
 
 use super::{

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nve_mdx::{NVS1_MAGIC, SearchIndex};
+use nve_mdx::{NVS2_MAGIC, SearchIndex};
 
 fn nve_bin() -> &'static str {
     env!("CARGO_BIN_EXE_nve")
@@ -81,7 +81,7 @@ fn docs_check_fails_non_zero_on_broken_link_and_unknown_demo() {
 }
 
 #[test]
-fn docs_build_skip_wasm_emits_all_30_semantic_html_pages_sitemap_and_nvs1() {
+fn docs_build_skip_wasm_emits_all_30_semantic_html_pages_sitemap_and_nvs2() {
     let out_dir = temp_test_dir("build-base");
     let output = Command::new(nve_bin())
         .current_dir(repo_root())
@@ -112,12 +112,12 @@ fn docs_build_skip_wasm_emits_all_30_semantic_html_pages_sitemap_and_nvs1() {
     assert!(out_dir.join(".nojekyll").is_file());
     assert!(out_dir.join("404.html").is_file());
     assert!(out_dir.join("sitemap.xml").is_file());
-    assert!(out_dir.join("search.nvs1").is_file());
+    assert!(out_dir.join("search.nvs2").is_file());
 
-    // Verify NVS1 binary search index decodes and answers queries
-    let nvs1_bytes = fs::read(out_dir.join("search.nvs1")).expect("read search.nvs1");
-    assert_eq!(&nvs1_bytes[..4], NVS1_MAGIC);
-    let index = SearchIndex::decode(&nvs1_bytes).expect("decode NVS1 index");
+    // Verify NVS2 binary search index decodes and answers queries
+    let nvs2_bytes = fs::read(out_dir.join("search.nvs2")).expect("read search.nvs2");
+    assert_eq!(&nvs2_bytes[..4], NVS2_MAGIC);
+    let index = SearchIndex::decode(&nvs2_bytes).expect("decode NVS2 index");
     let hits = index.query("VirtualList", 5);
     assert!(!hits.is_empty(), "expected search hits for VirtualList");
 

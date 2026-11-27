@@ -141,7 +141,14 @@ pub fn LandingHero() -> Element {
                         accessibility_role: "link",
                         accessibility_label: "Launch Live NVE Studio WASM app",
                         "href": "{studio_href}",
-                        "data-nve-hard-nav": "true",
+                        nve_table: nve_dioxus::table_attr_fn(|tx, node| {
+                            tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                nve_web_html::DataAttrList::from_pairs(vec![(
+                                    "data-nve-hard-nav".to_owned(),
+                                    "true".to_owned(),
+                                )]),
+                            ));
+                        }),
                         style: "flex-shrink: 0; justify-content: center; align-items: center; padding-horizontal: 18px; padding-vertical: 11px; border-radius: 9px; background-color: {theme.surface}; border-width: 1px; border-color: {theme.border};",
                         text {
                             style: "font-size: 14px; font-weight: 600; color: {theme.text};",

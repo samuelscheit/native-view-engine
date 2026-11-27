@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 
 use common::UiHarness;
 use nve_abi::ColorRgba;
-use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
 use nve_interop::{ColorScheme, ThemeContext};
 use nve_ui::prelude::*;
@@ -115,7 +114,7 @@ fn layout_actions_theme_switching_and_explicit_style_resets() {
     assert_eq!(h.raw_str(btn, "accessibilityRole"), Some("button"));
     assert_eq!(h.raw_bool(btn, "disabled"), Some(true));
     assert_eq!(h.raw_str(btn, "tabIndex"), Some("-1"));
-    assert!((h.backend.node(btn).unwrap().style.opacity - 0.5).abs() < 1e-3);
+    assert!((h.opacity(btn) - 0.5).abs() < 1e-3);
 
     h.press("primary-btn");
     h.keydown("primary-btn", "Enter", false);
@@ -127,13 +126,13 @@ fn layout_actions_theme_switching_and_explicit_style_resets() {
     let btn = h.find("primary-btn");
     assert_eq!(h.raw_bool(btn, "disabled"), Some(false));
     assert_eq!(h.raw_str(btn, "tabIndex"), Some("0"));
-    assert!((h.backend.node(btn).unwrap().style.opacity - 1.0).abs() < 1e-3);
+    assert!((h.opacity(btn) - 1.0).abs() < 1e-3);
 
     // Focus -> border_width=2.0, blur -> explicitly resets to 0.0 (no stale focus ring).
     h.focus("primary-btn");
-    assert_eq!(h.backend.node(btn).unwrap().style.border_width, 2.0);
+    assert_eq!(h.border_width(btn), 2.0);
     h.blur("primary-btn");
-    assert_eq!(h.backend.node(btn).unwrap().style.border_width, 0.0);
+    assert_eq!(h.border_width(btn), 0.0);
 
     // Press, Enter, Space, and IconButton Enter activation.
     h.press("primary-btn");
@@ -146,37 +145,22 @@ fn layout_actions_theme_switching_and_explicit_style_resets() {
     h.press("toggle-loading");
     h.press("primary-btn");
     assert_eq!(h.text_of("press-count"), "13");
-    assert!((h.backend.node(btn).unwrap().style.opacity - 0.5).abs() < 1e-3);
+    assert!((h.opacity(btn) - 0.5).abs() < 1e-3);
     h.press("toggle-loading");
-    assert!((h.backend.node(btn).unwrap().style.opacity - 1.0).abs() < 1e-3);
+    assert!((h.opacity(btn) - 1.0).abs() < 1e-3);
 
     // Theme switching: light -> dark -> high_contrast_light -> high_contrast_dark -> ThemeContext.
-    assert_eq!(
-        h.backend.node(card_el).unwrap().style.background,
-        ColorRgba::rgb(0xf8, 0xfa, 0xfc)
-    );
+    assert_eq!(h.bg(card_el), ColorRgba::rgb(0xf8, 0xfa, 0xfc));
     h.press("cycle-theme");
-    assert_eq!(
-        h.backend.node(card_el).unwrap().style.background,
-        ColorRgba::rgb(0x1e, 0x29, 0x3b)
-    );
+    assert_eq!(h.bg(card_el), ColorRgba::rgb(0x1e, 0x29, 0x3b));
     h.press("cycle-theme");
-    assert_eq!(h.backend.node(card_el).unwrap().style.border_width, 2.0);
+    assert_eq!(h.border_width(card_el), 2.0);
     assert_eq!(h.raw_str(card_el, "box-shadow"), Some("none"));
     h.press("cycle-theme");
-    assert_eq!(
-        h.backend.node(card_el).unwrap().style.background,
-        ColorRgba::rgb(0x0a, 0x0a, 0x0a)
-    );
+    assert_eq!(h.bg(card_el), ColorRgba::rgb(0x0a, 0x0a, 0x0a));
     h.press("cycle-theme");
-    assert_eq!(
-        h.backend.node(card_el).unwrap().style.background,
-        ColorRgba::rgb(0x10, 0x2a, 0x43)
-    );
-    assert_eq!(
-        h.backend.node(btn).unwrap().style.background,
-        ColorRgba::rgb(0x10, 0xb9, 0x81)
-    );
+    assert_eq!(h.bg(card_el), ColorRgba::rgb(0x10, 0x2a, 0x43));
+    assert_eq!(h.bg(btn), ColorRgba::rgb(0x10, 0xb9, 0x81));
 }
 
 #[component]
@@ -231,16 +215,16 @@ fn form_controls_aria_events_and_style_resets() {
     assert_eq!(h.raw_bool(inp, "secureTextEntry"), Some(true));
 
     h.focus("email-input");
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 2.0);
+    assert_eq!(h.border_width(inp), 2.0);
     h.blur("email-input");
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 1.0);
+    assert_eq!(h.border_width(inp), 1.0);
 
     h.press("toggle-err");
     assert_eq!(h.raw_str(inp, "ariaDescribedBy"), Some("email-error"));
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 2.0);
+    assert_eq!(h.border_width(inp), 2.0);
     h.press("toggle-err");
     assert_eq!(h.raw_str(inp, "ariaDescribedBy"), Some("email-helper"));
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 1.0);
+    assert_eq!(h.border_width(inp), 1.0);
 
     h.text_change("email-input", "ada@nve.dev");
     assert_eq!(h.text_of("form-state"), "ada@nve.dev|false|false");
@@ -265,11 +249,11 @@ fn form_controls_aria_events_and_style_resets() {
     assert_eq!(h.raw_str(sw, "ariaChecked"), Some("false"));
 
     h.press("toggle-sw-dis");
-    assert!((h.backend.node(sw).unwrap().style.opacity - 0.5).abs() < 1e-3);
+    assert!((h.opacity(sw) - 0.5).abs() < 1e-3);
     h.press("alerts-sw");
     assert_eq!(h.raw_str(sw, "ariaChecked"), Some("false"));
     h.press("toggle-sw-dis");
-    assert!((h.backend.node(sw).unwrap().style.opacity - 1.0).abs() < 1e-3);
+    assert!((h.opacity(sw) - 1.0).abs() < 1e-3);
 }
 
 #[component]
@@ -408,7 +392,7 @@ fn tabs_overlays_dropdown_and_toasts_end_to_end() {
     assert_eq!(h.raw_str(dlg, "ariaLabelledBy"), Some("confirm-dlg-title"));
     assert_eq!(h.raw_str(dlg, "ariaDescribedBy"), Some("confirm-dlg-description"));
     assert_eq!(h.raw_str(dlg, "ariaControls"), Some("dlg-cancel"));
-    let _ = h.render();
+    h.render();
     assert_eq!(h.text_of("overlay-log"), "dlg-cancel|none");
 
     h.keydown("confirm-dlg", "Tab", false);
@@ -502,9 +486,9 @@ fn virtual_list_100k_rows_renders_o_viewport_with_scroll_and_keyboard() {
     let mut h = UiHarness::new(VirtualList100kApp);
 
     assert!(
-        h.backend.nodes().len() < 80,
+        h.live_node_count() < 80,
         "100k VirtualList must render O(viewport) nodes, got {}",
-        h.backend.nodes().len()
+        h.live_node_count()
     );
     assert!(h.maybe_find("vlist-row-0").is_some());
     assert!(h.maybe_find("vlist-row-50000").is_none());
@@ -512,7 +496,7 @@ fn virtual_list_100k_rows_renders_o_viewport_with_scroll_and_keyboard() {
     h.scroll("vlist", 2_200_000.0);
     assert!(h.maybe_find("vlist-row-0").is_none());
     assert!(h.maybe_find("vlist-row-50000").is_some());
-    assert!(h.backend.nodes().len() < 80);
+    assert!(h.live_node_count() < 80);
 
     let top_h = h.backend.layout_of(h.find("vlist-top-spacer")).unwrap().height;
     let bot_h = h.backend.layout_of(h.find("vlist-bottom-spacer")).unwrap().height;

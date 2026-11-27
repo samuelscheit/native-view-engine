@@ -2,7 +2,7 @@
 //! wave progression series, and direct binary FFI `NVE_DRAW1` bar/line chart draw-list builders.
 
 use nve_abi::ColorRgba;
-use nve_components::canvas_ir::DrawList;
+use nve_canvas::DrawList;
 
 include!(concat!(
     env!("OUT_DIR"),
@@ -212,7 +212,7 @@ pub(crate) const PROGRESSION_SERIES: [ProgressionSeries; 6] = [
     ProgressionSeries {
         id: "web-ssr-payload",
         title: "Studio Frame 0 Web SSR + CSS Payload",
-        subtitle: "Option 5 Hybrid FNV-1a64 deduplicated CSS · commit 36a6e5a",
+        subtitle: "Option 5 Hybrid content-hashed deduplicated CSS · commit 36a6e5a",
         unit: "KiB",
         delta_badge: "-77.2%",
         category: BenchCategory::WebWasm,

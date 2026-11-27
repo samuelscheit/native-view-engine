@@ -11,7 +11,7 @@ mod common;
 use std::borrow::Cow;
 
 use common::UiHarness;
-use nve_abi::{ColorRgba, Command, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
@@ -175,93 +175,57 @@ fn nve_ui_components_merge_style_overrides_and_reset_all_state_transitions_clean
 
     // 1. User `style` override merges onto `Button`'s `nve_style` cleanly.
     let btn = h.find("styled-btn");
-    assert_eq!(h.backend.node(btn).unwrap().layout.padding, EdgeInsets::all(20.0));
-    assert_eq!(h.backend.node(btn).unwrap().style.border_radius, 22.0);
-    assert_eq!(
-        h.backend.node(btn).unwrap().style.background,
-        UiPaletteRgba::LIGHT.accent
-    );
+    assert_eq!(h.padding(btn), EdgeInsets::all(20.0));
+    assert_eq!(h.border_radius(btn), 22.0);
+    assert_eq!(h.bg(btn), UiPaletteRgba::LIGHT.accent);
     assert_eq!(h.raw_str(btn, "style"), None);
 
     // 2. Focus -> border_width=2.0 while user override padding=20 & radius=22 stay intact!
     h.focus("styled-btn");
-    assert_eq!(h.backend.node(btn).unwrap().style.border_width, 2.0);
-    assert_eq!(
-        h.backend.node(btn).unwrap().style.border_color,
-        UiPaletteRgba::LIGHT.border_focus
-    );
-    assert_eq!(h.backend.node(btn).unwrap().layout.padding, EdgeInsets::all(20.0));
-    assert_eq!(h.backend.node(btn).unwrap().style.border_radius, 22.0);
+    assert_eq!(h.border_width(btn), 2.0);
+    assert_eq!(h.border_color(btn), UiPaletteRgba::LIGHT.border_focus);
+    assert_eq!(h.padding(btn), EdgeInsets::all(20.0));
+    assert_eq!(h.border_radius(btn), 22.0);
 
     // Blur -> border_width resets cleanly to 0.0 and border_color to TRANSPARENT.
     h.blur("styled-btn");
-    assert_eq!(h.backend.node(btn).unwrap().style.border_width, 0.0);
-    assert_eq!(
-        h.backend.node(btn).unwrap().style.border_color,
-        ColorRgba::TRANSPARENT
-    );
+    assert_eq!(h.border_width(btn), 0.0);
+    assert_eq!(h.border_color(btn), ColorRgba::TRANSPARENT);
 
     // 3. Disabled -> opacity=0.5, re-enable -> opacity=1.0 (override stays intact throughout).
     h.press("toggle-disabled");
-    assert!((h.backend.node(btn).unwrap().style.opacity - 0.5).abs() < 1e-3);
-    assert_eq!(h.backend.node(btn).unwrap().style.border_radius, 22.0);
+    assert!((h.opacity(btn) - 0.5).abs() < 1e-3);
+    assert_eq!(h.border_radius(btn), 22.0);
     h.press("toggle-disabled");
-    assert!((h.backend.node(btn).unwrap().style.opacity - 1.0).abs() < 1e-3);
+    assert!((h.opacity(btn) - 1.0).abs() < 1e-3);
 
     // 4. Removing user `style` override restores exact theme radii & padding with zero raw "style" prop.
-    let cmds = h.press("toggle-override");
-    assert_eq!(h.backend.node(btn).unwrap().style.border_radius, 8.0);
-    assert_eq!(
-        h.backend.node(btn).unwrap().layout.padding,
-        EdgeInsets::symmetric(8.0, 16.0)
-    );
-    assert!(!cmds.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp { key, .. } if key == "style" || key == "nve_style"
-    )));
+    h.press("toggle-override");
+    assert_eq!(h.border_radius(btn), 8.0);
+    assert_eq!(h.padding(btn), EdgeInsets::symmetric(8.0, 16.0));
+    assert_eq!(h.raw_str(btn, "style"), None);
 
     // 5. Checkbox checked -> unchecked cleanly resets box fill & border.
     let cb = h.find("state-cb");
-    let cb_box = h.backend.node(cb).unwrap().children[0];
-    assert_eq!(
-        h.backend.node(cb_box).unwrap().style.background,
-        UiPaletteRgba::LIGHT.surface
-    );
+    let cb_box = h.children_of(cb)[0];
+    assert_eq!(h.bg(cb_box), UiPaletteRgba::LIGHT.surface);
     h.press("toggle-checked");
-    assert_eq!(
-        h.backend.node(cb_box).unwrap().style.background,
-        UiPaletteRgba::LIGHT.accent
-    );
+    assert_eq!(h.bg(cb_box), UiPaletteRgba::LIGHT.accent);
     h.press("toggle-checked");
-    assert_eq!(
-        h.backend.node(cb_box).unwrap().style.background,
-        UiPaletteRgba::LIGHT.surface
-    );
+    assert_eq!(h.bg(cb_box), UiPaletteRgba::LIGHT.surface);
 
     // 6. Input error -> valid resets border_width (2 -> 1) and border_color (danger -> border).
     let inp = h.find("state-input");
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 1.0);
-    assert_eq!(
-        h.backend.node(inp).unwrap().style.border_color,
-        UiPaletteRgba::LIGHT.border
-    );
+    assert_eq!(h.border_width(inp), 1.0);
+    assert_eq!(h.border_color(inp), UiPaletteRgba::LIGHT.border);
     h.press("toggle-error");
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 2.0);
-    assert_eq!(
-        h.backend.node(inp).unwrap().style.border_color,
-        UiPaletteRgba::LIGHT.danger
-    );
+    assert_eq!(h.border_width(inp), 2.0);
+    assert_eq!(h.border_color(inp), UiPaletteRgba::LIGHT.danger);
     h.press("toggle-error");
-    assert_eq!(h.backend.node(inp).unwrap().style.border_width, 1.0);
-    assert_eq!(
-        h.backend.node(inp).unwrap().style.border_color,
-        UiPaletteRgba::LIGHT.border
-    );
+    assert_eq!(h.border_width(inp), 1.0);
+    assert_eq!(h.border_color(inp), UiPaletteRgba::LIGHT.border);
 
     // 7. ThemeProvider syncs custom-mutated `theme.palette.accent = #10b981` into pre-parsed colors.
     h.press("toggle-dark");
-    assert_eq!(
-        h.backend.node(btn).unwrap().style.background,
-        ColorRgba::rgb(0x10, 0xb9, 0x81)
-    );
+    assert_eq!(h.bg(btn), ColorRgba::rgb(0x10, 0xb9, 0x81));
 }

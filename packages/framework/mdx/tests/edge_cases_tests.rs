@@ -1,11 +1,11 @@
-//! Additional deep edge-case tests for `nve-mdx`: NVS1 error paths, duplicate routes,
+//! Additional deep edge-case tests for `nve-mdx`: NVS2 error paths, duplicate routes,
 //! nested multiline highlighting, directive closers, and sub-millisecond search scale.
 
 use std::time::Instant;
 
 use nve_mdx::{
-    CompileOptions, ComponentRegistry, DiagnosticKind, NVS1_MAGIC, NVS1_VERSION, SearchIndex,
-    SearchIndexError, SiteSource, TokenKind, compile_site, compile_site_with_validation, fnv1a64,
+    CompileOptions, ComponentRegistry, DiagnosticKind, NVS2_MAGIC, NVS2_VERSION, SearchIndex,
+    SearchIndexError, SiteSource, TokenKind, compile_site, compile_site_with_validation,
     highlight_code,
 };
 
@@ -33,7 +33,7 @@ fn validator_detects_duplicate_routes_and_disallowed_children() {
 }
 
 #[test]
-fn nvs1_codec_rejects_all_malformed_variants_cleanly() {
+fn nvs2_codec_rejects_all_malformed_variants_cleanly() {
     // 1. Too short
     assert_eq!(SearchIndex::decode(&[0u8; 10]), Err(SearchIndexError::TooShort));
 
@@ -47,7 +47,7 @@ fn nvs1_codec_rejects_all_malformed_variants_cleanly() {
 
     // 3. Unsupported version
     let mut bad_ver = vec![0u8; 28];
-    bad_ver[0..4].copy_from_slice(NVS1_MAGIC);
+    bad_ver[0..4].copy_from_slice(NVS2_MAGIC);
     bad_ver[4..6].copy_from_slice(&99u16.to_le_bytes());
     assert_eq!(
         SearchIndex::decode(&bad_ver),
@@ -56,14 +56,14 @@ fn nvs1_codec_rejects_all_malformed_variants_cleanly() {
 
     // 4. Trailing bytes with valid checksum
     let mut trailing = Vec::new();
-    trailing.extend_from_slice(NVS1_MAGIC);
-    trailing.extend_from_slice(&NVS1_VERSION.to_le_bytes());
+    trailing.extend_from_slice(NVS2_MAGIC);
+    trailing.extend_from_slice(&NVS2_VERSION.to_le_bytes());
     trailing.extend_from_slice(&0u16.to_le_bytes());
     trailing.extend_from_slice(&0u32.to_le_bytes()); // doc_count
     trailing.extend_from_slice(&0u32.to_le_bytes()); // token_count
     trailing.extend_from_slice(&0u32.to_le_bytes()); // trigram_count
     trailing.extend_from_slice(&[0xde, 0xad]); // extra trailing bytes
-    let ck = fnv1a64(&trailing);
+    let ck = nve_hash::xxh64(&trailing, 0);
     trailing.extend_from_slice(&ck.to_le_bytes());
     assert_eq!(
         SearchIndex::decode(&trailing),
@@ -72,8 +72,8 @@ fn nvs1_codec_rejects_all_malformed_variants_cleanly() {
 
     // 5. Out-of-bounds posting doc_id with valid checksum
     let mut bad_doc = Vec::new();
-    bad_doc.extend_from_slice(NVS1_MAGIC);
-    bad_doc.extend_from_slice(&NVS1_VERSION.to_le_bytes());
+    bad_doc.extend_from_slice(NVS2_MAGIC);
+    bad_doc.extend_from_slice(&NVS2_VERSION.to_le_bytes());
     bad_doc.extend_from_slice(&0u16.to_le_bytes());
     bad_doc.extend_from_slice(&0u32.to_le_bytes()); // doc_count = 0
     bad_doc.extend_from_slice(&1u32.to_le_bytes()); // token_count = 1
@@ -83,7 +83,7 @@ fn nvs1_codec_rejects_all_malformed_variants_cleanly() {
     bad_doc.extend_from_slice(&1u32.to_le_bytes()); // posting_count = 1
     bad_doc.extend_from_slice(&7u32.to_le_bytes()); // doc_id = 7 >= 0
     bad_doc.extend_from_slice(&10u16.to_le_bytes()); // weight_x10
-    let ck2 = fnv1a64(&bad_doc);
+    let ck2 = nve_hash::xxh64(&bad_doc, 0);
     bad_doc.extend_from_slice(&ck2.to_le_bytes());
     assert_eq!(
         SearchIndex::decode(&bad_doc),
@@ -105,7 +105,7 @@ fn syntax_highlighter_tracks_multiline_comments_and_raw_strings() {
 }
 
 #[test]
-fn nvs1_query_stays_sub_millisecond_on_100_page_site() {
+fn nvs2_query_stays_sub_millisecond_on_100_page_site() {
     let mut src = SiteSource::new();
     for i in 0..100 {
         src.insert(

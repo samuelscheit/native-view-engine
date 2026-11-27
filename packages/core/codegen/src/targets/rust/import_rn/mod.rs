@@ -30,7 +30,7 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
     let _ = writeln!(out, "pub mod {mod_name} {{");
     let _ = writeln!(
         out,
-        "    use nve_abi::{{encode_bin_value_to_vec, BinValueView, ColorRgba, CommandBufferBuilder, ComponentKind, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, NveMapEntry, NveValue, RawPropValue}};"
+        "    use nve_abi::{{encode_bin_value_to_vec, BinValueView, ColorRgba, DecodeError, EventPayload, NativeEvent, NativeEventKind, NveMapEntry, NveValue, NveValueRef}};"
     );
     let _ = writeln!(out, "    use nve_dioxus::elements::AttributeDescription;");
     let _ = writeln!(out);
@@ -198,7 +198,7 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
         let _ = writeln!(out);
     }
 
-    // 5. Emit typed Props struct + builder methods + binary CommandBufferBuilder encoder
+    // 5. Emit typed Props struct + builder methods + binary NveBinValue encoder
     let _ = writeln!(out, "    #[derive(Debug, Clone, PartialEq, Default)]");
     let _ = writeln!(out, "    pub struct {pascal}Props {{");
     for prop in &spec.props {
@@ -250,54 +250,69 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "        /// Emits `CreateNode(ComponentKind::Custom, Some(\"{}\"))` and all typed raw props.",
+        "        /// Encodes all configured props for `{}` as a compact binary `NveBinValue` map.",
         sanitize_single_line_comment(&spec.component_name)
     );
-    let _ = writeln!(
-        out,
-        "        pub fn mount(&self, builder: &mut CommandBufferBuilder, node_id: NodeId) {{"
-    );
-    let _ = writeln!(
-        out,
-        "            builder.create_node(node_id, ComponentKind::Custom, Some(COMPONENT_NAME));"
-    );
-    let _ = writeln!(out, "            self.encode_props(builder, node_id);");
-    if !spec.events.is_empty() {
-        let _ = writeln!(out, "            builder.set_event_mask(node_id, EventMask::CUSTOM);");
+    let _ = writeln!(out, "        pub fn encode_props(&self) -> Result<Vec<u8>, DecodeError> {{");
+    // Phase 1: materialize any nested binary buffers as immutable local bindings before building
+    // `NveMapEntry` raw pointers (prevents Vec reallocation / Stacked Borrows invalidation).
+    for prop in &spec.props {
+        let field = rust_ident(&prop.name);
+        if let Some(prep) = rust_prop_preencode_stmt(&field, &prop.prop_type, prop.optional || prop.nullable) {
+            let _ = writeln!(out, "            {prep}");
+        }
     }
-    let _ = writeln!(out, "        }}");
-    let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "        /// Writes all configured props into `builder` via `RawPropValue` / binary `NveBinValue`."
-    );
-    let _ = writeln!(
-        out,
-        "        pub fn encode_props(&self, builder: &mut CommandBufferBuilder, node_id: NodeId) {{"
+        "            let mut entries: Vec<NveMapEntry> = Vec::with_capacity({});",
+        spec.props.len()
     );
     for prop in &spec.props {
         let field = rust_ident(&prop.name);
         let key = escape_c_like_string(&prop.name);
         if prop.optional || prop.nullable {
-            let _ = writeln!(out, "            if let Some(ref val) = self.{field} {{");
-            let expr = rust_to_raw_prop_expr("val", &prop.prop_type, true);
+            if rust_prop_needs_preencode(&prop.prop_type) {
+                let _ = writeln!(out, "            if let Some(ref b) = _bin_{field} {{");
+                let _ = writeln!(
+                    out,
+                    "                entries.push(NveMapEntry::new(\"{key}\", NveValue::from_bytes(b)));"
+                );
+                let _ = writeln!(out, "            }}");
+            } else {
+                let expr = rust_prop_to_nve_value_expr("val", &field, &prop.prop_type, true);
+                let _ = writeln!(out, "            if let Some(ref val) = self.{field} {{");
+                let _ = writeln!(
+                    out,
+                    "                entries.push(NveMapEntry::new(\"{key}\", {expr}));"
+                );
+                let _ = writeln!(out, "            }}");
+            }
+        } else if rust_prop_needs_preencode(&prop.prop_type) {
             let _ = writeln!(
                 out,
-                "                builder.set_raw_prop(node_id, \"{key}\", &{expr});"
+                "            entries.push(NveMapEntry::new(\"{key}\", NveValue::from_bytes(&_bin_{field})));"
             );
-            let _ = writeln!(out, "            }}");
         } else {
-            let expr = rust_to_raw_prop_expr(&format!("self.{field}"), &prop.prop_type, false);
+            let expr =
+                rust_prop_to_nve_value_expr(&format!("self.{field}"), &field, &prop.prop_type, false);
             let _ = writeln!(
                 out,
-                "            builder.set_raw_prop(node_id, \"{key}\", &{expr});"
+                "            entries.push(NveMapEntry::new(\"{key}\", {expr}));"
             );
         }
     }
+    let _ = writeln!(
+        out,
+        "            let map_val = NveValue::map(&entries);"
+    );
+    let _ = writeln!(
+        out,
+        "            encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&map_val) }})"
+    );
     let _ = writeln!(out, "        }}");
     let _ = writeln!(out, "    }}");
 
-    // 6. Native Commands (encoded as compact binary `NveBinValue` maps)
+    // 6. Native Commands (encoded as compact binary `NveBinValue` payloads for `Transaction::command`)
     if !spec.commands.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "    /// Imperative native commands (`codegenNativeCommands`).");
@@ -305,27 +320,22 @@ pub(crate) fn emit_component_rust(spec: &RnComponentSpec, mod_name: &str) -> Str
         let _ = writeln!(out, "        use super::*;");
         for cmd in &spec.commands {
             let fn_name = rust_ident(&cmd.name);
-            let mut sig = String::from("builder: &mut CommandBufferBuilder, node_id: NodeId");
-            for p in &cmd.params {
+            let mut sig = String::new();
+            for (idx, p) in cmd.params.iter().enumerate() {
+                if idx > 0 {
+                    sig.push_str(", ");
+                }
                 let pname = rust_ident(&p.name);
                 let pty = rust_simple_type(&p.param_type);
-                let _ = write!(sig, ", {pname}: {pty}");
+                let _ = write!(sig, "{pname}: {pty}");
             }
             let _ = writeln!(out);
-            let _ = writeln!(out, "        pub fn {fn_name}({sig}) {{");
+            let _ = writeln!(out, "        pub fn {fn_name}({sig}) -> Result<Vec<u8>, DecodeError> {{");
             if cmd.params.is_empty() {
-                let _ = writeln!(
-                    out,
-                    "            builder.dispatch_command(node_id, \"{}\", &[]);",
-                    escape_c_like_string(&cmd.name)
-                );
+                let _ = writeln!(out, "            Ok(Vec::new())");
             } else {
                 emit_rust_bin_map_payload(&mut out, &cmd.params, "            ", false);
-                let _ = writeln!(
-                    out,
-                    "            builder.dispatch_command(node_id, \"{}\", &payload);",
-                    escape_c_like_string(&cmd.name)
-                );
+                let _ = writeln!(out, "            Ok(payload)");
             }
             let _ = writeln!(out, "        }}");
         }
@@ -350,7 +360,7 @@ pub(crate) fn emit_turbomodule_rust(spec: &TurboModuleSpec, mod_name: &str) -> S
     let _ = writeln!(out, "pub mod {mod_name} {{");
     let _ = writeln!(
         out,
-        "    use nve_abi::{{encode_bin_value_to_vec, CommandBufferBuilder, NodeId, NveMapEntry, NveValue}};"
+        "    use nve_abi::{{encode_bin_value_to_vec, DecodeError, NveMapEntry, NveValue, NveValueRef}};"
     );
     let _ = writeln!(out);
     let _ = writeln!(
@@ -396,39 +406,32 @@ pub(crate) fn emit_turbomodule_rust(spec: &TurboModuleSpec, mod_name: &str) -> S
 
     let _ = writeln!(
         out,
-        "    /// Binary command-buffer bridge client dispatching TurboModule calls via `Command::DispatchCommand`."
+        "    /// Binary `NveBinValue` payload encoder for TurboModule host calls."
     );
     let _ = writeln!(out, "    pub struct {pascal}Bridge;");
     let _ = writeln!(out);
     let _ = writeln!(out, "    impl {pascal}Bridge {{");
     for method in &spec.methods {
         let mname = rust_ident(&method.name);
-        let mut params = String::from("builder: &mut CommandBufferBuilder, node_id: NodeId");
-        for p in &method.params {
+        let mut params = String::new();
+        for (idx, p) in method.params.iter().enumerate() {
+            if idx > 0 {
+                params.push_str(", ");
+            }
             let pname = rust_ident(&p.name);
             let pty = rust_simple_type(&p.param_type);
             if p.optional {
-                let _ = write!(params, ", {pname}: Option<{pty}>");
+                let _ = write!(params, "{pname}: Option<{pty}>");
             } else {
-                let _ = write!(params, ", {pname}: {pty}");
+                let _ = write!(params, "{pname}: {pty}");
             }
         }
-        let _ = writeln!(out, "        pub fn {mname}({params}) {{");
+        let _ = writeln!(out, "        pub fn {mname}({params}) -> Result<Vec<u8>, DecodeError> {{");
         if method.params.is_empty() {
-            let _ = writeln!(
-                out,
-                "            builder.dispatch_command(node_id, \"{}.{}\", &[]);",
-                escape_c_like_string(&spec.module_name),
-                escape_c_like_string(&method.name)
-            );
+            let _ = writeln!(out, "            Ok(Vec::new())");
         } else {
             emit_rust_bin_map_payload(&mut out, &method.params, "            ", true);
-            let _ = writeln!(
-                out,
-                "            builder.dispatch_command(node_id, \"{}.{}\", &payload);",
-                escape_c_like_string(&spec.module_name),
-                escape_c_like_string(&method.name)
-            );
+            let _ = writeln!(out, "            Ok(payload)");
         }
         let _ = writeln!(out, "        }}");
     }

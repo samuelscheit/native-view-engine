@@ -209,14 +209,22 @@ pub(crate) fn SiteFooter() -> Element {
                                         };
                                         let spa_target = (!is_ext && !*hard_nav)
                                             .then(|| DocsRoute::new(raw_target));
-                                        let hard_attr = (*hard_nav && !is_ext)
-                                            .then(|| "true".to_string());
+                                        let is_hard = *hard_nav && !is_ext;
                                         rsx! {
                                             pressable {
                                                 key: "footer-link-{label}",
                                                 accessibility_role: "link",
                                                 "href": "{href}",
-                                                "data-nve-hard-nav": hard_attr,
+                                                nve_table: nve_dioxus::table_attr_fn(move |tx, node| {
+                                                    if is_hard {
+                                                        tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                                            nve_web_html::DataAttrList::from_pairs(vec![(
+                                                                "data-nve-hard-nav".to_owned(),
+                                                                "true".to_owned(),
+                                                            )]),
+                                                        ));
+                                                    }
+                                                }),
                                                 onpress: move |_| {
                                                     if let Some(ref rt) = spa_target {
                                                         navigate_to(state, rt.clone());

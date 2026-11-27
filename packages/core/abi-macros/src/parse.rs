@@ -228,15 +228,15 @@ fn format_type(tokens: &[TokenTree]) -> String {
     out.trim().to_owned()
 }
 
-fn is_delim(t: &TokenTree, d: Delimiter) -> bool { matches!(t, TokenTree::Group(g) if g.delimiter() == d) }
-fn is_punct(tokens: &[TokenTree], i: usize, ch: char) -> bool { matches!(tokens.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ch) }
+pub(crate) fn is_delim(t: &TokenTree, d: Delimiter) -> bool { matches!(t, TokenTree::Group(g) if g.delimiter() == d) }
+pub(crate) fn is_punct(tokens: &[TokenTree], i: usize, ch: char) -> bool { matches!(tokens.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ch) }
 fn is_colon2(tokens: &[TokenTree], i: usize) -> bool { matches!(tokens.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ':' && p.spacing() == Spacing::Joint) && is_punct(tokens, i + 1, ':') }
-fn skip_vis(tokens: &[TokenTree], pos: &mut usize) {
+pub(crate) fn skip_vis(tokens: &[TokenTree], pos: &mut usize) {
     if matches!(tokens.get(*pos), Some(TokenTree::Ident(id)) if id.to_string() == "pub") {
         *pos += 1; if matches!(tokens.get(*pos), Some(t) if is_delim(t, Delimiter::Parenthesis)) { *pos += 1; }
     }
 }
-fn expect_ident(tokens: &[TokenTree], pos: &mut usize, desc: &str) -> Result<String, String> {
+pub(crate) fn expect_ident(tokens: &[TokenTree], pos: &mut usize, desc: &str) -> Result<String, String> {
     match tokens.get(*pos) { Some(TokenTree::Ident(id)) => { *pos += 1; Ok(id.to_string()) } other => Err(format!("expected {desc}, found {other:?}")) }
 }
 fn strip_raw(s: &str) -> String { s.strip_prefix("r#").unwrap_or(s).to_owned() }

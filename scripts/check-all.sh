@@ -390,7 +390,7 @@ suite_skia_desktop_shell() {
 
 suite_skia_gpu_check() {
   cd "$REPO_ROOT"
-  cargo check -p nve-backend-skia --features "$SKIA_GPU_FEATURE"
+  cargo check -p nve-backend-skia -p nve-skia-shell --features "$SKIA_GPU_FEATURE"
 }
 
 suite_abi_codegen_parity() {
@@ -667,7 +667,7 @@ fi
 
 # 1b. ABI codegen generate + parity check (required before host builds/tests)
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (15/15)"
+  run_suite "ABI codegen parity" suite_abi_codegen_parity "codegen abi + --check (21/21)"
 else
   skip_suite "ABI codegen parity" "cargo not found"
 fi
@@ -724,103 +724,120 @@ else
   skip_suite "Python script tests" "scripts/tests directory not found"
 fi
 
-# 2. C++20 Fabric bridge
-if has_cmake; then
-  fabric_note="standalone + bench --iters 10"
-  if [ -n "$RN_DIR" ]; then
-    fabric_note="RN Yoga/JSI + bench --iters 10"
-  fi
-  run_suite "C++20 Fabric bridge" suite_cpp_fabric_bridge "$fabric_note"
-else
-  skip_suite "C++20 Fabric bridge" "cmake not found"
-fi
+# Legacy C++ Fabric bridge & native host shells are temporarily gated until
+# Track 1B-2 rebinds all native hosts once against `libnve_runtime`.
+LEGACY_NATIVE_REASON="temporarily disabled until Track 1B-2 rebinds native hosts to libnve_runtime"
 
-# 3a. macOS AppKit host
-if [ "$OS_NAME" = "Darwin" ] && has_cmake; then
-  run_suite "macOS AppKit host" suite_macos_appkit "CTest + counter & studio dylibs"
-elif [ "$OS_NAME" != "Darwin" ]; then
-  skip_suite "macOS AppKit host" "requires macOS (Darwin)"
+if [ "${NVE_RUN_LEGACY_NATIVE_HOSTS:-0}" != "1" ]; then
+  skip_suite "C++20 Fabric bridge" "$LEGACY_NATIVE_REASON"
+  skip_suite "macOS AppKit host" "$LEGACY_NATIVE_REASON"
+  skip_suite "iOS Simulator SDK" "$LEGACY_NATIVE_REASON"
+  skip_suite "Windows host" "$LEGACY_NATIVE_REASON"
+  skip_suite "Qt 6 host" "$LEGACY_NATIVE_REASON"
+  skip_suite "GTK4 host" "$LEGACY_NATIVE_REASON"
+  skip_suite "Android JNI host" "$LEGACY_NATIVE_REASON"
+  skip_suite "Android Compose kit" "$LEGACY_NATIVE_REASON"
+  skip_suite "SwiftUI host kit" "$LEGACY_NATIVE_REASON"
+  skip_suite "Flutter host plugin" "$LEGACY_NATIVE_REASON"
 else
-  skip_suite "macOS AppKit host" "cmake not found"
-fi
-
-# 3b. iOS Simulator SDK ObjC++ syntax check
-if [ "$OS_NAME" = "Darwin" ] && command -v xcrun >/dev/null 2>&1 \
-  && xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
-  run_suite "iOS Simulator SDK" suite_ios_simulator_sdk "ObjC++ -Wall -Wextra -Werror"
-elif [ "$OS_NAME" != "Darwin" ]; then
-  skip_suite "iOS Simulator SDK" "requires macOS (Darwin)"
-else
-  skip_suite "iOS Simulator SDK" "iphonesimulator SDK not installed"
-fi
-
-# 3c. Windows host (MINGW / MSYS / Git Bash)
-case "$OS_NAME" in
-  MINGW*|MSYS*|CYGWIN*)
-    if has_cmake; then
-      run_suite "Windows host" suite_windows_host "CTest + counter & studio dylibs"
-    else
-      skip_suite "Windows host" "cmake not found"
+  # 2. C++20 Fabric bridge
+  if has_cmake; then
+    fabric_note="standalone + bench --iters 10"
+    if [ -n "$RN_DIR" ]; then
+      fabric_note="RN Yoga/JSI + bench --iters 10"
     fi
-    ;;
-  *)
-    skip_suite "Windows host" "requires Windows (MINGW/MSYS/Git Bash)"
-    ;;
-esac
+    run_suite "C++20 Fabric bridge" suite_cpp_fabric_bridge "$fabric_note"
+  else
+    skip_suite "C++20 Fabric bridge" "cmake not found"
+  fi
 
-# 4. Qt 6 host
-if has_cmake && has_qt6; then
-  run_suite "Qt 6 host" suite_qt6_host "offscreen CTest + Widgets & Quick dylibs"
-elif ! has_cmake; then
-  skip_suite "Qt 6 host" "cmake not found"
-else
-  skip_suite "Qt 6 host" "Qt6 / qmake6 not found"
-fi
+  # 3a. macOS AppKit host
+  if [ "$OS_NAME" = "Darwin" ] && has_cmake; then
+    run_suite "macOS AppKit host" suite_macos_appkit "CTest + counter & studio dylibs"
+  elif [ "$OS_NAME" != "Darwin" ]; then
+    skip_suite "macOS AppKit host" "requires macOS (Darwin)"
+  else
+    skip_suite "macOS AppKit host" "cmake not found"
+  fi
 
-# 5. GTK4 host
-if has_cmake && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk4; then
-  run_suite "GTK4 host" suite_gtk4_host "CTest"
-elif ! has_cmake; then
-  skip_suite "GTK4 host" "cmake not found"
-else
-  skip_suite "GTK4 host" "gtk4 not found via pkg-config"
-fi
+  # 3b. iOS Simulator SDK ObjC++ syntax check
+  if [ "$OS_NAME" = "Darwin" ] && command -v xcrun >/dev/null 2>&1 \
+    && xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
+    run_suite "iOS Simulator SDK" suite_ios_simulator_sdk "ObjC++ -Wall -Wextra -Werror"
+  elif [ "$OS_NAME" != "Darwin" ]; then
+    skip_suite "iOS Simulator SDK" "requires macOS (Darwin)"
+  else
+    skip_suite "iOS Simulator SDK" "iphonesimulator SDK not installed"
+  fi
 
-# 6. Android JNI host
-DETECTED_JAVA_HOME=""
-if has_cmake && DETECTED_JAVA_HOME="$(detect_java_home)"; then
-  run_suite "Android JNI host" suite_android_jni_host "android_jni_bridge_test + bridge_abi_test"
-elif ! has_cmake; then
-  skip_suite "Android JNI host" "cmake not found"
-else
-  skip_suite "Android JNI host" "JDK / JNI headers not found"
-fi
+  # 3c. Windows host (MINGW / MSYS / Git Bash)
+  case "$OS_NAME" in
+    MINGW*|MSYS*|CYGWIN*)
+      if has_cmake; then
+        run_suite "Windows host" suite_windows_host "CTest + counter & studio dylibs"
+      else
+        skip_suite "Windows host" "cmake not found"
+      fi
+      ;;
+    *)
+      skip_suite "Windows host" "requires Windows (MINGW/MSYS/Git Bash)"
+      ;;
+  esac
 
-# 6b. Android Compose kit (Gradle unit tests)
-DETECTED_ANDROID_SDK=""
-DETECTED_HOTSPOT_JAVA_HOME=""
-if [ ! -x "$REPO_ROOT/hosts/compose-kit/run-tests.sh" ]; then
-  skip_suite "Android Compose kit" "hosts/compose-kit/run-tests.sh not found"
-elif ! DETECTED_ANDROID_SDK="$(detect_android_sdk)"; then
-  skip_suite "Android Compose kit" "Android SDK not found"
-elif ! DETECTED_HOTSPOT_JAVA_HOME="$(detect_hotspot_java_home)"; then
-  skip_suite "Android Compose kit" "HotSpot/JBR JDK not found (OpenJ9 unsupported)"
-else
-  run_suite "Android Compose kit" suite_android_compose_kit "Gradle testDebugUnitTest"
-fi
+  # 4. Qt 6 host
+  if has_cmake && has_qt6; then
+    run_suite "Qt 6 host" suite_qt6_host "offscreen CTest + Widgets & Quick dylibs"
+  elif ! has_cmake; then
+    skip_suite "Qt 6 host" "cmake not found"
+  else
+    skip_suite "Qt 6 host" "Qt6 / qmake6 not found"
+  fi
 
-# 7. SwiftUI host kit
-if command -v swift >/dev/null 2>&1; then
-  run_suite "SwiftUI host kit" suite_swiftui_kit "swift test"
-else
-  skip_suite "SwiftUI host kit" "swift not found"
-fi
+  # 5. GTK4 host
+  if has_cmake && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk4; then
+    run_suite "GTK4 host" suite_gtk4_host "CTest"
+  elif ! has_cmake; then
+    skip_suite "GTK4 host" "cmake not found"
+  else
+    skip_suite "GTK4 host" "gtk4 not found via pkg-config"
+  fi
 
-# 8. Flutter host plugin
-if command -v flutter >/dev/null 2>&1; then
-  run_suite "Flutter host plugin" suite_flutter_plugin "flutter analyze + test"
-else
-  skip_suite "Flutter host plugin" "flutter not found"
+  # 6. Android JNI host
+  DETECTED_JAVA_HOME=""
+  if has_cmake && DETECTED_JAVA_HOME="$(detect_java_home)"; then
+    run_suite "Android JNI host" suite_android_jni_host "android_jni_bridge_test + bridge_abi_test"
+  elif ! has_cmake; then
+    skip_suite "Android JNI host" "cmake not found"
+  else
+    skip_suite "Android JNI host" "JDK / JNI headers not found"
+  fi
+
+  # 6b. Android Compose kit (Gradle unit tests)
+  DETECTED_ANDROID_SDK=""
+  DETECTED_HOTSPOT_JAVA_HOME=""
+  if [ ! -x "$REPO_ROOT/hosts/compose-kit/run-tests.sh" ]; then
+    skip_suite "Android Compose kit" "hosts/compose-kit/run-tests.sh not found"
+  elif ! DETECTED_ANDROID_SDK="$(detect_android_sdk)"; then
+    skip_suite "Android Compose kit" "Android SDK not found"
+  elif ! DETECTED_HOTSPOT_JAVA_HOME="$(detect_hotspot_java_home)"; then
+    skip_suite "Android Compose kit" "HotSpot/JBR JDK not found (OpenJ9 unsupported)"
+  else
+    run_suite "Android Compose kit" suite_android_compose_kit "Gradle testDebugUnitTest"
+  fi
+
+  # 7. SwiftUI host kit
+  if command -v swift >/dev/null 2>&1; then
+    run_suite "SwiftUI host kit" suite_swiftui_kit "swift test"
+  else
+    skip_suite "SwiftUI host kit" "swift not found"
+  fi
+
+  # 8. Flutter host plugin
+  if command -v flutter >/dev/null 2>&1; then
+    run_suite "Flutter host plugin" suite_flutter_plugin "flutter analyze + test"
+  else
+    skip_suite "Flutter host plugin" "flutter not found"
+  fi
 fi
 
 # --- Summary table ----------------------------------------------------------

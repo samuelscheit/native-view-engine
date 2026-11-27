@@ -1,4 +1,4 @@
-//! Constant-time Bearer token verification and OS CSPRNG token generation (zero FNV-1a64).
+//! Constant-time Bearer token verification and OS CSPRNG token generation.
 
 use subtle::ConstantTimeEq;
 

@@ -70,7 +70,7 @@ const WAVE_MILESTONES: [WaveMilestone; 8] = [
         commit: "36a6e5a",
         hosts: "10/10 parity",
         title: "Option 5 SSR (-77.2%), nve-docs & Zero-Copy",
-        summary: "FNV-1a64 Hybrid CSS + lossless hydration, nve-mdx + NVS1 search, reusable nve-docs, Swift/Flutter pairing parity, and zero-copy TypedStyle & HotAppInstance.",
+        summary: "Content-hashed Hybrid CSS + lossless hydration, nve-mdx + NVS2 search, reusable nve-docs, Swift/Flutter pairing parity, and zero-copy TypedStyle & HotAppInstance.",
     },
 ];
 

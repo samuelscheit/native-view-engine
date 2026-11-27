@@ -1,4 +1,4 @@
-//! Direct typed [`StorageBackend`] plus [`NativeStorage`] (disk or in-memory `NVK1`) and
+//! Direct typed [`StorageBackend`] plus [`NativeStorage`] (disk or in-memory `NVK2`) and
 //! [`MemoryStorage`] [`HostServiceHandler`] implementations.
 
 use std::any::{Any, TypeId};

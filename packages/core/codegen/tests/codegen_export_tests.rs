@@ -233,12 +233,7 @@ fn minimal_and_complex_specs_export_cleanly_across_all_five_targets() {
 }
 
 #[test]
-fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let include_dir = manifest_dir.join("../../../cxx/nve-fabric-bridge/include");
-    if !include_dir.join("nve_rn_component.hpp").exists() {
-        return;
-    }
+fn generated_c_and_cpp20_abi_headers_compile_cleanly() {
     let clang_ok = std::process::Command::new("clang++")
         .arg("--version")
         .output()
@@ -252,75 +247,43 @@ fn generated_cpp20_compiles_cleanly_against_real_nve_rn_component_header() {
     std::fs::create_dir_all(&tmp).unwrap();
     common::write_generated_c_abi_headers(&tmp);
 
-    let imported = import_rn_source(EMBEDDED_SWITCH_SPEC).expect("import Switch");
-    let adapter_path = tmp.join(&imported.cpp_adapter.relative_path);
-    std::fs::write(&adapter_path, &imported.cpp_adapter.content).unwrap();
-
-    let import_harness = tmp.join("check_import.cpp");
+    let c11_harness = tmp.join("check_abi.c");
     std::fs::write(
-        &import_harness,
-        format!(
-            "#include \"{}\"\nvoid instantiate(NveFabricHostHandle h) {{\n  nve::generated::register_switch_adapter(h, [](uint32_t, const nve::generated::SwitchProps&) {{}});\n}}\n",
-            imported.cpp_adapter.relative_path
-        ),
+        &c11_harness,
+        "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nint check_abi_sizes(void) { return (int)(sizeof(NveRenderNode) + sizeof(NveSceneView) + sizeof(NveTableView)); }\n",
     )
     .unwrap();
-
-    let status_import = std::process::Command::new("clang++")
-        .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
-        .arg("-I").arg(&tmp)
-        .arg("-I").arg(&include_dir)
-        .arg(&import_harness)
+    let status_c11 = std::process::Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(&tmp)
+        .arg(&c11_harness)
         .output()
-        .expect("run clang++ on import_rn adapter");
+        .expect("run clang on generated C11 ABI headers");
     assert!(
-        status_import.status.success(),
-        "import_rn C++20 adapter failed to compile:\n{}",
-        String::from_utf8_lossy(&status_import.stderr)
+        status_c11.status.success(),
+        "Generated C11 ABI headers failed to compile:\n{}",
+        String::from_utf8_lossy(&status_c11.stderr)
     );
 
-    let spec = counter_card_export_spec(ExportBackend::Fabric);
-    let exported = export_rn_spec(&spec).expect("export NveCounterCard");
-    exported.write_to_dir(&tmp).unwrap();
-
-    let status_export = std::process::Command::new("clang++")
+    let cpp_harness = tmp.join("check_abi.cpp");
+    std::fs::write(
+        &cpp_harness,
+        "#include \"nve_abi.generated.h\"\n#include \"nve_scene_abi.generated.h\"\nstatic_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE);\nstatic_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE);\nint check_abi_cpp() { return static_cast<int>(NVE_PRIMARY_SLOT_NONE); }\n",
+    )
+    .unwrap();
+    let status_cpp = std::process::Command::new("clang++")
         .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
-        .arg("-I").arg(&tmp)
-        .arg("-I").arg(&include_dir)
-        .arg(tmp.join(&exported.cpp_bridge_cpp.relative_path))
+        .arg("-I")
+        .arg(&tmp)
+        .arg(&cpp_harness)
         .output()
-        .expect("run clang++ on export_rn bridge");
+        .expect("run clang++ on generated C++20 ABI headers");
     assert!(
-        status_export.status.success(),
-        "export_rn C++20 bridge failed to compile:\n{}",
-        String::from_utf8_lossy(&status_export.stderr)
+        status_cpp.status.success(),
+        "Generated C++20 ABI headers failed to compile:\n{}",
+        String::from_utf8_lossy(&status_cpp.stderr)
     );
-
-    let windows_include_dir = manifest_dir.join("../../../hosts/windows-shell");
-    if windows_include_dir.join("NveRnwComponentView.hpp").exists() {
-        let rnw_harness = tmp.join("check_rnw.cpp");
-        std::fs::write(
-            &rnw_harness,
-            format!(
-                "#include \"{}\"\nvoid instantiate_rnw() {{\n  nve::exported::NveCounterCardRnwComponentView view;\n  (void)view;\n}}\n",
-                exported.windows_component_view_hpp.relative_path
-            ),
-        )
-        .unwrap();
-        let status_rnw = std::process::Command::new("clang++")
-            .args(["-std=c++20", "-fsyntax-only", "-Wall", "-Wextra", "-Werror"])
-            .arg("-I").arg(&tmp)
-            .arg("-I").arg(&include_dir)
-            .arg("-I").arg(&windows_include_dir)
-            .arg(&rnw_harness)
-            .output()
-            .expect("run clang++ on export_rn RNW component view");
-        assert!(
-            status_rnw.status.success(),
-            "export_rn RNW C++20 component view failed to compile:\n{}",
-            String::from_utf8_lossy(&status_rnw.stderr)
-        );
-    }
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -334,7 +297,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
 
     assert_eq!(core_files.len(), 5);
     assert_eq!(scene_files.len(), 5);
-    assert_eq!(all_files.len(), 15);
+    assert_eq!(all_files.len(), 21);
 
     assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
     assert_eq!(core_abi_schema_hash(), NVE_CORE_ABI_SCHEMA_HASH);

@@ -11,5 +11,6 @@ serde = ["dep:serde"]
 
 [dependencies]
 nve-abi-macros = { workspace = true }
+nve-hash = { workspace = true }
 serde = { workspace = true, optional = true }
 rustc-hash = { workspace = true }

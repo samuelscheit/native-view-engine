@@ -1,4 +1,5 @@
-use nve_abi::{ColorRgba, ComponentKind, LayoutProps, StyleProps};
+use nve_abi::{ColorRgba, NVE_PRIMARY_SLOT_NONE};
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 
 use crate::reloc::{
     compute_reloc_checksum, encode_scene_reloc, NveTimelineArchive, NveTimelineArchiveView,
@@ -10,22 +11,22 @@ use crate::{LayoutRect, Viewport};
 fn make_node<'a>(
     node_id: u32,
     parent_index: i32,
-    kind: ComponentKind,
+    primary_slot: u8,
     text: &'a str,
     children: &'a [u32],
 ) -> SceneRelocNodeInput<'a> {
     SceneRelocNodeInput {
         node_id,
         parent_index,
-        kind,
+        primary_slot,
         flags: 0,
         text_align: 0,
         image_resize_mode: 0,
         font_weight: 400,
         event_mask: 0,
         computed_rect: LayoutRect::default(),
-        style: StyleProps::default(),
-        layout: LayoutProps::default(),
+        style: VisualSnapshot::default(),
+        layout: LayoutSnapshot::default(),
         text,
         tag: "",
         image_src: "",
@@ -37,9 +38,9 @@ fn make_node<'a>(
 
 fn sample_base_scene() -> RelocBuf {
     let nodes = [
-        make_node(1, -1, ComponentKind::View, "", &[1, 2]),
-        make_node(2, 0, ComponentKind::Text, "0 - 0", &[]),
-        make_node(3, 0, ComponentKind::Text, "Q1 12:00", &[]),
+        make_node(1, -1, NVE_PRIMARY_SLOT_NONE, "", &[1, 2]),
+        make_node(2, 0, 1, "0 - 0", &[]),
+        make_node(3, 0, 1, "Q1 12:00", &[]),
     ];
     encode_scene_reloc(&SceneRelocInput {
         schema_version: 1,

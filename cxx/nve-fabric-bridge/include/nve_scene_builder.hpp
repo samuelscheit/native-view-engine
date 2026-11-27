@@ -102,12 +102,13 @@ class SceneTableBuilder {
         .removed_count = static_cast<uint32_t>(removed_ids_.size()),
         .text_slab_len = static_cast<uint32_t>(text_slab_.size()),
         .children_slab_len = static_cast<uint32_t>(children_slab_.size()),
-        ._pad = 0u,
+        .table_count = 0u,
         .nodes = nodes_.empty() ? nullptr : nodes_.data(),
         .text_slab = text_slab_.empty() ? nullptr : text_slab_.data(),
         .children_slab = children_slab_.empty() ? nullptr : children_slab_.data(),
         .dirty_indices = dirty_indices_.empty() ? nullptr : dirty_indices_.data(),
         .removed_ids = removed_ids_.empty() ? nullptr : removed_ids_.data(),
+        .tables = nullptr,
     };
   }
 

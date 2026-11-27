@@ -10,9 +10,13 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, ROOT_NODE_ID};
+use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
 use nve_backend_headless::HeadlessBackend;
-use nve_engine::{RenderBackend, Viewport};
+use nve_components::tables::{
+    core_realization_order, register_core_tables, Interaction, TextContent,
+};
+use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 use nve_wire::{
     parse_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportError,
 };
@@ -186,30 +190,38 @@ fn spawn_pair_and_wait_ready(extra_args: &[&str]) -> (ChildGuard, Vec<String>, R
     );
 }
 
-fn find_pressable_with_label(backend: &HeadlessBackend, label: &str) -> Option<NodeId> {
+fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
     fn walk(
-        backend: &HeadlessBackend,
-        id: NodeId,
+        store: &NodeStore,
+        id: StoreNodeId,
         nearest_pressable: Option<NodeId>,
         label: &str,
     ) -> Option<NodeId> {
-        let node = backend.node(id)?;
-        let active_pressable = if node.event_mask != 0 {
-            Some(id)
+        if !store.is_live(id) {
+            return None;
+        }
+        let active_pressable = if store
+            .try_row::<Interaction>(id)
+            .is_some_and(|i| i.event_mask() != 0)
+        {
+            Some(id.raw())
         } else {
             nearest_pressable
         };
-        if node.text.as_deref().is_some_and(|t| t.trim() == label) {
+        if store
+            .try_row::<TextContent>(id)
+            .is_some_and(|t| t.text().trim() == label)
+        {
             return active_pressable;
         }
-        for &child in &node.children {
-            if let Some(found) = walk(backend, child, active_pressable, label) {
+        for &child in store.children(id) {
+            if let Some(found) = walk(store, child, active_pressable, label) {
                 return Some(found);
             }
         }
         None
     }
-    walk(backend, ROOT_NODE_ID, None, label)
+    walk(store, StoreNodeId::ROOT, None, label)
 }
 
 #[test]
@@ -244,6 +256,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
     let timeout = Duration::from_secs(3);
     let f0 = ws.recv_frame_timeout(timeout).expect("initial keyframe").payload;
 
+    register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
         1,
@@ -253,15 +266,18 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
             scale_factor: 1.0,
         },
     );
-    headless.submit_frame(&f0).expect("submit initial Kitchen Sink frame");
-    let tree0 = headless.render_ascii_tree();
+    let mut replica = StoreWireReplica::new(headless, core_realization_order());
+    replica
+        .submit_nve2_frame(&f0)
+        .expect("submit initial Kitchen Sink frame");
+    let tree0 = replica.backend().render_ascii_tree(replica.store());
     assert!(tree0.contains("NVE Kitchen Sink"), "tree0:\n{tree0}");
     assert!(tree0.contains("Count: 0"), "tree0:\n{tree0}");
 
-    let inc_node = find_pressable_with_label(&headless, "Increment +")
+    let inc_node = find_pressable_with_label(replica.store(), "Increment +")
         .expect("find Increment + pressable node");
     let reset_node =
-        find_pressable_with_label(&headless, "Reset").expect("find Reset pressable node");
+        find_pressable_with_label(replica.store(), "Reset").expect("find Reset pressable node");
 
     let send_press = |client: &NveWireClient, node_id: NodeId, ts: u64| {
         let ev_ring = encode_events(&[NativeEvent {
@@ -276,18 +292,27 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
 
     send_press(&ws, inc_node, 1_000);
     let f1 = ws.recv_frame_timeout(timeout).expect("frame 1").payload;
-    headless.submit_frame(&f1).unwrap();
-    assert!(headless.render_ascii_tree().contains("Count: 1"));
+    replica.submit_nve2_frame(&f1).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Count: 1"));
 
     send_press(&ws, inc_node, 2_000);
     let f2 = ws.recv_frame_timeout(timeout).expect("frame 2").payload;
-    headless.submit_frame(&f2).unwrap();
-    assert!(headless.render_ascii_tree().contains("Count: 2"));
+    replica.submit_nve2_frame(&f2).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Count: 2"));
 
     send_press(&ws, reset_node, 3_000);
     let f3 = ws.recv_frame_timeout(timeout).expect("frame 3").payload;
-    headless.submit_frame(&f3).unwrap();
-    assert!(headless.render_ascii_tree().contains("Count: 0"));
+    replica.submit_nve2_frame(&f3).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Count: 0"));
 
     ws.close();
 }
@@ -314,8 +339,12 @@ fn nve_pair_honors_explicit_token_and_rejects_invalid_bearer_token() {
         .recv_frame_timeout(Duration::from_secs(3))
         .expect("recv frame")
         .payload;
-    let mut headless = HeadlessBackend::new();
-    headless.submit_frame(&f0).expect("submit frame");
-    assert!(headless.render_ascii_tree().contains("Count: 0"));
+    register_core_tables();
+    let mut replica = StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
+    replica.submit_nve2_frame(&f0).expect("submit frame");
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Count: 0"));
     quic.close();
 }

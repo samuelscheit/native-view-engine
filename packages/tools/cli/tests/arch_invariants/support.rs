@@ -170,6 +170,7 @@ pub fn rel_path(root: &Path, path: &Path) -> String {
 pub fn is_self_invariant_file(rel: &str) -> bool {
     rel == "packages/tools/cli/tests/arch_invariants.rs"
         || rel.starts_with("packages/tools/cli/tests/arch_invariants/")
+        || rel.starts_with("lints/ast-grep/")
 }
 
 pub fn assert_no_violations(invariant: &str, violations: &[Violation]) {

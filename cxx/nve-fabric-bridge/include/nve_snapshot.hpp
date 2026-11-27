@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_abi.generated.h"
+#include "nve_hash.generated.hpp"
 
 #include <atomic>
 #include <cctype>
@@ -70,13 +71,6 @@ inline constexpr size_t kSnapshotChecksumEnd = 32u;
 inline constexpr size_t kSnapshotSchemaVersionOffset = 32u;
 inline constexpr size_t kRelocContentKindOffset = 36u;
 inline constexpr size_t kSnapshotReservedOffset = 40u;
-
-/// Canonical XXH64 constants matching `packages/core/engine/src/hash.rs`.
-inline constexpr uint64_t kXxh64Prime1 = 0x9E3779B185EBCA87ULL;
-inline constexpr uint64_t kXxh64Prime2 = 0xC2B2AE3D27D4EB4FULL;
-inline constexpr uint64_t kXxh64Prime3 = 0x165667B19E3779F9ULL;
-inline constexpr uint64_t kXxh64Prime4 = 0x85EBCA77C2B2AE63ULL;
-inline constexpr uint64_t kXxh64Prime5 = 0x27D4EB2F165667C5ULL;
 
 /// Validation mode for opening an `NVERELOC` container.
 enum class VerifyMode : uint8_t {
@@ -199,33 +193,6 @@ static_assert(sizeof(RelocSceneNode) == 128u, "RelocSceneNode must be 128 bytes"
 
 namespace detail {
 
-inline constexpr uint64_t xxh64_rotl(uint64_t x, unsigned r) noexcept {
-  return (x << r) | (x >> (64u - r));
-}
-
-inline constexpr uint64_t xxh64_round(uint64_t acc, uint64_t lane) noexcept {
-  acc += lane * kXxh64Prime2;
-  acc = xxh64_rotl(acc, 31u);
-  acc *= kXxh64Prime1;
-  return acc;
-}
-
-inline constexpr uint64_t xxh64_merge_round(uint64_t acc, uint64_t val) noexcept {
-  val = xxh64_round(0u, val);
-  acc ^= val;
-  acc = acc * kXxh64Prime1 + kXxh64Prime4;
-  return acc;
-}
-
-inline constexpr uint64_t xxh64_avalanche(uint64_t h) noexcept {
-  h ^= h >> 33u;
-  h *= kXxh64Prime2;
-  h ^= h >> 29u;
-  h *= kXxh64Prime3;
-  h ^= h >> 32u;
-  return h;
-}
-
 inline constexpr size_t align_up_8(size_t n) noexcept {
   return (n + (kSnapshotSectionAlign - 1u)) & ~(kSnapshotSectionAlign - 1u);
 }
@@ -267,110 +234,11 @@ inline void write_le64(uint8_t* p, uint64_t v) noexcept {
   p[7] = static_cast<uint8_t>((v >> 56u) & 0xFFu);
 }
 
-inline uint64_t xxh64_finalize(uint64_t h, const uint8_t* rem, size_t len) noexcept {
-  size_t i = 0u;
-  while (i + 8u <= len) {
-    const uint64_t k1 = xxh64_round(0u, read_le64(rem + i));
-    h ^= k1;
-    h = xxh64_rotl(h, 27u) * kXxh64Prime1 + kXxh64Prime4;
-    i += 8u;
-  }
-  if (i + 4u <= len) {
-    h ^= static_cast<uint64_t>(read_le32(rem + i)) * kXxh64Prime1;
-    h = xxh64_rotl(h, 23u) * kXxh64Prime2 + kXxh64Prime3;
-    i += 4u;
-  }
-  while (i < len) {
-    h ^= static_cast<uint64_t>(rem[i]) * kXxh64Prime5;
-    h = xxh64_rotl(h, 11u) * kXxh64Prime1;
-    ++i;
-  }
-  return xxh64_avalanche(h);
-}
-
-class Xxh64Hasher {
- public:
-  explicit constexpr Xxh64Hasher(uint64_t seed = 0u) noexcept
-      : total_len_(0u),
-        large_len_(false),
-        seed_(seed),
-        v1_(seed + kXxh64Prime1 + kXxh64Prime2),
-        v2_(seed + kXxh64Prime2),
-        v3_(seed),
-        v4_(seed - kXxh64Prime1),
-        buf_{},
-        buf_len_(0u) {}
-
-  void update(const uint8_t* data, size_t len) noexcept {
-    if (data == nullptr || len == 0u) {
-      return;
-    }
-    total_len_ += static_cast<uint64_t>(len);
-    if (total_len_ >= 32u) {
-      large_len_ = true;
-    }
-    if (buf_len_ + len < 32u) {
-      std::memcpy(buf_ + buf_len_, data, len);
-      buf_len_ += len;
-      return;
-    }
-    size_t pos = 0u;
-    if (buf_len_ > 0u) {
-      const size_t take = 32u - buf_len_;
-      std::memcpy(buf_ + buf_len_, data, take);
-      v1_ = xxh64_round(v1_, read_le64(buf_ + 0u));
-      v2_ = xxh64_round(v2_, read_le64(buf_ + 8u));
-      v3_ = xxh64_round(v3_, read_le64(buf_ + 16u));
-      v4_ = xxh64_round(v4_, read_le64(buf_ + 24u));
-      pos += take;
-      buf_len_ = 0u;
-    }
-    while (pos + 32u <= len) {
-      v1_ = xxh64_round(v1_, read_le64(data + pos + 0u));
-      v2_ = xxh64_round(v2_, read_le64(data + pos + 8u));
-      v3_ = xxh64_round(v3_, read_le64(data + pos + 16u));
-      v4_ = xxh64_round(v4_, read_le64(data + pos + 24u));
-      pos += 32u;
-    }
-    if (pos < len) {
-      buf_len_ = len - pos;
-      std::memcpy(buf_, data + pos, buf_len_);
-    }
-  }
-
-  uint64_t finish() const noexcept {
-    uint64_t h64 = 0u;
-    if (large_len_) {
-      h64 = xxh64_rotl(v1_, 1u) + xxh64_rotl(v2_, 7u) + xxh64_rotl(v3_, 12u) +
-            xxh64_rotl(v4_, 18u);
-      h64 = xxh64_merge_round(h64, v1_);
-      h64 = xxh64_merge_round(h64, v2_);
-      h64 = xxh64_merge_round(h64, v3_);
-      h64 = xxh64_merge_round(h64, v4_);
-    } else {
-      h64 = seed_ + kXxh64Prime5;
-    }
-    h64 += total_len_;
-    return xxh64_finalize(h64, buf_, buf_len_);
-  }
-
- private:
-  uint64_t total_len_;
-  bool large_len_;
-  uint64_t seed_;
-  uint64_t v1_;
-  uint64_t v2_;
-  uint64_t v3_;
-  uint64_t v4_;
-  uint8_t buf_[32];
-  size_t buf_len_;
-};
-
 inline uint64_t compute_reloc_checksum(const uint8_t* data, size_t len) noexcept {
   Xxh64Hasher h(0u);
   h.update(data, kSnapshotChecksumOffset);
   h.update(data + kSnapshotChecksumEnd, len - kSnapshotChecksumEnd);
-  return h.finish();
+  return h.digest();
 }
 
 inline SnapshotStatus decode_and_validate_reloc_bundle(
@@ -517,13 +385,6 @@ inline bool utf8_to_wide(std::string_view utf8, std::wstring& out) {
 #endif
 
 } // namespace detail
-
-/// Computes the canonical 64-bit XXH64 digest over `data[0..len]` matching Rust `nve_engine::xxh64`.
-inline uint64_t xxh64(const uint8_t* data, size_t len, uint64_t seed = 0u) noexcept {
-  detail::Xxh64Hasher h(seed);
-  h.update(data, len);
-  return h.finish();
-}
 
 /// Encodes a complete, 8-byte-aligned `NVERELOC` bundle (`RELOC_KIND_BUNDLE`) in memory.
 /// Matches Rust `nve_engine::reloc::encode_reloc_bundle` byte-for-byte.

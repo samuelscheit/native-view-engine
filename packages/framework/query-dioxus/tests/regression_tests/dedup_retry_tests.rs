@@ -89,7 +89,7 @@ fn mid_flight_sibling_mount_does_not_refire_when_in_flight_fetch_fails() {
         1,
         "sibling mounted while fetch is in-flight must not refire when that fetch fails"
     );
-    let html = web.render_html();
+    let html = web.render_html(surface.store());
     assert!(html.contains("A:ERR:true"));
     assert!(html.contains("B:ERR:true"));
 }
@@ -151,7 +151,7 @@ fn late_component_mount_after_failure_retries_and_recovers() {
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().query_calls, 1);
-    assert!(web.render_html().contains("A:ERR"));
+    assert!(web.render_html(surface.store()).contains("A:ERR"));
 
     // Transport recovers; Component B mounts later while A stays mounted -> MUST retry & recover!
     transport.inner.lock().unwrap().fail_queries = false;
@@ -165,7 +165,7 @@ fn late_component_mount_after_failure_retries_and_recovers() {
         2,
         "new component mounting after a completed failure must retry the slot"
     );
-    let html = web.render_html();
+    let html = web.render_html(surface.store());
     assert!(html.contains("A:Recovered"), "existing subscriber must see recovered data: {html}");
     assert!(html.contains("B:Recovered"), "new subscriber must see recovered data: {html}");
 }
@@ -228,7 +228,7 @@ fn external_prefetch_after_failed_mount_and_stale_remount_revalidate_cleanly() {
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().query_calls, 1);
-    assert!(web.render_html().contains("A:ERR"));
+    assert!(web.render_html(surface.store()).contains("A:ERR"));
 
     // 2. Transport recovers; external `client.prefetch()` populates the SAME slot at the SAME
     //    `inv_ver` ("V1", call 2) while Component A stays mounted.
@@ -244,7 +244,7 @@ fn external_prefetch_after_failed_mount_and_stale_remount_revalidate_cleanly() {
     }
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().query_calls, 2);
-    assert!(web.render_html().contains("A:V1"));
+    assert!(web.render_html(surface.store()).contains("A:V1"));
 
     // 3. Advance past stale_time_ms(5_000) and mount B -> MUST revalidate to "V2" (call 3)!
     //    (Under sticky `last_attempted`, the earlier failure token stalled B indefinitely.)
@@ -259,8 +259,8 @@ fn external_prefetch_after_failed_mount_and_stale_remount_revalidate_cleanly() {
         3,
         "stale slot populated via external prefetch after earlier failure must revalidate on mount"
     );
-    assert!(web.render_html().contains("A:V2"));
-    assert!(web.render_html().contains("B:V2"));
+    assert!(web.render_html(surface.store()).contains("A:V2"));
+    assert!(web.render_html(surface.store()).contains("B:V2"));
 }
 
 #[test]
@@ -391,8 +391,8 @@ fn sibling_mount_during_failing_or_retry_sleeping_refetch_preserves_dedup_and_ba
     }
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert_eq!(transport.inner.lock().unwrap().query_calls, 3);
-    assert!(web.render_html().contains("P:V2"));
-    assert!(web.render_html().contains("B:V2"));
+    assert!(web.render_html(surface.store()).contains("P:V2"));
+    assert!(web.render_html(surface.store()).contains("B:V2"));
 
     // Case B: slot becomes stale (`needs_fetch == true`), refetch() is in-flight -> LateSibling C
     // mounts mid-flight -> refetch() exhausts retries -> C must NOT fire a second refetch cycle!

@@ -46,9 +46,17 @@ export function nve_intersecting_targets(entries) {
 
 export function nve_schedule_idle(cb) {
   if (typeof requestIdleCallback === 'function') {
-    requestIdleCallback(() => cb());
-  } else {
-    setTimeout(() => cb(), 1);
+    return requestIdleCallback(() => cb());
+  }
+  return -setTimeout(() => cb(), 1);
+}
+
+export function nve_cancel_idle(handle) {
+  if (!handle) return;
+  if (handle > 0 && typeof cancelIdleCallback === 'function') {
+    cancelIdleCallback(handle);
+  } else if (handle < 0) {
+    clearTimeout(-handle);
   }
 }
 
@@ -94,7 +102,8 @@ export function nve_replay_interaction(target, eventType, clientX, clientY, key)
 ")]
 extern "C" {
     fn nve_intersecting_targets(entries: &JsValue) -> Vec<web_sys::Element>;
-    fn nve_schedule_idle(cb: &JsValue);
+    fn nve_schedule_idle(cb: &JsValue) -> i32;
+    fn nve_cancel_idle(handle: i32);
     fn nve_dispatch_hydrated_event(el: &web_sys::Element, island_id: &str, trigger: &str);
     fn nve_replay_interaction(
         target: &web_sys::Element,
@@ -178,7 +187,7 @@ pub fn render_studio_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
     session
         .render_initial()
         .map_err(|e| JsValue::from_str(&format!("studio SSR render failed: {e}")))?;
-    Ok(SsrRenderResult::from_output(session.backend().render_ssr()))
+    Ok(SsrRenderResult::from_output(session.render_ssr()))
 }
 
 #[cfg(feature = "app-kitchen-sink")]
@@ -193,7 +202,7 @@ pub fn render_kitchen_sink_ssr_bundle() -> Result<SsrRenderResult, JsValue> {
     session
         .render_initial()
         .map_err(|e| JsValue::from_str(&format!("kitchen-sink SSR render failed: {e}")))?;
-    Ok(SsrRenderResult::from_output(session.backend().render_ssr()))
+    Ok(SsrRenderResult::from_output(session.render_ssr()))
 }
 
 #[cfg(feature = "app-studio")]
@@ -202,7 +211,7 @@ pub fn render_studio_ssr_document(title: &str) -> Result<String, JsValue> {
     let vp = Viewport { width: 1280.0, height: 800.0, scale_factor: 1.0 };
     let mut session = WebAppSession::new_studio_workspace(DEFAULT_SURFACE_ID, WebBackend::new(), vp);
     session.render_initial().map_err(|e| JsValue::from_str(&format!("studio SSR document render failed: {e}")))?;
-    Ok(session.backend().render_ssr_document(&SsrDocumentOptions { title: title.to_owned(), ..Default::default() }))
+    Ok(session.render_ssr_document(&SsrDocumentOptions { title: title.to_owned(), ..Default::default() }))
 }
 
 #[cfg(feature = "app-studio")]
@@ -292,12 +301,17 @@ pub struct ProgressiveIslandHost {
     replayed_count: Rc<Cell<usize>>,
     observer: Option<web_sys::IntersectionObserver>,
     _on_intersect: Option<Closure<dyn FnMut(JsValue)>>,
+    idle_handle: i32,
     _idle_cb: Option<Closure<dyn FnMut()>>,
     _interaction_handles: Vec<InteractionCaptureHandle>,
 }
 
 impl Drop for ProgressiveIslandHost {
     fn drop(&mut self) {
+        if self.idle_handle != 0 {
+            nve_cancel_idle(self.idle_handle);
+            self.idle_handle = 0;
+        }
         if let Some(obs) = self.observer.take() {
             obs.disconnect();
         }
@@ -320,7 +334,10 @@ fn attach_interaction_trap(
               cy: i32,
               key: Option<String>,
               stop: &dyn Fn()| {
-            if sched.borrow().is_hydrated(&island_id) {
+            let Ok(mut guard) = sched.try_borrow_mut() else {
+                return;
+            };
+            if guard.is_hydrated(&island_id) {
                 return;
             }
             let target_nid = target_el
@@ -335,7 +352,8 @@ fn attach_interaction_trap(
                 client_y: cy,
                 key: key.clone(),
             };
-            let replays = sched.borrow_mut().on_interaction(captured);
+            let replays = guard.on_interaction(captured);
+            drop(guard);
             if let Some(replays) = replays {
                 stop();
                 nve_dispatch_hydrated_event(
@@ -497,8 +515,11 @@ impl ProgressiveIslandHost {
             let sched_vis = Rc::clone(&scheduler);
             let cb = Closure::<dyn FnMut(JsValue)>::new(move |entries: JsValue| {
                 for target in nve_intersecting_targets(&entries) {
-                    if let Some(id) = target.get_attribute("data-nve-island") {
-                        let newly_hydrated = sched_vis.borrow_mut().on_visible(&id);
+                    if let Some(id) = target.get_attribute("data-nve-island")
+                        && let Ok(mut guard) = sched_vis.try_borrow_mut()
+                    {
+                        let newly_hydrated = guard.on_visible(&id);
+                        drop(guard);
                         if newly_hydrated {
                             nve_dispatch_hydrated_event(
                                 &target,
@@ -529,11 +550,15 @@ impl ProgressiveIslandHost {
             })
             .collect();
 
-        let idle_cb = if has_idle {
+        let (idle_handle, idle_cb) = if has_idle {
             let sched_idle = Rc::clone(&scheduler);
             let els_idle = Rc::clone(&island_elements);
             let cb = Closure::<dyn FnMut()>::new(move || {
-                let idle_ids = sched_idle.borrow_mut().on_idle();
+                let Ok(mut guard) = sched_idle.try_borrow_mut() else {
+                    return;
+                };
+                let idle_ids = guard.on_idle();
+                drop(guard);
                 for id in idle_ids {
                     let el = els_idle.borrow().get(&id).cloned();
                     if let Some(el) = el {
@@ -541,10 +566,10 @@ impl ProgressiveIslandHost {
                     }
                 }
             });
-            nve_schedule_idle(cb.as_ref());
-            Some(cb)
+            let handle = nve_schedule_idle(cb.as_ref());
+            (handle, Some(cb))
         } else {
-            None
+            (0, None)
         };
 
         Ok(ProgressiveIslandHost {
@@ -552,6 +577,7 @@ impl ProgressiveIslandHost {
             replayed_count,
             observer,
             _on_intersect: on_intersect,
+            idle_handle,
             _idle_cb: idle_cb,
             _interaction_handles: interaction_handles,
         })

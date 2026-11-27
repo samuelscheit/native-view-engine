@@ -2,14 +2,15 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{write_ppm, MultiBackendHarness};
+use common::{find_in_store, live_node_ids, register_studio_tables, write_ppm, MultiBackendHarness};
 use nve_abi::{
     ColorRgba, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveValue, RawPropValue,
+    NveSizeConstraints, NveValue,
 };
 use nve_backend_headless::HeadlessBackend;
+use nve_components::tables::Visual;
 use nve_engine::loader::HotAppInstance;
-use nve_engine::{HotPatchMsg, NveApp, RenderBackend, Viewport};
+use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, StudioWorkspaceModule,
     SyncTransportMode, WorkspaceState, MAX_HISTORY, WORKSPACE_STATE_BIN_MAGIC,
@@ -32,6 +33,7 @@ fn single_command_buffer_drives_all_backends_views_and_interactions() {
         assert!(tree.contains(expected), "headless missing '{expected}'");
         assert!(html.contains(expected), "web missing '{expected}'");
     }
+    h.skia.rebuild_display_list(h.surface.store());
     assert!(!h.skia.display_list().ops.is_empty());
 
     h.press("btn-new-task");
@@ -94,11 +96,21 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
 
     h.press("accent-violet");
     assert!(h.ascii().contains("Accent -> Violet"));
-    assert!(h.html().contains("rgba(167,139,250,1)"));
+    let ssr_violet = h.web.render_ssr(h.surface.store());
+    assert!(
+        ssr_violet.style_css.contains("#a78bfa"),
+        "expected violet #a78bfa in SSR stylesheet, got:\n{}",
+        ssr_violet.style_css
+    );
 
     h.press("radius-pill");
     assert!(h.ascii().contains("Radius -> Pill (18)"));
-    assert!(h.html().contains("border-radius:18px;"));
+    let ssr_pill = h.web.render_ssr(h.surface.store());
+    assert!(
+        ssr_pill.style_css.contains("border-radius:18px"),
+        "expected border-radius:18px in SSR stylesheet, got:\n{}",
+        ssr_pill.style_css
+    );
 
     h.press("radius-sharp");
     assert!(
@@ -106,22 +118,33 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
         "expected 'Radius -> Sharp (0)' in tree:\n{}",
         h.ascii()
     );
-    assert!(h.html().contains("border-radius:0px;"));
+    let ssr_sharp = h.web.render_ssr(h.surface.store());
+    assert!(
+        !ssr_sharp.style_css.contains("border-radius:18px"),
+        "expected sharp radius to clear border-radius:18px from SSR stylesheet, got:\n{}",
+        ssr_sharp.style_css
+    );
 
     h.press("density-compact");
     assert!(h.ascii().contains("Density -> Compact"));
 
     h.press("toggle-xray");
     assert!(h.ascii().contains("X-Ray HUD: ON"));
-    let has_xray_card_border = h.headless.nodes().values().any(|n| {
-        n.style.border_width >= 2.0 && n.style.border_color == ColorRgba::rgb(167, 139, 250)
+    let has_xray_card_border = live_node_ids(h.surface.store()).into_iter().any(|id| {
+        h.surface.store().try_row::<Visual>(id).is_some_and(|v| {
+            v.border_width() >= 2.0
+                && ColorRgba::from_u32(v.border_color().0) == ColorRgba::rgb(167, 139, 250)
+        })
     });
     assert!(has_xray_card_border, "X-Ray violet card border expected");
 
     h.press("toggle-xray");
     assert!(h.ascii().contains("X-Ray HUD: OFF"));
-    let still_has_xray = h.headless.nodes().values().any(|n| {
-        n.style.border_width >= 2.0 && n.style.border_color == ColorRgba::rgb(167, 139, 250)
+    let still_has_xray = live_node_ids(h.surface.store()).into_iter().any(|id| {
+        h.surface.store().try_row::<Visual>(id).is_some_and(|v| {
+            v.border_width() >= 2.0
+                && ColorRgba::from_u32(v.border_color().0) == ColorRgba::rgb(167, 139, 250)
+        })
     });
     assert!(!still_has_xray, "X-Ray borders must cleanly reset when OFF");
 
@@ -136,7 +159,12 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     h.press("tt-first");
     assert!(h.ascii().contains("Snapshot 1 / 8"));
     assert!(h.ascii().contains("Workspace Boot"));
-    assert!(h.html().contains("rgba(56,189,248,1)"));
+    let ssr_first = h.web.render_ssr(h.surface.store());
+    assert!(
+        ssr_first.style_css.contains("#38bdf8"),
+        "expected cyan #38bdf8 in SSR stylesheet, got:\n{}",
+        ssr_first.style_css
+    );
 
     h.press("tt-redo");
     assert!(h.ascii().contains("Snapshot 2 / 8"));
@@ -252,9 +280,10 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         AccentTheme::Green
     );
 
+    register_studio_tables();
     let frame = restored_app.render(3);
-    let mut host = HeadlessBackend::new();
-    host.set_viewport(
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(
         1,
         Viewport {
             width: 960.0,
@@ -262,8 +291,9 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
             scale_factor: 1.0,
         },
     );
-    host.submit_frame(frame).unwrap();
-    let tree = host.render_ascii_tree();
+    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
+    host.submit_nve2_frame(frame).unwrap();
+    let tree = host.backend().render_ascii_tree(host.store());
     assert!(tree.contains("Live Metrics"));
     assert!(tree.contains("LIVE SYNC"));
     assert!(tree.contains("USB Mux"));
@@ -304,24 +334,25 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
         height: 640.0,
         scale_factor: 1.0,
     };
-    let mut host = HeadlessBackend::new();
-    host.set_viewport(1, vp);
+    register_studio_tables();
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(1, vp);
+    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
 
     let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
     let f1 = inst.render(1);
     assert!(!f1.is_empty());
-    host.submit_frame(f1).unwrap();
-    assert!(host.render_ascii_tree().contains("AETHER"));
-    assert!(host.render_ascii_tree().contains("AET-101"));
+    host.submit_nve2_frame(f1).unwrap();
+    assert!(host.backend().render_ascii_tree(host.store()).contains("AETHER"));
+    assert!(host.backend().render_ascii_tree(host.store()).contains("AET-101"));
 
-    let press_id = |host: &mut HeadlessBackend, inst: &mut HotAppInstance, tid: &str, fid: u64| {
-        let nid = host
-            .nodes()
-            .values()
-            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
-            .id;
-        let rect = host.layout_of(nid).unwrap();
+    let press_id = |host: &mut StoreWireReplica<HeadlessBackend>,
+                    inst: &mut HotAppInstance,
+                    tid: &str,
+                    fid: u64| {
+        let nid = find_in_store(host.store(), tid)
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let rect = host.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
             1,
             nid,
@@ -331,25 +362,27 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
         )];
         assert!(inst.dispatch_events(&ev));
         let frame = inst.render(fid);
-        host.submit_frame(frame).unwrap();
+        host.submit_nve2_frame(frame).unwrap();
     };
 
     press_id(&mut host, &mut inst, "btn-new-task", 2);
     press_id(&mut host, &mut inst, "accent-violet", 3);
     press_id(&mut host, &mut inst, "toggle-xray", 4);
-    assert!(host.render_ascii_tree().contains("AET-105"));
-    assert!(host.render_ascii_tree().contains("X-Ray HUD: ON"));
-    assert!(host.render_ascii_tree().contains("Snapshot 4 / 4"));
+    assert!(host.backend().render_ascii_tree(host.store()).contains("AET-105"));
+    assert!(host.backend().render_ascii_tree(host.store()).contains("X-Ray HUD: ON"));
+    assert!(host.backend().render_ascii_tree(host.store()).contains("Snapshot 4 / 4"));
 
     let outcome = inst.reload(&dylib_path).expect("reload gen 2");
     assert_eq!(outcome.generation, 2);
     assert_eq!(inst.generation(), 2);
 
-    let mut host2 = HeadlessBackend::new();
-    host2.set_viewport(1, vp);
+    let mut backend2 = HeadlessBackend::new();
+    backend2.set_viewport(1, vp);
+    let mut host2 =
+        StoreWireReplica::new(backend2, nve_components::tables::core_realization_order());
     let f5 = inst.render(5);
-    host2.submit_frame(f5).unwrap();
-    let tree2 = host2.render_ascii_tree();
+    host2.submit_nve2_frame(f5).unwrap();
+    let tree2 = host2.backend().render_ascii_tree(host2.store());
     assert!(tree2.contains("AET-105"), "lost new task after reload:\n{tree2}");
     assert!(
         tree2.contains("X-Ray HUD: ON"),

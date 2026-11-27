@@ -1,82 +1,147 @@
-//! Per-frame `NveSceneTable` mirror of a `WebBackend` tree (feature `scene-view`), shared by
+//! Per-frame `NveSceneTable` mirror of a live `NodeStore` tree (feature `scene-view`), shared by
 //! [`crate::WebAppSession`] and [`crate::PairedWebSession`].
 
+use nve_abi::table::NveTableView;
 use nve_abi::{
-    component_kind_to_scene_u8, ComponentKind, Dimension, EventMask, FrameId, NodeId,
-    NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneNodeInput, NVE_NODE_CLIP_BOUNDS,
-    NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
+    FrameId, NodeId, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneNodeInput,
+    NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
-use nve_backend_web::{MirrorElement, WebBackend};
-use nve_engine::RenderBackend;
+use nve_components::tables::{Interaction, Layout, Overflow, TextContent, Typography, Visual};
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable};
 
-fn mirror_to_scene_input<'a>(
-    backend: &WebBackend,
-    node_id: NodeId,
-    el: &'a MirrorElement,
-) -> SceneNodeInput<'a> {
+fn store_node_to_scene_input<'a>(
+    store: &'a NodeStore,
+    node_id: StoreNodeId,
+    children_scratch: &'a mut Vec<NodeId>,
+) -> (SceneNodeInput<'a>, u32, u16) {
+    let children = store.children(node_id);
+    children_scratch.clear();
+    children_scratch.extend(children.iter().map(|c| c.raw()));
+
+    let (text_offset, text_len) = if let Some(tc) = store.try_row::<TextContent>(node_id) {
+        let span = tc.text_span();
+        let s = tc.text();
+        let clamped_len = if s.len() <= u16::MAX as usize {
+            s.len() as u16
+        } else {
+            let mut end = u16::MAX as usize;
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            end as u16
+        };
+        if clamped_len == 0 {
+            (0u32, 0u16)
+        } else {
+            (span.off(), clamped_len)
+        }
+    } else {
+        (0u32, 0u16)
+    };
+
     let mut flags = 0u8;
-    if el.kind == ComponentKind::Text && el.children.is_empty() {
+    if store.has::<TextContent>(node_id) && children.is_empty() {
         flags |= NVE_NODE_LEAF_TEXT;
     }
-    if el.kind == ComponentKind::Pressable || el.event_mask != EventMask::NONE {
+    if store
+        .try_row::<Interaction>(node_id)
+        .is_some_and(|i| i.event_mask() != 0)
+    {
         flags |= NVE_NODE_INTERACTIVE;
     }
-    if el.kind == ComponentKind::ScrollView {
+    if store.try_row::<Visual>(node_id).is_some_and(|v| {
+        matches!(v.overflow_x(), Overflow::Hidden | Overflow::Scroll)
+            || matches!(v.overflow_y(), Overflow::Hidden | Overflow::Scroll)
+    }) {
         flags |= NVE_NODE_CLIP_BOUNDS;
     }
 
-    let (x, y, width, height) = if let Some(rect) = backend.layout_of(node_id) {
-        (rect.x, rect.y, rect.width, rect.height)
-    } else {
-        let w = match el.layout.width {
-            Dimension::Points(v) => v,
-            _ => 0.0,
+    let (width, height) = store.try_row::<Layout>(node_id).map_or((0.0, 0.0), |l| {
+        let w = if !l.width().is_auto() && !l.width().is_percent() {
+            l.width().value()
+        } else {
+            0.0
         };
-        let h = match el.layout.height {
-            Dimension::Points(v) => v,
-            _ => 0.0,
+        let h = if !l.height().is_auto() && !l.height().is_percent() {
+            l.height().value()
+        } else {
+            0.0
         };
-        (0.0, 0.0, w, h)
-    };
+        (w, h)
+    });
 
-    SceneNodeInput {
-        node_id,
-        kind: component_kind_to_scene_u8(el.kind as u16),
-        flags,
-        opacity_u8: NveRenderNode::encode_opacity_u8(el.style.opacity),
-        x,
-        y,
-        width,
-        height,
-        bg_rgba: el.style.background.to_u32(),
-        text_rgba: el.style.text_color.to_u32(),
-        border_rgba: el.style.border_color.to_u32(),
-        border_radius: el.style.border_radius,
-        border_width: el.style.border_width,
-        font_size: el.style.font_size,
-        z_index: el.style.z_index,
-        text: el.text.as_deref().unwrap_or(""),
-        children: &el.children,
-    }
+    let (opacity_u8, bg_rgba, border_rgba, border_radius, border_width, z_index) = store
+        .try_row::<Visual>(node_id)
+        .map_or((255, 0, 0, 0.0, 0.0, 0), |v| {
+            (
+                NveRenderNode::encode_opacity_u8(v.opacity()),
+                v.background().0,
+                v.border_color().0,
+                v.border_radius(),
+                v.border_width(),
+                v.z_index(),
+            )
+        });
+
+    let (text_rgba, font_size) = store
+        .try_row::<Typography>(node_id)
+        .map_or((0, 16.0), |t| (t.color().0, t.font_size()));
+
+    (
+        SceneNodeInput {
+            node_id: node_id.raw(),
+            primary_slot: store.primary_slot(node_id).0,
+            flags,
+            opacity_u8,
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            bg_rgba,
+            text_rgba,
+            border_rgba,
+            border_radius,
+            border_width,
+            font_size,
+            z_index,
+            text: "",
+            children: children_scratch.as_slice(),
+        },
+        text_offset,
+        text_len,
+    )
 }
 
-
-/// Per-frame `NveSceneTable` mirror of the `WebBackend` tree behind a stable `NveSceneView`
+/// Per-frame `NveSceneTable` mirror of a live `NodeStore` behind a stable `NveSceneView`
 /// header in linear memory (`nve_web_scene_view_ptr`, zero-copy JS inspection).
 pub struct SceneMirror {
     table: NveSceneTable,
     view: Box<NveSceneView>,
-    sort_scratch: Vec<NodeId>,
+    sort_scratch: Vec<StoreNodeId>,
+    children_scratch: Vec<NodeId>,
+    text_dirty_marks: Vec<u64>,
+    text_dirty_epoch: u64,
+    published_tables: Vec<NveTableView>,
+    published_dirty_buf: Vec<u32>,
 }
 
 impl SceneMirror {
     pub(crate) fn new() -> Self {
         let table = NveSceneTable::new();
         let view = Box::new(table.as_view());
-        Self { table, view, sort_scratch: Vec::new() }
+        Self {
+            table,
+            view,
+            sort_scratch: Vec::new(),
+            children_scratch: Vec::new(),
+            text_dirty_marks: Vec::new(),
+            text_dirty_epoch: 0,
+            published_tables: Vec::new(),
+            published_dirty_buf: Vec::new(),
+        }
     }
 
-    /// The incremental [`NveSceneTable`] mirroring the live `WebBackend` tree.
+    /// The incremental [`NveSceneTable`] mirroring the live `NodeStore` tree.
     pub fn table(&self) -> &NveSceneTable {
         &self.table
     }
@@ -92,22 +157,63 @@ impl SceneMirror {
         &*self.view as *const NveSceneView
     }
 
-    /// A safe zero-copy borrowed [`NveSceneRef`] over the current snapshot.
-    pub fn as_ref(&self) -> NveSceneRef<'_> {
-        self.table.as_ref()
+    /// A safe zero-copy borrowed [`NveSceneRef`] paired with `store`'s unified UTF-8 `text_slab`.
+    pub fn as_ref_with_store<'a>(&'a self, store: &'a NodeStore) -> NveSceneRef<'a> {
+        self.table.as_ref_with_external_text(store.text_slab())
     }
 
-    pub(crate) fn sync(&mut self, backend: &WebBackend, frame_id: FrameId) {
+    pub(crate) fn sync(&mut self, store: &NodeStore, changes: &ChangeSet, frame_id: FrameId) {
         self.sort_scratch.clear();
-        self.sort_scratch.extend(backend.iter_nodes().map(|(id, _)| id));
-        self.sort_scratch.sort_unstable();
-        let _ = self.table.sync_frame(
-            frame_id,
-            self.sort_scratch.iter().filter_map(|&node_id| {
-                let el = backend.node(node_id)?;
-                Some(mirror_to_scene_input(backend, node_id, el))
-            }),
+        self.sort_scratch.extend(store.live_nodes());
+        self.sort_scratch.sort_unstable_by_key(|id| id.raw());
+
+        self.table.begin_frame(frame_id);
+        let has_text_changes = if let Some(td) = changes.table(TextContent::slot()) {
+            self.text_dirty_epoch = self.text_dirty_epoch.wrapping_add(1);
+            if self.text_dirty_epoch == 0 {
+                self.text_dirty_marks.fill(0);
+                self.text_dirty_epoch = 1;
+            }
+            if self.text_dirty_marks.len() < store.capacity() {
+                self.text_dirty_marks.resize(store.capacity(), 0);
+            }
+            let epoch = self.text_dirty_epoch;
+            for &nid in td.nodes.iter().chain(td.detached.iter()) {
+                let idx = nid.index();
+                if idx < self.text_dirty_marks.len() {
+                    self.text_dirty_marks[idx] = epoch;
+                }
+            }
+            true
+        } else {
+            false
+        };
+
+        for &node_id in &self.sort_scratch {
+            let text_dirty = has_text_changes
+                && self.text_dirty_marks.get(node_id.index()).copied()
+                    == Some(self.text_dirty_epoch);
+            let (input, text_offset, text_len) =
+                store_node_to_scene_input(store, node_id, &mut self.children_scratch);
+            let _ = self
+                .table
+                .upsert_node_external_text(input, text_offset, text_len, text_dirty);
+        }
+        self.table.prune_unseen();
+        self.table.maybe_compact_slabs();
+
+        store.publish_table_views(
+            changes,
+            &mut self.published_tables,
+            &mut self.published_dirty_buf,
         );
-        *self.view = self.table.as_view();
+        let mut view = self.table.as_view_with_external_text(store.text_slab());
+        view.table_count = self.published_tables.len() as u32;
+        view.tables = if self.published_tables.is_empty() {
+            core::ptr::null()
+        } else {
+            self.published_tables.as_ptr()
+        };
+        *self.view = view;
     }
 }

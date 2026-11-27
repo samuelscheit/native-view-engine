@@ -193,8 +193,12 @@ impl Default for StreamingDocumentOptions {
 
 impl StreamingDocumentOptions {
     /// Populates `base_css`, `style_css`, and `rule_hashes` from a rendered [`WebBackend`].
-    pub fn from_backend(title: impl Into<String>, backend: &WebBackend) -> Self {
-        let ssr = backend.render_ssr();
+    pub fn from_backend(
+        title: impl Into<String>,
+        backend: &WebBackend,
+        store: &nve_store::NodeStore,
+    ) -> Self {
+        let ssr = backend.render_ssr(store);
         Self {
             title: title.into(),
             base_css: ssr.base_css,
@@ -358,8 +362,9 @@ impl StreamingSsrSession {
         &mut self,
         slot_id: &str,
         backend: &WebBackend,
+        store: &nve_store::NodeStore,
     ) -> Result<String, StreamingError> {
-        let ssr = backend.render_ssr();
+        let ssr = backend.render_ssr(store);
         let css = (!ssr.style_css.is_empty()).then_some(ssr.style_css.as_str());
         self.resolve_slot(slot_id, &ssr.html, css)
     }

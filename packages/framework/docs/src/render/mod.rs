@@ -18,7 +18,26 @@ use dioxus_core_macro::Props;
 use nve_dioxus::prelude::*;
 use nve_mdx::{Block, CompiledPage};
 
+use nve_web_html::{DataAttrList, HtmlDataAttrs, HtmlSemantics, SemanticElement};
+
 use crate::state::use_docs_state;
+
+#[inline]
+pub(crate) fn html_semantic(element: SemanticElement) -> TableAttr {
+    table_attr_fn(move |tx, node| {
+        tx.edit::<HtmlSemantics>(node).element(element);
+    })
+}
+
+#[inline]
+pub(crate) fn html_data_attrs(pairs: Vec<(String, String)>) -> TableAttr {
+    table_attr_fn(move |tx, node| {
+        if !pairs.is_empty() {
+            tx.edit::<HtmlDataAttrs>(node)
+                .entries(Some(DataAttrList::from_pairs(pairs.clone())));
+        }
+    })
+}
 
 /// Renders a compiled MDX page inside an `accessibility_role: "article"` semantic container.
 #[component]
@@ -47,7 +66,7 @@ pub fn DocsArticle(page: CompiledPage) -> Element {
             test_id: "docs-article",
             accessibility_role: "article",
             accessibility_label: "{page.title}",
-            "data-route": "{public_route}",
+            nve_table: html_data_attrs(vec![("route".to_owned(), public_route.to_string())]),
             style: "width: 100%; flex-direction: column; gap: 18px;",
 
             // Article header (badge, H1 title, description, tags)

@@ -569,6 +569,24 @@ class NveDirectEventWriter {
           ..x = deltaX
           ..y = deltaY;
         dst.value.tag = NveValueTag.nullValue.code;
+      case NveTableEventPayload(:final tableKey, :final eventId, :final bytes):
+        dst
+          ..payloadTag = NveEventPayloadTag.tableEvent.code
+          ..keyCode = eventId;
+        if (bytes.isEmpty) {
+          dst.text
+            ..ptr = ffi.nullptr
+            ..len = 0;
+        } else {
+          final ptr = arena.allocBytes(bytes.length, align: 1);
+          ptr.asTypedList(bytes.length).setAll(0, bytes);
+          dst.text
+            ..ptr = ptr
+            ..len = bytes.length;
+        }
+        dst.value
+          ..tag = NveValueTag.i64.code
+          ..data.i64Val = tableKey;
     }
   }
 
@@ -606,6 +624,15 @@ class NveDirectEventWriter {
           payload = NvePointerPayload(x: ev.x, y: ev.y, modifiers: ev.modifiers, flags: ev.eventFlags);
         case NveEventPayloadTag.wheel:
           payload = NveWheelPayload(deltaX: ev.x, deltaY: ev.y, modifiers: ev.modifiers);
+        case NveEventPayloadTag.tableEvent:
+          final raw = (ev.text.ptr == ffi.nullptr || ev.text.len == 0)
+              ? Uint8List(0)
+              : Uint8List.fromList(ev.text.ptr.asTypedList(ev.text.len));
+          payload = NveTableEventPayload(
+            tableKey: ev.value.data.i64Val,
+            eventId: ev.keyCode,
+            bytes: raw,
+          );
         case null:
           continue;
       }

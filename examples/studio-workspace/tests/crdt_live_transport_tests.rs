@@ -7,9 +7,11 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, RawPropValue};
+use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_headless::HeadlessBackend;
-use nve_engine::{RenderBackend, Viewport};
+use nve_components::tables::DebugId;
+use nve_engine::{StoreBackend, Viewport};
+use nve_store::NodeId as StoreNodeId;
 use nve_interop::crdt::{
     CrdtRecord, CrdtValue, HlcTimestamp, NveCrdtDelta, OpId, PeerId, VersionVector,
 };
@@ -528,25 +530,36 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
     let render = |surface: &mut nve_dioxus::DioxusSurface,
                   headless: &mut HeadlessBackend,
                   fid: &mut u64| {
-        let (_, _, bytes) = surface.render_frame(*fid);
+        surface
+            .commit_to(*fid, headless)
+            .expect("commit studio frame");
         *fid += 1;
-        headless.submit_frame(&bytes).expect("submit studio frame");
     };
     let press = |surface: &mut nve_dioxus::DioxusSurface,
                  headless: &mut HeadlessBackend,
                  fid: &mut u64,
                  tid: &str| {
-        let nid = headless
-            .nodes()
-            .values()
-            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
-            .unwrap_or_else(|| panic!("missing testID='{tid}'\n{}", headless.render_ascii_tree()))
-            .id;
+        let store = surface.store();
+        let mut stack = vec![StoreNodeId::ROOT];
+        let mut found = None;
+        while let Some(id) = stack.pop() {
+            if id != StoreNodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == tid
+            {
+                found = Some(id.raw());
+                break;
+            }
+            stack.extend_from_slice(store.children(id));
+        }
+        let nid = found.unwrap_or_else(|| {
+            panic!("missing testID='{tid}'\n{}", headless.render_ascii_tree(store))
+        });
         let rect = headless.layout_of(nid).unwrap();
         let cx = rect.x + rect.width * 0.5;
         let cy = rect.y + rect.height * 0.5;
         let hit = headless
-            .hit_test(cx, cy, true)
+            .hit_test(store, cx, cy)
             .unwrap_or_else(|| panic!("hit_test missed '{tid}' at ({cx}, {cy}) rect={rect:?}"));
         assert_eq!(hit, nid, "hit_test hit wrong node for '{tid}'");
         assert!(surface.dispatch_events(&[NativeEvent {
@@ -556,13 +569,14 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: cx, y: cy },
         }]));
-        let (_, _, bytes) = surface.render_frame(*fid);
+        surface
+            .commit_to(*fid, headless)
+            .expect("commit after press");
         *fid += 1;
-        headless.submit_frame(&bytes).expect("submit after press");
     };
 
     render(&mut surface, &mut headless, &mut fid);
-    let init_tree = headless.render_ascii_tree();
+    let init_tree = headless.render_ascii_tree(surface.store());
     assert!(init_tree.contains("NVC1 0/0d | 0B"));
     assert!(init_tree.contains("MESH"));
     assert!(init_tree.contains("Sync Now"));
@@ -570,7 +584,7 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
 
     // 1. Trigger live binary NVC1 Sync Now directly from Studio panel!
     press(&mut surface, &mut headless, &mut fid, "crdt-sync-now");
-    let after_sync = headless.render_ascii_tree();
+    let after_sync = headless.render_ascii_tree(surface.store());
     assert!(
         after_sync.contains("NVC1 1/1d |") && !after_sync.contains("| 0B"),
         "expected non-zero NVC1 delta & byte metrics after Sync Now:\n{after_sync}"
@@ -578,18 +592,18 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
 
     // 2. Simulate network partition -> peers drop to 0, badge flips to SPLIT, button flips to Heal Mesh.
     press(&mut surface, &mut headless, &mut fid, "crdt-toggle-partition");
-    let split_tree = headless.render_ascii_tree();
+    let split_tree = headless.render_ascii_tree(surface.store());
     assert!(split_tree.contains("SPLIT"));
     assert!(split_tree.contains("0 peers"));
     assert!(split_tree.contains("Heal Mesh"));
 
     // Pressing Sync Now while partitioned delivers 0 new remote deltas.
     press(&mut surface, &mut headless, &mut fid, "crdt-sync-now");
-    assert!(headless.render_ascii_tree().contains("NVC1 1/1d |"));
+    assert!(headless.render_ascii_tree(surface.store()).contains("NVC1 1/1d |"));
 
     // 3. Heal Mesh -> reconnects peers, runs real NVC1 anti-entropy merge, updates counters & reactions!
     press(&mut surface, &mut headless, &mut fid, "crdt-toggle-partition");
-    let healed_tree = headless.render_ascii_tree();
+    let healed_tree = headless.render_ascii_tree(surface.store());
     assert!(healed_tree.contains("MESH"));
     assert!(healed_tree.contains("2 peers"));
     assert!(healed_tree.contains("NVC1 2/2d |"));

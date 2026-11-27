@@ -15,10 +15,15 @@ use nve_backend_skia::gpu::GpuSurfaceConfig;
 #[cfg(feature = "skia")]
 use nve_backend_skia::{GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use nve_backend_skia::{CursorKind, SkiaBackend};
+use nve_canvas_skia::CanvasSkiaSystem;
+use nve_components::tables::{core_realization_order, register_core_tables};
 use nve_engine::{
     encode_reloc_bundle, write_reloc_atomic, HotPatchMsg, LayoutRect, NativeInstantBootStore,
-    RelocHeader, RenderBackend, StateSaveOutcome, StateStoreConfig, VerifyMode, Viewport,
+    RelocHeader, StateSaveOutcome, StateStoreConfig, StoreBackend, StoreWireReplica, VerifyMode,
+    Viewport,
 };
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_svg_skia::SvgSkiaSystem;
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
 use super::hot_reload_client::resolve_dylib_path;
@@ -35,11 +40,24 @@ pub(super) fn now_us() -> u64 {
         .unwrap_or(0)
 }
 
+/// Creates a [`StoreWireReplica<SkiaBackend>`] configured with shell table systems (`Canvas` + `Svg`).
+pub fn new_shell_skia_replica(
+    surface_id: SurfaceId,
+    viewport: Viewport,
+) -> StoreWireReplica<SkiaBackend> {
+    register_core_tables();
+    let mut backend = SkiaBackend::new();
+    backend.register_table_system(CanvasSkiaSystem);
+    backend.register_table_system(SvgSkiaSystem);
+    backend.set_viewport(surface_id, viewport);
+    StoreWireReplica::new(backend, core_realization_order())
+}
+
 /// Window-independent controller driving rendering, hit-test -> event dispatch, 2-tier hot
 /// reload, and snapshot persistence for any [`DesktopApp`].
 pub struct DesktopSession<A: DesktopApp> {
     pub(super) app: A,
-    pub(super) backend: SkiaBackend,
+    pub(super) replica: StoreWireReplica<SkiaBackend>,
     pub(super) surface_id: SurfaceId,
     next_frame_id: FrameId,
     pub(super) viewport: Viewport,
@@ -71,13 +89,12 @@ impl<A: DesktopApp> DesktopSession<A> {
         clear_color: ColorRgba,
         show_hud: bool,
     ) -> Self {
-        let mut backend = SkiaBackend::new();
-        backend.set_viewport(surface_id, viewport);
+        let replica = new_shell_skia_replica(surface_id, viewport);
         let phys_w = ((viewport.width * viewport.scale_factor).round() as u32).max(1);
         let phys_h = ((viewport.height * viewport.scale_factor).round() as u32).max(1);
         Self::from_parts(
             app,
-            backend,
+            replica,
             PixelBuffer::new(phys_w, phys_h),
             Vec::new(),
             surface_id,
@@ -90,7 +107,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         app: A,
-        backend: SkiaBackend,
+        replica: StoreWireReplica<SkiaBackend>,
         pixel_buffer: PixelBuffer,
         last_frame_bytes: Vec<u8>,
         surface_id: SurfaceId,
@@ -108,7 +125,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         .ok();
         Self {
             app,
-            backend,
+            replica,
             surface_id,
             next_frame_id: 1,
             viewport,
@@ -142,15 +159,19 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     pub fn backend(&self) -> &SkiaBackend {
-        &self.backend
+        self.replica.backend()
     }
 
     pub fn backend_mut(&mut self) -> &mut SkiaBackend {
-        &mut self.backend
+        self.replica.backend_mut()
+    }
+
+    pub fn store(&self) -> &NodeStore {
+        self.replica.store()
     }
 
     pub fn active_cursor(&self) -> CursorKind {
-        self.backend.active_cursor()
+        self.replica.backend().current_cursor(self.replica.store())
     }
 
     pub fn pixel_buffer(&self) -> &PixelBuffer {
@@ -174,17 +195,38 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     pub fn focused_node(&self) -> Option<NodeId> {
-        self.backend.focused_node()
+        self.replica.backend().focused_node()
+    }
+
+    pub fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {
+        self.replica.backend().layout_tree().layout_of(node_id)
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let id = self.replica.backend().focused_node()?;
+        let (s, e) = self.replica.backend().focus_state().selection_range()?;
+        let val = self
+            .replica
+            .backend()
+            .text_input_value(self.replica.store(), StoreNodeId(id))?;
+        val.get(s..e).map(str::to_owned)
     }
 
     /// Logical viewport rectangle of the live caret or active IME preedit span.
     pub fn ime_cursor_rect_logical(&self) -> Option<LayoutRect> {
-        self.backend.focused_ime_cursor_rect()
+        self.replica.backend().ime_cursor_rect(self.replica.store())
     }
 
     /// Physical-pixel viewport rectangle of the live caret or active IME preedit span.
     pub fn ime_cursor_rect_physical(&self) -> Option<LayoutRect> {
-        self.backend.focused_ime_cursor_physical_rect()
+        let r = self.ime_cursor_rect_logical()?;
+        let s = self.viewport.scale_factor;
+        Some(LayoutRect {
+            x: r.x * s,
+            y: r.y * s,
+            width: r.width * s,
+            height: r.height * s,
+        })
     }
 
     pub fn with_clipboard(mut self, clipboard: Box<dyn ClipboardProvider>) -> Self {
@@ -224,28 +266,36 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
     }
 
-    /// Replays a freeze-dried Frame-0 `CommandBuffer` directly into the backend and rasterizes it.
+    /// Replays a freeze-dried Frame-0 `NVE2` wire payload directly into the replica and rasterizes it.
     pub fn replay_frame0_command_buffer(
         &mut self,
         frame0_bytes: &[u8],
     ) -> Result<&PixelBuffer, DesktopHostError> {
         if !frame0_bytes.is_empty() {
-            self.backend.submit_frame(frame0_bytes)?;
+            self.replica.submit_nve2_frame(frame0_bytes)?;
             self.last_frame_bytes = frame0_bytes.to_vec();
         }
         self.rasterize_current();
         Ok(&self.pixel_buffer)
     }
 
-    /// Atomically persists the last rendered Frame-0 `CommandBuffer` and live app state into an
+    /// Atomically persists a self-contained Frame-0 `NVE2` keyframe and live app state into an
     /// `NVERELOC` bundle file on disk.
     pub fn save_snapshot(
         &mut self,
         path: &Path,
         schema_version: u32,
     ) -> Result<RelocHeader, DesktopHostError> {
+        let mut keyframe = Vec::new();
+        let frame0_bytes: &[u8] = if self.replica.store().live_nodes().next().is_some() {
+            nve_store::wire::WireEncoder::default()
+                .encode_full(self.replica.store(), &mut keyframe);
+            &keyframe
+        } else {
+            &self.last_frame_bytes
+        };
         let state_bytes = self.app.snapshot_state();
-        let bundle = encode_reloc_bundle(schema_version, 0, &self.last_frame_bytes, state_bytes, &[])?;
+        let bundle = encode_reloc_bundle(schema_version, 0, frame0_bytes, state_bytes, &[])?;
         let header = *bundle.view(VerifyMode::HeaderOnly)?.header();
         write_reloc_atomic(path, &bundle)?;
         Ok(header)
@@ -261,7 +311,8 @@ impl<A: DesktopApp> DesktopSession<A> {
     ) -> Result<StateSaveOutcome, DesktopHostError> {
         let mut store =
             NativeInstantBootStore::open(user_dir, schema_version, StateStoreConfig::default())?;
-        let scene_buf = self.backend.export_scene_reloc(
+        let scene_buf = self.replica.backend().layout_tree().export_scene_reloc(
+            self.replica.store(),
             schema_version,
             self.frame_counter.max(1),
             app_tag,
@@ -316,11 +367,14 @@ impl<A: DesktopApp> DesktopSession<A> {
         } else {
             None
         };
-        let telemetry = swapchain.execute_frame(
-            self.backend.display_list(),
+        let (store, backend) = self.replica.store_and_backend_mut();
+        let (dl, registry, events) = backend.paint_parts_mut();
+        let telemetry = swapchain.execute_frame_with_plugins(
+            dl,
             self.viewport.scale_factor,
             self.clear_color,
             hud,
+            Some((store, registry, events)),
         )?;
         self.last_telemetry = Some(telemetry.clone());
         Ok(telemetry)
@@ -346,17 +400,20 @@ impl<A: DesktopApp> DesktopSession<A> {
         delta_y: f32,
     ) -> Result<bool, DesktopHostError> {
         self.cursor_logical = (x, y);
-        let Some(scroll_node_id) = self.backend.hit_test_scroll_view(x, y) else {
+        let Some(scroll_node_id) = self
+            .replica
+            .backend()
+            .hit_test_scroll_container(self.replica.store(), x, y)
+        else {
             return Ok(false);
         };
-        let prev = self.backend.scroll_offset(scroll_node_id);
-        let (new_x, new_y) = self
-            .backend
-            .apply_scroll_delta(scroll_node_id, delta_x, delta_y);
+        let sid = StoreNodeId(scroll_node_id);
+        let prev = self.replica.backend().scroll_offset(scroll_node_id);
+        let (store, backend) = self.replica.store_and_backend_mut();
+        let (new_x, new_y) = backend.apply_scroll_delta(store, sid, delta_x, delta_y);
         let offset_changed = (prev.0 - new_x).abs() > 1e-4 || (prev.1 - new_y).abs() > 1e-4;
-        let (content_width, content_height) = self
-            .backend
-            .scroll_content_size(scroll_node_id)
+        let (content_width, content_height) = backend
+            .scroll_content_size(store, sid)
             .unwrap_or((self.viewport.width, self.viewport.height));
 
         let event = [NveDirectEvent::scroll(
@@ -398,7 +455,9 @@ impl<A: DesktopApp> DesktopSession<A> {
             height: ph as f32 / scale,
             scale_factor: scale,
         };
-        self.backend.set_viewport(self.surface_id, self.viewport);
+        self.replica
+            .backend_mut()
+            .set_viewport(self.surface_id, self.viewport);
         self.pixel_buffer.resize(pw, ph);
 
         let app_handled_resize = self.notify_viewport_resize();
@@ -406,7 +465,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         if app_handled_resize || self.last_frame_bytes.is_empty() {
             self.render_and_rasterize()?;
         } else {
-            self.backend.submit_frame(&self.last_frame_bytes)?;
+            self.replica.commit_changes(&ChangeSet::default())?;
             self.rasterize_current();
         }
         Ok(())
@@ -418,7 +477,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.next_frame_id += 1;
         let bytes = self.app.render(frame_id);
         if !bytes.is_empty() {
-            self.backend.submit_frame(bytes)?;
+            self.replica.submit_nve2_frame(bytes)?;
             self.last_frame_bytes.clear();
             self.last_frame_bytes.extend_from_slice(bytes);
         }
@@ -433,10 +492,17 @@ impl<A: DesktopApp> DesktopSession<A> {
             if let Some(surface) = self.gpu_surface.as_mut() {
                 let pw = self.pixel_buffer.width();
                 let ph = self.pixel_buffer.height();
+                let (store, backend) = self.replica.store_and_backend_mut();
+                let (dl, registry, events) = backend.paint_parts_mut();
                 let ok = surface.resize(pw, ph).is_ok()
-                    && self
-                        .backend
-                        .paint_to_surface(&self.skia_renderer, surface, self.clear_color)
+                    && surface
+                        .render_display_list_with_plugins(
+                            &self.skia_renderer,
+                            dl,
+                            self.viewport.scale_factor,
+                            self.clear_color,
+                            Some((store, registry, events)),
+                        )
                         .is_ok()
                     && surface.copy_to_pixel_buffer(&mut self.pixel_buffer).is_ok();
                 (
@@ -452,8 +518,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             (false, GpuBackendKind::Softbuffer, None);
 
         if !painted_via_skia {
-            self.backend
-                .rasterize(&mut self.pixel_buffer, self.clear_color);
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.rasterize_with_store(store, &mut self.pixel_buffer, self.clear_color);
         }
         if self.show_hud
             && let Some(banner) = &self.status_banner
@@ -505,8 +571,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let resolved = resolve_dylib_path(dylib_path);
                 match self.app.reload(&resolved, self.surface_id) {
                     Ok(new_gen) => {
-                        self.backend = SkiaBackend::new();
-                        self.backend.set_viewport(self.surface_id, self.viewport);
+                        self.replica = new_shell_skia_replica(self.surface_id, self.viewport);
                         self.last_frame_bytes.clear();
                         let swap_ms = t0.elapsed().as_millis();
                         self.status_banner = Some(format!(

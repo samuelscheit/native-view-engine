@@ -156,7 +156,17 @@ pub(crate) fn render_studio_panel(
     rsx! {
         view {
             test_id: "studio-panel",
-            "layout-engine": "{layout_engine_str}",
+            nve_table: {
+                let le = layout_engine_str.to_owned();
+                nve_dioxus::table_attr_fn(move |tx, node| {
+                    tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                        nve_web_html::DataAttrList::from_pairs(vec![(
+                            "layout-engine".to_owned(),
+                            le.clone(),
+                        )]),
+                    ));
+                })
+            },
             style: "{studio_panel_style}",
 
             // Studio Header
@@ -363,7 +373,17 @@ pub(crate) fn render_studio_panel(
                 }
                 view {
                     test_id: "layout-engine-readout",
-                    "layout-engine": "{layout_engine_str}",
+                    nve_table: {
+                        let le = layout_engine_str.to_owned();
+                        nve_dioxus::table_attr_fn(move |tx, node| {
+                            tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                nve_web_html::DataAttrList::from_pairs(vec![(
+                                    "layout-engine".to_owned(),
+                                    le.clone(),
+                                )]),
+                            ));
+                        })
+                    },
                     style: "width: 100%; flex-shrink: 0;",
                     text {
                         style: "color: {accent_hex}; font-size: 9px;",
@@ -390,7 +410,17 @@ pub(crate) fn render_studio_panel(
                 gap: Some(3.0),
                 style: Some(section_card_style.clone()),
                 view {
-                    "sync-transport": "{sync_transport_slug}",
+                    nve_table: {
+                        let slug = sync_transport_slug.to_owned();
+                        nve_dioxus::table_attr_fn(move |tx, node| {
+                            tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                                nve_web_html::DataAttrList::from_pairs(vec![(
+                                    "sync-transport".to_owned(),
+                                    slug.clone(),
+                                )]),
+                            ));
+                        })
+                    },
                     style: "width: 100%; flex-direction: row; justify-content: space-between; align-items: center;",
                     text { style: "color: {TEXT_MUTED}; font-size: 9px;", "LIVE SYNC" }
                     Button {

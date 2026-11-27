@@ -7,7 +7,7 @@ use nve_codegen::{ExportTarget, HybridTarget};
 
 #[derive(Subcommand)]
 pub(crate) enum CodegenAction {
-    /// Regenerate (or check for drift in) all 15 Core ABI, Scene ABI, and Wire Codec artifacts.
+    /// Regenerate (or check for drift in) all 21 Core ABI, Scene ABI, Wire Codec, and XXH64 mirror artifacts.
     Abi {
         /// Verify checked-in artifacts match generated output byte-for-byte without writing files.
         #[arg(long, default_value_t = false)]
@@ -172,7 +172,7 @@ pub(crate) fn cmd_codegen(action: CodegenAction) {
             Ok(paths) => {
                 let verb = if check { "Verified" } else { "Generated" };
                 println!(
-                    "{verb} {} Core + Scene ABI + Wire Codec file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}, wire_hash=0x{:016X}){}",
+                    "{verb} {} Core + Scene ABI + Wire Codec + XXH64 mirror file(s) in {} (core_hash=0x{:016X}, scene_hash=0x{:016X}, wire_hash=0x{:016X}){}",
                     paths.len(),
                     out.display(),
                     nve_codegen::core_abi_schema_hash(),
@@ -315,8 +315,8 @@ mod tests {
         assert!(run_codegen_wire(&tmp, true).is_ok());
         assert!(run_codegen_abi(&tmp, true).is_err());
 
-        let written = run_codegen_abi(&tmp, false).expect("write all 15 ABI + wire files");
-        assert_eq!(written.len(), 15);
+        let written = run_codegen_abi(&tmp, false).expect("write all 21 ABI + wire + hash files");
+        assert_eq!(written.len(), 21);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("hosts/web-shell/nve_core_abi.generated.ts");

@@ -198,7 +198,7 @@ impl HotAppInstance {
             .unwrap_or_else(|| Path::new(""))
     }
 
-    /// Renders a frame and borrows the binary `CommandBuffer` slice directly from the loaded
+    /// Renders a frame and borrows the binary `NVE2` wire frame slice directly from the loaded
     /// app module's internal frame buffer (zero heap allocation / zero `.to_vec()` copy per frame).
     ///
     /// The borrowed slice remains valid until the next `&mut self` call on this [`HotAppInstance`].

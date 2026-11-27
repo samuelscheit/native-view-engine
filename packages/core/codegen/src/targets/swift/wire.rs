@@ -10,8 +10,7 @@ use crate::schema::wire::{
     EVENT_ENTRY_NODE_ID_OFFSET, EVENT_ENTRY_PAYLOAD_TAG_OFFSET, EVENT_ENTRY_SURFACE_ID_OFFSET,
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
-    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
     NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
@@ -40,7 +39,7 @@ pub fn generate_swift_wire_codecs() -> String {
 
     writeln!(
         s,
-        "/// Single-source wire codec constants, canonical FNV-1a64, `EventRing` (`NVEV`) writer,"
+        "/// Single-source wire codec constants, `EventRing` (`NVEV`) writer,"
     )
     .unwrap();
     writeln!(
@@ -52,78 +51,6 @@ pub fn generate_swift_wire_codecs() -> String {
     writeln!(
         s,
         "    public static let schemaHash: UInt64 = 0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X}\n"
-    )
-    .unwrap();
-
-    // FNV-1a64
-    writeln!(s, "    // MARK: - Canonical 64-bit FNV-1a\n").unwrap();
-    writeln!(s, "    public enum Fnv1a64 {{").unwrap();
-    writeln!(
-        s,
-        "        public static let offsetBasis: UInt64 = 0x{FNV1A_OFFSET_BASIS:016X}"
-    )
-    .unwrap();
-    writeln!(s, "        public static let prime: UInt64 = 0x{FNV1A_PRIME:016X}\n").unwrap();
-    writeln!(
-        s,
-        r#"        public struct TestVector: Equatable, Sendable {{
-            public let label: String
-            public let bytes: [UInt8]
-            public let expected: UInt64
-        }}
-
-        public static let testVectors: [TestVector] = ["#
-    )
-    .unwrap();
-    for vec in FNV1A64_TEST_VECTORS {
-        writeln!(
-            s,
-            "            TestVector(label: \"{}\", bytes: [{}], expected: 0x{:016X}),",
-            vec.label,
-            format_swift_bytes(vec.bytes),
-            vec.expected
-        )
-        .unwrap();
-    }
-    writeln!(
-        s,
-        r#"        ]
-
-        @inlinable
-        public static func update(_ hash: UInt64, bytes: UnsafeRawBufferPointer) -> UInt64 {{
-            var h = hash
-            for byte in bytes {{
-                h ^= UInt64(byte)
-                h = h &* prime
-            }}
-            return h
-        }}
-
-        @inlinable
-        public static func hash(_ bytes: [UInt8]) -> UInt64 {{
-            bytes.withUnsafeBytes {{ update(offsetBasis, bytes: $0) }}
-        }}
-
-        @inlinable
-        public static func hash(_ data: Data) -> UInt64 {{
-            data.withUnsafeBytes {{ update(offsetBasis, bytes: $0) }}
-        }}
-
-        @inlinable
-        public static func hash(utf8 string: String) -> UInt64 {{
-            var h = offsetBasis
-            for byte in string.utf8 {{
-                h ^= UInt64(byte)
-                h = h &* prime
-            }}
-            return h
-        }}
-
-        public static func verifyTestVectors() -> Bool {{
-            testVectors.allSatisfy {{ hash($0.bytes) == $0.expected }}
-        }}
-    }}
-"#
     )
     .unwrap();
 

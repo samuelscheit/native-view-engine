@@ -10,8 +10,7 @@ use crate::schema::wire::{
     EVENT_ENTRY_NODE_ID_OFFSET, EVENT_ENTRY_PAYLOAD_TAG_OFFSET, EVENT_ENTRY_SURFACE_ID_OFFSET,
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
-    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
     NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
@@ -54,80 +53,6 @@ pub fn generate_cpp_wire_codecs() -> String {
         "inline constexpr uint64_t kWireCodecsSchemaHash = 0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X}ULL;\n"
     )
     .unwrap();
-
-    // FNV-1a 64-bit
-    writeln!(s, "// ============================================================================").unwrap();
-    writeln!(s, "// Canonical 64-bit FNV-1a").unwrap();
-    writeln!(s, "// ============================================================================\n").unwrap();
-    writeln!(
-        s,
-        "inline constexpr uint64_t kFnv1a64OffsetBasis = 0x{FNV1A_OFFSET_BASIS:016X}ULL;"
-    )
-    .unwrap();
-    writeln!(
-        s,
-        "inline constexpr uint64_t kFnv1a64Prime = 0x{FNV1A_PRIME:016X}ULL;\n"
-    )
-    .unwrap();
-    writeln!(
-        s,
-        r#"constexpr uint64_t fnv1a64_update(uint64_t hash, std::span<const uint8_t> bytes) noexcept {{
-  for (const uint8_t byte : bytes) {{
-    hash ^= static_cast<uint64_t>(byte);
-    hash *= kFnv1a64Prime;
-  }}
-  return hash;
-}}
-
-constexpr uint64_t fnv1a64(std::span<const uint8_t> bytes) noexcept {{
-  return fnv1a64_update(kFnv1a64OffsetBasis, bytes);
-}}
-
-constexpr uint64_t fnv1a64_pair(
-    std::span<const uint8_t> a,
-    std::span<const uint8_t> b) noexcept {{
-  return fnv1a64_update(fnv1a64_update(kFnv1a64OffsetBasis, a), b);
-}}
-
-constexpr uint64_t fnv1a64_str(std::string_view text) noexcept {{
-  uint64_t hash = kFnv1a64OffsetBasis;
-  for (const char ch : text) {{
-    hash ^= static_cast<uint64_t>(static_cast<uint8_t>(ch));
-    hash *= kFnv1a64Prime;
-  }}
-  return hash;
-}}
-"#
-    )
-    .unwrap();
-
-    // Compile-time FNV-1a64 vector table + static_assert verification
-    for vec in FNV1A64_TEST_VECTORS {
-        if vec.bytes.is_empty() {
-            writeln!(
-                s,
-                "static_assert(fnv1a64(std::span<const uint8_t>{{}}) == 0x{:016X}ULL, \"FNV-1a64 vector `{}` mismatch\");",
-                vec.expected, vec.label
-            )
-            .unwrap();
-        } else {
-            writeln!(
-                s,
-                "inline constexpr std::array<uint8_t, {}> kFnv1a64Vector_{} = {{{}}};",
-                vec.bytes.len(),
-                vec.label,
-                format_cpp_byte_array(vec.bytes)
-            )
-            .unwrap();
-            writeln!(
-                s,
-                "static_assert(fnv1a64(kFnv1a64Vector_{}) == 0x{:016X}ULL, \"FNV-1a64 vector `{}` mismatch\");",
-                vec.label, vec.expected, vec.label
-            )
-            .unwrap();
-        }
-    }
-    writeln!(s).unwrap();
 
     // EventRing (`NVEV`) constants
     writeln!(s, "// ============================================================================").unwrap();

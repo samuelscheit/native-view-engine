@@ -9,16 +9,20 @@
 
 use std::sync::{Arc, Mutex};
 
+mod common;
+
+use common::{data_attr_in_store, find_in_store, live_node_ids, register_studio_tables};
 use nve_abi::{
     EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-    NveMapEntry, NvePropsRef, NveValue, RawPropValue, ROOT_NODE_ID,
+    NveMapEntry, NvePropsRef, NveValue, ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
+use nve_components::tables::DebugId;
 use nve_dioxus::prelude::*;
 use nve_dioxus::traits::{ReactiveTraitStore, TraitProvider, TraitScope};
 use nve_dioxus::DioxusSurface;
-use nve_engine::{NveApp, RenderBackend, Viewport};
+use nve_engine::{NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_host_services::{HostCallbackBridge, MemoryHostServices};
 use nve_interop::traits::{
     ColorScheme, HighContrast, Locale, ReducedMotion, SizeClass, TraitStore, UiDensity,
@@ -84,29 +88,18 @@ impl StudioHarness {
     fn render_next(&mut self) {
         let fid = self.next_frame;
         self.next_frame += 1;
-        let (_, _, bytes) = self.surface.render_frame(fid);
-        self.headless.submit_frame(&bytes).expect("headless submit");
+        self.surface
+            .commit_to(fid, &mut self.headless)
+            .expect("headless commit");
     }
 
     fn find_by_test_id(&self, test_id: &str) -> Option<NodeId> {
-        self.headless
-            .nodes()
-            .values()
-            .find(|n| {
-                matches!(
-                    n.raw_props.get("testID"),
-                    Some(RawPropValue::String(s)) if s == test_id
-                )
-            })
-            .map(|n| n.id)
+        find_in_store(self.surface.store(), test_id)
     }
 
     fn prop_str(&self, test_id: &str, prop: &str) -> Option<String> {
         let id = self.find_by_test_id(test_id)?;
-        match self.headless.node(id)?.raw_props.get(prop) {
-            Some(RawPropValue::String(s)) => Some(s.clone()),
-            _ => None,
-        }
+        data_attr_in_store(self.surface.store(), id, prop)
     }
 
     fn press(&mut self, test_id: &str) {
@@ -125,7 +118,7 @@ impl StudioHarness {
         let cy = rect.y + rect.height * 0.5;
         let hit = self
             .headless
-            .hit_test(cx, cy, true)
+            .hit_test(self.surface.store(), cx, cy)
             .unwrap_or_else(|| panic!("hit_test missed '{test_id}' at ({cx}, {cy})"));
         assert_eq!(hit, node_id, "hit_test mismatch for '{test_id}'");
 
@@ -141,16 +134,18 @@ impl StudioHarness {
     }
 
     fn ascii(&self) -> String {
-        self.headless.render_ascii_tree()
+        self.headless.render_ascii_tree(self.surface.store())
     }
 
     fn assert_no_horizontal_overflow(&self, label: &str) {
-        for (&nid, node) in self.headless.nodes().iter() {
+        let store = self.surface.store();
+        for sid in live_node_ids(store) {
+            let nid = sid.raw();
             if let Some(rect) = self.headless.layout_of(nid) {
+                let tid = store.try_row::<DebugId>(sid).map(|d| d.test_id());
                 assert!(
                     rect.x >= -0.5 && rect.x + rect.width <= self.viewport.width + 1.0,
-                    "[{label}] horizontal overflow on Node#{nid} ({:?}): rect={rect:?}, vp={}",
-                    node.raw_props.get("testID"),
+                    "[{label}] horizontal overflow on Node#{nid} ({tid:?}): rect={rect:?}, vp={}",
                     self.viewport.width
                 );
             }
@@ -347,6 +342,7 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert_eq!(app.state_snapshot().size_class(), SizeClass::Compact);
     assert!(app.state_snapshot().is_mobile_portrait());
 
+    register_studio_tables();
     let frame = app.render(2).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
@@ -357,19 +353,16 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
             scale_factor: 1.0,
         },
     );
-    host.submit_frame(&frame).unwrap();
-    let root = host
-        .nodes()
-        .values()
-        .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == "workspace-root"))
-        .expect("workspace-root");
+    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
+    rep.submit_nve2_frame(&frame).unwrap();
+    let root_id = find_in_store(rep.store(), "workspace-root").expect("workspace-root");
     assert_eq!(
-        root.raw_props.get("size-class"),
-        Some(&RawPropValue::String("Compact".into()))
+        data_attr_in_store(rep.store(), root_id, "size-class").as_deref(),
+        Some("Compact")
     );
     assert_eq!(
-        root.raw_props.get("viewport-mode"),
-        Some(&RawPropValue::String("mobile-portrait".into()))
+        data_attr_in_store(rep.store(), root_id, "viewport-mode").as_deref(),
+        Some("mobile-portrait")
     );
 }
 
@@ -416,7 +409,6 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
     }
 
     let mut surface = DioxusSurface::new(1, TraitScopeProbeApp);
-    let (_, _, bytes) = surface.render_frame(1);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
         1,
@@ -426,18 +418,13 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
             scale_factor: 1.0,
         },
     );
-    headless.submit_frame(&bytes).unwrap();
+    surface.commit_to(1, &mut headless).unwrap();
 
     let read_prop = |tid: &str, key: &str| -> String {
-        let node = headless
-            .nodes()
-            .values()
-            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
+        let id = find_in_store(surface.store(), tid)
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
-        match node.raw_props.get(key) {
-            Some(RawPropValue::String(s)) => s.clone(),
-            other => panic!("expected string prop '{key}' on '{tid}', got {other:?}"),
-        }
+        data_attr_in_store(surface.store(), id, key)
+            .unwrap_or_else(|| panic!("missing prop '{key}' on '{tid}'"))
     };
 
     // Root and un-scoped sibling stay Cyan + Expanded + false.
@@ -449,7 +436,7 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
     assert_eq!(read_prop("probe-scoped", "trait-accent"), "Amber");
     assert_eq!(read_prop("probe-scoped", "trait-mode"), "CompactScope");
     assert_eq!(read_prop("probe-scoped", "trait-compact-scope"), "true");
-    assert!(headless.render_ascii_tree().contains("Expanded | Light | en-US | Amber"));
+    assert!(headless.render_ascii_tree(surface.store()).contains("Expanded | Light | en-US | Amber"));
 
     // Sibling after `<TraitScope>` is completely isolated from the override.
     assert_eq!(read_prop("probe-sibling", "trait-accent"), "Cyan");
@@ -559,6 +546,7 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
     assert!(!snap.locale().is_rtl());
 
     // Render frame and verify live UI reflects synced Light + de-DE traits.
+    register_studio_tables();
     let frame_bytes = module.render(2).to_vec();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
@@ -569,11 +557,12 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
             scale_factor: 1.0,
         },
     );
-    headless.submit_frame(&frame_bytes).unwrap();
+    let mut rep = StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
+    rep.submit_nve2_frame(&frame_bytes).unwrap();
+    let tree = rep.backend().render_ascii_tree(rep.store());
     assert!(
-        headless.render_ascii_tree().contains("Light | de-DE"),
-        "Studio panel should render synced host ColorScheme + Locale:\n{}",
-        headless.render_ascii_tree()
+        tree.contains("Light | de-DE"),
+        "Studio panel should render synced host ColorScheme + Locale:\n{tree}"
     );
 
     // Copying Markdown while FFI-bound routes through `NVE_IFACE_HOST = 5` into `host_mem`!

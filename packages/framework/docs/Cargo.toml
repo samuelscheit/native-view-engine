@@ -14,6 +14,7 @@ nve-host-services = { workspace = true }
 nve-clipboard = { workspace = true }
 nve-system-env = { workspace = true }
 nve-ui = { workspace = true }
+nve-web-html = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
 dioxus-signals = { workspace = true }
@@ -21,3 +22,6 @@ dioxus-signals = { workspace = true }
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
 nve-backend-web = { workspace = true }
+nve-components = { workspace = true }
+nve-store = { workspace = true }
+nve-web-html-web = { workspace = true }

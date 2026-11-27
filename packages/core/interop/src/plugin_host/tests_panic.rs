@@ -1,14 +1,45 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    CommandBufferBuilder, CommandDecoder, ComponentKind, FrameId, NveDirectEvent,
-    NveGestureDisposition, NveIntrinsicSize, NveMapEntry, NveSizeConstraints, SurfaceId,
-    ROOT_NODE_ID,
+    FrameId, NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
+    NveSizeConstraints, SurfaceId,
 };
+use nve_components::tables::TextContent;
+use nve_store::wire::{WireDecoder, WireEncoder};
+use nve_store::{ChangeSet, NodeId, NodeStore};
 
 use crate::error::InteropError;
 
 use super::*;
+
+fn encode_text_frame(label: &str) -> Vec<u8> {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let n = tx.create();
+    tx.edit::<TextContent>(n).text(label);
+    tx.set_children(NodeId::ROOT, &[n]);
+    tx.commit_into(&mut changes);
+    let mut enc = WireEncoder::default();
+    let mut out = Vec::new();
+    enc.encode(&store, &changes, &mut out);
+    out
+}
+
+fn decode_first_text(bytes: &[u8]) -> String {
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    let mut tx = replica.tx();
+    dec.apply(&mut tx, bytes).expect("decode nve2");
+    tx.commit_into(&mut changes);
+    let child = replica.children(NodeId::ROOT)[0];
+    replica
+        .try_row::<TextContent>(child)
+        .expect("TextContent attached")
+        .text()
+        .to_owned()
+}
 
 // ---- End-to-end panicking `export_nve_app!` plugin survival verification ----
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,7 +72,7 @@ fn get_host_panic_mode() -> HostPanicMode {
 }
 
 struct ExportedFlakyPlugin {
-    surface_id: SurfaceId,
+    _surface_id: SurfaceId,
     counter: u32,
     frame_buf: Vec<u8>,
     out_events: Vec<NveDirectEvent>,
@@ -62,7 +93,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
             panic!("flaky plugin exploded in create");
         }
         Self {
-            surface_id,
+            _surface_id: surface_id,
             counter: 10,
             frame_buf: Vec::new(),
             out_events: vec![NveDirectEvent::press(surface_id, 1, 0, 0.0, 0.0)],
@@ -74,12 +105,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
         if get_host_panic_mode() == HostPanicMode::PanicRender {
             panic!("flaky plugin exploded in render frame {frame_id}");
         }
-        let mut b = CommandBufferBuilder::new(self.surface_id, frame_id);
-        b.create_node(2, ComponentKind::Text, None);
-        b.set_text(2, &format!("flaky:{}", self.counter));
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+        self.frame_buf = encode_text_frame(&format!("flaky:{}", self.counter));
         &self.frame_buf
     }
 
@@ -149,7 +175,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
 }
 
 struct ExportedHealthyPlugin {
-    surface_id: SurfaceId,
+    _surface_id: SurfaceId,
     ticks: u32,
     frame_buf: Vec<u8>,
 }
@@ -157,19 +183,14 @@ struct ExportedHealthyPlugin {
 impl nve_engine::NveApp for ExportedHealthyPlugin {
     fn create(surface_id: SurfaceId) -> Self {
         Self {
-            surface_id,
+            _surface_id: surface_id,
             ticks: 0,
             frame_buf: Vec::new(),
         }
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(self.surface_id, frame_id);
-        b.create_node(2, ComponentKind::Text, None);
-        b.set_text(2, &format!("healthy:ticks={}", self.ticks));
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        self.frame_buf = encode_text_frame(&format!("healthy:ticks={}", self.ticks));
         &self.frame_buf
     }
 
@@ -323,23 +344,15 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     set_host_panic_mode(HostPanicMode::Healthy);
     let still_live = host.get_mut(flaky_id).unwrap();
     assert_eq!(still_live.generation(), 1);
-    let (_, flaky_cmds) = CommandDecoder::new(still_live.render(8).unwrap())
-        .unwrap()
-        .decode_all()
-        .unwrap();
-    assert!(format!("{flaky_cmds:?}").contains("flaky:11"));
+    assert_eq!(decode_first_text(still_live.render(8).unwrap()), "flaky:11");
 
     // 8. Healthy sibling plugin stayed 100% healthy throughout all flaky panics!
     let sibling = host.get_mut(healthy_id).unwrap();
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     let sibling_frame = sibling.render(1).unwrap().to_vec();
-    let (hdr, sibling_cmds) = CommandDecoder::new(&sibling_frame)
-        .unwrap()
-        .decode_all()
-        .unwrap();
-    assert_eq!(hdr.surface_id, 30_000);
-    assert!(format!("{sibling_cmds:?}").contains("healthy:ticks=2"));
+    assert_eq!(sibling.surface_id(), 30_000);
+    assert_eq!(decode_first_text(&sibling_frame), "healthy:ticks=2");
 
     // 9. Panicking `destroy` during `unload` survives cleanly and leaves sibling intact.
     set_host_panic_mode(HostPanicMode::PanicDestroy);

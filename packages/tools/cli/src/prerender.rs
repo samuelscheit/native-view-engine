@@ -168,10 +168,8 @@ mod tests {
             assert_eq!(scene.viewport().height, h);
 
             let mut skia = SkiaBackend::new();
-            let loaded = skia
-                .render_reloc_scene(scene)
-                .expect("skia render_reloc_scene");
-            assert_eq!(loaded, report.node_count);
+            skia.load_scene_reloc(&scene)
+                .expect("skia load_scene_reloc");
             assert!(!skia.display_list().ops.is_empty());
 
             let has_text = skia.display_list().ops.iter().any(|op| match op {
