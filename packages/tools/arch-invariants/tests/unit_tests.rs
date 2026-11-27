@@ -251,6 +251,93 @@ fn unit_guppy_dag_catches_proc_macros_and_wasm32_workspace_mediated_platform_cha
 }
 
 #[test]
+fn unit_guppy_dag_catches_iterative_workspace_proc_macro_and_build_chains() {
+    let json = format!(
+        r#"{{
+        "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",
+        "workspace_members": [
+            "path+file:///repo/packages/core/core-app#0.1.0",
+            "path+file:///repo/packages/core/core-derive#0.1.0",
+            "path+file:///repo/packages/tools/build-helper#0.1.0"
+        ],
+        "packages": [
+            {{
+                "id": "path+file:///repo/packages/core/core-app#0.1.0", "name": "nve-core-app", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/core-app/Cargo.toml", "targets": {t_app}, "features": {{}},
+                "dependencies": [
+                    {{"name": "nve-core-derive", "req": "*", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null, "path": "/repo/packages/core/core-derive"}},
+                    {{"name": "nve-build-helper", "req": "*", "kind": "build", "optional": false, "uses_default_features": true, "features": [], "target": null, "path": "/repo/packages/tools/build-helper"}}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/core/core-derive#0.1.0", "name": "nve-core-derive", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/core-derive/Cargo.toml", "targets": {t_derive}, "features": {{}},
+                "dependencies": [
+                    {{"name": "serde_json", "req": "^1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/tools/build-helper#0.1.0", "name": "nve-build-helper", "version": "0.1.0",
+                "manifest_path": "/repo/packages/tools/build-helper/Cargo.toml", "targets": {t_helper}, "features": {{}},
+                "dependencies": [
+                    {{"name": "dioxus-core", "req": "^0.7", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{"id": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "name": "serde_json", "version": "1.0.0", "manifest_path": "/cargo/serde_json/Cargo.toml", "targets": {t_sj}, "features": {{}}, "dependencies": []}},
+            {{"id": "registry+https://github.com/rust-lang/crates.io-index#dioxus-core@0.7.0", "name": "dioxus-core", "version": "0.7.0", "manifest_path": "/cargo/dioxus-core/Cargo.toml", "targets": {t_dx}, "features": {{}}, "dependencies": []}}
+        ],
+        "resolve": {{
+            "nodes": [
+                {{
+                    "id": "path+file:///repo/packages/core/core-app#0.1.0",
+                    "dependencies": [
+                        "path+file:///repo/packages/core/core-derive#0.1.0",
+                        "path+file:///repo/packages/tools/build-helper#0.1.0"
+                    ],
+                    "deps": [
+                        {{"name": "nve_core_derive", "pkg": "path+file:///repo/packages/core/core-derive#0.1.0", "dep_kinds": [{{"kind": null, "target": null}}]}},
+                        {{"name": "nve_build_helper", "pkg": "path+file:///repo/packages/tools/build-helper#0.1.0", "dep_kinds": [{{"kind": "build", "target": null}}]}}
+                    ]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/core/core-derive#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0"],
+                    "deps": [{{"name": "serde_json", "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/tools/build-helper#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#dioxus-core@0.7.0"],
+                    "deps": [{{"name": "dioxus_core", "pkg": "registry+https://github.com/rust-lang/crates.io-index#dioxus-core@0.7.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{"id": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.0", "dependencies": [], "deps": []}},
+                {{"id": "registry+https://github.com/rust-lang/crates.io-index#dioxus-core@0.7.0", "dependencies": [], "deps": []}}
+            ]
+        }}
+    }}"#,
+        t_app = lib_target("nve_core_app", "/repo/packages/core/core-app"),
+        t_derive = proc_macro_target("nve_core_derive", "/repo/packages/core/core-derive"),
+        t_helper = lib_target("nve_build_helper", "/repo/packages/tools/build-helper"),
+        t_sj = lib_target("serde_json", "/cargo/serde_json"),
+        t_dx = lib_target("dioxus_core", "/cargo/dioxus-core"),
+    );
+    let graph = PackageGraph::from_json(&json).expect("valid iterative workspace chain graph");
+
+    let v_sj = dag::check_zero_serde_json(&graph);
+    assert!(
+        v_sj.iter()
+            .any(|v| v.snippet == "nve-core-app -> nve-core-derive -> serde_json"),
+        "expected full workspace proc-macro chain `nve-core-app -> nve-core-derive -> serde_json`: {v_sj:?}"
+    );
+
+    let v_dx = dag::check_core_zero_dioxus(&graph);
+    assert!(
+        v_dx.iter()
+            .any(|v| v.snippet == "nve-core-app -> nve-build-helper -> dioxus-core"),
+        "expected full workspace build-dep chain `nve-core-app -> nve-build-helper -> dioxus-core`: {v_dx:?}"
+    );
+}
+
+#[test]
 fn unit_syn_ast_checks_positive_and_negative() {
     let core_a_src = "pub enum TextAlign { Left, Center, Right }\npub enum Display { Flex, None }\n#[cfg(any(test, feature = \"extra\"))] pub struct ExposedInProd { pub node_id: u32 }\n#[cfg(test)] pub struct OnlyTest { pub node_id: u32 }";
     let core_b_src = "pub enum TextAlign { Start, End }\npub enum PatchAlign { Start, End }\nimpl From<PatchAlign> for TextAlign { fn from(_: PatchAlign) -> Self { Self::Start } }";
@@ -404,10 +491,10 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     let mut vts_bad = Vec::new();
     purity::scan_ts_53bit_safety(
         "typescript/a.rs",
-        "const id = Number(view.getBigUint64(0, true));\nconst x = hi * 4294967296 + lo;\nconst y = hi << 32;",
+        "const id = Number(view.getBigUint64(0, true));\nconst signed = Number(view.getBigInt64(0, true));\nconst x = hi * 4294967296 + lo;\nconst y = hi << 32;",
         &mut vts_bad,
     );
-    assert_eq!(vts_bad.len(), 3, "expected 3 TS 53-bit violations: {vts_bad:?}");
+    assert_eq!(vts_bad.len(), 4, "expected 4 TS 53-bit violations: {vts_bad:?}");
 
     let mut vts_ok = Vec::new();
     purity::scan_ts_53bit_safety(

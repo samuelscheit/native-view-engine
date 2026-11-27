@@ -42,7 +42,10 @@ mod imp {
     use ash::vk::Handle as AshHandle;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
     use skia_safe::{
-        gpu::{backend_semaphores, vk, DirectContext, FlushInfo, SubmitInfo, SyncCpu},
+        gpu::{
+            backend_semaphores, vk, DirectContext, FlushInfo, SemaphoresSubmitted, SubmitInfo,
+            SyncCpu,
+        },
         ColorType, Surface,
     };
 
@@ -225,8 +228,9 @@ mod imp {
             }
             match &mut self.target {
                 VulkanTarget::Window(_) => {
-                    self.recreate_window_swapchain(next)?;
-                    Ok(true)
+                    // Advance `GaneshPresenter::extent` to `next` even if recreation fails (e.g.
+                    // 0x0 minimized or OOM); `swapchain_dirty` stays `true` for `begin_native_frame`.
+                    Ok(self.recreate_window_swapchain(next).is_ok())
                 }
                 VulkanTarget::Offscreen { surface } => {
                     let _ = self.direct_context.flush_submit_and_sync_cpu();
@@ -360,13 +364,22 @@ mod imp {
                         .active_surface
                         .take()
                         .ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    if let Err(e) = self.direct_context.flush_surface_with_texture_state(
+                    match self.direct_context.flush_surface_with_texture_state(
                         &mut surface,
                         &flush_info,
                         Some(&present_state),
                     ) {
-                        win.swapchain_dirty = true;
-                        return Err(GpuSurfaceError::FlushFailed(e.to_string()));
+                        Ok(SemaphoresSubmitted::Yes) => {}
+                        Ok(SemaphoresSubmitted::No) => {
+                            win.swapchain_dirty = true;
+                            return Err(GpuSurfaceError::FlushFailed(
+                                "DirectContext did not submit render_finished semaphore".to_string(),
+                            ));
+                        }
+                        Err(e) => {
+                            win.swapchain_dirty = true;
+                            return Err(GpuSurfaceError::FlushFailed(e.to_string()));
+                        }
                     }
                     drop(surface);
                     if !self.direct_context.submit(SubmitInfo {

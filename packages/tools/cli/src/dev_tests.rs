@@ -86,8 +86,8 @@ fn child_process_guard_drop_kills_and_reaps_running_child() {
     use std::process::Stdio;
 
     let mut cmd = if cfg!(windows) {
-        let mut c = ProcessCommand::new("cmd");
-        c.args(["/C", "ping", "-n", "30", "127.0.0.1"]);
+        let mut c = ProcessCommand::new("ping");
+        c.args(["-n", "30", "127.0.0.1"]);
         c
     } else {
         let mut c = ProcessCommand::new("sleep");
@@ -126,6 +126,32 @@ fn deferred_skia_launch_waits_for_first_successful_rebuild() {
     let (tx_drop, rx_drop) = bounded::<()>(1);
     drop(tx_drop);
     assert!(wait_for_skia_launch_ready(false, &rx_drop).is_err());
+}
+
+#[test]
+fn watch_classifier_forces_tier2_rebuild_until_first_build_succeeds() {
+    let dir = std::env::temp_dir().join(format!(
+        "nve-dev-watch-guard-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("sample.rs");
+    std::fs::write(&file, "fn view() { let _ = \"hello\"; }\n").expect("write temp rs");
+
+    let mut cache = rsx_diff::RsxWatchCache::new();
+    let paths = vec![file.clone()];
+    // Before the first build succeeds, even a save must force a Tier-2 rebuild (never NoOp/Tier1).
+    let (patches, reason) = classify_watch_changes(false, &paths, &mut cache, 2);
+    assert!(patches.is_empty());
+    assert_eq!(reason.as_deref(), Some("awaiting first successful build"));
+
+    // Once built and seeded, an unchanged file is classified as a no-op.
+    cache.seed_dir(&dir);
+    let (patches_after, reason_after) = classify_watch_changes(true, &paths, &mut cache, 3);
+    assert!(patches_after.is_empty());
+    assert!(reason_after.is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
