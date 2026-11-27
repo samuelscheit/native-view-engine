@@ -15,6 +15,7 @@ pub mod hot_patch;
 pub mod signal_archive;
 pub mod stream_slot;
 mod surface;
+pub mod render_probe;
 pub mod table_attr;
 #[cfg(test)]
 mod tests;
