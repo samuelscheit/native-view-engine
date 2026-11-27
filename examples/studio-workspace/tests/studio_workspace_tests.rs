@@ -217,6 +217,9 @@ fn studio_live_self_patching_xray_and_deterministic_time_travel() {
     assert!(h.ascii().contains("ON"));
 }
 
+/// `(label, action on a state given a task id, domains it must republish)`.
+type DomainCase = (&'static str, fn(&mut WorkspaceState, u32), DomainMask);
+
 #[test]
 fn store_updates_publish_only_the_domains_they_change() {
     let mut st = WorkspaceState::default();
@@ -225,7 +228,7 @@ fn store_updates_publish_only_the_domains_they_change() {
     let task = st.current.tasks.iter().find(|t| t.status == TaskStatus::Todo).map(|t| t.id).expect("seeded Todo task");
     let frame = DomainMask::INSPECTOR;
     let committed = frame.union(DomainMask::METRICS);
-    let cases: [(&str, fn(&mut WorkspaceState, u32), DomainMask); 5] = [
+    let cases: [DomainCase; 5] = [
         ("cycle task status", |s, t| s.cycle_task_status(t), committed.union(DomainMask::BOARD)),
         ("scroll stream", |s, _| s.set_stream_scroll_offset(4_000), frame.union(DomainMask::STREAM)),
         ("same scroll", |s, _| s.set_stream_scroll_offset(4_000), DomainMask::NONE),
