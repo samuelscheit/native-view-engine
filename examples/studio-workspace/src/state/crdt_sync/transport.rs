@@ -129,10 +129,10 @@ impl CrdtWireFrame {
         let mut out = Vec::with_capacity(CRDT_DIGEST_MIN_LEN + vv.len() * 16);
         out.extend_from_slice(&CRDT_DIGEST_MAGIC);
         out.extend_from_slice(&CRDT_DIGEST_VERSION.to_le_bytes());
-        out.extend_from_slice(&sender.to_le_bytes());
+        out.extend_from_slice(&sender.as_u64().to_le_bytes());
         out.extend_from_slice(&(vv.len() as u32).to_le_bytes());
         for (peer, seq) in vv.iter() {
-            out.extend_from_slice(&peer.to_le_bytes());
+            out.extend_from_slice(&peer.as_u64().to_le_bytes());
             out.extend_from_slice(&seq.to_le_bytes());
         }
         let checksum = crdt_xxh64(&out);

@@ -183,4 +183,24 @@ fn handshake_slot_chunk_uri_and_session_roundtrip() {
             ..
         }
     ));
+
+    // Non-zero reserved bytes in Reject and HelloAck must be strictly rejected.
+    let mut bad_reject = NveWireRejectReason::ServerBusy.encode("busy");
+    bad_reject[1] = 0x7F;
+    assert_eq!(
+        NveWireRejectReason::decode(&bad_reject),
+        Err(NveWireError::NonZeroReserved(0x7F))
+    );
+
+    let mut bad_ack = NveWireHelloAck {
+        session_id: 9,
+        schema_version: 2,
+        server_capabilities: 0x0F,
+    }
+    .encode();
+    bad_ack[6] = 0x01;
+    assert_eq!(
+        NveWireHelloAck::decode(&bad_ack),
+        Err(NveWireError::NonZeroReserved(0x01))
+    );
 }

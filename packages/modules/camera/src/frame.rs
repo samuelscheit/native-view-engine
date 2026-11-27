@@ -4,7 +4,7 @@
 use std::fmt;
 use std::mem::{offset_of, size_of};
 
-use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec};
+use nve_codec::{ByteReader, CodecError, NveCodec, SliceWriter};
 
 pub const CAMERA_FRAME_MAGIC: [u8; 4] = *b"NVCF";
 pub const CAMERA_FRAME_VERSION: u8 = 1;
@@ -56,15 +56,10 @@ pub enum CameraPixelFormat {
 
 impl CameraPixelFormat {
     #[inline]
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        Self::from_repr(v)
-    }
-
-    #[inline]
     pub fn from_u32(v: u32) -> Result<Self, CameraCodecError> {
         u8::try_from(v)
             .ok()
-            .and_then(Self::from_u8)
+            .and_then(Self::from_repr)
             .ok_or(CameraCodecError::InvalidEnum("CameraPixelFormat", v))
     }
 
@@ -166,23 +161,33 @@ impl CameraFrameWireLayout {
         Ok(desc)
     }
 
-    /// Encodes this 40-byte wire layout into canonical little-endian bytes using `nve-codec`
-    /// (zero `unsafe` pointer casts).
+    /// Encodes this 40-byte wire layout directly into `dst` with zero heap allocations.
+    #[inline]
+    pub fn write_into(
+        &self,
+        dst: &mut [u8; CAMERA_FRAME_DESCRIPTOR_SIZE],
+    ) -> Result<(), CodecError> {
+        let mut w = SliceWriter::new(dst);
+        w.write_raw(&self.magic)?;
+        w.write_u8(self.version)?;
+        w.write_u8(self.pixel_format)?;
+        w.write_u16(self.rotation_deg)?;
+        w.write_u32(self.width)?;
+        w.write_u32(self.height)?;
+        w.write_u32(self.stride_bytes)?;
+        w.write_u32(self.reserved)?;
+        w.write_u64(self.timestamp_ns)?;
+        w.write_u64(self.native_handle_id)?;
+        w.finish()
+    }
+
+    /// Encodes this 40-byte wire layout into canonical little-endian bytes using `SliceWriter`
+    /// (zero heap allocations and zero `unsafe` pointer casts).
     #[inline]
     pub fn to_bytes(&self) -> [u8; CAMERA_FRAME_DESCRIPTOR_SIZE] {
-        let mut w = ByteWriter::with_capacity(CAMERA_FRAME_DESCRIPTOR_SIZE);
-        w.write_raw(&self.magic);
-        w.write_u8(self.version);
-        w.write_u8(self.pixel_format);
-        w.write_u16(self.rotation_deg);
-        w.write_u32(self.width);
-        w.write_u32(self.height);
-        w.write_u32(self.stride_bytes);
-        w.write_u32(self.reserved);
-        w.write_u64(self.timestamp_ns);
-        w.write_u64(self.native_handle_id);
         let mut out = [0u8; CAMERA_FRAME_DESCRIPTOR_SIZE];
-        out.copy_from_slice(w.as_slice());
+        let res = self.write_into(&mut out);
+        debug_assert!(res.is_ok());
         out
     }
 }
@@ -265,7 +270,7 @@ impl CameraFrameDescriptor {
         &self,
         dst: &mut [u8; CAMERA_FRAME_DESCRIPTOR_SIZE],
     ) -> Result<(), CameraCodecError> {
-        *dst = self.encode()?;
+        self.to_wire_layout()?.write_into(dst)?;
         Ok(())
     }
 

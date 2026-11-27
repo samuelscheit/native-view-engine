@@ -5,7 +5,8 @@ Zero-unsafe (`#![forbid(unsafe_code)]`), zero-runtime-dependency Tier-2 little-e
 ## Key Public API
 
 - `ByteReader<'a>` — strictly bounds-checked LE reader (strict `0|1` bools, canonical LE floats, bounded `read_bytes`/`read_str`/`read_vec`, `expect_magic`, `expect_zero`, `finish()`).
-- `ByteWriter` — reusable LE writer (`clear()`, `with_buf()`, `patch_u32`, length-prefixed slices/strings/sequences).
+- `ByteWriter` — reusable LE writer (`clear()`, `with_buf()`, checked `patch_u32` / `write_zeroes`, length-prefixed slices/strings/sequences).
+- `SliceWriter<'a>` — zero-allocation fixed-slice LE writer over `&mut [u8]` with exact-fill `finish()`.
 - `CodecError` — typed, allocation-free binary framing error (`Truncated`, `BadMagic`, `BadVersion`, `BadEnum`, `BadBool`, `NonZeroReserved`, `LenOverflow`, `TrailingBytes`, `InvalidUtf8`).
 - `NveEncode` / `NveDecode` and `#[derive(NveCodec)]`.
 

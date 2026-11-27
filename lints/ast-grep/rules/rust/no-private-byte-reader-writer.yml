@@ -68,3 +68,70 @@ rule:
           kind: visibility_modifier
           regex: '^pub$'
       - matches: rust-in-test-code
+---
+id: rust-no-private-slice-byte-readers
+language: rust
+severity: error
+message: "Hand-written private `read_u16`/`read_u32`/`read_u64` slice reader calling `from_le_bytes` outside `packages/core/codec/` is banned; use `nve_codec::ByteReader`."
+note: "[stage: Post1B1D] Catches ad-hoc free-function slice readers like `fn read_u32(buf: &[u8], pos: &mut usize)` that bypass `nve-codec`."
+files:
+  - "packages/**/*.rs"
+ignores:
+  - "packages/core/codec/**"
+  - "packages/core/hash/**"
+  - "packages/core/abi/**"
+  - "packages/tools/arch-invariants/**"
+  # Skipped on this branch to avoid conflict with Slice 1c on `main` (which already rewrote hydrate.rs).
+  - "packages/framework/query/src/hydrate.rs"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/tests_*.rs"
+  - "**/test.rs"
+rule:
+  kind: function_item
+  has:
+    field: name
+    kind: identifier
+    regex: '^read_u(?:16|32|64)$'
+  all:
+    - has:
+        stopBy: end
+        kind: identifier
+        regex: '^from_le_bytes$'
+  not:
+    any:
+      - has:
+          kind: visibility_modifier
+          regex: '^pub$'
+      - matches: rust-in-test-code
+---
+id: rust-no-swallowed-codec-write
+language: rust
+severity: error
+message: "Do not swallow fallible `nve-codec` writer results with `let _ = ...`; propagate `Result` instead."
+note: "Guards against silently truncating or corrupting Tier-2 binary frames by discarding `Result<(), CodecError>`."
+files:
+  - "packages/**/*.rs"
+  - "hosts/**/*.rs"
+ignores:
+  - "packages/tools/arch-invariants/**"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  pattern: let _ = $VAL;
+  has:
+    field: value
+    kind: call_expression
+    has:
+      field: function
+      kind: field_expression
+      has:
+        field: field
+        kind: field_identifier
+        regex: '^(?:write_len|write_bytes|write_bytes_u16|write_bytes_u8|write_str|write_str_u16|write_str_u8|write_opt|write_value|write_zeroes|patch_u32)$'
+  not:
+    matches: rust-in-test-code

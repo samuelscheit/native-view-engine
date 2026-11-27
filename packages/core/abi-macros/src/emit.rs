@@ -105,7 +105,7 @@ fn opt_usize(v: Option<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::{parse_string_literal, parse_usize_literal};
+    use crate::parse::{parse_i128_literal, parse_string_literal, parse_usize_literal};
     use crate::{ParsedField, ParsedVariant};
 
     #[test]
@@ -115,6 +115,13 @@ mod tests {
         assert_eq!(parse_usize_literal("0b1010").unwrap(), 10);
         assert_eq!(parse_usize_literal("0o77").unwrap(), 63);
         assert!(parse_usize_literal("bad").is_err());
+        assert_eq!(parse_i128_literal("1i32", true).unwrap(), -1);
+        assert_eq!(parse_i128_literal("2147483648i32", true).unwrap(), i128::from(i32::MIN));
+        assert_eq!(parse_i128_literal("0x7FFF_FFFFi32", false).unwrap(), i128::from(i32::MAX));
+        assert_eq!(parse_i128_literal("170141183460469231731687303715884105728", true).unwrap(), i128::MIN);
+        assert!(parse_i128_literal("1u32", true).is_err());
+        assert!(parse_i128_literal("170141183460469231731687303715884105728", false).is_err());
+        assert!(parse_i128_literal("0xZZ", false).is_err());
         assert_eq!(parse_string_literal(r##"r#"a "b" \n"#"##).unwrap(), r#"a "b" \n"#);
         assert_eq!(parse_string_literal(r#""\x41\u{2014}\n\t""#).unwrap(), "A—\n\t");
         let s = emit_item(&ParsedItem::Struct(ParsedRecord {

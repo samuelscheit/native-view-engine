@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use nve_codec::{ByteReader, NveCodec, NveDecode};
+use nve_codec::{NveCodec, NveDecode};
 
 /// Fixed little-endian encoded byte length of [`OpId`] (`peer: u64` + `seq: u64`).
 pub const OP_ID_ENCODED_LEN: usize = 16;
@@ -31,16 +31,6 @@ impl PeerId {
     #[inline]
     pub const fn as_u64(self) -> u64 {
         self.0
-    }
-
-    #[inline]
-    pub const fn to_le_bytes(self) -> [u8; 8] {
-        self.0.to_le_bytes()
-    }
-
-    #[inline]
-    pub const fn from_le_bytes(bytes: [u8; 8]) -> Self {
-        Self(u64::from_le_bytes(bytes))
     }
 }
 
@@ -67,24 +57,6 @@ impl OpId {
     #[inline]
     pub const fn new(peer: PeerId, seq: u64) -> Self {
         Self { peer, seq }
-    }
-
-    #[inline]
-    pub fn to_le_bytes(self) -> [u8; OP_ID_ENCODED_LEN] {
-        let mut out = [0u8; OP_ID_ENCODED_LEN];
-        out[0..8].copy_from_slice(&self.peer.0.to_le_bytes());
-        out[8..16].copy_from_slice(&self.seq.to_le_bytes());
-        out
-    }
-
-    #[inline]
-    pub fn from_le_bytes(bytes: [u8; OP_ID_ENCODED_LEN]) -> Self {
-        let peer = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte peer slice"));
-        let seq = u64::from_le_bytes(bytes[8..16].try_into().expect("8-byte seq slice"));
-        Self {
-            peer: PeerId(peer),
-            seq,
-        }
     }
 }
 
@@ -134,32 +106,8 @@ impl HlcTimestamp {
     }
 
     #[inline]
-    pub fn encode_le(self) -> [u8; HLC_ENCODED_LEN] {
-        let mut out = [0u8; HLC_ENCODED_LEN];
-        out[0..8].copy_from_slice(&self.physical_ms.to_le_bytes());
-        out[8..10].copy_from_slice(&self.logical.to_le_bytes());
-        out[10..18].copy_from_slice(&self.peer_id.to_le_bytes());
-        out
-    }
-
-    #[inline]
-    pub fn decode_le(bytes: [u8; HLC_ENCODED_LEN]) -> Self {
-        let physical_ms = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte physical_ms"));
-        let logical = u16::from_le_bytes(bytes[8..10].try_into().expect("2-byte logical"));
-        let peer_id = u64::from_le_bytes(bytes[10..18].try_into().expect("8-byte peer_id"));
-        Self {
-            physical_ms,
-            logical,
-            peer_id,
-        }
-    }
-
-    #[inline]
     pub fn decode_slice(bytes: &[u8]) -> Option<Self> {
-        let mut r = ByteReader::new(bytes);
-        let ts = <Self as NveDecode>::decode(&mut r).ok()?;
-        r.finish().ok()?;
-        Some(ts)
+        <Self as NveDecode>::decode_exact(bytes).ok()
     }
 }
 

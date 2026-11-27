@@ -82,3 +82,56 @@ invalid:
   - |
     struct BinWriter(Vec<u8>);
     fn read_u32() -> u32 { 0 }
+---
+id: rust-no-private-slice-byte-readers
+valid:
+  - |
+    pub fn read_u32(buf: &[u8]) -> u32 {
+        u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+    }
+  - |
+    fn read_u32(r: &mut nve_codec::ByteReader<'_>) -> Result<u32, nve_codec::CodecError> {
+        r.read_u32()
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
+            let s = buf.get(*pos..*pos + 4)?;
+            *pos += 4;
+            Some(u32::from_le_bytes(s.try_into().ok()?))
+        }
+    }
+invalid:
+  - |
+    fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
+        let s = buf.get(*pos..*pos + 4)?;
+        *pos += 4;
+        Some(u32::from_le_bytes(s.try_into().ok()?))
+    }
+  - |
+    fn read_u64(buf: &[u8]) -> u64 {
+        u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+    }
+---
+id: rust-no-swallowed-codec-write
+valid:
+  - |
+    fn encode(w: &mut ByteWriter, s: &str) -> Result<(), CodecError> {
+        w.write_str(s)?;
+        w.write_len(1)?;
+        Ok(())
+    }
+  - |
+    fn format_text(out: &mut String) {
+        let _ = writeln!(out, "ok");
+    }
+invalid:
+  - |
+    fn encode(w: &mut ByteWriter, s: &str) {
+        let _ = w.write_str(s);
+    }
+  - |
+    fn encode(w: &mut ByteWriter) {
+        let _ = w.patch_u32(0, 42);
+    }

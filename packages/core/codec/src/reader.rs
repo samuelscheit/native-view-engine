@@ -7,12 +7,17 @@ use crate::{canonical_f32_bits, canonical_f64_bits, CodecError, NveDecode};
 pub struct ByteReader<'a> {
     data: &'a [u8],
     pos: usize,
+    zero_byte_budget: usize,
 }
 
 impl<'a> ByteReader<'a> {
     #[inline]
     pub const fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            data,
+            pos: 0,
+            zero_byte_budget: data.len().saturating_add(64),
+        }
     }
 
     #[inline]
@@ -230,6 +235,10 @@ impl<'a> ByteReader<'a> {
     }
 
     /// Reads a `u32`-length-prefixed vector bounded by `max` elements and `min_elem_bytes` per item.
+    ///
+    /// When `min_elem_bytes == 0`, no upfront capacity is allocated (so lying lengths fail with 0
+    /// heap allocations) and zero-byte-progress items are bounded to `O(input_len)` across the
+    /// reader's lifetime to prevent `Vec<Vec<()>>` CPU-amplification DoS attacks.
     pub fn read_vec<T>(
         &mut self,
         max: usize,
@@ -237,14 +246,28 @@ impl<'a> ByteReader<'a> {
         mut decode_item: impl FnMut(&mut Self) -> Result<T, CodecError>,
     ) -> Result<Vec<T>, CodecError> {
         let count = self.read_len(max, min_elem_bytes)?;
-        let cap = if min_elem_bytes > 0 {
-            count
-        } else {
-            count.min(1024)
-        };
-        let mut out = Vec::with_capacity(cap);
-        for _ in 0..count {
-            out.push(decode_item(self)?);
+        if min_elem_bytes > 0 {
+            let mut out = Vec::with_capacity(count);
+            for _ in 0..count {
+                out.push(decode_item(self)?);
+            }
+            return Ok(out);
+        }
+        let mut out = Vec::new();
+        for i in 0..count {
+            let before = self.pos;
+            let item = decode_item(self)?;
+            if self.pos == before {
+                let remaining_items = count - i;
+                if remaining_items > self.zero_byte_budget {
+                    return Err(CodecError::LenOverflow {
+                        len: count,
+                        max: self.zero_byte_budget,
+                    });
+                }
+                self.zero_byte_budget -= 1;
+            }
+            out.push(item);
         }
         Ok(out)
     }

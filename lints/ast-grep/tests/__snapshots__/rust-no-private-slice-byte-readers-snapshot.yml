@@ -1,0 +1,38 @@
+id: rust-no-private-slice-byte-readers
+snapshots:
+  "fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {\n    let s = buf.get(*pos..*pos + 4)?;\n    *pos += 4;\n    Some(u32::from_le_bytes(s.try_into().ok()?))\n}\n":
+    labels:
+    - source: |-
+        fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
+            let s = buf.get(*pos..*pos + 4)?;
+            *pos += 4;
+            Some(u32::from_le_bytes(s.try_into().ok()?))
+        }
+      style: primary
+      start: 0
+      end: 161
+    - source: from_le_bytes
+      style: secondary
+      start: 125
+      end: 138
+    - source: read_u32
+      style: secondary
+      start: 3
+      end: 11
+  "fn read_u64(buf: &[u8]) -> u64 {\n    u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])\n}\n":
+    labels:
+    - source: |-
+        fn read_u64(buf: &[u8]) -> u64 {
+            u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+        }
+      style: primary
+      start: 0
+      end: 123
+    - source: from_le_bytes
+      style: secondary
+      start: 42
+      end: 55
+    - source: read_u64
+      style: secondary
+      start: 3
+      end: 11

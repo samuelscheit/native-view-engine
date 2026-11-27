@@ -1,0 +1,38 @@
+id: rust-no-swallowed-codec-write
+snapshots:
+  "fn encode(w: &mut ByteWriter) {\n    let _ = w.patch_u32(0, 42);\n}\n":
+    labels:
+    - source: let _ = w.patch_u32(0, 42);
+      style: primary
+      start: 36
+      end: 63
+    - source: patch_u32
+      style: secondary
+      start: 46
+      end: 55
+    - source: w.patch_u32
+      style: secondary
+      start: 44
+      end: 55
+    - source: w.patch_u32(0, 42)
+      style: secondary
+      start: 44
+      end: 62
+  "fn encode(w: &mut ByteWriter, s: &str) {\n    let _ = w.write_str(s);\n}\n":
+    labels:
+    - source: let _ = w.write_str(s);
+      style: primary
+      start: 45
+      end: 68
+    - source: write_str
+      style: secondary
+      start: 55
+      end: 64
+    - source: w.write_str
+      style: secondary
+      start: 53
+      end: 64
+    - source: w.write_str(s)
+      style: secondary
+      start: 53
+      end: 67

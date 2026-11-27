@@ -6,6 +6,7 @@
 //! bounds-checked, DoS-hardened Tier-2 codec.
 
 #![forbid(unsafe_code)]
+#![deny(clippy::let_underscore_must_use)]
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 mod reader;
@@ -16,9 +17,80 @@ mod tests;
 
 use core::fmt;
 
+/// Derives [`NveEncode`] and [`NveDecode`] for Tier-2 little-endian structs and enums.
+///
+/// # Compile-Time Guards
+///
+/// Generics are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[derive(NveCodec)]
+/// struct BadGeneric<T>(T);
+/// ```
+///
+/// Duplicate enum tags are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[derive(NveCodec)]
+/// enum DupTag {
+///     #[nve_codec(tag = 1)]
+///     A(u8),
+///     #[nve_codec(tag = 1)]
+///     B(u16),
+/// }
+/// ```
+///
+/// Out-of-range tags are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[repr(u8)]
+/// #[derive(NveCodec)]
+/// enum OutOfRange {
+///     TooBig = 256,
+/// }
+/// ```
+///
+/// Non-`u8` data-carrying enums are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[repr(u16)]
+/// #[derive(NveCodec)]
+/// enum BadDataRepr {
+///     A(u32),
+/// }
+/// ```
+///
+/// Unknown `#[nve_codec(...)]` keys are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[derive(NveCodec)]
+/// #[nve_codec(unknown_key = "x")]
+/// struct BadKey(u8);
+/// ```
+///
+/// Unit-only enums must use Rust discriminants instead of `#[nve_codec(tag = ...)]`:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[repr(u8)]
+/// #[derive(NveCodec)]
+/// enum BadUnitTag {
+///     #[nve_codec(tag = 7)]
+///     A = 1,
+/// }
+/// ```
+///
+/// Unsupported integer `#[repr(...)]` attributes are rejected:
+/// ```compile_fail
+/// use nve_codec::NveCodec;
+/// #[repr(i8)]
+/// #[derive(NveCodec)]
+/// enum BadRepr {
+///     A = 1,
+/// }
+/// ```
 pub use nve_abi_macros::NveCodec;
 pub use reader::ByteReader;
-pub use writer::ByteWriter;
+pub use writer::{ByteWriter, SliceWriter};
 
 /// Default upper bound on element counts decoded by `NveDecode` for `Vec<T>`.
 pub const DEFAULT_MAX_ITEMS: usize = 65_536;
@@ -116,7 +188,7 @@ pub trait NveEncode {
 /// Trait for Tier-2 little-endian binary deserialization from a [`ByteReader`].
 pub trait NveDecode: Sized {
     /// Conservative minimum encoded byte size used to bound vector pre-allocation.
-    const MIN_ENCODED_BYTES: usize = 0;
+    const MIN_ENCODED_BYTES: usize;
 
     fn decode(r: &mut ByteReader<'_>) -> Result<Self, CodecError>;
 

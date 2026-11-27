@@ -71,7 +71,7 @@ fn hot_patch_msg_roundtrip_all_variants_and_wire_tags() {
     ];
 
     for (msg, expected_tag) in cases {
-        let bytes = msg.to_bytes();
+        let bytes = msg.to_bytes().unwrap();
         assert_eq!(&bytes[..4], b"NVP1");
         assert_eq!(bytes[4], expected_tag, "variant tag");
         let decoded = HotPatchMsg::from_bytes(&bytes).expect("roundtrip decode");
@@ -274,7 +274,8 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             node_path: vec![],
             text_replacements: vec![],
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         assert_eq!(
             (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&valid_patch)),
             1
@@ -285,7 +286,8 @@ fn export_nve_app_routes_hot_patches_handles_nulls_and_defaults() {
             message: "ping".into(),
             latency_ms: 1,
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         assert_eq!(
             (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&status_patch)),
             0

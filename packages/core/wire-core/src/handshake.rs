@@ -1,7 +1,7 @@
 //! Bearer-token TLS 1.3 handshake messages (`Hello`, `HelloAck`, `Reject`) and out-of-order
 //! `AsyncSlot` chunk payloads for `NveWireFrame` v2.
 
-use nve_codec::{ByteReader, ByteWriter, NveCodec};
+use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, SliceWriter};
 
 use crate::frame::NveWireError;
 
@@ -44,14 +44,6 @@ pub enum NveWireRejectReason {
 }
 
 impl NveWireRejectReason {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
-        match Self::from_repr(raw) {
-            Some(r) => Ok(r),
-            None => Err(NveWireError::InvalidPayload("unknown reject reason")),
-        }
-    }
-
     pub fn encode(self, detail: &str) -> Vec<u8> {
         let detail_bytes = detail.as_bytes();
         let clipped_len = detail_bytes.len().min(256);
@@ -71,8 +63,9 @@ impl NveWireRejectReason {
             });
         }
         let mut r = ByteReader::new(bytes);
-        let reason = Self::from_u8(r.read_u8()?)?;
-        let _reserved = r.read_u8()?;
+        let reason = Self::from_repr(r.read_u8()?)
+            .ok_or(NveWireError::InvalidPayload("unknown reject reason"))?;
+        r.expect_zero(1)?;
         let detail_len = usize::from(r.read_u16()?);
         if r.remaining() != detail_len {
             return Err(NveWireError::InvalidPayload("reject detail length mismatch"));
@@ -169,14 +162,21 @@ pub struct NveWireHelloAck {
 impl NveWireHelloAck {
     pub const ENCODED_LEN: usize = 12;
 
+    #[inline]
+    pub fn write_into(&self, dst: &mut [u8; Self::ENCODED_LEN]) -> Result<(), CodecError> {
+        let mut w = SliceWriter::new(dst);
+        w.write_u32(self.session_id)?;
+        w.write_u16(self.schema_version)?;
+        w.write_zeroes(2)?;
+        w.write_u32(self.server_capabilities)?;
+        w.finish()
+    }
+
+    #[inline]
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut w = ByteWriter::with_capacity(Self::ENCODED_LEN);
-        w.write_u32(self.session_id);
-        w.write_u16(self.schema_version);
-        w.write_u16(0);
-        w.write_u32(self.server_capabilities);
         let mut out = [0u8; Self::ENCODED_LEN];
-        out.copy_from_slice(w.as_slice());
+        let res = self.write_into(&mut out);
+        debug_assert!(res.is_ok());
         out
     }
 
@@ -190,8 +190,9 @@ impl NveWireHelloAck {
         let mut r = ByteReader::new(bytes);
         let session_id = r.read_u32()?;
         let schema_version = r.read_u16()?;
-        let _reserved = r.read_u16()?;
+        r.expect_zero(2)?;
         let server_capabilities = r.read_u32()?;
+        r.finish()?;
         Ok(Self {
             session_id,
             schema_version,

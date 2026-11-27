@@ -293,7 +293,8 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
             message: "x".into(),
             latency_ms: 0,
         }
-        .to_bytes();
+        .to_bytes()
+        .unwrap();
         assert_eq!(
             (dev.apply_hot_patch)(handle, NveBufferSlice::from_slice(&patch)),
             0

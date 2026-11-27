@@ -37,10 +37,101 @@ fn map_codec_err(err: CodecError, total_len: usize, pos: usize) -> SignalArchive
         CodecError::InvalidUtf8 => SignalArchiveError::InvalidUtf8,
         CodecError::TrailingBytes(n) => SignalArchiveError::TrailingBytes(n),
         CodecError::LenOverflow { len, .. } => SignalArchiveError::PayloadTooLarge(len),
-        _ => SignalArchiveError::Truncated {
+        CodecError::BadEnum { raw, .. } => SignalArchiveError::InvalidValueTag(raw as u8),
+        CodecError::BadVersion(v) => SignalArchiveError::UnsupportedFormatVersion(v),
+        CodecError::BadMagic => SignalArchiveError::InvalidMagic([0; 8]),
+        CodecError::NonZeroReserved(_) => SignalArchiveError::Truncated {
             expected: pos,
             actual: total_len,
         },
+    }
+}
+
+struct ArchiveReader<'a> {
+    inner: ByteReader<'a>,
+    total_len: usize,
+}
+
+impl<'a> ArchiveReader<'a> {
+    #[inline]
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            inner: ByteReader::new(bytes),
+            total_len: bytes.len(),
+        }
+    }
+
+    #[inline]
+    fn map<T>(&self, res: Result<T, CodecError>) -> Result<T, SignalArchiveError> {
+        res.map_err(|e| map_codec_err(e, self.total_len, self.inner.pos()))
+    }
+
+    #[inline]
+    const fn remaining(&self) -> usize {
+        self.inner.remaining()
+    }
+
+    #[inline]
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], SignalArchiveError> {
+        let res = self.inner.read_array::<N>();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_u8(&mut self) -> Result<u8, SignalArchiveError> {
+        let res = self.inner.read_u8();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_bool(&mut self) -> Result<bool, SignalArchiveError> {
+        let res = self.inner.read_bool();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_u32(&mut self) -> Result<u32, SignalArchiveError> {
+        let res = self.inner.read_u32();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_i64(&mut self) -> Result<i64, SignalArchiveError> {
+        let res = self.inner.read_i64();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_u64(&mut self) -> Result<u64, SignalArchiveError> {
+        let res = self.inner.read_u64();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_f64_raw(&mut self) -> Result<f64, SignalArchiveError> {
+        let res = self.inner.read_f64_raw();
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_str(&mut self, max: usize) -> Result<&'a str, SignalArchiveError> {
+        let res = self.inner.read_str(max);
+        self.map(res)
+    }
+
+    #[inline]
+    fn read_bytes(&mut self, max: usize) -> Result<&'a [u8], SignalArchiveError> {
+        let res = self.inner.read_bytes(max);
+        self.map(res)
+    }
+
+    #[inline]
+    fn finish(self) -> Result<(), SignalArchiveError> {
+        let pos = self.inner.pos();
+        let total_len = self.total_len;
+        self.inner
+            .finish()
+            .map_err(|e| map_codec_err(e, total_len, pos))
     }
 }
 
@@ -67,46 +158,20 @@ fn encode_value(value: &SignalValue, w: &mut ByteWriter) -> Result<(), SignalArc
     Ok(())
 }
 
-fn decode_value(r: &mut ByteReader<'_>, total_len: usize) -> Result<SignalValue, SignalArchiveError> {
-    let raw_tag = r
-        .read_u8()
-        .map_err(|e| map_codec_err(e, total_len, r.pos()))?;
+fn decode_value(r: &mut ArchiveReader<'_>) -> Result<SignalValue, SignalArchiveError> {
+    let raw_tag = r.read_u8()?;
     let tag =
-        SignalValueTag::from_u8(raw_tag).ok_or(SignalArchiveError::InvalidValueTag(raw_tag))?;
+        SignalValueTag::from_repr(raw_tag).ok_or(SignalArchiveError::InvalidValueTag(raw_tag))?;
     match tag {
         SignalValueTag::Null => Ok(SignalValue::Null),
-        SignalValueTag::Bool => Ok(SignalValue::Bool(
-            r.read_bool()
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?,
-        )),
-        SignalValueTag::I64 => Ok(SignalValue::I64(
-            r.read_i64()
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?,
-        )),
-        SignalValueTag::U64 => Ok(SignalValue::U64(
-            r.read_u64()
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?,
-        )),
-        SignalValueTag::F64 => Ok(SignalValue::F64(
-            r.read_f64_raw()
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?,
-        )),
-        SignalValueTag::Str => {
-            let s = r
-                .read_str(u32::MAX as usize)
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?;
-            Ok(SignalValue::Str(s.to_owned()))
-        }
-        SignalValueTag::Bytes => {
-            let raw = r
-                .read_bytes(u32::MAX as usize)
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?;
-            Ok(SignalValue::Bytes(raw.to_vec()))
-        }
+        SignalValueTag::Bool => Ok(SignalValue::Bool(r.read_bool()?)),
+        SignalValueTag::I64 => Ok(SignalValue::I64(r.read_i64()?)),
+        SignalValueTag::U64 => Ok(SignalValue::U64(r.read_u64()?)),
+        SignalValueTag::F64 => Ok(SignalValue::F64(r.read_f64_raw()?)),
+        SignalValueTag::Str => Ok(SignalValue::Str(r.read_str(u32::MAX as usize)?.to_owned())),
+        SignalValueTag::Bytes => Ok(SignalValue::Bytes(r.read_bytes(u32::MAX as usize)?.to_vec())),
         SignalValueTag::BinValue => {
-            let raw = r
-                .read_bytes(u32::MAX as usize)
-                .map_err(|e| map_codec_err(e, total_len, r.pos()))?;
+            let raw = r.read_bytes(u32::MAX as usize)?;
             let _ = BinValueView::parse(raw)?;
             Ok(SignalValue::BinValue(raw.to_vec()))
         }
@@ -116,35 +181,25 @@ fn decode_value(r: &mut ByteReader<'_>, total_len: usize) -> Result<SignalValue,
 fn decode_header<'a>(
     bytes: &'a [u8],
     expected_magic: [u8; 8],
-) -> Result<(u32, usize, ByteReader<'a>), SignalArchiveError> {
+) -> Result<(u32, usize, ArchiveReader<'a>), SignalArchiveError> {
     if bytes.len() < HEADER_SIZE {
         return Err(SignalArchiveError::Truncated {
             expected: HEADER_SIZE,
             actual: bytes.len(),
         });
     }
-    let mut r = ByteReader::new(bytes);
-    let magic = r
-        .read_array::<8>()
-        .map_err(|e| map_codec_err(e, bytes.len(), 0))?;
+    let mut r = ArchiveReader::new(bytes);
+    let magic = r.read_array::<8>()?;
     if magic != expected_magic {
         return Err(SignalArchiveError::InvalidMagic(magic));
     }
-    let format_version = r
-        .read_u32()
-        .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))?;
+    let format_version = r.read_u32()?;
     if format_version != NVE_SIGNAL_ARCHIVE_VERSION {
         return Err(SignalArchiveError::UnsupportedFormatVersion(format_version));
     }
-    let schema_version = r
-        .read_u32()
-        .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))?;
-    let count = r
-        .read_u32()
-        .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))? as usize;
-    let stored_checksum = r
-        .read_u64()
-        .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))?;
+    let schema_version = r.read_u32()?;
+    let count = r.read_u32()? as usize;
+    let stored_checksum = r.read_u64()?;
     let computed_checksum = compute_container_checksum(bytes);
     if computed_checksum != stored_checksum {
         return Err(SignalArchiveError::ChecksumMismatch {
@@ -219,7 +274,8 @@ impl SignalDelta {
         let op_count = u32::try_from(sorted_ops.len())
             .map_err(|_| SignalArchiveError::PayloadTooLarge(sorted_ops.len()))?;
         let mut w = ByteWriter::with_capacity(HEADER_SIZE + sorted_ops.len() * 16);
-        w.write_zeroes(HEADER_SIZE);
+        w.write_zeroes(HEADER_SIZE)
+            .map_err(|_| SignalArchiveError::PayloadTooLarge(HEADER_SIZE))?;
         for op in &sorted_ops {
             match op {
                 SignalDeltaOp::Upsert { slot_id, value } => {
@@ -249,12 +305,8 @@ impl SignalDelta {
         let mut prev_slot: Option<u64> = None;
 
         for _ in 0..op_count {
-            let op_kind = r
-                .read_u8()
-                .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))?;
-            let slot_id = r
-                .read_u64()
-                .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))?;
+            let op_kind = r.read_u8()?;
+            let slot_id = r.read_u64()?;
             if let Some(prev) = prev_slot
                 && slot_id <= prev
             {
@@ -263,7 +315,7 @@ impl SignalDelta {
             prev_slot = Some(slot_id);
             match op_kind {
                 DELTA_OP_UPSERT => {
-                    let value = decode_value(&mut r, bytes.len())?;
+                    let value = decode_value(&mut r)?;
                     ops.push(SignalDeltaOp::Upsert { slot_id, value });
                 }
                 DELTA_OP_REMOVE => {
@@ -273,9 +325,7 @@ impl SignalDelta {
             }
         }
 
-        let end_pos = r.pos();
-        r.finish()
-            .map_err(|e| map_codec_err(e, bytes.len(), end_pos))?;
+        r.finish()?;
 
         Ok(Self {
             schema_version,
@@ -364,7 +414,8 @@ impl SignalTableSnapshot {
         let slot_count = u32::try_from(self.slots.len())
             .map_err(|_| SignalArchiveError::PayloadTooLarge(self.slots.len()))?;
         let mut w = ByteWriter::with_capacity(HEADER_SIZE + self.slots.len() * 18);
-        w.write_zeroes(HEADER_SIZE);
+        w.write_zeroes(HEADER_SIZE)
+            .map_err(|_| SignalArchiveError::PayloadTooLarge(HEADER_SIZE))?;
         for (&slot_id, value) in &self.slots {
             w.write_u64(slot_id);
             encode_value(value, &mut w)?;
@@ -385,22 +436,18 @@ impl SignalTableSnapshot {
         let mut prev_slot: Option<u64> = None;
 
         for _ in 0..slot_count {
-            let slot_id = r
-                .read_u64()
-                .map_err(|e| map_codec_err(e, bytes.len(), r.pos()))?;
+            let slot_id = r.read_u64()?;
             if let Some(prev) = prev_slot
                 && slot_id <= prev
             {
                 return Err(SignalArchiveError::UnsortedOrDuplicateSlot(slot_id));
             }
             prev_slot = Some(slot_id);
-            let value = decode_value(&mut r, bytes.len())?;
+            let value = decode_value(&mut r)?;
             slots.insert(slot_id, value);
         }
 
-        let end_pos = r.pos();
-        r.finish()
-            .map_err(|e| map_codec_err(e, bytes.len(), end_pos))?;
+        r.finish()?;
 
         Ok(Self {
             schema_version,

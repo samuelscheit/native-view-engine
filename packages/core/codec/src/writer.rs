@@ -149,15 +149,29 @@ impl ByteWriter {
     }
 
     #[inline]
-    pub fn write_zeroes(&mut self, count: usize) {
-        self.buf.resize(self.buf.len() + count, 0);
+    pub fn write_zeroes(&mut self, count: usize) -> Result<(), CodecError> {
+        let new_len = self.buf.len().checked_add(count).ok_or(CodecError::LenOverflow {
+            len: count,
+            max: usize::MAX - self.buf.len(),
+        })?;
+        self.buf.resize(new_len, 0);
+        Ok(())
     }
 
     #[inline]
-    pub fn patch_u32(&mut self, offset: usize, v: u32) {
-        if let Some(dst) = self.buf.get_mut(offset..offset + 4) {
-            dst.copy_from_slice(&v.to_le_bytes());
-        }
+    pub fn patch_u32(&mut self, offset: usize, v: u32) -> Result<(), CodecError> {
+        let end = offset.checked_add(4).ok_or(CodecError::LenOverflow {
+            len: offset,
+            max: self.buf.len().saturating_sub(4),
+        })?;
+        let Some(dst) = self.buf.get_mut(offset..end) else {
+            return Err(CodecError::Truncated {
+                needed: 4,
+                remaining: self.buf.len().saturating_sub(offset),
+            });
+        };
+        dst.copy_from_slice(&v.to_le_bytes());
+        Ok(())
     }
 
     #[inline]
@@ -235,5 +249,140 @@ impl ByteWriter {
     #[inline]
     pub fn write_value<T: NveEncode>(&mut self, value: &T) -> Result<(), CodecError> {
         value.encode(self)
+    }
+}
+
+/// Zero-allocation little-endian binary writer over a caller-owned `&mut [u8]` slice.
+#[derive(Debug)]
+pub struct SliceWriter<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> SliceWriter<'a> {
+    #[inline]
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    #[inline]
+    pub const fn pos(&self) -> usize {
+        self.pos
+    }
+
+    #[inline]
+    pub const fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
+    #[inline]
+    pub fn written(&self) -> &[u8] {
+        &self.buf[..self.pos]
+    }
+
+    #[inline]
+    pub fn write_raw(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
+        let remaining = self.remaining();
+        if bytes.len() > remaining {
+            return Err(CodecError::Truncated {
+                needed: bytes.len(),
+                remaining,
+            });
+        }
+        let end = self.pos + bytes.len();
+        self.buf[self.pos..end].copy_from_slice(bytes);
+        self.pos = end;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn write_zeroes(&mut self, count: usize) -> Result<(), CodecError> {
+        let remaining = self.remaining();
+        if count > remaining {
+            return Err(CodecError::Truncated {
+                needed: count,
+                remaining,
+            });
+        }
+        let end = self.pos + count;
+        self.buf[self.pos..end].fill(0);
+        self.pos = end;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn write_u8(&mut self, v: u8) -> Result<(), CodecError> {
+        self.write_raw(&[v])
+    }
+
+    #[inline]
+    pub fn write_i8(&mut self, v: i8) -> Result<(), CodecError> {
+        self.write_raw(&[v as u8])
+    }
+
+    #[inline]
+    pub fn write_bool(&mut self, v: bool) -> Result<(), CodecError> {
+        self.write_raw(&[u8::from(v)])
+    }
+
+    #[inline]
+    pub fn write_u16(&mut self, v: u16) -> Result<(), CodecError> {
+        self.write_raw(&v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_i16(&mut self, v: i16) -> Result<(), CodecError> {
+        self.write_raw(&v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_u32(&mut self, v: u32) -> Result<(), CodecError> {
+        self.write_raw(&v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_i32(&mut self, v: i32) -> Result<(), CodecError> {
+        self.write_raw(&v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_u64(&mut self, v: u64) -> Result<(), CodecError> {
+        self.write_raw(&v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_i64(&mut self, v: i64) -> Result<(), CodecError> {
+        self.write_raw(&v.to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_f32(&mut self, v: f32) -> Result<(), CodecError> {
+        self.write_raw(&canonical_f32_bits(v).to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_f32_raw(&mut self, v: f32) -> Result<(), CodecError> {
+        self.write_raw(&v.to_bits().to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_f64(&mut self, v: f64) -> Result<(), CodecError> {
+        self.write_raw(&canonical_f64_bits(v).to_le_bytes())
+    }
+
+    #[inline]
+    pub fn write_f64_raw(&mut self, v: f64) -> Result<(), CodecError> {
+        self.write_raw(&v.to_bits().to_le_bytes())
+    }
+
+    /// Verifies that the destination slice was filled completely with zero unused trailing bytes.
+    #[inline]
+    pub fn finish(self) -> Result<(), CodecError> {
+        let rem = self.remaining();
+        if rem != 0 {
+            Err(CodecError::TrailingBytes(rem))
+        } else {
+            Ok(())
+        }
     }
 }

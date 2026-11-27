@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 pub use nve_abi::ColorRgba;
 use nve_abi::Key64;
+use nve_codec::{ByteReader, ByteWriter, CodecError, NveDecode, NveEncode};
 use nve_store::{NveTable, Res, Resource, Rgba};
 
 /// Vector SVG node table (`nve.svg`).
@@ -37,148 +38,62 @@ pub struct Svg {
 const MAX_SHAPES: usize = 4096;
 const MAX_CMDS: usize = 65536;
 
+fn encode_svg_picture(pic: &SvgPicture, w: &mut ByteWriter) -> Result<(), CodecError> {
+    w.write_f32(pic.view_box.0);
+    w.write_f32(pic.view_box.1);
+    w.write_f32(pic.view_box.2);
+    w.write_f32(pic.view_box.3);
+    w.write_len(pic.shapes.len())?;
+    for shape in pic.shapes.iter() {
+        w.write_opt(shape.fill, |w, c| {
+            w.write_u32(c.to_u32());
+            Ok(())
+        })?;
+        w.write_opt(shape.stroke, |w, c| {
+            w.write_u32(c.to_u32());
+            Ok(())
+        })?;
+        w.write_f32(shape.stroke_width);
+        shape.fill_rule.encode(w)?;
+        w.write_len(shape.path.len())?;
+        for cmd in shape.path.iter() {
+            cmd.encode(w)?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_svg_picture(bytes: &[u8]) -> Result<SvgPicture, CodecError> {
+    let mut r = ByteReader::new(bytes);
+    let vb = (r.read_f32()?, r.read_f32()?, r.read_f32()?, r.read_f32()?);
+    let shapes = r.read_vec(MAX_SHAPES, 11, |r| {
+        let fill = r.read_opt(|r| Ok(ColorRgba::from_u32(r.read_u32()?)))?;
+        let stroke = r.read_opt(|r| Ok(ColorRgba::from_u32(r.read_u32()?)))?;
+        let stroke_width = r.read_f32()?;
+        let fill_rule = FillRule::decode(r)?;
+        let path = r.read_vec(MAX_CMDS, VectorPathCmd::MIN_ENCODED_BYTES, VectorPathCmd::decode)?;
+        Ok(VectorShape {
+            path: Arc::from(path),
+            fill,
+            stroke,
+            stroke_width,
+            fill_rule,
+        })
+    })?;
+    r.finish()?;
+    Ok(SvgPicture::new(vb, shapes))
+}
+
 impl Resource for SvgPicture {
     const KIND: Key64 = Key64::of("nve.res.svg_picture");
 
     fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.view_box.0.to_le_bytes());
-        out.extend_from_slice(&self.view_box.1.to_le_bytes());
-        out.extend_from_slice(&self.view_box.2.to_le_bytes());
-        out.extend_from_slice(&self.view_box.3.to_le_bytes());
-        out.extend_from_slice(&(self.shapes.len() as u32).to_le_bytes());
-        for shape in self.shapes.iter() {
-            match shape.fill {
-                None => out.push(0),
-                Some(c) => {
-                    out.push(1);
-                    out.extend_from_slice(&c.to_u32().to_le_bytes());
-                }
-            }
-            match shape.stroke {
-                None => out.push(0),
-                Some(c) => {
-                    out.push(1);
-                    out.extend_from_slice(&c.to_u32().to_le_bytes());
-                }
-            }
-            out.extend_from_slice(&shape.stroke_width.to_le_bytes());
-            out.push(shape.fill_rule as u8);
-            out.extend_from_slice(&(shape.path.len() as u32).to_le_bytes());
-            for &cmd in shape.path.iter() {
-                match cmd {
-                    VectorPathCmd::MoveTo(x, y) => {
-                        out.push(0);
-                        out.extend_from_slice(&x.to_le_bytes());
-                        out.extend_from_slice(&y.to_le_bytes());
-                    }
-                    VectorPathCmd::LineTo(x, y) => {
-                        out.push(1);
-                        out.extend_from_slice(&x.to_le_bytes());
-                        out.extend_from_slice(&y.to_le_bytes());
-                    }
-                    VectorPathCmd::QuadTo(cx, cy, x, y) => {
-                        out.push(2);
-                        out.extend_from_slice(&cx.to_le_bytes());
-                        out.extend_from_slice(&cy.to_le_bytes());
-                        out.extend_from_slice(&x.to_le_bytes());
-                        out.extend_from_slice(&y.to_le_bytes());
-                    }
-                    VectorPathCmd::CubicTo(c1x, c1y, c2x, c2y, x, y) => {
-                        out.push(3);
-                        out.extend_from_slice(&c1x.to_le_bytes());
-                        out.extend_from_slice(&c1y.to_le_bytes());
-                        out.extend_from_slice(&c2x.to_le_bytes());
-                        out.extend_from_slice(&c2y.to_le_bytes());
-                        out.extend_from_slice(&x.to_le_bytes());
-                        out.extend_from_slice(&y.to_le_bytes());
-                    }
-                    VectorPathCmd::Close => out.push(4),
-                }
-            }
-        }
+        let res = ByteWriter::with_buf(out, |w| encode_svg_picture(self, w));
+        debug_assert!(res.is_ok());
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        let mut pos = 0usize;
-        let take = |pos: &mut usize, n: usize| -> Option<&[u8]> {
-            let end = pos.checked_add(n)?;
-            let s = bytes.get(*pos..end)?;
-            *pos = end;
-            Some(s)
-        };
-        let u8v = |pos: &mut usize| -> Option<u8> { Some(take(pos, 1)?[0]) };
-        let u32v = |pos: &mut usize| -> Option<u32> {
-            Some(u32::from_le_bytes(take(pos, 4)?.try_into().ok()?))
-        };
-        let f32v = |pos: &mut usize| -> Option<f32> {
-            Some(f32::from_le_bytes(take(pos, 4)?.try_into().ok()?))
-        };
-
-        let vb = (
-            f32v(&mut pos)?,
-            f32v(&mut pos)?,
-            f32v(&mut pos)?,
-            f32v(&mut pos)?,
-        );
-        let shape_count = u32v(&mut pos)? as usize;
-        if shape_count > MAX_SHAPES {
-            return None;
-        }
-        let mut shapes = Vec::with_capacity(shape_count.min(64));
-        for _ in 0..shape_count {
-            let fill = match u8v(&mut pos)? {
-                0 => None,
-                1 => Some(ColorRgba::from_u32(u32v(&mut pos)?)),
-                _ => return None,
-            };
-            let stroke = match u8v(&mut pos)? {
-                0 => None,
-                1 => Some(ColorRgba::from_u32(u32v(&mut pos)?)),
-                _ => return None,
-            };
-            let stroke_width = f32v(&mut pos)?;
-            let fill_rule = match u8v(&mut pos)? {
-                0 => FillRule::NonZero,
-                1 => FillRule::EvenOdd,
-                _ => return None,
-            };
-            let cmd_count = u32v(&mut pos)? as usize;
-            if cmd_count > MAX_CMDS {
-                return None;
-            }
-            let mut path = Vec::with_capacity(cmd_count.min(256));
-            for _ in 0..cmd_count {
-                let cmd = match u8v(&mut pos)? {
-                    0 => VectorPathCmd::MoveTo(f32v(&mut pos)?, f32v(&mut pos)?),
-                    1 => VectorPathCmd::LineTo(f32v(&mut pos)?, f32v(&mut pos)?),
-                    2 => VectorPathCmd::QuadTo(
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                    ),
-                    3 => VectorPathCmd::CubicTo(
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                        f32v(&mut pos)?,
-                    ),
-                    4 => VectorPathCmd::Close,
-                    _ => return None,
-                };
-                path.push(cmd);
-            }
-            shapes.push(VectorShape {
-                path: Arc::from(path),
-                fill,
-                stroke,
-                stroke_width,
-                fill_rule,
-            });
-        }
-        (pos == bytes.len()).then(|| SvgPicture::new(vb, shapes))
+        decode_svg_picture(bytes).ok()
     }
 }
 

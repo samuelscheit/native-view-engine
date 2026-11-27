@@ -292,8 +292,10 @@ fn websocket_hot_reload_client_receives_messages_and_invokes_wake() {
             dylib_path: "target/debug/libdemo.dylib".into(),
             build_ms: 210,
         };
-        ws.send(Message::Binary(m1.to_bytes().into())).unwrap();
-        ws.send(Message::Binary(m2.to_bytes().into())).unwrap();
+        ws.send(Message::Binary(m1.to_bytes().unwrap().into()))
+            .unwrap();
+        ws.send(Message::Binary(m2.to_bytes().unwrap().into()))
+            .unwrap();
         let _ = ws.close(None);
     });
 

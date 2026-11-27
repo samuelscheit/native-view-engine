@@ -6,7 +6,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use nve_codec::{ByteReader, NveCodec, NveDecode};
+use nve_codec::{NveCodec, NveDecode};
 
 use crate::error::ServiceError;
 use crate::events::TypedEventBus;
@@ -161,19 +161,12 @@ pub enum PermissionStatus {
 }
 
 impl PermissionStatus {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        Self::from_repr(raw)
-    }
-
     pub fn encode(self) -> Vec<u8> {
         vec![self as u8]
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ServiceError> {
-        let mut r = ByteReader::new(bytes);
-        let status = <Self as NveDecode>::decode(&mut r)?;
-        r.finish()?;
-        Ok(status)
+        Ok(<Self as NveDecode>::decode_exact(bytes)?)
     }
 }
 

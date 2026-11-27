@@ -196,7 +196,9 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                     message: "Hot reload: connected".into(),
                     latency_ms: 0,
                 };
-                let _ = ws.send(tungstenite::Message::Binary(status.to_bytes().into()));
+                if let Ok(bytes) = status.to_bytes() {
+                    let _ = ws.send(tungstenite::Message::Binary(bytes.into()));
+                }
                 ws_clients.lock().unwrap_or_else(|e| e.into_inner()).push(ws);
             }
         }
@@ -204,7 +206,10 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
 
     let broadcast_msg = |clients: &Arc<Mutex<Vec<tungstenite::WebSocket<std::net::TcpStream>>>>,
                          msg: &HotPatchMsg| {
-        let payload = tungstenite::Message::Binary(msg.to_bytes().into());
+        let Ok(bytes) = msg.to_bytes() else {
+            return;
+        };
+        let payload = tungstenite::Message::Binary(bytes.into());
         let mut guard = clients.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain_mut(|ws| ws.send(payload.clone()).is_ok());
     };
@@ -395,8 +400,9 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .as_ref()
+                        && let Ok(bytes) = msg.to_bytes()
                     {
-                        let _ = tx.send(PairControlMsg::Tier1Patch(msg.to_bytes()));
+                        let _ = tx.send(PairControlMsg::Tier1Patch(bytes));
                     }
                     let status = HotPatchMsg::DevStatus {
                         message: format!(

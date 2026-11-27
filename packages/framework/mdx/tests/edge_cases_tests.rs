@@ -116,7 +116,7 @@ fn nvs2_query_stays_sub_millisecond_on_100_page_site() {
         );
     }
     let site = compile_site(&src, &CompileOptions::default());
-    let encoded = site.search_index.encode();
+    let encoded = site.search_index.encode().unwrap();
     let decoded = SearchIndex::decode(&encoded).unwrap();
 
     // Warm one query then measure.

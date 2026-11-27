@@ -263,7 +263,9 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert_eq!(emitted.len(), 1);
     assert_eq!(emitted[0].node_id, NodeId(6));
 
-    let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }.to_bytes();
+    let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }
+        .to_bytes()
+        .unwrap();
     assert!(inst.apply_hot_patch(&patch));
     assert_eq!(inst.render(FrameId(2)), b"frame=2;counter=16");
     assert_eq!(inst.snapshot_state(), 16u32.to_le_bytes());

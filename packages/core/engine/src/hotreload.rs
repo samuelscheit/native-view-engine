@@ -88,7 +88,7 @@ pub enum HotPatchMsg {
 
 impl HotPatchMsg {
     /// Encodes this hot-patch message into compact binary `NVP1` framing.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, CodecError> {
         let mut w = ByteWriter::with_capacity(64);
         w.write_raw(&HOT_PATCH_WIRE_MAGIC);
         match self {
@@ -103,31 +103,31 @@ impl HotPatchMsg {
             } => {
                 w.write_u8(1);
                 w.write_u64(*generation);
-                let _ = w.write_str(template_id);
+                w.write_str(template_id)?;
 
-                w.write_u32(attr_updates.len() as u32);
+                w.write_len(attr_updates.len())?;
                 for (k, v) in attr_updates {
-                    let _ = w.write_str(k);
-                    let _ = w.write_str(v);
+                    w.write_str(k)?;
+                    w.write_str(v)?;
                 }
 
-                w.write_u32(text_updates.len() as u32);
+                w.write_len(text_updates.len())?;
                 for (idx, text) in text_updates {
-                    w.write_u32(*idx as u32);
-                    let _ = w.write_str(text);
+                    w.write_len(*idx)?;
+                    w.write_str(text)?;
                 }
 
-                let _ = w.write_opt(target_test_id.as_deref(), ByteWriter::write_str);
+                w.write_opt(target_test_id.as_deref(), ByteWriter::write_str)?;
 
-                w.write_u32(node_path.len() as u32);
+                w.write_len(node_path.len())?;
                 for &step in node_path {
-                    w.write_u32(step as u32);
+                    w.write_len(step)?;
                 }
 
-                w.write_u32(text_replacements.len() as u32);
+                w.write_len(text_replacements.len())?;
                 for (old_text, new_text) in text_replacements {
-                    let _ = w.write_str(old_text);
-                    let _ = w.write_str(new_text);
+                    w.write_str(old_text)?;
+                    w.write_str(new_text)?;
                 }
             }
             Self::DylibReload {
@@ -137,7 +137,7 @@ impl HotPatchMsg {
             } => {
                 w.write_u8(2);
                 w.write_u64(*generation);
-                let _ = w.write_str(dylib_path);
+                w.write_str(dylib_path)?;
                 w.write_u64(*build_ms);
             }
             Self::DevStatus {
@@ -145,11 +145,11 @@ impl HotPatchMsg {
                 latency_ms,
             } => {
                 w.write_u8(3);
-                let _ = w.write_str(message);
+                w.write_str(message)?;
                 w.write_u64(*latency_ms);
             }
         }
-        w.into_bytes()
+        Ok(w.into_bytes())
     }
 
     /// Decodes a compact binary `NVP1` hot-patch frame.
@@ -251,7 +251,7 @@ mod tests {
         ];
 
         for msg in &cases {
-            let bin = msg.to_bytes();
+            let bin = msg.to_bytes().unwrap();
             assert!(bin.starts_with(&HOT_PATCH_WIRE_MAGIC));
             assert_eq!(HotPatchMsg::from_bytes(&bin).unwrap(), *msg);
             for cut in 0..bin.len() {

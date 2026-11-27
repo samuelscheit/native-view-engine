@@ -231,7 +231,7 @@ impl NveCrdtDelta {
                 encode_record(rec, w)?;
                 let body_len = w.len() - body_start;
                 check_limit("record_bytes", body_len, MAX_FIELD_BYTES)?;
-                w.patch_u32(len_pos, body_len as u32);
+                w.patch_u32(len_pos, body_len as u32)?;
             }
 
             check_limit("wire_bytes", w.len() + 8, MAX_WIRE_BYTES)?;

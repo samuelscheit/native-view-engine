@@ -3135,6 +3135,7 @@ name = "nve-svg"
 version = "0.1.0"
 dependencies = [
  "nve-abi",
+ "nve-codec",
  "nve-hash",
  "nve-store",
 ]
@@ -3184,6 +3185,7 @@ dependencies = [
  "nve-abi",
  "nve-backend-headless",
  "nve-backend-web",
+ "nve-codec",
  "nve-components",
  "nve-dioxus",
  "nve-engine",

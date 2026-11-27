@@ -374,7 +374,7 @@ fn form_draft_store_works_with_memory_snapshot_storage_and_rejects_corruption_pl
     let mut fields = BTreeMap::new();
     fields.insert("title".into(), "Launch Notes".into());
     fields.insert("body".into(), "Binary draft".into());
-    let mut blob = encode_form_draft(&fields);
+    let mut blob = encode_form_draft(&fields).unwrap();
     assert!(blob.starts_with(b"NVE_FORM_DRAFT_V1"));
     assert_eq!(decode_form_draft(&blob), Some(fields.clone()));
     // Flip one bit -> XXH64 checksum MUST reject.

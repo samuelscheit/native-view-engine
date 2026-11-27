@@ -234,7 +234,7 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
             message: "Synced".into(),
             latency_ms: 2,
         };
-        ws.send(Message::Binary(binary_msg.to_bytes().into()))
+        ws.send(Message::Binary(binary_msg.to_bytes().unwrap().into()))
             .unwrap();
         ws.send(Message::Text(
             r#"{"type":"dev_status","message":"x","latency_ms":0}"#.into(),
@@ -242,7 +242,7 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
         .unwrap();
         ws.send(Message::Binary(b"NVP1\x03garbage".to_vec().into()))
             .unwrap();
-        ws.send(Message::Binary(status_msg.to_bytes().into()))
+        ws.send(Message::Binary(status_msg.to_bytes().unwrap().into()))
             .unwrap();
         let _ = ws.close(None);
     });

@@ -245,7 +245,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         text_replacements: vec![],
     };
     let action = session
-        .handle_hot_patch_frame(&empty_patch.to_bytes())
+        .handle_hot_patch_frame(&empty_patch.to_bytes().unwrap())
         .expect("empty template patch");
     assert_eq!(
         action,
@@ -267,7 +267,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         text_replacements: vec![],
     };
     let oob_action = session
-        .handle_hot_patch_frame(&oob_patch.to_bytes())
+        .handle_hot_patch_frame(&oob_patch.to_bytes().unwrap())
         .expect("oob patch");
     match oob_action {
         HotReloadAction::TemplatePatched {

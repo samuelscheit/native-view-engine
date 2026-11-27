@@ -106,12 +106,6 @@ pub enum SignalValueTag {
     BinValue = 7,
 }
 
-impl SignalValueTag {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        Self::from_repr(raw)
-    }
-}
 
 /// Typed value stored in one archived signal slot.
 #[derive(Debug, Clone)]

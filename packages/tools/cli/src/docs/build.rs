@@ -107,7 +107,10 @@ pub(crate) fn run_build(opts: &BuildOptions) -> Result<BuildSummary, String> {
     let has_wasm = !opts.skip_wasm;
 
     // 1. Emit binary NVS2 search index.
-    let search_bytes = site.search_index.encode();
+    let search_bytes = site
+        .search_index
+        .encode()
+        .map_err(|e| format!("failed to encode search.nvs2: {e}"))?;
     fs::write(opts.out.join("search.nvs2"), &search_bytes)
         .map_err(|e| format!("failed to write search.nvs2: {e}"))?;
 

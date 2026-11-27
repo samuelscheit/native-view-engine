@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_HAPTICS;
 use nve_host_services::{
-    pack_typed, resolve_typed, ByteReader, HostServiceHandler, HostServiceProvider, NveCodec,
-    ServiceError,
+    pack_typed, resolve_typed, CodecError, HostServiceHandler, HostServiceProvider, NveCodec,
+    NveDecode, ServiceError,
 };
 
 pub use native::NativeHaptics;
@@ -33,12 +33,6 @@ pub enum ImpactStyle {
     Rigid = 5,
 }
 
-impl ImpactStyle {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        Self::from_repr(raw)
-    }
-}
-
 /// Notification feedback style for [`HapticsClient::notification`].
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveCodec)]
@@ -47,12 +41,6 @@ pub enum NotificationHaptic {
     Success = 1,
     Warning = 2,
     Error = 3,
-}
-
-impl NotificationHaptic {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        Self::from_repr(raw)
-    }
 }
 
 /// Recorded haptic trigger captured by [`MemoryHaptics`] for test assertions.
@@ -68,11 +56,12 @@ pub fn encode_impact_request(style: ImpactStyle) -> [u8; 1] {
 }
 
 pub fn decode_impact_request(bytes: &[u8]) -> Result<ImpactStyle, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let raw = r.read_u8()?;
-    r.finish()?;
-    ImpactStyle::from_u8(raw)
-        .ok_or_else(|| ServiceError::InvalidArg(format!("invalid ImpactStyle {raw}")))
+    ImpactStyle::decode_exact(bytes).map_err(|err| match err {
+        CodecError::BadEnum { raw, .. } => {
+            ServiceError::InvalidArg(format!("invalid ImpactStyle {raw}"))
+        }
+        other => ServiceError::from(other),
+    })
 }
 
 pub fn encode_notification_haptic_request(kind: NotificationHaptic) -> [u8; 1] {
@@ -80,11 +69,12 @@ pub fn encode_notification_haptic_request(kind: NotificationHaptic) -> [u8; 1] {
 }
 
 pub fn decode_notification_haptic_request(bytes: &[u8]) -> Result<NotificationHaptic, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let raw = r.read_u8()?;
-    r.finish()?;
-    NotificationHaptic::from_u8(raw)
-        .ok_or_else(|| ServiceError::InvalidArg(format!("invalid NotificationHaptic {raw}")))
+    NotificationHaptic::decode_exact(bytes).map_err(|err| match err {
+        CodecError::BadEnum { raw, .. } => {
+            ServiceError::InvalidArg(format!("invalid NotificationHaptic {raw}"))
+        }
+        other => ServiceError::from(other),
+    })
 }
 
 /// Direct typed in-process backend for [`SERVICE_HAPTICS`].

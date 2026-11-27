@@ -198,7 +198,7 @@ pub unsafe extern "C" fn nve_wire_client_send_datagram(
         if client.is_null() || (payload_len > 0 && payload.is_null()) {
             return NVE_WIRE_ERR_INVALID_ARG;
         }
-        let Ok(wire_kind) = NveWireKind::from_u8(kind) else {
+        let Some(wire_kind) = NveWireKind::from_repr(kind) else {
             return NVE_WIRE_ERR_INVALID_ARG;
         };
         // SAFETY: Valid handle & slice.

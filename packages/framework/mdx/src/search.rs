@@ -174,7 +174,7 @@ impl SearchIndex {
     }
 
     /// Encode this index into the compact little-endian `NVS2` binary format with XXH64 trailer.
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>, nve_codec::CodecError> {
         crate::search_codec::encode_index(self)
     }
 

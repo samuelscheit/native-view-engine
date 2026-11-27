@@ -7,7 +7,7 @@
 use std::fmt;
 
 use nve_abi::xxh64;
-use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec};
+use nve_codec::{ByteReader, ByteWriter, CodecError, NveCodec, SliceWriter};
 
 /// 2-byte ASCII magic identifying `NveWireFrame` v2 packets (`"NW"`).
 pub const NVE_WIRE_MAGIC: [u8; 2] = *b"NW";
@@ -51,15 +51,6 @@ pub enum NveWireChannel {
     Presence = 5,
 }
 
-impl NveWireChannel {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
-        match Self::from_repr(raw) {
-            Some(ch) => Ok(ch),
-            None => Err(NveWireError::UnknownChannel(raw)),
-        }
-    }
-}
 
 /// Frame message kind discriminator for `NveWireFrame` v2.
 #[repr(u8)]
@@ -91,14 +82,6 @@ pub enum NveWireKind {
 }
 
 impl NveWireKind {
-    #[inline]
-    pub const fn from_u8(raw: u8) -> Result<Self, NveWireError> {
-        match Self::from_repr(raw) {
-            Some(k) => Ok(k),
-            None => Err(NveWireError::UnknownKind(raw)),
-        }
-    }
-
     /// Default logical channel associated with this frame kind.
     #[inline]
     pub const fn default_channel(self) -> NveWireChannel {
@@ -219,18 +202,26 @@ impl NveWireHeader {
             }
     }
 
-    /// Serializes the 16-byte little-endian header.
+    #[inline]
+    fn write_slice(&self, dst: &mut [u8; NVE_WIRE_HEADER_SIZE]) -> Result<(), CodecError> {
+        let mut w = SliceWriter::new(dst);
+        w.write_raw(&NVE_WIRE_MAGIC)?;
+        w.write_u8(NVE_WIRE_VERSION)?;
+        w.write_u8(self.channel as u8)?;
+        w.write_u8(self.kind as u8)?;
+        w.write_u8(self.flags)?;
+        w.write_zeroes(2)?;
+        w.write_u32(self.sequence)?;
+        w.write_u32(self.payload_len)?;
+        w.finish()
+    }
+
+    /// Serializes the 16-byte little-endian header with zero heap allocation.
     #[inline]
     pub fn to_bytes(&self) -> [u8; NVE_WIRE_HEADER_SIZE] {
         let mut out = [0u8; NVE_WIRE_HEADER_SIZE];
-        out[0..2].copy_from_slice(&NVE_WIRE_MAGIC);
-        out[2] = NVE_WIRE_VERSION;
-        out[3] = self.channel as u8;
-        out[4] = self.kind as u8;
-        out[5] = self.flags;
-        out[6..8].copy_from_slice(&0u16.to_le_bytes());
-        out[8..12].copy_from_slice(&self.sequence.to_le_bytes());
-        out[12..16].copy_from_slice(&self.payload_len.to_le_bytes());
+        let res = self.write_slice(&mut out);
+        debug_assert!(res.is_ok());
         out
     }
 
@@ -263,8 +254,11 @@ impl NveWireHeader {
         if version != NVE_WIRE_VERSION {
             return Err(NveWireError::UnsupportedVersion(version));
         }
-        let channel = NveWireChannel::from_u8(r.read_u8()?)?;
-        let kind = NveWireKind::from_u8(r.read_u8()?)?;
+        let raw_channel = r.read_u8()?;
+        let channel =
+            NveWireChannel::from_repr(raw_channel).ok_or(NveWireError::UnknownChannel(raw_channel))?;
+        let raw_kind = r.read_u8()?;
+        let kind = NveWireKind::from_repr(raw_kind).ok_or(NveWireError::UnknownKind(raw_kind))?;
         let flags = r.read_u8()?;
         let reserved = r.read_u16()?;
         if reserved != 0 {

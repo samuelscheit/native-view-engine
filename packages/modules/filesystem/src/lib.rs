@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 pub use nve_abi::SERVICE_FILESYSTEM;
 use nve_host_services::{
-    pack_typed, resolve_typed, ByteReader, ByteWriter, HostServiceHandler, HostServiceProvider,
-    NveCodec, NveDecode, NveEncode, ServiceError, MAX_PAYLOAD_BYTES, MAX_SEQ_ITEMS,
+    pack_typed, resolve_typed, ByteReader, ByteWriter, CodecError, HostServiceHandler,
+    HostServiceProvider, NveCodec, NveDecode, NveEncode, ServiceError, MAX_PAYLOAD_BYTES,
+    MAX_SEQ_ITEMS,
 };
 
 pub use native::{native_standard_path, NativeFilesystem};
@@ -34,11 +35,6 @@ pub enum StandardPathKind {
     Downloads = 6,
 }
 
-impl StandardPathKind {
-    pub const fn from_u8(raw: u8) -> Option<Self> {
-        Self::from_repr(raw)
-    }
-}
 
 /// Extension filter displayed by native open/save file dialogs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,11 +79,12 @@ pub fn encode_standard_path_request(kind: StandardPathKind) -> Vec<u8> {
 }
 
 pub fn decode_standard_path_request(bytes: &[u8]) -> Result<StandardPathKind, ServiceError> {
-    let mut r = ByteReader::new(bytes);
-    let raw = r.read_u8()?;
-    r.finish()?;
-    StandardPathKind::from_u8(raw)
-        .ok_or_else(|| ServiceError::InvalidArg(format!("unknown StandardPathKind {raw}")))
+    StandardPathKind::decode_exact(bytes).map_err(|err| match err {
+        CodecError::BadEnum { raw, .. } => {
+            ServiceError::InvalidArg(format!("unknown StandardPathKind {raw}"))
+        }
+        other => ServiceError::from(other),
+    })
 }
 
 pub fn encode_standard_path_response(path: &str) -> Result<Vec<u8>, ServiceError> {

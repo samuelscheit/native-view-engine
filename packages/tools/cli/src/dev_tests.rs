@@ -39,7 +39,10 @@ fn hot_reload_helpers_cover_platform_paths_and_filters() {
     )));
 
     let msg = make_dylib_reload_msg(3, &dylib, 180);
-    assert_eq!(HotPatchMsg::from_bytes(&msg.to_bytes()).unwrap(), msg);
+    assert_eq!(
+        HotPatchMsg::from_bytes(&msg.to_bytes().unwrap()).unwrap(),
+        msg
+    );
 
     use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
     assert!(should_trigger_rebuild(&notify::EventKind::Create(

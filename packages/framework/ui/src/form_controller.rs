@@ -301,8 +301,9 @@ impl FormController {
             self.restored_draft = false;
             return;
         }
-        let encoded = encode_form_draft(&self.field_values());
-        if encoded.len() <= self.max_draft_bytes {
+        if let Ok(encoded) = encode_form_draft(&self.field_values())
+            && encoded.len() <= self.max_draft_bytes
+        {
             let _ = self.storage.save_draft(&key, &encoded);
         }
     }

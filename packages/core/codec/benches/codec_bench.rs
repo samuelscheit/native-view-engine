@@ -7,8 +7,8 @@ fn main() {}
 mod native {
     use std::hint::black_box;
 
-    use criterion::{criterion_group, Criterion};
-    use nve_codec::{ByteReader, ByteWriter, NveCodec, NveDecode, NveEncode};
+    use criterion::{criterion_group, Criterion, Throughput};
+    use nve_codec::{ByteReader, ByteWriter, NveCodec, NveDecode, NveEncode, SliceWriter};
 
     #[repr(u8)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, NveCodec)]
@@ -39,7 +39,13 @@ mod native {
             active: true,
         };
 
-        c.bench_function("codec_small_struct_reused_roundtrip", |b| {
+        w.clear();
+        sample.encode(&mut w).expect("encode");
+        let small_bytes = w.len() as u64;
+
+        let mut g_small = c.benchmark_group("codec_small");
+        g_small.throughput(Throughput::Bytes(small_bytes));
+        g_small.bench_function("struct_reused_roundtrip", |b| {
             b.iter(|| {
                 w.clear();
                 sample.encode(&mut w).expect("encode");
@@ -49,6 +55,25 @@ mod native {
                 black_box(dec)
             });
         });
+        g_small.bench_function("slice_writer_40b_header", |b| {
+            let mut dst = [0u8; 40];
+            b.iter(|| {
+                let mut sw = SliceWriter::new(black_box(&mut dst));
+                sw.write_raw(b"NVCF").expect("magic");
+                sw.write_u8(1).expect("v");
+                sw.write_u8(0).expect("fmt");
+                sw.write_u16(90).expect("rot");
+                sw.write_u32(1920).expect("w");
+                sw.write_u32(1080).expect("h");
+                sw.write_u32(7680).expect("stride");
+                sw.write_u32(0).expect("res");
+                sw.write_u64(123_456_789).expect("ts");
+                sw.write_u64(42).expect("handle");
+                sw.finish().expect("finish");
+                black_box(dst[39])
+            });
+        });
+        g_small.finish();
 
         let batch: Vec<BenchRecord> = (0..128)
             .map(|i| BenchRecord {
@@ -61,8 +86,15 @@ mod native {
             })
             .collect();
         let mut batch_buf = ByteWriter::with_capacity(8192);
+        batch_buf.write_len(batch.len()).expect("len");
+        for item in &batch {
+            item.encode(&mut batch_buf).expect("encode");
+        }
+        let batch_bytes = batch_buf.len() as u64;
 
-        c.bench_function("codec_realistic_128_records_roundtrip", |b| {
+        let mut g_batch = c.benchmark_group("codec_realistic");
+        g_batch.throughput(Throughput::Bytes(batch_bytes));
+        g_batch.bench_function("128_records_roundtrip", |b| {
             b.iter(|| {
                 batch_buf.clear();
                 batch_buf.write_len(batch.len()).expect("len");
@@ -80,6 +112,41 @@ mod native {
                 black_box(acc)
             });
         });
+        g_batch.finish();
+
+        // String & byte-slice throughput benchmark (64 strings + 4 KiB blob).
+        let strings: Vec<&str> = (0..64).map(|_| "nve-codec-utf8-throughput-sample").collect();
+        let blob = vec![0xABu8; 4096];
+        let mut str_buf = ByteWriter::with_capacity(8192);
+        str_buf.write_len(strings.len()).expect("len");
+        for s in &strings {
+            str_buf.write_str(s).expect("str");
+        }
+        str_buf.write_bytes(&blob).expect("blob");
+        let str_bytes = str_buf.len() as u64;
+
+        let mut g_str = c.benchmark_group("codec_slices_strings");
+        g_str.throughput(Throughput::Bytes(str_bytes));
+        g_str.bench_function("64_strings_and_4k_blob_roundtrip", |b| {
+            b.iter(|| {
+                str_buf.clear();
+                str_buf.write_len(strings.len()).expect("len");
+                for s in black_box(&strings) {
+                    str_buf.write_str(s).expect("str");
+                }
+                str_buf.write_bytes(black_box(&blob)).expect("blob");
+                let mut r = ByteReader::new(black_box(str_buf.as_slice()));
+                let n = r.read_len(1024, 4).expect("len");
+                let mut total = 0usize;
+                for _ in 0..n {
+                    total += r.read_str(256).expect("str").len();
+                }
+                total += r.read_bytes(8192).expect("blob").len();
+                r.finish().expect("finish");
+                black_box(total)
+            });
+        });
+        g_str.finish();
     }
 
     criterion_group!(benches, bench_codec);

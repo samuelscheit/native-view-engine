@@ -47,10 +47,6 @@ impl ImageResizeMode {
         self as u8
     }
 
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        Self::from_repr(v)
-    }
-
     pub fn parse(raw: &str) -> Option<Self> {
         let s = raw.trim();
         if s.eq_ignore_ascii_case("cover") {
@@ -86,11 +82,6 @@ pub(super) enum DrawOpcode {
     RestoreClip = 8,
 }
 
-impl DrawOpcode {
-    pub(super) fn from_u8(v: u8) -> Result<Self, DrawListError> {
-        Self::from_repr(v).ok_or(DrawListError::UnknownOpcode(v))
-    }
-}
 
 /// Typed vector drawing operation encoded inside an `NVE_DRAW1` binary draw list.
 #[derive(Debug, Clone, PartialEq)]

@@ -10,6 +10,7 @@ use std::path::Path;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use nve_abi::xxh64;
+use nve_codec::{ByteReader, ByteWriter, CodecError, DEFAULT_MAX_BYTES, DEFAULT_MAX_ITEMS};
 use nve_engine::{NativeStateStore, StateStoreConfig};
 
 pub use crate::form_controller::FormController;
@@ -58,23 +59,19 @@ impl fmt::Display for FormDraftError {
 impl std::error::Error for FormDraftError {}
 
 /// Encodes `fields` into a compact, binary FFI, XXH64-checksummed `NVE_FORM_DRAFT_V1` binary blob.
-pub fn encode_form_draft(fields: &BTreeMap<String, String>) -> Vec<u8> {
+pub fn encode_form_draft(fields: &BTreeMap<String, String>) -> Result<Vec<u8>, CodecError> {
     let payload_hint: usize = fields.iter().map(|(k, v)| 8 + k.len() + v.len()).sum();
-    let mut out = Vec::with_capacity(FORM_DRAFT_MAGIC.len() + 8 + payload_hint + 8);
-    out.extend_from_slice(FORM_DRAFT_MAGIC);
-    out.extend_from_slice(&FORM_DRAFT_SCHEMA_VERSION.to_le_bytes());
-    out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+    let mut w = ByteWriter::with_capacity(FORM_DRAFT_MAGIC.len() + 8 + payload_hint + 8);
+    w.write_raw(FORM_DRAFT_MAGIC);
+    w.write_u32(FORM_DRAFT_SCHEMA_VERSION);
+    w.write_len(fields.len())?;
     for (k, v) in fields {
-        let kb = k.as_bytes();
-        let vb = v.as_bytes();
-        out.extend_from_slice(&(kb.len() as u32).to_le_bytes());
-        out.extend_from_slice(kb);
-        out.extend_from_slice(&(vb.len() as u32).to_le_bytes());
-        out.extend_from_slice(vb);
+        w.write_str(k)?;
+        w.write_str(v)?;
     }
-    let checksum = xxh64(&out, 0);
-    out.extend_from_slice(&checksum.to_le_bytes());
-    out
+    let checksum = xxh64(w.as_slice(), 0);
+    w.write_u64(checksum);
+    Ok(w.into_bytes())
 }
 
 /// Strictly decodes and verifies an `NVE_FORM_DRAFT_V1` binary draft blob.
@@ -84,53 +81,25 @@ pub fn decode_form_draft(bytes: &[u8]) -> Option<BTreeMap<String, String>> {
         return None;
     }
     let (body, crc_bytes) = bytes.split_at(bytes.len() - 8);
-    let expected_crc = u64::from_le_bytes(crc_bytes.try_into().ok()?);
+    let expected_crc = ByteReader::new(crc_bytes).read_u64().ok()?;
     if xxh64(body, 0) != expected_crc {
         return None;
     }
-    if !body.starts_with(FORM_DRAFT_MAGIC) {
-        return None;
-    }
-    let mut pos = FORM_DRAFT_MAGIC.len();
-    let version = read_u32(body, &mut pos)?;
+    let mut r = ByteReader::new(body);
+    r.expect_magic(FORM_DRAFT_MAGIC).ok()?;
+    let version = r.read_u32().ok()?;
     if version != FORM_DRAFT_SCHEMA_VERSION {
         return None;
     }
-    let count = read_u32(body, &mut pos)? as usize;
+    let count = r.read_len(DEFAULT_MAX_ITEMS, 8).ok()?;
     let mut fields = BTreeMap::new();
     for _ in 0..count {
-        let key = read_utf8_str(body, &mut pos)?;
-        let val = read_utf8_str(body, &mut pos)?;
+        let key = r.read_string(DEFAULT_MAX_BYTES).ok()?;
+        let val = r.read_string(DEFAULT_MAX_BYTES).ok()?;
         fields.insert(key, val);
     }
-    if pos != body.len() {
-        return None;
-    }
+    r.finish().ok()?;
     Some(fields)
-}
-
-#[inline]
-fn read_u32(buf: &[u8], pos: &mut usize) -> Option<u32> {
-    let end = pos.checked_add(4)?;
-    let slice = buf.get(*pos..end)?;
-    *pos = end;
-    Some(u32::from_le_bytes(slice.try_into().ok()?))
-}
-
-fn read_utf8_str(buf: &[u8], pos: &mut usize) -> Option<String> {
-    let len = read_u32(buf, pos)? as usize;
-    let end = pos.checked_add(len)?;
-    let slice = buf.get(*pos..end)?;
-    *pos = end;
-    std::str::from_utf8(slice).ok().map(str::to_owned)
-}
-
-fn read_byte_vec(buf: &[u8], pos: &mut usize) -> Option<Vec<u8>> {
-    let len = read_u32(buf, pos)? as usize;
-    let end = pos.checked_add(len)?;
-    let slice = buf.get(*pos..end)?;
-    *pos = end;
-    Some(slice.to_vec())
 }
 
 /// Pluggable persistence backend for [`FormDraftStore`] and [`FormController`].
@@ -304,7 +273,8 @@ impl NativeMmapFormDraftStorage {
                 .map_err(|e| FormDraftError::Persistence(e.to_string()))?;
             return Ok(());
         }
-        let encoded = encode_draft_table(table);
+        let encoded = encode_draft_table(table)
+            .map_err(|e| FormDraftError::Persistence(e.to_string()))?;
         self.store
             .save(&encoded)
             .map_err(|e| FormDraftError::Persistence(e.to_string()))?;
@@ -331,35 +301,28 @@ impl FormDraftStorage for NativeMmapFormDraftStorage {
     }
 }
 
-fn encode_draft_table(table: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(64 + table.len() * 64);
-    out.extend_from_slice(FORM_DRAFT_TABLE_MAGIC);
-    out.extend_from_slice(&(table.len() as u32).to_le_bytes());
+fn encode_draft_table(table: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, CodecError> {
+    let mut w = ByteWriter::with_capacity(64 + table.len() * 64);
+    w.write_raw(FORM_DRAFT_TABLE_MAGIC);
+    w.write_len(table.len())?;
     for (k, blob) in table {
-        let kb = k.as_bytes();
-        out.extend_from_slice(&(kb.len() as u32).to_le_bytes());
-        out.extend_from_slice(kb);
-        out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
-        out.extend_from_slice(blob);
+        w.write_str(k)?;
+        w.write_bytes(blob)?;
     }
-    out
+    Ok(w.into_bytes())
 }
 
 fn decode_draft_table(bytes: &[u8]) -> Option<BTreeMap<String, Vec<u8>>> {
-    if !bytes.starts_with(FORM_DRAFT_TABLE_MAGIC) {
-        return None;
-    }
-    let mut pos = FORM_DRAFT_TABLE_MAGIC.len();
-    let count = read_u32(bytes, &mut pos)? as usize;
+    let mut r = ByteReader::new(bytes);
+    r.expect_magic(FORM_DRAFT_TABLE_MAGIC).ok()?;
+    let count = r.read_len(DEFAULT_MAX_ITEMS, 8).ok()?;
     let mut table = BTreeMap::new();
     for _ in 0..count {
-        let key = read_utf8_str(bytes, &mut pos)?;
-        let blob = read_byte_vec(bytes, &mut pos)?;
+        let key = r.read_string(DEFAULT_MAX_BYTES).ok()?;
+        let blob = r.read_bytes(DEFAULT_MAX_BYTES).ok()?.to_vec();
         table.insert(key, blob);
     }
-    if pos != bytes.len() {
-        return None;
-    }
+    r.finish().ok()?;
     Some(table)
 }
 
@@ -395,7 +358,10 @@ impl<S: FormDraftStorage> FormDraftStore<S> {
         persist_key: &str,
         fields: &BTreeMap<String, String>,
     ) -> Result<usize, FormDraftError> {
-        let encoded = encode_form_draft(fields);
+        let encoded = encode_form_draft(fields).map_err(|_| FormDraftError::SizeLimitExceeded {
+            bytes: usize::MAX,
+            limit: self.max_bytes,
+        })?;
         if encoded.len() > self.max_bytes {
             return Err(FormDraftError::SizeLimitExceeded {
                 bytes: encoded.len(),

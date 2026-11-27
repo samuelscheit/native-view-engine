@@ -269,7 +269,9 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         node_path: vec![],
         text_replacements: vec![],
     };
-    let act1 = session.handle_hot_patch_frame(&tpl.to_bytes()).unwrap();
+    let act1 = session
+        .handle_hot_patch_frame(&tpl.to_bytes().unwrap())
+        .unwrap();
     match act1 {
         HotReloadAction::TemplatePatched {
             generation,
@@ -297,7 +299,9 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         dylib_path: "target/debug/libnve_example_kitchen_sink.dylib".into(),
         build_ms: 215,
     };
-    let act2 = session.handle_hot_patch_frame(&reload.to_bytes()).unwrap();
+    let act2 = session
+        .handle_hot_patch_frame(&reload.to_bytes().unwrap())
+        .unwrap();
     assert_eq!(
         act2,
         HotReloadAction::ReloadPage {
@@ -312,7 +316,9 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         message: "watching examples/kitchen-sink/src".into(),
         latency_ms: 12,
     };
-    let act3 = session.handle_hot_patch_frame(&status.to_bytes()).unwrap();
+    let act3 = session
+        .handle_hot_patch_frame(&status.to_bytes().unwrap())
+        .unwrap();
     assert_eq!(
         act3,
         HotReloadAction::DevStatus {
@@ -326,7 +332,7 @@ fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
         .handle_hot_patch_frame(br#"{"type":"dev_status"}"#)
         .is_err());
     assert!(session.handle_hot_patch_frame(b"NVP1\xFF").is_err());
-    let frame = status.to_bytes();
+    let frame = status.to_bytes().unwrap();
     assert!(session
         .handle_hot_patch_frame(&frame[..frame.len() - 1])
         .is_err());

@@ -27,6 +27,7 @@ pub enum SearchIndexError {
     UnexpectedEof,
     InvalidUtf8,
     InvalidDocId { doc_id: u32, doc_count: u32 },
+    NonZeroReserved(u16),
     TrailingBytes(usize),
 }
 
@@ -35,6 +36,7 @@ impl From<CodecError> for SearchIndexError {
     fn from(err: CodecError) -> Self {
         match err {
             CodecError::InvalidUtf8 => Self::InvalidUtf8,
+            CodecError::NonZeroReserved(v) => Self::NonZeroReserved(v as u16),
             CodecError::TrailingBytes(n) => Self::TrailingBytes(n),
             _ => Self::UnexpectedEof,
         }
@@ -56,6 +58,7 @@ impl fmt::Display for SearchIndexError {
             Self::InvalidDocId { doc_id, doc_count } => {
                 write!(f, "posting doc_id {doc_id} out of range (doc_count={doc_count})")
             }
+            Self::NonZeroReserved(v) => write!(f, "NVS2 reserved header bytes must be 0, got {v}"),
             Self::TrailingBytes(n) => write!(f, "NVS2 buffer has {n} unexpected trailing bytes"),
         }
     }
@@ -63,41 +66,38 @@ impl fmt::Display for SearchIndexError {
 
 impl std::error::Error for SearchIndexError {}
 
-pub(crate) fn encode_index(index: &SearchIndex) -> Vec<u8> {
+pub(crate) fn encode_index(index: &SearchIndex) -> Result<Vec<u8>, CodecError> {
     let mut w = ByteWriter::with_capacity(
         HEADER_BYTES + index.docs.len() * 64 + index.tokens.len() * 16 + CHECKSUM_BYTES,
     );
     w.write_raw(NVS2_MAGIC);
     w.write_u16(NVS2_VERSION);
     w.write_u16(0);
-    w.write_u32(index.docs.len() as u32);
-    w.write_u32(index.tokens.len() as u32);
-    w.write_u32(index.trigrams.len() as u32);
+    w.write_len(index.docs.len())?;
+    w.write_len(index.tokens.len())?;
+    w.write_len(index.trigrams.len())?;
 
     for doc in &index.docs {
-        let _ = w.write_str(&doc.route);
-        let _ = w.write_str(&doc.title);
-        let _ = w.write_str(&doc.section);
-        let _ = w.write_str(&doc.anchor);
-        let _ = w.write_str(&doc.excerpt);
+        w.write_str(&doc.route)?;
+        w.write_str(&doc.title)?;
+        w.write_str(&doc.section)?;
+        w.write_str(&doc.anchor)?;
+        w.write_str(&doc.excerpt)?;
     }
 
     for (term, postings) in &index.tokens {
-        let _ = w.write_str(term);
-        write_postings(&mut w, postings);
+        w.write_str(term)?;
+        write_postings(&mut w, postings)?;
     }
 
     for (tri, postings) in &index.trigrams {
-        let tri_bytes = tri.as_bytes();
-        let len = tri_bytes.len().min(u8::MAX as usize);
-        w.write_u8(len as u8);
-        w.write_raw(&tri_bytes[..len]);
-        write_postings(&mut w, postings);
+        w.write_str_u8(tri)?;
+        write_postings(&mut w, postings)?;
     }
 
     let checksum = xxh64(w.as_slice(), 0);
     w.write_u64(checksum);
-    w.into_bytes()
+    Ok(w.into_bytes())
 }
 
 pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError> {
@@ -116,7 +116,7 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
     if version != NVS2_VERSION {
         return Err(SearchIndexError::UnsupportedVersion(version));
     }
-    let _reserved = r.read_u16()?;
+    r.expect_zero(2)?;
 
     let expected_ck = ByteReader::new(&bytes[payload_len..]).read_u64()?;
     let actual_ck = xxh64(payload, 0);
@@ -174,12 +174,13 @@ pub(crate) fn decode_index(bytes: &[u8]) -> Result<SearchIndex, SearchIndexError
     })
 }
 
-fn write_postings(w: &mut ByteWriter, postings: &[Posting]) {
-    w.write_u32(postings.len() as u32);
+fn write_postings(w: &mut ByteWriter, postings: &[Posting]) -> Result<(), CodecError> {
+    w.write_len(postings.len())?;
     for p in postings {
         w.write_u32(p.doc_id);
         w.write_u16(p.weight_x10);
     }
+    Ok(())
 }
 
 fn read_postings(r: &mut ByteReader<'_>, doc_count: u32) -> Result<Vec<Posting>, SearchIndexError> {

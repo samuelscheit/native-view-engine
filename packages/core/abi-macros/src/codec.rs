@@ -5,7 +5,7 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 
 use crate::emit::quote_str;
 use crate::parse::{
-    expect_ident, is_delim, is_punct, parse_string_literal, parse_usize_literal, skip_vis,
+    expect_ident, is_delim, is_punct, parse_i128_literal, parse_string_literal, skip_vis,
 };
 
 const DEFAULT_CRATE_PATH: &str = "::nve_codec";
@@ -25,7 +25,8 @@ enum VariantFields {
 
 struct Variant {
     ident: String,
-    tag: i64,
+    tag: i128,
+    has_attr_tag: bool,
     fields: VariantFields,
 }
 
@@ -71,8 +72,15 @@ fn parse_item_attrs(
                     for tt in args {
                         if let TokenTree::Ident(id) = tt {
                             let s = id.to_string();
-                            if matches!(s.as_str(), "u8" | "u16" | "u32" | "i32") {
-                                repr = Some(s);
+                            match s.as_str() {
+                                "u8" | "u16" | "u32" | "i32" => repr = Some(s),
+                                "i8" | "i16" | "u64" | "i64" | "u128" | "i128" | "isize"
+                                | "usize" => {
+                                    return Err(format!(
+                                        "#[derive(NveCodec)] does not support `#[repr({s})]` (supported integer reprs: u8, u16, u32, i32)"
+                                    ));
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -106,7 +114,7 @@ fn parse_item_attrs(
     Ok((crate_path, repr))
 }
 
-fn parse_variant_tag_attr(tokens: &[TokenTree], pos: &mut usize) -> Result<Option<i64>, String> {
+fn parse_variant_tag_attr(tokens: &[TokenTree], pos: &mut usize) -> Result<Option<i128>, String> {
     let mut tag = None;
     while is_punct(tokens, *pos, '#') {
         let Some(TokenTree::Group(g)) = tokens.get(*pos + 1).filter(|t| is_delim(t, Delimiter::Bracket)) else {
@@ -135,8 +143,7 @@ fn parse_variant_tag_attr(tokens: &[TokenTree], pos: &mut usize) -> Result<Optio
                 i += 1;
                 match k.as_str() {
                     "tag" => {
-                        let v = parse_usize_literal(&lit.to_string())? as i64;
-                        tag = Some(if neg { -v } else { v });
+                        tag = Some(parse_i128_literal(&lit.to_string(), neg)?);
                     }
                     other => return Err(format!("unknown #[nve_codec] variant key `{other}`")),
                 }
@@ -220,7 +227,7 @@ fn parse_tuple_fields(stream: TokenStream) -> Result<Vec<String>, String> {
 
 fn parse_variants(stream: TokenStream, enum_name: &str) -> Result<Vec<Variant>, String> {
     let tokens: Vec<TokenTree> = stream.into_iter().collect();
-    let (mut pos, mut out, mut next_tag) = (0, Vec::new(), 0i64);
+    let (mut pos, mut out, mut next_tag) = (0, Vec::new(), Some(0i128));
     while pos < tokens.len() {
         let attr_tag = parse_variant_tag_attr(&tokens, &mut pos)?;
         if pos >= tokens.len() {
@@ -252,17 +259,26 @@ fn parse_variants(stream: TokenStream, enum_name: &str) -> Result<Vec<Variant>, 
                 ));
             };
             pos += 1;
-            let v = parse_usize_literal(&lit.to_string())? as i64;
-            Some(if neg { -v } else { v })
+            Some(parse_i128_literal(&lit.to_string(), neg)?)
         } else {
             None
         };
-        let tag = attr_tag.or(disc_tag).unwrap_or(next_tag);
-        next_tag = tag + 1;
+        let tag = match attr_tag.or(disc_tag) {
+            Some(t) => t,
+            None => next_tag.ok_or_else(|| {
+                format!("#[derive(NveCodec)] enum `{enum_name}::{ident}` implicit tag overflowed")
+            })?,
+        };
+        next_tag = tag.checked_add(1);
         if is_punct(&tokens, pos, ',') {
             pos += 1;
         }
-        out.push(Variant { ident, tag, fields });
+        out.push(Variant {
+            ident,
+            tag,
+            has_attr_tag: attr_tag.is_some(),
+            fields,
+        });
     }
     if out.is_empty() {
         return Err(format!("#[derive(NveCodec)] enum `{enum_name}` must have at least one variant"));
@@ -307,6 +323,11 @@ fn parse(input: TokenStream) -> Result<ParsedCodec, String> {
             let variants = parse_variants(g.stream(), &ident)?;
             let repr = repr.unwrap_or_else(|| "u8".to_owned());
             let unit_only = variants.iter().all(|v| matches!(v.fields, VariantFields::Unit));
+            if unit_only && variants.iter().any(|v| v.has_attr_tag) {
+                return Err(format!(
+                    "#[derive(NveCodec)] unit-only enum `{ident}` forbids `#[nve_codec(tag = ...)]`; use Rust discriminants (`Variant = N`) instead"
+                ));
+            }
             if !unit_only && repr != "u8" {
                 return Err(format!(
                     "#[derive(NveCodec)] data-carrying enum `{ident}` uses u8 variant tags"
@@ -316,8 +337,8 @@ fn parse(input: TokenStream) -> Result<ParsedCodec, String> {
                 let ok = match repr.as_str() {
                     "u8" => (0..=255).contains(&v.tag),
                     "u16" => (0..=65535).contains(&v.tag),
-                    "u32" => (0..=i64::from(u32::MAX)).contains(&v.tag),
-                    "i32" => (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&v.tag),
+                    "u32" => (0..=i128::from(u32::MAX)).contains(&v.tag),
+                    "i32" => (i128::from(i32::MIN)..=i128::from(i32::MAX)).contains(&v.tag),
                     _ => false,
                 };
                 if !ok {
@@ -350,8 +371,8 @@ fn emit(p: &ParsedCodec) -> String {
     let mut extra = String::new();
     let (encode_body, decode_body, min_bytes) = match &p.kind {
         ItemKind::UnitStruct => (
-            "let _ = w; ::core::result::Result::Ok(())".to_owned(),
-            "let _ = r; ::core::result::Result::Ok(Self)".to_owned(),
+            "let _ = __nve_w; ::core::result::Result::Ok(())".to_owned(),
+            "let _ = __nve_r; ::core::result::Result::Ok(Self)".to_owned(),
             "0usize".to_owned(),
         ),
         ItemKind::NamedStruct(fields) => {
@@ -359,32 +380,42 @@ fn emit(p: &ParsedCodec) -> String {
             let mut dec = String::new();
             let mut min = String::from("0usize");
             for (name, ty) in fields {
-                enc.push_str(&format!("<{ty} as {c}::NveEncode>::encode(&self.{name}, w)?;"));
-                dec.push_str(&format!("{name}: <{ty} as {c}::NveDecode>::decode(r)?,"));
+                enc.push_str(&format!("<{ty} as {c}::NveEncode>::encode(&self.{name}, __nve_w)?;"));
+                dec.push_str(&format!("{name}: <{ty} as {c}::NveDecode>::decode(__nve_r)?,"));
                 min.push_str(&format!(" + <{ty} as {c}::NveDecode>::MIN_ENCODED_BYTES"));
             }
             if fields.is_empty() {
-                enc.push_str("let _ = w;");
-                dec.push_str("let _ = r;");
+                enc.push_str("let _ = __nve_w;");
+                (
+                    format!("{enc} ::core::result::Result::Ok(())"),
+                    "let _ = __nve_r; ::core::result::Result::Ok(Self {})".to_owned(),
+                    min,
+                )
+            } else {
+                enc.push_str("::core::result::Result::Ok(())");
+                (enc, format!("::core::result::Result::Ok(Self {{ {dec} }})"), min)
             }
-            enc.push_str("::core::result::Result::Ok(())");
-            (enc, format!("::core::result::Result::Ok(Self {{ {dec} }})"), min)
         }
         ItemKind::TupleStruct(tys) => {
             let mut enc = String::new();
             let mut dec = String::new();
             let mut min = String::from("0usize");
             for (i, ty) in tys.iter().enumerate() {
-                enc.push_str(&format!("<{ty} as {c}::NveEncode>::encode(&self.{i}, w)?;"));
-                dec.push_str(&format!("<{ty} as {c}::NveDecode>::decode(r)?,"));
+                enc.push_str(&format!("<{ty} as {c}::NveEncode>::encode(&self.{i}, __nve_w)?;"));
+                dec.push_str(&format!("<{ty} as {c}::NveDecode>::decode(__nve_r)?,"));
                 min.push_str(&format!(" + <{ty} as {c}::NveDecode>::MIN_ENCODED_BYTES"));
             }
             if tys.is_empty() {
-                enc.push_str("let _ = w;");
-                dec.push_str("let _ = r;");
+                enc.push_str("let _ = __nve_w;");
+                (
+                    format!("{enc} ::core::result::Result::Ok(())"),
+                    "let _ = __nve_r; ::core::result::Result::Ok(Self())".to_owned(),
+                    min,
+                )
+            } else {
+                enc.push_str("::core::result::Result::Ok(())");
+                (enc, format!("::core::result::Result::Ok(Self({dec}))"), min)
             }
-            enc.push_str("::core::result::Result::Ok(())");
-            (enc, format!("::core::result::Result::Ok(Self({dec}))"), min)
         }
         ItemKind::Enum { repr, variants } => {
             let (read_fn, write_fn, tag_size) = repr_read_write(repr);
@@ -405,9 +436,9 @@ fn emit(p: &ParsedCodec) -> String {
                         #[inline] pub const fn from_repr(raw: {repr}) -> ::core::option::Option<Self> {{ match raw {{ {from_arms} _ => ::core::option::Option::None }} }} \
                     }}"
                 ));
-                let enc = format!("w.{write_fn}(self.to_repr()); ::core::result::Result::Ok(())");
+                let enc = format!("__nve_w.{write_fn}(self.to_repr()); ::core::result::Result::Ok(())");
                 let dec = format!(
-                    "let raw = r.{read_fn}()?; \
+                    "let raw = __nve_r.{read_fn}()?; \
                      Self::from_repr(raw).ok_or({c}::CodecError::BadEnum {{ ty: {ty_str}, raw: raw as u32 }})"
                 );
                 (enc, dec, format!("{tag_size}usize"))
@@ -419,30 +450,33 @@ fn emit(p: &ParsedCodec) -> String {
                     let t = v.tag;
                     match &v.fields {
                         VariantFields::Unit => {
-                            enc_arms.push_str(&format!("Self::{vn} => {{ w.write_u8({t}_u8); }}"));
+                            enc_arms.push_str(&format!("Self::{vn} => {{ __nve_w.write_u8({t}_u8); }}"));
                             dec_arms.push_str(&format!("{t}_u8 => ::core::result::Result::Ok(Self::{vn}),"));
                         }
                         VariantFields::Tuple(tys) => {
                             let bindings: Vec<String> = (0..tys.len()).map(|i| format!("__f{i}")).collect();
                             let bind_list = bindings.join(", ");
-                            let mut body = format!("w.write_u8({t}_u8);");
+                            let mut body = format!("__nve_w.write_u8({t}_u8);");
                             let mut dfields = String::new();
                             for (i, ty) in tys.iter().enumerate() {
-                                body.push_str(&format!("<{ty} as {c}::NveEncode>::encode(__f{i}, w)?;"));
-                                dfields.push_str(&format!("<{ty} as {c}::NveDecode>::decode(r)?,"));
+                                body.push_str(&format!("<{ty} as {c}::NveEncode>::encode(__f{i}, __nve_w)?;"));
+                                dfields.push_str(&format!("<{ty} as {c}::NveDecode>::decode(__nve_r)?,"));
                             }
                             enc_arms.push_str(&format!("Self::{vn}({bind_list}) => {{ {body} }}"));
                             dec_arms.push_str(&format!("{t}_u8 => ::core::result::Result::Ok(Self::{vn}({dfields})),"));
                         }
                         VariantFields::Named(fields) => {
-                            let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
-                            let bind_list = names.join(", ");
-                            let mut body = format!("w.write_u8({t}_u8);");
+                            let mut pats = Vec::with_capacity(fields.len());
+                            let mut body = format!("__nve_w.write_u8({t}_u8);");
                             let mut dfields = String::new();
                             for (fname, ty) in fields {
-                                body.push_str(&format!("<{ty} as {c}::NveEncode>::encode({fname}, w)?;"));
-                                dfields.push_str(&format!("{fname}: <{ty} as {c}::NveDecode>::decode(r)?,"));
+                                let bare = fname.strip_prefix("r#").unwrap_or(fname);
+                                let bind = format!("__f_{bare}");
+                                pats.push(format!("{fname}: {bind}"));
+                                body.push_str(&format!("<{ty} as {c}::NveEncode>::encode({bind}, __nve_w)?;"));
+                                dfields.push_str(&format!("{fname}: <{ty} as {c}::NveDecode>::decode(__nve_r)?,"));
                             }
+                            let bind_list = pats.join(", ");
                             enc_arms.push_str(&format!("Self::{vn} {{ {bind_list} }} => {{ {body} }}"));
                             dec_arms.push_str(&format!("{t}_u8 => ::core::result::Result::Ok(Self::{vn} {{ {dfields} }}),"));
                         }
@@ -450,7 +484,7 @@ fn emit(p: &ParsedCodec) -> String {
                 }
                 let enc = format!("match self {{ {enc_arms} }} ::core::result::Result::Ok(())");
                 let dec = format!(
-                    "match r.read_u8()? {{ {dec_arms} other => ::core::result::Result::Err({c}::CodecError::BadEnum {{ ty: {ty_str}, raw: other as u32 }}) }}"
+                    "match __nve_r.read_u8()? {{ {dec_arms} other => ::core::result::Result::Err({c}::CodecError::BadEnum {{ ty: {ty_str}, raw: other as u32 }}) }}"
                 );
                 (enc, dec, "1usize".to_owned())
             }
@@ -461,12 +495,12 @@ fn emit(p: &ParsedCodec) -> String {
         "{extra} \
          impl {c}::NveEncode for {id} {{ \
              #[inline] \
-             fn encode(&self, w: &mut {c}::ByteWriter) -> ::core::result::Result<(), {c}::CodecError> {{ {encode_body} }} \
+             fn encode(&self, __nve_w: &mut {c}::ByteWriter) -> ::core::result::Result<(), {c}::CodecError> {{ {encode_body} }} \
          }} \
          impl {c}::NveDecode for {id} {{ \
              const MIN_ENCODED_BYTES: usize = {min_bytes}; \
              #[inline] \
-             fn decode(r: &mut {c}::ByteReader<'_>) -> ::core::result::Result<Self, {c}::CodecError> {{ {decode_body} }} \
+             fn decode(__nve_r: &mut {c}::ByteReader<'_>) -> ::core::result::Result<Self, {c}::CodecError> {{ {decode_body} }} \
          }}"
     )
 }
