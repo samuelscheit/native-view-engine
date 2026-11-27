@@ -128,6 +128,7 @@ where
         Some(raw) if raw.trim_ascii().eq_ignore_ascii_case(ERROR_KIND_PROTOCOL.as_bytes()) => {
             ReplyKind::Protocol
         }
+        Some(raw) if !raw.trim_ascii().is_empty() => ReplyKind::Protocol,
         _ if (200..300).contains(&http_status) => ReplyKind::Ok,
         _ => ReplyKind::Protocol,
     };

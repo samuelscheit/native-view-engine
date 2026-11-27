@@ -6,9 +6,11 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use nve_rpc::{ProcId, Tag64};
 
+use core::task::Waker;
+
 use crate::slab::{
-    QueryMeta, QueryPayload, QuerySlotId, TagIndex, FLAG_IN_DIRTY_QUEUE, FLAG_IS_FETCHING,
-    FLAG_IS_INVALIDATED, FLAG_HYDRATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
+    QueryMeta, QueryPayload, QuerySlotId, TagIndex, FLAG_HYDRATED, FLAG_IN_DIRTY_QUEUE,
+    FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
     FLAG_SUBSCRIBED_ALL, NONE_IDX,
 };
 use crate::types::{IdentityBuildHasher, QueryHandle, QueryOptions};
@@ -27,10 +29,11 @@ pub(crate) struct CacheState {
     pub tags: TagIndex,
     pub active_slots: Vec<QuerySlotId>,
     pub dirty_slots: Vec<QuerySlotId>,
-    pub wildcard_epoch: u64,
+    pub wildcard_epoch: u32,
     pub next_mutation_id: u64,
     pub gc_cursor: usize,
     pub live_count: usize,
+    pub subscribed_all_count: usize,
     pub wake_cb: Option<WakeCallback>,
 }
 
@@ -48,6 +51,7 @@ impl CacheState {
             next_mutation_id: 1,
             gc_cursor: 0,
             live_count: 0,
+            subscribed_all_count: 0,
             wake_cb: None,
         }
     }
@@ -82,7 +86,7 @@ impl CacheState {
 
     pub(crate) fn mark_dirty(&mut self, slot: QuerySlotId) -> Option<WakeCallback> {
         let meta = &mut self.metas[slot.index()];
-        meta.data_version = meta.data_version.wrapping_add(1);
+        meta.data_version = meta.data_version.wrapping_add(1).max(1);
         if (meta.flags & FLAG_IN_DIRTY_QUEUE) == 0 {
             meta.flags |= FLAG_IN_DIRTY_QUEUE;
             self.dirty_slots.push(slot);
@@ -113,7 +117,8 @@ impl CacheState {
         };
 
         let old_head = self.key_index.get(&key_hash).copied().unwrap_or(NONE_IDX);
-        let mut flags = 0u16;
+        // Preserve `FLAG_IN_DIRTY_QUEUE` across evict+reuse so `dirty_slots.len() <= metas.len()`.
+        let mut flags = self.metas[slot.index()].flags & FLAG_IN_DIRTY_QUEUE;
         if options.refetch_on_focus {
             flags |= FLAG_REFETCH_ON_FOCUS;
         }
@@ -122,6 +127,7 @@ impl CacheState {
         }
         if overflow_all {
             flags |= FLAG_SUBSCRIBED_ALL;
+            self.subscribed_all_count += 1;
         }
 
         let mut first_tag_edge = NONE_IDX;
@@ -143,9 +149,10 @@ impl CacheState {
             first_tag_edge,
             subscriber_count: 0,
             flags,
+            optimistic_rev: 0,
         };
         let payload = &mut self.payloads[slot.index()];
-        payload.reset();
+        let _ = payload.reset();
         payload.proc_name = proc_name;
         payload.encoded_args = encoded_args;
         payload.last_inactive_ms = now_ms;
@@ -160,10 +167,13 @@ impl CacheState {
         }
     }
 
-    pub(crate) fn evict_slot(&mut self, slot: QuerySlotId) {
+    pub(crate) fn evict_slot(&mut self, slot: QuerySlotId, waiters_out: &mut Vec<Waker>) {
         let idx = slot.index();
         if self.metas[idx].is_free() || self.metas[idx].subscriber_count > 0 {
             return;
+        }
+        if (self.metas[idx].flags & FLAG_SUBSCRIBED_ALL) != 0 {
+            self.subscribed_all_count = self.subscribed_all_count.saturating_sub(1);
         }
 
         let key_hash = self.metas[idx].args_hash;
@@ -191,15 +201,23 @@ impl CacheState {
 
         let mut first_edge = self.metas[idx].first_tag_edge;
         self.tags.unlink_slot(&mut first_edge);
-        self.payloads[idx].reset();
+        waiters_out.extend(self.payloads[idx].reset());
 
+        let dirty_bit = self.metas[idx].flags & FLAG_IN_DIRTY_QUEUE;
         let next_gen = self.metas[idx].slot_gen.wrapping_add(1).max(1);
-        self.metas[idx] = QueryMeta::free(next_gen);
+        let mut free_meta = QueryMeta::free(next_gen);
+        free_meta.flags |= dirty_bit;
+        self.metas[idx] = free_meta;
         self.free_slots.push(slot);
         self.live_count = self.live_count.saturating_sub(1);
     }
 
-    pub(crate) fn invalidate_slot(&mut self, slot: QuerySlotId, active_out: &mut Vec<QueryHandle>) {
+    pub(crate) fn invalidate_slot(
+        &mut self,
+        slot: QuerySlotId,
+        active_out: &mut Vec<QueryHandle>,
+        waiters_out: &mut Vec<Waker>,
+    ) {
         let idx = slot.index();
         let meta = &mut self.metas[idx];
         if meta.is_free() {
@@ -211,9 +229,7 @@ impl CacheState {
         meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED);
         let generation = meta.slot_gen;
         let is_active = meta.subscriber_count > 0;
-        if let Some(abort) = self.payloads[idx].in_flight_abort.take() {
-            abort();
-        }
+        waiters_out.append(&mut self.payloads[idx].in_flight_waiters);
         let _ = self.mark_dirty(slot);
         if is_active {
             let handle = QueryHandle { slot, generation };
@@ -223,7 +239,13 @@ impl CacheState {
         }
     }
 
-    pub(crate) fn gc_sweep(&mut self, now_ms: u64, max_steps: usize, max_entries: usize) -> usize {
+    pub(crate) fn gc_sweep(
+        &mut self,
+        now_ms: u64,
+        max_steps: usize,
+        max_entries: usize,
+        waiters_out: &mut Vec<Waker>,
+    ) -> usize {
         if self.metas.is_empty() {
             return 0;
         }
@@ -242,7 +264,7 @@ impl CacheState {
             }
             let inactive_for = now_ms.saturating_sub(self.payloads[idx].last_inactive_ms);
             if inactive_for >= u64::from(meta.gc_time_ms) {
-                self.evict_slot(QuerySlotId(idx as u32));
+                self.evict_slot(QuerySlotId(idx as u32), waiters_out);
                 evicted += 1;
             }
         }
@@ -260,7 +282,7 @@ impl CacheState {
             }
             match oldest {
                 Some((slot, _)) => {
-                    self.evict_slot(slot);
+                    self.evict_slot(slot, waiters_out);
                     evicted += 1;
                 }
                 None => break,

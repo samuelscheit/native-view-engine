@@ -23,6 +23,7 @@ members = [
     "packages/framework/http-hyper",
     "packages/framework/http-web",
     "packages/framework/query",
+    "packages/framework/query-dioxus",
     "packages/framework/i18n",
     "packages/framework/mdx",
     "packages/framework/docs",
@@ -71,6 +72,7 @@ nve-server = { path = "packages/framework/server" }
 nve-http-hyper = { path = "packages/framework/http-hyper" }
 nve-http-web = { path = "packages/framework/http-web" }
 nve-query = { path = "packages/framework/query" }
+nve-query-dioxus = { path = "packages/framework/query-dioxus" }
 nve-i18n = { path = "packages/framework/i18n" }
 nve-mdx = { path = "packages/framework/mdx" }
 nve-docs = { path = "packages/framework/docs" }

@@ -1,0 +1,22 @@
+[package]
+name = "nve-query-dioxus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dioxus 0.7 reactive query/action hooks, dense recycled slot-signal bridge, and progressive <ActionForm<P>> for nve-query."
+
+[dependencies]
+nve-rpc = { workspace = true }
+nve-query = { workspace = true }
+nve-dioxus = { workspace = true }
+nve-ui = { workspace = true }
+bytes = { workspace = true }
+dioxus-core = { workspace = true }
+dioxus-signals = { workspace = true }
+dioxus-core-macro = { workspace = true }
+
+[dev-dependencies]
+minicbor = { workspace = true }
+nve-abi = { workspace = true }
+nve-backend-web = { workspace = true }
+nve-engine = { workspace = true }

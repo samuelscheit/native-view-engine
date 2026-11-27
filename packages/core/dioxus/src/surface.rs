@@ -114,6 +114,21 @@ impl DioxusSurface {
         self.vdom.in_scope(ScopeId::ROOT, f)
     }
 
+    /// Polls Dioxus's internal async task/effect scheduler (`VirtualDom::wait_for_work`) once
+    /// without blocking, registering `waker` if no work is immediately ready.
+    ///
+    /// Returns `true` when one or more scopes became dirty and a subsequent `flush_into` /
+    /// `render_frame` should run. Hosts should re-call `poll_work` after flushing so newly
+    /// spawned futures are polled and `waker` stays armed on the scheduler channel.
+    pub fn poll_work(&mut self, waker: &core::task::Waker) -> bool {
+        let mut cx = core::task::Context::from_waker(waker);
+        let fut = core::pin::pin!(self.vdom.wait_for_work());
+        matches!(
+            core::future::Future::poll(fut, &mut cx),
+            core::task::Poll::Ready(())
+        )
+    }
+
     pub fn signal_registry(&self) -> &SignalRegistry {
         &self.signal_registry
     }

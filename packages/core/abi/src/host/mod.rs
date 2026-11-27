@@ -20,6 +20,9 @@ pub const NVE_CHANNEL_FLAG_RETAIN: u32 = 1 << 0;
 /// Reserved built-in host service IDs (`0x0001..0x00FF`).
 pub const SERVICE_CHANNEL: u32 = 0x0001;
 pub const SERVICE_WINDOW: u32 = 0x0002;
+/// `SERVICE_WINDOW` method requesting an asynchronous frame redraw from a background task or
+/// `cdylib` app without mutating the 24-byte `NveHostCallbacks` C ABI struct.
+pub const METHOD_WINDOW_REQUEST_FRAME: u32 = 1;
 pub const SERVICE_CLIPBOARD: u32 = 0x0010;
 pub const SERVICE_FILESYSTEM: u32 = 0x0011;
 pub const SERVICE_SECURE_STORE: u32 = 0x0012;

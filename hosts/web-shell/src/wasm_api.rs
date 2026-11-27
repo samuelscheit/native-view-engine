@@ -28,6 +28,9 @@ use crate::wasm_snapshot::{
     clear_persisted_snapshot, load_persisted_state, query_has_reset, query_has_ssr_demo,
     SnapshotPersistenceGuard, SnapshotTrigger,
 };
+pub(crate) use crate::wasm_wake::{
+    install_resize_listener, WebAsyncWakeGuard, WindowResizeListener,
+};
 #[cfg(feature = "app-kitchen-sink")]
 use nve_example_kitchen_sink::{decode_kitchen_sink_state, KITCHEN_SINK_STATE_VERSION};
 #[cfg(feature = "app-studio")]
@@ -63,83 +66,54 @@ impl Drop for HotReloadSocket {
     }
 }
 
-pub(crate) struct WindowResizeListener {
-    on_resize: Option<Closure<dyn FnMut(web_sys::Event)>>,
-    resize_observer: Option<web_sys::ResizeObserver>,
-    _on_observe: Option<Closure<dyn FnMut(JsValue)>>,
-}
-
-pub(crate) fn install_resize_listener<F>(
-    window: &web_sys::Window,
-    container: web_sys::Element,
-    on_viewport: F,
-) -> Option<WindowResizeListener>
-where
-    F: Fn(Viewport) + 'static,
-{
-    let callback = Rc::new(on_viewport);
-    let cb_win = Rc::clone(&callback);
-    let container_win = container.clone();
-    let on_resize = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-        cb_win(browser_viewport(&container_win));
-    });
-    let registered_win_resize = window
-        .add_event_listener_with_callback("resize", on_resize.as_ref().unchecked_ref())
-        .is_ok()
-        .then_some(on_resize);
-
-    let cb_obs = callback;
-    let container_obs = container.clone();
-    let on_observe = Closure::<dyn FnMut(JsValue)>::new(move |_entries: JsValue| {
-        cb_obs(browser_viewport(&container_obs));
-    });
-    let (resize_observer, registered_observe) =
-        match web_sys::ResizeObserver::new(on_observe.as_ref().unchecked_ref()) {
-            Ok(obs) => {
-                obs.observe(&container);
-                (Some(obs), Some(on_observe))
-            }
-            Err(_) => (None, None),
-        };
-
-    if registered_win_resize.is_some() || resize_observer.is_some() {
-        Some(WindowResizeListener {
-            on_resize: registered_win_resize,
-            resize_observer,
-            _on_observe: registered_observe,
-        })
-    } else {
-        None
-    }
-}
-
-impl Drop for WindowResizeListener {
-    fn drop(&mut self) {
-        if let Some(on_resize) = self.on_resize.take()
-            && let Some(window) = web_sys::window()
-        {
-            let _ = window.remove_event_listener_with_callback(
-                "resize",
-                on_resize.as_ref().unchecked_ref(),
-            );
-        }
-        if let Some(observer) = self.resize_observer.take() {
-            observer.disconnect();
-        }
-    }
-}
-
 struct ActiveShell {
     generation: u64,
     #[cfg(feature = "multi-window")]
     window_handle: Option<WindowHandleId>,
-    /// Owns the session for the page lifetime (only read by the scene-view exports).
-    #[cfg_attr(not(feature = "scene-view"), allow(dead_code))]
     session: Rc<RefCell<WebAppSession>>,
+    snapshot_trigger: Option<SnapshotTrigger>,
     #[cfg(feature = "dev")]
     _hot_reload: Option<HotReloadSocket>,
     _resize_listener: Option<WindowResizeListener>,
     _snapshot_guard: Option<SnapshotPersistenceGuard>,
+    _async_wake: WebAsyncWakeGuard,
+}
+
+/// Pumps async Dioxus tasks/effects for `(surface_id, generation)`. Returns `true` if the session
+/// is momentarily borrowed (re-entrancy) and should be re-scheduled on the next microtask.
+pub(crate) fn pump_surface_async_work(
+    surface_id: SurfaceId,
+    generation: u64,
+    waker: &std::task::Waker,
+) -> bool {
+    let target = ACTIVE_SHELLS.with(|shells| {
+        let map = shells.borrow();
+        let active = map.get(&surface_id)?;
+        if active.generation != generation {
+            return None;
+        }
+        Some((Rc::clone(&active.session), active.snapshot_trigger.clone()))
+    });
+    let Some((session, snapshot_trigger)) = target else {
+        return false;
+    };
+    match session.try_borrow_mut() {
+        Ok(mut guard) => {
+            match guard.pump_async_work(waker) {
+                Ok(Some(_)) => {
+                    if let Some(t) = snapshot_trigger.as_ref() {
+                        t.schedule_debounced();
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                }
+            }
+            false
+        }
+        Err(_) => true,
+    }
 }
 
 thread_local! {
@@ -564,17 +538,27 @@ where
         (None, None)
     };
 
+    let generation = NEXT_SHELL_GENERATION.with(|c| {
+        let next = c.get();
+        c.set(next.wrapping_add(1));
+        next
+    });
+    let async_wake = WebAsyncWakeGuard::new(surface_id, generation);
+    let wake_for_events = async_wake.waker().clone();
+
     let session_for_events = Rc::clone(&session);
     let trigger_for_events = snapshot_trigger.clone();
     session.borrow_mut().backend_mut().set_render_callback(move || {
         if let Ok(mut guard) = session_for_events.try_borrow_mut() {
             match guard.pump_events() {
-                Ok(Some(_)) => {
-                    if let Some(t) = trigger_for_events.as_ref() {
+                Ok(ev_frame) => {
+                    let async_frame = guard.pump_async_work(&wake_for_events).ok().flatten();
+                    if (ev_frame.is_some() || async_frame.is_some())
+                        && let Some(t) = trigger_for_events.as_ref()
+                    {
                         t.schedule_debounced();
                     }
                 }
-                Ok(None) => {}
                 Err(err) => {
                     web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
                 }
@@ -588,11 +572,14 @@ where
             .render_initial()
             .map_err(|e| JsValue::from_str(&format!("initial frame failed: {e}")))?;
         // Immediately pump any pre-hydration events / reconciled dirty controls queued during
-        // Frame-0 hydration handoff (`on_event` could not re-enter `session.borrow_mut()`).
+        // Frame-0 hydration handoff AND arm the async Dioxus scheduler waker.
         let replayed_frame = guard
             .pump_events()
             .map_err(|e| JsValue::from_str(&format!("post-hydration event pump failed: {e}")))?;
-        if replayed_frame.is_some()
+        let async_frame = guard
+            .pump_async_work(async_wake.waker())
+            .map_err(|e| JsValue::from_str(&format!("initial async pump failed: {e}")))?;
+        if (replayed_frame.is_some() || async_frame.is_some())
             && let Some(t) = snapshot_trigger.as_ref()
         {
             t.schedule_debounced();
@@ -627,11 +614,6 @@ where
         }
     }
 
-    let generation = NEXT_SHELL_GENERATION.with(|c| {
-        let next = c.get();
-        c.set(next.wrapping_add(1));
-        next
-    });
     #[cfg(feature = "multi-window")]
     let window_handle =
         register_mounted_surface_window(surface_id, app_name, viewport.width, viewport.height);
@@ -648,10 +630,12 @@ where
                 #[cfg(feature = "multi-window")]
                 window_handle,
                 session: Rc::clone(&session),
+                snapshot_trigger: snapshot_trigger.clone(),
                 #[cfg(feature = "dev")]
                 _hot_reload: hot_reload,
                 _resize_listener: resize_listener,
                 _snapshot_guard: snapshot_guard,
+                _async_wake: async_wake,
             },
         );
     });

@@ -48,11 +48,12 @@ pub struct QueryHandle {
 pub struct MutationId(pub u64);
 
 /// Token returned by `begin_fetch` and passed back to `complete_fetch` to guard against stale
-/// out-of-order responses or recycled slots.
+/// out-of-order responses, recycled slots, or wildcard invalidations that occurred mid-flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FetchTicket {
     pub handle: QueryHandle,
     pub fetch_gen: u32,
+    pub wildcard_epoch: u32,
 }
 
 /// Operating mode of a [`crate::QueryClient`].
@@ -167,6 +168,10 @@ pub struct QueryClientConfig {
     pub default_options: QueryOptions,
     /// Hard maximum cached query slots before evicting oldest inactive entries (default: `1024`).
     pub max_entries: usize,
+    /// Grace window in milliseconds during which hydrated SSR entries remain fresh even when
+    /// `QueryOptions::stale_time_ms == 0`, preventing an immediate duplicate fetch on mount while
+    /// still expiring cleanly afterward (default: `5_000` ms).
+    pub hydration_grace_ms: u32,
     /// Operating mode (`Client` vs `SsrReadOnly`).
     pub mode: QueryMode,
 }
@@ -177,6 +182,7 @@ impl Default for QueryClientConfig {
         Self {
             default_options: QueryOptions::default(),
             max_entries: 1024,
+            hydration_grace_ms: 5_000,
             mode: QueryMode::Client,
         }
     }
@@ -189,6 +195,7 @@ pub struct QuerySnapshot<T, E> {
     pub error: Option<Shared<RpcError<E>>>,
     pub is_fetching: bool,
     pub is_stale: bool,
+    pub is_invalidated: bool,
     pub data_version: u32,
 }
 
@@ -199,6 +206,7 @@ impl<T, E> Clone for QuerySnapshot<T, E> {
             error: self.error.as_ref().map(Shared::clone),
             is_fetching: self.is_fetching,
             is_stale: self.is_stale,
+            is_invalidated: self.is_invalidated,
             data_version: self.data_version,
         }
     }
@@ -260,30 +268,6 @@ impl Clock for SystemClock {
     }
 }
 
-/// Fallback clock on `wasm32` when no browser `performance.now()` clock is injected.
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default)]
-pub struct SystemClock {
-    ticks: AtomicU64,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl SystemClock {
-    #[inline]
-    pub const fn new() -> Self {
-        Self {
-            ticks: AtomicU64::new(0),
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl Clock for SystemClock {
-    #[inline]
-    fn now_ms(&self) -> u64 {
-        self.ticks.load(Ordering::Relaxed)
-    }
-}
 
 /// Deterministic controllable clock for zero-sleep unit & property tests.
 #[derive(Debug, Default)]

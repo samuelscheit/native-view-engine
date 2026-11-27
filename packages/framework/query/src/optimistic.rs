@@ -4,17 +4,18 @@
 use core::any::Any;
 
 use nve_rpc::{
-    encode_args, CacheTag, MaybeSend, MaybeSync, ProcId, Procedure, Query, RpcCodec, Tag64,
+    encode_args, CacheTag, CodecError, MaybeSend, MaybeSync, ProcId, Procedure, Query, RpcCodec,
+    Tag64,
 };
 
-use crate::slab::QueryPayload;
-use crate::types::{into_shared_any, MutationId, QueryHandle, SharedAny};
+use crate::slab::{QueryMeta, QueryPayload, QuerySlotId};
+use crate::types::{into_shared_any, MutationId, QueryHandle, Shared, SharedAny};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type PatchFn = Box<dyn Fn(&dyn Any) -> Option<SharedAny> + Send + Sync>;
+pub(crate) type PatchFn = Shared<dyn Fn(&dyn Any) -> Option<SharedAny> + Send + Sync>;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) type PatchFn = Box<dyn Fn(&dyn Any) -> Option<SharedAny>>;
+pub(crate) type PatchFn = Shared<dyn Fn(&dyn Any) -> Option<SharedAny>>;
 
 pub(crate) struct OptimisticLayer {
     pub mutation_id: MutationId,
@@ -33,7 +34,7 @@ impl OptimisticLayer {
         Self {
             mutation_id,
             settle_on_fetch_gen: None,
-            apply: Box::new(move |cur: &dyn Any| {
+            apply: Shared::new(move |cur: &dyn Any| {
                 let typed = cur.downcast_ref::<T>()?;
                 Some(into_shared_any(f(typed)))
             }),
@@ -41,41 +42,73 @@ impl OptimisticLayer {
     }
 }
 
-/// Recomputes `payload.effective_optimistic` by folding `payload.committed` through all active
-/// `optimistic_layers` in submission order.
-pub(crate) fn recompute_effective(payload: &mut QueryPayload) {
+/// Snapshot of a slot's committed value and optimistic layer closures prepared under the cache
+/// lock so all user transforms execute strictly OUTSIDE the lock (preventing native deadlocks and
+/// `wasm32` `RefCell` re-entrancy panics).
+pub(crate) struct RecomputeJob {
+    pub slot: QuerySlotId,
+    pub generation: u32,
+    pub rev: u16,
+    pub committed: SharedAny,
+    pub layers: Vec<PatchFn>,
+}
+
+/// Prepares a lock-free [`RecomputeJob`] for `slot`, or clears `effective_optimistic` immediately
+/// when no layers or no committed value exist.
+pub(crate) fn prepare_recompute_job(
+    slot: QuerySlotId,
+    meta: &mut QueryMeta,
+    payload: &mut QueryPayload,
+) -> Option<RecomputeJob> {
+    meta.optimistic_rev = meta.optimistic_rev.wrapping_add(1);
     if payload.optimistic_layers.is_empty() {
         payload.effective_optimistic = None;
-        return;
+        return None;
     }
     let Some(committed) = payload.committed.as_ref() else {
         payload.effective_optimistic = None;
-        return;
+        return None;
     };
+    let layers = payload
+        .optimistic_layers
+        .iter()
+        .map(|l| Shared::clone(&l.apply))
+        .collect();
+    Some(RecomputeJob {
+        slot,
+        generation: meta.slot_gen,
+        rev: meta.optimistic_rev,
+        committed: Shared::clone(committed),
+        layers,
+    })
+}
 
-    let mut cur: SharedAny = crate::types::Shared::clone(committed);
-    for layer in &payload.optimistic_layers {
-        if let Some(next) = (layer.apply)(cur.as_ref()) {
+/// Executes every optimistic layer closure in submission order outside the cache lock.
+pub(crate) fn fold_recompute_job(job: &RecomputeJob) -> SharedAny {
+    let mut cur = Shared::clone(&job.committed);
+    for layer in &job.layers {
+        if let Some(next) = (layer)(cur.as_ref()) {
             cur = next;
         }
     }
-    payload.effective_optimistic = Some(cur);
+    cur
 }
 
-/// Retires optimistic layers settled by a fetch at `completed_fetch_gen`, then rebases any
-/// still-pending sibling layers on top of the freshly committed value.
+/// Retires optimistic layers settled by a fetch at `completed_fetch_gen` (caller recomputes
+/// effective value outside the lock via [`prepare_recompute_job`]).
 pub(crate) fn settle_layers_up_to(payload: &mut QueryPayload, completed_fetch_gen: u32) {
     if !payload.optimistic_layers.is_empty() {
-        payload.optimistic_layers.retain(|layer| match layer.settle_on_fetch_gen {
-            Some(target_gen) => completed_fetch_gen < target_gen,
-            None => true,
-        });
+        payload
+            .optimistic_layers
+            .retain(|layer| match layer.settle_on_fetch_gen {
+                Some(target_gen) => (completed_fetch_gen.wrapping_sub(target_gen) as i32) < 0,
+                None => true,
+            });
     }
-    recompute_effective(payload);
 }
 
-/// Removes every optimistic layer owned by `mutation_id` (rollback on error) and rebases any
-/// remaining sibling layers on top of `committed`.
+/// Removes every optimistic layer owned by `mutation_id` (caller recomputes effective value
+/// outside the lock via [`prepare_recompute_job`]).
 pub(crate) fn remove_mutation_layers(payload: &mut QueryPayload, mutation_id: MutationId) -> bool {
     if payload.optimistic_layers.is_empty() {
         return false;
@@ -84,11 +117,7 @@ pub(crate) fn remove_mutation_layers(payload: &mut QueryPayload, mutation_id: Mu
     payload
         .optimistic_layers
         .retain(|l| l.mutation_id != mutation_id);
-    let changed = payload.optimistic_layers.len() != before;
-    if changed {
-        recompute_effective(payload);
-    }
-    changed
+    payload.optimistic_layers.len() != before
 }
 
 /// Marks every layer owned by `mutation_id` on `payload` to settle once `settle_gen` commits.
@@ -165,25 +194,25 @@ impl<'a, C> OptimisticTx<'a, C> {
     }
 
     /// Schedules an optimistic patch on the exact cached query `(P, args)`.
+    /// Returns `Err(CodecError)` if encoding `args` fails rather than silently dropping the patch.
     pub fn update_query<P>(
         &mut self,
         args: &P::Args,
         transform: impl Fn(&P::Output) -> P::Output + MaybeSend + MaybeSync + Clone + 'static,
-    ) -> &mut Self
+    ) -> Result<&mut Self, CodecError>
     where
         P: Procedure<Effect = Query>,
         C: RpcCodec<P::Args>,
     {
-        if let Ok(encoded_args) = encode_args::<P, C>(self.codec, args) {
-            self.ops.push(PendingPatchOp::ExactKey {
-                proc_id: P::ID,
-                encoded_args,
-                make_layer: Box::new(move |id| {
-                    OptimisticLayer::typed::<P::Output, _>(id, transform.clone())
-                }),
-            });
-        }
-        self
+        let encoded_args = encode_args::<P, C>(self.codec, args)?;
+        self.ops.push(PendingPatchOp::ExactKey {
+            proc_id: P::ID,
+            encoded_args,
+            make_layer: Box::new(move |id| {
+                OptimisticLayer::typed::<P::Output, _>(id, transform.clone())
+            }),
+        });
+        Ok(self)
     }
 
     /// Schedules an optimistic patch on every cached query of procedure `P` carrying `tag`.
@@ -226,5 +255,4 @@ impl<'a, C> OptimisticTx<'a, C> {
 
 pub(crate) fn apply_layer_to_slot(payload: &mut QueryPayload, layer: OptimisticLayer) {
     payload.optimistic_layers.push(layer);
-    recompute_effective(payload);
 }

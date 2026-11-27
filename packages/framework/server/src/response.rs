@@ -8,7 +8,7 @@ use http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, LOCATION};
 use http::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use nve_rpc::{
     classify_http_reply, encode_protocol_error_json, format_invalidate_sink, CodecError,
-    CodecFormat, FieldErrors, FormPairs, RawReply, RpcStatus, TagSink, TransportError,
+    CodecFormat, FieldErrors, FormPairs, RawReply, RpcStatus, TagSink,
     CONTENT_TYPE_ERROR_JSON, ERROR_KIND_DOMAIN, ERROR_KIND_FORM_VALIDATION, ERROR_KIND_PROTOCOL,
     HEADER_ERROR_KIND, HEADER_INVALIDATE,
 };
@@ -38,12 +38,13 @@ pub enum FormOutcome {
     ProtocolError(Box<Response<Bytes>>),
 }
 
-/// Compact pre-body rejection returned by [`crate::Server::preflight_request`] (32 bytes,
-/// avoiding inflating happy-path async state machines with a 144-byte `http::Response`).
+/// Compact pre-body rejection returned by [`crate::Server::preflight_request`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightError {
     pub status: RpcStatus,
     pub method_not_allowed: bool,
+    pub(crate) allow_options: bool,
+    pub(crate) cors_origin_idx: Option<usize>,
     pub message: Cow<'static, str>,
 }
 
@@ -53,23 +54,33 @@ impl PreflightError {
         Self {
             status,
             method_not_allowed: false,
+            allow_options: false,
+            cors_origin_idx: None,
             message: message.into(),
         }
     }
 
     #[inline]
-    pub(crate) fn method_not_allowed(message: &'static str) -> Self {
+    pub(crate) fn method_not_allowed(message: &'static str, allow_options: bool) -> Self {
         Self {
             status: RpcStatus::InvalidArgument,
             method_not_allowed: true,
+            allow_options,
+            cors_origin_idx: None,
             message: Cow::Borrowed(message),
         }
+    }
+
+    #[inline]
+    pub(crate) fn with_cors_origin(mut self, origin_idx: Option<usize>) -> Self {
+        self.cors_origin_idx = origin_idx;
+        self
     }
 
     /// Converts this preflight rejection into a standard JSON protocol error HTTP response.
     pub fn into_response(self) -> Response<Bytes> {
         if self.method_not_allowed {
-            method_not_allowed_response(&self.message)
+            method_not_allowed_response(&self.message, self.allow_options)
         } else {
             protocol_error_response(self.status, &self.message)
         }
@@ -167,11 +178,15 @@ fn typed_error_response(
         })
 }
 
-fn method_not_allowed_response(message: &str) -> Response<Bytes> {
+fn method_not_allowed_response(message: &str, allow_options: bool) -> Response<Bytes> {
     let mut resp = protocol_error_response(RpcStatus::InvalidArgument, message);
     *resp.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
-    resp.headers_mut()
-        .insert(ALLOW, HeaderValue::from_static("POST"));
+    let allow_val = if allow_options {
+        HeaderValue::from_static("POST, OPTIONS")
+    } else {
+        HeaderValue::from_static("POST")
+    };
+    resp.headers_mut().insert(ALLOW, allow_val);
     resp
 }
 
@@ -201,12 +216,8 @@ pub fn protocol_error_response(status: RpcStatus, message: &str) -> Response<Byt
 ///
 /// Any malformed or overflowing `Nve-Invalidate` header safely collapses to `invalidate_all = true`
 /// rather than failing the call, preventing clients from retrying an already-committed mutation.
-pub fn parse_rpc_http_reply(
-    status: StatusCode,
-    headers: &HeaderMap,
-    body: Bytes,
-) -> Result<RawReply, TransportError> {
+pub fn parse_rpc_http_reply(status: StatusCode, headers: &HeaderMap, body: Bytes) -> RawReply {
     let error_kind = headers.get(&HDR_ERROR_KIND).map(HeaderValue::as_bytes);
     let invalidate = headers.get_all(&HDR_INVALIDATE).iter().map(HeaderValue::as_bytes);
-    Ok(classify_http_reply(status.as_u16(), error_kind, invalidate, body))
+    classify_http_reply(status.as_u16(), error_kind, invalidate, body)
 }

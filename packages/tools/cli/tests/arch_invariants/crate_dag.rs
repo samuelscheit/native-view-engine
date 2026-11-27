@@ -242,6 +242,7 @@ pub fn check_framework_rpc_server_purity(graph: &WorkspaceGraph) -> Vec<Violatio
 
         // 2. Fullstack RPC/server/query/http-* and shared example API crates ban runtime serde_json.
         let is_http_adapter = pkg.rel_dir.starts_with("packages/framework/http-");
+        let is_query_ui = pkg.rel_dir == "packages/framework/query-dioxus";
         let is_sans_io = matches!(
             pkg.rel_dir.as_str(),
             "packages/framework/rpc"
@@ -249,7 +250,7 @@ pub fn check_framework_rpc_server_purity(graph: &WorkspaceGraph) -> Vec<Violatio
                 | "packages/framework/query"
                 | "examples/fullstack-issues/api"
         );
-        if !is_http_adapter && !is_sans_io {
+        if !is_http_adapter && !is_query_ui && !is_sans_io {
             continue;
         }
         if pkg.rel_dir.starts_with("packages/framework/") {

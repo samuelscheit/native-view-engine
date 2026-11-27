@@ -11,10 +11,9 @@ Runtime-agnostic, sans-I/O data-oriented query & mutation cache for `native-view
 - **Zero-Encode Hydration Seam**: preserves `CallReply::raw_body` for compact binary `dehydrate_bytes` / `hydrate_bytes` without a global type registry.
 
 ```rust
-use nve_query::{ManualClock, QueryClient, QueryClientConfig, QueryOptions};
+use nve_query::{ManualClock, QueryClient, QueryClientConfig, QueryOptions, Shared};
 use nve_rpc::{procedures, BoxFuture, CborCodec, RawCall, RawReply, ReplyKind, RpcCodec, Transport, TransportError};
 use bytes::Bytes;
-use std::sync::Arc;
 
 procedures! {
     query Echo = "demo.v1.Echo/Ping" (u64) -> u64, ();
@@ -38,7 +37,7 @@ impl Transport for MockTransport {
 let client = QueryClient::with_clock(
     MockTransport,
     CborCodec::default(),
-    Arc::new(ManualClock::new(1_000)),
+    Shared::new(ManualClock::new(1_000)),
     QueryClientConfig::default(),
 );
 let handle = client.subscribe::<Echo>(&42, QueryOptions::default()).unwrap();

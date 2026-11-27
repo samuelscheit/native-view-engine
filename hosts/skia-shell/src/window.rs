@@ -206,6 +206,12 @@ pub trait DesktopApp {
     /// arrive (used by [`PairedRemoteApp`]).
     fn install_wake_callback(&mut self, _wake: Arc<dyn Fn() + Send + Sync>) {}
 
+    /// Polls any in-process asynchronous tasks (such as `DioxusSurface::poll_work`) and returns
+    /// `true` when dirty state requires rendering a fresh frame.
+    fn poll_async_work(&mut self) -> bool {
+        false
+    }
+
     /// Returns `true` when an asynchronous remote frame is queued and ready to be rendered.
     fn has_pending_remote_frame(&self) -> bool {
         false

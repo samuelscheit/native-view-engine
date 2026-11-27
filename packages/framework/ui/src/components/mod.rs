@@ -46,7 +46,8 @@ pub use error_boundary::{
     ErrorContext, ErrorFallback, UiError, UiErrorReport,
 };
 pub use form_view::{
-    use_form_context, Form, FormField, FormMethod, FormSubmitButton, FormSubmitPayload,
+    use_form_context, Form, FormField, FormHiddenField, FormMethod, FormSubmitButton,
+    FormSubmitPayload,
 };
 pub use forms::{Checkbox, Input, Switch};
 pub use keyboard_avoiding::{

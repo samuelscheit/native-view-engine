@@ -98,6 +98,16 @@ impl SessionApp {
         }
     }
 
+    fn poll_work(&mut self, waker: &core::task::Waker) -> bool {
+        match self {
+            Self::Dioxus(surface) => surface.poll_work(waker),
+            #[cfg(feature = "app-studio")]
+            Self::Studio(_) => false,
+            #[cfg(feature = "app-kitchen-sink")]
+            Self::KitchenSink(_) => false,
+        }
+    }
+
     fn dispatch_events(&mut self, events: &[NativeEvent]) -> bool {
         match self {
             Self::Dioxus(surface) => surface.dispatch_events(events),
@@ -428,6 +438,24 @@ impl WebAppSession {
             return Ok(None);
         }
         self.render_and_submit().map(Some)
+    }
+
+    /// Polls any ready Dioxus async tasks/effects (such as `nve-query` fetches or mutations) and
+    /// renders incremental frames until the scheduler rests with `waker` armed, bounded to avoid
+    /// starving browser painting.
+    pub fn pump_async_work(
+        &mut self,
+        waker: &core::task::Waker,
+    ) -> Result<Option<FrameTiming>, BackendError> {
+        const MAX_PUMPS: usize = 8;
+        let mut last = None;
+        for _ in 0..MAX_PUMPS {
+            if !self.app.poll_work(waker) {
+                break;
+            }
+            last = Some(self.render_and_submit()?);
+        }
+        Ok(last)
     }
 
     /// Decodes and applies one binary `NVP1` hot-patch frame from `nve dev`.

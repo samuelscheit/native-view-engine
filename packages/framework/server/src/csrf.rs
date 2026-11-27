@@ -125,6 +125,13 @@ impl CsrfPolicy {
         &self.allowed_origins
     }
 
+    /// Returns `true` when cookie-authenticated browser origins are configured (`false` for
+    /// [`Self::bearer_only`]).
+    #[inline]
+    pub fn allows_cookies(&self) -> bool {
+        !self.allowed_origins.is_empty()
+    }
+
     /// Validates origin & fetch-metadata rules for a state-changing request without allocating.
     pub fn check_origin(
         &self,
@@ -267,18 +274,22 @@ pub(crate) fn canonicalize_origin(raw: &str) -> Result<String, &'static str> {
         return Err("origin host must not be empty");
     }
 
-    let include_port = port.filter(|&p| p != default_port);
+    let default_port_num: u16 = default_port.parse().unwrap_or(0);
+    let normalized_port = port
+        .and_then(|p| p.parse::<u16>().ok())
+        .filter(|&num| num != default_port_num);
+    let port_str = normalized_port.map(|n| n.to_string());
     let mut out = String::with_capacity(
-        scheme.len() + host.len() + include_port.map_or(0, |p| 1 + p.len()),
+        scheme.len() + host.len() + port_str.as_ref().map_or(0, |p| 1 + p.len()),
     );
     out.push_str(scheme);
     for b in host.bytes() {
         // allow(to_ascii_lowercase): single byte by value, zero heap allocation
         out.push(b.to_ascii_lowercase() as char);
     }
-    if let Some(p) = include_port {
+    if let Some(p) = port_str {
         out.push(':');
-        out.push_str(p);
+        out.push_str(&p);
     }
     Ok(out)
 }
@@ -309,6 +320,9 @@ fn split_host_port(authority: &str) -> Result<(&str, Option<&str>), &'static str
         let end = after_bracket
             .find(']')
             .ok_or("unclosed IPv6 bracket in origin")?;
+        if end == 0 {
+            return Err("empty IPv6 host in origin");
+        }
         let host = &authority[..end + 2];
         let tail = &after_bracket[end + 1..];
         if tail.is_empty() {

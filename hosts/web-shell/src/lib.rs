@@ -33,6 +33,8 @@ pub mod wasm_popup;
 pub mod wasm_probe;
 #[cfg(target_arch = "wasm32")]
 mod wasm_snapshot;
+#[cfg(target_arch = "wasm32")]
+mod wasm_wake;
 
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
 #[cfg(feature = "multi-window")]

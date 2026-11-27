@@ -56,8 +56,7 @@ fn server_handles_404_405_413_415_domain_ok_clamping_and_wildcard_invalidation()
     let mut bad_inv_headers = HeaderMap::new();
     bad_inv_headers.insert(HEADER_INVALIDATE, HeaderValue::from_static("deadbeef"));
     let safe_reply =
-        parse_rpc_http_reply(StatusCode::OK, &bad_inv_headers, Bytes::from_static(&[0x01]))
-            .unwrap();
+        parse_rpc_http_reply(StatusCode::OK, &bad_inv_headers, Bytes::from_static(&[0x01]));
     assert!(safe_reply.invalidate_all);
     assert!(safe_reply.invalidated_tags.is_empty());
 
@@ -289,7 +288,7 @@ fn direct_transport_supports_trusted_ssr_and_strict_http_modes() {
 }
 
 #[test]
-fn form_action_negotiates_0js_browser_text_vs_cbor_and_enforces_limits() {
+fn form_action_handles_0js_browser_and_enforces_limits() {
     let server = build_test_server();
 
     // 1. Unified `handle_request` dispatches built-in `FormRoute` (`/forms/rename` -> 303).
@@ -332,7 +331,7 @@ fn form_action_negotiates_0js_browser_text_vs_cbor_and_enforces_limits() {
         .unwrap()
         .contains("title"));
 
-    // 4. `execute_form_action` takes a sealed `&FormRoute` and preserves submitted `FormPairs`
+    // 3. `execute_form_action` takes a sealed `&FormRoute` and preserves submitted `FormPairs`
     //    for SSR HTML re-rendering.
     let rename_route = FormRoute::new::<Rename>("/forms/rename", "/issues/7");
     let ssr_bad = Request::builder()
@@ -351,7 +350,7 @@ fn form_action_negotiates_0js_browser_text_vs_cbor_and_enforces_limits() {
         other => panic!("expected ValidationFailed with preserved form, got {other:?}"),
     }
 
-    // 5. Form edge errors: GET -> 405, wrong Content-Type -> 415, non-UTF8 -> 400, > max_form_fields -> 413,
+    // 4. Form edge errors: GET -> 405, wrong Content-Type -> 415, non-UTF8 -> 400, > max_form_fields -> 413,
     //    action registered without `register_with_form` -> 415.
     let form_get = Request::builder()
         .method(Method::GET)
@@ -518,8 +517,7 @@ fn opt_in_cors_policy_handles_preflight_rpc_errors_and_blocks_cross_site_forms()
         "http://localhost:8080"
     );
 
-    // 5. Cross-site HTML `<form>` POST (CORS simple request, no preflight) MUST STILL BE BLOCKED
-    //    even for origins allowed in `CorsPolicy`!
+    // 5. Cross-site HTML `<form>` POST MUST BE BLOCKED and NEVER leak CORS headers!
     let cross_form = Request::builder()
         .method(Method::POST)
         .uri("/forms/rename")
@@ -529,8 +527,116 @@ fn opt_in_cors_policy_handles_preflight_rpc_errors_and_blocks_cross_site_forms()
         .header(COOKIE, "nve_session=web-cookie")
         .body(Bytes::from_static(b"id=7&title=CSRF"))
         .unwrap();
+    let cross_form_resp = block_on(server.handle_request(cross_form));
+    assert_eq!(cross_form_resp.status(), StatusCode::FORBIDDEN);
+    assert!(!cross_form_resp
+        .headers()
+        .contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    // 6. OPTIONS preflight edge cases: missing/non-POST ACRM -> 403 without ACAO; unknown proc -> 404;
+    //    duplicate Origin -> 403; non-RPC 404 -> no ACAO; GET RPC -> 405 Allow: POST, OPTIONS.
+    let preflight_no_acrm = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(ORIGIN, "http://localhost:8080")
+        .body(Bytes::new())
+        .unwrap();
+    let no_acrm_resp = block_on(server.handle_request(preflight_no_acrm));
+    assert_eq!(no_acrm_resp.status(), StatusCode::FORBIDDEN);
+    assert!(!no_acrm_resp
+        .headers()
+        .contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let preflight_get = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(ORIGIN, "http://localhost:8080")
+        .header(ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .body(Bytes::new())
+        .unwrap();
+    let bad_method_resp = block_on(server.handle_request(preflight_get));
+    assert_eq!(bad_method_resp.status(), StatusCode::FORBIDDEN);
+    assert!(!bad_method_resp
+        .headers()
+        .contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let preflight_unknown = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/rpc/demo.v1.Health/DoesNotExist")
+        .header(ORIGIN, "http://localhost:8080")
+        .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .body(Bytes::new())
+        .unwrap();
+    let unknown_opt = block_on(server.handle_request(preflight_unknown));
+    assert_eq!(unknown_opt.status(), StatusCode::NOT_FOUND);
+    assert!(!unknown_opt
+        .headers()
+        .contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let dup_origin = Request::builder()
+        .method(Method::POST)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header(ORIGIN, "http://localhost:8080")
+        .header(ORIGIN, "http://localhost:8080")
+        .header(COOKIE, "nve_session=web-cookie")
+        .body(Bytes::from_static(&[0x01]))
+        .unwrap();
+    let dup_resp = block_on(server.handle_request(dup_origin));
+    assert_eq!(dup_resp.status(), StatusCode::FORBIDDEN);
+    assert!(!dup_resp.headers().contains_key(ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let rpc_get = Request::builder()
+        .method(Method::GET)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .body(Bytes::new())
+        .unwrap();
+    let rpc_get_resp = block_on(server.handle_request(rpc_get));
+    assert_eq!(rpc_get_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
-        block_on(server.handle_request(cross_form)).status(),
-        StatusCode::FORBIDDEN
+        rpc_get_resp.headers().get(http::header::ALLOW).unwrap(),
+        "POST, OPTIONS"
     );
+
+    // 7. `allow_credentials(false)` + `CsrfPolicy::bearer_only()` MUST strip Cookie on CORS POST
+    //    and omit `Access-Control-Allow-Credentials`.
+    let mut reg2 = RpcRegistry::<(), String>::builder();
+    reg2.register::<Ping, _, _>(|_cx: Cx<(), String>, n: u64| async move { Ok(n + 1) });
+    let bearer_cors_server = Server::new(
+        (),
+        reg2.build(),
+        DemoAuth,
+        CsrfPolicy::bearer_only(),
+        ServerConfig::default().with_cors(
+            CorsPolicy::allow_origins(["http://localhost:08080", "http://localhost:080"])
+                .allow_credentials(false),
+        ),
+    );
+    let mut body2 = Vec::new();
+    CborCodec::default().encode_into(&1u64, &mut body2).unwrap();
+    let cookie_blocked = Request::builder()
+        .method(Method::POST)
+        .uri("/rpc/demo.v1.Health/Ping")
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header(ORIGIN, "http://localhost:8080")
+        .header(COOKIE, "nve_session=web-cookie")
+        .body(Bytes::from(body2))
+        .unwrap();
+    let cookie_blocked_resp = block_on(bearer_cors_server.handle_request(cookie_blocked));
+    assert_eq!(cookie_blocked_resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        cookie_blocked_resp
+            .headers()
+            .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+            .unwrap(),
+        "http://localhost:8080"
+    );
+    assert!(!cookie_blocked_resp
+        .headers()
+        .contains_key(ACCESS_CONTROL_ALLOW_CREDENTIALS));
+    assert_eq!(
+        cookie_blocked_resp.headers().get(VARY).unwrap(),
+        "Origin"
+    );
+    assert!(CorsPolicy::try_allow_origins(["http://[]"]).is_err());
 }

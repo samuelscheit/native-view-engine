@@ -46,7 +46,7 @@ pub struct QueryMeta {
     pub proc_id: ProcId,
     pub args_hash: u64,
     pub updated_at_ms: u64,
-    pub invalidated_epoch: u64,
+    pub invalidated_epoch: u32,
     pub stale_time_ms: u32,
     pub gc_time_ms: u32,
     pub fetch_gen: u32,
@@ -54,8 +54,9 @@ pub struct QueryMeta {
     pub slot_gen: u32,
     pub hash_next: u32,
     pub first_tag_edge: u32,
-    pub subscriber_count: u16,
+    pub subscriber_count: u32,
     pub flags: u16,
+    pub optimistic_rev: u16,
 }
 
 const _: () = {
@@ -80,6 +81,7 @@ impl QueryMeta {
             first_tag_edge: NONE_IDX,
             subscriber_count: 0,
             flags: FLAG_FREE,
+            optimistic_rev: 0,
         }
     }
 
@@ -104,26 +106,23 @@ impl QueryMeta {
     }
 
     #[inline]
-    pub fn is_stale(&self, now_ms: u64, wildcard_epoch: u64) -> bool {
-        if (self.flags & FLAG_IS_INVALIDATED) != 0 || self.invalidated_epoch != wildcard_epoch {
+    pub fn is_invalidated(&self, wildcard_epoch: u32) -> bool {
+        (self.flags & FLAG_IS_INVALIDATED) != 0 || self.invalidated_epoch != wildcard_epoch
+    }
+
+    #[inline]
+    pub fn is_stale(&self, now_ms: u64, wildcard_epoch: u32, hydration_grace_ms: u32) -> bool {
+        if self.is_invalidated(wildcard_epoch) || !self.has_data() {
             return true;
         }
-        if !self.has_data() {
-            return true;
-        }
-        if (self.flags & FLAG_HYDRATED) != 0 && self.stale_time_ms == 0 {
-            // Hydrated entry suppresses immediate first-mount refetch until invalidated or expired.
-            return false;
-        }
-        now_ms.saturating_sub(self.updated_at_ms) >= u64::from(self.stale_time_ms)
+        let eff_stale = if (self.flags & FLAG_HYDRATED) != 0 {
+            u64::from(self.stale_time_ms.max(hydration_grace_ms))
+        } else {
+            u64::from(self.stale_time_ms)
+        };
+        now_ms.saturating_sub(self.updated_at_ms) >= eff_stale
     }
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type AbortFn = Box<dyn FnOnce() + Send + Sync>;
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) type AbortFn = Box<dyn FnOnce()>;
 
 /// Cold per-slot storage holding encoded args, raw response bytes, decoded values, and optimistic
 /// layers. Kept out of [`QueryMeta`] so hot sweeps never touch heap pointers.
@@ -138,7 +137,7 @@ pub(crate) struct QueryPayload {
     pub optimistic_layers: Vec<OptimisticLayer>,
     pub last_inactive_ms: u64,
     pub active_pos: u32,
-    pub in_flight_abort: Option<AbortFn>,
+    pub in_flight_waiters: Vec<core::task::Waker>,
     pub options: QueryOptions,
 }
 
@@ -155,12 +154,14 @@ impl QueryPayload {
             optimistic_layers: Vec::new(),
             last_inactive_ms: 0,
             active_pos: NONE_IDX,
-            in_flight_abort: None,
+            in_flight_waiters: Vec::new(),
             options: QueryOptions::default(),
         }
     }
 
-    pub(crate) fn reset(&mut self) {
+    /// Resets cold payload storage WITHOUT waking waiters under the cache lock; callers must wake
+    /// returned waiters after releasing the lock.
+    pub(crate) fn reset(&mut self) -> Vec<core::task::Waker> {
         self.proc_name = "";
         self.encoded_args = Bytes::new();
         self.raw_response = None;
@@ -171,10 +172,8 @@ impl QueryPayload {
         self.optimistic_layers.clear();
         self.last_inactive_ms = 0;
         self.active_pos = NONE_IDX;
-        if let Some(abort) = self.in_flight_abort.take() {
-            abort();
-        }
         self.options = QueryOptions::default();
+        core::mem::take(&mut self.in_flight_waiters)
     }
 
     /// Returns the currently visible value (optimistic overlay if active, otherwise committed).

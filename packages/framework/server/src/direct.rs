@@ -160,7 +160,7 @@ where
             };
 
             let (parts, body) = resp.into_parts();
-            parse_rpc_http_reply(parts.status, &parts.headers, body)
+            Ok(parse_rpc_http_reply(parts.status, &parts.headers, body))
         })
     }
 }

@@ -17,7 +17,7 @@ use nve_dioxus::prelude::*;
 use crate::components::actions::{Button, ButtonSize, ButtonVariant};
 use crate::components::forms::Input;
 use crate::form_draft::FormController;
-use crate::style_buf::TypedStyleBuilder;
+use crate::style_buf::{TypedStyleBuilder, TypedTextStyle};
 use crate::theme::use_theme_rgba;
 
 /// HTTP submission method emitted on `<form method="...">`.
@@ -48,7 +48,8 @@ pub struct FormSubmitPayload {
 #[derive(Clone, Copy)]
 struct FormSubmitContext {
     controller: Signal<FormController>,
-    on_submit: Option<EventHandler<FormSubmitPayload>>,
+    on_submit: Signal<Option<EventHandler<FormSubmitPayload>>>,
+    clear_draft_on_submit: Signal<bool>,
 }
 
 /// Reads the enclosing [`Form`]'s [`FormController`] signal when called inside `<Form>`.
@@ -56,14 +57,18 @@ pub fn use_form_context() -> Option<Signal<FormController>> {
     try_consume_context::<FormSubmitContext>().map(|ctx| ctx.controller)
 }
 
-fn dispatch_form_submit(
-    mut ctrl: Signal<FormController>,
-    on_submit: Option<EventHandler<FormSubmitPayload>>,
-) {
+fn dispatch_form_submit(ctx: FormSubmitContext) {
+    let mut ctrl = ctx.controller;
+    let clear_draft = *ctx.clear_draft_on_submit.peek();
+    let handler = *ctx.on_submit.peek();
     let persist_key = ctrl.read().persist_key().map(str::to_owned);
-    let outcome = ctrl.write().submit_with(|_| Ok(()));
-    if let Ok(values) = outcome
-        && let Some(handler) = on_submit
+    let values = if clear_draft {
+        ctrl.write().submit_with(|_| Ok(())).ok()
+    } else {
+        ctrl.write().validate_for_submit()
+    };
+    if let Some(values) = values
+        && let Some(handler) = handler
     {
         handler.call(FormSubmitPayload { values, persist_key });
     }
@@ -80,12 +85,13 @@ pub fn Form(
     #[props(default)] persist_key: Option<String>,
     #[props(default)] controller: Option<Signal<FormController>>,
     #[props(default)] on_submit: Option<EventHandler<FormSubmitPayload>>,
+    #[props(default = true)] clear_draft_on_submit: bool,
     #[props(default)] id: Option<String>,
     #[props(default)] test_id: Option<String>,
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
-    let (theme, _colors) = use_theme_rgba();
+    let (theme, colors) = use_theme_rgba();
 
     let persist_key_init = persist_key.clone();
     let fallback_ctrl = use_signal(move || match persist_key_init {
@@ -106,11 +112,18 @@ pub fn Form(
         }
     }
 
+    let on_submit_sig = use_signal(|| on_submit);
+    *on_submit_sig.write_unchecked() = on_submit;
+    let clear_draft_sig = use_signal(|| clear_draft_on_submit);
+    *clear_draft_sig.write_unchecked() = clear_draft_on_submit;
+
+    let ctx = FormSubmitContext {
+        controller: active_ctrl,
+        on_submit: on_submit_sig,
+        clear_draft_on_submit: clear_draft_sig,
+    };
     use_hook(|| {
-        provide_context(FormSubmitContext {
-            controller: active_ctrl,
-            on_submit,
-        });
+        provide_context(ctx);
     });
 
     let form_style = TypedStyleBuilder::new()
@@ -118,18 +131,26 @@ pub fn Form(
         .gap(theme.spacing.md)
         .width_pct(100.0)
         .finish();
+    let form_err_style = TypedStyleBuilder::new()
+        .text_style(TypedTextStyle {
+            color: colors.danger,
+            font_size: theme.typography.sm,
+            font_weight: "500",
+            text_align: "left",
+            opacity: 1.0,
+        })
+        .finish();
 
     let method_str = method.as_html_method();
-    let dirty_flag = if active_ctrl.read().is_dirty() {
+    let ctrl_read = active_ctrl.read();
+    let dirty_flag = if ctrl_read.is_dirty() { "true" } else { "false" };
+    let restored_flag = if ctrl_read.has_restored_draft() {
         "true"
     } else {
         "false"
     };
-    let restored_flag = if active_ctrl.read().has_restored_draft() {
-        "true"
-    } else {
-        "false"
-    };
+    let form_error = ctrl_read.form_error().map(str::to_owned);
+    drop(ctrl_read);
 
     rsx! {
         form {
@@ -145,8 +166,17 @@ pub fn Form(
             nve_style: form_style,
             style: style,
             onsubmit: move |_: SubmitEvent| {
-                dispatch_form_submit(active_ctrl, on_submit);
+                dispatch_form_submit(ctx);
             },
+            if let Some(ref err_msg) = form_error {
+                text {
+                    test_id: "form-error",
+                    accessibility_role: "alert",
+                    aria_live: "assertive",
+                    nve_style: form_err_style,
+                    "{err_msg}"
+                }
+            }
             {children}
         }
     }
@@ -157,6 +187,7 @@ pub fn Form(
 #[component]
 pub fn FormField(
     name: String,
+    #[props(default)] initial_value: Option<String>,
     #[props(default)] label: Option<String>,
     #[props(default)] placeholder: Option<String>,
     #[props(default)] helper_text: Option<String>,
@@ -172,6 +203,10 @@ pub fn FormField(
     #[props(default)] style: Option<String>,
 ) -> Element {
     let ctx = try_consume_context::<FormSubmitContext>();
+    if let Some(c) = ctx {
+        let init = initial_value.as_deref().unwrap_or("");
+        c.controller.write_unchecked().ensure_text_field(&name, init);
+    }
     let value = ctx
         .map(|c| c.controller.read().text_value(&name))
         .unwrap_or_default();
@@ -211,15 +246,41 @@ pub fn FormField(
             },
             on_submit: move |_| {
                 if let Some(c) = ctx {
-                    dispatch_form_submit(c.controller, c.on_submit);
+                    dispatch_form_submit(c);
                 }
             },
         }
     }
 }
 
+/// Hidden form parameter inside [`Form`]: emits `<input type="hidden" name="..." value="...">`
+/// for 0-JS HTML submissions while synchronizing its value into [`FormController`] for native and
+/// hydrated WASM submissions.
+#[component]
+pub fn FormHiddenField(name: String, value: String) -> Element {
+    let ctx = try_consume_context::<FormSubmitContext>();
+    if let Some(c) = ctx {
+        let mut ctrl = c.controller.write_unchecked();
+        if ctrl.state().value::<String>(&name).map(String::as_str) != Some(value.as_str()) {
+            ctrl.register_text_field(name.clone(), value.clone());
+        }
+    }
+    rsx! {
+        textinput {
+            name: name,
+            input_type: "hidden",
+            value: "{value}",
+            style: "display: none;",
+        }
+    }
+}
+
 /// Submit button inside [`Form`] emitting `<button type="submit" name="..." value="...">` on Web
 /// and triggering [`FormController`] validation + submission on Native/Headless press.
+///
+/// On `wasm32`, `<button type="submit">` natively triggers the enclosing `<form onsubmit>` event
+/// once; `on_press` submission dispatch is therefore gated to non-`wasm32` targets so clicks never
+/// double-submit on Web.
 #[component]
 pub fn FormSubmitButton(
     #[props(default)] variant: ButtonVariant,
@@ -232,6 +293,7 @@ pub fn FormSubmitButton(
     #[props(default)] style: Option<String>,
     children: Element,
 ) -> Element {
+    #[cfg(not(target_arch = "wasm32"))]
     let ctx = try_consume_context::<FormSubmitContext>();
 
     rsx! {
@@ -246,8 +308,9 @@ pub fn FormSubmitButton(
             test_id: test_id,
             style: style,
             on_press: move |_| {
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(c) = ctx {
-                    dispatch_form_submit(c.controller, c.on_submit);
+                    dispatch_form_submit(c);
                 }
             },
             {children}

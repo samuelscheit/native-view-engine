@@ -2719,6 +2719,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-query-dioxus"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dioxus-core",
+ "dioxus-core-macro",
+ "dioxus-signals",
+ "minicbor",
+ "nve-abi",
+ "nve-backend-web",
+ "nve-dioxus",
+ "nve-engine",
+ "nve-query",
+ "nve-rpc",
+ "nve-ui",
+]
+
+[[package]]
 name = "nve-router"
 version = "0.1.0"
 dependencies = [

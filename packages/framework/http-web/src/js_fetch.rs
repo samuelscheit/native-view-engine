@@ -24,11 +24,16 @@ export function nveStartFetch(url, body, ct, creds, auth, timeoutMs, maxBytes, o
     try {
       const res = await globalThis.fetch(url, {
         method: "POST", body: reqBody, headers, credentials: creds,
-        redirect: "error", cache: "no-store", signal: ac.signal
+        redirect: "manual", cache: "no-store", signal: ac.signal
       });
+      if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+        try { await res.body?.cancel(); } catch (_) {}
+        throw { k: "redirect", m: "unexpected HTTP redirect" };
+      }
       const cl = res.headers.get("content-length");
       if (cl !== null && Number(cl) > maxBytes) {
         try { await res.body?.cancel(); } catch (_) {}
+        try { ac.abort("too_large"); } catch (_) {}
         throw { k: "too_large", m: "response content-length exceeded cap" };
       }
       let out;
@@ -43,6 +48,7 @@ export function nveStartFetch(url, body, ct, creds, auth, timeoutMs, maxBytes, o
           total += value.byteLength;
           if (total > maxBytes) {
             try { await reader.cancel(); } catch (_) {}
+            try { ac.abort("too_large"); } catch (_) {}
             throw { k: "too_large", m: "response body exceeded max_response_bytes" };
           }
           chunks.push(value);
@@ -72,7 +78,6 @@ export function nveStartFetch(url, body, ct, creds, auth, timeoutMs, maxBytes, o
       if (globalThis.navigator && globalThis.navigator.onLine === false)
         throw { k: "offline", m: "browser is offline" };
       const msg = (e && e.message) ? String(e.message) : String(e);
-      if (msg.toLowerCase().includes("redirect")) throw { k: "redirect", m: msg };
       throw { k: "network", m: msg };
     } finally {
       if (timer) clearTimeout(timer);
@@ -82,7 +87,10 @@ export function nveStartFetch(url, body, ct, creds, auth, timeoutMs, maxBytes, o
     (v) => onDone(true, v),
     (e) => onDone(false, e)
   );
-  return () => { try { ac.abort("cancelled"); } catch (_) {} };
+  return () => {
+    if (timer) clearTimeout(timer);
+    try { ac.abort("cancelled"); } catch (_) {}
+  };
 }
 
 export function nvePerfNowMs() {
@@ -94,16 +102,23 @@ export function nvePerfNowMs() {
 export function nveAttachLifecycle(onFocus, onOnline) {
   const doc = globalThis.document;
   const win = globalThis.window;
-  const vis = () => { if (doc && doc.visibilityState === "visible") onFocus(); };
+  let lastFocus = -1000;
+  const fireFocus = () => {
+    const now = nvePerfNowMs();
+    if (now - lastFocus < 100) return;
+    lastFocus = now;
+    onFocus();
+  };
+  const vis = () => { if (doc && doc.visibilityState === "visible") fireFocus(); };
   if (doc && doc.addEventListener) doc.addEventListener("visibilitychange", vis);
   if (win && win.addEventListener) {
-    win.addEventListener("focus", onFocus);
+    win.addEventListener("focus", fireFocus);
     win.addEventListener("online", onOnline);
   }
   return () => {
     if (doc && doc.removeEventListener) doc.removeEventListener("visibilitychange", vis);
     if (win && win.removeEventListener) {
-      win.removeEventListener("focus", onFocus);
+      win.removeEventListener("focus", fireFocus);
       win.removeEventListener("online", onOnline);
     }
   };
@@ -141,6 +156,7 @@ struct FetchPromiseFuture {
 
 impl Drop for FetchPromiseFuture {
     fn drop(&mut self) {
+        self.state.borrow_mut().waker = None;
         if let Some(abort) = self.abort_fn.take() {
             let _ = abort.call0(&JsValue::NULL);
         }
@@ -210,7 +226,7 @@ pub(crate) async fn execute_js_fetch(
             let status = arr.get(0).as_f64().unwrap_or(500.0) as u16;
             let err_kind_str = arr.get(1).as_string().unwrap_or_default();
             let inv_str = arr.get(2).as_string().unwrap_or_default();
-            let u8_arr = Uint8Array::new(&arr.get(3));
+            let u8_arr: Uint8Array = arr.get(3).unchecked_into();
             let body_vec = u8_arr.to_vec();
 
             let err_kind = if err_kind_str.is_empty() {

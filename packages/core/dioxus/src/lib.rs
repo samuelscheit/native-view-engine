@@ -178,7 +178,7 @@ pub mod prelude {
     pub use nve_components::svg::{FillRule, SvgPicture, VectorPathCmd, VectorShape};
     pub use nve_components::transform::Transform2D;
     pub use dioxus_core;
-    pub use dioxus_core::{Element, VirtualDom};
+    pub use dioxus_core::{current_scope_id, spawn, use_drop, use_hook, Element, VirtualDom};
     pub use dioxus_core_macro::{component, rsx, Props};
     pub use dioxus_signals;
     pub use dioxus_signals::{ReadableExt, Signal, WritableExt};

@@ -1,32 +1,87 @@
 //! Optimistic patch transactions, action execution with automatic invalidation, O(k) tag & O(1)
 //! wildcard invalidation, focus/reconnect hooks, bounded GC, and `NVEQ` dehydration/hydration.
 
-use core::future::Future;
+use core::future::{poll_fn, Future};
+use core::task::Poll;
 
-use nve_hash::xxh64;
 use nve_rpc::{
     call_with_codec, decode_reply, Action, CallReply, MaybeSend, MaybeSync, Procedure, Query,
     RpcCodec, RpcError, Tag64, TagSink, Transport,
 };
 
-use crate::engine::{query_key_hash, QueryClient, BODY_HASH_SEED};
-use crate::hydrate::{
-    decode_hydration_entries, encode_hydration_entries, DehydrateEntryRef, DehydrateError,
-};
+use crate::engine::{query_key_hash, run_side_effects, QueryClient};
 use crate::optimistic::{
-    apply_layer_to_slot, mark_mutation_settling, remove_mutation_layers, OptimisticHandle,
-    OptimisticTx, PendingPatchOp,
+    apply_layer_to_slot, mark_mutation_settling, prepare_recompute_job, remove_mutation_layers,
+    OptimisticHandle, OptimisticTx, PendingPatchOp,
 };
-use crate::slab::{
-    QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IS_INVALIDATED,
-    FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT, FLAG_SUBSCRIBED_ALL,
-};
+use crate::slab::{QuerySlotId, FLAG_SUBSCRIBED_ALL};
 use crate::state::WakeCallback;
-use crate::types::{MutationId, QueryHandle, Shared};
+use crate::types::{FetchTicket, MutationId, QueryHandle, Shared};
+
+struct FetchCancelGuard<'a, T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> {
+    client: &'a QueryClient<T, C>,
+    ticket: Option<FetchTicket>,
+}
+
+impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop for FetchCancelGuard<'_, T, C> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.client.cancel_fetch_ticket(ticket);
+        }
+    }
+}
+
+struct SubCancelGuard<'a, T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> {
+    client: &'a QueryClient<T, C>,
+    handle: Option<QueryHandle>,
+}
+
+impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop for SubCancelGuard<'_, T, C> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.client.unsubscribe(handle);
+        }
+    }
+}
+
+struct OptimisticCancelGuard<'a, T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> {
+    client: &'a QueryClient<T, C>,
+    handle: Option<OptimisticHandle>,
+}
+
+impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> Drop
+    for OptimisticCancelGuard<'_, T, C>
+{
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.client.rollback_optimistic(&handle);
+        }
+    }
+}
 
 impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C> {
+    /// Suspends until `handle` is no longer `IS_FETCHING` (or is evicted), enabling deduplicated
+    /// concurrent `fetch_handle` / `prefetch` callers to share a single in-flight network request.
+    async fn wait_for_in_flight(&self, handle: QueryHandle) {
+        poll_fn(|cx| {
+            self.inner.state.with(|s| {
+                if !s.is_live(handle) {
+                    return Poll::Ready(());
+                }
+                let idx = handle.slot.index();
+                if !s.metas[idx].is_fetching() {
+                    return Poll::Ready(());
+                }
+                s.payloads[idx].in_flight_waiters.push(cx.waker().clone());
+                Poll::Pending
+            })
+        })
+        .await;
+    }
+
     /// Executes one network fetch attempt for `handle` without holding the cache lock across
-    /// `.await`. Deduplicates concurrent calls on the same slot with zero error cloning.
+    /// `.await`. Cancellation-safe: dropping the future mid-`.await` clears `FLAG_IS_FETCHING`
+    /// and wakes deduplicated waiters automatically.
     pub async fn fetch_handle<P>(
         &self,
         handle: QueryHandle,
@@ -35,14 +90,24 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         P: Procedure<Effect = Query>,
         C: RpcCodec<P::Output> + RpcCodec<P::Error>,
     {
-        let Some((ticket, raw_call)) = self.begin_fetch(handle) else {
-            return Ok(self.read::<P>(handle).data);
+        let Some((ticket, raw_call)) = self.begin_fetch_for::<P>(handle) else {
+            self.wait_for_in_flight(handle).await;
+            let snap = self.read::<P>(handle);
+            if let Some(err) = snap.error {
+                return Err(err);
+            }
+            return Ok(snap.data);
+        };
+        let mut cancel_guard = FetchCancelGuard {
+            client: self,
+            ticket: Some(ticket),
         };
         let raw_res = self.inner.transport.call_raw(raw_call).await;
         let decoded = match raw_res {
             Ok(raw_reply) => decode_reply::<P, C>(&self.inner.codec, raw_reply),
             Err(terr) => Err(RpcError::Transport(terr)),
         };
+        cancel_guard.ticket = None;
         match decoded {
             Ok(reply) => {
                 self.complete_fetch_shared::<P>(ticket, Ok(reply));
@@ -104,8 +169,14 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         let handle = self
             .subscribe::<P>(args, self.inner.config.default_options)
             .map_err(|e| Shared::new(RpcError::Codec(e)))?;
+        let mut sub_guard = SubCancelGuard {
+            client: self,
+            handle: Some(handle),
+        };
         let res = self.fetch_handle::<P>(handle).await;
-        self.unsubscribe(handle);
+        if let Some(h) = sub_guard.handle.take() {
+            self.unsubscribe(h);
+        }
         match res {
             Ok(Some(val)) => Ok(val),
             Ok(None) => Err(Shared::new(RpcError::Transport(
@@ -122,8 +193,14 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     {
         let mut tx = OptimisticTx::new(&self.inner.codec);
         build(&mut tx);
+        if tx.ops.is_empty() {
+            return OptimisticHandle {
+                mutation_id: MutationId(0),
+                touched: Vec::new(),
+            };
+        }
 
-        let (handle, wake) = self.inner.state.with(|s| {
+        let (handle, jobs, wake) = self.inner.state.with(|s| {
             let mutation_id = MutationId(s.next_mutation_id);
             s.next_mutation_id = s.next_mutation_id.wrapping_add(1).max(1);
 
@@ -140,13 +217,16 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         let key_hash = query_key_hash(proc_id, &encoded_args);
                         if let Some(slot) = s.lookup_slot(proc_id, key_hash, &encoded_args) {
                             let idx = slot.index();
-                            if s.payloads[idx].committed.is_some() {
+                            if s.metas[idx].has_data() {
                                 apply_layer_to_slot(&mut s.payloads[idx], make_layer(mutation_id));
                                 wake_cb = s.mark_dirty(slot);
-                                touched.push(QueryHandle {
+                                let h = QueryHandle {
                                     slot,
                                     generation: s.metas[idx].slot_gen,
-                                });
+                                };
+                                if !touched.contains(&h) {
+                                    touched.push(h);
+                                }
                             }
                         }
                     }
@@ -161,7 +241,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             let idx = slot.index();
                             if !s.metas[idx].is_free()
                                 && s.metas[idx].proc_id == proc_id
-                                && s.payloads[idx].committed.is_some()
+                                && s.metas[idx].has_data()
                             {
                                 apply_layer_to_slot(&mut s.payloads[idx], make_layer(mutation_id));
                                 wake_cb = s.mark_dirty(slot);
@@ -182,7 +262,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         for idx in 0..s.metas.len() {
                             if !s.metas[idx].is_free()
                                 && s.metas[idx].proc_id == proc_id
-                                && s.payloads[idx].committed.is_some()
+                                && s.metas[idx].has_data()
                             {
                                 let slot = QuerySlotId(idx as u32);
                                 apply_layer_to_slot(&mut s.payloads[idx], make_layer(mutation_id));
@@ -200,35 +280,56 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 }
             }
 
+            let mut jobs = Vec::with_capacity(touched.len());
+            for &qh in &touched {
+                let idx = qh.slot.index();
+                if let Some(job) =
+                    prepare_recompute_job(qh.slot, &mut s.metas[idx], &mut s.payloads[idx])
+                {
+                    jobs.push(job);
+                }
+            }
+
             (
                 OptimisticHandle {
                     mutation_id,
                     touched,
                 },
+                jobs,
                 wake_cb,
             )
         });
 
+        self.recompute_jobs_outside_lock(jobs);
         if let Some(cb) = wake {
             cb();
         }
         handle
     }
 
-    /// Rolls back all optimistic layers belonging to `handle` without disturbing sibling mutations.
+    /// Rolls back all optimistic layers belonging to `handle` without disturbing sibling mutations,
+    /// recomputing remaining layers strictly outside the cache lock.
     pub fn rollback_optimistic(&self, handle: &OptimisticHandle) {
-        let wake = self.inner.state.with(|s| {
+        let (jobs, wake) = self.inner.state.with(|s| {
             let mut wake_cb: Option<WakeCallback> = None;
+            let mut jobs = Vec::new();
             for &qh in &handle.touched {
                 if !s.is_live(qh) {
                     continue;
                 }
-                if remove_mutation_layers(&mut s.payloads[qh.slot.index()], handle.mutation_id) {
+                let idx = qh.slot.index();
+                if remove_mutation_layers(&mut s.payloads[idx], handle.mutation_id) {
+                    if let Some(job) =
+                        prepare_recompute_job(qh.slot, &mut s.metas[idx], &mut s.payloads[idx])
+                    {
+                        jobs.push(job);
+                    }
                     wake_cb = s.mark_dirty(qh.slot);
                 }
             }
-            wake_cb
+            (jobs, wake_cb)
         });
+        self.recompute_jobs_outside_lock(jobs);
         if let Some(cb) = wake {
             cb();
         }
@@ -237,31 +338,96 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     /// Marks all slots touched by `handle` as invalidated and arms their optimistic layers to
     /// retire automatically once the post-action refetch commits (zero UI flicker).
     pub fn settle_optimistic(&self, handle: &OptimisticHandle) -> Vec<QueryHandle> {
-        let (to_refetch, wake) = self.inner.state.with(|s| {
+        self.settle_action_atomically(handle, &[], false)
+    }
+
+    /// Single-lock atomic post-action settlement: applies wildcard/tag invalidations AND arms
+    /// optimistic layers to settle on the exact post-invalidation `fetch_gen` with ONE
+    /// `invalidate_slot` per slot and ONE `wake_cb()` call after releasing the lock.
+    fn settle_action_atomically(
+        &self,
+        opt_handle: &OptimisticHandle,
+        tags: &[Tag64],
+        invalidate_all: bool,
+    ) -> Vec<QueryHandle> {
+        let (to_refetch, jobs, waiters, wake) = self.inner.state.with(|s| {
             let mut active = Vec::new();
-            let mut wake_cb: Option<WakeCallback> = None;
-            for &qh in &handle.touched {
+            let mut jobs = Vec::new();
+            let mut waiters = Vec::new();
+            let mut invalidated_slots = Vec::new();
+            let mut touched_any = false;
+
+            if invalidate_all {
+                s.wildcard_epoch = s.wildcard_epoch.wrapping_add(1);
+                let active_len = s.active_slots.len();
+                for i in 0..active_len {
+                    let slot = s.active_slots[i];
+                    s.invalidate_slot(slot, &mut active, &mut waiters);
+                    invalidated_slots.push(slot);
+                    touched_any = true;
+                }
+            } else {
+                for &tag in tags {
+                    let mut slots = Vec::new();
+                    s.tags.for_each_slot(tag, |slot| slots.push(slot));
+                    for slot in slots {
+                        if !invalidated_slots.contains(&slot) {
+                            s.invalidate_slot(slot, &mut active, &mut waiters);
+                            invalidated_slots.push(slot);
+                            touched_any = true;
+                        }
+                    }
+                }
+                if !tags.is_empty() && s.subscribed_all_count > 0 {
+                    for idx in 0..s.metas.len() {
+                        if !s.metas[idx].is_free()
+                            && (s.metas[idx].flags & FLAG_SUBSCRIBED_ALL) != 0
+                        {
+                            let slot = QuerySlotId(idx as u32);
+                            if !invalidated_slots.contains(&slot) {
+                                s.invalidate_slot(slot, &mut active, &mut waiters);
+                                invalidated_slots.push(slot);
+                                touched_any = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for &qh in &opt_handle.touched {
                 if !s.is_live(qh) {
                     continue;
                 }
-                s.invalidate_slot(qh.slot, &mut active);
-                let target_gen = s.metas[qh.slot.index()].fetch_gen;
-                if mark_mutation_settling(
-                    &mut s.payloads[qh.slot.index()],
-                    handle.mutation_id,
-                    target_gen,
-                ) {
-                    wake_cb = s.mark_dirty(qh.slot);
+                if !invalidated_slots.contains(&qh.slot) {
+                    s.invalidate_slot(qh.slot, &mut active, &mut waiters);
+                    invalidated_slots.push(qh.slot);
+                    touched_any = true;
                 }
-                if s.metas[qh.slot.index()].subscriber_count == 0 {
-                    remove_mutation_layers(&mut s.payloads[qh.slot.index()], handle.mutation_id);
+                let idx = qh.slot.index();
+                let target_gen = s.metas[idx].fetch_gen;
+                if mark_mutation_settling(&mut s.payloads[idx], opt_handle.mutation_id, target_gen)
+                {
+                    let _ = s.mark_dirty(qh.slot);
+                    touched_any = true;
+                }
+                if s.metas[idx].subscriber_count == 0
+                    && remove_mutation_layers(&mut s.payloads[idx], opt_handle.mutation_id)
+                    && let Some(job) =
+                        prepare_recompute_job(qh.slot, &mut s.metas[idx], &mut s.payloads[idx])
+                {
+                    jobs.push(job);
                 }
             }
-            (active, wake_cb)
+
+            let wake = if touched_any || invalidate_all {
+                s.wake_cb.clone()
+            } else {
+                None
+            };
+            (active, jobs, waiters, wake)
         });
-        if let Some(cb) = wake {
-            cb();
-        }
+        self.recompute_jobs_outside_lock(jobs);
+        run_side_effects(wake, waiters);
         to_refetch
     }
 
@@ -291,37 +457,58 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         Opt: FnOnce(&mut OptimisticTx<'_, C>),
     {
         let opt_handle = self.apply_optimistic(optimistic);
+        self.execute_action_with_handle::<P>(args, opt_handle).await
+    }
+
+    /// Executes action `P` for an already-applied [`OptimisticHandle`], atomically settling
+    /// invalidations and optimistic layers in one lock acquisition on `Ok`, or rolling back on
+    /// `Err` / future drop.
+    pub async fn execute_action_with_handle<P>(
+        &self,
+        args: &P::Args,
+        opt_handle: OptimisticHandle,
+    ) -> Result<(CallReply<P::Output>, Vec<QueryHandle>), RpcError<P::Error>>
+    where
+        P: Procedure<Effect = Action>,
+        C: RpcCodec<P::Args> + RpcCodec<P::Output> + RpcCodec<P::Error>,
+    {
+        let mut cancel_guard = OptimisticCancelGuard {
+            client: self,
+            handle: (opt_handle.touched_count() > 0).then_some(opt_handle),
+        };
         let res = call_with_codec::<P, C>(&self.inner.transport, &self.inner.codec, args).await;
+        let opt_handle = cancel_guard.handle.take().unwrap_or(OptimisticHandle {
+            mutation_id: MutationId(0),
+            touched: Vec::new(),
+        });
 
         let mut static_tags = TagSink::new();
         P::invalidates(args, &mut static_tags);
 
         match res {
             Ok(reply) => {
-                let mut to_refetch = if reply.invalidate_all || static_tags.is_overflow_all() {
-                    self.invalidate_all()
+                let inv_all = reply.invalidate_all || static_tags.is_overflow_all();
+                let mut all_tags = if inv_all {
+                    Vec::new()
                 } else {
-                    let mut all_tags =
+                    let mut v =
                         Vec::with_capacity(reply.invalidated_tags.len() + static_tags.len());
-                    all_tags.extend_from_slice(&reply.invalidated_tags);
+                    v.extend_from_slice(&reply.invalidated_tags);
                     for &t in static_tags.as_slice() {
-                        if !all_tags.contains(&t) {
-                            all_tags.push(t);
+                        if !v.contains(&t) {
+                            v.push(t);
                         }
                     }
-                    self.invalidate_tags(&all_tags)
+                    v
                 };
-                if opt_handle.touched_count() > 0 {
-                    for h in self.settle_optimistic(&opt_handle) {
-                        if !to_refetch.contains(&h) {
-                            to_refetch.push(h);
-                        }
-                    }
-                }
+                let to_refetch = self.settle_action_atomically(&opt_handle, &all_tags, inv_all);
+                all_tags.clear();
                 Ok((reply, to_refetch))
             }
             Err(err @ RpcError::Transport(_)) => {
-                self.rollback_optimistic(&opt_handle);
+                if opt_handle.touched_count() > 0 {
+                    self.rollback_optimistic(&opt_handle);
+                }
                 if static_tags.is_overflow_all() {
                     let _ = self.invalidate_all();
                 } else if !static_tags.is_empty() {
@@ -330,233 +517,12 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 Err(err)
             }
             Err(err) => {
-                self.rollback_optimistic(&opt_handle);
+                if opt_handle.touched_count() > 0 {
+                    self.rollback_optimistic(&opt_handle);
+                }
                 Err(err)
             }
         }
     }
 
-    /// Invalidates all queries tagged with any tag in `tags` (O(k) via flat `TagEdge` pool) into
-    /// caller-reused scratch buffer `active_out` (zero heap allocations when pre-sized).
-    pub fn invalidate_tags_into(&self, tags: &[Tag64], active_out: &mut Vec<QueryHandle>) {
-        active_out.clear();
-        let wake = self.inner.state.with(|s| {
-            let mut visited_count = 0usize;
-            for &tag in tags {
-                let mut cur_slots = [QuerySlotId(0); 32];
-                let mut len = 0usize;
-                let mut overflow: Option<Vec<QuerySlotId>> = None;
-                s.tags.for_each_slot(tag, |slot| {
-                    if let Some(vec) = &mut overflow {
-                        vec.push(slot);
-                    } else if len < cur_slots.len() {
-                        cur_slots[len] = slot;
-                        len += 1;
-                    } else {
-                        let mut vec = Vec::with_capacity(64);
-                        vec.extend_from_slice(&cur_slots);
-                        vec.push(slot);
-                        overflow = Some(vec);
-                    }
-                });
-                if let Some(vec) = overflow {
-                    for slot in vec {
-                        s.invalidate_slot(slot, active_out);
-                        visited_count += 1;
-                    }
-                } else {
-                    for &slot in &cur_slots[..len] {
-                        s.invalidate_slot(slot, active_out);
-                        visited_count += 1;
-                    }
-                }
-            }
-            if !tags.is_empty() {
-                let active_len = s.active_slots.len();
-                for i in 0..active_len {
-                    let slot = s.active_slots[i];
-                    if (s.metas[slot.index()].flags & FLAG_SUBSCRIBED_ALL) != 0 {
-                        s.invalidate_slot(slot, active_out);
-                        visited_count += 1;
-                    }
-                }
-            }
-            if visited_count > 0 {
-                s.wake_cb.clone()
-            } else {
-                None
-            }
-        });
-        if let Some(cb) = wake {
-            cb();
-        }
-    }
-
-    /// Invalidates all queries tagged with any tag in `tags`, returning active mounted handles
-    /// that should refetch.
-    pub fn invalidate_tags(&self, tags: &[Tag64]) -> Vec<QueryHandle> {
-        let mut active = Vec::new();
-        self.invalidate_tags_into(tags, &mut active);
-        active
-    }
-
-    /// O(1) wildcard `*` invalidation (`wildcard_epoch += 1`), marking only active mounted
-    /// queries dirty and returning their handles for refetch.
-    pub fn invalidate_all(&self) -> Vec<QueryHandle> {
-        let (active, wake) = self.inner.state.with(|s| {
-            s.wildcard_epoch = s.wildcard_epoch.wrapping_add(1);
-            let mut out = Vec::with_capacity(s.active_slots.len());
-            let active_len = s.active_slots.len();
-            for i in 0..active_len {
-                let slot = s.active_slots[i];
-                s.invalidate_slot(slot, &mut out);
-            }
-            (out, s.wake_cb.clone())
-        });
-        if let Some(cb) = wake {
-            cb();
-        }
-        active
-    }
-
-    /// Returns active mounted stale/errored handles eligible for refetch on window focus.
-    pub fn on_window_focus(&self) -> Vec<QueryHandle> {
-        self.collect_refetch_eligible(FLAG_REFETCH_ON_FOCUS)
-    }
-
-    /// Returns active mounted stale/errored handles eligible for refetch on network reconnect.
-    pub fn on_network_online(&self) -> Vec<QueryHandle> {
-        self.collect_refetch_eligible(FLAG_REFETCH_ON_RECONNECT)
-    }
-
-    fn collect_refetch_eligible(&self, required_flag: u16) -> Vec<QueryHandle> {
-        let now_ms = self.inner.clock.now_ms();
-        self.inner.state.with(|s| {
-            let mut out = Vec::new();
-            for &slot in &s.active_slots {
-                let meta = s.metas[slot.index()];
-                if (meta.flags & required_flag) != 0
-                    && !meta.is_fetching()
-                    && (meta.has_error() || meta.is_stale(now_ms, s.wildcard_epoch))
-                {
-                    out.push(QueryHandle {
-                        slot,
-                        generation: meta.slot_gen,
-                    });
-                }
-            }
-            out
-        })
-    }
-
-    /// Runs a bounded incremental GC sweep over up to `max_steps` slots, returning how many
-    /// expired inactive slots were evicted.
-    pub fn gc_sweep(&self, max_steps: usize) -> usize {
-        let now_ms = self.inner.clock.now_ms();
-        self.inner
-            .state
-            .with(|s| s.gc_sweep(now_ms, max_steps, self.inner.config.max_entries))
-    }
-
-    /// Dehydrates all live entries with raw CBOR response bytes into a compact `NVEQ` binary blob
-    /// for SSR -> client hydration (zero `serde_json`, zero type registry).
-    pub fn dehydrate_bytes(&self) -> Vec<u8> {
-        let now_ms = self.inner.clock.now_ms();
-        self.inner.state.with(|s| {
-            let mut tag_bufs: Vec<Vec<Tag64>> = Vec::new();
-            let mut slot_indices: Vec<usize> = Vec::new();
-            for (idx, meta) in s.metas.iter().enumerate() {
-                if meta.is_free() || !meta.has_data() {
-                    continue;
-                }
-                if s.payloads[idx].raw_response.is_some() {
-                    let mut tags = Vec::new();
-                    s.tags.collect_tags_for_slot(meta.first_tag_edge, &mut tags);
-                    tag_bufs.push(tags);
-                    slot_indices.push(idx);
-                }
-            }
-            let refs: Vec<DehydrateEntryRef<'_>> = slot_indices
-                .iter()
-                .zip(tag_bufs.iter())
-                .map(|(&idx, tags)| {
-                    let meta = s.metas[idx];
-                    let payload = &s.payloads[idx];
-                    let age_ms = u32::try_from(now_ms.saturating_sub(meta.updated_at_ms))
-                        .unwrap_or(u32::MAX);
-                    DehydrateEntryRef {
-                        proc_id: meta.proc_id,
-                        age_ms,
-                        tags: tags.as_slice(),
-                        encoded_args: &payload.encoded_args,
-                        raw_body: payload.raw_response.as_deref().unwrap_or(&[]),
-                    }
-                })
-                .collect();
-            encode_hydration_entries(&refs)
-        })
-    }
-
-    /// Seeds cache slots from a dehydrated `NVEQ` binary blob without decoding typed values yet
-    /// (decoding happens lazily on the first typed [`Self::read`] call, and tags are indexed
-    /// immediately so pre-read invalidations work).
-    pub fn hydrate_bytes(&self, bytes: &[u8]) -> Result<usize, DehydrateError> {
-        let entries = decode_hydration_entries(bytes)?;
-        let now_ms = self.inner.clock.now_ms();
-        let count = entries.len();
-        self.inner.state.with(|s| {
-            for entry in entries {
-                let key_hash = query_key_hash(entry.proc_id, &entry.encoded_args);
-                let updated_at = now_ms.saturating_sub(u64::from(entry.age_ms));
-                let body_hash = xxh64(&entry.raw_body, BODY_HASH_SEED);
-
-                let slot = if let Some(existing) =
-                    s.lookup_slot(entry.proc_id, key_hash, &entry.encoded_args)
-                {
-                    existing
-                } else {
-                    s.insert_slot(
-                        entry.proc_id,
-                        "",
-                        key_hash,
-                        entry.encoded_args,
-                        self.inner.config.default_options,
-                        &entry.tags,
-                        false,
-                        updated_at,
-                    )
-                    .slot
-                };
-
-                let idx = slot.index();
-                let meta = &mut s.metas[idx];
-                meta.updated_at_ms = updated_at;
-                meta.invalidated_epoch = s.wildcard_epoch;
-                meta.flags |= FLAG_HAS_DATA | FLAG_HYDRATED;
-                meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED);
-
-                let payload = &mut s.payloads[idx];
-                payload.raw_response = Some(entry.raw_body);
-                payload.raw_body_hash = body_hash;
-                payload.committed = None;
-                payload.committed_error = None;
-            }
-        });
-        Ok(count)
-    }
-
-    #[inline]
-    pub fn live_slot_count(&self) -> usize {
-        self.inner.state.with(|s| s.live_count)
-    }
-
-    #[inline]
-    pub fn active_slot_count(&self) -> usize {
-        self.inner.state.with(|s| s.active_slots.len())
-    }
-
-    #[inline]
-    pub fn tag_edge_count(&self) -> usize {
-        self.inner.state.with(|s| s.tags.live_edge_count())
-    }
 }

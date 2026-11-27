@@ -41,15 +41,33 @@ pub const DEFAULT_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default maximum idle keep-alive sockets cached per host.
 pub const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 32;
 
-/// Native Hyper plain HTTP/1.1 (`http://`) client implementing [`nve_rpc::Transport`].
-///
-/// Configured with `TCP_NODELAY`, bounded idle pool timer, connect timeout, and per-call request
-/// timeout. For TLS/QUIC over the public internet, pair with an HTTPS reverse proxy or Slice 2's
-/// `nve-wire` transport.
+/// RAII wrapper shutting down an owned background Tokio runtime via `shutdown_background()` so
+/// dropping the last [`HyperTransport`] clone from inside an async Tokio task never panics.
+struct BackgroundRuntime(Option<tokio::runtime::Runtime>);
+
+impl BackgroundRuntime {
+    #[inline]
+    fn handle(&self) -> tokio::runtime::Handle {
+        self.0
+            .as_ref()
+            .expect("BackgroundRuntime live until Drop")
+            .handle()
+            .clone()
+    }
+}
+
+impl Drop for BackgroundRuntime {
+    fn drop(&mut self) {
+        if let Some(rt) = self.0.take() {
+            rt.shutdown_background();
+        }
+    }
+}
+
 #[derive(Clone)]
 enum HyperRuntime {
     Handle(tokio::runtime::Handle),
-    Owned(Arc<tokio::runtime::Runtime>),
+    Owned(Arc<BackgroundRuntime>),
 }
 
 impl HyperRuntime {
@@ -57,7 +75,7 @@ impl HyperRuntime {
     fn handle(&self) -> tokio::runtime::Handle {
         match self {
             Self::Handle(h) => h.clone(),
-            Self::Owned(rt) => rt.handle().clone(),
+            Self::Owned(rt) => rt.handle(),
         }
     }
 }
@@ -78,6 +96,11 @@ impl<T> Future for AbortOnDropJoinHandle<T> {
     }
 }
 
+/// Native Hyper plain HTTP/1.1 (`http://`) client implementing [`nve_rpc::Transport`].
+///
+/// Configured with `TCP_NODELAY`, bounded idle pool timer, connect timeout, and per-call request
+/// timeout. For TLS/QUIC over the public internet, pair with an HTTPS reverse proxy or Slice 2's
+/// `nve-wire` transport.
 #[derive(Clone)]
 pub struct HyperTransport {
     client: Client<HttpConnector, Full<Bytes>>,
@@ -132,7 +155,7 @@ impl HyperTransport {
             .thread_name("nve-http-hyper")
             .build()
             .map_err(|err| TransportError::config(format!("failed to start Tokio runtime: {err}")))?;
-        self.runtime = Some(HyperRuntime::Owned(Arc::new(rt)));
+        self.runtime = Some(HyperRuntime::Owned(Arc::new(BackgroundRuntime(Some(rt)))));
         Ok(self)
     }
 
@@ -202,17 +225,6 @@ impl Transport for HyperTransport {
                 ));
             }
 
-            let Some(handle) = self
-                .runtime
-                .as_ref()
-                .map(HyperRuntime::handle)
-                .or_else(|| tokio::runtime::Handle::try_current().ok())
-            else {
-                return Err(TransportError::config(
-                    "HyperTransport requires a Tokio runtime; call with_runtime() or with_background_runtime()",
-                ));
-            };
-
             let mut url = String::with_capacity(
                 self.base_url.len() + self.rpc_prefix.len() + req.name.len() + 2,
             );
@@ -229,60 +241,85 @@ impl Transport for HyperTransport {
                 .headers_mut()
                 .insert(CONTENT_TYPE, HeaderValue::from_static(req.content_type));
 
-            let client = self.client.clone();
             let max_response_bytes = self.max_response_bytes;
             let request_timeout = self.request_timeout;
 
-            let join = handle.spawn(async move {
-                let exchange = async {
-                    let resp = client.request(http_req).await.map_err(|err| {
-                        TransportError::network(format!("HTTP request failed: {err}"))
-                    })?;
-
-                    let (parts, body) = resp.into_parts();
-                    let resp_bytes = collect_body_limited(body, max_response_bytes)
-                        .await
-                        .map_err(|err| match err {
-                            BodyReadError::TooLarge { .. } => {
-                                TransportError::response_too_large(err.to_string())
-                            }
-                            BodyReadError::Timeout { .. } => {
-                                TransportError::timeout(err.to_string())
-                            }
-                            BodyReadError::Stream(_) => TransportError::network(err.to_string()),
-                        })?;
-                    let error_kind = parts.headers.get(&HDR_ERROR_KIND).map(HeaderValue::as_bytes);
-                    let invalidate = parts
-                        .headers
-                        .get_all(&HDR_INVALIDATE)
-                        .iter()
-                        .map(HeaderValue::as_bytes);
-                    Ok(classify_http_reply(
-                        parts.status.as_u16(),
-                        error_kind,
-                        invalidate,
-                        resp_bytes,
-                    ))
-                };
-
-                match tokio::time::timeout(request_timeout, exchange).await {
+            if let Some(rt) = &self.runtime {
+                let client = self.client.clone();
+                let join = rt.handle().spawn(execute_hyper_exchange(
+                    client,
+                    http_req,
+                    max_response_bytes,
+                    request_timeout,
+                ));
+                return match AbortOnDropJoinHandle(join).await {
                     Ok(res) => res,
-                    Err(_) => Err(TransportError::timeout(format!(
-                        "HTTP request timed out after {}ms",
-                        request_timeout.as_millis()
+                    Err(err) if err.is_cancelled() => {
+                        Err(TransportError::cancelled("HTTP request task cancelled"))
+                    }
+                    Err(err) => Err(TransportError::network(format!(
+                        "HTTP request task failed: {err}"
                     ))),
-                }
-            });
-
-            match AbortOnDropJoinHandle(join).await {
-                Ok(res) => res,
-                Err(err) if err.is_cancelled() => {
-                    Err(TransportError::cancelled("HTTP request task cancelled"))
-                }
-                Err(err) => Err(TransportError::network(format!(
-                    "HTTP request task failed: {err}"
-                ))),
+                };
             }
+
+            if tokio::runtime::Handle::try_current().is_err() {
+                return Err(TransportError::config(
+                    "HyperTransport requires a Tokio runtime; call with_runtime() or with_background_runtime()",
+                ));
+            }
+            execute_hyper_exchange(
+                self.client.clone(),
+                http_req,
+                max_response_bytes,
+                request_timeout,
+            )
+            .await
         })
+    }
+}
+
+async fn execute_hyper_exchange(
+    client: Client<HttpConnector, Full<Bytes>>,
+    http_req: Request<Full<Bytes>>,
+    max_response_bytes: usize,
+    request_timeout: Duration,
+) -> Result<RawReply, TransportError> {
+    let exchange = async {
+        let resp = client
+            .request(http_req)
+            .await
+            .map_err(|err| TransportError::network(format!("HTTP request failed: {err}")))?;
+
+        let (parts, body) = resp.into_parts();
+        let resp_bytes = collect_body_limited(body, max_response_bytes)
+            .await
+            .map_err(|err| match err {
+                BodyReadError::TooLarge { .. } => {
+                    TransportError::response_too_large(err.to_string())
+                }
+                BodyReadError::Timeout { .. } => TransportError::timeout(err.to_string()),
+                BodyReadError::Stream(_) => TransportError::network(err.to_string()),
+            })?;
+        let error_kind = parts.headers.get(&HDR_ERROR_KIND).map(HeaderValue::as_bytes);
+        let invalidate = parts
+            .headers
+            .get_all(&HDR_INVALIDATE)
+            .iter()
+            .map(HeaderValue::as_bytes);
+        Ok(classify_http_reply(
+            parts.status.as_u16(),
+            error_kind,
+            invalidate,
+            resp_bytes,
+        ))
+    };
+
+    match tokio::time::timeout(request_timeout, exchange).await {
+        Ok(res) => res,
+        Err(_) => Err(TransportError::timeout(format!(
+            "HTTP request timed out after {}ms",
+            request_timeout.as_millis()
+        ))),
     }
 }

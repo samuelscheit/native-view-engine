@@ -536,14 +536,32 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
 
     pub(crate) fn process_pending_remote_frames(&mut self) {
         for sw in self.windows.values_mut() {
-            if !sw.session.app().has_pending_remote_frame() {
+            if !sw.session.app().has_pending_remote_frame()
+                && !sw.session.app_mut().poll_async_work()
+            {
                 continue;
             }
             if let Some(banner) = sw.session.app().remote_status_banner() {
                 sw.session.set_status_banner(Some(banner));
             }
             if let Err(err) = sw.session.render_and_rasterize() {
-                eprintln!("[nve-skia-shell] paired remote frame error: {err}");
+                eprintln!("[nve-skia-shell] async frame error: {err}");
+            }
+            sw.sync_title();
+            sw.sync_ime_state();
+            sw.window.request_redraw();
+        }
+    }
+
+    pub(crate) fn process_app_wakes(&mut self) {
+        let host_woke = self.host_services.take_pending_app_wake();
+        for sw in self.windows.values_mut() {
+            let dirty = sw.session.app_mut().poll_async_work() || host_woke;
+            if !dirty {
+                continue;
+            }
+            if let Err(err) = sw.session.render_and_rasterize() {
+                eprintln!("[nve-skia-shell] async wake frame error: {err}");
             }
             sw.sync_title();
             sw.sync_ime_state();
@@ -591,6 +609,7 @@ impl<A: DesktopApp> ApplicationHandler<HostWakeEvent> for DesktopWindowHost<A> {
         match event {
             HostWakeEvent::HotReload => self.process_pending_hot_patches(),
             HostWakeEvent::RemoteFrame => self.process_pending_remote_frames(),
+            HostWakeEvent::AppWake => self.process_app_wakes(),
             HostWakeEvent::WindowCommand(cmd) => self.apply_window_command(event_loop, cmd),
         }
     }

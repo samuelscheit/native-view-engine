@@ -9,11 +9,12 @@
 use std::any::{Any, TypeId};
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nve_abi::{
-    NveBufferSlice, NveHostCallbacks, NveHostStatus, NVE_CHANNEL_FLAG_RETAIN, SERVICE_SYSTEM_ENV,
-    SERVICE_WINDOW,
+    NveBufferSlice, NveHostCallbacks, NveHostStatus, METHOD_WINDOW_REQUEST_FRAME,
+    NVE_CHANNEL_FLAG_RETAIN, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 use nve_clipboard::NativeClipboard;
 use nve_filesystem::NativeFilesystem;
@@ -154,6 +155,8 @@ pub struct SkiaHostServices {
     window_backend_typed: (TypeId, Arc<dyn Any + Send + Sync>),
     cached_env: Arc<SkiaSystemEnvBackend>,
     cached_env_typed: (TypeId, Arc<dyn Any + Send + Sync>),
+    wake_sink: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    pending_app_wake: AtomicBool,
 }
 
 impl SkiaHostServices {
@@ -203,6 +206,8 @@ impl SkiaHostServices {
             window_backend_typed,
             cached_env,
             cached_env_typed,
+            wake_sink: Mutex::new(None),
+            pending_app_wake: AtomicBool::new(false),
         })
     }
 
@@ -217,12 +222,47 @@ impl SkiaHostServices {
         }
     }
 
-    /// Attaches a `winit` [`EventLoopProxy`] as the live window command sink and immediately
-    /// flushes any commands buffered prior to event-loop startup.
+    /// Attaches a `winit` [`EventLoopProxy`] as the live window command sink and async frame wake
+    /// sink, immediately flushing any commands buffered prior to event-loop startup.
     pub fn attach_event_loop_proxy(&self, proxy: EventLoopProxy<HostWakeEvent>) {
+        let wake_proxy = proxy.clone();
+        self.attach_wake_sink(Arc::new(move || {
+            let _ = wake_proxy.send_event(HostWakeEvent::AppWake);
+        }));
         self.attach_window_sink(Arc::new(move |cmd| {
             let _ = proxy.send_event(HostWakeEvent::WindowCommand(cmd));
         }));
+    }
+
+    /// Attaches an async frame wake callback invoked when an app calls
+    /// `NveHostCallbacks::invoke(SERVICE_WINDOW, METHOD_WINDOW_REQUEST_FRAME)`.
+    pub fn attach_wake_sink(&self, sink: Arc<dyn Fn() + Send + Sync>) {
+        let fire_now = {
+            let mut guard = self.wake_sink.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = Some(Arc::clone(&sink));
+            self.pending_app_wake.load(Ordering::Acquire)
+        };
+        if fire_now {
+            sink();
+        }
+    }
+
+    /// Marks an asynchronous frame wake pending and invokes the attached wake sink if present.
+    pub fn request_frame_wake(&self) {
+        self.pending_app_wake.store(true, Ordering::Release);
+        let sink = self
+            .wake_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(cb) = sink {
+            cb();
+        }
+    }
+
+    /// Consumes and returns whether an async app frame wake was requested via `SERVICE_WINDOW`.
+    pub fn take_pending_app_wake(&self) -> bool {
+        self.pending_app_wake.swap(false, Ordering::AcqRel)
     }
 
     /// Attaches a custom window command sink and flushes any previously queued commands in FIFO order.
@@ -400,6 +440,10 @@ impl HostServiceProvider for SkiaHostServices {
         request: &[u8],
     ) -> Result<InvokeResult, ServiceError> {
         if service_id == SERVICE_WINDOW {
+            if method_id == METHOD_WINDOW_REQUEST_FRAME {
+                self.request_frame_wake();
+                return Ok(InvokeResult::Ready(Vec::new().into()));
+            }
             return Err(ServiceError::Unsupported);
         }
         if service_id == SERVICE_SYSTEM_ENV {

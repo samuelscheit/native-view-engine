@@ -26,6 +26,7 @@ pub struct FieldState<T> {
     sync_error: Option<String>,
     cross_error: Option<String>,
     async_error: Option<String>,
+    server_error: Option<String>,
     async_generation: u64,
     validating: bool,
 }
@@ -42,6 +43,7 @@ impl<T: Clone + PartialEq> FieldState<T> {
             sync_error: None,
             cross_error: None,
             async_error: None,
+            server_error: None,
             async_generation: 0,
             validating: false,
         }
@@ -68,6 +70,7 @@ impl<T: Clone + PartialEq> FieldState<T> {
         self.value = value;
         self.async_generation = self.async_generation.wrapping_add(1);
         self.async_error = None;
+        self.server_error = None;
         self.validating = false;
     }
 
@@ -121,6 +124,12 @@ impl<T: Clone + PartialEq> FieldState<T> {
         self.cross_error = error;
     }
 
+    /// Explicitly sets or clears a server-returned field error (auto-cleared on edit).
+    #[inline]
+    pub fn set_server_error(&mut self, error: Option<String>) {
+        self.server_error = error;
+    }
+
     /// Starts an asynchronous validation cycle and returns a [`ValidationToken`] stamped with the
     /// field's current generation. Any earlier tokens become stale immediately.
     pub fn begin_async_validation(&mut self) -> ValidationToken {
@@ -164,6 +173,7 @@ impl<T: Clone + PartialEq> FieldState<T> {
             .as_deref()
             .or(self.cross_error.as_deref())
             .or(self.async_error.as_deref())
+            .or(self.server_error.as_deref())
     }
 
     /// Returns the active error only once the field has been blurred (`touched`) or the form has
@@ -191,6 +201,7 @@ impl<T: Clone + PartialEq> FieldState<T> {
         self.sync_error = None;
         self.cross_error = None;
         self.async_error = None;
+        self.server_error = None;
         self.validating = false;
         self.async_generation = self.async_generation.wrapping_add(1);
     }
@@ -201,6 +212,7 @@ impl<T: Clone + PartialEq> FieldState<T> {
         self.initial = self.value.clone();
         self.touched = false;
         self.submitted = false;
+        self.server_error = None;
     }
 }
 
@@ -221,6 +233,7 @@ trait DynField {
     fn mark_submitted(&mut self);
     fn run_sync_validators(&mut self) -> bool;
     fn set_cross_error(&mut self, error: Option<String>);
+    fn set_server_error(&mut self, error: Option<String>);
     fn begin_async_validation(&mut self) -> ValidationToken;
     fn apply_async_result(&mut self, token: &ValidationToken, result: Result<(), String>) -> bool;
     fn is_validating(&self) -> bool;
@@ -268,6 +281,10 @@ impl<T: Clone + PartialEq + 'static> DynField for TypedFieldSlot<T> {
 
     fn set_cross_error(&mut self, error: Option<String>) {
         self.state.set_cross_error(error);
+    }
+
+    fn set_server_error(&mut self, error: Option<String>) {
+        self.state.set_server_error(error);
     }
 
     fn begin_async_validation(&mut self) -> ValidationToken {
@@ -527,6 +544,25 @@ impl FormState {
     #[inline]
     pub fn is_submitted(&self) -> bool {
         self.submitted
+    }
+
+    /// Sets or clears a server validation error on field `id`, marking it submitted when `Some`.
+    pub fn set_server_error(&mut self, id: &str, error: Option<String>) -> bool {
+        let Some(field) = self.fields.get_mut(id) else {
+            return false;
+        };
+        if error.is_some() {
+            field.mark_submitted();
+        }
+        field.set_server_error(error);
+        true
+    }
+
+    /// Clears all server-attached field errors across every registered field.
+    pub fn clear_server_errors(&mut self) {
+        for field in self.fields.values_mut() {
+            field.set_server_error(None);
+        }
     }
 
     pub fn error(&self, id: &str) -> Option<&str> {

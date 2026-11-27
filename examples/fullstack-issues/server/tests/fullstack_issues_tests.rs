@@ -1,7 +1,7 @@
 //! End-to-end integration tests for `examples/fullstack-issues`:
 //! - Native `HyperTransport` Bearer client vs `DirectTransport` exact parity (+ trusted SSR mode)
 //! - Web Cookie + Origin RPC and progressive 0-JS HTML `<form>` POST (`303 -> GET /issues`,
-//!   `422 text/plain` for browsers vs `422 application/cbor` for enhanced clients, `403` CSRF)
+//!   `422 text/plain` validation errors, `403` CSRF)
 //! - Mobile App Store schema skew (both new struct fields AND open-enum unknown variants)
 //! - Axum `Router` mountability of `IssuesHttpService`
 

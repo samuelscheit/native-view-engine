@@ -482,7 +482,7 @@ async fn hyper_transport_background_runtime_works_on_non_tokio_thread_and_cors_o
     let svc = NveHyperService::new(server.clone());
     let opt_req = Request::builder()
         .method(Method::OPTIONS)
-        .uri("/rpc/hyper.v1.Echo/Call")
+        .uri("/rpc/hyper.v1.Test/Echo")
         .header(ORIGIN, "http://localhost:8080")
         .header(http::header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
         .body(PanicIfPolledBody)
@@ -544,6 +544,59 @@ async fn hyper_transport_background_runtime_works_on_non_tokio_thread_and_cors_o
     let reply = res_rx.await.expect("UI thread must report result").unwrap();
     ui_thread.join().expect("plain UI thread must not panic");
     assert_eq!(reply.value.text, "from-winit-thread");
+
+    // 3. Dropping the last `HyperTransport::with_background_runtime()` clone inside an async
+    //    Tokio test context MUST NOT panic (`shutdown_background()`).
+    {
+        let owned_in_async = HyperTransport::new(format!("http://{addr}"))
+            .with_background_runtime()
+            .unwrap();
+        let reply2 = call::<Echo>(
+            &owned_in_async,
+            &EchoReq {
+                text: "drop-in-tokio".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply2.value.text, "drop-in-tokio");
+    }
+
+    // 4. Streaming 413 body-too-large after CORS preflight still preserves ACAO header!
+    let tiny_server = {
+        let mut reg = RpcRegistry::<(), ()>::builder();
+        reg.register::<Echo, _, _>(|_cx: Cx<(), ()>, req: EchoReq| async move {
+            Ok(EchoRes { text: req.text })
+        });
+        Server::new(
+            (),
+            reg.build(),
+            AnonymousAuth,
+            CsrfPolicy::allow_origins(["http://127.0.0.1"]),
+            ServerConfig {
+                max_body_bytes: 8,
+                ..ServerConfig::default()
+            }
+            .with_cors(nve_server::CorsPolicy::allow_origins(["http://localhost:8080"])),
+        )
+    };
+    let tiny_svc = NveHyperService::new(tiny_server);
+    let big_cors_req = Request::builder()
+        .method(Method::POST)
+        .uri("/rpc/hyper.v1.Test/Echo")
+        .header(CONTENT_TYPE, CONTENT_TYPE_CBOR)
+        .header(ORIGIN, "http://localhost:8080")
+        .body(Full::new(Bytes::from(vec![0u8; 64])))
+        .unwrap();
+    let big_cors_resp = tiny_svc.call(big_cors_req).await.unwrap();
+    assert_eq!(big_cors_resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        big_cors_resp
+            .headers()
+            .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .unwrap(),
+        "http://localhost:8080"
+    );
 
     let _ = tx.send(());
     srv_task.await.unwrap();

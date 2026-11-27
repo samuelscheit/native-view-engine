@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use nve_abi::{
     ColorRgba, CommandBufferBuilder, ComponentKind, FrameId, NveHostStatus, SurfaceId,
-    ROOT_NODE_ID, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
+    METHOD_WINDOW_REQUEST_FRAME, ROOT_NODE_ID, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
 use nve_engine::Viewport;
@@ -162,9 +162,16 @@ fn skia_host_services_dispatches_all_sdk_capabilities_buffer_retry_and_channel_b
         &[b"binary-channel-frame".to_vec()]
     );
 
-    // 8. Unsupported raw C-ABI service error paths
+    // 8. Async frame wakeup (`METHOD_WINDOW_REQUEST_FRAME = 1`) + unsupported raw C-ABI service error paths
+    assert!(!services.take_pending_app_wake());
+    let wake_resp = ffi
+        .invoke_sync(SERVICE_WINDOW, METHOD_WINDOW_REQUEST_FRAME, &[])
+        .expect("METHOD_WINDOW_REQUEST_FRAME must succeed");
+    assert!(wake_resp.is_empty());
+    assert!(services.take_pending_app_wake());
+    assert!(!services.take_pending_app_wake());
     assert!(matches!(
-        ffi.invoke_sync(SERVICE_WINDOW, 1, &[]),
+        ffi.invoke_sync(SERVICE_WINDOW, 99, &[]),
         Err(ServiceError::Unsupported)
     ));
     assert!(matches!(

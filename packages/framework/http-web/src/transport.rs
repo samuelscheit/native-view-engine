@@ -6,8 +6,9 @@ use nve_rpc::{BoxFuture, RawCall, RawReply, Transport, TransportError};
 
 use crate::config::FetchConfig;
 
-/// Minimal-WASM browser `fetch` RPC transport (`POST`, `application/cbor`, `redirect: "error"`,
-/// streaming `ReadableStream` response cap, `AbortController` timeout + abort-on-drop).
+/// Minimal-WASM browser `fetch` RPC transport (`POST`, `application/cbor`, `redirect: "manual"`
+/// rejecting opaque redirects deterministically, streaming `ReadableStream` response cap,
+/// `AbortController` timeout + abort-on-drop).
 #[derive(Debug, Clone)]
 pub struct FetchTransport {
     config: FetchConfig,

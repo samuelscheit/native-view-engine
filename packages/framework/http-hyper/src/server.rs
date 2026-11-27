@@ -135,9 +135,7 @@ where
     let prepared = match server.preflight_request(&mut parts, nested_rpc).await {
         Ok(p) => p,
         Err(err) => {
-            let mut resp = err.into_response();
-            server.apply_cors_headers(&parts.headers, &mut resp);
-            return Ok(resp.map(Full::new));
+            return Ok(server.preflight_error_response(err).map(Full::new));
         }
     };
 

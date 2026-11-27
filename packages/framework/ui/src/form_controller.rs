@@ -17,6 +17,7 @@ pub struct FormController {
     storage: Box<dyn FormDraftStorage>,
     restored_draft: bool,
     max_draft_bytes: usize,
+    form_error: Option<String>,
 }
 
 impl Default for FormController {
@@ -33,6 +34,7 @@ impl FormController {
             storage: default_draft_storage(),
             restored_draft: false,
             max_draft_bytes: DEFAULT_MAX_FORM_DRAFT_BYTES,
+            form_error: None,
         }
     }
 
@@ -46,6 +48,7 @@ impl FormController {
             storage: Box::new(storage),
             restored_draft: false,
             max_draft_bytes: DEFAULT_MAX_FORM_DRAFT_BYTES,
+            form_error: None,
         }
     }
 
@@ -56,6 +59,7 @@ impl FormController {
             storage: default_draft_storage(),
             restored_draft: false,
             max_draft_bytes: DEFAULT_MAX_FORM_DRAFT_BYTES,
+            form_error: None,
         }
     }
 
@@ -84,6 +88,14 @@ impl FormController {
         self
     }
 
+    /// Registers a text field with `initial` only if not yet registered (preserves user edits
+    /// and restored drafts across re-renders).
+    pub fn ensure_text_field(&mut self, name: &str, initial: &str) {
+        if self.state.field::<String>(name).is_none() {
+            self.state.register_field(name, initial.to_owned());
+        }
+    }
+
     /// Attaches a synchronous validator to a registered text field.
     pub fn add_text_validator<F>(&mut self, name: &str, validator: F) -> bool
     where
@@ -107,6 +119,7 @@ impl FormController {
         if self.state.field::<String>(name).is_none() {
             self.state.register_field(name, String::new());
         }
+        self.form_error = None;
         let _ = self.state.set_value(name, value);
         self.sync_draft_persistence();
     }
@@ -173,6 +186,48 @@ impl FormController {
         self.state.visible_error(name)
     }
 
+    /// Returns any form-level error (e.g. non-field server/transport errors).
+    #[inline]
+    pub fn form_error(&self) -> Option<&str> {
+        self.form_error.as_deref()
+    }
+
+    /// Sets or clears the form-level error message.
+    #[inline]
+    pub fn set_form_error(&mut self, error: Option<String>) {
+        self.form_error = error;
+    }
+
+    /// Attaches or clears a server error on `name` (falling back to `form_error` if `name` is
+    /// empty or does not match a registered field).
+    pub fn set_field_server_error(&mut self, name: &str, error: Option<String>) {
+        if name.is_empty() || !self.state.set_server_error(name, error.clone()) {
+            self.form_error = error;
+        }
+    }
+
+    /// Clears prior server errors and applies a batch of `(field_name, message)` server errors.
+    /// Matching fields receive visible inline errors; empty or unknown field names aggregate into
+    /// [`Self::form_error`].
+    pub fn apply_server_errors(&mut self, errors: &[(String, String)]) {
+        self.clear_server_errors();
+        let mut form_msgs = Vec::new();
+        for (field, msg) in errors {
+            if field.is_empty() || !self.state.set_server_error(field, Some(msg.clone())) {
+                form_msgs.push(msg.as_str());
+            }
+        }
+        if !form_msgs.is_empty() {
+            self.form_error = Some(form_msgs.join("; "));
+        }
+    }
+
+    /// Clears all field-level and form-level server errors.
+    pub fn clear_server_errors(&mut self) {
+        self.form_error = None;
+        self.state.clear_server_errors();
+    }
+
     pub fn is_valid(&self) -> bool {
         self.state.is_valid()
     }
@@ -192,20 +247,38 @@ impl FormController {
         map
     }
 
+    /// Runs full client validation for an asynchronous submit WITHOUT clearing persisted drafts or
+    /// committing the clean baseline. Call [`Self::mark_submit_succeeded`] only once the async
+    /// server action resolves `Ok`, or [`Self::apply_server_errors`] / [`Self::set_form_error`] on
+    /// rejection so user edits and drafts remain intact.
+    pub fn validate_for_submit(&mut self) -> Option<BTreeMap<String, String>> {
+        self.clear_server_errors();
+        if !self.state.submit() {
+            return None;
+        }
+        Some(self.field_values())
+    }
+
+    /// Commits the current field values as the clean baseline, clears server errors, and removes
+    /// any persisted draft after a verified asynchronous submission succeeds.
+    pub fn mark_submit_succeeded(&mut self) {
+        self.clear_server_errors();
+        self.state.commit_clean_baseline();
+        self.clear_draft();
+    }
+
     /// Runs full validation; if valid, invokes `on_valid` and clears the saved draft + commits the
     /// clean baseline ONLY when `on_valid` returns `Ok(())`.
     pub fn submit_with<F>(&mut self, on_valid: F) -> Result<BTreeMap<String, String>, Option<String>>
     where
         F: FnOnce(&BTreeMap<String, String>) -> Result<(), String>,
     {
-        if !self.state.submit() {
+        let Some(values) = self.validate_for_submit() else {
             return Err(None);
-        }
-        let values = self.field_values();
+        };
         match on_valid(&values) {
             Ok(()) => {
-                self.state.commit_clean_baseline();
-                self.clear_draft();
+                self.mark_submit_succeeded();
                 Ok(values)
             }
             Err(err) => Err(Some(err)),
@@ -214,6 +287,7 @@ impl FormController {
 
     /// Resets all fields back to their clean baseline and clears any persisted draft.
     pub fn reset(&mut self) {
+        self.form_error = None;
         self.state.reset_to_clean();
         self.clear_draft();
     }

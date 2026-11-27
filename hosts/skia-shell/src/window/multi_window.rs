@@ -40,6 +40,7 @@ use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 pub enum HostWakeEvent {
     HotReload,
     RemoteFrame,
+    AppWake,
     WindowCommand(WindowCommand),
 }
 

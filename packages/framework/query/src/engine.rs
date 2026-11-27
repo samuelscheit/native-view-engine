@@ -4,20 +4,24 @@
 use bytes::Bytes;
 use nve_hash::xxh64;
 use nve_rpc::{
-    encode_args, CallReply, CborCodec, CodecError, MaybeSend, MaybeSync, ProcId, Procedure, Query,
-    RawCall, RpcCodec, RpcError, TagSink, Transport,
+    encode_args, CborCodec, CodecError, MaybeSend, MaybeSync, ProcId, Procedure, Query, RpcCodec,
+    RpcError, TagSink, Transport,
 };
 
-use crate::optimistic::settle_layers_up_to;
+use core::task::Waker;
+
+use crate::optimistic::{prepare_recompute_job, settle_layers_up_to};
 use crate::slab::{
     QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IN_DIRTY_QUEUE,
     FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
     FLAG_SUBSCRIBED_ALL, NONE_IDX,
 };
 use crate::state::CacheState;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::types::SystemClock;
 use crate::types::{
-    downcast_shared, into_shared_any, Clock, FetchTicket, QueryClientConfig, QueryHandle,
-    QueryMode, QueryOptions, QuerySnapshot, Shared, SystemClock,
+    downcast_shared, into_shared_any, Clock, QueryClientConfig, QueryHandle, QueryMode,
+    QueryOptions, QuerySnapshot, Shared,
 };
 
 pub use crate::hydrate::DehydrateError;
@@ -83,9 +87,20 @@ impl<T, C> Clone for QueryClient<T, C> {
     }
 }
 
+impl<T, C> PartialEq for QueryClient<T, C> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        Shared::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl<T, C> Eq for QueryClient<T, C> {}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: Transport> QueryClient<T, CborCodec> {
     /// Creates a client in interactive [`QueryMode::Client`] using [`CborCodec::default`] and
-    /// [`SystemClock::new`].
+    /// [`SystemClock::new`]. On `wasm32`, construct with [`Self::with_clock`] passing a real
+    /// browser clock (e.g. `nve_http_web::BrowserClock`).
     pub fn new(transport: T) -> Self {
         Self::with_clock(
             transport,
@@ -192,38 +207,54 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         let mut sink = TagSink::new();
         P::tags(args, &mut sink);
 
-        let handle = self.inner.state.with(|s| {
+        let (handle, waiters) = self.inner.state.with(|s| {
+            let mut waiters = Vec::new();
             let handle = if let Some(slot) = s.lookup_slot(P::ID, key_hash, &encoded_args) {
                 let idx = slot.index();
                 let meta = &mut s.metas[idx];
-                meta.stale_time_ms = options.stale_time_ms;
-                meta.gc_time_ms = options.gc_time_ms;
-                if options.refetch_on_focus {
-                    meta.flags |= FLAG_REFETCH_ON_FOCUS;
+                if meta.subscriber_count == 0 {
+                    meta.stale_time_ms = options.stale_time_ms;
+                    meta.gc_time_ms = options.gc_time_ms;
+                    if options.refetch_on_focus {
+                        meta.flags |= FLAG_REFETCH_ON_FOCUS;
+                    } else {
+                        meta.flags &= !FLAG_REFETCH_ON_FOCUS;
+                    }
+                    if options.refetch_on_reconnect {
+                        meta.flags |= FLAG_REFETCH_ON_RECONNECT;
+                    } else {
+                        meta.flags &= !FLAG_REFETCH_ON_RECONNECT;
+                    }
+                    s.payloads[idx].options = options;
                 } else {
-                    meta.flags &= !FLAG_REFETCH_ON_FOCUS;
+                    // Merge shared-slot options conservatively across concurrent subscribers.
+                    meta.stale_time_ms = meta.stale_time_ms.min(options.stale_time_ms);
+                    meta.gc_time_ms = meta.gc_time_ms.max(options.gc_time_ms);
+                    if options.refetch_on_focus {
+                        meta.flags |= FLAG_REFETCH_ON_FOCUS;
+                    }
+                    if options.refetch_on_reconnect {
+                        meta.flags |= FLAG_REFETCH_ON_RECONNECT;
+                    }
                 }
-                if options.refetch_on_reconnect {
-                    meta.flags |= FLAG_REFETCH_ON_RECONNECT;
-                } else {
-                    meta.flags &= !FLAG_REFETCH_ON_RECONNECT;
-                }
-                let payload = &mut s.payloads[idx];
-                payload.proc_name = P::NAME;
-                payload.options = options;
+                s.payloads[idx].proc_name = P::NAME;
                 if !sink.is_overflow_all() && !sink.is_empty() {
-                    let mut first_edge = meta.first_tag_edge;
+                    let mut first_edge = s.metas[idx].first_tag_edge;
                     s.tags.attach_tags(slot, &mut first_edge, sink.as_slice());
                     s.metas[idx].first_tag_edge = first_edge;
-                } else if sink.is_overflow_all() {
+                } else if sink.is_overflow_all()
+                    && (s.metas[idx].flags & FLAG_SUBSCRIBED_ALL) == 0
+                {
                     s.metas[idx].flags |= FLAG_SUBSCRIBED_ALL;
+                    s.subscribed_all_count += 1;
                 }
                 QueryHandle {
                     slot,
                     generation: s.metas[idx].slot_gen,
                 }
             } else {
-                s.gc_sweep(now_ms, 16, self.inner.config.max_entries);
+                let target_cap = self.inner.config.max_entries.saturating_sub(1);
+                s.gc_sweep(now_ms, 16, target_cap, &mut waiters);
                 s.insert_slot(
                     P::ID,
                     P::NAME,
@@ -239,14 +270,18 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let idx = handle.slot.index();
             let meta = &mut s.metas[idx];
             let was_zero = meta.subscriber_count == 0;
-            meta.subscriber_count = meta.subscriber_count.saturating_add(1);
+            meta.subscriber_count = meta
+                .subscriber_count
+                .checked_add(1)
+                .expect("query subscriber_count overflowed u32");
             if was_zero {
                 let pos = s.active_slots.len() as u32;
                 s.active_slots.push(handle.slot);
                 s.payloads[idx].active_pos = pos;
             }
-            handle
+            (handle, waiters)
         });
+        run_side_effects(None, waiters);
         Ok(handle)
     }
 
@@ -277,13 +312,14 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
     }
 
     /// Reads the current typed [`QuerySnapshot`] for `handle` (zero heap allocations on cache hit;
-    /// lazily decodes `raw_response` once for hydrated entries).
+    /// lazily decodes `raw_response` once for hydrated entries outside the cache lock).
     pub fn read<P>(&self, handle: QueryHandle) -> QuerySnapshot<P::Output, P::Error>
     where
         P: Procedure<Effect = Query>,
         C: RpcCodec<P::Output>,
     {
         let now_ms = self.inner.clock.now_ms();
+        let grace = self.inner.config.hydration_grace_ms;
         let fast = self.inner.state.with(|s| {
             if !s.is_live(handle) {
                 return Ok(QuerySnapshot {
@@ -291,40 +327,89 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                     error: None,
                     is_fetching: false,
                     is_stale: true,
+                    is_invalidated: false,
                     data_version: 0,
                 });
             }
             let idx = handle.slot.index();
             let meta = s.metas[idx];
+            if meta.proc_id != P::ID {
+                return Ok(QuerySnapshot {
+                    data: None,
+                    error: None,
+                    is_fetching: false,
+                    is_stale: true,
+                    is_invalidated: false,
+                    data_version: 0,
+                });
+            }
             let payload = &s.payloads[idx];
 
             if payload.committed.is_none()
                 && let Some(raw) = payload.raw_response.as_ref()
             {
-                return Err(raw.clone());
+                return Err((raw.clone(), payload.raw_body_hash));
             }
 
-            let data = payload
-                .visible_data()
-                .and_then(downcast_shared::<P::Output>);
-            let error = payload
-                .committed_error
-                .as_ref()
-                .and_then(downcast_shared::<RpcError<P::Error>>);
             Ok(QuerySnapshot {
-                data,
-                error,
+                data: payload
+                    .visible_data()
+                    .and_then(downcast_shared::<P::Output>),
+                error: payload
+                    .committed_error
+                    .as_ref()
+                    .and_then(downcast_shared::<RpcError<P::Error>>),
                 is_fetching: meta.is_fetching(),
-                is_stale: meta.is_stale(now_ms, s.wildcard_epoch),
+                is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
+                is_invalidated: meta.is_invalidated(s.wildcard_epoch),
                 data_version: meta.data_version,
             })
         });
 
         match fast {
             Ok(snap) => snap,
-            Err(raw_bytes) => {
+            Err((raw_bytes, expected_hash)) => {
                 let decoded: Result<P::Output, CodecError> =
                     self.inner.codec.decode_bounded(&raw_bytes);
+                let job = self.inner.state.with(|s| {
+                    if !s.is_live(handle) {
+                        return None;
+                    }
+                    let idx = handle.slot.index();
+                    if s.metas[idx].proc_id != P::ID {
+                        return None;
+                    }
+                    match decoded {
+                        Ok(val) => {
+                            let payload = &mut s.payloads[idx];
+                            if payload.committed.is_none() && payload.raw_body_hash == expected_hash
+                            {
+                                payload.committed = Some(into_shared_any(val));
+                                s.metas[idx].flags |= FLAG_HAS_DATA;
+                                return prepare_recompute_job(
+                                    handle.slot,
+                                    &mut s.metas[idx],
+                                    &mut s.payloads[idx],
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            let payload = &mut s.payloads[idx];
+                            if payload.committed.is_none() && payload.raw_body_hash == expected_hash
+                            {
+                                payload.raw_response = None;
+                                payload.committed_error =
+                                    Some(into_shared_any(RpcError::<P::Error>::Codec(err)));
+                                s.metas[idx].flags |= FLAG_HAS_ERROR;
+                                s.metas[idx].flags &= !FLAG_HAS_DATA;
+                            }
+                        }
+                    }
+                    None
+                });
+                if let Some(job) = job {
+                    self.recompute_jobs_outside_lock(vec![job]);
+                }
                 self.inner.state.with(|s| {
                     if !s.is_live(handle) {
                         return QuerySnapshot {
@@ -332,29 +417,11 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             error: None,
                             is_fetching: false,
                             is_stale: true,
+                            is_invalidated: false,
                             data_version: 0,
                         };
                     }
                     let idx = handle.slot.index();
-                    match decoded {
-                        Ok(val) => {
-                            let shared = into_shared_any(val);
-                            let payload = &mut s.payloads[idx];
-                            if payload.committed.is_none() {
-                                payload.committed = Some(shared);
-                                crate::optimistic::recompute_effective(payload);
-                            }
-                            s.metas[idx].flags |= FLAG_HAS_DATA;
-                        }
-                        Err(err) => {
-                            let payload = &mut s.payloads[idx];
-                            payload.raw_response = None;
-                            payload.committed_error =
-                                Some(into_shared_any(RpcError::<P::Error>::Codec(err)));
-                            s.metas[idx].flags |= FLAG_HAS_ERROR;
-                            s.metas[idx].flags &= !FLAG_HAS_DATA;
-                        }
-                    }
                     let meta = s.metas[idx];
                     let payload = &s.payloads[idx];
                     QuerySnapshot {
@@ -366,7 +433,8 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                             .as_ref()
                             .and_then(downcast_shared::<RpcError<P::Error>>),
                         is_fetching: meta.is_fetching(),
-                        is_stale: meta.is_stale(now_ms, s.wildcard_epoch),
+                        is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
+                        is_invalidated: meta.is_invalidated(s.wildcard_epoch),
                         data_version: meta.data_version,
                     }
                 })
@@ -380,17 +448,19 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             return false;
         }
         let now_ms = self.inner.clock.now_ms();
+        let grace = self.inner.config.hydration_grace_ms;
         self.inner.state.with(|s| {
             if !s.is_live(handle) {
                 return false;
             }
             let meta = s.metas[handle.slot.index()];
-            !meta.is_fetching() && meta.is_stale(now_ms, s.wildcard_epoch)
+            !meta.is_fetching() && meta.is_stale(now_ms, s.wildcard_epoch, grace)
         })
     }
 
     /// Directly writes confirmed data into the cache for `(P, args)`, bumping `fetch_gen` so
-    /// slower in-flight fetches cannot overwrite it, and rebasing any live optimistic layers.
+    /// slower in-flight fetches cannot overwrite it, and rebasing any live optimistic layers
+    /// strictly outside the cache lock.
     pub fn set_query_data<P>(
         &self,
         args: &P::Args,
@@ -410,13 +480,18 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         let mut sink = TagSink::new();
         P::tags(args, &mut sink);
 
-        let (handle, wake) = self.inner.state.with(|s| {
+        let (handle, wake, waiters, job) = self.inner.state.with(|s| {
+            let mut waiters = Vec::new();
             let handle = if let Some(slot) = s.lookup_slot(P::ID, key_hash, &encoded_args) {
+                let idx = slot.index();
+                s.payloads[idx].proc_name = P::NAME;
                 QueryHandle {
                     slot,
-                    generation: s.metas[slot.index()].slot_gen,
+                    generation: s.metas[idx].slot_gen,
                 }
             } else {
+                let target_cap = self.inner.config.max_entries.saturating_sub(1);
+                s.gc_sweep(now_ms, 16, target_cap, &mut waiters);
                 s.insert_slot(
                     P::ID,
                     P::NAME,
@@ -431,154 +506,39 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             let idx = handle.slot.index();
             let meta = &mut s.metas[idx];
             meta.fetch_gen = meta.fetch_gen.wrapping_add(1).max(1);
+            let new_fetch_gen = meta.fetch_gen;
             meta.updated_at_ms = now_ms;
             meta.invalidated_epoch = s.wildcard_epoch;
             meta.flags |= FLAG_HAS_DATA;
             meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED | FLAG_IS_FETCHING | FLAG_HYDRATED);
 
             let payload = &mut s.payloads[idx];
-            if let Some(abort) = payload.in_flight_abort.take() {
-                abort();
-            }
+            waiters.append(&mut payload.in_flight_waiters);
             payload.raw_response = Some(raw_body);
             payload.raw_body_hash = raw_hash;
             payload.committed = Some(into_shared_any(value));
             payload.committed_error = None;
-            crate::optimistic::recompute_effective(payload);
-
+            settle_layers_up_to(payload, new_fetch_gen);
+            let job = prepare_recompute_job(handle.slot, &mut s.metas[idx], &mut s.payloads[idx]);
             let wake = s.mark_dirty(handle.slot);
-            (handle, wake)
+            (handle, wake, waiters, job)
         });
-        if let Some(cb) = wake {
-            cb();
+        if let Some(job) = job {
+            self.recompute_jobs_outside_lock(vec![job]);
         }
+        run_side_effects(wake, waiters);
         Ok(handle)
     }
 
-    /// Sans-I/O fetch start: transitions `handle` to `IS_FETCHING` and returns its deduplicated
-    /// `(FetchTicket, RawCall)`, or `None` if already fetching (dedup!) or invalid.
-    pub fn begin_fetch(&self, handle: QueryHandle) -> Option<(FetchTicket, RawCall)>
-    where
-        C: nve_rpc::CodecFormat,
-    {
-        let (out, wake) = self.inner.state.with(|s| {
-            if !s.is_live(handle) {
-                return (None, None);
-            }
-            let idx = handle.slot.index();
-            let meta = &mut s.metas[idx];
-            if meta.is_fetching() {
-                return (None, None);
-            }
-            meta.flags |= FLAG_IS_FETCHING;
-            let ticket = FetchTicket {
-                handle,
-                fetch_gen: meta.fetch_gen,
-            };
-            let payload = &s.payloads[idx];
-            let call = RawCall {
-                proc_id: meta.proc_id,
-                name: payload.proc_name,
-                effect: nve_rpc::Effect::Query,
-                content_type: C::CONTENT_TYPE,
-                body: payload.encoded_args.clone(),
-            };
-            let wake = s.mark_dirty(handle.slot);
-            (Some((ticket, call)), wake)
-        });
-        if let Some(cb) = wake {
-            cb();
-        }
-        out
+}
+
+pub(crate) fn run_side_effects(wake: Option<WakeCallback>, waiters: Vec<Waker>) {
+    for waker in waiters {
+        waker.wake();
     }
-
-    /// Sans-I/O fetch completion: commits `result` if `ticket` is still current (`slot_gen` and
-    /// `fetch_gen` match), performs structural-sharing equality check, retires settled optimistic
-    /// layers, and notifies observers. Returns `false` if the reply was stale and discarded.
-    pub fn complete_fetch<P>(
-        &self,
-        ticket: FetchTicket,
-        result: Result<CallReply<P::Output>, RpcError<P::Error>>,
-    ) -> bool
-    where
-        P: Procedure<Effect = Query>,
-    {
-        self.complete_fetch_shared::<P>(ticket, result.map_err(Shared::new))
+    if let Some(cb) = wake {
+        cb();
     }
-
-    pub(crate) fn complete_fetch_shared<P>(
-        &self,
-        ticket: FetchTicket,
-        result: Result<CallReply<P::Output>, Shared<RpcError<P::Error>>>,
-    ) -> bool
-    where
-        P: Procedure<Effect = Query>,
-    {
-        let now_ms = self.inner.clock.now_ms();
-        let (accepted, wake) = self.inner.state.with(|s| {
-            if !s.is_live(ticket.handle) {
-                return (false, None);
-            }
-            let idx = ticket.handle.slot.index();
-            let meta = &mut s.metas[idx];
-            if meta.fetch_gen != ticket.fetch_gen {
-                return (false, None);
-            }
-            meta.flags &= !(FLAG_IS_FETCHING | FLAG_HYDRATED);
-            let payload = &mut s.payloads[idx];
-            payload.in_flight_abort = None;
-
-            match result {
-                Ok(reply) => {
-                    let body_hash = xxh64(&reply.raw_body, BODY_HASH_SEED);
-                    let same_bytes = meta.has_data()
-                        && !meta.has_error()
-                        && payload.raw_body_hash == body_hash
-                        && payload
-                            .raw_response
-                            .as_ref()
-                            .is_some_and(|prev| prev.as_ref() == reply.raw_body.as_ref());
-                    let has_layers = !payload.optimistic_layers.is_empty();
-
-                    meta.updated_at_ms = now_ms;
-                    meta.invalidated_epoch = s.wildcard_epoch;
-                    meta.flags |= FLAG_HAS_DATA;
-                    meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED);
-
-                    if !same_bytes || has_layers {
-                        payload.raw_response = Some(reply.raw_body);
-                        payload.raw_body_hash = body_hash;
-                        payload.committed = Some(into_shared_any(reply.value));
-                        payload.committed_error = None;
-                        settle_layers_up_to(payload, ticket.fetch_gen);
-                    }
-                    let wake = s.mark_dirty(ticket.handle.slot);
-                    (true, wake)
-                }
-                Err(ref err)
-                    if matches!(
-                        err.as_ref(),
-                        RpcError::Transport(terr)
-                            if terr.kind == nve_rpc::TransportErrorKind::Cancelled
-                    ) =>
-                {
-                    let wake = s.mark_dirty(ticket.handle.slot);
-                    (true, wake)
-                }
-                Err(shared_err) => {
-                    meta.flags |= FLAG_HAS_ERROR;
-                    payload.committed_error = Some(shared_err);
-                    let wake = s.mark_dirty(ticket.handle.slot);
-                    (true, wake)
-                }
-            }
-        });
-        if let Some(cb) = wake {
-            cb();
-        }
-        accepted
-    }
-
 }
 
 #[inline]
