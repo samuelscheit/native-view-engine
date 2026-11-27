@@ -15,7 +15,7 @@ use crate::optimistic::{
     apply_layer_to_slot, mark_mutation_settling, prepare_recompute_job, remove_mutation_layers,
     OptimisticHandle, OptimisticTx, PendingPatchOp,
 };
-use crate::slab::{QuerySlotId, FLAG_SUBSCRIBED_ALL};
+use crate::slab::{pack_invalidation_version, QuerySlotId, FLAG_SUBSCRIBED_ALL};
 use crate::state::WakeCallback;
 use crate::types::{FetchTicket, MutationId, QueryHandle, Shared};
 
@@ -137,7 +137,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 if cur_completed_seq == pre_completed_seq {
                     return false;
                 }
-                let cur_inv_ver = ((u64::from(s.wildcard_epoch)) << 32) | u64::from(meta.fetch_gen);
+                let cur_inv_ver = pack_invalidation_version(s.wildcard_epoch, meta.fetch_gen);
                 cur_inv_ver == pre_inv_ver
                     || (!meta.is_invalidated(s.wildcard_epoch) && meta.has_data())
             });

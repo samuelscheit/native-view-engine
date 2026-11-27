@@ -11,6 +11,11 @@ use crate::types::{IdentityBuildHasher, QueryOptions, SharedAny};
 
 pub(crate) const NONE_IDX: u32 = u32::MAX;
 
+#[inline]
+pub(crate) const fn pack_invalidation_version(wildcard_epoch: u32, fetch_gen: u32) -> u64 {
+    ((wildcard_epoch as u64) << 32) | (fetch_gen as u64)
+}
+
 /// Dense index into the query cache's hot (`QueryMeta`) and cold (`QueryPayload`) slabs.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -139,6 +144,7 @@ pub(crate) struct QueryPayload {
     pub last_inactive_ms: u64,
     pub active_pos: u32,
     pub completed_seq: u32,
+    pub completed_invalidation_version: u64,
     pub in_flight_waiters: Vec<core::task::Waker>,
     pub options: QueryOptions,
 }
@@ -157,9 +163,16 @@ impl QueryPayload {
             last_inactive_ms: 0,
             active_pos: NONE_IDX,
             completed_seq: 0,
+            completed_invalidation_version: 0,
             in_flight_waiters: Vec::new(),
             options: QueryOptions::default(),
         }
+    }
+
+    #[inline]
+    pub(crate) fn record_commit(&mut self, inv_ver: u64) {
+        self.completed_seq = self.completed_seq.wrapping_add(1).max(1);
+        self.completed_invalidation_version = inv_ver;
     }
 
     /// Resets cold payload storage WITHOUT waking waiters under the cache lock; callers must wake
@@ -176,6 +189,7 @@ impl QueryPayload {
         self.last_inactive_ms = 0;
         self.active_pos = NONE_IDX;
         self.completed_seq = 0;
+        self.completed_invalidation_version = 0;
         self.options = QueryOptions::default();
         core::mem::take(&mut self.in_flight_waiters)
     }

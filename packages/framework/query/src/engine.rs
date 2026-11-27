@@ -12,9 +12,9 @@ use core::task::Waker;
 
 use crate::optimistic::{prepare_recompute_job, settle_layers_up_to};
 use crate::slab::{
-    QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IN_DIRTY_QUEUE,
-    FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS, FLAG_REFETCH_ON_RECONNECT,
-    FLAG_SUBSCRIBED_ALL, NONE_IDX,
+    pack_invalidation_version, QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED,
+    FLAG_IN_DIRTY_QUEUE, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED, FLAG_REFETCH_ON_FOCUS,
+    FLAG_REFETCH_ON_RECONNECT, FLAG_SUBSCRIBED_ALL, NONE_IDX,
 };
 use crate::state::CacheState;
 #[cfg(not(target_arch = "wasm32"))]
@@ -335,30 +335,12 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         let grace = self.inner.config.hydration_grace_ms;
         let fast = self.inner.state.with(|s| {
             if !s.is_live(handle) {
-                return Ok(QuerySnapshot {
-                    data: None,
-                    error: None,
-                    is_fetching: false,
-                    is_stale: true,
-                    is_invalidated: false,
-                    data_version: 0,
-                    invalidation_version: 0,
-                    completed_seq: 0,
-                });
+                return Ok(empty_snapshot());
             }
             let idx = handle.slot.index();
             let meta = s.metas[idx];
             if meta.proc_id != P::ID {
-                return Ok(QuerySnapshot {
-                    data: None,
-                    error: None,
-                    is_fetching: false,
-                    is_stale: true,
-                    is_invalidated: false,
-                    data_version: 0,
-                    invalidation_version: 0,
-                    completed_seq: 0,
-                });
+                return Ok(empty_snapshot());
             }
             let payload = &s.payloads[idx];
 
@@ -380,9 +362,9 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
                 is_invalidated: meta.is_invalidated(s.wildcard_epoch),
                 data_version: meta.data_version,
-                invalidation_version: ((u64::from(s.wildcard_epoch)) << 32)
-                    | u64::from(meta.fetch_gen),
+                invalidation_version: pack_invalidation_version(s.wildcard_epoch, meta.fetch_gen),
                 completed_seq: payload.completed_seq,
+                completed_invalidation_version: payload.completed_invalidation_version,
             })
         });
 
@@ -432,16 +414,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 }
                 self.inner.state.with(|s| {
                     if !s.is_live(handle) {
-                        return QuerySnapshot {
-                            data: None,
-                            error: None,
-                            is_fetching: false,
-                            is_stale: true,
-                            is_invalidated: false,
-                            data_version: 0,
-                            invalidation_version: 0,
-                            completed_seq: 0,
-                        };
+                        return empty_snapshot();
                     }
                     let idx = handle.slot.index();
                     let meta = s.metas[idx];
@@ -458,9 +431,12 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                         is_stale: meta.is_stale(now_ms, s.wildcard_epoch, grace),
                         is_invalidated: meta.is_invalidated(s.wildcard_epoch),
                         data_version: meta.data_version,
-                        invalidation_version: ((u64::from(s.wildcard_epoch)) << 32)
-                            | u64::from(meta.fetch_gen),
+                        invalidation_version: pack_invalidation_version(
+                            s.wildcard_epoch,
+                            meta.fetch_gen,
+                        ),
                         completed_seq: payload.completed_seq,
+                        completed_invalidation_version: payload.completed_invalidation_version,
                     }
                 })
             }
@@ -543,7 +519,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
             payload.raw_body_hash = raw_hash;
             payload.committed = Some(into_shared_any(value));
             payload.committed_error = None;
-            payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
+            payload.record_commit(pack_invalidation_version(s.wildcard_epoch, new_fetch_gen));
             settle_layers_up_to(payload, new_fetch_gen);
             let job = prepare_recompute_job(handle.slot, &mut s.metas[idx], &mut s.payloads[idx]);
             let wake = s.mark_dirty(handle.slot);
@@ -554,6 +530,21 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
         Ok(handle)
     }
 
+}
+
+#[inline]
+fn empty_snapshot<T, E>() -> QuerySnapshot<T, E> {
+    QuerySnapshot {
+        data: None,
+        error: None,
+        is_fetching: false,
+        is_stale: true,
+        is_invalidated: false,
+        data_version: 0,
+        invalidation_version: 0,
+        completed_seq: 0,
+        completed_invalidation_version: 0,
+    }
 }
 
 pub(crate) fn run_side_effects(wake: Option<WakeCallback>, waiters: Vec<Waker>) {

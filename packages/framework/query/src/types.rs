@@ -206,6 +206,11 @@ pub struct QuerySnapshot<T, E> {
     /// hooks waiting on an external fetch to distinguish settled completion from cancellation even
     /// when `stale_time_ms == 0`.
     pub completed_seq: u32,
+    /// Invalidation version (`(wildcard_epoch << 32) | fetch_gen`) answered by the most recent
+    /// data or error commit (`0` before the first commit, or on evicted/mismatched handles).
+    /// Allows reactive hooks to avoid re-fetching an invalidation already answered by an error
+    /// commit while still refetching any invalidation that arrives afterward.
+    pub completed_invalidation_version: u64,
 }
 
 impl<T, E> Clone for QuerySnapshot<T, E> {
@@ -219,6 +224,7 @@ impl<T, E> Clone for QuerySnapshot<T, E> {
             data_version: self.data_version,
             invalidation_version: self.invalidation_version,
             completed_seq: self.completed_seq,
+            completed_invalidation_version: self.completed_invalidation_version,
         }
     }
 }

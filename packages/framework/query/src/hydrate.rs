@@ -21,8 +21,8 @@ use nve_rpc::{MaybeSend, MaybeSync, ProcId, Tag64, Transport};
 
 use crate::engine::{query_key_hash, run_side_effects, QueryClient, BODY_HASH_SEED};
 use crate::slab::{
-    FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IS_FETCHING, FLAG_IS_INVALIDATED,
-    FLAG_SUBSCRIBED_ALL,
+    pack_invalidation_version, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IS_FETCHING,
+    FLAG_IS_INVALIDATED, FLAG_SUBSCRIBED_ALL,
 };
 use crate::state::WakeCallback;
 
@@ -321,7 +321,7 @@ impl<T: Transport, C: Clone + MaybeSend + MaybeSync + 'static> QueryClient<T, C>
                 payload.committed = None;
                 payload.committed_error = None;
                 payload.effective_optimistic = None;
-                payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
+                payload.record_commit(pack_invalidation_version(s.wildcard_epoch, meta.fetch_gen));
                 wake_cb = s.mark_dirty(slot);
             }
             (wake_cb, waiters)

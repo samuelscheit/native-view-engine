@@ -9,8 +9,8 @@ use crate::optimistic::{
     fold_recompute_job, prepare_recompute_job, settle_layers_up_to, RecomputeJob,
 };
 use crate::slab::{
-    QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED, FLAG_IS_FETCHING,
-    FLAG_IS_INVALIDATED,
+    pack_invalidation_version, QuerySlotId, FLAG_HAS_DATA, FLAG_HAS_ERROR, FLAG_HYDRATED,
+    FLAG_IS_FETCHING, FLAG_IS_INVALIDATED,
 };
 use crate::types::{into_shared_any, FetchTicket, QueryHandle, Shared};
 
@@ -79,7 +79,7 @@ impl<T, C> QueryClient<T, C> {
                 return (FetchStart::Unavailable, None);
             }
             if meta.is_fetching() {
-                let inv_ver = ((u64::from(s.wildcard_epoch)) << 32) | u64::from(meta.fetch_gen);
+                let inv_ver = pack_invalidation_version(s.wildcard_epoch, meta.fetch_gen);
                 return (
                     FetchStart::Wait {
                         completed_seq: s.payloads[idx].completed_seq,
@@ -182,7 +182,10 @@ impl<T, C> QueryClient<T, C> {
                     meta.invalidated_epoch = ticket.wildcard_epoch;
                     meta.flags |= FLAG_HAS_DATA;
                     meta.flags &= !(FLAG_HAS_ERROR | FLAG_IS_INVALIDATED);
-                    payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
+                    payload.record_commit(pack_invalidation_version(
+                        ticket.wildcard_epoch,
+                        ticket.fetch_gen,
+                    ));
 
                     let job = if !same_bytes || has_layers {
                         payload.raw_response = Some(reply.raw_body);
@@ -210,7 +213,10 @@ impl<T, C> QueryClient<T, C> {
                 Err(shared_err) => {
                     meta.flags |= FLAG_HAS_ERROR;
                     payload.committed_error = Some(shared_err);
-                    payload.completed_seq = payload.completed_seq.wrapping_add(1).max(1);
+                    payload.record_commit(pack_invalidation_version(
+                        ticket.wildcard_epoch,
+                        ticket.fetch_gen,
+                    ));
                     let wake = s.mark_dirty(ticket.handle.slot);
                     (true, wake, waiters, None)
                 }
@@ -356,9 +362,13 @@ mod tests {
             _ => panic!("expected atomic takeover FetchStart::Started after cancel"),
         };
 
-        // 5. Completing ticket2 bumps `completed_seq` to 1 (reflected in both `Wait` and `read()`);
-        //    `set_query_data` bumps it to 2; hydration populates a non-zero `completed_seq` as well.
-        assert_eq!(client.read::<FetchA>(h).completed_seq, 0);
+        // 5. Completing ticket2 bumps `completed_seq` to 1 and records `completed_invalidation_version`;
+        //    invalidation advances `invalidation_version` without advancing `completed_*`;
+        //    non-cancelled error commits advance both while `Cancelled` / `cancel_fetch_ticket` do not;
+        //    `set_query_data` and hydration advance both in lockstep.
+        let pre_snap = client.read::<FetchA>(h);
+        assert_eq!(pre_snap.completed_seq, 0);
+        assert_eq!(pre_snap.completed_invalidation_version, 0);
         let reply = nve_rpc::CallReply {
             value: 42u64,
             raw_body: bytes::Bytes::from_static(&[0x18, 0x2a]),
@@ -366,7 +376,10 @@ mod tests {
             invalidate_all: false,
         };
         assert!(client.complete_fetch::<FetchA>(ticket2, Ok(reply)));
-        assert_eq!(client.read::<FetchA>(h).completed_seq, 1);
+        let ok_snap = client.read::<FetchA>(h);
+        assert_eq!(ok_snap.completed_seq, 1);
+        assert_eq!(ok_snap.completed_invalidation_version, ok_snap.invalidation_version);
+
         let ticket3 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
             FetchStart::Started(ticket, _) => ticket,
             _ => panic!("expected Started after prior fetch completed"),
@@ -376,11 +389,60 @@ mod tests {
             _ => panic!("expected Wait with completed_seq=1"),
         }
         client.cancel_fetch_ticket(ticket3);
-        assert_eq!(client.read::<FetchA>(h).completed_seq, 1);
+        let after_cancel = client.read::<FetchA>(h);
+        assert_eq!(after_cancel.completed_seq, 1);
+        assert_eq!(
+            after_cancel.completed_invalidation_version,
+            ok_snap.invalidation_version
+        );
+
+        client.invalidate_handles(&[h]);
+        let after_inv = client.read::<FetchA>(h);
+        assert!(after_inv.is_invalidated);
+        assert_ne!(
+            after_inv.completed_invalidation_version,
+            after_inv.invalidation_version
+        );
+        let ticket4 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Started(ticket, _) => ticket,
+            _ => panic!("expected Started on invalidated slot"),
+        };
+        assert!(client.complete_fetch::<FetchA>(
+            ticket4,
+            Err(nve_rpc::RpcError::Transport(TransportError::cancelled("aborted")))
+        ));
+        let after_cancelled_err = client.read::<FetchA>(h);
+        assert_eq!(after_cancelled_err.completed_seq, 1);
+        assert_ne!(
+            after_cancelled_err.completed_invalidation_version,
+            after_inv.invalidation_version
+        );
+        let ticket5 = match client.begin_fetch_or_wait_snapshot::<FetchA>(h) {
+            FetchStart::Started(ticket, _) => ticket,
+            _ => panic!("expected Started after cancelled error"),
+        };
+        assert!(client.complete_fetch::<FetchA>(
+            ticket5,
+            Err(nve_rpc::RpcError::Transport(TransportError::network("boom")))
+        ));
+        let after_err = client.read::<FetchA>(h);
+        assert!(after_err.is_invalidated);
+        assert_eq!(after_err.completed_seq, 2);
+        assert_eq!(
+            after_err.completed_invalidation_version,
+            after_err.invalidation_version
+        );
 
         client.set_query_data::<FetchA>(&1, 99u64).unwrap();
-        assert_eq!(client.read::<FetchA>(h).completed_seq, 2);
-        assert_eq!(client.read::<FetchB>(h).completed_seq, 0);
+        let after_set = client.read::<FetchA>(h);
+        assert_eq!(after_set.completed_seq, 3);
+        assert_eq!(
+            after_set.completed_invalidation_version,
+            after_set.invalidation_version
+        );
+        let mismatch = client.read::<FetchB>(h);
+        assert_eq!(mismatch.completed_seq, 0);
+        assert_eq!(mismatch.completed_invalidation_version, 0);
 
         let blob = client.dehydrate_bytes().unwrap();
         let hydrated = QueryClient::with_clock(
@@ -393,9 +455,11 @@ mod tests {
         let hh = hydrated
             .subscribe::<FetchA>(&1, QueryOptions::default())
             .unwrap();
-        assert!(hydrated.read::<FetchA>(hh).completed_seq >= 1);
+        let h_snap = hydrated.read::<FetchA>(hh);
+        assert!(h_snap.completed_seq >= 1);
+        assert_eq!(h_snap.completed_invalidation_version, h_snap.invalidation_version);
 
-        // 6. Evicted handle returns Unavailable and `read()` reports `completed_seq == 0`.
+        // 6. Evicted handle returns Unavailable and `read()` reports `completed_* == 0`.
         client.unsubscribe(h);
         clock.advance(1);
         assert_eq!(client.gc_sweep(64), 1);
@@ -403,6 +467,8 @@ mod tests {
             client.begin_fetch_or_wait_snapshot::<FetchA>(h),
             FetchStart::Unavailable
         ));
-        assert_eq!(client.read::<FetchA>(h).completed_seq, 0);
+        let evicted = client.read::<FetchA>(h);
+        assert_eq!(evicted.completed_seq, 0);
+        assert_eq!(evicted.completed_invalidation_version, 0);
     }
 }

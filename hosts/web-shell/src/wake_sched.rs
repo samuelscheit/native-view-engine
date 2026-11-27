@@ -15,10 +15,9 @@ pub(crate) enum ScheduleKind {
     Macrotask,
 }
 
-/// Outcome of attempting to enter a synchronous direct pump window.
+/// Reason a synchronous direct pump window could not be entered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DirectPumpEnter {
-    Entered,
+pub(crate) enum DirectPumpBlocked {
     AlreadyPumping,
     Shutdown,
 }
@@ -130,16 +129,16 @@ impl WakeScheduler {
 
     /// Enters a synchronous direct pump (initial boot or DOM event callback), distinguishing
     /// active re-entrancy (`AlreadyPumping`) from a torn-down surface (`Shutdown`).
-    pub(crate) fn on_direct_pump_enter(&mut self) -> DirectPumpEnter {
+    pub(crate) fn on_direct_pump_enter(&mut self) -> Result<(), DirectPumpBlocked> {
         if !self.alive {
-            return DirectPumpEnter::Shutdown;
+            return Err(DirectPumpBlocked::Shutdown);
         }
         if self.pumping {
-            return DirectPumpEnter::AlreadyPumping;
+            return Err(DirectPumpBlocked::AlreadyPumping);
         }
         self.pumping = true;
         self.woken_during_pump = false;
-        DirectPumpEnter::Entered
+        Ok(())
     }
 
     /// Exits an active pump pass and returns the single follow-up schedule to dispatch, if any.

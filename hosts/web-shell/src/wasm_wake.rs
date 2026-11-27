@@ -15,7 +15,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 #[cfg(feature = "app-issues")]
-pub(crate) use crate::wake_sched::{DirectPumpEnter, PumpNext, ScheduleKind, WakeScheduler};
+pub(crate) use crate::wake_sched::{DirectPumpBlocked, PumpNext, ScheduleKind, WakeScheduler};
 
 #[cfg(feature = "app-issues")]
 #[wasm_bindgen(inline_js = "export function nve_queue_microtask(cb) { queueMicrotask(cb); }
@@ -80,16 +80,11 @@ impl WebFrameWaker {
         self: &Arc<Self>,
         waker: &Waker,
         f: impl FnOnce(&Waker) -> (PumpNext, R),
-    ) -> Result<R, DirectPumpEnter> {
-        match self
-            .sched
+    ) -> Result<R, DirectPumpBlocked> {
+        self.sched
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .on_direct_pump_enter()
-        {
-            DirectPumpEnter::Entered => {}
-            other => return Err(other),
-        }
+            .on_direct_pump_enter()?;
         let (next, res) = f(waker);
         let follow = self
             .sched
@@ -200,16 +195,14 @@ impl AsyncWakeHandle {
             }
         }) {
             Ok(rendered) => rendered,
-            Err(DirectPumpEnter::Shutdown) => false,
-            Err(DirectPumpEnter::AlreadyPumping | DirectPumpEnter::Entered) => {
-                match guard.pump_events() {
-                    Ok(f) => f.is_some(),
-                    Err(err) => {
-                        web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
-                        false
-                    }
+            Err(DirectPumpBlocked::Shutdown) => false,
+            Err(DirectPumpBlocked::AlreadyPumping) => match guard.pump_events() {
+                Ok(f) => f.is_some(),
+                Err(err) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
+                    false
                 }
-            }
+            },
         }
     }
 }

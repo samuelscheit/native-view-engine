@@ -469,3 +469,129 @@ fn invalidation_after_external_prefetch_settlement_triggers_refetch() {
         web2.render_html()
     );
 }
+
+#[test]
+fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() {
+    let transport = RegTransport::new("V1");
+    transport.inner.lock().unwrap().defer_queries = true;
+    let client = erased_query_client_with_clock(
+        transport.clone(),
+        Shared::new(ManualClock::new(1_000)),
+        QueryClientConfig::default(),
+    );
+    let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
+    let mut cx = core::task::Context::from_waker(&waker);
+
+    #[component]
+    fn View(id: u64) -> Element {
+        let mut opts = QueryOptions::default().stale_time_ms(60_000);
+        opts.max_retries = 0;
+        let q = use_query_with::<GetItem>(id, opts);
+        let label = q
+            .data()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "EMPTY".into());
+        let has_err = q.error().is_some();
+        rsx! { text { "F:{id}:{label}:{has_err}" } }
+    }
+
+    #[component]
+    fn Root() -> Element {
+        let (client, id) = dioxus_core::consume_context::<(ErasedQueryClient, u64)>();
+        rsx! {
+            QueryClientProvider {
+                client: client,
+                View { id: id }
+            }
+        }
+    }
+
+    // Case 1: Fresh hook mounts waiting on an external prefetch -> `invalidate_tags` discards it ->
+    // external `fetch_handle` on the invalidated slot FAILS -> hook renders without a duplicate
+    // 3rd request, yet a subsequent `invalidate_tags` DOES trigger refetch ("Recovered1").
+    let mut ext_pre = Box::pin(client.prefetch::<GetItem>(&40));
+    assert!(matches!(core::pin::Pin::as_mut(&mut ext_pre).poll(&mut cx), Poll::Pending));
+    let mut s1 = DioxusSurface::new(1, Root).with_context((client.clone(), 40u64));
+    let mut web1 = WebBackend::new();
+    let mut frame1 = 0;
+    let _ = render_once(&mut s1, &mut web1, &mut frame1);
+    let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
+
+    let inv1 = client.invalidate_tags(&[Tag64::keyed("item", 40)]);
+    assert_eq!(inv1.len(), 1);
+    transport.release_all();
+    // Stale prefetch settles after invalidation and is discarded cleanly (call 1).
+    assert!(matches!(
+        core::pin::Pin::as_mut(&mut ext_pre).poll(&mut cx),
+        Poll::Ready(Err(_))
+    ));
+    transport.inner.lock().unwrap().fail_queries = true;
+    // External fetch on the invalidated slot fails with an error (call 2).
+    let mut ext_fail1 = Box::pin(client.fetch_handle::<GetItem>(inv1[0]));
+    assert!(matches!(
+        core::pin::Pin::as_mut(&mut ext_fail1).poll(&mut cx),
+        Poll::Ready(Err(_))
+    ));
+    assert_eq!(transport.inner.lock().unwrap().query_calls, 2);
+
+    let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
+    assert!(web1.render_html().contains("F:40:EMPTY:true"));
+    assert_eq!(
+        transport.inner.lock().unwrap().query_calls,
+        2,
+        "hook must not re-fetch an invalidation already answered by a failed external fetch"
+    );
+
+    {
+        let mut g = transport.inner.lock().unwrap();
+        g.fail_queries = false;
+        g.name = "Recovered1".into();
+    }
+    let _ = client.invalidate_tags(&[Tag64::keyed("item", 40)]);
+    let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
+    assert!(web1.render_html().contains("F:40:Recovered1:false"));
+    assert_eq!(transport.inner.lock().unwrap().query_calls, 3);
+
+    // Case 2: Already-mounted hook settles ("V1") -> `invalidate_tags` -> external `fetch_handle`
+    // FAILS -> hook renders without a duplicate refetch, and a later `invalidate_tags` recovers.
+    let calls_base = transport.inner.lock().unwrap().query_calls;
+    {
+        let mut g = transport.inner.lock().unwrap();
+        g.defer_queries = false;
+        g.fail_queries = false;
+        g.name = "MountedV1".into();
+    }
+    let mut s2 = DioxusSurface::new(1, Root).with_context((client.clone(), 41u64));
+    let mut web2 = WebBackend::new();
+    let mut frame2 = 0;
+    let _ = render_once(&mut s2, &mut web2, &mut frame2);
+    let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
+    assert!(web2.render_html().contains("F:41:MountedV1:false"));
+    assert_eq!(transport.inner.lock().unwrap().query_calls - calls_base, 1);
+
+    let inv2 = client.invalidate_tags(&[Tag64::keyed("item", 41)]);
+    assert_eq!(inv2.len(), 1);
+    transport.inner.lock().unwrap().fail_queries = true;
+    let mut ext_fail2 = Box::pin(client.fetch_handle::<GetItem>(inv2[0]));
+    assert!(matches!(
+        core::pin::Pin::as_mut(&mut ext_fail2).poll(&mut cx),
+        Poll::Ready(Err(_))
+    ));
+    let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
+    assert!(web2.render_html().contains("F:41:MountedV1:true"));
+    assert_eq!(
+        transport.inner.lock().unwrap().query_calls - calls_base,
+        2,
+        "already-mounted hook must not re-fetch an invalidation already answered by a failed external fetch"
+    );
+
+    {
+        let mut g = transport.inner.lock().unwrap();
+        g.fail_queries = false;
+        g.name = "Recovered2".into();
+    }
+    let _ = client.invalidate_tags(&[Tag64::keyed("item", 41)]);
+    let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
+    assert!(web2.render_html().contains("F:41:Recovered2:false"));
+    assert_eq!(transport.inner.lock().unwrap().query_calls - calls_base, 3);
+}
