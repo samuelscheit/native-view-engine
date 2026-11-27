@@ -160,14 +160,39 @@ final class TableSceneTests: XCTestCase {
 
     func testSparseAndInvalidTables() throws {
         let rows: [UInt32] = [1, 2, 3, 4]
-        let owners: [UInt32] = [0x0001_0007, 0x0002_0003]
+        let owners: [UInt32] = [0x0100_0007, 0x0200_0003]
         rows.withUnsafeBufferPointer { rp in
             owners.withUnsafeBufferPointer { op in
                 let t = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op)
                 XCTAssertEqual(t?.isSparse, true)
-                XCTAssertEqual(t?.row(of: 0x0002_0003), 1)
-                XCTAssertNil(t?.row(of: 1))
-                XCTAssertEqual(t?.owner(0), 0x0001_0007)
+                XCTAssertNil(t?.row(of: 0x0200_0003))  // no published row index: nothing resolves
+                XCTAssertEqual(t?.owner(0), 0x0100_0007)
+                // Row index: page 0 maps node 7 -> row 0 and node 3 -> row 1 (`row + 1`).
+                var pages = [UInt32](repeating: 0, count: rowIndexPageLen)
+                pages[7] = 1
+                pages[3] = 2
+                let dir: [UInt32] = [0, .max]
+                dir.withUnsafeBufferPointer { dp in
+                    pages.withUnsafeBufferPointer { pp in
+                        let ix = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
+                                             rowIndexDir: dp, rowIndexPages: pp)
+                        XCTAssertEqual(ix?.row(ofNode: 3), 1)
+                        XCTAssertEqual(ix?.row(ofNode: 7), 0)
+                        XCTAssertNil(ix?.row(ofNode: 4))  // no row
+                        XCTAssertNil(ix?.row(ofNode: 300))  // page `.max`
+                        XCTAssertNil(ix?.row(ofNode: 600))  // past the directory
+                        XCTAssertNil(ix?.row(ofNode: -1))
+                        XCTAssertEqual(ix?.row(of: 0x0200_0003), 1)
+                        XCTAssertNil(ix?.row(of: 0x0100_0003))  // stale generation of slot 3
+                        XCTAssertNil(ix?.row(of: 1))
+                        // A row past `rowCount` and a partial page are refused.
+                        let short = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 1, rows: rp, owners: op,
+                                                rowIndexDir: dp, rowIndexPages: pp)
+                        XCTAssertNil(short?.row(ofNode: 3))
+                        XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
+                                                 rowIndexDir: dp, rowIndexPages: UnsafeBufferPointer(rebasing: pp[0..<255])))
+                    }
+                }
                 XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 3, rows: rp))
                 XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 33, rowCount: 0, rows: rp))
                 XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 0, rowCount: 0, rows: rp))

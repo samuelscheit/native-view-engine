@@ -1,9 +1,10 @@
 // NVE host runtime: one published table bound to a scene for O(1) per-node reads.
 //
 // `BoundTable::bind` resolves a generated `NveTableDesc` to the scene's `NveTableView` by key once
-// per acquired scene (scene slots are runtime-assigned) and, for sparse tables, builds a dense
-// node-index -> row map in reused storage. `RowRef` reads a field from the node's row, or from the
-// table defaults when the node has no row, so absent sparse rows and present rows read uniformly.
+// per acquired scene (scene slots are runtime-assigned): O(tables), independent of node capacity —
+// sparse rows resolve through the runtime's published row index (`TableReader::row_of_node`).
+// `RowRef` reads a field from the node's row, or from the table defaults when the node has no row,
+// so absent sparse rows and present rows read uniformly.
 #pragma once
 
 #include <bit>
@@ -11,7 +12,6 @@
 #include <optional>
 #include <span>
 #include <string_view>
-#include <vector>
 
 #include "runtime_session.hpp"
 #include "table_reader.hpp"
@@ -64,20 +64,11 @@ class RowRef {
 
 class BoundTable {
  public:
-  static constexpr uint32_t kNoRow = UINT32_MAX;
-
   /// Resolves `desc` in `scene`; afterwards `at()` / `row_of()` read this scene until rebound.
-  void bind(const RuntimeSceneReader& scene, const NveTableDesc& desc) {
+  void bind(const RuntimeSceneReader& scene, const NveTableDesc& desc) noexcept {
     desc_ = &desc;
     reader_ = scene.find_table(Key64{desc.key});
-    rows_by_index_.clear();
     node_rows_ = scene.rows();
-    if (!reader_ || !reader_->is_sparse()) return;
-    rows_by_index_.assign(scene.node_capacity(), kNoRow);
-    for (uint32_t r = 0; r < reader_->row_count(); ++r) {
-      const uint32_t index = node_index(reader_->owner(r).value_or(0u));
-      if (index < rows_by_index_.size()) rows_by_index_[index] = r;
-    }
   }
 
   [[nodiscard]] bool published() const noexcept { return reader_.has_value(); }
@@ -90,15 +81,11 @@ class BoundTable {
   }
   [[nodiscard]] const std::optional<TableReader>& reader() const noexcept { return reader_; }
 
-  /// Row of node `index`, if it has one. A dense table stores a (zeroed) row at every index, so
-  /// there the node's `table_set` bit decides whether the row is the node's.
+  /// Row of node `index`, if it has one (O(1)). A dense table stores a (zeroed) row at every
+  /// index, so there the node's `table_set` bit decides whether the row is the node's.
   [[nodiscard]] std::optional<uint32_t> row_of(uint32_t index) const noexcept {
-    if (!reader_) return std::nullopt;
-    if (!reader_->is_sparse()) {
-      return index < reader_->row_count() && attached(index) ? std::optional<uint32_t>(index) : std::nullopt;
-    }
-    if (index >= rows_by_index_.size() || rows_by_index_[index] == kNoRow) return std::nullopt;
-    return rows_by_index_[index];
+    if (!reader_ || (!reader_->is_sparse() && !attached(index))) return std::nullopt;
+    return reader_->row_of_node(index);
   }
 
   [[nodiscard]] bool has(uint32_t index) const noexcept { return row_of(index).has_value(); }
@@ -118,7 +105,6 @@ class BoundTable {
 
   const NveTableDesc* desc_ = nullptr;
   std::optional<TableReader> reader_;
-  std::vector<uint32_t> rows_by_index_;
   std::span<const NveNodeRow> node_rows_;  // borrowed from the bound scene
 };
 

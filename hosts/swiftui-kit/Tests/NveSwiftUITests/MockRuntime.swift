@@ -76,12 +76,24 @@ struct SceneBuilder {
                 tables[t].rows.append(contentsOf: repeatElement(0, count: need - tables[t].rows.count))
             }
             tables[t].rows.replaceSubrange(id.index * words..<(id.index + 1) * words, with: row)
-            // Like the runtime: dense tables publish owners too (row `i` belongs to node index `i`).
-            if tables[t].owners.count <= id.index {
-                tables[t].owners.append(contentsOf: repeatElement(0, count: id.index + 1 - tables[t].owners.count))
-            }
-            tables[t].owners[id.index] = id.raw
         }
+    }
+
+    /// The store's paged node-index -> `row + 1` index over sparse `owners` (the last row of an
+    /// owner wins, as an edit replaces it): `(row_index_dir, row_index_pages)`.
+    func rowIndex(_ table: Table) -> ([UInt32], [UInt32]) {
+        guard table.sparse else { return ([], []) }
+        var dir = [UInt32](repeating: .max, count: (rows.count + rowIndexPageLen - 1) / rowIndexPageLen)
+        var pages: [UInt32] = []
+        for (r, owner) in table.owners.enumerated() {
+            let index = NodeId(raw: owner).index
+            if dir[index / rowIndexPageLen] == .max {
+                dir[index / rowIndexPageLen] = UInt32(pages.count / rowIndexPageLen)
+                pages.append(contentsOf: repeatElement(0, count: rowIndexPageLen))
+            }
+            pages[Int(dir[index / rowIndexPageLen]) * rowIndexPageLen + index % rowIndexPageLen] = UInt32(r + 1)
+        }
+        return (dir, pages)
     }
 
     static func put(_ row: inout [UInt32], _ f: FieldSpec, _ v: UInt32) {
@@ -176,21 +188,24 @@ final class MockRuntime: @unchecked Sendable {
 
     fileprivate func publish() -> NveRuntimeSceneView {
         tableViews = scene.tables.map { t in
-            NveTableView(
+            let (dir, pages) = scene.rowIndex(t)
+            return NveTableView(
                 key_lo: t.key.lo, key_hi: t.key.hi, slot: t.slot, words: UInt32(t.words),
                 row_count: UInt32(t.rows.count / t.words), dirty_count: 0,
-                rows: pin(t.rows), owners: pin(t.owners), dirty_rows: nil)
+                row_index_dir_len: UInt32(dir.count), row_index_page_count: UInt32(pages.count / rowIndexPageLen),
+                rows: pin(t.rows), owners: pin(t.owners), dirty_rows: nil,
+                row_index_dir: pin(dir), row_index_pages: pin(pages))
         }
         view = NveRuntimeSceneView(
             schema_hash: schema, frame_id: frameId, node_capacity: UInt32(scene.rows.count),
             dirty_count: UInt32(dirty.count), removed_count: UInt32(removed.count),
             text_slab_len: UInt32(scene.text.count), children_slab_len: UInt32(scene.children.count),
             table_count: UInt32(tableViews.count), scroll_count: UInt32(scrollOffsets.count),
-            scene_epoch: 0, dirty_resource_count: 0, _reserved: 0,
+            scene_epoch: 0, dirty_resource_count: 0, moved_count: 0,
             rows: pin(scene.rows), rects: pin(scene.rects),
             text_slab: pin(scene.text), children_slab: pin(scene.children), dirty_indices: pin(dirty),
             removed_ids: pin(removed), tables: pin(tableViews), scroll_offsets: pin(scrollOffsets),
-            dirty_resources: nil)
+            dirty_resources: nil, moved_indices: nil)
         return view
     }
 

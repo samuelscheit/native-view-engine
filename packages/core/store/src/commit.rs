@@ -234,37 +234,30 @@ impl crate::store::NodeStore {
         }
 
         for &(slot, start, dirty_count) in &ranges[..range_len] {
-            let Some(col) = self.columns[slot.0 as usize].as_ref() else {
+            // Dense tables publish no owners or row index (row = node index) and only the rows of
+            // node slots that exist; the column's power-of-two growth tail belongs to no node.
+            let (Some(col), Some(t)) = (
+                self.columns[slot.0 as usize].as_ref(),
+                self.table_storage(slot),
+            ) else {
                 continue;
-            };
-            let dense = col.is_dense();
-            let row_count = col.published_row_count(self.capacity());
-            let rows_ptr = if col.rows.is_empty() {
-                core::ptr::null()
-            } else {
-                col.rows.as_ptr()
-            };
-            let owners_ptr = if dense || col.owners.is_empty() {
-                core::ptr::null()
-            } else {
-                col.owners.as_ptr()
-            };
-            let dirty_ptr = if dirty_count == 0 {
-                core::ptr::null()
-            } else {
-                // SAFETY: `start` is within `dirty_buf` (captured before pushing `dirty_count > 0` items).
-                unsafe { dirty_buf.as_ptr().add(start) }
             };
             out.push(nve_abi::table::NveTableView {
                 key_lo: col.desc.key().lo(),
                 key_hi: col.desc.key().hi(),
                 slot: slot.0 as u32,
                 words: col.w as u32,
-                row_count: row_count as u32,
+                row_count: t.row_count as u32,
                 dirty_count: dirty_count as u32,
-                rows: rows_ptr,
-                owners: owners_ptr,
-                dirty_rows: dirty_ptr,
+                row_index_dir_len: t.row_index_dir.len() as u32,
+                row_index_page_count: (t.row_index_pages.len()
+                    / nve_abi::table::NVE_ROW_INDEX_PAGE_LEN as usize)
+                    as u32,
+                rows: nve_abi::slab_ptr(t.rows),
+                owners: nve_abi::slab_ptr(t.owners),
+                dirty_rows: nve_abi::slab_ptr(&dirty_buf[start..start + dirty_count]),
+                row_index_dir: nve_abi::slab_ptr(t.row_index_dir),
+                row_index_pages: nve_abi::slab_ptr(t.row_index_pages),
             });
         }
     }

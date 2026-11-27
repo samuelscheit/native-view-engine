@@ -12,6 +12,8 @@ using gtk_internal::px;
 
 namespace {
 
+constexpr const char* kScrollOwnerKey = "nve-gtk-scroll-owner";  // on a scroll view's content `GtkFixed`
+
 std::string editable_text(const GtkNodeView& v) {
   if (v.kind == WidgetKind::TextView) {
     GtkTextBuffer* buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(v.widget));
@@ -166,13 +168,13 @@ GtkNodeView* NveGtkHost::Adapter::create(const host::NodeData& node) {
     case WidgetKind::Fixed: v->content = v->widget; break;
     case WidgetKind::Scrolled: {
       v->content = gtk_fixed_new();
+      g_object_set_data(G_OBJECT(v->content), kScrollOwnerKey, v);
       gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(v->widget), v->content);
       GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
       v->h_handler = g_signal_connect(gtk_scrolled_window_get_hadjustment(sw), "value-changed",
                                       gtk_detail::to_gcallback(&on_scroll_value_changed), v);
       v->v_handler = g_signal_connect(gtk_scrolled_window_get_vadjustment(sw), "value-changed",
                                       gtk_detail::to_gcallback(&on_scroll_value_changed), v);
-      host->scroll_views_.insert(v);
       break;
     }
     case WidgetKind::Entry:
@@ -202,12 +204,7 @@ GtkNodeView* NveGtkHost::Adapter::create(const host::NodeData& node) {
 void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
   ++host->reconcile_update_count_;
   GtkWidget* w = v->widget;
-  v->local = node.local;
-  gtk_widget_set_size_request(w, px(node.rect.width) > 0 ? px(node.rect.width) : -1,
-                              px(node.rect.height) > 0 ? px(node.rect.height) : -1);
-  if (GtkWidget* parent = gtk_widget_get_parent(w); parent != nullptr && GTK_IS_FIXED(parent)) {
-    gtk_fixed_move(GTK_FIXED(parent), w, static_cast<double>(node.local.x), static_cast<double>(node.local.y));
-  }
+  host->apply_geometry(*v, node);
   gtk_widget_set_opacity(w, static_cast<double>(std::clamp(node.visual.opacity, 0.0f, 1.0f)));
   gtk_widget_set_visible(w, node.visual.visibility != NVE_VISIBILITY_HIDDEN);
   const bool clips = node.visual.overflow_x != NVE_OVERFLOW_VISIBLE || node.visual.overflow_y != NVE_OVERFLOW_VISIBLE ||
@@ -251,6 +248,11 @@ void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
   v->synced = true;
 }
 
+void NveGtkHost::Adapter::move(GtkNodeView*& v, const host::NodeData& node) {
+  ++host->reconcile_move_count_;
+  host->apply_geometry(*v, node);
+}
+
 void NveGtkHost::Adapter::update_root(const host::NodeData& node) {
   const std::string rule = "." + host->scoped_class(node.id) + " {\n  background-color: " +
                            (node.visual.background != 0u ? gtk_internal::css_rgba(node.visual.background)
@@ -267,7 +269,8 @@ void NveGtkHost::Adapter::update_root(const host::NodeData& node) {
 void NveGtkHost::Adapter::destroy(uint32_t id, GtkNodeView*& v) {
   if (v == nullptr) return;
   host->css_dirty_ = host->css_rules_.erase(id) > 0u || host->css_dirty_;
-  host->scroll_views_.erase(v);
+  host->dirty_scroll_extents_.erase(v);
+  host->mark_scroll_extents(gtk_widget_get_parent(v->widget));
   if (v->kind == WidgetKind::Scrolled) {
     GtkScrolledWindow* sw = GTK_SCROLLED_WINDOW(v->widget);
     g_signal_handler_disconnect(gtk_scrolled_window_get_hadjustment(sw), v->h_handler);
@@ -297,11 +300,15 @@ void NveGtkHost::Adapter::set_children(const host::NodeData&, GtkNodeView** pare
                                        std::span<GtkNodeView** const> kids) {
   GtkWidget* container = parent_view != nullptr ? (*parent_view)->content : host->root_widget_;
   if (container == nullptr) return;  // leaf widgets (label, picture, ...) render no children
+  host->mark_scroll_extents(container);
   GtkWidget* prev = nullptr;
   for (GtkNodeView** kid : kids) {
     GtkNodeView* k = *kid;
     const bool moved_here = gtk_widget_get_parent(k->widget) != container;
-    if (moved_here) gtk_internal::detach_from_parent(k->widget);
+    if (moved_here) {
+      host->mark_scroll_extents(gtk_widget_get_parent(k->widget));
+      gtk_internal::detach_from_parent(k->widget);
+    }
     // Paint order == scene child order. (Re-inserting resets a `GtkFixed` child's position, so the
     // position is applied afterwards, always.)
     if (moved_here || gtk_widget_get_prev_sibling(k->widget) != prev) gtk_widget_insert_after(k->widget, container, prev);
@@ -350,14 +357,33 @@ void NveGtkHost::update_image(GtkNodeView& v, const host::NodeData& node) {
   }
 }
 
+void NveGtkHost::apply_geometry(GtkNodeView& v, const host::NodeData& node) {
+  GtkWidget* w = v.widget;
+  v.local = node.local;
+  gtk_widget_set_size_request(w, px(node.rect.width) > 0 ? px(node.rect.width) : -1,
+                              px(node.rect.height) > 0 ? px(node.rect.height) : -1);
+  GtkWidget* parent = gtk_widget_get_parent(w);
+  if (parent != nullptr && GTK_IS_FIXED(parent)) {
+    gtk_fixed_move(GTK_FIXED(parent), w, static_cast<double>(node.local.x), static_cast<double>(node.local.y));
+  }
+  mark_scroll_extents(parent);
+  if (v.kind == WidgetKind::Canvas) {
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(w), px(v.local.width));
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(w), px(v.local.height));
+  }
+}
+
+void NveGtkHost::mark_scroll_extents(GtkWidget* container) {
+  if (container == nullptr) return;
+  if (auto* owner = static_cast<GtkNodeView*>(g_object_get_data(G_OBJECT(container), kScrollOwnerKey))) {
+    dirty_scroll_extents_.insert(owner);
+  }
+}
+
 void NveGtkHost::update_canvas(GtkNodeView& v, uint32_t index) {
-  const canvas::CanvasData c = canvas_.at(index);
-  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(v.widget), px(v.local.width));
-  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(v.widget), px(v.local.height));
-  if (v.synced && c.draw_list == v.canvas_res && c.generation == v.canvas_generation) return;
-  v.canvas_res = c.draw_list;
-  v.canvas_generation = c.generation;
-  const std::span<const uint8_t> bytes = scene_resource(c.draw_list, canvas::kDrawListKind);
+  // Compared by bytes, not id: `RetainedTree` updates this view when its draw list is republished
+  // under the same id.
+  const std::span<const uint8_t> bytes = scene_resource(canvas_.at(index).draw_list, canvas::kDrawListKind);
   if (v.synced && std::ranges::equal(bytes, v.draw_list)) return;
   v.draw_list.assign(bytes.begin(), bytes.end());  // drawn later, after the scene is released
   ++v.redraw_count;
@@ -413,8 +439,9 @@ void NveGtkHost::update_scroll(GtkNodeView& v, const host::NodeData& node) {
 
 void NveGtkHost::update_scroll_extents() {
   // Content extent = union of the children's layout rects (our own record: GTK 4.24's
-  // `gtk_fixed_get_child_position` reports 0,0, see docs/UPSTREAM.md).
-  for (GtkNodeView* v : scroll_views_) {
+  // `gtk_fixed_get_child_position` reports 0,0, see docs/UPSTREAM.md). Only scroll views whose
+  // children were placed, moved, resized or removed since the last sync are re-measured.
+  for (GtkNodeView* v : dirty_scroll_extents_) {
     float w = 0.0f;
     float h = 0.0f;
     for (GtkWidget* c = gtk_widget_get_first_child(v->content); c != nullptr; c = gtk_widget_get_next_sibling(c)) {
@@ -425,6 +452,7 @@ void NveGtkHost::update_scroll_extents() {
     }
     gtk_widget_set_size_request(v->content, px(w), px(h));
   }
+  dirty_scroll_extents_.clear();
 }
 
 std::span<const uint8_t> NveGtkHost::canvas_draw_list_for_node_id(uint32_t node_id) const noexcept {
