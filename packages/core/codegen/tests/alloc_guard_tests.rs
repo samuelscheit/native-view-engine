@@ -3,9 +3,13 @@
 //! The view-models borrow the `nve-abi` descriptors and `TableDesc`s directly (no owned
 //! `HybridFileSpec` bridge), and every template renders into one pre-sized buffer. What remains are
 //! the small per-name `String`s of the spelling helpers: codegen is a cold build step, so those
-//! are not worth a zero-allocation rewrite. The ceilings sit ~25% above the measured counts
-//! (C header 1,173 / tables 2,209 / all files 6,199), so reintroducing an owned intermediate spec
-//! or per-field validation churn fails here. Byte totals count every buffer growth (ceiling 5x the output).
+//! are not worth a zero-allocation rewrite.
+//!
+//! Ceilings scale with the generated output (a minimum of output bytes per allocation, ~20% under
+//! the measured density: C header ~30, tables ~37, all files ~32), so the ABI growing (new slots,
+//! fields, value sets) never trips them, while reintroducing an owned intermediate spec or
+//! per-field validation churn (more allocations for the same output) does. Absolute counts used
+//! to fail on every ABI addition. Byte totals count every buffer growth (ceiling 5x the output).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -56,6 +60,16 @@ fn counted<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
     (ALLOCS.with(Cell::get) - a0, BYTES.with(Cell::get) - b0, out)
 }
 
+/// At least `min_bytes_per_alloc` output bytes per heap allocation.
+fn assert_density(what: &str, allocs: usize, out: usize, min_bytes_per_alloc: usize) {
+    assert!(
+        allocs * min_bytes_per_alloc <= out,
+        "{what} took {allocs} allocations for {out} output bytes \
+         ({} bytes/allocation, minimum {min_bytes_per_alloc})",
+        out / allocs.max(1)
+    );
+}
+
 #[test]
 fn c_abi_header_allocation_ceiling() {
     let _ = generate_c_abi_header(); // warm one-time statics
@@ -65,10 +79,7 @@ fn c_abi_header_allocation_ceiling() {
         "generate_c_abi_header: {allocs} allocations, {bytes} bytes for {} output bytes",
         header.len()
     );
-    assert!(
-        allocs <= 1_500,
-        "C header took {allocs} allocations (ceiling 1500)"
-    );
+    assert_density("C header", allocs, header.len(), 24);
     assert!(
         bytes <= 5 * header.len(),
         "C header allocated {bytes} bytes for {} output bytes",
@@ -83,11 +94,8 @@ fn table_files_allocation_ceiling() {
     eprintln!(
         "generate_table_files(17 core): {allocs} allocations, {bytes} bytes for {out} output bytes"
     );
-    assert!(
-        // Java `NveTables` names every field value (`{FIELD}_{VALUE}`, ~650 constants).
-        allocs <= 5_400,
-        "tables took {allocs} allocations (ceiling 5400)"
-    );
+    // Java `NveTables` names every field value (`{FIELD}_{VALUE}`, ~650 constants).
+    assert_density("tables", allocs, out, 29);
     assert!(
         bytes <= 5 * out,
         "tables allocated {bytes} bytes for {out} output bytes"
@@ -103,10 +111,7 @@ fn every_host_file_allocation_ceiling() {
         .map(|f| f.content.len())
         .sum();
     eprintln!("generate_all_abi_files: {allocs} allocations, {bytes} bytes for {out} output bytes");
-    assert!(
-        allocs <= 11_500,
-        "all files took {allocs} allocations (ceiling 11500)"
-    );
+    assert_density("all files", allocs, out, 26);
     assert!(
         bytes <= 5 * out,
         "all files allocated {bytes} bytes for {out} output bytes"
