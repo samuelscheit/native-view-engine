@@ -294,8 +294,8 @@ struct SceneTables {
   n.local = n.rect;
   if (const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr) {
     const NveLayoutRect parent = sealed_rect(*p);
-    n.local.x -= parent.x;
-    n.local.y -= parent.y;
+    n.local.x = finite_or(n.local.x - parent.x, 0.0f);  // FLT_MAX - -FLT_MAX overflows
+    n.local.y = finite_or(n.local.y - parent.y, 0.0f);
   }
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
   n.text_style = text_style;

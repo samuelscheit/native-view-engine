@@ -47,7 +47,6 @@ struct GtkNodeView {
   bool synced = false;
 
   // Image / canvas.
-  uint32_t image_src = 0u;
   uint32_t canvas_res = 0u;
   uint32_t canvas_generation = 0u;
   std::vector<uint8_t> draw_list;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -223,7 +224,8 @@ void NveGtkHost::Adapter::update(GtkNodeView*& v, const host::NodeData& node) {
       const bool wraps = t.white_space != NVE_WHITE_SPACE_NO_WRAP && t.white_space != NVE_WHITE_SPACE_PRE;
       gtk_label_set_wrap(GTK_LABEL(w), wraps ? TRUE : FALSE);
       gtk_label_set_wrap_mode(GTK_LABEL(w), PANGO_WRAP_WORD_CHAR);
-      gtk_label_set_lines(GTK_LABEL(w), t.max_lines > 0u ? static_cast<int>(t.max_lines) : -1);
+      const auto lines = static_cast<int>(std::min<uint32_t>(t.max_lines, std::numeric_limits<int>::max()));
+      gtk_label_set_lines(GTK_LABEL(w), lines > 0 ? lines : -1);
       gtk_label_set_ellipsize(GTK_LABEL(w), t.max_lines > 0u ? PANGO_ELLIPSIZE_END : PANGO_ELLIPSIZE_NONE);
       const float xalign = t.text_align == NVE_TEXT_ALIGN_CENTER                                   ? 0.5f
                            : (t.text_align == NVE_TEXT_ALIGN_END || t.text_align == NVE_TEXT_ALIGN_RIGHT) ? 1.0f
