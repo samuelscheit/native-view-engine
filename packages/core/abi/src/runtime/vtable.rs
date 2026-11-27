@@ -80,7 +80,7 @@ pub const RUNTIME_API_SLOTS: &[RuntimeFnSignature] = &[
     sig("scene_release", "int32_t", "NveRuntimeHandle handle", "Any thread."),
     sig("resource_payload", "int32_t", "NveRuntimeHandle handle, uint32_t resource_id, uint64_t* out_kind, NveBufferSlice* out_payload", "Any thread holding scene_acquire; canonical payload bytes + kind Key64 of a published ResourceId, borrowed until scene_release; NOT_FOUND when stale."),
     sig("get_metrics", "int32_t", "NveRuntimeHandle handle, NveRuntimeMetrics* out_metrics", "Any thread."),
-    sig("pair_connect", "int32_t", "NveRuntimeHandle handle, NveStrSlice uri, NveStrSlice token", "Owner thread."),
+    sig("pair_connect", "int32_t", "NveRuntimeHandle handle, NveStrSlice uri, NveStrSlice token", "Owner thread; replaces the local app or previous pairing (a rejected URI/token leaves it running)."),
     sig("pair_disconnect", "int32_t", "NveRuntimeHandle handle", "Owner thread."),
     sig("pair_is_connected", "uint32_t", "NveRuntimeHandle handle", "Any thread."),
     sig("last_error", "size_t", "uint8_t* out_buf, size_t cap", "Calling thread's last error (NUL-terminated); returns the full byte length."),

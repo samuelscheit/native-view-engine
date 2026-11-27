@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../generated/nve_abi.generated.h"
+#include "owned_events.hpp"
 #include "runtime_session.hpp"
 
 namespace nve::host {
@@ -175,12 +176,21 @@ class HostSession {
 
   /// Advances the runtime (renders the app / applies paired frames) and forwards the app's
   /// outbound events; `true` when the scene changed.
+  ///
+  /// The sink may re-enter the session (dispatch, pump, attach, reload, `set_event_sink`): it
+  /// gets an owned deep copy of the batch that no nested pump reuses, through a copy of the sink
+  /// that replacing it cannot destroy mid-call.
   bool pump(float dt_s = 0.0f) {
     bool changed = false;
     const bool ok = runtime_.tick(dt_s, &changed) == NVE_RUNTIME_OK;
     NveEventBatch out{};
     if (sink_ && runtime_.drain_emitted_events(&out) == NVE_RUNTIME_OK && out.ptr != nullptr && out.len != 0u) {
-      sink_(std::span<const NveDirectEvent>(out.ptr, out.len));
+      OwnedEvents batch = std::exchange(drained_, OwnedEvents{});  // a nested pump gets its own
+      batch.assign(std::span<const NveDirectEvent>(out.ptr, out.len));
+      const EventSink sink = sink_;
+      sink(batch.events());
+      batch.clear();
+      drained_ = std::move(batch);  // keeps the event vector's capacity for the next batch
     }
     return ok && changed;
   }
@@ -261,6 +271,7 @@ class HostSession {
   RuntimeSession runtime_;  // owns the app and its staged module
   WakePoster wake_;
   EventSink sink_;
+  OwnedEvents drained_;
   EventFactory events_;
   uint64_t source_generation_ = 0u;
   bool attached_ = false;

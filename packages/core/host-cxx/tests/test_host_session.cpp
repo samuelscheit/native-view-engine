@@ -1,8 +1,8 @@
-// Live `libnve_runtime` tests of app files through `HostSession`: `cdylib` modules loaded from
-// staged copies (status mapping, hot reload of a file rebuilt in place runs the NEW code with the
-// old state, failed loads keep the running app, staged copies are deleted on unload), runtime
-// `StateFile` app state (envelope, schema rules, quarantine, rotation, cold-start clearing), and
-// the host-side state path policy (`app_state.hpp`).
+// Live `libnve_runtime` tests of `HostSession` lifecycles: `cdylib` modules loaded from staged
+// copies (status mapping, hot reload of a file rebuilt in place runs the NEW code with the old
+// state, failed loads keep the running app, staged copies are deleted on unload), re-entrant
+// emitted-event sinks, runtime `StateFile` app state (envelope, schema rules, quarantine,
+// rotation, cold-start clearing), and the host-side state path policy (`app_state.hpp`).
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -165,6 +166,67 @@ void test_hot_reload_of_a_rebuilt_module() {
   CHECK(staged_copies(stem) == 0u);
 }
 
+/// The emitted-event sink may re-enter the session: nested dispatches (and their nested pumps)
+/// grow the app's event buffer and must not invalidate the batch the outer sink still reads, and
+/// replacing the sink from inside it must not destroy the running callback.
+void test_reentrant_event_sink() {
+  auto host = HostSession::create(RuntimeSession::default_config());
+  CHECK(host != nullptr);
+  if (!host) return;
+  CHECK(host->attach(&CounterApp::get_interface));
+  struct Seen {
+    std::string name;
+    int64_t value = 0;
+  };
+  std::vector<Seen> seen;  // recorded AFTER the nested calls returned
+  host->set_event_sink([&](std::span<const NveDirectEvent> evs) {
+    for (const NveDirectEvent& ev : evs) {
+      if (ev.value.data.i64_val < 4) (void)press(*host, CounterApp::kIncrement);
+      seen.push_back({std::string(reinterpret_cast<const char*>(ev.name.ptr), ev.name.len), ev.value.data.i64_val});
+    }
+  });
+  CHECK(press(*host, CounterApp::kIncrement));
+  CHECK(seen.size() == 4u);
+  for (size_t i = 0u; i < seen.size(); ++i) {
+    CHECK(seen[i].name == CounterApp::kCountEventName && seen[i].value == static_cast<int64_t>(4u - i));
+  }
+  CHECK(count(*host) == 4);
+
+  // A sink that replaces itself keeps running on its own (copied) state.
+  int calls = 0;
+  const std::string tag(64, 'x');  // heap-allocated capture: freed if the running sink were destroyed
+  host->set_event_sink([&host, &calls, tag](std::span<const NveDirectEvent>) {
+    host->set_event_sink([&calls](std::span<const NveDirectEvent>) { calls += 100; });
+    calls += tag.size() == 64u ? 1 : 1000;
+  });
+  CHECK(press(*host, CounterApp::kIncrement) && calls == 1);
+  CHECK(press(*host, CounterApp::kIncrement) && calls == 101);
+}
+
+/// A sink that hot-reloads the module destroys the app and unloads the image that owns the
+/// event names mid-batch: the batch it reads must be the session's own copy.
+void test_sink_reloading_the_module() {
+  auto host = HostSession::create(RuntimeSession::default_config());
+  CHECK(host != nullptr);
+  if (!host) return;
+  CHECK(host->load_module(NVE_TEST_COUNTER_MODULE));
+  std::vector<std::string> names;
+  std::vector<int64_t> values;
+  bool reloaded = false;
+  host->set_event_sink([&](std::span<const NveDirectEvent> evs) {
+    if (!std::exchange(reloaded, true)) CHECK(host->reload_module(NVE_TEST_COUNTER_DOUBLE_MODULE));
+    for (const NveDirectEvent& ev : evs) {
+      names.emplace_back(reinterpret_cast<const char*>(ev.name.ptr), ev.name.len);
+      values.push_back(ev.value.data.i64_val);
+    }
+  });
+  CHECK(press(*host, CounterApp::kIncrement));
+  CHECK(reloaded && names == std::vector<std::string>{"count"} && values == std::vector<int64_t>{1});
+  CHECK(press(*host, CounterApp::kIncrement) && count(*host) == 3);  // the reloaded (double) code
+  // The restored state re-emits `count` (1); then one event per applied press.
+  CHECK(values == (std::vector<int64_t>{1, 1, 2, 3}));
+}
+
 void test_state_files() {
   auto host = HostSession::create(RuntimeSession::default_config());
   CHECK(host != nullptr);
@@ -267,12 +329,14 @@ void test_state_paths() {
 int main() {
   test_module_status_mapping();
   test_hot_reload_of_a_rebuilt_module();
+  test_reentrant_event_sink();
+  test_sink_reloading_the_module();
   test_state_files();
   test_state_paths();
   if (g_failures != 0) {
-    fprintf(stderr, "nve_host_app_files_test: %d failure(s)\n", g_failures);
+    fprintf(stderr, "nve_host_session_test: %d failure(s)\n", g_failures);
     return 1;
   }
-  printf("nve_host_app_files_test: ok\n");
+  printf("nve_host_session_test: ok\n");
   return 0;
 }
