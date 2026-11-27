@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(NVE_WITH_RNW_FABRIC "Build the react-native-windows 0.83+ Composition Fabric component (nve_rnw_component)" OFF)
-option(NVE_ENABLE_NATIVE_VIEWS "Enable packages/modules/native-views" OFF)
 set(RNW_GENERATED_DIR "" CACHE PATH "react-native-windows C++/WinRT generated headers (winrt/Microsoft.ReactNative.Composition.h)")
 set(NVE_RNW_EXTRA_INCLUDE_DIRS "" CACHE STRING "Extra include directories for react-native-windows / Windows App SDK")
 set(NVE_RNW_LIBS "" CACHE STRING "Libraries to link when NVE_WITH_RNW_FABRIC=ON")
@@ -42,17 +41,6 @@ target_include_directories(nve_windows_shell_lib PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_compile_options(nve_windows_shell_lib PRIVATE ${_nve_win_warnings})
 target_link_libraries(nve_windows_shell_lib PUBLIC nve::host_cxx nve::runtime nve::canvas_cxx)
 
-if(NVE_ENABLE_NATIVE_VIEWS)
-  if(NOT TARGET nve_win_native_views)
-    add_subdirectory(
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../packages/modules/native-views/windows"
-      "${CMAKE_CURRENT_BINARY_DIR}/nve_win_native_views"
-    )
-  endif()
-  target_link_libraries(nve_windows_shell_lib PUBLIC nve_win_native_views)
-  target_compile_definitions(nve_windows_shell_lib PUBLIC NVE_ENABLE_NATIVE_VIEWS=1)
-endif()
-
 # react-native-windows Fabric component: an optional layer ON TOP of the host (the host never
 # depends on it).
 if(NVE_WITH_RNW_FABRIC)
@@ -60,6 +48,8 @@ if(NVE_WITH_RNW_FABRIC)
     message(FATAL_ERROR "NVE_WITH_RNW_FABRIC=ON is only supported on Windows")
   endif()
   add_library(nve_rnw_component STATIC NveRnwComponentView.cpp)
+  # The header / TU guard on this define: without it the target compiles to nothing.
+  target_compile_definitions(nve_rnw_component PUBLIC NVE_WITH_RNW_FABRIC=1)
   target_compile_options(nve_rnw_component PRIVATE ${_nve_win_warnings})
   target_link_libraries(nve_rnw_component PUBLIC nve_windows_shell_lib windowsapp ${NVE_RNW_LIBS})
   if(RNW_GENERATED_DIR)
@@ -73,6 +63,9 @@ endif()
 if(WIN32)
   add_executable(nve_windows_shell main.cpp)
   target_compile_options(nve_windows_shell PRIVATE ${_nve_win_warnings})
+  if(MINGW)  # `wmain` entry point (MSVC picks it up by itself)
+    target_link_options(nve_windows_shell PRIVATE -municode)
+  endif()
   target_link_libraries(nve_windows_shell PRIVATE nve_windows_shell_lib)
 endif()
 
@@ -90,6 +83,9 @@ endif()
 target_compile_options(nve_windows_shell_test PRIVATE ${_nve_win_warnings})
 nve_use_app_module_fixtures(nve_windows_shell_test nve_win_fixture)
 target_link_libraries(nve_windows_shell_test PRIVATE nve_windows_shell_lib nve::host_test_support)
+if(NOT NVE_RUNTIME_NO_DEFAULT_FEATURES)  # the runtime pairs (`wire` feature): live loopback test
+  target_compile_definitions(nve_windows_shell_test PRIVATE NVE_RUNTIME_TEST_HAS_WIRE=1)
+endif()
 add_test(NAME windows_shell_test COMMAND nve_windows_shell_test)
 nve_host_sanitize(nve_windows_shell_lib nve_windows_shell_test)
 if(TARGET nve_windows_shell)

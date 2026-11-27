@@ -1,6 +1,8 @@
-// WIC image decoding (`data:` URLs, `file://` URLs, absolute paths, inline encoded bytes) into a
-// bounded per-render-target LRU of `ID2D1Bitmap`s, and headless BMP screenshots of the visual tree.
+// `D2DPaintCache` (WIC-decoded bitmaps of `data:` URLs, local files and inline bytes; per-node
+// DirectWrite layouts) and headless BMP screenshots of the visual tree.
 #include "NveWinD2DInternal.hpp"
+
+#include <nve/host/urls.hpp>
 
 #include <shlwapi.h>
 #include <wincodec.h>
@@ -11,15 +13,15 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <list>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace nve::win {
 
 namespace {
+
+constexpr size_t kMaxBitmaps = 64u;
 
 bool starts_with_ci(std::string_view s, std::string_view prefix) noexcept {
   if (s.size() < prefix.size()) return false;
@@ -50,128 +52,24 @@ std::vector<uint8_t> data_url_bytes(std::string_view url) {
   return out;
 }
 
-/// Filesystem path of a `file://` URL (percent-decoded by `PathCreateFromUrlW`) or an absolute path.
-std::wstring file_path(std::string_view url) {
+/// Local filesystem path of an image URL (`host::local_image_path`; `file:` URLs decoded by
+/// `PathCreateFromUrlW`). Never a UNC path: the OS would authenticate to that host (NTLM leak)
+/// and block the UI thread on the network.
+std::wstring local_file(std::string_view url) {
+  const auto local = host::local_image_path(url);
+  if (!local) return {};
+  std::wstring path;
   if (starts_with_ci(url, "file:")) {
     const std::wstring wurl = wide(url);
-    wchar_t path[MAX_PATH * 4] = {};
-    DWORD len = static_cast<DWORD>(std::size(path));
-    return SUCCEEDED(::PathCreateFromUrlW(wurl.c_str(), path, &len, 0)) ? std::wstring(path, len) : std::wstring();
+    wchar_t buf[MAX_PATH * 4] = {};
+    DWORD len = static_cast<DWORD>(std::size(buf));
+    if (FAILED(::PathCreateFromUrlW(wurl.c_str(), buf, &len, 0))) return {};
+    path.assign(buf, len);
+  } else {
+    path = wide(*local);
   }
-  const bool drive = url.size() > 2u && std::isalpha(static_cast<unsigned char>(url[0])) && url[1] == ':';
-  return drive || starts_with_ci(url, "\\\\") || starts_with_ci(url, "/") ? wide(url) : std::wstring();
+  return path.empty() || ::PathIsUNCW(path.c_str()) || path.starts_with(L"\\\\") ? std::wstring() : path;
 }
-
-class BitmapCache {
- public:
-  static BitmapCache& shared() {
-    static BitmapCache cache;
-    return cache;
-  }
-  ~BitmapCache() {
-    for (auto& [rt, lru] : targets_) clear(lru);
-    if (wic_ != nullptr) wic_->Release();
-  }
-
-  ID2D1Bitmap* get(ID2D1RenderTarget* rt, const WinImageSource& src) {
-    if (rt == nullptr || src.empty()) return nullptr;
-    Lru& lru = targets_[rt];
-    if (const auto it = lru.entries.find(src.key); it != lru.entries.end()) {
-      lru.order.splice(lru.order.begin(), lru.order, it->second.at);
-      return it->second.bitmap;
-    }
-    ID2D1Bitmap* bmp = decode(rt, src);
-    if (bmp == nullptr) return nullptr;
-    while (lru.entries.size() >= kMaxEntries) {
-      const auto victim = lru.entries.find(lru.order.back());
-      victim->second.bitmap->Release();
-      lru.entries.erase(victim);
-      lru.order.pop_back();
-    }
-    lru.order.push_front(src.key);
-    lru.entries.emplace(src.key, Entry{bmp, lru.order.begin()});
-    return bmp;
-  }
-
-  void release(ID2D1RenderTarget* rt) {
-    if (const auto it = targets_.find(rt); it != targets_.end()) {
-      clear(it->second);
-      targets_.erase(it);
-    }
-  }
-
- private:
-  static constexpr size_t kMaxEntries = 64u;
-  struct Entry {
-    ID2D1Bitmap* bitmap = nullptr;
-    std::list<std::string>::iterator at;
-  };
-  struct Lru {
-    std::list<std::string> order;  // most recent first
-    std::unordered_map<std::string, Entry> entries;
-  };
-
-  static void clear(Lru& lru) {
-    for (auto& [key, e] : lru.entries) e.bitmap->Release();
-    lru.entries.clear();
-    lru.order.clear();
-  }
-
-  IWICImagingFactory* wic() {
-    if (wic_ == nullptr) {
-      (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // S_FALSE / RPC_E_CHANGED_MODE: COM is up
-      (void)::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_));
-    }
-    return wic_;
-  }
-
-  ID2D1Bitmap* decode(ID2D1RenderTarget* rt, const WinImageSource& src) {
-    IWICImagingFactory* f = wic();
-    if (f == nullptr) return nullptr;
-    std::vector<uint8_t> url_bytes;
-    std::span<const uint8_t> memory = src.encoded;
-    std::wstring path;
-    if (!src.url.empty()) {
-      if (starts_with_ci(src.url, "data:image/")) {
-        url_bytes = data_url_bytes(src.url);
-        memory = url_bytes;
-      } else {
-        path = file_path(src.url);
-      }
-      if (memory.empty() && path.empty()) return nullptr;  // remote URLs: not fetched by the shell
-    }
-    IWICBitmapDecoder* decoder = nullptr;
-    IWICStream* stream = nullptr;
-    HRESULT hr = E_FAIL;
-    if (!path.empty()) {
-      hr = f->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
-    } else if (!memory.empty() && memory.size() <= 0xFFFFFFFFu) {
-      hr = f->CreateStream(&stream);
-      if (SUCCEEDED(hr)) {
-        hr = stream->InitializeFromMemory(const_cast<BYTE*>(memory.data()), static_cast<DWORD>(memory.size()));
-      }
-      if (SUCCEEDED(hr)) hr = f->CreateDecoderFromStream(stream, nullptr, WICDecodeMetadataCacheOnLoad, &decoder);
-    }
-    IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
-    ID2D1Bitmap* bitmap = nullptr;
-    if (SUCCEEDED(hr)) hr = decoder->GetFrame(0u, &frame);
-    if (SUCCEEDED(hr)) hr = f->CreateFormatConverter(&converter);
-    if (SUCCEEDED(hr)) {
-      hr = converter->Initialize(frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
-                                 WICBitmapPaletteTypeCustom);
-    }
-    if (SUCCEEDED(hr)) hr = rt->CreateBitmapFromWicBitmap(converter, nullptr, &bitmap);
-    for (IUnknown* u : {static_cast<IUnknown*>(converter), static_cast<IUnknown*>(frame), static_cast<IUnknown*>(decoder),
-                        static_cast<IUnknown*>(stream)}) {
-      if (u != nullptr) u->Release();
-    }
-    return SUCCEEDED(hr) ? bitmap : nullptr;
-  }
-
-  IWICImagingFactory* wic_ = nullptr;
-  std::unordered_map<ID2D1RenderTarget*, Lru> targets_;
-};
 
 bool fail(std::string* out_error, const char* message) {
   if (out_error != nullptr) *out_error = message;
@@ -203,13 +101,120 @@ bool write_bmp(std::string_view path, uint32_t w, uint32_t h, const uint8_t* bgr
 
 }  // namespace
 
-namespace d2d_internal {
+// --- D2DPaintCache ---------------------------------------------------------------------------
 
-ID2D1Bitmap* bitmap_for(ID2D1RenderTarget* rt, const WinImageSource& src) { return BitmapCache::shared().get(rt, src); }
+void D2DPaintCache::release() noexcept {
+  for (auto& [key, b] : bitmaps_) b.bitmap->Release();
+  bitmaps_.clear();
+  lru_.clear();
+  for (auto& [id, l] : layouts_) l.layout->Release();
+  layouts_.clear();
+  if (wic_ != nullptr) wic_->Release();
+  wic_ = nullptr;
+  target_ = nullptr;
+}
 
-void release_bitmaps(ID2D1RenderTarget* rt) { BitmapCache::shared().release(rt); }
+ID2D1Bitmap* D2DPaintCache::bitmap(ID2D1RenderTarget* rt, const WinImageSource& src) {
+  if (rt == nullptr || src.empty()) return nullptr;
+  if (rt != target_) {  // bitmaps belong to one target
+    for (auto& [key, b] : bitmaps_) b.bitmap->Release();
+    bitmaps_.clear();
+    lru_.clear();
+    target_ = rt;
+  }
+  if (const auto it = bitmaps_.find(src.key); it != bitmaps_.end()) {
+    lru_.splice(lru_.begin(), lru_, it->second.at);
+    return it->second.bitmap;
+  }
+  ID2D1Bitmap* bmp = decode(rt, src);
+  if (bmp == nullptr) return nullptr;
+  if (bitmaps_.size() >= kMaxBitmaps) {
+    const auto victim = bitmaps_.find(lru_.back());
+    victim->second.bitmap->Release();
+    bitmaps_.erase(victim);
+    lru_.pop_back();
+  }
+  lru_.push_front(src.key);
+  bitmaps_.emplace(src.key, Bitmap{bmp, lru_.begin()});
+  return bmp;
+}
 
-}  // namespace d2d_internal
+ID2D1Bitmap* D2DPaintCache::decode(ID2D1RenderTarget* rt, const WinImageSource& src) {
+  if (wic_ == nullptr) {
+    (void)::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // S_FALSE / RPC_E_CHANGED_MODE: COM is up
+    if (FAILED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_)))) {
+      wic_ = nullptr;
+      return nullptr;
+    }
+  }
+  std::vector<uint8_t> url_bytes;
+  std::span<const uint8_t> memory = src.encoded;
+  std::wstring path;
+  if (!src.url.empty()) {
+    if (starts_with_ci(src.url, "data:image/")) {
+      url_bytes = data_url_bytes(src.url);
+      memory = url_bytes;
+    } else {
+      path = local_file(src.url);  // remote URLs are not fetched by the shell
+    }
+    if (memory.empty() && path.empty()) return nullptr;
+  }
+  IWICBitmapDecoder* decoder = nullptr;
+  IWICStream* stream = nullptr;
+  HRESULT hr = E_FAIL;
+  if (!path.empty()) {
+    hr = wic_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+  } else if (!memory.empty() && memory.size() <= 0xFFFFFFFFu) {
+    hr = wic_->CreateStream(&stream);
+    if (SUCCEEDED(hr)) hr = stream->InitializeFromMemory(const_cast<BYTE*>(memory.data()), static_cast<DWORD>(memory.size()));
+    if (SUCCEEDED(hr)) hr = wic_->CreateDecoderFromStream(stream, nullptr, WICDecodeMetadataCacheOnLoad, &decoder);
+  }
+  IWICBitmapFrameDecode* frame = nullptr;
+  IWICFormatConverter* converter = nullptr;
+  ID2D1Bitmap* bitmap = nullptr;
+  if (SUCCEEDED(hr)) hr = decoder->GetFrame(0u, &frame);
+  if (SUCCEEDED(hr)) hr = wic_->CreateFormatConverter(&converter);
+  if (SUCCEEDED(hr)) {
+    hr = converter->Initialize(frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
+                               WICBitmapPaletteTypeCustom);
+  }
+  if (SUCCEEDED(hr)) hr = rt->CreateBitmapFromWicBitmap(converter, nullptr, &bitmap);
+  for (IUnknown* u : {static_cast<IUnknown*>(converter), static_cast<IUnknown*>(frame), static_cast<IUnknown*>(decoder),
+                      static_cast<IUnknown*>(stream)}) {
+    if (u != nullptr) u->Release();
+  }
+  return SUCCEEDED(hr) ? bitmap : nullptr;
+}
+
+IDWriteTextLayout* D2DPaintCache::layout(const DirectWriteTextMeasurer& m, uint32_t node, std::string_view text,
+                                         const TextPaint& style, float width, float height) {
+  auto it = layouts_.find(node);
+  if (it != layouts_.end() && it->second.width == width && it->second.height == height && it->second.text == text &&
+      it->second.style == style) {
+    return it->second.layout;
+  }
+  IDWriteTextLayout* fresh = m.create_layout(text, style, width, height);
+  if (it != layouts_.end()) {
+    it->second.layout->Release();
+    layouts_.erase(it);
+  }
+  if (fresh == nullptr) return nullptr;
+  layouts_.emplace(node, Layout{fresh, std::string(text), style, width, height});
+  return fresh;
+}
+
+void D2DPaintCache::prune(const NveWinVisualTree& tree) {
+  for (auto it = layouts_.begin(); it != layouts_.end();) {
+    if (tree.find(it->first) == nullptr) {
+      it->second.layout->Release();
+      it = layouts_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+// --- Headless screenshots --------------------------------------------------------------------
 
 bool render_visual_tree_to_bmp(const NveWinVisualTree& tree, const DirectWriteTextMeasurer& text, uint32_t width_px,
                                uint32_t height_px, float scale_factor, std::string_view out_bmp_path,
@@ -232,6 +237,7 @@ bool render_visual_tree_to_bmp(const NveWinVisualTree& tree, const DirectWriteTe
   void* bits = nullptr;
   bool ok = false;
   std::string error;
+  D2DPaintCache cache;  // released with this target, below
   if (FAILED(factory->CreateDCRenderTarget(&props, &rt))) {
     error = "CreateDCRenderTarget failed";
   } else if ((dc = ::CreateCompatibleDC(nullptr)) == nullptr) {
@@ -252,7 +258,7 @@ bool render_visual_tree_to_bmp(const NveWinVisualTree& tree, const DirectWriteTe
       const RECT bind{0, 0, static_cast<LONG>(width_px), static_cast<LONG>(height_px)};
       if (FAILED(rt->BindDC(dc, &bind))) {
         error = "ID2D1DCRenderTarget::BindDC failed";
-      } else if (FAILED(paint_visual_tree_d2d(rt, factory, tree, text))) {
+      } else if (FAILED(paint_visual_tree_d2d(rt, factory, tree, text, cache))) {
         error = "paint_visual_tree_d2d failed";
       } else {
         ::GdiFlush();
@@ -260,10 +266,8 @@ bool render_visual_tree_to_bmp(const NveWinVisualTree& tree, const DirectWriteTe
       }
     }
   }
-  if (rt != nullptr) {
-    d2d_internal::release_bitmaps(rt);
-    rt->Release();
-  }
+  cache.release();
+  if (rt != nullptr) rt->Release();
   if (previous != nullptr) ::SelectObject(dc, previous);
   if (dib != nullptr) ::DeleteObject(dib);
   if (dc != nullptr) ::DeleteDC(dc);

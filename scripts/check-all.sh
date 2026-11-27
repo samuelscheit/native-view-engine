@@ -520,12 +520,14 @@ suite_windows_host() {
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
     ${CMAKE_RN_ARGS[@]+"${CMAKE_RN_ARGS[@]}"}
   cmake --build "$build_dir"
-  # The live kitchen-sink `cdylib` test is opt-in: it runs when the dylib was built.
-  local env_prefix=()
-  if [ -f "$KITCHEN_SINK_DYLIB" ]; then
-    env_prefix=(env "NVE_TEST_KITCHEN_SINK_DYLIB=$(native_host_path "$KITCHEN_SINK_DYLIB")")
+  # The live kitchen-sink `cdylib` test is required: build the dylib, never skip silently.
+  (cd "$REPO_ROOT" && cargo build --locked -p nve-example-kitchen-sink)
+  if [ ! -f "$KITCHEN_SINK_DYLIB" ]; then
+    echo "error: expected kitchen-sink dylib at $KITCHEN_SINK_DYLIB" >&2
+    return 1
   fi
-  ${env_prefix[@]+"${env_prefix[@]}"} ctest --test-dir "$build_dir" --output-on-failure
+  NVE_TEST_KITCHEN_SINK_DYLIB="$(native_host_path "$KITCHEN_SINK_DYLIB")" \
+    ctest --test-dir "$build_dir" --output-on-failure
 }
 
 suite_qt6_host() {

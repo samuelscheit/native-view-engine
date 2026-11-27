@@ -2,6 +2,10 @@
 
 #if defined(_WIN32) && defined(NVE_WITH_RNW_FABRIC) && NVE_WITH_RNW_FABRIC
 
+#include <nve/host/utf8.h>
+
+#include <winrt/Microsoft.UI.Dispatching.h>
+
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -19,7 +23,8 @@ struct EmittedEvent {
   NveDirectEvent ev{};
   std::string name;
   std::string text;
-  std::string value_str;
+  std::string value_str;  // NVE_VAL_STR
+  std::string payload;    // NVE_VAL_BYTES (custom event payload, forwarded as `payloadJson` when UTF-8)
 };
 
 struct NveRnwComponentUserData : winrt::implements<NveRnwComponentUserData, winrt::Windows::Foundation::IInspectable> {
@@ -54,13 +59,18 @@ void write_event(rnw::IJSValueWriter const& writer, const EmittedEvent& e) {
     writer.WritePropertyName(L"text");
     writer.WriteString(winrt::to_hstring(e.text));
   }
+  if (!e.payload.empty() &&
+      nve_utf8_valid(reinterpret_cast<const uint8_t*>(e.payload.data()), e.payload.size()) != 0) {
+    writer.WritePropertyName(L"payloadJson");
+    writer.WriteString(winrt::to_hstring(e.payload));
+  }
   writer.WritePropertyName(L"value");
   switch (e.ev.value.tag) {
     case NVE_VAL_BOOL: writer.WriteBoolean(e.ev.value.data.bool_val != 0u); break;
     case NVE_VAL_I64: writer.WriteInt64(e.ev.value.data.i64_val); break;
     case NVE_VAL_F64: writer.WriteDouble(e.ev.value.data.f64_val); break;
     case NVE_VAL_STR: writer.WriteString(winrt::to_hstring(e.value_str)); break;
-    default: writer.WriteNull(); break;  // bytes / arrays / maps are not forwarded
+    default: writer.WriteNull(); break;  // bytes travel as `payloadJson`; arrays / maps are not forwarded
   }
   writer.WriteObjectEnd();
 }
@@ -79,12 +89,23 @@ winrt::com_ptr<NveRnwComponentUserData> initialize_view_host(rnw_comp::ViewCompo
   auto user_data = winrt::make_self<NveRnwComponentUserData>();
   view.UserData(user_data.as<winrt::Windows::Foundation::IInspectable>());
   const rnw::LayoutMetrics metrics = view.LayoutMetrics();
-  user_data->host = std::make_shared<NveWinHost>(WinHostConfig{
+  user_data->host = NveWinHost::create(WinHostConfig{
       .surface_id = view.Tag() > 0 ? static_cast<uint32_t>(view.Tag()) : 1u,
       .width = metrics.Frame.Width > 0.0f ? metrics.Frame.Width : 480.0f,
       .height = metrics.Frame.Height > 0.0f ? metrics.Frame.Height : 320.0f,
       .scale_factor = metrics.PointScaleFactor > 0.0f ? metrics.PointScaleFactor : 1.0f,
   });
+  if (user_data->host == nullptr) return user_data;  // no runtime / DirectWrite: an empty view
+
+  // Runtime wakes (timers, paired frames) arrive on any thread: pump on this view's UI thread.
+  const auto queue = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+  if (queue) {
+    user_data->host->set_wake_poster([queue, host = std::weak_ptr<NveWinHost>(user_data->host)] {
+      (void)queue.TryEnqueue([host] {
+        if (const auto h = host.lock()) (void)h->pump();
+      });
+    });
+  }
 
   auto weak = user_data->get_weak();
   user_data->host->set_event_callback([weak](std::span<const NveDirectEvent> events) {
@@ -92,7 +113,10 @@ winrt::com_ptr<NveRnwComponentUserData> initialize_view_host(rnw_comp::ViewCompo
     if (!strong || !strong->event_emitter) return;
     for (const NveDirectEvent& ev : events) {
       EmittedEvent e{ev, std::string(slice(ev.name)), std::string(slice(ev.text)),
-                     ev.value.tag == NVE_VAL_STR ? std::string(slice(ev.value.data.str_val)) : std::string()};
+                     ev.value.tag == NVE_VAL_STR ? std::string(slice(ev.value.data.str_val)) : std::string(),
+                     ev.value.tag == NVE_VAL_BYTES && ev.value.data.bytes_val.ptr != nullptr
+                         ? std::string(reinterpret_cast<const char*>(ev.value.data.bytes_val.ptr), ev.value.data.bytes_val.len)
+                         : std::string()};
       e.ev.name = e.ev.text = NveStrSlice{nullptr, 0u};  // borrowed: never touched after this call
       const std::wstring name = e.name.empty() ? std::wstring(L"nveEvent") : std::wstring(winrt::to_hstring(e.name));
       strong->event_emitter.DispatchEvent(name, [e = std::move(e)](rnw::IJSValueWriter const& w) { write_event(w, e); });
@@ -118,6 +142,7 @@ winrt::com_ptr<NveRnwComponentUserData> initialize_view_host(rnw_comp::ViewCompo
       winrt::auto_revoke, [weak](winrt::Windows::Foundation::IInspectable const&, rnw::ComponentView const&) {
         if (auto strong = weak.get()) {
           strong->event_emitter = nullptr;
+          if (strong->host != nullptr) strong->host->set_wake_poster({});
           strong->host.reset();
         }
       });

@@ -16,9 +16,14 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <list>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+
+struct IWICImagingFactory;
 
 namespace nve::win {
 
@@ -35,6 +40,50 @@ struct WinHostWindowOptions {
   bool quit_on_destroy = true;
 };
 
+/// Device resources of ONE render target, owned next to it (window member, screenshot local) and
+/// released deterministically with it: WIC-decoded bitmaps (bounded LRU, own WIC factory) and
+/// per-node DirectWrite layouts (rebuilt when text / style / box change, dropped with the node).
+/// UI-thread only.
+class D2DPaintCache {
+ public:
+  D2DPaintCache() = default;
+  ~D2DPaintCache() { release(); }
+  D2DPaintCache(const D2DPaintCache&) = delete;
+  D2DPaintCache& operator=(const D2DPaintCache&) = delete;
+
+  /// Bitmap of `src` on `rt` (decoded on a miss; `nullptr` when it does not decode or is not a
+  /// local / inline image). Borrowed until `release()` or eviction.
+  ID2D1Bitmap* bitmap(ID2D1RenderTarget* rt, const WinImageSource& src);
+  /// Layout of node `node`'s `text` in a `width` x `height` box. Borrowed until the next call
+  /// for the node or `prune`.
+  IDWriteTextLayout* layout(const DirectWriteTextMeasurer& m, uint32_t node, std::string_view text,
+                            const TextPaint& style, float width, float height);
+  /// Drops layouts of nodes `tree` no longer has.
+  void prune(const NveWinVisualTree& tree);
+  /// Drops everything (the target was lost or is being destroyed).
+  void release() noexcept;
+
+ private:
+  struct Bitmap {
+    ID2D1Bitmap* bitmap = nullptr;
+    std::list<std::string>::iterator at;
+  };
+  struct Layout {
+    IDWriteTextLayout* layout = nullptr;
+    std::string text;
+    TextPaint style;
+    float width = 0.0f;
+    float height = 0.0f;
+  };
+  ID2D1Bitmap* decode(ID2D1RenderTarget* rt, const WinImageSource& src);
+
+  ID2D1RenderTarget* target_ = nullptr;  // the bitmaps' owner
+  IWICImagingFactory* wic_ = nullptr;
+  std::unordered_map<std::string, Bitmap> bitmaps_;
+  std::list<std::string> lru_;  // most recent first
+  std::unordered_map<uint32_t, Layout> layouts_;
+};
+
 /// Paints all 8 `NVE_DRAW1` opcodes into `bounds` (validated first; clip stack balanced even for
 /// corrupt payloads or unbalanced clips). `factory` builds polylines / stroke styles (nullable).
 canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
@@ -42,9 +91,11 @@ canvas::DrawListDecodeResult render_draw_list_to_d2d(ID2D1RenderTarget* rt, ID2D
                                                      std::span<const uint8_t> bytes) noexcept;
 
 /// Paints `tree` (one `BeginDraw` / `EndDraw`) onto any render target: the window's
-/// `ID2D1HwndRenderTarget` or an offscreen `ID2D1DCRenderTarget`. `factory` created `rt`.
+/// `ID2D1HwndRenderTarget` or an offscreen `ID2D1DCRenderTarget`. `factory` created `rt`; `cache`
+/// belongs to `rt`. With `dirty` (DIPs), only that area is cleared and repainted.
 HRESULT paint_visual_tree_d2d(ID2D1RenderTarget* rt, ID2D1Factory* factory, const NveWinVisualTree& tree,
-                              const DirectWriteTextMeasurer& text);
+                              const DirectWriteTextMeasurer& text, D2DPaintCache& cache,
+                              const Rect* dirty = nullptr);
 
 /// Headless: paints `tree` into a 32-bit DIB and writes `out_bmp_path` (no window needed).
 bool render_visual_tree_to_bmp(const NveWinVisualTree& tree, const DirectWriteTextMeasurer& text, uint32_t width_px,
@@ -63,8 +114,9 @@ class NveWinHostWindow {
   NveWinHostWindow(const NveWinHostWindow&) = delete;
   NveWinHostWindow& operator=(const NveWinHostWindow&) = delete;
 
-  /// Creates the window (hidden until `show`) and sizes the surface to its client area.
-  bool create(HINSTANCE instance);
+  /// Creates the runtime surface and the window (hidden until `show`), sized to its client
+  /// area; `error` gets the reason on failure. `host()` is valid only after a successful create.
+  bool create(HINSTANCE instance, std::string* error = nullptr);
   void show(int cmd_show = SW_SHOWDEFAULT);
   /// Runs the thread's message loop until `WM_QUIT`.
   static int run_message_loop();
@@ -73,6 +125,7 @@ class NveWinHostWindow {
   bool save_screenshot_bmp(std::string_view out_bmp_path, std::string* out_error = nullptr) const;
 
   void set_title(std::string_view title);
+  /// Moves the window to screen `(x, y)` with a client area of `width` x `height` DIPs.
   void set_bounds(int x, int y, int width, int height);
   void focus();
   void close();
@@ -83,8 +136,8 @@ class NveWinHostWindow {
   [[nodiscard]] uint32_t surface_id() const noexcept { return options_.surface_id; }
   [[nodiscard]] HWND hwnd() const noexcept { return hwnd_; }
   [[nodiscard]] float dpi_scale() const noexcept;
-  [[nodiscard]] NveWinHost& host() noexcept { return host_; }
-  [[nodiscard]] const NveWinHost& host() const noexcept { return host_; }
+  [[nodiscard]] NveWinHost& host() noexcept { return *host_; }
+  [[nodiscard]] const NveWinHost& host() const noexcept { return *host_; }
   [[nodiscard]] const WinTextInputs& text_inputs() const noexcept { return inputs_; }
 
  private:
@@ -96,18 +149,20 @@ class NveWinHostWindow {
   void on_paint();
   void sync_surface_size();
   void on_wheel(WPARAM wparam, LPARAM lparam, bool horizontal);
+  void on_change();
   void schedule_input_sync();
+  void open_link(const std::string& href);
   [[nodiscard]] float dip(int device_px) const noexcept { return static_cast<float>(device_px) / dpi_scale(); }
+  [[nodiscard]] RECT outer_rect(int width_dips, int height_dips) const noexcept;
 
   WinHostWindowOptions options_;
-  NveWinHost host_;
+  std::unique_ptr<NveWinHost> host_;
   WinTextInputs inputs_;
+  D2DPaintCache cache_;
   HWND hwnd_ = nullptr;
   std::atomic<HWND> wake_hwnd_{nullptr};  // read by wake posters on any thread; null once destroyed
   ID2D1Factory* d2d_factory_ = nullptr;
   ID2D1HwndRenderTarget* render_target_ = nullptr;
-  float pointer_x_ = -1.0f;  // last pointer position (DIPs) for WM_SETCURSOR
-  float pointer_y_ = -1.0f;
   bool tracking_leave_ = false;
   bool input_sync_posted_ = false;
   std::function<bool(uint32_t)> on_close_request_;
