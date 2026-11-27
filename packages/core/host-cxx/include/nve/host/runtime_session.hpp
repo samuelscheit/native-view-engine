@@ -182,6 +182,12 @@ class RuntimeSceneReader {
     for (uint32_t i = 0u; i < v->table_count; ++i) {
       if (!TableReader::from_view(v->tables[i])) return SceneError::InvalidTable;
     }
+    // `scroll_offset()` binary-searches, so ids must be strictly ascending (no duplicates).
+    for (uint32_t i = 1u; i < v->scroll_count; ++i) {
+      if (v->scroll_offsets[i - 1u].node_id >= v->scroll_offsets[i].node_id) {
+        return SceneError::UnsortedScrollOffsets;
+      }
+    }
     return SceneError::None;
   }
 

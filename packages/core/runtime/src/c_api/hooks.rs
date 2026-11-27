@@ -37,6 +37,11 @@ impl TextMeasurer for HostTextMeasurer {
         font_weight: u16,
         max_width: Option<f32>,
     ) -> (f32, f32) {
+        // Degenerate sizes measure as empty without a host round trip; weights reach the host
+        // inside the CSS `100..=900` range whatever the style resolver produced.
+        if !font_size.is_finite() || font_size <= 0.0 {
+            return (0.0, 0.0);
+        }
         let (mut width, mut height) = (0.0f32, 0.0f32);
         // SAFETY: The host guarantees `measure(ctx, ..)` stays callable until it is replaced or the
         // runtime is destroyed; `text` and both out slots outlive the synchronous call.
@@ -45,7 +50,7 @@ impl TextMeasurer for HostTextMeasurer {
                 self.ctx.as_ptr(),
                 NveStrSlice::from_str(text),
                 font_size,
-                u32::from(font_weight),
+                u32::from(font_weight.clamp(100, 900)),
                 max_width.unwrap_or(f32::INFINITY),
                 &raw mut width,
                 &raw mut height,
@@ -167,4 +172,46 @@ pub(super) unsafe extern "C" fn rt_resource_payload(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    static SEEN: Mutex<Vec<(f32, u32)>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record(
+        _ctx: *mut core::ffi::c_void,
+        _text: NveStrSlice,
+        font_size: f32,
+        font_weight: u32,
+        _max_width: f32,
+        out_width: *mut f32,
+        out_height: *mut f32,
+    ) {
+        SEEN.lock().unwrap().push((font_size, font_weight));
+        // SAFETY: Runtime-owned out slots.
+        unsafe {
+            *out_width = 5.0;
+            *out_height = 6.0;
+        }
+    }
+
+    #[test]
+    fn host_measurer_clamps_weight_and_skips_degenerate_sizes() {
+        let m = HostTextMeasurer {
+            measure: record,
+            ctx: SendPtr(core::ptr::null_mut()),
+        };
+        for size in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(m.measure_with_weight("x", size, 400, None), (0.0, 0.0));
+        }
+        assert!(SEEN.lock().unwrap().is_empty(), "degenerate sizes never reach the host");
+        assert_eq!(m.measure_with_weight("x", 12.0, 0, None), (5.0, 6.0));
+        assert_eq!(m.measure_with_weight("x", 12.0, 1000, Some(10.0)), (5.0, 6.0));
+        assert_eq!(m.measure_with_weight("x", 12.0, 650, None), (5.0, 6.0));
+        assert_eq!(*SEEN.lock().unwrap(), [(12.0, 100), (12.0, 900), (12.0, 650)]);
+    }
 }

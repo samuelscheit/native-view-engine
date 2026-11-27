@@ -14,7 +14,7 @@ use crate::ffi::{
 };
 use crate::host::{NveHostApi, NveHostCallbacks, NveHostStatus};
 use crate::runtime::{
-    NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeMetrics,
+    NveLayoutRect, NveNodeRow, NveRuntimeConfig, NveRuntimeMetrics,
     NveRuntimeSceneView, NveRuntimeStatus, NveScrollOffset, NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_SIZE,
 };
 use crate::scene::{
@@ -436,6 +436,6 @@ const _: () = {
 
     assert!(size_of::<NveRuntimeSceneView>() == 112);
     assert!(align_of::<NveRuntimeSceneView>() == 8);
-    assert!(size_of::<NveRuntimeApi>() == 16 + 24 * 8);
-    assert!(align_of::<NveRuntimeApi>() == 8);
+    assert!(size_of::<crate::runtime::NveRuntimeApi>() == 16 + 24 * 8);
+    assert!(align_of::<crate::runtime::NveRuntimeApi>() == 8);
 };
