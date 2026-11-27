@@ -10,73 +10,11 @@ use crate::store::NodeStore;
 use crate::table::{self, OwnedTableDesc, TableSlot};
 use crate::tx::Transaction;
 
+use super::budget::{MAX_RESOURCE_SLOTS, SessionBudget};
 use super::{HEADER_WORDS, MAGIC, Op, VERSION, WireError, pad4_checked};
 
 /// Maximum length of a runtime-declared table name in `Op::DeclareTables`.
 const MAX_TABLE_NAME_BYTES: usize = 128;
-/// One-time session base allowance for slot-indexed arrays (`NodeStore::nodes`, static dense
-/// columns, and `ResourceStore::entries`), reset only on `WireDecoder::reset()` or a keyframe
-/// against a fresh store — never refilled on delta frames.
-const SESSION_BASE_SLOT_BYTES: usize = 16 * 1024 * 1024;
-/// Multiplier earning additional slot-memory budget strictly proportional to wire bytes received.
-const WIRE_SLOT_MULTIPLIER: usize = 16;
-/// Hard per-session ceiling on cumulative slot-array growth across all frames.
-const SESSION_MAX_SLOT_BYTES: usize = 256 * 1024 * 1024;
-/// Hard upper ceiling on wire `ResourceId` indices (`1 << 20` = 1,048,576 slots), matching the
-/// bounded 24-bit `NodeId::MAX_INDEX` space.
-const MAX_RESOURCE_SLOTS: u32 = 1 << 20;
-
-/// Session-anchored slot-memory budget preventing both single-frame sparse-index OOM and
-/// multi-frame stride amplification across nodes, static dense columns, and resources, while
-/// allowing legitimate churned keyframes (`encode_full`) to round-trip cleanly.
-#[derive(Debug, Clone, Default)]
-struct SessionBudget {
-    started: bool,
-    limit_bytes: usize,
-    used_bytes: usize,
-}
-
-impl SessionBudget {
-    fn reset(&mut self) {
-        self.started = false;
-        self.limit_bytes = 0;
-        self.used_bytes = 0;
-    }
-
-    fn begin_frame(&mut self, frame: u64, wire_bytes: usize, fresh_store: bool) {
-        let earned = wire_bytes.saturating_mul(WIRE_SLOT_MULTIPLIER);
-        if !self.started || (frame == 1 && fresh_store) {
-            self.started = true;
-            self.used_bytes = 0;
-            self.limit_bytes = SESSION_BASE_SLOT_BYTES
-                .saturating_add(earned)
-                .min(SESSION_MAX_SLOT_BYTES);
-        } else {
-            self.limit_bytes = self
-                .limit_bytes
-                .saturating_add(earned)
-                .min(SESSION_MAX_SLOT_BYTES);
-        }
-    }
-
-    #[inline]
-    fn remaining(&self) -> usize {
-        self.limit_bytes.saturating_sub(self.used_bytes)
-    }
-
-    #[inline]
-    fn charge(&mut self, delta_bytes: usize) -> Result<(), WireError> {
-        let next = self
-            .used_bytes
-            .checked_add(delta_bytes)
-            .ok_or(WireError::Budget)?;
-        if next > self.limit_bytes {
-            return Err(WireError::Budget);
-        }
-        self.used_bytes = next;
-        Ok(())
-    }
-}
 
 /// Receiver-side session state: wire slot → local slot, session-scoped dynamic table descriptors
 /// (never leaked into global `REGISTRY`), session slot-memory budget, and child scratch buffer.
@@ -152,12 +90,7 @@ impl WireDecoder {
     /// exceeding the session slot-memory ceiling before decoding starts.
     #[inline]
     pub fn max_frame0_node_hint(wire_bytes: usize) -> usize {
-        let max_budget = SESSION_BASE_SLOT_BYTES
-            .saturating_add(wire_bytes.saturating_mul(WIRE_SLOT_MULTIPLIER))
-            .min(SESSION_MAX_SLOT_BYTES);
-        (wire_bytes / 4)
-            .min(max_budget / size_of::<crate::store::NodeRow>())
-            .min(NodeId::MAX_INDEX as usize)
+        SessionBudget::max_frame0_node_hint(wire_bytes)
     }
 
     fn slot_layout(store: &NodeStore, slot: TableSlot) -> Option<(usize, u32, u32)> {
@@ -278,23 +211,10 @@ impl WireDecoder {
                     .reserve_for_frame0((count as usize).min(max_new_slots), r.remaining())?;
                 for _ in 0..count {
                     let id = r.node()?;
-                    let index = id.index();
-                    if index > NodeId::MAX_INDEX as usize {
-                        return Err(WireError::NodeExists(id.0));
-                    }
-                    let needed = index.saturating_add(1);
-                    let cur_cap = tx.store().capacity();
-                    let delta_bytes = if needed > cur_cap {
-                        let bytes = (needed - cur_cap)
-                            .checked_mul(node_row_bytes)
-                            .ok_or(WireError::Budget)?;
-                        if bytes > self.budget.remaining() {
-                            return Err(WireError::Budget);
-                        }
-                        bytes
-                    } else {
-                        0
-                    };
+                    let needed = id.index().saturating_add(1);
+                    let delta_bytes =
+                        self.budget
+                            .preview_grow(tx.store().capacity(), needed, node_row_bytes)?;
                     if !tx.store_mut().try_create_at(id)? {
                         return Err(WireError::NodeExists(id.0));
                     }
@@ -321,18 +241,11 @@ impl WireDecoder {
                     let len = r.u32()? as usize;
                     let blob = r.bytes(len)?;
                     let needed = (id as usize).saturating_add(1);
-                    let cur_slots = tx.store().resources.slots();
-                    let delta_bytes = if needed > cur_slots {
-                        let bytes = (needed - cur_slots)
-                            .checked_mul(crate::resource::ResourceStore::ENTRY_BYTES)
-                            .ok_or(WireError::Budget)?;
-                        if bytes > self.budget.remaining() {
-                            return Err(WireError::Budget);
-                        }
-                        bytes
-                    } else {
-                        0
-                    };
+                    let delta_bytes = self.budget.preview_grow(
+                        tx.store().resources.slots(),
+                        needed,
+                        crate::resource::ResourceStore::ENTRY_BYTES,
+                    )?;
                     if !tx.store_mut().resources.try_define_at(
                         ResourceId(id),
                         kind,
@@ -361,8 +274,7 @@ impl WireDecoder {
                     slot,
                     count as usize,
                     store_cap,
-                    &mut self.budget.used_bytes,
-                    self.budget.limit_bytes,
+                    &mut self.budget,
                 )?;
                 let words = words_usize as u32;
                 for _ in 0..count {
@@ -388,7 +300,7 @@ impl WireDecoder {
                             return Err(WireError::Resource { id: res.0, kind: 0 });
                         }
                     }
-                    let mut w = tx.try_writer(id, slot)?;
+                    let mut w = tx.try_writer(id, slot, &mut self.budget)?;
                     let mut bits = mask;
                     while bits != 0 {
                         let i = bits.trailing_zeros() as usize;
@@ -416,8 +328,7 @@ impl WireDecoder {
                     slot,
                     count as usize,
                     store_cap,
-                    &mut self.budget.used_bytes,
-                    self.budget.limit_bytes,
+                    &mut self.budget,
                 )?;
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
@@ -432,7 +343,8 @@ impl WireDecoder {
                             words: word,
                         });
                     }
-                    tx.try_writer(id, slot)?.put_str(word as usize, text);
+                    tx.try_writer(id, slot, &mut self.budget)?
+                        .put_str(word as usize, text);
                 }
             }
             Op::Detach => {

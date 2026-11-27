@@ -89,13 +89,15 @@ fn writer_at_existing(store: &mut NodeStore, index: NodeIndex, slot: TableSlot) 
 }
 
 /// Fallible internal row writer for wire decoding: uses `try_reserve` + `Column::try_attach`
-/// whenever a node attaches `slot`, returning `WireError::Alloc` instead of aborting on OOM.
+/// against `SessionBudget`, returning `WireError::Budget` on slot-budget overrun or
+/// `WireError::Alloc` on transient OOM instead of aborting.
 #[inline]
-fn try_writer_at_existing(
-    store: &mut NodeStore,
+fn try_writer_at_existing<'a>(
+    store: &'a mut NodeStore,
     index: NodeIndex,
     slot: TableSlot,
-) -> Result<RowWriter<'_>, crate::wire::WireError> {
+    budget: &mut crate::wire::budget::SessionBudget,
+) -> Result<RowWriter<'a>, crate::wire::WireError> {
     let NodeStore {
         nodes,
         columns,
@@ -112,7 +114,7 @@ fn try_writer_at_existing(
     touched.try_reserve(usize::from(node.effects == 0))?;
     let row = if !node.tables.contains(slot) {
         let id = NodeId::from_index(index, node.generation);
-        let r = col.try_attach(id, index)?;
+        let r = col.try_attach(id, index, budget)?;
         node.tables.insert(slot);
         let realize = if realization_mask.contains(slot) {
             effect::REALIZE
@@ -480,17 +482,18 @@ impl Transaction<'_> {
     // -----------------------------------------------------------------------------------------
 
     /// Fallible crate-private row writer for `slot` on `id`, attaching the table (defaults) when
-    /// absent via `try_attach`. Sealed so external callers cannot overwrite string/resource words.
-    pub(crate) fn try_writer(
-        &mut self,
+    /// absent via `try_attach` charged to `budget`. Sealed against raw scalar overwrites.
+    pub(crate) fn try_writer<'a>(
+        &'a mut self,
         id: NodeId,
         slot: TableSlot,
-    ) -> Result<RowWriter<'_>, crate::wire::WireError> {
+        budget: &mut crate::wire::budget::SessionBudget,
+    ) -> Result<RowWriter<'a>, crate::wire::WireError> {
         if !self.store.is_live(id) {
             return Err(crate::wire::WireError::DeadNode(id.0));
         }
         self.store.column_mut(slot);
-        try_writer_at_existing(self.store, id.node_index(), slot)
+        try_writer_at_existing(self.store, id.node_index(), slot, budget)
     }
 
     /// Fluent typed writer for `T` on `id` (attaches `T` with defaults when absent).

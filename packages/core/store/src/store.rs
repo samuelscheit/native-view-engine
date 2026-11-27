@@ -191,9 +191,9 @@ impl NodeStore {
             .saturating_add(capped_nodes)
             .saturating_add(1)
             .min(NodeId::MAX_INDEX as usize + 1);
-        if self.nodes.len() < target_slots {
+        if self.nodes.capacity() < target_slots {
             self.nodes
-                .try_reserve(target_slots - self.nodes.len())
+                .try_reserve_exact(target_slots - self.nodes.len())
                 .map_err(|_| crate::wire::WireError::Alloc)?;
         }
         let target_created = self.created.len().saturating_add(capped_nodes);
@@ -241,9 +241,15 @@ impl NodeStore {
             .try_reserve(1)
             .map_err(|_| crate::wire::WireError::Alloc)?;
         if self.nodes.len() < needed {
-            self.nodes
-                .try_reserve(needed - self.nodes.len())
-                .map_err(|_| crate::wire::WireError::Alloc)?;
+            if self.nodes.capacity() < needed {
+                let add = needed - self.nodes.len();
+                let res = if add >= 1024 || self.nodes.len() <= 1 {
+                    self.nodes.try_reserve_exact(add)
+                } else {
+                    self.nodes.try_reserve(add)
+                };
+                res.map_err(|_| crate::wire::WireError::Alloc)?;
+            }
             self.nodes.resize(needed, NodeRow::default());
         }
         let row = &mut self.nodes[index];
@@ -263,16 +269,10 @@ impl NodeStore {
         slot: TableSlot,
         expected_rows: usize,
         max_node_index: usize,
-        slot_bytes_used: &mut usize,
-        slot_bytes_limit: usize,
+        budget: &mut crate::wire::budget::SessionBudget,
     ) -> Result<(), crate::wire::WireError> {
         let col = self.column_mut(slot);
-        col.reserve_bulk(
-            expected_rows,
-            max_node_index,
-            slot_bytes_used,
-            slot_bytes_limit,
-        )
+        col.reserve_bulk(expected_rows, max_node_index, budget)
     }
 
     /// Installs the backend's ordered realization priority list used to derive

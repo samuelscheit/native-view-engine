@@ -6,6 +6,7 @@ use crate::id::{NodeId, NodeIndex};
 use crate::row::DirtyList;
 use crate::table::TableMeta;
 use crate::wire::WireError;
+use crate::wire::budget::SessionBudget;
 
 const PAGE_BITS: u32 = 8;
 const PAGE: usize = 1 << PAGE_BITS;
@@ -42,18 +43,58 @@ impl PagedIndex {
         self.pool[self.dir[p] as usize][n as usize & (PAGE - 1)] = row_plus_one;
     }
 
-    fn try_set(&mut self, node: NodeIndex, row_plus_one: u32) -> Result<(), WireError> {
+    fn try_set(
+        &mut self,
+        node: NodeIndex,
+        row_plus_one: u32,
+        budget: &mut SessionBudget,
+    ) -> Result<(), WireError> {
         let n = node.0;
         let p = (n >> PAGE_BITS) as usize;
-        if self.dir.len() <= p {
-            let needed = p.checked_add(1).ok_or(WireError::Alloc)?;
+        let needed_dir = p.checked_add(1).ok_or(WireError::Budget)?;
+        let needs_page = self.dir.get(p).copied().unwrap_or(NO_PAGE) == NO_PAGE;
+        let needed_pool = if needs_page {
+            self.pool.len().checked_add(1).ok_or(WireError::Budget)?
+        } else {
+            self.pool.len()
+        };
+
+        let dir_old_cap = self.dir.capacity();
+        let (dir_target, dir_delta) = SessionBudget::bounded_target_cap(
+            dir_old_cap,
+            self.dir.len(),
+            needed_dir,
+            size_of::<u32>(),
+            budget.remaining(),
+            256,
+        )?;
+        let remaining_after_dir = budget.remaining().saturating_sub(dir_delta);
+        let pool_old_cap = self.pool.capacity();
+        let (pool_target, pool_delta) = SessionBudget::bounded_target_cap(
+            pool_old_cap,
+            self.pool.len(),
+            needed_pool,
+            size_of::<[u32; PAGE]>(),
+            remaining_after_dir,
+            64,
+        )?;
+
+        if dir_target > dir_old_cap {
             self.dir
-                .try_reserve(needed - self.dir.len())
+                .try_reserve_exact(dir_target - self.dir.len())
                 .map_err(|_| WireError::Alloc)?;
-            self.dir.resize(needed, NO_PAGE);
+            budget.charge(dir_delta)?;
+        }
+        if pool_target > pool_old_cap {
+            self.pool
+                .try_reserve_exact(pool_target - self.pool.len())
+                .map_err(|_| WireError::Alloc)?;
+            budget.charge(pool_delta)?;
+        }
+        if self.dir.len() < needed_dir {
+            self.dir.resize(needed_dir, NO_PAGE);
         }
         if self.dir[p] == NO_PAGE {
-            self.pool.try_reserve(1).map_err(|_| WireError::Alloc)?;
             self.dir[p] = self.pool.len() as u32;
             self.pool.push([0; PAGE]);
         }
@@ -65,18 +106,32 @@ impl PagedIndex {
         &mut self,
         max_node_index: usize,
         expected_rows: usize,
+        budget: &mut SessionBudget,
     ) -> Result<(), WireError> {
         let dir_pages = max_node_index.div_ceil(PAGE).max(1);
-        let pool_pages = expected_rows.min(dir_pages).max(1);
+        // Exact page count for contiguous Frame-0 scenes (preserving O(1) alloc parity) while
+        // preventing repeated patches on a single high-index node from reserving `expected_rows`
+        // 1 KiB pages (128x wire amplification).
+        let pool_pages = expected_rows.div_ceil(PAGE).min(dir_pages).max(1);
+
+        let dir_delta = budget.preview_grow(self.dir.capacity(), dir_pages, size_of::<u32>())?;
+        let pool_delta =
+            budget.preview_grow(self.pool.capacity(), pool_pages, size_of::<[u32; PAGE]>())?;
+        let total_delta = dir_delta.checked_add(pool_delta).ok_or(WireError::Budget)?;
+        if total_delta > budget.remaining() {
+            return Err(WireError::Budget);
+        }
         if self.dir.capacity() < dir_pages {
             self.dir
-                .try_reserve(dir_pages.saturating_sub(self.dir.len()))
+                .try_reserve_exact(dir_pages - self.dir.len())
                 .map_err(|_| WireError::Alloc)?;
+            budget.charge(dir_delta)?;
         }
         if self.pool.capacity() < pool_pages {
             self.pool
-                .try_reserve(pool_pages.saturating_sub(self.pool.len()))
+                .try_reserve_exact(pool_pages - self.pool.len())
                 .map_err(|_| WireError::Alloc)?;
+            budget.charge(pool_delta)?;
         }
         Ok(())
     }
@@ -146,14 +201,13 @@ impl Column {
     }
 
     /// Fallibly pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs
-    /// O(1) heap allocations independent of `N`, charging exact dense slot delta bytes against the
-    /// session slot-memory budget (`WireError::Budget`) and propagating `WireError::Alloc` on OOM.
+    /// O(1) heap allocations independent of `N`, charging exact dense slot and sparse `PagedIndex`
+    /// growth against `budget` (`WireError::Budget`) and propagating `WireError::Alloc` on OOM.
     pub(crate) fn reserve_bulk(
         &mut self,
         expected_rows: usize,
         max_node_index: usize,
-        slot_bytes_used: &mut usize,
-        slot_bytes_limit: usize,
+        budget: &mut SessionBudget,
     ) -> Result<(), WireError> {
         if self.is_dense() {
             let cap = max_node_index.max(64).min(NodeId::MAX_INDEX as usize + 1);
@@ -164,28 +218,31 @@ impl Column {
                     .checked_add(2)
                     .and_then(|words| words.checked_mul(size_of::<u32>()))
                     .ok_or(WireError::Budget)?;
-                let delta_bytes = (cap - self.masks.len())
-                    .checked_mul(bytes_per_slot)
-                    .ok_or(WireError::Budget)?;
-                let next_used = slot_bytes_used
-                    .checked_add(delta_bytes)
-                    .ok_or(WireError::Budget)?;
-                if next_used > slot_bytes_limit {
-                    return Err(WireError::Budget);
+                let old_cap = self.masks.capacity();
+                let (target_cap, delta_bytes) = SessionBudget::bounded_target_cap(
+                    old_cap,
+                    self.masks.len(),
+                    cap,
+                    bytes_per_slot,
+                    budget.remaining(),
+                    1024,
+                )?;
+                let target_word_cap = target_cap.checked_mul(self.w).ok_or(WireError::Budget)?;
+                if target_cap > old_cap {
+                    self.masks
+                        .try_reserve_exact(target_cap - self.masks.len())
+                        .map_err(|_| WireError::Alloc)?;
+                    self.owners
+                        .try_reserve_exact(target_cap.saturating_sub(self.owners.len()))
+                        .map_err(|_| WireError::Alloc)?;
+                    self.rows
+                        .try_reserve_exact(target_word_cap.saturating_sub(self.rows.len()))
+                        .map_err(|_| WireError::Alloc)?;
+                    budget.charge(delta_bytes)?;
                 }
-                self.masks
-                    .try_reserve(cap - self.masks.len())
-                    .map_err(|_| WireError::Alloc)?;
-                self.owners
-                    .try_reserve(cap - self.owners.len())
-                    .map_err(|_| WireError::Alloc)?;
-                self.rows
-                    .try_reserve(word_cap.saturating_sub(self.rows.len()))
-                    .map_err(|_| WireError::Alloc)?;
                 self.masks.resize(cap, 0);
                 self.owners.resize(cap, 0);
                 self.rows.resize(word_cap, 0);
-                *slot_bytes_used = next_used;
             }
         } else if self.owners.is_empty() {
             let target = expected_rows.min(max_node_index.saturating_add(1));
@@ -205,7 +262,8 @@ impl Column {
                     .try_reserve(word_target)
                     .map_err(|_| WireError::Alloc)?;
             }
-            self.index.reserve_for_nodes(max_node_index, target)?;
+            self.index
+                .reserve_for_nodes(max_node_index, target, budget)?;
         }
         let dirty_cap_remaining = max_node_index.saturating_sub(self.dirty.as_slice().len());
         let dirty_additional = expected_rows.min(dirty_cap_remaining);
@@ -276,6 +334,7 @@ impl Column {
         &mut self,
         id: NodeId,
         node_index: NodeIndex,
+        budget: &mut SessionBudget,
     ) -> Result<usize, WireError> {
         let full = full_mask(self.w);
         let row = if self.is_dense() {
@@ -302,7 +361,7 @@ impl Column {
                 .try_reserve(next_rows.saturating_sub(self.rows.len()))
                 .map_err(|_| WireError::Alloc)?;
             self.dirty.try_reserve(1)?;
-            self.index.try_set(node_index, r as u32 + 1)?;
+            self.index.try_set(node_index, r as u32 + 1, budget)?;
             self.owners.push(id.raw());
             self.masks.push(0);
             self.rows.resize(next_rows, 0);
@@ -359,6 +418,12 @@ impl Column {
     #[inline]
     pub(crate) fn row_count(&self) -> usize {
         self.masks.len()
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn paged_pool_cap(&self) -> usize {
+        self.index.pool.capacity()
     }
 }
 

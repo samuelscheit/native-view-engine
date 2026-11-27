@@ -326,7 +326,7 @@ impl ResourceStore {
     }
 
     /// Number of resource slots (live, free, and the reserved slot `0`).
-    pub(crate) fn slots(&self) -> usize {
+    pub fn slots(&self) -> usize {
         self.entries.len()
     }
 
@@ -371,10 +371,14 @@ impl ResourceStore {
             copy.extend_from_slice(bytes);
             copy.into_boxed_slice()
         };
-        if self.entries.len() < needed {
-            self.entries
-                .try_reserve(needed - self.entries.len())
-                .map_err(|_| crate::wire::WireError::Alloc)?;
+        if self.entries.capacity() < needed {
+            let add = needed - self.entries.len();
+            let res = if add >= 256 || self.entries.len() <= 1 {
+                self.entries.try_reserve_exact(add)
+            } else {
+                self.entries.try_reserve(add)
+            };
+            res.map_err(|_| crate::wire::WireError::Alloc)?;
         }
         self.pending_free
             .try_reserve(1)

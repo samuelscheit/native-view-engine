@@ -827,20 +827,20 @@ fn wire_decoder_rejects_hostile_sparse_node_and_resource_keyframes_before_alloca
     //    overrun surfaces WireError::Budget cleanly.
     let mut store = NodeStore::new();
     let sparse_slot = Text::slot();
-    let mut slot_used = 0usize;
+    let mut huge_budget = crate::wire::budget::SessionBudget::with_limit(usize::MAX);
     assert_eq!(
         store.reserve_column_bulk(
             sparse_slot,
             usize::MAX / 2,
             usize::MAX / 2,
-            &mut slot_used,
-            usize::MAX,
+            &mut huge_budget
         ),
         Err(WireError::Alloc)
     );
     let dense_slot = Visual::slot();
+    let mut tiny_budget = crate::wire::budget::SessionBudget::with_limit(16);
     assert_eq!(
-        store.reserve_column_bulk(dense_slot, 1, 1024, &mut slot_used, 16),
+        store.reserve_column_bulk(dense_slot, 1, 1024, &mut tiny_budget),
         Err(WireError::Budget)
     );
 }
@@ -945,8 +945,8 @@ fn wire_dynamic_dense_tables_forced_sparse_and_static_dense_budget_rejects_ampli
         );
     }
 
-    // Part B: Static Dense 32-word table amplification exceeds per-frame dense byte budget and
-    // returns WireError::Alloc BEFORE allocating the dense column.
+    // Part B: Static Dense 32-word table amplification exceeds session slot budget and
+    // returns WireError::Budget BEFORE allocating the dense column.
     #[allow(dead_code)]
     #[derive(NveTable)]
     #[nve_table(name = "test.wire.dense_budget_32w", storage = "dense")]
@@ -1273,13 +1273,25 @@ fn wire_detach_on_high_index_node_across_sparse_and_dynamic_tables_dedups_sparse
     }
 
     // Frame 2: detach across all 33 sparse tables; also detach->re-attach->detach slot 0 (must
-    // dedup to 1 entry) and detach->re-attach slot 1 (must NOT appear in ChangeSet::detached).
+    // dedup to 1 entry), detach->re-attach slot 1 (must NOT appear in ChangeSet::detached), and
+    // CreateNodes + Patch + Detach on a brand-new CREATED node (must NOT appear in detached).
+    let fresh_id = NodeId(100_001);
+    let fresh_create = fresh_id.raw().to_le_bytes();
+    let mut fresh_patch = Vec::new();
+    fresh_patch.extend_from_slice(&fresh_id.raw().to_le_bytes());
+    fresh_patch.extend_from_slice(&0u32.to_le_bytes());
+    let fresh_detach = fresh_id.raw().to_le_bytes();
+
     let detach_body = high_id.raw().to_le_bytes();
-    let mut f2_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(38);
+    let mut f2_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(41);
     // Slot 0 (Text): Detach -> Patch -> Detach => single deduplicated detached entry.
     f2_ops.push((Op::Detach as u8, 0, 1, &detach_body));
     f2_ops.push((Op::Patch as u8, 0, 1, &patch_high));
     f2_ops.push((Op::Detach as u8, 0, 1, &detach_body));
+    // Same-frame CREATED node: CreateNodes -> Patch -> Detach on Text => zero detached entry.
+    f2_ops.push((Op::CreateNodes as u8, 0, 1, &fresh_create));
+    f2_ops.push((Op::Patch as u8, 0, 1, &fresh_patch));
+    f2_ops.push((Op::Detach as u8, 0, 1, &fresh_detach));
     // Slot 1 (dynamic): Detach -> Patch => stays attached, zero detached entry.
     f2_ops.push((Op::Detach as u8, 1, 1, &detach_body));
     f2_ops.push((Op::Patch as u8, 1, 1, &patch_high));
@@ -1294,13 +1306,14 @@ fn wire_detach_on_high_index_node_across_sparse_and_dynamic_tables_dedups_sparse
         tx.commit_into(&mut changes);
     }
 
+    assert!(!replica.has::<Text>(fresh_id));
     assert_eq!(
         changes
             .table(text_slot)
             .expect("Text table changes")
             .detached,
         vec![high_id],
-        "detach->re-attach->detach in one frame must deduplicate cleanly"
+        "detach->re-attach->detach must deduplicate and same-frame CREATED node must not emit detached"
     );
     let mut reattached_seen = 0usize;
     let mut detached_dyn_seen = 0usize;
@@ -1539,8 +1552,20 @@ fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_re
         tx.commit_into(&mut changes);
     }
 
-    // Frame 2: Patch all 64 nodes (filling dirty.len() == 64), Detach ROOT, then re-Patch ROOT
-    // with a new bg value in the same frame -> must reserve fallibly without doubling via grow().
+    // Frame 2: Write MODIFIED values to all 64 nodes so `changed == 1` actually fills
+    // `dirty.len() == 64` (buf_len == 65), re-patch already-dirty NodeId(2) (exercising
+    // `try_reserve(0)` when `len + 1 == buf_len`), then Detach ROOT and re-Patch ROOT (pushing
+    // the 65th dirty entry so `dirty.len() == 65` and `buf_len() == 66`, never 128 via grow()).
+    let mut patch_64_mod = Vec::with_capacity(64 * 12);
+    for id in 1..=64u32 {
+        patch_64_mod.extend_from_slice(&id.to_le_bytes());
+        patch_64_mod.extend_from_slice(&1u32.to_le_bytes());
+        patch_64_mod.extend_from_slice(&(id ^ 0xFF00_0000).to_le_bytes());
+    }
+    let mut already_dirty_n2 = Vec::new();
+    already_dirty_n2.extend_from_slice(&2u32.to_le_bytes());
+    already_dirty_n2.extend_from_slice(&1u32.to_le_bytes());
+    already_dirty_n2.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
     let detach_root = NodeId::ROOT.raw().to_le_bytes();
     let mut repatch_root = Vec::new();
     repatch_root.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
@@ -1549,24 +1574,155 @@ fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_re
     let f2 = build_wire_frame_num(
         2,
         &[
-            (Op::Patch as u8, 0, 64, &patch_64),
+            (Op::Patch as u8, 0, 64, &patch_64_mod),
+            (Op::Patch as u8, 0, 1, &already_dirty_n2),
             (Op::Detach as u8, 0, 1, &detach_root),
             (Op::Patch as u8, 0, 1, &repatch_root),
         ],
     );
     {
         let mut tx = replica.tx();
-        dec.apply(&mut tx, &f2)
-            .expect("same-frame Patch + Detach + re-Patch succeeds");
+        dec.apply(&mut tx, &f2).expect(
+            "same-frame modified Patch(64) + already-dirty Patch + Detach + re-Patch succeeds",
+        );
         let col = tx.store().columns[vis_slot.0 as usize]
             .as_ref()
             .expect("Visual column");
-        assert!(
-            col.dirty.buf_len() < 128,
-            "fallible dirty.try_reserve must not fall through to 2x grow(), buf_len={}",
-            col.dirty.buf_len()
+        assert_eq!(
+            col.dirty.as_slice().len(),
+            65,
+            "all 64 modified nodes + re-attached ROOT must produce 65 dirty entries"
+        );
+        assert_eq!(
+            col.dirty.buf_len(),
+            66,
+            "fallible dirty.try_reserve(+1 scratch) must allocate 66 slots, never 128 via grow()"
         );
         tx.commit_into(&mut changes);
     }
     assert_eq!(replica.row::<Visual>(NodeId::ROOT).bg(), Rgba(0x1122_3344));
+    assert_eq!(replica.row::<Visual>(NodeId(2)).bg(), Rgba(0xAABB_CCDD));
+
+    // Direct DirtyList boundary: when `len == buf_len` (64 == 64), `try_reserve(0)` must add the
+    // 1 scratch slot (65) so a subsequent no-op `push_if(_, false)` does NOT double to 128.
+    let mut dl = crate::row::DirtyList::default();
+    for i in 1..=64u32 {
+        dl.push_if(crate::id::NodeIndex(i), true);
+    }
+    assert_eq!(dl.as_slice().len(), 64);
+    assert_eq!(dl.buf_len(), 64);
+    dl.try_reserve(0).expect("try_reserve(0) adds scratch slot");
+    assert_eq!(dl.buf_len(), 65);
+    dl.push_if(crate::id::NodeIndex(1), false);
+    assert_eq!(dl.as_slice().len(), 64);
+    assert_eq!(
+        dl.buf_len(),
+        65,
+        "no-op push_if after try_reserve(0) must use scratch slot instead of 2x grow()"
+    );
+}
+
+#[test]
+fn paged_index_duplicate_patch_avoids_over_reserve_and_stride_256_hits_budget() {
+    use crate::wire::{Op, WireDecoder, WireError};
+
+    let build_32_dyn_sparse_decls = |key_base: u64, prefix: &str| {
+        let mut decls = Vec::new();
+        for i in 0..32u8 {
+            let key = nve_hash::Key64(key_base + u64::from(i));
+            let name = format!("{prefix}.{i:02}");
+            decls.extend_from_slice(&key.lo().to_le_bytes());
+            decls.extend_from_slice(&key.hi().to_le_bytes());
+            decls.extend_from_slice(&(0x300u32 + u32::from(i)).to_le_bytes());
+            decls.extend_from_slice(&0u32.to_le_bytes());
+            let packed = u32::from(i) | (1u32 << 8) | (1u32 << 24);
+            decls.extend_from_slice(&packed.to_le_bytes());
+            decls.extend_from_slice(&0u32.to_le_bytes());
+            decls.extend_from_slice(&0u32.to_le_bytes());
+            decls.extend_from_slice(&0u32.to_le_bytes());
+            decls.extend_from_slice(&[1u8, 0, 0, 0]);
+            decls.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            decls.extend_from_slice(name.as_bytes());
+            while !decls.len().is_multiple_of(4) {
+                decls.push(0);
+            }
+        }
+        decls
+    };
+
+    // Vector 1: 1 high-index live node (NodeId(500_000)) + 32 dynamic sparse tables each receiving
+    // 2,000 repeated `(NodeId(500_000), mask = 0)` patches -> succeeds without 128x pool over-reserve
+    // (`paged_pool_cap() <= 8`, NOT 1,954!).
+    let high_id = NodeId(500_000);
+    let dup_decls = build_32_dyn_sparse_decls(0xCAFE_F000_0000_0000, "dup.paged");
+    let create_high = high_id.raw().to_le_bytes();
+    let repeat_n: u32 = 2_000;
+    let mut dup_patch = Vec::with_capacity((repeat_n as usize) * 8);
+    for _ in 0..repeat_n {
+        dup_patch.extend_from_slice(&high_id.raw().to_le_bytes());
+        dup_patch.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let mut dup_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(34);
+    dup_ops.push((Op::DeclareTables as u8, 0, 32, &dup_decls));
+    dup_ops.push((Op::CreateNodes as u8, 0, 1, &create_high));
+    for i in 0..32u8 {
+        dup_ops.push((Op::Patch as u8, i, repeat_n, &dup_patch));
+    }
+    let dup_frame = build_wire_frame(&dup_ops);
+
+    let mut dup_replica = NodeStore::replica();
+    let mut dup_dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = dup_replica.tx();
+        dup_dec
+            .apply(&mut tx, &dup_frame)
+            .expect("duplicate high-index sparse patches must stay within SessionBudget");
+        tx.commit_into(&mut changes);
+    }
+    let dup_cols: Vec<_> = dup_replica
+        .columns
+        .iter()
+        .skip(crate::table::MAX_STATIC_TABLE_SLOTS)
+        .flatten()
+        .collect();
+    assert_eq!(dup_cols.len(), 32);
+    for col in dup_cols {
+        assert_eq!(col.row_count(), 1);
+        assert!(
+            col.paged_pool_cap() <= 8,
+            "PagedIndex::reserve_for_nodes must cap pool_pages by expected_rows.div_ceil(256) (<= 8), got {}",
+            col.paged_pool_cap()
+        );
+    }
+
+    // Vector 2: 600 stride-256 live nodes (`NodeId(256..=153_600)`, only 4.92 MiB of NodeRows)
+    // patched across 32 dynamic sparse tables -> `PagedIndex::pool` growth (32 * 600 * 1 KiB =
+    // 19.66 MiB + 4.92 MiB nodes > ~18.6 MiB budget) MUST fail with WireError::Budget.
+    let stride_decls = build_32_dyn_sparse_decls(0xCAFE_F100_0000_0000, "stride.paged");
+    let stride_n: u32 = 600;
+    let mut stride_create = Vec::with_capacity((stride_n as usize) * 4);
+    let mut stride_patch = Vec::with_capacity((stride_n as usize) * 8);
+    for k in 1..=stride_n {
+        let nid = k * 256;
+        stride_create.extend_from_slice(&nid.to_le_bytes());
+        stride_patch.extend_from_slice(&nid.to_le_bytes());
+        stride_patch.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let mut stride_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(34);
+    stride_ops.push((Op::DeclareTables as u8, 0, 32, &stride_decls));
+    stride_ops.push((Op::CreateNodes as u8, 0, stride_n, &stride_create));
+    for i in 0..32u8 {
+        stride_ops.push((Op::Patch as u8, i, stride_n, &stride_patch));
+    }
+    let stride_frame = build_wire_frame(&stride_ops);
+
+    let mut stride_replica = NodeStore::replica();
+    let mut stride_dec = WireDecoder::default();
+    let mut tx = stride_replica.tx();
+    assert_eq!(
+        stride_dec.apply(&mut tx, &stride_frame),
+        Err(WireError::Budget),
+        "stride-256 32-dynamic-table PagedIndex::pool amplification must hit WireError::Budget"
+    );
 }

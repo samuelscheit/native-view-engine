@@ -13,6 +13,7 @@
 //! mirrored exactly. Table slots are session-scoped: a sender declares each table key once per
 //! [`WireEncoder`] session and refers to it by its wire slot afterwards.
 
+pub(crate) mod budget;
 mod decode;
 mod encode;
 

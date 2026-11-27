@@ -740,23 +740,62 @@ fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
         "hostile WireError::Budget frame0 must be auto-removed as Corrupt"
     );
 
-    // Hostile padded ResourceId(400_000) (~22.4 MiB > 17 MiB) -> rejected and removed.
-    let mut res_ops = Vec::with_capacity((pad_count as usize + 12) * 4);
-    res_ops.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
-    res_ops.extend_from_slice(&pad_count.to_le_bytes());
-    res_ops.resize(res_ops.len() + (pad_count as usize) * 4, 0u8);
-    // Op::DefineResources (opcode=4, count=1), 5 words = 20 bytes (zero-length blob).
-    res_ops.extend_from_slice(&(4u32 | (1u32 << 16)).to_le_bytes());
-    res_ops.extend_from_slice(&5u32.to_le_bytes());
-    res_ops.extend_from_slice(&400_000u32.to_le_bytes());
-    res_ops.extend_from_slice(&[0u8; 16]);
-    let mut res_nve2 = minimal_nve2_header(1, 2, 6 + (res_ops.len() / 4) as u32);
-    res_nve2.extend_from_slice(&res_ops);
-    let hostile_res = sign_frame0_payload(&res_nve2, 0, meta);
+    // Hostile padded ResourceId(400_000) (~22.4 MiB > 17 MiB) using a REAL registered codec
+    // (`ImageSrc`) on disk via `Frame0File::boot_into_replica` -> rejected by SessionBudget
+    // (non-vacuous: same codec/blob at ResourceId(1) succeeds!), slots stay 1, file deleted.
+    use nve_components::tables::ImageSrc;
+    use nve_store::Resource;
+    nve_store::register_codec::<ImageSrc>();
+    let mut valid_blob = Vec::new();
+    ImageSrc::Url("https://example.invalid/a.png".into()).encode(&mut valid_blob);
+    let build_res_frame = |rid: u32, with_pad: bool| {
+        let mut def = Vec::new();
+        def.extend_from_slice(&rid.to_le_bytes());
+        def.extend_from_slice(&ImageSrc::KIND.lo().to_le_bytes());
+        def.extend_from_slice(&ImageSrc::KIND.hi().to_le_bytes());
+        def.extend_from_slice(&0u32.to_le_bytes());
+        def.extend_from_slice(&(valid_blob.len() as u32).to_le_bytes());
+        def.extend_from_slice(&valid_blob);
+        while !def.len().is_multiple_of(4) {
+            def.push(0);
+        }
+        let mut ops = Vec::new();
+        let mut op_count = 0u32;
+        if with_pad {
+            ops.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
+            ops.extend_from_slice(&pad_count.to_le_bytes());
+            ops.resize(ops.len() + (pad_count as usize) * 4, 0u8);
+            op_count += 1;
+        }
+        ops.extend_from_slice(&(4u32 | (1u32 << 16)).to_le_bytes());
+        ops.extend_from_slice(&((def.len() / 4) as u32).to_le_bytes());
+        ops.extend_from_slice(&def);
+        op_count += 1;
+        let mut nve2 = minimal_nve2_header(1, op_count, 6 + (ops.len() / 4) as u32);
+        nve2.extend_from_slice(&ops);
+        sign_frame0_payload(&nve2, 0, meta)
+    };
+    // Sanity check: identical registered ImageSrc payload at ResourceId(1) boots cleanly.
+    let valid_res_frame0 = build_res_frame(1, false);
+    Frame0File::boot_bytes_into_replica(&valid_res_frame0, meta, &mut replica)
+        .expect("registered ImageSrc payload at ResourceId(1) must decode cleanly");
+
+    let hostile_res = build_res_frame(400_000, true);
+    let res_path = temp_file("hostile_sparse_res.nve2");
+    std::fs::write(&res_path, &hostile_res).expect("write hostile resource frame0");
     assert!(matches!(
-        Frame0File::boot_bytes_into_replica(&hostile_res, meta, &mut replica),
+        Frame0File::boot_into_replica(&res_path, meta, &mut replica),
         Err(Frame0Miss::Corrupt(_))
     ));
+    assert_eq!(
+        replica.store().resources().slots(),
+        1,
+        "rejected resource frame0 must keep resources().slots() == 1"
+    );
+    assert!(
+        !res_path.exists(),
+        "hostile resource WireError::Budget frame0 must be auto-removed as Corrupt"
+    );
 }
 
 #[test]

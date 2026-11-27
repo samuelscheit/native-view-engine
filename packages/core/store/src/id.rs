@@ -161,11 +161,24 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    pub fn capacity(&self) -> usize {
+        self.raw.capacity()
+    }
+
+    #[inline]
     pub fn try_reserve(
         &mut self,
         additional: usize,
     ) -> Result<(), std::collections::TryReserveError> {
         self.raw.try_reserve(additional)
+    }
+
+    #[inline]
+    pub fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.raw.try_reserve_exact(additional)
     }
 
     #[inline]
