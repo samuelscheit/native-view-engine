@@ -28,13 +28,27 @@ fn unit_cfg_test_attr_soundness_rejects_any_not_and_test_utils() {
         }
     };
     assert!(is_cfg_test_attr(&parse_attrs("#[cfg(test)] fn f() {}")));
-    assert!(is_cfg_test_attr(&parse_attrs("#[cfg(all(test, feature = \"extra\"))] fn f() {}")));
-    assert!(is_cfg_test_attr(&parse_attrs("#[cfg(all(unix, all(test, not(windows))))] fn f() {}")));
-    assert!(!is_cfg_test_attr(&parse_attrs("#[cfg(any(test, feature = \"extra\"))] fn f() {}")));
-    assert!(!is_cfg_test_attr(&parse_attrs("#[cfg(not(test))] fn f() {}")));
-    assert!(!is_cfg_test_attr(&parse_attrs("#[cfg(feature = \"test-utils\")] fn f() {}")));
-    assert!(!is_cfg_test_attr(&parse_attrs("#[cfg(all(not(test), unix))] fn f() {}")));
-    assert!(!is_cfg_test_attr(&parse_attrs("#[cfg(all(any(test, unix), feature = \"foo\"))] fn f() {}")));
+    assert!(is_cfg_test_attr(&parse_attrs(
+        "#[cfg(all(test, feature = \"extra\"))] fn f() {}"
+    )));
+    assert!(is_cfg_test_attr(&parse_attrs(
+        "#[cfg(all(unix, all(test, not(windows))))] fn f() {}"
+    )));
+    assert!(!is_cfg_test_attr(&parse_attrs(
+        "#[cfg(any(test, feature = \"extra\"))] fn f() {}"
+    )));
+    assert!(!is_cfg_test_attr(&parse_attrs(
+        "#[cfg(not(test))] fn f() {}"
+    )));
+    assert!(!is_cfg_test_attr(&parse_attrs(
+        "#[cfg(feature = \"test-utils\")] fn f() {}"
+    )));
+    assert!(!is_cfg_test_attr(&parse_attrs(
+        "#[cfg(all(not(test), unix))] fn f() {}"
+    )));
+    assert!(!is_cfg_test_attr(&parse_attrs(
+        "#[cfg(all(any(test, unix), feature = \"foo\"))] fn f() {}"
+    )));
 }
 
 #[test]
@@ -117,14 +131,20 @@ fn unit_guppy_dag_and_wasm32_target_spec_evaluation() {
     assert!(!dag::check_core_zero_dioxus(&graph).is_empty());
     assert!(!dag::check_core_zero_platform_crates(&graph).is_empty());
     assert!(!dag::check_core_backend_module_deps(&graph).is_empty());
-    assert!(dag::check_packages_to_hosts_deps(&graph)
-        .iter()
-        .any(|v| v.snippet.contains("nve-engine -> nve-skia-shell")));
+    assert!(
+        dag::check_packages_to_hosts_deps(&graph)
+            .iter()
+            .any(|v| v.snippet.contains("nve-engine -> nve-skia-shell"))
+    );
 
     let mod_v = dag::check_module_root_spec_and_wasm32_dev_deps(&graph);
     assert!(mod_v.iter().any(|v| v.snippet.contains("criterion")));
     assert!(!mod_v.iter().any(|v| v.snippet.contains("skia-safe")));
-    assert!(mod_v.iter().any(|v| v.reason.contains("mix `web` and `skia`")));
+    assert!(
+        mod_v
+            .iter()
+            .any(|v| v.reason.contains("mix `web` and `skia`"))
+    );
 }
 
 #[test]
@@ -224,14 +244,16 @@ fn unit_guppy_dag_catches_proc_macros_and_wasm32_workspace_mediated_platform_cha
     // 1. Proc-macro core crate depending on banned `serde_json` must be caught.
     let v_sj = dag::check_zero_serde_json(&graph);
     assert!(
-        v_sj.iter().any(|v| v.snippet.contains("nve-core-macro -> serde_json")),
+        v_sj.iter()
+            .any(|v| v.snippet.contains("nve-core-macro -> serde_json")),
         "proc-macro core crate dep on serde_json must be caught: {v_sj:?}"
     );
 
     // 2. Normal core crate depending on proc-macro `dioxus-rsx-macro` must be caught.
     let v_dx = dag::check_core_zero_dioxus(&graph);
     assert!(
-        v_dx.iter().any(|v| v.snippet.contains("nve-core-app -> dioxus-rsx-macro")),
+        v_dx.iter()
+            .any(|v| v.snippet.contains("nve-core-app -> dioxus-rsx-macro")),
         "normal core crate dep on proc-macro dioxus-* must be caught: {v_dx:?}"
     );
 
@@ -357,7 +379,11 @@ fn unit_syn_ast_checks_positive_and_negative() {
 
     let mut v_fields = Vec::new();
     ast_layout::scan_bare_primitive_domain_fields("a.rs", core_a_src, &ast_a, &mut v_fields);
-    assert_eq!(v_fields.len(), 1, "cfg(any(test, ...)) must be scanned, cfg(test) skipped: {v_fields:?}");
+    assert_eq!(
+        v_fields.len(),
+        1,
+        "cfg(any(test, ...)) must be scanned, cfg(test) skipped: {v_fields:?}"
+    );
 
     let mut v_enum = Vec::new();
     ast_enums::scan_duplicate_enums_and_converters(
@@ -368,7 +394,11 @@ fn unit_syn_ast_checks_positive_and_negative() {
         ],
         &mut v_enum,
     );
-    assert_eq!(v_enum.len(), 4, "2 dup TextAlign + 1 impl From + 1 decode_align (not to_skia_align): {v_enum:?}");
+    assert_eq!(
+        v_enum.len(),
+        4,
+        "2 dup TextAlign + 1 impl From + 1 decode_align (not to_skia_align): {v_enum:?}"
+    );
     assert!(!v_enum.iter().any(|v| v.reason.contains("to_skia_align")));
 
     let mut v_match = Vec::new();
@@ -385,7 +415,11 @@ fn unit_syn_ast_checks_positive_and_negative() {
         &[("abi/a.rs".into(), &abi_a), ("abi/b.rs".into(), &abi_b)],
         &[("store/row.rs".into(), &store_a)],
     );
-    assert_eq!(v_abi.len(), 1, "only missing NveEvent should fail: {v_abi:?}");
+    assert_eq!(
+        v_abi.len(),
+        1,
+        "only missing NveEvent should fail: {v_abi:?}"
+    );
     assert!(v_abi[0].reason.contains("`NveEvent`"));
 
     assert!(hygiene::detect_personal_endpoint_or_path("/Users/alice/dev", false).is_some());
@@ -402,7 +436,9 @@ fn unit_syn_ast_checks_positive_and_negative() {
         Some("reloc_scene")
     );
     assert_eq!(
-        hygiene::is_banned_legacy_persistence_path("cxx/nve-fabric-bridge/include/nve_snapshot.hpp"),
+        hygiene::is_banned_legacy_persistence_path(
+            "cxx/nve-fabric-bridge/include/nve_snapshot.hpp"
+        ),
         Some("nve_snapshot")
     );
     assert_eq!(
@@ -418,12 +454,31 @@ fn unit_syn_ast_checks_positive_and_negative() {
         Some("/reloc/")
     );
     assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/reloc.rs"),
+        Some("/reloc/")
+    );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("cxx/nve-fabric-bridge/include/RELOC.hpp"),
+        Some("/reloc/")
+    );
+    assert_eq!(
         hygiene::is_banned_legacy_persistence_path("cxx/tests/test-mmap-snapshot.cpp"),
         Some("mmap_snapshot")
     );
-    assert!(hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/persistence.rs").is_none());
-    assert!(hygiene::is_banned_legacy_persistence_path("packages/backends/headless/benches/frame0_boot.rs").is_none());
-    assert!(hygiene::is_banned_legacy_persistence_path("packages/core/store/src/relocated_rows.rs").is_none());
+    assert!(
+        hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/persistence.rs")
+            .is_none()
+    );
+    assert!(
+        hygiene::is_banned_legacy_persistence_path(
+            "packages/backends/headless/benches/frame0_boot.rs"
+        )
+        .is_none()
+    );
+    assert!(
+        hygiene::is_banned_legacy_persistence_path("packages/core/store/src/relocated_rows.rs")
+            .is_none()
+    );
     assert_eq!(
         hygiene::detect_banned_legacy_persistence_symbol("pub struct MmapOffsetArena;"),
         Some("MmapOffsetArena")
@@ -440,17 +495,43 @@ fn unit_syn_ast_checks_positive_and_negative() {
         hygiene::detect_banned_legacy_persistence_symbol("RelocatableStateArena::open()"),
         Some("RelocatableStateArena")
     );
-    assert!(hygiene::detect_banned_legacy_persistence_symbol("Frame0File::boot_into_replica").is_none());
+    assert!(
+        hygiene::detect_banned_legacy_persistence_symbol("Frame0File::boot_into_replica").is_none()
+    );
     assert!(hygiene::detect_banned_legacy_persistence_symbol("MyRelocSceneNodeHelper").is_none());
 
     let memmap_json = format!(
         r#"{{
         "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",
-        "workspace_members": ["path+file:///repo/packages/core/engine#0.1.0"],
+        "workspace_members": [
+            "path+file:///repo/packages/core/engine#0.1.0",
+            "path+file:///repo/packages/core/dioxus#0.1.0"
+        ],
         "packages": [
             {{
                 "id": "path+file:///repo/packages/core/engine#0.1.0", "name": "nve-engine", "version": "0.1.0",
                 "manifest_path": "/repo/packages/core/engine/Cargo.toml", "targets": {t_eng}, "features": {{}},
+                "dependencies": [
+                    {{"name": "helper-crate", "req": "^0.1", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "path+file:///repo/packages/core/dioxus#0.1.0", "name": "nve-dioxus", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/dioxus/Cargo.toml", "targets": {t_dx}, "features": {{}},
+                "dependencies": [
+                    {{"name": "subsecond", "req": "^0.7", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "registry+https://github.com/rust-lang/crates.io-index#helper-crate@0.1.0", "name": "helper-crate", "version": "0.1.0",
+                "manifest_path": "/cargo/helper-crate/Cargo.toml", "targets": {t_hlp}, "features": {{}},
+                "dependencies": [
+                    {{"name": "memmap2", "req": "^0.9", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{
+                "id": "registry+https://github.com/rust-lang/crates.io-index#subsecond@0.7.0", "name": "subsecond", "version": "0.7.0",
+                "manifest_path": "/cargo/subsecond/Cargo.toml", "targets": {t_sub}, "features": {{}},
                 "dependencies": [
                     {{"name": "memmap2", "req": "^0.9", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
                 ]
@@ -461,6 +542,21 @@ fn unit_syn_ast_checks_positive_and_negative() {
             "nodes": [
                 {{
                     "id": "path+file:///repo/packages/core/engine#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#helper-crate@0.1.0"],
+                    "deps": [{{"name": "helper_crate", "pkg": "registry+https://github.com/rust-lang/crates.io-index#helper-crate@0.1.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{
+                    "id": "path+file:///repo/packages/core/dioxus#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#subsecond@0.7.0"],
+                    "deps": [{{"name": "subsecond", "pkg": "registry+https://github.com/rust-lang/crates.io-index#subsecond@0.7.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#helper-crate@0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0"],
+                    "deps": [{{"name": "memmap2", "pkg": "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#subsecond@0.7.0",
                     "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0"],
                     "deps": [{{"name": "memmap2", "pkg": "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
                 }},
@@ -469,20 +565,36 @@ fn unit_syn_ast_checks_positive_and_negative() {
         }}
     }}"#,
         t_eng = lib_target("nve_engine", "/repo/packages/core/engine"),
+        t_dx = lib_target("nve_dioxus", "/repo/packages/core/dioxus"),
+        t_hlp = lib_target("helper_crate", "/cargo/helper-crate"),
+        t_sub = lib_target("subsecond", "/cargo/subsecond"),
         t_mm = lib_target("memmap2", "/cargo/memmap2"),
     );
     let mm_graph = PackageGraph::from_json(&memmap_json).expect("valid memmap2 synthetic graph");
+    let mm_v = dag::check_no_memmap2_dep(&mm_graph);
     assert!(
-        !dag::check_no_memmap2_dep(&mm_graph).is_empty(),
-        "direct/transitive memmap2 in packages/core/engine must fail check_no_memmap2_dep"
+        mm_v.iter()
+            .any(|v| v.snippet == "nve-engine -> helper-crate -> memmap2"),
+        "transitive memmap2 in packages/core/engine must fail check_no_memmap2_dep: {mm_v:?}"
+    );
+    assert!(
+        !mm_v.iter().any(|v| v.snippet.contains("nve-dioxus")),
+        "transitive subsecond -> memmap2 in packages/core/dioxus must not false-positive: {mm_v:?}"
     );
     assert!(bench::check_bench_not_stub("fn main() {}").is_some());
     assert!(
-        bench::check_bench_not_stub("use std::hint::black_box; fn b(c: &mut Criterion) { let _ = 1; }")
-            .is_some(),
+        bench::check_bench_not_stub(
+            "use std::hint::black_box; fn b(c: &mut Criterion) { let _ = 1; }"
+        )
+        .is_some(),
         "unused black_box import without call must fail anti-stub check"
     );
-    assert!(bench::check_bench_not_stub("use std::hint::black_box; fn b(c: &mut Criterion) { black_box(1); }").is_none());
+    assert!(
+        bench::check_bench_not_stub(
+            "use std::hint::black_box; fn b(c: &mut Criterion) { black_box(1); }"
+        )
+        .is_none()
+    );
 
     // Multi-file benchmark group: both files have inner doc comments + inner `#![allow(dead_code)]`.
     let bench_main = "//! Main bench\n#![allow(dead_code)]\nmod sub;\ncriterion_main!(benches);\n";
@@ -505,21 +617,46 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     let inner_ast = syn::parse_file(inner_test_src).unwrap();
     let mut v = Vec::new();
     ast_layout::scan_hardcoded_schema_hashes("a.rs", inner_test_src, &inner_ast, &mut v);
-    purity::scan_platform_purity("packages/core/abi/src/a.rs", inner_test_src, &inner_ast, &mut v);
-    hot_path::scan_hot_path_ast("packages/core/store/src/a.rs", inner_test_src, &inner_ast, true, &mut v);
-    hot_path::scan_downcast_ref_ast("packages/backends/web/src/a.rs", inner_test_src, &inner_ast, &mut v);
-    assert!(v.is_empty(), "inner #![cfg(test)] must skip entire file: {v:?}");
+    purity::scan_platform_purity(
+        "packages/core/abi/src/a.rs",
+        inner_test_src,
+        &inner_ast,
+        &mut v,
+    );
+    hot_path::scan_hot_path_ast(
+        "packages/core/store/src/a.rs",
+        inner_test_src,
+        &inner_ast,
+        true,
+        &mut v,
+    );
+    hot_path::scan_downcast_ref_ast(
+        "packages/backends/web/src/a.rs",
+        inner_test_src,
+        &inner_ast,
+        &mut v,
+    );
+    assert!(
+        v.is_empty(),
+        "inner #![cfg(test)] must skip entire file: {v:?}"
+    );
 
     let nested_hash = "mod inner { impl Foo { const MY_SCHEMA_HASH: u64 = 0xDEAD_BEEF; } }";
     let nested_ast = syn::parse_file(nested_hash).unwrap();
     let mut vh = Vec::new();
     ast_layout::scan_hardcoded_schema_hashes("a.rs", nested_hash, &nested_ast, &mut vh);
-    assert_eq!(vh.len(), 1, "expected nested impl SCHEMA_HASH violation: {vh:?}");
+    assert_eq!(
+        vh.len(),
+        1,
+        "expected nested impl SCHEMA_HASH violation: {vh:?}"
+    );
 
     let web_src = "impl WebBackend { pub fn new() { #[cfg(feature = \"camera\")] let _ = 1; } }";
     let web_ast = syn::parse_file(web_src).unwrap();
     let mut vw = Vec::new();
-    assert!(dag::scan_web_backend_ast("web.rs", web_src, &web_ast, &mut vw));
+    assert!(dag::scan_web_backend_ast(
+        "web.rs", web_src, &web_ast, &mut vw
+    ));
     assert_eq!(vw.len(), 1, "expected camera cfg violation: {vw:?}");
 
     let hot_src = r#"
@@ -532,20 +669,50 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     "#;
     let hot_ast = syn::parse_file(hot_src).unwrap();
     let mut vhot = Vec::new();
-    hot_path::scan_hot_path_ast("packages/core/store/src/store.rs", hot_src, &hot_ast, true, &mut vhot);
-    assert_eq!(vhot.len(), 2, "expected from_utf8 + format! violations only in allowlisted store.rs: {vhot:?}");
+    hot_path::scan_hot_path_ast(
+        "packages/core/store/src/store.rs",
+        hot_src,
+        &hot_ast,
+        true,
+        &mut vhot,
+    );
+    assert_eq!(
+        vhot.len(),
+        2,
+        "expected from_utf8 + format! violations only in allowlisted store.rs: {vhot:?}"
+    );
 
     let non_allow_src = "fn new() { let _ = format!(\"alloc\"); }";
     let non_allow_ast = syn::parse_file(non_allow_src).unwrap();
     let mut v_non_allow = Vec::new();
-    hot_path::scan_hot_path_ast("packages/core/store/src/str_arena.rs", non_allow_src, &non_allow_ast, true, &mut v_non_allow);
-    assert_eq!(v_non_allow.len(), 1, "arbitrary fn new() must not be exempted: {v_non_allow:?}");
+    hot_path::scan_hot_path_ast(
+        "packages/core/store/src/str_arena.rs",
+        non_allow_src,
+        &non_allow_ast,
+        true,
+        &mut v_non_allow,
+    );
+    assert_eq!(
+        v_non_allow.len(),
+        1,
+        "arbitrary fn new() must not be exempted: {v_non_allow:?}"
+    );
 
     let trait_src = "trait T { fn try_str(&self) -> Option<&str>; }\nfn hot(b: &[u8]) { let _ = std::str::from_utf8(b); }";
     let trait_ast = syn::parse_file(trait_src).unwrap();
     let mut v_trait = Vec::new();
-    hot_path::scan_hot_path_ast("packages/core/store/src/span_pool.rs", trait_src, &trait_ast, true, &mut v_trait);
-    assert_eq!(v_trait.len(), 1, "trait decl must not exempt next fn: {v_trait:?}");
+    hot_path::scan_hot_path_ast(
+        "packages/core/store/src/span_pool.rs",
+        trait_src,
+        &trait_ast,
+        true,
+        &mut v_trait,
+    );
+    assert_eq!(
+        v_trait.len(),
+        1,
+        "trait decl must not exempt next fn: {v_trait:?}"
+    );
 
     // Per-node downcast_ref AST check (catches method w/ and w/o turbofish + Any::downcast_ref, skips #[cfg(test)]).
     let dc_src = r#"
@@ -560,10 +727,16 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     let dc_ast = syn::parse_file(dc_src).unwrap();
     let mut vdc = Vec::new();
     hot_path::scan_downcast_ref_ast("packages/backends/web/src/x.rs", dc_src, &dc_ast, &mut vdc);
-    assert_eq!(vdc.len(), 3, "expected 3 prod downcast_ref violations only: {vdc:?}");
+    assert_eq!(
+        vdc.len(),
+        3,
+        "expected 3 prod downcast_ref violations only: {vdc:?}"
+    );
 
     assert!(hot_path::line_has_fnv1a("use fnv::FnvHashMap;"));
-    assert!(hot_path::line_has_fnv1a("const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;"));
+    assert!(hot_path::line_has_fnv1a(
+        "const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;"
+    ));
     assert!(!hot_path::line_has_fnv1a("use nve_hash::xxh64;"));
 
     let tbl_src = r#"
@@ -581,8 +754,17 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     "#;
     let tbl_ast = syn::parse_file(tbl_src).unwrap();
     let mut vt = Vec::new();
-    purity::scan_table_and_codec_hygiene("packages/core/tables/src/t.rs", tbl_src, &tbl_ast, &mut vt);
-    assert_eq!(vt.len(), 6, "expected bits + default + split bool + Unset + SET_ + encode_bytes: {vt:?}");
+    purity::scan_table_and_codec_hygiene(
+        "packages/core/tables/src/t.rs",
+        tbl_src,
+        &tbl_ast,
+        &mut vt,
+    );
+    assert_eq!(
+        vt.len(),
+        6,
+        "expected bits + default + split bool + Unset + SET_ + encode_bytes: {vt:?}"
+    );
 
     // Dart 53-bit codegen check: every line alone, `true` = must be flagged.
     for (line, unsafe_) in [
@@ -651,7 +833,11 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
         "const id = Number(view.getBigUint64(0, true));\nconst signed = Number(view.getBigInt64(0, true));\nconst x = hi * 4294967296 + lo;\nconst y = hi << 32;",
         &mut vts_bad,
     );
-    assert_eq!(vts_bad.len(), 4, "expected 4 TS 53-bit violations: {vts_bad:?}");
+    assert_eq!(
+        vts_bad.len(),
+        4,
+        "expected 4 TS 53-bit violations: {vts_bad:?}"
+    );
 
     let mut vts_ok = Vec::new();
     codegen_53bit::scan_ts_53bit_safety(
@@ -711,7 +897,8 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     let multi_graph = PackageGraph::from_json(&multi_json).expect("valid multi-platform graph");
     let v_sj = dag::check_zero_serde_json(&multi_graph);
     assert!(
-        v_sj.iter().any(|x| x.snippet.contains("nve-foo -> third-party -> serde_json")),
+        v_sj.iter()
+            .any(|x| x.snippet.contains("nve-foo -> third-party -> serde_json")),
         "CargoSet must catch macOS-gated optional third-party serde_json: {v_sj:?}"
     );
 }

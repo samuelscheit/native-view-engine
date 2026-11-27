@@ -20,7 +20,7 @@ The `native-view-engine` monorepo enforces a strict, layered dependency DAG. Low
    ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
    │nve-components │      │  nve-engine   │      │  nve-interop  │
    │NVE_DRAW1 IR   │      │NveApp, Layout │      │Surfaces, CRDT │
-   │Style/Tag map  │      │Snapshot + WAL │      │NVT1/NVD1/NVW1 │
+   │Style/Tag map  │      │Frame0 + State │      │NVT1/NVD1/NVW1 │
    └───────┬───────┘      └───────┬───────┘      └───────┬───────┘
            │                      │                      │
      ┌─────┴──────────┬───────────┼───────────┬──────────┴─────┐

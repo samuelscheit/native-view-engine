@@ -5,6 +5,7 @@ use nve_abi::table::{Storage, Word};
 use crate::id::{NodeId, NodeIndex};
 use crate::row::DirtyList;
 use crate::table::TableMeta;
+use crate::wire::WireError;
 
 const PAGE_BITS: u32 = 8;
 const PAGE: usize = 1 << PAGE_BITS;
@@ -41,17 +42,24 @@ impl PagedIndex {
         self.pool[self.dir[p] as usize][n as usize & (PAGE - 1)] = row_plus_one;
     }
 
-    fn reserve_for_nodes(&mut self, max_node_index: usize, expected_rows: usize) {
+    fn reserve_for_nodes(
+        &mut self,
+        max_node_index: usize,
+        expected_rows: usize,
+    ) -> Result<(), WireError> {
         let dir_pages = max_node_index.div_ceil(PAGE).max(1);
         let pool_pages = expected_rows.min(dir_pages).max(1);
         if self.dir.capacity() < dir_pages {
-            let _ = self.dir.try_reserve(dir_pages.saturating_sub(self.dir.len()));
+            self.dir
+                .try_reserve(dir_pages.saturating_sub(self.dir.len()))
+                .map_err(|_| WireError::Alloc)?;
         }
         if self.pool.capacity() < pool_pages {
-            let _ = self
-                .pool
-                .try_reserve(pool_pages.saturating_sub(self.pool.len()));
+            self.pool
+                .try_reserve(pool_pages.saturating_sub(self.pool.len()))
+                .map_err(|_| WireError::Alloc)?;
         }
+        Ok(())
     }
 }
 
@@ -125,25 +133,30 @@ impl Column {
         matches!(self.desc.storage(), Storage::Dense)
     }
 
-    /// Pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs O(1)
-    /// heap allocations independent of `N`, without doubling non-empty sparse columns on delta
-    /// patches or overflowing multiplication on hostile inputs.
-    pub(crate) fn reserve_bulk(&mut self, expected_rows: usize, max_node_index: usize) {
+    /// Fallibly pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs
+    /// O(1) heap allocations independent of `N`, propagating [`WireError::Alloc`] on overflow or
+    /// allocation failure instead of falling through to infallible growth.
+    pub(crate) fn reserve_bulk(
+        &mut self,
+        expected_rows: usize,
+        max_node_index: usize,
+    ) -> Result<(), WireError> {
         if self.is_dense() {
             let cap = max_node_index
                 .max(expected_rows.saturating_add(1))
                 .max(64)
                 .min(NodeId::MAX_INDEX as usize + 1);
-            let Some(word_cap) = cap.checked_mul(self.w) else {
-                return;
-            };
+            let word_cap = cap.checked_mul(self.w).ok_or(WireError::Alloc)?;
             if self.masks.len() < cap {
-                if self.masks.try_reserve(cap - self.masks.len()).is_err()
-                    || self.owners.try_reserve(cap - self.owners.len()).is_err()
-                    || self.rows.try_reserve(word_cap - self.rows.len()).is_err()
-                {
-                    return;
-                }
+                self.masks
+                    .try_reserve(cap - self.masks.len())
+                    .map_err(|_| WireError::Alloc)?;
+                self.owners
+                    .try_reserve(cap - self.owners.len())
+                    .map_err(|_| WireError::Alloc)?;
+                self.rows
+                    .try_reserve(word_cap.saturating_sub(self.rows.len()))
+                    .map_err(|_| WireError::Alloc)?;
                 self.masks.resize(cap, 0);
                 self.owners.resize(cap, 0);
                 self.rows.resize(word_cap, 0);
@@ -151,17 +164,22 @@ impl Column {
         } else if self.owners.is_empty() {
             let target = expected_rows.min(max_node_index.saturating_add(1));
             if self.owners.capacity() < target {
-                let _ = self.owners.try_reserve(target);
+                self.owners
+                    .try_reserve(target)
+                    .map_err(|_| WireError::Alloc)?;
             }
             if self.masks.capacity() < target {
-                let _ = self.masks.try_reserve(target);
+                self.masks
+                    .try_reserve(target)
+                    .map_err(|_| WireError::Alloc)?;
             }
-            if let Some(word_target) = target.checked_mul(self.w)
-                && self.rows.capacity() < word_target
-            {
-                let _ = self.rows.try_reserve(word_target);
+            let word_target = target.checked_mul(self.w).ok_or(WireError::Alloc)?;
+            if self.rows.capacity() < word_target {
+                self.rows
+                    .try_reserve(word_target)
+                    .map_err(|_| WireError::Alloc)?;
             }
-            self.index.reserve_for_nodes(max_node_index, target);
+            self.index.reserve_for_nodes(max_node_index, target)?;
         }
         let dirty_target = self
             .dirty
@@ -169,7 +187,10 @@ impl Column {
             .len()
             .saturating_add(expected_rows)
             .max(64);
-        let _ = self.dirty.try_reserve(dirty_target);
+        self.dirty
+            .try_reserve(dirty_target)
+            .map_err(|_| WireError::Alloc)?;
+        Ok(())
     }
 
     /// Row of a node that has this table attached.

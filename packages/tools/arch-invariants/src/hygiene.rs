@@ -8,13 +8,13 @@ use std::path::Path;
 use syn::spanned::Spanned;
 
 pub use crate::persistence_guard::{
+    BANNED_LEGACY_PERSISTENCE_PATH_TOKENS, BANNED_LEGACY_PERSISTENCE_SYMBOLS,
     check_banned_legacy_persistence_paths, check_banned_legacy_persistence_symbols,
     detect_banned_legacy_persistence_symbol, is_banned_legacy_persistence_path,
-    BANNED_LEGACY_PERSISTENCE_PATH_TOKENS, BANNED_LEGACY_PERSISTENCE_SYMBOLS,
 };
 use crate::{
-    find_files_named, is_binary_ext, is_cfg_test_attr, is_self_invariant_file,
-    is_test_or_bench_rs, rel_path, RepoIndex, Violation, DOC_EXCLUDES,
+    DOC_EXCLUDES, RepoIndex, Violation, find_files_named, is_binary_ext, is_cfg_test_attr,
+    is_self_invariant_file, is_test_or_bench_rs, rel_path,
 };
 
 pub const MAX_PROD_LINES: usize = 650;
@@ -27,8 +27,29 @@ pub const EXISTING_OVERSIZE_ALLOWLIST: &[(&str, usize)] = &[];
 const PENDING_CLEANUP_PERSONAL_PATHS: &[(&str, usize)] = &[];
 
 const PERSONAL_SCAN_EXTS: &[&str] = &[
-    ".rs", ".ts", ".js", ".mjs", ".swift", ".kt", ".kts", ".java", ".dart", ".cpp", ".hpp", ".h",
-    ".c", ".mm", ".sh", ".py", ".toml", ".json", ".yml", ".yaml", ".properties", ".mdx", ".md",
+    ".rs",
+    ".ts",
+    ".js",
+    ".mjs",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".java",
+    ".dart",
+    ".cpp",
+    ".hpp",
+    ".h",
+    ".c",
+    ".mm",
+    ".sh",
+    ".py",
+    ".toml",
+    ".json",
+    ".yml",
+    ".yaml",
+    ".properties",
+    ".mdx",
+    ".md",
 ];
 
 pub fn check_backlog_open_only(idx: &RepoIndex) -> Vec<Violation> {
@@ -353,7 +374,9 @@ fn has_readme_doctest_attr(ast: &syn::File) -> bool {
 /// Monotonic 650-line production `.rs` file ratchet across `packages/`, `hosts/` and `examples/`.
 pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
     assert!(
-        EXISTING_OVERSIZE_ALLOWLIST.windows(2).all(|w| w[0].0 < w[1].0),
+        EXISTING_OVERSIZE_ALLOWLIST
+            .windows(2)
+            .all(|w| w[0].0 < w[1].0),
         "EXISTING_OVERSIZE_ALLOWLIST must stay strictly sorted"
     );
     let allowlist: BTreeMap<&str, usize> = EXISTING_OVERSIZE_ALLOWLIST.iter().copied().collect();
@@ -363,7 +386,10 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
     let mut rs_files = idx.rs_files_under("packages");
     rs_files.extend(idx.rs_files_under("hosts"));
     rs_files.extend(idx.rs_files_under("examples"));
-    assert!(!rs_files.is_empty(), "expected Rust files under packages/, hosts/ and examples/");
+    assert!(
+        !rs_files.is_empty(),
+        "expected Rust files under packages/, hosts/ and examples/"
+    );
 
     for rel in rs_files {
         if is_test_or_bench_rs(&rel) || rel.contains(".generated.") {
@@ -407,7 +433,6 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
     }
     violations
 }
-
 
 pub fn has_16_hex_literal(line: &str) -> bool {
     hex_literal_digit_counts(line).any(|digits| digits == 16)

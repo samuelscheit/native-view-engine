@@ -20,6 +20,7 @@ mod column;
 mod commit;
 pub mod events;
 mod id;
+mod node_mut;
 mod node_ref;
 mod resource;
 mod row;
@@ -33,25 +34,28 @@ pub mod wire;
 pub use changes::{ChangeSet, Command, TableChanges};
 pub use events::{TableEventBus, TypedTableEvent};
 pub use id::{Idx, IndexVec, NodeId, NodeIndex, ResourceId, TableSet, TableSetIter};
-pub use nve_abi::table::{effect, table_flags, FieldDesc, FieldKind, Storage, TableDesc, TableKey, Word};
-pub use nve_abi_macros::NveTable;
-pub use resource::{register_codec, Resource, ResourceStore};
-pub use row::{DirtyList, RowRef, RowWriter};
-pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
+pub use node_mut::NodeMut;
 pub use node_ref::NodeRef;
+pub use nve_abi::table::{
+    FieldDesc, FieldKind, Storage, TableDesc, TableKey, Word, effect, table_flags,
+};
+pub use nve_abi_macros::NveTable;
+pub use resource::{Resource, ResourceStore, register_codec};
+pub use row::{DirtyList, RowRef, RowWriter};
+pub use span_pool::{ChildSpan, Span, SpanPool, StrArena, StrSpan, class_cap};
 pub use store::{NodeRow, NodeStore, RealizationOrder, StoreStats};
 pub use table::{
-    desc, slot_of, tables_schema_hash, NveTable, Prop, RegistryError, Res, ResProp, Str, StrProp,
-    TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
+    MAX_STATIC_TABLE_SLOTS, NveTable, Prop, RegistryError, Res, ResProp, Str, StrProp, TableField,
+    TableSlot, desc, slot_of, tables_schema_hash,
 };
-pub use tx::{NodeMut, Transaction};
+pub use tx::Transaction;
 pub use value::{Length, Rgba, WordValue};
 
 #[doc(hidden)]
 pub mod __private {
     pub use crate::table::register_static;
-    pub use nve_abi::table::{compute_table_schema_hash, FieldDesc, FieldKind, Storage, TableDesc};
-    pub use nve_hash::{const_id, Key64};
+    pub use nve_abi::table::{FieldDesc, FieldKind, Storage, TableDesc, compute_table_schema_hash};
+    pub use nve_hash::{Key64, const_id};
 }
 
 #[cfg(test)]

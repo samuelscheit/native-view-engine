@@ -290,7 +290,26 @@ fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() 
     );
     drop(store_cold);
 
-    // Newer schema version on disk must return SchemaMismatch WITHOUT deleting state.nve.
+    // Older schema version (v2 < v3) on disk rotates to `state.nve.v2` and keeps persistence active.
+    let older_env = nve_engine::StateFile::encode_envelope(2, b"legacy-v2-payload")
+        .expect("encode older v2 schema");
+    std::fs::write(dir.join(STATE_FILE_NAME), &older_env).expect("write v2 state");
+    let mut store_upgraded =
+        WorkspaceStore::open_with_config(&dir, cfg).expect("older schema rotates cleanly");
+    assert_eq!(
+        store_upgraded.recovery_stats().rotated_from_older_schema,
+        Some(2)
+    );
+    assert!(
+        dir.join(format!("{STATE_FILE_NAME}.v2")).exists(),
+        "older schema must be rotated to state.nve.v2 backup"
+    );
+    store_upgraded
+        .save(&WorkspaceState::default())
+        .expect("persistence stays active after older-schema rotation");
+    drop(store_upgraded);
+
+    // Newer schema version (v99 > v3) on disk must return SchemaMismatch WITHOUT deleting state.nve.
     let newer_env = nve_engine::StateFile::encode_envelope(99, b"future-v99-payload")
         .expect("encode future schema");
     std::fs::write(dir.join(STATE_FILE_NAME), &newer_env).expect("write v99 state");
@@ -305,7 +324,7 @@ fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() 
     ));
     assert!(
         dir.join(STATE_FILE_NAME).exists(),
-        "schema mismatch must preserve state.nve on disk"
+        "newer schema mismatch must preserve state.nve on disk"
     );
 
     std::fs::write(dir.join(STATE_FILE_NAME), b"CORRUPTED_STATE_BYTES")
@@ -410,9 +429,11 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(h.find_by_test_id("doc-markdown-preview").is_some());
     let tree_md = h.ascii();
     assert!(tree_md.contains("# RFC-042: Zero-Copy NveSceneView"));
-    assert!(tree_md.contains(
-        "- [x] Enable crash-safe Frame-0 NVE2 + StateFile local persistence in Studio"
-    ));
+    assert!(
+        tree_md.contains(
+            "- [x] Enable crash-safe Frame-0 NVE2 + StateFile local persistence in Studio"
+        )
+    );
     assert!(tree_md.contains("- [ ] Verify crash-safe .nvewal compaction"));
     h.assert_no_horizontal_overflow("docs-1280x800-with-markdown");
 

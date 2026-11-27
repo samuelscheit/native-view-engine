@@ -8,7 +8,7 @@ use nve_abi::{Xxh64Hasher, xxh64};
 
 use super::{PersistenceError, le_u32, le_u64, write_file_atomic};
 #[cfg(not(target_arch = "wasm32"))]
-use super::{ReadBoundedError, backup_corrupt_file, read_file_bounded};
+use super::{ReadBoundedError, backup_corrupt_file, backup_rotated_file, read_file_bounded};
 
 pub const DEFAULT_STATE_FILE_NAME: &str = "state.nve";
 pub const STATE_FILE_MAGIC: [u8; 8] = *b"NVESTATE";
@@ -30,6 +30,9 @@ fn state_envelope_xxh64(header_prefix_16: &[u8], payload: &[u8]) -> u64 {
 pub struct StateRecoveryStats {
     pub loaded_from_disk: bool,
     pub recovered_from_corrupt: bool,
+    /// When an older on-disk schema (`actual < expected`) was rotated to `<file>.v{actual}`,
+    /// records `Some(actual)` so callers know persistence stayed active with a preserved backup.
+    pub rotated_from_older_schema: Option<u32>,
     pub generation: u64,
 }
 
@@ -91,7 +94,18 @@ impl StateFile {
                                 r.generation = 1;
                                 cached = Some(payload.to_vec());
                             }
-                            Err(e @ PersistenceError::SchemaMismatch { .. }) => return Err(e),
+                            Err(PersistenceError::SchemaMismatch { expected, actual }) => {
+                                if actual < expected {
+                                    drop(file);
+                                    backup_rotated_file(&path, &format!("v{actual}"))?;
+                                    r.rotated_from_older_schema = Some(actual);
+                                } else {
+                                    return Err(PersistenceError::SchemaMismatch {
+                                        expected,
+                                        actual,
+                                    });
+                                }
+                            }
                             Err(
                                 PersistenceError::Corrupt(_) | PersistenceError::PayloadTooLarge(_),
                             ) => {
@@ -235,8 +249,10 @@ impl StateFile {
             backup_corrupt_file(path);
         }
         self.cached = None;
+        self.generation = 0;
         self.recovery.loaded_from_disk = false;
         self.recovery.recovered_from_corrupt = true;
+        self.recovery.generation = 0;
         Ok(())
     }
 

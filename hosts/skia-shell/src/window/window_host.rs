@@ -19,11 +19,11 @@ use winit::window::WindowId;
 
 use super::hot_reload_client::HotReloadClient;
 use super::multi_window::{
-    apply_window_state, build_window_attributes, create_presenter, CloseVetoHandler, HostWakeEvent,
-    SecondaryAppFactory, SurfaceWindow,
+    CloseVetoHandler, HostWakeEvent, SecondaryAppFactory, SurfaceWindow, apply_window_state,
+    build_window_attributes, create_presenter,
 };
 use super::pair_client::{PairConnectConfig, PairedRemoteApp};
-use super::session::{prewarm_frame0_into_replica, DesktopSession};
+use super::session::{DesktopSession, prewarm_frame0_into_replica};
 use super::{DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot};
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
@@ -50,11 +50,7 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
 /// Canonical [`Frame0Meta`] shared between `DesktopWindowHost::new` cold pre-warm,
 /// `save_frame0_if_configured`, and `nve prerender`.
 pub(crate) fn default_frame0_meta() -> Frame0Meta {
-    Frame0Meta {
-        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
-        app_build_id: 0,
-        env_hash: 0,
-    }
+    Frame0Meta::default_core()
 }
 
 impl DesktopWindowHost<HotAppSlot> {
@@ -119,7 +115,8 @@ impl DesktopWindowHost<HotAppSlot> {
             Ok(app)
         });
 
-        let mut host = Self::from_primary_session_with_host_services(options, session, host_services);
+        let mut host =
+            Self::from_primary_session_with_host_services(options, session, host_services);
         host.secondary_app_factory = Some(factory);
         Ok(host)
     }
@@ -312,18 +309,21 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 return Err(DesktopHostError::Window(err.to_string()));
             }
         };
-        let presenter = match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
-            Ok(p) => p,
-            Err(err) => {
-                let _ = self.window_manager.close_window(handle_id);
-                return Err(err);
-            }
-        };
+        let presenter =
+            match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
+                Ok(p) => p,
+                Err(err) => {
+                    let _ = self.window_manager.close_window(handle_id);
+                    return Err(err);
+                }
+            };
 
         let size = window.inner_size();
         let scale = window.scale_factor() as f32;
         if let Err(err) = session.resize(size.width.max(1), size.height.max(1), scale) {
-            eprintln!("[nve-skia-shell] initial resize/render failed for surface {surface_id}: {err}");
+            eprintln!(
+                "[nve-skia-shell] initial resize/render failed for surface {surface_id}: {err}"
+            );
         }
         apply_window_state(&window, desc.state);
 
@@ -345,7 +345,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             last_telemetry: None,
         };
         if let Some(theme) = initial_theme
-            && sw.session.dispatch_host_event(&SkiaHostEvent::ThemeChanged(theme))
+            && sw
+                .session
+                .dispatch_host_event(&SkiaHostEvent::ThemeChanged(theme))
         {
             let _ = sw.session.render_and_rasterize();
         }

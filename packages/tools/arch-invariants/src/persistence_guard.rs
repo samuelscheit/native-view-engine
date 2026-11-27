@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    is_binary_ext, is_self_invariant_file, rel_path, walk_files_no_symlinks, RepoIndex, Violation,
-    DOC_EXCLUDES,
+    DOC_EXCLUDES, RepoIndex, Violation, is_binary_ext, is_self_invariant_file, rel_path,
+    walk_files_no_symlinks,
 };
 
 /// Legacy persistence / mmap-reloc path tokens permanently retired in Track 1B-2 Slice 2A-2.
@@ -39,9 +39,11 @@ fn path_contains_norm_token(rel: &str, token: &str) -> bool {
     let tb = token.as_bytes();
     let rb = rel.as_bytes();
     !tb.is_empty()
-        && rb
-            .windows(tb.len())
-            .any(|w| w.iter().zip(tb.iter()).all(|(&a, &b)| norm_path_byte(a) == b))
+        && rb.windows(tb.len()).any(|w| {
+            w.iter()
+                .zip(tb.iter())
+                .all(|(&a, &b)| norm_path_byte(a) == b)
+        })
 }
 
 /// Returns the matched retired legacy persistence token if `rel` re-introduces a banned path
@@ -57,10 +59,13 @@ pub fn is_banned_legacy_persistence_path(rel: &str) -> Option<&'static str> {
     {
         return Some(tok);
     }
-    if rel
-        .split(['/', '\\'])
-        .any(|seg| seg.eq_ignore_ascii_case("reloc"))
-    {
+    if rel.split(['/', '\\']).any(|seg| {
+        seg.eq_ignore_ascii_case("reloc")
+            || seg
+                .split('.')
+                .next()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("reloc"))
+    }) {
         return Some("/reloc/");
     }
     None

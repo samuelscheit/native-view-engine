@@ -20,7 +20,14 @@ impl Resource for Shadows {
         }
     }
     fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self(bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()))
+        Some(Self(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect(),
+        ))
     }
 }
 
@@ -70,14 +77,32 @@ fn commit(store: &mut NodeStore) -> ChangeSet {
 #[test]
 fn derive_emits_exact_layout_and_defaults() {
     let d = Visual::DESC;
-    assert_eq!(d.words(), 7, "bg, opacity, width, packed(align|wrap), label(2), shadows");
+    assert_eq!(
+        d.words(),
+        7,
+        "bg, opacity, width, packed(align|wrap), label(2), shadows"
+    );
     assert_eq!(d.defaults[1], 1.0f32.to_bits());
     assert_eq!(d.defaults[2], Length::AUTO.0);
     assert_eq!(d.defaults[3], 1 << 2, "wrap=true packed after 2-bit align");
     assert_eq!(d.str_words, 1 << 4);
     assert_eq!(d.resource_words, 1 << 6);
-    assert_eq!(d.word_effects, &[effect::PAINT, effect::COMPOSITE, effect::LAYOUT, effect::LAYOUT, effect::SEMANTICS, effect::SEMANTICS, effect::PAINT]);
-    assert_eq!(d.flags & nve_abi::table::table_flags::AFFECTS_LAYOUT, nve_abi::table::table_flags::AFFECTS_LAYOUT);
+    assert_eq!(
+        d.word_effects,
+        &[
+            effect::PAINT,
+            effect::COMPOSITE,
+            effect::LAYOUT,
+            effect::LAYOUT,
+            effect::SEMANTICS,
+            effect::SEMANTICS,
+            effect::PAINT
+        ]
+    );
+    assert_eq!(
+        d.flags & nve_abi::table::table_flags::AFFECTS_LAYOUT,
+        nve_abi::table::table_flags::AFFECTS_LAYOUT
+    );
     assert_eq!(Visual::KEY, nve_abi::Key64::of("test.visual"));
     assert_eq!(Visual::ALIGN.mask, 0b11);
     assert_eq!(Visual::WRAP.mask, 0b100);
@@ -92,7 +117,9 @@ fn writes_track_dirty_words_effects_and_skip_noops() {
     let mut tx = s.tx();
     let n = tx.create();
     tx.append_child(NodeId::ROOT, n);
-    tx.edit::<Visual>(n).bg(Rgba::rgb(1, 2, 3)).align(Align::End);
+    tx.edit::<Visual>(n)
+        .bg(Rgba::rgb(1, 2, 3))
+        .align(Align::End);
     let c = {
         let mut c = ChangeSet::default();
         tx.commit_into(&mut c);
@@ -104,7 +131,10 @@ fn writes_track_dirty_words_effects_and_skip_noops() {
     assert_eq!(t.nodes, vec![n]);
     assert_eq!(t.masks, vec![0b111_1111], "attach reports every word");
     let r = s.row::<Visual>(n);
-    assert_eq!((r.bg(), r.opacity(), r.align(), r.wrap()), (Rgba::rgb(1, 2, 3), 1.0, Align::End, true));
+    assert_eq!(
+        (r.bg(), r.opacity(), r.align(), r.wrap()),
+        (Rgba::rgb(1, 2, 3), 1.0, Align::End, true)
+    );
     assert!(r.width().is_auto());
 
     // Same values: no change at all.
@@ -125,7 +155,11 @@ fn writes_track_dirty_words_effects_and_skip_noops() {
     assert_eq!(c.touched, vec![n]);
     assert_eq!(c.effects, vec![effect::COMPOSITE | effect::LAYOUT]);
     assert!(c.needs_layout());
-    assert_eq!(s.row::<Visual>(n).align(), Align::End, "packed neighbour untouched");
+    assert_eq!(
+        s.row::<Visual>(n).align(),
+        Align::End,
+        "packed neighbour untouched"
+    );
 }
 
 #[test]
@@ -145,8 +179,16 @@ fn strings_compare_bytes_and_recycle_spans() {
         tx.commit_into(&mut c);
         c
     };
-    assert_eq!(s.row::<Text>(a).text_span(), span, "same class rewrites in place");
-    assert_eq!(c.table(Text::slot()).unwrap().masks, vec![0b11], "in-place content change is still dirty");
+    assert_eq!(
+        s.row::<Text>(a).text_span(),
+        span,
+        "same class rewrites in place"
+    );
+    assert_eq!(
+        c.table(Text::slot()).unwrap().masks,
+        vec![0b11],
+        "in-place content change is still dirty"
+    );
     assert_eq!(s.row::<Text>(a).text(), "abd");
     assert_eq!(s.text(span), "abd");
     let mut tx = s.tx();
@@ -232,7 +274,9 @@ fn removal_is_recursive_deferred_and_generational() {
     let mut tx = s.tx();
     let reused = tx.create();
     commit_tx(tx);
-    assert!(reused.index() == p.index() || reused.index() == c1.index() || reused.index() == c2.index());
+    assert!(
+        reused.index() == p.index() || reused.index() == c1.index() || reused.index() == c2.index()
+    );
     assert_ne!(reused.generation(), 0);
     assert!(!s.is_live(p) || reused == p);
     assert_eq!(s.stats().text_live, 0);
@@ -271,7 +315,11 @@ fn detach_reports_and_children_move_between_parents() {
     assert_eq!(kids, vec![a, b]);
     assert_eq!(c.table(Text::slot()).unwrap().detached, vec![x]);
     assert!(!s.has::<Text>(x));
-    assert_eq!(s.row::<Text>(x).color(), Rgba::BLACK, "absent rows read as defaults");
+    assert_eq!(
+        s.row::<Text>(x).color(),
+        Rgba::BLACK,
+        "absent rows read as defaults"
+    );
     let mut tx = s.tx();
     tx.insert_child(b, 0, a);
     commit_tx(tx);
@@ -313,7 +361,9 @@ fn sparse_swap_remove_keeps_rows_consistent() {
     let mut tx = s.tx();
     let ids: Vec<NodeId> = (0..600).map(|_| tx.create()).collect();
     for (i, &n) in ids.iter().enumerate() {
-        tx.edit::<Text>(n).text(&format!("n{i}")).color(Rgba(i as u32));
+        tx.edit::<Text>(n)
+            .text(&format!("n{i}"))
+            .color(Rgba(i as u32));
     }
     commit_tx(tx);
     let mut tx = s.tx();
@@ -392,9 +442,17 @@ fn replica_define_at_preserves_in_free_and_dedups_pending_free() {
     // Repeatedly defining + reclaiming the same unreferenced resource id across many frames must
     // preserve `RES_IN_FREE` and never grow `free` unboundedly.
     for _ in 0..20 {
-        assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded));
+        assert!(
+            store
+                .resources
+                .define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded)
+        );
         // Duplicate define_at in the same frame must not push a duplicate into `pending_free`.
-        assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded));
+        assert!(
+            store
+                .resources
+                .define_at(crate::ResourceId(1), Shadows::KIND, false, &encoded)
+        );
         assert_eq!(
             store.resources.pending_free_len(),
             1,
@@ -420,28 +478,49 @@ fn replica_define_at_retain_not_clobbered_by_intern() {
     Shadows(vec![9.0, 8.0]).encode(&mut enc_b);
 
     // Frame 1: define unreferenced id=1 -> end_frame moves it onto `free` with `RES_IN_FREE`.
-    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a));
+    assert!(
+        store
+            .resources
+            .define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a)
+    );
     store.resources.end_frame();
 
     // Frame 2: wire redefines id=1 AND retains it (still carries `RES_IN_FREE` until popped).
-    assert!(store.resources.define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a));
+    assert!(
+        store
+            .resources
+            .define_at(crate::ResourceId(1), Shadows::KIND, false, &enc_a)
+    );
     store.resources.retain(crate::ResourceId(1));
     store.resources.end_frame();
-    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(&Shadows(vec![1.0, 2.0])));
+    assert_eq!(
+        store.resource::<Shadows>(crate::ResourceId(1)),
+        Some(&Shadows(vec![1.0, 2.0]))
+    );
 
     // Local `intern` pops id=1 from `free`, must see it is live and skip it instead of clobbering!
     let local_id = store.resources.intern(Shadows(vec![9.0, 8.0]));
-    assert_ne!(local_id, crate::ResourceId(1), "live replica resource slot must not be clobbered");
-    assert_eq!(store.resource::<Shadows>(crate::ResourceId(1)), Some(&Shadows(vec![1.0, 2.0])));
-    assert_eq!(store.resource::<Shadows>(local_id), Some(&Shadows(vec![9.0, 8.0])));
+    assert_ne!(
+        local_id,
+        crate::ResourceId(1),
+        "live replica resource slot must not be clobbered"
+    );
+    assert_eq!(
+        store.resource::<Shadows>(crate::ResourceId(1)),
+        Some(&Shadows(vec![1.0, 2.0]))
+    );
+    assert_eq!(
+        store.resource::<Shadows>(local_id),
+        Some(&Shadows(vec![9.0, 8.0]))
+    );
     let _ = enc_b;
 }
 
 #[test]
 fn install_dynamic_table_rejects_static_slot_and_schema_mismatch() {
+    use crate::table::{MAX_STATIC_TABLE_SLOTS, OwnedTableDesc};
+    use nve_abi::table::{Storage, table_flags};
     use std::sync::Arc;
-    use crate::table::{OwnedTableDesc, MAX_STATIC_TABLE_SLOTS};
-    use nve_abi::table::{table_flags, Storage};
 
     let mut store = NodeStore::new();
     let make_desc = |schema_hash: u64| {
@@ -459,7 +538,9 @@ fn install_dynamic_table_rejects_static_slot_and_schema_mismatch() {
     };
 
     // Static partition slot (< MAX_STATIC_TABLE_SLOTS) must be rejected.
-    assert!(!store.install_dynamic_table(TableSlot((MAX_STATIC_TABLE_SLOTS - 1) as u8), make_desc(1)));
+    assert!(
+        !store.install_dynamic_table(TableSlot((MAX_STATIC_TABLE_SLOTS - 1) as u8), make_desc(1))
+    );
     // Dynamic partition slot succeeds on first install and on exact match, rejects schema mismatch.
     let dyn_slot = TableSlot(MAX_STATIC_TABLE_SLOTS as u8);
     assert!(store.install_dynamic_table(dyn_slot, make_desc(1)));
@@ -477,14 +558,18 @@ fn intern_type_mismatch_on_kind_collision_panics() {
     const SHARED_KIND: nve_hash::Key64 = nve_hash::Key64(nve_hash::const_id("test.collide.kind"));
     impl Resource for CollideA {
         const KIND: nve_hash::Key64 = SHARED_KIND;
-        fn encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.0.to_le_bytes()); }
+        fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.0.to_le_bytes());
+        }
         fn decode(b: &[u8]) -> Option<Self> {
             b.try_into().ok().map(|a| Self(u32::from_le_bytes(a)))
         }
     }
     impl Resource for CollideB {
         const KIND: nve_hash::Key64 = SHARED_KIND;
-        fn encode(&self, out: &mut Vec<u8>) { out.extend_from_slice(&self.0.to_le_bytes()); }
+        fn encode(&self, out: &mut Vec<u8>) {
+            out.extend_from_slice(&self.0.to_le_bytes());
+        }
         fn decode(b: &[u8]) -> Option<Self> {
             b.try_into().ok().map(|a| Self(u32::from_le_bytes(a)))
         }
@@ -527,4 +612,123 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
         "reclaimed slot must push exactly one free-list entry"
     );
     assert_eq!(store.resource::<Shadows>(id), None);
+}
+
+#[test]
+fn tables_schema_hash_is_order_and_duplicate_invariant_and_detects_schema_diff() {
+    let h_ab = crate::tables_schema_hash(&[&Visual::DESC, &Text::DESC]);
+    let h_ba = crate::tables_schema_hash(&[&Text::DESC, &Visual::DESC]);
+    let h_dup = crate::tables_schema_hash(&[&Visual::DESC, &Text::DESC, &Visual::DESC]);
+    let h_a = crate::tables_schema_hash(&[&Visual::DESC]);
+    assert_eq!(h_ab, h_ba);
+    assert_eq!(h_ab, h_dup);
+    assert_ne!(h_ab, h_a);
+
+    // Same TableKey with a conflicting schema_hash must NOT be deduplicated away.
+    static CONFLICT_DESC: nve_abi::table::TableDesc = nve_abi::table::TableDesc {
+        schema_hash: Visual::DESC.schema_hash ^ 1,
+        ..Visual::DESC
+    };
+    let h_conflict = crate::tables_schema_hash(&[&Visual::DESC, &CONFLICT_DESC]);
+    assert_ne!(h_conflict, h_a);
+}
+
+#[test]
+fn sparse_column_reserve_bulk_does_not_double_on_repeated_patches() {
+    use crate::wire::{WireDecoder, WireEncoder};
+
+    let mut src = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut enc = WireEncoder::default();
+    let mut dec = WireDecoder::default();
+    let mut replica = NodeStore::replica();
+
+    let mut ids = Vec::new();
+    {
+        let mut tx = src.tx();
+        for _ in 0..64 {
+            let n = tx.create();
+            tx.edit::<Text>(n).color(Rgba(1));
+            ids.push(n);
+        }
+        tx.commit_into(&mut changes);
+    }
+    let mut buf = Vec::new();
+    enc.encode(&src, &changes, &mut buf);
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &buf).expect("apply frame 1");
+        tx.commit_into(&mut changes);
+    }
+    let slot = Text::slot();
+    let cap_after_f1 = replica.columns[slot.0 as usize]
+        .as_ref()
+        .expect("sparse Text column")
+        .owners
+        .capacity();
+
+    // 10 repeated full-table sparse patches must NOT double owners/rows capacity.
+    for round in 2..=11u32 {
+        {
+            let mut tx = src.tx();
+            for &id in &ids {
+                tx.edit::<Text>(id).color(Rgba(round));
+            }
+            tx.commit_into(&mut changes);
+        }
+        buf.clear();
+        enc.encode(&src, &changes, &mut buf);
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &buf).expect("apply delta patch");
+        tx.commit_into(&mut changes);
+    }
+    let cap_after_deltas = replica.columns[slot.0 as usize]
+        .as_ref()
+        .expect("sparse Text column")
+        .owners
+        .capacity();
+    assert_eq!(
+        cap_after_deltas, cap_after_f1,
+        "repeated sparse patches must not double owners capacity"
+    );
+}
+
+#[test]
+fn wire_decoder_rejects_padded_sparse_node_id_and_reserve_bulk_returns_wire_error_alloc() {
+    use crate::wire::{WireDecoder, WireError};
+
+    // 1. Padded Op::ReleaseResources must not widen Op::CreateNodes index budget.
+    let pad_count: u32 = 8_192;
+    let mut ops = Vec::new();
+    ops.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
+    ops.extend_from_slice(&pad_count.to_le_bytes());
+    ops.resize(ops.len() + (pad_count as usize) * 4, 0u8);
+    ops.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
+    ops.extend_from_slice(&1u32.to_le_bytes());
+    ops.extend_from_slice(&10_000u32.to_le_bytes());
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&crate::wire::MAGIC.to_le_bytes());
+    frame.extend_from_slice(&crate::wire::VERSION.to_le_bytes());
+    frame.extend_from_slice(&0u16.to_le_bytes());
+    frame.extend_from_slice(&1u64.to_le_bytes());
+    frame.extend_from_slice(&2u32.to_le_bytes());
+    frame.extend_from_slice(&(6u32 + (ops.len() / 4) as u32).to_le_bytes());
+    frame.extend_from_slice(&ops);
+
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut tx = replica.tx();
+    assert_eq!(
+        dec.apply(&mut tx, &frame),
+        Err(WireError::NodeExists(10_000))
+    );
+
+    // 2. Overflow / un-reservable bulk request must surface WireError::Alloc cleanly.
+    let mut store = NodeStore::new();
+    let sparse_slot = Text::slot();
+    assert_eq!(
+        store.reserve_column_bulk(sparse_slot, usize::MAX / 2, usize::MAX / 2),
+        Err(WireError::Alloc)
+    );
 }

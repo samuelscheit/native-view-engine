@@ -9,14 +9,12 @@ use std::time::Instant;
 
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::CosmicTextEngine;
-use nve_components::tables::{
-    core_realization_order, core_tables_schema_hash, register_core_tables,
-};
+use nve_components::tables::{core_realization_order, register_core_tables};
 use nve_engine::{
     Frame0File, Frame0Meta, NveApp, StoreBackend, StoreWireReplica, TextMeasurer, Viewport,
 };
-use nve_example_kitchen_sink::{KitchenSinkModule, KITCHEN_SINK_STATE_VERSION};
-use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
+use nve_example_kitchen_sink::{KITCHEN_SINK_STATE_VERSION, KitchenSinkModule};
+use nve_studio_workspace::{STUDIO_SNAPSHOT_SCHEMA_VERSION, StudioWorkspaceModule};
 
 /// Options passed to `nve prerender`.
 #[derive(Debug, Clone)]
@@ -54,11 +52,7 @@ fn prerender_module<A: NveApp>(
         .submit_nve2_frame(frame1)
         .map_err(|e| format!("failed to render Frame-0 NVE2: {e}"))?;
 
-    let meta = Frame0Meta {
-        table_schema_hash: core_tables_schema_hash(),
-        app_build_id: 0,
-        env_hash: 0,
-    };
+    let meta = Frame0Meta::default_core();
     let buf = Frame0File::encode(replica.store(), meta)
         .map_err(|e| format!("failed to encode Frame-0 NVE2: {e}"))?;
 
@@ -177,11 +171,7 @@ mod tests {
             assert!(report.node_count >= 5);
             assert!(report.byte_len >= 64);
 
-            let meta = Frame0Meta {
-                table_schema_hash: core_tables_schema_hash(),
-                app_build_id: 0,
-                env_hash: 0,
-            };
+            let meta = Frame0Meta::default_core();
             let mut skia = SkiaBackend::new();
             skia.set_viewport(
                 1,
@@ -197,10 +187,17 @@ mod tests {
             assert_eq!(footer.node_count as usize, report.node_count);
             assert!(!replica.backend().display_list().ops.is_empty());
 
-            let has_text = replica.backend().display_list().ops.iter().any(|op| match op {
-                nve_backend_skia::PaintOp::DrawText { text, .. } => text.contains(expected_text),
-                _ => false,
-            });
+            let has_text = replica
+                .backend()
+                .display_list()
+                .ops
+                .iter()
+                .any(|op| match op {
+                    nve_backend_skia::PaintOp::DrawText { text, .. } => {
+                        text.contains(expected_text)
+                    }
+                    _ => false,
+                });
             assert!(
                 has_text,
                 "expected '{expected_text}' in prerendered {app_name} DisplayList"
@@ -209,13 +206,15 @@ mod tests {
             let _ = std::fs::remove_file(Path::new(&out));
         }
 
-        assert!(prerender_app_to_file(&PrerenderOptions {
-            app: "unknown-app".into(),
-            out: temp_out("bad"),
-            width: 800.0,
-            height: 600.0,
-            scale: 1.0,
-        })
-        .is_err());
+        assert!(
+            prerender_app_to_file(&PrerenderOptions {
+                app: "unknown-app".into(),
+                out: temp_out("bad"),
+                width: 800.0,
+                height: 600.0,
+                scale: 1.0,
+            })
+            .is_err()
+        );
     }
 }

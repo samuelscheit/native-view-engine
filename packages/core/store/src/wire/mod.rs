@@ -72,15 +72,25 @@ pub enum WireError {
     /// Wire slot used before being declared.
     UndeclaredTable(u8),
     /// A declared key exists locally with another schema / words, or violates table invariants.
-    SchemaMismatch { key: u64 },
+    SchemaMismatch {
+        key: u64,
+    },
     TableRegistry,
     NodeExists(u32),
     DeadNode(u32),
     InvalidChildren,
-    BadMask { mask: u32, words: u32 },
+    BadMask {
+        mask: u32,
+        words: u32,
+    },
     InvalidUtf8,
     /// Resource kind has no registered codec, or its bytes failed to decode.
-    Resource { id: u32, kind: u64 },
+    Resource {
+        id: u32,
+        kind: u64,
+    },
+    /// Memory reservation failed while decoding or pre-sizing a frame.
+    Alloc,
 }
 
 impl core::fmt::Display for WireError {

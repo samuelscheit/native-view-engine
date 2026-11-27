@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
-use nve_abi::table::{table_flags, Storage, MAX_TABLE_SLOTS};
 use nve_abi::Key64;
+use nve_abi::table::{MAX_TABLE_SLOTS, Storage, table_flags};
 
 use crate::id::{NodeId, ResourceId};
 use crate::store::NodeStore;
 use crate::table::{self, OwnedTableDesc, TableSlot};
 use crate::tx::Transaction;
 
-use super::{pad4_checked, Op, WireError, HEADER_WORDS, MAGIC, VERSION};
+use super::{HEADER_WORDS, MAGIC, Op, VERSION, WireError, pad4_checked};
 
 /// Maximum length of a runtime-declared table name in `Op::DeclareTables`.
 const MAX_TABLE_NAME_BYTES: usize = 128;
@@ -128,14 +128,11 @@ impl WireDecoder {
     /// Applies one `NVE2` frame to the replica behind `tx`; returns the frame number.
     pub fn apply(&mut self, tx: &mut Transaction<'_>, bytes: &[u8]) -> Result<u64, WireError> {
         let (frame, ops) = Self::validate_header(bytes)?;
-        // Compute capacity bounds ONCE per frame against `bytes.len()` so repeated ops in a single
-        // frame cannot amplify allocation bounds by `+1024` per op.
-        let max_node_index = tx
-            .store()
-            .capacity()
-            .saturating_add(bytes.len() / 4)
-            .saturating_add(1024)
-            .min(NodeId::MAX_INDEX as usize);
+        // Cap created node indices against `initial_cap + 1024 + cumulative_created_nodes`
+        // (incremented only by `Op::CreateNodes`, NEVER derived from total `bytes.len()`) so
+        // padding ops like `Op::ReleaseResources` cannot amplify dense column allocation bounds.
+        let initial_node_cap = tx.store().capacity();
+        let mut cumulative_created: usize = 0;
         let max_resource_id = tx
             .store()
             .resources
@@ -168,7 +165,8 @@ impl WireDecoder {
                 (head >> 8) as u8,
                 count,
                 &mut body_r,
-                max_node_index,
+                initial_node_cap,
+                &mut cumulative_created,
                 max_resource_id,
             )?;
             if body_r.at != body.len() {
@@ -189,7 +187,8 @@ impl WireDecoder {
         table: u8,
         count: u32,
         r: &mut R<'_>,
-        max_node_index: usize,
+        initial_node_cap: usize,
+        cumulative_created: &mut usize,
         max_resource_id: usize,
     ) -> Result<(), WireError> {
         match op {
@@ -206,12 +205,24 @@ impl WireDecoder {
                 if (count as usize) > r.remaining() / 4 {
                     return Err(WireError::Truncated);
                 }
+                *cumulative_created = cumulative_created.saturating_add(count as usize);
+                let max_node_index = initial_node_cap
+                    .saturating_add(1024)
+                    .saturating_add(*cumulative_created)
+                    .min(NodeId::MAX_INDEX as usize);
                 tx.store_mut()
                     .reserve_for_frame0(count as usize, r.remaining())
-                    .map_err(|_| WireError::Truncated)?;
+                    .map_err(|_| WireError::Alloc)?;
                 for _ in 0..count {
                     let id = r.node()?;
-                    if id.index() >= max_node_index || !tx.create_at(id) {
+                    if id.index() >= max_node_index {
+                        return Err(WireError::NodeExists(id.0));
+                    }
+                    let created = tx
+                        .store_mut()
+                        .try_create_at(id)
+                        .map_err(|_| WireError::Alloc)?;
+                    if !created {
                         return Err(WireError::NodeExists(id.0));
                     }
                 }
@@ -230,7 +241,11 @@ impl WireDecoder {
                     let ephemeral = r.u32()? != 0;
                     let len = r.u32()? as usize;
                     let blob = r.bytes(len)?;
-                    if !tx.store_mut().resources.define_at(ResourceId(id), kind, ephemeral, blob) {
+                    if !tx
+                        .store_mut()
+                        .resources
+                        .define_at(ResourceId(id), kind, ephemeral, blob)
+                    {
                         return Err(WireError::Resource { id, kind: kind.0 });
                     }
                 }
@@ -244,7 +259,7 @@ impl WireDecoder {
                     Self::slot_layout(tx.store(), slot).ok_or(WireError::UndeclaredTable(table))?;
                 let store_cap = tx.store().capacity();
                 tx.store_mut()
-                    .reserve_column_bulk(slot, count as usize, store_cap);
+                    .reserve_column_bulk(slot, count as usize, store_cap)?;
                 let words = words_usize as u32;
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
@@ -291,16 +306,19 @@ impl WireDecoder {
                     Self::slot_layout(tx.store(), slot).ok_or(WireError::UndeclaredTable(table))?;
                 let store_cap = tx.store().capacity();
                 tx.store_mut()
-                    .reserve_column_bulk(slot, count as usize, store_cap);
+                    .reserve_column_bulk(slot, count as usize, store_cap)?;
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
                     let word_len = r.u32()?;
                     let word = word_len & 0xFF;
                     let len = (word_len >> 8) as usize;
-                    let text = core::str::from_utf8(r.bytes(len)?)
-                        .map_err(|_| WireError::InvalidUtf8)?;
+                    let text =
+                        core::str::from_utf8(r.bytes(len)?).map_err(|_| WireError::InvalidUtf8)?;
                     if word >= 32 || str_words & (1 << word) == 0 {
-                        return Err(WireError::BadMask { mask: 1 << (word & 31), words: word });
+                        return Err(WireError::BadMask {
+                            mask: 1 << (word & 31),
+                            words: word,
+                        });
                     }
                     tx.writer(id, slot).put_str(word as usize, text);
                 }
@@ -379,19 +397,30 @@ impl WireDecoder {
     }
 
     fn live(&self, tx: &Transaction<'_>, id: NodeId) -> Result<NodeId, WireError> {
-        if tx.store().is_live(id) { Ok(id) } else { Err(WireError::DeadNode(id.0)) }
+        if tx.store().is_live(id) {
+            Ok(id)
+        } else {
+            Err(WireError::DeadNode(id.0))
+        }
     }
 
     fn declare(&mut self, tx: &mut Transaction<'_>, r: &mut R<'_>) -> Result<(), WireError> {
         let key = Key64::from_halves(r.u32()?, r.u32()?);
         let schema_hash = r.u32()? as u64 | (r.u32()? as u64) << 32;
         let packed = r.u32()?;
-        let (wire_slot, storage_raw, flags, words) =
-            (packed as u8, (packed >> 8) as u8, (packed >> 16) as u8, (packed >> 24) as usize);
+        let (wire_slot, storage_raw, flags, words) = (
+            packed as u8,
+            (packed >> 8) as u8,
+            (packed >> 16) as u8,
+            (packed >> 24) as usize,
+        );
         let str_words = r.u32()?;
         let resource_words = r.u32()?;
         if words == 0 || words > 32 || wire_slot as usize >= MAX_TABLE_SLOTS {
-            return Err(WireError::BadMask { mask: 0, words: words as u32 });
+            return Err(WireError::BadMask {
+                mask: 0,
+                words: words as u32,
+            });
         }
         let storage = match storage_raw {
             0 => Storage::Dense,
@@ -425,8 +454,11 @@ impl WireDecoder {
         // 1. Check session-scoped dynamic descriptors FIRST so wire-slot mappings stay stable
         //    within an active decoder session. Typed Rust module tables must be registered before
         //    wire decoding begins so they resolve directly through step 2 below.
-        if let Some((dyn_slot, existing)) =
-            self.dynamic_descs.iter().find(|(_, d)| d.key == key).cloned()
+        if let Some((dyn_slot, existing)) = self
+            .dynamic_descs
+            .iter()
+            .find(|(_, d)| d.key == key)
+            .cloned()
         {
             if !existing.matches_spec(&spec) {
                 return Err(WireError::SchemaMismatch { key: key.0 });

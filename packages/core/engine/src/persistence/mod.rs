@@ -107,19 +107,20 @@ pub(crate) fn read_file_bounded(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn rename_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
+pub(crate) fn rename_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        for attempt in 0..5u32 {
+        let mut attempt = 0u32;
+        loop {
             match std::fs::rename(src, dst) {
                 Ok(()) => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::PermissionDenied && attempt < 4 => {
                     std::thread::sleep(std::time::Duration::from_millis(1u64 << attempt));
+                    attempt += 1;
                 }
                 Err(e) => return Err(e),
             }
         }
-        std::fs::rename(src, dst)
     }
     #[cfg(not(windows))]
     {
@@ -145,14 +146,23 @@ fn sync_parent_dir(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn backup_corrupt_file(path: &Path) {
+pub(crate) fn backup_rotated_file(path: &Path, suffix: &str) -> io::Result<()> {
     let Some(name) = path.file_name() else {
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "persistence path must include a file name",
+        ));
     };
     let mut backup_name = name.to_os_string();
-    backup_name.push(".corrupt");
+    backup_name.push(".");
+    backup_name.push(suffix);
     let backup = path.with_file_name(backup_name);
-    if std::fs::rename(path, &backup).is_err() {
+    rename_with_retry(path, &backup)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn backup_corrupt_file(path: &Path) {
+    if backup_rotated_file(path, "corrupt").is_err() {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -186,11 +196,14 @@ pub fn write_file_atomic(path: &Path, bytes: &[u8], sync: bool) -> Result<(), Pe
     }
 
     let pid = std::process::id();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0u64, |d| d.as_nanos() as u64);
     let mut created: Option<(PathBuf, std::fs::File)> = None;
     for _ in 0..32 {
         let seq = ATOMIC_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
         let mut tmp_name = file_name.to_os_string();
-        tmp_name.push(format!(".tmp.{pid}.{seq}"));
+        tmp_name.push(format!(".tmp.{pid}.{nonce:x}.{seq}"));
         let tmp = path.with_file_name(tmp_name);
         match std::fs::OpenOptions::new()
             .write(true)

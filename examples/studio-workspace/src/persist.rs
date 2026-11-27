@@ -198,11 +198,14 @@ mod imp {
         }
 
         /// Reads and validates the cached `frame0.nve2` keyframe if present.
-        pub fn load_frame0(&self, expected: Frame0Meta) -> Result<(Frame0Footer, Vec<u8>), Frame0Miss> {
+        pub fn load_frame0(
+            &self,
+            expected: Frame0Meta,
+        ) -> Result<(Frame0Footer, Vec<u8>), Frame0Miss> {
             Frame0File::read_and_validate(&self.frame0_path, expected)
         }
 
-        /// Re-reads and validates the latest committed `WorkspaceState` from `state.nve`.
+        /// Decodes the latest committed `WorkspaceState` from `StateFile`'s validated cache.
         pub fn load_state(&self) -> Result<WorkspaceState, PersistError> {
             let Some(bytes) = self.state_file.load()? else {
                 return Ok(WorkspaceState::default());
@@ -269,17 +272,42 @@ mod imp {
             })
         }
 
-        #[inline] pub fn is_enabled(&self) -> bool { false }
-        #[inline] pub fn dir(&self) -> &Path { &self.dir }
-        #[inline] pub fn state_file_path(&self) -> Option<&Path> { Some(&self.state_file_path) }
-        #[inline] pub fn user_frame0_path(&self) -> &Path { &self.frame0_path }
-        #[inline] pub fn initial_state(&self) -> &WorkspaceState { &self.initial_state }
-        #[inline] pub fn recovery_stats(&self) -> PersistRecoveryStats { PersistRecoveryStats::default() }
-        #[inline] pub fn generation(&self) -> u64 { 0 }
+        #[inline]
+        pub fn is_enabled(&self) -> bool {
+            false
+        }
+        #[inline]
+        pub fn dir(&self) -> &Path {
+            &self.dir
+        }
+        #[inline]
+        pub fn state_file_path(&self) -> Option<&Path> {
+            Some(&self.state_file_path)
+        }
+        #[inline]
+        pub fn user_frame0_path(&self) -> &Path {
+            &self.frame0_path
+        }
+        #[inline]
+        pub fn initial_state(&self) -> &WorkspaceState {
+            &self.initial_state
+        }
+        #[inline]
+        pub fn recovery_stats(&self) -> PersistRecoveryStats {
+            PersistRecoveryStats::default()
+        }
+        #[inline]
+        pub fn generation(&self) -> u64 {
+            0
+        }
 
         #[inline]
         pub fn save(&mut self, _state: &WorkspaceState) -> Result<PersistOutcome, PersistError> {
-            Ok(PersistOutcome { generation: 0, byte_len: 0, payload_checksum: 0 })
+            Ok(PersistOutcome {
+                generation: 0,
+                byte_len: 0,
+                payload_checksum: 0,
+            })
         }
 
         #[inline]
@@ -290,7 +318,11 @@ mod imp {
             meta: Frame0Meta,
         ) -> Result<(PersistOutcome, Frame0Footer), PersistError> {
             Ok((
-                PersistOutcome { generation: 0, byte_len: 0, payload_checksum: 0 },
+                PersistOutcome {
+                    generation: 0,
+                    byte_len: 0,
+                    payload_checksum: 0,
+                },
                 Frame0Footer {
                     node_count: 0,
                     flags: 0,
@@ -303,7 +335,10 @@ mod imp {
         }
 
         #[inline]
-        pub fn load_frame0(&self, _expected: Frame0Meta) -> Result<(Frame0Footer, Vec<u8>), Frame0Miss> {
+        pub fn load_frame0(
+            &self,
+            _expected: Frame0Meta,
+        ) -> Result<(Frame0Footer, Vec<u8>), Frame0Miss> {
             Err(Frame0Miss::NotFound)
         }
 

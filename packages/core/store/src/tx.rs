@@ -5,12 +5,13 @@ use nve_abi::table::effect;
 
 use crate::changes::Command;
 use crate::id::{NodeId, NodeIndex, ResourceId};
+use crate::node_mut::NodeMut;
 use crate::resource::Resource;
 use crate::row::{DirtyList, RowWriter};
 use crate::span_pool::StrSpan;
 use crate::store::{
-    NodeRef, NodeRow, NodeStore, ANCESTOR_MARK, CHILDREN_DIRTY, CHILD_SEEN, CREATED, IN_FREE,
-    LIVE, PENDING_FREE,
+    ANCESTOR_MARK, CHILD_SEEN, CHILDREN_DIRTY, CREATED, IN_FREE, LIVE, NodeRow, NodeStore,
+    PENDING_FREE,
 };
 use crate::table::{NveTable, Prop, ResProp, StrProp, TableSlot};
 use crate::value::WordValue;
@@ -35,110 +36,12 @@ fn touch(node: &mut NodeRow, touched: &mut DirtyList, index: NodeIndex, fx: u8) 
     touched.push_if(index, (had == 0) & (fx != 0));
 }
 
-/// Zero-cost validated mutable handle to a single live node (2 registers: `&mut NodeStore` +
-/// `NodeIndex`).
-///
-/// Created via [`Transaction::spawn`] or [`Transaction::node_mut`], validating liveness once so
-/// multiple table edits / property writes on the same node skip repeated checks.
-pub struct NodeMut<'a> {
-    store: &'a mut NodeStore,
-    index: NodeIndex,
-}
-
-impl<'a> NodeMut<'a> {
-    #[inline(always)]
-    pub fn index(&self) -> NodeIndex {
-        self.index
-    }
-
-    #[inline(always)]
-    pub fn id(&self) -> NodeId {
-        NodeId::from_index(self.index, self.store.nodes[self.index].generation)
-    }
-
-    #[inline(always)]
-    pub fn as_ref(&self) -> NodeRef<'_> {
-        NodeRef::new_unchecked(self.store, self.index)
-    }
-
-    /// Fluent typed writer for `T` on this node (skips repeated liveness/generation checks).
-    #[inline(always)]
-    pub fn edit<T: NveTable>(&mut self) -> T::Mut<'_> {
-        T::from_row_writer(writer_at_typed::<T>(self.store, self.index))
-    }
-
-    /// Attaches `T` with its defaults (no-op if attached).
-    #[inline]
-    pub fn attach<T: NveTable>(&mut self) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index);
-        self
-    }
-
-    /// Sets one scalar property on this node.
-    #[inline(always)]
-    pub fn set<T: NveTable, V: WordValue>(&mut self, prop: Prop<T, V>, value: V) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put(
-            prop.word as usize,
-            prop.shift as u32,
-            prop.mask,
-            value.to_bits(),
-        );
-        self
-    }
-
-    /// Sets one string property on this node.
-    #[inline]
-    pub fn set_str<T: NveTable>(&mut self, prop: StrProp<T>, text: &str) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put_str(prop.word as usize, text);
-        self
-    }
-
-    /// Sets (interning) or clears one resource property on this node.
-    #[inline]
-    pub fn set_resource<T: NveTable, R: Resource>(
-        &mut self,
-        prop: ResProp<T, R>,
-        value: Option<R>,
-    ) -> &mut Self {
-        writer_at_typed::<T>(self.store, self.index).put_resource(prop.word as usize, value);
-        self
-    }
-
-    /// Replaces this node's ordered child list (zero heap allocations).
-    #[inline]
-    pub fn set_children(&mut self, children: &[NodeId]) -> &mut Self {
-        let id = self.id();
-        Transaction { store: self.store }.set_children(id, children);
-        self
-    }
-
-    /// Detaches table `T` from this node.
-    #[inline]
-    pub fn detach<T: NveTable>(&mut self) -> &mut Self {
-        let id = self.id();
-        Transaction { store: self.store }.detach_slot(id, T::slot());
-        self
-    }
-
-    /// Enqueues a typed imperative command on this node.
-    #[inline]
-    pub fn command<T: NveTable>(&mut self, op: u32, payload: &[u8]) -> &mut Self {
-        let id = self.id();
-        Transaction { store: self.store }.command_slot(id, T::slot(), op, payload);
-        self
-    }
-
-    /// Removes this node and its subtree.
-    #[inline]
-    pub fn remove(self) {
-        let id = self.id();
-        Transaction { store: self.store }.remove(id);
-    }
-}
-
 /// Typed writer resolving `T::slot()` and ensuring its column once before mutating words.
 #[inline]
-fn writer_at_typed<T: NveTable>(store: &mut NodeStore, index: NodeIndex) -> RowWriter<'_> {
+pub(crate) fn writer_at_typed<T: NveTable>(
+    store: &mut NodeStore,
+    index: NodeIndex,
+) -> RowWriter<'_> {
     let slot = T::slot();
     store.column_mut_typed::<T>(slot);
     writer_at_existing(store, index, slot)
@@ -163,7 +66,9 @@ fn writer_at_existing(store: &mut NodeStore, index: NodeIndex, slot: TableSlot) 
         ..
     } = store;
     let node = &mut nodes[index];
-    let col = columns[slot.0 as usize].as_mut().expect("column created above");
+    let col = columns[slot.0 as usize]
+        .as_mut()
+        .expect("column created above");
     if !node.tables.contains(slot) {
         let id = NodeId::from_index(index, node.generation);
         col.attach(id, index);
@@ -241,7 +146,10 @@ impl Transaction<'_> {
             Some(i) => i,
             None => {
                 let raw = s.nodes.len() as u32;
-                assert!(raw <= NodeId::MAX_INDEX, "NodeStore: node index space exhausted");
+                assert!(
+                    raw <= NodeId::MAX_INDEX,
+                    "NodeStore: node index space exhausted"
+                );
                 s.nodes.push(NodeRow::default())
             }
         };
@@ -256,26 +164,7 @@ impl Transaction<'_> {
     /// Creates `id` exactly (replica stores applying a wire frame). Returns `false` if the slot
     /// is occupied by a live node. O(1) — clears `IN_FREE`/`PENDING_FREE` flags without scanning.
     pub fn create_at(&mut self, id: NodeId) -> bool {
-        let s = &mut *self.store;
-        let index = id.node_index();
-        if index == NodeIndex::NULL {
-            return false;
-        }
-        if s.nodes.len() <= index.as_usize() {
-            s.nodes.resize(index.as_usize() + 1, NodeRow::default());
-        }
-        if s.nodes[index].flags & LIVE != 0 {
-            return false;
-        }
-        let row = &mut s.nodes[index];
-        *row = NodeRow {
-            generation: id.generation(),
-            primary_slot: TableSlot::NONE,
-            flags: LIVE | CREATED,
-            ..NodeRow::default()
-        };
-        s.created.push(id);
-        true
+        self.store.try_create_at(id).unwrap_or(false)
     }
 
     /// Removes `id` and its whole subtree, detaching it from its parent (zero heap allocations
@@ -548,36 +437,55 @@ impl Transaction<'_> {
     /// Crate-private row writer for `slot` on `id`, attaching the table (defaults) when absent.
     /// Sealed so external callers cannot overwrite string/resource words via raw scalar puts.
     pub(crate) fn writer(&mut self, id: NodeId, slot: TableSlot) -> RowWriter<'_> {
-        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        assert!(
+            self.store.is_live(id),
+            "NodeStore: write to dead node {id:?}"
+        );
         writer_at(self.store, id.node_index(), slot)
     }
 
     /// Fluent typed writer for `T` on `id` (attaches `T` with defaults when absent).
     #[inline]
     pub fn edit<T: NveTable>(&mut self, id: NodeId) -> T::Mut<'_> {
-        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        assert!(
+            self.store.is_live(id),
+            "NodeStore: write to dead node {id:?}"
+        );
         T::from_row_writer(writer_at_typed::<T>(self.store, id.node_index()))
     }
 
     /// Attaches `T` with its defaults (no-op if attached).
     #[inline]
     pub fn attach<T: NveTable>(&mut self, id: NodeId) {
-        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        assert!(
+            self.store.is_live(id),
+            "NodeStore: write to dead node {id:?}"
+        );
         writer_at_typed::<T>(self.store, id.node_index());
     }
 
     /// Sets one scalar property.
     #[inline(always)]
     pub fn set<T: NveTable, V: WordValue>(&mut self, id: NodeId, prop: Prop<T, V>, value: V) {
-        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
-        writer_at_typed::<T>(self.store, id.node_index())
-            .put(prop.word as usize, prop.shift as u32, prop.mask, value.to_bits());
+        assert!(
+            self.store.is_live(id),
+            "NodeStore: write to dead node {id:?}"
+        );
+        writer_at_typed::<T>(self.store, id.node_index()).put(
+            prop.word as usize,
+            prop.shift as u32,
+            prop.mask,
+            value.to_bits(),
+        );
     }
 
     /// Sets one string property.
     #[inline]
     pub fn set_str<T: NveTable>(&mut self, id: NodeId, prop: StrProp<T>, text: &str) {
-        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
+        assert!(
+            self.store.is_live(id),
+            "NodeStore: write to dead node {id:?}"
+        );
         writer_at_typed::<T>(self.store, id.node_index()).put_str(prop.word as usize, text);
     }
 
@@ -589,9 +497,11 @@ impl Transaction<'_> {
         prop: ResProp<T, R>,
         value: Option<R>,
     ) {
-        assert!(self.store.is_live(id), "NodeStore: write to dead node {id:?}");
-        writer_at_typed::<T>(self.store, id.node_index())
-            .put_resource(prop.word as usize, value);
+        assert!(
+            self.store.is_live(id),
+            "NodeStore: write to dead node {id:?}"
+        );
+        writer_at_typed::<T>(self.store, id.node_index()).put_resource(prop.word as usize, value);
     }
 
     /// Detaches table `T` from `id`, releasing its strings and resources.

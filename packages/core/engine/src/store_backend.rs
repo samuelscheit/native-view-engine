@@ -7,10 +7,19 @@
 //! [`StoreWireReplica`] and forward `(&store, &changes)` into the exact same [`StoreBackend`].
 
 use nve_abi::{NativeEvent, NodeId, SurfaceId};
-use nve_store::wire::WireDecoder;
+use nve_store::wire::{WireDecoder, WireError};
 use nve_store::{ChangeSet, NodeStore, RealizationOrder};
 
 use crate::{BackendApplyStats, BackendError, LayoutRect, Viewport};
+
+/// Structured error returned by [`StoreWireReplica::submit_frame0_nve2`] so `Frame0File`
+/// distinguishes corrupt wire/footer payloads from transient allocation or backend commit errors.
+pub(crate) enum Frame0SubmitError {
+    Wire,
+    Alloc,
+    NodeCountMismatch,
+    Backend(BackendError),
+}
 
 /// Universal backend trait implemented by every NVE renderer:
 /// - `nve-backend-headless` (pure-Rust `TaffyStoreLayout` + `NveSceneView` publisher)
@@ -127,11 +136,49 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         wire_bytes: &[u8],
         node_count_hint: usize,
     ) -> Result<BackendApplyStats, BackendError> {
+        self.decode_nve2_into_replica(wire_bytes, node_count_hint)?;
+        self.commit_decoded_or_reset()
+    }
+
+    /// Frame-0 boot path: validates `live_nodes == expected_live_nodes` **before** invoking
+    /// `backend.commit`, and resets the replica cleanly on any decode, mismatch, allocation, or
+    /// backend commit failure so the store and backend never diverge.
+    pub(crate) fn submit_frame0_nve2(
+        &mut self,
+        wire_bytes: &[u8],
+        expected_live_nodes: usize,
+    ) -> Result<BackendApplyStats, Frame0SubmitError> {
+        if let Err(err) = self.decode_nve2_into_replica(wire_bytes, expected_live_nodes) {
+            return Err(match err {
+                BackendError::Wire(WireError::Alloc)
+                | BackendError::NeedsKeyframe(Some(WireError::Alloc)) => Frame0SubmitError::Alloc,
+                BackendError::Wire(_) | BackendError::NeedsKeyframe(Some(_)) => {
+                    Frame0SubmitError::Wire
+                }
+                other => Frame0SubmitError::Backend(other),
+            });
+        }
+        if self.store.stats().live_nodes != expected_live_nodes {
+            self.reset();
+            self.needs_keyframe = true;
+            return Err(Frame0SubmitError::NodeCountMismatch);
+        }
+        self.commit_decoded_or_reset()
+            .map_err(Frame0SubmitError::Backend)
+    }
+
+    fn decode_nve2_into_replica(
+        &mut self,
+        wire_bytes: &[u8],
+        node_count_hint: usize,
+    ) -> Result<(), BackendError> {
         let (frame, _ops) = WireDecoder::validate_header(wire_bytes)?;
         if self.needs_keyframe && frame != 1 {
             return Err(BackendError::NeedsKeyframe(None));
         }
-        if frame == 1 && (self.needs_keyframe || self.store.is_live(nve_store::NodeId::ROOT)) {
+        if frame == 1
+            && (self.needs_keyframe || self.store.frame() > 0 || self.store.capacity() > 1)
+        {
             self.reset();
         }
         if node_count_hint > 0 {
@@ -149,9 +196,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             {
                 self.reset();
                 self.needs_keyframe = true;
-                return Err(BackendError::Internal(
-                    "frame0 pre-allocation failed".to_string(),
-                ));
+                return Err(BackendError::Wire(WireError::Alloc));
             }
         }
         let apply_res = {
@@ -165,10 +210,26 @@ impl<B: StoreBackend> StoreWireReplica<B> {
         if let Err(err) = apply_res {
             self.reset();
             self.needs_keyframe = true;
-            return Err(BackendError::NeedsKeyframe(Some(err)));
+            return Err(match err {
+                WireError::Alloc => BackendError::Wire(WireError::Alloc),
+                other => BackendError::NeedsKeyframe(Some(other)),
+            });
         }
-        self.needs_keyframe = false;
-        self.backend.commit(&self.store, &self.changes)
+        Ok(())
+    }
+
+    fn commit_decoded_or_reset(&mut self) -> Result<BackendApplyStats, BackendError> {
+        match self.backend.commit(&self.store, &self.changes) {
+            Ok(stats) => {
+                self.needs_keyframe = false;
+                Ok(stats)
+            }
+            Err(err) => {
+                self.reset();
+                self.needs_keyframe = true;
+                Err(err)
+            }
+        }
     }
 
     /// Commits an explicit [`ChangeSet`] against the replica `NodeStore` into `backend`.
@@ -206,7 +267,7 @@ impl<B: StoreBackend> StoreWireReplica<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_store::wire::{WireEncoder, MAGIC};
+    use nve_store::wire::{MAGIC, WireEncoder};
     use nve_store::{NodeId as StoreNodeId, NveTable};
 
     #[allow(dead_code)]
@@ -227,7 +288,11 @@ mod tests {
             "counting"
         }
         fn set_viewport(&mut self, _: SurfaceId, _: Viewport) {}
-        fn commit(&mut self, _: &NodeStore, _: &ChangeSet) -> Result<BackendApplyStats, BackendError> {
+        fn commit(
+            &mut self,
+            _: &NodeStore,
+            _: &ChangeSet,
+        ) -> Result<BackendApplyStats, BackendError> {
             self.commits += 1;
             Ok(BackendApplyStats::default())
         }
@@ -253,7 +318,10 @@ mod tests {
         enc.encode(&src, &changes, &mut frame1);
 
         let mut replica = StoreWireReplica::new(
-            CountingBackend { commits: 0, resets: 0 },
+            CountingBackend {
+                commits: 0,
+                resets: 0,
+            },
             RealizationOrder::default(),
         );
         replica.submit_nve2_frame(&frame1).expect("frame 1");
@@ -264,7 +332,10 @@ mod tests {
         let mut bad_hdr = frame1.clone();
         bad_hdr[0] ^= 0xFF;
         assert!(replica.submit_nve2_frame(&bad_hdr).is_err());
-        assert!(replica.store().is_live(child), "corrupt header must not wipe live replica");
+        assert!(
+            replica.store().is_live(child),
+            "corrupt header must not wipe live replica"
+        );
         assert_eq!(replica.backend().resets, 0);
 
         // Valid header (`frame == 2`, total_words == 7) with truncated op body fails mid-apply

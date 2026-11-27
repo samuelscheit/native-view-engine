@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use nve_abi::table::{TableDesc, Word, MAX_TABLE_SLOTS};
+use nve_abi::table::{MAX_TABLE_SLOTS, TableDesc, Word};
 
 use crate::column::Column;
 use crate::id::{IndexVec, NodeId, NodeIndex, ResourceId, TableSet};
@@ -228,15 +228,45 @@ impl NodeStore {
         Ok(())
     }
 
-    /// Pre-sizes an individual column for a bulk wire op (`Op::Patch` / `Op::SetStrings`).
+    /// Fallibly creates `id` at its exact slot (`WireDecoder` / replica apply), reserving backing
+    /// storage with `try_reserve` before resizing so hostile indices can never trigger OOM aborts.
+    pub(crate) fn try_create_at(
+        &mut self,
+        id: NodeId,
+    ) -> Result<bool, std::collections::TryReserveError> {
+        let index = id.node_index();
+        if index == NodeIndex::NULL {
+            return Ok(false);
+        }
+        let needed = index.as_usize().saturating_add(1);
+        if self.nodes.len() < needed {
+            self.nodes.try_reserve(needed - self.nodes.len())?;
+            self.nodes.resize(needed, NodeRow::default());
+        }
+        if self.nodes[index].flags & LIVE != 0 {
+            return Ok(false);
+        }
+        self.created.try_reserve(1)?;
+        let row = &mut self.nodes[index];
+        *row = NodeRow {
+            generation: id.generation(),
+            primary_slot: TableSlot::NONE,
+            flags: LIVE | CREATED,
+            ..NodeRow::default()
+        };
+        self.created.push(id);
+        Ok(true)
+    }
+
+    /// Fallibly pre-sizes an individual column for a bulk wire op (`Op::Patch` / `Op::SetStrings`).
     pub(crate) fn reserve_column_bulk(
         &mut self,
         slot: TableSlot,
         expected_rows: usize,
         max_node_index: usize,
-    ) {
+    ) -> Result<(), crate::wire::WireError> {
         let col = self.column_mut(slot);
-        col.reserve_bulk(expected_rows, max_node_index);
+        col.reserve_bulk(expected_rows, max_node_index)
     }
 
     /// Installs the backend's ordered realization priority list used to derive
@@ -317,8 +347,7 @@ impl NodeStore {
 
     #[inline]
     pub fn primary_slot(&self, id: NodeId) -> TableSlot {
-        self.get(id)
-            .map_or(TableSlot::NONE, NodeRef::primary_slot)
+        self.get(id).map_or(TableSlot::NONE, NodeRef::primary_slot)
     }
 
     #[inline(always)]
@@ -418,7 +447,9 @@ impl NodeStore {
                 self.columns[slot_idx] = Some(Column::new(TableMeta::Dynamic(desc)));
                 true
             }
-            Some(col) => matches!(&col.desc, TableMeta::Dynamic(existing) if existing.as_ref() == desc.as_ref()),
+            Some(col) => {
+                matches!(&col.desc, TableMeta::Dynamic(existing) if existing.as_ref() == desc.as_ref())
+            }
         }
     }
 

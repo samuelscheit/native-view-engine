@@ -9,15 +9,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::path::Path;
 
 use nve_components::tables::{
-    core_realization_order, core_tables_schema_hash, Interaction, Layout, TextContent, Typography,
-    Visual,
+    Interaction, Layout, TextContent, Typography, Visual, core_realization_order,
+    core_tables_schema_hash,
 };
 use nve_engine::{
-    write_file_atomic, BackendApplyStats, BackendError, Frame0File, Frame0Meta, Frame0Miss,
-    PersistenceError, StateFile, StoreBackend, StoreWireReplica, Viewport, FRAME0_FOOTER_SIZE,
-    STATE_FILE_HEADER_SIZE,
+    BackendApplyStats, BackendError, FRAME0_FOOTER_SIZE, Frame0File, Frame0Meta, Frame0Miss,
+    PersistenceError, STATE_FILE_HEADER_SIZE, StateFile, StoreBackend, StoreWireReplica, Viewport,
+    write_file_atomic,
 };
-use nve_store::wire::{WireDecoder, WireEncoder, MAGIC as NVE2_MAGIC, VERSION as NVE2_VERSION};
+use nve_store::wire::{MAGIC as NVE2_MAGIC, VERSION as NVE2_VERSION, WireDecoder, WireEncoder};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, RealizationOrder, Rgba};
 
 struct CountingAlloc;
@@ -150,7 +150,10 @@ fn state_file_atomic_roundtrip_schema_mismatch_corrupt_recovery_and_reset() {
 
     let out1 = sf.save(b"gen-1-payload").expect("save gen 1");
     assert_eq!(out1.generation, 1);
-    assert_eq!(out1.byte_len, STATE_FILE_HEADER_SIZE + b"gen-1-payload".len());
+    assert_eq!(
+        out1.byte_len,
+        STATE_FILE_HEADER_SIZE + b"gen-1-payload".len()
+    );
     let out2 = sf.save(b"gen-2-longer-payload").expect("save gen 2");
     assert_eq!(out2.generation, 2);
     assert_eq!(
@@ -167,20 +170,63 @@ fn state_file_atomic_roundtrip_schema_mismatch_corrupt_recovery_and_reset() {
         Some(b"gen-2-longer-payload".as_slice())
     );
 
-    // Reopen with mismatched/newer schema -> returns SchemaMismatch WITHOUT deleting user data.
+    // Reopen expecting an OLDER schema (expected 6 < on-disk 7 = newer file on disk) ->
+    // returns SchemaMismatch WITHOUT deleting or moving user data.
     assert!(matches!(
-        StateFile::open(&path, 8),
+        StateFile::open(&path, 6),
         Err(PersistenceError::SchemaMismatch {
-            expected: 8,
+            expected: 6,
             actual: 7
         })
     ));
-    assert!(path.exists(), "schema mismatch must preserve state file on disk");
+    assert!(
+        path.exists(),
+        "newer on-disk schema mismatch must preserve state file untouched"
+    );
     let still_intact = StateFile::open(&path, 7).expect("original schema still readable");
     assert_eq!(
         still_intact.load().expect("load intact").as_deref(),
         Some(b"gen-2-longer-payload".as_slice())
     );
+
+    // Reopen with a NEWER app schema (expected 8 > on-disk 7 = older file on disk) ->
+    // rotates on-disk file to `<name>.v7` and keeps persistence active with fresh state.
+    let rotated_backup = path.with_file_name(format!(
+        "{}.v7",
+        path.file_name().unwrap().to_str().unwrap()
+    ));
+    let _ = std::fs::remove_file(&rotated_backup);
+    let mut upgraded = StateFile::open(&path, 8).expect("older schema rotates cleanly");
+    assert_eq!(upgraded.recovery_stats().rotated_from_older_schema, Some(7));
+    assert!(!upgraded.recovery_stats().loaded_from_disk);
+    assert_eq!(upgraded.load().expect("fresh upgraded state"), None);
+    assert!(
+        rotated_backup.exists(),
+        "older schema file must be rotated to .v7 backup"
+    );
+    upgraded
+        .save(b"gen-v8-payload")
+        .expect("save under upgraded v8");
+    assert_eq!(
+        upgraded.load().expect("load v8").as_deref(),
+        Some(b"gen-v8-payload".as_slice())
+    );
+    let _ = std::fs::remove_file(&rotated_backup);
+    // Restore schema 7 file for subsequent bit-flip/quarantine checks below.
+    let mut restored_v7 = StateFile::open(&path, 7);
+    assert!(matches!(
+        restored_v7,
+        Err(PersistenceError::SchemaMismatch {
+            expected: 7,
+            actual: 8
+        })
+    ));
+    upgraded.reset().expect("reset before v7 save");
+    let mut sf_v7 = StateFile::open(&path, 7).expect("reopen clean v7");
+    sf_v7
+        .save(b"gen-2-longer-payload")
+        .expect("re-save v7 payload");
+    let _ = &mut restored_v7;
 
     // Single bit-flip in header (magic, schema_version, len), checksum, OR payload must report
     // Corrupt (never SchemaMismatch).
@@ -320,7 +366,10 @@ fn frame0_file_roundtrip_mismatches_and_corrupt_auto_delete() {
         ),
         Err(Frame0Miss::EnvHashMismatch { .. })
     ));
-    assert!(path.exists(), "metadata mismatch must not delete valid cache");
+    assert!(
+        path.exists(),
+        "metadata mismatch must not delete valid cache"
+    );
 
     // Non-zero flags (re-signed with valid XXH64) -> FlagsMismatch.
     let mut flagged = raw.clone();
@@ -350,7 +399,10 @@ fn frame0_file_roundtrip_mismatches_and_corrupt_auto_delete() {
         Frame0File::read_and_validate(&path, meta),
         Err(Frame0Miss::Corrupt(_))
     ));
-    assert!(!path.exists(), "payload-corrupt frame0 must be auto-deleted");
+    assert!(
+        !path.exists(),
+        "payload-corrupt frame0 must be auto-deleted"
+    );
 
     // 3. Single bit-flip in footer metadata -> Corrupt + auto-deleted.
     let mut flip_meta = raw.clone();
@@ -361,7 +413,10 @@ fn frame0_file_roundtrip_mismatches_and_corrupt_auto_delete() {
         Frame0File::read_and_validate(&path, meta),
         Err(Frame0Miss::Corrupt(_))
     ));
-    assert!(!path.exists(), "footer-meta-corrupt frame0 must be auto-deleted");
+    assert!(
+        !path.exists(),
+        "footer-meta-corrupt frame0 must be auto-deleted"
+    );
 
     // 4. Single bit-flip in footer checksum -> Corrupt + auto-deleted.
     let mut flip_hash = raw;
@@ -372,7 +427,10 @@ fn frame0_file_roundtrip_mismatches_and_corrupt_auto_delete() {
         Frame0File::read_and_validate(&path, meta),
         Err(Frame0Miss::Corrupt(_))
     ));
-    assert!(!path.exists(), "checksum-corrupt frame0 must be auto-deleted");
+    assert!(
+        !path.exists(),
+        "checksum-corrupt frame0 must be auto-deleted"
+    );
 }
 
 #[test]
@@ -383,7 +441,10 @@ fn frame0_decode_into_presized_store_has_o1_allocations_1k_vs_5k() {
         v.push(1);
         v
     });
-    assert!(probe_allocs >= 1, "CountingAlloc probe must observe >= 1 allocation");
+    assert!(
+        probe_allocs >= 1,
+        "CountingAlloc probe must observe >= 1 allocation"
+    );
 
     let store_1k = build_store(1_000);
     let store_5k = build_store(5_000);
@@ -533,8 +594,17 @@ fn frame0_rejects_delta_frames_and_node_count_mismatch() {
         Frame0File::boot_into_replica(&path, meta, &mut replica),
         Err(Frame0Miss::Corrupt(_))
     ));
+    assert_eq!(
+        replica.backend().commits,
+        0,
+        "lying footer node_count must fail BEFORE backend.commit runs"
+    );
     assert_eq!(replica.store().stats().live_nodes, 0);
-    assert!(!path.exists(), "mismatched node_count frame0 must be deleted");
+    assert!(replica.needs_keyframe());
+    assert!(
+        !path.exists(),
+        "mismatched node_count frame0 must be deleted"
+    );
 }
 
 #[test]
@@ -545,7 +615,11 @@ fn frame0_backend_commit_error_preserves_cache_while_corrupt_body_deletes_it() {
             "failing-commit"
         }
         fn set_viewport(&mut self, _: nve_abi::SurfaceId, _: Viewport) {}
-        fn commit(&mut self, _: &NodeStore, _: &ChangeSet) -> Result<BackendApplyStats, BackendError> {
+        fn commit(
+            &mut self,
+            _: &NodeStore,
+            _: &ChangeSet,
+        ) -> Result<BackendApplyStats, BackendError> {
             Err(BackendError::Internal("transient gpu surface lost".into()))
         }
         fn reset(&mut self) {}
@@ -565,6 +639,12 @@ fn frame0_backend_commit_error_preserves_cache_while_corrupt_body_deletes_it() {
         Frame0File::boot_into_replica(&path, meta, &mut failing),
         Err(Frame0Miss::Backend(ref msg)) if msg.contains("transient gpu surface lost")
     ));
+    assert_eq!(
+        failing.store().stats().live_nodes,
+        0,
+        "Backend::commit failure must reset replica so store and backend never diverge"
+    );
+    assert!(failing.needs_keyframe());
     assert!(
         path.exists(),
         "transient BackendError::commit failure must NOT delete a valid frame0.nve2"
@@ -591,4 +671,74 @@ fn frame0_backend_commit_error_preserves_cache_while_corrupt_body_deletes_it() {
         !path.exists(),
         "corrupt NVE2 decode failure must auto-delete frame0.nve2"
     );
+}
+
+#[test]
+fn hostile_padded_sparse_node_id_frame0_rejected_without_oom() {
+    let meta = Frame0Meta::default_core();
+    // Pad payload with 16,384 Op::ReleaseResources entries (64 KiB) + 1 Op::CreateNodes at sparse
+    // NodeId(20_000). Because WireDecoder caps created indices by `initial_cap + 1024 + created`
+    // (NOT total byte length), this must fail cleanly without allocating sparse/dense tables.
+    let pad_count: u32 = 16_384;
+    let mut ops_body = Vec::with_capacity((pad_count as usize + 8) * 4);
+    // Op 1: ReleaseResources (opcode=5, table=0, inline_count=pad_count), len=pad_count words.
+    ops_body.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
+    ops_body.extend_from_slice(&pad_count.to_le_bytes());
+    ops_body.resize(ops_body.len() + (pad_count as usize) * 4, 0u8);
+    // Op 2: CreateNodes (opcode=3, table=0, inline_count=1), len=1 word, NodeId(20_000).
+    ops_body.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
+    ops_body.extend_from_slice(&1u32.to_le_bytes());
+    ops_body.extend_from_slice(&20_000u32.to_le_bytes());
+
+    let total_words = 6 + (ops_body.len() / 4) as u32;
+    let mut nve2 = minimal_nve2_header(1, 2, total_words);
+    nve2.extend_from_slice(&ops_body);
+
+    let hostile = sign_frame0_payload(&nve2, 1, meta);
+    let mut replica = StoreWireReplica::new(
+        CountingBackend {
+            commits: 0,
+            last_live: 0,
+        },
+        core_realization_order(),
+    );
+    assert!(matches!(
+        Frame0File::boot_bytes_into_replica(&hostile, meta, &mut replica),
+        Err(Frame0Miss::Corrupt(_))
+    ));
+    assert_eq!(replica.store().stats().live_nodes, 0);
+    assert_eq!(replica.backend().commits, 0);
+}
+
+#[test]
+fn frame0_keyframe_resets_replica_holding_only_non_root_nodes() {
+    let mut replica = StoreWireReplica::new(
+        CountingBackend {
+            commits: 0,
+            last_live: 0,
+        },
+        core_realization_order(),
+    );
+    // Build a frame == 1 packet containing ONLY non-root NodeId(5) (no ROOT).
+    let mut ops = Vec::new();
+    ops.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
+    ops.extend_from_slice(&1u32.to_le_bytes());
+    ops.extend_from_slice(&5u32.to_le_bytes());
+    let mut non_root_f1 = minimal_nve2_header(1, 1, 6 + (ops.len() / 4) as u32);
+    non_root_f1.extend_from_slice(&ops);
+    replica
+        .submit_nve2_frame(&non_root_f1)
+        .expect("submit non-root frame 1");
+    assert!(replica.store().is_live(NodeId(5)));
+    assert!(!replica.store().is_live(NodeId::ROOT));
+
+    // Submitting a fresh frame == 1 keyframe with only ROOT must wipe non-root NodeId(5).
+    let root_store = build_store(2);
+    let mut root_f1 = Vec::new();
+    WireEncoder::default().encode_full(&root_store, &mut root_f1);
+    replica
+        .submit_nve2_frame(&root_f1)
+        .expect("fresh keyframe resets non-root live replica");
+    assert!(replica.store().is_live(NodeId::ROOT));
+    assert!(!replica.store().is_live(NodeId(5)));
 }

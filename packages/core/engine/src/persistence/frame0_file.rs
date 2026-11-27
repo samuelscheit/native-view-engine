@@ -9,7 +9,8 @@ use nve_abi::xxh64;
 use nve_store::wire::{WireDecoder, WireEncoder};
 use nve_store::{NodeId, NodeStore};
 
-use crate::{BackendApplyStats, BackendError, StoreBackend, StoreWireReplica};
+use crate::store_backend::Frame0SubmitError;
+use crate::{BackendApplyStats, StoreBackend, StoreWireReplica};
 
 use super::{PersistenceError, le_u32, le_u64, remove_corrupt_frame0, write_file_atomic};
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,6 +28,18 @@ pub struct Frame0Meta {
     pub table_schema_hash: u64,
     pub app_build_id: u64,
     pub env_hash: u64,
+}
+
+impl Frame0Meta {
+    /// Canonical Frame-0 metadata for all 17 core tables (`app_build_id = 0`, `env_hash = 0`),
+    /// shared across `nve prerender`, `nve-skia-shell`, and native hosts.
+    pub fn default_core() -> Self {
+        Self {
+            table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+            app_build_id: 0,
+            env_hash: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,20 +285,20 @@ impl Frame0File {
         replica: &mut StoreWireReplica<B>,
         disk_path: Option<&Path>,
     ) -> Result<(Frame0Footer, BackendApplyStats), Frame0Miss> {
-        match replica.submit_nve2_frame_with_hint(payload, footer.node_count as usize) {
-            Ok(stats) => {
-                if replica.store().stats().live_nodes != footer.node_count as usize {
-                    replica.reset();
-                    remove_corrupt_frame0(disk_path);
-                    return Err(Frame0Miss::Corrupt("footer node_count mismatch"));
-                }
-                Ok((footer, stats))
+        match replica.submit_frame0_nve2(payload, footer.node_count as usize) {
+            Ok(stats) => Ok((footer, stats)),
+            Err(Frame0SubmitError::NodeCountMismatch) => {
+                remove_corrupt_frame0(disk_path);
+                Err(Frame0Miss::Corrupt("footer node_count mismatch"))
             }
-            Err(BackendError::NeedsKeyframe(_) | BackendError::Wire(_)) => {
+            Err(Frame0SubmitError::Wire) => {
                 remove_corrupt_frame0(disk_path);
                 Err(Frame0Miss::Corrupt("NVE2 decode failed"))
             }
-            Err(other) => Err(Frame0Miss::Backend(other.to_string())),
+            Err(Frame0SubmitError::Alloc) => {
+                Err(Frame0Miss::Backend("NVE2 allocation failed".to_string()))
+            }
+            Err(Frame0SubmitError::Backend(err)) => Err(Frame0Miss::Backend(err.to_string())),
         }
     }
 
