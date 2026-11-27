@@ -22,6 +22,7 @@ mod hydrate_native_parse;
 #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
 mod hydrate_wasm;
 pub mod input_attrs;
+pub mod key_events;
 pub mod layout_ext_css;
 pub mod media_css;
 pub mod sanitize;
@@ -78,6 +79,10 @@ pub use events::{
 };
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
+pub use key_events::{
+    is_text_like_input_type, parse_dom_node_id, KeyInterceptor, WebKeyDisposition,
+    WebKeyEventInfo,
+};
 #[cfg(all(feature = "ssr", target_arch = "wasm32"))]
 pub use snapshot::BrowserLocalStorage;
 #[cfg(feature = "ssr")]
@@ -132,6 +137,7 @@ pub struct WebBackend {
     pub(crate) keyboard_insets: Rc<Cell<KeyboardInsets>>,
     pub(crate) on_keyboard_insets: Rc<RefCell<Option<visual_viewport::KeyboardInsetsCallback>>>,
     pub(crate) on_event: Rc<RefCell<Option<RenderCallback>>>,
+    pub(crate) key_interceptors: Rc<RefCell<key_events::KeyInterceptors>>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_report: HydrationReport,
     #[cfg(feature = "hydrate")]
@@ -179,6 +185,7 @@ impl WebBackend {
             keyboard_insets: Rc::new(Cell::new(KeyboardInsets::default())),
             on_keyboard_insets: Rc::new(RefCell::new(None)),
             on_event: Rc::new(RefCell::new(None)),
+            key_interceptors: Rc::default(),
             #[cfg(feature = "hydrate")]
             hydration_report: HydrationReport::default(),
             #[cfg(feature = "hydrate")]
@@ -235,6 +242,46 @@ impl WebBackend {
     /// Registers a callback invoked when asynchronous browser events are queued.
     pub fn set_on_event<F: Fn() + 'static>(&mut self, callback: F) {
         *self.on_event.borrow_mut() = Some(Rc::new(callback));
+    }
+
+    /// Registers a `keydown` interceptor. Interceptors run in registration order after IME
+    /// suppression and surface scoping, before Enter-submit and the default `KeyDown` event; the
+    /// first non-[`WebKeyDisposition::PassThrough`] result stops dispatch.
+    pub fn add_key_interceptor<F>(&mut self, interceptor: F)
+    where
+        F: FnMut(&WebKeyEventInfo<'_>) -> WebKeyDisposition + 'static,
+    {
+        self.key_interceptors.borrow_mut().push(Box::new(interceptor));
+    }
+
+    /// Runs the registered key interceptors for `info` (the live listener's path; also used for
+    /// headless replay). Re-entrant calls from inside an interceptor pass through.
+    pub fn intercept_key(&self, info: &WebKeyEventInfo<'_>) -> WebKeyDisposition {
+        self.key_interceptors
+            .try_borrow_mut()
+            .map_or(WebKeyDisposition::PassThrough, |mut hooks| hooks.dispatch(info))
+    }
+
+    /// Moves DOM focus to the live element of `node`. Returns `false` when it is not mounted.
+    #[cfg(target_arch = "wasm32")]
+    pub fn focus_node(&self, node: nve_store::NodeId) -> bool {
+        use wasm_bindgen::JsCast;
+        self.live_elements
+            .get(&node.raw())
+            .and_then(|el| el.dyn_ref::<web_sys::HtmlElement>())
+            .is_some_and(|el| el.focus().is_ok())
+    }
+
+    /// Scrolls every scroll container of `node`'s live element the minimum needed to show it.
+    #[cfg(target_arch = "wasm32")]
+    pub fn scroll_node_into_view(&self, node: nve_store::NodeId) -> bool {
+        self.live_elements.get(&node.raw()).is_some_and(|el| {
+            let opts = web_sys::ScrollIntoViewOptions::new();
+            opts.set_block(web_sys::ScrollLogicalPosition::Nearest);
+            opts.set_inline(web_sys::ScrollLogicalPosition::Nearest);
+            el.scroll_into_view_with_scroll_into_view_options(&opts);
+            true
+        })
     }
 
     #[inline]

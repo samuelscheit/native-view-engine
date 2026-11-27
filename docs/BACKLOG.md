@@ -45,8 +45,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
 - [ ] **Track 3B — Native Host Linkage & OS Parity (Post-Track 1B-1e / 1B-2)**
   - Fix `compose-kit` 15 missing JNI exports in `hosts/android-shell`, `swiftui-kit` empty `NveSurfaceRepresentable` + `TextInput`/IME, `windows-shell` keyboard/IME/UIA, and bind `NVE_IFACE_HOST = 5` across native hosts (Apple, Android, Qt, GTK, Windows) directly against `libnve_runtime` (zero throwaway C++/JNI/Swift rewrites).
 
-- [ ] **TV, Watch & Spatial Platform Backends — Phase 3 (Web TV D-Pad Remaining)**
-  - Phase 1 (`DeviceFormFactor` traits, `SpatialFocusEngine`, Android TV D-Pad), Phase 2 (standalone `packages/modules/tv` + real `tvOS`/`watchOS`/`visionOS`/`iOS` SDK builds + static `NveInterfaceResolver`), and Phase 3 CLI (`nve build --target tvos/visionos/watchos` + `.xcframework` recipes) are landed; remaining work is Web TV D-Pad key handling in `nve-backend-web`.
+- [ ] **TV, Watch & Spatial Platform Backends — Web TV D-Pad Dogfood & Live Verification**
+  - Engine (`nve-tv`), backend key interceptor, and `nve-tv-web` controller are landed; remaining: install `WebTvController` in an example app, live Chrome E2E (arrow focus across shelves, `<dialog>` trap, Select activation, gamepad), on-device Tizen/webOS key-code validation, and Android TV host forwarding of Back (consumed by the Activity).
 
 ---
 

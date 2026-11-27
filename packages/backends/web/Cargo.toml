@@ -36,6 +36,8 @@ web-sys = { workspace = true, features = [
     "Location",
     "NodeList",
     "Performance",
+    "ScrollIntoViewOptions",
+    "ScrollLogicalPosition",
     "ShadowRoot",
     "Storage",
     "SvgElement",

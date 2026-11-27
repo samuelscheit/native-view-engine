@@ -139,7 +139,7 @@ In **Step 1 Part B**, all half-baked standalone platform stubs (`src/host_servic
 | `packages/modules/storage` | 1,670 | **L1** | Crash-safe `NVK2` WAL disk KV engine is solid L2 code, but **zero hosts register it**, zero examples use it, WASM is volatile in-memory, uses cryptic `NVK2` name. | **Keep & Harden** |
 | `packages/modules/native-views` | ~4,100 | **L1** | Apple `NveAppleNativeViews.mm` has real `NSVisualEffectView`/`WKWebView`/`AVPlayer`; Win32 has `DwmSetWindowAttribute` blur; Flutter has `BackdropFilter`. *(Step 1 Part B deleted fake counter-only `nullptr` WebView/VideoPlayer stubs and GTK/Qt self-blur hacks; adapter hooks now return `nullptr` unless a real backend is injected.)* | **Keep Apple + Clean Adapters** |
 | `packages/modules/nitro-bridge` | 2,350 | **L1** | Clean standalone C++20 `HybridObject`/JNI layer, but has **zero dependency on Margelo `react-native-nitro-modules`**; only linked by `camera`. | **Defer / Fold Into RN Adapter** |
-| `packages/modules/tv` | 1,780 | **L1** | Real pure-Rust 2D spatial focus & overscan math + Kotlin key bridge, but **zero workspace consumers** and zero Android TV / Apple TV tests (`swiftui-kit` duplicates overscan). | **Defer → Backlog** |
+| `packages/modules/tv` (+ `web/`) | 4,500 | **L2** | Dense `NodeId`-keyed spatial focus engine (overrides, group memory, traps, wrap, repeat throttle), 6-vendor zero-alloc web key normalizer, gamepad repeater, `nve-tv-web` controller on the generic `WebBackend` key interceptor; `CountingAlloc` + Criterion guarded. **No example installs it yet**, no live TV-browser E2E, zero Apple TV tests (`swiftui-kit` duplicates overscan). | **Keep & Dogfood** |
 
 ---
 

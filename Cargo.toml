@@ -58,6 +58,7 @@ members = [
     "packages/modules/storage",
     "packages/modules/system-env",
     "packages/modules/tv",
+    "packages/modules/tv/web",
     "examples/kitchen-sink",
     "examples/studio-workspace",
     "examples/nve-docs-site",
@@ -138,6 +139,7 @@ nve-linking = { version = "0.1.0", path = "packages/modules/linking" }
 nve-system-env = { version = "0.1.0", path = "packages/modules/system-env" }
 nve-haptics = { version = "0.1.0", path = "packages/modules/haptics" }
 nve-tv = { version = "0.1.0", path = "packages/modules/tv" }
+nve-tv-web = { version = "0.1.0", path = "packages/modules/tv/web" }
 nve-example-kitchen-sink = { version = "0.1.0", path = "examples/kitchen-sink", default-features = false }
 nve-studio-workspace = { version = "0.1.0", path = "examples/studio-workspace", default-features = false }
 nve-example-issues-api = { version = "0.1.0", path = "examples/fullstack-issues/api" }

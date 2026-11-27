@@ -3209,6 +3209,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nve-tv-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "nve-abi",
+ "nve-backend-web",
+ "nve-hash",
+ "nve-tv",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "nve-ui"
 version = "0.1.0"
 dependencies = [

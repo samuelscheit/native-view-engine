@@ -13,7 +13,7 @@ use std::rc::Rc;
 use nve_abi::hash::HashMap;
 #[cfg(target_arch = "wasm32")]
 use nve_abi::{
-    pack_key_modifiers, EventMask, EventPayload, NativeEvent, NativeEventKind,
+    EventMask, EventPayload, NativeEvent, NativeEventKind,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
@@ -90,12 +90,12 @@ pub(crate) fn now_us() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn read_dom_input_value(el: &web_sys::Element) -> String {
+pub(crate) fn read_dom_input_value(el: &web_sys::Element) -> String {
     crate::input_attrs::read_dom_control_value(el).unwrap_or_default()
 }
 
 #[cfg(target_arch = "wasm32")]
-fn target_to_element(target: Option<web_sys::EventTarget>) -> Option<web_sys::Element> {
+pub(crate) fn target_to_element(target: Option<web_sys::EventTarget>) -> Option<web_sys::Element> {
     let t = target?;
     if let Ok(el) = t.clone().dyn_into::<web_sys::Element>() {
         Some(el)
@@ -107,7 +107,7 @@ fn target_to_element(target: Option<web_sys::EventTarget>) -> Option<web_sys::El
 }
 
 #[cfg(target_arch = "wasm32")]
-fn collect_ancestors(
+pub(crate) fn collect_ancestors(
     start: &web_sys::Element,
     root: &web_sys::Element,
     meta_map: &HashMap<NodeId, NodeEventMeta>,
@@ -131,7 +131,7 @@ fn collect_ancestors(
 
 /// Owns the delegated DOM event closures attached to the single mount root on `wasm32`.
 #[cfg(target_arch = "wasm32")]
-type DomEventListener = (web_sys::EventTarget, &'static str, bool, Closure<dyn FnMut(web_sys::Event)>);
+pub(crate) type DomEventListener = (web_sys::EventTarget, &'static str, bool, Closure<dyn FnMut(web_sys::Event)>);
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct RootEventDelegator {
@@ -152,7 +152,7 @@ impl Drop for RootEventDelegator {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn notify_event(on_event: &Rc<RefCell<Option<RenderCallback>>>) {
+pub(crate) fn notify_event(on_event: &Rc<RefCell<Option<RenderCallback>>>) {
     let cb = on_event.borrow().clone();
     if let Some(cb) = cb {
         cb();
@@ -160,7 +160,7 @@ fn notify_event(on_event: &Rc<RefCell<Option<RenderCallback>>>) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn register_listener(
+pub(crate) fn register_listener(
     listeners: &mut Vec<DomEventListener>,
     target: &web_sys::EventTarget,
     name: &'static str,
@@ -470,107 +470,7 @@ impl RootEventDelegator {
             register_listener(&mut listeners, &root_target, "scroll", true, cb);
         }
 
-        // KeyDown (attached to window so global shortcuts like Cmd+K / Escape always reach ROOT)
-        {
-            let r = root.clone();
-            let evs = Rc::clone(events);
-            let m = Rc::clone(meta);
-            let ime_g = Rc::clone(ime);
-            let sid = Rc::clone(surface_id);
-            let notify = Rc::clone(on_event);
-            let key_target: web_sys::EventTarget = web_sys::window()
-                .map(Into::into)
-                .unwrap_or_else(|| root_target.clone());
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-                let Some(ke) = ev.dyn_ref::<web_sys::KeyboardEvent>() else { return };
-                if ime_g.should_suppress_keydown(ke.is_composing(), ke.key_code()) {
-                    return;
-                }
-                let el = target_to_element(ev.target());
-                // Scope global keydown to this surface: ignore events targeting another mounted
-                // NVE surface's subtree so multi-surface pages never cross-fire.
-                if let Some(ref e) = el
-                    && !r.contains(Some(e))
-                    && e.closest("[data-nve-live],[data-nve-id]").ok().flatten().is_some()
-                {
-                    return;
-                }
-                let chain = el
-                    .as_ref()
-                    .filter(|e| r.contains(Some(e)))
-                    .map(|e| collect_ancestors(e, &r, &m.borrow()))
-                    .unwrap_or_default();
-                let key = ke.key();
-                let in_this_surface = el.as_ref().is_none_or(|e| {
-                    r.contains(Some(e))
-                        || e.tag_name().eq_ignore_ascii_case("BODY")
-                        || e.tag_name().eq_ignore_ascii_case("HTML")
-                });
-                if in_this_surface
-                    && (ke.meta_key() || ke.ctrl_key())
-                    && key.eq_ignore_ascii_case("k")
-                {
-                    ev.prevent_default();
-                }
-
-                let submit_ev = if key == "Enter"
-                    && let Some(ref target_el) = el
-                    && target_el.dyn_ref::<web_sys::HtmlInputElement>().is_some()
-                    && let Some((submit_id, _, _)) = chain
-                        .iter()
-                        .find(|(_, meta, _)| (meta.mask & EventMask::SUBMIT) != 0)
-                {
-                    ev.prevent_default();
-                    Some(NativeEvent {
-                        kind: NativeEventKind::Submit,
-                        surface_id: sid.get(),
-                        node_id: *submit_id,
-                        timestamp_us: now_us(),
-                        payload: EventPayload::Text(read_dom_input_value(target_el)),
-                    })
-                } else {
-                    None
-                };
-
-                if let Some(ev) = submit_ev {
-                    evs.borrow_mut().push(ev);
-                    notify_event(&notify);
-                    return;
-                }
-                if !in_this_surface {
-                    return;
-                }
-
-                let target_id = chain
-                    .iter()
-                    .find(|(_, meta, _)| (meta.mask & EventMask::KEY_DOWN) != 0)
-                    .map(|(id, _, _)| *id)
-                    .or_else(|| chain.first().map(|(id, _, _)| *id))
-                    .unwrap_or(nve_abi::ROOT_NODE_ID);
-                let modifiers = pack_key_modifiers(
-                    ke.meta_key(),
-                    ke.ctrl_key(),
-                    ke.shift_key(),
-                    ke.alt_key(),
-                    ke.repeat(),
-                );
-                evs.borrow_mut().push(NativeEvent {
-                    kind: NativeEventKind::KeyDown,
-                    surface_id: sid.get(),
-                    node_id: target_id,
-                    timestamp_us: now_us(),
-                    payload: EventPayload::Key {
-                        key,
-                        code: ke.code(),
-                        modifiers,
-                        key_code: ke.key_code(),
-                        is_composing: ke.is_composing(),
-                    },
-                });
-                notify_event(&notify);
-            });
-            register_listener(&mut listeners, &key_target, "keydown", false, cb);
-        }
+        crate::key_events::attach_keydown(&mut listeners, &root, backend);
 
         // Form Submit -> NativeEventKind::Submit
         {

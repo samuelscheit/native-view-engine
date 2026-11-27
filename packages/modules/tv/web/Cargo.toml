@@ -1,0 +1,34 @@
+[package]
+name = "nve-tv-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Web TV D-Pad / remote / gamepad controller for nve-backend-web built on nve-tv"
+
+[dependencies]
+nve-backend-web = { workspace = true }
+nve-hash = { workspace = true }
+nve-tv = { workspace = true }
+
+[dev-dependencies]
+nve-abi = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+    "DomRect",
+    "FocusOptions",
+    "Gamepad",
+    "GamepadButton",
+    "GamepadMappingType",
+    "HtmlInputElement",
+    "Navigator",
+    "NodeList",
+    "Performance",
+    "ScrollIntoViewOptions",
+    "ScrollLogicalPosition",
+] }
+
+[lints]
+workspace = true
