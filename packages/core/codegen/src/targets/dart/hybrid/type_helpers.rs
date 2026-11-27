@@ -36,7 +36,7 @@ pub(super) fn dart_type(ty: &HybridType) -> String {
         }
         HybridType::Result { ok, .. } => dart_type(ok),
         HybridType::Struct(name) | HybridType::Enum(name) => name.clone(),
-        HybridType::Value => "NveHybridDynamicValue".to_string(),
+        HybridType::Value => "DynamicValue".to_string(),
         HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
             "ffi.Pointer<ffi.Void>".to_string()
         }
@@ -269,7 +269,7 @@ pub(super) fn dart_default_value(
                 format!("{name}.fromRaw(0)")
             }
         }
-        HybridType::Value => "NveHybridDynamicValue()".to_string(),
+        HybridType::Value => "DynamicValue.nullValue".to_string(),
         HybridType::ConstPtr(_) | HybridType::MutPtr(_) | HybridType::Handle(_) => {
             "ffi.nullptr".to_string()
         }
@@ -286,27 +286,34 @@ pub(super) fn emit_dart_bin_write(out: &mut CodeWriter, indent: &str, w: &str, e
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
-        | HybridType::U64 => writeln!(out, "{indent}{w}.writeInt64({expr});"),
+        | HybridType::U64 => writeln!(out, "{indent}{w}.writeI64({expr});"),
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{w}.writeDouble({expr});")
+            writeln!(out, "{indent}{w}.writeF64({expr});")
         }
-        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeInt64({expr}.rawValue);"),
-        HybridType::String => writeln!(out, "{indent}{w}.writeString({expr});"),
+        HybridType::Enum(_) => writeln!(out, "{indent}{w}.writeI64({expr}.rawValue);"),
+        HybridType::String => writeln!(out, "{indent}{w}.writeStr({expr});"),
         HybridType::Bytes => writeln!(out, "{indent}{w}.writeBytes({expr});"),
         HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encodeBin({w});"),
-        HybridType::Value => writeln!(out, "{indent}{w}.writeRaw({expr}.binBytes);"),
+        HybridType::Value => writeln!(out, "{indent}{w}.raw({expr}.bytes);"),
+        // Each composite write is its own block so sibling fields never redeclare `_ov` / `_m`.
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}final _ov = {expr};");
-            writeln!(out, "{indent}if (_ov != null) {{");
-            emit_dart_bin_write(out, &format!("{indent}  "), w, "_ov", inner);
-            writeln!(out, "{indent}}} else {{ {w}.writeNull(); }}");
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  final _ov = {expr};");
+            writeln!(out, "{indent}  if (_ov != null) {{");
+            emit_dart_bin_write(out, &format!("{indent}    "), w, "_ov", inner);
+            writeln!(out, "{indent}  }} else {{");
+            writeln!(out, "{indent}    {w}.writeNull();");
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.writeArray({expr}.length, (aw) {{");
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  final _m = {w}.beginArray({expr}.length);");
             writeln!(out, "{indent}  for (final _el in {expr}) {{");
-            emit_dart_bin_write(out, &format!("{indent}    "), "aw", "_el", inner);
+            emit_dart_bin_write(out, &format!("{indent}    "), w, "_el", inner);
             writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}}});");
+            writeln!(out, "{indent}  {w}.end(_m);");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Void
         | HybridType::Result { .. }
@@ -326,21 +333,21 @@ pub(super) fn emit_dart_bin_read(out: &mut CodeWriter, indent: &str, r: &str, ds
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
-        | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readInt64();"),
+        | HybridType::U64 => writeln!(out, "{indent}{dst} = {r}.readI64();"),
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "{indent}{dst} = {r}.readDouble();")
+            writeln!(out, "{indent}{dst} = {r}.readF64();")
         }
         HybridType::Enum(e) => {
-            writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readInt64());")
+            writeln!(out, "{indent}{dst} = {e}.fromRaw({r}.readI64());")
         }
-        HybridType::String => writeln!(out, "{indent}{dst} = {r}.readString();"),
+        HybridType::String => writeln!(out, "{indent}{dst} = {r}.readStr();"),
         HybridType::Bytes => writeln!(out, "{indent}{dst} = {r}.readBytes();"),
         HybridType::Struct(s) => writeln!(out, "{indent}{dst} = {s}.decodeBin({r});"),
         HybridType::Value => {
-            writeln!(out, "{indent}{dst} = NveHybridDynamicValue({r}.readRawValue());")
+            writeln!(out, "{indent}{dst} = DynamicValue({r}.readRawValue());")
         }
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}if ({r}.readNullIfPresent()) {{");
+            writeln!(out, "{indent}if ({r}.readNull()) {{");
             writeln!(out, "{indent}  {dst} = null;");
             writeln!(out, "{indent}}} else {{");
             writeln!(out, "{indent}  late final {} _ov;", dart_type(inner));

@@ -23,7 +23,8 @@ pub use c_cpp::{
     generate_c_core_abi_h, generate_c_runtime_abi_h, generate_c_scene_abi_h, generate_hybrid_cpp,
 };
 pub use dart::{
-    generate_dart_core_abi, generate_dart_scene_abi, generate_export_flutter, generate_hybrid_dart,
+    generate_dart_core_abi, generate_dart_runtime_abi, generate_dart_tables,
+    generate_export_flutter, generate_hybrid_dart,
 };
 pub use kotlin_java::{
     generate_export_compose, generate_hybrid_kotlin, generate_java_core_abi,
@@ -87,7 +88,7 @@ pub fn generate_hybrid_all(
 }
 
 // ============================================================================
-// Unified Core ABI (5) + Scene ABI (5) + XXH64 mirror (6) = 16 Artifacts
+// Unified Core ABI (5) + Scene ABI (4) + Runtime ABI (3) + XXH64 mirror (5) = 17 Artifacts
 // ============================================================================
 
 /// Generates all 5 checked-in Core ABI files keyed by workspace-relative path.
@@ -104,7 +105,7 @@ pub fn generate_all_core_abi_files() -> Vec<GeneratedFile> {
             content: c_header,
         },
         GeneratedFile {
-            relative_path: "hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart".to_owned(),
+            relative_path: "packages/core/host-dart/lib/src/nve_core_abi.generated.dart".to_owned(),
             content: generate_dart_core_abi(),
         },
         GeneratedFile {
@@ -120,7 +121,7 @@ pub fn generate_all_core_abi_files() -> Vec<GeneratedFile> {
     ]
 }
 
-/// Generates all 5 checked-in Scene ABI files keyed by workspace-relative path.
+/// Generates all 4 checked-in Scene ABI files keyed by workspace-relative path.
 pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
     let c_header = generate_c_scene_abi_h();
     vec![
@@ -132,10 +133,6 @@ pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
             relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h"
                 .to_owned(),
             content: c_header,
-        },
-        GeneratedFile {
-            relative_path: "hosts/flutter-plugin/lib/src/nve_scene_abi.generated.dart".to_owned(),
-            content: generate_dart_scene_abi(),
         },
         GeneratedFile {
             relative_path:
@@ -150,16 +147,28 @@ pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
     ]
 }
 
-/// Generates all Runtime ABI header files keyed by workspace-relative path.
+/// Generates all Runtime ABI files (C header, Dart `dart:ffi` bindings, Dart core table layouts)
+/// keyed by workspace-relative path.
 pub fn generate_all_runtime_abi_files() -> Vec<GeneratedFile> {
-    vec![GeneratedFile {
-        relative_path: "packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
-            .to_owned(),
-        content: generate_c_runtime_abi_h(),
-    }]
+    vec![
+        GeneratedFile {
+            relative_path: "packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
+                .to_owned(),
+            content: generate_c_runtime_abi_h(),
+        },
+        GeneratedFile {
+            relative_path: "packages/core/host-dart/lib/src/nve_runtime_abi.generated.dart"
+                .to_owned(),
+            content: generate_dart_runtime_abi(),
+        },
+        GeneratedFile {
+            relative_path: "packages/core/host-dart/lib/src/nve_tables.generated.dart".to_owned(),
+            content: generate_dart_tables(),
+        },
+    ]
 }
 
-/// Generates every Core ABI (5) + Scene ABI (5) + Runtime ABI (1) + XXH64 mirror (6) artifact.
+/// Generates every Core ABI (5) + Scene ABI (4) + Runtime ABI (3) + XXH64 mirror (5) artifact.
 pub fn generate_all_abi_files() -> Vec<GeneratedFile> {
     let mut files = generate_all_core_abi_files();
     files.extend(generate_all_scene_abi_files());

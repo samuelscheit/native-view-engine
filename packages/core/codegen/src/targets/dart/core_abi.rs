@@ -1,11 +1,10 @@
 use crate::writer::CodeWriter;
 
-pub use super::scene_abi::generate_dart_scene_abi;
 use crate::naming::{screaming_snake_to_camel_case, to_camel_case, to_pascal_case};
 use crate::schema::hybrid::core_abi::{
     core_abi_spec, format_enum_value, module_c_struct_name, HOST_STATUS_VARIANTS,
 };
-use crate::schema::hybrid::HybridType;
+use crate::schema::hybrid::{HybridEnumSpec, HybridStructSpec, HybridType};
 
 pub(super) fn dart_core_ffi_annotation(ty: &HybridType) -> Option<&'static str> {
     match ty {
@@ -79,26 +78,98 @@ pub(super) fn dart_core_struct_field_type(ty: &HybridType) -> String {
     }
 }
 
-fn dart_enum_variant_ident(variant_name: &str) -> String {
+/// Dart reserved words (plus the `bool` type name) that cannot be member identifiers.
+const DART_RESERVED: &[&str] = &[
+    "assert", "bool", "break", "case", "catch", "class", "const", "continue", "default", "do",
+    "else", "enum", "extends", "false", "final", "finally", "for", "if", "in", "is", "new",
+    "null", "rethrow", "return", "super", "switch", "this", "throw", "true", "try", "var", "void",
+    "while", "with",
+];
+
+/// camelCase variant identifier; reserved words get a `Value` suffix (`null` → `nullValue`).
+pub(super) fn dart_enum_variant_ident(variant_name: &str) -> String {
     let camel = to_camel_case(variant_name);
-    match camel.as_str() {
-        "null" => "nullValue".to_string(),
-        "bool" => "boolValue".to_string(),
-        "default" => "defaultValue".to_string(),
-        _ => camel,
+    if DART_RESERVED.contains(&camel.as_str()) {
+        format!("{camel}Value")
+    } else {
+        camel
     }
 }
 
+/// Emits a Dart `enum` with `code` values and a `fromCode` decoder (falls back to
+/// `dart_fallback`, else returns `null` for unknown codes).
+pub(super) fn emit_dart_enum(out: &mut CodeWriter, e: &HybridEnumSpec) {
+    writeln!(out, "enum {} {{", e.name);
+    for (i, v) in e.variants.iter().enumerate() {
+        let vname = dart_enum_variant_ident(&v.name);
+        let term = if i + 1 == e.variants.len() { ";" } else { "," };
+        writeln!(out, "  {vname}({}){term}", format_enum_value(v.value));
+    }
+    writeln!(out);
+    writeln!(out, "  const {}(this.code);", e.name);
+    writeln!(out, "  final int code;");
+    writeln!(out);
+    let fallback = e.dart_fallback.as_deref().map(dart_enum_variant_ident);
+    let ret = if fallback.is_some() { e.name.clone() } else { format!("{}?", e.name) };
+    writeln!(out, "  static {ret} fromCode(int code) {{");
+    writeln!(out, "    return switch (code) {{");
+    for v in &e.variants {
+        let vname = dart_enum_variant_ident(&v.name);
+        if fallback.as_deref() == Some(vname.as_str()) {
+            continue;
+        }
+        writeln!(out, "      {} => {}.{vname},", format_enum_value(v.value), e.name);
+    }
+    match &fallback {
+        Some(fb) => writeln!(out, "      _ => {}.{fb},", e.name),
+        None => writeln!(out, "      _ => null,"),
+    }
+    writeln!(out, "    }};");
+    writeln!(out, "  }}");
+    writeln!(out, "}}");
+    writeln!(out);
+}
+
+/// Emits one `ffi.Struct` / `ffi.Union` with `external` fields in declaration order.
+pub(super) fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec) {
+    let base = if s.is_union { "ffi.Union" } else { "ffi.Struct" };
+    writeln!(out, "final class {} extends {base} {{", s.name);
+    for f in &s.fields {
+        let dart_field = to_camel_case(&f.name);
+        match &f.ty {
+            HybridType::FixedArray { elem, len } => {
+                writeln!(out, "  @ffi.Array({len})");
+                writeln!(
+                    out,
+                    "  external ffi.Array<{}> {dart_field};",
+                    dart_core_native_type(elem)
+                );
+            }
+            _ => {
+                if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+                    writeln!(out, "  {ann}");
+                }
+                writeln!(
+                    out,
+                    "  external {} {dart_field};",
+                    dart_core_struct_field_type(&f.ty)
+                );
+            }
+        }
+    }
+    writeln!(out, "}}");
+    writeln!(out);
+}
+
 // ============================================================================
-// Core ABI Target 3: Dart `dart:ffi` (`hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart`)
+// Core ABI Target 3: Dart `dart:ffi` (`packages/core/host-dart/lib/src/nve_core_abi.generated.dart`)
 // ============================================================================
 
-/// Generates `hosts/flutter-plugin/lib/src/nve_core_abi.generated.dart` directly from
+/// Generates `packages/core/host-dart/lib/src/nve_core_abi.generated.dart` directly from
 /// `packages/core/abi/src/schema.rs`.
 pub fn generate_dart_core_abi() -> String {
     let spec = core_abi_spec();
     let schema_hash = crate::schema::hybrid::core_abi::core_abi_schema_hash();
-    let signed_hash = schema_hash as i64;
     let mut out = CodeWriter::with_capacity(8 * 1024);
 
     writeln!(
@@ -112,14 +183,17 @@ pub fn generate_dart_core_abi() -> String {
     writeln!(out);
     writeln!(out, "import 'dart:ffi' as ffi;");
     writeln!(out);
+    writeln!(out, "import 'key64.dart';");
+    writeln!(out);
     writeln!(
         out,
-        "/// Deterministic XXH64 Core ABI schema hash (`0x{schema_hash:016X}`)."
+        "/// Deterministic XXH64 Core ABI schema hash (`0x{schema_hash:016X}`) as exact u32 halves."
     );
-    writeln!(out, "const int nveCoreAbiSchemaHash = {signed_hash};");
     writeln!(
         out,
-        "const String nveCoreAbiSchemaHashHex = '0x{schema_hash:016X}';"
+        "const Key64 nveCoreAbiSchemaHash = Key64(0x{:08X}, 0x{:08X});",
+        schema_hash as u32,
+        (schema_hash >> 32) as u32
     );
     writeln!(out);
 
@@ -147,53 +221,7 @@ pub fn generate_dart_core_abi() -> String {
 
     // Core enums
     for e in &spec.enums {
-        writeln!(out, "enum {} {{", e.name);
-        for (i, v) in e.variants.iter().enumerate() {
-            let vname = dart_enum_variant_ident(&v.name);
-            let term = if i + 1 == e.variants.len() { ";" } else { "," };
-            writeln!(out, "  {vname}({}){term}", format_enum_value(v.value));
-        }
-        writeln!(out);
-        writeln!(out, "  const {}(this.code);", e.name);
-        writeln!(out, "  final int code;");
-        writeln!(out);
-        if let Some(fallback) = &e.dart_fallback {
-            let fb_ident = dart_enum_variant_ident(fallback);
-            writeln!(out, "  static {} fromCode(int code) {{", e.name);
-            writeln!(out, "    return switch (code) {{");
-            for v in &e.variants {
-                let vname = dart_enum_variant_ident(&v.name);
-                if vname == fb_ident {
-                    continue;
-                }
-                writeln!(
-                    out,
-                    "      {} => {}.{vname},",
-                    format_enum_value(v.value),
-                    e.name
-                );
-            }
-            writeln!(out, "      _ => {}.{fb_ident},", e.name);
-            writeln!(out, "    }};");
-            writeln!(out, "  }}");
-        } else {
-            writeln!(out, "  static {}? fromCode(int code) {{", e.name);
-            writeln!(out, "    return switch (code) {{");
-            for v in &e.variants {
-                let vname = dart_enum_variant_ident(&v.name);
-                writeln!(
-                    out,
-                    "      {} => {}.{vname},",
-                    format_enum_value(v.value),
-                    e.name
-                );
-            }
-            writeln!(out, "      _ => null,");
-            writeln!(out, "    }};");
-            writeln!(out, "  }}");
-        }
-        writeln!(out, "}}");
-        writeln!(out);
+        emit_dart_enum(&mut out, e);
     }
 
     // Signed host-capability status enum (`NVE_IFACE_HOST = 5`)
@@ -247,33 +275,7 @@ pub fn generate_dart_core_abi() -> String {
             writeln!(out, ");");
             writeln!(out);
         }
-        let base = if s.is_union { "ffi.Union" } else { "ffi.Struct" };
-        writeln!(out, "final class {} extends {base} {{", s.name);
-        for f in &s.fields {
-            let dart_field = to_camel_case(&f.name);
-            match &f.ty {
-                HybridType::FixedArray { elem, len } => {
-                    writeln!(out, "  @ffi.Array({len})");
-                    writeln!(
-                        out,
-                        "  external ffi.Array<{}> {dart_field};",
-                        dart_core_native_type(elem)
-                    );
-                }
-                _ => {
-                    if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
-                        writeln!(out, "  {ann}");
-                    }
-                    writeln!(
-                        out,
-                        "  external {} {dart_field};",
-                        dart_core_struct_field_type(&f.ty)
-                    );
-                }
-            }
-        }
-        writeln!(out, "}}");
-        writeln!(out);
+        emit_dart_struct(&mut out, s);
     }
 
     // Native function typedefs for modular interfaces + nve_get_interface

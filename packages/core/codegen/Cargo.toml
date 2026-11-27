@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 nve-abi = { workspace = true }
 nve-hash = { workspace = true }
+# Core `#[derive(NveTable)]` descriptors for the Dart table-layout emitter.
+nve-components = { workspace = true }
+nve-store = { workspace = true }
 serde = { workspace = true }
 # Hybrid `.rs` spec frontend; `span-locations` gives parse errors real line/column numbers.
 proc-macro2 = { version = "1", features = ["span-locations"] }

@@ -1,9 +1,9 @@
 //! Flutter / Dart (`dart:ffi`) target emitter for NVE Hybrid FFI codegen.
 //!
-//! Emits a standalone, binary FFI, zero-external-package Dart file (`<stem>_hybrid.generated.dart`):
-//! - Uses only Dart SDK (`dart:convert` UTF-8, `dart:ffi`, `dart:typed_data`)
-//! - Exact `ffi.Struct` definitions for `NveStrSlice`, `NveBufferSlice`, `NveHybridOwnedBytes`,
-//!   `NveValue`, `NveMapEntry`, POD structs, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
+//! Emits one binary FFI Dart file (`<stem>_hybrid.generated.dart`) over the static host runtime
+//! `package:nve_host/nve_native.dart` (`BinWriter` / `BinReader`, `DynamicValue`, `DirectProps`,
+//! `NveHybridOwnedBytes`, and the generated core ABI structs):
+//! - Exact `ffi.Struct` definitions for POD structs, POD `NveHybridOpt*`, and `NveHybrid<Name>VTable`
 //! - `abstract interface class Hybrid<Name>Spec`
 //! - `class <Name>HybridClient` resolving `nve_get_interface`, verifying `schemaHash`,
 //!   and managing transient scratch buffers via the vtable's `allocBytes` / `freeBytes`.
@@ -26,7 +26,7 @@ use crate::naming::{
     to_pascal_case,
 };
 
-/// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and the shared `package:nve_flutter/nve_hybrid_runtime.dart`.
+/// Emits `<stem>_hybrid.generated.dart` using `dart:ffi` and the static `package:nve_host` runtime.
 pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>, CodegenError> {
     spec.validate()?;
     let stem = spec.stem_snake();
@@ -70,7 +70,7 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
     );
     writeln!(
         out,
-        "// Binary direct dart:ffi vtable bindings sharing `package:nve_flutter/nve_hybrid_runtime.dart`."
+        "// Binary direct dart:ffi vtable bindings over the static `package:nve_host` runtime."
     );
     writeln!(out);
     if body.contains("utf8.") {
@@ -81,7 +81,7 @@ pub fn generate_hybrid_dart(spec: &HybridFileSpec) -> Result<Vec<GeneratedFile>,
         writeln!(out, "import 'dart:typed_data';");
     }
     writeln!(out);
-    writeln!(out, "import 'package:nve_flutter/nve_hybrid_runtime.dart';");
+    writeln!(out, "import 'package:nve_host/nve_native.dart';");
     writeln!(out);
     out.push_str(&body);
 
@@ -205,19 +205,19 @@ fn emit_dart_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: &HybridFil
     }
 
     writeln!(out);
-    writeln!(out, "  void encodeBin(NveBinWriter w) {{");
-    writeln!(out, "    w.writeMap({}, (mw) {{", s.fields.len());
+    writeln!(out, "  void encodeBin(BinWriter w) {{");
+    writeln!(out, "    final _m = w.beginMap({});", s.fields.len());
     for f in &s.fields {
         let fname = dart_ident(&f.name);
         let key_lit = escape_dart_single_quoted_string(&f.name);
-        writeln!(out, "      mw.writeMapKey('{key_lit}');");
-        emit_dart_bin_write(out, "      ", "mw", &fname, &f.ty);
+        writeln!(out, "    w.writeMapKey('{key_lit}');");
+        emit_dart_bin_write(out, "    ", "w", &fname, &f.ty);
     }
-    writeln!(out, "    }});");
+    writeln!(out, "    w.end(_m);");
     writeln!(out, "  }}");
     writeln!(out);
 
-    writeln!(out, "  factory {}.decodeBin(NveBinReader r) {{", s.name);
+    writeln!(out, "  factory {}.decodeBin(BinReader r) {{", s.name);
     for f in &s.fields {
         let fname = dart_ident(&f.name);
         let def = dart_default_value(&f.ty, None, spec);
@@ -264,7 +264,7 @@ fn emit_dart_module(out: &mut CodeWriter, m: &HybridModuleSpec, spec: &HybridFil
 fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpec) {
     let pascal = to_pascal_case(&v.name);
 
-    writeln!(out, "class {pascal}Props implements NveDirectEncodable {{");
+    writeln!(out, "class {pascal}Props implements DirectEncodable {{");
     for p in &v.props {
         let pname = dart_ident(&p.name);
         writeln!(out, "  final {} {pname};", dart_type(&p.ty));
@@ -301,7 +301,7 @@ fn emit_dart_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &HybridFileSpe
     writeln!(out, "  int get directPropCount => {};", v.props.len());
     writeln!(out);
     writeln!(out, "  @override");
-    writeln!(out, "  void encodeDirect(NveDirectPropsBuilder builder) {{");
+    writeln!(out, "  void encodeDirect(DirectPropsBuilder builder) {{");
     for p in &v.props {
         let pname = dart_ident(&p.name);
         let key_lit = escape_dart_single_quoted_string(&p.name);

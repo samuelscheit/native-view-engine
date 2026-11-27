@@ -1,7 +1,7 @@
 //! Cross-language verification of the generated `nve_hash.generated.*` XXH64 mirrors: every host
 //! compiles its mirror and runs its embedded golden-vector self-check (one-shot + chunked
-//! streaming), plus `const_id("abc")` against Rust. Dart additionally runs compiled to JavaScript
-//! to prove the `(lo, hi)` halves stay exact on 53-bit doubles. Missing toolchains skip.
+//! streaming), plus `const_id("abc")` against Rust. Dart uses `packages/core/host-dart`'s
+//! `xxh64.dart` (its own golden suite on the VM and compiled to JS). Missing toolchains skip.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,7 +63,7 @@ fn golden_vectors_match_canonical_rust_xxh64() {
     }
     assert_eq!(ABC_ID, 0x44BC_2CF5_AD77_0999);
     let files = generate_all_hash_files();
-    assert_eq!(files.len(), 6);
+    assert_eq!(files.len(), 5);
     for f in &files {
         assert!(f.relative_path.contains(".generated.") || f.relative_path.ends_with("NveHash.java"));
         assert!(f.content.starts_with("// @generated"), "{}", f.relative_path);
@@ -183,28 +183,3 @@ fn typescript_mirror_runs_on_node_without_bigint() {
     }
 }
 
-#[test]
-fn dart_mirror_verifies_on_vm_and_compiled_to_javascript() {
-    let dir = temp_dir("dart");
-    write_mirror(&dir, "nve_hash.generated.dart", "nve_hash.generated.dart");
-    std::fs::write(
-        dir.join("check.dart"),
-        "import 'nve_hash.generated.dart';\nvoid main() {\n  \
-         if (!nveHashVerifyTestVectors()) throw StateError('vectors');\n  \
-         final k = NveKey64.of('abc');\n  final out = List<int>.filled(8, 0);\n  k.writeLE(out);\n  \
-         if (NveKey64.readLE(out) != k) throw StateError('roundtrip');\n  print('ok ${k.toHex()}');\n}\n",
-    )
-    .unwrap();
-    let Some(_) = run(Command::new("dart")
-        .current_dir(&dir)
-        .args(["analyze", "--fatal-infos", "nve_hash.generated.dart", "check.dart"]))
-    else {
-        return;
-    };
-    assert_ok_line(&run(Command::new("dart").current_dir(&dir).args(["run", "check.dart"])).unwrap());
-    run(Command::new("dart").current_dir(&dir).args(["compile", "js", "-O2", "-o", "check.js", "check.dart"]))
-        .expect("dart compile js");
-    if let Some(out) = run(Command::new("node").current_dir(&dir).arg("check.js")) {
-        assert_ok_line(&out);
-    }
-}

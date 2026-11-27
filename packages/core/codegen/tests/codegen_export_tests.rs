@@ -341,7 +341,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
     let all_files = generate_all_abi_files();
 
     assert_eq!(core_files.len(), 5);
-    assert_eq!(scene_files.len(), 5);
+    assert_eq!(scene_files.len(), 4);
     assert_eq!(all_files.len(), 17);
 
     assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);

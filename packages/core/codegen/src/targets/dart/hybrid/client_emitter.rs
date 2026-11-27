@@ -151,15 +151,15 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
         | HybridType::I32
         | HybridType::U32
         | HybridType::I64
-        | HybridType::U64 => writeln!(out, "    builder.writeInt64('{key_lit}', {expr});"),
+        | HybridType::U64 => writeln!(out, "    builder.writeI64('{key_lit}', {expr});"),
         HybridType::Enum(_) => {
-            writeln!(out, "    builder.writeInt64('{key_lit}', {expr}.rawValue);")
+            writeln!(out, "    builder.writeI64('{key_lit}', {expr}.rawValue);")
         }
         HybridType::F32 | HybridType::F64 => {
-            writeln!(out, "    builder.writeDouble('{key_lit}', {expr});")
+            writeln!(out, "    builder.writeF64('{key_lit}', {expr});")
         }
         HybridType::String => {
-            writeln!(out, "    builder.writeString('{key_lit}', {expr});")
+            writeln!(out, "    builder.writeStr('{key_lit}', {expr});")
         }
         HybridType::Bytes => writeln!(out, "    builder.writeBytes('{key_lit}', {expr});"),
         HybridType::Optional(inner) => match inner.as_ref() {
@@ -173,16 +173,16 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
             | HybridType::U32
             | HybridType::I64
             | HybridType::U64 => {
-                writeln!(out, "    builder.writeInt64('{key_lit}', {expr});")
+                writeln!(out, "    builder.writeI64('{key_lit}', {expr});")
             }
             HybridType::Enum(_) => {
-                writeln!(out, "    builder.writeInt64('{key_lit}', {expr}?.rawValue);")
+                writeln!(out, "    builder.writeI64('{key_lit}', {expr}?.rawValue);")
             }
             HybridType::F32 | HybridType::F64 => {
-                writeln!(out, "    builder.writeDouble('{key_lit}', {expr});")
+                writeln!(out, "    builder.writeF64('{key_lit}', {expr});")
             }
             HybridType::String => {
-                writeln!(out, "    builder.writeString('{key_lit}', {expr});")
+                writeln!(out, "    builder.writeStr('{key_lit}', {expr});")
             }
             HybridType::Bytes => {
                 writeln!(out, "    builder.writeBytes('{key_lit}', {expr});")
@@ -192,17 +192,17 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
                 writeln!(out, "    if (_opt_{expr} == null) {{");
                 writeln!(out, "      builder.writeNull('{key_lit}');");
                 writeln!(out, "    }} else {{");
-                writeln!(out, "      final _bw = NveBinWriter();");
+                writeln!(out, "      final _bw = BinWriter();");
                 emit_dart_bin_write(out, "      ", "_bw", &format!("_opt_{expr}"), other);
-                writeln!(out, "      builder.writeBytes('{key_lit}', _bw.takeBytes());");
+                writeln!(out, "      builder.writeBytes('{key_lit}', _bw.toBytes());");
                 writeln!(out, "    }}");
             }
         },
         other => {
             writeln!(out, "    {{");
-            writeln!(out, "      final _bw = NveBinWriter();");
+            writeln!(out, "      final _bw = BinWriter();");
             emit_dart_bin_write(out, "      ", "_bw", expr, other);
-            writeln!(out, "      builder.writeBytes('{key_lit}', _bw.takeBytes());");
+            writeln!(out, "      builder.writeBytes('{key_lit}', _bw.toBytes());");
             writeln!(out, "    }}");
         }
     }
@@ -211,7 +211,7 @@ pub(super) fn emit_dart_direct_prop_write(out: &mut CodeWriter, key_lit: &str, e
 pub(super) fn emit_dart_set_props(out: &mut CodeWriter, pascal: &str, _v: &HybridViewSpec) {
     writeln!(out, "  @override");
     writeln!(out, "  void setProps({pascal}Props props) {{");
-    writeln!(out, "    final st = NveDirectPropsWriter.withEncodedProps(");
+    writeln!(out, "    final st = DirectProps.withEncoded(");
     writeln!(out, "      props,");
     writeln!(out, "      (entriesPtr, count) => _setPropsDirect(_handle, entriesPtr, count),");
     writeln!(out, "    );");
@@ -280,7 +280,7 @@ pub(super) fn emit_dart_client_method(
                 args.push(format!("_s{idx}"));
             }
             HybridType::Value => {
-                writeln!(out, "      final _b{idx} = _copyToNative({pname}.binBytes);");
+                writeln!(out, "      final _b{idx} = _copyToNative({pname}.bytes);");
                 writeln!(out, "      tempBufs.add(_b{idx});");
                 writeln!(out, "      final _v{idx} = ffi.Struct.create<NveValue>();");
                 writeln!(out, "      _v{idx}.tag = 5;");
@@ -289,9 +289,9 @@ pub(super) fn emit_dart_client_method(
                 args.push(format!("_v{idx}"));
             }
             other => {
-                writeln!(out, "      final _w{idx} = NveBinWriter();");
+                writeln!(out, "      final _w{idx} = BinWriter();");
                 emit_dart_bin_write(out, "      ", &format!("_w{idx}"), &pname, other);
-                writeln!(out, "      final _b{idx} = _copyToNative(_w{idx}.takeBytes());");
+                writeln!(out, "      final _b{idx} = _copyToNative(_w{idx}.toBytes());");
                 writeln!(out, "      tempBufs.add(_b{idx});");
                 writeln!(out, "      final _s{idx} = ffi.Struct.create<NveBufferSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;");
                 args.push(format!("_s{idx}"));
@@ -386,7 +386,7 @@ pub(super) fn emit_dart_return_decode(
         HybridType::String => writeln!(out, "{indent}return _takeString({var});"),
         HybridType::Bytes => writeln!(out, "{indent}return _takeBytes({var});"),
         HybridType::Value => {
-            writeln!(out, "{indent}return NveHybridDynamicValue(_takeBytes({var}));")
+            writeln!(out, "{indent}return DynamicValue(_takeBytes({var}));")
         }
         HybridType::Optional(inner) if inner.is_pod(spec) => {
             writeln!(out, "{indent}if (!{var}.isSome) return null;");
@@ -401,7 +401,7 @@ pub(super) fn emit_dart_return_decode(
             }
         }
         other => {
-            writeln!(out, "{indent}final _r = NveBinReader(_takeBytes({var}));");
+            writeln!(out, "{indent}final _r = BinReader(_takeBytes({var}));");
             writeln!(out, "{indent}late final {} _out;", dart_type(other));
             emit_dart_bin_read(out, indent, "_r", "_out", other);
             writeln!(out, "{indent}return _out;");

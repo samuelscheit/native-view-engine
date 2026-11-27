@@ -16,7 +16,7 @@ host_runtime_missing_tool() {
     cxx) set -- cmake ctest cargo ;;
     swift) set -- swift ;;
     java) set -- javac java ;;
-    dart) set -- dart node ;;  # node runs the dart2js parity build
+    dart) set -- dart node cargo ;;  # node runs the dart2js parity build; cargo builds libnve_runtime
     ts)
       command -v node >/dev/null 2>&1 || { printf 'node'; return 0; }
       command -v tsc >/dev/null 2>&1 || command -v npx >/dev/null 2>&1 || { printf 'tsc or npx'; return 0; }
@@ -83,15 +83,26 @@ suite_host_java() {
 # developer's own copies in the repo must stay untouched.
 suite_host_dart() {
   local work="$BUILD_ROOT/host-dart"
+  local target_dir="${CARGO_TARGET_DIR:-$HOST_RT_ROOT/target}/debug"
+  local dylib
+  case "$(uname -s)" in
+    Darwin) dylib=dylib ;;
+    *) dylib=so ;;
+  esac
   rm -rf "$work"
   mkdir -p "$work"
   (cd "$HOST_RT_ROOT/packages/core/host-dart" && tar cf - --exclude .dart_tool --exclude pubspec.lock --exclude build .) \
     | (cd "$work" && tar xf -)
+  # `dart:ffi` suite: libnve_runtime (cdylib) plus the kitchen-sink app module it attaches.
+  (cd "$HOST_RT_ROOT" && cargo build --locked -p nve-runtime -p nve-example-kitchen-sink) || return 1
   (
     cd "$work"
     dart pub get --offline
     dart analyze --fatal-infos
     dart run --enable-asserts test/host_test.dart
+    NVE_RUNTIME_LIB="$target_dir/libnve_runtime.$dylib" \
+      NVE_KITCHEN_SINK_LIB="$target_dir/libnve_example_kitchen_sink.$dylib" \
+      dart run --enable-asserts test/runtime_session_test.dart
     dart compile js -O2 -o "$BUILD_ROOT/host-dart-web.js" test/web_parity_entry.dart
     node "$BUILD_ROOT/host-dart-web.js"
   )

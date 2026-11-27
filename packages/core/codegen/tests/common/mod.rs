@@ -32,35 +32,32 @@ pub fn write_generated_c_abi_headers(dir: &Path) {
     }
 }
 
-/// Materializes a self-contained offline `nve_flutter` Dart package under `temp_dir/nve_flutter_pkg`
-/// combining the hand-written pure-Dart runtime sources with freshly generated `*.generated.dart`
-/// bindings so `dart analyze` succeeds on a fresh checkout with zero generated files on disk.
-pub fn prepare_offline_nve_flutter_pkg(temp_dir: &Path, workspace_root: &Path) -> PathBuf {
-    let pkg_root = temp_dir.join("nve_flutter_pkg");
+/// Materializes a self-contained offline `nve_host` Dart package under `temp_dir/nve_host_pkg`:
+/// the hand-written `packages/core/host-dart/lib` sources plus freshly generated `*.generated.dart`
+/// bindings, so `dart analyze` succeeds on a fresh checkout with zero generated files on disk.
+pub fn prepare_offline_nve_host_pkg(temp_dir: &Path, workspace_root: &Path) -> PathBuf {
+    let pkg_root = temp_dir.join("nve_host_pkg");
     let dst_lib = pkg_root.join("lib");
-    let dst_src = dst_lib.join("src");
-    std::fs::create_dir_all(&dst_src).expect("create temp nve_flutter_pkg/lib/src");
-
-    let src_lib = workspace_root.join("hosts/flutter-plugin/lib");
+    std::fs::create_dir_all(dst_lib.join("src")).expect("create temp nve_host_pkg/lib/src");
     std::fs::write(
         pkg_root.join("pubspec.yaml"),
-        "name: nve_flutter\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
+        "name: nve_host\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
     )
-    .expect("write temp nve_flutter pubspec.yaml");
+    .expect("write temp nve_host pubspec.yaml");
 
-    for rel in [
-        "nve_hybrid_runtime.dart",
-        "src/direct_ffi.dart",
-        "src/event_codec.dart",
-        "src/nve_bin_codec.dart",
-        "src/nve_bin_value.dart",
-    ] {
-        std::fs::copy(src_lib.join(rel), dst_lib.join(rel))
-            .expect("copy hosts/flutter-plugin/lib file");
+    let src_lib = workspace_root.join("packages/core/host-dart/lib");
+    for dir in [PathBuf::new(), PathBuf::from("src")] {
+        for entry in std::fs::read_dir(src_lib.join(&dir)).expect("read host-dart lib dir") {
+            let path = entry.expect("host-dart lib entry").path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if name.ends_with(".dart") && !name.contains(".generated.") {
+                std::fs::copy(&path, dst_lib.join(&dir).join(name)).expect("copy host-dart source");
+            }
+        }
     }
 
     for file in nve_codegen::generate_all_abi_files() {
-        if let Some(rel) = file.relative_path.strip_prefix("hosts/flutter-plugin/lib/") {
+        if let Some(rel) = file.relative_path.strip_prefix("packages/core/host-dart/lib/") {
             let out_path = dst_lib.join(rel);
             if let Some(parent) = out_path.parent() {
                 std::fs::create_dir_all(parent).expect("create dart parent dir");

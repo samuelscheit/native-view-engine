@@ -199,25 +199,6 @@ pub(crate) const HOST_STATUS_VARIANTS: &[(&str, i32)] = &[
     ("InternalError", -8),
 ];
 
-pub(crate) fn snake_to_camel_preserve_leading(s: &str) -> String {
-    let trimmed = s.trim_start_matches('_');
-    let pascal = to_pascal_case(trimmed);
-    let mut chars = pascal.chars();
-    match chars.next() {
-        Some(first) => {
-            let mut out = String::with_capacity(pascal.len());
-            out.push(first.to_ascii_lowercase());
-            out.push_str(chars.as_str());
-            if s.starts_with('_') {
-                format!("_{out}")
-            } else {
-                out
-            }
-        }
-        None => s.to_owned(),
-    }
-}
-
 pub(crate) fn snake_to_screaming(s: &str) -> String {
     s.trim_start_matches('_').to_ascii_uppercase()
 }

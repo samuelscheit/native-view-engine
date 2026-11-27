@@ -777,8 +777,8 @@ fn swift_direct_runtime_files() -> Vec<PathBuf> {
 }
 
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
-    let flutter_plugin_root = common::prepare_offline_nve_flutter_pkg(dir, &workspace_root());
-    let canonical_plugin = std::fs::canonicalize(&flutter_plugin_root).unwrap_or(flutter_plugin_root);
+    let host_root = common::prepare_offline_nve_host_pkg(dir, &workspace_root());
+    let canonical_host = std::fs::canonicalize(&host_root).unwrap_or(host_root);
     let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let to_file_uri = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
@@ -801,7 +801,7 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
       "languageVersion": "3.4"
     }},
     {{
-      "name": "nve_flutter",
+      "name": "nve_host",
       "rootUri": "{}",
       "packageUri": "lib/",
       "languageVersion": "3.4"
@@ -810,7 +810,7 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
 }}
 "#,
         to_file_uri(&canonical_dir),
-        to_file_uri(&canonical_plugin),
+        to_file_uri(&canonical_host),
     );
     std::fs::write(dart_tool.join("package_config.json"), config)
         .expect("write temp package_config.json");
@@ -1125,17 +1125,17 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
     let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
     let dart_src = &dart_out.files[0].content;
 
-    // Verify generated Dart reuses the shared Flutter runtime instead of duplicating codecs/structs.
-    assert!(dart_src.contains("import 'package:nve_flutter/nve_hybrid_runtime.dart';"));
-    assert!(dart_src.contains("implements NveDirectEncodable"));
-    assert!(dart_src.contains("NveDirectPropsWriter.withEncodedProps"));
+    // Verify generated Dart reuses the static host runtime instead of duplicating codecs/structs.
+    assert!(dart_src.contains("import 'package:nve_host/nve_native.dart';"));
+    assert!(dart_src.contains("implements DirectEncodable"));
+    assert!(dart_src.contains("DirectProps.withEncoded"));
     assert!(
-        !dart_src.contains("class NveBinWriter"),
-        "generated Dart must not duplicate NveBinWriter"
+        !dart_src.contains("class BinWriter"),
+        "generated Dart must not duplicate BinWriter"
     );
     assert!(
-        !dart_src.contains("class NveBinReader"),
-        "generated Dart must not duplicate NveBinReader"
+        !dart_src.contains("class BinReader"),
+        "generated Dart must not duplicate BinReader"
     );
     assert!(
         !dart_src.contains("final class NveMapEntry"),
@@ -1151,7 +1151,7 @@ fn real_analyzer_verifies_generated_dart_ffi_bindings() {
     std::fs::create_dir_all(&lib_dir).unwrap();
     dart_out.write_to_dir(&lib_dir).unwrap();
 
-    // Minimal pubspec + offline package_config.json resolving `package:nve_flutter/` to disk.
+    // Minimal pubspec + offline package_config.json resolving `package:nve_host/` to disk.
     std::fs::write(
         dir.join("pubspec.yaml"),
         "name: nve_hybrid_check\nenvironment:\n  sdk: '>=3.4.0 <4.0.0'\n",
