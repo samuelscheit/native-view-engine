@@ -1,8 +1,64 @@
-//! Locates the `nve_abi` rlib this test binary links, so generated Rust can be compiled with a real
-//! `rustc` against it (hybrid end-to-end harnesses).
+//! Real `rustc` builds of generated Rust against this workspace's `nve_abi` rlib.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The `nve_abi` rlib and dependency search directories of the running test binary's profile.
+pub struct Rustc {
+    nve_abi_rlib: PathBuf,
+    dep_dirs: Vec<PathBuf>,
+}
+
+impl Rustc {
+    /// Locates `libnve_abi-*.rlib` across both the classic `target/<profile>/deps/` and the Cargo
+    /// 1.100+ per-unit `target/<profile>/build/<pkg>/<hash>/out/` layouts.
+    pub fn locate() -> Self {
+        // Linking `nve_abi` into the test binary makes Cargo build its rlib.
+        std::hint::black_box(nve_abi::NveValue::null());
+        let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
+        Self {
+            nve_abi_rlib,
+            dep_dirs,
+        }
+    }
+
+    /// `rustc --edition=2024 -D warnings <args> --extern nve_abi=… <externs> <src> -o <out>`,
+    /// failing the test with rustc's diagnostics.
+    pub fn build(
+        &self,
+        work_dir: &Path,
+        args: &[&str],
+        externs: &[(&str, &Path)],
+        src: &Path,
+        out: &Path,
+    ) {
+        let mut cmd = Command::new("rustc");
+        cmd.args(["--edition=2024", "-D", "warnings"]).args(args);
+        add_dep_search_dirs(&mut cmd, work_dir, &self.dep_dirs);
+        cmd.arg("--extern")
+            .arg(format!("nve_abi={}", self.nve_abi_rlib.display()));
+        for (name, rlib) in externs {
+            cmd.arg("--extern")
+                .arg(format!("{name}={}", rlib.display()));
+        }
+        let output = cmd.arg(src).arg("-o").arg(out).output().expect("run rustc");
+        assert!(
+            output.status.success(),
+            "rustc {} failed:\nstdout:\n{}\nstderr:\n{}",
+            src.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Builds `src` as the rlib `lib<crate_name>.rlib` in `work_dir` and returns its path.
+    pub fn build_lib(&self, work_dir: &Path, crate_name: &str, src: &Path) -> PathBuf {
+        let rlib = work_dir.join(format!("lib{crate_name}.rlib"));
+        let name_arg = format!("--crate-name={crate_name}");
+        self.build(work_dir, &["--crate-type=lib", &name_arg], &[], src, &rlib);
+        rlib
+    }
+}
 
 /// Locates `libnve_abi-*.rlib` and all Cargo dependency search directories across both classic
 /// `target/<profile>/deps/` and Cargo 1.100+ per-unit `target/<profile>/build/<pkg>/<hash>/out/`

@@ -13,7 +13,7 @@ use std::ffi::c_void;
 
 use nve_abi_macros::NveAbi;
 
-use crate::value::{NveEventBatch, NveMapEntry};
+use crate::value::{NveEventBatch, NveMapEntry, NveValueTag};
 
 /// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
 /// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
@@ -246,6 +246,14 @@ pub enum DecodeError {
     InvalidUtf8,
     TrailingBytes(usize),
     MaxDepthExceeded,
+    /// A value's wire tag differs from the tag its declared type requires (`found` is the raw tag).
+    UnexpectedTag { expected: NveValueTag, found: u32 },
+    /// An integer does not fit the named declared type.
+    OutOfRange(&'static str),
+    /// A required struct field is absent.
+    MissingField(&'static str),
+    /// A string, byte run, container payload, or element count exceeds the wire format's `u32`.
+    TooLarge,
 }
 
 impl std::fmt::Display for DecodeError {

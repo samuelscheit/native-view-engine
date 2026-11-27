@@ -1,4 +1,10 @@
+mod idents;
+#[cfg(test)]
+mod tests;
+
 use std::collections::{BTreeMap, BTreeSet};
+
+use idents::{validate_ident, validate_top_level_ident, validate_vtable_method_ident};
 
 use super::*;
 
@@ -178,6 +184,9 @@ impl HybridFileSpec {
                     m.name
                 )));
             }
+            for method in &m.methods {
+                validate_vtable_method_ident(&format!("module '{}'", m.name), &method.name)?;
+            }
             validate_methods(
                 &m.methods,
                 &enum_map,
@@ -272,7 +281,7 @@ impl HybridFileSpec {
                 }
             }
             for m in &v.methods {
-                validate_ident("method", &m.name)?;
+                validate_vtable_method_ident(&format!("view '{}'", v.name), &m.name)?;
                 if !member_names.insert(m.name.as_str()) {
                     return Err(CodegenError::validation(format!(
                         "duplicate member '{}' in view '{}'",
@@ -304,48 +313,6 @@ impl HybridFileSpec {
 
         Ok(())
     }
-}
-
-/// Top-level symbols exported by the generated C++ `namespace nve::hybrid` runtime bridge.
-const RESERVED_RUNTIME_NAMES: &[&str] = &[
-    "BinReader",
-    "BinWriter",
-    "DynamicValue",
-    "NveValueTree",
-    "OwnedBytes",
-    "checked_bytes",
-    "to_slice",
-    "require_done",
-];
-
-fn validate_top_level_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
-    validate_ident(kind, name)?;
-    if RESERVED_RUNTIME_NAMES.contains(&name) {
-        return Err(CodegenError::validation(format!(
-            "{kind} name '{name}' is reserved by the hybrid runtime"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return Err(CodegenError::validation(format!(
-            "{kind} name cannot be empty"
-        )));
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(CodegenError::validation(format!(
-            "invalid {kind} identifier '{name}': must start with ASCII letter or '_'"
-        )));
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(CodegenError::validation(format!(
-            "invalid {kind} identifier '{name}': must contain only ASCII alphanumeric or '_'"
-        )));
-    }
-    Ok(())
 }
 
 fn validate_methods(
@@ -469,6 +436,12 @@ fn validate_type(
             if matches!(inner.as_ref(), HybridType::Result { .. }) {
                 return Err(CodegenError::validation(format!(
                     "{ctx}: Vec<Result<...>> is not supported across FFI"
+                )));
+            }
+            // One spelling per wire form: a byte vector crosses as one `Bytes` run, not an `Array`.
+            if matches!(inner.as_ref(), HybridType::U8) {
+                return Err(CodegenError::validation(format!(
+                    "{ctx}: Vec<u8> must be declared as Bytes (one `Bytes` run on the wire)"
                 )));
             }
             validate_type(inner, false, enum_map, struct_map, alias_names, ctx)

@@ -76,6 +76,12 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
       - The JNI glue is linked and run against the Rust provider on a fake `JNIEnv`.
       - The C++ e2e covers dynamic values, nested sequences, invalid UTF-8 and null props.
       - Missing clang fails under CI.
+  - **Rust hybrid bindings on `nve_abi::hybrid` (commit 5a-rust)**
+    - The generated Rust hybrid module no longer embeds its 175-line runtime prelude (`NveHybridOwnedBytes`, `NveHybridStatus`, `NveHybridValue`, `nve_bin_codec`).
+      - Static runtime: `nve_abi::hybrid` (owned C buffers, status codes, `HybridCodec` for every hybrid type, trampoline `store` / `succeed` / `fail`), sticky-error `BinWriter`, and `NveValueTree` (bin value → borrowed C `NveValue` tree in two exactly-sized arenas).
+      - Generated code keeps only spec-specific items; structs and enums get their codec from `hybrid_struct_codec!` / `hybrid_enum_codec!`.
+    - Narrow integers and enum discriminants are range-checked instead of truncated; a `Value` defaults to `null` (was empty, malformed bytes); composite and `Value` event parameters cross as C trees, never wrapped in `Bytes`.
+    - Validation reserves the `_nve_` binding prefix, the `NveHybrid` type prefix, runtime type names, and vtable slot names (`create`, `destroy`, `apply_props`, ...) for methods; `Vec<u8>` must be spelled `Bytes`.
   - **C++ hybrid clients on host-cxx (commit 5a-cxx)**
     - The generated C++20 hybrid header no longer carries its own copied `NveBinValue` codec prelude.
       - It includes `<nve/host/bin_codec.hpp>` / `<nve/host/hybrid_runtime.hpp>`.

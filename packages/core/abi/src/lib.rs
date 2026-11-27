@@ -13,6 +13,8 @@ pub mod events;
 pub mod ffi;
 pub mod hash;
 pub mod host;
+#[cfg(feature = "wire")]
+pub mod hybrid;
 mod layout_asserts;
 pub mod num;
 pub mod scene;
@@ -53,8 +55,8 @@ pub use scene::{
 pub use style_types::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 #[cfg(feature = "wire")]
 pub use value::{
-    encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinMapIter, BinValueView,
-    NVE_BIN_VALUE_MAX_DEPTH,
+    encode_bin_value, encode_bin_value_to_vec, BinArrayIter, BinArrayWriter, BinMapIter,
+    BinMapWriter, BinValueView, BinWriter, NveValueTree, NVE_BIN_VALUE_MAX_DEPTH,
 };
 pub use value::{
     NveArrayRef, NveCommandSlice, NveCommandSliceRef, NveDirectEvent, NveDirectEventRef,

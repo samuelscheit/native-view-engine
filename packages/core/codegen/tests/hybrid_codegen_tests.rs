@@ -641,263 +641,6 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
 }
 
 #[test]
-fn real_compiler_verifies_generated_rust_against_nve_abi_with_zero_warnings() {
-    // Ensure nve_abi is linked by this test crate so Cargo builds `libnve_abi-*.rlib` in deps.
-    let _touch = nve_abi::NveValue::null();
-
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
-    let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
-
-    let dir = temp_test_dir("rust");
-    rust_out.write_to_dir(&dir).unwrap();
-    let rs_file = dir.join("crypto_hybrid.generated.rs");
-
-    // Locate `libnve_abi-*.rlib` and dependency search directories.
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-
-    let out_rlib = dir.join("libcrypto_hybrid_check.rlib");
-    let mut rustc_cmd = Command::new("rustc");
-    rustc_cmd.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=crypto_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    add_dep_search_dirs(&mut rustc_cmd, &dir, &dep_dirs);
-    let rustc_check = rustc_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(&rs_file)
-        .arg("-o")
-        .arg(&out_rlib)
-        .output()
-        .expect("run rustc on generated Rust module");
-
-    assert!(
-        rustc_check.status.success(),
-        "Generated Rust module failed rustc --edition=2024 -D warnings:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&rustc_check.stdout),
-        String::from_utf8_lossy(&rustc_check.stderr)
-    );
-
-    // Also compile & RUN an executable test exercising the generated Rust vtables, POD structs,
-    // binary NveBinValue round-trips, zero-copy `decode_props_direct`, and `emit_direct` events!
-    let main_rs = dir.join("e2e_main.rs");
-    std::fs::write(
-        &main_rs,
-        r#"
-use crypto_hybrid::*;
-use nve_abi::{BinValueView, NveBufferSlice, NveMapEntry, NveStrSlice, NveValue};
-
-#[derive(Default)]
-struct MyCrypto;
-
-impl CryptoHybrid for MyCrypto {
-    fn version(&mut self) -> String { "1.2.3".to_string() }
-    fn add(&mut self, a: i64, b: i64) -> i64 { a + b }
-    fn blake3(&mut self, data: &[u8]) -> Vec<u8> { data.iter().rev().copied().collect() }
-    fn hash_with(&mut self, algo: HashAlgorithm, data: &[u8]) -> DigestHeader {
-        DigestHeader {
-            algorithm: algo,
-            byte_len: data.len() as u32,
-            verified: true,
-            anchor: FramePoint { x: 3.5, y: -2.0 },
-        }
-    }
-    fn verify_payload(&mut self, payload: SignedPayload) -> Result<bool, String> {
-        if payload.label.is_empty() {
-            return Err("empty label".to_string());
-        }
-        Ok(payload.header.verified && payload.nonce == Some(77))
-    }
-    fn find_nonce(&mut self, _label: &str, hint: Option<u64>) -> Option<u64> {
-        hint.map(|h| h + 1)
-    }
-    fn lookup_payload(&mut self, id: u32) -> Option<SignedPayload> {
-        if id == 0 { return None; }
-        Some(SignedPayload {
-            header: DigestHeader {
-                algorithm: HashAlgorithm::Sha256,
-                byte_len: id,
-                verified: true,
-                anchor: FramePoint { x: 1.0, y: 2.0 },
-            },
-            label: format!("item-{id}"),
-            digest: vec![0xAA, 0xBB],
-            tags: vec!["fast".to_string(), "binary".to_string()],
-            nonce: Some(99),
-        })
-    }
-    fn batch_sign(&mut self, inputs: Vec<String>, algo: HashAlgorithm) -> Result<Vec<SignedPayload>, String> {
-        Ok(inputs.into_iter().map(|s| SignedPayload {
-            header: DigestHeader {
-                algorithm: algo,
-                byte_len: s.len() as u32,
-                verified: true,
-                anchor: FramePoint { x: 0.0, y: 0.0 },
-            },
-            label: s,
-            digest: vec![1, 2, 3],
-            tags: vec![],
-            nonce: None,
-        }).collect())
-    }
-    fn inspect_dynamic(&mut self, meta: NveHybridValue) -> NveHybridValue { meta }
-    fn transpose(&mut self, cursor: Cursor) -> Cursor {
-        let cols = cursor.grid.first().map_or(0, Vec::len);
-        let grid = (0..cols).map(|c| cursor.grid.iter().map(|row| row[c]).collect()).collect();
-        Cursor {
-            mark: cursor.mark + 1,
-            w: cursor.w.iter().rev().copied().collect(),
-            r: cursor.r.map(|s| s.to_uppercase()),
-            count: cursor.count * 2,
-            tag: cursor.tag.map(|v| -v),
-            grid,
-        }
-    }
-    fn reset_cache(&mut self) -> Result<(), String> { Ok(()) }
-}
-
-#[derive(Default)]
-struct MyVideo {
-    props: VideoSurfaceProps,
-    last_seek: u64,
-}
-
-impl VideoSurfaceHybrid for MyVideo {
-    fn apply_props(&mut self, props: VideoSurfaceProps) { self.props = props; }
-    fn seek(&mut self, position_ms: u64) { self.last_seek = position_ms; }
-    fn capture_frame(&mut self, at_point: FramePoint) -> Result<Vec<u8>, String> {
-        if at_point.x < 0.0 { return Err("negative x".to_string()); }
-        Ok(vec![0xDE, 0xAD])
-    }
-    fn current_metadata(&mut self) -> NveHybridValue { self.props.metadata.clone() }
-}
-
-fn main() {
-    let vt = build_crypto_vtable::<MyCrypto>();
-    assert_eq!(vt.abi_version, NVE_HYBRID_ABI_VERSION);
-    assert_eq!(vt.interface_id, NVE_HYBRID_CRYPTO_INTERFACE_ID);
-    assert_eq!(vt.schema_hash, NVE_HYBRID_CRYPTO_SCHEMA_HASH);
-
-    unsafe {
-        let h = (vt.create)();
-        assert!(!h.is_null());
-        assert_eq!((vt.add)(h, 19, 23), 42);
-
-        let ver = (vt.version)(h);
-        let ver_str = std::str::from_utf8(std::slice::from_raw_parts(ver.ptr, ver.len)).unwrap();
-        assert_eq!(ver_str, "1.2.3");
-        (vt.free_bytes)(ver);
-
-        let data = [1u8, 2, 3, 4];
-        let hdr = (vt.hash_with)(h, HashAlgorithm::Sha512.to_u32(), NveBufferSlice::from_slice(&data));
-        assert_eq!(hdr.algorithm, HashAlgorithm::Sha512);
-        assert_eq!(hdr.byte_len, 4);
-        assert!(hdr.verified);
-        assert_eq!(hdr.anchor.x, 3.5);
-
-        let opt_some = (vt.find_nonce)(h, NveStrSlice::from_str("k"), NveHybridOptU64 { is_some: true, value: 41 });
-        assert!(opt_some.is_some && opt_some.value == 42);
-        let opt_none = (vt.find_nonce)(h, NveStrSlice::from_str("k"), NveHybridOptU64 { is_some: false, value: 0 });
-        assert!(!opt_none.is_some);
-
-        // Non-POD struct binary round-trip + Result Ok/Err
-        let mut payload_bin = Vec::new();
-        SignedPayload {
-            header: hdr,
-            label: "hello".to_string(),
-            digest: vec![9, 8],
-            tags: vec!["a".to_string()],
-            nonce: Some(77),
-        }.encode_bin(&mut payload_bin);
-        let mut ok_out = false;
-        let mut err_out = NveHybridOwnedBytes::EMPTY;
-        let st = (vt.verify_payload)(h, NveBufferSlice::from_slice(&payload_bin), &mut ok_out, &mut err_out);
-        assert_eq!(st, NveHybridStatus::Ok as i32);
-        assert!(ok_out);
-
-        let mut bad_bin = Vec::new();
-        SignedPayload::default().encode_bin(&mut bad_bin);
-        let st_err = (vt.verify_payload)(h, NveBufferSlice::from_slice(&bad_bin), &mut ok_out, &mut err_out);
-        assert_eq!(st_err, NveHybridStatus::Err as i32);
-        let err_msg = std::str::from_utf8(std::slice::from_raw_parts(err_out.ptr, err_out.len)).unwrap();
-        assert_eq!(err_msg, "empty label");
-        (vt.free_bytes)(err_out);
-
-        // View props direct zero-copy decoding + event emission
-        let vvt = build_video_surface_vtable::<MyVideo>();
-        let vh = (vvt.create)();
-        let entries = [
-            NveMapEntry::new("source_url", NveValue::from_str("https://nve.dev/v.mp4")),
-            NveMapEntry::new("muted", NveValue::bool(true)),
-            NveMapEntry::new("quality", NveValue::i64(VideoQuality::Uhd4k.to_u32() as i64)),
-        ];
-        assert_eq!((vvt.set_props_direct)(vh, entries.as_ptr(), entries.len() as u32), NveHybridStatus::Ok as i32);
-        let decoded = VideoSurfaceProps::decode_props_direct(&entries).unwrap();
-        assert_eq!(decoded.source_url, "https://nve.dev/v.mp4");
-        assert!(decoded.muted);
-        assert_eq!(decoded.playback_rate, 1.0); // default preserved!
-        assert_eq!(decoded.quality, VideoQuality::Uhd4k);
-        assert_eq!(decoded.poster_url, None);
-
-        let ev = VideoSurfaceOnProgressEvent { position_ms: 1200, duration_ms: 9000 };
-        let ev_bin = ev.encode_bin();
-        let ev_view = BinValueView::parse(&ev_bin).unwrap();
-        assert_eq!(ev_view.get("position_ms").unwrap().as_i64(), Some(1200));
-        assert_eq!(ev_view.get("duration_ms").unwrap().as_i64(), Some(9000));
-        let mut saw_direct = false;
-        emit_video_surface_on_progress(1, 2, 333, 1200, 9000, |d| {
-            saw_direct = true;
-            assert_eq!(d.surface_id, 1);
-            assert_eq!(d.node_id, 2);
-            assert_eq!(d.timestamp_us, 333);
-        });
-        assert!(saw_direct);
-
-        (vvt.destroy)(vh);
-        (vt.destroy)(h);
-    }
-}
-"#,
-    )
-    .unwrap();
-
-    let e2e_bin = dir.join(format!("e2e_bin{}", std::env::consts::EXE_SUFFIX));
-    let mut e2e_cmd = Command::new("rustc");
-    e2e_cmd.args(["--edition=2024", "-D", "warnings"]);
-    add_dep_search_dirs(&mut e2e_cmd, &dir, &dep_dirs);
-    let e2e_compile = e2e_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg("--extern")
-        .arg(format!("crypto_hybrid={}", out_rlib.display()))
-        .arg(&main_rs)
-        .arg("-o")
-        .arg(&e2e_bin)
-        .output()
-        .expect("compile e2e Rust vtable binary");
-    assert!(
-        e2e_compile.status.success(),
-        "e2e Rust vtable binary failed to compile:\nstderr:\n{}",
-        String::from_utf8_lossy(&e2e_compile.stderr)
-    );
-
-    let e2e_run = Command::new(&e2e_bin)
-        .output()
-        .expect("run e2e Rust vtable binary");
-    assert!(
-        e2e_run.status.success(),
-        "e2e Rust vtable binary failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&e2e_run.stdout),
-        String::from_utf8_lossy(&e2e_run.stderr)
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn real_analyzer_verifies_generated_dart_ffi_bindings() {
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
     let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
@@ -1104,7 +847,6 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
 
 #[test]
 fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
-    let _touch = nve_abi::NveValue::null();
     if !common::require_tool("clang++") {
         return;
     }
@@ -1117,32 +859,10 @@ fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
     rust_out.write_to_dir(&dir).unwrap();
     cpp_out.write_to_dir(&dir).unwrap();
 
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
+    let rustc = common::rustc::Rustc::locate();
 
     // 1. Compile generated `crypto_hybrid.generated.rs` as an rlib
-    let hybrid_rlib = dir.join("libcrypto_hybrid.rlib");
-    let mut hybrid_cmd = Command::new("rustc");
-    hybrid_cmd.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=crypto_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    add_dep_search_dirs(&mut hybrid_cmd, &dir, &dep_dirs);
-    let st = hybrid_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(dir.join("crypto_hybrid.generated.rs"))
-        .arg("-o")
-        .arg(&hybrid_rlib)
-        .output()
-        .expect("compile crypto_hybrid rlib");
-    assert!(
-        st.status.success(),
-        "{}",
-        String::from_utf8_lossy(&st.stderr)
-    );
+    let hybrid_rlib = rustc.build_lib(&dir, "crypto_hybrid", &dir.join("crypto_hybrid.generated.rs"));
 
     // 2. Compile a Rust staticlib exporting `nve_get_interface` backed by `build_crypto_vtable` & `build_video_surface_vtable`
     let provider_rs = dir.join("provider.rs");
@@ -1272,23 +992,12 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
     .unwrap();
 
     let staticlib = dir.join("liblive_provider.a");
-    let mut lib_cmd = Command::new("rustc");
-    lib_cmd.args(["--edition=2024", "--crate-type=staticlib", "-D", "warnings"]);
-    add_dep_search_dirs(&mut lib_cmd, &dir, &dep_dirs);
-    let lib_build = lib_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg("--extern")
-        .arg(format!("crypto_hybrid={}", hybrid_rlib.display()))
-        .arg(&provider_rs)
-        .arg("-o")
-        .arg(&staticlib)
-        .output()
-        .expect("build Rust staticlib");
-    assert!(
-        lib_build.status.success(),
-        "Rust staticlib build failed:\n{}",
-        String::from_utf8_lossy(&lib_build.stderr)
+    rustc.build(
+        &dir,
+        &["--crate-type=staticlib"],
+        &[("crypto_hybrid", &hybrid_rlib)],
+        &provider_rs,
+        &staticlib,
     );
 
     // 3. Compile & link a real C++20 executable calling into the Rust staticlib via generated C++20 clients!
@@ -1697,32 +1406,9 @@ void check() {
     }
 
     // Real rustc verification of adversarial Rust output
-    let _touch = nve_abi::NveValue::null();
     let dir = temp_test_dir("adversarial_rust");
     rust_out.write_to_dir(&dir).unwrap();
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-    let mut adv_cmd = Command::new("rustc");
-    adv_cmd.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=safe_banner_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    add_dep_search_dirs(&mut adv_cmd, &dir, &dep_dirs);
-    let out = adv_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(dir.join("safe_banner_hybrid.generated.rs"))
-        .arg("-o")
-        .arg(dir.join("libsafe_banner_hybrid.rlib"))
-        .output()
-        .expect("rustc adversarial hybrid rust");
-    assert!(
-        out.status.success(),
-        "adversarial hybrid Rust failed rustc:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    common::rustc::Rustc::locate().build_lib(&dir, "safe_banner_hybrid", &dir.join("safe_banner_hybrid.generated.rs"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

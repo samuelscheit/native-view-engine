@@ -8,6 +8,7 @@
 //! `INTERNAL_ERROR(-8)`, and `internalError(-8)` are the same entry.
 
 use nve_abi::table::{FieldKind, MAX_TABLE_WORDS};
+use nve_abi::hybrid::NveHybridStatus;
 use nve_abi::{NVE_BIN_VALUE_MAX_DEPTH, NveHostStatus, NveValueTag};
 use nve_store::Length;
 
@@ -22,7 +23,6 @@ const SWIFT: &str = "packages/core/host-swift/Sources/NveHost/";
 const JAVA: &str = "packages/core/host-java/src/main/java/dev/nve/host/";
 const DART: &str = "packages/core/host-dart/lib/src/";
 const TS: &str = "packages/core/host-ts/src/";
-const HYBRID_STATUS_SOURCE: &str = "packages/core/codegen/src/targets/rust/hybrid/mod.rs";
 
 /// One mirror site: a file, the declaration that opens the block, its syntax, the C prefix its
 /// names carry (if any), and per-language renames of Rust variant names.
@@ -145,21 +145,24 @@ fn host_status_entries() -> Vec<(String, i64)> {
     .collect()
 }
 
-/// `NveHybridStatus` variants as emitted by codegen (`Name = N,` lines of its enum).
-fn hybrid_status_entries(idx: &RepoIndex, out: &mut Vec<Violation>) -> Vec<(String, i64)> {
-    let text = idx.read_text(HYBRID_STATUS_SOURCE).unwrap_or_default();
-    let entries = decl::code_block(&text, "pub enum NveHybridStatus")
-        .map(|body| decl::declarations(&body, Syntax::Assign))
-        .unwrap_or_default();
-    if entries.is_empty() {
-        out.push(Violation::new(
-            HYBRID_STATUS_SOURCE,
-            0,
-            "NveHybridStatus",
-            "could not read the hybrid status enum",
-        ));
+const fn hybrid_status_name(s: NveHybridStatus) -> &'static str {
+    match s {
+        NveHybridStatus::Ok => "Ok",
+        NveHybridStatus::Err => "Err",
+        NveHybridStatus::InvalidArg => "InvalidArg",
+        NveHybridStatus::SchemaMismatch => "SchemaMismatch",
+        NveHybridStatus::NullHandle => "NullHandle",
     }
-    entries
+}
+
+/// Every `nve_abi::hybrid::NveHybridStatus` (adding a variant fails `hybrid_status_name`'s
+/// exhaustive match first).
+fn hybrid_status_entries() -> Vec<(String, i64)> {
+    use NveHybridStatus as S;
+    [S::Ok, S::Err, S::InvalidArg, S::SchemaMismatch, S::NullHandle]
+        .into_iter()
+        .map(|s| (hybrid_status_name(s).to_owned(), i64::from(s as i32)))
+        .collect()
 }
 
 /// Checks every hand-mirrored constant in the five host runtimes. (Golden XXH64 vectors are
@@ -194,7 +197,7 @@ pub fn check_host_runtime_mirrors(idx: &RepoIndex) -> Vec<Violation> {
         ),
         &mut out,
     );
-    let hybrid = hybrid_status_entries(idx, &mut out);
+    let hybrid = hybrid_status_entries();
     check_set(
         idx,
         "NveHybridStatus",

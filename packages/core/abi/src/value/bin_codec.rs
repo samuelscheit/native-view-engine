@@ -16,106 +16,54 @@
 
 use crate::DecodeError;
 
+use super::bin_writer::BinWriter;
 use super::ffi_types::NveValueTag;
 use super::ffi_views::NveValueRef;
 use super::NVE_BIN_VALUE_MAX_DEPTH;
 
-/// Encodes an `NveValueRef` into the compact binary `NveBinValue` wire format.
-pub fn encode_bin_value(value: NveValueRef<'_>, out: &mut Vec<u8>) -> Result<(), DecodeError> {
-    encode_bin_value_depth(value, out, 0)
-}
-
-/// Convenience helper allocating a `Vec<u8>` and encoding `value` into binary `NveBinValue`.
-pub fn encode_bin_value_to_vec(value: NveValueRef<'_>) -> Result<Vec<u8>, DecodeError> {
-    let mut out = Vec::with_capacity(64);
-    encode_bin_value(value, &mut out)?;
-    Ok(out)
-}
-
-fn encode_bin_value_depth(
-    value: NveValueRef<'_>,
-    out: &mut Vec<u8>,
-    depth: usize,
-) -> Result<(), DecodeError> {
-    let tag = value
-        .tag()
-        .ok_or(DecodeError::InvalidEnum("NveValueTag", value.raw.tag))?;
+/// Encodes an `NveValueRef` into `w` (errors are recorded in `w`, see [`BinWriter::finish`]).
+pub fn encode_bin_value(value: NveValueRef<'_>, w: &mut BinWriter) {
+    let Some(tag) = value.tag() else {
+        return w.fail(DecodeError::InvalidEnum("NveValueTag", value.raw.tag));
+    };
     match tag {
-        NveValueTag::Null => {
-            out.push(NveValueTag::Null as u8);
-        }
-        NveValueTag::Bool => {
-            out.push(NveValueTag::Bool as u8);
-            out.push(u8::from(value.as_bool().unwrap_or(false)));
-        }
-        NveValueTag::I64 => {
-            out.push(NveValueTag::I64 as u8);
-            out.extend_from_slice(&value.as_i64().unwrap_or(0).to_le_bytes());
-        }
-        NveValueTag::F64 => {
-            out.push(NveValueTag::F64 as u8);
-            out.extend_from_slice(&value.as_f64().unwrap_or(0.0).to_le_bytes());
-        }
-        NveValueTag::Str => {
-            // SAFETY: `tag` was validated as `Str` and `NveValueRef` guarantees valid nested pointers.
-            let s = unsafe { value.raw.data.str_val.as_str()? };
-            let b = s.as_bytes();
-            let len = u32::try_from(b.len()).map_err(|_| DecodeError::Truncated)?;
-            out.push(NveValueTag::Str as u8);
-            out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(b);
-        }
-        NveValueTag::Bytes => {
-            let b = value.as_bytes().ok_or(DecodeError::Truncated)?;
-            let len = u32::try_from(b.len()).map_err(|_| DecodeError::Truncated)?;
-            out.push(NveValueTag::Bytes as u8);
-            out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(b);
-        }
-        NveValueTag::Array => {
-            if depth >= NVE_BIN_VALUE_MAX_DEPTH {
-                return Err(DecodeError::MaxDepthExceeded);
-            }
-            let arr = value.as_array().ok_or(DecodeError::Truncated)?;
-            let count = u32::try_from(arr.len()).map_err(|_| DecodeError::Truncated)?;
-            out.push(NveValueTag::Array as u8);
-            let byte_len_pos = out.len();
-            out.extend_from_slice(&0u32.to_le_bytes());
-            let payload_start = out.len();
-            out.extend_from_slice(&count.to_le_bytes());
-            for elem in arr.iter() {
-                encode_bin_value_depth(elem, out, depth + 1)?;
-            }
-            let payload_len =
-                u32::try_from(out.len() - payload_start).map_err(|_| DecodeError::Truncated)?;
-            out[byte_len_pos..byte_len_pos + 4].copy_from_slice(&payload_len.to_le_bytes());
-        }
-        NveValueTag::Map => {
-            if depth >= NVE_BIN_VALUE_MAX_DEPTH {
-                return Err(DecodeError::MaxDepthExceeded);
-            }
-            let map = value.as_map().ok_or(DecodeError::Truncated)?;
-            let count = u32::try_from(map.len()).map_err(|_| DecodeError::Truncated)?;
-            out.push(NveValueTag::Map as u8);
-            let byte_len_pos = out.len();
-            out.extend_from_slice(&0u32.to_le_bytes());
-            let payload_start = out.len();
-            out.extend_from_slice(&count.to_le_bytes());
-            for entry in map.entries {
-                // SAFETY: `NveMapRef` guarantees valid immutable entry key pointers for its lifetime.
-                let k = unsafe { entry.key.as_str()? };
-                let kb = k.as_bytes();
-                let klen = u32::try_from(kb.len()).map_err(|_| DecodeError::Truncated)?;
-                out.extend_from_slice(&klen.to_le_bytes());
-                out.extend_from_slice(kb);
-                encode_bin_value_depth(NveValueRef { raw: &entry.value }, out, depth + 1)?;
-            }
-            let payload_len =
-                u32::try_from(out.len() - payload_start).map_err(|_| DecodeError::Truncated)?;
-            out[byte_len_pos..byte_len_pos + 4].copy_from_slice(&payload_len.to_le_bytes());
-        }
+        NveValueTag::Null => w.null(),
+        NveValueTag::Bool => w.bool(value.as_bool().unwrap_or_default()),
+        NveValueTag::I64 => w.i64(value.as_i64().unwrap_or_default()),
+        NveValueTag::F64 => w.f64(value.as_f64().unwrap_or_default()),
+        // SAFETY: `tag` is `Str` and `NveValueRef` guarantees valid nested pointers.
+        NveValueTag::Str => match unsafe { value.raw.data.str_val.as_str() } {
+            Ok(s) => w.str(s),
+            Err(e) => w.fail(e),
+        },
+        NveValueTag::Bytes => match value.as_bytes() {
+            Some(b) => w.bytes(b),
+            None => w.fail(DecodeError::Truncated),
+        },
+        NveValueTag::Array => match value.as_array() {
+            Some(items) => w.array(|a| items.iter().for_each(|item| encode_bin_value(item, a.item()))),
+            None => w.fail(DecodeError::Truncated),
+        },
+        NveValueTag::Map => match value.as_map() {
+            Some(map) => w.map(|m| {
+                for entry in map.entries {
+                    // SAFETY: `NveMapRef` guarantees valid immutable entry key pointers for its lifetime.
+                    match unsafe { entry.key.as_str() } {
+                        Ok(key) => encode_bin_value(NveValueRef { raw: &entry.value }, m.key(key)),
+                        Err(e) => m.key("").fail(e),
+                    }
+                }
+            }),
+            None => w.fail(DecodeError::Truncated),
+        },
     }
-    Ok(())
+}
+
+/// Encodes `value` into a new binary `NveBinValue` buffer.
+pub fn encode_bin_value_to_vec(value: NveValueRef<'_>) -> Result<Vec<u8>, DecodeError> {
+    let mut w = BinWriter::with_capacity(64);
+    encode_bin_value(value, &mut w);
+    w.finish()
 }
 
 #[inline]

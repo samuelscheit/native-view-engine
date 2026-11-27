@@ -25,8 +25,9 @@ pub const NVE_HYBRID_INTERFACE_ID_BASE: u32 = 0x1000_0000;
 /// Bitmask for the 28-bit deterministic hash payload inside a hybrid `interface_id`.
 pub const NVE_HYBRID_INTERFACE_ID_MASK: u32 = 0x0FFF_FFFF;
 
-/// Current Hybrid FFI vtable ABI version stamped into every generated vtable.
-pub const NVE_HYBRID_ABI_VERSION: u32 = 1;
+/// Current Hybrid FFI vtable ABI version stamped into every generated vtable (owned by the Rust
+/// hybrid runtime, so generated C headers and Rust vtables can never disagree).
+pub use nve_abi::hybrid::NVE_HYBRID_ABI_VERSION;
 
 /// Computes a deterministic hybrid `interface_id >= 0x1000_0000` for a module or view.
 pub fn compute_hybrid_interface_id(kind: &str, name: &str) -> u32 {
