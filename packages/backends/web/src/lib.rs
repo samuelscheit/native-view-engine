@@ -70,8 +70,9 @@ pub use event_replay::{
     drain_valid_pre_hydration_events, pre_hydration_event_to_native,
     pre_hydration_replay_script_tag, CapturedPreHydrationEvent, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
+pub use input_attrs::{decode_form_urlencoded, decode_form_urlencoded_map};
 pub use events::{
-    decode_form_urlencoded_map, is_hard_nav_anchor, resolve_delegated_node,
+    is_hard_nav_anchor, resolve_delegated_node,
     should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
 };
 #[cfg(feature = "hydrate")]
@@ -98,7 +99,7 @@ pub use ssr::{SsrDocumentOptions, SsrOutput};
 pub use ssr_stream::{PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamingShellOutput};
 #[cfg(feature = "ssr")]
 pub use streaming::{
-    decode_form_urlencoded, sanitize_stream_slot_id, scoped_slot_hiding_css,
+    sanitize_stream_slot_id, scoped_slot_hiding_css,
     slot_placeholder_html, stream_slot_name, streaming_http_headers, FormActionResponse,
     LiveUpdateChunk, StreamingDocumentOptions, StreamingError, StreamingMode, StreamingSsrSession,
     ZeroJsLiveConfig, ZeroJsLiveSession, DEFAULT_MAX_LIVE_UPDATES, NVE_LIVE_SINK_IFRAME_HTML,

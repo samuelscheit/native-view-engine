@@ -1,7 +1,7 @@
-//! Stage-2 Opt-In Zero-JS Interactive Live Mode ([`ZeroJsLiveSession`]) and zero-dependency
-//! `application/x-www-form-urlencoded` form body decoding ([`decode_form_urlencoded`]).
+//! Stage-2 Opt-In Zero-JS Interactive Live Mode ([`ZeroJsLiveSession`]); form bodies decode via
+//! [`crate::decode_form_urlencoded`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::streaming::{
     format_light_dom_slot_chunk, sanitize_stream_slot_id, scoped_slot_hiding_css,
@@ -279,62 +279,5 @@ impl ZeroJsLiveSession {
         }
         self.closed = true;
         Some("<template data-nve-stream-end></template></div></div>\n</body>\n</html>\n".to_owned())
-    }
-}
-
-/// Pure, zero-dependency `application/x-www-form-urlencoded` decoder preserving pair order and
-/// repeated keys (handles `+` spaces, `%XX` multi-byte UTF-8, empty values, and bare keys).
-pub fn decode_form_urlencoded(body: &str) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    for segment in body.split('&') {
-        if segment.is_empty() {
-            continue;
-        }
-        let (raw_k, raw_v) = segment.split_once('=').unwrap_or((segment, ""));
-        pairs.push((percent_decode_form(raw_k), percent_decode_form(raw_v)));
-    }
-    pairs
-}
-
-/// Convenience map wrapper over [`decode_form_urlencoded`] (last value wins for duplicate keys).
-pub fn decode_form_urlencoded_map(body: &str) -> BTreeMap<String, String> {
-    decode_form_urlencoded(body).into_iter().collect()
-}
-
-fn percent_decode_form(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                    out.push((hi << 4) | lo);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-#[inline]
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
     }
 }

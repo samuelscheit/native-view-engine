@@ -210,20 +210,21 @@ pub fn web_composition_cancel_on_blur(
     })
 }
 
-/// Decodes an `application/x-www-form-urlencoded` form submission payload into a deterministic map.
-pub fn decode_form_urlencoded_map(raw: &str) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for pair in raw.split('&') {
-        if pair.is_empty() {
-            continue;
-        }
-        let (k, v) = match pair.split_once('=') {
-            Some((k, v)) => (k, v),
-            None => (pair, ""),
-        };
-        out.insert(percent_decode_plus(k), percent_decode_plus(v));
-    }
-    out
+/// Pure `application/x-www-form-urlencoded` decoder preserving pair order and repeated keys
+/// (`+` spaces, `%XX` multi-byte UTF-8, empty values, bare keys; malformed `%` kept literally).
+pub fn decode_form_urlencoded(body: &str) -> Vec<(String, String)> {
+    body.split('&')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let (k, v) = segment.split_once('=').unwrap_or((segment, ""));
+            (percent_decode_plus(k), percent_decode_plus(v))
+        })
+        .collect()
+}
+
+/// Map form of [`decode_form_urlencoded`] (last value wins for repeated keys).
+pub fn decode_form_urlencoded_map(body: &str) -> BTreeMap<String, String> {
+    decode_form_urlencoded(body).into_iter().collect()
 }
 
 fn percent_decode_plus(s: &str) -> String {
