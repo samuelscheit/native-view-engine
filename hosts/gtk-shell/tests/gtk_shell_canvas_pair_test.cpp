@@ -110,6 +110,14 @@ void test_canvas_nodes() {
   const auto now = host.canvas_draw_list_for_node_id(kCanvas);
   NVE_CHECK(std::vector<uint8_t>(now.begin(), now.end()) == second);
   NVE_CHECK(host.widget_for_node_id(kCanvas) == area);
+  // The same draw list id republished with new bytes (node row untouched): `dirty_resources`
+  // re-applies the canvas, which redraws with the new bytes.
+  const std::vector<uint8_t> third = sparkline(5.0f);
+  w.define_resource(6u, kDrawListKind, third);
+  flush(host);
+  NVE_CHECK(host.canvas_redraw_count_for_node_id(kCanvas) == 3u);
+  const auto republished = host.canvas_draw_list_for_node_id(kCanvas);
+  NVE_CHECK(std::vector<uint8_t>(republished.begin(), republished.end()) == third);
   // Detaching the canvas row turns the node back into a plain view.
   w.detach(kCanvas, NVE_TABLE_CANVAS_DESC);
   flush(host);

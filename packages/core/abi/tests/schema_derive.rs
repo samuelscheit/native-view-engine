@@ -104,7 +104,7 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
 
     let scene = scene_abi_descriptor();
     assert_eq!(scene.namespace, Some("NveSceneAbi"));
-    assert_eq!(scene.consts.len(), 14);
+    assert_eq!(scene.consts.len(), 17);
     assert_eq!(scene.records.len(), 4);
 
     let render = <NveRenderNode as NveStructSchema>::SCHEMA;

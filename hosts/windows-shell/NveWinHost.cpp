@@ -138,7 +138,7 @@ void NveWinHost::sync_views() {
   const uint64_t before = tree_.revision();
   {
     auto guard = session_->runtime().acquire_scene();
-    if (guard) (void)tree_.sync(*guard, session_->source_generation());
+    if (guard) (void)tree_.sync(*guard);
   }
   syncing_ = false;
   notify_if_changed(before);

@@ -46,7 +46,7 @@ void test_scene_over_generated_structs() {
   std::memcpy(row.data(), NVE_TABLE_LAYOUT_DEFAULTS, sizeof row);
   const NveTableView table{static_cast<uint32_t>(NVE_TABLE_LAYOUT_KEY & 0xFFFFFFFFu),
                            static_cast<uint32_t>(NVE_TABLE_LAYOUT_KEY >> 32), 0u, NVE_TABLE_LAYOUT_WORDS,
-                           1u, 0u, row.data(), nullptr, nullptr};
+                           1u, 0u, 0u, 0u, row.data(), nullptr, nullptr, nullptr, nullptr};
   NveRenderNode node{};
   node.node_id = NVE_ROOT_NODE_ID;
   node.primary_slot = NVE_PRIMARY_SLOT_NONE;
@@ -84,7 +84,7 @@ void test_generated_str_field() {
   row[NVE_TABLE_ACCESSIBILITY_LABEL.word + 1u] = 7u;
   const NveTableView view{static_cast<uint32_t>(NVE_TABLE_ACCESSIBILITY_KEY & 0xFFFFFFFFu),
                           static_cast<uint32_t>(NVE_TABLE_ACCESSIBILITY_KEY >> 32), 0u,
-                          NVE_TABLE_ACCESSIBILITY_WORDS, 1u, 0u, row.data(), nullptr, nullptr};
+                          NVE_TABLE_ACCESSIBILITY_WORDS, 1u, 0u, 0u, 0u, row.data(), nullptr, nullptr, nullptr, nullptr};
   const std::optional<TableReader> table = TableReader::from_view(view);
   CHECK(table.has_value());
   CHECK(table->str(0, NVE_TABLE_ACCESSIBILITY_LABEL) == std::optional<nve::host::StrSpan>(nve::host::StrSpan{5u, 7u}));
