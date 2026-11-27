@@ -51,12 +51,13 @@ pub(super) fn effective_layout_ext(
 
 #[inline]
 fn has_layered_styles(rec: &NodeRecord) -> bool {
-    rec.extras().is_some_and(|e| {
-        e.typed_style.is_some()
-            || e.standalone_layer.is_some()
-            || e.inline_style_override.is_some()
-            || !e.standalone_raw_attrs.is_empty()
-    })
+    rec.is_dirty_compose()
+        || rec.extras().is_some_and(|e| {
+            e.typed_style.is_some()
+                || e.standalone_layer.is_some()
+                || e.inline_style_override.is_some()
+                || !e.standalone_raw_attrs.is_empty()
+        })
 }
 
 #[inline]
@@ -161,27 +162,37 @@ impl NveMutationWriter {
         if !has_layered_styles(rec)
             && !conflicts_with_direct(rec.standalone_mask, rec.direct_shorthands, kind)
         {
+            let bits = mask_for_attr(kind);
+            let is_style_attr = (bits & MASK_ANY_STYLE) != 0;
             let prev_layout = rec.layout;
             let prev_style = rec.style;
+            let mut next_style = if is_style_attr && !rec.has_explicit_style() {
+                StyleProps::default()
+            } else {
+                rec.style
+            };
             let mut parsed_basis = None;
             let mut border_current = None;
             let mut explicit_color = false;
             let applied = apply_typed_attr_kind(
                 &mut rec.layout,
-                &mut rec.style,
+                &mut next_style,
                 kind,
                 value,
                 |decl| match decl {
                     ExtStyleDecl::FlexBasis(b) => parsed_basis = Some(b),
                     ExtStyleDecl::BorderCurrentColor(flag) => border_current = Some(flag),
                     ExtStyleDecl::ExplicitTextColor => explicit_color = true,
-                    ExtStyleDecl::Raw(..) => {}
+                    ExtStyleDecl::ExplicitStyle | ExtStyleDecl::Raw(..) => {}
                 },
             );
             if !applied {
+                // Invalid CSS value falls back by removing any stale previous value for `kind`.
+                self.remove_standalone_typed_attr(node_id, kind);
                 return;
             }
-            rec.standalone_mask |= mask_for_attr(kind);
+            rec.style = next_style;
+            rec.standalone_mask |= bits;
             rec.direct_shorthands |= shorthand_bit(kind);
             if let Some(basis) = parsed_basis {
                 let next_ext = effective_layout_ext(None, Some(basis));
@@ -212,11 +223,11 @@ impl NveMutationWriter {
             if rec.layout != prev_layout {
                 self.dirty_layout.push(node_id);
             }
-            if rec.style != prev_style || explicit_color || border_current.is_some() {
+            if is_style_attr {
                 rec.set_has_explicit_style(true);
-                if rec.style != prev_style {
-                    self.dirty_style.push(node_id);
-                }
+            }
+            if rec.style != prev_style {
+                self.dirty_style.push(node_id);
             }
             return;
         }
@@ -226,7 +237,8 @@ impl NveMutationWriter {
             .extras_mut()
             .standalone_layer
             .get_or_insert_with(|| Box::new(StandaloneLayer::default()));
-        if apply_to_standalone_layer(layer, kind, value) {
+        if apply_to_standalone_layer(layer, kind, value) || remove_from_standalone_layer(layer, kind)
+        {
             self.mark_dirty_compose(node_id);
         }
     }
@@ -419,7 +431,6 @@ impl NveMutationWriter {
 
             // Layer 3: inline `style="..."` override (parsed once per frame).
             if let Some(override_css) = ext.inline_style_override.as_deref() {
-                let before_style = next_style;
                 let _ = apply_typed_attr_with_ext(
                     &mut next_layout,
                     &mut next_style,
@@ -435,6 +446,9 @@ impl NveMutationWriter {
                             explicit_text_color = true;
                             style_touched = true;
                         }
+                        ExtStyleDecl::ExplicitStyle => {
+                            style_touched = true;
+                        }
                         ExtStyleDecl::Raw("font-weight", v) => {
                             next_fw = Some(Cow::Owned(v.to_owned()));
                         }
@@ -446,9 +460,6 @@ impl NveMutationWriter {
                         }
                     },
                 );
-                if next_style != before_style {
-                    style_touched = true;
-                }
             }
         }
 

@@ -39,7 +39,7 @@ pub use client_hints::{
 pub use css_values::{parse_color, parse_dim, parse_px};
 pub use inline_style::{
     apply_typed_attr, apply_typed_attr_kind, apply_typed_attr_with_ext, canonical_raw_style_key,
-    canonical_typed_attr_key, ExtStyleDecl, TypedAttrKind,
+    ExtStyleDecl, TypedAttrKind,
 };
 pub use input_hints::{AutofillHint, InputMode};
 pub use interaction::{

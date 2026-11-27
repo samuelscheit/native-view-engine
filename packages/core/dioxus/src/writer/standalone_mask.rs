@@ -221,7 +221,7 @@ pub(super) fn apply_to_standalone_layer(
         let applied = apply_typed_attr_kind(&mut tmp_l, &mut tmp_s, kind, value, |decl| match decl {
             ExtStyleDecl::FlexBasis(b) => parsed_basis = Some(b),
             ExtStyleDecl::BorderCurrentColor(flag) => border_current = Some(flag),
-            ExtStyleDecl::ExplicitTextColor | ExtStyleDecl::Raw(..) => {}
+            ExtStyleDecl::ExplicitTextColor | ExtStyleDecl::ExplicitStyle | ExtStyleDecl::Raw(..) => {}
         });
         if !applied {
             return false;
@@ -259,7 +259,7 @@ pub(super) fn apply_to_standalone_layer(
         |decl| match decl {
             ExtStyleDecl::FlexBasis(b) => parsed_basis = Some(b),
             ExtStyleDecl::BorderCurrentColor(flag) => border_current = Some(flag),
-            ExtStyleDecl::ExplicitTextColor | ExtStyleDecl::Raw(..) => {}
+            ExtStyleDecl::ExplicitTextColor | ExtStyleDecl::ExplicitStyle | ExtStyleDecl::Raw(..) => {}
         },
     );
     if !applied {

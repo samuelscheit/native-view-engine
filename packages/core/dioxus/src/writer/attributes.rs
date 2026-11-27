@@ -75,14 +75,14 @@ impl NveMutationWriter {
         match value {
             AttributeValue::Text(s) => self.apply_str_attr(sink, node_id, name, s),
             AttributeValue::Float(f) => {
-                let mut s = String::new();
-                nve_abi::num::write_f64(&mut s, *f);
-                self.apply_str_attr(sink, node_id, name, &s);
+                let mut buf = [0u8; 24];
+                let s = nve_abi::num::format_f64(&mut buf, *f);
+                self.apply_str_attr(sink, node_id, name, s);
             }
             AttributeValue::Int(i) => {
-                let mut s = String::new();
-                nve_abi::num::write_i64(&mut s, *i);
-                self.apply_str_attr(sink, node_id, name, &s);
+                let mut buf = [0u8; 24];
+                let s = nve_abi::num::format_i64(&mut buf, *i);
+                self.apply_str_attr(sink, node_id, name, s);
             }
             AttributeValue::Bool(b) => {
                 let prop_name = canonical_a11y_attr_key(name)
@@ -158,7 +158,7 @@ impl NveMutationWriter {
                     {
                         return;
                     }
-                    self.apply_typed_style(sink, node_id, typed.clone());
+                    self.apply_typed_style(node_id, typed.clone());
                 } else if (name == NVE_SHOW_ON_KEBAB_ATTR || name == NVE_SHOW_ON_ATTR)
                     && let Some(query) = any
                         .as_any()
@@ -257,12 +257,7 @@ impl NveMutationWriter {
 
     /// Applies a [`TypedStyle`] directly into `NodeRecord` with zero string formatting and zero
     /// CSS parsing when no inline `style` or standalone typed attribute override is present.
-    pub(crate) fn apply_typed_style<S: RenderSink>(
-        &mut self,
-        sink: &mut S,
-        node_id: NodeId,
-        typed: TypedStyle,
-    ) {
+    pub(crate) fn apply_typed_style(&mut self, node_id: NodeId, typed: TypedStyle) {
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
@@ -299,7 +294,6 @@ impl NveMutationWriter {
             mark_ext_dirty(&mut self.dirty_extended, ext, node_id, EXT_BACKGROUND_FILL);
         }
         ext.typed_style = Some(typed);
-        let _ = sink;
         self.mark_dirty_compose(node_id);
     }
 

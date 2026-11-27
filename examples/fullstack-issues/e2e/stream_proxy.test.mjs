@@ -160,14 +160,46 @@ test("superseding arm, timeout expiry, and upstream abort while held are handled
     });
     await cut;
     assert.equal(proxy.isHeld(), true);
-    // Destroy upstream socket while held; cut already resolved (single settlement) and held stays true.
+    // Destroy upstream socket while held; verify the client response stays OPEN until release()
+    // (racing `clientDone` against a timer detects premature `res.destroy()` regressions).
     activeRes.socket.destroy();
-    await new Promise((r) => setTimeout(r, 30));
-    assert.equal(proxy.isHeld(), true, "upstream RST while held must not tear down held response");
+    const whileHeld = await Promise.race([
+      clientDone,
+      new Promise((r) => setTimeout(() => r("still-open"), 35)),
+    ]);
+    assert.equal(whileHeld, "still-open", "upstream RST while held must not tear down held response");
     assert.equal(clientChunk, "<html><body>BEFORE<marker/>");
     proxy.release();
     const outcome = await clientDone;
     assert.notEqual(outcome, "end", "abort after release must not look like a clean EOF");
+
+    // 3. Upstream aborts AFTER release() (while forwarding): must destroy client instead of clean EOF.
+    const cut2 = proxy.arm({ marker: "<marker/>", timeoutMs: 5_000 });
+    let gotTail = false;
+    let onTail;
+    const sawTail = new Promise((r) => {
+      onTail = r;
+    });
+    const clientDone2 = new Promise((resolve) => {
+      const req = http.get(`${proxy.origin}/issues`, (res) => {
+        res.on("data", (c) => {
+          if (c.toString("utf8").includes("TAIL") && !gotTail) {
+            gotTail = true;
+            onTail();
+          }
+        });
+        res.on("end", () => resolve("end"));
+        res.on("close", () => resolve("close"));
+        res.on("error", () => resolve("error"));
+      });
+      req.on("error", () => resolve("req-error"));
+    });
+    await cut2;
+    proxy.release();
+    await sawTail;
+    activeRes.socket.destroy();
+    const outcome2 = await clientDone2;
+    assert.notEqual(outcome2, "end", "upstream abort after release() must not look like a clean EOF");
   } finally {
     activeRes?.socket?.destroy();
     await closeServer(proxy.server);

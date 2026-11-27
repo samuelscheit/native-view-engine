@@ -14,17 +14,23 @@ pub fn parse_px(raw: &str) -> Option<f32> {
     parse_f32(num)
 }
 
-pub fn parse_dim(raw: &str) -> Dimension {
+/// Strict CSS dimension parser: `auto`, `<f32>%`, or `<px>` length; returns `None` on invalid tokens.
+pub(crate) fn parse_dim_checked(raw: &str) -> Option<Dimension> {
     let s = raw.trim();
-    if s.eq_ignore_ascii_case("auto") {
-        Dimension::Auto
-    } else if let Some(pct) = s.strip_suffix('%') {
-        parse_f32(pct.trim())
-            .map(Dimension::Percent)
-            .unwrap_or(Dimension::Auto)
-    } else {
-        parse_px(s).map(Dimension::Points).unwrap_or(Dimension::Auto)
+    if s.is_empty() {
+        return None;
     }
+    if s.eq_ignore_ascii_case("auto") {
+        Some(Dimension::Auto)
+    } else if let Some(pct) = s.strip_suffix('%') {
+        parse_f32(pct.trim()).map(Dimension::Percent)
+    } else {
+        parse_px(s).map(Dimension::Points)
+    }
+}
+
+pub fn parse_dim(raw: &str) -> Dimension {
+    parse_dim_checked(raw).unwrap_or(Dimension::Auto)
 }
 
 pub fn parse_color(raw: &str) -> Option<ColorRgba> {

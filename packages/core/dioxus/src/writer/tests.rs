@@ -488,4 +488,49 @@ fn plain_standalone_typed_attrs_allocate_zero_node_extras_and_current_color_repa
         writer.current_color_borders.is_empty(),
         "removing a currentColor subtree must remove its entries from current_color_borders"
     );
+
+    // 3. Direct-path removal guard: removing unset overlapping longhands/shorthands must NOT
+    // clobber active fields or allocate `NodeExtras`, while removing active Color/Border/Flex
+    // resets cleanly.
+    let tx5 = writer.begin_tx(&mut sink, 1, 5);
+    let pad_node = tx5.writer.alloc_node(tx5.sink, ComponentKind::View, None);
+    let pad_el = ElementId(50);
+    tx5.writer.bind_element_id(pad_node, pad_el);
+    tx5.writer.apply_str_attr(tx5.sink, pad_node, "padding", "8px");
+    let top_node = tx5.writer.alloc_node(tx5.sink, ComponentKind::View, None);
+    let top_el = ElementId(51);
+    tx5.writer.bind_element_id(top_node, top_el);
+    tx5.writer.apply_str_attr(tx5.sink, top_node, "padding-top", "4px");
+    let cbf_node = tx5.writer.alloc_node(tx5.sink, ComponentKind::View, None);
+    let cbf_el = ElementId(52);
+    tx5.writer.bind_element_id(cbf_node, cbf_el);
+    tx5.writer.apply_str_attr(tx5.sink, cbf_node, "color", "#ef4444");
+    tx5.writer.apply_str_attr(tx5.sink, cbf_node, "border", "2px solid");
+    tx5.writer.apply_str_attr(tx5.sink, cbf_node, "flex", "2 0 120px");
+    tx5.finish_frame(true).unwrap();
+    assert!(writer.nodes[&pad_node].extras.is_none());
+    assert!(writer.nodes[&top_node].extras.is_none());
+    assert_eq!(writer.current_color_borders, vec![cbf_node]);
+
+    let mut tx6 = writer.begin_tx(&mut sink, 1, 6);
+    tx6.set_attribute("padding-left", None, &AttributeValue::None, pad_el);
+    tx6.set_attribute("padding-horizontal", None, &AttributeValue::None, pad_el);
+    tx6.set_attribute("padding", None, &AttributeValue::None, top_el);
+    tx6.set_attribute("color", None, &AttributeValue::None, cbf_el);
+    tx6.set_attribute("border", None, &AttributeValue::None, cbf_el);
+    tx6.set_attribute("flex", None, &AttributeValue::None, cbf_el);
+    tx6.finish_frame(true).unwrap();
+    assert_eq!(writer.nodes[&pad_node].layout.padding, EdgeInsets::all(8.0));
+    assert!(writer.nodes[&pad_node].extras.is_none());
+    assert_eq!(writer.nodes[&top_node].layout.padding.top, 4.0);
+    assert!(writer.nodes[&top_node].extras.is_none());
+    assert_eq!(writer.nodes[&cbf_node].style.text_color, StyleProps::default().text_color);
+    assert!(!writer.nodes[&cbf_node].has_explicit_text_color());
+    assert_eq!(writer.nodes[&cbf_node].style.border_width, 0.0);
+    assert!(writer.current_color_borders.is_empty());
+    assert_eq!(
+        (writer.nodes[&cbf_node].layout.flex_grow, writer.nodes[&cbf_node].layout.flex_shrink),
+        (0.0, 1.0)
+    );
+    assert!(writer.node_layout_ext(cbf_node).is_none());
 }

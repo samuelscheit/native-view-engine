@@ -5,7 +5,7 @@ use nve_abi::num::parse_f32;
 use nve_abi::{Dimension, FlexAlign, FlexDirection, FlexJustify, LayoutProps, StyleProps};
 
 use crate::css_shorthand;
-use crate::css_values::{parse_color, parse_dim, parse_px};
+use crate::css_values::{parse_color, parse_dim_checked, parse_px};
 
 /// Returns the canonical kebab-case raw prop key for inline CSS declarations that are
 /// forwarded via `raw_props` rather than stored in the binary ABI `LayoutProps`/`StyleProps`.
@@ -123,56 +123,22 @@ impl TypedAttrKind {
         })
     }
 
-    /// Canonical kebab-case attribute name for `self`.
+    /// Returns `true` when this attribute writes to [`StyleProps`] rather than [`LayoutProps`].
     #[inline]
-    pub const fn canonical_name(self) -> &'static str {
-        match self {
-            Self::PaddingTop => "padding-top",
-            Self::PaddingRight => "padding-right",
-            Self::PaddingBottom => "padding-bottom",
-            Self::PaddingLeft => "padding-left",
-            Self::PaddingHorizontal => "padding-horizontal",
-            Self::PaddingVertical => "padding-vertical",
-            Self::MarginTop => "margin-top",
-            Self::MarginRight => "margin-right",
-            Self::MarginBottom => "margin-bottom",
-            Self::MarginLeft => "margin-left",
-            Self::MarginHorizontal => "margin-horizontal",
-            Self::MarginVertical => "margin-vertical",
-            Self::Width => "width",
-            Self::Height => "height",
-            Self::MinWidth => "min-width",
-            Self::MinHeight => "min-height",
-            Self::MaxWidth => "max-width",
-            Self::MaxHeight => "max-height",
-            Self::FlexDirection => "flex-direction",
-            Self::JustifyContent => "justify-content",
-            Self::AlignItems => "align-items",
-            Self::Flex => "flex",
-            Self::FlexBasis => "flex-basis",
-            Self::FlexGrow => "flex-grow",
-            Self::FlexShrink => "flex-shrink",
-            Self::Gap => "gap",
-            Self::Padding => "padding",
-            Self::Margin => "margin",
-            Self::Border => "border",
-            Self::Background => "background-color",
-            Self::Color => "color",
-            Self::BorderColor => "border-color",
-            Self::BorderWidth => "border-width",
-            Self::BorderRadius => "border-radius",
-            Self::Opacity => "opacity",
-            Self::FontSize => "font-size",
-            Self::ZIndex => "z-index",
-        }
+    pub const fn is_style_prop(self) -> bool {
+        matches!(
+            self,
+            Self::Border
+                | Self::Background
+                | Self::Color
+                | Self::BorderColor
+                | Self::BorderWidth
+                | Self::BorderRadius
+                | Self::Opacity
+                | Self::FontSize
+                | Self::ZIndex
+        )
     }
-}
-
-/// Returns the canonical kebab-case attribute key when `key` is a standalone typed layout/style
-/// attribute handled by [`apply_typed_attr_with_ext`] (everything except `"style"` itself).
-#[inline]
-pub fn canonical_typed_attr_key(key: &str) -> Option<&'static str> {
-    TypedAttrKind::from_key(key).map(TypedAttrKind::canonical_name)
 }
 
 /// A parsed inline declaration that lives outside the binary `LayoutProps` / `StyleProps`.
@@ -186,6 +152,9 @@ pub enum ExtStyleDecl<'a> {
     BorderCurrentColor(bool),
     /// Emitted when a valid `color` declaration explicitly sets `StyleProps::text_color`.
     ExplicitTextColor,
+    /// Emitted when any valid [`StyleProps`] declaration applied (including default-valued ones
+    /// like `font-size: 16px` or `opacity: 1` that would otherwise compare equal to defaults).
+    ExplicitStyle,
     /// A recognized non-ABI `style` declaration (`font-weight`, `text-align`, `box-shadow`,
     /// `overflow`, ...) under its canonical kebab-case key, forwarded via `raw_props`.
     Raw(&'static str, &'a str),
@@ -227,7 +196,13 @@ where
         &mut explicit_text_color,
         &mut on_ext,
     );
-    emit_color_ext(style, border_uses_current_color, explicit_text_color, &mut on_ext);
+    emit_style_ext(
+        style,
+        border_uses_current_color,
+        explicit_text_color,
+        applied && kind.is_style_prop(),
+        &mut on_ext,
+    );
     applied
 }
 
@@ -247,6 +222,7 @@ where
 {
     let mut border_uses_current_color: Option<bool> = None;
     let mut explicit_text_color = false;
+    let mut explicit_style = false;
     if key == "style" {
         for decl in value.split(';') {
             if let Some((raw_k, raw_v)) = decl.split_once(':') {
@@ -256,7 +232,7 @@ where
                     continue;
                 }
                 if let Some(kind) = TypedAttrKind::from_key(k) {
-                    let _ = apply_typed_attr_kind_inner(
+                    if apply_typed_attr_kind_inner(
                         layout,
                         style,
                         kind,
@@ -264,19 +240,28 @@ where
                         &mut border_uses_current_color,
                         &mut explicit_text_color,
                         &mut on_ext,
-                    );
+                    ) && kind.is_style_prop()
+                    {
+                        explicit_style = true;
+                    }
                 } else if let Some(canonical) = canonical_raw_style_key(k) {
                     on_ext(ExtStyleDecl::Raw(canonical, v));
                 }
             }
         }
-        emit_color_ext(style, border_uses_current_color, explicit_text_color, &mut on_ext);
+        emit_style_ext(
+            style,
+            border_uses_current_color,
+            explicit_text_color,
+            explicit_style,
+            &mut on_ext,
+        );
         return true;
     }
     let Some(kind) = TypedAttrKind::from_key(key) else {
         return false;
     };
-    let _ = apply_typed_attr_kind_inner(
+    if apply_typed_attr_kind_inner(
         layout,
         style,
         kind,
@@ -284,20 +269,33 @@ where
         &mut border_uses_current_color,
         &mut explicit_text_color,
         &mut on_ext,
+    ) && kind.is_style_prop()
+    {
+        explicit_style = true;
+    }
+    emit_style_ext(
+        style,
+        border_uses_current_color,
+        explicit_text_color,
+        explicit_style,
+        &mut on_ext,
     );
-    emit_color_ext(style, border_uses_current_color, explicit_text_color, &mut on_ext);
     true
 }
 
 #[inline]
-fn emit_color_ext<F>(
+fn emit_style_ext<F>(
     style: &mut StyleProps,
     border_uses_current_color: Option<bool>,
     explicit_text_color: bool,
+    explicit_style: bool,
     on_ext: &mut F,
 ) where
     F: FnMut(ExtStyleDecl<'_>),
 {
+    if explicit_style {
+        on_ext(ExtStyleDecl::ExplicitStyle);
+    }
     if explicit_text_color {
         on_ext(ExtStyleDecl::ExplicitTextColor);
     }
@@ -375,37 +373,58 @@ where
             layout.margin.top = v;
             layout.margin.bottom = v;
         }
-        K::Width => layout.width = parse_dim(value),
-        K::Height => layout.height = parse_dim(value),
-        K::MinWidth => layout.min_width = parse_dim(value),
-        K::MinHeight => layout.min_height = parse_dim(value),
-        K::MaxWidth => layout.max_width = parse_dim(value),
-        K::MaxHeight => layout.max_height = parse_dim(value),
+        K::Width => {
+            let Some(d) = parse_dim_checked(value) else { return false };
+            layout.width = d;
+        }
+        K::Height => {
+            let Some(d) = parse_dim_checked(value) else { return false };
+            layout.height = d;
+        }
+        K::MinWidth => {
+            let Some(d) = parse_dim_checked(value) else { return false };
+            layout.min_width = d;
+        }
+        K::MinHeight => {
+            let Some(d) = parse_dim_checked(value) else { return false };
+            layout.min_height = d;
+        }
+        K::MaxWidth => {
+            let Some(d) = parse_dim_checked(value) else { return false };
+            layout.max_width = d;
+        }
+        K::MaxHeight => {
+            let Some(d) = parse_dim_checked(value) else { return false };
+            layout.max_height = d;
+        }
         K::FlexDirection => {
-            layout.flex_direction = match value {
+            layout.flex_direction = match value.trim() {
+                "column" => FlexDirection::Column,
                 "row" => FlexDirection::Row,
                 "column-reverse" | "columnReverse" => FlexDirection::ColumnReverse,
                 "row-reverse" | "rowReverse" => FlexDirection::RowReverse,
-                _ => FlexDirection::Column,
+                _ => return false,
             };
         }
         K::JustifyContent => {
-            layout.justify_content = match value {
+            layout.justify_content = match value.trim() {
+                "flex-start" | "start" | "flexStart" => FlexJustify::FlexStart,
                 "center" => FlexJustify::Center,
-                "flex-end" | "end" => FlexJustify::FlexEnd,
+                "flex-end" | "end" | "flexEnd" => FlexJustify::FlexEnd,
                 "space-between" | "spaceBetween" => FlexJustify::SpaceBetween,
                 "space-around" | "spaceAround" => FlexJustify::SpaceAround,
                 "space-evenly" | "spaceEvenly" => FlexJustify::SpaceEvenly,
-                _ => FlexJustify::FlexStart,
+                _ => return false,
             };
         }
         K::AlignItems => {
-            layout.align_items = match value {
-                "flex-start" | "start" => FlexAlign::FlexStart,
+            layout.align_items = match value.trim() {
+                "stretch" => FlexAlign::Stretch,
+                "flex-start" | "start" | "flexStart" => FlexAlign::FlexStart,
                 "center" => FlexAlign::Center,
-                "flex-end" | "end" => FlexAlign::FlexEnd,
+                "flex-end" | "end" | "flexEnd" => FlexAlign::FlexEnd,
                 "baseline" => FlexAlign::Baseline,
-                _ => FlexAlign::Stretch,
+                _ => return false,
             };
         }
         K::Flex => {
@@ -485,7 +504,7 @@ where
             style.font_size = v;
         }
         K::ZIndex => {
-            let Ok(v) = value.parse::<i32>() else { return false };
+            let Ok(v) = value.trim().parse::<i32>() else { return false };
             style.z_index = v;
         }
     }

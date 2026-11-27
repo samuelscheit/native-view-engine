@@ -101,11 +101,8 @@ impl<S: RenderSink> WriteMutations for MutationTx<'_, S> {
         let nid = self.writer.alloc_node(self.sink, ComponentKind::View, None);
         // Empty `if`/`match` arms must not occupy layout: as a plain `View` the placeholder is a
         // flex item and adds a spurious `gap` on every backend (Web CSS, Yoga/Skia).
-        self.writer.apply_typed_style(
-            self.sink,
-            nid,
-            TypedStyle::new().display(Display::None),
-        );
+        self.writer
+            .apply_typed_style(nid, TypedStyle::new().display(Display::None));
         self.writer.bind_element_id(nid, id);
         self.writer.stack.push(nid);
     }

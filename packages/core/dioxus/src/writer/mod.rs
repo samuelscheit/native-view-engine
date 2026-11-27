@@ -135,6 +135,11 @@ pub(crate) struct NodeRecord {
     flags: u8,
 }
 
+const _: () = assert!(
+    core::mem::size_of::<NodeRecord>() <= 200,
+    "NodeRecord must remain compact (<= 200 bytes)"
+);
+
 impl Default for NodeRecord {
     fn default() -> Self {
         Self {
@@ -374,7 +379,11 @@ impl NveMutationWriter {
         self.style_sources.clear();
         self.style_walk_stack.clear();
         self.color_tree_dirty = false;
-        self.dirty_compose.clear();
+        for nid in self.dirty_compose.drain(..) {
+            if let Some(rec) = self.nodes.get_mut(&nid) {
+                rec.set_dirty_compose(false);
+            }
+        }
         self.raw_style_scratch.clear();
         self.dirty_children.clear();
         self.dirty_layout.clear();

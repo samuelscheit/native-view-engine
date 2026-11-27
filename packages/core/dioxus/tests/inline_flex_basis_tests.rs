@@ -473,3 +473,60 @@ fn layer2_shorthand_vs_longhand_precedence_survives_static_dynamic_split_and_tog
     );
     assert_eq!(sink.style_of("border_split").border_width, 5.0);
 }
+
+#[component]
+fn SameFrameTransitionAndFallbackApp() -> Element {
+    let mut step = use_signal(|| 0usize);
+    let s = step();
+    // Same-frame removal of last layer paired with standalone typed attr insertion.
+    let ov: Option<String> = (s == 0).then(|| "hidden".to_owned());
+    let inline_bg: Option<String> = (s == 0).then(|| "background-color: #ef4444".to_owned());
+    let added_w: Option<String> = (s >= 1).then(|| "240px".to_owned());
+    let added_border: Option<String> = (s >= 1).then(|| "2px solid".to_owned());
+    // Invalid-value update must clear stale value (direct path -> default 0, layered -> nve_style).
+    let dyn_pad = if s == 0 { "8px" } else { "garbage" };
+    let typed_pad = TypedStyle::new().padding(14.0);
+    rsx! {
+        view {
+            style: "color: #ffffff",
+            view { test_id: "ov_to_w", "overflow": ov, width: added_w.clone() }
+            view { test_id: "style_to_wb", style: inline_bg, width: added_w, "border": added_border }
+            view { test_id: "direct_invalid", padding: "{dyn_pad}" }
+            view { test_id: "layered_invalid", nve_style: typed_pad, padding: "{dyn_pad}" }
+            // Both direct-path and inline `style` default-valued `font-size: 16px` must stay 16px under a 24px parent Text.
+            text {
+                font_size: "24px",
+                text { test_id: "child_default_fs", font_size: "16px", "body" }
+                text { test_id: "child_inline_default_fs", style: "font-size: 16px", "inline" }
+            }
+            pressable { test_id: "cycle", onpress: move |_| step += 1 }
+        }
+    }
+}
+
+#[test]
+fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
+    use nve_abi::{ColorRgba, EdgeInsets};
+    let mut surface = DioxusSurface::new(1, SameFrameTransitionAndFallbackApp);
+    let mut sink = ExtSink::default();
+    surface.flush_into(1, &mut sink).unwrap();
+
+    // Frame 1: initial states + default-valued `font_size: "16px"` resists 24px Text inheritance.
+    assert_eq!(sink.raw_of("ov_to_w", "overflow"), Some(Some("hidden")));
+    assert_eq!(sink.layout[&sink.node("direct_invalid")].padding, EdgeInsets::all(8.0));
+    assert_eq!(sink.layout[&sink.node("layered_invalid")].padding, EdgeInsets::all(8.0));
+    assert_eq!(sink.style_of("child_default_fs").font_size, 16.0);
+    assert_eq!(sink.style_of("child_inline_default_fs").font_size, 16.0);
+
+    // Frame 2: removing last layer (`overflow` / `style`) + adding `width` / `border` in the SAME
+    // frame must preserve the newly added typed attrs and resolve `currentColor` against white parent.
+    press(&mut surface, &mut sink, 2);
+    assert_eq!(sink.raw_of("ov_to_w", "overflow"), Some(None));
+    assert_eq!(sink.layout[&sink.node("ov_to_w")].width, Dimension::Points(240.0));
+    assert_eq!(sink.layout[&sink.node("style_to_wb")].width, Dimension::Points(240.0));
+    assert_eq!(sink.style_of("style_to_wb").border_width, 2.0);
+    assert_eq!(sink.style_of("style_to_wb").border_color, ColorRgba::WHITE);
+    // Updating `padding: "8px"` -> `"garbage"` clears stale value (default 0 / nve_style 14px).
+    assert_eq!(sink.layout[&sink.node("direct_invalid")].padding, EdgeInsets::all(0.0));
+    assert_eq!(sink.layout[&sink.node("layered_invalid")].padding, EdgeInsets::all(14.0));
+}
