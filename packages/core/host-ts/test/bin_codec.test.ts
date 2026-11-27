@@ -104,8 +104,65 @@ test('rejects malformed input exactly like Rust', () => {
   expectKind('trailingBytes', () => BinReader.validate(Uint8Array.of(0, 0)), 'two values');
   expectKind('truncated', () => BinReader.validate(Uint8Array.of(6, 5, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0)), 'overrun');
   expectKind('unexpectedTag', () => new BinReader(Uint8Array.of(0)).readI64(), 'wrong tag');
-  BinReader.validate(nested(BIN_VALUE_MAX_DEPTH));
+  assert.equal(BinReader.validate(Uint8Array.of(BinTag.Null)), 0, 'scalar depth 0');
+  assert.equal(BinReader.validate(GOLDEN), 2, 'golden depth 2');
+  assert.equal(BinReader.validate(nested(BIN_VALUE_MAX_DEPTH)), BIN_VALUE_MAX_DEPTH, 'exact maxDepth');
   expectKind('maxDepth', () => BinReader.validate(nested(BIN_VALUE_MAX_DEPTH + 1)), 'depth 65');
+
+  // Rust `validate_value_at` check order parity: tag -> depth -> header/EOF.
+  const wrapDepth = (leafBytes: Uint8Array): Uint8Array => {
+    const w = new BinWriter();
+    const marks: BinMark[] = [];
+    for (let i = 0; i < BIN_VALUE_MAX_DEPTH; i++) marks.push(w.beginArray(1));
+    w.raw(leafBytes);
+    for (const m of marks.reverse()) w.end(m);
+    return w.toBytes();
+  };
+  const atMaxDepth = (leafBytes: Uint8Array, fn: (r: BinReader) => void): void => {
+    const r = new BinReader(wrapDepth(leafBytes));
+    const step = (remaining: number): void => {
+      if (remaining === 0) {
+        fn(r);
+        r.bytesView(r.remaining);
+        return;
+      }
+      r.readArray(() => step(remaining - 1));
+    };
+    step(BIN_VALUE_MAX_DEPTH);
+    r.requireEnd();
+  };
+  // (a) Mismatched valid tag -> unexpectedTag; invalid wire tag -> invalidTag; EOF -> truncated.
+  expectKind('invalidTag', () => BinReader.validate(wrapDepth(Uint8Array.of(0x7f))), 'checkAt invalidTag at depth 64');
+  atMaxDepth(Uint8Array.of(0x7f), (r) => {
+    expectKind('invalidTag', () => r.readArray(() => null), 'inContainer invalidTag at depth 64');
+  });
+  atMaxDepth(Uint8Array.of(BinTag.Map), (r) => {
+    expectKind('unexpectedTag', () => r.readArray(() => null), 'inContainer mismatched tag at depth 64');
+  });
+  atMaxDepth(Uint8Array.of(BinTag.Null), (r) => {
+    expectKind('unexpectedTag', () => r.readArray(() => null), 'inContainer Null tag at depth 64');
+    expectKind('unexpectedTag', () => r.readMap(() => null), 'inContainer Null for Map at depth 64');
+    assert.equal(r.readNull(), true);
+    expectKind('truncated', () => r.readArray(() => null), 'inContainer EOF at depth 64');
+    expectKind('truncated', () => r.checkValue(), 'checkValue EOF at depth 64');
+  });
+  // (b) Container tag with truncated header at depth 64 reports maxDepth (not truncated).
+  expectKind(
+    'maxDepth',
+    () => BinReader.validate(wrapDepth(Uint8Array.of(BinTag.Array))),
+    'checkAt truncated Array header at depth 64',
+  );
+  expectKind(
+    'maxDepth',
+    () => BinReader.validate(wrapDepth(Uint8Array.of(BinTag.Map, 4, 0))),
+    'checkAt truncated Map header at depth 64',
+  );
+  atMaxDepth(Uint8Array.of(BinTag.Array), (r) => {
+    expectKind('maxDepth', () => r.readArray(() => null), 'inContainer truncated Array header at depth 64');
+  });
+  atMaxDepth(Uint8Array.of(BinTag.Map, 4, 0), (r) => {
+    expectKind('maxDepth', () => r.readMap(() => null), 'inContainer truncated Map header at depth 64');
+  });
   // A leading BOM is data (Rust keeps it), not something to strip.
   const bom = new BinWriter();
   bom.writeStr('\ufeffx');

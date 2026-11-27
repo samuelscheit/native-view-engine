@@ -22,7 +22,7 @@ pub fn generate_export_web_component(
     let tag_name = web_component_tag(&spec.name);
     let element_js = GeneratedFile {
         relative_path: format!("{tag_name}.generated.js"),
-        content: emit_web_component_js(spec, &tag_name),
+        content: emit_web_component_js(spec, &tag_name)?,
     };
     let types_dts = GeneratedFile {
         relative_path: format!("{tag_name}.generated.d.ts"),
@@ -37,7 +37,7 @@ pub fn generate_export_web_component(
     })
 }
 
-fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
+fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> Result<String, CodegenError> {
     let name = &spec.name;
     let elem_class = format!("{name}Element");
     let wasm_pkg = format!("./pkg/{}_web.js", to_snake_case(name));
@@ -53,66 +53,17 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
         out,
         "// Typed Custom Element wrapping a `wasm-bindgen` NVE surface."
     );
+    writeln!(
+        out,
+        "// Imports `@nve/host` (erasable TS; consume via a workspace or TS-aware bundler)."
+    );
+    writeln!(out);
+    writeln!(out, "import {{");
+    writeln!(out, "  decodeJsValue as decodeNveBinValue,");
+    writeln!(out, "  encodeJsValue as encodeNveBinValue,");
+    writeln!(out, "}} from '@nve/host';");
     writeln!(out);
     writeln!(out, "let _wasmModulePromise = null;");
-    writeln!(out, "const _utf8Encoder = new TextEncoder();");
-    writeln!(out, "const _utf8Decoder = new TextDecoder('utf-8', {{ fatal: true }});");
-    writeln!(out);
-    writeln!(out, "function _encodeNveBinValue(value, chunks = []) {{");
-    writeln!(out, "  if (value === null || value === undefined) {{ chunks.push(new Uint8Array([0])); return chunks; }}");
-    writeln!(out, "  if (typeof value === 'boolean') {{ chunks.push(new Uint8Array([1, value ? 1 : 0])); return chunks; }}");
-    writeln!(out, "  if (typeof value === 'number') {{");
-    writeln!(out, "    const buf = new ArrayBuffer(9); const dv = new DataView(buf);");
-    writeln!(out, "    if (Number.isInteger(value) && Number.isSafeInteger(value)) {{ dv.setUint8(0, 2); dv.setBigInt64(1, BigInt(value), true); }}");
-    writeln!(out, "    else {{ dv.setUint8(0, 3); dv.setFloat64(1, value, true); }}");
-    writeln!(out, "    chunks.push(new Uint8Array(buf)); return chunks;");
-    writeln!(out, "  }}");
-    writeln!(out, "  if (typeof value === 'string') {{");
-    writeln!(out, "    const bytes = _utf8Encoder.encode(value); const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
-    writeln!(out, "    dv.setUint8(0, 4); dv.setUint32(1, bytes.byteLength, true); chunks.push(new Uint8Array(hdr), bytes); return chunks;");
-    writeln!(out, "  }}");
-    writeln!(out, "  if (value instanceof Uint8Array) {{");
-    writeln!(out, "    const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
-    writeln!(out, "    dv.setUint8(0, 5); dv.setUint32(1, value.byteLength, true); chunks.push(new Uint8Array(hdr), value); return chunks;");
-    writeln!(out, "  }}");
-    writeln!(out, "  if (Array.isArray(value)) {{");
-    writeln!(out, "    const inner = []; const cnt = new ArrayBuffer(4); new DataView(cnt).setUint32(0, value.length, true); inner.push(new Uint8Array(cnt));");
-    writeln!(out, "    for (const item of value) _encodeNveBinValue(item, inner);");
-    writeln!(out, "    const bodyLen = inner.reduce((a, b) => a + b.byteLength, 0); const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
-    writeln!(out, "    dv.setUint8(0, 6); dv.setUint32(1, bodyLen, true); chunks.push(new Uint8Array(hdr), ...inner); return chunks;");
-    writeln!(out, "  }}");
-    writeln!(out, "  const entries = Object.entries(value).filter(([, v]) => v !== undefined);");
-    writeln!(out, "  const inner = []; const cnt = new ArrayBuffer(4); new DataView(cnt).setUint32(0, entries.length, true); inner.push(new Uint8Array(cnt));");
-    writeln!(out, "  for (const [k, v] of entries) {{");
-    writeln!(out, "    const kb = _utf8Encoder.encode(k); const kl = new ArrayBuffer(4); new DataView(kl).setUint32(0, kb.byteLength, true);");
-    writeln!(out, "    inner.push(new Uint8Array(kl), kb); _encodeNveBinValue(v, inner);");
-    writeln!(out, "  }}");
-    writeln!(out, "  const bodyLen = inner.reduce((a, b) => a + b.byteLength, 0); const hdr = new ArrayBuffer(5); const dv = new DataView(hdr);");
-    writeln!(out, "  dv.setUint8(0, 7); dv.setUint32(1, bodyLen, true); chunks.push(new Uint8Array(hdr), ...inner); return chunks;");
-    writeln!(out, "}}");
-    writeln!(out);
-    writeln!(out, "function encodeNveBinValue(value) {{");
-    writeln!(out, "  const chunks = _encodeNveBinValue(value);");
-    writeln!(out, "  const total = chunks.reduce((a, b) => a + b.byteLength, 0);");
-    writeln!(out, "  const out = new Uint8Array(total); let off = 0;");
-    writeln!(out, "  for (const c of chunks) {{ out.set(c, off); off += c.byteLength; }}");
-    writeln!(out, "  return out;");
-    writeln!(out, "}}");
-    writeln!(out);
-    writeln!(out, "function decodeNveBinValue(bytes, state = {{ off: 0 }}) {{");
-    writeln!(out, "  if (!(bytes instanceof Uint8Array) || state.off >= bytes.byteLength) return null;");
-    writeln!(out, "  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);");
-    writeln!(out, "  const tag = bytes[state.off++];");
-    writeln!(out, "  if (tag === 0) return null;");
-    writeln!(out, "  if (tag === 1) return bytes[state.off++] !== 0;");
-    writeln!(out, "  if (tag === 2) {{ const v = Number(dv.getBigInt64(state.off, true)); state.off += 8; return v; }}");
-    writeln!(out, "  if (tag === 3) {{ const v = dv.getFloat64(state.off, true); state.off += 8; return v; }}");
-    writeln!(out, "  if (tag === 4) {{ const n = dv.getUint32(state.off, true); state.off += 4; const s = _utf8Decoder.decode(bytes.subarray(state.off, state.off + n)); state.off += n; return s; }}");
-    writeln!(out, "  if (tag === 5) {{ const n = dv.getUint32(state.off, true); state.off += 4; const b = bytes.subarray(state.off, state.off + n); state.off += n; return b; }}");
-    writeln!(out, "  if (tag === 6) {{ state.off += 4; const n = dv.getUint32(state.off, true); state.off += 4; const arr = []; for (let i = 0; i < n; i++) arr.push(decodeNveBinValue(bytes, state)); return arr; }}");
-    writeln!(out, "  if (tag === 7) {{ state.off += 4; const n = dv.getUint32(state.off, true); state.off += 4; const obj = {{}}; for (let i = 0; i < n; i++) {{ const kl = dv.getUint32(state.off, true); state.off += 4; const k = _utf8Decoder.decode(bytes.subarray(state.off, state.off + kl)); state.off += kl; obj[k] = decodeNveBinValue(bytes, state); }} return obj; }}");
-    writeln!(out, "  return null;");
-    writeln!(out, "}}");
     writeln!(out);
     writeln!(out, "async function loadWasmModule(moduleUrl) {{");
     writeln!(out, "  if (!_wasmModulePromise) {{");
@@ -168,7 +119,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out, "    this._surface = null;");
     writeln!(out, "    this._props = {{");
     for prop in &spec.props {
-        if let Some(def) = js_default_literal(prop) {
+        if let Some(def) = js_default_literal(prop)? {
             writeln!(
                 out,
                 "      '{}': {def},",
@@ -233,7 +184,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     for prop in &spec.props {
         let attr = to_kebab_case(&prop.name);
         let key = escape_ts_single_quoted(&prop.name);
-        let parse_expr = js_parse_attr_expr(&prop.prop_type);
+        let parse_expr = js_parse_attr_expr(prop)?;
         writeln!(out, "      case '{}':", escape_ts_single_quoted(&attr));
         writeln!(out, "        this._props['{key}'] = {parse_expr};");
         writeln!(out, "        this._syncProps();");
@@ -336,7 +287,7 @@ fn emit_web_component_js(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out);
     writeln!(out, "define{name}();");
 
-    out.into_string()
+    Ok(out.into_string())
 }
 
 fn emit_web_component_dts(spec: &NveExportSpec, tag_name: &str) -> String {
@@ -390,15 +341,20 @@ fn emit_web_component_dts(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out, "export interface {name}Props {{");
     for prop in &spec.props {
         let camel = to_camel_case(&prop.name);
-        let opt = if prop.optional || prop.default_value.is_some() {
-            "?"
-        } else {
-            ""
-        };
-        let null_s = if prop.nullable { " | null" } else { "" };
+        let has_default = prop.default_value.is_some();
+        let opt = if prop.optional || has_default { "?" } else { "" };
+        let is_nullable =
+            prop.nullable || matches!(prop.default_value, Some(DefaultValue::Null));
+        let mut suffix = String::new();
+        if is_nullable {
+            suffix.push_str(" | null");
+        }
+        if prop.optional && !has_default {
+            suffix.push_str(" | undefined");
+        }
         writeln!(
             out,
-            "  {camel}{opt}: {}{null_s};",
+            "  {camel}{opt}: {}{suffix};",
             dts_type(&prop.prop_type)
         );
     }
@@ -414,12 +370,22 @@ fn emit_web_component_dts(spec: &NveExportSpec, tag_name: &str) -> String {
     writeln!(out, "  static readonly observedAttributes: readonly string[];");
     for prop in &spec.props {
         let camel = to_camel_case(&prop.name);
-        let null_s = if prop.optional || prop.nullable {
-            " | undefined"
-        } else {
-            ""
-        };
-        writeln!(out, "  {camel}: {}{null_s};", dts_type(&prop.prop_type));
+        let has_default = prop.default_value.is_some();
+        let is_nullable =
+            prop.nullable || matches!(prop.default_value, Some(DefaultValue::Null));
+        let opt = if prop.optional && !has_default { "?" } else { "" };
+        let mut suffix = String::new();
+        if is_nullable {
+            suffix.push_str(" | null");
+        }
+        if prop.optional && !has_default {
+            suffix.push_str(" | undefined");
+        }
+        writeln!(
+            out,
+            "  {camel}{opt}: {}{suffix};",
+            dts_type(&prop.prop_type)
+        );
     }
     for cmd in &spec.commands {
         let mname = to_camel_case(&cmd.name);
@@ -464,25 +430,93 @@ fn dom_event_name(ev: &EventSpec) -> String {
     to_kebab_case(&strip_on_prefix(&ev.name))
 }
 
-fn js_default_literal(prop: &PropSpec) -> Option<String> {
-    let def = prop.default_value.as_ref()?;
-    match def {
-        DefaultValue::Null => Some("null".to_owned()),
-        DefaultValue::Bool(b) => Some(if *b { "true" } else { "false" }.to_owned()),
-        DefaultValue::Int(i) => Some(i.to_string()),
-        DefaultValue::Float(f) => Some(format_float_literal(*f)),
-        DefaultValue::String(s) => Some(format!("'{}'", escape_ts_single_quoted(s))),
-    }
+/// Renders a prop's JS default literal, rejecting out-of-range integer defaults on `Int32` /
+/// `IntEnum` props so `number`-typed properties never receive a `bigint` literal.
+///
+/// - Only `PropType::Mixed` emits a `...n` BigInt literal (when `|i| > 2^53 - 1`).
+/// - `Float` / `Double` with `DefaultValue::Int(i)` emit `{i}.0` (JS `number`). Note that whole
+///   floats like `1.0` satisfy `Number.isSafeInteger`, so `encodeJsValue` writes `BinTag.I64` and
+///   Rust's `BinValueView::as_number()` / `BinReader::readF64()` widens them to `f64` losslessly.
+fn js_default_literal(prop: &PropSpec) -> Result<Option<String>, CodegenError> {
+    let Some(def) = prop.default_value.as_ref() else {
+        return Ok(None);
+    };
+    let lit = match (&prop.prop_type, def) {
+        (_, DefaultValue::Null) => "null".to_owned(),
+        (_, DefaultValue::Bool(b)) => if *b { "true" } else { "false" }.to_owned(),
+        (PropType::Float | PropType::Double, DefaultValue::Int(i)) => format!("{i}.0"),
+        (PropType::Int32, DefaultValue::Int(i)) => {
+            let v = i32::try_from(*i).map_err(|_| {
+                CodegenError::validation(format!(
+                    "web component prop '{}' (Int32) default {i} exceeds i32 range",
+                    prop.name
+                ))
+            })?;
+            v.to_string()
+        }
+        (PropType::IntEnum { variants }, DefaultValue::Int(i)) => {
+            let v = i32::try_from(*i).map_err(|_| {
+                CodegenError::validation(format!(
+                    "web component prop '{}' (IntEnum) default {i} exceeds i32 range",
+                    prop.name
+                ))
+            })?;
+            if !variants.is_empty() && !variants.contains(&v) {
+                return Err(CodegenError::validation(format!(
+                    "web component prop '{}' (IntEnum) default {v} is not in variants {variants:?}",
+                    prop.name
+                )));
+            }
+            v.to_string()
+        }
+        (PropType::Mixed, DefaultValue::Int(i)) => {
+            const MAX_SAFE_INT: i64 = (1i64 << 53) - 1;
+            if (-MAX_SAFE_INT..=MAX_SAFE_INT).contains(i) {
+                i.to_string()
+            } else {
+                format!("{i}n")
+            }
+        }
+        (_, DefaultValue::Int(i)) => {
+            return Err(CodegenError::validation(format!(
+                "web component prop '{}' ({:?}) does not accept integer default {i}",
+                prop.name, prop.prop_type
+            )));
+        }
+        (_, DefaultValue::Float(f)) => format_float_literal(*f),
+        (_, DefaultValue::String(s)) => format!("'{}'", escape_ts_single_quoted(s)),
+    };
+    Ok(Some(lit))
 }
 
-fn js_parse_attr_expr(ty: &PropType) -> &'static str {
-    match ty {
-        PropType::Bool => "newValue !== null && newValue !== 'false'",
-        PropType::Int32 | PropType::IntEnum { .. } => "newValue === null ? undefined : Number.parseInt(newValue, 10)",
-        PropType::Float | PropType::Double => "newValue === null ? undefined : Number.parseFloat(newValue)",
-        PropType::Array { .. } => "newValue === null ? undefined : newValue.split(',').map((s) => s.trim()).filter(Boolean)",
-        _ => "newValue ?? undefined",
-    }
+/// Generates the HTML-attribute parser expression for `attributeChangedCallback`.
+///
+/// Removing an attribute (`newValue === null`) restores the prop's declared default when one
+/// exists — including `Bool` props with `default = true`, which intentionally revert to `true` on
+/// attribute removal instead of `false`. Non-defaulted `Bool` props treat removal as `false`
+/// (standard HTML boolean attribute semantics), and other non-defaulted props revert to `undefined`.
+fn js_parse_attr_expr(prop: &PropSpec) -> Result<String, CodegenError> {
+    let fallback = js_default_literal(prop)?.unwrap_or_else(|| "undefined".to_owned());
+    let expr = match &prop.prop_type {
+        PropType::Bool => {
+            if prop.default_value.is_some() {
+                format!("newValue === null ? {fallback} : newValue !== 'false'")
+            } else {
+                "newValue !== null && newValue !== 'false'".to_owned()
+            }
+        }
+        PropType::Int32 | PropType::IntEnum { .. } => {
+            format!("newValue === null ? {fallback} : Number.parseInt(newValue, 10)")
+        }
+        PropType::Float | PropType::Double => {
+            format!("newValue === null ? {fallback} : Number.parseFloat(newValue)")
+        }
+        PropType::Array { .. } => format!(
+            "newValue === null ? {fallback} : newValue.split(',').map((s) => s.trim()).filter(Boolean)"
+        ),
+        _ => format!("newValue === null ? {fallback} : newValue"),
+    };
+    Ok(expr)
 }
 
 fn dts_type(ty: &PropType) -> String {
@@ -512,7 +546,8 @@ fn dts_type(ty: &PropType) -> String {
                 .iter()
                 .map(|f| {
                     let opt = if f.optional { "?" } else { "" };
-                    format!("{}{opt}: {}", f.name, dts_type(&f.field_type))
+                    let null_s = if f.nullable { " | null" } else { "" };
+                    format!("{}{opt}: {}{null_s}", f.name, dts_type(&f.field_type))
                 })
                 .collect();
             format!("Readonly<{{ {} }}>", parts.join("; "))

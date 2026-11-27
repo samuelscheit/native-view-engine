@@ -323,7 +323,7 @@ const _: () = {
 };
 
 // ============================================================================
-// Deterministic XXH64 Schema Hash (must match `nve-codegen::compute_scene_schema_hash`)
+// Deterministic XXH64 Schema Hash (the single source: `nve codegen abi` emits it verbatim)
 // ============================================================================
 
 const fn hash_field(h: &mut Xxh64Hasher, name: &str, ty: &str, sep: &[u8], v: usize) {

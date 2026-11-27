@@ -1,13 +1,14 @@
 //! Internal [`SurfaceState`] and [`RuntimeInner`] owning `LaidOutScene`, reusable `ChangeSet`
-//! scratch buffers, `WireDecoder`, and `FrameTickHook`s; publication lives in `publish.rs`.
+//! scratch buffers, `WireDecoder`, and `FrameTickHook`s (publication lives in `publish.rs`).
 
 use nve_abi::table::NveTableView;
 use nve_abi::{
     FrameId, NveLayoutRect, NveNodeRow, NveRuntimeMetrics, NveRuntimeSceneView, NveScrollOffset,
 };
+use nve_engine::LayoutRect;
 use nve_layout::{DynLayoutEngine, LaidOutScene};
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeStore, RealizationOrder};
+use nve_store::{ChangeSet, NodeStore, RealizationOrder, ResourceStore};
 
 use crate::app::{AppFrame, FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeError, Timer};
@@ -50,8 +51,12 @@ pub(crate) struct SurfaceState {
     pub(crate) dirty_stamp: Vec<u32>,
     pub(crate) dirty_epoch: u32,
     pub(crate) removed_ids: Vec<u32>,
-    pub(crate) scroll_offsets: Vec<NveScrollOffset>,
+    /// Visual scroll shifts published through `NveRuntimeSceneView::scroll_offsets`.
+    pub(crate) published_scroll: Vec<NveScrollOffset>,
     pub(crate) published_view: NveRuntimeSceneView,
+    /// `ResourceStore` of the store `published_view` borrows (null while invalidated); lets
+    /// `resource_payload` serve any `scene_acquire` thread without touching `!Sync` apps.
+    pub(crate) published_resources: *const ResourceStore,
     pub(crate) metrics: NveRuntimeMetrics,
     pub(crate) needs_render: bool,
     pub(crate) needs_publish: bool,
@@ -430,3 +435,12 @@ impl RuntimeInner {
     }
 }
 
+#[inline]
+pub(crate) fn layout_rect_to_abi(r: LayoutRect) -> NveLayoutRect {
+    NveLayoutRect {
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+    }
+}

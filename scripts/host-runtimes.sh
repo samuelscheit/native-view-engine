@@ -37,6 +37,16 @@ host_runtime_has_tools() {
   ! host_runtime_missing_tool "$1" >/dev/null
 }
 
+# Every suite tests against generated ABI / table / XXH64 vector files (`nve codegen abi`); they
+# are gitignored, so generate them first. `scripts/check-all.sh` runs its ABI codegen suite instead.
+host_runtime_generate() {
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "error: cargo is needed to generate the host ABI files (nve codegen abi)" >&2
+    return 1
+  fi
+  (cd "$HOST_RT_ROOT" && cargo run --locked -q -p nve-cli -- codegen abi >/dev/null)
+}
+
 # Java sources under `$1`, NUL-separated (safe for paths with spaces or newlines).
 host_runtime_java_sources() {
   find "$1" -name '*.java' -print0
@@ -152,6 +162,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
       echo "error: host-$s needs '$missing', which is not on PATH" >&2
       exit 1
     fi
+  done
+  host_runtime_generate
+  for s in "${suites[@]}"; do
     printf '\n== host-%s ==\n' "$s"
     "suite_host_$s"
   done

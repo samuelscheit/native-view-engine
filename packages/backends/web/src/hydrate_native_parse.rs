@@ -31,11 +31,11 @@ pub(crate) struct NativeHtmlNode {
     pub(crate) live_control_value: Option<String>,
     pub(crate) slot_name: Option<String>,
     pub(crate) data_nve_slot: Option<String>,
+    pub(crate) data_nve_slot_ack: Option<String>,
     pub(crate) data_nve_dsd_host: bool,
     pub(crate) is_shadow_template: bool,
     pub(crate) is_app_container: bool,
     pub(crate) ssr_hash: Option<String>,
-    pub(crate) closed: bool,
     pub(crate) children: Vec<usize>,
 }
 
@@ -208,24 +208,30 @@ fn has_attr(attrs: &[(String, Option<String>)], name: &str) -> bool {
     attrs.iter().any(|(k, _)| k == name)
 }
 
-fn find_close_raw_tag(html: &str, from: usize, close_tag_lower: &[u8]) -> usize {
+/// Byte offset just past the raw-text close tag (`</style>` / `</script>`) at or after `from`,
+/// or `None` when the input ends before it (a truncated stream).
+fn find_close_raw_tag(html: &str, from: usize, close_tag_lower: &[u8]) -> Option<usize> {
     let bytes = html.as_bytes();
     let nlen = close_tag_lower.len();
     let mut i = from;
-    while i + nlen <= bytes.len() {
+    while i + nlen < bytes.len() {
         if bytes[i] == b'<'
             && bytes[i + 1] == b'/'
             && bytes[i..i + nlen].eq_ignore_ascii_case(close_tag_lower)
+            && matches!(
+                bytes[i + nlen],
+                b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | b'\x0c'
+            )
         {
             let mut end = i + nlen;
             while end < bytes.len() && bytes[end] != b'>' {
                 end += 1;
             }
-            return if end < bytes.len() { end + 1 } else { bytes.len() };
+            return (end < bytes.len()).then_some(end + 1);
         }
         i += 1;
     }
-    bytes.len()
+    None
 }
 
 /// Parses an SSR fragment OR full/partial streaming DSD HTML document into a [`NativeSsrTree`]
@@ -301,7 +307,6 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
                 .rposition(|&idx| tree.arena[idx].tag.eq_ignore_ascii_case(close_name))
             {
                 let closed_idx = open_stack[pos];
-                tree.arena[closed_idx].closed = true;
                 for sel in &mut selects {
                     if sel.open_option == Some(closed_idx) {
                         sel.open_option = None;
@@ -354,11 +359,19 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
         }
 
         if tag == "style" || tag == "script" {
+            // A raw-text element truncated before its close tag holds partial CSS: never seed it.
+            let complete = self_closing || {
+                let close_pat: &[u8] = if tag == "style" { b"</style" } else { b"</script" };
+                let close = find_close_raw_tag(html, i, close_pat);
+                i = close.unwrap_or(html.len());
+                close.is_some()
+            };
             if tag == "style" {
                 if has_attr(&attrs, "data-nve-base") {
                     tree.has_base_style = true;
                 }
-                if (has_attr(&attrs, "data-nve-ssr") || has_attr(&attrs, "data-nve-ssr-chunk"))
+                if complete
+                    && (has_attr(&attrs, "data-nve-ssr") || has_attr(&attrs, "data-nve-ssr-chunk"))
                     && let Some(csv) = attr_val(&attrs, "data-nve-hashes")
                 {
                     for tok in csv.split(',') {
@@ -368,10 +381,6 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
                         }
                     }
                 }
-            }
-            if !self_closing {
-                let close_pat: &[u8] = if tag == "style" { b"</style" } else { b"</script" };
-                i = find_close_raw_tag(html, i, close_pat);
             }
             continue;
         }
@@ -403,11 +412,13 @@ pub(crate) fn parse_ssr_html_tree(html: &str) -> NativeSsrTree {
                 .then(|| attr_val(&attrs, "name").map(str::to_owned))
                 .flatten(),
             data_nve_slot: attr_val(&attrs, "data-nve-slot").map(str::to_owned),
+            data_nve_slot_ack: (tag == "template")
+                .then(|| attr_val(&attrs, "data-nve-slot-ack").map(str::to_owned))
+                .flatten(),
             data_nve_dsd_host: has_attr(&attrs, "data-nve-dsd-host"),
             is_shadow_template: tag == "template" && has_attr(&attrs, "shadowrootmode"),
             is_app_container: attr_val(&attrs, "id") == Some("app"),
             ssr_hash,
-            closed: is_void,
             children: Vec::new(),
         });
 
@@ -498,14 +509,15 @@ fn promote_dsd_in_native_tree(tree: &mut NativeSsrTree, top_level: &[usize]) {
             .copied()
             .find(|&c| tree.arena[c].is_shadow_template);
 
-        // Collect complete Light-DOM `[data-nve-slot="{id}"]` chunks (last wins).
+        // Collect acked Light-DOM `[data-nve-slot="{id}"]` chunks (last wins): only a chunk
+        // directly followed by its `data-nve-slot-ack` is complete (mirrors the browser).
         let mut slot_chunks: HashMap<String, usize> = HashMap::default();
-        for &cid in &tree.arena[h_idx].children {
-            let child = &tree.arena[cid];
-            if child.closed
-                && let Some(ref slot_id) = child.data_nve_slot
+        for pair in tree.arena[h_idx].children.windows(2) {
+            let (chunk, ack) = (&tree.arena[pair[0]], &tree.arena[pair[1]]);
+            if let Some(ref slot_id) = chunk.data_nve_slot
+                && ack.data_nve_slot_ack.as_ref() == Some(slot_id)
             {
-                slot_chunks.insert(slot_id.clone(), cid);
+                slot_chunks.insert(slot_id.clone(), pair[0]);
             }
         }
 

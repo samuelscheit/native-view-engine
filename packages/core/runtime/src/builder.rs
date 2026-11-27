@@ -88,7 +88,9 @@ impl RuntimeError {
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SceneBusy => f.write_str("runtime scene is currently locked by an active reader"),
+            Self::SceneBusy => {
+                f.write_str("runtime scene is busy (held by an active reader or writer)")
+            }
             Self::WireDecode(msg) => write!(f, "NVE2 wire decode failed: {msg}"),
             Self::Io(msg) => write!(f, "runtime I/O error: {msg}"),
             Self::InvalidArg(msg) => write!(f, "invalid runtime argument: {msg}"),
@@ -222,7 +224,8 @@ impl RuntimeBuilder {
                     dirty_stamp: Vec::new(),
                     dirty_epoch: 0,
                     removed_ids: Vec::new(),
-                    scroll_offsets: Vec::new(),
+                    published_scroll: Vec::new(),
+                    published_resources: core::ptr::null(),
                     published_view: NveRuntimeSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,
                         ..NveRuntimeSceneView::default()

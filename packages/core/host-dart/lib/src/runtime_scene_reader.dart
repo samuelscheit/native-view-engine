@@ -3,7 +3,7 @@
 /// Mirrors the C++ `nve::host::RuntimeSceneReader`: construction validates the schema hash, every
 /// slab against its count, the text slab's UTF-8, every live node's child range, every dirty
 /// index, and every published table once; later reads are plain typed-list loads. Native hosts
-/// wrap the borrowed pointers with `Pointer.asTypedList` (`package:nve_host/nve_native.dart`);
+/// wrap the borrowed pointers with `Pointer.asTypedList` (`package:nve_host/nve_host_ffi.dart`);
 /// tests and web hosts pass ordinary typed lists.
 library;
 

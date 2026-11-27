@@ -182,6 +182,20 @@ impl<T: Copy + Default> SpanPool<T> {
         self.live
     }
 
+    /// Pre-sizes the contiguous backing slab fallibly so bulk loads (such as Frame-0 boot) avoid
+    /// repeated geometric reallocations without aborting on untrusted hints.
+    #[inline]
+    pub fn try_reserve_data(
+        &mut self,
+        min_cap: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        if self.data.capacity() < min_cap {
+            self.data
+                .try_reserve(min_cap.saturating_sub(self.data.len()))?;
+        }
+        Ok(())
+    }
+
     fn alloc(&mut self, len: u32) -> u32 {
         assert!(len <= MAX_SPAN_LEN, "SpanPool: span length {len} exceeds MAX_SPAN_LEN");
         let class = class_of(len) as usize;
@@ -315,6 +329,14 @@ impl StrArena {
     #[inline(always)]
     pub fn live(&self) -> usize {
         self.0.live()
+    }
+
+    #[inline]
+    pub(crate) fn try_reserve_bytes(
+        &mut self,
+        min_cap: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.0.try_reserve_data(min_cap)
     }
 
     /// Crate-private O(1) unchecked UTF-8 slice read for live row words owned by the same

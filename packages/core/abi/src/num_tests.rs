@@ -279,3 +279,27 @@ fn slow_path_stays_within_a_few_ulp() {
         assert!(ulps <= 16, "{lit}: {ours:e} vs {std:e} ({ulps} ulp)");
     }
 }
+
+#[test]
+fn stack_formatters_reuse_dirty_buffer_across_extremes() {
+    let mut buf = [0xFFu8; 24];
+    assert_eq!(format_i64(&mut buf, i64::MIN), "-9223372036854775808");
+    buf.fill(0xFF);
+    assert_eq!(format_i64(&mut buf, i64::MAX), "9223372036854775807");
+    buf.fill(0xFF);
+    assert_eq!(format_u64(&mut buf, u64::MAX), "18446744073709551615");
+    buf.fill(0xFF);
+    assert_eq!(format_u64(&mut buf, 0), "0");
+    for (v, want) in [
+        (f64::NAN, "0"),
+        (f64::INFINITY, "0"),
+        (f64::NEG_INFINITY, "0"),
+        (-0.0, "0"),
+        (1e300, "9007199254740.992"),
+        (-1e300, "-9007199254740.992"),
+        (-3.125, "-3.125"),
+    ] {
+        buf.fill(0xFF);
+        assert_eq!(format_f64(&mut buf, v), want, "{v:e}");
+    }
+}

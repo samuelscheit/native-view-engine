@@ -9,6 +9,7 @@
 pub mod app;
 pub mod builder;
 pub mod c_api;
+mod hooks;
 mod lock;
 mod pair;
 mod publish;

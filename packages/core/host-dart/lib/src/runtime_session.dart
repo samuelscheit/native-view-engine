@@ -9,15 +9,17 @@ library;
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
+import 'generated/nve_abi_const.generated.dart';
+import 'generated/nve_abi_ffi.generated.dart';
+import 'generated/nve_runtime_abi.generated.dart';
+import 'hybrid_ffi.dart' show HybridArena;
 import 'key64.dart';
-import 'native_values.dart';
-import 'nve_core_abi.generated.dart';
-import 'nve_runtime_abi.generated.dart';
 import 'runtime_api.dart';
 import 'runtime_scene_reader.dart';
 import 'scene_reader.dart' show SceneErrorKind, SceneException;
 import 'table_reader.dart';
 import 'utf8.dart' show encodeUtf8CodePointAt, utf16UnitsAt, utf8EncodedLength;
+import 'value_tree.dart' show NveValueTree;
 
 /// One input event (`NveDirectEvent`); string fields are copied into native memory per dispatch.
 final class RuntimeEvent {
@@ -293,7 +295,7 @@ final class RuntimeSession {
     final view = bytes.asTypedList(textBytes);
     final array = _events.reserve(events.length * ffi.sizeOf<NveDirectEvent>()).cast<NveDirectEvent>();
     // Structured values only: plain input batches never allocate an arena.
-    final arena = events.any((e) => e.value != null) ? NativeArena() : null;
+    final arena = events.any((e) => e.value != null) ? HybridArena() : null;
     var cursor = 0;
     void copyStr(String s, NveStrSlice out) {
       final start = cursor;
@@ -324,7 +326,7 @@ final class RuntimeSession {
         out.value.tag = NveValueTag.nullValue.code;
       } else {
         try {
-          arena.writeValue(out.value, e.value);
+          NveValueTree.writeObject(arena, out.value, e.value);
         } on Object {
           arena.dispose();
           rethrow;

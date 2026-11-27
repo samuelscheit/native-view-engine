@@ -7,7 +7,8 @@
 /// - [NveScenePainter] / [NveTablePainter] paint scene tables (extend with module painters).
 library;
 
-export 'package:nve_host/nve_native.dart';
+export 'package:nve_host/nve_host.dart';
+export 'package:nve_host/nve_host_ffi.dart';
 
 export 'src/canvas_semantics.dart';
 export 'src/draw_list_painter.dart';

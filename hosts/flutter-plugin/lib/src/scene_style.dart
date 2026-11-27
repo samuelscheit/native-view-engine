@@ -43,7 +43,7 @@ final class NveTextStyle {
   final double? lineHeight;
   final int? maxLines;
 
-  /// `NveTypographyTable.decoration*` bits.
+  /// `TypographyTable.decoration*` bits.
   final int decoration;
 
   /// This style overridden by node [index]'s `Typography` row in [table] (if any).
@@ -53,35 +53,35 @@ final class NveTextStyle {
       return this;
     }
     final t = table!;
-    final set = t.u32(row, NveTypographyTable.set);
+    final set = t.u32(row, TypographyTable.set);
     bool has(int bit) => set & bit != 0;
-    final rawColor = t.color(row, NveTypographyTable.color).packed;
-    final rawSize = t.f32(row, NveTypographyTable.fontSize);
-    final rawWeight = t.u32(row, NveTypographyTable.fontWeight);
-    final size = has(NveTypographyTable.setFontSize) || (rawSize - 16).abs() > 1e-4 ? rawSize : fontSize;
-    final lh = t.length(row, NveTypographyTable.lineHeight);
-    final family = has(NveTypographyTable.setFontFamily) ? s.str(t, row, NveTypographyTable.fontFamily) : fontFamily;
+    final rawColor = t.color(row, TypographyTable.color).packed;
+    final rawSize = t.f32(row, TypographyTable.fontSize);
+    final rawWeight = t.u32(row, TypographyTable.fontWeight);
+    final size = has(NveTypographySet.fontSize) || (rawSize - 16).abs() > 1e-4 ? rawSize : fontSize;
+    final lh = t.length(row, TypographyTable.lineHeight);
+    final family = has(NveTypographySet.fontFamily) ? s.str(t, row, TypographyTable.fontFamily) : fontFamily;
     return NveTextStyle(
-      color: has(NveTypographyTable.setColor) || rawColor != nveDefaultTextColor ? rawColor : color,
+      color: has(NveTypographySet.color) || rawColor != nveDefaultTextColor ? rawColor : color,
       fontSize: size,
-      fontWeight: has(NveTypographyTable.setFontWeight) || rawWeight != 400 ? rawWeight : fontWeight,
-      italic: has(NveTypographyTable.setFontStyle)
-          ? t.enumValue(row, NveTypographyTable.fontStyle) != NveFontStyle.normal
+      fontWeight: has(NveTypographySet.fontWeight) || rawWeight != 400 ? rawWeight : fontWeight,
+      italic: has(NveTypographySet.fontStyle)
+          ? t.enumValue(row, TypographyTable.fontStyle) != NveFontStyle.normal
           : italic,
-      textAlign: has(NveTypographyTable.setTextAlign) || t.enumValue(row, NveTypographyTable.textAlign) != NveTextAlign.start
-          ? t.enumValue(row, NveTypographyTable.textAlign)
+      textAlign: has(NveTypographySet.textAlign) || t.enumValue(row, TypographyTable.textAlign) != NveTextAlign.start
+          ? t.enumValue(row, TypographyTable.textAlign)
           : textAlign,
       fontFamily: family == null || family.isEmpty ? null : family,
-      letterSpacing: has(NveTypographyTable.setLetterSpacing) ? t.f32(row, NveTypographyTable.letterSpacing) : letterSpacing,
-      lineHeight: has(NveTypographyTable.setLineHeight)
+      letterSpacing: has(NveTypographySet.letterSpacing) ? t.f32(row, TypographyTable.letterSpacing) : letterSpacing,
+      lineHeight: has(NveTypographySet.lineHeight)
           ? switch (lh.unit) {
               LengthUnit.points => lh.value,
               LengthUnit.percent => size * lh.value / 100,
               LengthUnit.auto => null,
             }
           : lineHeight,
-      maxLines: has(NveTypographyTable.setMaxLines) ? t.u32(row, NveTypographyTable.maxLines) : maxLines,
-      decoration: has(NveTypographyTable.setTextDecoration) ? t.u32(row, NveTypographyTable.textDecoration) : decoration,
+      maxLines: has(NveTypographySet.maxLines) ? t.u32(row, TypographyTable.maxLines) : maxLines,
+      decoration: has(NveTypographySet.textDecoration) ? t.u32(row, TypographyTable.textDecoration) : decoration,
     );
   }
 
@@ -95,9 +95,9 @@ final class NveTextStyle {
         letterSpacing: letterSpacing,
         height: lineHeight != null && fontSize > 0 ? lineHeight! / fontSize : null,
         decoration: TextDecoration.combine([
-          if (decoration & NveTypographyTable.decorationUnderline != 0) TextDecoration.underline,
-          if (decoration & NveTypographyTable.decorationOverline != 0) TextDecoration.overline,
-          if (decoration & NveTypographyTable.decorationLineThrough != 0) TextDecoration.lineThrough,
+          if (decoration & NveTextDecoration.underline != 0) TextDecoration.underline,
+          if (decoration & NveTextDecoration.overline != 0) TextDecoration.overline,
+          if (decoration & NveTextDecoration.lineThrough != 0) TextDecoration.lineThrough,
         ]),
       );
 

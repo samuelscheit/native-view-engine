@@ -167,12 +167,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: DocsAction,
     },
-    /// Pre-bake a zero-copy `frame0.nvereloc` instant-boot scene for any native NVE app.
+    /// Pre-bake a Frame-0 `frame0.nve2` keyframe for any native NVE app.
     Prerender {
-        /// App to prerender (`studio` or `counter`).
+        /// App to prerender (`studio` or `kitchen-sink`).
         #[arg(long, default_value = "studio")]
         app: String,
-        /// Output file path for the pre-baked `frame0.nvereloc` binary.
+        /// Output file path for the pre-baked `frame0.nve2` binary.
         #[arg(long)]
         out: PathBuf,
         /// Target logical viewport width in points.
@@ -544,7 +544,7 @@ mod tests {
             "--app",
             "studio",
             "--out",
-            "/tmp/frame0.nvereloc",
+            "/tmp/frame0.nve2",
             "--width",
             "1280",
             "--height",
@@ -561,7 +561,7 @@ mod tests {
                 scale,
             } => {
                 assert_eq!(app, "studio");
-                assert_eq!(out, PathBuf::from("/tmp/frame0.nvereloc"));
+                assert_eq!(out, PathBuf::from("/tmp/frame0.nve2"));
                 assert_eq!(width, 1280.0);
                 assert_eq!(height, 800.0);
                 assert_eq!(scale, 1.0);

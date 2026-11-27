@@ -16,12 +16,12 @@ pub mod visual;
 #[cfg(test)]
 mod tests;
 
-pub use box_shadow::{parse_box_shadow, write_box_shadows_css, BoxShadow};
+pub use box_shadow::{BoxShadow, parse_box_shadow, write_box_shadows_css};
 pub use interaction::{
     Accessibility, AccessibilityMut, AccessibilityRef, AriaAutoComplete, AriaLive, AriaOrientation,
     AriaRole, AriaTriState, DebugId, DebugIdMut, DebugIdRef, Interaction, InteractionMut,
-    InteractionRef, StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
-    NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+    InteractionRef, NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_ROLE_ATTR, NVE_SUSPENSE_ATTR,
+    StreamBoundary, StreamBoundaryMut, StreamBoundaryRef, StreamSlotRole,
 };
 pub use layout::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, Direction, Display, FlexDirection, FlexWrap,
@@ -38,34 +38,112 @@ pub use resources::{
     StateRules, Transitions,
 };
 pub use visual::{
-    text_decoration, FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive,
-    ResponsiveMut, ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef,
-    Transform, TransformMut, TransformRef, Typography, TypographyMut, TypographyRef, VerticalAlign,
-    Visibility, Visual, VisualMut, VisualRef, WhiteSpace, WordBreak,
+    FontStyle, Motion, MotionMut, MotionRef, Overflow, OverflowWrap, Responsive, ResponsiveMut,
+    ResponsiveRef, TextAlign, TextContent, TextContentMut, TextContentRef, Transform, TransformMut,
+    TransformRef, Typography, TypographyMut, TypographyRef, VerticalAlign, Visibility, Visual,
+    VisualMut, VisualRef, WhiteSpace, WordBreak, text_decoration,
 };
 
 use nve_store::{NveTable, RealizationOrder};
 
-/// Registers every cross-platform core table and its resource codecs in the process-global table registry.
-/// Idempotent and fast after the first call.
-pub fn register_core_tables() {
-    let _ = Layout::slot();
-    let _ = GridLayout::slot();
-    let _ = GridItem::slot();
-    let _ = Visual::slot();
-    let _ = Typography::slot();
-    let _ = TextContent::slot();
-    let _ = Transform::slot();
-    let _ = Motion::slot();
-    let _ = Responsive::slot();
-    let _ = Interaction::slot();
-    let _ = Accessibility::slot();
-    let _ = DebugId::slot();
-    let _ = StreamBoundary::slot();
-    let _ = Link::slot();
-    let _ = Scroll::slot();
-    let _ = Image::slot();
-    let _ = TextInput::slot();
+macro_rules! define_core_tables {
+    ($($table:ident),+ $(,)?) => {
+        /// Canonical descriptor list of all 17 cross-platform core tables.
+        pub const CORE_TABLE_DESCS: &[&nve_store::TableDesc] = &[$(&$table::DESC),+];
+
+        /// Registers every cross-platform core table and its resource codecs in the process-global
+        /// table registry. Idempotent and fast after the first call.
+        pub fn register_core_tables() {
+            $(let _ = $table::slot();)+
+        }
+    };
+}
+
+define_core_tables!(
+    Layout,
+    GridLayout,
+    GridItem,
+    Visual,
+    Typography,
+    TextContent,
+    Transform,
+    Motion,
+    Responsive,
+    Interaction,
+    Accessibility,
+    DebugId,
+    StreamBoundary,
+    Link,
+    Scroll,
+    Image,
+    TextInput,
+);
+
+const fn word(name: &'static str, value: u32) -> nve_abi::table::WordConstDesc {
+    nve_abi::table::WordConstDesc { name, value }
+}
+
+/// Every `word_enum!` the core tables use, plus the `Typography::SET_*` and `text_decoration::*`
+/// bit sets: emitted next to the table field specs for foreign hosts.
+pub const CORE_WORD_CONSTS: &[nve_abi::table::WordConstGroup] = &[
+    AlignItems::WORD_CONSTS,
+    AriaAutoComplete::WORD_CONSTS,
+    AriaLive::WORD_CONSTS,
+    AriaOrientation::WORD_CONSTS,
+    AriaRole::WORD_CONSTS,
+    AriaTriState::WORD_CONSTS,
+    Display::WORD_CONSTS,
+    FlexDirection::WORD_CONSTS,
+    FontStyle::WORD_CONSTS,
+    ImageFit::WORD_CONSTS,
+    InputKind::WORD_CONSTS,
+    JustifyContent::WORD_CONSTS,
+    LinkTarget::WORD_CONSTS,
+    Overflow::WORD_CONSTS,
+    OverflowWrap::WORD_CONSTS,
+    Position::WORD_CONSTS,
+    ScrollAxes::WORD_CONSTS,
+    Scrollbars::WORD_CONSTS,
+    TextAlign::WORD_CONSTS,
+    VerticalAlign::WORD_CONSTS,
+    Visibility::WORD_CONSTS,
+    WhiteSpace::WORD_CONSTS,
+    WordBreak::WORD_CONSTS,
+    nve_abi::table::WordConstGroup {
+        name: "TypographySet",
+        values: &[
+            word("Color", Typography::SET_COLOR),
+            word("FontSize", Typography::SET_FONT_SIZE),
+            word("LineHeight", Typography::SET_LINE_HEIGHT),
+            word("LetterSpacing", Typography::SET_LETTER_SPACING),
+            word("FontFamily", Typography::SET_FONT_FAMILY),
+            word("MaxLines", Typography::SET_MAX_LINES),
+            word("FontWeight", Typography::SET_FONT_WEIGHT),
+            word("FontStyle", Typography::SET_FONT_STYLE),
+            word("WhiteSpace", Typography::SET_WHITE_SPACE),
+            word("WordBreak", Typography::SET_WORD_BREAK),
+            word("OverflowWrap", Typography::SET_OVERFLOW_WRAP),
+            word("TextAlign", Typography::SET_TEXT_ALIGN),
+            word("TextDecoration", Typography::SET_TEXT_DECORATION),
+            word("VerticalAlign", Typography::SET_VERTICAL_ALIGN),
+        ],
+    },
+    nve_abi::table::WordConstGroup {
+        name: "TextDecoration",
+        values: &[
+            word("Underline", text_decoration::UNDERLINE as u32),
+            word("Overline", text_decoration::OVERLINE as u32),
+            word("LineThrough", text_decoration::LINE_THROUGH as u32),
+        ],
+    },
+];
+
+/// Deterministic 64-bit XXH64 schema digest over [`CORE_TABLE_DESCS`].
+///
+/// Independent of process-global lazy table registration order or optional module tables (such as
+/// `Canvas` or `Svg`), so cold Frame-0 pre-warm always matches saved `frame0.nve2` footers.
+pub fn core_tables_schema_hash() -> u64 {
+    nve_store::tables_schema_hash(CORE_TABLE_DESCS)
 }
 
 /// Returns `true` when `id` carries a [`TextInput`] row with [`InputKind::Hidden`].

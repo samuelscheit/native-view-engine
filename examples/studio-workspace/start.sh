@@ -116,15 +116,15 @@ if [[ "$START_WEB" -eq 1 ]]; then
     echo "==> Building hosts/web-shell WASM bundle..."
     "$ROOT_DIR/hosts/web-shell/build.sh"
   fi
-  launch "Web WASM (http://127.0.0.1:${WEB_PORT}/?app=${WEB_APP})" \
-    python3 -m http.server "$WEB_PORT" --bind 127.0.0.1 --directory "$ROOT_DIR/hosts/web-shell"
+  launch "Web WASM (http://0.0.0.0:${WEB_PORT}/?app=${WEB_APP})" \
+    python3 -m http.server "$WEB_PORT" --bind 0.0.0.0 --directory "$ROOT_DIR/hosts/web-shell"
 fi
 
 # 6. Optional mobile simulators (when standalone launcher scripts are present)
-if [[ -x "$ROOT_DIR/hosts/ios-shell/run-simulator.sh" && "${NVE_START_IOS:-0}" == "1" ]]; then
+if [[ -x "$ROOT_DIR/hosts/ios-shell/run-simulator.sh" && "${NVE_START_IOS:-1}" == "1" ]]; then
   launch "iOS Simulator" "$ROOT_DIR/hosts/ios-shell/run-simulator.sh" "$APP_PKG"
 fi
-if [[ -x "$ROOT_DIR/hosts/android-shell/run-emulator.sh" && "${NVE_START_ANDROID:-0}" == "1" ]]; then
+if [[ -x "$ROOT_DIR/hosts/android-shell/run-emulator.sh" && "${NVE_START_ANDROID:-1}" == "1" ]]; then
   launch "Android Emulator" "$ROOT_DIR/hosts/android-shell/run-emulator.sh" "$APP_PKG"
 fi
 

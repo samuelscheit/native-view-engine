@@ -1,4 +1,5 @@
 import Combine
+import NveHost
 import Foundation
 
 /// `NveWireFrame` v2 logical channel identifiers matching `nve_wire_core::NveWireChannel`.
@@ -72,7 +73,7 @@ public enum NveWireCodec {
         appendLE(&out, UInt32(payload.count))
         out.append(payload)
         if hasCk {
-            let ck = NveXxh64.hash(out, seed: xxh64Seed)
+            let ck = Xxh64.hash(out, seed: xxh64Seed)
             appendLE(&out, ck)
         }
         return out
@@ -100,7 +101,7 @@ public enum NveWireCodec {
         let bodyEnd = headerSize + len
         if hasCk {
             let expectedCk = readU64(b, bodyEnd)
-            let actualCk = NveXxh64.hash(Data(b[0..<bodyEnd]), seed: xxh64Seed)
+            let actualCk = Xxh64.hash(Data(b[0..<bodyEnd]), seed: xxh64Seed)
             guard actualCk == expectedCk else { throw NvePairProtocolError.checksumMismatch }
         }
         return (ch, kind, seq, Data(b[headerSize..<bodyEnd]))

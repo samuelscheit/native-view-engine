@@ -7,7 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Shared Apple (iOS & macOS) component-view lifecycle controller.
 ///
-/// Owns `nve::NveRnComponentBridge`, the optional `dlopen` handle, and snapshot replay while
+/// Owns `nve::NveRnComponentBridge` and the optional `dlopen` handle while
 /// delegating incremental `O(changed)` `NveSceneView` reconciliation to `NveAppleSceneReconciler`
 /// and UIKit/AppKit view creation/styling/gestures to its adapter.
 @interface NveAppleComponentHost : NSObject
@@ -48,20 +48,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) BOOL isPaired;
 @property (nonatomic, readonly) BOOL isPairedConnected;
-
-/// Zero-copy instant-boot Frame-0 replay from an `NVERELOC` snapshot file before any dylib loads.
-/// Mounts native views immediately and caches the snapshot state for seamless `restore_state`
-/// once the live app dylib or interface attaches.
-- (BOOL)replayFrame0SnapshotAtPath:(NSString *)snapshotPath
-             expectedSchemaVersion:(uint32_t)expectedSchemaVersion
-                     restoreTimeUs:(uint64_t * _Nullable)outRestoreUs;
-
-/// Freeze-dries the live shadow tree into a complete Frame-0 `CommandBuffer` + `snapshot_state()`
-/// and persists it atomically to `snapshotPath`.
-- (BOOL)saveSnapshotAtPath:(NSString *)snapshotPath
-             schemaVersion:(uint32_t)schemaVersion;
-
-@property (nonatomic, readonly) BOOL hasReplayedFrame0;
 
 - (BOOL)applyPropsDictionary:(NSDictionary<NSString *, id> *)props;
 - (void)renderFrame;

@@ -10,7 +10,7 @@ After a backend decodes a `CommandBuffer` and computes Flexbox layout, native ho
 
 ## `NveRenderNode`: Exactly One CPU Cache Line
 
-`NveRenderNode` (`packages/core/abi/src/scene/types.rs`) is `#[repr(C, align(64))]` and strictly verified at compile time to occupy **64 bytes** (`NVE_RENDER_NODE_SIZE == 64`, `NVE_RENDER_NODE_ALIGN == 64`). Every field offset is locked by `const` `offset_of!` assertions in Rust and `_Static_assert(offsetof(...))` in `nve_scene_abi.generated.h`.
+`NveRenderNode` (`packages/core/abi/src/scene/types.rs`) is `#[repr(C, align(64))]` and strictly verified at compile time to occupy **64 bytes** (`NVE_RENDER_NODE_SIZE == 64`, `NVE_RENDER_NODE_ALIGN == 64`). Every field offset is locked by `const` `offset_of!` assertions in Rust and `_Static_assert(offsetof(...))` in `nve_abi.generated.h` (`packages/core/host-cxx/include/nve/generated/`).
 
 | Offset | Size | Field | Type | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -36,7 +36,7 @@ After a backend decodes a `CommandBuffer` and computes Flexbox layout, native ho
 
 `NveSceneView` bundles flat read-only pointers to five contiguous slabs plus a compile-time schema hash:
 
-```c title="nve_scene_abi.generated.h (excerpt)" highlight="2,5-6,10-14"
+```c title="nve_abi.generated.h (excerpt)" highlight="2,5-6,10-14"
 typedef struct NveSceneView {
   uint64_t schema_hash;          // NVE_SCENE_SCHEMA_HASH (compile-time 64-bit XXH64)
   uint64_t frame_id;
@@ -60,11 +60,11 @@ Instead of re-walking the entire tree every frame, hosts iterate only `dirty_ind
 
 - Reading 3 dirty nodes out of 1,000 takes **24.82 ns** (`rust::abi/scene/scene_view_read_dirty_3_of_1000`).
 - Publishing 10 dirty nodes on a 1,000-node C++20 scene takes **7.54 µs** (`cxx::scene_view_publish_10_on_1000`).
-- On Android JNI (`hosts/android-shell/NveAndroidSurfaceJni.cpp`), `CachedDirectBuffer` wraps each slab in a persistent `GlobalRef` `java.nio.ByteBuffer` (`NewDirectByteBuffer`), re-creating the JNI reference **only** when a slab pointer or capacity grows — achieving zero GC allocations per frame in Java (`dev.nve.android.generated.NveSceneBuffer`) and Jetpack Compose (`NveSceneBuffer.kt`).
+- On Android JNI (`hosts/android-shell/NveAndroidSurfaceJni.cpp`), `CachedDirectBuffer` wraps each slab in a persistent `GlobalRef` `java.nio.ByteBuffer` (`NewDirectByteBuffer`), re-creating the JNI reference **only** when a slab pointer or capacity grows — achieving zero GC allocations per frame in Java (`dev.nve.host.SceneReader` with the generated `dev.nve.host.generated.NveAbi` offsets) and Jetpack Compose (`NveSceneBuffer.kt`).
 
 ### Compile-Time Schema Hash Lock
 
-`NVE_SCENE_SCHEMA_HASH` is computed at compile time via XXH64 over every field name, type, and byte offset of `NveRenderNode`, `NveSceneView`, and `NveNodeMeta`. Every generated host binding (`nve_scene_abi.generated.h`, `nve_scene_abi.generated.dart`, `dev.nve.android.generated.NveSceneBuffer`, `nve_scene_view.generated.ts`) verifies `view.schema_hash == NVE_SCENE_SCHEMA_HASH` before dereferencing a single node, making ABI drift fail fast and deterministically.
+`NVE_SCENE_SCHEMA_HASH` is computed at compile time via XXH64 over every field name, type, and byte offset of `NveRenderNode`, `NveSceneView`, and `NveNodeMeta`. Every static host `SceneReader` (`packages/core/host-{cxx,swift,java,dart,ts}`) verifies `view.schema_hash` against the generated `NVE_SCENE_SCHEMA_HASH` before dereferencing a single node, making ABI drift fail fast and deterministically.
 
 ## Zero-Copy `text_slab` & `NVE_DRAW1`
 
@@ -84,5 +84,5 @@ Keep `NveRenderNode` strictly at 64 bytes by moving sparse, variable-length per-
 - Uses the same `CachedDirectBuffer` zero-copy `DirectByteBuffer` mechanism over JNI so Android TalkBack (`AccessibilityNodeProvider`) and Jetpack Compose `Modifier.semantics` stay synchronized at 120fps without allocating per-node Java/Kotlin objects or parsing custom TLV streams.
 
 <Callout kind="tip" title="Regenerating and verifying Scene ABI bindings">
-Run `cargo nve codegen abi --check` to verify all 15 Core + Scene + Wire generated artifacts across C, Swift, Dart, Java (`dev.nve.android.generated.*`), and TypeScript match `nve-abi` byte-for-byte.
+Run `cargo nve codegen abi --check` to verify the 15 generated host files across C, Swift, Dart, Java (`dev.nve.host.generated.*`), and TypeScript match `nve-abi` byte-for-byte.
 </Callout>

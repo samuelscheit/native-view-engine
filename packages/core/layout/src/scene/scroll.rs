@@ -26,6 +26,12 @@ impl ScrollOffsets {
         self.offsets.get(&id).copied().unwrap_or((0.0, 0.0))
     }
 
+    /// Every tracked `(node, (x, y))` offset, in unspecified order.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (AbiNodeId, (f32, f32))> + '_ {
+        self.offsets.iter().map(|(&id, &xy)| (id, xy))
+    }
+
     #[inline]
     pub fn contains(&self, id: AbiNodeId) -> bool {
         self.offsets.contains_key(&id)
@@ -41,12 +47,6 @@ impl ScrollOffsets {
         self.offsets.remove(&id);
         self.last_requested_x.remove(&id);
         self.last_requested_y.remove(&id);
-    }
-
-    /// Every tracked `(container, (x, y))` offset, in unspecified order.
-    #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (AbiNodeId, (f32, f32))> + '_ {
-        self.offsets.iter().map(|(&id, &xy)| (id, xy))
     }
 
     #[inline]

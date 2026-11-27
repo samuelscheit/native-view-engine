@@ -1,12 +1,12 @@
 # `nve-bench`
 
-Deterministic fixture library and Criterion benchmark harness (`packages/tools/bench`, **Tools layer**) measuring ABI, backend, Dioxus, interop, arena/mmap, render-sink handoff, and WASM bundle size metrics.
+Deterministic fixture library and Criterion benchmark harness (`packages/tools/bench`, **Tools layer**) measuring ABI, backend, Dioxus, interop, render-sink handoff, and WASM bundle size metrics.
 
 ## Key Public API
 
-- `DEFAULT_VIEWPORT`, `build_row_tree_cmd`, `build_node_tree_cmd`, `build_card_scene_cmd`, `build_row_patch_cmd`, `build_event_batch`
+- `DEFAULT_VIEWPORT`, `build_row_tree_cmd`, `build_node_tree_cmd`, `build_card_scene_cmd`, `build_event_batch`
 - `BenchCounterApp`, `create_bench_dioxus_surface`, `BenchFfiApp`
-- `arena_mmap`, `wasm_bundle_size`
+- `wasm_bundle_size`
 
 ```rust
 use nve_bench::build_row_tree_cmd;

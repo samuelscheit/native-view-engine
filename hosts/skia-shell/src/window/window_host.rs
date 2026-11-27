@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nve_abi::SurfaceId;
-use nve_engine::Viewport;
+use nve_engine::{Frame0Meta, Viewport};
 use nve_interop::{
     SurfacePresentation, WindowDescriptor, WindowFlags, WindowHandleId, WindowManager,
 };
@@ -17,21 +17,18 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
 
-use super::instant_boot::resolve_default_instant_boot_options;
 use super::hot_reload_client::HotReloadClient;
 use super::multi_window::{
-    apply_window_state, build_window_attributes, create_presenter, CloseVetoHandler, HostWakeEvent,
-    SecondaryAppFactory, SurfaceWindow,
+    CloseVetoHandler, HostWakeEvent, SecondaryAppFactory, SurfaceWindow, apply_window_state,
+    build_window_attributes, create_presenter,
 };
 use super::pair_client::{PairConnectConfig, PairedRemoteApp};
-use super::session::DesktopSession;
-use super::{
-    prewarm_from_options, DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot,
-};
+use super::session::{DesktopSession, prewarm_frame0_into_replica};
+use super::{DesktopApp, DesktopHostError, DesktopPreviewOptions, HotAppSlot};
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 /// Live multi-window `winit` desktop host supporting direct hardware GPU swapchains (`skia-metal`,
-/// `skia-vulkan`, `skia-d3d`) with `softbuffer` fallback, Frame-0 `MmapSnapshot` instant boot,
+/// `skia-vulkan`, `skia-d3d`) with `softbuffer` fallback, optional Frame-0 `frame0.nve2` pre-warm,
 /// `WindowManager` lifecycle/modal/veto rules, `NVE_IFACE_HOST = 5` host services, and thin-client
 /// `NVD1` pairing.
 pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
@@ -53,9 +50,8 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
 impl DesktopWindowHost<HotAppSlot> {
     pub fn new(
         dylib_path: PathBuf,
-        mut options: DesktopPreviewOptions,
+        options: DesktopPreviewOptions,
     ) -> Result<Self, DesktopHostError> {
-        resolve_default_instant_boot_options(&dylib_path, &mut options);
         let scale = if options.scale_factor.is_finite() && options.scale_factor > 0.0 {
             options.scale_factor
         } else {
@@ -67,19 +63,28 @@ impl DesktopWindowHost<HotAppSlot> {
             scale_factor: scale,
         };
 
-        let prewarmed = prewarm_from_options(&options, initial_viewport);
+        let meta = Frame0Meta::default_core();
+        let prewarmed = options.frame0_path.as_deref().and_then(|path| {
+            prewarm_frame0_into_replica(
+                path,
+                meta,
+                options.surface_id,
+                initial_viewport,
+                options.clear_color,
+                options.layout_engine,
+            )
+            .ok()
+        });
 
         let host_services = SkiaHostServices::new();
-        let mut session = if let Some(prewarmed) = prewarmed {
-            let prior_state = (!prewarmed.state_bytes.is_empty())
-                .then_some(prewarmed.state_bytes.as_slice());
-            let mut app = HotAppSlot::load_with_state(&dylib_path, options.surface_id, prior_state)?;
-            let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
+        let mut app = HotAppSlot::load(&dylib_path, options.surface_id)?;
+        let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
+        let mut session = if let Some((replica, pixel_buffer, _footer)) = prewarmed {
             DesktopSession::from_parts(
                 app,
-                prewarmed.replica,
-                prewarmed.pixel_buffer,
-                prewarmed.frame0_bytes,
+                replica,
+                pixel_buffer,
+                Vec::new(),
                 options.surface_id,
                 initial_viewport,
                 options.clear_color,
@@ -87,8 +92,6 @@ impl DesktopWindowHost<HotAppSlot> {
             )
             .with_layout_choice(options.layout_engine)
         } else {
-            let mut app = HotAppSlot::load(&dylib_path, options.surface_id)?;
-            let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
             DesktopSession::new_with_layout(
                 app,
                 options.surface_id,
@@ -109,7 +112,8 @@ impl DesktopWindowHost<HotAppSlot> {
             Ok(app)
         });
 
-        let mut host = Self::from_primary_session_with_host_services(options, session, host_services);
+        let mut host =
+            Self::from_primary_session_with_host_services(options, session, host_services);
         host.secondary_app_factory = Some(factory);
         Ok(host)
     }
@@ -217,62 +221,25 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             .session
     }
 
-    pub fn save_snapshot_if_configured(&mut self) {
-        if self.options.disable_instant_boot {
-            return;
-        }
-        let schema_version = self.options.schema_version;
-        if let Some(boot_dir) = self.options.instant_boot_dir.clone() {
-            let app_tag = self.options.title.clone();
-            let saved = if let Some(wid) = self.primary_window_id
-                && let Some(win) = self.windows.get_mut(&wid)
-            {
-                Some(
-                    win.session
-                        .save_instant_boot_checkpoint(&boot_dir, schema_version, &app_tag),
-                )
-            } else {
-                self.primary_session
-                    .as_mut()
-                    .map(|s| s.save_instant_boot_checkpoint(&boot_dir, schema_version, &app_tag))
-            };
-            if let Some(res) = saved {
-                match res {
-                    Ok(_) => eprintln!(
-                        "[nve-skia-shell] Saved instant-boot user_frame0.nvereloc + state.nvemmap to '{}' (schema v{schema_version})",
-                        boot_dir.display()
-                    ),
-                    Err(err) => eprintln!(
-                        "[nve-skia-shell] Warning: failed to save instant-boot store to '{}': {err}",
-                        boot_dir.display()
-                    ),
-                }
-            }
-            return;
-        }
-
-        let Some(snap_path) = self.options.snapshot_path.clone() else {
+    pub fn save_frame0_if_configured(&mut self) {
+        let Some(frame0_path) = self.options.frame0_path.clone() else {
             return;
         };
+        let meta = Frame0Meta::default_core();
         let saved = if let Some(wid) = self.primary_window_id
-            && let Some(win) = self.windows.get_mut(&wid)
+            && let Some(win) = self.windows.get(&wid)
         {
-            Some(win.session.save_snapshot(&snap_path, schema_version))
+            Some(win.session.save_frame0(&frame0_path, meta))
         } else {
             self.primary_session
-                .as_mut()
-                .map(|s| s.save_snapshot(&snap_path, schema_version))
+                .as_ref()
+                .map(|s| s.save_frame0(&frame0_path, meta))
         };
-        let Some(res) = saved else { return };
-        match res {
-            Ok(_) => eprintln!(
-                "[nve-skia-shell] Saved Frame-0 + state NVERELOC to '{}' (schema v{schema_version})",
-                snap_path.display()
-            ),
-            Err(err) => eprintln!(
-                "[nve-skia-shell] Warning: failed to save snapshot to '{}': {err}",
-                snap_path.display()
-            ),
+        if let Some(Err(err)) = saved {
+            eprintln!(
+                "[nve-skia-shell] Warning: failed to save frame0.nve2 to '{}': {err}",
+                frame0_path.display()
+            );
         }
     }
 
@@ -301,7 +268,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         let res = event_loop
             .run_app(&mut self)
             .map_err(|e| DesktopHostError::EventLoop(e.to_string()));
-        self.save_snapshot_if_configured();
+        self.save_frame0_if_configured();
         res
     }
 
@@ -340,18 +307,21 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
                 return Err(DesktopHostError::Window(err.to_string()));
             }
         };
-        let presenter = match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
-            Ok(p) => p,
-            Err(err) => {
-                let _ = self.window_manager.close_window(handle_id);
-                return Err(err);
-            }
-        };
+        let presenter =
+            match create_presenter(&window, self.options.preferred_backend, self.options.vsync) {
+                Ok(p) => p,
+                Err(err) => {
+                    let _ = self.window_manager.close_window(handle_id);
+                    return Err(err);
+                }
+            };
 
         let size = window.inner_size();
         let scale = window.scale_factor() as f32;
         if let Err(err) = session.resize(size.width.max(1), size.height.max(1), scale) {
-            eprintln!("[nve-skia-shell] initial resize/render failed for surface {surface_id}: {err}");
+            eprintln!(
+                "[nve-skia-shell] initial resize/render failed for surface {surface_id}: {err}"
+            );
         }
         apply_window_state(&window, desc.state);
 
@@ -373,7 +343,9 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             last_telemetry: None,
         };
         if let Some(theme) = initial_theme
-            && sw.session.dispatch_host_event(&SkiaHostEvent::ThemeChanged(theme))
+            && sw
+                .session
+                .dispatch_host_event(&SkiaHostEvent::ThemeChanged(theme))
         {
             let _ = sw.session.render_and_rasterize();
         }
@@ -429,7 +401,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         }
         let primary_closed = self.primary_handle.is_some_and(|p| closed.contains(&p));
         if primary_closed {
-            self.save_snapshot_if_configured();
+            self.save_frame0_if_configured();
         }
         let wids: Vec<(WindowId, SurfaceId)> = self
             .windows
@@ -446,7 +418,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
             self.primary_handle = None;
         }
         if self.windows.is_empty() || (primary_closed && self.exit_on_primary_close) {
-            self.save_snapshot_if_configured();
+            self.save_frame0_if_configured();
             self.hot_reload.take();
             self.windows.clear();
             self.surface_to_window.clear();
@@ -536,7 +508,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
 
 impl<A: DesktopApp> Drop for DesktopWindowHost<A> {
     fn drop(&mut self) {
-        self.save_snapshot_if_configured();
+        self.save_frame0_if_configured();
     }
 }
 

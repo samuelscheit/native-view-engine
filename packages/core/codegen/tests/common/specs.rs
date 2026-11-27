@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use nve_codegen::{
-    CommandSpec, DefaultValue, EventBubbling, EventSpec, ExportBackend, NveExportSpec,
-    ObjectField, ParamSpec, PropSpec, PropType,
+    CommandSpec, DefaultValue, EventBubbling, EventSpec, ExportBackend, NveExportSpec, ObjectField,
+    ParamSpec, PropSpec, PropType,
 };
 
 pub const EMBEDDED_SWITCH_SPEC: &str = r#"

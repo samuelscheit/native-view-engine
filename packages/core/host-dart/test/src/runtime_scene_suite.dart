@@ -40,21 +40,21 @@ final class _Frame {
   final removed = Uint32List.fromList([9 | (2 << 24)]);
 
   TableReader visual() {
-    final words = Uint32List(4 * NveVisualTable.words);
-    words[2 * NveVisualTable.words + NveVisualTable.background.word] = 0xFF2010F0;
+    final words = Uint32List(4 * VisualTable.words);
+    words[2 * VisualTable.words + VisualTable.background.word] = 0xFF2010F0;
     return TableReader(
-      key: NveVisualTable.key,
+      key: VisualTable.key,
       slot: _visualSlot,
-      words: NveVisualTable.words,
+      words: VisualTable.words,
       rowCount: 4,
       rows: ByteData.sublistView(words),
     );
   }
 
   TableReader textTable() => TableReader(
-        key: NveTextTable.key,
+        key: TextTable.key,
         slot: _textSlot,
-        words: NveTextTable.words,
+        words: TextTable.words,
         rowCount: 1,
         rows: ByteData.sublistView(Uint32List.fromList([0, 6])),
         owners: ByteData.sublistView(Uint32List.fromList([2 | (5 << 24)])),
@@ -150,17 +150,17 @@ void runRuntimeScene(Check c) {
   c.eq(s.dirtyIndices.join(','), '1,2', 'dirty');
   c.eq(s.removedIds.join(','), '${9 | (2 << 24)}', 'removed');
 
-  final visual = s.findTable(NveVisualTable.key)!;
+  final visual = s.findTable(VisualTable.key)!;
   c.that(identical(s.tableAtSlot(_visualSlot), visual), 'slot index');
   c.eq(s.tableAtSlot(200), null, 'slot out of range');
   c.eq(s.rowOf(visual, 2), 2, 'dense row = node index');
   c.eq(s.rowOf(visual, 3), -1, 'dense row requires attachment');
   c.eq(s.rowOf(null, 2), -1, 'absent table');
-  c.eq(visual.color(2, NveVisualTable.background).packed, 0xFF2010F0, 'dense color');
+  c.eq(visual.color(2, VisualTable.background).packed, 0xFF2010F0, 'dense color');
   final text = s.tableAtSlot(_textSlot)!;
   c.eq(s.rowOf(text, 2), 0, 'sparse row via owner index');
   c.eq(s.rowOf(text, 1), -1, 'sparse table not attached');
-  c.eq(s.str(text, 0, NveTextTable.text), 'héllo', 'str field decodes UTF-8');
+  c.eq(s.str(text, 0, TextTable.text), 'héllo', 'str field decodes UTF-8');
   c.eq(s.text(0, 0), '', 'empty text');
   c.throwsA<RangeError>(() => s.textBytes(2, 1), 'text inside a code point');
   c.throwsA<RangeError>(() => s.textBytes(4, 9), 'text past slab');
@@ -182,23 +182,12 @@ void runRuntimeScene(Check c) {
   c.eq(f.open(children: Uint32List(0), rows: stale).childCount(1), 0, 'dead nodes with stale child ranges are not validated');
 
   // ---- generated core table layouts ---------------------------------------------------------
-  for (final (name, key, words) in [
-    (NveVisualTable.name, NveVisualTable.key, NveVisualTable.words),
-    (NveTypographyTable.name, NveTypographyTable.key, NveTypographyTable.words),
-    (NveTextTable.name, NveTextTable.key, NveTextTable.words),
-    (NveTextInputTable.name, NveTextInputTable.key, NveTextInputTable.words),
-    (NveScrollTable.name, NveScrollTable.key, NveScrollTable.words),
-    (NveInteractionTable.name, NveInteractionTable.key, NveInteractionTable.words),
-    (NveAccessibilityTable.name, NveAccessibilityTable.key, NveAccessibilityTable.words),
-    (NveImageTable.name, NveImageTable.key, NveImageTable.words),
-  ]) {
-    c.eq(key, Key64.of(name), '$name key == xxh64(name)');
-    c.that(words >= 1 && words <= maxTableWords, '$name words');
-  }
-  c.that(NveTextTable.sparse && !NveVisualTable.sparse, 'storage');
-  c.eq(NveVisualTable.defaults.length, NveVisualTable.words, 'defaults cover every word');
-  c.that(NveTypographyTable.fontSize.fits(NveTypographyTable.words), 'typography fontSize fits');
-  c.eq(f32FromBits(NveTypographyTable.defaults[NveTypographyTable.fontSize.word]), 16.0, 'typography default font size');
+  c.that(!TextTable.dense && VisualTable.dense, 'storage');
+  c.eq(VisualTable.defaults.length, VisualTable.words, 'defaults cover every word');
+  c.that(TypographyTable.fontSize.fits(TypographyTable.words), 'typography fontSize fits');
+  c.eq(f32FromBits(TypographyTable.defaults[TypographyTable.fontSize.word]), 16.0, 'typography default font size');
   c.eq(NveOverflow.hidden, 1, 'word enum value');
   c.eq(NveAriaTriState.trueValue, 2, 'reserved-word variant renamed');
+  c.eq(NveTypographySet.fontStyle, 1 << 7, 'typography set bit');
+  c.eq(NveTextDecoration.lineThrough, 4, 'text decoration bit');
 }

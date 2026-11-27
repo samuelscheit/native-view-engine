@@ -107,11 +107,11 @@ final class NveScenePainter {
     _resources = resources;
     _onImage = onImageLoaded;
     _ctx = NvePaintContext._(canvas, tree, resources);
-    _typo = s.findTable(NveTypographyTable.key);
-    _textTable = s.findTable(NveTextTable.key);
-    _input = s.findTable(NveTextInputTable.key);
-    _image = s.findTable(NveImageTable.key);
-    _transform = s.findTable(NveTransformTable.key);
+    _typo = s.findTable(TypographyTable.key);
+    _textTable = s.findTable(TextTable.key);
+    _input = s.findTable(TextInputTable.key);
+    _image = s.findTable(ImageTable.key);
+    _transform = s.findTable(TransformTable.key);
     _modules
       ..clear()
       ..addAll([
@@ -138,12 +138,12 @@ final class NveScenePainter {
     final vr = s.rowOf(v, index);
     final hidden = vr < 0
         ? parentHidden
-        : switch (v!.enumValue(vr, NveVisualTable.visibility)) {
+        : switch (v!.enumValue(vr, VisualTable.visibility)) {
             NveVisibility.visible => false,
             NveVisibility.hidden => true,
             _ => parentHidden,
           };
-    final opacity = vr < 0 ? 1.0 : v!.f32(vr, NveVisualTable.opacity).clamp(0.0, 1.0);
+    final opacity = vr < 0 ? 1.0 : v!.f32(vr, VisualTable.opacity).clamp(0.0, 1.0);
     if (opacity <= 0.001) {
       return;
     }
@@ -160,7 +160,7 @@ final class NveScenePainter {
         ..transform(_matrix(_transform!, tr, rect));
       saves++;
     }
-    final radius = vr < 0 ? 0.0 : math.max(0.0, v!.f32(vr, NveVisualTable.borderRadius));
+    final radius = vr < 0 ? 0.0 : math.max(0.0, v!.f32(vr, VisualTable.borderRadius));
     final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
     final style = inherited.resolve(s, _typo, index);
     if (!hidden && rect.width > 0 && rect.height > 0) {
@@ -191,13 +191,13 @@ final class NveScenePainter {
   }
 
   Float64List _matrix(TableReader tf, int row, Rect rect) {
-    final ox = rect.left + rect.width * tf.f32(row, NveTransformTable.originX);
-    final oy = rect.top + rect.height * tf.f32(row, NveTransformTable.originY);
-    final rad = tf.f32(row, NveTransformTable.rotateDeg) * math.pi / 180;
-    final sx = tf.f32(row, NveTransformTable.scaleX), sy = tf.f32(row, NveTransformTable.scaleY);
+    final ox = rect.left + rect.width * tf.f32(row, TransformTable.originX);
+    final oy = rect.top + rect.height * tf.f32(row, TransformTable.originY);
+    final rad = tf.f32(row, TransformTable.rotateDeg) * math.pi / 180;
+    final sx = tf.f32(row, TransformTable.scaleX), sy = tf.f32(row, TransformTable.scaleY);
     final c = math.cos(rad), n = math.sin(rad);
     // translate(t + origin) · rotate · scale · translate(-origin), column-major 4×4.
-    final tx = tf.f32(row, NveTransformTable.translateX) + ox, ty = tf.f32(row, NveTransformTable.translateY) + oy;
+    final tx = tf.f32(row, TransformTable.translateX) + ox, ty = tf.f32(row, TransformTable.translateY) + oy;
     final a = c * sx, b = n * sx, cc = -n * sy, d = c * sy;
     return Float64List.fromList(<double>[
       a, b, 0, 0, //
@@ -208,12 +208,12 @@ final class NveScenePainter {
   }
 
   void _box(TableReader v, int row, Rect rect, RRect rrect, double radius) {
-    final bg = v.color(row, NveVisualTable.background).packed;
+    final bg = v.color(row, VisualTable.background).packed;
     if ((bg >>> 24) != 0) {
       _canvas.drawRRect(rrect, Paint()..color = nveColor(bg));
     }
-    final bw = v.f32(row, NveVisualTable.borderWidth);
-    final bc = v.color(row, NveVisualTable.borderColor).packed;
+    final bw = v.f32(row, VisualTable.borderWidth);
+    final bc = v.color(row, VisualTable.borderColor).packed;
     if (bw > 0 && (bc >>> 24) != 0) {
       final inset = rect.width > bw && rect.height > bw ? bw / 2 : 0.0;
       _canvas.drawRRect(
@@ -236,7 +236,7 @@ final class NveScenePainter {
     if (inputRow >= 0) {
       _paintInput(_input!, inputRow, index, rect, style);
     } else if (s.rowOf(_textTable, index) case final tr when tr >= 0) {
-      final text = s.str(_textTable!, tr, NveTextTable.text);
+      final text = s.str(_textTable!, tr, TextTable.text);
       if (text.isNotEmpty && style.fontSize > 0 && (style.color >>> 24) != 0) {
         _layout(text, style, rect.width, style.maxLines).paint(_canvas, rect.topLeft);
       }
@@ -251,10 +251,10 @@ final class NveScenePainter {
 
   void _paintInput(TableReader t, int row, int index, Rect rect, NveTextStyle style) {
     final s = _tree.s;
-    final value = s.str(t, row, NveTextInputTable.value);
-    final secure = t.boolean(row, NveTextInputTable.secure);
-    final multiline = t.boolean(row, NveTextInputTable.multiline);
-    final shown = value.isEmpty ? s.str(t, row, NveTextInputTable.placeholder) : (secure ? '•' * value.runes.length : value);
+    final value = s.str(t, row, TextInputTable.value);
+    final secure = t.boolean(row, TextInputTable.secure);
+    final multiline = t.boolean(row, TextInputTable.multiline);
+    final shown = value.isEmpty ? s.str(t, row, TextInputTable.placeholder) : (secure ? '•' * value.runes.length : value);
     if (shown.isEmpty) {
       return;
     }
@@ -282,9 +282,9 @@ final class NveScenePainter {
       return l.unit == LengthUnit.points ? math.max(0.0, l.value) : 0.0;
     }
 
-    final left = pad(NveLayoutTable.paddingLeft), right = pad(NveLayoutTable.paddingRight);
-    var top = pad(NveLayoutTable.paddingTop);
-    final bottom = pad(NveLayoutTable.paddingBottom);
+    final left = pad(LayoutTable.paddingLeft), right = pad(LayoutTable.paddingRight);
+    var top = pad(LayoutTable.paddingTop);
+    final bottom = pad(LayoutTable.paddingBottom);
     if (top == 0 && bottom == 0 && rect.height > fontSize * 1.4) {
       top = math.max(0.0, (rect.height - fontSize * 1.35) / 2);
     }
@@ -293,7 +293,7 @@ final class NveScenePainter {
   }
 
   void _paintImage(TableReader t, int row, Rect rect, RRect rrect) {
-    final id = t.resource(row, NveImageTable.src);
+    final id = t.resource(row, ImageTable.src);
     final payload = _resources?.payload(id);
     final img = switch (payload == null ? null : decodeImageSource(payload)) {
       NveImageUrl(:final uri) => imageCache.resolveOrRequest(uri, onDecoded: _onImage),
@@ -307,7 +307,7 @@ final class NveScenePainter {
       return;
     }
     final w = img.width.toDouble(), h = img.height.toDouble();
-    final mode = switch (t.enumValue(row, NveImageTable.fit)) {
+    final mode = switch (t.enumValue(row, ImageTable.fit)) {
       NveImageFit.contain => NveImageResizeMode.contain,
       NveImageFit.fill => NveImageResizeMode.stretch,
       NveImageFit.none => NveImageResizeMode.center,
@@ -321,8 +321,8 @@ final class NveScenePainter {
     final paint = Paint()
       ..filterQuality = FilterQuality.medium
       ..isAntiAlias = true;
-    if (t.boolean(row, NveImageTable.tintEnabled)) {
-      paint.colorFilter = ColorFilter.mode(nveColor(t.color(row, NveImageTable.tint).packed), BlendMode.srcIn);
+    if (t.boolean(row, ImageTable.tintEnabled)) {
+      paint.colorFilter = ColorFilter.mode(nveColor(t.color(row, ImageTable.tint).packed), BlendMode.srcIn);
     }
     _canvas
       ..save()

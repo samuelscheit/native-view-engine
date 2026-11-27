@@ -1,5 +1,8 @@
 package dev.nve.host;
 
+import java.nio.Buffer;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /** Hybrid FFI prelude shared by every generated Java / Kotlin hybrid client. */
@@ -61,6 +64,23 @@ public final class HybridRuntime {
         }
     }
 
+    /**
+     * Direct little-endian copy of {@code bytes[offset .. offset + length)} whose capacity is exactly
+     * {@code length}: JNI glue reads a direct buffer's capacity, not its limit.
+     */
+    public static ByteBuffer directBuffer(byte[] bytes, int offset, int length) {
+        final ByteBuffer b = ByteBuffer.allocateDirect(length).order(ByteOrder.LITTLE_ENDIAN).put(bytes, offset, length);
+        // Through `Buffer`: `--release 11` would link the Java 9+ covariant `ByteBuffer.flip()`,
+        // which older Android runtimes lack (`NoSuchMethodError`).
+        final Buffer asBuffer = b;
+        asBuffer.flip();
+        return b;
+    }
+
+    public static ByteBuffer directBuffer(byte[] bytes) {
+        return directBuffer(bytes, 0, bytes.length);
+    }
+
     /** Throws {@code SCHEMA_MISMATCH} unless a peer's schema hash equals the generated one. */
     public static void checkSchema(Key64 expected, Key64 actual) {
         if (!expected.equals(actual)) {
@@ -80,13 +100,29 @@ public final class HybridRuntime {
 
         /** Validated copy of {@code bytes}; throws {@link BinCodecException} when invalid. */
         public static DynamicValue of(byte[] bytes) {
-            BinReader.validate(bytes);
-            return new DynamicValue(bytes.clone());
+            final byte[] copy = bytes.clone(); // validate the copy: the caller may still mutate `bytes`
+            BinReader.validate(copy);
+            return new DynamicValue(copy);
+        }
+
+        /** Validated copy of the next value of {@code r}; throws {@link BinCodecException} when invalid. */
+        public static DynamicValue read(BinReader r) {
+            return new DynamicValue(r.readCheckedValue());
         }
 
         /** Copy of the encoded bytes. */
         public byte[] bytes() {
             return bytes.clone();
+        }
+
+        /** Appends the encoded value to {@code w} (no intermediate copy). */
+        public void writeTo(BinWriter w) {
+            w.raw(bytes, 0, bytes.length);
+        }
+
+        /** Direct buffer of the encoded bytes, for a JNI argument. */
+        public ByteBuffer toDirectBuffer() {
+            return directBuffer(bytes);
         }
 
         public BinTag tag() {

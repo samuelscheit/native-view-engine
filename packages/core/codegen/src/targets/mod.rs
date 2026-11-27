@@ -1,9 +1,8 @@
 //! Target-language code emitters organized by output language, plus unified multi-target
-//! dispatchers for Core/Scene ABI, Hybrid FFI, and RN import/export.
+//! dispatchers for Hybrid FFI and RN import/export. Host ABI data lives in [`crate::abi`].
 
 pub mod c_cpp;
 pub mod dart;
-pub mod hash;
 pub mod kotlin_java;
 pub mod rust;
 pub mod swift;
@@ -19,23 +18,12 @@ use crate::schema::export::{
 };
 use crate::schema::hybrid::{HybridFileSpec, HybridTarget};
 
-pub use c_cpp::{
-    generate_c_core_abi_h, generate_c_runtime_abi_h, generate_c_scene_abi_h, generate_hybrid_cpp,
-};
-pub use dart::{
-    generate_dart_core_abi, generate_dart_runtime_abi, generate_dart_tables,
-    generate_export_flutter, generate_hybrid_dart,
-};
-pub use kotlin_java::{
-    generate_export_compose, generate_hybrid_kotlin, generate_java_core_abi,
-    generate_java_scene_buffer,
-};
+pub use c_cpp::generate_hybrid_cpp;
+pub use dart::{generate_export_flutter, generate_hybrid_dart};
+pub use kotlin_java::{generate_export_compose, generate_hybrid_kotlin};
 pub use rust::generate_hybrid_rust;
 pub use swift::{generate_export_swiftui, generate_hybrid_swift};
-pub use typescript::{
-    generate_export_web_component, generate_hybrid_ts, generate_ts_core_abi,
-    generate_ts_scene_view,
-};
+pub use typescript::{generate_export_web_component, generate_hybrid_ts};
 
 // ============================================================================
 // Hybrid FFI Dispatchers
@@ -85,96 +73,6 @@ pub fn generate_hybrid_all(
         outputs.push(generate_hybrid_target(spec, target)?);
     }
     Ok(outputs)
-}
-
-// ============================================================================
-// Unified Core ABI (5) + Scene ABI (4) + Runtime ABI (3) + XXH64 mirror (5) = 17 Artifacts
-// ============================================================================
-
-/// Generates all 5 checked-in Core ABI files keyed by workspace-relative path.
-pub fn generate_all_core_abi_files() -> Vec<GeneratedFile> {
-    let c_header = generate_c_core_abi_h();
-    vec![
-        GeneratedFile {
-            relative_path: "cxx/nve-fabric-bridge/include/nve_abi.generated.h".to_owned(),
-            content: c_header.clone(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_abi.generated.h"
-                .to_owned(),
-            content: c_header,
-        },
-        GeneratedFile {
-            relative_path: "packages/core/host-dart/lib/src/nve_core_abi.generated.dart".to_owned(),
-            content: generate_dart_core_abi(),
-        },
-        GeneratedFile {
-            relative_path:
-                "hosts/android-shell/android-app/src/dev/nve/android/generated/NveCoreAbi.java"
-                    .to_owned(),
-            content: generate_java_core_abi(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/web-shell/nve_core_abi.generated.ts".to_owned(),
-            content: generate_ts_core_abi(),
-        },
-    ]
-}
-
-/// Generates all 4 checked-in Scene ABI files keyed by workspace-relative path.
-pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
-    let c_header = generate_c_scene_abi_h();
-    vec![
-        GeneratedFile {
-            relative_path: "cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h".to_owned(),
-            content: c_header.clone(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/swiftui-kit/Sources/CNveAbi/include/nve_scene_abi.generated.h"
-                .to_owned(),
-            content: c_header,
-        },
-        GeneratedFile {
-            relative_path:
-                "hosts/android-shell/android-app/src/dev/nve/android/generated/NveSceneBuffer.java"
-                    .to_owned(),
-            content: generate_java_scene_buffer(),
-        },
-        GeneratedFile {
-            relative_path: "hosts/web-shell/nve_scene_view.generated.ts".to_owned(),
-            content: generate_ts_scene_view(),
-        },
-    ]
-}
-
-/// Generates all Runtime ABI files (C header, Dart `dart:ffi` bindings, Dart core table layouts)
-/// keyed by workspace-relative path.
-pub fn generate_all_runtime_abi_files() -> Vec<GeneratedFile> {
-    vec![
-        GeneratedFile {
-            relative_path: "packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
-                .to_owned(),
-            content: generate_c_runtime_abi_h(),
-        },
-        GeneratedFile {
-            relative_path: "packages/core/host-dart/lib/src/nve_runtime_abi.generated.dart"
-                .to_owned(),
-            content: generate_dart_runtime_abi(),
-        },
-        GeneratedFile {
-            relative_path: "packages/core/host-dart/lib/src/nve_tables.generated.dart".to_owned(),
-            content: generate_dart_tables(),
-        },
-    ]
-}
-
-/// Generates every Core ABI (5) + Scene ABI (4) + Runtime ABI (3) + XXH64 mirror (5) artifact.
-pub fn generate_all_abi_files() -> Vec<GeneratedFile> {
-    let mut files = generate_all_core_abi_files();
-    files.extend(generate_all_scene_abi_files());
-    files.extend(generate_all_runtime_abi_files());
-    files.extend(hash::generate_all_hash_files());
-    files
 }
 
 // ============================================================================

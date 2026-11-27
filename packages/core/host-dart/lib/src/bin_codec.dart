@@ -21,28 +21,7 @@ enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
 const int binValueMaxDepth = 64;
 
-/// `true` when number [v] is written as `i64`. Native `int`s always are; on the web every
-/// integral `double` is also an `int` (`1.0 is int`), so only exact integers in ±(2^53 − 1)
-/// that are not `-0.0` qualify there and everything else stays an `f64` (lossless round-trip).
-bool encodesAsI64(num v) {
-  if (v is! int) {
-    return false;
-  }
-  if (!identical(1, 1.0)) {
-    return true; // native VM: distinct int type
-  }
-  return v.abs() <= 9007199254740991 && !(v == 0 && v.isNegative);
-}
-
-/// Throws [BinErrorKind.maxDepth] when opening a container at [depth] would exceed
-/// [binValueMaxDepth] (shared by every encoder / decoder walk).
-void checkBinValueDepth(int depth) {
-  if (depth >= binValueMaxDepth) {
-    throw BinCodecException(BinErrorKind.maxDepth, 'container nesting exceeds $binValueMaxDepth (depth $depth)');
-  }
-}
-
-enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark }
+enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark, invalidAlignment }
 
 final class BinCodecException implements Exception {
   const BinCodecException(this.kind, this.message);
@@ -161,6 +140,14 @@ final class BinReader {
     return utf8String(_length());
   }
 
+  /// Reads a `Str` value's validated UTF-8 bytes as a zero-copy view (no UTF-16 decode).
+  Uint8List readStrUtf8() {
+    _expect(BinTag.str);
+    final len = _length();
+    final at = _checkUtf8(len);
+    return Uint8List.sublistView(bytes, at, at + len);
+  }
+
   Uint8List readBytes() {
     _expect(BinTag.bytes);
     return take(_length());
@@ -172,7 +159,22 @@ final class BinReader {
   /// Entry count of a map; read each entry as [readMapKey] then a value.
   int beginMap() => _openContainer(BinTag.map, 5).$1;
 
+  /// Opens an array, runs [body] with reads clamped to the array's payload, restores the outer
+  /// limit, and throws [BinErrorKind.trailingBytes] if [body] leaves unconsumed bytes.
+  T readArrayScope<T>(T Function(int count) body) => _readContainerScope(BinTag.array, 1, body);
+
+  /// Opens a map, runs [body] with reads clamped to the map's payload, restores the outer limit,
+  /// and throws [BinErrorKind.trailingBytes] if [body] leaves unconsumed bytes.
+  T readMapScope<T>(T Function(int count) body) => _readContainerScope(BinTag.map, 5, body);
+
   String readMapKey() => utf8String(_length());
+
+  /// Reads a map key's validated UTF-8 bytes as a zero-copy view (no UTF-16 decode).
+  Uint8List readMapKeyUtf8() {
+    final len = _length();
+    final at = _checkUtf8(len);
+    return Uint8List.sublistView(bytes, at, at + len);
+  }
 
   /// Skips one value in O(1).
   void skipValue() {
@@ -199,6 +201,20 @@ final class BinReader {
     final start = _pos;
     skipValue();
     return Uint8List.sublistView(bytes, start, _pos);
+  }
+
+  /// Fully validates and consumes the next value, returning a view of its encoded bytes.
+  Uint8List readCheckedValue() {
+    final start = _pos;
+    checkValue();
+    return Uint8List.sublistView(bytes, start, _pos);
+  }
+
+  /// Throws [BinErrorKind.trailingBytes] unless every byte up to the active limit was consumed.
+  void requireDone() {
+    if (!isAtEnd) {
+      throw BinCodecException(BinErrorKind.trailingBytes, '$remaining trailing bytes');
+    }
   }
 
   /// Fully validates and consumes the next value (Rust `BinValueView::parse` rules).
@@ -254,6 +270,22 @@ final class BinReader {
     return (count, end);
   }
 
+  T _readContainerScope<T>(BinTag tag, int minEntryBytes, T Function(int count) body) {
+    final (count, end) = _openContainer(tag, minEntryBytes);
+    final outer = _limit;
+    _limit = end;
+    final T result;
+    try {
+      result = body(count);
+    } finally {
+      _limit = outer;
+    }
+    if (_pos != end) {
+      throw BinCodecException(BinErrorKind.trailingBytes, '${end - _pos} bytes');
+    }
+    return result;
+  }
+
   void _checkValue(int depth) {
     final tag = peekTag();
     switch (tag) {
@@ -269,7 +301,9 @@ final class BinReader {
         _checkUtf8(_length()); // validated in place, never viewed or decoded
       case BinTag.array:
       case BinTag.map:
-        checkBinValueDepth(depth);
+        if (depth >= binValueMaxDepth) {
+          throw BinCodecException(BinErrorKind.maxDepth, 'depth $depth');
+        }
         final isMap = tag == BinTag.map;
         final (count, end) = _openContainer(tag, isMap ? 5 : 1);
         // Like Rust's `&bytes[..container_end]`: no child read may escape its container.

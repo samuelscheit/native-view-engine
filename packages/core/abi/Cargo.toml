@@ -21,6 +21,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "abi_bench"
 harness = false
+required-features = ["wire"]
 
 [lints]
 workspace = true

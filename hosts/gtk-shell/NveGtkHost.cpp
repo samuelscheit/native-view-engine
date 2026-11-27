@@ -300,29 +300,6 @@ size_t NveGtkHost::poll_paired_frames() {
   return applied;
 }
 
-bool NveGtkHost::replay_snapshot(
-    std::string_view path,
-    uint32_t expected_schema_version,
-    NveFrameStats* out_stats,
-    SnapshotStatus* out_status) {
-  session_.set_surface_config(config_);
-  if (!session_.replay_frame0_snapshot(path, expected_schema_version, out_stats, out_status)) {
-    return false;
-  }
-  reconciler_.clear(adapter_);
-  raw_props_initialized_ = false;
-  sync_views(/*check_raw_props=*/true);
-  return true;
-}
-
-bool NveGtkHost::save_snapshot(
-    std::string_view path,
-    uint32_t schema_version,
-    std::string_view meta,
-    SnapshotStatus* out_status) const {
-  return session_.save_snapshot(path, schema_version, meta, out_status);
-}
-
 bool NveGtkHost::apply_props(const PropMap& props) {
   if (!session_.is_valid()) {
     return false;

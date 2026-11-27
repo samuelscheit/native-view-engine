@@ -294,6 +294,11 @@ macro_rules! word_enum {
         #[allow(dead_code)]
         impl $name {
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
+            /// Variant names and discriminants for host codegen.
+            pub const WORD_CONSTS: $crate::__private::WordConstGroup = $crate::__private::WordConstGroup {
+                name: stringify!($name),
+                values: &[$($crate::__private::WordConstDesc { name: stringify!($variant), value: $value }),+],
+            };
             #[inline(always)]
             pub const fn to_word(self) -> u32 { self as u32 }
             #[inline(always)]

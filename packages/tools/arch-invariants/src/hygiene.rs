@@ -7,9 +7,14 @@ use std::path::Path;
 
 use syn::spanned::Spanned;
 
+pub use crate::persistence_guard::{
+    BANNED_LEGACY_PERSISTENCE_PATH_TOKENS, BANNED_LEGACY_PERSISTENCE_SYMBOLS,
+    check_banned_legacy_persistence_paths, check_banned_legacy_persistence_symbols,
+    detect_banned_legacy_persistence_symbol, is_banned_legacy_persistence_path,
+};
 use crate::{
-    find_files_named, is_binary_ext, is_cfg_test_attr, is_self_invariant_file,
-    is_test_or_bench_rs, rel_path, RepoIndex, Violation, DOC_EXCLUDES,
+    DOC_EXCLUDES, RepoIndex, Violation, find_files_named, is_binary_ext, is_cfg_test_attr,
+    is_self_invariant_file, is_test_or_bench_rs, rel_path,
 };
 
 pub const MAX_PROD_LINES: usize = 650;
@@ -22,8 +27,29 @@ pub const EXISTING_OVERSIZE_ALLOWLIST: &[(&str, usize)] = &[];
 const PENDING_CLEANUP_PERSONAL_PATHS: &[(&str, usize)] = &[];
 
 const PERSONAL_SCAN_EXTS: &[&str] = &[
-    ".rs", ".ts", ".js", ".mjs", ".swift", ".kt", ".kts", ".java", ".dart", ".cpp", ".hpp", ".h",
-    ".c", ".mm", ".sh", ".py", ".toml", ".json", ".yml", ".yaml", ".properties", ".mdx", ".md",
+    ".rs",
+    ".ts",
+    ".js",
+    ".mjs",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".java",
+    ".dart",
+    ".cpp",
+    ".hpp",
+    ".h",
+    ".c",
+    ".mm",
+    ".sh",
+    ".py",
+    ".toml",
+    ".json",
+    ".yml",
+    ".yaml",
+    ".properties",
+    ".mdx",
+    ".md",
 ];
 
 pub fn check_backlog_open_only(idx: &RepoIndex) -> Vec<Violation> {
@@ -49,6 +75,9 @@ pub fn check_backlog_open_only(idx: &RepoIndex) -> Vec<Violation> {
     violations
 }
 
+/// Askama templates of `nve-codegen`: they contain the `@generated` banner of their output.
+const CODEGEN_TEMPLATES_DIR: &str = "packages/core/codegen/templates/";
+
 pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
     let mut violations = Vec::new();
     for rel in &idx.tracked {
@@ -60,12 +89,12 @@ pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
                 "Generated `*.generated.*` files must be gitignored and never tracked",
             ));
         }
-        if rel.contains("dev/nve/android/generated/") {
+        if rel.contains("dev/nve/host/generated/") {
             violations.push(Violation::new(
                 rel,
                 0,
                 rel,
-                "Generated Java files under `dev/nve/android/generated/` must never be tracked",
+                "Generated Java files under `dev/nve/host/generated/` must never be tracked",
             ));
         }
         if rel.ends_with(".trace.json") || rel.ends_with(".perfetto.json") {
@@ -92,34 +121,36 @@ pub fn check_generated_files_and_artifacts(idx: &RepoIndex) -> Vec<Violation> {
         if is_binary_ext(rel) || rel == "Cargo.lock" || is_self_invariant_file(rel) {
             continue;
         }
-        if let Some(content) = idx.read_text(rel) {
-            for (i, line) in content.lines().take(25).enumerate() {
-                let t = line.trim();
-                let is_comment = t.starts_with("//")
-                    || t.starts_with("/*")
-                    || t.starts_with('*')
-                    || t.starts_with('#')
-                    || t.starts_with("<!--");
-                if is_comment && t.contains("@generated") {
-                    let in_java_gen = rel.contains("dev/nve/android/generated/");
-                    let has_dot_gen = Path::new(rel)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.contains(".generated."));
-                    if !in_java_gen && !has_dot_gen {
-                        violations.push(Violation::new(
-                            rel,
-                            i + 1,
-                            line,
-                            "Non-Java `@generated` file must include `.generated.` in its filename",
-                        ));
-                    }
-                    break;
-                }
-            }
+        if let Some(content) = idx.read_text(rel)
+            && let Some((line_no, line)) = misnamed_generated_banner(rel, &content)
+        {
+            violations.push(Violation::new(
+                rel,
+                line_no,
+                line,
+                "Non-Java `@generated` file must include `.generated.` in its filename",
+            ));
         }
     }
     violations
+}
+
+/// The `@generated` banner line (1-based) of a file that carries one but is not named as generated
+/// output: non-Java files need `.generated.` in the name, Java lives in `dev/nve/host/generated/`.
+/// Codegen templates carry the banner they emit; they are sources, not output.
+pub fn misnamed_generated_banner<'a>(rel: &str, content: &'a str) -> Option<(usize, &'a str)> {
+    if rel.starts_with(CODEGEN_TEMPLATES_DIR) {
+        return None;
+    }
+    let (i, line) = content.lines().take(25).enumerate().find(|(_, line)| {
+        let t = line.trim();
+        let is_comment = ["//", "/*", "*", "#", "<!--"].iter().any(|p| t.starts_with(p));
+        is_comment && t.contains("@generated")
+    })?;
+    let in_java_gen = rel.contains("dev/nve/host/generated/");
+    let has_dot_gen =
+        Path::new(rel).file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(".generated."));
+    (!in_java_gen && !has_dot_gen).then_some((i + 1, line))
 }
 
 pub fn check_zero_json_buzzword(idx: &RepoIndex) -> Vec<Violation> {
@@ -343,7 +374,9 @@ fn has_readme_doctest_attr(ast: &syn::File) -> bool {
 /// Monotonic 650-line production `.rs` file ratchet across `packages/`, `hosts/` and `examples/`.
 pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
     assert!(
-        EXISTING_OVERSIZE_ALLOWLIST.windows(2).all(|w| w[0].0 < w[1].0),
+        EXISTING_OVERSIZE_ALLOWLIST
+            .windows(2)
+            .all(|w| w[0].0 < w[1].0),
         "EXISTING_OVERSIZE_ALLOWLIST must stay strictly sorted"
     );
     let allowlist: BTreeMap<&str, usize> = EXISTING_OVERSIZE_ALLOWLIST.iter().copied().collect();
@@ -353,7 +386,10 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
     let mut rs_files = idx.rs_files_under("packages");
     rs_files.extend(idx.rs_files_under("hosts"));
     rs_files.extend(idx.rs_files_under("examples"));
-    assert!(!rs_files.is_empty(), "expected Rust files under packages/, hosts/ and examples/");
+    assert!(
+        !rs_files.is_empty(),
+        "expected Rust files under packages/, hosts/ and examples/"
+    );
 
     for rel in rs_files {
         if is_test_or_bench_rs(&rel) || rel.contains(".generated.") {
@@ -399,27 +435,32 @@ pub fn check_production_file_sizes(idx: &RepoIndex) -> Vec<Violation> {
 }
 
 pub fn has_16_hex_literal(line: &str) -> bool {
+    hex_literal_digit_counts(line).any(|digits| digits == 16)
+}
+
+/// Hex-digit counts (ignoring `_` separators) of every `0x`/`0X` literal in `line`.
+pub fn hex_literal_digit_counts(line: &str) -> impl Iterator<Item = usize> + '_ {
     let bytes = line.as_bytes();
     let mut i = 0;
-    while i + 18 <= bytes.len() {
-        if bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
-            let mut j = i + 2;
-            let mut digits = 0usize;
-            while j < bytes.len() && (bytes[j].is_ascii_hexdigit() || bytes[j] == b'_') {
-                if bytes[j].is_ascii_hexdigit() {
-                    digits += 1;
+    std::iter::from_fn(move || {
+        while i + 2 < bytes.len() {
+            if bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+                let mut j = i + 2;
+                let mut digits = 0usize;
+                while j < bytes.len() && (bytes[j].is_ascii_hexdigit() || bytes[j] == b'_') {
+                    digits += usize::from(bytes[j].is_ascii_hexdigit());
+                    j += 1;
                 }
-                j += 1;
+                i = j;
+                if digits > 0 {
+                    return Some(digits);
+                }
+            } else {
+                i += 1;
             }
-            if digits == 16 {
-                return true;
-            }
-            i = j;
-        } else {
-            i += 1;
         }
-    }
-    false
+        None
+    })
 }
 
 fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {

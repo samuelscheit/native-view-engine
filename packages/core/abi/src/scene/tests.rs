@@ -269,21 +269,27 @@ fn raw_scene_ref_rejects_corrupt_views() {
 }
 
 #[test]
-fn scene_c_header_matches_compile_time_schema_hash_when_present() {
+fn generated_c_header_matches_compile_time_schema_hashes() {
     assert_ne!(NVE_SCENE_SCHEMA_HASH, 0);
     let header_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h");
-    if !header_path.is_file() {
-        return;
+        .join("../host-cxx/include/nve/generated/nve_abi.generated.h");
+    let content = std::fs::read_to_string(&header_path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}. Generate it first: `cargo run --locked -p nve-cli -- codegen abi`",
+            header_path.display()
+        )
+    });
+    for (name, hash) in [
+        ("NVE_SCENE_SCHEMA_HASH", NVE_SCENE_SCHEMA_HASH),
+        ("NVE_CORE_ABI_SCHEMA_HASH", crate::NVE_CORE_ABI_SCHEMA_HASH),
+    ] {
+        let expected = format!("#define {name} 0x{hash:016X}ULL");
+        assert!(
+            content.contains(&expected),
+            "nve_abi.generated.h schema hash drift: expected `{expected}` in {}; rerun `nve codegen abi`",
+            header_path.display()
+        );
     }
-    let content = std::fs::read_to_string(&header_path)
-        .expect("read generated cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h");
-    let expected_macro = format!("0x{NVE_SCENE_SCHEMA_HASH:016X}ULL");
-    assert!(
-        content.contains(&expected_macro),
-        "nve_scene_abi.generated.h schema hash drift! Expected {expected_macro} in {}",
-        header_path.display()
-    );
 }
 
 #[test]

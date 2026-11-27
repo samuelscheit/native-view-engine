@@ -2,12 +2,19 @@
 
 **Native View Engine (`nve`)** is a native-speed, multi-backend cross-platform UI engine written in Rust and C++20. Write declarative UI once with Rust HTML-like ergonomics (Dioxus 0.7 `rsx!` + fine-grained signals, or any custom frontend) and drive **real platform-native views**, **GPU/Skia canvases**, and **Web WASM DOM** from a single zero-copy binary ABI — with sub-second iteration and zero overhead.
 
+> [!WARNING]
+> This project is heavily work in progress as a proof-of-concept and does not yet meet its stated goals.
+
+> [!Note]
+> #### I would greatly appreciate any help and feedback :) please feel free to submit PRs, issues, and discussions or [contact me here](https://samuelscheit.com/#contact)
+> 
+
 ## Big Goals
 
 1. **Zero-Overhead Binary Architecture**: Cross the Rust ↔ host boundary via a single modular C ABI (`nve_get_interface(uint32_t)`), one batched binary `CommandBuffer` per frame, and a zero-copy `#[repr(C)]` `NveValue` bump-arena FFI sink — zero Hermes/JS VM, direct binary bridge, zero per-prop FFI chatter.
 2. **Real Native Views Everywhere, From One Core**: Ship first-class native hosts on **macOS (AppKit)**, **iOS (UIKit / RN Fabric)**, **Windows (Win32 / Direct2D / DirectWrite + `react-native-windows` Fabric)**, **Linux (GTK4 / Pango)**, **Cross-Platform Qt 6**, **Android (JNI / Jetpack Compose)**, **SwiftUI**, **Flutter (`dart:ffi`)**, **Desktop/Mobile Skia**, and **Web (WASM DOM)** — all sharing one DRY C++20 host runtime (`nve_host_runtime.hpp`) and one Apple host core (`hosts/apple-common/`).
 3. **Composable, Switchable Layout Engines**: Zero-cost generic `LayoutEngine` + `TextMeasurer` traits so apps can choose pure-Rust **Taffy**, real **React Native Yoga** (`nve-layout-yoga`), or custom layout engines at compile time (zero vtable overhead) or runtime.
-4. **Instant Cold Start (`< 5 ms`) & Universal Native State Save/Restore**: Freeze-dry the last rendered binary `CommandBuffer` alongside a pointer-free `mmap` relocatable state arena (`MmapSnapshot` + `RelocatableStateArena`) so apps paint Frame 0 directly from virtual memory before logic even mounts — surviving crashes, reboots, ASLR, and app upgrades across every OS and WASM.
+4. **Instant Cold Start (`< 2 ms` 1k-node Frame-0 Boot) & Crash-Atomic State Save/Restore**: Persist Frame 0 as a schema- and `XXH64`-verified `NVE2` keyframe (`Frame0File` / `frame0.nve2`) replayed through live Taffy layout (zero viewport/DPI/theme staleness, 100% table parity) alongside crash-atomic `StateFile` (`state.nve`) binary state — zero `mmap`, zero `unsafe`.
 5. **Sub-Second 2-Tier Hot Reload & `NVE Studio`**: Live-patch styles/templates in `< 5 ms` (Tier-1) and hot-swap compiled native `.dylib`/`.dll`/`.so` logic in `< 300 ms` (Tier-2) without losing state, powering **NVE Studio** — a self-hosting live workbench with X-Ray layout/FFI inspection, side-by-side multi-host preview, deterministic `CommandBuffer` time-travel scrubbing, and ~10 KB/s binary delta live pairing.
 6. **Universal Framework Interop & 5-Target Bi-Directional Codegen**: Embed NVE inside existing React Native, Flutter, SwiftUI, Jetpack Compose, or Web apps — and embed native framework islands inside NVE — with shared gesture arbitration, intrinsic layout negotiation, and zero-copy channel pub/sub (`nve-interop`, `nve-codegen`).
 7. **Flagship Real-World Proof**: Build a **local-first workspace & messaging suite** (Linear × Notion × Slack class in ~15 MB / `< 40 MB` RAM, `< 50 ms` cold start, 120fps 100k-item views, native OS feel on every device, instant Web WASM share links, and native-speed `nve_get_interface` plugins) using NVE Studio.
@@ -28,7 +35,7 @@ Real numbers from `benchmarks/baseline.json` (`cargo bench -p nve-bench` + Relea
 | 1,000-row Flexbox layout (`Taffy` / C++ standalone) | **1.77 ms** / **451 µs** | 1,000-row hit-test: **3.62 µs** |
 | Web DOM HTML SSR (100 / 500 rows) | **12.45 µs** / **65.05 µs** | Studio WASM bundle: **285.8 KiB gzipped** (`wasm-release`) |
 | Skia display list (1,000 nodes) / card rasterize | **962 µs** / **136.6 µs** | Software + Apple Metal GPU swapchains |
-| Cold `mmap` Frame-0 + state restore (100 rows) | **82 – 136 µs** | `29 µs` raw `mmap` open + append-only `.nvewal` |
+| Frame-0 `NVE2` boot + live Taffy layout (1,000 nodes) | **< 2 ms** | Cold replica + page-cached `frame0.nve2` read, O(1) allocs |
 
 ## Architecture at a Glance
 
@@ -37,7 +44,7 @@ Rust App (Dioxus 0.7 rsx! via nve-dioxus, or any frontend implementing NveApp)
   │  Exposes nve_get_interface(uint32_t): Surface | Layout | Component | Dev
   │  Binary CommandBuffer, 64B NveSceneView + NveNodeMeta, direct NveDirectEvent / NveMapEntry FFI, NVE_DRAW1 vectors
   ▼
-nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, MmapSnapshot + WAL, 2-Tier Hot Reload)
+nve-engine (NveApp, Generic LayoutEngine/TextMeasurer, Frame0File + StateFile, 2-Tier Hot Reload)
   ├──► cxx/nve-fabric-bridge (C++20 Yoga/JSI/Fabric, nve_host_runtime.hpp, nve_draw_list.hpp)
   │     ├──► hosts/apple-common + hosts/{macos-shell,ios-shell}  (AppKit & UIKit / CoreGraphics / VoiceOver)
   │     ├──► hosts/windows-shell                                 (Win32/Direct2D/WIC/DirectWrite & RNW Fabric)

@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nve_codegen::{
-    generate_hybrid_all, generate_hybrid_target, parse_hybrid_rust_spec, CodegenError,
-    HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec, HybridFieldSpec,
-    HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec, HybridPropSpec,
-    HybridStructSpec, HybridTarget, HybridType, HybridViewSpec, NVE_HYBRID_INTERFACE_ID_BASE,
+    CodegenError, HybridDefaultValue, HybridEnumSpec, HybridEnumVariant, HybridEventSpec,
+    HybridFieldSpec, HybridFileSpec, HybridMethodSpec, HybridModuleSpec, HybridParamSpec,
+    HybridPropSpec, HybridStructSpec, HybridTarget, HybridType, HybridViewSpec,
+    NVE_HYBRID_INTERFACE_ID_BASE, generate_hybrid_all, generate_hybrid_target,
+    parse_hybrid_rust_spec,
 };
 
 /// Realistic multi-item declarative Rust spec exercising every supported feature:
@@ -21,109 +22,9 @@ use nve_codegen::{
 ///   nested structs, enums, and `NveValue`
 /// - `#[nve_hybrid_view(name = "VideoSurface")]` covering typed `#[prop]` with defaults,
 ///   typed `#[event]`, and imperative `#[method]`
-const REALISTIC_HYBRID_SPEC: &str = r#"
-use nve_abi::NveValue;
-
-/// Supported cryptographic hash algorithms.
-#[nve_hybrid_enum]
-#[repr(u32)]
-pub enum HashAlgorithm {
-    Blake3 = 0,
-    Sha256 = 1,
-    Sha512 = 2,
-}
-
-/// Video playback quality tier.
-#[nve_hybrid_enum]
-#[repr(u32)]
-pub enum VideoQuality {
-    Auto = 0,
-    Sd480,
-    Hd1080 = 10,
-    Uhd4k,
-}
-
-/// Scalar-only POD point struct (passed directly by value across C ABI).
-#[nve_hybrid_struct]
-pub struct FramePoint {
-    pub x: f32,
-    pub y: f32,
-}
-
-/// Nested POD struct embedding another POD struct and an enum.
-#[nve_hybrid_struct]
-pub struct DigestHeader {
-    pub algorithm: HashAlgorithm,
-    pub byte_len: u32,
-    pub verified: bool,
-    pub anchor: FramePoint,
-}
-
-/// Non-POD owned record containing strings, bytes, options, vectors, and nested structs.
-#[nve_hybrid_struct]
-pub struct SignedPayload {
-    pub header: DigestHeader,
-    pub label: String,
-    pub digest: Vec<u8>,
-    pub tags: Vec<String>,
-    pub nonce: Option<u64>,
-}
-
-/// High-performance binary native crypto module.
-#[nve_hybrid_module(name = "Crypto")]
-pub trait CryptoSpec {
-    fn version(&self) -> String;
-    fn add(&self, a: i64, b: i64) -> i64;
-    fn blake3(&self, data: &[u8]) -> Vec<u8>;
-    fn hash_with(&self, algo: HashAlgorithm, data: &[u8]) -> DigestHeader;
-    fn verify_payload(&self, payload: SignedPayload) -> Result<bool, String>;
-    fn find_nonce(&self, label: &str, hint: Option<u64>) -> Option<u64>;
-    fn lookup_payload(&self, id: u32) -> Option<SignedPayload>;
-    fn batch_sign(&self, inputs: Vec<String>, algo: HashAlgorithm) -> Result<Vec<SignedPayload>, String>;
-    fn inspect_dynamic(&self, meta: NveValue) -> NveValue;
-    fn reset_cache(&mut self) -> Result<(), String>;
-}
-
-/// Native hardware-accelerated video surface view.
-#[nve_hybrid_view(name = "VideoSurface")]
-pub trait VideoSurfaceSpec {
-    #[prop]
-    fn source_url(&self) -> String;
-
-    #[prop(default = false)]
-    fn muted(&self) -> bool;
-
-    #[prop(default = 1.0)]
-    fn playback_rate(&self) -> f32;
-
-    #[prop(default = VideoQuality::Auto)]
-    fn quality(&self) -> VideoQuality;
-
-    #[prop(default = None)]
-    fn poster_url(&self) -> Option<String>;
-
-    #[event]
-    fn on_progress(&self, position_ms: u64, duration_ms: u64);
-
-    #[event]
-    fn on_error(&self, code: i32, message: String);
-
-    #[method]
-    fn seek(&mut self, position_ms: u64);
-
-    #[method]
-    fn capture_frame(&self, at_point: FramePoint) -> Result<Vec<u8>, String>;
-}
-"#;
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .expect("workspace root 3 levels above CARGO_MANIFEST_DIR")
-        .to_path_buf()
-}
+const REALISTIC_HYBRID_SPEC: &str = include_str!("fixtures/realistic_hybrid.nve.rs");
+/// A functional fake `<jni.h>` (`JNIEnv` records thrown exceptions), so JNI glue compiles and runs.
+const FAKE_JNI_H: &str = include_str!("fixtures/fake_jni.h");
 
 fn temp_test_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -134,137 +35,6 @@ fn temp_test_dir(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp test dir");
     dir
-}
-
-fn tool_available(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-/// Locates `libnve_abi-*.rlib` and all Cargo dependency search directories across both classic
-/// `target/<profile>/deps/` and Cargo 1.100+ per-unit `target/<profile>/build/<pkg>/<hash>/out/`
-/// layouts.
-fn locate_nve_abi_and_dep_dirs() -> (PathBuf, Vec<PathBuf>) {
-    let current_exe = std::env::current_exe().expect("current_exe");
-    let exe_dir = current_exe.parent().expect("test executable parent dir");
-
-    let find_nve_abi_in = |dir: &Path| -> Option<PathBuf> {
-        std::fs::read_dir(dir)
-            .ok()?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .find(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-            })
-    };
-
-    let rlib_has_wire_feature = |path: &Path| -> bool {
-        const NEEDLE: &[u8] = b"encode_bin_value_to_vec";
-        std::fs::read(path)
-            .map(|bytes| bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE))
-            .unwrap_or(false)
-    };
-    let find_best_nve_abi_in = |dir: &Path| -> Option<PathBuf> {
-        let mut matches: Vec<(bool, std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
-            .ok()?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("libnve_abi-") && n.ends_with(".rlib"))
-            })
-            .map(|p| {
-                let mtime = std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                (rlib_has_wire_feature(&p), mtime, p)
-            })
-            .collect();
-        matches.sort_by_key(|(has_wire, mtime, _)| (*has_wire, *mtime));
-        matches.pop().map(|(_, _, path)| path)
-    };
-
-    // 1. Classic Cargo layout (`target/<profile>/deps/`).
-    if let Some(rlib) = find_best_nve_abi_in(exe_dir) {
-        return (rlib, vec![exe_dir.to_path_buf()]);
-    }
-
-    // 2. Cargo 1.100+ per-unit build layout (`target/<profile>/build/<pkg>/<hash>/out/`).
-    let build_root = current_exe
-        .ancestors()
-        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("build"))
-        .expect("expected Cargo deps/ or build/ ancestor directory for test executable");
-
-    let mut nve_abi_candidates: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    let mut dep_dirs: Vec<PathBuf> = Vec::new();
-
-    if let Ok(pkgs) = std::fs::read_dir(build_root) {
-        for pkg_entry in pkgs.filter_map(|e| e.ok()) {
-            let pkg_path = pkg_entry.path();
-            if !pkg_path.is_dir() {
-                continue;
-            }
-            let is_nve_abi = pkg_entry.file_name() == "nve-abi";
-            let Ok(hashes) = std::fs::read_dir(&pkg_path) else {
-                continue;
-            };
-            for hash_entry in hashes.filter_map(|e| e.ok()) {
-                let out_dir = hash_entry.path().join("out");
-                if !out_dir.is_dir() {
-                    continue;
-                }
-                if is_nve_abi && let Some(rlib) = find_nve_abi_in(&out_dir) {
-                    let mtime = std::fs::metadata(&rlib)
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    nve_abi_candidates.push((mtime, rlib));
-                }
-                let has_rlib = std::fs::read_dir(&out_dir).ok().is_some_and(|it| {
-                    it.filter_map(|e| e.ok()).any(|e| {
-                        e.path()
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .is_some_and(|ext| matches!(ext, "rlib" | "dll" | "so" | "dylib"))
-                    })
-                });
-                if has_rlib {
-                    dep_dirs.push(out_dir);
-                }
-            }
-        }
-    }
-
-    nve_abi_candidates.sort_by_key(|(mtime, path)| (rlib_has_wire_feature(path), *mtime));
-    let nve_abi_rlib = nve_abi_candidates
-        .pop()
-        .map(|(_, path)| path)
-        .expect("libnve_abi-*.rlib must exist in target deps or build dir");
-    (nve_abi_rlib, dep_dirs)
-}
-
-fn add_dep_search_dirs(cmd: &mut Command, temp_dir: &Path, dep_dirs: &[PathBuf]) {
-    if dep_dirs.len() <= 8 {
-        for dir in dep_dirs {
-            cmd.arg("-L").arg(format!("dependency={}", dir.display()));
-        }
-        return;
-    }
-    // Use a `rustc` `@file` response file so Cargo 1.100+'s per-unit `build/<pkg>/<hash>/out`
-    // directories never exceed Windows' 32 KiB `CreateProcessW` command-line limit (OS error 206).
-    let rsp_path = temp_dir.join("rustc_dep_dirs.rsp");
-    let mut contents = String::new();
-    for dir in dep_dirs {
-        contents.push_str("-L\ndependency=");
-        contents.push_str(&dir.to_string_lossy());
-        contents.push('\n');
-    }
-    std::fs::write(&rsp_path, contents).expect("write rustc dep dirs response file");
-    cmd.arg(format!("@{}", rsp_path.display()));
 }
 
 #[test]
@@ -279,25 +49,26 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     assert_eq!(spec.enums[1].variants[2].value, 10);
     assert_eq!(spec.enums[1].variants[3].value, 11);
 
-    assert_eq!(spec.structs.len(), 3);
+    assert_eq!(spec.structs.len(), 4);
     assert!(spec.find_struct("FramePoint").unwrap().is_pod(&spec));
     assert!(spec.find_struct("DigestHeader").unwrap().is_pod(&spec));
     assert!(!spec.find_struct("SignedPayload").unwrap().is_pod(&spec));
+    assert!(!spec.find_struct("Cursor").unwrap().is_pod(&spec));
 
     assert_eq!(spec.modules.len(), 1);
     let crypto = &spec.modules[0];
     assert_eq!(crypto.name, "Crypto");
     assert_eq!(crypto.trait_name, "CryptoSpec");
-    assert_eq!(crypto.methods.len(), 10);
+    assert_eq!(crypto.methods.len(), 11);
     assert!(crypto.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
 
     assert_eq!(spec.views.len(), 1);
     let video = &spec.views[0];
     assert_eq!(video.name, "VideoSurface");
     assert_eq!(video.trait_name, "VideoSurfaceSpec");
-    assert_eq!(video.props.len(), 5);
+    assert_eq!(video.props.len(), 9);
     assert_eq!(video.events.len(), 2);
-    assert_eq!(video.methods.len(), 2);
+    assert_eq!(video.methods.len(), 3);
     assert!(video.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
     assert_ne!(crypto.interface_id(), video.interface_id());
     assert_ne!(crypto.schema_hash(&spec), video.schema_hash(&spec));
@@ -353,6 +124,109 @@ fn generates_all_6_targets_deterministically_with_zero_json() {
             );
         }
     }
+}
+
+/// `#[prop] fn metadata(&self) -> NveValue` (`HybridType::Value`) keeps its true `NveValue` tags on
+/// every target's `setProps` path: never encoded through a scratch `BinWriter` into a `Bytes` value.
+#[test]
+fn value_direct_props_keep_true_tags_on_all_6_targets() {
+    /// Per target: the `setProps` body (from `start` up to `end`), an optional line binding the
+    /// prop's value to `{v}` (`prefix{v}suffix`), and the consecutive lines carrying it directly.
+    struct Direct {
+        target: HybridTarget,
+        start: &'static str,
+        end: &'static str,
+        bind: Option<(&'static str, &'static str)>,
+        lines: &'static [&'static str],
+    }
+    let direct = [
+        Direct {
+            target: HybridTarget::Rust,
+            start: "pub fn decode_props(",
+            end: "Ok(props)",
+            bind: None,
+            lines: &[r#""metadata" => props.metadata = nve_abi::hybrid::HybridCodec::decode_value_ref(value)?,"#],
+        },
+        Direct {
+            target: HybridTarget::Cpp,
+            start: "void setProps(const VideoSurfaceProps& props) override {",
+            end: "set_props_direct(",
+            bind: Some(("const ::nve::host::NveValueTree ", "(props.metadata);")),
+            lines: &[
+                r#"entry.key = NveStrSlice{reinterpret_cast<const uint8_t*>("metadata"), 8u};"#,
+                "entry.value = {v}.root();",
+            ],
+        },
+        Direct {
+            target: HybridTarget::Swift,
+            start: "public func setProps(_ props: VideoSurfaceProps) throws {",
+            end: "HybridStatus.check(_nveStatus)",
+            bind: Some(("let ", " = try _nveTree.value(props.metadata)")),
+            lines: &[r#"_nveTree.entry("metadata", {v}),"#],
+        },
+        Direct {
+            target: HybridTarget::Kotlin,
+            start: "override fun setProps(props: VideoSurfaceProps) {",
+            end: "nativeSetProps(",
+            bind: None,
+            lines: &["_nveW.writeMapKey(\"metadata\")", "props.metadata.writeTo(_nveW)"],
+        },
+        Direct {
+            target: HybridTarget::Dart,
+            start: "void encodeDirect(HybridPropsBuilder _nveB) {",
+            end: "\n  }\n",
+            bind: None,
+            lines: &["_nveB.writeDynamicValue('metadata', metadata);"],
+        },
+        Direct {
+            target: HybridTarget::TypeScript,
+            start: "setProps(props: VideoSurfaceProps): void {",
+            end: "wasmSetPropsBin(",
+            bind: None,
+            lines: &["_nve_w.writeMapKey('metadata');", "props.metadata.writeTo(_nve_w);"],
+        },
+    ];
+    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).expect("parse spec");
+    let outputs = generate_hybrid_all(&spec, HybridTarget::ALL).expect("generate all 6 targets");
+    assert_eq!(outputs.len(), direct.len());
+    for d in &direct {
+        let output = outputs.iter().find(|o| o.target == d.target).expect("target generated");
+        let src: String = output.files.iter().map(|f| f.content.as_str()).collect();
+        let body = src
+            .split_once(d.start)
+            .and_then(|(_, rest)| rest.split_once(d.end))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("{:?}: no setProps body `{}`..`{}`", d.target, d.start, d.end));
+        let lines: Vec<&str> = body.lines().map(str::trim).collect();
+        let var = d.bind.map(|(prefix, suffix)| {
+            lines
+                .iter()
+                .find_map(|l| l.strip_prefix(prefix)?.strip_suffix(suffix))
+                .unwrap_or_else(|| panic!("{:?}: `metadata` is not bound as `{prefix}..{suffix}`", d.target))
+        });
+        let expected: Vec<String> =
+            d.lines.iter().map(|l| l.replace("{v}", var.unwrap_or_default())).collect();
+        assert!(
+            lines.windows(expected.len()).any(|w| w == expected.as_slice()),
+            "{:?}: `metadata` is not carried directly; expected {expected:?}",
+            d.target
+        );
+        for line in lines.iter().filter(|l| l.contains("metadata") || var.is_some_and(|v| l.contains(v))) {
+            for banned in ["Bytes", "bytes(", "encoded", "_prop_bin_", "_nveBw", "BinWriter"] {
+                assert!(
+                    !line.contains(banned),
+                    "{:?}: `metadata` (HybridType::Value) routed through `{banned}`: {line}",
+                    d.target
+                );
+            }
+        }
+    }
+    // Kotlin's JNI glue rebuilds C `NveValue`s from the props buffer: `metadata` must not be among
+    // the props it re-wraps as one encoded `Bytes` value.
+    let kotlin = outputs.iter().find(|o| o.target == HybridTarget::Kotlin).expect("Kotlin output");
+    let jni = kotlin.files.iter().find(|f| f.relative_path.ends_with(".cpp")).expect("JNI glue");
+    assert!(jni.content.contains("key == \"chapters\""), "the JNI glue re-wraps encoded props by key");
+    assert!(!jni.content.contains("key == \"metadata\""), "JNI re-wraps `metadata` as Bytes");
 }
 
 #[test]
@@ -478,9 +352,18 @@ fn programmatic_rust_dsl_spec_matches_parsed_spec() {
     dsl.validate().expect("programmatic spec should validate");
     let outputs = generate_hybrid_all(&dsl, HybridTarget::ALL).expect("generate all targets");
     assert_eq!(outputs.len(), 6);
-    assert_eq!(outputs[0].files[0].relative_path, "mini_math_hybrid.generated.rs");
-    assert_eq!(outputs[1].files[0].relative_path, "MiniMathHybridAbi.generated.h");
-    assert_eq!(outputs[1].files[1].relative_path, "MiniMathHybridSpec.generated.hpp");
+    assert_eq!(
+        outputs[0].files[0].relative_path,
+        "mini_math_hybrid.generated.rs"
+    );
+    assert_eq!(
+        outputs[1].files[0].relative_path,
+        "MiniMathHybridAbi.generated.h"
+    );
+    assert_eq!(
+        outputs[1].files[1].relative_path,
+        "MiniMathHybridSpec.generated.hpp"
+    );
 }
 
 #[test]
@@ -570,7 +453,10 @@ fn rejects_negative_and_malformed_specs() {
         }
         "#,
     );
-    assert!(tree_ok.is_ok(), "Vec<Self> should be valid, got {tree_ok:?}");
+    assert!(
+        tree_ok.is_ok(),
+        "Vec<Self> should be valid, got {tree_ok:?}"
+    );
 
     // 9. Invalid prop default type mismatch
     assert!(matches!(
@@ -602,11 +488,33 @@ fn rejects_negative_and_malformed_specs() {
         bad_ident.validate(),
         Err(CodegenError::Validation(_))
     ));
+
+    // 11. Reserved C++ hybrid runtime symbols must be rejected at top level
+    for reserved in [
+        "BinReader",
+        "BinWriter",
+        "DynamicValue",
+        "NveValueTree",
+        "OwnedBytes",
+    ] {
+        let src = format!("#[nve_hybrid_struct]\npub struct {reserved} {{ pub x: u32 }}");
+        assert!(
+            matches!(parse_hybrid_rust_spec(&src), Err(CodegenError::Validation(ref m)) if m.contains("reserved")),
+            "expected reserved error for struct {reserved}"
+        );
+    }
+    for reserved in ["checked_bytes", "to_slice", "require_done"] {
+        let src = format!("#[nve_hybrid_c_fn]\npub extern \"C\" fn {reserved}() -> u32;");
+        assert!(
+            matches!(parse_hybrid_rust_spec(&src), Err(CodegenError::Validation(ref m)) if m.contains("reserved")),
+            "expected reserved error for c_fn {reserved}"
+        );
+    }
 }
 
 #[test]
 fn real_compiler_verifies_c11_and_cpp20_headers() {
-    if !tool_available("clang") || !tool_available("clang++") {
+    if !common::require_tool("clang") || !common::require_tool("clang++") {
         return;
     }
 
@@ -616,7 +524,6 @@ fn real_compiler_verifies_c11_and_cpp20_headers() {
     common::write_generated_c_abi_headers(&dir);
     cpp_out.write_to_dir(&dir).unwrap();
 
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let abi_h = dir.join("CryptoHybridAbi.generated.h");
 
     // 1. Verify pure C11 header directly (`-x c-header`) AND included from a C11 translation unit
@@ -645,7 +552,6 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
             "-fsyntax-only",
         ])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&abi_h)
         .output()
         .expect("run clang on generated C11 header");
@@ -659,7 +565,6 @@ int _check_c11(const NveHybridCryptoVTable* vt) {
     let c_tu_check = Command::new("clang")
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&c_driver)
         .output()
         .expect("run clang on C11 driver");
@@ -693,7 +598,6 @@ void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideo
     let cpp_check = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&cpp_driver)
         .output()
         .expect("run clang++ on generated C++20 header");
@@ -707,48 +611,11 @@ void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideo
     // 3. Also compile-check generated C++20 JNI glue (`CryptoHybridJni.cpp`) against a standard JNI stub header
     let kt_out = generate_hybrid_target(&spec, HybridTarget::Kotlin).unwrap();
     kt_out.write_to_dir(&dir).unwrap();
-    std::fs::write(
-        dir.join("jni.h"),
-        r#"#pragma once
-#include <cstdint>
-#define JNIEXPORT
-#define JNICALL
-#define JNI_FALSE 0
-#define JNI_TRUE 1
-typedef uint8_t jboolean;
-typedef int8_t jbyte;
-typedef int32_t jint;
-typedef int64_t jlong;
-typedef float jfloat;
-typedef double jdouble;
-typedef int32_t jsize;
-struct _jobject {};
-typedef _jobject* jobject;
-struct _jclass : _jobject {};
-typedef _jclass* jclass;
-struct _jstring : _jobject {};
-typedef _jstring* jstring;
-struct _jbyteArray : _jobject {};
-typedef _jbyteArray* jbyteArray;
-struct JNIEnv {
-  jclass FindClass(const char*);
-  jint ThrowNew(jclass, const char*);
-  void* GetDirectBufferAddress(jobject);
-  jlong GetDirectBufferCapacity(jobject);
-  jbyteArray NewByteArray(jsize);
-  void SetByteArrayRegion(jbyteArray, jsize, jsize, const jbyte*);
-  const char* GetStringUTFChars(jstring, jboolean*);
-  void ReleaseStringUTFChars(jstring, const char*);
-  jstring NewStringUTF(const char*);
-};
-"#,
-    )
-    .unwrap();
+    std::fs::write(dir.join("jni.h"), FAKE_JNI_H).unwrap();
 
     let jni_check = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(dir.join("CryptoHybridJni.generated.cpp"))
         .output()
         .expect("run clang++ on generated JNI C++20 glue");
@@ -759,25 +626,64 @@ struct JNIEnv {
         String::from_utf8_lossy(&jni_check.stderr)
     );
 
+    // 4. Also compile-check shadowing names (`raw` in POD `to_abi()`, and client member names
+    //    `vtable_`/`handle_`/`own`/`take_string`/`take_bytes` as method parameters).
+    let shadow_spec = parse_hybrid_rust_spec(
+        r#"
+#[nve_hybrid_struct]
+pub struct RawPod {
+    pub raw: u32,
+}
+
+#[nve_hybrid_module(name = "Shadow")]
+pub trait ShadowSpec {
+    fn collide(
+        &self,
+        vtable: RawPod,
+        handle: String,
+        own: Vec<u8>,
+        take_string: Vec<i32>,
+        take_bytes: NveValue,
+    ) -> Result<String, String>;
+    fn echo_val(&self, own: Vec<u8>) -> NveValue;
+}
+"#,
+    )
+    .unwrap();
+    generate_hybrid_target(&shadow_spec, HybridTarget::Cpp)
+        .unwrap()
+        .write_to_dir(&dir)
+        .unwrap();
+    let shadow_driver = dir.join("shadow.cpp");
+    std::fs::write(
+        &shadow_driver,
+        r#"
+#include "ShadowHybridSpec.generated.hpp"
+std::string _check_shadow(const NveHybridShadowVTable* vt) {
+  nve::hybrid::ShadowClient c(vt);
+  (void)c.echoVal({});
+  return c.collide(nve::hybrid::RawPod{1u}, "a", {}, {1}, nve::hybrid::DynamicValue{});
+}
+"#,
+    )
+    .unwrap();
+    let shadow_check = Command::new("clang++")
+        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
+        .arg(format!("-I{}", dir.display()))
+        .arg(&shadow_driver)
+        .output()
+        .expect("run clang++ on shadowing C++20 header");
+    assert!(
+        shadow_check.status.success(),
+        "Shadowing C++20 header failed clang++:\n{}",
+        String::from_utf8_lossy(&shadow_check.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn swift_direct_runtime_files() -> Vec<PathBuf> {
-    let swift_src = workspace_root().join("hosts/swiftui-kit/Sources/NveSwiftUI");
-    [
-        "NveBinValue.swift",
-        "NveEventTypes.swift",
-        "NveDirectArena.swift",
-        "NveDirectValueEncoding.swift",
-        "NveDirectWriters.swift",
-    ]
-    .into_iter()
-    .map(|f| swift_src.join(f))
-    .collect()
-}
-
 fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
-    let host_root = common::prepare_offline_nve_host_pkg(dir, &workspace_root());
+    let host_root = common::prepare_offline_nve_host_pkg(dir);
     let canonical_host = std::fs::canonicalize(&host_root).unwrap_or(host_root);
     let canonical_dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let to_file_uri = |p: &Path| {
@@ -817,332 +723,40 @@ fn write_offline_dart_package_config(dir: &Path, pkg_name: &str) {
 }
 
 #[test]
-fn real_compiler_verifies_swift_direct_c_interop() {
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
-    let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
-    let swift_out = generate_hybrid_target(&spec, HybridTarget::Swift).unwrap();
-
-    // Verify generated Swift uses the shared zero-alloc stack-slab arena (never legacy pinnedBuffers).
-    let swift_src = &swift_out.files[0].content;
-    assert!(
-        !swift_src.contains("pinnedBuffers"),
-        "generated Swift must not contain legacy pinnedBuffers heap encoder"
-    );
-    assert!(
-        !swift_src.contains("flatBytes"),
-        "generated Swift must not flatten heap byte arrays in setProps"
-    );
-    assert!(swift_src.contains("NveDirectEncodable"));
-    assert!(swift_src.contains("NveDirectPropsBuilder"));
-    assert!(swift_src.contains("NveDirectPropsWriter.withEncodedProps"));
-
-    if !tool_available("swiftc") {
-        return;
-    }
-
-    let dir = temp_test_dir("swift");
-    common::write_generated_c_abi_headers(&dir);
-    cpp_out.write_to_dir(&dir).unwrap();
-    swift_out.write_to_dir(&dir).unwrap();
-
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
-    let abi_h = dir.join("CryptoHybridAbi.generated.h");
-    let swift_file = dir.join("CryptoHybridSpec.generated.swift");
-
-    let mut swift_cmd = Command::new("swiftc");
-    swift_cmd
-        .arg("-typecheck")
-        .arg("-import-objc-header")
-        .arg(&abi_h)
-        .arg("-I")
-        .arg(&dir)
-        .arg("-I")
-        .arg(&nve_inc);
-    for runtime_file in swift_direct_runtime_files() {
-        swift_cmd.arg(runtime_file);
-    }
-    let swift_check = swift_cmd
-        .arg(&swift_file)
-        .output()
-        .expect("run swiftc -typecheck on generated Swift spec against shared NveSwiftUI arena");
-    assert!(
-        swift_check.status.success(),
-        "Swift direct C-interop spec failed swiftc -typecheck:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&swift_check.stdout),
-        String::from_utf8_lossy(&swift_check.stderr)
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn real_compiler_verifies_generated_rust_against_nve_abi_with_zero_warnings() {
-    // Ensure nve_abi is linked by this test crate so Cargo builds `libnve_abi-*.rlib` in deps.
-    let _touch = nve_abi::NveValue::null();
-
-    let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
-    let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
-
-    let dir = temp_test_dir("rust");
-    rust_out.write_to_dir(&dir).unwrap();
-    let rs_file = dir.join("crypto_hybrid.generated.rs");
-
-    // Locate `libnve_abi-*.rlib` and dependency search directories.
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-
-    let out_rlib = dir.join("libcrypto_hybrid_check.rlib");
-    let mut rustc_cmd = Command::new("rustc");
-    rustc_cmd.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=crypto_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    add_dep_search_dirs(&mut rustc_cmd, &dir, &dep_dirs);
-    let rustc_check = rustc_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(&rs_file)
-        .arg("-o")
-        .arg(&out_rlib)
-        .output()
-        .expect("run rustc on generated Rust module");
-
-    assert!(
-        rustc_check.status.success(),
-        "Generated Rust module failed rustc --edition=2024 -D warnings:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&rustc_check.stdout),
-        String::from_utf8_lossy(&rustc_check.stderr)
-    );
-
-    // Also compile & RUN an executable test exercising the generated Rust vtables, POD structs,
-    // binary NveBinValue round-trips, zero-copy `decode_props_direct`, and `emit_direct` events!
-    let main_rs = dir.join("e2e_main.rs");
-    std::fs::write(
-        &main_rs,
-        r#"
-use crypto_hybrid::*;
-use nve_abi::{BinValueView, NveBufferSlice, NveMapEntry, NveStrSlice, NveValue};
-
-#[derive(Default)]
-struct MyCrypto;
-
-impl CryptoHybrid for MyCrypto {
-    fn version(&mut self) -> String { "1.2.3".to_string() }
-    fn add(&mut self, a: i64, b: i64) -> i64 { a + b }
-    fn blake3(&mut self, data: &[u8]) -> Vec<u8> { data.iter().rev().copied().collect() }
-    fn hash_with(&mut self, algo: HashAlgorithm, data: &[u8]) -> DigestHeader {
-        DigestHeader {
-            algorithm: algo,
-            byte_len: data.len() as u32,
-            verified: true,
-            anchor: FramePoint { x: 3.5, y: -2.0 },
-        }
-    }
-    fn verify_payload(&mut self, payload: SignedPayload) -> Result<bool, String> {
-        if payload.label.is_empty() {
-            return Err("empty label".to_string());
-        }
-        Ok(payload.header.verified && payload.nonce == Some(77))
-    }
-    fn find_nonce(&mut self, _label: &str, hint: Option<u64>) -> Option<u64> {
-        hint.map(|h| h + 1)
-    }
-    fn lookup_payload(&mut self, id: u32) -> Option<SignedPayload> {
-        if id == 0 { return None; }
-        Some(SignedPayload {
-            header: DigestHeader {
-                algorithm: HashAlgorithm::Sha256,
-                byte_len: id,
-                verified: true,
-                anchor: FramePoint { x: 1.0, y: 2.0 },
-            },
-            label: format!("item-{id}"),
-            digest: vec![0xAA, 0xBB],
-            tags: vec!["fast".to_string(), "binary".to_string()],
-            nonce: Some(99),
-        })
-    }
-    fn batch_sign(&mut self, inputs: Vec<String>, algo: HashAlgorithm) -> Result<Vec<SignedPayload>, String> {
-        Ok(inputs.into_iter().map(|s| SignedPayload {
-            header: DigestHeader {
-                algorithm: algo,
-                byte_len: s.len() as u32,
-                verified: true,
-                anchor: FramePoint { x: 0.0, y: 0.0 },
-            },
-            label: s,
-            digest: vec![1, 2, 3],
-            tags: vec![],
-            nonce: None,
-        }).collect())
-    }
-    fn inspect_dynamic(&mut self, meta: NveHybridValue) -> NveHybridValue { meta }
-    fn reset_cache(&mut self) -> Result<(), String> { Ok(()) }
-}
-
-#[derive(Default)]
-struct MyVideo {
-    props: VideoSurfaceProps,
-    last_seek: u64,
-}
-
-impl VideoSurfaceHybrid for MyVideo {
-    fn apply_props(&mut self, props: VideoSurfaceProps) { self.props = props; }
-    fn seek(&mut self, position_ms: u64) { self.last_seek = position_ms; }
-    fn capture_frame(&mut self, at_point: FramePoint) -> Result<Vec<u8>, String> {
-        if at_point.x < 0.0 { return Err("negative x".to_string()); }
-        Ok(vec![0xDE, 0xAD])
-    }
-}
-
-fn main() {
-    let vt = build_crypto_vtable::<MyCrypto>();
-    assert_eq!(vt.abi_version, NVE_HYBRID_ABI_VERSION);
-    assert_eq!(vt.interface_id, NVE_HYBRID_CRYPTO_INTERFACE_ID);
-    assert_eq!(vt.schema_hash, NVE_HYBRID_CRYPTO_SCHEMA_HASH);
-
-    unsafe {
-        let h = (vt.create)();
-        assert!(!h.is_null());
-        assert_eq!((vt.add)(h, 19, 23), 42);
-
-        let ver = (vt.version)(h);
-        let ver_str = std::str::from_utf8(std::slice::from_raw_parts(ver.ptr, ver.len)).unwrap();
-        assert_eq!(ver_str, "1.2.3");
-        (vt.free_bytes)(ver);
-
-        let data = [1u8, 2, 3, 4];
-        let hdr = (vt.hash_with)(h, HashAlgorithm::Sha512.to_u32(), NveBufferSlice::from_slice(&data));
-        assert_eq!(hdr.algorithm, HashAlgorithm::Sha512);
-        assert_eq!(hdr.byte_len, 4);
-        assert!(hdr.verified);
-        assert_eq!(hdr.anchor.x, 3.5);
-
-        let opt_some = (vt.find_nonce)(h, NveStrSlice::from_str("k"), NveHybridOptU64 { is_some: true, value: 41 });
-        assert!(opt_some.is_some && opt_some.value == 42);
-        let opt_none = (vt.find_nonce)(h, NveStrSlice::from_str("k"), NveHybridOptU64 { is_some: false, value: 0 });
-        assert!(!opt_none.is_some);
-
-        // Non-POD struct binary round-trip + Result Ok/Err
-        let mut payload_bin = Vec::new();
-        SignedPayload {
-            header: hdr,
-            label: "hello".to_string(),
-            digest: vec![9, 8],
-            tags: vec!["a".to_string()],
-            nonce: Some(77),
-        }.encode_bin(&mut payload_bin);
-        let mut ok_out = false;
-        let mut err_out = NveHybridOwnedBytes::EMPTY;
-        let st = (vt.verify_payload)(h, NveBufferSlice::from_slice(&payload_bin), &mut ok_out, &mut err_out);
-        assert_eq!(st, NveHybridStatus::Ok as i32);
-        assert!(ok_out);
-
-        let mut bad_bin = Vec::new();
-        SignedPayload::default().encode_bin(&mut bad_bin);
-        let st_err = (vt.verify_payload)(h, NveBufferSlice::from_slice(&bad_bin), &mut ok_out, &mut err_out);
-        assert_eq!(st_err, NveHybridStatus::Err as i32);
-        let err_msg = std::str::from_utf8(std::slice::from_raw_parts(err_out.ptr, err_out.len)).unwrap();
-        assert_eq!(err_msg, "empty label");
-        (vt.free_bytes)(err_out);
-
-        // View props direct zero-copy decoding + event emission
-        let vvt = build_video_surface_vtable::<MyVideo>();
-        let vh = (vvt.create)();
-        let entries = [
-            NveMapEntry::new("source_url", NveValue::from_str("https://nve.dev/v.mp4")),
-            NveMapEntry::new("muted", NveValue::bool(true)),
-            NveMapEntry::new("quality", NveValue::i64(VideoQuality::Uhd4k.to_u32() as i64)),
-        ];
-        assert_eq!((vvt.set_props_direct)(vh, entries.as_ptr(), entries.len() as u32), NveHybridStatus::Ok as i32);
-        let decoded = VideoSurfaceProps::decode_props_direct(&entries).unwrap();
-        assert_eq!(decoded.source_url, "https://nve.dev/v.mp4");
-        assert!(decoded.muted);
-        assert_eq!(decoded.playback_rate, 1.0); // default preserved!
-        assert_eq!(decoded.quality, VideoQuality::Uhd4k);
-        assert_eq!(decoded.poster_url, None);
-
-        let ev = VideoSurfaceOnProgressEvent { position_ms: 1200, duration_ms: 9000 };
-        let ev_bin = ev.encode_bin();
-        let ev_view = BinValueView::parse(&ev_bin).unwrap();
-        assert_eq!(ev_view.get("position_ms").unwrap().as_i64(), Some(1200));
-        assert_eq!(ev_view.get("duration_ms").unwrap().as_i64(), Some(9000));
-        let mut saw_direct = false;
-        emit_video_surface_on_progress(1, 2, 333, 1200, 9000, |d| {
-            saw_direct = true;
-            assert_eq!(d.surface_id, 1);
-            assert_eq!(d.node_id, 2);
-            assert_eq!(d.timestamp_us, 333);
-        });
-        assert!(saw_direct);
-
-        (vvt.destroy)(vh);
-        (vt.destroy)(h);
-    }
-}
-"#,
-    )
-    .unwrap();
-
-    let e2e_bin = dir.join(format!("e2e_bin{}", std::env::consts::EXE_SUFFIX));
-    let mut e2e_cmd = Command::new("rustc");
-    e2e_cmd.args(["--edition=2024", "-D", "warnings"]);
-    add_dep_search_dirs(&mut e2e_cmd, &dir, &dep_dirs);
-    let e2e_compile = e2e_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg("--extern")
-        .arg(format!("crypto_hybrid={}", out_rlib.display()))
-        .arg(&main_rs)
-        .arg("-o")
-        .arg(&e2e_bin)
-        .output()
-        .expect("compile e2e Rust vtable binary");
-    assert!(
-        e2e_compile.status.success(),
-        "e2e Rust vtable binary failed to compile:\nstderr:\n{}",
-        String::from_utf8_lossy(&e2e_compile.stderr)
-    );
-
-    let e2e_run = Command::new(&e2e_bin)
-        .output()
-        .expect("run e2e Rust vtable binary");
-    assert!(
-        e2e_run.status.success(),
-        "e2e Rust vtable binary failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&e2e_run.stdout),
-        String::from_utf8_lossy(&e2e_run.stderr)
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn real_analyzer_verifies_generated_dart_ffi_bindings() {
     let spec = parse_hybrid_rust_spec(REALISTIC_HYBRID_SPEC).unwrap();
     let dart_out = generate_hybrid_target(&spec, HybridTarget::Dart).unwrap();
     let dart_src = &dart_out.files[0].content;
 
-    // Verify generated Dart reuses the static host runtime instead of duplicating codecs/structs.
-    assert!(dart_src.contains("import 'package:nve_host/nve_native.dart';"));
-    assert!(dart_src.contains("implements DirectEncodable"));
-    assert!(dart_src.contains("DirectProps.withEncoded"));
+    // Verify generated Dart reuses the static `package:nve_host` runtime instead of duplicating codecs/structs.
+    assert!(dart_src.contains("import 'package:nve_host/nve_host.dart';"));
+    assert!(dart_src.contains("import 'package:nve_host/nve_host_ffi.dart';"));
     assert!(
-        !dart_src.contains("class BinWriter"),
-        "generated Dart must not duplicate BinWriter"
+        !dart_src.contains("package:nve_flutter"),
+        "generated Dart hybrid client must depend on package:nve_host, not package:nve_flutter"
+    );
+    assert!(dart_src.contains("implements HybridPropsEncodable"));
+    assert!(dart_src.contains("HybridPropsWriter.withEncodedProps"));
+    assert!(dart_src.contains("NveValueTree.fromDynamic"));
+    assert!(dart_src.contains("writeDynamicValue('metadata', metadata)"));
+    assert!(
+        !dart_src.contains("class NveBinWriter"),
+        "generated Dart must not duplicate NveBinWriter"
     );
     assert!(
-        !dart_src.contains("class BinReader"),
-        "generated Dart must not duplicate BinReader"
+        !dart_src.contains("class NveBinReader"),
+        "generated Dart must not duplicate NveBinReader"
     );
     assert!(
         !dart_src.contains("final class NveMapEntry"),
         "generated Dart must not duplicate core ABI FFI structs"
     );
+    assert!(
+        !dart_src.contains("_NveGetInterfaceNative"),
+        "generated Dart must reuse static FFI typedefs from package:nve_host"
+    );
 
-    if !tool_available("dart") {
+    if !common::require_tool("dart") {
         return;
     }
 
@@ -1183,12 +797,12 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
         NveValueArray, NveValueData, NveValueMap,
     };
 
-    if !tool_available("clang") {
+    if !common::require_tool("clang") {
         return;
     }
 
     let mut c_src = String::from(
-        "#include <stddef.h>\n#include <stdalign.h>\n#include \"nve_abi.generated.h\"\n\n",
+        "#include <stddef.h>\n#include <stdalign.h>\n#include <nve/generated/nve_abi.generated.h>\n\n",
     );
 
     let mut check_layout = |c_ty: &str, sz: usize, al: usize, fields: &[(&str, usize)]| {
@@ -1326,8 +940,7 @@ fn rust_offset_of_matches_c_offsetof_in_nve_abi_header() {
 
 #[test]
 fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
-    let _touch = nve_abi::NveValue::null();
-    if !tool_available("clang++") {
+    if !common::require_tool("clang++") {
         return;
     }
 
@@ -1339,28 +952,10 @@ fn real_cross_language_cpp20_calls_generated_rust_vtable_end_to_end() {
     rust_out.write_to_dir(&dir).unwrap();
     cpp_out.write_to_dir(&dir).unwrap();
 
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
+    let rustc = common::rustc::Rustc::locate();
 
     // 1. Compile generated `crypto_hybrid.generated.rs` as an rlib
-    let hybrid_rlib = dir.join("libcrypto_hybrid.rlib");
-    let mut hybrid_cmd = Command::new("rustc");
-    hybrid_cmd.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=crypto_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    add_dep_search_dirs(&mut hybrid_cmd, &dir, &dep_dirs);
-    let st = hybrid_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(dir.join("crypto_hybrid.generated.rs"))
-        .arg("-o")
-        .arg(&hybrid_rlib)
-        .output()
-        .expect("compile crypto_hybrid rlib");
-    assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+    let hybrid_rlib = rustc.build_lib(&dir, "crypto_hybrid", &dir.join("crypto_hybrid.generated.rs"));
 
     // 2. Compile a Rust staticlib exporting `nve_get_interface` backed by `build_crypto_vtable` & `build_video_surface_vtable`
     let provider_rs = dir.join("provider.rs");
@@ -1427,6 +1022,18 @@ impl CryptoHybrid for LiveCrypto {
         }).collect())
     }
     fn inspect_dynamic(&mut self, meta: NveHybridValue) -> NveHybridValue { meta }
+    fn transpose(&mut self, cursor: Cursor) -> Cursor {
+        let cols = cursor.grid.first().map_or(0, Vec::len);
+        let grid = (0..cols).map(|c| cursor.grid.iter().map(|row| row[c]).collect()).collect();
+        Cursor {
+            mark: cursor.mark + 1,
+            w: cursor.w.iter().rev().copied().collect(),
+            r: cursor.r.map(|s| s.to_uppercase()),
+            count: cursor.count * 2,
+            tag: cursor.tag.map(|v| -v),
+            grid,
+        }
+    }
     fn reset_cache(&mut self) -> Result<(), String> { Ok(()) }
 }
 
@@ -1440,11 +1047,26 @@ impl VideoSurfaceHybrid for LiveVideo {
     fn apply_props(&mut self, props: VideoSurfaceProps) { self.props = props; }
     fn seek(&mut self, position_ms: u64) { self.seek_pos = position_ms; }
     fn capture_frame(&mut self, at_point: FramePoint) -> Result<Vec<u8>, String> {
+        if at_point.x < 0.0 {
+            return Err("bad \u{1F600}".to_string());
+        }
         if !self.props.muted || self.seek_pos != 9876 {
             return Err("unexpected view state".to_string());
         }
-        Ok(vec![at_point.x as u8, at_point.y as u8, self.props.source_url.len() as u8])
+        let mut frame = vec![at_point.x as u8, at_point.y as u8, self.props.source_url.len() as u8];
+        if let Some(focus) = self.props.focus_point {
+            frame.push(focus.x as u8);
+        }
+        if let Some(poster) = &self.props.poster_url {
+            frame.push(poster.len() as u8);
+        }
+        frame.extend_from_slice(&self.props.drm_key);
+        for &ch in &self.props.chapters {
+            frame.push(ch as u8);
+        }
+        Ok(frame)
     }
+    fn current_metadata(&mut self) -> NveHybridValue { self.props.metadata.clone() }
 }
 
 static CRYPTO_VTABLE: NveHybridCryptoVTable = build_crypto_vtable::<LiveCrypto>();
@@ -1463,23 +1085,12 @@ pub extern "C" fn nve_get_interface(interface_id: u32) -> *const c_void {
     .unwrap();
 
     let staticlib = dir.join("liblive_provider.a");
-    let mut lib_cmd = Command::new("rustc");
-    lib_cmd.args(["--edition=2024", "--crate-type=staticlib", "-D", "warnings"]);
-    add_dep_search_dirs(&mut lib_cmd, &dir, &dep_dirs);
-    let lib_build = lib_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg("--extern")
-        .arg(format!("crypto_hybrid={}", hybrid_rlib.display()))
-        .arg(&provider_rs)
-        .arg("-o")
-        .arg(&staticlib)
-        .output()
-        .expect("build Rust staticlib");
-    assert!(
-        lib_build.status.success(),
-        "Rust staticlib build failed:\n{}",
-        String::from_utf8_lossy(&lib_build.stderr)
+    rustc.build(
+        &dir,
+        &["--crate-type=staticlib"],
+        &[("crypto_hybrid", &hybrid_rlib)],
+        &provider_rs,
+        &staticlib,
     );
 
     // 3. Compile & link a real C++20 executable calling into the Rust staticlib via generated C++20 clients!
@@ -1551,6 +1162,65 @@ int main() {
   video.seek(9876u);
   auto frame = video.captureFrame(FramePoint{5.0f, 9.0f});
   assert(frame.size() == 3 && frame[0] == 5 && frame[1] == 9 && frame[2] == 24);
+  // A dynamic value crosses as an `NveValue` tree and comes back byte-identical.
+  BinWriter dw;
+  const auto dmap = dw.begin_map(2);
+  dw.write_map_key("k");
+  const auto darr = dw.begin_array(3);
+  dw.write_i64(1);
+  dw.write_str("x");
+  dw.write_null();
+  dw.end(darr);
+  dw.write_map_key("f");
+  dw.write_f64(2.5);
+  dw.end(dmap);
+  const auto meta = DynamicValue::from_bytes(dw.bytes());
+  assert(meta.has_value());
+  assert(crypto.inspectDynamic(*meta) == *meta);
+
+  // Absent non-direct options cross as `Null`; present ones, `Bytes`, `Vec`, and `NveValue`
+  // props round-trip losslessly (nested `NveValue` is never double-wrapped as `Bytes`).
+  props.posterUrl = "p.png";
+  props.focusPoint = FramePoint{7.0f, 0.0f};
+  props.drmKey = {0xAA, 0xBB};
+  props.chapters = {10, 20, 30};
+  props.metadata = *meta;
+  video.setProps(props);
+  frame = video.captureFrame(FramePoint{5.0f, 9.0f});
+  assert(frame.size() == 10 && frame[3] == 7 && frame[4] == 5);
+  assert(frame[5] == 0xAA && frame[6] == 0xBB && frame[7] == 10 && frame[8] == 20 && frame[9] == 30);
+  assert(video.currentMetadata() == *meta);
+  props.posterUrl = std::nullopt;
+  props.focusPoint = std::nullopt;
+  props.drmKey.clear();
+  props.chapters.clear();
+  props.metadata = DynamicValue{};
+  video.setProps(props);
+  assert(video.captureFrame(FramePoint{5.0f, 9.0f}).size() == 3);
+  assert(video.currentMetadata().is_null());
+
+  // Field names shadowing codec names (`w`, `mark`, `r`, `count`), two `Option`s, and a nested sequence.
+  Cursor cursor;
+  cursor.mark = 1u;
+  cursor.w = {1, 2, 3};
+  cursor.r = "ab";
+  cursor.count = 4u;
+  cursor.tag = 42;
+  cursor.grid = {{1, 2, 3}, {4, 5, 6}};
+  const Cursor t = crypto.transpose(cursor);
+  assert(t.mark == 2u && t.count == 8u && t.r == std::optional<std::string>("AB"));
+  assert(t.tag == std::optional<int32_t>(-42));
+  assert((t.w == std::vector<uint8_t>{3, 2, 1}));
+  assert((t.grid == std::vector<std::vector<int32_t>>{{1, 4}, {2, 5}, {3, 6}}));
+
+  // Invalid UTF-8 never crosses the ABI: the encoding fails before the call.
+  bool utf8_caught = false;
+  try {
+    (void)crypto.batchSign({"\xff"}, HashAlgorithm::Sha256);
+  } catch (const std::runtime_error& e) {
+    utf8_caught = std::string(e.what()).find("InvalidUtf8") != std::string::npos;
+  }
+  assert(utf8_caught);
   return 0;
 }
 "#,
@@ -1558,12 +1228,10 @@ int main() {
     .unwrap();
 
     common::write_generated_c_abi_headers(&dir);
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
     let cpp_bin = dir.join("cpp_e2e_bin");
     let cpp_link = Command::new("clang++")
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])
         .arg(format!("-I{}", dir.display()))
-        .arg(format!("-I{}", nve_inc.display()))
         .arg(&cpp_main)
         .arg(&staticlib)
         .arg("-o")
@@ -1587,8 +1255,51 @@ int main() {
         String::from_utf8_lossy(&run.stderr)
     );
 
+    // 4. The Android JNI glue, linked against the same Rust staticlib and *run* on a fake `JNIEnv`
+    //    that records what Java would see (pending exceptions, arrays, strings).
+    generate_hybrid_target(&spec, HybridTarget::Kotlin)
+        .unwrap()
+        .write_to_dir(&dir)
+        .unwrap();
+    std::fs::write(dir.join("jni.h"), FAKE_JNI_H).unwrap();
+    std::fs::write(dir.join("jni_test_support.h"), JNI_TEST_SUPPORT_H).unwrap();
+    let jni_main = dir.join("jni_main.cpp");
+    std::fs::write(&jni_main, JNI_HARNESS_CPP).unwrap();
+    let jni_bin = dir.join("jni_e2e_bin");
+    // ASan/UBSan: the glue borrows the direct buffer for every prop, so a dangling slice fails.
+    let jni_link = Command::new("clang++")
+        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-g"])
+        .args(["-fsanitize=address,undefined", "-fno-sanitize-recover=all"])
+        .arg(format!("-I{}", dir.display()))
+        .arg(&jni_main)
+        .arg(dir.join("CryptoHybridJni.generated.cpp"))
+        .arg(&staticlib)
+        .arg("-o")
+        .arg(&jni_bin)
+        .output()
+        .expect("link the JNI glue against the Rust staticlib");
+    assert!(
+        jni_link.status.success(),
+        "JNI glue <-> Rust link failed:\n{}",
+        String::from_utf8_lossy(&jni_link.stderr)
+    );
+    let jni_run = Command::new(&jni_bin)
+        .output()
+        .expect("run the JNI harness");
+    assert!(
+        jni_run.status.success(),
+        "JNI harness failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&jni_run.stdout),
+        String::from_utf8_lossy(&jni_run.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Drives the generated JNI entry points like the Kotlin client does (direct buffers, Java
+/// strings), against the live Rust provider, through every success and error path.
+const JNI_HARNESS_CPP: &str = include_str!("fixtures/jni_harness.cpp");
+const JNI_TEST_SUPPORT_H: &str = include_str!("fixtures/jni_test_support.h");
 
 #[test]
 fn explicit_interface_id_and_fixed_layout_static_asserts_work_in_hybrid_pipeline() {
@@ -1658,48 +1369,6 @@ pub trait ModBSpec {
 }
 
 #[test]
-fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
-    let root = workspace_root();
-    assert!(
-        !root.join("packages/core/codegen/specs").exists(),
-        "packages/core/codegen/specs/ must stay deleted (colocated #[derive(NveAbi)] is the single source of truth)"
-    );
-
-    let core = nve_codegen::core_abi_spec();
-    let scene = nve_codegen::scene_abi_spec();
-
-    // Verify core modular interfaces keep exact fixed IDs 1..=5
-    assert_eq!(core.modules.len(), 5);
-    assert_eq!(core.modules[0].interface_id(), nve_abi::NVE_IFACE_SURFACE);
-    assert_eq!(core.modules[1].interface_id(), nve_abi::NVE_IFACE_LAYOUT);
-    assert_eq!(core.modules[2].interface_id(), nve_abi::NVE_IFACE_COMPONENT);
-    assert_eq!(core.modules[3].interface_id(), nve_abi::NVE_IFACE_DEV);
-    assert_eq!(core.modules[4].interface_id(), nve_abi::NVE_IFACE_HOST);
-
-    // Verify scene node layout descriptors
-    let render_node = scene.find_struct("NveRenderNode").expect("NveRenderNode");
-    assert_eq!(render_node.align, Some(nve_abi::NVE_RENDER_NODE_ALIGN));
-    assert_eq!(render_node.expected_size, Some(nve_abi::NVE_RENDER_NODE_SIZE));
-    assert_eq!(render_node.fields.len(), 20);
-
-    // Cross-check both deterministic schema hashes against `packages/core/abi`
-    assert_eq!(nve_codegen::core_abi_schema_hash(), nve_abi::NVE_CORE_ABI_SCHEMA_HASH);
-    assert_ne!(core.file_schema_hash(), 0);
-    assert_eq!(core.file_schema_hash(), nve_codegen::core_abi_spec().file_schema_hash());
-    assert_eq!(
-        nve_codegen::compute_scene_schema_hash(&scene),
-        nve_abi::NVE_SCENE_SCHEMA_HASH
-    );
-
-    // Verify all 17 Core + Scene + Runtime ABI + XXH64 mirror files are deterministic, obey naming
-    // invariants, and match any materialized files on disk byte-for-byte.
-    let all = nve_codegen::generate_all_abi_files();
-    assert_eq!(all.len(), 17);
-    assert_eq!(all, nve_codegen::generate_all_abi_files());
-    common::assert_generated_file_naming_and_optional_disk_parity(&all, &root, false);
-}
-
-#[test]
 fn hybrid_emitters_escape_interpolation_quotes_and_newlines_across_all_6_targets() {
     let adversarial_spec = r#"
 /// Doc line 1
@@ -1757,9 +1426,8 @@ pub trait SafeBannerSpec {
     // 4. Rust + C++20: verify real compilers accept the emitted code cleanly!
     let rust_out = generate_hybrid_target(&spec, HybridTarget::Rust).unwrap();
     let cpp_out = generate_hybrid_target(&spec, HybridTarget::Cpp).unwrap();
-    let nve_inc = workspace_root().join("cxx/nve-fabric-bridge/include");
 
-    if tool_available("clang++") {
+    if common::require_tool("clang++") {
         let dir = temp_test_dir("adversarial_cpp");
         common::write_generated_c_abi_headers(&dir);
         cpp_out.write_to_dir(&dir).unwrap();
@@ -1779,7 +1447,6 @@ void check() {
         let out = Command::new("clang++")
             .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
             .arg(format!("-I{}", dir.display()))
-            .arg(format!("-I{}", nve_inc.display()))
             .arg(&driver)
             .output()
             .expect("clang++ adversarial hybrid cpp");
@@ -1791,36 +1458,22 @@ void check() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    if tool_available("swiftc") {
+    // Generated Swift against the static host runtime (`common::swift`); the full Swift <-> Rust
+    // run lives in `hybrid_swift_runtime_tests`.
+    if common::require_tool("swiftc") {
         let dir = temp_test_dir("adversarial_swift");
-        common::write_generated_c_abi_headers(&dir);
+        let host = common::swift::build_host_swift(&dir, &[]);
         cpp_out.write_to_dir(&dir).unwrap();
         swift_out.write_to_dir(&dir).unwrap();
-        let mut swift_cmd = Command::new("swiftc");
-        swift_cmd
-            .arg("-typecheck")
-            .arg("-import-objc-header")
-            .arg(dir.join("SafeBannerHybridAbi.generated.h"))
-            .arg("-I")
-            .arg(&dir)
-            .arg("-I")
-            .arg(&nve_inc);
-        for runtime_file in swift_direct_runtime_files() {
-            swift_cmd.arg(runtime_file);
-        }
-        let out = swift_cmd
-            .arg(dir.join("SafeBannerHybridSpec.generated.swift"))
-            .output()
-            .expect("swiftc adversarial hybrid swift");
-        assert!(
-            out.status.success(),
-            "adversarial hybrid Swift failed swiftc -typecheck:\n{}",
-            String::from_utf8_lossy(&out.stderr)
+        common::swift::typecheck_generated(
+            &host,
+            &dir.join("SafeBannerHybridAbi.generated.h"),
+            &dir.join("SafeBannerHybridSpec.generated.swift"),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    if tool_available("dart") {
+    if common::require_tool("dart") {
         let dir = temp_test_dir("adversarial_dart");
         let lib_dir = dir.join("lib");
         std::fs::create_dir_all(&lib_dir).unwrap();
@@ -1846,39 +1499,19 @@ void check() {
     }
 
     // Real rustc verification of adversarial Rust output
-    let _touch = nve_abi::NveValue::null();
     let dir = temp_test_dir("adversarial_rust");
     rust_out.write_to_dir(&dir).unwrap();
-    let (nve_abi_rlib, dep_dirs) = locate_nve_abi_and_dep_dirs();
-    let mut adv_cmd = Command::new("rustc");
-    adv_cmd.args([
-        "--edition=2024",
-        "--crate-type=lib",
-        "--crate-name=safe_banner_hybrid",
-        "-D",
-        "warnings",
-    ]);
-    add_dep_search_dirs(&mut adv_cmd, &dir, &dep_dirs);
-    let out = adv_cmd
-        .arg("--extern")
-        .arg(format!("nve_abi={}", nve_abi_rlib.display()))
-        .arg(dir.join("safe_banner_hybrid.generated.rs"))
-        .arg("-o")
-        .arg(dir.join("libsafe_banner_hybrid.rlib"))
-        .output()
-        .expect("rustc adversarial hybrid rust");
-    assert!(
-        out.status.success(),
-        "adversarial hybrid Rust failed rustc:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    common::rustc::Rustc::locate().build_lib(&dir, "safe_banner_hybrid", &dir.join("safe_banner_hybrid.generated.rs"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn fuzz_hybrid_parser_never_panics_on_adversarial_and_truncated_inputs() {
     // 1. Sampled UTF-8 prefix truncations across the entire realistic hybrid spec
-    let indices: Vec<usize> = REALISTIC_HYBRID_SPEC.char_indices().map(|(i, _)| i).collect();
+    let indices: Vec<usize> = REALISTIC_HYBRID_SPEC
+        .char_indices()
+        .map(|(i, _)| i)
+        .collect();
     for (step, &byte_idx) in indices.iter().enumerate() {
         if step % 3 == 0 || byte_idx + 64 >= REALISTIC_HYBRID_SPEC.len() {
             let _ = parse_hybrid_rust_spec(&REALISTIC_HYBRID_SPEC[..byte_idx]);
@@ -1913,7 +1546,10 @@ fn fuzz_hybrid_parser_never_panics_on_adversarial_and_truncated_inputs() {
         "pub(crate".to_owned(),
     ];
     for case in &edge_cases {
-        let _ = parse_hybrid_rust_spec(case);
+        assert!(
+            parse_hybrid_rust_spec(case).is_err(),
+            "must be rejected: {case}"
+        );
     }
 
     // 3. 1,200 deterministic PRNG adversarial token streams

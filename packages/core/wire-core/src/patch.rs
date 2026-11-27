@@ -1,4 +1,4 @@
-//! Compact binary `NodePatchDelta` payload codec built on `nve_engine::NveNodePatch` (24 bytes each).
+//! Compact binary `NodePatchDelta` payload codec built on 24-byte `#[repr(C)]` [`NveNodePatch`].
 //!
 //! Wire layout (little-endian):
 //! - `patch_count: u32` (0..4)
@@ -6,9 +6,155 @@
 //! - `patches: [NveNodePatch; patch_count]` (`24 * patch_count` bytes)
 //! - `string_table: [u8; string_table_len]` (UTF-8 bytes referenced by `NveNodePatch::value_lo/hi`)
 
-use nve_engine::{NveNodePatch, NveNodePatchField, NVE_NODE_PATCH_FLAG_STRING_SPAN};
+use std::mem::{align_of, offset_of, size_of};
 
 use crate::frame::NveWireError;
+
+/// Flag bit on [`NveNodePatch::flags`] indicating `(value_lo, value_hi)` stores a UTF-8
+/// `(offset, len)` span inside the enclosing `NodePatchDelta` string table.
+pub const NVE_NODE_PATCH_FLAG_STRING_SPAN: u16 = 1 << 0;
+
+/// Discriminator identifying which visual or text field an [`NveNodePatch`] updates.
+#[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NveNodePatchField {
+    Text = 1,
+    BackgroundRgba = 2,
+    TextRgba = 3,
+    BorderRgba = 4,
+    Opacity = 5,
+    FontSize = 6,
+    Visibility = 7,
+    RectX = 8,
+    RectY = 9,
+    RectWidth = 10,
+    RectHeight = 11,
+    ZIndex = 12,
+    BorderRadius = 13,
+    BorderWidth = 14,
+    ImageSrc = 15,
+    Tag = 16,
+    CustomScalar = 17,
+}
+
+impl NveNodePatchField {
+    #[inline]
+    pub const fn from_u16(raw: u16) -> Option<Self> {
+        match raw {
+            1 => Some(Self::Text),
+            2 => Some(Self::BackgroundRgba),
+            3 => Some(Self::TextRgba),
+            4 => Some(Self::BorderRgba),
+            5 => Some(Self::Opacity),
+            6 => Some(Self::FontSize),
+            7 => Some(Self::Visibility),
+            8 => Some(Self::RectX),
+            9 => Some(Self::RectY),
+            10 => Some(Self::RectWidth),
+            11 => Some(Self::RectHeight),
+            12 => Some(Self::ZIndex),
+            13 => Some(Self::BorderRadius),
+            14 => Some(Self::BorderWidth),
+            15 => Some(Self::ImageSrc),
+            16 => Some(Self::Tag),
+            17 => Some(Self::CustomScalar),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub const fn is_string_field(self) -> bool {
+        matches!(self, Self::Text | Self::ImageSrc | Self::Tag)
+    }
+}
+
+/// Compact 24-byte `#[repr(C)]` single-field mutation for a scene node.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NveNodePatch {
+    pub node_id: u32,
+    pub field_tag: u16,
+    pub flags: u16,
+    /// Scalar value (`u32`, `f32::to_bits`, or low 32 bits) or UTF-8 string byte offset.
+    pub value_lo: u32,
+    /// Secondary scalar value (high 32 bits) or UTF-8 string byte length.
+    pub value_hi: u32,
+    /// Optional spring/easing transition hint in milliseconds (`0` = immediate).
+    pub transition_ms: u32,
+    pub reserved: u32,
+}
+
+const _: () = {
+    assert!(size_of::<NveNodePatch>() == 24);
+    assert!(align_of::<NveNodePatch>() == 4);
+    assert!(offset_of!(NveNodePatch, node_id) == 0);
+    assert!(offset_of!(NveNodePatch, field_tag) == 4);
+    assert!(offset_of!(NveNodePatch, flags) == 6);
+    assert!(offset_of!(NveNodePatch, value_lo) == 8);
+    assert!(offset_of!(NveNodePatch, value_hi) == 12);
+    assert!(offset_of!(NveNodePatch, transition_ms) == 16);
+    assert!(offset_of!(NveNodePatch, reserved) == 20);
+};
+
+impl NveNodePatch {
+    #[inline]
+    pub const fn scalar(
+        node_id: u32,
+        field: NveNodePatchField,
+        value_lo: u32,
+        value_hi: u32,
+        transition_ms: u32,
+    ) -> Self {
+        Self {
+            node_id,
+            field_tag: field as u16,
+            flags: 0,
+            value_lo,
+            value_hi,
+            transition_ms,
+            reserved: 0,
+        }
+    }
+
+    #[inline]
+    pub const fn string_span(
+        node_id: u32,
+        field: NveNodePatchField,
+        str_offset: u32,
+        str_len: u32,
+        transition_ms: u32,
+    ) -> Self {
+        Self {
+            node_id,
+            field_tag: field as u16,
+            flags: NVE_NODE_PATCH_FLAG_STRING_SPAN,
+            value_lo: str_offset,
+            value_hi: str_len,
+            transition_ms,
+            reserved: 0,
+        }
+    }
+
+    #[inline]
+    pub const fn field(&self) -> Option<NveNodePatchField> {
+        NveNodePatchField::from_u16(self.field_tag)
+    }
+
+    #[inline]
+    pub const fn is_string_span(&self) -> bool {
+        (self.flags & NVE_NODE_PATCH_FLAG_STRING_SPAN) != 0
+    }
+
+    #[inline]
+    pub const fn as_f32(&self) -> f32 {
+        f32::from_bits(self.value_lo)
+    }
+
+    #[inline]
+    pub const fn as_u64(&self) -> u64 {
+        (self.value_lo as u64) | ((self.value_hi as u64) << 32)
+    }
+}
 
 /// Fixed 8-byte subheader for `NveWireKind::NodePatchDelta` payloads.
 pub const NVE_NODE_PATCH_DELTA_HEADER_SIZE: usize = 8;

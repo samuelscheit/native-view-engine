@@ -10,10 +10,10 @@ import 'package:nve_host/nve_host.dart';
 
 final class NveSceneTree {
   NveSceneTree(this.s)
-      : visual = s.findTable(NveVisualTable.key),
-        layout = s.findTable(NveLayoutTable.key),
-        scroll = s.findTable(NveScrollTable.key),
-        interaction = s.findTable(NveInteractionTable.key);
+      : visual = s.findTable(VisualTable.key),
+        layout = s.findTable(LayoutTable.key),
+        scroll = s.findTable(ScrollTable.key),
+        interaction = s.findTable(InteractionTable.key);
 
   final RuntimeSceneReader s;
   final TableReader? visual;
@@ -44,15 +44,15 @@ final class NveSceneTree {
 
   bool isDisplayNone(int index) {
     final row = s.rowOf(layout, index);
-    return row >= 0 && layout!.enumValue(row, NveLayoutTable.display) == NveDisplay.none;
+    return row >= 0 && layout!.enumValue(row, LayoutTable.display) == NveDisplay.none;
   }
 
   /// `Visual.overflow_x / overflow_y` clips children.
   bool clipsChildren(int index) {
     final row = s.rowOf(visual, index);
     return row >= 0 &&
-        (visual!.enumValue(row, NveVisualTable.overflowX) != NveOverflow.visible ||
-            visual!.enumValue(row, NveVisualTable.overflowY) != NveOverflow.visible);
+        (visual!.enumValue(row, VisualTable.overflowX) != NveOverflow.visible ||
+            visual!.enumValue(row, VisualTable.overflowY) != NveOverflow.visible);
   }
 
   bool isScrollContainer(int index) => s.rowOf(scroll, index) >= 0;
@@ -60,10 +60,10 @@ final class NveSceneTree {
   /// `Interaction.event_mask` of [index] (`0` when absent or disabled).
   int eventMask(int index) {
     final row = s.rowOf(interaction, index);
-    if (row < 0 || interaction!.boolean(row, NveInteractionTable.disabled)) {
+    if (row < 0 || interaction!.boolean(row, InteractionTable.disabled)) {
       return 0;
     }
-    return interaction!.u32(row, NveInteractionTable.eventMask);
+    return interaction!.u32(row, InteractionTable.eventMask);
   }
 
   /// Live child slot indices of [index] in paint order (stable `z_index` sort when any is set).
@@ -91,7 +91,7 @@ final class NveSceneTree {
 
   int zIndex(int index) {
     final row = s.rowOf(visual, index);
-    return row < 0 ? 0 : visual!.i32(row, NveVisualTable.zIndex);
+    return row < 0 ? 0 : visual!.i32(row, VisualTable.zIndex);
   }
 
   /// Deepest node under [point] (surface coordinates) for which [accept] holds, honoring

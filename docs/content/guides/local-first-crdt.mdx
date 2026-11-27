@@ -1,6 +1,6 @@
 ---
 title: "Local-First Storage & CRDTs"
-description: "Instant-Boot MmapSnapshot Frame-0 freeze-dry (NVE_SNAP), crash-safe append-only .nvewal WAL (NVE_WAL1), and zero-dependency binary CRDT engine (NVC1)."
+description: "Zero-unsafe Frame-0 NVE2 keyframe boot (Frame0File), crash-atomic StateFile persistence (NVESTATE), and zero-dependency binary CRDT engine (NVC1)."
 order: 6
 ---
 
@@ -8,29 +8,24 @@ order: 6
 
 Native View Engine treats instant cold start and offline-first multi-device collaboration as first-class engine primitives — zero SQLite/JSON glue required for Frame-0 persistence or deterministic state convergence.
 
-## Instant-Boot `MmapSnapshot` (`NVE_SNAP`)
+## Frame-0 `NVE2` Keyframe Boot (`Frame0File` / `frame0.nve2`)
 
-`packages/core/engine/src/snapshot/` freeze-dries both the last rendered binary `CommandBuffer` (**Frame 0**) and a pointer-free `RelocatableStateArena` into a single 8-byte-aligned memory-mapped file (`NVE_SNAP`, 80-byte fixed header):
+`packages/core/engine/src/persistence/` persists Frame 0 as a single standard `NVE2` keyframe (`frame == 1`) followed by a 40-byte little-endian footer (`Frame0Footer`):
 
-| Offset | Size | Field | Description |
+| Offset (from end) | Size | Field | Description |
 | :--- | :--- | :--- | :--- |
-| `0..8` | 8 B | `magic` | `b"NVE_SNAP"` |
-| `8..16` | 8 B | `format_version`, `app_schema_version` | `u32 = 1`, caller schema version |
-| `16..24` | 8 B | `flags`, `reserved` | `u32`, `u32 (0)` |
-| `24..32` | 8 B | `checksum_xxh64` | XXH64 over `0..24` + `32..file_len` |
-| `32..48` | 16 B | `frame0_offset`, `frame0_len` | 8-byte aligned Frame-0 `NVE1` `CommandBuffer` |
-| `48..64` | 16 B | `state_offset`, `state_len` | 8-byte aligned `RelocatableStateArena` / `NVE_SIG1` bytes |
-| `64..80` | 16 B | `meta_offset`, `meta_len` | Optional viewport / metadata bytes |
+| `-40..-36` | 4 B | `node_count` | Exact live `NodeStore` node count used to pre-size arenas in O(1) allocations |
+| `-36..-32` | 4 B | `flags` | Format flags (`0`) |
+| `-32..-24` | 8 B | `table_schema_hash` | Deterministic `XXH64` over `CORE_TABLE_DESCS` (`core_tables_schema_hash()`) |
+| `-24..-16` | 8 B | `app_build_id` | Caller build/schema tag (`0` default for `nve prerender` & `nve-skia-shell`) |
+| `-16..-8` | 8 B | `env_hash` | Optional environment/theme tag |
+| `-8..0` | 8 B | `payload_xxh64` | `XXH64` over the entire `NVE2` payload + first 32 footer bytes |
 
-Because `MmapSnapshot` contains zero absolute memory pointers, it survives ASLR, crashes, OS reboots, and app upgrades. Measured cold boot on Apple Silicon: **`29 µs`** raw `mmap` open and **`82–136 µs`** full Frame-0 + 100-row state restore.
+Booting `frame0.nve2` decodes directly into a pre-sized `StoreWireReplica` and computes fresh live Taffy layout at the actual launch viewport and DPI — eliminating stale baked rects with zero `mmap` and zero `unsafe` (`< 2 ms` for 1,000 nested nodes).
 
-## Crash-Safe Write-Ahead Log (`.nvewal` / `NVE_WAL1`)
+## Crash-Atomic State Persistence (`StateFile` / `state.nve`)
 
-Writing a full snapshot on every keystroke is wasteful. `packages/core/engine/src/snapshot_wal/` pairs `MmapSnapshot` with an append-only binary WAL (`NVE_WAL1`, 24-byte header bound to `base_snapshot_checksum`):
-
-- **Record framing:** `seq: u64` (monotonic from `1`) | `kind: u8` (`1 = StateDelta`, `2 = Frame0Delta`, `3 = Checkpoint`) | `payload_len: u32` | `payload_bytes` | `checksum_xxh64: u64`.
-- **Torn-tail recovery vs. corruption rejection:** On `SnapshotWal::open_or_create`, any torn *trailing* record at EOF (mid-write power loss) is cleanly truncated back to the last valid boundary, whereas any corrupted *middle* record returns a strict `WalError`.
-- **Atomic compaction:** `SnapshotWal::compact_into_snapshot` writes a new `NVE_SNAP` via sibling temp file + `sync_all()` + atomic `rename()`, then rotates the `.nvewal` file to a clean 24-byte header bound to the new checksum.
+Application state (`WorkspaceState` `NWS1`, `SignalArchive` `NVE_SIG1`, `FormDraftStore`) persists via `StateFile`, which wraps an arbitrary binary payload in a 24-byte `NVESTATE` header (`magic: 8B | schema_version: u32 | payload_len: u32 | xxh64: u64` covering header prefix + payload) and writes via exclusive `create_new` sibling temp file → `sync_all()` → atomic `rename()` → parent-directory `sync_all()`. Corrupt files are quarantined to `<file>.corrupt`; I/O and schema-version mismatches never delete user data.
 
 ## Zero-Dependency Binary CRDT Engine (`NVC1`)
 
@@ -77,4 +72,4 @@ let mut blocks = RgaList::<String>::new();
 let _ins_delta = blocks.insert_after(None, "Intro paragraph".into(), clock.next_op_id(1_700_000_000_030));
 ```
 
-In `examples/studio-workspace`, `StudioCrdtDoc` combines `LwwRegister`, `PnCounter`, `OrSet`, and `RgaList` with verified 5-peer partition-heal convergence and crash-safe `.nvewal` persistence.
+In `examples/studio-workspace`, `StudioCrdtDoc` combines `LwwRegister`, `PnCounter`, `OrSet`, and `RgaList` with verified 5-peer partition-heal convergence and crash-atomic `StateFile` persistence.

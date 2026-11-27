@@ -6,10 +6,10 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:nve_host/nve_native.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 import 'src/check.dart';
-import 'src/native_values_suite.dart';
 import 'src/runtime_ingress_suite.dart';
 
 String _lib(String env, String stem) {
@@ -41,8 +41,8 @@ void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, Strin
 /// `(liveNodes, textNodes, firstText, maxRight, maxBottom, interactive index)` of the scene; the
 /// interactive node is the first event target whose center lies inside [viewportHeight].
 (int, int, String, double, double, int) _summarize(RuntimeSceneReader s, {double viewportHeight = 600}) {
-  final text = s.findTable(NveTextTable.key);
-  final interaction = s.findTable(NveInteractionTable.key);
+  final text = s.findTable(TextTable.key);
+  final interaction = s.findTable(InteractionTable.key);
   var live = 0, texts = 0, interactive = -1;
   var first = '';
   var right = 0.0, bottom = 0.0;
@@ -60,12 +60,12 @@ void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, Strin
     if (row >= 0) {
       texts++;
       if (first.isEmpty) {
-        first = s.str(text!, row, NveTextTable.text);
+        first = s.str(text!, row, TextTable.text);
       }
     }
     final ir = s.rowOf(interaction, i);
     final cy = s.y(i) + s.height(i) / 2;
-    if (interactive < 0 && ir >= 0 && interaction!.u32(ir, NveInteractionTable.eventMask) != 0 && s.width(i) > 0 &&
+    if (interactive < 0 && ir >= 0 && interaction!.u32(ir, InteractionTable.eventMask) != 0 && s.width(i) > 0 &&
         cy > 0 && cy < viewportHeight) {
       interactive = i;
     }
@@ -81,13 +81,13 @@ void _expectStatus(Check c, NveRuntimeStatus status, void Function() body, Strin
 
 /// Every text of the scene in tree order: a press that re-renders visibly changes it.
 String _textDigest(RuntimeSceneReader s) {
-  final text = s.findTable(NveTextTable.key);
+  final text = s.findTable(TextTable.key);
   final out = StringBuffer();
   void walk(int i) {
     final row = s.rowOf(text, i);
     if (row >= 0) {
       out
-        ..write(s.str(text!, row, NveTextTable.text))
+        ..write(s.str(text!, row, TextTable.text))
         ..write('\u0000');
     }
     for (final child in s.children(i)) {
@@ -106,11 +106,11 @@ String _textDigest(RuntimeSceneReader s) {
 
 /// Visible press targets `(raw NodeId, center x, center y)`.
 List<(int, double, double)> _pressTargets(RuntimeSceneReader s, double viewportHeight) {
-  final interaction = s.findTable(NveInteractionTable.key);
+  final interaction = s.findTable(InteractionTable.key);
   return [
     for (var i = 1; i < s.nodeCapacity; i++)
       if (s.rowOf(interaction, i) case final r when r >= 0)
-        if (interaction!.u32(r, NveInteractionTable.eventMask) & 1 != 0 &&
+        if (interaction!.u32(r, InteractionTable.eventMask) & 1 != 0 &&
             s.width(i) > 0 &&
             s.y(i) + s.height(i) / 2 > 0 &&
             s.y(i) + s.height(i) / 2 < viewportHeight)
@@ -120,7 +120,6 @@ List<(int, double, double)> _pressTargets(RuntimeSceneReader s, double viewportH
 
 void main() {
   final c = Check();
-  runNativeValues(c);
   runRuntimeIngress(c);
   c.throwsA<ArgumentError>(() => RuntimeApi.open('/nonexistent/libnve_runtime_missing.dylib'), 'missing library');
   final api = RuntimeApi.open(_lib('NVE_RUNTIME_LIB', 'nve_runtime'));
@@ -161,11 +160,11 @@ void main() {
   c.eq(session.tick(1 / 60), true, 'first tick publishes the app frame');
   final (live, texts, firstText, right, bottom, interactive) = session.withScene((s) {
     c.that(s.dirtyIndices.isNotEmpty, 'first frame marks nodes dirty');
-    c.that(s.findTable(NveVisualTable.key) != null, 'visual table published');
-    final visual = s.findTable(NveVisualTable.key)!;
-    c.eq(visual.words, NveVisualTable.words, 'published visual layout matches generated words');
-    final typo = s.findTable(NveTypographyTable.key);
-    c.that(typo == null || typo.words == NveTypographyTable.words, 'typography words match');
+    c.that(s.findTable(VisualTable.key) != null, 'visual table published');
+    final visual = s.findTable(VisualTable.key)!;
+    c.eq(visual.words, VisualTable.words, 'published visual layout matches generated words');
+    final typo = s.findTable(TypographyTable.key);
+    c.that(typo == null || typo.words == TypographyTable.words, 'typography words match');
     return _summarize(s, viewportHeight: 844);
   });
   c.that(live > 10, 'kitchen sink has a real tree ($live live nodes)');
@@ -207,7 +206,7 @@ void main() {
       RuntimeEvent.custom(rootNodeId, 'command', value: {
         'n': 1,
         'list': [1.5, 'x', null, true],
-        'bin': DynamicValue(encodeDynamic({'deep': [1]})),
+        'bin': DynamicValue.fromObject({'deep': [1]}),
       }),
     ]);
     c.throwsA<ArgumentError>(
@@ -219,7 +218,7 @@ void main() {
 
   // Host scroll is published on the next tick as the container's visual child shift.
   final scroller = session.withScene((s) {
-    final t = s.findTable(NveScrollTable.key);
+    final t = s.findTable(ScrollTable.key);
     for (var i = 1; t != null && i < s.nodeCapacity; i++) {
       if (s.rowOf(t, i) >= 0) {
         return s.nodeId(i);
@@ -235,7 +234,7 @@ void main() {
     c.eq(session.withScene((s) => s.scrollShift(s.indexOf(scroller))), (sx, sy), 'published shift = scroll offset');
     session.scrollBy(scroller, 0, -1e6);
     session.tick(0);
-    c.eq(session.withScene((s) => s.scrollCount), 0, 'scrolled back: nothing published');
+    c.eq(session.withScene((s) => s.scrollShift(s.indexOf(scroller))), (0.0, 0.0), 'scrolled back: zero shift');
   } else {
     c.that(false, 'kitchen sink exposes a scroll container');
   }

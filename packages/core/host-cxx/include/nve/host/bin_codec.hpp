@@ -44,6 +44,23 @@ enum class BinError : uint8_t {
   InvalidMark,    ///< `BinWriter::end` got a mark that is not an open container in this buffer
 };
 
+/// Stable name of `e` (`"Truncated"`), for error messages.
+[[nodiscard]] constexpr const char* to_string(BinError e) noexcept {
+  switch (e) {
+    case BinError::None: return "None";
+    case BinError::Truncated: return "Truncated";
+    case BinError::UnexpectedTag: return "UnexpectedTag";
+    case BinError::InvalidTag: return "InvalidTag";
+    case BinError::InvalidBool: return "InvalidBool";
+    case BinError::InvalidUtf8: return "InvalidUtf8";
+    case BinError::TooLarge: return "TooLarge";
+    case BinError::MaxDepth: return "MaxDepth";
+    case BinError::TrailingBytes: return "TrailingBytes";
+    case BinError::InvalidMark: return "InvalidMark";
+  }
+  return "Unknown";
+}
+
 /// Bounds-checked zero-copy cursor over little-endian bytes.
 class BinReader {
  public:
@@ -94,6 +111,7 @@ class BinReader {
   // ---- tagged NveBinValue -----------------------------------------------------------------
   /// Tag of the next value without consuming it (`BinTag::Null` and an error when truncated).
   BinTag peek_tag() noexcept {
+    if (!ok()) return BinTag::Null;
     if (pos_ >= limit_) return fail<BinTag>(BinError::Truncated);
     const uint8_t t = data_[pos_];
     if (t > static_cast<uint8_t>(BinTag::Map)) return fail<BinTag>(BinError::InvalidTag);
@@ -129,11 +147,36 @@ class BinReader {
     return expect(BinTag::Bytes) ? bytes(u32()) : std::span<const uint8_t>();
   }
 
-  /// Element count of an `Array` (0 on failure). Rejects counts the payload cannot hold.
-  uint32_t begin_array() noexcept { return begin_container(BinTag::Array, 1u); }
+  /// A container being read: its entry count, and the bounds `end` checks and restores.
+  struct ReadMark {
+    uint32_t count = 0;
+    size_t end = 0;
+    size_t outer_limit = 0;
+  };
 
-  /// Entry count of a `Map` (0 on failure); read each entry as `read_map_key()` then a value.
-  uint32_t begin_map() noexcept { return begin_container(BinTag::Map, 5u); }
+  /// Opens an `Array` (count 0 on failure; counts the payload cannot hold are rejected). Until
+  /// `end(mark)`, no read can pass its payload, so a crafted entry never reads its parent's bytes.
+  ReadMark begin_array() noexcept { return open(BinTag::Array, 1u); }
+
+  /// Opens an `Array` that must hold exactly `len` entries (a spec `[T; N]`): fewer fail with
+  /// `Truncated`, more with `TooLarge` (count 0). Close it with `end(mark)` either way.
+  ReadMark begin_array_exact(uint32_t len) noexcept {
+    ReadMark mark = begin_array();
+    if (ok() && mark.count != len) {
+      (void)fail<bool>(mark.count < len ? BinError::Truncated : BinError::TooLarge);
+      mark.count = 0u;
+    }
+    return mark;
+  }
+
+  /// Opens a `Map` like `begin_array`; read each entry as `read_map_key()` then a value.
+  ReadMark begin_map() noexcept { return open(BinTag::Map, 5u); }
+
+  /// Closes `mark`'s container: its payload must have been read exactly (`TrailingBytes`).
+  void end(const ReadMark& mark) noexcept {
+    limit_ = mark.outer_limit;
+    if (ok() && pos_ != mark.end) (void)fail<bool>(BinError::TrailingBytes);
+  }
 
   std::string_view read_map_key() noexcept { return utf8(u32()); }
 
@@ -161,7 +204,14 @@ class BinReader {
     }
   }
 
-  /// The next complete encoded value, borrowed.
+  /// The next value, fully validated like `check_value`, borrowed (empty on failure).
+  std::span<const uint8_t> read_checked_value() noexcept {
+    const size_t start = pos_;
+    check_value();
+    return ok() ? data_.subspan(start, pos_ - start) : std::span<const uint8_t>();
+  }
+
+  /// The next complete encoded value, borrowed, skipped in O(1) without validating its contents.
   std::span<const uint8_t> read_raw_value() noexcept {
     const size_t start = pos_;
     skip_value();
@@ -215,9 +265,15 @@ class BinReader {
     return count;
   }
 
-  uint32_t begin_container(BinTag tag, uint32_t min_entry_bytes) noexcept {
+  ReadMark open(BinTag tag, uint32_t min_entry_bytes) noexcept {
+    ReadMark mark{0u, pos_, limit_};
     size_t end = 0;
-    return open_container(tag, min_entry_bytes, &end);
+    const uint32_t count = open_container(tag, min_entry_bytes, &end);
+    if (!ok()) return mark;
+    mark.count = count;
+    mark.end = end;
+    limit_ = end;
+    return mark;
   }
 
   void check_value_at(uint32_t depth) noexcept {

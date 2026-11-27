@@ -718,6 +718,89 @@ fn pair_inbound_overflow_recovers_with_single_keyframe_request() {
 }
 
 #[test]
+fn pair_non_delta_overflow_recovers_from_single_keyframe_request_when_server_cache_present() {
+    use nve_wire::NveWireFrame;
+
+    let token = "runtime-cached-overflow-tok";
+    let server = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        token,
+    ))
+    .expect("bind server");
+    let kf_bytes = encode_scene("CACHED_KF_OVERFLOW_V1");
+    let _ = server.broadcast_scene_keyframe(1, &kf_bytes);
+
+    let mut rt = RuntimeBuilder::new()
+        .viewport(Viewport {
+            width: 320.0,
+            height: 240.0,
+            scale_factor: 1.0,
+        })
+        .build();
+    let uri = format!("ws://{}/nve-wire", server.wss_addr());
+    rt.pair_connect(&uri, token).expect("pair_connect");
+    assert!(wait_until(Duration::from_secs(3), || rt.pair_is_connected()));
+    assert!(wait_until(Duration::from_secs(3), || {
+        let _ = rt.tick(0.016).unwrap();
+        let g = rt.acquire_scene().unwrap();
+        read_text_slab(g.view()).contains("CACHED_KF_OVERFLOW_V1")
+    }));
+
+    // Broadcast a second SceneKeyframe via `broadcast_frame` while ALREADY connected so the peer
+    // received it via broadcast (previously setting `last_sent_kf_seq = seq`), then flood 320
+    // non-CommandDelta `Presence` frames (keeping server `latest_keyframe == Some`) to overflow!
+    let kf2_bytes = encode_scene("CACHED_KF_OVERFLOW_V2");
+    assert_eq!(server.broadcast_scene_keyframe(2, &kf2_bytes).unwrap(), 1);
+    assert!(wait_until(Duration::from_secs(3), || {
+        let _ = rt.tick(0.016).unwrap();
+        let g = rt.acquire_scene().unwrap();
+        read_text_slab(g.view()).contains("CACHED_KF_OVERFLOW_V2")
+    }));
+
+    let rx_before = rt.metrics().unwrap().wire_bytes_rx;
+    for seq in 3..=330u32 {
+        let presence = NveWireFrame::new(NveWireKind::Presence, seq, vec![1, 2, 3, 4]);
+        assert_eq!(server.broadcast_frame(&presence).unwrap(), 1);
+    }
+    assert!(wait_until(Duration::from_secs(4), || {
+        rt.metrics().unwrap().wire_bytes_rx >= rx_before + (328 * 20)
+    }));
+
+    // Tick processes `Overflowed`, resets replica, and sends ONE explicit `KeyframeRequest`.
+    // Server MUST reply immediately from `latest_keyframe` (NEVER swallowing it!) with zero
+    // producer involvement, restoring `CACHED_KF_OVERFLOW_V2`!
+    let mut saw_reset = false;
+    let mut saw_recovered = false;
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while !saw_recovered && Instant::now() < deadline {
+        let _ = rt.tick(0.016).expect("overflow tick must stay Ok");
+        let g = rt.acquire_scene().unwrap();
+        let text = read_text_slab(g.view()).to_owned();
+        if text.is_empty() {
+            saw_reset = true;
+        } else if saw_reset && text.contains("CACHED_KF_OVERFLOW_V2") {
+            saw_recovered = true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(saw_reset, "overflow must reset replica before recovery");
+    assert!(
+        saw_recovered,
+        "server must answer single explicit recovery KeyframeRequest from cached latest_keyframe"
+    );
+    assert!(
+        server
+            .recv_inbound_timeout(Duration::from_millis(100))
+            .is_none(),
+        "cached server reply must not forward KeyframeRequest to producer"
+    );
+
+    rt.pair_disconnect().unwrap();
+    server.shutdown();
+}
+
+#[test]
 fn pair_lifecycle_edge_cases_busy_rebind_detach_null_non_owner_and_destroy() {
     let api = get_api();
     let token = "lifecycle-edge-tok";

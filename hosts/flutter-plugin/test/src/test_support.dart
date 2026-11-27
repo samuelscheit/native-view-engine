@@ -20,20 +20,20 @@ final class TableShape {
   final List<int> defaults;
 }
 
-final visualShape = TableShape(NveVisualTable.key, NveVisualTable.words, NveVisualTable.sparse, NveVisualTable.defaults);
-final layoutShape = TableShape(NveLayoutTable.key, NveLayoutTable.words, NveLayoutTable.sparse, NveLayoutTable.defaults);
-final scrollShape = TableShape(NveScrollTable.key, NveScrollTable.words, NveScrollTable.sparse, NveScrollTable.defaults);
-final textShape = TableShape(NveTextTable.key, NveTextTable.words, NveTextTable.sparse, NveTextTable.defaults);
+final visualShape = TableShape(VisualTable.key, VisualTable.words, !VisualTable.dense, VisualTable.defaults);
+final layoutShape = TableShape(LayoutTable.key, LayoutTable.words, !LayoutTable.dense, LayoutTable.defaults);
+final scrollShape = TableShape(ScrollTable.key, ScrollTable.words, !ScrollTable.dense, ScrollTable.defaults);
+final textShape = TableShape(TextTable.key, TextTable.words, !TextTable.dense, TextTable.defaults);
 final typographyShape =
-    TableShape(NveTypographyTable.key, NveTypographyTable.words, NveTypographyTable.sparse, NveTypographyTable.defaults);
+    TableShape(TypographyTable.key, TypographyTable.words, !TypographyTable.dense, TypographyTable.defaults);
 final interactionShape =
-    TableShape(NveInteractionTable.key, NveInteractionTable.words, NveInteractionTable.sparse, NveInteractionTable.defaults);
+    TableShape(InteractionTable.key, InteractionTable.words, !InteractionTable.dense, InteractionTable.defaults);
 final a11yShape = TableShape(
-    NveAccessibilityTable.key, NveAccessibilityTable.words, NveAccessibilityTable.sparse, NveAccessibilityTable.defaults);
+    AccessibilityTable.key, AccessibilityTable.words, !AccessibilityTable.dense, AccessibilityTable.defaults);
 final transformShape =
-    TableShape(NveTransformTable.key, NveTransformTable.words, NveTransformTable.sparse, NveTransformTable.defaults);
+    TableShape(TransformTable.key, TransformTable.words, !TransformTable.dense, TransformTable.defaults);
 final textInputShape =
-    TableShape(NveTextInputTable.key, NveTextInputTable.words, NveTextInputTable.sparse, NveTextInputTable.defaults);
+    TableShape(TextInputTable.key, TextInputTable.words, !TextInputTable.dense, TextInputTable.defaults);
 
 final class _Table {
   _Table(this.shape, this.slot);

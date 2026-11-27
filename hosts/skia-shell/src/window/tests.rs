@@ -1,27 +1,26 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
-use nve_backend_skia::gpu::{
-    GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSwapchain,
-};
+use nve_backend_skia::gpu::{GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSwapchain};
 use nve_backend_skia::raster::PixelBuffer;
 use nve_components::tables::{
-    register_core_tables, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
+    FlexDirection, Interaction, Layout, TextContent, Typography, Visual, register_core_tables,
 };
 use nve_engine::loader::LoaderError;
-use nve_engine::{HotPatchMsg, RelocError, Viewport};
+use nve_engine::{Frame0Meta, Frame0Miss, HotPatchMsg, Viewport};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 use tungstenite::Message;
 
+use super::session::prewarm_frame0_into_replica;
 use super::{
-    replay_instant_boot_store_into_backend, replay_snapshot_into_backend, write_pixel_buffer_ppm,
-    DesktopApp, DesktopHostError, DesktopSession, HotAppSlot, HotReloadClient,
+    DesktopApp, DesktopHostError, DesktopSession, HotAppSlot, HotReloadClient, LayoutEngineChoice,
+    write_pixel_buffer_ppm,
 };
 
 struct MockCounterApp {
@@ -35,7 +34,6 @@ struct MockCounterApp {
     changes: ChangeSet,
     initialized: bool,
     frame_buf: Vec<u8>,
-    state_buf: Vec<u8>,
 }
 
 impl MockCounterApp {
@@ -52,7 +50,6 @@ impl MockCounterApp {
             changes: ChangeSet::default(),
             initialized: false,
             frame_buf: Vec::new(),
-            state_buf: Vec::new(),
         }
     }
 }
@@ -79,7 +76,11 @@ impl DesktopApp for MockCounterApp {
             tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
             tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
             tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
-            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(
+                StoreNodeId(2),
+                Layout::FLEX_DIRECTION,
+                FlexDirection::Column,
+            );
             tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
             tx.set(StoreNodeId(3), Typography::COLOR, Rgba::WHITE);
@@ -88,7 +89,11 @@ impl DesktopApp for MockCounterApp {
             tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
             tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(48.0));
             tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 10.0);
-            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.set(
+                StoreNodeId(4),
+                Interaction::EVENT_MASK,
+                EventMask::PRESS as u32,
+            );
 
             tx.set_children(StoreNodeId(2), &[StoreNodeId(3), StoreNodeId(4)]);
             tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
@@ -162,11 +167,6 @@ impl DesktopApp for MockCounterApp {
         self.initialized = false;
         Ok(self.generation)
     }
-
-    fn snapshot_state(&mut self) -> &[u8] {
-        self.state_buf = format!("count={};label={}", self.count, self.label).into_bytes();
-        &self.state_buf
-    }
 }
 
 #[test]
@@ -176,13 +176,8 @@ fn hit_test_click_dispatches_press_and_rerenders_pixels() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session = DesktopSession::new(
-        MockCounterApp::new(),
-        1,
-        viewport,
-        ColorRgba::BLACK,
-        false,
-    );
+    let mut session =
+        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
     session.render_and_rasterize().unwrap();
 
     let btn = session.layout_of(4).expect("button layout");
@@ -211,13 +206,8 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session = DesktopSession::new(
-        MockCounterApp::new(),
-        1,
-        viewport,
-        ColorRgba::BLACK,
-        true,
-    );
+    let mut session =
+        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, true);
     session.render_and_rasterize().unwrap();
 
     let btn = session.layout_of(4).unwrap();
@@ -260,10 +250,12 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
         session.pixel_buffer().get_rgb(cx as u32, cy as u32),
         Some((168, 85, 247))
     );
-    assert!(session
-        .status_banner()
-        .unwrap()
-        .contains("Hot reload gen #2"));
+    assert!(
+        session
+            .status_banner()
+            .unwrap()
+            .contains("Hot reload gen #2")
+    );
 
     let updated = session
         .handle_hot_patch(HotPatchMsg::DevStatus {
@@ -340,13 +332,8 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
         height: 150.0,
         scale_factor: 1.0,
     };
-    let mut session = DesktopSession::new(
-        MockCounterApp::new(),
-        1,
-        viewport,
-        ColorRgba::BLACK,
-        false,
-    );
+    let mut session =
+        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
     session.render_and_rasterize().unwrap();
     assert_eq!(session.pixel_buffer().width(), 200);
     assert_eq!(session.pixel_buffer().height(), 150);
@@ -383,13 +370,8 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
         height: 160.0,
         scale_factor: 1.0,
     };
-    let mut session = DesktopSession::new(
-        MockCounterApp::new(),
-        1,
-        viewport,
-        ColorRgba::BLACK,
-        true,
-    );
+    let mut session =
+        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, true);
     session.render_and_rasterize().unwrap();
     let init_tel = session
         .last_frame_telemetry()
@@ -427,19 +409,14 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
 }
 
 #[test]
-fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
+fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
     let viewport = Viewport {
         width: 300.0,
         height: 200.0,
         scale_factor: 1.0,
     };
-    let mut session = DesktopSession::new(
-        MockCounterApp::new(),
-        1,
-        viewport,
-        ColorRgba::BLACK,
-        false,
-    );
+    let mut session =
+        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
     session.render_and_rasterize().unwrap();
 
     let btn = session.layout_of(4).unwrap();
@@ -447,70 +424,119 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
 
-    let snap_path = std::env::temp_dir().join(format!(
-        "nve_skia_shell_test_{}.nvereloc",
-        std::process::id()
-    ));
-    let header = session.save_snapshot(&snap_path, 7).expect("atomic save");
-    assert_eq!(header.schema_version, 7);
-    assert!(header.payload_len > 0);
+    let frame0_path =
+        std::env::temp_dir().join(format!("nve_skia_shell_test_{}.nve2", std::process::id()));
+    let meta = Frame0Meta {
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+        app_build_id: 7,
+        env_hash: 0,
+    };
+    let footer = session
+        .save_frame0(&frame0_path, meta)
+        .expect("atomic save");
+    assert_eq!(footer.app_build_id, 7);
+    assert!(footer.node_count >= 4);
 
-    let mismatch = replay_snapshot_into_backend(&snap_path, 8, 1, viewport, ColorRgba::BLACK);
+    let wrong_meta = Frame0Meta {
+        app_build_id: 8,
+        ..meta
+    };
+    let mismatch =
+        prewarm_frame0_into_replica(&frame0_path, wrong_meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy);
     assert!(matches!(
         mismatch,
-        Err(DesktopHostError::Reloc(RelocError::SchemaVersionMismatch {
+        Err(DesktopHostError::Frame0(Frame0Miss::BuildIdMismatch {
             expected: 8,
             actual: 7
         }))
     ));
 
-    let prewarmed = replay_snapshot_into_backend(&snap_path, 7, 1, viewport, ColorRgba::BLACK)
-        .expect("prewarm frame0");
-    assert_eq!(prewarmed.state_bytes, b"count=1;label=Counter");
+    let (_replica, pixel_buffer, loaded_footer) =
+        prewarm_frame0_into_replica(&frame0_path, meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
+            .expect("prewarm frame0");
+    assert_eq!(loaded_footer.node_count, footer.node_count);
     assert_eq!(
-        prewarmed.pixel_buffer.get_rgb(cx as u32, cy as u32),
+        pixel_buffer.get_rgb(cx as u32, cy as u32),
         Some((16, 185, 129))
     );
 
-    // Also test full NativeInstantBootStore roundtrip (user_frame0.nvereloc + state.nvemmap).
-    let boot_dir = std::env::temp_dir().join(format!(
-        "nve_skia_shell_boot_{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&boot_dir);
-    let outcome = session
-        .save_instant_boot_checkpoint(&boot_dir, 7, "mock-counter")
-        .expect("save instant boot checkpoint");
-    assert!(outcome.generation >= 2);
-
-    let replayed = replay_instant_boot_store_into_backend(
-        &boot_dir,
-        None,
-        7,
-        1,
-        viewport,
-        ColorRgba::BLACK,
-    )
-    .expect("replay instant boot store");
-    assert!(replayed.used_user_frame0);
-    assert_eq!(replayed.state_bytes, b"count=1;label=Counter");
+    // Booting the same frame0.nve2 at a wider viewport updates live layout immediately.
+    let wide_vp = Viewport {
+        width: 600.0,
+        height: 400.0,
+        scale_factor: 1.0,
+    };
+    let (wide_replica, wide_buf, _) =
+        prewarm_frame0_into_replica(&frame0_path, meta, 1, wide_vp, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
+            .expect("prewarm wide viewport");
+    assert_eq!(wide_buf.width(), 600);
     assert_eq!(
-        replayed.pixel_buffer.get_rgb(cx as u32, cy as u32),
-        Some((16, 185, 129))
+        wide_replica
+            .backend()
+            .layout_tree()
+            .layout_of(2)
+            .unwrap()
+            .width,
+        600.0
     );
-    let _ = std::fs::remove_dir_all(&boot_dir);
 
-    let ppm_path = std::env::temp_dir().join(format!(
-        "nve_skia_shell_test_{}.ppm",
-        std::process::id()
-    ));
+    let ppm_path =
+        std::env::temp_dir().join(format!("nve_skia_shell_test_{}.ppm", std::process::id()));
     session.write_screenshot_ppm(&ppm_path).expect("write ppm");
     let ppm = std::fs::read(&ppm_path).expect("read ppm");
     assert!(ppm.starts_with(b"P6\n300 200\n255\n"));
     assert_eq!(ppm.len(), b"P6\n300 200\n255\n".len() + 300 * 200 * 3);
 
-    let _ = std::fs::remove_file(&snap_path);
+    let _ = std::fs::remove_file(&frame0_path);
     let _ = std::fs::remove_file(&ppm_path);
+}
+
+#[test]
+fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
+    #[allow(dead_code)]
+    #[derive(nve_store::NveTable)]
+    #[nve_table(name = "skia_shell.test.late_module_table", storage = "sparse")]
+    struct LateModuleTable {
+        #[effect(paint)]
+        tag: u32,
+    }
+
+    let cold_meta = Frame0Meta::default_core();
+    assert_eq!(cold_meta.app_build_id, 0);
+    assert_eq!(
+        cold_meta.table_schema_hash,
+        nve_components::tables::core_tables_schema_hash()
+    );
+
+    let viewport = Viewport {
+        width: 320.0,
+        height: 200.0,
+        scale_factor: 1.0,
+    };
+    let mut session =
+        DesktopSession::new(MockCounterApp::new(), 1, viewport, ColorRgba::BLACK, false);
+    session.render_and_rasterize().unwrap();
+
+    let frame0_path = std::env::temp_dir().join(format!(
+        "nve_skia_shell_cold_meta_{}.nve2",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&frame0_path);
+    let saved_footer = session
+        .save_frame0(&frame0_path, Frame0Meta::default_core())
+        .expect("save frame0 with Frame0Meta::default_core");
+
+    // Register an unrelated module table AFTER saving — Frame0Meta::default_core() must NOT drift!
+    let _ = <LateModuleTable as nve_store::NveTable>::slot();
+    let post_reg_meta = Frame0Meta::default_core();
+    assert_eq!(post_reg_meta, cold_meta);
+
+    let (_replica, _buf, loaded_footer) =
+        prewarm_frame0_into_replica(&frame0_path, post_reg_meta, 1, viewport, ColorRgba::BLACK, LayoutEngineChoice::Taffy)
+            .expect("cold prewarm must hit cache despite late module table registration");
+    assert_eq!(loaded_footer.node_count, saved_footer.node_count);
+
+    let _ = std::fs::remove_file(&frame0_path);
 }
 
 #[test]
@@ -553,8 +579,8 @@ fn render_visual_verification_ppms_at_2x_hidpi() {
 
     for (lib_stem, w, h, clear, out_path) in targets {
         let dylib = workspace_root.join(format!("target/debug/{lib_stem}.{dylib_ext}"));
-        let app = HotAppSlot::load(&dylib, 1)
-            .unwrap_or_else(|e| panic!("failed to load {dylib:?}: {e}"));
+        let app =
+            HotAppSlot::load(&dylib, 1).unwrap_or_else(|e| panic!("failed to load {dylib:?}: {e}"));
         let viewport = Viewport {
             width: w,
             height: h,

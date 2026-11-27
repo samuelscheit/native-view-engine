@@ -121,8 +121,7 @@ if [[ ! -f "$RUST_DYLIB" ]]; then
 fi
 
 echo "==> [2/4] Compiling standalone iOS Simulator host binary..."
-if [[ ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.generated.h" \
-   || ! -f "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h" ]]; then
+if [[ ! -f "$REPO_ROOT/packages/core/host-cxx/include/nve/generated/nve_abi.generated.h" ]]; then
   echo "==> Generating NVE ABI headers (nve-cli codegen abi)..."
   (cd "$REPO_ROOT" && cargo run --locked -p nve-cli -- codegen abi)
 fi
@@ -134,6 +133,7 @@ COMMON_FLAGS=(
   -g
   -Wall
   -Wextra
+  -I"$REPO_ROOT/packages/core/host-cxx/include"
   -I"$REPO_ROOT/cxx/nve-fabric-bridge/include"
   -I"$REPO_ROOT/cxx/nve-fabric-bridge/src"
   -I"$REPO_ROOT/hosts/apple-common"
@@ -199,8 +199,7 @@ if [[ ! -f "$CONFIG_STAMP" ]] || [[ "$(cat "$CONFIG_STAMP")" != "$CURRENT_CONFIG
 fi
 
 HEADER_DEPS=(
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_abi.generated.h"
-  "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_scene_abi.generated.h"
+  "$REPO_ROOT/packages/core/host-cxx/include/nve/generated/nve_abi.generated.h"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_draw_list.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/nve_host_runtime.hpp"
   "$REPO_ROOT/cxx/nve-fabric-bridge/include/detail/host_runtime_dylib.hpp"

@@ -5,7 +5,8 @@ library;
 
 import 'dart:ffi' as ffi;
 
-import 'package:nve_host/nve_native.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 import 'check.dart';
 
@@ -30,8 +31,7 @@ void runRuntimeIngress(Check c) {
   c.eq(nveNodeRowSize, nodeRowWords * 4, 'node row words');
   c.eq(ffi.sizeOf<NveLayoutRect>(), nveLayoutRectSize, 'NveLayoutRect size');
   c.eq(nveLayoutRectSize, layoutRectFloats * 4, 'layout rect floats');
-  c.eq(ffi.sizeOf<NveScrollOffset>(), nveScrollOffsetSize, 'NveScrollOffset size');
-  c.eq(nveScrollOffsetSize, scrollOffsetWords * 4, 'scroll offset words');
+  c.eq(ffi.sizeOf<NveScrollOffset>(), scrollOffsetWords * 4, 'NveScrollOffset size');
   c.eq(ffi.sizeOf<NveTableView>(), 24 + 3 * _ptr, 'NveTableView size');
   final viewSize = ffi.sizeOf<NveRuntimeSceneView>();
   c.eq(viewSize, 48 + 8 * _ptr, 'NveRuntimeSceneView size (112 on 64-bit)');

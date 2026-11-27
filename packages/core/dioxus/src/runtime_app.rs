@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::task::Waker;
 
 use nve_abi::{FrameId, NveEventBatchRef};
-use nve_engine::{AppFrame, HotPatchMsg, RuntimeApp, WakeBridge, WakeToken};
+use nve_engine::{AppFrame, CapabilityUnsupported, HotPatchMsg, RuntimeApp, WakeBridge, WakeToken};
 use nve_store::NodeStore;
 
 use crate::DioxusSurface;
@@ -92,8 +92,8 @@ impl RuntimeApp for DioxusRuntimeApp {
         had_pending
     }
 
-    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> bool {
-        self.surface.apply_hot_patch(patch)
+    fn apply_hot_patch(&mut self, patch: &HotPatchMsg) -> Result<bool, CapabilityUnsupported> {
+        Ok(self.surface.apply_hot_patch(patch))
     }
 }
 

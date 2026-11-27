@@ -43,10 +43,10 @@ Future<void> _settle(WidgetTester tester, NveCanvasController c) async {
 
 /// Every text of the published scene in slot order.
 String _texts(NveSceneTree t) {
-  final table = t.s.findTable(NveTextTable.key);
+  final table = t.s.findTable(TextTable.key);
   return [
     for (var i = 1; i < t.s.nodeCapacity; i++)
-      if (t.s.rowOf(table, i) case final r when r >= 0) t.s.str(table!, r, NveTextTable.text),
+      if (t.s.rowOf(table, i) case final r when r >= 0) t.s.str(table!, r, TextTable.text),
   ].join('\u0000');
 }
 
@@ -74,7 +74,7 @@ void main() {
     final (live, right, firstText) = c.withTree((t) {
       var n = 0, maxRight = 0.0;
       String? text;
-      final textTable = t.s.findTable(NveTextTable.key);
+      final textTable = t.s.findTable(TextTable.key);
       for (var i = 1; i < t.s.nodeCapacity; i++) {
         if (!t.s.isLive(i)) {
           continue;
@@ -83,7 +83,7 @@ void main() {
         maxRight = t.rectOf(i).right > maxRight ? t.rectOf(i).right : maxRight;
         final row = t.s.rowOf(textTable, i);
         if (text == null && row >= 0 && !t.isDisplayNone(i)) {
-          final s = t.s.str(textTable!, row, NveTextTable.text).trim();
+          final s = t.s.str(textTable!, row, TextTable.text).trim();
           text = s.isEmpty ? null : s;
         }
       }

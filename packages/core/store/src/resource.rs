@@ -3,11 +3,12 @@
 //! words by `ResourceId`.
 //!
 //! In-process backends read the typed value directly (zero encode/decode); values are encoded
-//! only for dedup hashing and when a frame crosses a wire boundary. `EPHEMERAL` resources skip
-//! hashing and are rewritten in place (120 Hz live canvas draw lists).
+//! only for dedup hashing, when a frame crosses a wire boundary, and when a foreign host borrows
+//! the canonical payload ([`ResourceStore::encoded`]). `EPHEMERAL` resources skip hashing and are
+//! rewritten in place (120 Hz live canvas draw lists); their encoding is cached lazily on demand.
 
 use std::any::{Any, TypeId};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use nve_abi::Key64;
 use nve_hash::xxh64;
@@ -20,9 +21,6 @@ const RES_IN_FREE: u8 = 1 << 1;
 const RES_DEFINED_THIS_FRAME: u8 = 1 << 2;
 const RES_CREATED_THIS_FRAME: u8 = 1 << 3;
 const RES_RELEASED_THIS_FRAME: u8 = 1 << 4;
-/// Replica entry whose kind has no codec in this process (e.g. a module resource mirrored by a
-/// host runtime that never links the module): kept as its exact wire bytes, never decoded.
-const RES_OPAQUE: u8 = 1 << 5;
 
 /// A typed blob that can live in the [`ResourceStore`] and cross the wire.
 pub trait Resource: Send + Sync + 'static {
@@ -68,7 +66,8 @@ pub fn register_codec<R: Resource>() {
     let mut reg = CODECS.write().unwrap_or_else(|e| e.into_inner());
     if let Some((_, existing)) = reg.iter().find(|(k, _)| *k == R::KIND.0) {
         assert_eq!(
-            existing.type_id, tid,
+            existing.type_id,
+            tid,
             "Resource KIND collision on {:?} between distinct Rust types",
             R::KIND
         );
@@ -96,10 +95,31 @@ struct Entry {
     ephemeral: bool,
     flags: u8,
     value: Option<AnyArc>,
-    /// Cached wire encoding for non-ephemeral entries so steady-state dedup hits and wire sends
-    /// avoid re-encoding the existing value.
-    encoded: Box<[u8]>,
+    /// Canonical `Resource::encode` bytes of `value`: filled eagerly for interned / wire-defined
+    /// entries (dedup hits and wire sends never re-encode) and lazily for ephemeral entries on the
+    /// first [`ResourceStore::encoded`] borrow; reset whenever `value` changes in place.
+    encoded: OnceLock<Box<[u8]>>,
 }
+
+impl Entry {
+    const fn vacant() -> Self {
+        Self {
+            kind: Key64(0),
+            refs: 0,
+            hash: 0,
+            ephemeral: false,
+            flags: 0,
+            value: None,
+            encoded: OnceLock::new(),
+        }
+    }
+}
+
+/// Value of a replica resource whose kind has no codec in this image (e.g. a module resource
+/// defined by a separately linked app): kept as opaque canonical bytes, so it still counts as
+/// defined, re-encodes byte-exact, and is borrowable via [`ResourceStore::encoded`], while typed
+/// [`ResourceStore::get`] reads stay `None`.
+struct OpaqueResource;
 
 /// Refcounted blob store. Index `0` is reserved for [`ResourceId::NONE`].
 pub struct ResourceStore {
@@ -115,15 +135,7 @@ pub struct ResourceStore {
 impl Default for ResourceStore {
     fn default() -> Self {
         Self {
-            entries: vec![Entry {
-                kind: Key64(0),
-                refs: 0,
-                hash: 0,
-                ephemeral: false,
-                flags: 0,
-                value: None,
-                encoded: Box::new([]),
-            }],
+            entries: vec![Entry::vacant()],
             dedup: FxHashMap::default(),
             free: Vec::new(),
             pending_free: Vec::new(),
@@ -135,6 +147,10 @@ impl Default for ResourceStore {
 }
 
 impl ResourceStore {
+    /// Byte size of one slot in `ResourceStore::entries`, used by [`crate::wire::WireDecoder`]
+    /// to charge slot growth against its session slot-memory budget.
+    pub(crate) const ENTRY_BYTES: usize = size_of::<Entry>();
+
     fn slot(&mut self) -> u32 {
         while let Some(i) = self.free.pop() {
             if let Some(e) = self.entries.get_mut(i as usize) {
@@ -149,15 +165,7 @@ impl ResourceStore {
                 }
             }
         }
-        self.entries.push(Entry {
-            kind: Key64(0),
-            refs: 0,
-            hash: 0,
-            ephemeral: false,
-            flags: 0,
-            value: None,
-            encoded: Box::new([]),
-        });
+        self.entries.push(Entry::vacant());
         (self.entries.len() - 1) as u32
     }
 
@@ -167,7 +175,7 @@ impl ResourceStore {
         hash: u64,
         ephemeral: bool,
         value: AnyArc,
-        encoded: Box<[u8]>,
+        encoded: OnceLock<Box<[u8]>>,
     ) -> ResourceId {
         let i = self.slot();
         self.entries[i as usize] = Entry {
@@ -196,13 +204,13 @@ impl ResourceStore {
         if let Some(&i) = self.dedup.get(&(R::KIND.0, hash))
             && let Some(e) = self.entries.get_mut(i as usize)
             && e.value.as_deref().is_some_and(|v| v.is::<R>())
-            && e.encoded.as_ref() == self.scratch.as_slice()
+            && e.encoded.get().map(AsRef::as_ref) == Some(self.scratch.as_slice())
         {
             e.refs += 1;
             return ResourceId(i);
         }
         register_codec::<R>();
-        let encoded: Box<[u8]> = self.scratch.as_slice().into();
+        let encoded = OnceLock::from(Box::<[u8]>::from(self.scratch.as_slice()));
         self.insert(R::KIND, hash, false, Arc::new(value), encoded)
     }
 
@@ -224,6 +232,7 @@ impl ResourceStore {
             } else {
                 e.value = Some(Arc::new(value));
             }
+            e.encoded = OnceLock::new();
             if e.flags & RES_DEFINED_THIS_FRAME == 0 {
                 e.flags |= RES_DEFINED_THIS_FRAME;
                 self.defined.push(old);
@@ -231,7 +240,7 @@ impl ResourceStore {
             return old;
         }
         register_codec::<R>();
-        self.insert(R::KIND, 0, true, Arc::new(value), Box::new([]))
+        self.insert(R::KIND, 0, true, Arc::new(value), OnceLock::new())
     }
 
     /// Adds a reference to `id`.
@@ -258,9 +267,7 @@ impl ResourceStore {
         }
         e.refs -= 1;
         if e.refs == 0 {
-            if !e.ephemeral
-                && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(id.0)
-            {
+            if !e.ephemeral && self.dedup.get(&(e.kind.0, e.hash)).copied() == Some(id.0) {
                 self.dedup.remove(&(e.kind.0, e.hash));
             }
             if e.flags & RES_PENDING_FREE == 0 {
@@ -307,72 +314,146 @@ impl ResourceStore {
         self.entries.get(id.0 as usize).is_some_and(|e| e.refs > 0)
     }
 
-    /// Wire encoding of `id` (`false` if it is undefined or its kind has no registered codec and
-    /// it was not mirrored as opaque bytes).
+    /// Wire encoding of `id` (`false` if its kind has no registered codec).
+    ///
+    /// Copies the cached canonical bytes when present; otherwise encodes straight into `out`
+    /// without populating the cache (per-frame ephemeral wire sends stay allocation-free).
     pub fn encode(&self, id: ResourceId, out: &mut Vec<u8>) -> bool {
         let Some(e) = self.entries.get(id.0 as usize) else {
             return false;
         };
-        if e.value.is_some() && (e.flags & RES_OPAQUE != 0 || (!e.ephemeral && codec(e.kind).is_some())) {
-            out.extend_from_slice(&e.encoded);
+        let Some(value) = e.value.as_deref() else {
+            return false;
+        };
+        if let Some(bytes) = e.encoded.get() {
+            out.extend_from_slice(bytes);
             return true;
         }
-        match (codec(e.kind), e.value.as_deref()) {
-            (Some(c), Some(v)) => {
-                (c.encode)(v, out);
-                true
-            }
-            _ => false,
+        let Some(c) = codec(e.kind) else {
+            return false;
+        };
+        (c.encode)(value, out);
+        true
+    }
+
+    /// Borrowed canonical `Resource::encode` payload of live resource `id` (the exact bytes an
+    /// `NVE2` `DefineResources` entry carries), encoded and cached on first use.
+    ///
+    /// Opaque replica resources (kinds without a codec here) return their wire bytes verbatim.
+    /// `None` for `ResourceId::NONE`, released / recycled ids, and local values whose kind has no
+    /// registered codec. The slice stays valid until the store is next mutated.
+    pub fn encoded(&self, id: ResourceId) -> Option<&[u8]> {
+        if id.is_none() {
+            return None;
         }
+        let e = self.entries.get(id.0 as usize)?;
+        if e.refs == 0 {
+            return None;
+        }
+        let value = e.value.as_deref()?;
+        if let Some(bytes) = e.encoded.get() {
+            return Some(bytes);
+        }
+        let c = codec(e.kind)?;
+        Some(e.encoded.get_or_init(|| {
+            let mut out = Vec::new();
+            (c.encode)(value, &mut out);
+            out.into_boxed_slice()
+        }))
     }
 
     /// Number of resource slots (live, free, and the reserved slot `0`).
-    pub(crate) fn slots(&self) -> usize {
+    pub fn slots(&self) -> usize {
         self.entries.len()
     }
 
     /// Whether `id` holds a value (defined and not yet recycled).
     pub(crate) fn is_defined(&self, id: ResourceId) -> bool {
-        self.entries.get(id.0 as usize).is_some_and(|e| e.value.is_some())
+        self.entries
+            .get(id.0 as usize)
+            .is_some_and(|e| e.value.is_some())
     }
 
     pub(crate) fn is_ephemeral(&self, id: ResourceId) -> bool {
         self.entries.get(id.0 as usize).is_some_and(|e| e.ephemeral)
     }
 
-    /// Mirrors a resource defined by a wire frame at exactly `id` (replica stores).
-    ///
-    /// A kind with a registered codec is decoded (and rejected when its bytes do not decode); a
-    /// kind without one is kept opaque so replicas forward and expose module resources they never
-    /// link. `false` for id `0` or undecodable bytes of a known kind.
-    pub(crate) fn define_at(
+    /// Fallibly mirrors a resource defined by a wire frame at exactly `id` (replica stores),
+    /// validating slot growth against `budget` (via `bounded_target_cap`) and reserving backing
+    /// vectors before mutating state so hostile ids cannot overshoot `SessionBudget` or abort.
+    /// Kinds without a codec in this image are kept as [`OpaqueResource`] bytes; known kinds must
+    /// decode.
+    pub(crate) fn try_define_at(
         &mut self,
         id: ResourceId,
         kind: Key64,
         ephemeral: bool,
         bytes: &[u8],
-    ) -> bool {
-        let (value, opaque): (AnyArc, bool) = match codec(kind) {
-            Some(c) => match (c.decode)(bytes) {
-                Some(v) => (v, false),
-                None => return false,
-            },
-            None => (Arc::new(()), true),
-        };
+        budget: Option<&mut crate::wire::budget::SessionBudget>,
+    ) -> Result<bool, crate::wire::WireError> {
         let i = id.0 as usize;
         if i == 0 {
-            return false;
+            return Ok(false);
         }
-        while self.entries.len() <= i {
-            self.entries.push(Entry {
-                kind: Key64(0),
-                refs: 0,
-                hash: 0,
-                ephemeral: false,
-                flags: 0,
-                value: None,
-                encoded: Box::new([]),
-            });
+        let needed = i.checked_add(1).ok_or(crate::wire::WireError::Budget)?;
+        let budget_plan = if let Some(b) = budget.as_deref() {
+            Some(crate::wire::budget::SessionBudget::bounded_target_cap(
+                self.entries.capacity(),
+                self.entries.len(),
+                needed,
+                Self::ENTRY_BYTES,
+                b.remaining(),
+            )?)
+        } else {
+            None
+        };
+        let exact_copy = || -> Result<OnceLock<Box<[u8]>>, crate::wire::WireError> {
+            let mut copy = Vec::new();
+            copy.try_reserve_exact(bytes.len())
+                .map_err(|_| crate::wire::WireError::Alloc)?;
+            copy.extend_from_slice(bytes);
+            Ok(OnceLock::from(copy.into_boxed_slice()))
+        };
+        let (value, encoded): (AnyArc, OnceLock<Box<[u8]>>) = match codec(kind) {
+            Some(c) => {
+                let Some(value) = (c.decode)(bytes) else {
+                    return Ok(false);
+                };
+                let encoded = if ephemeral {
+                    OnceLock::new()
+                } else {
+                    exact_copy()?
+                };
+                (value, encoded)
+            }
+            None => (Arc::new(OpaqueResource), exact_copy()?),
+        };
+        if let (Some((target, delta_bytes)), Some(b)) = (budget_plan, budget) {
+            if target > self.entries.capacity() {
+                self.entries
+                    .try_reserve_exact(target - self.entries.len())
+                    .map_err(|_| crate::wire::WireError::Alloc)?;
+                b.charge(delta_bytes)?;
+            }
+        } else if self.entries.capacity() < needed {
+            let add = needed - self.entries.len();
+            self.entries
+                .try_reserve(add)
+                .map_err(|_| crate::wire::WireError::Alloc)?;
+        }
+        self.pending_free
+            .try_reserve(1)
+            .map_err(|_| crate::wire::WireError::Alloc)?;
+        self.defined
+            .try_reserve(1)
+            .map_err(|_| crate::wire::WireError::Alloc)?;
+        if !ephemeral {
+            self.dedup
+                .try_reserve(1)
+                .map_err(|_| crate::wire::WireError::Alloc)?;
+        }
+        while self.entries.len() < needed {
+            self.entries.push(Entry::vacant());
         }
         let prev = &self.entries[i];
         if !prev.ephemeral
@@ -387,12 +468,7 @@ impl ResourceStore {
         let was_pending = e.flags & RES_PENDING_FREE != 0;
         let preserved = e.flags & (RES_IN_FREE | RES_PENDING_FREE | RES_RELEASED_THIS_FRAME);
         let hash = if ephemeral { 0 } else { xxh64(bytes, kind.0) };
-        // Opaque entries can never be re-encoded, so they always keep their bytes.
-        let encoded: Box<[u8]> = if ephemeral && !opaque { Box::new([]) } else { bytes.into() };
         let mut flags = RES_DEFINED_THIS_FRAME | preserved;
-        if opaque {
-            flags |= RES_OPAQUE;
-        }
         if refs == 0 {
             flags |= RES_PENDING_FREE;
         }
@@ -414,7 +490,24 @@ impl ResourceStore {
         if !already_defined {
             self.defined.push(id);
         }
-        true
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn define_at(
+        &mut self,
+        id: ResourceId,
+        kind: Key64,
+        ephemeral: bool,
+        bytes: &[u8],
+    ) -> bool {
+        self.try_define_at(id, kind, ephemeral, bytes, None)
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entries_cap(&self) -> usize {
+        self.entries.capacity()
     }
 
     #[cfg(test)]
@@ -450,7 +543,7 @@ impl ResourceStore {
                     self.dedup.remove(&(e.kind.0, e.hash));
                 }
                 e.value = None;
-                e.encoded = Box::new([]);
+                e.encoded = OnceLock::new();
                 if e.flags & RES_IN_FREE == 0 {
                     e.flags |= RES_IN_FREE;
                     self.free.push(i);

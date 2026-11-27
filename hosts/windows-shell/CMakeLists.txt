@@ -98,16 +98,16 @@ target_link_libraries(nve_windows_shell PRIVATE nve_windows_shell_lib)
 enable_testing()
 
 add_library(nve_win_fixture_no_entry SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_win_fixture_no_entry PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_ENTRY=1)
-target_include_directories(nve_win_fixture_no_entry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_compile_definitions(nve_win_fixture_no_entry PRIVATE NVE_BUILDING_LIBRARY=1 NVE_FIXTURE_NO_ENTRY=1)
+target_link_libraries(nve_win_fixture_no_entry PRIVATE nve::host_cxx)
 
 add_library(nve_win_fixture_no_surface SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_win_fixture_no_surface PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_NO_SURFACE=1)
-target_include_directories(nve_win_fixture_no_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_compile_definitions(nve_win_fixture_no_surface PRIVATE NVE_BUILDING_LIBRARY=1 NVE_FIXTURE_NO_SURFACE=1)
+target_link_libraries(nve_win_fixture_no_surface PRIVATE nve::host_cxx)
 
 add_library(nve_win_fixture_stateful SHARED tests/test_dylib_fixtures.c)
-target_compile_definitions(nve_win_fixture_stateful PRIVATE NVE_BUILD_SHARED_LIB=1 NVE_FIXTURE_STATEFUL=1)
-target_include_directories(nve_win_fixture_stateful PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../cxx/nve-fabric-bridge/include")
+target_compile_definitions(nve_win_fixture_stateful PRIVATE NVE_BUILDING_LIBRARY=1 NVE_FIXTURE_STATEFUL=1)
+target_link_libraries(nve_win_fixture_stateful PRIVATE nve::host_cxx)
 
 add_executable(nve_windows_shell_test
   tests/windows_shell_test.cpp

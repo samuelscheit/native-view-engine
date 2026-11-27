@@ -122,15 +122,15 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
     assert_ne!(n1, n2);
 
     // 2. Non-panicking bounded backpressure (`PoolOverloaded`) when single worker is blocked in
-    //    sync build_surface and queue_capacity_per_worker == 1.
+    //    sync build_surface and a capacity of 2 render slots (the active holder + one queued).
     let small_pool = SsrLocalPool::with_config(
         SsrLocalPoolConfig::default()
             .with_worker_count(1)
-            .with_queue_capacity_per_worker(1),
+            .with_queue_capacity_per_worker(2),
     )
     .unwrap();
     assert_eq!(small_pool.worker_count(), 1);
-    assert_eq!(small_pool.queue_capacity_per_worker(), 1);
+    assert_eq!(small_pool.queue_capacity_per_worker(), 2);
 
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (unblock_tx, unblock_rx) = std::sync::mpsc::sync_channel::<()>(1);
@@ -161,7 +161,7 @@ async fn scenario_9_csp_nonce_pool_backpressure_and_clean_drop() {
         .await
         .unwrap();
 
-    // Fill the single remaining queue slot deterministically by polling `queued_fut` once
+    // Fill the single remaining render slot deterministically by polling `queued_fut` once
     // (`render_streaming` calls `dispatch()` synchronously before awaiting `headers_rx`).
     let mut queued_fut = Box::pin(small_pool.render_streaming(
         SsrPageOptions::new("q", web_backend),

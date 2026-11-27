@@ -108,7 +108,8 @@ impl StoreMutationTx<'_, '_> {
     /// attribute that should be preserved across `style`/`nve_style` clears/updates.
     #[inline]
     pub(crate) fn apply_numeric_attr_untracked(&mut self, node: NodeId, name: &str, v: f64) -> bool {
-        let f = if v.is_finite() { v as f32 } else { 0.0 };
+        let max = nve_abi::num::MAX_STYLE_SCALAR;
+        let f = if v.is_finite() { (v as f32).clamp(-max, max) } else { 0.0 };
         match name {
             "width" => {
                 self.tx.edit::<Layout>(node).width(Length::points(f.max(0.0)));
@@ -509,6 +510,9 @@ impl StoreMutationTx<'_, '_> {
 
     fn clear_attr(&mut self, node: NodeId, name: &str) {
         if self.remove_standalone_style(node, name) {
+            if super::current_color::key_sets_border_color(name) {
+                self.refresh_current_color_border(node);
+            }
             let layer = nve_components::css_attr_layer(name);
             debug_assert!(layer != 0, "removed standalone style `{name}` must have a non-zero layer");
             self.rebuild_style_layers_mask(node, layer);
@@ -533,6 +537,9 @@ impl StoreMutationTx<'_, '_> {
             "style" => {
                 if let Some((inline, prev_mask)) = self.inline_styles.remove(&node) {
                     self.buffer_pool.recycle_inline(inline);
+                    if nve_components::mask_border_color_source(prev_mask).is_some() {
+                        self.refresh_current_color_border(node);
+                    }
                     let layers = nve_components::prop_bits_to_layers(prev_mask);
                     if layers != 0 {
                         self.rebuild_style_layers_mask(node, layers);

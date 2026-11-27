@@ -6,7 +6,8 @@ library;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
-import 'package:nve_host/nve_native.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 import 'canvas_semantics.dart';
 import 'nve_canvas_controller.dart';

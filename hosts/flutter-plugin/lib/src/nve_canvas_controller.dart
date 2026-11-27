@@ -9,7 +9,8 @@ import 'dart:ui' show Offset, Size;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:nve_host/nve_native.dart';
+import 'package:nve_host/nve_host.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 import 'scene_resources.dart';
 import 'scene_tree.dart';

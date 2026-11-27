@@ -176,9 +176,6 @@ void runBinCodec(Check c) {
   c.throwsA<UnsupportedError>(() => dv.bytes[0] = 1, 'dynamic bytes are read-only');
   expectKind(c, BinErrorKind.truncated, () => DynamicValue(golden.sublist(0, 10)), 'dynamic prefix');
   expectKind(c, BinErrorKind.truncated, () => DynamicValue(<int>[]), 'dynamic empty');
-  HybridException.checkSchema(const Key64(1, 2), const Key64(1, 2));
-  final he = c.throwsA<HybridException>(() => HybridException.checkSchema(const Key64(1, 2), const Key64(1, 3)), 'schema mismatch');
-  c.eq(he?.status, HybridStatus.schemaMismatch, 'schema mismatch status');
   c.eq(HostStatus.fromCode(-8), HostStatus.internalError, 'host status -8');
   c.eq(HostStatus.fromCode(99), null, 'unknown host status');
   c.eq(HybridStatus.fromCode(4), HybridStatus.nullHandle, 'hybrid status 4');

@@ -16,12 +16,12 @@ use nve_components::tables::{register_core_tables, FlexDirection, Interaction, L
 use nve_engine::{HotPatchMsg, Viewport};
 use nve_store::wire::WireEncoder;
 use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
-use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig};
+use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig, NveWireTransportKind};
 use tungstenite::Message;
 
 use super::{
     render_paired_headless_screenshot, DesktopApp, DesktopHostError, DesktopPreviewOptions,
-    DesktopSession, HotReloadClient, PairConnectConfig, PairTransport, PairedRemoteApp,
+    DesktopSession, HotReloadClient, PairConnectConfig, PairedRemoteApp,
 };
 
 struct RemoteServerApp {
@@ -293,17 +293,17 @@ fn hot_reload_client_decodes_nvp1_and_ignores_text_frames() {
 #[test]
 fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pixels() {
     for transport in [
-        PairTransport::Quic,
-        PairTransport::WebTransport,
-        PairTransport::Wss,
-        PairTransport::Ws,
+        NveWireTransportKind::Quic,
+        NveWireTransportKind::WebTransport,
+        NveWireTransportKind::Wss,
+        NveWireTransportKind::Ws,
     ] {
         let server = TestPairServer::start("skia-pair-e2e-token");
         let addr = match transport {
-            PairTransport::Quic => format!("quic://{}", server.quic_addr),
-            PairTransport::WebTransport => format!("https://{}/nve-wire", server.quic_addr),
-            PairTransport::Wss => format!("wss://{}/nve-wire", server.wss_addr),
-            PairTransport::Ws | PairTransport::Auto => format!("ws://{}/nve-wire", server.wss_addr),
+            NveWireTransportKind::Quic => format!("quic://{}", server.quic_addr),
+            NveWireTransportKind::WebTransport => format!("https://{}/nve-wire", server.quic_addr),
+            NveWireTransportKind::Wss => format!("wss://{}/nve-wire", server.wss_addr),
+            NveWireTransportKind::Ws | NveWireTransportKind::Auto => format!("ws://{}/nve-wire", server.wss_addr),
         };
         let wakes = Arc::new(AtomicUsize::new(0));
         let wakes_cb = Arc::clone(&wakes);
@@ -357,7 +357,7 @@ fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
     let bad = PairedRemoteApp::connect(PairConnectConfig::new(
         format!("ws://{}/nve-wire", server.wss_addr),
         "wrong-token",
-        PairTransport::Ws,
+        NveWireTransportKind::Ws,
     ));
     assert!(matches!(bad, Err(DesktopHostError::Pairing(_))));
 
@@ -379,7 +379,7 @@ fn paired_headless_screenshot_writes_png_and_rejects_bad_token() {
         PairConnectConfig::new(
             format!("wss://{}/nve-wire", server.wss_addr),
             server.token.clone(),
-            PairTransport::Wss,
+            NveWireTransportKind::Wss,
         )
         .with_cert_sha256(server.cert_sha256),
         opts,
@@ -407,7 +407,7 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
     let cfg = PairConnectConfig::new(
         format!("ws://{}/nve-wire", server.wss_addr()),
         token,
-        PairTransport::Ws,
+        NveWireTransportKind::Ws,
     );
     let app = PairedRemoteApp::connect(cfg).expect("connect paired app");
     let viewport = Viewport {
@@ -512,7 +512,7 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
     let cfg = PairConnectConfig::new(
         format!("ws://{}/nve-wire", server.wss_addr()),
         token,
-        PairTransport::Ws,
+        NveWireTransportKind::Ws,
     );
     let app = PairedRemoteApp::connect(cfg).expect("connect paired app");
     let viewport = Viewport {
@@ -621,11 +621,54 @@ fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner(
         .expect("valid keyframe + trailing delta must apply cleanly");
     assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((16, 185, 129)));
 
+    // 3b. Mid-frame corrupt delta (valid NVE2 header + CreateNodes(99) + corrupt op 0xFE) must
+    //     recover cleanly, request a keyframe, and reset cleanly on recovery (no leaked node 99)!
+    let mut mid_corrupt = Vec::new();
+    for _ in 0..6 {
+        mid_corrupt.extend_from_slice(&0u32.to_le_bytes());
+    }
+    mid_corrupt.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes()); // CreateNodes count=1
+    mid_corrupt.extend_from_slice(&1u32.to_le_bytes());
+    mid_corrupt.extend_from_slice(&99u32.to_le_bytes());
+    mid_corrupt.extend_from_slice(&(0xFEu32 | (1u32 << 16)).to_le_bytes()); // unknown op 0xFE
+    mid_corrupt.extend_from_slice(&1u32.to_le_bytes());
+    mid_corrupt.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    let total_words = (mid_corrupt.len() / 4) as u32;
+    mid_corrupt[0..4].copy_from_slice(&0x3245_564Eu32.to_le_bytes());
+    mid_corrupt[4..8].copy_from_slice(&1u32.to_le_bytes());
+    mid_corrupt[8..12].copy_from_slice(&6u32.to_le_bytes());
+    mid_corrupt[12..16].copy_from_slice(&0u32.to_le_bytes());
+    mid_corrupt[16..20].copy_from_slice(&2u32.to_le_bytes());
+    mid_corrupt[20..24].copy_from_slice(&total_words.to_le_bytes());
+
+    assert_eq!(server.broadcast_command_delta(6, &mid_corrupt).unwrap(), 1);
+    wait_rx(&session, 6);
+    session
+        .render_and_rasterize()
+        .expect("mid-frame corrupt delta must recover, not return Err");
+    let req2 = server
+        .recv_inbound_timeout(Duration::from_secs(2))
+        .expect("server receives KeyframeRequest after mid-frame corrupt delta");
+    assert_eq!(req2.frame.kind, NveWireKind::KeyframeRequest);
+
+    assert!(server
+        .send_scene_keyframe_to_peer(req2.session_id, 7, &kf_yellow)
+        .unwrap());
+    wait_rx(&session, 7);
+    session
+        .render_and_rasterize()
+        .expect("recovery keyframe after mid-frame corrupt delta");
+    assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((250, 204, 21)));
+    assert!(
+        !session.store().is_live(StoreNodeId(99)),
+        "mid-frame corrupt node 99 must not survive recovery keyframe"
+    );
+
     // 4. Terminal auth rejection surfaces `[AUTH REJECTED]` in remote_status_banner!
     let bad_cfg = PairConnectConfig::new(
         format!("ws://{}/nve-wire", server.wss_addr()),
         "wrong-token-for-banner",
-        PairTransport::Ws,
+        NveWireTransportKind::Ws,
     );
     let mut bad_app = PairedRemoteApp::spawn_for_test(bad_cfg).expect("spawn bad-token app");
     let auth_deadline = Instant::now() + Duration::from_secs(3);

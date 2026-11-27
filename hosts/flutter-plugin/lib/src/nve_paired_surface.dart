@@ -4,7 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:nve_host/nve_native.dart';
+import 'package:nve_host/nve_host_ffi.dart';
 
 import 'nve_canvas_controller.dart';
 import 'nve_canvas_view.dart';

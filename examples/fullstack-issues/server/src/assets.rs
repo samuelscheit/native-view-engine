@@ -25,15 +25,45 @@ window.__nveIssuesMod = mod;
 window.__nveIssuesController = mod.start_issues_app('app', '');
 ";
 
+/// Mutable entry points (`boot.js`, `manifest.json`, test routes): always revalidated, so a
+/// rebuild is picked up on the next load.
+const CACHE_NO_STORE: &str = "no-store";
+/// `hosts/web-shell/build.sh` publishes every bundle file under `pkg/<bundle>/<content-hash>/`
+/// and never rewrites a published hash directory, so those bytes are cached forever.
+const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// Hex length of `build.sh`'s `PUBLISHED_HASH` directory names.
+const CONTENT_HASH_DIR_LEN: usize = 16;
+
 /// Builds a `200 OK` uncached `nosniff` response with `mime` content type.
 pub fn static_response(mime: &'static str, body: impl Into<Bytes>) -> Response<HttpBody> {
+    cached_static_response(mime, CACHE_NO_STORE, body)
+}
+
+fn cached_static_response(
+    mime: &'static str,
+    cache_control: &'static str,
+    body: impl Into<Bytes>,
+) -> Response<HttpBody> {
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, mime)
         .header(X_CONTENT_TYPE_OPTIONS, "nosniff")
-        .header(CACHE_CONTROL, "no-store")
+        .header(CACHE_CONTROL, cache_control)
         .body(HttpBody::full(body.into()))
         .expect("static response builds cleanly")
+}
+
+/// `immutable` for files inside a `build.sh` content-hash directory, `no-store` otherwise.
+fn asset_cache_control(rel: &str) -> &'static str {
+    match rel.split_once('/') {
+        Some((dir, _))
+            if dir.len() == CONTENT_HASH_DIR_LEN
+                && dir.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            CACHE_IMMUTABLE
+        }
+        _ => CACHE_NO_STORE,
+    }
 }
 
 /// Plain-text protocol error response (`404`, `401`, `500`, ...) as an [`HttpBody`].
@@ -58,7 +88,7 @@ pub fn read_wasm_asset_sync(root: &Path, rel: &str) -> Response<HttpBody> {
         _ => return not_found(),
     };
     match std::fs::read(&target) {
-        Ok(bytes) => static_response(mime, bytes),
+        Ok(bytes) => cached_static_response(mime, asset_cache_control(rel), bytes),
         Err(_) => not_found(),
     }
 }
@@ -85,7 +115,25 @@ fn resolve_safe_subpath(root: &Path, rel: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_safe_subpath;
+    use super::{asset_cache_control, resolve_safe_subpath, CACHE_IMMUTABLE, CACHE_NO_STORE};
+
+    #[test]
+    fn only_content_hash_directory_assets_are_immutable() {
+        let hashed = "78862642eae79244/nve_web_shell_bg.wasm";
+        assert_eq!(asset_cache_control(hashed), CACHE_IMMUTABLE);
+        assert_eq!(asset_cache_control("78862642eae79244/snippets/a/b.js"), CACHE_IMMUTABLE);
+        for mutable in [
+            "manifest.json",
+            "boot.js",
+            "78862642EAE79244/x.wasm",
+            "78862642eae7924/x.wasm",
+            "78862642eae792440/x.wasm",
+            "78862642eae7924g/x.wasm",
+            "staging/x.wasm",
+        ] {
+            assert_eq!(asset_cache_control(mutable), CACHE_NO_STORE, "{mutable}");
+        }
+    }
 
     #[test]
     fn resolve_safe_subpath_rejects_parent_dir_even_inside_root() {

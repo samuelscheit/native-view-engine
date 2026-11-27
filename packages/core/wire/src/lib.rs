@@ -53,6 +53,10 @@ pub use tls::{
 /// Default Happy-Eyeballs delay before racing `wss://` alongside QUIC (`250ms`).
 pub const DEFAULT_HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
 
+/// 1-byte `KeyframeRequest` payload marker identifying an automatic reconnect-init request
+/// (deduplicated against `register_peer`'s initial send; empty payload = explicit recovery).
+pub(crate) const KEYFRAME_REQ_RECONNECT_INIT: u8 = 1;
+
 /// Errors returned by `nve-wire` server/client transport operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NveWireTransportError {

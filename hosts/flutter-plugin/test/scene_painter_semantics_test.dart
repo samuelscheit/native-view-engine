@@ -13,7 +13,7 @@ const _red = (255, 0, 0, 255);
 const _blue = (0, 0, 255, 255);
 const _green = (0, 255, 0, 255);
 
-void _fill(SceneBuilder b, int node, int color) => b.bits(visualShape, node, NveVisualTable.background, color);
+void _fill(SceneBuilder b, int node, int color) => b.bits(visualShape, node, VisualTable.background, color);
 
 Future<Uint8List> _paint(SceneBuilder b, {NveScenePainter? painter, Offset origin = Offset.zero}) {
   final p = painter ?? NveScenePainter();
@@ -36,10 +36,10 @@ void main() {
       _fill(b, high, packRgba(255, 0, 0));
       _fill(b, gone, packRgba(255, 0, 0));
       b
-        ..bits(visualShape, scroller, NveVisualTable.overflowY, NveOverflow.hidden)
+        ..bits(visualShape, scroller, VisualTable.overflowY, NveOverflow.hidden)
         ..scrollOffset(scroller, 0, 30)
-        ..bits(visualShape, low, NveVisualTable.zIndex, 1)
-        ..bits(layoutShape, gone, NveLayoutTable.display, NveDisplay.none);
+        ..bits(visualShape, low, VisualTable.zIndex, 1)
+        ..bits(layoutShape, gone, LayoutTable.display, NveDisplay.none);
       final px = await _paint(b);
       expect(pixelAt(px, 100, 75, 15), _blue, reason: 'content painted at y - scroll (40 - 30)');
       expect(pixelAt(px, 100, 75, 35), _white, reason: 'content no longer at 30..40');
@@ -70,14 +70,14 @@ void main() {
       _fill(b, moved, packRgba(0, 0, 255));
       _fill(b, invisible, packRgba(255, 0, 0));
       b
-        ..f32(visualShape, faded, NveVisualTable.opacity, 0.5)
-        ..bits(visualShape, hiddenParent, NveVisualTable.visibility, NveVisibility.hidden)
-        ..bits(visualShape, shownChild, NveVisualTable.visibility, NveVisibility.visible)
-        ..f32(visualShape, bordered, NveVisualTable.borderWidth, 4)
-        ..bits(visualShape, bordered, NveVisualTable.borderColor, packRgba(255, 0, 0))
-        ..f32(transformShape, moved, NveTransformTable.translateX, 80)
-        ..f32(transformShape, moved, NveTransformTable.translateY, 80)
-        ..f32(visualShape, invisible, NveVisualTable.opacity, 0);
+        ..f32(visualShape, faded, VisualTable.opacity, 0.5)
+        ..bits(visualShape, hiddenParent, VisualTable.visibility, NveVisibility.hidden)
+        ..bits(visualShape, shownChild, VisualTable.visibility, NveVisibility.visible)
+        ..f32(visualShape, bordered, VisualTable.borderWidth, 4)
+        ..bits(visualShape, bordered, VisualTable.borderColor, packRgba(255, 0, 0))
+        ..f32(transformShape, moved, TransformTable.translateX, 80)
+        ..f32(transformShape, moved, TransformTable.translateY, 80)
+        ..f32(visualShape, invisible, VisualTable.opacity, 0);
       final px = await _paint(b);
       final (r, g, bl, _) = pixelAt(px, 100, 10, 10);
       expect([r, g, bl].every((c) => c > 100 && c < 155), isTrue, reason: '50% black over white ($r,$g,$bl)');
@@ -97,11 +97,11 @@ void main() {
       final input = b.node(const Rect.fromLTWH(0, 50, 100, 40), parent: root);
       _fill(b, root, packRgba(255, 255, 255));
       b
-        ..bits(typographyShape, root, NveTypographyTable.set, NveTypographyTable.setColor | NveTypographyTable.setFontSize)
-        ..bits(typographyShape, root, NveTypographyTable.color, packRgba(255, 0, 0))
-        ..f32(typographyShape, root, NveTypographyTable.fontSize, 10)
-        ..str(textShape, label, NveTextTable.text, 'MM')
-        ..str(textInputShape, input, NveTextInputTable.placeholder, 'Search');
+        ..bits(typographyShape, root, TypographyTable.set, NveTypographySet.color | NveTypographySet.fontSize)
+        ..bits(typographyShape, root, TypographyTable.color, packRgba(255, 0, 0))
+        ..f32(typographyShape, root, TypographyTable.fontSize, 10)
+        ..str(textShape, label, TextTable.text, 'MM')
+        ..str(textInputShape, input, TextInputTable.placeholder, 'Search');
       final px = (await tester.runAsync(() => _paint(b)))!;
       expect(pixelAt(px, 100, 3, 5), _red, reason: 'Ahem glyph box in the inherited color');
       expect(pixelAt(px, 100, 40, 5), _white, reason: 'two 10pt glyphs end at x = 20');
@@ -131,10 +131,10 @@ void main() {
       final b = SceneBuilder();
       final root = b.node(const Rect.fromLTWH(0, 0, 100, 100));
       final img = b.node(const Rect.fromLTWH(0, 0, 40, 40), parent: root);
-      final imageShape = TableShape(NveImageTable.key, NveImageTable.words, NveImageTable.sparse, NveImageTable.defaults);
+      final imageShape = TableShape(ImageTable.key, ImageTable.words, !ImageTable.dense, ImageTable.defaults);
       b
-        ..bits(imageShape, img, NveImageTable.src, 9)
-        ..bits(imageShape, img, NveImageTable.fit, NveImageFit.fill);
+        ..bits(imageShape, img, ImageTable.src, 9)
+        ..bits(imageShape, img, ImageTable.fit, NveImageFit.fill);
       final png = makeSolidPngBytes(0, 0, 255, width: 4, height: 4);
       final payload = Uint8List.fromList([
         1,
@@ -166,8 +166,8 @@ void main() {
       final root = b.node(const Rect.fromLTWH(0, 0, 10, 10));
       final kid = b.node(const Rect.fromLTWH(0, 0, 10, 10), parent: root);
       b
-        ..f32(visualShape, root, NveVisualTable.opacity, 0.5)
-        ..bits(visualShape, root, NveVisualTable.overflowX, NveOverflow.hidden)
+        ..f32(visualShape, root, VisualTable.opacity, 0.5)
+        ..bits(visualShape, root, VisualTable.overflowX, NveOverflow.hidden)
         ..bits(TableShape(_Throwing.key, 1, true, const [0]), kid, FieldSpec(0, FieldKind.u32), 1);
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
@@ -211,28 +211,28 @@ void main() {
       final invisibleParent = b.node(const Rect.fromLTWH(0, 140, 100, 40), parent: root);
       final shown = b.node(const Rect.fromLTWH(0, 160, 50, 20), parent: invisibleParent);
       b
-        ..bits(interactionShape, button, NveInteractionTable.eventMask, nveEventMaskPress)
-        ..str(textShape, button, NveTextTable.text, 'Save')
-        ..bits(a11yShape, heading, NveAccessibilityTable.role, NveAriaRole.heading)
-        ..str(textShape, heading, NveTextTable.text, 'Settings')
-        ..str(textInputShape, password, NveTextInputTable.value, 'héllo')
-        ..bits(textInputShape, password, NveTextInputTable.secure, 1)
-        ..str(textInputShape, password, NveTextInputTable.placeholder, 'Password')
-        ..bits(a11yShape, hidden, NveAccessibilityTable.hidden, 1)
-        ..str(textShape, hiddenKid, NveTextTable.text, 'secret')
-        ..bits(visualShape, clipper, NveVisualTable.overflowX, NveOverflow.hidden)
-        ..str(textShape, outside, NveTextTable.text, 'clipped')
-        ..bits(a11yShape, toggle, NveAccessibilityTable.role, NveAriaRole.switchValue)
-        ..bits(a11yShape, toggle, NveAccessibilityTable.checked, NveAriaTriState.trueValue)
-        ..str(a11yShape, toggle, NveAccessibilityTable.label, 'Wi-Fi')
-        ..bits(a11yShape, decorative, NveAccessibilityTable.role, NveAriaRole.presentation)
-        ..str(textShape, decorative, NveTextTable.text, 'ornament')
-        ..f32(visualShape, transparent, NveVisualTable.opacity, 0)
-        ..str(textShape, transparent, NveTextTable.text, 'faded out')
-        ..bits(visualShape, invisibleParent, NveVisualTable.visibility, NveVisibility.hidden)
-        ..str(textShape, invisibleParent, NveTextTable.text, 'invisible')
-        ..bits(visualShape, shown, NveVisualTable.visibility, NveVisibility.visible)
-        ..str(textShape, shown, NveTextTable.text, 'visible again');
+        ..bits(interactionShape, button, InteractionTable.eventMask, nveEventMaskPress)
+        ..str(textShape, button, TextTable.text, 'Save')
+        ..bits(a11yShape, heading, AccessibilityTable.role, NveAriaRole.heading)
+        ..str(textShape, heading, TextTable.text, 'Settings')
+        ..str(textInputShape, password, TextInputTable.value, 'héllo')
+        ..bits(textInputShape, password, TextInputTable.secure, 1)
+        ..str(textInputShape, password, TextInputTable.placeholder, 'Password')
+        ..bits(a11yShape, hidden, AccessibilityTable.hidden, 1)
+        ..str(textShape, hiddenKid, TextTable.text, 'secret')
+        ..bits(visualShape, clipper, VisualTable.overflowX, NveOverflow.hidden)
+        ..str(textShape, outside, TextTable.text, 'clipped')
+        ..bits(a11yShape, toggle, AccessibilityTable.role, NveAriaRole.switchValue)
+        ..bits(a11yShape, toggle, AccessibilityTable.checked, NveAriaTriState.trueValue)
+        ..str(a11yShape, toggle, AccessibilityTable.label, 'Wi-Fi')
+        ..bits(a11yShape, decorative, AccessibilityTable.role, NveAriaRole.presentation)
+        ..str(textShape, decorative, TextTable.text, 'ornament')
+        ..f32(visualShape, transparent, VisualTable.opacity, 0)
+        ..str(textShape, transparent, TextTable.text, 'faded out')
+        ..bits(visualShape, invisibleParent, VisualTable.visibility, NveVisibility.hidden)
+        ..str(textShape, invisibleParent, TextTable.text, 'invisible')
+        ..bits(visualShape, shown, VisualTable.visibility, NveVisibility.visible)
+        ..str(textShape, shown, TextTable.text, 'visible again');
       final taps = <(int, Offset)>[];
       final asm = NveCanvasSemanticsAssembler();
       final nodes = asm.build(b.tree(), const Rect.fromLTWH(0, 0, 200, 200), (id, c) => taps.add((id, c)));

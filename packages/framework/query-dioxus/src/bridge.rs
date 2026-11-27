@@ -16,7 +16,7 @@ use nve_query::{Clock, QueryClient, QueryClientConfig, QueryHandle, QuerySlotId,
 use nve_rpc::{BoxFuture, CborCodec, RawCall, RawReply, Transport, TransportError};
 
 use crate::sleep::{default_sleep_callback, SleepHandle};
-use crate::suspense::sanitize_slot_id;
+use crate::suspense::SuspenseIdAllocator;
 
 /// Object-safe type-erased [`Transport`] wrapper so shared cross-platform Dioxus UI components
 /// never thread `<T: Transport>` generics across Web (`FetchTransport`), Native (`HyperTransport`),
@@ -148,7 +148,7 @@ struct SlotTaskEntry {
 struct BridgeSlots {
     alive: bool,
     next_task_seq: u64,
-    next_suspense_id: u32,
+    suspense_ids: SuspenseIdAllocator,
     signals: Vec<Option<(Signal<u32>, u32)>>,
     slot_tasks: Vec<Option<SlotTaskEntry>>,
     dirty_buf: Vec<(QuerySlotId, u32)>,
@@ -202,7 +202,7 @@ impl DioxusQueryBridge {
             slots: Rc::new(RefCell::new(BridgeSlots {
                 alive: true,
                 next_task_seq: 1,
-                next_suspense_id: 0,
+                suspense_ids: SuspenseIdAllocator::default(),
                 signals: Vec::new(),
                 slot_tasks: Vec::new(),
                 dirty_buf: Vec::with_capacity(16),
@@ -220,16 +220,10 @@ impl DioxusQueryBridge {
         &self.client
     }
 
-    /// Allocates a deterministic `<QuerySuspense>` slot ID matching `SsrBoundaryRegistry`'s
-    /// `s0`, `s1`, ... sequence when no explicit `id` is provided.
+    /// Allocates a `<QuerySuspense>` slot ID with the allocator `SsrBoundaryRegistry` uses, so
+    /// client and server assign identical IDs in render order.
     pub(crate) fn allocate_suspense_id(&self, explicit_id: Option<&str>) -> String {
-        if let Some(clean) = sanitize_slot_id(explicit_id) {
-            return clean;
-        }
-        let mut slots = self.slots.borrow_mut();
-        let n = slots.next_suspense_id;
-        slots.next_suspense_id = slots.next_suspense_id.wrapping_add(1);
-        format!("s{n}")
+        self.slots.borrow_mut().suspense_ids.allocate(explicit_id)
     }
 
     #[inline]

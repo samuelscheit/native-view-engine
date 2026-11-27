@@ -77,7 +77,7 @@ std::vector<uint8_t> encode_frame(
   }
   if (has_ck) {
     const size_t body_len = kWireHeaderSize + payload.size();
-    const uint64_t digest = xxh64(std::span<const uint8_t>(out.data(), body_len), kWireXxh64Seed);
+    const uint64_t digest = nve::host::xxh64(std::span<const uint8_t>(out.data(), body_len), kWireXxh64Seed);
     write_u64_le(out.data() + body_len, digest);
   }
   return out;
@@ -112,7 +112,7 @@ bool decode_frame(std::span<const uint8_t> bytes, WireFrameView& out, size_t max
   const size_t payload_end = kWireHeaderSize + static_cast<size_t>(hdr.payload_len);
   if (hdr.has_xxh64()) {
     const uint64_t expected = read_u64_le(bytes.data() + payload_end);
-    const uint64_t actual = xxh64(bytes.subspan(0, payload_end), kWireXxh64Seed);
+    const uint64_t actual = nve::host::xxh64(bytes.subspan(0, payload_end), kWireXxh64Seed);
     if (actual != expected) return false;
   }
   out.header = hdr;

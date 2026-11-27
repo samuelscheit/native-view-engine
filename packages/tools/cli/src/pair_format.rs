@@ -39,13 +39,17 @@ pub(crate) fn display_host_for_uri(host: &str) -> &str {
     }
 }
 
-pub(crate) fn format_ws_url(host: &str, ws_port: u16) -> String {
+fn format_url_host(host: &str) -> String {
     let disp = display_host_for_uri(host);
     if disp.contains(':') && !disp.starts_with('[') {
-        format!("ws://[{disp}]:{ws_port}")
+        format!("[{disp}]")
     } else {
-        format!("ws://{disp}:{ws_port}")
+        disp.to_owned()
     }
+}
+
+pub(crate) fn format_ws_url(host: &str, ws_port: u16) -> String {
+    format!("ws://{}:{ws_port}", format_url_host(host))
 }
 
 pub(crate) fn format_pairing_uri(
@@ -111,7 +115,7 @@ pub(crate) fn format_pair_banner(
     width: f32,
     height: f32,
 ) -> String {
-    let disp = display_host_for_uri(host);
+    let url_host = format_url_host(host);
     let uri = format_pairing_uri(
         host,
         quic_addr.port(),
@@ -123,7 +127,7 @@ pub(crate) fn format_pair_banner(
     );
     let browser_query = format_browser_pair_query(host, wss_addr.port(), token, Some(cert_hash_hex));
     format!(
-        "nve pair — Unified QUIC/WebTransport + WSS Device Pairing (NveWireFrame v2)\n  dylib:     {}\n  quic/h3:   https://{disp}:{}/nve-wire (ALPN: h3, nve-wire-2; bound {quic_addr})\n  wss/ws:    wss://{disp}:{}/nve-wire (bound {wss_addr})\n  cert_hash: {cert_hash_hex} (13-day ECDSA P-256)\n  token:     {token}\n  uri:       {uri}\n  browser:   {browser_query}\n",
+        "nve pair — Unified QUIC/WebTransport + WSS Device Pairing (NveWireFrame v2)\n  dylib:     {}\n  quic/h3:   https://{url_host}:{}/nve-wire (ALPN: h3, nve-wire-2; bound {quic_addr})\n  wss/ws:    wss://{url_host}:{}/nve-wire (bound {wss_addr})\n  cert_hash: {cert_hash_hex} (13-day ECDSA P-256)\n  token:     {token}\n  uri:       {uri}\n  browser:   {browser_query}\n",
         dylib_path.display(),
         quic_addr.port(),
         wss_addr.port(),

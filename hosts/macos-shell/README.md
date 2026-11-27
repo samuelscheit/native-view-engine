@@ -23,5 +23,5 @@ ctest --test-dir hosts/macos-shell/build --output-on-failure
 # Launch native AppKit host window:
 ./hosts/macos-shell/build/nve_macos_shell
 # Or load a compiled Rust NVE cdylib:
-./hosts/macos-shell/build/nve_macos_shell --dylib target/debug/libmy_app.dylib
+./hosts/macos-shell/build/nve_macos_shell --dylib target/debug/libnve_studio_workspace.dylib
 ```

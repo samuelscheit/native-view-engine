@@ -107,6 +107,7 @@ pub(crate) struct PairSession<A: PairedApp> {
     last_frame: Vec<u8>,
     mirror_store: NodeStore,
     mirror_decoder: WireDecoder,
+    mirror_changes: nve_store::ChangeSet,
     mirror_has_state: bool,
     token: String,
     started_at: Instant,
@@ -157,6 +158,7 @@ impl<A: PairedApp> PairSession<A> {
             last_frame: Vec::new(),
             mirror_store,
             mirror_decoder: WireDecoder::default(),
+            mirror_changes: nve_store::ChangeSet::default(),
             mirror_has_state: false,
             token,
             started_at: now,
@@ -224,8 +226,7 @@ impl<A: PairedApp> PairSession<A> {
         let applied = {
             let mut tx = self.mirror_store.tx();
             if self.mirror_decoder.apply(&mut tx, bytes).is_ok() {
-                let mut changes = nve_store::ChangeSet::default();
-                tx.commit_into(&mut changes);
+                tx.commit_into(&mut self.mirror_changes);
                 true
             } else {
                 false
@@ -245,16 +246,14 @@ impl<A: PairedApp> PairSession<A> {
     fn send_fresh_keyframe_to_peer(&self, peer_session_id: u32) {
         if self.mirror_has_state {
             let mut full = Vec::new();
-            WireEncoder::default().encode_full(&self.mirror_store, &mut full);
+            WireEncoder::default().encode_full_with_labels(
+                &self.mirror_store,
+                self.mirror_decoder.declared_wire_tables(),
+                &mut full,
+            );
             let _ = self
                 .server
                 .send_scene_keyframe_to_peer(peer_session_id, self.frame_id as u32, &full);
-        } else if !self.last_frame.is_empty() {
-            let _ = self.server.send_scene_keyframe_to_peer(
-                peer_session_id,
-                self.frame_id as u32,
-                &self.last_frame,
-            );
         }
     }
 
@@ -284,17 +283,10 @@ impl<A: PairedApp> PairSession<A> {
                 .broadcast_command_delta(self.frame_id as u32, &frame)
                 .map_err(|e| format!("NveWireServer broadcast failed: {e}"))?;
         }
-        match frame {
-            Cow::Borrowed(slice) => {
-                self.last_frame.clear();
-                self.last_frame.extend_from_slice(slice);
-            }
-            Cow::Owned(vec) => {
-                self.last_frame = vec;
-            }
-        }
-        let latest = self.last_frame.clone();
-        self.apply_to_mirror(&latest, is_keyframe);
+        // Apply to mirror BEFORE moving/storing into `self.last_frame` (avoids per-frame clone).
+        let frame_owned = frame.into_owned();
+        self.apply_to_mirror(&frame_owned, is_keyframe);
+        self.last_frame = frame_owned;
         Ok(true)
     }
 

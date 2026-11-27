@@ -18,7 +18,6 @@ pub mod image_cache;
 mod interaction;
 mod motion;
 pub mod raster;
-mod reloc_scene;
 mod scroll;
 pub mod table_system;
 pub mod text;
@@ -358,7 +357,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         );
     }
 
-    /// Software-rasterizes the retained `DisplayList` (without plugin dispatch — e.g. Frame-0 `SceneRelocView`).
+    /// Software-rasterizes the retained `DisplayList` (without plugin dispatch).
     pub fn rasterize(&self, buffer: &mut PixelBuffer, clear_color: ColorRgba) {
         rasterize_display_list_with_text_engine(
             &self.display_list,

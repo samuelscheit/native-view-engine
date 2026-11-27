@@ -1,7 +1,7 @@
 #pragma once
 
 #include "nve_rn_component.hpp"
-#include "nve_scene_abi.generated.h"
+#include <nve/generated/nve_abi.generated.h>
 
 #include <algorithm>
 #include <cmath>

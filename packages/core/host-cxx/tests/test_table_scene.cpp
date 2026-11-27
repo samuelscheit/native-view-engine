@@ -297,10 +297,12 @@ void test_runtime_scene_reader_and_session_mock() {
       NveLayoutRect{0.0f, 0.0f, 0.0f, 0.0f},
       NveLayoutRect{10.0f, 20.0f, 120.0f, 40.0f},
   };
-  state.view = NveRuntimeSceneView{
-      NVE_RUNTIME_SCHEMA_HASH, 3u, 2u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-      rows.data(), rects.data(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-  };
+  state.view = NveRuntimeSceneView{};
+  state.view.schema_hash = NVE_RUNTIME_SCHEMA_HASH;
+  state.view.frame_id = 3u;
+  state.view.node_capacity = 2u;
+  state.view.rows = rows.data();
+  state.view.rects = rects.data();
 
   auto noop_i32 = [](NveRuntimeHandle) -> int32_t { return NVE_RUNTIME_OK; };
   NveRuntimeApi mock_api{};
@@ -346,10 +348,30 @@ void test_runtime_scene_reader_and_session_mock() {
   mock_api.pair_disconnect = noop_i32;
   mock_api.pair_is_connected = [](NveRuntimeHandle) -> uint32_t { return 0u; };
   mock_api.last_error = [](uint8_t*, size_t) -> size_t { return 0u; };
+  // An incomplete vtable (any NULL slot) is refused before `create` runs.
+  CHECK(!nve::host::RuntimeSession::create(&mock_api).has_value());
+  mock_api.set_text_measurer = [](NveRuntimeHandle, NveRuntimeMeasureTextFn, void*) -> int32_t {
+    return NVE_RUNTIME_OK;
+  };
+  mock_api.set_props = [](NveRuntimeHandle, const NveMapEntry*, uint32_t, uint32_t*) -> int32_t {
+    return NVE_RUNTIME_UNSUPPORTED;
+  };
+  mock_api.drain_emitted_events = [](NveRuntimeHandle, NveEventBatch*) -> int32_t {
+    return NVE_RUNTIME_UNSUPPORTED;
+  };
+  mock_api.snapshot_state = [](NveRuntimeHandle, NveBufferSlice*) -> int32_t { return NVE_RUNTIME_UNSUPPORTED; };
+  mock_api.restore_state = [](NveRuntimeHandle, NveBufferSlice) -> int32_t { return NVE_RUNTIME_UNSUPPORTED; };
+  mock_api.apply_hot_patch = [](NveRuntimeHandle, NveBufferSlice, uint32_t*) -> int32_t {
+    return NVE_RUNTIME_UNSUPPORTED;
+  };
+  mock_api.resource_payload = [](NveRuntimeHandle, uint32_t, uint64_t*, NveBufferSlice*) -> int32_t {
+    return NVE_RUNTIME_NOT_FOUND;
+  };
 
   {
     auto sess = nve::host::RuntimeSession::create(&mock_api);
     CHECK(sess.has_value());
+    if (!sess) return;
     auto wake_cb = [](void* ctx) { ++static_cast<MockState*>(ctx)->wake_fires; };
     CHECK(sess->set_wake_callback(wake_cb, &state) == NVE_RUNTIME_OK);
     CHECK(state.wake_fires == 1);

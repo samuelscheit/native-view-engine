@@ -9,7 +9,7 @@ use nve_components::tables::{
     Display, FlexDirection, Interaction, Layout, Overflow, Position, StateRules, Transform,
     Visibility, Visual, core_realization_order,
 };
-use nve_engine::{SceneRelocView, StoreBackend, VerifyMode, Viewport};
+use nve_engine::{StoreBackend, Viewport};
 use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, Transaction};
 
 use crate::HeadlessBackend;
@@ -141,22 +141,11 @@ fn contents_nodes_publish_no_box_paint_or_clip() {
         (wrapper.x, wrapper.y, wrapper.width, wrapper.height),
         (20.0, 10.0, 0.0, 0.0)
     );
-
-    let reloc = f
-        .backend
-        .export_scene_reloc(&f.store, 1, 1, "contents", ColorRgba::BLACK)
-        .expect("reloc export");
-    let parsed = SceneRelocView::from_bytes(&reloc, VerifyMode::Full).expect("valid reloc");
-    let node = parsed
-        .find_node_by_id(f.wrapper.raw())
-        .expect("wrapper exported")
-        .1;
-    assert!(
-        !node.clips_children(),
-        "a box-less node must not clip its subtree"
-    );
-    let row = parsed.find_node_by_id(f.row.raw()).expect("row exported").1;
-    assert!(!row.clips_children());
+    let row = nodes
+        .iter()
+        .find(|n| n.node_id == f.row.raw())
+        .expect("row published");
+    assert_eq!(row.flags & nve_abi::NVE_NODE_CLIP_BOUNDS, 0);
 }
 
 #[test]

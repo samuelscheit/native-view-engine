@@ -100,36 +100,44 @@ fn framework_rpc_and_server_layer_purity() {
 // Cross-file `syn` AST invariants
 // ============================================================================
 
+/// Enforces [INV:no-duplicate-enum-match-arms].
+#[test]
+fn no_duplicate_enum_match_arms_workspace_wide() {
+    let idx = repo_index();
+    let report = ast_enums::check_duplicate_enum_match_arms(idx);
+    assert_no_violations(
+        "Zero new duplicated enum match/assignment tables (same-file & cross-file, same-direction & mirrored) and zero stale baseline entries",
+        &report.active_violations,
+    );
+    assert_staged_violations(
+        Stage::Post1B1D,
+        "Pre-existing allowlisted duplicate enum match/assignment tables",
+        &report.allowlisted_violations,
+    );
+}
+
 #[test]
 fn cross_file_enums_converters_and_match_tables() {
     let idx = repo_index();
-    let mut core_owned = Vec::new();
-    let mut backend_owned = Vec::new();
+    let all_owned = ast_enums::collect_workspace_prod_rs(idx);
     let mut violations = Vec::new();
 
-    for rel in idx.rs_files_under("packages") {
-        if is_test_or_bench_rs(&rel) || is_self_invariant_file(&rel) {
-            continue;
-        }
-        let Some(parsed) = idx.parse_rust(&rel) else {
-            continue;
-        };
-        ast_enums::scan_match_tables(&rel, &parsed.raw, &parsed.ast, &mut violations);
-        if rel.starts_with("packages/core/") {
-            core_owned.push((rel, parsed));
-        } else if rel.starts_with("packages/backends/") {
-            backend_owned.push((rel, parsed));
+    for f in &all_owned {
+        if f.rel.starts_with("packages/") {
+            ast_enums::scan_match_tables(&f.rel, &f.parsed.raw, &f.parsed.ast, &mut violations);
         }
     }
 
-    let core_refs: Vec<_> = core_owned.iter().map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast)).collect();
-    let backend_refs: Vec<_> = backend_owned.iter().map(|(r, p)| (r.clone(), p.raw.as_str(), &p.ast)).collect();
-    assert!(!core_refs.is_empty() && !backend_refs.is_empty());
-    ast_enums::scan_duplicate_enums_and_converters(&core_refs, &backend_refs, &mut violations);
+    let all_refs: Vec<_> = all_owned
+        .iter()
+        .map(|f| (f.rel.clone(), f.parsed.raw.as_str(), &f.parsed.ast))
+        .collect();
+    assert!(!all_refs.is_empty());
+    ast_enums::scan_duplicate_enums_and_converters(&all_refs, &mut violations);
 
     assert_staged_violations(
         Stage::Post1B1D,
-        "Cross-file duplicate enums, redundant NVE->NVE converters, mirrored <-> match pairs, discriminant matches, core str tables",
+        "Cross-file duplicate enums, redundant NVE->NVE converters, discriminant matches, core str tables",
         &violations,
     );
 }
@@ -274,6 +282,24 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
     assert_no_violations("Zero hardcoded *_SCHEMA_HASH hex literals", &v_hashes);
 }
 
+/// Enforces [INV:no-reloc-mmap-snapshot].
+#[test]
+fn no_retired_reloc_mmap_snapshot_paths_symbols_or_memmap2_deps() {
+    let idx = repo_index();
+    assert_no_violations(
+        "Zero retired legacy persistence paths (mmap_arena / reloc_scene / nve_snapshot / instant_boot / mmap_snapshot / reloc/)",
+        &hygiene::check_banned_legacy_persistence_paths(idx),
+    );
+    assert_no_violations(
+        "Zero retired legacy persistence symbols (MmapOffsetArena / RelocSceneNode / RelocSceneRoot / RelocatableStateArena)",
+        &hygiene::check_banned_legacy_persistence_symbols(idx),
+    );
+    assert_no_violations(
+        "Zero direct memmap2 dependencies workspace-wide and zero transitive memmap2 in core (non-dioxus) / headless / web",
+        &dag::check_no_memmap2_dep(&idx.graph),
+    );
+}
+
 /// Enforces [INV:zero-fnv1a].
 #[test]
 fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
@@ -327,8 +353,7 @@ fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
         "Zero banned legacy 4-letter format acronyms outside DOC_EXCLUDES",
         &purity::check_banned_4_letter_acronyms(idx),
     );
-    assert_staged_violations(
-        Stage::Post1B1E,
+    assert_no_violations(
         "Codegen Dart/TypeScript 53-bit integer safety & legacy wire/reloc/hybrid_rust/scene_abi path bans",
         &purity::check_codegen_hygiene_and_dart_53bit(idx),
     );
@@ -378,12 +403,13 @@ fn spec_invariant_ids_have_mechanical_guards() {
 }
 
 /// The static host runtimes (`packages/core/host-*`) mirror status codes, `FieldKind`, value tags,
-/// limits, `Length` tags, and golden XXH64 digests by hand: every copy must match the Rust source.
+/// limits, and `Length` tags by hand: every copy must match the Rust source. (Golden XXH64 vectors
+/// are generated from `nve_hash` by `nve codegen abi`.)
 #[test]
 fn host_runtime_mirrors_match_rust_sources() {
     let idx = repo_index();
     assert_no_violations(
-        "Host runtime mirrors match nve_abi / nve_store / nve_hash",
+        "Host runtime mirrors match nve_abi / nve_store",
         &host_runtimes::check_host_runtime_mirrors(idx),
     );
 }

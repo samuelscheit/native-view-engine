@@ -18,8 +18,6 @@ NS_ASSUME_NONNULL_BEGIN
   std::unique_ptr<nve::PairClient> _pairClient;
   NveFabricHostHandle _Nullable _pairedHost;
   uint64_t _pairedFrameCount;
-  NveFabricHostHandle _Nullable _frame0Host;
-  std::vector<uint8_t> _pendingSnapshotState;
   void * _Nullable _dylibHandle;
   uint32_t _surfaceId;
   nve::BumpArena _propsArena;
@@ -54,17 +52,6 @@ BOOL host_connect_paired_config(
 void host_disconnect_paired(NveAppleComponentHost *host);
 
 NSUInteger host_poll_paired_frames(NveAppleComponentHost *host);
-
-BOOL host_replay_frame0_snapshot(
-    NveAppleComponentHost *host,
-    NSString *snapshotPath,
-    uint32_t expectedSchemaVersion,
-    uint64_t * _Nullable outRestoreUs);
-
-BOOL host_save_snapshot(
-    NveAppleComponentHost *host,
-    NSString *snapshotPath,
-    uint32_t schemaVersion);
 
 } // namespace nve::apple
 

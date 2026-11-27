@@ -1,14 +1,13 @@
-//! Zero-copy [`NveRuntimeSceneView`] publication of a [`SurfaceState`]: pre-scroll layout rects,
-//! dirty / removed indices, table views, and scroll offsets borrowed straight from the store.
+//! Zero-copy [`NveRuntimeSceneView`] publication from the active `NodeStore`: invalidation,
+//! pointer-drift validation, and per-frame publish of rows, rects, slabs, tables, and resources.
 
 use nve_abi::{
     NveLayoutRect, NveNodeRow, NveRuntimeSceneView, NveScrollOffset, NVE_RUNTIME_SCHEMA_HASH,
 };
-use nve_engine::LayoutRect;
 use nve_store::{ChangeSet, NodeId, NodeStore, TableSlot};
 
 use crate::builder::Timer;
-use crate::state::SurfaceState;
+use crate::state::{layout_rect_to_abi, SurfaceState};
 
 impl SurfaceState {
     /// Clears all borrowed pointers in `published_view` and `published_tables` so an early error,
@@ -19,17 +18,23 @@ impl SurfaceState {
             frame_id: self.frame_id,
             ..NveRuntimeSceneView::default()
         };
+        self.published_resources = core::ptr::null();
         self.published_tables.clear();
         self.published_dirty_buf.clear();
         self.dirty_indices.clear();
         self.removed_ids.clear();
-        self.scroll_offsets.clear();
+        self.published_scroll.clear();
         self.metrics.dirty_nodes = 0;
     }
 
     /// Verifies that every borrowed slab pointer and every published `NveTableView` column pointer
     /// and row count in `published_view` still matches `store` identically.
     pub(crate) fn published_view_matches_store(&self, store: &NodeStore) -> bool {
+        if !self.published_resources.is_null()
+            && !core::ptr::eq(self.published_resources, store.resources())
+        {
+            return false;
+        }
         let v = &self.published_view;
         if v.node_capacity == 0 && v.table_count == 0 {
             return true;
@@ -145,19 +150,13 @@ impl SurfaceState {
             &mut self.published_dirty_buf,
         );
 
-        // Visual child shifts of every scrolled container (rects stay pre-scroll).
-        self.scroll_offsets.clear();
-        for (raw, _) in self.scene.scroll_offsets().iter() {
-            let id = NodeId(raw);
-            if !store.is_live(id) {
-                continue;
-            }
-            let (x, y) = self.scene.visual_scroll_shift(store, id);
-            if x != 0.0 || y != 0.0 {
-                self.scroll_offsets.push(NveScrollOffset { node_id: raw, x, y });
-            }
+        self.published_scroll.clear();
+        let scroll = self.scene.scroll_offsets();
+        for (node_id, _) in scroll.iter() {
+            let (x, y) = scroll.visual_shift(store, NodeId(node_id));
+            self.published_scroll.push(NveScrollOffset { node_id, x, y });
         }
-        self.scroll_offsets.sort_unstable_by_key(|s| s.node_id);
+        self.published_scroll.sort_unstable_by_key(|s| s.node_id);
 
         let rows_slice = store.node_rows();
         let text_slab = store.text_slab();
@@ -172,7 +171,7 @@ impl SurfaceState {
             text_slab_len: text_slab.len() as u32,
             children_slab_len: children_slab.len() as u32,
             table_count: self.published_tables.len() as u32,
-            scroll_count: self.scroll_offsets.len() as u32,
+            scroll_count: self.published_scroll.len() as u32,
             _reserved: 0,
             rows: if rows_slice.is_empty() {
                 core::ptr::null()
@@ -211,13 +210,14 @@ impl SurfaceState {
             } else {
                 self.published_tables.as_ptr()
             },
-            scroll_offsets: if self.scroll_offsets.is_empty() {
+            scroll_offsets: if self.published_scroll.is_empty() {
                 core::ptr::null()
             } else {
-                self.scroll_offsets.as_ptr()
+                self.published_scroll.as_ptr()
             },
         };
 
+        self.published_resources = store.resources();
         self.metrics.frame_id = self.frame_id;
         self.metrics.publish_us = t_pub.elapsed_us();
         self.metrics.dirty_nodes = self.dirty_indices.len() as u32;
@@ -225,15 +225,5 @@ impl SurfaceState {
             self.metrics.live_nodes = store.stats().live_nodes as u32;
         }
         self.needs_publish = false;
-    }
-}
-
-#[inline]
-fn layout_rect_to_abi(r: LayoutRect) -> NveLayoutRect {
-    NveLayoutRect {
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
     }
 }

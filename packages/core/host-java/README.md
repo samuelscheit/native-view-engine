@@ -9,7 +9,15 @@ every Java / Kotlin host binding.
 | `BinReader`, `BinWriter`, `BinTag`, `BinCodecException`, `Utf8` | Bounds-checked LE primitives, the `NveBinValue` format, strict UTF-8 |
 | `FieldKind`, `FieldSpec`, `Length`, `Rgba`, `TableReader` | Reusable, allocation-free word-table reader over direct `ByteBuffer`s |
 | `SceneReader`, `SceneException` | Reusable `NveSceneView` frame reader. `attach` validates once; node fields are read by generated offsets. |
-| `HybridRuntime` | `HybridStatus`, `HostStatus`, `HybridException`, `checkSchema`, `DynamicValue` |
+| `HybridRuntime` | `HybridStatus`, `HostStatus`, `HybridException`, `checkSchema`, `DynamicValue`, `directBuffer` |
+
+Generated Kotlin / Java hybrid clients (`nve codegen hybrid --target kotlin`) import this runtime and
+never copy it: structs encode through `BinWriter` (`beginMap` / `end`) and decode through `BinReader`
+(`beginMap` / `beginArray` return a `ReadMark` that bounds every read until `end(mark)`, which also
+rejects unread entries);
+JNI arguments cross as `BinWriter.toDirectBuffer()` / `HybridRuntime.directBuffer` (capacity == size,
+little-endian), `NveValue` fields as `DynamicValue` (`read` validates, `writeTo` appends without a
+copy), and every result is checked with `BinReader.expectEnd()`.
 
 - Strings are encoded straight into the writer's buffer, and so is the input to `Xxh64.constId` /
   `Hasher.updateUtf8`. A lone surrogate is rejected with `INVALID_UTF8`; it is never replaced with `?`.
@@ -21,6 +29,10 @@ every Java / Kotlin host binding.
 - Validation does not allocate. The suite proves this with the thread allocation counter.
 
 `attach` sets the passed buffers to little-endian and reads relative to their current position.
+
+## Generated data
+
+`nve codegen abi` writes `dev.nve.host.generated.{NveAbi,NveTables}` and the test-only `HashVectors` (gitignored). `GeneratedTest` checks them against this runtime.
 
 ## Verify
 

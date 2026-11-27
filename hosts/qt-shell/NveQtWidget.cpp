@@ -316,45 +316,6 @@ bool NveQtWidget::isPairedConnected() const noexcept {
   return impl_->session_.is_paired_connected();
 }
 
-bool NveQtWidget::replayFrame0Snapshot(
-    const QString& snapshotPath,
-    uint32_t expectedSchemaVersion,
-    uint32_t surfaceId,
-    uint64_t* outRestoreUs) {
-  const QByteArray utf8 = snapshotPath.toUtf8();
-  const NveSurfaceConfig cfg = impl_->currentSurfaceConfig(surfaceId);
-  impl_->session_.set_surface_config(cfg);
-
-  using Clock = std::chrono::steady_clock;
-  const auto t0 = Clock::now();
-  const bool ok = impl_->session_.replay_frame0_snapshot(
-      std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())),
-      expectedSchemaVersion);
-  if (!ok) {
-    return false;
-  }
-  impl_->surface_id_ = surfaceId;
-  impl_->clearViews();
-  impl_->syncViews(/*check_raw_props=*/true);
-  const auto t1 = Clock::now();
-  if (outRestoreUs != nullptr) {
-    *outRestoreUs = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
-  }
-  return true;
-}
-
-bool NveQtWidget::saveSnapshot(const QString& snapshotPath, uint32_t schemaVersion) const {
-  const QByteArray utf8 = snapshotPath.toUtf8();
-  return impl_->session_.save_snapshot(
-      std::string_view(utf8.constData(), static_cast<size_t>(utf8.size())), schemaVersion);
-}
-
-void NveQtWidget::setAutoSnapshotPath(const QString& snapshotPath, uint32_t schemaVersion) {
-  impl_->auto_snapshot_path_ = snapshotPath;
-  impl_->auto_snapshot_schema_ = schemaVersion;
-}
-
 bool NveQtWidget::applyProps(const nve::PropMap& props) {
   if (!impl_->session_.is_valid()) {
     return false;
@@ -536,13 +497,6 @@ void NveQtWidget::paintEvent(QPaintEvent* /*event*/) {
     QPainter painter(this);
     painter.fillRect(rect(), impl_->root_bg_color_);
   }
-}
-
-void NveQtWidget::closeEvent(QCloseEvent* event) {
-  if (!impl_->auto_snapshot_path_.isEmpty() && nodeCount() > 0u) {
-    (void)saveSnapshot(impl_->auto_snapshot_path_, impl_->auto_snapshot_schema_);
-  }
-  QWidget::closeEvent(event);
 }
 
 } // namespace nve::qt

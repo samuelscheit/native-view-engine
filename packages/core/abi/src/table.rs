@@ -11,6 +11,21 @@ use nve_hash::{Key64, Xxh64Hasher};
 /// One row word.
 pub type Word = u32;
 
+/// One named word value of a table field: a `word_enum!` variant or a bit-mask constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordConstDesc {
+    pub name: &'static str,
+    pub value: Word,
+}
+
+/// A named set of word values (`Overflow`, `TypographySet`) that host codegen emits next to the
+/// table field specs, so foreign readers never hand-copy enum discriminants or flag bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordConstGroup {
+    pub name: &'static str,
+    pub values: &'static [WordConstDesc],
+}
+
 /// Maximum words per table row (the per-row dirty mask is one `u32`).
 pub const MAX_TABLE_WORDS: usize = 32;
 

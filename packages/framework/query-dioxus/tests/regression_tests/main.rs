@@ -6,6 +6,8 @@ mod dedup_retry_tests;
 mod external_fetch_tests;
 mod lifecycle_opt_tests;
 mod query_form_tests;
+mod ssr_registry_tests;
+mod suspense_retry_tests;
 mod suspense_ssr_recovery_tests;
 mod suspense_tests;
 

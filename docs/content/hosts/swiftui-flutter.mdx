@@ -10,7 +10,7 @@ When you want to embed NVE Rust components natively inside existing **SwiftUI** 
 
 ## SwiftUI Host Kit (`hosts/swiftui-kit`)
 
-`NveSwiftUI` is a Swift Package Manager library supporting **iOS 16+** (`UIViewRepresentable`) and **macOS 13+** (`NSViewRepresentable`), importing generated C ABI headers (`nve_abi.generated.h`, `nve_scene_abi.generated.h`) via the `CNveAbi` C target:
+`NveSwiftUI` is a Swift Package Manager library supporting **iOS 16+** (`UIViewRepresentable`) and **macOS 13+** (`NSViewRepresentable`), importing the generated C ABI header (`nve_abi.generated.h`) through the `CNveAbi` target of `packages/core/host-swift`:
 
 - **`NveDirectArena` & `NveDirectEncodable`** — Strongly typed Swift prop structs (including those emitted by `cargo nve codegen hybrid --target swift`) conform to `NveDirectEncodable` and encode directly into a stack-backed `NveDirectArena` using compile-time `StaticString` keys for `NveComponentApi::set_props_direct` — zero `[String: Any]` boxing and zero heap buffer pinning.
 - **`NveSurfaceRepresentable` & `NveSceneCanvasView`** — Integrates `sizeThatFits` intrinsic layout negotiation (`NveLayoutApi::measure`), CoreGraphics/SwiftUI Canvas `NVE_DRAW1` vector rendering, reactive direct prop updates, and automatic `dismantleUIView` / `dismantleNSView` teardown.

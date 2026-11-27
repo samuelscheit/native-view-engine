@@ -6,9 +6,9 @@ import 'dart:convert' show utf8;
 import 'dart:ffi' as ffi;
 import 'dart:io' show Platform;
 
+import 'generated/nve_abi_ffi.generated.dart';
+import 'generated/nve_runtime_abi.generated.dart';
 import 'key64.dart';
-import 'nve_core_abi.generated.dart';
-import 'nve_runtime_abi.generated.dart';
 
 /// Status-carrying failure of one `NveRuntimeApi` call (`message` includes `last_error`).
 final class RuntimeException implements Exception {

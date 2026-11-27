@@ -1,25 +1,44 @@
-//! `syn` type, literal, and attribute-value conversion for the hybrid Rust spec frontend.
+//! Errors, identifiers, types, and literals of the hybrid Rust spec frontend.
 
 use proc_macro2::Span;
 use syn::spanned::Spanned;
-use syn::{Expr, ExprLit, ExprUnary, GenericArgument, Lit, PathArguments, Type, UnOp};
+use syn::{Expr, ExprLit, ExprUnary, GenericArgument, Ident, Lit, PathArguments, Type, UnOp};
 
 use crate::error::CodegenError;
 use crate::schema::hybrid::{HybridDefaultValue, HybridType};
 
-/// Maximum nesting of types (`Option<Vec<*const T>>`, ...) accepted from a spec.
-const MAX_TYPE_DEPTH: usize = 128;
+/// Maximum type nesting (`Option<Vec<...>>`): lowered types and their recursive walks stay shallow.
+const MAX_NESTING: usize = 128;
 
-/// A parse error located at `span` (1-based line and column).
+/// A parse error located at `span` (1-based line, 1-based column).
 pub(super) fn error_at(span: Span, message: impl Into<String>) -> CodegenError {
     let start = span.start();
-    CodegenError::parse(start.line.max(1), start.column + 1, message)
+    CodegenError::parse(start.line, start.column + 1, message)
 }
 
-impl From<syn::Error> for CodegenError {
-    fn from(e: syn::Error) -> Self {
-        error_at(e.span(), e.to_string())
+/// A `syn` error at its own location. `syn` reports "unexpected end of input" at the call site
+/// (an empty span at offset 0), so that case is located at the end of `source` instead.
+pub(super) fn syn_error(e: &syn::Error, source: &str) -> CodegenError {
+    let span = e.span();
+    if !span.byte_range().is_empty() || span.byte_range().start > 0 {
+        return error_at(span, e.to_string());
     }
+    let line = source.lines().count().max(1);
+    let column = source.lines().last().map_or(0, |l| l.chars().count()) + 1;
+    CodegenError::parse(line, column, e.to_string())
+}
+
+/// The identifier as written. Raw identifiers (`r#type`) are rejected: every target language
+/// would need its own escaping for them.
+pub(super) fn ident(i: &Ident) -> Result<String, CodegenError> {
+    let name = i.to_string();
+    if name.starts_with("r#") {
+        return Err(error_at(
+            i.span(),
+            format!("raw identifier `{name}` is not supported in hybrid specs"),
+        ));
+    }
+    Ok(name)
 }
 
 /// Converts a Rust type from a hybrid spec into the hybrid IR.
@@ -28,39 +47,55 @@ pub(super) fn convert_type(ty: &Type) -> Result<HybridType, CodegenError> {
 }
 
 fn convert_at(ty: &Type, depth: usize) -> Result<HybridType, CodegenError> {
-    if depth >= MAX_TYPE_DEPTH {
+    if depth >= MAX_NESTING {
         return Err(error_at(ty.span(), "maximum type nesting depth exceeded"));
     }
-    let inner = |t: &Type| convert_at(t, depth + 1).map(Box::new);
+    let inner = |t: &Type| convert_at(t, depth + 1);
     match ty {
         Type::Tuple(t) if t.elems.is_empty() => Ok(HybridType::Void),
-        Type::Paren(p) => convert_at(&p.elem, depth + 1),
-        Type::Ptr(p) if p.mutability.is_some() => Ok(HybridType::MutPtr(inner(&p.elem)?)),
-        Type::Ptr(p) => Ok(HybridType::ConstPtr(inner(&p.elem)?)),
+        Type::Paren(p) => inner(&p.elem),
+        Type::Ptr(p) if p.mutability.is_some() => Ok(HybridType::MutPtr(Box::new(inner(&p.elem)?))),
+        Type::Ptr(p) => Ok(HybridType::ConstPtr(Box::new(inner(&p.elem)?))),
         Type::Array(a) => Ok(HybridType::FixedArray {
-            elem: inner(&a.elem)?,
+            elem: Box::new(inner(&a.elem)?),
             len: array_len(&a.len)?,
         }),
         Type::Reference(r) => match r.elem.as_ref() {
-            Type::Slice(s) => sequence(*inner(&s.elem)?),
-            other => convert_at(other, depth + 1),
+            Type::Slice(s) => Ok(sequence(inner(&s.elem)?)),
+            other => inner(other),
         },
         Type::Path(p) if p.qself.is_none() => {
-            let Some(seg) = p.path.segments.last() else {
+            let segments = &p.path.segments;
+            let Some(last) = segments.last() else {
                 return Err(error_at(ty.span(), "empty type path"));
             };
-            let name = seg.ident.to_string();
-            let args = generic_types(&seg.arguments)?;
+            if let Some(s) = segments
+                .iter()
+                .rev()
+                .skip(1)
+                .find(|s| !s.arguments.is_none())
+            {
+                return Err(error_at(
+                    s.arguments.span(),
+                    "generic arguments are only supported on the last path segment",
+                ));
+            }
+            let name = ident(&last.ident)?;
+            let args = generic_types(&last.arguments)?;
             match (name.as_str(), args.as_slice()) {
+                ("Option" | "Vec" | "Result", []) => Err(error_at(
+                    last.span(),
+                    format!("`{name}` needs its type arguments"),
+                )),
                 (_, []) => Ok(scalar(&name)),
-                ("Option", [t]) => Ok(HybridType::Optional(inner(t)?)),
-                ("Vec", [t]) => sequence(*inner(t)?),
+                ("Option", [t]) => Ok(HybridType::Optional(Box::new(inner(t)?))),
+                ("Vec", [t]) => Ok(sequence(inner(t)?)),
                 ("Result", [ok, err]) => Ok(HybridType::Result {
-                    ok: inner(ok)?,
-                    err: inner(err)?,
+                    ok: Box::new(inner(ok)?),
+                    err: Box::new(inner(err)?),
                 }),
                 _ => Err(error_at(
-                    seg.span(),
+                    last.span(),
                     format!("unsupported generic type '{name}<...>' in hybrid spec"),
                 )),
             }
@@ -70,11 +105,11 @@ fn convert_at(ty: &Type, depth: usize) -> Result<HybridType, CodegenError> {
 }
 
 /// `[u8]` / `Vec<u8>` are byte buffers; any other element is a sequence.
-fn sequence(elem: HybridType) -> Result<HybridType, CodegenError> {
-    Ok(match elem {
+fn sequence(elem: HybridType) -> HybridType {
+    match elem {
         HybridType::U8 => HybridType::Bytes,
         other => HybridType::Vec(Box::new(other)),
-    })
+    }
 }
 
 fn scalar(name: &str) -> HybridType {
@@ -97,9 +132,14 @@ fn scalar(name: &str) -> HybridType {
     }
 }
 
+/// The type arguments of `<...>`; `None` for a plain segment. Empty `<>` is an error.
 fn generic_types(args: &PathArguments) -> Result<Vec<&Type>, CodegenError> {
     match args {
         PathArguments::None => Ok(Vec::new()),
+        PathArguments::AngleBracketed(a) if a.args.is_empty() => Err(error_at(
+            a.span(),
+            "empty `<>` is not a valid hybrid spec type",
+        )),
         PathArguments::AngleBracketed(a) => a
             .args
             .iter()
@@ -147,12 +187,19 @@ pub(super) fn unsigned(expr: &Expr, what: &str) -> Result<u64, CodegenError> {
     }
 }
 
+/// An unsigned integer literal that must fit `u32`, located at the literal.
+pub(super) fn unsigned_u32(expr: &Expr, what: &str) -> Result<u32, CodegenError> {
+    let value = unsigned(expr, what)?;
+    u32::try_from(value)
+        .map_err(|_| error_at(expr.span(), format!("{what} {value} exceeds u32::MAX")))
+}
+
 /// `true` when the integer literal was written in hexadecimal (`0x...`), kept for emitted consts.
 pub(super) fn is_hex(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) if i.to_string().starts_with("0x"))
 }
 
-/// A `#[prop(default = ...)]` value: bool, (negative) integer or float, string, `None`, or
+/// A `#[prop(default = ...)]` value: bool, (negative) integer or finite float, string, `None`, or
 /// `Enum::Variant`.
 pub(super) fn default_value(expr: &Expr) -> Result<HybridDefaultValue, CodegenError> {
     let unsupported = || error_at(expr.span(), "unsupported #[prop(default = ...)] value");
@@ -161,10 +208,7 @@ pub(super) fn default_value(expr: &Expr) -> Result<HybridDefaultValue, CodegenEr
             Lit::Bool(b) => Ok(HybridDefaultValue::Bool(b.value)),
             Lit::Str(s) => Ok(HybridDefaultValue::String(s.value())),
             Lit::Int(_) => unsigned(expr, "default").map(HybridDefaultValue::UInt),
-            Lit::Float(f) => f
-                .base10_parse()
-                .map(HybridDefaultValue::Float)
-                .map_err(Into::into),
+            Lit::Float(f) => finite(f, 1.0),
             _ => Err(unsupported()),
         },
         Expr::Unary(ExprUnary {
@@ -174,44 +218,61 @@ pub(super) fn default_value(expr: &Expr) -> Result<HybridDefaultValue, CodegenEr
         }) => match operand.as_ref() {
             Expr::Lit(ExprLit {
                 lit: Lit::Float(f), ..
-            }) => f
-                .base10_parse::<f64>()
-                .map(|v| HybridDefaultValue::Float(-v))
-                .map_err(Into::into),
+            }) => finite(f, -1.0),
             Expr::Lit(ExprLit {
                 lit: Lit::Int(i), ..
             }) => {
-                let magnitude = i
-                    .base10_parse::<u64>()
-                    .map_err(|_| error_at(i.span(), "integer literal out of i64 range"))?;
+                let out_of_range = || error_at(i.span(), "integer literal out of i64 range");
+                let magnitude = i.base10_parse::<u64>().map_err(|_| out_of_range())?;
                 let value = if magnitude == i64::MIN.unsigned_abs() {
                     i64::MIN
                 } else {
                     i64::try_from(magnitude)
                         .ok()
                         .and_then(i64::checked_neg)
-                        .ok_or_else(|| error_at(i.span(), "integer literal out of i64 range"))?
+                        .ok_or_else(out_of_range)?
                 };
                 Ok(HybridDefaultValue::Int(value))
             }
             _ => Err(unsupported()),
         },
         Expr::Path(p) if p.qself.is_none() => {
-            let segments: Vec<String> = p
+            if p.path.leading_colon.is_some()
+                || p.path.segments.iter().any(|s| !s.arguments.is_none())
+            {
+                return Err(error_at(
+                    p.span(),
+                    "default paths are `None` or `Enum::Variant`, without `::` prefix or generics",
+                ));
+            }
+            let segments = p
                 .path
                 .segments
                 .iter()
-                .map(|s| s.ident.to_string())
-                .collect();
-            match segments.as_slice() {
-                [none] if none == "None" => Ok(HybridDefaultValue::None),
-                [enum_name, variant] => Ok(HybridDefaultValue::EnumVariant {
-                    enum_name: enum_name.clone(),
-                    variant: variant.clone(),
-                }),
-                _ => Err(unsupported()),
+                .map(|s| ident(&s.ident))
+                .collect::<Result<Vec<_>, _>>()?;
+            match <[String; 1]>::try_from(segments) {
+                Ok([none]) if none == "None" => Ok(HybridDefaultValue::None),
+                Ok(_) => Err(unsupported()),
+                Err(segments) => match <[String; 2]>::try_from(segments) {
+                    Ok([enum_name, variant]) => {
+                        Ok(HybridDefaultValue::EnumVariant { enum_name, variant })
+                    }
+                    Err(_) => Err(unsupported()),
+                },
             }
         }
         _ => Err(unsupported()),
     }
+}
+
+/// `sign * f` when finite (`1e400` parses to infinity, which no target can spell).
+fn finite(f: &syn::LitFloat, sign: f64) -> Result<HybridDefaultValue, CodegenError> {
+    let value = f
+        .base10_parse::<f64>()
+        .map_err(|e| error_at(f.span(), e.to_string()))?;
+    if !value.is_finite() {
+        return Err(error_at(f.span(), "float default must be finite"));
+    }
+    Ok(HybridDefaultValue::Float(sign * value))
 }

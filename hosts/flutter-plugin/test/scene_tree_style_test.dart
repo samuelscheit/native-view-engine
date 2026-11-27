@@ -19,11 +19,11 @@ void main() {
       hiddenNode = b.node(const Rect.fromLTWH(100, 0, 100, 100), parent: root);
       b
         ..attach(scrollShape, scroller)
-        ..bits(visualShape, scroller, NveVisualTable.overflowY, NveOverflow.scroll)
+        ..bits(visualShape, scroller, VisualTable.overflowY, NveOverflow.scroll)
         ..scrollOffset(scroller, 0, 100)
-        ..bits(layoutShape, hiddenNode, NveLayoutTable.display, NveDisplay.none)
-        ..bits(interactionShape, deep, NveInteractionTable.eventMask, nveEventMaskPress)
-        ..bits(interactionShape, sibling, NveInteractionTable.eventMask, nveEventMaskPress);
+        ..bits(layoutShape, hiddenNode, LayoutTable.display, NveDisplay.none)
+        ..bits(interactionShape, deep, InteractionTable.eventMask, nveEventMaskPress)
+        ..bits(interactionShape, sibling, InteractionTable.eventMask, nveEventMaskPress);
     });
 
     test('visual rects subtract every ancestor scroll shift; published rects stay pre-scroll', () {
@@ -60,7 +60,7 @@ void main() {
     });
 
     test('disabled interaction yields an empty event mask', () {
-      b.bits(interactionShape, deep, NveInteractionTable.disabled, 1);
+      b.bits(interactionShape, deep, InteractionTable.disabled, 1);
       final t = b.tree();
       expect(t.eventMask(deep), 0);
       expect(t.eventMask(sibling), nveEventMaskPress);
@@ -76,8 +76,8 @@ void main() {
       final e = s.node(Rect.zero, parent: r);
       expect(s.tree().paintOrder(r), [a, c, d, e]);
       s
-        ..bits(visualShape, a, NveVisualTable.zIndex, 2)
-        ..bits(visualShape, d, NveVisualTable.zIndex, -1 & 0xFFFFFFFF);
+        ..bits(visualShape, a, VisualTable.zIndex, 2)
+        ..bits(visualShape, d, VisualTable.zIndex, -1 & 0xFFFFFFFF);
       final t = s.tree();
       expect(t.zIndex(d), -1);
       expect(t.paintOrder(r), [d, c, e, a]);
@@ -97,21 +97,21 @@ void main() {
       final child = b.node(Rect.zero, parent: parent);
       final plain = b.node(Rect.zero, parent: parent);
       b
-        ..bits(typographyShape, parent, NveTypographyTable.set,
-            NveTypographyTable.setFontFamily | NveTypographyTable.setLineHeight | NveTypographyTable.setTextDecoration)
-        ..bits(typographyShape, parent, NveTypographyTable.color, packRgba(255, 0, 0))
-        ..f32(typographyShape, parent, NveTypographyTable.fontSize, 20)
-        ..bits(typographyShape, parent, NveTypographyTable.fontWeight, 700)
-        ..str(typographyShape, parent, NveTypographyTable.fontFamily, 'Inter')
-        ..length(typographyShape, parent, NveTypographyTable.lineHeight, 150, percent: true)
-        ..bits(typographyShape, parent, NveTypographyTable.textDecoration,
-            NveTypographyTable.decorationUnderline | NveTypographyTable.decorationLineThrough)
-        ..bits(typographyShape, child, NveTypographyTable.set, NveTypographyTable.setFontStyle | NveTypographyTable.setMaxLines)
-        ..bits(typographyShape, child, NveTypographyTable.fontStyle, NveFontStyle.italic)
-        ..bits(typographyShape, child, NveTypographyTable.maxLines, 2)
-        ..bits(typographyShape, child, NveTypographyTable.textAlign, NveTextAlign.center);
+        ..bits(typographyShape, parent, TypographyTable.set,
+            NveTypographySet.fontFamily | NveTypographySet.lineHeight | NveTypographySet.textDecoration)
+        ..bits(typographyShape, parent, TypographyTable.color, packRgba(255, 0, 0))
+        ..f32(typographyShape, parent, TypographyTable.fontSize, 20)
+        ..bits(typographyShape, parent, TypographyTable.fontWeight, 700)
+        ..str(typographyShape, parent, TypographyTable.fontFamily, 'Inter')
+        ..length(typographyShape, parent, TypographyTable.lineHeight, 150, percent: true)
+        ..bits(typographyShape, parent, TypographyTable.textDecoration,
+            NveTextDecoration.underline | NveTextDecoration.lineThrough)
+        ..bits(typographyShape, child, TypographyTable.set, NveTypographySet.fontStyle | NveTypographySet.maxLines)
+        ..bits(typographyShape, child, TypographyTable.fontStyle, NveFontStyle.italic)
+        ..bits(typographyShape, child, TypographyTable.maxLines, 2)
+        ..bits(typographyShape, child, TypographyTable.textAlign, NveTextAlign.center);
       final s = b.build();
-      final typo = s.findTable(NveTypographyTable.key);
+      final typo = s.findTable(TypographyTable.key);
       final p = const NveTextStyle().resolve(s, typo, parent);
       expect(p.color, packRgba(255, 0, 0));
       expect(p.fontSize, 20);

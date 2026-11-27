@@ -1,0 +1,3 @@
+// `CNveAbi` is defined once, next to the generated headers in host-cxx (`nve codegen abi`); this
+// SwiftPM target only refers to that definition, so both maps can be on one search path.
+extern module CNveAbi "../../../../host-cxx/include/module.modulemap"
