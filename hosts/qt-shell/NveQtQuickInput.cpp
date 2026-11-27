@@ -1,0 +1,372 @@
+// `NveQtQuickItem` input: picking in paint order, press / link activation, pointer events with
+// hover enter / leave per node, cursors, wheel scrolling (with chaining to outer scroll views),
+// focus traversal, keyboard activation, and controlled text editing with IME composition.
+#include "NveQtQuickInternal.hpp"
+
+#include <QCursor>
+#include <QGuiApplication>
+#include <QInputMethod>
+#include <QInputMethodEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
+
+#include <algorithm>
+
+namespace nve::qt {
+
+namespace {
+
+/// Children in reverse paint order (topmost first).
+std::vector<QuickNodeView*> topmost_first(const QuickNodeView& v) {
+  std::vector<QuickNodeView*> kids = v.children;
+  std::stable_sort(kids.begin(), kids.end(), [](const QuickNodeView* a, const QuickNodeView* b) { return a->z < b->z; });
+  std::reverse(kids.begin(), kids.end());
+  return kids;
+}
+
+/// `p` in `parent`'s content coordinates (its box origin, plus its scroll offset).
+QuickNodeView* pick_in(QuickNodeView& parent, QPointF p) {
+  for (QuickNodeView* v : topmost_first(parent)) {
+    if (!v->visible) continue;
+    const QPointF local = p - v->local.topLeft();
+    const bool inside = local.x() >= 0.0 && local.y() >= 0.0 && local.x() <= v->local.width() &&
+                        local.y() <= v->local.height() && v->local.width() > 0.0 && v->local.height() > 0.0;
+    if (!inside && v->clips) continue;
+    if (QuickNodeView* hit = pick_in(*v, local + v->scroll)) return hit;
+    if (inside) return v;
+  }
+  return nullptr;
+}
+
+/// Nearest of `v` and its ancestors (root excluded) satisfying `pred`.
+template <class Pred>
+QuickNodeView* nearest(QuickNodeView* v, Pred&& pred) {
+  for (; v != nullptr && v->parent != nullptr; v = v->parent) {
+    if (pred(*v)) return v;
+  }
+  return nullptr;
+}
+
+Qt::CursorShape cursor_shape(uint8_t cursor) noexcept {
+  switch (cursor) {
+    case NVE_CURSOR_KIND_POINTER: return Qt::PointingHandCursor;
+    case NVE_CURSOR_KIND_TEXT: return Qt::IBeamCursor;
+    case NVE_CURSOR_KIND_GRAB: return Qt::OpenHandCursor;
+    case NVE_CURSOR_KIND_GRABBING: return Qt::ClosedHandCursor;
+    case NVE_CURSOR_KIND_NOT_ALLOWED: return Qt::ForbiddenCursor;
+    case NVE_CURSOR_KIND_COL_RESIZE: return Qt::SplitHCursor;
+    case NVE_CURSOR_KIND_ROW_RESIZE: return Qt::SplitVCursor;
+    case NVE_CURSOR_KIND_MOVE: return Qt::SizeAllCursor;
+    case NVE_CURSOR_KIND_CROSSHAIR: return Qt::CrossCursor;
+    case NVE_CURSOR_KIND_PROGRESS: return Qt::BusyCursor;
+    case NVE_CURSOR_KIND_WAIT: return Qt::WaitCursor;
+    default: return Qt::ArrowCursor;
+  }
+}
+
+/// Records in tree (tab) order.
+void collect(QuickNodeView& v, std::vector<QuickNodeView*>& out) {
+  for (QuickNodeView* c : v.children) {
+    out.push_back(c);
+    collect(*c, out);
+  }
+}
+
+}  // namespace
+
+QuickNodeView* NveQtQuickItem::Impl::pick(QPointF item_pos) { return pick_in(root_, item_pos); }
+
+// --- Pointer -----------------------------------------------------------------------------------
+
+void NveQtQuickItem::Impl::press(QPointF pos) {
+  QuickNodeView* hit = pick(pos);
+  QuickNodeView* focus = nearest(hit, [](const QuickNodeView& v) { return v.focusable; });
+  QuickNodeView* target = nearest(hit, [](const QuickNodeView& v) { return v.activatable(); });
+  pressed_ = target != nullptr ? target->id : 0u;
+  if (focus != nullptr && focus->is_input) {
+    focus->input.caret = static_cast<int>(focus->input.edit.size());
+  }
+  const uint32_t down = [&] {
+    QuickNodeView* d = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_EVENT_POINTER_DOWN); });
+    return d != nullptr ? d->id : 0u;
+  }();
+  set_focus(focus != nullptr ? focus->id : 0u);  // may dispatch: records can change
+  if (const QuickNodeView* d = find(down); d != nullptr && down != 0u) {
+    const QPointF local = pos - origin_of(*d);
+    (void)dispatch_pointer(down, NVE_EVENT_POINTER_DOWN, static_cast<float>(local.x()), static_cast<float>(local.y()));
+  }
+}
+
+void NveQtQuickItem::Impl::release(QPointF pos) {
+  QuickNodeView* hit = pick(pos);
+  if (QuickNodeView* up = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_EVENT_POINTER_UP); })) {
+    const QPointF local = pos - origin_of(*up);
+    (void)dispatch_pointer(up->id, NVE_EVENT_POINTER_UP, static_cast<float>(local.x()), static_cast<float>(local.y()));
+    hit = pick(pos);  // the dispatch may have changed the scene
+  }
+  const uint32_t pressed = std::exchange(pressed_, 0u);
+  QuickNodeView* target = nearest(hit, [pressed](const QuickNodeView& v) { return v.id == pressed; });
+  if (pressed == 0u || target == nullptr || !target->activatable()) return;  // released elsewhere
+  const QPointF local = pos - origin_of(*target);
+  const std::string href = target->href;
+  // May destroy records: touch nothing afterwards.
+  (void)activate(pressed, target->wants_press, href, static_cast<float>(local.x()), static_cast<float>(local.y()));
+}
+
+void NveQtQuickItem::Impl::hover(QPointF pos, bool inside) {
+  QuickNodeView* hit = inside ? pick(pos) : nullptr;
+  std::vector<uint32_t> path;
+  for (QuickNodeView* v = hit; v != nullptr && v->parent != nullptr; v = v->parent) path.insert(path.begin(), v->id);
+  // Leave nodes no longer hovered (deepest first), enter new ones (outermost first).
+  const std::vector<uint32_t> before = std::exchange(hovered_, path);
+  for (auto it = before.rbegin(); it != before.rend(); ++it) {
+    if (std::find(path.begin(), path.end(), *it) != path.end()) continue;
+    if (const QuickNodeView* v = find(*it); v != nullptr && v->wants(NVE_EVENT_POINTER_LEAVE)) {
+      (void)dispatch_pointer(*it, NVE_EVENT_POINTER_LEAVE, 0.0f, 0.0f);
+    }
+  }
+  for (const uint32_t id : path) {
+    if (std::find(before.begin(), before.end(), id) != before.end()) continue;
+    if (const QuickNodeView* v = find(id); v != nullptr && v->wants(NVE_EVENT_POINTER_ENTER)) {
+      const QPointF local = pos - origin_of(*v);
+      (void)dispatch_pointer(id, NVE_EVENT_POINTER_ENTER, static_cast<float>(local.x()), static_cast<float>(local.y()));
+    }
+  }
+  hit = inside ? pick(pos) : nullptr;
+  if (QuickNodeView* mv = nearest(hit, [](const QuickNodeView& v) { return v.wants(NVE_EVENT_POINTER_MOVE); })) {
+    const QPointF local = pos - origin_of(*mv);
+    (void)dispatch_pointer(mv->id, NVE_EVENT_POINTER_MOVE, static_cast<float>(local.x()), static_cast<float>(local.y()));
+    hit = inside ? pick(pos) : nullptr;
+  }
+  // Cursor: the nearest explicit one, else a hand over pressables, an I-beam over inputs.
+  Qt::CursorShape shape = Qt::ArrowCursor;
+  for (const QuickNodeView* v = hit; v != nullptr && v->parent != nullptr; v = v->parent) {
+    if (v->cursor != NVE_CURSOR_KIND_AUTO) {
+      shape = cursor_shape(v->cursor);
+      break;
+    }
+    if (v->activatable()) {
+      shape = Qt::PointingHandCursor;
+      break;
+    }
+    if (v->is_input) {
+      shape = Qt::IBeamCursor;
+      break;
+    }
+  }
+  if (owner_->cursor().shape() != shape) owner_->setCursor(shape);
+}
+
+bool NveQtQuickItem::Impl::wheel(QPointF pos, QPointF delta) {
+  // The innermost scroll container that can still move takes the delta (else its ancestors).
+  for (QuickNodeView* v = pick(pos); v != nullptr && v->parent != nullptr; v = v->parent) {
+    if (!v->scrollable) continue;
+    const std::optional<QPointF> now =
+        scroll_by(v->id, static_cast<float>(-delta.x()), static_cast<float>(-delta.y()));
+    if (!now || *now == v->scroll) continue;
+    v->scroll = *now;
+    mark_dirty(*v);
+    QSizeF extent = v->local.size();
+    for (const QuickNodeView* c : v->children) {
+      extent = extent.expandedTo(QSizeF(c->local.right(), c->local.bottom()));
+    }
+    (void)dispatch_scroll(v->id, static_cast<float>(now->x()), static_cast<float>(now->y()),
+                          static_cast<float>(extent.width()), static_cast<float>(extent.height()));
+    return true;
+  }
+  return false;
+}
+
+// --- Focus & keyboard --------------------------------------------------------------------------
+
+void NveQtQuickItem::Impl::set_focus(uint32_t id) {
+  if (id == focused_) return;
+  const uint32_t before = std::exchange(focused_, id);
+  for (const uint32_t changed : {before, id}) {
+    if (QuickNodeView* v = find(changed); v != nullptr && changed != 0u && v->is_input) {
+      v->input.preedit.clear();
+      bump_paint(*v);  // caret
+    }
+  }
+  if (id != 0u && !owner_->hasActiveFocus()) owner_->forceActiveFocus(Qt::MouseFocusReason);
+  QGuiApplication::inputMethod()->update(Qt::ImQueryAll);
+  if (id != 0u) a11y_focused(id);
+  if (before != 0u && find(before) != nullptr) (void)dispatch_focus(before, false);
+  if (id != 0u && find(id) != nullptr) (void)dispatch_focus(id, true);
+}
+
+void NveQtQuickItem::Impl::edit_input(QuickNodeView& v, const QString& text, int caret) {
+  QString next = text;
+  if (v.input.max_length > 0u && static_cast<uint32_t>(next.size()) > v.input.max_length) {
+    next.truncate(static_cast<qsizetype>(v.input.max_length));
+  }
+  v.input.edit = next;
+  v.input.caret = std::clamp(caret, 0, static_cast<int>(next.size()));
+  bump_paint(v);
+  QGuiApplication::inputMethod()->update(Qt::ImSurroundingText | Qt::ImCursorPosition);
+  const std::string utf8 = next.toStdString();
+  // May destroy `v`: touch nothing afterwards.
+  if (v.input.control.user_edited(utf8)) (void)dispatch_text_change(v.id, utf8);
+}
+
+bool NveQtQuickItem::Impl::key(QKeyEvent& event) {
+  QuickNodeView* f = find(focused_);
+  if (f == nullptr || focused_ == 0u) f = nullptr;
+  const int k = event.key();
+  if (k == Qt::Key_Tab || k == Qt::Key_Backtab) {  // focus traversal in tree order, wrapping
+    std::vector<QuickNodeView*> order;
+    collect(root_, order);
+    std::erase_if(order, [](const QuickNodeView* v) { return !v->focusable || !v->visible; });
+    if (order.empty()) return false;
+    const auto at = std::find(order.begin(), order.end(), f);
+    const ptrdiff_t n = static_cast<ptrdiff_t>(order.size());
+    const ptrdiff_t i = at == order.end() ? (k == Qt::Key_Tab ? -1 : 0) : at - order.begin();
+    set_focus(order[static_cast<size_t>(((i + (k == Qt::Key_Tab ? 1 : -1)) % n + n) % n)]->id);
+    return true;
+  }
+  if (f == nullptr) return false;
+  if (!f->is_input) {
+    if ((k == Qt::Key_Space || k == Qt::Key_Return || k == Qt::Key_Enter) && f->activatable()) {
+      (void)activate(f->id, f->wants_press, f->href, static_cast<float>(f->local.width() * 0.5),
+                     static_cast<float>(f->local.height() * 0.5));
+      return true;
+    }
+    return false;
+  }
+  QuickInput& in = f->input;
+  if (in.read_only || f->disabled) return k != Qt::Key_Escape;
+  QString text = in.edit;
+  int caret = std::clamp(in.caret, 0, static_cast<int>(text.size()));
+  switch (k) {
+    case Qt::Key_Left: in.caret = std::max(0, caret - 1); bump_paint(*f); return true;
+    case Qt::Key_Right: in.caret = std::min(static_cast<int>(text.size()), caret + 1); bump_paint(*f); return true;
+    case Qt::Key_Home: in.caret = 0; bump_paint(*f); return true;
+    case Qt::Key_End: in.caret = static_cast<int>(text.size()); bump_paint(*f); return true;
+    case Qt::Key_Backspace:
+      if (caret == 0) return true;
+      text.remove(caret - 1, 1);
+      edit_input(*f, text, caret - 1);
+      return true;
+    case Qt::Key_Delete:
+      if (caret >= text.size()) return true;
+      text.remove(caret, 1);
+      edit_input(*f, text, caret);
+      return true;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+      if (in.multiline) {
+        text.insert(caret, QChar(u'\n'));
+        edit_input(*f, text, caret + 1);
+      } else {
+        (void)dispatch_submit(f->id, text.toStdString());
+      }
+      return true;
+    default: break;
+  }
+  const QString typed = scene_string(event.text().toStdString());
+  if (typed.isEmpty()) return false;
+  text.insert(caret, typed);
+  edit_input(*f, text, caret + static_cast<int>(typed.size()));
+  return true;
+}
+
+void NveQtQuickItem::Impl::ime(QInputMethodEvent& event) {
+  QuickNodeView* f = find(focused_);
+  if (f == nullptr || focused_ == 0u || !f->is_input || f->input.read_only) return;
+  f->input.preedit = event.preeditString();
+  const QString commit = scene_string(event.commitString().toStdString(), f->input.multiline);
+  if (commit.isEmpty()) {
+    bump_paint(*f);
+    return;
+  }
+  QString text = f->input.edit;
+  const int caret = std::clamp(f->input.caret, 0, static_cast<int>(text.size()));
+  text.insert(caret, commit);
+  edit_input(*f, text, caret + static_cast<int>(commit.size()));
+}
+
+QVariant NveQtQuickItem::Impl::ime_query(Qt::InputMethodQuery query) const {
+  const QuickNodeView* f = find(focused_);
+  const bool editing = f != nullptr && focused_ != 0u && f->is_input;
+  switch (query) {
+    case Qt::ImEnabled: return editing && !f->input.read_only;
+    case Qt::ImSurroundingText: return editing ? QVariant(f->input.edit) : QVariant();
+    case Qt::ImCursorPosition:
+    case Qt::ImAnchorPosition: return editing ? QVariant(f->input.caret) : QVariant();
+    case Qt::ImHints: {
+      if (!editing) return {};
+      Qt::InputMethodHints hints = Qt::ImhNone;
+      if (f->input.secure) hints |= Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText;
+      if (f->input.multiline) hints |= Qt::ImhMultiLine;
+      return static_cast<int>(hints);
+    }
+    case Qt::ImCursorRectangle: {
+      if (!editing) return {};
+      const QFontMetricsF fm(f->paint.style.font);
+      const QPointF at = origin_of(*f) + f->paint.content_box.topLeft();
+      return QRectF(at.x() + fm.horizontalAdvance(f->input.edit.left(f->input.caret)), at.y(), 1.0, fm.height());
+    }
+    default: return {};
+  }
+}
+
+// --- NveQtQuickItem event handlers -------------------------------------------------------------
+
+void NveQtQuickItem::mousePressEvent(QMouseEvent* event) {
+  if (event->button() != Qt::LeftButton) {
+    event->ignore();
+    return;
+  }
+  event->accept();
+  impl_->press(event->position());
+}
+
+void NveQtQuickItem::mouseMoveEvent(QMouseEvent* event) { impl_->hover(event->position(), contains(event->position())); }
+
+void NveQtQuickItem::mouseReleaseEvent(QMouseEvent* event) {
+  event->accept();
+  impl_->release(event->position());
+}
+
+void NveQtQuickItem::hoverMoveEvent(QHoverEvent* event) { impl_->hover(event->position(), true); }
+
+void NveQtQuickItem::hoverLeaveEvent(QHoverEvent* event) { impl_->hover(event->position(), false); }
+
+void NveQtQuickItem::wheelEvent(QWheelEvent* event) {
+  // Pixel deltas from touchpads; one wheel notch (120) scrolls 48 px.
+  const QPointF delta = !event->pixelDelta().isNull() ? QPointF(event->pixelDelta())
+                                                      : QPointF(event->angleDelta()) * (48.0 / 120.0);
+  event->setAccepted(impl_->wheel(event->position(), delta));
+}
+
+void NveQtQuickItem::keyPressEvent(QKeyEvent* event) {
+  if (!impl_->key(*event)) QQuickItem::keyPressEvent(event);
+}
+
+void NveQtQuickItem::inputMethodEvent(QInputMethodEvent* event) {
+  impl_->ime(*event);
+  event->accept();
+}
+
+QVariant NveQtQuickItem::inputMethodQuery(Qt::InputMethodQuery query) const {
+  const QVariant own = impl_->ime_query(query);
+  return own.isValid() ? own : QQuickItem::inputMethodQuery(query);
+}
+
+void NveQtQuickItem::focusOutEvent(QFocusEvent* event) {
+  QQuickItem::focusOutEvent(event);
+  impl_->set_focus(0u);
+}
+
+uint32_t NveQtQuickItem::hitTestNode(QPointF item_pos, bool interactive_only) const {
+  QuickNodeView* hit = impl_->pick(item_pos);
+  if (interactive_only) {
+    hit = nearest(hit, [](const QuickNodeView& v) {
+      return v.event_mask != 0u || v.activatable() || v.focusable || v.scrollable;
+    });
+  }
+  return hit != nullptr ? hit->id : 0u;
+}
+
+}  // namespace nve::qt

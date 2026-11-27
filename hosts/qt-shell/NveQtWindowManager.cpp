@@ -27,7 +27,8 @@ NveQtWidget* NveQtWindowManager::openWindow(const QtWindowSpec& spec, bool showW
     parentWidget = pit->second.widget;
   }
 
-  auto* widget = new NveQtWidget(parentWidget);
+  auto* widget = new NveQtWidget(
+      QtHostConfig{spec.surface_id, static_cast<float>(spec.width), static_cast<float>(spec.height)}, parentWidget);
   Qt::WindowFlags flags = Qt::Window;
   if (spec.always_on_top) {
     flags |= Qt::WindowStaysOnTopHint;
@@ -189,7 +190,7 @@ bool NveQtWindowManager::closeWindow(uint32_t surfaceId) {
     entries_.erase(it);
     if (widget != nullptr) {
       widget->removeEventFilter(this);
-      widget->disconnectPaired();
+      if (widget->host().is_paired()) widget->host().disconnect_paired();
       widget->close();
       delete widget;
     }

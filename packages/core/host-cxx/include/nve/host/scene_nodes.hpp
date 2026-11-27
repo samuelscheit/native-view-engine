@@ -162,6 +162,9 @@ struct NodeData {
   NodeKind kind = NodeKind::View;
   NveLayoutRect rect{};   // absolute (not scroll-shifted)
   NveLayoutRect local{};  // relative to the parent's rect
+  /// Content box (inside border and padding) relative to `rect`'s origin: where a host draws
+  /// text, images, inputs and canvases (layout rects are border boxes).
+  NveLayoutRect content{};
   std::span<const uint32_t> children;  // packed `NodeId`s
   VisualStyle visual;
   TextStyle text_style;
@@ -212,9 +215,10 @@ struct NodeData {
 
 /// Every core table a retained-view host renders, bound to one scene.
 struct SceneTables {
-  BoundTable visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
+  BoundTable layout, visual, typography, text, image, text_input, scroll, accessibility, interaction, link;
 
   void bind(const RuntimeSceneReader& scene) {
+    layout.bind(scene, NVE_TABLE_LAYOUT_DESC);
     visual.bind(scene, NVE_TABLE_VISUAL_DESC);
     typography.bind(scene, NVE_TABLE_TYPOGRAPHY_DESC);
     text.bind(scene, NVE_TABLE_TEXT_DESC);
@@ -281,7 +285,7 @@ struct SceneTables {
 }
 
 /// Decodes only the identity and geometry of live node `index`: `id`, `index`, `parent`, `kind`,
-/// `rect`, `local`, `children`. Every other field keeps its default.
+/// `rect`, `local`, `content`, `children`. Every other field keeps its default.
 [[nodiscard]] inline NodeData read_geometry(const RuntimeSceneReader& scene, const SceneTables& t,
                                             uint32_t index) noexcept {
   NodeData n;
@@ -293,10 +297,30 @@ struct SceneTables {
   n.kind = t.kind_of(row->primary_slot);
   n.rect = sealed_rect(*scene.rect(index));
   n.local = n.rect;
-  if (const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr) {
-    const NveLayoutRect parent = sealed_rect(*p);
+  const NveLayoutRect* parent_rect = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr;
+  if (parent_rect != nullptr) {
+    const NveLayoutRect parent = sealed_rect(*parent_rect);
     n.local.x = finite_or(n.local.x - parent.x, 0.0f);  // FLT_MAX - -FLT_MAX overflows
     n.local.y = finite_or(n.local.y - parent.y, 0.0f);
+  }
+  // Content box: border (`nve.visual.border_width`, all sides) + padding. Percent padding resolves
+  // against the containing block's width on every side, as in CSS and the runtime's layout.
+  {
+    const float basis = parent_rect != nullptr ? sealed_rect(*parent_rect).width : n.rect.width;  // root: viewport
+    const RowRef l = t.layout.at(index);
+    const auto pad = [&](NveFieldSpec f) {
+      const LengthValue v = l.length(f);
+      return extent(v.unit == NVE_LENGTH_POINTS    ? v.value
+                    : v.unit == NVE_LENGTH_PERCENT ? basis * v.value / 100.0f
+                                                   : 0.0f);
+    };
+    const float border = extent(t.visual.at(index).f32(NVE_TABLE_VISUAL_BORDER_WIDTH));
+    const float left = border + pad(NVE_TABLE_LAYOUT_PADDING_LEFT);
+    const float top = border + pad(NVE_TABLE_LAYOUT_PADDING_TOP);
+    const float right = border + pad(NVE_TABLE_LAYOUT_PADDING_RIGHT);
+    const float bottom = border + pad(NVE_TABLE_LAYOUT_PADDING_BOTTOM);
+    n.content = NveLayoutRect{left, top, std::max(0.0f, n.rect.width - left - right),
+                              std::max(0.0f, n.rect.height - top - bottom)};
   }
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
   // An empty text wrapper of run leaves realizes as a container (see `NodeKind`).
