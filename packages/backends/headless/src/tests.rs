@@ -256,6 +256,7 @@ fn publish_scene_view_marks_in_place_text_edits_dirty_and_skips_external_slab_co
     };
     backend.commit(&store, &changes).unwrap();
     let view1 = backend.publish_scene_view(&store, &changes, 1);
+    // SAFETY: `view1` borrows live `backend` and `store` slabs for this test assertion.
     let ref1 = unsafe { nve_abi::NveSceneRef::from_raw(view1) }.unwrap();
     let idx1 = backend.scene_table.index_of(label.raw()).unwrap();
     assert_eq!(ref1.node_text(&ref1.nodes()[idx1]).unwrap(), "10");
@@ -270,6 +271,7 @@ fn publish_scene_view_marks_in_place_text_edits_dirty_and_skips_external_slab_co
     }
     backend.commit(&store, &changes).unwrap();
     let view2 = backend.publish_scene_view(&store, &changes, 2);
+    // SAFETY: `view2` borrows live `backend` and `store` slabs for this test assertion.
     let ref2 = unsafe { nve_abi::NveSceneRef::from_raw(view2) }.unwrap();
     let idx2 = backend.scene_table.index_of(label.raw()).unwrap();
     assert_eq!(ref2.nodes()[idx2].text_offset, off1);
@@ -283,6 +285,7 @@ fn publish_scene_view_marks_in_place_text_edits_dirty_and_skips_external_slab_co
     // Calling compact_text_slab() on an external-text NveSceneTable must be a safe no-op.
     backend.scene_table.compact_text_slab();
     let view3 = backend.publish_scene_view(&store, &ChangeSet::default(), 3);
+    // SAFETY: `view3` borrows live `backend` and `store` slabs for this test assertion.
     let ref3 = unsafe { nve_abi::NveSceneRef::from_raw(view3) }.unwrap();
     assert_eq!(ref3.node_text(&ref3.nodes()[idx2]).unwrap(), "11");
 }

@@ -32,23 +32,28 @@ thread_local! {
     static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
 }
 
+// SAFETY: Delegates directly to `std::alloc::System` while incrementing a thread-local counter.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+        // SAFETY: Forwards caller-validated `layout` to the global `System` allocator.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Forwards caller-validated `(ptr, layout)` allocated by `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+        // SAFETY: Forwards caller-validated `layout` to the global `System` allocator.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+        // SAFETY: Forwards caller-validated `(ptr, layout, new_size)` to `System`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -139,13 +144,13 @@ pub(crate) struct RegState {
 impl RegTransport {
     pub fn new(name: &str) -> Self {
         let t = Self::default();
-        t.inner.lock().unwrap().name = name.to_owned();
+        t.inner.lock().unwrap_or_else(|e| e.into_inner()).name = name.to_owned();
         t
     }
 
     pub fn release_all(&self) {
         let wakers = {
-            let mut g = self.inner.lock().unwrap();
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             g.defer_queries = false;
             g.defer_actions = false;
             core::mem::take(&mut g.wakers)
@@ -161,9 +166,9 @@ impl Transport for RegTransport {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             if req.name == GetItem::NAME {
-                let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode id");
                 core::future::poll_fn(|cx| {
-                    let mut g = inner.lock().unwrap();
+                    let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
                     if g.defer_queries {
                         g.wakers.push(cx.waker().clone());
                         Poll::Pending
@@ -172,7 +177,7 @@ impl Transport for RegTransport {
                     }
                 })
                 .await;
-                let mut g = inner.lock().unwrap();
+                let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
                 g.query_calls += 1;
                 if g.transient_failures_left > 0 {
                     g.transient_failures_left -= 1;
@@ -190,7 +195,7 @@ impl Transport for RegTransport {
                         },
                         &mut body,
                     )
-                    .unwrap();
+                    .expect("encode item");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -200,9 +205,10 @@ impl Transport for RegTransport {
                 });
             }
             if req.name == RenameItem::NAME {
-                let inp: RenameItemInput = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let inp: RenameItemInput =
+                    CborCodec::default().decode_bounded(&req.body).expect("decode rename");
                 core::future::poll_fn(|cx| {
-                    let mut g = inner.lock().unwrap();
+                    let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
                     if g.defer_actions {
                         g.wakers.push(cx.waker().clone());
                         Poll::Pending
@@ -211,7 +217,7 @@ impl Transport for RegTransport {
                     }
                 })
                 .await;
-                let mut g = inner.lock().unwrap();
+                let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
                 g.action_calls += 1;
                 g.name = inp.name.clone();
                 let mut body = Vec::new();
@@ -223,7 +229,7 @@ impl Transport for RegTransport {
                         },
                         &mut body,
                     )
-                    .unwrap();
+                    .expect("encode renamed item");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -256,16 +262,19 @@ pub(crate) fn new_web_backend() -> WebBackend {
 
 pub(crate) fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
     let mut stack = vec![StoreNodeId::ROOT];
+    let mut found = None;
     while let Some(id) = stack.pop() {
         if id != StoreNodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == tid
         {
-            return id.raw();
+            found = Some(id.raw());
+            break;
         }
         stack.extend_from_slice(store.children(id));
     }
-    panic!("expected node with test_id='{tid}'");
+    assert!(found.is_some(), "expected node with test_id='{tid}'");
+    found.expect("checked Some above")
 }
 
 pub(crate) fn pump_settled(
@@ -280,7 +289,7 @@ pub(crate) fn pump_settled(
             return n;
         }
         *frame += 1;
-        surface.commit_to(*frame, web).unwrap();
+        surface.commit_to(*frame, web).expect("commit_to web");
         n += 1;
     }
     assert!(
@@ -292,6 +301,6 @@ pub(crate) fn pump_settled(
 
 pub(crate) fn render_once(surface: &mut DioxusSurface, web: &mut WebBackend, frame: &mut u64) -> String {
     *frame += 1;
-    surface.commit_to(*frame, web).unwrap();
+    surface.commit_to(*frame, web).expect("commit_to web");
     web.render_html(surface.store())
 }

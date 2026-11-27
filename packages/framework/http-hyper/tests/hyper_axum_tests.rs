@@ -39,13 +39,16 @@ thread_local! {
     static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
 }
 
+// SAFETY: Delegates directly to `std::alloc::System` while incrementing a thread-local counter.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+        // SAFETY: Forwards caller-validated `layout` to the global `System` allocator.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Forwards caller-validated `(ptr, layout)` allocated by `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
@@ -90,7 +93,10 @@ impl Body for PanicIfPolledBody {
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        panic!("body was polled despite failing preflight checks!");
+        #[expect(clippy::panic, reason = "test double verifying body is never polled after preflight failure")]
+        {
+            panic!("body was polled despite failing preflight checks!");
+        }
     }
 }
 

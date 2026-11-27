@@ -175,8 +175,8 @@ impl<'a> NodeRef<'a> {
         let slot = T::slot();
         let w = self.words(slot)?;
         debug_assert_eq!(
-            self.store.columns[slot.0 as usize].as_ref().unwrap().desc.key(),
-            T::DESC.key,
+            self.store.columns[slot.0 as usize].as_ref().map(|c| c.desc.key()),
+            Some(T::DESC.key),
             "table slot {} key mismatch for `{}`",
             slot.0,
             T::DESC.name

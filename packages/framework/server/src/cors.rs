@@ -56,8 +56,7 @@ impl CorsPolicy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::try_allow_origins(origins)
-            .unwrap_or_else(|err| panic!("invalid CorsPolicy origin: {err}"))
+        Self::try_allow_origins(origins).expect("invalid CorsPolicy origin")
     }
 
     /// Fallible version of [`Self::allow_origins`], normalizing each origin and pre-validating

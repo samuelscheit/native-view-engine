@@ -35,6 +35,10 @@ impl OptimisticLayer {
             mutation_id,
             settle_on_fetch_gen: None,
             apply: Shared::new(move |cur: &dyn Any| {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "type-erased query optimistic patch layer"
+                )]
                 let typed = cur.downcast_ref::<T>()?;
                 Some(into_shared_any(f(typed)))
             }),

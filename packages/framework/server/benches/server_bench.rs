@@ -16,10 +16,11 @@ fn block_on<F: Future>(fut: F) -> F::Output {
     let mut fut = std::pin::pin!(fut);
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(out) => out,
-        Poll::Pending => panic!("sans-I/O bench future unexpectedly yielded Poll::Pending"),
-    }
+    let ready = match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(out) => Some(out),
+        Poll::Pending => None,
+    };
+    ready.expect("sans-I/O bench future unexpectedly yielded Poll::Pending")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
@@ -63,7 +64,7 @@ impl AuthResolver<(), u64> for BenchCookieAuth {
         state: &'a (),
         headers: &'a HeaderMap,
     ) -> nve_rpc::BoxFuture<'a, Result<u64, AuthError>> {
-        let res = self.try_resolve_sync(state, headers).unwrap();
+        let res = self.try_resolve_sync(state, headers).expect("sync auth");
         Box::pin(async move { res })
     }
 }
@@ -99,7 +100,7 @@ fn bench_server_dispatch(c: &mut Criterion) {
             },
             &mut arg_bytes,
         )
-        .unwrap();
+        .expect("encode arg");
     let payload = Bytes::from(arg_bytes);
 
     // Measure ONLY `Server::handle_rpc_request` (setup runs outside the timed region via `iter_batched`).
@@ -114,7 +115,7 @@ fn bench_server_dispatch(c: &mut Criterion) {
                     .header("sec-fetch-site", "same-origin")
                     .header(COOKIE, "nve_session=bench-session-token")
                     .body(payload.clone())
-                    .unwrap()
+                    .expect("build request")
             },
             |req| {
                 let resp = block_on(server.handle_rpc_request(black_box(req)));

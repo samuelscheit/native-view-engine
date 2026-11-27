@@ -22,7 +22,7 @@ pub const APPROVED_HOST_CARGO_TOMLS: &[&str] = &[
 /// Pre-existing runtime `serde_json` allowlist (Track 1B-1e).
 const PENDING_CLEANUP_SERDE_JSON: &[(&str, &str)] = &[("nve-codegen", "Track 1B-1e")];
 
-const TARGET_TRIPLES_ALL: &[&str] = &[
+pub(crate) const TARGET_TRIPLES_ALL: &[&str] = &[
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
@@ -41,13 +41,13 @@ fn platform_spec(triple: &'static str) -> PlatformSpec {
     )
 }
 
-fn workspace_rel_dir(pkg: &PackageMetadata<'_>) -> Option<String> {
+pub(crate) fn workspace_rel_dir(pkg: &PackageMetadata<'_>) -> Option<String> {
     pkg.source()
         .workspace_path()
         .map(|p| p.as_str().replace('\\', "/"))
 }
 
-fn rel_manifest(pkg: &PackageMetadata<'_>) -> String {
+pub(crate) fn rel_manifest(pkg: &PackageMetadata<'_>) -> String {
     match workspace_rel_dir(pkg) {
         Some(dir) if !dir.is_empty() => format!("{dir}/Cargo.toml"),
         _ => "Cargo.toml".to_string(),
@@ -59,7 +59,7 @@ fn rel_manifest(pkg: &PackageMetadata<'_>) -> String {
 /// across every platform in `triples`, PLUS iterative expansion of workspace `[build-dependencies]`
 /// and workspace proc-macro dependencies across native targets (still excluding third-party
 /// build-script dependencies like `skia-bindings -> serde_json`).
-fn transitive_chains<'g>(
+pub(crate) fn transitive_chains<'g>(
     graph: &'g PackageGraph,
     root_id: &'g PackageId,
     include_dev: bool,

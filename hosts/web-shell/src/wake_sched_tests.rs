@@ -41,7 +41,7 @@ impl TestFrameWaker {
 
     fn enqueue(&self, item: Option<(ScheduleKind, u64)>) {
         if let Some((kind, tok)) = item {
-            let mut q = self.queues.lock().unwrap();
+            let mut q = self.queues.lock().unwrap_or_else(|e| e.into_inner());
             match kind {
                 ScheduleKind::Microtask => q.microtasks.push_back(tok),
                 ScheduleKind::Macrotask => q.macrotasks.push_back(tok),
@@ -51,7 +51,10 @@ impl TestFrameWaker {
 
     fn clear_mid_pump_wake(&self) {
         self.before_poll_calls.fetch_add(1, Ordering::AcqRel);
-        self.sched.lock().unwrap().clear_mid_pump_wake();
+        self.sched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_mid_pump_wake();
     }
 
     fn run_tick_outcome(
@@ -59,17 +62,22 @@ impl TestFrameWaker {
         token: u64,
         session: &mut WebAppSession,
     ) -> Option<AsyncPumpOutcome> {
-        if !self.sched.lock().unwrap().on_scheduled_tick_enter(token) {
+        if !self
+            .sched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .on_scheduled_tick_enter(token)
+        {
             return None;
         }
         let waker = Waker::from(Arc::clone(self));
         let outcome = session
             .pump_async_work_with(&waker, || self.clear_mid_pump_wake())
-            .unwrap();
+            .expect("pump_async_work_with");
         let follow = self
             .sched
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .on_pump_exit(PumpNext::from_hit_cap(outcome.hit_cap));
         self.enqueue(follow);
         Some(outcome)
@@ -87,7 +95,7 @@ impl Wake for TestFrameWaker {
 
     fn wake_by_ref(self: &Arc<Self>) {
         let item = {
-            let mut sched = self.sched.lock().unwrap();
+            let mut sched = self.sched.lock().unwrap_or_else(|e| e.into_inner());
             if sched.is_pumping() {
                 self.mid_pump_wakes.fetch_add(1, Ordering::AcqRel);
             }

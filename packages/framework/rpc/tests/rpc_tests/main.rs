@@ -15,13 +15,16 @@ thread_local! {
     static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
 }
 
+// SAFETY: Delegates directly to `std::alloc::System` while incrementing a thread-local counter.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+        // SAFETY: Forwards caller-validated `layout` to the global `System` allocator.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Forwards caller-validated `(ptr, layout)` allocated by `System`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

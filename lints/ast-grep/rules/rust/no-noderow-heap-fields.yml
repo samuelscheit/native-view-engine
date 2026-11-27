@@ -1,3 +1,4 @@
+# [INV:no-noderow-heap-fields]
 id: rust-no-noderow-heap-fields
 language: rust
 severity: error

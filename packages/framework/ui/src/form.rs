@@ -411,10 +411,7 @@ impl FormState {
     }
 
     /// Returns a typed reference to the [`FieldState<T>`] for `id`.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "FormController heterogeneous typed field map resolves FieldState<T> by name"
-    )]
+    #[expect(clippy::disallowed_methods, reason = "FormController heterogeneous typed field map")]
     pub fn field<T: Clone + PartialEq + 'static>(&self, id: &str) -> Option<&FieldState<T>> {
         self.fields
             .get(id)

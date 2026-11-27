@@ -126,7 +126,7 @@ impl Default for TransportState {
 impl AsyncDemoTransport {
     fn release_queries(&self) {
         let wakers: Vec<Waker> = {
-            let mut g = self.state.lock().unwrap();
+            let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
             g.defer_queries = false;
             core::mem::take(&mut g.pending_wakers)
         };
@@ -137,7 +137,7 @@ impl AsyncDemoTransport {
 
     fn release_actions(&self) {
         let wakers: Vec<Waker> = {
-            let mut g = self.state.lock().unwrap();
+            let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
             g.defer_actions = false;
             core::mem::take(&mut g.pending_wakers)
         };
@@ -152,9 +152,9 @@ impl Transport for AsyncDemoTransport {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
             if req.name == GetTodo::NAME {
-                let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode id");
                 core::future::poll_fn(|cx| {
-                    let mut g = state.lock().unwrap();
+                    let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                     if g.defer_queries {
                         g.pending_wakers.push(cx.waker().clone());
                         Poll::Pending
@@ -164,7 +164,7 @@ impl Transport for AsyncDemoTransport {
                 })
                 .await;
                 let title = {
-                    let mut g = state.lock().unwrap();
+                    let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                     g.query_calls += 1;
                     g.titles
                         .get(&id)
@@ -174,7 +174,7 @@ impl Transport for AsyncDemoTransport {
                 let mut body = Vec::new();
                 CborCodec::default()
                     .encode_into(&Todo { id, title }, &mut body)
-                    .unwrap();
+                    .expect("encode todo");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -185,10 +185,11 @@ impl Transport for AsyncDemoTransport {
             }
 
             if req.name == RenameTodo::NAME {
-                let input: RenameTodoInput =
-                    CborCodec::default().decode_bounded(&req.body).unwrap();
+                let input: RenameTodoInput = CborCodec::default()
+                    .decode_bounded(&req.body)
+                    .expect("decode rename");
                 core::future::poll_fn(|cx| {
-                    let mut g = state.lock().unwrap();
+                    let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                     if g.defer_actions {
                         g.pending_wakers.push(cx.waker().clone());
                         Poll::Pending
@@ -197,7 +198,7 @@ impl Transport for AsyncDemoTransport {
                     }
                 })
                 .await;
-                let mut g = state.lock().unwrap();
+                let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
                 g.action_calls += 1;
                 if g.reject_title.as_deref() == Some(input.title.as_str()) {
                     let mut fe = FieldErrors::new();
@@ -205,7 +206,7 @@ impl Transport for AsyncDemoTransport {
                     let mut body = Vec::new();
                     CborCodec::default()
                         .encode_into(&TodoErr::Validation(fe), &mut body)
-                        .unwrap();
+                        .expect("encode validation err");
                     return Ok(RawReply {
                         http_status: 422,
                         kind: ReplyKind::Domain,
@@ -220,7 +221,9 @@ impl Transport for AsyncDemoTransport {
                     title: input.title,
                 };
                 let mut body = Vec::new();
-                CborCodec::default().encode_into(&updated, &mut body).unwrap();
+                CborCodec::default()
+                    .encode_into(&updated, &mut body)
+                    .expect("encode updated todo");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -256,21 +259,24 @@ fn new_web_backend() -> WebBackend {
 
 fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
     let mut stack = vec![StoreNodeId::ROOT];
+    let mut found = None;
     while let Some(id) = stack.pop() {
         if id != StoreNodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == tid
         {
-            return id.raw();
+            found = Some(id.raw());
+            break;
         }
         stack.extend_from_slice(store.children(id));
     }
-    panic!("{tid} present");
+    assert!(found.is_some(), "{tid} present");
+    found.expect("checked Some above")
 }
 
 fn render_html(surface: &mut DioxusSurface, web: &mut WebBackend, frame: &mut u64) -> String {
     *frame += 1;
-    surface.commit_to(*frame, web).unwrap();
+    surface.commit_to(*frame, web).expect("commit_to web");
     web.render_html(surface.store())
 }
 
@@ -286,7 +292,7 @@ fn pump_all_async(
             return rendered;
         }
         *frame += 1;
-        surface.commit_to(*frame, web).unwrap();
+        surface.commit_to(*frame, web).expect("commit_to web");
         rendered += 1;
     }
     assert!(

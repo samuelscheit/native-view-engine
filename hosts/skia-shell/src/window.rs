@@ -4,6 +4,7 @@
 //! `NVERELOC` + `MmapOffsetArena` (`NativeInstantBootStore`) replay & atomic save on exit.
 
 pub mod clipboard;
+#[cfg(test)]
 pub mod dioxus_app;
 pub mod hot_reload_client;
 mod ime;

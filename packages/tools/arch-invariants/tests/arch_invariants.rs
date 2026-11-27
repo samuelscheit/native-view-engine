@@ -5,13 +5,14 @@ use std::collections::BTreeSet;
 use nve_arch_invariants::{
     assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
     find_files_named, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, purity,
-    rel_path, repo_index, Stage, Violation,
+    rel_path, repo_index, rpc_dag, spec_registry, Stage, Violation,
 };
 
 // ============================================================================
 // Workspace DAG invariants (`guppy` + `target-spec`)
 // ============================================================================
 
+/// Enforces [INV:module-and-host-boundaries].
 #[test]
 fn no_sdk_library_crates_in_hosts_and_zero_packages_to_hosts_deps() {
     let idx = repo_index();
@@ -33,6 +34,7 @@ fn no_sdk_library_crates_in_hosts_and_zero_packages_to_hosts_deps() {
     assert_no_violations("No SDK library crates in hosts/ & no packages/** -> hosts/**", &violations);
 }
 
+/// Enforces [INV:core-zero-dioxus].
 #[test]
 fn core_crates_zero_dioxus_and_platform_dependencies() {
     let idx = repo_index();
@@ -41,6 +43,7 @@ fn core_crates_zero_dioxus_and_platform_dependencies() {
     assert_no_violations("Framework- & platform-agnostic packages/core/*", &violations);
 }
 
+/// Enforces [INV:zero-runtime-serde-json] and [INV:module-and-host-boundaries].
 #[test]
 fn core_backends_modules_zero_serde_json_and_zero_module_deps() {
     let idx = repo_index();
@@ -53,12 +56,32 @@ fn core_backends_modules_zero_serde_json_and_zero_module_deps() {
     );
 }
 
+/// Enforces [INV:module-and-host-boundaries].
 #[test]
 fn module_root_spec_purity_and_wasm32_dev_dep_gating() {
     let idx = repo_index();
     let violations = dag::check_module_root_spec_and_wasm32_dev_deps(&idx.graph);
     assert_no_violations(
         "Module root spec purity, no web+skia feature mix, and real target-spec wasm32 dev-dep gating",
+        &violations,
+    );
+}
+
+/// Enforces [INV:zero-fnv1a].
+#[test]
+fn zero_fnv_crate_dependency_workspace_wide() {
+    let idx = repo_index();
+    let violations = rpc_dag::check_zero_fnv_crate_dep(&idx.graph);
+    assert_no_violations("Zero `fnv` crate dependency across workspace", &violations);
+}
+
+/// Enforces [INV:zero-runtime-serde-json].
+#[test]
+fn framework_rpc_and_server_layer_purity() {
+    let idx = repo_index();
+    let violations = rpc_dag::check_framework_rpc_server_purity(&idx.graph);
+    assert_no_violations(
+        "Framework RPC/server layer purity (zero serde_json; zero tokio/hyper/axum in sans-I/O crates; zero core -> framework deps)",
         &violations,
     );
 }
@@ -101,6 +124,7 @@ fn cross_file_enums_converters_and_match_tables() {
     );
 }
 
+/// Enforces [INV:abi-repr-c-locks].
 #[test]
 fn cross_file_repr_c_abi_layout_asserts_and_cache_line_locks() {
     let idx = repo_index();
@@ -126,6 +150,7 @@ fn cross_file_repr_c_abi_layout_asserts_and_cache_line_locks() {
     );
 }
 
+/// Enforces [INV:typed-domain-handles].
 #[test]
 fn bare_primitive_domain_fields_in_core_and_module_roots() {
     let idx = repo_index();
@@ -179,6 +204,7 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
 // Repo hygiene & benchmark / CountingAlloc coverage
 // ============================================================================
 
+/// Enforces [INV:backlog-open-only], [INV:generated-files-hygiene], and [INV:max-650-lines].
 #[test]
 fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_ratchet() {
     let idx = repo_index();
@@ -231,6 +257,7 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
     assert_no_violations("Zero hardcoded *_SCHEMA_HASH hex literals", &v_hashes);
 }
 
+/// Enforces [INV:zero-fnv1a].
 #[test]
 fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
     let idx = repo_index();
@@ -248,6 +275,7 @@ fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
     );
 }
 
+/// Enforces [INV:no-legacy-acronyms].
 #[test]
 fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
     let idx = repo_index();
@@ -289,6 +317,7 @@ fn staged_table_hygiene_platform_purity_acronyms_and_codegen_53bit() {
     );
 }
 
+/// Enforces [INV:bench-and-alloc-guards].
 #[test]
 fn benchmarks_and_counting_alloc_coverage() {
     let idx = repo_index();
@@ -314,5 +343,19 @@ fn benchmarks_and_counting_alloc_coverage() {
         Stage::Post1B1D,
         "All packages/{core,backends,framework}/* crates ship GlobalAlloc/CountingAlloc guards",
         &report.alloc_guards,
+    );
+}
+
+#[test]
+fn spec_invariant_ids_have_mechanical_guards() {
+    let idx = repo_index();
+    let (spec_count, violations) = spec_registry::check_repo_spec_invariants(idx);
+    assert!(
+        spec_count > 0,
+        "expected at least one `[INV:<id>]` tag in SPEC_DOCS so the registry guard cannot pass vacuously"
+    );
+    assert_no_violations(
+        "Every promised `[INV:<id>]` in AGENTS.md / docs/BACKLOG.md / docs/architecture.md has a backing mechanical guard",
+        &violations,
     );
 }

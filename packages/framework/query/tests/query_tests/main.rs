@@ -27,13 +27,16 @@ mod alloc_guard {
         static THREAD_ALLOCS: Cell<usize> = const { Cell::new(0) };
     }
 
+    // SAFETY: Delegates directly to `std::alloc::System` while incrementing a thread-local counter.
     unsafe impl GlobalAlloc for CountingAlloc {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let _ = THREAD_ALLOCS.try_with(|c| c.set(c.get().saturating_add(1)));
+            // SAFETY: Forwards caller-validated `layout` to the global `System` allocator.
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: Forwards caller-validated `(ptr, layout)` allocated by `System`.
             unsafe { System.dealloc(ptr, layout) }
         }
     }
@@ -56,10 +59,11 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
     let mut fut = std::pin::pin!(fut);
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(out) => out,
-        Poll::Pending => panic!("sans-I/O query test future unexpectedly yielded Poll::Pending"),
-    }
+    let ready = match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(out) => Some(out),
+        Poll::Pending => None,
+    };
+    ready.expect("sans-I/O query test future unexpectedly yielded Poll::Pending")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, minicbor::Encode, minicbor::Decode)]
@@ -142,7 +146,7 @@ impl Transport for ScriptedTransport {
                     },
                 ];
                 let mut body = Vec::new();
-                CborCodec::default().encode_into(&items, &mut body).unwrap();
+                CborCodec::default().encode_into(&items, &mut body).expect("encode items");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -152,14 +156,14 @@ impl Transport for ScriptedTransport {
                 });
             }
             if req.name == GetItem::NAME {
-                let id: u64 = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let id: u64 = CborCodec::default().decode_bounded(&req.body).expect("decode id");
                 let item = Item {
                     id,
                     title: format!("Item {id} v{n}"),
                     closed: false,
                 };
                 let mut body = Vec::new();
-                CborCodec::default().encode_into(&item, &mut body).unwrap();
+                CborCodec::default().encode_into(&item, &mut body).expect("encode item");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,
@@ -173,7 +177,7 @@ impl Transport for ScriptedTransport {
                     let mut body = Vec::new();
                     CborCodec::default()
                         .encode_into(&DemoErr::Rejected, &mut body)
-                        .unwrap();
+                        .expect("encode err");
                     return Ok(RawReply {
                         http_status: 422,
                         kind: ReplyKind::Domain,
@@ -185,14 +189,14 @@ impl Transport for ScriptedTransport {
                 if action_fail == 2 {
                     return Err(TransportError::timeout("gateway timeout"));
                 }
-                let input: RenameInput = CborCodec::default().decode_bounded(&req.body).unwrap();
+                let input: RenameInput = CborCodec::default().decode_bounded(&req.body).expect("decode rename");
                 let updated = Item {
                     id: input.id,
                     title: input.title,
                     closed: false,
                 };
                 let mut body = Vec::new();
-                CborCodec::default().encode_into(&updated, &mut body).unwrap();
+                CborCodec::default().encode_into(&updated, &mut body).expect("encode updated");
                 return Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,

@@ -54,8 +54,8 @@ mod native_bench {
         for i in 0..1000u64 {
             let h = client
                 .subscribe::<BenchItem>(&i, QueryOptions::default().stale_time_ms(60_000))
-                .unwrap();
-            client.set_query_data::<BenchItem>(&i, i * 2).unwrap();
+                .expect("subscribe");
+            client.set_query_data::<BenchItem>(&i, i * 2).expect("seed cache");
             handles.push(h);
         }
 
@@ -93,7 +93,7 @@ mod native_bench {
                     for i in 0..1000u64 {
                         let h = c
                             .subscribe::<BenchItem>(&i, QueryOptions::default().gc_time_ms(100))
-                            .unwrap();
+                            .expect("subscribe gc");
                         c.unsubscribe(h);
                     }
                     clk.advance(500);

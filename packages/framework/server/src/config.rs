@@ -28,8 +28,12 @@ impl FormRoute {
         let path = normalize_exact_path(&path.into());
         assert!(!path.is_empty(), "form route path must not be empty");
         let redirect = success_redirect.into();
-        let _ = validate_same_origin_redirect(&redirect)
-            .unwrap_or_else(|err| panic!("invalid FormRoute success_redirect `{redirect}`: {err}"));
+        let redirect_check = validate_same_origin_redirect(&redirect);
+        assert!(
+            redirect_check.is_ok(),
+            "invalid FormRoute success_redirect `{redirect}`: {}",
+            redirect_check.err().unwrap_or("")
+        );
         Self {
             path,
             proc_name: P::NAME,

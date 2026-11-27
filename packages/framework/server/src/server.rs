@@ -113,13 +113,14 @@ where
         config: ServerConfig,
     ) -> Self {
         for route in &config.form_routes {
-            let idx = registry.lookup_index(route.proc_name()).unwrap_or_else(|| {
-                panic!(
-                    "FormRoute `{}` targets unregistered procedure `{}`",
-                    route.path(),
-                    route.proc_name()
-                )
-            });
+            let lookup = registry.lookup_index(route.proc_name());
+            assert!(
+                lookup.is_some(),
+                "FormRoute `{}` targets unregistered procedure `{}`",
+                route.path(),
+                route.proc_name()
+            );
+            let idx = lookup.expect("checked Some above");
             assert!(
                 registry.entry_at(idx).supports_form(),
                 "FormRoute `{}` targets procedure `{}` registered without `register_with_form`",

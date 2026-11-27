@@ -39,7 +39,7 @@ impl Transport for ManualGateTransport {
                     closed: false,
                 };
                 let mut body = Vec::new();
-                CborCodec::default().encode_into(&item, &mut body).unwrap();
+                CborCodec::default().encode_into(&item, &mut body).expect("encode gated item");
                 Poll::Ready(Ok(RawReply {
                     http_status: 200,
                     kind: ReplyKind::Ok,

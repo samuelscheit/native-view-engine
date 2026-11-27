@@ -366,14 +366,14 @@ where
     pub fn build(mut self) -> RpcRegistry<S, U, C> {
         self.entries.sort_by_key(|(id, _)| *id);
         for pair in self.entries.windows(2) {
-            if pair[0].0 == pair[1].0 {
-                panic!(
-                    "duplicate ProcId {:016x} for procedures `{}` and `{}`",
-                    pair[0].0.raw(),
-                    pair[0].1.name,
-                    pair[1].1.name
-                );
-            }
+            assert_ne!(
+                pair[0].0,
+                pair[1].0,
+                "duplicate ProcId {:016x} for procedures `{}` and `{}`",
+                pair[0].0.raw(),
+                pair[0].1.name,
+                pair[1].1.name
+            );
         }
         RpcRegistry {
             entries: self.entries.into_boxed_slice(),

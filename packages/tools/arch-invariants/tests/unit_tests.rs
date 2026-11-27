@@ -443,8 +443,20 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
     "#;
     let hot_ast = syn::parse_file(hot_src).unwrap();
     let mut vhot = Vec::new();
-    hot_path::scan_hot_path_ast("packages/core/store/src/tx.rs", hot_src, &hot_ast, true, &mut vhot);
-    assert_eq!(vhot.len(), 2, "expected from_utf8 + format! violations only: {vhot:?}");
+    hot_path::scan_hot_path_ast("packages/core/store/src/store.rs", hot_src, &hot_ast, true, &mut vhot);
+    assert_eq!(vhot.len(), 2, "expected from_utf8 + format! violations only in allowlisted store.rs: {vhot:?}");
+
+    let non_allow_src = "fn new() { let _ = format!(\"alloc\"); }";
+    let non_allow_ast = syn::parse_file(non_allow_src).unwrap();
+    let mut v_non_allow = Vec::new();
+    hot_path::scan_hot_path_ast("packages/core/store/src/str_arena.rs", non_allow_src, &non_allow_ast, true, &mut v_non_allow);
+    assert_eq!(v_non_allow.len(), 1, "arbitrary fn new() must not be exempted: {v_non_allow:?}");
+
+    let trait_src = "trait T { fn try_str(&self) -> Option<&str>; }\nfn hot(b: &[u8]) { let _ = std::str::from_utf8(b); }";
+    let trait_ast = syn::parse_file(trait_src).unwrap();
+    let mut v_trait = Vec::new();
+    hot_path::scan_hot_path_ast("packages/core/store/src/span_pool.rs", trait_src, &trait_ast, true, &mut v_trait);
+    assert_eq!(v_trait.len(), 1, "trait decl must not exempt next fn: {v_trait:?}");
 
     // Per-node downcast_ref AST check (catches method w/ and w/o turbofish + Any::downcast_ref, skips #[cfg(test)]).
     let dc_src = r#"

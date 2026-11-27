@@ -31,3 +31,6 @@ nve-server = { workspace = true }
 [[bench]]
 name = "ssr_bench"
 harness = false
+
+[lints]
+workspace = true

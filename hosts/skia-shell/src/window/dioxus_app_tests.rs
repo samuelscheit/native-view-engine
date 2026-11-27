@@ -11,7 +11,7 @@ use nve_dioxus::DioxusSurface;
 use nve_engine::Viewport;
 use nve_host_services::HostServiceProvider;
 
-use super::{DesktopApp, DesktopSession, DioxusDesktopApp};
+use super::{DesktopApp, DesktopPreviewOptions, DesktopSession, DesktopWindowHost, DioxusDesktopApp};
 use crate::host_services::SkiaHostServices;
 
 #[test]
@@ -129,5 +129,12 @@ fn dioxus_desktop_app_wakes_on_background_thread_completion_and_renders_update()
         initial_bytes.as_slice(),
         "post-wake render must emit updated frame bytes"
     );
+    assert!(session.app().surface().store().live_nodes().next().is_some());
+    assert!(session.app_mut().surface_mut().store().live_nodes().next().is_some());
     assert!(!session.app_mut().poll_async_work());
+
+    let host_surface = DioxusSurface::new(1, AsyncDesktopRoot).with_context(gate);
+    let host = DesktopWindowHost::new_dioxus(host_surface, DesktopPreviewOptions::default())
+        .expect("new_dioxus must construct primary session");
+    assert!(host.windows.is_empty());
 }

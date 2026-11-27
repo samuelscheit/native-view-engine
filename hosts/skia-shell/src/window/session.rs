@@ -178,6 +178,11 @@ impl<A: DesktopApp> DesktopSession<A> {
         &self.pixel_buffer
     }
 
+    #[cfg(test)]
+    pub fn last_frame_bytes(&self) -> &[u8] {
+        &self.last_frame_bytes
+    }
+
     pub fn viewport(&self) -> Viewport {
         self.viewport
     }

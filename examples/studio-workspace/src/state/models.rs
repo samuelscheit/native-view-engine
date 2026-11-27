@@ -339,29 +339,15 @@ impl SyncTransportMode {
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
+        use SyncTransportMode as M;
+        const TABLE: &[(&str, M)] = &[
+            ("lan", M::LanQuic), ("quic", M::LanQuic), ("lan-quic", M::LanQuic), ("lan_quic", M::LanQuic),
+            ("usb", M::UsbMux), ("usb-mux", M::UsbMux), ("usb_mux", M::UsbMux),
+            ("relay", M::RelayWss), ("wss", M::RelayWss), ("relay-wss", M::RelayWss), ("relay_wss", M::RelayWss),
+            ("offline", M::Offline), ("none", M::Offline),
+        ];
         let s = raw.trim();
-        if s.eq_ignore_ascii_case("lan")
-            || s.eq_ignore_ascii_case("quic")
-            || s.eq_ignore_ascii_case("lan-quic")
-            || s.eq_ignore_ascii_case("lan_quic")
-        {
-            Some(Self::LanQuic)
-        } else if s.eq_ignore_ascii_case("usb")
-            || s.eq_ignore_ascii_case("usb-mux")
-            || s.eq_ignore_ascii_case("usb_mux")
-        {
-            Some(Self::UsbMux)
-        } else if s.eq_ignore_ascii_case("relay")
-            || s.eq_ignore_ascii_case("wss")
-            || s.eq_ignore_ascii_case("relay-wss")
-            || s.eq_ignore_ascii_case("relay_wss")
-        {
-            Some(Self::RelayWss)
-        } else if s.eq_ignore_ascii_case("offline") || s.eq_ignore_ascii_case("none") {
-            Some(Self::Offline)
-        } else {
-            None
-        }
+        TABLE.iter().find_map(|&(k, v)| s.eq_ignore_ascii_case(k).then_some(v))
     }
 
     pub const fn next(self) -> Self {

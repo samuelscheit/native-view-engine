@@ -28,3 +28,6 @@ minicbor = { workspace = true }
 http-body-util = { workspace = true }
 base64 = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "tokio"] }
+
+[lints]
+workspace = true

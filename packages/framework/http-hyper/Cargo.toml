@@ -48,3 +48,6 @@ required-features = ["server", "client"]
 name = "http_hyper_bench"
 harness = false
 required-features = ["server", "client"]
+
+[lints]
+workspace = true

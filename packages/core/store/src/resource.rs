@@ -190,10 +190,6 @@ impl ResourceStore {
         self.scratch.clear();
         value.encode(&mut self.scratch);
         let hash = xxh64(&self.scratch, R::KIND.0);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "Track 1B-1d ResourceStore type-erased dedup boundary"
-        )]
         if let Some(&i) = self.dedup.get(&(R::KIND.0, hash))
             && let Some(e) = self.entries.get_mut(i as usize)
             && e.value.as_deref().is_some_and(|v| v.is::<R>())

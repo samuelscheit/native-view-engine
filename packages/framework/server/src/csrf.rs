@@ -87,7 +87,7 @@ impl CsrfPolicy {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::try_allow_origins(origins).unwrap_or_else(|err| panic!("invalid CsrfPolicy origin: {err}"))
+        Self::try_allow_origins(origins).expect("invalid CsrfPolicy origin")
     }
 
     /// Fallible version of [`Self::allow_origins`] validating and normalizing each origin at startup.

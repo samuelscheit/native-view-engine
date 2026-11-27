@@ -24,7 +24,7 @@ let _plan = StreamPlan::default();
 
 ## Invariants
 
-- Zero `serde_json` and zero runtime `axum` coupling (enforced mechanically by `arch_invariants::crate_dag`).
+- Zero `serde_json` and zero runtime `axum` coupling (enforced mechanically by `nve_arch_invariants::rpc_dag::check_framework_rpc_server_purity`).
 - DSD placement hygiene (`<form>` ancestors, table/select foster-parenting traps, nested slots) fails closed with `SsrError::Streaming(StreamingError::InvalidSlotPlacement(_))` strictly BEFORE headers are sent.
 - Every per-slot chunk emits its `NVEQ` v2 `<script type="application/x-nve-query">` + `<template data-nve-q-ack>` strictly BEFORE the matching `<div slot="nve-slot-...">` inside one atomic `Bytes` frame, with zero duplicate CSS rules or `NVEQ` entries.
 - Client TCP disconnect closes `ChannelBody` -> `tx.closed()` aborts the `spawn_local` task and drops `VirtualDom` and all in-flight RPC futures immediately.
@@ -36,5 +36,5 @@ cargo test --locked -p nve-ssr
 cargo clippy --locked -p nve-ssr --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p nve-ssr
 cargo bench --locked -p nve-ssr --bench ssr_bench -- --quick
-cargo test --locked -p nve-cli --test arch_invariants
+cargo test --locked -p nve-arch-invariants
 ```

@@ -15,7 +15,7 @@ fn bench_hyper_loopback_rpc(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .expect("build tokio runtime");
 
     let (addr, tx, handle) = rt.block_on(async {
         let mut reg = RpcRegistry::<(), ()>::builder();
@@ -29,8 +29,8 @@ fn bench_hyper_loopback_rpc(c: &mut Criterion) {
             CsrfPolicy::allow_origins(["http://127.0.0.1"]),
             ServerConfig::default(),
         );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
         let (tx, rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
             let _ = serve_rpc_with_shutdown(listener, server, async {
@@ -44,7 +44,9 @@ fn bench_hyper_loopback_rpc(c: &mut Criterion) {
     let transport = HyperTransport::new(format!("http://{addr}"));
     c.bench_function("nve_http_hyper_loopback_cbor_rpc", |b| {
         b.iter(|| {
-            let reply = rt.block_on(call::<LoopPing>(&transport, black_box(&41u64))).unwrap();
+            let reply = rt
+                .block_on(call::<LoopPing>(&transport, black_box(&41u64)))
+                .expect("loopback rpc");
             black_box(reply.value)
         });
     });
