@@ -74,7 +74,7 @@ void on_click_released(GtkGestureClick*, gint, gdouble x, gdouble y, gpointer da
     (void)v->host->simulate_press(v->id, static_cast<float>(x), static_cast<float>(y));
     return;
   }
-  if (!v->href.empty()) {  // a link nobody intercepts: open it natively
+  if (host::openable_link(v->href)) {  // a link nobody intercepts: open it natively (http/https/mailto)
 #if GTK_CHECK_VERSION(4, 10, 0)
     GtkUriLauncher* launcher = gtk_uri_launcher_new(v->href.c_str());
     GtkRoot* root = gtk_widget_get_root(v->widget);
