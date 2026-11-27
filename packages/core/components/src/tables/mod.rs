@@ -46,6 +46,27 @@ pub use visual::{
 
 use nve_store::{NveTable, RealizationOrder};
 
+/// Descriptor of every cross-platform core table (input of the foreign-host table codegen).
+pub const CORE_TABLES: &[&nve_store::TableDesc] = &[
+    &Layout::DESC,
+    &GridLayout::DESC,
+    &GridItem::DESC,
+    &Visual::DESC,
+    &Typography::DESC,
+    &TextContent::DESC,
+    &Transform::DESC,
+    &Motion::DESC,
+    &Responsive::DESC,
+    &Interaction::DESC,
+    &Accessibility::DESC,
+    &DebugId::DESC,
+    &StreamBoundary::DESC,
+    &Link::DESC,
+    &Scroll::DESC,
+    &Image::DESC,
+    &TextInput::DESC,
+];
+
 /// Registers every cross-platform core table and its resource codecs in the process-global table registry.
 /// Idempotent and fast after the first call.
 pub fn register_core_tables() {

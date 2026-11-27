@@ -49,8 +49,9 @@ pub use targets::{
     generate_export_swiftui, generate_export_web_component, generate_hybrid_all,
     generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin, generate_hybrid_rust,
     generate_hybrid_swift, generate_hybrid_target, generate_hybrid_ts, generate_import_rn,
-    generate_java_core_abi, generate_java_scene_buffer, generate_ts_core_abi,
-    generate_ts_scene_view, HybridGenerateOutput,
+    generate_java_core_abi, generate_java_scene_buffer, generate_java_tables,
+    generate_java_tables_file, generate_ts_core_abi, generate_ts_scene_view,
+    HybridGenerateOutput, JAVA_TABLES_PATH,
 };
 
 // ===========================================================================

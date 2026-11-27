@@ -5,9 +5,14 @@
 //! In-process backends read the typed value directly (zero encode/decode); values are encoded
 //! only for dedup hashing and when a frame crosses a wire boundary. `EPHEMERAL` resources skip
 //! hashing and are rewritten in place (120 Hz live canvas draw lists).
+//!
+//! Replica stores (wire / `NVE2` receivers such as the host runtime) keep every defined
+//! resource's wire bytes, so hosts can read them zero-copy ([`ResourceStore::bytes`]). A kind
+//! without a codec registered in this process is mirrored as raw bytes instead of rejecting the
+//! frame: typed reads miss, bytes and re-encoding still work.
 
 use std::any::{Any, TypeId};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use nve_abi::Key64;
 use nve_hash::xxh64;
@@ -20,6 +25,13 @@ const RES_IN_FREE: u8 = 1 << 1;
 const RES_DEFINED_THIS_FRAME: u8 = 1 << 2;
 const RES_CREATED_THIS_FRAME: u8 = 1 << 3;
 const RES_RELEASED_THIS_FRAME: u8 = 1 << 4;
+/// `Entry::encoded` holds the current value's wire bytes.
+const RES_HAS_BYTES: u8 = 1 << 5;
+
+/// Value of a replica entry whose kind has no codec in this process (bytes live in `encoded`).
+struct RawResource;
+
+static RAW_RESOURCE: LazyLock<AnyArc> = LazyLock::new(|| Arc::new(RawResource));
 
 /// A typed blob that can live in the [`ResourceStore`] and cross the wire.
 pub trait Resource: Send + Sync + 'static {
@@ -93,9 +105,18 @@ struct Entry {
     ephemeral: bool,
     flags: u8,
     value: Option<AnyArc>,
-    /// Cached wire encoding for non-ephemeral entries so steady-state dedup hits and wire sends
-    /// avoid re-encoding the existing value.
+    /// Wire bytes when `RES_HAS_BYTES` is set: interned entries (dedup + wire sends skip
+    /// re-encoding) and every replica entry (zero-copy host reads).
     encoded: Box<[u8]>,
+}
+
+/// Overwrites `slot` with `bytes`, reusing its allocation when the length is unchanged.
+fn store_bytes(slot: &mut Box<[u8]>, bytes: &[u8]) {
+    if slot.len() == bytes.len() {
+        slot.copy_from_slice(bytes);
+    } else {
+        *slot = bytes.into();
+    }
 }
 
 /// Refcounted blob store. Index `0` is reserved for [`ResourceId::NONE`].
@@ -167,12 +188,13 @@ impl ResourceStore {
         encoded: Box<[u8]>,
     ) -> ResourceId {
         let i = self.slot();
+        let bytes_flag = if ephemeral { 0 } else { RES_HAS_BYTES };
         self.entries[i as usize] = Entry {
             kind,
             refs: 1,
             hash,
             ephemeral,
-            flags: RES_DEFINED_THIS_FRAME | RES_CREATED_THIS_FRAME,
+            flags: RES_DEFINED_THIS_FRAME | RES_CREATED_THIS_FRAME | bytes_flag,
             value: Some(value),
             encoded,
         };
@@ -221,6 +243,8 @@ impl ResourceStore {
             } else {
                 e.value = Some(Arc::new(value));
             }
+            // The typed value changed in place: any mirrored bytes are stale.
+            e.flags &= !RES_HAS_BYTES;
             if e.flags & RES_DEFINED_THIS_FRAME == 0 {
                 e.flags |= RES_DEFINED_THIS_FRAME;
                 self.defined.push(old);
@@ -304,12 +328,12 @@ impl ResourceStore {
         self.entries.get(id.0 as usize).is_some_and(|e| e.refs > 0)
     }
 
-    /// Wire encoding of `id` (`false` if its kind has no registered codec).
+    /// Wire encoding of `id` (`false` when it holds no value or a typed value without a codec).
     pub fn encode(&self, id: ResourceId, out: &mut Vec<u8>) -> bool {
         let Some(e) = self.entries.get(id.0 as usize) else {
             return false;
         };
-        if !e.ephemeral && e.value.is_some() && codec(e.kind).is_some() {
+        if e.value.is_some() && e.flags & RES_HAS_BYTES != 0 {
             out.extend_from_slice(&e.encoded);
             return true;
         }
@@ -322,8 +346,16 @@ impl ResourceStore {
         }
     }
 
-    /// Number of resource slots (live, free, and the reserved slot `0`).
-    pub(crate) fn slots(&self) -> usize {
+    /// Zero-copy wire bytes of defined `id`, when this store holds them (replica entries,
+    /// interned entries; not in-process ephemeral values, which are never encoded).
+    pub fn bytes(&self, id: ResourceId) -> Option<&[u8]> {
+        let e = self.entries.get(id.0 as usize)?;
+        (e.value.is_some() && e.flags & RES_HAS_BYTES != 0).then_some(&*e.encoded)
+    }
+
+    /// Number of resource slots (live, free, and the reserved slot `0`); every `ResourceId` is
+    /// below it.
+    pub fn slots(&self) -> usize {
         self.entries.len()
     }
 
@@ -332,11 +364,12 @@ impl ResourceStore {
         self.entries.get(id.0 as usize).is_some_and(|e| e.value.is_some())
     }
 
-    pub(crate) fn is_ephemeral(&self, id: ResourceId) -> bool {
+    pub fn is_ephemeral(&self, id: ResourceId) -> bool {
         self.entries.get(id.0 as usize).is_some_and(|e| e.ephemeral)
     }
 
-    /// Mirrors a resource defined by a wire frame at exactly `id` (replica stores).
+    /// Mirrors a resource defined by a wire frame at exactly `id` (replica stores), keeping its
+    /// bytes. A kind without a codec here is mirrored raw; a known kind must decode.
     pub(crate) fn define_at(
         &mut self,
         id: ResourceId,
@@ -344,11 +377,12 @@ impl ResourceStore {
         ephemeral: bool,
         bytes: &[u8],
     ) -> bool {
-        let Some(c) = codec(kind) else {
-            return false;
-        };
-        let Some(value) = (c.decode)(bytes) else {
-            return false;
+        let value = match codec(kind) {
+            Some(c) => match (c.decode)(bytes) {
+                Some(v) => v,
+                None => return false,
+            },
+            None => Arc::clone(&RAW_RESOURCE),
         };
         let i = id.0 as usize;
         if i == 0 {
@@ -378,8 +412,9 @@ impl ResourceStore {
         let was_pending = e.flags & RES_PENDING_FREE != 0;
         let preserved = e.flags & (RES_IN_FREE | RES_PENDING_FREE | RES_RELEASED_THIS_FRAME);
         let hash = if ephemeral { 0 } else { xxh64(bytes, kind.0) };
-        let encoded: Box<[u8]> = if ephemeral { Box::new([]) } else { bytes.into() };
-        let mut flags = RES_DEFINED_THIS_FRAME | preserved;
+        let mut encoded = std::mem::take(&mut e.encoded);
+        store_bytes(&mut encoded, bytes);
+        let mut flags = RES_DEFINED_THIS_FRAME | RES_HAS_BYTES | preserved;
         if refs == 0 {
             flags |= RES_PENDING_FREE;
         }

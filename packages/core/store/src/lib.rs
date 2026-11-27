@@ -32,7 +32,9 @@ pub mod wire;
 pub use changes::{ChangeSet, Command, TableChanges};
 pub use events::{TableEventBus, TypedTableEvent};
 pub use id::{Idx, IndexVec, NodeId, NodeIndex, ResourceId, TableSet, TableSetIter};
-pub use nve_abi::table::{effect, table_flags, FieldDesc, FieldKind, Storage, TableDesc, TableKey, Word};
+pub use nve_abi::table::{
+    effect, table_flags, EnumVariant, FieldDesc, FieldKind, Storage, TableDesc, TableKey, Word,
+};
 pub use nve_abi_macros::NveTable;
 pub use resource::{register_codec, Resource, ResourceStore};
 pub use row::{DirtyList, RowRef, RowWriter};

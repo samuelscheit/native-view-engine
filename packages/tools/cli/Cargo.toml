@@ -17,6 +17,7 @@ tungstenite = { workspace = true }
 nve-abi = { workspace = true }
 nve-store = { workspace = true }
 nve-components = { workspace = true }
+nve-canvas = { workspace = true }
 nve-engine = { workspace = true }
 nve-dioxus = { workspace = true }
 dioxus-core = { workspace = true }

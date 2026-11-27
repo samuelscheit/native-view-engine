@@ -528,3 +528,19 @@ fn define_at_retain_redefine_release_same_frame_does_not_duplicate_pending_free(
     );
     assert_eq!(store.resource::<Shadows>(id), None);
 }
+
+#[test]
+fn resource_bytes_follow_intern_and_in_place_ephemeral_rewrites() {
+    let mut store = NodeStore::new();
+    let interned = store.resources.intern(Shadows(vec![1.0]));
+    assert_eq!(store.resources().bytes(interned), Some(&1.0f32.to_le_bytes()[..]));
+    // In-process ephemeral values are typed only: no stale or eager bytes.
+    let eph = store.resources.set_ephemeral(crate::ResourceId::NONE, Shadows(vec![2.0]));
+    assert!(store.resources().bytes(eph).is_none());
+    let mut out = Vec::new();
+    assert!(store.resources().encode(eph, &mut out));
+    assert_eq!(out, 2.0f32.to_le_bytes());
+    assert_eq!(store.resources.set_ephemeral(eph, Shadows(vec![3.0])), eph);
+    assert!(store.resources().bytes(eph).is_none());
+    assert!(store.resources().slots() > eph.0 as usize);
+}

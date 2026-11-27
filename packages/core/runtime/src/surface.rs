@@ -10,8 +10,8 @@ use nve_abi::{
 };
 use nve_components::tables::{Overflow, Scroll, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
-use nve_layout::DynLayoutEngine;
-use nve_store::{ChangeSet, NodeId};
+use nve_layout::{DynLayoutEngine, HeuristicTextMeasurer, TextMeasurer};
+use nve_store::NodeId;
 
 use crate::app::{FrameTickHook, RuntimeApp};
 use crate::builder::{RuntimeBuilder, RuntimeError};
@@ -369,16 +369,25 @@ impl SurfaceRuntime {
 
     pub fn swap_layout_engine(&mut self, engine: DynLayoutEngine) -> Result<(), RuntimeError> {
         self.with_write(|inner| {
-            let (store, state) = inner.split_store_and_state();
-            state.invalidate_published_view();
-            state.scene.replace_layout_engine(engine);
-            state.layout_engine_name = state.scene.layout_engine_name();
-            state.frame_id = state.frame_id.wrapping_add(1).max(1);
-            let mut full = ChangeSet::default();
-            full.created.extend(store.live_nodes());
-            let laid_out = state.scene.commit(store, &full);
-            state.scene.reconcile_scroll_offsets(store);
-            state.publish_scene(store, &full, laid_out);
+            inner.state.scene.replace_layout_engine(engine);
+            inner.state.layout_engine_name = inner.state.scene.layout_engine_name();
+            inner.relayout_all();
+            Ok(())
+        })
+    }
+
+    /// Installs `measurer` (`None` restores [`HeuristicTextMeasurer`]) and relayouts every live
+    /// node, so text sizes from the new measurer are published before this returns.
+    pub fn set_text_measurer(
+        &self,
+        measurer: Option<Arc<dyn TextMeasurer>>,
+    ) -> Result<(), RuntimeError> {
+        self.with_write(|inner| {
+            inner
+                .state
+                .scene
+                .set_text_measurer(measurer.unwrap_or_else(|| Arc::new(HeuristicTextMeasurer)));
+            inner.relayout_all();
             Ok(())
         })
     }

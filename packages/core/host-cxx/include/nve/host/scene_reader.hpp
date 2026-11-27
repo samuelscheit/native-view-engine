@@ -28,6 +28,7 @@ enum class SceneError : uint8_t {
   MisalignedSlab,  ///< a non-empty slab pointer violates its element type alignment
   InvalidUtf8,     ///< `text_slab` is not well-formed UTF-8
   InvalidTable,    ///< a published `NveTableView` is malformed
+  InvalidResource, ///< a published `NveResourceView` / dirty resource id is malformed
 };
 
 template <class View>

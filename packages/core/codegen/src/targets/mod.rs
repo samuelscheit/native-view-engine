@@ -27,7 +27,7 @@ pub use dart::{
 };
 pub use kotlin_java::{
     generate_export_compose, generate_hybrid_kotlin, generate_java_core_abi,
-    generate_java_scene_buffer,
+    generate_java_scene_buffer, generate_java_tables, generate_java_tables_file, JAVA_TABLES_PATH,
 };
 pub use rust::generate_hybrid_rust;
 pub use swift::{generate_export_swiftui, generate_hybrid_swift};

@@ -8,7 +8,8 @@ use std::time::Duration;
 use nve_abi::{
     NveBufferSlice, NveEventBatch, NveEventBatchRef, NveGetInterfaceFn, NveRuntimeApi,
     NveRuntimeConfig, NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus,
-    NveRuntimeWakeFn, NveStrSlice, NVE_RUNTIME_ABI_VERSION, NVE_RUNTIME_SCHEMA_HASH,
+    NveRuntimeWakeFn, NveStrSlice, NveTextMeasureFn, NVE_RUNTIME_ABI_VERSION,
+    NVE_RUNTIME_SCHEMA_HASH,
 };
 use nve_engine::Viewport;
 use nve_engine::app::format_panic_payload;
@@ -16,6 +17,7 @@ use nve_engine::app::format_panic_payload;
 use crate::app::CAbiAppAdapter;
 use crate::builder::{RuntimeBuilder, RuntimeError};
 use crate::surface::SurfaceRuntime;
+use crate::text_measure::HostTextMeasurer;
 
 /// Maximum time `rt_destroy` waits for concurrent readers before refusing to UAF a leaked lock.
 const DESTROY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -525,6 +527,28 @@ unsafe extern "C" fn rt_pair_is_connected(handle: NveRuntimeHandle) -> u32 {
     })
 }
 
+unsafe extern "C" fn rt_set_text_measurer(
+    handle: NveRuntimeHandle,
+    measure: Option<NveTextMeasureFn>,
+    ctx: *mut c_void,
+) -> i32 {
+    runtime_catch_unwind(
+        "nve_runtime::set_text_measurer",
+        NveRuntimeStatus::Panic.as_i32(),
+        || {
+            // SAFETY: `handle` checked non-null inside `borrow_runtime`.
+            let Some(rt) = (unsafe { borrow_runtime(handle) }) else {
+                return NveRuntimeStatus::InvalidArg.as_i32();
+            };
+            let measurer = measure.map(|f| {
+                // SAFETY: The host keeps `f(ctx)` valid until replaced or `destroy` per the ABI.
+                Arc::new(unsafe { HostTextMeasurer::new(f, ctx) }) as Arc<dyn nve_layout::TextMeasurer>
+            });
+            status_from_result(rt.set_text_measurer(measurer))
+        },
+    )
+}
+
 unsafe extern "C" fn rt_last_error(out_buf: *mut u8, cap: usize) -> usize {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         LAST_RUNTIME_ERROR
@@ -572,6 +596,7 @@ static RUNTIME_API: NveRuntimeApi = NveRuntimeApi {
     pair_disconnect: rt_pair_disconnect,
     pair_is_connected: rt_pair_is_connected,
     last_error: rt_last_error,
+    set_text_measurer: rt_set_text_measurer,
 };
 
 /// Single exported C ABI entry point for `libnve_runtime`.

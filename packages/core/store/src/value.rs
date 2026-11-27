@@ -9,6 +9,8 @@ use nve_abi::table::FieldKind;
 pub trait WordValue: Copy {
     const BITS: u8;
     const KIND: FieldKind;
+    /// `(name, value)` of each variant for `word_enum!` types (empty otherwise).
+    const VARIANTS: &'static [crate::EnumVariant] = &[];
     fn to_bits(self) -> u32;
     fn from_bits(bits: u32) -> Self;
 }
@@ -310,6 +312,9 @@ macro_rules! word_enum {
         impl $crate::WordValue for $name {
             const BITS: u8 = $bits;
             const KIND: $crate::__private::FieldKind = $crate::__private::FieldKind::Enum;
+            const VARIANTS: &'static [$crate::EnumVariant] = &[
+                $( $crate::EnumVariant { name: stringify!($variant), value: $value } ),+
+            ];
             #[inline(always)]
             fn to_bits(self) -> u32 { self as u32 }
             #[inline(always)]

@@ -299,7 +299,7 @@ fn emit(t: &Table) -> String {
         let d = docs(f);
         fx[w as usize] |= f.effects;
         fields.push_str(&format!(
-            "{S}::FieldDesc {{ name: {}, kind: <{ty} as {S}::TableField>::KIND, word: {w}, shift: {sh}, bits: {}, effects: {} }},",
+            "{S}::FieldDesc {{ name: {}, kind: <{ty} as {S}::TableField>::KIND, word: {w}, shift: {sh}, bits: {}, effects: {}, variants: <{ty} as {S}::TableField>::VARIANTS }},",
             quote_str(name), if matches!(f.class, Class::Str) { 64 } else { f.width }, f.effects));
         regs.push_str(&format!("<{ty} as {S}::TableField>::register();"));
         let cname = upper(name);

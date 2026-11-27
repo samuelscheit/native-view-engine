@@ -94,6 +94,16 @@ pub struct FieldDesc {
     pub bits: u8,
     /// Effect class of the field's words.
     pub effects: u8,
+    /// `(name, value)` of every variant when the field is a word enum (`word_enum!`), else empty.
+    /// Drives foreign-host constants; not part of `schema_hash` (values are bounded by `bits`).
+    pub variants: &'static [EnumVariant],
+}
+
+/// One variant of a word-enum table field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnumVariant {
+    pub name: &'static str,
+    pub value: u32,
 }
 
 /// Compile-time description of a table, emitted by `#[derive(NveTable)]`.

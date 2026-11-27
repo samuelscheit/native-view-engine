@@ -1,10 +1,11 @@
 // NVE host runtime: validated C++20 RAII wrappers over `NveRuntimeApi` and `NveRuntimeSceneView`.
 //
 // `RuntimeSceneReader` validates `NVE_RUNTIME_SCHEMA_HASH`, every borrowed slab pointer/count pair,
-// UTF-8 `text_slab`, and every published `NveTableView` once on `open()`.
+// UTF-8 `text_slab`, every published `NveTableView`, every `NveResourceView`, and every dirty
+// resource id once on `open()`.
 // `RuntimeSceneGuard` pairs `scene_acquire` with automatic `scene_release` (and releases immediately
 // if validation ever fails so reader locks can never leak).
-// `RuntimeSession` wraps the 17-slot `NveRuntimeApi` vtable with RAII `destroy` and move-only
+// `RuntimeSession` wraps the 18-slot `NveRuntimeApi` vtable with RAII `destroy` and move-only
 // ownership.
 #pragma once
 
@@ -23,6 +24,15 @@
 #include "xxh64.hpp"
 
 namespace nve::host {
+
+/// Borrowed wire bytes of one live resource (`kind` = resource kind key).
+struct ResourceBytes {
+  Key64 kind{0u};
+  std::span<const uint8_t> bytes;
+  uint32_t flags = 0u;
+
+  [[nodiscard]] bool ephemeral() const noexcept { return (flags & NVE_RESOURCE_FLAG_EPHEMERAL) != 0u; }
+};
 
 /// Validated zero-copy reader over a borrowed `NveRuntimeSceneView`.
 class RuntimeSceneReader {
@@ -49,6 +59,19 @@ class RuntimeSceneReader {
   [[nodiscard]] std::span<const uint32_t> children_slab() const noexcept { return children_; }
   [[nodiscard]] std::string_view text_slab() const noexcept { return text_; }
   [[nodiscard]] uint32_t table_count() const noexcept { return static_cast<uint32_t>(tables_.size()); }
+  [[nodiscard]] uint32_t resource_capacity() const noexcept { return static_cast<uint32_t>(resources_.size()); }
+  /// Raw `ResourceId`s (re)defined on this frame (unique, each `< resource_capacity()`).
+  [[nodiscard]] std::span<const uint32_t> dirty_resources() const noexcept { return dirty_resources_; }
+
+  /// Live resource `id`; `nullopt` for `0`, free slots, and ids past the capacity.
+  [[nodiscard]] std::optional<ResourceBytes> resource(uint32_t id) const noexcept {
+    if (id == 0u || id >= resources_.size()) return std::nullopt;
+    const NveResourceView& r = resources_[id];
+    if (r.kind_lo == 0u && r.kind_hi == 0u) return std::nullopt;
+    return ResourceBytes{Key64::from_halves(r.kind_lo, r.kind_hi),
+                         r.len > 0u ? std::span<const uint8_t>(r.bytes, r.len) : std::span<const uint8_t>(),
+                         r.flags};
+  }
 
   [[nodiscard]] const NveNodeRow* row(uint32_t index) const noexcept {
     return index < rows_.size() ? &rows_[index] : nullptr;
@@ -120,7 +143,9 @@ class RuntimeSceneReader {
         children_(span_of(v.children_slab, v.children_slab_len)),
         dirty_(span_of(v.dirty_indices, v.dirty_count)),
         removed_(span_of(v.removed_ids, v.removed_count)),
-        tables_(span_of(v.tables, v.table_count)) {}
+        tables_(span_of(v.tables, v.table_count)),
+        resources_(span_of(v.resources, v.resource_capacity)),
+        dirty_resources_(span_of(v.dirty_resources, v.dirty_resource_count)) {}
 
   template <class T>
   static std::span<const T> span_of(const T* p, uint32_t count) noexcept {
@@ -151,6 +176,17 @@ class RuntimeSceneReader {
     for (uint32_t i = 0u; i < v->table_count; ++i) {
       if (!TableReader::from_view(v->tables[i])) return SceneError::InvalidTable;
     }
+    if (const SceneError e = check_slab(v->resources, v->resource_capacity); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->dirty_resources, v->dirty_resource_count); e != SceneError::None) return e;
+    for (uint32_t i = 0u; i < v->resource_capacity; ++i) {
+      const NveResourceView& r = v->resources[i];
+      if ((r.len > 0u) != (r.bytes != nullptr)) return SceneError::InvalidResource;
+      if (i == 0u && (r.len != 0u || r.kind_lo != 0u || r.kind_hi != 0u)) return SceneError::InvalidResource;
+    }
+    for (uint32_t i = 0u; i < v->dirty_resource_count; ++i) {
+      const uint32_t id = v->dirty_resources[i];
+      if (id == 0u || id >= v->resource_capacity) return SceneError::InvalidResource;
+    }
     return SceneError::None;
   }
 
@@ -166,6 +202,8 @@ class RuntimeSceneReader {
   std::span<const uint32_t> dirty_;
   std::span<const uint32_t> removed_;
   std::span<const NveTableView> tables_;
+  std::span<const NveResourceView> resources_;
+  std::span<const uint32_t> dirty_resources_;
 };
 
 /// Move-only RAII read guard pairing `scene_acquire` with `scene_release`.
@@ -242,7 +280,8 @@ class RuntimeSession {
            api->scroll_by != nullptr && api->scene_acquire != nullptr &&
            api->scene_release != nullptr && api->get_metrics != nullptr &&
            api->pair_connect != nullptr && api->pair_disconnect != nullptr &&
-           api->pair_is_connected != nullptr && api->last_error != nullptr;
+           api->pair_is_connected != nullptr && api->last_error != nullptr &&
+           api->set_text_measurer != nullptr;
   }
 
   [[nodiscard]] static std::optional<RuntimeSession> create(
@@ -292,6 +331,13 @@ class RuntimeSession {
 
   [[nodiscard]] NveRuntimeStatus clear_wake_callback() noexcept {
     return set_wake_callback(nullptr, nullptr);
+  }
+
+  /// Installs (`measure != nullptr`) or removes the host text measurer and relayouts every node.
+  /// `ctx` must outlive the next `set_text_measurer` / `reset`.
+  [[nodiscard]] NveRuntimeStatus set_text_measurer(NveTextMeasureFn measure, void* ctx) noexcept {
+    if (!valid()) return NVE_RUNTIME_INVALID_ARG;
+    return static_cast<NveRuntimeStatus>(api_->set_text_measurer(handle_, measure, ctx));
   }
 
   [[nodiscard]] NveRuntimeStatus set_viewport(float width, float height, float scale_factor) noexcept {

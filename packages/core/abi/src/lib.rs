@@ -44,9 +44,10 @@ pub use host::{
     SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
 };
 pub use runtime::{
-    NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
-    NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, NveRuntimeWakeFn,
-    NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION,
+    NveLayoutRect, NveNodeRow, NveResourceView, NveRuntimeApi, NveRuntimeConfig,
+    NveRuntimeGetInterfaceFn, NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView,
+    NveRuntimeStatus, NveRuntimeWakeFn, NveTextMeasureFn, NVE_LAYOUT_RECT_SIZE,
+    NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RESOURCE_FLAG_EPHEMERAL, NVE_RUNTIME_ABI_VERSION,
     NVE_RUNTIME_SCHEMA_HASH,
 };
 pub use scene::{

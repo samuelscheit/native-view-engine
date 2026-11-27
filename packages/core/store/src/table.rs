@@ -82,6 +82,8 @@ pub trait TableField {
     const KIND: FieldKind;
     /// Bits occupied in its (first) word.
     const BITS: u8;
+    /// Variants of a word-enum field (empty for every other field).
+    const VARIANTS: &'static [crate::EnumVariant] = &[];
     /// Registers codecs the field needs to cross a wire boundary.
     #[inline]
     fn register() {}
@@ -90,6 +92,7 @@ pub trait TableField {
 impl<T: WordValue> TableField for T {
     const KIND: FieldKind = T::KIND;
     const BITS: u8 = T::BITS;
+    const VARIANTS: &'static [crate::EnumVariant] = T::VARIANTS;
 }
 
 impl TableField for Str {

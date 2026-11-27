@@ -26,6 +26,9 @@ pub fn generate_c_runtime_abi_h() -> String {
     let table_view = spec
         .find_struct("NveTableView")
         .expect("runtime_abi_descriptor must declare NveTableView");
+    let resource_view = spec
+        .find_struct("NveResourceView")
+        .expect("runtime_abi_descriptor must declare NveResourceView");
     let scene_view = spec
         .find_struct("NveRuntimeSceneView")
         .expect("runtime_abi_descriptor must declare NveRuntimeSceneView");
@@ -138,6 +141,10 @@ pub fn generate_c_runtime_abi_h() -> String {
 
     writeln!(out, "typedef void* NveRuntimeHandle;");
     writeln!(out, "typedef void (*NveRuntimeWakeFn)(void* ctx);");
+    writeln!(
+        out,
+        "typedef int32_t (*NveTextMeasureFn)(void* ctx, NveStrSlice text, float font_size, uint32_t font_weight, float max_width, float* out_width, float* out_height);"
+    );
     writeln!(out);
 
     writeln!(out, "typedef enum NveRuntimeStatus {{");
@@ -158,6 +165,7 @@ pub fn generate_c_runtime_abi_h() -> String {
     emit_c_struct(&mut out, node_row);
     emit_c_struct(&mut out, config);
     emit_c_struct(&mut out, metrics);
+    emit_c_struct(&mut out, resource_view);
     emit_c_struct(&mut out, scene_view);
 
     writeln!(out, "typedef struct NveRuntimeApi {{");
@@ -223,6 +231,10 @@ pub fn generate_c_runtime_abi_h() -> String {
         out,
         "  size_t (*last_error)(uint8_t* out_buf, size_t cap);"
     );
+    writeln!(
+        out,
+        "  int32_t (*set_text_measurer)(NveRuntimeHandle handle, NveTextMeasureFn measure, void* ctx);"
+    );
     writeln!(out, "}} NveRuntimeApi;");
     writeln!(out);
     writeln!(out, "/*");
@@ -230,7 +242,8 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, " * - Owner thread affinity: `create` binds the surface to its creating thread.");
     writeln!(out, " *   All mutating, layout, and app-touching calls (`destroy`, `set_viewport`,");
     writeln!(out, " *   `attach_app_interface`, `submit_nve2`, `tick`, `dispatch_events`, `hit_test`,");
-    writeln!(out, " *   `scroll_by`, `pair_connect`, `pair_disconnect`) MUST be invoked on that");
+    writeln!(out, " *   `scroll_by`, `pair_connect`, `pair_disconnect`, `set_text_measurer`) MUST be");
+    writeln!(out, " *   invoked on that");
     writeln!(out, " *   owner thread (wrong-thread calls return `NVE_RUNTIME_INVALID_ARG` with");
     writeln!(out, " *   diagnostic text in `last_error`). No thread may concurrently access the");
     writeln!(out, " *   handle during or after `destroy(h)`.");
@@ -248,6 +261,14 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, " *   `set_wake_callback`, `destroy`, or mutating `NveRuntimeApi` methods inside it).");
     writeln!(out, " *   `set_wake_callback(h, NULL, NULL)` and `destroy(h)` drain all in-flight");
     writeln!(out, " *   invocations before returning so the host may safely free `ctx` afterward.");
+    writeln!(out, " * - `NveTextMeasureFn(ctx, ...)`: invoked synchronously on the owner thread during");
+    writeln!(out, " *   layout. `max_width`: `INFINITY` = unconstrained, `0` = min-content, `> 0` = wrap");
+    writeln!(out, " *   width. Return `0` with a finite, non-negative size; anything else falls back");
+    writeln!(out, " *   to the heuristic measurer. `ctx` must outlive the next `set_text_measurer` or");
+    writeln!(out, " *   `destroy`; it MUST NOT call back into `NveRuntimeApi`.");
+    writeln!(out, " * - `resources[id]` borrows each live resource's wire bytes by raw `ResourceId`");
+    writeln!(out, " *   (same lifetime as every other scene pointer); `dirty_resources` lists the ids");
+    writeln!(out, " *   (re)defined on `frame_id` so hosts can drop decoded caches.");
     writeln!(out, " */");
     writeln!(
         out,
@@ -323,6 +344,19 @@ pub fn generate_c_runtime_abi_h() -> String {
     emit_fixed_asserts(&mut out, config, 24);
     emit_fixed_asserts(&mut out, metrics, 64);
 
+    for f in &resource_view.fields {
+        let off = f.offset.map_or_else(|| "16u".to_owned(), |o| format!("{o}u"));
+        writeln!(
+            out,
+            "NVE_STATIC_ASSERT(offsetof(NveResourceView, {}) == {off}, \"NveResourceView.{} offset mismatch\");",
+            f.name, f.name
+        );
+    }
+    writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveResourceView) == 24u, \"NveResourceView must be 24 bytes on 64-bit\");"
+    );
+
     let mut ptr_slot = 0usize;
     for f in &scene_view.fields {
         if let Some(off) = f.offset {
@@ -334,7 +368,7 @@ pub fn generate_c_runtime_abi_h() -> String {
         } else {
             writeln!(
                 out,
-                "NVE_STATIC_ASSERT(offsetof(NveRuntimeSceneView, {}) == 40u + {ptr_slot}u * sizeof(void*), \"NveRuntimeSceneView.{} offset mismatch\");",
+                "NVE_STATIC_ASSERT(offsetof(NveRuntimeSceneView, {}) == 48u + {ptr_slot}u * sizeof(void*), \"NveRuntimeSceneView.{} offset mismatch\");",
                 f.name, f.name
             );
             ptr_slot += 1;
@@ -342,7 +376,7 @@ pub fn generate_c_runtime_abi_h() -> String {
     }
     writeln!(
         out,
-        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeSceneView) == 96u, \"NveRuntimeSceneView must be 96 bytes on 64-bit\");"
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeSceneView) == 120u, \"NveRuntimeSceneView must be 120 bytes on 64-bit\");"
     );
     writeln!(
         out,
@@ -374,6 +408,7 @@ pub fn generate_c_runtime_abi_h() -> String {
         "pair_disconnect",
         "pair_is_connected",
         "last_error",
+        "set_text_measurer",
     ]
     .iter()
     .enumerate()
@@ -385,7 +420,7 @@ pub fn generate_c_runtime_abi_h() -> String {
     }
     writeln!(
         out,
-        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeApi) == 152u, \"NveRuntimeApi must be 152 bytes on 64-bit\");"
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveRuntimeApi) == 160u, \"NveRuntimeApi must be 160 bytes on 64-bit\");"
     );
     writeln!(out);
     writeln!(out, "#ifdef __cplusplus");

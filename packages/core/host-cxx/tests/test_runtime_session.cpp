@@ -528,8 +528,24 @@ void test_live_runtime_session() {
   }
 #endif
 
+  // ABI v2 host text measurer: install (relayouts on a new frame), then restore the heuristic.
+  const NveTextMeasureFn measure = [](void*, NveStrSlice, float, uint32_t, float, float* w,
+                                      float* h) -> int32_t {
+    *w = 1.0f;
+    *h = 1.0f;
+    return 0;
+  };
+  NveRuntimeMetrics before{};
+  CHECK(session.metrics(&before) == NVE_RUNTIME_OK);
+  CHECK(session.set_text_measurer(measure, nullptr) == NVE_RUNTIME_OK);
+  NveRuntimeMetrics after{};
+  CHECK(session.metrics(&after) == NVE_RUNTIME_OK);
+  CHECK(after.frame_id == before.frame_id + 1u);
+  CHECK(session.set_text_measurer(nullptr, nullptr) == NVE_RUNTIME_OK);
+
   // Explicit reset destroys cleanly; second reset is a no-op.
   session.reset();
+  CHECK(session.set_text_measurer(measure, nullptr) == NVE_RUNTIME_INVALID_ARG);
   CHECK(!session.valid());
   session.reset();
 }

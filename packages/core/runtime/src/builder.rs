@@ -222,6 +222,7 @@ impl RuntimeBuilder {
                     dirty_stamp: Vec::new(),
                     dirty_epoch: 0,
                     removed_ids: Vec::new(),
+                    resources: Default::default(),
                     published_view: NveRuntimeSceneView {
                         schema_hash: NVE_RUNTIME_SCHEMA_HASH,
                         ..NveRuntimeSceneView::default()
