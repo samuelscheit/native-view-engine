@@ -482,19 +482,29 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     /// Renders a frame (or drains ordered queued remote frames) into `SkiaBackend` and rasterizes.
     pub fn render_and_rasterize(&mut self) -> Result<&PixelBuffer, DesktopHostError> {
-        let mut applied_queued = false;
+        let mut saw_queued = false;
         while let Some((is_keyframe, bytes)) = self.app.take_queued_wire_frame() {
-            if !bytes.is_empty() {
-                if is_keyframe {
-                    self.replica.submit_nve2_keyframe(&bytes)?;
-                } else {
-                    self.replica.submit_nve2_frame(&bytes)?;
+            saw_queued = true;
+            if bytes.is_empty() {
+                continue;
+            }
+            let res = if is_keyframe {
+                self.replica.submit_nve2_keyframe(&bytes)
+            } else {
+                self.replica.submit_nve2_frame(&bytes)
+            };
+            match res {
+                Ok(_) => {
+                    self.app.on_queued_wire_frame_applied(is_keyframe);
+                    self.last_frame_bytes = bytes;
                 }
-                self.last_frame_bytes = bytes;
-                applied_queued = true;
+                Err(_) => {
+                    self.app.on_queued_wire_frame_error();
+                    break;
+                }
             }
         }
-        if !applied_queued {
+        if !saw_queued {
             let frame_id = self.next_frame_id;
             self.next_frame_id += 1;
             let bytes = self.app.render(frame_id);

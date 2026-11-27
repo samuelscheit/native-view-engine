@@ -12,7 +12,8 @@ use nve_abi::{direct_event_to_native, encode_events, FrameId, SurfaceId};
 use nve_store::wire::WireDecoder;
 use nve_wire::{
     parse_wire_uri, NveWireClientConfig, NveWireKind, NveWireMetrics, NveWireTransportKind,
-    NveWireUri, ReconnectConfig, ReconnectingWireClient, WireInboundItem, DEFAULT_WIRE_WSS_PATH,
+    NveWireUri, ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireResyncState,
+    DEFAULT_WIRE_WSS_PATH,
 };
 
 use super::{DesktopApp, DesktopHostError};
@@ -155,19 +156,27 @@ impl PairConnectConfig {
     }
 }
 
+struct QueuedRemoteFrame {
+    session_id: u64,
+    is_keyframe: bool,
+    is_frame1: bool,
+    payload: Vec<u8>,
+}
+
 /// Live thin-client [`DesktopApp`] backed directly by [`ReconnectingWireClient`].
 ///
-/// Queues ordered `(is_keyframe, payload)` frames in a bounded [`VecDeque`] so incremental
-/// `CommandDelta` batches are applied sequentially without dropping intermediate mutations.
+/// Queues ordered frames in a bounded [`VecDeque`] and shares [`WireResyncState`] with
+/// `nve-runtime` so incremental `CommandDelta` batches apply sequentially and recover cleanly on
+/// reconnect, overflow, or decode failure.
 pub struct PairedRemoteApp {
     client: ReconnectingWireClient,
     endpoint_label: String,
-    pending_frames: VecDeque<(bool, Vec<u8>)>,
+    pending_frames: VecDeque<QueuedRemoteFrame>,
     last_rendered: Vec<u8>,
     has_seen_frame: bool,
-    waiting_for_keyframe: bool,
-    resync_epoch: u64,
-    keyframe_requested_key: Option<(u64, u64)>,
+    resync: WireResyncState,
+    last_dequeued_session_id: u64,
+    last_dequeued_resets: bool,
 }
 
 impl PairedRemoteApp {
@@ -199,10 +208,47 @@ impl PairedRemoteApp {
             pending_frames: VecDeque::new(),
             last_rendered: Vec::new(),
             has_seen_frame: false,
-            waiting_for_keyframe: false,
-            resync_epoch: 0,
-            keyframe_requested_key: None,
+            resync: WireResyncState::new(),
+            last_dequeued_session_id: 0,
+            last_dequeued_resets: false,
         })
+    }
+
+    #[cfg(test)]
+    pub fn spawn_for_test(config: PairConnectConfig) -> Result<Self, DesktopHostError> {
+        let uri = config.resolve_uri()?;
+        if uri.token.trim().is_empty() {
+            return Err(DesktopHostError::Pairing(
+                "missing --pair-token for --pair-connect".to_string(),
+            ));
+        }
+        let mut wire_cfg = NveWireClientConfig::new(uri.token.clone(), "nve-skia-shell");
+        wire_cfg.cert_sha256 = uri.cert_sha256;
+        let client = ReconnectingWireClient::spawn(
+            uri,
+            wire_cfg,
+            ReconnectConfig {
+                initial_backoff: Duration::from_millis(20),
+                max_backoff: Duration::from_millis(40),
+            },
+            None,
+        )
+        .map_err(|e| DesktopHostError::Pairing(format!("wire spawn failed: {e}")))?;
+        Ok(Self {
+            client,
+            endpoint_label: config.addr,
+            pending_frames: VecDeque::new(),
+            last_rendered: Vec::new(),
+            has_seen_frame: false,
+            resync: WireResyncState::new(),
+            last_dequeued_session_id: 0,
+            last_dequeued_resets: false,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn auth_rejections(&self) -> u64 {
+        self.client.auth_rejections()
     }
 
     #[cfg(test)]
@@ -234,15 +280,6 @@ impl PairedRemoteApp {
         self.client.metrics()
     }
 
-    fn request_keyframe_once(&mut self, session_id: u64) {
-        self.waiting_for_keyframe = true;
-        let key = (session_id, self.resync_epoch);
-        if self.keyframe_requested_key != Some(key) {
-            self.keyframe_requested_key = Some(key);
-            let _ = self.client.request_keyframe();
-        }
-    }
-
     /// Processes one ordered [`WireInboundItem`], returning `Some(sequence)` when a scene frame
     /// was enqueued.
     fn ingest_item(&mut self, item: WireInboundItem) -> Option<u32> {
@@ -251,15 +288,18 @@ impl PairedRemoteApp {
                 session_id,
                 reconnected,
             } => {
-                if reconnected && (self.has_seen_frame || self.waiting_for_keyframe) {
-                    self.waiting_for_keyframe = true;
-                    self.keyframe_requested_key = Some((session_id, self.resync_epoch));
+                if reconnected {
+                    self.pending_frames.clear();
                 }
+                self.resync
+                    .on_session_started(session_id, reconnected, self.has_seen_frame);
                 None
             }
             WireInboundItem::Overflowed { session_id } => {
                 self.pending_frames.clear();
-                self.request_keyframe_once(session_id);
+                let client = &self.client;
+                self.resync
+                    .on_overflowed(session_id, || client.request_keyframe().is_ok());
                 None
             }
             WireInboundItem::Frame { session_id, frame } => {
@@ -273,22 +313,29 @@ impl PairedRemoteApp {
                 let is_keyframe = frame.kind == NveWireKind::SceneKeyframe;
                 let is_frame1 =
                     WireDecoder::validate_header(&frame.payload).is_ok_and(|(num, _)| num == 1);
-                if self.waiting_for_keyframe && !is_keyframe && !is_frame1 {
+                let has_queued_resync_base = self
+                    .pending_frames
+                    .front()
+                    .is_some_and(|f| (f.is_keyframe || f.is_frame1) && f.session_id == session_id);
+                if !self.resync.should_apply(is_keyframe, is_frame1) && !has_queued_resync_base {
                     return None;
                 }
                 if is_keyframe || is_frame1 {
                     self.pending_frames.clear();
-                    if self.waiting_for_keyframe {
-                        self.waiting_for_keyframe = false;
-                        self.resync_epoch = self.resync_epoch.wrapping_add(1);
-                    }
                 } else if self.pending_frames.len() >= MAX_PENDING_REMOTE_FRAMES {
                     self.pending_frames.clear();
-                    self.request_keyframe_once(session_id);
+                    let client = &self.client;
+                    self.resync
+                        .on_overflowed(session_id, || client.request_keyframe().is_ok());
                     return None;
                 }
                 let seq = frame.sequence;
-                self.pending_frames.push_back((is_keyframe, frame.payload));
+                self.pending_frames.push_back(QueuedRemoteFrame {
+                    session_id,
+                    is_keyframe,
+                    is_frame1,
+                    payload: frame.payload,
+                });
                 self.has_seen_frame = true;
                 Some(seq)
             }
@@ -324,7 +371,7 @@ impl PairedRemoteApp {
         let latest = self
             .pending_frames
             .back()
-            .map(|(_, bytes)| bytes.clone())
+            .map(|f| f.payload.clone())
             .unwrap_or_default();
         Ok((last_seq, latest))
     }
@@ -356,8 +403,10 @@ impl DesktopApp for PairedRemoteApp {
 
     fn render(&mut self, _frame_id: FrameId) -> &[u8] {
         self.drain_incoming_frames();
-        if let Some((_, bytes)) = self.pending_frames.pop_front() {
-            self.last_rendered = bytes;
+        if let Some(q) = self.pending_frames.pop_front() {
+            self.last_dequeued_session_id = q.session_id;
+            self.last_dequeued_resets = q.is_keyframe || q.is_frame1;
+            self.last_rendered = q.payload;
             &self.last_rendered
         } else {
             &[]
@@ -366,7 +415,28 @@ impl DesktopApp for PairedRemoteApp {
 
     fn take_queued_wire_frame(&mut self) -> Option<(bool, Vec<u8>)> {
         self.drain_incoming_frames();
-        self.pending_frames.pop_front()
+        let q = self.pending_frames.pop_front()?;
+        self.last_dequeued_session_id = q.session_id;
+        self.last_dequeued_resets = q.is_keyframe || q.is_frame1;
+        Some((q.is_keyframe, q.payload))
+    }
+
+    fn on_queued_wire_frame_applied(&mut self, is_keyframe: bool) {
+        if is_keyframe || self.last_dequeued_resets {
+            self.resync.mark_keyframe_applied();
+        }
+    }
+
+    fn on_queued_wire_frame_error(&mut self) {
+        self.pending_frames.clear();
+        let sid = if self.last_dequeued_session_id != 0 {
+            self.last_dequeued_session_id
+        } else {
+            self.client.active_session_id()
+        };
+        let client = &self.client;
+        self.resync
+            .on_decode_error(sid, || client.request_keyframe().is_ok());
     }
 
     fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
@@ -404,12 +474,22 @@ impl DesktopApp for PairedRemoteApp {
 
     fn remote_status_banner(&self) -> Option<String> {
         let m = self.metrics();
+        let transport = PairTransport::from_wire_kind(self.client.transport_kind());
+        if self.client.auth_rejections() > 0 {
+            let reason = self
+                .client
+                .last_error()
+                .unwrap_or_else(|| "unauthorized".to_owned());
+            return Some(format!(
+                "Paired {} [AUTH REJECTED] · {reason}",
+                transport.label(),
+            ));
+        }
         let state = if self.is_connected() {
             "LIVE"
         } else {
             "RECONNECTING"
         };
-        let transport = PairTransport::from_wire_kind(self.client.transport_kind());
         Some(format!(
             "Paired {} [{}] · seq #{} · {} B rx",
             transport.label(),

@@ -57,7 +57,7 @@ pub fn generate_c_runtime_abi_h() -> String {
     writeln!(out, "#ifndef NVE_RUNTIME_API");
     writeln!(out, "#if defined(NVE_RUNTIME_SHARED)");
     writeln!(out, "#if defined(_WIN32)");
-    writeln!(out, "#if defined(NVE_BUILDING_RUNTIME) || defined(NVE_BUILD_SHARED_LIB)");
+    writeln!(out, "#if defined(NVE_BUILDING_RUNTIME)");
     writeln!(out, "#define NVE_RUNTIME_API __declspec(dllexport)");
     writeln!(out, "#else");
     writeln!(out, "#define NVE_RUNTIME_API __declspec(dllimport)");

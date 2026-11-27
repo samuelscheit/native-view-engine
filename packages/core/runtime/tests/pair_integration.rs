@@ -448,8 +448,11 @@ fn corrupt_nve2_mid_frame_and_multi_frame_batch_recovers_with_rate_limited_keyfr
         .recv_inbound_timeout(Duration::from_secs(2))
         .expect("server receives single KeyframeRequest");
     assert_eq!(req1.frame.kind, NveWireKind::KeyframeRequest);
-    // Note: server automatically replies with cached `HEALTHY_V1` keyframe to `req1`; drain that
-    // recovery first, then test explicit rate-limiting without a cached keyframe on a fresh server!
+    // Because `broadcast_command_delta` invalidated the server's stale Frame-1 keyframe, the
+    // producer explicitly replies to `req1` with a fresh targeted snapshot (no stale rollback!).
+    assert!(server
+        .send_scene_keyframe_to_peer(req1.session_id, 3, &frame1)
+        .unwrap());
     assert!(wait_until(Duration::from_secs(2), || {
         let _ = rt.tick(0.016).unwrap();
         let g = rt.acquire_scene().unwrap();
@@ -481,12 +484,16 @@ fn corrupt_nve2_mid_frame_and_multi_frame_batch_recovers_with_rate_limited_keyfr
     }
 
     // Queue BOTH valid Frame 2 AND mid-frame corrupt Frame 3 BEFORE a single `tick()`!
+    let rx_before_batch = rt.metrics().unwrap().wire_bytes_rx;
     let f2_valid = scene_srv2.update_label_delta("BATCH_V2_BEFORE_CORRUPT");
     let f3_corrupt = build_mid_frame_corrupt_nve2(3);
     assert_eq!(server_nocache.broadcast_command_delta(2, &f2_valid).unwrap(), 1);
     assert_eq!(server_nocache.broadcast_command_delta(3, &f3_corrupt).unwrap(), 1);
-    // Give transport thread time to enqueue both before calling tick once.
-    std::thread::sleep(Duration::from_millis(80));
+    // Wait deterministically until live transport metrics reflect BOTH frames already enqueued.
+    let expected_batch_bytes = (f2_valid.len() + f3_corrupt.len()) as u64;
+    assert!(wait_until(Duration::from_secs(2), || {
+        rt.metrics().unwrap().wire_bytes_rx >= rx_before_batch + expected_batch_bytes
+    }));
     assert!(rt.tick(0.016).expect("multi-frame batch tick must recover, not error"));
     {
         let g = rt.acquire_scene().unwrap();
@@ -506,10 +513,14 @@ fn corrupt_nve2_mid_frame_and_multi_frame_batch_recovers_with_rate_limited_keyfr
 
     // While `waiting_for_keyframe`: stale delta AND even a corrupt keyframe MUST NOT emit another
     // KeyframeRequest (strictly rate-limited per session/epoch).
+    let rx_before_stale = rt.metrics().unwrap().wire_bytes_rx;
     let f4_stale = scene_srv2.update_label_delta("STALE_DELTA_IGNORED");
     assert_eq!(server_nocache.broadcast_command_delta(4, &f4_stale).unwrap(), 1);
     assert_eq!(server_nocache.broadcast_scene_keyframe(5, b"NOT_NVE2").unwrap(), 1);
-    std::thread::sleep(Duration::from_millis(80));
+    let expected_stale_bytes = (f4_stale.len() + b"NOT_NVE2".len()) as u64;
+    assert!(wait_until(Duration::from_secs(2), || {
+        rt.metrics().unwrap().wire_bytes_rx >= rx_before_stale + expected_stale_bytes
+    }));
     let _ = rt.tick(0.016).expect("still no abort on broken keyframe");
     assert!(
         server_nocache
@@ -549,6 +560,10 @@ fn pair_disconnect_then_pair_connect_preserves_wakes_and_validates_uri_synchrono
     for bad in [
         "",
         "not-a-url",
+        "http://127.0.0.1:8092",
+        "ws://bad host:8092/nve-wire",
+        "ws://127.0.0.1:0/nve-wire",
+        "ws://http::8092/nve-wire",
         "wss://127.0.0.1:8092/nve-wire",
         "quic://127.0.0.1:8091",
         "https://127.0.0.1:8091/nve-wire",
@@ -608,9 +623,98 @@ fn pair_disconnect_then_pair_connect_preserves_wakes_and_validates_uri_synchrono
         read_text_slab(g.view()).contains("SESSION_TWO")
     }));
 
+    // Calling pair_connect with an invalid URI while ALREADY paired MUST fail synchronously
+    // WITHOUT disconnecting or disturbing the live paired session!
+    assert!(matches!(
+        rt.pair_connect("not-a-url", "tok"),
+        Err(RuntimeError::InvalidArg(_))
+    ));
+    assert!(rt.pair_is_connected());
+    assert_eq!(
+        srv2.broadcast_scene_keyframe(2, &encode_scene("STILL_LIVE_AFTER_BAD_URI"))
+            .unwrap(),
+        1
+    );
+    assert!(wait_until(Duration::from_secs(3), || {
+        let _ = rt.tick(0.016).unwrap();
+        let g = rt.acquire_scene().unwrap();
+        read_text_slab(g.view()).contains("STILL_LIVE_AFTER_BAD_URI")
+    }));
+
     rt.pair_disconnect().unwrap();
     srv1.shutdown();
     srv2.shutdown();
+}
+
+#[test]
+fn pair_inbound_overflow_recovers_with_single_keyframe_request() {
+    let token = "runtime-overflow-tok";
+    let server = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        token,
+    ))
+    .expect("bind server");
+    let (mut scene_srv, f1) = StatefulSceneServer::new("OVERFLOW_V1");
+    let _ = server.broadcast_scene_keyframe(1, &f1);
+
+    let mut rt = RuntimeBuilder::new()
+        .viewport(Viewport {
+            width: 320.0,
+            height: 240.0,
+            scale_factor: 1.0,
+        })
+        .build();
+    let uri = format!("ws://{}/nve-wire", server.wss_addr());
+    rt.pair_connect(&uri, token).expect("pair_connect");
+    assert!(wait_until(Duration::from_secs(3), || rt.pair_is_connected()));
+    assert!(wait_until(Duration::from_secs(3), || rt.tick(0.016).unwrap()));
+
+    // Flood 320 CommandDeltas without calling tick() -> triggers WireInboundItem::Overflowed!
+    let rx_before = rt.metrics().unwrap().wire_bytes_rx;
+    let mut total_delta_bytes = 0u64;
+    for seq in 2..=321u32 {
+        let delta = scene_srv.update_label_delta(&format!("OVERFLOW_DELTA_{seq}"));
+        total_delta_bytes += delta.len() as u64;
+        assert_eq!(server.broadcast_command_delta(seq, &delta).unwrap(), 1);
+    }
+    assert!(wait_until(Duration::from_secs(4), || {
+        rt.metrics().unwrap().wire_bytes_rx >= rx_before + total_delta_bytes
+    }));
+
+    // Drain until the Overflowed sentinel is processed -> tick() stays Ok and emits ONE KeyframeRequest.
+    let req_deadline = Instant::now() + Duration::from_secs(4);
+    let req = loop {
+        let _ = rt.tick(0.016).expect("overflow tick must not error");
+        if let Some(m) = server.recv_inbound_timeout(Duration::from_millis(50)) {
+            break m;
+        }
+        assert!(
+            Instant::now() < req_deadline,
+            "timed out waiting for overflow recovery KeyframeRequest"
+        );
+    };
+    assert_eq!(req.frame.kind, NveWireKind::KeyframeRequest);
+    assert!(
+        server
+            .recv_inbound_timeout(Duration::from_millis(150))
+            .is_none(),
+        "overflow recovery must emit at most ONE KeyframeRequest"
+    );
+
+    // Send targeted recovery keyframe -> scene recovers cleanly!
+    let recovery = encode_scene("OVERFLOW_RECOVERED");
+    assert!(server
+        .send_scene_keyframe_to_peer(req.session_id, 400, &recovery)
+        .unwrap());
+    assert!(wait_until(Duration::from_secs(3), || {
+        let _ = rt.tick(0.016).unwrap();
+        let g = rt.acquire_scene().unwrap();
+        read_text_slab(g.view()).contains("OVERFLOW_RECOVERED")
+    }));
+
+    rt.pair_disconnect().unwrap();
+    server.shutdown();
 }
 
 #[test]

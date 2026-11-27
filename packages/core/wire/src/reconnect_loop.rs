@@ -262,19 +262,25 @@ async fn drive_session(
                             shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                        if client.send_events(bytes).is_err() {
-                            return false;
+                        match client.send_events(bytes) {
+                            Ok(()) => shared.update_metrics_from(client),
+                            Err(NveWireTransportError::Backpressure(_)) => {
+                                shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(_) => return false,
                         }
-                        shared.update_metrics_from(client);
                     }
                     Some(OutboundCmd::RequestKeyframe { session_id: cmd_sid }) => {
                         if cmd_sid != session_id {
                             continue;
                         }
-                        if client.request_keyframe().is_err() {
-                            return false;
+                        match client.request_keyframe() {
+                            Ok(()) => shared.update_metrics_from(client),
+                            Err(NveWireTransportError::Backpressure(_)) => {
+                                shared.dropped_outbound.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(_) => return false,
                         }
-                        shared.update_metrics_from(client);
                     }
                     None => return true,
                 }
@@ -282,14 +288,17 @@ async fn drive_session(
             ev = client.next_inbound_event() => {
                 match ev {
                     Some(ClientInboundEvent::Frame(frame)) => {
-                        shared.update_metrics_from(client);
                         let item = WireInboundItem::Frame { session_id, frame };
                         if !push_inbound_item(inbound_tx, inbound_drain, item, session_id, shared) {
                             return true;
                         }
+                        // Update metrics AFTER enqueueing so observing `frames_received >= N`
+                        // guarantees those frames are already visible in `inbound_rx`.
+                        shared.update_metrics_from(client);
                         shared.fire_wake();
                     }
                     Some(ClientInboundEvent::Overflowed) => {
+                        shared.update_metrics_from(client);
                         if !push_inbound_overflow(inbound_tx, inbound_drain, session_id, shared) {
                             return true;
                         }

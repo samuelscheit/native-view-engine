@@ -65,6 +65,8 @@ pub(crate) struct SharedState {
     pub(crate) auth_rejections: AtomicU64,
     pub(crate) dropped_outbound: AtomicU64,
     pub(crate) dropped_inbound: AtomicU64,
+    base_client_dropped_inbound: AtomicU64,
+    cur_client_dropped_inbound: AtomicU64,
     pub(crate) last_error: Mutex<Option<String>>,
     metrics: Mutex<NveWireMetrics>,
     base_metrics: Mutex<NveWireMetrics>,
@@ -86,6 +88,8 @@ impl SharedState {
             auth_rejections: AtomicU64::new(0),
             dropped_outbound: AtomicU64::new(0),
             dropped_inbound: AtomicU64::new(0),
+            base_client_dropped_inbound: AtomicU64::new(0),
+            cur_client_dropped_inbound: AtomicU64::new(0),
             last_error: Mutex::new(None),
             metrics: Mutex::new(NveWireMetrics::default()),
             base_metrics: Mutex::new(NveWireMetrics::default()),
@@ -136,11 +140,16 @@ impl SharedState {
             },
         };
         *self.metrics.lock().unwrap_or_else(|e| e.into_inner()) = combined;
+        self.cur_client_dropped_inbound
+            .store(client.dropped_inbound(), Ordering::Release);
     }
 
     pub(crate) fn checkpoint_metrics(&self) {
         let cur = *self.metrics.lock().unwrap_or_else(|e| e.into_inner());
         *self.base_metrics.lock().unwrap_or_else(|e| e.into_inner()) = cur;
+        let cur_dropped = self.cur_client_dropped_inbound.swap(0, Ordering::AcqRel);
+        self.base_client_dropped_inbound
+            .fetch_add(cur_dropped, Ordering::Release);
     }
 }
 
@@ -347,7 +356,19 @@ impl ReconnectingWireClient {
 
     #[inline]
     pub fn dropped_inbound(&self) -> u64 {
-        self.shared.dropped_inbound.load(Ordering::Acquire)
+        self.shared
+            .dropped_inbound
+            .load(Ordering::Acquire)
+            .saturating_add(
+                self.shared
+                    .base_client_dropped_inbound
+                    .load(Ordering::Acquire),
+            )
+            .saturating_add(
+                self.shared
+                    .cur_client_dropped_inbound
+                    .load(Ordering::Acquire),
+            )
     }
 
     pub fn last_error(&self) -> Option<String> {
@@ -365,11 +386,6 @@ impl ReconnectingWireClient {
 
     #[inline]
     pub fn has_pending_item(&self) -> bool {
-        !self.inbound_rx.is_empty()
-    }
-
-    #[inline]
-    pub fn has_pending_frame(&self) -> bool {
         !self.inbound_rx.is_empty()
     }
 
@@ -458,23 +474,20 @@ impl ReconnectingWireClient {
     }
 
     /// Installs or clears the wake callback, draining any in-flight invocation, dropping the
-    /// replaced callback outside the lock, and immediately firing the new callback if inbound
-    /// items or terminal auth errors are already queued.
+    /// replaced callback outside the lock, and firing under the shared read lock if inbound items
+    /// or terminal auth errors were already pending when installed (mirroring `WakeBridge::set_sink`).
     pub fn set_wake_callback(&self, cb: Option<WireWakeCallback>) {
-        let fire_now = cb
-            .as_ref()
-            .filter(|_| {
-                !self.inbound_rx.is_empty()
-                    || self.shared.auth_rejections.load(Ordering::Acquire) > 0
-            })
-            .cloned();
-        let old = {
+        let (old, should_fire) = {
             let mut guard = self.shared.wake.write().unwrap_or_else(|e| e.into_inner());
-            std::mem::replace(&mut *guard, cb)
+            let old = std::mem::replace(&mut *guard, cb);
+            let pending = guard.is_some()
+                && (!self.inbound_rx.is_empty()
+                    || self.shared.auth_rejections.load(Ordering::Acquire) > 0);
+            (old, pending)
         };
         drop(old);
-        if let Some(f) = fire_now {
-            f();
+        if should_fire {
+            self.shared.fire_wake();
         }
     }
 

@@ -259,15 +259,29 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
         assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
     }
 
-    // 3b. Subsequent valid delta recovers cleanly and proves `replica_store` genuinely grew by 256+
-    //     nodes (reallocated backing buffer) during step 2!
+    // 3b. Because step 2 failed mid-frame after mutating `replica_store`, the runtime MUST have
+    //     reset `replica_store` and `LaidOutScene` cleanly (zero leaked 256-node partial state!):
+    //     a stale incremental Frame-3 delta against `container` must therefore fail cleanly, and a
+    //     subsequent full Frame-1 keyframe carrying all 16 + 256 nodes must recover cleanly with
+    //     reallocated `rows` and full capacity!
     {
         let mut tx = src_store.tx();
         tx.edit::<Visual>(container).opacity(0.75);
         tx.commit_into(&mut changes);
     }
+    let mut stale_delta = Vec::new();
+    enc.encode(&src_store, &changes, &mut stale_delta);
+    // SAFETY: Valid handle and slice on owner thread.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&stale_delta)),
+            NveRuntimeStatus::Io.as_i32(),
+            "stale incremental delta must fail after mid-frame error reset (no leaked nodes)"
+        );
+    }
+
     let mut recovery_frame = Vec::new();
-    enc.encode(&src_store, &changes, &mut recovery_frame);
+    WireEncoder::default().encode_full(&src_store, &mut recovery_frame);
     let mut recovered = NveRuntimeSceneView::default();
     // SAFETY: Valid handle, slice, and out pointer.
     unsafe {
@@ -282,7 +296,7 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
         assert!(!recovered.rows.is_null() && !recovered.rects.is_null() && !recovered.tables.is_null());
         assert!(
             recovered.node_capacity >= orig_cap + 256,
-            "expected replica_store to have grown by >= 256 nodes (was {orig_cap}, now {})",
+            "expected recovered keyframe to carry all >= 256+ nodes (was {orig_cap}, now {})",
             recovered.node_capacity
         );
         assert_ne!(
@@ -377,6 +391,150 @@ fn failed_reallocating_wire_frame_and_detach_never_leave_dangling_published_view
 
     // SAFETY: Destroy handle once on owner thread.
     unsafe { (api.destroy)(h) };
+}
+
+#[test]
+fn submit_nve2_corrupt_header_preserves_scene_while_mid_frame_error_resets_store_and_layout() {
+    nve_components::tables::register_core_tables();
+    let api = get_api();
+    let cfg = NveRuntimeConfig {
+        surface_id: 1,
+        width: 400.0,
+        height: 300.0,
+        scale_factor: 1.0,
+        flags: 0,
+        _reserved: 0,
+    };
+    // SAFETY: Valid config on owner thread.
+    let h = unsafe { (api.create)(&cfg) };
+    assert!(!h.is_null());
+
+    // Frame 1: ROOT(1) + child(2) sized 120x40.
+    let mut src = NodeStore::new();
+    let mut enc = WireEncoder::default();
+    let mut changes = ChangeSet::default();
+    let child = NodeId(2);
+    {
+        let mut tx = src.tx();
+        let _ = tx.create_at(NodeId::ROOT);
+        assert!(tx.create_at(child));
+        tx.edit::<Layout>(NodeId::ROOT)
+            .width(Length::points(400.0))
+            .height(Length::points(300.0));
+        tx.edit::<Layout>(child)
+            .width(Length::points(120.0))
+            .height(Length::points(40.0));
+        tx.set_children(NodeId::ROOT, &[child]);
+        tx.commit_into(&mut changes);
+    }
+    let mut frame1 = Vec::new();
+    enc.encode(&src, &changes, &mut frame1);
+
+    let mut view = NveRuntimeSceneView::default();
+    // SAFETY: Valid handle, slice, and out pointers.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&frame1)),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert_eq!((api.scene_acquire)(h, &mut view), NveRuntimeStatus::Ok.as_i32());
+        let rects = std::slice::from_raw_parts(view.rects, view.node_capacity as usize);
+        assert_eq!(rects[2].width, 120.0);
+        assert_eq!(rects[2].height, 40.0);
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+    }
+
+    // 1. Corrupt header fails before touching store -> live scene & layout rect stay 100% intact.
+    let bad_hdr = b"NOT_NVE2_HEADER_BYTES";
+    // SAFETY: Valid handle and slice.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(bad_hdr)),
+            NveRuntimeStatus::Io.as_i32()
+        );
+        assert_eq!((api.scene_acquire)(h, &mut view), NveRuntimeStatus::Ok.as_i32());
+        let rects = std::slice::from_raw_parts(view.rects, view.node_capacity as usize);
+        assert_eq!(rects[2].width, 120.0);
+        assert_eq!(rects[2].height, 40.0);
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+    }
+
+    // 2. Mid-frame corrupt body (valid header + CreateNodes(99) + invalid op 0xFF) MUST reset both
+    //    `replica_store` and `LaidOutScene` cleanly (zero leaked nodes, NULL published view).
+    {
+        let mut tx = src.tx();
+        let leaked = NodeId(99);
+        assert!(tx.create_at(leaked));
+        tx.edit::<Layout>(leaked)
+            .width(Length::points(55.0))
+            .height(Length::points(55.0));
+        tx.commit_into(&mut changes);
+    }
+    let mut bad_mid = Vec::new();
+    enc.encode(&src, &changes, &mut bad_mid);
+    append_failing_op_to_valid_nve2(&mut bad_mid);
+
+    let mut metrics = NveRuntimeMetrics::default();
+    // SAFETY: Valid handle and slices.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&bad_mid)),
+            NveRuntimeStatus::Io.as_i32()
+        );
+        assert_eq!((api.scene_acquire)(h, &mut view), NveRuntimeStatus::Ok.as_i32());
+        assert!(view.rows.is_null() && view.node_capacity == 0);
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+        assert_eq!((api.get_metrics)(h, &mut metrics), NveRuntimeStatus::Ok.as_i32());
+        assert_eq!(metrics.live_nodes, 0);
+    }
+
+    // Stale delta against child(2) fails because replica_store was wiped cleanly.
+    {
+        let mut tx = src.tx();
+        tx.edit::<Layout>(child).width(Length::points(200.0));
+        tx.commit_into(&mut changes);
+    }
+    let mut stale_f3 = Vec::new();
+    enc.encode(&src, &changes, &mut stale_f3);
+    // SAFETY: Valid handle and slice.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&stale_f3)),
+            NveRuntimeStatus::Io.as_i32()
+        );
+    }
+
+    // 3. Fresh Frame-1 keyframe recovers store + layout cleanly (child 2 = 200x50, no node 99).
+    let mut fresh = NodeStore::new();
+    {
+        let mut tx = fresh.tx();
+        let _ = tx.create_at(NodeId::ROOT);
+        assert!(tx.create_at(child));
+        tx.edit::<Layout>(NodeId::ROOT)
+            .width(Length::points(400.0))
+            .height(Length::points(300.0));
+        tx.edit::<Layout>(child)
+            .width(Length::points(200.0))
+            .height(Length::points(50.0));
+        tx.set_children(NodeId::ROOT, &[child]);
+        tx.commit_into(&mut changes);
+    }
+    let mut fresh_kf = Vec::new();
+    WireEncoder::default().encode_full(&fresh, &mut fresh_kf);
+    // SAFETY: Valid handle, slice, and out pointers.
+    unsafe {
+        assert_eq!(
+            (api.submit_nve2)(h, NveBufferSlice::from_slice(&fresh_kf)),
+            NveRuntimeStatus::Ok.as_i32()
+        );
+        assert_eq!((api.scene_acquire)(h, &mut view), NveRuntimeStatus::Ok.as_i32());
+        assert!(view.node_capacity >= 3 && view.node_capacity < 99);
+        let rects = std::slice::from_raw_parts(view.rects, view.node_capacity as usize);
+        assert_eq!(rects[2].width, 200.0);
+        assert_eq!(rects[2].height, 50.0);
+        assert_eq!((api.scene_release)(h), NveRuntimeStatus::Ok.as_i32());
+        (api.destroy)(h);
+    }
 }
 
 #[test]

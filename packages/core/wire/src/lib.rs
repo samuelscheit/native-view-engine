@@ -17,6 +17,8 @@ pub mod framing;
 pub mod reconnect;
 #[cfg(feature = "client")]
 mod reconnect_loop;
+#[cfg(feature = "client")]
+pub mod resync;
 #[cfg(feature = "server")]
 pub mod server;
 #[cfg(feature = "server")]
@@ -38,6 +40,8 @@ pub use nve_wire_core::*;
 pub use reconnect::{
     ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireWakeCallback,
 };
+#[cfg(feature = "client")]
+pub use resync::WireResyncState;
 #[cfg(feature = "server")]
 pub use server::NveWireServer;
 #[cfg(feature = "server")]
@@ -56,6 +60,7 @@ pub enum NveWireTransportError {
     Tls(String),
     Auth(String),
     Connect(String),
+    Backpressure(String),
     Io(String),
 }
 
@@ -72,6 +77,7 @@ impl fmt::Display for NveWireTransportError {
             Self::Tls(msg) => write!(f, "TLS error: {msg}"),
             Self::Auth(msg) => write!(f, "authentication error: {msg}"),
             Self::Connect(msg) => write!(f, "connect error: {msg}"),
+            Self::Backpressure(msg) => write!(f, "wire backpressure: {msg}"),
             Self::Io(msg) => write!(f, "I/O error: {msg}"),
         }
     }

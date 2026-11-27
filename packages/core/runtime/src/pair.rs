@@ -20,13 +20,14 @@ pub(crate) const WIRE_PAIRING_SUPPORTED: bool = false;
 
 #[cfg(all(feature = "wire", not(target_arch = "wasm32")))]
 mod enabled {
+    use std::net::Ipv6Addr;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
     use nve_abi::{direct_event_to_native, encode_events, NveEventBatchRef, NveRuntimeMetrics};
     use nve_wire::{
         parse_wire_uri, NveWireClientConfig, NveWireKind, NveWireTransportKind, NveWireUri,
-        ReconnectConfig, ReconnectingWireClient, WireInboundItem,
+        ReconnectConfig, ReconnectingWireClient, WireInboundItem, WireResyncState,
     };
 
     use super::PairInboundEvent;
@@ -41,9 +42,29 @@ mod enabled {
         client: ReconnectingWireClient,
         last_rx: u64,
         last_tx: u64,
-        waiting_for_keyframe: bool,
-        resync_epoch: u64,
-        keyframe_requested_key: Option<(u64, u64)>,
+        resync: WireResyncState,
+    }
+
+    fn is_valid_host(host: &str) -> bool {
+        if host.is_empty() || host.bytes().any(|b| b.is_ascii_whitespace()) {
+            return false;
+        }
+        let bare = host
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(host);
+        if bare.is_empty() {
+            return false;
+        }
+        if host.starts_with('[') || host.ends_with(']') || bare.contains(':') {
+            return bare.parse::<Ipv6Addr>().is_ok();
+        }
+        bare.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            && !bare.starts_with('.')
+            && !bare.ends_with('.')
+            && !bare.starts_with('-')
+            && !bare.ends_with('-')
     }
 
     impl PairSession {
@@ -59,9 +80,13 @@ mod enabled {
             }
             let mut parsed = parse_wire_uri(trimmed_uri)
                 .map_err(|_| RuntimeError::InvalidArg("invalid pairing URI"))?;
-            if parsed.host.trim().is_empty()
-                || (parsed.quic_port.is_none() && parsed.wss_port.is_none())
-            {
+            if !is_valid_host(&parsed.host) {
+                return Err(RuntimeError::InvalidArg("invalid pairing URI host"));
+            }
+            if parsed.quic_port == Some(0) || parsed.wss_port == Some(0) {
+                return Err(RuntimeError::InvalidArg("pairing URI port must be non-zero"));
+            }
+            if parsed.quic_port.is_none() && parsed.wss_port.is_none() {
                 return Err(RuntimeError::InvalidArg(
                     "pairing URI must specify host and port",
                 ));
@@ -109,9 +134,7 @@ mod enabled {
                 client,
                 last_rx: 0,
                 last_tx: 0,
-                waiting_for_keyframe: false,
-                resync_epoch: 0,
-                keyframe_requested_key: None,
+                resync: WireResyncState::new(),
             })
         }
 
@@ -121,36 +144,49 @@ mod enabled {
         }
 
         #[inline]
-        pub(crate) fn is_waiting_for_keyframe(&self) -> bool {
-            self.waiting_for_keyframe
+        pub(crate) fn on_session_started(
+            &mut self,
+            session_id: u64,
+            reconnected: bool,
+            has_prior_state: bool,
+        ) {
+            self.resync
+                .on_session_started(session_id, reconnected, has_prior_state);
         }
 
-        /// Enters `waiting_for_keyframe` after an automatic reconnect (where `ReconnectingWireClient`
-        /// already issued one `KeyframeRequest` for `session_id`).
         #[inline]
-        pub(crate) fn enter_resync_after_reconnect(&mut self, session_id: u64) {
-            self.waiting_for_keyframe = true;
-            self.keyframe_requested_key = Some((session_id, self.resync_epoch));
+        pub(crate) fn on_overflowed(&mut self, session_id: u64) {
+            let client = &self.client;
+            self.resync
+                .on_overflowed(session_id, || client.request_keyframe().is_ok());
         }
 
-        /// Enters `waiting_for_keyframe` and sends at most ONE `KeyframeRequest` per
-        /// `(session_id, resync_epoch)` so persistently broken payloads cannot spin infinitely.
-        pub(crate) fn request_keyframe_once(&mut self, session_id: u64) {
-            self.waiting_for_keyframe = true;
-            let key = (session_id, self.resync_epoch);
-            if self.keyframe_requested_key != Some(key) {
-                self.keyframe_requested_key = Some(key);
-                let _ = self.client.request_keyframe();
-            }
-        }
-
-        /// Exits `waiting_for_keyframe` after a clean keyframe or `frame == 1` apply.
         #[inline]
-        pub(crate) fn mark_synced(&mut self) {
-            if self.waiting_for_keyframe {
-                self.waiting_for_keyframe = false;
-                self.resync_epoch = self.resync_epoch.wrapping_add(1);
-            }
+        pub(crate) fn on_decode_error(&mut self, session_id: u64) {
+            let client = &self.client;
+            self.resync
+                .on_decode_error(session_id, || client.request_keyframe().is_ok());
+        }
+
+        #[inline]
+        pub(crate) fn should_apply(&self, is_keyframe: bool, is_frame1: bool) -> bool {
+            self.resync.should_apply(is_keyframe, is_frame1)
+        }
+
+        #[inline]
+        pub(crate) fn mark_keyframe_applied(&mut self) {
+            self.resync.mark_keyframe_applied();
+        }
+
+        #[inline]
+        #[allow(dead_code)]
+        pub(crate) fn auth_rejected(&self) -> bool {
+            self.client.auth_rejections() > 0
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn last_error(&self) -> Option<String> {
+            self.client.last_error()
         }
 
         pub(crate) fn try_recv_event(&self) -> Option<PairInboundEvent> {
@@ -210,6 +246,15 @@ mod enabled {
             dst.pair_connected = u32::from(self.client.is_connected());
         }
 
+        pub(crate) fn overlay_live_metrics(&self, dst: &mut NveRuntimeMetrics) {
+            let m = self.client.metrics();
+            let drx = m.wire_bytes_rx.saturating_sub(self.last_rx);
+            let dtx = m.wire_bytes_tx.saturating_sub(self.last_tx);
+            dst.wire_bytes_rx = dst.wire_bytes_rx.saturating_add(drx);
+            dst.wire_bytes_tx = dst.wire_bytes_tx.saturating_add(dtx);
+            dst.pair_connected = u32::from(self.client.is_connected());
+        }
+
         pub(crate) fn shutdown(&mut self) {
             self.client.shutdown();
         }
@@ -255,15 +300,33 @@ mod disabled {
             false
         }
 
-        pub(crate) fn is_waiting_for_keyframe(&self) -> bool {
+        pub(crate) fn on_session_started(
+            &mut self,
+            _session_id: u64,
+            _reconnected: bool,
+            _has_prior_state: bool,
+        ) {
+        }
+
+        pub(crate) fn on_overflowed(&mut self, _session_id: u64) {}
+
+        pub(crate) fn on_decode_error(&mut self, _session_id: u64) {}
+
+        pub(crate) fn should_apply(&self, _is_keyframe: bool, _is_frame1: bool) -> bool {
+            true
+        }
+
+        pub(crate) fn mark_keyframe_applied(&mut self) {}
+
+        #[allow(dead_code)]
+        pub(crate) fn auth_rejected(&self) -> bool {
             false
         }
 
-        pub(crate) fn enter_resync_after_reconnect(&mut self, _session_id: u64) {}
-
-        pub(crate) fn request_keyframe_once(&mut self, _session_id: u64) {}
-
-        pub(crate) fn mark_synced(&mut self) {}
+        #[allow(dead_code)]
+        pub(crate) fn last_error(&self) -> Option<String> {
+            None
+        }
 
         pub(crate) fn try_recv_event(&self) -> Option<PairInboundEvent> {
             None
@@ -274,6 +337,10 @@ mod disabled {
         }
 
         pub(crate) fn sync_metrics(&mut self, dst: &mut NveRuntimeMetrics) {
+            dst.pair_connected = 0;
+        }
+
+        pub(crate) fn overlay_live_metrics(&self, dst: &mut NveRuntimeMetrics) {
             dst.pair_connected = 0;
         }
 

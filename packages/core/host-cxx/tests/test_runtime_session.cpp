@@ -416,6 +416,10 @@ void test_live_runtime_session() {
     CHECK(srv_fd >= 0);
     int opt = 1;
     (void)::setsockopt(srv_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    timeval tv{};
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    (void)::setsockopt(srv_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -430,6 +434,10 @@ void test_live_runtime_session() {
     std::thread srv_thread([srv_fd, &stop_srv]() {
       const int cfd = ::accept(srv_fd, nullptr, nullptr);
       if (cfd < 0) return;
+      timeval ctv{};
+      ctv.tv_sec = 2;
+      ctv.tv_usec = 0;
+      (void)::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &ctv, sizeof(ctv));
       std::string req;
       char buf[1024];
       while (req.find("\r\n\r\n") == std::string::npos) {
@@ -514,6 +522,7 @@ void test_live_runtime_session() {
     stop_srv.store(true, std::memory_order_release);
     CHECK(session.pair_disconnect() == NVE_RUNTIME_OK);
     CHECK(!session.pair_is_connected());
+    (void)::shutdown(srv_fd, SHUT_RDWR);
     srv_thread.join();
     ::close(srv_fd);
   }

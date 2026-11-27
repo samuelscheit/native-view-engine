@@ -31,13 +31,29 @@ pub(crate) enum OutboundCommand {
     Datagram(Bytes),
 }
 
+#[derive(Clone)]
+struct CachedKeyframe {
+    seq: u64,
+    bytes: Bytes,
+}
+
+struct PeerEntry {
+    transport: NveWireTransportKind,
+    tx: mpsc::UnboundedSender<OutboundCommand>,
+    last_sent_kf_seq: u64,
+    pending_kf_request: bool,
+}
+
 pub(crate) struct SharedServerState {
     bearer_token: String,
     schema_version: u16,
     pub(crate) max_frame_bytes: usize,
     next_session_id: AtomicU32,
-    peers: Mutex<HashMap<u32, (NveWireTransportKind, mpsc::UnboundedSender<OutboundCommand>)>>,
-    latest_keyframe: Mutex<Option<Bytes>>,
+    next_kf_seq: AtomicU64,
+    had_scene_frame: AtomicBool,
+    // Lock ordering invariant: ALWAYS acquire `latest_keyframe` BEFORE `peers`.
+    latest_keyframe: Mutex<Option<CachedKeyframe>>,
+    peers: Mutex<HashMap<u32, PeerEntry>>,
     inbound_tx: Sender<NveWireInboundMessage>,
     inbound_notify: Arc<tokio::sync::Notify>,
     frames_sent: AtomicU64,
@@ -56,18 +72,48 @@ impl SharedServerState {
     ) -> (u32, mpsc::UnboundedReceiver<OutboundCommand>) {
         let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
-        if let Some(kf) = self
-            .latest_keyframe
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        let mut emit_join_kf_req = false;
         {
-            let _ = tx.send(OutboundCommand::Stream(kf));
+            let kf_guard = self
+                .latest_keyframe
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let (last_sent_kf_seq, pending_kf_request) = if let Some(cached) = kf_guard.as_ref() {
+                if tx.send(OutboundCommand::Stream(cached.bytes.clone())).is_ok() {
+                    self.frames_sent.fetch_add(1, Ordering::Relaxed);
+                    self.wire_bytes_tx
+                        .fetch_add(cached.bytes.len() as u64, Ordering::Relaxed);
+                    (cached.seq, false)
+                } else {
+                    (0, false)
+                }
+            } else if self.had_scene_frame.load(Ordering::Acquire) {
+                // Deltas invalidated `latest_keyframe`; ask producer for ONE fresh full keyframe
+                // targeted to this joining/reconnecting peer so it never rolls back to Frame 1.
+                emit_join_kf_req = true;
+                (0, true)
+            } else {
+                (0, false)
+            };
+            peers.insert(
+                session_id,
+                PeerEntry {
+                    transport,
+                    tx,
+                    last_sent_kf_seq,
+                    pending_kf_request,
+                },
+            );
         }
-        self.peers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session_id, (transport, tx));
+        if emit_join_kf_req {
+            let _ = self.inbound_tx.send(NveWireInboundMessage {
+                session_id,
+                transport,
+                frame: NveWireFrame::new(NveWireKind::KeyframeRequest, 0, Vec::new()),
+            });
+            self.inbound_notify.notify_waiters();
+        }
         (session_id, rx)
     }
 
@@ -79,7 +125,7 @@ impl SharedServerState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&session_id)
-            .map(|(_, tx)| tx.clone())
+            .map(|p| p.tx.clone())
     }
 
     pub(crate) fn unregister_peer(&self, session_id: u32) {
@@ -149,21 +195,59 @@ impl SharedServerState {
                 true
             }
             NveWireKind::Bye => false,
-            _ => {
-                // Answer KeyframeRequest ONLY to the requesting peer's channel (never broadcast,
-                // which would reset other healthy peers) using only a genuine cached SceneKeyframe.
-                if frame.kind == NveWireKind::KeyframeRequest
-                    && let Some(kf) = self
+            NveWireKind::KeyframeRequest => {
+                // Lock ordering: `latest_keyframe` -> `peers`.
+                let mut forward_to_producer = false;
+                {
+                    let kf_guard = self
                         .latest_keyframe
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .clone()
-                    && reply_tx.send(OutboundCommand::Stream(kf.clone())).is_ok()
-                {
-                    self.frames_sent.fetch_add(1, Ordering::Relaxed);
-                    self.wire_bytes_tx
-                        .fetch_add(kf.len() as u64, Ordering::Relaxed);
+                        .unwrap_or_else(|e| e.into_inner());
+                    let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(cached) = kf_guard.as_ref() {
+                        let already_sent = peers
+                            .get_mut(&session_id)
+                            .is_some_and(|p| {
+                                if p.last_sent_kf_seq == cached.seq {
+                                    // Suppress duplicate reconnect keyframe right after register_peer,
+                                    // but allow a subsequent explicit request (e.g. corrupt frame).
+                                    p.last_sent_kf_seq = 0;
+                                    true
+                                } else {
+                                    p.last_sent_kf_seq = cached.seq;
+                                    p.pending_kf_request = false;
+                                    false
+                                }
+                            });
+                        if !already_sent
+                            && reply_tx
+                                .send(OutboundCommand::Stream(cached.bytes.clone()))
+                                .is_ok()
+                        {
+                            self.frames_sent.fetch_add(1, Ordering::Relaxed);
+                            self.wire_bytes_tx
+                                .fetch_add(cached.bytes.len() as u64, Ordering::Relaxed);
+                        }
+                    } else if let Some(p) = peers.get_mut(&session_id) {
+                        if !p.pending_kf_request {
+                            p.pending_kf_request = true;
+                            forward_to_producer = true;
+                        }
+                    } else {
+                        forward_to_producer = true;
+                    }
                 }
+                if forward_to_producer {
+                    let _ = self.inbound_tx.send(NveWireInboundMessage {
+                        session_id,
+                        transport,
+                        frame,
+                    });
+                    self.inbound_notify.notify_waiters();
+                }
+                true
+            }
+            _ => {
                 let _ = self.inbound_tx.send(NveWireInboundMessage {
                     session_id,
                     transport,
@@ -241,8 +325,10 @@ impl NveWireServer {
             schema_version: DEFAULT_WIRE_SCHEMA_VERSION,
             max_frame_bytes: config.max_frame_bytes.max(DEFAULT_MAX_WIRE_FRAME_BYTES),
             next_session_id: AtomicU32::new(1),
-            peers: Mutex::new(HashMap::new()),
+            next_kf_seq: AtomicU64::new(1),
+            had_scene_frame: AtomicBool::new(false),
             latest_keyframe: Mutex::new(None),
+            peers: Mutex::new(HashMap::new()),
             inbound_tx,
             inbound_notify: Arc::new(tokio::sync::Notify::new()),
             frames_sent: AtomicU64::new(0),
@@ -348,7 +434,12 @@ impl NveWireServer {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .any(|(k, _)| matches!(k, NveWireTransportKind::Quic | NveWireTransportKind::WebTransport))
+            .any(|p| {
+                matches!(
+                    p.transport,
+                    NveWireTransportKind::Quic | NveWireTransportKind::WebTransport
+                )
+            })
     }
 
     pub fn wait_for_peers(&self, min_peers: usize, timeout: Duration) -> bool {
@@ -376,24 +467,49 @@ impl NveWireServer {
 
     /// Broadcasts one `NveWireFrame` to all connected peers (QUIC, WebTransport, and WSS/WS).
     ///
-    /// Only genuine [`NveWireKind::SceneKeyframe`] frames are cached in `latest_keyframe` for
-    /// late-joining or reconnecting peers; incremental `CommandDelta` frames never overwrite it.
+    /// Locks `latest_keyframe` before `peers` consistently with `register_peer`. Genuine
+    /// [`NveWireKind::SceneKeyframe`] frames refresh `latest_keyframe`; [`NveWireKind::CommandDelta`]
+    /// frames invalidate `latest_keyframe` (`None`) so late-joining or reconnecting peers never
+    /// roll back to a stale Frame-1 snapshot.
     pub fn broadcast_frame(&self, frame: &NveWireFrame) -> Result<usize, NveWireTransportError> {
         let encoded = Bytes::from(frame.encode()?);
-        if frame.kind == NveWireKind::SceneKeyframe {
-            *self
-                .state
-                .latest_keyframe
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(encoded.clone());
-        }
-        let peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut kf_guard = self
+            .state
+            .latest_keyframe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let new_kf_seq = match frame.kind {
+            NveWireKind::SceneKeyframe => {
+                let seq = self.state.next_kf_seq.fetch_add(1, Ordering::Relaxed);
+                *kf_guard = Some(CachedKeyframe {
+                    seq,
+                    bytes: encoded.clone(),
+                });
+                self.state.had_scene_frame.store(true, Ordering::Release);
+                Some(seq)
+            }
+            NveWireKind::CommandDelta => {
+                *kf_guard = None;
+                self.state.had_scene_frame.store(true, Ordering::Release);
+                None
+            }
+            _ => None,
+        };
         let mut delivered = 0usize;
-        for (_, tx) in peers.values() {
-            if tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
+        for peer in peers.values_mut() {
+            if peer.tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
                 delivered += 1;
+                if let Some(seq) = new_kf_seq {
+                    peer.last_sent_kf_seq = seq;
+                    peer.pending_kf_request = false;
+                } else if frame.kind == NveWireKind::CommandDelta {
+                    peer.last_sent_kf_seq = 0;
+                }
             }
         }
+        drop(peers);
+        drop(kf_guard);
         if delivered > 0 {
             self.state
                 .frames_sent
@@ -413,10 +529,15 @@ impl NveWireServer {
         frame: &NveWireFrame,
     ) -> Result<bool, NveWireTransportError> {
         let encoded = Bytes::from(frame.encode()?);
-        let Some(tx) = self.state.peer_sender(session_id) else {
+        let mut peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(peer) = peers.get_mut(&session_id) else {
             return Ok(false);
         };
-        if tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
+        if peer.tx.send(OutboundCommand::Stream(encoded.clone())).is_ok() {
+            if frame.kind == NveWireKind::SceneKeyframe {
+                peer.pending_kf_request = false;
+            }
+            drop(peers);
             self.state.frames_sent.fetch_add(1, Ordering::Relaxed);
             self.state
                 .wire_bytes_tx
@@ -447,14 +568,14 @@ impl NveWireServer {
         let encoded = Bytes::from(dgram_frame.encode()?);
         let peers = self.state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let mut delivered = 0usize;
-        for (kind, tx) in peers.values() {
-            let cmd = match kind {
+        for peer in peers.values() {
+            let cmd = match peer.transport {
                 NveWireTransportKind::Quic | NveWireTransportKind::WebTransport => {
                     OutboundCommand::Datagram(encoded.clone())
                 }
                 _ => OutboundCommand::Stream(encoded.clone()),
             };
-            if tx.send(cmd).is_ok() {
+            if peer.tx.send(cmd).is_ok() {
                 delivered += 1;
             }
         }
@@ -501,6 +622,8 @@ impl NveWireServer {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.state.inbound_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Ok(msg) = self.inbound_rx.try_recv() {
                 return Some(msg);
             }

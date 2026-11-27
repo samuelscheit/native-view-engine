@@ -281,6 +281,13 @@ pub trait DesktopApp {
         None
     }
 
+    /// Invoked after the most recently dequeued wire frame applied cleanly into `StoreWireReplica`.
+    fn on_queued_wire_frame_applied(&mut self, _is_keyframe: bool) {}
+
+    /// Invoked when the most recently dequeued wire frame failed to decode/apply, allowing paired
+    /// remote apps to enter `waiting_for_keyframe` and request a rate-limited `SceneKeyframe`.
+    fn on_queued_wire_frame_error(&mut self) {}
+
     /// Optional live status banner for remote/paired sessions (shown in HUD & window title).
     fn remote_status_banner(&self) -> Option<String> {
         None

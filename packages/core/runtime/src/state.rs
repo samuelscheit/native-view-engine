@@ -332,6 +332,12 @@ impl RuntimeInner {
             res
         };
         if let Err(err) = apply_res {
+            // Discard mid-frame partial mutations immediately so `replica_store` and
+            // `LaidOutScene` stay synchronized across `submit_nve2`, `AppFrame::Wire`, and pair.
+            Self::reset_replica_and_state(replica_store, state);
+            state.merged_changes.copy_from(&state.empty_changes);
+            *has_changes = false;
+            state.needs_publish = true;
             return Err(RuntimeError::WireDecode(err.to_string()));
         }
         state.has_replica_state = true;
@@ -348,6 +354,7 @@ impl RuntimeInner {
 
     fn reset_replica_and_state(replica_store: &mut NodeStore, state: &mut SurfaceState) {
         state.invalidate_published_view();
+        state.metrics.live_nodes = 0;
         state.rects.clear();
         state.scene.reset();
         state.wire_decoder = WireDecoder::default();
@@ -502,20 +509,17 @@ impl RuntimeInner {
         Ok((changed, needs_follow_up_wake))
     }
 
-    fn reset_and_request_pair_keyframe(&mut self, session_id: u64, has_changes: &mut bool) {
+    fn reset_pair_replica(&mut self, has_changes: &mut bool) {
         self.reset_for_app_change();
         self.state
             .merged_changes
             .copy_from(&self.state.empty_changes);
         *has_changes = false;
         self.state.needs_publish = true;
-        if let Some(ref mut pair) = self.pair {
-            pair.request_keyframe_once(session_id);
-        }
     }
 
-    /// Drains bounded paired wire events, maintaining `waiting_for_keyframe` across reconnects,
-    /// queue overflows, and mid-frame/multi-frame decode failures without aborting `tick()`.
+    /// Drains bounded paired wire events, delegating resync rules to `WireResyncState` across
+    /// reconnects, queue overflows, and mid-frame/multi-frame decode failures without aborting `tick()`.
     fn drain_pair_frames(&mut self, has_changes: &mut bool) -> bool {
         let mut drained = 0usize;
         while drained < MAX_PAIR_FRAMES_PER_TICK {
@@ -528,15 +532,19 @@ impl RuntimeInner {
                     session_id,
                     reconnected,
                 } => {
-                    if reconnected
-                        && let Some(ref mut pair) = self.pair
-                        && (self.state.has_replica_state || pair.is_waiting_for_keyframe())
-                    {
-                        pair.enter_resync_after_reconnect(session_id);
+                    if let Some(ref mut pair) = self.pair {
+                        pair.on_session_started(
+                            session_id,
+                            reconnected,
+                            self.state.has_replica_state,
+                        );
                     }
                 }
                 PairInboundEvent::Overflowed { session_id } => {
-                    self.reset_and_request_pair_keyframe(session_id, has_changes);
+                    self.reset_pair_replica(has_changes);
+                    if let Some(ref mut pair) = self.pair {
+                        pair.on_overflowed(session_id);
+                    }
                 }
                 PairInboundEvent::Keyframe {
                     session_id,
@@ -548,11 +556,14 @@ impl RuntimeInner {
                     match self.apply_wire_bytes(&payload, true, false, has_changes) {
                         Ok(()) => {
                             if let Some(ref mut pair) = self.pair {
-                                pair.mark_synced();
+                                pair.mark_keyframe_applied();
                             }
                         }
                         Err(_) => {
-                            self.reset_and_request_pair_keyframe(session_id, has_changes);
+                            self.reset_pair_replica(has_changes);
+                            if let Some(ref mut pair) = self.pair {
+                                pair.on_decode_error(session_id);
+                            }
                         }
                     }
                 }
@@ -563,27 +574,26 @@ impl RuntimeInner {
                     if payload.is_empty() {
                         continue;
                     }
-                    let waiting = self
+                    let is_frame1 = WireDecoder::validate_header(&payload)
+                        .is_ok_and(|(frame_num, _)| frame_num == 1);
+                    let admit = self
                         .pair
                         .as_ref()
-                        .is_some_and(PairSession::is_waiting_for_keyframe);
-                    if waiting {
-                        // Drop deltas (and corrupt packets) while waiting for a SceneKeyframe or frame 1.
-                        let Ok((frame_num, _)) = WireDecoder::validate_header(&payload) else {
-                            continue;
-                        };
-                        if frame_num != 1 {
-                            continue;
-                        }
+                        .is_none_or(|p| p.should_apply(false, is_frame1));
+                    if !admit {
+                        continue;
                     }
                     match self.apply_wire_bytes(&payload, false, false, has_changes) {
                         Ok(()) => {
-                            if let Some(ref mut pair) = self.pair {
-                                pair.mark_synced();
+                            if is_frame1 && let Some(ref mut pair) = self.pair {
+                                pair.mark_keyframe_applied();
                             }
                         }
                         Err(_) => {
-                            self.reset_and_request_pair_keyframe(session_id, has_changes);
+                            self.reset_pair_replica(has_changes);
+                            if let Some(ref mut pair) = self.pair {
+                                pair.on_decode_error(session_id);
+                            }
                         }
                     }
                 }

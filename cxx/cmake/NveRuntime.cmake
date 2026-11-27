@@ -41,13 +41,19 @@ if(NOT TARGET nve_runtime)
     set(_nve_rt_lib_path "${NVE_RUNTIME_PREBUILT_LIB}")
   else()
     if("${NVE_RUNTIME_PROFILE}" STREQUAL "")
-      string(TOLOWER "${CMAKE_BUILD_TYPE}" _nve_rt_build_type)
-      if(_nve_rt_build_type STREQUAL "release"
-         OR _nve_rt_build_type STREQUAL "relwithdebinfo"
-         OR _nve_rt_build_type STREQUAL "minsizerel")
-        set(_nve_rt_profile "release")
-      else()
+      if(CMAKE_CONFIGURATION_TYPES)
+        # Multi-config generators (Xcode, Visual Studio) leave `CMAKE_BUILD_TYPE` empty at
+        # configure time; default deterministically to `debug` (override with `-DNVE_RUNTIME_PROFILE=release`).
         set(_nve_rt_profile "debug")
+      else()
+        string(TOLOWER "${CMAKE_BUILD_TYPE}" _nve_rt_build_type)
+        if(_nve_rt_build_type STREQUAL "release"
+           OR _nve_rt_build_type STREQUAL "relwithdebinfo"
+           OR _nve_rt_build_type STREQUAL "minsizerel")
+          set(_nve_rt_profile "release")
+        else()
+          set(_nve_rt_profile "debug")
+        endif()
       endif()
     else()
       string(TOLOWER "${NVE_RUNTIME_PROFILE}" _nve_rt_profile)

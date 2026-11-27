@@ -538,9 +538,15 @@ impl SurfaceRuntime {
     pub fn metrics(&self) -> Result<NveRuntimeMetrics, RuntimeError> {
         self.check_not_poisoned()?;
         let _guard = self.lock.read_guard().ok_or(RuntimeError::SceneBusy)?;
-        // SAFETY: Reader lock held for `_guard`'s lifetime.
-        let mut m = unsafe { &*self.inner.get() }.state.metrics;
-        m.pair_connected = u32::from(self.pair_is_connected());
+        // SAFETY: Reader lock held for `_guard`'s lifetime; `overlay_live_metrics` only reads
+        // immutable `u64` snapshots and atomic counters on `ReconnectingWireClient`.
+        let inner = unsafe { &*self.inner.get() };
+        let mut m = inner.state.metrics;
+        if let Some(pair) = inner.pair.as_ref() {
+            pair.overlay_live_metrics(&mut m);
+        } else {
+            m.pair_connected = u32::from(self.pair_is_connected());
+        }
         Ok(m)
     }
 }

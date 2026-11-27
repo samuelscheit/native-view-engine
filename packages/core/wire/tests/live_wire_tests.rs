@@ -515,7 +515,7 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
     let proxy_uri = parse_wire_uri(&format!("ws://{proxy_addr}/nve-wire")).expect("proxy uri");
     let mut peer_b = ReconnectingWireClient::connect_sync(
         proxy_uri,
-        NveWireClientConfig::new(token, "reconnecting-peer-b"),
+        NveWireClientConfig::new(token.clone(), "reconnecting-peer-b"),
         ReconnectConfig {
             initial_backoff: Duration::from_millis(40),
             max_backoff: Duration::from_millis(120),
@@ -568,12 +568,14 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
         b"delta-during-outage-3"
     );
 
-    // Peer B automatically reconnects -> SessionStarted(2, reconnected=true) + cached SceneKeyframe
-    // (NOT overwritten by delta-3!).
+    // Peer B automatically reconnects -> SessionStarted(2, reconnected=true).
+    // Because CommandDeltas 2 & 3 invalidated the server's stale Frame-1 keyframe, the server
+    // MUST NOT replay stale `initial-scene-keyframe-v1` (which would roll Peer B back!). Instead
+    // it emits ONE KeyframeRequest to the producer so the producer answers ONLY Peer B with a
+    // fresh post-Frame-3 full snapshot!
     let mut saw_session2 = false;
-    let mut saw_kf = false;
     let deadline = Instant::now() + Duration::from_secs(5);
-    while (!saw_session2 || !saw_kf) && Instant::now() < deadline {
+    while !saw_session2 && Instant::now() < deadline {
         let Some(item) = peer_b.recv_item_timeout(Duration::from_millis(200)) else {
             continue;
         };
@@ -586,25 +588,30 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
                 session_id: 2,
                 frame,
             } if frame.kind == NveWireKind::SceneKeyframe => {
-                assert_eq!(
+                assert_ne!(
                     frame.payload, b"initial-scene-keyframe-v1",
-                    "CommandDelta must NEVER overwrite server latest_keyframe"
+                    "stale Frame-1 keyframe must NEVER be replayed after CommandDeltas invalidated it"
                 );
-                saw_kf = true;
             }
             _ => {}
         }
     }
     assert!(saw_session2, "peer B must emit SessionStarted(2, reconnected=true)");
-    assert!(saw_kf, "peer B must receive genuine cached SceneKeyframe on reconnect");
 
-    // Server also receives KeyframeRequest and can send a targeted fresh SceneKeyframe ONLY to Peer B.
+    // Server receives exactly ONE KeyframeRequest (synthetic join + client reconnect request
+    // deduplicated!) and answers ONLY Peer B with a fresh post-Frame-3 snapshot.
     let kf_req = server
         .recv_inbound_timeout(Duration::from_secs(2))
-        .expect("server receives KeyframeRequest");
+        .expect("server receives KeyframeRequest after delta invalidation");
     assert_eq!(kf_req.frame.kind, NveWireKind::KeyframeRequest);
+    assert!(
+        server
+            .recv_inbound_timeout(Duration::from_millis(120))
+            .is_none(),
+        "join + reconnect must not emit duplicate KeyframeRequests"
+    );
     assert!(server
-        .send_scene_keyframe_to_peer(kf_req.session_id, 4, b"targeted-fresh-kf")
+        .send_scene_keyframe_to_peer(kf_req.session_id, 4, b"post-delta3-fresh-kf")
         .unwrap());
 
     let mut saw_targeted = false;
@@ -613,8 +620,11 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
         if let Some(WireInboundItem::Frame { frame, .. }) =
             peer_b.recv_item_timeout(Duration::from_millis(100))
             && frame.kind == NveWireKind::SceneKeyframe
-            && frame.payload == b"targeted-fresh-kf"
         {
+            assert_eq!(
+                frame.payload, b"post-delta3-fresh-kf",
+                "peer B must receive fresh post-delta snapshot, never stale Frame 1"
+            );
             saw_targeted = true;
         }
     }
@@ -626,6 +636,53 @@ fn same_server_reconnect_targets_keyframe_reply_without_resetting_healthy_peer()
         "healthy peer A must not be disrupted by peer B's KeyframeRequest"
     );
 
+    // Now broadcast a fresh SceneKeyframe (v5) with ZERO subsequent deltas -> server caches v5.
+    // Late-joining Peer C gets cached v5 ONCE; an immediate redundant KeyframeRequest from Peer C
+    // is deduplicated (no duplicate frame, no producer spam), while a subsequent KeyframeRequest
+    // (e.g. corruption recovery) still resends cached v5!
+    assert_eq!(
+        server
+            .broadcast_scene_keyframe(5, b"cached-keyframe-v5")
+            .unwrap(),
+        2
+    );
+    let _ = peer_a.recv_frame_timeout(Duration::from_secs(2)).unwrap();
+    let _ = peer_b.recv_item_timeout(Duration::from_secs(2)).unwrap();
+
+    let direct_uri = parse_wire_uri(&format!("ws://{}/nve-wire", server.wss_addr())).unwrap();
+    let peer_c = NveWireClient::connect_uri_sync(
+        &direct_uri,
+        &NveWireClientConfig::new(token, "late-peer-c"),
+    )
+    .expect("connect peer C");
+    let c_init = peer_c
+        .recv_frame_timeout(Duration::from_secs(2))
+        .expect("peer C cached keyframe");
+    assert_eq!(c_init.kind, NveWireKind::SceneKeyframe);
+    assert_eq!(c_init.payload, b"cached-keyframe-v5");
+
+    // First redundant KeyframeRequest right after cached join delivery is suppressed.
+    peer_c.request_keyframe().unwrap();
+    assert!(
+        peer_c.recv_frame_timeout(Duration::from_millis(120)).is_none(),
+        "redundant KeyframeRequest for already-delivered cached keyframe must be suppressed"
+    );
+    assert!(
+        server
+            .recv_inbound_timeout(Duration::from_millis(80))
+            .is_none(),
+        "cached keyframe dedup must not forward KeyframeRequest to producer"
+    );
+
+    // Second KeyframeRequest (e.g. after client corruption) DOES resend cached v5 cleanly!
+    peer_c.request_keyframe().unwrap();
+    let c_resend = peer_c
+        .recv_frame_timeout(Duration::from_secs(2))
+        .expect("subsequent KeyframeRequest must resend cached keyframe");
+    assert_eq!(c_resend.kind, NveWireKind::SceneKeyframe);
+    assert_eq!(c_resend.payload, b"cached-keyframe-v5");
+
+    peer_c.close();
     peer_b.shutdown();
     peer_a.close();
     stop_proxy.store(true, Ordering::Release);
@@ -844,4 +901,277 @@ fn prompt_shutdown_during_backoff_and_stalled_handshake() {
     );
 
     let _ = keep_open.join();
+}
+
+#[test]
+fn pre_hello_ack_close_retries_as_connect_not_terminal_auth() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::sync::atomic::AtomicBool;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = Arc::clone(&stop);
+
+    let srv_thread = std::thread::spawn(move || {
+        rt.block_on(async move {
+            // Attempt 1: upgrade WS, read Hello, close immediately BEFORE HelloAck!
+            if let Ok((stream, _)) = listener.accept().await
+                && let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await
+            {
+                let _ = ws.next().await;
+                let _ = ws.close(None).await;
+            }
+            // Attempt 2: upgrade WS, read Hello, send Ping + valid HelloAck + SceneKeyframe!
+            if let Ok((stream, _)) = listener.accept().await
+                && let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await
+            {
+                let _ = ws.next().await;
+                let _ = ws.send(Message::Ping(vec![1, 2, 3].into())).await;
+                let mut ack_payload = Vec::with_capacity(12);
+                ack_payload.extend_from_slice(&42u32.to_le_bytes());
+                ack_payload.extend_from_slice(&[2u8, 0, 0, 0]);
+                ack_payload.extend_from_slice(&0u32.to_le_bytes());
+                let ack = NveWireFrame::new(NveWireKind::HelloAck, 1, ack_payload)
+                    .encode()
+                    .unwrap();
+                let _ = ws.send(Message::Binary(ack.into())).await;
+
+                let kf = NveWireFrame::new(
+                    NveWireKind::SceneKeyframe,
+                    2,
+                    b"recovered-after-pre-hello-close".to_vec(),
+                )
+                .encode()
+                .unwrap();
+                let _ = ws.send(Message::Binary(kf.into())).await;
+
+                while !stop_srv.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        });
+    });
+
+    let uri = parse_wire_uri(&format!("ws://{addr}/nve-wire")).unwrap();
+    let mut client = ReconnectingWireClient::spawn(
+        uri,
+        NveWireClientConfig::new("tok", "pre-hello-close-test"),
+        ReconnectConfig {
+            initial_backoff: Duration::from_millis(25),
+            max_backoff: Duration::from_millis(60),
+        },
+        None,
+    )
+    .expect("spawn client");
+
+    let mut saw_kf = false;
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while !saw_kf && Instant::now() < deadline {
+        if let Some(WireInboundItem::Frame { frame, .. }) =
+            client.recv_item_timeout(Duration::from_millis(100))
+            && frame.kind == NveWireKind::SceneKeyframe
+            && frame.payload == b"recovered-after-pre-hello-close"
+        {
+            saw_kf = true;
+        }
+    }
+    assert!(
+        saw_kf,
+        "transient pre-HelloAck WS close must retry cleanly (auth_rejections={}, last_error={:?})",
+        client.auth_rejections(),
+        client.last_error()
+    );
+    assert_eq!(
+        client.auth_rejections(),
+        0,
+        "pre-HelloAck disconnect must not be classified as terminal Auth rejection"
+    );
+
+    stop.store(true, Ordering::Release);
+    client.shutdown();
+    let _ = srv_thread.join();
+}
+
+#[test]
+fn inbound_queue_overflow_emits_overflowed_counts_dropped_and_preserves_control_and_keyframe() {
+    let token = generate_bearer_token();
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ws_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let server1 = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        ws_addr,
+        token.clone(),
+    ))
+    .expect("bind server1");
+
+    let uri = parse_wire_uri(&format!("ws://{ws_addr}/nve-wire")).unwrap();
+    let mut client = ReconnectingWireClient::connect_sync(
+        uri,
+        NveWireClientConfig::new(token.clone(), "overflow-test-client"),
+        ReconnectConfig {
+            initial_backoff: Duration::from_millis(25),
+            max_backoff: Duration::from_millis(60),
+        },
+        None,
+    )
+    .expect("connect overflow client");
+
+    // 1. Flood > 300 CommandDeltas without draining, followed by a SceneKeyframe.
+    for seq in 1..=320u32 {
+        assert_eq!(server1.broadcast_command_delta(seq, b"delta").unwrap(), 1);
+    }
+    assert_eq!(
+        server1
+            .broadcast_scene_keyframe(321, b"post-overflow-kf")
+            .unwrap(),
+        1
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while (client.dropped_inbound() == 0 || client.metrics().keyframes_received < 1)
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        client.dropped_inbound() > 0,
+        "saturated inbound queue must report dropped_inbound > 0"
+    );
+
+    let mut saw_overflow = false;
+    let mut saw_kf_after_overflow = false;
+    while let Some(item) = client.try_recv_item() {
+        match item {
+            WireInboundItem::Overflowed { session_id: 1 } => saw_overflow = true,
+            WireInboundItem::Frame { frame, .. }
+                if saw_overflow
+                    && frame.kind == NveWireKind::SceneKeyframe
+                    && frame.payload == b"post-overflow-kf" =>
+            {
+                saw_kf_after_overflow = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_overflow, "overflowed inbound queue must emit WireInboundItem::Overflowed");
+    assert!(
+        saw_kf_after_overflow,
+        "SceneKeyframe arriving on full queue must be preserved after Overflowed"
+    );
+
+    // 2. Saturate inbound queue again, then drop server1 and start server2 on same port:
+    //    reconnect's SessionStarted(2, reconnected=true) MUST be preserved despite full queue!
+    for seq in 322..=620u32 {
+        let _ = server1.broadcast_command_delta(seq, b"fill");
+    }
+    let fill_deadline = Instant::now() + Duration::from_secs(3);
+    while client.metrics().command_deltas_received < 600 && Instant::now() < fill_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    server1.shutdown();
+    drop(server1);
+
+    let rebind_deadline = Instant::now() + Duration::from_secs(3);
+    let server2 = loop {
+        match NveWireServer::bind_sync(NveWireServerConfig::new(
+            "127.0.0.1:0".parse().unwrap(),
+            ws_addr,
+            token.clone(),
+        )) {
+            Ok(s) => break s,
+            Err(_) if Instant::now() < rebind_deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("rebind server2 failed: {e}"),
+        }
+    };
+
+    let rec_deadline = Instant::now() + Duration::from_secs(4);
+    while client.active_session_id() < 2 && Instant::now() < rec_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(client.active_session_id(), 2);
+
+    let mut saw_session2 = false;
+    while let Some(item) = client.try_recv_item() {
+        if matches!(
+            item,
+            WireInboundItem::SessionStarted {
+                session_id: 2,
+                reconnected: true
+            }
+        ) {
+            saw_session2 = true;
+        }
+    }
+    assert!(
+        saw_session2,
+        "SessionStarted(2, reconnected=true) must never be lost when inbound queue is full"
+    );
+
+    client.shutdown();
+    server2.shutdown();
+}
+
+#[test]
+fn ipv6_loopback_ws_uri_connect_roundtrip() {
+    let token = generate_bearer_token();
+    let Ok(server) = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "[::1]:0".parse().unwrap(),
+        "[::1]:0".parse().unwrap(),
+        token.clone(),
+    )) else {
+        // Gracefully skip on environments without IPv6 loopback enabled.
+        return;
+    };
+    let _ = server.broadcast_scene_keyframe(1, b"ipv6-loopback-ok");
+    let port = server.wss_addr().port();
+
+    // 1. Parsed bracketed URI `ws://[::1]:port/nve-wire`.
+    let parsed_uri = parse_wire_uri(&format!("ws://[::1]:{port}/nve-wire")).expect("parse IPv6 URI");
+    let client = NveWireClient::connect_uri_sync(
+        &parsed_uri,
+        &NveWireClientConfig::new(token.clone(), "ipv6-parsed"),
+    )
+    .expect("connect via bracketed IPv6 URI");
+    let f = client
+        .recv_frame_timeout(Duration::from_secs(2))
+        .expect("receive IPv6 frame");
+    assert_eq!(f.payload, b"ipv6-loopback-ok");
+    client.close();
+
+    // 2. Direct unbracketed `NveWireUri { host: "::1", ... }` via ReconnectingWireClient.
+    let mut raw_uri = parsed_uri;
+    raw_uri.host = "::1".to_owned();
+    let mut reconnecting = ReconnectingWireClient::connect_sync(
+        raw_uri,
+        NveWireClientConfig::new(token, "ipv6-raw-host"),
+        ReconnectConfig::default(),
+        None,
+    )
+    .expect("connect ReconnectingWireClient with unbracketed IPv6 host");
+    let mut saw_v6 = false;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !saw_v6 && Instant::now() < deadline {
+        if let Some(WireInboundItem::Frame { frame, .. }) =
+            reconnecting.recv_item_timeout(Duration::from_millis(100))
+            && frame.payload == b"ipv6-loopback-ok"
+        {
+            saw_v6 = true;
+        }
+    }
+    assert!(saw_v6, "IPv6 ReconnectingWireClient must receive SceneKeyframe");
+
+    reconnecting.shutdown();
+    server.shutdown();
 }

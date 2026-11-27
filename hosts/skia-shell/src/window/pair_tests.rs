@@ -451,6 +451,7 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
         thread::sleep(Duration::from_millis(5));
     }
     assert!(session.app().frames_received() >= 2);
+    assert!(session.app().has_pending_remote_frame());
 
     // A single render_and_rasterize() must drain Frame 1 AND Frame 2 in exact order -> green!
     session.render_and_rasterize().expect("apply ordered batch");
@@ -484,6 +485,7 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
     while session.app().frames_received() < 3 && Instant::now() < kf_deadline {
         thread::sleep(Duration::from_millis(5));
     }
+    assert!(session.app().has_pending_remote_frame());
     session.render_and_rasterize().expect("apply frame-5 keyframe");
     assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((250, 204, 21)));
     assert!(
@@ -492,6 +494,154 @@ fn paired_remote_app_preserves_multi_delta_batch_order_and_resets_on_high_frame_
     );
     assert!(session.store().is_live(StoreNodeId(9)));
 
+    session.app_mut().disconnect();
+    server.shutdown();
+}
+
+#[test]
+fn paired_remote_app_recovers_from_corrupt_frame_and_shows_auth_rejected_banner() {
+    register_core_tables();
+    let token = "skia-corrupt-recover-token";
+    let server = NveWireServer::bind_sync(NveWireServerConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        token,
+    ))
+    .expect("bind server");
+
+    let cfg = PairConnectConfig::new(
+        format!("ws://{}/nve-wire", server.wss_addr()),
+        token,
+        PairTransport::Ws,
+    );
+    let app = PairedRemoteApp::connect(cfg).expect("connect paired app");
+    let viewport = Viewport {
+        width: 240.0,
+        height: 160.0,
+        scale_factor: 1.0,
+    };
+    let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+
+    // Build valid Frame 1 (blue) and corrupt Frame 2 (garbage payload).
+    let mut store = NodeStore::new();
+    let mut enc = WireEncoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = store.tx();
+        let _ = tx.create_at(StoreNodeId::ROOT);
+        let _ = tx.create_at(StoreNodeId(2));
+        tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+        tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+        tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(37, 99, 235));
+        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+        tx.commit_into(&mut changes);
+    }
+    let mut f1 = Vec::new();
+    enc.encode(&store, &changes, &mut f1);
+
+    assert_eq!(server.broadcast_scene_keyframe(1, &f1).unwrap(), 1);
+    assert_eq!(server.broadcast_command_delta(2, b"CORRUPT_NVE2_FRAME").unwrap(), 1);
+    let wait_rx = |sess: &DesktopSession<PairedRemoteApp>, target: u64| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while sess.app().frames_received() < target && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            sess.app().frames_received() >= target,
+            "expected >= {target} frames, got {}",
+            sess.app().frames_received()
+        );
+    };
+    wait_rx(&session, 2);
+
+    // 1. render_and_rasterize MUST NOT abort on Frame 2 error, MUST still rasterize valid Frame 1
+    //    (blue), and MUST trigger ONE KeyframeRequest!
+    session
+        .render_and_rasterize()
+        .expect("corrupt remote frame must recover rather than return Err");
+    assert_eq!(
+        session.pixel_buffer().get_rgb(50, 50),
+        Some((37, 99, 235)),
+        "earlier valid Frame 1 must still be rasterized when Frame 2 fails"
+    );
+    let req = server
+        .recv_inbound_timeout(Duration::from_secs(2))
+        .expect("server receives KeyframeRequest after corrupt Frame 2");
+    assert_eq!(req.frame.kind, NveWireKind::KeyframeRequest);
+
+    // 2. While waiting for a valid keyframe: a corrupt SceneKeyframe MUST NOT clear waiting state
+    //    or spam another KeyframeRequest!
+    assert!(server
+        .send_scene_keyframe_to_peer(req.session_id, 3, b"BROKEN_KF")
+        .unwrap());
+    wait_rx(&session, 3);
+    session
+        .render_and_rasterize()
+        .expect("corrupt keyframe must not abort");
+    assert!(
+        server
+            .recv_inbound_timeout(Duration::from_millis(150))
+            .is_none(),
+        "must not spam duplicate KeyframeRequests in the same resync epoch"
+    );
+
+    // 3. Send valid recovery SceneKeyframe (yellow) + immediate trailing CommandDelta (green) in
+    //    ONE burst -> single render_and_rasterize() must clear waiting_for_keyframe on the valid
+    //    keyframe AND apply the trailing delta in order -> green!
+    let mut store_rec = NodeStore::new();
+    let mut enc_rec = WireEncoder::default();
+    let mut ch_rec = ChangeSet::default();
+    {
+        let mut tx = store_rec.tx();
+        let _ = tx.create_at(StoreNodeId::ROOT);
+        let _ = tx.create_at(StoreNodeId(5));
+        tx.set(StoreNodeId(5), Layout::WIDTH, Length::percent(100.0));
+        tx.set(StoreNodeId(5), Layout::HEIGHT, Length::percent(100.0));
+        tx.set(StoreNodeId(5), Visual::BACKGROUND, Rgba::rgb(250, 204, 21));
+        tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(5)]);
+        tx.commit_into(&mut ch_rec);
+    }
+    let mut kf_yellow = Vec::new();
+    enc_rec.encode(&store_rec, &ch_rec, &mut kf_yellow);
+    {
+        let mut tx = store_rec.tx();
+        tx.set(StoreNodeId(5), Visual::BACKGROUND, Rgba::rgb(16, 185, 129));
+        tx.commit_into(&mut ch_rec);
+    }
+    let mut delta_green = Vec::new();
+    enc_rec.encode(&store_rec, &ch_rec, &mut delta_green);
+
+    assert!(server
+        .send_scene_keyframe_to_peer(req.session_id, 4, &kf_yellow)
+        .unwrap());
+    assert_eq!(server.broadcast_command_delta(5, &delta_green).unwrap(), 1);
+    wait_rx(&session, 5);
+    session
+        .render_and_rasterize()
+        .expect("valid keyframe + trailing delta must apply cleanly");
+    assert_eq!(session.pixel_buffer().get_rgb(50, 50), Some((16, 185, 129)));
+
+    // 4. Terminal auth rejection surfaces `[AUTH REJECTED]` in remote_status_banner!
+    let bad_cfg = PairConnectConfig::new(
+        format!("ws://{}/nve-wire", server.wss_addr()),
+        "wrong-token-for-banner",
+        PairTransport::Ws,
+    );
+    let mut bad_app = PairedRemoteApp::spawn_for_test(bad_cfg).expect("spawn bad-token app");
+    let auth_deadline = Instant::now() + Duration::from_secs(3);
+    while bad_app.auth_rejections() == 0 && Instant::now() < auth_deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(bad_app.auth_rejections(), 1);
+    let banner = bad_app
+        .remote_status_banner()
+        .expect("paired app status banner");
+    assert!(
+        banner.contains("AUTH REJECTED"),
+        "expected AUTH REJECTED in banner, got `{banner}`"
+    );
+
+    bad_app.disconnect();
     session.app_mut().disconnect();
     server.shutdown();
 }

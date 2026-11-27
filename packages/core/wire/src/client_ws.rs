@@ -1,5 +1,6 @@
 //! TLS WebSocket (`wss://` / `ws://`) and URI-based dispatch helpers for [`NveWireClient`].
 
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,17 +22,31 @@ use crate::client::{
     CLIENT_INBOUND_CAP, CLIENT_OUTBOUND_CAP,
 };
 use crate::framing::{read_wt_frame, write_wt_raw};
-use crate::tls::{
-    build_pinned_client_tls_config, build_quic_transport_config, ensure_crypto_provider,
-};
+use crate::tls::{build_pinned_client_tls_config, ensure_crypto_provider};
 use crate::{NveWireClientConfig, NveWireTransportError};
+
+fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+fn format_url_host(host: &str) -> Cow<'_, str> {
+    let bare = strip_ipv6_brackets(host);
+    if bare.contains(':') {
+        Cow::Owned(format!("[{bare}]"))
+    } else {
+        Cow::Borrowed(bare)
+    }
+}
 
 async fn resolve_socket_addr(
     host: &str,
     port: u16,
     timeout: Duration,
 ) -> Result<SocketAddr, NveWireTransportError> {
-    let mut addrs = tokio::time::timeout(timeout, tokio::net::lookup_host((host, port)))
+    let bare = strip_ipv6_brackets(host);
+    let mut addrs = tokio::time::timeout(timeout, tokio::net::lookup_host((bare, port)))
         .await
         .map_err(|_| NveWireTransportError::Connect("DNS lookup timed out".to_owned()))?
         .map_err(|e| NveWireTransportError::Connect(e.to_string()))?;
@@ -56,7 +71,6 @@ impl NveWireClient {
         let mut transport = quinn::TransportConfig::default();
         transport.datagram_receive_buffer_size(Some(65_536));
         transport.datagram_send_buffer_size(65_536);
-        let _ = build_quic_transport_config();
 
         let client = web_transport_quinn::ClientBuilder::new()
             .with_transport_config(transport)
@@ -76,7 +90,7 @@ impl NveWireClient {
             let ack = match read_wt_frame(&mut recv, config.max_frame_bytes).await? {
                 Some(f) => decode_hello_response(f)?,
                 None => {
-                    return Err(NveWireTransportError::Auth(
+                    return Err(NveWireTransportError::Connect(
                         "server closed WebTransport stream before HelloAck".to_owned(),
                     ))
                 }
@@ -177,10 +191,16 @@ impl NveWireClient {
     ) -> Result<Self, NveWireTransportError> {
         let parsed = url::Url::parse(url_str)
             .map_err(|e| NveWireTransportError::Connect(format!("invalid WS url: {e}")))?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| NveWireTransportError::Connect("WS url missing host".to_owned()))?
-            .to_owned();
+        let host = match parsed.host() {
+            Some(url::Host::Ipv6(ip)) => ip.to_string(),
+            Some(url::Host::Ipv4(ip)) => ip.to_string(),
+            Some(url::Host::Domain(domain)) => domain.to_owned(),
+            None => {
+                return Err(NveWireTransportError::Connect(
+                    "WS url missing host".to_owned(),
+                ))
+            }
+        };
         let is_tls = parsed.scheme() == "wss";
         let port = parsed
             .port_or_known_default()
@@ -236,17 +256,28 @@ impl NveWireClient {
             .await
             .map_err(|e| NveWireTransportError::Io(e.to_string()))?;
 
-        let ack = match stream.next().await {
-            Some(Ok(Message::Binary(raw))) => {
-                let frame = NveWireFrame::decode(&raw, config.max_frame_bytes)?;
-                decode_hello_response(frame)?
+        let ack = loop {
+            match stream.next().await {
+                Some(Ok(Message::Binary(raw))) => {
+                    let frame = NveWireFrame::decode(&raw, config.max_frame_bytes)?;
+                    break decode_hello_response(frame)?;
+                }
+                Some(Ok(Message::Ping(data))) => {
+                    let _ = sink.send(Message::Pong(data)).await;
+                }
+                Some(Ok(Message::Pong(_))) => {}
+                Some(Ok(Message::Close(_))) | None => {
+                    return Err(NveWireTransportError::Connect(
+                        "WS peer closed before HelloAck".to_owned(),
+                    ))
+                }
+                Some(Ok(_)) => {
+                    return Err(NveWireTransportError::Connect(
+                        "unexpected non-binary WS message before HelloAck".to_owned(),
+                    ))
+                }
+                Some(Err(e)) => return Err(NveWireTransportError::Io(e.to_string())),
             }
-            Some(Ok(_)) | None => {
-                return Err(NveWireTransportError::Auth(
-                    "WS peer closed before HelloAck".to_owned(),
-                ))
-            }
-            Some(Err(e)) => return Err(NveWireTransportError::Io(e.to_string())),
         };
 
         let (inbound_tx, inbound_rx) = bounded(CLIENT_INBOUND_CAP);
@@ -344,6 +375,7 @@ impl NveWireClient {
             cfg.cert_sha256 = uri.cert_sha256;
         }
         let host = &uri.host;
+        let url_host = format_url_host(host);
         let path = if uri.path.starts_with('/') {
             uri.path.as_str()
         } else {
@@ -364,27 +396,27 @@ impl NveWireClient {
                     let port = uri.quic_port.or(uri.wss_port).ok_or_else(|| {
                         NveWireTransportError::Connect("missing WebTransport port".to_owned())
                     })?;
-                    let url = format!("https://{host}:{port}{path}");
+                    let url = format!("https://{url_host}:{port}{path}");
                     Self::connect_webtransport(&url, &cfg).await
                 }
                 NveWireTransportKind::Wss => {
                     let port = uri.wss_port.or(uri.quic_port).ok_or_else(|| {
                         NveWireTransportError::Connect("missing WSS port".to_owned())
                     })?;
-                    let url = format!("wss://{host}:{port}{path}");
+                    let url = format!("wss://{url_host}:{port}{path}");
                     Self::connect_ws(&url, &cfg).await
                 }
                 NveWireTransportKind::Ws => {
                     let port = uri.wss_port.or(uri.quic_port).ok_or_else(|| {
                         NveWireTransportError::Connect("missing WS port".to_owned())
                     })?;
-                    let url = format!("ws://{host}:{port}{path}");
+                    let url = format!("ws://{url_host}:{port}{path}");
                     Self::connect_ws(&url, &cfg).await
                 }
                 NveWireTransportKind::Auto => match (uri.quic_port, uri.wss_port) {
                     (Some(qp), Some(wp)) => {
                         let scheme = if cfg.cert_sha256.is_some() { "wss" } else { "ws" };
-                        let ws_url = format!("{scheme}://{host}:{wp}{path}");
+                        let ws_url = format!("{scheme}://{url_host}:{wp}{path}");
                         if cfg.cert_sha256.is_some() {
                             let addr = resolve_socket_addr(host, qp, timeout).await?;
                             Self::connect_happy_eyeballs(addr, &ws_url, &cfg).await
@@ -398,7 +430,7 @@ impl NveWireClient {
                     }
                     (None, Some(wp)) => {
                         let scheme = if cfg.cert_sha256.is_some() { "wss" } else { "ws" };
-                        let ws_url = format!("{scheme}://{host}:{wp}{path}");
+                        let ws_url = format!("{scheme}://{url_host}:{wp}{path}");
                         Self::connect_ws(&ws_url, &cfg).await
                     }
                     (None, None) => Err(NveWireTransportError::Connect(

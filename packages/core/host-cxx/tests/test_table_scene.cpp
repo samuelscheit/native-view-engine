@@ -374,29 +374,40 @@ void test_runtime_scene_reader_and_session_mock() {
       assigned = std::move(*self_ptr);
       CHECK(assigned.active() && assigned->frame_id() == 3u);
 
+      // Non-self move-assignment releases prior guard_a lock immediately and clears moved-from guard_b.
+      auto guard_b = sess->acquire_scene();
+      CHECK(guard_b.has_value() && guard_b->active());
+      const int releases_before = state.releases;
+      assigned = std::move(*guard_b);
+      CHECK(state.releases == releases_before + 1);
+      CHECK(!guard_b->active());
+      CHECK(guard_b->reader().rows().empty() && guard_b->reader().rects().empty());
+      CHECK(guard_b->raw().rows == nullptr && guard_b->raw().node_capacity == 0u);
+      CHECK(assigned.active() && assigned->frame_id() == 3u);
+
       // Explicit release() clears raw_ and reader_ spans immediately.
       assigned.release();
       CHECK(!assigned.active());
       CHECK(assigned.reader().rows().empty() && assigned.reader().rects().empty());
       CHECK(assigned.raw().rows == nullptr && assigned.raw().node_capacity == 0u);
     }
-    CHECK(state.acquires == 1 && state.releases == 1);
+    CHECK(state.acquires == 2 && state.releases == 2);
 
-    // Misaligned slab pointer MUST be rejected by RuntimeSceneReader::open().
+    // Misaligned slab pointer MUST be rejected by RuntimeSceneReader::open() with MisalignedSlab.
     alignas(NveNodeRow) uint8_t unaligned_buf[sizeof(NveNodeRow) * 2u + 4u]{};
     NveRuntimeSceneView misaligned = state.view;
     misaligned.rows = reinterpret_cast<const NveNodeRow*>(unaligned_buf + 1u);
     SceneError align_err = SceneError::None;
     CHECK(!nve::host::RuntimeSceneReader::open(&misaligned, Key64{NVE_RUNTIME_SCHEMA_HASH}, &align_err)
                .has_value());
-    CHECK(align_err == SceneError::NullSlab);
+    CHECK(align_err == SceneError::MisalignedSlab);
 
     // Corrupted view MUST release reader lock immediately instead of leaking!
     state.corrupt_view = true;
     SceneError err = SceneError::None;
     CHECK(!sess->acquire_scene(nullptr, &err).has_value());
     CHECK(err == SceneError::SchemaMismatch);
-    CHECK(state.acquires == 2 && state.releases == 2);
+    CHECK(state.acquires == 3 && state.releases == 3);
   }
   CHECK(state.destroys == 1);
   g_mock = nullptr;

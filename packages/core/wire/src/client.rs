@@ -239,7 +239,7 @@ impl NveWireClient {
             let ack = match read_stream_frame(&mut recv, config.max_frame_bytes).await? {
                 Some(f) => decode_hello_response(f)?,
                 None => {
-                    return Err(NveWireTransportError::Auth(
+                    return Err(NveWireTransportError::Connect(
                         "server closed QUIC stream before HelloAck".to_owned(),
                     ))
                 }
@@ -393,6 +393,11 @@ impl NveWireClient {
         self.stats.snapshot(self.session_id)
     }
 
+    #[inline]
+    pub(crate) fn dropped_inbound(&self) -> u64 {
+        self.stats.dropped_inbound.load(Ordering::Acquire)
+    }
+
     fn alloc_seq(&self) -> u32 {
         self.next_sequence.fetch_add(1, Ordering::Relaxed)
     }
@@ -400,7 +405,7 @@ impl NveWireClient {
     fn send_outbound(&self, cmd: ClientOut, byte_len: u64) -> Result<(), NveWireTransportError> {
         self.outbound_tx.try_send(cmd).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => {
-                NveWireTransportError::Io("wire client outbound queue full".to_owned())
+                NveWireTransportError::Backpressure("wire client outbound queue full".to_owned())
             }
             mpsc::error::TrySendError::Closed(_) => {
                 NveWireTransportError::Io("wire client outbound closed".to_owned())
@@ -576,7 +581,7 @@ pub(crate) fn decode_hello_response(
                 "rejected ({reason:?}): {detail}"
             )))
         }
-        other => Err(NveWireTransportError::Auth(format!(
+        other => Err(NveWireTransportError::Connect(format!(
             "unexpected handshake reply kind: {other:?}"
         ))),
     }

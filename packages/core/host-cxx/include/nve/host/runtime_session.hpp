@@ -128,21 +128,23 @@ class RuntimeSceneReader {
   }
 
   template <class T>
-  static bool slab_ok(const T* p, uint32_t count) noexcept {
-    return count == 0u ||
-           (p != nullptr && (reinterpret_cast<uintptr_t>(p) % alignof(T)) == 0u &&
-            count_fits_host(count, sizeof(T)));
+  static SceneError check_slab(const T* p, uint32_t count) noexcept {
+    if (count == 0u) return SceneError::None;
+    if (p == nullptr || !count_fits_host(count, sizeof(T))) return SceneError::NullSlab;
+    if ((reinterpret_cast<uintptr_t>(p) % alignof(T)) != 0u) return SceneError::MisalignedSlab;
+    return SceneError::None;
   }
 
   static SceneError validate(const NveRuntimeSceneView* v, Key64 expected_schema) noexcept {
     if (v == nullptr) return SceneError::NullView;
     if (v->schema_hash != expected_schema.value) return SceneError::SchemaMismatch;
-    if (!slab_ok(v->rows, v->node_capacity) || !slab_ok(v->rects, v->node_capacity) ||
-        !slab_ok(v->text_slab, v->text_slab_len) || !slab_ok(v->children_slab, v->children_slab_len) ||
-        !slab_ok(v->dirty_indices, v->dirty_count) || !slab_ok(v->removed_ids, v->removed_count) ||
-        !slab_ok(v->tables, v->table_count)) {
-      return SceneError::NullSlab;
-    }
+    if (const SceneError e = check_slab(v->rows, v->node_capacity); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->rects, v->node_capacity); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->text_slab, v->text_slab_len); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->children_slab, v->children_slab_len); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->dirty_indices, v->dirty_count); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->removed_ids, v->removed_count); e != SceneError::None) return e;
+    if (const SceneError e = check_slab(v->tables, v->table_count); e != SceneError::None) return e;
     if (v->text_slab_len > 0u && nve_utf8_valid(v->text_slab, v->text_slab_len) == 0) {
       return SceneError::InvalidUtf8;
     }

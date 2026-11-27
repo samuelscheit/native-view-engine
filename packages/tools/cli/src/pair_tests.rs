@@ -289,3 +289,125 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
         .any(|u| u.transport == "lan-quic" && u.peers == 1));
     client.close();
 }
+
+#[test]
+fn pair_session_answers_keyframe_request_after_deltas_with_fresh_full_snapshot_for_requesting_peer_only() {
+    let (ctrl_tx, ctrl_rx) = unbounded();
+    let (ready_tx, ready_rx) = bounded(1);
+    let server_thread = std::thread::spawn(move || {
+        let surface = DioxusSurface::new(1, InspectDemo);
+        let mut session = PairSession::start(
+            surface,
+            "127.0.0.1",
+            0,
+            0,
+            "cli-late-join-kf-token".into(),
+            393.0,
+            852.0,
+        )
+        .expect("start PairSession");
+        ready_tx
+            .send((session.ws_addr(), session.token().to_owned()))
+            .unwrap();
+        session.run_until(120, &AtomicBool::new(false), Some(&ctrl_rx));
+    });
+
+    let (ws_addr, token) = ready_rx.recv().unwrap();
+    let uri = parse_wire_uri(&format!("ws://{ws_addr}/nve-wire")).unwrap();
+    let cfg_a = NveWireClientConfig::new(token.clone(), "peer-a");
+    let peer_a = NveWireClient::connect_uri_sync(&uri, &cfg_a).expect("connect peer A");
+
+    let timeout = Duration::from_secs(2);
+    let f0 = peer_a.recv_frame_timeout(timeout).expect("peer A initial frame");
+    assert_eq!(f0.kind, nve_wire::NveWireKind::SceneKeyframe);
+
+    register_core_tables();
+    let make_replica = || {
+        let mut headless = HeadlessBackend::new();
+        headless.set_viewport(
+            1,
+            Viewport {
+                width: 393.0,
+                height: 852.0,
+                scale_factor: 1.0,
+            },
+        );
+        StoreWireReplica::new(headless, core_realization_order())
+    };
+
+    let mut rep_a = make_replica();
+    rep_a.submit_nve2_keyframe(&f0.payload).unwrap();
+    assert!(rep_a
+        .backend()
+        .render_ascii_tree(rep_a.store())
+        .contains("Counter: 0"));
+    let btn_node = rep_a
+        .backend()
+        .hit_test(rep_a.store(), 60.0, 75.0)
+        .expect("pressable button");
+
+    let tap = |ts: u64| {
+        encode_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: btn_node,
+            timestamp_us: ts,
+            kind: NativeEventKind::Press,
+            payload: EventPayload::Point { x: 60.0, y: 75.0 },
+        }])
+    };
+
+    // Advance scene via incremental CommandDelta -> invalidates server's stale Frame-1 keyframe!
+    peer_a.send_events(tap(1000)).unwrap();
+    let f1 = peer_a.recv_frame_timeout(timeout).expect("peer A delta 1");
+    assert_eq!(f1.kind, nve_wire::NveWireKind::CommandDelta);
+    rep_a.submit_nve2_frame(&f1.payload).unwrap();
+    assert!(rep_a
+        .backend()
+        .render_ascii_tree(rep_a.store())
+        .contains("Counter: 1"));
+
+    // Late-joining Peer B connects AFTER the delta: server emits synthetic KeyframeRequest and
+    // PairSession answers ONLY Peer B with a fresh full snapshot containing Counter: 1!
+    let cfg_b = NveWireClientConfig::new(token, "peer-b");
+    let peer_b = NveWireClient::connect_uri_sync(&uri, &cfg_b).expect("connect peer B");
+    let kf_b = peer_b
+        .recv_frame_timeout(timeout)
+        .expect("peer B receives fresh full SceneKeyframe");
+    assert_eq!(kf_b.kind, nve_wire::NveWireKind::SceneKeyframe);
+
+    let mut rep_b = make_replica();
+    rep_b.submit_nve2_keyframe(&kf_b.payload).unwrap();
+    let tree_b = rep_b.backend().render_ascii_tree(rep_b.store());
+    assert!(
+        tree_b.contains("Counter: 1") && !tree_b.contains("Counter: 0"),
+        "late-joining peer B must receive fresh Counter: 1 snapshot, not stale Frame-1 rollback: {tree_b}"
+    );
+
+    // Healthy Peer A MUST NOT receive any unsolicited SceneKeyframe reset!
+    assert!(
+        peer_a.recv_frame_timeout(Duration::from_millis(150)).is_none(),
+        "peer B's targeted keyframe must not disrupt healthy peer A"
+    );
+
+    // Next tap advances BOTH Peer A and Peer B cleanly to Counter: 2.
+    peer_b.send_events(tap(2000)).unwrap();
+    let d_a = peer_a.recv_frame_timeout(timeout).expect("peer A delta 2");
+    let d_b = peer_b.recv_frame_timeout(timeout).expect("peer B delta 2");
+    assert_eq!(d_a.kind, nve_wire::NveWireKind::CommandDelta);
+    assert_eq!(d_b.kind, nve_wire::NveWireKind::CommandDelta);
+    rep_a.submit_nve2_frame(&d_a.payload).unwrap();
+    rep_b.submit_nve2_frame(&d_b.payload).unwrap();
+    assert!(rep_a
+        .backend()
+        .render_ascii_tree(rep_a.store())
+        .contains("Counter: 2"));
+    assert!(rep_b
+        .backend()
+        .render_ascii_tree(rep_b.store())
+        .contains("Counter: 2"));
+
+    ctrl_tx.send(PairControlMsg::Shutdown).unwrap();
+    peer_a.close();
+    peer_b.close();
+    server_thread.join().expect("pair server thread exited cleanly");
+}
