@@ -410,10 +410,10 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
             continue;
         };
         scanned += 1;
-        if rel.contains("/dart/") {
+        if rel.contains("/dart/") || rel.ends_with("/dart.rs") {
             scan_dart_53bit_safety(&rel, &src, &mut violations);
         }
-        if rel.contains("/typescript/") {
+        if rel.contains("/typescript/") || rel.ends_with("/typescript.rs") {
             scan_ts_53bit_safety(&rel, &src, &mut violations);
         }
         let file = rel.rsplit('/').next().unwrap_or("");
@@ -463,7 +463,8 @@ pub fn scan_dart_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
 
 pub fn scan_ts_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
     for (idx, line) in src.lines().enumerate() {
-        let unsafe_ts_64 = (line.contains("Number(") && line.contains("getBigUint64"))
+        let unsafe_ts_64 = (line.contains("Number(")
+            && (line.contains("getBigUint64") || line.contains("getBigInt64")))
             || line.contains("4294967296")
             || (line.contains("<< 32") && !line.contains("BigInt") && !line.contains("32n"));
         if unsafe_ts_64 {

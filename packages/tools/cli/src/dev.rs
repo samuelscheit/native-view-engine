@@ -249,7 +249,6 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                     if let Some(tx) = pair_tx_slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                         let _ = tx.send(PairControlMsg::DylibReload(dylib_for_build.clone()));
                     }
-                    let _ = skia_ready_tx.try_send(());
                     true
                 }
                 _ => {
@@ -260,36 +259,59 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
         }
     };
 
-    let initial_ok = build_once(1);
-
-    if opts.pair && initial_ok {
-        let token = pair::resolve_or_generate_token(opts.pair_token.clone());
-        match pair::spawn_dylib_pair_thread(
-            dylib_path.clone(),
-            opts.host.clone(),
-            opts.pair_udp_port,
-            opts.pair_ws_port,
-            token,
-            393.0,
-            852.0,
-            60,
-        ) {
-            Ok((tx, banner)) => {
-                println!("{banner}");
-                *pair_tx_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    let start_pair_server = {
+        let pair_enabled = opts.pair;
+        let pair_host = opts.host.clone();
+        let pair_udp_port = opts.pair_udp_port;
+        let pair_ws_port = opts.pair_ws_port;
+        let pair_token = opts.pair_token.clone();
+        let dylib_for_pair = dylib_path.clone();
+        let pair_tx_slot = Arc::clone(&pair_tx_slot);
+        move || {
+            if !pair_enabled
+                || pair_tx_slot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some()
+            {
+                return;
             }
-            Err(err) => {
-                eprintln!("[pair] failed to start live pairing server: {err}");
+            let token = pair::resolve_or_generate_token(pair_token.clone());
+            match pair::spawn_dylib_pair_thread(
+                dylib_for_pair.clone(),
+                pair_host.clone(),
+                pair_udp_port,
+                pair_ws_port,
+                token,
+                393.0,
+                852.0,
+                60,
+            ) {
+                Ok((tx, banner)) => {
+                    println!("{banner}");
+                    *pair_tx_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+                }
+                Err(err) => {
+                    eprintln!("[pair] failed to start live pairing server: {err}");
+                }
             }
         }
+    };
+
+    let initial_ok = build_once(1);
+    if initial_ok {
+        start_pair_server();
     }
 
     let watch_owned = watch_dir.clone();
     let clients_for_watch = Arc::clone(&clients);
     let pair_tx_for_watch = Arc::clone(&pair_tx_slot);
     let run_watch_loop = move || {
+        let mut has_built_once = initial_ok;
         let mut rsx_cache = rsx_diff::RsxWatchCache::new();
-        rsx_cache.seed_dir(&watch_owned);
+        if has_built_once {
+            rsx_cache.seed_dir(&watch_owned);
+        }
 
         let (tx, rx) = unbounded();
         let mut watcher = RecommendedWatcher::new(
@@ -333,32 +355,8 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
             }
 
             let t_diff = Instant::now();
-            let mut tier1_patches: Vec<(PathBuf, HotPatchMsg)> = Vec::new();
-            let mut fallback_reason: Option<String> = None;
-
-            if changed_paths.is_empty() {
-                fallback_reason = Some("unspecified path event".into());
-            } else {
-                for path in &changed_paths {
-                    match std::fs::read_to_string(path) {
-                        Ok(new_src) => match rsx_cache.diff_file(path, &new_src, generation + 1) {
-                            rsx_diff::DiffOutcome::NoOp => {}
-                            rsx_diff::DiffOutcome::Tier1Patch(msg) => {
-                                tier1_patches.push((path.clone(), msg));
-                            }
-                            rsx_diff::DiffOutcome::RequireTier2Rebuild { reason } => {
-                                fallback_reason = Some(reason);
-                                break;
-                            }
-                        },
-                        Err(err) => {
-                            fallback_reason =
-                                Some(format!("could not read {}: {err}", path.display()));
-                            break;
-                        }
-                    }
-                }
-            }
+            let (tier1_patches, fallback_reason) =
+                classify_watch_changes(has_built_once, &changed_paths, &mut rsx_cache, generation + 1);
 
             if let Some(reason) = fallback_reason {
                 if let Some(first) = changed_paths.first() {
@@ -366,7 +364,13 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                 }
                 generation += 1;
                 if build_once(generation) {
+                    let first_success = !has_built_once;
+                    has_built_once = true;
                     rsx_cache.seed_dir(&watch_owned);
+                    if first_success {
+                        start_pair_server();
+                        let _ = skia_ready_tx.try_send(());
+                    }
                 }
             } else if tier1_patches.is_empty() {
                 if let Some(first) = changed_paths.first() {
@@ -439,6 +443,41 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     } else {
         run_watch_loop();
     }
+}
+
+fn classify_watch_changes(
+    has_built_once: bool,
+    changed_paths: &[PathBuf],
+    rsx_cache: &mut rsx_diff::RsxWatchCache,
+    next_generation: u64,
+) -> (Vec<(PathBuf, HotPatchMsg)>, Option<String>) {
+    if !has_built_once {
+        return (Vec::new(), Some("awaiting first successful build".into()));
+    }
+    if changed_paths.is_empty() {
+        return (Vec::new(), Some("unspecified path event".into()));
+    }
+    let mut tier1_patches = Vec::new();
+    for path in changed_paths {
+        match std::fs::read_to_string(path) {
+            Ok(new_src) => match rsx_cache.diff_file(path, &new_src, next_generation) {
+                rsx_diff::DiffOutcome::NoOp => {}
+                rsx_diff::DiffOutcome::Tier1Patch(msg) => {
+                    tier1_patches.push((path.clone(), msg));
+                }
+                rsx_diff::DiffOutcome::RequireTier2Rebuild { reason } => {
+                    return (Vec::new(), Some(reason));
+                }
+            },
+            Err(err) => {
+                return (
+                    Vec::new(),
+                    Some(format!("could not read {}: {err}", path.display())),
+                );
+            }
+        }
+    }
+    (tier1_patches, None)
 }
 
 fn wait_for_skia_launch_ready(initial_ok: bool, ready_rx: &Receiver<()>) -> Result<(), &'static str> {

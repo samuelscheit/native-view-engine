@@ -212,11 +212,8 @@ mod imp {
             _recreations: &mut u64,
         ) -> Result<(), GpuSurfaceError> {
             if let D3D12Target::Window(win) = &mut self.target {
-                if win.buffers.is_empty()
-                    || win.buffer_extent.width != extent.width
-                    || win.buffer_extent.height != extent.height
-                {
-                    win.buffers.clear();
+                debug_assert_eq!(win.buffer_extent, extent);
+                if win.buffers.is_empty() {
                     win.buffers = wrap_dxgi_backbuffers(
                         &win.swap_chain,
                         &mut self.direct_context,
@@ -366,25 +363,44 @@ mod imp {
                 ..Default::default()
             };
             // SAFETY: `factory`, `backend_context.queue`, and the caller-supplied `hwnd` are valid live handles.
-            let swap_chain: IDXGISwapChain3 = unsafe {
+            let swap_chain: IDXGISwapChain3 = match unsafe {
                 factory.CreateSwapChainForHwnd(&backend_context.queue, hwnd, &desc, None, None)
             }
             .map_err(|e| {
                 GpuSurfaceError::SurfaceCreationFailed(format!(
                     "CreateSwapChainForHwnd failed: {e}"
                 ))
-            })?
-            .cast()
-            .map_err(|e| {
-                GpuSurfaceError::SurfaceCreationFailed(format!("cast IDXGISwapChain3 failed: {e}"))
-            })?;
+            })
+            .and_then(|sc| {
+                sc.cast().map_err(|e| {
+                    GpuSurfaceError::SurfaceCreationFailed(format!(
+                        "cast IDXGISwapChain3 failed: {e}"
+                    ))
+                })
+            }) {
+                Ok(sc) => sc,
+                Err(err) => {
+                    direct_context.release_resources_and_abandon();
+                    return Err(err);
+                }
+            };
 
-            let buffers = wrap_dxgi_backbuffers(
+            let buffers = match wrap_dxgi_backbuffers(
                 &swap_chain,
                 &mut direct_context,
                 d3d_cfg.extent,
                 d3d_cfg.buffer_count,
-            )?;
+            ) {
+                Ok(bufs) => bufs,
+                Err(err) => {
+                    // Abandon and drop DirectContext BEFORE `swap_chain` (and `_backend_context`).
+                    let _ = direct_context.flush_submit_and_sync_cpu();
+                    direct_context.release_resources_and_abandon();
+                    drop(direct_context);
+                    drop(swap_chain);
+                    return Err(err);
+                }
+            };
 
             Ok(Self::new(
                 D3D12NativeSwapchain {
