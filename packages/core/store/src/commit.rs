@@ -91,7 +91,9 @@ impl Transaction<'_> {
             for &index in col.dirty.as_slice() {
                 let node = &s.nodes[index];
                 let attached = node.flags & LIVE != 0 && node.tables.contains(slot);
-                let Some(row) = col.find_row(index) else { continue };
+                let Some(row) = col.find_row(index) else {
+                    continue;
+                };
                 let m = col.masks[row];
                 col.masks[row] = 0;
                 if attached && m != 0 {
@@ -100,6 +102,10 @@ impl Transaction<'_> {
                 }
             }
             col.dirty.clear();
+            if col.detached.len() > 1 {
+                col.detached.sort_unstable_by_key(|id| id.0);
+                col.detached.dedup();
+            }
             for id in col.detached.drain(..) {
                 let node = &s.nodes[id.node_index()];
                 if node.flags & LIVE != 0

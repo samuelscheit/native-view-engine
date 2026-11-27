@@ -14,26 +14,72 @@ use super::{HEADER_WORDS, MAGIC, Op, VERSION, WireError, pad4_checked};
 
 /// Maximum length of a runtime-declared table name in `Op::DeclareTables`.
 const MAX_TABLE_NAME_BYTES: usize = 128;
-/// Base per-frame dense-column allocation allowance so small delta frames can attach a new static
-/// dense table to an existing store without failing.
-const DENSE_ALLOC_BASE_BYTES: usize = 16 * 1024 * 1024;
-/// Multiplier scaling the per-frame dense-column budget with wire frame length.
-const DENSE_ALLOC_WIRE_MULTIPLIER: usize = 16;
-/// Hard per-frame ceiling on newly allocated dense-column bytes across all tables so a hostile
-/// 64 MiB frame cannot amplify `CreateNodes` into multi-GiB dense allocations.
-const MAX_FRAME_DENSE_ALLOC_BYTES: usize = 256 * 1024 * 1024;
+/// One-time session base allowance for slot-indexed arrays (`NodeStore::nodes`, static dense
+/// columns, and `ResourceStore::entries`), reset only on `WireDecoder::reset()` or a keyframe
+/// against a fresh store — never refilled on delta frames.
+const SESSION_BASE_SLOT_BYTES: usize = 16 * 1024 * 1024;
+/// Multiplier earning additional slot-memory budget strictly proportional to wire bytes received.
+const WIRE_SLOT_MULTIPLIER: usize = 16;
+/// Hard per-session ceiling on cumulative slot-array growth across all frames.
+const SESSION_MAX_SLOT_BYTES: usize = 256 * 1024 * 1024;
+/// Hard upper ceiling on wire `ResourceId` indices (`1 << 20` = 1,048,576 slots), matching the
+/// bounded 24-bit `NodeId::MAX_INDEX` space.
+const MAX_RESOURCE_SLOTS: u32 = 1 << 20;
 
-struct FrameBudget {
-    initial_node_cap: usize,
-    cumulative_created_nodes: usize,
-    initial_res_slots: usize,
-    cumulative_defined_resources: usize,
-    dense_bytes_used: usize,
-    dense_byte_budget: usize,
+/// Session-anchored slot-memory budget preventing both single-frame sparse-index OOM and
+/// multi-frame stride amplification across nodes, static dense columns, and resources, while
+/// allowing legitimate churned keyframes (`encode_full`) to round-trip cleanly.
+#[derive(Debug, Clone, Default)]
+struct SessionBudget {
+    started: bool,
+    limit_bytes: usize,
+    used_bytes: usize,
+}
+
+impl SessionBudget {
+    fn reset(&mut self) {
+        self.started = false;
+        self.limit_bytes = 0;
+        self.used_bytes = 0;
+    }
+
+    fn begin_frame(&mut self, frame: u64, wire_bytes: usize, fresh_store: bool) {
+        let earned = wire_bytes.saturating_mul(WIRE_SLOT_MULTIPLIER);
+        if !self.started || (frame == 1 && fresh_store) {
+            self.started = true;
+            self.used_bytes = 0;
+            self.limit_bytes = SESSION_BASE_SLOT_BYTES
+                .saturating_add(earned)
+                .min(SESSION_MAX_SLOT_BYTES);
+        } else {
+            self.limit_bytes = self
+                .limit_bytes
+                .saturating_add(earned)
+                .min(SESSION_MAX_SLOT_BYTES);
+        }
+    }
+
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.limit_bytes.saturating_sub(self.used_bytes)
+    }
+
+    #[inline]
+    fn charge(&mut self, delta_bytes: usize) -> Result<(), WireError> {
+        let next = self
+            .used_bytes
+            .checked_add(delta_bytes)
+            .ok_or(WireError::Budget)?;
+        if next > self.limit_bytes {
+            return Err(WireError::Budget);
+        }
+        self.used_bytes = next;
+        Ok(())
+    }
 }
 
 /// Receiver-side session state: wire slot → local slot, session-scoped dynamic table descriptors
-/// (never leaked into global `REGISTRY`), and reusable child scratch buffer.
+/// (never leaked into global `REGISTRY`), session slot-memory budget, and child scratch buffer.
 #[derive(Debug, Clone)]
 pub struct WireDecoder {
     map: [u8; MAX_TABLE_SLOTS],
@@ -41,6 +87,7 @@ pub struct WireDecoder {
     next_dynamic_slot: TableSlot,
     dynamic_exhausted: bool,
     kids_scratch: Vec<NodeId>,
+    budget: SessionBudget,
 }
 
 impl Default for WireDecoder {
@@ -51,6 +98,7 @@ impl Default for WireDecoder {
             next_dynamic_slot: TableSlot((MAX_TABLE_SLOTS - 1) as u8),
             dynamic_exhausted: false,
             kids_scratch: Vec::new(),
+            budget: SessionBudget::default(),
         }
     }
 }
@@ -97,6 +145,19 @@ impl WireDecoder {
         self.next_dynamic_slot = TableSlot((MAX_TABLE_SLOTS - 1) as u8);
         self.dynamic_exhausted = false;
         self.kids_scratch.clear();
+        self.budget.reset();
+    }
+
+    /// Maximum `NodeStore` slot hint a Frame-0 pre-reservation may claim for `wire_bytes` without
+    /// exceeding the session slot-memory ceiling before decoding starts.
+    #[inline]
+    pub fn max_frame0_node_hint(wire_bytes: usize) -> usize {
+        let max_budget = SESSION_BASE_SLOT_BYTES
+            .saturating_add(wire_bytes.saturating_mul(WIRE_SLOT_MULTIPLIER))
+            .min(SESSION_MAX_SLOT_BYTES);
+        (wire_bytes / 4)
+            .min(max_budget / size_of::<crate::store::NodeRow>())
+            .min(NodeId::MAX_INDEX as usize)
     }
 
     fn slot_layout(store: &NodeStore, slot: TableSlot) -> Option<(usize, u32, u32)> {
@@ -145,21 +206,11 @@ impl WireDecoder {
     /// Applies one `NVE2` frame to the replica behind `tx`; returns the frame number.
     pub fn apply(&mut self, tx: &mut Transaction<'_>, bytes: &[u8]) -> Result<u64, WireError> {
         let (frame, ops) = Self::validate_header(bytes)?;
-        // Cap created node and resource indices strictly against `initial + 1024 + cumulative`
-        // (incremented only by `Op::CreateNodes` / `Op::DefineResources`, NEVER derived from total
-        // `bytes.len()`) so padding ops like `Op::ReleaseResources` cannot amplify allocation bounds.
-        let mut budget = FrameBudget {
-            initial_node_cap: tx.store().capacity(),
-            cumulative_created_nodes: 0,
-            initial_res_slots: tx.store().resources.slots(),
-            cumulative_defined_resources: 0,
-            dense_bytes_used: 0,
-            dense_byte_budget: bytes
-                .len()
-                .saturating_mul(DENSE_ALLOC_WIRE_MULTIPLIER)
-                .saturating_add(DENSE_ALLOC_BASE_BYTES)
-                .min(MAX_FRAME_DENSE_ALLOC_BYTES),
-        };
+        let fresh_store = tx.store().frame() == 0
+            && tx.store().capacity() <= 1
+            && tx.store().resources.slots() <= 1
+            && tx.store().table_slots().next().is_none();
+        self.budget.begin_frame(frame, bytes.len(), fresh_store);
         let mut r = R {
             b: bytes,
             at: HEADER_WORDS * 4,
@@ -180,7 +231,7 @@ impl WireDecoder {
             } else {
                 body_r.u32()?
             };
-            self.op(tx, op, (head >> 8) as u8, count, &mut body_r, &mut budget)?;
+            self.op(tx, op, (head >> 8) as u8, count, &mut body_r)?;
             if body_r.at != body.len() {
                 return Err(WireError::TrailingBytes);
             }
@@ -198,7 +249,6 @@ impl WireDecoder {
         table: u8,
         count: u32,
         r: &mut R<'_>,
-        budget: &mut FrameBudget,
     ) -> Result<(), WireError> {
         match op {
             Op::DeclareTables => {
@@ -214,28 +264,42 @@ impl WireDecoder {
                 if (count as usize) > r.remaining() / 4 {
                     return Err(WireError::Truncated);
                 }
-                budget.cumulative_created_nodes = budget
-                    .cumulative_created_nodes
-                    .saturating_add(count as usize);
-                let max_node_index = budget
-                    .initial_node_cap
-                    .saturating_add(1024)
-                    .saturating_add(budget.cumulative_created_nodes)
-                    .min(NodeId::MAX_INDEX as usize + 1);
+                let node_row_bytes = size_of::<crate::store::NodeRow>();
+                let existing_creatable = tx.store().capacity().saturating_sub(1);
+                let min_new_slots = (count as usize).saturating_sub(existing_creatable);
+                let min_new_bytes = min_new_slots
+                    .checked_mul(node_row_bytes)
+                    .ok_or(WireError::Budget)?;
+                if min_new_bytes > self.budget.remaining() {
+                    return Err(WireError::Budget);
+                }
+                let max_new_slots = self.budget.remaining() / node_row_bytes;
                 tx.store_mut()
-                    .reserve_for_frame0(count as usize, r.remaining())
-                    .map_err(|_| WireError::Alloc)?;
+                    .reserve_for_frame0((count as usize).min(max_new_slots), r.remaining())?;
                 for _ in 0..count {
                     let id = r.node()?;
-                    if id.index() >= max_node_index {
+                    let index = id.index();
+                    if index > NodeId::MAX_INDEX as usize {
                         return Err(WireError::NodeExists(id.0));
                     }
-                    let created = tx
-                        .store_mut()
-                        .try_create_at(id)
-                        .map_err(|_| WireError::Alloc)?;
-                    if !created {
+                    let needed = index.saturating_add(1);
+                    let cur_cap = tx.store().capacity();
+                    let delta_bytes = if needed > cur_cap {
+                        let bytes = (needed - cur_cap)
+                            .checked_mul(node_row_bytes)
+                            .ok_or(WireError::Budget)?;
+                        if bytes > self.budget.remaining() {
+                            return Err(WireError::Budget);
+                        }
+                        bytes
+                    } else {
+                        0
+                    };
+                    if !tx.store_mut().try_create_at(id)? {
                         return Err(WireError::NodeExists(id.0));
+                    }
+                    if delta_bytes > 0 {
+                        self.budget.charge(delta_bytes)?;
                     }
                 }
             }
@@ -244,29 +308,41 @@ impl WireDecoder {
                 if (count as usize) > r.remaining() / 20 {
                     return Err(WireError::Truncated);
                 }
-                budget.cumulative_defined_resources = budget
-                    .cumulative_defined_resources
-                    .saturating_add(count as usize);
-                let max_resource_id = budget
-                    .initial_res_slots
-                    .saturating_add(1024)
-                    .saturating_add(budget.cumulative_defined_resources);
                 for _ in 0..count {
                     let id = r.u32()?;
-                    if id as usize >= max_resource_id {
+                    if id == 0 {
                         return Err(WireError::Resource { id, kind: 0 });
+                    }
+                    if id >= MAX_RESOURCE_SLOTS {
+                        return Err(WireError::Budget);
                     }
                     let kind = Key64::from_halves(r.u32()?, r.u32()?);
                     let ephemeral = r.u32()? != 0;
                     let len = r.u32()? as usize;
                     let blob = r.bytes(len)?;
-                    let ok = tx
-                        .store_mut()
-                        .resources
-                        .try_define_at(ResourceId(id), kind, ephemeral, blob)
-                        .map_err(|_| WireError::Alloc)?;
-                    if !ok {
+                    let needed = (id as usize).saturating_add(1);
+                    let cur_slots = tx.store().resources.slots();
+                    let delta_bytes = if needed > cur_slots {
+                        let bytes = (needed - cur_slots)
+                            .checked_mul(crate::resource::ResourceStore::ENTRY_BYTES)
+                            .ok_or(WireError::Budget)?;
+                        if bytes > self.budget.remaining() {
+                            return Err(WireError::Budget);
+                        }
+                        bytes
+                    } else {
+                        0
+                    };
+                    if !tx.store_mut().resources.try_define_at(
+                        ResourceId(id),
+                        kind,
+                        ephemeral,
+                        blob,
+                    )? {
                         return Err(WireError::Resource { id, kind: kind.0 });
+                    }
+                    if delta_bytes > 0 {
+                        self.budget.charge(delta_bytes)?;
                     }
                 }
             }
@@ -285,8 +361,8 @@ impl WireDecoder {
                     slot,
                     count as usize,
                     store_cap,
-                    &mut budget.dense_bytes_used,
-                    budget.dense_byte_budget,
+                    &mut self.budget.used_bytes,
+                    self.budget.limit_bytes,
                 )?;
                 let words = words_usize as u32;
                 for _ in 0..count {
@@ -340,8 +416,8 @@ impl WireDecoder {
                     slot,
                     count as usize,
                     store_cap,
-                    &mut budget.dense_bytes_used,
-                    budget.dense_byte_budget,
+                    &mut self.budget.used_bytes,
+                    self.budget.limit_bytes,
                 )?;
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
@@ -366,7 +442,7 @@ impl WireDecoder {
                 let slot = self.local(table)?;
                 for _ in 0..count {
                     let id = self.live(tx, r.node()?)?;
-                    tx.detach_slot(id, slot);
+                    tx.try_detach_slot(id, slot)?;
                 }
             }
             Op::SetChildren => {

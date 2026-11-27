@@ -133,6 +133,10 @@ impl Default for ResourceStore {
 }
 
 impl ResourceStore {
+    /// Byte size of one slot in `ResourceStore::entries`, used by [`crate::wire::WireDecoder`]
+    /// to charge slot growth against its session slot-memory budget.
+    pub(crate) const ENTRY_BYTES: usize = size_of::<Entry>();
+
     fn slot(&mut self) -> u32 {
         while let Some(i) = self.free.pop() {
             if let Some(e) = self.entries.get_mut(i as usize) {
@@ -346,35 +350,42 @@ impl ResourceStore {
         kind: Key64,
         ephemeral: bool,
         bytes: &[u8],
-    ) -> Result<bool, std::collections::TryReserveError> {
+    ) -> Result<bool, crate::wire::WireError> {
+        let i = id.0 as usize;
+        if i == 0 {
+            return Ok(false);
+        }
         let Some(c) = codec(kind) else {
             return Ok(false);
         };
         let Some(value) = (c.decode)(bytes) else {
             return Ok(false);
         };
-        let i = id.0 as usize;
-        if i == 0 {
-            return Ok(false);
-        }
-        let Some(needed) = i.checked_add(1) else {
-            return self.entries.try_reserve(usize::MAX).map(|()| false);
-        };
+        let needed = i.checked_add(1).ok_or(crate::wire::WireError::Alloc)?;
         let encoded: Box<[u8]> = if ephemeral {
             Box::new([])
         } else {
             let mut copy = Vec::new();
-            copy.try_reserve_exact(bytes.len())?;
+            copy.try_reserve_exact(bytes.len())
+                .map_err(|_| crate::wire::WireError::Alloc)?;
             copy.extend_from_slice(bytes);
             copy.into_boxed_slice()
         };
         if self.entries.len() < needed {
-            self.entries.try_reserve(needed - self.entries.len())?;
+            self.entries
+                .try_reserve(needed - self.entries.len())
+                .map_err(|_| crate::wire::WireError::Alloc)?;
         }
-        self.pending_free.try_reserve(1)?;
-        self.defined.try_reserve(1)?;
+        self.pending_free
+            .try_reserve(1)
+            .map_err(|_| crate::wire::WireError::Alloc)?;
+        self.defined
+            .try_reserve(1)
+            .map_err(|_| crate::wire::WireError::Alloc)?;
         if !ephemeral {
-            self.dedup.try_reserve(1)?;
+            self.dedup
+                .try_reserve(1)
+                .map_err(|_| crate::wire::WireError::Alloc)?;
         }
         while self.entries.len() < needed {
             self.entries.push(Entry {

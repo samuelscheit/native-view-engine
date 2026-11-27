@@ -96,15 +96,13 @@ pub(crate) struct Column {
     index: PagedIndex,
     /// Node indices whose mask went `0 → non-zero` this frame.
     pub(crate) dirty: DirtyList,
-    /// `NodeId`s that detached this table this frame (still-live nodes only, deduplicated).
+    /// `NodeId`s that detached this table this frame (deduplicated sparsely at `commit_into`).
     pub(crate) detached: Vec<NodeId>,
     /// Packed sparse row indices populated by swap-remove this frame (deduplicated via
     /// `relocated_epoch` in O(1); merged into `NveTableView::dirty_rows` without `NVE2` re-send).
     pub(crate) relocated_rows: Vec<u32>,
     /// Per-row-index stamp preventing duplicate `relocated_rows` entries within one frame.
     pub(crate) relocated_epoch: Vec<u64>,
-    /// Per-node-index flag preventing duplicate `detached` entries within one frame.
-    pub(crate) detached_epoch: Vec<u64>,
     pub(crate) frame_epoch: u64,
 }
 
@@ -122,63 +120,58 @@ impl Column {
             detached: Vec::new(),
             relocated_rows: Vec::new(),
             relocated_epoch: Vec::new(),
-            detached_epoch: Vec::new(),
             frame_epoch: 1,
         }
     }
 
+    #[inline]
     pub(crate) fn record_detached(&mut self, id: NodeId) {
-        let idx = id.index();
-        if self.detached_epoch.len() <= idx {
-            self.detached_epoch.resize(idx + 1, 0);
-        }
-        if self.detached_epoch[idx] != self.frame_epoch {
-            self.detached_epoch[idx] = self.frame_epoch;
-            self.detached.push(id);
-        }
+        self.detached.push(id);
     }
 
     pub(crate) fn next_frame_epoch(&mut self) {
         self.frame_epoch = self.frame_epoch.wrapping_add(1);
         if self.frame_epoch == 0 {
-            self.detached_epoch.fill(0);
             self.relocated_epoch.fill(0);
             self.frame_epoch = 1;
         }
     }
 
+    /// Only compiled static tables declared `Storage::Dense` use dense node-indexed storage.
+    /// Wire-declared dynamic tables always use paged-sparse storage in memory while keeping
+    /// `TableMeta::storage()` faithful to the wire schema for downstream relaying.
     #[inline(always)]
     pub(crate) fn is_dense(&self) -> bool {
-        matches!(self.desc.storage(), Storage::Dense)
+        matches!(self.desc, TableMeta::Static(d) if matches!(d.storage, Storage::Dense))
     }
 
     /// Fallibly pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs
-    /// O(1) heap allocations independent of `N`, enforcing the caller's per-frame dense byte
-    /// budget and propagating [`WireError::Alloc`] on budget overrun, overflow, or OOM.
+    /// O(1) heap allocations independent of `N`, charging exact dense slot delta bytes against the
+    /// session slot-memory budget (`WireError::Budget`) and propagating `WireError::Alloc` on OOM.
     pub(crate) fn reserve_bulk(
         &mut self,
         expected_rows: usize,
         max_node_index: usize,
-        dense_bytes_used: &mut usize,
-        dense_byte_budget: usize,
+        slot_bytes_used: &mut usize,
+        slot_bytes_limit: usize,
     ) -> Result<(), WireError> {
         if self.is_dense() {
             let cap = max_node_index.max(64).min(NodeId::MAX_INDEX as usize + 1);
-            let word_cap = cap.checked_mul(self.w).ok_or(WireError::Alloc)?;
+            let word_cap = cap.checked_mul(self.w).ok_or(WireError::Budget)?;
             if self.masks.len() < cap {
                 let bytes_per_slot = self
                     .w
                     .checked_add(2)
                     .and_then(|words| words.checked_mul(size_of::<u32>()))
-                    .ok_or(WireError::Alloc)?;
+                    .ok_or(WireError::Budget)?;
                 let delta_bytes = (cap - self.masks.len())
                     .checked_mul(bytes_per_slot)
-                    .ok_or(WireError::Alloc)?;
-                let next_used = dense_bytes_used
+                    .ok_or(WireError::Budget)?;
+                let next_used = slot_bytes_used
                     .checked_add(delta_bytes)
-                    .ok_or(WireError::Alloc)?;
-                if next_used > dense_byte_budget {
-                    return Err(WireError::Alloc);
+                    .ok_or(WireError::Budget)?;
+                if next_used > slot_bytes_limit {
+                    return Err(WireError::Budget);
                 }
                 self.masks
                     .try_reserve(cap - self.masks.len())
@@ -192,7 +185,7 @@ impl Column {
                 self.masks.resize(cap, 0);
                 self.owners.resize(cap, 0);
                 self.rows.resize(word_cap, 0);
-                *dense_bytes_used = next_used;
+                *slot_bytes_used = next_used;
             }
         } else if self.owners.is_empty() {
             let target = expected_rows.min(max_node_index.saturating_add(1));
@@ -216,9 +209,7 @@ impl Column {
         }
         let dirty_cap_remaining = max_node_index.saturating_sub(self.dirty.as_slice().len());
         let dirty_additional = expected_rows.min(dirty_cap_remaining);
-        self.dirty
-            .try_reserve(dirty_additional)
-            .map_err(|_| WireError::Alloc)?;
+        self.dirty.try_reserve(dirty_additional)?;
         Ok(())
     }
 
@@ -277,6 +268,10 @@ impl Column {
 
     /// Fallible variant of [`Self::attach`] used by [`crate::wire::WireDecoder`] so multi-op
     /// sparse frames never fall through to infallible `Vec::push`/`resize` growth.
+    ///
+    /// Dense columns must already be pre-sized through [`Self::reserve_bulk`] (session budget);
+    /// an under-sized dense column is rejected with [`WireError::Budget`] rather than growing
+    /// outside the budget.
     pub(crate) fn try_attach(
         &mut self,
         id: NodeId,
@@ -285,28 +280,14 @@ impl Column {
         let full = full_mask(self.w);
         let row = if self.is_dense() {
             let n = node_index.as_usize();
-            if self.masks.len() <= n {
-                let cap = n
-                    .checked_add(1)
-                    .ok_or(WireError::Alloc)?
-                    .next_power_of_two()
-                    .max(64)
-                    .min(NodeId::MAX_INDEX as usize + 1);
-                let word_cap = cap.checked_mul(self.w).ok_or(WireError::Alloc)?;
-                self.masks
-                    .try_reserve(cap - self.masks.len())
-                    .map_err(|_| WireError::Alloc)?;
-                self.owners
-                    .try_reserve(cap - self.owners.len())
-                    .map_err(|_| WireError::Alloc)?;
-                self.rows
-                    .try_reserve(word_cap.saturating_sub(self.rows.len()))
-                    .map_err(|_| WireError::Alloc)?;
-                self.masks.resize(cap, 0);
-                self.owners.resize(cap, 0);
-                self.rows.resize(word_cap, 0);
+            debug_assert!(
+                n < self.masks.len(),
+                "dense column must be pre-sized via reserve_bulk before try_attach"
+            );
+            if n >= self.masks.len() {
+                return Err(WireError::Budget);
             }
-            self.dirty.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.dirty.try_reserve(1)?;
             self.owners[n] = id.raw();
             n
         } else {
@@ -320,7 +301,7 @@ impl Column {
             self.rows
                 .try_reserve(next_rows.saturating_sub(self.rows.len()))
                 .map_err(|_| WireError::Alloc)?;
-            self.dirty.try_reserve(1).map_err(|_| WireError::Alloc)?;
+            self.dirty.try_reserve(1)?;
             self.index.try_set(node_index, r as u32 + 1)?;
             self.owners.push(id.raw());
             self.masks.push(0);

@@ -91,19 +91,29 @@ impl DirtyList {
     }
 
     #[inline]
-    pub(crate) fn try_reserve(
-        &mut self,
-        additional: usize,
-    ) -> Result<(), std::collections::TryReserveError> {
-        let Some(needed) = self.len.checked_add(additional) else {
-            return self.buf.try_reserve(usize::MAX);
-        };
+    pub(crate) fn try_reserve(&mut self, additional: usize) -> Result<(), crate::wire::WireError> {
+        // Branchless `push_if` writes `self.buf[self.len] = value` unconditionally even when
+        // `cond == false` and calls `grow()` whenever `self.len == self.buf.len()`, so pushing
+        // `additional` items without hitting `grow()` requires `self.len + additional + 1` slots.
+        let needed = self
+            .len
+            .checked_add(additional)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(crate::wire::WireError::Alloc)?;
         let min_cap = needed.max(64);
         if self.buf.len() < min_cap {
-            self.buf.try_reserve(min_cap - self.buf.len())?;
+            self.buf
+                .try_reserve(min_cap - self.buf.len())
+                .map_err(|_| crate::wire::WireError::Alloc)?;
             self.buf.resize(min_cap, NodeIndex::NULL);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn buf_len(&self) -> usize {
+        self.buf.len()
     }
 
     #[inline]

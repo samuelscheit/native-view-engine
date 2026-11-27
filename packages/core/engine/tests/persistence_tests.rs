@@ -701,27 +701,26 @@ fn frame0_backend_commit_error_preserves_cache_while_corrupt_body_deletes_it() {
 }
 
 #[test]
-fn hostile_padded_sparse_node_id_frame0_rejected_without_oom() {
+fn hostile_padded_sparse_node_and_resource_frame0_rejected_without_oom() {
     let meta = Frame0Meta::default_core();
-    // Pad payload with 16,384 Op::ReleaseResources entries (65,580 B payload -> old bytes/4 + 1024
-    // + 1 bound was 17,420). NodeId(10_000) is strictly between the new bound (1,026) and the old
-    // bound (17,420) so this regression guard is non-vacuous.
+    // Pad payload with 16,384 Op::ReleaseResources entries (65 KiB -> session budget ~17 MiB) +
+    // 1 Op::CreateNodes at NodeId(600_000) (19.2 MiB > 17 MiB) -> rejected before allocating.
     let pad_count: u32 = 16_384;
     let mut ops_body = Vec::with_capacity((pad_count as usize + 8) * 4);
-    // Op 1: ReleaseResources (opcode=5, table=0, inline_count=pad_count), len=pad_count words.
     ops_body.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
     ops_body.extend_from_slice(&pad_count.to_le_bytes());
     ops_body.resize(ops_body.len() + (pad_count as usize) * 4, 0u8);
-    // Op 2: CreateNodes (opcode=3, table=0, inline_count=1), len=1 word, NodeId(10_000).
     ops_body.extend_from_slice(&(3u32 | (1u32 << 16)).to_le_bytes());
     ops_body.extend_from_slice(&1u32.to_le_bytes());
-    ops_body.extend_from_slice(&10_000u32.to_le_bytes());
+    ops_body.extend_from_slice(&600_000u32.to_le_bytes());
 
     let total_words = 6 + (ops_body.len() / 4) as u32;
     let mut nve2 = minimal_nve2_header(1, 2, total_words);
     nve2.extend_from_slice(&ops_body);
 
     let hostile = sign_frame0_payload(&nve2, 1, meta);
+    let path = temp_file("hostile_sparse_node.nve2");
+    std::fs::write(&path, &hostile).expect("write hostile node frame0");
     let mut replica = StoreWireReplica::new(
         CountingBackend {
             commits: 0,
@@ -730,15 +729,38 @@ fn hostile_padded_sparse_node_id_frame0_rejected_without_oom() {
         core_realization_order(),
     );
     assert!(matches!(
-        Frame0File::boot_bytes_into_replica(&hostile, meta, &mut replica),
+        Frame0File::boot_into_replica(&path, meta, &mut replica),
         Err(Frame0Miss::Corrupt(_))
     ));
     assert_eq!(replica.store().stats().live_nodes, 0);
+    assert_eq!(replica.store().capacity(), 1);
     assert_eq!(replica.backend().commits, 0);
+    assert!(
+        !path.exists(),
+        "hostile WireError::Budget frame0 must be auto-removed as Corrupt"
+    );
+
+    // Hostile padded ResourceId(400_000) (~22.4 MiB > 17 MiB) -> rejected and removed.
+    let mut res_ops = Vec::with_capacity((pad_count as usize + 12) * 4);
+    res_ops.extend_from_slice(&(5u32 | (pad_count << 16)).to_le_bytes());
+    res_ops.extend_from_slice(&pad_count.to_le_bytes());
+    res_ops.resize(res_ops.len() + (pad_count as usize) * 4, 0u8);
+    // Op::DefineResources (opcode=4, count=1), 5 words = 20 bytes (zero-length blob).
+    res_ops.extend_from_slice(&(4u32 | (1u32 << 16)).to_le_bytes());
+    res_ops.extend_from_slice(&5u32.to_le_bytes());
+    res_ops.extend_from_slice(&400_000u32.to_le_bytes());
+    res_ops.extend_from_slice(&[0u8; 16]);
+    let mut res_nve2 = minimal_nve2_header(1, 2, 6 + (res_ops.len() / 4) as u32);
+    res_nve2.extend_from_slice(&res_ops);
+    let hostile_res = sign_frame0_payload(&res_nve2, 0, meta);
+    assert!(matches!(
+        Frame0File::boot_bytes_into_replica(&hostile_res, meta, &mut replica),
+        Err(Frame0Miss::Corrupt(_))
+    ));
 }
 
 #[test]
-fn frame0_alloc_error_maps_to_backend_miss_and_preserves_disk_file() {
+fn frame0_budget_overrun_maps_to_corrupt_and_removes_hostile_disk_file() {
     use nve_store::NveTable;
 
     fn encode_decl(desc: &nve_abi::table::TableDesc, wire_slot: u8) -> Vec<u8> {
@@ -770,11 +792,12 @@ fn frame0_alloc_error_maps_to_backend_miss_and_preserves_disk_file() {
     }
 
     let _ = (<Layout as NveTable>::slot(), <Visual as NveTable>::slot());
-    let dense_per_slot =
+    let slot_bytes_per_node =
         (<Layout as NveTable>::DESC.words() + <Visual as NveTable>::DESC.words() + 4)
-            * size_of::<u32>();
-    assert!(dense_per_slot > 64);
-    let n_nodes: u32 = ((18 * 1024 * 1024) / (dense_per_slot - 64)) as u32;
+            * size_of::<u32>()
+            + size_of::<nve_store::NodeRow>();
+    assert!(slot_bytes_per_node > 64);
+    let n_nodes: u32 = ((18 * 1024 * 1024) / (slot_bytes_per_node - 64)) as u32;
 
     let mut decls = encode_decl(&<Layout as NveTable>::DESC, 0);
     decls.extend_from_slice(&encode_decl(&<Visual as NveTable>::DESC, 1));
@@ -804,8 +827,8 @@ fn frame0_alloc_error_maps_to_backend_miss_and_preserves_disk_file() {
 
     let meta = Frame0Meta::default_core();
     let envelope = sign_frame0_payload(&nve2, n_nodes, meta);
-    let path = temp_file("alloc_budget.nve2");
-    std::fs::write(&path, &envelope).expect("write alloc frame0");
+    let path = temp_file("budget_overrun.nve2");
+    std::fs::write(&path, &envelope).expect("write budget overrun frame0");
 
     let mut replica = StoreWireReplica::new(
         CountingBackend {
@@ -816,14 +839,63 @@ fn frame0_alloc_error_maps_to_backend_miss_and_preserves_disk_file() {
     );
     assert!(matches!(
         Frame0File::boot_into_replica(&path, meta, &mut replica),
-        Err(Frame0Miss::Backend(ref msg)) if msg.contains("allocation")
+        Err(Frame0Miss::Corrupt(_))
     ));
     assert_eq!(replica.store().stats().live_nodes, 0);
     assert_eq!(replica.backend().commits, 0);
     assert!(replica.needs_keyframe());
     assert!(
-        path.exists(),
-        "Frame0SubmitError::Alloc -> Frame0Miss::Backend must preserve the disk file"
+        !path.exists(),
+        "deterministic WireError::Budget overrun must auto-delete hostile frame0.nve2"
+    );
+}
+
+#[test]
+fn frame0_churned_keyframe_roundtrips_cleanly() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut ids = Vec::with_capacity(2_500);
+    {
+        let mut tx = store.tx();
+        for _ in 0..2_500 {
+            ids.push(tx.create());
+        }
+        tx.commit_into(&mut changes);
+    }
+    let survivor = *ids.last().expect("survivor node");
+    assert!(survivor.index() >= 2_500);
+    {
+        let mut tx = store.tx();
+        for &id in &ids[..ids.len() - 1] {
+            tx.remove(id);
+        }
+        tx.set_children(NodeId::ROOT, &[survivor]);
+        tx.edit::<Visual>(survivor)
+            .background(Rgba::rgb(12, 34, 56));
+        tx.edit::<TextContent>(survivor).text("survived-churn");
+        tx.commit_into(&mut changes);
+    }
+
+    let meta = Frame0Meta::default_core();
+    let path = temp_file("churned_keyframe.nve2");
+    let _ = std::fs::remove_file(&path);
+    Frame0File::save(&path, &store, meta).expect("save churned frame0");
+
+    let mut replica = StoreWireReplica::new(
+        CountingBackend {
+            commits: 0,
+            last_live: 0,
+        },
+        core_realization_order(),
+    );
+    let (footer, _stats) =
+        Frame0File::boot_into_replica(&path, meta, &mut replica).expect("boot churned frame0");
+    assert_eq!(footer.node_count, 2);
+    assert_eq!(replica.store().stats().live_nodes, 2);
+    assert!(replica.store().is_live(survivor));
+    assert_eq!(
+        replica.store().row::<TextContent>(survivor).text(),
+        "survived-churn"
     );
     let _ = std::fs::remove_file(&path);
 }

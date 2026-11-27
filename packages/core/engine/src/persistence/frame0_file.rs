@@ -285,21 +285,8 @@ impl Frame0File {
         replica: &mut StoreWireReplica<B>,
         disk_path: Option<&Path>,
     ) -> Result<(Frame0Footer, BackendApplyStats), Frame0Miss> {
-        match replica.submit_frame0_nve2(payload, footer.node_count as usize) {
-            Ok(stats) => Ok((footer, stats)),
-            Err(Frame0SubmitError::NodeCountMismatch) => {
-                remove_corrupt_frame0(disk_path);
-                Err(Frame0Miss::Corrupt("footer node_count mismatch"))
-            }
-            Err(Frame0SubmitError::Wire) => {
-                remove_corrupt_frame0(disk_path);
-                Err(Frame0Miss::Corrupt("NVE2 decode failed"))
-            }
-            Err(Frame0SubmitError::Alloc) => {
-                Err(Frame0Miss::Backend("NVE2 allocation failed".to_string()))
-            }
-            Err(Frame0SubmitError::Backend(err)) => Err(Frame0Miss::Backend(err.to_string())),
-        }
+        let res = replica.submit_frame0_nve2(payload, footer.node_count as usize);
+        map_frame0_submit_result(res, footer, disk_path)
     }
 
     fn read_into_buf(
@@ -341,6 +328,28 @@ impl Frame0File {
     }
 }
 
+fn map_frame0_submit_result(
+    res: Result<BackendApplyStats, Frame0SubmitError>,
+    footer: Frame0Footer,
+    disk_path: Option<&Path>,
+) -> Result<(Frame0Footer, BackendApplyStats), Frame0Miss> {
+    match res {
+        Ok(stats) => Ok((footer, stats)),
+        Err(Frame0SubmitError::NodeCountMismatch) => {
+            remove_corrupt_frame0(disk_path);
+            Err(Frame0Miss::Corrupt("footer node_count mismatch"))
+        }
+        Err(Frame0SubmitError::Wire) => {
+            remove_corrupt_frame0(disk_path);
+            Err(Frame0Miss::Corrupt("NVE2 decode failed"))
+        }
+        Err(Frame0SubmitError::Alloc) => {
+            Err(Frame0Miss::Backend("NVE2 allocation failed".to_string()))
+        }
+        Err(Frame0SubmitError::Backend(err)) => Err(Frame0Miss::Backend(err.to_string())),
+    }
+}
+
 fn append_footer(out: &mut Vec<u8>, node_count: u32, meta: Frame0Meta) {
     let f = Frame0Footer {
         node_count,
@@ -354,4 +363,42 @@ fn append_footer(out: &mut Vec<u8>, node_count: u32, meta: Frame0Meta) {
     out.extend_from_slice(&f.to_bytes());
     let hash = xxh64(&out[..start + 32], FRAME0_XXH64_SEED);
     out[start + 32..start + 40].copy_from_slice(&hash.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame0_submit_alloc_error_maps_to_backend_miss_and_preserves_disk_file() {
+        let path = std::env::temp_dir().join(format!(
+            "nve_frame0_alloc_preserve_{}.nve2",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"valid-cache-sentinel").expect("write sentinel");
+        let footer = Frame0Footer {
+            node_count: 1,
+            flags: 0,
+            table_schema_hash: 0,
+            app_build_id: 0,
+            env_hash: 0,
+            payload_xxh64: 0,
+        };
+        assert!(matches!(
+            map_frame0_submit_result(Err(Frame0SubmitError::Alloc), footer, Some(&path)),
+            Err(Frame0Miss::Backend(ref msg)) if msg.contains("allocation")
+        ));
+        assert!(
+            path.exists(),
+            "transient Frame0SubmitError::Alloc must preserve disk cache"
+        );
+        assert!(matches!(
+            map_frame0_submit_result(Err(Frame0SubmitError::Wire), footer, Some(&path)),
+            Err(Frame0Miss::Corrupt(_))
+        ));
+        assert!(
+            !path.exists(),
+            "deterministic Frame0SubmitError::Wire / Budget must remove corrupt disk cache"
+        );
+    }
 }

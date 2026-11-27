@@ -109,12 +109,10 @@ fn try_writer_at_existing(
     let col = columns[slot.0 as usize]
         .as_mut()
         .ok_or(crate::wire::WireError::UndeclaredTable(slot.0))?;
-    touched
-        .try_reserve(1)
-        .map_err(|_| crate::wire::WireError::Alloc)?;
-    if !node.tables.contains(slot) {
+    touched.try_reserve(usize::from(node.effects == 0))?;
+    let row = if !node.tables.contains(slot) {
         let id = NodeId::from_index(index, node.generation);
-        col.try_attach(id, index)?;
+        let r = col.try_attach(id, index)?;
         node.tables.insert(slot);
         let realize = if realization_mask.contains(slot) {
             effect::REALIZE
@@ -122,8 +120,12 @@ fn try_writer_at_existing(
             0
         };
         touch(node, touched, index, realize | col.desc.effects());
-    }
-    let row = col.row_of(index);
+        r
+    } else {
+        let r = col.row_of(index);
+        col.dirty.try_reserve(usize::from(col.masks[r] == 0))?;
+        r
+    };
     let w = col.w;
     Ok(RowWriter {
         row: &mut col.rows[row * w..(row + 1) * w],
@@ -561,6 +563,34 @@ impl Transaction<'_> {
         if !self.store.has_slot(id, slot) {
             return;
         }
+        self.detach_live_slot(id, slot);
+    }
+
+    /// Fallible crate-private detach for [`crate::wire::WireDecoder`], reserving `touched` and
+    /// `col.detached` before mutating state so hostile `Op::Detach` frames never OOM-abort.
+    pub(crate) fn try_detach_slot(
+        &mut self,
+        id: NodeId,
+        slot: TableSlot,
+    ) -> Result<(), crate::wire::WireError> {
+        if !self.store.has_slot(id, slot) {
+            return Ok(());
+        }
+        let index = id.node_index();
+        let node = &self.store.nodes[index];
+        let created = node.flags & CREATED != 0;
+        let need_touch = usize::from(node.effects == 0);
+        self.store.touched.try_reserve(need_touch)?;
+        if !created && let Some(col) = self.store.columns[slot.0 as usize].as_mut() {
+            col.detached
+                .try_reserve(1)
+                .map_err(|_| crate::wire::WireError::Alloc)?;
+        }
+        self.detach_live_slot(id, slot);
+        Ok(())
+    }
+
+    fn detach_live_slot(&mut self, id: NodeId, slot: TableSlot) {
         let index = id.node_index();
         self.release_row(index, slot);
         let s = &mut *self.store;

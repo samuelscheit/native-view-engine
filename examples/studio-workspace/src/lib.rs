@@ -177,7 +177,12 @@ impl StudioWorkspaceModule {
     /// A module over `host_services` (e.g. [`StudioHostServices::new`] for deterministic headless
     /// runs), persisting where [`STUDIO_PERSIST_ENV_VAR`] points when it is set.
     pub fn with_services(surface_id: SurfaceId, host_services: Arc<StudioHostServices>) -> Self {
-        Self::from_persist_result(surface_id, host_services, WorkspaceStore::open_from_env())
+        Self::from_persist_result(
+            surface_id,
+            host_services,
+            WorkspaceStore::open_from_env(),
+            Some(STUDIO_PERSIST_ENV_VAR),
+        )
     }
 
     /// A module over `host_services` that attempts to open local persistence at `dir`, surfacing
@@ -187,22 +192,36 @@ impl StudioWorkspaceModule {
         host_services: Arc<StudioHostServices>,
         dir: impl AsRef<Path>,
     ) -> Self {
-        Self::from_persist_result(surface_id, host_services, Some(WorkspaceStore::open(dir)))
+        Self::from_persist_result(
+            surface_id,
+            host_services,
+            Some(WorkspaceStore::open(dir)),
+            None,
+        )
     }
 
     fn from_persist_result(
         surface_id: SurfaceId,
         host_services: Arc<StudioHostServices>,
         open_res: Option<Result<WorkspaceStore, PersistError>>,
+        env_var: Option<&str>,
     ) -> Self {
         let (persist_store, persist_open_error) = match open_res {
             Some(Ok(store)) => (Some(store), None),
             Some(Err(err)) => {
                 let msg = err.to_string();
                 #[cfg(not(target_arch = "wasm32"))]
-                eprintln!(
-                    "[nve-studio-workspace] Warning: failed to open persistence store ({STUDIO_PERSIST_ENV_VAR}): {msg}"
-                );
+                if let Some(var) = env_var {
+                    eprintln!(
+                        "[nve-studio-workspace] Warning: failed to open persistence store ({var}): {msg}"
+                    );
+                } else {
+                    eprintln!(
+                        "[nve-studio-workspace] Warning: failed to open persistence store: {msg}"
+                    );
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = env_var;
                 (None, Some(msg))
             }
             None => (None, None),

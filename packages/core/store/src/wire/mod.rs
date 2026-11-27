@@ -89,7 +89,9 @@ pub enum WireError {
         id: u32,
         kind: u64,
     },
-    /// Memory reservation failed while decoding or pre-sizing a frame.
+    /// Session or frame slot-memory budget exceeded while decoding a wire frame.
+    Budget,
+    /// Transient OS memory reservation failed while decoding or pre-sizing a frame.
     Alloc,
 }
 

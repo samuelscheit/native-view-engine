@@ -693,12 +693,12 @@ fn sparse_column_reserve_bulk_does_not_double_on_repeated_patches() {
     );
 }
 
-fn build_wire_frame(ops: &[(u8, u8, u32, &[u8])]) -> Vec<u8> {
+fn build_wire_frame_num(frame_num: u64, ops: &[(u8, u8, u32, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&crate::wire::MAGIC.to_le_bytes());
     out.extend_from_slice(&crate::wire::VERSION.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&1u64.to_le_bytes());
+    out.extend_from_slice(&frame_num.to_le_bytes());
     out.extend_from_slice(&(ops.len() as u32).to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     for &(tag, slot, count, body) in ops {
@@ -719,6 +719,10 @@ fn build_wire_frame(ops: &[(u8, u8, u32, &[u8])]) -> Vec<u8> {
     let words = (out.len() / 4) as u32;
     out[20..24].copy_from_slice(&words.to_le_bytes());
     out
+}
+
+fn build_wire_frame(ops: &[(u8, u8, u32, &[u8])]) -> Vec<u8> {
+    build_wire_frame_num(1, ops)
 }
 
 fn encode_table_decl(desc: &nve_abi::table::TableDesc, wire_slot: u8) -> Vec<u8> {
@@ -750,14 +754,13 @@ fn encode_table_decl(desc: &nve_abi::table::TableDesc, wire_slot: u8) -> Vec<u8>
 }
 
 #[test]
-fn wire_decoder_rejects_padded_sparse_node_id_and_reserve_bulk_returns_wire_error_alloc() {
+fn wire_decoder_rejects_hostile_sparse_node_and_resource_keyframes_before_allocating() {
     use crate::wire::{Op, WireDecoder, WireError};
 
-    // 1. Padded Op::ReleaseResources (32,812 B frame -> old bytes/4 + 1024 + 1 bound was 9,228).
-    //    NodeId(5_000) is strictly between the new bound (1,026) and the old bound (9,228) so
-    //    this test is non-vacuous and rejects padding amplification with zero node growth.
+    // 1. Hostile padded keyframe jumping to NodeId(600_000): 600_000 * 32 B = 19.2 MiB >
+    //    (16 MiB + 32 KiB * 16 = 16.5 MiB) -> rejected with WireError::Budget before allocating.
     let pad_body = vec![0u8; 8_192 * 4];
-    let create_body = 5_000u32.to_le_bytes();
+    let create_body = 600_000u32.to_le_bytes();
     let frame = build_wire_frame(&[
         (Op::ReleaseResources as u8, 0, 8_192, &pad_body),
         (Op::CreateNodes as u8, 0, 1, &create_body),
@@ -766,51 +769,79 @@ fn wire_decoder_rejects_padded_sparse_node_id_and_reserve_bulk_returns_wire_erro
     let mut replica = NodeStore::replica();
     let mut dec = WireDecoder::default();
     let mut tx = replica.tx();
-    assert_eq!(
-        dec.apply(&mut tx, &frame),
-        Err(WireError::NodeExists(5_000))
-    );
+    assert_eq!(dec.apply(&mut tx, &frame), Err(WireError::Budget));
     assert_eq!(tx.store().capacity(), 1);
 
-    // 2. Padded Op::ReleaseResources (65,536 B padding -> old bytes/20 + 1024 + 1 bound was ~4,305).
-    //    ResourceId(2_500) is strictly between the new bound (1,026) and the old bound (~4,305).
+    // 2. Hostile padded keyframe jumping to ResourceId(400_000): 400_000 * ENTRY_BYTES (~56 B) =
+    //    ~22.4 MiB > (16 MiB + 64 KiB * 16 = 17 MiB) -> rejected with WireError::Budget before
+    //    allocating; ResourceId(0) short-circuits to Resource; ResourceId(1 << 20) hits Budget.
     crate::register_codec::<Shadows>();
     let mut shadow_blob = Vec::new();
     Shadows(vec![1.0]).encode(&mut shadow_blob);
-    let mut def_res = Vec::new();
-    def_res.extend_from_slice(&2_500u32.to_le_bytes());
-    def_res.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
-    def_res.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
-    def_res.extend_from_slice(&0u32.to_le_bytes());
-    def_res.extend_from_slice(&(shadow_blob.len() as u32).to_le_bytes());
-    def_res.extend_from_slice(&shadow_blob);
+    let build_res_op = |rid: u32| {
+        let mut def_res = Vec::new();
+        def_res.extend_from_slice(&rid.to_le_bytes());
+        def_res.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
+        def_res.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
+        def_res.extend_from_slice(&0u32.to_le_bytes());
+        def_res.extend_from_slice(&(shadow_blob.len() as u32).to_le_bytes());
+        def_res.extend_from_slice(&shadow_blob);
+        def_res
+    };
     let res_pad = vec![0u8; 16_384 * 4];
+    let def_400k = build_res_op(400_000);
     let res_frame = build_wire_frame(&[
         (Op::ReleaseResources as u8, 0, 16_384, &res_pad),
-        (Op::DefineResources as u8, 0, 1, &def_res),
+        (Op::DefineResources as u8, 0, 1, &def_400k),
     ]);
     let mut res_replica = NodeStore::replica();
     let mut res_dec = WireDecoder::default();
     let mut res_tx = res_replica.tx();
     assert_eq!(
         res_dec.apply(&mut res_tx, &res_frame),
-        Err(WireError::Resource { id: 2_500, kind: 0 })
+        Err(WireError::Budget)
     );
     assert_eq!(res_tx.store().resources().slots(), 1);
 
-    // 3. Overflow / un-reservable bulk request must surface WireError::Alloc cleanly.
+    let def_over_cap = build_res_op(1 << 20);
+    let cap_frame = build_wire_frame(&[(Op::DefineResources as u8, 0, 1, &def_over_cap)]);
+    let mut cap_replica = NodeStore::replica();
+    let mut cap_dec = WireDecoder::default();
+    let mut cap_tx = cap_replica.tx();
+    assert_eq!(
+        cap_dec.apply(&mut cap_tx, &cap_frame),
+        Err(WireError::Budget)
+    );
+
+    let def_zero = build_res_op(0);
+    let zero_frame = build_wire_frame(&[(Op::DefineResources as u8, 0, 1, &def_zero)]);
+    let mut z_replica = NodeStore::replica();
+    let mut z_dec = WireDecoder::default();
+    let mut z_tx = z_replica.tx();
+    assert_eq!(
+        z_dec.apply(&mut z_tx, &zero_frame),
+        Err(WireError::Resource { id: 0, kind: 0 })
+    );
+
+    // 3. Overflow / un-reservable sparse request surfaces WireError::Alloc, while dense budget
+    //    overrun surfaces WireError::Budget cleanly.
     let mut store = NodeStore::new();
     let sparse_slot = Text::slot();
-    let mut dense_used = 0usize;
+    let mut slot_used = 0usize;
     assert_eq!(
         store.reserve_column_bulk(
             sparse_slot,
             usize::MAX / 2,
             usize::MAX / 2,
-            &mut dense_used,
+            &mut slot_used,
             usize::MAX,
         ),
         Err(WireError::Alloc)
+    );
+    let dense_slot = Visual::slot();
+    assert_eq!(
+        store.reserve_column_bulk(dense_slot, 1, 1024, &mut slot_used, 16),
+        Err(WireError::Budget)
     );
 }
 
@@ -1004,7 +1035,7 @@ fn wire_dynamic_dense_tables_forced_sparse_and_static_dense_budget_rejects_ampli
         let mut tx = budget_replica.tx();
         assert_eq!(
             budget_dec.apply(&mut tx, &budget_frame),
-            Err(WireError::Alloc)
+            Err(WireError::Budget)
         );
     }
     assert_eq!(
@@ -1012,7 +1043,82 @@ fn wire_dynamic_dense_tables_forced_sparse_and_static_dense_budget_rejects_ampli
             .as_ref()
             .map_or(0, |c| c.row_count()),
         0,
-        "dense column must not be allocated when dense byte budget is exceeded"
+        "dense column must not be allocated when session slot budget is exceeded"
+    );
+
+    // Part C (P1 #2): Relaying a wire-declared dynamic `Storage::Dense` table preserves
+    // `Storage::Dense` on the wire via `encode_full` (no SchemaMismatch on a downstream peer that
+    // statically registered the table as Dense) while the intermediate relay backs it sparsely.
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "test.wire.relay_dense_fidelity", storage = "dense")]
+    struct RelayDense {
+        #[effect(paint)]
+        val: u32,
+    }
+    assert!(
+        crate::slot_of(RelayDense::DESC.key).is_none(),
+        "RelayDense must start unregistered so intermediate relay allocates a dynamic slot"
+    );
+    let relay_decl = encode_table_decl(&RelayDense::DESC, 0);
+    let create_root = NodeId::ROOT.raw().to_le_bytes();
+    let mut patch_val = Vec::new();
+    patch_val.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
+    patch_val.extend_from_slice(&1u32.to_le_bytes()); // mask: word 0
+    patch_val.extend_from_slice(&0xCAFE_1234u32.to_le_bytes());
+    let incoming = build_wire_frame(&[
+        (Op::DeclareTables as u8, 0, 1, &relay_decl),
+        (Op::CreateNodes as u8, 0, 1, &create_root),
+        (Op::Patch as u8, 0, 1, &patch_val),
+    ]);
+
+    let mut relay_store = NodeStore::replica();
+    let mut relay_dec = WireDecoder::default();
+    {
+        let mut tx = relay_store.tx();
+        relay_dec
+            .apply(&mut tx, &incoming)
+            .expect("intermediate relay decodes dynamic dense table");
+        tx.commit_into(&mut changes);
+    }
+    let relay_col = relay_store
+        .columns
+        .iter()
+        .skip(crate::table::MAX_STATIC_TABLE_SLOTS)
+        .flatten()
+        .find(|c| c.desc.key() == RelayDense::DESC.key)
+        .expect("dynamic RelayDense column");
+    assert!(
+        !relay_col.is_dense(),
+        "intermediate relay must back dynamic Dense table sparsely"
+    );
+    assert_eq!(relay_col.row_count(), 1);
+    assert_eq!(
+        relay_col.desc.storage(),
+        nve_abi::table::Storage::Dense,
+        "TableMeta::storage() must preserve declared wire Storage::Dense for relaying"
+    );
+
+    let mut relayed_bytes = Vec::new();
+    crate::wire::WireEncoder::default().encode_full(&relay_store, &mut relayed_bytes);
+
+    // Downstream peer compiles & registers RelayDense statically as Storage::Dense.
+    let static_relay_slot = RelayDense::slot();
+    let mut peer_b = NodeStore::replica();
+    let mut peer_b_dec = WireDecoder::default();
+    {
+        let mut tx = peer_b.tx();
+        peer_b_dec
+            .apply(&mut tx, &relayed_bytes)
+            .expect("downstream peer with static Dense table must accept relayed keyframe");
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(peer_b.row::<RelayDense>(NodeId::ROOT).val(), 0xCAFE_1234);
+    assert!(
+        peer_b.columns[static_relay_slot.0 as usize]
+            .as_ref()
+            .expect("peer_b static column")
+            .is_dense()
     );
 }
 
@@ -1072,14 +1178,15 @@ fn dense_reserve_bulk_repeated_root_patches_and_empty_patch_do_not_inflate_rows(
         col.row_count()
     );
 
-    // 3. Two-op sparse Patch frame exercises fallible try_writer -> try_attach + PagedIndex::try_set
-    //    on the second op when !owners.is_empty().
+    // 3. Two-op sparse Patch frame including NodeId(300) (>= 256, page 1) in Op 2 exercises
+    //    fallible try_writer -> try_attach + PagedIndex::try_set's dir resize and new-page branch.
     let text_slot = Text::slot();
     let text_decl = encode_table_decl(&Text::DESC, 1);
     let mut nodes_body = Vec::new();
     for id in 2..=65u32 {
         nodes_body.extend_from_slice(&id.to_le_bytes());
     }
+    nodes_body.extend_from_slice(&300u32.to_le_bytes());
     let mut op1_patch = Vec::new();
     op1_patch.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
     op1_patch.extend_from_slice(&0u32.to_le_bytes());
@@ -1088,23 +1195,378 @@ fn dense_reserve_bulk_repeated_root_patches_and_empty_patch_do_not_inflate_rows(
         op2_patch.extend_from_slice(&id.to_le_bytes());
         op2_patch.extend_from_slice(&0u32.to_le_bytes());
     }
-    let two_op_sparse = build_wire_frame(&[
-        (Op::DeclareTables as u8, 0, 1, &text_decl),
-        (Op::CreateNodes as u8, 0, 64, &nodes_body),
-        (Op::Patch as u8, 1, 1, &op1_patch),
-        (Op::Patch as u8, 1, 64, &op2_patch),
-    ]);
+    op2_patch.extend_from_slice(&300u32.to_le_bytes());
+    op2_patch.extend_from_slice(&0u32.to_le_bytes());
+    let two_op_sparse = build_wire_frame_num(
+        3,
+        &[
+            (Op::DeclareTables as u8, 0, 1, &text_decl),
+            (Op::CreateNodes as u8, 0, 65, &nodes_body),
+            (Op::Patch as u8, 1, 1, &op1_patch),
+            (Op::Patch as u8, 1, 65, &op2_patch),
+        ],
+    );
     {
         let mut tx = replica.tx();
         dec.apply(&mut tx, &two_op_sparse)
-            .expect("two-op sparse frame succeeds via try_writer -> try_attach");
+            .expect("two-op sparse frame succeeds via try_writer -> try_attach + try_set");
         tx.commit_into(&mut changes);
     }
+    assert!(replica.has::<Text>(NodeId(300)));
     assert_eq!(
         replica.columns[text_slot.0 as usize]
             .as_ref()
             .expect("Text sparse column")
             .row_count(),
-        65
+        66
     );
+}
+
+#[test]
+fn wire_detach_on_high_index_node_across_sparse_and_dynamic_tables_dedups_sparsely() {
+    use crate::wire::{Op, WireDecoder};
+
+    // Frame 1: create high-index NodeId(100_000) (3.2 MiB << 16 MiB), declare 32 dynamic sparse
+    // tables + static sparse Text, and attach all 33 to NodeId(100_000).
+    let high_id = NodeId(100_000);
+    let create_body = high_id.raw().to_le_bytes();
+    let text_slot = Text::slot();
+    let mut decls = encode_table_decl(&Text::DESC, 0);
+    for i in 1..=32u8 {
+        let key = nve_hash::Key64(0xCAFE_E000_0000_0000 + u64::from(i));
+        let name = format!("sparse.detach.{i:02}");
+        decls.extend_from_slice(&key.lo().to_le_bytes());
+        decls.extend_from_slice(&key.hi().to_le_bytes());
+        decls.extend_from_slice(&(0x200u32 + u32::from(i)).to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        let packed = u32::from(i) | (1u32 << 8) | (1u32 << 24);
+        decls.extend_from_slice(&packed.to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        decls.extend_from_slice(&0u32.to_le_bytes());
+        decls.extend_from_slice(&[1u8, 0, 0, 0]);
+        decls.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        decls.extend_from_slice(name.as_bytes());
+        while !decls.len().is_multiple_of(4) {
+            decls.push(0);
+        }
+    }
+    let mut patch_high = Vec::new();
+    patch_high.extend_from_slice(&high_id.raw().to_le_bytes());
+    patch_high.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut f1_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(35);
+    f1_ops.push((Op::DeclareTables as u8, 0, 33, &decls));
+    f1_ops.push((Op::CreateNodes as u8, 0, 1, &create_body));
+    for wire_slot in 0..=32u8 {
+        f1_ops.push((Op::Patch as u8, wire_slot, 1, &patch_high));
+    }
+    let f1 = build_wire_frame_num(1, &f1_ops);
+
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &f1).expect("apply frame 1");
+        tx.commit_into(&mut changes);
+    }
+
+    // Frame 2: detach across all 33 sparse tables; also detach->re-attach->detach slot 0 (must
+    // dedup to 1 entry) and detach->re-attach slot 1 (must NOT appear in ChangeSet::detached).
+    let detach_body = high_id.raw().to_le_bytes();
+    let mut f2_ops: Vec<(u8, u8, u32, &[u8])> = Vec::with_capacity(38);
+    // Slot 0 (Text): Detach -> Patch -> Detach => single deduplicated detached entry.
+    f2_ops.push((Op::Detach as u8, 0, 1, &detach_body));
+    f2_ops.push((Op::Patch as u8, 0, 1, &patch_high));
+    f2_ops.push((Op::Detach as u8, 0, 1, &detach_body));
+    // Slot 1 (dynamic): Detach -> Patch => stays attached, zero detached entry.
+    f2_ops.push((Op::Detach as u8, 1, 1, &detach_body));
+    f2_ops.push((Op::Patch as u8, 1, 1, &patch_high));
+    // Slots 2..=32: plain Detach.
+    for wire_slot in 2..=32u8 {
+        f2_ops.push((Op::Detach as u8, wire_slot, 1, &detach_body));
+    }
+    let f2 = build_wire_frame_num(2, &f2_ops);
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &f2).expect("apply frame 2 detaches");
+        tx.commit_into(&mut changes);
+    }
+
+    assert_eq!(
+        changes
+            .table(text_slot)
+            .expect("Text table changes")
+            .detached,
+        vec![high_id],
+        "detach->re-attach->detach in one frame must deduplicate cleanly"
+    );
+    let mut reattached_seen = 0usize;
+    let mut detached_dyn_seen = 0usize;
+    for (idx, col) in replica
+        .columns
+        .iter()
+        .enumerate()
+        .skip(crate::table::MAX_STATIC_TABLE_SLOTS)
+    {
+        let Some(col) = col else { continue };
+        let slot = TableSlot(idx as u8);
+        assert!(
+            col.detached.capacity() <= 8,
+            "sparse column detached buffer must stay O(1), not dense"
+        );
+        assert!(col.relocated_epoch.is_empty());
+        if col.row_count() == 1 {
+            reattached_seen += 1;
+            assert!(
+                changes.table(slot).is_none_or(|t| t.detached.is_empty()),
+                "re-attached table must not report detached in ChangeSet"
+            );
+        } else {
+            assert_eq!(col.row_count(), 0);
+            detached_dyn_seen += 1;
+            assert_eq!(
+                changes.table(slot).expect("detached dyn change").detached,
+                vec![high_id]
+            );
+        }
+    }
+    assert_eq!(reattached_seen, 1);
+    assert_eq!(detached_dyn_seen, 31);
+}
+
+#[test]
+fn session_budget_allows_churned_keyframes_and_blocks_multiframe_stride_1024_amplification() {
+    use crate::wire::{Op, WireDecoder, WireEncoder, WireError};
+
+    // 1. Legitimate churned keyframe (create 2,500 nodes, remove 2..2499; define & drop 2,000
+    //    resources keeping the last one) must round-trip cleanly via encode_full() into a fresh
+    //    replica without hitting any arbitrary +1024 index cap.
+    let mut src = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut created_ids = Vec::with_capacity(2_500);
+    {
+        let mut tx = src.tx();
+        for _ in 0..2_500 {
+            created_ids.push(tx.create());
+        }
+        tx.commit_into(&mut changes);
+    }
+    let last_node = *created_ids.last().expect("last churned node");
+    assert!(last_node.index() >= 2_500);
+    {
+        let mut tx = src.tx();
+        for &id in &created_ids[..created_ids.len() - 1] {
+            tx.remove(id);
+        }
+        tx.set_children(NodeId::ROOT, &[last_node]);
+        tx.commit_into(&mut changes);
+    }
+    // Churn 2,000 resources in one frame, then attach the last one so its ResourceId is > 2,000.
+    let mut last_shadow = Shadows(vec![0.0]);
+    {
+        let mut tx = src.tx();
+        for i in 1..=2_000u32 {
+            let s = Shadows(vec![i as f32]);
+            tx.edit::<Visual>(last_node).shadows(Some(s));
+            last_shadow = Shadows(vec![i as f32]);
+        }
+        tx.commit_into(&mut changes);
+    }
+    let last_rid = src.row::<Visual>(last_node).shadows();
+    assert!(
+        last_rid.0 >= 2_000,
+        "expected churned ResourceId >= 2,000, got {}",
+        last_rid.0
+    );
+
+    let mut keyframe = Vec::new();
+    WireEncoder::default().encode_full(&src, &mut keyframe);
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &keyframe)
+            .expect("churned keyframe must round-trip cleanly under SessionBudget");
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(
+        replica.live_nodes().collect::<Vec<_>>(),
+        vec![NodeId::ROOT, last_node]
+    );
+    assert_eq!(
+        replica.resource::<Shadows>(replica.row::<Visual>(last_node).shadows()),
+        Some(&last_shadow)
+    );
+
+    // 2. Multi-frame stride-1024 node + dense-Visual attack (spoofing frame == 1 on every delta
+    //    to prove non-fresh stores NEVER refill the 16 MiB base!) must hit WireError::Budget.
+    let vis_decl = encode_table_decl(&Visual::DESC, 0);
+    let mut atk_store = NodeStore::replica();
+    let mut atk_dec = WireDecoder::default();
+    let mut hit_budget_at = None;
+    for step in 0..500u32 {
+        let nid = (step + 1) * 1_024;
+        let create = nid.to_le_bytes();
+        let mut patch = Vec::new();
+        patch.extend_from_slice(&nid.to_le_bytes());
+        patch.extend_from_slice(&0u32.to_le_bytes());
+        let frame = if step == 0 {
+            build_wire_frame_num(
+                1,
+                &[
+                    (Op::DeclareTables as u8, 0, 1, &vis_decl),
+                    (Op::CreateNodes as u8, 0, 1, &create),
+                    (Op::Patch as u8, 0, 1, &patch),
+                ],
+            )
+        } else {
+            // Alternate spoofed frame == 1 and normal delta frame numbers.
+            let fnum = if step % 2 == 0 {
+                1
+            } else {
+                u64::from(step + 1)
+            };
+            build_wire_frame_num(
+                fnum,
+                &[
+                    (Op::CreateNodes as u8, 0, 1, &create),
+                    (Op::Patch as u8, 0, 1, &patch),
+                ],
+            )
+        };
+        let mut tx = atk_store.tx();
+        match atk_dec.apply(&mut tx, &frame) {
+            Ok(_) => tx.commit_into(&mut changes),
+            Err(WireError::Budget) => {
+                hit_budget_at = Some(step);
+                break;
+            }
+            Err(other) => panic!("unexpected error on stride-1024 step {step}: {other:?}"),
+        }
+    }
+    assert!(
+        hit_budget_at.is_some(),
+        "500-frame stride-1024 node+dense stream must hit WireError::Budget"
+    );
+    assert!(
+        atk_store.capacity() < 300_000,
+        "stride-1024 stream must cap store capacity, got {}",
+        atk_store.capacity()
+    );
+
+    // 3. Multi-frame stride-1024 resource attack must hit WireError::Budget well before 500 frames.
+    crate::register_codec::<Shadows>();
+    let mut blob = Vec::new();
+    Shadows(vec![42.0]).encode(&mut blob);
+    let mut res_store = NodeStore::replica();
+    let mut res_dec = WireDecoder::default();
+    let mut res_hit_at = None;
+    for step in 0..500u32 {
+        let rid = (step + 1) * 1_024;
+        let mut def = Vec::new();
+        def.extend_from_slice(&rid.to_le_bytes());
+        def.extend_from_slice(&Shadows::KIND.lo().to_le_bytes());
+        def.extend_from_slice(&Shadows::KIND.hi().to_le_bytes());
+        def.extend_from_slice(&0u32.to_le_bytes());
+        def.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        def.extend_from_slice(&blob);
+        let frame = build_wire_frame_num(
+            u64::from(step + 1),
+            &[(Op::DefineResources as u8, 0, 1, &def)],
+        );
+        let mut tx = res_store.tx();
+        match res_dec.apply(&mut tx, &frame) {
+            Ok(_) => tx.commit_into(&mut changes),
+            Err(WireError::Budget) => {
+                res_hit_at = Some(step);
+                break;
+            }
+            Err(other) => panic!("unexpected resource error at step {step}: {other:?}"),
+        }
+    }
+    assert!(
+        res_hit_at.is_some(),
+        "500-frame stride-1024 resource stream must hit WireError::Budget"
+    );
+    assert!(
+        res_store.resources().slots() < 350_000,
+        "stride-1024 resource stream must cap slots, got {}",
+        res_store.resources().slots()
+    );
+}
+
+#[test]
+fn dirty_list_try_reserve_plus_one_prevents_grow_at_exact_64_and_patch_detach_repatch() {
+    use crate::wire::{Op, WireDecoder};
+
+    let vis_slot = Visual::slot();
+    let vis_decl = encode_table_decl(&Visual::DESC, 0);
+    let mut create_64 = Vec::with_capacity(64 * 4);
+    let mut patch_64 = Vec::with_capacity(64 * 12);
+    for id in 1..=64u32 {
+        create_64.extend_from_slice(&id.to_le_bytes());
+        patch_64.extend_from_slice(&id.to_le_bytes());
+        patch_64.extend_from_slice(&1u32.to_le_bytes()); // mask: word 0 (bg)
+        patch_64.extend_from_slice(&id.to_le_bytes());
+    }
+    let f1 = build_wire_frame_num(
+        1,
+        &[
+            (Op::DeclareTables as u8, 0, 1, &vis_decl),
+            (Op::CreateNodes as u8, 0, 64, &create_64),
+            (Op::Patch as u8, 0, 64, &patch_64),
+        ],
+    );
+
+    let mut replica = NodeStore::replica();
+    let mut dec = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &f1)
+            .expect("exact 64-node dense patch succeeds");
+        let col = tx.store().columns[vis_slot.0 as usize]
+            .as_ref()
+            .expect("Visual column");
+        assert_eq!(col.dirty.as_slice().len(), 64);
+        assert_eq!(
+            col.dirty.buf_len(),
+            65,
+            "DirtyList::try_reserve(64) must allocate 65 slots (+1 scratch) and never double to 128 via grow()"
+        );
+        tx.commit_into(&mut changes);
+    }
+
+    // Frame 2: Patch all 64 nodes (filling dirty.len() == 64), Detach ROOT, then re-Patch ROOT
+    // with a new bg value in the same frame -> must reserve fallibly without doubling via grow().
+    let detach_root = NodeId::ROOT.raw().to_le_bytes();
+    let mut repatch_root = Vec::new();
+    repatch_root.extend_from_slice(&NodeId::ROOT.raw().to_le_bytes());
+    repatch_root.extend_from_slice(&1u32.to_le_bytes());
+    repatch_root.extend_from_slice(&0x1122_3344u32.to_le_bytes());
+    let f2 = build_wire_frame_num(
+        2,
+        &[
+            (Op::Patch as u8, 0, 64, &patch_64),
+            (Op::Detach as u8, 0, 1, &detach_root),
+            (Op::Patch as u8, 0, 1, &repatch_root),
+        ],
+    );
+    {
+        let mut tx = replica.tx();
+        dec.apply(&mut tx, &f2)
+            .expect("same-frame Patch + Detach + re-Patch succeeds");
+        let col = tx.store().columns[vis_slot.0 as usize]
+            .as_ref()
+            .expect("Visual column");
+        assert!(
+            col.dirty.buf_len() < 128,
+            "fallible dirty.try_reserve must not fall through to 2x grow(), buf_len={}",
+            col.dirty.buf_len()
+        );
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(replica.row::<Visual>(NodeId::ROOT).bg(), Rgba(0x1122_3344));
 }

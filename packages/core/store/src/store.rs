@@ -178,7 +178,7 @@ impl NodeStore {
         &mut self,
         node_count: usize,
         payload_bytes: usize,
-    ) -> Result<(), std::collections::TryReserveError> {
+    ) -> Result<(), crate::wire::WireError> {
         let capped_nodes = node_count
             .min(payload_bytes / 4)
             .min(NodeId::MAX_INDEX as usize);
@@ -192,49 +192,60 @@ impl NodeStore {
             .saturating_add(1)
             .min(NodeId::MAX_INDEX as usize + 1);
         if self.nodes.len() < target_slots {
-            self.nodes.try_reserve(target_slots - self.nodes.len())?;
+            self.nodes
+                .try_reserve(target_slots - self.nodes.len())
+                .map_err(|_| crate::wire::WireError::Alloc)?;
         }
         let target_created = self.created.len().saturating_add(capped_nodes);
         if self.created.capacity() < target_created {
             self.created
-                .try_reserve(target_created.saturating_sub(self.created.len()))?;
+                .try_reserve(target_created.saturating_sub(self.created.len()))
+                .map_err(|_| crate::wire::WireError::Alloc)?;
         }
         self.touched.try_reserve(capped_nodes)?;
         self.reparented.try_reserve(capped_nodes)?;
-        self.children.try_reserve_data(
-            self.children
-                .data()
-                .len()
-                .saturating_add(capped_nodes.saturating_mul(2)),
-        )?;
-        self.text.try_reserve_bytes(
-            self.text
-                .data()
-                .len()
-                .saturating_add(payload_bytes.min(capped_nodes.saturating_mul(128).max(4096))),
-        )?;
+        self.children
+            .try_reserve_data(
+                self.children
+                    .data()
+                    .len()
+                    .saturating_add(capped_nodes.saturating_mul(2)),
+            )
+            .map_err(|_| crate::wire::WireError::Alloc)?;
+        self.text
+            .try_reserve_bytes(
+                self.text
+                    .data()
+                    .len()
+                    .saturating_add(payload_bytes.min(capped_nodes.saturating_mul(128).max(4096))),
+            )
+            .map_err(|_| crate::wire::WireError::Alloc)?;
         Ok(())
     }
 
-    /// Fallibly creates `id` at its exact slot (`WireDecoder` / replica apply), reserving backing
-    /// storage with `try_reserve` before resizing so hostile indices can never trigger OOM aborts.
-    pub(crate) fn try_create_at(
-        &mut self,
-        id: NodeId,
-    ) -> Result<bool, std::collections::TryReserveError> {
+    /// Atomically and fallibly creates `id` at its exact slot (`WireDecoder` / replica apply),
+    /// reserving both `created` and `nodes` before mutating so error paths leave zero partial state.
+    pub(crate) fn try_create_at(&mut self, id: NodeId) -> Result<bool, crate::wire::WireError> {
         let index = id.node_index();
         if index == NodeIndex::NULL {
             return Ok(false);
         }
-        let needed = index.as_usize().saturating_add(1);
-        if self.nodes.len() < needed {
-            self.nodes.try_reserve(needed - self.nodes.len())?;
-            self.nodes.resize(needed, NodeRow::default());
-        }
-        if self.nodes[index].flags & LIVE != 0 {
+        if self.nodes.get(index).is_some_and(|r| r.flags & LIVE != 0) {
             return Ok(false);
         }
-        self.created.try_reserve(1)?;
+        let needed = index
+            .as_usize()
+            .checked_add(1)
+            .ok_or(crate::wire::WireError::Alloc)?;
+        self.created
+            .try_reserve(1)
+            .map_err(|_| crate::wire::WireError::Alloc)?;
+        if self.nodes.len() < needed {
+            self.nodes
+                .try_reserve(needed - self.nodes.len())
+                .map_err(|_| crate::wire::WireError::Alloc)?;
+            self.nodes.resize(needed, NodeRow::default());
+        }
         let row = &mut self.nodes[index];
         *row = NodeRow {
             generation: id.generation(),
@@ -252,15 +263,15 @@ impl NodeStore {
         slot: TableSlot,
         expected_rows: usize,
         max_node_index: usize,
-        dense_bytes_used: &mut usize,
-        dense_byte_budget: usize,
+        slot_bytes_used: &mut usize,
+        slot_bytes_limit: usize,
     ) -> Result<(), crate::wire::WireError> {
         let col = self.column_mut(slot);
         col.reserve_bulk(
             expected_rows,
             max_node_index,
-            dense_bytes_used,
-            dense_byte_budget,
+            slot_bytes_used,
+            slot_bytes_limit,
         )
     }
 

@@ -312,9 +312,7 @@ impl TableMeta {
     pub(crate) fn storage(&self) -> Storage {
         match self {
             Self::Static(d) => d.storage,
-            // Wire-declared dynamic tables always use paged-sparse storage so an untrusted peer
-            // cannot declare 32 dynamic Dense tables and amplify node count into multi-GiB RAM.
-            Self::Dynamic(_) => Storage::Sparse,
+            Self::Dynamic(d) => d.storage,
         }
     }
 

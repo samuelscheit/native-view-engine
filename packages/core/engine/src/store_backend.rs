@@ -181,9 +181,8 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             self.reset();
         }
         if node_count_hint > 0 {
-            let bounded_hint = node_count_hint
-                .min(wire_bytes.len() / 4)
-                .min(nve_store::NodeId::MAX_INDEX as usize);
+            let bounded_hint =
+                node_count_hint.min(WireDecoder::max_frame0_node_hint(wire_bytes.len()));
             if self
                 .store
                 .reserve_for_frame0(bounded_hint, wire_bytes.len())
