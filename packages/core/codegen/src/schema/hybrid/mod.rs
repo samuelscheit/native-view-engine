@@ -267,6 +267,15 @@ impl HybridType {
     pub fn pod_opt_suffix_for(&self, file: &HybridFileSpec) -> Option<Cow<'static, str>> {
         self.is_pod(file).then(|| self.pod_opt_suffix()).flatten()
     }
+
+    /// Returns the deterministic C-ABI option wrapper suffix if and only if `self` is
+    /// `HybridType::Optional(inner)` where `inner` is a valid POD type in `file`.
+    pub fn optional_pod_suffix(&self, file: &HybridFileSpec) -> Option<Cow<'static, str>> {
+        match self {
+            Self::Optional(inner) => inner.pod_opt_suffix_for(file),
+            _ => None,
+        }
+    }
 }
 
 /// Typed literal default value for a `#[prop(default = ...)]` on a `HybridView`.

@@ -84,6 +84,9 @@ pub(super) fn dart_ffi_struct_field_type(ty: &HybridType) -> String {
 }
 
 pub(super) fn dart_native_value_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if let Some(suffix) = ty.optional_pod_suffix(spec) {
+        return format!("NveHybridOpt{suffix}");
+    }
     match ty {
         HybridType::Void => "ffi.Void".to_string(),
         HybridType::Bool => "ffi.Bool".to_string(),
@@ -97,10 +100,6 @@ pub(super) fn dart_native_value_type(ty: &HybridType, spec: &HybridFileSpec) -> 
         HybridType::F32 => "ffi.Float".to_string(),
         HybridType::F64 => "ffi.Double".to_string(),
         HybridType::Struct(name) if ty.is_pod(spec) => format!("NveHybrid{name}"),
-        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
-            Some(suffix) => format!("NveHybridOpt{suffix}"),
-            None => "NveHybridOwnedBytes".to_string(),
-        },
         _ => "NveHybridOwnedBytes".to_string(),
     }
 }

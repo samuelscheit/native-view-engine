@@ -286,3 +286,111 @@ pub fn line_has_fnv1a(line: &str) -> bool {
         .iter()
         .any(|needle| compact.windows(needle.len()).any(|w| w == needle.as_bytes()))
 }
+
+fn is_per_node_downcast_scope(rel: &str) -> bool {
+    rel.starts_with("packages/backends/")
+        || rel.starts_with("packages/core/abi/")
+        || rel.starts_with("packages/core/components/")
+        || rel.starts_with("packages/core/tables/")
+        || rel == "packages/core/engine/src/layout.rs"
+        || matches!(
+            rel,
+            "packages/core/store/src/store.rs"
+                | "packages/core/store/src/tx.rs"
+                | "packages/core/store/src/table.rs"
+                | "packages/core/store/src/commit.rs"
+                | "packages/core/store/src/view.rs"
+                | "packages/core/store/src/span_pool.rs"
+        )
+}
+
+/// Scans production Rust files in per-node hot scopes (`backends/**`, `core/{abi,components,tables}`,
+/// `engine/src/layout.rs`, and hot store files) for banned `Any::downcast_ref` / `.downcast_ref`.
+pub fn check_zero_per_node_downcast_ref(idx: &RepoIndex) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let mut scanned = 0usize;
+    for rel in idx.rs_files_under("packages") {
+        if is_test_or_bench_rs(&rel)
+            || is_self_invariant_file(&rel)
+            || !is_per_node_downcast_scope(&rel)
+        {
+            continue;
+        }
+        let Some(parsed) = idx.parse_rust(&rel) else {
+            continue;
+        };
+        scanned += 1;
+        scan_downcast_ref_ast(&rel, &parsed.raw, &parsed.ast, &mut violations);
+    }
+    assert!(
+        scanned > 0,
+        "zero_per_node_downcast_ref must scan > 0 files in per-node scope"
+    );
+    violations
+}
+
+/// AST visitor catching `.downcast_ref(...)`, `.downcast_ref::<T>(...)`, and `Any::downcast_ref(...)`
+/// while skipping `#![cfg(test)]` and `#[cfg(test)]` items.
+pub fn scan_downcast_ref_ast(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<Violation>) {
+    if is_cfg_test_attr(&ast.attrs) {
+        return;
+    }
+    struct DowncastScan<'a> {
+        rel: &'a str,
+        raw: &'a str,
+        out: &'a mut Vec<Violation>,
+    }
+    impl<'ast> Visit<'ast> for DowncastScan<'_> {
+        fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+            if !is_cfg_test_attr(&node.attrs) {
+                visit::visit_item_mod(self, node);
+            }
+        }
+        fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+            if !is_cfg_test_attr(&node.attrs) {
+                visit::visit_item_fn(self, node);
+            }
+        }
+        fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
+            if !is_cfg_test_attr(&node.attrs) {
+                visit::visit_impl_item_fn(self, node);
+            }
+        }
+        fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
+            if !is_cfg_test_attr(&node.attrs) {
+                visit::visit_item_impl(self, node);
+            }
+        }
+        fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
+            if node.method == "downcast_ref" {
+                let ln = node.method.span().start().line;
+                self.out.push(Violation::new(
+                    self.rel,
+                    ln,
+                    line_at(self.raw, ln),
+                    "Per-node `Any::downcast_ref` is banned; use typed tables/handles",
+                ));
+            }
+            visit::visit_expr_method_call(self, node);
+        }
+        fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+            if let syn::Expr::Path(ep) = &*node.func
+                && ep
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "downcast_ref")
+            {
+                let ln = ep.span().start().line;
+                self.out.push(Violation::new(
+                    self.rel,
+                    ln,
+                    line_at(self.raw, ln),
+                    "Per-node `Any::downcast_ref` is banned; use typed tables/handles",
+                ));
+            }
+            visit::visit_expr_call(self, node);
+        }
+    }
+    DowncastScan { rel, raw, out }.visit_file(ast);
+}

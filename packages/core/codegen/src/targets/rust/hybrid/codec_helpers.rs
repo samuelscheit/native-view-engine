@@ -78,6 +78,9 @@ pub(super) fn rust_c_abi_pod_type(ty: &HybridType) -> String {
 }
 
 pub(super) fn rust_c_abi_param_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if let Some(suffix) = ty.optional_pod_suffix(spec) {
+        return format!("NveHybridOpt{suffix}");
+    }
     match ty {
         HybridType::Bool
         | HybridType::U8
@@ -94,15 +97,14 @@ pub(super) fn rust_c_abi_param_type(ty: &HybridType, spec: &HybridFileSpec) -> S
         HybridType::String => "NveStrSlice".to_string(),
         HybridType::Bytes => "NveBufferSlice".to_string(),
         HybridType::Value => "NveValue".to_string(),
-        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
-            Some(suffix) => format!("NveHybridOpt{suffix}"),
-            None => "NveBufferSlice".to_string(),
-        },
         _ => "NveBufferSlice".to_string(),
     }
 }
 
 pub(super) fn rust_c_abi_return_type(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if let Some(suffix) = ty.optional_pod_suffix(spec) {
+        return format!("NveHybridOpt{suffix}");
+    }
     match ty {
         HybridType::Void => "()".to_string(),
         HybridType::Bool
@@ -117,15 +119,15 @@ pub(super) fn rust_c_abi_return_type(ty: &HybridType, spec: &HybridFileSpec) -> 
         | HybridType::F64
         | HybridType::Enum(_) => rust_c_abi_pod_type(ty),
         HybridType::Struct(_) if ty.is_pod(spec) => rust_c_abi_pod_type(ty),
-        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
-            Some(suffix) => format!("NveHybridOpt{suffix}"),
-            None => "NveHybridOwnedBytes".to_string(),
-        },
         _ => "NveHybridOwnedBytes".to_string(),
     }
 }
 
 pub(super) fn rust_c_abi_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
+    if let (HybridType::Optional(inner), Some(suffix)) = (ty, ty.optional_pod_suffix(spec)) {
+        let zero_inner = rust_c_abi_zero_value(inner, spec);
+        return format!("NveHybridOpt{suffix} {{ is_some: false, value: {zero_inner} }}");
+    }
     match ty {
         HybridType::Bool => "false".to_string(),
         HybridType::U8
@@ -138,13 +140,6 @@ pub(super) fn rust_c_abi_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> S
         | HybridType::Enum(_) => "0".to_string(),
         HybridType::F32 | HybridType::F64 => "0.0".to_string(),
         HybridType::Struct(name) if ty.is_pod(spec) => format!("{name}::default()"),
-        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
-            Some(suffix) => {
-                let zero_inner = rust_c_abi_zero_value(inner, spec);
-                format!("NveHybridOpt{suffix} {{ is_some: false, value: {zero_inner} }}")
-            }
-            None => "NveHybridOwnedBytes::EMPTY".to_string(),
-        },
         _ => "NveHybridOwnedBytes::EMPTY".to_string(),
     }
 }

@@ -75,6 +75,142 @@ snapshots:
       style: secondary
       start: 28
       end: 53
+  "pub struct LayoutNode {\n    pub children: Vec<nve_store::NodeId>,\n}\n":
+    labels:
+    - source: Vec<nve_store::NodeId>
+      style: primary
+      start: 42
+      end: 64
+    - source: Vec
+      style: secondary
+      start: 42
+      end: 45
+    - source: NodeId
+      style: secondary
+      start: 57
+      end: 63
+    - source: nve_store::NodeId
+      style: secondary
+      start: 46
+      end: 63
+    - source: nve_store::NodeId
+      style: secondary
+      start: 46
+      end: 63
+    - source: LayoutNode
+      style: secondary
+      start: 11
+      end: 21
+    - source: |-
+        pub struct LayoutNode {
+            pub children: Vec<nve_store::NodeId>,
+        }
+      style: secondary
+      start: 0
+      end: 67
+    - source: "pub children: Vec<nve_store::NodeId>"
+      style: secondary
+      start: 28
+      end: 64
+  "pub struct LayoutNode {\n    pub children: std::vec::Vec<NodeId>,\n}\n":
+    labels:
+    - source: std::vec::Vec<NodeId>
+      style: primary
+      start: 42
+      end: 63
+    - source: Vec
+      style: secondary
+      start: 52
+      end: 55
+    - source: std::vec::Vec
+      style: secondary
+      start: 42
+      end: 55
+    - source: NodeId
+      style: secondary
+      start: 56
+      end: 62
+    - source: NodeId
+      style: secondary
+      start: 56
+      end: 62
+    - source: LayoutNode
+      style: secondary
+      start: 11
+      end: 21
+    - source: |-
+        pub struct LayoutNode {
+            pub children: std::vec::Vec<NodeId>,
+        }
+      style: secondary
+      start: 0
+      end: 66
+    - source: "pub children: std::vec::Vec<NodeId>"
+      style: secondary
+      start: 28
+      end: 63
+  "pub struct Node {\n    pub children: std::vec::Vec<nve_store::NodeId>,\n}\n":
+    labels:
+    - source: std::vec::Vec<nve_store::NodeId>
+      style: primary
+      start: 36
+      end: 68
+    - source: Vec
+      style: secondary
+      start: 46
+      end: 49
+    - source: std::vec::Vec
+      style: secondary
+      start: 36
+      end: 49
+    - source: NodeId
+      style: secondary
+      start: 61
+      end: 67
+    - source: nve_store::NodeId
+      style: secondary
+      start: 50
+      end: 67
+    - source: nve_store::NodeId
+      style: secondary
+      start: 50
+      end: 67
+    - source: Node
+      style: secondary
+      start: 11
+      end: 15
+    - source: |-
+        pub struct Node {
+            pub children: std::vec::Vec<nve_store::NodeId>,
+        }
+      style: secondary
+      start: 0
+      end: 71
+    - source: "pub children: std::vec::Vec<nve_store::NodeId>"
+      style: secondary
+      start: 22
+      end: 68
+  "pub struct Node {\n    pub extra: Box<u32>,\n}\n":
+    labels:
+    - source: Box
+      style: primary
+      start: 33
+      end: 36
+    - source: Node
+      style: secondary
+      start: 11
+      end: 15
+    - source: |-
+        pub struct Node {
+            pub extra: Box<u32>,
+        }
+      style: secondary
+      start: 0
+      end: 44
+    - source: "pub extra: Box<u32>"
+      style: secondary
+      start: 22
+      end: 41
   "pub struct NodeColdData {\n    pub ordered: BTreeMap<u32, u32>,\n}\n":
     labels:
     - source: BTreeMap

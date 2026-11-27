@@ -413,6 +413,9 @@ pub fn check_codegen_hygiene_and_dart_53bit(idx: &RepoIndex) -> Vec<Violation> {
         if rel.contains("/dart/") {
             scan_dart_53bit_safety(&rel, &src, &mut violations);
         }
+        if rel.contains("/typescript/") {
+            scan_ts_53bit_safety(&rel, &src, &mut violations);
+        }
         let file = rel.rsplit('/').next().unwrap_or("");
         if file == "wire.rs" || file.starts_with("reloc") {
             violations.push(Violation::new(
@@ -453,6 +456,22 @@ pub fn scan_dart_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
                 idx + 1,
                 line,
                 "Unsafe 64-bit integer constant in Dart-web binding (JS Number precision is 53 bits); use `(lo: u32, hi: u32)` or `BigInt`",
+            ));
+        }
+    }
+}
+
+pub fn scan_ts_53bit_safety(rel: &str, src: &str, out: &mut Vec<Violation>) {
+    for (idx, line) in src.lines().enumerate() {
+        let unsafe_ts_64 = (line.contains("Number(") && line.contains("getBigUint64"))
+            || line.contains("4294967296")
+            || (line.contains("<< 32") && !line.contains("BigInt") && !line.contains("32n"));
+        if unsafe_ts_64 {
+            out.push(Violation::new(
+                rel,
+                idx + 1,
+                line,
+                "Unsafe 64-bit integer arithmetic in TypeScript/JS binding (JS Number precision is 53 bits); use `(lo: u32, hi: u32)` or `BigInt`",
             ));
         }
     }

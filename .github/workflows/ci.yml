@@ -70,7 +70,9 @@ jobs:
         run: |
           cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
           cargo test --workspace --exclude nve-arch-invariants
+          cargo test --locked -p nve-ui --features spatial-focus --test spatial_focus_tests
           cargo test -p nve-backend-skia -p nve-skia-shell
+          cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
           cargo clippy --locked -p nve-backend-skia --features skia -- -D warnings
           cargo clippy --locked -p nve-backend-skia --features skia-vulkan -- -D warnings
           cargo clippy --locked -p nve-skia-shell --features skia-vulkan -- -D warnings
@@ -262,8 +264,11 @@ jobs:
       - name: Build and test Rust workspace + Skia shell
         run: |
           cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
+          cargo test --locked -p nve-arch-invariants
           cargo test --workspace --exclude nve-arch-invariants
+          cargo test --locked -p nve-ui --features spatial-focus --test spatial_focus_tests
           cargo test -p nve-backend-skia -p nve-skia-shell
+          cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
           cargo clippy --locked -p nve-backend-skia --features skia -- -D warnings
           cargo clippy --locked -p nve-backend-skia --features skia-metal -- -D warnings
           cargo clippy --locked -p nve-skia-shell --features skia-metal -- -D warnings
@@ -366,8 +371,11 @@ jobs:
         shell: pwsh
         run: |
           cargo build -p nve-example-kitchen-sink -p nve-studio-workspace
+          cargo test --locked -p nve-arch-invariants
           cargo test --workspace --exclude nve-arch-invariants
+          cargo test --locked -p nve-ui --features spatial-focus --test spatial_focus_tests
           cargo test -p nve-backend-skia -p nve-skia-shell
+          cargo clippy --locked -p nve-ui --features spatial-focus --all-targets -- -D warnings
           cargo clippy --locked -p nve-backend-skia --features skia -- -D warnings
           cargo clippy --locked -p nve-backend-skia --features skia-d3d -- -D warnings
           cargo clippy --locked -p nve-skia-shell --features skia-d3d -- -D warnings

@@ -43,18 +43,30 @@ rule:
           has:
             field: name
             kind: type_identifier
-            regex: '^[A-Za-z0-9_]+Node$'
+            regex: '^[A-Za-z0-9_]*Node$'
     - kind: generic_type
       all:
         - has:
             field: type
-            kind: type_identifier
-            regex: '^Vec$'
+            any:
+              - kind: type_identifier
+                regex: '^Vec$'
+              - kind: scoped_type_identifier
+                has:
+                  field: name
+                  kind: type_identifier
+                  regex: '^Vec$'
         - has:
             field: type_arguments
             has:
-              kind: type_identifier
-              regex: '^NodeId$'
+              any:
+                - kind: type_identifier
+                  regex: '^NodeId$'
+                - kind: scoped_type_identifier
+                  has:
+                    field: name
+                    kind: type_identifier
+                    regex: '^NodeId$'
       inside:
         stopBy: end
         any:
@@ -66,7 +78,7 @@ rule:
           has:
             field: name
             kind: type_identifier
-            regex: '^[A-Za-z0-9_]+Node$'
+            regex: '^[A-Za-z0-9_]*Node$'
   not:
     any:
       - matches: rust-in-test-code

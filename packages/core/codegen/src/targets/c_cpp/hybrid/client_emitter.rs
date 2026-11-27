@@ -339,6 +339,25 @@ pub(super) fn emit_cpp_client_method(out: &mut CodeWriter, method: &HybridMethod
     let mut call_args = vec!["handle_".to_string()];
     for (idx, p) in method.params.iter().enumerate() {
         let pname = cpp_ident(&p.name);
+        if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec)) {
+            writeln!(out, "    NveHybridOpt{suffix} _arg_{idx}{{false, {{}}}};");
+            writeln!(out, "    if ({pname}.has_value()) {{");
+            writeln!(out, "      _arg_{idx}.is_some = true;");
+            match inner.as_ref() {
+                HybridType::Enum(_) => {
+                    writeln!(out, "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});");
+                }
+                HybridType::Struct(_) => {
+                    writeln!(out, "      _arg_{idx}.value = {pname}->to_abi();");
+                }
+                _ => {
+                    writeln!(out, "      _arg_{idx}.value = *{pname};");
+                }
+            }
+            writeln!(out, "    }}");
+            call_args.push(format!("_arg_{idx}"));
+            continue;
+        }
         match &p.ty {
             HybridType::Bool
             | HybridType::U8
@@ -369,31 +388,6 @@ pub(super) fn emit_cpp_client_method(out: &mut CodeWriter, method: &HybridMethod
                 call_args.push(format!("_arg_{idx}"));
             }
             HybridType::Value => call_args.push(pname),
-            HybridType::Optional(inner) => {
-                if let Some(suffix) = inner.pod_opt_suffix_for(spec) {
-                    writeln!(out, "    NveHybridOpt{suffix} _arg_{idx}{{false, {{}}}};");
-                    writeln!(out, "    if ({pname}.has_value()) {{");
-                    writeln!(out, "      _arg_{idx}.is_some = true;");
-                    match inner.as_ref() {
-                        HybridType::Enum(_) => {
-                            writeln!(out, "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});");
-                        }
-                        HybridType::Struct(_) => {
-                            writeln!(out, "      _arg_{idx}.value = {pname}->to_abi();");
-                        }
-                        _ => {
-                            writeln!(out, "      _arg_{idx}.value = *{pname};");
-                        }
-                    }
-                    writeln!(out, "    }}");
-                    call_args.push(format!("_arg_{idx}"));
-                } else {
-                    let wname = format!("_arg_w_{idx}");
-                    writeln!(out, "    BinWriter {wname};");
-                    emit_cpp_bin_write(out, "    ", &wname, &pname, &p.ty);
-                    call_args.push(format!("{wname}.slice()"));
-                }
-            }
             other => {
                 let wname = format!("_arg_w_{idx}");
                 writeln!(out, "    BinWriter {wname};");

@@ -42,10 +42,7 @@ mod imp {
     use ash::vk::Handle as AshHandle;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
     use skia_safe::{
-        gpu::{
-            backend_render_targets, backend_semaphores, surfaces, vk, DirectContext, FlushInfo,
-            Protected, SubmitInfo, SurfaceOrigin, SyncCpu,
-        },
+        gpu::{backend_semaphores, vk, DirectContext, FlushInfo, SubmitInfo, SyncCpu},
         ColorType, Surface,
     };
 
@@ -55,7 +52,7 @@ mod imp {
     use super::setup::{
         create_device, create_instance, create_skia_vulkan_context, create_sync_objects,
         create_vk_surface, create_vk_swapchain, destroy_sync_objects, load_vulkan_entry,
-        map_ash_to_skia_format, pick_physical_device, required_surface_extensions,
+        pick_physical_device, required_surface_extensions, wrap_vk_swapchain_image,
         FrameSyncObjects, SkiaVulkanContextParams, VkSwapchainParams,
     };
     use super::VulkanSwapchainConfig;
@@ -68,7 +65,7 @@ mod imp {
         surface_loader: ash::khr::surface::Instance,
         swapchain_loader: ash::khr::swapchain::Device,
         surface_khr: ash_vk::SurfaceKHR,
-        swapchain_khr: ash_vk::SwapchainKHR,
+        swapchain_khr: Option<ash_vk::SwapchainKHR>,
         images: Vec<ash_vk::Image>,
         vk_extent: ash_vk::Extent2D,
         format: ash_vk::Format,
@@ -111,18 +108,23 @@ mod imp {
             let VulkanTarget::Window(win) = &mut self.target else {
                 return Ok(());
             };
+            let frame_count = win.sync_frames.len().max(win.min_image_count as usize);
             let _ = self.direct_context.flush_submit_and_sync_cpu();
-            // SAFETY: `self.device` is live; waiting for idle drains GPU work before replacing swapchain images.
+            // SAFETY: `self.device` is live; waiting for idle drains GPU work before replacing swapchain & sync objects.
             unsafe {
                 let _ = self.device.device_wait_idle();
             }
-            for sync in &mut win.sync_frames {
-                sync.in_flight_pending = false;
-            }
             win.active_surface.take();
             win.active_image_index = None;
-            let old = win.swapchain_khr;
-            let created = create_vk_swapchain(&VkSwapchainParams {
+            win.swapchain_dirty = true;
+            // Destroy and recreate binary semaphores & fences across swapchain recreation so no
+            // signaled/unconsumed semaphore from an aborted or failed frame leaks (VUID 01286).
+            destroy_sync_objects(&self.device, &win.sync_frames);
+            win.sync_frames.clear();
+            win.current_sync = 0;
+
+            let old = win.swapchain_khr.take();
+            let created_res = create_vk_swapchain(&VkSwapchainParams {
                 surface_loader: &win.surface_loader,
                 swapchain_loader: &win.swapchain_loader,
                 physical_device: self.physical_device,
@@ -130,17 +132,26 @@ mod imp {
                 extent: next,
                 vsync: win.vsync,
                 requested_images: win.min_image_count,
-                old_swapchain: old,
-            })?;
-            // SAFETY: Device is idle and all Skia surfaces referencing `old` swapchain images have been dropped.
-            unsafe {
-                win.swapchain_loader.destroy_swapchain(old, None);
+                old_swapchain: old.unwrap_or_else(ash_vk::SwapchainKHR::null),
+            });
+            // Destroy `old` immediately whether creation succeeded or failed: once passed as
+            // `oldSwapchain` it is retired and must never be passed again (VUID 01933).
+            if let Some(old_sc) = old {
+                // SAFETY: Device is idle and all Skia surfaces referencing `old_sc` were dropped above.
+                unsafe {
+                    win.swapchain_loader.destroy_swapchain(old_sc, None);
+                }
             }
-            win.swapchain_khr = created.swapchain;
+            let created = created_res?;
+            let swapchain_guard = SwapchainGuard(&win.swapchain_loader, Some(created.swapchain));
+            let new_sync = create_sync_objects(&self.device, frame_count)?;
+            win.swapchain_khr = Some(swapchain_guard.disarm());
             win.images = created.images;
             win.vk_extent = created.extent;
             win.format = created.format;
             win.color_type = created.color_type;
+            win.sync_frames = new_sync;
+            win.current_sync = 0;
             win.swapchain_dirty = false;
             Ok(())
         }
@@ -157,10 +168,12 @@ mod imp {
                 VulkanTarget::Window(win) => {
                     win.active_surface.take();
                     destroy_sync_objects(&self.device, &win.sync_frames);
+                    win.sync_frames.clear();
                     // SAFETY: Device is idle, `active_surface` is dropped, and every handle belongs to `self.device`/`self.instance`.
                     unsafe {
-                        win.swapchain_loader
-                            .destroy_swapchain(win.swapchain_khr, None);
+                        if let Some(sc) = win.swapchain_khr.take() {
+                            win.swapchain_loader.destroy_swapchain(sc, None);
+                        }
                         win.surface_loader.destroy_surface(win.surface_khr, None);
                     }
                 }
@@ -234,7 +247,8 @@ mod imp {
         ) -> Result<(), GpuSurfaceError> {
             let needs_recreate = matches!(
                 &self.target,
-                VulkanTarget::Window(win) if win.swapchain_dirty
+                VulkanTarget::Window(win)
+                    if win.swapchain_dirty || win.swapchain_khr.is_none() || win.sync_frames.is_empty()
             );
             if needs_recreate {
                 self.recreate_window_swapchain(extent)?;
@@ -242,6 +256,9 @@ mod imp {
             }
 
             if let VulkanTarget::Window(win) = &mut self.target {
+                let swapchain_khr = win
+                    .swapchain_khr
+                    .ok_or(GpuSurfaceError::DrawableUnavailable)?;
                 let sync = &mut win.sync_frames[win.current_sync];
                 if sync.in_flight_pending {
                     // SAFETY: `sync.in_flight` is a live fence owned by `self.device` with a submitted signal in flight.
@@ -254,12 +271,11 @@ mod imp {
                     }
                     sync.in_flight_pending = false;
                 }
-                // SAFETY: `win.swapchain_khr` and `sync.image_available` are live handles on `self.device`.
-                // Note: `sync.in_flight` is intentionally NOT reset here — it is reset immediately before
-                // `queue_submit` in `present_native_frame` so acquire/render failures never leave it unsignaled.
+                // SAFETY: `swapchain_khr` and `sync.image_available` are live handles on `self.device`.
+                // `sync.in_flight` is reset immediately before `queue_submit` in `present_native_frame`.
                 let acquired = unsafe {
                     win.swapchain_loader.acquire_next_image(
-                        win.swapchain_khr,
+                        swapchain_khr,
                         u64::MAX,
                         sync.image_available,
                         ash_vk::Fence::null(),
@@ -274,6 +290,7 @@ mod imp {
                         ));
                     }
                     Err(e) => {
+                        win.swapchain_dirty = true;
                         return Err(GpuSurfaceError::SurfaceCreationFailed(format!(
                             "vkAcquireNextImageKHR failed: {e}"
                         )));
@@ -283,50 +300,25 @@ mod imp {
                     win.swapchain_dirty = true;
                 }
 
-                let image = win.images[image_index as usize];
-                let vk_format = map_ash_to_skia_format(win.format);
-                // SAFETY: `image` is a live swapchain `VkImage` owned by `win.swapchain_khr` for this frame.
-                let mut image_info = unsafe {
-                    vk::ImageInfo::new(
-                        image.as_raw() as _,
-                        vk::Alloc::default(),
-                        vk::ImageTiling::OPTIMAL,
-                        vk::ImageLayout::UNDEFINED,
-                        vk_format,
-                        1,
-                        self.queue_family_index,
-                        None,
-                        Protected::No,
-                        vk::SharingMode::EXCLUSIVE,
-                    )
+                let Some(&image) = win.images.get(image_index as usize) else {
+                    win.swapchain_dirty = true;
+                    return Err(GpuSurfaceError::DrawableUnavailable);
                 };
-                image_info.image_usage_flags =
-                    ash_vk::ImageUsageFlags::COLOR_ATTACHMENT.as_raw();
-
-                let backend_rt = backend_render_targets::make_vk(
-                    (win.vk_extent.width as i32, win.vk_extent.height as i32),
-                    &image_info,
-                );
-                let mut surface = surfaces::wrap_backend_render_target(
+                let Some(surface) = wrap_vk_swapchain_image(
                     &mut self.direct_context,
-                    &backend_rt,
-                    SurfaceOrigin::TopLeft,
+                    image,
+                    win.vk_extent,
+                    win.format,
                     win.color_type,
-                    None,
-                    None,
-                )
-                .ok_or_else(|| {
-                    GpuSurfaceError::SurfaceCreationFailed(
+                    self.queue_family_index,
+                    sync.image_available,
+                ) else {
+                    // `acquire_next_image` already signaled `sync.image_available`; force swapchain + sync rebuild.
+                    win.swapchain_dirty = true;
+                    return Err(GpuSurfaceError::SurfaceCreationFailed(
                         "wrap_backend_render_target returned None for VkImage".to_string(),
-                    )
-                })?;
-
-                // Hook the swapchain acquire semaphore into Skia's surface wait list so the GPU
-                // stalls color attachment writes until presentation ownership transfers.
-                // SAFETY: `sync.image_available` is a live `VkSemaphore` kept alive inside `VulkanWindowState`.
-                let acquire_sem =
-                    unsafe { backend_semaphores::make_vk(sync.image_available.as_raw() as _) };
-                surface.wait(&[acquire_sem], false);
+                    ));
+                };
 
                 win.active_image_index = Some(image_index);
                 win.active_surface = Some(surface);
@@ -368,18 +360,20 @@ mod imp {
                         .active_surface
                         .take()
                         .ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    self.direct_context
-                        .flush_surface_with_texture_state(
-                            &mut surface,
-                            &flush_info,
-                            Some(&present_state),
-                        )
-                        .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))?;
+                    if let Err(e) = self.direct_context.flush_surface_with_texture_state(
+                        &mut surface,
+                        &flush_info,
+                        Some(&present_state),
+                    ) {
+                        win.swapchain_dirty = true;
+                        return Err(GpuSurfaceError::FlushFailed(e.to_string()));
+                    }
                     drop(surface);
                     if !self.direct_context.submit(SubmitInfo {
                         sync: SyncCpu::No,
                         ..SubmitInfo::default()
                     }) {
+                        win.swapchain_dirty = true;
                         return Err(GpuSurfaceError::FlushFailed(
                             "DirectContext::submit returned false".to_string(),
                         ));
@@ -403,41 +397,66 @@ mod imp {
                     .active_image_index
                     .take()
                     .ok_or(GpuSurfaceError::DrawableUnavailable)?;
+                let swapchain_khr = win
+                    .swapchain_khr
+                    .ok_or(GpuSurfaceError::DrawableUnavailable)?;
                 let sync = &mut win.sync_frames[win.current_sync];
                 let wait_sems = [sync.render_finished];
-                let swapchains = [win.swapchain_khr];
+                let swapchains = [swapchain_khr];
                 let image_indices = [image_index];
                 let present_info = ash_vk::PresentInfoKHR::default()
                     .wait_semaphores(&wait_sems)
                     .swapchains(&swapchains)
                     .image_indices(&image_indices);
-                // SAFETY: `self.queue`, `win.swapchain_khr`, `sync.render_finished`, and `image_index` are valid handles
+                // SAFETY: `self.queue`, `swapchain_khr`, `sync.render_finished`, and `image_index` are valid handles
                 // and `submit_native_frame` transitioned the image to `PRESENT_SRC_KHR`.
-                match unsafe { win.swapchain_loader.queue_present(self.queue, &present_info) } {
+                let present_err = match unsafe { win.swapchain_loader.queue_present(self.queue, &present_info) } {
                     Ok(suboptimal) => {
                         if suboptimal {
                             win.swapchain_dirty = true;
                         }
+                        None
                     }
                     Err(ash_vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                         win.swapchain_dirty = true;
+                        None
                     }
                     Err(e) => {
-                        return Err(GpuSurfaceError::PresentFailed(format!(
+                        win.swapchain_dirty = true;
+                        Some(GpuSurfaceError::PresentFailed(format!(
                             "vkQueuePresentKHR failed: {e}"
-                        )));
+                        )))
                     }
+                };
+                if let Some(err) = present_err {
+                    // Drain submitted GPU work referencing this slot's semaphores before returning.
+                    // SAFETY: `self.device` is live.
+                    unsafe {
+                        let _ = self.device.device_wait_idle();
+                    }
+                    sync.in_flight_pending = false;
+                    return Err(err);
                 }
-                // Reset immediately before `queue_submit`; if `queue_submit` fails, `in_flight_pending`
-                // stays `false` so the next frame does not hang waiting on an unsignaled fence.
+                // Reset immediately before `queue_submit`; on failure drain device and rebuild swapchain.
                 // SAFETY: `self.device`, `self.queue`, and `sync.in_flight` are valid live handles.
-                unsafe {
+                let fence_res = unsafe {
                     self.device
                         .reset_fences(&[sync.in_flight])
-                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence reset: {e}")))?;
-                    self.device
-                        .queue_submit(self.queue, &[], sync.in_flight)
-                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence submit: {e}")))?;
+                        .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence reset: {e}")))
+                        .and_then(|()| {
+                            self.device
+                                .queue_submit(self.queue, &[], sync.in_flight)
+                                .map_err(|e| GpuSurfaceError::PresentFailed(format!("fence submit: {e}")))
+                        })
+                };
+                if let Err(err) = fence_res {
+                    win.swapchain_dirty = true;
+                    // SAFETY: `self.device` is live.
+                    unsafe {
+                        let _ = self.device.device_wait_idle();
+                    }
+                    sync.in_flight_pending = false;
+                    return Err(err);
                 }
                 sync.in_flight_pending = true;
                 win.current_sync = (win.current_sync + 1) % win.sync_frames.len();
@@ -447,6 +466,9 @@ mod imp {
 
         fn abort_native_frame(&mut self) {
             if let VulkanTarget::Window(win) = &mut self.target {
+                if win.active_image_index.is_some() {
+                    win.swapchain_dirty = true;
+                }
                 win.active_surface.take();
                 win.active_image_index = None;
             }
@@ -583,7 +605,7 @@ mod imp {
                         surface_loader,
                         swapchain_loader,
                         surface_khr,
-                        swapchain_khr,
+                        swapchain_khr: Some(swapchain_khr),
                         images: created.images,
                         vk_extent: created.extent,
                         format: created.format,

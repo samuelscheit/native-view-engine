@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use guppy::graph::cargo::{CargoOptions, CargoSet};
+use guppy::graph::cargo::{CargoOptions, CargoSet, InitialsPlatform};
 use guppy::graph::feature::StandardFeatures;
 use guppy::graph::{BuildTargetId, DependencyDirection, PackageGraph, PackageMetadata};
 use guppy::platform::{EnabledTernary, Platform, PlatformSpec, TargetFeatures};
@@ -55,8 +55,9 @@ fn rel_manifest(pkg: &PackageMetadata<'_>) -> String {
 }
 
 /// Shortest transitive dependency chains reachable from `root_id` using `guppy`'s `CargoSet`
-/// feature-graph resolver (with ALL features of `root_id` enabled) across every platform in
-/// `triples`, PLUS direct `[build-dependencies]` of workspace crates (while excluding third-party
+/// feature-graph resolver (`InitialsPlatform::ProcMacrosOnTarget` + `StandardFeatures::All`)
+/// across every platform in `triples`, PLUS iterative expansion of workspace `[build-dependencies]`
+/// and workspace proc-macro dependencies across native targets (still excluding third-party
 /// build-script dependencies like `skia-bindings -> serde_json`).
 fn transitive_chains<'g>(
     graph: &'g PackageGraph,
@@ -82,6 +83,7 @@ fn transitive_chains<'g>(
         let target = platform_spec(triple);
         let mut opts = CargoOptions::new();
         opts.set_include_dev(include_dev)
+            .set_initials_platform(InitialsPlatform::ProcMacrosOnTarget)
             .set_target_platform(target)
             .set_host_platform(host_linux.clone());
         if let Ok(cargo_set) = CargoSet::new(initials.clone(), features_only.clone(), &opts) {
@@ -95,36 +97,56 @@ fn transitive_chains<'g>(
         }
     }
 
-    // Also inspect direct `[build-dependencies]` of workspace crates in the active set (and their
-    // target closures on host) so workspace build-deps (e.g. `nve-engine -> build dioxus-core`)
-    // are always caught without pulling third-party build scripts (e.g. `skia-bindings -> serde_json`).
-    let mut ws_build_roots: Vec<&'g PackageId> = Vec::new();
-    for &pid in &active_ids {
-        if let Ok(pkg) = graph.metadata(pid)
-            && pkg.in_workspace()
-        {
+    // Iteratively expand workspace `[build-dependencies]` and workspace edges targeting
+    // `proc-macro = true` crates across native platforms (while excluding third-party build
+    // scripts like `skia-bindings -> serde_json`).
+    let mut expanded_ws_host_roots: BTreeSet<&'g PackageId> = BTreeSet::new();
+    loop {
+        let mut next_roots: Vec<&'g PackageId> = Vec::new();
+        for &pid in &active_ids {
+            let Ok(pkg) = graph.metadata(pid) else {
+                continue;
+            };
+            if !pkg.in_workspace() {
+                continue;
+            }
             for link in pkg.direct_links() {
-                if link.build().is_present() {
-                    ws_build_roots.push(link.to().id());
+                let is_ws_build = link.build().is_present();
+                let is_ws_proc_macro = link.to().is_proc_macro()
+                    && (if pid == root_id {
+                        include_dev || !link.dev_only()
+                    } else {
+                        !link.dev_only()
+                    });
+                if (is_ws_build || is_ws_proc_macro)
+                    && expanded_ws_host_roots.insert(link.to().id())
+                {
+                    next_roots.push(link.to().id());
                 }
             }
         }
-    }
-    if !ws_build_roots.is_empty()
-        && let Ok(bset) = graph.resolve_ids(ws_build_roots)
-    {
+        if next_roots.is_empty() {
+            break;
+        }
+        let Ok(bset) = graph.resolve_ids(next_roots) else {
+            break;
+        };
         let b_initials = bset.to_feature_set(StandardFeatures::All);
-        let mut opts = CargoOptions::new();
-        opts.set_include_dev(false)
-            .set_target_platform(host_linux.clone())
-            .set_host_platform(host_linux);
-        if let Ok(cargo_set) = CargoSet::new(b_initials, features_only, &opts) {
-            for pid in cargo_set
-                .target_features()
-                .to_package_set()
-                .package_ids(DependencyDirection::Forward)
-            {
-                active_ids.insert(pid);
+        for &triple in TARGET_TRIPLES_NATIVE {
+            let target = platform_spec(triple);
+            let mut opts = CargoOptions::new();
+            opts.set_include_dev(false)
+                .set_initials_platform(InitialsPlatform::ProcMacrosOnTarget)
+                .set_target_platform(target)
+                .set_host_platform(host_linux.clone());
+            if let Ok(cargo_set) = CargoSet::new(b_initials.clone(), features_only.clone(), &opts) {
+                for pid in cargo_set
+                    .target_features()
+                    .to_package_set()
+                    .package_ids(DependencyDirection::Forward)
+                {
+                    active_ids.insert(pid);
+                }
             }
         }
     }
@@ -242,6 +264,7 @@ pub fn check_core_zero_dioxus(graph: &PackageGraph) -> Vec<Violation> {
 }
 
 pub fn check_core_zero_platform_crates(graph: &PackageGraph) -> Vec<Violation> {
+    let wasm32 = platform_spec("wasm32-unknown-unknown");
     let mut violations = Vec::new();
     let mut scanned = 0usize;
     for pkg in graph.workspace().iter() {
@@ -252,34 +275,55 @@ pub fn check_core_zero_platform_crates(graph: &PackageGraph) -> Vec<Violation> {
             continue;
         }
         scanned += 1;
-        // Evaluate across all 3 native targets via `CargoSet`, PLUS direct workspace edges on all 4
-        // targets (including `wasm32`) so direct/workspace-mediated `web-sys`/`js-sys`/`wasm-bindgen`/
-        // `skia-safe` edges are always caught while third-party wasm shims (`getrandom`/`web-time`/
-        // `tokio` -> `js-sys`/`wasm-bindgen` on wasm32) do not false-positive.
-        for (dep_id, chain) in transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_NATIVE) {
+        // 1. Any banned platform crate reachable on Linux/macOS/Windows (even via third-party) fails.
+        let native_chains = transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_NATIVE);
+        let mut seen_snippets: BTreeSet<String> = BTreeSet::new();
+        for (dep_id, chain) in &native_chains {
             if let Ok(dep) = graph.metadata(dep_id)
                 && BANNED_PLATFORM_CRATES.contains(&dep.name())
             {
-                violations.push(Violation::new(
-                    rel_manifest(&pkg),
-                    1,
-                    chain.join(" -> "),
-                    "packages/core/* must not depend on platform crates (`web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`)",
-                ));
-            }
-        }
-        // Also check direct workspace edges on wasm32 (a core crate may never directly list
-        // `web-sys`/`js-sys`/`wasm-bindgen`/`skia-safe` even behind `cfg(target_arch = "wasm32")`).
-        for link in pkg.direct_links() {
-            if !link.dev_only() && BANNED_PLATFORM_CRATES.contains(&link.to().name()) {
-                let snippet = format!("{} -> {}", pkg.name(), link.to().name());
-                if !violations.iter().any(|v| v.snippet == snippet) {
+                let snippet = chain.join(" -> ");
+                if seen_snippets.insert(snippet.clone()) {
                     violations.push(Violation::new(
                         rel_manifest(&pkg),
                         1,
                         snippet,
                         "packages/core/* must not depend on platform crates (`web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`)",
                     ));
+                }
+            }
+        }
+        // 2. Across all targets (including `wasm32`), any workspace crate reachable from `pkg`
+        // (including `pkg` itself) that directly links a banned platform crate fails, catching
+        // `core -> workspace -> web-sys` behind `cfg(wasm32)` while skipping third-party wasm shims.
+        let all_chains = transitive_chains(graph, pkg.id(), false, TARGET_TRIPLES_ALL);
+        let ws_reachable = std::iter::once((pkg.id(), vec![pkg.name().to_string()])).chain(
+            all_chains
+                .into_iter()
+                .filter(|(id, _)| graph.metadata(id).is_ok_and(|m| m.in_workspace())),
+        );
+        for (ws_id, prefix_chain) in ws_reachable {
+            let Ok(ws_pkg) = graph.metadata(ws_id) else {
+                continue;
+            };
+            for link in ws_pkg.direct_links() {
+                if link.dev_only() || !BANNED_PLATFORM_CRATES.contains(&link.to().name()) {
+                    continue;
+                }
+                let enabled_wasm = link.normal().status().enabled_on(&wasm32) != EnabledTernary::Disabled
+                    || link.build().status().enabled_on(&wasm32) != EnabledTernary::Disabled;
+                if enabled_wasm {
+                    let mut chain = prefix_chain.clone();
+                    chain.push(link.to().name().to_string());
+                    let snippet = chain.join(" -> ");
+                    if seen_snippets.insert(snippet.clone()) {
+                        violations.push(Violation::new(
+                            rel_manifest(&pkg),
+                            1,
+                            snippet,
+                            "packages/core/* must not depend on platform crates (`web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`)",
+                        ));
+                    }
                 }
             }
         }

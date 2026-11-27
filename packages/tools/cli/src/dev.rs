@@ -6,7 +6,7 @@ use std::process::Command as ProcessCommand;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use nve_engine::HotPatchMsg;
 
@@ -41,10 +41,6 @@ pub(crate) fn dylib_path_for_package_in(target_dir: &Path, package: &str) -> Pat
     target_dir
         .join("debug")
         .join(format!("{prefix}{}.{ext}", package.replace('-', "_")))
-}
-
-pub(crate) fn dylib_path_for_package(package: &str) -> PathBuf {
-    dylib_path_for_package_in(Path::new("target"), package)
 }
 
 pub(crate) fn default_watch_dir_for_package(package: &str) -> PathBuf {
@@ -216,6 +212,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     let target_dir = resolve_cargo_target_dir().unwrap_or_else(|_| PathBuf::from("target"));
     let dylib_path = dylib_path_for_package_in(&target_dir, &opts.package);
     let pair_tx_slot: Arc<Mutex<Option<Sender<PairControlMsg>>>> = Arc::new(Mutex::new(None));
+    let (skia_ready_tx, skia_ready_rx) = bounded::<()>(1);
 
     let build_once = {
         let package = opts.package.clone();
@@ -252,6 +249,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
                     if let Some(tx) = pair_tx_slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                         let _ = tx.send(PairControlMsg::DylibReload(dylib_for_build.clone()));
                     }
+                    let _ = skia_ready_tx.try_send(());
                     true
                 }
                 _ => {
@@ -414,14 +412,18 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
         }
     };
 
-    if opts.skia && !initial_ok {
-        eprintln!(
-            "[dev] initial build of '{}' failed; skipping `--skia` desktop preview launch",
-            opts.package
-        );
-        run_watch_loop();
-    } else if opts.skia {
+    if opts.skia {
         std::thread::spawn(run_watch_loop);
+        if !initial_ok {
+            eprintln!(
+                "[dev] initial build of '{}' failed; waiting for first successful rebuild to launch `--skia` desktop preview...",
+                opts.package
+            );
+        }
+        if let Err(err) = wait_for_skia_launch_ready(initial_ok, &skia_ready_rx) {
+            eprintln!("[dev] {err}");
+            std::process::exit(1);
+        }
         let preview_res = run_skia_shell_subprocess(&dylib_path, &client_ws_url);
         if let Some(tx) = pair_tx_slot
             .lock()
@@ -437,6 +439,15 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
     } else {
         run_watch_loop();
     }
+}
+
+fn wait_for_skia_launch_ready(initial_ok: bool, ready_rx: &Receiver<()>) -> Result<(), &'static str> {
+    if initial_ok {
+        return Ok(());
+    }
+    ready_rx
+        .recv()
+        .map_err(|_| "watch loop terminated before first successful rebuild")
 }
 
 fn skia_shell_bin_name() -> &'static str {
@@ -457,7 +468,7 @@ fn parse_cargo_target_dir(stdout: &[u8]) -> Result<PathBuf, String> {
         .ok_or_else(|| "`cargo metadata` output missing `target_directory`".to_string())
 }
 
-fn resolve_cargo_target_dir() -> Result<PathBuf, String> {
+pub(crate) fn resolve_cargo_target_dir() -> Result<PathBuf, String> {
     let out = ProcessCommand::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
@@ -523,8 +534,11 @@ struct ChildProcessGuard(Option<std::process::Child>);
 
 impl ChildProcessGuard {
     fn wait(mut self) -> std::io::Result<std::process::ExitStatus> {
-        let mut child = self.0.take().expect("ChildProcessGuard active");
-        child.wait()
+        let res = self.0.as_mut().expect("ChildProcessGuard active").wait();
+        if res.is_ok() {
+            self.0 = None;
+        }
+        res
     }
 }
 

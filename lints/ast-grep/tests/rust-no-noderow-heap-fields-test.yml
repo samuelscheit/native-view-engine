@@ -115,3 +115,19 @@ invalid:
     pub struct SceneNode {
         pub props: std::collections::HashMap<u32, u32>,
     }
+  - |
+    pub struct Node {
+        pub extra: Box<u32>,
+    }
+  - |
+    pub struct LayoutNode {
+        pub children: std::vec::Vec<NodeId>,
+    }
+  - |
+    pub struct LayoutNode {
+        pub children: Vec<nve_store::NodeId>,
+    }
+  - |
+    pub struct Node {
+        pub children: std::vec::Vec<nve_store::NodeId>,
+    }

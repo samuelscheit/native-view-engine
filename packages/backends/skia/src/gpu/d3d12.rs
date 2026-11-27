@@ -34,8 +34,9 @@ mod imp {
     use skia_safe::{
         gpu::{
             backend_render_targets, d3d, direct_contexts, surfaces, BackendRenderTarget,
-            DirectContext, Protected, SurfaceOrigin, SyncCpu,
+            DirectContext, FlushInfo, Protected, SurfaceOrigin, SyncCpu,
         },
+        surfaces::BackendSurfaceAccess,
         ColorType, Surface,
     };
     use windows::{
@@ -69,8 +70,9 @@ mod imp {
     use crate::gpu::{GpuBackendKind, GpuSurfaceConfig, GpuSurfaceError, SwapchainExtent};
 
     struct D3D12WindowState {
-        swap_chain: IDXGISwapChain3,
+        // Drop order: Skia surfaces & BackendRenderTargets must drop BEFORE IDXGISwapChain3.
         buffers: Vec<(Surface, BackendRenderTarget)>,
+        swap_chain: IDXGISwapChain3,
         buffer_extent: SwapchainExtent,
         active_index: Option<usize>,
         vsync: bool,
@@ -79,7 +81,7 @@ mod imp {
 
     enum D3D12Target {
         Window(D3D12WindowState),
-        Offscreen { surface: Surface },
+        Offscreen { surface: Option<Surface> },
     }
 
     /// Platform-specific Direct3D 12 swapchain resources managed by [`GaneshPresenter`].
@@ -88,6 +90,22 @@ mod imp {
         target: D3D12Target,
         direct_context: DirectContext,
         _backend_context: d3d::BackendContext,
+    }
+
+    impl Drop for D3D12NativeSwapchain {
+        fn drop(&mut self) {
+            let _ = self.direct_context.flush_submit_and_sync_cpu();
+            match &mut self.target {
+                D3D12Target::Window(win) => {
+                    win.buffers.clear();
+                    win.active_index = None;
+                }
+                D3D12Target::Offscreen { surface } => {
+                    surface.take();
+                }
+            }
+            self.direct_context.release_resources_and_abandon();
+        }
     }
 
     /// Real Direct3D 12 hardware GPU swapchain & offscreen render-target presenter.
@@ -110,8 +128,10 @@ mod imp {
             &mut self,
         ) -> Option<(&mut Surface, &mut DirectContext)> {
             match &mut self.target {
-                D3D12Target::Offscreen { surface } => Some((surface, &mut self.direct_context)),
-                D3D12Target::Window(_) => None,
+                D3D12Target::Offscreen {
+                    surface: Some(surface),
+                } => Some((surface, &mut self.direct_context)),
+                _ => None,
             }
         }
 
@@ -120,11 +140,14 @@ mod imp {
             prev: SwapchainExtent,
             next: SwapchainExtent,
         ) -> Result<bool, GpuSurfaceError> {
-            if next.width == prev.width && next.height == prev.height {
-                return Ok(false);
-            }
             match &mut self.target {
                 D3D12Target::Window(win) => {
+                    if next.width == win.buffer_extent.width
+                        && next.height == win.buffer_extent.height
+                    {
+                        win.buffer_extent.scale_factor = next.scale_factor;
+                        return Ok(false);
+                    }
                     let _ = self.direct_context.flush_submit_and_sync_cpu();
                     // DXGI requires releasing all COM backbuffer references before ResizeBuffers.
                     win.buffers.clear();
@@ -154,30 +177,46 @@ mod imp {
                             "IDXGISwapChain::ResizeBuffers failed: {err}"
                         )));
                     }
+                    // DXGI swapchain dimensions are now `next`. Keep `win.buffer_extent` and
+                    // `GaneshPresenter::extent` synchronized even if eager wrapping fails; lazy
+                    // re-wrap in `begin_native_frame` will retry and surface any wrap error.
                     win.buffer_extent = next;
-                    win.buffers = wrap_dxgi_backbuffers(
+                    if let Ok(wrapped) = wrap_dxgi_backbuffers(
                         &win.swap_chain,
                         &mut self.direct_context,
                         win.buffer_extent,
                         win.buffer_count,
-                    )?;
+                    ) {
+                        win.buffers = wrapped;
+                    }
+                    Ok(true)
                 }
                 D3D12Target::Offscreen { surface } => {
+                    if next.width == prev.width && next.height == prev.height {
+                        return Ok(false);
+                    }
                     let _ = self.direct_context.flush_submit_and_sync_cpu();
-                    *surface =
-                        create_ganesh_offscreen_surface(&mut self.direct_context, next, "D3D12")?;
+                    *surface = Some(create_ganesh_offscreen_surface(
+                        &mut self.direct_context,
+                        next,
+                        "D3D12",
+                    )?);
+                    Ok(true)
                 }
             }
-            Ok(true)
         }
 
         fn begin_native_frame(
             &mut self,
-            _extent: SwapchainExtent,
+            extent: SwapchainExtent,
             _recreations: &mut u64,
         ) -> Result<(), GpuSurfaceError> {
             if let D3D12Target::Window(win) = &mut self.target {
-                if win.buffers.is_empty() {
+                if win.buffers.is_empty()
+                    || win.buffer_extent.width != extent.width
+                    || win.buffer_extent.height != extent.height
+                {
+                    win.buffers.clear();
                     win.buffers = wrap_dxgi_backbuffers(
                         &win.swap_chain,
                         &mut self.direct_context,
@@ -204,26 +243,44 @@ mod imp {
                         .map(|(surface, _)| surface)
                         .ok_or(GpuSurfaceError::DrawableUnavailable)
                 }
-                D3D12Target::Offscreen { surface } => Ok(surface),
+                D3D12Target::Offscreen { surface } => surface
+                    .as_mut()
+                    .ok_or(GpuSurfaceError::DrawableUnavailable),
             }
         }
 
         fn submit_native_frame(&mut self) -> Result<(), GpuSurfaceError> {
-            let (surface, sync) = match &mut self.target {
+            match &mut self.target {
                 D3D12Target::Window(win) => {
                     let idx = win.active_index.ok_or(GpuSurfaceError::DrawableUnavailable)?;
                     let (surface, _) = win
                         .buffers
                         .get_mut(idx)
                         .ok_or(GpuSurfaceError::DrawableUnavailable)?;
-                    (surface, SyncCpu::No)
+                    self.direct_context
+                        .flush_surface_with_access(
+                            surface,
+                            BackendSurfaceAccess::Present,
+                            &FlushInfo::default(),
+                        )
+                        .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))?;
+                    if !self.direct_context.submit(SyncCpu::No) {
+                        return Err(GpuSurfaceError::FlushFailed(
+                            "DirectContext::submit returned false".to_string(),
+                        ));
+                    }
+                    Ok(())
                 }
-                D3D12Target::Offscreen { surface } => (surface, SyncCpu::Yes),
-            };
-            self.direct_context
-                .flush_and_submit_surface(surface, sync)
-                .map(|_| ())
-                .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))
+                D3D12Target::Offscreen { surface } => {
+                    let surface = surface
+                        .as_mut()
+                        .ok_or(GpuSurfaceError::DrawableUnavailable)?;
+                    self.direct_context
+                        .flush_and_submit_surface(surface, SyncCpu::Yes)
+                        .map(|_| ())
+                        .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))
+                }
+            }
         }
 
         fn present_native_frame(&mut self) -> Result<(), GpuSurfaceError> {
@@ -252,11 +309,22 @@ mod imp {
         pub fn new_offscreen(config: GpuSurfaceConfig) -> Result<Self, GpuSurfaceError> {
             let d3d_cfg = D3D12SwapchainConfig::from_surface_config(config)?;
             let (_factory, backend_context, mut direct_context) = create_d3d12_context()?;
-            let surface =
-                create_ganesh_offscreen_surface(&mut direct_context, d3d_cfg.extent, "D3D12")?;
+            let surface = match create_ganesh_offscreen_surface(
+                &mut direct_context,
+                d3d_cfg.extent,
+                "D3D12",
+            ) {
+                Ok(s) => s,
+                Err(err) => {
+                    direct_context.release_resources_and_abandon();
+                    return Err(err);
+                }
+            };
             Ok(Self::new(
                 D3D12NativeSwapchain {
-                    target: D3D12Target::Offscreen { surface },
+                    target: D3D12Target::Offscreen {
+                        surface: Some(surface),
+                    },
                     direct_context,
                     _backend_context: backend_context,
                 },
