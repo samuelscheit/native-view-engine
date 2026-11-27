@@ -1,350 +1,271 @@
-#include "NveRnwComponentView.hpp"
-#include "NveWinHostWindow.hpp"
+// Windows host model (portable): accessibility semantics, inherited typography, text inputs
+// (controlled echo, submit, focus, secure / multiline), images (URL, inline bytes, invalid, fit
+// placement), box shadows, visibility, z-order, hit testing, cursors, hover, and links.
 #include "windows_test_helpers.hpp"
 
-#include <cstring>
-#include <filesystem>
-#include <initializer_list>
-#include <iostream>
-#include <optional>
-#include <string>
-#include <string_view>
+#include <nve/host/core_resources.hpp>
+
+#include <algorithm>
 #include <vector>
 
 namespace {
 
-using nve::win_test::approx_eq;
-using nve::win_test::get_env_string;
-using nve::win_test::nve_test_patch;
+using namespace nve::win;
+using namespace nve::win::test;
+namespace h = nve::host;
 
-void test_live_counter_dylib_if_configured() {
-  const std::string dylib_env = get_env_string("NVE_TEST_KITCHEN_SINK_DYLIB");
-  if (dylib_env.empty()) return;
+constexpr uint32_t kColumn = 2u, kHeading = 3u, kEntry = 4u, kSecret = 5u, kNotes = 6u, kImgUrl = 7u, kImgBytes = 8u,
+                   kImgBad = 9u, kHidden = 10u, kShown = 11u, kLink = 12u, kLinkText = 13u, kGrab = 14u, kHover = 15u,
+                   kCard = 16u, kBelow = 17u, kAbove = 18u, kDisabled = 19u;
 
-  nve::win::NveRnwComponentHost host;
-  const NveSurfaceConfig cfg{.surface_id = 1, .width = 1280.0f, .height = 800.0f, .scale_factor = 1.0f};
-  int err_code = 0;
-  std::string err_msg;
-  NVE_CHECK(host.load_dylib(dylib_env, cfg, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0);
-
-  auto find_leaf_by_text = [&](std::string_view expected) -> const nve::win::NveWinNodeVisual* {
-    for (const auto& flat : host.visual_tree().build_draw_order()) {
-      const auto* node = host.visual_tree().find(flat.node_id);
-      if (node != nullptr && node->is_text_leaf && node->text == expected) return node;
-    }
-    return nullptr;
-  };
-
-  auto find_pressable_ancestor = [&](uint32_t node_id) -> const nve::win::NveWinNodeVisual* {
-    const auto* cur = host.visual_tree().find(node_id);
-    uint32_t hops = 0;
-    while (cur != nullptr && cur->parent_id != 0 && cur->parent_id != NVE_ROOT_NODE_ID && hops < 64) {
-      const auto* parent = host.visual_tree().find(cur->parent_id);
-      if (parent == nullptr) break;
-      if (parent->interactive) return parent;
-      cur = parent;
-      ++hops;
-    }
-    return nullptr;
-  };
-
-  const auto* lbl_title = find_leaf_by_text("NVE Kitchen Sink");
-  const auto* lbl_count = find_leaf_by_text("Count: 0");
-  const auto* lbl_inc = find_leaf_by_text("Increment +");
-  const auto* lbl_reset = find_leaf_by_text("Reset");
-  NVE_CHECK(lbl_title && lbl_count && lbl_inc && lbl_reset);
-
-  for (const auto* lbl : {lbl_title, lbl_count, lbl_inc, lbl_reset}) {
-    NVE_CHECK(lbl->layout.width > 20.0f && lbl->layout.height >= 14.0f);
-    NVE_CHECK(nve::unpack_rgba(lbl->text_color_rgba).a8 == 255);
-  }
-  NVE_CHECK(approx_eq(lbl_count->font_size, 28.0f, 0.5f));
-
-  const auto* inc_btn = find_pressable_ancestor(lbl_inc->node_id);
-  const auto* reset_btn = find_pressable_ancestor(lbl_reset->node_id);
-  NVE_CHECK(inc_btn != nullptr && reset_btn != nullptr);
-
-  if (nve::fabric_host_has_yoga_layout()) {
-    bool saw_top_card = false;
-    for (const auto& flat : host.visual_tree().build_draw_order()) {
-      const auto* node = host.visual_tree().find(flat.node_id);
-      if (node != nullptr && node->kind == NVE_COMP_VIEW && node->border_radius >= 15.0f) {
-        if (nve::unpack_rgba(node->background_rgba).a8 == 255 &&
-            node->layout.width > 100.0f && node->layout.height > 40.0f) {
-          saw_top_card = true;
-        }
-      }
-    }
-    NVE_CHECK(saw_top_card);
-
-    auto assert_centered = [&](const nve::win::NveWinNodeVisual* btn, const nve::win::NveWinNodeVisual* lbl) {
-      const auto btn_rect = host.visual_tree().absolute_rect(btn->node_id);
-      const auto lbl_rect = host.visual_tree().absolute_rect(lbl->node_id);
-      NVE_CHECK(btn_rect.has_value() && lbl_rect.has_value());
-      NVE_CHECK(approx_eq(lbl_rect->x + lbl_rect->width * 0.5f, btn_rect->x + btn_rect->width * 0.5f, 3.0f));
-      NVE_CHECK(approx_eq(lbl_rect->y + lbl_rect->height * 0.5f, btn_rect->y + btn_rect->height * 0.5f, 3.0f));
-    };
-    assert_centered(inc_btn, lbl_inc);
-    assert_centered(reset_btn, lbl_reset);
-
-    const auto inc_rect = host.visual_tree().absolute_rect(inc_btn->node_id);
-    const auto reset_rect = host.visual_tree().absolute_rect(reset_btn->node_id);
-    NVE_CHECK(inc_rect.has_value() && reset_rect.has_value());
-
-    NVE_CHECK(host.dispatch_click_at(inc_rect->x + inc_rect->width * 0.5f, inc_rect->y + inc_rect->height * 0.5f) != 0);
-    NVE_CHECK(find_leaf_by_text("Count: 1") != nullptr);
-    NVE_CHECK(host.dispatch_click_at(reset_rect->x + reset_rect->width * 0.5f, reset_rect->y + reset_rect->height * 0.5f) != 0);
-    NVE_CHECK(find_leaf_by_text("Count: 0") != nullptr);
-    NVE_CHECK(host.dispatch_click_at(inc_rect->x + inc_rect->width * 0.5f, inc_rect->y + inc_rect->height * 0.5f) != 0);
-    NVE_CHECK(host.dispatch_click_at(inc_rect->x + inc_rect->width * 0.5f, inc_rect->y + inc_rect->height * 0.5f) != 0);
-    NVE_CHECK(find_leaf_by_text("Count: 2") != nullptr);
-  } else {
-    NVE_CHECK(host.dispatch_press(inc_btn->node_id, 10.0f, 10.0f) != 0);
-    NVE_CHECK(find_leaf_by_text("Count: 1") != nullptr);
-    NVE_CHECK(host.dispatch_press(reset_btn->node_id, 10.0f, 10.0f) != 0);
-    NVE_CHECK(find_leaf_by_text("Count: 0") != nullptr);
-    NVE_CHECK(host.dispatch_press(inc_btn->node_id, 10.0f, 10.0f) != 0);
-    NVE_CHECK(host.dispatch_press(inc_btn->node_id, 10.0f, 10.0f) != 0);
-    NVE_CHECK(find_leaf_by_text("Count: 2") != nullptr);
-  }
-
-  NVE_CHECK(host.reload_dylib(dylib_env, &err_code, &err_msg));
-  NVE_CHECK(err_code == 0 && find_leaf_by_text("Count: 2") != nullptr);
-
-#if defined(_WIN32)
-  const std::string shot_env = get_env_string("NVE_TEST_SCREENSHOT_PATH");
-  if (!shot_env.empty()) {
-    std::string bmp_err;
-    NVE_CHECK(nve::win::render_visual_tree_to_bmp(
-        host.visual_tree(), *host.text_measurer(), 640, 420, 1.0f, shot_env, &bmp_err));
-  }
-#endif
+void a11y(h::Nve2Writer& w, uint32_t id, uint32_t role, std::string_view label) {
+  w.set(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_ROLE, role);
+  if (!label.empty()) (void)w.set_str(id, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LABEL, label);
 }
 
-struct MockWinImageScrollComponent {
-  static inline MockWinImageScrollComponent* last_instance = nullptr;
-  uint32_t surface_id{1};
-  std::string image_src{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2dIAAAAASUVORK5CYII="};
-  std::string resize_mode{"cover"};
-  int counter{0};
-  int scroll_events{0};
-  uint32_t last_scroll_node{0};
-  float last_scroll_x{0.0f};
-  float last_scroll_y{0.0f};
-  float last_scroll_content_h{0.0f};
-  std::vector<uint8_t> cmd_buf;
-
-  static NveAppHandle create(uint32_t sid) {
-    auto* self = new MockWinImageScrollComponent();
-    self->surface_id = sid;
-    last_instance = self;
-    return self;
-  }
-  static void destroy(NveAppHandle h) {
-    auto* self = static_cast<MockWinImageScrollComponent*>(h);
-    if (last_instance == self) last_instance = nullptr;
-    delete self;
-  }
-
-  template <typename T>
-  void push(T v) {
-    const auto* p = reinterpret_cast<const uint8_t*>(&v);
-    cmd_buf.insert(cmd_buf.end(), p, p + sizeof(T));
-  }
-
-  static NveBufferSlice render(NveAppHandle h, uint64_t frame_id) {
-    auto* self = static_cast<MockWinImageScrollComponent*>(h);
-    self->cmd_buf.clear();
-    uint32_t ops = 0u;
-    self->push<uint32_t>(NVE_ABI_MAGIC);
-    self->push<uint16_t>(NVE_ABI_VERSION);
-    self->push<uint16_t>(0u);
-    self->push<uint32_t>(self->surface_id);
-    self->push<uint64_t>(frame_id);
-    self->push<uint32_t>(0u);
-
-    auto create_node = [&](uint32_t id, uint16_t kind) {
-      self->push<uint8_t>(NVE_OP_CREATE_NODE);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(kind);
-      self->push<uint16_t>(0u);
-      ++ops;
-    };
-    auto set_children = [&](uint32_t parent, std::initializer_list<uint32_t> kids) {
-      self->push<uint8_t>(NVE_OP_SET_CHILDREN);
-      self->push<uint32_t>(parent);
-      self->push<uint32_t>(static_cast<uint32_t>(kids.size()));
-      for (uint32_t k : kids) self->push<uint32_t>(k);
-      ++ops;
-    };
-    auto set_text = [&](uint32_t id, const std::string& s) {
-      self->push<uint8_t>(NVE_OP_SET_TEXT);
-      self->push<uint32_t>(id);
-      self->push<uint32_t>(static_cast<uint32_t>(s.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), s.begin(), s.end());
-      ++ops;
-    };
-    auto set_box = [&](uint32_t id, float w, float h) {
-      self->push<uint8_t>(NVE_OP_SET_LAYOUT);
-      self->push<uint32_t>(id);
-      self->push<uint8_t>(1u); self->push<float>(w);
-      self->push<uint8_t>(1u); self->push<float>(h);
-      for (int i = 0; i < 4; ++i) { self->push<uint8_t>(0u); self->push<float>(0.0f); }
-      self->push<uint8_t>(0u); self->push<uint8_t>(0u); self->push<uint8_t>(0u);
-      self->push<float>(0.0f); self->push<float>(0.0f); self->push<float>(0.0f);
-      for (int i = 0; i < 8; ++i) self->push<float>(0.0f);
-      ++ops;
-    };
-    auto set_raw_str = [&](uint32_t id, std::string_view k, std::string_view v) {
-      self->push<uint8_t>(NVE_OP_SET_RAW_PROP);
-      self->push<uint32_t>(id);
-      self->push<uint16_t>(static_cast<uint16_t>(k.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), k.begin(), k.end());
-      self->push<uint8_t>(4u);
-      self->push<uint32_t>(static_cast<uint32_t>(v.size()));
-      self->cmd_buf.insert(self->cmd_buf.end(), v.begin(), v.end());
-      ++ops;
-    };
-
-    create_node(2u, NVE_COMP_VIEW);
-    create_node(3u, NVE_COMP_IMAGE);
-    create_node(4u, NVE_COMP_SCROLL_VIEW);
-    create_node(5u, NVE_COMP_PRESSABLE);
-    create_node(6u, NVE_COMP_TEXT);
-    create_node(7u, NVE_COMP_TEXT);
-
-    set_children(NVE_ROOT_NODE_ID, {2u});
-    set_children(2u, {3u, 4u, 6u, 7u});
-    set_children(4u, {5u});
-
-    set_box(2u, 320.0f, 260.0f);
-    set_box(3u, 64.0f, 64.0f);
-    set_raw_str(3u, "src", self->image_src);
-    set_raw_str(3u, "resizeMode", self->resize_mode);
-
-    set_box(4u, 160.0f, 60.0f);
-    set_box(5u, 160.0f, 220.0f);
-
-    set_box(6u, 140.0f, 24.0f);
-    set_text(6u, "WinCount:" + std::to_string(self->counter));
-
-    set_box(7u, 140.0f, 24.0f);
-    set_text(7u, "UnchangedSibling");
-
-    self->push<uint8_t>(NVE_OP_COMMIT);
-    self->push<uint8_t>(1u);
-    ++ops;
-    std::memcpy(self->cmd_buf.data() + 20, &ops, sizeof(uint32_t));
-    return NveBufferSlice{self->cmd_buf.data(), self->cmd_buf.size()};
-  }
-
-  static uint32_t dispatch_events(NveAppHandle h, NveEventBatch batch) {
-    auto* self = static_cast<MockWinImageScrollComponent*>(h);
-    if (batch.ptr == nullptr) return 0u;
-    for (uint32_t i = 0u; i < batch.len; ++i) {
-      const NveDirectEvent& ev = batch.ptr[i];
-      if (ev.kind == static_cast<uint8_t>(nve::EventKind::Scroll)) {
-        ++self->scroll_events;
-        self->last_scroll_node = ev.node_id;
-        self->last_scroll_x = ev.x;
-        self->last_scroll_y = ev.y;
-        self->last_scroll_content_h = ev.height;
-      } else if (ev.kind == static_cast<uint8_t>(nve::EventKind::Press) && ev.node_id == 5u) {
-        ++self->counter;
-        return 1u;
-      }
-    }
-    return 0u;
-  }
-
-  static uint32_t set_props(NveAppHandle h, const NveMapEntry* entries, uint32_t count) {
-    auto* self = static_cast<MockWinImageScrollComponent*>(h);
-    for (uint32_t i = 0u; i < count; ++i) {
-      const auto k = nve::str_slice_view(entries[i].key);
-      if (k == "resizeMode" && entries[i].value.tag == NVE_VAL_STR) {
-        const auto v = nve::str_slice_view(entries[i].value.data.str_val);
-        self->resize_mode.assign(v.data(), v.size());
-      } else if (k == "src" && entries[i].value.tag == NVE_VAL_STR) {
-        const auto v = nve::str_slice_view(entries[i].value.data.str_val);
-        if (v == "file") self->image_src = "file:///tmp/avatar.png";
-        else self->image_src.assign(v.data(), v.size());
-      }
-    }
-    return 1u;
-  }
-
-  static const void* get_interface(uint32_t iface) {
-    static const NveSurfaceApi kSurface{&create, &destroy, &render, &dispatch_events};
-    static const NveComponentApi kComp{&set_props, nullptr};
-    if (iface == NVE_IFACE_SURFACE) return &kSurface;
-    if (iface == NVE_IFACE_COMPONENT) return &kComp;
-    return nullptr;
-  }
-};
-
-void test_image_scroll_and_incremental_scene_view() {
-  nve::win::NveRnwComponentHost host;
-  const NveSurfaceConfig cfg{.surface_id = 17u, .width = 320.0f, .height = 260.0f, .scale_factor = 1.0f};
-  NVE_CHECK(host.attach_interface(&MockWinImageScrollComponent::get_interface, cfg));
-  NVE_CHECK(MockWinImageScrollComponent::last_instance != nullptr);
-  auto* mock = MockWinImageScrollComponent::last_instance;
-
-  const auto* img = host.visual_tree().find(3u);
-  NVE_CHECK(img != nullptr && img->kind == NVE_NODE_KIND_IMAGE);
-  NVE_CHECK(img->image_src.find("data:image/png;base64,") == 0u);
-  NVE_CHECK(img->resize_mode == nve::win::ImageResizeMode::Cover);
-
-  NVE_CHECK(host.update_props(nve::PropMap{{"resizeMode", std::string("contain")}}));
-  NVE_CHECK(host.visual_tree().find(3u)->resize_mode == nve::win::ImageResizeMode::Contain);
-  NVE_CHECK(host.update_props(nve::PropMap{{"resizeMode", std::string("stretch")}}));
-  NVE_CHECK(host.visual_tree().find(3u)->resize_mode == nve::win::ImageResizeMode::Stretch);
-  NVE_CHECK(host.update_props(
-      nve::PropMap{{"resizeMode", std::string("center")}, {"src", std::string("file")}}));
-  NVE_CHECK(host.visual_tree().find(3u)->resize_mode == nve::win::ImageResizeMode::Center);
-  NVE_CHECK(host.visual_tree().find(3u)->image_src == "file:///tmp/avatar.png");
-
-  const auto* scroll = host.visual_tree().find(4u);
-  NVE_CHECK(scroll != nullptr && scroll->kind == NVE_NODE_KIND_SCROLL_VIEW);
-  NVE_CHECK(scroll->clip_bounds && scroll->content_height >= 220.0f);
-
-  const auto scroll_rect = host.visual_tree().absolute_rect(4u);
-  NVE_CHECK(scroll_rect.has_value());
-  const float sx = scroll_rect->x + 20.0f;
-  const float sy = scroll_rect->y + 20.0f;
-  NVE_CHECK(host.visual_tree().hit_test_scrollable(sx, sy) == std::optional<uint32_t>{4u});
-
-  const auto child5_before = host.visual_tree().absolute_rect(5u);
-  NVE_CHECK(child5_before.has_value());
-
-  (void)host.dispatch_wheel_at(sx, sy, 0.0f, 45.0f);
-  NVE_CHECK(mock->scroll_events == 1 && mock->last_scroll_node == 4u);
-  NVE_CHECK(approx_eq(mock->last_scroll_y, 45.0f, 0.5f) && mock->last_scroll_content_h >= 220.0f);
-
-  const auto off = host.visual_tree().scroll_offset(4u);
-  NVE_CHECK(off.has_value() && approx_eq(off->second, 45.0f, 0.5f));
-
-  const auto child5_after = host.visual_tree().absolute_rect(5u);
-  NVE_CHECK(child5_after.has_value() && approx_eq(child5_after->y, child5_before->y - 45.0f, 0.5f));
-
-  (void)host.dispatch_wheel_at(sx, sy, 0.0f, 500.0f);
-  NVE_CHECK(mock->scroll_events == 2);
-  NVE_CHECK(approx_eq(host.visual_tree().scroll_offset(4u)->second, 160.0f, 0.5f));
-  NVE_CHECK(approx_eq(mock->last_scroll_y, 160.0f, 0.5f));
-
-  (void)host.dispatch_scroll(4u, 12.0f, 34.0f, 160.0f, 220.0f);
-  NVE_CHECK(mock->scroll_events == 3);
-  NVE_CHECK(approx_eq(mock->last_scroll_x, 12.0f, 0.5f) && approx_eq(mock->last_scroll_y, 34.0f, 0.5f));
-
-  const uint64_t updates_before = host.visual_tree().updated_count();
-  NVE_CHECK(host.dispatch_press(5u, 10.0f, 10.0f) == 1u);
-  NVE_CHECK(host.visual_tree().find(6u)->text == "WinCount:1");
-  NVE_CHECK(host.visual_tree().updated_count() - updates_before == 1u);
+void image(h::Nve2Writer& w, uint32_t id, uint32_t res, std::span<const uint8_t> src, uint32_t fit) {
+  w.create(id);
+  w.define_resource(res, h::kImageSrcKind, src);
+  w.set(id, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, res);
+  w.set(id, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_FIT, fit);
+  sized(w, id, 32.0f, 16.0f);
 }
 
-} // namespace
+void input(h::Nve2Writer& w, uint32_t id, std::string_view value) {
+  w.create(id);
+  (void)w.set_str(id, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, value);
+  events(w, id, {NVE_EVENT_TEXT_CHANGE, NVE_EVENT_SUBMIT, NVE_EVENT_FOCUS, NVE_EVENT_BLUR});
+  sized(w, id, 160.0f, 24.0f);
+}
 
-void nve_test_win_live_snapshot_and_media() {
-  test_live_counter_dylib_if_configured();
-  test_image_scroll_and_incremental_scene_view();
+void absolute(h::Nve2Writer& w, uint32_t id, float left, float top, float width, float height, int32_t z) {
+  w.create(id);
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_POSITION, NVE_POSITION_ABSOLUTE);
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_INSET_LEFT, h::length_points(left));
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_INSET_TOP, h::length_points(top));
+  sized(w, id, width, height);
+  w.set(id, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_Z_INDEX, static_cast<uint32_t>(z));
+}
+
+void test_pure_helpers() {
+  // Image placement for every `NVE_IMAGE_FIT_*` (100x50 box, 20x20 image).
+  const Rect box{10.0f, 10.0f, 100.0f, 50.0f};
+  const auto fill = place_image(NVE_IMAGE_FIT_FILL, box, 20.0f, 20.0f);
+  NVE_CHECK(fill && fill->dst == box && (fill->src == Rect{0.0f, 0.0f, 20.0f, 20.0f}));
+  const auto contain = place_image(NVE_IMAGE_FIT_CONTAIN, box, 20.0f, 20.0f);
+  NVE_CHECK(contain && (contain->dst == Rect{35.0f, 10.0f, 50.0f, 50.0f}));
+  const auto cover = place_image(NVE_IMAGE_FIT_COVER, box, 20.0f, 20.0f);
+  NVE_CHECK(cover && cover->dst == box && (cover->src == Rect{0.0f, 5.0f, 20.0f, 10.0f}));
+  const auto none = place_image(NVE_IMAGE_FIT_NONE, box, 20.0f, 20.0f);
+  NVE_CHECK(none && (none->dst == Rect{50.0f, 25.0f, 20.0f, 20.0f}) && (none->src == Rect{0.0f, 0.0f, 20.0f, 20.0f}));
+  const auto down_small = place_image(NVE_IMAGE_FIT_SCALE_DOWN, box, 20.0f, 20.0f);
+  NVE_CHECK(down_small && down_small->dst == none->dst);
+  const auto down_big = place_image(NVE_IMAGE_FIT_SCALE_DOWN, box, 400.0f, 400.0f);
+  NVE_CHECK(down_big && (down_big->dst == Rect{35.0f, 10.0f, 50.0f, 50.0f}));
+  const auto none_big = place_image(NVE_IMAGE_FIT_NONE, box, 400.0f, 400.0f);  // centred crop
+  NVE_CHECK(none_big && none_big->dst == box && (none_big->src == Rect{150.0f, 175.0f, 100.0f, 50.0f}));
+  NVE_CHECK(!place_image(NVE_IMAGE_FIT_COVER, Rect{}, 20.0f, 20.0f));
+  NVE_CHECK(!place_image(NVE_IMAGE_FIT_COVER, box, 0.0f, 20.0f) && !place_image(NVE_IMAGE_FIT_COVER, box, NAN, 1.0f));
+
+  // Shadow passes: a hard shadow is one offset pass; a blurred one ramps outwards, the
+  // composited alphas (1/n .. 1) reach full colour at the innermost pass; inset / clear: none.
+  const Rect card{0.0f, 0.0f, 40.0f, 20.0f};
+  const auto hard = outer_shadow_passes(h::BoxShadow{2.0f, 3.0f, 0.0f, 1.0f, h::rgba(0, 0, 0, 128), false}, card, 4.0f);
+  NVE_CHECK(hard.size() == 1u && (hard[0].rect == Rect{1.0f, 2.0f, 42.0f, 22.0f}) && hard[0].radius == 5.0f);
+  const auto soft = outer_shadow_passes(h::BoxShadow{0.0f, 4.0f, 8.0f, 0.0f, h::rgba(0, 0, 0, 255), false}, card, 0.0f);
+  NVE_CHECK(soft.size() == 4u && soft.front().rect.width > soft.back().rect.width);
+  NVE_CHECK(approx(soft.front().rect.x, -6.0, 0.01) && approx(soft.back().alpha, 1.0, 1e-6) &&
+            approx(soft.front().alpha, 0.25, 1e-6));
+  NVE_CHECK(outer_shadow_passes(h::BoxShadow{0, 0, 4, 0, h::rgba(0, 0, 0), true}, card, 0.0f).empty());
+  NVE_CHECK(outer_shadow_passes(h::BoxShadow{0, 0, 4, 0, h::rgba(0, 0, 0, 0), false}, card, 0.0f).empty());
+}
+
+void test_scene_semantics_inputs_and_pointer() {
+  const std::vector<uint8_t> png_bytes = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3};
+  const std::vector<uint8_t> url = h::encode_image_url("data:image/png;base64,iVBORw0KGgo=");
+  const std::vector<uint8_t> bytes = h::encode_image_bytes(png_bytes);
+  const std::vector<uint8_t> empty_url = h::encode_image_url("");  // decodes, but names nothing
+  const h::BoxShadow shadows[] = {{0.0f, 2.0f, 6.0f, 0.0f, h::rgba(0, 0, 0, 64), false},
+                                  {0.0f, 0.0f, 0.0f, 1.0f, h::rgba(255, 0, 0), true}};
+
+  ScriptedApp app;
+  h::Nve2Writer& w = app.w;
+  w.create(1u);
+  w.create(kColumn);
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET,
+        NVE_TYPOGRAPHY_SET_FONT_STYLE | NVE_TYPOGRAPHY_SET_FONT_FAMILY | NVE_TYPOGRAPHY_SET_TEXT_DECORATION |
+            NVE_TYPOGRAPHY_SET_COLOR | NVE_TYPOGRAPHY_SET_FONT_WEIGHT);
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_STYLE, NVE_FONT_STYLE_ITALIC);
+  (void)w.set_str(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_FAMILY, "Inter");
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_TEXT_DECORATION, NVE_TEXT_DECORATION_UNDERLINE);
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_COLOR, h::rgba(10, 20, 30));
+  w.set(kColumn, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_WEIGHT, 700u);
+
+  text_node(w, kHeading, "Settings");
+  a11y(w, kHeading, NVE_ARIA_ROLE_HEADING, "");
+  w.set(kHeading, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_LEVEL, 2u);
+  input(w, kEntry, "hi");
+  (void)w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_PLACEHOLDER, "Name");
+  w.set(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MAX_LENGTH, 8u);
+  input(w, kSecret, "");
+  w.set(kSecret, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_INPUT_KIND, NVE_INPUT_KIND_PASSWORD);
+  input(w, kNotes, "line");
+  w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_MULTILINE, true);
+  w.set_bool(kNotes, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_READ_ONLY, true);
+  image(w, kImgUrl, 40u, url, NVE_IMAGE_FIT_CONTAIN);
+  (void)w.set_str(kImgUrl, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_ALT, "Logo");
+  image(w, kImgBytes, 41u, bytes, NVE_IMAGE_FIT_COVER);
+  image(w, kImgBad, 42u, empty_url, NVE_IMAGE_FIT_COVER);
+  w.create(kHidden);  // hidden parent, explicitly visible child
+  sized(w, kHidden, 40.0f, 10.0f);
+  w.set(kHidden, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_VISIBILITY, NVE_VISIBILITY_HIDDEN);
+  text_node(w, kShown, "shown");
+  w.set(kShown, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_VISIBILITY, NVE_VISIBILITY_VISIBLE);
+  const uint32_t hidden_kids[] = {kShown};
+  w.set_children(kHidden, hidden_kids);
+  w.create(kLink);
+  (void)w.set_str(kLink, NVE_TABLE_LINK_DESC, NVE_TABLE_LINK_HREF, "https://example.com/docs");
+  sized(w, kLink, 80.0f, 20.0f);
+  text_node(w, kLinkText, "Docs");
+  const uint32_t link_kids[] = {kLinkText};
+  w.set_children(kLink, link_kids);
+  w.create(kGrab);
+  sized(w, kGrab, 50.0f, 20.0f);
+  w.set(kGrab, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_CURSOR, NVE_CURSOR_KIND_GRAB);
+  w.create(kHover);
+  sized(w, kHover, 50.0f, 20.0f);
+  events(w, kHover, {NVE_EVENT_POINTER_ENTER, NVE_EVENT_POINTER_LEAVE, NVE_EVENT_POINTER_MOVE});
+  w.create(kCard);
+  sized(w, kCard, 60.0f, 30.0f);
+  w.define_resource(43u, h::kBoxShadowsKind, h::encode_box_shadows(shadows));
+  w.set(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BOX_SHADOWS, 43u);
+  w.set_f32(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, 6.0f);
+  w.set_f32(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, 2.0f);
+  w.set(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_COLOR, h::rgba(1, 2, 3));
+  w.set_f32(kCard, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, 0.5f);
+  w.create(kDisabled);
+  sized(w, kDisabled, 50.0f, 20.0f);
+  events(w, kDisabled, {NVE_EVENT_PRESS});
+  w.set_bool(kDisabled, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_DISABLED, true);
+  const uint32_t column_kids[] = {kHeading, kEntry, kSecret, kNotes, kImgUrl, kImgBytes, kImgBad,
+                                  kHidden, kLink, kGrab, kHover, kCard, kDisabled};
+  w.set_children(kColumn, column_kids);
+  // Overlapping absolute siblings: the earlier one has the higher z-index, so it paints on top.
+  absolute(w, kAbove, 300.0f, 10.0f, 50.0f, 50.0f, 5);
+  events(w, kAbove, {NVE_EVENT_PRESS});
+  absolute(w, kBelow, 320.0f, 20.0f, 50.0f, 50.0f, 0);
+  events(w, kBelow, {NVE_EVENT_PRESS});
+  const uint32_t root_kids[] = {kColumn, kAbove, kBelow};
+  w.set_children(1u, root_kids);
+  // Controlled input: the app upper-cases what it receives.
+  app.on_event = [](ScriptedApp& a, const h::testing::RecordedEvent& e) {
+    if (e.ev.kind != NVE_EVENT_TEXT_CHANGE || e.ev.node_id != kEntry) return;
+    std::string upper = e.text;
+    for (char& c : upper) c = static_cast<char>(c >= 'a' && c <= 'z' ? c - 32 : c);
+    (void)a.w.set_str(kEntry, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, upper);
+  };
+
+  NveWinHost host(WinHostConfig{.width = 480.0f, .height = 900.0f});
+  NVE_CHECK(host.attach_interface(&ScriptedApp::get_interface));
+  const NveWinVisualTree& tree = host.visual_tree();
+
+  // Semantics.
+  const WinNodeVisual& heading = node(host, kHeading);
+  NVE_CHECK(heading.semantics.role == NVE_ARIA_ROLE_HEADING && heading.semantics.level == 2u &&
+            heading.semantics.label == "Settings");
+  NVE_CHECK(node(host, kEntry).semantics.role == NVE_ARIA_ROLE_TEXT_BOX);
+  NVE_CHECK(node(host, kImgUrl).semantics.role == NVE_ARIA_ROLE_IMAGE && node(host, kImgUrl).semantics.label == "Logo");
+  NVE_CHECK(node(host, kLink).kind == h::NodeKind::Link && node(host, kLink).semantics.role == NVE_ARIA_ROLE_LINK);
+  NVE_CHECK(node(host, kDisabled).semantics.disabled && !node(host, kDisabled).wants(NVE_EVENT_PRESS));
+
+  // Inherited typography reaches every text-bearing descendant; explicit values win.
+  for (const uint32_t id : {kHeading, kLinkText, kEntry}) {
+    const TextPaint& t = node(host, id).text_style;
+    NVE_CHECK(t.font_style == NVE_FONT_STYLE_ITALIC && t.font_family == "Inter" && t.font_weight == 700u);
+    NVE_CHECK(t.text_decoration == NVE_TEXT_DECORATION_UNDERLINE && t.color == h::rgba(10, 20, 30));
+  }
+
+  // Text inputs: owned rows, secure / multiline / read-only, the live-input list.
+  NVE_CHECK(tree.text_inputs().size() == 3u);
+  const WinNodeVisual& entry = node(host, kEntry);
+  NVE_CHECK(entry.kind == h::NodeKind::TextInput && entry.input.value == "hi" && entry.input.placeholder == "Name" &&
+            entry.input.max_length == 8u && !entry.input.secure);
+  NVE_CHECK(node(host, kSecret).input.secure && node(host, kNotes).input.multiline && node(host, kNotes).input.read_only);
+  NVE_CHECK(host.dispatch_text_change(kEntry, "hey"));
+  NVE_CHECK(app.last(NVE_EVENT_TEXT_CHANGE)->text == "hey" && node(host, kEntry).input.value == "HEY");
+  NVE_CHECK(!host.dispatch_submit(kEntry, "HEY") && app.last(NVE_EVENT_SUBMIT)->text == "HEY");
+  (void)host.dispatch_focus(kEntry, true);
+  (void)host.dispatch_focus(kEntry, false);
+  NVE_CHECK(app.count(NVE_EVENT_FOCUS, kEntry) == 1u && app.count(NVE_EVENT_BLUR, kEntry) == 1u);
+
+  // Images: URL, inline bytes (content-hash key), an empty source -> nothing to draw.
+  NVE_CHECK(node(host, kImgUrl).image.url == "data:image/png;base64,iVBORw0KGgo=" &&
+            node(host, kImgUrl).image.key == node(host, kImgUrl).image.url && node(host, kImgUrl).image_fit == NVE_IMAGE_FIT_CONTAIN);
+  NVE_CHECK(node(host, kImgBytes).image.encoded == png_bytes && node(host, kImgBytes).image.key.rfind("bytes:", 0) == 0u);
+  NVE_CHECK(node(host, kImgBad).image.empty());
+
+  // Box shadows decoded, visual style.
+  const WinNodeVisual& card = node(host, kCard);
+  NVE_CHECK(card.shadows.size() == 2u && card.shadows[0] == shadows[0] && card.shadows[1].inset);
+  NVE_CHECK(card.visual.border_width == 2.0f && card.visual.border_color == h::rgba(1, 2, 3));
+  NVE_CHECK(approx(tree.frame_of(kCard)->opacity, 0.5, 1e-6));
+
+  // Visibility: a hidden parent is not painted / hit, its visible child is.
+  NVE_CHECK(!tree.frame_of(kHidden)->visible && tree.frame_of(kShown)->visible);
+  const auto [hx, hy] = center(host, kHidden);
+  const WinNodeVisual* shown_hit = tree.hit_test(hx, hy);
+  NVE_CHECK(shown_hit == nullptr || shown_hit->id != kHidden);
+
+  // Z-order: paint order follows z-index; the topmost overlapping node takes the press.
+  const std::vector<uint32_t> order = paint_order(host);
+  const auto pos = [&order](uint32_t id) { return std::find(order.begin(), order.end(), id) - order.begin(); };
+  NVE_CHECK(pos(kBelow) < pos(kAbove) && pos(kColumn) < pos(kBelow));
+  NVE_CHECK(host.press_at(330.0f, 30.0f).node_id == kAbove);
+  NVE_CHECK(host.press_at(360.0f, 65.0f).node_id == kBelow);
+  NVE_CHECK(app.count(NVE_EVENT_PRESS, kAbove) == 1u && app.count(NVE_EVENT_PRESS, kBelow) == 1u);
+  const auto* press = app.last(NVE_EVENT_PRESS);
+  NVE_CHECK(approx(press->ev.x, 40.0, 0.5) && approx(press->ev.y, 45.0, 0.5));  // node-local
+
+  // Disabled nodes take no press; links report their href (the window opens it natively).
+  const auto [dx, dy] = center(host, kDisabled);
+  NVE_CHECK(host.press_at(dx, dy).node_id == 0u);
+  const auto [lx, ly] = center(host, kLinkText);
+  const PressResult link = host.press_at(lx, ly);
+  NVE_CHECK(link.node_id == kLink && !link.dispatched && link.href == "https://example.com/docs");
+
+  // Cursors: explicit kind, POINTER over links, AUTO elsewhere.
+  const auto [gx, gy] = center(host, kGrab);
+  NVE_CHECK(host.cursor_at(gx, gy) == NVE_CURSOR_KIND_GRAB);
+  NVE_CHECK(host.cursor_at(lx, ly) == NVE_CURSOR_KIND_POINTER);
+  NVE_CHECK(host.cursor_at(470.0f, 890.0f) == NVE_CURSOR_KIND_AUTO);
+
+  // Hover: enter once, move while inside, leave on exit / window leave.
+  const auto [vx, vy] = center(host, kHover);
+  host.pointer_move(vx, vy);
+  host.pointer_move(vx + 1.0f, vy);
+  NVE_CHECK(host.hovered_node() == kHover && app.count(NVE_EVENT_POINTER_ENTER, kHover) == 1u);
+  NVE_CHECK(app.count(NVE_EVENT_POINTER_MOVE, kHover) == 2u && approx(app.last(NVE_EVENT_POINTER_MOVE)->ev.x, 26.0, 0.5));
+  host.pointer_move(gx, gy);
+  NVE_CHECK(host.hovered_node() == 0u && app.count(NVE_EVENT_POINTER_LEAVE, kHover) == 1u);
+  host.pointer_move(vx, vy);
+  host.pointer_leave();
+  NVE_CHECK(app.count(NVE_EVENT_POINTER_ENTER, kHover) == 2u && app.count(NVE_EVENT_POINTER_LEAVE, kHover) == 2u);
+
+  // Removal drops the view and its text-input registration.
+  w.remove(kSecret);
+  const uint32_t fewer[] = {kHeading, kEntry, kNotes, kImgUrl, kImgBytes, kImgBad, kHidden, kLink, kGrab, kHover, kCard, kDisabled};
+  w.set_children(kColumn, fewer);
+  flush(host);
+  NVE_CHECK(tree.find(kSecret) == nullptr && tree.text_inputs().size() == 2u);
+  // A kind change (view -> text input) recreates the view.
+  (void)w.set_str(kGrab, NVE_TABLE_TEXT_INPUT_DESC, NVE_TABLE_TEXT_INPUT_VALUE, "now an input");
+  flush(host);
+  NVE_CHECK(node(host, kGrab).kind == h::NodeKind::TextInput && tree.text_inputs().size() == 3u);
+}
+
+}  // namespace
+
+void nve_test_win_media_and_input() {
+  test_pure_helpers();
+  test_scene_semantics_inputs_and_pointer();
 }

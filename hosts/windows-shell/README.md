@@ -1,58 +1,46 @@
-# Windows Native Desktop & `react-native-windows` Fabric Host Shell (`hosts/windows-shell`)
+# Windows host shell (`hosts/windows-shell`)
 
-Native Windows Win32 + Direct2D/DirectWrite desktop host shell and embeddable `react-native-windows` 0.83+/0.88+ Composition Fabric component host built on `cxx/nve-fabric-bridge` (`nve_host_runtime.hpp`).
+Native Win32 + Direct2D / DirectWrite host for NVE apps, built on the shared C++ host stack
+(`cxx/cmake/NveHostStack.cmake`: `nve::host_cxx` + `libnve_runtime` + `nve::canvas_cxx`). It reads
+the runtime's zero-copy `NveRuntimeSceneView` through `RetainedTree` / `SceneTables`.
 
-## Components
+## Layers
 
-1. **DirectWrite Text Measurer (`NveWinTextMeasurer.hpp`)**:
-   RAII `nve::win::DirectWriteTextMeasurer` backed by `IDWriteFactory`, cached Segoe UI `IDWriteTextFormat`, and `IDWriteTextLayout::GetMetrics`, plugged directly into `nve::NativeHostSession::set_text_measurer(...)`.
-2. **Retained Visual Tree & RNW Fabric Host (`NveRnwComponentView.hpp` / `NveRnwComponentView.cpp`)**:
-   - `nve::win::NveWinVisualTree`: reconciles `nve::RenderedNodeSnapshot` frames using `nve::RetainedViewReconciler`, computes z-ordered paint lists, and performs reverse z/tree interactive hit-testing.
-   - `nve::win::NveRnwComponentHost`: portable C++20 controller wrapping `nve::NativeHostSession` for props JSON, layout resize, press dispatch, outbound event forwarding, and state-preserving Tier-2 `.dll` hot-reload.
-   - Under `-DNVE_WITH_RNW_FABRIC=ON`: `register_nve_rnw_component(...)` binds directly to modern `react-native-windows` Composition Fabric (`winrt/Microsoft.ReactNative.Composition.h` — `IReactPackageBuilderFabric`, `IReactCompositionViewComponentBuilder`, `ViewComponentView`, `ContentIslandComponentView`, `LayoutMetrics`).
-3. **Standalone Win32 + Direct2D/DirectWrite Host (`NveWinHostWindow.hpp` / `NveWinHostWindow.cpp` / `main.cpp`)**:
-   DPI-aware (`GetDpiForWindow` / `WM_DPICHANGED`) Win32 window rendering rounded rectangles, borders, opacity layers (`ID2D1Layer`), z-order, and DirectWrite text, with `WM_LBUTTONUP` click dispatch and headless `--screenshot <path.bmp>` export via `ID2D1DCRenderTarget`.
+| Files | Platform | Role |
+|---|---|---|
+| `NveWinVisualTree.{hpp,cpp}` | every OS | Retained model. `RetainedTree` mirrors the scene O(changed) into owned `WinNodeVisual`s: visual style, box shadows, inherited typography (`TextPaint`), text, images (URL / bytes), `nve.canvas` draw lists, text-input rows, scroll offsets, interaction, ARIA semantics, links. Also paint-order walk (z-index, scroll shift, clips, visibility, opacity), hit testing, image-fit and shadow geometry. |
+| `NveWinHost.{hpp,cpp}` | every OS | One runtime surface (`HostSession`): in-process app, `cdylib` with state-preserving hot reload, or paired `nve dev`. Also app-state files, props / hot patches, and input: press / link at a point, wheel → `scroll_by` + `Scroll` (edge chaining), hover `Pointer*`, cursors, text / submit / focus. On Windows it installs the DirectWrite measurer. |
+| `NveWinWindowManager.{hpp,cpp}` | every OS | Multi-window lifecycle: modal blockers, close veto, cascade close, quit on last close. Uses headless `NveWinHost`s off Windows. |
+| `NveWinTextMeasurer.hpp` | Windows | DirectWrite measurer (`NveRuntimeMeasureTextFn`) and the `IDWriteTextLayout`s the painter draws: family, size, weight, style, wrapping, alignment, decoration, letter spacing, line height, max lines. |
+| `NveWinD2DRenderer.cpp`, `NveWinD2DMedia.cpp` | Windows | Direct2D painter: shadows, rounded backgrounds and clips, borders, opacity layers, images, canvas `NVE_DRAW1` lists, text. Also the WIC image cache (`data:` / `file://` / paths / inline bytes) and headless BMP export. |
+| `NveWinHostWindow.{hpp,cpp}`, `NveWinTextInputs.{hpp,cpp}` | Windows | Per-monitor-DPI window. Runtime wakes are posted (`WM_APP_WAKE`) and dropped once the window is destroyed. Native `EDIT` overlays for text inputs (`host::ControlledText`). Cursors, hover tracking, links open via `ShellExecuteW`. |
+| `NveRnwComponentView.{hpp,cpp}` | Windows + RNW | Optional react-native-windows 0.83+ Composition Fabric component on top of `NveWinHost`. Built only as `nve_rnw_component` (`-DNVE_WITH_RNW_FABRIC=ON`). The host never depends on it. |
 
-## Build & Test (Windows MSVC + Ninja)
+## Build & test
+
+On every OS (macOS / Linux run the portable model, controller and window-manager suites):
+
+```bash
+cmake -S hosts/windows-shell -B build/windows-shell -G Ninja
+cmake --build build/windows-shell
+ctest --test-dir build/windows-shell --output-on-failure
+```
+
+On Windows (MSVC + Ninja), the same commands also build `nve_windows_shell.exe`. The test then adds
+the Direct2D / DirectWrite / WIC / live-window suite. `NVE_TEST_KITCHEN_SINK_DYLIB=<path to
+nve_example_kitchen_sink.dll>` runs the live Rust `cdylib` test. React-native-windows component:
+add `-DNVE_WITH_RNW_FABRIC=ON -DRNW_GENERATED_DIR=<rnw app>\Generated Files`.
+
+## Run
 
 ```powershell
-# Standalone build (requires only VS/MSVC + Windows SDK; zero RNW install needed):
-cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja
-cmake --build hosts/windows-shell/build
-ctest --test-dir hosts/windows-shell/build --output-on-failure
-
-# Build with React Native Yoga + JSI from a local react-native / rnw checkout:
-cmake -S hosts/windows-shell -B hosts/windows-shell/build -G Ninja `
-  -DRN_REACT_COMMON_DIR="C:\path\to\react-native\ReactCommon"
-cmake --build hosts/windows-shell/build
-
-# Run live Rust Kitchen Sink DLL test (builds nve_example_kitchen_sink.dll first):
-cargo build -p nve-example-kitchen-sink
-$env:NVE_TEST_KITCHEN_SINK_DYLIB = (Resolve-Path target\debug\nve_example_kitchen_sink.dll).Path
-ctest --test-dir hosts/windows-shell/build --output-on-failure
-
-# Launch standalone Win32/Direct2D preview window or render headless BMP screenshot:
-.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll
-.\hosts\windows-shell\build\nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll --screenshot kitchen-sink.bmp
+nve_windows_shell.exe                                  # built-in counter demo
+nve_windows_shell.exe --dylib target\debug\nve_example_kitchen_sink.dll
+nve_windows_shell.exe --pair nve://127.0.0.1:7878 --pair-token <token>
+nve_windows_shell.exe --dylib app.dll --screenshot out.bmp --scale 2   # headless
 ```
 
-## Embedding in `react-native-windows` 0.83+/0.88+ Composition Fabric
-
-Enable `-DNVE_WITH_RNW_FABRIC=ON` and point `-DRNW_GENERATED_DIR` at your RNW app's generated C++/WinRT headers directory (containing `winrt/Microsoft.ReactNative.Composition.h`):
-
-```powershell
-cmake -S hosts/windows-shell -B hosts/windows-shell/build-rnw -G Ninja `
-  -DNVE_WITH_RNW_FABRIC=ON `
-  -DRNW_GENERATED_DIR="C:\path\to\rnw-app\Generated Files" `
-  -DRN_REACT_COMMON_DIR="C:\path\to\react-native\ReactCommon"
-cmake --build hosts/windows-shell/build-rnw
-```
-
-Then register your NVE Rust component inside your RNW `IReactPackageProvider::CreatePackage`:
-
-```cpp
-nve::win::NveRnwComponentRegistrationConfig cfg{};
-cfg.component_name = L"NveCounterView";
-cfg.default_dylib_path = "nve_example_kitchen_sink.dll";
-nve::win::register_nve_rnw_component(packageBuilder, std::move(cfg));
-```
+App state persists across launches: `--state <file>`, `--no-state`, `--reset-state`, `--schema <ver>`,
+`NVE_STATE_DISABLE=1`, `NVE_STATE_PATH=<file>`, `NVE_RESET_STATE=1`. Paired apps keep their state on
+the server. When pairing or the dylib load fails, the shell runs the built-in counter with
+persistence disabled. The failed app's state is neither restored nor overwritten.

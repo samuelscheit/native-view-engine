@@ -1,15 +1,17 @@
 #pragma once
 
-#include <nve/generated/nve_abi.generated.h>
-#include "nve_value.hpp"
+#include "NveWinHost.hpp"
+
+#include <nve/host/nve2_writer.hpp>
+#include <nve/host/testing/scripted_app.hpp>
 
 #include <cmath>
-#include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <span>
+#include <source_location>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #define NVE_CHECK(expr)                                                                         \
@@ -20,73 +22,70 @@
     }                                                                                           \
   } while (0)
 
-namespace nve::win_test {
+namespace nve::win::test {
 
-inline bool approx_eq(float a, float b, float eps = 1.5f) {
-  return std::fabs(a - b) <= eps;
+using host::testing::ScriptedApp;
+
+inline bool approx(double a, double b, double eps = 1.5) { return std::fabs(a - b) <= eps; }
+
+/// Renders the `ScriptedApp`'s pending ops and mirrors them into the visual tree.
+inline void flush(NveWinHost& host) {
+  (void)host.session().dispatch(ScriptedApp::flush_event(host.surface_id()));
+  (void)host.pump();
 }
 
-inline std::span<const uint8_t> nve_test_patch(std::string_view text) {
-  return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
+/// Text node helper for scripted scenes.
+inline void text_node(host::Nve2Writer& w, uint32_t id, std::string_view text) {
+  w.create(id);
+  (void)w.set_str(id, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, text);
 }
 
-inline std::string get_env_string(const char* name) {
-#if defined(_WIN32)
-  char* buf = nullptr;
-  size_t len = 0;
-  if (_dupenv_s(&buf, &len, name) != 0 || buf == nullptr) {
-    return {};
+/// Fixed-size box helper.
+inline void sized(host::Nve2Writer& w, uint32_t id, float width, float height) {
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_WIDTH, host::length_points(width));
+  w.set(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_HEIGHT, host::length_points(height));
+  w.set_f32(id, NVE_TABLE_LAYOUT_DESC, NVE_TABLE_LAYOUT_FLEX_SHRINK, 0.0f);
+}
+
+inline void events(host::Nve2Writer& w, uint32_t id, std::initializer_list<NveEventKind> kinds) {
+  uint32_t mask = 0u;
+  for (const NveEventKind k : kinds) mask |= host::event_bit(k);
+  w.set(id, NVE_TABLE_INTERACTION_DESC, NVE_TABLE_INTERACTION_EVENT_MASK, mask);
+}
+
+inline const WinNodeVisual& node(const NveWinHost& host, uint32_t id,
+                                 std::source_location at = std::source_location::current()) {
+  const WinNodeVisual* v = host.visual_tree().find(id);
+  if (v == nullptr) {
+    std::cerr << "no view for node " << id << " at " << at.file_name() << ":" << at.line() << "\n";
+    std::abort();
   }
-  std::string out(buf);
-  std::free(buf);
-  return out;
-#else
-  const char* val = std::getenv(name);
-  return (val != nullptr) ? std::string(val) : std::string{};
-#endif
+  return *v;
 }
 
-struct DirectOutboundQueue {
-  struct Pending {
-    uint32_t surface_id{0};
-    uint32_t node_id{0};
-    uint64_t ts{0};
-    std::string name;
-    std::string payload;
-  };
-  std::vector<Pending> pending;
-  std::vector<Pending> drained;
-  std::vector<NveDirectEvent> batch_storage;
+inline Rect abs_rect(const NveWinHost& host, uint32_t id) {
+  const auto f = host.visual_tree().frame_of(id);
+  NVE_CHECK(f.has_value());
+  return f->rect;
+}
 
-  void push_custom(uint32_t sid, uint32_t nid, uint64_t ts, std::string name, std::string payload) {
-    pending.push_back(Pending{sid, nid, ts, std::move(name), std::move(payload)});
-  }
+inline std::pair<float, float> center(const NveWinHost& host, uint32_t id) {
+  const Rect r = abs_rect(host, id);
+  return {r.x + r.width * 0.5f, r.y + r.height * 0.5f};
+}
 
-  NveEventBatch drain() {
-    drained.swap(pending);
-    pending.clear();
-    batch_storage.clear();
-    batch_storage.reserve(drained.size());
-    for (const auto& p : drained) {
-      NveDirectEvent ev{};
-      ev.surface_id = p.surface_id;
-      ev.node_id = p.node_id;
-      ev.timestamp_us = p.ts;
-      ev.kind = NVE_EVENT_CUSTOM;
-      ev.payload_tag = NVE_EVENT_PAYLOAD_CUSTOM;
-      ev.name = nve::make_str_slice(p.name);
-      ev.value = nve::make_bytes_value(NveBufferSlice{
-          reinterpret_cast<const uint8_t*>(p.payload.data()),
-          p.payload.size(),
-      });
-      batch_storage.push_back(ev);
+/// Node ids in paint order.
+inline std::vector<uint32_t> paint_order(const NveWinHost& host) {
+  struct Order {
+    std::vector<uint32_t> ids;
+    bool enter(const WinNodeVisual& n, const PaintFrame&) {
+      ids.push_back(n.id);
+      return true;
     }
-    return NveEventBatch{
-        batch_storage.empty() ? nullptr : batch_storage.data(),
-        static_cast<uint32_t>(batch_storage.size()),
-        0u,
-    };
-  }
-};
+    void leave(const WinNodeVisual&, const PaintFrame&) {}
+  } order;
+  host.visual_tree().walk(order);
+  return order.ids;
+}
 
-} // namespace nve::win_test
+}  // namespace nve::win::test
