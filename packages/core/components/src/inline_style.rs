@@ -123,22 +123,6 @@ impl TypedAttrKind {
         })
     }
 
-    /// Returns `true` when this attribute writes to [`StyleProps`] rather than [`LayoutProps`].
-    #[inline]
-    pub const fn is_style_prop(self) -> bool {
-        matches!(
-            self,
-            Self::Border
-                | Self::Background
-                | Self::Color
-                | Self::BorderColor
-                | Self::BorderWidth
-                | Self::BorderRadius
-                | Self::Opacity
-                | Self::FontSize
-                | Self::ZIndex
-        )
-    }
 }
 
 /// A parsed inline declaration that lives outside the binary `LayoutProps` / `StyleProps`.
@@ -152,9 +136,9 @@ pub enum ExtStyleDecl<'a> {
     BorderCurrentColor(bool),
     /// Emitted when a valid `color` declaration explicitly sets `StyleProps::text_color`.
     ExplicitTextColor,
-    /// Emitted when any valid [`StyleProps`] declaration applied (including default-valued ones
-    /// like `font-size: 16px` or `opacity: 1` that would otherwise compare equal to defaults).
-    ExplicitStyle,
+    /// Emitted when a valid `font-size` declaration explicitly sets `StyleProps::font_size`
+    /// (including default-valued `16px`, which must block ancestor `Text` font-size inheritance).
+    ExplicitFontSize,
     /// A recognized non-ABI `style` declaration (`font-weight`, `text-align`, `box-shadow`,
     /// `overflow`, ...) under its canonical kebab-case key, forwarded via `raw_props`.
     Raw(&'static str, &'a str),
@@ -200,7 +184,7 @@ where
         style,
         border_uses_current_color,
         explicit_text_color,
-        applied && kind.is_style_prop(),
+        applied && kind == TypedAttrKind::FontSize,
         &mut on_ext,
     );
     applied
@@ -208,8 +192,12 @@ where
 
 /// Parses inline/shorthand CSS-like or RN-like attributes into typed `LayoutProps` and
 /// `StyleProps`, invoking `on_ext` for every recognized declaration outside the binary ABI
-/// (typed [`ExtStyleDecl::FlexBasis`], symbolic `currentColor` / explicit `color` signals, or a
-/// raw [`ExtStyleDecl::Raw`] declaration).
+/// (typed [`ExtStyleDecl::FlexBasis`], symbolic `currentColor` / explicit `color` /
+/// explicit `font-size` signals, or a raw [`ExtStyleDecl::Raw`] declaration).
+///
+/// Returns `true` whenever `key` is `"style"` or a recognized [`TypedAttrKind`] (even if `value`
+/// is invalid so callers do not leak typed keys to raw props); use [`apply_typed_attr_kind`] when
+/// you need to distinguish whether `value` parsed cleanly.
 pub fn apply_typed_attr_with_ext<F>(
     layout: &mut LayoutProps,
     style: &mut StyleProps,
@@ -222,7 +210,7 @@ where
 {
     let mut border_uses_current_color: Option<bool> = None;
     let mut explicit_text_color = false;
-    let mut explicit_style = false;
+    let mut explicit_font_size = false;
     if key == "style" {
         for decl in value.split(';') {
             if let Some((raw_k, raw_v)) = decl.split_once(':') {
@@ -240,9 +228,9 @@ where
                         &mut border_uses_current_color,
                         &mut explicit_text_color,
                         &mut on_ext,
-                    ) && kind.is_style_prop()
+                    ) && kind == TypedAttrKind::FontSize
                     {
-                        explicit_style = true;
+                        explicit_font_size = true;
                     }
                 } else if let Some(canonical) = canonical_raw_style_key(k) {
                     on_ext(ExtStyleDecl::Raw(canonical, v));
@@ -253,7 +241,7 @@ where
             style,
             border_uses_current_color,
             explicit_text_color,
-            explicit_style,
+            explicit_font_size,
             &mut on_ext,
         );
         return true;
@@ -269,15 +257,15 @@ where
         &mut border_uses_current_color,
         &mut explicit_text_color,
         &mut on_ext,
-    ) && kind.is_style_prop()
+    ) && kind == TypedAttrKind::FontSize
     {
-        explicit_style = true;
+        explicit_font_size = true;
     }
     emit_style_ext(
         style,
         border_uses_current_color,
         explicit_text_color,
-        explicit_style,
+        explicit_font_size,
         &mut on_ext,
     );
     true
@@ -288,13 +276,13 @@ fn emit_style_ext<F>(
     style: &mut StyleProps,
     border_uses_current_color: Option<bool>,
     explicit_text_color: bool,
-    explicit_style: bool,
+    explicit_font_size: bool,
     on_ext: &mut F,
 ) where
     F: FnMut(ExtStyleDecl<'_>),
 {
-    if explicit_style {
-        on_ext(ExtStyleDecl::ExplicitStyle);
+    if explicit_font_size {
+        on_ext(ExtStyleDecl::ExplicitFontSize);
     }
     if explicit_text_color {
         on_ext(ExtStyleDecl::ExplicitTextColor);
@@ -398,33 +386,73 @@ where
             layout.max_height = d;
         }
         K::FlexDirection => {
-            layout.flex_direction = match value.trim() {
-                "column" => FlexDirection::Column,
-                "row" => FlexDirection::Row,
-                "column-reverse" | "columnReverse" => FlexDirection::ColumnReverse,
-                "row-reverse" | "rowReverse" => FlexDirection::RowReverse,
-                _ => return false,
+            let v = value.trim();
+            layout.flex_direction = if v.eq_ignore_ascii_case("column") {
+                FlexDirection::Column
+            } else if v.eq_ignore_ascii_case("row") {
+                FlexDirection::Row
+            } else if v.eq_ignore_ascii_case("column-reverse")
+                || v.eq_ignore_ascii_case("columnReverse")
+            {
+                FlexDirection::ColumnReverse
+            } else if v.eq_ignore_ascii_case("row-reverse")
+                || v.eq_ignore_ascii_case("rowReverse")
+            {
+                FlexDirection::RowReverse
+            } else {
+                return false;
             };
         }
         K::JustifyContent => {
-            layout.justify_content = match value.trim() {
-                "flex-start" | "start" | "flexStart" => FlexJustify::FlexStart,
-                "center" => FlexJustify::Center,
-                "flex-end" | "end" | "flexEnd" => FlexJustify::FlexEnd,
-                "space-between" | "spaceBetween" => FlexJustify::SpaceBetween,
-                "space-around" | "spaceAround" => FlexJustify::SpaceAround,
-                "space-evenly" | "spaceEvenly" => FlexJustify::SpaceEvenly,
-                _ => return false,
+            let v = value.trim();
+            layout.justify_content = if v.eq_ignore_ascii_case("flex-start")
+                || v.eq_ignore_ascii_case("start")
+                || v.eq_ignore_ascii_case("flexStart")
+            {
+                FlexJustify::FlexStart
+            } else if v.eq_ignore_ascii_case("center") {
+                FlexJustify::Center
+            } else if v.eq_ignore_ascii_case("flex-end")
+                || v.eq_ignore_ascii_case("end")
+                || v.eq_ignore_ascii_case("flexEnd")
+            {
+                FlexJustify::FlexEnd
+            } else if v.eq_ignore_ascii_case("space-between")
+                || v.eq_ignore_ascii_case("spaceBetween")
+            {
+                FlexJustify::SpaceBetween
+            } else if v.eq_ignore_ascii_case("space-around")
+                || v.eq_ignore_ascii_case("spaceAround")
+            {
+                FlexJustify::SpaceAround
+            } else if v.eq_ignore_ascii_case("space-evenly")
+                || v.eq_ignore_ascii_case("spaceEvenly")
+            {
+                FlexJustify::SpaceEvenly
+            } else {
+                return false;
             };
         }
         K::AlignItems => {
-            layout.align_items = match value.trim() {
-                "stretch" => FlexAlign::Stretch,
-                "flex-start" | "start" | "flexStart" => FlexAlign::FlexStart,
-                "center" => FlexAlign::Center,
-                "flex-end" | "end" | "flexEnd" => FlexAlign::FlexEnd,
-                "baseline" => FlexAlign::Baseline,
-                _ => return false,
+            let v = value.trim();
+            layout.align_items = if v.eq_ignore_ascii_case("stretch") {
+                FlexAlign::Stretch
+            } else if v.eq_ignore_ascii_case("flex-start")
+                || v.eq_ignore_ascii_case("start")
+                || v.eq_ignore_ascii_case("flexStart")
+            {
+                FlexAlign::FlexStart
+            } else if v.eq_ignore_ascii_case("center") {
+                FlexAlign::Center
+            } else if v.eq_ignore_ascii_case("flex-end")
+                || v.eq_ignore_ascii_case("end")
+                || v.eq_ignore_ascii_case("flexEnd")
+            {
+                FlexAlign::FlexEnd
+            } else if v.eq_ignore_ascii_case("baseline") {
+                FlexAlign::Baseline
+            } else {
+                return false;
             };
         }
         K::Flex => {
@@ -438,11 +466,11 @@ where
             on_ext(ExtStyleDecl::FlexBasis(basis));
         }
         K::FlexGrow => {
-            let Some(v) = parse_f32(value) else { return false };
+            let Some(v) = parse_f32(value.trim()) else { return false };
             layout.flex_grow = v;
         }
         K::FlexShrink => {
-            let Some(v) = parse_f32(value) else { return false };
+            let Some(v) = parse_f32(value.trim()) else { return false };
             layout.flex_shrink = v;
         }
         K::Gap => {
@@ -496,7 +524,7 @@ where
             style.border_radius = v;
         }
         K::Opacity => {
-            let Some(v) = parse_f32(value) else { return false };
+            let Some(v) = parse_f32(value.trim()) else { return false };
             style.opacity = v.clamp(0.0, 1.0);
         }
         K::FontSize => {

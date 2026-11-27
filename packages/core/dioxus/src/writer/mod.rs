@@ -33,6 +33,8 @@ use nve_interop::native_view::NativeViewHandleBinder;
 use crate::native_view::NATIVE_VIEW_TAG;
 use crate::typed_style::TypedStyle;
 
+pub(crate) use standalone_mask::StandaloneLayer;
+
 pub(crate) const EXT_LAYOUT_EXT: u16 = 1 << 0;
 pub(crate) const EXT_TRANSFORM: u16 = 1 << 1;
 pub(crate) const EXT_CURSOR: u16 = 1 << 2;
@@ -44,35 +46,6 @@ pub(crate) const EXT_BACKGROUND_FILL: u16 = 1 << 7;
 pub(crate) const EXT_SVG: u16 = 1 << 8;
 pub(crate) const EXT_DRAW_LIST: u16 = 1 << 9;
 pub(crate) const EXT_NATIVE_VIEW_PROPS: u16 = 1 << 10;
-
-/// Parsed Layer-2 standalone typed attribute snapshot (allocated lazily only when a node combines
-/// standalone typed attributes with `nve_style`, inline `style`, standalone raw-style attrs, or
-/// overlapping shorthand + longhand attributes). Keeps shorthand, axis-shorthand, and longhand
-/// values in distinct tiers so precedence (`shorthand` < `axis` < `longhand`) is 100% independent
-/// of attribute order, static/dynamic template split, and `Some -> None -> Some` toggles.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct StandaloneLayer {
-    /// Active shorthand/axis bits (`SH_*` in `standalone_mask.rs`).
-    pub(crate) shorthand_mask: u8,
-    pub(crate) sh_flex_grow: f32,
-    pub(crate) sh_flex_shrink: f32,
-    pub(crate) sh_flex_basis: nve_abi::Dimension,
-    pub(crate) sh_padding: nve_abi::EdgeInsets,
-    pub(crate) sh_pad_h: f32,
-    pub(crate) sh_pad_v: f32,
-    pub(crate) sh_margin: nve_abi::EdgeInsets,
-    pub(crate) sh_mar_h: f32,
-    pub(crate) sh_mar_v: f32,
-    pub(crate) sh_border_width: f32,
-    pub(crate) sh_border_color: ColorRgba,
-    pub(crate) sh_border_current_color: bool,
-    /// Active non-shorthand / longhand field bits (`MASK_*`).
-    pub(crate) mask: u32,
-    pub(crate) layout: LayoutProps,
-    pub(crate) style: StyleProps,
-    pub(crate) flex_basis: nve_abi::Dimension,
-    pub(crate) border_current_color: bool,
-}
 
 /// Cold optional per-node metadata boxed behind `Option<Box<NodeExtras>>` so hot `NodeRecord`
 /// entries stay compact (`<= 200` bytes).
@@ -107,7 +80,7 @@ pub(crate) struct NodeExtras {
     pub(crate) dirty_ext_mask: u16,
 }
 
-const FLAG_EXPLICIT_STYLE: u8 = 1 << 0;
+const FLAG_EXPLICIT_FONT_SIZE: u8 = 1 << 0;
 const FLAG_EXPLICIT_FONT_WEIGHT: u8 = 1 << 1;
 const FLAG_EXPLICIT_TEXT_ALIGN: u8 = 1 << 2;
 const FLAG_DEFERRED_NATIVE_CREATE: u8 = 1 << 3;
@@ -181,16 +154,16 @@ impl NodeRecord {
     }
 
     #[inline]
-    pub(crate) fn has_explicit_style(&self) -> bool {
-        (self.flags & FLAG_EXPLICIT_STYLE) != 0
+    pub(crate) fn has_explicit_font_size(&self) -> bool {
+        (self.flags & FLAG_EXPLICIT_FONT_SIZE) != 0
     }
 
     #[inline]
-    pub(crate) fn set_has_explicit_style(&mut self, v: bool) {
+    pub(crate) fn set_has_explicit_font_size(&mut self, v: bool) {
         if v {
-            self.flags |= FLAG_EXPLICIT_STYLE;
+            self.flags |= FLAG_EXPLICIT_FONT_SIZE;
         } else {
-            self.flags &= !FLAG_EXPLICIT_STYLE;
+            self.flags &= !FLAG_EXPLICIT_FONT_SIZE;
         }
     }
 
@@ -390,7 +363,11 @@ impl NveMutationWriter {
         self.dirty_style.clear();
         self.dirty_text_props.clear();
         self.dirty_events.clear();
-        self.dirty_extended.clear();
+        for nid in self.dirty_extended.drain(..) {
+            if let Some(ext) = self.nodes.get_mut(&nid).and_then(|r| r.extras.as_deref_mut()) {
+                ext.dirty_ext_mask = 0;
+            }
+        }
         self.deferred_native_nodes.clear();
         sink.begin_frame(surface_id, frame_id);
         MutationTx { writer: self, sink }

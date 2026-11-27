@@ -3,10 +3,37 @@
 //! (`shorthand` < `axis shorthand` < `longhand`) regardless of attribute order, Dioxus
 //! static-vs-dynamic split, or `Some -> None -> Some` toggles, with zero string parsing on compose.
 
-use nve_abi::{Dimension, LayoutProps, StyleProps};
+use nve_abi::{ColorRgba, Dimension, EdgeInsets, LayoutProps, StyleProps};
 use nve_components::{apply_typed_attr_kind, ExtStyleDecl, TypedAttrKind};
 
-use super::StandaloneLayer;
+/// Parsed Layer-2 standalone typed attribute snapshot (allocated lazily only when a node combines
+/// standalone typed attributes with `nve_style`, inline `style`, standalone raw-style attrs, or
+/// overlapping shorthand + longhand attributes). Keeps shorthand, axis-shorthand, and longhand
+/// values in distinct tiers so precedence (`shorthand` < `axis` < `longhand`) is 100% independent
+/// of attribute order, static/dynamic template split, and `Some -> None -> Some` toggles.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StandaloneLayer {
+    /// Active shorthand/axis bits (`SH_*`).
+    pub(crate) shorthand_mask: u8,
+    pub(crate) sh_flex_grow: f32,
+    pub(crate) sh_flex_shrink: f32,
+    pub(crate) sh_flex_basis: Dimension,
+    pub(crate) sh_padding: EdgeInsets,
+    pub(crate) sh_pad_h: f32,
+    pub(crate) sh_pad_v: f32,
+    pub(crate) sh_margin: EdgeInsets,
+    pub(crate) sh_mar_h: f32,
+    pub(crate) sh_mar_v: f32,
+    pub(crate) sh_border_width: f32,
+    pub(crate) sh_border_color: ColorRgba,
+    pub(crate) sh_border_current_color: bool,
+    /// Active non-shorthand / longhand field bits (`MASK_*`).
+    pub(crate) mask: u32,
+    pub(crate) layout: LayoutProps,
+    pub(crate) style: StyleProps,
+    pub(crate) flex_basis: Dimension,
+    pub(crate) border_current_color: bool,
+}
 
 pub(super) const SH_FLEX: u8 = 1 << 0;
 pub(super) const SH_PADDING: u8 = 1 << 1;
@@ -47,7 +74,7 @@ const MASK_OPACITY: u32 = 1 << 26;
 const MASK_FONT_SIZE: u32 = 1 << 27;
 const MASK_Z_INDEX: u32 = 1 << 28;
 
-pub(super) const MASK_ANY_STYLE: u32 = MASK_BACKGROUND
+const MASK_ANY_STYLE: u32 = MASK_BACKGROUND
     | MASK_TEXT_COLOR
     | MASK_BORDER_COLOR
     | MASK_BORDER_WIDTH
@@ -221,7 +248,9 @@ pub(super) fn apply_to_standalone_layer(
         let applied = apply_typed_attr_kind(&mut tmp_l, &mut tmp_s, kind, value, |decl| match decl {
             ExtStyleDecl::FlexBasis(b) => parsed_basis = Some(b),
             ExtStyleDecl::BorderCurrentColor(flag) => border_current = Some(flag),
-            ExtStyleDecl::ExplicitTextColor | ExtStyleDecl::ExplicitStyle | ExtStyleDecl::Raw(..) => {}
+            ExtStyleDecl::ExplicitTextColor
+            | ExtStyleDecl::ExplicitFontSize
+            | ExtStyleDecl::Raw(..) => {}
         });
         if !applied {
             return false;
@@ -259,7 +288,9 @@ pub(super) fn apply_to_standalone_layer(
         |decl| match decl {
             ExtStyleDecl::FlexBasis(b) => parsed_basis = Some(b),
             ExtStyleDecl::BorderCurrentColor(flag) => border_current = Some(flag),
-            ExtStyleDecl::ExplicitTextColor | ExtStyleDecl::ExplicitStyle | ExtStyleDecl::Raw(..) => {}
+            ExtStyleDecl::ExplicitTextColor
+            | ExtStyleDecl::ExplicitFontSize
+            | ExtStyleDecl::Raw(..) => {}
         },
     );
     if !applied {
@@ -383,7 +414,7 @@ pub(super) fn overlay_standalone_layer(
     override_basis: &mut Option<Dimension>,
     border_current_color: &mut bool,
     explicit_text_color: &mut bool,
-    style_touched: &mut bool,
+    explicit_font_size: &mut bool,
 ) {
     let sh = layer.shorthand_mask;
     if sh != 0 {
@@ -400,7 +431,6 @@ pub(super) fn overlay_standalone_layer(
             layout.margin = layer.sh_margin;
         }
         if (sh & SH_BORDER) != 0 {
-            *style_touched = true;
             style.border_width = layer.sh_border_width;
             *border_current_color = layer.sh_border_current_color;
             if !layer.sh_border_current_color {
@@ -453,7 +483,6 @@ pub(super) fn overlay_standalone_layer(
     if (m & MASK_MAR_B) != 0 { layout.margin.bottom = layer.layout.margin.bottom; }
     if (m & MASK_MAR_L) != 0 { layout.margin.left = layer.layout.margin.left; }
     if (m & MASK_ANY_STYLE) != 0 {
-        *style_touched = true;
         if (m & MASK_BACKGROUND) != 0 { style.background = layer.style.background; }
         if (m & MASK_TEXT_COLOR) != 0 {
             style.text_color = layer.style.text_color;
@@ -468,7 +497,10 @@ pub(super) fn overlay_standalone_layer(
         if (m & MASK_BORDER_WIDTH) != 0 { style.border_width = layer.style.border_width; }
         if (m & MASK_BORDER_RADIUS) != 0 { style.border_radius = layer.style.border_radius; }
         if (m & MASK_OPACITY) != 0 { style.opacity = layer.style.opacity; }
-        if (m & MASK_FONT_SIZE) != 0 { style.font_size = layer.style.font_size; }
+        if (m & MASK_FONT_SIZE) != 0 {
+            style.font_size = layer.style.font_size;
+            *explicit_font_size = true;
+        }
         if (m & MASK_Z_INDEX) != 0 { style.z_index = layer.style.z_index; }
     }
 }

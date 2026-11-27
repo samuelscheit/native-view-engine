@@ -27,7 +27,6 @@ use super::attr_keys::sync_raw_style_prop;
 use super::standalone_mask::{
     apply_to_standalone_layer, clear_attr_fields, conflicts_with_direct, mask_for_attr,
     overlay_standalone_layer, promote_direct_to_layer, remove_from_standalone_layer, shorthand_bit,
-    MASK_ANY_STYLE,
 };
 use super::{mark_ext_dirty, NodeRecord, NveMutationWriter, StandaloneLayer, EXT_LAYOUT_EXT};
 
@@ -162,28 +161,23 @@ impl NveMutationWriter {
         if !has_layered_styles(rec)
             && !conflicts_with_direct(rec.standalone_mask, rec.direct_shorthands, kind)
         {
-            let bits = mask_for_attr(kind);
-            let is_style_attr = (bits & MASK_ANY_STYLE) != 0;
             let prev_layout = rec.layout;
             let prev_style = rec.style;
-            let mut next_style = if is_style_attr && !rec.has_explicit_style() {
-                StyleProps::default()
-            } else {
-                rec.style
-            };
             let mut parsed_basis = None;
             let mut border_current = None;
             let mut explicit_color = false;
+            let mut explicit_font_size = false;
             let applied = apply_typed_attr_kind(
                 &mut rec.layout,
-                &mut next_style,
+                &mut rec.style,
                 kind,
                 value,
                 |decl| match decl {
                     ExtStyleDecl::FlexBasis(b) => parsed_basis = Some(b),
                     ExtStyleDecl::BorderCurrentColor(flag) => border_current = Some(flag),
                     ExtStyleDecl::ExplicitTextColor => explicit_color = true,
-                    ExtStyleDecl::ExplicitStyle | ExtStyleDecl::Raw(..) => {}
+                    ExtStyleDecl::ExplicitFontSize => explicit_font_size = true,
+                    ExtStyleDecl::Raw(..) => {}
                 },
             );
             if !applied {
@@ -191,8 +185,7 @@ impl NveMutationWriter {
                 self.remove_standalone_typed_attr(node_id, kind);
                 return;
             }
-            rec.style = next_style;
-            rec.standalone_mask |= bits;
+            rec.standalone_mask |= mask_for_attr(kind);
             rec.direct_shorthands |= shorthand_bit(kind);
             if let Some(basis) = parsed_basis {
                 let next_ext = effective_layout_ext(None, Some(basis));
@@ -220,11 +213,11 @@ impl NveMutationWriter {
                     self.color_tree_dirty = true;
                 }
             }
+            if explicit_font_size {
+                rec.set_has_explicit_font_size(true);
+            }
             if rec.layout != prev_layout {
                 self.dirty_layout.push(node_id);
-            }
-            if is_style_attr {
-                rec.set_has_explicit_style(true);
             }
             if rec.style != prev_style {
                 self.dirty_style.push(node_id);
@@ -287,6 +280,15 @@ impl NveMutationWriter {
             if kind == TypedAttrKind::Color {
                 rec.set_has_explicit_text_color(false);
                 self.color_tree_dirty = true;
+                if let Some(pid) = rec.parent() {
+                    self.dirty_text_props.push(pid);
+                }
+            }
+            if kind == TypedAttrKind::FontSize {
+                rec.set_has_explicit_font_size(false);
+                if let Some(pid) = rec.parent() {
+                    self.dirty_text_props.push(pid);
+                }
             }
             if matches!(kind, TypedAttrKind::Border | TypedAttrKind::BorderColor) {
                 let _ = set_node_border_current_color(
@@ -295,12 +297,6 @@ impl NveMutationWriter {
                     node_id,
                     false,
                 );
-            }
-            if (rec.standalone_mask & MASK_ANY_STYLE) == 0 && rec.has_explicit_style() {
-                rec.set_has_explicit_style(false);
-                if let Some(pid) = rec.parent() {
-                    self.dirty_text_props.push(pid);
-                }
             }
             if rec.layout != prev_layout {
                 self.dirty_layout.push(node_id);
@@ -366,7 +362,7 @@ impl NveMutationWriter {
         };
         let prev_layout = rec.layout;
         let prev_style = rec.style;
-        let had_explicit_style = rec.has_explicit_style();
+        let prev_explicit_font_size = rec.has_explicit_font_size();
         let had_explicit_fw = rec.has_explicit_font_weight();
         let had_explicit_ta = rec.has_explicit_text_align();
         let prev_explicit_text_color = rec.has_explicit_text_color();
@@ -379,8 +375,8 @@ impl NveMutationWriter {
         let (
             mut next_layout,
             mut next_style,
-            mut style_touched,
             mut explicit_text_color,
+            mut explicit_font_size,
             mut next_fw,
             mut next_ta,
         ) = if let Some(typed) = typed_ref {
@@ -396,8 +392,8 @@ impl NveMutationWriter {
             (
                 if typed.has_layout { typed.layout } else { LayoutProps::default() },
                 if typed.has_style { typed.style } else { StyleProps::default() },
-                typed.has_style,
                 typed.has_text_color,
+                typed.has_font_size,
                 typed.font_weight.clone(),
                 typed.text_align.clone(),
             )
@@ -418,7 +414,7 @@ impl NveMutationWriter {
                     &mut override_basis,
                     &mut border_current_color,
                     &mut explicit_text_color,
-                    &mut style_touched,
+                    &mut explicit_font_size,
                 );
             }
             for (k, v) in &ext.standalone_raw_attrs {
@@ -438,17 +434,9 @@ impl NveMutationWriter {
                     override_css,
                     |decl| match decl {
                         ExtStyleDecl::FlexBasis(basis) => override_basis = Some(basis),
-                        ExtStyleDecl::BorderCurrentColor(flag) => {
-                            border_current_color = flag;
-                            style_touched = true;
-                        }
-                        ExtStyleDecl::ExplicitTextColor => {
-                            explicit_text_color = true;
-                            style_touched = true;
-                        }
-                        ExtStyleDecl::ExplicitStyle => {
-                            style_touched = true;
-                        }
+                        ExtStyleDecl::BorderCurrentColor(flag) => border_current_color = flag,
+                        ExtStyleDecl::ExplicitTextColor => explicit_text_color = true,
+                        ExtStyleDecl::ExplicitFontSize => explicit_font_size = true,
                         ExtStyleDecl::Raw("font-weight", v) => {
                             next_fw = Some(Cow::Owned(v.to_owned()));
                         }
@@ -472,19 +460,30 @@ impl NveMutationWriter {
                 self.inherited_text_color_from_ancestors(node_id)
             };
         }
-        if !style_touched {
-            if !had_explicit_style {
-                next_style = prev_style;
-            } else if let Some(pid) = parent_id {
-                self.dirty_text_props.push(pid);
+        let mut re_inherit_from_parent = false;
+        if !explicit_text_color {
+            if !prev_explicit_text_color {
+                next_style.text_color = prev_style.text_color;
+            } else {
+                re_inherit_from_parent = true;
             }
+        }
+        if !explicit_font_size {
+            if !prev_explicit_font_size {
+                next_style.font_size = prev_style.font_size;
+            } else {
+                re_inherit_from_parent = true;
+            }
+        }
+        if re_inherit_from_parent && let Some(pid) = parent_id {
+            self.dirty_text_props.push(pid);
         }
 
         let Some(rec) = self.nodes.get_mut(&node_id) else {
             return;
         };
         rec.set_dirty_compose(false);
-        rec.set_has_explicit_style(style_touched);
+        rec.set_has_explicit_font_size(explicit_font_size);
         rec.set_has_explicit_text_color(explicit_text_color);
         let border_flag_changed = set_node_border_current_color(
             &mut self.current_color_borders,

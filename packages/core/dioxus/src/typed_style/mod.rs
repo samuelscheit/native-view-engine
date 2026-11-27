@@ -62,6 +62,7 @@ pub struct TypedStyle {
     pub has_layout: bool,
     pub has_style: bool,
     pub has_text_color: bool,
+    pub has_font_size: bool,
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
     pub box_shadow: Option<Cow<'static, str>>,
@@ -95,6 +96,7 @@ impl TypedStyle {
             has_layout: false,
             has_style: false,
             has_text_color: false,
+            has_font_size: false,
             font_weight: None,
             text_align: None,
             box_shadow: None,
@@ -425,6 +427,7 @@ impl TypedStyle {
     pub fn font_size(mut self, px: f32) -> Self {
         self.style.font_size = Self::sanitize(px).max(1.0);
         self.has_style = true;
+        self.has_font_size = true;
         self
     }
 

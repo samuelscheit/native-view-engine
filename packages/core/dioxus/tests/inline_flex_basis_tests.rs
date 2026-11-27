@@ -493,11 +493,41 @@ fn SameFrameTransitionAndFallbackApp() -> Element {
             view { test_id: "style_to_wb", style: inline_bg, width: added_w, "border": added_border }
             view { test_id: "direct_invalid", padding: "{dyn_pad}" }
             view { test_id: "layered_invalid", nve_style: typed_pad, padding: "{dyn_pad}" }
-            // Both direct-path and inline `style` default-valued `font-size: 16px` must stay 16px under a 24px parent Text.
+            // Per-property Text inheritance across direct, inline `style`, and `TypedStyle` paths:
+            // adding `opacity` / `font_size` / `color` must never clobber sibling inherited props,
+            // and removing or invalidating an explicit prop must re-inherit from the Text parent.
             text {
-                font_size: "24px",
-                text { test_id: "child_default_fs", font_size: "16px", "body" }
-                text { test_id: "child_inline_default_fs", style: "font-size: 16px", "inline" }
+                font_size: if s < 2 { "24px" } else { "30px" },
+                color: if s < 2 { "#0000ff" } else { "#22c55e" },
+                text {
+                    test_id: "dyn_opacity",
+                    opacity: match s { 0 => None, 1 | 2 => Some("0.5"), _ => Some("garbage") },
+                    "op"
+                }
+                text {
+                    test_id: "dyn_fs",
+                    font_size: match s { 0 => None, 1 | 2 => Some("16px"), _ => Some("bad") },
+                    "fs"
+                }
+                text {
+                    test_id: "dyn_inline_fs",
+                    style: match s {
+                        0 => None,
+                        1 | 2 => Some("font-size: 16px; opacity: 0.8"),
+                        _ => Some("opacity: 0.8"),
+                    },
+                    "ifs"
+                }
+                text {
+                    test_id: "dyn_color",
+                    color: match s { 0 => None, 1 | 2 => Some("#ef4444"), _ => None },
+                    "col"
+                }
+                text {
+                    test_id: "typed_op",
+                    nve_style: TypedStyle::new().opacity(0.6),
+                    "top"
+                }
             }
             pressable { test_id: "cycle", onpress: move |_| step += 1 }
         }
@@ -507,26 +537,72 @@ fn SameFrameTransitionAndFallbackApp() -> Element {
 #[test]
 fn same_frame_layer_removal_default_style_explicit_and_invalid_attr_fallback() {
     use nve_abi::{ColorRgba, EdgeInsets};
+    let blue = ColorRgba::rgb(0x00, 0x00, 0xff);
+    let green = ColorRgba::rgb(0x22, 0xc5, 0x5e);
+    let red = ColorRgba::rgb(0xef, 0x44, 0x44);
+
     let mut surface = DioxusSurface::new(1, SameFrameTransitionAndFallbackApp);
     let mut sink = ExtSink::default();
     surface.flush_into(1, &mut sink).unwrap();
 
-    // Frame 1: initial states + default-valued `font_size: "16px"` resists 24px Text inheritance.
+    // Frame 1 (s=0): all children inherit (24px, blue) — including `TypedStyle::new().opacity(0.6)`.
     assert_eq!(sink.raw_of("ov_to_w", "overflow"), Some(Some("hidden")));
     assert_eq!(sink.layout[&sink.node("direct_invalid")].padding, EdgeInsets::all(8.0));
     assert_eq!(sink.layout[&sink.node("layered_invalid")].padding, EdgeInsets::all(8.0));
-    assert_eq!(sink.style_of("child_default_fs").font_size, 16.0);
-    assert_eq!(sink.style_of("child_inline_default_fs").font_size, 16.0);
+    for id in ["dyn_opacity", "dyn_fs", "dyn_inline_fs", "dyn_color", "typed_op"] {
+        assert_eq!(sink.style_of(id).font_size, 24.0, "{id}");
+        assert_eq!(sink.style_of(id).text_color, blue, "{id}");
+    }
+    assert_eq!(sink.style_of("typed_op").opacity, 0.6);
 
-    // Frame 2: removing last layer (`overflow` / `style`) + adding `width` / `border` in the SAME
-    // frame must preserve the newly added typed attrs and resolve `currentColor` against white parent.
+    // Frame 2 (s=1): same-frame layer removal + typed attr insertion, invalid-value fallback, AND
+    // dynamic per-property Text overrides (must preserve sibling inherited color / font_size!).
     press(&mut surface, &mut sink, 2);
     assert_eq!(sink.raw_of("ov_to_w", "overflow"), Some(None));
     assert_eq!(sink.layout[&sink.node("ov_to_w")].width, Dimension::Points(240.0));
     assert_eq!(sink.layout[&sink.node("style_to_wb")].width, Dimension::Points(240.0));
     assert_eq!(sink.style_of("style_to_wb").border_width, 2.0);
     assert_eq!(sink.style_of("style_to_wb").border_color, ColorRgba::WHITE);
-    // Updating `padding: "8px"` -> `"garbage"` clears stale value (default 0 / nve_style 14px).
     assert_eq!(sink.layout[&sink.node("direct_invalid")].padding, EdgeInsets::all(0.0));
     assert_eq!(sink.layout[&sink.node("layered_invalid")].padding, EdgeInsets::all(14.0));
+
+    assert_eq!(sink.style_of("dyn_opacity").opacity, 0.5);
+    assert_eq!(sink.style_of("dyn_opacity").font_size, 24.0);
+    assert_eq!(sink.style_of("dyn_opacity").text_color, blue);
+
+    assert_eq!(sink.style_of("dyn_fs").font_size, 16.0);
+    assert_eq!(sink.style_of("dyn_fs").text_color, blue);
+
+    assert_eq!(sink.style_of("dyn_inline_fs").font_size, 16.0);
+    assert_eq!(sink.style_of("dyn_inline_fs").opacity, 0.8);
+    assert_eq!(sink.style_of("dyn_inline_fs").text_color, blue);
+
+    assert_eq!(sink.style_of("dyn_color").text_color, red);
+    assert_eq!(sink.style_of("dyn_color").font_size, 24.0);
+
+    // Frame 3 (s=2): parent updates to (30px, green); each child inherits ONLY its non-explicit props.
+    press(&mut surface, &mut sink, 3);
+    assert_eq!(sink.style_of("dyn_opacity").font_size, 30.0);
+    assert_eq!(sink.style_of("dyn_opacity").text_color, green);
+    assert_eq!(sink.style_of("dyn_fs").font_size, 16.0);
+    assert_eq!(sink.style_of("dyn_fs").text_color, green);
+    assert_eq!(sink.style_of("dyn_inline_fs").font_size, 16.0);
+    assert_eq!(sink.style_of("dyn_inline_fs").text_color, green);
+    assert_eq!(sink.style_of("dyn_color").text_color, red);
+    assert_eq!(sink.style_of("dyn_color").font_size, 30.0);
+    assert_eq!(sink.style_of("typed_op").font_size, 30.0);
+    assert_eq!(sink.style_of("typed_op").text_color, green);
+
+    // Frame 4 (s=3): removing / invalidating explicit overrides restores parent's (30px, green).
+    press(&mut surface, &mut sink, 4);
+    assert_eq!(sink.style_of("dyn_opacity").opacity, 1.0);
+    assert_eq!(sink.style_of("dyn_opacity").font_size, 30.0);
+    assert_eq!(sink.style_of("dyn_opacity").text_color, green);
+    assert_eq!(sink.style_of("dyn_fs").font_size, 30.0);
+    assert_eq!(sink.style_of("dyn_fs").text_color, green);
+    assert_eq!(sink.style_of("dyn_inline_fs").font_size, 30.0);
+    assert_eq!(sink.style_of("dyn_inline_fs").opacity, 0.8);
+    assert_eq!(sink.style_of("dyn_inline_fs").text_color, green);
+    assert_eq!(sink.style_of("dyn_color").text_color, green);
+    assert_eq!(sink.style_of("dyn_color").font_size, 30.0);
 }

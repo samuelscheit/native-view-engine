@@ -533,4 +533,22 @@ fn plain_standalone_typed_attrs_allocate_zero_node_extras_and_current_color_repa
         (0.0, 1.0)
     );
     assert!(writer.node_layout_ext(cbf_node).is_none());
+
+    // 4. Abandoned `MutationTx`: dropping a tx with pending `dirty_compose` entries must NOT leave
+    // stale `FLAG_DIRTY_COMPOSE` set on the next `begin_tx`, or future style updates are skipped.
+    let abort_node = {
+        let tx7 = writer.begin_tx(&mut sink, 1, 7);
+        let nid = tx7.writer.alloc_node(tx7.sink, ComponentKind::View, None);
+        tx7.writer.bind_element_id(nid, ElementId(53));
+        tx7.writer.apply_str_attr(tx7.sink, nid, "style", "width: 100px");
+        assert!(tx7.writer.nodes[&nid].is_dirty_compose());
+        nid
+    };
+
+    let tx8 = writer.begin_tx(&mut sink, 1, 8);
+    assert!(!tx8.writer.nodes[&abort_node].is_dirty_compose());
+    tx8.writer.apply_str_attr(tx8.sink, abort_node, "style", "width: 200px");
+    tx8.finish_frame(true).unwrap();
+    assert_eq!(writer.nodes[&abort_node].layout.width, Dimension::Points(200.0));
+    assert!(!writer.nodes[&abort_node].is_dirty_compose());
 }

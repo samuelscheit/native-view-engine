@@ -198,12 +198,18 @@ impl NveMutationWriter {
             if let Some(child) = self.nodes.get_mut(&cid)
                 && child.kind == ComponentKind::Text
             {
-                if !child.has_explicit_style()
-                    && (child.style.text_color != entry.color
-                        || (child.style.font_size - entry.font_size).abs() > f32::EPSILON)
-                {
+                let mut style_changed = false;
+                if !child.has_explicit_text_color() && child.style.text_color != entry.color {
                     child.style.text_color = entry.color;
+                    style_changed = true;
+                }
+                if !child.has_explicit_font_size()
+                    && (child.style.font_size - entry.font_size).abs() > f32::EPSILON
+                {
                     child.style.font_size = entry.font_size;
+                    style_changed = true;
+                }
+                if style_changed {
                     self.dirty_style.push(cid);
                 }
                 if !child.has_explicit_font_weight()

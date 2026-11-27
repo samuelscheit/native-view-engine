@@ -14,7 +14,7 @@ fn ext_decls(
         ExtStyleDecl::Raw(k, v) => out.push((None, format!("{k}:{v}"))),
         ExtStyleDecl::BorderCurrentColor(_)
         | ExtStyleDecl::ExplicitTextColor
-        | ExtStyleDecl::ExplicitStyle => {}
+        | ExtStyleDecl::ExplicitFontSize => {}
     }));
     out
 }
@@ -257,12 +257,17 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     let mut l_strict = LayoutProps::default();
     let mut s_strict = StyleProps::default();
     assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Width, " 120px ", |_| {}));
-    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexDirection, " row ", |_| {}));
-    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::JustifyContent, " center ", |_| {}));
-    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::AlignItems, " flex-end ", |_| {}));
+    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexDirection, " ROW ", |_| {}));
+    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::JustifyContent, " CENTER ", |_| {}));
+    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::AlignItems, " FLEX-END ", |_| {}));
+    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, " 2 ", |_| {}));
+    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, " 0 ", |_| {}));
+    assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Opacity, " 0.5 ", |_| {}));
     assert!(apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::ZIndex, " 10 ", |_| {}));
     assert_eq!(l_strict.width, Dimension::Points(120.0));
     assert_eq!(l_strict.flex_direction, FlexDirection::Row);
+    assert_eq!((l_strict.flex_grow, l_strict.flex_shrink), (2.0, 0.0));
+    assert_eq!(s_strict.opacity, 0.5);
     assert_eq!(s_strict.z_index, 10);
     let snap_l = l_strict;
     let snap_s = s_strict;
@@ -271,38 +276,41 @@ fn hex_shorthands_non_ascii_safety_and_border_width_longhand_consistency() {
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexDirection, "bogus", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::JustifyContent, "bogus", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::AlignItems, "bogus", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexGrow, "nope", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::FlexShrink, "nope", |_| {}));
+    assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::Opacity, "nope", |_| {}));
     assert!(!apply_typed_attr_kind(&mut l_strict, &mut s_strict, TypedAttrKind::ZIndex, "nope", |_| {}));
     assert_eq!((l_strict, s_strict), (snap_l, snap_s));
 
     let mut explicit_color = false;
-    let mut explicit_style = false;
+    let mut explicit_font_size = false;
     let mut border_current = None;
     let mut s3 = StyleProps::default();
     apply_typed_attr_with_ext(&mut l, &mut s3, "style", "border: 1px solid; color: #fff", |d| {
         match d {
             ExtStyleDecl::ExplicitTextColor => explicit_color = true,
-            ExtStyleDecl::ExplicitStyle => explicit_style = true,
+            ExtStyleDecl::ExplicitFontSize => explicit_font_size = true,
             ExtStyleDecl::BorderCurrentColor(v) => border_current = Some(v),
             _ => {}
         }
     });
     assert!(explicit_color);
-    assert!(explicit_style);
+    assert!(!explicit_font_size);
     assert_eq!(border_current, Some(true));
 
-    // Default-valued `font-size: 16px` emits `ExplicitStyle`; layout-only `width: 100px` does not.
-    let mut def_style_flag = false;
+    // Default-valued `font-size: 16px` emits `ExplicitFontSize`; `opacity: 0.5` / `width: 100px` do not.
+    let mut def_fs_flag = false;
     apply_typed_attr_with_ext(&mut l, &mut s3, "style", "font-size: 16px", |d| {
-        if matches!(d, ExtStyleDecl::ExplicitStyle) {
-            def_style_flag = true;
+        if matches!(d, ExtStyleDecl::ExplicitFontSize) {
+            def_fs_flag = true;
         }
     });
-    assert!(def_style_flag);
-    let mut layout_only_flag = false;
-    apply_typed_attr_with_ext(&mut l, &mut s3, "style", "width: 100px", |d| {
-        if matches!(d, ExtStyleDecl::ExplicitStyle) {
-            layout_only_flag = true;
+    assert!(def_fs_flag);
+    let mut non_fs_flag = false;
+    apply_typed_attr_with_ext(&mut l, &mut s3, "style", "opacity: 0.5; width: 100px", |d| {
+        if matches!(d, ExtStyleDecl::ExplicitFontSize | ExtStyleDecl::ExplicitTextColor) {
+            non_fs_flag = true;
         }
     });
-    assert!(!layout_only_flag);
+    assert!(!non_fs_flag);
 }

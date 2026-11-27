@@ -175,6 +175,17 @@ test("superseding arm, timeout expiry, and upstream abort while held are handled
 
     // 3. Upstream aborts AFTER release() (while forwarding): must destroy client instead of clean EOF.
     const cut2 = proxy.arm({ marker: "<marker/>", timeoutMs: 5_000 });
+    const withTimeout = (promise, label) => {
+      let timer;
+      return Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 5_000);
+          timer.unref?.();
+        }),
+      ]).finally(() => clearTimeout(timer));
+    };
+    let tailBuf = "";
     let gotTail = false;
     let onTail;
     const sawTail = new Promise((r) => {
@@ -183,7 +194,8 @@ test("superseding arm, timeout expiry, and upstream abort while held are handled
     const clientDone2 = new Promise((resolve) => {
       const req = http.get(`${proxy.origin}/issues`, (res) => {
         res.on("data", (c) => {
-          if (c.toString("utf8").includes("TAIL") && !gotTail) {
+          tailBuf += c.toString("utf8");
+          if (tailBuf.includes("TAIL") && !gotTail) {
             gotTail = true;
             onTail();
           }
@@ -196,9 +208,9 @@ test("superseding arm, timeout expiry, and upstream abort while held are handled
     });
     await cut2;
     proxy.release();
-    await sawTail;
+    await withTimeout(sawTail, "TAIL chunk after release()");
     activeRes.socket.destroy();
-    const outcome2 = await clientDone2;
+    const outcome2 = await withTimeout(clientDone2, "client teardown after post-release abort");
     assert.notEqual(outcome2, "end", "upstream abort after release() must not look like a clean EOF");
   } finally {
     activeRes?.socket?.destroy();
