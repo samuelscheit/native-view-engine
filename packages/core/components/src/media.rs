@@ -1,11 +1,9 @@
 //! Breakpoint-general, strictly typed responsive `@media` queries, sparse style patches,
-//! native viewport evaluation, and deterministic CSS `@media` emission.
+//! and native viewport evaluation.
 //!
 //! Zero serialization and zero arbitrary strings: [`MediaQuery`] is a compact 8-byte `#[repr(C)]`
 //! `Copy` struct directly shareable in memory across Rust, FFI, WASM, and native backends with
 //! 0% CSS injection surface.
-
-use std::fmt::Write as _;
 
 pub use nve_abi::ColorScheme;
 
@@ -42,14 +40,6 @@ impl MediaPointer {
     #[inline]
     pub const fn from_u8(raw: u8) -> Option<Self> {
         match raw { 1 => Some(Self::Fine), 2 => Some(Self::Coarse), _ => None }
-    }
-    #[inline]
-    pub const fn as_css(self) -> &'static str {
-        match self { Self::Fine => "fine", Self::Coarse => "coarse" }
-    }
-    #[inline]
-    pub const fn negated_css(self) -> &'static str {
-        match self { Self::Fine => "coarse", Self::Coarse => "fine" }
     }
 }
 
@@ -314,70 +304,6 @@ impl MediaQuery {
             return false;
         }
         true
-    }
-
-    /// Writes a deterministic, injection-free CSS `@media` condition into `out`.
-    pub fn write_css_condition(&self, out: &mut String) -> bool {
-        if !self.is_valid() || self.is_empty() {
-            return false;
-        }
-        let mut first = true;
-        let mut push_sep = |buf: &mut String| {
-            if !first {
-                buf.push_str(" and ");
-            }
-            first = false;
-        };
-
-        if let Some(min) = self.min_width_opt() {
-            push_sep(out);
-            let _ = write!(out, "(min-width:{min}px)");
-        }
-        if let Some(max) = self.max_width_opt() {
-            push_sep(out);
-            let _ = write!(out, "(max-width:{max}.98px)");
-        }
-        if let Some(scheme) = self.color_scheme_opt() {
-            push_sep(out);
-            let _ = write!(out, "(prefers-color-scheme:{})", scheme.as_css());
-        }
-        if let Some(rm) = self.reduced_motion_opt() {
-            push_sep(out);
-            let kw = if rm { "reduce" } else { "no-preference" };
-            let _ = write!(out, "(prefers-reduced-motion:{kw})");
-        }
-        if let Some(ptr) = self.pointer_opt() {
-            push_sep(out);
-            let _ = write!(out, "(pointer:{})", ptr.as_css());
-        }
-        !first
-    }
-
-    /// Emits exact complementary CSS `@media` conditions that hide a node whenever `self` does
-    /// NOT match (De Morgan negation: `!(A && B)` -> `[!A, !B]`).
-    pub fn write_negated_css_conditions(&self, out: &mut Vec<String>) {
-        if !self.is_valid() {
-            out.push("all".to_owned());
-            return;
-        }
-        if let Some(min) = self.min_width_opt()
-            && min > 0
-        {
-            out.push(format!("(max-width:{}.98px)", min - 1));
-        }
-        if let Some(max) = self.max_width_opt() {
-            out.push(format!("(min-width:{}px)", u32::from(max) + 1));
-        }
-        if let Some(scheme) = self.color_scheme_opt() {
-            out.push(format!("(prefers-color-scheme:{})", scheme.negated_css()));
-        }
-        if let Some(rm) = self.reduced_motion_opt() {
-            let kw = if rm { "no-preference" } else { "reduce" };
-            out.push(format!("(prefers-reduced-motion:{kw})"));
-        }
-        if let Some(ptr) = self.pointer_opt() {
-            out.push(format!("(pointer:{})", ptr.negated_css()));
-        }
     }
 }
 

@@ -65,10 +65,9 @@ pub use gpu::{
     GpuSurfaceError, GpuSwapchain, SoftwareFramePresenter, SwapchainExtent,
 };
 #[cfg(feature = "skia")]
-pub use gpu::{
-    CpuSkiaSurface, GaneshPresenter, GpuSurface, GpuSurfaceBackend, NativeSwapchain,
-    SkiaCanvasRenderer,
-};
+pub use gpu::{CpuSkiaSurface, GpuSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
+#[cfg(any(feature = "skia-metal", feature = "skia-vulkan", feature = "skia-d3d"))]
+pub use gpu::{GaneshPresenter, NativeSwapchain};
 pub use image_cache::{
     compute_image_placement, decode_image_uri, decode_png, encode_rgb_png, DecodedImage,
     ImageCache, ImageDecodeError, ImageDrawPlacement,

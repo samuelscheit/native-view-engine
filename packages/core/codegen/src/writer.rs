@@ -12,6 +12,12 @@ use std::ops::Deref;
 pub(crate) struct CodeWriter(String);
 
 impl CodeWriter {
+    /// Creates an empty writer.
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self(String::new())
+    }
+
     /// Creates an empty buffer with at least `capacity` bytes preallocated.
     #[inline]
     pub(crate) fn with_capacity(capacity: usize) -> Self {
@@ -35,6 +41,13 @@ impl CodeWriter {
     #[inline]
     pub(crate) fn into_string(self) -> String {
         self.0
+    }
+}
+
+impl fmt::Display for CodeWriter {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

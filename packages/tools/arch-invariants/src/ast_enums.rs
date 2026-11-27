@@ -19,6 +19,7 @@ const EXTERNAL_SDK_ROOTS: &[&str] = &[
     "cosmic_text",
     "vk",
     "ash",
+    "ash_vk",
     "windows",
     "objc2",
     "gtk4",
@@ -47,6 +48,9 @@ pub fn scan_duplicate_enums_and_converters(
 
     for (is_core, files) in [(true, core_files), (false, backend_files)] {
         for (rel, _, ast) in files {
+            if is_cfg_test_attr(&ast.attrs) {
+                continue;
+            }
             collect_pub_enums(
                 rel,
                 &ast.items,
@@ -84,6 +88,9 @@ pub fn scan_duplicate_enums_and_converters(
     }
 
     for (rel, raw, ast) in core_files.iter().chain(backend_files.iter()) {
+        if is_cfg_test_attr(&ast.attrs) {
+            continue;
+        }
         scan_converters_in_items(rel, raw, &ast.items, &internal_enum_names, out);
     }
 }
@@ -264,6 +271,9 @@ struct FnMatchProfile {
 }
 
 pub fn scan_match_tables(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<Violation>) {
+    if is_cfg_test_attr(&ast.attrs) {
+        return;
+    }
     let mut fns = Vec::new();
     collect_fn_profiles(&ast.items, &mut fns);
 

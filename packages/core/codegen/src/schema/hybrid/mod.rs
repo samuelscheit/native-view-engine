@@ -9,11 +9,13 @@ mod validate;
 
 pub use core_abi::{
     compute_scene_schema_hash, core_abi_schema_hash, core_abi_spec, scene_abi_spec,
-    NVE_CORE_ABI_SCHEMA_HASH, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE, NVE_SCENE_SCHEMA_HASH,
+    ResolvedSceneAbi, NVE_CORE_ABI_SCHEMA_HASH, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
+    NVE_SCENE_SCHEMA_HASH,
 };
 pub use file_spec::HybridFileSpec;
 pub use schema_bridge::from_abi_descriptor;
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -243,21 +245,27 @@ impl HybridType {
 
     /// Deterministic C-ABI option wrapper suffix for POD optional types (`Optional<T>`).
     /// Returns `Some("I64")`, `Some("Vec2")`, etc. when `self` is a POD inner type.
-    pub fn pod_opt_suffix(&self) -> Option<String> {
+    pub fn pod_opt_suffix(&self) -> Option<Cow<'static, str>> {
         match self {
-            Self::Bool => Some("Bool".to_string()),
-            Self::U8 => Some("U8".to_string()),
-            Self::U16 => Some("U16".to_string()),
-            Self::Usize => Some("Usize".to_string()),
-            Self::I32 => Some("I32".to_string()),
-            Self::U32 => Some("U32".to_string()),
-            Self::I64 => Some("I64".to_string()),
-            Self::U64 => Some("U64".to_string()),
-            Self::F32 => Some("F32".to_string()),
-            Self::F64 => Some("F64".to_string()),
-            Self::Enum(name) | Self::Struct(name) => Some(to_pascal_case(name)),
+            Self::Bool => Some(Cow::Borrowed("Bool")),
+            Self::U8 => Some(Cow::Borrowed("U8")),
+            Self::U16 => Some(Cow::Borrowed("U16")),
+            Self::Usize => Some(Cow::Borrowed("Usize")),
+            Self::I32 => Some(Cow::Borrowed("I32")),
+            Self::U32 => Some(Cow::Borrowed("U32")),
+            Self::I64 => Some(Cow::Borrowed("I64")),
+            Self::U64 => Some(Cow::Borrowed("U64")),
+            Self::F32 => Some(Cow::Borrowed("F32")),
+            Self::F64 => Some(Cow::Borrowed("F64")),
+            Self::Enum(name) | Self::Struct(name) => Some(Cow::Owned(to_pascal_case(name))),
             _ => None,
         }
+    }
+
+    /// Returns the deterministic C-ABI option wrapper suffix if and only if `self` is a valid
+    /// POD type in `file` with a direct `NveHybridOpt<Suffix>` representation.
+    pub fn pod_opt_suffix_for(&self, file: &HybridFileSpec) -> Option<Cow<'static, str>> {
+        self.is_pod(file).then(|| self.pod_opt_suffix()).flatten()
     }
 }
 

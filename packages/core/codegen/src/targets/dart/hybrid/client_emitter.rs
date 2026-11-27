@@ -275,18 +275,26 @@ pub(super) fn emit_dart_client_method(
                 writeln!(out, "      _v{idx}.data.bytesVal.len = _b{idx}.len;");
                 args.push(format!("_v{idx}"));
             }
-            HybridType::Optional(inner) if inner.is_pod(spec) => {
-                let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
-                writeln!(out, "      final _o{idx} = ffi.Struct.create<NveHybridOpt{suffix}>();");
-                writeln!(out, "      if ({pname} != null) {{");
-                writeln!(out, "        _o{idx}.isSome = true;");
-                match inner.as_ref() {
-                    HybridType::Enum(_) => writeln!(out, "        _o{idx}.value = {pname}.rawValue;"),
-                    HybridType::Struct(_) => writeln!(out, "        _o{idx}.value = {pname}.toAbi();"),
-                    _ => writeln!(out, "        _o{idx}.value = {pname};"),
+            HybridType::Optional(inner) => {
+                if let Some(suffix) = inner.pod_opt_suffix_for(spec) {
+                    writeln!(out, "      final _o{idx} = ffi.Struct.create<NveHybridOpt{suffix}>();");
+                    writeln!(out, "      if ({pname} != null) {{");
+                    writeln!(out, "        _o{idx}.isSome = true;");
+                    match inner.as_ref() {
+                        HybridType::Enum(_) => writeln!(out, "        _o{idx}.value = {pname}.rawValue;"),
+                        HybridType::Struct(_) => writeln!(out, "        _o{idx}.value = {pname}.toAbi();"),
+                        _ => writeln!(out, "        _o{idx}.value = {pname};"),
+                    }
+                    writeln!(out, "      }}");
+                    args.push(format!("_o{idx}"));
+                } else {
+                    writeln!(out, "      final _w{idx} = NveBinWriter();");
+                    emit_dart_bin_write(out, "      ", &format!("_w{idx}"), &pname, &p.ty);
+                    writeln!(out, "      final _b{idx} = _copyToNative(_w{idx}.takeBytes());");
+                    writeln!(out, "      tempBufs.add(_b{idx});");
+                    writeln!(out, "      final _s{idx} = ffi.Struct.create<NveBufferSlice>()..ptr = _b{idx}.ptr..len = _b{idx}.len;");
+                    args.push(format!("_s{idx}"));
                 }
-                writeln!(out, "      }}");
-                args.push(format!("_o{idx}"));
             }
             other => {
                 writeln!(out, "      final _w{idx} = NveBinWriter();");

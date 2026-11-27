@@ -103,3 +103,15 @@ invalid:
     pub struct NodeRow {
         pub label: String,
     }
+  - |
+    pub struct LayoutNode {
+        pub children: Vec<NodeId>,
+    }
+  - |
+    pub struct RenderNode {
+        pub extra: Box<u32>,
+    }
+  - |
+    pub struct SceneNode {
+        pub props: std::collections::HashMap<u32, u32>,
+    }

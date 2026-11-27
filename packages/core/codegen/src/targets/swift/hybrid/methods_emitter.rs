@@ -44,20 +44,30 @@ pub(super) fn emit_swift_client_method(out: &mut CodeWriter, method: &HybridMeth
                 call_args.push(svar);
             }
             HybridType::Value => call_args.push(pname),
-            HybridType::Optional(inner) if inner.is_pod(spec) => {
-                let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
-                let svar = format!("_arg{idx}");
-                let zero = swift_c_zero_value(inner, spec);
-                let unwrap_expr = match inner.as_ref() {
-                    HybridType::Enum(_) => "v.rawValue".to_string(),
-                    HybridType::Struct(_) => "v.toAbi()".to_string(),
-                    _ => "v".to_string(),
-                };
-                writeln!(
-                    out,
-                    "        let {svar}: NveHybridOpt{suffix} = {pname}.map {{ v in NveHybridOpt{suffix}(is_some: true, value: {unwrap_expr}) }} ?? NveHybridOpt{suffix}(is_some: false, value: {zero})"
-                );
-                call_args.push(svar);
+            HybridType::Optional(inner) => {
+                if let Some(suffix) = inner.pod_opt_suffix_for(spec) {
+                    let svar = format!("_arg{idx}");
+                    let zero = swift_c_zero_value(inner, spec);
+                    let unwrap_expr = match inner.as_ref() {
+                        HybridType::Enum(_) => "v.rawValue".to_string(),
+                        HybridType::Struct(_) => "v.toAbi()".to_string(),
+                        _ => "v".to_string(),
+                    };
+                    writeln!(
+                        out,
+                        "        let {svar}: NveHybridOpt{suffix} = {pname}.map {{ v in NveHybridOpt{suffix}(is_some: true, value: {unwrap_expr}) }} ?? NveHybridOpt{suffix}(is_some: false, value: {zero})"
+                    );
+                    call_args.push(svar);
+                } else {
+                    let wvar = format!("_w{idx}");
+                    let bvar = format!("_binBuf{idx}");
+                    let svar = format!("_arg{idx}");
+                    writeln!(out, "        var {wvar} = NveHybridBinWriter()");
+                    emit_swift_bin_write(out, "        ", &wvar, &pname, &p.ty);
+                    writeln!(out, "        let {bvar} = {wvar}.bytes");
+                    pinned_scopes.push((bvar, svar.clone(), false));
+                    call_args.push(svar);
+                }
             }
             other => {
                 let wvar = format!("_w{idx}");
@@ -364,13 +374,13 @@ pub(super) fn swift_c_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> Stri
 
 pub(super) fn swift_c_return_zero_value(ty: &HybridType, spec: &HybridFileSpec) -> String {
     match ty {
-        HybridType::Optional(inner) if inner.is_pod(spec) => {
-            let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
-            format!(
+        HybridType::Optional(inner) => match inner.pod_opt_suffix_for(spec) {
+            Some(suffix) => format!(
                 "NveHybridOpt{suffix}(is_some: false, value: {})",
                 swift_c_zero_value(inner, spec)
-            )
-        }
+            ),
+            None => swift_c_zero_value(ty, spec),
+        },
         other => swift_c_zero_value(other, spec),
     }
 }

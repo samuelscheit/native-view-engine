@@ -99,8 +99,8 @@ mod native {
                 ..Transform2D::IDENTITY
             };
             b.iter(|| {
-                let m1 = t1.to_matrix_2d(100.0, 50.0);
-                let m2 = t2.to_matrix_2d(100.0, 50.0);
+                let m1 = black_box(&t1).to_matrix_2d(100.0, 50.0);
+                let m2 = black_box(&t2).to_matrix_2d(100.0, 50.0);
                 let m = affine_concat(black_box(&m1), black_box(&m2));
                 black_box(affine_map_point(&m, 50.0, 25.0))
             });

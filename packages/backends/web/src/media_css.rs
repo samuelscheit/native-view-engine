@@ -4,11 +4,116 @@
 //! Accepts strictly typed Rust structs/slices directly from `nve_components::media` with zero
 //! JSON, zero wire serialization, and 0% CSS injection surface.
 
+use std::fmt::Write as _;
+
 use nve_abi::num::{write_i64, write_u64};
-use nve_abi::{EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_abi::{ColorScheme, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::layout_ext::GridTrack;
-use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::media::{MediaPointer, MediaQuery, ResponsiveRule};
 use nve_components::style_patch::StylePatch;
+
+/// Formats [`ColorScheme`] as a CSS `prefers-color-scheme` keyword.
+#[inline]
+pub const fn color_scheme_as_css(scheme: ColorScheme) -> &'static str {
+    match scheme {
+        ColorScheme::Light => "light",
+        ColorScheme::Dark => "dark",
+    }
+}
+
+/// Formats the complementary CSS `prefers-color-scheme` keyword for De Morgan negation.
+#[inline]
+pub const fn color_scheme_negated_css(scheme: ColorScheme) -> &'static str {
+    match scheme {
+        ColorScheme::Light => "dark",
+        ColorScheme::Dark => "light",
+    }
+}
+
+/// Formats [`MediaPointer`] as a CSS `pointer` keyword.
+#[inline]
+pub const fn media_pointer_as_css(ptr: MediaPointer) -> &'static str {
+    match ptr {
+        MediaPointer::Fine => "fine",
+        MediaPointer::Coarse => "coarse",
+    }
+}
+
+/// Formats the complementary CSS `pointer` keyword for De Morgan negation.
+#[inline]
+pub const fn media_pointer_negated_css(ptr: MediaPointer) -> &'static str {
+    match ptr {
+        MediaPointer::Fine => "coarse",
+        MediaPointer::Coarse => "fine",
+    }
+}
+
+/// Writes a deterministic, injection-free CSS `@media` condition for `query` into `out`.
+pub fn write_media_css_condition(query: &MediaQuery, out: &mut String) -> bool {
+    if !query.is_valid() || query.is_empty() {
+        return false;
+    }
+    let mut first = true;
+    let mut push_sep = |buf: &mut String| {
+        if !first {
+            buf.push_str(" and ");
+        }
+        first = false;
+    };
+
+    if let Some(min) = query.min_width_opt() {
+        push_sep(out);
+        let _ = write!(out, "(min-width:{min}px)");
+    }
+    if let Some(max) = query.max_width_opt() {
+        push_sep(out);
+        let _ = write!(out, "(max-width:{max}.98px)");
+    }
+    if let Some(scheme) = query.color_scheme_opt() {
+        push_sep(out);
+        let _ = write!(out, "(prefers-color-scheme:{})", color_scheme_as_css(scheme));
+    }
+    if let Some(rm) = query.reduced_motion_opt() {
+        push_sep(out);
+        let kw = if rm { "reduce" } else { "no-preference" };
+        let _ = write!(out, "(prefers-reduced-motion:{kw})");
+    }
+    if let Some(ptr) = query.pointer_opt() {
+        push_sep(out);
+        let _ = write!(out, "(pointer:{})", media_pointer_as_css(ptr));
+    }
+    !first
+}
+
+/// Emits exact complementary CSS `@media` conditions that hide a node whenever `query` does
+/// NOT match (De Morgan negation: `!(A && B)` -> `[!A, !B]`).
+pub fn write_negated_media_css_conditions(query: &MediaQuery, out: &mut Vec<String>) {
+    if !query.is_valid() {
+        out.push("all".to_owned());
+        return;
+    }
+    if let Some(min) = query.min_width_opt()
+        && min > 0
+    {
+        out.push(format!("(max-width:{}.98px)", min - 1));
+    }
+    if let Some(max) = query.max_width_opt() {
+        out.push(format!("(min-width:{}px)", u32::from(max) + 1));
+    }
+    if let Some(scheme) = query.color_scheme_opt() {
+        out.push(format!(
+            "(prefers-color-scheme:{})",
+            color_scheme_negated_css(scheme)
+        ));
+    }
+    if let Some(rm) = query.reduced_motion_opt() {
+        let kw = if rm { "no-preference" } else { "reduce" };
+        out.push(format!("(prefers-reduced-motion:{kw})"));
+    }
+    if let Some(ptr) = query.pointer_opt() {
+        out.push(format!("(pointer:{})", media_pointer_negated_css(ptr)));
+    }
+}
 
 use crate::css::{
     canonical_f32, format_content_class, write_compact_color, write_compact_dim,
@@ -340,7 +445,7 @@ pub fn compile_node_media_rules(
 
     if let Some(query) = show_on {
         let mut negated = Vec::new();
-        query.write_negated_css_conditions(&mut negated);
+        write_negated_media_css_conditions(&query, &mut negated);
         const HIDE_DECL: &str = "display:none!important;";
         for condition in negated {
             let class_name = format_media_class(&condition, HIDE_DECL);
@@ -360,7 +465,7 @@ pub fn compile_node_media_rules(
             continue;
         }
         let mut condition = String::new();
-        if !rule.query.write_css_condition(&mut condition) {
+        if !write_media_css_condition(&rule.query, &mut condition) {
             continue;
         }
         let mut decls = String::new();

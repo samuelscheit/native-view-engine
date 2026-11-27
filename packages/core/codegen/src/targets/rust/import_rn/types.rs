@@ -1,6 +1,6 @@
 //! Typed binary `NveBinValue` helpers for `import_rn` Rust emitter.
 
-use std::fmt::Write as _;
+use crate::writer::CodeWriter;
 
 use crate::schema::export::{DefaultValue, EventSpec, ObjectField, ParamSpec, PropType};
 use crate::naming::{
@@ -8,27 +8,27 @@ use crate::naming::{
 };
 
 pub(super) fn emit_rust_bin_map_payload(
-    out: &mut String,
+    out: &mut CodeWriter,
     params: &[ParamSpec],
     indent: &str,
     respect_optional: bool,
 ) {
-    let _ = writeln!(out, "{indent}let mut entries: Vec<NveMapEntry> = Vec::with_capacity({});", params.len());
+    writeln!(out, "{indent}let mut entries: Vec<NveMapEntry> = Vec::with_capacity({});", params.len());
     for p in params {
         let pname = rust_ident(&p.name);
         let key = escape_c_like_string(&p.name);
         if respect_optional && p.optional {
             let val_expr = rust_nve_value_expr("v", &p.param_type, true);
-            let _ = writeln!(out, "{indent}if let Some(ref v) = {pname} {{");
-            let _ = writeln!(out, "{indent}    entries.push(NveMapEntry::new(\"{key}\", {val_expr}));");
-            let _ = writeln!(out, "{indent}}}");
+            writeln!(out, "{indent}if let Some(ref v) = {pname} {{");
+            writeln!(out, "{indent}    entries.push(NveMapEntry::new(\"{key}\", {val_expr}));");
+            writeln!(out, "{indent}}}");
         } else {
             let val_expr = rust_nve_value_expr(&pname, &p.param_type, false);
-            let _ = writeln!(out, "{indent}entries.push(NveMapEntry::new(\"{key}\", {val_expr}));");
+            writeln!(out, "{indent}entries.push(NveMapEntry::new(\"{key}\", {val_expr}));");
         }
     }
-    let _ = writeln!(out, "{indent}let map_val = NveValue::map(&entries);");
-    let _ = writeln!(
+    writeln!(out, "{indent}let map_val = NveValue::map(&entries);");
+    writeln!(
         out,
         "{indent}let payload = encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&map_val) }})?;"
     );
@@ -55,7 +55,7 @@ pub(super) fn rust_nve_value_expr(var: &str, ty: &PropType, is_ref: bool) -> Str
 }
 
 pub(super) fn emit_rust_aux_types(
-    out: &mut String,
+    out: &mut CodeWriter,
     comp_pascal: &str,
     prop_name: &str,
     prop_type: &PropType,
@@ -64,55 +64,55 @@ pub(super) fn emit_rust_aux_types(
     match prop_type {
         PropType::StringEnum { variants } => {
             let enum_name = format!("{comp_pascal}{}", to_pascal_case(prop_name));
-            let _ = writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]");
-            let _ = writeln!(out, "    pub enum {enum_name} {{");
+            writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]");
+            writeln!(out, "    pub enum {enum_name} {{");
             for v in variants {
-                let _ = writeln!(out, "        {},", to_pascal_case(v));
+                writeln!(out, "        {},", to_pascal_case(v));
             }
-            let _ = writeln!(out, "    }}");
-            let _ = writeln!(out);
-            let _ = writeln!(out, "    impl {enum_name} {{");
-            let _ = writeln!(out, "        pub const fn as_str(self) -> &'static str {{");
-            let _ = writeln!(out, "            match self {{");
+            writeln!(out, "    }}");
+            writeln!(out);
+            writeln!(out, "    impl {enum_name} {{");
+            writeln!(out, "        pub const fn as_str(self) -> &'static str {{");
+            writeln!(out, "            match self {{");
             for v in variants {
-                let _ = writeln!(
+                writeln!(
                     out,
                     "                Self::{} => \"{}\",",
                     to_pascal_case(v),
                     escape_c_like_string(v)
                 );
             }
-            let _ = writeln!(out, "            }}");
-            let _ = writeln!(out, "        }}");
-            let _ = writeln!(out, "    }}");
-            let _ = writeln!(out);
+            writeln!(out, "            }}");
+            writeln!(out, "        }}");
+            writeln!(out, "    }}");
+            writeln!(out);
             if let Some(first) = variants.first() {
                 let def_variant = match default_val {
                     Some(DefaultValue::String(s)) if variants.contains(s) => to_pascal_case(s),
                     _ => to_pascal_case(first),
                 };
-                let _ = writeln!(out, "    impl Default for {enum_name} {{");
-                let _ = writeln!(out, "        fn default() -> Self {{ Self::{def_variant} }}");
-                let _ = writeln!(out, "    }}");
-                let _ = writeln!(out);
+                writeln!(out, "    impl Default for {enum_name} {{");
+                writeln!(out, "        fn default() -> Self {{ Self::{def_variant} }}");
+                writeln!(out, "    }}");
+                writeln!(out);
             }
-            let _ = writeln!(out, "    impl From<{enum_name}> for NveValue {{");
-            let _ = writeln!(
+            writeln!(out, "    impl From<{enum_name}> for NveValue {{");
+            writeln!(
                 out,
                 "        fn from(v: {enum_name}) -> Self {{ NveValue::from_str(v.as_str()) }}"
             );
-            let _ = writeln!(out, "    }}");
-            let _ = writeln!(out);
+            writeln!(out, "    }}");
+            writeln!(out);
         }
         PropType::IntEnum { variants } => {
             let enum_name = format!("{comp_pascal}{}", to_pascal_case(prop_name));
-            let _ = writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]");
-            let _ = writeln!(out, "    pub enum {enum_name} {{");
+            writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]");
+            writeln!(out, "    pub enum {enum_name} {{");
             for v in variants {
-                let _ = writeln!(out, "        {} = {v},", int_enum_variant_pascal(*v));
+                writeln!(out, "        {} = {v},", int_enum_variant_pascal(*v));
             }
-            let _ = writeln!(out, "    }}");
-            let _ = writeln!(out);
+            writeln!(out, "    }}");
+            writeln!(out);
             if let Some(first) = variants.first() {
                 let def_v = match default_val {
                     Some(DefaultValue::Int(i)) if variants.contains(&(*i as i32)) => {
@@ -120,18 +120,18 @@ pub(super) fn emit_rust_aux_types(
                     }
                     _ => int_enum_variant_pascal(*first),
                 };
-                let _ = writeln!(out, "    impl Default for {enum_name} {{");
-                let _ = writeln!(out, "        fn default() -> Self {{ Self::{def_v} }}");
-                let _ = writeln!(out, "    }}");
-                let _ = writeln!(out);
+                writeln!(out, "    impl Default for {enum_name} {{");
+                writeln!(out, "        fn default() -> Self {{ Self::{def_v} }}");
+                writeln!(out, "    }}");
+                writeln!(out);
             }
-            let _ = writeln!(out, "    impl From<{enum_name}> for NveValue {{");
-            let _ = writeln!(
+            writeln!(out, "    impl From<{enum_name}> for NveValue {{");
+            writeln!(
                 out,
                 "        fn from(v: {enum_name}) -> Self {{ NveValue::i64(v as i64) }}"
             );
-            let _ = writeln!(out, "    }}");
-            let _ = writeln!(out);
+            writeln!(out, "    }}");
+            writeln!(out);
         }
         PropType::Array { item } => {
             emit_rust_aux_types(
@@ -150,7 +150,7 @@ pub(super) fn emit_rust_aux_types(
     }
 }
 
-pub(super) fn emit_rust_event_payload(out: &mut String, comp_pascal: &str, ev: &EventSpec) {
+pub(super) fn emit_rust_event_payload(out: &mut CodeWriter, comp_pascal: &str, ev: &EventSpec) {
     if ev.payload.is_empty() {
         return;
     }
@@ -159,24 +159,24 @@ pub(super) fn emit_rust_event_payload(out: &mut String, comp_pascal: &str, ev: &
     emit_rust_object_struct(out, &struct_name, &ev.payload);
 }
 
-pub(super) fn emit_rust_object_struct(out: &mut String, struct_name: &str, fields: &[ObjectField]) {
-    let _ = writeln!(out, "    #[derive(Debug, Clone, PartialEq, Default)]");
-    let _ = writeln!(out, "    pub struct {struct_name} {{");
+pub(super) fn emit_rust_object_struct(out: &mut CodeWriter, struct_name: &str, fields: &[ObjectField]) {
+    writeln!(out, "    #[derive(Debug, Clone, PartialEq, Default)]");
+    writeln!(out, "    pub struct {struct_name} {{");
     for f in fields {
         let fname = rust_ident(&f.name);
         let fty = rust_simple_type(&f.field_type);
         if f.optional || f.nullable {
-            let _ = writeln!(out, "        pub {fname}: Option<{fty}>,");
+            writeln!(out, "        pub {fname}: Option<{fty}>,");
         } else {
-            let _ = writeln!(out, "        pub {fname}: {fty},");
+            writeln!(out, "        pub {fname}: {fty},");
         }
     }
-    let _ = writeln!(out, "    }}");
-    let _ = writeln!(out);
+    writeln!(out, "    }}");
+    writeln!(out);
 
-    let _ = writeln!(out, "    impl {struct_name} {{");
-    let _ = writeln!(out, "        pub fn to_bin_bytes(&self) -> Result<Vec<u8>, DecodeError> {{");
-    let _ = writeln!(
+    writeln!(out, "    impl {struct_name} {{");
+    writeln!(out, "        pub fn to_bin_bytes(&self) -> Result<Vec<u8>, DecodeError> {{");
+    writeln!(
         out,
         "            let mut entries: Vec<NveMapEntry> = Vec::with_capacity({});",
         fields.len()
@@ -186,40 +186,40 @@ pub(super) fn emit_rust_object_struct(out: &mut String, struct_name: &str, field
         let key = escape_c_like_string(&f.name);
         if f.optional || f.nullable {
             let val_expr = rust_nve_value_expr("v", &f.field_type, true);
-            let _ = writeln!(out, "            if let Some(ref v) = self.{fname} {{");
-            let _ = writeln!(
+            writeln!(out, "            if let Some(ref v) = self.{fname} {{");
+            writeln!(
                 out,
                 "                entries.push(NveMapEntry::new(\"{key}\", {val_expr}));"
             );
-            let _ = writeln!(out, "            }}");
+            writeln!(out, "            }}");
         } else {
             let val_expr = rust_nve_value_expr(&format!("self.{fname}"), &f.field_type, false);
-            let _ = writeln!(
+            writeln!(
                 out,
                 "            entries.push(NveMapEntry::new(\"{key}\", {val_expr}));"
             );
         }
     }
-    let _ = writeln!(out, "            let map_val = NveValue::map(&entries);");
-    let _ = writeln!(
+    writeln!(out, "            let map_val = NveValue::map(&entries);");
+    writeln!(
         out,
         "            encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&map_val) }})"
     );
-    let _ = writeln!(out, "        }}");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "        pub fn decode_bin(data: &[u8]) -> Option<Self> {{");
-    let _ = writeln!(out, "            let view = BinValueView::parse(data).ok()?;");
-    let _ = writeln!(out, "            Some(Self {{");
+    writeln!(out, "        }}");
+    writeln!(out);
+    writeln!(out, "        pub fn decode_bin(data: &[u8]) -> Option<Self> {{");
+    writeln!(out, "            let view = BinValueView::parse(data).ok()?;");
+    writeln!(out, "            Some(Self {{");
     for f in fields {
         let fname = rust_ident(&f.name);
         let key = escape_c_like_string(&f.name);
         let expr = rust_decode_bin_field_expr(&key, f);
-        let _ = writeln!(out, "                {fname}: {expr},");
+        writeln!(out, "                {fname}: {expr},");
     }
-    let _ = writeln!(out, "            }})");
-    let _ = writeln!(out, "        }}");
-    let _ = writeln!(out, "    }}");
-    let _ = writeln!(out);
+    writeln!(out, "            }})");
+    writeln!(out, "        }}");
+    writeln!(out, "    }}");
+    writeln!(out);
 }
 
 pub(super) fn rust_decode_bin_field_expr(key: &str, f: &ObjectField) -> String {

@@ -6,7 +6,8 @@ Accessible, themeable Dioxus UI component library (`packages/framework/ui`, **Fr
 
 - `components::{VirtualList, VirtualListState, VirtualSlice, FenwickHeightTree, RowHeights, HeightsRevision, ScrollAlign}` and calendar/combobox/overlay widgets
 - `focus::{FocusScope, FocusScopeProvider, FocusTrap, use_focus_scope}`
-- `form::{FormState, FieldHandle, FieldState, ValidationToken}`, `theme`, `positioning`, `spatial_focus`, `history`
+- `form::{FormState, FieldHandle, FieldState, ValidationToken}`, `theme`, `positioning`, `history`
+- Optional `spatial-focus` feature (opt-in via `features = ["spatial-focus"]`): `spatial_focus` re-exporting `nve-tv`
 
 ```rust
 use nve_ui::{FenwickHeightTree, RowHeights};
@@ -18,13 +19,14 @@ assert_eq!(heights.len(), tree.len());
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`, `nve-dioxus`, `nve-engine`, `nve-i18n`, `nve-interop`, `dioxus-*`, and `wasm32`-gated `web-sys` (`criterion` is native-only dev-dep).
-- **Must NOT depend on**: `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
+- **Depends on**: `nve-abi`, `nve-dioxus`, `nve-engine`, `nve-i18n`, `nve-interop`, `nve-web-html`, `base64`, `dioxus-*`, `wasm32`-gated `web-sys`, and optional `nve-tv` behind the opt-in `spatial-focus` feature (`criterion` is a native-only dev-dependency).
+- **Must NOT depend on**: `skia-safe`, `serde_json`, or `hosts/*`.
 
 ## Verification
 
 ```bash
 cargo test -p nve-ui
+cargo test -p nve-ui --features spatial-focus --test spatial_focus_tests
 cargo test -p nve-ui --test virtual_list_perf_tests
 cargo bench -p nve-ui --bench virtual_list_bench
 ```

@@ -384,7 +384,6 @@ suite_cargo_deny() {
 
 suite_rust_clippy() {
   cd "$REPO_ROOT"
-  cargo clippy --locked --workspace --lib --bins -- -D warnings
   cargo clippy --locked --workspace --all-targets -- -D warnings
   if has_wasm_target; then
     cargo clippy --locked -p nve-web-shell --target wasm32-unknown-unknown -- -D warnings
@@ -409,7 +408,9 @@ suite_skia_desktop_shell() {
 
 suite_skia_gpu_check() {
   cd "$REPO_ROOT"
-  cargo check -p nve-backend-skia -p nve-skia-shell --features "$SKIA_GPU_FEATURE"
+  cargo clippy --locked -p nve-backend-skia --features skia -- -D warnings
+  cargo clippy --locked -p nve-backend-skia --features "$SKIA_GPU_FEATURE" -- -D warnings
+  cargo clippy --locked -p nve-skia-shell --features "$SKIA_GPU_FEATURE" -- -D warnings
 }
 
 suite_abi_codegen_parity() {
@@ -667,7 +668,7 @@ fi
 
 # 0d. Rust Clippy workspace lints
 if command -v cargo >/dev/null 2>&1; then
-  run_suite "Rust Clippy" suite_rust_clippy "--lib --bins + --all-targets + wasm32"
+  run_suite "Rust Clippy" suite_rust_clippy "--all-targets + wasm32"
 else
   skip_suite "Rust Clippy" "cargo not found"
 fi
@@ -698,7 +699,7 @@ case "$OS_NAME" in
   MINGW*|MSYS*|CYGWIN*) SKIA_GPU_FEATURE="skia-d3d" ;;
 esac
 if [ -n "$SKIA_GPU_FEATURE" ] && command -v cargo >/dev/null 2>&1; then
-  run_suite "Skia GPU feature check" suite_skia_gpu_check "cargo check -p nve-backend-skia --features $SKIA_GPU_FEATURE"
+  run_suite "Skia GPU feature check" suite_skia_gpu_check "clippy skia + $SKIA_GPU_FEATURE"
 elif [ -z "$SKIA_GPU_FEATURE" ]; then
   skip_suite "Skia GPU feature check" "no platform GPU feature mapped for $OS_NAME"
 else

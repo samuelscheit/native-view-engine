@@ -369,24 +369,30 @@ pub(super) fn emit_cpp_client_method(out: &mut CodeWriter, method: &HybridMethod
                 call_args.push(format!("_arg_{idx}"));
             }
             HybridType::Value => call_args.push(pname),
-            HybridType::Optional(inner) if inner.is_pod(spec) => {
-                let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
-                writeln!(out, "    NveHybridOpt{suffix} _arg_{idx}{{false, {{}}}};");
-                writeln!(out, "    if ({pname}.has_value()) {{");
-                writeln!(out, "      _arg_{idx}.is_some = true;");
-                match inner.as_ref() {
-                    HybridType::Enum(_) => {
-                        writeln!(out, "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});");
+            HybridType::Optional(inner) => {
+                if let Some(suffix) = inner.pod_opt_suffix_for(spec) {
+                    writeln!(out, "    NveHybridOpt{suffix} _arg_{idx}{{false, {{}}}};");
+                    writeln!(out, "    if ({pname}.has_value()) {{");
+                    writeln!(out, "      _arg_{idx}.is_some = true;");
+                    match inner.as_ref() {
+                        HybridType::Enum(_) => {
+                            writeln!(out, "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});");
+                        }
+                        HybridType::Struct(_) => {
+                            writeln!(out, "      _arg_{idx}.value = {pname}->to_abi();");
+                        }
+                        _ => {
+                            writeln!(out, "      _arg_{idx}.value = *{pname};");
+                        }
                     }
-                    HybridType::Struct(_) => {
-                        writeln!(out, "      _arg_{idx}.value = {pname}->to_abi();");
-                    }
-                    _ => {
-                        writeln!(out, "      _arg_{idx}.value = *{pname};");
-                    }
+                    writeln!(out, "    }}");
+                    call_args.push(format!("_arg_{idx}"));
+                } else {
+                    let wname = format!("_arg_w_{idx}");
+                    writeln!(out, "    BinWriter {wname};");
+                    emit_cpp_bin_write(out, "    ", &wname, &pname, &p.ty);
+                    call_args.push(format!("{wname}.slice()"));
                 }
-                writeln!(out, "    }}");
-                call_args.push(format!("_arg_{idx}"));
             }
             other => {
                 let wname = format!("_arg_w_{idx}");

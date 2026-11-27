@@ -42,17 +42,24 @@ pub trait NativeSwapchain {
     fn offscreen_surface_and_context_mut(&mut self) -> Option<(&mut Surface, &mut DirectContext)>;
 
     /// Resizes the native swapchain or offscreen GPU render target to `next`.
+    ///
+    /// Returns `Ok(true)` if underlying GPU swapchain/render-target resources were recreated
+    /// (incrementing `swapchain_recreations`), or `Ok(false)` for a scale-factor-only metadata update.
     fn resize_native(
         &mut self,
         prev: SwapchainExtent,
         next: SwapchainExtent,
-    ) -> Result<(), GpuSurfaceError>;
+    ) -> Result<bool, GpuSurfaceError>;
 
     /// Acquires the next drawable / swapchain image for rendering.
     ///
-    /// Returns `Ok(true)` if an internal dirty swapchain was recreated during acquire so the
-    /// caller increments `swapchain_recreations`.
-    fn begin_native_frame(&mut self, extent: SwapchainExtent) -> Result<bool, GpuSurfaceError>;
+    /// Increments `recreations` immediately if an internal dirty swapchain is recreated so the
+    /// counter is preserved even if a subsequent acquire step fails.
+    fn begin_native_frame(
+        &mut self,
+        extent: SwapchainExtent,
+        recreations: &mut u64,
+    ) -> Result<(), GpuSurfaceError>;
 
     /// Returns the active [`Surface`] to record Skia draw commands into.
     fn active_surface_mut(&mut self) -> Result<&mut Surface, GpuSurfaceError>;
@@ -236,9 +243,11 @@ impl<S: NativeSwapchain> GpuFramePresenter for GaneshPresenter<S> {
             return Ok(());
         }
 
-        self.inner.resize_native(self.extent, next)?;
+        let recreated = self.inner.resize_native(self.extent, next)?;
         self.extent = next;
-        self.swapchain_recreations += 1;
+        if recreated {
+            self.swapchain_recreations += 1;
+        }
         Ok(())
     }
 
@@ -254,9 +263,8 @@ impl<S: NativeSwapchain> GpuFramePresenter for GaneshPresenter<S> {
         self.record_us = 0;
         self.submit_us = 0;
 
-        if self.inner.begin_native_frame(self.extent)? {
-            self.swapchain_recreations += 1;
-        }
+        self.inner
+            .begin_native_frame(self.extent, &mut self.swapchain_recreations)?;
 
         self.acquire_us = t0.elapsed().as_micros() as u64;
         self.state = FrameLifecycleState::Begun;

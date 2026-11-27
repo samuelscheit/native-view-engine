@@ -11,11 +11,10 @@ use core::mem::{align_of, size_of};
 ///
 /// Use `Option<ColorScheme>` where "unspecified / follow system" is meaningful (`0` on the wire).
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ColorScheme {
-    #[default]
     Light = 1,
     Dark = 2,
 }
@@ -59,22 +58,6 @@ impl ColorScheme {
     #[inline]
     pub const fn is_light(self) -> bool {
         matches!(self, Self::Light)
-    }
-
-    #[inline]
-    pub const fn as_css(self) -> &'static str {
-        match self {
-            Self::Light => "light",
-            Self::Dark => "dark",
-        }
-    }
-
-    #[inline]
-    pub const fn negated_css(self) -> &'static str {
-        match self {
-            Self::Light => "dark",
-            Self::Dark => "light",
-        }
     }
 }
 

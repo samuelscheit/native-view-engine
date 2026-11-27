@@ -126,10 +126,10 @@ impl HybridFileSpec {
         out.push(s);
     }
 
-    /// Collects all distinct POD inner types wrapped in `HybridType::Optional(T)` across all
-    /// module and view method signatures (used to emit exact `NveHybridOpt<T>` C-ABI structs).
-    pub fn collect_pod_option_types(&self) -> Vec<HybridType> {
-        let mut by_suffix: BTreeMap<String, HybridType> = BTreeMap::new();
+    /// Collects all distinct `(suffix, inner)` POD types wrapped in `HybridType::Optional(T)`
+    /// across all module and view method signatures (used to emit exact `NveHybridOpt<T>` C-ABI structs).
+    pub fn collect_pod_option_types(&self) -> Vec<(std::borrow::Cow<'static, str>, HybridType)> {
+        let mut by_suffix: BTreeMap<std::borrow::Cow<'static, str>, HybridType> = BTreeMap::new();
         let mut record_ty = |ty: &HybridType| {
             collect_pod_opts_in_type(ty, self, &mut by_suffix);
         };
@@ -149,18 +149,18 @@ impl HybridFileSpec {
                 record_ty(&method.return_type);
             }
         }
-        by_suffix.into_values().collect()
+        by_suffix.into_iter().collect()
     }
 }
 
 fn collect_pod_opts_in_type(
     ty: &HybridType,
     file: &HybridFileSpec,
-    out: &mut BTreeMap<String, HybridType>,
+    out: &mut BTreeMap<std::borrow::Cow<'static, str>, HybridType>,
 ) {
     match ty {
-        HybridType::Optional(inner) if inner.is_pod(file) => {
-            if let Some(suffix) = inner.pod_opt_suffix() {
+        HybridType::Optional(inner) => {
+            if let Some(suffix) = inner.pod_opt_suffix_for(file) {
                 out.entry(suffix).or_insert_with(|| (**inner).clone());
             }
         }

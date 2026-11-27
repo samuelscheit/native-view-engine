@@ -127,10 +127,8 @@ pub(super) fn emit_rust_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec:
 }
 
 pub(super) fn emit_pod_option_structs(out: &mut CodeWriter, spec: &HybridFileSpec) {
-    let opts = spec.collect_pod_option_types();
-    for inner in &opts {
-        let suffix = inner.pod_opt_suffix().expect("validated POD optional has suffix");
-        let ffi_ty = rust_c_abi_pod_type(inner);
+    for (suffix, inner) in spec.collect_pod_option_types() {
+        let ffi_ty = rust_c_abi_pod_type(&inner);
         writeln!(out, "#[repr(C)]");
         writeln!(out, "#[derive(Debug, Clone, Copy)]");
         writeln!(out, "pub struct NveHybridOpt{suffix} {{");

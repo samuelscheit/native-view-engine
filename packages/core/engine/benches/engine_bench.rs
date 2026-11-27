@@ -23,9 +23,10 @@ mod native {
                 arena.reset();
                 let mut sum = 0.0f32;
                 for i in 0..1000u32 {
+                    let x = black_box(i as f32);
                     let r = arena.alloc_val(LayoutRect {
-                        x: i as f32,
-                        y: (i * 2) as f32,
+                        x,
+                        y: x * 2.0,
                         width: 100.0,
                         height: 32.0,
                     });

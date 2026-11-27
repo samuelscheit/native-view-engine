@@ -1,5 +1,5 @@
-//! Criterion micro-benchmarks for `nve-abi` (`NveSceneTable`, fixed-point CSS number codec, and
-//! `NveDirectEvent` / `EventRing` roundtrip).
+//! Criterion micro-benchmarks for `nve-abi` (`NveSceneTable`, fixed-point number codec, and
+//! `native_events_to_direct` conversion).
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
