@@ -25,12 +25,15 @@
 #include "nve/host/app_state.hpp"
 #include "nve/host/demo_counter_app.hpp"
 #include "nve/host/host_session.hpp"
+#include "nve/host/testing/recorder.hpp"
+#include "nve/host/testing/scratch_dir.hpp"
 
 namespace {
 
 namespace fs = std::filesystem;
 using namespace nve::host;
 using demo::CounterApp;
+using testing::ScratchDir;
 
 /// The counter app's count, read from its `NveDevApi` snapshot (4 LE bytes; -1 without one).
 int32_t count(HostSession& host) {
@@ -69,21 +72,6 @@ void write_bytes(const fs::path& p, std::string_view bytes) {
   out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
-/// A per-run scratch directory (removed on scope exit).
-struct ScratchDir {
-  fs::path path;
-  explicit ScratchDir(std::string_view tag)
-      : path(fs::temp_directory_path() /
-             (std::string(tag) + "_" +
-              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))) {
-    fs::create_directories(path);
-  }
-  ~ScratchDir() {
-    std::error_code ec;
-    fs::remove_all(path, ec);
-  }
-};
-
 void test_module_status_mapping() {
   auto host = HostSession::create(RuntimeSession::default_config());
   CHECK(host != nullptr);
@@ -97,7 +85,7 @@ void test_module_status_mapping() {
   CHECK(!host->load_module(NVE_TEST_NO_SURFACE_MODULE, &err, &msg) && err == ModuleError::MissingSurface);
   CHECK(!host->load_module(NVE_TEST_PARTIAL_SURFACE_MODULE, &err, &msg) && err == ModuleError::MissingSurface);
   CHECK(msg.find("NVE_IFACE_SURFACE") != std::string::npos);
-  CHECK(!host->has_app() && !host->has_module() && host->source_generation() == 0u);
+  CHECK(!host->has_app() && !host->has_module());
   // Rejected modules leave no staged copy behind.
   for (const char* m : {NVE_TEST_NO_ENTRY_MODULE, NVE_TEST_NO_SURFACE_MODULE, NVE_TEST_PARTIAL_SURFACE_MODULE}) {
     CHECK(staged_copies(fs::path(m).stem().string()) == 0u);
@@ -111,8 +99,8 @@ void test_hot_reload_of_a_rebuilt_module() {
   CHECK(host != nullptr);
   if (!host) return;
   const ScratchDir dir("nve_host_reload");
-  const std::string stem = dir.path.filename().string();  // unique per run
-  const fs::path app = dir.path / (stem + fs::path(NVE_TEST_COUNTER_MODULE).extension().string());
+  const std::string stem = dir.path().filename().string();  // unique per run
+  const fs::path app = dir.path() / (stem + fs::path(NVE_TEST_COUNTER_MODULE).extension().string());
   const auto build = [&](const char* fixture) { fs::copy_file(fixture, app, fs::copy_options::overwrite_existing); };
   ModuleError err = ModuleError::None;
   std::string msg;
@@ -125,9 +113,10 @@ void test_hot_reload_of_a_rebuilt_module() {
 
   // Rebuild the same path with new behaviour: the reload runs the NEW code, with the old state.
   build(NVE_TEST_COUNTER_DOUBLE_MODULE);
-  const uint64_t gen = host->source_generation();
+  const uint32_t epoch = testing::published_scene_epoch(*host);
   CHECK(host->reload_module(app.string(), &err, &msg) && err == ModuleError::None);
-  CHECK(host->source_generation() == gen + 1u && host->has_module());
+  const uint32_t reloaded = testing::published_scene_epoch(*host);
+  CHECK(reloaded != epoch && reloaded != UINT32_MAX && host->has_module());
   CHECK(count(*host) == 2);  // state carried into the new app before it went live
   CHECK(press(*host, CounterApp::kIncrement));
   CHECK(count(*host) == 4);  // a press counts 2: new code
@@ -136,8 +125,8 @@ void test_hot_reload_of_a_rebuilt_module() {
   // Failed reloads keep the running app, its state, and the generation.
   CHECK(!host->reload_module(NVE_TEST_PARTIAL_SURFACE_MODULE, &err, &msg) && err == ModuleError::MissingSurface);
   CHECK(!host->reload_module(NVE_TEST_NO_ENTRY_MODULE, &err, &msg) && err == ModuleError::MissingEntry);
-  CHECK(!host->reload_module((dir.path / "missing.so").string(), &err, &msg) && err == ModuleError::Open);
-  CHECK(host->source_generation() == gen + 1u && host->has_module());
+  CHECK(!host->reload_module((dir.path() / "missing.so").string(), &err, &msg) && err == ModuleError::Open);
+  CHECK(testing::published_scene_epoch(*host) == reloaded && host->has_module());
   CHECK(press(*host, CounterApp::kIncrement));
   CHECK(count(*host) == 6);
   CHECK(staged_copies(stem) == 1u);
@@ -232,7 +221,7 @@ void test_state_files() {
   CHECK(host != nullptr);
   if (!host) return;
   const ScratchDir dir("nve_host_state");
-  const fs::path path = dir.path / "nested" / "app.nvestate";  // the runtime creates `nested`
+  const fs::path path = dir.path() / "nested" / "app.nvestate";  // the runtime creates `nested`
   const std::string p = path.string();
   RuntimeSession& rt = host->runtime();
 
@@ -308,9 +297,14 @@ void test_state_paths() {
   CHECK(a != app_state::resolve_path("/other/My Cool App!.dylib"));  // identity-scoped
   CHECK(app_state::slug("") == "nve-app" && app_state::slug("???") == "nve-app");
   CHECK(!app_state::reset_requested());
+  // UTF-8 round-trips losslessly (Windows: no ANSI code page), and multi-byte stems slug safely.
+  const std::string umlaut = "/apps/Grüße-✓/Über App.dylib";
+  CHECK(app_state::utf8(app_state::from_utf8(umlaut)) == umlaut);
+  CHECK(app_state::slug(umlaut) == "ber-app");
+  CHECK(app_state::resolve_path(umlaut) != app_state::resolve_path("/apps/Grusse/Uber App.dylib"));
 
   const ScratchDir dir("nve_app_state_paths");
-  const std::string explicit_path = (dir.path / "s.nvestate").string();
+  const std::string explicit_path = (dir.path() / "s.nvestate").string();
   write_bytes(explicit_path, "keep");
   set_env("NVE_STATE_PATH", explicit_path.c_str());
   set_env("NVE_RESET_STATE", "yes");

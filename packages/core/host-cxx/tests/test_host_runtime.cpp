@@ -17,95 +17,13 @@
 #include "nve/host/host_session.hpp"
 #include "nve/host/nve2_writer.hpp"
 #include "nve/host/retained_tree.hpp"
+#include "nve/host/testing/recorder.hpp"
 
 namespace {
 
 using namespace nve::host;
-
-/// Records every adapter call; views are plain structs keyed by node id.
-struct Recorder {
-  struct View {
-    uint32_t id = 0u;
-    NodeKind kind = NodeKind::View;
-    std::string text;
-    TextStyle style;
-    NveLayoutRect local{};
-    uint32_t background = 0u;
-    uint32_t image_src = 0u;
-    std::string value;
-    std::string label;
-    std::string family;  // owned copy: the scene's text slab moves between frames
-    std::vector<uint32_t> children;
-    uint32_t attached_to = 0u;  // parent view id the adapter linked this view under (1 = root)
-    int updates = 0;
-  };
-  using Handle = View*;
-
-  std::map<uint32_t, View> views;
-  std::vector<uint32_t> root_children;
-  int creates = 0;
-  int destroys = 0;
-  int root_updates = 0;
-
-  uint32_t tag(const NodeData& n) { return static_cast<uint32_t>(n.kind); }
-  Handle create(const NodeData& n) {
-    ++creates;
-    View& v = views[n.id];
-    v = View{};
-    v.id = n.id;
-    return &v;
-  }
-  void update(Handle& h, const NodeData& n) {
-    h->kind = n.kind;
-    h->text = std::string(n.text);
-    h->style = n.text_style;
-    h->family = std::string(n.text_style.font_family);
-    h->style.font_family = {};  // do not keep a view into the scene
-    h->local = n.local;
-    h->background = n.visual.background;
-    h->image_src = n.image.src;
-    h->value = std::string(n.input.value);
-    h->label = std::string(n.a11y.label);
-    ++h->updates;
-  }
-  void update_root(const NodeData&) { ++root_updates; }
-  void destroy(uint32_t id, Handle&) {
-    ++destroys;
-    views.erase(id);
-  }
-  void set_children(const NodeData&, Handle* parent, std::span<Handle* const> kids) {
-    std::vector<uint32_t>& out = parent != nullptr ? (*parent)->children : root_children;
-    out.clear();
-    for (Handle* k : kids) {
-      out.push_back((*k)->id);
-      (*k)->attached_to = parent != nullptr ? (*parent)->id : 1u;
-    }
-  }
-};
-
-struct Harness {
-  std::unique_ptr<HostSession> host = HostSession::create(RuntimeSession::default_config(1u, 400.0f, 300.0f));
-  Nve2Writer w;
-  SceneTables tables;
-  RetainedTree<Recorder> tree;
-  Recorder rec;
-  uint64_t frame = 0u;
-
-  bool submit() {
-    const auto bytes = w.finish(++frame);
-    if (host->runtime().submit_nve2(bytes) != NVE_RUNTIME_OK) {
-      fprintf(stderr, "submit_nve2: %s\n", host->last_error().c_str());
-      return false;
-    }
-    (void)host->pump();
-    return true;
-  }
-  size_t sync() {
-    auto guard = host->runtime().acquire_scene();
-    if (!guard) return 0u;
-    return tree.sync(guard->reader(), tables, rec, host->source_generation());
-  }
-};
+using testing::Recorder;
+using Harness = testing::TreeHarness<Recorder>;
 
 void test_writer_round_trip_and_retained_tree() {
   Harness h;
@@ -312,17 +230,17 @@ void test_source_change_runs_a_full_pass() {
   CHECK(h.submit());
   CHECK(h.sync() == 4u);  // root + 3 views
   CHECK(h.rec.views.count(40u) == 1u && h.rec.views[3].text == "old");
-  const uint64_t before = h.host->source_generation();
+  const uint32_t before = testing::published_scene_epoch(*h.host);
   CHECK(h.host->attach(&CounterApp::get_interface));
-  CHECK(h.host->source_generation() == before + 1u);
-  (void)h.host->pump();
+  const uint32_t epoch = testing::published_scene_epoch(*h.host);
+  CHECK(epoch != before && epoch != UINT32_MAX);
   CHECK(h.sync() > 0u);
   CHECK(h.rec.views.count(40u) == 0u);  // only the old app had node 40
   CHECK(h.rec.views[CounterApp::kTitle].text == "NVE native host");
   CHECK(h.rec.views[CounterApp::kTitle].attached_to == CounterApp::kColumn);  // relinked
-  // A failed attach leaves the running app (and the generation) untouched.
+  // A failed attach leaves the running app (and its scene) untouched.
   CHECK(!h.host->attach(nullptr));
-  CHECK(h.host->source_generation() == before + 1u && h.host->has_app());
+  CHECK(testing::published_scene_epoch(*h.host) == epoch && h.host->has_app());
 }
 
 /// A dense table (`nve.visual`) stores a zeroed row at every index: nodes without the table must
@@ -362,8 +280,18 @@ void test_read_node_seals_floats() {
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_OPACITY, nan);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_WIDTH, -inf);
   w.set_f32(2u, NVE_TABLE_VISUAL_DESC, NVE_TABLE_VISUAL_BORDER_RADIUS, inf);
+  constexpr uint32_t kTypoSet =
+      NVE_TYPOGRAPHY_SET_FONT_SIZE | NVE_TYPOGRAPHY_SET_LETTER_SPACING | NVE_TYPOGRAPHY_SET_LINE_HEIGHT;
+  const auto points = [](float v) { return std::bit_cast<uint32_t>(v) & ~uint32_t{NVE_LENGTH_TAG_MASK}; };
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, kTypoSet);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, nan);
   w.set_f32(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, inf);
+  w.set(2u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, points(nan));
+  // Control: valid values on the same fields are taken.
+  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_SET, kTypoSet);
+  w.set_f32(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_FONT_SIZE, 30.0f);
+  w.set_f32(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LETTER_SPACING, 2.0f);
+  w.set(3u, NVE_TABLE_TYPOGRAPHY_DESC, NVE_TABLE_TYPOGRAPHY_LINE_HEIGHT, points(40.0f));
   w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_X, inf);
   w.set_f32(2u, NVE_TABLE_SCROLL_DESC, NVE_TABLE_SCROLL_REQUESTED_SCROLL_Y, 12.0f);
   w.set_f32(2u, NVE_TABLE_ACCESSIBILITY_DESC, NVE_TABLE_ACCESSIBILITY_VALUE_NOW, -inf);
@@ -377,14 +305,24 @@ void test_read_node_seals_floats() {
   TextStyle parent;
   parent.font_size = 18.0f;
   parent.letter_spacing = 0.5f;
+  parent.line_height = LengthValue{NVE_LENGTH_POINTS, 22.0f};
   const NodeData n = read_node(guard->reader(), t, 2u, inherit_text_style(parent, t, guard->reader(), 2u));
   CHECK(n.visual.opacity == 1.0f && n.visual.border_width == 0.0f && n.visual.border_radius == 0.0f);
   CHECK(n.text_style.font_size == 18.0f && n.text_style.letter_spacing == 0.5f);
+  CHECK(n.text_style.line_height == parent.line_height);
   CHECK(n.text_style == n.text_style);
   CHECK(std::isnan(n.scroll.requested_x) && n.scroll.requested_y == 12.0f);
   CHECK(std::isnan(n.a11y.value_now));
-  CHECK(std::isfinite(n.rect.x) && std::isfinite(n.local.y) && n.rect.width >= 0.0f);
-  CHECK(read_node(guard->reader(), t, 3u, TextStyle{}).visual.opacity == 1.0f);  // clamped
+  const NodeData ok = read_node(guard->reader(), t, 3u, inherit_text_style(parent, t, guard->reader(), 3u));
+  CHECK(ok.visual.opacity == 1.0f);  // 7 clamped
+  CHECK(ok.text_style.font_size == 30.0f && ok.text_style.letter_spacing == 2.0f);
+  CHECK(ok.text_style.line_height == (LengthValue{NVE_LENGTH_POINTS, 40.0f}));
+
+  // Box-shadow resources are sealed the same way.
+  const BoxShadow bad[] = {{nan, inf, -inf, -2.0f, 7u, false}};
+  const auto shadows = decode_box_shadows(encode_box_shadows(bad));
+  CHECK(shadows && shadows->size() == 1u);
+  CHECK((*shadows)[0] == (BoxShadow{0.0f, 0.0f, 0.0f, -2.0f, 7u, false}));
 }
 
 /// A text node with children (Dioxus `text { "a" {b} }`: empty wrapper + run leaves) is a
@@ -409,13 +347,23 @@ void test_text_wrappers_are_containers() {
     const NodeData run = read_node(guard->reader(), t, 3u, TextStyle{});
     CHECK(run.kind == NodeKind::Text && run.text == "Count: " && accessible_label(run) == "Count: ");
   }
+  const auto node2 = [&]() -> std::pair<NodeKind, std::string> {
+    auto g = h.host->runtime().acquire_scene();  // released before the next submit
+    CHECK(g.has_value());
+    SceneTables t;
+    t.bind(g->reader());
+    const NodeData n = read_node(g->reader(), t, 2u, TextStyle{});
+    return {n.kind, std::string(n.text)};
+  };
   w.set_children(2u, std::vector<uint32_t>{});
   CHECK(h.submit());
-  auto guard = h.host->runtime().acquire_scene();
-  CHECK(guard.has_value());
-  SceneTables t;
-  t.bind(guard->reader());
-  CHECK(read_node(guard->reader(), t, 2u, TextStyle{}).kind == NodeKind::Text);
+  CHECK(node2().first == NodeKind::Text);
+  // Own text plus children (NVE2 / C++ apps): stays text, its text is not dropped.
+  CHECK(w.set_str(2u, NVE_TABLE_TEXT_DESC, NVE_TABLE_TEXT_TEXT, "own"));
+  w.create(5u);
+  w.set_children(2u, std::vector<uint32_t>{5u});
+  CHECK(h.submit());
+  CHECK(node2() == std::make_pair(NodeKind::Text, std::string("own")));
 }
 
 /// `ControlledText`: first publish writes, edit echoes are absorbed, app rewrites win, host

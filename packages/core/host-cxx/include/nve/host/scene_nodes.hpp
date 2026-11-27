@@ -25,9 +25,10 @@
 
 namespace nve::host {
 
-/// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`. A text
-/// node with children is a `View`: a Dioxus `text { "Count: " {n} }` publishes an empty wrapper
-/// whose runs are child text leaves, so only leaves are realized as text (labels hold no children).
+/// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`. An
+/// empty text node with children is a `View`: a Dioxus `text { "Count: " {n} }` publishes an
+/// empty wrapper whose runs are child text leaves, so only leaves are realized as text (labels
+/// hold no children). A text node with its own text stays `Text`.
 enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 
 /// Subscription bit of `kind` in `nve.interaction.event_mask` (Rust `EventMask::of`; the three
@@ -283,9 +284,10 @@ struct SceneTables {
   return s;
 }
 
-/// Decodes live node `index`. `text_style` is its resolved (inherited) style.
-[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
-                                        const TextStyle& text_style) noexcept {
+/// Decodes only the identity and geometry of live node `index`: `id`, `index`, `parent`, `kind`,
+/// `rect`, `local`, `children`. Every other field keeps its default.
+[[nodiscard]] inline NodeData read_geometry(const RuntimeSceneReader& scene, const SceneTables& t,
+                                            uint32_t index) noexcept {
   NodeData n;
   const NveNodeRow* row = scene.row(index);
   if (row == nullptr) return n;
@@ -297,11 +299,23 @@ struct SceneTables {
   n.local = n.rect;
   if (const NveLayoutRect* p = n.parent != 0u ? scene.rect(node_index(n.parent)) : nullptr) {
     const NveLayoutRect parent = sealed_rect(*p);
-    n.local.x -= parent.x;
-    n.local.y -= parent.y;
+    n.local.x = finite_or(n.local.x - parent.x, 0.0f);  // FLT_MAX - -FLT_MAX overflows
+    n.local.y = finite_or(n.local.y - parent.y, 0.0f);
   }
   n.children = scene.node_children(index).value_or(std::span<const uint32_t>());
-  if (n.kind == NodeKind::Text && !n.children.empty()) n.kind = NodeKind::View;
+  // An empty text wrapper of run leaves realizes as a container (see `NodeKind`).
+  if (n.kind == NodeKind::Text && !n.children.empty() &&
+      t.text.at(index).str(NVE_TABLE_TEXT_TEXT, scene).empty()) {
+    n.kind = NodeKind::View;
+  }
+  return n;
+}
+
+/// Decodes live node `index`. `text_style` is its resolved (inherited) style.
+[[nodiscard]] inline NodeData read_node(const RuntimeSceneReader& scene, const SceneTables& t, uint32_t index,
+                                        const TextStyle& text_style) noexcept {
+  NodeData n = read_geometry(scene, t, index);
+  if (n.index != index) return n;
   n.text_style = text_style;
 
   const RowRef v = t.visual.at(index);

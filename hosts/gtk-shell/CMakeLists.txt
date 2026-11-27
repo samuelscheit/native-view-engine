@@ -48,6 +48,7 @@ add_executable(nve_gtk_shell_test
   tests/gtk_shell_test.cpp
   tests/gtk_shell_a11y_media_test.cpp
   tests/gtk_shell_canvas_pair_test.cpp
+  tests/gtk_shell_reconcile_test.cpp
   tests/gtk_window_manager_test.cpp
 )
 target_compile_options(nve_gtk_shell_test PRIVATE ${_nve_gtk_warnings})

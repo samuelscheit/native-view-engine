@@ -53,6 +53,7 @@ public protocol RuntimeSceneViewABI {
     var scroll_count: UInt32 { get }
     var scene_epoch: UInt32 { get }
     var dirty_resource_count: UInt32 { get }
+    var moved_count: UInt32 { get }
     var rows: UnsafePointer<Row>! { get }
     var rects: UnsafePointer<Rect>! { get }
     var text_slab: UnsafePointer<UInt8>! { get }
@@ -62,6 +63,7 @@ public protocol RuntimeSceneViewABI {
     var tables: UnsafePointer<Table>! { get }
     var scroll_offsets: UnsafePointer<Scroll>! { get }
     var dirty_resources: UnsafePointer<UInt32>! { get }
+    var moved_indices: UnsafePointer<UInt32>! { get }
 }
 
 public enum SceneError: Error, Equatable, Sendable {
@@ -130,8 +132,11 @@ public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
     public let textSlab: UnsafeBufferPointer<UInt8>
     /// Raw child `NodeId`s (`NveNodeRow.child_off ..< child_off + child_len`).
     public let childrenSlab: UnsafeBufferPointer<UInt32>
-    /// Slot indices created or modified on `frameId`.
+    /// Slot indices created, or whose row, tables or children changed on `frameId`.
     public let dirtyIndices: UnsafeBufferPointer<UInt32>
+    /// Live slot indices not in `dirtyIndices` whose geometry alone changed on `frameId` (absolute
+    /// rect, or origin relative to the parent's): re-apply only position / size.
+    public let movedIndices: UnsafeBufferPointer<UInt32>
     /// Raw `NodeId`s removed on `frameId`.
     public let removedIds: UnsafeBufferPointer<UInt32>
     public let tables: UnsafeBufferPointer<View.Table>
@@ -156,6 +161,7 @@ public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
         let text = try buffer(v.text_slab, v.text_slab_len)
         let children = try buffer(v.children_slab, v.children_slab_len)
         let dirty = try buffer(v.dirty_indices, v.dirty_count)
+        let moved = try buffer(v.moved_indices, v.moved_count)
         let removed = try buffer(v.removed_ids, v.removed_count)
         let tables = try buffer(v.tables, v.table_count)
         let scrolls = try buffer(v.scroll_offsets, v.scroll_count)
@@ -166,7 +172,7 @@ public struct RuntimeSceneReader<View: RuntimeSceneViewABI> {
         }
         return Self(
             frameId: v.frame_id, sceneEpoch: v.scene_epoch, rows: rows, rects: rects, textSlab: text,
-            childrenSlab: children, dirtyIndices: dirty, removedIds: removed, tables: tables,
+            childrenSlab: children, dirtyIndices: dirty, movedIndices: moved, removedIds: removed, tables: tables,
             scrollOffsets: scrolls, dirtyResources: dirtyResources)
     }
 

@@ -68,6 +68,15 @@ pub struct Text {
     pub color: Rgba,
 }
 
+/// A sparse table published to the scene (`NveTableView` carries its row index).
+#[allow(dead_code)]
+#[derive(crate::NveTable)]
+#[nve_table(name = "test.badge", storage = "sparse", flags = "publish")]
+pub struct Badge {
+    #[effect(paint)]
+    pub color: Rgba,
+}
+
 fn commit(store: &mut NodeStore) -> ChangeSet {
     let mut c = ChangeSet::default();
     store.tx().commit_into(&mut c);
@@ -445,9 +454,89 @@ fn sparse_swap_remove_keeps_rows_consistent() {
             assert_eq!(r.color(), Rgba(i as u32));
         }
     }
-    let (_, owners, rows) = s.table_storage(Text::slot()).unwrap();
-    assert_eq!(rows, 400);
-    assert_eq!(owners.len(), 400);
+    let t = s.table_storage(Text::slot()).unwrap();
+    assert_eq!(t.row_count, 400);
+    assert_eq!(t.owners.len(), 400);
+}
+
+/// Resolves node slot `index` through a published sparse `NveTableView` exactly as a host does.
+fn published_row_of(v: &nve_abi::table::NveTableView, index: u32) -> Option<u32> {
+    use nve_abi::table::{NVE_ROW_INDEX_PAGE_BITS, NVE_ROW_INDEX_PAGE_LEN};
+    let slot = (index >> NVE_ROW_INDEX_PAGE_BITS) as usize;
+    if slot >= v.row_index_dir_len as usize {
+        return None;
+    }
+    // SAFETY: the view borrows the live store; `row_index_dir_len` / `row_index_page_count` bound both reads.
+    let page = unsafe { *v.row_index_dir.add(slot) };
+    if page >= v.row_index_page_count {
+        return None;
+    }
+    let at = page as usize * NVE_ROW_INDEX_PAGE_LEN as usize + (index & (NVE_ROW_INDEX_PAGE_LEN - 1)) as usize;
+    // SAFETY: `at < row_index_page_count * NVE_ROW_INDEX_PAGE_LEN`.
+    let row_plus_one = unsafe { *v.row_index_pages.add(at) };
+    (row_plus_one != 0 && row_plus_one <= v.row_count).then(|| row_plus_one - 1)
+}
+
+#[test]
+fn published_row_index_tracks_swap_remove_compaction_and_slot_reuse() {
+    let mut s = NodeStore::new();
+    let mut live: Vec<NodeId> = Vec::new();
+    let mut seed = 0x9E37_79B9_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let (mut views, mut dirty) = (Vec::new(), Vec::new());
+    for round in 0..60 {
+        let mut tx = s.tx();
+        for _ in 0..40 {
+            match next() % 5 {
+                // Create (reusing freed slots) with a row, or attach a row to a live node.
+                0 | 1 => {
+                    let n = tx.create();
+                    tx.edit::<Badge>(n).color(Rgba(round));
+                    live.push(n);
+                }
+                2 if !live.is_empty() => {
+                    let n = live[next() as usize % live.len()];
+                    tx.edit::<Badge>(n).color(Rgba(round));
+                }
+                // Detach a row from the middle (swap-remove moves the last row into its place).
+                3 if !live.is_empty() => tx.detach::<Badge>(live[next() as usize % live.len()]),
+                // Remove a node (its slot is reused by a later create).
+                4 if !live.is_empty() => {
+                    let n = live.swap_remove(next() as usize % live.len());
+                    tx.remove(n);
+                }
+                _ => {}
+            }
+        }
+        let changes = commit_tx(tx);
+        s.publish_table_views(&changes, &mut views, &mut dirty);
+        let v = views
+            .iter()
+            .find(|v| v.slot == Badge::slot().0 as u32)
+            .expect("Badge published");
+        assert!(!v.owners.is_null() || v.row_count == 0);
+        // SAFETY: `owners` spans `row_count` raw ids of the live store.
+        let owners = unsafe { core::slice::from_raw_parts(v.owners, v.row_count as usize) };
+        for index in 0..(s.capacity() as u32 + 2 * nve_abi::table::NVE_ROW_INDEX_PAGE_LEN) {
+            let expected = owners
+                .iter()
+                .position(|&raw| NodeId(raw).node_index().0 == index)
+                .map(|r| r as u32);
+            assert_eq!(published_row_of(v, index), expected, "round {round}, node slot {index}");
+        }
+        for &n in &live {
+            assert_eq!(
+                published_row_of(v, n.index() as u32).map(|r| owners[r as usize]),
+                s.has::<Badge>(n).then_some(n.raw()),
+                "round {round}: {n:?}"
+            );
+        }
+    }
 }
 
 #[test]

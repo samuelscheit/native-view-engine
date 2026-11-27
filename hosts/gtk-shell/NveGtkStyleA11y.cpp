@@ -311,7 +311,11 @@ void unparent_children(GtkWidget* container) {
   while (GtkWidget* child = gtk_widget_get_first_child(container)) gtk_fixed_remove(GTK_FIXED(container), child);
 }
 
-int px(float v) noexcept { return std::isfinite(v) && v > 0.0f ? static_cast<int>(std::lround(v)) : 0; }
+int px(float v) noexcept {
+  // GTK sizes are `int`: clamp before rounding (`lround` of a huge finite float is UB-adjacent).
+  constexpr float kMax = 1.0e7f;
+  return std::isfinite(v) && v > 0.0f ? static_cast<int>(std::lround(std::min(v, kMax))) : 0;
+}
 
 }  // namespace gtk_internal
 

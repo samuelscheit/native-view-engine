@@ -384,6 +384,9 @@ const SCENE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_META_FLAG_ACCESSIBILITY_HIDDEN", NVE_META_FLAG_ACCESSIBILITY_HIDDEN as u64, true, None),
     abi_const("NVE_META_RESIZE_MODE_SHIFT", NVE_META_RESIZE_MODE_SHIFT as u64, false, None),
     abi_const("NVE_META_RESIZE_MODE_MASK", NVE_META_RESIZE_MODE_MASK as u64, true, None),
+    abi_const("NVE_ROW_INDEX_PAGE_BITS", crate::table::NVE_ROW_INDEX_PAGE_BITS as u64, false, Some("`log2` of the node indices one `NveTableView::row_index_pages` page covers.")),
+    abi_const("NVE_ROW_INDEX_PAGE_LEN", crate::table::NVE_ROW_INDEX_PAGE_LEN as u64, false, Some("Entries per `NveTableView::row_index_pages` page.")),
+    abi_const("NVE_ROW_INDEX_NO_PAGE", crate::table::NVE_ROW_INDEX_NO_PAGE as u64, true, Some("`NveTableView::row_index_dir` entry of a node-index range without a page.")),
 ];
 
 const SCENE_RECORDS: &[AbiRecordDescriptor] = &[

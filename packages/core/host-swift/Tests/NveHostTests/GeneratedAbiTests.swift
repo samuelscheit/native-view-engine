@@ -19,6 +19,8 @@ final class GeneratedAbiTests: XCTestCase {
         }
         XCTAssertEqual(NveTables.Layout.key, Key64(NVE_TABLE_LAYOUT_KEY))
         XCTAssertEqual(NveTables.Layout.defaults.count, NveTables.Layout.words)
+        XCTAssertEqual(rowIndexPageLen, Int(NVE_ROW_INDEX_PAGE_LEN))
+        XCTAssertEqual(rowIndexPageLen, 1 << Int(NVE_ROW_INDEX_PAGE_BITS))
     }
 
     func testGeneratedStrFieldReadsItsSpan() throws {
