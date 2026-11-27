@@ -10,7 +10,7 @@ pub const VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX: f32 = 80.0;
 /// Compact 8-byte `#[repr(C)]` layout (zero padding, zero serialization) shared across
 /// `nve-interop::traits::TraitEnvironment`, `nve-backend-web`, and `nve-ui`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, nve_codec::NveCodec)]
 pub struct KeyboardInsets {
     /// Occluded vertical height at the bottom of the viewport in logical points/dp (`>= 0.0`).
     pub height: f32,

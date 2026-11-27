@@ -4,7 +4,7 @@
 use nve_abi::NodeId;
 use nve_components::interaction::{CursorKind, FocusModality, InteractionState, InteractionTracker};
 use nve_engine::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 
 use crate::SkiaBackend;
 
@@ -24,11 +24,11 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.layout_tree
             .interaction_tracker()
             .active_cursor_node()
-            .map(|id| self.layout_tree.effective_cursor(store, StoreNodeId(id)))
+            .map(|id| self.layout_tree.effective_cursor(store, id))
             .unwrap_or(CursorKind::Default)
     }
 
-    pub fn effective_cursor(&self, store: &NodeStore, node_id: StoreNodeId) -> CursorKind {
+    pub fn effective_cursor(&self, store: &NodeStore, node_id: NodeId) -> CursorKind {
         self.layout_tree.effective_cursor(store, node_id)
     }
 

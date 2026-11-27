@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use common::{find_in_store, live_node_ids, register_studio_tables, write_ppm, MultiBackendHarness};
 use nve_abi::{
-    ColorRgba, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveValue,
+    ColorRgba, FrameId, NveDirectEvent, NveGestureDisposition, NveMapEntry, NvePropsRef,
+    NveSizeConstraints, NveValue, SurfaceId,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::Visual;
@@ -213,7 +213,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     state.scrub_redo();
     assert_eq!(state.cursor, MAX_HISTORY - 1);
 
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
     let measured = app.measure(NveSizeConstraints {
         min_w: 320.0,
         max_w: 960.0,
@@ -236,7 +236,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     // SAFETY: `direct_entries` outlives `direct_props`.
     let direct_props = unsafe { NvePropsRef::from_slice(&direct_entries) };
     assert!(app.set_props(direct_props));
-    let _ = app.render(1);
+    let _ = app.render(FrameId(1));
     let patch = HotPatchMsg::TemplatePatch {
         generation: 1,
         template_id: "studio".into(),
@@ -247,7 +247,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         text_replacements: vec![],
     };
     assert!(app.apply_hot_patch(&patch));
-    let _ = app.render(2);
+    let _ = app.render(FrameId(2));
 
     let saved = app.snapshot_state().to_vec();
     assert!(!saved.is_empty());
@@ -256,7 +256,7 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
         "snapshot_state must emit binary NWS1 binary format"
     );
 
-    let mut restored_app = StudioWorkspaceModule::create(1);
+    let mut restored_app = StudioWorkspaceModule::create(SurfaceId(1));
     restored_app.restore_state(b"{not-valid-binary");
     assert_eq!(
         restored_app.state_snapshot().current.studio.accent,
@@ -283,10 +283,10 @@ fn history_is_bounded_and_nve_app_snapshot_restore_roundtrips_cleanly() {
     );
 
     register_studio_tables();
-    let frame = restored_app.render(3);
+    let frame = restored_app.render(FrameId(3));
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 960.0,
             height: 640.0,
@@ -338,11 +338,11 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     };
     register_studio_tables();
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, vp);
+    backend.set_viewport(SurfaceId(1), vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
 
-    let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
-    let f1 = inst.render(1);
+    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId(1), 1, None).expect("load gen 1");
+    let f1 = inst.render(FrameId(1));
     assert!(!f1.is_empty());
     host.submit_nve2_frame(f1).unwrap();
     assert!(host.backend().render_ascii_tree(host.store()).contains("AETHER"));
@@ -356,14 +356,14 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
-            1,
+            SurfaceId(1),
             nid,
             fid * 16_000,
             rect.x + rect.width * 0.5,
             rect.y + rect.height * 0.5,
         )];
         assert!(inst.dispatch_events(&ev));
-        let frame = inst.render(fid);
+        let frame = inst.render(FrameId(fid));
         host.submit_nve2_frame(frame).unwrap();
     };
 
@@ -379,10 +379,10 @@ fn tier2_cdylib_hotswap_loads_via_nve_get_interface_and_preserves_full_state() {
     assert_eq!(inst.generation(), 2);
 
     let mut backend2 = HeadlessBackend::new();
-    backend2.set_viewport(1, vp);
+    backend2.set_viewport(SurfaceId(1), vp);
     let mut host2 =
         StoreWireReplica::new(backend2, nve_components::tables::core_realization_order());
-    let f5 = inst.render(5);
+    let f5 = inst.render(FrameId(5));
     host2.submit_nve2_frame(f5).unwrap();
     let tree2 = host2.backend().render_ascii_tree(host2.store());
     assert!(tree2.contains("AET-105"), "lost new task after reload:\n{tree2}");

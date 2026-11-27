@@ -90,7 +90,9 @@ fn core_and_scene_descriptors_reflect_real_rustc_layouts() {
     let core = core_abi_descriptor();
     assert_eq!(core.namespace, Some("NveCoreAbi"));
     assert_eq!(core.consts.len(), 13);
-    assert_eq!(core.aliases.len(), 4);
+    assert_eq!(core.aliases.len(), 12);
+    assert_eq!(core.aliases[0].name, "NveNodeId");
+    assert_eq!(core.aliases[1].name, "NveSurfaceId");
     assert_eq!(core.enums.len(), 4);
     assert_eq!(core.records.len(), 17);
     assert_eq!(core.modules.len(), 5);

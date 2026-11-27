@@ -1,18 +1,18 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
 use nve_bench::create_bench_dioxus_surface;
 use nve_components::tables::Interaction;
 use nve_engine::HotPatchMsg;
 use nve_store::NodeStore;
 
-fn find_pressable_node_id(store: &NodeStore) -> u32 {
+fn find_pressable_node_id(store: &NodeStore) -> NodeId {
     store
         .live_nodes()
         .find_map(|id| {
             let mask = store.try_row::<Interaction>(id)?.event_mask();
-            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id.raw())
+            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id)
         })
         .expect("pressable node in BenchCounterApp")
 }
@@ -23,24 +23,24 @@ fn bench_dioxus(c: &mut Criterion) {
     group.bench_function("initial_frame_render", |b| {
         b.iter_batched(
             create_bench_dioxus_surface,
-            |mut surface| black_box(surface.render_nve2_slice(1).len()),
+            |mut surface| black_box(surface.render_nve2_slice(FrameId(1)).len()),
             BatchSize::SmallInput,
         );
     });
 
     // Incremental state update diff (Press event -> signal increment -> VDOM diff + NVE2 encode)
     let mut surface = create_bench_dioxus_surface();
-    let _ = surface.render_nve2_slice(1);
+    let _ = surface.render_nve2_slice(FrameId(1));
     let btn_id = find_pressable_node_id(surface.store());
-    let mut frame_id = 1u64;
+    let mut frame_id = FrameId(1);
 
     group.bench_function("incremental_state_update_diff", |b| {
         b.iter(|| {
-            frame_id += 1;
+            frame_id = frame_id.next();
             let handled = surface.dispatch_events(&[NativeEvent {
-                surface_id: 1,
+                surface_id: SurfaceId::ROOT,
                 node_id: btn_id,
-                timestamp_us: frame_id * 16_000,
+                timestamp_us: frame_id.raw() * 16_000,
                 kind: NativeEventKind::Press,
                 payload: EventPayload::Point { x: 40.0, y: 20.0 },
             }]);
@@ -51,14 +51,14 @@ fn bench_dioxus(c: &mut Criterion) {
 
     // Tier-1 hot patch application (queue TemplatePatch + render frame applying attr/text patches)
     let mut patch_surface = create_bench_dioxus_surface();
-    let _ = patch_surface.render_nve2_slice(1);
+    let _ = patch_surface.render_nve2_slice(FrameId(1));
     let mut generation = 1u64;
-    let mut pframe = 1u64;
+    let mut pframe = FrameId(1);
 
     group.bench_function("tier1_hot_patch_apply", |b| {
         b.iter(|| {
             generation += 1;
-            pframe += 1;
+            pframe = pframe.next();
             let opacity = if generation.is_multiple_of(2) {
                 "0.85"
             } else {

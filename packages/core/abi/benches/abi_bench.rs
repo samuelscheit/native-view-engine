@@ -11,22 +11,22 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use nve_abi::num::{parse_f32, write_f32};
     use nve_abi::{
-        native_events_to_direct, EventPayload, NativeEvent, NativeEventKind, NveSceneTable,
-        SceneNodeInput, NVE_PRIMARY_SLOT_NONE,
+        native_events_to_direct, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId,
+        NveSceneTable, PrimarySlot, SceneNodeInput, SurfaceId,
     };
 
     fn bench_scene_table(c: &mut Criterion) {
         let mut table = NveSceneTable::new();
-        let mut frame = 0u64;
+        let mut frame = FrameId::ZERO;
         c.bench_function("scene_table_upsert_256_nodes", |b| {
             b.iter(|| {
-                frame = frame.wrapping_add(1);
+                frame = frame.next();
                 table.begin_frame(frame);
                 for id in 1..=256u32 {
                     table
                         .upsert_node(SceneNodeInput {
-                            node_id: id,
-                            primary_slot: NVE_PRIMARY_SLOT_NONE,
+                            node_id: NodeId(id),
+                            primary_slot: PrimarySlot::NONE,
                             x: (id as f32) * 4.0,
                             y: (id as f32) * 2.0,
                             width: 120.0,
@@ -70,8 +70,8 @@ mod native {
     fn bench_direct_event_conversion(c: &mut Criterion) {
         let events: Vec<NativeEvent> = (0..32u32)
             .map(|i| NativeEvent {
-                surface_id: 1,
-                node_id: i + 1,
+                surface_id: SurfaceId(1),
+                node_id: NodeId(i + 1),
                 timestamp_us: u64::from(i) * 1000,
                 kind: NativeEventKind::Press,
                 payload: EventPayload::Point {

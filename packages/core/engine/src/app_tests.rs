@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::ffi::c_void;
 
 use nve_abi::{
-    NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
+    NodeId, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
     NveGestureDisposition, NveHostApi, NveHostCallbacks, NveIntrinsicSize, NveLayoutApi,
     NveMapEntry, NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, NVE_IFACE_COMPONENT,
     NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
@@ -64,7 +64,7 @@ impl NveApp for PanickingTestApp {
             _ => Self {
                 surface_id,
                 frame_buf: vec![0xAA, 0xBB],
-                emitted_buf: vec![NveDirectEvent::press(surface_id, 1, 10, 1.0, 2.0)],
+                emitted_buf: vec![NveDirectEvent::press(surface_id, NodeId::ROOT, 10, 1.0, 2.0)],
                 state_buf: vec![1, 2, 3],
             },
         }
@@ -175,7 +175,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
 
         // 0. Null handle guards across all 12 handle-taking shims (no dereference, no panic).
         let null_h = std::ptr::null_mut();
-        assert_eq!((surface.render)(null_h, 1).len, 0);
+        assert_eq!((surface.render)(null_h, FrameId(1)).len, 0);
         assert_eq!((surface.dispatch_events)(null_h, NveEventBatch::EMPTY), 0);
         assert_eq!(
             (layout.measure)(null_h, NveSizeConstraints::loose(100.0, 100.0)),
@@ -200,7 +200,7 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
 
         // 1. Panicking `create` returns null and records message; non-string payloads also work.
         set_panic_target(PanicTarget::Create);
-        let h_fail = (surface.create)(7);
+        let h_fail = (surface.create)(SurfaceId(7));
         assert!(h_fail.is_null());
         let peeked = last_ffi_panic().expect("create panic recorded");
         assert!(peeked.contains("NveSurfaceApi::create"));
@@ -209,16 +209,16 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
         assert_eq!(last_ffi_panic(), None);
 
         set_panic_target(PanicTarget::NonStringPayload);
-        let h_non_str = (surface.create)(8);
+        let h_non_str = (surface.create)(SurfaceId(8));
         assert!(h_non_str.is_null());
         let non_str_msg = take_last_ffi_panic().expect("non-string panic recorded");
         assert!(non_str_msg.contains("non-string panic payload"));
 
         // 2. Normal create + verify happy path does not record any panic.
         set_panic_target(PanicTarget::None);
-        let handle = (surface.create)(42);
+        let handle = (surface.create)(SurfaceId(42));
         assert!(!handle.is_null());
-        assert_eq!((surface.render)(handle, 1).as_slice(), &[0xAA, 0xBB]);
+        assert_eq!((surface.render)(handle, FrameId(1)).as_slice(), &[0xAA, 0xBB]);
         assert_eq!(
             (layout.measure)(handle, NveSizeConstraints::loose(300.0, 200.0)),
             NveIntrinsicSize {
@@ -234,13 +234,13 @@ fn export_nve_app_catches_panics_across_all_12_shims_and_null_handles() {
 
         // 3. Verify every remaining shim survives panics and returns its exact sentinel.
         set_panic_target(PanicTarget::Render);
-        let r = (surface.render)(handle, 99);
+        let r = (surface.render)(handle, FrameId(99));
         assert!(r.ptr.is_null() && r.len == 0);
         let msg = take_last_ffi_panic().unwrap();
         assert!(msg.contains("NveSurfaceApi::render") && msg.contains("boom in render frame 99"));
 
         set_panic_target(PanicTarget::DispatchEvents);
-        let direct_ev = [NveDirectEvent::press(42, 2, 100, 1.0, 2.0)];
+        let direct_ev = [NveDirectEvent::press(SurfaceId(42), NodeId(2), 100, 1.0, 2.0)];
         assert_eq!(
             (surface.dispatch_events)(handle, NveEventBatch::from_slice(&direct_ev)),
             0
@@ -394,7 +394,7 @@ impl NveApp for DirectOnlyPropsApp {
 
 #[test]
 fn direct_set_props_reads_nested_maps_and_arrays_zero_copy() {
-    let mut app = DirectOnlyPropsApp::create(1);
+    let mut app = DirectOnlyPropsApp::create(SurfaceId::ROOT);
     let nested_entries = [NveMapEntry::new("active", NveValue::bool(true))];
     let tag_elems = [NveValue::from_str("a"), NveValue::from_str("b")];
     let entries = [

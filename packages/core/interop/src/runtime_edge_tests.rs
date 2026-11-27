@@ -237,20 +237,20 @@ fn surface_registration_and_channel_error_guards() {
     let mut runtime = InteropRuntime::new();
     let id = runtime
         .surfaces
-        .register_surface(SurfaceDescriptor::new(FrameworkKind::Nve, "Root").with_id(7))
+        .register_surface(SurfaceDescriptor::new(FrameworkKind::Nve, "Root").with_id(SurfaceId(7)))
         .unwrap();
-    assert_eq!(id, 7);
+    assert_eq!(id, SurfaceId(7));
     assert_eq!(
         runtime
             .surfaces
-            .register_surface(SurfaceDescriptor::new(FrameworkKind::Nve, "Dup").with_id(7)),
-        Err(InteropError::DuplicateSurface(7))
+            .register_surface(SurfaceDescriptor::new(FrameworkKind::Nve, "Dup").with_id(SurfaceId(7))),
+        Err(InteropError::DuplicateSurface(SurfaceId(7)))
     );
     assert_eq!(
         runtime
             .surfaces
-            .register_child(999, FrameworkKind::Flutter, "Orphan"),
-        Err(InteropError::ParentNotFound(999))
+            .register_child(SurfaceId(999), FrameworkKind::Flutter, "Orphan"),
+        Err(InteropError::ParentNotFound(SurfaceId(999)))
     );
 
     assert!(matches!(
@@ -271,4 +271,56 @@ fn surface_registration_and_channel_error_guards() {
         ),
         Err(InteropError::ChannelNotFound(999))
     );
+}
+
+#[test]
+fn surface_orchestrator_rejects_null_and_aba_stale_generational_handles() {
+    let mut orch = SurfaceOrchestrator::new();
+
+    // Index 0 (both NULL and non-zero generation) is rejected cleanly.
+    assert_eq!(
+        orch.register_surface(
+            SurfaceDescriptor::new(FrameworkKind::Nve, "Null").with_id(SurfaceId::NULL)
+        ),
+        Err(InteropError::InvalidSurfaceId(SurfaceId::NULL))
+    );
+    let zero_idx_gen1 = SurfaceId::new(0, 1);
+    assert_eq!(
+        orch.register_surface(
+            SurfaceDescriptor::new(FrameworkKind::Nve, "ZeroIdx").with_id(zero_idx_gen1)
+        ),
+        Err(InteropError::InvalidSurfaceId(zero_idx_gen1))
+    );
+    assert_eq!(orch.active_count(), 0);
+
+    // Allocate, destroy, and re-allocate the same slot -> generation bumps, stale handle rejected.
+    let s1 = orch
+        .register_root(FrameworkKind::Nve, "First", SurfaceEnvironment::default())
+        .unwrap();
+    assert!(!s1.is_null());
+    assert_eq!(orch.active_count(), 1);
+    let destroyed = orch.destroy_surface(s1).unwrap();
+    assert_eq!(destroyed.len(), 1);
+    assert_eq!(destroyed[0].surface_id, s1);
+    assert_eq!(orch.active_count(), 0);
+
+    let s2 = orch
+        .register_root(FrameworkKind::Nve, "Reused", SurfaceEnvironment::default())
+        .unwrap();
+    assert_eq!(s2.index(), s1.index());
+    assert_eq!(s2.generation(), s1.generation().wrapping_add(1));
+    assert_ne!(s2, s1);
+
+    // Stale handle `s1` fails every lookup/mutation while live `s2` stays intact.
+    assert!(orch.get(s1).is_none());
+    assert_eq!(
+        orch.transition_state(s1, LifecycleState::Resumed),
+        Err(InteropError::SurfaceNotFound(s1))
+    );
+    assert_eq!(
+        orch.destroy_surface(s1),
+        Err(InteropError::SurfaceNotFound(s1))
+    );
+    assert_eq!(orch.get(s2).unwrap().component_name, "Reused");
+    assert_eq!(orch.active_count(), 1);
 }

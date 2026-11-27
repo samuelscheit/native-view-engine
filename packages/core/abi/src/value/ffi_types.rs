@@ -2,7 +2,7 @@ use core::mem::{align_of, size_of};
 
 use nve_abi_macros::NveAbi;
 
-use crate::{DecodeError, NveBufferSlice};
+use crate::{DecodeError, NveBufferSlice, PropFieldId};
 
 use super::ffi_views::NveValueRef;
 
@@ -302,8 +302,8 @@ impl NveMapEntry {
 #[derive(Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 32)]
 pub struct NvePropEntry {
-    #[nve_abi(offset = 0)]
-    pub field_id: u16,
+    #[nve_abi(offset = 0, c_type = "u16")]
+    pub field_id: PropFieldId,
     #[nve_abi(offset = 2)]
     pub _pad: [u8; 6],
     #[nve_abi(offset = 8)]
@@ -314,7 +314,7 @@ impl NvePropEntry {
     #[inline]
     pub const fn new(field_id: u16, value: NveValue) -> Self {
         Self {
-            field_id,
+            field_id: PropFieldId(field_id),
             _pad: [0; 6],
             value,
         }

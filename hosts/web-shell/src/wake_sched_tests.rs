@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Wake, Waker};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventPayload, NativeEvent, NativeEventKind, SurfaceId};
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -153,10 +153,11 @@ fn cap_hitting_burst_with_mid_pump_wakes_schedules_only_macrotask() {
 
     let fw = TestFrameWaker::new();
     let gate = StepGate::default();
-    let surface = DioxusSurface::new(1, BurstApp)
+    let surface = DioxusSurface::new(SurfaceId(1), BurstApp)
         .with_context(gate.clone())
         .with_context(Waker::from(Arc::clone(&fw)));
-    let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new(SurfaceId(1), surface, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
 
     assert_eq!(fw.sched.lock().unwrap().on_direct_pump_enter(), Ok(()));
@@ -392,10 +393,11 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
 
     let fw = TestFrameWaker::new();
     let gates = PumpGates::default();
-    let surface = DioxusSurface::new(1, PumpOrderApp)
+    let surface = DioxusSurface::new(SurfaceId(1), PumpOrderApp)
         .with_context(Waker::from(Arc::clone(&fw)))
         .with_context(gates.clone());
-    let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new(SurfaceId(1), surface, WebBackend::new(), Viewport::default());
     let waker = Waker::from(Arc::clone(&fw));
 
     let run_direct =
@@ -428,7 +430,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     // 1. Task-spawning click drained synchronously -> 0 trailing microtasks despite mid-pump wake.
     let spawn_btn = find(&session, "spawn-btn");
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: spawn_btn,
         timestamp_us: 1,
         kind: NativeEventKind::Press,
@@ -447,7 +449,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     //    (Fails right here if `on_before_poll` is hoisted once before the loop.)
     let rw_btn = find(&session, "render-wake-btn");
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: rw_btn,
         timestamp_us: 2,
         kind: NativeEventKind::Press,
@@ -500,7 +502,7 @@ fn pump_async_work_with_clears_prior_wakes_per_iteration_and_preserves_final_pol
     //    schedule exactly 1 follow-up microtask! (Fails if `on_before_poll` is moved after poll.)
     let fp_btn = find(&session, "final-poll-wake-btn");
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: fp_btn,
         timestamp_us: 3,
         kind: NativeEventKind::Press,

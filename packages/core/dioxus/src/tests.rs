@@ -1,7 +1,7 @@
 //! End-to-end tests for `DioxusSurface` directly over `NodeStore`, `TypedStyle`, `TableAttr`
 //! extensibility, surgical `HotPatchMsg`, direct event dispatch, and `NVE2` wire round-trip.
 
-use nve_abi::{ColorRgba, EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
 use nve_components::tables::{
     Accessibility, AriaRole, DebugId, Interaction, Layout, TextContent, TextInput, Typography,
     Visual,
@@ -71,9 +71,9 @@ fn find_by_test_id(store: &NodeStore, tid: &str) -> NodeId {
 
 #[test]
 fn dioxus_surface_nodestore_typed_style_table_attr_events_and_nve2_roundtrip() {
-    let mut surface = DioxusSurface::new(1, CounterApp);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, CounterApp);
     let mut wire_bytes = Vec::new();
-    let (_rec_us, _enc_us) = surface.render_nve2(1, &mut wire_bytes);
+    let (_rec_us, _enc_us) = surface.render_nve2(FrameId(1), &mut wire_bytes);
     assert!(!wire_bytes.is_empty());
 
     let card = find_by_test_id(surface.store(), "card-root");
@@ -125,15 +125,15 @@ fn dioxus_surface_nodestore_typed_style_table_attr_events_and_nve2_roundtrip() {
 
     // Dispatch a Press event on the button and verify reactive update + NVE2 delta.
     let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: btn.raw(),
+        surface_id: SurfaceId::ROOT,
+        node_id: btn,
         timestamp_us: 100,
         kind: NativeEventKind::Press,
         payload: EventPayload::Point { x: 10.0, y: 10.0 },
     }]);
     assert!(handled);
 
-    surface.render_nve2(2, &mut wire_bytes);
+    surface.render_nve2(FrameId(2), &mut wire_bytes);
     assert_eq!(
         surface.store().try_row::<CustomBadge>(card).unwrap().count(),
         1
@@ -169,8 +169,8 @@ fn MultiCardApp() -> Element {
 
 #[test]
 fn targeted_hot_patch_updates_only_addressed_node_and_text() {
-    let mut surface = DioxusSurface::new(1, MultiCardApp);
-    surface.reconcile(1);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, MultiCardApp);
+    surface.reconcile(FrameId(1));
 
     let alpha = find_by_test_id(surface.store(), "card-alpha");
     let beta = find_by_test_id(surface.store(), "card-beta");
@@ -188,7 +188,7 @@ fn targeted_hot_patch_updates_only_addressed_node_and_text() {
         node_path: vec![0, 0],
         text_replacements: vec![("# engineering".into(), "# runtime".into())],
     }));
-    surface.reconcile(2);
+    surface.reconcile(FrameId(2));
 
     let alpha_vis = surface.store().try_row::<Visual>(alpha).unwrap();
     assert_eq!(alpha_vis.background(), Rgba::rgb(37, 99, 235));

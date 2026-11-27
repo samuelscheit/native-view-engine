@@ -3,7 +3,7 @@
 //! - `Transform2D` + sticky positioning hit-testing and painting
 //! - `SceneRelocView` Frame-0 zero-layout instant-boot painting
 
-use nve_abi::{ColorRgba, EventMask};
+use nve_abi::{ColorRgba, EventMask, FrameId, SurfaceId};
 use nve_backend_skia::{
     CursorKind, EasingCurve, FocusModality, InteractionState, MotionPreference, PixelBuffer,
     SkiaBackend, StateStyleRule, StylePatch, TransitionProperty, TransitionSpec,
@@ -25,7 +25,7 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
         height: 200.0,
         scale_factor: 1.0,
     };
-    backend.set_viewport(1, vp);
+    backend.set_viewport(SurfaceId::ROOT, vp);
 
     let rules = vec![StateStyleRule::new(
         InteractionState::HOVER,
@@ -81,15 +81,15 @@ fn skia_interaction_motion_transitions_and_reloc_frame0_roundtrip() {
     assert!(!backend.needs_next_frame());
 
     // Focus tracking via keyboard modality.
-    assert!(backend.set_interaction_focus(&store, Some(btn.raw()), FocusModality::Keyboard));
+    assert!(backend.set_interaction_focus(&store, Some(btn), FocusModality::Keyboard));
     assert!(backend
-        .interaction_state(btn.raw())
+        .interaction_state(btn)
         .contains(InteractionState::FOCUS_VISIBLE));
 
     // Export Frame-0 NVERELOC from layout_tree and load into a cold SkiaBackend with zero layout.
     let reloc = backend
         .layout_tree()
-        .export_scene_reloc(&store, 1, 1, "skia-e2e", ColorRgba::BLACK)
+        .export_scene_reloc(&store, 1, FrameId(1), "skia-e2e", ColorRgba::BLACK)
         .unwrap();
     let view = SceneRelocView::from_bytes(&reloc, VerifyMode::Full).unwrap();
     let mut cold = SkiaBackend::new();
@@ -105,7 +105,7 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 300.0,
             height: 200.0,
@@ -128,7 +128,7 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     };
     backend.commit(&store, &changes).unwrap();
 
-    let rect = backend.layout_of(hidden.raw()).expect("hidden input layout entry");
+    let rect = backend.layout_of(hidden).expect("hidden input layout entry");
     assert_eq!((rect.width, rect.height), (0.0, 0.0));
     assert!(
         backend.display_list().ops.is_empty(),
@@ -138,7 +138,7 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     assert_eq!(backend.hit_test(&store, 1.0, 1.0), None);
     assert_eq!(backend.hit_test_interaction(&store, 1.0, 1.0), None);
     assert!(!backend.is_text_input(&store, hidden));
-    backend.set_focused_node(&store, Some(hidden.raw()));
+    backend.set_focused_node(&store, Some(hidden));
     assert_eq!(backend.focused_node(), None);
 
     // Mutating an already-focused visible input to Hidden automatically clears focus and paint ops.
@@ -157,8 +157,8 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     };
     backend.commit(&store, &changes).unwrap();
     assert!(backend.is_text_input(&store, visible));
-    backend.set_focused_node(&store, Some(visible.raw()));
-    assert_eq!(backend.focused_node(), Some(visible.raw()));
+    backend.set_focused_node(&store, Some(visible));
+    assert_eq!(backend.focused_node(), Some(visible));
     assert!(!backend.display_list().ops.is_empty());
 
     {
@@ -170,7 +170,7 @@ fn hidden_text_input_has_zero_layout_zero_paint_ops_no_hit_and_refuses_focus() {
     assert_eq!(backend.focused_node(), None);
     assert!(!backend.is_text_input(&store, visible));
     assert!(backend.display_list().ops.is_empty());
-    let vr = backend.layout_of(visible.raw()).expect("now-hidden layout");
+    let vr = backend.layout_of(visible).expect("now-hidden layout");
     assert_eq!((vr.width, vr.height), (0.0, 0.0));
 }
 
@@ -180,7 +180,7 @@ fn ancestor_display_none_clears_and_rejects_child_text_input_focus() {
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 300.0,
             height: 200.0,
@@ -208,8 +208,8 @@ fn ancestor_display_none_clears_and_rejects_child_text_input_focus() {
     };
     backend.commit(&store, &changes).unwrap();
 
-    backend.set_focused_node(&store, Some(child.raw()));
-    assert_eq!(backend.focused_node(), Some(child.raw()));
+    backend.set_focused_node(&store, Some(child));
+    assert_eq!(backend.focused_node(), Some(child));
 
     // Hiding the ancestor clears focus on the focused child TextInput during commit.
     {
@@ -225,7 +225,7 @@ fn ancestor_display_none_clears_and_rejects_child_text_input_focus() {
     );
 
     // Direct set_focused_node on a child under a Display::None ancestor is also rejected.
-    backend.set_focused_node(&store, Some(child.raw()));
+    backend.set_focused_node(&store, Some(child));
     assert_eq!(
         backend.focused_node(),
         None,

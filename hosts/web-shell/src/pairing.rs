@@ -268,7 +268,7 @@ impl PairedWebSession {
     pub fn on_pair_binary_message(&mut self, raw: &[u8]) -> Result<Vec<u8>, String> {
         let outcome = self.client.on_binary_message(raw)?;
         for (seq, cmd_bytes) in outcome.frames {
-            self.apply_remote_frame(u64::from(seq), &cmd_bytes)
+            self.apply_remote_frame(FrameId(u64::from(seq)), &cmd_bytes)
                 .map_err(|e| format!("WebBackend submit_nve2_frame failed for seq {seq}: {e}"))?;
         }
         for msg in outcome.outbound {
@@ -376,8 +376,11 @@ impl PairedWebSession {
         }
         let _ = self.replica.submit_nve2_frame(command_bytes)?;
         #[cfg(feature = "scene-view")]
-        self.scene
-            .sync(self.replica.store(), self.replica.last_changes(), frame_id.max(1));
+        self.scene.sync(
+            self.replica.store(),
+            self.replica.last_changes(),
+            FrameId(frame_id.raw().max(1)),
+        );
         #[cfg(not(feature = "scene-view"))]
         let _ = frame_id;
         Ok(())

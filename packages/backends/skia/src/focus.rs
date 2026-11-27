@@ -4,7 +4,7 @@
 use nve_abi::NodeId;
 use nve_components::tables::{is_subtree_display_none, InputKind, TextInput, Typography};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 
 use crate::text::DEFAULT_FONT_WEIGHT;
 use crate::text_grapheme::clamp_grapheme_boundary;
@@ -52,7 +52,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     #[inline]
-    pub fn is_text_input(&self, store: &NodeStore, node_id: StoreNodeId) -> bool {
+    pub fn is_text_input(&self, store: &NodeStore, node_id: NodeId) -> bool {
         store.is_live(node_id)
             && store
                 .try_row::<TextInput>(node_id)
@@ -60,20 +60,20 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     #[inline]
-    pub fn is_secure_text_input(&self, store: &NodeStore, node_id: StoreNodeId) -> bool {
+    pub fn is_secure_text_input(&self, store: &NodeStore, node_id: NodeId) -> bool {
         store.is_live(node_id) && is_secure_node(store, node_id)
     }
 
     #[inline]
-    pub fn is_multiline_text_input(&self, store: &NodeStore, node_id: StoreNodeId) -> bool {
+    pub fn is_multiline_text_input(&self, store: &NodeStore, node_id: NodeId) -> bool {
         store.is_live(node_id) && is_multiline_node(store, node_id)
     }
 
-    pub fn text_input_value(&self, store: &NodeStore, node_id: StoreNodeId) -> Option<String> {
+    pub fn text_input_value(&self, store: &NodeStore, node_id: NodeId) -> Option<String> {
         if !self.is_text_input(store, node_id) {
             return None;
         }
-        if self.focus.focused_node == Some(node_id.raw())
+        if self.focus.focused_node == Some(node_id)
             && let Some(ref v) = self.focus.uncontrolled_value
         {
             return Some(v.clone());
@@ -84,7 +84,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn cursor_index_at_x(
         &self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
         logical_x: f32,
     ) -> Option<usize> {
         if !self.is_text_input(store, node_id) {
@@ -99,7 +99,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             .unwrap_or(13.0);
         let text_rect = compute_text_input_inner_rect(store, node_id, visual_rect, font_size);
         let is_secure = is_secure_node(store, node_id);
-        let scroll_x = if self.focus.focused_node == Some(node_id.raw()) {
+        let scroll_x = if self.focus.focused_node == Some(node_id) {
             compute_text_input_scroll_x(
                 self.text_engine.as_ref(),
                 &committed,
@@ -126,7 +126,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn selection_rects_for_range(
         &self,
         store: &NodeStore,
-        node_id: StoreNodeId,
+        node_id: NodeId,
         start: usize,
         end: usize,
     ) -> Vec<LayoutRect> {
@@ -166,8 +166,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     pub fn ime_cursor_rect(&self, store: &NodeStore) -> Option<LayoutRect> {
-        let raw = self.focus.focused_node?;
-        let id = StoreNodeId(raw);
+        let id = self.focus.focused_node?;
         let committed = self.text_input_value(store, id)?;
         let visual_rect = self.visual_rect_of(store, id)?;
         let font_size = store
@@ -189,20 +188,18 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     pub fn set_focused_node(&mut self, store: &NodeStore, node_id: Option<NodeId>) {
-        let node_id = node_id.filter(|&raw| {
-            let sid = StoreNodeId(raw);
-            store.is_live(sid) && !is_subtree_display_none(store, sid)
-        });
+        let node_id = node_id
+            .filter(|&id| store.is_live(id) && !is_subtree_display_none(store, id));
         if self.focus.focused_node == node_id {
             return;
         }
         self.focus = TextFocusState {
             focused_node: node_id,
             caret_byte_index: node_id
-                .and_then(|raw| self.text_input_value(store, StoreNodeId(raw)))
+                .and_then(|id| self.text_input_value(store, id))
                 .map_or(0, |s| s.len()),
             selection_anchor: node_id
-                .and_then(|raw| self.text_input_value(store, StoreNodeId(raw)))
+                .and_then(|id| self.text_input_value(store, id))
                 .map_or(0, |s| s.len()),
             ime_preedit: None,
             ime_preedit_cursor: None,
@@ -217,8 +214,8 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         caret: usize,
         anchor: usize,
     ) {
-        if let Some(raw) = self.focus.focused_node
-            && let Some(val) = self.text_input_value(store, StoreNodeId(raw))
+        if let Some(id) = self.focus.focused_node
+            && let Some(val) = self.text_input_value(store, id)
         {
             self.focus.caret_byte_index = clamp_grapheme_boundary(&val, caret);
             self.focus.selection_anchor = clamp_grapheme_boundary(&val, anchor);
@@ -245,12 +242,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     ) {
         let clamped = match value.as_deref() {
             Some(v) => clamp_grapheme_boundary(v, caret_byte_index),
-            None => self
-                .focus
-                .focused_node
-                .map_or(0, |raw| {
-                    clamp_grapheme_boundary(raw_text_input_value(store, StoreNodeId(raw)), caret_byte_index)
-                }),
+            None => self.focus.focused_node.map_or(0, |id| {
+                clamp_grapheme_boundary(raw_text_input_value(store, id), caret_byte_index)
+            }),
         };
         self.focus.uncontrolled_value = value;
         self.focus.caret_byte_index = clamped;
@@ -259,10 +253,9 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     pub(crate) fn reconcile_focus_state(&mut self, store: &NodeStore) {
-        let Some(raw) = self.focus.focused_node else {
+        let Some(id) = self.focus.focused_node else {
             return;
         };
-        let id = StoreNodeId(raw);
         if !store.is_live(id) || is_subtree_display_none(store, id) {
             self.focus = TextFocusState::default();
             return;

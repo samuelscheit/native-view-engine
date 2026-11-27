@@ -143,7 +143,8 @@ pub fn nve_web_scene_view_ptr() -> usize {
 
 #[cfg(feature = "scene-view")]
 #[wasm_bindgen]
-pub fn nve_web_scene_view_ptr_for_surface(surface_id: SurfaceId) -> usize {
+pub fn nve_web_scene_view_ptr_for_surface(surface_id: u32) -> usize {
+    let surface_id = SurfaceId(surface_id);
     ACTIVE_SHELLS.with(|shells| {
         shells
             .borrow()
@@ -154,8 +155,8 @@ pub fn nve_web_scene_view_ptr_for_surface(surface_id: SurfaceId) -> usize {
 }
 
 #[wasm_bindgen]
-pub fn active_surface_ids() -> Vec<SurfaceId> {
-    ACTIVE_SHELLS.with(|shells| shells.borrow().keys().copied().collect())
+pub fn active_surface_ids() -> Vec<u32> {
+    ACTIVE_SHELLS.with(|shells| shells.borrow().keys().map(|id| id.raw()).collect())
 }
 
 #[wasm_bindgen]
@@ -183,7 +184,7 @@ impl WebAppController {
     pub fn mount_id(&self) -> String { self.mount_id.clone() }
 
     #[wasm_bindgen(getter)]
-    pub fn surface_id(&self) -> SurfaceId { self.surface_id }
+    pub fn surface_id(&self) -> u32 { self.surface_id.raw() }
 
     pub fn node_count(&self) -> usize { self.session.borrow().node_count() }
 
@@ -357,7 +358,7 @@ pub(crate) fn start_surface_app_inner<F>(
 where
     F: FnOnce(SurfaceId, WebBackend, Viewport) -> WebAppSession,
 {
-    if surface_id == 0 {
+    if surface_id.is_null() {
         return Err(JsValue::from_str("surface_id must be non-zero"));
     }
     let (window, container) = find_mount_container(surface_id, mount_id)?;
@@ -547,19 +548,19 @@ pub fn start_studio_workspace_app(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
+    start_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID.raw(), mount_id, ws_url)
 }
 
 #[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn start_studio_workspace_app_on_surface(
-    surface_id: SurfaceId,
+    surface_id: u32,
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "StudioWorkspaceApp",
-        surface_id,
+        SurfaceId(surface_id),
         mount_id,
         ws_url,
         false,
@@ -573,19 +574,19 @@ pub fn start_kitchen_sink_app(
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
-    start_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
+    start_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID.raw(), mount_id, ws_url)
 }
 
 #[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
 pub fn start_kitchen_sink_app_on_surface(
-    surface_id: SurfaceId,
+    surface_id: u32,
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "KitchenSinkApp",
-        surface_id,
+        SurfaceId(surface_id),
         mount_id,
         ws_url,
         false,

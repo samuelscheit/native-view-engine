@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use nve_abi::{FrameId, NodeId, SurfaceId};
 use nve_backend_web::WebBackend;
 use nve_components::tables::DebugId;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use nve_query::{ManualClock, QueryClientConfig, QueryOptions, Shared};
 use nve_query_dioxus::prelude::*;
 use nve_rpc::{
@@ -262,15 +263,15 @@ fn new_web_backend() -> WebBackend {
     web
 }
 
-fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
-    let mut stack = vec![StoreNodeId::ROOT];
+fn find_by_test_id(store: &NodeStore, tid: &str) -> NodeId {
+    let mut stack = vec![NodeId::ROOT];
     let mut found = None;
     while let Some(id) = stack.pop() {
-        if id != StoreNodeId::ROOT
+        if id != NodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == tid
         {
-            found = Some(id.raw());
+            found = Some(id);
             break;
         }
         stack.extend_from_slice(store.children(id));
@@ -281,7 +282,7 @@ fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
 
 fn render_html(surface: &mut DioxusSurface, web: &mut WebBackend, frame: &mut u64) -> String {
     *frame += 1;
-    surface.commit_to(*frame, web).expect("commit_to web");
+    surface.commit_to(FrameId(*frame), web).expect("commit_to web");
     web.render_html(surface.store())
 }
 
@@ -297,7 +298,7 @@ fn pump_all_async(
             return rendered;
         }
         *frame += 1;
-        surface.commit_to(*frame, web).expect("commit_to web");
+        surface.commit_to(FrameId(*frame), web).expect("commit_to web");
         rendered += 1;
     }
     assert!(
@@ -413,7 +414,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
 
     let handles_box: SharedHandles = std::rc::Rc::new(std::cell::RefCell::new(None));
 
-    let mut surface = DioxusSurface::new(1, RootWrapper)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, RootWrapper)
         .with_context(client.clone())
         .with_context(std::rc::Rc::clone(&handles_box));
 
@@ -480,7 +481,7 @@ fn zero_input_async_wake_signal_recycling_and_action_form_work_end_to_end() {
     let actions_before = transport.state.lock().unwrap().action_calls;
     let form_node = find_by_test_id(surface.store(), "rename-form");
     let submit_ev = nve_abi::NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: form_node,
         timestamp_us: 0,
         kind: nve_abi::NativeEventKind::Submit,
@@ -637,7 +638,7 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
     let mut web = new_web_backend();
     let wake_flag = Arc::new(FlagWaker(AtomicBool::new(false), AtomicUsize::new(0)));
     let waker = Waker::from(Arc::clone(&wake_flag));
-    let mut surface = DioxusSurface::new(1, OptRoot).with_context(client);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, OptRoot).with_context(client);
 
     let _ = render_html(&mut surface, &mut web, &mut frame);
     let _ = pump_all_async(&mut surface, &mut web, &waker, &mut frame);
@@ -647,7 +648,7 @@ fn use_action_run_optimistic_updates_immediately_and_rolls_back_on_error() {
 
     // Click triggers `run_optimistic`: synchronous patch appears immediately while RPC is in flight!
     let press_ev = nve_abi::NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: btn,
         timestamp_us: 0,
         kind: nve_abi::NativeEventKind::Press,

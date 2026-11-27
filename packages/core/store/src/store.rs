@@ -475,7 +475,7 @@ impl NodeStore {
     }
 
     /// Dense rows (`row_count * words`) and sparse owners of a table, for scene publishing.
-    pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[u32], usize)> {
+    pub fn table_storage(&self, slot: TableSlot) -> Option<(&[Word], &[NodeId], usize)> {
         let c = self.columns[slot.0 as usize].as_ref()?;
         Some((&c.rows, &c.owners, c.row_count()))
     }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
 use nve_backend_skia::gpu::{
     GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSwapchain,
 };
@@ -119,7 +119,7 @@ impl DesktopApp for MockCounterApp {
     fn dispatch_events(&mut self, events: nve_abi::NveEventBatchRef<'_>) -> bool {
         let mut handled = false;
         for ev in events.iter() {
-            if ev.node_id() == 4 && ev.kind() == Some(NativeEventKind::Press) {
+            if ev.node_id() == NodeId(4) && ev.kind() == Some(NativeEventKind::Press) {
                 self.count += 1;
                 self.button_color = ColorRgba::rgb(16, 185, 129);
                 handled = true;
@@ -178,14 +178,14 @@ fn hit_test_click_dispatches_press_and_rerenders_pixels() {
     };
     let mut session = DesktopSession::new(
         MockCounterApp::new(),
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
         false,
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(4).expect("button layout");
+    let btn = session.layout_of(NodeId(4)).expect("button layout");
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
 
@@ -213,14 +213,14 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
     };
     let mut session = DesktopSession::new(
         MockCounterApp::new(),
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
         true,
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId(4)).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
@@ -342,7 +342,7 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
     };
     let mut session = DesktopSession::new(
         MockCounterApp::new(),
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
         false,
@@ -358,7 +358,7 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
     assert_eq!(session.pixel_buffer().width(), 600);
     assert_eq!(session.pixel_buffer().height(), 400);
 
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId(4)).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(session.pixel_buffer().get_rgb(px, py), Some((37, 99, 235)));
@@ -385,7 +385,7 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
     };
     let mut session = DesktopSession::new(
         MockCounterApp::new(),
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
         true,
@@ -420,7 +420,7 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
 
     let mut readback = PixelBuffer::new(1, 1);
     sw.copy_to_pixel_buffer(&mut readback).unwrap();
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId(4)).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(readback.get_rgb(px, py), Some((37, 99, 235)));
@@ -435,14 +435,14 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
     };
     let mut session = DesktopSession::new(
         MockCounterApp::new(),
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
         false,
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.layout_of(4).unwrap();
+    let btn = session.layout_of(NodeId(4)).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
@@ -455,7 +455,8 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
     assert_eq!(header.schema_version, 7);
     assert!(header.payload_len > 0);
 
-    let mismatch = replay_snapshot_into_backend(&snap_path, 8, 1, viewport, ColorRgba::BLACK);
+    let mismatch =
+        replay_snapshot_into_backend(&snap_path, 8, SurfaceId::ROOT, viewport, ColorRgba::BLACK);
     assert!(matches!(
         mismatch,
         Err(DesktopHostError::Reloc(RelocError::SchemaVersionMismatch {
@@ -464,8 +465,9 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
         }))
     ));
 
-    let prewarmed = replay_snapshot_into_backend(&snap_path, 7, 1, viewport, ColorRgba::BLACK)
-        .expect("prewarm frame0");
+    let prewarmed =
+        replay_snapshot_into_backend(&snap_path, 7, SurfaceId::ROOT, viewport, ColorRgba::BLACK)
+            .expect("prewarm frame0");
     assert_eq!(prewarmed.state_bytes, b"count=1;label=Counter");
     assert_eq!(
         prewarmed.pixel_buffer.get_rgb(cx as u32, cy as u32),
@@ -487,7 +489,7 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
         &boot_dir,
         None,
         7,
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
     )
@@ -515,7 +517,7 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
 
 #[test]
 fn hot_app_slot_reports_loader_error_for_missing_dylib() {
-    let err = HotAppSlot::load(Path::new("/nonexistent/path/libmissing_nve.dylib"), 1)
+    let err = HotAppSlot::load(Path::new("/nonexistent/path/libmissing_nve.dylib"), SurfaceId::ROOT)
         .err()
         .expect("expected loader error for nonexistent dylib");
     assert!(matches!(err, DesktopHostError::Loader(LoaderError::Io(_))));
@@ -553,14 +555,14 @@ fn render_visual_verification_ppms_at_2x_hidpi() {
 
     for (lib_stem, w, h, clear, out_path) in targets {
         let dylib = workspace_root.join(format!("target/debug/{lib_stem}.{dylib_ext}"));
-        let app = HotAppSlot::load(&dylib, 1)
+        let app = HotAppSlot::load(&dylib, SurfaceId::ROOT)
             .unwrap_or_else(|e| panic!("failed to load {dylib:?}: {e}"));
         let viewport = Viewport {
             width: w,
             height: h,
             scale_factor: 2.0,
         };
-        let mut session = DesktopSession::new(app, 1, viewport, clear, false);
+        let mut session = DesktopSession::new(app, SurfaceId::ROOT, viewport, clear, false);
         session
             .render_and_rasterize()
             .expect("render and rasterize at 2x HiDPI");

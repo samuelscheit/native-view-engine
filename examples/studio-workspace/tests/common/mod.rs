@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nve_abi::{ColorRgba, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
@@ -29,7 +29,7 @@ pub fn find_in_store(store: &NodeStore, test_id: &str) -> Option<NodeId> {
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == test_id
         {
-            return Some(id.raw());
+            return Some(id);
         }
         stack.extend_from_slice(store.children(id));
     }
@@ -37,7 +37,7 @@ pub fn find_in_store(store: &NodeStore, test_id: &str) -> Option<NodeId> {
 }
 
 pub fn data_attr_in_store(store: &NodeStore, id: NodeId, key: &str) -> Option<String> {
-    let res = store.try_row::<HtmlDataAttrs>(StoreNodeId(id))?.entries();
+    let res = store.try_row::<HtmlDataAttrs>(id)?.entries();
     let list = store.resource::<DataAttrList>(res)?;
     let stripped = key.strip_prefix("data-").unwrap_or(key);
     list.0
@@ -79,12 +79,12 @@ impl MultiBackendHarness {
         let mut web = WebBackend::new();
         register_web_html_systems(web.table_registry_mut());
         web.register_table_system(CanvasWebSystem);
-        headless.set_viewport(1, viewport);
-        skia.set_viewport(1, viewport);
-        web.set_viewport(1, viewport);
+        headless.set_viewport(SurfaceId(1), viewport);
+        skia.set_viewport(SurfaceId(1), viewport);
+        web.set_viewport(SurfaceId(1), viewport);
 
         let mut h = Self {
-            surface: create_surface_for_viewport(1, width, height),
+            surface: create_surface_for_viewport(SurfaceId(1), width, height),
             headless,
             skia,
             web,
@@ -98,7 +98,7 @@ impl MultiBackendHarness {
     pub fn render_next(&mut self) {
         let fid = self.next_frame;
         self.next_frame += 1;
-        self.surface.reconcile(fid);
+        self.surface.reconcile(FrameId(fid));
         let store = self.surface.store();
         let changes = self.surface.last_changes();
         self.headless.commit(store, changes).expect("headless commit");
@@ -143,7 +143,7 @@ impl MultiBackendHarness {
         );
 
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id: hit,
             timestamp_us: self.next_frame * 16_000,
             kind: NativeEventKind::Press,
@@ -162,7 +162,7 @@ impl MultiBackendHarness {
         );
         let node_id = node_id.expect("checked above");
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id,
             timestamp_us: self.next_frame * 16_000,
             kind: NativeEventKind::TextChange,
@@ -194,7 +194,7 @@ impl MultiBackendHarness {
             if id == StoreNodeId::ROOT {
                 continue;
             }
-            let Some(r) = self.headless.layout_of(id.raw()) else {
+            let Some(r) = self.headless.layout_of(id) else {
                 continue;
             };
             if r.width <= 0.0 || r.height <= 0.0 {

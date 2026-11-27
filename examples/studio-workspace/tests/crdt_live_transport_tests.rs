@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::DebugId;
 use nve_engine::{StoreBackend, Viewport};
@@ -515,10 +515,10 @@ fn in_memory_mesh_handles_packet_drops_reordering_and_partition_heal() {
 
 #[test]
 fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip() {
-    let mut surface = create_surface_for_viewport(1, 960.0, 640.0);
+    let mut surface = create_surface_for_viewport(SurfaceId(1), 960.0, 640.0);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 960.0,
             height: 640.0,
@@ -531,7 +531,7 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
                   headless: &mut HeadlessBackend,
                   fid: &mut u64| {
         surface
-            .commit_to(*fid, headless)
+            .commit_to(FrameId(*fid), headless)
             .expect("commit studio frame");
         *fid += 1;
     };
@@ -547,7 +547,7 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                found = Some(id.raw());
+                found = Some(id);
                 break;
             }
             stack.extend_from_slice(store.children(id));
@@ -563,14 +563,14 @@ fn studio_ui_crdt_sync_panel_interactive_sync_partition_heal_and_nws1_roundtrip(
             .unwrap_or_else(|| panic!("hit_test missed '{tid}' at ({cx}, {cy}) rect={rect:?}"));
         assert_eq!(hit, nid, "hit_test hit wrong node for '{tid}'");
         assert!(surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id: hit,
             timestamp_us: *fid * 16_000,
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: cx, y: cy },
         }]));
         surface
-            .commit_to(*fid, headless)
+            .commit_to(FrameId(*fid), headless)
             .expect("commit after press");
         *fid += 1;
     };

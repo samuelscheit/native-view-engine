@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
 use nve_components::tables::{
     register_core_tables, FlexDirection, Interaction, Layout, Overflow, Scroll, Visual,
 };
@@ -12,8 +12,8 @@ use super::input::format_keydown_shorthand;
 use super::{DesktopApp, DesktopHostError, DesktopSession};
 
 struct MockScrollAndKeyApp {
-    scroll_events: Vec<(u32, f32, f32, f32, f32)>,
-    keydown_payloads: Vec<(u32, String)>,
+    scroll_events: Vec<(NodeId, f32, f32, f32, f32)>,
+    keydown_payloads: Vec<(NodeId, String)>,
     palette_open: bool,
     store: NodeStore,
     encoder: WireEncoder,
@@ -148,7 +148,7 @@ fn desktop_session_forwards_wheel_scroll_and_typed_keydown_events() {
         scale_factor: 1.0,
     };
     let app = MockScrollAndKeyApp::new();
-    let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::BLACK, false);
+    let mut session = DesktopSession::new(app, SurfaceId::ROOT, viewport, ColorRgba::BLACK, false);
     session.render_and_rasterize().unwrap();
 
     assert_eq!(session.pixel_buffer().get_rgb(50, 20), Some((239, 68, 68)));
@@ -156,7 +156,7 @@ fn desktop_session_forwards_wheel_scroll_and_typed_keydown_events() {
     assert!(!session.handle_scroll_logical(220.0, 140.0, 0.0, 60.0).unwrap());
 
     assert!(session.handle_scroll_logical(50.0, 50.0, 0.0, 100.0).unwrap());
-    assert_eq!(session.app().scroll_events[0], (2, 0.0, 100.0, 200.0, 240.0));
+    assert_eq!(session.app().scroll_events[0], (NodeId(2), 0.0, 100.0, 200.0, 240.0));
     assert_eq!(session.pixel_buffer().get_rgb(50, 20), Some((16, 185, 129)));
     assert_eq!(session.pixel_buffer().get_rgb(50, 80), Some((37, 99, 235)));
     assert_eq!(session.pixel_buffer().get_rgb(50, 120), Some((0, 0, 0)));

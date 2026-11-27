@@ -120,9 +120,9 @@ impl DesktopApp for TextMaturityApp {
             match (ev.kind(), ev.payload_tag()) {
                 (Some(NativeEventKind::TextChange), 3) => {
                     let t = ev.text().to_owned();
-                    if ev.node_id() == 10 {
+                    if ev.node_id() == NodeId(10) {
                         self.single_val = t.clone();
-                    } else if ev.node_id() == 11 {
+                    } else if ev.node_id() == NodeId(11) {
                         self.multi_val = t.clone();
                     }
                     self.events_log.push((ev.node_id(), NativeEventKind::TextChange, t));
@@ -170,7 +170,7 @@ fn new_session(single: &str, multi: &str) -> DesktopSession<TextMaturityApp> {
     };
     let mut session = DesktopSession::new(
         TextMaturityApp::new(single, multi),
-        1,
+        SurfaceId::ROOT,
         vp,
         ColorRgba::BLACK,
         false,
@@ -189,7 +189,7 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
     let initial = format!("{family}{flag}{wave}{accent}");
 
     let mut session = new_session(&initial, "");
-    session.focus_node(Some(10)).unwrap();
+    session.focus_node(Some(NodeId(10))).unwrap();
     let none = ModifiersState::empty();
     let shift = ModifiersState::SHIFT;
 
@@ -240,7 +240,7 @@ fn grapheme_safe_editing_for_zwj_family_flag_skin_tone_and_combining_accent() {
 #[test]
 fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
     let mut session = new_session("hello world_42 test", "line one\nline two");
-    let r10 = session.layout_of(10).unwrap();
+    let r10 = session.layout_of(NodeId(10)).unwrap();
     let click_x = r10.x + 28.0;
     let click_y = r10.y + r10.height * 0.5;
 
@@ -272,7 +272,7 @@ fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
     assert_eq!(session.app().single_val, "alpha beta gamma delta");
 
     // Paste with CRLF + CR into multiline (node 11) normalizes line endings to `\n`.
-    session.focus_node(Some(11)).unwrap();
+    session.focus_node(Some(NodeId(11))).unwrap();
     session
         .handle_keyboard_input(&Key::Character("a".into()), None, ModifiersState::SUPER)
         .unwrap();
@@ -291,7 +291,7 @@ fn double_click_word_triple_click_paragraph_and_crlf_paste_normalization() {
 #[test]
 fn bidi_visual_navigation_and_backspace_never_panic_or_split_clusters() {
     let mut session = new_session("Hello مرحبا world", "");
-    session.focus_node(Some(10)).unwrap();
+    session.focus_node(Some(NodeId(10))).unwrap();
     let none = ModifiersState::empty();
 
     // Sweep ArrowLeft from end to start, then ArrowRight back to end.
@@ -328,7 +328,7 @@ fn bidi_visual_navigation_and_backspace_never_panic_or_split_clusters() {
 #[test]
 fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_caret_rect() {
     let mut session = new_session("", "");
-    session.focus_node(Some(10)).unwrap();
+    session.focus_node(Some(NodeId(10))).unwrap();
     session.app_mut().events_log.clear();
 
     let r0 = session.ime_cursor_rect_logical().expect("focused caret rect");
@@ -359,10 +359,10 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (10, NativeEventKind::CompositionStart, "ni".into()),
-            (10, NativeEventKind::CompositionUpdate, "nihao".into()),
-            (10, NativeEventKind::CompositionEnd, "你好".into()),
-            (10, NativeEventKind::TextChange, "你好".into()),
+            (NodeId(10), NativeEventKind::CompositionStart, "ni".into()),
+            (NodeId(10), NativeEventKind::CompositionUpdate, "nihao".into()),
+            (NodeId(10), NativeEventKind::CompositionEnd, "你好".into()),
+            (NodeId(10), NativeEventKind::TextChange, "你好".into()),
         ]
     );
 
@@ -377,14 +377,14 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (10, NativeEventKind::CompositionStart, "zhong".into()),
-            (10, NativeEventKind::CompositionEnd, String::new()),
-            (10, NativeEventKind::Blur, String::new()),
+            (NodeId(10), NativeEventKind::CompositionStart, "zhong".into()),
+            (NodeId(10), NativeEventKind::CompositionEnd, String::new()),
+            (NodeId(10), NativeEventKind::Blur, String::new()),
         ]
     );
 
     // 5. Empty Preedit and Ime::Disabled mid-composition both emit clean CompositionEnd("").
-    session.focus_node(Some(10)).unwrap();
+    session.focus_node(Some(NodeId(10))).unwrap();
     session.app_mut().events_log.clear();
     assert!(session
         .handle_ime(&Ime::Preedit("ka".into(), Some((0, 2))))
@@ -397,10 +397,10 @@ fn unified_ime_lifecycle_emits_start_update_end_blur_cancel_and_tracks_live_care
     assert_eq!(
         session.app().events_log,
         vec![
-            (10, NativeEventKind::CompositionStart, "ka".into()),
-            (10, NativeEventKind::CompositionEnd, String::new()),
-            (10, NativeEventKind::CompositionStart, "ki".into()),
-            (10, NativeEventKind::CompositionEnd, String::new()),
+            (NodeId(10), NativeEventKind::CompositionStart, "ka".into()),
+            (NodeId(10), NativeEventKind::CompositionEnd, String::new()),
+            (NodeId(10), NativeEventKind::CompositionStart, "ki".into()),
+            (NodeId(10), NativeEventKind::CompositionEnd, String::new()),
         ]
     );
 }

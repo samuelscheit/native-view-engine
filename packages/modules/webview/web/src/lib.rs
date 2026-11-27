@@ -4,7 +4,7 @@
 
 use nve_backend_web::html::write_attr;
 use nve_backend_web::{is_safe_web_url, WebSystemCommitCtx, WebTableSystem};
-use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
+use nve_store::{NodeId, NodeStore, NveTable, SurfaceId, TableSlot};
 use nve_webview::{events, WebView, WebViewCommand};
 
 /// Default iframe sandbox policy — intentionally omits `allow-same-origin` so sandboxed content
@@ -69,7 +69,7 @@ impl WebTableSystem for WebViewWebSystem {
         {
             ctx.set_attr(node, "src", &url);
             ctx.events
-                .emit::<WebView, String>(0, node, 0, events::LOAD_START, url);
+                .emit::<WebView, String>(SurfaceId::NULL, node, 0, events::LOAD_START, url);
         }
     }
 }

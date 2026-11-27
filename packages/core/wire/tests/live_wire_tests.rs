@@ -13,7 +13,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    encode_events, ColorRgba, EventPayload, NativeEvent, NativeEventKind, NVE_PRIMARY_SLOT_NONE,
+    encode_events, ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId,
+    SurfaceId, NVE_PRIMARY_SLOT_NONE,
 };
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::{
@@ -31,7 +32,7 @@ use nve_wire::{
 fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
     let nodes = [
         SceneRelocNodeInput {
-            node_id: 1,
+            node_id: NodeId::ROOT,
             parent_index: -1,
             primary_slot: NVE_PRIMARY_SLOT_NONE,
             flags: 0,
@@ -50,7 +51,7 @@ fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
             children: &[1],
         },
         SceneRelocNodeInput {
-            node_id: 2,
+            node_id: NodeId(2),
             parent_index: 0,
             primary_slot: 1,
             flags: 0,
@@ -71,8 +72,8 @@ fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
     ];
     encode_scene_reloc(&SceneRelocInput {
         schema_version: 1,
-        surface_id: 1,
-        frame_id: 1,
+        surface_id: SurfaceId::ROOT,
+        frame_id: FrameId(1),
         viewport: Viewport {
             width: 393.0,
             height: 852.0,
@@ -155,9 +156,9 @@ async fn live_quic_nve_wire_2_roundtrip_scene_command_patch_events_and_datagram(
 
     // 4. Upstream EventBatch backchannel.
     let event_bytes = encode_events(&[NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         kind: NativeEventKind::Press,
-        node_id: 2,
+        node_id: NodeId(2),
         timestamp_us: 1234,
         payload: EventPayload::Point { x: 10.0, y: 20.0 },
     }]);

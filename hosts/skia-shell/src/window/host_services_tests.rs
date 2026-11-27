@@ -397,7 +397,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     host.set_exit_on_primary_close(false);
     host.set_secondary_app_factory(|surface_id, _desc| Ok(HostAwareMockApp::new(surface_id)));
 
-    let primary_app = HostAwareMockApp::new(1);
+    let primary_app = HostAwareMockApp::new(SurfaceId::ROOT);
     let primary_themes = Arc::clone(&primary_app.themes_seen);
     let primary_locales = Arc::clone(&primary_app.locales_seen);
     let primary_events = Arc::clone(&primary_app.lifecycle_events);
@@ -406,7 +406,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
 
     let primary_session = DesktopSession::new(
         primary_app,
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 640.0,
             height: 480.0,
@@ -418,7 +418,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     let primary_h = host
         .open_window(
             1,
-            1,
+            SurfaceId::ROOT,
             SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Primary", 640.0, 480.0)),
             primary_session,
         )
@@ -433,30 +433,30 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     assert_eq!(primary_locales.lock().unwrap().len(), 1);
     assert_eq!(primary_locales.lock().unwrap()[0].tag, "en-US");
     assert!(primary_events.lock().unwrap().iter().any(
-        |e| matches!(e, WindowLifecycleEvent::Opened { handle, surface_id: 1, .. } if *handle == primary_h)
+        |e| matches!(e, WindowLifecycleEvent::Opened { handle, surface_id, .. } if *handle == primary_h && *surface_id == SurfaceId::ROOT)
     ));
 
     // 2. App submits typed WindowCommands directly to open Modal, Sheet, Popover, and update title/bounds.
     let count = host.window(1).unwrap().session.app().send_window_commands(&[
         WindowCommand::OpenWindow {
-            surface_id: 2,
+            surface_id: SurfaceId(2),
             presentation: SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: true,
                 descriptor: WindowDescriptor::new("Modal", 320.0, 200.0),
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: 3,
+            surface_id: SurfaceId(3),
             presentation: SurfacePresentation::Sheet {
-                parent: 1,
+                parent: SurfaceId::ROOT,
                 descriptor: WindowDescriptor::new("Inspector Sheet", 300.0, 240.0),
             },
         },
         WindowCommand::OpenWindow {
-            surface_id: 4,
+            surface_id: SurfaceId(4),
             presentation: SurfacePresentation::Popover {
-                anchor_surface: 3,
+                anchor_surface: SurfaceId(3),
                 anchor_rect: WindowRect::new(10.0, 10.0, 80.0, 24.0),
                 descriptor: WindowDescriptor::new("Tooltip Popover", 180.0, 120.0),
             },
@@ -472,7 +472,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     ]);
     assert_eq!(count, 5);
 
-    let results = host.drain_window_commands(u64::from);
+    let results = host.drain_window_commands(|s| u64::from(s.raw()));
     assert_eq!(results.len(), 5);
     let modal_h = results[0].as_ref().unwrap().unwrap();
     let sheet_h = results[1].as_ref().unwrap().unwrap();
@@ -502,7 +502,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
         .app()
         .send_window_commands(&[WindowCommand::CloseWindow { handle: primary_h }]);
     assert_eq!(
-        host.drain_window_commands(u64::from),
+        host.drain_window_commands(|s| u64::from(s.raw())),
         vec![Err(WindowError::BlockedByModalChild {
             target: primary_h,
             modal_child: modal_h,
@@ -516,10 +516,10 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
         .session
         .app()
         .send_window_commands(&[WindowCommand::CloseWindow { handle: modal_h }]);
-    assert_eq!(host.drain_window_commands(u64::from), vec![Ok(None)]);
+    assert_eq!(host.drain_window_commands(|s| u64::from(s.raw())), vec![Ok(None)]);
     assert_eq!(host.window_count(), 3);
     assert!(primary_events.lock().unwrap().iter().any(
-        |e| matches!(e, WindowLifecycleEvent::Closed { handle, surface_id: 2 } if *handle == modal_h)
+        |e| matches!(e, WindowLifecycleEvent::Closed { handle, surface_id } if *handle == modal_h && *surface_id == SurfaceId(2))
     ));
 
     // 5. Live theme change (Dark @ 2x) and locale change (ar-EG RTL) flow directly via TypedEventBus.
@@ -568,7 +568,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
         host.window_manager().get(primary_h).unwrap().lifecycle,
         WindowLifecycleState::ClosePending
     );
-    assert_eq!(host.drain_window_commands(u64::from), vec![Ok(None)]);
+    assert_eq!(host.drain_window_commands(|s| u64::from(s.raw())), vec![Ok(None)]);
     assert_eq!(
         host.window_manager().get(primary_h).unwrap().lifecycle,
         WindowLifecycleState::Open
@@ -579,7 +579,7 @@ fn multi_window_service_roundtrip_modal_close_block_cascade_veto_and_theme_local
     allow_flag.store(true, Ordering::SeqCst);
     let allow_pending = host.handle_close_requested(1).unwrap();
     assert!(allow_pending.vetoed);
-    assert_eq!(host.drain_window_commands(u64::from), vec![Ok(None)]);
+    assert_eq!(host.drain_window_commands(|s| u64::from(s.raw())), vec![Ok(None)]);
     assert_eq!(host.window_count(), 0);
     assert!(host.window_manager().get(popover_h).is_none());
     assert!(host.window_manager().get(sheet_h).is_none());

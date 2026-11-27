@@ -9,11 +9,12 @@ Cross-platform 2D/GPU Skia `StoreBackend` (`packages/backends/skia`, **Backend l
 - `gpu::{GaneshPresenter, NativeSwapchain, metal::MetalSwapchain, vulkan::VulkanSwapchain, d3d12::D3D12Swapchain}`, `raster`, `image_cache`
 
 ```rust
+use nve_abi::SurfaceId;
 use nve_backend_skia::SkiaBackend;
 use nve_engine::{StoreBackend, Viewport};
 
 let mut backend = SkiaBackend::new();
-backend.set_viewport(1, Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
+backend.set_viewport(SurfaceId(1), Viewport { width: 1280.0, height: 720.0, scale_factor: 2.0 });
 assert_eq!(backend.viewport().scale_factor, 2.0);
 ```
 

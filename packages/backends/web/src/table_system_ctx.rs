@@ -276,13 +276,13 @@ impl RetagElementSink for web_sys::Element {
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn replay_retagged_mirrors<E: RetagElementSink>(
     retagged: &[NodeId],
-    live: &HashMap<u32, E>,
+    live: &HashMap<NodeId, E>,
     plugin_attrs: &HashMap<NodeId, Vec<(String, String)>>,
     plugin_inline_css: &HashMap<NodeId, String>,
     plugin_inner_html: &HashMap<NodeId, String>,
 ) {
     for &nid in retagged {
-        let Some(el) = live.get(&nid.raw()) else {
+        let Some(el) = live.get(&nid) else {
             continue;
         };
         if let Some(attrs) = plugin_attrs.get(&nid) {
@@ -307,12 +307,12 @@ pub(crate) fn dispatch_retagged_sync<E>(
     registry: &WebTableRegistry,
     store: &nve_store::NodeStore,
     retagged: &[NodeId],
-    live: &HashMap<u32, E>,
+    live: &HashMap<NodeId, E>,
     committed: &nve_abi::hash::HashSet<(TableSlot, NodeId)>,
     mut on_sync: impl FnMut(&dyn crate::table_system::WebTableSystem, NodeId, &E),
 ) {
     for &nid in retagged {
-        let Some(el) = live.get(&nid.raw()) else { continue };
+        let Some(el) = live.get(&nid) else { continue };
         for sys in registry.iter() {
             let slot = sys.slot();
             if store.has_slot(nid, slot) && !committed.contains(&(slot, nid)) {

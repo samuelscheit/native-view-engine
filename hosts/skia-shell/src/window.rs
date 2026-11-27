@@ -160,7 +160,7 @@ impl Default for DesktopPreviewOptions {
             scale_factor: 1.0,
             clear_color: ColorRgba::rgb(15, 23, 42),
             ws_url: Some(DEFAULT_WS_URL.to_string()),
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             show_hud: true,
             preferred_backend: GpuBackendKind::platform_preferred(),
             vsync: true,

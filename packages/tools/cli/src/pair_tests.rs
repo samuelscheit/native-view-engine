@@ -63,7 +63,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     let (ctrl_tx, ctrl_rx) = unbounded();
     let (ready_tx, ready_rx) = bounded(1);
     let server_thread = std::thread::spawn(move || {
-        let surface = DioxusSurface::new(1, InspectDemo);
+        let surface = DioxusSurface::new(SurfaceId(1), InspectDemo);
         let mut session = PairSession::start(
             surface,
             "127.0.0.1",
@@ -107,7 +107,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -127,7 +127,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
 
     let make_tap = |ts: u64| {
         encode_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id: btn_node,
             timestamp_us: ts,
             kind: NativeEventKind::Press,

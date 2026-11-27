@@ -22,9 +22,9 @@ use nve_engine::{
     RelocHeader, StateSaveOutcome, StateStoreConfig, StoreBackend, StoreWireReplica, VerifyMode,
     Viewport,
 };
+use nve_store::ChangeSet;
 #[cfg(test)]
 use nve_store::NodeStore;
-use nve_store::{ChangeSet, NodeId as StoreNodeId};
 use nve_svg_skia::SvgSkiaSystem;
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
@@ -129,7 +129,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             app,
             replica,
             surface_id,
-            next_frame_id: 1,
+            next_frame_id: FrameId(1),
             viewport,
             pixel_buffer,
             clear_color,
@@ -212,7 +212,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let val = self
             .replica
             .backend()
-            .text_input_value(self.replica.store(), StoreNodeId(id))?;
+            .text_input_value(self.replica.store(), id)?;
         val.get(s..e).map(str::to_owned)
     }
 
@@ -291,7 +291,7 @@ impl<A: DesktopApp> DesktopSession<A> {
         let scene_buf = self.replica.backend().layout_tree().export_scene_reloc(
             self.replica.store(),
             schema_version,
-            self.frame_counter.max(1),
+            FrameId(self.frame_counter.max(1)),
             app_tag,
             self.clear_color,
         )?;
@@ -381,13 +381,12 @@ impl<A: DesktopApp> DesktopSession<A> {
         else {
             return Ok(false);
         };
-        let sid = StoreNodeId(scroll_node_id);
         let prev = self.replica.backend().scroll_offset(scroll_node_id);
         let (store, backend) = self.replica.store_and_backend_mut();
-        let (new_x, new_y) = backend.apply_scroll_delta(store, sid, delta_x, delta_y);
+        let (new_x, new_y) = backend.apply_scroll_delta(store, scroll_node_id, delta_x, delta_y);
         let offset_changed = (prev.0 - new_x).abs() > 1e-4 || (prev.1 - new_y).abs() > 1e-4;
         let (content_width, content_height) = backend
-            .scroll_content_size(store, sid)
+            .scroll_content_size(store, scroll_node_id)
             .unwrap_or((self.viewport.width, self.viewport.height));
 
         let event = [NveDirectEvent::scroll(
@@ -448,7 +447,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// Renders a frame from the app into `SkiaBackend` and rasterizes into `pixel_buffer`.
     pub fn render_and_rasterize(&mut self) -> Result<&PixelBuffer, DesktopHostError> {
         let frame_id = self.next_frame_id;
-        self.next_frame_id += 1;
+        self.next_frame_id = self.next_frame_id.next();
         let bytes = self.app.render(frame_id);
         if !bytes.is_empty() {
             self.replica.submit_nve2_frame(bytes)?;

@@ -8,8 +8,8 @@ mod loader_common;
 
 use loader_common::{compile_test_cdylib, TempDirGuard, SHARED_ABI_DEFS};
 use nve_abi::{
-    NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry, NveSizeConstraints,
-    NveValue,
+    FrameId, NodeId, NveDirectEvent, NveGestureDisposition, NveIntrinsicSize, NveMapEntry,
+    NveSizeConstraints, NveValue, SurfaceId,
 };
 use nve_engine::loader::{HotAppInstance, LoaderError};
 use nve_engine::HotPatchMsg;
@@ -19,7 +19,7 @@ fn loader_reports_io_error_for_missing_dylib_and_load_error_for_invalid_binary()
     let dir = TempDirGuard::new("loader-errors");
 
     let missing = dir.path().join("does_not_exist.dylib");
-    let err = HotAppInstance::load(&missing, 1, 1, None)
+    let err = HotAppInstance::load(&missing, SurfaceId::ROOT, 1, None)
         .err()
         .expect("missing dylib must fail");
     assert!(matches!(err, LoaderError::Io(_)), "got {err:?}");
@@ -27,7 +27,7 @@ fn loader_reports_io_error_for_missing_dylib_and_load_error_for_invalid_binary()
 
     let bogus = dir.path().join("not_a_dylib.dylib");
     std::fs::write(&bogus, b"definitely not a Mach-O / ELF / PE library").unwrap();
-    let err = HotAppInstance::load(&bogus, 1, 1, None)
+    let err = HotAppInstance::load(&bogus, SurfaceId::ROOT, 1, None)
         .err()
         .expect("corrupt binary must fail");
     assert!(matches!(err, LoaderError::Load(_)), "got {err:?}");
@@ -45,7 +45,7 @@ fn loader_rejects_dylib_with_missing_symbol_or_null_surface_interface() {
         pub extern "C" fn unrelated_symbol() -> u32 { 42 }
         "#,
     );
-    let err = HotAppInstance::load(&no_sym_path, 1, 1, None)
+    let err = HotAppInstance::load(&no_sym_path, SurfaceId::ROOT, 1, None)
         .err()
         .expect("missing symbol must fail");
     assert!(matches!(err, LoaderError::Load(_)), "got {err:?}");
@@ -61,7 +61,7 @@ fn loader_rejects_dylib_with_missing_symbol_or_null_surface_interface() {
         }
         "#,
     );
-    let err = HotAppInstance::load(&null_surface_path, 1, 1, None)
+    let err = HotAppInstance::load(&null_surface_path, SurfaceId::ROOT, 1, None)
         .err()
         .expect("null surface interface must fail");
     assert!(matches!(err, LoaderError::MissingSurfaceInterface), "got {err:?}");
@@ -109,10 +109,10 @@ fn loader_handles_surface_only_module_with_optional_interfaces_absent() {
     );
     let path = compile_test_cdylib(dir.path(), "surface_only_app", &src);
 
-    let mut inst = HotAppInstance::load(&path, 5, 1, Some(b"ignored")).expect("load surface-only");
+    let mut inst = HotAppInstance::load(&path, SurfaceId(5), 1, Some(b"ignored")).expect("load surface-only");
     assert_eq!(inst.generation(), 1);
-    assert_eq!(inst.render(9), 9u64.to_le_bytes());
-    let tap = [NveDirectEvent::press(5, 2, 10, 1.0, 2.0)];
+    assert_eq!(inst.render(FrameId(9)), 9u64.to_le_bytes());
+    let tap = [NveDirectEvent::press(SurfaceId(5), NodeId(2), 10, 1.0, 2.0)];
     assert!(inst.dispatch_events(&tap));
     assert!(!inst.dispatch_events(&[]));
 
@@ -242,11 +242,11 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
 
     let dylib_path = compile_test_cdylib(dir.path(), "full_hotswap_app", &cdylib_src);
 
-    let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
+    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
     let gen1_copy = inst.loaded_copy_path().to_path_buf();
     assert!(gen1_copy.exists());
     assert_eq!(inst.generation(), 1);
-    assert_eq!(inst.render(1), b"frame=1;counter=0");
+    assert_eq!(inst.render(FrameId(1)), b"frame=1;counter=0");
 
     assert_eq!(
         inst.measure(NveSizeConstraints::loose(500.0, 500.0)),
@@ -257,15 +257,15 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
 
     let props = [NveMapEntry::new("counter", NveValue::i64(5))];
     assert!(inst.set_props(&props));
-    let tap = [NveDirectEvent::press(1, 2, 10, 1.0, 2.0)];
+    let tap = [NveDirectEvent::press(SurfaceId::ROOT, NodeId(2), 10, 1.0, 2.0)];
     assert!(inst.dispatch_events(&tap));
     let emitted = inst.drain_emitted_events();
     assert_eq!(emitted.len(), 1);
-    assert_eq!(emitted[0].node_id, 6);
+    assert_eq!(emitted[0].node_id, NodeId(6));
 
     let patch = HotPatchMsg::DevStatus { message: "fixture".into(), latency_ms: 0 }.to_bytes();
     assert!(inst.apply_hot_patch(&patch));
-    assert_eq!(inst.render(2), b"frame=2;counter=16");
+    assert_eq!(inst.render(FrameId(2)), b"frame=2;counter=16");
     assert_eq!(inst.snapshot_state(), 16u32.to_le_bytes());
 
     let outcome2 = inst.reload(&dylib_path).expect("reload gen 2");
@@ -277,9 +277,9 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert_ne!(gen2_copy, gen1_copy);
     assert!(gen2_copy.exists());
     assert_eq!(inst.generation(), 2);
-    assert_eq!(inst.render(3), b"frame=3;counter=16");
+    assert_eq!(inst.render(FrameId(3)), b"frame=3;counter=16");
     assert!(inst.dispatch_events(&tap));
-    assert_eq!(inst.render(4), b"frame=4;counter=17");
+    assert_eq!(inst.render(FrameId(4)), b"frame=4;counter=17");
 
     // Transactional failure safety across missing/corrupt/bad-symbol/no-surface/null-handle.
     assert!(matches!(inst.reload(&dir.path().join("missing.dylib")), Err(LoaderError::Io(_))));
@@ -326,7 +326,7 @@ fn loader_valid_dylib_full_lifecycle_and_state_preserving_hotswap() {
     assert_eq!(outcome3.generation, 3);
     assert!(!gen2_copy.exists());
     let gen3_copy = inst.loaded_copy_path().to_path_buf();
-    assert_eq!(inst.render(5), b"frame=5;counter=17");
+    assert_eq!(inst.render(FrameId(5)), b"frame=5;counter=17");
     drop(inst);
     assert!(!gen3_copy.exists());
 }

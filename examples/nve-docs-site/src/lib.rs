@@ -14,7 +14,7 @@ pub mod wasm;
 
 use std::sync::Arc;
 
-use nve_abi::SurfaceId;
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::{SsrOutput, WebBackend};
 use nve_clipboard::MemoryClipboard;
 use nve_dioxus::DioxusSurface;
@@ -43,7 +43,7 @@ pub fn create_nve_docs_surface(
     base_path: &str,
     viewport: DocsViewport,
 ) -> DioxusSurface {
-    create_nve_docs_surface_on(1, route, base_path, viewport)
+    create_nve_docs_surface_on(SurfaceId::ROOT, route, base_path, viewport)
 }
 
 /// Create a `DioxusSurface` for the official embedded `docs/content/` on an explicit `surface_id`.
@@ -99,7 +99,7 @@ pub fn render_nve_docs_ssr(route: &str, base_path: &str, viewport: DocsViewport)
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend.register_table_system(nve_canvas_web::CanvasWebSystem);
     surface
-        .commit_to(1, &mut backend)
+        .commit_to(FrameId(1), &mut backend)
         .expect("WebBackend commit_to for docs SSR");
     backend.render_ssr(surface.store())
 }

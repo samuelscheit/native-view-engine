@@ -316,8 +316,8 @@ pub fn encode_events(events: &[NativeEvent]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + events.len() * 32);
     out.extend_from_slice(&(events.len() as u32).to_le_bytes());
     for ev in events {
-        out.extend_from_slice(&ev.surface_id.to_le_bytes());
-        out.extend_from_slice(&ev.node_id.to_le_bytes());
+        out.extend_from_slice(&ev.surface_id.raw().to_le_bytes());
+        out.extend_from_slice(&ev.node_id.raw().to_le_bytes());
         out.extend_from_slice(&ev.timestamp_us.to_le_bytes());
         out.push(ev.kind as u8);
         match &ev.payload {
@@ -453,8 +453,8 @@ pub fn decode_events(bytes: &[u8]) -> Result<Vec<NativeEvent>, DecodeError> {
     let count = read_u32(&mut pos)? as usize;
     let mut out = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
-        let surface_id = read_u32(&mut pos)?;
-        let node_id = read_u32(&mut pos)?;
+        let surface_id = SurfaceId(read_u32(&mut pos)?);
+        let node_id = NodeId(read_u32(&mut pos)?);
         let timestamp_us = read_u64(&mut pos)?;
         let kind = NativeEventKind::from_u8(take(&mut pos, 1)?[0])?;
         let ptag = take(&mut pos, 1)?[0];

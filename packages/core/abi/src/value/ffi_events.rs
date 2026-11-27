@@ -1,6 +1,6 @@
 use nve_abi_macros::NveAbi;
 
-use crate::{NativeEventKind, NveEventPayloadTag};
+use crate::{NativeEventKind, NodeId, NveEventPayloadTag, SurfaceId};
 
 use super::ffi_types::{guarded_slice, NveStrSlice, NveValue};
 
@@ -23,10 +23,10 @@ pub const NVE_EVENT_FLAG_COMPOSING: u8 = 1 << 4;
 #[derive(Clone, Copy, NveAbi)]
 #[nve_abi(size_64 = 96)]
 pub struct NveDirectEvent {
-    #[nve_abi(offset = 0)]
-    pub surface_id: u32,
-    #[nve_abi(offset = 4)]
-    pub node_id: u32,
+    #[nve_abi(offset = 0, c_type = "NveSurfaceId")]
+    pub surface_id: SurfaceId,
+    #[nve_abi(offset = 4, c_type = "NveNodeId")]
+    pub node_id: NodeId,
     #[nve_abi(offset = 8)]
     pub timestamp_us: u64,
     /// `NativeEventKind` (1..=20).
@@ -65,15 +65,15 @@ pub struct NveDirectEvent {
 impl Default for NveDirectEvent {
     #[inline]
     fn default() -> Self {
-        Self::empty(0, 0, 0, NativeEventKind::Focus)
+        Self::empty(SurfaceId::NULL, NodeId::NULL, 0, NativeEventKind::Focus)
     }
 }
 
 impl NveDirectEvent {
     #[inline]
     pub const fn empty(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         kind: NativeEventKind,
     ) -> Self {
@@ -97,7 +97,13 @@ impl NveDirectEvent {
     }
 
     #[inline]
-    pub const fn press(surface_id: u32, node_id: u32, timestamp_us: u64, x: f32, y: f32) -> Self {
+    pub const fn press(
+        surface_id: SurfaceId,
+        node_id: NodeId,
+        timestamp_us: u64,
+        x: f32,
+        y: f32,
+    ) -> Self {
         Self {
             kind: NativeEventKind::Press as u8,
             payload_tag: NveEventPayloadTag::Point as u8,
@@ -109,8 +115,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn long_press(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         x: f32,
         y: f32,
@@ -126,8 +132,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn scroll(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         x: f32,
         y: f32,
@@ -147,8 +153,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn text_change(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         text: &str,
     ) -> Self {
@@ -162,8 +168,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn layout(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         x: f32,
         y: f32,
@@ -183,8 +189,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn composition(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         kind: NativeEventKind,
         text: &str,
@@ -200,8 +206,8 @@ impl NveDirectEvent {
     #[inline]
     #[allow(clippy::too_many_arguments)]
     pub const fn key_down(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         key: &str,
         code: &str,
@@ -227,8 +233,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn key_up(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         key: &str,
         code: &str,
@@ -247,7 +253,12 @@ impl NveDirectEvent {
     }
 
     #[inline]
-    pub const fn submit(surface_id: u32, node_id: u32, timestamp_us: u64, text: &str) -> Self {
+    pub const fn submit(
+        surface_id: SurfaceId,
+        node_id: NodeId,
+        timestamp_us: u64,
+        text: &str,
+    ) -> Self {
         Self {
             kind: NativeEventKind::Submit as u8,
             payload_tag: if text.is_empty() {
@@ -263,8 +274,8 @@ impl NveDirectEvent {
     #[inline]
     #[allow(clippy::too_many_arguments)]
     pub const fn pointer(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         kind: NativeEventKind,
         x: f32,
@@ -285,8 +296,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn wheel(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         delta_x: f32,
         delta_y: f32,
@@ -304,8 +315,8 @@ impl NveDirectEvent {
 
     #[inline]
     pub const fn custom(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         name: &str,
         value: NveValue,
@@ -325,8 +336,8 @@ impl NveDirectEvent {
     /// borrows `payload` bytes in `text` with zero struct-size growth.
     #[inline]
     pub const fn table_event(
-        surface_id: u32,
-        node_id: u32,
+        surface_id: SurfaceId,
+        node_id: NodeId,
         timestamp_us: u64,
         table_key: crate::Key64,
         event_id: u32,

@@ -261,7 +261,7 @@ mod tests {
     use nve_abi::FrameId;
     use nve_components::tables::{register_core_tables, Layout, Visual};
     use nve_store::wire::WireEncoder;
-    use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+    use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
     struct CountingTestApp {
         count: u32,
@@ -289,8 +289,8 @@ mod tests {
             let mut changes = ChangeSet::default();
             {
                 let mut tx = store.tx();
-                let root = StoreNodeId::ROOT;
-                let n2 = StoreNodeId(2);
+                let root = NodeId::ROOT;
+                let n2 = NodeId(2);
                 let _ = tx.create_at(root);
                 let _ = tx.create_at(n2);
                 tx.set(n2, Layout::WIDTH, Length::points(200.0));
@@ -358,7 +358,7 @@ mod tests {
         };
         let mut session = DesktopSession::new(
             CountingTestApp::new(),
-            1,
+            SurfaceId::ROOT,
             viewport,
             ColorRgba::BLACK,
             false,
@@ -378,7 +378,7 @@ mod tests {
             &boot_dir,
             None,
             1,
-            1,
+            SurfaceId::ROOT,
             viewport,
             ColorRgba::BLACK,
         )
@@ -393,7 +393,7 @@ mod tests {
             &boot_dir,
             None,
             1,
-            1,
+            SurfaceId::ROOT,
             viewport,
             ColorRgba::BLACK,
         )

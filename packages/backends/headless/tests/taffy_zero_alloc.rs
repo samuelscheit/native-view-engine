@@ -58,7 +58,7 @@ fn taffy_store_layout_and_headless_commit_zero_steady_state_allocs() {
         height: 600.0,
         scale_factor: 1.0,
     };
-    backend.set_viewport(1, vp);
+    backend.set_viewport(nve_abi::SurfaceId::ROOT, vp);
 
     // Build a 64-node Flexbox + text tree and warm all caches/scratch stacks.
     let mut tx = store.tx();

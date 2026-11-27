@@ -4,7 +4,7 @@
 use nve_abi::{EventMask, NodeId};
 use nve_components::tables::{is_node_display_none, Interaction, Scroll, Visual};
 use nve_engine::{LayoutRect, StoreLayoutEngine};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 
 use crate::display_list::{intersect_rects, offset_rect, point_in_rect, should_clip_children};
 use crate::{SkiaBackend, MAX_HIT_TEST_DEPTH};
@@ -20,7 +20,7 @@ impl HitTargetFilter {
         self,
         backend: &SkiaBackend<L>,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
     ) -> bool {
         match self {
             Self::EventSubscribed => store
@@ -35,7 +35,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
         self.hit_test_filtered(
             store,
-            StoreNodeId::ROOT,
+            NodeId::ROOT,
             x,
             y,
             (0.0, 0.0),
@@ -49,7 +49,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     pub fn hit_test_interaction(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
         self.hit_test_filtered(
             store,
-            StoreNodeId::ROOT,
+            NodeId::ROOT,
             x,
             y,
             (0.0, 0.0),
@@ -61,13 +61,13 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     }
 
     pub fn hit_test_scroll_container(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_scroll_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), None, false, 0)
+        self.hit_test_scroll_rec(store, NodeId::ROOT, x, y, (0.0, 0.0), None, false, 0)
     }
 
     fn visit_children_topmost_first(
         store: &NodeStore,
-        children: &[StoreNodeId],
-        mut visit: impl FnMut(StoreNodeId) -> Option<NodeId>,
+        children: &[NodeId],
+        mut visit: impl FnMut(NodeId) -> Option<NodeId>,
     ) -> Option<NodeId> {
         let has_z = children.len() > 1
             && children
@@ -80,7 +80,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 }
             }
         } else {
-            let mut sorted: Vec<StoreNodeId> = children.to_vec();
+            let mut sorted: Vec<NodeId> = children.to_vec();
             sorted.sort_by_key(|&cid| store.try_row::<Visual>(cid).map_or(0, |v| v.z_index()));
             for cid in sorted.into_iter().rev() {
                 if let Some(hit) = visit(cid) {
@@ -95,7 +95,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     fn hit_test_filtered(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
@@ -110,7 +110,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let is_vis_hidden = store
             .try_row::<Visual>(id)
             .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
-        let rect = self.layout_tree.layout_of(id.raw())?;
+        let rect = self.layout_tree.layout_of(id)?;
         let (stx, sty) = self.layout_tree.compute_sticky_delta(store, id);
         let node_offset = (offset.0 + stx, offset.1 + sty);
         let visual_rect = offset_rect(rect, node_offset);
@@ -122,7 +122,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
         let effective_tf = self
             .motion
-            .resolve_animated_transform(id.raw(), self.layout_tree.effective_transform(store, id));
+            .resolve_animated_transform(id, self.layout_tree.effective_transform(store, id));
         let (px, py) = if let Some(tf) = effective_tf
             && !tf.is_identity()
         {
@@ -140,7 +140,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let inside_self = point_in_rect(px, py, visual_rect);
 
         let clips = should_clip_children(store, id);
-        if !inside_self && id != StoreNodeId::ROOT && clips {
+        if !inside_self && id != NodeId::ROOT && clips {
             return None;
         }
 
@@ -153,7 +153,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 Some(c) if point_in_rect(px, py, c) => Some(c),
                 _ => {
                     return if inside_self && !is_vis_hidden && filter.matches(self, store, id) {
-                        Some(id.raw())
+                        Some(id)
                     } else {
                         None
                     };
@@ -185,7 +185,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         }
 
         if inside_self && !is_vis_hidden && filter.matches(self, store, id) {
-            Some(id.raw())
+            Some(id)
         } else {
             None
         }
@@ -195,7 +195,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     fn hit_test_scroll_rec(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
@@ -209,11 +209,11 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         let is_vis_hidden = store
             .try_row::<Visual>(id)
             .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
-        let rect = self.layout_tree.layout_of(id.raw())?;
+        let rect = self.layout_tree.layout_of(id)?;
         let visual_rect = offset_rect(rect, offset);
         let inside_self =
             point_in_rect(x, y, visual_rect) && clip.is_none_or(|c| point_in_rect(x, y, c));
-        if !inside_self && id != StoreNodeId::ROOT {
+        if !inside_self && id != NodeId::ROOT {
             return None;
         }
 
@@ -253,7 +253,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         }
 
         if inside_self && !is_vis_hidden && is_scrollable {
-            Some(id.raw())
+            Some(id)
         } else {
             None
         }

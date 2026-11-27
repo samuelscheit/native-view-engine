@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use nve_abi::EventMask;
+use nve_abi::{EventMask, FrameId, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_components::tables::{
     AlignItems, FlexDirection, Interaction, JustifyContent, Layout, TextContent, Typography,
@@ -59,8 +59,8 @@ fn compare_store_taffy_vs_yoga(
         yoga_backend.set_text_measurer(m);
     }
 
-    taffy_backend.set_viewport(1, viewport);
-    yoga_backend.set_viewport(1, viewport);
+    taffy_backend.set_viewport(SurfaceId::ROOT, viewport);
+    yoga_backend.set_viewport(SurfaceId::ROOT, viewport);
 
     taffy_backend
         .commit(store, changes)
@@ -73,10 +73,10 @@ fn compare_store_taffy_vs_yoga(
     assert_eq!(yoga_backend.name(), "headless-yoga");
 
     for &id in node_ids {
-        let tr = taffy_backend.layout_of(id.raw());
+        let tr = taffy_backend.layout_of(id);
         assert!(tr.is_some(), "[{label}] missing taffy rect for node #{}", id.raw());
         let tr = tr.expect("checked above");
-        let yr = yoga_backend.layout_of(id.raw());
+        let yr = yoga_backend.layout_of(id);
         assert!(yr.is_some(), "[{label}] missing yoga rect for node #{}", id.raw());
         let yr = yr.expect("checked above");
         assert_rect_parity(label, id, tr, yr);
@@ -249,8 +249,8 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
         return;
     }
 
-    let mut surface = nve_example_kitchen_sink::create_surface(1);
-    surface.reconcile(1);
+    let mut surface = nve_example_kitchen_sink::create_surface(SurfaceId::ROOT);
+    surface.reconcile(FrameId(1));
     let store = surface.store();
     let changes = surface.last_changes();
 
@@ -261,12 +261,12 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     };
 
     let mut taffy_backend = HeadlessBackend::new();
-    taffy_backend.set_viewport(1, viewport);
+    taffy_backend.set_viewport(SurfaceId::ROOT, viewport);
     taffy_backend.commit(store, changes).unwrap();
 
     let mut yoga_backend =
         HeadlessBackend::with_layout(YogaLayoutEngine::new().expect("real RN Yoga available"));
-    yoga_backend.set_viewport(1, viewport);
+    yoga_backend.set_viewport(SurfaceId::ROOT, viewport);
     yoga_backend.commit(store, changes).unwrap();
 
     let mut node_ids = live_node_ids(store);
@@ -278,8 +278,8 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     );
 
     for &id in &node_ids {
-        let tr = taffy_backend.layout_of(id.raw()).unwrap();
-        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        let tr = taffy_backend.layout_of(id).unwrap();
+        let yr = yoga_backend.layout_of(id).unwrap();
         assert_rect_parity("examples/kitchen-sink", id, tr, yr);
     }
 
@@ -292,8 +292,8 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     swapped_to_yoga.commit(store, &full_changes).unwrap();
     assert_eq!(swapped_to_yoga.layout_engine().name(), "yoga");
     for &id in &node_ids {
-        let sr = swapped_to_yoga.layout_of(id.raw()).unwrap();
-        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        let sr = swapped_to_yoga.layout_of(id).unwrap();
+        let yr = yoga_backend.layout_of(id).unwrap();
         assert_rect_parity("kitchen_sink_after_swap_to_yoga", id, sr, yr);
     }
 
@@ -303,8 +303,8 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
     swapped_to_dyn.commit(store, &full_changes).unwrap();
     assert_eq!(swapped_to_dyn.layout_engine().name(), "yoga");
     for &id in &node_ids {
-        let dr = swapped_to_dyn.layout_of(id.raw()).unwrap();
-        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        let dr = swapped_to_dyn.layout_of(id).unwrap();
+        let yr = yoga_backend.layout_of(id).unwrap();
         assert_rect_parity("kitchen_sink_after_swap_to_dyn_yoga", id, dr, yr);
     }
 
@@ -312,8 +312,8 @@ fn parity_examples_kitchen_sink_nodestore_and_live_swap() {
         swapped_to_dyn.swap_layout_engine(TaffyStoreLayout::new());
     swapped_back_taffy.commit(store, &full_changes).unwrap();
     for &id in &node_ids {
-        let tr = swapped_back_taffy.layout_of(id.raw()).unwrap();
-        let yr = yoga_backend.layout_of(id.raw()).unwrap();
+        let tr = swapped_back_taffy.layout_of(id).unwrap();
+        let yr = yoga_backend.layout_of(id).unwrap();
         assert_rect_parity("kitchen_sink_after_swap_back_to_taffy", id, tr, yr);
     }
 }
@@ -392,16 +392,16 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
     let mut yoga = HeadlessBackend::with_layout(YogaLayoutEngine::new().unwrap());
     taffy.set_text_measurer(Arc::clone(&measurer));
     yoga.set_text_measurer(Arc::clone(&measurer));
-    taffy.set_viewport(1, viewport);
-    yoga.set_viewport(1, viewport);
+    taffy.set_viewport(SurfaceId::ROOT, viewport);
+    yoga.set_viewport(SurfaceId::ROOT, viewport);
 
     taffy.commit(&store, &changes1).unwrap();
     yoga.commit(&store, &changes1).unwrap();
 
-    let y_text_1 = yoga.layout_of(n3.raw()).unwrap();
+    let y_text_1 = yoga.layout_of(n3).unwrap();
     assert!((y_text_1.width - 100.0).abs() <= 1.0, "got {y_text_1:?}");
     assert!((y_text_1.height - 75.0).abs() <= 1.0, "got {y_text_1:?}");
-    let y_sib_1 = yoga.layout_of(n4.raw()).unwrap();
+    let y_sib_1 = yoga.layout_of(n4).unwrap();
     assert!((y_sib_1.y - 93.0).abs() <= 1.0, "got {y_sib_1:?}");
 
     // Frame 2: shorten text to 5 chars -> 50px -> 1 line = 25px, sibling moves up to y = 43!
@@ -419,13 +419,13 @@ fn parity_custom_text_measurer_wrapping_and_dynamic_text_updates() {
         assert_rect_parity(
             "custom_text_wrapping_frame2",
             id,
-            taffy.layout_of(id.raw()).unwrap(),
-            yoga.layout_of(id.raw()).unwrap(),
+            taffy.layout_of(id).unwrap(),
+            yoga.layout_of(id).unwrap(),
         );
     }
-    let y_text_2 = yoga.layout_of(n3.raw()).unwrap();
+    let y_text_2 = yoga.layout_of(n3).unwrap();
     assert!((y_text_2.height - 25.0).abs() <= 1.0, "got {y_text_2:?}");
-    let y_sib_2 = yoga.layout_of(n4.raw()).unwrap();
+    let y_sib_2 = yoga.layout_of(n4).unwrap();
     assert!((y_sib_2.y - 43.0).abs() <= 1.0, "got {y_sib_2:?}");
 }
 

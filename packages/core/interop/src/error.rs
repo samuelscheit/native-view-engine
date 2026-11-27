@@ -11,6 +11,7 @@ pub type SubscriptionId = u64;
 /// channel bus, and island operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteropError {
+    InvalidSurfaceId(SurfaceId),
     SurfaceNotFound(SurfaceId),
     DuplicateSurface(SurfaceId),
     ParentNotFound(SurfaceId),
@@ -45,6 +46,7 @@ impl From<crate::window::WindowError> for InteropError {
 impl fmt::Display for InteropError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidSurfaceId(id) => write!(f, "invalid surface id {id}"),
             Self::SurfaceNotFound(id) => write!(f, "surface {id} not found"),
             Self::DuplicateSurface(id) => write!(f, "surface {id} is already registered"),
             Self::ParentNotFound(id) => write!(f, "parent surface {id} not found"),

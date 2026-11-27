@@ -1,4 +1,4 @@
-use crate::NativeEventKind;
+use crate::{NativeEventKind, NodeId, SurfaceId};
 
 use super::ffi_events::{
     NveDirectEvent, NveEventBatch, NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE,
@@ -186,8 +186,8 @@ impl<'a> NveDirectEventRef<'a> {
     /// All pointers inside `raw` must remain valid and immutable for `'a`.
     #[inline] pub const unsafe fn from_raw(raw: &'a NveDirectEvent) -> Self { Self { raw } }
     #[inline] pub const fn raw(&self) -> &'a NveDirectEvent { self.raw }
-    #[inline] pub const fn surface_id(&self) -> u32 { self.raw.surface_id }
-    #[inline] pub const fn node_id(&self) -> u32 { self.raw.node_id }
+    #[inline] pub const fn surface_id(&self) -> SurfaceId { self.raw.surface_id }
+    #[inline] pub const fn node_id(&self) -> NodeId { self.raw.node_id }
     #[inline] pub const fn timestamp_us(&self) -> u64 { self.raw.timestamp_us }
     #[inline] pub const fn kind(&self) -> Option<NativeEventKind> { NativeEventKind::from_u8_opt(self.raw.kind) }
     #[inline] pub const fn payload_tag(&self) -> u8 { self.raw.payload_tag }
@@ -301,13 +301,13 @@ impl<'a> NvePropSliceRef<'a> {
     #[inline] pub const fn is_empty(&self) -> bool { self.entries.is_empty() }
     /// Zero-allocation `O(n)` lookup by `field_id`.
     #[inline] pub fn get(&self, field_id: u16) -> Option<NveValueRef<'a>> {
-        self.entries.iter().find_map(|e| (e.field_id == field_id).then_some(NveValueRef { raw: &e.value }))
+        self.entries.iter().find_map(|e| (e.field_id.raw() == field_id).then_some(NveValueRef { raw: &e.value }))
     }
     #[inline] pub fn entry(&self, index: usize) -> Option<(u16, NveValueRef<'a>)> {
-        self.entries.get(index).map(|e| (e.field_id, NveValueRef { raw: &e.value }))
+        self.entries.get(index).map(|e| (e.field_id.raw(), NveValueRef { raw: &e.value }))
     }
     #[inline] pub fn iter(&self) -> impl ExactSizeIterator<Item = (u16, NveValueRef<'a>)> + 'a {
-        self.entries.iter().map(|e| (e.field_id, NveValueRef { raw: &e.value }))
+        self.entries.iter().map(|e| (e.field_id.raw(), NveValueRef { raw: &e.value }))
     }
 }
 

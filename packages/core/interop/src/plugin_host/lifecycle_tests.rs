@@ -1,10 +1,10 @@
 use std::ffi::c_void;
 
 use nve_abi::{
-    NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent, NveEventBatch,
-    NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef,
-    NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveDirectEvent,
+    NveEventBatch, NveGestureDisposition, NveIntrinsicSize, NveLayoutApi, NveMapEntry,
+    NvePropsRef, NveSizeConstraints, NveSurfaceApi, NveValue, SurfaceId, NVE_IFACE_COMPONENT,
+    NVE_IFACE_DEV, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use nve_components::tables::TextContent;
 use nve_store::wire::{WireDecoder, WireEncoder};
@@ -51,7 +51,7 @@ struct MockPluginState {
     out_events: Vec<NveDirectEvent>,
 }
 
-unsafe extern "C" fn p1_create(surface_id: u32) -> NveAppHandle {
+unsafe extern "C" fn p1_create(surface_id: SurfaceId) -> NveAppHandle {
     Box::into_raw(Box::new(MockPluginState {
         surface_id,
         version_tag: "v1",
@@ -62,7 +62,7 @@ unsafe extern "C" fn p1_create(surface_id: u32) -> NveAppHandle {
     })) as NveAppHandle
 }
 
-unsafe extern "C" fn p2_create(surface_id: u32) -> NveAppHandle {
+unsafe extern "C" fn p2_create(surface_id: SurfaceId) -> NveAppHandle {
     Box::into_raw(Box::new(MockPluginState {
         surface_id,
         version_tag: "v2",
@@ -80,7 +80,7 @@ unsafe extern "C" fn p_destroy(handle: NveAppHandle) {
     }
 }
 
-unsafe extern "C" fn p_render(handle: NveAppHandle, _frame_id: u64) -> NveBufferSlice {
+unsafe extern "C" fn p_render(handle: NveAppHandle, _frame_id: FrameId) -> NveBufferSlice {
     // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
     st.frame_buf = encode_text_frame(&format!("{}:count={}", st.version_tag, st.counter));
@@ -130,7 +130,7 @@ unsafe extern "C" fn p_set_props(
 unsafe extern "C" fn p_drain_events(handle: NveAppHandle) -> NveEventBatch {
     // SAFETY: `NvePluginHost` passes a live exclusive handle from `p1_create`/`p2_create`.
     let st = unsafe { &mut *(handle as *mut MockPluginState) };
-    st.out_events = vec![NveDirectEvent::press(st.surface_id, st.counter, 0, 0.0, 0.0)];
+    st.out_events = vec![NveDirectEvent::press(st.surface_id, NodeId(st.counter), 0, 0.0, 0.0)];
     NveEventBatch::from_slice(&st.out_events)
 }
 
@@ -210,7 +210,7 @@ unsafe extern "C" fn broken_missing_surface_get_interface(_id: u32) -> *const c_
     std::ptr::null()
 }
 
-unsafe extern "C" fn null_handle_create(_surface_id: u32) -> NveAppHandle {
+unsafe extern "C" fn null_handle_create(_surface_id: SurfaceId) -> NveAppHandle {
     std::ptr::null_mut()
 }
 
@@ -230,7 +230,7 @@ unsafe extern "C" fn broken_null_handle_get_interface(id: u32) -> *const c_void 
 
 #[test]
 fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
-    let mut host = NvePluginHost::with_surface_base(20_000);
+    let mut host = NvePluginHost::with_surface_base(SurfaceId(20_000));
 
     // 1. Reject plugin missing NVE_IFACE_SURFACE.
     assert_eq!(
@@ -264,7 +264,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
         )
         .unwrap();
     let min_slot = host.get(p_min).unwrap();
-    assert_eq!(min_slot.surface_id(), 20_000);
+    assert_eq!(min_slot.surface_id(), SurfaceId(20_000));
     assert!(min_slot.capabilities().surface);
     assert!(!min_slot.capabilities().component);
     assert!(!min_slot.capabilities().layout);
@@ -280,7 +280,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert_eq!(host.active_count(), 2);
 
     let slot = host.get_mut(p_full).unwrap();
-    assert_eq!(slot.surface_id(), 20_001);
+    assert_eq!(slot.surface_id(), SurfaceId(20_001));
     assert!(slot.capabilities().component && slot.capabilities().dev && slot.capabilities().layout);
     assert_eq!(
         slot.measure(NveSizeConstraints::loose(400.0, 200.0)),
@@ -295,7 +295,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     let props = [NveMapEntry::new("counter", NveValue::i64(42))];
     assert!(slot.set_props(&props).unwrap());
     assert!(slot.dispatch_events(&[]).unwrap()); // counter -> 43
-    let f1 = slot.render(1).unwrap().to_vec();
+    let f1 = slot.render(FrameId(1)).unwrap().to_vec();
     assert_eq!(decode_first_text(&f1), "v1:count=43");
 
     // 5. Failed hot-swap (broken plugin returning null handle or missing surface)
@@ -319,7 +319,7 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     // Original v1 slot is still live at generation 1 with counter=43!
     let still_v1 = host.get_mut(p_full).unwrap();
     assert_eq!(still_v1.generation(), 1);
-    let f_after_fail = still_v1.render(2).unwrap().to_vec();
+    let f_after_fail = still_v1.render(FrameId(2)).unwrap().to_vec();
     assert_eq!(decode_first_text(&f_after_fail), "v1:count=43");
 
     // 6. Valid hot-swap v1 -> v2 preserves isolated surface_id (20_001) and counter=43!
@@ -333,9 +333,9 @@ fn capability_checks_isolated_surfaces_and_transactional_hotswap() {
     assert_eq!(gen2, 2);
 
     let v2_slot = host.get_mut(p_full).unwrap();
-    assert_eq!(v2_slot.surface_id(), 20_001);
+    assert_eq!(v2_slot.surface_id(), SurfaceId(20_001));
     assert_eq!(v2_slot.generation(), 2);
-    let f2 = v2_slot.render(3).unwrap().to_vec();
+    let f2 = v2_slot.render(FrameId(3)).unwrap().to_vec();
     assert_eq!(decode_first_text(&f2), "v2:count=43");
 
     // 7. Duplicate name rejected; unload cleans up cleanly.

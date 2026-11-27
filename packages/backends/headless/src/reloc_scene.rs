@@ -18,12 +18,12 @@ use nve_engine::{
     SCENE_NODE_CLIP_CHILDREN, SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN,
     SCENE_NODE_INTERACTIVE,
 };
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::{NodeId, NodeStore};
 
 use crate::{HeadlessBackend, TaffyStoreLayout, MAX_TREE_DEPTH};
 
 struct OwnedNodeData {
-    node_id: u32,
+    node_id: NodeId,
     parent_index: i32,
     primary_slot: u8,
     flags: u8,
@@ -52,9 +52,9 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         app_tag: &str,
         clear_color: ColorRgba,
     ) -> Result<RelocBuf, RelocError> {
-        let mut ordered_ids: Vec<(StoreNodeId, i32)> = Vec::new();
-        let mut id_to_idx: HashMap<StoreNodeId, u32> = HashMap::new();
-        let mut stack: Vec<(StoreNodeId, i32, usize)> = vec![(StoreNodeId::ROOT, -1, 0)];
+        let mut ordered_ids: Vec<(NodeId, i32)> = Vec::new();
+        let mut id_to_idx: HashMap<NodeId, u32> = HashMap::new();
+        let mut stack: Vec<(NodeId, i32, usize)> = vec![(NodeId::ROOT, -1, 0)];
 
         while let Some((id, parent_idx, depth)) = stack.pop() {
             if depth > MAX_TREE_DEPTH || !store.is_live(id) || id_to_idx.contains_key(&id) {
@@ -149,7 +149,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 .collect();
 
             owned.push(OwnedNodeData {
-                node_id: id.raw(),
+                node_id: id,
                 parent_index,
                 primary_slot: store.primary_slot(id).0,
                 flags,
@@ -276,12 +276,18 @@ fn prerender_native_frame0_into<A: NveApp, L: StoreLayoutEngine>(
     }
 
     let mut replica = StoreWireReplica::new(backend, core_realization_order());
-    let frame0_nve2 = app.render(1).to_vec();
+    let frame0_nve2 = app.render(FrameId(1)).to_vec();
     if !frame0_nve2.is_empty() {
         replica.submit_nve2_frame(&frame0_nve2)?;
     }
     replica
         .backend()
-        .export_scene_reloc(replica.store(), schema_version, 1, app_tag, clear_color)
+        .export_scene_reloc(
+            replica.store(),
+            schema_version,
+            FrameId(1),
+            app_tag,
+            clear_color,
+        )
         .map_err(|e| BackendError::Internal(e.to_string()))
 }

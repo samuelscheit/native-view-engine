@@ -314,7 +314,7 @@ pub(super) fn emit_rust_view(out: &mut CodeWriter, v: &HybridViewSpec, spec: &Hy
         let ev_name_lit = escape_c_like_string(&ev.name);
         writeln!(
             out,
-            "        let direct = NveDirectEvent::custom(surface_id, node_id, timestamp_us, \"{ev_name_lit}\", NveValue::map(&entries));"
+            "        let direct = NveDirectEvent::custom(nve_abi::SurfaceId(surface_id), nve_abi::NodeId(node_id), timestamp_us, \"{ev_name_lit}\", NveValue::map(&entries));"
         );
         writeln!(out, "        sink(&direct);");
         writeln!(out, "    }}");

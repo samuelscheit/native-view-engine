@@ -1072,8 +1072,8 @@ fn main() {
         let mut saw_direct = false;
         emit_video_surface_on_progress(1, 2, 333, 1200, 9000, |d| {
             saw_direct = true;
-            assert_eq!(d.surface_id, 1);
-            assert_eq!(d.node_id, 2);
+            assert_eq!(d.surface_id, nve_abi::SurfaceId(1));
+            assert_eq!(d.node_id, nve_abi::NodeId(2));
             assert_eq!(d.timestamp_us, 333);
         });
         assert!(saw_direct);

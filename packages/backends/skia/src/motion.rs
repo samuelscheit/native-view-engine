@@ -12,7 +12,7 @@ use nve_components::style_patch::VisualSnapshot;
 use nve_components::tables::{Motion, Transitions};
 use nve_components::transform::{lerp_transform_2d, Transform2D};
 use nve_engine::StoreLayoutEngine;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable};
+use nve_store::{ChangeSet, NodeStore, NveTable};
 
 use crate::SkiaBackend;
 
@@ -297,12 +297,12 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         self.motion.needs_next_frame()
     }
 
-    pub fn animated_style(&self, store: &NodeStore, node_id: StoreNodeId) -> Option<VisualSnapshot> {
+    pub fn animated_style(&self, store: &NodeStore, node_id: NodeId) -> Option<VisualSnapshot> {
         if !store.is_live(node_id) {
             return None;
         }
         let mut style = self.layout_tree.effective_visual(store, node_id);
-        self.motion.apply_animated_style(node_id.raw(), &mut style);
+        self.motion.apply_animated_style(node_id, &mut style);
         Some(style)
     }
 
@@ -317,27 +317,26 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         if self.motion.transitions.is_empty() {
             return;
         }
-        for &raw in dirty_ids {
-            let id = StoreNodeId(raw);
+        for &id in dirty_ids {
             if !store.is_live(id) {
                 continue;
             }
             let target = self.layout_tree.effective_visual(store, id);
-            self.motion.sync_target(raw, target);
+            self.motion.sync_target(id, target);
             let tf = self
                 .layout_tree
                 .effective_transform(store, id)
                 .unwrap_or(Transform2D::IDENTITY);
-            self.motion.sync_transform_target(raw, tf);
+            self.motion.sync_transform_target(id, tf);
         }
     }
 
     pub(crate) fn reconcile_motion_after_frame(&mut self, store: &NodeStore, changes: &ChangeSet) {
-        self.motion.retain_nodes(|raw| store.is_live(StoreNodeId(raw)));
+        self.motion.retain_nodes(|id| store.is_live(id));
         // Clean up entries when the `Motion` table is detached from a live node.
         if let Some(tc) = changes.table(Motion::slot()) {
             for &nid in &tc.detached {
-                self.motion.set_node_transitions(nid.raw(), Vec::new());
+                self.motion.set_node_transitions(nid, Vec::new());
             }
         }
         // Sync any newly added/updated `Motion` table rows into `MotionDriver`.
@@ -352,34 +351,33 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
                 } else {
                     Vec::new()
                 };
-                self.motion.set_node_transitions(id.raw(), specs);
+                self.motion.set_node_transitions(id, specs);
                 let style = self.layout_tree.effective_visual(store, id);
-                self.motion.seed_baseline(id.raw(), style);
+                self.motion.seed_baseline(id, style);
                 let tf = self
                     .layout_tree
                     .effective_transform(store, id)
                     .unwrap_or(Transform2D::IDENTITY);
-                self.motion.seed_transform_baseline(id.raw(), tf);
-            } else if self.motion.transitions.contains_key(&id.raw()) {
-                self.motion.set_node_transitions(id.raw(), Vec::new());
+                self.motion.seed_transform_baseline(id, tf);
+            } else if self.motion.transitions.contains_key(&id) {
+                self.motion.set_node_transitions(id, Vec::new());
             }
         }
         if self.motion.transitions.is_empty() {
             return;
         }
         let tracked: Vec<NodeId> = self.motion.transitions.keys().copied().collect();
-        for raw in tracked {
-            let id = StoreNodeId(raw);
+        for id in tracked {
             if !store.is_live(id) {
                 continue;
             }
             let target = self.layout_tree.effective_visual(store, id);
-            self.motion.sync_target(raw, target);
+            self.motion.sync_target(id, target);
             let tf = self
                 .layout_tree
                 .effective_transform(store, id)
                 .unwrap_or(Transform2D::IDENTITY);
-            self.motion.sync_transform_target(raw, tf);
+            self.motion.sync_transform_target(id, tf);
         }
     }
 }

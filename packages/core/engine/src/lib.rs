@@ -137,7 +137,7 @@ impl<B: StoreBackend> SurfaceRunner<B> {
         backend.set_viewport(surface_id, viewport);
         Self {
             surface_id,
-            next_frame_id: 1,
+            next_frame_id: FrameId(1),
             backend,
             profiler: FrameProfiler::new(512),
         }
@@ -161,7 +161,7 @@ impl<B: StoreBackend> SurfaceRunner<B> {
 
     pub fn next_frame_id(&mut self) -> FrameId {
         let id = self.next_frame_id;
-        self.next_frame_id += 1;
+        self.next_frame_id = self.next_frame_id.next();
         id
     }
 

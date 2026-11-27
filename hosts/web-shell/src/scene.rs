@@ -3,8 +3,9 @@
 
 use nve_abi::table::NveTableView;
 use nve_abi::{
-    FrameId, NodeId, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneNodeInput,
-    NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
+    FrameId, NodeId, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, PrimarySlot,
+    SceneNodeInput, ShortLen, ZIndex, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE,
+    NVE_NODE_LEAF_TEXT,
 };
 use nve_components::tables::{Interaction, Layout, Overflow, TextContent, Typography, Visual};
 use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable};
@@ -16,7 +17,7 @@ fn store_node_to_scene_input<'a>(
 ) -> (SceneNodeInput<'a>, u32, u16) {
     let children = store.children(node_id);
     children_scratch.clear();
-    children_scratch.extend(children.iter().map(|c| c.raw()));
+    children_scratch.extend(children.iter().copied());
 
     let (text_offset, text_len) = if let Some(tc) = store.try_row::<TextContent>(node_id) {
         let span = tc.text_span();
@@ -89,8 +90,8 @@ fn store_node_to_scene_input<'a>(
 
     (
         SceneNodeInput {
-            node_id: node_id.raw(),
-            primary_slot: store.primary_slot(node_id).0,
+            node_id,
+            primary_slot: PrimarySlot(store.primary_slot(node_id).0),
             flags,
             opacity_u8,
             x: 0.0,
@@ -103,7 +104,7 @@ fn store_node_to_scene_input<'a>(
             border_radius,
             border_width,
             font_size,
-            z_index,
+            z_index: ZIndex(z_index),
             text: "",
             children: children_scratch.as_slice(),
         },
@@ -195,9 +196,12 @@ impl SceneMirror {
                     == Some(self.text_dirty_epoch);
             let (input, text_offset, text_len) =
                 store_node_to_scene_input(store, node_id, &mut self.children_scratch);
-            let _ = self
-                .table
-                .upsert_node_external_text(input, text_offset, text_len, text_dirty);
+            let _ = self.table.upsert_node_external_text(
+                input,
+                text_offset,
+                ShortLen(text_len),
+                text_dirty,
+            );
         }
         self.table.prune_unseen();
         self.table.maybe_compact_slabs();

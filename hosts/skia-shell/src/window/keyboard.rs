@@ -8,7 +8,7 @@ use nve_abi::{
 };
 use nve_backend_skia::SkiaBackend;
 use nve_components::tables::Interaction;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use winit::keyboard::{Key, ModifiersState};
 
 use super::session::{now_us, DesktopSession};
@@ -18,17 +18,17 @@ use super::text_edit::{
 };
 use super::{DesktopApp, DesktopHostError};
 
-fn has_keydown_listener(store: &NodeStore, id: StoreNodeId) -> bool {
+fn has_keydown_listener(store: &NodeStore, id: NodeId) -> bool {
     store.try_row::<Interaction>(id).is_some_and(|i| {
         (u64::from(i.event_mask()) & (EventMask::KEY_DOWN | EventMask::KEY_UP)) != 0
     })
 }
 
 fn find_keydown_target_from(store: &NodeStore, start: NodeId) -> NodeId {
-    let mut cur = StoreNodeId(start);
+    let mut cur = start;
     for _ in 0..256 {
         if store.is_live(cur) && has_keydown_listener(store, cur) {
-            return cur.raw();
+            return cur;
         }
         let Some(parent) = store.parent(cur) else {
             break;
@@ -42,13 +42,13 @@ fn find_keydown_target_from(store: &NodeStore, start: NodeId) -> NodeId {
 }
 
 fn find_keydown_target(store: &NodeStore) -> NodeId {
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
         if !store.is_live(id) {
             continue;
         }
         if has_keydown_listener(store, id) {
-            return id.raw();
+            return id;
         }
         for &cid in store.children(id).iter().rev() {
             stack.push(cid);
@@ -129,7 +129,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             .filter(|&id| {
                 self.replica
                     .backend()
-                    .is_text_input(self.replica.store(), StoreNodeId(id))
+                    .is_text_input(self.replica.store(), id)
             })
         else {
             return if let Some(mapped) = classify_unfocused_keydown(key, modifiers) {
@@ -139,7 +139,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             };
         };
 
-        let sid = StoreNodeId(focused_id);
+        let sid = focused_id;
         let current = self
             .replica
             .backend()

@@ -2,7 +2,6 @@
 //! lifecycle dispatch for [`DesktopSession`].
 
 use nve_abi::{native_events_to_direct, EventPayload, NativeEvent, NativeEventKind, NodeId};
-use nve_store::NodeId as StoreNodeId;
 use winit::event::Ime;
 
 use super::session::{now_us, DesktopSession};
@@ -88,7 +87,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             .filter(|&id| {
                 self.replica
                     .backend()
-                    .is_text_input(self.replica.store(), StoreNodeId(id))
+                    .is_text_input(self.replica.store(), id)
             })
         else {
             return Ok(false);
@@ -162,7 +161,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                 let current = self
                     .replica
                     .backend()
-                    .text_input_value(self.replica.store(), StoreNodeId(focused_id))
+                    .text_input_value(self.replica.store(), focused_id)
                     .unwrap_or_default();
                 let caret = self.replica.backend().focus_state().caret_byte_index;
                 let selection = self.replica.backend().focus_state().selection_range();

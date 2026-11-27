@@ -76,7 +76,7 @@ pub use traits::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport,
 };
 
-use nve_abi::SurfaceId;
+pub use nve_abi::SurfaceId;
 
 /// Unified facade coordinating [`SurfaceOrchestrator`] and any enabled interop subsystems
 /// so teardown and arbitration stay strictly synchronized with zero leaked subscriptions or locks.

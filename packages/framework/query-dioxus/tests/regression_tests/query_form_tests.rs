@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -60,7 +61,7 @@ fn invalidated_query_failure_does_not_loop_and_retry_uses_sleep_backoff() {
         rsx! { text { "ITEM:{label}:ERR:{has_err}" } }
     }
 
-    let mut surface = DioxusSurface::new(1, Root).with_context((client.clone(), sleep));
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root).with_context((client.clone(), sleep));
     let mut web = WebBackend::new();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
@@ -129,7 +130,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, MultiFormRoot)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, MultiFormRoot)
         .with_context(submitted_ctx)
         .with_context(Rc::clone(&ctrl_slot));
     let mut web = new_web_backend();
@@ -147,7 +148,7 @@ fn multi_field_form_settles_without_loop_and_controller_swap_rebinds_cleanly() {
 
     let form_id = find_by_test_id(surface.store(), "multi-form");
     let submit_ev = nve_abi::NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: form_id,
         timestamp_us: 0,
         kind: nve_abi::NativeEventKind::Submit,

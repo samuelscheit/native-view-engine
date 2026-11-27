@@ -22,7 +22,8 @@ use std::sync::Arc;
 use nve_abi::table::NveTableView;
 use nve_abi::{
     ColorRgba, FrameId, NativeEvent, NodeId, NveRenderNode, NveSceneTable, NveSceneView,
-    SceneNodeInput, SurfaceId, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
+    PrimarySlot, SceneNodeInput, ShortLen, SurfaceId, ZIndex, NVE_NODE_CLIP_BOUNDS,
+    NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
 use nve_components::layout_ext::compute_sticky_offset;
 use nve_components::tables::{
@@ -33,7 +34,7 @@ use nve_components::transform::Transform2D;
 use nve_engine::{
     HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport,
 };
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable, TableSlot};
+use nve_store::{ChangeSet, NodeStore, NveTable, TableSlot};
 
 pub use nve_components::interaction::{
     CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
@@ -83,7 +84,7 @@ pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     published_children_scratch: Vec<NodeId>,
     text_dirty_marks: Vec<u64>,
     text_dirty_epoch: u64,
-    pub(crate) walk_stack: Vec<(StoreNodeId, usize)>,
+    pub(crate) walk_stack: Vec<(NodeId, usize)>,
 }
 
 impl Default for HeadlessBackend<TaffyStoreLayout> {
@@ -103,7 +104,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         let text_measurer: Arc<dyn TextMeasurer> = Arc::new(HeuristicTextMeasurer);
         layout.set_text_measurer(Arc::clone(&text_measurer));
         Self {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             viewport: Viewport::default(),
             viewport_dirty: true,
             layout,
@@ -204,7 +205,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     /// Recomputes layout for `store` immediately (e.g. after swapping layout engines or viewport).
     pub fn recompute_layout(&mut self, store: &NodeStore) {
         self.layout
-            .compute_layout(store, StoreNodeId::ROOT, self.viewport);
+            .compute_layout(store, NodeId::ROOT, self.viewport);
         self.viewport_dirty = false;
     }
 
@@ -219,14 +220,14 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         fn walk<L: StoreLayoutEngine>(
             backend: &HeadlessBackend<L>,
             store: &NodeStore,
-            id: StoreNodeId,
+            id: NodeId,
             depth: usize,
             out: &mut String,
         ) {
             for _ in 0..depth {
                 out.push_str("  ");
             }
-            let r = backend.layout_of(id.raw()).unwrap_or_default();
+            let r = backend.layout_of(id).unwrap_or_default();
             let _ = write!(
                 out,
                 "Node#{} ({:.0},{:.0} {:.0}×{:.0})",
@@ -260,7 +261,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             }
         }
         let mut out = String::new();
-        walk(self, store, StoreNodeId::ROOT, 0, &mut out);
+        walk(self, store, NodeId::ROOT, 0, &mut out);
         out
     }
 
@@ -281,11 +282,11 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     #[inline]
     pub fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
-        self.layout.layout_of(StoreNodeId(id))
+        self.layout.layout_of(id)
     }
 
     /// Computes sticky offset `(dx, dy)` for `id` against its nearest scroll ancestor.
-    pub fn compute_sticky_delta(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+    pub fn compute_sticky_delta(&self, store: &NodeStore, id: NodeId) -> (f32, f32) {
         let Some(l) = store.try_row::<NveLayout>(id) else {
             return (0.0, 0.0);
         };
@@ -312,15 +313,14 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 break;
             }
             steps += 1;
-            let raw = anc.raw();
-            let has_offset = self.scroll_offsets.contains_key(&raw);
+            let has_offset = self.scroll_offsets.contains_key(&anc);
             let is_scroll = store.try_row::<Visual>(anc).is_some_and(|v| {
                 matches!(v.overflow_x(), Overflow::Scroll | Overflow::Auto)
                     || matches!(v.overflow_y(), Overflow::Scroll | Overflow::Auto)
             });
             if has_offset || is_scroll {
                 scroller = anc;
-                scroll = self.scroll_offset(raw);
+                scroll = self.scroll_offset(anc);
                 break;
             }
             cur = store.parent(anc);
@@ -348,7 +348,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     /// Reads the `Transform2D` of `id` from `NodeStore`'s `Transform` table, if attached.
-    pub fn effective_transform(&self, store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
+    pub fn effective_transform(&self, store: &NodeStore, id: NodeId) -> Option<Transform2D> {
         let t = store.try_row::<TransformTable>(id)?;
         let tf = Transform2D {
             translate_x: t.translate_x(),
@@ -364,14 +364,14 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest node subscribing to events.
     pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), false, 0)
+        self.hit_test_rec(store, NodeId::ROOT, x, y, (0.0, 0.0), false, 0)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn hit_test_rec(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
@@ -400,10 +400,10 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             && px <= r_x + rect.width
             && py >= r_y
             && py <= r_y + rect.height;
-        if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
+        if !inside && id != NodeId::ROOT && node_clips_overflow(store, id) {
             return None;
         }
-        let (sx, sy) = self.scroll_offset(id.raw());
+        let (sx, sy) = self.scroll_offset(id);
         let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
         for &cid in store.children(id).iter().rev() {
             if let Some(hit) = self.hit_test_rec(
@@ -422,7 +422,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             .try_row::<Interaction>(id)
             .map_or(0, |i| i.event_mask());
         if inside && !effective_hidden && mask != 0 {
-            Some(id.raw())
+            Some(id)
         } else {
             None
         }
@@ -442,7 +442,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     ) -> NveSceneView {
         self.scene_table.begin_frame(frame_id);
         for &removed in &changes.removed {
-            self.scene_table.remove_node(removed.raw());
+            self.scene_table.remove_node(removed);
         }
         let has_text_changes = if let Some(td) = changes.table(TextContent::slot()) {
             self.text_dirty_epoch = self.text_dirty_epoch.wrapping_add(1);
@@ -465,8 +465,8 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             false
         };
         self.walk_stack.clear();
-        if store.is_live(StoreNodeId::ROOT) {
-            self.walk_stack.push((StoreNodeId::ROOT, 0));
+        if store.is_live(NodeId::ROOT) {
+            self.walk_stack.push((NodeId::ROOT, 0));
         }
         while let Some((id, depth)) = self.walk_stack.pop() {
             if !store.is_live(id) {
@@ -541,14 +541,14 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
             self.published_children_scratch.clear();
             self.published_children_scratch
-                .extend(children.iter().take(u16::MAX as usize).map(|c| c.raw()));
+                .extend(children.iter().take(u16::MAX as usize).copied());
 
             let text_dirty = has_text_changes
                 && self.text_dirty_marks.get(id.index()).copied() == Some(self.text_dirty_epoch);
             let res = self.scene_table.upsert_node_external_text(
                 SceneNodeInput {
-                    node_id: id.raw(),
-                    primary_slot: store.primary_slot(id).0,
+                    node_id: id,
+                    primary_slot: PrimarySlot(store.primary_slot(id).0),
                     flags,
                     opacity_u8,
                     x: rect.x,
@@ -561,12 +561,12 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                     border_radius,
                     border_width,
                     font_size,
-                    z_index,
+                    z_index: ZIndex(z_index),
                     text: "",
                     children: &self.published_children_scratch,
                 },
                 text_offset,
-                text_len,
+                ShortLen(text_len),
                 text_dirty,
             );
             debug_assert!(res.is_ok(), "scene_table upsert failed: {res:?}");
@@ -599,11 +599,11 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     /// Formats a human-readable ASCII tree + layout rect dump of `store` for debugging and snapshot tests.
     pub fn dump_tree(&self, store: &NodeStore) -> String {
         let mut out = String::new();
-        self.dump_rec(store, StoreNodeId::ROOT, 0, &mut out);
+        self.dump_rec(store, NodeId::ROOT, 0, &mut out);
         out
     }
 
-    fn dump_rec(&self, store: &NodeStore, id: StoreNodeId, depth: usize, out: &mut String) {
+    fn dump_rec(&self, store: &NodeStore, id: NodeId, depth: usize, out: &mut String) {
         if depth > MAX_TREE_DEPTH || !store.is_live(id) {
             return;
         }

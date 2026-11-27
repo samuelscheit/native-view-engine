@@ -3,7 +3,7 @@
 //! - Verifies all 5 interactive playgrounds mount and respond to real press/input events
 //! - Verifies lossless zero-mismatch `WebBackend::hydrate_from_ssr` DOM identity preservation
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
 use nve_backend_web::WebBackend;
 use nve_canvas::{Canvas, DrawList};
 use nve_canvas_web::CanvasWebSystem;
@@ -31,7 +31,7 @@ impl InteractiveHarness {
         register_web_html_systems(backend.table_registry_mut());
         backend.register_table_system(CanvasWebSystem);
         surface
-            .commit_to(1, &mut backend)
+            .commit_to(FrameId(1), &mut backend)
             .expect("initial commit_to");
         Self {
             surface,
@@ -54,7 +54,7 @@ impl InteractiveHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == test_id
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
@@ -63,7 +63,7 @@ impl InteractiveHarness {
 
     fn collect_text(&self, root: NodeId) -> String {
         let mut out = String::new();
-        self.collect_text_rec(StoreNodeId(root), &mut out);
+        self.collect_text_rec(root, &mut out);
         out
     }
 
@@ -84,7 +84,7 @@ impl InteractiveHarness {
     fn draw_op_count(&self, id: NodeId) -> usize {
         let store = self.surface.store();
         store
-            .try_row::<Canvas>(StoreNodeId(id))
+            .try_row::<Canvas>(id)
             .and_then(|c| store.resource::<DrawList>(c.draw_list()))
             .map_or(0, |dl| dl.len())
     }
@@ -92,7 +92,7 @@ impl InteractiveHarness {
     fn press(&mut self, test_id: &str) {
         let node_id = self.find(test_id);
         let ev = NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id,
             timestamp_us: self.frame_id * 1000,
             kind: NativeEventKind::Press,
@@ -104,14 +104,14 @@ impl InteractiveHarness {
         );
         self.frame_id += 1;
         self.surface
-            .commit_to(self.frame_id, &mut self.backend)
+            .commit_to(FrameId(self.frame_id), &mut self.backend)
             .expect("commit_to");
     }
 
     fn type_text(&mut self, test_id: &str, value: &str) {
         let node_id = self.find(test_id);
         let ev = NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id,
             timestamp_us: self.frame_id * 1000,
             kind: NativeEventKind::TextChange,
@@ -123,7 +123,7 @@ impl InteractiveHarness {
         );
         self.frame_id += 1;
         self.surface
-            .commit_to(self.frame_id, &mut self.backend)
+            .commit_to(FrameId(self.frame_id), &mut self.backend)
             .expect("commit_to");
     }
 }
@@ -227,7 +227,7 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
 
             let mut surface = create_nve_docs_surface(route, "", client_vp);
             surface
-                .commit_to(1, &mut hydrated)
+                .commit_to(FrameId(1), &mut hydrated)
                 .expect("hydrate commit_to");
 
             let report = hydrated.hydration_report();
@@ -447,8 +447,8 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     use nve_engine::{NveApp, Viewport};
     use nve_docs_site::DocsSiteModule;
 
-    let mut module = DocsSiteModule::create(1);
-    let frame_bytes = module.render(1).to_vec();
+    let mut module = DocsSiteModule::create(SurfaceId(1));
+    let frame_bytes = module.render(FrameId(1)).to_vec();
     assert!(!frame_bytes.is_empty(), "native NveApp Frame 1 must be non-empty");
 
     nve_components::tables::register_core_tables();
@@ -457,7 +457,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     let mut skia = SkiaBackend::new();
     skia.register_table_system(nve_canvas_skia::CanvasSkiaSystem);
     skia.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 1280.0,
             height: 800.0,
@@ -499,7 +499,7 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     // Verify binary NVDS state snapshot + restore
     let snap = module.snapshot_state().to_vec();
     assert!(snap.starts_with(b"NVDS"));
-    let mut restored = DocsSiteModule::create(2);
+    let mut restored = DocsSiteModule::create(SurfaceId(2));
     restored.restore_state(&snap);
-    assert!(!restored.render(1).is_empty());
+    assert!(!restored.render(FrameId(1)).is_empty());
 }

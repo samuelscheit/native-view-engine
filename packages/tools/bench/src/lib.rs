@@ -17,7 +17,7 @@ pub use wasm_bundle_size::{
 };
 
 use nve_abi::{
-    EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NveEventBatchRef,
+    EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveEventBatchRef,
     NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, SurfaceId, ROOT_NODE_ID,
 };
 use nve_components::tables::{
@@ -28,7 +28,7 @@ use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{NveApp, Viewport};
 use nve_store::wire::WireEncoder;
-use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{ChangeSet, Length, NodeStore, Rgba};
 
 pub const DEFAULT_VIEWPORT: Viewport = Viewport {
     width: 393.0,
@@ -62,13 +62,13 @@ impl RowFeedFixture {
         self.store = NodeStore::new();
         self.encoder = WireEncoder::default();
         let mut root_children = Vec::with_capacity(self.row_count);
-        let mut next_id = ROOT_NODE_ID + 1;
+        let mut next_id = ROOT_NODE_ID.raw() + 1;
 
         {
             let mut tx = self.store.tx();
             for i in 0..self.row_count {
-                let row_id = StoreNodeId(next_id);
-                let text_id = StoreNodeId(next_id + 1);
+                let row_id = NodeId(next_id);
+                let text_id = NodeId(next_id + 1);
                 next_id += 2;
 
                 tx.create_at(row_id);
@@ -102,7 +102,7 @@ impl RowFeedFixture {
                 tx.set_children(row_id, &[text_id]);
                 root_children.push(row_id);
             }
-            tx.set_children(StoreNodeId::ROOT, &root_children);
+            tx.set_children(NodeId::ROOT, &root_children);
             tx.commit_into(&mut self.changes);
         }
 
@@ -120,8 +120,8 @@ impl RowFeedFixture {
             let count = updates.min(self.row_count);
             let mut tx = self.store.tx();
             for i in 0..count {
-                let idx = ((frame_id as usize * 7 + i) % self.row_count) as u32;
-                let text_id = StoreNodeId(ROOT_NODE_ID + 1 + idx * 2 + 1);
+                let idx = ((frame_id.raw() as usize * 7 + i) % self.row_count) as u32;
+                let text_id = NodeId(ROOT_NODE_ID.raw() + 1 + idx * 2 + 1);
                 tx.set_str(
                     text_id,
                     TextContent::TEXT,
@@ -154,7 +154,7 @@ pub fn build_node_tree_cmd(node_count: usize, _frame_id: FrameId) -> Vec<u8> {
     {
         let mut tx = store.tx();
         for i in 0..node_count {
-            let nid = StoreNodeId(ROOT_NODE_ID + 1 + i as u32);
+            let nid = NodeId(ROOT_NODE_ID.raw() + 1 + i as u32);
             tx.create_at(nid);
             if i % 2 == 0 {
                 tx.set(nid, Layout::WIDTH, Length::percent(100.0));
@@ -181,7 +181,7 @@ pub fn build_node_tree_cmd(node_count: usize, _frame_id: FrameId) -> Vec<u8> {
             }
             root_children.push(nid);
         }
-        tx.set_children(StoreNodeId::ROOT, &root_children);
+        tx.set_children(NodeId::ROOT, &root_children);
         tx.commit_into(&mut changes);
     }
 
@@ -199,12 +199,12 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
 
     {
         let mut tx = store.tx();
-        let outer = StoreNodeId(2);
-        let card = StoreNodeId(3);
-        let eyebrow = StoreNodeId(4);
-        let headline = StoreNodeId(5);
-        let button = StoreNodeId(6);
-        let btn_label = StoreNodeId(7);
+        let outer = NodeId(2);
+        let card = NodeId(3);
+        let eyebrow = NodeId(4);
+        let headline = NodeId(5);
+        let button = NodeId(6);
+        let btn_label = NodeId(7);
 
         tx.create_at(outer);
         tx.set(outer, Layout::WIDTH, Length::percent(100.0));
@@ -273,7 +273,7 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
         tx.set_children(button, &[btn_label]);
         tx.set_children(card, &[eyebrow, headline, button]);
         tx.set_children(outer, &[card]);
-        tx.set_children(StoreNodeId::ROOT, &[outer]);
+        tx.set_children(NodeId::ROOT, &[outer]);
         tx.commit_into(&mut changes);
     }
 
@@ -287,11 +287,11 @@ pub fn build_card_scene_cmd(_frame_id: FrameId) -> Vec<u8> {
 pub fn build_event_batch(count: usize) -> Vec<NativeEvent> {
     (0..count)
         .map(|i| {
-            let node_id = (i as u32 % 100) + 2;
+            let node_id = NodeId((i as u32 % 100) + 2);
             let ts = (i as u64 + 1) * 16_000;
             match i % 4 {
                 0 => NativeEvent {
-                    surface_id: 1,
+                    surface_id: SurfaceId::ROOT,
                     node_id,
                     timestamp_us: ts,
                     kind: NativeEventKind::Press,
@@ -301,7 +301,7 @@ pub fn build_event_batch(count: usize) -> Vec<NativeEvent> {
                     },
                 },
                 1 => NativeEvent {
-                    surface_id: 1,
+                    surface_id: SurfaceId::ROOT,
                     node_id,
                     timestamp_us: ts,
                     kind: NativeEventKind::Scroll,
@@ -313,14 +313,14 @@ pub fn build_event_batch(count: usize) -> Vec<NativeEvent> {
                     },
                 },
                 2 => NativeEvent {
-                    surface_id: 1,
+                    surface_id: SurfaceId::ROOT,
                     node_id,
                     timestamp_us: ts,
                     kind: NativeEventKind::TextChange,
                     payload: EventPayload::Text(format!("query-{i}")),
                 },
                 _ => NativeEvent {
-                    surface_id: 1,
+                    surface_id: SurfaceId::ROOT,
                     node_id,
                     timestamp_us: ts,
                     kind: NativeEventKind::TableEvent,
@@ -367,7 +367,7 @@ pub fn BenchCounterApp() -> Element {
 }
 
 pub fn create_bench_dioxus_surface() -> DioxusSurface {
-    DioxusSurface::new(1, BenchCounterApp)
+    DioxusSurface::new(SurfaceId::ROOT, BenchCounterApp)
 }
 
 /// Minimal `NveApp` exported via `export_nve_app!` for zero-cost `nve_get_interface` FFI benchmarks.

@@ -3,15 +3,15 @@ mod common;
 use common::{live_node_ids, register_studio_tables, unique_test_dir, MultiBackendHarness};
 use nve_abi::xxh64;
 use nve_abi::{
-    pack_key_modifiers, EventMask, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef,
-    NveValue, ROOT_NODE_ID,
+    pack_key_modifiers, EventMask, FrameId, NveDirectEvent, NveEventBatchRef, NveMapEntry,
+    NvePropsRef, NveValue, SurfaceId, ROOT_NODE_ID,
 };
 use nve_canvas::{Canvas, CanvasOp, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
 use nve_components::tables::{Image, ImageFit, ImageSrc, Interaction, TextInput};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::NveApp;
 use nve_store::wire::WireDecoder;
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeStore};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, DocBlockKind,
     PersistConfig, StudioWorkspaceModule, WorkbenchPreset, WorkspaceState, WorkspaceStore,
@@ -77,7 +77,7 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     let canvas_row = h
         .surface
         .store()
-        .try_row::<Canvas>(StoreNodeId(canvas_id))
+        .try_row::<Canvas>(canvas_id)
         .expect("Canvas table row");
     let dl = h
         .surface
@@ -98,11 +98,11 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
 
     // Verify NVE2 wire roundtrip of the Canvas + DrawList resource through StudioWorkspaceModule.
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
     let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
     // SAFETY: `metrics_entries` outlives the synchronous `set_props` call.
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&metrics_entries) }));
-    let wire_bytes = app.render(1).to_vec();
+    let wire_bytes = app.render(FrameId(1)).to_vec();
 
     let mut replica = NodeStore::replica();
     let mut decoder = WireDecoder::default();
@@ -328,21 +328,21 @@ fn workspace_store_cold_save_torn_header_compaction_and_full_restart_recovery() 
 
     let mod_dir = unique_test_dir("module-persist");
     {
-        let mut app =
-            StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("create module");
-        let _ = app.render(1);
+        let mut app = StudioWorkspaceModule::create_with_persist_dir(SurfaceId(1), &mod_dir)
+            .expect("create module");
+        let _ = app.render(FrameId(1));
         let docs_entries = [
             NveMapEntry::new("accent", NveValue::from_str("green")),
             NveMapEntry::new("view", NveValue::from_str("docs")),
         ];
         // SAFETY: `docs_entries` outlives the synchronous `set_props` call.
         assert!(app.set_props(unsafe { NvePropsRef::from_slice(&docs_entries) }));
-        let _ = app.render(2);
+        let _ = app.render(FrameId(2));
         assert!(app.persist_store().expect("persist store").generation() >= 2);
     }
     {
-        let app2 =
-            StudioWorkspaceModule::create_with_persist_dir(1, &mod_dir).expect("reopen module");
+        let app2 = StudioWorkspaceModule::create_with_persist_dir(SurfaceId(1), &mod_dir)
+            .expect("reopen module");
         let snap = app2.state_snapshot();
         assert_eq!(snap.current.studio.accent, AccentTheme::Green);
         assert_eq!(snap.current.active_view, ActiveView::Docs);
@@ -420,10 +420,10 @@ fn docs_view_interactive_blocks_textinput_markdown_export_and_time_travel() {
     assert!(md.contains("- [x] Eliminate JSON scene descriptors"));
     assert!(md.contains("- [ ] Enable crash-safe NVERELOC"));
 
-    let mut app = StudioWorkspaceModule::create(1);
-    let _ = app.render(1);
+    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let _ = app.render(FrameId(1));
     let cmd_k = [NveDirectEvent::key_down(
-        1,
+        SurfaceId(1),
         ROOT_NODE_ID,
         1000,
         "k",

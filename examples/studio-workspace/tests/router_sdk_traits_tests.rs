@@ -13,8 +13,8 @@ mod common;
 
 use common::{data_attr_in_store, find_in_store, live_node_ids, register_studio_tables};
 use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-    NveMapEntry, NvePropsRef, NveValue, ROOT_NODE_ID,
+    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
+    NveMapEntry, NvePropsRef, NveValue, SurfaceId, ROOT_NODE_ID,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_clipboard::{ClipboardClient, MemoryClipboard};
@@ -70,10 +70,10 @@ impl StudioHarness {
             scale_factor: 1.0,
         };
         let mut headless = HeadlessBackend::new();
-        headless.set_viewport(1, viewport);
+        headless.set_viewport(SurfaceId(1), viewport);
 
         let mut h = Self {
-            surface: create_surface_with_services(1, Arc::clone(&store), host_services),
+            surface: create_surface_with_services(SurfaceId(1), Arc::clone(&store), host_services),
             headless,
             store,
             memory,
@@ -88,7 +88,7 @@ impl StudioHarness {
         let fid = self.next_frame;
         self.next_frame += 1;
         self.surface
-            .commit_to(fid, &mut self.headless)
+            .commit_to(FrameId(fid), &mut self.headless)
             .expect("headless commit");
     }
 
@@ -124,7 +124,7 @@ impl StudioHarness {
         assert_eq!(hit, node_id, "hit_test mismatch for '{test_id}'");
 
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id: hit,
             timestamp_us: self.next_frame * 16_000,
             kind: NativeEventKind::Press,
@@ -141,7 +141,7 @@ impl StudioHarness {
     fn assert_no_horizontal_overflow(&self, label: &str) {
         let store = self.surface.store();
         for sid in live_node_ids(store) {
-            let nid = sid.raw();
+            let nid = sid;
             if let Some(rect) = self.headless.layout_of(nid) {
                 let tid = store.try_row::<DebugId>(sid).map(|d| d.test_id());
                 assert!(
@@ -261,8 +261,8 @@ fn typed_studio_route_deep_links_and_back_forward_navigation_sync() {
     assert_eq!(restored.current_route(), &StudioRoute::Doc { id: 2 });
 
     // 4. Deep-link navigation via `StudioWorkspaceModule` direct props.
-    let mut module = StudioWorkspaceModule::create(1);
-    let _ = module.render(1);
+    let mut module = StudioWorkspaceModule::create(SurfaceId(1));
+    let _ = module.render(FrameId(1));
     let entries = [NveMapEntry::new("route", NveValue::from_str("aether://studio/doc/2"))];
     // SAFETY: `entries` outlives the synchronous `set_props` call.
     assert!(module.set_props(unsafe { NvePropsRef::from_slice(&entries) }));
@@ -324,10 +324,10 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert!(compact_layout.compact_header);
 
     // 2. Live `StudioWorkspaceModule::dispatch_events`: 1px desktop drags do NOT churn surface.
-    let mut app = StudioWorkspaceModule::create(1);
-    let _ = app.render(1);
+    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
+    let _ = app.render(FrameId(1));
     let dispatch_resize = |app: &mut StudioWorkspaceModule, w: f32, h: f32, ts: u64| {
-        let ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
+        let ev = [NveDirectEvent::layout(SurfaceId(1), ROOT_NODE_ID, ts, 0.0, 0.0, w, h)];
         // SAFETY: `ev` stack array outlives the synchronous `dispatch_events` call.
         app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) })
     };
@@ -347,10 +347,10 @@ fn breakpoint_only_size_class_collapse_and_zero_churn_on_1px_desktop_drags() {
     assert!(app.state_snapshot().is_mobile_portrait());
 
     register_studio_tables();
-    let frame = app.render(2).to_vec();
+    let frame = app.render(FrameId(2)).to_vec();
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -412,17 +412,17 @@ fn custom_trait_key_and_trait_scope_override_isolation() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, TraitScopeProbeApp);
+    let mut surface = DioxusSurface::new(SurfaceId(1), TraitScopeProbeApp);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 800.0,
             height: 400.0,
             scale_factor: 1.0,
         },
     );
-    surface.commit_to(1, &mut headless).unwrap();
+    surface.commit_to(FrameId(1), &mut headless).unwrap();
 
     let read_prop = |tid: &str, key: &str| -> String {
         let id = find_in_store(surface.store(), tid)
@@ -509,8 +509,8 @@ fn clipboard_client_markdown_export_and_deep_link_url_roundtrip() {
 
 #[test]
 fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
-    let mut module = StudioWorkspaceModule::create(1);
-    let _ = module.render(1);
+    let mut module = StudioWorkspaceModule::create(SurfaceId(1));
+    let _ = module.render(FrameId(1));
     assert!(!module.host_services().is_ffi_bound());
 
     // Prepare a simulated native host behind `HostCallbackBridge` (`NVE_IFACE_HOST = 5`).
@@ -551,10 +551,10 @@ fn nve_iface_host_5_ffi_callbacks_clipboard_and_system_env_sync() {
 
     // Render frame and verify live UI reflects synced Light + de-DE traits.
     register_studio_tables();
-    let frame_bytes = module.render(2).to_vec();
+    let frame_bytes = module.render(FrameId(2)).to_vec();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 1280.0,
             height: 800.0,

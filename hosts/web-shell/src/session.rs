@@ -28,7 +28,7 @@ use nve_store::NodeStore;
 use nve_studio_workspace::{StudioWorkspaceModule, STUDIO_SNAPSHOT_SCHEMA_VERSION};
 
 /// Surface ID of the first (primary) app mounted into the page.
-pub const DEFAULT_SURFACE_ID: SurfaceId = 1;
+pub const DEFAULT_SURFACE_ID: SurfaceId = SurfaceId::ROOT;
 
 #[cfg(feature = "app-studio")]
 fn dispatch_studio_viewport_layout(
@@ -241,7 +241,7 @@ impl WebAppSession {
         backend.set_viewport(surface_id, viewport);
         Self {
             surface_id,
-            frame_id: 0,
+            frame_id: FrameId::ZERO,
             app,
             backend,
             #[cfg(feature = "scene-view")]
@@ -575,7 +575,7 @@ impl WebAppSession {
     }
 
     fn render_and_submit(&mut self) -> Result<FrameTiming, BackendError> {
-        self.frame_id = self.frame_id.wrapping_add(1).max(1);
+        self.frame_id = FrameId(self.frame_id.next().raw().max(1));
         let frame_id = self.frame_id;
         let (reconcile_us, stats) = self.app.commit_to_timed(frame_id, &mut self.backend)?;
         self.sync_scene(frame_id);

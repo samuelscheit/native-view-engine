@@ -347,6 +347,7 @@ mod tests {
     use nve_components::tables::{DebugId, Layout};
     use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
     use nve_store::{Length, NodeId};
+    use nve_abi::{FrameId, SurfaceId};
     use nve_web_html_web::register_web_html_systems;
     use nve_host_services::{HostServiceProvider, MemoryHostServices};
     use nve_mdx::{CompileOptions, SiteSource, compile_site_with_validation};
@@ -381,7 +382,7 @@ description: "Table column alignment verification."
         for (vw, vh) in [(1280.0_f32, 800.0_f32), (390.0_f32, 844.0_f32)] {
             let services: Arc<dyn HostServiceProvider> = Arc::new(MemoryHostServices::new());
             let mut surface = create_docs_surface_with_viewport(
-                1,
+                SurfaceId::ROOT,
                 "/",
                 DocsViewport::new(vw, vh),
                 DocsSiteConfig::new("Test Docs"),
@@ -392,7 +393,7 @@ description: "Table column alignment verification."
             // 1. Verify typed Layout word table + TaffyStoreLayout column rects in HeadlessBackend.
             let mut headless = HeadlessBackend::new();
             headless.set_viewport(
-                1,
+                SurfaceId::ROOT,
                 Viewport {
                     width: vw,
                     height: vh,
@@ -400,7 +401,7 @@ description: "Table column alignment verification."
                 },
             );
             surface
-                .commit_to(1, &mut headless)
+                .commit_to(FrameId(1), &mut headless)
                 .expect("headless commit_to");
 
             let store = surface.store();
@@ -440,9 +441,9 @@ description: "Table column alignment verification."
                     assert_eq!(layout.min_width(), Length::points(0.0));
 
                     let header_rect = headless
-                        .layout_of(header_cells[col_idx].raw())
+                        .layout_of(header_cells[col_idx])
                         .expect("header rect");
-                    let cell_rect = headless.layout_of(cell_id.raw()).expect("cell rect");
+                    let cell_rect = headless.layout_of(cell_id).expect("cell rect");
                     assert!(
                         (header_rect.x - cell_rect.x).abs() < 0.01,
                         "viewport {vw}x{vh} col {col_idx} x mismatch: header={} body={}",

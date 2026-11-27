@@ -13,6 +13,7 @@ pub mod events;
 pub mod ffi;
 pub mod hash;
 pub mod host;
+pub mod id;
 mod layout_asserts;
 pub mod num;
 pub mod scene;
@@ -65,9 +66,8 @@ pub use value::{
     NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
 
-pub type SurfaceId = u32;
-pub type NodeId = u32;
-pub type FrameId = u64;
-
-/// Reserved root node ID for every surface.
-pub const ROOT_NODE_ID: NodeId = 1;
+pub use id::{
+    ArenaOffset, ByteLen, DurationMs, DurationUs, EventFlags, EventId, FrameId, InterfaceId,
+    NodeId, NodeIndex, PrimarySlot, PropFieldId, ShortLen, SurfaceId, TimestampMs, TimestampUs,
+    ZIndex, ROOT_NODE_ID,
+};

@@ -50,8 +50,9 @@ impl WebBackend {
                 if let Some(node) = list.item(i)
                     && let Ok(el) = node.dyn_into::<web_sys::Element>()
                     && let Some(raw) = el.get_attribute("data-nve-id")
-                    && let Ok(id) = raw.parse::<u32>()
+                    && let Ok(raw_id) = raw.parse::<u32>()
                 {
+                    let id = NodeId(raw_id);
                     self.live_elements.insert(id, el);
                     self.unverified_ssr_ids.insert(id);
                 }
@@ -92,8 +93,8 @@ impl WebBackend {
         self.renderer
             .remove_plugins(changes, Some(&self.live_elements));
         for &id in &changes.removed {
-            self.unverified_ssr_ids.remove(&id.raw());
-            if let Some(el) = self.live_elements.remove(&id.raw()) {
+            self.unverified_ssr_ids.remove(&id);
+            if let Some(el) = self.live_elements.remove(&id) {
                 el.remove();
             }
         }
@@ -109,8 +110,8 @@ impl WebBackend {
             }
             created_set.insert(id);
             let (tag, ns) = self.renderer.registry().resolve_tag(store, id);
-            let was_ssr_candidate = self.unverified_ssr_ids.remove(&id.raw());
-            let el = if let Some(adopted) = self.live_elements.get(&id.raw()).cloned() {
+            let was_ssr_candidate = self.unverified_ssr_ids.remove(&id);
+            let el = if let Some(adopted) = self.live_elements.get(&id).cloned() {
                 if adopted.tag_name().eq_ignore_ascii_case(tag) {
                     #[cfg(feature = "hydrate")]
                     if was_ssr_candidate {
@@ -121,7 +122,7 @@ impl WebBackend {
                     let fresh = create_dom_element(&doc, id, tag, ns);
                     move_dom_children(&adopted, &fresh);
                     let _ = adopted.replace_with_with_node_1(&fresh);
-                    self.live_elements.insert(id.raw(), fresh.clone());
+                    self.live_elements.insert(id, fresh.clone());
                     retagged.push(id);
                     #[cfg(feature = "hydrate")]
                     if was_ssr_candidate {
@@ -129,7 +130,7 @@ impl WebBackend {
                         let mut ssr_tag = adopted.tag_name();
                         ssr_tag.make_ascii_lowercase();
                         self.hydration_report.mismatches.push(crate::HydrationMismatch {
-                            node_id: id.raw(),
+                            node_id: id,
                             reason: format!("SSR <{ssr_tag}> != live <{tag}>"),
                         });
                     }
@@ -137,16 +138,16 @@ impl WebBackend {
                 }
             } else {
                 let fresh = create_dom_element(&doc, id, tag, ns);
-                self.live_elements.insert(id.raw(), fresh.clone());
+                self.live_elements.insert(id, fresh.clone());
                 fresh
             };
             self.sync_full_element(store, id, &el);
         }
 
         // Ensure ROOT is mounted into `mount_root` and verify ROOT hydration if present.
-        if self.unverified_ssr_ids.remove(&NodeId::ROOT.raw()) {
+        if self.unverified_ssr_ids.remove(&NodeId::ROOT) {
             #[cfg(feature = "hydrate")]
-            if let Some(root_el) = self.live_elements.get(&NodeId::ROOT.raw()) {
+            if let Some(root_el) = self.live_elements.get(&NodeId::ROOT) {
                 if root_el.tag_name().eq_ignore_ascii_case("div") {
                     self.hydration_report.adopted_nodes += 1;
                 } else {
@@ -154,7 +155,7 @@ impl WebBackend {
                 }
             }
         }
-        if let Some(root_el) = self.live_elements.get(&NodeId::ROOT.raw())
+        if let Some(root_el) = self.live_elements.get(&NodeId::ROOT)
             && root_el.parent_element().as_ref() != Some(&mount_root)
         {
             let _ = mount_root.append_child(root_el);
@@ -166,7 +167,7 @@ impl WebBackend {
                 continue;
             }
             if fx == effect::COMPOSITE {
-                if let Some(el) = self.live_elements.get(&id.raw()) {
+                if let Some(el) = self.live_elements.get(&id) {
                     apply_compositor_properties_live(store, id, el);
                 }
                 continue;
@@ -176,7 +177,7 @@ impl WebBackend {
             } else {
                 self.renderer.registry().resolve_tag(store, id)
             };
-            let el = if let Some(existing) = self.live_elements.get(&id.raw()).cloned() {
+            let el = if let Some(existing) = self.live_elements.get(&id).cloned() {
                 if id != NodeId::ROOT
                     && fx & effect::REALIZE != 0
                     && !existing.tag_name().eq_ignore_ascii_case(tag)
@@ -184,7 +185,7 @@ impl WebBackend {
                     let fresh = create_dom_element(&doc, id, tag, ns);
                     move_dom_children(&existing, &fresh);
                     let _ = existing.replace_with_with_node_1(&fresh);
-                    self.live_elements.insert(id.raw(), fresh.clone());
+                    self.live_elements.insert(id, fresh.clone());
                     retagged.push(id);
                     fresh
                 } else {
@@ -192,7 +193,7 @@ impl WebBackend {
                 }
             } else {
                 let fresh = create_dom_element(&doc, id, tag, ns);
-                self.live_elements.insert(id.raw(), fresh.clone());
+                self.live_elements.insert(id, fresh.clone());
                 fresh
             };
             self.sync_full_element(store, id, &el);
@@ -200,10 +201,10 @@ impl WebBackend {
 
         // 3b. Prune any dead SSR DOM nodes left unvisited after the first hydrated commit.
         if !self.unverified_ssr_ids.is_empty() {
-            let dead_ids: Vec<u32> = self.unverified_ssr_ids.drain().collect();
-            for raw_id in dead_ids {
-                if !store.is_live(NodeId(raw_id)) {
-                    if let Some(stale_el) = self.live_elements.remove(&raw_id) {
+            let dead_ids: Vec<NodeId> = self.unverified_ssr_ids.drain().collect();
+            for node_id in dead_ids {
+                if !store.is_live(node_id) {
+                    if let Some(stale_el) = self.live_elements.remove(&node_id) {
                         stale_el.remove();
                         #[cfg(feature = "hydrate")]
                         {
@@ -211,7 +212,7 @@ impl WebBackend {
                             let mut ssr_tag = stale_el.tag_name();
                             ssr_tag.make_ascii_lowercase();
                             self.hydration_report.mismatches.push(crate::HydrationMismatch {
-                                node_id: raw_id,
+                                node_id,
                                 reason: format!("SSR <{ssr_tag}> missing from live NodeStore"),
                             });
                         }
@@ -240,7 +241,7 @@ impl WebBackend {
             if self.renderer.plugin_inner_html(parent).is_some() {
                 continue;
             }
-            let Some(parent_el) = self.live_elements.get(&parent.raw()).cloned() else {
+            let Some(parent_el) = self.live_elements.get(&parent).cloned() else {
                 continue;
             };
             let wanted = store.children(parent);
@@ -256,7 +257,7 @@ impl WebBackend {
             }
             let mut cursor = parent_el.first_element_child();
             for &cid in wanted {
-                let Some(child_el) = self.live_elements.get(&cid.raw()) else {
+                let Some(child_el) = self.live_elements.get(&cid) else {
                     continue;
                 };
                 if cursor.as_ref() == Some(child_el) {
@@ -301,7 +302,7 @@ impl WebBackend {
                 sys.write_inline_css(store, id, &mut inline);
             }
         }
-        if let Some(patch) = self.patch_css.get(&id.raw()) {
+        if let Some(patch) = self.patch_css.get(&id) {
             inline.push_str(patch);
         }
         if inline.is_empty() {
@@ -380,7 +381,7 @@ impl WebBackend {
 
         if let Some(ti) = store.try_row::<TextInput>(id) {
             let val = ti.value();
-            self.input_sync.borrow_mut().on_backend_value_sync(id.raw(), val);
+            self.input_sync.borrow_mut().on_backend_value_sync(id, val);
             if let Some(inp) = el.dyn_ref::<web_sys::HtmlInputElement>() {
                 if inp.value() != val {
                     inp.set_value(val);

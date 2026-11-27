@@ -147,13 +147,13 @@ fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_sta
     let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
     hydrated.queue_pre_hydration_events(vec![
         CapturedPreHydrationEvent::Press {
-            node_id: label.raw(),
+            node_id: label,
             x: 10.0,
             y: 12.0,
             age_ms: 25,
         },
         CapturedPreHydrationEvent::Press {
-            node_id: label.raw(),
+            node_id: label,
             x: 10.0,
             y: 12.0,
             age_ms: 60_000,
@@ -164,7 +164,7 @@ fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_sta
     assert_eq!(hydrated.hydration_report().replayed_events, 1);
     assert_eq!(drained.len(), 1);
     assert_eq!(drained[0].kind, NativeEventKind::Press);
-    assert_eq!(drained[0].node_id, btn.raw());
+    assert_eq!(drained[0].node_id, btn);
 }
 
 #[test]
@@ -1020,8 +1020,8 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         tx.edit::<RetagChanged>(n).v(2);
         tx.commit_into(&mut changes);
     }
-    let mut live: HashMap<u32, MockRetagEl> = HashMap::default();
-    live.insert(n.raw(), MockRetagEl::default());
+    let mut live: HashMap<NodeId, MockRetagEl> = HashMap::default();
+    live.insert(n, MockRetagEl::default());
     let mut synced_slots: Vec<(TableSlot, NodeId)> = Vec::new();
     renderer.commit_plugins_active_with(
         &store,
@@ -1033,7 +1033,7 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         |sys, nid, _| synced_slots.push((sys.slot(), nid)),
     );
 
-    let el = live.get(&n.raw()).unwrap();
+    let el = live.get(&n).unwrap();
     let replayed = el.attrs.borrow();
     // 1) Detached plugin's attr, inline CSS, and innerHTML MUST NOT touch the fresh retagged element.
     assert!(
@@ -1070,8 +1070,8 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
         tx.edit::<RetagCanvas>(n).ops(7);
         tx.commit_into(&mut changes);
     }
-    let mut live3: HashMap<u32, MockRetagEl> = HashMap::default();
-    live3.insert(n.raw(), MockRetagEl::default());
+    let mut live3: HashMap<NodeId, MockRetagEl> = HashMap::default();
+    live3.insert(n, MockRetagEl::default());
     synced_slots.clear();
     renderer.commit_plugins_active_with(
         &store,
@@ -1089,7 +1089,7 @@ fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1(
     );
     assert!(
         live3
-            .get(&n.raw())
+            .get(&n)
             .unwrap()
             .attrs
             .borrow()

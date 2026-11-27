@@ -9,7 +9,7 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
-    use nve_abi::ColorRgba;
+    use nve_abi::{ColorRgba, FrameId, NodeId, SurfaceId};
     use nve_components::{LayoutSnapshot, VisualSnapshot};
     use nve_engine::{
         encode_scene_reloc, FrameArena, LayoutRect, SceneRelocInput, SceneRelocNodeInput,
@@ -41,7 +41,7 @@ mod native {
         let child_indices: Vec<u32> = (1..64u32).collect();
         let nodes: Vec<SceneRelocNodeInput<'_>> = (0..64u32)
             .map(|idx| SceneRelocNodeInput {
-                node_id: idx + 1,
+                node_id: NodeId(idx + 1),
                 parent_index: if idx == 0 { -1 } else { 0 },
                 primary_slot: 0,
                 flags: 0,
@@ -67,8 +67,8 @@ mod native {
             .collect();
         let input = SceneRelocInput {
             schema_version: 1,
-            surface_id: 1,
-            frame_id: 1,
+            surface_id: SurfaceId::ROOT,
+            frame_id: FrameId(1),
             viewport: Viewport {
                 width: 1280.0,
                 height: 720.0,

@@ -120,13 +120,13 @@ pub fn generate_dart_scene_abi() -> String {
         } else {
             snake_to_camel_preserve_leading(&f.name)
         };
-        if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+        if let Some(ann) = dart_core_ffi_annotation(&f.ty, &spec.aliases) {
             writeln!(out, "  {ann}");
         }
         writeln!(
             out,
             "  external {} {dart_name}; // offset {}",
-            dart_core_struct_field_type(&f.ty),
+            dart_core_struct_field_type(&f.ty, &spec.aliases),
             f.offset.expect("NveRenderNode field defines offset")
         );
     }
@@ -149,18 +149,18 @@ pub fn generate_dart_scene_abi() -> String {
                 writeln!(
                     out,
                     "  external ffi.Array<{}> {dart_name}; // offset {}",
-                    dart_core_native_type(elem),
+                    dart_core_native_type(elem, &spec.aliases),
                     f.offset.expect("NveNodeMeta field defines offset")
                 );
             }
             _ => {
-                if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+                if let Some(ann) = dart_core_ffi_annotation(&f.ty, &spec.aliases) {
                     writeln!(out, "  {ann}");
                 }
                 writeln!(
                     out,
                     "  external {} {dart_name}; // offset {}",
-                    dart_core_struct_field_type(&f.ty),
+                    dart_core_struct_field_type(&f.ty, &spec.aliases),
                     f.offset.expect("NveNodeMeta field defines offset")
                 );
             }
@@ -175,13 +175,13 @@ pub fn generate_dart_scene_abi() -> String {
     writeln!(out, "final class NveTableView extends ffi.Struct {{");
     for f in &table_view.fields {
         let dart_name = snake_to_camel_preserve_leading(&f.name);
-        if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+        if let Some(ann) = dart_core_ffi_annotation(&f.ty, &spec.aliases) {
             writeln!(out, "  {ann}");
         }
         writeln!(
             out,
             "  external {} {dart_name};",
-            dart_core_struct_field_type(&f.ty)
+            dart_core_struct_field_type(&f.ty, &spec.aliases)
         );
     }
     writeln!(out, "}}");
@@ -197,13 +197,13 @@ pub fn generate_dart_scene_abi() -> String {
         } else {
             snake_to_camel_preserve_leading(&f.name)
         };
-        if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+        if let Some(ann) = dart_core_ffi_annotation(&f.ty, &spec.aliases) {
             writeln!(out, "  {ann}");
         }
         writeln!(
             out,
             "  external {} {dart_name};",
-            dart_core_struct_field_type(&f.ty)
+            dart_core_struct_field_type(&f.ty, &spec.aliases)
         );
     }
     writeln!(out, "}}");

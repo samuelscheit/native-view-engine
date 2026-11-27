@@ -9,7 +9,7 @@ mod tests;
 
 use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
 use nve_abi::hash::HashMap;
-use nve_abi::{EventMask, NodeId as AbiNodeId, SurfaceId};
+use nve_abi::{EventMask, SurfaceId};
 use nve_components::interaction::CursorKind;
 use nve_components::tables::{
     self, AriaRole, Image, Interaction, Link, Scroll, TextContent, TextInput,
@@ -108,21 +108,20 @@ impl NveMutationWriter {
     }
 
     #[inline]
-    pub fn element_id_of(&self, node_id: AbiNodeId) -> Option<ElementId> {
-        self.node_to_el.get(&NodeId(node_id)).copied()
+    pub fn element_id_of(&self, node_id: NodeId) -> Option<ElementId> {
+        self.node_to_el.get(&node_id).copied()
     }
 
     #[inline]
-    pub fn has_event_mask(&self, node_id: AbiNodeId, mask: u64) -> bool {
-        let nid = NodeId(node_id);
+    pub fn has_event_mask(&self, node_id: NodeId, mask: u64) -> bool {
         self.store
-            .try_row::<Interaction>(nid)
+            .try_row::<Interaction>(node_id)
             .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
     }
 
     /// Walks up from `node_id` to `NodeId::ROOT` checking if any ancestor subscribed to `mask`.
-    pub fn has_event_mask_in_chain(&self, node_id: AbiNodeId, mask: u64) -> bool {
-        let mut cur = Some(NodeId(node_id));
+    pub fn has_event_mask_in_chain(&self, node_id: NodeId, mask: u64) -> bool {
+        let mut cur = Some(node_id);
         while let Some(nid) = cur {
             if !self.store.is_live(nid) {
                 break;

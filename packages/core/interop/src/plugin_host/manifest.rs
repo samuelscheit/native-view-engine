@@ -13,7 +13,7 @@ use crate::error::InteropError;
 pub type PluginId = u32;
 
 /// Default starting `SurfaceId` reserved for isolated plugin slots.
-pub const DEFAULT_PLUGIN_SURFACE_BASE: SurfaceId = 10_000;
+pub const DEFAULT_PLUGIN_SURFACE_BASE: SurfaceId = SurfaceId(10_000);
 
 /// Probed ABI capability bitmap discovered via `nve_get_interface(uint32_t)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -13,7 +13,7 @@ mod native {
     use nve_backend_web::WebBackend;
     use nve_components::tables::{Layout, TextContent, Visual};
     use nve_engine::{StoreBackend, Viewport};
-    use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
+    use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba, SurfaceId};
 
     fn bench_web_ssr_and_snapshot(c: &mut Criterion) {
         let mut store = NodeStore::new();
@@ -41,7 +41,7 @@ mod native {
 
         let mut backend = WebBackend::new();
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 1280.0,
                 height: 720.0,

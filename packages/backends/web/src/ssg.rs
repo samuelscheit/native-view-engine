@@ -1,6 +1,6 @@
 //! Generic, app-agnostic Web SSG + 0ms Instant-Restore document builder & shell injector.
 
-use nve_abi::{NveDirectEvent, NveEventBatchRef, ROOT_NODE_ID};
+use nve_abi::{FrameId, NveDirectEvent, NveEventBatchRef, SurfaceId, ROOT_NODE_ID};
 use nve_components::tables::core_realization_order;
 use nve_engine::{BackendError, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_store::NodeStore;
@@ -31,14 +31,14 @@ pub struct WebSsgDocumentOptions {
 pub fn prerender_nve_app_frame0<A: NveApp>(
     viewport: Viewport,
 ) -> Result<(NodeStore, WebBackend), BackendError> {
-    let mut app = A::create(1);
+    let mut app = A::create(SurfaceId::ROOT);
     if viewport.width.is_finite()
         && viewport.height.is_finite()
         && viewport.width > 0.0
         && viewport.height > 0.0
     {
         let layout = [NveDirectEvent::layout(
-            1,
+            SurfaceId::ROOT,
             ROOT_NODE_ID,
             0,
             0.0,
@@ -49,9 +49,9 @@ pub fn prerender_nve_app_frame0<A: NveApp>(
         // SAFETY: `layout` is a stack-local slice containing no nested pointers.
         let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout) });
     }
-    let frame_bytes = app.render(1).to_vec();
+    let frame_bytes = app.render(FrameId(1)).to_vec();
     let mut backend = WebBackend::new();
-    backend.set_viewport(1, viewport);
+    backend.set_viewport(SurfaceId::ROOT, viewport);
     let mut replica = StoreWireReplica::new(backend, core_realization_order());
     if !frame_bytes.is_empty() {
         replica.submit_nve2_frame(&frame_bytes)?;
@@ -67,7 +67,7 @@ pub fn prerender_nve_app_frame0<A: NveApp>(
         tx.commit_into(&mut changes);
     }
     let mut out_backend = WebBackend::new();
-    out_backend.set_viewport(1, viewport);
+    out_backend.set_viewport(SurfaceId::ROOT, viewport);
     out_backend.commit(&store, &changes)?;
     Ok((store, out_backend))
 }

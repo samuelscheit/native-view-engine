@@ -8,8 +8,8 @@ use std::process::Command;
 
 use nve_abi::{
     decode_events, encode_events, pack_key_modifiers, EventMask, EventPayload, NativeEvent,
-    NativeEventKind, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT,
-    NVE_KEY_MOD_SHIFT,
+    NativeEventKind, NodeId, SurfaceId, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
+    NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
 use nve_codegen::schema::wire as wc;
 use nve_codegen::targets::generate_all_wire_codec_files;
@@ -29,22 +29,22 @@ fn assert_decoded_cross_language_event_ring(raw: &[u8]) {
     let decoded = decode_events(raw).expect("Rust nve_abi::decode_events must decode host EventRing");
     let expected = vec![
         NativeEvent {
-            surface_id: 1,
-            node_id: 10,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(10),
             timestamp_us: 1000,
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 12.5, y: 34.25 },
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 11,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(11),
             timestamp_us: 2000,
             kind: NativeEventKind::LongPress,
             payload: EventPayload::Point { x: 5.0, y: 6.0 },
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 12,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(12),
             timestamp_us: 3000,
             kind: NativeEventKind::Scroll,
             payload: EventPayload::Scroll {
@@ -55,15 +55,15 @@ fn assert_decoded_cross_language_event_ring(raw: &[u8]) {
             },
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 13,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(13),
             timestamp_us: 4000,
             kind: NativeEventKind::TextChange,
             payload: EventPayload::Text("hello".into()),
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 14,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(14),
             timestamp_us: 5000,
             kind: NativeEventKind::Layout,
             payload: EventPayload::Layout {
@@ -74,15 +74,15 @@ fn assert_decoded_cross_language_event_ring(raw: &[u8]) {
             },
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 15,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(15),
             timestamp_us: 6000,
             kind: NativeEventKind::Focus,
             payload: EventPayload::Empty,
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 16,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(16),
             timestamp_us: 7000,
             kind: NativeEventKind::KeyDown,
             payload: EventPayload::Key {
@@ -179,8 +179,8 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
 
     // Cross-check binary layout of `encode_events` against spec offsets & payload tags.
     let single = encode_events(&[NativeEvent {
-        surface_id: 0x1122_3344,
-        node_id: 0x5566_7788,
+        surface_id: SurfaceId(0x1122_3344),
+        node_id: NodeId(0x5566_7788),
         timestamp_us: 0x0102_0304_0506_0708,
         kind: NativeEventKind::Blur,
         payload: EventPayload::Empty,

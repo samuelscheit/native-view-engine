@@ -227,7 +227,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
 
     let nodes = [
         SceneRelocNodeInput {
-            node_id: 1,
+            node_id: nve_abi::NodeId(1),
             parent_index: -1,
             primary_slot: NVE_PRIMARY_SLOT_NONE,
             flags: SCENE_NODE_CLIP_CHILDREN,
@@ -254,7 +254,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
             children: &children_root,
         },
         SceneRelocNodeInput {
-            node_id: 2,
+            node_id: nve_abi::NodeId(2),
             parent_index: 0,
             primary_slot: 1,
             flags: SCENE_NODE_HAS_EXPLICIT_STYLE | SCENE_NODE_INTERACTIVE,
@@ -283,7 +283,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
             children: &[],
         },
         SceneRelocNodeInput {
-            node_id: 3,
+            node_id: nve_abi::NodeId(3),
             parent_index: 0,
             primary_slot: 2,
             flags: 0,
@@ -310,8 +310,8 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
 
     let buf = encode_scene_reloc(&SceneRelocInput {
         schema_version: 2,
-        surface_id: 1,
-        frame_id: 1,
+        surface_id: nve_abi::SurfaceId::ROOT,
+        frame_id: nve_abi::FrameId(1),
         viewport: Viewport {
             width: 1280.0,
             height: 800.0,

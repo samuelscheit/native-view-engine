@@ -357,7 +357,7 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
 
     let ra = Arc::clone(&received_a);
     let sub_a = bus
-        .subscribe(TOPIC_AUTH, Some(10), true, move |msg| {
+        .subscribe(TOPIC_AUTH, Some(SurfaceId(10)), true, move |msg| {
             ra.lock().unwrap().push(msg.clone());
         })
         .unwrap();
@@ -374,19 +374,25 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
     let ra2 = Arc::clone(&received_a);
     let rb2 = Arc::clone(&received_b);
     let sub_custom_a = bus
-        .subscribe_by_id(custom_id, Some(10), false, move |m| {
+        .subscribe_by_id(custom_id, Some(SurfaceId(10)), false, move |m| {
             ra2.lock().unwrap().push(m.clone());
         })
         .unwrap();
     let _sub_custom_b = bus
-        .subscribe_by_id(custom_id, Some(20), false, move |m| {
+        .subscribe_by_id(custom_id, Some(SurfaceId(20)), false, move |m| {
             rb2.lock().unwrap().push(m.clone());
         })
         .unwrap();
 
     let payload = ChannelPayload::from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
     let count = bus
-        .publish_by_id(custom_id, Some(1), PayloadEncoding::Binary, payload.clone(), false)
+        .publish_by_id(
+            custom_id,
+            Some(SurfaceId::ROOT),
+            PayloadEncoding::Binary,
+            payload.clone(),
+            false,
+        )
         .unwrap();
     assert_eq!(count, 2);
 
@@ -401,11 +407,11 @@ fn channel_bus_zero_copy_pubsub_retained_state_and_unsub() {
     bus.unsubscribe(sub_custom_a).unwrap();
     bus.unsubscribe(sub_a).unwrap();
     let count_after = bus
-        .publish_bytes("metrics.frame_timing", Some(1), payload, false)
+        .publish_bytes("metrics.frame_timing", Some(SurfaceId::ROOT), payload, false)
         .unwrap();
     assert_eq!(count_after, 1);
 
     // Unsubscribe by surface cleans up remaining subscriber for surface 20.
-    assert_eq!(bus.unsubscribe_surface(20), 1);
+    assert_eq!(bus.unsubscribe_surface(SurfaceId(20)), 1);
     assert_eq!(bus.subscriber_count("metrics.frame_timing"), 0);
 }

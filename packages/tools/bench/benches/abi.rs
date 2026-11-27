@@ -2,10 +2,10 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use nve_abi::{
-    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, NveLayoutApi, NveMapEntry,
-    NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi, NveValue, SceneNodeInput,
-    NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
-    NVE_PRIMARY_SLOT_NONE,
+    decode_events, encode_bin_value_to_vec, encode_events, BinValueView, FrameId, NodeId,
+    NveLayoutApi, NveMapEntry, NveSceneRef, NveSceneTable, NveSizeConstraints, NveSurfaceApi,
+    NveValue, PrimarySlot, SceneNodeInput, SurfaceId, ZIndex, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
 use nve_bench::{build_event_batch, build_node_tree_cmd, nve_bench_get_interface};
 use nve_components::tables::{register_core_tables, TextContent};
@@ -19,14 +19,14 @@ fn bench_nve2_wire_codec(c: &mut Criterion) {
     for &nodes in &[100usize, 1_000, 10_000] {
         encode_group.throughput(Throughput::Elements(nodes as u64));
         encode_group.bench_with_input(BenchmarkId::from_parameter(nodes), &nodes, |b, &n| {
-            b.iter(|| black_box(build_node_tree_cmd(black_box(n), 1)));
+            b.iter(|| black_box(build_node_tree_cmd(black_box(n), FrameId(1))));
         });
     }
     encode_group.finish();
 
     let mut decode_group = c.benchmark_group("abi/nve2_wire_decode");
     for &nodes in &[100usize, 1_000, 10_000] {
-        let encoded = build_node_tree_cmd(nodes, 1);
+        let encoded = build_node_tree_cmd(nodes, FrameId(1));
         decode_group.throughput(Throughput::Bytes(encoded.len() as u64));
         decode_group.bench_with_input(BenchmarkId::from_parameter(nodes), &encoded, |b, bytes| {
             b.iter_batched(
@@ -80,7 +80,7 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
         *ptr
     };
     // SAFETY: `surface_api.create` returns an opaque handle valid until `surface_api.destroy`.
-    let handle = unsafe { (surface_api.create)(1) };
+    let handle = unsafe { (surface_api.create)(SurfaceId::ROOT) };
 
     group.bench_function("lookup_interface", |b| {
         b.iter(|| {
@@ -117,9 +117,9 @@ fn bench_ffi_interface_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("surface_render_slice", |b| {
-        let mut frame = 1u64;
+        let mut frame = FrameId(1);
         b.iter(|| {
-            frame += 1;
+            frame = frame.next();
             // SAFETY: `handle` is live until destroyed after this benchmark group.
             unsafe { black_box((surface_api.render)(black_box(handle), black_box(frame))) }
         });
@@ -183,12 +183,12 @@ fn bench_zero_copy_value_read(c: &mut Criterion) {
 
 fn bench_scene_view_read(c: &mut Criterion) {
     register_core_tables();
-    let text_slot = TextContent::slot().0;
+    let text_slot = PrimarySlot(TextContent::slot().0);
     let mut group = c.benchmark_group("abi/scene");
 
     let mut table = NveSceneTable::with_capacity(1000);
-    table.begin_frame(1);
-    let children_root: Vec<u32> = (2..=1000u32).collect();
+    table.begin_frame(FrameId(1));
+    let children_root: Vec<NodeId> = (2..=1000u32).map(NodeId).collect();
     for id in 1..=1000u32 {
         let label = if id == 1 {
             ""
@@ -197,12 +197,12 @@ fn bench_scene_view_read(c: &mut Criterion) {
         } else {
             "Button Action"
         };
-        let children: &[u32] = if id == 1 { &children_root } else { &[] };
+        let children: &[NodeId] = if id == 1 { &children_root } else { &[] };
         table
             .upsert_node(SceneNodeInput {
-                node_id: id,
+                node_id: NodeId(id),
                 primary_slot: if id == 1 || id % 4 == 0 {
-                    NVE_PRIMARY_SLOT_NONE
+                    PrimarySlot::NONE
                 } else {
                     text_slot
                 },
@@ -222,7 +222,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
                 border_radius: 8.0,
                 border_width: 1.0,
                 font_size: 14.0,
-                z_index: 0,
+                z_index: ZIndex::ZERO,
                 text: label,
                 children,
             })
@@ -230,11 +230,11 @@ fn bench_scene_view_read(c: &mut Criterion) {
     }
 
     // Mutate only 3 nodes out of 1000 for the incremental frame benchmark.
-    table.begin_frame(2);
+    table.begin_frame(FrameId(2));
     for &id in &[17u32, 333, 987] {
         table
             .upsert_node(SceneNodeInput {
-                node_id: id,
+                node_id: NodeId(id),
                 primary_slot: text_slot,
                 flags: NVE_NODE_LEAF_TEXT,
                 opacity_u8: 240,
@@ -248,7 +248,7 @@ fn bench_scene_view_read(c: &mut Criterion) {
                 border_radius: 10.0,
                 border_width: 1.5,
                 font_size: 15.0,
-                z_index: 2,
+                z_index: ZIndex(2),
                 text: "Counter: 42",
                 children: &[],
             })

@@ -23,7 +23,7 @@ fn find_counter_increment_button(store: &nve_store::NodeStore) -> NodeId {
             store
                 .try_row::<nve_components::tables::DebugId>(id)
                 .filter(|d| d.test_id() == "ks-counter-inc")
-                .map(|_| id.raw())
+                .map(|_| id)
         })
         .expect("ks-counter-inc button in remote mirror")
 }
@@ -38,8 +38,8 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     ))
     .expect("bind NveWireServer");
 
-    let mut kitchen_sink = nve_example_kitchen_sink::create_surface(1);
-    let frame1 = kitchen_sink.render_nve2_slice(1).to_vec();
+    let mut kitchen_sink = nve_example_kitchen_sink::create_surface(SurfaceId(1));
+    let frame1 = kitchen_sink.render_nve2_slice(FrameId(1)).to_vec();
     server
         .broadcast_command_delta(1, &frame1)
         .expect("seed initial keyframe");
@@ -49,7 +49,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
         height: 600.0,
         scale_factor: 1.0,
     };
-    let mut web_session = PairedWebSession::new(1, WebBackend::new(), viewport, token);
+    let mut web_session = PairedWebSession::new(SurfaceId(1), WebBackend::new(), viewport, token);
 
     let ws_url = format!("ws://127.0.0.1:{}/nve-wire", server.wss_addr().port());
     let (mut ws, _) = tungstenite::connect(&ws_url).expect("connect WS");
@@ -91,7 +91,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     // Local DOM click -> EventBatch -> server mutates KitchenSinkApp -> CommandDelta -> Count: 1.
     let btn_id = find_counter_increment_button(web_session.store());
     web_session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: btn_id,
         timestamp_us: 12_345,
         kind: NativeEventKind::Press,
@@ -110,7 +110,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
         .expect("server received click EventBatch");
     let click_evs = decode_events(&click_in.frame.payload).expect("valid click EventRing");
     assert!(kitchen_sink.dispatch_events(&click_evs));
-    let frame2 = kitchen_sink.render_nve2_slice(2).to_vec();
+    let frame2 = kitchen_sink.render_nve2_slice(FrameId(2)).to_vec();
     assert_eq!(server.broadcast_command_delta(2, &frame2).unwrap(), 1);
 
     while web_session.frames_received() < 2 {
@@ -158,8 +158,8 @@ fn pair_client_machine_rejects_bad_frames_and_unauthorized_reject() {
     assert!(!client.is_connected());
     assert!(client
         .encode_input_events(&[NativeEvent {
-            surface_id: 1,
-            node_id: 1,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(1),
             timestamp_us: 0,
             kind: NativeEventKind::Focus,
             payload: EventPayload::Empty,

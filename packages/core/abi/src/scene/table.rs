@@ -1,6 +1,6 @@
 use crate::hash::HashMap;
 
-use crate::{FrameId, NodeId};
+use crate::{ByteLen, FrameId, NodeId, ShortLen};
 
 use super::raw_view::NveSceneRef;
 use super::types::{
@@ -17,14 +17,14 @@ pub struct NveSceneTable {
     nodes: Vec<NveRenderNode>,
     id_to_index: HashMap<NodeId, usize>,
     text_slab: Vec<u8>,
-    children_slab: Vec<u32>,
+    children_slab: Vec<NodeId>,
     dirty_indices: Vec<u32>,
     dirty_marks: Vec<u64>,
     seen_marks: Vec<u64>,
-    removed_ids: Vec<u32>,
+    removed_ids: Vec<NodeId>,
     mark_epoch: u64,
     live_text_bytes: usize,
-    live_children_len: usize,
+    live_children_count: usize,
     external_text_slab: bool,
 }
 
@@ -35,7 +35,7 @@ impl NveSceneTable {
 
     pub fn with_capacity(node_capacity: usize) -> Self {
         Self {
-            frame_id: 0,
+            frame_id: FrameId::ZERO,
             nodes: Vec::with_capacity(node_capacity),
             id_to_index: HashMap::with_capacity_and_hasher(node_capacity, Default::default()),
             text_slab: Vec::with_capacity(node_capacity * 16),
@@ -46,7 +46,7 @@ impl NveSceneTable {
             removed_ids: Vec::new(),
             mark_epoch: 0,
             live_text_bytes: 0,
-            live_children_len: 0,
+            live_children_count: 0,
             external_text_slab: false,
         }
     }
@@ -86,7 +86,7 @@ impl NveSceneTable {
 
     /// Clears every node and slab.
     pub fn clear(&mut self) {
-        self.frame_id = 0;
+        self.frame_id = FrameId::ZERO;
         self.nodes.clear();
         self.id_to_index.clear();
         self.text_slab.clear();
@@ -96,7 +96,7 @@ impl NveSceneTable {
         self.seen_marks.clear();
         self.removed_ids.clear();
         self.live_text_bytes = 0;
-        self.live_children_len = 0;
+        self.live_children_count = 0;
         self.external_text_slab = false;
     }
 
@@ -116,13 +116,14 @@ impl NveSceneTable {
             "NveSceneTable::upsert_node cannot be mixed with external text slab mode"
         );
         if self.mark_epoch == 0 {
-            self.begin_frame(self.frame_id.wrapping_add(1));
+            self.begin_frame(self.frame_id.next());
         }
         let text_bytes = input.text.as_bytes();
-        let text_len_u16 =
+        let text_len_u16 = ShortLen(
             u16::try_from(text_bytes.len()).map_err(|_| SceneError::TextTooLong {
                 len: text_bytes.len(),
-            })?;
+            })?,
+        );
         let child_count_u16 =
             u16::try_from(input.children.len()).map_err(|_| SceneError::ChildrenTooMany {
                 count: input.children.len(),
@@ -134,7 +135,7 @@ impl NveSceneTable {
 
             let (text_offset, text_len) = {
                 let prev_start = prev.text_offset as usize;
-                let prev_end = prev_start + prev.text_len as usize;
+                let prev_end = prev_start + prev.text_len.as_usize();
                 let unchanged = prev_end <= self.text_slab.len()
                     && &self.text_slab[prev_start..prev_end] == text_bytes;
                 if unchanged {
@@ -142,10 +143,10 @@ impl NveSceneTable {
                 } else {
                     self.live_text_bytes = self
                         .live_text_bytes
-                        .saturating_sub(prev.text_len as usize)
+                        .saturating_sub(prev.text_len.as_usize())
                         + text_bytes.len();
                     if text_bytes.is_empty() {
-                        (0u32, 0u16)
+                        (0u32, ShortLen::ZERO)
                     } else {
                         let off = u32::try_from(self.text_slab.len())
                             .map_err(|_| SceneError::SlabOverflow("text_slab"))?;
@@ -163,8 +164,8 @@ impl NveSceneTable {
                 if unchanged {
                     (prev.child_offset, prev.child_count)
                 } else {
-                    self.live_children_len = self
-                        .live_children_len
+                    self.live_children_count = self
+                        .live_children_count
                         .saturating_sub(prev.child_count as usize)
                         + input.children.len();
                     if input.children.is_empty() {
@@ -223,7 +224,7 @@ impl NveSceneTable {
                 let off = u32::try_from(self.children_slab.len())
                     .map_err(|_| SceneError::SlabOverflow("children_slab"))?;
                 self.children_slab.extend_from_slice(input.children);
-                self.live_children_len += input.children.len();
+                self.live_children_count += input.children.len();
                 off
             };
 
@@ -267,15 +268,15 @@ impl NveSceneTable {
             return false;
         };
         if self.mark_epoch == 0 {
-            self.begin_frame(self.frame_id.wrapping_add(1));
+            self.begin_frame(self.frame_id.next());
         }
 
         let removed = self.nodes[idx];
         self.live_text_bytes = self
             .live_text_bytes
-            .saturating_sub(removed.text_len as usize);
-        self.live_children_len = self
-            .live_children_len
+            .saturating_sub(removed.text_len.as_usize());
+        self.live_children_count = self
+            .live_children_count
             .saturating_sub(removed.child_count as usize);
         self.removed_ids.push(node_id);
 
@@ -309,7 +310,7 @@ impl NveSceneTable {
         &mut self,
         input: SceneNodeInput<'_>,
         text_offset: u32,
-        text_len: u16,
+        text_len: ShortLen,
         force_dirty: bool,
     ) -> Result<u32, SceneError> {
         assert!(
@@ -318,7 +319,7 @@ impl NveSceneTable {
         );
         self.external_text_slab = true;
         if self.mark_epoch == 0 {
-            self.begin_frame(self.frame_id.wrapping_add(1));
+            self.begin_frame(self.frame_id.next());
         }
         let child_count_u16 =
             u16::try_from(input.children.len()).map_err(|_| SceneError::ChildrenTooMany {
@@ -363,7 +364,7 @@ impl NveSceneTable {
                 let off = u32::try_from(self.children_slab.len())
                     .map_err(|_| SceneError::SlabOverflow("children_slab"))?;
                 self.children_slab.extend_from_slice(input.children);
-                self.live_children_len += input.children.len();
+                self.live_children_count += input.children.len();
                 off
             };
             let idx = self.nodes.len();
@@ -401,7 +402,7 @@ impl NveSceneTable {
     fn upsert_children(
         &mut self,
         prev: NveRenderNode,
-        children: &[u32],
+        children: &[NodeId],
         child_count_u16: u16,
     ) -> Result<(u32, u16), SceneError> {
         let prev_start = prev.child_offset as usize;
@@ -411,8 +412,8 @@ impl NveSceneTable {
         if unchanged {
             Ok((prev.child_offset, prev.child_count))
         } else {
-            self.live_children_len = self
-                .live_children_len
+            self.live_children_count = self
+                .live_children_count
                 .saturating_sub(prev.child_count as usize)
                 + children.len();
             if children.is_empty() {
@@ -465,7 +466,7 @@ impl NveSceneTable {
             self.compact_text_slab();
         }
         if self.children_slab.len() > 16 * 1024
-            && self.children_slab.len() > self.live_children_len * 2
+            && self.children_slab.len() > self.live_children_count * 2
         {
             self.compact_children_slab();
         }
@@ -480,7 +481,7 @@ impl NveSceneTable {
         let mut new_slab = Vec::with_capacity(self.live_text_bytes);
         for idx in 0..self.nodes.len() {
             let text_len = self.nodes[idx].text_len;
-            if text_len == 0 {
+            if text_len.raw() == 0 {
                 if self.nodes[idx].text_offset != 0 {
                     self.nodes[idx].text_offset = 0;
                     self.mark_dirty(idx);
@@ -488,7 +489,7 @@ impl NveSceneTable {
                 continue;
             }
             let start = self.nodes[idx].text_offset as usize;
-            let end = start + text_len as usize;
+            let end = start + text_len.as_usize();
             let new_off = new_slab.len() as u32;
             new_slab.extend_from_slice(&self.text_slab[start..end]);
             if self.nodes[idx].text_offset != new_off {
@@ -503,7 +504,7 @@ impl NveSceneTable {
     /// Unconditionally compacts `children_slab` in place, rewriting live node child offsets and
     /// marking every node whose offset changed dirty.
     pub fn compact_children_slab(&mut self) {
-        let mut new_slab = Vec::with_capacity(self.live_children_len);
+        let mut new_slab = Vec::with_capacity(self.live_children_count);
         for idx in 0..self.nodes.len() {
             let child_count = self.nodes[idx].child_count;
             if child_count == 0 {
@@ -522,7 +523,7 @@ impl NveSceneTable {
                 self.mark_dirty(idx);
             }
         }
-        self.live_children_len = new_slab.len();
+        self.live_children_count = new_slab.len();
         self.children_slab = new_slab;
     }
 
@@ -556,8 +557,8 @@ impl NveSceneTable {
             node_count: self.nodes.len() as u32,
             dirty_count: self.dirty_indices.len() as u32,
             removed_count: self.removed_ids.len() as u32,
-            text_slab_len: text_slab.len() as u32,
-            children_slab_len: self.children_slab.len() as u32,
+            text_slab_len: ByteLen(text_slab.len() as u32),
+            children_slab_len: ByteLen(self.children_slab.len() as u32),
             table_count: 0,
             nodes: if self.nodes.is_empty() {
                 std::ptr::null()

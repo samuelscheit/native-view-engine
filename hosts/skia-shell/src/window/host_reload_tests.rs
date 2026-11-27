@@ -6,6 +6,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use nve_abi::{FrameId, NodeId, SurfaceId};
 use winit::window::Theme as WinitTheme;
 
 use super::host_services_tests::make_memory_services;
@@ -228,13 +229,13 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
     let dylib = compile_test_cdylib(dir.path(), "skia_host_reload_app", cdylib_src);
     let (_mem, services) = make_memory_services();
 
-    let mut slot = HotAppSlot::load(&dylib, 1).expect("load cdylib into HotAppSlot");
+    let mut slot = HotAppSlot::load(&dylib, SurfaceId::ROOT).expect("load cdylib into HotAppSlot");
     assert!(slot.has_host_interface());
     assert!(slot.bind_host_services(Some(Arc::clone(&services))));
 
     // Gen 1 received initial #[repr(C)] ThemeSnapshot and invokes SERVICE_SYSTEM_ENV::GET_THEME live.
-    assert_eq!(slot.render(1), b"f=1;bound=1;themes=1;state=1;scheme=1");
-    let tick = [nve_abi::NveDirectEvent::press(1, 2, 1, 0.0, 0.0)];
+    assert_eq!(slot.render(FrameId(1)), b"f=1;bound=1;themes=1;state=1;scheme=1");
+    let tick = [nve_abi::NveDirectEvent::press(SurfaceId::ROOT, NodeId(2), 1, 0.0, 0.0)];
     // SAFETY: `NveDirectEvent::press` holds only scalar coordinates and no borrowed pointers.
     let tick_batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&tick) };
     assert!(slot.dispatch_events(tick_batch));
@@ -242,17 +243,17 @@ fn hot_app_slot_binds_host_services_rebinds_across_tier2_reload_without_dangling
     // Update theme to Dark -> push typed SkiaHostEvent::ThemeChanged -> Tier-2 reload to Gen 2.
     let dark_snap = services.update_theme_from_winit(WinitTheme::Dark, 2.0);
     assert!(slot.dispatch_host_event(&SkiaHostEvent::ThemeChanged(dark_snap)));
-    assert_eq!(slot.render(2), b"f=2;bound=1;themes=2;state=2;scheme=2");
+    assert_eq!(slot.render(FrameId(2)), b"f=2;bound=1;themes=2;state=2;scheme=2");
 
     // Tier-2 reload preserves state=2, re-binds SkiaHostServices onto Gen 2 without dangling pointers.
-    let gen2 = slot.reload(&dylib, 1).expect("reload gen 2");
+    let gen2 = slot.reload(&dylib, SurfaceId::ROOT).expect("reload gen 2");
     assert_eq!(gen2, 2);
-    assert_eq!(slot.render(3), b"f=3;bound=1;themes=1;state=2;scheme=2");
+    assert_eq!(slot.render(FrameId(3)), b"f=3;bound=1;themes=1;state=2;scheme=2");
     assert!(slot.dispatch_events(tick_batch));
 
     // Unbind cleanly clears callbacks (scheme becomes 0, bound=0).
     assert!(slot.bind_host_services(None));
-    assert_eq!(slot.render(4), b"f=4;bound=0;themes=1;state=3;scheme=0");
+    assert_eq!(slot.render(FrameId(4)), b"f=4;bound=0;themes=1;state=3;scheme=0");
 
     // Re-bind + drop slot safely without dangling pointers.
     assert!(slot.bind_host_services(Some(Arc::clone(&services))));

@@ -11,14 +11,13 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId as AbiNodeId};
+use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_web::{InputSyncTracker, WebBackend};
 use nve_components::tables::{DebugId, TextContent, TextInput};
 use nve_dioxus::elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_store::NodeId;
 use nve_ui::prelude::*;
 
 use common::UiHarness;
@@ -29,7 +28,7 @@ struct DualHarness {
     surface: DioxusSurface,
     headless: HeadlessBackend,
     web: WebBackend,
-    frame_id: u64,
+    frame_id: FrameId,
     timestamp_us: u64,
 }
 
@@ -41,14 +40,14 @@ impl DualHarness {
             scale_factor: 3.0,
         };
         let mut headless = HeadlessBackend::new();
-        headless.set_viewport(1, vp);
+        headless.set_viewport(SurfaceId::ROOT, vp);
         let mut web = WebBackend::new();
-        web.set_viewport(1, vp);
+        web.set_viewport(SurfaceId::ROOT, vp);
         let mut h = Self {
-            surface: DioxusSurface::new(1, root),
+            surface: DioxusSurface::new(SurfaceId::ROOT, root),
             headless,
             web,
-            frame_id: 0,
+            frame_id: FrameId::ZERO,
             timestamp_us: 0,
         };
         h.render();
@@ -56,7 +55,7 @@ impl DualHarness {
     }
 
     fn render(&mut self) {
-        self.frame_id += 1;
+        self.frame_id = self.frame_id.next();
         self.surface.reconcile(self.frame_id);
         let store = self.surface.store();
         let changes = self.surface.last_changes();
@@ -68,7 +67,7 @@ impl DualHarness {
             .expect("web commit succeeded");
     }
 
-    fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+    fn maybe_find(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -76,14 +75,14 @@ impl DualHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    fn find(&self, tid: &str) -> AbiNodeId {
+    fn find(&self, tid: &str) -> NodeId {
         let found = self.maybe_find(tid);
         assert!(found.is_some(), "expected node with testID='{tid}'");
         found.expect("checked above")
@@ -102,7 +101,7 @@ impl DualHarness {
     }
 
     fn text_of(&self, tid: &str) -> String {
-        self.collect_text(NodeId(self.find(tid)))
+        self.collect_text(self.find(tid))
     }
 
     fn next_ts(&mut self) -> u64 {
@@ -114,7 +113,7 @@ impl DualHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Press,
@@ -127,7 +126,7 @@ impl DualHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::TextChange,
@@ -408,7 +407,7 @@ fn autofill_and_inputmode_emit_canonical_ssr_and_dom_attrs_and_sync_without_keyd
         let ti = h
             .surface
             .store()
-            .try_row::<TextInput>(NodeId(id))
+            .try_row::<TextInput>(id)
             .unwrap_or_else(|| panic!("expected TextInput row on {tid}"));
         let actual_ac = ti.autofill().get().map(AutofillHint::as_html_autocomplete);
         assert_eq!(

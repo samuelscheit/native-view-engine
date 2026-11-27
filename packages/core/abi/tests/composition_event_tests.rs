@@ -1,8 +1,8 @@
 #![cfg(feature = "wire")]
 
 use nve_abi::{
-    decode_events, encode_events, EventMask, EventPayload, NativeEvent, NativeEventKind,
-    NveDirectEvent, NveEventBatch, NveEventBatchRef, NveEventPayloadTag,
+    decode_events, encode_events, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId,
+    NveDirectEvent, NveEventBatch, NveEventBatchRef, NveEventPayloadTag, SurfaceId,
 };
 
 #[test]
@@ -14,22 +14,22 @@ fn composition_events_roundtrip_event_ring_and_direct_ffi_batch() {
 
     let events = vec![
         NativeEvent {
-            surface_id: 1,
-            node_id: 10,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(10),
             timestamp_us: 100,
             kind: NativeEventKind::CompositionStart,
             payload: EventPayload::Text("ni".into()),
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 10,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(10),
             timestamp_us: 200,
             kind: NativeEventKind::CompositionUpdate,
             payload: EventPayload::Text("nihao".into()),
         },
         NativeEvent {
-            surface_id: 1,
-            node_id: 10,
+            surface_id: SurfaceId(1),
+            node_id: NodeId(10),
             timestamp_us: 300,
             kind: NativeEventKind::CompositionEnd,
             payload: EventPayload::Text("你好".into()),
@@ -40,9 +40,27 @@ fn composition_events_roundtrip_event_ring_and_direct_ffi_batch() {
     assert_eq!(decoded, events);
 
     let direct = [
-        NveDirectEvent::composition(1, 10, 100, NativeEventKind::CompositionStart, "ni"),
-        NveDirectEvent::composition(1, 10, 200, NativeEventKind::CompositionUpdate, "nihao"),
-        NveDirectEvent::composition(1, 10, 300, NativeEventKind::CompositionEnd, "你好"),
+        NveDirectEvent::composition(
+            SurfaceId(1),
+            NodeId(10),
+            100,
+            NativeEventKind::CompositionStart,
+            "ni",
+        ),
+        NveDirectEvent::composition(
+            SurfaceId(1),
+            NodeId(10),
+            200,
+            NativeEventKind::CompositionUpdate,
+            "nihao",
+        ),
+        NveDirectEvent::composition(
+            SurfaceId(1),
+            NodeId(10),
+            300,
+            NativeEventKind::CompositionEnd,
+            "你好",
+        ),
     ];
     let batch = NveEventBatch::from_slice(&direct);
     // SAFETY: `direct` stays alive for the lifetime of `view`.

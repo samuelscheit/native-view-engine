@@ -1,4 +1,4 @@
-use crate::FrameId;
+use crate::{FrameId, NodeId};
 
 use super::types::{NveRenderNode, NveSceneView, SceneError, NVE_SCENE_SCHEMA_HASH};
 
@@ -8,9 +8,9 @@ pub struct NveSceneRef<'a> {
     pub(super) frame_id: FrameId,
     pub(super) nodes: &'a [NveRenderNode],
     pub(super) text_slab: &'a [u8],
-    pub(super) children_slab: &'a [u32],
+    pub(super) children_slab: &'a [NodeId],
     pub(super) dirty_indices: &'a [u32],
-    pub(super) removed_ids: &'a [u32],
+    pub(super) removed_ids: &'a [NodeId],
     pub(super) tables: &'a [crate::table::NveTableView],
 }
 
@@ -64,8 +64,8 @@ impl<'a> NveSceneRef<'a> {
         let (nodes, text_slab, children_slab, dirty_indices, removed_ids, tables) = unsafe {
             (
                 guarded_slice(view.nodes, view.node_count, "nodes")?,
-                guarded_slice(view.text_slab, view.text_slab_len, "text_slab")?,
-                guarded_slice(view.children_slab, view.children_slab_len, "children_slab")?,
+                guarded_slice(view.text_slab, view.text_slab_len.raw(), "text_slab")?,
+                guarded_slice(view.children_slab, view.children_slab_len.raw(), "children_slab")?,
                 guarded_slice(view.dirty_indices, view.dirty_count, "dirty_indices")?,
                 guarded_slice(view.removed_ids, view.removed_count, "removed_ids")?,
                 guarded_slice(view.tables, view.table_count, "tables")?,
@@ -113,7 +113,7 @@ impl<'a> NveSceneRef<'a> {
     }
 
     #[inline]
-    pub const fn removed_ids(&self) -> &'a [u32] {
+    pub const fn removed_ids(&self) -> &'a [NodeId] {
         self.removed_ids
     }
 
@@ -123,7 +123,7 @@ impl<'a> NveSceneRef<'a> {
     }
 
     #[inline]
-    pub const fn children_slab(&self) -> &'a [u32] {
+    pub const fn children_slab(&self) -> &'a [NodeId] {
         self.children_slab
     }
 
@@ -142,12 +142,12 @@ impl<'a> NveSceneRef<'a> {
 
     #[inline]
     pub fn node_text_bytes(&self, node: &NveRenderNode) -> Result<&'a [u8], SceneError> {
-        if node.text_len == 0 {
+        if node.text_len.raw() == 0 {
             return Ok(&[]);
         }
         let start = node.text_offset as usize;
         let end = start
-            .checked_add(node.text_len as usize)
+            .checked_add(node.text_len.as_usize())
             .ok_or(SceneError::TextOutOfBounds {
                 node_id: node.node_id,
                 offset: node.text_offset,
@@ -173,7 +173,7 @@ impl<'a> NveSceneRef<'a> {
     }
 
     #[inline]
-    pub fn node_children(&self, node: &NveRenderNode) -> Result<&'a [u32], SceneError> {
+    pub fn node_children(&self, node: &NveRenderNode) -> Result<&'a [NodeId], SceneError> {
         if node.child_count == 0 {
             return Ok(&[]);
         }

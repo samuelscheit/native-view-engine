@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use nve_abi::{
-    pack_key_modifiers, ColorRgba, EdgeInsets, EventPayload, NativeEvent, NativeEventKind,
-    NodeId as AbiNodeId,
+    pack_key_modifiers, ColorRgba, EdgeInsets, EventPayload, FrameId, NativeEvent, NativeEventKind,
+    NodeId, SurfaceId,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{
@@ -15,14 +15,13 @@ use nve_components::tables::{
 use nve_dioxus::elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::Element;
 use nve_dioxus::DioxusSurface;
-use nve_store::NodeId;
 use nve_web_html::{DataAttrList, HtmlDataAttrs, HtmlSemantics};
 
 pub struct UiHarness {
     pub surface: DioxusSurface,
     pub backend: HeadlessBackend,
-    num_attrs: HashMap<(AbiNodeId, &'static str), String>,
-    frame_id: u64,
+    num_attrs: HashMap<(NodeId, &'static str), String>,
+    frame_id: FrameId,
     timestamp_us: u64,
 }
 
@@ -31,7 +30,7 @@ impl UiHarness {
     pub fn new(root: fn() -> Element) -> Self {
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 800.0,
                 height: 600.0,
@@ -39,10 +38,10 @@ impl UiHarness {
             },
         );
         let mut h = Self {
-            surface: DioxusSurface::new(1, root),
+            surface: DioxusSurface::new(SurfaceId::ROOT, root),
             backend,
             num_attrs: HashMap::new(),
-            frame_id: 0,
+            frame_id: FrameId::ZERO,
             timestamp_us: 0,
         };
         h.render();
@@ -50,7 +49,7 @@ impl UiHarness {
     }
 
     pub fn render(&mut self) {
-        self.frame_id += 1;
+        self.frame_id = self.frame_id.next();
         self.surface
             .commit_to(self.frame_id, &mut self.backend)
             .expect("headless commit_to succeeded");
@@ -65,30 +64,30 @@ impl UiHarness {
             if id != NodeId::ROOT {
                 if let Some(a) = store.try_row::<Accessibility>(id) {
                     self.num_attrs
-                        .insert((id.raw(), "ariaValueNow"), format_num(a.value_now()));
+                        .insert((id, "ariaValueNow"), format_num(a.value_now()));
                     self.num_attrs
-                        .insert((id.raw(), "ariaValueMin"), format_num(a.value_min()));
+                        .insert((id, "ariaValueMin"), format_num(a.value_min()));
                     self.num_attrs
-                        .insert((id.raw(), "ariaValueMax"), format_num(a.value_max()));
+                        .insert((id, "ariaValueMax"), format_num(a.value_max()));
                 }
                 if let Some(i) = store.try_row::<Interaction>(id)
                     && i.tab_index_set()
                 {
                     self.num_attrs
-                        .insert((id.raw(), "tabIndex"), i.tab_index().to_string());
+                        .insert((id, "tabIndex"), i.tab_index().to_string());
                 }
             }
             stack.extend_from_slice(store.children(id));
         }
     }
 
-    pub fn find(&self, tid: &str) -> AbiNodeId {
+    pub fn find(&self, tid: &str) -> NodeId {
         let found = self.maybe_find(tid);
         assert!(found.is_some(), "expected node with testID='{tid}'");
         found.expect("checked above")
     }
 
-    pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+    pub fn maybe_find(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -96,7 +95,7 @@ impl UiHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
@@ -107,56 +106,51 @@ impl UiHarness {
         self.surface.store().stats().live_nodes
     }
 
-    pub fn children_of(&self, id: AbiNodeId) -> Vec<AbiNodeId> {
-        self.surface
-            .store()
-            .children(NodeId(id))
-            .iter()
-            .map(|n| n.raw())
-            .collect()
+    pub fn children_of(&self, id: NodeId) -> Vec<NodeId> {
+        self.surface.store().children(id).to_vec()
     }
 
-    pub fn bg(&self, id: AbiNodeId) -> ColorRgba {
+    pub fn bg(&self, id: NodeId) -> ColorRgba {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(ColorRgba::TRANSPARENT, |v| ColorRgba::from_u32(v.background().0))
     }
 
-    pub fn border_width(&self, id: AbiNodeId) -> f32 {
+    pub fn border_width(&self, id: NodeId) -> f32 {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(0.0, |v| v.border_width())
     }
 
-    pub fn border_color(&self, id: AbiNodeId) -> ColorRgba {
+    pub fn border_color(&self, id: NodeId) -> ColorRgba {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(ColorRgba::TRANSPARENT, |v| {
                 ColorRgba::from_u32(v.border_color().0)
             })
     }
 
-    pub fn border_radius(&self, id: AbiNodeId) -> f32 {
+    pub fn border_radius(&self, id: NodeId) -> f32 {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(0.0, |v| v.border_radius())
     }
 
-    pub fn opacity(&self, id: AbiNodeId) -> f32 {
+    pub fn opacity(&self, id: NodeId) -> f32 {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(1.0, |v| v.opacity())
     }
 
-    pub fn has_box_shadow(&self, id: AbiNodeId) -> bool {
+    pub fn has_box_shadow(&self, id: NodeId) -> bool {
         let store = self.surface.store();
         store
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .and_then(|v| {
                 let r = v.box_shadows();
                 (!r.is_none())
@@ -166,10 +160,10 @@ impl UiHarness {
             .unwrap_or(false)
     }
 
-    pub fn padding(&self, id: AbiNodeId) -> EdgeInsets {
+    pub fn padding(&self, id: NodeId) -> EdgeInsets {
         self.surface
             .store()
-            .try_row::<Layout>(NodeId(id))
+            .try_row::<Layout>(id)
             .map_or(EdgeInsets::default(), |l| EdgeInsets {
                 top: l.padding_top().value(),
                 right: l.padding_right().value(),
@@ -179,9 +173,9 @@ impl UiHarness {
     }
 
     /// Reads typed semantic/ARIA/data attributes directly from `NodeStore` word tables.
-    pub fn raw_str(&self, id: AbiNodeId, key: &str) -> Option<&str> {
+    pub fn raw_str(&self, id: NodeId, key: &str) -> Option<&str> {
         let store = self.surface.store();
-        let nid = NodeId(id);
+        let nid = id;
         if let Some(data_key) = key.strip_prefix("data-") {
             let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
             if res.is_none() {
@@ -281,9 +275,9 @@ impl UiHarness {
         }
     }
 
-    pub fn raw_bool(&self, id: AbiNodeId, key: &str) -> Option<bool> {
+    pub fn raw_bool(&self, id: NodeId, key: &str) -> Option<bool> {
         let store = self.surface.store();
-        let nid = NodeId(id);
+        let nid = id;
         match key {
             "disabled" => store.try_row::<Interaction>(nid).map(|i| i.disabled()),
             "secureTextEntry" => store.try_row::<TextInput>(nid).map(|ti| ti.secure()),
@@ -297,7 +291,7 @@ impl UiHarness {
 
     pub fn text_of(&self, tid: &str) -> String {
         let id = self.find(tid);
-        self.collect_text(NodeId(id))
+        self.collect_text(id)
     }
 
     fn collect_text(&self, id: NodeId) -> String {
@@ -321,7 +315,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Press,
@@ -334,7 +328,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::KeyDown,
@@ -353,7 +347,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Focus,
@@ -366,7 +360,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Blur,
@@ -383,7 +377,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::TextChange,
@@ -396,7 +390,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Submit,
@@ -409,7 +403,7 @@ impl UiHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Scroll,

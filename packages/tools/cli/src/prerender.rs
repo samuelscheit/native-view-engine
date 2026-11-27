@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, SurfaceId};
 use nve_backend_headless::prerender_native_frame0_with_text_measurer;
 use nve_backend_skia::CosmicTextEngine;
 use nve_engine::{write_reloc_atomic, NveApp, SceneRelocView, TextMeasurer, VerifyMode, Viewport};
@@ -60,10 +60,10 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
         || app_arg.eq_ignore_ascii_case("studio-workspace")
         || app_arg.eq_ignore_ascii_case("nve-studio-workspace")
     {
-        let mut app = StudioWorkspaceModule::create(1);
+        let mut app = StudioWorkspaceModule::create(SurfaceId(1));
         let buf = prerender_native_frame0_with_text_measurer(
             &mut app,
-            1,
+            SurfaceId(1),
             viewport,
             STUDIO_SNAPSHOT_SCHEMA_VERSION,
             "studio",
@@ -75,10 +75,10 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
     } else if app_arg.eq_ignore_ascii_case("kitchen-sink")
         || app_arg.eq_ignore_ascii_case("nve-example-kitchen-sink")
     {
-        let mut app = KitchenSinkModule::create(1);
+        let mut app = KitchenSinkModule::create(SurfaceId(1));
         let buf = prerender_native_frame0_with_text_measurer(
             &mut app,
-            1,
+            SurfaceId(1),
             viewport,
             KITCHEN_SINK_STATE_VERSION,
             "kitchen-sink",

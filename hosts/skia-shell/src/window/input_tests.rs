@@ -146,10 +146,10 @@ impl DesktopApp for MockTextInputApp {
                 }
                 (Some(NativeEventKind::TextChange), 3) => {
                     let text = ev.text().to_owned();
-                    if ev.node_id() == 10 {
+                    if ev.node_id() == NodeId(10) {
                         self.title_value = text.clone();
                         handled = true;
-                    } else if ev.node_id() == 11 {
+                    } else if ev.node_id() == NodeId(11) {
                         self.password_value = text.clone();
                         handled = true;
                     }
@@ -197,7 +197,7 @@ fn new_text_session(has_custom_listener: bool) -> DesktopSession<MockTextInputAp
     };
     let mut session = DesktopSession::new(
         MockTextInputApp::new(has_custom_listener),
-        1,
+        SurfaceId::ROOT,
         viewport,
         ColorRgba::BLACK,
         false,
@@ -231,15 +231,15 @@ fn format_keydown_shorthand_produces_compact_strings() {
 #[test]
 fn click_focus_and_blur_transitions_emit_events_and_update_focus_ring_pixels() {
     let mut session = new_text_session(false);
-    let r10 = session.layout_of(10).unwrap();
-    let r11 = session.layout_of(11).unwrap();
+    let r10 = session.layout_of(NodeId(10)).unwrap();
+    let r11 = session.layout_of(NodeId(11)).unwrap();
 
     // Click node 10 -> Focus(10) and sky-blue focus ring painted.
     assert!(session
         .handle_click_logical(r10.x + 20.0, r10.y + 18.0)
         .unwrap());
-    assert_eq!(session.focused_node(), Some(10));
-    assert_eq!(session.app().focus_log, vec![(10, "focus")]);
+    assert_eq!(session.focused_node(), Some(NodeId(10)));
+    assert_eq!(session.app().focus_log, vec![(NodeId(10), "focus")]);
     assert_eq!(
         session
             .pixel_buffer()
@@ -251,10 +251,10 @@ fn click_focus_and_blur_transitions_emit_events_and_update_focus_ring_pixels() {
     assert!(session
         .handle_click_logical(r11.x + 20.0, r11.y + 18.0)
         .unwrap());
-    assert_eq!(session.focused_node(), Some(11));
+    assert_eq!(session.focused_node(), Some(NodeId(11)));
     assert_eq!(
         session.app().focus_log,
-        vec![(10, "focus"), (10, "blur"), (11, "focus")]
+        vec![(NodeId(10), "focus"), (NodeId(10), "blur"), (NodeId(11), "focus")]
     );
     assert_ne!(
         session
@@ -274,7 +274,12 @@ fn click_focus_and_blur_transitions_emit_events_and_update_focus_ring_pixels() {
     assert_eq!(session.focused_node(), None);
     assert_eq!(
         session.app().focus_log,
-        vec![(10, "focus"), (10, "blur"), (11, "focus"), (11, "blur")]
+        vec![
+            (NodeId(10), "focus"),
+            (NodeId(10), "blur"),
+            (NodeId(11), "focus"),
+            (NodeId(11), "blur")
+        ]
     );
     assert_ne!(
         session
@@ -287,7 +292,7 @@ fn click_focus_and_blur_transitions_emit_events_and_update_focus_ring_pixels() {
 #[test]
 fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_submit() {
     let mut session = new_text_session(false);
-    let r10 = session.layout_of(10).unwrap();
+    let r10 = session.layout_of(NodeId(10)).unwrap();
     session
         .handle_click_logical(r10.x + 15.0, r10.y + 15.0)
         .unwrap();
@@ -365,13 +370,13 @@ fn keyboard_editing_supports_utf8_navigation_backspace_delete_select_all_and_sub
     assert!(session
         .handle_keyboard_input(&Key::Named(NamedKey::Enter), None, none)
         .unwrap());
-    assert_eq!(session.app().submits, vec![(10, "done".to_string())]);
+    assert_eq!(session.app().submits, vec![(NodeId(10), "done".to_string())]);
 }
 
 #[test]
 fn cjk_ime_preedit_commit_and_escape_behavior() {
     let mut session = new_text_session(true);
-    let r10 = session.layout_of(10).unwrap();
+    let r10 = session.layout_of(NodeId(10)).unwrap();
     session
         .handle_click_logical(r10.x + 15.0, r10.y + 15.0)
         .unwrap();
@@ -395,7 +400,7 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
         .handle_keyboard_input(&Key::Named(NamedKey::Escape), None, none)
         .unwrap());
     assert_eq!(session.backend().focus_state().ime_preedit.as_deref(), None);
-    assert_eq!(session.focused_node(), Some(10));
+    assert_eq!(session.focused_node(), Some(NodeId(10)));
 
     // Re-enter IME composition and Commit CJK text -> emits TextChange and clears preedit.
     assert!(session
@@ -420,7 +425,7 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
         .handle_keyboard_input(&Key::Named(NamedKey::Escape), None, none)
         .unwrap());
     assert_eq!(session.focused_node(), None);
-    assert_eq!(session.app().focus_log.last(), Some(&(10, "blur")));
+    assert_eq!(session.app().focus_log.last(), Some(&(NodeId(10), "blur")));
     assert_eq!(
         session.app().keydowns.last().map(|(_, s)| s.as_str()),
         Some("Escape")
@@ -430,11 +435,11 @@ fn cjk_ime_preedit_commit_and_escape_behavior() {
 #[test]
 fn uncontrolled_text_input_updates_value_and_caret_locally() {
     let mut session = new_text_session(false);
-    let r12 = session.layout_of(12).unwrap();
+    let r12 = session.layout_of(NodeId(12)).unwrap();
     session
         .handle_click_logical(r12.x + 15.0, r12.y + 15.0)
         .unwrap();
-    assert_eq!(session.focused_node(), Some(12));
+    assert_eq!(session.focused_node(), Some(NodeId(12)));
 
     let none = ModifiersState::empty();
     assert!(session
@@ -458,7 +463,7 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     assert_eq!(word_bounds_at("hello world_42!", 15), (14, 15));
 
     let mut session = new_text_session(false);
-    let r10 = session.layout_of(10).unwrap();
+    let r10 = session.layout_of(NodeId(10)).unwrap();
     let mid_y = r10.y + r10.height * 0.5;
     let none = ModifiersState::empty();
     let shift = ModifiersState::SHIFT;
@@ -557,7 +562,7 @@ fn drag_double_click_shift_selection_and_clipboard_copy_cut_paste_roundtrip() {
     assert_eq!(session.selected_text().as_deref(), Some("world"));
 
     // Secure input (node 11) must refuse Cmd+C so password plaintext never leaks to clipboard.
-    let r11 = session.layout_of(11).unwrap();
+    let r11 = session.layout_of(NodeId(11)).unwrap();
     session
         .handle_click_logical(r11.x + 15.0, r11.y + 15.0)
         .unwrap();
@@ -659,7 +664,7 @@ fn hidden_input_and_display_none_nodes_have_zero_layout_paint_hit_and_reject_foc
 
     let mut session = DesktopSession::new(
         HiddenInputApp::new(),
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 200.0,
@@ -674,11 +679,11 @@ fn hidden_input_and_display_none_nodes_have_zero_layout_paint_hit_and_reject_foc
         session.backend().display_list().ops.is_empty(),
         "hidden/display:none inputs must produce 0 paint ops"
     );
-    for id in [10u32, 11, 13] {
+    for id in [NodeId(10), NodeId(11), NodeId(13)] {
         let r = session.layout_of(id).expect("layout entry");
         assert_eq!((r.width, r.height), (0.0, 0.0), "node {id} must be 0x0");
         assert!(
-            !is_focusable(session.replica.store(), StoreNodeId(id)),
+            !is_focusable(session.replica.store(), id),
             "node {id} must not be focusable"
         );
         assert!(!session.focus_node(Some(id)).unwrap(), "focus_node({id}) must be rejected");

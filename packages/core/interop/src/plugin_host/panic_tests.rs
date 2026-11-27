@@ -96,7 +96,7 @@ impl nve_engine::NveApp for ExportedFlakyPlugin {
             _surface_id: surface_id,
             counter: 10,
             frame_buf: Vec::new(),
-            out_events: vec![NveDirectEvent::press(surface_id, 1, 0, 0.0, 0.0)],
+            out_events: vec![NveDirectEvent::press(surface_id, NodeId::ROOT, 0, 0.0, 0.0)],
             state_buf: Vec::new(),
         }
     }
@@ -214,7 +214,7 @@ unsafe extern "C" {
 #[test]
 fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_healthy() {
     set_host_panic_mode(HostPanicMode::Healthy);
-    let mut host = NvePluginHost::with_surface_base(30_000);
+    let mut host = NvePluginHost::with_surface_base(SurfaceId(30_000));
 
     // Mount healthy sibling plugin first.
     let healthy_id = host
@@ -261,7 +261,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     let render_err: InteropError = host
         .get_mut(flaky_id)
         .unwrap()
-        .render(7)
+        .render(FrameId(7))
         .unwrap_err()
         .into();
     assert!(matches!(
@@ -271,7 +271,7 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
 
     // 4. Panicking `dispatch_events`.
     set_host_panic_mode(HostPanicMode::PanicDispatchEvents);
-    let direct_ev = [NveDirectEvent::press(30_001, 2, 100, 1.0, 2.0)];
+    let direct_ev = [NveDirectEvent::press(SurfaceId(30_001), NodeId(2), 100, 1.0, 2.0)];
     let ev_err: InteropError = host
         .get_mut(flaky_id)
         .unwrap()
@@ -344,14 +344,14 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     set_host_panic_mode(HostPanicMode::Healthy);
     let still_live = host.get_mut(flaky_id).unwrap();
     assert_eq!(still_live.generation(), 1);
-    assert_eq!(decode_first_text(still_live.render(8).unwrap()), "flaky:11");
+    assert_eq!(decode_first_text(still_live.render(FrameId(8)).unwrap()), "flaky:11");
 
     // 8. Healthy sibling plugin stayed 100% healthy throughout all flaky panics!
     let sibling = host.get_mut(healthy_id).unwrap();
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
     assert!(sibling.dispatch_events(&direct_ev).unwrap());
-    let sibling_frame = sibling.render(1).unwrap().to_vec();
-    assert_eq!(sibling.surface_id(), 30_000);
+    let sibling_frame = sibling.render(FrameId(1)).unwrap().to_vec();
+    assert_eq!(sibling.surface_id(), SurfaceId(30_000));
     assert_eq!(decode_first_text(&sibling_frame), "healthy:ticks=2");
 
     // 9. Panicking `destroy` during `unload` survives cleanly and leaves sibling intact.
@@ -359,5 +359,5 @@ fn export_nve_app_plugin_panics_return_interop_error_and_keep_sibling_plugins_he
     host.unload(flaky_id).expect("unload panicking plugin");
     set_host_panic_mode(HostPanicMode::Healthy);
     assert_eq!(host.active_count(), 1);
-    assert!(host.get_mut(healthy_id).unwrap().render(2).is_ok());
+    assert!(host.get_mut(healthy_id).unwrap().render(FrameId(2)).is_ok());
 }

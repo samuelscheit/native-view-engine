@@ -51,8 +51,8 @@ pub(crate) struct Column {
     pub(crate) rows: Vec<Word>,
     /// Dirty word mask per row (dense: per node index).
     pub(crate) masks: Vec<u32>,
-    /// Dense: raw `NodeId` per live attached slot (`0` = unattached); sparse: raw `NodeId` per row.
-    pub(crate) owners: Vec<u32>,
+    /// Dense: `NodeId` per live attached slot (`NodeId::NULL` = unattached); sparse: `NodeId` per row.
+    pub(crate) owners: Vec<NodeId>,
     index: PagedIndex,
     /// Node indices whose mask went `0 → non-zero` this frame.
     pub(crate) dirty: DirtyList,
@@ -145,14 +145,14 @@ impl Column {
             if self.masks.len() <= n {
                 let cap = (n + 1).next_power_of_two().max(64);
                 self.masks.resize(cap, 0);
-                self.owners.resize(cap, 0);
+                self.owners.resize(cap, NodeId::NULL);
                 self.rows.resize(cap * self.w, 0);
             }
-            self.owners[n] = id.raw();
+            self.owners[n] = id;
             n
         } else {
             let r = self.owners.len();
-            self.owners.push(id.raw());
+            self.owners.push(id);
             self.masks.push(0);
             self.rows.resize((r + 1) * self.w, 0);
             self.index.set(node_index, r as u32 + 1);
@@ -172,7 +172,7 @@ impl Column {
         if self.is_dense() {
             let n = node_index.as_usize();
             if n < self.owners.len() {
-                self.owners[n] = 0;
+                self.owners[n] = NodeId::NULL;
             }
             return;
         }
@@ -187,7 +187,7 @@ impl Column {
             self.owners[r] = self.owners[last];
             let was = self.masks[last];
             self.masks[r] = was;
-            let moved = NodeId(self.owners[r]).node_index();
+            let moved = self.owners[r].node_index();
             self.index.set(moved, r as u32 + 1);
             if self.desc.flags() & nve_abi::table::table_flags::PUBLISH_TO_SCENE != 0 {
                 if self.relocated_epoch.len() <= r {

@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
+    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
+    SurfaceId,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
@@ -17,18 +18,18 @@ use nve_example_kitchen_sink::{
     KITCHEN_SINK_STATE_MAGIC,
 };
 use nve_i18n::CalendarDate;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use nve_ui::DateRange;
 use nve_web_html_web::register_web_html_systems;
 
 fn find_node_by_test_id(store: &NodeStore, test_id: &str) -> NodeId {
-    let mut stack = vec![StoreNodeId::ROOT];
+    let mut stack = vec![NodeId::ROOT];
     while let Some(id) = stack.pop() {
-        if id != StoreNodeId::ROOT
+        if id != NodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == test_id
         {
-            return id.raw();
+            return id;
         }
         stack.extend_from_slice(store.children(id));
     }
@@ -47,7 +48,7 @@ fn press_test_id(
     let id = find_node_by_test_id(surface.store(), test_id);
     let rect = backend.layout_of(id).unwrap_or_default();
     let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: id,
         timestamp_us: frame_id * 16_000,
         kind: NativeEventKind::Press,
@@ -58,7 +59,7 @@ fn press_test_id(
     }]);
     assert!(handled, "expected press on '{test_id}' to be handled");
     surface
-        .commit_to(frame_id, backend)
+        .commit_to(FrameId(frame_id), backend)
         .expect("commit test press frame");
 }
 
@@ -116,7 +117,7 @@ fn binary_state_codec_roundtrips_all_fields_and_rejects_corruption() {
 
 #[test]
 fn single_command_buffer_drives_headless_skia_and_web_with_events() {
-    let mut app = create_surface(1);
+    let mut app = create_surface(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
     let mut skia = SkiaBackend::new();
     skia.register_table_system(CanvasSkiaSystem);
@@ -129,11 +130,11 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
         height: 860.0,
         scale_factor: 1.0,
     };
-    headless.set_viewport(1, vp);
-    skia.set_viewport(1, vp);
-    web.set_viewport(1, vp);
+    headless.set_viewport(SurfaceId::ROOT, vp);
+    skia.set_viewport(SurfaceId::ROOT, vp);
+    web.set_viewport(SurfaceId::ROOT, vp);
 
-    app.reconcile(1);
+    app.reconcile(FrameId(1));
     headless.commit(app.store(), app.last_changes()).unwrap();
     skia.commit(app.store(), app.last_changes()).unwrap();
     web.commit(app.store(), app.last_changes()).unwrap();
@@ -147,14 +148,14 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     for frame_id in 2..=3 {
         let inc_id = find_node_by_test_id(app.store(), "ks-counter-inc");
         let handled = app.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: inc_id,
             timestamp_us: frame_id * 16_000,
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 10.0, y: 10.0 },
         }]);
         assert!(handled);
-        app.reconcile(frame_id);
+        app.reconcile(FrameId(frame_id));
         headless.commit(app.store(), app.last_changes()).unwrap();
         skia.commit(app.store(), app.last_changes()).unwrap();
         web.commit(app.store(), app.last_changes()).unwrap();
@@ -178,10 +179,10 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
 
 #[test]
 fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary() {
-    let mut app = create_surface(1);
+    let mut app = create_surface(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1440.0,
             height: 900.0,
@@ -189,7 +190,7 @@ fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary(
         },
     );
 
-    app.commit_to(1, &mut headless).unwrap();
+    app.commit_to(FrameId(1), &mut headless).unwrap();
     assert!(headless.render_ascii_tree(app.store()).contains("Overview & Primitives"));
 
     // Toggle theme, density, locale, pseudo, and reduced motion.
@@ -236,29 +237,29 @@ fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary(
 
 #[test]
 fn module_snapshot_and_restore_preserves_full_gallery_state() {
-    let mut m1 = KitchenSinkModule::create(1);
+    let mut m1 = KitchenSinkModule::create(SurfaceId::ROOT);
     let mut headless = HeadlessBackend::new();
-    headless.set_viewport(1, Viewport::default());
+    headless.set_viewport(SurfaceId::ROOT, Viewport::default());
     let mut rep1 =
         StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
-    let f1 = m1.render(1).to_vec();
+    let f1 = m1.render(FrameId(1)).to_vec();
     rep1.submit_nve2_frame(&f1).unwrap();
 
     let inc_id = find_node_by_test_id(rep1.store(), "ks-counter-inc");
-    let press_ev = [NveDirectEvent::press(1, inc_id, 1_000, 4.0, 4.0)];
+    let press_ev = [NveDirectEvent::press(SurfaceId::ROOT, inc_id, 1_000, 4.0, 4.0)];
     // SAFETY: `press_ev` stack array outlives the synchronous `dispatch_events` call.
     assert!(m1.dispatch_events(unsafe { NveEventBatchRef::from_slice(&press_ev) }));
-    let _ = m1.render(2);
+    let _ = m1.render(FrameId(2));
     assert_eq!(m1.count(), 1);
 
     let snap = m1.snapshot_state().to_vec();
-    let mut m2 = KitchenSinkModule::create(2);
+    let mut m2 = KitchenSinkModule::create(SurfaceId(2));
     assert!(m2.try_restore_state(&snap));
     assert_eq!(m2.count(), 1);
     let mut h2 = HeadlessBackend::new();
-    h2.set_viewport(2, Viewport::default());
+    h2.set_viewport(SurfaceId(2), Viewport::default());
     let mut rep2 = StoreWireReplica::new(h2, nve_components::tables::core_realization_order());
-    rep2.submit_nve2_frame(m2.render(1)).unwrap();
+    rep2.submit_nve2_frame(m2.render(FrameId(1))).unwrap();
     assert!(rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 1"));
 }
 
@@ -282,7 +283,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 
     let mut host = HeadlessBackend::new();
     host.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 860.0,
@@ -291,19 +292,19 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     );
     let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
 
-    let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
-    let frame1 = inst.render(1);
+    let mut inst = HotAppInstance::load(&dylib_path, SurfaceId::ROOT, 1, None).expect("load gen 1");
+    let frame1 = inst.render(FrameId(1));
     rep.submit_nve2_frame(frame1).unwrap();
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 0"));
 
     let inc_node = find_node_by_test_id(rep.store(), "ks-counter-inc");
-    let press_ev = [NveDirectEvent::press(1, inc_node, 1000, 10.0, 10.0)];
+    let press_ev = [NveDirectEvent::press(SurfaceId::ROOT, inc_node, 1000, 10.0, 10.0)];
 
     assert!(inst.dispatch_events(&press_ev));
-    let f2 = inst.render(2);
+    let f2 = inst.render(FrameId(2));
     rep.submit_nve2_frame(f2).unwrap();
     assert!(inst.dispatch_events(&press_ev));
-    let f3 = inst.render(3);
+    let f3 = inst.render(FrameId(3));
     rep.submit_nve2_frame(f3).unwrap();
     assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 2"));
 
@@ -315,7 +316,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
 
     let mut host2 = HeadlessBackend::new();
     host2.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 1280.0,
             height: 860.0,
@@ -324,7 +325,7 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
     );
     let mut rep2 =
         StoreWireReplica::new(host2, nve_components::tables::core_realization_order());
-    let f4 = inst.render(4);
+    let f4 = inst.render(FrameId(4));
     rep2.submit_nve2_frame(f4).unwrap();
     assert!(
         rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 2"),

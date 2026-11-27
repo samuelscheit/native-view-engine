@@ -209,19 +209,19 @@ pub fn render_studio_ssr_document(title: &str) -> Result<String, JsValue> {
 #[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn hydrate_studio_workspace_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
-    hydrate_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
+    hydrate_studio_workspace_app_on_surface(DEFAULT_SURFACE_ID.raw(), mount_id, ws_url)
 }
 
 #[cfg(feature = "app-studio")]
 #[wasm_bindgen]
 pub fn hydrate_studio_workspace_app_on_surface(
-    surface_id: SurfaceId,
+    surface_id: u32,
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "StudioWorkspaceApp",
-        surface_id,
+        SurfaceId(surface_id),
         mount_id,
         ws_url,
         true,
@@ -232,19 +232,19 @@ pub fn hydrate_studio_workspace_app_on_surface(
 #[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
 pub fn hydrate_kitchen_sink_app(mount_id: &str, ws_url: Option<String>) -> Result<WebAppController, JsValue> {
-    hydrate_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID, mount_id, ws_url)
+    hydrate_kitchen_sink_app_on_surface(DEFAULT_SURFACE_ID.raw(), mount_id, ws_url)
 }
 
 #[cfg(feature = "app-kitchen-sink")]
 #[wasm_bindgen]
 pub fn hydrate_kitchen_sink_app_on_surface(
-    surface_id: SurfaceId,
+    surface_id: u32,
     mount_id: &str,
     ws_url: Option<String>,
 ) -> Result<WebAppController, JsValue> {
     start_surface_app_inner(
         "KitchenSinkApp",
-        surface_id,
+        SurfaceId(surface_id),
         mount_id,
         ws_url,
         true,
@@ -329,7 +329,7 @@ fn attach_interaction_trap(
             let target_nid = target_el
                 .as_ref()
                 .and_then(|t| t.get_attribute("data-nve-id"))
-                .and_then(|s| s.parse::<NodeId>().ok());
+                .and_then(|s| s.parse::<u32>().ok().map(NodeId));
             let captured = CapturedInteraction {
                 island_id: island_id.clone(),
                 event_type: ev_type.to_owned(),
@@ -467,8 +467,8 @@ impl ProgressiveIslandHost {
             }
             let node_id = el
                 .get_attribute("data-nve-id")
-                .and_then(|s| s.parse::<NodeId>().ok())
-                .unwrap_or(0);
+                .and_then(|s| s.parse::<u32>().ok().map(NodeId))
+                .unwrap_or(NodeId::NULL);
             let trigger = el
                 .get_attribute("data-nve-hydrate")
                 .and_then(|s| HydrateTrigger::parse(&s))

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::{SsrDocumentOptions, WebBackend};
 use nve_docs::DocsViewport;
 use nve_mdx::CompiledSite;
@@ -219,7 +220,7 @@ fn emit_ssr_page(
     body_scripts: Option<&str>,
 ) -> Result<(usize, usize), String> {
     let mut surface = nve_docs_site::create_nve_docs_surface_full(
-        1,
+        SurfaceId(1),
         Arc::clone(site),
         public_route,
         base_path,
@@ -230,7 +231,7 @@ fn emit_ssr_page(
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend.register_table_system(nve_canvas_web::CanvasWebSystem);
     surface
-        .commit_to(1, &mut backend)
+        .commit_to(FrameId(1), &mut backend)
         .map_err(|e| format!("SSR commit_to failed for '{public_route}': {e}"))?;
 
     let ssr_preview = backend.render_ssr(surface.store());
@@ -380,7 +381,7 @@ fn render_404_page(
     body_scripts: Option<&str>,
 ) -> Result<String, String> {
     let mut surface = nve_docs_site::create_nve_docs_surface_full(
-        1,
+        SurfaceId(1),
         Arc::clone(site),
         "/",
         base_path,
@@ -391,7 +392,7 @@ fn render_404_page(
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend.register_table_system(nve_canvas_web::CanvasWebSystem);
     surface
-        .commit_to(1, &mut backend)
+        .commit_to(FrameId(1), &mut backend)
         .map_err(|e| format!("SSR 404 commit_to failed: {e}"))?;
     Ok(backend.render_ssr_document(
         surface.store(),

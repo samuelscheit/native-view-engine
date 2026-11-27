@@ -1,7 +1,7 @@
 //! Deep integration tests for `:hover`, `:focus`, `:focus-visible`, `:active`, `:disabled`,
 //! and [`CursorKind`] resolution inside [`HeadlessBackend`] over `NodeStore` word tables.
 
-use nve_abi::{ColorRgba, EventMask};
+use nve_abi::{ColorRgba, EventMask, SurfaceId};
 use nve_backend_headless::{
     CursorKind, FocusModality, HeadlessBackend, InteractionState, StateStyleRule, StylePatch,
 };
@@ -15,7 +15,7 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     let mut changes = ChangeSet::default();
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 400.0,
             height: 300.0,
@@ -74,8 +74,8 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
 
     // Hover btn -> hover rule activates.
     let dirty = backend.dispatch_pointer_move(&store, 50.0, 20.0);
-    assert_eq!(dirty, vec![btn.raw()]);
-    assert!(backend.interaction_state(btn.raw()).contains(InteractionState::HOVER));
+    assert_eq!(dirty, vec![btn]);
+    assert!(backend.interaction_state(btn).contains(InteractionState::HOVER));
     assert_eq!(
         backend.effective_visual(&store, btn).background,
         ColorRgba::rgb(30, 64, 175)
@@ -90,9 +90,9 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     let _ = backend.dispatch_pointer_up(&store, 50.0, 20.0);
 
     // Keyboard focus -> focus + focus-visible.
-    let _ = backend.dispatch_focus(Some(btn.raw()), FocusModality::Keyboard);
+    let _ = backend.dispatch_focus(Some(btn), FocusModality::Keyboard);
     assert!(backend
-        .interaction_state(btn.raw())
+        .interaction_state(btn)
         .contains(InteractionState::FOCUS_VISIBLE));
 
     // Disable via NodeStore Interaction table -> disabled rule + NotAllowed cursor.
@@ -102,7 +102,7 @@ fn headless_interaction_hover_active_focus_disabled_and_cursor() {
     backend.commit(&store, &changes).unwrap();
 
     assert!(backend
-        .interaction_state(btn.raw())
+        .interaction_state(btn)
         .contains(InteractionState::DISABLED));
     assert_eq!(backend.effective_cursor(&store, btn), CursorKind::NotAllowed);
     assert!((backend.effective_visual(&store, btn).opacity - 0.4).abs() < 1e-4);

@@ -15,10 +15,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use nve_abi::{FrameId, NodeId};
 use nve_backend_web::WebBackend;
 use nve_components::tables::DebugId;
 use nve_dioxus::DioxusSurface;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 use nve_rpc::{
     procedures, BoxFuture, CborCodec, DomainStatus, FieldErrors, FormDecode, FormPairs, Procedure,
     RawCall, RawReply, ReplyKind, RpcCodec, RpcStatus, Tag64, Transport, TransportError,
@@ -258,15 +259,15 @@ pub(crate) fn new_web_backend() -> WebBackend {
     web
 }
 
-pub(crate) fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
-    let mut stack = vec![StoreNodeId::ROOT];
+pub(crate) fn find_by_test_id(store: &NodeStore, tid: &str) -> NodeId {
+    let mut stack = vec![NodeId::ROOT];
     let mut found = None;
     while let Some(id) = stack.pop() {
-        if id != StoreNodeId::ROOT
+        if id != NodeId::ROOT
             && let Some(dbg) = store.try_row::<DebugId>(id)
             && dbg.test_id() == tid
         {
-            found = Some(id.raw());
+            found = Some(id);
             break;
         }
         stack.extend_from_slice(store.children(id));
@@ -287,7 +288,7 @@ pub(crate) fn pump_settled(
             return n;
         }
         *frame += 1;
-        surface.commit_to(*frame, web).expect("commit_to web");
+        surface.commit_to(FrameId(*frame), web).expect("commit_to web");
         n += 1;
     }
     assert!(
@@ -299,6 +300,6 @@ pub(crate) fn pump_settled(
 
 pub(crate) fn render_once(surface: &mut DioxusSurface, web: &mut WebBackend, frame: &mut u64) -> String {
     *frame += 1;
-    surface.commit_to(*frame, web).expect("commit_to web");
+    surface.commit_to(FrameId(*frame), web).expect("commit_to web");
     web.render_html(surface.store())
 }

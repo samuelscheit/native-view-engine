@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use nve_abi::{
-    decode_events, native_events_to_direct, NveDirectEvent, NveMapEntry, NveValue, ROOT_NODE_ID,
+    decode_events, native_events_to_direct, FrameId, NveDirectEvent, NveMapEntry, NveValue,
+    SurfaceId, ROOT_NODE_ID,
 };
 use nve_dioxus::DioxusSurface;
 use nve_engine::loader::HotAppInstance;
@@ -59,7 +60,7 @@ pub(crate) trait PairedApp {
 
 impl PairedApp for HotAppInstance {
     fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-        Cow::Borrowed(HotAppInstance::render(self, frame_id))
+        Cow::Borrowed(HotAppInstance::render(self, FrameId(frame_id)))
     }
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         HotAppInstance::dispatch_events(self, events)
@@ -79,7 +80,7 @@ impl PairedApp for HotAppInstance {
 
 impl PairedApp for DioxusSurface {
     fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-        Cow::Borrowed(self.render_nve2_slice(frame_id))
+        Cow::Borrowed(self.render_nve2_slice(FrameId(frame_id)))
     }
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         // SAFETY: `events` is a valid borrowed slice whose nested pointers outlive this call.
@@ -335,7 +336,15 @@ impl<A: PairedApp> PairSession<A> {
             .map_err(|e| format!("bind NveWireServer on quic={quic_bind} wss={wss_bind}: {e}"))?;
 
         if width > 0.0 && height > 0.0 {
-            let layout_ev = [NveDirectEvent::layout(1, ROOT_NODE_ID, 0, 0.0, 0.0, width, height)];
+            let layout_ev = [NveDirectEvent::layout(
+                SurfaceId(1),
+                ROOT_NODE_ID,
+                0,
+                0.0,
+                0.0,
+                width,
+                height,
+            )];
             let _ = app.dispatch_events(&layout_ev);
         }
 
@@ -508,7 +517,7 @@ pub(crate) fn spawn_dylib_pair_thread(
     std::thread::Builder::new()
         .name("nve-cli-pair-session".into())
         .spawn(move || {
-            let app = match HotAppInstance::load(&dylib_path, 1, 1, None) {
+            let app = match HotAppInstance::load(&dylib_path, SurfaceId(1), 1, None) {
                 Ok(a) => a,
                 Err(e) => {
                     let _ = ready_tx.send(Err(format!("load {}: {e}", dylib_path.display())));
@@ -558,7 +567,7 @@ pub(crate) fn cmd_pair(opts: PairOptions) {
         std::process::exit(1);
     });
     let token = resolve_or_generate_token(opts.token);
-    let app = HotAppInstance::load(&dylib_path, 1, 1, None).unwrap_or_else(|e| {
+    let app = HotAppInstance::load(&dylib_path, SurfaceId(1), 1, None).unwrap_or_else(|e| {
         eprintln!("failed to load {}: {e}", dylib_path.display());
         std::process::exit(1);
     });

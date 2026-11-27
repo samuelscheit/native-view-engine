@@ -10,7 +10,7 @@ use nve_components::interaction::{
 use nve_components::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
 use nve_components::tables::{InputKind, Interaction, StateRules, TextInput, Visual};
 use nve_engine::StoreLayoutEngine;
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 
 use crate::{
     is_display_none, layout_snapshot_of, node_clips_overflow, visual_snapshot_of, HeadlessBackend,
@@ -35,7 +35,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
 
     /// Returns `true` when `id` participates in pointer hover/active/cursor hit-testing.
     #[inline]
-    pub fn is_interaction_target(&self, store: &NodeStore, id: StoreNodeId) -> bool {
+    pub fn is_interaction_target(&self, store: &NodeStore, id: NodeId) -> bool {
         if !store.is_live(id) || is_display_none(store, id) {
             return false;
         }
@@ -49,19 +49,19 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
         let has_visible_input = store
             .try_row::<TextInput>(id)
             .is_some_and(|t| t.input_kind() != InputKind::Hidden);
-        has_inter || has_visible_input || self.interaction.is_disabled(id.raw())
+        has_inter || has_visible_input || self.interaction.is_disabled(id)
     }
 
     /// Hit-tests `(x, y)` in reverse paint order for the deepest interaction-eligible node.
     pub fn hit_test_interaction(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
-        self.hit_test_interaction_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), false, 0)
+        self.hit_test_interaction_rec(store, NodeId::ROOT, x, y, (0.0, 0.0), false, 0)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn hit_test_interaction_rec(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
@@ -90,10 +90,10 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             && px <= r_x + rect.width
             && py >= r_y
             && py <= r_y + rect.height;
-        if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
+        if !inside && id != NodeId::ROOT && node_clips_overflow(store, id) {
             return None;
         }
-        let (sx, sy) = self.scroll_offset(id.raw());
+        let (sx, sy) = self.scroll_offset(id);
         let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
         for &cid in store.children(id).iter().rev() {
             if let Some(hit) = self.hit_test_interaction_rec(
@@ -109,13 +109,13 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             }
         }
         if inside && !effective_hidden && self.is_interaction_target(store, id) {
-            Some(id.raw())
+            Some(id)
         } else {
             None
         }
     }
 
-    fn state_rules_of<'a>(&self, store: &'a NodeStore, id: StoreNodeId) -> &'a [StateStyleRule] {
+    fn state_rules_of<'a>(&self, store: &'a NodeStore, id: NodeId) -> &'a [StateStyleRule] {
         store
             .try_row::<Interaction>(id)
             .map(|i| i.state_rules())
@@ -126,32 +126,32 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     }
 
     /// Resolves the effective merged [`StylePatch`] for `id` under its current [`InteractionState`].
-    pub fn effective_patch(&self, store: &NodeStore, id: StoreNodeId) -> StylePatch {
+    pub fn effective_patch(&self, store: &NodeStore, id: NodeId) -> StylePatch {
         let rules = self.state_rules_of(store, id);
-        resolve_patch(rules, self.interaction.state(id.raw()))
+        resolve_patch(rules, self.interaction.state(id))
     }
 
     /// Resolves the effective [`VisualSnapshot`] for `id` with active pseudo-state rules applied.
-    pub fn effective_visual(&self, store: &NodeStore, id: StoreNodeId) -> VisualSnapshot {
+    pub fn effective_visual(&self, store: &NodeStore, id: NodeId) -> VisualSnapshot {
         let base = visual_snapshot_of(store, id);
         let rules = self.state_rules_of(store, id);
-        resolve_style(&base, rules, self.interaction.state(id.raw()))
+        resolve_style(&base, rules, self.interaction.state(id))
     }
 
     /// Resolves both [`LayoutSnapshot`] and [`VisualSnapshot`] for `id` with active state rules.
     pub fn effective_layout_and_visual(
         &self,
         store: &NodeStore,
-        id: StoreNodeId,
+        id: NodeId,
     ) -> (LayoutSnapshot, VisualSnapshot) {
         let base_l = layout_snapshot_of(store, id);
         let base_v = visual_snapshot_of(store, id);
         let rules = self.state_rules_of(store, id);
-        resolve_layout_and_style(&base_l, &base_v, rules, self.interaction.state(id.raw()))
+        resolve_layout_and_style(&base_l, &base_v, rules, self.interaction.state(id))
     }
 
     /// Resolves the effective [`CursorKind`] for `id` under its current [`InteractionState`].
-    pub fn effective_cursor(&self, store: &NodeStore, id: StoreNodeId) -> CursorKind {
+    pub fn effective_cursor(&self, store: &NodeStore, id: NodeId) -> CursorKind {
         if is_display_none(store, id) {
             return CursorKind::Auto;
         }
@@ -168,7 +168,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
             base_cursor
         };
         let rules = self.state_rules_of(store, id);
-        resolve_cursor(base, rules, self.interaction.state(id.raw()))
+        resolve_cursor(base, rules, self.interaction.state(id))
     }
 
     #[inline]

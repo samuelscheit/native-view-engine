@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use nve_abi::{
-    ColorRgba, EventPayload, NativeEvent, NativeEventKind, NodeId as AbiNodeId, pack_key_modifiers,
+    ColorRgba, EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, SurfaceId,
+    pack_key_modifiers,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{Accessibility, DebugId, Link, TextContent, Visual};
 use nve_dioxus::DioxusSurface;
 use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;
-use nve_store::NodeId;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_docs::{
     DocsNavSection, DocsSiteConfig, DocsViewport, PlaygroundMeta, PlaygroundRegistry,
@@ -205,7 +205,7 @@ impl DocsHarness {
         services.register(MemorySystemEnv::new());
         let host: Arc<dyn HostServiceProvider> = services.clone();
         let surface = create_docs_surface_with_viewport(
-            1,
+            SurfaceId::ROOT,
             route,
             viewport,
             build_config(),
@@ -215,7 +215,7 @@ impl DocsHarness {
         );
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: viewport.width,
                 height: viewport.height,
@@ -236,11 +236,11 @@ impl DocsHarness {
     pub fn render(&mut self) {
         self.frame_id += 1;
         self.surface
-            .commit_to(self.frame_id, &mut self.backend)
+            .commit_to(FrameId(self.frame_id), &mut self.backend)
             .expect("headless commit_to");
     }
 
-    pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+    pub fn maybe_find(&self, tid: &str) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -248,14 +248,14 @@ impl DocsHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id() == tid
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    pub fn find(&self, tid: &str) -> AbiNodeId {
+    pub fn find(&self, tid: &str) -> NodeId {
         let found = self.maybe_find(tid);
         assert!(
             found.is_some(),
@@ -265,7 +265,7 @@ impl DocsHarness {
         found.expect("checked above")
     }
 
-    pub fn find_prefix(&self, prefix: &str) -> AbiNodeId {
+    pub fn find_prefix(&self, prefix: &str) -> NodeId {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -273,7 +273,7 @@ impl DocsHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && dbg.test_id().starts_with(prefix)
             {
-                return id.raw();
+                return id;
             }
             stack.extend_from_slice(store.children(id));
         }
@@ -283,7 +283,7 @@ impl DocsHarness {
         }
     }
 
-    pub fn find_matching(&self, pred: impl Fn(&str) -> bool) -> Option<AbiNodeId> {
+    pub fn find_matching(&self, pred: impl Fn(&str) -> bool) -> Option<NodeId> {
         let store = self.surface.store();
         let mut stack = vec![NodeId::ROOT];
         while let Some(id) = stack.pop() {
@@ -291,23 +291,23 @@ impl DocsHarness {
                 && let Some(dbg) = store.try_row::<DebugId>(id)
                 && pred(dbg.test_id())
             {
-                return Some(id.raw());
+                return Some(id);
             }
             stack.extend_from_slice(store.children(id));
         }
         None
     }
 
-    pub fn bg(&self, id: AbiNodeId) -> ColorRgba {
+    pub fn bg(&self, id: NodeId) -> ColorRgba {
         self.surface
             .store()
-            .try_row::<Visual>(NodeId(id))
+            .try_row::<Visual>(id)
             .map_or(ColorRgba::TRANSPARENT, |v| ColorRgba::from_u32(v.background().0))
     }
 
-    pub fn raw_str(&self, id: AbiNodeId, key: &str) -> Option<String> {
+    pub fn raw_str(&self, id: NodeId, key: &str) -> Option<String> {
         let store = self.surface.store();
-        let nid = NodeId(id);
+        let nid = id;
         if let Some(dk) = key.strip_prefix("data-") {
             let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
             if res.is_none() {
@@ -348,8 +348,8 @@ impl DocsHarness {
         }
     }
 
-    pub fn collect_text(&self, id: AbiNodeId) -> String {
-        self.collect_text_store(NodeId(id))
+    pub fn collect_text(&self, id: NodeId) -> String {
+        self.collect_text_store(id)
     }
 
     fn collect_text_store(&self, id: NodeId) -> String {
@@ -379,10 +379,10 @@ impl DocsHarness {
         self.press_id(id);
     }
 
-    pub fn press_id(&mut self, id: AbiNodeId) {
+    pub fn press_id(&mut self, id: NodeId) {
         let ts = self.next_ts();
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::Press,
@@ -396,7 +396,7 @@ impl DocsHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::TextChange,
@@ -410,7 +410,7 @@ impl DocsHarness {
         let id = self.find(tid);
         let ts = self.next_ts();
         let handled = self.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: id,
             timestamp_us: ts,
             kind: NativeEventKind::KeyDown,

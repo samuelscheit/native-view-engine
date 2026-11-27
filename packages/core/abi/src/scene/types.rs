@@ -4,7 +4,7 @@ use std::mem::{align_of, offset_of, size_of};
 use nve_abi_macros::NveAbi;
 use nve_hash::Xxh64Hasher;
 
-use crate::NodeId;
+use crate::{ByteLen, FrameId, NodeId, PrimarySlot, ShortLen, ZIndex};
 
 /// Exact byte size of one `NveRenderNode` record (one 64-byte CPU cache line).
 pub const NVE_RENDER_NODE_SIZE: usize = 64;
@@ -41,11 +41,11 @@ pub const NVE_PRIMARY_SLOT_NONE: u8 = 0xFF;
 #[nve_abi(size = 64)]
 pub struct NveRenderNode {
     /// Stable node identifier (`NVE_ROOT_NODE_ID == 1`).
-    #[nve_abi(offset = 0)]
-    pub node_id: u32,
+    #[nve_abi(offset = 0, c_type = "u32")]
+    pub node_id: NodeId,
     /// Highest-priority realizing `TableSlot` (`0..127`), or `NVE_PRIMARY_SLOT_NONE` (`0xFF`) for a plain container.
-    #[nve_abi(offset = 4)]
-    pub primary_slot: u8,
+    #[nve_abi(offset = 4, c_type = "u8")]
+    pub primary_slot: PrimarySlot,
     /// Bitmask of `NVE_NODE_LEAF_TEXT`, `NVE_NODE_INTERACTIVE`, `NVE_NODE_CLIP_BOUNDS`.
     #[nve_abi(offset = 5)]
     pub flags: u8,
@@ -89,8 +89,8 @@ pub struct NveRenderNode {
     #[nve_abi(offset = 48)]
     pub text_offset: u32,
     /// UTF-8 byte length inside `text_slab`.
-    #[nve_abi(offset = 52)]
-    pub text_len: u16,
+    #[nve_abi(offset = 52, c_type = "u16")]
+    pub text_len: ShortLen,
     /// Number of child `u32` IDs inside `children_slab`.
     #[nve_abi(offset = 54)]
     pub child_count: u16,
@@ -98,8 +98,8 @@ pub struct NveRenderNode {
     #[nve_abi(offset = 56)]
     pub child_offset: u32,
     /// Stacking z-index order.
-    #[nve_abi(offset = 60)]
-    pub z_index: i32,
+    #[nve_abi(offset = 60, c_type = "i32")]
+    pub z_index: ZIndex,
 }
 
 // Compile-time ABI layout verification for every single field of `NveRenderNode`.
@@ -133,8 +133,8 @@ impl NveRenderNode {
     #[inline]
     pub const fn zeroed() -> Self {
         Self {
-            node_id: 0,
-            primary_slot: NVE_PRIMARY_SLOT_NONE,
+            node_id: NodeId::NULL,
+            primary_slot: PrimarySlot::NONE,
             flags: 0,
             opacity_u8: 255,
             _pad0: 0,
@@ -149,10 +149,10 @@ impl NveRenderNode {
             border_width: 0.0,
             font_size: 16.0,
             text_offset: 0,
-            text_len: 0,
+            text_len: ShortLen::ZERO,
             child_count: 0,
             child_offset: 0,
-            z_index: 0,
+            z_index: ZIndex::ZERO,
         }
     }
 
@@ -218,8 +218,8 @@ pub struct NveSceneView {
     #[nve_abi(offset = 0)]
     pub schema_hash: u64,
     /// Monotonic frame counter.
-    #[nve_abi(offset = 8)]
-    pub frame_id: u64,
+    #[nve_abi(offset = 8, c_type = "u64")]
+    pub frame_id: FrameId,
     /// Total live nodes in `nodes`.
     #[nve_abi(offset = 16)]
     pub node_count: u32,
@@ -230,11 +230,11 @@ pub struct NveSceneView {
     #[nve_abi(offset = 24)]
     pub removed_count: u32,
     /// Byte length of `text_slab`.
-    #[nve_abi(offset = 28)]
-    pub text_slab_len: u32,
+    #[nve_abi(offset = 28, c_type = "u32")]
+    pub text_slab_len: ByteLen,
     /// Element count (`u32` entries) of `children_slab`.
-    #[nve_abi(offset = 32)]
-    pub children_slab_len: u32,
+    #[nve_abi(offset = 32, c_type = "u32")]
+    pub children_slab_len: ByteLen,
     /// Number of published `NveTableView` entries in `tables`.
     #[nve_abi(offset = 36)]
     pub table_count: u32,
@@ -243,11 +243,13 @@ pub struct NveSceneView {
     /// Contiguous UTF-8 text byte slab.
     pub text_slab: *const u8,
     /// Contiguous `u32` child node ID slab.
-    pub children_slab: *const u32,
+    #[nve_abi(c_type = "*const u32")]
+    pub children_slab: *const NodeId,
     /// Indices into `nodes` modified during `frame_id`.
     pub dirty_indices: *const u32,
     /// Node IDs removed during `frame_id`.
-    pub removed_ids: *const u32,
+    #[nve_abi(c_type = "*const u32")]
+    pub removed_ids: *const NodeId,
     /// Contiguous array of `table_count` zero-copy [`crate::table::NveTableView`] entries.
     pub tables: *const crate::table::NveTableView,
 }
@@ -270,32 +272,32 @@ const _: () = {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, NveAbi)]
 #[nve_abi(size = 64)]
 pub struct NveNodeMeta {
-    #[nve_abi(offset = 0)]
-    pub node_id: u32,
+    #[nve_abi(offset = 0, c_type = "u32")]
+    pub node_id: NodeId,
     #[nve_abi(offset = 4)]
     pub flags: u32,
     #[nve_abi(offset = 8)]
     pub label_offset: u32,
-    #[nve_abi(offset = 12)]
-    pub label_len: u16,
-    #[nve_abi(offset = 14)]
-    pub role_len: u16,
+    #[nve_abi(offset = 12, c_type = "u16")]
+    pub label_len: ShortLen,
+    #[nve_abi(offset = 14, c_type = "u16")]
+    pub role_len: ShortLen,
     #[nve_abi(offset = 16)]
     pub role_offset: u32,
     #[nve_abi(offset = 20)]
     pub hint_offset: u32,
-    #[nve_abi(offset = 24)]
-    pub hint_len: u16,
-    #[nve_abi(offset = 26)]
-    pub state_desc_len: u16,
+    #[nve_abi(offset = 24, c_type = "u16")]
+    pub hint_len: ShortLen,
+    #[nve_abi(offset = 26, c_type = "u16")]
+    pub state_desc_len: ShortLen,
     #[nve_abi(offset = 28)]
     pub state_desc_offset: u32,
     #[nve_abi(offset = 32)]
     pub placeholder_offset: u32,
-    #[nve_abi(offset = 36)]
-    pub placeholder_len: u16,
-    #[nve_abi(offset = 38)]
-    pub test_id_len: u16,
+    #[nve_abi(offset = 36, c_type = "u16")]
+    pub placeholder_len: ShortLen,
+    #[nve_abi(offset = 38, c_type = "u16")]
+    pub test_id_len: ShortLen,
     #[nve_abi(offset = 40)]
     pub test_id_offset: u32,
     #[nve_abi(offset = 44)]
@@ -435,16 +437,16 @@ pub enum SceneError {
     UnalignedBufferPointer(&'static str),
     BufferLengthOverflow(&'static str),
     TextOutOfBounds {
-        node_id: u32,
+        node_id: NodeId,
         offset: u32,
-        len: u16,
+        len: ShortLen,
         slab_len: usize,
     },
     InvalidUtf8 {
-        node_id: u32,
+        node_id: NodeId,
     },
     ChildrenOutOfBounds {
-        node_id: u32,
+        node_id: NodeId,
         offset: u32,
         count: u16,
         slab_len: usize,
@@ -470,7 +472,7 @@ impl std::error::Error for SceneError {}
 #[derive(Debug, Clone, Copy)]
 pub struct SceneNodeInput<'a> {
     pub node_id: NodeId,
-    pub primary_slot: u8,
+    pub primary_slot: PrimarySlot,
     pub flags: u8,
     pub opacity_u8: u8,
     pub x: f32,
@@ -483,7 +485,7 @@ pub struct SceneNodeInput<'a> {
     pub border_radius: f32,
     pub border_width: f32,
     pub font_size: f32,
-    pub z_index: i32,
+    pub z_index: ZIndex,
     pub text: &'a str,
     pub children: &'a [NodeId],
 }
@@ -491,8 +493,8 @@ pub struct SceneNodeInput<'a> {
 impl<'a> Default for SceneNodeInput<'a> {
     fn default() -> Self {
         Self {
-            node_id: 0,
-            primary_slot: NVE_PRIMARY_SLOT_NONE,
+            node_id: NodeId::NULL,
+            primary_slot: PrimarySlot::NONE,
             flags: 0,
             opacity_u8: 255,
             x: 0.0,
@@ -505,7 +507,7 @@ impl<'a> Default for SceneNodeInput<'a> {
             border_radius: 0.0,
             border_width: 0.0,
             font_size: 16.0,
-            z_index: 0,
+            z_index: ZIndex::ZERO,
             text: "",
             children: &[],
         }

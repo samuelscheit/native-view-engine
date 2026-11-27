@@ -163,15 +163,15 @@ macro_rules! export_nve_app {
         const _: () = {
             use ::std::ffi::c_void;
             use $crate::abi::{
-                NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveEventBatch,
+                FrameId, NveAppHandle, NveBufferSlice, NveComponentApi, NveDevApi, NveEventBatch,
                 NveEventBatchRef, NveGestureDisposition, NveHostApi, NveHostCallbacks,
                 NveIntrinsicSize, NveLayoutApi, NveMapEntry, NvePropsRef, NveSizeConstraints,
-                NveSurfaceApi, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
+                NveSurfaceApi, SurfaceId, NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST,
                 NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
             };
             use $crate::NveApp;
 
-            unsafe extern "C" fn __nve_create(surface_id: u32) -> NveAppHandle {
+            unsafe extern "C" fn __nve_create(surface_id: SurfaceId) -> NveAppHandle {
                 $crate::app::ffi_catch_unwind(
                     "NveSurfaceApi::create",
                     ::std::ptr::null_mut(),
@@ -194,7 +194,7 @@ macro_rules! export_nve_app {
 
             unsafe extern "C" fn __nve_render(
                 handle: NveAppHandle,
-                frame_id: u64,
+                frame_id: FrameId,
             ) -> NveBufferSlice {
                 if handle.is_null() {
                     return NveBufferSlice::EMPTY;

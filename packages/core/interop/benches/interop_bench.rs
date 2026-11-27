@@ -12,6 +12,7 @@ mod native {
     use std::sync::Arc;
 
     use criterion::{criterion_group, Criterion};
+    use nve_abi::SurfaceId;
     use nve_interop::{
         ChannelPayload, FrameworkKind, GestureArbitrator, GestureCapabilities, NveChannelBus,
         PointerPhase, PointerSample,
@@ -19,10 +20,19 @@ mod native {
 
     fn bench_gesture_arbitrator(c: &mut Criterion) {
         let mut arb = GestureArbitrator::new();
-        let chain = [1u32, 2, 3, 4, 5, 6, 7, 8];
+        let chain = [
+            SurfaceId(1),
+            SurfaceId(2),
+            SurfaceId(3),
+            SurfaceId(4),
+            SurfaceId(5),
+            SurfaceId(6),
+            SurfaceId(7),
+            SurfaceId(8),
+        ];
         for &sid in &chain {
             let mut caps = GestureCapabilities::vertical_scroll(FrameworkKind::Nve);
-            if sid < 6 {
+            if sid.raw() < 6 {
                 caps.scroll_edges.at_bottom = true;
             }
             arb.set_capabilities(sid, caps);
@@ -76,7 +86,7 @@ mod native {
         let received = Arc::new(AtomicUsize::new(0));
         let received_cb = Arc::clone(&received);
         let _sub = bus
-            .subscribe("bench.theme", Some(1), false, move |msg| {
+            .subscribe("bench.theme", Some(SurfaceId::ROOT), false, move |msg| {
                 received_cb.fetch_add(msg.payload.as_bytes().len(), Ordering::Relaxed);
             })
             .expect("valid bench channel subscription");

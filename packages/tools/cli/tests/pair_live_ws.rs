@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
-use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId};
+use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind, NodeId, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_components::tables::{
     core_realization_order, register_core_tables, Interaction, TextContent,
@@ -207,7 +207,7 @@ fn find_pressable_with_label(store: &NodeStore, label: &str) -> Option<NodeId> {
             .try_row::<Interaction>(id)
             .is_some_and(|i| i.event_mask() != 0)
         {
-            Some(id.raw())
+            Some(id)
         } else {
             nearest_pressable
         };
@@ -262,7 +262,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
     register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -284,7 +284,7 @@ fn nve_pair_ephemeral_ports_readiness_and_live_quic_wss_roundtrip() {
 
     let send_press = |client: &NveWireClient, node_id: NodeId, ts: u64| {
         let ev_ring = encode_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id,
             timestamp_us: ts,
             kind: NativeEventKind::Press,

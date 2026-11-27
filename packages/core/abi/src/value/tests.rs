@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use crate::{DecodeError, NveBufferSlice};
+use crate::{DecodeError, NodeId, NveBufferSlice, SurfaceId};
 
 use super::*;
 
@@ -9,7 +9,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
     let valid_u8 = [1u8, 2, 3, 4];
     let valid_val = NveValue::i64(42);
     let valid_entry = NveMapEntry::new("ok", NveValue::bool(true));
-    let valid_ev = NveDirectEvent::press(1, 2, 3, 4.0, 5.0);
+    let valid_ev = NveDirectEvent::press(SurfaceId(1), NodeId(2), 3, 4.0, 5.0);
 
     // SAFETY: Adversarial boundary test — every FFI view method validates null, alignment, and
     // `isize::MAX` overflow before constructing any Rust slice, and valid stack buffers outlive all refs.
@@ -206,7 +206,7 @@ fn rejects_null_non_empty_misaligned_and_overflowing_raw_slices() {
         };
         let batch_ref = NveEventBatchRef::try_from_raw(valid_batch).expect("valid batch");
         assert_eq!(batch_ref.len(), 1);
-        assert_eq!(batch_ref.get(0).unwrap().node_id(), 2);
+        assert_eq!(batch_ref.get(0).unwrap().node_id(), NodeId(2));
     }
 }
 

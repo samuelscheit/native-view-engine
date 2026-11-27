@@ -8,7 +8,7 @@ use nve_components::tables::{Interaction, TextContent};
 use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, Viewport,
 };
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+use nve_store::{ChangeSet, NodeStore};
 
 use crate::{HeadlessBackend, HeadlessMutation, MAX_TREE_DEPTH};
 
@@ -42,10 +42,10 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
             if idx < self.prev_rects.len() {
                 self.prev_rects[idx] = (0, LayoutRect::default());
             }
-            self.interaction.remove_node(id.raw());
-            self.scroll_offsets.remove(&id.raw());
+            self.interaction.remove_node(id);
+            self.scroll_offsets.remove(&id);
             if self.track_mutations {
-                self.last_mutations.push(HeadlessMutation::Remove(id.raw()));
+                self.last_mutations.push(HeadlessMutation::Remove(id));
             }
         }
         for &id in &changes.created {
@@ -56,18 +56,18 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
             if let Some(inter) = store.try_row::<Interaction>(id)
                 && inter.disabled()
             {
-                let _ = self.interaction.set_disabled(id.raw(), true);
+                let _ = self.interaction.set_disabled(id, true);
             }
             if self.track_mutations {
                 self.last_mutations
-                    .push(HeadlessMutation::Create(id.raw(), store.primary_slot(id)));
+                    .push(HeadlessMutation::Create(id, store.primary_slot(id)));
             }
         }
         for (&id, &fx) in changes.touched.iter().zip(changes.effects.iter()) {
             if let Some(inter) = store.try_row::<Interaction>(id) {
                 let is_dis = inter.disabled();
-                if self.interaction.is_disabled(id.raw()) != is_dis {
-                    let _ = self.interaction.set_disabled(id.raw(), is_dis);
+                if self.interaction.is_disabled(id) != is_dis {
+                    let _ = self.interaction.set_disabled(id, is_dis);
                 }
             }
             if self.track_mutations {
@@ -75,13 +75,13 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
                     && let Some(t) = store.try_row::<TextContent>(id)
                 {
                     self.last_mutations.push(HeadlessMutation::UpdateText(
-                        id.raw(),
+                        id,
                         t.text().to_owned(),
                     ));
                 }
                 if fx & (effect::PAINT | effect::COMPOSITE) != 0 {
                     self.last_mutations
-                        .push(HeadlessMutation::UpdateStyle(id.raw()));
+                        .push(HeadlessMutation::UpdateStyle(id));
                 }
             }
         }
@@ -99,7 +99,7 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
                 .any(|&fx| fx & (effect::LAYOUT | effect::MEASURE) != 0);
         if needs_layout {
             self.layout
-                .compute_layout(store, StoreNodeId::ROOT, self.viewport);
+                .compute_layout(store, NodeId::ROOT, self.viewport);
             self.viewport_dirty = false;
         }
         let layout_us = t_layout.elapsed().as_micros() as u64;
@@ -114,8 +114,8 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
             self.rect_gen = self.rect_gen.wrapping_add(1).max(1);
             let cur_gen = self.rect_gen;
             self.walk_stack.clear();
-            if store.is_live(StoreNodeId::ROOT) {
-                self.walk_stack.push((StoreNodeId::ROOT, 0));
+            if store.is_live(NodeId::ROOT) {
+                self.walk_stack.push((NodeId::ROOT, 0));
             }
             while let Some((id, depth)) = self.walk_stack.pop() {
                 if depth > MAX_TREE_DEPTH || !store.is_live(id) {
@@ -126,7 +126,7 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
                     let (prev_gen, prev_rect) = self.prev_rects[idx];
                     if prev_gen == 0 || prev_rect != rect {
                         self.last_mutations
-                            .push(HeadlessMutation::UpdateLayout(id.raw(), rect));
+                            .push(HeadlessMutation::UpdateLayout(id, rect));
                     }
                     self.prev_rects[idx] = (cur_gen, rect);
                 }
@@ -157,7 +157,7 @@ impl<L: StoreLayoutEngine> StoreBackend for HeadlessBackend<L> {
     }
 
     fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {
-        self.layout.layout_of(StoreNodeId(node_id))
+        self.layout.layout_of(node_id)
     }
 
     fn reset(&mut self) {

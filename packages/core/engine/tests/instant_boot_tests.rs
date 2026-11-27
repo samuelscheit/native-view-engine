@@ -3,7 +3,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nve_abi::{ColorRgba, NVE_PRIMARY_SLOT_NONE};
+use nve_abi::{ColorRgba, FrameId, NodeId, SurfaceId, NVE_PRIMARY_SLOT_NONE};
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
 use nve_engine::{
@@ -40,7 +40,7 @@ impl Drop for TempDir {
 
 fn make_sample_scene(schema_version: u32, title: &str) -> Vec<u8> {
     let nodes = [SceneRelocNodeInput {
-        node_id: 1,
+        node_id: NodeId::ROOT,
         parent_index: -1,
         primary_slot: NVE_PRIMARY_SLOT_NONE,
         flags: 0,
@@ -70,8 +70,8 @@ fn make_sample_scene(schema_version: u32, title: &str) -> Vec<u8> {
     }];
     encode_scene_reloc(&SceneRelocInput {
         schema_version,
-        surface_id: 1,
-        frame_id: 1,
+        surface_id: SurfaceId::ROOT,
+        frame_id: FrameId(1),
         viewport: Viewport {
             width: 800.0,
             height: 600.0,

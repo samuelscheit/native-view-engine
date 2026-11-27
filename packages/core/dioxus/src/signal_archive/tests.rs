@@ -346,8 +346,8 @@ fn live_dioxus_signal_registers_snapshots_and_hydrates() {
         rsx! {}
     }
 
-    let mut surface = crate::DioxusSurface::new(1, app);
-    surface.reconcile(1);
+    let mut surface = crate::DioxusSurface::new(nve_abi::SurfaceId::ROOT, app);
+    surface.reconcile(nve_abi::FrameId(1));
 
     assert!(CAPTURED.lock().unwrap().is_some());
     assert_eq!(*HYDRATED_VAL.lock().unwrap(), Some(19));

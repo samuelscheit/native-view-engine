@@ -10,7 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    decode_events, ColorRgba, EventMask, EventPayload, FrameId, NativeEventKind, NVE_KEY_MOD_META,
+    decode_events, ColorRgba, EventMask, EventPayload, FrameId, NativeEventKind, NodeId,
+    SurfaceId, NVE_KEY_MOD_META,
 };
 use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
@@ -100,7 +101,7 @@ impl RemoteServerApp {
         let mut changed = false;
         for ev in events {
             match (ev.kind, ev.payload) {
-                (NativeEventKind::Press, _) if ev.node_id == 4 => {
+                (NativeEventKind::Press, _) if ev.node_id == NodeId(4) => {
                     self.clicks += 1;
                     changed = true;
                 }
@@ -142,9 +143,9 @@ impl TestPairServer {
 
         let handle = thread::spawn(move || {
             let mut app = RemoteServerApp::new();
-            let mut frame_id = 1u64;
+            let mut frame_id = FrameId(1);
             let initial = app.render(frame_id);
-            let _ = server.broadcast_command_delta(frame_id as u32, &initial);
+            let _ = server.broadcast_command_delta(frame_id.raw() as u32, &initial);
 
             while !stop_flag.load(Ordering::Relaxed) {
                 let mut mutated = false;
@@ -154,9 +155,9 @@ impl TestPairServer {
                     }
                 }
                 if mutated {
-                    frame_id += 1;
+                    frame_id = frame_id.next();
                     let next = app.render(frame_id);
-                    let _ = server.broadcast_command_delta(frame_id as u32, &next);
+                    let _ = server.broadcast_command_delta(frame_id.raw() as u32, &next);
                 } else {
                     thread::sleep(Duration::from_millis(2));
                 }
@@ -323,7 +324,8 @@ fn paired_remote_app_e2e_quic_webtransport_wss_and_ws_rasterizes_and_mutates_pix
             height: 200.0,
             scale_factor: 1.0,
         };
-        let mut session = DesktopSession::new(app, 1, viewport, ColorRgba::rgb(0, 0, 0), false);
+        let mut session =
+            DesktopSession::new(app, SurfaceId::ROOT, viewport, ColorRgba::rgb(0, 0, 0), false);
 
         session
             .app_mut()

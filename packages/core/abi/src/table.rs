@@ -200,7 +200,8 @@ pub struct NveTableView {
     /// `row_count * words` row words.
     pub rows: *const u32,
     /// Raw `NodeId` owner per row (sparse tables) or null (dense tables).
-    pub owners: *const u32,
+    #[nve_abi(c_type = "*const u32")]
+    pub owners: *const crate::NodeId,
     /// Row indices changed this frame.
     pub dirty_rows: *const u32,
 }

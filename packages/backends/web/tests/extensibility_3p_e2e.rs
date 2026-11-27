@@ -13,7 +13,7 @@
 
 use nve_abi::{
     decode_events, direct_event_to_native, encode_events, EventPayload, NativeEventKind,
-    NveDirectEvent, NveDirectEventRef, NveEventPayloadTag,
+    NveDirectEvent, NveDirectEventRef, NveEventPayloadTag, SurfaceId,
 };
 use nve_backend_web::{WebStoreRenderer, WebSystemCommitCtx, WebTableSystem};
 use nve_components::tables::{Layout, Transform, Visual};
@@ -132,7 +132,7 @@ impl WebTableSystem for MockMapWebSystem {
             ctx.set_attr(node, "data-lng", &ev.lng.to_string());
             ctx.set_attr(node, "data-zoom", &ev.zoom.to_string());
             ctx.events
-                .emit::<MockMapTable, _>(1, node, 1234, EVENT_REGION_CHANGED, ev);
+                .emit::<MockMapTable, _>(SurfaceId::ROOT, node, 1234, EVENT_REGION_CHANGED, ev);
         }
     }
 }
@@ -251,8 +251,8 @@ fn third_party_mock_map_e2e_nve2_scene_view_events_and_web_fast_lane() {
     // Zero-copy NveDirectEvent::table_event round-trip.
     let wire_payload = expected.encode();
     let direct = NveDirectEvent::table_event(
-        1,
-        map_node.0,
+        SurfaceId::ROOT,
+        map_node,
         5678,
         MockMapTable::DESC.key,
         EVENT_REGION_CHANGED,

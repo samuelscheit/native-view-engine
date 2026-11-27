@@ -9,7 +9,7 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
-    use nve_abi::ColorRgba;
+    use nve_abi::{ColorRgba, SurfaceId};
     use nve_backend_skia::raster::{rasterize_display_list, PixelBuffer};
     use nve_backend_skia::{decode_image_uri, SkiaBackend};
     use nve_components::tables::{Layout, TextContent, Visual};
@@ -45,7 +45,7 @@ mod native {
 
         let mut backend = SkiaBackend::new();
         backend.set_viewport(
-            1,
+            SurfaceId::ROOT,
             Viewport {
                 width: 320.0,
                 height: 240.0,

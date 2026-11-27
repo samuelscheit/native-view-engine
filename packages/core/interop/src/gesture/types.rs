@@ -24,7 +24,7 @@ impl SurfaceChain {
     #[inline]
     pub(super) fn from_slice(slice: &[SurfaceId]) -> Self {
         if slice.len() <= INLINE_CHAIN_CAP {
-            let mut buf = [0u32; INLINE_CHAIN_CAP];
+            let mut buf = [SurfaceId::NULL; INLINE_CHAIN_CAP];
             buf[..slice.len()].copy_from_slice(slice);
             Self::Inline {
                 len: slice.len() as u8,
@@ -70,31 +70,31 @@ impl SurfaceChain {
     }
 }
 
-/// Fast integer-keyed map optimized for typical small counts (<= `N` entries stored inline with
+/// Fast key-indexed map optimized for typical small counts (<= `N` entries stored inline with
 /// zero heap allocation and cache-local linear key scan) with seamless spill to an Fx-hashed
 /// `HashMap` for larger tables.
 #[derive(Debug)]
-pub(super) enum FastU32Map<V, const N: usize> {
+pub(super) enum FastKeyMap<K, V, const N: usize> {
     Inline {
         len: u8,
-        keys: [u32; N],
+        keys: [K; N],
         vals: [Option<V>; N],
     },
-    Spill(HashMap<u32, V>),
+    Spill(HashMap<K, V>),
 }
 
-impl<V, const N: usize> Default for FastU32Map<V, N> {
+impl<K: Copy + Default, V, const N: usize> Default for FastKeyMap<K, V, N> {
     #[inline]
     fn default() -> Self {
         Self::Inline {
             len: 0,
-            keys: [0; N],
+            keys: [K::default(); N],
             vals: std::array::from_fn(|_| None),
         }
     }
 }
 
-impl<V, const N: usize> FastU32Map<V, N> {
+impl<K: Copy + Eq + std::hash::Hash, V, const N: usize> FastKeyMap<K, V, N> {
     #[inline(always)]
     pub(super) fn len(&self) -> usize {
         match self {
@@ -109,7 +109,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline(always)]
-    pub(super) fn get(&self, key: u32) -> Option<&V> {
+    pub(super) fn get(&self, key: K) -> Option<&V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -127,7 +127,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline(always)]
-    pub(super) fn get_mut(&mut self, key: u32) -> Option<&mut V> {
+    pub(super) fn get_mut(&mut self, key: K) -> Option<&mut V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -145,7 +145,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline]
-    pub(super) fn insert(&mut self, key: u32, val: V) -> Option<V> {
+    pub(super) fn insert(&mut self, key: K, val: V) -> Option<V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -178,7 +178,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
     }
 
     #[inline]
-    pub(super) fn remove(&mut self, key: u32) -> Option<V> {
+    pub(super) fn remove(&mut self, key: K) -> Option<V> {
         match self {
             Self::Inline { len, keys, vals } => {
                 let n = usize::from(*len);
@@ -202,7 +202,7 @@ impl<V, const N: usize> FastU32Map<V, N> {
         }
     }
 
-    pub(super) fn retain<F: FnMut(u32, &mut V) -> bool>(&mut self, mut keep: F) {
+    pub(super) fn retain<F: FnMut(K, &mut V) -> bool>(&mut self, mut keep: F) {
         match self {
             Self::Inline { len, keys, vals } => {
                 let mut i = 0usize;

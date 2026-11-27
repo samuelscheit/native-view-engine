@@ -7,8 +7,8 @@ use common::{
     data_attr_in_store, find_in_store, live_node_ids, register_studio_tables, MultiBackendHarness,
 };
 use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveDirectEventRef,
-    NveEventBatchRef,
+    EventPayload, FrameId, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveDirectEventRef,
+    NveEventBatchRef, SurfaceId,
 };
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_engine::reloc::{
@@ -42,11 +42,11 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     };
 
     register_studio_tables();
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
     let mut backend = HeadlessBackend::new();
-    backend.set_viewport(1, vp);
+    backend.set_viewport(SurfaceId(1), vp);
     let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
-    let f1 = app.render(1).to_vec();
+    let f1 = app.render(FrameId(1)).to_vec();
     host.submit_nve2_frame(&f1)
         .expect("submit initial studio frame");
 
@@ -58,7 +58,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = host.backend().layout_of(nid).expect("node layout");
         let ev = [NveDirectEvent::press(
-            1,
+            SurfaceId(1),
             nid,
             fid * 16_000,
             rect.x + rect.width * 0.5,
@@ -67,7 +67,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
         let batch = unsafe { NveEventBatchRef::from_slice(&ev) };
         assert!(app.dispatch_events(batch), "press '{tid}' not handled");
-        let frame = app.render(fid).to_vec();
+        let frame = app.render(FrameId(fid)).to_vec();
         host.submit_nve2_frame(&frame)
             .expect("submit frame after press");
     };
@@ -88,9 +88,9 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     let saved_state_bytes = app.snapshot_state().to_vec();
     assert!(!saved_state_bytes.is_empty());
 
-    let mut freeze_app = StudioWorkspaceModule::create(1);
+    let mut freeze_app = StudioWorkspaceModule::create(SurfaceId(1));
     freeze_app.restore_state(&saved_state_bytes);
-    let frame0_bytes = freeze_app.render(1).to_vec();
+    let frame0_bytes = freeze_app.render(FrameId(1)).to_vec();
     assert!(frame0_bytes.len() > 24);
 
     let bundle = encode_reloc_bundle(
@@ -104,7 +104,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     write_reloc_atomic(&snap_path, &bundle).expect("write studio NVERELOC atomically");
 
     let mut cold_backend = HeadlessBackend::new();
-    cold_backend.set_viewport(1, vp);
+    cold_backend.set_viewport(SurfaceId(1), vp);
     let mut cold_host =
         StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());
 
@@ -132,7 +132,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     assert!(frame0_tree.contains("X-Ray HUD: ON"));
     assert!(frame0_tree.contains("Snapshot 7 / 7"));
 
-    let mut cold_app = StudioWorkspaceModule::create(1);
+    let mut cold_app = StudioWorkspaceModule::create(SurfaceId(1));
     let t_state_start = Instant::now();
     cold_app.restore_state(snap.state());
     let t_state = t_state_start.elapsed();
@@ -159,7 +159,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         let cpp_snap = RelocBundleView::from_view(cpp_mapped.view()).expect("parse C++ bundle");
         assert_eq!(cpp_snap.meta(), b"cpp-roundtrip");
         let mut verify_backend = HeadlessBackend::new();
-        verify_backend.set_viewport(1, vp);
+        verify_backend.set_viewport(SurfaceId(1), vp);
         let mut verify_host = StoreWireReplica::new(
             verify_backend,
             nve_components::tables::core_realization_order(),
@@ -170,7 +170,7 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         let verify_tree = verify_host.backend().render_ascii_tree(verify_host.store());
         assert!(verify_tree.contains("# engineering"));
         assert!(verify_tree.contains("X-Ray HUD: ON"));
-        let mut verify_app = StudioWorkspaceModule::create(1);
+        let mut verify_app = StudioWorkspaceModule::create(SurfaceId(1));
         verify_app.restore_state(cpp_snap.state());
         assert_eq!(verify_app.state_snapshot(), expected_state);
     }
@@ -238,7 +238,7 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
 
         let t0 = Instant::now();
         let handled = h.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id: nid,
             timestamp_us: h.next_frame * 16_000,
             kind: NativeEventKind::Press,
@@ -248,7 +248,7 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
         let t_disp = t0.elapsed().as_micros();
         let fid = h.next_frame;
         h.next_frame += 1;
-        let rec_us = h.surface.reconcile(fid);
+        let rec_us = h.surface.reconcile(FrameId(fid));
         let fe_us = t0.elapsed().as_micros();
         let store = h.surface.store();
         let changes = h.surface.last_changes();
@@ -393,14 +393,14 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         scale_factor: 1.0,
     };
 
-    let mut app = StudioWorkspaceModule::create(1);
+    let mut app = StudioWorkspaceModule::create(SurfaceId(1));
     let mut dyn_backend: HeadlessBackend<DynLayoutEngine> =
         HeadlessBackend::with_layout(Box::new(TaffyStoreLayout::new()));
-    dyn_backend.set_viewport(1, vp);
+    dyn_backend.set_viewport(SurfaceId(1), vp);
     let mut replica =
         StoreWireReplica::new(dyn_backend, nve_components::tables::core_realization_order());
 
-    let f1 = app.render(1).to_vec();
+    let f1 = app.render(FrameId(1)).to_vec();
     replica.submit_nve2_frame(&f1).unwrap();
     assert_eq!(replica.backend().layout_engine().name(), "taffy");
     assert_eq!(read_root_layout_engine_prop(replica.store()), "taffy");
@@ -414,7 +414,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
             .unwrap_or_else(|| panic!("missing testID='{tid}'"));
         let rect = replica.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
-            1,
+            SurfaceId(1),
             nid,
             fid * 16_000,
             rect.x + rect.width * 0.5,
@@ -422,7 +422,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         )];
         // SAFETY: `ev` outlives the synchronous `dispatch_events` call.
         assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
-        let frame = app.render(fid).to_vec();
+        let frame = app.render(FrameId(fid)).to_vec();
         replica.submit_nve2_frame(&frame).unwrap();
         frame
     };
@@ -450,7 +450,7 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
     let taffy_rects_before: Vec<(NodeId, LayoutRect)> = {
         let mut pairs: Vec<(NodeId, LayoutRect)> = live_node_ids(replica.store())
             .into_iter()
-            .filter_map(|id| replica.backend().layout_of(id.raw()).map(|r| (id.raw(), r)))
+            .filter_map(|id| replica.backend().layout_of(id).map(|r| (id, r)))
             .collect();
         pairs.sort_by_key(|(id, _)| *id);
         pairs

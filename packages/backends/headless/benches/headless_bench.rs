@@ -41,7 +41,7 @@ mod native {
 
         let mut backend = HeadlessBackend::new();
         backend.set_viewport(
-            1,
+            nve_abi::SurfaceId::ROOT,
             Viewport {
                 width: 1280.0,
                 height: 720.0,

@@ -4,7 +4,7 @@
 //! `PixelBuffer` via `SkiaTableRegistry`, handle imperative commands, emit zero-serialization
 //! typed `TableEventBus` events, and round-trip over `NVE2` with zero modifications to `nve-backend-skia`.
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, SurfaceId};
 use nve_backend_skia::{PixelBuffer, SkiaSystemPaintCtx, SkiaTableRegistry, SkiaTableSystem};
 use nve_engine::LayoutRect;
 use nve_store::wire::{WireDecoder, WireEncoder};
@@ -58,7 +58,13 @@ impl SkiaTableSystem for MockSkiaMapSystem {
             && let Ok(bytes) = <[u8; 4]>::try_from(payload)
         {
             let pin_id = u32::from_le_bytes(bytes);
-            events.emit::<MockSkiaMapTable, _>(1, node, 42, EVENT_PIN_TAPPED, PinTapped { pin_id });
+            events.emit::<MockSkiaMapTable, _>(
+                SurfaceId::ROOT,
+                node,
+                42,
+                EVENT_PIN_TAPPED,
+                PinTapped { pin_id },
+            );
         }
     }
 }

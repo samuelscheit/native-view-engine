@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, FrameId, SurfaceId};
 use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
@@ -15,14 +15,14 @@ use nve_layout_yoga::YogaLayoutEngine;
 fn bench_headless_backend(c: &mut Criterion) {
     let mut layout_group = c.benchmark_group("backend_headless/taffy_layout");
     for &rows in &[100usize, 1_000] {
-        let init_bytes = build_row_tree_cmd(rows, 1);
+        let init_bytes = build_row_tree_cmd(rows, FrameId(1));
         layout_group.throughput(Throughput::Elements((rows * 2) as u64));
         layout_group.bench_with_input(BenchmarkId::new("initial_rows", rows), &init_bytes, |b, bytes| {
             b.iter_batched(
                 || {
                     let mut replica =
                         StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
-                    replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                    replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     replica
                 },
                 |mut replica| {
@@ -40,9 +40,9 @@ fn bench_headless_backend(c: &mut Criterion) {
 
     let mut hit_group = c.benchmark_group("backend_headless/hit_test");
     for &rows in &[100usize, 1_000] {
-        let init_bytes = build_row_tree_cmd(rows, 1);
+        let init_bytes = build_row_tree_cmd(rows, FrameId(1));
         let mut replica = StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
-        replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+        replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
         replica
             .submit_nve2_frame(&init_bytes)
             .expect("submit hit-test bench frame");
@@ -66,13 +66,13 @@ fn bench_skia_backend(c: &mut Criterion) {
     let mut group = c.benchmark_group("backend_skia");
 
     // 1. Card scene: display-list build + software rasterization
-    let card_cmd = build_card_scene_cmd(1);
+    let card_cmd = build_card_scene_cmd(FrameId(1));
     group.bench_function("display_list_card", |b| {
         b.iter_batched(
             || {
                 let mut replica =
                     StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
-                replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                 replica
             },
             |mut replica| {
@@ -86,7 +86,7 @@ fn bench_skia_backend(c: &mut Criterion) {
     });
 
     let mut skia_card = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
-    skia_card.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+    skia_card.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
     skia_card
         .submit_nve2_frame(&card_cmd)
         .expect("submit skia card fixture");
@@ -101,13 +101,13 @@ fn bench_skia_backend(c: &mut Criterion) {
     });
 
     // 2. 1,000-node tree (500 rows * 2 nodes): display-list build + software rasterization
-    let tree_cmd = build_row_tree_cmd(500, 1);
+    let tree_cmd = build_row_tree_cmd(500, FrameId(1));
     group.bench_function("display_list_1000_nodes", |b| {
         b.iter_batched(
             || {
                 let mut replica =
                     StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
-                replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                 replica
             },
             |mut replica| {
@@ -121,7 +121,7 @@ fn bench_skia_backend(c: &mut Criterion) {
     });
 
     let mut skia_tree = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
-    skia_tree.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+    skia_tree.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
     skia_tree
         .submit_nve2_frame(&tree_cmd)
         .expect("submit skia tree fixture");
@@ -145,15 +145,15 @@ fn bench_web_backend(c: &mut Criterion) {
     let mut frame_buf = Vec::with_capacity(16_384);
     feed_100.encode_initial(&mut frame_buf);
     let mut web_100 = StoreWireReplica::new(WebBackend::new(), core_realization_order());
-    web_100.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+    web_100.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
     web_100
         .submit_nve2_frame(&frame_buf)
         .expect("submit initial web_100 frame");
 
-    let mut frame_id = 2u64;
+    let mut frame_id = FrameId(2);
     group.bench_function("incremental_dom_patch_10_nodes", |b| {
         b.iter(|| {
-            frame_id += 1;
+            frame_id = frame_id.next();
             feed_100.encode_patch(frame_id, 10, &mut frame_buf);
             black_box(
                 web_100
@@ -167,9 +167,9 @@ fn bench_web_backend(c: &mut Criterion) {
         b.iter(|| black_box(web_100.backend().render_html(web_100.store())));
     });
 
-    let init_500 = build_row_tree_cmd(500, 1);
+    let init_500 = build_row_tree_cmd(500, FrameId(1));
     let mut web_500 = StoreWireReplica::new(WebBackend::new(), core_realization_order());
-    web_500.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+    web_500.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
     web_500
         .submit_nve2_frame(&init_500)
         .expect("submit initial web_500 frame");
@@ -184,7 +184,7 @@ fn bench_web_backend(c: &mut Criterion) {
 fn bench_taffy_vs_yoga(c: &mut Criterion) {
     let mut group = c.benchmark_group("layout_engine/taffy_vs_yoga");
     for &rows in &[100usize, 1_000] {
-        let init_bytes = build_row_tree_cmd(rows, 1);
+        let init_bytes = build_row_tree_cmd(rows, FrameId(1));
         group.throughput(Throughput::Elements((rows * 2) as u64));
 
         group.bench_with_input(BenchmarkId::new("taffy_static", rows), &init_bytes, |b, bytes| {
@@ -192,7 +192,7 @@ fn bench_taffy_vs_yoga(c: &mut Criterion) {
                 || {
                     let mut replica =
                         StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
-                    replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                    replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     replica
                 },
                 |mut replica| {
@@ -214,7 +214,7 @@ fn bench_taffy_vs_yoga(c: &mut Criterion) {
                         HeadlessBackend::with_layout(boxed),
                         core_realization_order(),
                     );
-                    replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                    replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                     replica
                 },
                 |mut replica| {
@@ -240,7 +240,7 @@ fn bench_taffy_vs_yoga(c: &mut Criterion) {
                                 HeadlessBackend::with_layout(yoga),
                                 core_realization_order(),
                             );
-                            replica.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
+                            replica.backend_mut().set_viewport(SurfaceId::ROOT, DEFAULT_VIEWPORT);
                             replica
                         },
                         |mut replica| {

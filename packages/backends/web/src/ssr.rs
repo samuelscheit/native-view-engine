@@ -185,7 +185,7 @@ impl WebBackend {
                 sys.write_inline_css(store, id, &mut inline);
             }
         }
-        if let Some(patch) = self.patch_css.get(&id.raw()) {
+        if let Some(patch) = self.patch_css.get(&id) {
             inline.push_str(patch);
         }
         if !inline.is_empty() {

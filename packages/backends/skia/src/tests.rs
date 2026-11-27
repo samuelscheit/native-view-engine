@@ -1,4 +1,4 @@
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, SurfaceId};
 use nve_components::paint::{BackgroundFill, GradientStop};
 use nve_components::tables::{
     BackgroundFillRes, BoxShadows, Layout, Scroll, TextContent, Typography, Visual,
@@ -16,7 +16,7 @@ fn skia_commit_display_list_gradients_shadows_scroll_and_rasterize() {
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 320.0,
             height: 200.0,
@@ -100,7 +100,7 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
     let mut changes = ChangeSet::default();
     let mut backend = SkiaBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId::ROOT,
         Viewport {
             width: 300.0,
             height: 300.0,
@@ -157,19 +157,19 @@ fn skia_hit_test_recurses_into_visible_child_under_visibility_hidden_parent() {
     assert!(!painted_colors.contains(&ColorRgba::rgb(0, 0, 255)), "inherit child under hidden parent must not paint");
     assert!(painted_colors.contains(&ColorRgba::rgb(0, 255, 0)), "explicit Visible child under hidden parent must paint");
 
-    let inh_r = backend.layout_of(inherit_child.raw()).unwrap();
-    let vis_r = backend.layout_of(visible_child.raw()).unwrap();
+    let inh_r = backend.layout_of(inherit_child).unwrap();
+    let vis_r = backend.layout_of(visible_child).unwrap();
     assert_eq!(backend.hit_test(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
     assert_eq!(backend.hit_test_interaction(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
     assert_eq!(backend.hit_test_scroll_container(&store, inh_r.x + 10.0, inh_r.y + 10.0), None);
-    assert_eq!(backend.hit_test(&store, vis_r.x + 10.0, vis_r.y + 10.0), Some(visible_child.raw()));
+    assert_eq!(backend.hit_test(&store, vis_r.x + 10.0, vis_r.y + 10.0), Some(visible_child));
     assert_eq!(
         backend.hit_test_interaction(&store, vis_r.x + 10.0, vis_r.y + 10.0),
-        Some(visible_child.raw())
+        Some(visible_child)
     );
     assert_eq!(
         backend.hit_test_scroll_container(&store, vis_r.x + 10.0, vis_r.y + 10.0),
-        Some(visible_child.raw())
+        Some(visible_child)
     );
     assert_eq!(backend.hit_test(&store, 190.0, 190.0), None);
     let _ = hidden_parent;

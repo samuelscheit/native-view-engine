@@ -3,31 +3,9 @@
 use core::marker::PhantomData;
 use core::ops::{Index, IndexMut};
 
+pub use nve_abi::{NodeId, NodeIndex};
+
 use crate::table::TableSlot;
-
-/// Dense slot index into [`crate::NodeStore`]'s node table (0 is reserved for null).
-///
-/// Distinct from [`NodeId`] (which packs `index:24 | generation:8`) so internal slot-index lists
-/// (`free`, `pending_free`, `touched`, `reparented`) cannot be accidentally mixed with generational
-/// `NodeId` lists (`created`, `removed`) at compile time.
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct NodeIndex(pub u32);
-
-impl NodeIndex {
-    pub const NULL: Self = Self(0);
-    pub const ROOT: Self = Self(1);
-
-    #[inline(always)]
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
-    }
-
-    #[inline(always)]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
 
 /// Bitset of attached table slots on a node (up to 128 tables).
 #[repr(transparent)]
@@ -199,57 +177,6 @@ impl<I: Idx, T> IndexMut<I> for IndexVec<I, T> {
     #[inline(always)]
     fn index_mut(&mut self, idx: I) -> &mut Self::Output {
         &mut self.raw[idx.as_usize()]
-    }
-}
-
-/// Node identity: `index: 24 | generation: 8`. Raw value `0` is the null node.
-///
-/// Indices are recycled only at frame boundaries, so an id observed during a frame never aliases a
-/// different live node in the same frame; the generation catches stale ids across frames.
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
-pub struct NodeId(pub u32);
-
-impl NodeId {
-    pub const NULL: Self = Self(0);
-    /// The root node of every surface (index 1, generation 0).
-    pub const ROOT: Self = Self(1);
-    pub const INDEX_BITS: u32 = 24;
-    pub const MAX_INDEX: u32 = (1 << Self::INDEX_BITS) - 1;
-
-    #[inline(always)]
-    pub const fn new(index: u32, generation: u8) -> Self {
-        Self((generation as u32) << Self::INDEX_BITS | (index & Self::MAX_INDEX))
-    }
-
-    #[inline(always)]
-    pub const fn from_index(index: NodeIndex, generation: u8) -> Self {
-        Self::new(index.0, generation)
-    }
-
-    #[inline(always)]
-    pub const fn node_index(self) -> NodeIndex {
-        NodeIndex(self.0 & Self::MAX_INDEX)
-    }
-
-    #[inline(always)]
-    pub const fn index(self) -> usize {
-        (self.0 & Self::MAX_INDEX) as usize
-    }
-
-    #[inline(always)]
-    pub const fn generation(self) -> u8 {
-        (self.0 >> Self::INDEX_BITS) as u8
-    }
-
-    #[inline(always)]
-    pub const fn is_null(self) -> bool {
-        self.0 == 0
-    }
-
-    #[inline(always)]
-    pub const fn raw(self) -> u32 {
-        self.0
     }
 }
 

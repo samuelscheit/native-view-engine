@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
 use nve_backend_headless::HeadlessBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -108,10 +108,10 @@ pub(crate) fn InspectDemo() -> Element {
 }
 
 pub(crate) fn cmd_inspect() {
-    let mut surface = DioxusSurface::new(1, InspectDemo);
+    let mut surface = DioxusSurface::new(SurfaceId(1), InspectDemo);
     let mut backend = HeadlessBackend::new();
     backend.set_viewport(
-        1,
+        SurfaceId(1),
         Viewport {
             width: 393.0,
             height: 852.0,
@@ -119,7 +119,9 @@ pub(crate) fn cmd_inspect() {
         },
     );
 
-    let (rec_us, s1) = surface.commit_to_timed(1, &mut backend).expect("frame 1");
+    let (rec_us, s1) = surface
+        .commit_to_timed(FrameId(1), &mut backend)
+        .expect("frame 1");
     let total1 = rec_us + s1.layout_us + s1.diff_us + s1.mount_us;
     println!(
         "=== Frame 1 (initial) | {} ops | total={}us (rec={}us layout={}us diff={}us) ===",
@@ -133,7 +135,7 @@ pub(crate) fn cmd_inspect() {
     println!("\n--> Simulated native Press at (60, 75) hit Node#{hit}");
 
     let handled = surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: hit,
         timestamp_us: 1000,
         kind: NativeEventKind::Press,
@@ -141,7 +143,9 @@ pub(crate) fn cmd_inspect() {
     }]);
     assert!(handled, "press event should have been handled");
 
-    let (rec2, s2) = surface.commit_to_timed(2, &mut backend).expect("frame 2");
+    let (rec2, s2) = surface
+        .commit_to_timed(FrameId(2), &mut backend)
+        .expect("frame 2");
     let total2 = rec2 + s2.layout_us + s2.diff_us + s2.mount_us;
     println!(
         "\n=== Frame 2 (after tap) | {} ops | total={}us (rec={}us layout={}us diff={}us) ===",
@@ -160,23 +164,23 @@ mod tests {
         assert!(probe_tool("__definitely_missing_nve_binary__", &["--version"]).is_none());
         assert!(probe_tool("rustc", &["--definitely-invalid-flag-xyz"]).is_none());
 
-        let mut surface = DioxusSurface::new(1, InspectDemo);
+        let mut surface = DioxusSurface::new(SurfaceId(1), InspectDemo);
         let mut backend = HeadlessBackend::new();
-        backend.set_viewport(1, Viewport::default());
-        surface.commit_to(1, &mut backend).unwrap();
+        backend.set_viewport(SurfaceId(1), Viewport::default());
+        surface.commit_to(FrameId(1), &mut backend).unwrap();
         assert!(backend.render_ascii_tree(surface.store()).contains("Counter: 0"));
 
         let hit = backend
             .hit_test(surface.store(), 60.0, 75.0)
             .expect("hit button");
         assert!(surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId(1),
             node_id: hit,
             timestamp_us: 1000,
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 60.0, y: 75.0 },
         }]));
-        surface.commit_to(2, &mut backend).unwrap();
+        surface.commit_to(FrameId(2), &mut backend).unwrap();
         assert!(backend.render_ascii_tree(surface.store()).contains("Counter: 1"));
     }
 }

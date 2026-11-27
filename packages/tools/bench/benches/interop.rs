@@ -10,7 +10,7 @@ use nve_interop::crdt::{
 use nve_interop::{
     ChannelPayload, FrameworkKind, GestureCapabilities, InteropRuntime, IntrinsicSize,
     LayoutProposal, MeasurableSurface, NveChannelBus, PayloadEncoding, PointerPhase, PointerSample,
-    ScrollEdgeState, SizeConstraints, SurfaceEnvironment,
+    ScrollEdgeState, SizeConstraints, SurfaceEnvironment, SurfaceId,
 };
 
 struct BenchTextSurface {
@@ -45,7 +45,7 @@ fn bench_channel_bus(c: &mut Criterion) {
         let counter = Arc::new(AtomicUsize::new(0));
         for i in 0..subs {
             let c_ref = Arc::clone(&counter);
-            bus.subscribe_by_id(ch_id, Some(i as u32 + 1), false, move |msg| {
+            bus.subscribe_by_id(ch_id, Some(SurfaceId(i as u32 + 1)), false, move |msg| {
                 c_ref.fetch_add(msg.as_bytes().len(), Ordering::Relaxed);
             })
             .expect("subscribe bench channel");
@@ -57,7 +57,7 @@ fn bench_channel_bus(c: &mut Criterion) {
                 let delivered = bus
                     .publish_by_id(
                         ch_id,
-                        Some(1),
+                        Some(SurfaceId::ROOT),
                         PayloadEncoding::Binary,
                         payload.clone(),
                         false,

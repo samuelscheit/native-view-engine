@@ -1,4 +1,4 @@
-use nve_abi::{ColorRgba, NVE_PRIMARY_SLOT_NONE};
+use nve_abi::{ColorRgba, FrameId, NodeId, SurfaceId, NVE_PRIMARY_SLOT_NONE};
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 
 use crate::reloc::{
@@ -16,7 +16,7 @@ fn make_node<'a>(
     children: &'a [u32],
 ) -> SceneRelocNodeInput<'a> {
     SceneRelocNodeInput {
-        node_id,
+        node_id: NodeId(node_id),
         parent_index,
         primary_slot,
         flags: 0,
@@ -44,8 +44,8 @@ fn sample_base_scene() -> RelocBuf {
     ];
     encode_scene_reloc(&SceneRelocInput {
         schema_version: 1,
-        surface_id: 1,
-        frame_id: 1,
+        surface_id: SurfaceId::ROOT,
+        frame_id: FrameId(1),
         viewport: Viewport {
             width: 360.0,
             height: 160.0,

@@ -2472,6 +2472,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi-macros",
+ "nve-codec",
  "nve-hash",
  "rustc-hash",
  "serde",
@@ -2536,6 +2537,7 @@ dependencies = [
  "base64",
  "criterion",
  "nve-abi",
+ "nve-codec",
  "nve-components",
  "nve-engine",
  "nve-store",
@@ -2702,6 +2704,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "nve-abi",
+ "nve-codec",
  "nve-hash",
  "nve-store",
 ]

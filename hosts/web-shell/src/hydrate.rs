@@ -123,7 +123,7 @@ impl IslandHydrationScheduler {
                 }
             }
             if let Some(id) = island_id {
-                discovered.push((node_id.raw(), id.to_owned(), trigger));
+                discovered.push((node_id, id.to_owned(), trigger));
             }
         }
         discovered.sort_unstable_by_key(|(id, _, _)| *id);

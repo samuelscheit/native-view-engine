@@ -118,7 +118,7 @@ impl WebBackend {
             }
             for &id in &matching_ids {
                 if id != NodeId::ROOT {
-                    self.patch_css.entry(id.raw()).or_default().push_str(&css);
+                    self.patch_css.entry(id).or_default().push_str(&css);
                     mutations += 1;
                 }
             }
@@ -131,7 +131,7 @@ impl WebBackend {
         if !attr_updates.is_empty() {
             for &id in &matching_ids {
                 if id != NodeId::ROOT
-                    && let Some(el) = self.live_elements.get(&id.raw()).cloned()
+                    && let Some(el) = self.live_elements.get(&id).cloned()
                 {
                     self.sync_full_element(store, id, &el);
                 }

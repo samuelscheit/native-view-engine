@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::UiHarness;
+use nve_abi::{FrameId, SurfaceId};
 use nve_backend_web::{
     decode_form_urlencoded_map, MemorySnapshotStorage, SnapshotStorage, WebBackend,
 };
@@ -128,11 +129,11 @@ fn NativeWebPrimitivesShowcase() -> Element {
 
 #[test]
 fn native_overlays_disclosure_accordion_and_form_emit_exact_html5_and_hydrate_zero_mismatches() {
-    let mut surface = DioxusSurface::new(1, NativeWebPrimitivesShowcase);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, NativeWebPrimitivesShowcase);
 
     let mut web = WebBackend::new();
     register_web_html_systems(web.table_registry_mut());
-    surface.commit_to(1, &mut web).unwrap();
+    surface.commit_to(FrameId(1), &mut web).unwrap();
 
     let ssr = web.render_ssr(surface.store());
     let mirror = web.render_html(surface.store());

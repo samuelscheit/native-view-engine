@@ -3,7 +3,7 @@
 use nve_abi::SurfaceId;
 
 use super::types::{
-    ArbitrationDecision, ArbitrationReason, FastU32Map, GestureCapabilities, GestureDisposition,
+    ArbitrationDecision, ArbitrationReason, FastKeyMap, GestureCapabilities, GestureDisposition,
     PointerPhase, PointerSample, ScrollEdgeState, SurfaceChain,
 };
 
@@ -23,9 +23,9 @@ struct ActivePointer {
 /// inside a SwiftUI vertical `ScrollView`).
 #[derive(Debug, Default)]
 pub struct GestureArbitrator {
-    capabilities: FastU32Map<GestureCapabilities, 16>,
-    overrides: FastU32Map<GestureDisposition, 8>,
-    active_pointers: FastU32Map<ActivePointer, 8>,
+    capabilities: FastKeyMap<SurfaceId, GestureCapabilities, 16>,
+    overrides: FastKeyMap<SurfaceId, GestureDisposition, 8>,
+    active_pointers: FastKeyMap<u32, ActivePointer, 8>,
 }
 
 impl GestureArbitrator {

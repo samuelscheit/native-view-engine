@@ -6,8 +6,8 @@
 
 use nve_abi::{
     decode_events, direct_event_to_native, encode_events, native_events_to_direct, EventPayload,
-    NativeEvent, NativeEventKind, NveBufferSlice, NveDirectEventRef, NveGestureDisposition,
-    NveSizeConstraints,
+    NativeEvent, NativeEventKind, NodeId, NveBufferSlice, NveDirectEventRef, NveGestureDisposition,
+    NveSizeConstraints, SurfaceId,
 };
 
 struct XorShift64(u64);
@@ -74,8 +74,8 @@ fn event_ring_and_direct_event_seeded_roundtrip_including_table_events() {
     let mut events = Vec::with_capacity(64);
 
     for i in 0..64u64 {
-        let surface_id = (rng.next_u32() % 4) + 1;
-        let node_id = (rng.next_u32() % 1000) + 1;
+        let surface_id = SurfaceId((rng.next_u32() % 4) + 1);
+        let node_id = NodeId((rng.next_u32() % 1000) + 1);
         let timestamp_us = i * 16_667;
         let ev = match i % 6 {
             0 => NativeEvent {

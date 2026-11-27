@@ -3,7 +3,7 @@ mod loader_common;
 use std::ffi::c_void;
 
 use loader_common::{compile_test_cdylib, TempDirGuard, SHARED_ABI_DEFS};
-use nve_abi::NveHostCallbacks;
+use nve_abi::{FrameId, NveHostCallbacks, SurfaceId};
 use nve_engine::loader::HotAppInstance;
 
 #[test]
@@ -50,7 +50,7 @@ fn loader_resolves_host_interface_and_rebinds_across_hotswap() {
         "#
     );
     let dylib = compile_test_cdylib(dir.path(), "host_iface_app", &cdylib_src);
-    let mut inst = HotAppInstance::load(&dylib, 1, 1, None).expect("load host-capable dylib");
+    let mut inst = HotAppInstance::load(&dylib, SurfaceId::ROOT, 1, None).expect("load host-capable dylib");
     assert!(inst.has_host_interface());
 
     let cb = NveHostCallbacks {
@@ -60,11 +60,11 @@ fn loader_resolves_host_interface_and_rebinds_across_hotswap() {
     };
     assert!(inst.bind_host(Some(cb)));
     assert!(inst.dispatch_host_events(b"hostpayload"));
-    assert_eq!(inst.render(1), format!("ctx={};ev=11", 0xBEEFusize).as_bytes());
+    assert_eq!(inst.render(FrameId(1)), format!("ctx={};ev=11", 0xBEEFusize).as_bytes());
 
     let outcome = inst.reload(&dylib).expect("reload gen 2");
     assert_eq!(outcome.generation, 2);
-    assert_eq!(inst.render(2), format!("ctx={};ev=0", 0xBEEFusize).as_bytes());
+    assert_eq!(inst.render(FrameId(2)), format!("ctx={};ev=0", 0xBEEFusize).as_bytes());
 }
 
 #[test]
@@ -174,9 +174,9 @@ fn loader_zero_copy_borrows_dylib_buffers_directly_and_handles_null_or_empty_sli
     );
 
     let dylib = compile_test_cdylib(dir.path(), "zerocopy_ptr_app", &cdylib_src);
-    let mut inst = HotAppInstance::load(&dylib, 1, 1, None).expect("load zerocopy dylib");
+    let mut inst = HotAppInstance::load(&dylib, SurfaceId::ROOT, 1, None).expect("load zerocopy dylib");
 
-    let frame = inst.render(7);
+    let frame = inst.render(FrameId(7));
     assert_eq!(frame.len(), 16);
     assert_eq!(frame.as_ptr() as usize, u64::from_le_bytes(frame[0..8].try_into().unwrap()) as usize);
     assert_eq!(u64::from_le_bytes(frame[8..16].try_into().unwrap()), 7);
@@ -190,7 +190,7 @@ fn loader_zero_copy_borrows_dylib_buffers_directly_and_handles_null_or_empty_sli
     assert_eq!(state.as_ptr() as usize, u64::from_le_bytes(state[0..8].try_into().unwrap()) as usize);
 
     for edge_frame in [0u64, 99, 100] {
-        assert!(inst.render(edge_frame).is_empty());
+        assert!(inst.render(FrameId(edge_frame)).is_empty());
         assert!(inst.drain_emitted_events().is_empty());
         assert!(inst.snapshot_state().is_empty());
     }

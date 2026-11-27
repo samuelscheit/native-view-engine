@@ -5,10 +5,23 @@ use crate::naming::{screaming_snake_to_camel_case, to_camel_case, to_pascal_case
 use crate::schema::hybrid::core_abi::{
     core_abi_spec, format_enum_value, module_c_struct_name, HOST_STATUS_VARIANTS,
 };
-use crate::schema::hybrid::HybridType;
+use crate::schema::hybrid::{HybridAliasSpec, HybridType};
 
-pub(super) fn dart_core_ffi_annotation(ty: &HybridType) -> Option<&'static str> {
+fn resolve_alias_target<'a>(ty: &'a HybridType, aliases: &'a [HybridAliasSpec]) -> &'a HybridType {
     match ty {
+        HybridType::Handle(name) => aliases
+            .iter()
+            .find(|a| a.name == *name)
+            .map_or(ty, |a| &a.target),
+        _ => ty,
+    }
+}
+
+pub(super) fn dart_core_ffi_annotation(
+    ty: &HybridType,
+    aliases: &[HybridAliasSpec],
+) -> Option<&'static str> {
+    match resolve_alias_target(ty, aliases) {
         HybridType::Bool => Some("@ffi.Bool()"),
         HybridType::U8 => Some("@ffi.Uint8()"),
         HybridType::U16 => Some("@ffi.Uint16()"),
@@ -23,8 +36,16 @@ pub(super) fn dart_core_ffi_annotation(ty: &HybridType) -> Option<&'static str> 
     }
 }
 
-pub(super) fn dart_core_native_type(ty: &HybridType) -> String {
-    match ty {
+pub(super) fn dart_core_native_type(ty: &HybridType, aliases: &[HybridAliasSpec]) -> String {
+    if let HybridType::Handle(name) = ty {
+        if name == "NveHostInvokeFn" {
+            return "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_string();
+        }
+        if name == "NveHostChannelPublishFn" {
+            return "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_string();
+        }
+    }
+    match resolve_alias_target(ty, aliases) {
         HybridType::Void => "ffi.Void".to_string(),
         HybridType::Bool => "ffi.Bool".to_string(),
         HybridType::U8 => "ffi.Uint8".to_string(),
@@ -38,22 +59,24 @@ pub(super) fn dart_core_native_type(ty: &HybridType) -> String {
         HybridType::F64 => "ffi.Double".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Struct(name) => name.clone(),
-        HybridType::Handle(name) if name == "NveHostInvokeFn" => {
-            "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_string()
-        }
-        HybridType::Handle(name) if name == "NveHostChannelPublishFn" => {
-            "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_string()
-        }
         HybridType::Handle(_) => "ffi.Pointer<ffi.Void>".to_string(),
         HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
-            format!("ffi.Pointer<{}>", dart_core_native_type(inner))
+            format!("ffi.Pointer<{}>", dart_core_native_type(inner, aliases))
         }
         other => unreachable!("unsupported core ABI Dart native type: {other:?}"),
     }
 }
 
-pub(super) fn dart_core_struct_field_type(ty: &HybridType) -> String {
-    match ty {
+pub(super) fn dart_core_struct_field_type(ty: &HybridType, aliases: &[HybridAliasSpec]) -> String {
+    if let HybridType::Handle(name) = ty {
+        if name == "NveHostInvokeFn" {
+            return "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_string();
+        }
+        if name == "NveHostChannelPublishFn" {
+            return "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_string();
+        }
+    }
+    match resolve_alias_target(ty, aliases) {
         HybridType::Bool => "bool".to_string(),
         HybridType::U8
         | HybridType::U16
@@ -65,15 +88,9 @@ pub(super) fn dart_core_struct_field_type(ty: &HybridType) -> String {
         HybridType::F32 | HybridType::F64 => "double".to_string(),
         HybridType::Value => "NveValue".to_string(),
         HybridType::Struct(name) => name.clone(),
-        HybridType::Handle(name) if name == "NveHostInvokeFn" => {
-            "ffi.Pointer<ffi.NativeFunction<NveHostInvokeNative>>".to_string()
-        }
-        HybridType::Handle(name) if name == "NveHostChannelPublishFn" => {
-            "ffi.Pointer<ffi.NativeFunction<NveHostChannelPublishNative>>".to_string()
-        }
         HybridType::Handle(_) => "ffi.Pointer<ffi.Void>".to_string(),
         HybridType::ConstPtr(inner) | HybridType::MutPtr(inner) => {
-            format!("ffi.Pointer<{}>", dart_core_native_type(inner))
+            format!("ffi.Pointer<{}>", dart_core_native_type(inner, aliases))
         }
         other => unreachable!("unsupported core ABI Dart struct field type: {other:?}"),
     }
@@ -257,17 +274,17 @@ pub fn generate_dart_core_abi() -> String {
                     writeln!(
                         out,
                         "  external ffi.Array<{}> {dart_field};",
-                        dart_core_native_type(elem)
+                        dart_core_native_type(elem, &spec.aliases)
                     );
                 }
                 _ => {
-                    if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+                    if let Some(ann) = dart_core_ffi_annotation(&f.ty, &spec.aliases) {
                         writeln!(out, "  {ann}");
                     }
                     writeln!(
                         out,
                         "  external {} {dart_field};",
-                        dart_core_struct_field_type(&f.ty)
+                        dart_core_struct_field_type(&f.ty, &spec.aliases)
                     );
                 }
             }
@@ -280,7 +297,7 @@ pub fn generate_dart_core_abi() -> String {
     for m in &spec.modules {
         for method in &m.methods {
             let td_name = format!("Nve{}Native", to_pascal_case(&method.name));
-            let ret = dart_core_native_type(&method.return_type);
+            let ret = dart_core_native_type(&method.return_type, &spec.aliases);
             let mut params = Vec::new();
             if method.has_self {
                 params.push("ffi.Pointer<ffi.Void> handle".to_string());
@@ -288,7 +305,7 @@ pub fn generate_dart_core_abi() -> String {
             for p in &method.params {
                 params.push(format!(
                     "{} {}",
-                    dart_core_native_type(&p.ty),
+                    dart_core_native_type(&p.ty, &spec.aliases),
                     to_camel_case(&p.name)
                 ));
             }

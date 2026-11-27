@@ -178,7 +178,7 @@ impl RelocLayoutProps {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RelocSceneNode {
-    pub node_id: u32,
+    pub node_id: NodeId,
     pub parent_index: i32,
     pub event_mask: u64,
     pub x: f32,
@@ -268,9 +268,9 @@ pub struct RelocSceneRoot {
     pub viewport_height: f32,
     pub scale_factor: f32,
     pub root_node_index: u32,
-    pub surface_id: u32,
+    pub surface_id: SurfaceId,
     pub clear_rgba: u32,
-    pub frame_id: u64,
+    pub frame_id: FrameId,
     pub nodes: RelocSlice<RelocSceneNode>,
     pub layouts: RelocSlice<RelocLayoutProps>,
     pub app_tag: RelocStr,

@@ -12,10 +12,10 @@ use crate::session::*;
     feature = "scene-view"
 ))]
 use nve_abi::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind, NveRenderNode, NveSceneRef,
-    NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
+    EventMask, EventPayload, FrameId, NativeEvent, NativeEventKind, NveRenderNode, NveSceneRef,
+    PrimarySlot, ZIndex, NVE_SCENE_SCHEMA_HASH, ROOT_NODE_ID,
 };
-use nve_abi::NodeId;
+use nve_abi::{NodeId, SurfaceId};
 #[cfg(all(
     feature = "app-studio",
     feature = "app-kitchen-sink",
@@ -56,7 +56,7 @@ pub(crate) fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<No
             .try_row::<DebugId>(id)
             .is_some_and(|d| d.test_id() == target)
         {
-            return Some(id.raw());
+            return Some(id);
         }
         for &child in store.children(id) {
             if let Some(found) = walk(store, child, target) {
@@ -79,7 +79,7 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         .expect("expected mounted node with requested test_id");
     let mask = session
         .store()
-        .try_row::<Interaction>(StoreNodeId(node_id))
+        .try_row::<Interaction>(node_id)
         .map_or(0, |i| u64::from(i.event_mask()));
     assert_ne!(
         mask & EventMask::PRESS,
@@ -87,7 +87,7 @@ fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) 
         "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
     );
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id,
         timestamp_us,
         kind: NativeEventKind::Press,
@@ -144,9 +144,9 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
     assert_eq!(scene.nodes().len(), session.node_count());
 
     for rnode in scene.nodes() {
-        let sid = StoreNodeId(rnode.node_id);
+        let sid = rnode.node_id;
         assert!(store.is_live(sid), "scene node {} missing in NodeStore", rnode.node_id);
-        assert_eq!(rnode.primary_slot, store.primary_slot(sid).0);
+        assert_eq!(rnode.primary_slot, PrimarySlot(store.primary_slot(sid).0));
         let children = store.children(sid);
         assert_eq!(
             rnode.is_leaf_text(),
@@ -190,12 +190,12 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
             .map_or(16.0, |t| t.font_size());
         assert_eq!(rnode.font_size.to_bits(), expected_font_size.to_bits());
         let expected_z = store.try_row::<Visual>(sid).map_or(0, |v| v.z_index());
-        assert_eq!(rnode.z_index, expected_z);
+        assert_eq!(rnode.z_index, ZIndex(expected_z));
         let expected_text = store
             .try_row::<TextContent>(sid)
             .map_or("", |t| t.text());
         assert_eq!(scene.node_text(rnode).expect("valid scene node UTF-8"), expected_text);
-        let expected_children: Vec<NodeId> = children.iter().map(|c| c.raw()).collect();
+        let expected_children: Vec<NodeId> = children.to_vec();
         assert_eq!(
             scene
                 .node_children(rnode)
@@ -213,7 +213,8 @@ fn assert_scene_view_matches_store(session: &WebAppSession) {
 ))]
 #[test]
 fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
-    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
     let init = session.render_initial().unwrap();
     assert!(init.op_count > 0);
     assert!(init.mutation_count > 0);
@@ -253,7 +254,8 @@ fn kitchen_sink_app_mounts_clicks_incrementally_and_resets() {
 ))]
 #[test]
 fn handles_nvp1_hot_patch_frames_for_tier1_tier2_and_status() {
-    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
     assert_scene_view_matches_store(&session);
 
@@ -346,7 +348,8 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
         height: 800.0,
         scale_factor: 1.0,
     };
-    let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), viewport);
+    let mut session =
+        WebAppSession::new_studio_workspace(SurfaceId(1), WebBackend::new(), viewport);
 
     let init = session.render_initial().unwrap();
     assert!(init.op_count > 0);
@@ -437,7 +440,8 @@ fn studio_workspace_mounts_interacts_and_time_travels() {
 ))]
 #[test]
 fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
-    let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
+    let mut session =
+        WebAppSession::new_kitchen_sink(SurfaceId(1), WebBackend::new(), Viewport::default());
     let ptr_before = session.scene().view_ptr();
     // SAFETY: `ptr_before` points to the session's stable `NveSceneView`.
     let empty_view = unsafe { *ptr_before };
@@ -451,7 +455,7 @@ fn scene_view_is_valid_before_initial_render_and_tracks_pointer_stability() {
     assert_eq!(session.scene().view_ptr(), ptr_before);
     // SAFETY: `ptr_before` remains valid across `render_initial()` (pointer stability invariant).
     let mounted_view = unsafe { *ptr_before };
-    assert_eq!(mounted_view.frame_id, 1);
+    assert_eq!(mounted_view.frame_id, FrameId(1));
     assert_eq!(mounted_view.node_count as usize, session.node_count());
     assert_scene_view_matches_store(&session);
 }
@@ -469,7 +473,8 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         height: 800.0,
         scale_factor: 2.0,
     };
-    let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), desktop_vp);
+    let mut session =
+        WebAppSession::new_studio_workspace(SurfaceId(1), WebBackend::new(), desktop_vp);
     session.render_initial().unwrap();
     assert_scene_view_matches_store(&session);
 
@@ -478,7 +483,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         .expect("expected task-avatar-1 image node");
     let avatar = session
         .store()
-        .try_row::<Image>(StoreNodeId(avatar_id))
+        .try_row::<Image>(avatar_id)
         .expect("task-avatar-1 should carry Image table");
     assert_eq!(avatar.fit(), ImageFit::Cover);
     let src = session
@@ -494,7 +499,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     // 2. Board TextInput search + custom task create via `submit` (and empty submit is a safe no-op).
     let search_id = find_node_by_test_id(session.store(), "board-search-input").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: search_id,
         timestamp_us: 1000,
         kind: NativeEventKind::TextChange,
@@ -508,7 +513,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(session.render_html().contains("AET-101"));
 
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: ROOT_NODE_ID,
         timestamp_us: 1600,
         kind: NativeEventKind::Submit,
@@ -518,7 +523,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 
     let new_task_id = find_node_by_test_id(session.store(), "board-new-task-input").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: new_task_id,
         timestamp_us: 1700,
         kind: NativeEventKind::TextChange,
@@ -526,7 +531,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     });
     session.pump_events().unwrap().expect("draft update");
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: new_task_id,
         timestamp_us: 1800,
         kind: NativeEventKind::Submit,
@@ -546,7 +551,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
 
     let pal_in = find_node_by_test_id(session.store(), "palette-input").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: pal_in,
         timestamp_us: 2000,
         kind: NativeEventKind::TextChange,
@@ -579,7 +584,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
     assert!(session.render_html().contains("STR-99999"));
     let stream_vp = find_node_by_test_id(session.store(), "stream-viewport").unwrap();
     session.backend_mut().push_event(NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId(1),
         node_id: stream_vp,
         timestamp_us: 4300,
         kind: NativeEventKind::Scroll,
@@ -600,7 +605,7 @@ fn studio_workspace_full_parity_canvas_img_cmdk_stream_islands_and_mobile_resize
         .expect("expected metrics-sparkline-canvas");
     let canvas_row = session
         .store()
-        .try_row::<Canvas>(StoreNodeId(canvas_id))
+        .try_row::<Canvas>(canvas_id)
         .expect("metrics-sparkline-canvas should carry Canvas table");
     let dl = session
         .store()
@@ -694,8 +699,9 @@ fn pump_async_work_reports_hit_cap_and_finishes_via_continuation() {
     }
 
     let gate = StepGate::default();
-    let surface = DioxusSurface::new(1, BurstAsyncApp).with_context(gate.clone());
-    let mut session = WebAppSession::new(1, surface, WebBackend::new(), Viewport::default());
+    let surface = DioxusSurface::new(SurfaceId(1), BurstAsyncApp).with_context(gate.clone());
+    let mut session =
+        WebAppSession::new(SurfaceId(1), surface, WebBackend::new(), Viewport::default());
     session.render_initial().unwrap();
 
     let waker = Waker::noop();

@@ -2,7 +2,7 @@
 
 use std::mem::{align_of, size_of};
 
-use nve_abi::ColorRgba;
+use nve_abi::{ColorRgba, NodeId};
 use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
@@ -223,82 +223,85 @@ fn unified_style_patch_resolves_cascade_priority_compounds_and_large_rule_lists(
 #[test]
 fn interaction_tracker_handles_hover_drag_cancel_touch_focus_modality_disabled_and_unmount() {
     let mut t = InteractionTracker::new();
+    let n10 = NodeId(10);
+    let n20 = NodeId(20);
+    let n30 = NodeId(30);
 
     // 1. Hover enter, repeat (no dirty), switch, and leave.
-    assert_eq!(t.pointer_move(Some(10)), vec![10]);
-    assert_eq!(t.state(10), InteractionState::HOVER);
-    assert!(t.pointer_move(Some(10)).is_empty());
-    assert_eq!(t.pointer_move(Some(20)), vec![10, 20]);
-    assert_eq!(t.state(10), InteractionState::NONE);
-    assert_eq!(t.state(20), InteractionState::HOVER);
+    assert_eq!(t.pointer_move(Some(n10)), vec![n10]);
+    assert_eq!(t.state(n10), InteractionState::HOVER);
+    assert!(t.pointer_move(Some(n10)).is_empty());
+    assert_eq!(t.pointer_move(Some(n20)), vec![n10, n20]);
+    assert_eq!(t.state(n10), InteractionState::NONE);
+    assert_eq!(t.state(n20), InteractionState::HOVER);
 
     // 2. Press + click completion on same node.
-    assert_eq!(t.pointer_down(Some(20)), vec![20]);
-    assert_eq!(t.state(20), InteractionState::HOVER | InteractionState::ACTIVE);
-    assert_eq!(t.active_cursor_node(), Some(20));
-    let (clicked, dirty) = t.pointer_up_clicked(Some(20));
-    assert_eq!(clicked, Some(20));
-    assert_eq!(dirty, vec![20]);
-    assert_eq!(t.state(20), InteractionState::HOVER);
+    assert_eq!(t.pointer_down(Some(n20)), vec![n20]);
+    assert_eq!(t.state(n20), InteractionState::HOVER | InteractionState::ACTIVE);
+    assert_eq!(t.active_cursor_node(), Some(n20));
+    let (clicked, dirty) = t.pointer_up_clicked(Some(n20));
+    assert_eq!(clicked, Some(n20));
+    assert_eq!(dirty, vec![n20]);
+    assert_eq!(t.state(n20), InteractionState::HOVER);
 
     // 3. Press-cancel on drag-off.
-    assert_eq!(t.pointer_down(Some(20)), vec![20]);
-    assert_eq!(t.active(), Some(20));
-    assert_eq!(t.pointer_move(Some(30)), vec![20, 30]);
+    assert_eq!(t.pointer_down(Some(n20)), vec![n20]);
+    assert_eq!(t.active(), Some(n20));
+    assert_eq!(t.pointer_move(Some(n30)), vec![n20, n30]);
     assert_eq!(t.active(), None, "dragging off node 20 cancels active press");
-    assert_eq!(t.state(20), InteractionState::NONE);
-    assert_eq!(t.state(30), InteractionState::HOVER);
-    let (clicked_after_drag, dirty_up) = t.pointer_up_clicked(Some(30));
+    assert_eq!(t.state(n20), InteractionState::NONE);
+    assert_eq!(t.state(n30), InteractionState::HOVER);
+    let (clicked_after_drag, dirty_up) = t.pointer_up_clicked(Some(n30));
     assert_eq!(clicked_after_drag, None);
     assert!(dirty_up.is_empty());
 
     // 4. Touch sticky-hover prevention on hybrid devices.
-    assert_eq!(t.hovered(), Some(30));
-    assert_eq!(t.touch_tap(Some(30)), vec![30]);
+    assert_eq!(t.hovered(), Some(n30));
+    assert_eq!(t.touch_tap(Some(n30)), vec![n30]);
     assert_eq!(t.hovered(), None, "touch tap must clear hovered so no sticky hover remains");
     assert_eq!(t.active(), None);
 
-    assert_eq!(t.pointer_move(Some(10)), vec![10]);
-    assert_eq!(t.touch_start(Some(20)), vec![10, 20]);
+    assert_eq!(t.pointer_move(Some(n10)), vec![n10]);
+    assert_eq!(t.touch_start(Some(n20)), vec![n10, n20]);
     assert_eq!(t.hovered(), None);
-    assert_eq!(t.active(), Some(20));
-    assert_eq!(t.touch_end(), vec![20]);
-    assert_eq!(t.state(20), InteractionState::NONE);
+    assert_eq!(t.active(), Some(n20));
+    assert_eq!(t.touch_end(), vec![n20]);
+    assert_eq!(t.state(n20), InteractionState::NONE);
 
     // 5. Focus modality: Pointer -> FOCUS only; Keyboard -> FOCUS | FOCUS_VISIBLE.
-    assert_eq!(t.focus_pointer(Some(10)), vec![10]);
+    assert_eq!(t.focus_pointer(Some(n10)), vec![n10]);
     assert_eq!(t.focus_modality(), FocusModality::Pointer);
-    assert_eq!(t.state(10), InteractionState::FOCUS);
-    assert_eq!(t.focus_keyboard(Some(10)), vec![10]);
+    assert_eq!(t.state(n10), InteractionState::FOCUS);
+    assert_eq!(t.focus_keyboard(Some(n10)), vec![n10]);
     assert_eq!(t.focus_modality(), FocusModality::Keyboard);
-    assert_eq!(t.state(10), InteractionState::FOCUS | InteractionState::FOCUS_VISIBLE);
-    assert_eq!(t.focus_pointer(Some(10)), vec![10]);
-    assert_eq!(t.state(10), InteractionState::FOCUS);
-    assert_eq!(t.focus_keyboard(Some(20)), vec![10, 20]);
-    assert_eq!(t.state(10), InteractionState::NONE);
-    assert_eq!(t.state(20), InteractionState::FOCUS | InteractionState::FOCUS_VISIBLE);
+    assert_eq!(t.state(n10), InteractionState::FOCUS | InteractionState::FOCUS_VISIBLE);
+    assert_eq!(t.focus_pointer(Some(n10)), vec![n10]);
+    assert_eq!(t.state(n10), InteractionState::FOCUS);
+    assert_eq!(t.focus_keyboard(Some(n20)), vec![n10, n20]);
+    assert_eq!(t.state(n10), InteractionState::NONE);
+    assert_eq!(t.state(n20), InteractionState::FOCUS | InteractionState::FOCUS_VISIBLE);
 
     // 6. Disabled clears active & focus and rejects new press/focus while keeping hover cursor target.
-    assert_eq!(t.pointer_down(Some(20)), vec![20]);
-    assert_eq!(t.set_disabled(20, true), vec![20]);
+    assert_eq!(t.pointer_down(Some(n20)), vec![n20]);
+    assert_eq!(t.set_disabled(n20, true), vec![n20]);
     assert_eq!(t.active(), None);
     assert_eq!(t.focused(), None);
-    assert_eq!(t.state(20), InteractionState::HOVER | InteractionState::DISABLED);
+    assert_eq!(t.state(n20), InteractionState::HOVER | InteractionState::DISABLED);
 
-    assert!(t.pointer_down(Some(20)).is_empty(), "disabled node cannot become active");
+    assert!(t.pointer_down(Some(n20)).is_empty(), "disabled node cannot become active");
     assert_eq!(t.active(), None);
-    assert_eq!(t.focus_keyboard(Some(10)), vec![10]);
-    assert!(t.focus_keyboard(Some(20)).is_empty(), "focusing disabled node must not steal focus");
-    assert_eq!(t.focused(), Some(10));
+    assert_eq!(t.focus_keyboard(Some(n10)), vec![n10]);
+    assert!(t.focus_keyboard(Some(n20)).is_empty(), "focusing disabled node must not steal focus");
+    assert_eq!(t.focused(), Some(n10));
 
     // 7. Unmount cleanly clears hovered, active, focused, and disabled state.
-    assert_eq!(t.remove_node(10), vec![10]);
+    assert_eq!(t.remove_node(n10), vec![n10]);
     assert_eq!(t.focused(), None);
-    assert_eq!(t.state(10), InteractionState::NONE);
+    assert_eq!(t.state(n10), InteractionState::NONE);
 
-    assert_eq!(t.remove_node(20), vec![20]);
+    assert_eq!(t.remove_node(n20), vec![n20]);
     assert_eq!(t.hovered(), None);
-    assert!(!t.is_disabled(20));
-    assert_eq!(t.state(20), InteractionState::NONE);
-    assert!(t.remove_node(999).is_empty());
+    assert!(!t.is_disabled(n20));
+    assert_eq!(t.state(n20), InteractionState::NONE);
+    assert!(t.remove_node(NodeId(999)).is_empty());
 }

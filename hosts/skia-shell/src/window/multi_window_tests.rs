@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, NodeId, SurfaceId};
 use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::Viewport;
 use nve_interop::{SurfacePresentation, WindowDescriptor, WindowError, WindowRect};
@@ -78,7 +78,7 @@ impl DesktopApp for SurfaceCounterApp {
         let mut handled = false;
         for ev in events.iter() {
             if ev.surface_id() == self.surface_id
-                && ev.node_id() == 4
+                && ev.node_id() == NodeId(4)
                 && ev.kind() == Some(NativeEventKind::Press)
             {
                 self.presses += 1;
@@ -110,21 +110,21 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     let primary_h = host
         .open_window(
             100,
-            1,
+            SurfaceId::ROOT,
             SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Primary", 400.0, 300.0)),
-            make_session(1, 400.0, 300.0),
+            make_session(SurfaceId::ROOT, 400.0, 300.0),
         )
         .unwrap();
     let inspector_h = host
         .open_window(
             200,
-            2,
+            SurfaceId(2),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: false,
                 descriptor: WindowDescriptor::new("Inspector", 320.0, 260.0),
             },
-            make_session(2, 320.0, 260.0),
+            make_session(SurfaceId(2), 320.0, 260.0),
         )
         .unwrap();
 
@@ -132,7 +132,7 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     assert_ne!(primary_h, inspector_h);
 
     // Click inside window 200 (surface 2) affects ONLY surface 2, never surface 1.
-    let btn2 = host.window(200).unwrap().session.layout_of(4).unwrap();
+    let btn2 = host.window(200).unwrap().session.layout_of(NodeId(4)).unwrap();
     assert!(host
         .route_click(200, btn2.x + btn2.width * 0.5, btn2.y + btn2.height * 0.5)
         .unwrap());
@@ -149,20 +149,20 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     let modal_h = host
         .open_window(
             300,
-            3,
+            SurfaceId(3),
             SurfacePresentation::SecondaryWindow {
-                parent: Some(1),
+                parent: Some(SurfaceId::ROOT),
                 modal: true,
                 descriptor: WindowDescriptor::new("Confirm", 280.0, 180.0),
             },
-            make_session(3, 280.0, 180.0),
+            make_session(SurfaceId(3), 280.0, 180.0),
         )
         .unwrap();
     assert_eq!(
         host.route_focus(100),
         Err(WindowError::BlockedByModalChild { target: primary_h, modal_child: modal_h })
     );
-    let btn1 = host.window(100).unwrap().session.layout_of(4).unwrap();
+    let btn1 = host.window(100).unwrap().session.layout_of(NodeId(4)).unwrap();
     assert!(!host
         .route_click(100, btn1.x + btn1.width * 0.5, btn1.y + btn1.height * 0.5)
         .unwrap());
@@ -188,50 +188,50 @@ fn close_veto_and_cascading_child_cleanup_and_exit_policy() {
     let allow_primary = Arc::new(AtomicBool::new(false));
     let allow_flag = Arc::clone(&allow_primary);
     host.set_close_veto_handler(move |_handle, sid| {
-        if sid == 1 { allow_flag.load(Ordering::SeqCst) } else { true }
+        if sid == SurfaceId::ROOT { allow_flag.load(Ordering::SeqCst) } else { true }
     });
 
     let primary_h = host
         .open_window(
             10,
-            1,
+            SurfaceId::ROOT,
             SurfacePresentation::PrimaryWindow(WindowDescriptor::new("Primary", 400.0, 300.0)),
-            make_session(1, 400.0, 300.0),
+            make_session(SurfaceId::ROOT, 400.0, 300.0),
         )
         .unwrap();
     let sheet_h = host
         .open_window(
             20,
-            2,
+            SurfaceId(2),
             SurfacePresentation::Sheet {
-                parent: 1,
+                parent: SurfaceId::ROOT,
                 descriptor: WindowDescriptor::new("Sheet", 300.0, 200.0),
             },
-            make_session(2, 300.0, 200.0),
+            make_session(SurfaceId(2), 300.0, 200.0),
         )
         .unwrap();
     let popover_h = host
         .open_window(
             30,
-            3,
+            SurfaceId(3),
             SurfacePresentation::Popover {
-                anchor_surface: 2,
+                anchor_surface: SurfaceId(2),
                 anchor_rect: WindowRect::new(10.0, 10.0, 80.0, 28.0),
                 descriptor: WindowDescriptor::new("Popover", 180.0, 140.0),
             },
-            make_session(3, 180.0, 140.0),
+            make_session(SurfaceId(3), 180.0, 140.0),
         )
         .unwrap();
     let detached_h = host
         .open_window(
             40,
-            4,
+            SurfaceId(4),
             SurfacePresentation::SecondaryWindow {
                 parent: None,
                 modal: false,
                 descriptor: WindowDescriptor::new("Detached", 300.0, 200.0),
             },
-            make_session(4, 300.0, 200.0),
+            make_session(SurfaceId(4), 300.0, 200.0),
         )
         .unwrap();
 
@@ -248,7 +248,7 @@ fn close_veto_and_cascading_child_cleanup_and_exit_policy() {
     assert_eq!(closed_primary.closed_handles, vec![popover_h, sheet_h, primary_h]);
     assert!(!closed_primary.should_exit_loop);
     assert_eq!(host.window_count(), 1);
-    assert!(host.window_by_surface(4).is_some());
+    assert!(host.window_by_surface(SurfaceId(4)).is_some());
 
     // Closing the final remaining window signals loop exit.
     let closed_last = host.handle_close_requested(40).unwrap();

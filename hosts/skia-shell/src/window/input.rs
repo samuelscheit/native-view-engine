@@ -9,7 +9,7 @@ use nve_abi::{
 };
 use nve_backend_skia::SkiaBackend;
 use nve_components::tables::{is_subtree_display_none, Interaction, TextInput};
-use nve_store::{NodeId as StoreNodeId, NodeStore};
+use nve_store::NodeStore;
 
 use super::session::{now_us, DesktopSession};
 pub(super) use super::text_edit::{paragraph_bounds_at, word_bounds_at};
@@ -23,7 +23,7 @@ use super::{DesktopApp, DesktopHostError};
 const MULTI_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_MAX_DIST_SQ: f32 = 36.0; // 6.0 logical px
 
-pub(super) fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(super) fn is_focusable(store: &NodeStore, id: NodeId) -> bool {
     if !store.is_live(id) || is_subtree_display_none(store, id) {
         return false;
     }
@@ -38,17 +38,16 @@ pub(super) fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
 fn hit_test_focusable(store: &NodeStore, backend: &SkiaBackend, x: f32, y: f32) -> Option<NodeId> {
     let mut cur = backend.hit_test_interaction(store, x, y).or_else(|| backend.hit_test(store, x, y))?;
     for _ in 0..256 {
-        let sid = StoreNodeId(cur);
-        if is_focusable(store, sid) {
+        if is_focusable(store, cur) {
             return Some(cur);
         }
-        let Some(parent) = store.parent(sid) else {
+        let Some(parent) = store.parent(cur) else {
             break;
         };
-        if parent.raw() == cur {
+        if parent == cur {
             break;
         }
-        cur = parent.raw();
+        cur = parent;
     }
     None
 }
@@ -67,7 +66,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     pub fn focus_node(&mut self, next_focus: Option<NodeId>) -> Result<bool, DesktopHostError> {
         let prev_focus = self.replica.backend().focused_node();
         let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();
-        let next_valid = next_focus.filter(|&id| is_focusable(self.replica.store(), StoreNodeId(id)));
+        let next_valid = next_focus.filter(|&id| is_focusable(self.replica.store(), id));
         {
             let (store, backend) = self.replica.store_and_backend_mut();
             backend.set_focused_node(store, next_valid);
@@ -177,7 +176,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             .filter(|&id| {
                 self.replica
                     .backend()
-                    .is_text_input(self.replica.store(), StoreNodeId(id))
+                    .is_text_input(self.replica.store(), id)
             })
             && next_focus == Some(text_id)
         {
@@ -203,7 +202,7 @@ impl<A: DesktopApp> DesktopSession<A> {
             let hit_idx = self
                 .replica
                 .backend()
-                .cursor_index_at_x(self.replica.store(), StoreNodeId(text_id), x)
+                .cursor_index_at_x(self.replica.store(), text_id, x)
                 .unwrap_or_else(|| self.replica.backend().focus_state().caret_byte_index);
             let prev_sel = (
                 self.replica.backend().focus_state().selection_anchor,
@@ -215,7 +214,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let val = self
                         .replica
                         .backend()
-                        .text_input_value(self.replica.store(), StoreNodeId(text_id))
+                        .text_input_value(self.replica.store(), text_id)
                         .unwrap_or_default();
                     let (w_start, w_end) = word_bounds_at(&val, hit_idx);
                     let (store, backend) = self.replica.store_and_backend_mut();
@@ -226,7 +225,7 @@ impl<A: DesktopApp> DesktopSession<A> {
                     let val = self
                         .replica
                         .backend()
-                        .text_input_value(self.replica.store(), StoreNodeId(text_id))
+                        .text_input_value(self.replica.store(), text_id)
                         .unwrap_or_default();
                     let (p_start, p_end) = paragraph_bounds_at(&val, hit_idx);
                     let (store, backend) = self.replica.store_and_backend_mut();
@@ -301,13 +300,13 @@ impl<A: DesktopApp> DesktopSession<A> {
                 && self
                     .replica
                     .backend()
-                    .is_text_input(self.replica.store(), StoreNodeId(node_id));
+                    .is_text_input(self.replica.store(), node_id);
             if !is_valid {
                 self.dragging_text_node = None;
             } else if let Some(next_caret) = self
                 .replica
                 .backend()
-                .cursor_index_at_x(self.replica.store(), StoreNodeId(node_id), x)
+                .cursor_index_at_x(self.replica.store(), node_id, x)
                 && next_caret != self.replica.backend().focus_state().caret_byte_index
             {
                 let anchor = self.replica.backend().focus_state().selection_anchor;

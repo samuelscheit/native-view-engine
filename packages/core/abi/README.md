@@ -10,14 +10,14 @@ Zero-copy `#[repr(C)]` C ABI and binary wire definitions (`packages/core/abi`, *
 - `value::{NveValue, NveValueRef, NveDirectEvent, BinValueView}`, `events`, `schema`, `NveAbi`
 
 ```rust
-use nve_abi::{NveSceneTable, SceneNodeInput, NVE_PRIMARY_SLOT_NONE};
+use nve_abi::{FrameId, NodeId, NveSceneTable, PrimarySlot, SceneNodeInput};
 
 let mut table = NveSceneTable::new();
-table.begin_frame(1);
+table.begin_frame(FrameId(1));
 table
     .upsert_node(SceneNodeInput {
-        node_id: 1,
-        primary_slot: NVE_PRIMARY_SLOT_NONE,
+        node_id: NodeId(1),
+        primary_slot: PrimarySlot::NONE,
         ..SceneNodeInput::default()
     })
     .expect("valid scene node");

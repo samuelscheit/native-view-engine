@@ -2,6 +2,7 @@
 //! `primary_slot` realization.
 
 use dioxus_core::{AttributeValue, ElementId, WriteMutations};
+use nve_abi::SurfaceId;
 use nve_components::tables::{Interaction, Layout, Link, TextContent, Visual};
 use nve_store::{Length, NodeId, NveTable};
 
@@ -9,7 +10,7 @@ use super::NveMutationWriter;
 
 #[test]
 fn direct_numeric_and_bool_attributes_avoid_string_roundtrip() {
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.set_attribute("width", None, &AttributeValue::Float(240.0), ElementId(1));
@@ -41,7 +42,7 @@ fn direct_numeric_and_bool_attributes_avoid_string_roundtrip() {
 
 #[test]
 fn remove_node_cleans_up_subtree_and_id_maps() {
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.create_text_node("hello", ElementId(2));
@@ -92,7 +93,7 @@ fn table_attr_rerender_updates_in_place_and_clear_style_preserves_standalone_att
     }
 
     let clears = Rc::new(Cell::new(0));
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
     writer.with_transaction(|mtx| {
         mtx.create_placeholder(ElementId(1));
         mtx.set_attribute(
@@ -266,7 +267,7 @@ fn inline_style_update_clears_dropped_declarations_and_skips_redundant_dirtying(
     use crate::typed_style::{TypedStyle, NVE_TYPED_STYLE_ATTR};
     use nve_store::NveTable as _;
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
 
     // Node A (no TypedStyle, no standalone): updating style clears dropped Layout/Visual props.
     writer.with_transaction(|mtx| {
@@ -419,7 +420,7 @@ fn canonical_style_precedence_standalone_clear_composite_fast_lane_and_invalid_k
     use nve_components::tables::Typography;
     use nve_store::NveTable as _;
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
 
     // 1. Canonical precedence: `style="width: 100px;"` then standalone `width="240"` -> inline 100px wins
     //    immediately and survives identical re-apply and additive `style` updates.
@@ -611,7 +612,7 @@ fn standalone_invalid_reset_empty_style_clear_noop_and_shorthand_order_preservat
     use nve_components::tables::Typography;
     use nve_store::NveTable as _;
 
-    let mut writer = NveMutationWriter::new(1);
+    let mut writer = NveMutationWriter::new(SurfaceId::ROOT);
 
     // 1. Standalone invalid value on untouched node must NOT record junk in standalone_style_attrs.
     writer.with_transaction(|mtx| {

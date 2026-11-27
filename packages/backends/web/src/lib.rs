@@ -53,7 +53,7 @@ use nve_abi::{EventMask, NativeEvent, NodeId, SurfaceId};
 use nve_components::keyboard::KeyboardInsets;
 use nve_components::tables::{Interaction, Link, TextInput};
 use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, TableEventBus};
+use nve_store::{ChangeSet, NodeStore, TableEventBus};
 
 pub use css::{canonical_f32_bits, write_compositor_css, write_store_node_css, NVE_BASE_RESET_CSS};
 pub use event_replay::{
@@ -133,9 +133,9 @@ pub struct WebBackend {
     #[cfg(target_arch = "wasm32")]
     pub(crate) visual_viewport_tracker: Option<visual_viewport::VisualViewportTracker>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) created_scratch: nve_abi::hash::HashSet<StoreNodeId>,
+    pub(crate) created_scratch: nve_abi::hash::HashSet<NodeId>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) retagged_scratch: Vec<StoreNodeId>,
+    pub(crate) retagged_scratch: Vec<NodeId>,
 }
 
 impl Default for WebBackend {
@@ -147,7 +147,7 @@ impl Default for WebBackend {
 impl WebBackend {
     pub fn new() -> Self {
         Self {
-            surface_id: Rc::new(Cell::new(1)),
+            surface_id: Rc::new(Cell::new(SurfaceId::ROOT)),
             viewport: Viewport::default(),
             renderer: WebStoreRenderer::new(),
             stylesheet: StyleSheetCache::new(),
@@ -276,8 +276,8 @@ impl WebBackend {
     fn sync_event_meta(&self, store: &NodeStore, changes: &ChangeSet) {
         let mut meta = self.node_event_meta.borrow_mut();
         for &removed in &changes.removed {
-            meta.remove(&removed.raw());
-            self.input_sync.borrow_mut().remove(removed.raw());
+            meta.remove(&removed);
+            self.input_sync.borrow_mut().remove(removed);
         }
         for &id in changes.created.iter().chain(changes.touched.iter()) {
             if !store.is_live(id) {
@@ -292,7 +292,7 @@ impl WebBackend {
             let is_link = store.has::<Link>(id);
             if mask != 0 || is_input || is_link {
                 meta.insert(
-                    id.raw(),
+                    id,
                     NodeEventMeta {
                         is_input,
                         is_link,
@@ -300,7 +300,7 @@ impl WebBackend {
                     },
                 );
             } else {
-                meta.remove(&id.raw());
+                meta.remove(&id);
             }
         }
     }
@@ -322,7 +322,7 @@ impl StoreBackend for WebBackend {
         changes: &ChangeSet,
     ) -> Result<BackendApplyStats, BackendError> {
         for &removed in &changes.removed {
-            self.patch_css.remove(&removed.raw());
+            self.patch_css.remove(&removed);
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -342,8 +342,7 @@ impl StoreBackend for WebBackend {
         #[cfg(feature = "hydrate")]
         if !self.pre_hydration_events.is_empty() {
             let drained = std::mem::take(&mut self.pre_hydration_events);
-            let valid =
-                drain_valid_pre_hydration_events(drained, |id| store.is_live(StoreNodeId(id)));
+            let valid = drain_valid_pre_hydration_events(drained, |id| store.is_live(id));
             let meta = self.node_event_meta.borrow();
             let mut evs = self.pending_events.borrow_mut();
             let sid = self.surface_id.get();
@@ -357,23 +356,22 @@ impl StoreBackend for WebBackend {
         #[cfg(feature = "hydrate")]
         if !self.pending_ssr_nodes.is_empty() {
             let ssr_nodes = std::mem::take(&mut self.pending_ssr_nodes);
-            for (raw_id, expected_tag) in ssr_nodes {
-                let sid = StoreNodeId(raw_id);
-                if !store.is_live(sid) {
+            for (node_id, expected_tag) in ssr_nodes {
+                if !store.is_live(node_id) {
                     self.hydration_report.replaced_nodes += 1;
                     self.hydration_report.mismatches.push(HydrationMismatch {
-                        node_id: raw_id,
+                        node_id,
                         reason: format!("SSR <{expected_tag}> missing from live NodeStore"),
                     });
                     continue;
                 }
-                let (actual_tag, _) = self.renderer.registry().resolve_tag(store, sid);
+                let (actual_tag, _) = self.renderer.registry().resolve_tag(store, node_id);
                 if actual_tag.eq_ignore_ascii_case(&expected_tag) {
                     self.hydration_report.adopted_nodes += 1;
                 } else {
                     self.hydration_report.replaced_nodes += 1;
                     self.hydration_report.mismatches.push(HydrationMismatch {
-                        node_id: raw_id,
+                        node_id,
                         reason: format!("SSR <{expected_tag}> != live <{actual_tag}>"),
                     });
                 }
@@ -400,7 +398,6 @@ impl StoreBackend for WebBackend {
             self.warm_stylesheet(store, changes);
         }
 
-        let _ = StoreNodeId::ROOT;
         Ok(stats)
     }
 
@@ -425,9 +422,9 @@ fn resolve_replay_target(
     meta: &HashMap<NodeId, NodeEventMeta>,
     ev: &CapturedPreHydrationEvent,
 ) -> NodeId {
-    let mut cur = Some(StoreNodeId(ev.node_id()));
+    let mut cur = Some(ev.node_id());
     while let Some(nid) = cur {
-        if let Some(m) = meta.get(&nid.raw()) {
+        if let Some(m) = meta.get(&nid) {
             let matched = match ev {
                 CapturedPreHydrationEvent::Press { .. } => (m.mask & EventMask::PRESS) != 0,
                 CapturedPreHydrationEvent::KeyDown { .. } => (m.mask & EventMask::KEY_DOWN) != 0,
@@ -436,7 +433,7 @@ fn resolve_replay_target(
                 }
             };
             if matched {
-                return nid.raw();
+                return nid;
             }
         }
         cur = store.parent(nid);

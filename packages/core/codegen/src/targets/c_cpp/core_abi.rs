@@ -140,6 +140,18 @@ pub fn generate_c_core_abi_h() -> String {
         writeln!(out);
     }
 
+    // Handle & scalar aliases (emitted before structs so ABI structs/vtables can reference them)
+    for a in &spec.aliases {
+        if matches!(
+            a.name.as_str(),
+            "NveHostInvokeFn" | "NveHostChannelPublishFn"
+        ) {
+            continue;
+        }
+        writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
+    }
+    writeln!(out);
+
     // Forward declarations for mutually referencing value structs
     writeln!(out, "typedef struct NveValue NveValue;");
     writeln!(out, "typedef struct NveMapEntry NveMapEntry;");
@@ -324,17 +336,6 @@ pub fn generate_c_core_abi_h() -> String {
     }
     writeln!(out);
 
-    // Handle aliases
-    for a in &spec.aliases {
-        if matches!(
-            a.name.as_str(),
-            "NveHostInvokeFn" | "NveHostChannelPublishFn"
-        ) {
-            continue;
-        }
-        writeln!(out, "typedef {} {};", c_core_type(&a.target), a.name);
-    }
-    writeln!(out);
 
     // Modular interface vtables
     for m in &spec.modules {

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -63,7 +64,7 @@ fn mid_flight_sibling_mount_does_not_refire_when_in_flight_fetch_fails() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root)
         .with_context(client)
         .with_context(Rc::clone(&toggle_slot));
     let mut web = WebBackend::new();
@@ -140,7 +141,7 @@ fn late_component_mount_after_failure_retries_and_recovers() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root)
         .with_context(client)
         .with_context(Rc::clone(&toggle_slot));
     let mut web = WebBackend::new();
@@ -217,7 +218,7 @@ fn external_prefetch_after_failed_mount_and_stale_remount_revalidate_cleanly() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root)
         .with_context(client.clone())
         .with_context(Rc::clone(&toggle_slot));
     let mut web = WebBackend::new();
@@ -344,7 +345,7 @@ fn sibling_mount_during_failing_or_retry_sleeping_refetch_preserves_dedup_and_ba
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root)
         .with_context((client, sleep))
         .with_context(Rc::clone(&ctrl_slot));
     let mut web = WebBackend::new();

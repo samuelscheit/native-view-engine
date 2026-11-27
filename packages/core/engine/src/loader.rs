@@ -205,7 +205,7 @@ impl HotAppInstance {
     /// app module's internal frame buffer (zero heap allocation / zero `.to_vec()` copy per frame).
     ///
     /// The borrowed slice remains valid until the next `&mut self` call on this [`HotAppInstance`].
-    pub fn render(&mut self, frame_id: u64) -> &[u8] {
+    pub fn render(&mut self, frame_id: nve_abi::FrameId) -> &[u8] {
         // SAFETY: `self.handle` is live while `self` owns it; returned buffer stays valid until next `&mut self` call.
         unsafe { (self.surface.render)(self.handle, frame_id).as_slice() }
     }

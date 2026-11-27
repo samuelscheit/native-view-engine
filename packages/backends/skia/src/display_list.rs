@@ -13,7 +13,7 @@ use nve_components::tables::{
     Scroll, TextAlign as NveTextAlign, TextContent, TextInput, Typography, Visual,
 };
 use nve_engine::{LayoutRect, StoreLayoutEngine};
-use nve_store::{NodeId as StoreNodeId, NodeStore, Rgba};
+use nve_store::{NodeStore, Rgba};
 
 use crate::motion::MotionDriver;
 use crate::scroll::compute_scroll_content_size;
@@ -69,7 +69,7 @@ pub(crate) fn intersects_clip(clip: LayoutRect, r: LayoutRect, pad: f32) -> bool
 }
 
 #[inline]
-pub(crate) fn should_clip_children(store: &NodeStore, id: StoreNodeId) -> bool {
+pub(crate) fn should_clip_children(store: &NodeStore, id: NodeId) -> bool {
     if store.has::<Scroll>(id) {
         return true;
     }
@@ -88,7 +88,7 @@ fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     store: &NodeStore,
     layout_tree: &HeadlessBackend<L>,
     scroll_offsets: &HashMap<NodeId, (f32, f32)>,
-    id: StoreNodeId,
+    id: NodeId,
     rect: LayoutRect,
     ops: &mut Vec<PaintOp>,
 ) {
@@ -100,7 +100,7 @@ fn emit_scrollview_scrollbars<L: StoreLayoutEngine>(
     if !has_v && !has_h {
         return;
     }
-    let (sx, sy) = scroll_offsets.get(&id.raw()).copied().unwrap_or((0.0, 0.0));
+    let (sx, sy) = scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
     let corner_gap = if has_v && has_h {
         SCROLLBAR_THICKNESS + SCROLLBAR_MARGIN
     } else {
@@ -185,9 +185,9 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     in_transform: bool,
     inherited_hidden: bool,
     inherited_text: InheritedTextStyle,
-    sort_scratch: &mut Vec<StoreNodeId>,
+    sort_scratch: &mut Vec<NodeId>,
     ops: &mut Vec<PaintOp>,
-    id: StoreNodeId,
+    id: NodeId,
 ) {
     if !store.is_live(id) || nve_components::tables::is_hidden_text_input(store, id) {
         return;
@@ -205,7 +205,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         .try_row::<Visual>(id)
         .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
 
-    let Some(base_rect) = layout_tree.layout_of(id.raw()) else {
+    let Some(base_rect) = layout_tree.layout_of(id) else {
         return;
     };
     let (stx, sty) = layout_tree.compute_sticky_delta(store, id);
@@ -213,13 +213,13 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
     let rect = offset_rect(base_rect, node_offset);
 
     let mut style = layout_tree.effective_visual(store, id);
-    motion.apply_animated_style(id.raw(), &mut style);
+    motion.apply_animated_style(id, &mut style);
     if style.opacity <= 0.001 {
         return;
     }
 
     let effective_tf = motion.resolve_animated_transform(
-        id.raw(),
+        id,
         layout_tree.effective_transform(store, id),
     );
     let has_tf = effective_tf.is_some_and(|t| !t.is_identity());
@@ -319,7 +319,7 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         .map(|t| map_text_align(t.text_align()))
         .or(inherited_text.text_align)
         .unwrap_or_default();
-    let effective_color = if patch.text_color.is_some() || motion.has_active_color(id.raw()) {
+    let effective_color = if patch.text_color.is_some() || motion.has_active_color(id) {
         style.text_color
     } else {
         typo.filter(|t| t.set() & Typography::SET_COLOR != 0 || t.color() != Rgba::BLACK)
@@ -509,12 +509,12 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
 pub(crate) fn scroll_shift_for(
     store: &NodeStore,
     scroll_offsets: &HashMap<NodeId, (f32, f32)>,
-    id: StoreNodeId,
+    id: NodeId,
 ) -> (f32, f32) {
     let Some(scroll) = store.try_row::<Scroll>(id) else {
         return (0.0, 0.0);
     };
-    let (sx, sy) = scroll_offsets.get(&id.raw()).copied().unwrap_or((0.0, 0.0));
+    let (sx, sy) = scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
     let top_spacer = scroll.virtual_top_spacer();
     if top_spacer.is_finite() && top_spacer > 0.0 {
         (sx, (sy - top_spacer).max(0.0))

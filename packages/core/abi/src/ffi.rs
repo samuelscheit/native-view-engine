@@ -13,6 +13,7 @@ use std::ffi::c_void;
 
 use nve_abi_macros::NveAbi;
 
+use crate::id::{DurationUs, FrameId, SurfaceId};
 use crate::value::{NveEventBatch, NveMapEntry};
 
 /// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
@@ -64,8 +65,8 @@ impl NveBufferSlice {
 #[derive(Debug, Clone, Copy, NveAbi)]
 #[nve_abi(size = 16)]
 pub struct NveSurfaceConfig {
-    #[nve_abi(offset = 0)]
-    pub surface_id: u32,
+    #[nve_abi(offset = 0, c_type = "NveSurfaceId")]
+    pub surface_id: SurfaceId,
     #[nve_abi(offset = 4)]
     pub width: f32,
     #[nve_abi(offset = 8)]
@@ -83,14 +84,14 @@ pub struct NveFrameStats {
     pub op_count: u32,
     #[nve_abi(offset = 4)]
     pub mutation_count: u32,
-    #[nve_abi(offset = 8)]
-    pub decode_us: u64,
-    #[nve_abi(offset = 16)]
-    pub layout_us: u64,
-    #[nve_abi(offset = 24)]
-    pub diff_us: u64,
-    #[nve_abi(offset = 32)]
-    pub mount_us: u64,
+    #[nve_abi(offset = 8, c_type = "u64")]
+    pub decode_us: DurationUs,
+    #[nve_abi(offset = 16, c_type = "u64")]
+    pub layout_us: DurationUs,
+    #[nve_abi(offset = 24, c_type = "u64")]
+    pub diff_us: DurationUs,
+    #[nve_abi(offset = 32, c_type = "u64")]
+    pub mount_us: DurationUs,
 }
 
 /// Box layout constraints passed to `NveLayoutApi::measure`.
@@ -266,9 +267,9 @@ pub type NveGetInterfaceFn = unsafe extern "C" fn(interface_id: u32) -> *const c
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NveSurfaceApi {
-    pub create: unsafe extern "C" fn(surface_id: u32) -> NveAppHandle,
+    pub create: unsafe extern "C" fn(surface_id: SurfaceId) -> NveAppHandle,
     pub destroy: unsafe extern "C" fn(handle: NveAppHandle),
-    pub render: unsafe extern "C" fn(handle: NveAppHandle, frame_id: u64) -> NveBufferSlice,
+    pub render: unsafe extern "C" fn(handle: NveAppHandle, frame_id: FrameId) -> NveBufferSlice,
     pub dispatch_events: unsafe extern "C" fn(handle: NveAppHandle, batch: NveEventBatch) -> u32,
 }
 

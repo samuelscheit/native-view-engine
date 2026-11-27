@@ -12,7 +12,7 @@ use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use common::UiHarness;
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventPayload, FrameId, NativeEvent, NativeEventKind, SurfaceId};
 use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 
@@ -366,7 +366,7 @@ fn virtual_list_zero_allocation_guards() {
     let vlist_100_id = harness_100.find("live-vlist-100");
     let (scroll_100_stats, _) = measure_allocs(|| {
         assert!(harness_100.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: vlist_100_id,
             timestamp_us: 16_000,
             kind: NativeEventKind::Scroll,
@@ -379,14 +379,14 @@ fn virtual_list_zero_allocation_guards() {
         }]));
         harness_100
             .surface
-            .commit_to(2, &mut harness_100.backend)
+            .commit_to(FrameId(2), &mut harness_100.backend)
             .expect("commit 100 scroll frame");
     });
 
     let vlist_100k_id = harness.find("live-vlist");
     let (scroll_100k_stats, _) = measure_allocs(|| {
         assert!(harness.surface.dispatch_events(&[NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: vlist_100k_id,
             timestamp_us: 32_000,
             kind: NativeEventKind::Scroll,
@@ -399,7 +399,7 @@ fn virtual_list_zero_allocation_guards() {
         }]));
         harness
             .surface
-            .commit_to(10, &mut harness.backend)
+            .commit_to(FrameId(10), &mut harness.backend)
             .expect("commit 100k scroll frame");
     });
 

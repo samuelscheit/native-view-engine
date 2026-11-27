@@ -45,7 +45,7 @@ use nve_engine::{
     BackendApplyStats, BackendError, LayoutRect, StoreBackend, StoreLayoutEngine, TextMeasurer,
     Viewport,
 };
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, Rgba, TableEventBus};
+use nve_store::{ChangeSet, NodeStore, Rgba, TableEventBus};
 
 use display_list::{emit_node_into, InheritedTextStyle};
 
@@ -169,7 +169,7 @@ pub enum PaintOp {
     },
     /// Delegated capability plugin paint op (`nve-svg-skia`, `nve-canvas-skia`, 3P crates).
     Plugin {
-        node_id: StoreNodeId,
+        node_id: NodeId,
         rect: LayoutRect,
         inherited_text_color: Rgba,
     },
@@ -192,7 +192,7 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) motion: MotionDriver,
     pub(crate) table_registry: SkiaTableRegistry,
     pub(crate) table_events: TableEventBus,
-    pub(crate) sort_scratch: Vec<StoreNodeId>,
+    pub(crate) sort_scratch: Vec<NodeId>,
 }
 
 impl Default for SkiaBackend<TaffyStoreLayout> {
@@ -326,8 +326,8 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
 
     /// Computes the visual (scroll-shifted + sticky-clamped) layout rectangle of `node_id` in
     /// logical viewport coordinates.
-    pub fn visual_rect_of(&self, store: &NodeStore, node_id: StoreNodeId) -> Option<LayoutRect> {
-        let mut rect = self.layout_tree.layout_of(node_id.raw())?;
+    pub fn visual_rect_of(&self, store: &NodeStore, node_id: NodeId) -> Option<LayoutRect> {
+        let mut rect = self.layout_tree.layout_of(node_id)?;
         let (own_sx, own_sy) = self.layout_tree.compute_sticky_delta(store, node_id);
         rect.x += own_sx;
         rect.y += own_sy;
@@ -352,7 +352,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
     /// Compiles the retained [`DisplayList`] directly from `store`.
     pub fn rebuild_display_list(&mut self, store: &NodeStore) {
         self.display_list.ops.clear();
-        if !store.is_live(StoreNodeId::ROOT) {
+        if !store.is_live(NodeId::ROOT) {
             return;
         }
         let clip_bounds = LayoutRect {
@@ -376,7 +376,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             InheritedTextStyle::default(),
             &mut self.sort_scratch,
             &mut self.display_list.ops,
-            StoreNodeId::ROOT,
+            NodeId::ROOT,
         );
     }
 

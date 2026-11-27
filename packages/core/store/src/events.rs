@@ -96,7 +96,7 @@ impl TypedTableEvent {
         };
         NativeEvent {
             surface_id: self.surface_id,
-            node_id: self.node.0,
+            node_id: self.node,
             timestamp_us: self.timestamp_us,
             kind: NativeEventKind::TableEvent,
             payload: EventPayload::TableEvent {
@@ -112,7 +112,7 @@ impl TypedTableEvent {
     pub fn as_direct_event(&self) -> NveDirectEvent {
         NveDirectEvent::table_event(
             self.surface_id,
-            self.node.0,
+            self.node,
             self.timestamp_us,
             self.table_key,
             self.event_id,

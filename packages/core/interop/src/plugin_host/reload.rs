@@ -33,7 +33,7 @@ impl NvePluginHost {
     pub fn with_surface_base(base_surface_id: SurfaceId) -> Self {
         Self {
             next_plugin_id: 1,
-            next_surface_id: base_surface_id.max(1),
+            next_surface_id: SurfaceId(base_surface_id.raw().max(1)),
             slots: HashMap::default(),
             name_index: HashMap::default(),
         }
@@ -55,7 +55,7 @@ impl NvePluginHost {
 
     fn commit_ids(&mut self) {
         self.next_plugin_id = self.next_plugin_id.saturating_add(1);
-        self.next_surface_id = self.next_surface_id.saturating_add(1);
+        self.next_surface_id = SurfaceId(self.next_surface_id.raw().saturating_add(1));
     }
 
     /// Registers an in-process `nve_get_interface` plugin with ABI capability validation and a

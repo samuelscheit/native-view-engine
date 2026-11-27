@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use nve_abi::SurfaceId;
 use nve_backend_web::WebBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
@@ -105,7 +106,7 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
         }
     }
 
-    let mut surface = DioxusSurface::new(1, SharedRoot)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, SharedRoot)
         .with_context(client.clone())
         .with_context(Rc::clone(&flags_slot));
     let mut web = new_web_backend();
@@ -136,7 +137,7 @@ fn sibling_unmount_mid_fetch_never_strands_survivor_and_optimistic_survives_row_
     transport.inner.lock().unwrap().defer_actions = true;
     let btn = find_by_test_id(surface.store(), "row-opt-btn");
     assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: btn,
         timestamp_us: 0,
         kind: nve_abi::NativeEventKind::Press,
@@ -243,7 +244,7 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
         }
     }
 
-    let mut surface = DioxusSurface::new(1, WrapRoot)
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, WrapRoot)
         .with_context(client.clone())
         .with_context(Rc::clone(&slot));
     let mut web = new_web_backend();
@@ -284,7 +285,7 @@ fn provider_unmount_before_first_poll_rolls_back_optimistic_and_flush_is_zero_al
     // before the spawned future's first poll -> pre-spawn OptimisticDropGuard MUST roll back!
     let btn = find_by_test_id(surface.store(), "unmount-provider-btn");
     assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: btn,
         timestamp_us: 0,
         kind: nve_abi::NativeEventKind::Press,
@@ -370,7 +371,7 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
         }
     }
 
-    let mut surface = DioxusSurface::new(1, Root).with_context(client);
+    let mut surface = DioxusSurface::new(SurfaceId::ROOT, Root).with_context(client);
     let mut web = new_web_backend();
     let mut frame = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
@@ -380,7 +381,7 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
     // 1. Trigger UseAction::run() and immediately unmount RunRow before first task poll.
     let run_btn = find_by_test_id(surface.store(), "run-and-unmount-btn");
     assert!(surface.dispatch_events(&[nve_abi::NativeEvent {
-        surface_id: 1,
+        surface_id: SurfaceId::ROOT,
         node_id: run_btn,
         timestamp_us: 0,
         kind: nve_abi::NativeEventKind::Press,
@@ -396,14 +397,14 @@ fn use_action_run_and_action_form_survive_same_frame_unmount_without_panic() {
     let hide_btn = find_by_test_id(surface.store(), "hide-form-btn");
     assert!(surface.dispatch_events(&[
         nve_abi::NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: form_id,
             timestamp_us: 0,
             kind: nve_abi::NativeEventKind::Submit,
             payload: nve_abi::EventPayload::Text(String::new()),
         },
         nve_abi::NativeEvent {
-            surface_id: 1,
+            surface_id: SurfaceId::ROOT,
             node_id: hide_btn,
             timestamp_us: 0,
             kind: nve_abi::NativeEventKind::Press,
@@ -452,7 +453,7 @@ fn spawn_slot_fetch_supersede_cancels_sleeping_retry_and_siblings_dedupe_failed_
         }
     }
 
-    let mut s1 = DioxusSurface::new(1, FailRoot).with_context(fail_client);
+    let mut s1 = DioxusSurface::new(SurfaceId::ROOT, FailRoot).with_context(fail_client);
     let mut w1 = WebBackend::new();
     let mut f1 = 0;
     let waker = Waker::from(Arc::new(NoopFlagWaker(AtomicBool::new(false))));
@@ -527,7 +528,7 @@ fn spawn_slot_fetch_supersede_cancels_sleeping_retry_and_siblings_dedupe_failed_
         }
     }
 
-    let mut s2 = DioxusSurface::new(1, RetryRoot)
+    let mut s2 = DioxusSurface::new(SurfaceId::ROOT, RetryRoot)
         .with_context((retry_client, sleep))
         .with_context(Rc::clone(&ctrl_slot));
     let mut w2 = WebBackend::new();

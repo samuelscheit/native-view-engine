@@ -25,7 +25,7 @@ use crate::value::{
     NVE_EVENT_FLAG_BUTTON_MASK, NVE_EVENT_FLAG_CAPTURE, NVE_EVENT_FLAG_COMPOSING, NVE_KEY_MOD_ALT,
     NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT, NVE_KEY_MOD_SHIFT,
 };
-use crate::ROOT_NODE_ID;
+use crate::{InterfaceId, ROOT_NODE_ID};
 
 pub use nve_abi_macros::NveAbi;
 
@@ -156,7 +156,7 @@ pub struct AbiMethodDescriptor {
 pub struct AbiModuleDescriptor {
     pub name: &'static str,
     pub trait_name: &'static str,
-    pub interface_id: u32,
+    pub interface_id: InterfaceId,
     pub c_name: &'static str,
     pub doc: Option<&'static str>,
     pub methods: &'static [AbiMethodDescriptor],
@@ -231,7 +231,7 @@ const fn abi_method(
 const CORE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_ABI_MAGIC", u32::from_le_bytes(*b"NVE2") as u64, true, Some("Wire magic bytes (`\"NVE2\"` little-endian).")),
     abi_const("NVE_ABI_VERSION", 1, false, Some("Binary `NVE2` wire protocol version.")),
-    abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID as u64, false, Some("Reserved root node ID for every surface.")),
+    abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID.raw() as u64, false, Some("Reserved root node ID for every surface.")),
     abi_const("NVE_BIN_VALUE_MAX_DEPTH", 64, false, Some("Maximum permitted container nesting depth for `NveBinValue`.")),
     abi_const("NVE_CHANNEL_FLAG_RETAIN", NVE_CHANNEL_FLAG_RETAIN as u64, false, Some("Flag bit on `channel_publish` / `ChannelMessage` requesting retained channel state.")),
     abi_const("NVE_KEY_MOD_META", NVE_KEY_MOD_META as u64, true, Some("Meta / Command modifier flag in `NveDirectEvent::modifiers`.")),
@@ -245,6 +245,14 @@ const CORE_CONSTS: &[AbiConstDescriptor] = &[
 ];
 
 const CORE_ALIASES: &[AbiAliasDescriptor] = &[
+    AbiAliasDescriptor { name: "NveNodeId", target: "u32", doc: Some("Generational node identifier (`index:24 | generation:8`; `0` is null).") },
+    AbiAliasDescriptor { name: "NveSurfaceId", target: "u32", doc: Some("Generational surface identifier (`index:24 | generation:8`; `0` is null).") },
+    AbiAliasDescriptor { name: "NveFrameId", target: "u64", doc: Some("Monotonic 64-bit frame counter.") },
+    AbiAliasDescriptor { name: "NveTimestampUs", target: "u64", doc: Some("Monotonic timestamp in microseconds.") },
+    AbiAliasDescriptor { name: "NveEventId", target: "u32", doc: Some("Table-scoped event discriminant (`0..32`).") },
+    AbiAliasDescriptor { name: "NveEventFlags", target: "u32", doc: Some("Bitflags for event modifiers, pointer buttons, capture, and IME composition.") },
+    AbiAliasDescriptor { name: "NveArenaOffset", target: "u32", doc: Some("Byte offset inside an event batch byte arena.") },
+    AbiAliasDescriptor { name: "NveByteLen", target: "u32", doc: Some("32-bit byte length across ABI arenas and slices.") },
     AbiAliasDescriptor { name: "NveAppHandle", target: "*mut c_void", doc: Some("Opaque handle to an instantiated NVE app/component.") },
     AbiAliasDescriptor { name: "NveFabricHostHandle", target: "*mut c_void", doc: Some("Opaque handle to a C++20 `nve-fabric-bridge` host instance.") },
     AbiAliasDescriptor { name: "NveHostInvokeFn", target: "*const c_void", doc: Some("Host capability invocation callback function pointer (`NveHostCallbacks::invoke`).") },
@@ -282,20 +290,20 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Surface",
         trait_name: "NveSurfaceApiSpec",
-        interface_id: NVE_IFACE_SURFACE,
+        interface_id: InterfaceId(NVE_IFACE_SURFACE),
         c_name: "NveSurfaceApi",
         doc: Some("Required core surface interface (`NVE_IFACE_SURFACE = 1`)."),
         methods: &[
-            abi_method("create", &[abi_param("surface_id", "u32")], "NveAppHandle", false, false, None),
+            abi_method("create", &[abi_param("surface_id", "NveSurfaceId")], "NveAppHandle", false, false, None),
             abi_method("destroy", &[], "()", true, false, None),
-            abi_method("render", &[abi_param("frame_id", "u64")], "NveBufferSlice", true, false, None),
+            abi_method("render", &[abi_param("frame_id", "NveFrameId")], "NveBufferSlice", true, false, None),
             abi_method("dispatch_events", &[abi_param("batch", "NveEventBatch")], "u32", true, false, None),
         ],
     },
     AbiModuleDescriptor {
         name: "Layout",
         trait_name: "NveLayoutApiSpec",
-        interface_id: NVE_IFACE_LAYOUT,
+        interface_id: InterfaceId(NVE_IFACE_LAYOUT),
         c_name: "NveLayoutApi",
         doc: Some("Optional layout & gesture interface (`NVE_IFACE_LAYOUT = 2`). Zero-serialization register calls."),
         methods: &[
@@ -306,7 +314,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Component",
         trait_name: "NveComponentApiSpec",
-        interface_id: NVE_IFACE_COMPONENT,
+        interface_id: InterfaceId(NVE_IFACE_COMPONENT),
         c_name: "NveComponentApi",
         doc: Some("Optional embedded component props & outbound event interface (`NVE_IFACE_COMPONENT = 3`)."),
         methods: &[
@@ -317,7 +325,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Dev",
         trait_name: "NveDevApiSpec",
-        interface_id: NVE_IFACE_DEV,
+        interface_id: InterfaceId(NVE_IFACE_DEV),
         c_name: "NveDevApi",
         doc: Some("Optional dev / 2-tier hot-reload interface (`NVE_IFACE_DEV = 4`, may be NULL in release builds)."),
         methods: &[
@@ -336,7 +344,7 @@ const CORE_MODULES: &[AbiModuleDescriptor] = &[
     AbiModuleDescriptor {
         name: "Host",
         trait_name: "NveHostApiSpec",
-        interface_id: NVE_IFACE_HOST,
+        interface_id: InterfaceId(NVE_IFACE_HOST),
         c_name: "NveHostApi",
         doc: Some("Optional binary host-capability & channel-bus interface (`NVE_IFACE_HOST = 5`)."),
         methods: &[
@@ -538,7 +546,7 @@ pub const fn compute_core_abi_schema_hash() -> u64 {
         let m = &desc.modules[i];
         hash_tag_str(&mut h, "module");
         hash_tag_str(&mut h, m.name);
-        h.update_u64(m.interface_id as u64);
+        h.update_u64(m.interface_id.raw() as u64);
         h.update_u64(m.methods.len() as u64);
         let mut j = 0;
         while j < m.methods.len() {

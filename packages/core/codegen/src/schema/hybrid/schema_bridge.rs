@@ -131,7 +131,7 @@ fn convert_module(m: &AbiModuleDescriptor) -> HybridModuleSpec {
         trait_name: m.trait_name.to_owned(),
         methods: m.methods.iter().map(convert_method).collect(),
         doc: m.doc.map(str::to_owned),
-        explicit_interface_id: Some(m.interface_id),
+        explicit_interface_id: Some(m.interface_id.raw()),
         c_name: Some(m.c_name.to_owned()),
     }
 }
