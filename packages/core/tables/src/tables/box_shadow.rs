@@ -15,13 +15,14 @@ pub struct BoxShadow {
 }
 
 impl BoxShadow {
-    /// Outer shadow offset by `(offset_x, offset_y)` with `blur_radius` (clamped `>= 0`).
+    /// Outer shadow offset by `(offset_x, offset_y)` with `blur_radius` (`>= 0`); non-finite
+    /// inputs become `0` so the value always passes `BoxShadows` validation.
     #[inline]
     pub const fn new(offset_x: f32, offset_y: f32, blur_radius: f32, color: Rgba) -> Self {
         Self {
-            offset_x,
-            offset_y,
-            blur_radius: if blur_radius > 0.0 { blur_radius } else { 0.0 },
+            offset_x: finite_or_zero(offset_x),
+            offset_y: finite_or_zero(offset_y),
+            blur_radius: finite_or_zero(blur_radius).max(0.0),
             spread_radius: 0.0,
             color,
             inset: false,
@@ -30,7 +31,7 @@ impl BoxShadow {
 
     #[inline]
     pub const fn spread(mut self, spread_radius: f32) -> Self {
-        self.spread_radius = spread_radius;
+        self.spread_radius = finite_or_zero(spread_radius);
         self
     }
 
@@ -39,4 +40,9 @@ impl BoxShadow {
         self.inset = true;
         self
     }
+}
+
+#[inline]
+const fn finite_or_zero(v: f32) -> f32 {
+    if v.is_finite() { v } else { 0.0 }
 }

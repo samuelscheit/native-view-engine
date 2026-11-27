@@ -18,7 +18,7 @@ use nve_tables::tables::{core_realization_order, Interaction};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_engine::{StoreBackend, StoreWireReplica};
-use nve_motion::{EasingCurve, TransitionProperty, TransitionSpec};
+use nve_motion::{write_transitions, EasingCurve, Motion, TransitionProperty, TransitionSpec};
 use nve_store::NodeStore;
 
 #[derive(Clone, PartialEq)]
@@ -104,14 +104,11 @@ fn rich_extended_app() -> Element {
                 pressable {
                     key: "{i}",
                     nve_style: card_style.clone(),
-                    nve_table: nve_dioxus::table_attr_fn(|tx, node| {
-                        nve_motion::write_transitions(
-                            tx,
-                            node,
-                            &[TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
-                                .easing(EasingCurve::EaseOut)],
-                        );
-                    }),
+                    nve_table: nve_dioxus::table_attr::<Motion, _>(
+                        [TransitionSpec::new(TransitionProperty::BackgroundColor, 160)
+                            .easing(EasingCurve::EaseOut)],
+                        |tx, node, specs| write_transitions(tx, node, specs),
+                    ),
                     view {
                         nve_style: TypedStyle::new()
                             .width_px(20.0)

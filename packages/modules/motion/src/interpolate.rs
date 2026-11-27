@@ -6,13 +6,15 @@ use nve_tables::transform::Transform2D;
 
 use crate::table::TransitionProperty;
 
-/// Linearly interpolates between `from` and `to` at `t` (safe for non-finite inputs).
+/// Interpolates `from -> to` at `t` with exact endpoints; `t` outside `[0, 1]` extrapolates so
+/// anticipation (`t < 0`) and overshoot (`t > 1`) curves keep their shape. Non-finite `t` holds
+/// `from`.
 #[inline]
 pub fn lerp_f32(from: f32, to: f32, t: f32) -> f32 {
-    if !t.is_finite() || t <= 0.0 {
+    if !t.is_finite() || t == 0.0 {
         return from;
     }
-    if (t - 1.0).abs() <= f32::EPSILON {
+    if t == 1.0 {
         return to;
     }
     from + (to - from) * t
@@ -47,10 +49,10 @@ pub fn lerp_color_rgba(from: ColorRgba, to: ColorRgba, t: f32) -> ColorRgba {
 
 /// Interpolates all continuous visual fields of [`VisualSnapshot`] at progress `t`.
 pub fn lerp_style_props(from: &VisualSnapshot, to: &VisualSnapshot, t: f32) -> VisualSnapshot {
-    if !t.is_finite() || t <= 0.0 {
+    if !t.is_finite() || t == 0.0 {
         return *from;
     }
-    if t >= 1.0 {
+    if t == 1.0 {
         return *to;
     }
     VisualSnapshot {
@@ -101,10 +103,10 @@ pub fn lerp_style_property(
 /// Linearly interpolates every component of [`Transform2D`] at progress `t`.
 #[inline]
 pub fn lerp_transform_2d(from: &Transform2D, to: &Transform2D, t: f32) -> Transform2D {
-    if !t.is_finite() || t <= 0.0 {
+    if !t.is_finite() || t == 0.0 {
         return *from;
     }
-    if (t - 1.0).abs() <= f32::EPSILON {
+    if t == 1.0 {
         return *to;
     }
     Transform2D {

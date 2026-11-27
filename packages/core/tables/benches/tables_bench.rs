@@ -26,7 +26,7 @@ mod native {
         ];
         let dims = ["auto", "100%", "24px", "12.5px", "320", "50%"];
 
-        c.bench_function("components_parse_color_batch", |b| {
+        c.bench_function("tables_parse_color_batch", |b| {
             b.iter(|| {
                 let mut acc = 0u32;
                 for &raw in black_box(&colors) {
@@ -38,7 +38,7 @@ mod native {
             });
         });
 
-        c.bench_function("components_parse_dim_batch", |b| {
+        c.bench_function("tables_parse_dim_batch", |b| {
             b.iter(|| {
                 let mut count = 0usize;
                 for &raw in black_box(&dims) {
@@ -66,7 +66,7 @@ mod native {
             },
         ];
 
-        c.bench_function("components_transform2d_concat_map", |b| {
+        c.bench_function("tables_transform2d_concat_map", |b| {
             let t1 = Transform2D {
                 translate_x: 24.0,
                 translate_y: 12.0,
@@ -91,7 +91,7 @@ mod native {
             });
         });
 
-        c.bench_function("components_sample_gradient_16", |b| {
+        c.bench_function("tables_sample_gradient_16", |b| {
             b.iter(|| {
                 let mut acc = 0u32;
                 for i in 0..16 {

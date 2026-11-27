@@ -11,7 +11,7 @@ use nve_tables::tables::{
 };
 use nve_store::{NodeId, NodeStore, Rgba};
 
-use super::{write_compact_color, write_compact_num, write_compact_px};
+use super::write_compact_num;
 
 pub(super) fn write_visual_and_typography_css(
     store: &NodeStore,
@@ -28,19 +28,19 @@ pub(super) fn write_visual_and_typography_css(
             out.push(';');
         } else if v.background() != Rgba::TRANSPARENT {
             out.push_str("background:");
-            write_compact_color(ColorRgba::from_u32(v.background().0), out);
+            ColorRgba::from_u32(v.background().0).write_css(out);
             out.push(';');
         }
         if v.border_width() > 0.0 && v.border_color() != Rgba::TRANSPARENT {
             out.push_str("border:");
-            write_compact_px(v.border_width(), out);
+            crate::css::write_px(v.border_width(), out);
             out.push_str(" solid ");
-            write_compact_color(ColorRgba::from_u32(v.border_color().0), out);
+            ColorRgba::from_u32(v.border_color().0).write_css(out);
             out.push(';');
         }
         if v.border_radius() > 0.0 {
             out.push_str("border-radius:");
-            write_compact_px(v.border_radius(), out);
+            crate::css::write_px(v.border_radius(), out);
             out.push(';');
         }
         match v.visibility() {
@@ -73,22 +73,7 @@ pub(super) fn write_visual_and_typography_css(
             && !shadows.is_empty()
         {
             out.push_str("box-shadow:");
-            for (i, sh) in shadows.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_compact_px(sh.offset_x, out);
-                out.push(' ');
-                write_compact_px(sh.offset_y, out);
-                out.push(' ');
-                write_compact_px(sh.blur_radius, out);
-                if sh.spread_radius != 0.0 {
-                    out.push(' ');
-                    write_compact_px(sh.spread_radius, out);
-                }
-                out.push(' ');
-                write_compact_color(ColorRgba::from_u32(sh.color.0), out);
-            }
+            crate::css::write_box_shadows(shadows.iter(), out);
             out.push(';');
         }
         if include_compositor {
@@ -126,12 +111,12 @@ pub(super) fn write_visual_and_typography_css(
     if let Some(t) = store.try_row::<Typography>(id) {
         if t.is_color_explicit() {
             out.push_str("color:");
-            write_compact_color(ColorRgba::from_u32(t.color().0), out);
+            ColorRgba::from_u32(t.color().0).write_css(out);
             out.push(';');
         }
         if t.is_font_size_explicit() {
             out.push_str("font-size:");
-            write_compact_px(t.font_size(), out);
+            crate::css::write_px(t.font_size(), out);
             out.push(';');
         }
         if t.is_font_weight_explicit() {
@@ -144,7 +129,7 @@ pub(super) fn write_visual_and_typography_css(
             if t.line_height().is_auto() {
                 out.push_str("normal");
             } else if t.line_height().is_points() {
-                write_compact_px(t.line_height().value(), out);
+                crate::css::write_px(t.line_height().value(), out);
             } else {
                 write_compact_num(t.line_height().value() / 100.0, out);
             }
@@ -152,7 +137,7 @@ pub(super) fn write_visual_and_typography_css(
         }
         if t.is_letter_spacing_explicit() {
             out.push_str("letter-spacing:");
-            write_compact_px(t.letter_spacing(), out);
+            crate::css::write_px(t.letter_spacing(), out);
             out.push(';');
         }
         if t.is_overflow_wrap_explicit() {
@@ -262,48 +247,16 @@ pub fn write_compositor_css(store: &NodeStore, id: NodeId, out: &mut String) {
 }
 
 pub fn write_transform_css(tf: nve_tables::tables::TransformRef<'_>, out: &mut String) {
-    let (tx, ty) = (tf.translate_x(), tf.translate_y());
-    let (sx, sy) = (tf.scale_x(), tf.scale_y());
-    let rot = tf.rotate_deg();
-    if tx != 0.0 || ty != 0.0 || (sx - 1.0).abs() > 1e-4 || (sy - 1.0).abs() > 1e-4 || rot != 0.0 {
-        out.push_str("transform:");
-        let mut first = true;
-        if tx != 0.0 || ty != 0.0 {
-            out.push_str("translate(");
-            write_compact_px(tx, out);
-            out.push(',');
-            write_compact_px(ty, out);
-            out.push(')');
-            first = false;
-        }
-        if (sx - 1.0).abs() > 1e-4 || (sy - 1.0).abs() > 1e-4 {
-            if !first {
-                out.push(' ');
-            }
-            out.push_str("scale(");
-            write_compact_num(sx, out);
-            out.push(',');
-            write_compact_num(sy, out);
-            out.push(')');
-            first = false;
-        }
-        if rot != 0.0 {
-            if !first {
-                out.push(' ');
-            }
-            out.push_str("rotate(");
-            write_compact_num(rot, out);
-            out.push_str("deg)");
-        }
-        out.push(';');
-    }
-    if (tf.origin_x() - 0.5).abs() > 1e-4 || (tf.origin_y() - 0.5).abs() > 1e-4 {
-        out.push_str("transform-origin:");
-        write_compact_num(tf.origin_x() * 100.0, out);
-        out.push_str("% ");
-        write_compact_num(tf.origin_y() * 100.0, out);
-        out.push_str("%;");
-    }
+    let tf = nve_tables::transform::Transform2D {
+        translate_x: tf.translate_x(),
+        translate_y: tf.translate_y(),
+        scale_x: tf.scale_x(),
+        scale_y: tf.scale_y(),
+        rotate_deg: tf.rotate_deg(),
+        origin_x: tf.origin_x(),
+        origin_y: tf.origin_y(),
+    };
+    crate::css::write_transform_decls(&tf, false, out);
 }
 
 /// Validates a CSS `font-family` list against CSS injection, comments, unbalanced quotes, and

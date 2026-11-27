@@ -61,10 +61,10 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
-/// `<v>px`, or bare `0`.
+/// `<v>px`, or bare `0` (non-finite and `-0` canonicalize to `0`).
 pub fn write_px(v: f32, out: &mut String) {
     let start = out.len();
-    write_f32(out, finite(v));
+    write_f32(out, super::canonical_f32(v));
     if &out[start..] != "0" {
         out.push_str("px");
     }

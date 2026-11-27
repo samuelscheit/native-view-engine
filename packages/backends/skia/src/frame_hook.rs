@@ -25,6 +25,13 @@ pub type TargetsOf<'a> = &'a dyn Fn(NodeId) -> NodeTargets;
 /// The backend reports commits and interaction-driven target changes; the hook owns all
 /// animation state and overrides visual values while animations run.
 pub trait SkiaFrameHook: Send + 'static {
+    /// Registers every table this hook reads in the process-global static table registry.
+    ///
+    /// Called by [`crate::SkiaBackend::register_frame_hook`] before any frame is applied, so a
+    /// wire replica (e.g. a hot-swapped cdylib host) maps the hook's table declarations to the
+    /// same static slots its typed lookups use instead of fresh dynamic slots.
+    fn register_tables(&self);
+
     /// Reconciles after a committed frame (`changes`).
     fn after_commit(&mut self, store: &NodeStore, changes: &ChangeSet, targets: TargetsOf<'_>);
 
@@ -132,6 +139,7 @@ impl SkiaFrameHooks {
 impl<L: StoreLayoutEngine> SkiaBackend<L> {
     /// Installs a per-frame animation hook (e.g. `nve_motion_skia::MotionDriver`).
     pub fn register_frame_hook<H: SkiaFrameHook>(&mut self, hook: H) -> &mut Self {
+        hook.register_tables();
         self.frame_hooks.register(hook);
         self
     }

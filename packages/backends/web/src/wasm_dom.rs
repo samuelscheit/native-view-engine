@@ -531,9 +531,9 @@ fn apply_compositor_properties_live(store: &NodeStore, id: NodeId, el: &web_sys:
             let mut first = true;
             if tx != 0.0 || ty != 0.0 {
                 val.push_str("translate(");
-                crate::css::write_compact_px(tx, &mut val);
+                crate::css::write_px(tx, &mut val);
                 val.push(',');
-                crate::css::write_compact_px(ty, &mut val);
+                crate::css::write_px(ty, &mut val);
                 val.push(')');
                 first = false;
             }

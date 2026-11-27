@@ -258,7 +258,9 @@ pub(crate) fn emit_node_into<L: StoreLayoutEngine>(
         if !shadow_res.is_none()
             && let Some(shadows) = store.resource::<BoxShadows>(shadow_res)
         {
-            for sh in shadows.iter() {
+            // Inset shadows are not rasterized by Skia yet (docs/BACKLOG.md); never paint them
+            // as outer shadows.
+            for sh in shadows.iter().filter(|sh| !sh.inset) {
                 let shadow_bounds = LayoutRect {
                     x: rect.x + sh.offset_x - sh.spread_radius,
                     y: rect.y + sh.offset_y - sh.spread_radius,

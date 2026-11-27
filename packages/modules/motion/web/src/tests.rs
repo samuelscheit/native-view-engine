@@ -30,18 +30,53 @@ fn easing_css_is_canonical_and_sanitized() {
     );
 }
 
-#[test]
-fn spring_easing_emits_linear_stops_matching_native_samples() {
-    let spring = EasingCurve::Spring(SpringSpec::bouncy());
-    let css = easing(spring);
+fn linear_stops(css: &str) -> Vec<f32> {
     let body = css.strip_prefix("linear(").and_then(|s| s.strip_suffix(')')).expect("linear()");
-    let stops: Vec<f32> = body.split(',').map(|v| v.parse().expect("number")).collect();
-    assert_eq!(stops.len(), 25);
-    assert_eq!((stops[0], stops[24]), (0.0, 1.0));
-    assert!(stops.iter().any(|&v| v > 1.0), "bouncy spring overshoot survives in CSS");
-    for (i, &v) in stops.iter().enumerate() {
-        assert!((v - spring.sample(i as f32 / 24.0)).abs() <= 5e-4, "stop {i}");
+    body.split(',').map(|v| v.parse().expect("number")).collect()
+}
+
+/// What a browser paints for CSS `linear(stops...)` (evenly spaced stops) at progress `t`.
+fn css_linear_at(stops: &[f32], t: f32) -> f32 {
+    let segments = (stops.len() - 1) as f32;
+    let x = t * segments;
+    let i = (x.floor() as usize).min(stops.len() - 2);
+    stops[i] + (stops[i + 1] - stops[i]) * (x - i as f32)
+}
+
+#[test]
+fn spring_linear_easing_tracks_the_native_curve_across_damping_regimes() {
+    for (name, spec, max_err) in [
+        ("bouncy", SpringSpec::bouncy(), 0.02),
+        ("snappy", SpringSpec::snappy(), 0.02),
+        ("critical", SpringSpec::from_duration_bounce(0.4, 0.0), 0.02),
+        ("overdamped", SpringSpec::from_duration_bounce(0.4, -0.6), 0.02),
+        ("wobbly", SpringSpec::new(900.0, 6.0, 1.0), 0.04),
+    ] {
+        let curve = EasingCurve::Spring(spec);
+        let stops = linear_stops(&easing(curve));
+        assert!((25..=129).contains(&stops.len()), "{name}: {} stops", stops.len());
+        assert_eq!((stops[0], *stops.last().expect("stop")), (0.0, 1.0), "{name}");
+        let worst = (0..=4000)
+            .map(|i| i as f32 / 4000.0)
+            .map(|t| (css_linear_at(&stops, t) - curve.sample(t)).abs())
+            .fold(0.0, f32::max);
+        assert!(worst <= max_err, "{name}: piecewise-linear error {worst} > {max_err}");
     }
+    // Oscillating springs get more stops than critically damped ones.
+    let bouncy = linear_stops(&easing(EasingCurve::Spring(SpringSpec::bouncy()))).len();
+    let critical = linear_stops(&easing(EasingCurve::Spring(SpringSpec::from_duration_bounce(0.4, 0.0)))).len();
+    assert!(bouncy > critical, "{bouncy} vs {critical}");
+}
+
+#[test]
+fn springs_emit_a_cubic_bezier_fallback_declaration_first() {
+    let spring = TransitionSpec::spring(TransitionProperty::Opacity, SpringSpec::bouncy());
+    let rule = compile_transitions([spring].into_iter()).expect("rule");
+    let (legacy, modern) = rule.decls.split_once(";transition:").expect("two declarations");
+    assert!(legacy.starts_with("transition:opacity ") && legacy.contains("cubic-bezier(0.34,1.56,0.64,1)"), "{legacy}");
+    assert!(modern.contains("linear(0,"), "{modern}");
+    let plain = compile_transitions([TransitionSpec::all(100)].into_iter()).expect("rule");
+    assert_eq!(plain.decls.matches("transition:").count(), 1, "no fallback without springs");
 }
 
 #[test]
@@ -91,7 +126,7 @@ fn registered_system_emits_transition_class_rule_through_ssr() {
         n
     };
     let mut web = WebBackend::new();
-    web.register_table_system(MotionWebSystem);
+    web.register_table_system(MotionWebSystem::new());
     web.commit(&store, &changes).expect("commit");
     let ssr = web.render_ssr(&store);
     let rule = compile_transitions(

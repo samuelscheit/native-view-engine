@@ -8,7 +8,7 @@ use nve_tables::layout_ext::{LayoutExt, PositionMode};
 use nve_tables::tables::Display;
 use nve_tables::transform::Transform2D;
 
-use crate::css::{canonical_f32, write_compact_dim, write_compact_num, write_compact_px};
+use crate::css::{canonical_f32, write_compact_dim, write_compact_num};
 
 /// Emits compact native CSS declarations for [`LayoutExt`] into `out`.
 pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) {
@@ -68,12 +68,12 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
         }
         if let Some(cg) = grid.column_gap {
             out.push_str("column-gap:");
-            write_compact_px(canonical_f32(cg).max(0.0), out);
+            crate::css::write_px(canonical_f32(cg).max(0.0), out);
             out.push(';');
         }
         if let Some(rg) = grid.row_gap {
             out.push_str("row-gap:");
-            write_compact_px(canonical_f32(rg).max(0.0), out);
+            crate::css::write_px(canonical_f32(rg).max(0.0), out);
             out.push(';');
         }
     }
@@ -89,22 +89,22 @@ pub fn write_compact_layout_ext_into(ext: Option<&LayoutExt>, out: &mut String) 
     }
     if let Some(v) = ext.padding_inline.start {
         out.push_str("padding-inline-start:");
-        write_compact_px(canonical_f32(v).max(0.0), out);
+        crate::css::write_px(canonical_f32(v).max(0.0), out);
         out.push(';');
     }
     if let Some(v) = ext.padding_inline.end {
         out.push_str("padding-inline-end:");
-        write_compact_px(canonical_f32(v).max(0.0), out);
+        crate::css::write_px(canonical_f32(v).max(0.0), out);
         out.push(';');
     }
     if let Some(v) = ext.margin_inline.start {
         out.push_str("margin-inline-start:");
-        write_compact_px(canonical_f32(v), out);
+        crate::css::write_px(canonical_f32(v), out);
         out.push(';');
     }
     if let Some(v) = ext.margin_inline.end {
         out.push_str("margin-inline-end:");
-        write_compact_px(canonical_f32(v), out);
+        crate::css::write_px(canonical_f32(v), out);
         out.push(';');
     }
 }

@@ -110,6 +110,7 @@ impl FlatResource for BoxShadows {
         if self.0.len() > MAX_ITEMS {
             return false;
         }
+        let start = out.len();
         out.reserve(1 + self.0.len() * SHADOW_STRIDE);
         out.push(self.0.len() as u32);
         for s in self.0.iter() {
@@ -119,6 +120,11 @@ impl FlatResource for BoxShadows {
             out.push(s.spread_radius.to_bits());
             out.push(s.color.0);
             out.push(u32::from(s.inset));
+        }
+        // Producers intern exactly what replicas accept.
+        if !Self::validate(&out[start..]) {
+            out.truncate(start);
+            return false;
         }
         true
     }
@@ -137,12 +143,11 @@ impl FlatResource for BoxShadows {
         if words.len() != expected {
             return false;
         }
-        for chunk in words[1..].as_chunks::<SHADOW_STRIDE>().0 {
-            if chunk[5] > 1 {
-                return false;
-            }
-        }
-        true
+        // Finite geometry, non-negative blur, boolean inset flag.
+        words[1..].as_chunks::<SHADOW_STRIDE>().0.iter().all(|w| {
+            let f = |i: usize| f32::from_bits(w[i]);
+            (0..4).all(|i| f(i).is_finite()) && f(2) >= 0.0 && w[5] <= 1
+        })
     }
 
     #[inline(always)]

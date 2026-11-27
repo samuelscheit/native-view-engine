@@ -69,9 +69,11 @@ impl TimedTransition {
 
     /// Returns `true` once elapsed time has reached `delay_s + duration_s`.
     #[inline]
+    /// Settled once the full delay + duration elapsed, or immediately for a no-op
+    /// (`from == to`) transition. Never mid-flight: an overshooting curve crossing `to` keeps
+    /// running.
     pub fn is_settled(&self) -> bool {
-        self.elapsed_s >= self.delay_s + self.duration_s
-            || (self.value - self.to).abs() <= f32::EPSILON && self.elapsed_s >= self.delay_s
+        self.elapsed_s >= self.delay_s + self.duration_s || self.from == self.to
     }
 
     /// Snaps immediately to `to`.
@@ -258,9 +260,10 @@ impl MotionClock {
         self.keys.binary_search(key)
     }
 
-    /// Writes `track` at `key` (inserting in sorted position) and keeps `active_count` exact.
-    fn put(&mut self, key: MotionKey, track: MotionTrack, active: bool) {
-        match self.find(&key) {
+    /// Writes `track` at `key` given its search result `at` (inserting in sorted position) and
+    /// keeps `active_count` exact.
+    fn put(&mut self, at: Result<usize, usize>, key: MotionKey, track: MotionTrack, active: bool) {
+        match at {
             Ok(i) => {
                 match (self.active[i], active) {
                     (false, true) => self.active_count += 1,
@@ -301,7 +304,8 @@ impl MotionClock {
         target: f32,
     ) {
         let key = key.into();
-        let state = match self.find(&key) {
+        let at = self.find(&key);
+        let state = match at {
             Ok(i) => match self.tracks[i] {
                 MotionTrack::Spring { mut state, .. } => {
                     state.retarget(target);
@@ -312,7 +316,7 @@ impl MotionClock {
             Err(_) => SpringState::with_velocity(initial_if_absent, velocity_if_absent, target),
         };
         let active = !state.is_settled(&spec);
-        self.put(key, MotionTrack::Spring { spec, state }, active);
+        self.put(at, key, MotionTrack::Spring { spec, state }, active);
     }
 
     /// Starts or smoothly retargets a timed eased transition track.
@@ -324,10 +328,11 @@ impl MotionClock {
         target: f32,
     ) {
         let key = key.into();
-        let from = self.value(&key).unwrap_or(initial_if_absent);
+        let at = self.find(&key);
+        let from = at.map_or(initial_if_absent, |i| self.tracks[i].value());
         let transition = TimedTransition::new(from, target, &spec);
-        let active = (from - target).abs() > f32::EPSILON || !transition.is_settled();
-        self.put(key, MotionTrack::Timed(transition), active);
+        let active = !transition.is_settled();
+        self.put(at, key, MotionTrack::Timed(transition), active);
     }
 
     /// Immediately sets `key` to a settled scalar `value` without animating.
@@ -336,7 +341,8 @@ impl MotionClock {
             spec: SpringSpec::snappy(),
             state: SpringState::settled(value),
         };
-        self.put(key.into(), track, false);
+        let key = key.into();
+        self.put(self.find(&key), key, track, false);
     }
 
     /// Advances all active tracks by `dt_s` seconds and returns key-ordered completions.
@@ -353,8 +359,17 @@ impl MotionClock {
             return;
         }
         let pref = self.preference;
+        // Stop scanning once every track that was active at the start has been stepped.
+        let mut remaining = self.active_count;
         for i in 0..self.keys.len() {
-            if self.active[i] && self.tracks[i].step(dt_s, pref) {
+            if remaining == 0 {
+                break;
+            }
+            if !self.active[i] {
+                continue;
+            }
+            remaining -= 1;
+            if self.tracks[i].step(dt_s, pref) {
                 self.active[i] = false;
                 self.active_count -= 1;
                 on_complete(MotionCompletion {

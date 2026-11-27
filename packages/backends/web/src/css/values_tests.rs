@@ -93,3 +93,38 @@ fn box_shadows_format_lists_and_none() {
     write_box_shadows([drop, inner], &mut out);
     assert_eq!(out, "0 4px 12px rgba(0,0,0,0.251), inset 1px 0 0 -2px #ffffff");
 }
+
+#[test]
+fn ssr_emits_inset_and_multiple_shadows_and_rejects_non_finite_geometry() {
+    use nve_engine::StoreBackend;
+    use nve_store::{ChangeSet, FlatResource, NodeId, NodeStore};
+    use nve_tables::tables::{BoxShadows, Visual};
+
+    let drop = BoxShadow::new(0.0, 4.0, 12.0, Rgba::new(0, 0, 0, 64));
+    let inner = BoxShadow::new(0.0, 1.0, 2.0, Rgba::new(255, 255, 255, 255)).inset();
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let n = tx.create();
+    tx.set_children(NodeId::ROOT, &[n]);
+    tx.edit::<Visual>(n).box_shadows(Some(BoxShadows::new(vec![drop, inner])));
+    tx.commit_into(&mut changes);
+    let mut web = crate::WebBackend::new();
+    web.commit(&store, &changes).expect("commit");
+    let ssr = web.render_ssr(&store);
+    let css = format!("{}{}", ssr.style_css, ssr.html);
+    assert!(
+        css.contains("box-shadow:0 4px 12px rgba(0,0,0,0.251), inset 0 1px 2px #ffffff"),
+        "{css}"
+    );
+
+    // Non-finite / negative-blur shadows can neither be interned nor accepted from the wire.
+    let nan = BoxShadow { offset_x: f32::NAN, ..drop };
+    assert!(!BoxShadows::new(vec![nan]).write_words(&mut Vec::new()));
+    let negative_blur = BoxShadow { blur_radius: -1.0, ..drop };
+    assert!(!BoxShadows::new(vec![negative_blur]).write_words(&mut Vec::new()));
+    // The constructors sanitize instead.
+    let sanitized = BoxShadow::new(f32::INFINITY, 1.0, -5.0, drop.color).spread(f32::NAN);
+    assert_eq!((sanitized.offset_x, sanitized.blur_radius, sanitized.spread_radius), (0.0, 0.0, 0.0));
+    assert!(BoxShadows::new(vec![sanitized]).write_words(&mut Vec::new()));
+}

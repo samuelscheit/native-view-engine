@@ -312,6 +312,10 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     /// Dispatches a direct typed [`SkiaHostEvent`] into the mounted app with zero serialization.
     pub fn dispatch_host_event(&mut self, event: &SkiaHostEvent) -> bool {
+        if let SkiaHostEvent::ThemeChanged(theme) = event {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.set_reduced_motion(store, theme.reduced_motion);
+        }
         self.app.dispatch_host_event(event)
     }
 

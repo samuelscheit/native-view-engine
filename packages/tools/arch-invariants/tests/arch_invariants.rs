@@ -250,7 +250,7 @@ fn bare_primitive_domain_fields_in_core_and_module_roots() {
     assert_no_violations("Zero bare primitive domain fields in packages/core/store", &v_store);
     assert_staged_violations(
         Stage::Post1B1D,
-        "Zero bare primitive domain fields in core/{abi,engine,tables,components,codec} & modules/<cap>",
+        "Zero bare primitive domain fields in core/{abi,engine,tables,codec} & modules/<cap>",
         &v_1b1d,
     );
 }
@@ -321,7 +321,7 @@ fn active_hot_path_utf8_alloc_guards_and_zero_fnv1a_repo_wide() {
         &hot_path::check_hot_path_perf_and_utf8(idx),
     );
     assert_no_violations(
-        "Zero per-node Any::downcast_ref across backends, core/{abi,components,tables}, engine/layout, and hot store",
+        "Zero per-node Any::downcast_ref across backends, core/{abi,tables}, engine/layout, and hot store",
         &hot_path::check_zero_per_node_downcast_ref(idx),
     );
     assert_no_violations(

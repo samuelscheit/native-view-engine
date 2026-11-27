@@ -46,16 +46,51 @@ pub struct ResolvedNodeStyle {
 impl ResolvedNodeStyle {
     /// Applies the content-addressed class `class` (rule body `decls`) to this node.
     pub fn push_class_rule(&mut self, class: String, decls: String) {
-        self.classes.push(' ');
-        self.classes.push_str(&class);
+        self.push_class(&class);
         self.class_rules.push((class, decls));
     }
 
     /// Applies the `@media`-gated rule `rule` to this node.
     pub fn push_media_rule(&mut self, rule: CompiledMediaRule) {
-        self.classes.push(' ');
-        self.classes.push_str(&rule.class_name);
+        self.push_class(&rule.class_name);
         self.media_rules.push(rule);
+    }
+
+    fn push_class(&mut self, class: &str) {
+        if !self.classes.is_empty() {
+            self.classes.push(' ');
+        }
+        self.classes.push_str(class);
+    }
+
+    fn remove_class(&mut self, class: &str) {
+        let kept: Vec<&str> = self.classes.split(' ').filter(|c| *c != class).collect();
+        self.classes = kept.join(" ");
+    }
+
+    /// Once the dynamic rule budget is exhausted, drops plugin rules pushed since the
+    /// `(class_rules, media_rules)` lengths `since`: class rules not already in the sheet and all
+    /// new `@media` rules.
+    fn enforce_rule_budget(
+        &mut self,
+        since: (usize, usize),
+        allow_new: bool,
+        has_rule: &impl Fn(&str) -> bool,
+    ) {
+        if allow_new {
+            return;
+        }
+        let rejected: Vec<String> = self.class_rules[since.0..]
+            .iter()
+            .filter(|(cls, _)| !has_rule(cls))
+            .map(|(cls, _)| cls.clone())
+            .chain(self.media_rules[since.1..].iter().map(|m| m.class_name.clone()))
+            .collect();
+        for cls in &rejected {
+            self.remove_class(cls);
+        }
+        self.class_rules.retain(|(cls, _)| !rejected.contains(cls));
+        self.media_rules.truncate(since.1);
     }
 }
 
@@ -307,11 +342,13 @@ pub fn resolve_store_node_style(
         }
     }
 
+    let since = (out.class_rules.len(), out.media_rules.len());
     for sys in systems.iter() {
         if store.has_slot(id, sys.slot()) {
             sys.resolve_style(store, id, &mut out);
         }
     }
+    out.enforce_rule_budget(since, allow_new, &has_rule);
 
     out
 }

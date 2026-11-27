@@ -306,3 +306,25 @@ fn retained_event_clone_is_isolated_and_layout_and_table_events_dispatch() {
         &[(mod_key.0, 5, vec![0xDE, 0xAD, 0xBE, 0xEF])]
     );
 }
+
+#[test]
+fn value_table_attr_compares_by_value_and_detaches_on_clear() {
+    use nve_tables::tables::Transform;
+
+    fn write(tx: &mut nve_store::Transaction<'_>, node: NodeId, x: &f32) {
+        tx.edit::<Transform>(node).translate_x(*x);
+    }
+    let a = crate::table_attr::<Transform, _>(4.0f32, write);
+    assert!(a == crate::table_attr::<Transform, _>(4.0f32, write), "equal values skip rewrites");
+    assert!(a != crate::table_attr::<Transform, _>(5.0f32, write));
+    assert!(a != crate::table_attr_fn(|_, _| {}), "different writer kinds never compare equal");
+
+    let mut store = NodeStore::new();
+    let mut tx = store.tx();
+    let n = tx.create();
+    tx.set_children(NodeId::ROOT, &[n]);
+    a.write_to(&mut tx, n);
+    assert_eq!(tx.store().row::<Transform>(n).translate_x(), 4.0);
+    a.clear_from(&mut tx, n);
+    assert!(!tx.store().has::<Transform>(n), "clearing the attribute detaches its table");
+}

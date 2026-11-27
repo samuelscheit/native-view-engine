@@ -2978,6 +2978,7 @@ dependencies = [
 name = "nve-motion-skia"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nve-abi",
  "nve-backend-skia",
  "nve-engine",
@@ -3202,7 +3203,6 @@ dependencies = [
  "criterion",
  "nve-abi",
  "nve-codec",
- "nve-hash",
  "nve-store",
 ]
 

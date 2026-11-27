@@ -43,13 +43,16 @@ impl EasingCurve {
         }
     }
 
-    /// Canonical form: `cubic-bezier` x control points clamped to `[0, 1]` and non-finite
-    /// coordinates zeroed (the exact curve every backend evaluates or emits).
+    /// Canonical form — the exact curve every backend evaluates, emits, and the `Transitions`
+    /// wire round-trips: `cubic-bezier` x control points clamped to `[0, 1]` with non-finite
+    /// coordinates zeroed; springs reduced to their physical parameters (rest thresholds are a
+    /// property of a live `SpringState`, not of the normalized curve).
     pub fn sanitized(self) -> Self {
         match self {
             Self::CubicBezier(x1, y1, x2, y2) => {
                 Self::CubicBezier(unit(x1), finite(y1), unit(x2), finite(y2))
             }
+            Self::Spring(s) => Self::Spring(SpringSpec::new(s.stiffness, s.damping, s.mass)),
             other => other,
         }
     }

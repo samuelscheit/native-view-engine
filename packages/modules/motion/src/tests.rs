@@ -7,7 +7,7 @@ use nve_tables::snapshots::VisualSnapshot as StyleProps;
 use nve_store::{FlatResource, ValidatedWords};
 
 use crate::{
-    lerp_color_rgba, lerp_style_property, lerp_style_props, resolve_transition_for, EasingCurve,
+    lerp_color_rgba, lerp_f32, lerp_style_property, lerp_style_props, resolve_transition_for, EasingCurve,
     MotionClock, MotionCompletion, MotionKey, MotionPreference, SpringSpec, SpringState,
     TimedTransition, TransitionProperty, TransitionSpec, Transitions,
 };
@@ -319,10 +319,50 @@ fn transitions_resource_roundtrips_and_rejects_hostile_words() {
         bad[i] = w;
         assert!(!Transitions::validate(&bad), "word {i} = {w:#x} must fail");
     }
-    // Producers cannot intern what replicas reject.
-    let nan_spring = Transitions::new([TransitionSpec::all(10)
-        .easing(EasingCurve::Spring(SpringSpec { mass: f32::NAN, ..SpringSpec::snappy() }))]);
-    assert!(!nan_spring.write_words(&mut Vec::new()));
+    // Producers write the canonical curve: non-finite spring parameters sanitize, custom rest
+    // thresholds (a live-state property) drop out, and an undamped spring is rejected.
+    let decode = |spec: TransitionSpec| {
+        let mut w = Vec::new();
+        Transitions::new([spec])
+            .write_words(&mut w)
+            .then(|| Transitions::view(ValidatedWords::try_new(&w).expect("valid")).get(0))
+            .flatten()
+    };
+    let nan_mass = SpringSpec { mass: f32::NAN, ..SpringSpec::snappy() };
+    let nan_spec = TransitionSpec::all(10).easing(EasingCurve::Spring(nan_mass));
+    assert_eq!(decode(nan_spec).map(|s| s.easing), Some(EasingCurve::Spring(SpringSpec::snappy())));
+    let custom_rest = SpringSpec::gentle().with_rest_thresholds(0.5, 0.5);
+    let canonical = TransitionSpec::all(10).easing(EasingCurve::Spring(custom_rest));
+    assert_eq!(decode(canonical).map(|s| s.easing), Some(canonical.easing.sanitized()));
+    let undamped = TransitionSpec::all(10).easing(EasingCurve::Spring(SpringSpec::new(100.0, 0.0, 1.0)));
+    assert_eq!(decode(undamped), None, "an undamped spring never settles");
+}
+
+#[test]
+fn timed_transition_never_settles_mid_flight_and_noop_settles_immediately() {
+    let overshoot = TransitionSpec::all(100).easing(EasingCurve::CubicBezier(0.34, 1.56, 0.64, 1.0));
+    let mut tr = TimedTransition::new(0.0, 1.0, &overshoot);
+    let mut crossed = false;
+    for _ in 0..9 {
+        assert!(!tr.step(0.01, MotionPreference::Full), "settled mid-flight at {}", tr.value);
+        crossed |= tr.value > 1.0;
+    }
+    assert!(crossed, "the overshoot curve crosses the target before the end");
+    assert!(tr.step(0.02, MotionPreference::Full));
+
+    let noop = TimedTransition::new(0.5, 0.5, &TransitionSpec::all(100).delay_ms(500));
+    assert!(noop.is_settled(), "from == to settles immediately even with a delay");
+}
+
+#[test]
+fn interpolation_extrapolates_anticipation_and_overshoot() {
+    assert_eq!(lerp_f32(10.0, 20.0, -0.1), 9.0);
+    assert_eq!(lerp_f32(10.0, 20.0, 1.2), 22.0);
+    assert_eq!(lerp_f32(10.0, 20.0, f32::NAN), 10.0);
+    let back = EasingCurve::CubicBezier(0.36, -0.6, 0.5, 1.0);
+    let t = back.sample(0.1);
+    assert!(t < 0.0, "anticipation curve dips below 0 ({t})");
+    assert!(lerp_f32(0.0, 100.0, t) < 0.0);
 }
 
 #[test]

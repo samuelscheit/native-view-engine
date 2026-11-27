@@ -232,7 +232,7 @@ impl TypedStyle {
     /// Sets the node's shadows (`[]` / `None` explicitly clears any previous shadows).
     #[inline]
     pub fn box_shadows(mut self, shadows: impl IntoIterator<Item = BoxShadow>) -> Self {
-        self.box_shadows = Some(shadows.into_iter().collect());
+        self.box_shadows = Some(shadows.into_iter().collect::<Arc<[BoxShadow]>>());
         self
     }
 

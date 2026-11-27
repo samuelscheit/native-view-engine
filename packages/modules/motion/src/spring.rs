@@ -171,11 +171,23 @@ impl SpringSpec {
         }
     }
 
+    /// Sanitized physical `(mass, stiffness, damping)` in `f64` — the single source every
+    /// derived quantity and [`SpringState::step`] use (non-finite values fall back to the
+    /// [`SpringSpec::snappy`] defaults).
+    #[inline]
+    fn physical(&self) -> (f64, f64, f64) {
+        let or = |v: f32, fallback: f64| if v.is_finite() { f64::from(v) } else { fallback };
+        (
+            or(self.mass, 1.0).max(MIN_MASS),
+            or(self.stiffness, 400.0).max(MIN_STIFFNESS),
+            or(self.damping, 30.0).max(0.0),
+        )
+    }
+
     /// Natural angular frequency `omega_0 = sqrt(stiffness / mass)` in rad/s.
     #[inline]
     pub fn angular_frequency(&self) -> f32 {
-        let k = f64::from(self.stiffness).max(MIN_STIFFNESS);
-        let m = f64::from(self.mass).max(MIN_MASS);
+        let (m, k, _) = self.physical();
         (k / m).sqrt() as f32
     }
 
@@ -192,7 +204,9 @@ impl SpringSpec {
         } else if zeta < 1.0 {
             LN_1E3 / (zeta * omega).max(1e-6)
         } else {
-            LN_1E3 / (omega * (zeta - (zeta * zeta - 1.0).sqrt())).max(1e-6)
+            // Slow overdamped root `omega (zeta - sqrt(zeta^2 - 1))`, rationalized so large
+            // `zeta` does not cancel catastrophically.
+            LN_1E3 / (omega / (zeta + (zeta * zeta - 1.0).sqrt())).max(1e-6)
         };
         secs.clamp(0.01, 10.0) as f32
     }
@@ -201,9 +215,7 @@ impl SpringSpec {
     /// `< 1` is underdamped, `== 1` is critically damped, `> 1` is overdamped.
     #[inline]
     pub fn damping_ratio(&self) -> f32 {
-        let k = f64::from(self.stiffness).max(MIN_STIFFNESS);
-        let m = f64::from(self.mass).max(MIN_MASS);
-        let c = f64::from(self.damping).max(0.0);
+        let (m, k, c) = self.physical();
         (c / (2.0 * (k * m).sqrt())) as f32
     }
 }
@@ -304,21 +316,7 @@ impl SpringState {
         }
 
         let t = f64::from(dt_s);
-        let m = if spec.mass.is_finite() {
-            f64::from(spec.mass).max(MIN_MASS)
-        } else {
-            1.0
-        };
-        let k = if spec.stiffness.is_finite() {
-            f64::from(spec.stiffness).max(MIN_STIFFNESS)
-        } else {
-            400.0
-        };
-        let c = if spec.damping.is_finite() {
-            f64::from(spec.damping).max(0.0)
-        } else {
-            30.0
-        };
+        let (m, k, c) = spec.physical();
 
         let target = f64::from(self.target);
         let x0 = f64::from(self.value) - target;

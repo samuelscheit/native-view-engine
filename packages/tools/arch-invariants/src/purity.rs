@@ -64,10 +64,8 @@ pub fn scan_table_and_codec_hygiene(
     }
 
     let check_unset = rel.starts_with("packages/core/tables/")
-        || rel.starts_with("packages/core/tables/")
         || (rel.starts_with("packages/modules/") && rel.matches('/').count() >= 4);
-    let check_set_masks =
-        rel.starts_with("packages/core/tables/") || rel.starts_with("packages/core/tables/");
+    let check_set_masks = rel.starts_with("packages/core/tables/");
     let in_core = rel.starts_with("packages/core/");
     let in_dioxus = rel.starts_with("packages/core/dioxus/src/");
     let has_repr_c = file_has_repr_c_struct(&ast.items);
@@ -259,14 +257,10 @@ fn scan_table_items(
 /// Scans `packages/core/*` for CSS/HTML formatters/parsers (belonging in `nve-backend-web`) and
 /// stateful `motion`/`MotionClock` references (belonging in `packages/modules/motion/`).
 pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec<Violation>) {
-    if is_cfg_test_attr(&ast.attrs) {
+    if !rel.starts_with("packages/core/") || is_cfg_test_attr(&ast.attrs) {
         return;
     }
-    let in_no_motion_core = rel.starts_with("packages/core/tables/")
-        || rel.starts_with("packages/core/tables/")
-        || rel.starts_with("packages/core/engine/")
-        || rel.starts_with("packages/core/runtime/");
-    if in_no_motion_core && rel.contains("motion") {
+    if rel.contains("motion") {
         out.push(Violation::new(
             rel,
             1,
@@ -278,7 +272,6 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
     struct PurityScan<'a> {
         rel: &'a str,
         raw: &'a str,
-        in_no_motion_core: bool,
         out: &'a mut Vec<Violation>,
     }
 
@@ -302,7 +295,7 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
             if is_cfg_test_attr(&node.attrs) {
                 return;
             }
-            if self.in_no_motion_core && node.ident == "motion" {
+            if node.ident == "motion" {
                 let ln = node.ident.span().start().line;
                 self.out.push(Violation::new(
                     self.rel,
@@ -330,6 +323,14 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
             visit::visit_impl_item_fn(self, node);
         }
 
+        fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+            if is_cfg_test_attr(&node.attrs) {
+                return;
+            }
+            self.check_fn_name(&node.sig.ident);
+            visit::visit_trait_item_fn(self, node);
+        }
+
         fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
             if !is_cfg_test_attr(&node.attrs) {
                 visit::visit_item_impl(self, node);
@@ -337,7 +338,7 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
         }
 
         fn visit_ident(&mut self, i: &'ast syn::Ident) {
-            if self.in_no_motion_core && i == "MotionClock" {
+            if i == "MotionClock" {
                 let ln = i.span().start().line;
                 self.out.push(Violation::new(
                     self.rel,
@@ -352,7 +353,6 @@ pub fn scan_platform_purity(rel: &str, raw: &str, ast: &syn::File, out: &mut Vec
     PurityScan {
         rel,
         raw,
-        in_no_motion_core,
         out,
     }
     .visit_file(ast);

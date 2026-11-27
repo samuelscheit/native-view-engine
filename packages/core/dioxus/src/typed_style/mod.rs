@@ -63,7 +63,7 @@ pub struct TypedStyle {
     pub font_weight: Option<Cow<'static, str>>,
     pub text_align: Option<Cow<'static, str>>,
     /// `Some(empty)` explicitly clears shadows; `None` leaves them untouched.
-    pub box_shadows: Option<Vec<BoxShadow>>,
+    pub box_shadows: Option<std::sync::Arc<[BoxShadow]>>,
     pub overflow: Option<Cow<'static, str>>,
     pub object_fit: Option<Cow<'static, str>>,
     pub layout_ext: Option<Box<LayoutExt>>,

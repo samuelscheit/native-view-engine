@@ -54,7 +54,7 @@ pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler,
 pub fn register_shell_web_systems(backend: &mut nve_backend_web::WebBackend) {
     nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
     backend.register_table_system(nve_canvas_web::CanvasWebSystem);
-    backend.register_table_system(nve_motion_web::MotionWebSystem);
+    backend.register_table_system(nve_motion_web::MotionWebSystem::new());
 }
 #[cfg(feature = "multi-window")]
 pub use multi_window::{

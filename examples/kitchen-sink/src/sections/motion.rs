@@ -4,7 +4,10 @@
 
 use nve_abi::ColorRgba;
 use nve_canvas::{Canvas, DrawList};
-use nve_motion::{EasingCurve, MotionClock, MotionKey, MotionPreference, TransitionSpec};
+use nve_motion::{
+    write_transitions, EasingCurve, Motion, MotionClock, MotionKey, MotionPreference,
+    TransitionSpec,
+};
 use nve_dioxus::prelude::*;
 use nve_dioxus::table_attr_fn;
 use nve_ui::{
@@ -217,9 +220,10 @@ pub fn MotionSection(handle: AppHandle) -> Element {
                             view {
                                 test_id: "ks-motion-pill",
                                 nve_style: motion_pill_style,
-                                nve_table: table_attr_fn(move |tx, node| {
-                                    nve_motion::write_transitions(tx, node, &motion_pill_transitions);
-                                }),
+                                nve_table: nve_dioxus::table_attr::<Motion, _>(
+                                    motion_pill_transitions,
+                                    |tx, node, specs| write_transitions(tx, node, specs),
+                                ),
                                 text {
                                     style: "font-size: 12px; font-weight: 700; color: {text_primary};",
                                     if snap.motion_toggled { "Expanded Target State" } else { "Compact Rest State" }

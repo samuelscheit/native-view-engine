@@ -67,7 +67,9 @@ pub use stream_slot::{
     NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_NAME_PREFIX, NVE_STREAM_SLOT_ROLE_ATTR,
 };
 pub use surface::DioxusSurface;
-pub use table_attr::{table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR};
+pub use table_attr::{
+    table_attr, table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR,
+};
 pub use traits::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
     use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
@@ -118,7 +120,8 @@ pub mod prelude {
     };
     pub use crate::stream_slot::{NveStreamSlot, StreamSlotRole, SuspenseSlot};
     pub use crate::table_attr::{
-        table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR,
+        table_attr, table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter,
+        NVE_TABLE_ATTR,
     };
     pub use crate::traits::{
         use_environment, use_provide_existing_trait_store, use_provide_trait_store, use_trait,

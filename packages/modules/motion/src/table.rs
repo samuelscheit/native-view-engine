@@ -136,7 +136,7 @@ pub fn resolve_transition_for(
 }
 
 /// Attaches `specs` as `node`'s [`Motion`] transitions, or detaches [`Motion`] when empty
-/// (e.g. from a Dioxus `nve_table: table_attr_fn(..)` writer).
+/// (e.g. from Dioxus: `nve_table: table_attr::<Motion, _>(specs, |tx, n, s| write_transitions(tx, n, s))`).
 pub fn write_transitions(tx: &mut TxCore<'_>, node: NodeId, specs: &[TransitionSpec]) {
     if specs.is_empty() {
         tx.detach::<Motion>(node);
@@ -183,6 +183,12 @@ impl<'a> TransitionsView<'a> {
     #[inline(always)]
     pub fn is_empty(self) -> bool {
         self.len() == 0
+    }
+
+    /// Validated flat words (a content key for caches).
+    #[inline(always)]
+    pub fn words(self) -> &'a [u32] {
+        self.0
     }
 
     pub fn get(self, index: usize) -> Option<TransitionSpec> {
@@ -267,15 +273,8 @@ impl FlatResource for Transitions {
                         && (0.0..=1.0).contains(&c(0))
                         && (0.0..=1.0).contains(&c(2))
                 }
-                EASING_SPRING => {
-                    c(0).is_finite()
-                        && c(0) > 0.0
-                        && c(1).is_finite()
-                        && c(1) >= 0.0
-                        && c(2).is_finite()
-                        && c(2) > 0.0
-                        && w[6] == 0
-                }
+                // Positive finite stiffness, damping (an undamped spring never settles), mass.
+                EASING_SPRING => (0..3).all(|i| c(i).is_finite() && c(i) > 0.0) && w[6] == 0,
                 _ => false,
             };
             params_ok

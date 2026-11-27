@@ -4,19 +4,31 @@
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
+use std::sync::Mutex;
+
+use nve_abi::hash::HashMap;
 use nve_abi::num::{write_f32, write_u64};
 use nve_backend_web::css::format_content_class;
 use nve_backend_web::media_css::{format_media_class, CompiledMediaRule};
 use nve_backend_web::{ResolvedNodeStyle, WebTableSystem};
-use nve_motion::{EasingCurve, Motion, TransitionProperty, TransitionSpec, Transitions};
+use nve_motion::{EasingCurve, Motion, SpringSpec, TransitionProperty, TransitionSpec, Transitions};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};
 
 #[cfg(test)]
 mod tests;
 
-/// Segments of a spring's CSS `linear()` easing (25 stops at 3 decimals: smooth overshoot,
-/// ~150 bytes).
-const SPRING_LINEAR_SEGMENTS: u16 = 24;
+/// `linear()` segments per damped spring oscillation (keeps the painted curve within ~1-2 % of
+/// the native one, measured in `spring_linear_easing_tracks_the_native_curve_*`).
+const SEGMENTS_PER_OSCILLATION: f32 = 20.0;
+/// Segment bounds of a spring `linear()` easing (≤ 129 stops at 3 decimals, ~800 bytes).
+const MIN_SPRING_SEGMENTS: u16 = 24;
+const MAX_SPRING_SEGMENTS: u16 = 128;
+/// `cubic-bezier` stand-ins for engines without CSS `linear()` (Safari < 17.2): a back-out
+/// curve for springs that overshoot, a quint ease-out otherwise.
+const OVERSHOOT_FALLBACK: EasingCurve = EasingCurve::CubicBezier(0.34, 1.56, 0.64, 1.0);
+const SETTLE_FALLBACK: EasingCurve = EasingCurve::CubicBezier(0.22, 1.0, 0.36, 1.0);
+/// Memoized rule count before the content-keyed cache is reset.
+const MAX_CACHED_RULES: usize = 512;
 const REDUCED_MOTION_COND: &str = "(prefers-reduced-motion:reduce)";
 const REDUCED_MOTION_ALL_INSTANT_DECLS: &str =
     "transition-duration:0ms!important;transition-delay:0ms!important;";
@@ -57,18 +69,37 @@ pub fn write_easing_css(curve: EasingCurve, out: &mut String) {
             }
             out.push(')');
         }
-        spring @ EasingCurve::Spring(_) => {
+        spring @ EasingCurve::Spring(spec) => {
+            let segments = spring_segments(&spec);
             out.push_str("linear(");
-            for i in 0..=SPRING_LINEAR_SEGMENTS {
+            for i in 0..=segments {
                 if i > 0 {
                     out.push(',');
                 }
-                let t = f32::from(i) / f32::from(SPRING_LINEAR_SEGMENTS);
-                write_f32(out, spring.sample(t));
+                write_f32(out, spring.sample(f32::from(i) / f32::from(segments)));
             }
             out.push(')');
         }
     }
+}
+
+/// `linear()` segments for `spec`: [`SEGMENTS_PER_OSCILLATION`] per damped oscillation over the
+/// settle duration, clamped to `[MIN_SPRING_SEGMENTS, MAX_SPRING_SEGMENTS]`.
+fn spring_segments(spec: &SpringSpec) -> u16 {
+    let zeta = spec.damping_ratio();
+    let damped = spec.angular_frequency() * (1.0 - zeta * zeta).max(0.0).sqrt();
+    let oscillations = damped * spec.settle_duration_s() / std::f32::consts::TAU;
+    let segments = (oscillations * SEGMENTS_PER_OSCILLATION).ceil();
+    segments.clamp(f32::from(MIN_SPRING_SEGMENTS), f32::from(MAX_SPRING_SEGMENTS)) as u16
+}
+
+/// `cubic-bezier` stand-in for `curve` where CSS `linear()` is unsupported (`None` for
+/// non-spring curves, which need no fallback).
+fn legacy_fallback(curve: EasingCurve) -> Option<EasingCurve> {
+    let EasingCurve::Spring(spec) = curve else {
+        return None;
+    };
+    Some(if spec.damping_ratio() < 1.0 { OVERSHOOT_FALLBACK } else { SETTLE_FALLBACK })
 }
 
 /// Writes one `transition` list item (e.g. `background-color 150ms ease-out 25ms`).
@@ -83,6 +114,22 @@ pub fn write_transition_entry(spec: &TransitionSpec, out: &mut String) {
         write_u64(out, u64::from(spec.delay_ms));
         out.push_str("ms");
     }
+}
+
+/// Writes a `transition:<list>;` declaration; with `legacy`, springs use their `cubic-bezier`
+/// stand-in.
+fn write_transition_list(specs: impl Iterator<Item = TransitionSpec>, legacy: bool, out: &mut String) {
+    out.push_str("transition:");
+    for (idx, mut spec) in specs.enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        if legacy {
+            spec.easing = legacy_fallback(spec.easing).unwrap_or(spec.easing);
+        }
+        write_transition_entry(&spec, out);
+    }
+    out.push(';');
 }
 
 /// Content-addressed `transition` rule (`nve-t-<8hex>`) plus the optional shared
@@ -119,17 +166,14 @@ pub fn compile_transitions<I>(specs: I) -> Option<CompiledTransitionRule>
 where
     I: Iterator<Item = TransitionSpec> + Clone,
 {
-    let mut decls = String::from("transition:");
-    for (idx, spec) in specs.clone().enumerate() {
-        if idx > 0 {
-            decls.push(',');
-        }
-        write_transition_entry(&spec, &mut decls);
+    specs.clone().next()?;
+    let mut decls = String::new();
+    // Engines without `linear()` drop the second declaration and keep the `cubic-bezier`
+    // stand-ins of the first.
+    if specs.clone().any(|s| legacy_fallback(s.easing).is_some()) {
+        write_transition_list(specs.clone(), true, &mut decls);
     }
-    if decls.len() == "transition:".len() {
-        return None;
-    }
-    decls.push(';');
+    write_transition_list(specs.clone(), false, &mut decls);
 
     let reduced_motion_rule = specs.clone().any(|s| s.reduced_motion_instant).then(|| {
         let rm_decls = if specs.clone().all(|s| s.reduced_motion_instant) {
@@ -156,8 +200,19 @@ where
 }
 
 /// `WebTableSystem` plugin for [`Motion`] (`nve.motion`).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MotionWebSystem;
+///
+/// Compiled rules are memoized by the `Transitions` resource words, so restyling a node never
+/// re-samples spring curves (bounded: the cache resets past [`MAX_CACHED_RULES`]).
+#[derive(Debug, Default)]
+pub struct MotionWebSystem {
+    compiled: Mutex<HashMap<Box<[u32]>, Option<CompiledTransitionRule>>>,
+}
+
+impl MotionWebSystem {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl WebTableSystem for MotionWebSystem {
     fn slot(&self) -> TableSlot {
@@ -171,7 +226,20 @@ impl WebTableSystem for MotionWebSystem {
         let Some(specs) = store.resource::<Transitions>(row.transitions()) else {
             return;
         };
-        if let Some(rule) = compile_transitions(specs.iter()) {
+        let rule = {
+            let mut cache = self.compiled.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hit) = cache.get(specs.words()) {
+                hit.clone()
+            } else {
+                if cache.len() >= MAX_CACHED_RULES {
+                    cache.clear();
+                }
+                let rule = compile_transitions(specs.iter());
+                cache.insert(specs.words().into(), rule.clone());
+                rule
+            }
+        };
+        if let Some(rule) = rule {
             out.push_class_rule(rule.class_name, rule.decls);
             if let Some(rm) = rule.reduced_motion_rule {
                 out.push_media_rule(rm);

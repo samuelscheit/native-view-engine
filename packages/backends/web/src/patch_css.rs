@@ -14,8 +14,8 @@ use nve_store::{
 };
 
 use crate::css::{
-    canonical_f32, write_compact_color, write_compact_dim, write_compact_edges, write_compact_num,
-    write_compact_px,
+    canonical_f32, write_compact_dim, write_compact_edges, write_compact_num,
+
 };
 
 #[inline]
@@ -127,17 +127,17 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
     let has_cg = prop_written(lm, Layout::COLUMN_GAP);
     if has_rg && has_cg && Layout::ROW_GAP.get(lw) == Layout::COLUMN_GAP.get(lw) {
         out.push_str("gap:");
-        write_compact_px(canonical_f32(Layout::ROW_GAP.get(lw).value()).max(0.0), out);
+        crate::css::write_px(canonical_f32(Layout::ROW_GAP.get(lw).value()).max(0.0), out);
         out.push(';');
     } else {
         if has_cg {
             out.push_str("column-gap:");
-            write_compact_px(canonical_f32(Layout::COLUMN_GAP.get(lw).value()).max(0.0), out);
+            crate::css::write_px(canonical_f32(Layout::COLUMN_GAP.get(lw).value()).max(0.0), out);
             out.push(';');
         }
         if has_rg {
             out.push_str("row-gap:");
-            write_compact_px(canonical_f32(Layout::ROW_GAP.get(lw).value()).max(0.0), out);
+            crate::css::write_px(canonical_f32(Layout::ROW_GAP.get(lw).value()).max(0.0), out);
             out.push(';');
         }
     }
@@ -164,22 +164,22 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
     if pad_logical {
         if has_pt {
             out.push_str("padding-top:");
-            write_compact_px(canonical_f32(Layout::PADDING_TOP.get(lw).value()).max(0.0), out);
+            crate::css::write_px(canonical_f32(Layout::PADDING_TOP.get(lw).value()).max(0.0), out);
             out.push(';');
         }
         if has_pb {
             out.push_str("padding-bottom:");
-            write_compact_px(canonical_f32(Layout::PADDING_BOTTOM.get(lw).value()).max(0.0), out);
+            crate::css::write_px(canonical_f32(Layout::PADDING_BOTTOM.get(lw).value()).max(0.0), out);
             out.push(';');
         }
         if has_pl {
             out.push_str("padding-inline-start:");
-            write_compact_px(canonical_f32(Layout::PADDING_LEFT.get(lw).value()).max(0.0), out);
+            crate::css::write_px(canonical_f32(Layout::PADDING_LEFT.get(lw).value()).max(0.0), out);
             out.push(';');
         }
         if has_pr {
             out.push_str("padding-inline-end:");
-            write_compact_px(canonical_f32(Layout::PADDING_RIGHT.get(lw).value()).max(0.0), out);
+            crate::css::write_px(canonical_f32(Layout::PADDING_RIGHT.get(lw).value()).max(0.0), out);
             out.push(';');
         }
     } else if has_pt && has_pr && has_pb && has_pl {
@@ -202,7 +202,7 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
         ] {
             if written {
                 out.push_str(name);
-                write_compact_px(canonical_f32(val).max(0.0), out);
+                crate::css::write_px(canonical_f32(val).max(0.0), out);
                 out.push(';');
             }
         }
@@ -216,22 +216,22 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
     if mar_logical {
         if has_mt {
             out.push_str("margin-top:");
-            write_compact_px(canonical_f32(Layout::MARGIN_TOP.get(lw).value()), out);
+            crate::css::write_px(canonical_f32(Layout::MARGIN_TOP.get(lw).value()), out);
             out.push(';');
         }
         if has_mb {
             out.push_str("margin-bottom:");
-            write_compact_px(canonical_f32(Layout::MARGIN_BOTTOM.get(lw).value()), out);
+            crate::css::write_px(canonical_f32(Layout::MARGIN_BOTTOM.get(lw).value()), out);
             out.push(';');
         }
         if has_ml {
             out.push_str("margin-inline-start:");
-            write_compact_px(canonical_f32(Layout::MARGIN_LEFT.get(lw).value()), out);
+            crate::css::write_px(canonical_f32(Layout::MARGIN_LEFT.get(lw).value()), out);
             out.push(';');
         }
         if has_mr {
             out.push_str("margin-inline-end:");
-            write_compact_px(canonical_f32(Layout::MARGIN_RIGHT.get(lw).value()), out);
+            crate::css::write_px(canonical_f32(Layout::MARGIN_RIGHT.get(lw).value()), out);
             out.push(';');
         }
     } else if has_mt && has_mr && has_mb && has_ml {
@@ -254,7 +254,7 @@ fn emit_layout_decls(lw: &[Word], lm: &[u32], out: &mut String) {
         ] {
             if written {
                 out.push_str(name);
-                write_compact_px(canonical_f32(val), out);
+                crate::css::write_px(canonical_f32(val), out);
                 out.push(';');
             }
         }
@@ -334,7 +334,7 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
     if t.has_v {
         if prop_written(t.vm, Visual::BACKGROUND) {
             out.push_str("background-color:");
-            write_compact_color(ColorRgba::from_u32(Visual::BACKGROUND.get(t.vw).0), out);
+            ColorRgba::from_u32(Visual::BACKGROUND.get(t.vw).0).write_css(out);
             out.push(';');
         }
         let has_bw = prop_written(t.vm, Visual::BORDER_WIDTH);
@@ -342,26 +342,26 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
         match (has_bw, has_bc) {
             (true, true) => {
                 out.push_str("border:");
-                write_compact_px(canonical_f32(Visual::BORDER_WIDTH.get(t.vw)).max(0.0), out);
+                crate::css::write_px(canonical_f32(Visual::BORDER_WIDTH.get(t.vw)).max(0.0), out);
                 out.push_str(" solid ");
-                write_compact_color(ColorRgba::from_u32(Visual::BORDER_COLOR.get(t.vw).0), out);
+                ColorRgba::from_u32(Visual::BORDER_COLOR.get(t.vw).0).write_css(out);
                 out.push(';');
             }
             (true, false) => {
                 out.push_str("border-width:");
-                write_compact_px(canonical_f32(Visual::BORDER_WIDTH.get(t.vw)).max(0.0), out);
+                crate::css::write_px(canonical_f32(Visual::BORDER_WIDTH.get(t.vw)).max(0.0), out);
                 out.push(';');
             }
             (false, true) => {
                 out.push_str("border-color:");
-                write_compact_color(ColorRgba::from_u32(Visual::BORDER_COLOR.get(t.vw).0), out);
+                ColorRgba::from_u32(Visual::BORDER_COLOR.get(t.vw).0).write_css(out);
                 out.push(';');
             }
             (false, false) => {}
         }
         if prop_written(t.vm, Visual::BORDER_RADIUS) {
             out.push_str("border-radius:");
-            write_compact_px(canonical_f32(Visual::BORDER_RADIUS.get(t.vw)).max(0.0), out);
+            crate::css::write_px(canonical_f32(Visual::BORDER_RADIUS.get(t.vw)).max(0.0), out);
             out.push(';');
         }
         if prop_written(t.vm, Visual::OPACITY) {
@@ -422,12 +422,12 @@ fn emit_row_patch_decls(t: PatchedTables<'_>, store: Option<&NodeStore>, out: &m
     if t.has_t {
         if prop_written(t.tm, Typography::COLOR) {
             out.push_str("color:");
-            write_compact_color(ColorRgba::from_u32(Typography::COLOR.get(t.tw).0), out);
+            ColorRgba::from_u32(Typography::COLOR.get(t.tw).0).write_css(out);
             out.push(';');
         }
         if prop_written(t.tm, Typography::FONT_SIZE) {
             out.push_str("font-size:");
-            write_compact_px(canonical_f32(Typography::FONT_SIZE.get(t.tw)).max(1.0), out);
+            crate::css::write_px(canonical_f32(Typography::FONT_SIZE.get(t.tw)).max(1.0), out);
             out.push(';');
         }
         if prop_written(t.tm, Typography::TEXT_ALIGN) {

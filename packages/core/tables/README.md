@@ -17,7 +17,7 @@ let mode = InputMode::Email;
 
 ## Dependency Invariants
 
-- **Depends on**: `nve-abi`.
+- **Depends on**: `nve-abi`, `nve-codec`, `nve-store`.
 - **Must NOT depend on**: `dioxus*`, `web-sys`, `js-sys`, `wasm-bindgen`, `skia-safe`, `serde_json`, `packages/modules/*`, or `hosts/*`.
 
 ## Verification

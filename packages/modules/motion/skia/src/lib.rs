@@ -7,8 +7,9 @@ use nve_abi::hash::{HashMap, HashSet};
 use nve_backend_skia::{SkiaFrameHook, TargetsOf};
 use nve_tables::snapshots::VisualSnapshot;
 use nve_tables::transform::Transform2D;
+use nve_abi::ColorRgba;
 use nve_motion::{
-    lerp_style_property, lerp_transform_2d, resolve_transition_for, Motion, MotionPreference,
+    lerp_color_rgba, lerp_f32, lerp_transform_2d, resolve_transition_for, Motion, MotionPreference,
     TimedTransition, TransitionProperty, Transitions,
 };
 use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
@@ -16,6 +17,7 @@ use nve_store::{ChangeSet, NodeId, NodeStore, NveTable};
 #[cfg(test)]
 mod tests;
 
+/// Animated visual channels, in [`NodeMotion::channels`] order.
 const VISUAL_PROPS: [TransitionProperty; 5] = [
     TransitionProperty::BackgroundColor,
     TransitionProperty::Color,
@@ -25,11 +27,55 @@ const VISUAL_PROPS: [TransitionProperty; 5] = [
 ];
 const COLOR_CHANNEL: usize = 1;
 
+/// Endpoints of one animated channel (only the channel's own value, not a whole snapshot).
+#[derive(Debug, Clone, Copy)]
+enum Span {
+    Color(ColorRgba, ColorRgba),
+    Scalar(f32, f32),
+}
+
+fn channel_span(from: &VisualSnapshot, to: &VisualSnapshot, idx: usize) -> Span {
+    match idx {
+        0 => Span::Color(from.background, to.background),
+        1 => Span::Color(from.text_color, to.text_color),
+        2 => Span::Color(from.border_color, to.border_color),
+        3 => Span::Scalar(from.border_radius, to.border_radius),
+        _ => Span::Scalar(from.opacity, to.opacity),
+    }
+}
+
+fn channel_differs(a: &VisualSnapshot, b: &VisualSnapshot, idx: usize) -> bool {
+    match channel_span(a, b, idx) {
+        Span::Color(x, y) => x != y,
+        Span::Scalar(x, y) => (x - y).abs() > 1e-4,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ChannelAnim {
-    from: VisualSnapshot,
-    to: VisualSnapshot,
+    span: Span,
     timer: TimedTransition,
+}
+
+impl ChannelAnim {
+    fn apply(&self, idx: usize, style: &mut VisualSnapshot) {
+        let t = self.timer.progress();
+        match (self.span, idx) {
+            (Span::Color(a, b), 0) => style.background = lerp_color_rgba(a, b, t),
+            (Span::Color(a, b), 1) => style.text_color = lerp_color_rgba(a, b, t),
+            (Span::Color(a, b), _) => style.border_color = lerp_color_rgba(a, b, t),
+            (Span::Scalar(a, b), 3) => style.border_radius = lerp_f32(a, b, t).max(0.0),
+            (Span::Scalar(a, b), _) => style.opacity = lerp_f32(a, b, t).clamp(0.0, 1.0),
+        }
+    }
+}
+
+/// Steps `timer`; returns `(settled, painted value changed)`. Ticks inside the delay change
+/// nothing visible.
+fn step_timer(timer: &mut TimedTransition, dt_s: f32, pref: MotionPreference) -> (bool, bool) {
+    let before = timer.progress();
+    let settled = timer.step(dt_s, pref);
+    (settled, settled || timer.progress() != before)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -43,25 +89,26 @@ impl NodeMotion {
     }
 
     fn apply_to(&self, style: &mut VisualSnapshot) {
-        for (prop, ch) in VISUAL_PROPS.into_iter().zip(&self.channels) {
+        for (idx, ch) in self.channels.iter().enumerate() {
             if let Some(ch) = ch {
-                lerp_style_property(&ch.from, &ch.to, prop, ch.timer.progress(), style);
+                ch.apply(idx, style);
             }
         }
     }
 
-    /// Steps every channel; returns `true` when any channel was running.
+    /// Steps every channel; returns whether any painted value changed.
     fn step(&mut self, dt_s: f32, pref: MotionPreference) -> bool {
-        let mut stepped = false;
+        let mut changed = false;
         for slot in &mut self.channels {
             if let Some(ch) = slot {
-                stepped = true;
-                if ch.timer.step(dt_s, pref) {
+                let (settled, moved) = step_timer(&mut ch.timer, dt_s, pref);
+                changed |= moved;
+                if settled {
                     *slot = None;
                 }
             }
         }
-        stepped
+        changed
     }
 }
 
@@ -76,17 +123,6 @@ impl TransformAnim {
     #[inline]
     fn current(&self) -> Transform2D {
         lerp_transform_2d(&self.from, &self.to, self.timer.progress())
-    }
-}
-
-fn visual_differs(a: &VisualSnapshot, b: &VisualSnapshot, prop: TransitionProperty) -> bool {
-    match prop {
-        TransitionProperty::BackgroundColor => a.background != b.background,
-        TransitionProperty::Color => a.text_color != b.text_color,
-        TransitionProperty::BorderColor => a.border_color != b.border_color,
-        TransitionProperty::BorderRadius => (a.border_radius - b.border_radius).abs() > 1e-4,
-        TransitionProperty::Opacity => (a.opacity - b.opacity).abs() > 1e-4,
-        _ => false,
     }
 }
 
@@ -121,7 +157,9 @@ fn start_timer(
 /// Per-node declarative transition driver for `nve_backend_skia::SkiaBackend`.
 ///
 /// Tracks nodes carrying a [`Motion`] row, remembers each node's last resolved target, and
-/// animates from the currently painted value whenever a target changes.
+/// animates the changed channels from the currently painted value. Work per commit is
+/// proportional to the changed nodes (and tracked descendants of changed ancestors, whose
+/// inherited styles may have moved), never to every tracked node.
 #[derive(Debug, Clone, Default)]
 pub struct MotionDriver {
     preference: MotionPreference,
@@ -130,6 +168,7 @@ pub struct MotionDriver {
     last_transform: HashMap<NodeId, Transform2D>,
     active: HashMap<NodeId, NodeMotion>,
     active_transform: HashMap<NodeId, TransformAnim>,
+    changed: HashSet<NodeId>,
     scratch: Vec<NodeId>,
 }
 
@@ -145,6 +184,8 @@ impl MotionDriver {
 
     fn untrack(&mut self, id: NodeId) {
         self.tracked.remove(&id);
+        self.last_target.remove(&id);
+        self.last_transform.remove(&id);
         self.active.remove(&id);
         self.active_transform.remove(&id);
     }
@@ -157,6 +198,18 @@ impl MotionDriver {
         self.active_transform.retain(|&id, _| store.is_live(id));
     }
 
+    /// `id` or one of its ancestors changed this frame.
+    fn affected(&self, store: &NodeStore, id: NodeId) -> bool {
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if self.changed.contains(&n) {
+                return true;
+            }
+            cur = store.parent(n);
+        }
+        false
+    }
+
     fn sync_visual(&mut self, store: &NodeStore, id: NodeId, target: VisualSnapshot) {
         let Some(prev) = self.last_target.insert(id, target) else {
             return;
@@ -165,9 +218,10 @@ impl MotionDriver {
         let mut motion = self.active.remove(&id).unwrap_or_default();
         motion.apply_to(&mut current);
         for (idx, prop) in VISUAL_PROPS.into_iter().enumerate() {
-            if visual_differs(&prev, &target, prop) {
-                motion.channels[idx] = start_timer(store, id, prop, self.preference)
-                    .map(|timer| ChannelAnim { from: current, to: target, timer });
+            if channel_differs(&prev, &target, idx) {
+                motion.channels[idx] = start_timer(store, id, prop, self.preference).map(|timer| {
+                    ChannelAnim { span: channel_span(&current, &target, idx), timer }
+                });
             }
         }
         if !motion.is_empty() {
@@ -201,8 +255,14 @@ impl MotionDriver {
 }
 
 impl SkiaFrameHook for MotionDriver {
+    fn register_tables(&self) {
+        let _ = Motion::slot();
+    }
+
     fn after_commit(&mut self, store: &NodeStore, changes: &ChangeSet, targets: TargetsOf<'_>) {
-        self.retain_live(store);
+        if !changes.removed.is_empty() {
+            self.retain_live(store);
+        }
         if let Some(tc) = changes.table(Motion::slot()) {
             for &id in &tc.detached {
                 self.untrack(id);
@@ -219,9 +279,14 @@ impl SkiaFrameHook for MotionDriver {
                 self.untrack(id);
             }
         }
+        if self.tracked.is_empty() || (changes.created.is_empty() && changes.touched.is_empty()) {
+            return;
+        }
+        self.changed.clear();
+        self.changed.extend(changes.created.iter().chain(changes.touched.iter()).copied());
         let mut ids = std::mem::take(&mut self.scratch);
         ids.clear();
-        ids.extend(self.tracked.iter().copied());
+        ids.extend(self.tracked.iter().copied().filter(|&id| self.affected(store, id)));
         for &id in &ids {
             self.sync(store, id, targets);
         }
@@ -237,17 +302,10 @@ impl SkiaFrameHook for MotionDriver {
     }
 
     fn advance(&mut self, dt_s: f32) -> bool {
-        let pref = self.preference;
-        let mut changed = false;
-        self.active.retain(|_, motion| {
-            changed |= motion.step(dt_s, pref);
-            !motion.is_empty()
-        });
-        self.active_transform.retain(|_, anim| {
-            changed = true;
-            !anim.timer.step(dt_s, pref)
-        });
-        changed
+        if !(dt_s.is_finite() && dt_s > 0.0) {
+            return false;
+        }
+        self.step_all(dt_s)
     }
 
     fn needs_next_frame(&self) -> bool {
@@ -260,12 +318,9 @@ impl SkiaFrameHook for MotionDriver {
             return false;
         }
         self.preference = pref;
-        let had_active = self.needs_next_frame();
-        if pref.is_reduced() {
-            self.active.clear();
-            self.active_transform.clear();
-        }
-        pref.is_reduced() && had_active
+        // A zero-length step under `Reduce` snaps exactly the transitions that opted into
+        // `reduced_motion_instant`; the others keep animating.
+        pref.is_reduced() && self.step_all(0.0)
     }
 
     fn apply_visual(&self, node: NodeId, style: &mut VisualSnapshot) {
@@ -289,5 +344,23 @@ impl SkiaFrameHook for MotionDriver {
 
     fn reset(&mut self) {
         *self = Self::default();
+    }
+}
+
+impl MotionDriver {
+    /// Steps every running animation by `dt_s`; returns whether any painted value changed.
+    fn step_all(&mut self, dt_s: f32) -> bool {
+        let pref = self.preference;
+        let mut changed = false;
+        self.active.retain(|_, motion| {
+            changed |= motion.step(dt_s, pref);
+            !motion.is_empty()
+        });
+        self.active_transform.retain(|_, anim| {
+            let (settled, moved) = step_timer(&mut anim.timer, dt_s, pref);
+            changed |= moved;
+            !settled
+        });
+        changed
     }
 }

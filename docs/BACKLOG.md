@@ -23,7 +23,8 @@ Open roadmap for `native-view-engine`, ordered from active P0/P1 work to Flagshi
   - **Delete `style_buf/` + all 62 `nve-ui` `style:` props, ban author-facing `style: "..."` strings completely (zero runtime CSS parser), AND upgrade Tier-1 hot reload (A6=6a)**: extend `packages/tools/cli/src/rsx_diff` + `HotPatchMsg::TemplatePatch` to diff typed RSX literal/enum/color attributes into typed **`RowPatch` word updates** applied straight to `NodeStore` (< 10 ms zero-recompile style hot reload on physical iOS/Web/Desktop with zero CSS parser).
   - Wire real `:hover`/`:active`/`:focus-visible`, pointer dragging (`SplitPane`, `BottomSheet`), hover/anchored floating overlays (`Tooltip`, `Popover`, `DropdownMenu`, `Dialog`), and real scroll sync (`VirtualList`) across `nve-ui` and `examples/kitchen-sink`, verified with live browser/window behavioral assertions & desktop/mobile screenshot critique.
 
-- [ ] **Track 3A — Hardware Skia Retained Compositor/Caches, `skia-shell` AccessKit & `web-shell` `NVE_IFACE_HOST` (Can Overlap Track 1B-1d)**
+- [ ] **Track 3A — Hardware Skia Retained Compositor/Caches, `skia-shell` AccessKit & `web-shell` `NVE_IFACE_HOST`**
+  - **Skia inset `box-shadow`**: `PaintOp::DrawShadow` only rasterizes outer shadows, so `BoxShadow::inset` is skipped on Skia (web renders it natively); add an inset shadow op (clip to the rounded rect, invert the blurred mask) on CPU and GPU paths with pixel tests against the web output.
   - Fix Skia full display-list rebuild on every commit & motion tick (retained per-node display-list / compositor-layer tree for 120 Hz opacity/transform updates) plus GPU Skia per-frame image/font churn (`gpu/skia_renderer.rs`: GPU texture cache, bold `Typeface` cache, `CosmicTextEngine` glyph-run shaping) and add real Vulkan/D3D12 parity tests.
   - Wire `skia-shell` AccessKit accessibility tree sync and bind `NVE_IFACE_HOST = 5` in `hosts/web-shell`.
 

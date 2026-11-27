@@ -297,7 +297,6 @@ fn is_per_node_downcast_scope(rel: &str) -> bool {
     rel.starts_with("packages/backends/")
         || rel.starts_with("packages/core/abi/")
         || rel.starts_with("packages/core/tables/")
-        || rel.starts_with("packages/core/tables/")
         || rel == "packages/core/engine/src/layout.rs"
         || matches!(
             rel,
@@ -310,7 +309,7 @@ fn is_per_node_downcast_scope(rel: &str) -> bool {
         )
 }
 
-/// Scans production Rust files in per-node hot scopes (`backends/**`, `core/{abi,components,tables}`,
+/// Scans production Rust files in per-node hot scopes (`backends/**`, `core/{abi,tables}`,
 /// `engine/src/layout.rs`, and hot store files) for banned `Any::downcast_ref` / `.downcast_ref`.
 pub fn check_zero_per_node_downcast_ref(idx: &RepoIndex) -> Vec<Violation> {
     let mut violations = Vec::new();

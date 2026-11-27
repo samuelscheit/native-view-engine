@@ -126,3 +126,95 @@ fn without_the_hook_or_motion_table_nothing_animates() {
     assert!(hooked.pointer_move(&store, 40.0, 20.0));
     assert!(!hooked.needs_next_frame(), "nodes without `Motion` snap");
 }
+
+fn set_bg(store: &mut NodeStore, skia: &mut SkiaBackend, btn: NodeId, bg: Rgba) {
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    tx.edit::<Visual>(btn).background(bg);
+    tx.commit_into(&mut changes);
+    skia.commit(store, &changes).expect("commit");
+}
+
+fn set_transitions(store: &mut NodeStore, skia: &mut SkiaBackend, btn: NodeId, specs: &[TransitionSpec]) {
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    nve_motion::write_transitions(&mut tx, btn, specs);
+    tx.commit_into(&mut changes);
+    skia.commit(store, &changes).expect("commit");
+}
+
+#[test]
+fn zero_dt_and_in_delay_ticks_change_nothing_visible() {
+    let mut store = NodeStore::new();
+    let (btn, changes) = hover_button(&mut store, true);
+    let mut skia = backend(&store, &changes, true);
+    set_transitions(&mut store, &mut skia, btn, &[TransitionSpec::new(TransitionProperty::BackgroundColor, 100)
+        .delay_ms(100)
+        .easing(EasingCurve::Linear)]);
+    set_bg(&mut store, &mut skia, btn, Rgba::rgb(255, 0, 0));
+    assert!(skia.needs_next_frame());
+    let before = skia.animated_style(&store, btn).expect("live").background;
+    skia.advance_animations(&store, 0.0);
+    skia.advance_animations(&store, 0.05);
+    assert_eq!(skia.animated_style(&store, btn).expect("live").background, before, "still in delay");
+    skia.advance_animations(&store, 0.1);
+    assert_ne!(skia.animated_style(&store, btn).expect("live").background, before);
+}
+
+#[test]
+fn detach_then_reattach_does_not_replay_a_stale_transition() {
+    let mut store = NodeStore::new();
+    let (btn, changes) = hover_button(&mut store, true);
+    let mut skia = backend(&store, &changes, true);
+    set_transitions(&mut store, &mut skia, btn, &[]);
+    set_bg(&mut store, &mut skia, btn, Rgba::rgb(255, 0, 0));
+    assert!(!skia.needs_next_frame(), "no Motion: instant");
+    set_transitions(&mut store, &mut skia, btn, &[TransitionSpec::all(100).easing(EasingCurve::Linear)]);
+    assert!(!skia.needs_next_frame(), "reattaching seeds the current value, it does not animate from a stale one");
+    set_bg(&mut store, &mut skia, btn, Rgba::rgb(0, 255, 0));
+    assert!(skia.needs_next_frame());
+    skia.advance_animations(&store, 0.05);
+    let mid = skia.animated_style(&store, btn).expect("live").background;
+    assert!(mid.r > 0 && mid.g > 0, "animates red -> green, got {mid:?}");
+}
+
+#[test]
+fn reduced_motion_keeps_transitions_that_opt_out_of_instant() {
+    let mut store = NodeStore::new();
+    let (btn, changes) = hover_button(&mut store, true);
+    let mut skia = backend(&store, &changes, true);
+    set_transitions(&mut store, &mut skia, btn, &[TransitionSpec::new(TransitionProperty::BackgroundColor, 200)
+        .easing(EasingCurve::Linear)
+        .reduced_motion_instant(false)]);
+    set_bg(&mut store, &mut skia, btn, Rgba::rgb(255, 0, 0));
+    skia.set_reduced_motion(&store, true);
+    assert!(skia.needs_next_frame(), "opted-out transition keeps running under reduced motion");
+    set_transitions(&mut store, &mut skia, btn, &[TransitionSpec::new(TransitionProperty::BackgroundColor, 200)]);
+    set_bg(&mut store, &mut skia, btn, Rgba::rgb(0, 0, 255));
+    assert!(!skia.needs_next_frame(), "instant transitions snap under reduced motion");
+}
+
+#[test]
+fn spring_transition_overshoots_into_the_display_list() {
+    use nve_backend_skia::PaintOp;
+    use nve_motion::SpringSpec;
+
+    let mut store = NodeStore::new();
+    let (btn, changes) = hover_button(&mut store, true);
+    let mut skia = backend(&store, &changes, true);
+    set_transitions(&mut store, &mut skia, btn, &[TransitionSpec::spring(TransitionProperty::Transform, SpringSpec::bouncy())]);
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    tx.edit::<Transform>(btn).translate_x(110.0);
+    tx.commit_into(&mut changes);
+    skia.commit(&store, &changes).expect("commit");
+    let mut peak = f32::MIN;
+    while skia.advance_animations(&store, 1.0 / 60.0) {
+        for op in &skia.display_list().ops {
+            if let PaintOp::PushTransform { matrix } = op {
+                peak = peak.max(matrix[4]);
+            }
+        }
+    }
+    assert!(peak > 110.5, "bouncy spring overshoots the 110px target in painted output (peak {peak})");
+}

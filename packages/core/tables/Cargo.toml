@@ -7,14 +7,13 @@ license.workspace = true
 [dependencies]
 nve-abi = { workspace = true }
 nve-codec = { workspace = true }
-nve-hash = { workspace = true }
 nve-store = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }
 
 [[bench]]
-name = "components_bench"
+name = "tables_bench"
 harness = false
 
 [lints]

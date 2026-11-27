@@ -567,3 +567,34 @@ fn unit_restored_active_and_staged_scanners_positive_and_negative() {
         "CargoSet must catch macOS-gated optional third-party serde_json: {v_sj:?}"
     );
 }
+
+#[test]
+fn unit_platform_purity_flags_css_html_formatters_and_motion_in_core_only() {
+    let scan = |rel: &str, src: &str| {
+        let ast = syn::parse_file(src).expect("parse");
+        let mut v = Vec::new();
+        purity::scan_platform_purity(rel, src, &ast, &mut v);
+        v
+    };
+    for bad in [
+        "pub fn write_css_into(out: &mut String) {}",
+        "impl X { pub const fn as_css(self) -> &'static str { \"\" } }",
+        "impl X { pub const fn as_html_type(self) -> &'static str { \"\" } }",
+        "impl X { pub const fn to_css_keyword(&self) -> &'static str { \"\" } }",
+        "pub trait Fmt { fn format_css(&self); }",
+        "pub fn parse_box_shadow(raw: &str) {}",
+        "pub mod motion {}",
+        "pub struct S { clock: MotionClock }",
+    ] {
+        assert_eq!(scan("packages/core/interop/src/a.rs", bad).len(), 1, "core must flag: {bad}");
+        assert!(scan("packages/backends/web/src/a.rs", bad).is_empty(), "backends may: {bad}");
+    }
+    assert_eq!(scan("packages/core/engine/src/motion.rs", "").len(), 1, "motion-named core file");
+    for good in [
+        "pub fn whatwg_token() {}",
+        "pub struct ReducedMotion(bool);",
+        "#[cfg(test)] mod tests { fn write_css() {} }",
+    ] {
+        assert!(scan("packages/core/tables/src/a.rs", good).is_empty(), "allowed: {good}");
+    }
+}

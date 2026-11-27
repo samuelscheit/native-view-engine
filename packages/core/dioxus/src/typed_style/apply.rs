@@ -129,9 +129,8 @@ impl TypedStyle {
                     .z_index(s.z_index);
             }
             if let Some(ref shadows) = self.box_shadows {
-                tx.edit::<Visual>(node).box_shadows(
-                    (!shadows.is_empty()).then(|| BoxShadows(shadows.as_slice().into())),
-                );
+                tx.edit::<Visual>(node)
+                    .box_shadows((!shadows.is_empty()).then(|| BoxShadows(Arc::clone(shadows))));
             }
             if let Some(ref ov) = self.overflow {
                 let mode = match ov.trim() {

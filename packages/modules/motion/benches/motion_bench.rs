@@ -8,7 +8,7 @@ fn main() {}
 mod native {
     use std::hint::black_box;
 
-    use criterion::{criterion_group, Criterion};
+    use criterion::{criterion_group, BatchSize, Criterion};
     use nve_abi::NodeId;
     use nve_motion::{
         EasingCurve, MotionClock, MotionPreference, SpringSpec, SpringState, TransitionProperty,
@@ -38,14 +38,18 @@ mod native {
                 1.0,
             );
         }
+        // The clone is setup (not measured): each iteration ticks a fresh copy of 256 tracks.
         c.bench_function("motion_clock_tick_256_tracks", |b| {
-            b.iter(|| {
-                let mut warm = clock.clone();
-                warm.tick_with(black_box(1.0 / 120.0), |ev| {
-                    black_box(ev);
-                });
-                black_box(warm.active_count())
-            });
+            b.iter_batched_ref(
+                || clock.clone(),
+                |warm| {
+                    warm.tick_with(black_box(1.0 / 120.0), |ev| {
+                        black_box(ev);
+                    });
+                    black_box(warm.active_count())
+                },
+                BatchSize::SmallInput,
+            );
         });
 
         let easing = EasingCurve::Spring(SpringSpec::bouncy());
