@@ -226,6 +226,15 @@ pub(crate) fn render_calendar_dialog(
                     let focused_str = if cell.is_focused { "true" } else { "false" };
                     let on_select = cb.on_select;
                     let on_grid_key = cb.on_grid_key;
+                    let cell_data = super::html_tables::html_data_attrs(vec![
+                        ("date".to_owned(), iso.clone()),
+                        ("in-month".to_owned(), in_month_str.to_owned()),
+                        ("today".to_owned(), today_str.to_owned()),
+                        ("in-range".to_owned(), in_range_str.to_owned()),
+                        ("range-start".to_owned(), range_start_str.to_owned()),
+                        ("range-end".to_owned(), range_end_str.to_owned()),
+                        ("focused".to_owned(), focused_str.to_owned()),
+                    ]);
 
                     rsx! {
                         pressable {
@@ -237,13 +246,7 @@ pub(crate) fn render_calendar_dialog(
                             aria_disabled: "{aria_dis}",
                             disabled: cell_disabled,
                             tab_index: if cell.is_focused && !cell_disabled { 0 } else { -1 },
-                            "data-date": "{iso}",
-                            "data-in-month": "{in_month_str}",
-                            "data-today": "{today_str}",
-                            "data-in-range": "{in_range_str}",
-                            "data-range-start": "{range_start_str}",
-                            "data-range-end": "{range_end_str}",
-                            "data-focused": "{focused_str}",
+                            nve_table: cell_data,
                             nve_style: cell_style,
                             onpress: move |_| {
                                 if !cell_disabled {
@@ -284,6 +287,15 @@ pub(crate) fn render_calendar_dialog(
     let on_prev = cb.on_prev;
     let on_next = cb.on_next;
     let on_grid_key = cb.on_grid_key;
+    let mut cal_data = Vec::new();
+    if let Some(ref p) = pos_placement { cal_data.push(("placement".to_owned(), p.clone())); }
+    if let Some(ref x) = pos_x { cal_data.push(("x".to_owned(), x.clone())); }
+    if let Some(ref y) = pos_y { cal_data.push(("y".to_owned(), y.clone())); }
+    if let Some(ref f) = pos_flipped { cal_data.push(("flipped".to_owned(), f.clone())); }
+    if let Some(ref s) = pos_shifted { cal_data.push(("shifted".to_owned(), s.clone())); }
+    if let Some(ref ax) = pos_arrow_x { cal_data.push(("arrow-x".to_owned(), ax.clone())); }
+    if let Some(ref ay) = pos_arrow_y { cal_data.push(("arrow-y".to_owned(), ay.clone())); }
+    let cal_table = super::html_tables::html_data_attrs(cal_data);
 
     rsx! {
         view {
@@ -291,13 +303,7 @@ pub(crate) fn render_calendar_dialog(
             accessibility_role: "dialog",
             aria_labelledby: "{month_label_id}",
             tab_index: -1,
-            "data-placement": pos_placement,
-            "data-x": pos_x,
-            "data-y": pos_y,
-            "data-flipped": pos_flipped,
-            "data-shifted": pos_shifted,
-            "data-arrow-x": pos_arrow_x,
-            "data-arrow-y": pos_arrow_y,
+            nve_table: cal_table,
             nve_style: dialog_style,
             view {
                 test_id: format!("{base_id}-header"),

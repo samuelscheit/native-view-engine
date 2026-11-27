@@ -179,18 +179,21 @@ pub fn Button(
     let tab_index = if blocked { -1 } else { 0 };
     let on_press_click = on_press;
     let on_press_key = on_press;
+    let html_attr = super::html_tables::html_invoker_table(
+        button_type.clone(),
+        name.clone(),
+        value.clone(),
+        command,
+        commandfor,
+        popovertarget,
+        popovertargetaction,
+    );
 
     rsx! {
         pressable {
             id: id,
             test_id: test_id,
-            button_type: button_type,
-            name: name,
-            value: value,
-            command: command,
-            commandfor: commandfor,
-            popovertarget: popovertarget,
-            popovertargetaction: popovertargetaction,
+            nve_table: html_attr,
             accessibility_role: "button",
             accessibility_label: accessibility_label,
             accessibility_hint: accessibility_hint,
@@ -299,18 +302,21 @@ pub fn IconButton(
     let tab_index = if blocked { -1 } else { 0 };
     let on_press_click = on_press;
     let on_press_key = on_press;
+    let html_attr = super::html_tables::html_invoker_table(
+        button_type.clone(),
+        name.clone(),
+        value.clone(),
+        command,
+        commandfor,
+        popovertarget,
+        popovertargetaction,
+    );
 
     rsx! {
         pressable {
             id: id,
             test_id: test_id,
-            button_type: button_type,
-            name: name,
-            value: value,
-            command: command,
-            commandfor: commandfor,
-            popovertarget: popovertarget,
-            popovertargetaction: popovertargetaction,
+            nve_table: html_attr,
             accessibility_role: "button",
             accessibility_label: "{accessibility_label}",
             accessibility_hint: accessibility_hint,

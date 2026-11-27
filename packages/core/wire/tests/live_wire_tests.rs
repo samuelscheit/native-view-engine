@@ -13,9 +13,9 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    encode_events, ColorRgba, ComponentKind, EventPayload, LayoutProps, NativeEvent,
-    NativeEventKind, StyleProps,
+    encode_events, ColorRgba, EventPayload, NativeEvent, NativeEventKind, NVE_PRIMARY_SLOT_NONE,
 };
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_engine::{
     encode_scene_reloc, LayoutRect, SceneRelocInput, SceneRelocNodeInput, SceneRelocView,
     VerifyMode, Viewport,
@@ -33,15 +33,15 @@ fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
         SceneRelocNodeInput {
             node_id: 1,
             parent_index: -1,
-            kind: ComponentKind::View,
+            primary_slot: NVE_PRIMARY_SLOT_NONE,
             flags: 0,
             text_align: 0,
             image_resize_mode: 0,
             font_weight: 400,
             event_mask: 0,
             computed_rect: LayoutRect::default(),
-            style: StyleProps::default(),
-            layout: LayoutProps::default(),
+            style: VisualSnapshot::default(),
+            layout: LayoutSnapshot::default(),
             text: "",
             tag: "",
             image_src: "",
@@ -52,15 +52,15 @@ fn build_sample_scene_archive() -> nve_engine::NveSceneArchive {
         SceneRelocNodeInput {
             node_id: 2,
             parent_index: 0,
-            kind: ComponentKind::Text,
+            primary_slot: 1,
             flags: 0,
             text_align: 0,
             image_resize_mode: 0,
             font_weight: 400,
             event_mask: 0,
             computed_rect: LayoutRect::default(),
-            style: StyleProps::default(),
-            layout: LayoutProps::default(),
+            style: VisualSnapshot::default(),
+            layout: LayoutSnapshot::default(),
             text: "Hello QUIC/WebTransport",
             tag: "",
             image_src: "",

@@ -1,246 +1,172 @@
-//! Zero-copy `NVERELOC` pre-rendered Frame-0 scene export, hydration, and generic
-//! [`prerender_native_frame0`] pipeline for [`HeadlessBackend`].
+//! Zero-copy `NVERELOC` Frame-0 scene export from [`HeadlessBackend`] + [`NodeStore`], plus the
+//! generic [`prerender_native_frame0`] pipeline for `NveApp` (`NVE2`) instant-boot baking.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use nve_abi::{
-    ColorRgba, ComponentKind, FrameId, NodeId, NveDirectEvent, NveEventBatchRef, RawPropValue,
-    SurfaceId, ROOT_NODE_ID,
+    ColorRgba, FrameId, NveDirectEvent, NveEventBatchRef, SurfaceId, ROOT_NODE_ID,
 };
-use nve_components::canvas_ir::{DrawListDecoder, ImageResizeMode};
-use nve_components::style_patch::{Display, Overflow, TextAlign as PatchTextAlign};
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
+use nve_components::tables::{
+    core_realization_order, write_box_shadows_css, BoxShadows, Display as NveDisplay, Image,
+    ImageFit, ImageSrc, Interaction, Layout, Overflow, TextAlign, TextContent, Typography, Visual,
+};
 use nve_engine::{
-    encode_scene_reloc, BackendError, LayoutEngine, NveApp, RelocBuf, RelocError, RenderBackend,
-    SceneRelocInput, SceneRelocNodeInput, SceneRelocView, TextMeasurer, VerifyMode, Viewport,
+    encode_scene_reloc, BackendError, LayoutRect, NveApp, RelocBuf, RelocError, SceneRelocInput,
+    SceneRelocNodeInput, StoreBackend, StoreLayoutEngine, StoreWireReplica, TextMeasurer, Viewport,
     SCENE_NODE_CLIP_CHILDREN, SCENE_NODE_HAS_EXPLICIT_STYLE, SCENE_NODE_HIDDEN,
     SCENE_NODE_INTERACTIVE,
 };
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 
-use crate::{HeadlessBackend, HeadlessNode, TaffyLayoutEngine, MAX_TREE_DEPTH};
-
-fn extract_font_weight(node: &HeadlessNode) -> u16 {
-    let raw = node
-        .raw_props
-        .get("font-weight")
-        .or_else(|| node.raw_props.get("fontWeight"));
-    match raw {
-        Some(RawPropValue::I64(n)) => (*n).clamp(100, 900) as u16,
-        Some(RawPropValue::F64(n)) if n.is_finite() => (n.round() as i64).clamp(100, 900) as u16,
-        Some(RawPropValue::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
-            "thin" => 100,
-            "extralight" | "ultralight" => 200,
-            "light" => 300,
-            "normal" | "regular" => 400,
-            "medium" => 500,
-            "semibold" | "demibold" => 600,
-            "bold" => 700,
-            "extrabold" | "ultrabold" => 800,
-            "black" | "heavy" => 900,
-            other => other.parse::<u16>().unwrap_or(400).clamp(100, 900),
-        },
-        _ => 400,
-    }
-}
-
-fn extract_text_align(node: &HeadlessNode) -> u8 {
-    let raw = node
-        .raw_props
-        .get("text-align")
-        .or_else(|| node.raw_props.get("textAlign"));
-    match raw {
-        Some(RawPropValue::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
-            "center" => 1,
-            "right" | "end" => 2,
-            _ => 0,
-        },
-        _ => 0,
-    }
-}
-
-fn extract_image_resize_mode(node: &HeadlessNode) -> u8 {
-    let raw = node
-        .raw_props
-        .get("resizeMode")
-        .or_else(|| node.raw_props.get("resize_mode"));
-    let mode = match raw {
-        Some(RawPropValue::String(s)) => ImageResizeMode::parse(s).unwrap_or_default(),
-        Some(RawPropValue::I64(n)) => ImageResizeMode::from_u8(*n as u8).unwrap_or_default(),
-        _ => ImageResizeMode::default(),
-    };
-    mode as u8
-}
-
-fn should_clip_children(node: &HeadlessNode) -> bool {
-    if node.kind == ComponentKind::ScrollView {
-        return true;
-    }
-    if let Some(RawPropValue::String(ov)) = node.raw_props.get("overflow") {
-        let lower = ov.trim().to_ascii_lowercase();
-        if matches!(lower.as_str(), "hidden" | "clip" | "scroll" | "auto") {
-            return true;
-        }
-    }
-    matches!(node.raw_props.get("clip"), Some(RawPropValue::Bool(true)))
-}
+use crate::{HeadlessBackend, TaffyStoreLayout, MAX_TREE_DEPTH};
 
 struct OwnedNodeData {
-    node_id: NodeId,
+    node_id: u32,
     parent_index: i32,
-    kind: ComponentKind,
+    primary_slot: u8,
     flags: u8,
     text_align: u8,
     image_resize_mode: u8,
     font_weight: u16,
     event_mask: u64,
-    computed_rect: nve_engine::LayoutRect,
-    style: nve_abi::StyleProps,
-    layout: nve_abi::LayoutProps,
+    computed_rect: LayoutRect,
+    style: VisualSnapshot,
+    layout: LayoutSnapshot,
     text: String,
     tag: String,
     image_src: String,
     box_shadow: String,
-    draw_list: Vec<u8>,
     children: Vec<u32>,
 }
 
-impl<L: LayoutEngine> HeadlessBackend<L> {
-    /// Exports the current laid-out tree into a validated, 64-byte-aligned `NVERELOC` Frame-0
-    /// scene (`SceneRelocView`) ready for zero-allocation native instant-boot painting.
+impl<L: StoreLayoutEngine> HeadlessBackend<L> {
+    /// Exports the current laid-out `NodeStore` into a validated, 64-byte-aligned `NVERELOC`
+    /// Frame-0 scene (`SceneRelocView`) ready for zero-allocation native instant-boot painting.
     pub fn export_scene_reloc(
         &self,
+        store: &NodeStore,
         schema_version: u32,
         frame_id: FrameId,
         app_tag: &str,
         clear_color: ColorRgba,
     ) -> Result<RelocBuf, RelocError> {
-        // Collect reachable tree nodes in pre-order starting from ROOT_NODE_ID.
-        let mut ordered_ids: Vec<(NodeId, i32)> = Vec::new();
-        let mut id_to_idx: HashMap<NodeId, u32> = HashMap::new();
-        let mut stack: Vec<(NodeId, i32, usize)> = vec![(ROOT_NODE_ID, -1, 0)];
+        let mut ordered_ids: Vec<(StoreNodeId, i32)> = Vec::new();
+        let mut id_to_idx: HashMap<StoreNodeId, u32> = HashMap::new();
+        let mut stack: Vec<(StoreNodeId, i32, usize)> = vec![(StoreNodeId::ROOT, -1, 0)];
 
         while let Some((id, parent_idx, depth)) = stack.pop() {
-            if depth > MAX_TREE_DEPTH || id_to_idx.contains_key(&id) {
+            if depth > MAX_TREE_DEPTH || !store.is_live(id) || id_to_idx.contains_key(&id) {
                 continue;
             }
-            let Some(node) = self.nodes.get(id) else {
-                continue;
-            };
             let idx = ordered_ids.len() as u32;
             id_to_idx.insert(id, idx);
             ordered_ids.push((id, parent_idx));
-            for &cid in node.children.iter().rev() {
+            for &cid in store.children(id).iter().rev() {
                 stack.push((cid, idx as i32, depth + 1));
             }
         }
 
         let mut owned: Vec<OwnedNodeData> = Vec::with_capacity(ordered_ids.len());
         for &(id, parent_index) in &ordered_ids {
-            let node = self.nodes.get(id).expect("collected node exists");
-            let patch = self.effective_patch(id);
-            let mut style = node.style;
-            if !patch.is_empty() {
-                patch.apply_style_to(&mut style);
-            }
-
+            let (layout, style) = self.effective_layout_and_visual(store, id);
             let mut flags = 0u8;
-            let clips = match patch.overflow {
-                Some(Overflow::Visible) => node.kind == ComponentKind::ScrollView,
-                Some(Overflow::Hidden | Overflow::Scroll | Overflow::Auto) => true,
-                None => should_clip_children(node),
-            };
-            if clips {
+            if store.try_row::<Visual>(id).is_some_and(|v| {
+                matches!(
+                    v.overflow_x(),
+                    Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+                ) || matches!(
+                    v.overflow_y(),
+                    Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+                )
+            }) {
                 flags |= SCENE_NODE_CLIP_CHILDREN;
             }
-            if node.has_explicit_style {
+            if store.has::<Typography>(id) {
                 flags |= SCENE_NODE_HAS_EXPLICIT_STYLE;
             }
-            if node.event_mask != 0 || node.kind == ComponentKind::Pressable {
+            let event_mask = u64::from(
+                store
+                    .try_row::<Interaction>(id)
+                    .map_or(0, |i| i.event_mask()),
+            );
+            if event_mask != 0 {
                 flags |= SCENE_NODE_INTERACTIVE;
             }
-            if patch.display == Some(Display::None) {
+            if store
+                .try_row::<Layout>(id)
+                .is_some_and(|l| l.display() == NveDisplay::None)
+            {
                 flags |= SCENE_NODE_HIDDEN;
             }
-
-            let font_weight = patch.font_weight.unwrap_or_else(|| extract_font_weight(node));
-            let text_align = patch
-                .text_align
-                .map(|a| match a {
-                    PatchTextAlign::Center => 1,
-                    PatchTextAlign::Right => 2,
-                    PatchTextAlign::Left | PatchTextAlign::Justify => 0,
+            let (text_align, font_weight) = store
+                .try_row::<Typography>(id)
+                .map(|t| {
+                    let ta = match t.text_align() {
+                        TextAlign::Start | TextAlign::Left => 0,
+                        TextAlign::Center => 1,
+                        TextAlign::End | TextAlign::Right => 2,
+                        TextAlign::Justify => 3,
+                    };
+                    (ta, t.font_weight())
                 })
-                .unwrap_or_else(|| extract_text_align(node));
-
-            let text = if let Some(t) = node.text.as_deref() {
-                t.to_owned()
-            } else if node.kind == ComponentKind::TextInput {
-                match node
-                    .raw_props
-                    .get("value")
-                    .or_else(|| node.raw_props.get("placeholder"))
-                {
-                    Some(RawPropValue::String(s)) => s.clone(),
-                    _ => String::new(),
-                }
-            } else {
-                String::new()
-            };
-
-            let tag = match node.raw_props.get("testid").or_else(|| node.raw_props.get("testID")) {
-                Some(RawPropValue::String(s)) => s.clone(),
-                _ => node.custom_name.clone().unwrap_or_default(),
-            };
-
-            let image_src = match node.raw_props.get("src") {
-                Some(RawPropValue::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-
-            let box_shadow = match node
-                .raw_props
-                .get("box-shadow")
-                .or_else(|| node.raw_props.get("boxShadow"))
-            {
-                Some(RawPropValue::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-
-            let draw_list = match node
-                .raw_props
-                .get("drawList")
-                .or_else(|| node.raw_props.get("draw_list"))
-            {
-                Some(RawPropValue::Bytes(bytes)) => bytes.clone(),
-                Some(RawPropValue::String(s)) => {
-                    DrawListDecoder::decode_attr_bytes(s).unwrap_or_default()
-                }
-                _ => Vec::new(),
-            };
-
-            let children: Vec<u32> = node
-                .children
+                .unwrap_or((0, 400));
+            let (image_src, image_resize_mode) = store
+                .try_row::<Image>(id)
+                .map(|img| {
+                    let rm = match img.fit() {
+                        ImageFit::Cover => 0,
+                        ImageFit::Contain => 1,
+                        ImageFit::Fill => 2,
+                        ImageFit::None => 3,
+                        ImageFit::ScaleDown => 4,
+                    };
+                    let url = match store.resource::<ImageSrc>(img.src()) {
+                        Some(ImageSrc::Url(u)) => u.clone(),
+                        _ => String::new(),
+                    };
+                    (url, rm)
+                })
+                .unwrap_or_default();
+            let text = store
+                .try_row::<TextContent>(id)
+                .map(|t| t.text().to_owned())
+                .unwrap_or_default();
+            let box_shadow = store
+                .try_row::<Visual>(id)
+                .map(|v| v.box_shadows())
+                .filter(|r| !r.is_none())
+                .and_then(|r| store.resource::<BoxShadows>(r))
+                .filter(|bs| !bs.0.is_empty())
+                .map(|bs| {
+                    let mut css = String::new();
+                    write_box_shadows_css(&mut css, &bs.0);
+                    css
+                })
+                .unwrap_or_default();
+            let children: Vec<u32> = store
+                .children(id)
                 .iter()
                 .filter_map(|cid| id_to_idx.get(cid).copied())
                 .collect();
 
             owned.push(OwnedNodeData {
-                node_id: id,
+                node_id: id.raw(),
                 parent_index,
-                kind: node.kind,
+                primary_slot: store.primary_slot(id).0,
                 flags,
                 text_align,
-                image_resize_mode: extract_image_resize_mode(node),
+                image_resize_mode,
                 font_weight,
-                event_mask: node.event_mask,
-                computed_rect: node.computed_rect,
+                event_mask,
+                computed_rect: self.layout.layout_of(id).unwrap_or_default(),
                 style,
-                layout: node.layout,
+                layout,
                 text,
-                tag,
+                tag: String::new(),
                 image_src,
                 box_shadow,
-                draw_list,
                 children,
             });
         }
@@ -250,7 +176,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             .map(|n| SceneRelocNodeInput {
                 node_id: n.node_id,
                 parent_index: n.parent_index,
-                kind: n.kind,
+                primary_slot: n.primary_slot,
                 flags: n.flags,
                 text_align: n.text_align,
                 image_resize_mode: n.image_resize_mode,
@@ -263,7 +189,7 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
                 tag: &n.tag,
                 image_src: &n.image_src,
                 box_shadow: &n.box_shadow,
-                draw_list: &n.draw_list,
+                draw_list: &[],
                 children: &n.children,
             })
             .collect();
@@ -279,167 +205,9 @@ impl<L: LayoutEngine> HeadlessBackend<L> {
             nodes: &inputs,
         })
     }
-
-    /// Hydrates this [`HeadlessBackend`] directly from a pre-rendered [`SceneRelocView`] without
-    /// running Taffy layout (using pre-computed `computed_rect`s from `frame0.nvereloc`).
-    ///
-    /// Returns the number of hydrated nodes.
-    pub fn load_reloc_scene(&mut self, view: SceneRelocView<'_>) -> Result<usize, BackendError> {
-        let root = view.root();
-        self.surface_id = root.surface_id;
-        self.viewport = view.viewport();
-        self.nodes.clear();
-        self.prev_rects.clear();
-        self.last_mutations.clear();
-        self.layout.reset();
-
-        let scene_nodes = view.nodes();
-        if scene_nodes.is_empty() {
-            self.ensure_node(ROOT_NODE_ID, ComponentKind::Root, None);
-            return Ok(0);
-        }
-
-        for (idx, sn) in scene_nodes.iter().enumerate() {
-            let id = sn.node_id;
-            let kind = sn.component_kind();
-            let text_str = view
-                .text_of(sn)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            let tag_str = view
-                .tag_of(sn)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            let image_src = view
-                .image_src_of(sn)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            let box_shadow = view
-                .box_shadow_of(sn)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            let draw_list = view
-                .draw_list_of(sn)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            let child_indices = view
-                .children_of(sn)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-
-            let mut raw_props = HashMap::new();
-            if !tag_str.is_empty() {
-                raw_props.insert("testid".into(), RawPropValue::String(tag_str.to_owned()));
-            }
-            if !image_src.is_empty() {
-                raw_props.insert("src".into(), RawPropValue::String(image_src.to_owned()));
-                raw_props.insert(
-                    "resizeMode".into(),
-                    RawPropValue::I64(i64::from(sn.image_resize_mode)),
-                );
-            }
-            if !box_shadow.is_empty() {
-                raw_props.insert(
-                    "box-shadow".into(),
-                    RawPropValue::String(box_shadow.to_owned()),
-                );
-            }
-            if !draw_list.is_empty() {
-                raw_props.insert("drawList".into(), RawPropValue::Bytes(draw_list.to_vec()));
-            }
-            if sn.font_weight != 400 {
-                raw_props.insert(
-                    "font-weight".into(),
-                    RawPropValue::I64(i64::from(sn.font_weight)),
-                );
-            }
-            match sn.text_align {
-                1 => {
-                    raw_props.insert("text-align".into(), RawPropValue::String("center".into()));
-                }
-                2 => {
-                    raw_props.insert("text-align".into(), RawPropValue::String("right".into()));
-                }
-                _ => {}
-            }
-            if sn.clips_children() && kind != ComponentKind::ScrollView {
-                raw_props.insert("overflow".into(), RawPropValue::String("hidden".into()));
-            }
-            if kind == ComponentKind::TextInput && !text_str.is_empty() {
-                raw_props.insert("value".into(), RawPropValue::String(text_str.to_owned()));
-            }
-
-            let parent = if sn.parent_index >= 0 {
-                scene_nodes.get(sn.parent_index as usize).map(|p| p.node_id)
-            } else {
-                None
-            };
-            let children: Vec<NodeId> = child_indices
-                .iter()
-                .filter_map(|&cidx| scene_nodes.get(cidx as usize).map(|c| c.node_id))
-                .collect();
-
-            let layout = view.layout_of_index(idx).unwrap_or_default();
-            let style = sn.style_props();
-            let text_arc = (!text_str.is_empty()).then(|| Arc::<str>::from(text_str));
-
-            self.layout.upsert_node(id, kind);
-            self.layout.set_layout(id, &layout);
-            self.layout.set_style(id, &style);
-            if let Some(t) = text_arc.as_deref() {
-                self.layout.set_text(id, t);
-            }
-
-            self.nodes.insert(
-                id,
-                HeadlessNode {
-                    id,
-                    kind,
-                    custom_name: (kind == ComponentKind::Custom && !tag_str.is_empty())
-                        .then(|| tag_str.to_owned()),
-                    text: text_arc,
-                    layout,
-                    layout_ext: None,
-                    transform: None,
-                    style,
-                    background_fill: None,
-                    has_explicit_style: sn.has_explicit_style(),
-                    raw_props,
-                    draw_list: None,
-                    svg: None,
-                    native_view_props: None,
-                    event_mask: sn.event_mask,
-                    cursor: None,
-                    state_rules: Vec::new(),
-                    parent,
-                    children,
-                    computed_rect: sn.computed_rect(),
-                },
-            );
-        }
-
-        // Wire children into layout engine so a later `recompute_layout` or live diff stays exact.
-        for sn in scene_nodes {
-            if let Some(node) = self.nodes.get(sn.node_id)
-                && !node.children.is_empty()
-            {
-                self.layout.set_children(sn.node_id, &node.children);
-            }
-        }
-
-        Ok(scene_nodes.len())
-    }
-
-    /// Convenience entrypoint that validates `bytes` with `mode` and hydrates this backend.
-    pub fn load_reloc_scene_bytes(
-        &mut self,
-        bytes: &[u8],
-        mode: VerifyMode,
-    ) -> Result<usize, BackendError> {
-        let view =
-            SceneRelocView::from_bytes(bytes, mode).map_err(|e| BackendError::Internal(e.to_string()))?;
-        self.load_reloc_scene(view)
-    }
 }
 
-/// Generic, app-agnostic Native Instant-Boot Frame-0 prerenderer.
-///
-/// Executes Frame 0 of any [`NveApp`] at `viewport`, computes Flexbox layout via
-/// [`HeadlessBackend`] + [`TaffyLayoutEngine`], and emits a validated `frame0.nvereloc` buffer.
+/// Generic, app-agnostic Native Instant-Boot Frame-0 prerenderer (`NVE2` -> `frame0.nvereloc`).
 pub fn prerender_native_frame0<A: NveApp>(
     app: &mut A,
     surface_id: SurfaceId,
@@ -448,10 +216,9 @@ pub fn prerender_native_frame0<A: NveApp>(
     app_tag: &str,
     clear_color: ColorRgba,
 ) -> Result<RelocBuf, BackendError> {
-    let backend = HeadlessBackend::<TaffyLayoutEngine>::new();
     prerender_native_frame0_into(
         app,
-        backend,
+        HeadlessBackend::<TaffyStoreLayout>::new(),
         surface_id,
         viewport,
         schema_version,
@@ -460,8 +227,7 @@ pub fn prerender_native_frame0<A: NveApp>(
     )
 }
 
-/// Variant of [`prerender_native_frame0`] accepting a custom [`TextMeasurer`] (such as
-/// `nve_backend_skia::CosmicTextEngine`) for pixel-exact pre-baked text rects.
+/// Variant of [`prerender_native_frame0`] accepting a custom [`TextMeasurer`].
 pub fn prerender_native_frame0_with_text_measurer<A: NveApp>(
     app: &mut A,
     surface_id: SurfaceId,
@@ -471,7 +237,7 @@ pub fn prerender_native_frame0_with_text_measurer<A: NveApp>(
     clear_color: ColorRgba,
     text_measurer: Arc<dyn TextMeasurer>,
 ) -> Result<RelocBuf, BackendError> {
-    let mut backend = HeadlessBackend::<TaffyLayoutEngine>::new();
+    let mut backend = HeadlessBackend::<TaffyStoreLayout>::new();
     backend.set_text_measurer(text_measurer);
     prerender_native_frame0_into(
         app,
@@ -484,7 +250,7 @@ pub fn prerender_native_frame0_with_text_measurer<A: NveApp>(
     )
 }
 
-fn prerender_native_frame0_into<A: NveApp, L: LayoutEngine>(
+fn prerender_native_frame0_into<A: NveApp, L: StoreLayoutEngine>(
     app: &mut A,
     mut backend: HeadlessBackend<L>,
     surface_id: SurfaceId,
@@ -511,11 +277,13 @@ fn prerender_native_frame0_into<A: NveApp, L: LayoutEngine>(
         let _ = app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&layout_ev) });
     }
 
-    let frame0_cmd = app.render(1).to_vec();
-    if !frame0_cmd.is_empty() {
-        backend.submit_frame(&frame0_cmd)?;
+    let mut replica = StoreWireReplica::new(backend, core_realization_order());
+    let frame0_nve2 = app.render(1).to_vec();
+    if !frame0_nve2.is_empty() {
+        replica.submit_nve2_frame(&frame0_nve2)?;
     }
-    backend
-        .export_scene_reloc(schema_version, 1, app_tag, clear_color)
+    replica
+        .backend()
+        .export_scene_reloc(replica.store(), schema_version, 1, app_tag, clear_color)
         .map_err(|e| BackendError::Internal(e.to_string()))
 }

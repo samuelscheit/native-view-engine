@@ -1,6 +1,6 @@
 //! Zero-dependency pure-Rust Markdown & declarative `.mdx` compiler, syntax highlighter,
 //! `_meta.toml` navigation builder, compile-time validator, and binary full-text search index
-//! (`NVS1`) for `native-view-engine`.
+//! (`NVS2`) for `native-view-engine`.
 
 pub mod ast;
 pub mod codegen;
@@ -35,7 +35,7 @@ pub use nav::{
 };
 pub use parser::{ParsedBody, parse_markdown_body};
 pub use search::{
-    NVS1_MAGIC, NVS1_VERSION, Posting, SearchDoc, SearchHit, SearchIndex, SearchIndexError, fnv1a64,
+    NVS2_MAGIC, NVS2_VERSION, Posting, SearchDoc, SearchHit, SearchIndex, SearchIndexError,
 };
 pub use validate::{
     ComponentRegistry, ComponentSchema, Diagnostic, DiagnosticKind, DiagnosticSeverity, PropSchema,
@@ -95,7 +95,7 @@ pub fn compile_document(route: &str, source_path: &str, source: &str) -> Compile
 }
 
 /// Compile an entire [`SiteSource`] into a [`CompiledSite`] (pages, navigation, pagination, and
-/// `NVS1` search index).
+/// `NVS2` search index).
 pub fn compile_site(source: &SiteSource, options: &CompileOptions) -> CompiledSite {
     let mut pages = Vec::new();
     for (rel_path, content) in source.doc_files() {

@@ -15,6 +15,7 @@ nve-dioxus = { workspace = true }
 nve-engine = { workspace = true }
 nve-i18n = { workspace = true }
 nve-interop = { path = "../../core/interop", default-features = false }
+nve-web-html = { workspace = true }
 dioxus-core = { workspace = true }
 dioxus-core-macro = { workspace = true }
 dioxus-signals = { workspace = true }
@@ -25,6 +26,9 @@ web-sys = { workspace = true, features = ["Storage"] }
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
 nve-backend-web = { workspace = true }
+nve-components = { workspace = true }
+nve-store = { workspace = true }
+nve-web-html-web = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { workspace = true }

@@ -3,10 +3,8 @@
 
 use std::mem::{align_of, offset_of, size_of};
 
-use nve_abi::{
-    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, LayoutProps,
-    StyleProps,
-};
+use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::media::{
     FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
     ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
@@ -318,12 +316,9 @@ fn responsive_style_patch_applies_all_26_fields() {
     let rule = ResponsiveRule::new(MediaQuery::expanded(), full_patch);
     assert_eq!(rule.query, MediaQuery::expanded());
 
-    let mut layout = LayoutProps::default();
-    let mut style = StyleProps::default();
-    let mut raws = Vec::new();
-    rule.patch.apply_to_with_raw(&mut layout, &mut style, |k, v| {
-        raws.push((k.to_owned(), v.to_owned()));
-    });
+    let mut layout = LayoutSnapshot::default();
+    let mut style = VisualSnapshot::default();
+    rule.patch.apply_to(&mut layout, &mut style);
 
     assert_eq!(layout.flex_direction, FlexDirection::RowReverse);
     assert_eq!(layout.justify_content, FlexJustify::SpaceBetween);
@@ -347,13 +342,8 @@ fn responsive_style_patch_applies_all_26_fields() {
     assert_eq!(style.opacity, 0.92);
     assert_eq!(style.font_size, 18.5);
     assert_eq!(style.z_index, 42);
-    assert_eq!(
-        raws,
-        vec![
-            ("flex-wrap".into(), "wrap".into()),
-            ("overflow".into(), "auto".into()),
-            ("text-align".into(), "center".into()),
-            ("font-weight".into(), "700".into()),
-        ]
-    );
+    assert_eq!(rule.patch.flex_wrap, Some(FlexWrap::Wrap));
+    assert_eq!(rule.patch.overflow, Some(Overflow::Auto));
+    assert_eq!(rule.patch.text_align, Some(TextAlign::Center));
+    assert_eq!(rule.patch.font_weight, Some(700));
 }

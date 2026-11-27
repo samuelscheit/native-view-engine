@@ -1,13 +1,17 @@
 mod common;
 
-use common::{unique_test_dir, MultiBackendHarness};
+use common::{live_node_ids, register_studio_tables, unique_test_dir, MultiBackendHarness};
+use nve_abi::xxh64;
 use nve_abi::{
-    pack_key_modifiers, Command, CommandDecoder, ComponentKind, EventMask, NveDirectEvent,
-    NveEventBatchRef, NveMapEntry, NvePropsRef, NveValue, RawPropValue, ROOT_NODE_ID,
+    pack_key_modifiers, EventMask, NveDirectEvent, NveEventBatchRef, NveMapEntry, NvePropsRef,
+    NveValue, ROOT_NODE_ID,
 };
-use nve_components::{CanvasOp, DrawListDecoder, ImageResizeMode, NVE_DRAW_MAGIC};
+use nve_canvas::{Canvas, CanvasOp, DrawList, DrawListDecoder, NVE_DRAW_MAGIC};
+use nve_components::tables::{Image, ImageFit, ImageSrc, Interaction, TextInput};
 use nve_engine::mmap_arena::ARENA_HEADER_SLOT_SIZE;
-use nve_engine::{xxh64, NveApp, RenderBackend};
+use nve_engine::NveApp;
+use nve_store::wire::WireDecoder;
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_studio_workspace::{
     AccentTheme, ActiveView, ChannelKind, CornerRadiusMode, DensityMode, DocBlockKind,
     PersistConfig, StudioWorkspaceModule, WorkbenchPreset, WorkspaceState, WorkspaceStore,
@@ -17,55 +21,49 @@ use nve_studio_workspace::{
 #[test]
 fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_bytes() {
     let mut h = MultiBackendHarness::new(960.0, 640.0);
+    let store = h.surface.store();
 
-    let board_images: Vec<_> = h
-        .headless
-        .nodes()
-        .values()
-        .filter(|n| n.kind == ComponentKind::Image)
+    let board_images: Vec<_> = live_node_ids(store)
+        .into_iter()
+        .filter_map(|id| store.try_row::<Image>(id).map(|row| (id, row)))
         .collect();
     assert!(
         board_images.len() >= 4,
         "expected PNG Image avatars on every issue card, got {}",
         board_images.len()
     );
-    for img in &board_images {
-        match img.raw_props.get("src") {
-            Some(RawPropValue::String(src)) => {
+    for (_, img) in &board_images {
+        match store.resource::<ImageSrc>(img.src()) {
+            Some(ImageSrc::Url(src)) => {
                 assert!(
                     src.starts_with("data:image/png;base64,"),
                     "expected PNG data URI src, got {src}"
                 );
             }
-            other => panic!("missing Image src prop: {other:?}"),
+            other => panic!("missing Image src resource: {other:?}"),
         }
-        assert_eq!(
-            img.raw_props.get("resizeMode"),
-            Some(&RawPropValue::String(ImageResizeMode::Cover.as_str().into()))
-        );
+        assert_eq!(img.fit(), ImageFit::Cover);
     }
 
-    let board_inputs: Vec<_> = h
-        .headless
-        .nodes()
-        .values()
-        .filter(|n| n.kind == ComponentKind::TextInput)
+    let board_inputs: Vec<_> = live_node_ids(store)
+        .into_iter()
+        .filter_map(|id| store.try_row::<TextInput>(id).map(|row| (id, row)))
         .collect();
     assert!(
         board_inputs.len() >= 2,
         "expected search + custom task TextInputs on Board, got {}",
         board_inputs.len()
     );
-    for inp in &board_inputs {
+    for (id, inp) in &board_inputs {
+        let mask = store
+            .try_row::<Interaction>(*id)
+            .map_or(0, |i| i.event_mask());
         assert_ne!(
-            inp.event_mask & EventMask::TEXT_CHANGE,
+            u64::from(mask) & EventMask::TEXT_CHANGE,
             0,
             "TextInput must subscribe to EventMask::TEXT_CHANGE"
         );
-        assert!(matches!(
-            inp.raw_props.get("placeholder"),
-            Some(RawPropValue::String(p)) if !p.is_empty()
-        ));
+        assert!(!inp.placeholder().is_empty());
     }
 
     let html_board = h.html();
@@ -75,71 +73,61 @@ fn command_buffer_emits_real_image_text_input_and_skia_canvas_with_nve_draw1_byt
     h.press("nav-metrics");
     let canvas_id = h
         .find_by_test_id("metrics-sparkline-canvas")
-        .expect("SkiaCanvas node in Metrics view");
-    let canvas_node = h.headless.node(canvas_id).unwrap();
-    assert_eq!(canvas_node.kind, ComponentKind::SkiaCanvas);
-    let draw_prop = canvas_node
-        .raw_props
-        .get("drawList")
-        .expect("SkiaCanvas must emit drawList prop");
-    let ops = DrawListDecoder::decode_raw_prop(draw_prop)
-        .expect("SkiaCanvas drawList must decode as valid NVE_DRAW1");
+        .expect("Canvas node in Metrics view");
+    let canvas_row = h
+        .surface
+        .store()
+        .try_row::<Canvas>(StoreNodeId(canvas_id))
+        .expect("Canvas table row");
+    let dl = h
+        .surface
+        .store()
+        .resource::<DrawList>(canvas_row.draw_list())
+        .expect("Canvas DrawList resource");
     assert!(
-        ops.iter().any(|op| matches!(op, CanvasOp::StrokePolyline { points, .. } if points.len() >= 8)),
-        "expected telemetry StrokePolyline op in SkiaCanvas draw list, got {ops:?}"
+        dl.ops()
+            .iter()
+            .any(|op| matches!(op, CanvasOp::StrokePolyline { points, .. } if points.len() >= 8)),
+        "expected telemetry StrokePolyline op in Canvas draw list, got {:?}",
+        dl.ops()
     );
+    let raw_bytes = dl.to_nve_draw1_bytes();
+    assert!(raw_bytes.starts_with(&NVE_DRAW_MAGIC));
+    assert!(DrawListDecoder::decode(&raw_bytes).expect("decode NVE_DRAW1").len() >= 7);
     assert!(h.html().contains("<canvas "));
 
+    // Verify NVE2 wire roundtrip of the Canvas + DrawList resource through StudioWorkspaceModule.
+    register_studio_tables();
     let mut app = StudioWorkspaceModule::create(1);
     let metrics_entries = [NveMapEntry::new("view", NveValue::from_str("metrics"))];
     assert!(app.set_props(unsafe { NvePropsRef::from_slice(&metrics_entries) }));
-    let cmd_bytes = app.render(1).to_vec();
-    let (_, commands) = CommandDecoder::new(&cmd_bytes)
-        .and_then(CommandDecoder::decode_all)
-        .expect("decode metrics CommandBuffer");
+    let wire_bytes = app.render(1).to_vec();
 
-    let mut saw_canvas_create = false;
-    let mut saw_nve_draw1_bytes = false;
-    for cmd in &commands {
-        match cmd {
-            Command::CreateNode {
-                kind: ComponentKind::SkiaCanvas,
-                ..
-            } => {
-                saw_canvas_create = true;
-            }
-            Command::SetRawProp {
-                key,
-                value: RawPropValue::Bytes(bytes),
-                ..
-            } if key == "drawList" => {
-                assert!(
-                    bytes.starts_with(&NVE_DRAW_MAGIC),
-                    "drawList RawPropValue::Bytes must start with NVE_DRAW1 magic"
-                );
-                let decoded = DrawListDecoder::decode(bytes).expect("decode binary NVE_DRAW1");
-                assert!(decoded.len() >= 7);
-                saw_nve_draw1_bytes = true;
-            }
-            _ => {}
-        }
-    }
-    assert!(saw_canvas_create, "expected CreateNode(SkiaCanvas) in CommandBuffer");
-    assert!(
-        saw_nve_draw1_bytes,
-        "expected SetRawProp('drawList', RawPropValue::Bytes(NVE_DRAW1...)) in CommandBuffer"
-    );
+    let mut replica = NodeStore::replica();
+    let mut decoder = WireDecoder::default();
+    let mut changes = ChangeSet::default();
+    let mut tx = replica.tx();
+    decoder.apply(&mut tx, &wire_bytes).expect("decode metrics NVE2");
+    tx.commit_into(&mut changes);
+
+    let saw_canvas = live_node_ids(&replica).into_iter().any(|id| {
+        replica
+            .try_row::<Canvas>(id)
+            .and_then(|c| replica.resource::<DrawList>(c.draw_list()))
+            .is_some_and(|list| list.len() >= 7)
+    });
+    assert!(saw_canvas, "expected Canvas with >=7 DrawList ops in decoded NVE2 replica");
 }
 
 #[test]
-fn nws1_v2_fnv1a64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
+fn nws1_v2_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
     let mut state = WorkspaceState::default();
-    assert!(state.create_custom_task("Verify FNV-1a64 persistence"));
+    assert!(state.create_custom_task("Verify XXH64 persistence"));
     state.send_quick_reply(ChannelKind::Engineering, "NWS1 v2 integrity gate");
     state.select_view(ActiveView::Docs);
     assert!(state.toggle_doc_checklist(7));
     let added = state
-        .add_doc_block(DocBlockKind::Callout, "FNV-1a64 checksummed block")
+        .add_doc_block(DocBlockKind::Callout, "XXH64 checksummed block")
         .expect("add doc block");
     assert!(state.update_doc_block_text(added, "Edited checksummed callout"));
     state.toggle_doc_markdown_preview();
@@ -173,7 +161,7 @@ fn nws1_v2_fnv1a64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
         mutated[pos] ^= 0x80;
         assert!(
             WorkspaceState::from_bytes(&mutated).is_none(),
-            "single-bit flip at byte {pos}/{len} must be rejected by FNV-1a64"
+            "single-bit flip at byte {pos}/{len} must be rejected by XXH64"
         );
     }
 

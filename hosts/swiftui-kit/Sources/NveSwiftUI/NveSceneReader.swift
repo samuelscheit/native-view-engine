@@ -18,6 +18,7 @@ public struct NveSceneReader {
     public let childrenSlab: UnsafeBufferPointer<UInt32>
     public let dirtyIndices: UnsafeBufferPointer<UInt32>
     public let removedIds: UnsafeBufferPointer<UInt32>
+    public let tables: UnsafeBufferPointer<NveTableView>
 
     /// Validates `schema_hash` and non-null pointer invariants without copying any slab data.
     public init(view: NveSceneView) throws {
@@ -49,6 +50,10 @@ public struct NveSceneReader {
         if removedCount > 0 && view.removed_ids == nil {
             throw NveSceneReaderError.nullBufferPointer("removed_ids")
         }
+        let tableCount = Int(view.table_count)
+        if tableCount > 0 && view.tables == nil {
+            throw NveSceneReaderError.nullBufferPointer("tables")
+        }
 
         self.frameId = view.frame_id
         self.nodes = UnsafeBufferPointer(start: view.nodes, count: nodeCount)
@@ -56,6 +61,7 @@ public struct NveSceneReader {
         self.childrenSlab = UnsafeBufferPointer(start: view.children_slab, count: childrenLen)
         self.dirtyIndices = UnsafeBufferPointer(start: view.dirty_indices, count: dirtyCount)
         self.removedIds = UnsafeBufferPointer(start: view.removed_ids, count: removedCount)
+        self.tables = UnsafeBufferPointer(start: view.tables, count: tableCount)
     }
 
     @inlinable

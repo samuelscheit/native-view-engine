@@ -79,7 +79,7 @@ impl PairedApp for HotAppInstance {
 
 impl PairedApp for DioxusSurface {
     fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-        Cow::Owned(self.render_frame(frame_id).2)
+        Cow::Borrowed(self.render_nve2_slice(frame_id))
     }
     fn dispatch_events(&mut self, events: &[NveDirectEvent]) -> bool {
         DioxusSurface::dispatch_direct_events(self, unsafe {

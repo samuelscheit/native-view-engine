@@ -5,16 +5,10 @@
 //! Hover rules are wrapped in `@media (hover:hover)` by default so touch taps on mobile/hybrid
 //! devices never suffer sticky `:hover` states.
 
-use core::fmt::Write as _;
-
-use nve_abi::NodeId;
 use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
 
 use crate::media_css::write_style_patch_decls;
-use crate::WebBackend;
-
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+use crate::css::format_content_class;
 
 /// One compiled, content-addressed CSS interactive pseudo-state rule
 /// (`nve-s-<8hex>`).
@@ -98,15 +92,6 @@ impl CompiledStateRule {
     }
 }
 
-#[inline]
-fn fnv1a_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-    }
-    hash
-}
-
 /// Returns the static base-layer `(class_name, css_decl)` pair for a non-`Auto` [`CursorKind`],
 /// or `None` for [`CursorKind::Auto`]. Emitting cursors as dedicated zero-alloc base classes
 /// avoids multiplying structural `.s<hash>` rules and guarantees zero duplicate CSS rules during
@@ -132,13 +117,7 @@ pub const fn format_cursor_rule(cursor: CursorKind) -> Option<(&'static str, &'s
 
 /// Formats a deterministic content-addressed class token `nve-s-<8hex>` for `(state, decls)`.
 pub fn format_state_class(state: InteractionState, decls: &str) -> String {
-    let mut h = FNV1A_OFFSET_BASIS;
-    h = fnv1a_bytes(h, &[state.bits(), 0]);
-    h = fnv1a_bytes(h, decls.as_bytes());
-    let h32 = (h ^ (h >> 32)) as u32;
-    let mut out = String::with_capacity(14);
-    let _ = write!(&mut out, "nve-s-{h32:08x}");
-    out
+    format_content_class("nve-s-", &[&[state.bits(), 0], decls.as_bytes()])
 }
 
 /// Compiles a node's [`StateStyleRule`] slice into content-addressed [`CompiledStateRule`]s in
@@ -183,26 +162,3 @@ pub fn compile_node_state_rules_with_hover_guard(
     }
 }
 
-impl WebBackend {
-    /// Directly attaches or clears a zero-serialization base [`CursorKind`] on `id`.
-    pub fn set_node_cursor(&mut self, id: NodeId, cursor: Option<CursorKind>) {
-        let Some(node) = self.nodes.get_mut(&id) else {
-            return;
-        };
-        if node.cursor != cursor {
-            node.cursor = cursor;
-            self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-
-    /// Directly replaces the zero-serialization [`StateStyleRule`] list on `id`.
-    pub fn set_node_state_rules(&mut self, id: NodeId, rules: Vec<StateStyleRule>) {
-        let Some(node) = self.nodes.get_mut(&id) else {
-            return;
-        };
-        if node.state_rules != rules {
-            node.state_rules = rules;
-            self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-}

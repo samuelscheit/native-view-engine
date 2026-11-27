@@ -68,9 +68,9 @@ Supported ARIA attributes: `accessibility_label`, `accessibility_role`, `accessi
 
 `packages/core/dioxus/src/signal_archive/` persists and hydrates Dioxus signals across Tier-2 `cdylib` hot-swaps, process restarts, and `MmapSnapshot` + `.nvewal` crash recovery without JSON or fragile slot indices.
 
-Each signal is keyed by a deterministic 64-bit FNV-1a hash of `(component_path, '\0', signal_name)` (`signal_slot_id`), preventing collisions and tolerating added, removed, or re-typed signals across app upgrades:
+Each signal is keyed by a deterministic 64-bit XXH64 hash of `(component_path, '\0', signal_name)` (`signal_slot_id`), preventing collisions and tolerating added, removed, or re-typed signals across app upgrades:
 
-- **Full archive (`NVE_SIG1`, 28-byte header)** — `magic(8) | version(u32=1) | schema_version(u32) | slot_count(u32) | checksum_fnv64(u64)` followed by sorted `(slot_id: u64, tag: u8, payload)` slots (`Null`, `Bool`, `I64`, `U64`, `F64`, `Str`, `Bytes`, `BinValue`).
+- **Full archive (`NVE_SIG1`, 28-byte header)** — `magic(8) | version(u32=1) | schema_version(u32) | slot_count(u32) | checksum_xxh64(u64)` followed by sorted `(slot_id: u64, tag: u8, payload)` slots (`Null`, `Bool`, `I64`, `U64`, `F64`, `Str`, `Bytes`, `BinValue`).
 - **Incremental WAL delta (`NVE_SGD1`, 28-byte header)** — Streams only dirty `Upsert (1)` / `Remove (2)` signal ops into `SnapshotWal` (`NVE_WAL1`) between checkpoints.
 
 ```rust title="Registering persistent signals with SignalRegistry" highlight="5-8,11-15"

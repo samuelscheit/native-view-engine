@@ -313,8 +313,13 @@ fn unit_type_abi_macro_and_regression_scanners_positive_and_negative() {
 
 #[test]
 fn unit_perf_hash_codegen_purity_scanners_positive_and_negative() {
+    const { assert!(crate::ENFORCE_POST_NODESTORE) };
     assert!(line_has_fnv1a("const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;"));
     assert!(line_has_fnv1a("const OFFSET32: u32 = 0x811c_9dc5;"));
+    assert!(line_has_fnv1a("const DEC_OFFSET64: u64 = 14695981039346656037;"));
+    assert!(line_has_fnv1a("const DEC_PRIME64: u64 = 1099511628211;"));
+    assert!(line_has_fnv1a("const DEC_OFFSET32: u32 = 2166136261;"));
+    assert!(line_has_fnv1a("const DEC_PRIME32: u32 = 16777619;"));
     assert!(line_has_fnv1a("use fnv::FnvHashMap;"));
     assert!(!line_has_fnv1a("pub const fn xxh64(b: &[u8]) -> u64"));
 
@@ -341,11 +346,31 @@ fn unit_perf_hash_codegen_purity_scanners_positive_and_negative() {
     let mut v_hot_clean = Vec::new();
     scan_hot_path_str(
         "packages/core/store/src/str_arena.rs",
-        "pub struct NodeRow { pub parent: NodeId }\nfn get(&self, s: &[u8]) -> &str { unsafe { std::str::from_utf8_unchecked(s) } }",
+        "pub struct NodeRow { pub parent: NodeId }\nfn get(&self, s: &[u8]) -> &str { debug_assert!(core::str::from_utf8(s).is_ok()); unsafe { std::str::from_utf8_unchecked(s) } }",
         true,
         &mut v_hot_clean,
     );
     assert!(v_hot_clean.is_empty());
+
+    // Trait declaration `;` must reset `pending_cold_fn` so it never exempts the next block,
+    // and non-allowlisted `fn new(` in other hot files must NOT be exempted.
+    let mut v_hot_trait = Vec::new();
+    scan_hot_path_str(
+        "packages/core/store/src/span_pool.rs",
+        "trait T { fn try_str(&self) -> Option<&str>; }\nfn hot(b: &[u8]) { let _ = std::str::from_utf8(b); }",
+        true,
+        &mut v_hot_trait,
+    );
+    assert_eq!(v_hot_trait.len(), 1, "trait decl `;` must not exempt next fn: {v_hot_trait:?}");
+
+    let mut v_hot_non_allow = Vec::new();
+    scan_hot_path_str(
+        "packages/core/store/src/str_arena.rs",
+        "fn new() { let _ = format!(\"alloc\"); }",
+        true,
+        &mut v_hot_non_allow,
+    );
+    assert_eq!(v_hot_non_allow.len(), 1, "arbitrary fn new() must not be exempted: {v_hot_non_allow:?}");
 
     // Codegen positive (raw string via push_str, Dart static const int, TS 53-bit) + negative
     let mut v_cg = Vec::new();

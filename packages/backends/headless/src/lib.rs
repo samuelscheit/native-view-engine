@@ -1,535 +1,635 @@
-//! Pure-Rust headless RenderBackend generic over any [`LayoutEngine`] (defaulting to [`TaffyLayoutEngine`]).
+//! Pure-Rust headless [`StoreBackend`] generic over any [`StoreLayoutEngine`] (defaulting to
+//! [`TaffyStoreLayout`] directly over `NodeStore` word columns with zero `TaffyTree` duplication).
 //!
-//! Provides <50ms edit->test verification of any Rust UI frontend, mutation diffing,
-//! coordinate hit-testing, interactive pseudo-state & cursor tracking (`InteractionTracker`),
-//! simulated native events, live layout-engine swapping, and an ASCII tree + rect inspector.
+//! Provides <50ms edit->test verification of any Rust UI frontend, mutation diffing, coordinate
+//! hit-testing (with scroll offsets, sticky clamping, overflow clipping, and `Transform2D`),
+//! interactive pseudo-state & cursor tracking (`InteractionTracker`), live `NveSceneView`
+//! (`primary_slot` + `NveTableView`) publication, live layout-engine swapping, and an ASCII
+//! tree + rect inspector.
 
-mod frame;
+mod commit;
 mod interaction;
-mod layout_ext;
 pub mod reloc_scene;
-pub mod slot_map;
-pub mod taffy_engine;
-pub mod taffy_style;
-mod typed_sync;
-mod validate;
+mod snapshot;
+pub mod taffy_store;
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
-use std::time::Instant;
 
+use nve_abi::table::NveTableView;
 use nve_abi::{
-    ColorRgba, ComponentKind, LayoutProps, NativeEvent, NodeId, RawPropValue, StyleProps,
-    SurfaceId, ROOT_NODE_ID,
+    ColorRgba, FrameId, NativeEvent, NodeId, NveRenderNode, NveSceneTable, NveSceneView,
+    SceneNodeInput, SurfaceId, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT,
 };
-use nve_components::canvas_ir::DrawList;
-use nve_components::native_view::{TypedNativeViewCommand, TypedNativeViewProps};
+use nve_components::layout_ext::compute_sticky_offset;
+use nve_components::tables::{
+    Interaction, Layout as NveLayout, Overflow, Position, TextContent,
+    Transform as TransformTable, Typography, Visual,
+};
+use nve_components::transform::Transform2D;
 use nve_engine::{
-    HeuristicTextMeasurer, LayoutEngine, LayoutRect, TextMeasurer, Viewport,
+    HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport,
 };
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, NveTable, TableSlot};
 
 pub use nve_components::interaction::{
     CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
 };
 pub use nve_components::layout_ext::{
-    compute_sticky_offset, GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack,
-    GridTrackPlacement, GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges,
-    PositionInsets, PositionMode,
+    GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack, GridTrackPlacement,
+    GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges, PositionInsets, PositionMode,
 };
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
-pub use nve_components::style_patch::{Display, StylePatch};
-pub use nve_components::svg::{FillRule, SvgPicture, VectorPathCmd, VectorShape};
-pub use nve_components::transform::Transform2D;
+pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
-pub use slot_map::{NodeSlotMap, DENSE_SLOT_LIMIT};
-use slot_map::VisitStamps;
-pub use taffy_engine::{
-    to_taffy_dim, to_taffy_lpa, to_taffy_style, to_taffy_style_with_ext, TaffyLayoutEngine,
-};
-use validate::fmt_node;
+pub(crate) use snapshot::{is_display_none, length_to_dim, node_clips_overflow};
+pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
+pub use taffy_store::{ResolvedTextStyle, TaffyStoreLayout};
 
 pub(crate) const MAX_TREE_DEPTH: usize = 512;
 
-#[derive(Debug, Clone)]
-pub struct HeadlessNode {
-    pub id: NodeId,
-    pub kind: ComponentKind,
-    pub custom_name: Option<String>,
-    pub text: Option<Arc<str>>,
-    pub layout: LayoutProps,
-    pub layout_ext: Option<Box<LayoutExt>>,
-    pub transform: Option<Transform2D>,
-    pub style: StyleProps,
-    pub background_fill: Option<BackgroundFill>,
-    pub has_explicit_style: bool,
-    pub raw_props: HashMap<String, RawPropValue>,
-    pub draw_list: Option<DrawList>,
-    pub svg: Option<SvgPicture>,
-    pub native_view_props: Option<TypedNativeViewProps>,
-    pub event_mask: u64,
-    pub cursor: Option<CursorKind>,
-    pub state_rules: Vec<StateStyleRule>,
-    pub parent: Option<NodeId>,
-    pub children: Vec<NodeId>,
-    pub computed_rect: LayoutRect,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum HeadlessMutation {
-    Create(NodeId, ComponentKind),
+    Create(NodeId, TableSlot),
     Remove(NodeId),
     UpdateLayout(NodeId, LayoutRect),
     UpdateText(NodeId, String),
     UpdateStyle(NodeId),
 }
 
-struct TextStyleFrame {
-    id: NodeId,
-    color: ColorRgba,
-    font_size: f32,
-    has_inherited: bool,
-}
-
-pub struct HeadlessBackend<L: LayoutEngine = TaffyLayoutEngine> {
+/// Pure-Rust headless [`StoreBackend`] backed by a zero-copy [`StoreLayoutEngine`].
+///
+/// Holds ZERO duplicate copies of the UI tree, strings, or style props — reads directly from
+/// `&NodeStore` during `commit` and inspection methods.
+pub struct HeadlessBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) surface_id: SurfaceId,
     pub(crate) viewport: Viewport,
-    pub(crate) nodes: NodeSlotMap<HeadlessNode>,
+    pub(crate) viewport_dirty: bool,
     pub(crate) layout: L,
     text_measurer: Arc<dyn TextMeasurer>,
-    pub(crate) prev_rects: NodeSlotMap<(u64, LayoutRect)>,
-    rect_gen: u64,
+    pub(crate) prev_rects: Vec<(u64, LayoutRect)>,
+    pub(crate) rect_gen: u64,
     pub(crate) track_mutations: bool,
-    pub(crate) text_style_dirty: bool,
-    pub(crate) has_nested_text: bool,
-    pub(crate) visit_stamps: VisitStamps,
     pub(crate) interaction: InteractionTracker,
     pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
-    pub(crate) scratch_children: Vec<NodeId>,
-    pub(crate) scratch_old_children: Vec<NodeId>,
-    pub(crate) scratch_prev_parents: Vec<NodeId>,
-    scratch_walk: Vec<(NodeId, usize)>,
-    scratch_text_stack: Vec<TextStyleFrame>,
-    scratch_resync_styles: Vec<(NodeId, StyleProps)>,
     pub(crate) last_mutations: Vec<HeadlessMutation>,
     pub(crate) pending_events: Vec<NativeEvent>,
-    pub(crate) dispatched_commands: Vec<(NodeId, String, Vec<u8>)>,
-    pub(crate) typed_dispatched_commands: Vec<(NodeId, TypedNativeViewCommand)>,
-    pub(crate) frame_error: Option<nve_engine::BackendError>,
-    pub(crate) frame_op_count: u32,
+    pub(crate) scene_table: NveSceneTable,
+    pub(crate) published_tables: Vec<NveTableView>,
+    published_dirty_buf: Vec<u32>,
+    published_children_scratch: Vec<NodeId>,
+    text_dirty_marks: Vec<u64>,
+    text_dirty_epoch: u64,
+    pub(crate) walk_stack: Vec<(StoreNodeId, usize)>,
 }
 
-impl Default for HeadlessBackend<TaffyLayoutEngine> {
+impl Default for HeadlessBackend<TaffyStoreLayout> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HeadlessBackend<TaffyLayoutEngine> {
+impl HeadlessBackend<TaffyStoreLayout> {
     pub fn new() -> Self {
-        Self::with_layout(TaffyLayoutEngine::new())
+        Self::with_layout(TaffyStoreLayout::new())
     }
 }
 
-impl<L: LayoutEngine> HeadlessBackend<L> {
-    /// Creates a headless backend backed by any concrete or boxed [`LayoutEngine`].
+impl<L: StoreLayoutEngine> HeadlessBackend<L> {
     pub fn with_layout(mut layout: L) -> Self {
         let text_measurer: Arc<dyn TextMeasurer> = Arc::new(HeuristicTextMeasurer);
         layout.set_text_measurer(Arc::clone(&text_measurer));
-        let mut this = Self {
+        Self {
             surface_id: 1,
             viewport: Viewport::default(),
-            nodes: NodeSlotMap::new(),
+            viewport_dirty: true,
             layout,
             text_measurer,
-            prev_rects: NodeSlotMap::new(),
+            prev_rects: Vec::new(),
             rect_gen: 0,
             track_mutations: true,
-            text_style_dirty: false,
-            has_nested_text: false,
-            visit_stamps: VisitStamps::new(),
             interaction: InteractionTracker::new(),
             scroll_offsets: HashMap::new(),
-            scratch_children: Vec::new(),
-            scratch_old_children: Vec::new(),
-            scratch_prev_parents: Vec::new(),
-            scratch_walk: Vec::new(),
-            scratch_text_stack: Vec::new(),
-            scratch_resync_styles: Vec::new(),
             last_mutations: Vec::new(),
             pending_events: Vec::new(),
-            dispatched_commands: Vec::new(),
-            typed_dispatched_commands: Vec::new(),
-            frame_error: None,
-            frame_op_count: 0,
-        };
-        this.ensure_node(ROOT_NODE_ID, ComponentKind::Root, None);
-        this
+            scene_table: NveSceneTable::new(),
+            published_tables: Vec::new(),
+            published_dirty_buf: Vec::new(),
+            published_children_scratch: Vec::new(),
+            text_dirty_marks: Vec::new(),
+            text_dirty_epoch: 0,
+            walk_stack: Vec::new(),
+        }
     }
 
-    /// Configures whether per-frame [`HeadlessMutation`] recording and rect diffing are active.
     pub fn with_mutation_tracking(mut self, enabled: bool) -> Self {
         self.track_mutations = enabled;
         self
     }
 
+    #[inline]
     pub fn set_mutation_tracking(&mut self, enabled: bool) {
         self.track_mutations = enabled;
     }
 
-    pub fn mutation_tracking(&self) -> bool {
-        self.track_mutations
+    #[inline]
+    pub fn layout_engine_name(&self) -> &'static str {
+        self.layout.name()
     }
 
+    #[inline]
     pub fn layout_engine(&self) -> &L {
         &self.layout
     }
 
+    #[inline]
     pub fn layout_engine_mut(&mut self) -> &mut L {
         &mut self.layout
     }
 
+    #[inline]
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    #[inline]
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id
+    }
+
+    pub fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
+        self.text_measurer = Arc::clone(&measurer);
+        self.layout.set_text_measurer(measurer);
+        self.viewport_dirty = true;
+    }
+
+    #[inline]
     pub fn text_measurer(&self) -> &Arc<dyn TextMeasurer> {
         &self.text_measurer
     }
 
-    /// Replaces the active [`TextMeasurer`] and propagates it to the underlying [`LayoutEngine`].
-    pub fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
-        self.text_measurer = Arc::clone(&measurer);
-        self.layout.set_text_measurer(measurer);
-    }
-
-    /// Hot-swaps the active [`LayoutEngine`] to `next`, replaying the entire retained node tree
-    /// and recomputing rects.
-    pub fn swap_layout_engine<NewL: LayoutEngine>(self, mut next: NewL) -> HeadlessBackend<NewL> {
-        next.reset();
-        next.set_text_measurer(Arc::clone(&self.text_measurer));
-
-        for node in self.nodes.values() {
-            next.upsert_node(node.id, node.kind);
-            next.set_layout(node.id, &node.layout);
-            if node.layout_ext.is_some() {
-                next.set_layout_ext(node.id, node.layout_ext.as_deref());
-            }
-            next.set_style(node.id, &node.style);
-            if let Some(text) = node.text.as_deref() {
-                next.set_text(node.id, text);
-            }
-        }
-        for node in self.nodes.values() {
-            if !node.children.is_empty() {
-                next.set_children(node.id, &node.children);
-            }
-        }
-
-        let mut swapped = HeadlessBackend {
+    /// Hot-swaps the active layout engine while preserving viewport, scroll, and interaction state.
+    /// The caller should follow with `recompute_layout(store)` if an immediate re-layout is needed.
+    pub fn swap_layout_engine<L2: StoreLayoutEngine>(
+        self,
+        mut new_layout: L2,
+    ) -> HeadlessBackend<L2> {
+        new_layout.set_text_measurer(Arc::clone(&self.text_measurer));
+        HeadlessBackend {
             surface_id: self.surface_id,
             viewport: self.viewport,
-            nodes: self.nodes,
-            layout: next,
+            viewport_dirty: true,
+            layout: new_layout,
             text_measurer: self.text_measurer,
             prev_rects: self.prev_rects,
             rect_gen: self.rect_gen,
             track_mutations: self.track_mutations,
-            text_style_dirty: self.text_style_dirty,
-            has_nested_text: self.has_nested_text,
-            visit_stamps: self.visit_stamps,
             interaction: self.interaction,
             scroll_offsets: self.scroll_offsets,
-            scratch_children: self.scratch_children,
-            scratch_old_children: self.scratch_old_children,
-            scratch_prev_parents: self.scratch_prev_parents,
-            scratch_walk: self.scratch_walk,
-            scratch_text_stack: self.scratch_text_stack,
-            scratch_resync_styles: self.scratch_resync_styles,
             last_mutations: self.last_mutations,
             pending_events: self.pending_events,
-            dispatched_commands: self.dispatched_commands,
-            typed_dispatched_commands: self.typed_dispatched_commands,
-            frame_error: None,
-            frame_op_count: 0,
-        };
-        swapped.recompute_layout();
-        swapped
+            scene_table: self.scene_table,
+            published_tables: self.published_tables,
+            published_dirty_buf: self.published_dirty_buf,
+            published_children_scratch: self.published_children_scratch,
+            text_dirty_marks: self.text_dirty_marks,
+            text_dirty_epoch: self.text_dirty_epoch,
+            walk_stack: self.walk_stack,
+        }
     }
 
-    /// Re-runs the active layout engine against the retained tree and refreshes all `computed_rect`s.
-    pub fn recompute_layout(&mut self) {
-        self.run_layout_and_diff(false);
-    }
-
-    pub fn nodes(&self) -> &NodeSlotMap<HeadlessNode> {
-        &self.nodes
+    /// Recomputes layout for `store` immediately (e.g. after swapping layout engines or viewport).
+    pub fn recompute_layout(&mut self, store: &NodeStore) {
+        self.layout
+            .compute_layout(store, StoreNodeId::ROOT, self.viewport);
+        self.viewport_dirty = false;
     }
 
     #[inline]
-    pub fn node(&self, id: NodeId) -> Option<&HeadlessNode> {
-        self.nodes.get(id)
-    }
-
     pub fn last_mutations(&self) -> &[HeadlessMutation] {
         &self.last_mutations
     }
 
-    pub fn dispatched_commands(&self) -> &[(NodeId, String, Vec<u8>)] {
-        &self.dispatched_commands
+    /// Renders a human-readable indented tree of live nodes, layout rects, test IDs, and text.
+    pub fn render_ascii_tree(&self, store: &NodeStore) -> String {
+        use core::fmt::Write as _;
+        fn walk<L: StoreLayoutEngine>(
+            backend: &HeadlessBackend<L>,
+            store: &NodeStore,
+            id: StoreNodeId,
+            depth: usize,
+            out: &mut String,
+        ) {
+            for _ in 0..depth {
+                out.push_str("  ");
+            }
+            let r = backend.layout_of(id.raw()).unwrap_or_default();
+            let _ = write!(
+                out,
+                "Node#{} ({:.0},{:.0} {:.0}×{:.0})",
+                id.raw(),
+                r.x,
+                r.y,
+                r.width,
+                r.height
+            );
+            if let Some(dbg) = store.try_row::<nve_components::tables::DebugId>(id) {
+                let tid = dbg.test_id();
+                if !tid.is_empty() {
+                    let _ = write!(out, " [{tid}]");
+                }
+            }
+            if let Some(tc) = store.try_row::<nve_components::tables::TextContent>(id) {
+                let t = tc.text();
+                if !t.is_empty() {
+                    let _ = write!(out, " \"{t}\"");
+                }
+            }
+            if let Some(ti) = store.try_row::<nve_components::tables::TextInput>(id) {
+                let v = ti.value();
+                if !v.is_empty() {
+                    let _ = write!(out, " value=\"{v}\"");
+                }
+            }
+            out.push('\n');
+            for &child in store.children(id) {
+                walk(backend, store, child, depth + 1, out);
+            }
+        }
+        let mut out = String::new();
+        walk(self, store, StoreNodeId::ROOT, 0, &mut out);
+        out
     }
 
-    /// Queues a synthetic native event (e.g. simulated tap or text edit) for the next poll.
+    #[inline]
     pub fn push_event(&mut self, event: NativeEvent) {
         self.pending_events.push(event);
     }
 
-    /// Hit-tests the committed layout tree in reverse paint order, returning the deepest node
-    /// containing `(x, y)` (preferring nodes that subscribe to events if `interactive_only`).
-    /// Accounts for scroll offsets, `position: sticky` clamping, and `Transform2D` inverse mapping.
-    pub fn hit_test(&self, x: f32, y: f32, interactive_only: bool) -> Option<NodeId> {
-        self.hit_test_rec(ROOT_NODE_ID, x, y, (0.0, 0.0), interactive_only, 0)
+    #[inline]
+    pub fn set_scroll_offset(&mut self, id: NodeId, dx: f32, dy: f32) {
+        self.scroll_offsets.insert(id, (dx, dy));
     }
 
+    #[inline]
+    pub fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
+        self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0))
+    }
+
+    #[inline]
+    pub fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
+        self.layout.layout_of(StoreNodeId(id))
+    }
+
+    /// Computes sticky offset `(dx, dy)` for `id` against its nearest scroll ancestor.
+    pub fn compute_sticky_delta(&self, store: &NodeStore, id: StoreNodeId) -> (f32, f32) {
+        let Some(l) = store.try_row::<NveLayout>(id) else {
+            return (0.0, 0.0);
+        };
+        if l.position() != Position::Sticky {
+            return (0.0, 0.0);
+        }
+        let Some(node_rect) = self.layout.layout_of(id) else {
+            return (0.0, 0.0);
+        };
+        let Some(parent_id) = store.parent(id) else {
+            return (0.0, 0.0);
+        };
+        let Some(cb_rect) = self.layout.layout_of(parent_id) else {
+            return (0.0, 0.0);
+        };
+
+        // Walk up to find nearest scroll container (overflow scroll/auto or non-zero scroll offset).
+        let mut scroller = parent_id;
+        let mut cur = Some(parent_id);
+        let mut scroll = (0.0f32, 0.0f32);
+        let mut steps = 0usize;
+        while let Some(anc) = cur {
+            if steps > MAX_TREE_DEPTH {
+                break;
+            }
+            steps += 1;
+            let raw = anc.raw();
+            let has_offset = self.scroll_offsets.contains_key(&raw);
+            let is_scroll = store.try_row::<Visual>(anc).is_some_and(|v| {
+                matches!(v.overflow_x(), Overflow::Scroll | Overflow::Auto)
+                    || matches!(v.overflow_y(), Overflow::Scroll | Overflow::Auto)
+            });
+            if has_offset || is_scroll {
+                scroller = anc;
+                scroll = self.scroll_offset(raw);
+                break;
+            }
+            cur = store.parent(anc);
+        }
+
+        let vp_rect = self.layout.layout_of(scroller).unwrap_or(LayoutRect {
+            x: 0.0,
+            y: 0.0,
+            width: self.viewport.width,
+            height: self.viewport.height,
+        });
+        let insets = nve_components::layout_ext::PositionInsets {
+            top: length_to_dim(l.inset_top()),
+            right: length_to_dim(l.inset_right()),
+            bottom: length_to_dim(l.inset_bottom()),
+            left: length_to_dim(l.inset_left()),
+        };
+        compute_sticky_offset(
+            (node_rect.x, node_rect.y, node_rect.width, node_rect.height),
+            (cb_rect.x, cb_rect.y, cb_rect.width, cb_rect.height),
+            (vp_rect.x, vp_rect.y, vp_rect.width, vp_rect.height),
+            scroll,
+            insets,
+        )
+    }
+
+    /// Reads the `Transform2D` of `id` from `NodeStore`'s `Transform` table, if attached.
+    pub fn effective_transform(&self, store: &NodeStore, id: StoreNodeId) -> Option<Transform2D> {
+        let t = store.try_row::<TransformTable>(id)?;
+        let tf = Transform2D {
+            translate_x: t.translate_x(),
+            translate_y: t.translate_y(),
+            scale_x: t.scale_x(),
+            scale_y: t.scale_y(),
+            rotate_deg: t.rotate_deg(),
+            origin_x: t.origin_x(),
+            origin_y: t.origin_y(),
+        };
+        (!tf.is_identity()).then_some(tf)
+    }
+
+    /// Hit-tests `(x, y)` in reverse paint order for the deepest node subscribing to events.
+    pub fn hit_test(&self, store: &NodeStore, x: f32, y: f32) -> Option<NodeId> {
+        self.hit_test_rec(store, StoreNodeId::ROOT, x, y, (0.0, 0.0), false, 0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn hit_test_rec(
         &self,
-        id: NodeId,
+        store: &NodeStore,
+        id: StoreNodeId,
         x: f32,
         y: f32,
         offset: (f32, f32),
-        interactive_only: bool,
+        inherited_hidden: bool,
         depth: usize,
     ) -> Option<NodeId> {
-        if depth > MAX_TREE_DEPTH {
+        if depth > MAX_TREE_DEPTH || !store.is_live(id) || is_display_none(store, id) {
             return None;
         }
-        let node = self.nodes.get(id)?;
-        if node.layout_ext.as_deref().is_some_and(|e| e.display == Display::None) {
-            return None;
-        }
-        let (stx, sty) = self.compute_sticky_delta(id, &self.scroll_offsets);
+        let effective_hidden = store
+            .try_row::<Visual>(id)
+            .map_or(inherited_hidden, |v| v.visibility().resolve(inherited_hidden));
+        let rect = self.layout.layout_of(id)?;
+        let (stx, sty) = self.compute_sticky_delta(store, id);
         let node_offset = (offset.0 + stx, offset.1 + sty);
-        let r = LayoutRect {
-            x: node.computed_rect.x + node_offset.0,
-            y: node.computed_rect.y + node_offset.1,
-            width: node.computed_rect.width,
-            height: node.computed_rect.height,
-        };
-        let (px, py) = if let Some(tf) = self.effective_transform(id)
-            && !tf.is_identity()
-        {
-            tf.inverse_map_surface_point(x, y, r.x, r.y, r.width, r.height)?
+        let r_x = rect.x + node_offset.0;
+        let r_y = rect.y + node_offset.1;
+        let (px, py) = if let Some(tf) = self.effective_transform(store, id) {
+            tf.inverse_map_surface_point(x, y, r_x, r_y, rect.width, rect.height)?
         } else {
             (x, y)
         };
-        let inside = px >= r.x && px <= r.x + r.width && py >= r.y && py <= r.y + r.height;
-        if !inside && id != ROOT_NODE_ID && layout_ext::node_clips_overflow(node) {
+        let inside = rect.width > 0.0
+            && rect.height > 0.0
+            && px >= r_x
+            && px <= r_x + rect.width
+            && py >= r_y
+            && py <= r_y + rect.height;
+        if !inside && id != StoreNodeId::ROOT && node_clips_overflow(store, id) {
             return None;
         }
-        let (sx, sy) = self.scroll_offsets.get(&id).copied().unwrap_or((0.0, 0.0));
+        let (sx, sy) = self.scroll_offset(id.raw());
         let child_offset = (node_offset.0 - sx, node_offset.1 - sy);
-        for &child in node.children.iter().rev() {
-            if let Some(hit) =
-                self.hit_test_rec(child, px, py, child_offset, interactive_only, depth + 1)
-            {
+        for &cid in store.children(id).iter().rev() {
+            if let Some(hit) = self.hit_test_rec(
+                store,
+                cid,
+                px,
+                py,
+                child_offset,
+                effective_hidden,
+                depth + 1,
+            ) {
                 return Some(hit);
             }
         }
-        if inside && (!interactive_only || node.event_mask != 0) {
-            Some(id)
+        let mask = store
+            .try_row::<Interaction>(id)
+            .map_or(0, |i| i.event_mask());
+        if inside && !effective_hidden && mask != 0 {
+            Some(id.raw())
         } else {
             None
         }
     }
 
-    /// Formats a clean ASCII tree with computed Flexbox rects, text, and event masks.
-    pub fn render_ascii_tree(&self) -> String {
+    /// Publishes the latest laid-out `NodeStore` into a zero-copy `NveSceneView` with
+    /// `primary_slot` and dense `NveTableView` descriptors ready for native C++/Swift/Kotlin/Dart hosts.
+    ///
+    /// Unifies `NveSceneView::text_slab` directly with `store.text_slab()` so both
+    /// `NveRenderNode::{text_offset,text_len}` and every published `NveTableView` `Str` word decode
+    /// against the single zero-copy UTF-8 slab with zero text duplication.
+    pub fn publish_scene_view(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+        frame_id: FrameId,
+    ) -> NveSceneView {
+        self.scene_table.begin_frame(frame_id);
+        for &removed in &changes.removed {
+            self.scene_table.remove_node(removed.raw());
+        }
+        let has_text_changes = if let Some(td) = changes.table(TextContent::slot()) {
+            self.text_dirty_epoch = self.text_dirty_epoch.wrapping_add(1);
+            if self.text_dirty_epoch == 0 {
+                self.text_dirty_marks.fill(0);
+                self.text_dirty_epoch = 1;
+            }
+            if self.text_dirty_marks.len() < store.capacity() {
+                self.text_dirty_marks.resize(store.capacity(), 0);
+            }
+            let epoch = self.text_dirty_epoch;
+            for &nid in td.nodes.iter().chain(td.detached.iter()) {
+                let idx = nid.index();
+                if idx < self.text_dirty_marks.len() {
+                    self.text_dirty_marks[idx] = epoch;
+                }
+            }
+            true
+        } else {
+            false
+        };
+        self.walk_stack.clear();
+        if store.is_live(StoreNodeId::ROOT) {
+            self.walk_stack.push((StoreNodeId::ROOT, 0));
+        }
+        while let Some((id, depth)) = self.walk_stack.pop() {
+            if !store.is_live(id) {
+                continue;
+            }
+            let rect = self.layout.layout_of(id).unwrap_or_default();
+            let (bg, border_color, border_width, border_radius, opacity, z_index, clip) =
+                if let Some(v) = store.try_row::<Visual>(id) {
+                    (
+                        v.background().0,
+                        v.border_color().0,
+                        v.border_width(),
+                        v.border_radius(),
+                        v.opacity(),
+                        v.z_index(),
+                        matches!(
+                            v.overflow_x(),
+                            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+                        ) || matches!(
+                            v.overflow_y(),
+                            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+                        ),
+                    )
+                } else {
+                    (0, 0, 0.0, 0.0, 1.0, 0, false)
+                };
+            let event_mask = store
+                .try_row::<Interaction>(id)
+                .map_or(0, |i| i.event_mask());
+            let (text_offset, text_len) = if let Some(tc) = store.try_row::<TextContent>(id) {
+                let span = tc.text_span();
+                let s = tc.text();
+                let clamped_len = if s.len() <= u16::MAX as usize {
+                    s.len() as u16
+                } else {
+                    let mut end = u16::MAX as usize;
+                    while !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    end as u16
+                };
+                if clamped_len == 0 {
+                    (0u32, 0u16)
+                } else {
+                    (span.off(), clamped_len)
+                }
+            } else {
+                (0u32, 0u16)
+            };
+            let children = if depth < MAX_TREE_DEPTH {
+                store.children(id)
+            } else {
+                &[]
+            };
+            let mut flags = 0u8;
+            if text_len > 0 && children.is_empty() {
+                flags |= NVE_NODE_LEAF_TEXT;
+            }
+            if event_mask != 0 {
+                flags |= NVE_NODE_INTERACTIVE;
+            }
+            if clip {
+                flags |= NVE_NODE_CLIP_BOUNDS;
+            }
+            let text_rgba = store
+                .try_row::<Typography>(id)
+                .map_or(ColorRgba::BLACK.to_u32(), |t| t.color().0);
+            let font_size = store
+                .try_row::<Typography>(id)
+                .map_or(16.0, |t| t.font_size());
+            let opacity_u8 = NveRenderNode::encode_opacity_u8(opacity);
+
+            self.published_children_scratch.clear();
+            self.published_children_scratch
+                .extend(children.iter().take(u16::MAX as usize).map(|c| c.raw()));
+
+            let text_dirty = has_text_changes
+                && self.text_dirty_marks.get(id.index()).copied() == Some(self.text_dirty_epoch);
+            let res = self.scene_table.upsert_node_external_text(
+                SceneNodeInput {
+                    node_id: id.raw(),
+                    primary_slot: store.primary_slot(id).0,
+                    flags,
+                    opacity_u8,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    bg_rgba: bg,
+                    text_rgba,
+                    border_rgba: border_color,
+                    border_radius,
+                    border_width,
+                    font_size,
+                    z_index,
+                    text: "",
+                    children: &self.published_children_scratch,
+                },
+                text_offset,
+                text_len,
+                text_dirty,
+            );
+            debug_assert!(res.is_ok(), "scene_table upsert failed: {res:?}");
+
+            if depth < MAX_TREE_DEPTH {
+                for &cid in children.iter().take(u16::MAX as usize).rev() {
+                    self.walk_stack.push((cid, depth + 1));
+                }
+            }
+        }
+
+        self.scene_table.prune_unseen();
+        self.scene_table.maybe_compact_slabs();
+
+        store.publish_table_views(
+            changes,
+            &mut self.published_tables,
+            &mut self.published_dirty_buf,
+        );
+        let mut view = self.scene_table.as_view_with_external_text(store.text_slab());
+        view.table_count = self.published_tables.len() as u32;
+        view.tables = if self.published_tables.is_empty() {
+            std::ptr::null()
+        } else {
+            self.published_tables.as_ptr()
+        };
+        view
+    }
+
+    /// Formats a human-readable ASCII tree + layout rect dump of `store` for debugging and snapshot tests.
+    pub fn dump_tree(&self, store: &NodeStore) -> String {
         let mut out = String::new();
-        fmt_node(&self.nodes, ROOT_NODE_ID, 0, &mut out);
+        self.dump_rec(store, StoreNodeId::ROOT, 0, &mut out);
         out
     }
 
-    pub(crate) fn ensure_node(&mut self, id: NodeId, kind: ComponentKind, custom_name: Option<&str>) {
-        if let Some(existing) = self.nodes.get_mut(id) {
-            let kind_changed = existing.kind != kind;
-            existing.kind = kind;
-            match (&mut existing.custom_name, custom_name) {
-                (Some(slot), Some(name)) => {
-                    if slot.as_str() != name {
-                        slot.clear();
-                        slot.push_str(name);
-                    }
-                }
-                (slot, name) => *slot = name.map(ToOwned::to_owned),
-            }
-            if kind_changed {
-                if (kind == ComponentKind::Text && !existing.children.is_empty())
-                    || self.has_nested_text
-                {
-                    if kind == ComponentKind::Text && !existing.children.is_empty() {
-                        self.has_nested_text = true;
-                    }
-                    self.text_style_dirty = true;
-                }
-                self.layout.upsert_node(id, kind);
-            }
+    fn dump_rec(&self, store: &NodeStore, id: StoreNodeId, depth: usize, out: &mut String) {
+        if depth > MAX_TREE_DEPTH || !store.is_live(id) {
             return;
         }
-        self.layout.upsert_node(id, kind);
-        self.nodes.insert(
-            id,
-            HeadlessNode {
-                id,
-                kind,
-                custom_name: custom_name.map(ToOwned::to_owned),
-                text: None,
-                layout: LayoutProps::default(),
-                layout_ext: None,
-                transform: None,
-                style: StyleProps::default(),
-                background_fill: None,
-                has_explicit_style: false,
-                raw_props: HashMap::new(),
-                draw_list: None,
-                svg: None,
-                native_view_props: None,
-                event_mask: 0,
-                cursor: None,
-                state_rules: Vec::new(),
-                parent: None,
-                children: Vec::new(),
-                computed_rect: LayoutRect::default(),
-            },
+        for _ in 0..depth {
+            out.push_str("  ");
+        }
+        let rect = self.layout.layout_of(id).unwrap_or_default();
+        let slot = store.primary_slot(id);
+        let _ = write!(
+            out,
+            "#{} [slot={}] ({:.1}, {:.1}, {:.1}x{:.1})",
+            id.raw(),
+            slot.0,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height
         );
-    }
-
-    fn propagate_text_styles(&mut self) {
-        if !self.text_style_dirty {
-            return;
-        }
-        self.text_style_dirty = false;
-
-        let visit_gen = self.visit_stamps.next_gen();
-        self.scratch_text_stack.clear();
-        self.scratch_text_stack.push(TextStyleFrame {
-            id: ROOT_NODE_ID,
-            color: ColorRgba::BLACK,
-            font_size: 16.0,
-            has_inherited: false,
-        });
-        self.scratch_resync_styles.clear();
-        let mut found_text_with_children = false;
-
-        while let Some(frame) = self.scratch_text_stack.pop() {
-            if !self.visit_stamps.mark(frame.id, visit_gen) {
-                continue;
-            }
-            let Some(node) = self.nodes.get(frame.id) else {
-                continue;
-            };
-            let mut next_color = frame.color;
-            let mut next_font_size = frame.font_size;
-            let mut next_has = frame.has_inherited;
-
-            if node.kind == ComponentKind::Text {
-                if !node.children.is_empty() {
-                    found_text_with_children = true;
-                }
-                if !node.has_explicit_style {
-                    let target_color = if frame.has_inherited {
-                        frame.color
-                    } else {
-                        ColorRgba::BLACK
-                    };
-                    let target_font = if frame.has_inherited {
-                        frame.font_size
-                    } else {
-                        16.0
-                    };
-                    if node.style.text_color != target_color
-                        || (node.style.font_size - target_font).abs() > 1e-3
-                    {
-                        let mut updated = node.style;
-                        updated.text_color = target_color;
-                        updated.font_size = target_font;
-                        self.scratch_resync_styles.push((frame.id, updated));
-                    }
-                    next_color = target_color;
-                    next_font_size = target_font;
-                } else {
-                    next_color = node.style.text_color;
-                    next_font_size = node.style.font_size;
-                }
-                next_has = true;
-            }
-
-            for &cid in node.children.iter().rev() {
-                self.scratch_text_stack.push(TextStyleFrame {
-                    id: cid,
-                    color: next_color,
-                    font_size: next_font_size,
-                    has_inherited: next_has,
-                });
+        if let Some(t) = store.try_row::<TextContent>(id) {
+            let s = t.text();
+            if !s.is_empty() {
+                let _ = write!(out, " {:?}", s);
             }
         }
-
-        self.has_nested_text = found_text_with_children;
-
-        for &(id, style) in &self.scratch_resync_styles {
-            if let Some(node) = self.nodes.get_mut(id) {
-                node.style = style;
-            }
-            self.layout.set_style(id, &style);
+        out.push('\n');
+        for &cid in store.children(id) {
+            self.dump_rec(store, cid, depth + 1, out);
         }
-    }
-
-    pub(crate) fn run_layout_and_diff(&mut self, record_to_last_mutations: bool) -> (u64, u64) {
-        let t_layout = Instant::now();
-        self.propagate_text_styles();
-        self.layout.compute_layout(ROOT_NODE_ID, self.viewport);
-        let layout_us = t_layout.elapsed().as_micros() as u64;
-
-        let t_diff = Instant::now();
-        let track = self.track_mutations;
-        let prev_gen = self.rect_gen;
-        let next_gen = if track {
-            let mut g = self.rect_gen.wrapping_add(1);
-            if g == 0 {
-                self.prev_rects.clear();
-                g = 1;
-            }
-            self.rect_gen = g;
-            g
-        } else {
-            0
-        };
-
-        self.scratch_walk.clear();
-        self.scratch_walk.push((ROOT_NODE_ID, 0));
-        while let Some((id, depth)) = self.scratch_walk.pop() {
-            if depth > MAX_TREE_DEPTH {
-                continue;
-            }
-            let Some(rect) = self.layout.layout_of(id) else {
-                continue;
-            };
-            let Some(node) = self.nodes.get_mut(id) else {
-                continue;
-            };
-            node.computed_rect = rect;
-            if track {
-                let unchanged = self
-                    .prev_rects
-                    .insert(id, (next_gen, rect))
-                    .is_some_and(|(g, prev)| g == prev_gen && prev == rect);
-                if !unchanged && record_to_last_mutations {
-                    self.last_mutations
-                        .push(HeadlessMutation::UpdateLayout(id, rect));
-                }
-            }
-            if depth < MAX_TREE_DEPTH {
-                for &child in node.children.iter().rev() {
-                    self.scratch_walk.push((child, depth + 1));
-                }
-            }
-        }
-        let diff_us = t_diff.elapsed().as_micros() as u64;
-        (layout_us, diff_us)
     }
 }
 

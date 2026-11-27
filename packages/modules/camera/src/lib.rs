@@ -1,34 +1,23 @@
-//! Optional NVE VisionCamera v5 adapter & typed `CameraPreview` spec (`packages/modules/camera`).
+//! Optional NVE camera module (`packages/modules/camera`).
 //!
-//! Provides:
-//! - Unified [`CameraFacing`] enum shared across camera adapters,
-//! - Typed [`CameraPreview`] (`NativeViewSpec`), [`CameraPreviewProps`], [`CameraPreviewCommand`],
-//!   and 40-byte `#[repr(C)]` [`CameraFrameDescriptor`] / [`CameraFrameWireLayout`] (`NVCF`)
-//!   (`feature = "spec"`, reusing `nve-components::native_view`),
-//! - Optional `nve-interop` re-exports (`feature = "interop"`),
+//! Pure-spec root crate with zero dependency on `nve-components`, `nve-interop`, or any backend:
+//! - [`table::CameraPreviewTable`] (`#[derive(NveTable)]`, `"nve.camera.preview"`),
+//! - [`CameraFacing`] enum shared across camera adapters,
+//! - 40-byte `#[repr(C)]` [`CameraFrameDescriptor`] / [`CameraFrameWireLayout`] (`NVCF`),
 //! - Optional Nitro C-ABI bridge bindings (`feature = "nitro"`).
 
-pub mod types;
-
-#[cfg(feature = "spec")]
 pub mod frame;
-#[cfg(feature = "interop")]
-pub mod interop;
 #[cfg(feature = "nitro")]
 pub mod nitro;
-#[cfg(feature = "spec")]
-pub mod spec;
+pub mod table;
+pub mod types;
 
+pub use frame::{
+    CameraCodecError, CameraFrameDescriptor, CameraFrameProcessor, CameraFrameWireLayout,
+    CameraPixelFormat, CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION,
+};
+pub use table::{CameraPreviewTable, CameraStabilization, CameraTorch};
 pub use types::CameraFacing;
 
-#[cfg(feature = "spec")]
-pub use nve_components::native_view::{
-    NativeViewCodecError as CameraCodecError, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC,
-};
-#[cfg(feature = "spec")]
-pub use spec::{
-    CameraFrameDescriptor, CameraFrameProcessor, CameraFrameWireLayout, CameraPixelFormat,
-    CameraPreview, CameraPreviewCommand, CameraPreviewProps, StabilizationMode, TorchMode,
-    CAMERA_FRAME_DESCRIPTOR_SIZE, CAMERA_FRAME_MAGIC, CAMERA_FRAME_VERSION, CAMERA_PREVIEW_KIND,
-    MAX_CAMERA_FPS,
-};
+pub const CAMERA_PREVIEW_KIND: &str = "nve.camera.preview";
+pub const MAX_CAMERA_FPS: u16 = 240;

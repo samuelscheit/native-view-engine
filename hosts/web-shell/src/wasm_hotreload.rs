@@ -1,7 +1,7 @@
 //! Dev-only browser WebSocket client for binary `NVP1` hot-reload patches (`feature = "dev"`).
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::Weak;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -37,7 +37,7 @@ fn browser_now_ms() -> f64 {
 
 pub(crate) fn connect_hot_reload(
     ws_url: &str,
-    session: Rc<RefCell<WebAppSession>>,
+    session: Weak<RefCell<WebAppSession>>,
 ) -> Result<HotReloadSocket, JsValue> {
     let socket = web_sys::WebSocket::new(ws_url)?;
     socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
@@ -56,6 +56,9 @@ pub(crate) fn connect_hot_reload(
             if bytes.is_empty() {
                 return;
             }
+            let Some(session) = session.upgrade() else {
+                return;
+            };
             let result = session.borrow_mut().handle_hot_patch_frame(&bytes);
             match result {
                 Ok(HotReloadAction::TemplatePatched { generation, .. }) => {

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use cosmic_text::SwashContent;
+use nve_abi::Xxh64Hasher;
 
 /// Default logical font size used when an invalid (non-positive / non-finite) size is passed.
 pub const DEFAULT_FONT_SIZE: f32 = 16.0;
@@ -97,28 +98,19 @@ pub(crate) fn sanitize_scale(scale_factor: f32) -> f32 {
 }
 
 #[inline]
-fn fnv1a_step(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
-#[inline]
 pub(crate) fn hash_measure_key(
     text: &str,
     font_size_bits: u32,
     font_weight: u16,
     max_width_bits: u32,
 ) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    h = fnv1a_step(h, text.as_bytes());
-    h = fnv1a_step(h, &[0xFF]);
-    h = fnv1a_step(h, &font_weight.to_le_bytes());
-    h = fnv1a_step(h, &font_size_bits.to_le_bytes());
-    h = fnv1a_step(h, &max_width_bits.to_le_bytes());
-    h
+    let mut h = Xxh64Hasher::new(0);
+    h.update(text.as_bytes());
+    h.update(&[0xFF]);
+    h.update(&font_weight.to_le_bytes());
+    h.update_u32(font_size_bits);
+    h.update_u32(max_width_bits);
+    h.digest()
 }
 
 #[inline]
@@ -131,15 +123,14 @@ pub(crate) fn hash_shaped_key(
     align_width_bits: u32,
     scale_bits: u32,
 ) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    h = fnv1a_step(h, text.as_bytes());
-    h = fnv1a_step(h, &[0xFE, text_align.as_u8()]);
-    h = fnv1a_step(h, &font_weight.to_le_bytes());
-    h = fnv1a_step(h, &font_size_bits.to_le_bytes());
-    h = fnv1a_step(h, &wrap_width_bits.to_le_bytes());
-    h = fnv1a_step(h, &align_width_bits.to_le_bytes());
-    h = fnv1a_step(h, &scale_bits.to_le_bytes());
-    h
+    let mut h = Xxh64Hasher::new(0);
+    h.update(text.as_bytes());
+    h.update(&[0xFE, text_align.as_u8()]);
+    h.update(&font_weight.to_le_bytes());
+    for bits in [font_size_bits, wrap_width_bits, align_width_bits, scale_bits] {
+        h.update_u32(bits);
+    }
+    h.digest()
 }
 
 #[derive(Debug, Clone)]

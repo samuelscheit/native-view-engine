@@ -517,8 +517,8 @@
 							appEl.innerHTML = ssr.html;
 							window.__nveSsrPreHydrate = {
 								rootEl: appEl.querySelector('[data-nve-id="1"]'),
-								searchInput: appEl.querySelector('[testid="board-search-input"]'),
-								statusBtn: appEl.querySelector('[testid="task-status-1"]'),
+								searchInput: appEl.querySelector('[data-testid="board-search-input"]'),
+								statusBtn: appEl.querySelector('[data-testid="task-status-1"]'),
 								ruleCount: ssr.rule_count,
 								rootHash: ssr.root_hash_hex,
 								htmlBytes: ssr.html.length,

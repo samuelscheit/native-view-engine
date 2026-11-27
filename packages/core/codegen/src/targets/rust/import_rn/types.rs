@@ -1,4 +1,4 @@
-//! Typed binary `NveBinValue` & `RawPropValue` helpers for `import_rn` Rust emitter.
+//! Typed binary `NveBinValue` helpers for `import_rn` Rust emitter.
 
 use std::fmt::Write as _;
 
@@ -27,9 +27,10 @@ pub(super) fn emit_rust_bin_map_payload(
             let _ = writeln!(out, "{indent}entries.push(NveMapEntry::new(\"{key}\", {val_expr}));");
         }
     }
+    let _ = writeln!(out, "{indent}let map_val = NveValue::map(&entries);");
     let _ = writeln!(
         out,
-        "{indent}let payload = encode_bin_value_to_vec(&NveValue::map(&entries));"
+        "{indent}let payload = encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&map_val) }})?;"
     );
 }
 
@@ -95,10 +96,10 @@ pub(super) fn emit_rust_aux_types(
                 let _ = writeln!(out, "    }}");
                 let _ = writeln!(out);
             }
-            let _ = writeln!(out, "    impl From<{enum_name}> for RawPropValue {{");
+            let _ = writeln!(out, "    impl From<{enum_name}> for NveValue {{");
             let _ = writeln!(
                 out,
-                "        fn from(v: {enum_name}) -> Self {{ RawPropValue::String(v.as_str().to_owned()) }}"
+                "        fn from(v: {enum_name}) -> Self {{ NveValue::from_str(v.as_str()) }}"
             );
             let _ = writeln!(out, "    }}");
             let _ = writeln!(out);
@@ -124,10 +125,10 @@ pub(super) fn emit_rust_aux_types(
                 let _ = writeln!(out, "    }}");
                 let _ = writeln!(out);
             }
-            let _ = writeln!(out, "    impl From<{enum_name}> for RawPropValue {{");
+            let _ = writeln!(out, "    impl From<{enum_name}> for NveValue {{");
             let _ = writeln!(
                 out,
-                "        fn from(v: {enum_name}) -> Self {{ RawPropValue::I64(v as i64) }}"
+                "        fn from(v: {enum_name}) -> Self {{ NveValue::i64(v as i64) }}"
             );
             let _ = writeln!(out, "    }}");
             let _ = writeln!(out);
@@ -174,7 +175,7 @@ pub(super) fn emit_rust_object_struct(out: &mut String, struct_name: &str, field
     let _ = writeln!(out);
 
     let _ = writeln!(out, "    impl {struct_name} {{");
-    let _ = writeln!(out, "        pub fn to_bin_bytes(&self) -> Vec<u8> {{");
+    let _ = writeln!(out, "        pub fn to_bin_bytes(&self) -> Result<Vec<u8>, DecodeError> {{");
     let _ = writeln!(
         out,
         "            let mut entries: Vec<NveMapEntry> = Vec::with_capacity({});",
@@ -199,9 +200,10 @@ pub(super) fn emit_rust_object_struct(out: &mut String, struct_name: &str, field
             );
         }
     }
+    let _ = writeln!(out, "            let map_val = NveValue::map(&entries);");
     let _ = writeln!(
         out,
-        "            encode_bin_value_to_vec(&NveValue::map(&entries))"
+        "            encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&map_val) }})"
     );
     let _ = writeln!(out, "        }}");
     let _ = writeln!(out);
@@ -280,36 +282,83 @@ pub(super) fn rust_simple_type(ty: &PropType) -> String {
     }
 }
 
-pub(super) fn rust_to_raw_prop_expr(var: &str, ty: &PropType, is_ref: bool) -> String {
-    let deref = if is_ref { format!("*{var}") } else { var.to_owned() };
-    let clone = format!("{var}.clone()");
-    match ty {
-        PropType::Bool => format!("RawPropValue::Bool({deref})"),
-        PropType::Int32 => format!("RawPropValue::I64({deref} as i64)"),
-        PropType::Float => format!("RawPropValue::F64({deref} as f64)"),
-        PropType::Double => format!("RawPropValue::F64({deref})"),
-        PropType::String | PropType::ImageSource | PropType::Dimension | PropType::Mixed => {
-            format!("RawPropValue::String({clone})")
-        }
-        PropType::Color => format!("RawPropValue::I64({deref}.to_u32() as i64)"),
-        PropType::StringEnum { .. } | PropType::IntEnum { .. } => {
-            format!("RawPropValue::from({deref})")
-        }
+pub(super) fn rust_prop_needs_preencode(ty: &PropType) -> bool {
+    matches!(
+        ty,
+        PropType::Point | PropType::EdgeInsets | PropType::Object { .. } | PropType::Array { .. }
+    )
+}
+
+pub(super) fn rust_prop_preencode_stmt(
+    field: &str,
+    ty: &PropType,
+    is_option: bool,
+) -> Option<String> {
+    if !rust_prop_needs_preencode(ty) {
+        return None;
+    }
+    let encode_var = |var: &str| match ty {
         PropType::Point => format!(
-            "RawPropValue::Bytes(encode_bin_value_to_vec(&NveValue::array(&[NveValue::f64({var}.0 as f64), NveValue::f64({var}.1 as f64)])))"
+            "{{ let arr = [NveValue::f64({var}.0 as f64), NveValue::f64({var}.1 as f64)]; let v = NveValue::array(&arr); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }})? }}"
         ),
         PropType::EdgeInsets => format!(
-            "RawPropValue::Bytes(encode_bin_value_to_vec(&NveValue::array(&[NveValue::f64({var}.0 as f64), NveValue::f64({var}.1 as f64), NveValue::f64({var}.2 as f64), NveValue::f64({var}.3 as f64)])))"
+            "{{ let arr = [NveValue::f64({var}.0 as f64), NveValue::f64({var}.1 as f64), NveValue::f64({var}.2 as f64), NveValue::f64({var}.3 as f64)]; let v = NveValue::array(&arr); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }})? }}"
         ),
-        PropType::Object { .. } => format!("RawPropValue::Bytes({var}.to_bin_bytes())"),
-        PropType::Array { item } => {
-            let elem_expr = rust_nve_value_expr("item", item, true);
-            format!(
-                "RawPropValue::Bytes({{ let items: Vec<NveValue> = {var}.iter().map(|item| {elem_expr}).collect(); encode_bin_value_to_vec(&NveValue::array(&items)) }})"
-            )
+        PropType::Object { .. } => format!("{var}.to_bin_bytes()?"),
+        PropType::Array { item } => match item.as_ref() {
+            PropType::Object { .. } => format!(
+                "{{ let encoded_items: Vec<Vec<u8>> = {var}.iter().map(|item| item.to_bin_bytes()).collect::<Result<Vec<_>, _>>()?; let items: Vec<NveValue> = encoded_items.iter().map(|b| NveValue::from_bytes(b.as_slice())).collect(); let v = NveValue::array(&items); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }})? }}"
+            ),
+            PropType::Point => format!(
+                "{{ let encoded_items: Vec<Vec<u8>> = {var}.iter().map(|item| {{ let arr = [NveValue::f64(item.0 as f64), NveValue::f64(item.1 as f64)]; let v = NveValue::array(&arr); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }}) }}).collect::<Result<Vec<_>, _>>()?; let items: Vec<NveValue> = encoded_items.iter().map(|b| NveValue::from_bytes(b.as_slice())).collect(); let v = NveValue::array(&items); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }})? }}"
+            ),
+            PropType::EdgeInsets => format!(
+                "{{ let encoded_items: Vec<Vec<u8>> = {var}.iter().map(|item| {{ let arr = [NveValue::f64(item.0 as f64), NveValue::f64(item.1 as f64), NveValue::f64(item.2 as f64), NveValue::f64(item.3 as f64)]; let v = NveValue::array(&arr); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }}) }}).collect::<Result<Vec<_>, _>>()?; let items: Vec<NveValue> = encoded_items.iter().map(|b| NveValue::from_bytes(b.as_slice())).collect(); let v = NveValue::array(&items); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }})? }}"
+            ),
+            _ => {
+                let elem_expr = rust_nve_value_expr("item", item, true);
+                format!(
+                    "{{ let items: Vec<NveValue> = {var}.iter().map(|item| {elem_expr}).collect(); let v = NveValue::array(&items); encode_bin_value_to_vec(unsafe {{ NveValueRef::from_raw(&v) }})? }}"
+                )
+            }
+        },
+        _ => unreachable!(),
+    };
+    if is_option {
+        let body = encode_var("val");
+        Some(format!(
+            "let _bin_{field}: Option<Vec<u8>> = match self.{field}.as_ref() {{ Some(val) => Some({body}), None => None }};"
+        ))
+    } else {
+        let body = encode_var(&format!("self.{field}"));
+        Some(format!("let _bin_{field}: Vec<u8> = {body};"))
+    }
+}
+
+pub(super) fn rust_prop_to_nve_value_expr(
+    var: &str,
+    _field: &str,
+    ty: &PropType,
+    is_ref: bool,
+) -> String {
+    let deref = if is_ref { format!("*{var}") } else { var.to_owned() };
+    match ty {
+        PropType::Bool => format!("NveValue::bool({deref})"),
+        PropType::Int32 => format!("NveValue::i64({deref} as i64)"),
+        PropType::Float => format!("NveValue::f64({deref} as f64)"),
+        PropType::Double => format!("NveValue::f64({deref})"),
+        PropType::String | PropType::ImageSource | PropType::Dimension | PropType::Mixed => {
+            format!("NveValue::from_str({var}.as_str())")
+        }
+        PropType::Color => format!("NveValue::i64({deref}.to_u32() as i64)"),
+        PropType::StringEnum { .. } | PropType::IntEnum { .. } => {
+            format!("NveValue::from({deref})")
         }
         PropType::Void | PropType::Promise { .. } | PropType::Callback { .. } => {
-            "RawPropValue::Null".to_owned()
+            "NveValue::null()".to_owned()
+        }
+        PropType::Point | PropType::EdgeInsets | PropType::Object { .. } | PropType::Array { .. } => {
+            unreachable!("handled via rust_prop_preencode_stmt")
         }
     }
 }

@@ -1,5 +1,5 @@
 //! Direct FFI (`NveEventBatchRef`) event dispatch into Dioxus listeners for built-in typed
-//! pointer, scroll, text, focus, composition, keyboard, submit, wheel, and custom events.
+//! pointer, scroll, text, focus, composition, keyboard, submit, table, and custom events.
 
 use std::any::Any;
 use std::rc::Rc;
@@ -7,10 +7,12 @@ use std::rc::Rc;
 use dioxus_core::Event;
 use nve_abi::{
     native_events_to_direct, EventMask, NativeEvent, NativeEventKind, NveEventBatchRef,
+    NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_SHIFT,
 };
 
 use crate::elements::{
     self, CompositionEventData, FocusEventData, KeyEventData, ScrollEventData, SubmitEventData,
+    TableEventData,
 };
 use crate::surface::DioxusSurface;
 use crate::CustomEventData;
@@ -42,6 +44,13 @@ impl DioxusSurface {
                         x: ev.x(),
                         y: ev.y(),
                     });
+                    self.vdom
+                        .runtime()
+                        .handle_event("press", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::Press), 0) => {
+                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData::default());
                     self.vdom
                         .runtime()
                         .handle_event("press", Event::new(data, true), el_id);
@@ -113,24 +122,43 @@ impl DioxusSurface {
                         .handle_event("blur", Event::new(data, false), el_id);
                     handled = true;
                 }
-                (
-                    Some(
-                        kind @ (NativeEventKind::CompositionStart
-                        | NativeEventKind::CompositionUpdate
-                        | NativeEventKind::CompositionEnd),
-                    ),
-                    0 | 3,
-                ) if self.writer.has_event_mask(ev.node_id(), EventMask::COMPOSITION) => {
-                    let wire_name = composition_event_wire_name(kind);
-                    let text = if ev.payload_tag() == 3 {
-                        ev.text().to_owned()
-                    } else {
-                        String::new()
-                    };
-                    let data: Rc<dyn Any> = Rc::new(CompositionEventData { text });
+                (Some(NativeEventKind::CompositionStart), 0 | 3)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::COMPOSITION) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(CompositionEventData {
+                        text: ev.text().to_owned(),
+                    });
                     self.vdom
                         .runtime()
-                        .handle_event(wire_name, Event::new(data, true), el_id);
+                        .handle_event("compositionstart", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::CompositionUpdate), 3)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::COMPOSITION) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(CompositionEventData {
+                        text: ev.text().to_owned(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("compositionupdate", Event::new(data, true), el_id);
+                    handled = true;
+                }
+                (Some(NativeEventKind::CompositionEnd), 0 | 3)
+                    if self
+                        .writer
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::COMPOSITION) =>
+                {
+                    let data: Rc<dyn Any> = Rc::new(CompositionEventData {
+                        text: ev.text().to_owned(),
+                    });
+                    self.vdom
+                        .runtime()
+                        .handle_event("compositionend", Event::new(data, true), el_id);
                     handled = true;
                 }
                 (Some(NativeEventKind::KeyDown), 6)
@@ -138,173 +166,78 @@ impl DioxusSurface {
                         .writer
                         .has_event_mask_in_chain(ev.node_id(), EventMask::KEY_DOWN) =>
                 {
+                    let m = ev.modifiers();
                     let data: Rc<dyn Any> = Rc::new(KeyEventData {
-                        key: ev.key().to_owned(),
-                        meta: ev.meta(),
-                        ctrl: ev.ctrl(),
-                        shift: ev.shift(),
-                        alt: ev.alt(),
+                        key: ev.text().to_owned(),
+                        meta: (m & NVE_KEY_MOD_META) != 0,
+                        ctrl: (m & NVE_KEY_MOD_CTRL) != 0,
+                        shift: (m & NVE_KEY_MOD_SHIFT) != 0,
+                        alt: (m & NVE_KEY_MOD_ALT) != 0,
                     });
                     self.vdom
                         .runtime()
                         .handle_event("keydown", Event::new(data, true), el_id);
                     handled = true;
                 }
-                (Some(NativeEventKind::KeyUp), 6)
+                (Some(NativeEventKind::KeyDown), 3)
                     if self
                         .writer
-                        .has_event_mask_in_chain(ev.node_id(), EventMask::KEY_UP) =>
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::KEY_DOWN) =>
                 {
                     let data: Rc<dyn Any> = Rc::new(KeyEventData {
-                        key: ev.key().to_owned(),
-                        meta: ev.meta(),
-                        ctrl: ev.ctrl(),
-                        shift: ev.shift(),
-                        alt: ev.alt(),
+                        key: ev.text().to_owned(),
+                        meta: false,
+                        ctrl: false,
+                        shift: false,
+                        alt: false,
                     });
                     self.vdom
                         .runtime()
-                        .handle_event("keyup", Event::new(data, true), el_id);
+                        .handle_event("keydown", Event::new(data, true), el_id);
                     handled = true;
                 }
-                (Some(NativeEventKind::Submit), 0 | 3)
+                (Some(NativeEventKind::Submit), 3)
                     if self
                         .writer
                         .has_event_mask_in_chain(ev.node_id(), EventMask::SUBMIT) =>
                 {
-                    let value = if ev.payload_tag() == 3 {
-                        ev.text().to_owned()
-                    } else {
-                        String::new()
-                    };
-                    let data: Rc<dyn Any> = Rc::new(SubmitEventData { value });
+                    let data: Rc<dyn Any> = Rc::new(SubmitEventData {
+                        value: ev.text().to_owned(),
+                    });
                     self.vdom
                         .runtime()
                         .handle_event("submit", Event::new(data, true), el_id);
                     handled = true;
                 }
-                (
-                    Some(
-                        kind @ (NativeEventKind::PointerDown
-                        | NativeEventKind::PointerMove
-                        | NativeEventKind::PointerUp
-                        | NativeEventKind::PointerEnter
-                        | NativeEventKind::PointerLeave),
-                    ),
-                    7,
-                ) if self
-                    .writer
-                    .has_event_mask_in_chain(ev.node_id(), pointer_event_mask(kind)) =>
-                {
-                    let data: Rc<dyn Any> = Rc::new(elements::PressEventData {
-                        x: ev.x(),
-                        y: ev.y(),
-                    });
-                    self.vdom.runtime().handle_event(
-                        pointer_event_wire_name(kind),
-                        Event::new(data, true),
-                        el_id,
-                    );
-                    handled = true;
-                }
-                (Some(NativeEventKind::Wheel), 8)
+                (Some(NativeEventKind::TableEvent), 9)
                     if self
                         .writer
-                        .has_event_mask_in_chain(ev.node_id(), EventMask::WHEEL) =>
+                        .has_event_mask_in_chain(ev.node_id(), EventMask::TABLE_EVENT) =>
                 {
-                    let data: Rc<dyn Any> = Rc::new(ScrollEventData {
-                        x: ev.delta_x(),
-                        y: ev.delta_y(),
-                        content_width: 0.0,
-                        content_height: 0.0,
+                    let data: Rc<dyn Any> = Rc::new(TableEventData {
+                        table_key: ev.table_key().0,
+                        event_id: ev.table_event_id(),
+                        payload: ev.table_payload().to_vec(),
                     });
                     self.vdom
                         .runtime()
-                        .handle_event("wheel", Event::new(data, true), el_id);
+                        .handle_event("tableevent", Event::new(data, true), el_id);
                     handled = true;
                 }
-                (Some(NativeEventKind::Custom), 5)
-                    if self
-                        .writer
-                        .has_event_mask_in_chain(ev.node_id(), EventMask::CUSTOM) =>
-                {
-                    let name = ev.name();
-                    let wire_name = normalize_custom_event_name(name);
-                    let raw_bytes: &[u8] = if let Some(b) = ev.value().as_bytes() {
-                        b
-                    } else if let Some(s) = ev.value().as_str() {
-                        s.as_bytes()
-                    } else if !ev.text().is_empty() {
-                        ev.text().as_bytes()
-                    } else {
-                        &[]
-                    };
-                    let payload = build_custom_event_payload(&wire_name, name, raw_bytes);
+                (Some(NativeEventKind::Custom), 5) => {
+                    let name = ev.name().to_owned();
+                    let data: Rc<dyn Any> = Rc::new(CustomEventData {
+                        name: name.clone(),
+                        data: ev.value().as_bytes().unwrap_or(&[]).to_vec(),
+                    });
                     self.vdom
                         .runtime()
-                        .handle_event(&wire_name, Event::new(payload, true), el_id);
+                        .handle_event(&name, Event::new(data, true), el_id);
                     handled = true;
                 }
                 _ => {}
             }
         }
         handled
-    }
-}
-
-#[inline]
-fn composition_event_wire_name(kind: NativeEventKind) -> &'static str {
-    match kind {
-        NativeEventKind::CompositionStart => "compositionstart",
-        NativeEventKind::CompositionUpdate => "compositionupdate",
-        NativeEventKind::CompositionEnd => "compositionend",
-        _ => "compositionupdate",
-    }
-}
-
-#[inline]
-fn pointer_event_mask(kind: NativeEventKind) -> u64 {
-    match kind {
-        NativeEventKind::PointerDown => EventMask::POINTER_DOWN,
-        NativeEventKind::PointerMove => EventMask::POINTER_MOVE,
-        NativeEventKind::PointerUp => EventMask::POINTER_UP,
-        NativeEventKind::PointerEnter => EventMask::POINTER_ENTER,
-        NativeEventKind::PointerLeave => EventMask::POINTER_LEAVE,
-        _ => EventMask::NONE,
-    }
-}
-
-#[inline]
-fn pointer_event_wire_name(kind: NativeEventKind) -> &'static str {
-    match kind {
-        NativeEventKind::PointerDown => "pointerdown",
-        NativeEventKind::PointerMove => "pointermove",
-        NativeEventKind::PointerUp => "pointerup",
-        NativeEventKind::PointerEnter => "pointerenter",
-        NativeEventKind::PointerLeave => "pointerleave",
-        _ => "pointermove",
-    }
-}
-
-#[inline]
-fn normalize_custom_event_name(name: &str) -> String {
-    let lower = name.to_ascii_lowercase();
-    let stripped = lower.strip_prefix("on").unwrap_or(&lower);
-    if stripped.is_empty() {
-        "custom".to_owned()
-    } else {
-        stripped.to_owned()
-    }
-}
-
-fn build_custom_event_payload(wire_name: &str, raw_name: &str, data: &[u8]) -> Rc<dyn Any> {
-    match wire_name {
-        "submit" => Rc::new(SubmitEventData {
-            value: String::from_utf8_lossy(data).into_owned(),
-        }),
-        _ => Rc::new(CustomEventData {
-            name: raw_name.to_owned(),
-            data: data.to_vec(),
-        }),
     }
 }

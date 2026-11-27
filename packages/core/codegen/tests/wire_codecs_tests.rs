@@ -1,5 +1,5 @@
 //! Cross-language verification tests for single-source wire codecs (`EventRing`/`NVEV`,
-//! typed `KeyDown`, `NVE_DRAW1` vector canvas, and canonical 64-bit FNV-1a).
+//! typed `KeyDown`, and `NVE_DRAW1` vector canvas).
 
 mod common;
 
@@ -11,7 +11,6 @@ use nve_abi::{
     NativeEventKind, NVE_KEY_MOD_ALT, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META, NVE_KEY_MOD_REPEAT,
     NVE_KEY_MOD_SHIFT,
 };
-use nve_codegen::schema::hybrid::{fnv1a_64, FNV1A_64_OFFSET_BASIS};
 use nve_codegen::schema::wire as wc;
 use nve_codegen::targets::generate_all_wire_codec_files;
 
@@ -100,22 +99,7 @@ fn assert_decoded_cross_language_event_ring(raw: &[u8]) {
 
 #[test]
 fn spec_matches_nve_abi_and_nve_components_authoritatively() {
-    // 1. Canonical 64-bit FNV-1a constants & reference vectors
-    assert_eq!(wc::FNV1A_OFFSET_BASIS, 0xcbf2_9ce4_8422_2325);
-    assert_eq!(wc::FNV1A_PRIME, 0x0000_0100_0000_01b3);
-    assert_eq!(wc::FNV1A_OFFSET_BASIS, FNV1A_64_OFFSET_BASIS);
-    assert_eq!(wc::fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
-    assert_eq!(wc::fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
-    assert_eq!(wc::fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
-    assert_eq!(wc::fnv1a64_pair(b"foo", b"bar"), wc::fnv1a64(b"foobar"));
-    assert_eq!(
-        wc::fnv1a64_update(wc::fnv1a64_update(wc::FNV1A_OFFSET_BASIS, b"NVE_"), b"DRAW1"),
-        wc::fnv1a64(b"NVE_DRAW1")
-    );
-    for vec in wc::FNV1A64_TEST_VECTORS {
-        assert_eq!(wc::fnv1a64(vec.bytes), vec.expected);
-        assert_eq!(fnv1a_64(vec.bytes), vec.expected);
-    }
+    // 1. Schema hash is the compile-time constant.
     assert_eq!(wc::wire_codecs_schema_hash(), wc::NVE_WIRE_CODECS_SCHEMA_HASH);
     assert_ne!(wc::NVE_WIRE_CODECS_SCHEMA_HASH, 0);
 
@@ -153,6 +137,7 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
         ("POINTER_ENTER", NativeEventKind::PointerEnter as u8),
         ("POINTER_LEAVE", NativeEventKind::PointerLeave as u8),
         ("WHEEL", NativeEventKind::Wheel as u8),
+        ("TABLE_EVENT", NativeEventKind::TableEvent as u8),
     ];
     assert_eq!(wc::EVENT_KINDS.len(), expected_kinds.len());
     for (spec_v, (name, abi_val)) in wc::EVENT_KINDS.iter().zip(expected_kinds.iter()) {
@@ -179,6 +164,7 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
         ("POINTER_ENTER", EventMask::POINTER_ENTER),
         ("POINTER_LEAVE", EventMask::POINTER_LEAVE),
         ("WHEEL", EventMask::WHEEL),
+        ("TABLE_EVENT", EventMask::TABLE_EVENT),
     ];
     assert_eq!(wc::EVENT_MASKS.len(), expected_masks.len());
     for (spec_m, (name, abi_val)) in wc::EVENT_MASKS.iter().zip(expected_masks.iter()) {
@@ -207,10 +193,10 @@ fn spec_matches_nve_abi_and_nve_components_authoritatively() {
     assert_eq!(e[wc::EVENT_ENTRY_KIND_OFFSET], NativeEventKind::Blur as u8);
     assert_eq!(e[wc::EVENT_ENTRY_PAYLOAD_TAG_OFFSET], wc::EVENT_PAYLOAD_TAGS[0].tag);
 
-    // 3. Cross-check `NVE_DRAW1` constants & opcodes directly against `packages/core/components`
+    // 3. Cross-check `NVE_DRAW1` constants & opcodes directly against `packages/modules/canvas`
     let canvas_types =
-        std::fs::read_to_string(repo_root().join("packages/core/components/src/canvas_ir/types.rs"))
-            .expect("read packages/core/components/src/canvas_ir/types.rs");
+        std::fs::read_to_string(repo_root().join("packages/modules/canvas/src/types.rs"))
+            .expect("read packages/modules/canvas/src/types.rs");
     assert_eq!(&wc::DRAW_LIST_MAGIC, b"NVE_DRAW1");
     assert!(canvas_types.contains("pub const NVE_DRAW_MAGIC: [u8; 9] = *b\"NVE_DRAW1\";"));
     assert!(canvas_types.contains(&format!("pub const NVE_DRAW_VERSION: u16 = {};", wc::DRAW_LIST_VERSION)));
@@ -279,7 +265,6 @@ fn cpp20_wire_codecs_compile_and_execute_against_rust_reference() {
 #include <vector>
 int main() {{
   using namespace nve::wire;
-  assert(fnv1a64_str("foobar") == 0x85944171F73967E8ULL);
   EventRingWriter w(false);
   w.push_press(1, 10, 1000, 12.5f, 34.25f);
   w.push_long_press(1, 11, 2000, 5.0f, 6.0f);
@@ -356,7 +341,6 @@ fn java11_wire_codecs_compile_and_execute_against_rust_reference() {
 import java.nio.file.*;
 public final class WireCheckDriver {{
     public static void main(String[] args) throws Exception {{
-        if (!NveWireCodecs.verifyFnv1a64TestVectors()) throw new AssertionError("FNV-1a64 failed");
         var w = new NveWireCodecs.EventRingWriter(false);
         w.pushPress(1, 10, 1000L, 12.5f, 34.25f);
         w.pushLongPress(1, 11, 2000L, 5.0f, 6.0f);
@@ -423,7 +407,6 @@ fn swift_wire_codecs_compile_and_execute_against_rust_reference() {
         &main_swift,
         format!(
             r#"import Foundation
-precondition(NveWireCodecs.Fnv1a64.verifyTestVectors())
 var w = NveWireCodecs.EventRingWriter(framed: false)
 w.pushPress(surfaceId: 1, nodeId: 10, timestampUs: 1000, x: 12.5, y: 34.25)
 w.pushLongPress(surfaceId: 1, nodeId: 11, timestampUs: 2000, x: 5.0, y: 6.0)
@@ -491,7 +474,6 @@ fn dart_wire_codecs_analyze_and_execute_against_rust_reference() {
 import 'dart:typed_data';
 import 'nve_wire_codecs.generated.dart';
 void main() {{
-  if (!nveWireVerifyFnv1a64TestVectors()) throw StateError('fnv1a64');
   final w = NveWireEventRingWriter(framed: false);
   w.pushPress(1, 10, 1000, 12.5, 34.25);
   w.pushLongPress(1, 11, 2000, 5.0, 6.0);
@@ -562,11 +544,10 @@ fn typescript_wire_codecs_execute_and_verify_against_rust_reference() {
         format!(
             r#"import * as fs from 'node:fs';
 import {{
-  verifyFnv1a64TestVectors, NveWireEventRingWriter, NVE_WIRE_EVENT_KIND,
+  NveWireEventRingWriter, NVE_WIRE_EVENT_KIND,
   NVE_EVENT_RING_VERSION, decodeEventRingFramedHeader, NVE_DRAW_LIST_MAGIC,
   NVE_DRAW_OP, decodeDrawListHeader, drawOpFixedPayloadBytes,
 }} from '{}';
-if (!verifyFnv1a64TestVectors()) throw new Error('fnv1a64');
 const w = new NveWireEventRingWriter(false);
 w.pushPress(1, 10, 1000n, 12.5, 34.25);
 w.pushLongPress(1, 11, 2000n, 5.0, 6.0);

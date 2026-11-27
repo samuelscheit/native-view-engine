@@ -20,12 +20,12 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
         table
             .upsert_node(SceneNodeInput {
                 node_id: id,
-                kind: if id == 1 {
-                    NVE_NODE_KIND_ROOT
+                primary_slot: if id == 1 {
+                    NVE_PRIMARY_SLOT_NONE
                 } else if id % 3 == 0 {
-                    NVE_NODE_KIND_PRESSABLE
+                    2
                 } else {
-                    NVE_NODE_KIND_TEXT
+                    1
                 },
                 flags: if id % 3 == 0 {
                     NVE_NODE_INTERACTIVE
@@ -59,7 +59,7 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
         table
             .upsert_node(SceneNodeInput {
                 node_id: id,
-                kind: NVE_NODE_KIND_TEXT,
+                primary_slot: 1,
                 flags: NVE_NODE_LEAF_TEXT,
                 opacity_u8: 200,
                 x: id as f32 + 5.0,
@@ -82,7 +82,7 @@ fn incremental_table_tracks_only_changed_and_removed_nodes() {
     table
         .upsert_node(SceneNodeInput {
             node_id: 2,
-            kind: NVE_NODE_KIND_TEXT,
+            primary_slot: 1,
             flags: NVE_NODE_LEAF_TEXT,
             opacity_u8: 255,
             x: 2.0,
@@ -144,20 +144,20 @@ fn sync_frame_and_compaction_preserve_live_data() {
             [
                 SceneNodeInput {
                     node_id: 1,
-                    kind: NVE_NODE_KIND_ROOT,
+                    primary_slot: NVE_PRIMARY_SLOT_NONE,
                     children: &[2, 3],
                     ..Default::default()
                 },
                 SceneNodeInput {
                     node_id: 2,
-                    kind: NVE_NODE_KIND_TEXT,
+                    primary_slot: 1,
                     flags: NVE_NODE_LEAF_TEXT,
                     text: "hello",
                     ..Default::default()
                 },
                 SceneNodeInput {
                     node_id: 3,
-                    kind: NVE_NODE_KIND_TEXT,
+                    primary_slot: 1,
                     flags: NVE_NODE_LEAF_TEXT,
                     text: "world",
                     ..Default::default()
@@ -174,13 +174,13 @@ fn sync_frame_and_compaction_preserve_live_data() {
             [
                 SceneNodeInput {
                     node_id: 1,
-                    kind: NVE_NODE_KIND_ROOT,
+                    primary_slot: NVE_PRIMARY_SLOT_NONE,
                     children: &[2],
                     ..Default::default()
                 },
                 SceneNodeInput {
                     node_id: 2,
-                    kind: NVE_NODE_KIND_TEXT,
+                    primary_slot: 1,
                     flags: NVE_NODE_LEAF_TEXT,
                     text: "updated 🚀",
                     ..Default::default()
@@ -233,12 +233,13 @@ fn raw_scene_ref_rejects_corrupt_views() {
         removed_count: 0,
         text_slab_len: 2,
         children_slab_len: 0,
-        _pad: 0,
+        table_count: 0,
         nodes: &node,
         text_slab: bad_utf8.as_ptr(),
         children_slab: std::ptr::null(),
         dirty_indices: std::ptr::null(),
         removed_ids: std::ptr::null(),
+        tables: std::ptr::null(),
     };
     let reader = unsafe { NveSceneRef::from_raw(valid_view) }.unwrap();
     assert_eq!(
@@ -279,4 +280,109 @@ fn scene_c_header_matches_compile_time_schema_hash_when_present() {
         "nve_scene_abi.generated.h schema hash drift! Expected {expected_macro} in {}",
         header_path.display()
     );
+}
+
+#[test]
+fn external_text_slab_view_and_ref_roundtrip() {
+    let ext_slab = b"hello external";
+    let mut table = NveSceneTable::new();
+    table.begin_frame(1);
+    let idx = table
+        .upsert_node_external_text(
+            SceneNodeInput {
+                node_id: 10,
+                primary_slot: 1,
+                flags: NVE_NODE_LEAF_TEXT,
+                ..Default::default()
+            },
+            6,
+            8,
+            false,
+        )
+        .unwrap();
+    let r = table.as_ref_with_external_text(ext_slab);
+    assert_eq!(r.node_text(&r.nodes()[idx as usize]).unwrap(), "external");
+    let raw = table.as_view_with_external_text(ext_slab);
+    let from_raw = unsafe { NveSceneRef::from_raw(raw) }.unwrap();
+    assert_eq!(from_raw.node_text(&from_raw.nodes()[idx as usize]).unwrap(), "external");
+}
+
+#[test]
+#[should_panic(expected = "upsert_node_external_text cannot be mixed")]
+fn external_text_slab_panics_after_internal_upsert() {
+    let mut table = NveSceneTable::new();
+    table
+        .upsert_node(SceneNodeInput {
+            node_id: 1,
+            text: "internal",
+            ..Default::default()
+        })
+        .unwrap();
+    let _ = table.upsert_node_external_text(
+        SceneNodeInput {
+            node_id: 2,
+            ..Default::default()
+        },
+        0,
+        0,
+        false,
+    );
+}
+
+#[test]
+#[should_panic(expected = "upsert_node cannot be mixed")]
+fn internal_upsert_panics_after_external_text_slab() {
+    let mut table = NveSceneTable::new();
+    table
+        .upsert_node_external_text(
+            SceneNodeInput {
+                node_id: 1,
+                ..Default::default()
+            },
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+    let _ = table.upsert_node(SceneNodeInput {
+        node_id: 2,
+        text: "internal",
+        ..Default::default()
+    });
+}
+
+#[test]
+#[should_panic(expected = "as_view called in external text slab mode")]
+fn as_view_panics_in_external_text_slab_mode() {
+    let mut table = NveSceneTable::new();
+    table
+        .upsert_node_external_text(
+            SceneNodeInput {
+                node_id: 1,
+                ..Default::default()
+            },
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+    let _ = table.as_view();
+}
+
+#[test]
+#[should_panic(expected = "as_ref called in external text slab mode")]
+fn as_ref_panics_in_external_text_slab_mode() {
+    let mut table = NveSceneTable::new();
+    table
+        .upsert_node_external_text(
+            SceneNodeInput {
+                node_id: 1,
+                ..Default::default()
+            },
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+    let _ = table.as_ref();
 }

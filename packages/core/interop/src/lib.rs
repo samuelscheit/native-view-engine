@@ -13,8 +13,6 @@ pub mod error;
 pub mod gesture;
 #[cfg(feature = "layout")]
 pub mod layout;
-#[cfg(feature = "native-view")]
-pub mod native_view;
 #[cfg(feature = "plugin-host")]
 pub mod plugin_host;
 #[cfg(feature = "reconcile")]
@@ -65,21 +63,6 @@ pub use surface::{
 pub use window::{
     ManagedWindow, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
     WindowLifecycleEvent, WindowLifecycleState, WindowManager, WindowRect, WindowState,
-};
-#[cfg(feature = "native-view")]
-pub use native_view::{
-    BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
-    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, MAX_NATIVE_CMD_ARGS,
-    MAX_NATIVE_PROP_FIELDS, NATIVE_CMD_HEADER_SIZE, NATIVE_CMD_MAGIC, NATIVE_CMD_VERSION,
-    NATIVE_PROPS_HEADER_SIZE, NATIVE_PROPS_MAGIC, NATIVE_PROPS_VERSION, NATIVE_VIEW_KIND_PROP_KEY,
-    NATIVE_VIEW_PROPS_PROP_KEY, NativeCommand, NativeCommandBuilder, NativeCommandDecoder,
-    NativeCommandEncoder, NativeCommandSink, NativeCommandSource, NativeProp, NativePropDecoder,
-    NativePropEncoder, NativePropSink, NativePropSource, NativePropValue, NativeProps,
-    NativePropsBuilder, NativeValueRef, NativeViewCodecError,
-    NativeViewHandle as TypedNativeViewHandle, NativeViewHandleBinder, NativeViewRegistry,
-    NativeViewSpec, NoCommand, QueuedNativeCommand, TypedNativeViewCommand, TypedNativeViewProps,
-    VideoPlayer, VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView,
-    WebViewCommand, WebViewProps,
 };
 #[cfg(feature = "traits")]
 pub use traits::{

@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 nve-abi = { workspace = true }
+nve-hash = { workspace = true }
+nve-store = { workspace = true }

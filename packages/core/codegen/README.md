@@ -9,11 +9,11 @@ Binary, compile-time-verified multi-target code generator for `native-view-engin
 | Layer / Module | Purpose |
 | :--- | :--- |
 | `lib.rs`, `error.rs`, `naming.rs` | Crate root public re-exports (`nve_codegen::*`), unified `import_rn_*` / `export_*` entrypoints, structured `CodegenError`, and cross-language identifier/casing helpers. |
-| `schema/` | All IRs, `#[repr(C)]` layout computation, semantic validation, deterministic FNV-1a64 schema hashing, and colocated `AbiFileDescriptor` bridges: |
+| `schema/` | All IRs, `#[repr(C)]` layout computation, semantic validation, deterministic XXH64 schema hashing, and colocated `AbiFileDescriptor` bridges: |
 | `schema/export.rs` | Shared export & RN IR (`GeneratedFile`, `NveExportSpec`, `ParsedRnSpec`, `RnComponentSpec`, `TurboModuleSpec`, `ExportTarget`, output bundles). |
 | `schema/hybrid/` | Hybrid FFI IR (`mod.rs`, `file_spec.rs`, `validate.rs`), colocated `#[derive(NveAbi)]` descriptor bridge (`schema_bridge.rs`), and Core/Scene ABI specs & hashes (`core_abi.rs`). |
 | `schema/reloc/` | Zero-copy aligned `RelocSlice<T>` / `RelocStr` IR, layout calculation, and cycle/alignment validation (`mod.rs`, `ir.rs`, `validate.rs`). |
-| `schema/wire.rs` | Single-source binary wire specification (`FNV-1a64`, `EventRing`, `NVE_DRAW1` opcodes & schema hash). |
+| `schema/wire.rs` | Single-source binary wire specification (`EventRing`, `NVE_DRAW1` opcodes & schema hash). |
 | `frontend/` | All input specification lexers and recursive-descent parsers: |
 | `frontend/rn_spec/` | React Native Fabric `*NativeComponent.{ts,js}` & TurboModule `Native*.{ts,js}` lexer and parser (`mod.rs`, `lexer.rs`, `syntax.rs`, `calls.rs`, `lowering.rs`). |
 | `frontend/hybrid_rust/` | Pure-Rust declarative Hybrid FFI `.rs` lexer and parser (`mod.rs`, `lexer.rs`, `items.rs`, `traits.rs`). |
@@ -45,7 +45,7 @@ Centralized `.nve.rs` spec files (`packages/core/codegen/specs/`) have been **el
   - Optional layout contracts (`#[nve_abi(size = N, size_64 = N, align = N)]` and field `#[nve_abi(offset = N, offset64 = N, c_type = "...")]`) emit compile-time `const` assertions automatically.
   - `nve-codegen` converts colocated `nve_abi::schema::AbiFileDescriptor` values (`core_abi_descriptor()`, `scene_abi_descriptor()`) directly into `HybridFileSpec` via `from_abi_descriptor` — zero duplicated spec files and zero `wasm32` runtime bloat (dead-code-eliminated `const` metadata).
 - **Zero-copy binary slabs (`mmap`, disk caches, network/IPC frames)**: construct a `nve_codegen::RelocSchema` (`RelocStruct`, `RelocField`, `RelocEnum`, `RelocType::{RelocSlice, RelocStr, ...}`) in the owning crate and call `generate_reloc_rust(&schema)` / `generate_reloc_cpp(&schema)` (or `generate_reloc_all(&schema)`).
-  - Use `VerifyMode::Full` for untrusted network sockets and external files (verifies alignment, magic, FNV-1a64 `schema_hash`, bounds, `u32` overflow, UTF-8, `bool`, enum discriminants, and recursion depth before creating any reference).
+  - Use `VerifyMode::Full` for untrusted network sockets and external files (verifies alignment, magic, XXH64 `schema_hash`, bounds, `u32` overflow, UTF-8, `bool`, enum discriminants, and recursion depth before creating any reference).
   - Use `VerifyMode::HeaderOnly` for trusted local `mmap` caches and compiled-in static assets (O(1) header + root check).
   - Use `unsafe { view_unchecked(buf) }` for 0-check raw pointer casts when invariants are already proven.
 - **Direct in-process FFI (static `extern "C"` by default; optional vtables for `dlopen`/`cdylib`)**: derive `#[derive(NveAbi)]` on real `#[repr(C)]` types or construct a `nve_codegen::HybridFileSpec` (`HybridStructSpec`, `HybridEnumSpec`, `c_functions`, and optionally `HybridModuleSpec`/`HybridViewSpec`) directly in Rust and call `generate_hybrid_target(&spec, HybridTarget::Cpp)` (or `generate_hybrid_all`).
@@ -61,6 +61,6 @@ cargo test --locked -p nve-codegen
 # Enforce zero Clippy warnings across library and tests
 cargo clippy --locked -p nve-codegen --all-targets -- -D warnings
 
-# Generate all 15 Core ABI (5) + Scene ABI (5) + Wire Codec (5) artifacts on disk and verify 15/15 parity
+# Generate all 21 Core ABI (5) + Scene ABI (5) + Wire Codec (5) + XXH64 mirror (6) artifacts on disk and verify 21/21 parity
 cargo run --locked -p nve-cli -- codegen abi && cargo run --locked -p nve-cli -- codegen abi --check
 ```

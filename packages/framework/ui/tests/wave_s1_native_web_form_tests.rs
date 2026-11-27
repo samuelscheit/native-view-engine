@@ -16,10 +16,11 @@ use common::UiHarness;
 use nve_backend_web::{
     decode_form_urlencoded_map, MemorySnapshotStorage, SnapshotStorage, WebBackend,
 };
-use nve_dioxus::elements::backend::RenderBackend;
+use nve_dioxus::elements::backend::StoreBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
 use nve_ui::prelude::*;
+use nve_web_html_web::register_web_html_systems;
 use nve_ui::{
     decode_form_draft, encode_form_draft, FormDraftError, FormDraftStore,
     NativeMmapFormDraftStorage, StringKeyValueDraftBackend, StringKeyValueFormDraftStorage,
@@ -128,13 +129,13 @@ fn NativeWebPrimitivesShowcase() -> Element {
 #[test]
 fn native_overlays_disclosure_accordion_and_form_emit_exact_html5_and_hydrate_zero_mismatches() {
     let mut surface = DioxusSurface::new(1, NativeWebPrimitivesShowcase);
-    let (_, _, frame0) = surface.render_frame(1);
 
     let mut web = WebBackend::new();
-    web.submit_frame(&frame0).unwrap();
+    register_web_html_systems(web.table_registry_mut());
+    surface.commit_to(1, &mut web).unwrap();
 
-    let ssr = web.render_ssr();
-    let mirror = web.render_html();
+    let ssr = web.render_ssr(surface.store());
+    let mirror = web.render_html(surface.store());
 
     for html in [&ssr.html, &mirror] {
         // Native <dialog> + Invoker Commands (`show-modal` & `close`).
@@ -176,7 +177,10 @@ fn native_overlays_disclosure_accordion_and_form_emit_exact_html5_and_hydrate_ze
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
-        hydrated.submit_frame(&frame0).unwrap();
+        register_web_html_systems(hydrated.table_registry_mut());
+        hydrated
+            .commit(surface.store(), surface.last_changes())
+            .unwrap();
         let report = hydrated.hydration_report();
         assert!(
             report.mismatches.is_empty(),

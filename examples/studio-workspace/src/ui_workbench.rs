@@ -278,7 +278,17 @@ pub(crate) fn render_workbench_view(
 
             view {
                 test_id: "wb-viewport-grid",
-                "workbench-preset": "{preset.as_str()}",
+                nve_table: {
+                    let preset_str = preset.as_str().to_owned();
+                    nve_dioxus::table_attr_fn(move |tx, node| {
+                        tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                            nve_web_html::DataAttrList::from_pairs(vec![(
+                                "workbench-preset".to_owned(),
+                                preset_str.clone(),
+                            )]),
+                        ));
+                    })
+                },
                 style: "width: 100%; flex-shrink: 0; flex-direction: {viewport_grid_dir}; gap: 6px;",
                 if preset.includes_desktop() {
                     {render_preview_frame("wb-frame-desktop", "Desktop", "1280x800", "3-col", 3, current, accent_hex, accent_tint, xray, m)}

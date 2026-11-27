@@ -4,7 +4,10 @@ use dioxus_core_macro::Props;
 use nve_dioxus::prelude::*;
 use nve_mdx::Inline;
 
+use nve_web_html::SemanticElement;
+
 use crate::render::components::InlineComponentView;
+use crate::render::html_semantic;
 use crate::route::DocsRoute;
 use crate::state::{navigate_to_target, use_docs_state};
 
@@ -92,7 +95,7 @@ fn InlineNodeView(
         },
         Inline::Strong(children) => rsx! {
             text {
-                "semanticTag": "strong",
+                nve_table: html_semantic(SemanticElement::Strong),
                 style: "display: inline; font-size: {font_size}px; font-weight: 700; color: {text_color};",
                 for (idx, child) in children.into_iter().enumerate() {
                     InlineNodeView {
@@ -108,7 +111,7 @@ fn InlineNodeView(
         },
         Inline::Emphasis(children) => rsx! {
             text {
-                "semanticTag": "em",
+                nve_table: html_semantic(SemanticElement::Em),
                 style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; font-style: italic; color: {text_color};",
                 for (idx, child) in children.into_iter().enumerate() {
                     InlineNodeView {
@@ -124,7 +127,7 @@ fn InlineNodeView(
         },
         Inline::Strikethrough(children) => rsx! {
             text {
-                "semanticTag": "s",
+                nve_table: html_semantic(SemanticElement::Strike),
                 style: "display: inline; font-size: {font_size}px; font-weight: {base_weight}; text-decoration: line-through; color: {theme.muted};",
                 for (idx, child) in children.into_iter().enumerate() {
                     InlineNodeView {
@@ -247,7 +250,7 @@ fn InlineNodeView(
         }
         Inline::HardBreak => rsx! {
             view {
-                "semanticTag": "br",
+                nve_table: html_semantic(SemanticElement::Br),
                 style: "width: 100%; height: 4px;",
             }
         },

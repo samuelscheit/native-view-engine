@@ -536,7 +536,7 @@ pub fn BottomSheet(
                 accessibility_role: "dialog",
                 aria_modal: "true",
                 aria_labelledby: title_id.clone(),
-                "data-detent-fraction": "{frac_attr}",
+                nve_table: super::html_tables::html_data_attrs(vec![("detent-fraction".to_owned(), frac_attr.clone())]),
                 nve_style: sheet_style,
                 style: style,
                 onpress: move |ev: PressEvent| ev.stop_propagation(),

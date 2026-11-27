@@ -12,9 +12,10 @@
 use std::mem::{align_of, offset_of, size_of};
 
 use nve_abi::{
-    ColorRgba, ComponentKind, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify,
-    FrameId, LayoutProps, NodeId, StyleProps, SurfaceId,
+    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, FrameId, NodeId,
+    SurfaceId,
 };
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 
 use crate::mmap_arena::ArenaPod;
 use crate::{LayoutRect, Viewport};
@@ -80,7 +81,7 @@ impl RelocLayoutProps {
         }
     }
 
-    pub fn from_abi(lp: &LayoutProps) -> Self {
+    pub fn from_abi(lp: &LayoutSnapshot) -> Self {
         let (width_tag, width_val) = Self::encode_dim(lp.width);
         let (height_tag, height_val) = Self::encode_dim(lp.height);
         let (min_width_tag, min_width_val) = Self::encode_dim(lp.min_width);
@@ -122,7 +123,7 @@ impl RelocLayoutProps {
         }
     }
 
-    pub fn to_abi(&self) -> LayoutProps {
+    pub fn to_abi(&self) -> LayoutSnapshot {
         let flex_direction = match self.flex_direction {
             1 => FlexDirection::Row,
             2 => FlexDirection::ColumnReverse,
@@ -144,7 +145,7 @@ impl RelocLayoutProps {
             4 => FlexAlign::Baseline,
             _ => FlexAlign::Stretch,
         };
-        LayoutProps {
+        LayoutSnapshot {
             width: Self::decode_dim(self.width_tag, self.width_val),
             height: Self::decode_dim(self.height_tag, self.height_val),
             min_width: Self::decode_dim(self.min_width_tag, self.min_width_val),
@@ -192,7 +193,8 @@ pub struct RelocSceneNode {
     pub border_radius: f32,
     pub opacity: f32,
     pub font_size: f32,
-    pub kind: u8,
+    /// Primary realizing table slot (`0..127`), or `NVE_PRIMARY_SLOT_NONE` (`0xFF`) for a container.
+    pub primary_slot: u8,
     pub flags: u8,
     pub text_align: u8,
     pub image_resize_mode: u8,
@@ -219,8 +221,8 @@ impl RelocSceneNode {
     }
 
     #[inline]
-    pub const fn style_props(&self) -> StyleProps {
-        StyleProps {
+    pub const fn style_props(&self) -> VisualSnapshot {
+        VisualSnapshot {
             background: ColorRgba::from_u32(self.bg_rgba),
             text_color: ColorRgba::from_u32(self.text_rgba),
             border_color: ColorRgba::from_u32(self.border_rgba),
@@ -233,18 +235,8 @@ impl RelocSceneNode {
     }
 
     #[inline]
-    pub const fn component_kind(&self) -> ComponentKind {
-        match self.kind {
-            0 => ComponentKind::Root,
-            1 => ComponentKind::View,
-            2 => ComponentKind::Text,
-            3 => ComponentKind::ScrollView,
-            4 => ComponentKind::Image,
-            5 => ComponentKind::TextInput,
-            6 => ComponentKind::Pressable,
-            7 => ComponentKind::SkiaCanvas,
-            _ => ComponentKind::Custom,
-        }
+    pub const fn primary_slot(&self) -> u8 {
+        self.primary_slot
     }
 
     #[inline]
@@ -306,7 +298,7 @@ const _: () = {
     assert!(offset_of!(RelocSceneNode, x) == 16);
     assert!(offset_of!(RelocSceneNode, bg_rgba) == 32);
     assert!(offset_of!(RelocSceneNode, border_width) == 48);
-    assert!(offset_of!(RelocSceneNode, kind) == 64);
+    assert!(offset_of!(RelocSceneNode, primary_slot) == 64);
     assert!(offset_of!(RelocSceneNode, font_weight) == 68);
     assert!(offset_of!(RelocSceneNode, text) == 72);
     assert!(offset_of!(RelocSceneNode, tag) == 80);
@@ -332,15 +324,15 @@ const _: () = {
 pub struct SceneRelocNodeInput<'a> {
     pub node_id: NodeId,
     pub parent_index: i32,
-    pub kind: ComponentKind,
+    pub primary_slot: u8,
     pub flags: u8,
     pub text_align: u8,
     pub image_resize_mode: u8,
     pub font_weight: u16,
     pub event_mask: u64,
     pub computed_rect: LayoutRect,
-    pub style: StyleProps,
-    pub layout: LayoutProps,
+    pub style: VisualSnapshot,
+    pub layout: LayoutSnapshot,
     pub text: &'a str,
     pub tag: &'a str,
     pub image_src: &'a str,
@@ -403,7 +395,7 @@ pub fn encode_scene_reloc(input: &SceneRelocInput<'_>) -> Result<RelocBuf, Reloc
             border_radius: node.style.border_radius,
             opacity: node.style.opacity,
             font_size: node.style.font_size,
-            kind: nve_abi::component_kind_to_scene_u8(node.kind as u16),
+            primary_slot: node.primary_slot,
             flags: node.flags,
             text_align: node.text_align,
             image_resize_mode: node.image_resize_mode,
@@ -558,7 +550,7 @@ impl<'a> SceneRelocView<'a> {
     }
 
     #[inline]
-    pub fn layout_of_index(&self, index: usize) -> Option<LayoutProps> {
+    pub fn layout_of_index(&self, index: usize) -> Option<LayoutSnapshot> {
         self.layouts.get(index).map(RelocLayoutProps::to_abi)
     }
 

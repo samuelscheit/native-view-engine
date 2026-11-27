@@ -1,49 +1,35 @@
 //! Dioxus (`dioxus-core 0.7`) frontend adapter for `native-view-engine`.
 //!
-//! Implements `dioxus_core::WriteMutations` to emit a single flat, typed binary `CommandBuffer`
-//! per frame — feeding Fabric (iOS/Android), Skia (Desktop/Mobile), Web (WASM), and Headless
-//! backends identically.
+//! Bridges `dioxus_core::WriteMutations` directly into a single-owner [`nve_store::NodeStore`]
+//! via [`nve_store::Transaction`] — feeding Headless, Skia, Web (WASM/SSR), and cross-boundary
+//! `NVE2` native hosts identically with zero mirror trees, zero `ComponentKind`, and zero
+//! optional module dependencies.
 
-pub mod canvas;
 pub mod dioxus_elements;
 pub use dioxus_elements as elements;
 pub mod error_boundary;
 mod events;
 pub mod hot_patch;
-pub mod native_view;
 pub mod signal_archive;
 pub mod stream_slot;
 mod surface;
-pub mod svg;
+pub mod table_attr;
 #[cfg(test)]
 mod tests;
 pub mod traits;
 pub mod typed_style;
 mod writer;
 
-pub use canvas::CanvasDrawList;
 pub use elements::{
     CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent, KeyEventData,
-    ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData,
+    PressEvent, PressEventData, ScrollEvent, ScrollEventData, SubmitEvent, SubmitEventData,
+    TableEvent, TableEventData, TextEvent, TextEventData,
 };
 pub use error_boundary::{
     throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
     ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
 };
-pub use nve_components::canvas_ir::{CanvasOp, DrawList, DrawListRecorder};
 pub use nve_components::input_hints::{AutofillHint, InputMode};
-pub use native_view::{
-    use_native_view_handle, use_native_view_registry, use_provide_native_view_registry,
-    BlurMaterial, BlurSurface, BlurSurfaceProps, DecodeNativeCommand, DecodeNativeProps,
-    DecodedWebElementProps, EncodeNativeCommand, EncodeNativeProps, NativeCommand,
-    NativeCommandDecoder, NativeCommandEncoder, NativeProp, NativePropDecoder, NativePropEncoder,
-    NativePropValue, NativeProps, NativeValueRef, NativeView, NativeViewCodecError,
-    NativeViewHandle, NativeViewProvider, NativeViewRegistry, NativeViewSpec, NoCommand,
-    QueuedNativeCommand, TypedNativeViewCommand, TypedNativeViewProps, VideoPlayer,
-    VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
-    WebViewProps, NATIVE_CMD_MAGIC, NATIVE_PROPS_MAGIC, NATIVE_VIEW_KIND_PROP_KEY,
-    NATIVE_VIEW_PROPS_PROP_KEY,
-};
 pub use nve_components::interaction::{
     resolve_cursor, resolve_layout_and_style, resolve_patch, resolve_style, CursorKind,
     FocusModality, InteractionState, InteractionTracker, StateStyleRule,
@@ -68,9 +54,6 @@ pub use nve_components::paint::{
     LinearGradient, RadialGradient,
 };
 pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
-pub use nve_components::svg::{
-    compute_svg_content_hash, parse_svg_path_data, FillRule, SvgPicture, VectorPathCmd, VectorShape,
-};
 pub use nve_components::transform::{
     affine_concat, affine_inverse_map_point, affine_map_point, lerp_transform_2d, Transform2D,
 };
@@ -85,7 +68,7 @@ pub use stream_slot::{
     NVE_STREAM_SLOT_ATTR, NVE_STREAM_SLOT_NAME_PREFIX, NVE_STREAM_SLOT_ROLE_ATTR,
 };
 pub use surface::DioxusSurface;
-pub use svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
+pub use table_attr::{table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR};
 pub use traits::{
     effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
     use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
@@ -93,98 +76,80 @@ pub use traits::{
     HighContrast, HostToolkit, KeyboardInsets, Locale, Orientation, PlatformOnly, PlatformOs,
     PointerKind, ReactiveTraitStore, ReducedMotion, SafeAreaInsets, ScaleFactor, SizeClass,
     TextScale, TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitResolver,
-    TraitScope, TraitStore, TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
-    ViewportChangeMask, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
+    TraitScope, TraitStore, TraitSwitch, UiDensity, VerticalSizeClass, ViewportChangeMask,
+    BUILTIN_TRAIT_COUNT, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 pub use typed_style::{
     parse_flex_align, parse_flex_direction, parse_flex_justify, ShowOn, TypedStyle,
     NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR,
 };
-pub use nve_engine::{BatchSink, RenderSink};
-pub use writer::{MutationTx, NveMutationWriter};
-
-use dioxus_core::Event;
+pub use writer::{NveMutationWriter, StoreMutationTx};
 
 /// Alias matching `elements::events::onblur` (`FocusEvent`) so blur listeners share one canonical payload type.
 pub type BlurEventData = FocusEventData;
 pub type BlurEvent = FocusEvent;
 
-/// Payload for generic native `Custom` events dispatched into Dioxus custom event listeners.
+/// Lightweight `use_signal` hook backed directly by `dioxus_core::use_hook` + `dioxus_signals::Signal`.
+pub fn use_signal<T: 'static>(init: impl FnOnce() -> T) -> dioxus_signals::Signal<T> {
+    dioxus_core::use_hook(|| dioxus_signals::Signal::new(init()))
+}
+
+/// Payload delivered to Dioxus handlers registered for custom host events.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CustomEventData {
     pub name: String,
     pub data: Vec<u8>,
 }
 
-pub type CustomEvent = Event<CustomEventData>;
+pub type CustomEvent = dioxus_core::Event<CustomEventData>;
 
+/// Prelude imported by Dioxus NVE apps (`use nve_dioxus::prelude::*;`).
 pub mod prelude {
-    pub use crate::canvas::CanvasDrawList;
+    pub use crate::dioxus_elements;
     pub use crate::elements::{
-        self as dioxus_elements, events::*, CompositionEvent, CompositionEventData, KeyEvent,
-        KeyEventData, PressEvent, SubmitEvent, SubmitEventData, TextEvent,
+        events::*, CompositionEvent, CompositionEventData, FocusEvent, FocusEventData, KeyEvent,
+        KeyEventData, PressEvent, PressEventData, ScrollEvent, ScrollEventData, SubmitEvent,
+        SubmitEventData, TableEvent, TableEventData, TextEvent, TextEventData,
     };
-    pub use crate::native_view::{
-        use_native_view_handle, use_native_view_registry, use_provide_native_view_registry,
-        BlurMaterial, BlurSurface, BlurSurfaceProps, NativeCommand, NativeProps, NativeView,
-        NativeViewCodecError, NativeViewHandle, NativeViewProvider, NativeViewRegistry,
-        NativeViewSpec, TypedNativeViewCommand, TypedNativeViewProps, VideoPlayer,
-        VideoPlayerCommand, VideoPlayerProps, WebElement, WebElementProps, WebView, WebViewCommand,
-        WebViewProps,
-    };
-    pub use nve_components::canvas_ir::{CanvasOp, DrawList, DrawListRecorder};
     pub use crate::error_boundary::{
         throw_error, throw_ui_error, ui_error, CapturedError, ErrorBoundary, ErrorBoundaryProps,
         ErrorBoundaryReset, ErrorContext, ErrorFallback, UiError, UiErrorReport,
     };
-    pub use crate::stream_slot::{
-        NveStreamSlot, NveStreamSlotProps, StreamSlotRole, SuspenseSlot, SuspenseSlotProps,
+    pub use crate::stream_slot::{NveStreamSlot, StreamSlotRole, SuspenseSlot};
+    pub use crate::table_attr::{
+        table_attr_fn, table_attr_fn_with_clear, TableAttr, TableWriter, NVE_TABLE_ATTR,
     };
     pub use crate::traits::{
-        effective_bottom_inset, keyboard_insets_from_visual_viewport, use_environment,
-        use_provide_existing_trait_store, use_provide_trait_store, use_trait, use_trait_store,
-        CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast, HostToolkit,
-        KeyboardInsets, Locale, Orientation, PlatformOnly, PlatformOs, PointerKind,
+        use_environment, use_provide_existing_trait_store, use_provide_trait_store, use_trait,
+        use_trait_store, CanHover, ColorScheme, ContainerSize, HasHardwareKeyboard, HighContrast,
+        HostToolkit, KeyboardInsets, Locale, Orientation, PlatformOnly, PlatformOs, PointerKind,
         ReactiveTraitStore, ReducedMotion, SafeAreaInsets, ScaleFactor, SizeClass, TextScale,
         TraitEnvironment, TraitKey, TraitOverrides, TraitProvider, TraitScope, TraitStore,
-        TraitSwitch, TraitValueScope, UiDensity, VerticalSizeClass,
+        TraitSwitch, UiDensity, VerticalSizeClass,
     };
-    pub use nve_components::input_hints::{AutofillHint, InputMode};
-    pub use crate::svg::{SvgPictureAttr, NVE_SVG_PICTURE_ATTR};
     pub use crate::typed_style::{ShowOn, TypedStyle, NVE_SHOW_ON_ATTR, NVE_TYPED_STYLE_ATTR};
+    pub use crate::{BlurEvent, BlurEventData, CustomEvent, CustomEventData, DioxusSurface};
+    pub use dioxus_core;
+    pub use dioxus_core::{
+        consume_context, current_scope_id, provide_context, spawn, try_consume_context, use_drop,
+        use_hook, Element, IntoDynNode, VNode, VirtualDom,
+    };
+    pub use dioxus_core_macro::{component, rsx, Props};
     pub use crate::use_signal;
-    pub use crate::{
-        BlurEvent, BlurEventData, CustomEvent, CustomEventData, FocusEvent, FocusEventData,
-        ScrollEvent, ScrollEventData,
-    };
-    pub use nve_components::interaction::{
-        CursorKind, FocusModality, InteractionState, InteractionTracker, StateStyleRule,
-    };
+    pub use dioxus_signals;
+    pub use dioxus_signals::{ReadableExt, Signal, WritableExt};
+    pub use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+    pub use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
     pub use nve_components::layout_ext::{
-        GridItemPlacement, GridLayout, GridLine, GridSingleTrack, GridTrack, GridTrackPlacement,
-        GridTrackUnit, LayoutDirection, LayoutExt, LogicalInlineEdges, PositionInsets,
+        GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
         PositionMode,
     };
     pub use nve_components::media::{
-        Display, FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow,
-        ResponsiveRule, ResponsiveStylePatch, StylePatch, TextAlign,
+        Display, MediaQuery, ResponsiveRule, ResponsiveStylePatch, StylePatch,
     };
-    pub use nve_components::motion::{
-        EasingCurve, MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack,
-        TimedTransition, TransitionProperty, TransitionSpec,
-    };
+    pub use nve_components::input_hints::{AutofillHint, InputMode};
+    pub use nve_components::motion::{EasingCurve, TransitionProperty, TransitionSpec};
     pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
     pub use nve_components::spring::{MotionPreference, SpringSpec, SpringState};
-    pub use nve_components::svg::{FillRule, SvgPicture, VectorPathCmd, VectorShape};
     pub use nve_components::transform::Transform2D;
-    pub use dioxus_core;
-    pub use dioxus_core::{current_scope_id, spawn, use_drop, use_hook, Element, VirtualDom};
-    pub use dioxus_core_macro::{component, rsx, Props};
-    pub use dioxus_signals;
-    pub use dioxus_signals::{ReadableExt, Signal, WritableExt};
-}
-
-/// Lightweight `use_signal` hook backed directly by `dioxus_core::use_hook` + `dioxus_signals::Signal`.
-pub fn use_signal<T: 'static>(init: impl FnOnce() -> T) -> dioxus_signals::Signal<T> {
-    dioxus_core::use_hook(|| dioxus_signals::Signal::new(init()))
 }

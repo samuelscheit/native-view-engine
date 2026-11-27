@@ -7,6 +7,9 @@ use nve_mdx::{Block, ListItem, TableAlign};
 use crate::render::code_block::CodeBlockView;
 use crate::render::components::ComponentBlockView;
 use crate::render::directives::DirectiveBlockView;
+use nve_web_html::SemanticElement;
+
+use crate::render::html_semantic;
 use crate::render::inlines::InlinesView;
 use crate::state::use_docs_state;
 
@@ -252,17 +255,17 @@ fn TableView(
             style: "width: 100%; min-width: 0px; overflow-x: auto; border-radius: 8px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
             view {
                 test_id: "docs-table-{scope_key}",
-                "semanticTag": "table",
+                nve_table: html_semantic(SemanticElement::Table),
                 accessibility_role: "table",
                 style: "{table_style}",
 
                 // Table header
                 if !headers.is_empty() {
                     view {
-                        "semanticTag": "thead",
+                        nve_table: html_semantic(SemanticElement::Thead),
                         style: "width: 100%; flex-direction: column;",
                         view {
-                            "semanticTag": "tr",
+                            nve_table: html_semantic(SemanticElement::Tr),
                             accessibility_role: "row",
                             style: "width: 100%; flex-direction: row; background-color: {theme.surface_subtle}; border-width: 1px; border-color: {theme.border};",
                             for (col_idx, cell) in headers.into_iter().enumerate() {
@@ -272,7 +275,7 @@ fn TableView(
                                     rsx! {
                                         view {
                                             key: "{scope_key}-th-{col_idx}",
-                                            "semanticTag": "th",
+                                            nve_table: html_semantic(SemanticElement::Th),
                                             accessibility_role: "columnheader",
                                             style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 9px; align-items: {af}; text-align: {ta};",
                                             InlinesView {
@@ -291,7 +294,7 @@ fn TableView(
                 // Table body
                 if !rows.is_empty() {
                     view {
-                        "semanticTag": "tbody",
+                        nve_table: html_semantic(SemanticElement::Tbody),
                         style: "width: 100%; flex-direction: column;",
                         for (row_idx, row) in rows.into_iter().enumerate() {
                             {
@@ -303,7 +306,7 @@ fn TableView(
                                 rsx! {
                                     view {
                                         key: "{scope_key}-tr-{row_idx}",
-                                        "semanticTag": "tr",
+                                        nve_table: html_semantic(SemanticElement::Tr),
                                         accessibility_role: "row",
                                         style: "width: 100%; flex-direction: row; background-color: {row_bg}; border-width: 1px; border-color: {theme.border};",
                                         for (col_idx, cell) in row.into_iter().enumerate() {
@@ -313,7 +316,7 @@ fn TableView(
                                                 rsx! {
                                                     view {
                                                         key: "{scope_key}-td-{row_idx}-{col_idx}",
-                                                        "semanticTag": "td",
+                                                        nve_table: html_semantic(SemanticElement::Td),
                                                         accessibility_role: "cell",
                                                         style: "{TABLE_CELL_FLEX_STYLE} padding-horizontal: 12px; padding-vertical: 8px; align-items: {af}; text-align: {ta};",
                                                         InlinesView {
@@ -339,10 +342,12 @@ fn TableView(
 mod tests {
     use std::sync::Arc;
 
-    use nve_abi::{Dimension, NodeId, RawPropValue};
     use nve_backend_headless::HeadlessBackend;
     use nve_backend_web::WebBackend;
-    use nve_dioxus::dioxus_elements::backend::{RenderBackend, Viewport};
+    use nve_components::tables::{DebugId, Layout};
+    use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
+    use nve_store::{Length, NodeId};
+    use nve_web_html_web::register_web_html_systems;
     use nve_host_services::{HostServiceProvider, MemoryHostServices};
     use nve_mdx::{CompileOptions, SiteSource, compile_site_with_validation};
 
@@ -384,9 +389,7 @@ description: "Table column alignment verification."
                 Arc::new(PlaygroundRegistry::new()),
                 services,
             );
-            let (_, _, frame_bytes) = surface.render_frame(1);
-
-            // 1. Verify typed LayoutProps + Taffy computed column rects in HeadlessBackend.
+            // 1. Verify typed Layout word table + TaffyStoreLayout column rects in HeadlessBackend.
             let mut headless = HeadlessBackend::new();
             headless.set_viewport(
                 1,
@@ -396,48 +399,50 @@ description: "Table column alignment verification."
                     scale_factor: 1.0,
                 },
             );
-            headless
-                .submit_frame(&frame_bytes)
-                .expect("headless submit_frame");
+            surface
+                .commit_to(1, &mut headless)
+                .expect("headless commit_to");
 
-            let table_id = headless
-                .nodes()
-                .values()
-                .find_map(|n| match n.raw_props.get("testID") {
-                    Some(RawPropValue::String(s))
-                        if s.starts_with("docs-table-") && !s.starts_with("docs-table-wrap-") =>
-                    {
-                        Some(n.id)
+            let store = surface.store();
+            let mut stack = vec![NodeId::ROOT];
+            let mut table_id = None;
+            while let Some(nid) = stack.pop() {
+                if let Some(dbg) = store.try_row::<DebugId>(nid) {
+                    let tid = dbg.test_id();
+                    if tid.starts_with("docs-table-") && !tid.starts_with("docs-table-wrap-") {
+                        table_id = Some(nid);
+                        break;
                     }
-                    _ => None,
-                })
-                .expect("rendered docs-table node");
+                }
+                stack.extend_from_slice(store.children(nid));
+            }
+            let table_id = table_id.expect("rendered docs-table node");
 
-            let sections = &headless.node(table_id).expect("table node").children;
+            let sections = store.children(table_id);
             assert_eq!(sections.len(), 2, "expected thead + tbody sections");
             let rows: Vec<NodeId> = sections
                 .iter()
-                .flat_map(|&sec_id| headless.node(sec_id).expect("section").children.iter().copied())
+                .flat_map(|&sec_id| store.children(sec_id).iter().copied())
                 .collect();
             assert_eq!(rows.len(), 3, "expected 1 header row + 2 body rows");
 
-            let header_cells = &headless.node(rows[0]).expect("header row").children;
+            let header_cells = store.children(rows[0]);
             assert_eq!(header_cells.len(), 4);
 
             for &row_id in &rows {
-                let cells = &headless.node(row_id).expect("row node").children;
+                let cells = store.children(row_id);
                 assert_eq!(cells.len(), 4);
                 for (col_idx, &cell_id) in cells.iter().enumerate() {
-                    let cell = headless.node(cell_id).expect("cell node");
-                    assert_eq!(cell.layout.flex_grow, 1.0);
-                    assert_eq!(cell.layout.flex_shrink, 1.0);
-                    assert_eq!(cell.layout.width, Dimension::Points(0.0));
-                    assert_eq!(cell.layout.min_width, Dimension::Points(0.0));
+                    let layout = store.try_row::<Layout>(cell_id).expect("cell layout");
+                    assert_eq!(layout.flex_grow(), 1.0);
+                    assert_eq!(layout.flex_shrink(), 1.0);
+                    assert_eq!(layout.width(), Length::points(0.0));
+                    assert_eq!(layout.min_width(), Length::points(0.0));
 
                     let header_rect = headless
-                        .layout_of(header_cells[col_idx])
+                        .layout_of(header_cells[col_idx].raw())
                         .expect("header rect");
-                    let cell_rect = headless.layout_of(cell_id).expect("cell rect");
+                    let cell_rect = headless.layout_of(cell_id.raw()).expect("cell rect");
                     assert!(
                         (header_rect.x - cell_rect.x).abs() < 0.01,
                         "viewport {vw}x{vh} col {col_idx} x mismatch: header={} body={}",
@@ -453,10 +458,12 @@ description: "Table column alignment verification."
                 }
             }
 
-            // 2. Verify WebBackend emits semantic table tags, overflow-x wrapper, and cell wrapping.
+            // 2. Verify WebBackend + nve-web-html-web emits semantic table tags, overflow-x wrapper, and cell wrapping.
             let mut web = WebBackend::new();
-            web.submit_frame(&frame_bytes).expect("web submit_frame");
-            let ssr = web.render_ssr();
+            register_web_html_systems(web.table_registry_mut());
+            web.commit(surface.store(), surface.last_changes())
+                .expect("web commit");
+            let ssr = web.render_ssr(surface.store());
             assert!(
                 ssr.style_css.contains("overflow-wrap:break-word;"),
                 "expected overflow-wrap:break-word in SSR CSS:\n{}",
@@ -473,7 +480,7 @@ description: "Table column alignment verification."
             assert!(ssr.html.contains("<tr "), "expected semantic <tr>");
             assert!(ssr.html.contains("<th "), "expected semantic <th>");
             assert!(ssr.html.contains("<td "), "expected semantic <td>");
-            let html = web.render_html();
+            let html = web.render_html(surface.store());
             assert!(html.contains("role=\"columnheader\""));
             assert!(html.contains("role=\"cell\""));
         }

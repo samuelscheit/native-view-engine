@@ -236,19 +236,16 @@ mod tests {
 
     use super::*;
 
-    fn find_testid_node_id(backend: &WebBackend, testid: &str) -> nve_abi::NodeId {
-        backend
-            .iter_nodes()
-            .find_map(|(id, el)| {
-                el.raw_props
-                    .get("testID")
-                    .or_else(|| el.raw_props.get("data-testid"))
-                    .and_then(|v| match v {
-                        nve_abi::RawPropValue::String(s) if s == testid => Some(id),
-                        _ => None,
-                    })
+    fn find_testid_node_id(store: &nve_store::NodeStore, testid: &str) -> nve_abi::NodeId {
+        store
+            .live_nodes()
+            .find_map(|id| {
+                store
+                    .try_row::<nve_components::tables::DebugId>(id)
+                    .filter(|d| d.test_id() == testid)
+                    .map(|_| id.raw())
             })
-            .expect("testID present in backend")
+            .expect("testID present in store")
     }
 
     #[test]
@@ -329,8 +326,8 @@ mod tests {
         ));
 
         // Clicking Increment on surface 2 updates surface 2 only, leaving surface 3 untouched.
-        let inc_node = find_testid_node_id(host.session(2).unwrap().backend(), "ks-counter-inc");
-        host.session_mut(2).unwrap().backend().push_event(NativeEvent {
+        let inc_node = find_testid_node_id(host.session(2).unwrap().store(), "ks-counter-inc");
+        host.session_mut(2).unwrap().backend_mut().push_event(NativeEvent {
             surface_id: 2,
             node_id: inc_node,
             timestamp_us: 1000,
@@ -338,8 +335,8 @@ mod tests {
             payload: EventPayload::Point { x: 20.0, y: 20.0 },
         });
         host.session_mut(2).unwrap().pump_events().unwrap().unwrap();
-        assert!(host.session(2).unwrap().backend().render_html().contains("Count: 1"));
-        assert!(host.session(3).unwrap().backend().render_html().contains("Count: 0"));
+        assert!(host.session(2).unwrap().render_html().contains("Count: 1"));
+        assert!(host.session(3).unwrap().render_html().contains("Count: 0"));
 
         // Direct typed WindowCommand dispatch updates title & focus cleanly.
         assert_eq!(

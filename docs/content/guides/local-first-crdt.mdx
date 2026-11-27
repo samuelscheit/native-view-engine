@@ -17,7 +17,7 @@ Native View Engine treats instant cold start and offline-first multi-device coll
 | `0..8` | 8 B | `magic` | `b"NVE_SNAP"` |
 | `8..16` | 8 B | `format_version`, `app_schema_version` | `u32 = 1`, caller schema version |
 | `16..24` | 8 B | `flags`, `reserved` | `u32`, `u32 (0)` |
-| `24..32` | 8 B | `checksum_fnv64` | FNV-1a 64-bit over `0..24` + `32..file_len` |
+| `24..32` | 8 B | `checksum_xxh64` | XXH64 over `0..24` + `32..file_len` |
 | `32..48` | 16 B | `frame0_offset`, `frame0_len` | 8-byte aligned Frame-0 `NVE1` `CommandBuffer` |
 | `48..64` | 16 B | `state_offset`, `state_len` | 8-byte aligned `RelocatableStateArena` / `NVE_SIG1` bytes |
 | `64..80` | 16 B | `meta_offset`, `meta_len` | Optional viewport / metadata bytes |
@@ -28,7 +28,7 @@ Because `MmapSnapshot` contains zero absolute memory pointers, it survives ASLR,
 
 Writing a full snapshot on every keystroke is wasteful. `packages/core/engine/src/snapshot_wal/` pairs `MmapSnapshot` with an append-only binary WAL (`NVE_WAL1`, 24-byte header bound to `base_snapshot_checksum`):
 
-- **Record framing:** `seq: u64` (monotonic from `1`) | `kind: u8` (`1 = StateDelta`, `2 = Frame0Delta`, `3 = Checkpoint`) | `payload_len: u32` | `payload_bytes` | `checksum_fnv64: u64`.
+- **Record framing:** `seq: u64` (monotonic from `1`) | `kind: u8` (`1 = StateDelta`, `2 = Frame0Delta`, `3 = Checkpoint`) | `payload_len: u32` | `payload_bytes` | `checksum_xxh64: u64`.
 - **Torn-tail recovery vs. corruption rejection:** On `SnapshotWal::open_or_create`, any torn *trailing* record at EOF (mid-write power loss) is cleanly truncated back to the last valid boundary, whereas any corrupted *middle* record returns a strict `WalError`.
 - **Atomic compaction:** `SnapshotWal::compact_into_snapshot` writes a new `NVE_SNAP` via sibling temp file + `sync_all()` + atomic `rename()`, then rotates the `.nvewal` file to a clean 24-byte header bound to the new checksum.
 
@@ -58,7 +58,7 @@ Defined in `packages/core/interop/src/crdt/wire.rs` (minimum 30 bytes, strict bo
 magic("NVC1": 4B) | version(u16=1) | sender(u64)
   | vv_len(u32) + [peer: u64, seq: u64]*
   | record_count(u32) + [rec_len: u32, tag: u8, body]*
-  | checksum(u64 FNV-1a64 over all preceding bytes)
+  | checksum(u64 XXH64 over all preceding bytes)
 ```
 
 Supported record tags: `1 = LwwSet`, `2 = GCounterSet`, `3 = PnCounterSet`, `4 = OrSetAddU64`, `5 = OrSetRemove`, `6 = RgaInsert`, `7 = RgaDelete`, `8 = OrSetAddStr`.

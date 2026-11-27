@@ -14,7 +14,6 @@ use crate::support::{
 /// 650 lines: `(path, max_lines)`. Fails if ANY allowlisted file grows above `max_lines` OR
 /// shrinks to `<= 650` lines (forcing the allowlist strictly downward to zero).
 const EXISTING_OVERSIZE_ALLOWLIST: &[(&str, usize)] = &[
-    ("packages/backends/skia/src/gpu/vulkan.rs", 1221),
     ("packages/backends/web/src/snapshot.rs", 690),
     ("packages/core/interop/src/gesture.rs", 927),
     ("packages/core/interop/src/surface.rs", 947),

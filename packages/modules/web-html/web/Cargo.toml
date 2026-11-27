@@ -1,0 +1,13 @@
+[package]
+name = "nve-web-html-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-backend-web = { workspace = true }
+nve-store = { workspace = true }
+nve-web-html = { workspace = true }
+
+[dev-dependencies]
+nve-engine = { workspace = true }

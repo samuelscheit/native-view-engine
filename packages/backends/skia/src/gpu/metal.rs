@@ -219,20 +219,30 @@ mod imp {
             scale_factor: f32,
             clear_color: ColorRgba,
         ) -> Result<(), GpuSurfaceError> {
+            self.render_with_renderer_plugins(renderer, display_list, scale_factor, clear_color, None)
+        }
+
+        pub fn render_with_renderer_plugins(
+            &mut self,
+            renderer: &SkiaCanvasRenderer,
+            display_list: &DisplayList,
+            scale_factor: f32,
+            clear_color: ColorRgba,
+            plugins: Option<super::super::SkiaPluginContext<'_>>,
+        ) -> Result<(), GpuSurfaceError> {
             match &mut self.target {
                 MetalTarget::Offscreen { surface } => {
                     let canvas = surface.canvas();
                     canvas.clear(to_skia_color(clear_color));
-                    renderer.paint_display_list(display_list, canvas, scale_factor);
+                    renderer.paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
                     self.direct_context
                         .flush_and_submit_surface(surface, SyncCpu::Yes)
                         .map_err(|e| GpuSurfaceError::FlushFailed(e.to_string()))?;
                     Ok(())
                 }
-                MetalTarget::WindowLayer { .. } => {
-                    self.execute_frame(display_list, scale_factor, clear_color, None)
-                        .map(|_| ())
-                }
+                MetalTarget::WindowLayer { .. } => self
+                    .execute_frame_with_plugins(display_list, scale_factor, clear_color, None, plugins)
+                    .map(|_| ()),
             }
         }
 
@@ -383,10 +393,21 @@ mod imp {
 
         fn render_display_list(
             &mut self,
+            dl: &DisplayList,
+            scale: f32,
+            clear: ColorRgba,
+            hud: Option<&str>,
+        ) -> Result<(), GpuSurfaceError> {
+            self.render_display_list_with_plugins(dl, scale, clear, hud, None)
+        }
+
+        fn render_display_list_with_plugins(
+            &mut self,
             display_list: &DisplayList,
             scale_factor: f32,
             clear_color: ColorRgba,
             hud_banner: Option<&str>,
+            plugins: Option<super::super::SkiaPluginContext<'_>>,
         ) -> Result<(), GpuSurfaceError> {
             if self.state != FrameLifecycleState::Begun {
                 return Err(GpuSurfaceError::InvalidFrameState {
@@ -404,7 +425,7 @@ mod imp {
             let canvas = surface.canvas();
             canvas.clear(to_skia_color(clear_color));
             self.renderer
-                .paint_display_list(display_list, canvas, scale_factor);
+                .paint_display_list_opt_plugins(display_list, canvas, scale_factor, plugins);
             if let Some(banner) = hud_banner {
                 self.renderer.paint_hud_banner(canvas, scale_factor, banner);
             }

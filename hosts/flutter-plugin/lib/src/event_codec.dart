@@ -198,6 +198,36 @@ final class NveWheelPayload extends NveEventPayload {
   int get hashCode => Object.hash(deltaX, deltaY, modifiers);
 }
 
+final class NveTableEventPayload extends NveEventPayload {
+  const NveTableEventPayload({
+    required this.tableKey,
+    required this.eventId,
+    required this.bytes,
+  });
+
+  final int tableKey;
+  final int eventId;
+  final Uint8List bytes;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! NveTableEventPayload ||
+        other.tableKey != tableKey ||
+        other.eventId != eventId ||
+        other.bytes.length != bytes.length) {
+      return false;
+    }
+    for (var i = 0; i < bytes.length; i++) {
+      if (other.bytes[i] != bytes[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(tableKey, eventId, Object.hashAll(bytes));
+}
+
 /// Decoded outbound or inbound NVE event with strongly typed payload (binary).
 class NveEvent {
   const NveEvent({
@@ -535,6 +565,7 @@ class NveEventRingCodec {
         NveKeyPayload() => NveEventPayloadTag.key.code,
         NvePointerPayload() => NveEventPayloadTag.pointer.code,
         NveWheelPayload() => NveEventPayloadTag.wheel.code,
+        NveTableEventPayload() => NveEventPayloadTag.tableEvent.code,
       };
       final meta = ByteData(18)
         ..setUint32(0, ev.surfaceId, Endian.little)
@@ -605,6 +636,13 @@ class NveEventRingCodec {
             ..setFloat32(4, deltaY, Endian.little)
             ..setUint8(8, modifiers);
           builder.add(wh.buffer.asUint8List());
+        case NveTableEventPayload(:final tableKey, :final eventId, :final bytes):
+          final hdr = ByteData(16)
+            ..setUint64(0, tableKey, Endian.little)
+            ..setUint32(8, eventId, Endian.little)
+            ..setUint32(12, bytes.length, Endian.little);
+          builder.add(hdr.buffer.asUint8List());
+          builder.add(bytes);
       }
     }
 

@@ -5,17 +5,18 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps, SurfaceId,
-    ROOT_NODE_ID,
-};
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
 use nve_backend_skia::gpu::{
     GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSwapchain,
 };
 use nve_backend_skia::raster::PixelBuffer;
+use nve_components::tables::{
+    register_core_tables, FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
+};
 use nve_engine::loader::LoaderError;
-use nve_engine::{HotPatchMsg, RelocError, RenderBackend, Viewport};
+use nve_engine::{HotPatchMsg, RelocError, Viewport};
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 use tungstenite::Message;
 
 use super::{
@@ -29,18 +30,27 @@ struct MockCounterApp {
     label: String,
     button_color: ColorRgba,
     reloaded_paths: Vec<PathBuf>,
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    initialized: bool,
     frame_buf: Vec<u8>,
     state_buf: Vec<u8>,
 }
 
 impl MockCounterApp {
     fn new() -> Self {
+        register_core_tables();
         Self {
             generation: 1,
             count: 0,
             label: "Counter".to_string(),
             button_color: ColorRgba::rgb(37, 99, 235),
             reloaded_paths: Vec::new(),
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            initialized: false,
             frame_buf: Vec::new(),
             state_buf: Vec::new(),
         }
@@ -52,62 +62,57 @@ impl DesktopApp for MockCounterApp {
         self.generation
     }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(1, frame_id);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Percent(100.0),
-                height: Dimension::Percent(100.0),
-                padding: EdgeInsets::all(20.0),
-                gap: 12.0,
-                flex_direction: FlexDirection::Column,
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            2,
-            &StyleProps {
-                background: ColorRgba::rgb(15, 23, 42),
-                ..Default::default()
-            },
-        );
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        let mut tx = self.store.tx();
+        if !self.initialized {
+            let _ = tx.create_at(StoreNodeId::ROOT);
+            let _ = tx.create_at(StoreNodeId(2));
+            let _ = tx.create_at(StoreNodeId(3));
+            let _ = tx.create_at(StoreNodeId(4));
 
-        b.create_node(3, ComponentKind::Text, None);
-        b.set_style(
-            3,
-            &StyleProps {
-                text_color: ColorRgba::WHITE,
-                font_size: 20.0,
-                ..Default::default()
-            },
-        );
-        b.set_text(3, &format!("{}: {}", self.label, self.count));
+            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let p = Length::points(20.0);
+            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
+            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
+            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
+            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(StoreNodeId(2), Visual::BACKGROUND, Rgba::rgb(15, 23, 42));
 
-        b.create_node(4, ComponentKind::Pressable, None);
-        b.set_layout(
-            4,
-            &LayoutProps {
-                width: Dimension::Points(160.0),
-                height: Dimension::Points(48.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            4,
-            &StyleProps {
-                background: self.button_color,
-                border_radius: 10.0,
-                ..Default::default()
-            },
-        );
-        b.set_event_mask(4, EventMask::PRESS);
+            tx.set(StoreNodeId(3), Typography::COLOR, Rgba::WHITE);
+            tx.set(StoreNodeId(3), Typography::FONT_SIZE, 20.0);
 
-        b.set_children(2, &[3, 4]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
+            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(48.0));
+            tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 10.0);
+            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+
+            tx.set_children(StoreNodeId(2), &[StoreNodeId(3), StoreNodeId(4)]);
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            self.initialized = true;
+        }
+        tx.set_str(
+            StoreNodeId(3),
+            TextContent::TEXT,
+            &format!("{}: {}", self.label, self.count),
+        );
+        tx.set(
+            StoreNodeId(4),
+            Visual::BACKGROUND,
+            Rgba::new(
+                self.button_color.r,
+                self.button_color.g,
+                self.button_color.b,
+                self.button_color.a,
+            ),
+        );
+        tx.commit_into(&mut self.changes);
+        self.frame_buf.clear();
+        self.encoder
+            .encode(&self.store, &self.changes, &mut self.frame_buf);
         &self.frame_buf
     }
 
@@ -152,6 +157,9 @@ impl DesktopApp for MockCounterApp {
         self.reloaded_paths.push(new_dylib_path.to_path_buf());
         self.generation += 1;
         self.button_color = ColorRgba::rgb(168, 85, 247);
+        self.store = NodeStore::new();
+        self.encoder.reset();
+        self.initialized = false;
         Ok(self.generation)
     }
 
@@ -177,7 +185,7 @@ fn hit_test_click_dispatches_press_and_rerenders_pixels() {
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.backend().layout_of(4).expect("button layout");
+    let btn = session.layout_of(4).expect("button layout");
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
 
@@ -212,7 +220,7 @@ fn handles_tier1_template_patch_tier2_dylib_reload_and_dev_status() {
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.backend().layout_of(4).unwrap();
+    let btn = session.layout_of(4).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());
@@ -350,7 +358,7 @@ fn resize_updates_hidpi_viewport_and_scales_pixel_buffer() {
     assert_eq!(session.pixel_buffer().width(), 600);
     assert_eq!(session.pixel_buffer().height(), 400);
 
-    let btn = session.backend().layout_of(4).unwrap();
+    let btn = session.layout_of(4).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(session.pixel_buffer().get_rgb(px, py), Some((37, 99, 235)));
@@ -412,7 +420,7 @@ fn desktop_session_presents_to_swapchain_and_records_frame_telemetry() {
 
     let mut readback = PixelBuffer::new(1, 1);
     sw.copy_to_pixel_buffer(&mut readback).unwrap();
-    let btn = session.backend().layout_of(4).unwrap();
+    let btn = session.layout_of(4).unwrap();
     let px = ((btn.x + btn.width * 0.5) * 2.0) as u32;
     let py = ((btn.y + btn.height * 0.5) * 2.0) as u32;
     assert_eq!(readback.get_rgb(px, py), Some((37, 99, 235)));
@@ -434,7 +442,7 @@ fn snapshot_save_replay_prewarms_frame0_state_and_enforces_schema() {
     );
     session.render_and_rasterize().unwrap();
 
-    let btn = session.backend().layout_of(4).unwrap();
+    let btn = session.layout_of(4).unwrap();
     let cx = btn.x + btn.width * 0.5;
     let cy = btn.y + btn.height * 0.5;
     assert!(session.handle_click_logical(cx, cy).unwrap());

@@ -19,4 +19,6 @@ dioxus-core-macro = { workspace = true }
 minicbor = { workspace = true }
 nve-abi = { workspace = true }
 nve-backend-web = { workspace = true }
-nve-engine = { workspace = true }
+nve-components = { workspace = true }
+nve-store = { workspace = true }
+nve-web-html-web = { workspace = true }

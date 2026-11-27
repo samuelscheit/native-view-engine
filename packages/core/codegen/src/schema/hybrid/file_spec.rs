@@ -63,37 +63,37 @@ impl HybridFileSpec {
 
     /// Deterministic file-wide 64-bit schema hash covering all items in order.
     pub fn file_schema_hash(&self) -> u64 {
-        let mut h = FNV1A_64_OFFSET_BASIS;
-        h = hash_str(h, "nve.hybrid.file.v1");
+        let mut h = Xxh64Hasher::new(0);
+        hash_str(&mut h, "nve.hybrid.file.v1");
         for c in &self.consts {
-            h = hash_str(h, "const");
-            h = hash_str(h, &c.name);
-            h = hash_str(h, &c.ty.canonical_signature());
-            h = fnv1a_64_update(h, &c.value.to_le_bytes());
+            hash_str(&mut h, "const");
+            hash_str(&mut h, &c.name);
+            hash_str(&mut h, &c.ty.canonical_signature());
+            h.update(&c.value.to_le_bytes());
         }
         for a in &self.aliases {
-            h = hash_str(h, "alias");
-            h = hash_str(h, &a.name);
-            h = hash_str(h, &a.target.canonical_signature());
+            hash_str(&mut h, "alias");
+            hash_str(&mut h, &a.name);
+            hash_str(&mut h, &a.target.canonical_signature());
         }
         for e in &self.enums {
-            h = hash_enum(h, e);
+            hash_enum(&mut h, e);
         }
         for s in &self.structs {
-            h = hash_struct(h, s);
+            hash_struct(&mut h, s);
         }
         for m in &self.modules {
-            h = fnv1a_64_update(h, &m.schema_hash(self).to_le_bytes());
+            h.update(&m.schema_hash(self).to_le_bytes());
         }
         for v in &self.views {
-            h = fnv1a_64_update(h, &v.schema_hash(self).to_le_bytes());
+            h.update(&v.schema_hash(self).to_le_bytes());
         }
         for f in &self.c_functions {
             let mut rs = BTreeSet::new();
             let mut re = BTreeSet::new();
-            h = hash_method(h, f, &mut rs, &mut re);
+            hash_method(&mut h, f, &mut rs, &mut re);
         }
-        h
+        h.digest()
     }
 
     /// Returns all structs in topological dependency order (dependencies emitted before dependents
@@ -170,76 +170,73 @@ fn collect_pod_opts_in_type(
 }
 
 
-pub(super) fn hash_str(mut h: u64, s: &str) -> u64 {
-    h = fnv1a_64_update(h, &(s.len() as u32).to_le_bytes());
-    fnv1a_64_update(h, s.as_bytes())
+pub(crate) fn hash_str(h: &mut Xxh64Hasher, s: &str) {
+    h.update_u32(s.len() as u32);
+    h.update(s.as_bytes());
 }
 
 pub(super) fn hash_method(
-    mut h: u64,
+    h: &mut Xxh64Hasher,
     m: &HybridMethodSpec,
     ref_structs: &mut BTreeSet<String>,
     ref_enums: &mut BTreeSet<String>,
-) -> u64 {
-    h = hash_str(h, "method");
-    h = hash_str(h, &m.name);
-    h = fnv1a_64_update(h, &(m.params.len() as u32).to_le_bytes());
+) {
+    hash_str(h, "method");
+    hash_str(h, &m.name);
+    h.update_u32(m.params.len() as u32);
     for p in &m.params {
-        h = hash_str(h, &p.name);
-        h = hash_str(h, &p.ty.canonical_signature());
+        hash_str(h, &p.name);
+        hash_str(h, &p.ty.canonical_signature());
         p.ty.collect_refs(ref_structs, ref_enums);
     }
-    h = hash_str(h, &m.return_type.canonical_signature());
+    hash_str(h, &m.return_type.canonical_signature());
     m.return_type.collect_refs(ref_structs, ref_enums);
-    h
 }
 
-fn hash_enum(mut h: u64, e: &HybridEnumSpec) -> u64 {
-    h = hash_str(h, "enum");
-    h = hash_str(h, &e.name);
+fn hash_enum(h: &mut Xxh64Hasher, e: &HybridEnumSpec) {
+    hash_str(h, "enum");
+    hash_str(h, &e.name);
     for v in &e.variants {
-        h = hash_str(h, &v.name);
-        h = fnv1a_64_update(h, &v.value.to_le_bytes());
+        hash_str(h, &v.name);
+        h.update(&v.value.to_le_bytes());
     }
-    h
 }
 
-fn hash_struct(mut h: u64, s: &HybridStructSpec) -> u64 {
-    h = hash_str(h, if s.is_union { "union" } else { "struct" });
-    h = hash_str(h, &s.name);
+fn hash_struct(h: &mut Xxh64Hasher, s: &HybridStructSpec) {
+    hash_str(h, if s.is_union { "union" } else { "struct" });
+    hash_str(h, &s.name);
     if let Some(align) = s.align {
-        h = hash_str(h, "align");
-        h = fnv1a_64_update(h, &(align as u64).to_le_bytes());
+        hash_str(h, "align");
+        h.update_u64(align as u64);
     }
     if let Some(sz) = s.expected_size {
-        h = hash_str(h, "size");
-        h = fnv1a_64_update(h, &(sz as u64).to_le_bytes());
+        hash_str(h, "size");
+        h.update_u64(sz as u64);
     }
     if let Some(sz64) = s.expected_size_64 {
-        h = hash_str(h, "size64");
-        h = fnv1a_64_update(h, &(sz64 as u64).to_le_bytes());
+        hash_str(h, "size64");
+        h.update_u64(sz64 as u64);
     }
     for f in &s.fields {
-        h = hash_str(h, &f.name);
-        h = hash_str(h, &f.ty.canonical_signature());
+        hash_str(h, &f.name);
+        hash_str(h, &f.ty.canonical_signature());
         if let Some(off) = f.offset {
-            h = hash_str(h, "offset");
-            h = fnv1a_64_update(h, &(off as u64).to_le_bytes());
+            hash_str(h, "offset");
+            h.update_u64(off as u64);
         }
         if let Some(off64) = f.offset_64 {
-            h = hash_str(h, "offset64");
-            h = fnv1a_64_update(h, &(off64 as u64).to_le_bytes());
+            hash_str(h, "offset64");
+            h.update_u64(off64 as u64);
         }
     }
-    h
 }
 
 pub(super) fn hash_transitive_types(
-    mut h: u64,
+    h: &mut Xxh64Hasher,
     file: &HybridFileSpec,
     mut pending_structs: BTreeSet<String>,
     mut seen_enums: BTreeSet<String>,
-) -> u64 {
+) {
     let mut seen_structs = BTreeSet::new();
     while let Some(name) = pending_structs.pop_first() {
         if !seen_structs.insert(name.clone()) {
@@ -259,13 +256,12 @@ pub(super) fn hash_transitive_types(
     }
     for e_name in seen_enums {
         if let Some(e) = file.find_enum(&e_name) {
-            h = hash_enum(h, e);
+            hash_enum(h, e);
         }
     }
     for s_name in seen_structs {
         if let Some(s) = file.find_struct(&s_name) {
-            h = hash_struct(h, s);
+            hash_struct(h, s);
         }
     }
-    h
 }

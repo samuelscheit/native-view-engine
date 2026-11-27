@@ -66,31 +66,35 @@ impl KitchenSinkModule {
         &self.surface
     }
 
-    /// Reconciles and flushes directly into `sink` via monomorphized [`nve_engine::RenderSink`]
-    /// with zero `CommandBuffer` encode/decode overhead.
-    pub fn flush_into<S: nve_engine::RenderSink>(
+    pub fn surface_mut(&mut self) -> &mut DioxusSurface {
+        &mut self.surface
+    }
+
+    /// Reconciles and commits directly into `backend` via [`nve_engine::StoreBackend`]
+    /// with zero wire encode/decode overhead.
+    pub fn commit_to<B: nve_engine::StoreBackend>(
         &mut self,
         frame_id: FrameId,
-        sink: &mut S,
+        backend: &mut B,
     ) -> Result<nve_engine::BackendApplyStats, nve_engine::BackendError> {
-        let (_, stats) = self.flush_into_timed(frame_id, sink)?;
+        let (_, stats) = self.commit_to_timed(frame_id, backend)?;
         Ok(stats)
     }
 
-    /// Timed variant of [`Self::flush_into`] returning `(reconcile_us, stats)`.
-    pub fn flush_into_timed<S: nve_engine::RenderSink>(
+    /// Timed variant of [`Self::commit_to`] returning `(reconcile_us, stats)`.
+    pub fn commit_to_timed<B: nve_engine::StoreBackend>(
         &mut self,
         frame_id: FrameId,
-        sink: &mut S,
+        backend: &mut B,
     ) -> Result<(u64, nve_engine::BackendApplyStats), nve_engine::BackendError> {
         if !self.mounted {
             state::set_pending_store(Some(Arc::clone(&self.store)));
             self.mounted = true;
-            let res = self.surface.flush_into_timed(frame_id, sink);
+            let res = self.surface.commit_to_timed(frame_id, backend);
             state::set_pending_store(None);
             res
         } else {
-            self.surface.flush_into_timed(frame_id, sink)
+            self.surface.commit_to_timed(frame_id, backend)
         }
     }
 
@@ -131,11 +135,11 @@ impl NveApp for KitchenSinkModule {
         if !self.mounted {
             state::set_pending_store(Some(Arc::clone(&self.store)));
             self.mounted = true;
-            let slice = self.surface.render_frame_slice(frame_id);
+            let slice = self.surface.render_nve2_slice(frame_id);
             state::set_pending_store(None);
             slice
         } else {
-            self.surface.render_frame_slice(frame_id)
+            self.surface.render_nve2_slice(frame_id)
         }
     }
 

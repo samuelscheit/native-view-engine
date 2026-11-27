@@ -353,7 +353,7 @@ fn fold_node(
     label: &str,
     child_count: usize,
 ) -> u64 {
-    let mut h = acc.wrapping_mul(0x100000001B3).wrapping_add(id);
+    let mut h = acc.wrapping_mul(0x9E37_79B1_85EB_CA87).wrapping_add(id);
     h ^= ((parent as u64) << 32) | (rgba as u64);
     h = h.wrapping_add(x.to_bits() as u64 ^ ((y.to_bits() as u64) << 16));
     h = h.wrapping_add(label.len() as u64 + child_count as u64);

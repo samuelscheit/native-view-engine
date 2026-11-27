@@ -42,9 +42,7 @@ pub use schema::reloc::{
     RelocType, StructLayout, RELOC_HEADER_ALIGN, RELOC_HEADER_SIZE, RELOC_MAX_VERIFY_DEPTH,
     RELOC_SLICE_ALIGN, RELOC_SLICE_SIZE,
 };
-pub use schema::wire::{
-    fnv1a64, fnv1a64_pair, fnv1a64_update, wire_codecs_schema_hash, NVE_WIRE_CODECS_SCHEMA_HASH,
-};
+pub use schema::wire::{wire_codecs_schema_hash, NVE_WIRE_CODECS_SCHEMA_HASH};
 pub use targets::{
     generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
     generate_all_wire_codec_files, generate_c_core_abi_h, generate_c_scene_abi_h,

@@ -139,20 +139,27 @@ pub fn Tooltip(
                 {children}
             }
             if is_open {
-                view {
-                    test_id: "{bubble_id}",
-                    accessibility_role: "tooltip",
-                    "data-placement": pos_placement,
-                    "data-x": pos_x,
-                    "data-y": pos_y,
-                    "data-flipped": pos_flipped,
-                    "data-shifted": pos_shifted,
-                    "data-arrow-x": pos_arrow_x,
-                    "data-arrow-y": pos_arrow_y,
-                    nve_style: tip_style,
-                    text {
-                        nve_style: tip_text_style,
-                        "{content}"
+                {
+                    let mut tip_data = Vec::new();
+                    if let Some(ref p) = pos_placement { tip_data.push(("placement".to_owned(), p.clone())); }
+                    if let Some(ref x) = pos_x { tip_data.push(("x".to_owned(), x.clone())); }
+                    if let Some(ref y) = pos_y { tip_data.push(("y".to_owned(), y.clone())); }
+                    if let Some(ref f) = pos_flipped { tip_data.push(("flipped".to_owned(), f.clone())); }
+                    if let Some(ref s) = pos_shifted { tip_data.push(("shifted".to_owned(), s.clone())); }
+                    if let Some(ref ax) = pos_arrow_x { tip_data.push(("arrow-x".to_owned(), ax.clone())); }
+                    if let Some(ref ay) = pos_arrow_y { tip_data.push(("arrow-y".to_owned(), ay.clone())); }
+                    let tip_table = super::html_tables::html_data_attrs(tip_data);
+                    rsx! {
+                        view {
+                            test_id: "{bubble_id}",
+                            accessibility_role: "tooltip",
+                            nve_table: tip_table,
+                            nve_style: tip_style,
+                            text {
+                                nve_style: tip_text_style,
+                                "{content}"
+                            }
+                        }
                     }
                 }
             }

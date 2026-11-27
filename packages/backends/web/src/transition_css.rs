@@ -1,17 +1,12 @@
 //! Zero-serialization, zero-JS native CSS `transition:` compilation for [`TransitionSpec`] slices
 //! with automatic `@media (prefers-reduced-motion:reduce)` instant-snap handling.
 
-use core::fmt::Write as _;
-
 use nve_abi::num::write_u64;
-use nve_abi::NodeId;
 use nve_components::motion::TransitionSpec;
 
 use crate::media_css::{format_media_class, CompiledMediaRule};
-use crate::WebBackend;
+use crate::css::format_content_class;
 
-const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 const REDUCED_MOTION_COND: &str = "(prefers-reduced-motion:reduce)";
 const REDUCED_MOTION_ALL_INSTANT_DECLS: &str =
     "transition-duration:0ms!important;transition-delay:0ms!important;";
@@ -25,23 +20,10 @@ pub struct CompiledTransitionRule {
     pub reduced_motion_rule: Option<CompiledMediaRule>,
 }
 
-#[inline]
-fn fnv1a_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-    }
-    hash
-}
-
 /// Formats a deterministic content-addressed class token `nve-t-<8hex>` for a CSS `transition:`
 /// declaration string.
 pub fn format_transition_class(decls: &str) -> String {
-    let h = fnv1a_bytes(FNV1A_OFFSET_BASIS, decls.as_bytes());
-    let h32 = (h ^ (h >> 32)) as u32;
-    let mut out = String::with_capacity(14);
-    let _ = write!(&mut out, "nve-t-{h32:08x}");
-    out
+    format_content_class("nve-t-", &[decls.as_bytes()])
 }
 
 /// Compiles a node's [`TransitionSpec`] slice into a content-addressed base `transition:` rule
@@ -112,15 +94,3 @@ pub fn compile_node_transitions(specs: &[TransitionSpec]) -> Option<CompiledTran
     })
 }
 
-impl WebBackend {
-    /// Directly replaces the zero-serialization [`TransitionSpec`] list on `id`.
-    pub fn set_node_transitions(&mut self, id: NodeId, transitions: Vec<TransitionSpec>) {
-        let Some(node) = self.nodes.get_mut(&id) else {
-            return;
-        };
-        if node.transitions != transitions {
-            node.transitions = transitions;
-            self.flush_or_queue_responsive_dirty(vec![id]);
-        }
-    }
-}

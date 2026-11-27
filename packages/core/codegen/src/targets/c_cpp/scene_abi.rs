@@ -18,6 +18,7 @@ pub fn generate_c_scene_abi_h() -> String {
     let spec = scene_abi_spec();
     let schema_hash = compute_scene_schema_hash(&spec);
     let render_node = spec.find_struct("NveRenderNode").unwrap();
+    let table_view = spec.find_struct("NveTableView").unwrap();
     let scene_view = spec.find_struct("NveSceneView").unwrap();
     let node_meta = spec.find_struct("NveNodeMeta").unwrap();
     let node_size = render_node.expected_size.unwrap();
@@ -76,10 +77,10 @@ pub fn generate_c_scene_abi_h() -> String {
         }
     }
     let _ = writeln!(out);
-    let _ = writeln!(out, "/* Compact uint8_t NveRenderNode::kind discriminants */");
+    let _ = writeln!(out, "/* Sentinel NveRenderNode::primary_slot value (plain container) */");
     for c in &spec.consts {
-        if c.name.starts_with("NVE_NODE_KIND_") {
-            let _ = writeln!(out, "#define {} {}u", c.name, c.value);
+        if c.name == "NVE_PRIMARY_SLOT_NONE" {
+            let _ = writeln!(out, "#define {} 0x{:02X}u", c.name, c.value);
         }
     }
     let _ = writeln!(out);
@@ -113,6 +114,13 @@ pub fn generate_c_scene_abi_h() -> String {
         );
     }
     let _ = writeln!(out, "}} NveRenderNode;");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "/* Zero-copy view of one published NodeStore word table. */");
+    let _ = writeln!(out, "typedef struct NveTableView {{");
+    for f in &table_view.fields {
+        let _ = writeln!(out, "  {} {};", c_core_type(&f.ty), f.name);
+    }
+    let _ = writeln!(out, "}} NveTableView;");
     let _ = writeln!(out);
     let _ = writeln!(out, "typedef struct NveSceneView {{");
     for f in &scene_view.fields {
@@ -178,9 +186,30 @@ pub fn generate_c_scene_abi_h() -> String {
             ptr_slot += 1;
         }
     }
+    let mut tv_ptr_slot = 0usize;
+    for f in &table_view.fields {
+        if let Some(off) = f.offset {
+            let _ = writeln!(
+                out,
+                "NVE_STATIC_ASSERT(offsetof(NveTableView, {}) == {off}u, \"NveTableView.{} offset mismatch\");",
+                f.name, f.name
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "NVE_STATIC_ASSERT(offsetof(NveTableView, {}) == 24u + {tv_ptr_slot}u * sizeof(void*), \"NveTableView.{} offset mismatch\");",
+                f.name, f.name
+            );
+            tv_ptr_slot += 1;
+        }
+    }
     let _ = writeln!(
         out,
-        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveSceneView) == 80u, \"NveSceneView size must be 80 on 64-bit\");"
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveTableView) == 48u, \"NveTableView size must be 48 on 64-bit\");"
+    );
+    let _ = writeln!(
+        out,
+        "NVE_STATIC_ASSERT(sizeof(void*) != 8 || sizeof(NveSceneView) == 88u, \"NveSceneView size must be 88 on 64-bit\");"
     );
     let _ = writeln!(
         out,

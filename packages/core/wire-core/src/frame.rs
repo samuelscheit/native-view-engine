@@ -1,12 +1,12 @@
 //! `NveWireFrame` v2 binary framing: 16-byte fixed little-endian header + payload + optional 8-byte
-//! `XXH64` integrity trailer (`nve_engine::xxh64`).
+//! `XXH64` integrity trailer (`nve_abi::xxh64`).
 //!
 //! Zero custom ARQ, zero SACK bitmaps, zero hand-rolled UDP fragmentation — QUIC / WebTransport /
 //! TLS WebSocket provides transport encryption, congestion control, multiplexing, and framing.
 
 use std::fmt;
 
-use nve_engine::xxh64;
+use nve_abi::xxh64;
 
 /// 2-byte ASCII magic identifying `NveWireFrame` v2 packets (`"NW"`).
 pub const NVE_WIRE_MAGIC: [u8; 2] = *b"NW";
@@ -74,7 +74,7 @@ pub enum NveWireKind {
     Reject = 3,
     /// Complete zero-copy `NveSceneArchive` (`RelocBuf`, already `XXH64`-verified in its 64B header).
     SceneKeyframe = 4,
-    /// Direct incremental `CommandBuffer` batch (zero reverse-parsing).
+    /// Direct incremental `NVE2` frame batch (zero reverse-parsing).
     CommandDelta = 5,
     /// Compact 24-byte `NveNodePatch` slice + UTF-8 string table.
     NodePatchDelta = 6,

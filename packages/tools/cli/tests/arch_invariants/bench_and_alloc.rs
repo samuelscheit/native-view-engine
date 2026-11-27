@@ -80,13 +80,7 @@ fn crates_have_benchmarks_and_allocation_guards() {
         if pkg.is_proc_macro || pkg.rel_dir == "packages/tools/bench" {
             continue;
         }
-        let is_core_or_backend_ns = matches!(
-            pkg.rel_dir.as_str(),
-            "packages/core/abi"
-                | "packages/core/hash"
-                | "packages/core/store"
-                | "packages/core/engine"
-        ) || pkg.rel_dir.starts_with("packages/backends/");
+        let is_nodestore_crate = pkg.rel_dir == "packages/core/store";
 
         let in_bench_scope = pkg.rel_dir.starts_with("packages/core/")
             || pkg.rel_dir.starts_with("packages/backends/")
@@ -116,7 +110,7 @@ fn crates_have_benchmarks_and_allocation_guards() {
                 &pkg.rel_dir,
                 "Crate must ship at least one real colocated benchmark (`[[bench]]` or non-stub `benches/*.rs`)",
             );
-            if is_core_or_backend_ns {
+            if is_nodestore_crate {
                 v_nodestore_bench.push(v.clone());
             }
             v_all_bench.push(v);
@@ -139,12 +133,16 @@ fn crates_have_benchmarks_and_allocation_guards() {
                 }
             }
             if !has_alloc_guard {
-                v_alloc_guard.push(Violation::new(
+                let v = Violation::new(
                     &pkg.rel_manifest,
                     1,
                     &pkg.rel_dir,
                     "Crate under packages/{core,backends,framework}/* must ship at least one `GlobalAlloc`/`CountingAlloc` heap-allocation guard in `tests/` or `benches/`",
-                ));
+                );
+                if is_nodestore_crate || pkg.rel_dir == "packages/backends/headless" {
+                    v_nodestore_bench.push(v.clone());
+                }
+                v_alloc_guard.push(v);
             }
         }
     }
@@ -153,9 +151,8 @@ fn crates_have_benchmarks_and_allocation_guards() {
         scanned_crates > 0,
         "benchmark/alloc scanner must inspect workspace crates"
     );
-    assert_staged_violations(
-        Stage::PostNodeStore,
-        "Core (`abi`/`hash`/`store`/`engine`) and backend crates ship colocated benchmarks",
+    assert_no_violations(
+        "`nve-store` ships colocated benchmarks and `nve-store` + `nve-backend-headless` ship `CountingAlloc` zero-alloc guards",
         &v_nodestore_bench,
     );
     assert_staged_violations(

@@ -7,7 +7,6 @@
 mod common;
 
 use common::UiHarness;
-use nve_dioxus::elements::backend::RenderBackend;
 use nve_dioxus::prelude::*;
 use nve_ui::prelude::*;
 use nve_ui::Orientation;
@@ -276,7 +275,7 @@ fn combobox_headless_e2e_aria_keyboard_tags_and_states() {
     h.keydown("cb-input", "Escape", false);
     assert!(h.maybe_find("cb-listbox").is_none());
     h.blur("cb-input");
-    assert_eq!(h.backend.node(h.find("cb-input")).unwrap().style.border_width, 1.0);
+    assert_eq!(h.border_width(h.find("cb-input")), 1.0);
 }
 
 // ---------------------------------------------------------------------------

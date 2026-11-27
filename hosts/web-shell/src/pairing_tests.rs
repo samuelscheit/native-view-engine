@@ -16,15 +16,14 @@ use tungstenite::Message;
 
 use super::*;
 
-fn find_counter_increment_button(backend: &WebBackend) -> NodeId {
-    backend
-        .iter_nodes()
-        .find_map(|(id, el)| {
-            matches!(
-                el.raw_props.get("testID"),
-                Some(nve_abi::RawPropValue::String(s)) if s == "ks-counter-inc"
-            )
-            .then_some(id)
+fn find_counter_increment_button(store: &nve_store::NodeStore) -> NodeId {
+    store
+        .live_nodes()
+        .find_map(|id| {
+            store
+                .try_row::<nve_components::tables::DebugId>(id)
+                .filter(|d| d.test_id() == "ks-counter-inc")
+                .map(|_| id.raw())
         })
         .expect("ks-counter-inc button in remote mirror")
 }
@@ -40,7 +39,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     .expect("bind NveWireServer");
 
     let mut kitchen_sink = nve_example_kitchen_sink::create_surface(1);
-    let (_, _, frame1) = kitchen_sink.render_frame(1);
+    let frame1 = kitchen_sink.render_nve2_slice(1).to_vec();
     server
         .broadcast_command_delta(1, &frame1)
         .expect("seed initial keyframe");
@@ -77,7 +76,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     assert!(web_session.is_connected());
     assert_ne!(web_session.session_id(), 0);
     assert_eq!(web_session.frames_received(), 1);
-    assert!(web_session.backend().render_html().contains("Count: 0"));
+    assert!(web_session.render_html().contains("Count: 0"));
     #[cfg(feature = "scene-view")]
     assert!(web_session.scene().view().node_count > 0);
 
@@ -90,8 +89,8 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
     assert_eq!(layout_evs[0].kind, NativeEventKind::Layout);
 
     // Local DOM click -> EventBatch -> server mutates KitchenSinkApp -> CommandDelta -> Count: 1.
-    let btn_id = find_counter_increment_button(web_session.backend());
-    web_session.backend().push_event(NativeEvent {
+    let btn_id = find_counter_increment_button(web_session.store());
+    web_session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id: btn_id,
         timestamp_us: 12_345,
@@ -111,7 +110,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
         .expect("server received click EventBatch");
     let click_evs = decode_events(&click_in.frame.payload).expect("valid click EventRing");
     assert!(kitchen_sink.dispatch_events(&click_evs));
-    let (_, _, frame2) = kitchen_sink.render_frame(2);
+    let frame2 = kitchen_sink.render_nve2_slice(2).to_vec();
     assert_eq!(server.broadcast_command_delta(2, &frame2).unwrap(), 1);
 
     while web_session.frames_received() < 2 {
@@ -125,7 +124,7 @@ fn web_pair_client_full_wire_v2_ws_handshake_delta_dom_render_and_event_batch() 
             ws.send(Message::Binary(reply.into())).unwrap();
         }
     }
-    assert!(web_session.backend().render_html().contains("Count: 1"));
+    assert!(web_session.render_html().contains("Count: 1"));
 
     // Synthetic keydown -> EventBatch -> decoded by server.
     let kd_frame = web_session

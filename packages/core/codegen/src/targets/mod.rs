@@ -3,6 +3,7 @@
 
 pub mod c_cpp;
 pub mod dart;
+pub mod hash;
 pub mod kotlin_java;
 pub mod rust;
 pub mod swift;
@@ -181,11 +182,12 @@ pub fn generate_all_wire_codec_files() -> Vec<GeneratedFile> {
     ]
 }
 
-/// Generates ALL 15 checked-in Core ABI (5) + Scene ABI (5) + Wire Codecs (5) artifacts.
+/// Generates every Core ABI (5) + Scene ABI (5) + Wire Codecs (5) + XXH64 mirror (6) artifact.
 pub fn generate_all_abi_files() -> Vec<GeneratedFile> {
     let mut files = generate_all_core_abi_files();
     files.extend(generate_all_scene_abi_files());
     files.extend(generate_all_wire_codec_files());
+    files.extend(hash::generate_all_hash_files());
     files
 }
 

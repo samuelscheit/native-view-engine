@@ -1,152 +1,69 @@
-//! Web DOM / WASM RenderBackend consuming the exact same `nve-abi` `CommandBuffer`.
+//! Unified Web DOM / WASM / SSR / Hydration [`StoreBackend`] over `NodeStore` word tables and
+//! [`WebTableRegistry`].
 //!
-//! - **Option 5 Hybrid CSS**: static `.nve` base reset (`NVE_BASE_RESET_CSS`), bounded
-//!   content-addressed structural stylesheet cache (`.s<base36(fnv1a64)>`), zero-serialization
-//!   `@media` responsive rules (`.nve-m-<8hex>`), volatile/continuous inline lane, `.nve-tl`
-//!   leaf-text inheritance, and deferred once-per-frame style flushing.
-//! - **Keyed Minimal-Diff `SetChildren`**: O(N) head/tail-trimmed + LIS DOM reconciler preserving
-//!   element identity, focus, `<input>` cursor/IME, and `ScrollView` scroll position.
-//! - **Semantic HTML5 SSR**: `render_ssr()` and `render_ssr_document()` mapping semantic ARIA/link
-//!   props onto real HTML5 tags with deterministic CSS rules and opt-in `<script data-nve-replay>`.
-//! - **Zero-Flicker Hydration & Root Event Delegation**: `hydrate_into()` adopts SSR DOM nodes
-//!   in-place with a single root delegated listener set, 3-way `StateReconciler` control
-//!   preservation, atomic pre-hydration replay, and structured `HydrationMismatch` reports.
+//! `nve-backend-web` has **zero dependencies** on optional capability modules (`svg`, `canvas`,
+//! `blur`, `webview`, `video`, `camera`, `web-element`, `web-html`). Every capability registers a
+//! [`WebTableSystem`] onto [`WebBackend::register_table_system`], covering live `wasm32` DOM,
+//! SSR, streaming SSR, and hydration uniformly.
 
-pub mod canvas;
-mod css;
-mod dom;
-mod event_replay;
-mod events;
-mod frame;
-mod frame_ext;
+pub mod css;
+pub mod event_replay;
+pub mod events;
 mod hot_patch;
-mod html;
+pub mod html;
 #[cfg(feature = "hydrate")]
-mod hydrate;
-#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-mod hydrate_native;
-#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
-mod hydrate_native_parse;
-#[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
-mod hydrate_wasm;
-mod input_attrs;
-mod layout_ext_css;
-mod media_css;
-#[cfg(any(
-    feature = "nv-blur",
-    feature = "nv-webview",
-    feature = "nv-video",
-    feature = "nv-web-element",
-    feature = "camera",
-))]
-pub mod native_view;
-mod paint_svg;
-mod raw_style;
-mod reconcile;
-mod semantic_attrs;
+pub mod hydrate;
+pub mod input_attrs;
+pub mod layout_ext_css;
+pub mod media_css;
+pub mod sanitize;
 #[cfg(feature = "ssr")]
-mod snapshot;
+pub mod snapshot;
 #[cfg(feature = "ssr")]
-mod ssg;
+pub mod ssg;
 #[cfg(feature = "ssr")]
-mod ssr;
-#[cfg(feature = "ssr")]
-mod ssr_stream;
+pub mod ssr;
+pub mod state_css;
 #[cfg(feature = "ssr")]
 pub mod streaming;
 #[cfg(feature = "ssr")]
-mod streaming_live;
-mod state_css;
-mod style_hash;
-mod stylesheet;
+pub mod streaming_live;
+pub mod stylesheet;
 #[cfg(target_arch = "wasm32")]
 mod stylesheet_wasm;
-mod transition_css;
-mod tree;
-mod visual_viewport;
+pub mod table_system;
+pub mod transition_css;
+pub mod visual_viewport;
+#[cfg(target_arch = "wasm32")]
+mod wasm_dom;
 
-#[cfg(test)]
-mod css_format_tests;
-#[cfg(all(test, feature = "ssr"))]
-mod correctness_tests;
-#[cfg(test)]
-mod native_view_tests;
-#[cfg(all(test, feature = "ssr"))]
-mod snapshot_tests;
-#[cfg(test)]
-mod ssr_hydrate_tests;
-#[cfg(all(test, feature = "ssr"))]
-mod streaming_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod transition_tests;
 
-pub use css::{
-    canonical_f32_bits, component_to_html_tag, is_semantic_tag_prop, layout_to_css,
-    layout_to_css_into, resolve_semantic_tag, style_to_css, style_to_css_into, write_compact_color,
-    write_compact_edges, MirrorElement, SemanticTag, NVE_BASE_RESET_CSS,
-};
-pub use dom::{
-    is_truthy_raw_prop, map_a11y_or_input_attr, raw_prop_route, MappedHtmlAttr, RawPropRoute,
-};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+/// Optional host callback invoked when a live browser event is pushed.
+pub type RenderCallback = Rc<dyn Fn()>;
+
+use nve_abi::hash::HashMap;
+use nve_abi::{EventMask, NativeEvent, NodeId, SurfaceId};
+use nve_components::keyboard::KeyboardInsets;
+use nve_components::tables::{Interaction, Link, TextInput};
+use nve_engine::{BackendApplyStats, BackendError, StoreBackend, Viewport};
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore, TableEventBus};
+
+pub use css::{canonical_f32_bits, write_compositor_css, write_store_node_css, NVE_BASE_RESET_CSS};
 pub use event_replay::{
     drain_valid_pre_hydration_events, pre_hydration_event_to_native,
-    pre_hydration_replay_script_tag, CapturedPreHydrationEvent, MAX_REPLAY_AGE_MS,
-    MAX_REPLAY_QUEUE_LEN, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
+    pre_hydration_replay_script_tag, CapturedPreHydrationEvent, PRE_HYDRATION_REPLAY_SCRIPT_TAG,
 };
 pub use events::{
-    resolve_delegated_node, should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker,
-    NodeEventMeta,
-};
-pub use visual_viewport::{
-    effective_bottom_inset, keyboard_insets_from_visual_viewport, KeyboardInsets,
-    KEYBOARD_INSETS_EVENT_NAME, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
+    decode_form_urlencoded_map, is_hard_nav_anchor, resolve_delegated_node,
+    should_intercept_anchor_click, ImeCompositionGuard, InputSyncTracker, NodeEventMeta,
 };
 #[cfg(feature = "hydrate")]
 pub use hydrate::{HydrationMismatch, HydrationReport};
-pub use layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
-pub use media_css::{
-    compile_node_media_rules, format_media_class, write_responsive_patch_decls,
-    write_style_patch_decls, CompiledMediaRule,
-};
-pub use paint_svg::write_compact_background_fill_into;
-pub use state_css::{
-    compile_node_state_rules, compile_node_state_rules_with_hover_guard, format_cursor_rule,
-    format_state_class, CompiledStateRule,
-};
-#[cfg(any(
-    feature = "nv-blur",
-    feature = "nv-webview",
-    feature = "nv-video",
-    feature = "nv-web-element",
-    feature = "camera",
-))]
-pub use native_view::{
-    DecodedNativeView, NativeCommand, NativeCommandDecoder, NativePropDecoder, NativeProps,
-    NativeValueRef, NativeViewCodecError, NativeViewNodeState, TypedNativeViewCommand,
-    TypedNativeViewProps,
-};
-#[cfg(feature = "nv-blur")]
-pub use native_view::{BlurMaterial, BlurSurfaceProps};
-#[cfg(feature = "nv-video")]
-pub use native_view::{VideoPlayerCommand, VideoPlayerProps};
-#[cfg(feature = "nv-web-element")]
-pub use native_view::WebElementProps;
-#[cfg(feature = "nv-webview")]
-pub use native_view::{WebViewCommand, WebViewProps};
-#[cfg(feature = "camera")]
-pub use native_view::{
-    CameraNodeState, CameraPreviewCommand, CameraPreviewFacing, CameraPreviewProps,
-    StabilizationMode, TorchMode,
-};
-pub use raw_style::{
-    is_image_fit_prop, is_raw_style_prop, is_safe_css_value, raw_prop_to_object_fit, RawStyleProps,
-};
-pub use reconcile::{plan_keyed_child_ops, ChildDiffOp};
-pub use semantic_attrs::{
-    canonical_html_attr_name, is_tag_only_raw_prop, should_close_dialog_on_backdrop_click,
-};
 #[cfg(all(feature = "ssr", target_arch = "wasm32"))]
 pub use snapshot::BrowserLocalStorage;
 #[cfg(feature = "ssr")]
@@ -160,141 +77,63 @@ pub use snapshot::{
 };
 #[cfg(feature = "ssr")]
 pub use ssg::{
-    inject_ssg_into_shell_html, inject_ssg_with_scripts_into_shell_html, prerender_nve_app_frame0,
-    WebSsgDocumentOptions,
+    inject_ssg_into_shell_html, inject_ssg_with_scripts_into_shell_html,
+    prerender_nve_app_frame0, WebSsgDocumentOptions,
 };
 #[cfg(feature = "ssr")]
 pub use ssr::{SsrDocumentOptions, SsrOutput};
 #[cfg(feature = "ssr")]
-pub use ssr_stream::{PendingStreamSlot, SsrDeltaChunk, SsrStyleTracker, StreamingShellOutput};
-#[cfg(feature = "ssr")]
 pub use streaming::{
-    decode_form_urlencoded, decode_form_urlencoded_map, sanitize_stream_slot_id,
-    scoped_slot_hiding_css, slot_placeholder_html, stream_slot_name, streaming_http_headers,
-    FormActionResponse, LiveUpdateChunk, StreamingDocumentOptions, StreamingError, StreamingMode,
-    StreamingSsrSession, ZeroJsLiveConfig, ZeroJsLiveSession, DEFAULT_MAX_LIVE_UPDATES,
-    NVE_LIVE_SINK_IFRAME_HTML, NVE_LIVE_SINK_IFRAME_NAME, NVE_STREAM_KEEPALIVE_COMMENT,
-    NVE_STREAM_SLOT_PREFIX,
+    encode_http_chunk, sanitize_stream_slot_id, scoped_slot_hiding_css, slot_placeholder_html,
+    stream_slot_name, streaming_http_headers, StreamingDocumentOptions, StreamingError,
+    StreamingMode, StreamingSsrSession,
 };
-pub use style_hash::{
-    format_structural_class, hash_structural_style, is_inheriting_leaf_text,
-    is_volatile_dimension, is_volatile_opacity, VOLATILE_DIMENSION_LIMIT,
+pub use stylesheet::{ResolvedNodeStyle, StyleSheetCache, MAX_DYNAMIC_RULES};
+pub use table_system::{
+    is_safe_custom_tag, is_safe_web_attr, is_safe_web_url, RealizedWebNode, WebStoreRenderer,
+    WebSystemCommitCtx, WebTableRegistry, WebTableSystem,
 };
-pub use stylesheet::{
-    resolve_node_style, CachedRule, ResolvedNodeStyle, StyleSheetCache,
-    INCREMENTAL_RULE_BATCH_THRESHOLD, MAX_DYNAMIC_RULES,
-};
-pub use transition_css::{
-    compile_node_transitions, format_transition_class, CompiledTransitionRule,
+pub use visual_viewport::{
+    effective_bottom_inset, keyboard_insets_from_visual_viewport, KEYBOARD_INSETS_EVENT_NAME,
+    VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX,
 };
 
-#[cfg(target_arch = "wasm32")]
-use core::fmt::Write as _;
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-
-use nve_abi::hash::HashMap;
-#[cfg(target_arch = "wasm32")]
-use nve_abi::Dimension;
-use nve_abi::{ComponentKind, EventMask, NativeEvent, NodeId, SurfaceId, ROOT_NODE_ID};
-use nve_engine::Viewport;
-
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::closure::Closure;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
-
-#[cfg(target_arch = "wasm32")]
-use crate::events::RootEventDelegator;
-use crate::visual_viewport::KeyboardInsetsCallback;
-#[cfg(target_arch = "wasm32")]
-use crate::visual_viewport::VisualViewportTracker;
-#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-use crate::hydrate_native::NativeAdoptedNode;
-#[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
-use crate::hydrate_native_parse::NativeSsrTree;
-
-pub(crate) type RenderCallback = Rc<dyn Fn()>;
-
-/// Native-testable Web DOM backend (mirrors exact DOM ops; mounts real `web_sys::Element`s on `wasm32`).
+/// Unified Web DOM / WASM / SSR / Hydration [`StoreBackend`].
 pub struct WebBackend {
     pub(crate) surface_id: Rc<Cell<SurfaceId>>,
     pub(crate) viewport: Viewport,
-    pub(crate) frame_counter: u64,
-    pub(crate) frame_op_count: u32,
-    pub(crate) frame_mutations: u32,
-    pub(crate) frame_replaced_existing: bool,
-    pub(crate) frame_dirty_styles: Vec<NodeId>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) frame_dirty_canvases: Vec<NodeId>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) frame_dirty_svgs: Vec<NodeId>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) frame_dirty_dirs: Vec<NodeId>,
-    pub(crate) nodes: HashMap<NodeId, MirrorElement>,
-    #[cfg(any(
-        feature = "nv-blur",
-        feature = "nv-webview",
-        feature = "nv-video",
-        feature = "nv-web-element",
-        feature = "camera",
-    ))]
-    pub(crate) native_views: HashMap<NodeId, NativeViewNodeState>,
-    pub(crate) parent_of: HashMap<NodeId, NodeId>,
+    pub(crate) renderer: WebStoreRenderer,
     pub(crate) stylesheet: StyleSheetCache,
-    pub(crate) events: Rc<RefCell<Vec<NativeEvent>>>,
-    pub(crate) on_event: Rc<RefCell<Option<RenderCallback>>>,
+    pub(crate) patch_css: HashMap<NodeId, String>,
+    pub(crate) pending_events: Rc<RefCell<Vec<NativeEvent>>>,
     pub(crate) node_event_meta: Rc<RefCell<HashMap<NodeId, NodeEventMeta>>>,
+    pub(crate) input_sync: Rc<RefCell<InputSyncTracker>>,
+    pub(crate) ime_guard: Rc<ImeCompositionGuard>,
     pub(crate) keyboard_insets: Rc<Cell<KeyboardInsets>>,
-    pub(crate) on_keyboard_insets: Rc<RefCell<Option<KeyboardInsetsCallback>>>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) hydrating: bool,
-    #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
-    pub(crate) hydrate_root: Option<web_sys::Element>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) pending_pre_hydration_events: Vec<CapturedPreHydrationEvent>,
-    #[cfg(feature = "hydrate")]
-    pub(crate) pending_responsive_dirty: Vec<NodeId>,
+    pub(crate) on_keyboard_insets: Rc<RefCell<Option<visual_viewport::KeyboardInsetsCallback>>>,
+    pub(crate) on_event: Rc<RefCell<Option<RenderCallback>>>,
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_report: HydrationReport,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
-    pub(crate) native_hydrate_tree: Option<NativeSsrTree>,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-    pub(crate) native_adopted_nodes: HashMap<NodeId, NativeAdoptedNode>,
-    #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-    pub(crate) next_native_instance_id: u64,
+    #[cfg(feature = "hydrate")]
+    pub(crate) hydrated_control_values: HashMap<NodeId, String>,
+    #[cfg(feature = "hydrate")]
+    pub(crate) pre_hydration_events: Vec<CapturedPreHydrationEvent>,
+    #[cfg(feature = "hydrate")]
+    pub(crate) pending_ssr_nodes: HashMap<NodeId, String>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) attr_scratch: String,
+    pub(crate) mount_root: Option<web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) dom_nodes: HashMap<NodeId, web_sys::Element>,
+    pub(crate) live_elements: HashMap<NodeId, web_sys::Element>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) ime_guards: Rc<RefCell<HashMap<NodeId, ImeCompositionGuard>>>,
+    pub(crate) unverified_ssr_ids: nve_abi::hash::HashSet<NodeId>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) input_sync: Rc<RefCell<InputSyncTracker>>,
+    pub(crate) delegated_events: Option<events::RootEventDelegator>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) root_delegator: Option<RootEventDelegator>,
+    pub(crate) visual_viewport_tracker: Option<visual_viewport::VisualViewportTracker>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) window_keydown: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    pub(crate) created_scratch: nve_abi::hash::HashSet<StoreNodeId>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) visual_viewport_tracker: Option<VisualViewportTracker>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl Drop for WebBackend {
-    fn drop(&mut self) {
-        if let Some(window_keydown) = self.window_keydown.take()
-            && let Some(window) = web_sys::window()
-        {
-            let _ = window.remove_event_listener_with_callback(
-                "keydown",
-                window_keydown.as_ref().unchecked_ref(),
-            );
-        }
-        // Detach `visualViewport` listeners and all delegated container listeners cleanly.
-        self.visual_viewport_tracker = None;
-        self.root_delegator = None;
-        self.dom_nodes.clear();
-    }
+    pub(crate) retagged_scratch: Vec<StoreNodeId>,
 }
 
 impl Default for WebBackend {
@@ -305,196 +144,300 @@ impl Default for WebBackend {
 
 impl WebBackend {
     pub fn new() -> Self {
-        let mut nodes = HashMap::default();
-        nodes.insert(ROOT_NODE_ID, MirrorElement::new(ComponentKind::Root));
-        let mut meta = HashMap::default();
-        meta.insert(
-            ROOT_NODE_ID,
-            NodeEventMeta {
-                kind: ComponentKind::Root,
-                mask: EventMask::NONE,
-            },
-        );
         Self {
             surface_id: Rc::new(Cell::new(1)),
             viewport: Viewport::default(),
-            frame_counter: 0,
-            frame_op_count: 0,
-            frame_mutations: 0,
-            frame_replaced_existing: false,
-            frame_dirty_styles: Vec::new(),
-            #[cfg(target_arch = "wasm32")]
-            frame_dirty_canvases: Vec::new(),
-            #[cfg(target_arch = "wasm32")]
-            frame_dirty_svgs: Vec::new(),
-            #[cfg(target_arch = "wasm32")]
-            frame_dirty_dirs: Vec::new(),
-            nodes,
-            #[cfg(any(
-                feature = "nv-blur",
-                feature = "nv-webview",
-                feature = "nv-video",
-                feature = "nv-web-element",
-                feature = "camera",
-            ))]
-            native_views: HashMap::default(),
-            parent_of: HashMap::default(),
+            renderer: WebStoreRenderer::new(),
             stylesheet: StyleSheetCache::new(),
-            events: Rc::new(RefCell::new(Vec::new())),
-            on_event: Rc::new(RefCell::new(None)),
-            node_event_meta: Rc::new(RefCell::new(meta)),
-            keyboard_insets: Rc::new(Cell::new(KeyboardInsets::HIDDEN)),
+            patch_css: HashMap::default(),
+            pending_events: Rc::new(RefCell::new(Vec::new())),
+            node_event_meta: Rc::new(RefCell::new(HashMap::default())),
+            input_sync: Rc::new(RefCell::new(InputSyncTracker::new())),
+            ime_guard: Rc::new(ImeCompositionGuard::new()),
+            keyboard_insets: Rc::new(Cell::new(KeyboardInsets::default())),
             on_keyboard_insets: Rc::new(RefCell::new(None)),
-            #[cfg(feature = "hydrate")]
-            hydrating: false,
-            #[cfg(all(target_arch = "wasm32", feature = "hydrate"))]
-            hydrate_root: None,
-            #[cfg(feature = "hydrate")]
-            pending_pre_hydration_events: Vec::new(),
-            #[cfg(feature = "hydrate")]
-            pending_responsive_dirty: Vec::new(),
+            on_event: Rc::new(RefCell::new(None)),
             #[cfg(feature = "hydrate")]
             hydration_report: HydrationReport::default(),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate", feature = "ssr"))]
-            native_hydrate_tree: None,
-            #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-            native_adopted_nodes: HashMap::default(),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "hydrate"))]
-            next_native_instance_id: 1,
+            #[cfg(feature = "hydrate")]
+            hydrated_control_values: HashMap::default(),
+            #[cfg(feature = "hydrate")]
+            pre_hydration_events: Vec::new(),
+            #[cfg(feature = "hydrate")]
+            pending_ssr_nodes: HashMap::default(),
             #[cfg(target_arch = "wasm32")]
-            attr_scratch: String::with_capacity(64),
+            mount_root: None,
             #[cfg(target_arch = "wasm32")]
-            dom_nodes: HashMap::default(),
+            live_elements: HashMap::default(),
             #[cfg(target_arch = "wasm32")]
-            ime_guards: Rc::new(RefCell::new(HashMap::default())),
+            unverified_ssr_ids: nve_abi::hash::HashSet::default(),
             #[cfg(target_arch = "wasm32")]
-            input_sync: Rc::new(RefCell::new(InputSyncTracker::new())),
-            #[cfg(target_arch = "wasm32")]
-            root_delegator: None,
-            #[cfg(target_arch = "wasm32")]
-            window_keydown: None,
+            delegated_events: None,
             #[cfg(target_arch = "wasm32")]
             visual_viewport_tracker: None,
+            #[cfg(target_arch = "wasm32")]
+            created_scratch: nve_abi::hash::HashSet::default(),
+            #[cfg(target_arch = "wasm32")]
+            retagged_scratch: Vec::new(),
         }
     }
 
-    #[cfg(not(any(
-        feature = "nv-blur",
-        feature = "nv-webview",
-        feature = "nv-video",
-        feature = "nv-web-element",
-        feature = "camera",
-    )))]
     #[inline]
-    pub(crate) fn effective_html_tag<'a>(&'a self, _node_id: NodeId, el: &'a MirrorElement) -> &'a str {
-        el.tag
+    pub fn register_table_system<S: WebTableSystem>(&mut self, system: S) -> &mut Self {
+        self.renderer.registry_mut().register(system);
+        self
     }
 
-    /// Returns the most recently configured [`Viewport`] for this backend.
-    pub fn viewport(&self) -> Viewport {
-        self.viewport
+    #[inline]
+    pub fn table_registry(&self) -> &WebTableRegistry {
+        self.renderer.registry()
     }
 
-    /// Returns a read-only handle to the Option 5 Hybrid [`StyleSheetCache`].
+    #[inline]
+    pub fn table_registry_mut(&mut self) -> &mut WebTableRegistry {
+        self.renderer.registry_mut()
+    }
+
+    #[inline]
+    pub fn table_events(&self) -> &TableEventBus {
+        &self.renderer.events
+    }
+
+    #[inline]
+    pub fn table_events_mut(&mut self) -> &mut TableEventBus {
+        &mut self.renderer.events
+    }
+
+    /// Registers a callback invoked when asynchronous browser events are queued.
+    pub fn set_on_event<F: Fn() + 'static>(&mut self, callback: F) {
+        *self.on_event.borrow_mut() = Some(Rc::new(callback));
+    }
+
+    #[inline]
+    pub fn renderer(&self) -> &WebStoreRenderer {
+        &self.renderer
+    }
+
+    #[inline]
+    pub fn renderer_mut(&mut self) -> &mut WebStoreRenderer {
+        &mut self.renderer
+    }
+
+    #[inline]
     pub fn stylesheet(&self) -> &StyleSheetCache {
         &self.stylesheet
     }
 
-    /// Seeds additional SSR structural class hashes (comma-separated, e.g. from a late mid-stream
-    /// `<style data-nve-ssr-chunk data-nve-hashes="...">` element moved into `document.head`) so
-    /// subsequent client renders never duplicate already-present CSS rules.
-    pub fn seed_ssr_hashes(&mut self, hashes_csv: &str) -> usize {
-        self.stylesheet.seed_ssr_hashes(hashes_csv)
+    #[inline]
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
     }
 
-    /// Mounts `ROOT_NODE_ID` into an existing browser DOM container (e.g. `#app`),
-    /// adopts the static `.nve` base reset stylesheet, and attaches a single root event delegator
-    /// plus a global `window` `keydown` listener.
-    #[cfg(target_arch = "wasm32")]
-    pub fn mount_into(container: web_sys::Element) -> Self {
-        let mut backend = Self::new();
-        container.set_text_content(None);
-        backend.attr_scratch.clear();
-        let _ = write!(&mut backend.attr_scratch, "{ROOT_NODE_ID}");
-        let _ = container.set_attribute("data-nve-id", &backend.attr_scratch);
-        if let Some(root) = backend.nodes.get_mut(&ROOT_NODE_ID) {
-            root.layout.width = Dimension::Percent(100.0);
-            root.layout.height = Dimension::Percent(100.0);
+    #[inline]
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id.get()
+    }
+
+    #[inline]
+    pub fn ime_guard(&self) -> &ImeCompositionGuard {
+        &self.ime_guard
+    }
+
+    #[inline]
+    pub fn push_event(&mut self, event: NativeEvent) {
+        self.pending_events.borrow_mut().push(event);
+    }
+
+    #[inline]
+    pub fn composite_fast_lane_hits(&self) -> u64 {
+        self.renderer.composite_fast_lane_hits
+    }
+
+    #[inline]
+    pub fn full_style_rebuilds(&self) -> u64 {
+        self.renderer.full_style_rebuilds
+    }
+
+    fn warm_stylesheet(&mut self, store: &NodeStore, changes: &ChangeSet) {
+        for &id in &changes.created {
+            if store.is_live(id) {
+                let _ = self.stylesheet.resolve_node(store, id);
+            }
         }
-        backend.dom_nodes.insert(ROOT_NODE_ID, container.clone());
-        backend.flush_dirty_styles(&[ROOT_NODE_ID]);
-        backend.attach_root_event_delegator(container);
-        backend.attach_window_keydown_listener();
-        #[cfg(feature = "hydrate")]
-        {
-            let _ = crate::event_replay::drain_browser_pre_hydration_events();
-        }
-        backend.attach_visual_viewport_listener();
-        backend
-    }
-
-    pub fn set_render_callback<F: Fn() + 'static>(&mut self, callback: F) {
-        *self.on_event.borrow_mut() = Some(Rc::new(callback));
-    }
-
-    pub fn with_render_callback<F: Fn() + 'static>(mut self, callback: F) -> Self {
-        self.set_render_callback(callback);
-        self
-    }
-
-    pub fn event_queue(&self) -> Rc<RefCell<Vec<NativeEvent>>> {
-        Rc::clone(&self.events)
-    }
-
-    pub fn push_event(&self, event: NativeEvent) {
-        self.events.borrow_mut().push(event);
-        let cb = self.on_event.borrow().clone();
-        if let Some(cb) = cb {
-            cb();
-        }
-    }
-
-    pub fn node(&self, node_id: NodeId) -> Option<&MirrorElement> {
-        self.nodes.get(&node_id)
-    }
-
-    pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &MirrorElement)> {
-        self.nodes.iter().map(|(&id, el)| (id, el))
-    }
-
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    pub fn event_mask_of(&self, node_id: NodeId) -> u64 {
-        self.nodes
-            .get(&node_id)
-            .map(|n| n.event_mask)
-            .unwrap_or(EventMask::NONE)
-    }
-
-    pub(crate) fn remove_node_event_meta(&mut self, node_id: NodeId) {
-        self.node_event_meta.borrow_mut().remove(&node_id);
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.ime_guards.borrow_mut().remove(&node_id);
-            self.input_sync.borrow_mut().remove(node_id);
-        }
-    }
-
-    pub(crate) fn queue_leaf_text_children(&self, parent_id: NodeId, dirty_styles: &mut Vec<NodeId>) {
-        if let Some(parent) = self.nodes.get(&parent_id)
-            && parent.kind == ComponentKind::Text
-        {
-            for &cid in &parent.children {
-                if self
-                    .nodes
-                    .get(&cid)
-                    .is_some_and(|c| c.kind == ComponentKind::Text && c.children.is_empty())
-                {
-                    dirty_styles.push(cid);
-                }
+        for (&id, &fx) in changes.touched.iter().zip(changes.effects.iter()) {
+            if store.is_live(id) && fx != nve_abi::table::effect::COMPOSITE {
+                let _ = self.stylesheet.resolve_node(store, id);
             }
         }
     }
+
+    fn sync_event_meta(&self, store: &NodeStore, changes: &ChangeSet) {
+        let mut meta = self.node_event_meta.borrow_mut();
+        for &removed in &changes.removed {
+            meta.remove(&removed.raw());
+            self.input_sync.borrow_mut().remove(removed.raw());
+        }
+        for &id in changes.created.iter().chain(changes.touched.iter()) {
+            if !store.is_live(id) {
+                continue;
+            }
+            let mask = u64::from(
+                store
+                    .try_row::<Interaction>(id)
+                    .map_or(0, |i| i.event_mask()),
+            );
+            let is_input = store.has::<TextInput>(id);
+            let is_link = store.has::<Link>(id);
+            if mask != 0 || is_input || is_link {
+                meta.insert(
+                    id.raw(),
+                    NodeEventMeta {
+                        is_input,
+                        is_link,
+                        mask,
+                    },
+                );
+            } else {
+                meta.remove(&id.raw());
+            }
+        }
+    }
+}
+
+impl StoreBackend for WebBackend {
+    fn name(&self) -> &'static str {
+        "web"
+    }
+
+    fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport) {
+        self.surface_id.set(surface_id);
+        self.viewport = viewport;
+    }
+
+    fn commit(
+        &mut self,
+        store: &NodeStore,
+        changes: &ChangeSet,
+    ) -> Result<BackendApplyStats, BackendError> {
+        for &removed in &changes.removed {
+            self.patch_css.remove(&removed.raw());
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let stats = self.renderer.commit(store, changes)?;
+        #[cfg(target_arch = "wasm32")]
+        let mut stats = {
+            let m = self.renderer.commit_core(store, changes);
+            BackendApplyStats {
+                op_count: m,
+                mutation_count: m,
+                ..Default::default()
+            }
+        };
+
+        self.sync_event_meta(store, changes);
+
+        #[cfg(feature = "hydrate")]
+        if !self.pre_hydration_events.is_empty() {
+            let drained = std::mem::take(&mut self.pre_hydration_events);
+            let valid =
+                drain_valid_pre_hydration_events(drained, |id| store.is_live(StoreNodeId(id)));
+            let meta = self.node_event_meta.borrow();
+            let mut evs = self.pending_events.borrow_mut();
+            let sid = self.surface_id.get();
+            for captured in valid {
+                let target_id = resolve_replay_target(store, &meta, &captured);
+                evs.push(pre_hydration_event_to_native(captured, sid, 0, target_id));
+                self.hydration_report.replayed_events += 1;
+            }
+        }
+
+        #[cfg(feature = "hydrate")]
+        if !self.pending_ssr_nodes.is_empty() {
+            let ssr_nodes = std::mem::take(&mut self.pending_ssr_nodes);
+            for (raw_id, expected_tag) in ssr_nodes {
+                let sid = StoreNodeId(raw_id);
+                if !store.is_live(sid) {
+                    self.hydration_report.replaced_nodes += 1;
+                    self.hydration_report.mismatches.push(HydrationMismatch {
+                        node_id: raw_id,
+                        reason: format!("SSR <{expected_tag}> missing from live NodeStore"),
+                    });
+                    continue;
+                }
+                let (actual_tag, _) = self.renderer.registry().resolve_tag(store, sid);
+                if actual_tag.eq_ignore_ascii_case(&expected_tag) {
+                    self.hydration_report.adopted_nodes += 1;
+                } else {
+                    self.hydration_report.replaced_nodes += 1;
+                    self.hydration_report.mismatches.push(HydrationMismatch {
+                        node_id: raw_id,
+                        reason: format!("SSR <{expected_tag}> != live <{actual_tag}>"),
+                    });
+                }
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            if self.mount_root.is_some() {
+                let plugin_muts = self.commit_live_dom(store, changes);
+                stats.op_count += plugin_muts;
+                stats.mutation_count += plugin_muts;
+            } else {
+                let plugin_muts = self.renderer.commit_plugins(store, changes, None, &[]);
+                stats.op_count += plugin_muts;
+                stats.mutation_count += plugin_muts;
+                self.warm_stylesheet(store, changes);
+            }
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Keep stylesheet rules warm for newly created / non-composite-touched nodes.
+            self.warm_stylesheet(store, changes);
+        }
+
+        let _ = StoreNodeId::ROOT;
+        Ok(stats)
+    }
+
+    fn drain_events(&mut self) -> Vec<NativeEvent> {
+        std::mem::take(&mut *self.pending_events.borrow_mut())
+    }
+
+    fn reset(&mut self) {
+        self.renderer.reset();
+        self.stylesheet.clear();
+        self.patch_css.clear();
+        self.pending_events.borrow_mut().clear();
+        self.node_event_meta.borrow_mut().clear();
+        #[cfg(target_arch = "wasm32")]
+        self.clear_live_dom();
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn resolve_replay_target(
+    store: &NodeStore,
+    meta: &HashMap<NodeId, NodeEventMeta>,
+    ev: &CapturedPreHydrationEvent,
+) -> NodeId {
+    let mut cur = Some(StoreNodeId(ev.node_id()));
+    while let Some(nid) = cur {
+        if let Some(m) = meta.get(&nid.raw()) {
+            let matched = match ev {
+                CapturedPreHydrationEvent::Press { .. } => (m.mask & EventMask::PRESS) != 0,
+                CapturedPreHydrationEvent::KeyDown { .. } => (m.mask & EventMask::KEY_DOWN) != 0,
+                CapturedPreHydrationEvent::Submit { .. } => {
+                    m.is_input || (m.mask & EventMask::SUBMIT) != 0
+                }
+            };
+            if matched {
+                return nid.raw();
+            }
+        }
+        cur = store.parent(nid);
+    }
+    ev.node_id()
 }

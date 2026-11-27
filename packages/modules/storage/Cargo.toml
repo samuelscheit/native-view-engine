@@ -3,7 +3,8 @@ name = "nve-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Standalone opt-in NVE crash-safe NVK1 binary KV store capability module (SERVICE_STORAGE = 0x0020)"
+description = "Standalone opt-in NVE crash-safe NVK2 binary KV store capability module (SERVICE_STORAGE = 0x0020)"
 
 [dependencies]
+nve-hash = { workspace = true }
 nve-host-services = { workspace = true }

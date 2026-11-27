@@ -5,25 +5,6 @@ use crate::error::ServiceError;
 /// Upper bound on element count in a single decoded sequence to prevent OOM DoS on corrupt buffers.
 pub const MAX_SEQ_ITEMS: usize = 65_536;
 
-/// FNV-1a 64-bit offset basis.
-pub const FNV1A_64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-/// FNV-1a 64-bit prime.
-pub const FNV1A_64_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Computes a deterministic 64-bit FNV-1a checksum over `bytes` with zero external dependencies.
-pub fn fnv1a64(bytes: &[u8]) -> u64 {
-    fnv1a64_update(FNV1A_64_OFFSET, bytes)
-}
-
-/// Continues an incremental 64-bit FNV-1a checksum from `state`.
-pub fn fnv1a64_update(mut state: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        state ^= u64::from(b);
-        state = state.wrapping_mul(FNV1A_64_PRIME);
-    }
-    state
-}
-
 /// Validates a non-empty URL containing a scheme (`scheme:...`) without control characters.
 pub fn validate_url(url: &str) -> Result<(), ServiceError> {
     let trimmed = url.trim();

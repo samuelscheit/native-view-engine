@@ -179,7 +179,7 @@ impl ImageCache {
 
     /// Registers raw PNG bytes under a deterministic content-addressed cache key and returns the key.
     pub fn register_png_bytes(&self, png_bytes: &[u8]) -> Result<String, ImageDecodeError> {
-        let key = format!("nve-mem://png/{:016x}-{}", fnv1a64(png_bytes), png_bytes.len());
+        let key = format!("nve-mem://png/{:016x}-{}", nve_abi::xxh64(png_bytes, 0), png_bytes.len());
         let _ = self.get_or_decode_png_bytes(&key, png_bytes)?;
         Ok(key)
     }
@@ -207,14 +207,4 @@ impl ImageCache {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.clear();
     }
-}
-
-#[inline]
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
 }

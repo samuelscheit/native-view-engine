@@ -10,8 +10,7 @@ use crate::schema::wire::{
     EVENT_ENTRY_NODE_ID_OFFSET, EVENT_ENTRY_PAYLOAD_TAG_OFFSET, EVENT_ENTRY_SURFACE_ID_OFFSET,
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
-    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
     NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
@@ -40,71 +39,6 @@ pub fn generate_ts_wire_codecs() -> String {
     writeln!(
         s,
         "export const NVE_WIRE_CODECS_SCHEMA_HASH: bigint = 0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X}n;\n"
-    )
-    .unwrap();
-
-    // FNV-1a64
-    writeln!(s, "// ============================================================================").unwrap();
-    writeln!(s, "// Canonical 64-bit FNV-1a").unwrap();
-    writeln!(s, "// ============================================================================\n").unwrap();
-    writeln!(
-        s,
-        "export const NVE_FNV1A_64_OFFSET_BASIS: bigint = 0x{FNV1A_OFFSET_BASIS:016X}n;"
-    )
-    .unwrap();
-    writeln!(
-        s,
-        "export const NVE_FNV1A_64_PRIME: bigint = 0x{FNV1A_PRIME:016X}n;"
-    )
-    .unwrap();
-    writeln!(s, "const FNV1A_64_MASK: bigint = 0xFFFFFFFFFFFFFFFFn;\n").unwrap();
-    writeln!(
-        s,
-        r#"export interface NveFnv1a64TestVector {{
-  readonly label: string;
-  readonly bytes: ReadonlyArray<number>;
-  readonly expected: bigint;
-}}
-
-export const NVE_FNV1A_64_TEST_VECTORS: ReadonlyArray<NveFnv1a64TestVector> = ["#
-    )
-    .unwrap();
-    for vec in FNV1A64_TEST_VECTORS {
-        writeln!(
-            s,
-            "  {{ label: '{}', bytes: [{}], expected: 0x{:016X}n }},",
-            vec.label,
-            format_ts_bytes(vec.bytes),
-            vec.expected
-        )
-        .unwrap();
-    }
-    writeln!(
-        s,
-        r#"];
-
-export function fnv1a64Update(hash: bigint, bytes: Uint8Array): bigint {{
-  let h = hash & FNV1A_64_MASK;
-  for (let i = 0; i < bytes.length; i++) {{
-    h ^= BigInt(bytes[i]!);
-    h = (h * NVE_FNV1A_64_PRIME) & FNV1A_64_MASK;
-  }}
-  return h;
-}}
-
-export function fnv1a64(bytes: Uint8Array): bigint {{
-  return fnv1a64Update(NVE_FNV1A_64_OFFSET_BASIS, bytes);
-}}
-
-export function verifyFnv1a64TestVectors(): boolean {{
-  for (const vec of NVE_FNV1A_64_TEST_VECTORS) {{
-    if (fnv1a64(new Uint8Array(vec.bytes)) !== vec.expected) {{
-      return false;
-    }}
-  }}
-  return true;
-}}
-"#
     )
     .unwrap();
 

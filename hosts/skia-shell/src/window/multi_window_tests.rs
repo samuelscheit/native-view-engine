@@ -2,13 +2,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps, SurfaceId,
-    ROOT_NODE_ID,
-};
-use nve_engine::{RenderBackend, Viewport};
+use nve_abi::{ColorRgba, EventMask, FrameId, NativeEventKind, SurfaceId};
+use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
+use nve_engine::Viewport;
 use nve_interop::{SurfacePresentation, WindowDescriptor, WindowError, WindowRect};
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 
 use super::multi_window::HeadlessMultiWindowHost;
 use super::{DesktopApp, DesktopHostError, DesktopSession};
@@ -16,56 +15,62 @@ use super::{DesktopApp, DesktopHostError, DesktopSession};
 struct SurfaceCounterApp {
     surface_id: SurfaceId,
     presses: u32,
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    initialized: bool,
     frame_buf: Vec<u8>,
 }
 
 impl SurfaceCounterApp {
     fn new(surface_id: SurfaceId) -> Self {
-        Self { surface_id, presses: 0, frame_buf: Vec::new() }
+        register_core_tables();
+        Self {
+            surface_id,
+            presses: 0,
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            initialized: false,
+            frame_buf: Vec::new(),
+        }
     }
 }
 
 impl DesktopApp for SurfaceCounterApp {
     fn generation(&self) -> u64 { 1 }
 
-    fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let mut b = CommandBufferBuilder::new(self.surface_id, frame_id);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Percent(100.0),
-                height: Dimension::Percent(100.0),
-                padding: EdgeInsets::all(12.0),
-                flex_direction: FlexDirection::Column,
-                ..Default::default()
-            },
-        );
-        b.create_node(4, ComponentKind::Pressable, None);
-        b.set_layout(
-            4,
-            &LayoutProps {
-                width: Dimension::Points(140.0),
-                height: Dimension::Points(48.0),
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            4,
-            &StyleProps {
-                background: if self.presses > 0 {
-                    ColorRgba::rgb(16, 185, 129)
-                } else {
-                    ColorRgba::rgb(37, 99, 235)
-                },
-                ..Default::default()
-            },
-        );
-        b.set_event_mask(4, EventMask::PRESS);
-        b.set_children(2, &[4]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        self.frame_buf = b.into_bytes();
+    fn render(&mut self, _frame_id: FrameId) -> &[u8] {
+        let mut tx = self.store.tx();
+        if !self.initialized {
+            let _ = tx.create_at(StoreNodeId::ROOT);
+            let _ = tx.create_at(StoreNodeId(2));
+            let _ = tx.create_at(StoreNodeId(4));
+            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let p = Length::points(12.0);
+            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
+            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(140.0));
+            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(48.0));
+            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.set_children(StoreNodeId(2), &[StoreNodeId(4)]);
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            self.initialized = true;
+        }
+        let bg = if self.presses > 0 {
+            Rgba::rgb(16, 185, 129)
+        } else {
+            Rgba::rgb(37, 99, 235)
+        };
+        tx.set(StoreNodeId(4), Visual::BACKGROUND, bg);
+        tx.commit_into(&mut self.changes);
+        self.frame_buf.clear();
+        self.encoder
+            .encode(&self.store, &self.changes, &mut self.frame_buf);
         &self.frame_buf
     }
 
@@ -127,7 +132,7 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
     assert_ne!(primary_h, inspector_h);
 
     // Click inside window 200 (surface 2) affects ONLY surface 2, never surface 1.
-    let btn2 = host.window(200).unwrap().session.backend().layout_of(4).unwrap();
+    let btn2 = host.window(200).unwrap().session.layout_of(4).unwrap();
     assert!(host
         .route_click(200, btn2.x + btn2.width * 0.5, btn2.y + btn2.height * 0.5)
         .unwrap());
@@ -157,7 +162,7 @@ fn multi_window_host_routes_events_independently_and_enforces_modal_blocking() {
         host.route_focus(100),
         Err(WindowError::BlockedByModalChild { target: primary_h, modal_child: modal_h })
     );
-    let btn1 = host.window(100).unwrap().session.backend().layout_of(4).unwrap();
+    let btn1 = host.window(100).unwrap().session.layout_of(4).unwrap();
     assert!(!host
         .route_click(100, btn1.x + btn1.width * 0.5, btn1.y + btn1.height * 0.5)
         .unwrap());

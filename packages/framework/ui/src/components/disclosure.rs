@@ -162,17 +162,19 @@ pub fn Disclosure(
 
     let is_controlled = open.is_some();
     let tab_index = if disabled { -1 } else { 0 };
+    let details_table = super::html_tables::html_details_table(is_open, group_name);
+    let summary_table = super::html_tables::html_summary_table();
 
     rsx! {
-        details {
+        view {
             id: "{details_id}",
             test_id: "{base_id}",
-            open: is_open,
-            name: group_name,
+            nve_table: details_table,
             nve_style: container_style,
             style: style,
-            summary {
+            view {
                 test_id: "{summary_id}",
+                nve_table: summary_table,
                 accessibility_role: "button",
                 aria_expanded: "{aria_expanded}",
                 aria_controls: "{content_id}",
@@ -215,7 +217,7 @@ pub fn Disclosure(
             view {
                 id: "{content_id}",
                 test_id: "{content_id}",
-                "data-nve-open": "{aria_expanded}",
+                nve_table: super::html_tables::html_data_attrs(vec![("nve-open".to_owned(), aria_expanded.to_owned())]),
                 nve_style: content_style,
                 {children}
             }

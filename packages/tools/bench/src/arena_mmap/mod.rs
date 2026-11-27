@@ -149,7 +149,7 @@ pub fn fold_task_fields(
     title: &str,
     tag: &str,
 ) -> u64 {
-    let mut h = acc.wrapping_mul(0x100000001B3).wrapping_add(id);
+    let mut h = acc.wrapping_mul(0x9E37_79B1_85EB_CA87).wrapping_add(id);
     h ^= updated_at_ms as u64;
     h = h.wrapping_add(((priority as u64) << 32) | (status as u64));
     let tb = title.as_bytes();

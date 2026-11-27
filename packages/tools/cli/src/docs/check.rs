@@ -110,7 +110,7 @@ pub(crate) fn run_check(content_dir: &Path) -> Result<(), String> {
     }
 
     println!(
-        "✓ docs check passed: {} pages, {} _meta.toml manifests, {} live demos, search.nvs1 ({:.1} KiB)",
+        "✓ docs check passed: {} pages, {} _meta.toml manifests, {} live demos, search.nvs2 ({:.1} KiB)",
         report.page_count,
         report.meta_count,
         report.demo_count,

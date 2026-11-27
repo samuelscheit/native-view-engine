@@ -1,608 +1,1107 @@
-use std::cell::Cell;
-use std::rc::Rc;
-
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask, EventPayload,
-    FlexAlign, FlexDirection, FlexJustify, LayoutProps, NativeEvent, NativeEventKind, RawPropValue,
-    StyleProps, ROOT_NODE_ID,
+use nve_abi::ColorRgba;
+use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
+use nve_components::media::{MediaQuery, ResponsiveRule};
+use nve_components::style_patch::StylePatch;
+use nve_components::tables::{
+    Accessibility, AriaRole, DebugId, FlexDirection, Interaction, Layout, Link, Responsive,
+    ResponsiveRules, StateRules, TextContent, Transform, Typography, Visual,
 };
-use nve_components::canvas_ir::{CanvasOp, DrawListBuilder, ImageResizeMode};
-use nve_engine::RenderBackend;
+use nve_engine::{HotPatchMsg, StoreBackend};
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
-use crate::events::IME_PROCESS_KEY_CODE;
-use crate::{
-    layout_to_css, layout_to_css_into, map_a11y_or_input_attr, style_to_css, style_to_css_into,
-    ImeCompositionGuard, MappedHtmlAttr, WebBackend,
-};
+use crate::{SsrDocumentOptions, WebBackend};
 
 #[test]
-fn renders_flexbox_html_from_command_buffer() {
+fn web_backend_ssr_dedup_css_composite_fast_lane_hydrate_and_hot_patch() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
     let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::Pressable, None);
-    b.set_text(2, "Click");
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-    let html = web.render_html();
-    assert!(html.contains("<button data-nve-id=\"2\""));
-    assert!(html.contains("Click</button>"));
 
-    // Reusing a scratch String via `fmt_html_into` matches `render_html` identically.
-    let mut scratch = String::with_capacity(256);
-    web.fmt_html_into(ROOT_NODE_ID, &mut scratch);
-    assert_eq!(scratch, html);
-}
+    let mut tx = store.tx();
+    let card1 = tx.create();
+    let card2 = tx.create();
+    let heading = tx.create();
+    let link = tx.create();
+    tx.set_children(NodeId::ROOT, &[card1, card2]);
+    tx.set_children(card1, &[heading, link]);
 
-#[test]
-fn css_into_writers_match_wrappers_and_reuse_buffers() {
-    let layout = LayoutProps {
-        width: Dimension::Percent(100.0),
-        height: Dimension::Points(64.0),
-        min_width: Dimension::Points(120.0),
-        min_height: Dimension::Points(32.0),
-        max_width: Dimension::Points(480.0),
-        max_height: Dimension::Percent(90.0),
-        flex_direction: FlexDirection::RowReverse,
-        justify_content: FlexJustify::SpaceBetween,
-        align_items: FlexAlign::Baseline,
-        flex_grow: 1.0,
-        flex_shrink: 0.0,
-        gap: 8.0,
-        padding: EdgeInsets::symmetric(10.0, 14.0),
-        margin: EdgeInsets::all(4.0),
-    };
-    let style = StyleProps {
-        background: ColorRgba::rgba(17, 24, 39, 128),
-        text_color: ColorRgba::WHITE,
-        border_color: ColorRgba::rgb(56, 189, 248),
-        border_width: 2.0,
-        border_radius: 12.0,
-        opacity: 0.9,
-        font_size: 18.0,
-        z_index: 5,
-    };
-
-    let mut buf = String::with_capacity(512);
-    layout_to_css_into(&layout, &mut buf);
-    assert_eq!(buf, layout_to_css(&layout));
-    assert!(buf.contains("min-width:120px;"));
-    assert!(buf.contains("min-height:32px;"));
-    assert!(buf.contains("max-width:480px;"));
-    assert!(buf.contains("max-height:90%;"));
-
-    let cap_before = buf.capacity();
-    buf.clear();
-    style_to_css_into(&style, &mut buf);
-    assert_eq!(buf, style_to_css(&style));
-    assert_eq!(buf.capacity(), cap_before);
-    assert!(buf.contains("background-color:rgba(17,24,39,0.502);"));
-    assert!(buf.contains("border:2px solid rgba(56,189,248,1);"));
-    assert!(buf.contains("z-index:5;"));
-}
-
-#[test]
-fn updates_style_and_layout_incrementally() {
-    let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.set_layout(
-        2,
-        &LayoutProps {
-            width: Dimension::Percent(100.0),
-            height: Dimension::Points(64.0),
-            min_width: Dimension::Points(120.0),
-            max_width: Dimension::Points(480.0),
-            flex_direction: FlexDirection::Row,
-            justify_content: FlexJustify::Center,
-            align_items: FlexAlign::Center,
-            gap: 12.0,
-            padding: EdgeInsets::all(16.0),
-            ..Default::default()
-        },
-    );
-    b.set_style(
-        2,
-        &StyleProps {
-            background: ColorRgba::rgb(37, 99, 235),
-            text_color: ColorRgba::WHITE,
-            border_radius: 12.0,
-            font_size: 18.0,
-            ..Default::default()
-        },
-    );
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-
-    let css1 = web.node(2).unwrap().combined_css();
-    assert!(css1.contains("flex-direction:row;"));
-    assert!(css1.contains("min-width:120px;"));
-    assert!(css1.contains("max-width:480px;"));
-    assert!(css1.contains("background-color:rgba(37,99,235,1);"));
-    assert!(css1.contains("border-radius:12px;"));
-
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_style(
-        2,
-        &StyleProps {
-            background: ColorRgba::rgb(15, 23, 42),
-            text_color: ColorRgba::rgb(56, 189, 248),
-            border_radius: 20.0,
-            opacity: 0.75,
-            font_size: 24.0,
-            ..Default::default()
-        },
-    );
-    b2.commit(true);
-    let stats = web.submit_frame(b2.finish()).unwrap();
-    assert_eq!(stats.mutation_count, 1);
-
-    let css2 = web.node(2).unwrap().combined_css();
-    assert!(css2.contains("flex-direction:row;"));
-    assert!(css2.contains("padding:16px 16px 16px 16px;"));
-    assert!(css2.contains("background-color:rgba(15,23,42,1);"));
-    assert!(css2.contains("border-radius:20px;"));
-    assert!(css2.contains("opacity:0.75;"));
-}
-
-#[test]
-fn removes_nodes_and_detaches_from_parent() {
-    let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::Text, None);
-    b.set_text(2, "Keep");
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_text(3, "Drop");
-    b.set_children(ROOT_NODE_ID, &[2, 3]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-    assert_eq!(web.node_count(), 3);
-    assert!(web.render_html().contains("Drop</span>"));
-
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.remove_node(3);
-    b2.commit(true);
-    web.submit_frame(b2.finish()).unwrap();
-
-    assert_eq!(web.node_count(), 2);
-    assert!(web.node(3).is_none());
-    assert_eq!(web.node(ROOT_NODE_ID).unwrap().children, vec![2]);
-    let html = web.render_html();
-    assert!(html.contains("Keep</span>"));
-    assert!(!html.contains("Drop"));
-}
-
-#[test]
-fn tracks_event_masks_and_fires_render_callback() {
-    let callback_hits = Rc::new(Cell::new(0u32));
-    let hits_clone = Rc::clone(&callback_hits);
-
-    let mut web = WebBackend::new().with_render_callback(move || {
-        hits_clone.set(hits_clone.get() + 1);
-    });
-
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::Pressable, None);
-    b.set_event_mask(2, EventMask::PRESS);
-    b.create_node(3, ComponentKind::TextInput, None);
-    b.set_event_mask(3, EventMask::TEXT_CHANGE | EventMask::FOCUS);
-    b.set_children(ROOT_NODE_ID, &[2, 3]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-
-    assert_eq!(web.event_mask_of(2), EventMask::PRESS);
-    assert_eq!(
-        web.event_mask_of(3),
-        EventMask::TEXT_CHANGE | EventMask::FOCUS
-    );
-
-    web.push_event(NativeEvent {
-        surface_id: 1,
-        node_id: 2,
-        timestamp_us: 42,
-        kind: NativeEventKind::Press,
-        payload: EventPayload::Point { x: 10.0, y: 20.0 },
-    });
-    web.push_event(NativeEvent {
-        surface_id: 1,
-        node_id: 3,
-        timestamp_us: 99,
-        kind: NativeEventKind::TextChange,
-        payload: EventPayload::Text("hello".into()),
-    });
-
-    assert_eq!(callback_hits.get(), 2);
-    let drained = web.drain_events();
-    assert_eq!(drained.len(), 2);
-    assert_eq!(drained[0].node_id, 2);
-    assert_eq!(drained[1].payload, EventPayload::Text("hello".into()));
-    assert!(web.drain_events().is_empty());
-
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_event_mask(2, EventMask::NONE);
-    b2.commit(true);
-    web.submit_frame(b2.finish()).unwrap();
-    assert_eq!(web.event_mask_of(2), EventMask::NONE);
-}
-
-#[test]
-fn applies_incremental_patches_and_raw_props() {
-    let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_text(3, "Count: 0");
-    b.create_node(4, ComponentKind::TextInput, None);
-    b.set_raw_prop(4, "placeholder", &RawPropValue::String("Type here".into()));
-    b.set_children(2, &[3, 4]);
-    b.set_children(ROOT_NODE_ID, &[2]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-
-    assert_eq!(
-        web.node(4).unwrap().raw_props.get("placeholder"),
-        Some(&RawPropValue::String("Type here".into()))
-    );
-    assert!(web.render_html().contains("Count: 0</span>"));
-
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_text(3, "Count: 1");
-    b2.commit(true);
-    let stats = web.submit_frame(b2.finish()).unwrap();
-    assert_eq!(stats.mutation_count, 1);
-    assert!(web.render_html().contains("Count: 1</span>"));
-    assert_eq!(
-        web.node(4).unwrap().raw_props.get("placeholder"),
-        Some(&RawPropValue::String("Type here".into()))
-    );
-
-    let patched = web.apply_template_patch(&nve_engine::HotPatchMsg::TemplatePatch {
-        generation: 1,
-        template_id: "counter".into(),
-        attr_updates: vec![("style".into(), "background-color: #111827".into())],
-        text_updates: vec![(0, "Count: 99".into())],
-        target_test_id: None,
-        node_path: vec![],
-        text_replacements: vec![],
-    });
-    assert!(patched >= 2);
-    assert!(web.render_html().contains("Count: 99</span>"));
-    assert!(web
-        .node(2)
-        .unwrap()
-        .combined_css()
-        .contains("background-color: #111827;"));
-}
-
-#[test]
-fn targeted_template_patch_updates_only_matching_dom_mirror_nodes() {
-    let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::View, None);
-    b.set_raw_prop(2, "testID", &RawPropValue::String("nav-eng".into()));
-    b.create_node(3, ComponentKind::Text, None);
-    b.set_text(3, "# engineering");
-    b.set_children(2, &[3]);
-
-    b.create_node(4, ComponentKind::View, None);
-    b.set_raw_prop(4, "testID", &RawPropValue::String("nav-design".into()));
-    b.create_node(5, ComponentKind::Text, None);
-    b.set_text(5, "# design-sync");
-    b.set_children(4, &[5]);
-
-    b.set_children(ROOT_NODE_ID, &[2, 4]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-
-    let mutations = web.apply_template_patch(&nve_engine::HotPatchMsg::TemplatePatch {
-        generation: 2,
-        template_id: "ui.rs".into(),
-        attr_updates: vec![(
-            "style".into(),
-            "padding: 14px; background-color: #1d4ed8;".into(),
-        )],
-        text_updates: vec![(0, "# ergoiherg".into())],
-        target_test_id: Some("nav-eng".into()),
-        node_path: vec![0],
-        text_replacements: vec![("# engineering".into(), "# ergoiherg".into())],
-    });
-    assert_eq!(mutations, 2);
-    assert_eq!(web.node(3).unwrap().text.as_deref(), Some("# ergoiherg"));
-    assert_eq!(web.node(5).unwrap().text.as_deref(), Some("# design-sync"));
-    assert!(web
-        .node(2)
-        .unwrap()
-        .combined_css()
-        .contains("background-color: #1d4ed8;"));
-    assert!(!web
-        .node(4)
-        .unwrap()
-        .combined_css()
-        .contains("background-color: #1d4ed8;"));
-
-    let noop = web.apply_template_patch(&nve_engine::HotPatchMsg::TemplatePatch {
-        generation: 3,
-        template_id: "ui.rs".into(),
-        attr_updates: vec![("opacity".into(), "0.2".into())],
-        text_updates: vec![],
-        target_test_id: Some("missing-id".into()),
-        node_path: vec![],
-        text_replacements: vec![],
-    });
-    assert_eq!(noop, 0);
-    assert!(!web.node(2).unwrap().combined_css().contains("opacity:0.2;"));
-    assert!(!web.node(4).unwrap().combined_css().contains("opacity:0.2;"));
-}
-
-#[test]
-fn maps_image_resize_mode_alt_and_src_in_mirror_and_html() {
-    let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    for (idx, (id, prop_key, prop_val)) in [
-        (2u32, "resizeMode", "cover"),
-        (3u32, "resize_mode", "contain"),
-        (4u32, "objectFit", "stretch"),
-        (5u32, "resizeMode", "center"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        b.create_node(id, ComponentKind::Image, None);
-        b.set_raw_prop(
-            id,
-            if idx == 3 { "uri" } else { "src" },
-            &RawPropValue::String(format!("https://example.com/img{idx}.png")),
-        );
-        b.set_raw_prop(
-            id,
-            "alt",
-            &RawPropValue::String(format!("Avatar \"{idx}\"")),
-        );
-        b.set_raw_prop(id, prop_key, &RawPropValue::String(prop_val.into()));
+    // Two cards with identical structural styles should deduplicate to the SAME `.n<hash>` class!
+    for c in [card1, card2] {
+        tx.edit::<Layout>(c)
+            .flex_direction(FlexDirection::Row)
+            .padding_top(Length::points(12.0))
+            .padding_right(Length::points(12.0))
+            .padding_bottom(Length::points(12.0))
+            .padding_left(Length::points(12.0));
+        tx.edit::<Visual>(c)
+            .background(Rgba::rgb(15, 23, 42))
+            .border_radius(8.0);
     }
-    b.set_children(ROOT_NODE_ID, &[2, 3, 4, 5]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
+    tx.edit::<Interaction>(card1)
+        .cursor(CursorKind::Pointer)
+        .state_rules(Some(StateRules(
+            vec![StateStyleRule::new(
+                InteractionState::HOVER,
+                StylePatch::new().bg(ColorRgba::rgb(30, 64, 175)),
+            )]
+            .into(),
+        )));
+    tx.edit::<Responsive>(card1).rules(Some(ResponsiveRules(
+        vec![ResponsiveRule::new(
+            MediaQuery::expanded(),
+            StylePatch::new().gap(24.0),
+        )]
+        .into(),
+    )));
+    tx.edit::<Accessibility>(heading)
+        .role(AriaRole::Heading)
+        .level(1);
+    tx.edit::<TextContent>(heading).text("Hello NVE2 Web");
+    tx.edit::<Typography>(heading).color(Rgba::WHITE).font_size(24.0);
+    tx.edit::<DebugId>(heading).test_id("hero-title");
+    tx.edit::<Link>(link).href("https://example.com");
+    tx.edit::<TextContent>(link).text("Docs");
+    tx.commit_into(&mut changes);
 
-    assert_eq!(web.node(2).unwrap().raw_style.object_fit, Some("cover"));
-    assert_eq!(web.node(3).unwrap().raw_style.object_fit, Some("contain"));
-    assert_eq!(web.node(4).unwrap().raw_style.object_fit, Some("fill"));
-    assert_eq!(web.node(5).unwrap().raw_style.object_fit, Some("none"));
+    web.commit(&store, &changes).unwrap();
 
-    let html = web.render_html();
-    assert!(html.contains(
-        "<img data-nve-id=\"2\" src=\"https://example.com/img0.png\" alt=\"Avatar &quot;0&quot;\""
-    ));
-    assert!(html.contains(
-        "<img data-nve-id=\"5\" src=\"https://example.com/img3.png\" alt=\"Avatar &quot;3&quot;\""
-    ));
-    assert!(html.contains("object-fit:cover;"));
-    assert!(html.contains("object-fit:contain;"));
-    assert!(html.contains("object-fit:fill;"));
-    assert!(html.contains("object-fit:none;"));
+    // Frame 2: COMPOSITE-only mutation on card1 hits the fast lane!
+    let mut tx = store.tx();
+    tx.edit::<Visual>(card1).opacity(0.8);
+    tx.edit::<Transform>(card1).translate_x(12.0);
+    tx.commit_into(&mut changes);
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(web.composite_fast_lane_hits(), 1);
 
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_raw_prop(
-        2,
-        "resizeMode",
-        &RawPropValue::I64(ImageResizeMode::Contain.to_u8() as i64),
+    // SSR emits semantic tags (`<h1>`, `<a href=...>`) + deduplicated CSS + `@media` + `:hover`.
+    let ssr = web.render_ssr(&store);
+    assert!(ssr.html.contains("<h1 "));
+    assert!(ssr.html.contains("Hello NVE2 Web"));
+    assert!(ssr.html.contains("<a "));
+    assert!(ssr.html.contains("href=\"https://example.com\""));
+    assert!(ssr.html.contains("data-testid=\"hero-title\""));
+    assert!(ssr.style_css.contains("cursor:pointer;"));
+    assert!(ssr.style_css.contains(":hover"));
+    assert!(ssr.style_css.contains("@media"));
+
+    let doc = web.render_ssr_document(
+        &store,
+        &SsrDocumentOptions {
+            title: "NVE2 Test".into(),
+            enable_event_replay: true,
+            ..Default::default()
+        },
     );
-    b2.set_raw_prop(3, "resizeMode", &RawPropValue::Null);
-    b2.commit(true);
-    web.submit_frame(b2.finish()).unwrap();
-    assert_eq!(web.node(2).unwrap().raw_style.object_fit, Some("contain"));
-    assert_eq!(web.node(3).unwrap().raw_style.object_fit, None);
+    assert!(doc.contains("<!doctype html>"));
+    assert!(doc.contains("<style data-nve-base>"));
+    assert!(doc.contains("<style data-nve-ssr"));
+
+    // Hydration seeds rule hashes with zero duplicate CSS rules.
+    let hydrated = WebBackend::hydrate_from_ssr(&ssr);
+    assert!(hydrated.hydration_report().is_clean());
+    assert_eq!(
+        hydrated.hydration_report().reused_css_rules as usize,
+        ssr.rule_hashes.len()
+    );
+
+    // Tier-1 hot-patch updates text directly in NodeStore!
+    let patched = web.apply_template_patch(
+        &mut store,
+        &HotPatchMsg::TemplatePatch {
+            generation: 1,
+            template_id: "hero-title".into(),
+            attr_updates: vec![("letter-spacing".into(), "1px".into())],
+            text_updates: vec![],
+            target_test_id: Some("hero-title".into()),
+            node_path: vec![],
+            text_replacements: vec![("Hello NVE2 Web".into(), "Patched NVE2 Web".into())],
+        },
+    );
+    assert!(patched >= 1);
+    let after = web.render_html(&store);
+    assert!(after.contains("Patched NVE2 Web"));
+    assert!(after.contains("letter-spacing:1px;"));
+}
+
+#[cfg(feature = "hydrate")]
+#[test]
+fn pre_hydration_press_on_child_text_bubbles_to_interactive_parent_and_drops_stale() {
+    use nve_abi::{EventMask, NativeEventKind};
+    use crate::CapturedPreHydrationEvent;
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut tx = store.tx();
+    let btn = tx.create();
+    let label = tx.create();
+    tx.set_children(NodeId::ROOT, &[btn]);
+    tx.set_children(btn, &[label]);
+    tx.edit::<Interaction>(btn).event_mask(EventMask::PRESS as u32);
+    tx.edit::<TextContent>(label).text("Click Me");
+    tx.commit_into(&mut changes);
+
+    let mut ssr_web = WebBackend::new();
+    ssr_web.commit(&store, &changes).unwrap();
+    let ssr = ssr_web.render_ssr(&store);
+
+    let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
+    hydrated.queue_pre_hydration_events(vec![
+        CapturedPreHydrationEvent::Press {
+            node_id: label.raw(),
+            x: 10.0,
+            y: 12.0,
+            age_ms: 25,
+        },
+        CapturedPreHydrationEvent::Press {
+            node_id: label.raw(),
+            x: 10.0,
+            y: 12.0,
+            age_ms: 60_000,
+        },
+    ]);
+    hydrated.commit(&store, &changes).unwrap();
+    let drained = hydrated.drain_events();
+    assert_eq!(hydrated.hydration_report().replayed_events, 1);
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].kind, NativeEventKind::Press);
+    assert_eq!(drained[0].node_id, btn.raw());
 }
 
 #[test]
-fn decodes_nve_draw1_canvas_ops_and_handles_corrupt_or_null_draw_lists() {
-    let mut dl = DrawListBuilder::with_capacity(256);
-    dl.clear(ColorRgba::rgb(17, 24, 39))
-        .fill_rect(4.0, 4.0, 40.0, 20.0, ColorRgba::rgb(56, 189, 248))
-        .fill_rounded_rect(50.0, 4.0, 40.0, 20.0, 6.0, ColorRgba::rgb(167, 139, 250))
-        .fill_circle(110.0, 14.0, 8.0, ColorRgba::rgb(34, 197, 94))
-        .stroke_line(0.0, 36.0, 120.0, 36.0, 2.0, ColorRgba::WHITE)
-        .stroke_polyline(
-            &[(10.0, 60.0), (40.0, 45.0), (80.0, 55.0)],
-            2.5,
-            ColorRgba::rgb(245, 158, 11),
-        )
-        .clip_rect(0.0, 0.0, 120.0, 72.0)
-        .restore_clip();
-    let raw_bytes = dl.finish();
+fn base_reset_css_keeps_element_defaults_zero_specificity() {
+    let css = crate::NVE_BASE_RESET_CSS;
+    assert!(css.contains(":where(.nve)"));
+    assert!(css.contains(":where(span.nve){display:inline;"));
+    assert!(css.contains(":where(a.nve)"));
+    assert!(css.contains(":where(button.nve)"));
+    assert!(!css.contains("}span.nve{"));
+    assert!(!css.contains("}a.nve{"));
+    assert!(!css.contains("}button.nve{"));
+    assert!(css.starts_with("@layer nve-base,nve-s,nve-m,nve-st0,nve-st1,nve-st2,nve-st3,nve-st4;"));
+}
 
-    let mut spark = DrawListBuilder::with_capacity(256);
-    spark.sparkline(
-        &[120.0, 180.0, 150.0, 240.0],
-        320.0,
-        72.0,
-        ColorRgba::rgb(56, 189, 248),
-        ColorRgba::rgb(17, 24, 39),
-    );
-    let spark_attr = spark.to_attr_string();
+#[test]
+fn web_security_sanitizers_block_xss_and_css_breakout_vectors() {
+    use nve_components::tables::{LinkTarget, TextInput};
+    use crate::{is_safe_custom_tag, is_safe_web_attr, is_safe_web_url};
 
+    // URL scheme & control-char smuggling vectors
+    assert!(is_safe_web_url("https://example.com/docs"));
+    assert!(is_safe_web_url("http://localhost:8080/a"));
+    assert!(is_safe_web_url("mailto:hi@example.com"));
+    assert!(is_safe_web_url("tel:+15551234567"));
+    assert!(is_safe_web_url("/docs/start"));
+    assert!(is_safe_web_url("./img.png"));
+    assert!(is_safe_web_url("../img.png"));
+    assert!(is_safe_web_url("#section"));
+    assert!(is_safe_web_url("data:image/png;base64,iVBORw0KGgo="));
+    assert!(!is_safe_web_url("javascript:alert(1)"));
+    assert!(!is_safe_web_url("java\tscript:alert(1)"));
+    assert!(!is_safe_web_url("java\nscript:alert(1)"));
+    assert!(!is_safe_web_url("\x01javascript:alert(1)"));
+    assert!(!is_safe_web_url("data:image/svg+xml,<svg onload=alert(1)>"));
+    assert!(!is_safe_web_url("//evil.example/x.js"));
+    assert!(!is_safe_web_url("/\\evil.example/x.js"));
+    assert!(!is_safe_web_url("vbscript:msgbox(1)"));
+
+    // Custom tag denylist
+    assert!(is_safe_custom_tag("my-widget"));
+    assert!(is_safe_custom_tag("article"));
+    for bad_tag in [
+        "script",
+        "SCRIPT",
+        "style",
+        "iframe",
+        "frame",
+        "frameset",
+        "object",
+        "embed",
+        "applet",
+        "base",
+        "meta",
+        "link",
+        "foreignObject",
+        "animate",
+        "set",
+        "template",
+        "noscript",
+        "svg",
+        "math",
+        "1bad",
+        "a b",
+    ] {
+        assert!(!is_safe_custom_tag(bad_tag), "tag {bad_tag} must be rejected");
+    }
+
+    // Attribute name & URL-bearing attribute checks
+    assert!(is_safe_web_attr("data-state", "open"));
+    assert!(is_safe_web_attr("data-nve-island", "ui-playground"));
+    assert!(is_safe_web_attr("data-nve-hydrate", "visible"));
+    assert!(is_safe_web_attr("aria-label", "Submit"));
+    assert!(is_safe_web_attr("href", "https://example.com"));
+    assert!(is_safe_web_attr("srcset", "/a.png 1x, https://cdn.example/b.webp 2x"));
+    for (k, v) in [
+        ("onclick", "alert(1)"),
+        ("ONLOAD", "alert(1)"),
+        ("is", "x-evil"),
+        ("srcdoc", "<script>alert(1)</script>"),
+        ("style", "background:url(javascript:alert(1))"),
+        ("class", "injected"),
+        ("data-nve-id", "999"),
+        ("data-nve-ssr", "1"),
+        ("data-nve-hydrated", "true"),
+        ("attributeName", "href"),
+        ("to", "javascript:alert(1)"),
+        ("href", "java\tscript:alert(1)"),
+        ("src", "data:image/svg+xml,<svg/>"),
+        ("formaction", "//evil.com"),
+        ("poster", "javascript:alert(1)"),
+        ("data", "javascript:alert(1)"),
+        ("srcset", "/ok.png 1x, javascript:alert(1) 2x"),
+        ("1invalid", "x"),
+    ] {
+        assert!(
+            !is_safe_web_attr(k, v),
+            "attr {k}={v} must be rejected"
+        );
+    }
+
+    // SSR: font-family CSS injection, </style> breakout, target="_blank" rel, and default maxlength
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
     let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::SkiaCanvas, None);
-    b.set_raw_prop(2, "drawList", &RawPropValue::Bytes(raw_bytes));
-    b.create_node(3, ComponentKind::SkiaCanvas, None);
-    b.set_raw_prop(3, "draw_list", &RawPropValue::String(spark_attr));
-    b.create_node(4, ComponentKind::SkiaCanvas, None);
-    b.set_raw_prop(4, "drawList", &RawPropValue::Bytes(b"CORRUPT".to_vec()));
-    b.set_children(ROOT_NODE_ID, &[2, 3, 4]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
+    let mut tx = store.tx();
+    let txt = tx.create();
+    let link = tx.create();
+    let inp = tx.create();
+    tx.set_children(NodeId::ROOT, &[txt, link, inp]);
+    tx.edit::<TextContent>(txt).text("safe");
+    tx.edit::<Typography>(txt)
+        .font_family("Inter;}</style><script>alert(1)</script>");
+    tx.edit::<Link>(link)
+        .href("https://example.com")
+        .target(LinkTarget::Blank);
+    tx.edit::<TextInput>(inp).max_length(u16::MAX);
+    tx.commit_into(&mut changes);
+    web.commit(&store, &changes).unwrap();
 
-    let n2 = web.node(2).unwrap();
-    assert_eq!(n2.tag, "canvas");
-    assert_eq!(n2.draw_op_count, 8);
-    assert_eq!(n2.draw_ops.len(), 8);
-    assert!(matches!(n2.draw_ops[0], CanvasOp::Clear { .. }));
-    assert!(matches!(n2.draw_ops[7], CanvasOp::RestoreClip));
+    let doc = web.render_ssr_document(&store, &SsrDocumentOptions::default());
+    assert!(!doc.contains("<script>alert(1)</script>"));
+    assert!(doc.contains("target=\"_blank\""));
+    assert!(doc.contains("rel=\"noopener noreferrer\""));
+    assert!(!doc.contains("maxlength=\"65535\""));
 
-    let n3 = web.node(3).unwrap();
-    assert!(n3.draw_op_count > 3);
-    assert_eq!(web.node(4).unwrap().draw_op_count, 0);
+    // Plain relative paths, query paths, data: srcset, multi-URL ping, data-nve-* prefix,
+    // whitespace-padded tags/attrs, raw-text tags, font-family comments/quotes, and non-finite flex.
+    assert!(is_safe_web_url("img.png"));
+    assert!(is_safe_web_url("docs/guide"));
+    assert!(is_safe_web_url("?q=foo:bar"));
+    assert!(is_safe_web_attr("srcset", "data:image/png;base64,iVBORw0KGgo= 1x, img.png 2x"));
+    assert!(!is_safe_web_attr("srcset", "data:image/png;base64,iVBORw0KGgo=, javascript:alert(1)"));
+    assert!(is_safe_web_attr("ping", "https://a.example/p /b/p"));
+    assert!(!is_safe_web_attr("ping", "https://a.example/p javascript:alert(1)"));
+    assert!(!is_safe_web_attr("ping", "   "));
+    assert!(!is_safe_web_attr("data-nve-internal-future", "1"));
+    assert!(!is_safe_web_attr(" href", "https://example.com"));
+    assert!(!is_safe_web_attr("href ", "https://example.com"));
+    for bad in [" div", "div ", "plaintext", "xmp", "textarea", "title"] {
+        assert!(!is_safe_custom_tag(bad), "tag {bad:?} must be rejected");
+    }
 
-    let html = web.render_html();
-    assert!(html.contains("<canvas data-nve-id=\"2\" data-nve-draw-ops=\"8\""));
-
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_raw_prop(2, "drawList", &RawPropValue::Null);
-    b2.commit(true);
-    web.submit_frame(b2.finish()).unwrap();
-    assert_eq!(web.node(2).unwrap().draw_op_count, 0);
-    assert!(web.node(2).unwrap().draw_ops.is_empty());
+    // Font-family comments / unbalanced quotes + non-finite flex_grow.
+    let mut store2 = NodeStore::new();
+    let mut changes2 = ChangeSet::default();
+    let mut web2 = WebBackend::new();
+    let n2 = {
+        let mut tx = store2.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<Layout>(n).flex_grow(f32::NAN);
+        tx.edit::<Typography>(n).font_family("Inter /* comment */");
+        tx.commit_into(&mut changes2);
+        n
+    };
+    web2.commit(&store2, &changes2).unwrap();
+    let css2 = web2.render_ssr(&store2).style_css;
+    assert!(!css2.contains("NaN"), "non-finite flex_grow leaked into CSS: {css2}");
+    assert!(!css2.contains("/*"), "CSS comment in font_family leaked: {css2}");
+    {
+        let mut tx = store2.tx();
+        tx.edit::<Typography>(n2).font_family("'Unclosed");
+        tx.commit_into(&mut changes2);
+    }
+    web2.commit(&store2, &changes2).unwrap();
+    let css3 = web2.render_ssr(&store2).style_css;
+    assert!(!css3.contains("Unclosed"), "unbalanced quote in font_family leaked: {css3}");
 }
 
 #[test]
-fn maps_aria_accessibility_and_input_attributes_in_html_ssr_and_dom_mapper() {
+fn plugin_table_detach_automatically_clears_owned_attrs_inner_html_and_inline_css() {
+    use nve_store::{NveTable, TableSlot};
+    use crate::{WebSystemCommitCtx, WebTableSystem};
+
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.plug", storage = "sparse")]
+    struct TestPlug {
+        #[effect(paint)]
+        flag: u32,
+    }
+
+    struct PlugSys;
+    impl WebTableSystem for PlugSys {
+        fn slot(&self) -> TableSlot {
+            TestPlug::slot()
+        }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, _: &NodeStore, node: NodeId, _: u32) {
+            ctx.set_attr(node, "data-plug", "on");
+            ctx.set_inner_html(node, "<b>hi</b>".into());
+            ctx.set_inline_css(node, "backdrop-filter:blur(4px);".into());
+        }
+    }
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
     let mut web = WebBackend::new();
-    let mut b = CommandBufferBuilder::new(1, 1);
-    b.create_node(2, ComponentKind::Pressable, None);
-    b.set_raw_prop(
-        2,
-        "accessibilityLabel",
-        &RawPropValue::String("Submit \"Order\" & Pay".into()),
-    );
-    b.set_raw_prop(2, "accessibilityRole", &RawPropValue::String("button".into()));
-    b.set_raw_prop(
-        2,
-        "accessibilityHint",
-        &RawPropValue::String("Charges saved card".into()),
-    );
-    b.set_raw_prop(2, "disabled", &RawPropValue::Bool(true));
+    web.register_table_system(PlugSys);
+    let n = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<TestPlug>(n).flag(1);
+        tx.commit_into(&mut changes);
+        n
+    };
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(web.renderer().plugin_attrs(n), &[("data-plug".to_string(), "on".to_string())]);
+    assert_eq!(web.renderer().plugin_inner_html(n), Some("<b>hi</b>"));
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("backdrop-filter:blur(4px);"));
 
-    b.create_node(3, ComponentKind::TextInput, None);
-    b.set_raw_prop(
-        3,
-        "accessibilityLabel",
-        &RawPropValue::String("API Token".into()),
-    );
-    b.set_raw_prop(3, "secureTextEntry", &RawPropValue::Bool(true));
-    b.set_raw_prop(3, "readOnly", &RawPropValue::Bool(true));
-
-    b.set_children(ROOT_NODE_ID, &[2, 3]);
-    b.commit(true);
-    web.submit_frame(b.finish()).unwrap();
-
-    let html = web.render_html();
-    assert!(html.contains("aria-label=\"Submit &quot;Order&quot; &amp; Pay\""));
-    assert!(html.contains("role=\"button\""));
-    assert!(html.contains("aria-description=\"Charges saved card\""));
-    assert!(html.contains(" disabled aria-disabled=\"true\""));
-    assert!(html.contains("<input data-nve-id=\"3\" aria-label=\"API Token\" type=\"password\" readonly"));
-
-    // Clearing boolean props removes ARIA/HTML attributes cleanly.
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.set_raw_prop(2, "disabled", &RawPropValue::Bool(false));
-    b2.set_raw_prop(3, "secureTextEntry", &RawPropValue::Bool(false));
-    b2.set_raw_prop(3, "readOnly", &RawPropValue::Null);
-    b2.commit(true);
-    web.submit_frame(b2.finish()).unwrap();
-
-    let html2 = web.render_html();
-    assert!(!html2.contains("aria-disabled=\"true\""));
-    assert!(!html2.contains("type=\"password\""));
-    assert!(!html2.contains(" readonly"));
-
-    // Direct DOM attribute mapper checks for wasm32 sync parity.
-    assert_eq!(
-        map_a11y_or_input_attr(
-            ComponentKind::View,
-            "accessibilityLabel",
-            &RawPropValue::String("Palette".into())
-        ),
-        Some(MappedHtmlAttr::Set("aria-label", "Palette"))
-    );
-    assert_eq!(
-        map_a11y_or_input_attr(
-            ComponentKind::View,
-            "accessibilityLabel",
-            &RawPropValue::Null
-        ),
-        Some(MappedHtmlAttr::Remove("aria-label"))
-    );
-    assert_eq!(
-        map_a11y_or_input_attr(
-            ComponentKind::View,
-            "accessibilityHint",
-            &RawPropValue::String("Opens commands".into())
-        ),
-        Some(MappedHtmlAttr::Set("aria-description", "Opens commands"))
-    );
-    assert_eq!(
-        map_a11y_or_input_attr(ComponentKind::TextInput, "secureTextEntry", &RawPropValue::Bool(true)),
-        Some(MappedHtmlAttr::Set("type", "password"))
-    );
-    // A non-secure input and any non-input element carry no `type`, like render_html and SSR.
-    assert_eq!(
-        map_a11y_or_input_attr(ComponentKind::TextInput, "secureTextEntry", &RawPropValue::Bool(false)),
-        Some(MappedHtmlAttr::Remove("type"))
-    );
-    assert_eq!(
-        map_a11y_or_input_attr(ComponentKind::View, "secureTextEntry", &RawPropValue::Bool(true)),
-        Some(MappedHtmlAttr::Remove("type"))
-    );
-    assert_eq!(
-        map_a11y_or_input_attr(ComponentKind::TextInput, "readOnly", &RawPropValue::String("true".into())),
-        Some(MappedHtmlAttr::ReadOnly(true))
-    );
-    assert_eq!(
-        map_a11y_or_input_attr(ComponentKind::Pressable, "disabled", &RawPropValue::String("false".into())),
-        Some(MappedHtmlAttr::Disabled(false))
-    );
+    // Detaching the plugin table without a custom remove_node impl must still clear all owned state.
+    {
+        let mut tx = store.tx();
+        tx.detach::<TestPlug>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert!(web.renderer().plugin_attrs(n).is_empty());
+    assert!(web.renderer().plugin_inner_html(n).is_none());
+    assert!(web.renderer().plugin_inline_css(n).is_none());
 }
 
 #[test]
-fn ime_composition_guard_suppresses_preedit_input_and_commit_enter() {
-    let guard = ImeCompositionGuard::new();
-    assert!(!guard.is_composing());
-    assert!(!guard.should_suppress_input());
-    assert!(!guard.should_suppress_keydown(false, 13));
+fn css_visibility_emits_visible_hidden_and_omits_inherit() {
+    use nve_components::tables::{Visibility, Visual};
 
-    // During CJK IME composition, pre-edit input and Enter keydown are suppressed.
-    guard.on_composition_start();
-    assert!(guard.is_composing());
-    assert!(guard.should_suppress_input());
-    assert!(guard.should_suppress_keydown(false, 13));
-    assert!(guard.should_suppress_keydown(true, 13));
-
-    // Ending composition resumes normal input and Enter submit handling.
-    guard.on_composition_end();
-    assert!(!guard.is_composing());
-    assert!(!guard.should_suppress_input());
-    assert!(!guard.should_suppress_keydown(false, 13));
-
-    // WebKit/Safari `keyCode == 229` or `ev.is_composing()` still suppresses Enter even after flag flips.
-    assert!(guard.should_suppress_keydown(true, 13));
-    assert!(guard.should_suppress_keydown(false, IME_PROCESS_KEY_CODE));
-}
-
-#[test]
-fn prunes_orphans_on_full_rebuild() {
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
     let mut web = WebBackend::new();
-    let mut b1 = CommandBufferBuilder::new(1, 1);
-    b1.create_node(2, ComponentKind::View, None);
-    b1.create_node(3, ComponentKind::Text, None);
-    b1.create_node(4, ComponentKind::Text, None);
-    b1.set_children(2, &[3, 4]);
-    b1.set_children(ROOT_NODE_ID, &[2]);
-    b1.commit(true);
-    web.submit_frame(b1.finish()).unwrap();
-    assert_eq!(web.node_count(), 4);
+    let n = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<Visual>(n).visibility(Visibility::Inherit);
+        tx.commit_into(&mut changes);
+        n
+    };
+    web.commit(&store, &changes).unwrap();
+    let ssr_inh = web.render_ssr(&store);
+    assert!(!ssr_inh.style_css.contains("visibility:"), "Inherit must omit visibility: {}", ssr_inh.style_css);
 
-    let mut b2 = CommandBufferBuilder::new(1, 2);
-    b2.create_node(2, ComponentKind::View, None);
-    b2.create_node(3, ComponentKind::Text, None);
-    b2.set_text(3, "Mobile");
-    b2.set_children(2, &[3]);
-    b2.set_children(ROOT_NODE_ID, &[2]);
-    b2.commit(true);
-    web.submit_frame(b2.finish()).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(n).visibility(Visibility::Visible);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    let ssr_vis = web.render_ssr(&store);
+    assert!(ssr_vis.style_css.contains("visibility:visible;"), "Visible must emit visibility:visible: {}", ssr_vis.style_css);
 
-    assert_eq!(web.node_count(), 3);
-    assert!(web.node(4).is_none());
-    assert_eq!(web.node(3).unwrap().text.as_deref(), Some("Mobile"));
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(n).visibility(Visibility::Hidden);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    let ssr_hid = web.render_ssr(&store);
+    assert!(ssr_hid.style_css.contains("visibility:hidden;"), "Hidden must emit visibility:hidden: {}", ssr_hid.style_css);
+
+    // Transitioning Hidden -> Inherit must drop `visibility:hidden;`.
+    {
+        let mut tx = store.tx();
+        tx.edit::<Visual>(n).visibility(Visibility::Inherit);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    let ssr_back = web.render_ssr(&store);
+    assert!(
+        !ssr_back.style_css.contains("visibility:"),
+        "Hidden -> Inherit must clear visibility: {}",
+        ssr_back.style_css
+    );
+
+    // CSS visibility keywords: collapse -> Hidden, initial -> Visible, inherit/unset/revert/revert-layer -> Inherit, invalid ignored.
+    {
+        let mut tx = store.tx();
+        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "collapse"));
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden);
+    {
+        let mut tx = store.tx();
+        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "bogus"));
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Hidden, "invalid visibility value must not overwrite");
+    {
+        let mut tx = store.tx();
+        assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", "initial"));
+        tx.commit_into(&mut changes);
+    }
+    assert_eq!(store.row::<Visual>(n).visibility(), Visibility::Visible);
+    for kw in ["unset", "revert", "revert-layer", "inherit"] {
+        {
+            let mut tx = store.tx();
+            tx.edit::<Visual>(n).visibility(Visibility::Hidden);
+            tx.commit_into(&mut changes);
+        }
+        {
+            let mut tx = store.tx();
+            assert!(nve_components::apply_css_attr_to_tx(&mut tx, n, "visibility", kw));
+            tx.commit_into(&mut changes);
+        }
+        assert_eq!(
+            store.row::<Visual>(n).visibility(),
+            Visibility::Inherit,
+            "CSS visibility keyword `{kw}` must resolve to Visibility::Inherit"
+        );
+    }
+}
+
+#[test]
+fn cross_slot_plugin_ownership_protects_other_slot_attrs_and_inline_css() {
+    use nve_store::{NveTable, TableSlot};
+    use crate::{WebSystemCommitCtx, WebTableSystem};
+
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.owner_a", storage = "sparse")]
+    struct OwnerA {
+        #[effect(paint)]
+        v: u32,
+    }
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.owner_b", storage = "sparse")]
+    struct OwnerB {
+        #[effect(paint)]
+        v: u32,
+    }
+
+    struct SysA;
+    impl WebTableSystem for SysA {
+        fn slot(&self) -> TableSlot { OwnerA::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            if store.row::<OwnerA>(node).v() == 1 {
+                ctx.set_attr(node, "data-shared", "a");
+                ctx.set_inline_css(node, "filter:blur(2px);".into());
+            } else {
+                ctx.remove_attr(node, "data-shared");
+                ctx.set_inline_css(node, String::new());
+            }
+        }
+    }
+    struct SysB;
+    impl WebTableSystem for SysB {
+        fn slot(&self) -> TableSlot { OwnerB::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            if store.row::<OwnerB>(node).v() == 1 {
+                ctx.set_attr(node, "data-shared", "b");
+                ctx.set_inline_css(node, "backdrop-filter:blur(4px);".into());
+            } else {
+                ctx.remove_attr(node, "data-shared");
+                ctx.set_inline_css(node, String::new());
+            }
+        }
+    }
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut web = WebBackend::new();
+    web.register_table_system(SysA);
+    web.register_table_system(SysB);
+
+    // Order 1: SysB commits first, then SysA overwrites both, then SysA removes/clears -> SysB's exact values restore!
+    let n = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<OwnerB>(n).v(1);
+        tx.commit_into(&mut changes);
+        n
+    };
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<OwnerA>(n).v(1);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(web.renderer().plugin_attrs(n), &[("data-shared".to_string(), "a".to_string())]);
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("filter:blur(2px);"));
+
+    {
+        let mut tx = store.tx();
+        tx.edit::<OwnerA>(n).v(2);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[("data-shared".to_string(), "b".to_string())],
+        "removing attr from SysA must restore SysB's exact value"
+    );
+    assert_eq!(
+        web.renderer().plugin_inline_css(n),
+        Some("backdrop-filter:blur(4px);"),
+        "clearing inline_css from SysA must restore SysB's exact inline CSS"
+    );
+
+    // Order 2: SysA sets again, then SysB detaches -> SysA's exact values restore!
+    {
+        let mut tx = store.tx();
+        tx.edit::<OwnerA>(n).v(1);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.detach::<OwnerB>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(web.renderer().plugin_attrs(n), &[("data-shared".to_string(), "a".to_string())]);
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("filter:blur(2px);"));
+
+    // Detaching SysA too cleans everything.
+    {
+        let mut tx = store.tx();
+        tx.detach::<OwnerA>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert!(web.renderer().plugin_attrs(n).is_empty());
+    assert!(web.renderer().plugin_inline_css(n).is_none());
+}
+
+#[test]
+fn three_plugin_write_sequence_precedence_and_non_owner_guard() {
+    use nve_store::{NveTable, TableSlot};
+    use crate::{WebSystemCommitCtx, WebTableSystem};
+
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.seq_a", storage = "sparse")]
+    struct SeqA {
+        #[effect(paint)]
+        v: u32,
+    }
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.seq_b", storage = "sparse")]
+    struct SeqB {
+        #[effect(paint)]
+        v: u32,
+    }
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.seq_c", storage = "sparse")]
+    struct SeqC {
+        #[effect(paint)]
+        v: u32,
+    }
+
+    struct SysSeqA;
+    impl WebTableSystem for SysSeqA {
+        fn slot(&self) -> TableSlot { SeqA::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            match store.row::<SeqA>(node).v() {
+                1 => {
+                    ctx.set_attr(node, "data-shared", "a");
+                    ctx.set_attr(node, "aria-label", "plugin-a-label");
+                    ctx.set_inline_css(node, "filter:blur(1px);".into());
+                }
+                2 => {
+                    ctx.set_attr(node, "data-shared", "a2");
+                    ctx.set_inline_css(node, "filter:blur(10px);".into());
+                }
+                3 => {
+                    ctx.set_attr(node, "data-k1", "a1");
+                    ctx.set_attr(node, "data-k2", "a2");
+                }
+                _ => {
+                    ctx.remove_attr(node, "data-shared");
+                    ctx.remove_attr(node, "aria-label");
+                    ctx.set_inline_css(node, String::new());
+                }
+            }
+        }
+    }
+    struct SysSeqB;
+    impl WebTableSystem for SysSeqB {
+        fn slot(&self) -> TableSlot { SeqB::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            match store.row::<SeqB>(node).v() {
+                1 => {
+                    ctx.set_attr(node, "data-shared", "b");
+                    ctx.set_inline_css(node, "filter:blur(2px);".into());
+                }
+                2 => {
+                    // Non-owner removal attempts on another plugin's attrs and inline CSS.
+                    ctx.remove_attr(node, "data-shared");
+                    ctx.remove_attr(node, "aria-label");
+                    ctx.remove_attr(node, "data-unowned");
+                    ctx.set_inline_css(node, String::new());
+                }
+                3 => {
+                    ctx.set_attr(node, "data-k1", "b1");
+                    ctx.set_attr(node, "data-k2", "b2");
+                }
+                4 => {
+                    ctx.retain_slot_attrs(node, |k| k == "data-k1");
+                }
+                5 => {
+                    ctx.retain_slot_attrs(node, |_| false);
+                }
+                _ => {}
+            }
+        }
+    }
+    struct SysSeqC;
+    impl WebTableSystem for SysSeqC {
+        fn slot(&self) -> TableSlot { SeqC::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            match store.row::<SeqC>(node).v() {
+                1 => {
+                    ctx.set_attr(node, "data-shared", "c");
+                    ctx.set_inline_css(node, "filter:blur(3px);".into());
+                }
+                2 => {
+                    ctx.set_attr(node, "data-shared", "c2");
+                    ctx.set_inline_css(node, "filter:blur(4px);".into());
+                }
+                3 => {
+                    ctx.set_attr(node, "data-k1", "c1");
+                }
+                _ => {
+                    ctx.remove_attr(node, "data-shared");
+                    ctx.set_inline_css(node, String::new());
+                }
+            }
+        }
+    }
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut web = WebBackend::new();
+    web.register_table_system(SysSeqA);
+    web.register_table_system(SysSeqB);
+    web.register_table_system(SysSeqC);
+
+    // 1. A writes "a" + "aria-label", C writes "c"; non-owner B remove_attr / set_inline_css("")
+    //    must leave both plugin-owned attrs and C's live values completely untouched.
+    let n = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<SeqA>(n).v(1);
+        tx.commit_into(&mut changes);
+        n
+    };
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqC>(n).v(1);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqB>(n).v(2);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[
+            ("data-shared".to_string(), "c".to_string()),
+            ("aria-label".to_string(), "plugin-a-label".to_string()),
+        ],
+        "non-owner B remove_attr must leave C's data-shared and A's aria-label exact and leak-free"
+    );
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("filter:blur(3px);"));
+
+    // 2. Real 3-plugin max-seq tiebreak (all three live: A < B < C):
+    //    detaching C must restore B (NOT registry-first A!), then detaching B restores A.
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqB>(n).v(1);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqC>(n).v(2);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[
+            ("data-shared".to_string(), "c2".to_string()),
+            ("aria-label".to_string(), "plugin-a-label".to_string()),
+        ]
+    );
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("filter:blur(4px);"));
+
+    {
+        let mut tx = store.tx();
+        tx.detach::<SeqC>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[
+            ("data-shared".to_string(), "b".to_string()),
+            ("aria-label".to_string(), "plugin-a-label".to_string()),
+        ],
+        "detaching C with A < B < C must restore B (max seq), not registry-first A"
+    );
+    assert_eq!(
+        web.renderer().plugin_inline_css(n),
+        Some("filter:blur(2px);"),
+        "detaching C with A < B < C must restore B's inline CSS"
+    );
+
+    // 3. Non-registry write order (B < A2 < C): detaching C must restore A2 (max seq), not B!
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqA>(n).v(2);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqC>(n).v(1);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[
+            ("data-shared".to_string(), "c".to_string()),
+            ("aria-label".to_string(), "plugin-a-label".to_string()),
+        ]
+    );
+    {
+        let mut tx = store.tx();
+        tx.detach::<SeqC>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[
+            ("data-shared".to_string(), "a2".to_string()),
+            ("aria-label".to_string(), "plugin-a-label".to_string()),
+        ],
+        "detaching C with B < A2 < C must restore A2 (max seq), not B"
+    );
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("filter:blur(10px);"));
+
+    // Detaching older owner B must leave newer owner A2 intact; detaching A cleans everything.
+    {
+        let mut tx = store.tx();
+        tx.detach::<SeqB>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n),
+        &[
+            ("data-shared".to_string(), "a2".to_string()),
+            ("aria-label".to_string(), "plugin-a-label".to_string()),
+        ]
+    );
+    assert_eq!(web.renderer().plugin_inline_css(n), Some("filter:blur(10px);"));
+    {
+        let mut tx = store.tx();
+        tx.detach::<SeqA>(n);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert!(web.renderer().plugin_attrs(n).is_empty());
+    assert!(web.renderer().plugin_inline_css(n).is_none());
+
+    // 4. `retain_slot_attrs` across 3 plugins (A < B < C on data-k1, A < B on data-k2):
+    let n2 = {
+        let mut tx = store.tx();
+        let n2 = tx.create();
+        tx.set_children(NodeId::ROOT, &[n, n2]);
+        tx.edit::<SeqA>(n2).v(3);
+        tx.commit_into(&mut changes);
+        n2
+    };
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqB>(n2).v(3);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqC>(n2).v(3);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n2),
+        &[
+            ("data-k1".to_string(), "c1".to_string()),
+            ("data-k2".to_string(), "b2".to_string()),
+        ]
+    );
+
+    // B retains only data-k1 -> drops data-k2 (restores A's "a2"), leaves data-k1 ("c1") intact.
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqB>(n2).v(4);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n2),
+        &[
+            ("data-k1".to_string(), "c1".to_string()),
+            ("data-k2".to_string(), "a2".to_string()),
+        ]
+    );
+
+    // B drops data-k1 too -> C is newer than B, so data-k1 MUST stay "c1" (not regress to "a1")!
+    {
+        let mut tx = store.tx();
+        tx.edit::<SeqB>(n2).v(5);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n2),
+        &[
+            ("data-k1".to_string(), "c1".to_string()),
+            ("data-k2".to_string(), "a2".to_string()),
+        ]
+    );
+
+    // Detaching C restores A's "a1".
+    {
+        let mut tx = store.tx();
+        tx.detach::<SeqC>(n2);
+        tx.commit_into(&mut changes);
+    }
+    web.commit(&store, &changes).unwrap();
+    assert_eq!(
+        web.renderer().plugin_attrs(n2),
+        &[
+            ("data-k1".to_string(), "a1".to_string()),
+            ("data-k2".to_string(), "a2".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn retag_lifecycle_detaches_before_mirror_replay_and_gates_unchanged_sync_in_o1() {
+    use std::cell::RefCell;
+
+    use nve_abi::hash::HashMap;
+    use nve_store::{NveTable, TableSlot};
+
+    use crate::table_system::RetagElementSink;
+    use crate::{WebStoreRenderer, WebSystemCommitCtx, WebTableSystem};
+
+    #[derive(Default)]
+    struct MockRetagEl {
+        attrs: RefCell<Vec<(String, String)>>,
+        inner_html: RefCell<Option<String>>,
+    }
+    impl RetagElementSink for MockRetagEl {
+        fn set_attr(&self, name: &str, value: &str) {
+            self.attrs.borrow_mut().push((name.to_owned(), value.to_owned()));
+        }
+        fn set_inner_html(&self, html: &str) {
+            *self.inner_html.borrow_mut() = Some(html.to_owned());
+        }
+    }
+
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.retag_detach", storage = "sparse")]
+    struct RetagDetach {
+        #[effect(paint)]
+        v: u32,
+    }
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.retag_canvas", storage = "sparse")]
+    struct RetagCanvas {
+        #[effect(paint)]
+        ops: u32,
+    }
+    #[allow(dead_code)]
+    #[derive(NveTable)]
+    #[nve_table(name = "web.test.retag_changed", storage = "sparse")]
+    struct RetagChanged {
+        #[effect(paint)]
+        v: u32,
+    }
+
+    struct DetachSys;
+    impl WebTableSystem for DetachSys {
+        fn slot(&self) -> TableSlot { RetagDetach::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, _store: &NodeStore, node: NodeId, _: u32) {
+            ctx.set_attr(node, "data-webview", "1");
+            ctx.set_inline_css(node, "filter:blur(8px);".into());
+            ctx.set_inner_html(node, "<p>stale</p>".into());
+        }
+    }
+    struct CanvasSys;
+    impl WebTableSystem for CanvasSys {
+        fn slot(&self) -> TableSlot { RetagCanvas::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            let ops = store.row::<RetagCanvas>(node).ops();
+            ctx.set_attr(node, "data-nve-draw-ops", &ops.to_string());
+        }
+    }
+    struct ChangedSys;
+    impl WebTableSystem for ChangedSys {
+        fn slot(&self) -> TableSlot { RetagChanged::slot() }
+        fn commit_node(&self, ctx: &mut WebSystemCommitCtx<'_>, store: &NodeStore, node: NodeId, _: u32) {
+            let v = store.row::<RetagChanged>(node).v();
+            ctx.set_attr(node, "data-changed", &format!("v{v}"));
+        }
+    }
+
+    let mut store = NodeStore::new();
+    let mut changes = ChangeSet::default();
+    let mut renderer = WebStoreRenderer::new()
+        .with_table_system(DetachSys)
+        .with_table_system(CanvasSys)
+        .with_table_system(ChangedSys);
+
+    // Frame 1: attach all 3 plugins onto `n`.
+    let n = {
+        let mut tx = store.tx();
+        let n = tx.create();
+        tx.set_children(NodeId::ROOT, &[n]);
+        tx.edit::<RetagDetach>(n).v(1);
+        tx.edit::<RetagCanvas>(n).ops(3);
+        tx.edit::<RetagChanged>(n).v(1);
+        tx.commit_into(&mut changes);
+        n
+    };
+    renderer.commit(&store, &changes).unwrap();
+
+    // Frame 2: same-frame retag where RetagDetach detaches, RetagChanged mutates, and RetagCanvas
+    // remains attached & unchanged.
+    {
+        let mut tx = store.tx();
+        tx.detach::<RetagDetach>(n);
+        tx.edit::<RetagChanged>(n).v(2);
+        tx.commit_into(&mut changes);
+    }
+    let mut live: HashMap<u32, MockRetagEl> = HashMap::default();
+    live.insert(n.raw(), MockRetagEl::default());
+    let mut synced_slots: Vec<(TableSlot, NodeId)> = Vec::new();
+    renderer.commit_plugins_active_with(
+        &store,
+        &changes,
+        #[cfg(target_arch = "wasm32")]
+        None,
+        Some(&live),
+        &[n],
+        |sys, nid, _| synced_slots.push((sys.slot(), nid)),
+    );
+
+    let el = live.get(&n.raw()).unwrap();
+    let replayed = el.attrs.borrow();
+    // 1) Detached plugin's attr, inline CSS, and innerHTML MUST NOT touch the fresh retagged element.
+    assert!(
+        !replayed.iter().any(|(k, _)| k == "data-webview" || k == "data-nve-mod-style"),
+        "detached plugin must be purged before mirror replay: {replayed:?}"
+    );
+    assert_eq!(
+        *el.inner_html.borrow(),
+        None,
+        "detached plugin innerHTML must not be replayed onto fresh retagged element"
+    );
+    // Remaining attached plugins' mirrors WERE replayed.
+    assert!(replayed.iter().any(|(k, v)| k == "data-nve-draw-ops" && v == "3"));
+    // Step 2 committed RetagChanged to v2 in the authoritative mirror.
+    assert_eq!(
+        renderer.plugin_attrs(n),
+        &[
+            ("data-nve-draw-ops".to_string(), "3".to_string()),
+            ("data-changed".to_string(), "v2".to_string()),
+        ]
+    );
+    // 2) Step 2b sync ran ONCE for unchanged RetagCanvas, and SKIPPED RetagChanged (committed in Step 2)
+    //    and RetagDetach (detached in Step 1).
+    assert_eq!(
+        synced_slots,
+        vec![(RetagCanvas::slot(), n)],
+        "only unchanged attached plugins must run sync_retagged_element"
+    );
+
+    // Frame 3: consecutive retag frame where RetagCanvas mutates and RetagChanged (which was
+    // committed in Frame 2) is unchanged -> proves `retag_committed_scratch.clear()` resets per frame!
+    {
+        let mut tx = store.tx();
+        tx.edit::<RetagCanvas>(n).ops(7);
+        tx.commit_into(&mut changes);
+    }
+    let mut live3: HashMap<u32, MockRetagEl> = HashMap::default();
+    live3.insert(n.raw(), MockRetagEl::default());
+    synced_slots.clear();
+    renderer.commit_plugins_active_with(
+        &store,
+        &changes,
+        #[cfg(target_arch = "wasm32")]
+        None,
+        Some(&live3),
+        &[n],
+        |sys, nid, _| synced_slots.push((sys.slot(), nid)),
+    );
+    assert_eq!(
+        synced_slots,
+        vec![(RetagChanged::slot(), n)],
+        "consecutive retag frame must clear prior scratch so unchanged RetagChanged syncs once and changed RetagCanvas is skipped"
+    );
+    assert!(
+        live3
+            .get(&n.raw())
+            .unwrap()
+            .attrs
+            .borrow()
+            .iter()
+            .any(|(k, v)| k == "data-changed" && v == "v2"),
+        "Frame 3 mirror replay must copy RetagChanged's v2 onto fresh retagged element"
+    );
+    assert_eq!(
+        renderer.plugin_attrs(n),
+        &[
+            ("data-nve-draw-ops".to_string(), "7".to_string()),
+            ("data-changed".to_string(), "v2".to_string()),
+        ]
+    );
 }

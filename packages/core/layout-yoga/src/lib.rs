@@ -1,8 +1,9 @@
-//! Real React Native Yoga C++20 [`LayoutEngine`] implementation for `native-view-engine`.
+//! Real React Native Yoga C++20 [`StoreLayoutEngine`] implementation for `native-view-engine`.
 //!
 //! When built with `RN_REACT_COMMON_DIR=/path/to/react-native/packages/react-native/ReactCommon`,
 //! `build.rs` compiles React Native's `yogacore` C++20 sources and links [`YogaLayoutEngine`]
-//! directly to Yoga with full `YGNodeSetMeasureFunc` -> Rust [`TextMeasurer`] callbacks.
+//! directly to Yoga with full `YGNodeSetMeasureFunc` -> Rust [`TextMeasurer`] callbacks,
+//! reading directly from `NodeStore` word tables (`Layout`, `TextContent`, `Typography`).
 //!
 //! When built without `RN_REACT_COMMON_DIR`, the crate still compiles cleanly on every machine
 //! with [`YogaLayoutEngine::is_available()`] returning `false` and [`YogaLayoutEngine::new()`]
@@ -53,9 +54,9 @@ mod real_impl {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
 
-    use nve_abi::{ComponentKind, LayoutProps, NodeId, StyleProps};
-    use nve_components::layout_ext::LayoutExt;
-    use nve_engine::{HeuristicTextMeasurer, LayoutEngine, LayoutRect, TextMeasurer, Viewport};
+    use nve_components::tables::{Layout, TextContent, Typography};
+    use nve_engine::{HeuristicTextMeasurer, LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
+    use nve_store::{ChangeSet, NodeId, NodeStore};
 
     use crate::ffi::{
         nve_yg_config_free, nve_yg_config_new, nve_yg_config_set_point_scale_factor,
@@ -74,12 +75,10 @@ mod real_impl {
     struct MeasurePayload {
         text: String,
         font_size: f32,
+        font_weight: u16,
         measurer: Arc<dyn TextMeasurer>,
     }
 
-    /// Heap-stable container holding both the C++ `NveYogaMeasureHook` and the Rust payload
-    /// referenced by `YGNodeSetContext`. Because it is always owned behind a `Box`, rehashing
-    /// `HashMap<NodeId, YogaNodeEntry>` never moves or invalidates the pointer held by Yoga.
     struct BoxedMeasureState {
         hook: NveYogaMeasureHook,
         payload: MeasurePayload,
@@ -94,7 +93,8 @@ mod real_impl {
                 },
                 payload: MeasurePayload {
                     text: String::new(),
-                    font_size: StyleProps::default().font_size,
+                    font_size: HeuristicTextMeasurer::DEFAULT_FONT_SIZE,
+                    font_weight: 400,
                     measurer,
                 },
             });
@@ -121,57 +121,31 @@ mod real_impl {
             return;
         }
         let result = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: `user_data` points to `BoxedMeasureState::payload`, which stays pinned on
-            // the heap for the lifetime of the `YGNode` and is detached before drop.
             let payload = unsafe { &*(user_data.cast::<MeasurePayload>()) };
-            if payload.text.is_empty() {
-                return (0.0f32, 0.0f32);
-            }
-
             let max_width = match width_mode {
-                MEASURE_MODE_UNDEFINED => None,
-                MEASURE_MODE_EXACTLY | MEASURE_MODE_AT_MOST => {
-                    if width.is_finite() {
-                        Some(width.max(0.0))
-                    } else {
-                        None
-                    }
+                MEASURE_MODE_EXACTLY | MEASURE_MODE_AT_MOST if width.is_finite() => {
+                    Some(width.max(0.0))
                 }
                 _ => None,
             };
-
-            let (raw_w, raw_h) = payload
-                .measurer
-                .measure(&payload.text, payload.font_size, max_width);
-            let mut measured_w = if raw_w.is_finite() && raw_w >= 0.0 {
-                raw_w
-            } else {
-                0.0
+            let (measured_w, measured_h) = payload.measurer.measure_with_weight(
+                &payload.text,
+                payload.font_size,
+                payload.font_weight,
+                max_width,
+            );
+            let final_w = match width_mode {
+                MEASURE_MODE_EXACTLY if width.is_finite() => width.max(0.0),
+                MEASURE_MODE_AT_MOST if width.is_finite() => measured_w.min(width.max(0.0)),
+                MEASURE_MODE_UNDEFINED | _ => measured_w,
             };
-            let mut measured_h = if raw_h.is_finite() && raw_h >= 0.0 {
-                raw_h
-            } else {
-                0.0
+            let final_h = match height_mode {
+                MEASURE_MODE_EXACTLY if height.is_finite() => height.max(0.0),
+                MEASURE_MODE_AT_MOST if height.is_finite() => measured_h.min(height.max(0.0)),
+                MEASURE_MODE_UNDEFINED | _ => measured_h,
             };
-
-            match width_mode {
-                MEASURE_MODE_EXACTLY if width.is_finite() => measured_w = width.max(0.0),
-                MEASURE_MODE_AT_MOST if width.is_finite() => {
-                    measured_w = measured_w.min(width.max(0.0));
-                }
-                _ => {}
-            }
-            match height_mode {
-                MEASURE_MODE_EXACTLY if height.is_finite() => measured_h = height.max(0.0),
-                MEASURE_MODE_AT_MOST if height.is_finite() => {
-                    measured_h = measured_h.min(height.max(0.0));
-                }
-                _ => {}
-            }
-
-            (measured_w, measured_h)
+            (final_w, final_h)
         }));
-
         let (w, h) = result.unwrap_or((0.0, 0.0));
         unsafe {
             *out_width = w;
@@ -181,35 +155,30 @@ mod real_impl {
 
     struct YogaNodeEntry {
         yg_node: YGNodeRef,
-        kind: ComponentKind,
+        is_text: bool,
         measure_state: Option<Box<BoxedMeasureState>>,
     }
 
-    /// Real React Native Yoga C++20 implementation of [`LayoutEngine`].
+    /// Real React Native Yoga C++20 implementation of [`StoreLayoutEngine`].
     pub struct YogaLayoutEngine {
         config: YGConfigRef,
         nodes: HashMap<NodeId, YogaNodeEntry>,
-        children: HashMap<NodeId, Vec<NodeId>>,
         computed_rects: HashMap<NodeId, LayoutRect>,
         text_measurer: Arc<dyn TextMeasurer>,
+        child_scratch: Vec<YGNodeRef>,
     }
 
-    // SAFETY: `YogaLayoutEngine` exclusively owns its `YGConfigRef` and all `YGNodeRef`s;
-    // no pointers are aliased across instances and all mutations require `&mut self`.
     unsafe impl Send for YogaLayoutEngine {}
 
     impl YogaLayoutEngine {
-        /// Returns `true` because real React Native Yoga C++20 was compiled and linked.
         pub const fn is_available() -> bool {
             true
         }
 
-        /// Creates a new [`YogaLayoutEngine`] backed by real React Native Yoga.
         pub fn new() -> Result<Self, YogaUnavailableError> {
             Self::with_text_measurer(Arc::new(HeuristicTextMeasurer))
         }
 
-        /// Creates a new [`YogaLayoutEngine`] with a custom [`TextMeasurer`].
         pub fn with_text_measurer(
             text_measurer: Arc<dyn TextMeasurer>,
         ) -> Result<Self, YogaUnavailableError> {
@@ -218,9 +187,9 @@ mod real_impl {
             Ok(Self {
                 config,
                 nodes: HashMap::new(),
-                children: HashMap::new(),
                 computed_rects: HashMap::new(),
                 text_measurer,
+                child_scratch: Vec::new(),
             })
         }
 
@@ -235,8 +204,120 @@ mod real_impl {
             }
         }
 
+        fn ensure_node(&mut self, store: &NodeStore, id: NodeId) {
+            if !self.nodes.contains_key(&id) {
+                let yg_node = unsafe { nve_yg_node_new_with_config(self.config) };
+                assert!(!yg_node.is_null(), "YGNodeNewWithConfig returned null");
+                self.nodes.insert(
+                    id,
+                    YogaNodeEntry {
+                        yg_node,
+                        is_text: false,
+                        measure_state: None,
+                    },
+                );
+            }
+            self.sync_node_props(store, id);
+        }
+
+        fn sync_node_props(&mut self, store: &NodeStore, id: NodeId) {
+            let Some(entry) = self.nodes.get_mut(&id) else {
+                return;
+            };
+            if let Some(layout) = store.try_row::<Layout>(id) {
+                let props = NveYogaLayoutProps::from_store_layout(&layout);
+                let ext = NveYogaLayoutExt::from_store_layout(&layout);
+                unsafe {
+                    nve_yg_node_apply_layout(entry.yg_node, &props);
+                    nve_yg_node_apply_layout_ext(entry.yg_node, &ext);
+                }
+            } else {
+                let props = NveYogaLayoutProps {
+                    flex_shrink: 1.0,
+                    ..Default::default()
+                };
+                unsafe {
+                    nve_yg_node_apply_layout(entry.yg_node, &props);
+                    nve_yg_node_apply_layout_ext(entry.yg_node, std::ptr::null());
+                }
+            }
+
+            let text_row = store.try_row::<TextContent>(id);
+            let is_text = text_row.is_some();
+            if is_text {
+                if !entry.is_text {
+                    entry.is_text = true;
+                    Self::ensure_text_measure_attached(entry, &self.text_measurer);
+                }
+                let text = text_row.map(|t| t.text()).unwrap_or("");
+                let (font_size, font_weight) = store
+                    .try_row::<Typography>(id)
+                    .map(|t| {
+                        let fs = t.font_size();
+                        (
+                            if fs.is_finite() && fs > 0.0 {
+                                fs
+                            } else {
+                                HeuristicTextMeasurer::DEFAULT_FONT_SIZE
+                            },
+                            t.font_weight(),
+                        )
+                    })
+                    .unwrap_or((HeuristicTextMeasurer::DEFAULT_FONT_SIZE, 400));
+                if let Some(state) = entry.measure_state.as_mut() {
+                    let changed = state.payload.text != text
+                        || (state.payload.font_size - font_size).abs() > f32::EPSILON
+                        || state.payload.font_weight != font_weight;
+                    if changed {
+                        state.payload.text.clear();
+                        state.payload.text.push_str(text);
+                        state.payload.font_size = font_size;
+                        state.payload.font_weight = font_weight;
+                        unsafe { nve_yg_node_mark_dirty(entry.yg_node) };
+                    }
+                }
+            } else if entry.is_text {
+                entry.is_text = false;
+                unsafe {
+                    nve_yg_node_set_is_text(entry.yg_node, false);
+                    nve_yg_node_set_measure_hook(entry.yg_node, std::ptr::null_mut());
+                }
+                entry.measure_state = None;
+            }
+        }
+
+        fn sync_children_of(&mut self, store: &NodeStore, parent: NodeId) {
+            let Some(parent_yg) = self.nodes.get(&parent).map(|e| e.yg_node) else {
+                return;
+            };
+            self.child_scratch.clear();
+            for &cid in store.children(parent) {
+                if let Some(child_entry) = self.nodes.get(&cid) {
+                    self.child_scratch.push(child_entry.yg_node);
+                }
+            }
+            unsafe {
+                nve_yg_node_set_children(
+                    parent_yg,
+                    self.child_scratch.as_ptr(),
+                    self.child_scratch.len(),
+                );
+            }
+        }
+
+        fn sync_subtree_if_unseen(&mut self, store: &NodeStore, id: NodeId) {
+            if !store.is_alive(id) {
+                return;
+            }
+            self.ensure_node(store, id);
+            let children: Vec<NodeId> = store.children(id).to_vec();
+            for child in children {
+                self.sync_subtree_if_unseen(store, child);
+            }
+            self.sync_children_of(store, id);
+        }
+
         fn clear_all_nodes(&mut self) {
-            // Detach children and hooks before freeing any Yoga node or dropping BoxedMeasureState.
             for entry in self.nodes.values() {
                 unsafe {
                     nve_yg_node_detach_and_clear(entry.yg_node);
@@ -248,11 +329,10 @@ mod real_impl {
                 }
                 drop(entry.measure_state);
             }
-            self.children.clear();
             self.computed_rects.clear();
         }
 
-        fn collect_rects(&mut self, id: NodeId, origin_x: f32, origin_y: f32) {
+        fn collect_rects(&mut self, store: &NodeStore, id: NodeId, origin_x: f32, origin_y: f32) {
             let Some(entry) = self.nodes.get(&id) else {
                 return;
             };
@@ -264,10 +344,8 @@ mod real_impl {
                 height: raw.height,
             };
             self.computed_rects.insert(id, rect);
-            if let Some(child_ids) = self.children.get(&id).cloned() {
-                for child in child_ids {
-                    self.collect_rects(child, rect.x, rect.y);
-                }
+            for &child in store.children(id) {
+                self.collect_rects(store, child, rect.x, rect.y);
             }
         }
     }
@@ -284,133 +362,63 @@ mod real_impl {
         }
     }
 
-    impl LayoutEngine for YogaLayoutEngine {
+    impl StoreLayoutEngine for YogaLayoutEngine {
         fn name(&self) -> &'static str {
             "yoga"
         }
 
-        fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
-            if let Some(entry) = self.nodes.get_mut(&id) {
-                if entry.kind != kind {
-                    entry.kind = kind;
-                    if kind == ComponentKind::Text {
-                        Self::ensure_text_measure_attached(entry, &self.text_measurer);
-                        unsafe { nve_yg_node_mark_dirty(entry.yg_node) };
-                    } else {
-                        unsafe {
-                            nve_yg_node_set_is_text(entry.yg_node, false);
-                            nve_yg_node_set_measure_hook(entry.yg_node, std::ptr::null_mut());
-                        }
-                        entry.measure_state = None;
-                    }
-                }
-                return;
-            }
-
-            let yg_node = unsafe { nve_yg_node_new_with_config(self.config) };
-            assert!(!yg_node.is_null(), "YGNodeNewWithConfig returned null");
-            let default_props = NveYogaLayoutProps::from(&LayoutProps::default());
-            unsafe {
-                nve_yg_node_apply_layout(yg_node, &default_props);
-            }
-
-            let mut entry = YogaNodeEntry {
-                yg_node,
-                kind,
-                measure_state: None,
-            };
-            if kind == ComponentKind::Text {
-                Self::ensure_text_measure_attached(&mut entry, &self.text_measurer);
-            }
-            self.nodes.insert(id, entry);
-        }
-
-        fn remove_node(&mut self, id: NodeId) {
-            if let Some(entry) = self.nodes.remove(&id) {
-                unsafe {
-                    nve_yg_node_free(entry.yg_node);
-                }
-                drop(entry.measure_state);
-            }
-            self.children.remove(&id);
-            self.computed_rects.remove(&id);
-        }
-
-        fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
-            let Some(entry) = self.nodes.get(&id) else {
-                return;
-            };
-            let props = NveYogaLayoutProps::from(layout);
-            unsafe {
-                nve_yg_node_apply_layout(entry.yg_node, &props);
-            }
-        }
-
-        fn set_layout_ext(&mut self, id: NodeId, ext: Option<&LayoutExt>) {
-            let Some(entry) = self.nodes.get(&id) else {
-                return;
-            };
-            match ext {
-                Some(e) => {
-                    let ffi_ext = NveYogaLayoutExt::from(e);
+        fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
+            for &id in &changes.removed {
+                if let Some(entry) = self.nodes.remove(&id) {
                     unsafe {
-                        nve_yg_node_apply_layout_ext(entry.yg_node, &ffi_ext);
+                        nve_yg_node_detach_and_clear(entry.yg_node);
+                        nve_yg_node_free(entry.yg_node);
                     }
+                    drop(entry.measure_state);
                 }
-                None => unsafe {
-                    nve_yg_node_apply_layout_ext(entry.yg_node, std::ptr::null());
-                },
+                self.computed_rects.remove(&id);
             }
-        }
-
-        fn set_style(&mut self, id: NodeId, style: &StyleProps) {
-            let Some(entry) = self.nodes.get_mut(&id) else {
-                return;
-            };
-            let font_size = if style.font_size.is_finite() && style.font_size > 0.0 {
-                style.font_size
-            } else {
-                StyleProps::default().font_size
-            };
-            if entry.kind == ComponentKind::Text {
-                Self::ensure_text_measure_attached(entry, &self.text_measurer);
-                if let Some(state) = entry.measure_state.as_mut() {
-                    if (state.payload.font_size - font_size).abs() > f32::EPSILON {
-                        state.payload.font_size = font_size;
-                        unsafe { nve_yg_node_mark_dirty(entry.yg_node) };
-                    }
+            for &id in &changes.created {
+                if store.is_alive(id) {
+                    self.ensure_node(store, id);
+                }
+            }
+            for &id in &changes.touched {
+                if store.is_alive(id) {
+                    self.ensure_node(store, id);
+                }
+            }
+            for &parent in &changes.children_changed {
+                if store.is_alive(parent) {
+                    self.ensure_node(store, parent);
+                    self.sync_children_of(store, parent);
                 }
             }
         }
 
-        fn set_text(&mut self, id: NodeId, text: &str) {
-            let Some(entry) = self.nodes.get_mut(&id) else {
+        fn compute_layout(&mut self, store: &NodeStore, root: NodeId, viewport: Viewport) {
+            if !store.is_alive(root) {
+                self.computed_rects.clear();
                 return;
-            };
-            if entry.kind == ComponentKind::Text {
-                Self::ensure_text_measure_attached(entry, &self.text_measurer);
-                if let Some(state) = entry.measure_state.as_mut() {
-                    if state.payload.text != text {
-                        state.payload.text.clear();
-                        state.payload.text.push_str(text);
-                        unsafe { nve_yg_node_mark_dirty(entry.yg_node) };
-                    }
-                }
             }
-        }
-
-        fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
-            self.children.insert(parent, children.to_vec());
-            let Some(parent_yg) = self.nodes.get(&parent).map(|e| e.yg_node) else {
+            if !self.nodes.contains_key(&root) {
+                self.sync_subtree_if_unseen(store, root);
+            }
+            let Some(root_yg) = self.nodes.get(&root).map(|e| e.yg_node) else {
+                self.computed_rects.clear();
                 return;
             };
-            let child_refs: Vec<YGNodeRef> = children
-                .iter()
-                .filter_map(|cid| self.nodes.get(cid).map(|e| e.yg_node))
-                .collect();
             unsafe {
-                nve_yg_node_set_children(parent_yg, child_refs.as_ptr(), child_refs.len());
+                nve_yg_config_set_point_scale_factor(self.config, viewport.scale_factor);
+                nve_yg_node_set_fixed_size(root_yg, viewport.width, viewport.height);
+                nve_yg_node_calculate_layout(root_yg, viewport.width, viewport.height);
             }
+            self.computed_rects.clear();
+            self.collect_rects(store, root, 0.0, 0.0);
+        }
+
+        fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
+            self.computed_rects.get(&id).copied()
         }
 
         fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
@@ -423,24 +431,6 @@ mod real_impl {
             }
         }
 
-        fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
-            let Some(root_yg) = self.nodes.get(&root).map(|e| e.yg_node) else {
-                self.computed_rects.clear();
-                return;
-            };
-            unsafe {
-                nve_yg_config_set_point_scale_factor(self.config, viewport.scale_factor);
-                nve_yg_node_set_fixed_size(root_yg, viewport.width, viewport.height);
-                nve_yg_node_calculate_layout(root_yg, viewport.width, viewport.height);
-            }
-            self.computed_rects.clear();
-            self.collect_rects(root, 0.0, 0.0);
-        }
-
-        fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
-            self.computed_rects.get(&id).copied()
-        }
-
         fn reset(&mut self) {
             self.clear_all_nodes();
         }
@@ -451,16 +441,12 @@ mod real_impl {
 mod unavailable_impl {
     use std::sync::Arc;
 
-    use nve_abi::{ComponentKind, LayoutProps, NodeId, StyleProps};
-    use nve_engine::{LayoutEngine, LayoutRect, TextMeasurer, Viewport};
+    use nve_engine::{LayoutRect, StoreLayoutEngine, TextMeasurer, Viewport};
+    use nve_store::{ChangeSet, NodeId, NodeStore};
 
     use crate::YogaUnavailableError;
 
     /// Stub handle compiled when `RN_REACT_COMMON_DIR` was not set at build time.
-    ///
-    /// [`YogaLayoutEngine::is_available`] returns `false` and [`YogaLayoutEngine::new`] returns
-    /// [`YogaUnavailableError`], allowing workspace crates and generic code to compile cleanly
-    /// on machines without a local React Native checkout.
     pub struct YogaLayoutEngine {
         _uninhabited: std::convert::Infallible,
     }
@@ -481,44 +467,24 @@ mod unavailable_impl {
         }
     }
 
-    impl LayoutEngine for YogaLayoutEngine {
+    impl StoreLayoutEngine for YogaLayoutEngine {
         fn name(&self) -> &'static str {
             match self._uninhabited {}
         }
 
-        fn upsert_node(&mut self, _id: NodeId, _kind: ComponentKind) {
+        fn sync_changes(&mut self, _store: &NodeStore, _changes: &ChangeSet) {
             match self._uninhabited {}
         }
 
-        fn remove_node(&mut self, _id: NodeId) {
-            match self._uninhabited {}
-        }
-
-        fn set_layout(&mut self, _id: NodeId, _layout: &LayoutProps) {
-            match self._uninhabited {}
-        }
-
-        fn set_style(&mut self, _id: NodeId, _style: &StyleProps) {
-            match self._uninhabited {}
-        }
-
-        fn set_text(&mut self, _id: NodeId, _text: &str) {
-            match self._uninhabited {}
-        }
-
-        fn set_children(&mut self, _parent: NodeId, _children: &[NodeId]) {
-            match self._uninhabited {}
-        }
-
-        fn set_text_measurer(&mut self, _measurer: Arc<dyn TextMeasurer>) {
-            match self._uninhabited {}
-        }
-
-        fn compute_layout(&mut self, _root: NodeId, _viewport: Viewport) {
+        fn compute_layout(&mut self, _store: &NodeStore, _root: NodeId, _viewport: Viewport) {
             match self._uninhabited {}
         }
 
         fn layout_of(&self, _id: NodeId) -> Option<LayoutRect> {
+            match self._uninhabited {}
+        }
+
+        fn set_text_measurer(&mut self, _measurer: Arc<dyn TextMeasurer>) {
             match self._uninhabited {}
         }
 
@@ -536,7 +502,7 @@ pub use unavailable_impl::YogaLayoutEngine;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_engine::LayoutEngine;
+    use nve_engine::StoreLayoutEngine;
 
     #[test]
     fn availability_matches_constructor() {
@@ -544,7 +510,9 @@ mod tests {
             let engine = YogaLayoutEngine::new().expect("real RN Yoga should initialize");
             assert_eq!(engine.name(), "yoga");
         } else {
-            let err = YogaLayoutEngine::new().err().expect("expected YogaUnavailableError");
+            let err = YogaLayoutEngine::new()
+                .err()
+                .expect("expected YogaUnavailableError");
             assert!(err.to_string().contains("RN_REACT_COMMON_DIR"));
         }
     }

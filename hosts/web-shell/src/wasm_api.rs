@@ -11,7 +11,6 @@ use nve_engine::Viewport;
 #[cfg(feature = "multi-window")]
 use nve_interop::WindowHandleId;
 use wasm_bindgen::prelude::*;
-
 use crate::wasm_hydrate::SsrRenderResult;
 #[cfg(feature = "dev")]
 use crate::wasm_hotreload::{connect_hot_reload, HotReloadSocket};
@@ -208,12 +207,12 @@ impl WebAppController {
     #[wasm_bindgen(getter)]
     pub fn surface_id(&self) -> SurfaceId { self.surface_id }
 
-    pub fn node_count(&self) -> usize { self.session.borrow().backend().node_count() }
+    pub fn node_count(&self) -> usize { self.session.borrow().node_count() }
 
-    pub fn render_html(&self) -> String { self.session.borrow().backend().render_html() }
+    pub fn render_html(&self) -> String { self.session.borrow().render_html() }
 
     pub fn render_ssr_bundle(&self) -> SsrRenderResult {
-        SsrRenderResult::from_output(self.session.borrow().backend().render_ssr())
+        SsrRenderResult::from_output(self.session.borrow().render_ssr())
     }
 
     pub fn is_hydrated(&self) -> bool {
@@ -225,15 +224,15 @@ impl WebAppController {
     }
 
     pub fn hydration_adopted_count(&self) -> usize {
-        self.session.borrow().backend().hydration_report().adopted_nodes
+        self.session.borrow().backend().hydration_report().adopted_nodes as usize
     }
 
     pub fn hydration_replaced_count(&self) -> usize {
-        self.session.borrow().backend().hydration_report().replaced_nodes
+        self.session.borrow().backend().hydration_report().replaced_nodes as usize
     }
 
     pub fn hydration_seeded_rules(&self) -> usize {
-        self.session.borrow().backend().hydration_report().seeded_rule_count
+        self.session.borrow().backend().hydration_report().reused_css_rules as usize
     }
 
     pub fn stylesheet_rule_count(&self) -> usize {
@@ -241,7 +240,7 @@ impl WebAppController {
     }
 
     pub fn hydration_replayed_events(&self) -> usize {
-        self.session.borrow().backend().hydration_report().replayed_events
+        self.session.borrow().backend().hydration_report().replayed_events as usize
     }
 
     pub fn hydration_reconciled_dirty_controls(&self) -> usize {
@@ -249,7 +248,7 @@ impl WebAppController {
             .borrow()
             .backend()
             .hydration_report()
-            .reconciled_dirty_controls
+            .reconciled_dirty_controls as usize
     }
 
     pub fn restored_from_snapshot(&self) -> bool {
@@ -340,7 +339,6 @@ pub(crate) fn set_hud_status(state: &str, text: &str) {
         let _ = el.set_attribute("data-state", state);
     }
 }
-
 /// Runs once when the module is instantiated, in every bundle (studio, counter, dev): a Rust
 /// panic prints its message and `file:line` to the console before the `panic = "abort"` trap.
 #[wasm_bindgen(start)]
@@ -457,10 +455,12 @@ where
     #[cfg(feature = "app-issues")]
     let wake_for_events = async_wake.handle();
 
-    let session_for_events = Rc::clone(&session);
+    let session_for_events = Rc::downgrade(&session);
     let trigger_for_events = snapshot_trigger.clone();
-    session.borrow_mut().backend_mut().set_render_callback(move || {
-        if let Ok(mut guard) = session_for_events.try_borrow_mut() {
+    session.borrow_mut().backend_mut().set_on_event(move || {
+        if let Some(session_for_events) = session_for_events.upgrade()
+            && let Ok(mut guard) = session_for_events.try_borrow_mut()
+        {
             #[cfg(feature = "app-issues")]
             let rendered = wake_for_events.run_event_pump(&mut guard);
             #[cfg(not(feature = "app-issues"))]
@@ -489,9 +489,10 @@ where
     }
     let _ = container.set_attribute("data-nve-live", "1");
 
-    let session_for_resize = Rc::clone(&session);
+    let session_for_resize = Rc::downgrade(&session);
     let resize_listener = install_resize_listener(&window, container_for_resize, move |next_vp| {
-        if let Ok(mut guard) = session_for_resize.try_borrow_mut()
+        if let Some(session_for_resize) = session_for_resize.upgrade()
+            && let Ok(mut guard) = session_for_resize.try_borrow_mut()
             && let Err(err) = guard.resize_viewport(next_vp)
         {
             web_sys::console::error_1(&JsValue::from_str(&format!("[NVE Web] {err}")));
@@ -500,7 +501,7 @@ where
 
     #[cfg(feature = "dev")]
     let hot_reload = match ws_url.filter(|u| !u.trim().is_empty()) {
-        Some(url) => connect_hot_reload(&url, Rc::clone(&session)).ok(),
+        Some(url) => connect_hot_reload(&url, Rc::downgrade(&session)).ok(),
         None => {
             if surface_id == DEFAULT_SURFACE_ID {
                 set_hud_status("disabled", "Hot reload: disabled");

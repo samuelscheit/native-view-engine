@@ -1,102 +1,68 @@
-//! Zero-copy `NVERELOC` Frame-0 scene export and direct pre-rendered painting for [`SkiaBackend`].
-//!
-//! Compiles a [`DisplayList`] straight from a mapped [`SceneRelocView`] with zero Taffy layout
-//! recomputation so native shells can paint Frame 0 in microseconds before the live `VirtualDom`
-//! mounts and hands off cleanly on the first live `submit_frame`.
+//! Zero-copy `SceneRelocView` (`NVERELOC` Frame-0) painting directly into [`SkiaBackend`]'s
+//! retained [`DisplayList`] with zero layout computation.
 
-use nve_abi::{ColorRgba, ComponentKind, FrameId};
-use nve_components::canvas_ir::{DrawListDecoder, ImageResizeMode};
+use nve_components::tables::ImageFit;
 use nve_engine::{
-    BackendError, LayoutEngine, LayoutRect, RelocBuf, RelocError, SceneRelocView, VerifyMode,
+    BackendError, LayoutRect, SceneRelocView, StoreLayoutEngine,
 };
 
 use crate::display_list::{intersect_rects, intersects_clip, InheritedTextStyle};
 use crate::raster::parse_box_shadow;
 use crate::text::TextAlign;
-use crate::{PaintOp, SkiaBackend, TextFocusState};
+use crate::{PaintOp, SkiaBackend, MAX_HIT_TEST_DEPTH};
 
 #[inline]
-fn decode_text_align(raw: u8) -> TextAlign {
-    match raw {
+fn decode_text_align(v: u8) -> TextAlign {
+    match v {
         1 => TextAlign::Center,
         2 => TextAlign::Right,
         _ => TextAlign::Left,
     }
 }
 
-impl<L: LayoutEngine> SkiaBackend<L> {
-    /// Exports the current laid-out tree as a validated `NVERELOC` Frame-0 scene (`RelocBuf`).
-    pub fn export_scene_reloc(
-        &self,
-        schema_version: u32,
-        frame_id: FrameId,
-        app_tag: &str,
-        clear_color: ColorRgba,
-    ) -> Result<RelocBuf, RelocError> {
-        self.layout_tree
-            .export_scene_reloc(schema_version, frame_id, app_tag, clear_color)
+#[inline]
+fn decode_image_fit(v: u8) -> ImageFit {
+    match v {
+        1 => ImageFit::Contain,
+        2 => ImageFit::Fill,
+        3 => ImageFit::None,
+        4 => ImageFit::ScaleDown,
+        _ => ImageFit::Cover,
     }
+}
 
-    /// Validates `bytes` according to `mode`, compiles the pre-rendered [`DisplayList`] directly
-    /// from [`SceneRelocView`] (zero layout recomputation), and hydrates the retained tree for
-    /// instant hit-testing and seamless live handoff.
-    pub fn load_reloc_scene(
-        &mut self,
-        bytes: &[u8],
-        mode: VerifyMode,
-    ) -> Result<usize, BackendError> {
-        let view = SceneRelocView::from_bytes(bytes, mode)
-            .map_err(|e| BackendError::Internal(e.to_string()))?;
-        self.render_reloc_scene(view)
-    }
-
-    /// Renders a pre-validated [`SceneRelocView`] into this backend's [`DisplayList`] and hydrates
-    /// the underlying layout tree for zero-jump live handoff.
-    pub fn render_reloc_scene(&mut self, view: SceneRelocView<'_>) -> Result<usize, BackendError> {
-        self.viewport = view.viewport();
-        self.scroll_offsets.clear();
-        self.last_virtual_scroll_y.clear();
-        self.focus = TextFocusState::default();
-
-        let count = self.compile_reloc_display_list(view)?;
-        self.layout_tree.load_reloc_scene(view)?;
-        Ok(count)
-    }
-
-    /// Compiles `self.display_list` directly from a zero-copy [`SceneRelocView`] with zero
-    /// Taffy layout work and zero retained node-tree allocations.
-    pub fn compile_reloc_display_list(
-        &mut self,
-        view: SceneRelocView<'_>,
-    ) -> Result<usize, BackendError> {
-        self.viewport = view.viewport();
+impl<L: StoreLayoutEngine> SkiaBackend<L> {
+    /// Compiles a pre-laid-out [`SceneRelocView`] (`frame0.nvereloc`) directly into this
+    /// backend's retained [`crate::DisplayList`] with zero layout work.
+    pub fn load_scene_reloc(&mut self, view: &SceneRelocView<'_>) -> Result<(), BackendError> {
+        let vp = view.viewport();
+        self.viewport = vp;
         self.display_list.ops.clear();
-        self.sort_scratch.clear();
-        let nodes = view.nodes();
-        if nodes.is_empty() {
-            return Ok(0);
+        if view.nodes().is_empty() {
+            return Ok(());
         }
         let clip_bounds = LayoutRect {
             x: 0.0,
             y: 0.0,
-            width: self.viewport.width,
-            height: self.viewport.height,
+            width: vp.width.max(1.0),
+            height: vp.height.max(1.0),
         };
+        let mut sort_scratch = Vec::new();
         emit_reloc_node(
             view,
             view.root().root_node_index as usize,
             clip_bounds,
             InheritedTextStyle::default(),
-            &mut self.sort_scratch,
+            &mut sort_scratch,
             &mut self.display_list.ops,
             0,
-        )?;
-        Ok(nodes.len())
+        )
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_reloc_node(
-    view: SceneRelocView<'_>,
+    view: &SceneRelocView<'_>,
     idx: usize,
     clip_bounds: LayoutRect,
     inherited_text: InheritedTextStyle,
@@ -104,7 +70,7 @@ fn emit_reloc_node(
     ops: &mut Vec<PaintOp>,
     depth: usize,
 ) -> Result<(), BackendError> {
-    if depth > 512 {
+    if depth > MAX_HIT_TEST_DEPTH {
         return Ok(());
     }
     let Some(node) = view.node(idx) else {
@@ -113,68 +79,46 @@ fn emit_reloc_node(
     if node.is_hidden() {
         return Ok(());
     }
-
-    let kind = node.component_kind();
-    let mut style = node.style_props();
-    if kind == ComponentKind::Text && !node.has_explicit_style() {
-        if let Some(c) = inherited_text.text_color {
-            style.text_color = c;
-        }
-        if let Some(fs) = inherited_text.font_size {
-            style.font_size = fs;
-        }
-    }
-
-    let opacity = style.opacity.clamp(0.0, 1.0);
-    if opacity <= 0.001 {
+    let rect = node.computed_rect();
+    let style = node.style_props();
+    if style.opacity <= 0.001 {
         return Ok(());
     }
-    let pushed_opacity = opacity < 0.999;
+
     let opacity_op_idx = ops.len();
+    let pushed_opacity = style.opacity < 0.999;
     if pushed_opacity {
-        ops.push(PaintOp::SaveOpacity(opacity));
+        ops.push(PaintOp::SaveOpacity(style.opacity));
     }
 
-    let rect = node.computed_rect();
-    let in_clip = intersects_clip(clip_bounds, rect, 0.0);
     let radius = style.border_radius.max(0.0);
+    let in_clip = intersects_clip(clip_bounds, rect, 1.0);
 
     let box_shadow = view
         .box_shadow_of(node)
         .map_err(|e| BackendError::Internal(e.to_string()))?;
     if !box_shadow.is_empty() {
         for sh in parse_box_shadow(box_shadow) {
-            let shadow_bounds = LayoutRect {
-                x: rect.x + sh.offset_x - sh.spread_radius,
-                y: rect.y + sh.offset_y - sh.spread_radius,
-                width: rect.width + sh.spread_radius * 2.0,
-                height: rect.height + sh.spread_radius * 2.0,
-            };
-            if intersects_clip(clip_bounds, shadow_bounds, sh.blur_radius * 1.5 + 1.0) {
-                ops.push(PaintOp::DrawShadow {
-                    rect,
-                    radius,
-                    offset_x: sh.offset_x,
-                    offset_y: sh.offset_y,
-                    blur_radius: sh.blur_radius,
-                    spread_radius: sh.spread_radius,
-                    color: sh.color,
-                });
-            }
+            ops.push(PaintOp::DrawShadow {
+                rect,
+                radius,
+                offset_x: sh.offset_x,
+                offset_y: sh.offset_y,
+                blur_radius: sh.blur_radius,
+                spread_radius: sh.spread_radius,
+                color: sh.color,
+            });
         }
     }
 
-    if style.background.a > 0 && in_clip {
+    if in_clip && style.background.a > 0 {
         ops.push(PaintOp::FillRoundedRect {
             rect,
             radius,
             color: style.background,
         });
     }
-    if style.border_width > 0.0
-        && style.border_color.a > 0
-        && intersects_clip(clip_bounds, rect, style.border_width * 0.5)
-    {
+    if in_clip && style.border_width > 0.0 && style.border_color.a > 0 {
         ops.push(PaintOp::StrokeRoundedRect {
             rect,
             radius,
@@ -195,19 +139,16 @@ fn emit_reloc_node(
     };
 
     if in_clip {
-        if kind == ComponentKind::Image {
-            let src = view
-                .image_src_of(node)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            if !src.is_empty() {
-                ops.push(PaintOp::DrawImage {
-                    rect,
-                    radius,
-                    src: src.to_owned(),
-                    resize_mode: ImageResizeMode::from_u8(node.image_resize_mode)
-                        .unwrap_or_default(),
-                });
-            }
+        let src = view
+            .image_src_of(node)
+            .map_err(|e| BackendError::Internal(e.to_string()))?;
+        if !src.is_empty() {
+            ops.push(PaintOp::DrawImage {
+                rect,
+                radius,
+                src: src.to_owned(),
+                fit: decode_image_fit(node.image_resize_mode),
+            });
         }
 
         let text = view
@@ -223,33 +164,13 @@ fn emit_reloc_node(
                 color: style.text_color,
             });
         }
-
-        if kind == ComponentKind::SkiaCanvas {
-            let raw_dl = view
-                .draw_list_of(node)
-                .map_err(|e| BackendError::Internal(e.to_string()))?;
-            let canvas_ops = if raw_dl.is_empty() {
-                Vec::new()
-            } else {
-                DrawListDecoder::decode(raw_dl).unwrap_or_default()
-            };
-            ops.push(PaintOp::CustomSkiaCanvas {
-                node_id: node.node_id,
-                rect,
-                ops: canvas_ops.into(),
-            });
-        }
     }
 
-    let child_inherited = if kind == ComponentKind::Text {
-        InheritedTextStyle {
-            font_weight: Some(effective_weight),
-            text_align: Some(effective_align),
-            text_color: Some(style.text_color),
-            font_size: Some(style.font_size),
-        }
-    } else {
-        InheritedTextStyle::default()
+    let child_inherited = InheritedTextStyle {
+        font_weight: Some(effective_weight),
+        text_align: Some(effective_align),
+        text_color: Some(style.text_color),
+        font_size: Some(style.font_size),
     };
 
     let children = view

@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 use crate::rust_lex::ParsedStruct;
 use crate::support::{
-    assert_staged_violations, contains_ident, is_self_invariant_file, is_test_or_bench_rs,
-    parse_rust_structs, repo_index, strip_cfg_test_items, strip_rust_comments_and_strings,
-    Violation,
+    assert_no_violations, assert_staged_violations, contains_ident, is_self_invariant_file,
+    is_test_or_bench_rs, parse_rust_structs, repo_index, strip_cfg_test_items,
+    strip_rust_comments_and_strings, Violation,
 };
 use crate::Stage;
 
@@ -48,7 +48,8 @@ const BANNED_LEGACY_SYMBOLS_1B1D: &[&str] = &[
 #[test]
 fn bare_primitive_domain_fields_in_core_structs() {
     let idx = repo_index();
-    let mut violations = Vec::new();
+    let mut v_store = Vec::new();
+    let mut v_1b1d = Vec::new();
     let mut scanned = 0usize;
 
     for dir in ["abi", "store", "engine", "tables", "components", "codec"] {
@@ -60,7 +61,15 @@ fn bare_primitive_domain_fields_in_core_structs() {
                 continue;
             };
             scanned += 1;
-            scan_bare_primitive_domain_fields_in_str(&rel, &cached.prod_raw, &mut violations);
+            // Enforce immediately on `nve-store` (excluding `events.rs` `TypedTableEvent`,
+            // which Track 1B-1d replaces with `NveEvent`). Remaining core/ABI/reloc structs
+            // migrate in Track 1B-1d/1B-1e.
+            let target = if dir == "store" && rel != "packages/core/store/src/events.rs" {
+                &mut v_store
+            } else {
+                &mut v_1b1d
+            };
+            scan_bare_primitive_domain_fields_in_str(&rel, &cached.prod_raw, target);
         }
     }
     // Also scan root spec crates `packages/modules/<cap>/src` (excluding leaf backend sub-crates).
@@ -75,23 +84,21 @@ fn bare_primitive_domain_fields_in_core_structs() {
                     scan_bare_primitive_domain_fields_in_str(
                         &rel,
                         &cached.prod_raw,
-                        &mut violations,
+                        &mut v_1b1d,
                     );
                 }
             }
         }
     }
     assert!(scanned > 0, "bare_primitive_domain_fields must scan > 0 files");
-    if !Stage::PostNodeStore.is_enforced() {
-        assert!(
-            !violations.is_empty(),
-            "Expected bare primitive domain field scanner to detect pre-NodeStore fields in packages/core/abi"
-        );
-    }
+    assert_no_violations(
+        "Zero bare primitive domain fields in packages/core/store pub structs",
+        &v_store,
+    );
     assert_staged_violations(
-        Stage::PostNodeStore,
-        "Zero bare primitive domain fields in core/{abi,store,engine,tables,components,codec} & modules/<cap> pub structs",
-        &violations,
+        Stage::Post1B1D,
+        "Zero bare primitive domain fields in core/{abi,engine,tables,components,codec} & modules/<cap> pub structs",
+        &v_1b1d,
     );
 }
 
@@ -230,8 +237,7 @@ fn untyped_span_and_transparent_arena_alias_guard() {
         }
     }
     assert!(scanned > 0, "untyped_span_and_transparent_arena_alias_guard must scan > 0 files");
-    assert_staged_violations(
-        Stage::PostNodeStore,
+    assert_no_violations(
         "No untyped `Span` or transparent `StrArena = SpanPool<u8>` aliases",
         &violations,
     );
@@ -555,27 +561,18 @@ fn has_const_size_of_eq(
 /// Enforces [INV:no-legacy-nodestore-symbols] and [INV:no-legacy-event-style-symbols].
 #[test]
 fn legacy_regression_bans_post_nodestore_and_1b1d() {
-    let idx = repo_index();
     let (v_nodestore, scanned_ns) = scan_banned_symbols(BANNED_LEGACY_SYMBOLS_NODESTORE, true);
     let (v_1b1d, scanned_1d) = scan_banned_symbols(BANNED_LEGACY_SYMBOLS_1B1D, false);
     assert!(scanned_ns > 0 && scanned_1d > 0, "legacy scanners must scan > 0 files");
-    let _ = idx;
 
-    if !Stage::PostNodeStore.is_enforced() {
-        assert!(
-            !v_nodestore.is_empty(),
-            "Expected legacy NodeStore regression scanner to match pre-migration symbols on main"
-        );
-    }
     if !Stage::Post1B1D.is_enforced() {
         assert!(
             !v_1b1d.is_empty(),
             "Expected legacy 1B-1d event regression scanner to match pre-migration symbols on main"
         );
     }
-    assert_staged_violations(
-        Stage::PostNodeStore,
-        "Zero legacy NodeStore/ComponentKind/RenderSink/Any::downcast_ref regressions",
+    assert_no_violations(
+        "Zero legacy NodeStore/ComponentKind/RenderSink/per-node Any::downcast_ref regressions",
         &v_nodestore,
     );
     assert_staged_violations(
@@ -583,6 +580,23 @@ fn legacy_regression_bans_post_nodestore_and_1b1d() {
         "Zero legacy NativeEventKind/NveEventPayloadTag/EventPayload/EventMask regressions",
         &v_1b1d,
     );
+}
+
+fn is_per_node_downcast_scope(rel: &str) -> bool {
+    rel.starts_with("packages/backends/")
+        || rel.starts_with("packages/core/abi/")
+        || rel.starts_with("packages/core/components/")
+        || rel.starts_with("packages/core/tables/")
+        || rel == "packages/core/engine/src/layout.rs"
+        || matches!(
+            rel,
+            "packages/core/store/src/store.rs"
+                | "packages/core/store/src/tx.rs"
+                | "packages/core/store/src/table.rs"
+                | "packages/core/store/src/commit.rs"
+                | "packages/core/store/src/view.rs"
+                | "packages/core/store/src/span_pool.rs"
+        )
 }
 
 fn scan_banned_symbols(symbols: &[&str], check_downcast: bool) -> (Vec<Violation>, usize) {
@@ -597,7 +611,8 @@ fn scan_banned_symbols(symbols: &[&str], check_downcast: bool) -> (Vec<Violation
             continue;
         };
         scanned += 1;
-        scan_banned_symbols_in_str(&rel, &cached.prod_raw, &cached.prod_clean, symbols, check_downcast, &mut violations);
+        let check_dc = check_downcast && is_per_node_downcast_scope(&rel);
+        scan_banned_symbols_in_str(&rel, &cached.prod_raw, &cached.prod_clean, symbols, check_dc, &mut violations);
     }
     (violations, scanned)
 }

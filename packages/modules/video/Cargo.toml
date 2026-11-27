@@ -1,0 +1,9 @@
+[package]
+name = "nve-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-store = { workspace = true }

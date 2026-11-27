@@ -230,11 +230,20 @@ pub(crate) fn Stream100kPanel(
         // node churn across 100,000-row jumps.
         scrollview {
             test_id: "stream-viewport",
-            "virtual-top-spacer": "{top_spacer_attr}",
-            "virtual-bottom-spacer": "{bottom_spacer_attr}",
-            "virtual-total-height": "{total_height_attr}",
-            "virtual-rendered-count": "{mounted_count_attr}",
-            "virtual-scroll-y": "{scroll_y_attr}",
+            nve_table: {
+                let pairs = vec![
+                    ("virtual-top-spacer".to_owned(), top_spacer_attr.clone()),
+                    ("virtual-bottom-spacer".to_owned(), bottom_spacer_attr.clone()),
+                    ("virtual-total-height".to_owned(), total_height_attr.clone()),
+                    ("virtual-rendered-count".to_owned(), mounted_count_attr.clone()),
+                    ("virtual-scroll-y".to_owned(), scroll_y_attr.clone()),
+                ];
+                nve_dioxus::table_attr_fn(move |tx, node| {
+                    tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                        nve_web_html::DataAttrList::from_pairs(pairs.clone()),
+                    ));
+                })
+            },
             style: "width: 100%; flex: 1; flex-direction: column; gap: 0px;",
             border_width: "{row_bw}px",
             border_color: "{row_bc}",

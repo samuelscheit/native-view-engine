@@ -111,9 +111,12 @@ pub(crate) fn render_metrics_view(
                 text { style: "color: {TEXT_MUTED}; font-size: 10px;", "SKIA SPARKLINE (NVE_DRAW1)" }
                 text { style: "color: {accent_hex}; font-size: 10px;", "{current.telemetry_samples_us.len()} pts" }
             }
-            canvas {
+            view {
                 test_id: "metrics-sparkline-canvas",
-                draw_list: CanvasDrawList(sparkline),
+                nve_table: nve_dioxus::table_attr_fn(move |tx, node| {
+                    tx.edit::<nve_canvas::Canvas>(node)
+                        .draw_list_ephemeral(sparkline.clone());
+                }),
                 accessibility_label: "Live telemetry frame timing sparkline",
                 accessibility_role: "image",
                 style: "width: 100%; height: 72px; flex-shrink: 0; background-color: {CARD_ALT_BG}; border-radius: {m.button_radius}px; border-width: 1px; border-color: {BORDER_DEFAULT};",

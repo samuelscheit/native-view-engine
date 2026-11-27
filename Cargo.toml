@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "packages/core/hash",
     "packages/core/abi",
+    "packages/core/store",
     "packages/core/abi-macros",
     "packages/core/components",
     "packages/core/engine",
@@ -30,8 +31,25 @@ members = [
     "packages/framework/docs",
     "packages/tools/cli",
     "packages/tools/bench",
+    "packages/modules/blur",
+    "packages/modules/blur/web",
     "packages/modules/camera",
+    "packages/modules/camera/web",
+    "packages/modules/canvas",
+    "packages/modules/canvas/web",
+    "packages/modules/canvas/skia",
     "packages/modules/clipboard",
+    "packages/modules/svg",
+    "packages/modules/svg/web",
+    "packages/modules/svg/skia",
+    "packages/modules/video",
+    "packages/modules/video/web",
+    "packages/modules/web-element",
+    "packages/modules/web-element/web",
+    "packages/modules/web-html",
+    "packages/modules/web-html/web",
+    "packages/modules/webview",
+    "packages/modules/webview/web",
     "packages/modules/filesystem",
     "packages/modules/haptics",
     "packages/modules/linking",
@@ -57,6 +75,7 @@ license = "MIT"
 [workspace.dependencies]
 nve-hash = { path = "packages/core/hash" }
 nve-abi = { path = "packages/core/abi" }
+nve-store = { path = "packages/core/store" }
 nve-abi-macros = { path = "packages/core/abi-macros" }
 nve-components = { path = "packages/core/components" }
 nve-engine = { path = "packages/core/engine" }
@@ -82,7 +101,25 @@ nve-docs = { path = "packages/framework/docs" }
 nve-backend-headless = { path = "packages/backends/headless" }
 nve-backend-skia = { path = "packages/backends/skia" }
 nve-backend-web = { path = "packages/backends/web" }
+nve-blur = { path = "packages/modules/blur" }
+nve-blur-web = { path = "packages/modules/blur/web" }
+nve-camera = { path = "packages/modules/camera" }
+nve-camera-web = { path = "packages/modules/camera/web" }
+nve-canvas = { path = "packages/modules/canvas" }
+nve-canvas-web = { path = "packages/modules/canvas/web" }
+nve-canvas-skia = { path = "packages/modules/canvas/skia" }
 nve-clipboard = { path = "packages/modules/clipboard" }
+nve-svg = { path = "packages/modules/svg" }
+nve-svg-web = { path = "packages/modules/svg/web" }
+nve-svg-skia = { path = "packages/modules/svg/skia" }
+nve-video = { path = "packages/modules/video" }
+nve-video-web = { path = "packages/modules/video/web" }
+nve-web-element = { path = "packages/modules/web-element" }
+nve-web-element-web = { path = "packages/modules/web-element/web" }
+nve-web-html = { path = "packages/modules/web-html" }
+nve-web-html-web = { path = "packages/modules/web-html/web" }
+nve-webview = { path = "packages/modules/webview" }
+nve-webview-web = { path = "packages/modules/webview/web" }
 nve-filesystem = { path = "packages/modules/filesystem" }
 nve-secure-store = { path = "packages/modules/secure-store" }
 nve-linking = { path = "packages/modules/linking" }
@@ -105,7 +142,7 @@ axum = { version = "0.8.9", default-features = false }
 dioxus-core = "0.7.10"
 dioxus-signals = "0.7.10"
 dioxus-core-macro = "0.7.10"
-taffy = "0.16.0"
+taffy = { version = "0.16.0", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
 cc = "1.11"
 libloading = "0.9.1"
 clap = { version = "4.6.10", features = ["derive"] }

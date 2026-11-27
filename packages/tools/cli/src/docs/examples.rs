@@ -385,27 +385,34 @@ fn inject_embed_topbar_hider(index_path: &Path) -> Result<(), String> {
 /// engine-level [`prerender_nve_app_frame0`] helper so brand-new cold visitors paint at 0ms.
 fn render_example_default_ssr(slug: &str) -> Result<Option<SsrOutput>, String> {
     use nve_backend_web::WebBackend;
-    use nve_engine::{NveApp, RenderBackend};
+    use nve_engine::{NveApp, StoreBackend};
 
     let vp = Viewport {
         width: 1280.0,
         height: 800.0,
         scale_factor: 1.0,
     };
-    let backend = match slug {
-        "studio" => prerender_nve_app_frame0::<StudioWorkspaceModule>(vp)
-            .map_err(|e| format!("failed to prerender Frame-0 SSG for example '{slug}': {e}"))?,
+    let ssr = match slug {
+        "studio" => {
+            let (store, mut backend) = prerender_nve_app_frame0::<StudioWorkspaceModule>(vp)
+                .map_err(|e| format!("failed to prerender Frame-0 SSG for example '{slug}': {e}"))?;
+            nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+            backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+            backend.render_ssr(&store)
+        }
         "kitchen-sink" => {
             let mut app = KitchenSinkModule::create(1);
             let mut web = WebBackend::new();
+            nve_web_html_web::register_web_html_systems(web.table_registry_mut());
+            web.register_table_system(nve_canvas_web::CanvasWebSystem);
             web.set_viewport(1, vp);
-            app.flush_into(1, &mut web)
-                .map_err(|e| format!("failed to flush kitchen-sink Frame-0 SSG: {e}"))?;
-            web
+            app.commit_to(1, &mut web)
+                .map_err(|e| format!("failed to commit kitchen-sink Frame-0 SSG: {e}"))?;
+            web.render_ssr(app.surface().store())
         }
         _ => return Ok(None),
     };
-    Ok(Some(backend.render_ssr()))
+    Ok(Some(ssr))
 }
 
 /// Injects pre-rendered default Frame-0 SSG plus `<script data-nve-snapshot-boot>` and

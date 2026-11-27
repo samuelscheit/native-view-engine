@@ -18,6 +18,11 @@ pub enum CameraFacing {
 
 impl CameraFacing {
     #[inline]
+    pub const fn to_word(self) -> u32 {
+        self as u32
+    }
+
+    #[inline]
     pub const fn from_u8(v: u8) -> Option<Self> {
         match v {
             0 => Some(Self::Unknown),

@@ -216,11 +216,11 @@ impl NveWebHost {
     }
 
     pub fn node_count(&self) -> usize {
-        self.session.borrow().backend().node_count()
+        self.session.borrow().node_count()
     }
 
     pub fn render_html(&self) -> String {
-        self.session.borrow().backend().render_html()
+        self.session.borrow().render_html()
     }
 
     #[cfg(feature = "scene-view")]
@@ -295,12 +295,15 @@ impl NveWebHost {
 
         // Wire live browser DOM interactions (click/input/scroll/focus/blur/keydown/submit)
         // straight into binary NveWireFrame v2 EventBatch frames over the active transport.
-        let session_for_events = Rc::clone(&session);
+        let session_for_events = Rc::downgrade(&session);
         let socket_for_events = Rc::clone(&socket_slot);
         session
             .borrow_mut()
             .backend_mut()
-            .set_render_callback(move || {
+            .set_on_event(move || {
+                let Some(session_for_events) = session_for_events.upgrade() else {
+                    return;
+                };
                 let Ok(mut guard) = session_for_events.try_borrow_mut() else {
                     return;
                 };
@@ -320,10 +323,13 @@ impl NveWebHost {
             });
 
         // Forward window & container resizes upstream as Layout InputEvents.
-        let session_for_resize = Rc::clone(&session);
+        let session_for_resize = Rc::downgrade(&session);
         let socket_for_resize = Rc::clone(&socket_slot);
         let resize_listener =
             install_resize_listener(&window, container_for_resize, move |next_vp| {
+                let Some(session_for_resize) = session_for_resize.upgrade() else {
+                    return;
+                };
                 let Ok(mut guard) = session_for_resize.try_borrow_mut() else {
                     return;
                 };
@@ -336,7 +342,7 @@ impl NveWebHost {
 
         let owned_socket = if let Some(url) = ws_url {
             let handle =
-                open_managed_pair_socket(url, Rc::clone(&session), Rc::clone(&socket_slot))?;
+                open_managed_pair_socket(url, Rc::downgrade(&session), Rc::clone(&socket_slot))?;
             Some(handle)
         } else {
             set_hud_status("connecting", "Pair: waiting for socket…");
@@ -369,7 +375,7 @@ impl NveWebHost {
 
 fn open_managed_pair_socket(
     ws_url: &str,
-    session: Rc<RefCell<PairedWebSession>>,
+    session: std::rc::Weak<RefCell<PairedWebSession>>,
     socket_slot: Rc<RefCell<Option<web_sys::WebSocket>>>,
 ) -> Result<PairSocketHandle, JsValue> {
     let socket = web_sys::WebSocket::new(ws_url)?;
@@ -377,11 +383,17 @@ fn open_managed_pair_socket(
     *socket_slot.borrow_mut() = Some(socket.clone());
     set_hud_status("connecting", &format!("Pair: connecting ({ws_url})"));
 
-    let session_open = Rc::clone(&session);
+    let session_open = session.clone();
     let ws_open = socket.clone();
     let url_open = ws_url.to_string();
     let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        let hello = session_open.borrow_mut().build_hello();
+        let Some(session_open) = session_open.upgrade() else {
+            return;
+        };
+        let Ok(mut guard) = session_open.try_borrow_mut() else {
+            return;
+        };
+        let hello = guard.build_hello();
         send_binary_if_open(&ws_open, &hello);
         web_sys::console::log_1(&JsValue::from_str(&format!(
             "[NVE Pair] Binary WebSocket opened ({url_open}); sent NVT1 Hello ({} bytes)",
@@ -390,10 +402,13 @@ fn open_managed_pair_socket(
         set_hud_status("connecting", "Pair: authenticating…");
     });
 
-    let session_msg = Rc::clone(&session);
+    let session_msg = session;
     let ws_msg = socket.clone();
     let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
         move |ev: web_sys::MessageEvent| {
+            let Some(session_msg) = session_msg.upgrade() else {
+                return;
+            };
             let bytes = nve_extract_binary_message(&ev.data());
             if bytes.is_empty() {
                 return;

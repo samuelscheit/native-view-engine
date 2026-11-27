@@ -1,18 +1,18 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use nve_abi::{Command, CommandDecoder, EventMask, EventPayload, NativeEvent, NativeEventKind};
+use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind};
 use nve_bench::create_bench_dioxus_surface;
+use nve_components::tables::Interaction;
 use nve_engine::HotPatchMsg;
+use nve_store::NodeStore;
 
-fn find_pressable_node_id(cmd_bytes: &[u8]) -> u32 {
-    let (_, cmds) = CommandDecoder::new(cmd_bytes).unwrap().decode_all().unwrap();
-    cmds.into_iter()
-        .find_map(|cmd| match cmd {
-            Command::SetEventMask { node_id, mask } if (mask & EventMask::PRESS) != 0 => {
-                Some(node_id)
-            }
-            _ => None,
+fn find_pressable_node_id(store: &NodeStore) -> u32 {
+    store
+        .live_nodes()
+        .find_map(|id| {
+            let mask = store.try_row::<Interaction>(id)?.event_mask();
+            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id.raw())
         })
         .expect("pressable node in BenchCounterApp")
 }
@@ -23,15 +23,15 @@ fn bench_dioxus(c: &mut Criterion) {
     group.bench_function("initial_frame_render", |b| {
         b.iter_batched(
             create_bench_dioxus_surface,
-            |mut surface| black_box(surface.render_frame(1)),
+            |mut surface| black_box(surface.render_nve2_slice(1).len()),
             BatchSize::SmallInput,
         );
     });
 
-    // Incremental state update diff (Press event -> signal increment -> VDOM diff + ABI encode)
+    // Incremental state update diff (Press event -> signal increment -> VDOM diff + NVE2 encode)
     let mut surface = create_bench_dioxus_surface();
-    let (_, _, init_bytes) = surface.render_frame(1);
-    let btn_id = find_pressable_node_id(&init_bytes);
+    let _ = surface.render_nve2_slice(1);
+    let btn_id = find_pressable_node_id(surface.store());
     let mut frame_id = 1u64;
 
     group.bench_function("incremental_state_update_diff", |b| {
@@ -45,13 +45,13 @@ fn bench_dioxus(c: &mut Criterion) {
                 payload: EventPayload::Point { x: 40.0, y: 20.0 },
             }]);
             debug_assert!(handled);
-            black_box(surface.render_frame(frame_id))
+            black_box(surface.render_nve2_slice(frame_id).len())
         });
     });
 
     // Tier-1 hot patch application (queue TemplatePatch + render frame applying attr/text patches)
     let mut patch_surface = create_bench_dioxus_surface();
-    let _ = patch_surface.render_frame(1);
+    let _ = patch_surface.render_nve2_slice(1);
     let mut generation = 1u64;
     let mut pframe = 1u64;
 
@@ -75,7 +75,7 @@ fn bench_dioxus(c: &mut Criterion) {
             };
             let accepted = patch_surface.apply_hot_patch(&patch);
             debug_assert!(accepted);
-            black_box(patch_surface.render_frame(pframe))
+            black_box(patch_surface.render_nve2_slice(pframe).len())
         });
     });
 

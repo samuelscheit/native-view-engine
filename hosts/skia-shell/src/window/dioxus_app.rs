@@ -90,7 +90,7 @@ impl DesktopApp for DioxusDesktopApp {
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        self.surface.render_frame_slice(frame_id)
+        self.surface.render_nve2_slice(frame_id)
     }
 
     fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {

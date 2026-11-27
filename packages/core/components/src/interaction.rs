@@ -2,9 +2,9 @@
 //! `:focus-visible`, `:active`, `:disabled`), [`CursorKind`], deterministic cascade resolution,
 //! and an O(1) stateful [`InteractionTracker`] shared by native backends (Headless / Skia).
 
-use nve_abi::{define_bitflags, LayoutProps, StyleProps};
+use nve_abi::define_bitflags;
 
-use crate::style_patch::StylePatch;
+use crate::style_patch::{LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use crate::tracker::InteractionTracker;
 
 const STACK_RULE_CAP: usize = 16;
@@ -221,13 +221,13 @@ pub fn resolve_patch(rules: &[StateStyleRule], state: InteractionState) -> Style
     merged
 }
 
-/// Resolves the effective [`StyleProps`] for `base` after applying all matching `rules` for
+/// Resolves the effective [`VisualSnapshot`] for `base` after applying all matching `rules` for
 /// `state` in deterministic cascade order.
 pub fn resolve_style(
-    base: &StyleProps,
+    base: &VisualSnapshot,
     rules: &[StateStyleRule],
     state: InteractionState,
-) -> StyleProps {
+) -> VisualSnapshot {
     let patch = resolve_patch(rules, state);
     if patch.is_empty() {
         return *base;
@@ -237,14 +237,14 @@ pub fn resolve_style(
     resolved
 }
 
-/// Resolves both [`LayoutProps`] and [`StyleProps`] after applying all matching `rules` for
+/// Resolves both [`LayoutSnapshot`] and [`VisualSnapshot`] after applying all matching `rules` for
 /// `state` in deterministic cascade order.
 pub fn resolve_layout_and_style(
-    base_layout: &LayoutProps,
-    base_style: &StyleProps,
+    base_layout: &LayoutSnapshot,
+    base_style: &VisualSnapshot,
     rules: &[StateStyleRule],
     state: InteractionState,
-) -> (LayoutProps, StyleProps) {
+) -> (LayoutSnapshot, VisualSnapshot) {
     let patch = resolve_patch(rules, state);
     if patch.is_empty() {
         return (*base_layout, *base_style);

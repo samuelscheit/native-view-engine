@@ -1,535 +1,571 @@
-//! `NveMutationWriter` & ephemeral `MutationTx<'_, S: RenderSink>` — bridges
-//! `dioxus_core::WriteMutations` directly into any monomorphized [`nve_engine::RenderSink`]
-//! with zero intermediate serialization, zero vtable dispatch, and zero out-of-band sync loops.
+//! `NveMutationWriter` & ephemeral `StoreMutationTx<'_>` — bridges `dioxus_core::WriteMutations`
+//! directly into an owned [`NodeStore`] via [`nve_store::Transaction`] with zero `NodeRecord`
+//! mirroring, zero `Box<NodeExtras>`, zero `ComponentKind`, and zero `set_raw_prop`.
 
-mod attr_keys;
 mod attributes;
-mod flush;
 mod mutations;
 #[cfg(test)]
 mod tests;
 
-use std::borrow::Cow;
+use dioxus_core::{ElementId, TemplateAttribute, TemplateNode};
 use nve_abi::hash::HashMap;
-
-use dioxus_core::ElementId;
-use nve_abi::{
-    ColorRgba, ComponentKind, FrameId, LayoutProps, NodeId, StyleProps, SurfaceId, ROOT_NODE_ID,
+use nve_abi::{EventMask, NodeId as AbiNodeId, SurfaceId};
+use nve_components::interaction::CursorKind;
+use nve_components::tables::{
+    self, AriaRole, Image, Interaction, Link, Scroll, TextContent, TextInput,
 };
-use nve_components::canvas_ir::DrawList;
-use nve_components::interaction::{CursorKind, StateStyleRule};
-use nve_components::layout_ext::LayoutExt;
-use nve_components::media::{MediaQuery, ResponsiveRule};
-use nve_components::motion::TransitionSpec;
-use nve_components::native_view::TypedNativeViewProps;
-use nve_components::paint::BackgroundFill;
-use nve_components::svg::SvgPicture;
-use nve_components::transform::Transform2D;
-use nve_engine::RenderSink;
-use nve_interop::native_view::NativeViewHandleBinder;
+use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
 
-use crate::native_view::NATIVE_VIEW_TAG;
+use crate::table_attr::TableAttr;
 use crate::typed_style::TypedStyle;
 
-pub(crate) const EXT_LAYOUT_EXT: u16 = 1 << 0;
-pub(crate) const EXT_TRANSFORM: u16 = 1 << 1;
-pub(crate) const EXT_CURSOR: u16 = 1 << 2;
-pub(crate) const EXT_STATE_RULES: u16 = 1 << 3;
-pub(crate) const EXT_TRANSITIONS: u16 = 1 << 4;
-pub(crate) const EXT_SHOW_ON: u16 = 1 << 5;
-pub(crate) const EXT_RESPONSIVE_RULES: u16 = 1 << 6;
-pub(crate) const EXT_BACKGROUND_FILL: u16 = 1 << 7;
-pub(crate) const EXT_SVG: u16 = 1 << 8;
-pub(crate) const EXT_DRAW_LIST: u16 = 1 << 9;
-pub(crate) const EXT_NATIVE_VIEW_PROPS: u16 = 1 << 10;
-
-/// Cold optional per-node metadata boxed behind `Option<Box<NodeExtras>>` so hot `NodeRecord`
-/// entries stay compact (`<= 200` bytes).
-#[derive(Debug, Clone, Default)]
-pub(crate) struct NodeExtras {
-    pub(crate) typed_style: Option<TypedStyle>,
-    pub(crate) inline_style_override: Option<String>,
-    pub(crate) font_weight: Option<Cow<'static, str>>,
-    pub(crate) text_align: Option<Cow<'static, str>>,
-    pub(crate) box_shadow: Option<Cow<'static, str>>,
-    pub(crate) overflow: Option<Cow<'static, str>>,
-    pub(crate) object_fit: Option<Cow<'static, str>>,
-    pub(crate) test_id: Option<String>,
-    pub(crate) text: Option<String>,
-    pub(crate) native_kind: Option<String>,
-    pub(crate) native_props: Option<TypedNativeViewProps>,
-    pub(crate) native_handle_binder: Option<NativeViewHandleBinder>,
-    pub(crate) draw_list: Option<DrawList>,
-    pub(crate) explicit_show_on: Option<MediaQuery>,
-    pub(crate) show_on: Option<MediaQuery>,
-    pub(crate) responsive_rules: Vec<ResponsiveRule>,
-    pub(crate) cursor: Option<CursorKind>,
-    pub(crate) state_rules: Vec<StateStyleRule>,
-    pub(crate) transitions: Vec<TransitionSpec>,
-    pub(crate) layout_ext: Option<LayoutExt>,
-    pub(crate) transform: Option<Transform2D>,
-    pub(crate) background_fill: Option<BackgroundFill>,
-    pub(crate) svg_picture: Option<SvgPicture>,
-    /// Bitmask of `EXT_*` fields modified during the current frame (cleared on flush).
-    pub(crate) dirty_ext_mask: u16,
-}
-
-const FLAG_EXPLICIT_STYLE: u8 = 1 << 0;
-const FLAG_EXPLICIT_FONT_WEIGHT: u8 = 1 << 1;
-const FLAG_EXPLICIT_TEXT_ALIGN: u8 = 1 << 2;
-const FLAG_DEFERRED_NATIVE_CREATE: u8 = 1 << 3;
-
+/// Saved value of a standalone layout/visual/typography attribute so clearing `style="..."`
+/// restores standalone attributes instead of wiping them.
 #[derive(Debug, Clone)]
-pub(crate) struct NodeRecord {
-    pub(crate) layout: LayoutProps,
-    pub(crate) style: StyleProps,
-    pub(crate) children: Vec<NodeId>,
-    pub(crate) dioxus_id: Option<ElementId>,
-    pub(crate) event_mask: u64,
-    pub(crate) extras: Option<Box<NodeExtras>>,
-    /// `0` means no parent (valid node IDs start at `ROOT_NODE_ID == 1`).
-    parent_raw: NodeId,
-    pub(crate) kind: ComponentKind,
-    flags: u8,
+pub(crate) enum StandaloneStyleVal {
+    Float(f64),
+    Int(i64),
+    Str(String),
 }
 
-impl Default for NodeRecord {
-    fn default() -> Self {
-        Self {
-            layout: LayoutProps::default(),
-            style: StyleProps::default(),
-            children: Vec::new(),
-            dioxus_id: None,
-            event_mask: 0,
-            extras: None,
-            parent_raw: 0,
-            kind: ComponentKind::View,
-            flags: 0,
-        }
-    }
-}
-
-impl NodeRecord {
-    #[inline]
-    pub(crate) fn parent(&self) -> Option<NodeId> {
-        (self.parent_raw != 0).then_some(self.parent_raw)
-    }
-
-    #[inline]
-    pub(crate) fn set_parent(&mut self, parent: Option<NodeId>) {
-        self.parent_raw = parent.unwrap_or(0);
-    }
-
-    #[inline]
-    pub(crate) fn extras(&self) -> Option<&NodeExtras> {
-        self.extras.as_deref()
-    }
-
-    #[inline]
-    pub(crate) fn extras_mut(&mut self) -> &mut NodeExtras {
-        self.extras
-            .get_or_insert_with(|| Box::new(NodeExtras::default()))
-    }
-
-    #[inline]
-    pub(crate) fn has_explicit_style(&self) -> bool {
-        (self.flags & FLAG_EXPLICIT_STYLE) != 0
-    }
-
-    #[inline]
-    pub(crate) fn set_has_explicit_style(&mut self, v: bool) {
-        if v {
-            self.flags |= FLAG_EXPLICIT_STYLE;
-        } else {
-            self.flags &= !FLAG_EXPLICIT_STYLE;
-        }
-    }
-
-    #[inline]
-    pub(crate) fn has_explicit_font_weight(&self) -> bool {
-        (self.flags & FLAG_EXPLICIT_FONT_WEIGHT) != 0
-    }
-
-    #[inline]
-    pub(crate) fn set_has_explicit_font_weight(&mut self, v: bool) {
-        if v {
-            self.flags |= FLAG_EXPLICIT_FONT_WEIGHT;
-        } else {
-            self.flags &= !FLAG_EXPLICIT_FONT_WEIGHT;
-        }
-    }
-
-    #[inline]
-    pub(crate) fn has_explicit_text_align(&self) -> bool {
-        (self.flags & FLAG_EXPLICIT_TEXT_ALIGN) != 0
-    }
-
-    #[inline]
-    pub(crate) fn set_has_explicit_text_align(&mut self, v: bool) {
-        if v {
-            self.flags |= FLAG_EXPLICIT_TEXT_ALIGN;
-        } else {
-            self.flags &= !FLAG_EXPLICIT_TEXT_ALIGN;
-        }
-    }
-
-    #[inline]
-    pub(crate) fn deferred_native_create(&self) -> bool {
-        (self.flags & FLAG_DEFERRED_NATIVE_CREATE) != 0
-    }
-
-    #[inline]
-    pub(crate) fn set_deferred_native_create(&mut self, v: bool) {
-        if v {
-            self.flags |= FLAG_DEFERRED_NATIVE_CREATE;
-        } else {
-            self.flags &= !FLAG_DEFERRED_NATIVE_CREATE;
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct TextStyleWalkEntry {
-    pub(super) node_id: NodeId,
-    pub(super) color: ColorRgba,
-    pub(super) font_size: f32,
-    pub(super) font_weight: Option<Cow<'static, str>>,
-    pub(super) text_align: Option<Cow<'static, str>>,
-}
-
-/// Non-generic persistent Dioxus-to-NVE shadow tree & dirty-coalescing state.
-///
-/// Pair with any concrete [`RenderSink`] via [`Self::begin_tx`] to stream mutations with zero
-/// intermediate serialization and zero vtable indirection.
+/// Bridges Dioxus 0.7 `WriteMutations` straight into a single-owner [`NodeStore`].
 pub struct NveMutationWriter {
-    pub(super) surface_id: SurfaceId,
-    next_node_id: NodeId,
-    /// Maps Dioxus `ElementId` -> NVE `NodeId`. (`ElementId(0)` == `ROOT_NODE_ID`).
-    el_to_node: HashMap<ElementId, NodeId>,
-    node_to_el: HashMap<NodeId, ElementId>,
-    pub(crate) nodes: HashMap<NodeId, NodeRecord>,
-    pub(super) stack: Vec<NodeId>,
-    /// Persistent scratch buffers reused across frames (cleared + sorted/deduped in place).
-    pub(super) style_sources: Vec<NodeId>,
-    pub(super) style_walk_stack: Vec<TextStyleWalkEntry>,
-    pub(super) dirty_children: Vec<NodeId>,
-    pub(super) dirty_layout: Vec<NodeId>,
-    pub(super) dirty_style: Vec<NodeId>,
-    pub(super) dirty_text_props: Vec<NodeId>,
-    pub(super) dirty_events: Vec<NodeId>,
-    pub(super) dirty_extended: Vec<NodeId>,
-    pub(super) deferred_native_nodes: Vec<NodeId>,
-    pub(crate) patch_ids: Vec<NodeId>,
-    pub(crate) patch_leaf_text_ids: Vec<NodeId>,
-}
-
-/// Ephemeral monomorphized frame transaction pairing [`NveMutationWriter`] with any [`RenderSink`].
-///
-/// Implements `dioxus_core::WriteMutations` so Dioxus writes directly into `S` without dynamic
-/// dispatch or intermediate binary encoding.
-pub struct MutationTx<'a, S: RenderSink> {
-    pub(crate) writer: &'a mut NveMutationWriter,
-    pub(crate) sink: &'a mut S,
+    pub(crate) surface_id: SurfaceId,
+    pub(crate) store: NodeStore,
+    pub(crate) changes: ChangeSet,
+    pub(crate) el_to_node: HashMap<ElementId, NodeId>,
+    pub(crate) node_to_el: HashMap<NodeId, ElementId>,
+    pub(crate) stack: Vec<NodeId>,
+    pub(crate) child_scratch: Vec<NodeId>,
+    pub(crate) incoming_scratch: Vec<NodeId>,
+    /// Tracks active [`TableAttr`] writers per `(node, attr_name)` so multiple table attrs can
+    /// coexist on one node and `AttributeValue::None` / replacement can call `clear_from`.
+    pub(crate) attached_tables: HashMap<NodeId, Vec<(&'static str, TableAttr)>>,
+    /// Tracks active [`TypedStyle`] so inline `style` overrides merge cleanly and restore on clear.
+    pub(crate) typed_styles: HashMap<NodeId, TypedStyle>,
+    /// Tracks active inline `style="..."` override strings and their accepted CSS property bitmask.
+    pub(crate) inline_styles: HashMap<NodeId, (String, u64)>,
+    /// Tracks standalone CSS/style attributes (`width`, `color`, `opacity`, etc.) per node.
+    pub(crate) standalone_style_attrs: HashMap<NodeId, Vec<(String, StandaloneStyleVal)>>,
+    #[cfg(test)]
+    pub(crate) standalone_replay_count: usize,
+    #[cfg(test)]
+    pub(crate) inline_reapply_count: usize,
 }
 
 impl NveMutationWriter {
     pub fn new(surface_id: SurfaceId) -> Self {
-        let mut el_to_node = HashMap::with_capacity_and_hasher(16, Default::default());
-        let mut node_to_el = HashMap::with_capacity_and_hasher(16, Default::default());
-        let mut nodes = HashMap::with_capacity_and_hasher(16, Default::default());
-        el_to_node.insert(ElementId(0), ROOT_NODE_ID);
-        node_to_el.insert(ROOT_NODE_ID, ElementId(0));
-        nodes.insert(
-            ROOT_NODE_ID,
-            NodeRecord {
-                dioxus_id: Some(ElementId(0)),
-                ..Default::default()
-            },
-        );
+        tables::register_core_tables();
+        let mut store = NodeStore::new();
+        store.set_realization_order(tables::core_realization_order());
+        let mut el_to_node = HashMap::default();
+        let mut node_to_el = HashMap::default();
+        el_to_node.insert(ElementId(0), NodeId::ROOT);
+        node_to_el.insert(NodeId::ROOT, ElementId(0));
         Self {
             surface_id,
-            next_node_id: ROOT_NODE_ID + 1,
+            store,
+            changes: ChangeSet::default(),
             el_to_node,
             node_to_el,
-            nodes,
             stack: Vec::with_capacity(64),
-            style_sources: Vec::with_capacity(16),
-            style_walk_stack: Vec::new(),
-            dirty_children: Vec::with_capacity(16),
-            dirty_layout: Vec::with_capacity(16),
-            dirty_style: Vec::with_capacity(16),
-            dirty_text_props: Vec::new(),
-            dirty_events: Vec::new(),
-            dirty_extended: Vec::new(),
-            deferred_native_nodes: Vec::new(),
-            patch_ids: Vec::new(),
-            patch_leaf_text_ids: Vec::new(),
+            child_scratch: Vec::with_capacity(32),
+            incoming_scratch: Vec::with_capacity(32),
+            attached_tables: HashMap::default(),
+            typed_styles: HashMap::default(),
+            inline_styles: HashMap::default(),
+            standalone_style_attrs: HashMap::default(),
+            #[cfg(test)]
+            standalone_replay_count: 0,
+            #[cfg(test)]
+            inline_reapply_count: 0,
         }
     }
 
-    /// Starts a monomorphized frame transaction targeting `sink`.
-    pub fn begin_tx<'a, S: RenderSink>(
-        &'a mut self,
-        sink: &'a mut S,
-        surface_id: SurfaceId,
-        frame_id: FrameId,
-    ) -> MutationTx<'a, S> {
-        self.surface_id = surface_id;
-        self.stack.clear();
-        self.style_sources.clear();
-        self.style_walk_stack.clear();
-        self.dirty_children.clear();
-        self.dirty_layout.clear();
-        self.dirty_style.clear();
-        self.dirty_text_props.clear();
-        self.dirty_events.clear();
-        self.dirty_extended.clear();
-        self.deferred_native_nodes.clear();
-        sink.begin_frame(surface_id, frame_id);
-        MutationTx { writer: self, sink }
-    }
-
-    pub fn element_id_of(&self, node_id: NodeId) -> Option<ElementId> {
-        self.node_to_el.get(&node_id).copied()
+    #[inline]
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id
     }
 
     #[inline]
-    pub fn node_show_on(&self, node_id: NodeId) -> Option<MediaQuery> {
-        self.nodes.get(&node_id).and_then(|r| r.extras()?.show_on)
+    pub fn store(&self) -> &NodeStore {
+        &self.store
     }
 
     #[inline]
-    pub fn node_responsive_rules(&self, node_id: NodeId) -> &[ResponsiveRule] {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras())
-            .map(|e| e.responsive_rules.as_slice())
-            .unwrap_or(&[])
+    pub fn store_mut(&mut self) -> &mut NodeStore {
+        &mut self.store
     }
 
     #[inline]
-    pub fn node_cursor(&self, node_id: NodeId) -> Option<CursorKind> {
-        self.nodes.get(&node_id).and_then(|r| r.extras()?.cursor)
+    pub fn last_changes(&self) -> &ChangeSet {
+        &self.changes
     }
 
     #[inline]
-    pub fn node_state_rules(&self, node_id: NodeId) -> &[StateStyleRule] {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras())
-            .map(|e| e.state_rules.as_slice())
-            .unwrap_or(&[])
+    pub fn resolve_el(&self, id: ElementId) -> Option<NodeId> {
+        self.el_to_node.get(&id).copied()
     }
 
     #[inline]
-    pub fn node_transitions(&self, node_id: NodeId) -> &[TransitionSpec] {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras())
-            .map(|e| e.transitions.as_slice())
-            .unwrap_or(&[])
+    pub fn element_id_of(&self, node_id: AbiNodeId) -> Option<ElementId> {
+        self.node_to_el.get(&NodeId(node_id)).copied()
     }
 
     #[inline]
-    pub fn node_layout_ext(&self, node_id: NodeId) -> Option<&LayoutExt> {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras()?.layout_ext.as_ref())
+    pub fn has_event_mask(&self, node_id: AbiNodeId, mask: u64) -> bool {
+        let nid = NodeId(node_id);
+        self.store
+            .try_row::<Interaction>(nid)
+            .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
     }
 
-    #[inline]
-    pub fn node_transform(&self, node_id: NodeId) -> Option<Transform2D> {
-        self.nodes.get(&node_id).and_then(|r| r.extras()?.transform)
-    }
-
-    #[inline]
-    pub fn node_draw_list(&self, node_id: NodeId) -> Option<&DrawList> {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras()?.draw_list.as_ref())
-    }
-
-    #[inline]
-    pub fn node_native_view_props(&self, node_id: NodeId) -> Option<&TypedNativeViewProps> {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras()?.native_props.as_ref())
-    }
-
-    #[inline]
-    pub fn node_background_fill(&self, node_id: NodeId) -> Option<&BackgroundFill> {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras()?.background_fill.as_ref())
-    }
-
-    #[inline]
-    pub fn node_svg_picture(&self, node_id: NodeId) -> Option<&SvgPicture> {
-        self.nodes
-            .get(&node_id)
-            .and_then(|r| r.extras()?.svg_picture.as_ref())
-    }
-
-    pub(crate) fn has_event_mask(&self, node_id: NodeId, bit: u64) -> bool {
-        self.nodes
-            .get(&node_id)
-            .is_some_and(|n| (n.event_mask & bit) != 0)
-    }
-
-    pub(crate) fn has_event_mask_in_chain(&self, mut node_id: NodeId, bit: u64) -> bool {
-        while let Some(rec) = self.nodes.get(&node_id) {
-            if (rec.event_mask & bit) != 0 {
+    /// Walks up from `node_id` to `NodeId::ROOT` checking if any ancestor subscribed to `mask`.
+    pub fn has_event_mask_in_chain(&self, node_id: AbiNodeId, mask: u64) -> bool {
+        let mut cur = Some(NodeId(node_id));
+        while let Some(nid) = cur {
+            if !self.store.is_live(nid) {
+                break;
+            }
+            if self
+                .store
+                .try_row::<Interaction>(nid)
+                .is_some_and(|i| (u64::from(i.event_mask()) & mask) != 0)
+            {
                 return true;
             }
-            match rec.parent() {
-                Some(parent) => node_id = parent,
-                None => break,
-            }
+            cur = self.store.parent(nid);
         }
         false
     }
 
-    pub(super) fn alloc_node<S: RenderSink>(
+    /// Runs `f` inside a single [`Transaction`] on the owned [`NodeStore`] and commits the
+    /// resulting delta into `self.changes`.
+    pub fn with_transaction<R>(
         &mut self,
-        sink: &mut S,
-        kind: ComponentKind,
-        custom_name: Option<&str>,
-    ) -> NodeId {
-        let id = self.next_node_id;
-        self.next_node_id += 1;
-        self.nodes.insert(
-            id,
-            NodeRecord {
-                kind,
-                ..Default::default()
-            },
-        );
-        sink.create_node(id, kind, custom_name);
-        id
-    }
+        f: impl FnOnce(&mut StoreMutationTx<'_, '_>) -> R,
+    ) -> R {
+        let Self {
+            store,
+            changes,
+            el_to_node,
+            node_to_el,
+            stack,
+            child_scratch,
+            incoming_scratch,
+            attached_tables,
+            typed_styles,
+            inline_styles,
+            standalone_style_attrs,
+            #[cfg(test)]
+            standalone_replay_count,
+            #[cfg(test)]
+            inline_reapply_count,
+            ..
+        } = self;
 
-    pub(super) fn alloc_deferred_native_node(&mut self) -> NodeId {
-        let id = self.next_node_id;
-        self.next_node_id += 1;
-        let mut rec = NodeRecord {
-            kind: ComponentKind::Custom,
-            ..Default::default()
+        let mut tx = store.tx();
+        let out = {
+            let mut mtx = StoreMutationTx {
+                tx: &mut tx,
+                el_to_node,
+                node_to_el,
+                stack,
+                child_scratch,
+                incoming_scratch,
+                attached_tables,
+                typed_styles,
+                inline_styles,
+                standalone_style_attrs,
+                #[cfg(test)]
+                standalone_replay_count,
+                #[cfg(test)]
+                inline_reapply_count,
+            };
+            f(&mut mtx)
         };
-        rec.set_deferred_native_create(true);
-        self.nodes.insert(id, rec);
-        self.deferred_native_nodes.push(id);
-        id
+        tx.commit_into(changes);
+        out
+    }
+}
+
+/// Ephemeral per-frame Dioxus `WriteMutations` adapter borrowing [`Transaction`] directly.
+pub struct StoreMutationTx<'s, 'a> {
+    pub(crate) tx: &'a mut Transaction<'s>,
+    pub(crate) el_to_node: &'a mut HashMap<ElementId, NodeId>,
+    pub(crate) node_to_el: &'a mut HashMap<NodeId, ElementId>,
+    pub(crate) stack: &'a mut Vec<NodeId>,
+    pub(crate) child_scratch: &'a mut Vec<NodeId>,
+    pub(crate) incoming_scratch: &'a mut Vec<NodeId>,
+    pub(crate) attached_tables: &'a mut HashMap<NodeId, Vec<(&'static str, TableAttr)>>,
+    pub(crate) typed_styles: &'a mut HashMap<NodeId, TypedStyle>,
+    pub(crate) inline_styles: &'a mut HashMap<NodeId, (String, u64)>,
+    pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, Vec<(String, StandaloneStyleVal)>>,
+    #[cfg(test)]
+    pub(crate) standalone_replay_count: &'a mut usize,
+    #[cfg(test)]
+    pub(crate) inline_reapply_count: &'a mut usize,
+}
+
+impl StoreMutationTx<'_, '_> {
+    #[inline]
+    pub(crate) fn bind_element(&mut self, el: ElementId, node: NodeId) {
+        self.el_to_node.insert(el, node);
+        self.node_to_el.insert(node, el);
     }
 
-    pub(super) fn ensure_native_node_created<S: RenderSink>(
+    #[inline]
+    pub(crate) fn resolve_el(&self, id: ElementId) -> Option<NodeId> {
+        self.el_to_node.get(&id).copied()
+    }
+
+    #[inline]
+    pub(crate) fn record_standalone_style(
         &mut self,
-        sink: &mut S,
-        node_id: NodeId,
-        kind_override: Option<&str>,
+        node: NodeId,
+        name: &str,
+        val: StandaloneStyleVal,
+    ) -> usize {
+        let list = self.standalone_style_attrs.entry(node).or_default();
+        if let Some(pos) = list.iter().position(|(k, _)| k == name) {
+            list[pos].1 = val;
+            return pos;
+        }
+        let rank = nve_components::css_key_rank(name);
+        let pos = list
+            .iter()
+            .rposition(|(k, _)| nve_components::css_key_rank(k) <= rank)
+            .map_or(0, |i| i + 1);
+        list.insert(pos, (name.to_owned(), val));
+        pos
+    }
+
+    /// Removes a recorded standalone style attribute. Returns `true` iff an entry was removed.
+    pub(crate) fn remove_standalone_style(&mut self, node: NodeId, name: &str) -> bool {
+        let Some(list) = self.standalone_style_attrs.get_mut(&node) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|(k, _)| k != name);
+        let removed = list.len() != before;
+        if list.is_empty() {
+            self.standalone_style_attrs.remove(&node);
+        }
+        removed
+    }
+
+    #[inline]
+    fn replay_one_standalone_entry(
+        &mut self,
+        node: NodeId,
+        k: &str,
+        val: &StandaloneStyleVal,
+        layers: u8,
     ) {
-        let Some(rec) = self.nodes.get_mut(&node_id) else {
+        #[cfg(test)]
+        {
+            *self.standalone_replay_count += 1;
+        }
+        match val {
+            StandaloneStyleVal::Float(f) => {
+                let _ = self.apply_numeric_attr_untracked(node, k, *f);
+            }
+            StandaloneStyleVal::Int(i) => {
+                self.tx
+                    .edit::<tables::Visual>(node)
+                    .z_index((*i).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            }
+            StandaloneStyleVal::Str(s) => {
+                nve_components::apply_css_attr_layers_to_tx(self.tx, node, k, s, layers);
+            }
+        }
+    }
+
+    /// Replays standalone style attributes and inline `style="..."` for the specified `layers`
+    /// in canonical precedence order: `standalone` < `inline style`.
+    pub(crate) fn replay_standalone_and_inline(&mut self, node: NodeId, layers: u8) {
+        if layers == 0 {
+            return;
+        }
+        if let Some(saved) = self.standalone_style_attrs.remove(&node) {
+            for (k, val) in &saved {
+                let entry_layer = nve_components::css_attr_layer(k);
+                debug_assert!(entry_layer != 0, "standalone style key `{k}` must have a non-zero layer");
+                if (entry_layer & layers) == 0 {
+                    continue;
+                }
+                self.replay_one_standalone_entry(node, k, val, layers);
+            }
+            self.standalone_style_attrs.insert(node, saved);
+        }
+        self.reapply_inline_style(node, layers);
+    }
+
+    #[inline]
+    pub(crate) fn reapply_inline_style(&mut self, node: NodeId, layers: u8) {
+        if layers != 0
+            && let Some((inline, mask)) = self.inline_styles.get(&node)
+            && (nve_components::prop_bits_to_layers(*mask) & layers) != 0
+        {
+            #[cfg(test)]
+            {
+                *self.inline_reapply_count += 1;
+            }
+            nve_components::apply_css_attr_layers_to_tx(self.tx, node, "style", inline, layers);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn finish_standalone_style(
+        &mut self,
+        node: NodeId,
+        name: &str,
+        val: StandaloneStyleVal,
+    ) {
+        let pos = self.record_standalone_style(node, name, val);
+        let bits = nve_components::css_key_bits(name);
+        debug_assert!(bits.is_some(), "standalone style key `{name}` must have css_key_bits");
+        let bits = bits.unwrap_or(0);
+        let mut affected_bits = bits;
+
+        // Read-only scan of trailing entries for transitive property-bit overlap; avoids HashMap
+        // churn and re-parsing unrelated trailing attrs on 120 Hz standalone updates.
+        let has_overlap = self.standalone_style_attrs.get(&node).is_some_and(|list| {
+            let mut scan_bits = bits;
+            let mut overlapped = false;
+            for (k, _) in list.get(pos + 1..).unwrap_or(&[]) {
+                let entry_bits = nve_components::css_key_bits(k).unwrap_or(0);
+                if (entry_bits & scan_bits) != 0 {
+                    overlapped = true;
+                    scan_bits |= entry_bits;
+                }
+            }
+            overlapped
+        });
+
+        if has_overlap
+            && let Some(saved) = self.standalone_style_attrs.remove(&node)
+        {
+            for (k, val) in saved.get(pos + 1..).unwrap_or(&[]) {
+                let entry_bits = nve_components::css_key_bits(k).unwrap_or(0);
+                if (entry_bits & affected_bits) == 0 {
+                    continue;
+                }
+                affected_bits |= entry_bits;
+                let entry_layer = nve_components::prop_bits_to_layers(entry_bits);
+                self.replay_one_standalone_entry(node, k, val, entry_layer);
+            }
+            self.standalone_style_attrs.insert(node, saved);
+        }
+
+        let inline_layers = self.inline_styles.get(&node).map_or(0, |&(_, mask)| {
+            nve_components::prop_bits_to_layers(mask & affected_bits)
+        });
+        if inline_layers != 0 {
+            self.reapply_inline_style(node, inline_layers);
+        }
+    }
+
+    /// Updates `node`'s inline `style="..."` string in a single parse pass, preserving the
+    /// `effect::COMPOSITE` fast lane whenever no previously accepted CSS property is dropped.
+    pub(crate) fn apply_inline_style_attr(&mut self, node: NodeId, value: &str) {
+        let prev_mask = match self.inline_styles.get(&node) {
+            Some((prev_str, _)) if prev_str == value => return,
+            Some(&(_, mask)) => mask,
+            None => 0,
+        };
+        let next_mask = nve_components::apply_inline_style_layers_to_tx(
+            self.tx,
+            node,
+            value,
+            nve_components::STYLE_LAYER_ALL,
+        );
+        self.inline_styles.insert(node, (value.to_owned(), next_mask));
+        let dropped = nve_components::prop_bits_to_layers(prev_mask & !next_mask);
+        if dropped != 0 {
+            self.rebuild_style_layers_mask(node, dropped);
+        }
+    }
+
+    /// Rebuilds the specified `{Layout, Visual, Typography}` layers in canonical precedence order:
+    /// `TypedStyle` < standalone style attributes < inline `style="..."`.
+    pub(crate) fn rebuild_style_layers_mask(&mut self, node: NodeId, layers: u8) {
+        if layers == 0 {
+            return;
+        }
+        if layers & nve_components::STYLE_LAYER_LAYOUT != 0 {
+            self.tx.detach::<tables::Layout>(node);
+        }
+        if layers & nve_components::STYLE_LAYER_VISUAL != 0 {
+            self.tx.detach::<tables::Visual>(node);
+        }
+        if layers & nve_components::STYLE_LAYER_TYPOGRAPHY != 0 {
+            self.tx.detach::<tables::Typography>(node);
+        }
+        if let Some(ts) = self.typed_styles.get(&node) {
+            ts.apply_style_layers_to_tx(self.tx, node, layers);
+        }
+        self.replay_standalone_and_inline(node, layers);
+    }
+
+    /// Attaches initial core word tables for a static RSX tag name (zero `ComponentKind`).
+    pub(crate) fn attach_tag_defaults(&mut self, node: NodeId, tag: &str) {
+        match tag {
+            "text" | "span" | "p" => {
+                let _ = self.tx.edit::<TextContent>(node);
+            }
+            "scrollview" => {
+                let _ = self.tx.edit::<Scroll>(node);
+            }
+            "image" => {
+                let _ = self.tx.edit::<Image>(node);
+            }
+            "textinput" | "input" => {
+                let _ = self.tx.edit::<TextInput>(node);
+            }
+            "textarea" => {
+                self.tx.edit::<TextInput>(node).multiline(true);
+            }
+            "pressable" | "button" => {
+                self.tx
+                    .edit::<Interaction>(node)
+                    .cursor(CursorKind::Pointer)
+                    .focusable(true);
+                self.tx
+                    .edit::<tables::Accessibility>(node)
+                    .role(AriaRole::Button);
+            }
+            "a" => {
+                let _ = self.tx.edit::<Link>(node);
+                self.tx
+                    .edit::<Interaction>(node)
+                    .cursor(CursorKind::Pointer);
+            }
+            _ => {}
+        }
+    }
+
+    /// Recursively instantiates a static Dioxus [`TemplateNode`] directly into `NodeStore`.
+    pub(crate) fn instantiate_template_node(&mut self, tnode: &TemplateNode) -> NodeId {
+        match tnode {
+            TemplateNode::Element {
+                tag,
+                attrs,
+                children,
+                ..
+            } => {
+                let node = self.tx.create();
+                self.attach_tag_defaults(node, tag);
+                for attr in *attrs {
+                    if let TemplateAttribute::Static { name, value, .. } = attr {
+                        self.apply_str_attr(node, name, value);
+                    }
+                }
+                if !children.is_empty() {
+                    let mut child_ids = Vec::with_capacity(children.len());
+                    for child in *children {
+                        child_ids.push(self.instantiate_template_node(child));
+                    }
+                    self.tx.set_children(node, &child_ids);
+                }
+                node
+            }
+            TemplateNode::Text { text } => {
+                let node = self.tx.create();
+                self.tx.edit::<TextContent>(node).text(text);
+                node
+            }
+            TemplateNode::Dynamic { .. } => self.tx.create(),
+        }
+    }
+
+    /// Removes `node` from its current parent's child list (if any).
+    pub(crate) fn detach_from_parent(&mut self, node: NodeId) {
+        let Some(parent) = self.tx.store().parent(node) else {
             return;
         };
-        if !rec.deferred_native_create() {
-            return;
-        }
-        rec.set_deferred_native_create(false);
-        let resolved = kind_override.unwrap_or(NATIVE_VIEW_TAG);
-        rec.extras_mut().native_kind = Some(resolved.to_owned());
-        sink.create_node(node_id, ComponentKind::Custom, Some(resolved));
-    }
-
-    pub(super) fn bind_element_id(&mut self, node_id: NodeId, el_id: ElementId) {
-        self.el_to_node.insert(el_id, node_id);
-        self.node_to_el.insert(node_id, el_id);
-        if let Some(rec) = self.nodes.get_mut(&node_id) {
-            rec.dioxus_id = Some(el_id);
+        self.child_scratch.clear();
+        self.child_scratch
+            .extend_from_slice(self.tx.store().children(parent));
+        let before = self.child_scratch.len();
+        self.child_scratch.retain(|&c| c != node);
+        if self.child_scratch.len() != before {
+            self.tx.set_children(parent, self.child_scratch);
         }
     }
 
-    pub(super) fn resolve_el(&self, el_id: ElementId) -> Option<NodeId> {
-        self.el_to_node.get(&el_id).copied()
+    /// Removes `node` and its entire descendant subtree from `NodeStore` and ID maps.
+    pub(crate) fn remove_subtree(&mut self, root: NodeId) {
+        let mut to_visit = vec![root];
+        let mut order = Vec::new();
+        while let Some(nid) = to_visit.pop() {
+            order.push(nid);
+            to_visit.extend_from_slice(self.tx.store().children(nid));
+        }
+        for nid in order {
+            if let Some(el) = self.node_to_el.remove(&nid) {
+                self.el_to_node.remove(&el);
+            }
+            self.attached_tables.remove(&nid);
+            self.typed_styles.remove(&nid);
+            self.inline_styles.remove(&nid);
+            self.standalone_style_attrs.remove(&nid);
+        }
+        self.tx.remove(root);
     }
 
-    pub(super) fn walk_path(&self, root: NodeId, path: &[u8]) -> Option<NodeId> {
+    /// Walks a Dioxus template child path `[i0, i1, ...]` starting at `root`.
+    pub(crate) fn walk_path(&self, root: NodeId, path: &[u8]) -> Option<NodeId> {
         let mut cur = root;
         for &idx in path {
-            let rec = self.nodes.get(&cur)?;
-            cur = *rec.children.get(idx as usize)?;
+            cur = *self.tx.store().children(cur).get(idx as usize)?;
         }
         Some(cur)
     }
 
-    pub(super) fn detach_from_parent(&mut self, node_id: NodeId) {
-        if let Some(parent_id) = self.nodes.get(&node_id).and_then(NodeRecord::parent) {
-            if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                parent.children.retain(|&c| c != node_id);
-            }
-            self.dirty_children.push(parent_id);
-        }
-        if let Some(rec) = self.nodes.get_mut(&node_id) {
-            rec.set_parent(None);
-        }
-    }
-
-    pub(super) fn replace_node_in_parent_from_stack<S: RenderSink>(
-        &mut self,
-        sink: &mut S,
-        target_id: NodeId,
-        split: usize,
-    ) {
-        let Some(parent_id) = self.nodes.get(&target_id).and_then(NodeRecord::parent) else {
-            self.stack.truncate(split);
-            return;
-        };
-        for i in split..self.stack.len() {
-            let r = self.stack[i];
-            self.detach_from_parent(r);
-            if let Some(rec) = self.nodes.get_mut(&r) {
-                rec.set_parent(Some(parent_id));
-            }
-        }
-        if let Some(parent) = self.nodes.get_mut(&parent_id) {
-            if let Some(pos) = parent.children.iter().position(|&c| c == target_id) {
-                parent
-                    .children
-                    .splice(pos..=pos, self.stack.drain(split..));
-            } else {
-                self.stack.truncate(split);
-            }
-        } else {
-            self.stack.truncate(split);
-        }
-        self.dirty_children.push(parent_id);
-        self.remove_subtree(sink, target_id);
-    }
-
-    pub(super) fn remove_subtree<S: RenderSink>(&mut self, sink: &mut S, node_id: NodeId) {
-        if let Some(rec) = self.nodes.remove(&node_id) {
-            if let Some(binder) = rec.extras.and_then(|e| e.native_handle_binder) {
-                binder.unbind();
-            }
-            if let Some(el_id) = rec.dioxus_id {
-                self.el_to_node.remove(&el_id);
-            }
-            self.node_to_el.remove(&node_id);
-            for child in rec.children {
-                self.remove_subtree(sink, child);
-            }
-            sink.remove_node(node_id);
-        }
+    pub(crate) fn update_event_mask(&mut self, node: NodeId, bit: u64, set: bool) {
+        debug_assert!(
+            bit <= u64::from(u32::MAX),
+            "EventMask bit {bit:#x} exceeds Interaction::event_mask u32 width"
+        );
+        let cur = u64::from(
+            self.tx
+                .store()
+                .try_row::<Interaction>(node)
+                .map_or(0, |i| i.event_mask()),
+        );
+        let next = if set { cur | bit } else { cur & !bit };
+        self.tx
+            .edit::<Interaction>(node)
+            .event_mask(u32::try_from(next).unwrap_or(u32::MAX));
     }
 }
 
-#[inline]
-pub(super) fn mark_ext_dirty(
-    dirty_extended: &mut Vec<NodeId>,
-    ext: &mut NodeExtras,
-    node_id: NodeId,
-    bit: u16,
-) {
-    if ext.dirty_ext_mask == 0 {
-        dirty_extended.push(node_id);
+pub(crate) fn event_name_to_mask(name: &str) -> u64 {
+    match name {
+        "press" | "onpress" | "click" | "onclick" => EventMask::PRESS,
+        "longpress" | "onlongpress" => EventMask::LONG_PRESS,
+        "scroll" | "onscroll" => EventMask::SCROLL,
+        "change" | "onchange" | "input" | "oninput" => EventMask::TEXT_CHANGE,
+        "focus" | "onfocus" => EventMask::FOCUS,
+        "blur" | "onblur" => EventMask::BLUR,
+        "layout" | "onlayout" => EventMask::LAYOUT,
+        "compositionstart"
+        | "oncompositionstart"
+        | "compositionupdate"
+        | "oncompositionupdate"
+        | "compositionend"
+        | "oncompositionend" => EventMask::COMPOSITION,
+        "keydown" | "onkeydown" => EventMask::KEY_DOWN,
+        "keyup" | "onkeyup" => EventMask::KEY_UP,
+        "submit" | "onsubmit" => EventMask::SUBMIT,
+        "pointerdown" | "onpointerdown" => EventMask::POINTER_DOWN,
+        "pointermove" | "onpointermove" => EventMask::POINTER_MOVE,
+        "pointerup" | "onpointerup" => EventMask::POINTER_UP,
+        "pointerenter" | "onpointerenter" => EventMask::POINTER_ENTER,
+        "pointerleave" | "onpointerleave" => EventMask::POINTER_LEAVE,
+        "wheel" | "onwheel" => EventMask::WHEEL,
+        "tableevent" | "ontableevent" => EventMask::TABLE_EVENT,
+        _ => EventMask::CUSTOM,
     }
-    ext.dirty_ext_mask |= bit;
 }

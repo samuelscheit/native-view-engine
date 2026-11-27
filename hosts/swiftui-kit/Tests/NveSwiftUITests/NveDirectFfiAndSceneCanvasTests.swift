@@ -577,12 +577,13 @@ final class NveDirectFfiAndSceneCanvasTests: XCTestCase {
                                     removed_count: UInt32(removedBuf.count),
                                     text_slab_len: UInt32(textBuf.count),
                                     children_slab_len: UInt32(childBuf.count),
-                                    _pad: 0,
+                                    table_count: 0,
                                     nodes: nodesBuf.baseAddress,
                                     text_slab: textBuf.baseAddress,
                                     children_slab: childBuf.baseAddress,
                                     dirty_indices: dirtyBuf.baseAddress,
-                                    removed_ids: removedBuf.baseAddress
+                                    removed_ids: removedBuf.baseAddress,
+                                    tables: nil
                                 )
                                 try store.apply(view: view)
                             }

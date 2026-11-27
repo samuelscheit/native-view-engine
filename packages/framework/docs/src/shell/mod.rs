@@ -58,9 +58,11 @@ pub fn DocsShell() -> Element {
             view {
                 test_id: "docs-root",
                 accessibility_label: "{site_title}",
-                "viewport-mode": "{viewport_mode}",
-                "data-theme": "{color_scheme_attr}",
-                "data-route": "{active_route}",
+                nve_table: crate::render::html_data_attrs(vec![
+                    ("theme".to_owned(), color_scheme_attr.to_owned()),
+                    ("route".to_owned(), active_route.clone()),
+                    ("viewport-mode".to_owned(), viewport_mode.to_owned()),
+                ]),
                 style: "width: 100%; height: 100%; flex-direction: column; background-color: {theme.canvas}; color: {theme.text};",
                 onkeydown: move |ev: KeyEvent| {
                     let data = ev.data();

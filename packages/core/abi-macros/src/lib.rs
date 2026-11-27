@@ -5,6 +5,7 @@ extern crate proc_macro;
 
 mod emit;
 mod parse;
+mod table;
 
 use proc_macro::{Group, LexError, Span, TokenStream, TokenTree};
 
@@ -89,4 +90,14 @@ fn respan(stream: TokenStream, span: Span) -> TokenStream {
             tt
         })
         .collect()
+}
+
+/// Derives `nve_store::NveTable` for a word-table schema struct (see `table.rs` docs).
+#[proc_macro_derive(NveTable, attributes(nve_table, effect, default, bits))]
+pub fn derive_nve_table(input: TokenStream) -> TokenStream {
+    match table::derive(input) {
+        Ok(code) => parse_at_call_site(&code)
+            .unwrap_or_else(|e| compile_error(&format!("NveTable emit error: {e}"))),
+        Err(msg) => compile_error(&msg),
+    }
 }

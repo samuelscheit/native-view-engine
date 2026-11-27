@@ -2,7 +2,8 @@
 //! for **Aether Workspace** + **NVE Studio**.
 
 use nve_abi::ColorRgba;
-use nve_components::{parse_color, DrawList};
+use nve_canvas::DrawList;
+use nve_components::parse_color;
 
 /// Valid 8x8 RGBA PNG data-URI avatar for `@maya` (cyan ring/core).
 pub const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
@@ -14,7 +15,7 @@ pub const AVATAR_LIAM: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAg
 pub const AVATAR_SARA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAhWPTGsGEWB0tE4FDwQCvA6Eh8GAE5RZ/09pCRNAAAAAElFTkSuQmCC";
 
 /// Valid 8x8 RGBA PNG data-URI avatar for `@dev` (slate ring/core).
-pub const AVATAR_DEV: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHElEQVR42mOQ07T+jw8zEK1gyuIdKHggFJDtCwAdM3cRKMfnvgAAAABJRU5ErkJggg==";
+pub const AVATAR_DEV: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHElEQVQY02OQ07T+jw8zEK1gyuIdKHggFJDtCwAdM3cR3wnOlQAAAABJRU5ErkJggg==";
 
 /// Valid 8x8 RGBA PNG data-URI avatar for `@aria` (amber ring/core).
 pub const AVATAR_ARIA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAhXKWasGEXB13ncKHggFOB1JD4MAEs7b4ERxIxeAAAAAElFTkSuQmCC";

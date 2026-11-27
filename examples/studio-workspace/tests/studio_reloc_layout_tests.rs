@@ -3,19 +3,22 @@ mod common;
 use std::sync::Arc;
 use std::time::Instant;
 
-use common::MultiBackendHarness;
-use nve_abi::{
-    ComponentKind, EventPayload, LayoutProps, NativeEvent, NativeEventKind, NodeId,
-    NveDirectEvent, NveDirectEventRef, NveEventBatchRef, RawPropValue, StyleProps,
+use common::{
+    data_attr_in_store, find_in_store, live_node_ids, register_studio_tables, MultiBackendHarness,
 };
-use nve_backend_headless::{HeadlessBackend, TaffyLayoutEngine};
+use nve_abi::{
+    EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveDirectEventRef,
+    NveEventBatchRef,
+};
+use nve_backend_headless::{HeadlessBackend, TaffyStoreLayout};
 use nve_engine::reloc::{
     encode_reloc_bundle, write_reloc_atomic, MmapReloc, RelocBundleView, VerifyMode,
 };
 use nve_engine::{
-    DynLayoutEngine, LayoutEngine, LayoutRect, NveApp, RenderBackend, TextMeasurer, Viewport,
+    DynLayoutEngine, LayoutRect, NveApp, StoreBackend, StoreLayoutEngine, StoreWireReplica,
+    TextMeasurer, Viewport,
 };
-use nve_components::layout_ext::LayoutExt;
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_layout_yoga::YogaLayoutEngine;
 use nve_studio_workspace::{
     AccentTheme, ActiveView, CornerRadiusMode, DensityMode, LayoutEngineMode,
@@ -38,20 +41,22 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
         scale_factor: 1.0,
     };
 
+    register_studio_tables();
     let mut app = StudioWorkspaceModule::create(1);
-    let mut host = HeadlessBackend::new();
-    host.set_viewport(1, vp);
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(1, vp);
+    let mut host = StoreWireReplica::new(backend, nve_components::tables::core_realization_order());
     let f1 = app.render(1).to_vec();
-    host.submit_frame(&f1).expect("submit initial studio frame");
+    host.submit_nve2_frame(&f1)
+        .expect("submit initial studio frame");
 
-    let press_test_id = |host: &mut HeadlessBackend, app: &mut StudioWorkspaceModule, tid: &str, fid: u64| {
-        let nid = host
-            .nodes()
-            .values()
-            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
-            .id;
-        let rect = host.layout_of(nid).expect("node layout");
+    let press_test_id = |host: &mut StoreWireReplica<HeadlessBackend>,
+                         app: &mut StudioWorkspaceModule,
+                         tid: &str,
+                         fid: u64| {
+        let nid = find_in_store(host.store(), tid)
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let rect = host.backend().layout_of(nid).expect("node layout");
         let ev = [NveDirectEvent::press(
             1,
             nid,
@@ -64,7 +69,8 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
             "press '{tid}' not handled"
         );
         let frame = app.render(fid).to_vec();
-        host.submit_frame(&frame).expect("submit frame after press");
+        host.submit_nve2_frame(&frame)
+            .expect("submit frame after press");
     };
 
     press_test_id(&mut host, &mut app, "btn-new-task", 2);
@@ -98,8 +104,10 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     .expect("encode studio NVERELOC bundle");
     write_reloc_atomic(&snap_path, &bundle).expect("write studio NVERELOC atomically");
 
-    let mut cold_host = HeadlessBackend::new();
-    cold_host.set_viewport(1, vp);
+    let mut cold_backend = HeadlessBackend::new();
+    cold_backend.set_viewport(1, vp);
+    let mut cold_host =
+        StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());
 
     let t0 = Instant::now();
     let mapped =
@@ -115,11 +123,11 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
     assert!(st_ptr >= base && st_ptr + snap.state().len() <= end);
 
     cold_host
-        .submit_frame(snap.frame0())
+        .submit_nve2_frame(snap.frame0())
         .expect("zero-copy Frame-0 submit");
     let t_frame0 = t0.elapsed();
 
-    let frame0_tree = cold_host.render_ascii_tree();
+    let frame0_tree = cold_host.backend().render_ascii_tree(cold_host.store());
     assert!(frame0_tree.contains("# engineering"));
     assert!(frame0_tree.contains("Ship It - all checks green!"));
     assert!(frame0_tree.contains("X-Ray HUD: ON"));
@@ -151,12 +159,16 @@ fn mmap_snapshot_instant_boot_frame0_and_studio_state_restore_sub_millisecond() 
             .expect("open C++-written NVERELOC");
         let cpp_snap = RelocBundleView::from_view(cpp_mapped.view()).expect("parse C++ bundle");
         assert_eq!(cpp_snap.meta(), b"cpp-roundtrip");
-        let mut verify_host = HeadlessBackend::new();
-        verify_host.set_viewport(1, vp);
+        let mut verify_backend = HeadlessBackend::new();
+        verify_backend.set_viewport(1, vp);
+        let mut verify_host = StoreWireReplica::new(
+            verify_backend,
+            nve_components::tables::core_realization_order(),
+        );
         verify_host
-            .submit_frame(cpp_snap.frame0())
+            .submit_nve2_frame(cpp_snap.frame0())
             .expect("submit C++-written Frame-0 into Rust HeadlessBackend");
-        let verify_tree = verify_host.render_ascii_tree();
+        let verify_tree = verify_host.backend().render_ascii_tree(verify_host.store());
         assert!(verify_tree.contains("# engineering"));
         assert!(verify_tree.contains("X-Ray HUD: ON"));
         let mut verify_app = StudioWorkspaceModule::create(1);
@@ -193,11 +205,10 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
 
     let read_stream_prop = |h: &MultiBackendHarness, key: &str| -> u32 {
         let vp_id = h.find_by_test_id("stream-viewport").expect("stream-viewport");
-        let node = h.headless.node(vp_id).unwrap();
-        match node.raw_props.get(key) {
-            Some(RawPropValue::String(s)) => s.parse::<u32>().expect("numeric virtual prop"),
-            other => panic!("unexpected prop {key}={other:?}"),
-        }
+        let val = h
+            .data_attr(vp_id, key)
+            .unwrap_or_else(|| panic!("missing prop {key}"));
+        val.parse::<u32>().expect("numeric virtual prop")
     };
 
     let mounted_top = read_stream_prop(&h, "virtual-rendered-count");
@@ -238,23 +249,22 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
         let t_disp = t0.elapsed().as_micros();
         let fid = h.next_frame;
         h.next_frame += 1;
-        let (rec_us, enc_us, bytes) = h.surface.render_frame(fid);
+        let rec_us = h.surface.reconcile(fid);
         let fe_us = t0.elapsed().as_micros();
-        let stats = h.headless.submit_frame(&bytes).unwrap();
+        let store = h.surface.store();
+        let changes = h.surface.last_changes();
+        let stats = h.headless.commit(store, changes).unwrap();
         let total_us = t0.elapsed().as_micros();
         eprintln!(
-            "  [{tid}] fe={fe_us}us total={total_us}us | disp={t_disp}us rec={rec_us}us enc={enc_us}us | dec={}us lay={}us diff={}us | ops={} muts={} bytes={}",
-            stats.decode_us,
+            "  [{tid}] fe={fe_us}us total={total_us}us | disp={t_disp}us rec={rec_us}us | lay={}us diff={}us | muts={}",
             stats.layout_us,
             stats.diff_us,
-            stats.op_count,
             stats.mutation_count,
-            bytes.len()
         );
         frontend_frame_us.push(fe_us);
         e2e_frame_us.push(total_us);
-        h.skia.submit_frame(&bytes).unwrap();
-        h.web.submit_frame(&bytes).unwrap();
+        h.skia.commit(store, changes).unwrap();
+        h.web.commit(store, changes).unwrap();
     }
 
     let tree_50k = h.ascii();
@@ -332,65 +342,35 @@ fn stream_100k_virtualized_list_sub_2ms_jumps_and_fenwick_expand() {
 }
 
 struct HostMirrorLayoutEngine {
-    inner: TaffyLayoutEngine,
+    inner: TaffyStoreLayout,
 }
 
 impl HostMirrorLayoutEngine {
     fn new() -> Self {
         Self {
-            inner: TaffyLayoutEngine::new(),
+            inner: TaffyStoreLayout::new(),
         }
     }
 }
 
-impl LayoutEngine for HostMirrorLayoutEngine {
+impl StoreLayoutEngine for HostMirrorLayoutEngine {
     fn name(&self) -> &'static str {
         "yoga-host-mirror"
-    }
-
-    fn upsert_node(&mut self, id: NodeId, kind: ComponentKind) {
-        self.inner.upsert_node(id, kind);
-    }
-
-    fn remove_node(&mut self, id: NodeId) {
-        self.inner.remove_node(id);
-    }
-
-    fn set_layout(&mut self, id: NodeId, layout: &LayoutProps) {
-        self.inner.set_layout(id, layout);
-    }
-
-    // Defaulted no-op trait methods must be forwarded too, or `display: none` / grid / position
-    // extensions silently diverge from the wrapped engine.
-    fn set_layout_ext(&mut self, id: NodeId, ext: Option<&LayoutExt>) {
-        self.inner.set_layout_ext(id, ext);
-    }
-
-    fn set_raw_layout_prop(&mut self, id: NodeId, key: &str, value: &str) {
-        self.inner.set_raw_layout_prop(id, key, value);
-    }
-
-    fn set_style(&mut self, id: NodeId, style: &StyleProps) {
-        self.inner.set_style(id, style);
-    }
-
-    fn set_text(&mut self, id: NodeId, text: &str) {
-        self.inner.set_text(id, text);
-    }
-
-    fn set_children(&mut self, parent: NodeId, children: &[NodeId]) {
-        self.inner.set_children(parent, children);
     }
 
     fn set_text_measurer(&mut self, measurer: Arc<dyn TextMeasurer>) {
         self.inner.set_text_measurer(measurer);
     }
 
-    fn compute_layout(&mut self, root: NodeId, viewport: Viewport) {
-        self.inner.compute_layout(root, viewport);
+    fn sync_changes(&mut self, store: &NodeStore, changes: &ChangeSet) {
+        self.inner.sync_changes(store, changes);
     }
 
-    fn layout_of(&self, id: NodeId) -> Option<LayoutRect> {
+    fn compute_layout(&mut self, store: &NodeStore, root: StoreNodeId, viewport: Viewport) {
+        self.inner.compute_layout(store, root, viewport);
+    }
+
+    fn layout_of(&self, id: StoreNodeId) -> Option<LayoutRect> {
         self.inner.layout_of(id)
     }
 
@@ -399,25 +379,15 @@ impl LayoutEngine for HostMirrorLayoutEngine {
     }
 }
 
-fn read_root_layout_engine_prop<L: LayoutEngine>(backend: &HeadlessBackend<L>) -> String {
-    backend
-        .nodes()
-        .values()
-        .find(|n| {
-            matches!(
-                n.raw_props.get("testID"),
-                Some(RawPropValue::String(s)) if s == "workspace-root"
-            )
-        })
-        .and_then(|n| match n.raw_props.get("layout-engine") {
-            Some(RawPropValue::String(s)) => Some(s.clone()),
-            _ => None,
-        })
-        .expect("workspace-root must emit 'layout-engine' raw prop")
+fn read_root_layout_engine_prop(store: &NodeStore) -> String {
+    let root_id = find_in_store(store, "workspace-root").expect("workspace-root");
+    data_attr_in_store(store, root_id, "layout-engine")
+        .expect("workspace-root must emit 'layout-engine' data attr")
 }
 
 #[test]
 fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
+    register_studio_tables();
     let vp = Viewport {
         width: 960.0,
         height: 640.0,
@@ -426,26 +396,24 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
 
     let mut app = StudioWorkspaceModule::create(1);
     let mut dyn_backend: HeadlessBackend<DynLayoutEngine> =
-        HeadlessBackend::with_layout(Box::new(TaffyLayoutEngine::new()));
+        HeadlessBackend::with_layout(Box::new(TaffyStoreLayout::new()));
     dyn_backend.set_viewport(1, vp);
+    let mut replica =
+        StoreWireReplica::new(dyn_backend, nve_components::tables::core_realization_order());
 
     let f1 = app.render(1).to_vec();
-    dyn_backend.submit_frame(&f1).unwrap();
-    assert_eq!(dyn_backend.layout_engine().name(), "taffy");
-    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "taffy");
-    assert!(dyn_backend.render_ascii_tree().contains("Active: Taffy (Rust)"));
+    replica.submit_nve2_frame(&f1).unwrap();
+    assert_eq!(replica.backend().layout_engine().name(), "taffy");
+    assert_eq!(read_root_layout_engine_prop(replica.store()), "taffy");
+    assert!(replica.backend().render_ascii_tree(replica.store()).contains("Active: Taffy (Rust)"));
 
-    let press_dyn = |backend: &mut HeadlessBackend<DynLayoutEngine>,
+    let press_dyn = |replica: &mut StoreWireReplica<HeadlessBackend<DynLayoutEngine>>,
                      app: &mut StudioWorkspaceModule,
                      tid: &str,
                      fid: u64| -> Vec<u8> {
-        let nid = backend
-            .nodes()
-            .values()
-            .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == tid))
-            .unwrap_or_else(|| panic!("missing testID='{tid}'"))
-            .id;
-        let rect = backend.layout_of(nid).unwrap();
+        let nid = find_in_store(replica.store(), tid)
+            .unwrap_or_else(|| panic!("missing testID='{tid}'"));
+        let rect = replica.backend().layout_of(nid).unwrap();
         let ev = [NveDirectEvent::press(
             1,
             nid,
@@ -455,17 +423,17 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         )];
         assert!(app.dispatch_events(unsafe { NveEventBatchRef::from_slice(&ev) }));
         let frame = app.render(fid).to_vec();
-        backend.submit_frame(&frame).unwrap();
+        replica.submit_nve2_frame(&frame).unwrap();
         frame
     };
 
-    press_dyn(&mut dyn_backend, &mut app, "btn-new-task", 2);
-    press_dyn(&mut dyn_backend, &mut app, "accent-violet", 3);
-    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+    press_dyn(&mut replica, &mut app, "btn-new-task", 2);
+    press_dyn(&mut replica, &mut app, "accent-violet", 3);
+    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
 
-    press_dyn(&mut dyn_backend, &mut app, "layout-yoga", 4);
-    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "yoga");
-    assert!(dyn_backend.render_ascii_tree().contains("Active: Yoga (C++20)"));
+    press_dyn(&mut replica, &mut app, "layout-yoga", 4);
+    assert_eq!(read_root_layout_engine_prop(replica.store()), "yoga");
+    assert!(replica.backend().render_ascii_tree(replica.store()).contains("Active: Yoga (C++20)"));
     assert_eq!(
         app.state_snapshot().current.studio.layout_engine,
         LayoutEngineMode::Yoga
@@ -479,10 +447,9 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
     assert_eq!(ev0.value().as_str(), Some("yoga"));
 
     let taffy_rects_before: Vec<(NodeId, LayoutRect)> = {
-        let mut pairs: Vec<(NodeId, LayoutRect)> = dyn_backend
-            .nodes()
-            .keys()
-            .filter_map(|&id| dyn_backend.layout_of(id).map(|r| (id, r)))
+        let mut pairs: Vec<(NodeId, LayoutRect)> = live_node_ids(replica.store())
+            .into_iter()
+            .filter_map(|id| replica.backend().layout_of(id.raw()).map(|r| (id.raw(), r)))
             .collect();
         pairs.sort_by_key(|(id, _)| *id);
         pairs
@@ -495,11 +462,18 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         Box::new(HostMirrorLayoutEngine::new())
     };
     let expected_swapped_name = next_engine.name();
-    dyn_backend = dyn_backend.swap_layout_engine(next_engine);
-    assert_eq!(dyn_backend.layout_engine().name(), expected_swapped_name);
+    replica = replica.map_backend(|b| b.swap_layout_engine(next_engine));
+    let full_changes = {
+        let mut c = ChangeSet::default();
+        c.created = live_node_ids(replica.store());
+        c
+    };
+    replica.commit_changes(&full_changes).unwrap();
+    assert_eq!(replica.backend().layout_engine().name(), expected_swapped_name);
 
     for (id, taffy_rect) in &taffy_rects_before {
-        let swapped_rect = dyn_backend
+        let swapped_rect = replica
+            .backend()
             .layout_of(*id)
             .unwrap_or_else(|| panic!("missing swapped rect for node #{id}"));
         assert!(
@@ -511,14 +485,20 @@ fn live_taffy_yoga_layout_engine_switcher_and_mid_session_parity() {
         );
     }
 
-    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
-    press_dyn(&mut dyn_backend, &mut app, "layout-taffy", 5);
-    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "taffy");
-    dyn_backend = dyn_backend.swap_layout_engine(Box::new(TaffyLayoutEngine::new()));
-    assert_eq!(dyn_backend.layout_engine().name(), "taffy");
-    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
+    press_dyn(&mut replica, &mut app, "layout-taffy", 5);
+    assert_eq!(read_root_layout_engine_prop(replica.store()), "taffy");
+    replica = replica.map_backend(|b| b.swap_layout_engine(Box::new(TaffyStoreLayout::new()) as DynLayoutEngine));
+    let full_changes2 = {
+        let mut c = ChangeSet::default();
+        c.created = live_node_ids(replica.store());
+        c
+    };
+    replica.commit_changes(&full_changes2).unwrap();
+    assert_eq!(replica.backend().layout_engine().name(), "taffy");
+    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
 
-    press_dyn(&mut dyn_backend, &mut app, "tt-undo", 6);
-    assert_eq!(read_root_layout_engine_prop(&dyn_backend), "yoga");
-    assert!(dyn_backend.render_ascii_tree().contains("AET-105"));
+    press_dyn(&mut replica, &mut app, "tt-undo", 6);
+    assert_eq!(read_root_layout_engine_prop(replica.store()), "yoga");
+    assert!(replica.backend().render_ascii_tree(replica.store()).contains("AET-105"));
 }

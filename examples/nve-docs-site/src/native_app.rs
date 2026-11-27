@@ -18,7 +18,6 @@ pub struct DocsSiteModule {
     route: String,
     viewport: DocsViewport,
     surface: DioxusSurface,
-    last_frame_buf: Vec<u8>,
     last_state_buf: Vec<u8>,
 }
 
@@ -38,15 +37,12 @@ impl NveApp for DocsSiteModule {
             route,
             viewport,
             surface,
-            last_frame_buf: Vec::new(),
             last_state_buf: Vec::new(),
         }
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
-        let (_, _, bytes) = self.surface.render_frame(frame_id);
-        self.last_frame_buf = bytes;
-        &self.last_frame_buf
+        self.surface.render_nve2_slice(frame_id)
     }
 
     fn dispatch_events(&mut self, events: NveEventBatchRef<'_>) -> bool {

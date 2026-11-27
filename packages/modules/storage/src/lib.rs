@@ -1,5 +1,5 @@
 //! Embedded crash-safe binary KV / record store capability (`SERVICE_STORAGE = 0x0020`)
-//! with direct zero-serialization in-process dispatch ([`StorageBackend`]), `NVK1` on-disk
+//! with direct zero-serialization in-process dispatch ([`StorageBackend`]), `NVK2` on-disk
 //! WAL persistence, and cross-language `NVE_IFACE_HOST` C ABI codecs.
 
 pub mod engine;
@@ -11,7 +11,7 @@ use nve_host_services::{
     resolve_typed, BinReader, BinWriter, HostServiceProvider, ServiceError, MAX_SEQ_ITEMS,
 };
 
-pub use engine::{KvStore, KvStoreManager, NVK1_COMMIT_MARKER, NVK1_MAGIC, NVK1_VERSION};
+pub use engine::{KvStore, KvStoreManager, NVK2_COMMIT_MARKER, NVK2_MAGIC, NVK2_VERSION};
 pub use handler::{dispatch_storage_wire, MemoryStorage, NativeStorage, StorageBackend};
 
 /// Built-in service ID for the embedded crash-safe binary KV store.

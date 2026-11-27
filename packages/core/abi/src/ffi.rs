@@ -15,9 +15,9 @@ use nve_abi_macros::NveAbi;
 
 use crate::value::{NveEventBatch, NveMapEntry};
 
-/// Deterministic FNV-1a 64-bit schema fingerprint for NVE's Core C ABI
-/// (must match `nve-codegen::NVE_CORE_ABI_SCHEMA_HASH` and `nve_abi.generated.h`).
-pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = 0x0535_43B3_2C5D_959C;
+/// Compile-time XXH64 schema fingerprint for NVE's Core C ABI, derived directly from
+/// `crate::schema::core_abi_descriptor()` (zero hardcoded hex literals).
+pub const NVE_CORE_ABI_SCHEMA_HASH: u64 = crate::schema::compute_core_abi_schema_hash();
 
 pub const NVE_IFACE_SURFACE: u32 = 1;
 pub const NVE_IFACE_LAYOUT: u32 = 2;
@@ -129,76 +129,6 @@ pub struct NveIntrinsicSize {
     pub height: f32,
 }
 
-/// Binary CommandBuffer wire opcodes.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, NveAbi)]
-#[nve_abi(name = "NveOpcode", c_prefix = "NVE_OP_")]
-pub enum Opcode {
-    CreateNode = 1,
-    RemoveNode = 2,
-    SetChildren = 3,
-    SetText = 4,
-    SetLayout = 5,
-    SetStyle = 6,
-    SetRawProp = 7,
-    SetEventMask = 8,
-    DispatchCommand = 9,
-    Commit = 10,
-}
-
-impl Opcode {
-    #[inline(always)]
-    pub const fn from_u8(v: u8) -> Result<Self, DecodeError> {
-        match v {
-            1 => Ok(Self::CreateNode),
-            2 => Ok(Self::RemoveNode),
-            3 => Ok(Self::SetChildren),
-            4 => Ok(Self::SetText),
-            5 => Ok(Self::SetLayout),
-            6 => Ok(Self::SetStyle),
-            7 => Ok(Self::SetRawProp),
-            8 => Ok(Self::SetEventMask),
-            9 => Ok(Self::DispatchCommand),
-            10 => Ok(Self::Commit),
-            other => Err(DecodeError::UnknownOpcode(other)),
-        }
-    }
-}
-
-/// Built-in and custom component discriminants.
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, NveAbi)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[nve_abi(name = "NveComponentKind", c_prefix = "NVE_COMP_")]
-pub enum ComponentKind {
-    Root = 0,
-    View = 1,
-    Text = 2,
-    ScrollView = 3,
-    Image = 4,
-    TextInput = 5,
-    Pressable = 6,
-    SkiaCanvas = 7,
-    Custom = 0xFFFF,
-}
-
-impl ComponentKind {
-    #[inline(always)]
-    pub const fn from_u16(v: u16) -> Result<Self, DecodeError> {
-        match v {
-            0 => Ok(Self::Root),
-            1 => Ok(Self::View),
-            2 => Ok(Self::Text),
-            3 => Ok(Self::ScrollView),
-            4 => Ok(Self::Image),
-            5 => Ok(Self::TextInput),
-            6 => Ok(Self::Pressable),
-            7 => Ok(Self::SkiaCanvas),
-            0xFFFF => Ok(Self::Custom),
-            other => Err(DecodeError::InvalidEnum("ComponentKind", other as u32)),
-        }
-    }
-}
 
 /// Gesture arbitration disposition returned by `NveLayoutApi::hit_test`.
 #[repr(u8)]
@@ -246,6 +176,7 @@ pub enum NativeEventKind {
     PointerEnter = 18,
     PointerLeave = 19,
     Wheel = 20,
+    TableEvent = 21,
 }
 
 impl NativeEventKind {
@@ -272,6 +203,7 @@ impl NativeEventKind {
             18 => Some(Self::PointerEnter),
             19 => Some(Self::PointerLeave),
             20 => Some(Self::Wheel),
+            21 => Some(Self::TableEvent),
             _ => None,
         }
     }
@@ -299,6 +231,7 @@ pub enum NveEventPayloadTag {
     Key = 6,
     Pointer = 7,
     Wheel = 8,
+    TableEvent = 9,
 }
 
 /// Validation / decoding errors shared across zero-copy FFI views and binary wire codecs.

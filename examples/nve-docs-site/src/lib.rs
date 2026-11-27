@@ -96,8 +96,10 @@ pub fn create_nve_docs_surface_full(
 pub fn render_nve_docs_ssr(route: &str, base_path: &str, viewport: DocsViewport) -> SsrOutput {
     let mut surface = create_nve_docs_surface(route, base_path, viewport);
     let mut backend = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
     surface
-        .flush_into(1, &mut backend)
-        .expect("WebBackend flush_into for docs SSR");
-    backend.render_ssr()
+        .commit_to(1, &mut backend)
+        .expect("WebBackend commit_to for docs SSR");
+    backend.render_ssr(surface.store())
 }

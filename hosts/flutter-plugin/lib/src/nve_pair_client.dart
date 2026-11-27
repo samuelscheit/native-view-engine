@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'event_codec.dart';
+import 'nve_hash.generated.dart';
 
 typedef NvePairedFrameCallback = void Function(int seq, Uint8List frameBytes);
 
@@ -87,81 +88,10 @@ abstract final class NveWireCodec {
   static const int flagXxh64 = 1 << 0;
   static const int defaultSchemaVersion = 2;
   static const int maxFrameBytes = 16 * 1024 * 1024;
-  static final BigInt xxh64Seed = BigInt.parse('4E56455749524532', radix: 16);
+  static const NveKey64 xxh64Seed = NveKey64(0x49524532, 0x4E564557);
 
-  static final BigInt _mask64 = (BigInt.one << 64) - BigInt.one;
-  static final BigInt _p1 = BigInt.parse('9E3779B185EBCA87', radix: 16);
-  static final BigInt _p2 = BigInt.parse('C2B2AE3D27D4EB4F', radix: 16);
-  static final BigInt _p3 = BigInt.parse('165667B19E3779F9', radix: 16);
-  static final BigInt _p4 = BigInt.parse('85EBCA77C2B2AE63', radix: 16);
-  static final BigInt _p5 = BigInt.parse('27D4EB2F165667C5', radix: 16);
-
-  static BigInt _u64(BigInt v) => v & _mask64;
-  static BigInt _rotl(BigInt x, int r) => _u64((x << r) | (x >> (64 - r)));
-  static BigInt _round(BigInt acc, BigInt input) =>
-      _u64(_rotl(_u64(acc + _u64(input * _p2)), 31) * _p1);
-  static BigInt _merge(BigInt acc, BigInt v) =>
-      _u64(_u64((acc ^ _round(BigInt.zero, v)) * _p1) + _p4);
-
-  static BigInt _readU64(Uint8List b, int off) {
-    var v = BigInt.zero;
-    for (var i = 0; i < 8; i++) {
-      v |= BigInt.from(b[off + i]) << (i * 8);
-    }
-    return v;
-  }
-
-  static BigInt xxh64(Uint8List bytes, {BigInt? seed}) {
-    final s = seed ?? xxh64Seed;
-    final n = bytes.length;
-    var idx = 0;
-    BigInt h;
-    if (n >= 32) {
-      var v1 = _u64(s + _p1 + _p2);
-      var v2 = _u64(s + _p2);
-      var v3 = _u64(s);
-      var v4 = _u64(s - _p1);
-      while (idx <= n - 32) {
-        v1 = _round(v1, _readU64(bytes, idx)); idx += 8;
-        v2 = _round(v2, _readU64(bytes, idx)); idx += 8;
-        v3 = _round(v3, _readU64(bytes, idx)); idx += 8;
-        v4 = _round(v4, _readU64(bytes, idx)); idx += 8;
-      }
-      h = _u64(_rotl(v1, 1) + _rotl(v2, 7) + _rotl(v3, 12) + _rotl(v4, 18));
-      h = _merge(h, v1);
-      h = _merge(h, v2);
-      h = _merge(h, v3);
-      h = _merge(h, v4);
-    } else {
-      h = _u64(s + _p5);
-    }
-    h = _u64(h + BigInt.from(n));
-    while (idx + 8 <= n) {
-      h ^= _round(BigInt.zero, _readU64(bytes, idx));
-      h = _u64(_u64(_rotl(h, 27) * _p1) + _p4);
-      idx += 8;
-    }
-    if (idx + 4 <= n) {
-      final u32 = bytes[idx] |
-          (bytes[idx + 1] << 8) |
-          (bytes[idx + 2] << 16) |
-          (bytes[idx + 3] << 24);
-      h ^= _u64(BigInt.from(u32) * _p1);
-      h = _u64(_u64(_rotl(h, 23) * _p2) + _p3);
-      idx += 4;
-    }
-    while (idx < n) {
-      h ^= _u64(BigInt.from(bytes[idx]) * _p5);
-      h = _u64(_rotl(h, 11) * _p1);
-      idx += 1;
-    }
-    h ^= h >> 33;
-    h = _u64(h * _p2);
-    h ^= h >> 29;
-    h = _u64(h * _p3);
-    h ^= h >> 32;
-    return _u64(h);
-  }
+  static NveKey64 xxh64(Uint8List bytes, {NveKey64 seed = xxh64Seed}) =>
+      nveXxh64(bytes, seed);
 
   static Uint8List encodeFrame({
     required NveWireChannel channel,
@@ -186,10 +116,7 @@ abstract final class NveWireCodec {
     out.setRange(headerSize, headerSize + body.length, body);
     if (hasCk) {
       final bodyEnd = headerSize + body.length;
-      final ck = xxh64(Uint8List.sublistView(out, 0, bodyEnd));
-      for (var i = 0; i < 8; i++) {
-        out[bodyEnd + i] = ((ck >> (i * 8)) & BigInt.from(0xFF)).toInt();
-      }
+      xxh64(Uint8List.sublistView(out, 0, bodyEnd)).writeLE(out, bodyEnd);
     }
     return out;
   }
@@ -225,7 +152,7 @@ abstract final class NveWireCodec {
     }
     final bodyEnd = headerSize + len;
     if (hasCk) {
-      final expected = _readU64(bytes, bodyEnd);
+      final expected = NveKey64.readLE(bytes, bodyEnd);
       final actual = xxh64(Uint8List.sublistView(bytes, 0, bodyEnd));
       if (actual != expected) {
         throw const NvePairProtocolException('NveWireFrame XXH64 checksum mismatch');

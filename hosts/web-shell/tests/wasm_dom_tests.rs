@@ -2,46 +2,52 @@
 //!
 //! - On native targets (`cargo test --locked -p nve-web-shell`): exercises full multi-view
 //!   Aether Workspace + NVE Studio workflows, Counter rapid-click & edge-case resilience,
-//!   and Tier-1/Tier-2 hot-patch behavior via `WebBackend`'s DOM mirror.
+//!   and Tier-1/Tier-2 hot-patch behavior via `WebBackend` + `NodeStore`.
 //! - On `wasm32-unknown-unknown` (`cargo check --locked -p nve-web-shell --tests --target wasm32-unknown-unknown`):
 //!   verifies the `wasm_bindgen` entrypoints and `WebAppController` surface compile cleanly
 //!   with zero warnings.
 
-use nve_abi::{
-    EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue, ROOT_NODE_ID,
-};
+use nve_abi::{EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId};
 use nve_backend_web::WebBackend;
+use nve_components::tables::{DebugId, Interaction};
 use nve_engine::{FrameTiming, HotPatchMsg, Viewport};
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 use nve_web_shell::{HotReloadAction, WebAppSession};
 
-fn find_node_by_test_id(backend: &WebBackend, target: &str) -> Option<NodeId> {
-    fn walk(backend: &WebBackend, id: NodeId, target: &str) -> Option<NodeId> {
-        let el = backend.node(id)?;
-        if matches!(
-            el.raw_props.get("testID"),
-            Some(RawPropValue::String(s)) if s == target
-        ) {
-            return Some(id);
+fn find_node_by_test_id(store: &NodeStore, target: &str) -> Option<NodeId> {
+    fn walk(store: &NodeStore, id: StoreNodeId, target: &str) -> Option<NodeId> {
+        if !store.is_live(id) {
+            return None;
         }
-        for &child in &el.children {
-            if let Some(found) = walk(backend, child, target) {
+        if store
+            .try_row::<DebugId>(id)
+            .is_some_and(|d| d.test_id() == target)
+        {
+            return Some(id.raw());
+        }
+        for &child in store.children(id) {
+            if let Some(found) = walk(store, child, target) {
                 return Some(found);
             }
         }
         None
     }
-    walk(backend, ROOT_NODE_ID, target)
+    walk(store, StoreNodeId::ROOT, target)
 }
 
 fn press_test_id(session: &mut WebAppSession, test_id: &str, timestamp_us: u64) -> FrameTiming {
-    let node_id = find_node_by_test_id(session.backend(), test_id)
+    let node_id = find_node_by_test_id(session.store(), test_id)
         .unwrap_or_else(|| panic!("expected mounted node with testID='{test_id}'"));
+    let mask = session
+        .store()
+        .try_row::<Interaction>(StoreNodeId(node_id))
+        .map_or(0, |i| u64::from(i.event_mask()));
     assert_ne!(
-        session.backend().event_mask_of(node_id) & EventMask::PRESS,
+        mask & EventMask::PRESS,
         0,
         "node '{test_id}' (id={node_id}) should have EventMask::PRESS"
     );
-    session.backend().push_event(NativeEvent {
+    session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id,
         timestamp_us,
@@ -80,7 +86,7 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
     let mut session = WebAppSession::new_studio_workspace(1, WebBackend::new(), viewport);
     session.render_initial().expect("initial mount");
 
-    let html0 = session.backend().render_html();
+    let html0 = session.render_html();
     assert_balanced_dom(&html0);
     assert!(html0.contains("AETHER"));
     assert!(html0.contains("Issue Board"));
@@ -88,24 +94,24 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
     assert!(html0.contains("LIVE SYNC"));
     assert!(html0.contains("LAN QUIC"));
     assert!(html0.contains("X-Ray HUD: OFF"));
-    assert!(find_node_by_test_id(session.backend(), "studio-panel").is_some());
-    assert!(find_node_by_test_id(session.backend(), "studio-sync-telemetry").is_some());
+    assert!(find_node_by_test_id(session.store(), "studio-panel").is_some());
+    assert!(find_node_by_test_id(session.store(), "studio-sync-telemetry").is_some());
 
     // Cycle Live Sync transport mode via Studio panel button.
     press_test_id(&mut session, "sync-transport-cycle", 50);
-    let after_sync = session.backend().render_html();
+    let after_sync = session.render_html();
     assert_balanced_dom(&after_sync);
     assert!(after_sync.contains("USB Mux"));
     assert!(after_sync.contains("1 peer"));
 
     // Create a new task and verify board counts + filter pills respond cleanly.
     press_test_id(&mut session, "btn-new-task", 100);
-    let after_new = session.backend().render_html();
+    let after_new = session.render_html();
     assert_balanced_dom(&after_new);
     assert!(after_new.contains("All (5)"));
 
     press_test_id(&mut session, "filter-done", 200);
-    let after_done_filter = session.backend().render_html();
+    let after_done_filter = session.render_html();
     assert_balanced_dom(&after_done_filter);
     assert!(after_done_filter.contains("Done (1)"));
 
@@ -113,33 +119,33 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
 
     // Switch to # engineering, react to a message, and post a quick reply.
     press_test_id(&mut session, "nav-engineering", 400);
-    let eng_html = session.backend().render_html();
+    let eng_html = session.render_html();
     assert_balanced_dom(&eng_html);
     assert!(eng_html.contains("Single ABI drives all 4 hosts!"));
     assert!(eng_html.contains("QUICK REPLY"));
 
     press_test_id(&mut session, "reply-ship", 500);
-    let after_reply = session.backend().render_html();
+    let after_reply = session.render_html();
     assert_balanced_dom(&after_reply);
     assert!(after_reply.contains("Ship It - all checks green!"));
 
     // Switch to # design-sync and then Live Metrics with stress row mutations.
     press_test_id(&mut session, "nav-design", 600);
-    assert_balanced_dom(&session.backend().render_html());
+    assert_balanced_dom(&session.render_html());
 
     press_test_id(&mut session, "nav-metrics", 700);
     press_test_id(&mut session, "stress-add-8", 800);
-    let after_stress = session.backend().render_html();
+    let after_stress = session.render_html();
     assert_balanced_dom(&after_stress);
     assert!(after_stress.contains("Node Batch #12"));
 
     press_test_id(&mut session, "stress-add-24", 850);
-    let after_stress_more = session.backend().render_html();
+    let after_stress_more = session.render_html();
     assert_balanced_dom(&after_stress_more);
     assert!(after_stress_more.contains("Node Batch #36"));
 
     press_test_id(&mut session, "stress-reset", 900);
-    let after_reset = session.backend().render_html();
+    let after_reset = session.render_html();
     assert_balanced_dom(&after_reset);
     assert!(!after_reset.contains("Node Batch #12"));
 
@@ -147,24 +153,24 @@ fn studio_workspace_full_workflow_and_dom_invariants() {
     press_test_id(&mut session, "radius-sharp", 1000);
     press_test_id(&mut session, "density-compact", 1100);
     press_test_id(&mut session, "toggle-xray", 1200);
-    let xray_on = session.backend().render_html();
+    let xray_on = session.render_html();
     assert_balanced_dom(&xray_on);
     assert!(xray_on.contains("X-Ray HUD: ON"));
 
     press_test_id(&mut session, "tt-undo", 1300);
-    let after_undo = session.backend().render_html();
+    let after_undo = session.render_html();
     assert!(after_undo.contains("X-Ray HUD: OFF"));
 
     press_test_id(&mut session, "tt-redo", 1400);
-    let after_redo = session.backend().render_html();
+    let after_redo = session.render_html();
     assert!(after_redo.contains("X-Ray HUD: ON"));
 
     // Collapse and reopen the docked NVE Studio panel.
     press_test_id(&mut session, "btn-toggle-studio", 1500);
-    assert!(find_node_by_test_id(session.backend(), "studio-panel").is_none());
+    assert!(find_node_by_test_id(session.store(), "studio-panel").is_none());
 
     press_test_id(&mut session, "btn-toggle-studio", 1600);
-    assert!(find_node_by_test_id(session.backend(), "studio-panel").is_some());
+    assert!(find_node_by_test_id(session.store(), "studio-panel").is_some());
 }
 
 #[test]
@@ -172,13 +178,13 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
     let mut session = WebAppSession::new_kitchen_sink(1, WebBackend::new(), Viewport::default());
     session.render_initial().expect("initial kitchen-sink mount");
 
-    let inc_id = find_node_by_test_id(session.backend(), "ks-counter-inc")
+    let inc_id = find_node_by_test_id(session.store(), "ks-counter-inc")
         .expect("ks-counter-inc button");
-    let reset_id = find_node_by_test_id(session.backend(), "ks-counter-reset")
+    let reset_id = find_node_by_test_id(session.store(), "ks-counter-reset")
         .expect("ks-counter-reset button");
 
     // Unhandled press on a nonexistent node must be ignored cleanly (no frame, no panic).
-    session.backend().push_event(NativeEvent {
+    session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id: 99_999,
         timestamp_us: 10,
@@ -188,7 +194,7 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
     assert!(session.pump_events().expect("pump should not fail").is_none());
 
     for step in 1..=10u64 {
-        session.backend().push_event(NativeEvent {
+        session.backend_mut().push_event(NativeEvent {
             surface_id: 1,
             node_id: inc_id,
             timestamp_us: step * 100,
@@ -200,12 +206,12 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
             .expect("increment pump")
             .expect("increment frame");
         assert!(timing.mutation_count > 0 && timing.mutation_count < 24);
-        let html = session.backend().render_html();
+        let html = session.render_html();
         assert_balanced_dom(&html);
         assert!(html.contains(&format!("Count: {step}")));
     }
 
-    session.backend().push_event(NativeEvent {
+    session.backend_mut().push_event(NativeEvent {
         surface_id: 1,
         node_id: reset_id,
         timestamp_us: 2000,
@@ -213,7 +219,7 @@ fn kitchen_sink_app_rapid_clicks_and_unhandled_event_resilience() {
         payload: EventPayload::Point { x: 40.0, y: 20.0 },
     });
     session.pump_events().expect("reset pump").expect("reset frame");
-    assert!(session.backend().render_html().contains("Count: 0"));
+    assert!(session.render_html().contains("Count: 0"));
 }
 
 #[test]
@@ -267,7 +273,7 @@ fn hot_patch_empty_and_out_of_bounds_edge_cases() {
         }
         other => panic!("unexpected action: {other:?}"),
     }
-    assert_balanced_dom(&session.backend().render_html());
+    assert_balanced_dom(&session.render_html());
 
     // Malformed payloads return Err without corrupting the session.
     assert!(session.handle_hot_patch_frame(b"").is_err());

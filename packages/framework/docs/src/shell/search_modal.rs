@@ -7,7 +7,7 @@ use crate::state::{navigate_to_target, use_docs_state};
 
 const MAX_SEARCH_HITS: usize = 10;
 
-/// Modal `⌘K` search palette backed by the compiled `NVS1` inverted + trigram search index.
+/// Modal `⌘K` search palette backed by the compiled `NVS2` inverted + trigram search index.
 #[component]
 pub fn SearchModal() -> Element {
     let mut state = use_docs_state();

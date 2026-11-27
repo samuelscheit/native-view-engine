@@ -155,7 +155,7 @@ pub fn DatePicker(
                 aria_disabled: "{aria_dis}",
                 disabled: disabled,
                 tab_index: if disabled { -1 } else { 0 },
-                "data-segments": "{seg_value}",
+                nve_table: super::html_tables::html_data_attrs(vec![("segments".to_owned(), seg_value.clone())]),
                 nve_style: trigger_style,
                 onfocus: move |_| trigger_focused.set(true),
                 onblur: move |_| trigger_focused.set(false),

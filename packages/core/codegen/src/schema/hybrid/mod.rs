@@ -1,4 +1,4 @@
-//! Intermediate Representation (IR), deterministic FNV-1a schema hashing, interface ID
+//! Intermediate Representation (IR), deterministic XXH64 schema hashing, interface ID
 //! assignment, and strict semantic validation for NVE's Nitro-inspired Rust-first Hybrid FFI
 //! code generator.
 
@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CodegenError;
 use crate::naming::{to_pascal_case, to_snake_case};
-use file_spec::{hash_method, hash_str, hash_transitive_types};
+pub(crate) use file_spec::hash_str;
+use file_spec::{hash_method, hash_transitive_types};
+use nve_abi::{Key64, Xxh64Hasher};
 
 /// Base interface ID for generated hybrid vtables (`>= 0x1000_0000`), keeping the low range
 /// (`1..=4`) permanently reserved for core NVE interfaces (`NVE_IFACE_SURFACE..NVE_IFACE_DEV`).
@@ -32,33 +34,15 @@ pub const NVE_HYBRID_INTERFACE_ID_MASK: u32 = 0x0FFF_FFFF;
 /// Current Hybrid FFI vtable ABI version stamped into every generated vtable.
 pub const NVE_HYBRID_ABI_VERSION: u32 = 1;
 
-/// Deterministic 64-bit FNV-1a hash helper.
-pub const fn fnv1a_64_update(mut hash: u64, bytes: &[u8]) -> u64 {
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-        i += 1;
-    }
-    hash
-}
-
-/// FNV-1a 64-bit offset basis.
-pub const FNV1A_64_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
-
-/// Computes the deterministic FNV-1a 64-bit hash of a byte slice.
-pub const fn fnv1a_64(bytes: &[u8]) -> u64 {
-    fnv1a_64_update(FNV1A_64_OFFSET_BASIS, bytes)
-}
-
 /// Computes a deterministic hybrid `interface_id >= 0x1000_0000` for a module or view.
 pub fn compute_hybrid_interface_id(kind: &str, name: &str) -> u32 {
-    let mut h = FNV1A_64_OFFSET_BASIS;
-    h = fnv1a_64_update(h, b"nve.hybrid.iface.v1:");
-    h = fnv1a_64_update(h, kind.as_bytes());
-    h = fnv1a_64_update(h, b":");
-    h = fnv1a_64_update(h, name.as_bytes());
-    let folded = ((h as u32) ^ ((h >> 32) as u32)) & NVE_HYBRID_INTERFACE_ID_MASK;
+    let mut h = Xxh64Hasher::new(0);
+    h.update(b"nve.hybrid.iface.v1:");
+    h.update(kind.as_bytes());
+    h.update(b":");
+    h.update(name.as_bytes());
+    let k = Key64(h.digest());
+    let folded = (k.lo() ^ k.hi()) & NVE_HYBRID_INTERFACE_ID_MASK;
     NVE_HYBRID_INTERFACE_ID_BASE | folded
 }
 
@@ -144,7 +128,7 @@ pub enum HybridType {
 }
 
 impl HybridType {
-    /// Canonical deterministic type signature used for FNV-1a schema hashing.
+    /// Canonical deterministic type signature used for XXH64 schema hashing.
     pub fn canonical_signature(&self) -> String {
         match self {
             Self::Void => "void".to_string(),
@@ -467,7 +451,7 @@ pub struct HybridModuleSpec {
     pub doc: Option<String>,
     /// Optional explicit fixed interface ID override (e.g. `interface_id = 1` for core engine
     /// interfaces `NVE_IFACE_SURFACE..NVE_IFACE_DEV`). When `None`, defaults to deterministic
-    /// FNV-1a ID `>= 0x1000_0000`.
+    /// XXH64 ID `>= 0x1000_0000`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explicit_interface_id: Option<u32>,
     /// Optional explicit C vtable struct name (e.g. `"NveSurfaceApi"`).
@@ -483,22 +467,23 @@ impl HybridModuleSpec {
             .unwrap_or_else(|| compute_hybrid_interface_id("module", &self.name))
     }
 
-    /// Deterministic 64-bit FNV-1a schema hash covering this module's methods and all
+    /// Deterministic XXH64 schema hash covering this module's methods and all
     /// transitively referenced structs and enums.
     pub fn schema_hash(&self, file: &HybridFileSpec) -> u64 {
-        let mut h = FNV1A_64_OFFSET_BASIS;
-        h = hash_str(h, "nve.hybrid.module.v1");
-        h = hash_str(h, &self.name);
+        let mut h = Xxh64Hasher::new(0);
+        hash_str(&mut h, "nve.hybrid.module.v1");
+        hash_str(&mut h, &self.name);
         if let Some(id) = self.explicit_interface_id {
-            h = hash_str(h, "iface_id");
-            h = fnv1a_64_update(h, &id.to_le_bytes());
+            hash_str(&mut h, "iface_id");
+            h.update(&id.to_le_bytes());
         }
         let mut ref_structs = BTreeSet::new();
         let mut ref_enums = BTreeSet::new();
         for m in &self.methods {
-            h = hash_method(h, m, &mut ref_structs, &mut ref_enums);
+            hash_method(&mut h, m, &mut ref_structs, &mut ref_enums);
         }
-        hash_transitive_types(h, file, ref_structs, ref_enums)
+        hash_transitive_types(&mut h, file, ref_structs, ref_enums);
+        h.digest()
     }
 }
 
@@ -515,7 +500,7 @@ pub struct HybridViewSpec {
     pub methods: Vec<HybridMethodSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
-    /// Optional explicit fixed interface ID override. Defaults to deterministic FNV-1a ID
+    /// Optional explicit fixed interface ID override. Defaults to deterministic XXH64 ID
     /// `>= 0x1000_0000` when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explicit_interface_id: Option<u32>,
@@ -529,39 +514,40 @@ impl HybridViewSpec {
             .unwrap_or_else(|| compute_hybrid_interface_id("view", &self.name))
     }
 
-    /// Deterministic 64-bit FNV-1a schema hash covering this view's props, events, methods,
+    /// Deterministic XXH64 schema hash covering this view's props, events, methods,
     /// and all transitively referenced structs and enums.
     pub fn schema_hash(&self, file: &HybridFileSpec) -> u64 {
-        let mut h = FNV1A_64_OFFSET_BASIS;
-        h = hash_str(h, "nve.hybrid.view.v1");
-        h = hash_str(h, &self.name);
+        let mut h = Xxh64Hasher::new(0);
+        hash_str(&mut h, "nve.hybrid.view.v1");
+        hash_str(&mut h, &self.name);
         if let Some(id) = self.explicit_interface_id {
-            h = hash_str(h, "iface_id");
-            h = fnv1a_64_update(h, &id.to_le_bytes());
+            hash_str(&mut h, "iface_id");
+            h.update(&id.to_le_bytes());
         }
         let mut ref_structs = BTreeSet::new();
         let mut ref_enums = BTreeSet::new();
         for p in &self.props {
-            h = hash_str(h, "prop");
-            h = hash_str(h, &p.name);
-            h = hash_str(h, &p.ty.canonical_signature());
+            hash_str(&mut h, "prop");
+            hash_str(&mut h, &p.name);
+            hash_str(&mut h, &p.ty.canonical_signature());
             if let Some(def) = &p.default_value {
-                h = hash_str(h, &def.canonical_signature());
+                hash_str(&mut h, &def.canonical_signature());
             }
             p.ty.collect_refs(&mut ref_structs, &mut ref_enums);
         }
         for ev in &self.events {
-            h = hash_str(h, "event");
-            h = hash_str(h, &ev.name);
+            hash_str(&mut h, "event");
+            hash_str(&mut h, &ev.name);
             for param in &ev.params {
-                h = hash_str(h, &param.name);
-                h = hash_str(h, &param.ty.canonical_signature());
+                hash_str(&mut h, &param.name);
+                hash_str(&mut h, &param.ty.canonical_signature());
                 param.ty.collect_refs(&mut ref_structs, &mut ref_enums);
             }
         }
         for m in &self.methods {
-            h = hash_method(h, m, &mut ref_structs, &mut ref_enums);
+            hash_method(&mut h, m, &mut ref_structs, &mut ref_enums);
         }
-        hash_transitive_types(h, file, ref_structs, ref_enums)
+        hash_transitive_types(&mut h, file, ref_structs, ref_enums);
+        h.digest()
     }
 }

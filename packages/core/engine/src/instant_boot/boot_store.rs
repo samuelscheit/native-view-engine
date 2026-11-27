@@ -366,7 +366,7 @@ pub fn default_instant_boot_dir(app_identity: &str) -> Option<PathBuf> {
         }
         let canonical = canonicalize_app_identity(app_identity);
         let slug = sanitize_app_slug(app_identity);
-        let digest = crate::xxh64(canonical.as_bytes(), 0);
+        let digest = nve_abi::xxh64(canonical.as_bytes(), 0);
         let hash8 = format!("{:08x}", (digest & 0xFFFF_FFFF) as u32);
         let dir = default_instant_boot_cache_root().join(format!("{slug}-{hash8}"));
         if is_snapshot_reset_requested() {

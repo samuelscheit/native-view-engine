@@ -101,8 +101,10 @@ pub fn LiveDemoView(
             test_id: "docs-demo-{id}",
             accessibility_role: "region",
             accessibility_label: "{display_title}",
-            "data-nve-island": "{id}",
-            "data-nve-hydrate": "{hydrate_str}",
+            nve_table: crate::render::html_data_attrs(vec![
+                ("nve-island".to_owned(), id.clone()),
+                ("nve-hydrate".to_owned(), hydrate_str.to_owned()),
+            ]),
             style: "width: 100%; flex-direction: column; border-radius: 10px; border-width: 1px; border-color: {theme.border}; background-color: {theme.surface};",
 
             // Header with title, hydration strategy badge, and Preview | Code tabs

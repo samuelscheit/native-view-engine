@@ -321,7 +321,7 @@ fn corrupt_and_truncated_archives_are_rejected() {
 
 #[test]
 fn live_dioxus_signal_registers_snapshots_and_hydrates() {
-    use dioxus_core::{Element, VirtualDom};
+    use dioxus_core::Element;
     use dioxus_core_macro::rsx;
     use std::sync::Mutex;
 
@@ -345,12 +345,8 @@ fn live_dioxus_signal_registers_snapshots_and_hydrates() {
         rsx! {}
     }
 
-    let mut vdom = VirtualDom::new(app);
-    let mut writer = crate::NveMutationWriter::new(1);
-    let mut sink = nve_engine::BatchSink::new(1);
-    let mut tx = writer.begin_tx(&mut sink, 1, 1);
-    vdom.rebuild(&mut tx);
-    let _ = tx.finish_frame(true);
+    let mut surface = crate::DioxusSurface::new(1, app);
+    surface.reconcile(1);
 
     assert!(CAPTURED.lock().unwrap().is_some());
     assert_eq!(*HYDRATED_VAL.lock().unwrap(), Some(19));

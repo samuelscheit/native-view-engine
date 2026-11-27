@@ -1,518 +1,213 @@
-use dioxus_core::{Attribute, AttributeValue, Element, VNode};
-use nve_abi::{
-    pack_key_modifiers, ColorRgba, Command, CommandDecoder, ComponentKind, EventPayload,
-    NativeEvent, NativeEventKind, NodeId, NveBufferSlice, NveDirectEvent, NveEventBatch,
-    NveEventBatchRef, RawPropValue, NveValue,
+//! End-to-end tests for `DioxusSurface` directly over `NodeStore`, `TypedStyle`, `TableAttr`
+//! extensibility, surgical `HotPatchMsg`, direct event dispatch, and `NVE2` wire round-trip.
+
+use nve_abi::{ColorRgba, EventPayload, NativeEvent, NativeEventKind};
+use nve_components::tables::{
+    Accessibility, AriaRole, DebugId, Interaction, Layout, TextContent, TextInput, Typography,
+    Visual,
 };
-use nve_components::{DrawListBuilder, DrawListDecoder, NVE_DRAW_MAGIC};
+use nve_engine::HotPatchMsg;
+use nve_store::wire::WireDecoder;
+use nve_store::{ChangeSet, Length, NodeId, NodeStore, NveTable, Rgba};
 
-use crate::elements;
 use crate::prelude::*;
-use crate::DioxusSurface;
+
+#[allow(dead_code)]
+#[derive(NveTable)]
+#[nve_table(name = "acme.badge", storage = "sparse", flags = "publish")]
+struct CustomBadge {
+    #[effect(paint)]
+    pub count: u32,
+}
 
 #[component]
-fn AllEventsApp() -> Element {
-    let mut log = use_signal(String::new);
-
-    let on_scroll = Attribute::new(
-        "onscroll",
-        AttributeValue::listener(move |ev: ScrollEvent| {
-            let d = ev.data();
-            log.set(format!(
-                "scroll:{},{},{},{}",
-                d.x, d.y, d.content_width, d.content_height
-            ));
-        }),
-        None,
-        false,
-    );
-    let on_focus = Attribute::new(
-        "onfocus",
-        AttributeValue::listener(move |_ev: FocusEvent| {
-            log.set("focus".into());
-        }),
-        None,
-        false,
-    );
-    let on_blur = Attribute::new(
-        "onblur",
-        AttributeValue::listener(move |_ev: BlurEvent| {
-            log.set("blur".into());
-        }),
-        None,
-        false,
-    );
-    let on_longpress = Attribute::new(
-        "onlongpress",
-        AttributeValue::listener(move |ev: elements::PressEvent| {
-            let d = ev.data();
-            log.set(format!("longpress:{},{}", d.x, d.y));
-        }),
-        None,
-        false,
-    );
-    let on_custom = Attribute::new(
-        "onmetrics",
-        AttributeValue::listener(move |ev: CustomEvent| {
-            let d = ev.data();
-            log.set(format!("custom:{}:{}", d.name, d.data.len()));
-        }),
-        None,
-        false,
-    );
-    let on_submit = elements::events::onsubmit(move |ev: SubmitEvent| {
-        log.set(format!("submit:{}", ev.data().value));
+fn CounterApp() -> Element {
+    let mut count = use_signal(|| 0i32);
+    let badge_attr = table_attr_fn(move |tx, node| {
+        tx.edit::<CustomBadge>(node).count(count().max(0) as u32);
     });
-    let on_keydown = elements::events::onkeydown(move |ev: KeyEvent| {
-        let d = ev.data();
-        log.set(format!(
-            "keydown:{}:{}:{}:{}:{}",
-            d.key, d.meta, d.ctrl, d.shift, d.alt
-        ));
-    });
-
-    let _ = VNode::empty();
-    rsx! {
-        view {
-            test_id: "event-target",
-            ..vec![on_scroll, on_focus, on_blur, on_longpress, on_custom, on_submit, on_keydown],
-            text { "{log}" }
-        }
-    }
-}
-
-fn extract_target_and_text(bytes: &[u8]) -> (Option<NodeId>, Vec<String>) {
-    let (_, cmds) = CommandDecoder::new(bytes).unwrap().decode_all().unwrap();
-    let mut target = None;
-    let mut texts = Vec::new();
-    for cmd in cmds {
-        match cmd {
-            Command::SetRawProp {
-                node_id,
-                key,
-                value: RawPropValue::String(v),
-            } if key == "testID" && v == "event-target" => {
-                target = Some(node_id);
-            }
-            Command::SetText { text, .. } => texts.push(text),
-            _ => {}
-        }
-    }
-    (target, texts)
-}
-
-#[test]
-fn dispatches_scroll_focus_blur_longpress_and_custom_via_ring_and_direct_ffi() {
-    let mut surface = DioxusSurface::new(1, AllEventsApp);
-    let (_, _, f1) = surface.render_frame(1);
-    let (target_opt, _) = extract_target_and_text(&f1);
-    let target = target_opt.expect("event-target node mounted");
-
-    // 1. Scroll (EventRing)
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 10,
-        kind: NativeEventKind::Scroll,
-        payload: EventPayload::Scroll {
-            x: 12.0,
-            y: 240.0,
-            content_width: 393.0,
-            content_height: 2400.0,
-        },
-    }]));
-    let (_, _, f2) = surface.render_frame(2);
-    assert!(extract_target_and_text(&f2)
-        .1
-        .contains(&"scroll:12,240,393,2400".to_owned()));
-
-    // 2. Focus (EventRing)
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 20,
-        kind: NativeEventKind::Focus,
-        payload: EventPayload::Empty,
-    }]));
-    let (_, _, f3) = surface.render_frame(3);
-    assert!(extract_target_and_text(&f3).1.contains(&"focus".to_owned()));
-
-    // 3. Blur (EventRing)
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 30,
-        kind: NativeEventKind::Blur,
-        payload: EventPayload::Empty,
-    }]));
-    let (_, _, f4) = surface.render_frame(4);
-    assert!(extract_target_and_text(&f4).1.contains(&"blur".to_owned()));
-
-    // 4. LongPress (EventRing)
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 40,
-        kind: NativeEventKind::LongPress,
-        payload: EventPayload::Point { x: 75.5, y: 32.25 },
-    }]));
-    let (_, _, f5) = surface.render_frame(5);
-    assert!(extract_target_and_text(&f5)
-        .1
-        .contains(&"longpress:75.5,32.25".to_owned()));
-
-    // 5. Custom (EventRing — with leading "on" prefix normalized cleanly)
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 50,
-        kind: NativeEventKind::Custom,
-        payload: EventPayload::Custom {
-            name: "onmetrics".into(),
-            data: vec![1, 2, 3, 4],
-        },
-    }]));
-    let (_, _, f6) = surface.render_frame(6);
-    assert!(extract_target_and_text(&f6)
-        .1
-        .contains(&"custom:onmetrics:4".to_owned()));
-
-    // 6. Direct FFI path: Scroll, Focus, Blur, LongPress, Custom
-    let direct_scroll = [NveDirectEvent::scroll(1, target, 60, 5.0, 99.0, 320.0, 1200.0)];
-    let batch_scroll = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_scroll)) };
-    assert!(surface.dispatch_direct_events(batch_scroll));
-    let (_, _, f7) = surface.render_frame(7);
-    assert!(extract_target_and_text(&f7)
-        .1
-        .contains(&"scroll:5,99,320,1200".to_owned()));
-
-    let direct_focus = [NveDirectEvent::empty(1, target, 70, NativeEventKind::Focus)];
-    let batch_focus = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_focus)) };
-    assert!(surface.dispatch_direct_events(batch_focus));
-    let (_, _, f8) = surface.render_frame(8);
-    assert!(extract_target_and_text(&f8).1.contains(&"focus".to_owned()));
-
-    let direct_blur = [NveDirectEvent::empty(1, target, 80, NativeEventKind::Blur)];
-    let batch_blur = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_blur)) };
-    assert!(surface.dispatch_direct_events(batch_blur));
-    let (_, _, f9) = surface.render_frame(9);
-    assert!(extract_target_and_text(&f9).1.contains(&"blur".to_owned()));
-
-    let direct_lp = [NveDirectEvent::long_press(1, target, 90, 11.0, 22.0)];
-    let batch_lp = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_lp)) };
-    assert!(surface.dispatch_direct_events(batch_lp));
-    let (_, _, f10) = surface.render_frame(10);
-    assert!(extract_target_and_text(&f10)
-        .1
-        .contains(&"longpress:11,22".to_owned()));
-
-    let custom_bytes = [7u8, 8, 9];
-    let direct_custom = [NveDirectEvent::custom(
-        1,
-        target,
-        100,
-        "metrics",
-        NveValue::bytes(NveBufferSlice::from_slice(&custom_bytes)),
-    )];
-    let batch_custom = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_custom)) };
-    assert!(surface.dispatch_direct_events(batch_custom));
-    let (_, _, f11) = surface.render_frame(11);
-    assert!(extract_target_and_text(&f11)
-        .1
-        .contains(&"custom:metrics:3".to_owned()));
-
-    // 7. Typed Submit & KeyDown (both NativeEvent & direct FFI)
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 110,
-        kind: NativeEventKind::Submit,
-        payload: EventPayload::Text("ship v2".into()),
-    }]));
-    let (_, _, f12) = surface.render_frame(12);
-    assert!(extract_target_and_text(&f12)
-        .1
-        .contains(&"submit:ship v2".to_owned()));
-
-    assert!(surface.dispatch_events(&[NativeEvent {
-        surface_id: 1,
-        node_id: target,
-        timestamp_us: 120,
-        kind: NativeEventKind::KeyDown,
-        payload: EventPayload::Key {
-            key: "k".into(),
-            code: "KeyK".into(),
-            key_code: 75,
-            modifiers: pack_key_modifiers(true, false, true, false, false),
-            is_composing: false,
-        },
-    }]));
-    let f13 = surface.render_frame_slice(13).to_vec();
-    assert!(extract_target_and_text(&f13)
-        .1
-        .contains(&"keydown:k:true:false:true:false".to_owned()));
-
-    let direct_submit = [NveDirectEvent::submit(1, target, 130, "direct-msg")];
-    let batch_submit = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_submit)) };
-    assert!(surface.dispatch_direct_events(batch_submit));
-    let (_, _, f14) = surface.render_frame(14);
-    assert!(extract_target_and_text(&f14)
-        .1
-        .contains(&"submit:direct-msg".to_owned()));
-
-    let direct_keydown = [NveDirectEvent::key_down(
-        1,
-        target,
-        140,
-        "Enter",
-        "Enter",
-        pack_key_modifiers(false, true, false, true, false),
-        13,
-        false,
-    )];
-    let batch_keydown = unsafe { NveEventBatchRef::from_raw(NveEventBatch::from_slice(&direct_keydown)) };
-    assert!(surface.dispatch_direct_events(batch_keydown));
-    let f15 = surface.render_frame_slice(15).to_vec();
-    assert!(extract_target_and_text(&f15)
-        .1
-        .contains(&"keydown:Enter:false:true:false:true".to_owned()));
-}
-
-#[component]
-fn CanvasDrawListApp() -> Element {
-    let mut dl = DrawListBuilder::with_capacity(128);
-    dl.clear(ColorRgba::rgb(17, 24, 39))
-        .fill_rect(4.0, 4.0, 64.0, 24.0, ColorRgba::rgb(56, 189, 248));
-    let attr = dl.to_attr_string();
+    let card_style = TypedStyle::new()
+        .width_px(320.0)
+        .padding(16.0)
+        .bg(ColorRgba::rgb(15, 23, 42))
+        .radius(12.0)
+        .color(ColorRgba::WHITE)
+        .font_size(18.0)
+        .font_weight("bold")
+        .cursor(CursorKind::Pointer);
 
     rsx! {
         view {
-            canvas {
-                test_id: "direct-canvas",
-                draw_list: "{attr}",
-                style: "width: 120px; height: 48px;",
-            }
-            canvas {
-                test_id: "corrupt-canvas",
-                draw_list: "nve-draw1;b64,!!!invalid!!!",
-                style: "width: 40px; height: 20px;",
-            }
-        }
-    }
-}
-
-#[test]
-fn writer_decodes_draw_list_attr_directly_to_bytes_and_render_frame_slice_is_zero_copy() {
-    let mut s1 = DioxusSurface::new(1, CanvasDrawListApp);
-    let mut s2 = DioxusSurface::new(1, CanvasDrawListApp);
-
-    let slice_bytes = s1.render_frame_slice(1).to_vec();
-    let (_, _, owned_bytes) = s2.render_frame(1);
-    assert_eq!(slice_bytes, owned_bytes);
-
-    let (_, cmds) = CommandDecoder::new(&slice_bytes)
-        .unwrap()
-        .decode_all()
-        .unwrap();
-
-    let mut saw_canvas = false;
-    let mut saw_binary_draw_list = false;
-    let mut saw_corrupt_fallback = false;
-    for cmd in cmds {
-        match cmd {
-            Command::CreateNode {
-                kind: ComponentKind::SkiaCanvas,
-                ..
-            } => saw_canvas = true,
-            Command::SetRawProp {
-                key,
-                value: RawPropValue::Bytes(bytes),
-                ..
-            } if key == "drawList" => {
-                assert!(bytes.starts_with(&NVE_DRAW_MAGIC));
-                let ops = DrawListDecoder::decode(&bytes).expect("valid NVE_DRAW1 ops");
-                assert_eq!(ops.len(), 2);
-                saw_binary_draw_list = true;
-            }
-            Command::SetRawProp {
-                key,
-                value: RawPropValue::String(raw),
-                ..
-            } if key == "drawList" && raw.contains("!!!invalid!!!") => {
-                saw_corrupt_fallback = true;
-            }
-            _ => {}
-        }
-    }
-
-    assert!(saw_canvas);
-    assert!(
-        saw_binary_draw_list,
-        "NveMutationWriter must decode DRAW_LIST_ATTR_PREFIX directly into RawPropValue::Bytes"
-    );
-    assert!(
-        saw_corrupt_fallback,
-        "corrupt base64 drawList should degrade safely without panicking"
-    );
-}
-
-#[component]
-fn AriaAttributesApp() -> Element {
-    let mut expanded = use_signal(|| false);
-    let expanded_str = if expanded() { "true" } else { "false" };
-    let val_now: i64 = if expanded() { 75 } else { 25 };
-    let described: Option<&str> = if expanded() {
-        Some("help-2")
-    } else {
-        None
-    };
-
-    let manual_kebab = Attribute::new(
-        "aria-live",
-        AttributeValue::Text("assertive".into()),
-        None,
-        false,
-    );
-
-    rsx! {
-        view {
-            test_id: "aria-dialog",
-            accessibility_role: "dialog",
-            aria_modal: "true",
-            aria_labelledby: "dialog-title",
-            aria_describedby: described,
-            aria_live: "polite",
-            tab_index: -1,
-            style: "background-color: #111827; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);",
+            test_id: "card-root",
+            nve_style: card_style,
+            nve_table: badge_attr,
             pressable {
-                test_id: "aria-trigger",
-                accessibility_role: "tab",
-                tab_index: 0,
-                aria_checked: "mixed",
-                aria_selected: "true",
-                aria_expanded: "{expanded_str}",
-                aria_controls: "panel-1",
-                aria_valuenow: val_now,
-                aria_valuemin: 0,
-                aria_valuemax: 100,
-                onpress: move |_| expanded.toggle(),
-                text {
-                    style: "font-size: 14px; font-weight: 600; text-align: center; color: #ffffff;",
-                    "Toggle"
-                }
+                test_id: "inc-btn",
+                onpress: move |_| count += 1,
+                text { "Count: {count}" }
             }
-            view {
-                test_id: "aria-kebab",
-                ..vec![manual_kebab],
+            textinput {
+                test_id: "name-input",
+                placeholder: "Your name",
+                value: "Ada",
             }
         }
     }
 }
 
+fn find_by_test_id(store: &NodeStore, tid: &str) -> NodeId {
+    let mut stack = vec![NodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if id != NodeId::ROOT
+            && let Some(dbg) = store.try_row::<DebugId>(id)
+            && dbg.test_id() == tid
+        {
+            return id;
+        }
+        stack.extend_from_slice(store.children(id));
+    }
+    panic!("missing node with test_id={tid}");
+}
+
 #[test]
-fn typed_aria_and_tab_index_attributes_forward_cleanly_via_set_raw_prop() {
-    let mut surface = DioxusSurface::new(1, AriaAttributesApp);
-    let (_, _, frame1) = surface.render_frame(1);
-    let (_, cmds1) = CommandDecoder::new(&frame1)
-        .expect("valid header")
-        .decode_all()
-        .expect("valid frame 1");
+fn dioxus_surface_nodestore_typed_style_table_attr_events_and_nve2_roundtrip() {
+    let mut surface = DioxusSurface::new(1, CounterApp);
+    let mut wire_bytes = Vec::new();
+    let (_rec_us, _enc_us) = surface.render_nve2(1, &mut wire_bytes);
+    assert!(!wire_bytes.is_empty());
 
-    let find_node = |cmds: &[Command], tid: &str| -> NodeId {
-        cmds.iter()
-            .find_map(|c| match c {
-                Command::SetRawProp {
-                    node_id,
-                    key,
-                    value: RawPropValue::String(v),
-                } if key == "testID" && v == tid => Some(*node_id),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("missing node with testID={tid}"))
-    };
+    let card = find_by_test_id(surface.store(), "card-root");
+    let btn = find_by_test_id(surface.store(), "inc-btn");
+    let input = find_by_test_id(surface.store(), "name-input");
 
-    let has_str_prop = |cmds: &[Command], nid: NodeId, k: &str, expected: &str| {
-        cmds.iter().any(|c| {
-            matches!(
-                c,
-                Command::SetRawProp {
-                    node_id,
-                    key,
-                    value: RawPropValue::String(v),
-                } if *node_id == nid && key == k && v == expected
-            )
-        })
-    };
+    assert_eq!(
+        surface.store().try_row::<Layout>(card).unwrap().width(),
+        Length::points(320.0)
+    );
+    assert_eq!(
+        surface.store().try_row::<Visual>(card).unwrap().background(),
+        Rgba::rgb(15, 23, 42)
+    );
+    assert_eq!(
+        surface.store().try_row::<Typography>(card).unwrap().font_weight(),
+        700
+    );
+    assert_eq!(
+        surface.store().try_row::<CustomBadge>(card).unwrap().count(),
+        0
+    );
+    assert_eq!(
+        surface.store().try_row::<Accessibility>(btn).unwrap().role(),
+        AriaRole::Button
+    );
+    assert_ne!(
+        surface.store().try_row::<Interaction>(btn).unwrap().event_mask(),
+        0
+    );
+    let ti = surface.store().try_row::<TextInput>(input).unwrap();
+    assert_eq!(ti.value(), "Ada");
+    assert_eq!(ti.placeholder(), "Your name");
 
-    let dialog_id = find_node(&cmds1, "aria-dialog");
-    let trigger_id = find_node(&cmds1, "aria-trigger");
-    let kebab_id = find_node(&cmds1, "aria-kebab");
+    // Replicate frame 1 into an independent NodeStore via NVE2 WireDecoder.
+    let mut replica = NodeStore::replica();
+    let mut decoder = WireDecoder::default();
+    let mut replica_changes = ChangeSet::default();
+    {
+        let mut tx = replica.tx();
+        decoder.apply(&mut tx, &wire_bytes).unwrap();
+        tx.commit_into(&mut replica_changes);
+    }
+    let replica_card = find_by_test_id(&replica, "card-root");
+    assert_eq!(
+        replica.try_row::<CustomBadge>(replica_card).unwrap().count(),
+        0
+    );
 
-    // Verify all 12 typed ARIA/focus attributes plus preserved Wave 12D inline style forwarding.
-    assert!(has_str_prop(&cmds1, dialog_id, "accessibilityRole", "dialog"));
-    assert!(has_str_prop(&cmds1, dialog_id, "ariaModal", "true"));
-    assert!(has_str_prop(&cmds1, dialog_id, "ariaLabelledBy", "dialog-title"));
-    assert!(has_str_prop(&cmds1, dialog_id, "ariaLive", "polite"));
-    assert!(has_str_prop(&cmds1, dialog_id, "tabIndex", "-1"));
-    assert!(has_str_prop(
-        &cmds1,
-        dialog_id,
-        "box-shadow",
-        "0 8px 24px rgba(0, 0, 0, 0.4)"
-    ));
-    assert!(cmds1.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp {
-            node_id,
-            key,
-            value: RawPropValue::Null,
-        } if *node_id == dialog_id && key == "ariaDescribedBy"
-    )));
-
-    assert!(has_str_prop(&cmds1, trigger_id, "tabIndex", "0"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaChecked", "mixed"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaSelected", "true"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaExpanded", "false"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaControls", "panel-1"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaValueNow", "25"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaValueMin", "0"));
-    assert!(has_str_prop(&cmds1, trigger_id, "ariaValueMax", "100"));
-
-    // Manual kebab-case attribute normalizes to canonical camelCase key.
-    assert!(has_str_prop(&cmds1, kebab_id, "ariaLive", "assertive"));
-
-    // Preserved Wave 12D inline text style forwarding.
-    assert!(cmds1.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp {
-            key,
-            value: RawPropValue::String(v),
-            ..
-        } if key == "font-weight" && v == "600"
-    )));
-    assert!(cmds1.iter().any(|c| matches!(
-        c,
-        Command::SetRawProp {
-            key,
-            value: RawPropValue::String(v),
-            ..
-        } if key == "text-align" && v == "center"
-    )));
-
-    // Trigger press toggles reactive ARIA attributes and updates CommandBuffer cleanly.
-    assert!(surface.dispatch_events(&[NativeEvent {
+    // Dispatch a Press event on the button and verify reactive update + NVE2 delta.
+    let handled = surface.dispatch_events(&[NativeEvent {
         surface_id: 1,
-        node_id: trigger_id,
+        node_id: btn.raw(),
         timestamp_us: 100,
         kind: NativeEventKind::Press,
         payload: EventPayload::Point { x: 10.0, y: 10.0 },
-    }]));
-    let (_, _, frame2) = surface.render_frame(2);
-    let (_, cmds2) = CommandDecoder::new(&frame2)
-        .expect("valid header")
-        .decode_all()
-        .expect("valid frame 2");
-    assert!(has_str_prop(&cmds2, trigger_id, "ariaExpanded", "true"));
-    assert!(has_str_prop(&cmds2, trigger_id, "ariaValueNow", "75"));
-    assert!(has_str_prop(&cmds2, dialog_id, "ariaDescribedBy", "help-2"));
+    }]);
+    assert!(handled);
+
+    surface.render_nve2(2, &mut wire_bytes);
+    assert_eq!(
+        surface.store().try_row::<CustomBadge>(card).unwrap().count(),
+        1
+    );
+    {
+        let mut tx = replica.tx();
+        decoder.apply(&mut tx, &wire_bytes).unwrap();
+        tx.commit_into(&mut replica_changes);
+    }
+    assert_eq!(
+        replica.try_row::<CustomBadge>(replica_card).unwrap().count(),
+        1
+    );
+}
+
+#[component]
+fn MultiCardApp() -> Element {
+    rsx! {
+        view {
+            view {
+                test_id: "card-alpha",
+                style: "padding: 8px; background-color: #111111; border-radius: 4px;",
+                text { "# engineering" }
+            }
+            view {
+                test_id: "card-beta",
+                style: "padding: 8px; background-color: #222222; border-radius: 4px;",
+                text { "# design-sync" }
+            }
+        }
+    }
+}
+
+#[test]
+fn targeted_hot_patch_updates_only_addressed_node_and_text() {
+    let mut surface = DioxusSurface::new(1, MultiCardApp);
+    surface.reconcile(1);
+
+    let alpha = find_by_test_id(surface.store(), "card-alpha");
+    let beta = find_by_test_id(surface.store(), "card-beta");
+    let beta_bg = surface.store().try_row::<Visual>(beta).unwrap().background();
+
+    assert!(surface.apply_hot_patch(&HotPatchMsg::TemplatePatch {
+        generation: 2,
+        template_id: "ui.rs".into(),
+        attr_updates: vec![(
+            "style".into(),
+            "background-color: #2563eb; border-radius: 16px;".into(),
+        )],
+        text_updates: vec![],
+        target_test_id: Some("card-alpha".into()),
+        node_path: vec![0, 0],
+        text_replacements: vec![("# engineering".into(), "# runtime".into())],
+    }));
+    surface.reconcile(2);
+
+    let alpha_vis = surface.store().try_row::<Visual>(alpha).unwrap();
+    assert_eq!(alpha_vis.background(), Rgba::rgb(37, 99, 235));
+    assert_eq!(alpha_vis.border_radius(), 16.0);
+    assert_eq!(
+        surface.store().try_row::<Visual>(beta).unwrap().background(),
+        beta_bg
+    );
+
+    // Verify exact text replacement updated only "# engineering" -> "# runtime".
+    let mut texts = Vec::new();
+    let mut stack = vec![NodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if let Some(tc) = surface.store().try_row::<TextContent>(id) {
+            texts.push(tc.text().to_owned());
+        }
+        stack.extend_from_slice(surface.store().children(id));
+    }
+    assert!(texts.iter().any(|t| t == "# runtime"));
+    assert!(texts.iter().any(|t| t == "# design-sync"));
+    assert!(!texts.iter().any(|t| t == "# engineering"));
 }

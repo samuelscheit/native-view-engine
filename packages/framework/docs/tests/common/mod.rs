@@ -3,12 +3,15 @@
 use std::sync::Arc;
 
 use nve_abi::{
-    EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue, pack_key_modifiers,
+    ColorRgba, EventPayload, NativeEvent, NativeEventKind, NodeId as AbiNodeId, pack_key_modifiers,
 };
 use nve_backend_headless::HeadlessBackend;
+use nve_components::tables::{Accessibility, DebugId, Link, TextContent, Visual};
 use nve_dioxus::DioxusSurface;
-use nve_dioxus::dioxus_elements::backend::{RenderBackend, Viewport};
+use nve_dioxus::dioxus_elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::*;
+use nve_store::NodeId;
+use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use nve_docs::{
     DocsNavSection, DocsSiteConfig, DocsViewport, PlaygroundMeta, PlaygroundRegistry,
     create_docs_surface_with_viewport, default_component_registry,
@@ -230,62 +233,129 @@ impl DocsHarness {
         h
     }
 
-    pub fn render(&mut self) -> Vec<u8> {
+    pub fn render(&mut self) {
         self.frame_id += 1;
-        let (_, _, bytes) = self.surface.render_frame(self.frame_id);
-        self.backend
-            .submit_frame(&bytes)
-            .expect("headless submit_frame");
-        bytes
+        self.surface
+            .commit_to(self.frame_id, &mut self.backend)
+            .expect("headless commit_to");
     }
 
-    pub fn maybe_find(&self, tid: &str) -> Option<NodeId> {
-        self.backend
-            .nodes()
-            .values()
-            .find_map(|n| match n.raw_props.get("testID") {
-                Some(RawPropValue::String(s)) if s == tid => Some(n.id),
-                _ => None,
-            })
+    pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+        let store = self.surface.store();
+        let mut stack = vec![NodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != NodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == tid
+            {
+                return Some(id.raw());
+            }
+            stack.extend_from_slice(store.children(id));
+        }
+        None
     }
 
-    pub fn find(&self, tid: &str) -> NodeId {
+    pub fn find(&self, tid: &str) -> AbiNodeId {
         self.maybe_find(tid).unwrap_or_else(|| {
             panic!(
                 "expected node with testID='{tid}' in tree:\n{}",
-                self.backend.render_ascii_tree()
+                self.backend.dump_tree(self.surface.store())
             )
         })
     }
 
-    pub fn find_prefix(&self, prefix: &str) -> NodeId {
-        self.backend
-            .nodes()
-            .values()
-            .find_map(|n| match n.raw_props.get("testID") {
-                Some(RawPropValue::String(s)) if s.starts_with(prefix) => Some(n.id),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("expected node with testID prefix '{prefix}'"))
+    pub fn find_prefix(&self, prefix: &str) -> AbiNodeId {
+        let store = self.surface.store();
+        let mut stack = vec![NodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != NodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id().starts_with(prefix)
+            {
+                return id.raw();
+            }
+            stack.extend_from_slice(store.children(id));
+        }
+        panic!("expected node with testID prefix '{prefix}'")
     }
 
-    pub fn raw_str(&self, id: NodeId, key: &str) -> Option<&str> {
-        match self.backend.node(id)?.raw_props.get(key) {
-            Some(RawPropValue::String(s)) => Some(s.as_str()),
+    pub fn find_matching(&self, pred: impl Fn(&str) -> bool) -> Option<AbiNodeId> {
+        let store = self.surface.store();
+        let mut stack = vec![NodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != NodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && pred(dbg.test_id())
+            {
+                return Some(id.raw());
+            }
+            stack.extend_from_slice(store.children(id));
+        }
+        None
+    }
+
+    pub fn bg(&self, id: AbiNodeId) -> ColorRgba {
+        self.surface
+            .store()
+            .try_row::<Visual>(NodeId(id))
+            .map_or(ColorRgba::TRANSPARENT, |v| ColorRgba::from_u32(v.background().0))
+    }
+
+    pub fn raw_str(&self, id: AbiNodeId, key: &str) -> Option<String> {
+        let store = self.surface.store();
+        let nid = NodeId(id);
+        if let Some(dk) = key.strip_prefix("data-") {
+            let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
+            if res.is_none() {
+                return None;
+            }
+            let list = store.resource::<DataAttrList>(res)?;
+            return list.0.iter().find(|(k, _)| k == dk).map(|(_, v)| v.clone());
+        }
+        match key {
+            "viewport-mode" => {
+                let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
+                if res.is_none() {
+                    return None;
+                }
+                let list = store.resource::<DataAttrList>(res)?;
+                list.0
+                    .iter()
+                    .find(|(k, _)| k == "viewport-mode")
+                    .map(|(_, v)| v.clone())
+            }
+            "href" => store
+                .try_row::<Link>(nid)
+                .map(|l| l.href().to_owned())
+                .filter(|s| !s.is_empty()),
+            "aria-level" => {
+                let lvl = store.try_row::<Accessibility>(nid)?.level();
+                (lvl > 0).then(|| lvl.to_string())
+            }
+            "accessibilityRole" => {
+                let r = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
+                (!r.is_empty()).then(|| r.to_owned())
+            }
+            "accessibilityLabel" => store
+                .try_row::<Accessibility>(nid)
+                .map(|a| a.label().to_owned())
+                .filter(|s| !s.is_empty()),
             _ => None,
         }
     }
 
-    pub fn collect_text(&self, id: NodeId) -> String {
-        let Some(node) = self.backend.node(id) else {
-            return String::new();
-        };
+    pub fn collect_text(&self, id: AbiNodeId) -> String {
+        self.collect_text_store(NodeId(id))
+    }
+
+    fn collect_text_store(&self, id: NodeId) -> String {
+        let store = self.surface.store();
         let mut out = String::new();
-        if let Some(t) = node.text.as_deref() {
-            out.push_str(t);
+        if let Some(tc) = store.try_row::<TextContent>(id) {
+            out.push_str(tc.text());
         }
-        for &cid in &node.children {
-            out.push_str(&self.collect_text(cid));
+        for &cid in store.children(id) {
+            out.push_str(&self.collect_text_store(cid));
         }
         out
     }
@@ -305,7 +375,7 @@ impl DocsHarness {
         self.press_id(id);
     }
 
-    pub fn press_id(&mut self, id: NodeId) {
+    pub fn press_id(&mut self, id: AbiNodeId) {
         let ts = self.next_ts();
         let handled = self.surface.dispatch_events(&[NativeEvent {
             surface_id: 1,

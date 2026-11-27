@@ -97,7 +97,7 @@ fn dart_enum_variant_ident(variant_name: &str) -> String {
 /// `packages/core/abi/src/schema.rs`.
 pub fn generate_dart_core_abi() -> String {
     let spec = core_abi_spec();
-    let schema_hash = spec.file_schema_hash();
+    let schema_hash = crate::schema::hybrid::core_abi::core_abi_schema_hash();
     let signed_hash = schema_hash as i64;
     let mut out = String::with_capacity(8 * 1024);
 
@@ -114,7 +114,7 @@ pub fn generate_dart_core_abi() -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "/// Deterministic FNV-1a 64-bit Core ABI schema hash (`0x{schema_hash:016X}`)."
+        "/// Deterministic XXH64 Core ABI schema hash (`0x{schema_hash:016X}`)."
     );
     let _ = writeln!(out, "const int nveCoreAbiSchemaHash = {signed_hash};");
     let _ = writeln!(

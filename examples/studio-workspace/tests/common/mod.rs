@@ -2,15 +2,59 @@
 
 use std::path::{Path, PathBuf};
 
-use nve_abi::{
-    ColorRgba, ComponentKind, EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue,
-};
+use nve_abi::{ColorRgba, EventPayload, NativeEvent, NativeEventKind, NodeId};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::{PixelBuffer, SkiaBackend};
 use nve_backend_web::WebBackend;
+use nve_canvas_skia::CanvasSkiaSystem;
+use nve_canvas_web::CanvasWebSystem;
+use nve_components::tables::{DebugId, TextContent};
 use nve_dioxus::DioxusSurface;
-use nve_engine::{RenderBackend, Viewport};
+use nve_engine::{StoreBackend, Viewport};
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 use nve_studio_workspace::create_surface_for_viewport;
+use nve_web_html::{DataAttrList, HtmlDataAttrs};
+use nve_web_html_web::register_web_html_systems;
+
+pub fn register_studio_tables() {
+    nve_components::tables::register_core_tables();
+    let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
+    nve_web_html::register_web_html_tables();
+}
+
+pub fn find_in_store(store: &NodeStore, test_id: &str) -> Option<NodeId> {
+    let mut stack = vec![StoreNodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if id != StoreNodeId::ROOT
+            && let Some(dbg) = store.try_row::<DebugId>(id)
+            && dbg.test_id() == test_id
+        {
+            return Some(id.raw());
+        }
+        stack.extend_from_slice(store.children(id));
+    }
+    None
+}
+
+pub fn data_attr_in_store(store: &NodeStore, id: NodeId, key: &str) -> Option<String> {
+    let res = store.try_row::<HtmlDataAttrs>(StoreNodeId(id))?.entries();
+    let list = store.resource::<DataAttrList>(res)?;
+    let stripped = key.strip_prefix("data-").unwrap_or(key);
+    list.0
+        .iter()
+        .find(|(k, _)| k == key || k == stripped)
+        .map(|(_, v)| v.clone())
+}
+
+pub fn live_node_ids(store: &NodeStore) -> Vec<StoreNodeId> {
+    let mut out = Vec::new();
+    let mut stack = vec![StoreNodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        out.push(id);
+        stack.extend_from_slice(store.children(id));
+    }
+    out
+}
 
 pub struct MultiBackendHarness {
     pub surface: DioxusSurface,
@@ -23,6 +67,7 @@ pub struct MultiBackendHarness {
 
 impl MultiBackendHarness {
     pub fn new(width: f32, height: f32) -> Self {
+        register_studio_tables();
         let viewport = Viewport {
             width,
             height,
@@ -30,7 +75,10 @@ impl MultiBackendHarness {
         };
         let mut headless = HeadlessBackend::new();
         let mut skia = SkiaBackend::new();
+        skia.register_table_system(CanvasSkiaSystem);
         let mut web = WebBackend::new();
+        register_web_html_systems(web.table_registry_mut());
+        web.register_table_system(CanvasWebSystem);
         headless.set_viewport(1, viewport);
         skia.set_viewport(1, viewport);
         web.set_viewport(1, viewport);
@@ -47,27 +95,23 @@ impl MultiBackendHarness {
         h
     }
 
-    pub fn render_next(&mut self) -> Vec<u8> {
+    pub fn render_next(&mut self) {
         let fid = self.next_frame;
         self.next_frame += 1;
-        let (_, _, bytes) = self.surface.render_frame(fid);
-        self.headless.submit_frame(&bytes).expect("headless submit");
-        self.skia.submit_frame(&bytes).expect("skia submit");
-        self.web.submit_frame(&bytes).expect("web submit");
-        bytes
+        self.surface.reconcile(fid);
+        let store = self.surface.store();
+        let changes = self.surface.last_changes();
+        self.headless.commit(store, changes).expect("headless commit");
+        self.skia.commit(store, changes).expect("skia commit");
+        self.web.commit(store, changes).expect("web commit");
     }
 
     pub fn find_by_test_id(&self, test_id: &str) -> Option<NodeId> {
-        self.headless
-            .nodes()
-            .values()
-            .find(|n| {
-                matches!(
-                    n.raw_props.get("testID"),
-                    Some(RawPropValue::String(s)) if s == test_id
-                )
-            })
-            .map(|n| n.id)
+        find_in_store(self.surface.store(), test_id)
+    }
+
+    pub fn data_attr(&self, id: NodeId, key: &str) -> Option<String> {
+        data_attr_in_store(self.surface.store(), id, key)
     }
 
     pub fn press(&mut self, test_id: &str) {
@@ -86,7 +130,7 @@ impl MultiBackendHarness {
         let cy = rect.y + rect.height * 0.5;
         let hit = self
             .headless
-            .hit_test(cx, cy, true)
+            .hit_test(self.surface.store(), cx, cy)
             .unwrap_or_else(|| panic!("hit_test missed '{test_id}' at ({cx}, {cy}) rect={rect:?}"));
         assert_eq!(
             hit, node_id,
@@ -120,11 +164,11 @@ impl MultiBackendHarness {
     }
 
     pub fn ascii(&self) -> String {
-        self.headless.render_ascii_tree()
+        self.headless.render_ascii_tree(self.surface.store())
     }
 
     pub fn html(&self) -> String {
-        self.web.render_html()
+        self.web.render_html(self.surface.store())
     }
 
     pub fn rasterize(&self) -> PixelBuffer {
@@ -136,27 +180,29 @@ impl MultiBackendHarness {
 
     pub fn assert_no_horizontal_overflow(&self, label: &str) {
         let vp_w = self.viewport.width;
-        for node in self.headless.nodes().values() {
-            if node.kind == ComponentKind::Root {
+        let store = self.surface.store();
+        for id in live_node_ids(store) {
+            if id == StoreNodeId::ROOT {
                 continue;
             }
-            let r = node.computed_rect;
+            let Some(r) = self.headless.layout_of(id.raw()) else {
+                continue;
+            };
             if r.width <= 0.0 || r.height <= 0.0 {
                 continue;
             }
+            let text = store
+                .try_row::<TextContent>(id)
+                .map(|tc| tc.text());
             assert!(
                 r.x >= -0.5,
-                "[{label}] node #{id} ({kind:?}, text={text:?}) has negative x: {r:?}",
-                id = node.id,
-                kind = node.kind,
-                text = node.text
+                "[{label}] node #{} (text={text:?}) has negative x: {r:?}",
+                id.raw()
             );
             assert!(
                 r.x + r.width <= vp_w + 1.0,
-                "[{label}] node #{id} ({kind:?}, text={text:?}) overflows right edge ({vp_w}): {r:?}",
-                id = node.id,
-                kind = node.kind,
-                text = node.text
+                "[{label}] node #{} (text={text:?}) overflows right edge ({vp_w}): {r:?}",
+                id.raw()
             );
         }
     }

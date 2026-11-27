@@ -78,7 +78,7 @@ impl DesktopWindowHost<HotAppSlot> {
             let _ = app.bind_host_services(Some(Arc::clone(&host_services)));
             DesktopSession::from_parts(
                 app,
-                prewarmed.backend,
+                prewarmed.replica,
                 prewarmed.pixel_buffer,
                 prewarmed.frame0_bytes,
                 options.surface_id,

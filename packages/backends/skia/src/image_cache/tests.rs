@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use nve_abi::ColorRgba;
-use nve_components::canvas_ir::ImageResizeMode;
+use nve_components::tables::ImageFit;
 use nve_engine::LayoutRect;
 
 use super::png::{decode_pass, PngHeader};
@@ -11,7 +11,7 @@ use super::*;
 const AVATAR_MAYA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEWBxd4fKHggFOB1JD4MAKjRfBnTmv6zAAAAAElFTkSuQmCC";
 const AVATAR_LIAM: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAg9gVSsGEXB8u5fKHggFOB1JD4MAGcqfXUz+ORAAAAAAElFTkSuQmCC";
 const AVATAR_SARA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAhWPTGsGEWB0tE4FDwQCvA6Eh8GAE5RZ/09pCRNAAAAAElFTkSuQmCC";
-const AVATAR_DEV: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHElEQVR42mOQ07T+jw8zEK1gyuIdKHggFJDtCwAdM3cRKMfnvgAAAABJRU5ErkJggg==";
+const AVATAR_DEV: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHElEQVQY02OQ07T+jw8zEK1gyuIdKHggFJDtCwAdM3cR3wnOlQAAAABJRU5ErkJggg==";
 const AVATAR_ARIA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAhXKWasGEXB13ncKHggFOB1JD4MAEs7b4ERxIxeAAAAAElFTkSuQmCC";
 const AVATAR_NOAH: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAgerzysGEVB7eU/KHggFOB1JD4MAL/Ggglv5kNyAAAAAElFTkSuQmCC";
 const AVATAR_YOU: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJElEQVR42mOQ07T+jw8zgAh+cS2sGEXBj19/UPBAKMDrSHwYAFnZgxk5UYNxAAAAAElFTkSuQmCC";
@@ -218,7 +218,7 @@ fn computes_exact_placement_for_all_four_resize_modes() {
         width: 100.0,
         height: 50.0,
     };
-    let stretch = compute_image_placement(dst, 40, 40, ImageResizeMode::Stretch).unwrap();
+    let stretch = compute_image_placement(dst, 40, 40, ImageFit::Fill).unwrap();
     assert_eq!(
         (stretch.dst_x, stretch.dst_y, stretch.dst_w, stretch.dst_h),
         (10.0, 20.0, 100.0, 50.0)
@@ -228,26 +228,26 @@ fn computes_exact_placement_for_all_four_resize_modes() {
         (0.0, 0.0, 40.0, 40.0)
     );
 
-    let contain = compute_image_placement(dst, 40, 40, ImageResizeMode::Contain).unwrap();
+    let contain = compute_image_placement(dst, 40, 40, ImageFit::Contain).unwrap();
     assert_eq!(
         (contain.dst_x, contain.dst_y, contain.dst_w, contain.dst_h),
         (35.0, 20.0, 50.0, 50.0)
     );
 
-    let cover = compute_image_placement(dst, 40, 40, ImageResizeMode::Cover).unwrap();
+    let cover = compute_image_placement(dst, 40, 40, ImageFit::Cover).unwrap();
     assert_eq!(
         (cover.dst_x, cover.dst_y, cover.dst_w, cover.dst_h),
         (10.0, 20.0, 100.0, 50.0)
     );
     assert!((cover.src_y - 10.0).abs() < 1e-4 && (cover.src_h - 20.0).abs() < 1e-4);
 
-    let center = compute_image_placement(dst, 40, 40, ImageResizeMode::Center).unwrap();
+    let center = compute_image_placement(dst, 40, 40, ImageFit::None).unwrap();
     assert_eq!(
         (center.dst_x, center.dst_y, center.dst_w, center.dst_h),
         (40.0, 25.0, 40.0, 40.0)
     );
 
-    let center_crop = compute_image_placement(dst, 200, 100, ImageResizeMode::Center).unwrap();
+    let center_crop = compute_image_placement(dst, 200, 100, ImageFit::None).unwrap();
     assert_eq!(
         (
             center_crop.dst_x,

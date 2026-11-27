@@ -3,7 +3,9 @@
 //! [`MotionClock`] / [`MotionGroup`] track manager.
 
 use nve_abi::num::{write_f32, write_u64};
-use nve_abi::{ColorRgba, StyleProps};
+use nve_abi::ColorRgba;
+
+use crate::style_patch::VisualSnapshot;
 
 pub use crate::motion_clock::{
     MotionClock, MotionCompletion, MotionGroup, MotionKey, MotionTrack, TimedTransition,
@@ -271,15 +273,15 @@ pub fn lerp_color_rgba(from: ColorRgba, to: ColorRgba, t: f32) -> ColorRgba {
     )
 }
 
-/// Interpolates all continuous visual fields of [`StyleProps`] at progress `t`.
-pub fn lerp_style_props(from: &StyleProps, to: &StyleProps, t: f32) -> StyleProps {
+/// Interpolates all continuous visual fields of [`VisualSnapshot`] at progress `t`.
+pub fn lerp_style_props(from: &VisualSnapshot, to: &VisualSnapshot, t: f32) -> VisualSnapshot {
     if !t.is_finite() || t <= 0.0 {
         return *from;
     }
     if t >= 1.0 {
         return *to;
     }
-    StyleProps {
+    VisualSnapshot {
         background: lerp_color_rgba(from.background, to.background, t),
         text_color: lerp_color_rgba(from.text_color, to.text_color, t),
         border_color: lerp_color_rgba(from.border_color, to.border_color, t),
@@ -293,11 +295,11 @@ pub fn lerp_style_props(from: &StyleProps, to: &StyleProps, t: f32) -> StyleProp
 
 /// Interpolates one visual [`TransitionProperty`] from `from` toward `to` into `out`.
 pub fn lerp_style_property(
-    from: &StyleProps,
-    to: &StyleProps,
+    from: &VisualSnapshot,
+    to: &VisualSnapshot,
     prop: TransitionProperty,
     t: f32,
-    out: &mut StyleProps,
+    out: &mut VisualSnapshot,
 ) {
     match prop {
         TransitionProperty::All => *out = lerp_style_props(from, to, t),

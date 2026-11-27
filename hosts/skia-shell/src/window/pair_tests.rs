@@ -10,11 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    decode_events, ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets,
-    EventMask, EventPayload, FlexDirection, FrameId, LayoutProps, NativeEventKind, StyleProps,
-    NVE_KEY_MOD_META, ROOT_NODE_ID,
+    decode_events, ColorRgba, EventMask, EventPayload, FrameId, NativeEventKind, NVE_KEY_MOD_META,
 };
+use nve_components::tables::{register_core_tables, FlexDirection, Interaction, Layout, Visual};
 use nve_engine::{HotPatchMsg, Viewport};
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 use nve_wire::{NveWireKind, NveWireServer, NveWireServerConfig};
 use tungstenite::Message;
 
@@ -30,67 +31,66 @@ struct RemoteServerApp {
 
 impl RemoteServerApp {
     fn new() -> Self {
+        register_core_tables();
         Self {
             clicks: 0,
             palette_open: false,
         }
     }
 
-    fn render(&self, frame_id: FrameId) -> Vec<u8> {
-        let mut b = CommandBufferBuilder::new(1, frame_id);
-        b.create_node(2, ComponentKind::View, None);
-        b.set_layout(
-            2,
-            &LayoutProps {
-                width: Dimension::Percent(100.0),
-                height: Dimension::Percent(100.0),
-                padding: EdgeInsets::all(20.0),
-                gap: 12.0,
-                flex_direction: FlexDirection::Column,
-                ..Default::default()
-            },
-        );
-        b.set_style(
-            2,
-            &StyleProps {
-                background: if self.palette_open {
-                    ColorRgba::rgb(250, 204, 21)
+    fn render(&self, _frame_id: FrameId) -> Vec<u8> {
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        {
+            let mut tx = store.tx();
+            let _ = tx.create_at(StoreNodeId::ROOT);
+            let _ = tx.create_at(StoreNodeId(2));
+            let _ = tx.create_at(StoreNodeId(4));
+            tx.set(StoreNodeId(2), Layout::WIDTH, Length::percent(100.0));
+            tx.set(StoreNodeId(2), Layout::HEIGHT, Length::percent(100.0));
+            let p = Length::points(20.0);
+            tx.set(StoreNodeId(2), Layout::PADDING_TOP, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_RIGHT, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_BOTTOM, p);
+            tx.set(StoreNodeId(2), Layout::PADDING_LEFT, p);
+            tx.set(StoreNodeId(2), Layout::ROW_GAP, Length::points(12.0));
+            tx.set(StoreNodeId(2), Layout::COLUMN_GAP, Length::points(12.0));
+            tx.set(StoreNodeId(2), Layout::FLEX_DIRECTION, FlexDirection::Column);
+            tx.set(
+                StoreNodeId(2),
+                Visual::BACKGROUND,
+                if self.palette_open {
+                    Rgba::rgb(250, 204, 21)
                 } else {
-                    ColorRgba::rgb(15, 23, 42)
+                    Rgba::rgb(15, 23, 42)
                 },
-                ..Default::default()
-            },
-        );
-        b.set_event_mask(2, EventMask::KEY_DOWN | EventMask::CUSTOM);
+            );
+            tx.set(
+                StoreNodeId(2),
+                Interaction::EVENT_MASK,
+                (EventMask::KEY_DOWN | EventMask::CUSTOM) as u32,
+            );
 
-        b.create_node(4, ComponentKind::Pressable, None);
-        b.set_layout(
-            4,
-            &LayoutProps {
-                width: Dimension::Points(160.0),
-                height: Dimension::Points(56.0),
-                ..Default::default()
-            },
-        );
-        let btn_color = if self.clicks == 0 {
-            ColorRgba::rgb(37, 99, 235)
-        } else {
-            ColorRgba::rgb(16, 185, 129)
-        };
-        b.set_style(
-            4,
-            &StyleProps {
-                background: btn_color,
-                border_radius: 8.0,
-                ..Default::default()
-            },
-        );
-        b.set_event_mask(4, EventMask::PRESS);
-
-        b.set_children(2, &[4]);
-        b.set_children(ROOT_NODE_ID, &[2]);
-        b.commit(true);
-        b.into_bytes()
+            tx.set(StoreNodeId(4), Layout::WIDTH, Length::points(160.0));
+            tx.set(StoreNodeId(4), Layout::HEIGHT, Length::points(56.0));
+            tx.set(
+                StoreNodeId(4),
+                Visual::BACKGROUND,
+                if self.clicks == 0 {
+                    Rgba::rgb(37, 99, 235)
+                } else {
+                    Rgba::rgb(16, 185, 129)
+                },
+            );
+            tx.set(StoreNodeId(4), Visual::BORDER_RADIUS, 8.0);
+            tx.set(StoreNodeId(4), Interaction::EVENT_MASK, EventMask::PRESS as u32);
+            tx.set_children(StoreNodeId(2), &[StoreNodeId(4)]);
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+            tx.commit_into(&mut changes);
+        }
+        let mut out = Vec::new();
+        WireEncoder::default().encode(&store, &changes, &mut out);
+        out
     }
 
     fn dispatch(&mut self, encoded_events: &[u8]) -> bool {

@@ -211,7 +211,7 @@ const _: () = {
     assert!(size_of::<NveRenderNode>() == NVE_RENDER_NODE_SIZE);
     assert!(align_of::<NveRenderNode>() == NVE_RENDER_NODE_ALIGN);
     assert!(offset_of!(NveRenderNode, node_id) == 0);
-    assert!(offset_of!(NveRenderNode, kind) == 4);
+    assert!(offset_of!(NveRenderNode, primary_slot) == 4);
     assert!(offset_of!(NveRenderNode, flags) == 5);
     assert!(offset_of!(NveRenderNode, opacity_u8) == 6);
     assert!(offset_of!(NveRenderNode, _pad0) == 7);
@@ -238,14 +238,29 @@ const _: () = {
     assert!(offset_of!(NveSceneView, removed_count) == 24);
     assert!(offset_of!(NveSceneView, text_slab_len) == 28);
     assert!(offset_of!(NveSceneView, children_slab_len) == 32);
-    assert!(offset_of!(NveSceneView, _pad) == 36);
+    assert!(offset_of!(NveSceneView, table_count) == 36);
     assert!(offset_of!(NveSceneView, nodes) == 40);
     assert!(offset_of!(NveSceneView, text_slab) == 40 + PTR_SIZE);
     assert!(offset_of!(NveSceneView, children_slab) == 40 + 2 * PTR_SIZE);
     assert!(offset_of!(NveSceneView, dirty_indices) == 40 + 3 * PTR_SIZE);
     assert!(offset_of!(NveSceneView, removed_ids) == 40 + 4 * PTR_SIZE);
+    assert!(offset_of!(NveSceneView, tables) == 40 + 5 * PTR_SIZE);
     assert!(
-        size_of::<NveSceneView>() == align_up(40 + 5 * PTR_SIZE, align_of::<NveSceneView>())
+        size_of::<NveSceneView>() == align_up(40 + 6 * PTR_SIZE, align_of::<NveSceneView>())
+    );
+
+    assert!(offset_of!(crate::table::NveTableView, key_lo) == 0);
+    assert!(offset_of!(crate::table::NveTableView, key_hi) == 4);
+    assert!(offset_of!(crate::table::NveTableView, slot) == 8);
+    assert!(offset_of!(crate::table::NveTableView, words) == 12);
+    assert!(offset_of!(crate::table::NveTableView, row_count) == 16);
+    assert!(offset_of!(crate::table::NveTableView, dirty_count) == 20);
+    assert!(offset_of!(crate::table::NveTableView, rows) == 24);
+    assert!(offset_of!(crate::table::NveTableView, owners) == 24 + PTR_SIZE);
+    assert!(offset_of!(crate::table::NveTableView, dirty_rows) == 24 + 2 * PTR_SIZE);
+    assert!(
+        size_of::<crate::table::NveTableView>()
+            == align_up(24 + 3 * PTR_SIZE, align_of::<crate::table::NveTableView>())
     );
 
     assert!(size_of::<NveNodeMeta>() == NVE_NODE_META_SIZE);
@@ -264,9 +279,7 @@ const _: () = {
     assert!(offset_of!(NveNodeMeta, placeholder_len) == 36);
     assert!(offset_of!(NveNodeMeta, test_id_len) == 38);
     assert!(offset_of!(NveNodeMeta, test_id_offset) == 40);
-    assert!(offset_of!(NveNodeMeta, draw_list_offset) == 44);
-    assert!(offset_of!(NveNodeMeta, draw_list_len) == 48);
-    assert!(offset_of!(NveNodeMeta, _reserved) == 52);
+    assert!(offset_of!(NveNodeMeta, _reserved) == 44);
 };
 
 // Exact 64-bit ABI verification matching the checked-in C/Swift/Dart/TS/Java artifacts.
@@ -332,11 +345,15 @@ const _: () = {
     assert!(size_of::<NveHostCallbacks>() == 24);
     assert!(size_of::<NveHostApi>() == 16);
 
-    assert!(size_of::<NveSceneView>() == 80);
+    assert!(size_of::<NveSceneView>() == 88);
     assert!(align_of::<NveSceneView>() == 8);
     assert!(offset_of!(NveSceneView, nodes) == 40);
     assert!(offset_of!(NveSceneView, text_slab) == 48);
     assert!(offset_of!(NveSceneView, children_slab) == 56);
     assert!(offset_of!(NveSceneView, dirty_indices) == 64);
     assert!(offset_of!(NveSceneView, removed_ids) == 72);
+    assert!(offset_of!(NveSceneView, tables) == 80);
+
+    assert!(size_of::<crate::table::NveTableView>() == 48);
+    assert!(align_of::<crate::table::NveTableView>() == 8);
 };

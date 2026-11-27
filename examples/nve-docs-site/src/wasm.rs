@@ -11,13 +11,18 @@ use std::rc::Rc;
 
 use nve_abi::{
     EventPayload, FrameId, NativeEvent, NativeEventKind, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
-    ROOT_NODE_ID, RawPropValue, SurfaceId,
+    ROOT_NODE_ID, SurfaceId,
 };
 use nve_backend_web::{HydrationReport, WebBackend};
+use nve_canvas_web::CanvasWebSystem;
+use nve_components::tables::DebugId;
 use nve_dioxus::DioxusSurface;
 use nve_docs::{DocsRoute, DocsViewport};
-use nve_engine::{RenderBackend, Viewport};
+use nve_engine::{StoreBackend, Viewport};
 use nve_router::web::{BrowserHistoryBackend, WebHistoryAdapter};
+use nve_store::NodeId as StoreNodeId;
+use nve_web_html::{DataAttrList, HtmlDataAttrs};
+use nve_web_html_web::register_web_html_systems;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -43,41 +48,51 @@ impl DocsWebSession {
     fn render_next_frame(&mut self) -> Result<(), String> {
         self.frame_id = self.frame_id.saturating_add(1);
         self.surface
-            .flush_into(self.frame_id, &mut self.backend)
-            .map_err(|e| format!("WebBackend flush_into failed: {e}"))?;
+            .commit_to(self.frame_id, &mut self.backend)
+            .map_err(|e| format!("WebBackend commit_to failed: {e}"))?;
         Ok(())
     }
 
     fn find_node_by_test_id(&self, tid: &str) -> Option<nve_abi::NodeId> {
-        self.backend.iter_nodes().find_map(|(id, node)| {
-            match node.raw_props.get("testID") {
-                Some(RawPropValue::String(s)) if s == tid => Some(id),
-                _ => None,
+        let store = self.surface.store();
+        let mut stack = vec![StoreNodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != StoreNodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == tid
+            {
+                return Some(id.raw());
             }
-        })
+            stack.extend_from_slice(store.children(id));
+        }
+        None
+    }
+
+    fn data_attr_of(&self, id: nve_abi::NodeId, key: &str) -> Option<String> {
+        let store = self.surface.store();
+        let res = store.try_row::<HtmlDataAttrs>(StoreNodeId(id))?.entries();
+        let list = store.resource::<DataAttrList>(res)?;
+        let stripped = key.strip_prefix("data-").unwrap_or(key);
+        list.0
+            .iter()
+            .find(|(k, _)| k == key || k == stripped)
+            .map(|(_, v)| v.clone())
     }
 
     fn current_active_route(&self) -> Option<String> {
         let id = self
             .find_node_by_test_id("docs-root")
             .or_else(|| self.find_node_by_test_id("docs-article"))?;
-        match self.backend.node(id)?.raw_props.get("data-route") {
-            Some(RawPropValue::String(r)) => Some(r.clone()),
-            _ => None,
-        }
+        self.data_attr_of(id, "data-route")
     }
 
     fn current_dark_mode(&self) -> bool {
         let Some(id) = self.find_node_by_test_id("docs-root") else {
             return self.dark_mode;
         };
-        match self
-            .backend
-            .node(id)
-            .and_then(|n| n.raw_props.get("data-theme"))
-        {
-            Some(RawPropValue::String(s)) => s != "light",
-            _ => self.dark_mode,
+        match self.data_attr_of(id, "data-theme") {
+            Some(s) => s != "light",
+            None => self.dark_mode,
         }
     }
 
@@ -145,6 +160,7 @@ impl DocsWebSession {
         self.viewport = viewport;
         self.dark_mode = dark;
         self.last_route = DocsRoute::new(route).as_str().to_string();
+        self.backend.reset();
         self.backend.set_viewport(
             DOCS_SURFACE_ID,
             Viewport {
@@ -205,12 +221,12 @@ pub struct DocsWebController {
 impl DocsWebController {
     #[wasm_bindgen(getter)]
     pub fn hydrated(&self) -> bool {
-        self.session.borrow().hydration_report.hydrated
+        self.session.borrow().hydration_report.adopted_nodes > 0
     }
 
     #[wasm_bindgen(getter)]
     pub fn adopted_nodes(&self) -> usize {
-        self.session.borrow().hydration_report.adopted_nodes
+        self.session.borrow().hydration_report.adopted_nodes as usize
     }
 
     #[wasm_bindgen(getter)]
@@ -220,17 +236,17 @@ impl DocsWebController {
 
     #[wasm_bindgen(getter)]
     pub fn replaced_nodes(&self) -> usize {
-        self.session.borrow().hydration_report.replaced_nodes
+        self.session.borrow().hydration_report.replaced_nodes as usize
     }
 
     #[wasm_bindgen(getter)]
     pub fn seeded_rules(&self) -> usize {
-        self.session.borrow().hydration_report.seeded_rule_count
+        self.session.borrow().hydration_report.reused_css_rules as usize
     }
 
     #[wasm_bindgen(getter)]
     pub fn replayed_events(&self) -> usize {
-        self.session.borrow().hydration_report.replayed_events
+        self.session.borrow().hydration_report.replayed_events as usize
     }
 
     #[wasm_bindgen(getter)]
@@ -238,7 +254,7 @@ impl DocsWebController {
         self.session
             .borrow()
             .hydration_report
-            .reconciled_dirty_controls
+            .reconciled_dirty_controls as usize
     }
 
     #[wasm_bindgen(getter)]
@@ -257,7 +273,7 @@ impl DocsWebController {
     }
 
     pub fn node_count(&self) -> usize {
-        self.session.borrow().backend.node_count()
+        self.session.borrow().surface.store().stats().live_nodes
     }
 }
 
@@ -310,8 +326,8 @@ fn measure_browser_viewport(window: &web_sys::Window, container: &web_sys::Eleme
 fn reset_scroll_containers() {
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
         for sel in [
-            "[testid=\"docs-custom-scroll\"]",
-            "[testid=\"docs-main-scroll\"]",
+            "[data-testid=\"docs-custom-scroll\"]",
+            "[data-testid=\"docs-main-scroll\"]",
         ] {
             if let Ok(Some(el)) = doc.query_selector(sel) {
                 el.set_scroll_top(0);
@@ -378,6 +394,8 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         .unwrap_or_else(DocsRoute::root);
 
     let mut backend = WebBackend::hydrate_into(container.clone());
+    register_web_html_systems(backend.table_registry_mut());
+    backend.register_table_system(CanvasWebSystem);
     backend.set_viewport(
         DOCS_SURFACE_ID,
         Viewport {
@@ -408,13 +426,15 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         hydration_report: HydrationReport::default(),
     }));
 
-    // Wire reactive event callback from WebBackend's RootEventDelegator into DioxusSurface.
-    let session_events = Rc::clone(&session);
+    // Wire reactive event callback from WebBackend's RootEventDelegator into DioxusSurface
+    // using a Weak reference so `session -> backend -> on_event -> session` never leaks.
+    let session_events = Rc::downgrade(&session);
     session
         .borrow_mut()
         .backend
-        .set_render_callback(move || {
-            if let Ok(mut guard) = session_events.try_borrow_mut()
+        .set_on_event(move || {
+            if let Some(session_events) = session_events.upgrade()
+                && let Ok(mut guard) = session_events.try_borrow_mut()
                 && let Err(err) = guard.pump_events()
             {
                 web_sys::console::error_1(&JsValue::from_str(&format!("[nve-docs-site] {err}")));
@@ -436,9 +456,12 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
     }
 
     // Intercept same-origin internal `<a href>` clicks so Dioxus navigates via pushState without full reload.
-    let session_links = Rc::clone(&session);
+    let session_links = Rc::downgrade(&session);
     let link_interceptor = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(
         move |ev: web_sys::MouseEvent| {
+            let Some(session_links) = session_links.upgrade() else {
+                return;
+            };
             let Some(target_el) = ev
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
@@ -488,11 +511,12 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
     );
 
     // Register browser Back/Forward `popstate` handler.
-    let session_pop = Rc::clone(&session);
+    let session_pop = Rc::downgrade(&session);
     {
         let mut guard = session.borrow_mut();
         let _ = guard.history.backend_mut().register_popstate(move || {
-            if let Ok(mut s) = session_pop.try_borrow_mut()
+            if let Some(session_pop) = session_pop.upgrade()
+                && let Ok(mut s) = session_pop.try_borrow_mut()
                 && let Some(route) = s.history.initial_route()
                 && route.as_str() != s.last_route
             {
@@ -507,10 +531,11 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
     }
 
     // Register responsive viewport resize handler (CSS `@media` adapts layout with zero rebuilds).
-    let session_resize = Rc::clone(&session);
+    let session_resize = Rc::downgrade(&session);
     let container_resize = container.clone();
     let resize_listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
         if let Some(win) = web_sys::window()
+            && let Some(session_resize) = session_resize.upgrade()
             && let Ok(mut s) = session_resize.try_borrow_mut()
         {
             let next_vp = measure_browser_viewport(&win, &container_resize);

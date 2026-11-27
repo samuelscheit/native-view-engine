@@ -223,11 +223,14 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_ns(mid_bar_ns)}" }
                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{lo_bar_label}" }
                             }
-                            canvas {
+                            view {
                                 test_id: "bench-latest-canvas",
                                 nve_style: bar_canvas_resp.clone(),
                                 accessibility_label: "Latest verified NVE benchmark latency bar chart",
-                                draw_list: CanvasDrawList(bar_draw_list),
+                                nve_table: nve_dioxus::table_attr_fn(move |tx, node| {
+                                    tx.edit::<nve_canvas::Canvas>(node)
+                                        .draw_list_ephemeral(bar_draw_list.clone());
+                                }),
                                 style: "width: {bar_canvas_w}px; max-width: 100%; flex-grow: 1; height: {bar_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
                             }
                         }
@@ -338,11 +341,14 @@ pub fn BenchmarkProgressionDashboard() -> Element {
                                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{format_val(max_pt, series.unit)}" }
                                                 text { style: "font-size: 10px; font-family: monospace; color: {theme.muted};", "{lo_label}" }
                                             }
-                                            canvas {
+                                            view {
                                                 test_id: "bench-canvas-{series.id}",
                                                 nve_style: line_canvas_resp.clone(),
                                                 accessibility_label: "{series.title} progression chart",
-                                                draw_list: CanvasDrawList(draw_list),
+                                                nve_table: nve_dioxus::table_attr_fn(move |tx, node| {
+                                                    tx.edit::<nve_canvas::Canvas>(node)
+                                                        .draw_list_ephemeral(draw_list.clone());
+                                                }),
                                                 style: "width: {line_canvas_w}px; max-width: 100%; flex-grow: 1; height: {line_canvas_h}px; border-radius: 10px; border-width: 1px; border-color: {theme.border};",
                                             }
                                         }

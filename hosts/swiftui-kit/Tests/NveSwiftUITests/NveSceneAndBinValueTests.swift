@@ -77,12 +77,13 @@ final class NveSceneAndBinValueTests: XCTestCase {
                                 removed_count: UInt32(removedBuf.count),
                                 text_slab_len: UInt32(textBuf.count),
                                 children_slab_len: UInt32(childBuf.count),
-                                _pad: 0,
+                                table_count: 0,
                                 nodes: nodesBuf.baseAddress,
                                 text_slab: textBuf.baseAddress,
                                 children_slab: childBuf.baseAddress,
                                 dirty_indices: dirtyBuf.baseAddress,
-                                removed_ids: removedBuf.baseAddress
+                                removed_ids: removedBuf.baseAddress,
+                                tables: nil
                             )
 
                             let reader = try NveSceneReader(view: view)
@@ -123,12 +124,13 @@ final class NveSceneAndBinValueTests: XCTestCase {
             removed_count: 0,
             text_slab_len: 0,
             children_slab_len: 0,
-            _pad: 0,
+            table_count: 0,
             nodes: nil,
             text_slab: nil,
             children_slab: nil,
             dirty_indices: nil,
-            removed_ids: nil
+            removed_ids: nil,
+            tables: nil
         )
         XCTAssertThrowsError(try NveSceneReader(view: badView)) { err in
             XCTAssertEqual(
@@ -148,12 +150,13 @@ final class NveSceneAndBinValueTests: XCTestCase {
             removed_count: 0,
             text_slab_len: 0,
             children_slab_len: 0,
-            _pad: 0,
+            table_count: 0,
             nodes: nil,
             text_slab: nil,
             children_slab: nil,
             dirty_indices: nil,
-            removed_ids: nil
+            removed_ids: nil,
+            tables: nil
         )
         XCTAssertThrowsError(try NveSceneReader(view: nullNodesView)) { err in
             XCTAssertEqual(err as? NveSceneReaderError, .nullBufferPointer("nodes"))
@@ -192,12 +195,13 @@ final class NveSceneAndBinValueTests: XCTestCase {
                     removed_count: 0,
                     text_slab_len: 2,
                     children_slab_len: 0,
-                    _pad: 0,
+                    table_count: 0,
                     nodes: nodePtr,
                     text_slab: textBuf.baseAddress,
                     children_slab: nil,
                     dirty_indices: nil,
-                    removed_ids: nil
+                    removed_ids: nil,
+                    tables: nil
                 )
                 let reader = try NveSceneReader(view: view)
                 XCTAssertThrowsError(try reader.text(for: reader[0])) { err in

@@ -71,15 +71,15 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut frame = 0;
     let _ = render_once(&mut s, &mut web, &mut frame);
     let _ = pump_settled(&mut s, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("VAL:20:EMPTY"));
+    assert!(web.render_html(s.store()).contains("VAL:20:EMPTY"));
 
     drop(ext_cold);
     transport.release_all();
     let _ = pump_settled(&mut s, &mut web, &waker, &mut frame);
     assert!(
-        web.render_html().contains("VAL:20:ColdRecovered"),
+        web.render_html(s.store()).contains("VAL:20:ColdRecovered"),
         "cold-slot fresh mount must recover after cancelled external prefetch: {}",
-        web.render_html()
+        web.render_html(s.store())
     );
 
     // 2. Time-stale slot (has data, is_stale, !is_invalidated): external fetch cancelled -> recovers!
@@ -113,15 +113,15 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut frame2 = 0;
     let _ = render_once(&mut s2, &mut web2, &mut frame2);
     let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
-    assert!(web2.render_html().contains("VAL:21:StaleV1"));
+    assert!(web2.render_html(s2.store()).contains("VAL:21:StaleV1"));
 
     drop(ext_stale);
     transport.release_all();
     let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
     assert!(
-        web2.render_html().contains("VAL:21:StaleV2"),
+        web2.render_html(s2.store()).contains("VAL:21:StaleV2"),
         "stale-slot fresh mount must recover after cancelled external fetch: {}",
-        web2.render_html()
+        web2.render_html(s2.store())
     );
     client.unsubscribe(h_stale);
 
@@ -155,15 +155,15 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
     let mut frame3 = 0;
     let _ = render_once(&mut s3, &mut web3, &mut frame3);
     let _ = pump_settled(&mut s3, &mut web3, &waker, &mut frame3);
-    assert!(web3.render_html().contains("VAL:22:InvV1"));
+    assert!(web3.render_html(s3.store()).contains("VAL:22:InvV1"));
 
     drop(ext_inv);
     transport.release_all();
     let _ = pump_settled(&mut s3, &mut web3, &waker, &mut frame3);
     assert!(
-        web3.render_html().contains("VAL:22:InvV2"),
+        web3.render_html(s3.store()).contains("VAL:22:InvV2"),
         "invalidated-slot fresh mount must recover after cancelled external fetch: {}",
-        web3.render_html()
+        web3.render_html(s3.store())
     );
     client.unsubscribe(h_inv);
 
@@ -189,7 +189,7 @@ fn fresh_mount_during_external_fetch_recovers_on_cancel_across_cold_stale_and_in
         Poll::Ready(Ok(_))
     ));
     let _ = pump_settled(&mut s4, &mut web4, &waker, &mut frame4);
-    assert!(web4.render_html().contains("VAL:23:ZeroStaleOk"));
+    assert!(web4.render_html(s4.store()).contains("VAL:23:ZeroStaleOk"));
     assert_eq!(
         transport.inner.lock().unwrap().query_calls - calls_before,
         1,
@@ -234,7 +234,7 @@ fn invalidated_hook_refetches_after_external_fetch_is_cancelled() {
     // 1. Initial load succeeds ("V1").
     let _ = render_once(&mut surface, &mut web, &mut frame);
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
-    assert!(web.render_html().contains("A:V1"));
+    assert!(web.render_html(surface.store()).contains("A:V1"));
 
     // 2. Invalidate the slot and immediately start an EXTERNAL (non-bridge-owned) fetch before
     //    the hook re-renders. Hook re-renders while `is_fetching == true` and `active_for_ver == false`.
@@ -259,9 +259,9 @@ fn invalidated_hook_refetches_after_external_fetch_is_cancelled() {
     transport.release_all();
     let _ = pump_settled(&mut surface, &mut web, &waker, &mut frame);
     assert!(
-        web.render_html().contains("A:V2"),
+        web.render_html(surface.store()).contains("A:V2"),
         "mounted hook must refetch after an external fetch on an invalidated slot is cancelled: {}",
-        web.render_html()
+        web.render_html(surface.store())
     );
 }
 
@@ -421,9 +421,9 @@ fn invalidation_after_external_prefetch_settlement_triggers_refetch() {
     let _ = client.invalidate_tags(&[Tag64::keyed("item", 30)]);
     let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
     assert!(
-        web1.render_html().contains("R:30:Post"),
+        web1.render_html(s1.store()).contains("R:30:Post"),
         "invalidation right after external prefetch completion must trigger refetch: {}",
-        web1.render_html()
+        web1.render_html(s1.store())
     );
 
     // Case 2: External prefetch settles ("Pre2"), `invalidate_tags` bumps inv_ver, a SECOND
@@ -464,9 +464,9 @@ fn invalidation_after_external_prefetch_settlement_triggers_refetch() {
     transport.release_all();
     let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
     assert!(
-        web2.render_html().contains("R:31:Post2"),
+        web2.render_html(s2.store()).contains("R:31:Post2"),
         "hook must still recover when invalidation + cancelled 2nd external fetch follow prefetch: {}",
-        web2.render_html()
+        web2.render_html(s2.store())
     );
 }
 
@@ -535,7 +535,7 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
     assert_eq!(transport.inner.lock().unwrap().query_calls, 2);
 
     let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
-    assert!(web1.render_html().contains("F:40:EMPTY:true"));
+    assert!(web1.render_html(s1.store()).contains("F:40:EMPTY:true"));
     assert_eq!(
         transport.inner.lock().unwrap().query_calls,
         2,
@@ -549,7 +549,7 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
     }
     let _ = client.invalidate_tags(&[Tag64::keyed("item", 40)]);
     let _ = pump_settled(&mut s1, &mut web1, &waker, &mut frame1);
-    assert!(web1.render_html().contains("F:40:Recovered1:false"));
+    assert!(web1.render_html(s1.store()).contains("F:40:Recovered1:false"));
     assert_eq!(transport.inner.lock().unwrap().query_calls, 3);
 
     // Case 2: Already-mounted hook settles ("V1") -> `invalidate_tags` -> external `fetch_handle`
@@ -566,7 +566,7 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
     let mut frame2 = 0;
     let _ = render_once(&mut s2, &mut web2, &mut frame2);
     let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
-    assert!(web2.render_html().contains("F:41:MountedV1:false"));
+    assert!(web2.render_html(s2.store()).contains("F:41:MountedV1:false"));
     assert_eq!(transport.inner.lock().unwrap().query_calls - calls_base, 1);
 
     let inv2 = client.invalidate_tags(&[Tag64::keyed("item", 41)]);
@@ -578,7 +578,7 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
         Poll::Ready(Err(_))
     ));
     let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
-    assert!(web2.render_html().contains("F:41:MountedV1:true"));
+    assert!(web2.render_html(s2.store()).contains("F:41:MountedV1:true"));
     assert_eq!(
         transport.inner.lock().unwrap().query_calls - calls_base,
         2,
@@ -592,6 +592,6 @@ fn failed_external_refetch_after_invalidation_does_not_duplicate_network_call() 
     }
     let _ = client.invalidate_tags(&[Tag64::keyed("item", 41)]);
     let _ = pump_settled(&mut s2, &mut web2, &waker, &mut frame2);
-    assert!(web2.render_html().contains("F:41:Recovered2:false"));
+    assert!(web2.render_html(s2.store()).contains("F:41:Recovered2:false"));
     assert_eq!(transport.inner.lock().unwrap().query_calls - calls_base, 3);
 }

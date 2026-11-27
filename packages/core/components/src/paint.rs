@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use nve_abi::num::{write_f32, write_u64};
-use nve_abi::ColorRgba;
-
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+use nve_abi::{ColorRgba, Xxh64Hasher};
 
 /// One color stop along a linear or radial gradient (`offset` in `0.0..=1.0`).
 #[repr(C)]
@@ -208,24 +206,21 @@ impl BackgroundFill {
         }
     }
 
-    /// Mixes this background fill into a deterministic FNV-1a64 structural style hash.
-    pub fn hash_into(&self, mut h: u64) -> u64 {
+    /// Feeds this background fill into a deterministic XXH64 structural style hash.
+    pub fn hash_into(&self, h: &mut Xxh64Hasher) {
         match self {
-            Self::Solid(c) => {
-                h = fnv_bytes(h, &[1, c.r, c.g, c.b, c.a]);
-                h
-            }
+            Self::Solid(c) => h.update(&[1, c.r, c.g, c.b, c.a]),
             Self::Linear(lg) => {
-                h = fnv_bytes(h, &[2]);
-                h = fnv_f32(h, lg.angle_deg);
-                hash_stops(h, &lg.stops)
+                h.update(&[2]);
+                h.update_f32(lg.angle_deg);
+                hash_stops(h, &lg.stops);
             }
             Self::Radial(rg) => {
-                h = fnv_bytes(h, &[3]);
-                h = fnv_f32(h, rg.center_x);
-                h = fnv_f32(h, rg.center_y);
-                h = fnv_f32(h, rg.radius);
-                hash_stops(h, &rg.stops)
+                h.update(&[3]);
+                h.update_f32(rg.center_x);
+                h.update_f32(rg.center_y);
+                h.update_f32(rg.radius);
+                hash_stops(h, &rg.stops);
             }
         }
     }
@@ -463,32 +458,12 @@ pub fn write_css_color(c: ColorRgba, out: &mut String) {
     }
 }
 
-#[inline]
-fn fnv_bytes(mut h: u64, bytes: &[u8]) -> u64 {
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(FNV1A_PRIME);
-    }
-    h
-}
-
-#[inline]
-fn fnv_f32(h: u64, v: f32) -> u64 {
-    let bits = if !v.is_finite() || v == 0.0 {
-        0u32
-    } else {
-        v.to_bits()
-    };
-    fnv_bytes(h, &bits.to_le_bytes())
-}
-
-fn hash_stops(mut h: u64, stops: &[GradientStop]) -> u64 {
-    h = fnv_bytes(h, &(stops.len() as u32).to_le_bytes());
+fn hash_stops(h: &mut Xxh64Hasher, stops: &[GradientStop]) {
+    h.update_u32(stops.len() as u32);
     for s in stops {
-        h = fnv_f32(h, s.offset);
-        h = fnv_bytes(h, &[s.color.r, s.color.g, s.color.b, s.color.a]);
+        h.update_f32(s.offset);
+        h.update(&[s.color.r, s.color.g, s.color.b, s.color.a]);
     }
-    h
 }
 
 #[cfg(test)]

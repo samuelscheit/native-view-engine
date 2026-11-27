@@ -5,15 +5,15 @@ Pure `no_std` compile-time and streaming 64-bit XXH64 hashing crate for `native-
 ## Role & API
 
 - Provides `pub const fn xxh64(bytes: &[u8], seed: u64) -> u64`, `const_id`, `Key64`, and streaming `Xxh64Hasher`.
-- Shared XXH64 implementation used by `nve-rpc` (`ProcId`, `Tag64`) and the upcoming unified `NodeStore` / `NVE2` hash layer (`packages/core/engine/src/hash.rs` remains until that branch merges).
+- Single source of truth for compile-time `TableKey`, `ResourceKind`, `NVE_CORE_ABI_SCHEMA_HASH`, `NVE_SCENE_SCHEMA_HASH`, and `nve-rpc` (`ProcId`, `Tag64`) digests across Rust and generated foreign host bindings.
 
 ## Invariants
 
-- Strictly `#![no_std]` with zero dependencies and a single canonical XXH64 algorithm matching the official XXH64 specification.
-- Golden vectors locked against the canonical XXH64 reference specification across seed 0 and seeded inputs.
+- Strictly `#![no_std]` with zero dependencies and a single canonical XXH64 implementation across Rust and foreign bindings.
+- Golden vectors locked against the canonical XXH64 reference specification and C++/Swift/Dart/Kotlin/TypeScript host mirrors.
 
 ## Verification
 
 ```bash
-cargo test -p nve-hash
+cargo test --locked -p nve-hash
 ```

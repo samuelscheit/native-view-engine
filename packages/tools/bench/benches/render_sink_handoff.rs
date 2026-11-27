@@ -1,7 +1,8 @@
-//! Track 1B-1 microbenchmarks comparing direct monomorphized `DioxusSurface::flush_into<S: RenderSink>`
-//! (zero encode/decode, zero vtable) against cross-boundary `BatchSink` encode + `submit_frame` decode
-//! across 10-node incremental patches, 100-node and 1,000-node mounts, and rich extended props
-//! (gradients, SVG, `:hover` state rules, transitions, `LayoutExt`, `Transform2D`).
+//! Microbenchmarks comparing direct single-owner `DioxusSurface::commit_to(&mut backend)`
+//! (zero wire encode/decode, zero duplicate tree) against cross-boundary `NVE2` wire encode +
+//! `StoreWireReplica::submit_nve2_frame` decode across 10-node incremental patches, 100-node and
+//! 1,000-node mounts, and rich extended props (CSS Grid, gradients, `:hover` state rules,
+//! transitions, `@media` queries, `Transform2D`).
 
 use std::hint::black_box;
 
@@ -11,9 +12,11 @@ use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
 use nve_bench::DEFAULT_VIEWPORT;
+use nve_components::tables::{core_realization_order, Interaction};
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_engine::RenderBackend;
+use nve_engine::{StoreBackend, StoreWireReplica};
+use nve_store::NodeStore;
 
 #[derive(Clone, PartialEq)]
 struct RowListProps {
@@ -61,7 +64,6 @@ fn row_list_app(props: RowListProps) -> Element {
 }
 
 fn rich_extended_app() -> Element {
-    let icon = SvgPicture::from_paths(24.0, 24.0, &["M4 12 L20 12 M14 6 L20 12 L14 18"]);
     let grid_style = TypedStyle::new()
         .display_grid()
         .grid_cols([GridTrack::repeat_minmax_zero_fr(3)])
@@ -103,9 +105,12 @@ fn rich_extended_app() -> Element {
                 pressable {
                     key: "{i}",
                     nve_style: card_style.clone(),
-                    svg {
-                        nve_style: TypedStyle::new().width_px(20.0).height_px(20.0),
-                        picture: SvgPictureAttr::from(icon.clone()),
+                    view {
+                        nve_style: TypedStyle::new()
+                            .width_px(20.0)
+                            .height_px(20.0)
+                            .radius(4.0)
+                            .bg(ColorRgba::rgb(56, 189, 248)),
                     }
                     text { "Card #{i}" }
                 }
@@ -114,25 +119,30 @@ fn rich_extended_app() -> Element {
     }
 }
 
-fn find_tick_node_id_web(web: &WebBackend) -> u32 {
-    web.iter_nodes()
-        .find_map(|(id, el)| ((el.event_mask & EventMask::PRESS) != 0).then_some(id))
+fn find_tick_node_id(store: &NodeStore) -> u32 {
+    store
+        .live_nodes()
+        .find_map(|id| {
+            let mask = store.try_row::<Interaction>(id)?.event_mask();
+            ((u64::from(mask) & EventMask::PRESS) != 0).then_some(id.raw())
+        })
         .expect("pressable tick node")
 }
 
 fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
-    let mut group = c.benchmark_group("render_sink/patch_10_nodes");
+    let mut group = c.benchmark_group("store_handoff/patch_10_nodes");
     group.throughput(Throughput::Elements(10));
 
-    // 1. Direct flush_into -> WebBackend
-    let mut direct_surface = DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
+    // 1. Direct single-owner NodeStore commit -> WebBackend
+    let mut direct_surface =
+        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
     let mut direct_web = WebBackend::new();
     direct_web.set_viewport(1, DEFAULT_VIEWPORT);
-    direct_surface.flush_into(1, &mut direct_web).unwrap();
-    let direct_btn = find_tick_node_id_web(&direct_web);
+    direct_surface.commit_to(1, &mut direct_web).unwrap();
+    let direct_btn = find_tick_node_id(direct_surface.store());
     let mut direct_frame = 1u64;
 
-    group.bench_function("direct_flush_into_web", |b| {
+    group.bench_function("direct_commit_to_web", |b| {
         b.iter(|| {
             direct_frame += 1;
             direct_surface.dispatch_events(&[NativeEvent {
@@ -142,33 +152,38 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
                 kind: NativeEventKind::Press,
                 payload: EventPayload::Point { x: 10.0, y: 10.0 },
             }]);
-            black_box(direct_surface.flush_into(direct_frame, &mut direct_web).unwrap())
+            black_box(
+                direct_surface
+                    .commit_to(direct_frame, &mut direct_web)
+                    .unwrap(),
+            )
         });
     });
 
-    // 2. Cross-boundary BatchSink encode + WebBackend::submit_frame decode
-    let mut batch_surface = DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
-    let mut batch_web = WebBackend::new();
-    batch_web.set_viewport(1, DEFAULT_VIEWPORT);
+    // 2. Cross-boundary NVE2 wire encode + StoreWireReplica<WebBackend> decode
+    let mut wire_surface =
+        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows: 50 });
+    let mut wire_web = StoreWireReplica::new(WebBackend::new(), core_realization_order());
+    wire_web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
     {
-        let init = batch_surface.render_frame_slice(1);
-        batch_web.submit_frame(init).unwrap();
+        let init = wire_surface.render_nve2_slice(1);
+        wire_web.submit_nve2_frame(init).unwrap();
     }
-    let batch_btn = find_tick_node_id_web(&batch_web);
-    let mut batch_frame = 1u64;
+    let wire_btn = find_tick_node_id(wire_web.store());
+    let mut wire_frame = 1u64;
 
-    group.bench_function("batch_sink_encode_decode_web", |b| {
+    group.bench_function("nve2_wire_encode_decode_web", |b| {
         b.iter(|| {
-            batch_frame += 1;
-            batch_surface.dispatch_events(&[NativeEvent {
+            wire_frame += 1;
+            wire_surface.dispatch_events(&[NativeEvent {
                 surface_id: 1,
-                node_id: batch_btn,
-                timestamp_us: batch_frame * 16_000,
+                node_id: wire_btn,
+                timestamp_us: wire_frame * 16_000,
                 kind: NativeEventKind::Press,
                 payload: EventPayload::Point { x: 10.0, y: 10.0 },
             }]);
-            let bytes = batch_surface.render_frame_slice(batch_frame);
-            black_box(batch_web.submit_frame(black_box(bytes)).unwrap())
+            let bytes = wire_surface.render_nve2_slice(wire_frame);
+            black_box(wire_web.submit_nve2_frame(black_box(bytes)).unwrap())
         });
     });
 
@@ -177,64 +192,72 @@ fn bench_handoff_patch_10_nodes(c: &mut Criterion) {
 
 fn bench_handoff_mount_trees(c: &mut Criterion) {
     for &(label, rows) in &[("mount_100_nodes", 50usize), ("mount_1000_nodes", 500usize)] {
-        let mut group = c.benchmark_group(format!("render_sink/{label}"));
+        let mut group = c.benchmark_group(format!("store_handoff/{label}"));
         group.throughput(Throughput::Elements((rows * 2) as u64));
 
-        group.bench_function("direct_flush_into_web", |b| {
+        group.bench_function("direct_commit_to_web", |b| {
             b.iter_batched(
                 || {
-                    let surface = DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let surface =
+                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
                     let mut web = WebBackend::new();
                     web.set_viewport(1, DEFAULT_VIEWPORT);
                     (surface, web)
                 },
-                |(mut surface, mut web)| black_box(surface.flush_into(1, &mut web).unwrap()),
+                |(mut surface, mut web)| black_box(surface.commit_to(1, &mut web).unwrap()),
                 BatchSize::SmallInput,
             );
         });
 
-        group.bench_function("batch_sink_encode_decode_web", |b| {
+        group.bench_function("nve2_wire_encode_decode_web", |b| {
             b.iter_batched(
                 || {
-                    let surface = DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
-                    let mut web = WebBackend::new();
-                    web.set_viewport(1, DEFAULT_VIEWPORT);
+                    let surface =
+                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let mut web =
+                        StoreWireReplica::new(WebBackend::new(), core_realization_order());
+                    web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                     (surface, web)
                 },
                 |(mut surface, mut web)| {
-                    let bytes = surface.render_frame_slice(1);
-                    black_box(web.submit_frame(black_box(bytes)).unwrap())
+                    let bytes = surface.render_nve2_slice(1);
+                    black_box(web.submit_nve2_frame(black_box(bytes)).unwrap())
                 },
                 BatchSize::SmallInput,
             );
         });
 
-        group.bench_function("direct_flush_into_headless", |b| {
+        group.bench_function("direct_commit_to_headless", |b| {
             b.iter_batched(
                 || {
-                    let surface = DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let surface =
+                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
                     let mut headless = HeadlessBackend::new().with_mutation_tracking(false);
                     headless.set_viewport(1, DEFAULT_VIEWPORT);
                     (surface, headless)
                 },
                 |(mut surface, mut headless)| {
-                    black_box(surface.flush_into(1, &mut headless).unwrap())
+                    black_box(surface.commit_to(1, &mut headless).unwrap())
                 },
                 BatchSize::SmallInput,
             );
         });
 
-        group.bench_function("batch_sink_encode_decode_headless", |b| {
+        group.bench_function("nve2_wire_encode_decode_headless", |b| {
             b.iter_batched(
                 || {
-                    let surface = DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
-                    let mut headless = HeadlessBackend::new().with_mutation_tracking(false);
-                    headless.set_viewport(1, DEFAULT_VIEWPORT);
+                    let surface =
+                        DioxusSurface::new_with_props(1, row_list_app, RowListProps { rows });
+                    let mut headless = StoreWireReplica::new(
+                        HeadlessBackend::new().with_mutation_tracking(false),
+                        core_realization_order(),
+                    );
+                    headless.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                     (surface, headless)
                 },
                 |(mut surface, mut headless)| {
-                    let bytes = surface.render_frame_slice(1);
-                    black_box(headless.submit_frame(black_box(bytes)).unwrap())
+                    let bytes = surface.render_nve2_slice(1);
+                    black_box(headless.submit_nve2_frame(black_box(bytes)).unwrap())
                 },
                 BatchSize::SmallInput,
             );
@@ -245,10 +268,10 @@ fn bench_handoff_mount_trees(c: &mut Criterion) {
 }
 
 fn bench_handoff_rich_extended(c: &mut Criterion) {
-    let mut group = c.benchmark_group("render_sink/rich_extended_24_cards");
+    let mut group = c.benchmark_group("store_handoff/rich_extended_24_cards");
     group.throughput(Throughput::Elements(24));
 
-    group.bench_function("direct_flush_into_web", |b| {
+    group.bench_function("direct_commit_to_web", |b| {
         b.iter_batched(
             || {
                 let surface = DioxusSurface::new(1, rich_extended_app);
@@ -256,28 +279,28 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
                 web.set_viewport(1, DEFAULT_VIEWPORT);
                 (surface, web)
             },
-            |(mut surface, mut web)| black_box(surface.flush_into(1, &mut web).unwrap()),
+            |(mut surface, mut web)| black_box(surface.commit_to(1, &mut web).unwrap()),
             BatchSize::SmallInput,
         );
     });
 
-    group.bench_function("batch_sink_encode_decode_web", |b| {
+    group.bench_function("nve2_wire_encode_decode_web", |b| {
         b.iter_batched(
             || {
                 let surface = DioxusSurface::new(1, rich_extended_app);
-                let mut web = WebBackend::new();
-                web.set_viewport(1, DEFAULT_VIEWPORT);
+                let mut web = StoreWireReplica::new(WebBackend::new(), core_realization_order());
+                web.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                 (surface, web)
             },
             |(mut surface, mut web)| {
-                let bytes = surface.render_frame_slice(1);
-                black_box(web.submit_frame(black_box(bytes)).unwrap())
+                let bytes = surface.render_nve2_slice(1);
+                black_box(web.submit_nve2_frame(black_box(bytes)).unwrap())
             },
             BatchSize::SmallInput,
         );
     });
 
-    group.bench_function("direct_flush_into_skia", |b| {
+    group.bench_function("direct_commit_to_skia", |b| {
         b.iter_batched(
             || {
                 let surface = DioxusSurface::new(1, rich_extended_app);
@@ -285,22 +308,22 @@ fn bench_handoff_rich_extended(c: &mut Criterion) {
                 skia.set_viewport(1, DEFAULT_VIEWPORT);
                 (surface, skia)
             },
-            |(mut surface, mut skia)| black_box(surface.flush_into(1, &mut skia).unwrap()),
+            |(mut surface, mut skia)| black_box(surface.commit_to(1, &mut skia).unwrap()),
             BatchSize::SmallInput,
         );
     });
 
-    group.bench_function("batch_sink_encode_decode_skia", |b| {
+    group.bench_function("nve2_wire_encode_decode_skia", |b| {
         b.iter_batched(
             || {
                 let surface = DioxusSurface::new(1, rich_extended_app);
-                let mut skia = SkiaBackend::new();
-                skia.set_viewport(1, DEFAULT_VIEWPORT);
+                let mut skia = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
+                skia.backend_mut().set_viewport(1, DEFAULT_VIEWPORT);
                 (surface, skia)
             },
             |(mut surface, mut skia)| {
-                let bytes = surface.render_frame_slice(1);
-                black_box(skia.submit_frame(black_box(bytes)).unwrap())
+                let bytes = surface.render_nve2_slice(1);
+                black_box(skia.submit_nve2_frame(black_box(bytes)).unwrap())
             },
             BatchSize::SmallInput,
         );

@@ -32,9 +32,18 @@ use std::time::Instant;
 
 use nve_abi::ColorRgba;
 
-use crate::raster::{draw_hud_banner, rasterize_display_list_with_text_engine, PixelBuffer};
+use crate::raster::{
+    draw_hud_banner, rasterize_display_list_with_text_engine,
+    rasterize_display_list_with_text_engine_and_plugins, PixelBuffer,
+};
+use crate::table_system::SkiaTableRegistry;
 use crate::text::CosmicTextEngine;
 use crate::DisplayList;
+use nve_store::{NodeStore, TableEventBus};
+
+/// Borrowed plugin context (`NodeStore` + `SkiaTableRegistry` + `TableEventBus`) threaded into
+/// Skia GPU/CPU/software frame presenters so `PaintOp::Plugin` (`Svg`, `Canvas`, 3P) renders.
+pub type SkiaPluginContext<'a> = (&'a NodeStore, &'a SkiaTableRegistry, &'a mut TableEventBus);
 
 pub use select::GpuSwapchain;
 #[cfg(feature = "skia")]
@@ -344,6 +353,17 @@ pub trait GpuFramePresenter {
         hud_banner: Option<&str>,
     ) -> Result<(), GpuSurfaceError>;
 
+    fn render_display_list_with_plugins(
+        &mut self,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        _plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        self.render_display_list(display_list, scale_factor, clear_color, hud_banner)
+    }
+
     fn submit_frame(&mut self) -> Result<(), GpuSurfaceError>;
 
     fn present_frame(&mut self) -> Result<FrameTelemetry, GpuSurfaceError>;
@@ -357,10 +377,25 @@ pub trait GpuFramePresenter {
         clear_color: ColorRgba,
         hud_banner: Option<&str>,
     ) -> Result<FrameTelemetry, GpuSurfaceError> {
+        self.execute_frame_with_plugins(display_list, scale_factor, clear_color, hud_banner, None)
+    }
+
+    fn execute_frame_with_plugins(
+        &mut self,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<FrameTelemetry, GpuSurfaceError> {
         self.begin_frame()?;
-        if let Err(err) =
-            self.render_display_list(display_list, scale_factor, clear_color, hud_banner)
-        {
+        if let Err(err) = self.render_display_list_with_plugins(
+            display_list,
+            scale_factor,
+            clear_color,
+            hud_banner,
+            plugins,
+        ) {
             self.abort_frame();
             return Err(err);
         }
@@ -500,6 +535,17 @@ impl GpuFramePresenter for SoftwareFramePresenter {
         clear_color: ColorRgba,
         hud_banner: Option<&str>,
     ) -> Result<(), GpuSurfaceError> {
+        self.render_display_list_with_plugins(display_list, scale_factor, clear_color, hud_banner, None)
+    }
+
+    fn render_display_list_with_plugins(
+        &mut self,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
         if self.state != FrameLifecycleState::Begun {
             return Err(GpuSurfaceError::InvalidFrameState {
                 expected: FrameLifecycleState::Begun.as_str(),
@@ -508,13 +554,24 @@ impl GpuFramePresenter for SoftwareFramePresenter {
         }
         let scale = sanitize_scale_factor(scale_factor);
         let t0 = Instant::now();
-        rasterize_display_list_with_text_engine(
-            display_list,
-            &mut self.pixel_buffer,
-            scale,
-            clear_color,
-            self.text_engine.as_ref(),
-        );
+        if let Some(p) = plugins {
+            rasterize_display_list_with_text_engine_and_plugins(
+                display_list,
+                &mut self.pixel_buffer,
+                scale,
+                clear_color,
+                self.text_engine.as_ref(),
+                Some(p),
+            );
+        } else {
+            rasterize_display_list_with_text_engine(
+                display_list,
+                &mut self.pixel_buffer,
+                scale,
+                clear_color,
+                self.text_engine.as_ref(),
+            );
+        }
         if let Some(banner) = hud_banner {
             draw_hud_banner(&mut self.pixel_buffer, scale, banner);
         }

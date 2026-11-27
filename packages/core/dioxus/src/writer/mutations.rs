@@ -1,215 +1,190 @@
-//! `dioxus_core::WriteMutations` implementation and template instantiation for [`MutationTx`].
+//! `dioxus_core::WriteMutations` implementation over [`StoreMutationTx`].
 
-use dioxus_core::{AttributeValue, ElementId, Template, TemplateAttribute, TemplateNode, WriteMutations};
-use nve_abi::{ComponentKind, EventMask, NodeId, RawPropValueRef};
-use nve_components::resolve_tag;
-use nve_components::style_patch::Display;
-use nve_engine::RenderSink;
+use dioxus_core::{AttributeValue, ElementId, Template, WriteMutations};
+use nve_components::tables::{Display, Layout, TextContent};
 
-use crate::native_view::NATIVE_VIEW_TAG;
-use crate::typed_style::TypedStyle;
+use super::{event_name_to_mask, StoreMutationTx};
 
-use super::{MutationTx, NodeRecord};
+impl StoreMutationTx<'_, '_> {
+    fn drain_incoming_from_stack(&mut self, m: usize) {
+        let split = self.stack.len().saturating_sub(m);
+        self.incoming_scratch.clear();
+        self.incoming_scratch.extend(self.stack.drain(split..));
+    }
 
-impl<S: RenderSink> MutationTx<'_, S> {
-    pub(super) fn instantiate_template_node(&mut self, tnode: &TemplateNode) -> NodeId {
-        match tnode {
-            TemplateNode::Element {
-                tag,
-                attrs,
-                children,
-                ..
-            } => {
-                let id = if *tag == NATIVE_VIEW_TAG {
-                    self.writer.alloc_deferred_native_node()
-                } else {
-                    let (kind, custom) = resolve_tag(tag);
-                    let id = self.writer.alloc_node(self.sink, kind, custom);
-                    if matches!(*tag, "dialog" | "details" | "summary" | "form") {
-                        self.sink
-                            .set_raw_prop(id, "semanticTag", RawPropValueRef::String(tag));
-                    }
-                    id
-                };
-                for attr in *attrs {
-                    if let TemplateAttribute::Static { name, value, .. } = attr {
-                        self.writer.apply_str_attr(self.sink, id, name, value);
-                    }
-                }
-                if !children.is_empty() {
-                    let mut child_ids = Vec::with_capacity(children.len());
-                    for child in *children {
-                        let cid = self.instantiate_template_node(child);
-                        if let Some(crec) = self.writer.nodes.get_mut(&cid) {
-                            crec.set_parent(Some(id));
-                        }
-                        child_ids.push(cid);
-                    }
-                    if let Some(rec) = self.writer.nodes.get_mut(&id) {
-                        rec.children = child_ids;
-                    }
-                    self.writer.dirty_children.push(id);
-                }
-                id
-            }
-            TemplateNode::Text { text } => {
-                let id = self.writer.alloc_node(self.sink, ComponentKind::Text, None);
-                self.writer.record_text(id, text);
-                self.sink.set_text(id, text);
-                id
-            }
-            TemplateNode::Dynamic { .. } => {
-                // Placeholder slot replaced later by `replace_placeholder_with_nodes`.
-                self.writer.alloc_node(self.sink, ComponentKind::View, None)
-            }
+    fn discard_incoming_scratch(&mut self) {
+        let mut idx = 0;
+        while idx < self.incoming_scratch.len() {
+            let child = self.incoming_scratch[idx];
+            idx += 1;
+            self.remove_subtree(child);
+        }
+        self.incoming_scratch.clear();
+    }
+
+    fn detach_incoming_from_parents(&mut self) {
+        for i in 0..self.incoming_scratch.len() {
+            let child = self.incoming_scratch[i];
+            self.detach_from_parent(child);
         }
     }
 }
 
-impl<S: RenderSink> WriteMutations for MutationTx<'_, S> {
+impl WriteMutations for StoreMutationTx<'_, '_> {
     fn append_children(&mut self, id: ElementId, m: usize) {
-        let split = self.writer.stack.len().saturating_sub(m);
-        let Some(parent_id) = self.writer.resolve_el(id) else {
-            self.writer.stack.truncate(split);
+        self.drain_incoming_from_stack(m);
+        let Some(parent) = self.resolve_el(id) else {
+            self.discard_incoming_scratch();
             return;
         };
-        for i in split..self.writer.stack.len() {
-            let cid = self.writer.stack[i];
-            self.writer.detach_from_parent(cid);
-            if let Some(crec) = self.writer.nodes.get_mut(&cid) {
-                crec.set_parent(Some(parent_id));
-            }
-        }
-        if let Some(parent) = self.writer.nodes.get_mut(&parent_id) {
-            parent.children.extend(self.writer.stack.drain(split..));
-        } else {
-            self.writer.stack.truncate(split);
-        }
-        self.writer.dirty_children.push(parent_id);
+        self.detach_incoming_from_parents();
+        self.child_scratch.clear();
+        self.child_scratch
+            .extend_from_slice(self.tx.store().children(parent));
+        self.child_scratch.extend_from_slice(self.incoming_scratch);
+        self.tx.set_children(parent, self.child_scratch);
+        self.incoming_scratch.clear();
     }
 
     fn assign_node_id(&mut self, path: &'static [u8], id: ElementId) {
-        let Some(&top) = self.writer.stack.last() else {
+        let Some(&top) = self.stack.last() else {
             return;
         };
-        if let Some(target) = self.writer.walk_path(top, path) {
-            self.writer.bind_element_id(target, id);
+        if let Some(target) = self.walk_path(top, path) {
+            self.bind_element(id, target);
         }
     }
 
     fn create_placeholder(&mut self, id: ElementId) {
-        let nid = self.writer.alloc_node(self.sink, ComponentKind::View, None);
-        // Empty `if`/`match` arms must not occupy layout: as a plain `View` the placeholder is a
+        let node = self.tx.create();
+        // Empty `if`/`match` arms must not occupy layout: as a plain view the placeholder is a
         // flex item and adds a spurious `gap` on every backend (Web CSS, Yoga/Skia).
-        self.writer.apply_typed_style(
-            self.sink,
-            nid,
-            TypedStyle::new().display(Display::None),
-        );
-        self.writer.bind_element_id(nid, id);
-        self.writer.stack.push(nid);
+        self.tx.edit::<Layout>(node).display(Display::None);
+        self.bind_element(id, node);
+        self.stack.push(node);
     }
 
     fn create_text_node(&mut self, value: &str, id: ElementId) {
-        let nid = self.writer.alloc_node(self.sink, ComponentKind::Text, None);
-        self.writer.bind_element_id(nid, id);
-        self.writer.record_text(nid, value);
-        self.sink.set_text(nid, value);
-        self.writer.stack.push(nid);
+        let node = self.tx.create();
+        self.tx.edit::<TextContent>(node).text(value);
+        self.bind_element(id, node);
+        self.stack.push(node);
     }
 
     fn load_template(&mut self, template: Template, index: usize, id: ElementId) {
-        if let Some(root_tpl) = template.roots.get(index) {
-            let nid = self.instantiate_template_node(root_tpl);
-            self.writer.bind_element_id(nid, id);
-            self.writer.stack.push(nid);
-        }
+        let node = if let Some(root_node) = template.roots.get(index) {
+            self.instantiate_template_node(root_node)
+        } else {
+            self.tx.create()
+        };
+        self.bind_element(id, node);
+        self.stack.push(node);
     }
 
     fn replace_node_with(&mut self, id: ElementId, m: usize) {
-        let split = self.writer.stack.len().saturating_sub(m);
-        if let Some(target_id) = self.writer.resolve_el(id) {
-            self.writer
-                .replace_node_in_parent_from_stack(self.sink, target_id, split);
+        self.drain_incoming_from_stack(m);
+        let Some(old) = self.resolve_el(id) else {
+            self.discard_incoming_scratch();
+            return;
+        };
+        let Some(parent) = self.tx.store().parent(old) else {
+            self.discard_incoming_scratch();
+            self.remove_subtree(old);
+            return;
+        };
+        self.detach_incoming_from_parents();
+        self.child_scratch.clear();
+        self.child_scratch
+            .extend_from_slice(self.tx.store().children(parent));
+        if let Some(pos) = self.child_scratch.iter().position(|&c| c == old) {
+            self.child_scratch
+                .splice(pos..=pos, self.incoming_scratch.iter().copied());
+            self.tx.set_children(parent, self.child_scratch);
+            self.incoming_scratch.clear();
         } else {
-            self.writer.stack.truncate(split);
+            self.discard_incoming_scratch();
         }
+        self.remove_subtree(old);
     }
 
     fn replace_placeholder_with_nodes(&mut self, path: &'static [u8], m: usize) {
-        let split = self.writer.stack.len().saturating_sub(m);
-        let Some(&top) = split.checked_sub(1).and_then(|i| self.writer.stack.get(i)) else {
-            self.writer.stack.truncate(split);
+        let split = self.stack.len().saturating_sub(m);
+        if split == 0 {
+            self.drain_incoming_from_stack(m);
+            self.discard_incoming_scratch();
+            return;
+        }
+        let template_root = self.stack[split - 1];
+        self.drain_incoming_from_stack(m);
+        let Some(placeholder) = self.walk_path(template_root, path) else {
+            self.discard_incoming_scratch();
             return;
         };
-        if let Some(placeholder) = self.writer.walk_path(top, path) {
-            self.writer
-                .replace_node_in_parent_from_stack(self.sink, placeholder, split);
+        let Some(parent) = self.tx.store().parent(placeholder) else {
+            self.discard_incoming_scratch();
+            return;
+        };
+        self.detach_incoming_from_parents();
+        self.child_scratch.clear();
+        self.child_scratch
+            .extend_from_slice(self.tx.store().children(parent));
+        if let Some(pos) = self.child_scratch.iter().position(|&c| c == placeholder) {
+            self.child_scratch
+                .splice(pos..=pos, self.incoming_scratch.iter().copied());
+            self.tx.set_children(parent, self.child_scratch);
+            self.incoming_scratch.clear();
         } else {
-            self.writer.stack.truncate(split);
+            self.discard_incoming_scratch();
         }
+        self.remove_subtree(placeholder);
     }
 
     fn insert_nodes_after(&mut self, id: ElementId, m: usize) {
-        let split = self.writer.stack.len().saturating_sub(m);
-        let Some(anchor) = self.writer.resolve_el(id) else {
-            self.writer.stack.truncate(split);
+        self.drain_incoming_from_stack(m);
+        let Some(anchor) = self.resolve_el(id) else {
+            self.discard_incoming_scratch();
             return;
         };
-        let Some(parent_id) = self.writer.nodes.get(&anchor).and_then(NodeRecord::parent) else {
-            self.writer.stack.truncate(split);
+        let Some(parent) = self.tx.store().parent(anchor) else {
+            self.discard_incoming_scratch();
             return;
         };
-        for i in split..self.writer.stack.len() {
-            let n = self.writer.stack[i];
-            self.writer.detach_from_parent(n);
-            if let Some(rec) = self.writer.nodes.get_mut(&n) {
-                rec.set_parent(Some(parent_id));
-            }
-        }
-        if let Some(parent) = self.writer.nodes.get_mut(&parent_id) {
-            if let Some(pos) = parent.children.iter().position(|&c| c == anchor) {
-                parent
-                    .children
-                    .splice(pos + 1..pos + 1, self.writer.stack.drain(split..));
-            } else {
-                self.writer.stack.truncate(split);
-            }
+        self.detach_incoming_from_parents();
+        self.child_scratch.clear();
+        self.child_scratch
+            .extend_from_slice(self.tx.store().children(parent));
+        if let Some(pos) = self.child_scratch.iter().position(|&c| c == anchor) {
+            self.child_scratch
+                .splice(pos + 1..pos + 1, self.incoming_scratch.iter().copied());
+            self.tx.set_children(parent, self.child_scratch);
+            self.incoming_scratch.clear();
         } else {
-            self.writer.stack.truncate(split);
+            self.discard_incoming_scratch();
         }
-        self.writer.dirty_children.push(parent_id);
     }
 
     fn insert_nodes_before(&mut self, id: ElementId, m: usize) {
-        let split = self.writer.stack.len().saturating_sub(m);
-        let Some(anchor) = self.writer.resolve_el(id) else {
-            self.writer.stack.truncate(split);
+        self.drain_incoming_from_stack(m);
+        let Some(anchor) = self.resolve_el(id) else {
+            self.discard_incoming_scratch();
             return;
         };
-        let Some(parent_id) = self.writer.nodes.get(&anchor).and_then(NodeRecord::parent) else {
-            self.writer.stack.truncate(split);
+        let Some(parent) = self.tx.store().parent(anchor) else {
+            self.discard_incoming_scratch();
             return;
         };
-        for i in split..self.writer.stack.len() {
-            let n = self.writer.stack[i];
-            self.writer.detach_from_parent(n);
-            if let Some(rec) = self.writer.nodes.get_mut(&n) {
-                rec.set_parent(Some(parent_id));
-            }
-        }
-        if let Some(parent) = self.writer.nodes.get_mut(&parent_id) {
-            if let Some(pos) = parent.children.iter().position(|&c| c == anchor) {
-                parent
-                    .children
-                    .splice(pos..pos, self.writer.stack.drain(split..));
-            } else {
-                self.writer.stack.truncate(split);
-            }
+        self.detach_incoming_from_parents();
+        self.child_scratch.clear();
+        self.child_scratch
+            .extend_from_slice(self.tx.store().children(parent));
+        if let Some(pos) = self.child_scratch.iter().position(|&c| c == anchor) {
+            self.child_scratch
+                .splice(pos..pos, self.incoming_scratch.iter().copied());
+            self.tx.set_children(parent, self.child_scratch);
+            self.incoming_scratch.clear();
         } else {
-            self.writer.stack.truncate(split);
+            self.discard_incoming_scratch();
         }
-        self.writer.dirty_children.push(parent_id);
     }
 
     fn set_attribute(
@@ -219,76 +194,37 @@ impl<S: RenderSink> WriteMutations for MutationTx<'_, S> {
         value: &AttributeValue,
         id: ElementId,
     ) {
-        self.writer.set_attribute_impl(self.sink, name, value, id);
+        self.set_attribute_impl(name, value, id);
     }
 
     fn set_node_text(&mut self, value: &str, id: ElementId) {
-        if let Some(node_id) = self.writer.resolve_el(id) {
-            self.writer.record_text(node_id, value);
-            self.sink.set_text(node_id, value);
+        if let Some(node) = self.resolve_el(id) {
+            self.tx.edit::<TextContent>(node).text(value);
         }
     }
 
     fn create_event_listener(&mut self, name: &'static str, id: ElementId) {
-        let Some(node_id) = self.writer.resolve_el(id) else {
-            return;
-        };
-        let bit = event_name_to_mask(name);
-        if let Some(rec) = self.writer.nodes.get_mut(&node_id) {
-            rec.event_mask |= bit;
-            self.writer.dirty_events.push(node_id);
+        if let Some(node) = self.resolve_el(id) {
+            self.update_event_mask(node, event_name_to_mask(name), true);
         }
     }
 
     fn remove_event_listener(&mut self, name: &'static str, id: ElementId) {
-        let Some(node_id) = self.writer.resolve_el(id) else {
-            return;
-        };
-        let bit = event_name_to_mask(name);
-        if let Some(rec) = self.writer.nodes.get_mut(&node_id) {
-            rec.event_mask &= !bit;
-            self.writer.dirty_events.push(node_id);
+        if let Some(node) = self.resolve_el(id) {
+            self.update_event_mask(node, event_name_to_mask(name), false);
         }
     }
 
     fn remove_node(&mut self, id: ElementId) {
-        if let Some(node_id) = self.writer.resolve_el(id) {
-            self.writer.detach_from_parent(node_id);
-            self.writer.remove_subtree(self.sink, node_id);
+        if let Some(node) = self.resolve_el(id) {
+            self.detach_from_parent(node);
+            self.remove_subtree(node);
         }
     }
 
     fn push_root(&mut self, id: ElementId) {
-        if let Some(node_id) = self.writer.resolve_el(id) {
-            self.writer.stack.push(node_id);
+        if let Some(node) = self.resolve_el(id) {
+            self.stack.push(node);
         }
-    }
-}
-
-fn event_name_to_mask(name: &str) -> u64 {
-    match name {
-        "press" | "onpress" | "click" | "onclick" => EventMask::PRESS,
-        "longpress" | "onlongpress" => EventMask::LONG_PRESS,
-        "scroll" | "onscroll" => EventMask::SCROLL,
-        "change" | "onchange" | "input" | "oninput" => EventMask::TEXT_CHANGE,
-        "focus" | "onfocus" => EventMask::FOCUS,
-        "blur" | "onblur" => EventMask::BLUR,
-        "layout" | "onlayout" => EventMask::LAYOUT,
-        "compositionstart"
-        | "oncompositionstart"
-        | "compositionupdate"
-        | "oncompositionupdate"
-        | "compositionend"
-        | "oncompositionend" => EventMask::COMPOSITION,
-        "keydown" | "onkeydown" => EventMask::KEY_DOWN,
-        "keyup" | "onkeyup" => EventMask::KEY_UP,
-        "submit" | "onsubmit" => EventMask::SUBMIT,
-        "pointerdown" | "onpointerdown" => EventMask::POINTER_DOWN,
-        "pointermove" | "onpointermove" => EventMask::POINTER_MOVE,
-        "pointerup" | "onpointerup" => EventMask::POINTER_UP,
-        "pointerenter" | "onpointerenter" => EventMask::POINTER_ENTER,
-        "pointerleave" | "onpointerleave" => EventMask::POINTER_LEAVE,
-        "wheel" | "onwheel" => EventMask::WHEEL,
-        _ => EventMask::CUSTOM,
     }
 }

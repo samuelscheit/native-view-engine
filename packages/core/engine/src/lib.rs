@@ -1,9 +1,9 @@
-//! Core framework-agnostic runtime: `RenderBackend` trait, `Surface` coordinator,
-//! 6-stage `FrameProfiler` with Perfetto/Chrome trace export, and 2-tier hot-reload spine.
+//! Core framework-agnostic runtime: `StoreBackend` / `StoreLayoutEngine` traits, `SurfaceRunner`
+//! coordinator, `StoreWireReplica` for cross-boundary `NVE2` frames, 6-stage `FrameProfiler` with
+//! Perfetto/Chrome trace export, and 2-tier hot-reload spine.
 
 pub mod app;
 pub mod frame_arena;
-pub mod hash;
 pub mod hotreload;
 pub mod instant_boot;
 pub mod layout;
@@ -12,15 +12,16 @@ pub mod loader;
 pub mod mmap_arena;
 pub mod profiler;
 pub mod reloc;
-pub mod render_sink;
+pub mod store_backend;
 
 pub use nve_abi as abi;
-use nve_abi::{DecodeError, FrameId, NativeEvent, NodeId, SurfaceId};
+use nve_abi::{DecodeError, FrameId, NodeId, SurfaceId};
+use nve_store::{ChangeSet, NodeStore};
 
 pub use app::{clear_last_ffi_panic, last_ffi_panic, take_last_ffi_panic, NveApp};
-pub use render_sink::{replay_command_buffer_into, BatchSink, RenderSink};
 pub use frame_arena::{FrameArena, FRAME_ARENA_BASE_ALIGN};
-pub use hash::{xxh64, Xxh64Hasher};
+pub use store_backend::{StoreBackend, StoreWireReplica};
+
 pub use hotreload::HotPatchMsg;
 pub use instant_boot::{
     default_instant_boot_dir, is_snapshot_disabled, is_snapshot_reset_requested,
@@ -30,7 +31,7 @@ pub use instant_boot::{
     DEFAULT_STATE_COMPACT_HEADROOM, DEFAULT_USER_FRAME0_FILE,
 };
 pub use layout::{
-    BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, LayoutEngine, TextMeasurer,
+    BuiltinLayout, DynLayoutEngine, HeuristicTextMeasurer, StoreLayoutEngine, TextMeasurer,
 };
 pub use mmap_arena::{
     ArenaError, ArenaHeaderSlot, ArenaPod, MmapOffsetArena, OffsetPtr, OffsetSlice, OffsetStr,
@@ -94,6 +95,9 @@ pub struct BackendApplyStats {
 #[derive(Debug)]
 pub enum BackendError {
     Decode(DecodeError),
+    Wire(nve_store::wire::WireError),
+    /// Replica hit a mid-frame wire failure and reset; deltas are rejected until a `frame == 1` keyframe arrives.
+    NeedsKeyframe(Option<nve_store::wire::WireError>),
     InvalidNode(NodeId),
     Internal(String),
 }
@@ -101,6 +105,12 @@ pub enum BackendError {
 impl From<DecodeError> for BackendError {
     fn from(e: DecodeError) -> Self {
         Self::Decode(e)
+    }
+}
+
+impl From<nve_store::wire::WireError> for BackendError {
+    fn from(e: nve_store::wire::WireError) -> Self {
+        Self::Wire(e)
     }
 }
 
@@ -112,35 +122,15 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// Universal backend trait implemented by:
-/// - `nve-backend-headless` (pure-Rust Taffy layout + mutation recorder)
-/// - `cxx/nve-fabric-bridge` (React Native Fabric iOS `UIView` & Android `View`)
-/// - `nve-backend-skia` (macOS, Windows, Linux, iOS, Android GPU Skia)
-/// - `nve-backend-web` (WASM -> browser DOM)
-pub trait RenderBackend {
-    fn name(&self) -> &'static str;
-
-    fn set_viewport(&mut self, surface_id: SurfaceId, viewport: Viewport);
-
-    /// Applies one batched binary `CommandBuffer` frame and returns backend timing breakdown.
-    fn submit_frame(&mut self, command_bytes: &[u8]) -> Result<BackendApplyStats, BackendError>;
-
-    /// Drains any pending native input/layout events since the last frame.
-    fn drain_events(&mut self) -> Vec<NativeEvent>;
-
-    /// Returns computed layout rectangle for a node if available.
-    fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect>;
-}
-
-/// Manages frame sequencing and stage profiling for one rendered surface.
-pub struct SurfaceRunner<B: RenderBackend> {
+/// Manages frame sequencing and stage profiling for one rendered surface backed by a [`StoreBackend`].
+pub struct SurfaceRunner<B: StoreBackend> {
     surface_id: SurfaceId,
     next_frame_id: FrameId,
     backend: B,
     profiler: FrameProfiler,
 }
 
-impl<B: RenderBackend> SurfaceRunner<B> {
+impl<B: StoreBackend> SurfaceRunner<B> {
     pub fn new(surface_id: SurfaceId, viewport: Viewport, mut backend: B) -> Self {
         backend.set_viewport(surface_id, viewport);
         Self {
@@ -173,20 +163,22 @@ impl<B: RenderBackend> SurfaceRunner<B> {
         id
     }
 
-    pub fn submit_recorded_frame(
+    /// Commits one already-committed `(&NodeStore, &ChangeSet)` directly into the backend with
+    /// zero wire serialization or copying, recording exact `FrameTiming` in `profiler`.
+    pub fn commit_store(
         &mut self,
         frame_id: FrameId,
         reconcile_us: u64,
-        encode_us: u64,
-        command_bytes: &[u8],
+        store: &NodeStore,
+        changes: &ChangeSet,
     ) -> Result<FrameTiming, BackendError> {
-        let stats = self.backend.submit_frame(command_bytes)?;
+        let stats = self.backend.commit(store, changes)?;
         let timing = FrameTiming {
             frame_id,
             op_count: stats.op_count,
             mutation_count: stats.mutation_count,
             reconcile_us,
-            encode_us,
+            encode_us: 0,
             decode_us: stats.decode_us,
             layout_us: stats.layout_us,
             diff_us: stats.diff_us,
@@ -196,11 +188,9 @@ impl<B: RenderBackend> SurfaceRunner<B> {
         Ok(timing)
     }
 
-    /// Flushes a frame directly into the backend via [`RenderSink`] with zero `CommandBuffer`
-    /// allocation, encode, or decode overhead, recording exact `FrameTiming` in `profiler`.
-    pub fn flush_direct<F>(&mut self, flush: F) -> Result<FrameTiming, BackendError>
+    /// Runs a timed producer/commit closure against the backend and records exact `FrameTiming`.
+    pub fn commit_with<F>(&mut self, flush: F) -> Result<FrameTiming, BackendError>
     where
-        B: RenderSink,
         F: FnOnce(FrameId, &mut B) -> Result<(u64, BackendApplyStats), BackendError>,
     {
         let frame_id = self.next_frame_id();

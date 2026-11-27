@@ -49,9 +49,9 @@ NVE compiles native apps directly to platform machine code (`~15 MB` class binar
 
 Every crate in `native-view-engine` obeys four non-negotiable engineering invariants:
 
-1. **Direct typed memory on FFI boundaries, compact binary on wire** — In-process FFI uses direct `#[repr(C)]` structs and slices (`NveDirectEvent` / `NveEventBatch`, `NveMapEntry`, `NveSceneView`, 64-byte `NveNodeMeta`) with zero serialization; network and disk persistence use compact binary codecs (`NVE1` commands, `nve-wire-core`, `NVERELOC`, `MmapOffsetArena`) with bounds checks and `XXH64`/FNV-1a64 integrity hashes.
+1. **Direct typed memory on FFI boundaries, compact binary on wire** — In-process FFI uses direct `#[repr(C)]` structs and slices (`NveDirectEvent` / `NveEventBatch`, `NveMapEntry`, `NveSceneView`, 64-byte `NveNodeMeta`) with zero serialization; network and disk persistence use compact binary codecs (`NVE2` tables, `nve-wire-core`, `NVERELOC`, `MmapOffsetArena`) with bounds checks and `XXH64` integrity hashes.
 2. **Framework-agnostic engine core** — `nve-engine` has zero dependency on `dioxus-core`. Dioxus (`nve-dioxus`) is an adapter, not a hard requirement.
-3. **Single source of truth for ABIs** — Core and Scene ABIs are derived directly from Rust `#[derive(NveAbi)]` descriptors in `packages/core/abi`, locked by compile-time `offset_of!` assertions and 64-bit FNV-1a schema hashes (`0x053543B32C5D959C` and `0x6D45E53E0D9535D1`), and verified in CI via `cargo nve codegen abi --check`.
+3. **Single source of truth for ABIs** — Core and Scene ABIs are derived directly from Rust `#[derive(NveAbi)]` descriptors in `packages/core/abi`, locked by compile-time `offset_of!` assertions and 64-bit XXH64 schema hashes, and verified in CI via `cargo nve codegen abi --check`.
 4. **Honest verification over smoke tests** — Every decoder and host boundary ships with truncated-buffer, fuzz/property, layout-parity, and state-preservation tests alongside Criterion and C++ statistical regression baselines.
 
 ## Where to Go Next

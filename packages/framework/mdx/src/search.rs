@@ -1,10 +1,10 @@
-//! Zero-server compact binary full-text search index (`NVS1`).
+//! Zero-server compact binary full-text search index (`NVS2`).
 
 use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{Block, CompiledPage, DirectiveBlock, Inline};
 use crate::inline::append_inline_plain_text;
-pub use crate::search_codec::{NVS1_MAGIC, NVS1_VERSION, SearchIndexError, fnv1a64};
+pub use crate::search_codec::{NVS2_MAGIC, NVS2_VERSION, SearchIndexError};
 
 /// Field weights stored in tenths (`weight * 10`).
 const WEIGHT_TITLE_X10: u16 = 40; // 4.0
@@ -40,7 +40,7 @@ pub struct SearchHit {
     pub score: f32,
 }
 
-/// In-memory & binary-serializable full-text search index (`NVS1`).
+/// In-memory & binary-serializable full-text search index (`NVS2`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchIndex {
     pub docs: Vec<SearchDoc>,
@@ -173,12 +173,12 @@ impl SearchIndex {
         }
     }
 
-    /// Encode this index into the compact little-endian `NVS1` binary format with FNV-1a64 trailer.
+    /// Encode this index into the compact little-endian `NVS2` binary format with XXH64 trailer.
     pub fn encode(&self) -> Vec<u8> {
         crate::search_codec::encode_index(self)
     }
 
-    /// Decode an `NVS1` binary buffer with strict bounds & checksum verification (zero panics).
+    /// Decode an `NVS2` binary buffer with strict bounds & checksum verification (zero panics).
     pub fn decode(bytes: &[u8]) -> Result<Self, SearchIndexError> {
         crate::search_codec::decode_index(bytes)
     }

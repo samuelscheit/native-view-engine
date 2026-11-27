@@ -9,6 +9,7 @@ pub mod hot_reload_client;
 mod ime;
 pub mod input;
 pub mod instant_boot;
+mod keyboard;
 pub mod multi_window;
 pub mod pair_client;
 pub mod session;

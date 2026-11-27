@@ -5,24 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# Default keeps SSR, hydration, and non-camera native views enabled for `hosts/web-shell`
-# and `nve-docs-site`, while keeping `camera` (`getUserMedia` inline JS + codecs) opt-in.
-default = ["ssr", "hydrate", "native-views"]
+default = ["ssr", "hydrate"]
 ssr = []
 hydrate = []
-native-views = ["nv-blur", "nv-webview", "nv-video", "nv-web-element"]
-nv-blur = []
-nv-webview = []
-nv-video = []
-nv-web-element = []
-camera = ["dep:nve-camera"]
-nv-camera = ["camera"]
 
 [dependencies]
 nve-abi = { workspace = true }
-nve-camera = { path = "../../modules/camera", optional = true, default-features = false, features = ["spec"] }
 nve-components = { workspace = true }
 nve-engine = { workspace = true }
+nve-store = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
@@ -46,5 +37,6 @@ web-sys = { workspace = true, features = [
     "Performance",
     "ShadowRoot",
     "Storage",
+    "SvgElement",
     "VisualViewport",
 ] }

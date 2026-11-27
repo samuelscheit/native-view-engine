@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nve_abi.generated.h"
+#include "nve_hash.generated.hpp"
 
 #include <array>
 #include <cstddef>
@@ -108,9 +109,6 @@ struct WireHelloAck {
 };
 
 namespace wire_v2 {
-
-/// Canonical 64-bit XXH64 matching `nve_engine::xxh64(bytes, seed)` bit-for-bit.
-uint64_t xxh64(std::span<const uint8_t> data, uint64_t seed = kWireXxh64Seed) noexcept;
 
 /// Constant-time byte comparison for Bearer tokens.
 bool constant_time_eq(std::string_view a, std::string_view b) noexcept;

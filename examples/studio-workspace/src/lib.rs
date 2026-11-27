@@ -213,33 +213,37 @@ impl StudioWorkspaceModule {
         &self.surface
     }
 
-    /// Reconciles and flushes the workspace directly into `sink` via monomorphized [`nve_engine::RenderSink`]
-    /// with zero `CommandBuffer` encode/decode overhead.
-    pub fn flush_into<S: nve_engine::RenderSink>(
+    pub fn surface_mut(&mut self) -> &mut DioxusSurface {
+        &mut self.surface
+    }
+
+    /// Reconciles and commits the workspace directly into `backend` via [`nve_engine::StoreBackend`]
+    /// with zero wire encode/decode overhead.
+    pub fn commit_to<B: nve_engine::StoreBackend>(
         &mut self,
         frame_id: FrameId,
-        sink: &mut S,
+        backend: &mut B,
     ) -> Result<nve_engine::BackendApplyStats, nve_engine::BackendError> {
-        let (_, stats) = self.flush_into_timed(frame_id, sink)?;
+        let (_, stats) = self.commit_to_timed(frame_id, backend)?;
         Ok(stats)
     }
 
-    /// Timed variant of [`Self::flush_into`] returning `(reconcile_us, stats)`.
-    pub fn flush_into_timed<S: nve_engine::RenderSink>(
+    /// Timed variant of [`Self::commit_to`] returning `(reconcile_us, stats)`.
+    pub fn commit_to_timed<B: nve_engine::StoreBackend>(
         &mut self,
         frame_id: FrameId,
-        sink: &mut S,
+        backend: &mut B,
     ) -> Result<(u64, nve_engine::BackendApplyStats), nve_engine::BackendError> {
         if !self.mounted {
             ui::set_pending_store(Arc::clone(&self.store));
             ui::set_pending_host_services(Arc::clone(&self.host_services));
             self.mounted = true;
-            let res = self.surface.flush_into_timed(frame_id, sink);
+            let res = self.surface.commit_to_timed(frame_id, backend);
             ui::clear_pending_store();
             ui::clear_pending_host_services();
             res
         } else {
-            self.surface.flush_into_timed(frame_id, sink)
+            self.surface.commit_to_timed(frame_id, backend)
         }
     }
 
@@ -322,12 +326,12 @@ impl NveApp for StudioWorkspaceModule {
             ui::set_pending_store(Arc::clone(&self.store));
             ui::set_pending_host_services(Arc::clone(&self.host_services));
             self.mounted = true;
-            let slice = self.surface.render_frame_slice(frame_id);
+            let slice = self.surface.render_nve2_slice(frame_id);
             ui::clear_pending_store();
             ui::clear_pending_host_services();
             slice
         } else {
-            self.surface.render_frame_slice(frame_id)
+            self.surface.render_nve2_slice(frame_id)
         }
     }
 

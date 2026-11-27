@@ -167,7 +167,7 @@ impl WebBackend {
         let make_handler = |window: web_sys::Window, vv: web_sys::VisualViewport| {
             let slot = Rc::clone(&self.keyboard_insets);
             let on_kb = Rc::clone(&self.on_keyboard_insets);
-            let events = Rc::clone(&self.events);
+            let events = Rc::clone(&self.pending_events);
             let on_event = Rc::clone(&self.on_event);
             let surface_id = Rc::clone(&self.surface_id);
             Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
@@ -194,7 +194,7 @@ impl WebBackend {
 mod tests {
     use std::cell::RefCell;
 
-    use nve_engine::RenderBackend;
+    use nve_engine::StoreBackend;
 
     use super::*;
 

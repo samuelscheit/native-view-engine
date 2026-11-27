@@ -1,17 +1,27 @@
-//! Shared headless integration test harness driving real `DioxusSurface` + `HeadlessBackend`.
+//! Shared headless integration test harness driving real `DioxusSurface` + `HeadlessBackend`
+//! directly over `NodeStore` word tables.
+
+use std::collections::HashMap;
 
 use nve_abi::{
-    pack_key_modifiers, Command, CommandDecoder, EventPayload, NativeEvent, NativeEventKind,
-    NodeId, RawPropValue,
+    pack_key_modifiers, ColorRgba, EdgeInsets, EventPayload, NativeEvent, NativeEventKind,
+    NodeId as AbiNodeId,
 };
 use nve_backend_headless::HeadlessBackend;
-use nve_dioxus::elements::backend::{RenderBackend, Viewport};
+use nve_components::tables::{
+    Accessibility, AriaAutoComplete, AriaLive, AriaOrientation, AriaRelations, AriaTriState,
+    BoxShadows, DebugId, Interaction, Layout, TextContent, TextInput, Visual,
+};
+use nve_dioxus::elements::backend::{StoreBackend, Viewport};
 use nve_dioxus::prelude::Element;
 use nve_dioxus::DioxusSurface;
+use nve_store::NodeId;
+use nve_web_html::{DataAttrList, HtmlDataAttrs, HtmlSemantics};
 
 pub struct UiHarness {
     pub surface: DioxusSurface,
     pub backend: HeadlessBackend,
+    num_attrs: HashMap<(AbiNodeId, &'static str), String>,
     frame_id: u64,
     timestamp_us: u64,
 }
@@ -31,68 +41,271 @@ impl UiHarness {
         let mut h = Self {
             surface: DioxusSurface::new(1, root),
             backend,
+            num_attrs: HashMap::new(),
             frame_id: 0,
             timestamp_us: 0,
         };
-        let _ = h.render();
+        h.render();
         h
     }
 
-    pub fn render(&mut self) -> Vec<Command> {
+    pub fn render(&mut self) {
         self.frame_id += 1;
-        let (_, _, bytes) = self.surface.render_frame(self.frame_id);
-        self.backend
-            .submit_frame(&bytes)
-            .expect("headless submit_frame succeeded");
-        let (_, cmds) = CommandDecoder::new(&bytes)
-            .expect("valid command buffer header")
-            .decode_all()
-            .expect("valid command buffer");
-        cmds
+        self.surface
+            .commit_to(self.frame_id, &mut self.backend)
+            .expect("headless commit_to succeeded");
+        self.refresh_num_attrs();
     }
 
-    pub fn find(&self, tid: &str) -> NodeId {
+    fn refresh_num_attrs(&mut self) {
+        self.num_attrs.clear();
+        let store = self.surface.store();
+        let mut stack = vec![NodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != NodeId::ROOT {
+                if let Some(a) = store.try_row::<Accessibility>(id) {
+                    self.num_attrs
+                        .insert((id.raw(), "ariaValueNow"), format_num(a.value_now()));
+                    self.num_attrs
+                        .insert((id.raw(), "ariaValueMin"), format_num(a.value_min()));
+                    self.num_attrs
+                        .insert((id.raw(), "ariaValueMax"), format_num(a.value_max()));
+                }
+                if let Some(i) = store.try_row::<Interaction>(id)
+                    && i.tab_index_set()
+                {
+                    self.num_attrs
+                        .insert((id.raw(), "tabIndex"), i.tab_index().to_string());
+                }
+            }
+            stack.extend_from_slice(store.children(id));
+        }
+    }
+
+    pub fn find(&self, tid: &str) -> AbiNodeId {
         self.maybe_find(tid)
             .unwrap_or_else(|| panic!("expected node with testID='{tid}'"))
     }
 
-    pub fn maybe_find(&self, tid: &str) -> Option<NodeId> {
-        self.backend.nodes().values().find_map(|n| {
-            match n.raw_props.get("testID") {
-                Some(RawPropValue::String(s)) if s == tid => Some(n.id),
-                _ => None,
+    pub fn maybe_find(&self, tid: &str) -> Option<AbiNodeId> {
+        let store = self.surface.store();
+        let mut stack = vec![NodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != NodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == tid
+            {
+                return Some(id.raw());
             }
-        })
+            stack.extend_from_slice(store.children(id));
+        }
+        None
     }
 
-    pub fn raw_str(&self, id: NodeId, key: &str) -> Option<&str> {
-        match self.backend.node(id)?.raw_props.get(key) {
-            Some(RawPropValue::String(s)) => Some(s.as_str()),
+    pub fn live_node_count(&self) -> usize {
+        self.surface.store().stats().live_nodes
+    }
+
+    pub fn children_of(&self, id: AbiNodeId) -> Vec<AbiNodeId> {
+        self.surface
+            .store()
+            .children(NodeId(id))
+            .iter()
+            .map(|n| n.raw())
+            .collect()
+    }
+
+    pub fn bg(&self, id: AbiNodeId) -> ColorRgba {
+        self.surface
+            .store()
+            .try_row::<Visual>(NodeId(id))
+            .map_or(ColorRgba::TRANSPARENT, |v| ColorRgba::from_u32(v.background().0))
+    }
+
+    pub fn border_width(&self, id: AbiNodeId) -> f32 {
+        self.surface
+            .store()
+            .try_row::<Visual>(NodeId(id))
+            .map_or(0.0, |v| v.border_width())
+    }
+
+    pub fn border_color(&self, id: AbiNodeId) -> ColorRgba {
+        self.surface
+            .store()
+            .try_row::<Visual>(NodeId(id))
+            .map_or(ColorRgba::TRANSPARENT, |v| {
+                ColorRgba::from_u32(v.border_color().0)
+            })
+    }
+
+    pub fn border_radius(&self, id: AbiNodeId) -> f32 {
+        self.surface
+            .store()
+            .try_row::<Visual>(NodeId(id))
+            .map_or(0.0, |v| v.border_radius())
+    }
+
+    pub fn opacity(&self, id: AbiNodeId) -> f32 {
+        self.surface
+            .store()
+            .try_row::<Visual>(NodeId(id))
+            .map_or(1.0, |v| v.opacity())
+    }
+
+    pub fn has_box_shadow(&self, id: AbiNodeId) -> bool {
+        let store = self.surface.store();
+        store
+            .try_row::<Visual>(NodeId(id))
+            .and_then(|v| {
+                let r = v.box_shadows();
+                (!r.is_none())
+                    .then(|| store.resource::<BoxShadows>(r).map(|b| !b.0.is_empty()))
+                    .flatten()
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn padding(&self, id: AbiNodeId) -> EdgeInsets {
+        self.surface
+            .store()
+            .try_row::<Layout>(NodeId(id))
+            .map_or(EdgeInsets::default(), |l| EdgeInsets {
+                top: l.padding_top().value(),
+                right: l.padding_right().value(),
+                bottom: l.padding_bottom().value(),
+                left: l.padding_left().value(),
+            })
+    }
+
+    /// Reads typed semantic/ARIA/data attributes directly from `NodeStore` word tables.
+    pub fn raw_str(&self, id: AbiNodeId, key: &str) -> Option<&str> {
+        let store = self.surface.store();
+        let nid = NodeId(id);
+        if let Some(data_key) = key.strip_prefix("data-") {
+            let res = store.try_row::<HtmlDataAttrs>(nid)?.entries();
+            if res.is_none() {
+                return None;
+            }
+            let list = store.resource::<DataAttrList>(res)?;
+            return list
+                .0
+                .iter()
+                .find(|(k, _)| k == data_key || k == key)
+                .map(|(_, v)| v.as_str());
+        }
+        match key {
+            "testID" => store
+                .try_row::<DebugId>(nid)
+                .map(|d| d.test_id())
+                .filter(|s| !s.is_empty()),
+            "id" => store
+                .try_row::<DebugId>(nid)
+                .map(|d| d.id())
+                .filter(|s| !s.is_empty()),
+            "accessibilityRole" => {
+                let role = store.try_row::<Accessibility>(nid)?.role().as_aria_str();
+                (!role.is_empty()).then_some(role)
+            }
+            "accessibilityLabel" => store
+                .try_row::<Accessibility>(nid)
+                .map(|a| a.label())
+                .filter(|s| !s.is_empty()),
+            "ariaChecked" => tri_str(store.try_row::<Accessibility>(nid)?.checked()),
+            "ariaSelected" => tri_str(store.try_row::<Accessibility>(nid)?.selected()),
+            "ariaExpanded" => tri_str(store.try_row::<Accessibility>(nid)?.expanded()),
+            "ariaModal" => {
+                let a = store.try_row::<Accessibility>(nid)?;
+                a.modal().then_some("true")
+            }
+            "ariaInvalid" => {
+                let a = store.try_row::<Accessibility>(nid)?;
+                Some(if a.invalid() { "true" } else { "false" })
+            }
+            "ariaMultiSelectable" => {
+                let a = store.try_row::<Accessibility>(nid)?;
+                a.multiselectable().then_some("true")
+            }
+            "ariaDisabled" => {
+                let i = store.try_row::<Interaction>(nid)?;
+                Some(if i.disabled() { "true" } else { "false" })
+            }
+            "ariaLive" => match store.try_row::<Accessibility>(nid)?.live() {
+                AriaLive::Polite => Some("polite"),
+                AriaLive::Assertive => Some("assertive"),
+                AriaLive::Off | AriaLive::Unset => None,
+            },
+            "ariaOrientation" => match store.try_row::<Accessibility>(nid)?.orientation() {
+                AriaOrientation::Horizontal => Some("horizontal"),
+                AriaOrientation::Vertical => Some("vertical"),
+                AriaOrientation::Unset => None,
+            },
+            "ariaAutoComplete" => match store.try_row::<Accessibility>(nid)?.autocomplete() {
+                AriaAutoComplete::Inline => Some("inline"),
+                AriaAutoComplete::List => Some("list"),
+                AriaAutoComplete::None => Some("none"),
+                AriaAutoComplete::Unset => None,
+            },
+            "ariaControls" | "ariaLabelledBy" | "ariaDescribedBy" | "ariaActiveDescendant" => {
+                let res = store.try_row::<Accessibility>(nid)?.relations();
+                if res.is_none() {
+                    return None;
+                }
+                let rel = store.resource::<AriaRelations>(res)?;
+                let val = match key {
+                    "ariaControls" => rel.controls.as_str(),
+                    "ariaLabelledBy" => rel.labelled_by.as_str(),
+                    "ariaDescribedBy" => rel.described_by.as_str(),
+                    _ => rel.active_descendant.as_str(),
+                };
+                (!val.is_empty()).then_some(val)
+            }
+            "ariaValueNow" => self.num_attrs.get(&(id, "ariaValueNow")).map(String::as_str),
+            "ariaValueMin" => self.num_attrs.get(&(id, "ariaValueMin")).map(String::as_str),
+            "ariaValueMax" => self.num_attrs.get(&(id, "ariaValueMax")).map(String::as_str),
+            "tabIndex" => self.num_attrs.get(&(id, "tabIndex")).map(String::as_str),
+            "box-shadow" => {
+                if self.has_box_shadow(id) {
+                    Some("shadow")
+                } else {
+                    Some("none")
+                }
+            }
+            "value" => store
+                .try_row::<TextInput>(nid)
+                .map(|ti| ti.value()),
+            "placeholder" => store
+                .try_row::<TextInput>(nid)
+                .map(|ti| ti.placeholder()),
             _ => None,
         }
     }
 
-    pub fn raw_bool(&self, id: NodeId, key: &str) -> Option<bool> {
-        match self.backend.node(id)?.raw_props.get(key) {
-            Some(RawPropValue::Bool(b)) => Some(*b),
+    pub fn raw_bool(&self, id: AbiNodeId, key: &str) -> Option<bool> {
+        let store = self.surface.store();
+        let nid = NodeId(id);
+        match key {
+            "disabled" => store.try_row::<Interaction>(nid).map(|i| i.disabled()),
+            "secureTextEntry" => store.try_row::<TextInput>(nid).map(|ti| ti.secure()),
+            "readOnly" => store.try_row::<TextInput>(nid).map(|ti| ti.read_only()),
+            "multiline" => store.try_row::<TextInput>(nid).map(|ti| ti.multiline()),
+            "required" => store.try_row::<TextInput>(nid).map(|ti| ti.required()),
+            "open" => store.try_row::<HtmlSemantics>(nid).map(|s| s.open()),
             _ => None,
         }
     }
 
     pub fn text_of(&self, tid: &str) -> String {
         let id = self.find(tid);
-        self.collect_text(id)
+        self.collect_text(NodeId(id))
     }
 
     fn collect_text(&self, id: NodeId) -> String {
-        let Some(node) = self.backend.node(id) else {
-            return String::new();
-        };
+        let store = self.surface.store();
         let mut out = String::new();
-        if let Some(t) = node.text.as_deref() {
-            out.push_str(t);
+        if let Some(tc) = store.try_row::<TextContent>(id) {
+            out.push_str(tc.text());
         }
-        for &cid in &node.children {
+        for &cid in store.children(id) {
             out.push_str(&self.collect_text(cid));
         }
         out
@@ -103,7 +316,7 @@ impl UiHarness {
         self.timestamp_us
     }
 
-    pub fn press(&mut self, tid: &str) -> Vec<Command> {
+    pub fn press(&mut self, tid: &str) {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
@@ -113,10 +326,10 @@ impl UiHarness {
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 4.0, y: 4.0 },
         }]));
-        self.render()
+        self.render();
     }
 
-    pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) -> Vec<Command> {
+    pub fn keydown(&mut self, tid: &str, key: &str, shift: bool) {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
@@ -132,10 +345,10 @@ impl UiHarness {
                 is_composing: false,
             },
         }]));
-        self.render()
+        self.render();
     }
 
-    pub fn focus(&mut self, tid: &str) -> Vec<Command> {
+    pub fn focus(&mut self, tid: &str) {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
@@ -145,10 +358,10 @@ impl UiHarness {
             kind: NativeEventKind::Focus,
             payload: EventPayload::Empty,
         }]));
-        self.render()
+        self.render();
     }
 
-    pub fn blur(&mut self, tid: &str) -> Vec<Command> {
+    pub fn blur(&mut self, tid: &str) {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
@@ -158,10 +371,14 @@ impl UiHarness {
             kind: NativeEventKind::Blur,
             payload: EventPayload::Empty,
         }]));
-        self.render()
+        self.render();
     }
 
-    pub fn text_change(&mut self, tid: &str, value: &str) -> Vec<Command> {
+    pub fn text_change(&mut self, tid: &str, value: &str) {
+        self.change_text(tid, value);
+    }
+
+    pub fn change_text(&mut self, tid: &str, value: &str) {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
@@ -171,11 +388,23 @@ impl UiHarness {
             kind: NativeEventKind::TextChange,
             payload: EventPayload::Text(value.to_owned()),
         }]));
-        self.render()
+        self.render();
     }
 
-    #[cfg(feature = "virtual-list")]
-    pub fn scroll(&mut self, tid: &str, y: f32) -> Vec<Command> {
+    pub fn submit(&mut self, tid: &str, value: &str) {
+        let id = self.find(tid);
+        let ts = self.next_ts();
+        assert!(self.surface.dispatch_events(&[NativeEvent {
+            surface_id: 1,
+            node_id: id,
+            timestamp_us: ts,
+            kind: NativeEventKind::Submit,
+            payload: EventPayload::Text(value.to_owned()),
+        }]));
+        self.render();
+    }
+
+    pub fn scroll(&mut self, tid: &str, y: f32) {
         let id = self.find(tid);
         let ts = self.next_ts();
         assert!(self.surface.dispatch_events(&[NativeEvent {
@@ -187,9 +416,26 @@ impl UiHarness {
                 x: 0.0,
                 y,
                 content_width: 800.0,
-                content_height: 5_000_000.0,
+                content_height: y + 600.0,
             },
         }]));
-        self.render()
+        self.render();
+    }
+}
+
+fn tri_str(v: AriaTriState) -> Option<&'static str> {
+    match v {
+        AriaTriState::True => Some("true"),
+        AriaTriState::False => Some("false"),
+        AriaTriState::Mixed => Some("mixed"),
+        AriaTriState::Unset => None,
+    }
+}
+
+fn format_num(v: f32) -> String {
+    if (v - v.round()).abs() < 1e-4 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v}")
     }
 }

@@ -10,8 +10,7 @@ use crate::schema::wire::{
     EVENT_ENTRY_NODE_ID_OFFSET, EVENT_ENTRY_PAYLOAD_TAG_OFFSET, EVENT_ENTRY_SURFACE_ID_OFFSET,
     EVENT_ENTRY_TIMESTAMP_US_OFFSET, EVENT_KINDS, EVENT_MASKS, EVENT_PAYLOAD_TAGS,
     EVENT_RING_COUNT_HEADER_SIZE, EVENT_RING_FRAMED_HEADER_SIZE, EVENT_RING_MAGIC,
-    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, FNV1A64_TEST_VECTORS, FNV1A_OFFSET_BASIS,
-    FNV1A_PRIME, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
+    EVENT_RING_MAGIC_BYTES, EVENT_RING_VERSION, KEY_MOD_ALT, KEY_MOD_CTRL, KEY_MOD_META, KEY_MOD_REPEAT, KEY_MOD_SHIFT,
     NVE_WIRE_CODECS_SCHEMA_HASH,
 };
 
@@ -42,7 +41,7 @@ pub fn generate_java_wire_codecs() -> String {
 
     writeln!(
         s,
-        "/** Single-source wire codec constants, canonical FNV-1a64, EventRing writer, and NVE_DRAW1 decoder. */"
+        "/** Single-source wire codec constants, EventRing writer, and NVE_DRAW1 decoder. */"
     )
     .unwrap();
     writeln!(s, "public final class NveWireCodecs {{").unwrap();
@@ -55,75 +54,6 @@ pub fn generate_java_wire_codecs() -> String {
     writeln!(
         s,
         "    public static final String WIRE_CODECS_SCHEMA_HASH_HEX = \"0x{NVE_WIRE_CODECS_SCHEMA_HASH:016X}\";\n"
-    )
-    .unwrap();
-
-    // FNV-1a64
-    writeln!(s, "    // Canonical 64-bit FNV-1a").unwrap();
-    writeln!(
-        s,
-        "    public static final long FNV1A_64_OFFSET_BASIS = 0x{FNV1A_OFFSET_BASIS:016X}L;"
-    )
-    .unwrap();
-    writeln!(
-        s,
-        "    public static final long FNV1A_64_PRIME = 0x{FNV1A_PRIME:016X}L;\n"
-    )
-    .unwrap();
-    writeln!(
-        s,
-        r#"    public static final class Fnv1a64Vector {{
-        public final String label;
-        public final byte[] bytes;
-        public final long expected;
-
-        public Fnv1a64Vector(String label, byte[] bytes, long expected) {{
-            this.label = label;
-            this.bytes = bytes;
-            this.expected = expected;
-        }}
-    }}
-
-    public static final Fnv1a64Vector[] FNV1A_64_TEST_VECTORS = new Fnv1a64Vector[] {{"#
-    )
-    .unwrap();
-    for vec in FNV1A64_TEST_VECTORS {
-        writeln!(
-            s,
-            "        new Fnv1a64Vector(\"{}\", new byte[] {{{}}}, 0x{:016X}L),",
-            vec.label,
-            format_java_bytes(vec.bytes),
-            vec.expected
-        )
-        .unwrap();
-    }
-    writeln!(
-        s,
-        r#"    }};
-
-    public static long fnv1a64Update(long hash, byte[] bytes, int offset, int length) {{
-        long h = hash;
-        final int end = offset + length;
-        for (int i = offset; i < end; i++) {{
-            h ^= (bytes[i] & 0xFFL);
-            h *= FNV1A_64_PRIME;
-        }}
-        return h;
-    }}
-
-    public static long fnv1a64(byte[] bytes) {{
-        return fnv1a64Update(FNV1A_64_OFFSET_BASIS, bytes, 0, bytes.length);
-    }}
-
-    public static boolean verifyFnv1a64TestVectors() {{
-        for (Fnv1a64Vector v : FNV1A_64_TEST_VECTORS) {{
-            if (fnv1a64(v.bytes) != v.expected) {{
-                return false;
-            }}
-        }}
-        return true;
-    }}
-"#
     )
     .unwrap();
 

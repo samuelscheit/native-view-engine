@@ -84,7 +84,7 @@ impl NveWireRejectReason {
     }
 }
 
-/// Client `Hello` payload carrying the real Bearer token over TLS 1.3 (no FNV-1a derivation).
+/// Client `Hello` payload carrying the real Bearer token over TLS 1.3 (never derived from a hash).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NveWireHello {
     pub schema_version: u16,

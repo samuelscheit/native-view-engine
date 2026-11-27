@@ -18,8 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use nve_backend_web::WebBackend;
+use nve_components::tables::DebugId;
 use nve_dioxus::DioxusSurface;
-use nve_engine::RenderBackend;
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 use nve_rpc::{
     procedures, BoxFuture, CborCodec, DomainStatus, FieldErrors, FormDecode, FormPairs, Procedure,
     RawCall, RawReply, ReplyKind, RpcCodec, RpcStatus, Tag64, Transport, TransportError,
@@ -247,6 +248,26 @@ impl std::task::Wake for NoopFlagWaker {
     }
 }
 
+pub(crate) fn new_web_backend() -> WebBackend {
+    let mut web = WebBackend::new();
+    nve_web_html_web::register_web_html_systems(web.table_registry_mut());
+    web
+}
+
+pub(crate) fn find_by_test_id(store: &NodeStore, tid: &str) -> nve_abi::NodeId {
+    let mut stack = vec![StoreNodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if id != StoreNodeId::ROOT
+            && let Some(dbg) = store.try_row::<DebugId>(id)
+            && dbg.test_id() == tid
+        {
+            return id.raw();
+        }
+        stack.extend_from_slice(store.children(id));
+    }
+    panic!("expected node with test_id='{tid}'");
+}
+
 pub(crate) fn pump_settled(
     surface: &mut DioxusSurface,
     web: &mut WebBackend,
@@ -259,8 +280,7 @@ pub(crate) fn pump_settled(
             return n;
         }
         *frame += 1;
-        let (_, _, buf) = surface.render_frame(*frame);
-        web.submit_frame(&buf).unwrap();
+        surface.commit_to(*frame, web).unwrap();
         n += 1;
     }
     assert!(
@@ -272,7 +292,6 @@ pub(crate) fn pump_settled(
 
 pub(crate) fn render_once(surface: &mut DioxusSurface, web: &mut WebBackend, frame: &mut u64) -> String {
     *frame += 1;
-    let (_, _, buf) = surface.render_frame(*frame);
-    web.submit_frame(&buf).unwrap();
-    web.render_html()
+    surface.commit_to(*frame, web).unwrap();
+    web.render_html(surface.store())
 }

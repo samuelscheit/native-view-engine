@@ -1,4 +1,4 @@
-//! Zero-dependency crash-safe `NVK1` append-only binary KV persistence engine.
+//! Zero-dependency crash-safe `NVK2` append-only binary KV persistence engine.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +9,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
-use nve_host_services::{fnv1a64, BinReader, BinWriter, ServiceError, MAX_SEQ_ITEMS};
+use nve_hash::xxh64;
+use nve_host_services::{BinReader, BinWriter, ServiceError, MAX_SEQ_ITEMS};
 
 use crate::{
     validate_batch, validate_key, validate_namespace, validate_value, CompactStats, StorageEntry,
@@ -17,11 +18,11 @@ use crate::{
 };
 
 /// File magic for the crash-safe append-only KV log.
-pub const NVK1_MAGIC: [u8; 4] = *b"NVK1";
+pub const NVK2_MAGIC: [u8; 4] = *b"NVK2";
 /// Current binary log wire version.
-pub const NVK1_VERSION: u16 = 1;
-/// Atomic record commit marker placed after the per-record FNV-1a64 checksum.
-pub const NVK1_COMMIT_MARKER: [u8; 4] = *b"NKCM";
+pub const NVK2_VERSION: u16 = 1;
+/// Atomic record commit marker placed after the per-record XXH64 checksum.
+pub const NVK2_COMMIT_MARKER: [u8; 4] = *b"NKCM";
 
 const HEADER_LEN: usize = 16;
 const RECORD_HEADER_LEN: usize = 16;
@@ -41,7 +42,7 @@ enum LogBackend {
     },
 }
 
-/// Crash-safe append-only `NVK1` binary KV store supporting both disk and in-memory modes.
+/// Crash-safe append-only `NVK2` binary KV store supporting both disk and in-memory modes.
 pub struct KvStore {
     handle: u64,
     next_seq: u64,
@@ -326,7 +327,7 @@ impl KvStore {
     }
 }
 
-/// Manages named `NVK1` namespaces either in-memory or under a root directory on disk.
+/// Manages named `NVK2` namespaces either in-memory or under a root directory on disk.
 pub struct KvStoreManager {
     next_handle: u64,
     #[cfg(not(target_arch = "wasm32"))]
@@ -389,26 +390,26 @@ impl KvStoreManager {
 
 fn write_file_header(out: &mut Vec<u8>) {
     let mut prefix = [0u8; 8];
-    prefix[0..4].copy_from_slice(&NVK1_MAGIC);
-    prefix[4..6].copy_from_slice(&NVK1_VERSION.to_le_bytes());
+    prefix[0..4].copy_from_slice(&NVK2_MAGIC);
+    prefix[4..6].copy_from_slice(&NVK2_VERSION.to_le_bytes());
     prefix[6..8].copy_from_slice(&0u16.to_le_bytes());
-    let checksum = fnv1a64(&prefix);
+    let checksum = xxh64(&prefix, 0);
     out.extend_from_slice(&prefix);
     out.extend_from_slice(&checksum.to_le_bytes());
 }
 
 fn encode_record_frame(kind: u8, seq_no: u64, payload: &[u8]) -> Result<Vec<u8>, ServiceError> {
     let payload_len = u32::try_from(payload.len())
-        .map_err(|_| ServiceError::InvalidArg("NVK1 record payload exceeds u32::MAX".into()))?;
+        .map_err(|_| ServiceError::InvalidArg("NVK2 record payload exceeds u32::MAX".into()))?;
     let mut out = Vec::with_capacity(RECORD_HEADER_LEN + payload.len() + RECORD_TRAILER_LEN);
     out.push(kind);
     out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(&seq_no.to_le_bytes());
     out.extend_from_slice(&payload_len.to_le_bytes());
     out.extend_from_slice(payload);
-    let checksum = fnv1a64(&out);
+    let checksum = xxh64(&out, 0);
     out.extend_from_slice(&checksum.to_le_bytes());
-    out.extend_from_slice(&NVK1_COMMIT_MARKER);
+    out.extend_from_slice(&NVK2_COMMIT_MARKER);
     Ok(out)
 }
 
@@ -421,21 +422,21 @@ struct ReplayResult {
 
 fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
     if bytes.len() < HEADER_LEN {
-        return Err(ServiceError::Codec("NVK1 header truncated".into()));
+        return Err(ServiceError::Codec("NVK2 header truncated".into()));
     }
-    if bytes[0..4] != NVK1_MAGIC {
-        return Err(ServiceError::Codec("invalid NVK1 file magic".into()));
+    if bytes[0..4] != NVK2_MAGIC {
+        return Err(ServiceError::Codec("invalid NVK2 file magic".into()));
     }
     let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != NVK1_VERSION {
+    if version != NVK2_VERSION {
         return Err(ServiceError::Codec(format!(
-            "unsupported NVK1 version {version}"
+            "unsupported NVK2 version {version}"
         )));
     }
     let stored_hdr_crc = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-    if fnv1a64(&bytes[0..8]) != stored_hdr_crc {
+    if xxh64(&bytes[0..8], 0) != stored_hdr_crc {
         return Err(ServiceError::Codec(
-            "corrupt NVK1 file header checksum".into(),
+            "corrupt NVK2 file header checksum".into(),
         ));
     }
 
@@ -470,12 +471,12 @@ fn replay_nvk1_buffer(bytes: &[u8]) -> Result<ReplayResult, ServiceError> {
         let checksum_end = payload_end + 8;
         let frame_end = cursor + frame_len;
 
-        if bytes[checksum_end..frame_end] != NVK1_COMMIT_MARKER {
+        if bytes[checksum_end..frame_end] != NVK2_COMMIT_MARKER {
             recovered_torn_tail = true;
             break;
         }
         let stored_crc = u64::from_le_bytes(bytes[payload_end..checksum_end].try_into().unwrap());
-        let computed_crc = fnv1a64(&bytes[cursor..payload_end]);
+        let computed_crc = xxh64(&bytes[cursor..payload_end], 0);
         if stored_crc != computed_crc {
             recovered_torn_tail = true;
             break;
@@ -558,7 +559,7 @@ fn apply_record_payload(
         }
         other => {
             return Err(ServiceError::Codec(format!(
-                "unknown NVK1 record kind {other}"
+                "unknown NVK2 record kind {other}"
             )));
         }
     }

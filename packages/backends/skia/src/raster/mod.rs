@@ -5,21 +5,21 @@ pub(crate) mod clip;
 mod gradient;
 mod pixel_buffer;
 pub mod shadow;
-pub mod svg;
 pub(crate) mod text_blend;
 mod transform;
 
 use nve_abi::ColorRgba;
 use nve_engine::{LayoutRect, TextMeasurer};
+use nve_store::{NodeStore, TableEventBus};
 
+use crate::table_system::{SkiaSystemPaintCtx, SkiaTableRegistry};
 use crate::text::CosmicTextEngine;
 use crate::{DisplayList, PaintOp};
 
-use canvas::{draw_image, execute_canvas_ops};
+use canvas::draw_image;
 use clip::{rounded_rect_sdf, ClipStack};
 use gradient::{fill_rounded_rect_gradient, fill_rounded_rect_gradient_transformed};
 use shadow::draw_box_shadow;
-use svg::draw_svg;
 pub(crate) use text_blend::{
     blend_color_glyph, blend_mask_glyph, blend_subpixel_glyph, draw_bitmap_text,
 };
@@ -30,10 +30,6 @@ use transform::{
 
 pub use pixel_buffer::PixelBuffer;
 pub use shadow::{parse_box_shadow, BoxShadow};
-pub use svg::{
-    draw_svg_to_buffer, rasterize_svg_picture, CachedSvgBitmap, SvgCache, SvgCacheKey,
-    SvgCacheStats, DEFAULT_SVG_CACHE_MAX_BYTES, DEFAULT_SVG_CACHE_MAX_ENTRIES,
-};
 
 pub(crate) fn fill_rounded_rect(
     buf: &mut PixelBuffer,
@@ -227,6 +223,49 @@ pub fn rasterize_display_list_with_text_engine(
         scale_factor,
         clear_color,
         Some(text_engine),
+        None,
+    );
+}
+
+/// Rasterizes a retained `DisplayList` into `buffer`, dispatching any `PaintOp::Plugin` ops
+/// through `registry` against `store`.
+#[allow(clippy::too_many_arguments)]
+pub fn rasterize_display_list_with_plugins(
+    display_list: &DisplayList,
+    buffer: &mut PixelBuffer,
+    scale_factor: f32,
+    clear_color: ColorRgba,
+    text_engine: &CosmicTextEngine,
+    store: &NodeStore,
+    registry: &SkiaTableRegistry,
+    events: &mut TableEventBus,
+) {
+    rasterize_display_list_inner(
+        display_list,
+        buffer,
+        scale_factor,
+        clear_color,
+        Some(text_engine),
+        Some((store, registry, events)),
+    );
+}
+
+/// Rasterizes a retained `DisplayList` into `buffer` with `text_engine` and optional plugin context.
+pub(crate) fn rasterize_display_list_with_text_engine_and_plugins(
+    display_list: &DisplayList,
+    buffer: &mut PixelBuffer,
+    scale_factor: f32,
+    clear_color: ColorRgba,
+    text_engine: &CosmicTextEngine,
+    plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut TableEventBus)>,
+) {
+    rasterize_display_list_inner(
+        display_list,
+        buffer,
+        scale_factor,
+        clear_color,
+        Some(text_engine),
+        plugins,
     );
 }
 
@@ -238,7 +277,7 @@ pub fn rasterize_display_list_bitmap(
     scale_factor: f32,
     clear_color: ColorRgba,
 ) {
-    rasterize_display_list_inner(display_list, buffer, scale_factor, clear_color, None);
+    rasterize_display_list_inner(display_list, buffer, scale_factor, clear_color, None, None);
 }
 
 fn rasterize_display_list_inner(
@@ -247,6 +286,7 @@ fn rasterize_display_list_inner(
     scale_factor: f32,
     clear_color: ColorRgba,
     text_engine: Option<&CosmicTextEngine>,
+    mut plugins: Option<(&NodeStore, &SkiaTableRegistry, &mut TableEventBus)>,
 ) {
     let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -447,7 +487,7 @@ fn rasterize_display_list_inner(
                 rect,
                 radius,
                 src,
-                resize_mode,
+                fit,
             } => {
                 let eff = if is_tf {
                     map_logical_rect_approx(transform_stack.current(), *rect, scale)
@@ -460,33 +500,44 @@ fn rasterize_display_list_inner(
                     eff,
                     *radius,
                     src,
-                    *resize_mode,
+                    *fit,
                     scale,
                     cur_opacity,
                 );
             }
-            PaintOp::DrawSvg {
+            PaintOp::Plugin {
+                node_id,
                 rect,
-                picture,
-                tint,
+                inherited_text_color,
             } => {
-                draw_svg(
-                    buffer,
-                    &clip_stack,
-                    is_tf.then(|| transform_stack.current()),
-                    scale_rect(*rect, scale),
-                    picture,
-                    *tint,
-                    cur_opacity,
-                );
-            }
-            PaintOp::CustomSkiaCanvas { rect, ops, .. } => {
-                let eff = if is_tf {
-                    map_logical_rect_approx(transform_stack.current(), *rect, scale)
-                } else {
-                    *rect
-                };
-                execute_canvas_ops(buffer, &mut clip_stack, eff, ops, scale, cur_opacity);
+                if clip_stack.is_empty() {
+                    continue;
+                }
+                if let Some((store, registry, ref mut events)) = plugins {
+                    let eff = if is_tf {
+                        map_logical_rect_approx(transform_stack.current(), *rect, scale)
+                    } else {
+                        *rect
+                    };
+                    let scaled = scale_rect(eff, scale);
+                    let [cx0, cy0, cx1, cy1] = clip_stack.bounds();
+                    let clip_rect = LayoutRect {
+                        x: cx0 as f32,
+                        y: cy0 as f32,
+                        width: (cx1 - cx0).max(0) as f32,
+                        height: (cy1 - cy0).max(0) as f32,
+                    };
+                    let mut ctx = SkiaSystemPaintCtx {
+                        buffer,
+                        rect: scaled,
+                        clip_rect: Some(clip_rect),
+                        scale_factor: scale,
+                        opacity: cur_opacity,
+                        inherited_text_color: *inherited_text_color,
+                        events,
+                    };
+                    registry.paint_node(&mut ctx, store, *node_id);
+                }
             }
         }
     }

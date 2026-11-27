@@ -1,13 +1,13 @@
 //! Comprehensive tests for `nve-mdx`: Markdown/GFM/MDX parsing, frontmatter, `_meta.toml`,
-//! directives, compile-time validation, syntax highlighting, `NVS1` search, codegen, and fuzzing.
+//! directives, compile-time validation, syntax highlighting, `NVS2` search, codegen, and fuzzing.
 
 use std::time::Instant;
 
 use nve_mdx::{
     Block, CalloutKind, CompileOptions, ComponentRegistry, ComponentSchema, DiagnosticKind,
-    DirectiveBlock, HydrateStrategy, Inline, NVS1_MAGIC, NVS1_VERSION, NavNode, PropSchema,
+    DirectiveBlock, HydrateStrategy, Inline, NVS2_MAGIC, NVS2_VERSION, NavNode, PropSchema,
     PropType, PropValue, SearchIndex, SearchIndexError, SiteCodegenOptions, SiteSource, TableAlign,
-    TokenKind, compile_document, compile_site, compile_site_with_validation, fnv1a64,
+    TokenKind, compile_document, compile_site, compile_site_with_validation,
     generate_rust_module, highlight_code, parse_frontmatter, parse_meta_toml,
 };
 
@@ -440,7 +440,7 @@ fn syntax_highlighter_covers_all_required_languages() {
 }
 
 #[test]
-fn nvs1_search_roundtrip_ranking_trigrams_speed_and_fuzzing() {
+fn nvs2_search_roundtrip_ranking_trigrams_speed_and_fuzzing() {
     let mut src = SiteSource::new();
     src.insert(
         "title-hit.mdx",
@@ -461,10 +461,10 @@ fn nvs1_search_roundtrip_ranking_trigrams_speed_and_fuzzing() {
 
     let site = compile_site(&src, &CompileOptions::default());
     let encoded = site.search_index.encode();
-    assert_eq!(&encoded[..4], NVS1_MAGIC);
-    assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), NVS1_VERSION);
+    assert_eq!(&encoded[..4], NVS2_MAGIC);
+    assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), NVS2_VERSION);
 
-    let decoded = SearchIndex::decode(&encoded).expect("valid NVS1 decode");
+    let decoded = SearchIndex::decode(&encoded).expect("valid NVS2 decode");
     assert_eq!(decoded, site.search_index);
 
     // Ranking accuracy: title (4.0) > heading (2.5) > code (2.0) > body (1.0).
@@ -504,15 +504,15 @@ fn nvs1_search_roundtrip_ranking_trigrams_speed_and_fuzzing() {
         Err(SearchIndexError::ChecksumMismatch { .. })
     ));
 
-    // Forged huge `doc_count = u32::MAX` with valid recomputed FNV-1a64 checksum -> UnexpectedEof (no OOM!).
+    // Forged huge `doc_count = u32::MAX` with valid recomputed XXH64 checksum -> UnexpectedEof (no OOM!).
     let mut forged = Vec::new();
-    forged.extend_from_slice(NVS1_MAGIC);
-    forged.extend_from_slice(&NVS1_VERSION.to_le_bytes());
+    forged.extend_from_slice(NVS2_MAGIC);
+    forged.extend_from_slice(&NVS2_VERSION.to_le_bytes());
     forged.extend_from_slice(&0u16.to_le_bytes());
     forged.extend_from_slice(&u32::MAX.to_le_bytes()); // doc_count
     forged.extend_from_slice(&0u32.to_le_bytes()); // token_count
     forged.extend_from_slice(&0u32.to_le_bytes()); // trigram_count
-    let ck = fnv1a64(&forged);
+    let ck = nve_hash::xxh64(&forged, 0);
     forged.extend_from_slice(&ck.to_le_bytes());
     assert_eq!(
         SearchIndex::decode(&forged),

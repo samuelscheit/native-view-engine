@@ -6,14 +6,17 @@ use std::ffi::{c_int, c_long};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use nve_abi::{
-    ColorRgba, CommandBufferBuilder, ComponentKind, Dimension, EdgeInsets, EventMask,
-    FlexDirection, LayoutProps, StyleProps, ROOT_NODE_ID,
-};
+use nve_abi::{EventMask, ROOT_NODE_ID};
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
-use nve_engine::{RenderBackend, SurfaceRunner, Viewport};
+use nve_components::tables::{
+    core_realization_order, register_core_tables, FlexDirection, Interaction, Layout, TextContent,
+    Visual,
+};
+use nve_engine::{FrameProfiler, FrameTiming, StoreBackend, StoreWireReplica, Viewport};
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, Length, NodeId as StoreNodeId, NodeStore, Rgba};
 
 #[cfg(unix)]
 const RUSAGE_SELF: c_int = 0;
@@ -129,25 +132,32 @@ pub(crate) struct ArtifactSize {
     pub bytes: u64,
 }
 
-/// Measures cold backend + `SurfaceRunner` construction and an initial empty-surface commit.
+/// Measures cold backend + `StoreWireReplica` construction and an initial empty-surface commit.
 pub(crate) fn measure_cold_init_latencies() -> Vec<ColdInitSample> {
-    fn measure_one<B: RenderBackend>(make_backend: impl FnOnce() -> B) -> ColdInitSample {
-        let mut builder = CommandBufferBuilder::with_capacity(1, 0, 128);
-        builder.create_node(ROOT_NODE_ID + 1, ComponentKind::View, None);
-        builder.set_children(ROOT_NODE_ID, &[ROOT_NODE_ID + 1]);
-        builder.commit(true);
-        let frame0 = builder.into_bytes();
+    fn measure_one<B: StoreBackend>(make_backend: impl FnOnce() -> B) -> ColdInitSample {
+        register_core_tables();
+        let mut store = NodeStore::new();
+        let mut changes = ChangeSet::default();
+        {
+            let mut tx = store.tx();
+            let _ = tx.create_at(StoreNodeId::ROOT);
+            let _ = tx.create_at(StoreNodeId(ROOT_NODE_ID + 1));
+            tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(ROOT_NODE_ID + 1)]);
+            tx.commit_into(&mut changes);
+        }
+        let mut frame0 = Vec::new();
+        WireEncoder::default().encode(&store, &changes, &mut frame0);
 
         let t0 = Instant::now();
-        let backend = make_backend();
-        let mut runner = SurfaceRunner::new(1, Viewport::default(), backend);
-        runner
-            .backend_mut()
-            .submit_frame(&frame0)
+        let mut backend = make_backend();
+        backend.set_viewport(1, Viewport::default());
+        let mut replica = StoreWireReplica::new(backend, core_realization_order());
+        replica
+            .submit_nve2_frame(&frame0)
             .expect("cold-init frame0");
         let cold_init_us = t0.elapsed().as_micros() as u64;
         ColdInitSample {
-            backend: runner.backend().name(),
+            backend: replica.backend().name(),
             cold_init_us,
             frame0_bytes: frame0.len(),
         }
@@ -258,96 +268,165 @@ fn web_shell_bundle_wasm(bundle_dir: &Path) -> Option<PathBuf> {
     Some(bundle_dir.join(manifest.get("wasm")?.as_str()?))
 }
 
-pub(crate) fn build_initial_feed_cmd(rows: usize) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::with_capacity(1, 1, rows.saturating_mul(220).max(4096));
-    let mut root_children = Vec::with_capacity(rows);
-    let mut next_id = ROOT_NODE_ID + 1;
-    let row_layout = LayoutProps {
-        width: Dimension::Percent(100.0),
-        height: Dimension::Points(56.0),
-        flex_direction: FlexDirection::Row,
-        padding: EdgeInsets::symmetric(8.0, 16.0),
-        gap: 12.0,
-        ..Default::default()
-    };
-    let row_style = StyleProps {
-        background: ColorRgba::rgb(30, 41, 59),
-        border_radius: 8.0,
-        ..Default::default()
-    };
-
-    for i in 0..rows {
-        let row_id = next_id;
-        let text_id = next_id + 1;
-        next_id += 2;
-
-        b.create_node(row_id, ComponentKind::View, None);
-        b.set_layout(row_id, &row_layout);
-        b.set_style(row_id, &row_style);
-        b.set_event_mask(row_id, EventMask::PRESS);
-
-        b.create_node(text_id, ComponentKind::Text, None);
-        b.set_text(text_id, &format!("Row #{i} — Native View Engine"));
-        b.set_children(row_id, &[text_id]);
-        root_children.push(row_id);
-    }
-    b.set_children(ROOT_NODE_ID, &root_children);
-    b.commit(true);
-    b.into_bytes()
+pub(crate) struct BenchFeedSource {
+    store: NodeStore,
+    encoder: WireEncoder,
+    changes: ChangeSet,
+    rows: usize,
+    initialized: bool,
 }
 
-pub(crate) fn build_incremental_patch_cmd(frame_id: u64, rows: usize) -> Vec<u8> {
-    let mut b = CommandBufferBuilder::with_capacity(1, frame_id, 1024);
-    let updates = rows.min(10);
-    for i in 0..updates {
-        let idx = ((frame_id as usize * 7 + i) % rows) as u32;
-        let text_id = ROOT_NODE_ID + 1 + idx * 2 + 1;
-        b.set_text(text_id, &format!("Row #{idx} — Frame {frame_id}"));
+impl BenchFeedSource {
+    pub(crate) fn new(rows: usize) -> Self {
+        register_core_tables();
+        Self {
+            store: NodeStore::new(),
+            encoder: WireEncoder::default(),
+            changes: ChangeSet::default(),
+            rows,
+            initialized: false,
+        }
     }
-    b.commit(true);
-    b.into_bytes()
+
+    #[cfg(test)]
+    pub(crate) fn build_initial_frame(&mut self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.rows.saturating_mul(160).max(4096));
+        self.encode_initial(&mut out);
+        out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_incremental_frame(&mut self, frame_id: u64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(1024);
+        self.encode_incremental(frame_id, &mut out);
+        out
+    }
+
+    pub(crate) fn encode_initial(&mut self, out: &mut Vec<u8>) {
+        out.clear();
+        self.store = NodeStore::new();
+        self.encoder = WireEncoder::default();
+        let mut root_children = Vec::with_capacity(self.rows);
+        let mut next_id = ROOT_NODE_ID + 1;
+
+        {
+            let mut tx = self.store.tx();
+            for i in 0..self.rows {
+                let row_id = StoreNodeId(next_id);
+                let text_id = StoreNodeId(next_id + 1);
+                next_id += 2;
+
+                tx.create_at(row_id);
+                tx.set(row_id, Layout::WIDTH, Length::percent(100.0));
+                tx.set(row_id, Layout::HEIGHT, Length::points(56.0));
+                tx.set(row_id, Layout::FLEX_DIRECTION, FlexDirection::Row);
+                tx.set(row_id, Layout::PADDING_TOP, Length::points(8.0));
+                tx.set(row_id, Layout::PADDING_BOTTOM, Length::points(8.0));
+                tx.set(row_id, Layout::PADDING_LEFT, Length::points(16.0));
+                tx.set(row_id, Layout::PADDING_RIGHT, Length::points(16.0));
+                tx.set(row_id, Layout::ROW_GAP, Length::points(12.0));
+                tx.set(row_id, Layout::COLUMN_GAP, Length::points(12.0));
+                tx.set(row_id, Visual::BACKGROUND, Rgba::rgb(30, 41, 59));
+                tx.set(row_id, Visual::BORDER_RADIUS, 8.0f32);
+                tx.set(row_id, Interaction::EVENT_MASK, EventMask::PRESS as u32);
+
+                tx.create_at(text_id);
+                tx.set_str(
+                    text_id,
+                    TextContent::TEXT,
+                    &format!("Row #{i} — Native View Engine"),
+                );
+                tx.set_children(row_id, &[text_id]);
+                root_children.push(row_id);
+            }
+            tx.set_children(StoreNodeId::ROOT, &root_children);
+            tx.commit_into(&mut self.changes);
+        }
+
+        self.encoder.encode(&self.store, &self.changes, out);
+        self.initialized = true;
+    }
+
+    pub(crate) fn encode_incremental(&mut self, frame_id: u64, out: &mut Vec<u8>) {
+        if !self.initialized {
+            self.encode_initial(out);
+            return;
+        }
+        out.clear();
+        let updates = self.rows.min(10);
+        {
+            let mut tx = self.store.tx();
+            for i in 0..updates {
+                let idx = ((frame_id as usize * 7 + i) % self.rows) as u32;
+                let text_id = StoreNodeId(ROOT_NODE_ID + 1 + idx * 2 + 1);
+                tx.set_str(
+                    text_id,
+                    TextContent::TEXT,
+                    &format!("Row #{idx} — Frame {frame_id}"),
+                );
+            }
+            tx.commit_into(&mut self.changes);
+        }
+        self.encoder.encode(&self.store, &self.changes, out);
+    }
 }
 
-pub(crate) fn run_backend_bench<B: RenderBackend>(
+pub(crate) fn run_backend_bench<B: StoreBackend>(
     backend: B,
     rows: usize,
     frames: usize,
     trace_path: Option<&Path>,
 ) {
-    let mut runner = SurfaceRunner::new(1, Viewport::default(), backend);
+    let mut replica = StoreWireReplica::new(backend, core_realization_order());
+    replica.backend_mut().set_viewport(1, Viewport::default());
+    let mut profiler = FrameProfiler::new(2048);
+    let mut feed = BenchFeedSource::new(rows);
+    let mut init_bytes = Vec::with_capacity(rows.saturating_mul(160).max(4096));
+
     let t_enc0 = Instant::now();
-    let init_bytes = build_initial_feed_cmd(rows);
+    feed.encode_initial(&mut init_bytes);
     let enc0_us = t_enc0.elapsed().as_micros() as u64;
-    let init = runner
-        .backend_mut()
-        .submit_frame(&init_bytes)
+    let init = replica
+        .submit_nve2_frame(&init_bytes)
         .expect("initial bench frame");
     let init_total_us = enc0_us + init.decode_us + init.layout_us + init.diff_us + init.mount_us;
 
+    let mut patch = Vec::with_capacity(1024);
     for f in 2..=(frames as u64 + 1) {
         let t_enc = Instant::now();
-        let patch = build_incremental_patch_cmd(f, rows);
+        feed.encode_incremental(f, &mut patch);
         let enc_us = t_enc.elapsed().as_micros() as u64;
-        runner
-            .submit_recorded_frame(f, 0, enc_us, &patch)
+        let stats = replica
+            .submit_nve2_frame(&patch)
             .expect("incremental bench frame");
+        profiler.record(FrameTiming {
+            frame_id: f,
+            op_count: stats.op_count,
+            mutation_count: stats.mutation_count,
+            reconcile_us: 0,
+            encode_us: enc_us,
+            decode_us: stats.decode_us,
+            layout_us: stats.layout_us,
+            diff_us: stats.diff_us,
+            mount_us: stats.mount_us,
+        });
     }
 
     println!(
         "  [{:<16}] init={}us (bytes={}, dec={}us layout={}us diff={}us mount={}us) | incr p50={}us p99={}us",
-        runner.backend().name(),
+        replica.backend().name(),
         init_total_us,
         init_bytes.len(),
         init.decode_us,
         init.layout_us,
         init.diff_us,
         init.mount_us,
-        runner.profiler().p50_total_us(),
-        runner.profiler().p99_total_us(),
+        profiler.p50_total_us(),
+        profiler.p99_total_us(),
     );
 
     if let Some(path) = trace_path {
-        let json = runner.profiler().to_chrome_trace_json();
+        let json = profiler.to_chrome_trace_json();
         std::fs::write(path, json).expect("write Perfetto trace");
         println!("  -> wrote Perfetto/Chrome trace to {}", path.display());
     }
@@ -413,52 +492,38 @@ pub(crate) fn cmd_bench(rows: usize, frames: usize, trace: Option<PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nve_abi::{Command, CommandDecoder};
 
     #[test]
     fn bench_helpers_generate_valid_initial_and_incremental_buffers_across_edge_cases() {
-        let empty_init = build_initial_feed_cmd(0);
-        let (hdr0, cmds0) = CommandDecoder::new(&empty_init)
-            .unwrap()
-            .decode_all()
-            .unwrap();
-        assert_eq!(hdr0.op_count, 2);
-        assert_eq!(cmds0.len(), 2);
+        let mut feed0 = BenchFeedSource::new(0);
+        let empty_init = feed0.build_initial_frame();
+        assert_eq!(&empty_init[0..4], b"NVE2");
+        let empty_patch = feed0.build_incremental_frame(2);
+        assert_eq!(&empty_patch[0..4], b"NVE2");
 
-        let empty_patch = build_incremental_patch_cmd(2, 0);
-        let (_, patch0) = CommandDecoder::new(&empty_patch)
-            .unwrap()
-            .decode_all()
-            .unwrap();
-        assert_eq!(patch0, vec![Command::Commit { sync_mount: true }]);
+        let mut feed3 = BenchFeedSource::new(3);
+        let init3 = feed3.build_initial_frame();
+        let mut headless = StoreWireReplica::new(HeadlessBackend::new(), core_realization_order());
+        let mut skia = StoreWireReplica::new(SkiaBackend::new(), core_realization_order());
+        let mut web = StoreWireReplica::new(WebBackend::new(), core_realization_order());
+        headless.backend_mut().set_viewport(1, Viewport::default());
+        skia.backend_mut().set_viewport(1, Viewport::default());
+        web.backend_mut().set_viewport(1, Viewport::default());
 
-        let init3 = build_initial_feed_cmd(3);
-        let mut headless = HeadlessBackend::new();
-        let mut skia = SkiaBackend::new();
-        let mut web = WebBackend::new();
-        headless.set_viewport(1, Viewport::default());
-        skia.set_viewport(1, Viewport::default());
-        web.set_viewport(1, Viewport::default());
+        headless.submit_nve2_frame(&init3).unwrap();
+        skia.submit_nve2_frame(&init3).unwrap();
+        web.submit_nve2_frame(&init3).unwrap();
+        assert_eq!(web.store().live_nodes().count(), 1 + 3 * 2);
 
-        headless.submit_frame(&init3).unwrap();
-        skia.submit_frame(&init3).unwrap();
-        web.submit_frame(&init3).unwrap();
-        assert_eq!(web.node_count(), 1 + 3 * 2);
+        let patch3 = feed3.build_incremental_frame(2);
+        headless.submit_nve2_frame(&patch3).unwrap();
+        web.submit_nve2_frame(&patch3).unwrap();
+        assert!(web.backend().render_html(web.store()).contains("Frame 2"));
 
-        let patch3 = build_incremental_patch_cmd(2, 3);
-        let (_, cmds3) = CommandDecoder::new(&patch3).unwrap().decode_all().unwrap();
-        let text_updates = cmds3
-            .iter()
-            .filter(|c| matches!(c, Command::SetText { .. }))
-            .count();
-        assert_eq!(text_updates, 3);
-        headless.submit_frame(&patch3).unwrap();
-        web.submit_frame(&patch3).unwrap();
-        assert!(web.render_html().contains("Frame 2"));
-
-        let patch50 = build_incremental_patch_cmd(5, 50);
-        let (_, cmds50) = CommandDecoder::new(&patch50).unwrap().decode_all().unwrap();
-        assert_eq!(cmds50.len(), 11);
+        let mut feed50 = BenchFeedSource::new(50);
+        let _ = feed50.build_initial_frame();
+        let patch50 = feed50.build_incremental_frame(5);
+        assert_eq!(&patch50[0..4], b"NVE2");
     }
 
     #[test]

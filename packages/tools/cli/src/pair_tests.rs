@@ -1,6 +1,9 @@
 use nve_abi::{encode_events, EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_headless::HeadlessBackend;
-use nve_engine::{RenderBackend, Viewport};
+use nve_components::tables::{core_realization_order, register_core_tables, TextContent};
+use nve_engine::{StoreBackend, StoreWireReplica, Viewport};
+use nve_store::wire::WireEncoder;
+use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
 use nve_wire::{
     format_cert_hash_hex, parse_wire_uri, NveWireClient, NveWireClientConfig, NveWireTransportKind,
 };
@@ -101,6 +104,7 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     assert_eq!(f0, wt.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f0, wss.recv_frame_timeout(timeout).unwrap().payload);
 
+    register_core_tables();
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(
         1,
@@ -110,10 +114,15 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
             scale_factor: 1.0,
         },
     );
-    headless.submit_frame(&f0).unwrap();
-    assert!(headless.render_ascii_tree().contains("Counter: 0"));
-    let btn_node = headless
-        .hit_test(60.0, 75.0, true)
+    let mut replica = StoreWireReplica::new(headless, core_realization_order());
+    replica.submit_nve2_frame(&f0).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Counter: 0"));
+    let btn_node = replica
+        .backend()
+        .hit_test(replica.store(), 60.0, 75.0)
         .expect("pressable button");
 
     let make_tap = |ts: u64| {
@@ -131,24 +140,33 @@ fn pair_session_dispatches_remote_events_over_quic_webtransport_and_wss() {
     let f1 = quic.recv_frame_timeout(timeout).unwrap().payload;
     assert_eq!(f1, wt.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f1, wss.recv_frame_timeout(timeout).unwrap().payload);
-    headless.submit_frame(&f1).unwrap();
-    assert!(headless.render_ascii_tree().contains("Counter: 1"));
+    replica.submit_nve2_frame(&f1).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Counter: 1"));
 
     // 2. WebTransport tap -> Counter: 2 across all 3 transports.
     wt.send_events(&make_tap(2000)).unwrap();
     let f2 = wt.recv_frame_timeout(timeout).unwrap().payload;
     assert_eq!(f2, quic.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f2, wss.recv_frame_timeout(timeout).unwrap().payload);
-    headless.submit_frame(&f2).unwrap();
-    assert!(headless.render_ascii_tree().contains("Counter: 2"));
+    replica.submit_nve2_frame(&f2).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Counter: 2"));
 
     // 3. WSS tap -> Counter: 3 across all 3 transports.
     wss.send_events(&make_tap(3000)).unwrap();
     let f3 = wss.recv_frame_timeout(timeout).unwrap().payload;
     assert_eq!(f3, quic.recv_frame_timeout(timeout).unwrap().payload);
     assert_eq!(f3, wt.recv_frame_timeout(timeout).unwrap().payload);
-    headless.submit_frame(&f3).unwrap();
-    assert!(headless.render_ascii_tree().contains("Counter: 3"));
+    replica.submit_nve2_frame(&f3).unwrap();
+    assert!(replica
+        .backend()
+        .render_ascii_tree(replica.store())
+        .contains("Counter: 3"));
 
     ctrl_tx.send(PairControlMsg::Shutdown).unwrap();
     quic.close();
@@ -172,19 +190,28 @@ fn pair_session_pushes_live_sync_telemetry_props_on_peer_connect_and_traffic() {
     }
 
     impl PairedApp for TelemetryMockApp {
-        fn render(&mut self, frame_id: u64) -> Cow<'_, [u8]> {
-            let mut b = nve_abi::CommandBufferBuilder::new(1, frame_id);
-            b.create_node(2, nve_abi::ComponentKind::Text, None);
-            b.set_text(
-                2,
-                &format!(
-                    "peers={}",
-                    self.updates.last().map(|u| u.peers).unwrap_or(-1)
-                ),
-            );
-            b.set_children(ROOT_NODE_ID, &[2]);
-            b.commit(true);
-            Cow::Owned(b.into_bytes())
+        fn render(&mut self, _frame_id: u64) -> Cow<'_, [u8]> {
+            register_core_tables();
+            let mut store = NodeStore::new();
+            let mut changes = ChangeSet::default();
+            {
+                let mut tx = store.tx();
+                let _ = tx.create_at(StoreNodeId::ROOT);
+                let _ = tx.create_at(StoreNodeId(2));
+                tx.set_str(
+                    StoreNodeId(2),
+                    TextContent::TEXT,
+                    &format!(
+                        "peers={}",
+                        self.updates.last().map(|u| u.peers).unwrap_or(-1)
+                    ),
+                );
+                tx.set_children(StoreNodeId::ROOT, &[StoreNodeId(2)]);
+                tx.commit_into(&mut changes);
+            }
+            let mut out = Vec::new();
+            WireEncoder::default().encode(&store, &changes, &mut out);
+            Cow::Owned(out)
         }
 
         fn dispatch_events(&mut self, _events: &[NveDirectEvent]) -> bool {

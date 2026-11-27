@@ -179,6 +179,21 @@ impl<'a> NveDirectEventRef<'a> {
     #[inline] pub fn text(&self) -> &'a str { unsafe { self.raw.text.as_str() }.unwrap_or("") }
     #[inline] pub fn key(&self) -> &'a str { self.text() }
     #[inline] pub const fn value(&self) -> NveValueRef<'a> { NveValueRef { raw: &self.raw.value } }
+    /// Table identity key for `NativeEventKind::TableEvent`.
+    #[inline]
+    pub fn table_key(&self) -> crate::Key64 {
+        crate::Key64(self.value().as_i64().unwrap_or(0) as u64)
+    }
+    /// Table-scoped event ID for `NativeEventKind::TableEvent`.
+    #[inline]
+    pub const fn table_event_id(&self) -> u32 {
+        self.raw.key_code
+    }
+    /// Raw payload bytes for `NativeEventKind::TableEvent`.
+    #[inline]
+    pub fn table_payload(&self) -> &'a [u8] {
+        unsafe { self.raw.text.as_bytes() }
+    }
 }
 
 /// Zero-copy borrowed batch of `NveDirectEvent`s passed into `NveApp::dispatch_events`.

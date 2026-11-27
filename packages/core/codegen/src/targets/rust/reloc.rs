@@ -74,7 +74,7 @@ fn emit_preamble(out: &mut String, schema: &RelocSchema, schema_hash: u64, slab_
     .unwrap();
     writeln!(
         out,
-        "/// Deterministic FNV-1a64 schema hash (changes on any layout or variant mutation)."
+        "/// Deterministic XXH64 schema hash (changes on any layout or variant mutation)."
     )
     .unwrap();
     writeln!(out, "pub const SCHEMA_HASH: u64 = 0x{schema_hash:016X};").unwrap();

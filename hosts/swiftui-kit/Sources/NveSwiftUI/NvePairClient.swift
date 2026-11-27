@@ -53,71 +53,6 @@ public enum NveWireCodec {
     public static let defaultSchemaVersion: UInt16 = 2
     public static let maxFrameBytes = 16 * 1024 * 1024
 
-    public static func xxh64(_ data: Data, seed: UInt64 = xxh64Seed) -> UInt64 {
-        let p1: UInt64 = 0x9E37_79B1_85EB_CA87
-        let p2: UInt64 = 0xC2B2_AE3D_27D4_EB4F
-        let p3: UInt64 = 0x1656_67B1_9E37_79F9
-        let p4: UInt64 = 0x85EB_CA77_C2B2_AE63
-        let p5: UInt64 = 0x27D4_EB2F_1656_67C5
-        let bytes = [UInt8](data)
-        let n = bytes.count
-
-        @inline(__always) func rotl(_ x: UInt64, _ r: UInt64) -> UInt64 { (x << r) | (x >> (64 - r)) }
-        @inline(__always) func u64(_ i: Int) -> UInt64 {
-            var v: UInt64 = 0
-            for k in 0..<8 { v |= UInt64(bytes[i + k]) << UInt64(k * 8) }
-            return v
-        }
-        @inline(__always) func u32(_ i: Int) -> UInt64 {
-            UInt64(bytes[i]) | (UInt64(bytes[i + 1]) << 8) | (UInt64(bytes[i + 2]) << 16) | (UInt64(bytes[i + 3]) << 24)
-        }
-        @inline(__always) func round(_ acc: UInt64, _ input: UInt64) -> UInt64 {
-            rotl(acc &+ input &* p2, 31) &* p1
-        }
-        @inline(__always) func merge(_ acc: UInt64, _ v: UInt64) -> UInt64 {
-            (acc ^ round(0, v)) &* p1 &+ p4
-        }
-
-        var idx = 0
-        var h: UInt64
-        if n >= 32 {
-            var v1 = seed &+ p1 &+ p2
-            var v2 = seed &+ p2
-            var v3 = seed
-            var v4 = seed &- p1
-            while idx <= n - 32 {
-                v1 = round(v1, u64(idx)); idx += 8
-                v2 = round(v2, u64(idx)); idx += 8
-                v3 = round(v3, u64(idx)); idx += 8
-                v4 = round(v4, u64(idx)); idx += 8
-            }
-            h = rotl(v1, 1) &+ rotl(v2, 7) &+ rotl(v3, 12) &+ rotl(v4, 18)
-            h = merge(h, v1); h = merge(h, v2); h = merge(h, v3); h = merge(h, v4)
-        } else {
-            h = seed &+ p5
-        }
-        h &+= UInt64(n)
-        while idx + 8 <= n {
-            h ^= round(0, u64(idx))
-            h = rotl(h, 27) &* p1 &+ p4
-            idx += 8
-        }
-        if idx + 4 <= n {
-            h ^= u32(idx) &* p1
-            h = rotl(h, 23) &* p2 &+ p3
-            idx += 4
-        }
-        while idx < n {
-            h ^= UInt64(bytes[idx]) &* p5
-            h = rotl(h, 11) &* p1
-            idx += 1
-        }
-        h ^= h >> 33; h &*= p2
-        h ^= h >> 29; h &*= p3
-        h ^= h >> 32
-        return h
-    }
-
     public static func encodeFrame(
         channel: NveWireChannel,
         kind: NveWireKind,
@@ -137,7 +72,7 @@ public enum NveWireCodec {
         appendLE(&out, UInt32(payload.count))
         out.append(payload)
         if hasCk {
-            let ck = xxh64(out)
+            let ck = NveXxh64.hash(out, seed: xxh64Seed)
             appendLE(&out, ck)
         }
         return out
@@ -165,7 +100,7 @@ public enum NveWireCodec {
         let bodyEnd = headerSize + len
         if hasCk {
             let expectedCk = readU64(b, bodyEnd)
-            let actualCk = xxh64(Data(b[0..<bodyEnd]))
+            let actualCk = NveXxh64.hash(Data(b[0..<bodyEnd]), seed: xxh64Seed)
             guard actualCk == expectedCk else { throw NvePairProtocolError.checksumMismatch }
         }
         return (ch, kind, seq, Data(b[headerSize..<bodyEnd]))

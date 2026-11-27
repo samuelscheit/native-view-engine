@@ -1,8 +1,8 @@
 id: rust-no-manual-impl-word-value
 language: rust
-severity: error
-message: "Manual `impl WordValue` outside `packages/core/store/` is banned; derive via `#[derive(WordEnum)]`, `word_flags!`, or `#[derive(NveTable)]`."
-note: "[stage: PostNodeStore] Enforced as `error` immediately because `main` has 0 violations."
+severity: warning
+message: "Manual `impl WordValue` outside `packages/core/store/` is banned [stage: Post1B1D]; derive via `#[derive(WordEnum)]`, `word_flags!`, or `#[derive(NveTable)]`."
+note: "[stage: Post1B1D] Staged as `warning` until Track 1B-1d macro upgrades replace remaining manual `impl WordValue`."
 files:
   - "packages/**/*.rs"
 ignores:

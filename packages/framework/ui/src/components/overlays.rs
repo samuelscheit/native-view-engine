@@ -198,13 +198,31 @@ pub fn Dialog(
 
     let active_focus = trap.read().active().map(str::to_owned);
     let dialog_id_for_close = dialog_id.clone();
+    let dialog_table = super::html_tables::html_dialog_table(open, closedby.to_owned());
+    let close_invoker = super::html_tables::html_invoker_table(
+        Some("button".to_owned()),
+        None,
+        None,
+        Some("close".to_owned()),
+        Some(dialog_id_for_close),
+        None,
+        None,
+    );
+    let trigger_invoker = super::html_tables::html_invoker_table(
+        Some("button".to_owned()),
+        None,
+        None,
+        Some("show-modal".to_owned()),
+        Some(dialog_id.clone()),
+        None,
+        None,
+    );
 
     let dialog_el = rsx! {
-        dialog {
+        view {
             id: "{dialog_id}",
             test_id: "{base_id}",
-            open: open,
-            closedby: "{closedby}",
+            nve_table: dialog_table,
             accessibility_role: "dialog",
             accessibility_label: accessibility_label,
             aria_modal: "true",
@@ -261,9 +279,7 @@ pub fn Dialog(
             if let Some(ref close_txt) = close_label {
                 button {
                     test_id: "{close_btn_id}",
-                    button_type: "button",
-                    command: "close",
-                    commandfor: "{dialog_id_for_close}",
+                    nve_table: close_invoker,
                     accessibility_role: "button",
                     tab_index: 0,
                     nve_style: trigger_style.clone(),
@@ -298,9 +314,7 @@ pub fn Dialog(
                 if let Some(ref trig) = trigger_label {
                     button {
                         test_id: "{trigger_id}",
-                        button_type: "button",
-                        command: "show-modal",
-                        commandfor: "{dialog_id}",
+                        nve_table: trigger_invoker,
                         accessibility_role: "button",
                         tab_index: 0,
                         nve_style: trigger_style,
@@ -452,6 +466,40 @@ pub fn Popover(
 
     let aria_expanded = if open { "true" } else { "false" };
 
+    let popover_trigger_invoker = super::html_tables::html_invoker_table(
+        Some("button".to_owned()),
+        None,
+        None,
+        Some("toggle-popover".to_owned()),
+        Some(content_id.clone()),
+        Some(content_id.clone()),
+        Some("toggle".to_owned()),
+    );
+    let mut popover_data = Vec::new();
+    if let Some(ref p) = pos_placement {
+        popover_data.push(("placement".to_owned(), p.clone()));
+    }
+    if let Some(ref x) = pos_x {
+        popover_data.push(("x".to_owned(), x.clone()));
+    }
+    if let Some(ref y) = pos_y {
+        popover_data.push(("y".to_owned(), y.clone()));
+    }
+    if let Some(ref f) = pos_flipped {
+        popover_data.push(("flipped".to_owned(), f.clone()));
+    }
+    if let Some(ref s) = pos_shifted {
+        popover_data.push(("shifted".to_owned(), s.clone()));
+    }
+    if let Some(ref ax) = pos_arrow_x {
+        popover_data.push(("arrow-x".to_owned(), ax.clone()));
+    }
+    if let Some(ref ay) = pos_arrow_y {
+        popover_data.push(("arrow-y".to_owned(), ay.clone()));
+    }
+    let popover_table =
+        super::html_tables::html_popover_table(popover_mode.to_owned(), open, popover_data);
+
     rsx! {
         view {
             test_id: "{base_id}",
@@ -459,11 +507,7 @@ pub fn Popover(
             style: style,
             pressable {
                 test_id: "{trigger_id}",
-                button_type: "button",
-                popovertarget: "{content_id}",
-                popovertargetaction: "toggle",
-                command: "toggle-popover",
-                commandfor: "{content_id}",
+                nve_table: popover_trigger_invoker,
                 accessibility_role: "button",
                 aria_expanded: "{aria_expanded}",
                 aria_controls: "{content_id}",
@@ -496,17 +540,9 @@ pub fn Popover(
                 view {
                     id: "{content_id}",
                     test_id: "{content_id}",
-                    popover: "{popover_mode}",
-                    "data-nve-open": "{aria_expanded}",
+                    nve_table: popover_table,
                     accessibility_role: "dialog",
                     tab_index: -1,
-                    "data-placement": pos_placement,
-                    "data-x": pos_x,
-                    "data-y": pos_y,
-                    "data-flipped": pos_flipped,
-                    "data-shifted": pos_shifted,
-                    "data-arrow-x": pos_arrow_x,
-                    "data-arrow-y": pos_arrow_y,
                     nve_style: panel_style,
                     onkeydown: move |ev: KeyEvent| {
                         let data = ev.data();

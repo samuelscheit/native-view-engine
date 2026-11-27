@@ -53,6 +53,12 @@ mod wasm_snapshot;
 mod wasm_wake;
 
 pub use hydrate::{CapturedInteraction, HydrateTrigger, IslandHydrationScheduler, IslandSpec};
+
+/// Registers the shell's leaf web table systems (`nve-web-html-web` + `nve-canvas-web`) on `backend`.
+pub fn register_shell_web_systems(backend: &mut nve_backend_web::WebBackend) {
+    nve_web_html_web::register_web_html_systems(backend.table_registry_mut());
+    backend.register_table_system(nve_canvas_web::CanvasWebSystem);
+}
 #[cfg(feature = "multi-window")]
 pub use multi_window::{
     PopupWindowError, PopupWindowSpec, WebMultiWindowHost, DEFAULT_WINDOW_SYNC_CHANNEL,

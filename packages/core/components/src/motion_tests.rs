@@ -1,7 +1,9 @@
 //! Physics-invariant, convergence, variable-dt, retargeting, reduced-motion, easing, color
 //! interpolation, and `MotionClock` unit tests.
 
-use nve_abi::{ColorRgba, StyleProps};
+use nve_abi::ColorRgba;
+
+use crate::style_patch::VisualSnapshot as StyleProps;
 
 use crate::media::MediaEnv;
 use crate::motion::{

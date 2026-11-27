@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nve_abi::{
-    ColorRgba, ComponentKind, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify,
-    LayoutProps, StyleProps,
+    ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify, NVE_PRIMARY_SLOT_NONE,
 };
+use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 
 use crate::{LayoutRect, Viewport};
 
@@ -205,7 +205,7 @@ fn rejects_corrupt_magic_version_reserved_checksum_truncated_oob_and_misaligned(
 
 #[test]
 fn scene_reloc_roundtrip_and_corruption_guards() {
-    let lp_root = LayoutProps {
+    let lp_root = LayoutSnapshot {
         width: Dimension::Points(1280.0),
         height: Dimension::Points(800.0),
         min_width: Dimension::Points(320.0),
@@ -227,7 +227,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
         SceneRelocNodeInput {
             node_id: 1,
             parent_index: -1,
-            kind: ComponentKind::Root,
+            primary_slot: NVE_PRIMARY_SLOT_NONE,
             flags: SCENE_NODE_CLIP_CHILDREN,
             text_align: 0,
             image_resize_mode: 0,
@@ -239,7 +239,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
                 width: 1280.0,
                 height: 800.0,
             },
-            style: StyleProps {
+            style: VisualSnapshot {
                 background: ColorRgba::rgb(11, 17, 32),
                 ..Default::default()
             },
@@ -254,7 +254,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
         SceneRelocNodeInput {
             node_id: 2,
             parent_index: 0,
-            kind: ComponentKind::Text,
+            primary_slot: 1,
             flags: SCENE_NODE_HAS_EXPLICIT_STYLE | SCENE_NODE_INTERACTIVE,
             text_align: 1,
             image_resize_mode: 0,
@@ -266,13 +266,13 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
                 width: 240.0,
                 height: 32.0,
             },
-            style: StyleProps {
+            style: VisualSnapshot {
                 text_color: ColorRgba::WHITE,
                 font_size: 22.0,
                 border_radius: 8.0,
                 ..Default::default()
             },
-            layout: LayoutProps::default(),
+            layout: LayoutSnapshot::default(),
             text: "Aether Studio Instant Boot",
             tag: "hero-title",
             image_src: "",
@@ -283,7 +283,7 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
         SceneRelocNodeInput {
             node_id: 3,
             parent_index: 0,
-            kind: ComponentKind::SkiaCanvas,
+            primary_slot: 2,
             flags: 0,
             text_align: 0,
             image_resize_mode: 1,
@@ -295,8 +295,8 @@ fn scene_reloc_roundtrip_and_corruption_guards() {
                 width: 320.0,
                 height: 120.0,
             },
-            style: StyleProps::default(),
-            layout: LayoutProps::default(),
+            style: VisualSnapshot::default(),
+            layout: LayoutSnapshot::default(),
             text: "",
             tag: "sparkline",
             image_src: "asset://chart.png",

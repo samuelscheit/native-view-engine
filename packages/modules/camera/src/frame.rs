@@ -1,15 +1,71 @@
 //! Zero-copy `#[repr(C)]` `CameraFrameDescriptor`, 40-byte `CameraFrameWireLayout` (`NVCF`),
 //! and in-process [`CameraFrameProcessor`] callback trait.
 
+use std::fmt;
 use std::mem::{offset_of, size_of};
-
-use nve_components::native_view::NativeViewCodecError as CameraCodecError;
-
-use crate::spec::CameraPixelFormat;
 
 pub const CAMERA_FRAME_MAGIC: [u8; 4] = *b"NVCF";
 pub const CAMERA_FRAME_VERSION: u8 = 1;
 pub const CAMERA_FRAME_DESCRIPTOR_SIZE: usize = 40;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CameraCodecError {
+    Truncated,
+    TrailingBytes(usize),
+    InvalidMagic([u8; 4]),
+    UnsupportedVersion(u8),
+    InvalidEnum(&'static str, u32),
+    TypeMismatch { expected: &'static str },
+    PayloadTooLarge,
+}
+
+impl fmt::Display for CameraCodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl std::error::Error for CameraCodecError {}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CameraPixelFormat {
+    #[default]
+    Rgba8888 = 0,
+    Bgra8888 = 1,
+    Nv12 = 2,
+    Yuv420_888 = 3,
+}
+
+impl CameraPixelFormat {
+    #[inline]
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Rgba8888),
+            1 => Some(Self::Bgra8888),
+            2 => Some(Self::Nv12),
+            3 => Some(Self::Yuv420_888),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn from_u32(v: u32) -> Result<Self, CameraCodecError> {
+        u8::try_from(v)
+            .ok()
+            .and_then(Self::from_u8)
+            .ok_or(CameraCodecError::InvalidEnum("CameraPixelFormat", v))
+    }
+
+    #[inline]
+    pub const fn min_stride_bytes(self, width: u32) -> Option<u32> {
+        width.checked_mul(match self {
+            Self::Rgba8888 | Self::Bgra8888 => 4,
+            Self::Nv12 | Self::Yuv420_888 => 1,
+        })
+    }
+}
 
 /// Zero-copy in-process frame processor callback receiving [`CameraFrameDescriptor`] directly by
 /// reference (zero 40-byte `NVCF` serialization/deserialization copy on the Rust hot path).
@@ -56,7 +112,6 @@ const _: () = {
 };
 
 impl CameraFrameWireLayout {
-    /// Constructs a validated 40-byte `#[repr(C)]` wire layout directly from a descriptor.
     #[inline]
     pub fn from_descriptor(desc: &CameraFrameDescriptor) -> Result<Self, CameraCodecError> {
         desc.validate()?;
@@ -74,8 +129,6 @@ impl CameraFrameWireLayout {
         })
     }
 
-    /// Validates and converts this 40-byte `#[repr(C)]` wire struct directly into a
-    /// [`CameraFrameDescriptor`] with zero byte-slice parsing.
     #[inline]
     pub fn to_descriptor(&self) -> Result<CameraFrameDescriptor, CameraCodecError> {
         if self.magic != CAMERA_FRAME_MAGIC {
@@ -103,23 +156,15 @@ impl CameraFrameWireLayout {
         Ok(desc)
     }
 
-    /// Zero-copy byte view over this 40-byte `#[repr(C)]` wire struct (little-endian targets).
-    ///
-    /// Safe because `CameraFrameWireLayout` is `#[repr(C)]` with zero padding bytes (asserted by
-    /// the compile-time `size_of` and `offset_of!` layout invariants above).
     #[cfg(target_endian = "little")]
     #[inline]
     pub fn as_bytes(&self) -> &[u8; CAMERA_FRAME_DESCRIPTOR_SIZE] {
-        // SAFETY: `CameraFrameWireLayout` has size 40 with every byte occupied by initialized
-        // primitive fields (zero padding), and alignment of `[u8; 40]` is 1.
+        // SAFETY: `CameraFrameWireLayout` is `#[repr(C)]` with size 40 and zero padding bytes.
         unsafe { &*(self as *const Self as *const [u8; CAMERA_FRAME_DESCRIPTOR_SIZE]) }
     }
 }
 
 /// Zero-copy `#[repr(C)]` frame descriptor matching `packages/modules/camera/cxx` & `android`.
-///
-/// In-process Rust and C-ABI FFI callers pass `&CameraFrameDescriptor` or `CameraFrameDescriptor`
-/// directly by value/reference with zero 40-byte serialization copies.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -174,8 +219,6 @@ impl CameraFrameDescriptor {
         Ok(())
     }
 
-    /// Delivers this validated descriptor directly to an in-process [`CameraFrameProcessor`]
-    /// by reference with zero 40-byte serialization copies.
     #[inline]
     pub fn dispatch_to<P: CameraFrameProcessor + ?Sized>(
         &self,

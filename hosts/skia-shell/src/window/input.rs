@@ -1,15 +1,15 @@
-//! Interactive pointer, drag/double-click/triple-click range selection, focus/blur, keyboard,
-//! clipboard (`Ctrl/Cmd+C/X/V`), UAX #29 grapheme-safe UTF-8 editing, BiDi visual navigation,
-//! unified IME composition events, and direct typed `KeyDown`/`Submit` dispatch for
-//! [`DesktopSession`].
+//! Interactive pointer, drag/double-click/triple-click range selection, and focus/blur dispatch
+//! for [`DesktopSession`]. Keyboard shortcut and focused `TextInput` editing live in
+//! [`super::keyboard`].
 
 use std::time::{Duration, Instant};
 
 use nve_abi::{
-    native_events_to_direct, pack_key_modifiers, EventPayload, NativeEvent, NativeEventKind,
-    NodeId, NveDirectEvent,
+    native_events_to_direct, EventMask, EventPayload, NativeEvent, NativeEventKind, NodeId,
 };
-use winit::keyboard::{Key, ModifiersState};
+use nve_backend_skia::SkiaBackend;
+use nve_components::tables::{Interaction, TextInput};
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 
 use super::session::{now_us, DesktopSession};
 pub use super::text_edit::{
@@ -23,6 +23,37 @@ use super::{DesktopApp, DesktopHostError};
 const MULTI_CLICK_MAX_INTERVAL: Duration = Duration::from_millis(400);
 const MULTI_CLICK_MAX_DIST_SQ: f32 = 36.0; // 6.0 logical px
 
+fn is_focusable(store: &NodeStore, id: StoreNodeId) -> bool {
+    if !store.is_live(id) {
+        return false;
+    }
+    if store.has::<TextInput>(id) {
+        return true;
+    }
+    store.try_row::<Interaction>(id).is_some_and(|i| {
+        (u64::from(i.event_mask()) & (EventMask::FOCUS | EventMask::BLUR)) != 0
+    })
+}
+
+fn hit_test_focusable(store: &NodeStore, backend: &SkiaBackend, x: f32, y: f32) -> Option<NodeId> {
+    let mut cur = backend.hit_test_interaction(store, x, y).or_else(|| backend.hit_test(store, x, y))?;
+    for _ in 0..256 {
+        let sid = StoreNodeId(cur);
+        if is_focusable(store, sid) {
+            return Some(cur);
+        }
+        let Some(parent) = store.parent(sid) else {
+            break;
+        };
+        if parent.raw() == cur {
+            break;
+        }
+        cur = parent.raw();
+    }
+    None
+}
+
+
 impl<A: DesktopApp> DesktopSession<A> {
     pub(super) fn reset_multi_click(&mut self) {
         self.last_click_time = None;
@@ -33,11 +64,15 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// Programmatically moves focus to `next_focus` (or blurs when `None`), emitting balanced
     /// `CompositionEnd` (when blurring mid-composition) + `Blur`/`Focus` events and re-rendering.
     pub fn focus_node(&mut self, next_focus: Option<NodeId>) -> Result<bool, DesktopHostError> {
-        let prev_focus = self.backend.focused_node();
-        let had_preedit = self.backend.ime_preedit().is_some();
-        let focus_changed = self.backend.set_focused_node(next_focus);
-        let resolved_next = self.backend.focused_node();
-        if !focus_changed {
+        let prev_focus = self.replica.backend().focused_node();
+        let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();
+        let next_valid = next_focus.filter(|&id| is_focusable(self.replica.store(), StoreNodeId(id)));
+        {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.set_focused_node(store, next_valid);
+        }
+        let resolved_next = self.replica.backend().focused_node();
+        if resolved_next == prev_focus {
             return Ok(false);
         }
         self.dragging_text_node = None;
@@ -80,19 +115,29 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// and hit-tested `Press` events.
     pub fn handle_click_logical(&mut self, x: f32, y: f32) -> Result<bool, DesktopHostError> {
         self.cursor_logical = (x, y);
-        let prev_focus = self.backend.focused_node();
-        let had_preedit = self.backend.ime_preedit().is_some();
-        let next_focus = self.backend.hit_test_focusable(x, y);
-        let press_target = self.backend.hit_test(x, y);
+        let prev_focus = self.replica.backend().focused_node();
+        let had_preedit = self.replica.backend().focus_state().ime_preedit.is_some();
+        let next_focus = hit_test_focusable(self.replica.store(), self.replica.backend(), x, y);
+        let press_target = self
+            .replica
+            .backend()
+            .hit_test_interaction(self.replica.store(), x, y)
+            .or_else(|| self.replica.backend().hit_test(self.replica.store(), x, y));
 
         let ts = now_us();
         let mut events = Vec::with_capacity(4);
-        let mut visual_changed = !self.backend.pointer_down(x, y).is_empty();
+        let mut visual_changed = {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.pointer_down(store, x, y)
+        };
 
         if prev_focus != next_focus {
-            let changed = self.backend.set_focused_node(next_focus);
-            let resolved_next = self.backend.focused_node();
-            if changed {
+            {
+                let (store, backend) = self.replica.store_and_backend_mut();
+                backend.set_focused_node(store, next_focus);
+            }
+            let resolved_next = self.replica.backend().focused_node();
+            if resolved_next != prev_focus {
                 visual_changed = true;
                 if let Some(old_id) = prev_focus {
                     if had_preedit {
@@ -125,9 +170,14 @@ impl<A: DesktopApp> DesktopSession<A> {
         }
 
         if let Some(text_id) = self
-            .backend
+            .replica
+            .backend()
             .focused_node()
-            .filter(|&id| self.backend.is_text_input(id))
+            .filter(|&id| {
+                self.replica
+                    .backend()
+                    .is_text_input(self.replica.store(), StoreNodeId(id))
+            })
             && next_focus == Some(text_id)
         {
             let now = Instant::now();
@@ -150,29 +200,41 @@ impl<A: DesktopApp> DesktopSession<A> {
             };
 
             let hit_idx = self
-                .backend
-                .cursor_index_at_x(text_id, x)
-                .unwrap_or_else(|| self.backend.caret_byte_index());
+                .replica
+                .backend()
+                .cursor_index_at_x(self.replica.store(), StoreNodeId(text_id), x)
+                .unwrap_or_else(|| self.replica.backend().focus_state().caret_byte_index);
             let prev_sel = (
-                self.backend.selection_anchor_byte_index(),
-                self.backend.caret_byte_index(),
+                self.replica.backend().focus_state().selection_anchor,
+                self.replica.backend().focus_state().caret_byte_index,
             );
 
             match click_count {
                 2 => {
-                    let val = self.backend.text_input_value(text_id).unwrap_or_default();
+                    let val = self
+                        .replica
+                        .backend()
+                        .text_input_value(self.replica.store(), StoreNodeId(text_id))
+                        .unwrap_or_default();
                     let (w_start, w_end) = word_bounds_at(&val, hit_idx);
-                    self.backend.set_selection_range(w_start, w_end);
+                    let (store, backend) = self.replica.store_and_backend_mut();
+                    backend.set_caret_and_selection(store, w_end, w_start);
                     self.dragging_text_node = None;
                 }
                 3 => {
-                    let val = self.backend.text_input_value(text_id).unwrap_or_default();
+                    let val = self
+                        .replica
+                        .backend()
+                        .text_input_value(self.replica.store(), StoreNodeId(text_id))
+                        .unwrap_or_default();
                     let (p_start, p_end) = paragraph_bounds_at(&val, hit_idx);
-                    self.backend.set_selection_range(p_start, p_end);
+                    let (store, backend) = self.replica.store_and_backend_mut();
+                    backend.set_caret_and_selection(store, p_end, p_start);
                     self.dragging_text_node = None;
                 }
                 _ => {
-                    self.backend.set_selection_range(hit_idx, hit_idx);
+                    let (store, backend) = self.replica.store_and_backend_mut();
+                    backend.set_caret_and_selection(store, hit_idx, hit_idx);
                     self.dragging_text_node = Some(text_id);
                 }
             }
@@ -182,8 +244,8 @@ impl<A: DesktopApp> DesktopSession<A> {
             self.last_click_count = click_count;
 
             let next_sel = (
-                self.backend.selection_anchor_byte_index(),
-                self.backend.caret_byte_index(),
+                self.replica.backend().focus_state().selection_anchor,
+                self.replica.backend().focus_state().caret_byte_index,
             );
             if next_sel != prev_sel {
                 visual_changed = true;
@@ -229,16 +291,27 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// UAX #29 grapheme boundary.
     pub fn handle_pointer_move_logical(&mut self, x: f32, y: f32) -> Result<bool, DesktopHostError> {
         self.cursor_logical = (x, y);
-        let mut visual_changed = !self.backend.pointer_move(x, y).is_empty();
+        let mut visual_changed = {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.pointer_move(store, x, y)
+        };
         if let Some(node_id) = self.dragging_text_node {
-            if self.backend.focused_node() != Some(node_id) || !self.backend.is_text_input(node_id)
-            {
+            let is_valid = self.replica.backend().focused_node() == Some(node_id)
+                && self
+                    .replica
+                    .backend()
+                    .is_text_input(self.replica.store(), StoreNodeId(node_id));
+            if !is_valid {
                 self.dragging_text_node = None;
-            } else if let Some(next_caret) = self.backend.cursor_index_at_x(node_id, x)
-                && next_caret != self.backend.caret_byte_index()
+            } else if let Some(next_caret) = self
+                .replica
+                .backend()
+                .cursor_index_at_x(self.replica.store(), StoreNodeId(node_id), x)
+                && next_caret != self.replica.backend().focus_state().caret_byte_index
             {
-                let anchor = self.backend.selection_anchor_byte_index();
-                self.backend.set_selection_range(anchor, next_caret);
+                let anchor = self.replica.backend().focus_state().selection_anchor;
+                let (store, backend) = self.replica.store_and_backend_mut();
+                backend.set_caret_and_selection(store, next_caret, anchor);
                 visual_changed = true;
             }
         }
@@ -250,7 +323,10 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     /// Clears pointer hover/active state when the cursor leaves the window.
     pub fn handle_pointer_leave(&mut self) -> bool {
-        let dirty = !self.backend.pointer_leave().is_empty();
+        let dirty = {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.pointer_leave(store)
+        };
         if dirty {
             self.rasterize_current();
         }
@@ -262,7 +338,10 @@ impl<A: DesktopApp> DesktopSession<A> {
     pub fn handle_pointer_up_with_redraw(&mut self) -> bool {
         self.dragging_text_node = None;
         let (x, y) = self.cursor_logical;
-        let dirty = !self.backend.pointer_up(x, y).is_empty();
+        let dirty = {
+            let (store, backend) = self.replica.store_and_backend_mut();
+            backend.pointer_up(store, x, y)
+        };
         if dirty {
             self.rasterize_current();
         }
@@ -272,326 +351,5 @@ impl<A: DesktopApp> DesktopSession<A> {
     /// Finishes any in-progress mouse drag selection and releases active press state.
     pub fn handle_pointer_up_logical(&mut self) {
         let _ = self.handle_pointer_up_with_redraw();
-    }
-
-    /// Dispatches a direct typed `NativeEventKind::KeyDown` event.
-    pub fn handle_keydown(
-        &mut self,
-        key: &str,
-        meta: bool,
-        ctrl: bool,
-        shift: bool,
-        alt: bool,
-    ) -> Result<bool, DesktopHostError> {
-        if key.is_empty() {
-            return Ok(false);
-        }
-        let node_id = match self.backend.focused_node() {
-            Some(focused) => self.backend.find_custom_event_target_from(focused),
-            None => self.backend.find_custom_event_target(),
-        };
-        let event = [NveDirectEvent::key_down(
-            self.surface_id,
-            node_id,
-            now_us(),
-            key,
-            "",
-            pack_key_modifiers(meta, ctrl, shift, alt, false),
-            0,
-            false,
-        )];
-        // SAFETY: `key` and `""` remain valid for the duration of `dispatch_events`.
-        let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&event) };
-        let handled = self.app.dispatch_events(batch);
-        if handled {
-            self.render_and_rasterize()?;
-        }
-        Ok(handled)
-    }
-
-    /// Handles a `winit` keyboard press: when a `TextInput` is focused, drives UAX #29
-    /// grapheme-safe editing, BiDi visual caret/selection movement (`Shift+Left/Right/Home/End`),
-    /// clipboard (`Ctrl/Cmd+C/X/V`), `Cmd/Ctrl+A`, `Enter` -> `"submit"`, and `Escape` ->
-    /// cancel preedit or blur/keydown.
-    pub fn handle_keyboard_input(
-        &mut self,
-        key: &Key,
-        text: Option<&str>,
-        modifiers: ModifiersState,
-    ) -> Result<bool, DesktopHostError> {
-        self.reset_multi_click();
-        let meta = modifiers.super_key();
-        let ctrl = modifiers.control_key();
-        let shift = modifiers.shift_key();
-        let alt = modifiers.alt_key();
-
-        let Some(focused_id) = self
-            .backend
-            .focused_node()
-            .filter(|&id| self.backend.is_text_input(id))
-        else {
-            return if let Some(mapped) = classify_unfocused_keydown(key, modifiers) {
-                self.handle_keydown(mapped, meta, ctrl, shift, alt)
-            } else {
-                Ok(false)
-            };
-        };
-
-        let current = self.backend.text_input_value(focused_id).unwrap_or_default();
-        let caret = self.backend.caret_byte_index();
-        let anchor = self.backend.selection_anchor_byte_index();
-        let selection = self.backend.selection_range();
-
-        match classify_focused_key(key, text, modifiers) {
-            FocusedKeyAction::Insert(inserted) => {
-                let comp_end = self.backend.ime_preedit().is_some().then(String::new);
-                let (next_val, next_caret) = insert_text_at(&current, caret, selection, &inserted);
-                self.emit_text_change(focused_id, next_val, next_caret, comp_end)
-            }
-            FocusedKeyAction::Backspace => {
-                if self.backend.ime_preedit().is_some() {
-                    self.backend.set_ime_preedit(None, None);
-                    let mut events = Vec::with_capacity(1);
-                    self.push_composition_event(
-                        &mut events,
-                        focused_id,
-                        now_us(),
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
-                    );
-                    self.dispatch_and_redraw(&events)?;
-                    return Ok(true);
-                }
-                let Some((next_val, next_caret)) = delete_backward(&current, caret, selection)
-                else {
-                    return Ok(false);
-                };
-                self.emit_text_change(focused_id, next_val, next_caret, None)
-            }
-            FocusedKeyAction::Delete => {
-                let Some((next_val, next_caret)) = delete_forward(&current, caret, selection)
-                else {
-                    return Ok(false);
-                };
-                self.emit_text_change(focused_id, next_val, next_caret, None)
-            }
-            FocusedKeyAction::MoveLeft => {
-                if self.backend.ime_preedit().is_some() {
-                    return Ok(false);
-                }
-                let next_caret = match selection {
-                    Some((s, _)) => s,
-                    None => self.backend.move_caret_visual(focused_id, caret, -1),
-                };
-                let changed = next_caret != caret || selection.is_some();
-                self.backend.set_caret_byte_index(next_caret);
-                if changed {
-                    self.rasterize_current();
-                }
-                Ok(changed)
-            }
-            FocusedKeyAction::MoveRight => {
-                if self.backend.ime_preedit().is_some() {
-                    return Ok(false);
-                }
-                let next_caret = match selection {
-                    Some((_, e)) => e,
-                    None => self.backend.move_caret_visual(focused_id, caret, 1),
-                };
-                let changed = next_caret != caret || selection.is_some();
-                self.backend.set_caret_byte_index(next_caret);
-                if changed {
-                    self.rasterize_current();
-                }
-                Ok(changed)
-            }
-            FocusedKeyAction::MoveHome => {
-                let changed = caret != 0 || selection.is_some();
-                self.backend.set_caret_byte_index(0);
-                if changed {
-                    self.rasterize_current();
-                }
-                Ok(changed)
-            }
-            FocusedKeyAction::MoveEnd => {
-                let end = current.len();
-                let changed = caret != end || selection.is_some();
-                self.backend.set_caret_byte_index(end);
-                if changed {
-                    self.rasterize_current();
-                }
-                Ok(changed)
-            }
-            FocusedKeyAction::SelectLeft => {
-                if self.backend.ime_preedit().is_some() {
-                    return Ok(false);
-                }
-                let next_caret = self.backend.move_caret_visual(focused_id, caret, -1);
-                if next_caret == caret {
-                    return Ok(false);
-                }
-                self.backend.set_selection_range(anchor, next_caret);
-                self.rasterize_current();
-                Ok(true)
-            }
-            FocusedKeyAction::SelectRight => {
-                if self.backend.ime_preedit().is_some() {
-                    return Ok(false);
-                }
-                let next_caret = self.backend.move_caret_visual(focused_id, caret, 1);
-                if next_caret == caret {
-                    return Ok(false);
-                }
-                self.backend.set_selection_range(anchor, next_caret);
-                self.rasterize_current();
-                Ok(true)
-            }
-            FocusedKeyAction::SelectHome => {
-                if caret == 0 {
-                    return Ok(false);
-                }
-                self.backend.set_selection_range(anchor, 0);
-                self.rasterize_current();
-                Ok(true)
-            }
-            FocusedKeyAction::SelectEnd => {
-                let end = current.len();
-                if caret == end {
-                    return Ok(false);
-                }
-                self.backend.set_selection_range(anchor, end);
-                self.rasterize_current();
-                Ok(true)
-            }
-            FocusedKeyAction::SelectAll => {
-                self.backend.select_all_text();
-                self.rasterize_current();
-                Ok(true)
-            }
-            FocusedKeyAction::Copy => {
-                if self.backend.is_secure_text_input(focused_id) {
-                    return Ok(false);
-                }
-                if let Some(selected) = self.backend.selected_text() {
-                    self.clipboard.set_text(&selected);
-                    return Ok(true);
-                }
-                Ok(false)
-            }
-            FocusedKeyAction::Cut => {
-                let Some((s, e)) = selection else {
-                    return Ok(false);
-                };
-                if !self.backend.is_secure_text_input(focused_id)
-                    && let Some(selected) = self.backend.selected_text()
-                {
-                    self.clipboard.set_text(&selected);
-                }
-                let Some((next_val, next_caret)) = delete_backward(&current, caret, Some((s, e)))
-                else {
-                    return Ok(false);
-                };
-                self.emit_text_change(focused_id, next_val, next_caret, None)
-            }
-            FocusedKeyAction::Paste => {
-                let Some(raw_clip) = self.clipboard.get_text() else {
-                    return Ok(false);
-                };
-                let sanitized = if self.backend.is_multiline_text_input(focused_id) {
-                    sanitize_pasted_multiline(&raw_clip)
-                } else {
-                    sanitize_pasted_single_line(&raw_clip)
-                };
-                if sanitized.is_empty() {
-                    return Ok(false);
-                }
-                let comp_end = self.backend.ime_preedit().is_some().then(String::new);
-                let (next_val, next_caret) =
-                    insert_text_at(&current, caret, selection, &sanitized);
-                self.emit_text_change(focused_id, next_val, next_caret, comp_end)
-            }
-            FocusedKeyAction::Submit => {
-                let had_preedit = self.backend.ime_preedit().is_some();
-                self.backend.set_ime_preedit(None, None);
-                let ts = now_us();
-                let mut events = Vec::with_capacity(2);
-                if had_preedit {
-                    self.push_composition_event(
-                        &mut events,
-                        focused_id,
-                        ts,
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
-                    );
-                }
-                events.push(NativeEvent {
-                    surface_id: self.surface_id,
-                    node_id: focused_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::Submit,
-                    payload: EventPayload::Text(current),
-                });
-                let mut direct = Vec::with_capacity(events.len());
-                native_events_to_direct(&events, &mut direct);
-                // SAFETY: `direct` borrows solely from `events`, which outlives `dispatch_events`.
-                let batch = unsafe { nve_abi::NveEventBatchRef::from_slice(&direct) };
-                if self.app.dispatch_events(batch) {
-                    self.render_and_rasterize()?;
-                    Ok(true)
-                } else {
-                    self.handle_keydown("Enter", meta, ctrl, shift, alt)
-                }
-            }
-            FocusedKeyAction::Escape => {
-                if self.backend.ime_preedit().is_some() {
-                    self.backend.set_ime_preedit(None, None);
-                    let mut events = Vec::with_capacity(1);
-                    self.push_composition_event(
-                        &mut events,
-                        focused_id,
-                        now_us(),
-                        NativeEventKind::CompositionEnd,
-                        String::new(),
-                    );
-                    self.dispatch_and_redraw(&events)?;
-                    return Ok(true);
-                }
-                let has_custom = self.backend.has_custom_event_listener();
-                let custom_target = self.backend.find_custom_event_target_from(focused_id);
-                self.backend.set_focused_node(None);
-                self.dragging_text_node = None;
-
-                let ts = now_us();
-                let mut events = Vec::with_capacity(2);
-                events.push(NativeEvent {
-                    surface_id: self.surface_id,
-                    node_id: focused_id,
-                    timestamp_us: ts,
-                    kind: NativeEventKind::Blur,
-                    payload: EventPayload::Empty,
-                });
-                if has_custom {
-                    events.push(NativeEvent {
-                        surface_id: self.surface_id,
-                        node_id: custom_target,
-                        timestamp_us: ts,
-                        kind: NativeEventKind::KeyDown,
-                        payload: EventPayload::Key {
-                            key: "Escape".to_string(),
-                            code: String::new(),
-                            key_code: 0,
-                            modifiers: pack_key_modifiers(meta, ctrl, shift, alt, false),
-                            is_composing: false,
-                        },
-                    });
-                }
-                self.dispatch_and_redraw(&events)?;
-                Ok(true)
-            }
-            FocusedKeyAction::ForwardKeydown(mapped) => {
-                self.handle_keydown(mapped, meta, ctrl, shift, alt)
-            }
-            FocusedKeyAction::None => Ok(false),
-        }
     }
 }

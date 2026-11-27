@@ -20,6 +20,7 @@ pub fn generate_dart_scene_abi() -> String {
     let schema_hash = compute_scene_schema_hash(&spec);
     let signed_hash = schema_hash as i64;
     let render_node = spec.find_struct("NveRenderNode").unwrap();
+    let table_view = spec.find_struct("NveTableView").unwrap();
     let scene_view = spec.find_struct("NveSceneView").unwrap();
     let node_meta = spec.find_struct("NveNodeMeta").unwrap();
     let node_size = render_node.expected_size.unwrap();
@@ -41,7 +42,7 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "/// Deterministic FNV-1a 64-bit schema hash (`0x{schema_hash:016X}`)."
+        "/// Deterministic XXH64 schema hash (`0x{schema_hash:016X}`)."
     );
     let _ = writeln!(
         out,
@@ -60,11 +61,11 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out, "const int nveNodeInteractive = 1 << 1;");
     let _ = writeln!(out, "const int nveNodeClipBounds = 1 << 2;");
     let _ = writeln!(out);
-    let _ = writeln!(out, "// Compact uint8 NveRenderNode::kind discriminants");
+    let _ = writeln!(out, "// Sentinel NveRenderNode::primary_slot value (plain container)");
     for c in &spec.consts {
-        if c.name.starts_with("NVE_NODE_KIND_") {
+        if c.name == "NVE_PRIMARY_SLOT_NONE" {
             let dart_name = to_camel_case(&c.name.to_ascii_lowercase());
-            let _ = writeln!(out, "const int {dart_name} = {};", c.value);
+            let _ = writeln!(out, "const int {dart_name} = 0x{:02X};", c.value);
         }
     }
     let _ = writeln!(out);
@@ -159,6 +160,24 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
+        "/// Zero-copy view of one published NodeStore word table (`NveTableView` in `nve_scene_abi.generated.h`)."
+    );
+    let _ = writeln!(out, "final class NveTableView extends ffi.Struct {{");
+    for f in &table_view.fields {
+        let dart_name = snake_to_camel_preserve_leading(&f.name);
+        if let Some(ann) = dart_core_ffi_annotation(&f.ty) {
+            let _ = writeln!(out, "  {ann}");
+        }
+        let _ = writeln!(
+            out,
+            "  external {} {dart_name};",
+            dart_core_struct_field_type(&f.ty)
+        );
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
         "/// Zero-decode scene snapshot header + slab pointers (`NveSceneView` in `nve_scene_abi.generated.h`)."
     );
     let _ = writeln!(out, "final class NveSceneView extends ffi.Struct {{");
@@ -198,7 +217,9 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out, "  NveSceneReader._({{");
     let _ = writeln!(out, "    required this.frameId,");
     let _ = writeln!(out, "    required this.nodeCount,");
+    let _ = writeln!(out, "    required this.tableCount,");
     let _ = writeln!(out, "    required ffi.Pointer<NveRenderNode> nodesPtr,");
+    let _ = writeln!(out, "    required this.tables,");
     let _ = writeln!(out, "    required this.textSlab,");
     let _ = writeln!(out, "    required this.childrenSlab,");
     let _ = writeln!(out, "    required this.dirtyIndices,");
@@ -270,11 +291,23 @@ pub fn generate_dart_scene_abi() -> String {
         "      throw const NveSceneAbiException('removedIds pointer is null with non-zero removedCount');"
     );
     let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    final int tableCount = view.tableCount;");
+    let _ = writeln!(
+        out,
+        "    if (tableCount > 0 && view.tables == ffi.nullptr) {{"
+    );
+    let _ = writeln!(
+        out,
+        "      throw const NveSceneAbiException('tables pointer is null with non-zero tableCount');"
+    );
+    let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "    return NveSceneReader._(");
     let _ = writeln!(out, "      frameId: view.frameId,");
     let _ = writeln!(out, "      nodeCount: nodeCount,");
+    let _ = writeln!(out, "      tableCount: tableCount,");
     let _ = writeln!(out, "      nodesPtr: view.nodes,");
+    let _ = writeln!(out, "      tables: view.tables,");
     let _ = writeln!(
         out,
         "      textSlab: textLen == 0 ? Uint8List(0) : view.textSlab.asTypedList(textLen),"
@@ -296,11 +329,24 @@ pub fn generate_dart_scene_abi() -> String {
     let _ = writeln!(out);
     let _ = writeln!(out, "  final int frameId;");
     let _ = writeln!(out, "  final int nodeCount;");
+    let _ = writeln!(out, "  final int tableCount;");
     let _ = writeln!(out, "  final ffi.Pointer<NveRenderNode> _nodesPtr;");
+    let _ = writeln!(out, "  final ffi.Pointer<NveTableView> tables;");
     let _ = writeln!(out, "  final Uint8List textSlab;");
     let _ = writeln!(out, "  final Uint32List childrenSlab;");
     let _ = writeln!(out, "  final Uint32List dirtyIndices;");
     let _ = writeln!(out, "  final Uint32List removedIds;");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  /// Zero-copy indexed access to a published `NveTableView`.");
+    let _ = writeln!(out, "  NveTableView tableAt(int index) {{");
+    let _ = writeln!(out, "    if (index < 0 || index >= tableCount) {{");
+    let _ = writeln!(
+        out,
+        "      throw RangeError.index(index, this, 'index', null, tableCount);"
+    );
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    return tables[index];");
+    let _ = writeln!(out, "  }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "  /// Zero-copy indexed access to a 64-byte `NveRenderNode`.");
     let _ = writeln!(out, "  NveRenderNode nodeAt(int index) {{");

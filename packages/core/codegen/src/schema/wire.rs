@@ -1,80 +1,9 @@
 //! Declarative single-source specification for NVE cross-language wire codecs:
-//! - Canonical 64-bit FNV-1a (`0xcbf29ce484222325` / `0x00000100000001b3`) + reference vectors
 //! - Binary `EventRing` framing (`NVEV` / count header, 18-byte entry layout, `NativeEventKind`,
 //!   `EventPayloadTag`, `EventMask`, typed key modifier bits)
 //! - Binary `NVE_DRAW1` vector canvas stream constants, opcodes, fixed payload sizes, and header layout
 
-/// Canonical 64-bit FNV-1a offset basis (`14695981039346656037`).
-pub const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-
-/// Canonical 64-bit FNV-1a prime (`1099511628211`).
-pub const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// Updates an in-progress 64-bit FNV-1a hash with `bytes`.
-pub const fn fnv1a64_update(mut hash: u64, bytes: &[u8]) -> u64 {
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(FNV1A_PRIME);
-        i += 1;
-    }
-    hash
-}
-
-/// Computes the canonical 64-bit FNV-1a hash of `bytes`.
-pub const fn fnv1a64(bytes: &[u8]) -> u64 {
-    fnv1a64_update(FNV1A_OFFSET_BASIS, bytes)
-}
-
-/// Computes the canonical 64-bit FNV-1a hash over the concatenation `a || b`.
-pub const fn fnv1a64_pair(a: &[u8], b: &[u8]) -> u64 {
-    fnv1a64_update(fnv1a64_update(FNV1A_OFFSET_BASIS, a), b)
-}
-
-/// Single reference test vector emitted into every target language to lock unsigned-byte
-/// XOR and 64-bit wrapping multiplication semantics across C++, Swift, Dart, TS, and Java.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Fnv1a64TestVector {
-    pub label: &'static str,
-    pub bytes: &'static [u8],
-    pub expected: u64,
-}
-
-const BINARY_HIGH_BIT_VECTOR: &[u8] = &[0x00, 0x01, 0x7f, 0x80, 0xff];
-
-/// Authoritative FNV-1a 64-bit test vectors computed directly from [`fnv1a64`].
-pub const FNV1A64_TEST_VECTORS: &[Fnv1a64TestVector] = &[
-    Fnv1a64TestVector {
-        label: "empty",
-        bytes: b"",
-        expected: fnv1a64(b""),
-    },
-    Fnv1a64TestVector {
-        label: "a",
-        bytes: b"a",
-        expected: fnv1a64(b"a"),
-    },
-    Fnv1a64TestVector {
-        label: "foobar",
-        bytes: b"foobar",
-        expected: fnv1a64(b"foobar"),
-    },
-    Fnv1a64TestVector {
-        label: "nvev",
-        bytes: b"NVEV",
-        expected: fnv1a64(b"NVEV"),
-    },
-    Fnv1a64TestVector {
-        label: "nve_draw1",
-        bytes: b"NVE_DRAW1",
-        expected: fnv1a64(b"NVE_DRAW1"),
-    },
-    Fnv1a64TestVector {
-        label: "high_bits",
-        bytes: BINARY_HIGH_BIT_VECTOR,
-        expected: fnv1a64(BINARY_HIGH_BIT_VECTOR),
-    },
-];
+use nve_abi::Xxh64Hasher;
 
 // ============================================================================
 // EventRing (`NVEV` / event framing) — matches `packages/core/abi/src/events.rs`
@@ -235,6 +164,12 @@ pub const EVENT_KINDS: &[WireEnumVariant] = &[
         screaming: "WHEEL",
         value: 20,
     },
+    WireEnumVariant {
+        pascal: "TableEvent",
+        camel: "tableEvent",
+        screaming: "TABLE_EVENT",
+        value: 21,
+    },
 ];
 
 /// Payload tag descriptor for `EventPayload` wire framing.
@@ -312,6 +247,13 @@ pub const EVENT_PAYLOAD_TAGS: &[EventPayloadTagSpec] = &[
         screaming: "WHEEL",
         tag: 8,
         fixed_payload_bytes: Some(9),
+    },
+    EventPayloadTagSpec {
+        pascal: "TableEvent",
+        camel: "tableEvent",
+        screaming: "TABLE_EVENT",
+        tag: 9,
+        fixed_payload_bytes: None,
     },
 ];
 
@@ -440,6 +382,12 @@ pub const EVENT_MASKS: &[WireBitflag] = &[
         screaming: "WHEEL",
         value: 1 << 17,
     },
+    WireBitflag {
+        pascal: "TableEvent",
+        camel: "tableEvent",
+        screaming: "TABLE_EVENT",
+        value: 1 << 18,
+    },
 ];
 
 /// Typed keyboard modifier bitflags shared with `NveDirectEvent::modifiers`.
@@ -563,60 +511,58 @@ pub const DRAW_OPCODES: &[DrawOpcodeSpec] = &[
     },
 ];
 
-/// Computes the deterministic FNV-1a 64-bit schema hash covering every constant, enum,
+/// Computes the deterministic XXH64 schema hash covering every constant, enum,
 /// layout offset, and opcode in this wire codec specification.
 pub const fn wire_codecs_schema_hash() -> u64 {
-    let mut h = FNV1A_OFFSET_BASIS;
-    h = fnv1a64_update(h, b"nve.wire_codecs.v1");
-    h = fnv1a64_update(h, &FNV1A_OFFSET_BASIS.to_le_bytes());
-    h = fnv1a64_update(h, &FNV1A_PRIME.to_le_bytes());
-    h = fnv1a64_update(h, &EVENT_RING_MAGIC_BYTES);
-    h = fnv1a64_update(h, &EVENT_RING_VERSION.to_le_bytes());
-    h = fnv1a64_update(h, &(EVENT_RING_COUNT_HEADER_SIZE as u64).to_le_bytes());
-    h = fnv1a64_update(h, &(EVENT_RING_FRAMED_HEADER_SIZE as u64).to_le_bytes());
-    h = fnv1a64_update(h, &(EVENT_ENTRY_HEADER_SIZE as u64).to_le_bytes());
-    h = fnv1a64_update(h, &[KEY_MOD_META, KEY_MOD_CTRL, KEY_MOD_SHIFT, KEY_MOD_ALT, KEY_MOD_REPEAT]);
-    h = fnv1a64_update(h, &DRAW_LIST_MAGIC);
-    h = fnv1a64_update(h, &DRAW_LIST_VERSION.to_le_bytes());
-    h = fnv1a64_update(h, &(DRAW_LIST_HEADER_SIZE as u64).to_le_bytes());
-    h = fnv1a64_update(h, &(DRAW_LIST_MAX_OPS as u64).to_le_bytes());
-    h = fnv1a64_update(h, &(DRAW_LIST_MAX_POLYLINE_POINTS as u64).to_le_bytes());
-    h = fnv1a64_update(h, &(DRAW_LIST_MAX_CLIP_DEPTH as u64).to_le_bytes());
-    h = fnv1a64_update(h, DRAW_LIST_ATTR_PREFIX.as_bytes());
+    let mut h = Xxh64Hasher::new(0);
+    h.update(b"nve.wire_codecs.v2");
+    h.update(&EVENT_RING_MAGIC_BYTES);
+    h.update(&EVENT_RING_VERSION.to_le_bytes());
+    h.update_u64(EVENT_RING_COUNT_HEADER_SIZE as u64);
+    h.update_u64(EVENT_RING_FRAMED_HEADER_SIZE as u64);
+    h.update_u64(EVENT_ENTRY_HEADER_SIZE as u64);
+    h.update(&[KEY_MOD_META, KEY_MOD_CTRL, KEY_MOD_SHIFT, KEY_MOD_ALT, KEY_MOD_REPEAT]);
+    h.update(&DRAW_LIST_MAGIC);
+    h.update(&DRAW_LIST_VERSION.to_le_bytes());
+    h.update_u64(DRAW_LIST_HEADER_SIZE as u64);
+    h.update_u64(DRAW_LIST_MAX_OPS as u64);
+    h.update_u64(DRAW_LIST_MAX_POLYLINE_POINTS as u64);
+    h.update_u64(DRAW_LIST_MAX_CLIP_DEPTH as u64);
+    h.update(DRAW_LIST_ATTR_PREFIX.as_bytes());
 
     let mut i = 0;
     while i < EVENT_KINDS.len() {
-        h = fnv1a64_update(h, b"|ek:");
-        h = fnv1a64_update(h, EVENT_KINDS[i].screaming.as_bytes());
-        h = fnv1a64_update(h, &[EVENT_KINDS[i].value]);
+        h.update(b"|ek:");
+        h.update(EVENT_KINDS[i].screaming.as_bytes());
+        h.update(&[EVENT_KINDS[i].value]);
         i += 1;
     }
     i = 0;
     while i < EVENT_PAYLOAD_TAGS.len() {
-        h = fnv1a64_update(h, b"|ep:");
-        h = fnv1a64_update(h, EVENT_PAYLOAD_TAGS[i].screaming.as_bytes());
-        h = fnv1a64_update(h, &[EVENT_PAYLOAD_TAGS[i].tag]);
+        h.update(b"|ep:");
+        h.update(EVENT_PAYLOAD_TAGS[i].screaming.as_bytes());
+        h.update(&[EVENT_PAYLOAD_TAGS[i].tag]);
         let sz = match EVENT_PAYLOAD_TAGS[i].fixed_payload_bytes {
             Some(n) => n as u64,
             None => u64::MAX,
         };
-        h = fnv1a64_update(h, &sz.to_le_bytes());
+        h.update(&sz.to_le_bytes());
         i += 1;
     }
     i = 0;
     while i < DRAW_OPCODES.len() {
-        h = fnv1a64_update(h, b"|do:");
-        h = fnv1a64_update(h, DRAW_OPCODES[i].screaming.as_bytes());
-        h = fnv1a64_update(h, &[DRAW_OPCODES[i].opcode]);
+        h.update(b"|do:");
+        h.update(DRAW_OPCODES[i].screaming.as_bytes());
+        h.update(&[DRAW_OPCODES[i].opcode]);
         let sz = match DRAW_OPCODES[i].fixed_payload_bytes {
             Some(n) => n as u64,
             None => u64::MAX,
         };
-        h = fnv1a64_update(h, &sz.to_le_bytes());
+        h.update(&sz.to_le_bytes());
         i += 1;
     }
-    h
+    h.digest()
 }
 
-/// Deterministic FNV-1a 64-bit schema hash of the wire codec spec.
+/// Deterministic XXH64 schema hash of the wire codec spec.
 pub const NVE_WIRE_CODECS_SCHEMA_HASH: u64 = wire_codecs_schema_hash();

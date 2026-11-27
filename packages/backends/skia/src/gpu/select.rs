@@ -16,7 +16,7 @@ use super::vulkan;
 use super::{CpuSkiaSurface, GpuSurfaceBackend, SkiaCanvasRenderer};
 use super::{
     FrameLifecycleState, FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig,
-    GpuSurfaceError, SoftwareFramePresenter, SwapchainExtent,
+    GpuSurfaceError, SkiaPluginContext, SoftwareFramePresenter, SwapchainExtent,
 };
 use crate::raster::PixelBuffer;
 use crate::text::CosmicTextEngine;
@@ -418,6 +418,17 @@ impl GpuFramePresenter for GpuSwapchain {
         dispatch_swapchain_mut!(self, inner => GpuFramePresenter::render_display_list(inner, display_list, scale_factor, clear_color, hud_banner))
     }
 
+    fn render_display_list_with_plugins(
+        &mut self,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        hud_banner: Option<&str>,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
+        dispatch_swapchain_mut!(self, inner => GpuFramePresenter::render_display_list_with_plugins(inner, display_list, scale_factor, clear_color, hud_banner, plugins))
+    }
+
     fn submit_frame(&mut self) -> Result<(), GpuSurfaceError> {
         dispatch_swapchain_mut!(self, inner => GpuFramePresenter::submit_frame(inner))
     }
@@ -548,25 +559,49 @@ impl GpuSurfaceBackend for GpuSurface {
         scale_factor: f32,
         clear_color: ColorRgba,
     ) -> Result<(), GpuSurfaceError> {
+        self.render_display_list_with_plugins(renderer, display_list, scale_factor, clear_color, None)
+    }
+
+    fn render_display_list_with_plugins(
+        &mut self,
+        renderer: &SkiaCanvasRenderer,
+        display_list: &DisplayList,
+        scale_factor: f32,
+        clear_color: ColorRgba,
+        plugins: Option<SkiaPluginContext<'_>>,
+    ) -> Result<(), GpuSurfaceError> {
         match self {
             #[cfg(all(feature = "skia-metal", any(target_os = "macos", target_os = "ios")))]
-            Self::Metal(sw) => {
-                sw.render_with_renderer(renderer, display_list, scale_factor, clear_color)
-            }
+            Self::Metal(sw) => sw.render_with_renderer_plugins(
+                renderer,
+                display_list,
+                scale_factor,
+                clear_color,
+                plugins,
+            ),
             #[cfg(feature = "skia-vulkan")]
-            Self::Vulkan(sw) => {
-                sw.render_with_renderer(renderer, display_list, scale_factor, clear_color)
-            }
+            Self::Vulkan(sw) => sw.render_with_renderer_plugins(
+                renderer,
+                display_list,
+                scale_factor,
+                clear_color,
+                plugins,
+            ),
             #[cfg(all(feature = "skia-d3d", target_os = "windows"))]
-            Self::Direct3D12(sw) => {
-                sw.render_with_renderer(renderer, display_list, scale_factor, clear_color)
-            }
-            Self::CpuRaster(cpu) => GpuSurfaceBackend::render_display_list(
+            Self::Direct3D12(sw) => sw.render_with_renderer_plugins(
+                renderer,
+                display_list,
+                scale_factor,
+                clear_color,
+                plugins,
+            ),
+            Self::CpuRaster(cpu) => GpuSurfaceBackend::render_display_list_with_plugins(
                 cpu.as_mut(),
                 renderer,
                 display_list,
                 scale_factor,
                 clear_color,
+                plugins,
             ),
         }
     }

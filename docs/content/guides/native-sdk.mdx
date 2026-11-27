@@ -21,7 +21,7 @@ Native platform capabilities are decomposed into a tiny shared core (`packages/c
 | `nve-linking` | `LinkingClient` | `0x0013` | `open_url(&str)`, `can_open_url(&str)`, `initial_url()`, push `LinkingEvent` |
 | `nve-system-env` | `SystemEnvClient` | `0x0014` | `get_theme()` (`NVT2`), `get_locale()` (`NVL1`), live `SystemEnvBridge` pushes |
 | `nve-haptics` | `HapticsClient` | `0x0016` | `impact(ImpactStyle)`, `selection()`, `notification(NotificationHaptic)` |
-| `nve-storage` | `StorageClient` | `0x0020` | Crash-safe `NVK1` binary KV store (`open`, `get`, `put`, `delete`, `scan_prefix`, `commit_batch`, `compact`) |
+| `nve-storage` | `StorageClient` | `0x0020` | Crash-safe `NVK2` binary KV store (`open`, `get`, `put`, `delete`, `scan_prefix`, `commit_batch`, `compact`) |
 | `nve-camera` | `CameraPreview` spec | — | Optional VisionCamera v5 adapter + typed `CameraPreview` `NativeViewSpec` (`NVNP`/`NVNC`/`NVCF`) |
 
 ## Composing Only What You Need

@@ -1,40 +1,39 @@
-//! Option 5 Hybrid CSS stylesheet cache: compact declaration emitters, structural vs volatile
-//! lane resolution, bounded `MAX_DYNAMIC_RULES`, and 3-layer cascade-ordered flushing
-//! (base structural -> `@media` -> 5-tier interactive pseudo-state rules).
+//! Content-addressed deduplicated structural, `@media`, `:hover`/`:active`/`:focus`/`:disabled`,
+//! cursor, and transition stylesheet cache directly over `NodeStore` word tables.
 
-use nve_abi::hash::{HashMap, HashSet};
-use nve_abi::{ComponentKind, EventMask};
+use std::collections::BTreeMap;
 
-pub use crate::css::{
-    write_compact_cursor_into, write_compact_layout_into, write_compact_style_into,
-    write_volatile_inline_into,
+use nve_abi::hash::HashSet;
+use nve_components::interaction::CursorKind;
+use nve_components::tables::{
+    Interaction, Motion, Responsive, ResponsiveRules, StateRules, Transitions,
 };
-use crate::css::MirrorElement;
-use crate::layout_ext_css::{write_compact_layout_ext_into, write_compact_transform_into};
+use nve_store::{NodeId, NodeStore};
+
+use crate::css::{format_content_class, write_store_node_css};
 use crate::media_css::{compile_node_media_rules, CompiledMediaRule};
-use crate::paint_svg::write_compact_background_fill_into;
 use crate::state_css::{compile_node_state_rules, format_cursor_rule, CompiledStateRule};
-use crate::style_hash::{
-    format_structural_class, hash_structural_style_full, is_inheriting_leaf_text,
-};
 use crate::transition_css::compile_node_transitions;
-use nve_components::motion::TransitionSpec;
 
-/// Hard upper bound on dynamic structural CSS rules in [`StyleSheetCache`].
-pub const MAX_DYNAMIC_RULES: usize = 4096;
+/// Maximum number of deduplicated dynamic CSS rules emitted before falling back to inline styles.
+pub const MAX_DYNAMIC_RULES: usize = 8192;
+/// Number of ordered interactive cascade tiers (`Hover < Focus < FocusVisible < Active < Disabled`).
+pub const STATE_TIER_COUNT: usize = 5;
+/// Batch threshold before rewriting a fallback `<style>` element wholesale on `wasm32`.
+pub const INCREMENTAL_RULE_BATCH_THRESHOLD: usize = 32;
 
-/// Incremental rule batch size threshold above which `wasm32` allocates a new chunked
-/// `CSSStyleSheet` via `replace_sync` instead of per-rule `insert_rule`.
-pub const INCREMENTAL_RULE_BATCH_THRESHOLD: usize = 16;
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) const STATE_TIER_COUNT: usize = 5;
-
-/// Resolved Option 5 Hybrid presentation for a single DOM element.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ResolvedNodeStyle {
+/// One compiled stylesheet entry in [`StyleSheetCache`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedRule {
     pub class_name: String,
-    pub inline_style: String,
+    pub css_rule: String,
+}
+
+/// Resolved class list + newly generated rules for a single `NodeStore` node.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedNodeStyle {
+    pub classes: String,
+    pub inline_fallback: String,
     pub structural_rule: Option<(String, String)>,
     pub cursor_rule: Option<(&'static str, &'static str)>,
     pub transition_rule: Option<(String, String)>,
@@ -42,230 +41,32 @@ pub struct ResolvedNodeStyle {
     pub state_rules: Vec<CompiledStateRule>,
 }
 
-/// Computes the deterministic class list, optional structural rule, base cursor rule, responsive
-/// `@media` rules, interactive pseudo-state rules, and optional inline lane declarations for `node`.
-pub fn resolve_node_style(
-    node: &MirrorElement,
-    parent: Option<&MirrorElement>,
-    allow_new_rule: bool,
-    existing_rule_check: impl Fn(&str) -> bool,
-) -> ResolvedNodeStyle {
-    let leaf_text = is_inheriting_leaf_text(parent, node);
-    let mut class_name = String::with_capacity(48);
-    class_name.push_str("nve");
-
-    match node.kind {
-        ComponentKind::ScrollView => class_name.push_str(" nve-s"),
-        ComponentKind::Pressable => class_name.push_str(" nve-b"),
-        ComponentKind::TextInput => class_name.push_str(" nve-i"),
-        _ if (node.event_mask & EventMask::PRESS) != 0 => class_name.push_str(" nve-p"),
-        _ => {}
-    }
-    if leaf_text {
-        class_name.push_str(" nve-tl");
-    }
-
-    let mut media_rules = Vec::new();
-    if node.show_on.is_some() || !node.responsive_rules.is_empty() {
-        compile_node_media_rules(node.show_on, &node.responsive_rules, &mut media_rules);
-    }
-
-    let compiled_transition = (!node.transitions.is_empty())
-        .then(|| compile_node_transitions(&node.transitions))
-        .flatten();
-    if let Some(ref tr) = compiled_transition
-        && let Some(ref rm_rule) = tr.reduced_motion_rule
-        && !media_rules.iter().any(|r| r.class_name == rm_rule.class_name)
-    {
-        media_rules.push(rm_rule.clone());
-    }
-
-    let mut state_rules = Vec::new();
-    if !node.state_rules.is_empty() {
-        compile_node_state_rules(&node.state_rules, &mut state_rules);
-    }
-
-    let mut inline_style = String::new();
-
-    if node.is_consecutive_frame_volatile() {
-        write_compact_layout_into(&node.layout, false, &mut inline_style);
-        write_compact_layout_ext_into(node.layout_ext.as_deref(), &mut inline_style);
-        write_compact_style_into(&node.style, &node.raw_style, leaf_text, false, &mut inline_style);
-        write_compact_background_fill_into(node.background_fill.as_ref(), &mut inline_style);
-        write_compact_transform_into(node.transform, &mut inline_style);
-        write_compact_cursor_into(node.cursor, &mut inline_style);
-        TransitionSpec::write_css_list_into(&node.transitions, &mut inline_style);
-        if !node.patch_css.is_empty() {
-            inline_style.push_str(&node.patch_css);
-        }
-        for rule in &media_rules {
-            class_name.push(' ');
-            class_name.push_str(&rule.class_name);
-        }
-        for rule in &state_rules {
-            class_name.push(' ');
-            class_name.push_str(&rule.class_name);
-        }
-        return ResolvedNodeStyle {
-            class_name,
-            inline_style,
-            structural_rule: None,
-            cursor_rule: None,
-            transition_rule: None,
-            media_rules,
-            state_rules,
-        };
-    }
-
-    let mut structural_decls = String::with_capacity(96);
-    write_compact_layout_into(&node.layout, true, &mut structural_decls);
-    write_compact_layout_ext_into(node.layout_ext.as_deref(), &mut structural_decls);
-    write_compact_style_into(
-        &node.style,
-        &node.raw_style,
-        leaf_text,
-        true,
-        &mut structural_decls,
-    );
-    write_compact_background_fill_into(node.background_fill.as_ref(), &mut structural_decls);
-    write_compact_transform_into(node.transform, &mut structural_decls);
-
-    let structural_rule = if structural_decls.is_empty() {
-        None
-    } else {
-        let hash = hash_structural_style_full(
-            &node.layout,
-            node.layout_ext.as_deref(),
-            &node.style,
-            node.background_fill.as_ref(),
-            node.transform,
-            &node.raw_style,
-            leaf_text,
-        );
-        let cls = format_structural_class(hash);
-        if existing_rule_check(&cls) || allow_new_rule {
-            class_name.push(' ');
-            class_name.push_str(&cls);
-            Some((cls, structural_decls))
-        } else {
-            inline_style.push_str(&structural_decls);
-            None
-        }
-    };
-
-    let cursor_rule = node.cursor.and_then(format_cursor_rule).and_then(|(cls, decl)| {
-        if existing_rule_check(cls) || allow_new_rule {
-            class_name.push(' ');
-            class_name.push_str(cls);
-            Some((cls, decl))
-        } else {
-            inline_style.push_str(decl);
-            None
-        }
-    });
-
-    let transition_rule = compiled_transition.and_then(|tr| {
-        if existing_rule_check(&tr.class_name) || allow_new_rule {
-            class_name.push(' ');
-            class_name.push_str(&tr.class_name);
-            Some((tr.class_name, tr.decls))
-        } else {
-            inline_style.push_str(&tr.decls);
-            None
-        }
-    });
-
-    for rule in &media_rules {
-        class_name.push(' ');
-        class_name.push_str(&rule.class_name);
-    }
-    for rule in &state_rules {
-        class_name.push(' ');
-        class_name.push_str(&rule.class_name);
-    }
-
-    write_volatile_inline_into(&node.layout, &node.style, &node.patch_css, &mut inline_style);
-
-    ResolvedNodeStyle {
-        class_name,
-        inline_style,
-        structural_rule,
-        cursor_rule,
-        transition_rule,
-        media_rules,
-        state_rules,
-    }
-}
-
-/// One cached stylesheet rule stored in [`StyleSheetCache`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CachedRule {
-    Structural(String),
-    Media { condition: String, decls: String },
-    State(CompiledStateRule),
-}
-
-impl CachedRule {
-    /// Writes this rule's complete CSS text into `out`.
-    pub fn write_css_into(&self, class_name: &str, out: &mut String) {
-        match self {
-            Self::Structural(decls) => {
-                out.push('.');
-                out.push_str(class_name);
-                out.push('{');
-                out.push_str(decls);
-                out.push('}');
-            }
-            Self::Media { condition, decls } => {
-                out.push_str("@media ");
-                out.push_str(condition);
-                out.push_str("{.");
-                out.push_str(class_name);
-                out.push('{');
-                out.push_str(decls);
-                out.push_str("}}");
-            }
-            Self::State(rule) => rule.write_css_rule_into(out),
-        }
-    }
-}
-
-/// Bounded content-addressed structural, `@media`, and interactive pseudo-state CSS cache with
-/// cascade-ordered flushing (`structural -> @media -> Hover < Focus < FocusVisible < Active < Disabled`).
+/// Content-addressed CSS stylesheet cache shared between SSR and live `wasm32` DOM.
 #[derive(Default)]
 pub struct StyleSheetCache {
-    rules: HashMap<String, String>,
-    media_rules: HashMap<String, CompiledMediaRule>,
-    state_rules: HashMap<String, CompiledStateRule>,
-    pub(crate) inserted: HashSet<String>,
-    pub(crate) pending: Vec<(String, CachedRule)>,
-    pub(crate) base_mounted: bool,
-    #[cfg(not(target_arch = "wasm32"))]
-    flushed_css_rules: Vec<String>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) initial_flushed: bool,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) use_adopted: Option<bool>,
+    pub(crate) structural: BTreeMap<String, String>,
+    pub(crate) media: Vec<CompiledMediaRule>,
+    pub(crate) media_seen: HashSet<String>,
+    pub(crate) state: [Vec<CompiledStateRule>; STATE_TIER_COUNT],
+    pub(crate) state_seen: HashSet<String>,
     #[cfg(target_arch = "wasm32")]
     pub(crate) base_sheet: Option<web_sys::CssStyleSheet>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) dynamic_sheets: Vec<web_sys::CssStyleSheet>,
+    pub(crate) structural_sheet: Option<web_sys::CssStyleSheet>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) dynamic_sheet_last_len: u32,
+    pub(crate) media_sheet: Option<web_sys::CssStyleSheet>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) media_sheets: Vec<web_sys::CssStyleSheet>,
+    pub(crate) state_sheets: [Option<web_sys::CssStyleSheet>; STATE_TIER_COUNT],
     #[cfg(target_arch = "wasm32")]
-    pub(crate) media_sheet_last_len: u32,
+    pub(crate) pending_structural: Vec<CachedRule>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) state_sheets: [Vec<web_sys::CssStyleSheet>; STATE_TIER_COUNT],
+    pub(crate) pending_media: Vec<CachedRule>,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) state_sheet_last_lens: [u32; STATE_TIER_COUNT],
+    pub(crate) pending_state: [Vec<CachedRule>; STATE_TIER_COUNT],
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fallback_style_el: Option<web_sys::Element>,
+    pub(crate) fallback_mounted: bool,
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fallback_media_style_el: Option<web_sys::Element>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fallback_state_style_els: [Option<web_sys::Element>; STATE_TIER_COUNT],
+    pub(crate) adopted_mounted: bool,
 }
 
 impl StyleSheetCache {
@@ -273,143 +74,229 @@ impl StyleSheetCache {
         Self::default()
     }
 
-    #[inline]
+    pub fn clear(&mut self) {
+        self.structural.clear();
+        self.media.clear();
+        self.media_seen.clear();
+        for tier in &mut self.state {
+            tier.clear();
+        }
+        self.state_seen.clear();
+        #[cfg(target_arch = "wasm32")]
+        self.clear_dom_sheets();
+    }
+
     pub fn rule_count(&self) -> usize {
-        self.inserted.len().saturating_add(self.pending.len())
+        self.structural.len()
+            + self.media.len()
+            + self.state.iter().map(Vec::len).sum::<usize>()
     }
 
-    #[inline]
-    pub fn contains_rule(&self, class_name: &str) -> bool {
-        self.inserted.contains(class_name)
-            || self.rules.contains_key(class_name)
-            || self.media_rules.contains_key(class_name)
-            || self.state_rules.contains_key(class_name)
-    }
-
-    #[inline]
-    pub fn can_insert_new(&self) -> bool {
-        self.rule_count() < MAX_DYNAMIC_RULES
-    }
-
-    #[inline]
-    pub fn mark_base_mounted(&mut self) {
-        self.base_mounted = true;
-    }
-
-    pub fn seed_ssr_hashes(&mut self, csv: &str) -> usize {
-        let mut count = 0usize;
-        for token in csv.split(',') {
-            let trimmed = token.trim();
-            if !trimmed.is_empty()
-                && !self.contains_rule(trimmed)
-                && self.inserted.insert(trimmed.to_owned())
-            {
-                count += 1;
+    /// Pre-seeds known SSR class hashes so live hydration never re-inserts rules already in
+    /// `<style data-nve-ssr>`.
+    pub fn seed_ssr_hashes<'a>(&mut self, hashes: impl IntoIterator<Item = &'a str>) {
+        for h in hashes {
+            let trimmed = h.trim();
+            if !trimmed.is_empty() {
+                self.structural
+                    .entry(trimmed.to_owned())
+                    .or_default();
+                self.media_seen.insert(trimmed.to_owned());
+                self.state_seen.insert(trimmed.to_owned());
             }
         }
-        count
     }
 
-    pub fn ensure_rule(&mut self, class_name: String, decls: String) -> bool {
-        if self.contains_rule(&class_name) {
-            return true;
-        }
-        if !self.can_insert_new() {
-            return false;
-        }
-        self.rules.insert(class_name.clone(), decls.clone());
-        self.pending.push((class_name, CachedRule::Structural(decls)));
-        true
-    }
-
-    /// Queues a content-addressed `@media` rule (`nve-m-XXXXXXXX`) unless already cached or seeded.
-    pub fn ensure_media_rule(&mut self, rule: CompiledMediaRule) -> bool {
-        if self.contains_rule(&rule.class_name) {
-            return true;
-        }
-        if !self.can_insert_new() {
-            return false;
-        }
-        let key = rule.class_name.clone();
-        let cached = CachedRule::Media {
-            condition: rule.condition.clone(),
-            decls: rule.decls.clone(),
-        };
-        self.media_rules.insert(key.clone(), rule);
-        self.pending.push((key, cached));
-        true
-    }
-
-    /// Queues a content-addressed interactive pseudo-state rule (`nve-s-XXXXXXXX`) unless already
-    /// cached or seeded.
-    pub fn ensure_state_rule(&mut self, rule: CompiledStateRule) -> bool {
-        if self.contains_rule(&rule.class_name) {
-            return true;
-        }
-        if !self.can_insert_new() {
-            return false;
-        }
-        let key = rule.class_name.clone();
-        let cached = CachedRule::State(rule.clone());
-        self.state_rules.insert(key.clone(), rule);
-        self.pending.push((key, cached));
-        true
-    }
-
-    #[inline]
-    pub fn pending_count(&self) -> usize {
-        self.pending.len()
-    }
-
-    #[inline]
-    pub fn rules(&self) -> &HashMap<String, String> {
-        &self.rules
-    }
-
-    #[inline]
-    pub fn media_rules(&self) -> &HashMap<String, CompiledMediaRule> {
-        &self.media_rules
-    }
-
-    #[inline]
-    pub fn state_rules(&self) -> &HashMap<String, CompiledStateRule> {
-        &self.state_rules
-    }
-
-    /// Returns all CSS rules flushed so far in exact cascade order (structural -> `@media` ->
-    /// state rules ordered `Hover < Focus < FocusVisible < Active < Disabled`) on native targets.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn flushed_css_rules(&self) -> &[String] {
-        &self.flushed_css_rules
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn flush_to_dom(&mut self) {
-        self.base_mounted = true;
-        if self.pending.is_empty() {
-            return;
-        }
-        let batch = std::mem::take(&mut self.pending);
-        let mut structural = Vec::new();
-        let mut media = Vec::new();
-        let mut state: Vec<(String, CompiledStateRule)> = Vec::new();
-        for (cls, rule) in batch {
-            self.inserted.insert(cls.clone());
-            match rule {
-                CachedRule::Structural(_) => structural.push((cls, rule)),
-                CachedRule::Media { .. } => media.push((cls, rule)),
-                CachedRule::State(sr) => state.push((cls, sr)),
-            }
-        }
-        state.sort_by_key(|(_, sr)| sr.state.cascade_order());
-        for (cls, rule) in structural
-            .into_iter()
-            .chain(media)
-            .chain(state.into_iter().map(|(cls, sr)| (cls, CachedRule::State(sr))))
+    /// Resolves classes for `id` in `store`, registering any unseen rules into the cache.
+    pub fn resolve_node(&mut self, store: &NodeStore, id: NodeId) -> ResolvedNodeStyle {
+        let allow_new = self.rule_count() < MAX_DYNAMIC_RULES;
+        let resolved = resolve_store_node_style(store, id, allow_new, |cls| {
+            self.structural.contains_key(cls)
+        });
+        if let Some((ref cls, ref decls)) = resolved.structural_rule
+            && !self.structural.contains_key(cls)
         {
-            let mut css = String::with_capacity(64);
-            rule.write_css_into(&cls, &mut css);
-            self.flushed_css_rules.push(css);
+            self.structural.insert(cls.clone(), decls.clone());
+            #[cfg(target_arch = "wasm32")]
+            self.pending_structural.push(CachedRule {
+                class_name: cls.clone(),
+                css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
+            });
+        }
+        if let Some((cls, decls)) = resolved.cursor_rule
+            && !self.structural.contains_key(cls)
+        {
+            self.structural.insert(cls.to_owned(), decls.to_owned());
+            #[cfg(target_arch = "wasm32")]
+            self.pending_structural.push(CachedRule {
+                class_name: cls.to_owned(),
+                css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
+            });
+        }
+        if let Some((ref cls, ref decls)) = resolved.transition_rule
+            && !self.structural.contains_key(cls)
+        {
+            self.structural.insert(cls.clone(), decls.clone());
+            #[cfg(target_arch = "wasm32")]
+            self.pending_structural.push(CachedRule {
+                class_name: cls.clone(),
+                css_rule: format!("@layer nve-s{{.{cls}{{{decls}}}}}"),
+            });
+        }
+        for mr in &resolved.media_rules {
+            if self.media_seen.insert(mr.class_name.clone()) {
+                #[cfg(target_arch = "wasm32")]
+                self.pending_media.push(CachedRule {
+                    class_name: mr.class_name.clone(),
+                    css_rule: format!("@layer nve-m{{{}}}", mr.to_css_rule()),
+                });
+                self.media.push(mr.clone());
+            }
+        }
+        for sr in &resolved.state_rules {
+            if self.state_seen.insert(sr.class_name.clone()) {
+                let tier = sr.state.cascade_tier().unwrap_or(0).min(STATE_TIER_COUNT - 1);
+                #[cfg(target_arch = "wasm32")]
+                self.pending_state[tier].push(CachedRule {
+                    class_name: sr.class_name.clone(),
+                    css_rule: format!("@layer nve-st{tier}{{{}}}", sr.to_css_rule()),
+                });
+                self.state[tier].push(sr.clone());
+            }
+        }
+        resolved
+    }
+
+    /// Serializes all accumulated rules (structural, then `@media`, then ordered state tiers)
+    /// into CSS Cascade Layers so SSR `<style data-nve-ssr>` and live `adoptedStyleSheets`
+    /// maintain identical tier ordering (`nve-base < nve-s < nve-m < nve-st0..4`).
+    pub fn serialize_css(&self) -> (String, Vec<String>) {
+        use core::fmt::Write as _;
+        let mut css = String::new();
+        let mut hashes = Vec::with_capacity(self.rule_count());
+        let mut has_structural = false;
+        for (cls, decls) in &self.structural {
+            if !decls.is_empty() {
+                if !has_structural {
+                    css.push_str("@layer nve-s{");
+                    has_structural = true;
+                }
+                css.push('.');
+                css.push_str(cls);
+                css.push('{');
+                css.push_str(decls);
+                css.push('}');
+                hashes.push(cls.clone());
+            }
+        }
+        if has_structural {
+            css.push('}');
+        }
+        if !self.media.is_empty() {
+            css.push_str("@layer nve-m{");
+            for mr in &self.media {
+                mr.write_css_rule_into(&mut css);
+                hashes.push(mr.class_name.clone());
+            }
+            css.push('}');
+        }
+        for (tier_idx, tier) in self.state.iter().enumerate() {
+            if tier.is_empty() {
+                continue;
+            }
+            let _ = write!(css, "@layer nve-st{tier_idx}{{");
+            for sr in tier {
+                sr.write_css_rule_into(&mut css);
+                hashes.push(sr.class_name.clone());
+            }
+            css.push('}');
+        }
+        (css, hashes)
+    }
+}
+
+fn cursor_class_and_decl(c: CursorKind) -> Option<(&'static str, &'static str)> {
+    format_cursor_rule(c)
+}
+
+/// Computes content-addressed classes for `id` directly from `NodeStore` word tables.
+pub fn resolve_store_node_style(
+    store: &NodeStore,
+    id: NodeId,
+    allow_new: bool,
+    has_rule: impl Fn(&str) -> bool,
+) -> ResolvedNodeStyle {
+    let mut out = ResolvedNodeStyle::default();
+    if id == NodeId::ROOT {
+        out.classes.push_str("nve nve-r");
+    } else {
+        out.classes.push_str("nve");
+    }
+
+    let mut decls = String::new();
+    write_store_node_css(store, id, false, &mut decls);
+    if !decls.is_empty() {
+        let cls = format_content_class("n", &[decls.as_bytes()]);
+        if allow_new || has_rule(&cls) {
+            out.classes.push(' ');
+            out.classes.push_str(&cls);
+            out.structural_rule = Some((cls, decls));
+        } else {
+            out.inline_fallback = decls;
         }
     }
+
+    if let Some(inter) = store.try_row::<Interaction>(id) {
+        if let Some((cls, decl)) = cursor_class_and_decl(inter.cursor()) {
+            out.classes.push(' ');
+            out.classes.push_str(cls);
+            out.cursor_rule = Some((cls, decl));
+        }
+        let sr_res = inter.state_rules();
+        if !sr_res.is_none()
+            && let Some(rules) = store.resource::<StateRules>(sr_res)
+        {
+            let start = out.state_rules.len();
+            compile_node_state_rules(&rules.0, &mut out.state_rules);
+            for compiled in &out.state_rules[start..] {
+                out.classes.push(' ');
+                out.classes.push_str(&compiled.class_name);
+            }
+        }
+    }
+
+    if let Some(resp) = store.try_row::<Responsive>(id) {
+        let rr_res = resp.rules();
+        let rules_slice: &[nve_components::media::ResponsiveRule] = if !rr_res.is_none() {
+            store
+                .resource::<ResponsiveRules>(rr_res)
+                .map(|r| &*r.0)
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+        let start = out.media_rules.len();
+        compile_node_media_rules(resp.show_on(), rules_slice, &mut out.media_rules);
+        for compiled in &out.media_rules[start..] {
+            out.classes.push(' ');
+            out.classes.push_str(&compiled.class_name);
+        }
+    }
+
+    if let Some(motion) = store.try_row::<Motion>(id) {
+        let tr_res = motion.transitions();
+        if !tr_res.is_none()
+            && let Some(specs) = store.resource::<Transitions>(tr_res)
+            && let Some(tr) = compile_node_transitions(&specs.0)
+        {
+            out.classes.push(' ');
+            out.classes.push_str(&tr.class_name);
+            out.transition_rule = Some((tr.class_name, tr.decls));
+            if let Some(rm) = tr.reduced_motion_rule {
+                out.media_rules.push(rm);
+            }
+        }
+    }
+
+    out
 }

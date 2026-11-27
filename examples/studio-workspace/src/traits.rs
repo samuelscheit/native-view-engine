@@ -234,10 +234,19 @@ pub fn StudioTraitPreviewChip(#[props(default)] test_id: Option<String>) -> Elem
     rsx! {
         view {
             test_id: "{tid}",
-            "trait-size-class": "{sc_lbl}",
-            "trait-mode": "{mode_tag}",
-            "trait-accent": "{accent_lbl}",
-            "trait-compact-scope": "{compact_attr}",
+            nve_table: {
+                let pairs = vec![
+                    ("trait-size-class".to_owned(), sc_lbl.to_owned()),
+                    ("trait-mode".to_owned(), mode_tag.to_owned()),
+                    ("trait-accent".to_owned(), accent_lbl.to_owned()),
+                    ("trait-compact-scope".to_owned(), compact_attr.to_owned()),
+                ];
+                nve_dioxus::table_attr_fn(move |tx, node| {
+                    tx.edit::<nve_web_html::HtmlDataAttrs>(node).entries(Some(
+                        nve_web_html::DataAttrList::from_pairs(pairs.clone()),
+                    ));
+                })
+            },
             style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 5px; padding-vertical: 3px; background-color: {CONTROL_BG}; border-radius: 6px; border-width: 1px; border-color: {BORDER_DEFAULT};",
             text {
                 style: "color: {accent_hex}; font-size: 9px;",

@@ -1,306 +1,292 @@
-//! `wasm32` adopted-stylesheet & fallback `<style>` flushing for [`crate::StyleSheetCache`].
+//! Live `wasm32` CSS stylesheet mounting & flushing via Constructable Stylesheets
+//! (`document.adoptedStyleSheets`, with `<style>` element fallback).
+//!
+//! Preserves exact CSS cascade order:
+//! `base reset -> structural (.nve-c-*) -> @media (.nve-m-*) -> state tiers (Hover < Focus < FocusVisible < Active < Disabled)`.
 
 use crate::css::NVE_BASE_RESET_CSS;
-use crate::stylesheet::{
-    CachedRule, StyleSheetCache, INCREMENTAL_RULE_BATCH_THRESHOLD, STATE_TIER_COUNT,
-};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CascadeLayer {
-    Structural,
-    Media,
-    State(usize),
-}
-
-const FALLBACK_STATE_IDS: [&str; STATE_TIER_COUNT] = [
-    "nve-state-styles-0",
-    "nve-state-styles-1",
-    "nve-state-styles-2",
-    "nve-state-styles-3",
-    "nve-state-styles-4",
-];
+use crate::stylesheet::{CachedRule, StyleSheetCache, STATE_TIER_COUNT};
 
 #[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
-export function nve_insert_adopted_stylesheet(doc, sheet, before_sheet) {
+export function nve_mount_adopted_sheets(doc, base, structural, media, s0, s1, s2, s3, s4) {
   try {
     if (!doc || !('adoptedStyleSheets' in doc)) return false;
-    const cur = Array.from(doc.adoptedStyleSheets);
-    const idx = before_sheet ? cur.indexOf(before_sheet) : -1;
-    if (idx >= 0) {
-      cur.splice(idx, 0, sheet);
-    } else {
-      cur.push(sheet);
-    }
-    doc.adoptedStyleSheets = cur;
+    doc.adoptedStyleSheets = [
+      ...Array.from(doc.adoptedStyleSheets),
+      base, structural, media, s0, s1, s2, s3, s4,
+    ];
     return true;
   } catch (_) {
     return false;
   }
 }
+export function nve_unmount_adopted_sheets(doc, base, structural, media, s0, s1, s2, s3, s4) {
+  try {
+    if (!doc || !('adoptedStyleSheets' in doc)) return;
+    const drop = new Set([base, structural, media, s0, s1, s2, s3, s4]);
+    doc.adoptedStyleSheets = Array.from(doc.adoptedStyleSheets).filter(s => !drop.has(s));
+  } catch (_) {}
+}
+export function nve_append_css_rule(sheet, cssText) {
+  try {
+    sheet.insertRule(cssText, sheet.cssRules.length);
+  } catch (_) {}
+}
 ")]
 extern "C" {
-    fn nve_insert_adopted_stylesheet(
+    fn nve_mount_adopted_sheets(
         doc: &web_sys::Document,
-        sheet: &web_sys::CssStyleSheet,
-        before_sheet: Option<&web_sys::CssStyleSheet>,
+        base: &web_sys::CssStyleSheet,
+        structural: &web_sys::CssStyleSheet,
+        media: &web_sys::CssStyleSheet,
+        s0: &web_sys::CssStyleSheet,
+        s1: &web_sys::CssStyleSheet,
+        s2: &web_sys::CssStyleSheet,
+        s3: &web_sys::CssStyleSheet,
+        s4: &web_sys::CssStyleSheet,
     ) -> bool;
+    fn nve_unmount_adopted_sheets(
+        doc: &web_sys::Document,
+        base: &web_sys::CssStyleSheet,
+        structural: &web_sys::CssStyleSheet,
+        media: &web_sys::CssStyleSheet,
+        s0: &web_sys::CssStyleSheet,
+        s1: &web_sys::CssStyleSheet,
+        s2: &web_sys::CssStyleSheet,
+        s3: &web_sys::CssStyleSheet,
+        s4: &web_sys::CssStyleSheet,
+    );
+    fn nve_append_css_rule(sheet: &web_sys::CssStyleSheet, css_text: &str);
+}
+
+impl Drop for StyleSheetCache {
+    fn drop(&mut self) {
+        self.clear_dom_sheets();
+    }
 }
 
 impl StyleSheetCache {
-    pub fn flush_to_dom(&mut self) {
-        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-            for (cls, _) in self.pending.drain(..) {
-                self.inserted.insert(cls);
-            }
-            return;
-        };
-
-        if !self.base_mounted {
-            self.mount_base_reset(&doc);
-            self.base_mounted = true;
+    pub(crate) fn clear_dom_sheets(&mut self) {
+        self.pending_structural.clear();
+        self.pending_media.clear();
+        for tier in &mut self.pending_state {
+            tier.clear();
         }
-
-        if self.pending.is_empty() {
-            return;
+        if self.adopted_mounted
+            && let (
+                Some(doc),
+                Some(base),
+                Some(structural),
+                Some(media),
+                Some(s0),
+                Some(s1),
+                Some(s2),
+                Some(s3),
+                Some(s4),
+            ) = (
+                web_sys::window().and_then(|w| w.document()),
+                self.base_sheet.as_ref(),
+                self.structural_sheet.as_ref(),
+                self.media_sheet.as_ref(),
+                self.state_sheets[0].as_ref(),
+                self.state_sheets[1].as_ref(),
+                self.state_sheets[2].as_ref(),
+                self.state_sheets[3].as_ref(),
+                self.state_sheets[4].as_ref(),
+            )
+        {
+            nve_unmount_adopted_sheets(&doc, base, structural, media, s0, s1, s2, s3, s4);
         }
-
-        let batch = std::mem::take(&mut self.pending);
-        let mut structural_batch = Vec::new();
-        let mut media_batch = Vec::new();
-        let mut state_tiers: [Vec<(String, CachedRule)>; STATE_TIER_COUNT] = Default::default();
-        for (cls, rule) in batch {
-            self.inserted.insert(cls.clone());
-            match rule {
-                CachedRule::Structural(_) => structural_batch.push((cls, rule)),
-                CachedRule::Media { .. } => media_batch.push((cls, rule)),
-                CachedRule::State(sr) => {
-                    if let Some(tier) = sr.state.cascade_tier() {
-                        state_tiers[tier].push((cls, CachedRule::State(sr)));
-                    }
-                }
-            }
-        }
-
-        if !structural_batch.is_empty() {
-            self.flush_layer(&doc, &structural_batch, CascadeLayer::Structural);
-        }
-        if !media_batch.is_empty() {
-            self.flush_layer(&doc, &media_batch, CascadeLayer::Media);
-        }
-        for (tier, mut tier_batch) in state_tiers.into_iter().enumerate() {
-            if !tier_batch.is_empty() {
-                tier_batch.sort_by_key(|(_, rule)| match rule {
-                    CachedRule::State(sr) => sr.state.cascade_order(),
-                    _ => 0,
-                });
-                self.flush_layer(&doc, &tier_batch, CascadeLayer::State(tier));
-            }
-        }
-        self.initial_flushed = true;
+        self.base_sheet = None;
+        self.structural_sheet = None;
+        self.media_sheet = None;
+        self.state_sheets = Default::default();
+        self.adopted_mounted = false;
+        self.fallback_mounted = false;
     }
-
-    fn first_adopted_sheet_after(&self, layer: CascadeLayer) -> Option<&web_sys::CssStyleSheet> {
-        match layer {
-            CascadeLayer::Structural => self
-                .media_sheets
-                .first()
-                .or_else(|| self.state_sheets.iter().find_map(|s| s.first())),
-            CascadeLayer::Media => self.state_sheets.iter().find_map(|s| s.first()),
-            CascadeLayer::State(tier) => self.state_sheets[(tier + 1)..]
-                .iter()
-                .find_map(|s| s.first()),
-        }
-    }
-
-    fn first_fallback_el_after(&self, layer: CascadeLayer) -> Option<&web_sys::Element> {
-        match layer {
-            CascadeLayer::Structural => self
-                .fallback_media_style_el
-                .as_ref()
-                .or_else(|| self.fallback_state_style_els.iter().find_map(|e| e.as_ref())),
-            CascadeLayer::Media => self.fallback_state_style_els.iter().find_map(|e| e.as_ref()),
-            CascadeLayer::State(tier) => self.fallback_state_style_els[(tier + 1)..]
-                .iter()
-                .find_map(|e| e.as_ref()),
-        }
-    }
-
-    fn layer_sheets_mut(
-        &mut self,
-        layer: CascadeLayer,
-    ) -> (&mut Vec<web_sys::CssStyleSheet>, &mut u32) {
-        match layer {
-            CascadeLayer::Structural => (&mut self.dynamic_sheets, &mut self.dynamic_sheet_last_len),
-            CascadeLayer::Media => (&mut self.media_sheets, &mut self.media_sheet_last_len),
-            CascadeLayer::State(tier) => (
-                &mut self.state_sheets[tier],
-                &mut self.state_sheet_last_lens[tier],
-            ),
-        }
-    }
-
-    fn flush_layer(
-        &mut self,
-        doc: &web_sys::Document,
-        batch: &[(String, CachedRule)],
-        layer: CascadeLayer,
-    ) {
-        let use_adopted = self.use_adopted.unwrap_or(true);
-        if use_adopted {
-            let sheets_empty = match layer {
-                CascadeLayer::Structural => self.dynamic_sheets.is_empty(),
-                CascadeLayer::Media => self.media_sheets.is_empty(),
-                CascadeLayer::State(tier) => self.state_sheets[tier].is_empty(),
-            };
-            if !self.initial_flushed
-                || batch.len() > INCREMENTAL_RULE_BATCH_THRESHOLD
-                || sheets_empty
-            {
-                let mut text = String::with_capacity(batch.len() * 64);
-                for (cls, rule) in batch {
-                    rule.write_css_into(cls, &mut text);
-                    text.push('\n');
-                }
-                let before = self.first_adopted_sheet_after(layer).cloned();
-                if let Ok(sheet) = web_sys::CssStyleSheet::new()
-                    && sheet.replace_sync(&text).is_ok()
-                    && nve_insert_adopted_stylesheet(doc, &sheet, before.as_ref())
-                {
-                    let (sheets, last_len) = self.layer_sheets_mut(layer);
-                    sheets.push(sheet);
-                    *last_len = batch.len() as u32;
-                    self.use_adopted = Some(true);
-                    return;
-                }
-                self.use_adopted = Some(false);
+    /// Flushes all pending compiled CSS rules into live browser stylesheets in cascade order.
+    pub fn flush_to_dom(&mut self, doc: &web_sys::Document) {
+        if !self.adopted_mounted && !self.fallback_mounted {
+            if self.try_mount_adopted(doc) {
+                self.adopted_mounted = true;
             } else {
-                let (sheets, last_len) = self.layer_sheets_mut(layer);
-                if let Some(sheet) = sheets.last() {
-                    let mut all_ok = true;
-                    let mut rule_buf = String::with_capacity(96);
-                    for (cls, rule) in batch {
-                        rule_buf.clear();
-                        rule.write_css_into(cls, &mut rule_buf);
-                        if sheet.insert_rule_with_index(&rule_buf, *last_len).is_err() {
-                            all_ok = false;
-                            break;
-                        }
-                        *last_len = last_len.saturating_add(1);
-                    }
-                    if all_ok {
-                        return;
-                    }
-                }
+                self.fallback_mounted = true;
+                self.mount_fallback_base(doc);
             }
         }
 
-        self.append_to_fallback_style(doc, batch, layer);
-    }
-
-    /// Creates a runtime `<style>` element carrying the SSR page's CSP nonce (read from the
-    /// server-emitted `<style data-nve-base nonce>`), so strict `style-src 'nonce-…'` policies
-    /// accept fallback stylesheets. Uses the `nonce` IDL property: browsers hide the attribute
-    /// value after parsing.
-    fn create_style_el(doc: &web_sys::Document) -> Option<web_sys::Element> {
-        use wasm_bindgen::JsCast as _;
-        let el = doc.create_element("style").ok()?;
-        let nonce = doc
-            .query_selector("style[data-nve-base][nonce]")
-            .ok()
-            .flatten()
-            .and_then(|s| s.dyn_into::<web_sys::HtmlElement>().ok())
-            .map(|s| s.nonce())
-            .filter(|n| !n.is_empty());
-        if let Some(nonce) = nonce {
-            let _ = el.set_attribute("nonce", &nonce);
+        let structural = std::mem::take(&mut self.pending_structural);
+        let media = std::mem::take(&mut self.pending_media);
+        let mut states: [Vec<CachedRule>; STATE_TIER_COUNT] = Default::default();
+        for (dst, src) in states.iter_mut().zip(self.pending_state.iter_mut()) {
+            *dst = std::mem::take(src);
         }
-        Some(el)
+
+        if self.adopted_mounted {
+            if let Some(sheet) = self.structural_sheet.as_ref() {
+                insert_rules(sheet, &structural);
+            }
+            if let Some(sheet) = self.media_sheet.as_ref() {
+                insert_rules(sheet, &media);
+            }
+            for (tier, batch) in states.iter().enumerate() {
+                if let Some(sheet) = self.state_sheets[tier].as_ref() {
+                    insert_rules(sheet, batch);
+                }
+            }
+        } else {
+            append_fallback_rules(doc, "structural", &structural);
+            append_fallback_rules(doc, "media", &media);
+            for (tier, batch) in states.iter().enumerate() {
+                let tier_key = match tier {
+                    0 => "state-0",
+                    1 => "state-1",
+                    2 => "state-2",
+                    3 => "state-3",
+                    _ => "state-4",
+                };
+                append_fallback_rules(doc, tier_key, batch);
+            }
+        }
     }
 
-    fn style_parent(doc: &web_sys::Document) -> Option<web_sys::Element> {
-        doc.query_selector("head")
+    fn try_mount_adopted(&mut self, doc: &web_sys::Document) -> bool {
+        let has_dom_base = doc
+            .query_selector("style[data-nve-base]")
             .ok()
             .flatten()
-            .or_else(|| doc.document_element())
+            .is_some();
+        let has_dom_ssr = doc
+            .query_selector("style[data-nve-ssr]")
+            .ok()
+            .flatten()
+            .is_some();
+        if !has_dom_base
+            && has_dom_ssr
+            && let (Ok(Some(ssr_el)), Some(base_el)) =
+                (doc.query_selector("style[data-nve-ssr]"), create_style_el(doc))
+            && let Some(parent) = ssr_el.parent_node()
+        {
+            let _ = base_el.set_attribute("data-nve-base", "");
+            base_el.set_text_content(Some(NVE_BASE_RESET_CSS));
+            let _ = parent.insert_before(&base_el, Some(&ssr_el));
+        }
+
+        let Ok(base) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        // Only populate the adopted base sheet on fresh client mounts; during SSR/snapshot
+        // hydration `<style data-nve-base>` precedes `<style data-nve-ssr>` in `<head>`, whereas
+        // `adoptedStyleSheets` always cascades *after* `<style>` tags and would otherwise clobber
+        // equal-specificity SSR structural rules.
+        if !has_dom_base && !has_dom_ssr {
+            let _ = base.replace_sync(NVE_BASE_RESET_CSS);
+        }
+        let Ok(structural) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        let Ok(media) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        let Ok(s0) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        let Ok(s1) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        let Ok(s2) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        let Ok(s3) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+        let Ok(s4) = web_sys::CssStyleSheet::new() else {
+            return false;
+        };
+
+        if !nve_mount_adopted_sheets(doc, &base, &structural, &media, &s0, &s1, &s2, &s3, &s4) {
+            return false;
+        }
+
+        self.base_sheet = Some(base);
+        self.structural_sheet = Some(structural);
+        self.media_sheet = Some(media);
+        self.state_sheets = [Some(s0), Some(s1), Some(s2), Some(s3), Some(s4)];
+        true
     }
 
-    fn mount_base_reset(&mut self, doc: &web_sys::Document) {
-        let before = self
-            .dynamic_sheets
-            .first()
-            .or_else(|| self.first_adopted_sheet_after(CascadeLayer::Structural));
-        if let Ok(sheet) = web_sys::CssStyleSheet::new()
-            && sheet.replace_sync(NVE_BASE_RESET_CSS).is_ok()
-            && nve_insert_adopted_stylesheet(doc, &sheet, before)
+    fn mount_fallback_base(&self, doc: &web_sys::Document) {
+        if doc
+            .query_selector("style[data-nve-base]")
+            .ok()
+            .flatten()
+            .is_some()
         {
-            self.base_sheet = Some(sheet);
-            self.use_adopted = Some(true);
             return;
         }
-        self.use_adopted = Some(false);
-        if doc.get_element_by_id("nve-base-styles").is_none()
-            && let Some(style_el) = Self::create_style_el(doc)
-        {
-            style_el.set_id("nve-base-styles");
-            let _ = style_el.set_attribute("data-nve-base", "");
-            style_el.set_text_content(Some(NVE_BASE_RESET_CSS));
-            if let Some(parent) = Self::style_parent(doc) {
-                let _ = parent.append_child(&style_el);
+        let Ok(Some(head)) = doc.query_selector("head") else {
+            return;
+        };
+        if let Some(el) = create_style_el(doc) {
+            let _ = el.set_attribute("data-nve-base", "");
+            let _ = el.set_attribute("data-nve-tier", "base");
+            el.set_text_content(Some(NVE_BASE_RESET_CSS));
+            if let Ok(Some(ssr_el)) = doc.query_selector("style[data-nve-ssr]")
+                && let Some(parent) = ssr_el.parent_node()
+            {
+                let _ = parent.insert_before(&el, Some(&ssr_el));
+            } else {
+                let _ = head.append_child(&el);
             }
         }
     }
+}
 
-    fn append_to_fallback_style(
-        &mut self,
-        doc: &web_sys::Document,
-        batch: &[(String, CachedRule)],
-        layer: CascadeLayer,
-    ) {
-        let id = match layer {
-            CascadeLayer::Structural => "nve-styles",
-            CascadeLayer::Media => "nve-media-styles",
-            CascadeLayer::State(tier) => FALLBACK_STATE_IDS[tier],
-        };
-        let existing_cached = match layer {
-            CascadeLayer::Structural => self.fallback_style_el.clone(),
-            CascadeLayer::Media => self.fallback_media_style_el.clone(),
-            CascadeLayer::State(tier) => self.fallback_state_style_els[tier].clone(),
-        };
-        let style_el = match existing_cached {
-            Some(el) => el,
-            None => {
-                let el = match doc.get_element_by_id(id) {
-                    Some(el) => el,
-                    None => {
-                        let Some(created) = Self::create_style_el(doc) else {
-                            return;
-                        };
-                        created.set_id(id);
-                        if let Some(parent) = Self::style_parent(doc) {
-                            if let Some(before) = self.first_fallback_el_after(layer) {
-                                let _ = parent.insert_before(&created, Some(before));
-                            } else {
-                                let _ = parent.append_child(&created);
-                            }
-                        }
-                        created
-                    }
-                };
-                match layer {
-                    CascadeLayer::Structural => self.fallback_style_el = Some(el.clone()),
-                    CascadeLayer::Media => self.fallback_media_style_el = Some(el.clone()),
-                    CascadeLayer::State(tier) => {
-                        self.fallback_state_style_els[tier] = Some(el.clone());
-                    }
-                }
-                el
-            }
-        };
-        let mut css = style_el.text_content().unwrap_or_default();
-        for (cls, rule) in batch {
-            rule.write_css_into(cls, &mut css);
-            css.push('\n');
-        }
-        style_el.set_text_content(Some(&css));
+/// Creates a runtime `<style>` element carrying the SSR page's CSP nonce (read from the
+/// server-emitted `<style data-nve-base nonce>`), so strict `style-src 'nonce-…'` policies accept
+/// fallback stylesheets. Uses the `nonce` IDL property: browsers hide the attribute value after
+/// parsing.
+fn create_style_el(doc: &web_sys::Document) -> Option<web_sys::Element> {
+    use wasm_bindgen::JsCast as _;
+    let el = doc.create_element("style").ok()?;
+    let nonce = doc
+        .query_selector("style[data-nve-base][nonce]")
+        .ok()
+        .flatten()
+        .and_then(|s| s.dyn_into::<web_sys::HtmlElement>().ok())
+        .map(|s| s.nonce())
+        .filter(|n| !n.is_empty());
+    if let Some(nonce) = nonce {
+        let _ = el.set_attribute("nonce", &nonce);
     }
+    Some(el)
+}
+
+fn insert_rules(sheet: &web_sys::CssStyleSheet, rules: &[CachedRule]) {
+    for rule in rules {
+        nve_append_css_rule(sheet, &rule.css_rule);
+    }
+}
+
+fn append_fallback_rules(doc: &web_sys::Document, tier: &str, rules: &[CachedRule]) {
+    if rules.is_empty() {
+        return;
+    }
+    let selector = format!("style[data-nve-tier=\"{tier}\"]");
+    let el = if let Ok(Some(existing)) = doc.query_selector(&selector) {
+        existing
+    } else if let (Ok(Some(head)), Some(created)) =
+        (doc.query_selector("head"), create_style_el(doc))
+    {
+        let _ = created.set_attribute("data-nve-tier", tier);
+        let _ = head.append_child(&created);
+        created
+    } else {
+        return;
+    };
+    let mut text = el.text_content().unwrap_or_default();
+    for rule in rules {
+        text.push_str(&rule.css_rule);
+    }
+    el.set_text_content(Some(&text));
 }

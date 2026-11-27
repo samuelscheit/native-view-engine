@@ -7,7 +7,7 @@ use nve_abi::{EventPayload, NativeEvent, NativeEventKind};
 use nve_backend_headless::HeadlessBackend;
 use nve_dioxus::prelude::*;
 use nve_dioxus::DioxusSurface;
-use nve_engine::{SurfaceRunner, Viewport};
+use nve_engine::{StoreBackend, Viewport};
 
 use crate::build::probe::{format_tier3_doctor_section, SystemProbe};
 
@@ -109,38 +109,26 @@ pub(crate) fn InspectDemo() -> Element {
 
 pub(crate) fn cmd_inspect() {
     let mut surface = DioxusSurface::new(1, InspectDemo);
-    let mut runner = SurfaceRunner::new(
+    let mut backend = HeadlessBackend::new();
+    backend.set_viewport(
         1,
         Viewport {
             width: 393.0,
             height: 852.0,
             scale_factor: 3.0,
         },
-        HeadlessBackend::new(),
     );
 
-    let f1 = runner.next_frame_id();
-    let (rec_us, enc_us, bytes) = surface.render_frame(f1);
-    let t1 = runner
-        .submit_recorded_frame(f1, rec_us, enc_us, &bytes)
-        .expect("frame 1");
-
+    let (rec_us, s1) = surface.commit_to_timed(1, &mut backend).expect("frame 1");
+    let total1 = rec_us + s1.layout_us + s1.diff_us + s1.mount_us;
     println!(
-        "=== Frame 1 (initial) | {} bytes | {} ops | total={}us (rec={}us enc={}us dec={}us layout={}us diff={}us) ===",
-        bytes.len(),
-        t1.op_count,
-        t1.total_us(),
-        t1.reconcile_us,
-        t1.encode_us,
-        t1.decode_us,
-        t1.layout_us,
-        t1.diff_us
+        "=== Frame 1 (initial) | {} ops | total={}us (rec={}us layout={}us diff={}us) ===",
+        s1.op_count, total1, rec_us, s1.layout_us, s1.diff_us
     );
-    print!("{}", runner.backend().render_ascii_tree());
+    print!("{}", backend.render_ascii_tree(surface.store()));
 
-    let hit = runner
-        .backend()
-        .hit_test(60.0, 75.0, true)
+    let hit = backend
+        .hit_test(surface.store(), 60.0, 75.0)
         .expect("expected pressable button hit at (60, 75)");
     println!("\n--> Simulated native Press at (60, 75) hit Node#{hit}");
 
@@ -153,24 +141,13 @@ pub(crate) fn cmd_inspect() {
     }]);
     assert!(handled, "press event should have been handled");
 
-    let f2 = runner.next_frame_id();
-    let (rec2, enc2, bytes2) = surface.render_frame(f2);
-    let t2 = runner
-        .submit_recorded_frame(f2, rec2, enc2, &bytes2)
-        .expect("frame 2");
-
+    let (rec2, s2) = surface.commit_to_timed(2, &mut backend).expect("frame 2");
+    let total2 = rec2 + s2.layout_us + s2.diff_us + s2.mount_us;
     println!(
-        "\n=== Frame 2 (after tap) | {} bytes | {} ops | total={}us (rec={}us enc={}us dec={}us layout={}us diff={}us) ===",
-        bytes2.len(),
-        t2.op_count,
-        t2.total_us(),
-        t2.reconcile_us,
-        t2.encode_us,
-        t2.decode_us,
-        t2.layout_us,
-        t2.diff_us
+        "\n=== Frame 2 (after tap) | {} ops | total={}us (rec={}us layout={}us diff={}us) ===",
+        s2.op_count, total2, rec2, s2.layout_us, s2.diff_us
     );
-    print!("{}", runner.backend().render_ascii_tree());
+    print!("{}", backend.render_ascii_tree(surface.store()));
 }
 
 #[cfg(test)]
@@ -184,13 +161,14 @@ mod tests {
         assert!(probe_tool("rustc", &["--definitely-invalid-flag-xyz"]).is_none());
 
         let mut surface = DioxusSurface::new(1, InspectDemo);
-        let mut runner = SurfaceRunner::new(1, Viewport::default(), HeadlessBackend::new());
-        let f1 = runner.next_frame_id();
-        let (rec, enc, b1) = surface.render_frame(f1);
-        runner.submit_recorded_frame(f1, rec, enc, &b1).unwrap();
-        assert!(runner.backend().render_ascii_tree().contains("Counter: 0"));
+        let mut backend = HeadlessBackend::new();
+        backend.set_viewport(1, Viewport::default());
+        surface.commit_to(1, &mut backend).unwrap();
+        assert!(backend.render_ascii_tree(surface.store()).contains("Counter: 0"));
 
-        let hit = runner.backend().hit_test(60.0, 75.0, true).expect("hit button");
+        let hit = backend
+            .hit_test(surface.store(), 60.0, 75.0)
+            .expect("hit button");
         assert!(surface.dispatch_events(&[NativeEvent {
             surface_id: 1,
             node_id: hit,
@@ -198,9 +176,7 @@ mod tests {
             kind: NativeEventKind::Press,
             payload: EventPayload::Point { x: 60.0, y: 75.0 },
         }]));
-        let f2 = runner.next_frame_id();
-        let (rec2, enc2, b2) = surface.render_frame(f2);
-        runner.submit_recorded_frame(f2, rec2, enc2, &b2).unwrap();
-        assert!(runner.backend().render_ascii_tree().contains("Counter: 1"));
+        surface.commit_to(2, &mut backend).unwrap();
+        assert!(backend.render_ascii_tree(surface.store()).contains("Counter: 1"));
     }
 }

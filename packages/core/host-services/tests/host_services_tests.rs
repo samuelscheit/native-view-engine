@@ -12,7 +12,7 @@ use nve_abi::{
     NVE_CHANNEL_FLAG_RETAIN, NVE_IFACE_HOST,
 };
 use nve_host_services::{
-    fnv1a64, pack_typed, resolve_typed, validate_url, BinReader, BinWriter, FfiHostServices,
+    pack_typed, resolve_typed, validate_url, BinReader, BinWriter, FfiHostServices,
     HostCallbackBridge, HostServiceHandler, HostServiceProvider, HostServiceRegistry, InvokeResult,
     MemoryHostServices, PermissionStatus, ServiceError, TypedEventBus, FFI_MAX_RESPONSE_BYTES,
     FFI_STACK_BUF_SIZE,
@@ -482,8 +482,6 @@ fn binary_codec_primitives_and_permission_status() {
     );
     r.finish().unwrap();
 
-    assert_eq!(fnv1a64(b"hello"), fnv1a64(b"hello"));
-    assert_ne!(fnv1a64(b"hello"), fnv1a64(b"world"));
     assert!(validate_url("https://nve.dev").is_ok());
     assert!(validate_url("bad url").is_err());
     assert!(validate_url("https://bad\nurl").is_err());

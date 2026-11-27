@@ -364,12 +364,13 @@ NveSceneView FabricHost::scene_view() const noexcept {
       .removed_count = static_cast<uint32_t>(scene_.removed_ids.size()),
       .text_slab_len = static_cast<uint32_t>(scene_.text_slab.size()),
       .children_slab_len = static_cast<uint32_t>(scene_.children_slab.size()),
-      ._pad = 0u,
+      .table_count = 0u,
       .nodes = scene_.nodes.empty() ? nullptr : scene_.nodes.data(),
       .text_slab = scene_.text_slab.empty() ? nullptr : scene_.text_slab.data(),
       .children_slab = scene_.children_slab.empty() ? nullptr : scene_.children_slab.data(),
       .dirty_indices = scene_.dirty_indices.empty() ? nullptr : scene_.dirty_indices.data(),
       .removed_ids = scene_.removed_ids.empty() ? nullptr : scene_.removed_ids.data(),
+      .tables = nullptr,
   };
 }
 
@@ -383,12 +384,13 @@ NveSceneView fabric_host_scene_view(NveFabricHostHandle host) noexcept {
         .removed_count = 0u,
         .text_slab_len = 0u,
         .children_slab_len = 0u,
-        ._pad = 0u,
+        .table_count = 0u,
         .nodes = nullptr,
         .text_slab = nullptr,
         .children_slab = nullptr,
         .dirty_indices = nullptr,
         .removed_ids = nullptr,
+        .tables = nullptr,
     };
   }
   return static_cast<const FabricHost*>(host)->scene_view();

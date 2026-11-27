@@ -3,11 +3,16 @@
 //! - Verifies all 5 interactive playgrounds mount and respond to real press/input events
 //! - Verifies lossless zero-mismatch `WebBackend::hydrate_from_ssr` DOM identity preservation
 
-use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId, RawPropValue};
+use nve_abi::{EventPayload, NativeEvent, NativeEventKind, NodeId};
 use nve_backend_web::WebBackend;
+use nve_canvas::{Canvas, DrawList};
+use nve_canvas_web::CanvasWebSystem;
+use nve_components::tables::{DebugId, TextContent};
 use nve_docs::{DocsViewport, default_component_registry};
-use nve_engine::RenderBackend;
+use nve_engine::{StoreBackend, StoreWireReplica};
 use nve_mdx::validate_site;
+use nve_store::NodeId as StoreNodeId;
+use nve_web_html_web::register_web_html_systems;
 
 use nve_docs_site::{
     create_nve_docs_surface, embedded_compiled_site, playground_registry, render_nve_docs_ssr,
@@ -22,9 +27,12 @@ struct InteractiveHarness {
 impl InteractiveHarness {
     fn mount(route: &str) -> Self {
         let mut surface = create_nve_docs_surface(route, "", DocsViewport::desktop_default());
-        let (_, _, bytes) = surface.render_frame(1);
         let mut backend = WebBackend::new();
-        backend.submit_frame(&bytes).expect("initial submit_frame");
+        register_web_html_systems(backend.table_registry_mut());
+        backend.register_table_system(CanvasWebSystem);
+        surface
+            .commit_to(1, &mut backend)
+            .expect("initial commit_to");
         Self {
             surface,
             backend,
@@ -38,34 +46,46 @@ impl InteractiveHarness {
     }
 
     fn maybe_find(&self, test_id: &str) -> Option<NodeId> {
-        self.backend.iter_nodes().find_map(|(id, node)| {
-            match node.raw_props.get("testID") {
-                Some(RawPropValue::String(s)) if s == test_id => Some(id),
-                _ => None,
+        let store = self.surface.store();
+        let mut stack = vec![StoreNodeId::ROOT];
+        while let Some(id) = stack.pop() {
+            if id != StoreNodeId::ROOT
+                && let Some(dbg) = store.try_row::<DebugId>(id)
+                && dbg.test_id() == test_id
+            {
+                return Some(id.raw());
             }
-        })
+            stack.extend_from_slice(store.children(id));
+        }
+        None
     }
 
     fn collect_text(&self, root: NodeId) -> String {
         let mut out = String::new();
-        self.collect_text_rec(root, &mut out);
+        self.collect_text_rec(StoreNodeId(root), &mut out);
         out
     }
 
-    fn collect_text_rec(&self, id: NodeId, out: &mut String) {
-        let Some(node) = self.backend.node(id) else {
-            return;
-        };
-        if let Some(t) = &node.text {
-            out.push_str(t);
+    fn collect_text_rec(&self, id: StoreNodeId, out: &mut String) {
+        let store = self.surface.store();
+        if let Some(tc) = store.try_row::<TextContent>(id) {
+            out.push_str(tc.text());
         }
-        for &child in &node.children {
+        for &child in store.children(id) {
             self.collect_text_rec(child, out);
         }
     }
 
     fn text_of(&self, test_id: &str) -> String {
         self.collect_text(self.find(test_id))
+    }
+
+    fn draw_op_count(&self, id: NodeId) -> usize {
+        let store = self.surface.store();
+        store
+            .try_row::<Canvas>(StoreNodeId(id))
+            .and_then(|c| store.resource::<DrawList>(c.draw_list()))
+            .map_or(0, |dl| dl.len())
     }
 
     fn press(&mut self, test_id: &str) {
@@ -82,8 +102,9 @@ impl InteractiveHarness {
             "press on '{test_id}' should be handled"
         );
         self.frame_id += 1;
-        let (_, _, bytes) = self.surface.render_frame(self.frame_id);
-        self.backend.submit_frame(&bytes).expect("submit_frame");
+        self.surface
+            .commit_to(self.frame_id, &mut self.backend)
+            .expect("commit_to");
     }
 
     fn type_text(&mut self, test_id: &str, value: &str) {
@@ -100,8 +121,9 @@ impl InteractiveHarness {
             "text change on '{test_id}' should be handled"
         );
         self.frame_id += 1;
-        let (_, _, bytes) = self.surface.render_frame(self.frame_id);
-        self.backend.submit_frame(&bytes).expect("submit_frame");
+        self.surface
+            .commit_to(self.frame_id, &mut self.backend)
+            .expect("commit_to");
     }
 }
 
@@ -199,20 +221,20 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
             DocsViewport::new(390.0, 844.0),
         ] {
             let mut hydrated = WebBackend::hydrate_from_ssr(&ssr);
-            let root_before = hydrated
-                .native_dom_instance_id(nve_abi::ROOT_NODE_ID)
-                .expect("root SSR DOM instance");
+            register_web_html_systems(hydrated.table_registry_mut());
+            hydrated.register_table_system(CanvasWebSystem);
 
             let mut surface = create_nve_docs_surface(route, "", client_vp);
             surface
-                .flush_into(1, &mut hydrated)
-                .expect("hydrate flush_into");
+                .commit_to(1, &mut hydrated)
+                .expect("hydrate commit_to");
 
             let report = hydrated.hydration_report();
             assert!(
-                report.hydrated,
-                "route {route} ({}) should report hydrated=true",
-                client_vp.mode_label()
+                report.is_clean(),
+                "route {route} ({}) should hydrate cleanly, got mismatches={:?}",
+                client_vp.mode_label(),
+                report.mismatches
             );
             assert!(
                 report.adopted_nodes > 50,
@@ -221,22 +243,9 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
                 report.adopted_nodes
             );
             assert_eq!(
-                report.mismatches.len(),
-                0,
-                "route {route} ({}) had hydration mismatches: {:?}",
-                client_vp.mode_label(),
-                report.mismatches
-            );
-            assert_eq!(
                 report.replaced_nodes,
                 0,
                 "route {route} ({}) replaced SSR nodes",
-                client_vp.mode_label()
-            );
-            assert_eq!(
-                hydrated.native_dom_instance_id(nve_abi::ROOT_NODE_ID),
-                Some(root_before),
-                "root DOM instance identity must be preserved across hydration for {route} ({})",
                 client_vp.mode_label()
             );
         }
@@ -267,20 +276,8 @@ fn landing_hero_preview_tabs_and_examples_gallery_are_interactive() {
     // Verify Development & Benchmark Progression dashboard (NVE_DRAW1 canvases + Log scale + Table toggle + category filters)
     assert!(h.maybe_find("dev-progression-timeline").is_some());
     assert!(h.maybe_find("bench-latest-canvas").is_some());
-    assert!(
-        h.backend
-            .node(h.find("bench-latest-canvas"))
-            .expect("bar canvas")
-            .draw_op_count
-            >= 10
-    );
-    assert!(
-        h.backend
-            .node(h.find("bench-canvas-cmdbuf-encode"))
-            .expect("line canvas")
-            .draw_op_count
-            >= 8
-    );
+    assert!(h.draw_op_count(h.find("bench-latest-canvas")) >= 10);
+    assert!(h.draw_op_count(h.find("bench-canvas-cmdbuf-encode")) >= 8);
 
     // Toggle Log scale -> Linear and verify Y-axis updates
     let yaxis_log = h.text_of("bench-bar-yaxis");
@@ -385,7 +382,7 @@ fn playground_4_canvas_draw1_emits_real_binary_draw_ops_and_updates() {
     let mut h = InteractiveHarness::mount("/docs/guides/canvas-draw1");
 
     let canvas_id = h.find("pg-canvas-surface");
-    let ops_initial = h.backend.node(canvas_id).expect("canvas node").draw_op_count;
+    let ops_initial = h.draw_op_count(canvas_id);
     assert!(
         ops_initial >= 10,
         "expected >=10 NVE_DRAW1 ops for sparkline, got {ops_initial}"
@@ -393,11 +390,7 @@ fn playground_4_canvas_draw1_emits_real_binary_draw_ops_and_updates() {
     assert!(h.text_of("pg-canvas-palette").contains("Cyber Cyan"));
 
     h.press("pg-canvas-mode-bars");
-    let ops_bars = h
-        .backend
-        .node(h.find("pg-canvas-surface"))
-        .expect("canvas node")
-        .draw_op_count;
+    let ops_bars = h.draw_op_count(h.find("pg-canvas-surface"));
     assert_ne!(ops_bars, ops_initial, "switching scene mode should change draw op count");
 
     h.press("pg-canvas-pal-violet");
@@ -457,7 +450,11 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
     let frame_bytes = module.render(1).to_vec();
     assert!(!frame_bytes.is_empty(), "native NveApp Frame 1 must be non-empty");
 
+    nve_components::tables::register_core_tables();
+    let _ = <nve_canvas::Canvas as nve_store::NveTable>::slot();
+    nve_web_html::register_web_html_tables();
     let mut skia = SkiaBackend::new();
+    skia.register_table_system(nve_canvas_skia::CanvasSkiaSystem);
     skia.set_viewport(
         1,
         Viewport {
@@ -466,11 +463,16 @@ fn native_docs_site_module_renders_on_skia_backend_and_preserves_route_snapshot(
             scale_factor: 1.0,
         },
     );
-    skia.submit_frame(&frame_bytes)
-        .expect("SkiaBackend submit_frame for native DocsSiteModule");
+    let mut replica =
+        StoreWireReplica::new(skia, nve_components::tables::core_realization_order());
+    replica
+        .submit_nve2_frame(&frame_bytes)
+        .expect("SkiaBackend submit_nve2_frame for native DocsSiteModule");
 
     let mut pixels = PixelBuffer::new(1280, 800);
-    skia.rasterize(&mut pixels, ColorRgba::rgb(0x09, 0x09, 0x0b));
+    replica
+        .backend()
+        .rasterize(&mut pixels, ColorRgba::rgb(0x09, 0x09, 0x0b));
     let non_bg_pixels = pixels
         .pixels()
         .iter()

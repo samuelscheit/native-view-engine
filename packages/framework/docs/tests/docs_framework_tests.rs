@@ -5,10 +5,10 @@ mod common;
 use std::sync::Arc;
 
 use common::{DocsHarness, RUST_SNIPPET, build_config, build_fixture_site, build_playgrounds};
-use nve_abi::{ColorRgba, RawPropValue};
+use nve_abi::ColorRgba;
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_web::WebBackend;
-use nve_dioxus::dioxus_elements::backend::RenderBackend;
+use nve_web_html_web::register_web_html_systems;
 use nve_docs::{
     DocsAppState, DocsRoute, DocsTheme, DocsViewport, MOBILE_BREAKPOINT_PT, TOC_BREAKPOINT_PT,
     create_docs_surface, create_docs_surface_at_route,
@@ -136,14 +136,21 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     // Desktop 1280x800: navbar + desktop sidebar + article + TOC + CSS-hidden mobile menu toggle
     let desktop = DocsHarness::mount("/", DocsViewport::new(1280.0, 800.0));
     let root = desktop.find("docs-root");
-    assert_eq!(desktop.raw_str(root, "viewport-mode"), Some("desktop"));
     assert_eq!(
-        desktop.raw_str(desktop.find("docs-navbar"), "accessibilityRole"),
+        desktop.raw_str(root, "viewport-mode").as_deref(),
+        Some("desktop")
+    );
+    assert_eq!(
+        desktop
+            .raw_str(desktop.find("docs-navbar"), "accessibilityRole")
+            .as_deref(),
         Some("banner")
     );
     let desktop_sidebar = desktop.find("docs-sidebar-desktop");
     assert_eq!(
-        desktop.raw_str(desktop_sidebar, "accessibilityRole"),
+        desktop
+            .raw_str(desktop_sidebar, "accessibilityRole")
+            .as_deref(),
         Some("navigation")
     );
     assert_eq!(
@@ -151,12 +158,14 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
         Some(MediaQuery::min_width(960))
     );
     assert_eq!(
-        desktop.raw_str(desktop.find("docs-article"), "accessibilityRole"),
+        desktop
+            .raw_str(desktop.find("docs-article"), "accessibilityRole")
+            .as_deref(),
         Some("article")
     );
     let desktop_toc = desktop.find("docs-toc");
     assert_eq!(
-        desktop.raw_str(desktop_toc, "accessibilityRole"),
+        desktop.raw_str(desktop_toc, "accessibilityRole").as_deref(),
         Some("complementary")
     );
     assert_eq!(
@@ -186,23 +195,26 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     assert!(desktop.maybe_find("docs-sidebar-drawer").is_none());
 
     let toc_link = desktop.find("docs-toc-architecture-overview");
-    assert_eq!(desktop.raw_str(toc_link, "accessibilityRole"), Some("link"));
     assert_eq!(
-        desktop.raw_str(toc_link, "href"),
+        desktop.raw_str(toc_link, "accessibilityRole").as_deref(),
+        Some("link")
+    );
+    assert_eq!(
+        desktop.raw_str(toc_link, "href").as_deref(),
         Some("#architecture-overview")
     );
 
     let heading = desktop.find("docs-heading-architecture-overview");
     assert_eq!(
-        desktop.raw_str(heading, "accessibilityRole"),
+        desktop.raw_str(heading, "accessibilityRole").as_deref(),
         Some("heading")
     );
-    assert_eq!(desktop.raw_str(heading, "aria-level"), Some("2"));
+    assert_eq!(desktop.raw_str(heading, "aria-level").as_deref(), Some("2"));
 
     // Tablet 1024x768: identical DOM tree with declarative `@media` hiding TOC (< 1200pt)
     let tablet = DocsHarness::mount("/", DocsViewport::new(1024.0, 768.0));
     assert_eq!(
-        tablet.raw_str(tablet.find("docs-root"), "viewport-mode"),
+        tablet.raw_str(tablet.find("docs-root"), "viewport-mode").as_deref(),
         Some("tablet")
     );
     assert_eq!(
@@ -218,7 +230,7 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
     // CSS `@media` at T=0ms, mobile drawer toggle opens overlay with `max_width(959)`.
     let mut mobile = DocsHarness::mount("/", DocsViewport::new(390.0, 844.0));
     assert_eq!(
-        mobile.raw_str(mobile.find("docs-root"), "viewport-mode"),
+        mobile.raw_str(mobile.find("docs-root"), "viewport-mode").as_deref(),
         Some("mobile")
     );
     assert_eq!(
@@ -246,8 +258,9 @@ fn desktop_1280x800_three_column_and_mobile_390x844_drawer_collapse() {
         ssr_services,
     );
     let mut ssr_web = WebBackend::new();
-    ssr_surface.flush_into(1, &mut ssr_web).expect("ssr flush_into");
-    let ssr = ssr_web.render_ssr();
+    register_web_html_systems(ssr_web.table_registry_mut());
+    ssr_surface.commit_to(1, &mut ssr_web).expect("ssr commit_to");
+    let ssr = ssr_web.render_ssr(ssr_surface.store());
     assert!(
         ssr.style_css.contains("@media (max-width:959.98px){.nve-m-"),
         "expected desktop-only @media hide rule in SSR CSS:\n{}",
@@ -309,7 +322,7 @@ fn sidebar_and_prev_next_navigation_updates_rendered_page() {
 }
 
 #[test]
-fn cmd_k_search_modal_filters_nvs1_index_and_navigates() {
+fn cmd_k_search_modal_filters_nvs2_index_and_navigates() {
     let mut h = DocsHarness::mount("/", DocsViewport::desktop_default());
     assert!(h.maybe_find("docs-search-dialog").is_none());
 
@@ -329,7 +342,7 @@ fn cmd_k_search_modal_filters_nvs1_index_and_navigates() {
     let hit0_text = h.text_of("docs-search-hit-0");
     assert!(
         hit0_text.contains("Interactive Components"),
-        "expected NVS1 search hit for Interactive Components, got: {hit0_text}"
+        "expected NVS2 search hit for Interactive Components, got: {hit0_text}"
     );
 
     // Press Enter on selected hit -> navigates directly to /guides/components & closes modal
@@ -344,38 +357,23 @@ fn theme_toggle_updates_canvas_and_surface_colors() {
     let root_id = h.find("docs-root");
     let nav_id = h.find("docs-navbar");
 
-    assert_eq!(h.raw_str(root_id, "data-theme"), Some("dark"));
-    assert_eq!(
-        h.backend.node(root_id).unwrap().style.background,
-        ColorRgba::rgb(0x09, 0x09, 0x0b)
-    );
-    assert_eq!(
-        h.backend.node(nav_id).unwrap().style.background,
-        ColorRgba::rgb(0x11, 0x11, 0x14)
-    );
+    assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("dark"));
+    assert_eq!(h.bg(root_id), ColorRgba::rgb(0x09, 0x09, 0x0b));
+    assert_eq!(h.bg(nav_id), ColorRgba::rgb(0x11, 0x11, 0x14));
 
     // Toggle to light mode
     h.press("docs-theme-toggle");
     let root_id = h.find("docs-root");
     let nav_id = h.find("docs-navbar");
-    assert_eq!(h.raw_str(root_id, "data-theme"), Some("light"));
-    assert_eq!(
-        h.backend.node(root_id).unwrap().style.background,
-        ColorRgba::rgb(0xff, 0xff, 0xff)
-    );
-    assert_eq!(
-        h.backend.node(nav_id).unwrap().style.background,
-        ColorRgba::rgb(0xfa, 0xfa, 0xfa)
-    );
+    assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("light"));
+    assert_eq!(h.bg(root_id), ColorRgba::rgb(0xff, 0xff, 0xff));
+    assert_eq!(h.bg(nav_id), ColorRgba::rgb(0xfa, 0xfa, 0xfa));
 
     // Toggle back to dark mode
     h.press("docs-theme-toggle");
     let root_id = h.find("docs-root");
-    assert_eq!(h.raw_str(root_id, "data-theme"), Some("dark"));
-    assert_eq!(
-        h.backend.node(root_id).unwrap().style.background,
-        ColorRgba::rgb(0x09, 0x09, 0x0b)
-    );
+    assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("dark"));
+    assert_eq!(h.bg(root_id), ColorRgba::rgb(0x09, 0x09, 0x0b));
 }
 
 #[test]
@@ -406,15 +404,7 @@ fn interactive_tabs_and_live_demo_playground_work_in_page() {
     assert!(h.collect_text(panel_id).contains("cargo test --workspace"));
 
     let second_tab = h
-        .backend
-        .nodes()
-        .values()
-        .find_map(|n| match n.raw_props.get("testID") {
-            Some(RawPropValue::String(s)) if s.starts_with("docs-tab-") && s.ends_with("-1") => {
-                Some(n.id)
-            }
-            _ => None,
-        })
+        .find_matching(|s| s.starts_with("docs-tab-") && s.ends_with("-1"))
         .expect("second tab trigger");
     h.press_id(second_tab);
 
@@ -426,9 +416,12 @@ fn interactive_tabs_and_live_demo_playground_work_in_page() {
 
     // 2. Verify LiveDemo island attributes & interactive Dioxus counter state
     let demo_frame = h.find("docs-demo-counter");
-    assert_eq!(h.raw_str(demo_frame, "data-nve-island"), Some("counter"));
     assert_eq!(
-        h.raw_str(demo_frame, "data-nve-hydrate"),
+        h.raw_str(demo_frame, "data-nve-island").as_deref(),
+        Some("counter")
+    );
+    assert_eq!(
+        h.raw_str(demo_frame, "data-nve-hydrate").as_deref(),
         Some("interaction")
     );
     assert_eq!(h.text_of("demo-counter-value"), "Count: 0");
@@ -458,11 +451,10 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
         build_playgrounds(),
         services.clone(),
     );
-    let (_, _, frame_bytes) = surface.render_frame(1);
-
     let mut web = WebBackend::new();
-    web.submit_frame(&frame_bytes).expect("web submit_frame");
-    let html = web.render_html();
+    register_web_html_systems(web.table_registry_mut());
+    surface.commit_to(1, &mut web).expect("web commit_to");
+    let html = web.render_html(surface.store());
     assert!(
         html.contains("Interactive Components"),
         "SSR HTML missing page title: {html}"
@@ -482,14 +474,13 @@ fn create_docs_surface_at_route_renders_target_page_for_ssr() {
         build_playgrounds(),
         services,
     );
-    let (_, _, root_bytes) = root_surface.render_frame(1);
     let mut headless = HeadlessBackend::new();
-    headless
-        .submit_frame(&root_bytes)
-        .expect("root submit_frame");
+    root_surface
+        .commit_to(1, &mut headless)
+        .expect("root commit_to");
     assert!(
         headless
-            .render_ascii_tree()
+            .dump_tree(root_surface.store())
             .contains("Native View Engine Docs")
     );
 }
@@ -546,10 +537,12 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
         custom.clone(),
         services.clone(),
     );
-    let (_, _, landing_bytes) = landing_surface.render_frame(1);
     let mut web = WebBackend::new();
-    web.submit_frame(&landing_bytes).expect("landing submit");
-    let landing_html = web.render_ssr().html;
+    register_web_html_systems(web.table_registry_mut());
+    landing_surface
+        .commit_to(1, &mut web)
+        .expect("landing commit");
+    let landing_html = web.render_ssr(landing_surface.store()).html;
     assert!(landing_html.contains("Custom Landing Hero"));
     assert!(!landing_html.contains("docs-sidebar-desktop"));
 
@@ -564,10 +557,10 @@ fn docs_prefix_and_custom_pages_coexist_cleanly() {
         custom,
         services,
     );
-    let (_, _, docs_bytes) = docs_surface.render_frame(1);
     let mut web_docs = WebBackend::new();
-    web_docs.submit_frame(&docs_bytes).expect("docs submit");
-    let docs_html = web_docs.render_ssr().html;
+    register_web_html_systems(web_docs.table_registry_mut());
+    docs_surface.commit_to(1, &mut web_docs).expect("docs commit");
+    let docs_html = web_docs.render_ssr(docs_surface.store()).html;
     assert!(docs_html.contains("Quickstart"));
     assert!(docs_html.contains("docs-sidebar-desktop"));
     assert!(docs_html.contains("href=\"/repo/docs/guides/components\""));

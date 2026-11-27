@@ -7,20 +7,17 @@
 //! and TypeScript ABI bindings with zero duplicated spec files.
 
 use crate::ffi::{
-    ComponentKind, NativeEventKind, NveBufferSlice, NveEventPayloadTag, NveFrameStats,
-    NveGestureDisposition, NveIntrinsicSize, NveSizeConstraints, NveSurfaceConfig, Opcode,
-    NVE_IFACE_COMPONENT, NVE_IFACE_DEV, NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
+    NativeEventKind, NveBufferSlice, NveEventPayloadTag, NveFrameStats, NveGestureDisposition,
+    NveIntrinsicSize, NveSizeConstraints, NveSurfaceConfig, NVE_IFACE_COMPONENT, NVE_IFACE_DEV,
+    NVE_IFACE_HOST, NVE_IFACE_LAYOUT, NVE_IFACE_SURFACE,
 };
 use crate::host::{NveHostCallbacks, NVE_CHANNEL_FLAG_RETAIN};
 use crate::scene::{
     NveNodeMeta, NveRenderNode, NveSceneView, NVE_META_FLAG_ACCESSIBILITY_HIDDEN,
-    NVE_META_FLAG_DISABLED, NVE_META_FLAG_DRAW_LIST_CORRUPT, NVE_META_FLAG_HAS_DRAW_LIST,
-    NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY, NVE_META_RESIZE_MODE_MASK,
-    NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS, NVE_NODE_INTERACTIVE, NVE_NODE_KIND_CUSTOM,
-    NVE_NODE_KIND_IMAGE, NVE_NODE_KIND_PRESSABLE, NVE_NODE_KIND_ROOT, NVE_NODE_KIND_SCROLL_VIEW,
-    NVE_NODE_KIND_SKIA_CANVAS, NVE_NODE_KIND_TEXT, NVE_NODE_KIND_TEXT_INPUT, NVE_NODE_KIND_VIEW,
-    NVE_NODE_LEAF_TEXT, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE, NVE_RENDER_NODE_ALIGN,
-    NVE_RENDER_NODE_SIZE,
+    NVE_META_FLAG_DISABLED, NVE_META_FLAG_MULTILINE, NVE_META_FLAG_SECURE_TEXT_ENTRY,
+    NVE_META_RESIZE_MODE_MASK, NVE_META_RESIZE_MODE_SHIFT, NVE_NODE_CLIP_BOUNDS,
+    NVE_NODE_INTERACTIVE, NVE_NODE_LEAF_TEXT, NVE_NODE_META_ALIGN, NVE_NODE_META_SIZE,
+    NVE_PRIMARY_SLOT_NONE, NVE_RENDER_NODE_ALIGN, NVE_RENDER_NODE_SIZE,
 };
 use crate::value::{
     NveCommandSlice, NveDirectEvent, NveEventBatch, NveMapEntry, NvePropEntry, NvePropSlice,
@@ -209,8 +206,6 @@ pub trait NveEnumSchema: NveSchema {
 // Compile-time cross-check of wire-gated constants when `feature = "wire"` is enabled.
 #[cfg(feature = "wire")]
 const _: () = {
-    assert!(crate::codec::NVE_ABI_MAGIC == 0x3145_564E);
-    assert!(crate::codec::NVE_ABI_VERSION == 1);
     assert!(crate::value::NVE_BIN_VALUE_MAX_DEPTH == 64);
 };
 
@@ -234,8 +229,8 @@ const fn abi_method(
 }
 
 const CORE_CONSTS: &[AbiConstDescriptor] = &[
-    abi_const("NVE_ABI_MAGIC", u32::from_le_bytes(*b"NVE1") as u64, true, Some("Wire magic bytes (`\"NVE1\"` little-endian).")),
-    abi_const("NVE_ABI_VERSION", 1, false, Some("Binary `CommandBuffer` ABI version.")),
+    abi_const("NVE_ABI_MAGIC", u32::from_le_bytes(*b"NVE2") as u64, true, Some("Wire magic bytes (`\"NVE2\"` little-endian).")),
+    abi_const("NVE_ABI_VERSION", 1, false, Some("Binary `NVE2` wire protocol version.")),
     abi_const("NVE_ROOT_NODE_ID", ROOT_NODE_ID as u64, false, Some("Reserved root node ID for every surface.")),
     abi_const("NVE_BIN_VALUE_MAX_DEPTH", 64, false, Some("Maximum permitted container nesting depth for `NveBinValue`.")),
     abi_const("NVE_CHANNEL_FLAG_RETAIN", NVE_CHANNEL_FLAG_RETAIN as u64, false, Some("Flag bit on `channel_publish` / `ChannelMessage` requesting retained channel state.")),
@@ -257,8 +252,6 @@ const CORE_ALIASES: &[AbiAliasDescriptor] = &[
 ];
 
 const CORE_ENUMS: &[AbiEnumDescriptor] = &[
-    <Opcode as NveEnumSchema>::SCHEMA,
-    <ComponentKind as NveEnumSchema>::SCHEMA,
     <NveGestureDisposition as NveEnumSchema>::SCHEMA,
     <NveValueTag as NveEnumSchema>::SCHEMA,
     <NativeEventKind as NveEnumSchema>::SCHEMA,
@@ -383,20 +376,10 @@ const SCENE_CONSTS: &[AbiConstDescriptor] = &[
     abi_const("NVE_NODE_LEAF_TEXT", NVE_NODE_LEAF_TEXT as u64, false, Some("Bit flags on `NveRenderNode::flags`.")),
     abi_const("NVE_NODE_INTERACTIVE", NVE_NODE_INTERACTIVE as u64, false, None),
     abi_const("NVE_NODE_CLIP_BOUNDS", NVE_NODE_CLIP_BOUNDS as u64, false, None),
-    abi_const("NVE_NODE_KIND_ROOT", NVE_NODE_KIND_ROOT as u64, false, Some("Compact `uint8_t` `NveRenderNode::kind` discriminants.")),
-    abi_const("NVE_NODE_KIND_VIEW", NVE_NODE_KIND_VIEW as u64, false, None),
-    abi_const("NVE_NODE_KIND_TEXT", NVE_NODE_KIND_TEXT as u64, false, None),
-    abi_const("NVE_NODE_KIND_SCROLL_VIEW", NVE_NODE_KIND_SCROLL_VIEW as u64, false, None),
-    abi_const("NVE_NODE_KIND_IMAGE", NVE_NODE_KIND_IMAGE as u64, false, None),
-    abi_const("NVE_NODE_KIND_TEXT_INPUT", NVE_NODE_KIND_TEXT_INPUT as u64, false, None),
-    abi_const("NVE_NODE_KIND_PRESSABLE", NVE_NODE_KIND_PRESSABLE as u64, false, None),
-    abi_const("NVE_NODE_KIND_SKIA_CANVAS", NVE_NODE_KIND_SKIA_CANVAS as u64, false, None),
-    abi_const("NVE_NODE_KIND_CUSTOM", NVE_NODE_KIND_CUSTOM as u64, false, None),
+    abi_const("NVE_PRIMARY_SLOT_NONE", NVE_PRIMARY_SLOT_NONE as u64, true, Some("Sentinel `NveRenderNode::primary_slot` value (`0xFF`) meaning plain container with no realizing table.")),
     abi_const("NVE_META_FLAG_DISABLED", NVE_META_FLAG_DISABLED as u64, true, Some("Bit flags on `NveNodeMeta::flags`.")),
     abi_const("NVE_META_FLAG_SECURE_TEXT_ENTRY", NVE_META_FLAG_SECURE_TEXT_ENTRY as u64, true, None),
     abi_const("NVE_META_FLAG_MULTILINE", NVE_META_FLAG_MULTILINE as u64, true, None),
-    abi_const("NVE_META_FLAG_HAS_DRAW_LIST", NVE_META_FLAG_HAS_DRAW_LIST as u64, true, None),
-    abi_const("NVE_META_FLAG_DRAW_LIST_CORRUPT", NVE_META_FLAG_DRAW_LIST_CORRUPT as u64, true, None),
     abi_const("NVE_META_FLAG_ACCESSIBILITY_HIDDEN", NVE_META_FLAG_ACCESSIBILITY_HIDDEN as u64, true, None),
     abi_const("NVE_META_RESIZE_MODE_SHIFT", NVE_META_RESIZE_MODE_SHIFT as u64, false, None),
     abi_const("NVE_META_RESIZE_MODE_MASK", NVE_META_RESIZE_MODE_MASK as u64, true, None),
@@ -404,6 +387,7 @@ const SCENE_CONSTS: &[AbiConstDescriptor] = &[
 
 const SCENE_RECORDS: &[AbiRecordDescriptor] = &[
     AbiRecordDescriptor::Struct(<NveRenderNode as NveStructSchema>::SCHEMA),
+    AbiRecordDescriptor::Struct(<crate::table::NveTableView as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveSceneView as NveStructSchema>::SCHEMA),
     AbiRecordDescriptor::Struct(<NveNodeMeta as NveStructSchema>::SCHEMA),
 ];
@@ -434,4 +418,144 @@ pub const fn scene_abi_descriptor() -> AbiFileDescriptor {
         modules: &[],
         c_functions: &[],
     }
+}
+
+const fn hash_tag_str(h: &mut crate::Xxh64Hasher, s: &str) {
+    h.update_u64(s.len() as u64);
+    h.update(s.as_bytes());
+}
+
+const fn hash_opt_usize(h: &mut crate::Xxh64Hasher, v: Option<usize>) {
+    match v {
+        Some(n) => {
+            h.update(&[1]);
+            h.update_u64(n as u64);
+        }
+        None => h.update(&[0]),
+    }
+}
+
+const fn hash_fields(h: &mut crate::Xxh64Hasher, fields: &[AbiFieldDescriptor]) {
+    h.update_u64(fields.len() as u64);
+    let mut i = 0;
+    while i < fields.len() {
+        let f = &fields[i];
+        hash_tag_str(h, f.name);
+        hash_tag_str(h, f.abi_type());
+        hash_opt_usize(h, f.expected_offset);
+        hash_opt_usize(h, f.expected_offset_64);
+        i += 1;
+    }
+}
+
+const fn hash_sig(
+    h: &mut crate::Xxh64Hasher,
+    name: &str,
+    params: &[AbiParamDescriptor],
+    return_type: &str,
+    has_self: bool,
+    optional: bool,
+) {
+    hash_tag_str(h, name);
+    h.update(&[has_self as u8, optional as u8]);
+    h.update_u64(params.len() as u64);
+    let mut j = 0;
+    while j < params.len() {
+        hash_tag_str(h, params[j].name);
+        hash_tag_str(h, params[j].ty);
+        j += 1;
+    }
+    hash_tag_str(h, return_type);
+}
+
+/// Computes the deterministic, target-independent compile-time XXH64 fingerprint of
+/// [`core_abi_descriptor`] directly from the `#[derive(NveAbi)]` metadata (zero hardcoded hex).
+pub const fn compute_core_abi_schema_hash() -> u64 {
+    let desc = core_abi_descriptor();
+    let mut h = crate::Xxh64Hasher::new(0);
+    hash_tag_str(&mut h, "nve.core_abi.v2");
+
+    let mut i = 0;
+    while i < desc.consts.len() {
+        let c = &desc.consts[i];
+        hash_tag_str(&mut h, "const");
+        hash_tag_str(&mut h, c.name);
+        hash_tag_str(&mut h, c.ty);
+        h.update_u64(c.value);
+        i += 1;
+    }
+
+    i = 0;
+    while i < desc.aliases.len() {
+        let a = &desc.aliases[i];
+        hash_tag_str(&mut h, "alias");
+        hash_tag_str(&mut h, a.name);
+        hash_tag_str(&mut h, a.target);
+        i += 1;
+    }
+
+    i = 0;
+    while i < desc.enums.len() {
+        let e = &desc.enums[i];
+        hash_tag_str(&mut h, "enum");
+        hash_tag_str(&mut h, e.name);
+        hash_tag_str(&mut h, e.repr);
+        h.update_u64(e.variants.len() as u64);
+        let mut j = 0;
+        while j < e.variants.len() {
+            hash_tag_str(&mut h, e.variants[j].name);
+            h.update_u64(e.variants[j].value as u64);
+            j += 1;
+        }
+        i += 1;
+    }
+
+    i = 0;
+    while i < desc.records.len() {
+        match &desc.records[i] {
+            AbiRecordDescriptor::Struct(s) => {
+                hash_tag_str(&mut h, "struct");
+                hash_tag_str(&mut h, s.name);
+                hash_opt_usize(&mut h, s.explicit_align);
+                hash_opt_usize(&mut h, s.expected_size);
+                hash_opt_usize(&mut h, s.expected_size_64);
+                hash_fields(&mut h, s.fields);
+            }
+            AbiRecordDescriptor::Union(u) => {
+                hash_tag_str(&mut h, "union");
+                hash_tag_str(&mut h, u.name);
+                hash_opt_usize(&mut h, u.explicit_align);
+                hash_opt_usize(&mut h, u.expected_size);
+                hash_opt_usize(&mut h, u.expected_size_64);
+                hash_fields(&mut h, u.fields);
+            }
+        }
+        i += 1;
+    }
+
+    i = 0;
+    while i < desc.modules.len() {
+        let m = &desc.modules[i];
+        hash_tag_str(&mut h, "module");
+        hash_tag_str(&mut h, m.name);
+        h.update_u64(m.interface_id as u64);
+        h.update_u64(m.methods.len() as u64);
+        let mut j = 0;
+        while j < m.methods.len() {
+            let fm = &m.methods[j];
+            hash_sig(&mut h, fm.name, fm.params, fm.return_type, fm.has_self, fm.optional);
+            j += 1;
+        }
+        i += 1;
+    }
+
+    i = 0;
+    while i < desc.c_functions.len() {
+        let cf = &desc.c_functions[i];
+        hash_tag_str(&mut h, "cfn");
+        hash_sig(&mut h, cf.name, cf.params, cf.return_type, false, false);
+        i += 1;
+    }
+
+    h.digest()
 }

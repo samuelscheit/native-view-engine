@@ -2,28 +2,37 @@ use std::path::PathBuf;
 
 use nve_abi::{
     EventPayload, NativeEvent, NativeEventKind, NodeId, NveDirectEvent, NveEventBatchRef,
-    RawPropValue,
 };
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::SkiaBackend;
 use nve_backend_web::WebBackend;
+use nve_canvas_skia::CanvasSkiaSystem;
+use nve_canvas_web::CanvasWebSystem;
+use nve_components::tables::DebugId;
 use nve_engine::loader::HotAppInstance;
-use nve_engine::{HotPatchMsg, NveApp, RenderBackend, Viewport};
+use nve_engine::{HotPatchMsg, NveApp, StoreBackend, StoreWireReplica, Viewport};
 use nve_example_kitchen_sink::{
     create_surface, decode_kitchen_sink_state, encode_kitchen_sink_state, DensityPreset,
     GallerySection, KitchenSinkModule, KitchenSinkState, LocalePreset, SpringPreset, ThemeMode,
     KITCHEN_SINK_STATE_MAGIC,
 };
 use nve_i18n::CalendarDate;
+use nve_store::{NodeId as StoreNodeId, NodeStore};
 use nve_ui::DateRange;
+use nve_web_html_web::register_web_html_systems;
 
-fn find_node_by_test_id(backend: &HeadlessBackend, test_id: &str) -> NodeId {
-    backend
-        .nodes()
-        .values()
-        .find(|n| matches!(n.raw_props.get("testID"), Some(RawPropValue::String(s)) if s == test_id))
-        .unwrap_or_else(|| panic!("node with testID='{test_id}' not found"))
-        .id
+fn find_node_by_test_id(store: &NodeStore, test_id: &str) -> NodeId {
+    let mut stack = vec![StoreNodeId::ROOT];
+    while let Some(id) = stack.pop() {
+        if id != StoreNodeId::ROOT
+            && let Some(dbg) = store.try_row::<DebugId>(id)
+            && dbg.test_id() == test_id
+        {
+            return id.raw();
+        }
+        stack.extend_from_slice(store.children(id));
+    }
+    panic!("node with testID='{test_id}' not found")
 }
 
 fn press_test_id(
@@ -32,7 +41,7 @@ fn press_test_id(
     test_id: &str,
     frame_id: u64,
 ) {
-    let id = find_node_by_test_id(backend, test_id);
+    let id = find_node_by_test_id(surface.store(), test_id);
     let rect = backend.layout_of(id).unwrap_or_default();
     let handled = surface.dispatch_events(&[NativeEvent {
         surface_id: 1,
@@ -45,8 +54,7 @@ fn press_test_id(
         },
     }]);
     assert!(handled, "expected press on '{test_id}' to be handled");
-    let (_, _, patch) = surface.render_frame(frame_id);
-    backend.submit_frame(&patch).unwrap();
+    surface.commit_to(frame_id, backend).unwrap();
 }
 
 #[test]
@@ -106,7 +114,10 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     let mut app = create_surface(1);
     let mut headless = HeadlessBackend::new();
     let mut skia = SkiaBackend::new();
+    skia.register_table_system(CanvasSkiaSystem);
     let mut web = WebBackend::new();
+    register_web_html_systems(web.table_registry_mut());
+    web.register_table_system(CanvasWebSystem);
 
     let vp = Viewport {
         width: 1280.0,
@@ -117,18 +128,19 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
     skia.set_viewport(1, vp);
     web.set_viewport(1, vp);
 
-    let (_, _, frame1) = app.render_frame(1);
-    headless.submit_frame(&frame1).unwrap();
-    skia.submit_frame(&frame1).unwrap();
-    web.submit_frame(&frame1).unwrap();
+    app.reconcile(1);
+    headless.commit(app.store(), app.last_changes()).unwrap();
+    skia.commit(app.store(), app.last_changes()).unwrap();
+    web.commit(app.store(), app.last_changes()).unwrap();
 
-    assert!(headless.render_ascii_tree().contains("Count: 0"));
-    assert!(web.render_html().contains("Count: 0"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Count: 0"));
+    assert!(web.render_html(app.store()).contains("Count: 0"));
+    skia.rebuild_display_list(app.store());
     assert!(!skia.display_list().ops.is_empty());
 
     // Press Increment + twice via testID lookup.
     for frame_id in 2..=3 {
-        let inc_id = find_node_by_test_id(&headless, "ks-counter-inc");
+        let inc_id = find_node_by_test_id(app.store(), "ks-counter-inc");
         let handled = app.dispatch_events(&[NativeEvent {
             surface_id: 1,
             node_id: inc_id,
@@ -137,14 +149,14 @@ fn single_command_buffer_drives_headless_skia_and_web_with_events() {
             payload: EventPayload::Point { x: 10.0, y: 10.0 },
         }]);
         assert!(handled);
-        let (_, _, patch) = app.render_frame(frame_id);
-        headless.submit_frame(&patch).unwrap();
-        skia.submit_frame(&patch).unwrap();
-        web.submit_frame(&patch).unwrap();
+        app.reconcile(frame_id);
+        headless.commit(app.store(), app.last_changes()).unwrap();
+        skia.commit(app.store(), app.last_changes()).unwrap();
+        web.commit(app.store(), app.last_changes()).unwrap();
     }
 
-    assert!(headless.render_ascii_tree().contains("Count: 2"));
-    assert!(web.render_html().contains("Count: 2"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Count: 2"));
+    assert!(web.render_html(app.store()).contains("Count: 2"));
 
     // Tier-1 hot patch changes live style without recompile.
     let patched = app.apply_hot_patch(&HotPatchMsg::TemplatePatch {
@@ -172,38 +184,37 @@ fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary(
         },
     );
 
-    let (_, _, f1) = app.render_frame(1);
-    headless.submit_frame(&f1).unwrap();
-    assert!(headless.render_ascii_tree().contains("Overview & Primitives"));
+    app.commit_to(1, &mut headless).unwrap();
+    assert!(headless.render_ascii_tree(app.store()).contains("Overview & Primitives"));
 
     // Toggle theme, density, locale, pseudo, and reduced motion.
     press_test_id(&mut app, &mut headless, "ks-theme-toggle", 2);
-    assert!(headless.render_ascii_tree().contains("Theme: Light"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Theme: Light"));
     press_test_id(&mut app, &mut headless, "ks-density-spacious", 3);
     press_test_id(&mut app, &mut headless, "ks-locale-de-DE", 4);
     press_test_id(&mut app, &mut headless, "ks-reduced-motion-toggle", 5);
 
     // Navigate through Forms, Selection, Overlays, Layout, Motion.
     press_test_id(&mut app, &mut headless, "ks-nav-forms", 6);
-    assert!(headless.render_ascii_tree().contains("FormState Validation"));
+    assert!(headless.render_ascii_tree(app.store()).contains("FormState Validation"));
     press_test_id(&mut app, &mut headless, "ks-nav-selection", 7);
-    assert!(headless.render_ascii_tree().contains("Locale-Aware DatePicker"));
-    assert!(headless.render_ascii_tree().contains("Monday"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Locale-Aware DatePicker"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Monday"));
     press_test_id(&mut app, &mut headless, "ks-nav-overlays", 8);
-    assert!(headless.render_ascii_tree().contains("ToastProvider"));
+    assert!(headless.render_ascii_tree(app.store()).contains("ToastProvider"));
     press_test_id(&mut app, &mut headless, "ks-toast-success", 9);
-    assert!(headless.render_ascii_tree().contains("Build Verified"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Build Verified"));
 
     press_test_id(&mut app, &mut headless, "ks-nav-layout", 10);
-    assert!(headless.render_ascii_tree().contains("1,000 Variable-Height Rows"));
+    assert!(headless.render_ascii_tree(app.store()).contains("1,000 Variable-Height Rows"));
     press_test_id(&mut app, &mut headless, "ks-vl-jump-500", 11);
-    assert!(headless.render_ascii_tree().contains("Row #500"));
+    assert!(headless.render_ascii_tree(app.store()).contains("Row #500"));
 
     // Motion + Canvas + ErrorBoundary trigger & Retry recovery!
     press_test_id(&mut app, &mut headless, "ks-nav-motion", 12);
-    assert!(headless.render_ascii_tree().contains("UiErrorBoundary Subtree Isolation"));
+    assert!(headless.render_ascii_tree(app.store()).contains("UiErrorBoundary Subtree Isolation"));
     press_test_id(&mut app, &mut headless, "ks-trigger-error", 13);
-    let err_tree = headless.render_ascii_tree();
+    let err_tree = headless.render_ascii_tree(app.store());
     assert!(
         err_tree.contains("Subtree Error Caught"),
         "expected error boundary fallback, got:\n{err_tree}"
@@ -213,7 +224,7 @@ fn gallery_navigates_all_sections_switches_controls_and_recovers_error_boundary(
     assert!(err_tree.contains("NVE Kitchen Sink"));
 
     press_test_id(&mut app, &mut headless, "ks-error-boundary-retry", 14);
-    let recovered_tree = headless.render_ascii_tree();
+    let recovered_tree = headless.render_ascii_tree(app.store());
     assert!(recovered_tree.contains("Protected subtree is mounted and operational."));
     assert!(recovered_tree.contains("Recoveries: 1"));
 }
@@ -223,10 +234,12 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     let mut m1 = KitchenSinkModule::create(1);
     let mut headless = HeadlessBackend::new();
     headless.set_viewport(1, Viewport::default());
+    let mut rep1 =
+        StoreWireReplica::new(headless, nve_components::tables::core_realization_order());
     let f1 = m1.render(1).to_vec();
-    headless.submit_frame(&f1).unwrap();
+    rep1.submit_nve2_frame(&f1).unwrap();
 
-    let inc_id = find_node_by_test_id(&headless, "ks-counter-inc");
+    let inc_id = find_node_by_test_id(rep1.store(), "ks-counter-inc");
     let press_ev = [NveDirectEvent::press(1, inc_id, 1_000, 4.0, 4.0)];
     assert!(m1.dispatch_events(unsafe { NveEventBatchRef::from_slice(&press_ev) }));
     let _ = m1.render(2);
@@ -238,8 +251,9 @@ fn module_snapshot_and_restore_preserves_full_gallery_state() {
     assert_eq!(m2.count(), 1);
     let mut h2 = HeadlessBackend::new();
     h2.set_viewport(2, Viewport::default());
-    h2.submit_frame(m2.render(1)).unwrap();
-    assert!(h2.render_ascii_tree().contains("Count: 1"));
+    let mut rep2 = StoreWireReplica::new(h2, nve_components::tables::core_realization_order());
+    rep2.submit_nve2_frame(m2.render(1)).unwrap();
+    assert!(rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 1"));
 }
 
 #[test]
@@ -269,22 +283,23 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
             scale_factor: 1.0,
         },
     );
+    let mut rep = StoreWireReplica::new(host, nve_components::tables::core_realization_order());
 
     let mut inst = HotAppInstance::load(&dylib_path, 1, 1, None).expect("load gen 1");
     let frame1 = inst.render(1);
-    host.submit_frame(frame1).unwrap();
-    assert!(host.render_ascii_tree().contains("Count: 0"));
+    rep.submit_nve2_frame(frame1).unwrap();
+    assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 0"));
 
-    let inc_node = find_node_by_test_id(&host, "ks-counter-inc");
+    let inc_node = find_node_by_test_id(rep.store(), "ks-counter-inc");
     let press_ev = [NveDirectEvent::press(1, inc_node, 1000, 10.0, 10.0)];
 
     assert!(inst.dispatch_events(&press_ev));
     let f2 = inst.render(2);
-    host.submit_frame(f2).unwrap();
+    rep.submit_nve2_frame(f2).unwrap();
     assert!(inst.dispatch_events(&press_ev));
     let f3 = inst.render(3);
-    host.submit_frame(f3).unwrap();
-    assert!(host.render_ascii_tree().contains("Count: 2"));
+    rep.submit_nve2_frame(f3).unwrap();
+    assert!(rep.backend().render_ascii_tree(rep.store()).contains("Count: 2"));
 
     // Live Tier-2 dylib hot-swap to generation 2: count == 2 MUST survive!
     let outcome = inst.reload(&dylib_path).expect("reload gen 2");
@@ -301,11 +316,13 @@ fn tier2_cdylib_hotswap_preserves_state_across_generations() {
             scale_factor: 1.0,
         },
     );
+    let mut rep2 =
+        StoreWireReplica::new(host2, nve_components::tables::core_realization_order());
     let f4 = inst.render(4);
-    host2.submit_frame(f4).unwrap();
+    rep2.submit_nve2_frame(f4).unwrap();
     assert!(
-        host2.render_ascii_tree().contains("Count: 2"),
+        rep2.backend().render_ascii_tree(rep2.store()).contains("Count: 2"),
         "restored tree was:\n{}",
-        host2.render_ascii_tree()
+        rep2.backend().render_ascii_tree(rep2.store())
     );
 }

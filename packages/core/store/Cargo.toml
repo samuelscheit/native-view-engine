@@ -1,0 +1,19 @@
+[package]
+name = "nve-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Data-oriented word-table NodeStore, Transaction/ChangeSet, and the NVE2 table-major wire."
+
+[dependencies]
+nve-abi = { workspace = true }
+nve-hash = { workspace = true }
+nve-abi-macros = { workspace = true }
+rustc-hash = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "store_bench"
+harness = false

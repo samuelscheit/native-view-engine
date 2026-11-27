@@ -17,7 +17,7 @@ pub(crate) enum DocsAction {
         #[arg(long, default_value = "docs/content")]
         content: PathBuf,
     },
-    /// Build static semantic HTML5 + Option 5 CSS pages, search.nvs1, sitemap.xml, and WASM hydration bundle.
+    /// Build static semantic HTML5 + Option 5 CSS pages, search.nvs2, sitemap.xml, and WASM hydration bundle.
     Build {
         /// Path to the documentation content directory.
         #[arg(long, default_value = "docs/content")]

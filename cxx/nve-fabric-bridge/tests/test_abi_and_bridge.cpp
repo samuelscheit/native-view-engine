@@ -34,6 +34,8 @@ static_assert(sizeof(NveEventBatch) == (sizeof(void*) == 8u ? 16u : 12u), "NveEv
 static_assert(sizeof(NveNodeMeta) == NVE_NODE_META_SIZE && NVE_NODE_META_SIZE == 64u, "NveNodeMeta size mismatch");
 static_assert(sizeof(NveRenderNode) == NVE_RENDER_NODE_SIZE, "NveRenderNode size mismatch");
 static_assert(offsetof(NveSceneView, removed_ids) == 40u + 4u * sizeof(void*), "NveSceneView::removed_ids offset mismatch");
+static_assert(offsetof(NveSceneView, tables) == 40u + 5u * sizeof(void*), "NveSceneView::tables offset mismatch");
+static_assert(sizeof(NveTableView) == (sizeof(void*) == 8u ? 48u : 36u), "NveTableView size mismatch");
 static_assert(nve::kRelocHeaderSize == 64u, "NVERELOC header wire size mismatch");
 static_assert(offsetof(nve::RelocHeader, flags) == nve::kSnapshotFlagsOffset, "RelocHeader::flags offset mismatch");
 static_assert(nve::kWireHeaderSize == 16u, "NveWireFrame v2 header wire size mismatch");

@@ -1,118 +1,15 @@
-//! Image blitting (`ImageResizeMode`) and `NVE_DRAW1` vector canvas primitive rasterization.
+//! Image blitting (`ImageFit`) for the pure-Rust Skia software rasterizer.
+//!
+//! Vector canvas (`Canvas`) and SVG (`Svg`) rasterization live in standalone leaf modules
+//! (`nve-canvas-skia`, `nve-svg-skia`) registered via `SkiaTableRegistry`.
 
-use nve_abi::ColorRgba;
-use nve_components::canvas_ir::{CanvasOp, ImageResizeMode};
+use nve_components::tables::ImageFit;
 use nve_engine::LayoutRect;
 
 use crate::image_cache::{compute_image_placement, ImageCache};
 
 use super::clip::{rounded_rect_sdf, ClipStack};
-use super::{fill_rounded_rect, scale_rect, PixelBuffer};
-
-fn fill_circle(
-    buf: &mut PixelBuffer,
-    clip: &ClipStack,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    if radius <= 0.0 || color.a == 0 || opacity <= 0.0 || clip.is_empty() {
-        return;
-    }
-    let [cx0, cy0, cx1, cy1] = clip.bounds();
-    let min_x = ((cx - radius).floor() as i32 - 1).clamp(cx0, cx1);
-    let max_x = ((cx + radius).ceil() as i32 + 1).clamp(cx0, cx1);
-    let min_y = ((cy - radius).floor() as i32 - 1).clamp(cy0, cy1);
-    let max_y = ((cy + radius).ceil() as i32 + 1).clamp(cy0, cy1);
-    if min_x >= max_x || min_y >= max_y {
-        return;
-    }
-
-    let rounded_clip = clip.has_rounded();
-    for py in min_y..max_y {
-        let fy = py as f32 + 0.5;
-        let dy = fy - cy;
-        let dy2 = dy * dy;
-        for px in min_x..max_x {
-            let fx = px as f32 + 0.5;
-            let dx = fx - cx;
-            let dist = (dx * dx + dy2).sqrt() - radius;
-            let mut cov = (0.5 - dist).clamp(0.0, 1.0);
-            if cov <= 0.0 {
-                continue;
-            }
-            if rounded_clip {
-                cov *= clip.rounded_coverage(fx, fy);
-                if cov <= 0.0 {
-                    continue;
-                }
-            }
-            buf.blend_pixel(px, py, color, cov * opacity);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stroke_line(
-    buf: &mut PixelBuffer,
-    clip: &ClipStack,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    width: f32,
-    color: ColorRgba,
-    opacity: f32,
-) {
-    if width <= 0.0 || color.a == 0 || opacity <= 0.0 || clip.is_empty() {
-        return;
-    }
-    let hw = (width * 0.5).max(0.5);
-    let pad = hw.ceil() as i32 + 1;
-    let [cx0, cy0, cx1, cy1] = clip.bounds();
-    let min_x = (x0.min(x1).floor() as i32 - pad).clamp(cx0, cx1);
-    let max_x = (x0.max(x1).ceil() as i32 + pad).clamp(cx0, cx1);
-    let min_y = (y0.min(y1).floor() as i32 - pad).clamp(cy0, cy1);
-    let max_y = (y0.max(y1).ceil() as i32 + pad).clamp(cy0, cy1);
-    if min_x >= max_x || min_y >= max_y {
-        return;
-    }
-
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len_sq = dx * dx + dy * dy;
-    let rounded_clip = clip.has_rounded();
-
-    for py in min_y..max_y {
-        let fy = py as f32 + 0.5;
-        let py0 = fy - y0;
-        for px in min_x..max_x {
-            let fx = px as f32 + 0.5;
-            let px0 = fx - x0;
-            let t = if len_sq <= 1e-6 {
-                0.0
-            } else {
-                ((px0 * dx + py0 * dy) / len_sq).clamp(0.0, 1.0)
-            };
-            let rx = px0 - t * dx;
-            let ry = py0 - t * dy;
-            let dist = (rx * rx + ry * ry).sqrt() - hw;
-            let mut cov = (0.5 - dist).clamp(0.0, 1.0);
-            if cov <= 0.0 {
-                continue;
-            }
-            if rounded_clip {
-                cov *= clip.rounded_coverage(fx, fy);
-                if cov <= 0.0 {
-                    continue;
-                }
-            }
-            buf.blend_pixel(px, py, color, cov * opacity);
-        }
-    }
-}
+use super::{scale_rect, PixelBuffer};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_image(
@@ -121,7 +18,7 @@ pub(crate) fn draw_image(
     rect: LayoutRect,
     radius: f32,
     src: &str,
-    resize_mode: ImageResizeMode,
+    fit: ImageFit,
     scale: f32,
     opacity: f32,
 ) {
@@ -131,7 +28,7 @@ pub(crate) fn draw_image(
     let Ok(img) = ImageCache::shared().get_or_decode(src) else {
         return;
     };
-    let Some(placement) = compute_image_placement(rect, img.width, img.height, resize_mode) else {
+    let Some(placement) = compute_image_placement(rect, img.width, img.height, fit) else {
         return;
     };
 
@@ -201,146 +98,4 @@ pub(crate) fn draw_image(
             }
         }
     }
-}
-
-pub(crate) fn execute_canvas_ops(
-    buf: &mut PixelBuffer,
-    clip: &mut ClipStack,
-    canvas_rect: LayoutRect,
-    ops: &[CanvasOp],
-    scale: f32,
-    opacity: f32,
-) {
-    if canvas_rect.width <= 0.0 || canvas_rect.height <= 0.0 || opacity <= 0.0 || ops.is_empty() {
-        return;
-    }
-    let scaled_canvas = scale_rect(canvas_rect, scale);
-    clip.push(scaled_canvas, 0.0);
-    let mut local_clip_depth = 0usize;
-
-    for op in ops {
-        match op {
-            CanvasOp::Clear { color } => {
-                if color.a > 0 {
-                    fill_rounded_rect(buf, clip, scaled_canvas, 0.0, *color, opacity);
-                }
-            }
-            CanvasOp::FillRect { x, y, w, h, color } => {
-                let r = LayoutRect {
-                    x: (canvas_rect.x + *x) * scale,
-                    y: (canvas_rect.y + *y) * scale,
-                    width: *w * scale,
-                    height: *h * scale,
-                };
-                fill_rounded_rect(buf, clip, r, 0.0, *color, opacity);
-            }
-            CanvasOp::FillRoundedRect {
-                x,
-                y,
-                w,
-                h,
-                radius,
-                color,
-            } => {
-                let r = LayoutRect {
-                    x: (canvas_rect.x + *x) * scale,
-                    y: (canvas_rect.y + *y) * scale,
-                    width: *w * scale,
-                    height: *h * scale,
-                };
-                fill_rounded_rect(buf, clip, r, *radius * scale, *color, opacity);
-            }
-            CanvasOp::FillCircle {
-                cx,
-                cy,
-                radius,
-                color,
-            } => {
-                fill_circle(
-                    buf,
-                    clip,
-                    (canvas_rect.x + *cx) * scale,
-                    (canvas_rect.y + *cy) * scale,
-                    *radius * scale,
-                    *color,
-                    opacity,
-                );
-            }
-            CanvasOp::StrokeLine {
-                x0,
-                y0,
-                x1,
-                y1,
-                width,
-                color,
-            } => {
-                stroke_line(
-                    buf,
-                    clip,
-                    (canvas_rect.x + *x0) * scale,
-                    (canvas_rect.y + *y0) * scale,
-                    (canvas_rect.x + *x1) * scale,
-                    (canvas_rect.y + *y1) * scale,
-                    *width * scale,
-                    *color,
-                    opacity,
-                );
-            }
-            CanvasOp::StrokePolyline {
-                points,
-                width,
-                color,
-            } => {
-                if points.len() == 1 {
-                    let (px, py) = points[0];
-                    fill_circle(
-                        buf,
-                        clip,
-                        (canvas_rect.x + px) * scale,
-                        (canvas_rect.y + py) * scale,
-                        (*width * 0.5 * scale).max(0.5),
-                        *color,
-                        opacity,
-                    );
-                } else {
-                    for seg in points.windows(2) {
-                        let (x0, y0) = seg[0];
-                        let (x1, y1) = seg[1];
-                        stroke_line(
-                            buf,
-                            clip,
-                            (canvas_rect.x + x0) * scale,
-                            (canvas_rect.y + y0) * scale,
-                            (canvas_rect.x + x1) * scale,
-                            (canvas_rect.y + y1) * scale,
-                            *width * scale,
-                            *color,
-                            opacity,
-                        );
-                    }
-                }
-            }
-            CanvasOp::ClipRect { x, y, w, h } => {
-                let r = LayoutRect {
-                    x: (canvas_rect.x + *x) * scale,
-                    y: (canvas_rect.y + *y) * scale,
-                    width: *w * scale,
-                    height: *h * scale,
-                };
-                clip.push(r, 0.0);
-                local_clip_depth += 1;
-            }
-            CanvasOp::RestoreClip => {
-                if local_clip_depth > 0 {
-                    clip.pop();
-                    local_clip_depth -= 1;
-                }
-            }
-        }
-    }
-
-    for _ in 0..local_clip_depth {
-        clip.pop();
-    }
-    clip.pop();
 }

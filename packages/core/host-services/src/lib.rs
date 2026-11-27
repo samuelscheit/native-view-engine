@@ -19,8 +19,7 @@ pub mod win32_str;
 
 pub use bridge::HostCallbackBridge;
 pub use codec::{
-    fnv1a64, fnv1a64_update, validate_url, BinReader, BinWriter, FNV1A_64_OFFSET, FNV1A_64_PRIME,
-    MAX_SEQ_ITEMS,
+    validate_url, BinReader, BinWriter, MAX_SEQ_ITEMS,
 };
 pub use error::ServiceError;
 pub use events::{TypedAsyncTable, TypedEventBus, TypedEventSubscription, TypedHostEvent};

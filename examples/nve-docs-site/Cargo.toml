@@ -14,10 +14,15 @@ cdylib-export = []
 [dependencies]
 nve-abi = { workspace = true }
 nve-backend-web = { path = "../../packages/backends/web", default-features = false, features = ["ssr", "hydrate"] }
+nve-canvas = { workspace = true }
 nve-components = { workspace = true }
 nve-dioxus = { workspace = true }
 nve-docs = { workspace = true }
 nve-engine = { workspace = true }
+nve-canvas-web = { workspace = true }
+nve-store = { workspace = true }
+nve-web-html = { workspace = true }
+nve-web-html-web = { workspace = true }
 nve-interop = { path = "../../packages/core/interop", default-features = false, features = ["crdt"] }
 nve-mdx = { workspace = true }
 nve-router = { workspace = true }
@@ -50,3 +55,4 @@ web-sys = { workspace = true, features = [
 [dev-dependencies]
 nve-backend-headless = { workspace = true }
 nve-backend-skia = { workspace = true }
+nve-canvas-skia = { workspace = true }

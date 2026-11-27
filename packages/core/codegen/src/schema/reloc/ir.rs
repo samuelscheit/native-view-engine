@@ -1,5 +1,5 @@
 //! Intermediate Representation (IR), `#[repr(C)]` layout computation, semantic validation,
-//! and deterministic FNV-1a64 schema hashing for NVE's zero-copy `RelocSlice` code generator.
+//! and deterministic XXH64 schema hashing for NVE's zero-copy `RelocSlice` code generator.
 //!
 //! Schemas are constructed directly as typed Rust values (e.g. from `trait NveSchema` /
 //! `#[derive(NveAbi)]` in each owning crate) with zero `.nve.rs` text parsing and direct binary FFI.
@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::CodegenError;
-use crate::schema::hybrid::{fnv1a_64_update, FNV1A_64_OFFSET_BASIS};
+use crate::schema::hybrid::hash_str;
+use nve_abi::Xxh64Hasher;
 
 /// Fixed byte size of the 8-byte-aligned `RelocHeader` (`magic + schema_hash + total_len +
 /// flags + root_offset + _pad`).
@@ -120,7 +121,7 @@ pub enum RelocType {
 }
 
 impl RelocType {
-    /// Deterministic canonical signature included in the FNV-1a64 schema hash.
+    /// Deterministic canonical signature included in the XXH64 schema hash.
     pub fn canonical_signature(&self) -> String {
         match self {
             Self::Bool => "bool".to_string(),
@@ -322,7 +323,7 @@ impl RelocSchema {
             .fold(RELOC_HEADER_ALIGN, usize::max)
     }
 
-    /// Deterministic 64-bit FNV-1a schema hash covering magic, root, enums (names, repr,
+    /// Deterministic XXH64 schema hash covering magic, root, enums (names, repr,
     /// variants), and every struct's name, size, alignment, field names, types, and byte offsets.
     pub fn schema_hash(&self) -> Result<u64, CodegenError> {
         let layouts = self.compute_layouts()?;
@@ -330,36 +331,36 @@ impl RelocSchema {
     }
 
     pub(crate) fn schema_hash_with_layouts(&self, layouts: &BTreeMap<String, StructLayout>) -> u64 {
-        let mut h = FNV1A_64_OFFSET_BASIS;
-        h = hash_str(h, "nve.reloc.schema.v1");
-        h = hash_str(h, &self.name);
-        h = fnv1a_64_update(h, &self.magic);
-        h = hash_str(h, &self.root);
+        let mut h = Xxh64Hasher::new(0);
+        hash_str(&mut h, "nve.reloc.schema.v1");
+        hash_str(&mut h, &self.name);
+        h.update(&self.magic);
+        hash_str(&mut h, &self.root);
 
         for e in &self.enums {
-            h = hash_str(h, "enum");
-            h = hash_str(h, &e.name);
-            h = hash_str(h, e.repr.rust_type());
+            hash_str(&mut h, "enum");
+            hash_str(&mut h, &e.name);
+            hash_str(&mut h, e.repr.rust_type());
             for v in &e.variants {
-                h = hash_str(h, &v.name);
-                h = fnv1a_64_update(h, &v.value.to_le_bytes());
+                hash_str(&mut h, &v.name);
+                h.update(&v.value.to_le_bytes());
             }
         }
 
         for s in self.structs_topological() {
             let layout = &layouts[&s.name];
-            h = hash_str(h, "struct");
-            h = hash_str(h, &s.name);
-            h = fnv1a_64_update(h, &(layout.size as u64).to_le_bytes());
-            h = fnv1a_64_update(h, &(layout.align as u64).to_le_bytes());
+            hash_str(&mut h, "struct");
+            hash_str(&mut h, &s.name);
+            h.update_u64(layout.size as u64);
+            h.update_u64(layout.align as u64);
             for (f, fl) in s.fields.iter().zip(layout.fields.iter()) {
-                h = hash_str(h, &f.name);
-                h = hash_str(h, &f.ty.canonical_signature());
-                h = fnv1a_64_update(h, &(fl.offset as u64).to_le_bytes());
-                h = fnv1a_64_update(h, &(fl.size as u64).to_le_bytes());
+                hash_str(&mut h, &f.name);
+                hash_str(&mut h, &f.ty.canonical_signature());
+                h.update_u64(fl.offset as u64);
+                h.update_u64(fl.size as u64);
             }
         }
-        h
+        h.digest()
     }
 }
 
@@ -416,11 +417,6 @@ pub(crate) fn type_metrics(
             Ok((RELOC_SLICE_SIZE, RELOC_SLICE_ALIGN, false, true, true))
         }
     }
-}
-
-fn hash_str(mut h: u64, s: &str) -> u64 {
-    h = fnv1a_64_update(h, &(s.len() as u32).to_le_bytes());
-    fnv1a_64_update(h, s.as_bytes())
 }
 
 pub(crate) fn visit_direct_struct_deps<'a, F: FnMut(&'a str)>(ty: &'a RelocType, f: &mut F) {
