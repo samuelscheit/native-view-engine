@@ -12,7 +12,7 @@ import java.nio.ByteOrder;
  *
  * <p>Layout: {@code u32 count}, then per event {@code u32 surface, u32 node, u64 timestamp_us,
  * u8 kind, u8 payload_tag} and the payload. {@code kind} is an {@code NativeEventKind} code
- * ({@code NveCoreAbi.EVENT_*}). A write that does not fit throws {@link BufferOverflowException},
+ * ({@code NveAbi.EVENT_*}). A write that does not fit throws {@link BufferOverflowException},
  * a lone surrogate {@link BinCodecException}; both leave the ring as it was.
  */
 public final class EventRingWriter {
