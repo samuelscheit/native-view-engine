@@ -30,7 +30,7 @@ NVE lets you pick **real platform-native views** (`AppKit`, `UIKit`, `Win32/Dire
 
 Electron bundles Chromium and Node.js per application, paying 150–300 MB baseline RSS and hundreds of milliseconds of cold-start latency before the first frame paints.
 
-NVE compiles native apps directly to platform machine code (`~15 MB` class binaries, `< 40 MB` RSS) and supports `MmapSnapshot` Frame-0 boot (`29 µs` raw `mmap` open, `82–136 µs` Frame-0 + state restore for 100 rows). When you *do* want a browser share link or static site, the same Rust crate compiles to a **285.8 KiB gzipped** `wasm-release` bundle with pre-rendered semantic HTML5 SSR and progressive island hydration.
+NVE compiles native apps directly to platform machine code (`~15 MB` class binaries, `< 40 MB` RSS) and supports zero-`unsafe` Frame-0 `NVE2` boot (`< 2 ms` for 1,000 nested nodes with live responsive Taffy layout) plus crash-atomic `StateFile` persistence. When you *do* want a browser share link or static site, the same Rust crate compiles to a **285.8 KiB gzipped** `wasm-release` bundle with pre-rendered semantic HTML5 SSR and progressive island hydration.
 
 ## Measured Architecture Comparison
 
@@ -40,7 +40,7 @@ NVE compiles native apps directly to platform machine code (`~15 MB` class binar
 | **Host Bridge Transport** | 1 batched binary `NVE1` buffer / frame + 64B `NveSceneView` | JSI + `RawProps` + `folly::dynamic` | Dart FFI / MethodChannel | IPC + DOM serialization |
 | **Real Native OS Views** | Yes (AppKit, UIKit, Win32/RNW, GTK4, Qt, Android, DOM) | Yes (iOS/Android/macOS/Windows) | No (canvas-drawn; `PlatformView` for native) | No (HTML/CSS only) |
 | **GPU Canvas Option** | Yes (Skia Metal/Vulkan/D3D12, Qt Quick, `NVE_DRAW1`) | Separate library (`react-native-skia`) | Always Impeller/Skia | WebGL / Canvas2D |
-| **Cold Start (Frame 0)** | **82–136 µs** (`MmapSnapshot` Frame-0 replay) | ~150–400 ms (Hermes + JS bundle eval) | ~100–300 ms (Dart VM + engine init) | ~400–1,200 ms (multi-process) |
+| **Cold Start (Frame 0)** | **< 2 ms** (1k-node `frame0.nve2` + live Taffy layout) | ~150–400 ms (Hermes + JS bundle eval) | ~100–300 ms (Dart VM + engine init) | ~400–1,200 ms (multi-process) |
 | **Incremental 10-Node Patch** | **7.12 µs** (C++20 Fabric) / **1.22 µs** (Web DOM) | ~0.5–2.0 ms (JS reconciler + JSI) | ~0.2–1.0 ms (Dart widget rebuild) | ~0.5–3.0 ms (VDOM + Blink) |
 | **Web Bundle Size** | **285.8 KiB gzip** (`wasm-release` Studio) | Requires `react-native-web` + JS bundle | ~1.5–3.0 MB CanvasKit / skwasm | Not applicable |
 | **Hot Reload Latency** | **< 50 ms** (Tier-1 `NVP1`) / **150–400 ms** (Tier-2 `cdylib`) | ~200–600 ms (Metro Fast Refresh) | ~100–400 ms (Dart JIT) | ~200–800 ms (Vite/Webpack HMR) |
@@ -49,7 +49,7 @@ NVE compiles native apps directly to platform machine code (`~15 MB` class binar
 
 Every crate in `native-view-engine` obeys four non-negotiable engineering invariants:
 
-1. **Direct typed memory on FFI boundaries, compact binary on wire** — In-process FFI uses direct `#[repr(C)]` structs and slices (`NveDirectEvent` / `NveEventBatch`, `NveMapEntry`, `NveSceneView`, 64-byte `NveNodeMeta`) with zero serialization; network and disk persistence use compact binary codecs (`NVE2` tables, `nve-wire-core`, `NVERELOC`, `MmapOffsetArena`) with bounds checks and `XXH64` integrity hashes.
+1. **Direct typed memory on FFI boundaries, compact binary on wire** — In-process FFI uses direct `#[repr(C)]` structs and slices (`NveDirectEvent` / `NveEventBatch`, `NveMapEntry`, `NveSceneView`, 64-byte `NveNodeMeta`) with zero serialization; network and disk persistence use compact binary codecs (`NVE2` tables, `nve-wire-core`, `Frame0File` / `StateFile`) with strict bounds checks and `XXH64` integrity hashes.
 2. **Framework-agnostic engine core** — `nve-engine` has zero dependency on `dioxus-core`. Dioxus (`nve-dioxus`) is an adapter, not a hard requirement.
 3. **Single source of truth for ABIs** — Core and Scene ABIs are derived directly from Rust `#[derive(NveAbi)]` descriptors in `packages/core/abi`, locked by compile-time `offset_of!` assertions and 64-bit XXH64 schema hashes, and verified in CI via `cargo nve codegen abi --check`.
 4. **Honest verification over smoke tests** — Every decoder and host boundary ships with truncated-buffer, fuzz/property, layout-parity, and state-preservation tests alongside Criterion and C++ statistical regression baselines.

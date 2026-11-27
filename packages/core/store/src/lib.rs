@@ -20,6 +20,7 @@ mod column;
 mod commit;
 pub mod events;
 mod id;
+mod node_ref;
 mod resource;
 mod row;
 mod span_pool;
@@ -37,10 +38,11 @@ pub use nve_abi_macros::NveTable;
 pub use resource::{register_codec, Resource, ResourceStore};
 pub use row::{DirtyList, RowRef, RowWriter};
 pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
-pub use store::{NodeRef, NodeRow, NodeStore, RealizationOrder, StoreStats};
+pub use node_ref::NodeRef;
+pub use store::{NodeRow, NodeStore, RealizationOrder, StoreStats};
 pub use table::{
-    desc, registered_tables_schema_hash, slot_of, NveTable, Prop, RegistryError, Res, ResProp, Str,
-    StrProp, TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
+    desc, slot_of, tables_schema_hash, NveTable, Prop, RegistryError, Res, ResProp, Str, StrProp,
+    TableField, TableSlot, MAX_STATIC_TABLE_SLOTS,
 };
 pub use tx::{NodeMut, Transaction};
 pub use value::{Length, Rgba, WordValue};

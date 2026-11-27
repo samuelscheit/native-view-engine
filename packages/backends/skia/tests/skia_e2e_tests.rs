@@ -88,11 +88,11 @@ fn skia_interaction_motion_transitions_and_frame0_roundtrip() {
 
     // Export Frame-0 NVE2 keyframe and boot into a cold SkiaBackend replica with live layout.
     let meta = Frame0Meta {
-        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
         app_build_id: 1,
         env_hash: 0,
     };
-    let frame0 = Frame0File::encode(&store, meta);
+    let frame0 = Frame0File::encode(&store, meta).unwrap();
     let mut cold_backend = SkiaBackend::new();
     cold_backend.set_viewport(1, vp);
     let mut cold = StoreWireReplica::new(cold_backend, nve_components::tables::core_realization_order());

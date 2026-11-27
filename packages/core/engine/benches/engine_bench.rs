@@ -9,7 +9,9 @@ mod native {
     use std::hint::black_box;
 
     use criterion::{criterion_group, Criterion};
-    use nve_components::tables::{Interaction, Layout, TextContent, Typography, Visual};
+    use nve_components::tables::{
+        core_tables_schema_hash, Interaction, Layout, TextContent, Typography, Visual,
+    };
     use nve_engine::{Frame0File, Frame0Meta, StateFile};
     use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
@@ -45,15 +47,16 @@ mod native {
     fn bench_persistence(c: &mut Criterion) {
         let store = build_1k_store();
         let meta = Frame0Meta {
-            table_schema_hash: nve_store::registered_tables_schema_hash(),
+            table_schema_hash: core_tables_schema_hash(),
             app_build_id: 0x0001_0002_0003_0004,
             env_hash: 0x0005_0006_0007_0008,
         };
-        let encoded_frame0 = Frame0File::encode(&store, meta);
+        let encoded_frame0 = Frame0File::encode(&store, meta).expect("encode bench frame0");
 
         c.bench_function("frame0_encode_1k_nodes", |b| {
             b.iter(|| {
-                let bytes = Frame0File::encode(black_box(&store), black_box(meta));
+                let bytes = Frame0File::encode(black_box(&store), black_box(meta))
+                    .expect("encode bench frame0");
                 black_box(bytes.len())
             });
         });

@@ -409,8 +409,73 @@ fn unit_syn_ast_checks_positive_and_negative() {
         hygiene::is_banned_legacy_persistence_path("hosts/skia-shell/src/window/instant_boot.rs"),
         Some("instant_boot")
     );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/Mmap-Arena/mod.rs"),
+        Some("mmap_arena")
+    );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/reloc/node.rs"),
+        Some("/reloc/")
+    );
+    assert_eq!(
+        hygiene::is_banned_legacy_persistence_path("cxx/tests/test-mmap-snapshot.cpp"),
+        Some("mmap_snapshot")
+    );
     assert!(hygiene::is_banned_legacy_persistence_path("packages/core/engine/src/persistence.rs").is_none());
     assert!(hygiene::is_banned_legacy_persistence_path("packages/backends/headless/benches/frame0_boot.rs").is_none());
+    assert!(hygiene::is_banned_legacy_persistence_path("packages/core/store/src/relocated_rows.rs").is_none());
+    assert_eq!(
+        hygiene::detect_banned_legacy_persistence_symbol("pub struct MmapOffsetArena;"),
+        Some("MmapOffsetArena")
+    );
+    assert_eq!(
+        hygiene::detect_banned_legacy_persistence_symbol("let n: RelocSceneNode = x;"),
+        Some("RelocSceneNode")
+    );
+    assert_eq!(
+        hygiene::detect_banned_legacy_persistence_symbol("use crate::RelocSceneRoot;"),
+        Some("RelocSceneRoot")
+    );
+    assert_eq!(
+        hygiene::detect_banned_legacy_persistence_symbol("RelocatableStateArena::open()"),
+        Some("RelocatableStateArena")
+    );
+    assert!(hygiene::detect_banned_legacy_persistence_symbol("Frame0File::boot_into_replica").is_none());
+    assert!(hygiene::detect_banned_legacy_persistence_symbol("MyRelocSceneNodeHelper").is_none());
+
+    let memmap_json = format!(
+        r#"{{
+        "version": 1, "workspace_root": "/repo", "target_directory": "/repo/target",
+        "workspace_members": ["path+file:///repo/packages/core/engine#0.1.0"],
+        "packages": [
+            {{
+                "id": "path+file:///repo/packages/core/engine#0.1.0", "name": "nve-engine", "version": "0.1.0",
+                "manifest_path": "/repo/packages/core/engine/Cargo.toml", "targets": {t_eng}, "features": {{}},
+                "dependencies": [
+                    {{"name": "memmap2", "req": "^0.9", "kind": null, "optional": false, "uses_default_features": true, "features": [], "target": null}}
+                ]
+            }},
+            {{"id": "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0", "name": "memmap2", "version": "0.9.0", "manifest_path": "/cargo/memmap2/Cargo.toml", "targets": {t_mm}, "features": {{}}, "dependencies": []}}
+        ],
+        "resolve": {{
+            "nodes": [
+                {{
+                    "id": "path+file:///repo/packages/core/engine#0.1.0",
+                    "dependencies": ["registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0"],
+                    "deps": [{{"name": "memmap2", "pkg": "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0", "dep_kinds": [{{"kind": null, "target": null}}]}}]
+                }},
+                {{"id": "registry+https://github.com/rust-lang/crates.io-index#memmap2@0.9.0", "dependencies": [], "deps": []}}
+            ]
+        }}
+    }}"#,
+        t_eng = lib_target("nve_engine", "/repo/packages/core/engine"),
+        t_mm = lib_target("memmap2", "/cargo/memmap2"),
+    );
+    let mm_graph = PackageGraph::from_json(&memmap_json).expect("valid memmap2 synthetic graph");
+    assert!(
+        !dag::check_no_memmap2_dep(&mm_graph).is_empty(),
+        "direct/transitive memmap2 in packages/core/engine must fail check_no_memmap2_dep"
+    );
     assert!(bench::check_bench_not_stub("fn main() {}").is_some());
     assert!(
         bench::check_bench_not_stub("use std::hint::black_box; fn b(c: &mut Criterion) { let _ = 1; }")

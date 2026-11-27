@@ -47,6 +47,16 @@ pub struct DesktopWindowHost<A: DesktopApp = HotAppSlot> {
     pub(crate) proxy: Option<EventLoopProxy<HostWakeEvent>>,
 }
 
+/// Canonical [`Frame0Meta`] shared between `DesktopWindowHost::new` cold pre-warm,
+/// `save_frame0_if_configured`, and `nve prerender`.
+pub(crate) fn default_frame0_meta() -> Frame0Meta {
+    Frame0Meta {
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
+        app_build_id: 0,
+        env_hash: 0,
+    }
+}
+
 impl DesktopWindowHost<HotAppSlot> {
     pub fn new(
         dylib_path: PathBuf,
@@ -63,11 +73,7 @@ impl DesktopWindowHost<HotAppSlot> {
             scale_factor: scale,
         };
 
-        let meta = Frame0Meta {
-            table_schema_hash: nve_store::registered_tables_schema_hash(),
-            app_build_id: 0,
-            env_hash: 0,
-        };
+        let meta = default_frame0_meta();
         let prewarmed = options.frame0_path.as_deref().and_then(|path| {
             prewarm_frame0_into_replica(
                 path,
@@ -224,11 +230,7 @@ impl<A: DesktopApp> DesktopWindowHost<A> {
         let Some(frame0_path) = self.options.frame0_path.clone() else {
             return;
         };
-        let meta = Frame0Meta {
-            table_schema_hash: nve_store::registered_tables_schema_hash(),
-            app_build_id: 0,
-            env_hash: 0,
-        };
+        let meta = default_frame0_meta();
         let saved = if let Some(wid) = self.primary_window_id
             && let Some(win) = self.windows.get(&wid)
         {

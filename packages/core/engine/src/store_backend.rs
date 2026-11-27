@@ -135,9 +135,24 @@ impl<B: StoreBackend> StoreWireReplica<B> {
             self.reset();
         }
         if node_count_hint > 0 {
-            self.store
-                .reserve_for_frame0(node_count_hint, wire_bytes.len());
-            self.changes.reserve_for_frame0(node_count_hint);
+            let bounded_hint = node_count_hint
+                .min(wire_bytes.len() / 4)
+                .min(nve_store::NodeId::MAX_INDEX as usize);
+            if self
+                .store
+                .reserve_for_frame0(bounded_hint, wire_bytes.len())
+                .is_err()
+                || self
+                    .changes
+                    .reserve_for_frame0(bounded_hint, wire_bytes.len())
+                    .is_err()
+            {
+                self.reset();
+                self.needs_keyframe = true;
+                return Err(BackendError::Internal(
+                    "frame0 pre-allocation failed".to_string(),
+                ));
+            }
         }
         let apply_res = {
             let mut tx = self.store.tx();

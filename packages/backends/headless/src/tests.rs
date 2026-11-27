@@ -70,11 +70,11 @@ fn headless_commit_layout_hit_test_scene_view_and_frame0_export() {
 
     // Frame-0 NVE2 export round-trips cleanly into a cold replica with live layout.
     let meta = Frame0Meta {
-        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
         app_build_id: 1,
         env_hash: 0,
     };
-    let frame0_bytes = Frame0File::encode(&store, meta);
+    let frame0_bytes = Frame0File::encode(&store, meta).unwrap();
     let mut cold_backend = HeadlessBackend::new();
     cold_backend.set_viewport(1, Viewport { width: 400.0, height: 300.0, scale_factor: 2.0 });
     let mut cold = StoreWireReplica::new(cold_backend, core_realization_order());

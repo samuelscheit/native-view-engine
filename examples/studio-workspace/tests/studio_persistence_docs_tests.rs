@@ -200,7 +200,11 @@ fn nws1_v3_xxh64_corruption_rejection_bitflips_truncation_and_v1_rejection() {
 #[test]
 fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() {
     let dir = unique_test_dir("persist");
-    let cfg = PersistConfig { sync_on_save: true };
+    assert!(
+        PersistConfig::default().sync_on_save,
+        "PersistConfig::default() must be crash-durable (sync_on_save: true)"
+    );
+    let cfg = PersistConfig::default();
 
     let mut store = WorkspaceStore::open_with_config(&dir, cfg).expect("cold open store");
     assert!(store.is_enabled());
@@ -286,12 +290,34 @@ fn workspace_store_cold_save_atomic_replace_corrupt_recovery_and_full_restart() 
     );
     drop(store_cold);
 
+    // Newer schema version on disk must return SchemaMismatch WITHOUT deleting state.nve.
+    let newer_env = nve_engine::StateFile::encode_envelope(99, b"future-v99-payload")
+        .expect("encode future schema");
+    std::fs::write(dir.join(STATE_FILE_NAME), &newer_env).expect("write v99 state");
+    assert!(matches!(
+        WorkspaceStore::open_with_config(&dir, cfg),
+        Err(nve_studio_workspace::PersistError::Persistence(
+            nve_engine::PersistenceError::SchemaMismatch {
+                expected: 3,
+                actual: 99
+            }
+        ))
+    ));
+    assert!(
+        dir.join(STATE_FILE_NAME).exists(),
+        "schema mismatch must preserve state.nve on disk"
+    );
+
     std::fs::write(dir.join(STATE_FILE_NAME), b"CORRUPTED_STATE_BYTES")
         .expect("corrupt state file");
     let store_corrupt =
         WorkspaceStore::open_with_config(&dir, cfg).expect("fallback on corrupt state file");
     assert!(store_corrupt.recovery_stats().recovered_from_corrupt);
     assert_eq!(store_corrupt.initial_state(), &WorkspaceState::default());
+    assert!(
+        dir.join(format!("{STATE_FILE_NAME}.corrupt")).exists(),
+        "corrupt state.nve must be quarantined to state.nve.corrupt"
+    );
     drop(store_corrupt);
 
     let mod_dir = unique_test_dir("module-persist");

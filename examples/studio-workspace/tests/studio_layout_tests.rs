@@ -87,7 +87,7 @@ fn frame0_nve2_and_state_file_boot_restore_and_responsive_viewport() {
     assert!(!saved_state_bytes.is_empty());
 
     let meta = Frame0Meta {
-        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
         app_build_id: 1,
         env_hash: 0,
     };

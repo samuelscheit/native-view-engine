@@ -41,13 +41,16 @@ impl PagedIndex {
         self.pool[self.dir[p] as usize][n as usize & (PAGE - 1)] = row_plus_one;
     }
 
-    fn reserve_for_nodes(&mut self, max_node_index: usize) {
-        let pages = max_node_index.div_ceil(PAGE).max(1);
-        if self.dir.capacity() < pages {
-            self.dir.reserve(pages.saturating_sub(self.dir.len()));
+    fn reserve_for_nodes(&mut self, max_node_index: usize, expected_rows: usize) {
+        let dir_pages = max_node_index.div_ceil(PAGE).max(1);
+        let pool_pages = expected_rows.min(dir_pages).max(1);
+        if self.dir.capacity() < dir_pages {
+            let _ = self.dir.try_reserve(dir_pages.saturating_sub(self.dir.len()));
         }
-        if self.pool.capacity() < pages {
-            self.pool.reserve(pages.saturating_sub(self.pool.len()));
+        if self.pool.capacity() < pool_pages {
+            let _ = self
+                .pool
+                .try_reserve(pool_pages.saturating_sub(self.pool.len()));
         }
     }
 }
@@ -123,30 +126,50 @@ impl Column {
     }
 
     /// Pre-sizes dense/sparse storage for a bulk wire apply so decoding `N` rows performs O(1)
-    /// heap allocations independent of `N`.
+    /// heap allocations independent of `N`, without doubling non-empty sparse columns on delta
+    /// patches or overflowing multiplication on hostile inputs.
     pub(crate) fn reserve_bulk(&mut self, expected_rows: usize, max_node_index: usize) {
         if self.is_dense() {
-            let cap = max_node_index.max(expected_rows + 1).max(64);
+            let cap = max_node_index
+                .max(expected_rows.saturating_add(1))
+                .max(64)
+                .min(NodeId::MAX_INDEX as usize + 1);
+            let Some(word_cap) = cap.checked_mul(self.w) else {
+                return;
+            };
             if self.masks.len() < cap {
+                if self.masks.try_reserve(cap - self.masks.len()).is_err()
+                    || self.owners.try_reserve(cap - self.owners.len()).is_err()
+                    || self.rows.try_reserve(word_cap - self.rows.len()).is_err()
+                {
+                    return;
+                }
                 self.masks.resize(cap, 0);
                 self.owners.resize(cap, 0);
-                self.rows.resize(cap * self.w, 0);
+                self.rows.resize(word_cap, 0);
             }
-        } else {
-            let target = self.owners.len().saturating_add(expected_rows);
+        } else if self.owners.is_empty() {
+            let target = expected_rows.min(max_node_index.saturating_add(1));
             if self.owners.capacity() < target {
-                self.owners.reserve(target - self.owners.len());
+                let _ = self.owners.try_reserve(target);
             }
             if self.masks.capacity() < target {
-                self.masks.reserve(target - self.masks.len());
+                let _ = self.masks.try_reserve(target);
             }
-            let word_target = target.saturating_mul(self.w);
-            if self.rows.capacity() < word_target {
-                self.rows.reserve(word_target - self.rows.len());
+            if let Some(word_target) = target.checked_mul(self.w)
+                && self.rows.capacity() < word_target
+            {
+                let _ = self.rows.try_reserve(word_target);
             }
-            self.index.reserve_for_nodes(max_node_index);
+            self.index.reserve_for_nodes(max_node_index, target);
         }
-        self.dirty.reserve(expected_rows.max(64));
+        let dirty_target = self
+            .dirty
+            .as_slice()
+            .len()
+            .saturating_add(expected_rows)
+            .max(64);
+        let _ = self.dirty.try_reserve(dirty_target);
     }
 
     /// Row of a node that has this table attached.

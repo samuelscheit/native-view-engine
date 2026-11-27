@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use nve_backend_headless::HeadlessBackend;
 use nve_backend_skia::CosmicTextEngine;
-use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_components::tables::{
+    core_realization_order, core_tables_schema_hash, register_core_tables,
+};
 use nve_engine::{
     Frame0File, Frame0Meta, NveApp, StoreBackend, StoreWireReplica, TextMeasurer, Viewport,
 };
@@ -39,7 +41,6 @@ pub struct PrerenderReport {
 fn prerender_module<A: NveApp>(
     app: &mut A,
     viewport: Viewport,
-    schema_version: u32,
     measurer: Arc<dyn TextMeasurer>,
 ) -> Result<(Vec<u8>, usize), String> {
     register_core_tables();
@@ -54,11 +55,12 @@ fn prerender_module<A: NveApp>(
         .map_err(|e| format!("failed to render Frame-0 NVE2: {e}"))?;
 
     let meta = Frame0Meta {
-        table_schema_hash: nve_store::registered_tables_schema_hash(),
-        app_build_id: u64::from(schema_version),
+        table_schema_hash: core_tables_schema_hash(),
+        app_build_id: 0,
         env_hash: 0,
     };
-    let buf = Frame0File::encode(replica.store(), meta);
+    let buf = Frame0File::encode(replica.store(), meta)
+        .map_err(|e| format!("failed to encode Frame-0 NVE2: {e}"))?;
 
     // Round-trip validate into a cold replica before writing to disk.
     let mut verify_backend = HeadlessBackend::new();
@@ -97,13 +99,13 @@ pub fn prerender_app_to_file(opts: &PrerenderOptions) -> Result<PrerenderReport,
         || app_arg.eq_ignore_ascii_case("nve-studio-workspace")
     {
         let mut app = StudioWorkspaceModule::create(1);
-        let res = prerender_module(&mut app, viewport, STUDIO_SNAPSHOT_SCHEMA_VERSION, measurer)?;
+        let res = prerender_module(&mut app, viewport, measurer)?;
         ("studio".to_string(), STUDIO_SNAPSHOT_SCHEMA_VERSION, res)
     } else if app_arg.eq_ignore_ascii_case("kitchen-sink")
         || app_arg.eq_ignore_ascii_case("nve-example-kitchen-sink")
     {
         let mut app = KitchenSinkModule::create(1);
-        let res = prerender_module(&mut app, viewport, KITCHEN_SINK_STATE_VERSION, measurer)?;
+        let res = prerender_module(&mut app, viewport, measurer)?;
         ("kitchen-sink".to_string(), KITCHEN_SINK_STATE_VERSION, res)
     } else {
         return Err(format!(
@@ -176,8 +178,8 @@ mod tests {
             assert!(report.byte_len >= 64);
 
             let meta = Frame0Meta {
-                table_schema_hash: nve_store::registered_tables_schema_hash(),
-                app_build_id: u64::from(report.schema_version),
+                table_schema_hash: core_tables_schema_hash(),
+                app_build_id: 0,
                 env_hash: 0,
             };
             let mut skia = SkiaBackend::new();

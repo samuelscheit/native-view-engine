@@ -64,7 +64,7 @@ All numbers below are real measured medians from `benchmarks/baseline.json` reco
 | `interop/gesture_arbitration/nested_scroll_sequence` | **64.51 ns** | Zero-alloc ancestor chain arbitration |
 | `interop/channel_bus/publish_subscribers/1` / `8` / `64` | **47.5 ns** / **66.7 ns** / **385.8 ns** | `NveChannelBus` binary fan-out |
 | **Studio WASM bundle size (`wasm-release` + `wasm-opt -Oz`)** | **285.8 KiB gzipped** | `hosts/web-shell/build.sh` |
-| **Cold `MmapSnapshot` Frame-0 + state restore (100 rows)** | **82–136 µs** | `29 µs` raw `mmap` open + `.nvewal` |
+| **Frame-0 `NVE2` boot + live Taffy layout (1,000 nodes)** | **< 2 ms** | Cold replica + page-cached `frame0.nve2` read, O(1) allocs |
 | **Native flagship app RSS budget** | **< 40 MB RAM** | ~15 MB native binary vs 150–300 MB Electron |
 
 ## Running Benchmarks & Capturing Traces

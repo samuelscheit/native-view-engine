@@ -207,7 +207,8 @@ impl WireDecoder {
                     return Err(WireError::Truncated);
                 }
                 tx.store_mut()
-                    .reserve_for_frame0(count as usize, r.remaining());
+                    .reserve_for_frame0(count as usize, r.remaining())
+                    .map_err(|_| WireError::Truncated)?;
                 for _ in 0..count {
                     let id = r.node()?;
                     if id.index() >= max_node_index || !tx.create_at(id) {

@@ -1,5 +1,6 @@
 //! Criterion benchmark gating Frame-0 `NVE2` keyframe boot + live `TaffyStoreLayout`
-//! on a realistic 1,000-node UI tree (`< 2 ms` budget).
+//! on a realistic 1,000-node UI tree (`< 2 ms` budget; measures cold replica construction +
+//! page-cached file open/read + XXH64/footer validation + NVE2 decode + live Taffy layout).
 
 #[cfg(target_arch = "wasm32")]
 fn main() {}
@@ -11,10 +12,11 @@ mod native {
     use criterion::{criterion_group, Criterion};
     use nve_backend_headless::HeadlessBackend;
     use nve_components::tables::{
-        FlexDirection, Interaction, Layout, TextContent, Typography, Visual,
+        core_realization_order, core_tables_schema_hash, FlexDirection, Interaction, Layout,
+        TextContent, Typography, Visual,
     };
     use nve_engine::{Frame0File, Frame0Meta, StoreBackend, StoreWireReplica, Viewport};
-    use nve_store::{ChangeSet, Length, NodeId, NodeStore, RealizationOrder, Rgba};
+    use nve_store::{ChangeSet, Length, NodeId, NodeStore, Rgba};
 
     /// Builds a realistic 1,000-node multi-section workspace tree (root + shell + sidebar +
     /// content + 248 rows each with container + title + badge + action button = 1,000 nodes).
@@ -119,7 +121,7 @@ mod native {
     fn bench_frame0_boot(c: &mut Criterion) {
         let store = build_realistic_1k_tree();
         let meta = Frame0Meta {
-            table_schema_hash: nve_store::registered_tables_schema_hash(),
+            table_schema_hash: core_tables_schema_hash(),
             app_build_id: 0x0001_0002_0003_0004,
             env_hash: 0x0005_0006_0007_0008,
         };
@@ -142,7 +144,7 @@ mod native {
             b.iter(|| {
                 let mut backend = HeadlessBackend::new().with_mutation_tracking(false);
                 backend.set_viewport(1, vp);
-                let mut replica = StoreWireReplica::new(backend, RealizationOrder::default());
+                let mut replica = StoreWireReplica::new(backend, core_realization_order());
                 let (footer, _) = Frame0File::boot_into_replica_with_buf(
                     black_box(&path),
                     black_box(meta),
@@ -161,7 +163,7 @@ mod native {
             b.iter(|| {
                 let mut backend = HeadlessBackend::new().with_mutation_tracking(false);
                 backend.set_viewport(1, vp);
-                let mut replica = StoreWireReplica::new(backend, RealizationOrder::default());
+                let mut replica = StoreWireReplica::new(backend, core_realization_order());
                 let (footer, _) = Frame0File::boot_bytes_into_replica(
                     black_box(&raw_bytes),
                     black_box(meta),

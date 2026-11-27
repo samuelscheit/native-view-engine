@@ -27,7 +27,8 @@ pub use layout::{
 pub use persistence::{
     write_file_atomic, Frame0File, Frame0Footer, Frame0Meta, Frame0Miss, PersistenceError,
     StateFile, StateRecoveryStats, StateSaveOutcome, DEFAULT_FRAME0_FILE_NAME,
-    DEFAULT_STATE_FILE_NAME, FRAME0_FOOTER_SIZE, STATE_FILE_HEADER_SIZE, STATE_FILE_MAGIC,
+    DEFAULT_STATE_FILE_NAME, FRAME0_FOOTER_SIZE, MAX_FRAME0_FILE_BYTES, MAX_STATE_FILE_BYTES,
+    STATE_FILE_HEADER_SIZE, STATE_FILE_MAGIC,
 };
 pub use profiler::{FrameProfiler, FrameTiming};
 

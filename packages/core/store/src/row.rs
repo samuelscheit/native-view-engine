@@ -91,10 +91,15 @@ impl DirtyList {
     }
 
     #[inline]
-    pub(crate) fn reserve(&mut self, min_cap: usize) {
+    pub(crate) fn try_reserve(
+        &mut self,
+        min_cap: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
         if self.buf.len() < min_cap {
+            self.buf.try_reserve(min_cap - self.buf.len())?;
             self.buf.resize(min_cap, NodeIndex::NULL);
         }
+        Ok(())
     }
 
     #[inline]

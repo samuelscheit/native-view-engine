@@ -7,6 +7,9 @@
 use std::fmt;
 
 use nve_engine::{DEFAULT_FRAME0_FILE_NAME, DEFAULT_STATE_FILE_NAME, PersistenceError};
+pub use nve_engine::{
+    StateRecoveryStats as PersistRecoveryStats, StateSaveOutcome as PersistOutcome,
+};
 
 use crate::state::WORKSPACE_STATE_BIN_VERSION;
 
@@ -22,27 +25,16 @@ pub const USER_FRAME0_FILE_NAME: &str = DEFAULT_FRAME0_FILE_NAME;
 /// Application schema version embedded in Studio `state.nve` and `frame0.nve2` headers.
 pub const STUDIO_SNAPSHOT_SCHEMA_VERSION: u32 = WORKSPACE_STATE_BIN_VERSION as u32;
 
-/// Durability configuration for [`WorkspaceStore`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Durability configuration for [`WorkspaceStore`] (durable `sync_on_save: true` by default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersistConfig {
     pub sync_on_save: bool,
 }
 
-/// Diagnostic summary returned by [`WorkspaceStore::recovery_stats`] after opening a directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PersistRecoveryStats {
-    pub loaded_from_disk: bool,
-    pub schema_mismatch_reset: bool,
-    pub recovered_from_corrupt: bool,
-    pub generation: u64,
-}
-
-/// Outcome returned by [`WorkspaceStore::save`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PersistOutcome {
-    pub generation: u64,
-    pub byte_len: usize,
-    pub payload_checksum: u64,
+impl Default for PersistConfig {
+    fn default() -> Self {
+        Self { sync_on_save: true }
+    }
 }
 
 /// Persistence error surfaced by [`WorkspaceStore`] operations.
@@ -128,35 +120,20 @@ mod imp {
                 STUDIO_SNAPSHOT_SCHEMA_VERSION,
                 config.sync_on_save,
             )?;
-            let raw_rec = state_file.recovery_stats();
-            let mut recovery = PersistRecoveryStats {
-                loaded_from_disk: raw_rec.loaded_from_disk,
-                schema_mismatch_reset: raw_rec.schema_mismatch_reset,
-                recovered_from_corrupt: raw_rec.recovered_from_corrupt,
-                generation: raw_rec.generation,
-            };
+            let mut recovery = state_file.recovery_stats();
 
-            let initial_state = match state_file.load() {
-                Ok(Some(bytes)) => match WorkspaceState::from_bytes(&bytes) {
+            let initial_state = match state_file.load()? {
+                Some(bytes) => match WorkspaceState::from_bytes(&bytes) {
                     Some(decoded) => decoded,
                     None => {
-                        recovery.loaded_from_disk = false;
-                        recovery.recovered_from_corrupt = true;
+                        state_file.quarantine_corrupt()?;
+                        recovery = state_file.recovery_stats();
                         let default_state = WorkspaceState::default();
-                        state_file.reset()?;
                         let _ = state_file.save(&default_state.to_bytes())?;
                         default_state
                     }
                 },
-                Ok(None) => WorkspaceState::default(),
-                Err(_) => {
-                    recovery.loaded_from_disk = false;
-                    recovery.recovered_from_corrupt = true;
-                    let default_state = WorkspaceState::default();
-                    state_file.reset()?;
-                    let _ = state_file.save(&default_state.to_bytes())?;
-                    default_state
-                }
+                None => WorkspaceState::default(),
             };
 
             Ok(Self {
@@ -205,12 +182,7 @@ mod imp {
 
         /// Crash-atomically persists `state` into `state.nve`.
         pub fn save(&mut self, state: &WorkspaceState) -> Result<PersistOutcome, PersistError> {
-            let out = self.state_file.save(&state.to_bytes())?;
-            Ok(PersistOutcome {
-                generation: out.generation,
-                byte_len: out.byte_len,
-                payload_checksum: out.payload_checksum,
-            })
+            Ok(self.state_file.save(&state.to_bytes())?)
         }
 
         /// Crash-atomically persists both `state` (`state.nve`) and a Frame-0 `NVE2` keyframe (`frame0.nve2`).
@@ -242,8 +214,10 @@ mod imp {
         /// Resets persisted state and deletes any cached `frame0.nve2`.
         pub fn reset(&mut self) -> Result<(), PersistError> {
             self.state_file.reset()?;
-            if self.frame0_path.exists() {
-                let _ = std::fs::remove_file(&self.frame0_path);
+            match std::fs::remove_file(&self.frame0_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(PersistError::Io(e)),
             }
             self.initial_state = WorkspaceState::default();
             Ok(())

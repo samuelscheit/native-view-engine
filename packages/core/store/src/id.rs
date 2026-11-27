@@ -161,6 +161,14 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    pub fn try_reserve(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.raw.try_reserve(additional)
+    }
+
+    #[inline]
     pub fn push(&mut self, value: T) -> I {
         let idx = I::from_usize(self.raw.len());
         self.raw.push(value);

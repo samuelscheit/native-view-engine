@@ -446,7 +446,7 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
         std::process::id()
     ));
     let meta = Frame0Meta {
-        table_schema_hash: nve_store::registered_tables_schema_hash(),
+        table_schema_hash: nve_components::tables::core_tables_schema_hash(),
         app_build_id: 7,
         env_hash: 0,
     };
@@ -502,6 +502,59 @@ fn frame0_nve2_save_cold_prewarm_and_meta_enforcement() {
 
     let _ = std::fs::remove_file(&frame0_path);
     let _ = std::fs::remove_file(&ppm_path);
+}
+
+#[test]
+fn skia_shell_default_frame0_meta_is_stable_across_extra_table_registration() {
+    #[allow(dead_code)]
+    #[derive(nve_store::NveTable)]
+    #[nve_table(name = "skia_shell.test.late_module_table", storage = "sparse")]
+    struct LateModuleTable {
+        #[effect(paint)]
+        tag: u32,
+    }
+
+    let cold_meta = super::window_host::default_frame0_meta();
+    assert_eq!(cold_meta.app_build_id, 0);
+    assert_eq!(
+        cold_meta.table_schema_hash,
+        nve_components::tables::core_tables_schema_hash()
+    );
+
+    let viewport = Viewport {
+        width: 320.0,
+        height: 200.0,
+        scale_factor: 1.0,
+    };
+    let mut session = DesktopSession::new(
+        MockCounterApp::new(),
+        1,
+        viewport,
+        ColorRgba::BLACK,
+        false,
+    );
+    session.render_and_rasterize().unwrap();
+
+    let frame0_path = std::env::temp_dir().join(format!(
+        "nve_skia_shell_cold_meta_{}.nve2",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&frame0_path);
+    let saved_footer = session
+        .save_frame0(&frame0_path, super::window_host::default_frame0_meta())
+        .expect("save frame0 with default_frame0_meta");
+
+    // Register an unrelated module table AFTER saving — default_frame0_meta() must NOT drift!
+    let _ = <LateModuleTable as nve_store::NveTable>::slot();
+    let post_reg_meta = super::window_host::default_frame0_meta();
+    assert_eq!(post_reg_meta, cold_meta);
+
+    let (_replica, _buf, loaded_footer) =
+        prewarm_frame0_into_replica(&frame0_path, post_reg_meta, 1, viewport, ColorRgba::BLACK)
+            .expect("cold prewarm must hit cache despite late module table registration");
+    assert_eq!(loaded_footer.node_count, saved_footer.node_count);
+
+    let _ = std::fs::remove_file(&frame0_path);
 }
 
 #[test]

@@ -221,10 +221,6 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
         "Generated-file naming & zero tracked generated/build/trace artifacts",
         &hygiene::check_generated_files_and_artifacts(idx),
     );
-    assert_no_violations(
-        "Zero retired legacy persistence paths (mmap_arena / reloc_scene / nve_snapshot / instant_boot)",
-        &hygiene::check_banned_legacy_persistence_paths(idx),
-    );
     assert_no_violations("Zero marketing buzzword `Zero-JSON`", &hygiene::check_zero_json_buzzword(idx));
     assert_no_violations(
         "No hardcoded personal endpoints, hosts, or home paths",
@@ -274,6 +270,24 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
         }
     }
     assert_no_violations("Zero hardcoded *_SCHEMA_HASH hex literals", &v_hashes);
+}
+
+/// Enforces [INV:no-reloc-mmap-snapshot].
+#[test]
+fn no_retired_reloc_mmap_snapshot_paths_symbols_or_memmap2_deps() {
+    let idx = repo_index();
+    assert_no_violations(
+        "Zero retired legacy persistence paths (mmap_arena / reloc_scene / nve_snapshot / instant_boot / mmap_snapshot / reloc/)",
+        &hygiene::check_banned_legacy_persistence_paths(idx),
+    );
+    assert_no_violations(
+        "Zero retired legacy persistence symbols (MmapOffsetArena / RelocSceneNode / RelocSceneRoot / RelocatableStateArena)",
+        &hygiene::check_banned_legacy_persistence_symbols(idx),
+    );
+    assert_no_violations(
+        "Zero direct memmap2 dependencies workspace-wide and zero transitive memmap2 in core (non-dioxus) / headless / web",
+        &dag::check_no_memmap2_dep(&idx.graph),
+    );
 }
 
 /// Enforces [INV:zero-fnv1a].

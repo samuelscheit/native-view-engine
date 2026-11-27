@@ -68,6 +68,35 @@ pub const CORE_TABLE_DESCS: &[&TableDesc] = &[
     &TextInput::DESC,
 ];
 
+/// Canonical descriptor list of all 17 cross-platform core tables.
+pub const CORE_TABLE_DESCS: &[&nve_store::TableDesc] = &[
+    &Layout::DESC,
+    &GridLayout::DESC,
+    &GridItem::DESC,
+    &Visual::DESC,
+    &Typography::DESC,
+    &TextContent::DESC,
+    &Transform::DESC,
+    &Motion::DESC,
+    &Responsive::DESC,
+    &Interaction::DESC,
+    &Accessibility::DESC,
+    &DebugId::DESC,
+    &StreamBoundary::DESC,
+    &Link::DESC,
+    &Scroll::DESC,
+    &Image::DESC,
+    &TextInput::DESC,
+];
+
+/// Deterministic 64-bit XXH64 schema digest over [`CORE_TABLE_DESCS`].
+///
+/// Independent of process-global lazy table registration order or optional module tables (such as
+/// `Canvas` or `Svg`), so cold Frame-0 pre-warm always matches saved `frame0.nve2` footers.
+pub fn core_tables_schema_hash() -> u64 {
+    nve_store::tables_schema_hash(CORE_TABLE_DESCS)
+}
+
 /// Registers every cross-platform core table and its resource codecs in the process-global table registry.
 /// Idempotent and fast after the first call.
 pub fn register_core_tables() {

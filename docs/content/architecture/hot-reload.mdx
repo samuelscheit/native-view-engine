@@ -64,7 +64,7 @@ When Rust logic, signal types, or event handlers change, `nve dev` falls back to
 ::step{title="Incremental cdylib rebuild"}
 `cargo build -p <package>` runs with `[profile.dev.package."*"] opt-level = 2` (so dependencies are never rebuilt) and `-C split-debuginfo=unpacked` on macOS (skipping `dsymutil`). The resulting `.dylib`/`.so`/`.dll` is copied to a generation-stamped path so `dlopen` / `LoadLibrary` never returns a cached image handle.
 ::step{title="Snapshot live app state"}
-On receiving `HotPatchMsg::DylibReload`, the host invokes `old_dev_api->snapshot_state(old_handle)` (typically backed by `SignalArchive` `NVE_SIG1` or `RelocatableStateArena`).
+On receiving `HotPatchMsg::DylibReload`, the host invokes `old_dev_api->snapshot_state(old_handle)` (typically backed by `SignalArchive` `NVE_SIG1` or app binary state).
 ::step{title="Load new generation via nve_get_interface"}
 The host `dlopen`s the new library, resolves `nve_get_interface`, fetches `NVE_IFACE_SURFACE`, `NVE_IFACE_DEV`, and `NVE_IFACE_HOST`, creates `new_handle = new_surface_api->create(surface_id)`, and re-binds `NveHostCallbacks`.
 ::step{title="Restore state and render Frame 0"}
