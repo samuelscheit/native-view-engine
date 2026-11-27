@@ -37,7 +37,7 @@ pub use nve_abi_macros::NveTable;
 pub use resource::{register_codec, Resource, ResourceStore};
 pub use row::{DirtyList, RowRef, RowWriter};
 pub use span_pool::{class_cap, ChildSpan, Span, SpanPool, StrArena, StrSpan};
-pub use store::{NodeRef, NodeRow, NodeStore, RealizationOrder, StoreStats};
+pub use store::{LIVE, NodeRef, NodeRow, NodeStore, RealizationOrder, StoreStats};
 pub use table::{
     desc, slot_of, NveTable, Prop, RegistryError, Res, ResProp, Str, StrProp, TableField,
     TableSlot, MAX_STATIC_TABLE_SLOTS,

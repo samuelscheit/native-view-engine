@@ -1691,10 +1691,10 @@ fn dogfood_core_and_scene_abi_specs_parse_and_match_nve_abi_and_disk() {
         nve_abi::NVE_SCENE_SCHEMA_HASH
     );
 
-    // Verify all 16 Core ABI + Scene ABI + XXH64 mirror files are deterministic, obey naming
+    // Verify all 17 Core + Scene + Runtime ABI + XXH64 mirror files are deterministic, obey naming
     // invariants, and match any materialized files on disk byte-for-byte.
     let all = nve_codegen::generate_all_abi_files();
-    assert_eq!(all.len(), 16);
+    assert_eq!(all.len(), 17);
     assert_eq!(all, nve_codegen::generate_all_abi_files());
     common::assert_generated_file_naming_and_optional_disk_parity(&all, &root, false);
 }

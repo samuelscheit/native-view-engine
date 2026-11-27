@@ -8,6 +8,7 @@ members = [
     "packages/core/components",
     "packages/core/engine",
     "packages/core/layout",
+    "packages/core/runtime",
     "packages/core/dioxus",
     "packages/core/codegen",
     "packages/core/interop",
@@ -94,6 +95,7 @@ nve-abi-macros = { version = "0.1.0", path = "packages/core/abi-macros" }
 nve-components = { version = "0.1.0", path = "packages/core/components" }
 nve-engine = { version = "0.1.0", path = "packages/core/engine" }
 nve-layout = { version = "0.1.0", path = "packages/core/layout" }
+nve-runtime = { version = "0.1.0", path = "packages/core/runtime" }
 nve-layout-yoga = { version = "0.1.0", path = "packages/modules/layout-yoga" }
 nve-dioxus = { version = "0.1.0", path = "packages/core/dioxus" }
 nve-codegen = { version = "0.1.0", path = "packages/core/codegen" }

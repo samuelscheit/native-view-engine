@@ -19,7 +19,9 @@ use crate::schema::export::{
 };
 use crate::schema::hybrid::{HybridFileSpec, HybridTarget};
 
-pub use c_cpp::{generate_c_core_abi_h, generate_c_scene_abi_h, generate_hybrid_cpp};
+pub use c_cpp::{
+    generate_c_core_abi_h, generate_c_runtime_abi_h, generate_c_scene_abi_h, generate_hybrid_cpp,
+};
 pub use dart::{
     generate_dart_core_abi, generate_dart_scene_abi, generate_export_flutter, generate_hybrid_dart,
 };
@@ -148,10 +150,20 @@ pub fn generate_all_scene_abi_files() -> Vec<GeneratedFile> {
     ]
 }
 
-/// Generates every Core ABI (5) + Scene ABI (5) + XXH64 mirror (6) artifact.
+/// Generates all Runtime ABI header files keyed by workspace-relative path.
+pub fn generate_all_runtime_abi_files() -> Vec<GeneratedFile> {
+    vec![GeneratedFile {
+        relative_path: "packages/core/host-cxx/include/nve/host/nve_runtime_abi.generated.h"
+            .to_owned(),
+        content: generate_c_runtime_abi_h(),
+    }]
+}
+
+/// Generates every Core ABI (5) + Scene ABI (5) + Runtime ABI (1) + XXH64 mirror (6) artifact.
 pub fn generate_all_abi_files() -> Vec<GeneratedFile> {
     let mut files = generate_all_core_abi_files();
     files.extend(generate_all_scene_abi_files());
+    files.extend(generate_all_runtime_abi_files());
     files.extend(hash::generate_all_hash_files());
     files
 }

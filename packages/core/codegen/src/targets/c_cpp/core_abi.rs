@@ -389,10 +389,13 @@ pub fn generate_c_core_abi_h() -> String {
         out,
         "/* Single exported symbol per NVE module (`nve_get_interface`). */"
     );
+    writeln!(out, "#ifndef NVE_TYPE_GET_INTERFACE_FN_DEFINED");
+    writeln!(out, "#define NVE_TYPE_GET_INTERFACE_FN_DEFINED");
     writeln!(
         out,
         "typedef const void* (*NveGetInterfaceFn)(uint32_t interface_id);"
     );
+    writeln!(out, "#endif");
     writeln!(out, "NVE_API const void* nve_get_interface(uint32_t interface_id);");
     writeln!(out);
     writeln!(
@@ -447,6 +450,16 @@ pub fn generate_c_core_abi_h() -> String {
 }
 
 fn emit_c_core_struct_or_union(out: &mut CodeWriter, s: &HybridStructSpec) {
+    let guard = match s.name.as_str() {
+        "NveBufferSlice" => Some("NVE_TYPE_BUFFER_SLICE_DEFINED"),
+        "NveStrSlice" => Some("NVE_TYPE_STR_SLICE_DEFINED"),
+        "NveEventBatch" => Some("NVE_TYPE_EVENT_BATCH_DEFINED"),
+        _ => None,
+    };
+    if let Some(g) = guard {
+        writeln!(out, "#ifndef {g}");
+        writeln!(out, "#define {g}");
+    }
     let is_forward_typedef = matches!(s.name.as_str(), "NveValue" | "NveMapEntry");
     if s.is_union {
         writeln!(out, "typedef union {} {{", s.name);
@@ -469,6 +482,9 @@ fn emit_c_core_struct_or_union(out: &mut CodeWriter, s: &HybridStructSpec) {
         writeln!(out, "}};");
     } else {
         writeln!(out, "}} {};", s.name);
+    }
+    if guard.is_some() {
+        writeln!(out, "#endif");
     }
     writeln!(out);
 }

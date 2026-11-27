@@ -297,7 +297,7 @@ fn unified_core_and_scene_abi_generated_files_match_checked_in_artifacts_byte_fo
 
     assert_eq!(core_files.len(), 5);
     assert_eq!(scene_files.len(), 5);
-    assert_eq!(all_files.len(), 16);
+    assert_eq!(all_files.len(), 17);
 
     assert_ne!(NVE_CORE_ABI_SCHEMA_HASH, 0);
     assert_eq!(core_abi_schema_hash(), NVE_CORE_ABI_SCHEMA_HASH);

@@ -6,8 +6,10 @@ pub mod export_rn_ios;
 pub mod export_rn_windows;
 pub mod hybrid;
 pub mod import_rn;
+pub mod runtime_abi;
 pub mod scene_abi;
 
 pub use core_abi::generate_c_core_abi_h;
-pub use scene_abi::generate_c_scene_abi_h;
 pub use hybrid::generate_hybrid_cpp;
+pub use runtime_abi::generate_c_runtime_abi_h;
+pub use scene_abi::generate_c_scene_abi_h;

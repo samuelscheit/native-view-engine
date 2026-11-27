@@ -38,11 +38,6 @@ pub(crate) fn offset_rect(rect: LayoutRect, offset: (f32, f32)) -> LayoutRect {
 }
 
 #[inline]
-pub(crate) fn point_in_rect(x: f32, y: f32, r: LayoutRect) -> bool {
-    r.width > 0.0 && r.height > 0.0 && x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
-}
-
-#[inline]
 pub(crate) fn intersect_rects(a: LayoutRect, b: LayoutRect) -> Option<LayoutRect> {
     let x0 = a.x.max(b.x);
     let y0 = a.y.max(b.y);

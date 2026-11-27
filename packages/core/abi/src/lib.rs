@@ -15,6 +15,7 @@ pub mod hash;
 pub mod host;
 mod layout_asserts;
 pub mod num;
+pub mod runtime;
 pub mod scene;
 pub mod schema;
 pub mod style_types;
@@ -41,6 +42,12 @@ pub use host::{
     METHOD_WINDOW_REQUEST_FRAME, NVE_CHANNEL_FLAG_RETAIN, SERVICE_CHANNEL, SERVICE_CLIPBOARD,
     SERVICE_FILESYSTEM, SERVICE_HAPTICS, SERVICE_LINKING, SERVICE_NOTIFICATIONS,
     SERVICE_SECURE_STORE, SERVICE_SYSTEM_ENV, SERVICE_WINDOW,
+};
+pub use runtime::{
+    NveLayoutRect, NveNodeRow, NveRuntimeApi, NveRuntimeConfig, NveRuntimeGetInterfaceFn,
+    NveRuntimeHandle, NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, NveRuntimeWakeFn,
+    NVE_LAYOUT_RECT_SIZE, NVE_NODE_ROW_FLAG_LIVE, NVE_NODE_ROW_SIZE, NVE_RUNTIME_ABI_VERSION,
+    NVE_RUNTIME_SCHEMA_HASH,
 };
 pub use scene::{
     NveNodeMeta, NveRenderNode, NveSceneRef, NveSceneTable, NveSceneView, SceneError,

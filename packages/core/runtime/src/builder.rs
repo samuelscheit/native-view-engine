@@ -1,0 +1,205 @@
+//! [`RuntimeBuilder`], [`RuntimeError`], and platform-safe monotonic [`Timer`] for
+//! [`SurfaceRuntime`].
+
+use std::cell::UnsafeCell;
+use std::fmt;
+use std::sync::Arc;
+
+use nve_abi::{
+    NveRuntimeMetrics, NveRuntimeSceneView, NveRuntimeStatus, SurfaceId, NVE_RUNTIME_SCHEMA_HASH,
+};
+use nve_components::tables::{core_realization_order, register_core_tables};
+use nve_engine::Viewport;
+use nve_layout::{DynLayoutEngine, LaidOutScene, TaffyStoreLayout, TextMeasurer};
+use nve_store::wire::WireDecoder;
+use nve_store::{ChangeSet, NodeStore, RealizationOrder};
+
+use crate::app::{FrameTickHook, RuntimeApp};
+use crate::lock::SceneLock;
+use crate::surface::{RuntimeInner, SurfaceRuntime, SurfaceState};
+use crate::wake::WakeBridge;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct Timer(std::time::Instant);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Timer {
+    #[inline]
+    pub(crate) fn start() -> Self {
+        Self(std::time::Instant::now())
+    }
+
+    #[inline]
+    pub(crate) fn elapsed_us(&self) -> u64 {
+        self.0.elapsed().as_micros() as u64
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct Timer;
+
+#[cfg(target_arch = "wasm32")]
+impl Timer {
+    #[inline]
+    pub(crate) fn start() -> Self {
+        Self
+    }
+
+    #[inline]
+    pub(crate) fn elapsed_us(&self) -> u64 {
+        0
+    }
+}
+
+/// Error returned by [`SurfaceRuntime`] operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeError {
+    /// A host still holds an active `scene_acquire` read lock or concurrent hit-test lock.
+    SceneBusy,
+    /// Invalid binary `NVE2` wire frame payload.
+    WireDecode(String),
+    /// Invalid argument passed to the runtime.
+    InvalidArg(&'static str),
+}
+
+impl RuntimeError {
+    pub const fn status(&self) -> NveRuntimeStatus {
+        match self {
+            Self::SceneBusy => NveRuntimeStatus::Busy,
+            Self::WireDecode(_) => NveRuntimeStatus::Io,
+            Self::InvalidArg(_) => NveRuntimeStatus::InvalidArg,
+        }
+    }
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SceneBusy => f.write_str("runtime scene is currently locked by an active reader"),
+            Self::WireDecode(msg) => write!(f, "NVE2 wire decode failed: {msg}"),
+            Self::InvalidArg(msg) => write!(f, "invalid runtime argument: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeError {}
+
+/// Builder for configuring a [`SurfaceRuntime`] with a custom layout engine, text measurer,
+/// realization order, frame-tick hooks, and initial app.
+pub struct RuntimeBuilder {
+    surface_id: SurfaceId,
+    viewport: Viewport,
+    layout: Option<DynLayoutEngine>,
+    text_measurer: Option<Arc<dyn TextMeasurer>>,
+    realization: Option<RealizationOrder>,
+    app: Option<Box<dyn RuntimeApp>>,
+    tick_hooks: Vec<Box<dyn FrameTickHook>>,
+}
+
+impl Default for RuntimeBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RuntimeBuilder {
+    pub fn new() -> Self {
+        Self {
+            surface_id: 1,
+            viewport: Viewport::default(),
+            layout: None,
+            text_measurer: None,
+            realization: None,
+            app: None,
+            tick_hooks: Vec::new(),
+        }
+    }
+
+    pub fn surface_id(mut self, id: SurfaceId) -> Self {
+        self.surface_id = id;
+        self
+    }
+
+    pub fn viewport(mut self, viewport: Viewport) -> Self {
+        self.viewport = viewport;
+        self
+    }
+
+    pub fn layout(mut self, engine: DynLayoutEngine) -> Self {
+        self.layout = Some(engine);
+        self
+    }
+
+    pub fn text_measurer(mut self, measurer: Arc<dyn TextMeasurer>) -> Self {
+        self.text_measurer = Some(measurer);
+        self
+    }
+
+    pub fn realization_order(mut self, order: RealizationOrder) -> Self {
+        self.realization = Some(order);
+        self
+    }
+
+    pub fn app(mut self, app: Box<dyn RuntimeApp>) -> Self {
+        self.app = Some(app);
+        self
+    }
+
+    pub fn tick_hook(mut self, hook: Box<dyn FrameTickHook>) -> Self {
+        self.tick_hooks.push(hook);
+        self
+    }
+
+    pub fn build(self) -> SurfaceRuntime {
+        register_core_tables();
+        let layout: DynLayoutEngine = self
+            .layout
+            .unwrap_or_else(|| Box::new(TaffyStoreLayout::new()));
+        let mut scene = match self.text_measurer {
+            Some(m) => LaidOutScene::with_text_measurer(layout, m),
+            None => LaidOutScene::new(layout),
+        };
+        scene.set_viewport(self.viewport);
+
+        let mut replica_store = NodeStore::replica();
+        replica_store
+            .set_realization_order(self.realization.unwrap_or_else(core_realization_order));
+
+        let wake = Arc::new(WakeBridge::new());
+        let mut app = self.app;
+        if let Some(ref mut a) = app {
+            let wake_ref = Arc::clone(&wake);
+            a.install_wake(Arc::new(move || wake_ref.trigger()));
+        }
+
+        SurfaceRuntime {
+            lock: SceneLock::new(),
+            wake,
+            inner: UnsafeCell::new(RuntimeInner {
+                app,
+                replica_store,
+                state: SurfaceState {
+                    surface_id: self.surface_id,
+                    frame_id: 0,
+                    wire_decoder: WireDecoder::default(),
+                    wire_changes: ChangeSet::default(),
+                    empty_changes: ChangeSet::default(),
+                    scene,
+                    tick_hooks: self.tick_hooks,
+                    rects: Vec::new(),
+                    published_tables: Vec::new(),
+                    published_dirty_buf: Vec::new(),
+                    dirty_indices: Vec::new(),
+                    removed_ids: Vec::new(),
+                    published_view: NveRuntimeSceneView {
+                        schema_hash: NVE_RUNTIME_SCHEMA_HASH,
+                        ..NveRuntimeSceneView::default()
+                    },
+                    metrics: NveRuntimeMetrics::default(),
+                    needs_render: true,
+                    needs_publish: true,
+                },
+            }),
+        }
+    }
+}

@@ -34,7 +34,6 @@ mod text_bidi_tests;
 #[cfg(test)]
 mod text_tests;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -181,9 +180,6 @@ pub struct SkiaBackend<L: StoreLayoutEngine = TaffyStoreLayout> {
     pub(crate) display_list: DisplayList,
     pub(crate) viewport: Viewport,
     pub(crate) text_engine: Arc<CosmicTextEngine>,
-    pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
-    pub(crate) last_virtual_scroll_x: HashMap<NodeId, f32>,
-    pub(crate) last_virtual_scroll_y: HashMap<NodeId, f32>,
     pub(crate) focus: TextFocusState,
     pub(crate) motion: MotionDriver,
     pub(crate) table_registry: SkiaTableRegistry,
@@ -216,9 +212,6 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             display_list: DisplayList::default(),
             viewport: Viewport::default(),
             text_engine,
-            scroll_offsets: HashMap::new(),
-            last_virtual_scroll_x: HashMap::new(),
-            last_virtual_scroll_y: HashMap::new(),
             focus: TextFocusState::default(),
             motion: MotionDriver::new(),
             table_registry: SkiaTableRegistry::new(),
@@ -276,9 +269,6 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
             display_list: DisplayList::default(),
             viewport: self.viewport,
             text_engine: self.text_engine,
-            scroll_offsets: self.scroll_offsets,
-            last_virtual_scroll_x: self.last_virtual_scroll_x,
-            last_virtual_scroll_y: self.last_virtual_scroll_y,
             focus: self.focus,
             motion: self.motion,
             table_registry: self.table_registry,
@@ -353,7 +343,7 @@ impl<L: StoreLayoutEngine> SkiaBackend<L> {
         emit_node_into(
             store,
             &self.layout_tree,
-            &self.scroll_offsets,
+            self.layout_tree.scene().scroll_offsets().as_map(),
             &self.focus,
             &self.motion,
             &self.table_registry,
@@ -447,9 +437,6 @@ impl<L: StoreLayoutEngine> StoreBackend for SkiaBackend<L> {
     fn reset(&mut self) {
         self.layout_tree.reset();
         self.display_list.ops.clear();
-        self.scroll_offsets.clear();
-        self.last_virtual_scroll_x.clear();
-        self.last_virtual_scroll_y.clear();
         self.focus = TextFocusState::default();
         self.motion = MotionDriver::new();
         self.table_events.clear();

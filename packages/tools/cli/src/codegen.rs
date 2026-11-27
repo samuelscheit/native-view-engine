@@ -286,8 +286,8 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
 
         assert!(run_codegen_abi(&tmp, true).is_err());
-        let written = run_codegen_abi(&tmp, false).expect("write all 16 ABI + hash files");
-        assert_eq!(written.len(), 16);
+        let written = run_codegen_abi(&tmp, false).expect("write all 17 ABI + hash files");
+        assert_eq!(written.len(), 17);
         assert!(run_codegen_abi(&tmp, true).is_ok());
 
         let target_file = tmp.join("hosts/web-shell/nve_core_abi.generated.ts");

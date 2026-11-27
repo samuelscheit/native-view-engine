@@ -12,8 +12,12 @@ use crate::row::{DirtyList, RowRef};
 use crate::span_pool::{ChildSpan, SpanPool, StrArena, StrSpan};
 use crate::table::{self, NveTable, OwnedTableDesc, TableMeta, TableSlot};
 
-/// Node is allocated.
-pub(crate) const LIVE: u8 = 1 << 0;
+/// Node is allocated (exported as `nve_abi::NVE_NODE_ROW_FLAG_LIVE`).
+pub const LIVE: u8 = 1 << 0;
+
+const _: () = {
+    assert!(LIVE == nve_abi::NVE_NODE_ROW_FLAG_LIVE);
+};
 /// Node was created during the current frame.
 pub(crate) const CREATED: u8 = 1 << 1;
 /// Node's child list changed during the current frame (already queued).
@@ -341,6 +345,13 @@ impl NodeStore {
     #[inline]
     pub fn capacity(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Dense contiguous slice of all [`NodeRow`] slots (slot 0 is reserved null; live nodes live
+    /// in `1..capacity()` with `flags & LIVE != 0`). Published zero-copy in `NveRuntimeSceneView`.
+    #[inline]
+    pub fn node_rows(&self) -> &[NodeRow] {
+        self.nodes.as_slice()
     }
 
     /// Iterates every live node id.

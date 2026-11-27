@@ -117,11 +117,14 @@ pub fn generate_c_scene_abi_h() -> String {
     writeln!(out, "}} NveRenderNode;");
     writeln!(out);
     writeln!(out, "/* Zero-copy view of one published NodeStore word table. */");
+    writeln!(out, "#ifndef NVE_TYPE_TABLE_VIEW_DEFINED");
+    writeln!(out, "#define NVE_TYPE_TABLE_VIEW_DEFINED");
     writeln!(out, "typedef struct NveTableView {{");
     for f in &table_view.fields {
         writeln!(out, "  {} {};", c_core_type(&f.ty), f.name);
     }
     writeln!(out, "}} NveTableView;");
+    writeln!(out, "#endif");
     writeln!(out);
     writeln!(out, "typedef struct NveSceneView {{");
     for f in &scene_view.fields {

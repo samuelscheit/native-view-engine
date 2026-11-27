@@ -1,6 +1,4 @@
-//! Value-type layout/visual snapshots and visibility helpers over `NodeStore`. Box-generation
-//! predicates (`display: contents`, box paint, clipping) live in `nve_components::tables` so
-//! every backend shares them.
+//! Value-type layout/visual snapshots and visibility helpers over `NodeStore`.
 
 use nve_abi::ColorRgba;
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
@@ -8,12 +6,12 @@ use nve_components::tables::{Layout as NveLayout, Typography, box_visual, is_nod
 use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
 
 #[inline]
-pub(crate) fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
+pub fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
     is_node_display_none(store, id)
 }
 
 #[inline]
-pub(crate) fn length_to_dim(l: Length) -> nve_abi::Dimension {
+pub fn length_to_dim(l: Length) -> nve_abi::Dimension {
     if l.is_points() {
         nve_abi::Dimension::Points(l.value())
     } else if l.is_percent() {

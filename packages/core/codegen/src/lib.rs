@@ -42,8 +42,9 @@ pub use schema::hybrid::{
     NVE_SCENE_SCHEMA_HASH,
 };
 pub use targets::{
-    generate_all_abi_files, generate_all_core_abi_files, generate_all_scene_abi_files,
-    generate_c_core_abi_h, generate_c_scene_abi_h, generate_dart_core_abi,
+    generate_all_abi_files, generate_all_core_abi_files, generate_all_runtime_abi_files,
+    generate_all_scene_abi_files, generate_c_core_abi_h, generate_c_runtime_abi_h,
+    generate_c_scene_abi_h, generate_dart_core_abi,
     generate_dart_scene_abi, generate_export_compose, generate_export_flutter, generate_export_rn,
     generate_export_swiftui, generate_export_web_component, generate_hybrid_all,
     generate_hybrid_cpp, generate_hybrid_dart, generate_hybrid_kotlin, generate_hybrid_rust,
