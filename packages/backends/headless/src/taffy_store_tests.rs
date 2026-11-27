@@ -4,7 +4,7 @@ use nve_components::tables::{
     AlignItems as NveAlignItems, Direction as NveDirection, Display as NveDisplay,
     FlexDirection as NveFlexDirection, GridItem, GridLayout, GridLine as NveGridLine, GridTracks,
     JustifyContent as NveJustifyContent, Layout as NveLayout, Position as NvePosition,
-    TextContent, Typography,
+    TextContent, Typography, Visual,
 };
 use nve_engine::Viewport;
 use nve_store::{ChangeSet, Length, NodeId, NodeStore};
@@ -197,4 +197,110 @@ fn taffy_clears_stale_hoisted_children_and_propagates_rtl_detach() {
     );
     let r_abs = layout.layout_of(abs_child).unwrap();
     assert_eq!((r_abs.x, r_abs.y), (12.0, 14.0));
+}
+
+/// Taffy 0.16 drops `aspect_ratio` for leaves sized under `SizingMode::ContentSize`
+/// (DioxusLabs/taffy#804); `LayoutView::aspect_ratio_content_size` transfers the known axis.
+#[test]
+fn empty_leaf_aspect_ratio_with_flex_basis_and_flex_grow_resolves_the_cross_axis() {
+    // (container direction, child edits, expected child border-box (width, height))
+    type Edit = fn(&mut nve_store::Transaction<'_>, NodeId);
+    let cases: [(NveFlexDirection, Edit, (f32, f32)); 6] = [
+        (
+            NveFlexDirection::Row,
+            |tx, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0);
+            },
+            (100.0, 50.0),
+        ),
+        (
+            NveFlexDirection::Row,
+            |tx, c| {
+                tx.edit::<NveLayout>(c).flex_grow(1.0).aspect_ratio(4.0);
+            },
+            (400.0, 100.0),
+        ),
+        (
+            NveFlexDirection::Column,
+            |tx, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(80.0))
+                    .aspect_ratio(2.0);
+            },
+            (160.0, 80.0),
+        ),
+        // Padding + border: the ratio applies to the border box (Taffy's default `box-sizing`).
+        (
+            NveFlexDirection::Row,
+            |tx, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(100.0))
+                    .aspect_ratio(2.0)
+                    .padding_left(Length::points(10.0))
+                    .padding_top(Length::points(10.0))
+                    .padding_bottom(Length::points(4.0));
+                tx.edit::<Visual>(c).border_width(2.0);
+            },
+            (100.0, 50.0),
+        ),
+        (
+            NveFlexDirection::Row,
+            |tx, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_grow(1.0)
+                    .aspect_ratio(8.0)
+                    .padding_top(Length::points(6.0));
+                tx.edit::<Visual>(c).border_width(1.0);
+            },
+            (400.0, 50.0),
+        ),
+        // Padding + border larger than the ratio's height: the box never shrinks below them.
+        (
+            NveFlexDirection::Row,
+            |tx, c| {
+                tx.edit::<NveLayout>(c)
+                    .flex_basis(Length::points(40.0))
+                    .aspect_ratio(4.0)
+                    .padding_top(Length::points(20.0));
+            },
+            (40.0, 20.0),
+        ),
+    ];
+    for (i, (direction, edit, expected)) in cases.into_iter().enumerate() {
+        let mut store = NodeStore::new();
+        let mut layout = TaffyStoreLayout::new();
+        let mut changes = ChangeSet::default();
+        let mut tx = store.tx();
+        let container = tx.create();
+        let leaf = tx.create();
+        tx.set_children(NodeId::ROOT, &[container]);
+        tx.set_children(container, &[leaf]);
+        tx.edit::<NveLayout>(container)
+            .flex_direction(direction)
+            .align_items(NveAlignItems::FlexStart)
+            .width(Length::points(400.0));
+        edit(&mut tx, leaf);
+        tx.commit_into(&mut changes);
+        layout.sync_changes(&store, &changes);
+        layout.compute_layout(
+            &store,
+            NodeId::ROOT,
+            Viewport {
+                width: 400.0,
+                height: 300.0,
+                scale_factor: 1.0,
+            },
+        );
+        let r = layout.layout_of(leaf).expect("leaf laid out");
+        assert_eq!((r.width, r.height), expected, "case {i}");
+        let c = layout.layout_of(container).expect("container laid out");
+        let main = if direction == NveFlexDirection::Row {
+            c.height
+        } else {
+            c.width
+        };
+        assert!(main > 0.0, "case {i}: auto container must size to the leaf");
+    }
 }

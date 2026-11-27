@@ -3,7 +3,7 @@
 use nve_abi::ColorRgba;
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::tables::{
-    is_node_display_none, Layout as NveLayout, Overflow, Typography, Visual,
+    is_node_display_none, Display, Layout as NveLayout, Overflow, Typography, Visual,
 };
 use nve_store::{Length, NodeId as StoreNodeId, NodeStore};
 
@@ -12,17 +12,22 @@ pub(crate) fn is_display_none(store: &NodeStore, id: StoreNodeId) -> bool {
     is_node_display_none(store, id)
 }
 
+/// `display: contents`: the node generates no box (its children are laid out, painted, and
+/// hit-tested as children of its parent box), so it never clips.
+#[inline]
+pub(crate) fn is_display_contents(store: &NodeStore, id: StoreNodeId) -> bool {
+    store
+        .try_row::<NveLayout>(id)
+        .is_some_and(|l| l.display() == Display::Contents)
+}
+
 #[inline]
 pub(crate) fn node_clips_overflow(store: &NodeStore, id: StoreNodeId) -> bool {
-    store.try_row::<Visual>(id).is_some_and(|v| {
-        matches!(
-            v.overflow_x(),
-            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
-        ) || matches!(
-            v.overflow_y(),
-            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
-        )
-    })
+    let clips = |o: Overflow| matches!(o, Overflow::Hidden | Overflow::Scroll | Overflow::Auto);
+    !is_display_contents(store, id)
+        && store
+            .try_row::<Visual>(id)
+            .is_some_and(|v| clips(v.overflow_x()) || clips(v.overflow_y()))
 }
 
 #[inline]

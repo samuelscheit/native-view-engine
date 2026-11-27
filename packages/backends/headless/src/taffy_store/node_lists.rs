@@ -1,17 +1,18 @@
-//! Flat pooled-CSR storage of every containing block's out-of-flow ("hoisted") child list.
+//! Flat pooled-CSR per-node `NodeId` lists: each containing block's out-of-flow ("hoisted")
+//! boxes, and the `display: contents`-flattened box children of their parents.
 //!
-//! Taffy rewrites the lists of only the containers it re-lays out, in DFS order of the dirty
-//! subtree, while cached containers keep theirs. Strict CSR would need an O(N) rebuild for each
-//! such out-of-order rewrite, so each node owns a `(start, len, cap)` span in one shared `pool`:
+//! Lists are rewritten for only some nodes in arbitrary order (Taffy re-lays out only dirty
+//! containers, in DFS order, while cached ones keep theirs). Strict CSR would need an O(N)
+//! rebuild per out-of-order rewrite, so each node owns a `(start, len, cap)` span in one `pool`:
 //!
 //! - `clear` keeps the span's capacity, so the common "clear + re-add the same boxes" rewrite of a
 //!   dirty container writes in place.
 //! - A list outgrowing its capacity grows in place at the pool tail, else moves to the tail and
 //!   leaves a dead hole.
-//! - Once holes exceed half the pool, [`HoistedLists::compact`] repacks every span in node-index
+//! - Once holes exceed half the pool, [`NodeLists::compact`] repacks every span in node-index
 //!   order (plain CSR plus per-node slack) through a reused scratch buffer.
 //!
-//! Steady-state relayout therefore performs zero heap allocations and zero per-node `Vec`s.
+//! Steady-state rewrites therefore perform zero heap allocations and zero per-node `Vec`s.
 
 use nve_store::NodeId;
 
@@ -19,13 +20,13 @@ use nve_store::NodeId;
 const MIN_COMPACT_DEAD_SLOTS: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct HoistedSpan {
+struct ListSpan {
     start: u32,
     len: u32,
     cap: u32,
 }
 
-impl HoistedSpan {
+impl ListSpan {
     #[inline(always)]
     fn range(self) -> core::ops::Range<usize> {
         self.start as usize..(self.start + self.len) as usize
@@ -41,27 +42,27 @@ impl HoistedSpan {
 fn pool_offset(offset: usize) -> u32 {
     debug_assert!(
         u32::try_from(offset).is_ok(),
-        "hoisted pool exceeds u32 offsets"
+        "node list pool exceeds u32 offsets"
     );
     offset as u32
 }
 
 /// Per-node out-of-flow child lists packed into one flat `NodeId` pool.
 #[derive(Debug, Default)]
-pub(super) struct HoistedLists {
-    spans: Vec<HoistedSpan>,
+pub(super) struct NodeLists {
+    spans: Vec<ListSpan>,
     pool: Vec<NodeId>,
-    /// Reused destination of [`HoistedLists::compact`], swapped with `pool`.
+    /// Reused destination of [`NodeLists::compact`], swapped with `pool`.
     scratch: Vec<NodeId>,
     /// Pool slots owned by no span (moved-out or released capacity).
     dead: usize,
 }
 
-impl HoistedLists {
+impl NodeLists {
     /// Grows the per-node span table to `len` slots (never shrinks).
     pub(super) fn ensure_len(&mut self, len: usize) {
         if self.spans.len() < len {
-            self.spans.resize(len, HoistedSpan::default());
+            self.spans.resize(len, ListSpan::default());
         }
     }
 
@@ -92,7 +93,7 @@ impl HoistedLists {
     pub(super) fn release(&mut self, idx: usize) {
         if let Some(span) = self.spans.get_mut(idx) {
             self.dead += span.cap as usize;
-            *span = HoistedSpan::default();
+            *span = ListSpan::default();
         }
     }
 
@@ -113,7 +114,7 @@ impl HoistedLists {
                 self.pool[at] = id;
                 at += 1;
             }
-            HoistedSpan {
+            ListSpan {
                 len: pool_offset(at) - span.start,
                 ..span
             }
@@ -122,7 +123,7 @@ impl HoistedLists {
             self.pool.truncate(span.range().end);
             self.pool.extend(ids);
             let len = pool_offset(self.pool.len()) - span.start;
-            HoistedSpan {
+            ListSpan {
                 start: span.start,
                 len,
                 cap: len,
@@ -133,7 +134,7 @@ impl HoistedLists {
             self.pool.extend(ids);
             self.dead += span.cap as usize;
             let len = pool_offset(self.pool.len() - start);
-            HoistedSpan {
+            ListSpan {
                 start: pool_offset(start),
                 len,
                 cap: len,
@@ -142,7 +143,7 @@ impl HoistedLists {
         // Capacity-less spans are canonical `{0, 0, 0}` so no stale `start` can outlive a tail
         // truncation or compaction and index past the pool.
         self.spans[idx] = if next.cap == 0 {
-            HoistedSpan::default()
+            ListSpan::default()
         } else {
             next
         };
@@ -179,7 +180,7 @@ impl HoistedLists {
             .collect();
         owned.sort_unstable();
         for pair in owned.windows(2) {
-            assert!(pair[0].1 <= pair[1].0, "overlapping hoisted spans {pair:?}");
+            assert!(pair[0].1 <= pair[1].0, "overlapping list spans {pair:?}");
         }
         assert!(self.spans.iter().all(|s| s.len <= s.cap));
         assert!(owned.last().is_none_or(|&(_, end)| end <= self.pool.len()));
@@ -187,7 +188,7 @@ impl HoistedLists {
         assert_eq!(
             live + self.dead,
             self.pool.len(),
-            "hoisted pool slot accounting"
+            "node list pool slot accounting"
         );
     }
 
@@ -198,5 +199,5 @@ impl HoistedLists {
 }
 
 #[cfg(test)]
-#[path = "hoisted_tests.rs"]
+#[path = "node_lists_tests.rs"]
 mod tests;

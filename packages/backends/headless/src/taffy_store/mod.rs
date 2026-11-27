@@ -4,8 +4,9 @@
 //! and `unsafe impl Send`. Holds only dense `Vec<taffy::Cache>`, 16 B unrounded boxes, 16 B absolute
 //! rounded rects, and resolved inherited direction/typography arrays.
 
-mod hoisted;
+mod contents;
 mod layout_view;
+mod node_lists;
 mod style_view;
 
 use std::sync::Arc;
@@ -23,7 +24,8 @@ use taffy::geometry::Size;
 use taffy::style::AvailableSpace;
 use taffy::tree::{Cache, ClearState};
 
-use hoisted::HoistedLists;
+use contents::BoxChildren;
+use node_lists::NodeLists;
 use layout_view::LayoutView;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -64,7 +66,9 @@ pub struct TaffyStoreLayout {
     resolved_rtl: Vec<bool>,
     resolved_text: Vec<ResolvedTextStyle>,
     /// Out-of-flow boxes per containing block, in one flat pooled-CSR buffer.
-    hoisted: HoistedLists,
+    hoisted: NodeLists,
+    /// Taffy-visible children of parents with `display: contents` children.
+    box_children: BoxChildren,
     layout_gen: u64,
     last_viewport: Option<(NodeId, f32, f32)>,
     measurer: Arc<dyn TextMeasurer>,
@@ -110,7 +114,8 @@ impl TaffyStoreLayout {
             node_gens: Vec::new(),
             resolved_rtl: Vec::new(),
             resolved_text: Vec::new(),
-            hoisted: HoistedLists::default(),
+            hoisted: NodeLists::default(),
+            box_children: BoxChildren::default(),
             layout_gen: 0,
             last_viewport: None,
             measurer: Arc::new(HeuristicTextMeasurer),
@@ -142,6 +147,7 @@ impl TaffyStoreLayout {
         self.resolved_rtl.clear();
         self.resolved_text.clear();
         self.hoisted.reset();
+        self.box_children.reset();
         self.layout_gen = 0;
         self.last_viewport = None;
         self.inherit_dirty = true;
@@ -159,6 +165,7 @@ impl TaffyStoreLayout {
             self.resolved_text.resize(cap, ResolvedTextStyle::default());
         }
         self.hoisted.ensure_len(cap);
+        self.box_children.ensure_len(cap);
     }
 
     /// Invalidates cached Taffy entries for all layout/measure/structural changes in `changes`.
@@ -166,8 +173,9 @@ impl TaffyStoreLayout {
         self.ensure_capacity(store.capacity());
 
         let layout_dir_changed = changes.table(NveLayout::slot()).is_some_and(|td| {
-            let dir_bit = 1u32 << NveLayout::DIRECTION.word();
-            !td.detached.is_empty() || td.masks.iter().any(|&m| m & dir_bit != 0)
+            // Direction is inherited; display (`contents`) reshapes the box tree.
+            let bits = (1u32 << NveLayout::DIRECTION.word()) | (1u32 << NveLayout::DISPLAY.word());
+            !td.detached.is_empty() || td.masks.iter().any(|&m| m & bits != 0)
         });
         if !changes.created.is_empty()
             || !changes.removed.is_empty()
@@ -190,6 +198,7 @@ impl TaffyStoreLayout {
                 self.resolved_rtl[idx] = false;
                 self.resolved_text[idx] = ResolvedTextStyle::default();
                 self.hoisted.release(idx);
+                self.box_children.release(idx);
             }
         }
         for &id in &changes.created {
@@ -200,6 +209,7 @@ impl TaffyStoreLayout {
             self.rect_gen[idx] = 0;
             self.node_gens[idx] = id.generation();
             self.hoisted.release(idx);
+            self.box_children.release(idx);
             self.mark_dirty(store, id);
         }
         for &id in &changes.children {
@@ -240,7 +250,13 @@ impl TaffyStoreLayout {
             if idx >= self.caches.len() {
                 break;
             }
-            if matches!(self.caches[idx].clear(), ClearState::AlreadyEmpty) {
+            // An empty cache normally means every ancestor is already dirty, except on the
+            // starting node (e.g. a former `display: contents` node, never laid out) and on
+            // `display: contents` ancestors (never laid out, so always empty).
+            if matches!(self.caches[idx].clear(), ClearState::AlreadyEmpty)
+                && steps > 1
+                && !crate::is_display_contents(store, id)
+            {
                 break;
             }
             let Some(p) = store.parent(id) else {
@@ -304,11 +320,17 @@ impl TaffyStoreLayout {
             if dir_changed || (text_measure_changed && store.has::<TextContent>(id)) {
                 self.mark_dirty(store, id);
             }
+            if id != root && crate::is_display_contents(store, id) {
+                // Never laid out: drop any list recorded while it still generated a box.
+                self.hoisted.clear(idx);
+            }
+            self.box_children.rebuild(store, id);
 
             for &child in store.children(id).iter().rev() {
                 self.inherit_stack.push((child, rtl, text));
             }
         }
+        self.box_children.compact_if_fragmented();
     }
 
     /// Computes layout for `root` at `viewport` directly from `store` columns.
@@ -343,6 +365,7 @@ impl TaffyStoreLayout {
             caches: &mut self.caches,
             boxes: &mut self.boxes,
             hoisted: &mut self.hoisted,
+            box_children: &self.box_children,
             measurer: &*self.measurer,
         };
 
@@ -367,7 +390,13 @@ impl TaffyStoreLayout {
                 continue;
             }
             let idx = id.index();
-            let b = self.boxes[idx];
+            // `display: contents` generates no box: a zero rect at the parent origin, which its
+            // children (laid out by Taffy as the parent's) inherit unchanged.
+            let b = if id != root && crate::is_display_contents(store, id) {
+                UnroundedBox::default()
+            } else {
+                self.boxes[idx]
+            };
             let cx = px + b.x;
             let cy = py + b.y;
             let rx = cx.round();
@@ -458,3 +487,9 @@ impl StoreLayoutEngine for TaffyStoreLayout {
 #[cfg(test)]
 #[path = "../taffy_store_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod hoisted_tests;
+
+#[cfg(test)]
+mod contents_tests;

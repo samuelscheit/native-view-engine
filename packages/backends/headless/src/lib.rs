@@ -45,7 +45,7 @@ pub use nve_components::layout_ext::{
 pub use nve_components::paint::{BackgroundFill, GradientStop, LinearGradient, RadialGradient};
 pub use nve_components::style_patch::{Display, LayoutSnapshot, StylePatch, VisualSnapshot};
 pub use reloc_scene::{prerender_native_frame0, prerender_native_frame0_with_text_measurer};
-pub(crate) use snapshot::{is_display_none, length_to_dim, node_clips_overflow};
+pub(crate) use snapshot::{is_display_contents, is_display_none, length_to_dim, node_clips_overflow};
 pub use snapshot::{layout_snapshot_of, visual_snapshot_of};
 pub use taffy_store::{ResolvedTextStyle, TaffyStoreLayout};
 
@@ -473,7 +473,7 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                 continue;
             }
             let rect = self.layout.layout_of(id).unwrap_or_default();
-            let (bg, border_color, border_width, border_radius, opacity, z_index, clip) =
+            let (bg, border_color, border_width, border_radius, opacity, z_index) =
                 if let Some(v) = store.try_row::<Visual>(id) {
                     (
                         v.background().0,
@@ -482,17 +482,11 @@ impl<L: StoreLayoutEngine> HeadlessBackend<L> {
                         v.border_radius(),
                         v.opacity(),
                         v.z_index(),
-                        matches!(
-                            v.overflow_x(),
-                            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
-                        ) || matches!(
-                            v.overflow_y(),
-                            Overflow::Hidden | Overflow::Scroll | Overflow::Auto
-                        ),
                     )
                 } else {
-                    (0, 0, 0.0, 0.0, 1.0, 0, false)
+                    (0, 0, 0.0, 0.0, 1.0, 0)
                 };
+            let clip = node_clips_overflow(store, id);
             let event_mask = store
                 .try_row::<Interaction>(id)
                 .map_or(0, |i| i.event_mask());

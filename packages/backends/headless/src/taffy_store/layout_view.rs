@@ -7,14 +7,16 @@ use nve_store::{NodeId, NodeStore};
 use taffy::geometry::Size;
 use taffy::style::AvailableSpace;
 use taffy::tree::{Cache, Layout, LayoutInput, LayoutOutput, RunMode};
+use taffy::util::ResolveOrZero;
 use taffy::{
-    compute_cached_layout, compute_flexbox_layout, compute_grid_layout, compute_hidden_layout,
-    compute_leaf_layout, compute_oof_layout, CacheTree, LayoutContainingBlock,
-    LayoutFlexboxContainer, LayoutGridContainer, LayoutPartialTree, TraversePartialTree,
-    TraverseTree,
+    CacheTree, CoreStyle, LayoutContainingBlock, LayoutFlexboxContainer, LayoutGridContainer,
+    LayoutPartialTree, TraversePartialTree, TraverseTree, compute_cached_layout,
+    compute_flexbox_layout, compute_grid_layout, compute_hidden_layout, compute_leaf_layout,
+    compute_oof_layout,
 };
 
-use super::hoisted::HoistedLists;
+use super::contents::BoxChildren;
+use super::node_lists::NodeLists;
 use super::style_view::StyleView;
 use super::{ResolvedTextStyle, UnroundedBox};
 
@@ -26,7 +28,8 @@ pub(super) struct LayoutView<'s> {
     pub(super) resolved_text: &'s [ResolvedTextStyle],
     pub(super) caches: &'s mut [Cache],
     pub(super) boxes: &'s mut [UnroundedBox],
-    pub(super) hoisted: &'s mut HoistedLists,
+    pub(super) hoisted: &'s mut NodeLists,
+    pub(super) box_children: &'s BoxChildren,
     pub(super) measurer: &'s dyn TextMeasurer,
 }
 
@@ -58,15 +61,21 @@ impl<'s> LayoutView<'s> {
         }
     }
 
+    #[inline(always)]
+    fn box_children(&self, parent: taffy::NodeId) -> &[NodeId] {
+        self.box_children.get(self.store, self.id_of(parent))
+    }
+
     fn measure(
         &self,
         n: taffy::NodeId,
         known: Size<Option<f32>>,
         available: Size<AvailableSpace>,
+        parent_width: Option<f32>,
     ) -> Size<f32> {
         let id = self.id_of(n);
         let Some(tc) = self.store.try_row::<TextContent>(id) else {
-            return Size::ZERO;
+            return self.aspect_ratio_content_size(n, known, parent_width);
         };
         let text = tc.text();
         if text.is_empty() {
@@ -91,6 +100,35 @@ impl<'s> LayoutView<'s> {
             height: known.height.unwrap_or(safe_h),
         }
     }
+
+    /// Taffy 0.16 drops `aspect_ratio` when sizing a leaf under `SizingMode::ContentSize` (flex
+    /// item hypothetical cross size from `flex-basis` / `flex-grow`, DioxusLabs/taffy#804), so an
+    /// empty leaf collapses to 0. Transfer the single known border-box axis through the ratio and
+    /// report the content box Taffy adds padding + border back onto.
+    fn aspect_ratio_content_size(
+        &self,
+        n: taffy::NodeId,
+        known: Size<Option<f32>>,
+        parent_width: Option<f32>,
+    ) -> Size<f32> {
+        let style = self.style(n);
+        let Some(ratio) = style.aspect_ratio() else {
+            return Size::ZERO;
+        };
+        let (width, height) = match (known.width, known.height) {
+            (Some(w), None) => (w, w / ratio),
+            (None, Some(h)) => (h * ratio, h),
+            _ => return Size::ZERO,
+        };
+        let no_calc = |_, _| 0.0;
+        let pb = (style.padding().resolve_or_zero(parent_width, no_calc)
+            + style.border().resolve_or_zero(parent_width, no_calc))
+        .sum_axes();
+        Size {
+            width: (width - pb.width).max(0.0),
+            height: (height - pb.height).max(0.0),
+        }
+    }
 }
 
 type ChildIter<'a> =
@@ -104,8 +142,7 @@ impl TraversePartialTree for LayoutView<'_> {
 
     #[inline]
     fn child_ids(&self, parent: taffy::NodeId) -> Self::ChildIter<'_> {
-        self.store
-            .children(self.id_of(parent))
+        self.box_children(parent)
             .iter()
             .copied()
             .map(tid_from_nve as fn(NodeId) -> taffy::NodeId)
@@ -113,12 +150,12 @@ impl TraversePartialTree for LayoutView<'_> {
 
     #[inline]
     fn child_count(&self, parent: taffy::NodeId) -> usize {
-        self.store.children(self.id_of(parent)).len()
+        self.box_children(parent).len()
     }
 
     #[inline]
     fn get_child_id(&self, parent: taffy::NodeId, child_index: usize) -> taffy::NodeId {
-        tid_from_nve(self.store.children(self.id_of(parent))[child_index])
+        tid_from_nve(self.box_children(parent)[child_index])
     }
 }
 
@@ -175,7 +212,7 @@ impl LayoutPartialTree for LayoutView<'_> {
             } else {
                 tree.store.row::<NveLayout>(id).display()
             };
-            let has_children = !tree.store.children(id).is_empty();
+            let has_children = !tree.box_children(n).is_empty();
             let mut out = match (display, has_children) {
                 (NveDisplay::None, _) => {
                     tree.clear_hoisted_children(n);
@@ -190,7 +227,7 @@ impl LayoutPartialTree for LayoutView<'_> {
                         inputs,
                         &ro.style(n),
                         |_, _| 0.0,
-                        |k, a| ro.measure(n, k, a),
+                        |k, a| ro.measure(n, k, a, inputs.parent_size.width),
                     )
                 }
             };
