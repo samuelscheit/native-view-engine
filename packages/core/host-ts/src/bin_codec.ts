@@ -11,6 +11,7 @@
  * (`readI64Bits`); a 64-bit value is never squeezed through `Number(...)`.
  */
 import { Key64 } from './key64.ts';
+import { UTF8_DECODER, isValidUtf8, requireWellFormed } from './utf8.ts';
 
 /** `NveBinValue` tag (Rust `nve_abi::NveValueTag`). */
 export const BinTag = { Null: 0, Bool: 1, I64: 2, F64: 3, Str: 4, Bytes: 5, Array: 6, Map: 7 } as const;
@@ -27,7 +28,8 @@ export type BinErrorKind =
   | 'invalidUtf8'
   | 'tooLarge'
   | 'maxDepth'
-  | 'trailingBytes';
+  | 'trailingBytes'
+  | 'invalidMark';
 
 export class BinCodecError extends Error {
   readonly kind: BinErrorKind;
@@ -39,8 +41,6 @@ export class BinCodecError extends Error {
   }
 }
 
-/** Strict like Rust `str::from_utf8`; `ignoreBOM` keeps a leading U+FEFF instead of stripping it. */
-export const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const UTF8_ENCODER = new TextEncoder();
 
 /** Zero-copy cursor over `bytes`; byte slices are `subarray` views. */
@@ -48,10 +48,13 @@ export class BinReader {
   readonly bytes: Uint8Array;
   private readonly view: DataView;
   private pos = 0;
+  /** Reads stop here: `bytes.length`, or the enclosing container's end while validating. */
+  private limit: number;
 
   constructor(bytes: Uint8Array) {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.limit = bytes.length;
   }
 
   get position(): number {
@@ -59,11 +62,11 @@ export class BinReader {
   }
 
   get remaining(): number {
-    return this.bytes.length - this.pos;
+    return this.limit - this.pos;
   }
 
   get atEnd(): boolean {
-    return this.pos === this.bytes.length;
+    return this.pos === this.limit;
   }
 
   // ---- raw little-endian primitives ---------------------------------------------------------
@@ -117,7 +120,7 @@ export class BinReader {
   // ---- tagged NveBinValue ------------------------------------------------------------------
 
   peekTag(): BinTag {
-    if (this.pos >= this.bytes.length) throw this.truncated(1);
+    if (this.pos >= this.limit) throw this.truncated(1);
     const raw = this.bytes[this.pos]!;
     if (raw > BinTag.Map) throw new BinCodecError('invalidTag', `tag ${raw}`);
     return raw as BinTag;
@@ -217,8 +220,9 @@ export class BinReader {
     if (!r.atEnd) throw new BinCodecError('trailingBytes', `${r.remaining} bytes`);
   }
 
+  /** Rejects NaN / fractional / negative counts too, so `pos` can never stop being an integer. */
   private take(count: number): number {
-    if (count < 0 || count > this.bytes.length - this.pos) throw this.truncated(count);
+    if (!(Number.isInteger(count) && count >= 0 && count <= this.limit - this.pos)) throw this.truncated(count);
     const at = this.pos;
     this.pos += count;
     return at;
@@ -231,7 +235,7 @@ export class BinReader {
   }
 
   private truncated(need: number): BinCodecError {
-    return new BinCodecError('truncated', `need ${need} at ${this.pos}, have ${this.bytes.length - this.pos}`);
+    return new BinCodecError('truncated', `need ${need} at ${this.pos}, have ${this.limit - this.pos}`);
   }
 
   private expect(tag: BinTag): void {
@@ -251,33 +255,45 @@ export class BinReader {
     return [count, end];
   }
 
+  /** Validates a length-prefixed UTF-8 run in place (never decoded into a string). */
+  private checkUtf8Run(): void {
+    const n = this.length();
+    const at = this.take(n);
+    if (!isValidUtf8(this.bytes, at, at + n)) throw new BinCodecError('invalidUtf8', `at ${at}`);
+  }
+
   private checkAt(depth: number): void {
     const tag = this.peekTag();
     switch (tag) {
       case BinTag.Null:
       case BinTag.I64:
       case BinTag.F64:
+      case BinTag.Bytes:
         this.skipValue();
         return;
       case BinTag.Bool:
         this.readBool();
         return;
       case BinTag.Str:
-        this.readStr();
-        return;
-      case BinTag.Bytes:
-        this.readBytes();
+        this.expect(BinTag.Str);
+        this.checkUtf8Run();
         return;
       default: {
         if (depth >= BIN_VALUE_MAX_DEPTH) throw new BinCodecError('maxDepth', `depth ${depth}`);
         const isMap = tag === BinTag.Map;
         const [count, end] = this.openContainer(tag, isMap ? 5 : 1);
-        for (let i = 0; i < count; i++) {
-          if (isMap) this.readMapKey();
-          this.checkAt(depth + 1);
+        // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
+        const outer = this.limit;
+        this.limit = end;
+        try {
+          for (let i = 0; i < count; i++) {
+            if (isMap) this.checkUtf8Run();
+            this.checkAt(depth + 1);
+          }
+        } finally {
+          this.limit = outer;
         }
-        if (this.pos > end) throw this.truncated(this.pos - end);
-        if (this.pos < end) throw new BinCodecError('trailingBytes', `${end - this.pos} bytes`);
+        if (this.pos !== end) throw new BinCodecError('trailingBytes', `${end - this.pos} bytes`);
       }
     }
   }
@@ -385,7 +401,9 @@ export class BinWriter {
     this.f64(v);
   }
 
+  /** Throws `BinCodecError('invalidUtf8')` on a lone surrogate, writing nothing. */
   writeStr(v: string): void {
+    requireWellFormed(v);
     this.u8(BinTag.Str);
     this.writeMapKey(v);
   }
@@ -396,10 +414,16 @@ export class BinWriter {
     this.raw(v);
   }
 
+  /**
+   * Length-prefixed UTF-8 encoded in place (`encodeInto`, no temporary array); throws
+   * `BinCodecError('invalidUtf8')` on a lone surrogate instead of writing U+FFFD.
+   */
   writeMapKey(key: string): void {
-    const encoded = UTF8_ENCODER.encode(key);
-    this.u32(encoded.length);
-    this.raw(encoded);
+    requireWellFormed(key);
+    this.ensure(4 + 3 * key.length);
+    const { written } = UTF8_ENCODER.encodeInto(key, this.buf.subarray(this.len + 4));
+    this.u32(written);
+    this.len += written;
   }
 
   /** Opens an array of `count` values; returns the mark for `end()`. */
@@ -414,7 +438,9 @@ export class BinWriter {
 
   /** Patches the payload length of the container opened at `mark`. */
   end(mark: number): void {
-    if (!Number.isInteger(mark) || mark < 0 || mark + 4 > this.len) throw new RangeError(`mark ${mark}`);
+    if (!(Number.isInteger(mark) && mark >= 0 && mark <= this.len - 8)) {
+      throw new BinCodecError('invalidMark', `mark ${mark} of ${this.len}`);
+    }
     this.view.setUint32(mark, this.len - mark - 4, true);
   }
 
@@ -436,40 +462,4 @@ export class BinWriter {
     this.buf = grown;
     this.view = new DataView(grown.buffer);
   }
-}
-
-/** Strict UTF-8 validation of `b[start .. end)` without decoding (Rust `core::str::from_utf8`). */
-export function isValidUtf8(b: Uint8Array, start = 0, end = b.length): boolean {
-  let i = start;
-  while (i < end) {
-    const b0 = b[i]!;
-    if (b0 < 0x80) {
-      i++;
-      continue;
-    }
-    let need: number;
-    let lo = 0x80;
-    let hi = 0xbf;
-    if (b0 >= 0xc2 && b0 <= 0xdf) {
-      need = 1;
-    } else if (b0 >= 0xe0 && b0 <= 0xef) {
-      need = 2;
-      if (b0 === 0xe0) lo = 0xa0;
-      if (b0 === 0xed) hi = 0x9f;
-    } else if (b0 >= 0xf0 && b0 <= 0xf4) {
-      need = 3;
-      if (b0 === 0xf0) lo = 0x90;
-      if (b0 === 0xf4) hi = 0x8f;
-    } else {
-      return false;
-    }
-    if (need >= end - i) return false;
-    const b1 = b[i + 1]!;
-    if (b1 < lo || b1 > hi) return false;
-    for (let k = 2; k <= need; k++) {
-      if ((b[i + k]! & 0xc0) !== 0x80) return false;
-    }
-    i += need + 1;
-  }
-  return true;
 }

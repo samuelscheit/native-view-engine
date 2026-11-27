@@ -38,4 +38,13 @@ if(NVE_HOST_CXX_BUILD_TESTS)
     target_link_options(nve_host_${_test}_test PRIVATE ${_nve_host_sanitize})
     add_test(NAME nve_host_${_test} COMMAND nve_host_${_test}_test)
   endforeach()
+
+  # Compile-time guards: invalid `field()` specs and non-UTF-8 `Key64::of` names must not compile.
+  set(_nve_host_syntax_only ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only
+      -I${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail.cpp)
+  add_test(NAME nve_host_compile_ok COMMAND ${_nve_host_syntax_only})
+  foreach(_case BAD_FIELD_BITS BAD_FIELD_ZERO BAD_FIELD_WORD BAD_KEY)
+    add_test(NAME nve_host_compile_fail_${_case} COMMAND ${_nve_host_syntax_only} -DNVE_EXPECT_${_case})
+    set_tests_properties(nve_host_compile_fail_${_case} PROPERTIES WILL_FAIL TRUE)
+  endforeach()
 endif()

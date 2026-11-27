@@ -6,9 +6,9 @@
  * hard-codes a layout. Construction validates the schema hash, every slab against its count, and
  * the text slab's UTF-8 once; later reads are O(1) bounds checks (out of range throws `RangeError`).
  */
-import { UTF8_DECODER, isValidUtf8 } from './bin_codec.ts';
 import { Key64 } from './key64.ts';
-import { TableReader } from './table_reader.ts';
+import { MAX_TABLE_WORDS, TableReader, isIntIn } from './table_reader.ts';
+import { UTF8_DECODER, isValidUtf8 } from './utf8.ts';
 
 /** Byte offsets of `NveTableView` fields inside wasm32 linear memory (pointers are u32). */
 export interface TableViewLayout {
@@ -95,11 +95,11 @@ export class SceneReader {
     if (!s.schemaHash.equals(s.expectedSchema)) {
       throw new SceneError('schemaMismatch', `expected ${s.expectedSchema}, got ${s.schemaHash}`);
     }
-    if (!(s.nodeStride > 0)) throw new SceneError('missingSlab', `nodeStride ${s.nodeStride}`);
-    requireBytes(s.nodes.byteLength, s.nodeCount * s.nodeStride, 'nodes');
-    requireBytes(s.childrenSlab.byteLength, s.childrenSlabLen * 4, 'childrenSlab');
-    requireBytes(s.dirtyIndices.byteLength, s.dirtyCount * 4, 'dirtyIndices');
-    requireBytes(s.removedIds.byteLength, s.removedCount * 4, 'removedIds');
+    if (!isIntIn(s.nodeStride, 1, 0xffff_ffff)) throw new SceneError('missingSlab', `nodeStride ${s.nodeStride}`);
+    requireRecords(s.nodes, s.nodeCount, s.nodeStride, 'nodes');
+    requireRecords(s.childrenSlab, s.childrenSlabLen, 4, 'childrenSlab');
+    requireRecords(s.dirtyIndices, s.dirtyCount, 4, 'dirtyIndices');
+    requireRecords(s.removedIds, s.removedCount, 4, 'removedIds');
     if (!isValidUtf8(s.textSlab)) throw new SceneError('invalidUtf8', 'textSlab');
     this.frameId = s.frameId;
     this.nodeCount = s.nodeCount;
@@ -119,7 +119,7 @@ export class SceneReader {
   static fromLinearMemory(memory: ArrayBuffer, viewPtr: number, layout: SceneLayout, expectedSchema: Key64): SceneReader {
     const mem = new DataView(memory);
     const u32 = (at: number): number => {
-      if (!(at >= 0 && at + 4 <= mem.byteLength)) {
+      if (!isIntIn(at, 0, mem.byteLength - 4)) {
         throw new SceneError('missingSlab', `read at ${at} outside memory (${mem.byteLength})`);
       }
       return mem.getUint32(at, true);
@@ -147,8 +147,9 @@ export class SceneReader {
     const tables: TableReader[] = [];
     for (let i = 0; i < tableCount; i++) {
       const t = tablesBase + i * tl.stride;
+      const words = u32(t + tl.words);
+      if (!isIntIn(words, 1, MAX_TABLE_WORDS)) throw new SceneError('invalidTable', `table ${i}: words ${words}`);
       try {
-        const words = u32(t + tl.words);
         const rowCount = u32(t + tl.rowCount);
         const tableDirty = u32(t + tl.dirtyCount);
         const ownersPtr = u32(t + tl.owners);
@@ -210,7 +211,7 @@ export class SceneReader {
   }
 
   private nodeAt(index: number, offset: number, size: number): number {
-    if (!(index >= 0 && index < this.nodeCount && offset >= 0 && offset <= this.nodeStride - size)) {
+    if (!(isIntIn(index, 0, this.nodeCount - 1) && isIntIn(offset, 0, this.nodeStride - size))) {
       throw new RangeError(`node ${index} offset ${offset} (+${size}) outside ${this.nodeCount}x${this.nodeStride}`);
     }
     return index * this.nodeStride + offset;
@@ -221,7 +222,7 @@ export class SceneReader {
   /** View of `textSlab[offset .. offset + len)`; throws when out of range or not on UTF-8 boundaries. */
   textBytes(offset: number, len: number): Uint8Array {
     const size = this.textSlab.length;
-    if (!(offset >= 0 && len >= 0 && len <= size - offset) || !this.isBoundary(offset) || !this.isBoundary(offset + len)) {
+    if (!(isIntIn(offset, 0, size) && isIntIn(len, 0, size - offset)) || !this.isBoundary(offset) || !this.isBoundary(offset + len)) {
       throw new RangeError(`text [${offset}, +${len}) outside textSlab (${size}) or splits a code point`);
     }
     return this.textSlab.subarray(offset, offset + len);
@@ -261,11 +262,14 @@ export class SceneReader {
   }
 }
 
-function requireBytes(have: number, need: number, what: string): void {
-  if (!(need >= 0 && have >= need)) throw new SceneError('missingSlab', `${what} holds ${have} bytes, need ${need}`);
+/** `count` integer records of `size` bytes fit `view` (division: no product to overflow or NaN). */
+function requireRecords(view: DataView, count: number, size: number, what: string): void {
+  if (!(isIntIn(count, 0, 0xffff_ffff) && Math.floor(view.byteLength / size) >= count)) {
+    throw new SceneError('missingSlab', `${what} holds ${view.byteLength} bytes, need ${count} x ${size}`);
+  }
 }
 
 function u32At(view: DataView, i: number, count: number, what: string): number {
-  if (!(i >= 0 && i < count)) throw new RangeError(`${what} ${i} outside ${count}`);
+  if (!isIntIn(i, 0, count - 1)) throw new RangeError(`${what} ${i} outside ${count}`);
   return view.getUint32(i * 4, true);
 }

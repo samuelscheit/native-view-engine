@@ -67,6 +67,10 @@ void runXxh64(Check c) {
   c.eq(k, const Key64(0x985A4FD6, 0x33E73115), 'Key64.of');
   c.eq(k.toHex(), '33e73115985a4fd6', 'toHex');
   c.eq(constId('abc'), const Key64(0xAD770999, 0x44BC2CF5), 'constId');
+  c.eq(constId('héllo wörld — 日本語 🚀'), const Key64(0xF213F592, 0x72AC442F), 'constId encodes pairs in place');
+  for (final lone in const ['\uD800', 'x\uDC00', '\uD83D', '\uDE80\uD83D']) {
+    c.throwsA<BinCodecException>(() => constId(lone), 'constId lone surrogate');
+  }
   final le = List<int>.filled(9, 0);
   k.writeLE(le, 1);
   c.eq(Key64.readLE(le, 1), k, 'LE round trip at odd offset');

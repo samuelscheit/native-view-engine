@@ -1,6 +1,20 @@
 import NveHost
 import XCTest
 
+#if canImport(Darwin)
+import Darwin
+
+/// Live heap blocks across all malloc zones (`nil` where unsupported). This catches retained growth;
+/// malloc exposes no public per-call counter, so churn is guarded by storage identity below.
+private func liveHeapBlocks() -> Int? {
+    var stats = malloc_statistics_t()
+    malloc_zone_statistics(nil, &stats)
+    return Int(stats.blocks_in_use)
+}
+#else
+private func liveHeapBlocks() -> Int? { nil }
+#endif
+
 final class BinCodecTests: XCTestCase {
     private let golden = Golden.fromHex(Golden.binValueHex)
 
@@ -153,6 +167,90 @@ final class BinCodecTests: XCTestCase {
         }
         XCTAssertEqual(HostStatus.internalError.rawValue, -8)
         XCTAssertEqual(HybridStatus.nullHandle.rawValue, 4)
+    }
+
+    func testContainerLimitIsEnforced() {
+        // Rust validates children against `&bytes[..container_end]`: `Truncated`, not `invalidUtf8`.
+        assertInvalid([6, 5, 0, 0, 0, 1, 0, 0, 0, 4, 2, 0, 0, 0, 0xC0, 0xAF], .truncated)
+        assertInvalid([6, 10, 0, 0, 0, 1, 0, 0, 0, 6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], .truncated)
+    }
+
+    func testMaxLengthsNeverTrap() {
+        // u32::MAX lengths/counts are compared before becoming `Int` (would trap on arm64_32).
+        assertInvalid([4, 0xFF, 0xFF, 0xFF, 0xFF], .truncated)
+        assertInvalid([5, 0xFF, 0xFF, 0xFF, 0xFF], .truncated)
+        assertInvalid([6, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0], .truncated)
+        assertInvalid([7, 8, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0], .truncated)
+        var r = BinReader([0xFF, 0xFF, 0xFF, 0xFF])
+        XCTAssertThrowsError(try r.readMapKey()) { XCTAssertEqual($0 as? BinError, .truncated) }
+        var s = BinReader([4, 0xFF, 0xFF, 0xFF, 0x7F])
+        XCTAssertThrowsError(try s.skipValue()) { XCTAssertEqual($0 as? BinError, .truncated) }
+    }
+
+    func testBomRoundTrips() throws {
+        for text in ["\u{FEFF}", "\u{FEFF}x", "\u{FEFF}\u{FEFF}x"] {
+            var w = BinWriter()
+            let m = w.beginMap(1)
+            try w.writeMapKey(text)
+            try w.writeStr(text)
+            try w.end(m)
+            var r = BinReader(w.bytes)
+            XCTAssertEqual(try r.beginMap(), 1)
+            XCTAssertEqual(try r.readMapKey(), text)
+            XCTAssertEqual(try r.readStr(), text)
+        }
+        // Lone surrogates cannot occur: Swift `String` is always valid Unicode (`"\u{D800}"` does not
+        // compile), so the writer needs no surrogate check; byte-level input is validated on read.
+        XCTAssertThrowsError(try BinReader.validate([4, 3, 0, 0, 0, 0xED, 0xA0, 0x80])) {
+            XCTAssertEqual($0 as? BinError, .invalidUtf8)
+        }
+    }
+
+    func testStaleMarksThrowInsteadOfTrapping() throws {
+        var w = BinWriter()
+        let m = w.beginArray(1)
+        w.writeNull()
+        w.clear()
+        XCTAssertThrowsError(try w.end(m)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+        let open = w.beginArray(0)
+        try w.end(open)
+        w.clear()
+        w.writeNull()
+        XCTAssertThrowsError(try w.end(open)) { XCTAssertEqual($0 as? BinError, .invalidMark) }
+    }
+
+    func testValidationRetainsNothingAndWriterReusesItsStorage() throws {
+        var big = BinWriter(capacity: 1 << 20)
+        let m = big.beginArray(3)
+        try big.writeBytes([UInt8](repeating: 0xAB, count: 256 * 1024))
+        try big.writeStr(String(repeating: "x", count: 64 * 1024))
+        try big.writeStr("hé — 🚀")
+        try big.end(m)
+        let payload = big.bytes
+        try BinReader.validate(payload)
+        var w = BinWriter(capacity: 256)
+        for _ in 0..<2 {
+            w.clear()
+            try w.writeStr("warm-up")
+        }
+        let storage = w.bytes.withUnsafeBufferPointer { $0.baseAddress }
+        let capacity = w.bytes.capacity
+        let before = liveHeapBlocks()
+        for i in 0..<2000 {
+            try BinReader.validate(payload)
+            w.clear()
+            let a = w.beginArray(2)
+            w.writeI64(Int64(i))
+            try w.writeStr("steady state")
+            try w.end(a)
+        }
+        // The writer never reallocates once warm: same buffer, same capacity after 2000 reuses.
+        XCTAssertEqual(w.bytes.withUnsafeBufferPointer { $0.baseAddress }, storage)
+        XCTAssertEqual(w.bytes.capacity, capacity)
+        if let before, let after = liveHeapBlocks() {
+            // A per-iteration retained allocation would add >= 2000 live blocks; allow runtime noise.
+            XCTAssertLessThan(abs(after - before), 64, "heap blocks \(before) -> \(after)")
+        }
     }
 
     func testUtf8Validation() {

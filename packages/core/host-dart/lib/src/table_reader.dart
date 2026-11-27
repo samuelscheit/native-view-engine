@@ -12,8 +12,19 @@ import 'key64.dart';
 enum FieldKind { u32, i32, f32, boolean, enumeration, color, length, str, resource, node }
 
 /// One field of a table row: [bits] wide at [shift] inside [word] (`str` spans two words).
+///
+/// Always well-formed: construction throws [ArgumentError] unless `bits` is in `1..=32`,
+/// `shift + bits <= 32`, and the field fits a 32-word row, so extraction never mis-shifts.
 final class FieldSpec {
-  const FieldSpec(this.word, this.kind, {this.shift = 0, this.bits = 32});
+  factory FieldSpec(int word, FieldKind kind, {int shift = 0, int bits = 32}) {
+    final span = kind == FieldKind.str ? 2 : 1;
+    if (bits < 1 || bits > 32 || shift < 0 || shift + bits > 32 || word < 0 || word + span > maxTableWords) {
+      throw ArgumentError('invalid field spec word=$word shift=$shift bits=$bits');
+    }
+    return FieldSpec._(word, kind, shift, bits);
+  }
+
+  const FieldSpec._(this.word, this.kind, this.shift, this.bits);
 
   final int word;
   final int shift;
@@ -21,10 +32,7 @@ final class FieldSpec {
   final FieldKind kind;
 
   /// `true` when the field lies inside a row of [words] words.
-  bool fits(int words) {
-    final span = kind == FieldKind.str ? 2 : 1;
-    return word >= 0 && shift >= 0 && bits >= 1 && bits <= 32 && shift + bits <= 32 && word + span <= words;
-  }
+  bool fits(int words) => word + (kind == FieldKind.str ? 2 : 1) <= words;
 
   /// Field bits of [value] (unsigned).
   int extract(int value) => bits >= 32 ? value >>> shift : (value >>> shift) & ((1 << bits) - 1);
@@ -102,18 +110,25 @@ final class TableReader {
     if (words < 1 || words > maxTableWords) {
       throw ArgumentError.value(words, 'words', 'must be in 1..=$maxTableWords');
     }
-    _require(rows, rowCount * words, 'rows');
+    if (rowCount < 0 || dirtyCount < 0) {
+      throw ArgumentError('negative count: rowCount=$rowCount dirtyCount=$dirtyCount');
+    }
+    // Division, never `rowCount * words`: a hostile count cannot wrap the 64-bit VM `int`.
+    _require(rows, rowCount, words, 'rows');
     if (owners != null) {
-      _require(owners, rowCount, 'owners');
+      _require(owners, rowCount, 1, 'owners');
     }
-    if (dirtyCount > 0) {
-      _require(dirtyRows, dirtyCount, 'dirtyRows');
-    }
+    _require(dirtyRows, dirtyCount, 1, 'dirtyRows');
   }
 
-  static void _require(ByteData? view, int count, String what) {
-    if (count < 0 || (count > 0 && (view == null || view.lengthInBytes ~/ 4 < count))) {
-      throw ArgumentError('$what holds ${view == null ? 'null' : view.lengthInBytes ~/ 4} words, need $count');
+  /// Throws unless [view] holds `count` groups of `wordsPer` u32 words.
+  static void _require(ByteData? view, int count, int wordsPer, String what) {
+    if (count == 0) {
+      return;
+    }
+    final have = view == null ? 0 : view.lengthInBytes ~/ (4 * wordsPer);
+    if (have < count) {
+      throw ArgumentError('$what holds $have rows of $wordsPer words, need $count');
     }
   }
 
@@ -135,12 +150,20 @@ final class TableReader {
     return _rows.getUint32((r * words + w) * 4, Endian.little);
   }
 
-  int bits(int r, FieldSpec f) => f.extract(word(r, f.word));
+  /// Field bits of row [r]; throws [RangeError] when the field lies past this table's row.
+  int bits(int r, FieldSpec f) => f.extract(_fieldWord(r, f));
+
+  int _fieldWord(int r, FieldSpec f) {
+    if (!f.fits(words)) {
+      throw RangeError('field word ${f.word} past $words-word row');
+    }
+    return word(r, f.word);
+  }
   int u32(int r, FieldSpec f) => bits(r, f);
   int enumValue(int r, FieldSpec f) => bits(r, f);
   int resource(int r, FieldSpec f) => bits(r, f);
   int node(int r, FieldSpec f) => bits(r, f);
-  int i32(int r, FieldSpec f) => f.extractSigned(word(r, f.word));
+  int i32(int r, FieldSpec f) => f.extractSigned(_fieldWord(r, f));
   double f32(int r, FieldSpec f) => f32FromBits(bits(r, f));
   bool boolean(int r, FieldSpec f) => (bits(r, f) & 1) != 0;
   Rgba color(int r, FieldSpec f) => Rgba(bits(r, f));

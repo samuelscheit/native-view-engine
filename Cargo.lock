@@ -2486,6 +2486,9 @@ name = "nve-arch-invariants"
 version = "0.1.0"
 dependencies = [
  "guppy",
+ "nve-abi",
+ "nve-hash",
+ "nve-store",
  "proc-macro2",
  "syn 2.0.119",
 ]

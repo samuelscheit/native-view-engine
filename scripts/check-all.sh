@@ -661,6 +661,23 @@ else
   skip_suite "ast-grep lints" "ast-grep not found"
 fi
 
+# 0b2. Static host runtimes (packages/core/host-*): --quick runs C/C++ and TS; full runs all five.
+# shellcheck source=scripts/host-runtimes.sh
+source "$REPO_ROOT/scripts/host-runtimes.sh"
+host_runtime_suites=(cxx ts)
+[ "$QUICK_MODE" -eq 0 ] && host_runtime_suites=(cxx swift java dart ts)
+for host_rt in "${host_runtime_suites[@]}"; do
+  if host_runtime_has_tools "$host_rt"; then
+    run_suite "Host runtime $host_rt" "suite_host_$host_rt" "packages/core/host-$host_rt"
+  elif [ "${NVE_HOST_RUNTIMES_OPTIONAL:-0}" = "1" ]; then
+    skip_suite "Host runtime $host_rt" "$(host_runtime_tool "$host_rt") not found (NVE_HOST_RUNTIMES_OPTIONAL=1)"
+  else
+    banner "Host runtime $host_rt [MISSING TOOLCHAIN]"
+    printf 'error: %s not found; install it or set NVE_HOST_RUNTIMES_OPTIONAL=1\n' "$(host_runtime_tool "$host_rt")" >&2
+    record_result "Host runtime $host_rt" "FAIL" "-" "$(host_runtime_tool "$host_rt") not found"
+  fi
+done
+
 # 0c. Dependency & license audit (cargo-deny)
 if command -v cargo-deny >/dev/null 2>&1; then
   run_suite "cargo-deny audit" suite_cargo_deny "cargo deny check"

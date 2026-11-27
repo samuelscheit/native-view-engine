@@ -66,14 +66,37 @@ class Xxh64Hasher {
   return Xxh64Hasher(seed).update(text).digest();
 }
 
-/// Compile-time identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id`).
-[[nodiscard]] constexpr uint64_t const_id(std::string_view name) noexcept { return xxh64(name, 0u); }
+namespace detail {
+/// Deliberately not `constexpr`: reaching it during constant evaluation is a compile error.
+void name_is_not_valid_utf8();
+
+consteval bool utf8_valid(std::string_view text) {
+  uint8_t chunk[4] = {};
+  for (size_t i = 0; i < text.size();) {
+    const auto b0 = static_cast<uint8_t>(text[i]);
+    const size_t n = b0 < 0x80u ? 1u : b0 < 0xE0u ? 2u : b0 < 0xF0u ? 3u : 4u;
+    if (n > text.size() - i) return false;
+    for (size_t k = 0; k < n; ++k) chunk[k] = static_cast<uint8_t>(text[i + k]);
+    if (nve_utf8_valid(chunk, n) == 0) return false;
+    i += n;
+  }
+  return true;
+}
+}  // namespace detail
+
+/// Compile-time identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id`). A name that
+/// is not well-formed UTF-8 (impossible for a Rust `&str`) fails to compile. Runtime names use the
+/// validating `nve_key64_of`.
+[[nodiscard]] consteval uint64_t const_id(std::string_view name) {
+  if (!detail::utf8_valid(name)) detail::name_is_not_valid_utf8();
+  return xxh64(name, 0u);
+}
 
 /// 64-bit identity key; crosses 53-bit hosts (JS / Dart-web) as `(lo, hi)` `u32` halves.
 struct Key64 {
   uint64_t value = 0u;
 
-  [[nodiscard]] static constexpr Key64 of(std::string_view name) noexcept { return Key64{const_id(name)}; }
+  [[nodiscard]] static consteval Key64 of(std::string_view name) { return Key64{const_id(name)}; }
   [[nodiscard]] static constexpr Key64 from_halves(uint32_t lo, uint32_t hi) noexcept {
     return Key64{(static_cast<uint64_t>(hi) << 32) | lo};
   }

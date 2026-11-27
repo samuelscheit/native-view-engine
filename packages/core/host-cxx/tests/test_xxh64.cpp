@@ -71,7 +71,8 @@ void test_runtime_string_view_matches_constexpr() {
   constexpr uint64_t baked = xxh64(text, NVE_XXH64_PRIME1);
   volatile size_t len = text.size();  // defeat constant folding
   CHECK(xxh64(std::string_view(text.data(), len), NVE_XXH64_PRIME1) == baked);
-  CHECK(nve_key64_of(text.data(), text.size()).value == const_id(text));
+  NveKey64 runtime{};
+  CHECK(nve_key64_of(text.data(), text.size(), &runtime) == 1 && runtime.value == const_id(text));
   CHECK(Key64::from_c(Key64::of("x").to_c()) == Key64::of("x"));
 }
 

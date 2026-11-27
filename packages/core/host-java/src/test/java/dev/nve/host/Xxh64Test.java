@@ -87,5 +87,15 @@ final class Xxh64Test {
         c.that(Key64.of(1L).toHex().equals("0000000000000001"), "Key64.toHex pads");
         c.that(Key64.of(0xF00DFACEC0FFEE11L).toHex().equals("f00dfacec0ffee11"), "Key64.toHex high bit");
         c.eq(Xxh64.constId("abc"), 0x44BC2CF5AD770999L, "constId");
+        c.eq(Xxh64.constId("h\u00e9llo w\u00f6rld \u2014 \u65e5\u672c\u8a9e \ud83d\ude80"), 0x72AC442FF213F592L, "constId encodes pairs in place");
+        for (String lone : new String[] {"\ud800", "x\udc00", "\ud83d", "\ude80\ud83d"}) {
+            c.binError(BinCodecException.Kind.INVALID_UTF8, () -> Xxh64.constId(lone), "constId lone surrogate");
+        }
+        final Xxh64.Hasher warm = new Xxh64.Hasher(0);
+        warm.updateUtf8("warm \u00e9 \ud83d\ude80");
+        final long allocated = Alloc.bytes(() -> {
+            for (int i = 0; i < 1000; i++) warm.updateUtf8("steady \u00e9 \ud83d\ude80");
+        });
+        c.that(allocated < 1024, "updateUtf8 allocates nothing per call (" + allocated + " bytes)");
     }
 }

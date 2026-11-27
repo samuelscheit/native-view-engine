@@ -9,29 +9,33 @@ extension NveTestSceneView: SceneViewABI {}
 
 final class TableSceneTests: XCTestCase {
     private let schema = Key64(0xF00D_FACE_C0FF_EE11)
-    private let opacity = FieldSpec(word: 0, shift: 0, bits: 8, kind: .u32)
-    private let z = FieldSpec(word: 0, shift: 8, bits: 12, kind: .i32)
-    private let visible = FieldSpec(word: 0, shift: 20, bits: 1, kind: .bool)
-    private let width = FieldSpec(word: 1, kind: .length)
-    private let color = FieldSpec(word: 2, kind: .color)
-    private let label = FieldSpec(word: 3, kind: .str)
-    private let scale = FieldSpec(word: 5, kind: .f32)
+    // Fixture specs are statically valid; `try!` documents that, and a typo fails loudly.
+    private let opacity = try! FieldSpec(word: 0, shift: 0, bits: 8, kind: .u32)
+    private let z = try! FieldSpec(word: 0, shift: 8, bits: 12, kind: .i32)
+    private let visible = try! FieldSpec(word: 0, shift: 20, bits: 1, kind: .bool)
+    private let width = try! FieldSpec(word: 1, kind: .length)
+    private let color = try! FieldSpec(word: 2, kind: .color)
+    private let label = try! FieldSpec(word: 3, kind: .str)
+    private let scale = try! FieldSpec(word: 5, kind: .f32)
 
     private func scene() throws -> SceneReader<NveTestSceneView> {
         try SceneReader.open(nve_test_scene(), expectedSchema: schema)
     }
 
-    func testFieldSpecExtraction() {
-        XCTAssertEqual(FieldSpec(word: 0, shift: 8, bits: 8, kind: .u32).extract(0xABCD_1234), 0x12)
-        XCTAssertEqual(FieldSpec(word: 0, shift: 0, bits: 32, kind: .u32).extract(0xABCD_1234), 0xABCD_1234)
-        XCTAssertEqual(FieldSpec(word: 0, shift: 0, bits: 3, kind: .i32).extractSigned(7), -1)
-        XCTAssertEqual(FieldSpec(word: 0, shift: 0, bits: 3, kind: .i32).extractSigned(4), -4)
-        XCTAssertEqual(FieldSpec(word: 0, shift: 0, bits: 32, kind: .i32).extractSigned(0x8000_0000), .min)
-        XCTAssertEqual(FieldSpec(word: 0, shift: 31, bits: 1, kind: .i32).extractSigned(0x8000_0000), -1)
+    func testFieldSpecExtraction() throws {
+        XCTAssertEqual(try FieldSpec(word: 0, shift: 8, bits: 8, kind: .u32).extract(0xABCD_1234), 0x12)
+        XCTAssertEqual(try FieldSpec(word: 0, shift: 0, bits: 32, kind: .u32).extract(0xABCD_1234), 0xABCD_1234)
+        XCTAssertEqual(try FieldSpec(word: 0, shift: 0, bits: 3, kind: .i32).extractSigned(7), -1)
+        XCTAssertEqual(try FieldSpec(word: 0, shift: 0, bits: 3, kind: .i32).extractSigned(4), -4)
+        XCTAssertEqual(try FieldSpec(word: 0, shift: 0, bits: 32, kind: .i32).extractSigned(0x8000_0000), .min)
+        XCTAssertEqual(try FieldSpec(word: 0, shift: 31, bits: 1, kind: .i32).extractSigned(0x8000_0000), -1)
         XCTAssertTrue(label.fits(words: 5))
         XCTAssertFalse(label.fits(words: 4))
-        XCTAssertFalse(FieldSpec(word: 0, shift: 24, bits: 16, kind: .u32).fits(words: 1))
-        XCTAssertFalse(FieldSpec(word: 0, shift: 0, bits: 0, kind: .u32).fits(words: 1))
+        // Malformed specs cannot exist: construction throws instead of trapping in a later shift.
+        for (word, shift, bits, kind) in [(0, 24, 16, FieldKind.u32), (0, 0, 0, .u32), (0, 0, 33, .i32),
+                                          (0, 31, 2, .i32), (32, 0, 32, .u32), (31, 0, 32, .str), (255, 255, 255, .u32)] {
+            XCTAssertThrowsError(try FieldSpec(word: UInt8(word), shift: UInt8(shift), bits: UInt8(bits), kind: kind))
+        }
         XCTAssertEqual(LengthValue(word: 0x3F80_0000), LengthValue(unit: .points, value: 1))
         XCTAssertEqual(LengthValue(word: 0x4248_0001), LengthValue(unit: .percent, value: 50))
         XCTAssertEqual(LengthValue(word: 2), LengthValue(unit: .auto, value: 0))
@@ -60,7 +64,7 @@ final class TableSceneTests: XCTestCase {
         XCTAssertEqual(t.f32(1, scale)?.sign, .minus)
         XCTAssertNil(t.u32(2, opacity))
         XCTAssertNil(t.word(0, 6))
-        XCTAssertNil(t.str(0, FieldSpec(word: 5, kind: .str)))
+        XCTAssertNil(t.str(0, try FieldSpec(word: 5, kind: .str)))
         XCTAssertEqual(t.row(of: 1), 1)
         XCTAssertNil(t.row(of: 2))
         XCTAssertEqual(t.row(1).count, 6)
@@ -69,7 +73,53 @@ final class TableSceneTests: XCTestCase {
         XCTAssertNil(s.table(1))
     }
 
-    func testSparseAndInvalidTables() {
+    func testHostileViewsNeverTrap() throws {
+        // `words` is checked before any multiplication: no overflow trap on 64- or 32-bit hosts.
+        var huge = NveTestTableView()
+        huge.words = 0x8000_0001
+        huge.row_count = .max
+        XCTAssertNil(TableReader(view: huge))
+        huge.words = 32
+        huge.dirty_count = .max
+        XCTAssertNil(TableReader(view: huge))  // null pointers with huge counts
+        let base = try XCTUnwrap(nve_test_scene()).pointee
+        var bad = try XCTUnwrap(base.tables).pointee
+        bad.words = 0x8000_0001
+        bad.row_count = .max
+        try withUnsafePointer(to: bad) { tp in
+            var v = base
+            v.tables = tp
+            XCTAssertThrowsError(try SceneReader.open(v, expectedSchema: schema)) {
+                XCTAssertEqual($0 as? SceneError, .invalidTable(index: 0))
+            }
+            _ = try XCTUnwrap(Optional(tp))
+        }
+        let s = try scene()
+        XCTAssertNil(s.text(offset: .max, len: .max))
+        XCTAssertNil(s.text(offset: 1, len: .max))
+        XCTAssertNil(s.children(offset: .max, count: .max))
+        XCTAssertNil(s.children(offset: 2, count: .max))
+        // A field past this table's 6-word row reads as nil (spec itself is valid for 32 words).
+        let t = try XCTUnwrap(s.table(0))
+        XCTAssertNil(t.bits(0, try FieldSpec(word: 6, kind: .u32)))
+        XCTAssertNil(t.i32(0, try FieldSpec(word: 31, kind: .i32)))
+    }
+
+    func testBomIsTextNotStripped() throws {
+        let text: [UInt8] = [0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 0x78]
+        let base = try XCTUnwrap(nve_test_scene()).pointee
+        try text.withUnsafeBufferPointer { bp in
+            var v = base
+            v.text_slab = bp.baseAddress
+            v.text_slab_len = 7
+            let s = try SceneReader.open(v, expectedSchema: schema)
+            XCTAssertEqual(s.text(offset: 0, len: 7), "\u{FEFF}\u{FEFF}x")
+            XCTAssertEqual(s.text(offset: 0, len: 3), "\u{FEFF}")
+            _ = try XCTUnwrap(bp.baseAddress)
+        }
+    }
+
+    func testSparseAndInvalidTables() throws {
         let rows: [UInt32] = [1, 2, 3, 4]
         let owners: [UInt32] = [0x0001_0007, 0x0002_0003]
         rows.withUnsafeBufferPointer { rp in

@@ -62,7 +62,9 @@ public final class SceneReader {
             throw new SceneException(SceneException.Kind.INVALID_TABLE, "tableCount " + tableCount);
         }
         for (int i = 0; i < tableCount; i++) {
-            if (tables[i] == null) throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + i + " is null");
+            if (tables[i] == null || tables[i].words() < 1) {
+                throw new SceneException(SceneException.Kind.INVALID_TABLE, "table " + i + " is null or not attached");
+            }
         }
         if (textSlabLen > 0 && !Utf8.isValid(textSlab, textSlab.position(), textSlabLen)) {
             throw new SceneException(SceneException.Kind.INVALID_UTF8, "textSlab");

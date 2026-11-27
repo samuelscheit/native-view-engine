@@ -11,9 +11,15 @@ so Node runs the sources directly and any bundler can consume them.
 - A 64-bit value is never passed through `Number(...)`. The ast-grep rule
   `no-unsafe-bigint64-to-number` enforces this.
 
+Every index, count and offset must be an integer. `NaN`, `Infinity` and fractions throw instead of
+slipping past a bounds check. `FieldSpec` is a nominal class that is validated when constructed.
+Strings reject lone surrogates (`isWellFormed`), are encoded in place with `encodeInto`, and keep a
+leading BOM.
+
 | File | Contents |
 |---|---|
 | `src/key64.ts` | `Key64`, with `bigint` and safe-integer conversions that throw instead of rounding |
+| `src/utf8.ts` | Strict `isValidUtf8`, BOM-preserving `UTF8_DECODER`, in-place code-point encoding |
 | `src/xxh64.ts` | `Xxh64Hasher`, `xxh64`, `constId`: canonical XXH64, bit-identical to Rust `nve-hash` |
 | `src/bin_codec.ts` | `BinReader` / `BinWriter`, the `NveBinValue` format, `isValidUtf8`, a strict BOM-preserving `UTF8_DECODER` |
 | `src/table_reader.ts` | `FieldKind`, `FieldSpec`, `decodeLength`, `rgba`, `TableReader` |
@@ -21,6 +27,8 @@ so Node runs the sources directly and any bundler can consume them.
 | `src/hybrid_runtime.ts` | `HybridStatus`, `HostStatus`, `HybridError`, `DynamicValue` |
 
 ## Verify
+
+`scripts/host-runtimes.sh ts` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.
 
 ```bash
 node --test packages/core/host-ts/test/*.test.ts

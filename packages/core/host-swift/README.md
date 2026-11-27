@@ -21,9 +21,18 @@ extension NveSceneView: SceneViewABI {}
 let scene = try SceneReader.open(nve_scene_view(), expectedSchema: Key64(NVE_SCENE_SCHEMA_HASH))
 ```
 
+- `FieldSpec.init` throws for an invalid spec, so every `FieldSpec` is well-formed.
+- Wire lengths, offsets and counts are compared as `UInt64` before they become an `Int`, so hostile input
+  cannot trap, including on 32-bit `arm64_32` watchOS. The suite compile-checks `arm64_32` when the
+  watchOS SDK is present.
+- While validating, reads stay inside the container being checked, and strings are validated in place
+  without being decoded.
+
 `Tests/CNveHostTestABI` is a test-only C mirror of those structs. It proves this conformance in CI.
 
 ## Verify
+
+`scripts/host-runtimes.sh swift` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.
 
 ```bash
 swift test --package-path packages/core/host-swift --scratch-path "$TMPDIR/nve-host-swift" -Xswiftc -warnings-as-errors

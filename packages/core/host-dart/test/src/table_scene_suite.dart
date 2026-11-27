@@ -7,13 +7,13 @@ import 'check.dart';
 const Key64 schema = Key64(0xC0FFEE11, 0xF00DFACE); // high bit set on purpose
 final Key64 visual = Key64.of('nve.visual');
 
-const opacity = FieldSpec(0, FieldKind.u32, bits: 8);
-const z = FieldSpec(0, FieldKind.i32, shift: 8, bits: 12);
-const visible = FieldSpec(0, FieldKind.boolean, shift: 20, bits: 1);
-const width = FieldSpec(1, FieldKind.length);
-const color = FieldSpec(2, FieldKind.color);
-const label = FieldSpec(3, FieldKind.str);
-const scale = FieldSpec(5, FieldKind.f32);
+final opacity = FieldSpec(0, FieldKind.u32, bits: 8);
+final z = FieldSpec(0, FieldKind.i32, shift: 8, bits: 12);
+final visible = FieldSpec(0, FieldKind.boolean, shift: 20, bits: 1);
+final width = FieldSpec(1, FieldKind.length);
+final color = FieldSpec(2, FieldKind.color);
+final label = FieldSpec(3, FieldKind.str);
+final scale = FieldSpec(5, FieldKind.f32);
 
 /// Test node record: id u32 @0, text_offset u32 @4, text_len u16 @8, child_count u16 @10, child_offset u32 @12.
 const int nodeStride = 16;
@@ -138,17 +138,55 @@ void expectScene(Check c, SceneErrorKind kind, void Function() body, String what
   }
 }
 
+void runHardening(Check c) {
+  // Malformed specs cannot be built.
+  for (final (word, shift, bits, kind) in const [
+    (0, 24, 16, FieldKind.u32), (0, 0, 0, FieldKind.u32), (0, 0, 33, FieldKind.i32), (0, 31, 2, FieldKind.i32),
+    (32, 0, 32, FieldKind.u32), (31, 0, 32, FieldKind.str), (-1, 0, 8, FieldKind.u32), (0, -1, 8, FieldKind.u32), //
+  ]) {
+    c.throwsA<ArgumentError>(() => FieldSpec(word, kind, shift: shift, bits: bits), 'bad spec $word/$shift/$bits');
+  }
+  final t = TableReader(key: visual, slot: 0, words: 6, rowCount: 2, rows: words(rowWords));
+  c.throwsA<RangeError>(() => t.u32(0, FieldSpec(6, FieldKind.u32)), 'field past row');
+  c.throwsA<RangeError>(() => t.i32(0, FieldSpec(31, FieldKind.i32)), 'i32 field past row');
+  // Negative and overflowing counts.
+  c.throwsA<ArgumentError>(
+      () => TableReader(key: visual, slot: 0, words: 2, rowCount: 0, rows: ByteData(0), dirtyCount: -1), 'dirtyCount -1');
+  c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 2, rowCount: -1, rows: ByteData(0)), 'rowCount -1');
+  const isWeb = identical(0, 0.0);
+  if (!isWeb) {
+    // `rowCount * words` would wrap the 64-bit VM int to a tiny positive number.
+    final wrap = (1 << 62) + 1;
+    c.throwsA<ArgumentError>(() => TableReader(key: visual, slot: 0, words: 4, rowCount: wrap, rows: words(rowWords)), 'VM wrap');
+  }
+  // Hostile wasm32 table: words is rejected before any multiplication.
+  final (mem, view) = linearMemory(tableWords: 0x80000000);
+  final tablePtr = mem.getUint32(view + wasm32Layout.tables, Endian.little);
+  mem.setUint32(tablePtr + wasm32Layout.tableView.rowCount, 0x80000000, Endian.little);
+  expectScene(c, SceneErrorKind.invalidTable, () => SceneReader.fromLinearMemory(mem, view, wasm32Layout, schema), 'hostile words');
+  // A leading BOM is scene text, not stripped (dart:convert would drop it).
+  final (bomMem, bomView) = linearMemory();
+  final textPtr = bomMem.getUint32(bomView + wasm32Layout.textSlab, Endian.little);
+  const bom = [0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 0x78];
+  for (var i = 0; i < bom.length; i++) {
+    bomMem.setUint8(textPtr + i, bom[i]);
+  }
+  final s = SceneReader.fromLinearMemory(bomMem, bomView, wasm32Layout, schema);
+  c.eq(s.text(0, 7), '\uFEFF\uFEFFx', 'scene double BOM');
+  c.eq(s.text(0, 3), '\uFEFF', 'scene lone BOM');
+  c.eq(s.text(0, 7).length, 3, 'scene BOM length');
+}
+
 void runTableScene(Check c) {
+  runHardening(c);
   // Field specs.
-  c.eq(const FieldSpec(0, FieldKind.u32, shift: 8, bits: 8).extract(0xABCD1234), 0x12, 'extract');
-  c.eq(const FieldSpec(0, FieldKind.u32).extract(0xABCD1234), 0xABCD1234, 'extract whole');
-  c.eq(const FieldSpec(0, FieldKind.i32, bits: 3).extractSigned(7), -1, 'sign 3 bits');
-  c.eq(const FieldSpec(0, FieldKind.i32, bits: 3).extractSigned(4), -4, 'sign min');
-  c.eq(const FieldSpec(0, FieldKind.i32).extractSigned(0x80000000), -0x80000000, 'sign 32');
-  c.eq(const FieldSpec(0, FieldKind.i32, shift: 31, bits: 1).extractSigned(0x80000000), -1, 'sign top bit');
+  c.eq(FieldSpec(0, FieldKind.u32, shift: 8, bits: 8).extract(0xABCD1234), 0x12, 'extract');
+  c.eq(FieldSpec(0, FieldKind.u32).extract(0xABCD1234), 0xABCD1234, 'extract whole');
+  c.eq(FieldSpec(0, FieldKind.i32, bits: 3).extractSigned(7), -1, 'sign 3 bits');
+  c.eq(FieldSpec(0, FieldKind.i32, bits: 3).extractSigned(4), -4, 'sign min');
+  c.eq(FieldSpec(0, FieldKind.i32).extractSigned(0x80000000), -0x80000000, 'sign 32');
+  c.eq(FieldSpec(0, FieldKind.i32, shift: 31, bits: 1).extractSigned(0x80000000), -1, 'sign top bit');
   c.that(label.fits(5) && !label.fits(4), 'str fits');
-  c.that(!const FieldSpec(0, FieldKind.u32, shift: 24, bits: 16).fits(1), 'too wide');
-  c.that(!const FieldSpec(0, FieldKind.u32, bits: 0).fits(1), 'zero bits');
   c.eq(LengthValue.decode(0x3F800000), const LengthValue(LengthUnit.points, 1), 'points');
   c.eq(LengthValue.decode(0x42480001), const LengthValue(LengthUnit.percent, 50), 'percent');
   c.eq(LengthValue.decode(2), const LengthValue(LengthUnit.auto, 0), 'auto');
@@ -175,7 +213,7 @@ void runTableScene(Check c) {
   c.eq(t.owner(1), 1, 'dense owner');
   c.throwsA<RangeError>(() => t.u32(2, opacity), 'row oob');
   c.throwsA<RangeError>(() => t.word(0, 6), 'word oob');
-  c.throwsA<RangeError>(() => t.str(0, const FieldSpec(5, FieldKind.str)), 'str second word oob');
+  c.throwsA<RangeError>(() => t.str(0, FieldSpec(5, FieldKind.str)), 'str second word oob');
   c.throwsA<RangeError>(() => t.dirtyRow(1), 'dirty oob');
 
   // Sparse and invalid tables.

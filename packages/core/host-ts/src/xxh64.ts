@@ -1,4 +1,5 @@
-import { Key64, TWO32, read32LE } from './key64.ts';
+import { Key64, TWO32, read32LE, write32LE } from './key64.ts';
+import { encodeCodePointAt, requireWellFormed, utf16UnitsAt } from './utf8.ts';
 
 /** XXH64 primes 1..5 as `(lo, hi)` halves. */
 export type Xxh64Primes = readonly [Key64, Key64, Key64, Key64, Key64];
@@ -69,6 +70,7 @@ export class Xxh64Hasher {
   private v3: Key64;
   private v4: Key64;
   private readonly buf = new Uint8Array(32);
+  private readonly scratch = new Uint8Array(4);
   private bufLen = 0;
   private total = 0;
 
@@ -81,10 +83,14 @@ export class Xxh64Hasher {
     this.v4 = sub(seed, p1);
   }
 
-  update(bytes: Uint8Array): this {
-    const len = bytes.length;
-    this.total += len;
-    let i = 0;
+  /** Feeds `bytes[start .. end)`. */
+  update(bytes: Uint8Array, start = 0, end = bytes.length): this {
+    if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= bytes.length)) {
+      throw new RangeError(`range [${start}, ${end}) outside ${bytes.length} bytes`);
+    }
+    const len = end;
+    this.total += end - start;
+    let i = start;
     if (this.bufLen > 0) {
       while (this.bufLen < 32 && i < len) this.buf[this.bufLen++] = bytes[i++]!;
       if (this.bufLen < 32) return this;
@@ -96,9 +102,22 @@ export class Xxh64Hasher {
     return this;
   }
 
-  /** Feeds `v` as 4 little-endian bytes. */
+  /** Feeds `v` as 4 little-endian bytes (no allocation). */
   updateU32(v: number): this {
-    return this.update(new Uint8Array([v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff]));
+    write32LE(this.scratch, 0, v);
+    return this.update(this.scratch);
+  }
+
+  /**
+   * Feeds the UTF-8 encoding of `text` without allocating; throws `BinCodecError('invalidUtf8')` on a
+   * lone surrogate (never hashes U+FFFD).
+   */
+  updateUtf8(text: string): this {
+    requireWellFormed(text);
+    for (let i = 0; i < text.length; i += utf16UnitsAt(text, i)) {
+      this.update(this.scratch, 0, encodeCodePointAt(text, i, this.scratch, 0));
+    }
+    return this;
   }
 
   /** Feeds `v` as 8 little-endian bytes. */
@@ -150,9 +169,10 @@ export function xxh64(bytes: Uint8Array, seed: Key64 = Key64.ZERO): Key64 {
   return new Xxh64Hasher(seed).update(bytes).digest();
 }
 
-const UTF8 = new TextEncoder();
-
-/** Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id`). */
+/**
+ * Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id`); throws
+ * `BinCodecError('invalidUtf8')` for a name with a lone surrogate.
+ */
 export function constId(name: string): Key64 {
-  return xxh64(UTF8.encode(name));
+  return new Xxh64Hasher().updateUtf8(name).digest();
 }

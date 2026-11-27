@@ -41,18 +41,19 @@ enum class BinError : uint8_t {
   TooLarge,       ///< length does not fit the `u32` wire field
   MaxDepth,       ///< container nesting deeper than `kBinValueMaxDepth`
   TrailingBytes,  ///< container payload length disagrees with its contents
+  InvalidMark,    ///< `BinWriter::end` got a mark that is not an open container in this buffer
 };
 
 /// Bounds-checked zero-copy cursor over little-endian bytes.
 class BinReader {
  public:
-  explicit BinReader(std::span<const uint8_t> data) noexcept : data_(data) {}
+  explicit BinReader(std::span<const uint8_t> data) noexcept : data_(data), limit_(data.size()) {}
 
   [[nodiscard]] bool ok() const noexcept { return error_ == BinError::None; }
   [[nodiscard]] BinError error() const noexcept { return error_; }
   [[nodiscard]] size_t position() const noexcept { return pos_; }
-  [[nodiscard]] size_t remaining() const noexcept { return data_.size() - pos_; }
-  [[nodiscard]] bool at_end() const noexcept { return pos_ == data_.size(); }
+  [[nodiscard]] size_t remaining() const noexcept { return limit_ - pos_; }
+  [[nodiscard]] bool at_end() const noexcept { return pos_ == limit_; }
 
   // ---- raw little-endian primitives -------------------------------------------------------
   uint8_t u8() noexcept {
@@ -93,7 +94,7 @@ class BinReader {
   // ---- tagged NveBinValue -----------------------------------------------------------------
   /// Tag of the next value without consuming it (`BinTag::Null` and an error when truncated).
   BinTag peek_tag() noexcept {
-    if (pos_ >= data_.size()) return fail<BinTag>(BinError::Truncated);
+    if (pos_ >= limit_) return fail<BinTag>(BinError::Truncated);
     const uint8_t t = data_[pos_];
     if (t > static_cast<uint8_t>(BinTag::Map)) return fail<BinTag>(BinError::InvalidTag);
     return static_cast<BinTag>(t);
@@ -188,7 +189,7 @@ class BinReader {
 
   const uint8_t* take(size_t n) noexcept {
     if (!ok()) return nullptr;
-    if (n > data_.size() - pos_) return fail<const uint8_t*>(BinError::Truncated);
+    if (n > limit_ - pos_) return fail<const uint8_t*>(BinError::Truncated);
     const uint8_t* p = data_.data() + pos_;
     pos_ += n;
     return p;
@@ -246,11 +247,16 @@ class BinReader {
         const bool is_map = t == BinTag::Map;
         size_t end = 0;
         const uint32_t count = open_container(t, is_map ? 5u : 1u, &end);
+        if (!ok()) return;
+        // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
+        const size_t outer_limit = limit_;
+        limit_ = end;
         for (uint32_t i = 0; i < count && ok(); ++i) {
           if (is_map) (void)read_map_key();
           check_value_at(depth + 1u);
         }
-        if (ok() && pos_ != end) (void)fail<bool>(pos_ < end ? BinError::TrailingBytes : BinError::Truncated);
+        limit_ = outer_limit;
+        if (ok() && pos_ != end) (void)fail<bool>(BinError::TrailingBytes);
         return;
       }
     }
@@ -258,6 +264,7 @@ class BinReader {
 
   std::span<const uint8_t> data_;
   size_t pos_ = 0;
+  size_t limit_;  ///< reads stop here: `data_.size()`, or the enclosing container's end while validating
   BinError error_ = BinError::None;
 };
 
@@ -307,27 +314,29 @@ class BinWriter {
     tag(BinTag::F64);
     f64(v);
   }
+  /// Writes a `Str`; text that is not well-formed UTF-8 records `InvalidUtf8` (and an empty string).
   void write_str(std::string_view s) {
     tag(BinTag::Str);
-    sized(reinterpret_cast<const uint8_t*>(s.data()), s.size());
+    utf8_sized(s);
   }
   void write_bytes(std::span<const uint8_t> b) {
     tag(BinTag::Bytes);
     sized(b.data(), b.size());
   }
-  void write_map_key(std::string_view key) { sized(reinterpret_cast<const uint8_t*>(key.data()), key.size()); }
+  /// Writes a map key; text that is not well-formed UTF-8 records `InvalidUtf8` (and an empty key).
+  void write_map_key(std::string_view key) { utf8_sized(key); }
 
   /// Opens an `Array` of `count` values; close it with `end(mark)` after writing them.
   [[nodiscard]] Mark begin_array(uint32_t count) { return begin(BinTag::Array, count); }
   /// Opens a `Map` of `count` entries (`write_map_key` + value each); close it with `end(mark)`.
   [[nodiscard]] Mark begin_map(uint32_t count) { return begin(BinTag::Map, count); }
 
+  /// Closes the container opened at `m`; a mark past the buffer (e.g. stale after `clear()`)
+  /// records `InvalidMark` instead of writing out of bounds.
   void end(Mark m) noexcept {
+    if (buf_.size() < 8u || m.len_pos > buf_.size() - 8u) return record(BinError::InvalidMark);
     const size_t payload = buf_.size() - m.len_pos - 4u;
-    if (payload > std::numeric_limits<uint32_t>::max()) {
-      if (error_ == BinError::None) error_ = BinError::TooLarge;
-      return;
-    }
+    if (payload > std::numeric_limits<uint32_t>::max()) return record(BinError::TooLarge);
     nve_store_u32_le(buf_.data() + m.len_pos, static_cast<uint32_t>(payload));
   }
 
@@ -341,9 +350,23 @@ class BinWriter {
 
   void tag(BinTag t) { u8(static_cast<uint8_t>(t)); }
 
+  void record(BinError e) noexcept {
+    if (error_ == BinError::None) error_ = e;
+  }
+
+  void utf8_sized(std::string_view s) {
+    const auto* p = reinterpret_cast<const uint8_t*>(s.data());
+    if (nve_utf8_valid(p, s.size()) == 0) {
+      record(BinError::InvalidUtf8);
+      u32(0u);
+      return;
+    }
+    sized(p, s.size());
+  }
+
   void sized(const uint8_t* p, size_t n) {
     if (n > std::numeric_limits<uint32_t>::max()) {
-      if (error_ == BinError::None) error_ = BinError::TooLarge;
+      record(BinError::TooLarge);
       u32(0u);
       return;
     }

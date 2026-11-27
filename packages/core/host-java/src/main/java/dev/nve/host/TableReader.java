@@ -93,8 +93,14 @@ public final class TableReader {
         return rows.getInt(rowsBase + (r * words + w) * 4);
     }
 
+    /** Field bits of row {@code r}; throws {@link IndexOutOfBoundsException} when the field is past this row. */
     public int bits(int r, FieldSpec f) {
-        return f.extract(word(r, f.word));
+        return f.extract(fieldWord(r, f));
+    }
+
+    private int fieldWord(int r, FieldSpec f) {
+        if (!f.fits(words)) throw new IndexOutOfBoundsException("field word " + f.word + " past " + words + "-word row");
+        return word(r, f.word);
     }
 
     /** Unsigned field bits as raw int bits ({@code U32}, {@code ENUM}, {@code RESOURCE}, {@code NODE}). */
@@ -103,7 +109,7 @@ public final class TableReader {
     }
 
     public int i32(int r, FieldSpec f) {
-        return f.extractSigned(word(r, f.word));
+        return f.extractSigned(fieldWord(r, f));
     }
 
     public float f32(int r, FieldSpec f) {

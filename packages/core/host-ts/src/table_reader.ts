@@ -21,23 +21,45 @@ export const FieldKind = {
 } as const;
 export type FieldKind = (typeof FieldKind)[keyof typeof FieldKind];
 
-/** One field of a table row: `bits` wide at `shift` inside `word` (`Str` spans two words). */
-export interface FieldSpec {
+/** Integer in `[min, max]` (rejects NaN, ±Infinity, and fractions). */
+export function isIntIn(v: number, min: number, max: number): boolean {
+  return Number.isInteger(v) && v >= min && v <= max;
+}
+
+/**
+ * One field of a table row: `bits` wide at `shift` inside `word` (`Str` spans two words).
+ *
+ * Nominal (the ES private field keeps plain object literals out) and always well-formed: the
+ * constructor throws `RangeError` unless `bits` is in `1..=32`, `shift + bits <= 32`, and the field
+ * fits a 32-word row, so extraction never mis-shifts.
+ */
+export class FieldSpec {
   readonly word: number;
   readonly shift: number;
   readonly bits: number;
   readonly kind: FieldKind;
+  readonly #validated = true;
+
+  constructor(word: number, kind: FieldKind, shift = 0, bits = 32) {
+    const span = kind === FieldKind.Str ? 2 : 1;
+    if (!(isIntIn(bits, 1, 32) && isIntIn(shift, 0, 32 - bits) && isIntIn(word, 0, MAX_TABLE_WORDS - span) && isIntIn(kind, 0, 9))) {
+      throw new RangeError(`invalid field spec word=${word} shift=${shift} bits=${bits} kind=${kind}`);
+    }
+    this.word = word;
+    this.shift = shift;
+    this.bits = bits;
+    this.kind = kind;
+  }
+
+  /** `true` when the field lies inside a row of `words` words. */
+  fits(words: number): boolean {
+    return this.#validated && this.word + (this.kind === FieldKind.Str ? 2 : 1) <= words;
+  }
 }
 
-/** `FieldSpec` literal; whole-word by default. */
+/** `FieldSpec` shorthand; whole-word by default. */
 export function field(word: number, kind: FieldKind, shift = 0, bits = 32): FieldSpec {
-  return { word, shift, bits, kind };
-}
-
-/** `true` when `f` lies inside a row of `words` words. */
-export function fieldFits(f: FieldSpec, words: number): boolean {
-  const span = f.kind === FieldKind.Str ? 2 : 1;
-  return f.word >= 0 && f.shift >= 0 && f.bits >= 1 && f.bits <= 32 && f.shift + f.bits <= 32 && f.word + span <= words;
+  return new FieldSpec(word, kind, shift, bits);
 }
 
 /** Field bits of `value` (unsigned). */
@@ -110,11 +132,12 @@ export class TableReader {
   /** Throws `RangeError` when `words` is outside `1..=32` or a view is shorter than its count. */
   constructor(init: TableReaderInit) {
     const dirtyCount = init.dirtyCount ?? 0;
-    if (!Number.isInteger(init.words) || init.words < 1 || init.words > MAX_TABLE_WORDS) {
-      throw new RangeError(`words ${init.words} outside 1..=${MAX_TABLE_WORDS}`);
+    if (!isIntIn(init.words, 1, MAX_TABLE_WORDS)) throw new RangeError(`words ${init.words} outside 1..=${MAX_TABLE_WORDS}`);
+    const maxCount = 0xffff_ffff;
+    if (!isIntIn(init.rowCount, 0, maxCount) || !isIntIn(dirtyCount, 0, maxCount) || !isIntIn(init.slot, 0, maxCount)) {
+      throw new RangeError(`counts must be u32 integers: rowCount=${init.rowCount} dirtyCount=${dirtyCount} slot=${init.slot}`);
     }
-    if (init.rowCount < 0 || dirtyCount < 0) throw new RangeError('negative count');
-    if (wordsIn(init.rows) < init.rowCount * init.words) throw new RangeError(`rows hold ${wordsIn(init.rows)} words`);
+    if (Math.floor(wordsIn(init.rows) / init.words) < init.rowCount) throw new RangeError(`rows hold ${wordsIn(init.rows)} words`);
     if (init.owners && wordsIn(init.owners) < init.rowCount) throw new RangeError(`owners hold ${wordsIn(init.owners)} words`);
     if (wordsIn(init.dirtyRows) < dirtyCount) throw new RangeError(`dirtyRows hold ${wordsIn(init.dirtyRows)} words`);
     this.key = init.key;
@@ -133,14 +156,20 @@ export class TableReader {
 
   /** Raw word `w` of row `r` (unsigned). */
   word(r: number, w: number): number {
-    if (!(r >= 0 && r < this.rowCount && w >= 0 && w < this.words)) {
+    if (!(isIntIn(r, 0, this.rowCount - 1) && isIntIn(w, 0, this.words - 1))) {
       throw new RangeError(`row ${r} word ${w} outside ${this.rowCount}x${this.words}`);
     }
     return this.rows.getUint32((r * this.words + w) * 4, true);
   }
 
+  /** Field bits of row `r`; throws `RangeError` when the field lies past this table's row. */
   bits(r: number, f: FieldSpec): number {
-    return extractBits(f, this.word(r, f.word));
+    return extractBits(f, this.fieldWord(r, f));
+  }
+
+  private fieldWord(r: number, f: FieldSpec): number {
+    if (!f.fits(this.words)) throw new RangeError(`field word ${f.word} past ${this.words}-word row`);
+    return this.word(r, f.word);
   }
 
   u32(r: number, f: FieldSpec): number {
@@ -160,7 +189,7 @@ export class TableReader {
   }
 
   i32(r: number, f: FieldSpec): number {
-    return extractSigned(f, this.word(r, f.word));
+    return extractSigned(f, this.fieldWord(r, f));
   }
 
   f32(r: number, f: FieldSpec): number {
@@ -186,13 +215,13 @@ export class TableReader {
 
   /** Raw `NodeId` owning sparse row `r`, or `r` itself for dense tables. */
   owner(r: number): number {
-    if (!(r >= 0 && r < this.rowCount)) throw new RangeError(`row ${r} outside ${this.rowCount}`);
+    if (!isIntIn(r, 0, this.rowCount - 1)) throw new RangeError(`row ${r} outside ${this.rowCount}`);
     return this.owners ? this.owners.getUint32(r * 4, true) : r;
   }
 
   /** Row of `ownerId` (raw `NodeId` sparse, node index dense), or `null`; O(rows) sparse. */
   rowOf(ownerId: number): number | null {
-    if (!this.owners) return ownerId >= 0 && ownerId < this.rowCount && Number.isInteger(ownerId) ? ownerId : null;
+    if (!this.owners) return isIntIn(ownerId, 0, this.rowCount - 1) ? ownerId : null;
     for (let r = 0; r < this.rowCount; r++) {
       if (this.owners.getUint32(r * 4, true) === ownerId) return r;
     }
@@ -200,7 +229,7 @@ export class TableReader {
   }
 
   dirtyRow(i: number): number {
-    if (!(i >= 0 && i < this.dirtyCount) || !this.dirty) throw new RangeError(`dirty ${i} outside ${this.dirtyCount}`);
+    if (!isIntIn(i, 0, this.dirtyCount - 1) || !this.dirty) throw new RangeError(`dirty ${i} outside ${this.dirtyCount}`);
     return this.dirty.getUint32(i * 4, true);
   }
 }

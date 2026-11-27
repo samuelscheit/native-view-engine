@@ -8,4 +8,5 @@ export 'src/hybrid_runtime.dart';
 export 'src/key64.dart' show Key64;
 export 'src/scene_reader.dart';
 export 'src/table_reader.dart';
+export 'src/utf8.dart' show decodeUtf8PreserveBom, isValidUtf8, utf8EncodedLength;
 export 'src/xxh64.dart';

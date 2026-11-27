@@ -32,11 +32,32 @@ final class TableSceneTest {
     }
 
     static void run(Check c) {
+        hardening(c);
         fieldSpecs(c);
         denseTable(c);
         sparseAndInvalid(c);
         scene(c);
         sceneRejects(c);
+    }
+
+    static void hardening(Check c) {
+        final int[][] bad = {{0, 24, 16}, {0, 0, 0}, {0, 0, 33}, {0, 31, 2}, {32, 0, 32}, {-1, 0, 8}, {0, -1, 8}};
+        for (int[] b : bad) {
+            c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(b[0], b[1], b[2], FieldKind.U32), "bad spec " + b[0] + "/" + b[1] + "/" + b[2]);
+        }
+        c.throwsA(IllegalArgumentException.class, () -> FieldSpec.word(31, FieldKind.STR), "string past word 31");
+        c.throwsA(IllegalArgumentException.class, () -> new FieldSpec(0, 0, 8, null), "null kind");
+        final TableReader t = new TableReader().attach(VISUAL, 0, 6, 2, rows(), null, null, 0);
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.u32(0, FieldSpec.word(6, FieldKind.U32)), "field past row");
+        c.throwsA(IndexOutOfBoundsException.class, () -> t.i32(0, FieldSpec.word(31, FieldKind.I32)), "i32 field past row");
+        final SceneException unattached = c.throwsA(SceneException.class,
+                () -> new SceneReader().attach(SCHEMA, SCHEMA.value(), 1L, null, 0, NODE_STRIDE, null, 0, null, 0, null, 0, null, 0,
+                        new TableReader[] {new TableReader()}, 1),
+                "unattached table");
+        c.that(unattached != null && unattached.kind() == SceneException.Kind.INVALID_TABLE, "unattached kind");
+        final int[] bom = {0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 'x'};
+        final SceneReader s = attach(SCHEMA, text(bom), words(2, 3), new TableReader[0]);
+        c.that(s.text(0, 7).equals("\ufeff\ufeffx") && s.text(0, 3).equals("\ufeff"), "scene BOM text");
     }
 
     static void fieldSpecs(Check c) {
@@ -47,8 +68,6 @@ final class TableSceneTest {
         c.eq(FieldSpec.word(0, FieldKind.I32).extractSigned(0x80000000), Integer.MIN_VALUE, "sign 32");
         c.eq(new FieldSpec(0, 31, 1, FieldKind.I32).extractSigned(0x80000000), -1, "sign top bit");
         c.that(LABEL.fits(5) && !LABEL.fits(4), "str fits");
-        c.that(!new FieldSpec(0, 24, 16, FieldKind.U32).fits(1), "too wide");
-        c.that(!new FieldSpec(0, 0, 0, FieldKind.U32).fits(1), "zero bits");
         c.eq(Length.unit(0x3F800000), Length.POINTS, "points");
         c.that(Length.value(0x3F800000) == 1f, "points value");
         c.eq(Length.unit(0x42480001), Length.PERCENT, "percent");

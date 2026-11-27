@@ -1,6 +1,5 @@
 package dev.nve.host;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /** Little-endian writer for raw primitives and {@code NveBinValue}; reuse with {@link #clear()}. */
@@ -91,9 +90,11 @@ public final class BinWriter {
         f64(v);
     }
 
-    public void writeStr(String v) {
+    /** Throws {@link BinCodecException.Kind#INVALID_UTF8} on a lone surrogate, writing nothing. */
+    public void writeStr(CharSequence v) {
+        final int n = Utf8.encodedLength(v);
         u8(BinTag.STR.code());
-        writeMapKey(v);
+        writeEncoded(v, n);
     }
 
     public void writeBytes(byte[] v) {
@@ -102,10 +103,15 @@ public final class BinWriter {
         raw(v, 0, v.length);
     }
 
-    public void writeMapKey(String key) {
-        final byte[] utf8 = key.getBytes(StandardCharsets.UTF_8);
-        u32(utf8.length);
-        raw(utf8, 0, utf8.length);
+    /** Length-prefixed UTF-8 encoded in place (no temporary array); throws on a lone surrogate. */
+    public void writeMapKey(CharSequence key) {
+        writeEncoded(key, Utf8.encodedLength(key));
+    }
+
+    private void writeEncoded(CharSequence s, int n) {
+        ensure(4 + n);
+        u32(n);
+        len = Utf8.encode(s, buf, len);
     }
 
     /** Opens an array of {@code count} values; returns the mark for {@link #end(int)}. */
@@ -118,9 +124,9 @@ public final class BinWriter {
         return begin(BinTag.MAP, count);
     }
 
-    /** Patches the payload length of the container opened at {@code mark}. */
+    /** Patches the payload length of the container opened at {@code mark} (stale marks are rejected). */
     public void end(int mark) {
-        if (mark < 0 || mark + 4 > len) throw new IndexOutOfBoundsException("mark " + mark);
+        if (mark < 0 || mark > len - 8) throw new BinCodecException(BinCodecException.Kind.INVALID_MARK, "mark " + mark + " of " + len);
         putLe32(mark, len - mark - 4);
     }
 

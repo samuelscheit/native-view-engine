@@ -8,4 +8,5 @@ export * from './hybrid_runtime.ts';
 export * from './key64.ts';
 export * from './scene_reader.ts';
 export * from './table_reader.ts';
+export * from './utf8.ts';
 export * from './xxh64.ts';

@@ -10,10 +10,10 @@
 /// `getUint64` are never used because they throw on Dart-web.
 library;
 
-import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'key64.dart';
+import 'utf8.dart';
 
 /// `NveBinValue` tag (Rust `nve_abi::NveValueTag`); `index` is the wire byte.
 enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
@@ -21,7 +21,7 @@ enum BinTag { nullValue, boolValue, i64, f64, str, bytes, array, map }
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
 const int binValueMaxDepth = 64;
 
-enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes }
+enum BinErrorKind { truncated, unexpectedTag, invalidTag, invalidBool, invalidUtf8, tooLarge, maxDepth, trailingBytes, invalidMark }
 
 final class BinCodecException implements Exception {
   const BinCodecException(this.kind, this.message);
@@ -35,15 +35,20 @@ final class BinCodecException implements Exception {
 
 /// Zero-copy cursor over [bytes]; byte slices are views into the same buffer.
 final class BinReader {
-  BinReader(this.bytes) : _data = ByteData.sublistView(bytes);
+  BinReader(this.bytes)
+      : _data = ByteData.sublistView(bytes),
+        _limit = bytes.length;
 
   final Uint8List bytes;
   final ByteData _data;
   int _pos = 0;
 
+  /// Reads stop here: `bytes.length`, or the enclosing container's end while validating.
+  int _limit;
+
   int get position => _pos;
-  int get remaining => bytes.length - _pos;
-  bool get isAtEnd => _pos == bytes.length;
+  int get remaining => _limit - _pos;
+  bool get isAtEnd => _pos == _limit;
 
   // ---- raw little-endian primitives ---------------------------------------------------------
 
@@ -66,19 +71,21 @@ final class BinReader {
     return Uint8List.sublistView(bytes, at, at + count);
   }
 
-  /// Next [count] bytes decoded as strictly validated UTF-8.
-  String utf8String(int count) {
+  /// Next [count] bytes decoded as strictly validated UTF-8 (a leading U+FEFF is kept).
+  String utf8String(int count) => decodeUtf8PreserveBom(_utf8Run(count));
+
+  Uint8List _utf8Run(int count) {
     final at = _take(count);
     if (!isValidUtf8(bytes, at, at + count)) {
       throw BinCodecException(BinErrorKind.invalidUtf8, 'at $at');
     }
-    return utf8.decode(Uint8List.sublistView(bytes, at, at + count));
+    return Uint8List.sublistView(bytes, at, at + count);
   }
 
   // ---- tagged NveBinValue ------------------------------------------------------------------
 
   BinTag peekTag() {
-    if (_pos >= bytes.length) {
+    if (_pos >= _limit) {
       throw _truncated(1);
     }
     final raw = bytes[_pos];
@@ -181,7 +188,7 @@ final class BinReader {
   }
 
   int _take(int count) {
-    if (count < 0 || count > bytes.length - _pos) {
+    if (count < 0 || count > _limit - _pos) {
       throw _truncated(count);
     }
     final at = _pos;
@@ -198,7 +205,7 @@ final class BinReader {
   }
 
   BinCodecException _truncated(int need) =>
-      BinCodecException(BinErrorKind.truncated, 'need $need at $_pos, have ${bytes.length - _pos}');
+      BinCodecException(BinErrorKind.truncated, 'need $need at $_pos, have ${_limit - _pos}');
 
   void _expect(BinTag tag) {
     final actual = peekTag();
@@ -228,13 +235,13 @@ final class BinReader {
       case BinTag.nullValue:
       case BinTag.i64:
       case BinTag.f64:
+      case BinTag.bytes:
         skipValue();
       case BinTag.boolValue:
         readBool();
       case BinTag.str:
-        readStr();
-      case BinTag.bytes:
-        readBytes();
+        _expect(BinTag.str);
+        _utf8Run(_length()); // validated in place, never decoded
       case BinTag.array:
       case BinTag.map:
         if (depth >= binValueMaxDepth) {
@@ -242,16 +249,20 @@ final class BinReader {
         }
         final isMap = tag == BinTag.map;
         final (count, end) = _openContainer(tag, isMap ? 5 : 1);
-        for (var i = 0; i < count; i++) {
-          if (isMap) {
-            readMapKey();
+        // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
+        final outer = _limit;
+        _limit = end;
+        try {
+          for (var i = 0; i < count; i++) {
+            if (isMap) {
+              _utf8Run(_length());
+            }
+            _checkValue(depth + 1);
           }
-          _checkValue(depth + 1);
+        } finally {
+          _limit = outer;
         }
-        if (_pos > end) {
-          throw _truncated(_pos - end);
-        }
-        if (_pos < end) {
+        if (_pos != end) {
           throw BinCodecException(BinErrorKind.trailingBytes, '${end - _pos} bytes');
         }
     }
@@ -353,9 +364,11 @@ final class BinWriter {
     f64(v);
   }
 
+  /// Throws [BinCodecException] (`invalidUtf8`) on a lone surrogate, writing nothing.
   void writeStr(String v) {
+    final n = utf8EncodedLength(v);
     u8(BinTag.str.index);
-    writeMapKey(v);
+    _writeEncoded(v, n);
   }
 
   void writeBytes(List<int> v) {
@@ -364,10 +377,16 @@ final class BinWriter {
     raw(v);
   }
 
-  void writeMapKey(String key) {
-    final encoded = utf8.encode(key);
-    u32(encoded.length);
-    raw(encoded);
+  /// Length-prefixed UTF-8 encoded in place (no temporary list); throws [BinCodecException]
+  /// (`invalidUtf8`) on a lone surrogate instead of writing U+FFFD.
+  void writeMapKey(String key) => _writeEncoded(key, utf8EncodedLength(key));
+
+  void _writeEncoded(String s, int n) {
+    _ensure(4 + n);
+    u32(n);
+    for (var i = 0; i < s.length; i += utf16UnitsAt(s, i)) {
+      _len = encodeUtf8CodePointAt(s, i, _buf, _len);
+    }
   }
 
   /// Opens an array of [count] values; returns the mark for [end].
@@ -376,9 +395,11 @@ final class BinWriter {
   /// Opens a map of [count] entries ([writeMapKey] + value each); returns the mark for [end].
   int beginMap(int count) => _begin(BinTag.map, count);
 
-  /// Patches the payload length of the container opened at [mark].
+  /// Patches the payload length of the container opened at [mark] (stale marks are rejected).
   void end(int mark) {
-    RangeError.checkValueInInterval(mark, 0, _len - 4, 'mark');
+    if (mark < 0 || mark > _len - 8) {
+      throw BinCodecException(BinErrorKind.invalidMark, 'mark $mark of $_len');
+    }
     _data.setUint32(mark, _len - mark - 4, Endian.little);
   }
 
@@ -404,51 +425,4 @@ final class BinWriter {
     _buf = Uint8List(next)..setRange(0, _len, _buf);
     _data = ByteData.sublistView(_buf);
   }
-}
-
-/// Strict UTF-8 validation of `b[start ..< end]` (Rust `core::str::from_utf8` acceptance).
-bool isValidUtf8(List<int> b, [int start = 0, int? end]) {
-  final stop = end ?? b.length;
-  var i = start;
-  while (i < stop) {
-    final b0 = b[i];
-    if (b0 < 0x80) {
-      i++;
-      continue;
-    }
-    int need;
-    var lo = 0x80;
-    var hi = 0xBF;
-    if (b0 >= 0xC2 && b0 <= 0xDF) {
-      need = 1;
-    } else if (b0 >= 0xE0 && b0 <= 0xEF) {
-      need = 2;
-      if (b0 == 0xE0) {
-        lo = 0xA0;
-      }
-      if (b0 == 0xED) {
-        hi = 0x9F;
-      }
-    } else if (b0 >= 0xF0 && b0 <= 0xF4) {
-      need = 3;
-      if (b0 == 0xF0) {
-        lo = 0x90;
-      }
-      if (b0 == 0xF4) {
-        hi = 0x8F;
-      }
-    } else {
-      return false;
-    }
-    if (need >= stop - i || b[i + 1] < lo || b[i + 1] > hi) {
-      return false;
-    }
-    for (var k = 2; k <= need; k++) {
-      if ((b[i + k] & 0xC0) != 0x80) {
-        return false;
-      }
-    }
-    i += need + 1;
-  }
-  return true;
 }

@@ -182,7 +182,53 @@ void runBinCodec(Check c) {
   c.eq(HostStatus.fromCode(99), null, 'unknown host status');
   c.eq(HybridStatus.fromCode(4), HybridStatus.nullHandle, 'hybrid status 4');
 
+  // Container limit: children never read past their container (Rust `&bytes[..end]`).
+  expectKind(c, BinErrorKind.truncated,
+      () => BinReader.validate(Uint8List.fromList([6, 5, 0, 0, 0, 1, 0, 0, 0, 4, 2, 0, 0, 0, 0xC0, 0xAF])), 'escape container');
+  expectKind(c, BinErrorKind.truncated,
+      () => BinReader.validate(Uint8List.fromList([6, 10, 0, 0, 0, 1, 0, 0, 0, 6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
+      'nested escape');
+  // BOM is text on every path (dart:convert strips one leading BOM by itself).
+  for (final s in const ['\uFEFF', '\uFEFFx', '\uFEFF\uFEFFx']) {
+    final bw = BinWriter();
+    final m = bw.beginMap(1);
+    bw
+      ..writeMapKey(s)
+      ..writeStr(s)
+      ..end(m);
+    final br = BinReader(bw.toBytes());
+    c.eq(br.beginMap(), 1, 'BOM map');
+    c.eq(br.readMapKey(), s, 'BOM key ${s.length}');
+    c.eq(br.readStr(), s, 'BOM str ${s.length}');
+  }
+  c.eq(decodeUtf8PreserveBom(Uint8List.fromList([0xEF, 0xBB, 0xBF])), '\uFEFF', 'bare BOM');
+  // Lone surrogates are rejected (never U+FFFD) and nothing is written.
+  for (final lone in const ['\uD800', 'a\uDC00', '\uD83D', '\uDE80\uD83D']) {
+    final lw = BinWriter();
+    expectKind(c, BinErrorKind.invalidUtf8, () => lw.writeMapKey(lone), 'key lone surrogate');
+    c.eq(lw.length, 0, 'nothing written for a rejected key');
+    expectKind(c, BinErrorKind.invalidUtf8, () => lw.writeStr(lone), 'str lone surrogate');
+    c.eq(lw.length, 0, 'nothing written for a rejected string (not even the tag)');
+    expectKind(c, BinErrorKind.invalidUtf8, () => utf8EncodedLength(lone), 'length lone surrogate');
+  }
+  c.eq(utf8EncodedLength('h\u00e9 \u{1F680}'), 8, 'encoded length with a pair');
+  // Stale marks never patch out of bounds.
+  final mw = BinWriter();
+  final mark = mw.beginArray(1);
+  mw
+    ..writeNull()
+    ..clear();
+  expectKind(c, BinErrorKind.invalidMark, () => mw.end(mark), 'stale mark');
+  mw.writeNull();
+  expectKind(c, BinErrorKind.invalidMark, () => mw.end(0), 'mark without container');
+
   // UTF-8.
+  c.that(!isValidUtf8(const [-1]), 'negative element');
+  c.that(!isValidUtf8(const [0xE2, 0x80, 0x180]), 'continuation above 255');
+  c.that(!isValidUtf8(const [0x100]), 'lead above 255');
+  c.that(!isValidUtf8(const [0xC3, -0x57]), 'negative continuation');
+  c.throwsA<RangeError>(() => isValidUtf8(const [0x41], 0, 2), 'range past end');
+  c.throwsA<RangeError>(() => isValidUtf8(const [0x41], 1, 0), 'inverted range');
   c.that(isValidUtf8(utf8.encode('plain é — 🚀 \u{10FFFF}')), 'valid utf8');
   for (final bad in const [
     [0xC0, 0xAF], [0xE0, 0x80, 0xAF], [0xF0, 0x80, 0x80, 0xAF], [0xED, 0xA0, 0x80],

@@ -12,7 +12,6 @@ import {
   extractBits,
   extractSigned,
   field,
-  fieldFits,
   rgba,
 } from '../src/index.ts';
 import type { SceneErrorKind, SceneLayout } from '../src/index.ts';
@@ -102,9 +101,7 @@ test('field specs, lengths, colors', () => {
   assert.equal(extractSigned(field(0, FieldKind.I32, 0, 3), 4), -4);
   assert.equal(extractSigned(field(0, FieldKind.I32), 0x8000_0000), -0x8000_0000);
   assert.equal(extractSigned(field(0, FieldKind.I32, 31, 1), 0x8000_0000), -1);
-  assert.ok(fieldFits(LABEL, 5) && !fieldFits(LABEL, 4));
-  assert.ok(!fieldFits(field(0, FieldKind.U32, 24, 16), 1));
-  assert.ok(!fieldFits(field(0, FieldKind.U32, 0, 0), 1));
+  assert.ok(LABEL.fits(5) && !LABEL.fits(4));
   assert.deepEqual(decodeLength(0x3f80_0000), { unit: LengthUnit.Points, value: 1 });
   assert.deepEqual(decodeLength(0x4248_0001), { unit: LengthUnit.Percent, value: 50 });
   assert.deepEqual(decodeLength(2), { unit: LengthUnit.Auto, value: 0 });
@@ -206,4 +203,68 @@ test('scene rejections', () => {
       }),
     'short nodes slab',
   );
+});
+
+test('hardening: specs, NaN / fractional / Infinity arguments, hostile tables, BOM text', () => {
+  for (const [w, k, sh, b] of [
+    [0, FieldKind.U32, 24, 16], [0, FieldKind.U32, 0, 0], [0, FieldKind.I32, 0, 33], [0, FieldKind.I32, 31, 2],
+    [32, FieldKind.U32, 0, 32], [31, FieldKind.Str, 0, 32], [0.5, FieldKind.U32, 0, 8], [0, FieldKind.U32, NaN, 8],
+    [0, FieldKind.U32, 0, Infinity], [-1, FieldKind.U32, 0, 8], [0, 10 as FieldKind, 0, 8],
+  ] as const) {
+    assert.throws(() => field(w, k, sh, b), RangeError, `bad spec ${w}/${sh}/${b}/${k}`);
+  }
+  const t = new TableReader({ key: VISUAL, slot: 0, words: 6, rowCount: 2, rows: words(ROWS) });
+  assert.throws(() => t.u32(0, field(6, FieldKind.U32)), RangeError, 'field past row');
+  assert.throws(() => t.i32(0, field(31, FieldKind.I32)), RangeError, 'i32 field past row');
+  for (const bad of [NaN, 0.5, Infinity, -1]) {
+    assert.throws(() => t.word(bad, 0), RangeError, `row ${bad}`);
+    assert.throws(() => t.word(0, bad), RangeError, `word ${bad}`);
+    assert.throws(() => t.owner(bad), RangeError, `owner ${bad}`);
+    assert.equal(t.rowOf(bad), null, `rowOf ${bad}`);
+    assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: 6, rowCount: bad, rows: words(ROWS) }), RangeError);
+    assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: 6, rowCount: 0, rows: words([]), dirtyCount: bad }), RangeError);
+    assert.throws(() => new TableReader({ key: VISUAL, slot: 0, words: bad, rowCount: 0, rows: words([]) }), RangeError);
+  }
+  // A plain object literal is not a FieldSpec (nominal class), so it cannot smuggle a bad shift in.
+  const forged = { word: 0, shift: 40, bits: 8, kind: FieldKind.U32 } as unknown as ReturnType<typeof field>;
+  assert.throws(() => t.u32(0, forged), TypeError);
+
+  const [memory, , viewPtr] = linearMemory();
+  const s = SceneReader.fromLinearMemory(memory, viewPtr, WASM32, SCHEMA);
+  for (const bad of [NaN, 0.5, 2.5, Infinity, -1]) {
+    assert.throws(() => s.textBytes(bad, 1), RangeError, `text offset ${bad}`);
+    assert.throws(() => s.textBytes(0, bad), RangeError, `text len ${bad}`);
+    assert.throws(() => s.nodeU32(bad, 0), RangeError, `node ${bad}`);
+    assert.throws(() => s.nodeU32(0, bad), RangeError, `node offset ${bad}`);
+    assert.throws(() => s.childId(bad), RangeError, `child ${bad}`);
+    assert.throws(() => s.dirtyIndex(bad), RangeError, `dirty ${bad}`);
+    assert.throws(() => s.removedId(bad), RangeError, `removed ${bad}`);
+  }
+  expectScene('missingSlab', () => SceneReader.fromLinearMemory(memory, viewPtr + 0.5, WASM32, SCHEMA), 'fractional view');
+  expectScene('missingSlab', () => SceneReader.fromLinearMemory(memory, NaN, WASM32, SCHEMA), 'NaN view');
+  const empty = new DataView(new ArrayBuffer(0));
+  for (const bad of [NaN, 0.5, -1, Infinity]) {
+    expectScene(
+      'missingSlab',
+      () =>
+        new SceneReader({
+          expectedSchema: SCHEMA, schemaHash: SCHEMA, frameId: Key64.ZERO, nodes: empty, nodeCount: bad,
+          nodeStride: NODE_STRIDE, textSlab: new Uint8Array(0), childrenSlab: empty, childrenSlabLen: 0,
+          dirtyIndices: empty, dirtyCount: 0, removedIds: empty, removedCount: 0,
+        }),
+      `nodeCount ${bad}`,
+    );
+  }
+  // Hostile wasm32 table words are rejected before any arithmetic.
+  const [hostile, hostileMem, hostileView] = linearMemory(0x8000_0000);
+  const tablePtr = hostileMem.getUint32(hostileView + WASM32.tables, true);
+  hostileMem.setUint32(tablePtr + WASM32.tableView.rowCount, 0x8000_0000, true);
+  expectScene('invalidTable', () => SceneReader.fromLinearMemory(hostile, hostileView, WASM32, SCHEMA), 'hostile words');
+  // A leading BOM is scene text, never stripped.
+  const [bomMem, bomView, bomPtr] = linearMemory();
+  const textPtr = bomView.getUint32(bomPtr + WASM32.textSlab, true);
+  new Uint8Array(bomMem).set([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x78], textPtr);
+  const b = SceneReader.fromLinearMemory(bomMem, bomPtr, WASM32, SCHEMA);
+  assert.equal(b.text(0, 7), '\ufeff\ufeffx');
+  assert.equal(b.text(0, 3), '\ufeff');
 });

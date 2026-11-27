@@ -259,6 +259,70 @@ void test_dynamic_value() {
   CHECK(static_cast<int32_t>(nve::host::HostStatus::InternalError) == -8);
 }
 
+void test_container_limit_is_enforced() {
+  // Rust validates children against `&bytes[..container_end]`: the string's length field lies past
+  // the 5-byte array payload, so this is `Truncated` — never a read of the bytes after the container.
+  const std::vector<uint8_t> escape = {6, 5, 0, 0, 0, 1, 0, 0, 0, 4, 2, 0, 0, 0, 0xC0, 0xAF};
+  CHECK(BinReader::validate(escape) == BinError::Truncated);
+  // Nested: inner array claims more payload than the outer one has left.
+  const std::vector<uint8_t> nested = {6, 10, 0, 0, 0, 1, 0, 0, 0, 6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  CHECK(BinReader::validate(nested) == BinError::Truncated);
+}
+
+void test_bom_and_invalid_utf8_writes() {
+  for (const std::string_view s : {std::string_view("\xEF\xBB\xBF"), std::string_view("\xEF\xBB\xBFx"),
+                                   std::string_view("\xEF\xBB\xBF\xEF\xBB\xBFx")}) {
+    BinWriter w;
+    const BinWriter::Mark m = w.begin_map(1);
+    w.write_map_key(s);
+    w.write_str(s);
+    w.end(m);
+    BinReader r(w.bytes());
+    CHECK(r.begin_map() == 1u && r.read_map_key() == s && r.read_str() == s && r.ok());
+  }
+  // A lone surrogate (CESU/WTF-8 `ED A0 80`) or overlong is rejected by every writer path.
+  for (const std::string_view bad : {std::string_view("\xED\xA0\x80"), std::string_view("\xC0\xAF")}) {
+    BinWriter w;
+    w.write_str(bad);
+    CHECK(w.error() == BinError::InvalidUtf8);
+    BinWriter k;
+    k.write_map_key(bad);
+    CHECK(k.error() == BinError::InvalidUtf8);
+  }
+}
+
+void test_stale_marks_never_write_out_of_bounds() {
+  BinWriter w;
+  const BinWriter::Mark m = w.begin_array(1);
+  w.write_null();
+  w.clear();
+  w.end(m);  // buffer is empty: must not touch memory (ASan)
+  CHECK(w.error() == BinError::InvalidMark);
+  BinWriter d;
+  d.write_null();
+  d.end(BinWriter::Mark{0});
+  CHECK(d.error() == BinError::InvalidMark);
+  BinWriter far;
+  const BinWriter::Mark open = far.begin_array(0);
+  far.end(BinWriter::Mark{open.len_pos + 1u});  // would straddle the end
+  CHECK(far.error() == BinError::InvalidMark);
+  far.clear();
+  CHECK(far.ok());
+}
+
+void test_validation_is_allocation_free() {
+  BinWriter w(1 << 20);
+  const BinWriter::Mark m = w.begin_array(3);
+  const std::vector<uint8_t> blob(256 * 1024, 0xAB);
+  w.write_bytes(blob);
+  w.write_str(std::string(128 * 1024, 'x'));
+  w.write_str("h\xC3\xA9");
+  w.end(m);
+  const size_t before = g_allocations;
+  CHECK(BinReader::validate(w.bytes()) == BinError::None);
+  CHECK(g_allocations == before);
+}
+
 void test_writer_reuse_is_allocation_free() {
   BinWriter w(256);
   w.write_str("warm-up");
@@ -288,6 +352,10 @@ int main() {
   test_fuzz_never_overreads();
   test_dynamic_value();
   test_writer_reuse_is_allocation_free();
+  test_container_limit_is_enforced();
+  test_bom_and_invalid_utf8_writes();
+  test_stale_marks_never_write_out_of_bounds();
+  test_validation_is_allocation_free();
   if (g_failures != 0) {
     fprintf(stderr, "nve_host_bin_codec_test: %d failure(s)\n", g_failures);
     return 1;

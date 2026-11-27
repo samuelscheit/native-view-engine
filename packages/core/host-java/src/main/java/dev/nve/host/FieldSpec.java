@@ -7,7 +7,16 @@ public final class FieldSpec {
     public final int bits;
     public final FieldKind kind;
 
+    /**
+     * Throws {@link IllegalArgumentException} unless {@code bits} is in {@code 1..32},
+     * {@code shift + bits <= 32}, and the field fits a 32-word row, so extraction never mis-shifts.
+     */
     public FieldSpec(int word, int shift, int bits, FieldKind kind) {
+        final int span = kind == FieldKind.STR ? 2 : 1;
+        if (kind == null || bits < 1 || bits > 32 || shift < 0 || shift + bits > 32 || word < 0
+                || word + span > TableReader.MAX_WORDS) {
+            throw new IllegalArgumentException("invalid field spec word=" + word + " shift=" + shift + " bits=" + bits);
+        }
         this.word = word;
         this.shift = shift;
         this.bits = bits;
@@ -21,8 +30,7 @@ public final class FieldSpec {
 
     /** {@code true} when the field lies inside a row of {@code words} words. */
     public boolean fits(int words) {
-        final int span = kind == FieldKind.STR ? 2 : 1;
-        return word >= 0 && shift >= 0 && bits >= 1 && bits <= 32 && shift + bits <= 32 && word + span <= words;
+        return word + (kind == FieldKind.STR ? 2 : 1) <= words;
     }
 
     /** Field bits of {@code value} (unsigned, as raw int bits). */

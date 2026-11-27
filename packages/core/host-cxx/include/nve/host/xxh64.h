@@ -7,6 +7,7 @@
 #define NVE_HOST_XXH64_H
 
 #include "api.h"
+#include "utf8.h"
 
 #define NVE_XXH64_PRIME1 UINT64_C(0x9E3779B185EBCA87)
 #define NVE_XXH64_PRIME2 UINT64_C(0xC2B2AE3D27D4EB4F)
@@ -119,16 +120,19 @@ NVE_INLINE NveKey64 nve_key64_from_halves(uint32_t lo, uint32_t hi) {
 
 NVE_INLINE int nve_key64_eq(NveKey64 a, NveKey64 b) { return a.value == b.value; }
 
-/* Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id` / `Key64::of`). */
+/* Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id` / `Key64::of`).
+ * Returns 0 and leaves `*out` untouched when `name[0..len)` is not well-formed UTF-8 (a Rust `&str`
+ * can never hold such a name), else 1. */
 #if defined(__cplusplus)
-inline NveKey64 nve_key64_of(const char* name, size_t len) {
-  return NveKey64{nve_xxh64(reinterpret_cast<const uint8_t*>(name), len, 0u)};
-}
+inline int nve_key64_of(const char* name, size_t len, NveKey64* out) {
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(name);
 #else
-static inline NveKey64 nve_key64_of(const char* name, size_t len) {
-  NveKey64 key = {nve_xxh64((const uint8_t*)name, len, 0u)};
-  return key;
-}
+static inline int nve_key64_of(const char* name, size_t len, NveKey64* out) {
+  const uint8_t* bytes = (const uint8_t*)name;
 #endif
+  if (nve_utf8_valid(bytes, len) == 0) return 0;
+  out->value = nve_xxh64(bytes, len, 0u);
+  return 1;
+}
 
 #endif /* NVE_HOST_XXH64_H */

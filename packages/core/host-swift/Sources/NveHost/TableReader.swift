@@ -6,17 +6,30 @@
 
 /// Mirrors Rust `nve_abi::table::FieldKind`.
 public enum FieldKind: UInt8, Sendable {
-    case u32 = 0, i32, f32, bool, enumeration, color, length, str, resource, node
+    case u32 = 0, i32 = 1, f32 = 2, bool = 3, enumeration = 4, color = 5, length = 6, str = 7, resource = 8, node = 9
+}
+
+public struct FieldSpecError: Error, Equatable, Sendable {
+    public let word: UInt8
+    public let shift: UInt8
+    public let bits: UInt8
 }
 
 /// One field of a table row: `bits` wide at `shift` inside `word` (`Str` spans `word` and `word + 1`).
+///
+/// Always well-formed: `bits` in `1...32`, `shift + bits <= 32`, and inside a 32-word row, so the
+/// bit helpers below can never shift out of range.
 public struct FieldSpec: Hashable, Sendable {
     public let word: UInt8
     public let shift: UInt8
     public let bits: UInt8
     public let kind: FieldKind
 
-    public init(word: UInt8, shift: UInt8 = 0, bits: UInt8 = 32, kind: FieldKind) {
+    public init(word: UInt8, shift: UInt8 = 0, bits: UInt8 = 32, kind: FieldKind) throws(FieldSpecError) {
+        let span = kind == .str ? 2 : 1
+        guard (1...32).contains(bits), Int(shift) + Int(bits) <= 32, Int(word) + span <= maxTableWords else {
+            throw FieldSpecError(word: word, shift: shift, bits: bits)
+        }
         self.word = word
         self.shift = shift
         self.bits = bits
@@ -24,10 +37,7 @@ public struct FieldSpec: Hashable, Sendable {
     }
 
     /// `true` when the field lies inside a row of `words` words.
-    public func fits(words: Int) -> Bool {
-        let span = kind == .str ? 2 : 1
-        return (1...32).contains(bits) && Int(shift) + Int(bits) <= 32 && Int(word) + span <= words
-    }
+    public func fits(words: Int) -> Bool { Int(word) + (kind == .str ? 2 : 1) <= words }
 
     /// Field bits of `word` (unsigned).
     public func extract(_ value: UInt32) -> UInt32 {
@@ -133,15 +143,20 @@ public struct TableReader {
         self.dirtyRows = dirtyRows
     }
 
-    /// Wraps a generated `NveTableView`, rejecting null pointers with non-zero counts.
+    /// Wraps a generated `NveTableView`, rejecting a bad word count, counts the address space cannot
+    /// hold (32-bit hosts), and null pointers with non-zero counts — all before any arithmetic can trap.
     public init?(view v: some TableViewABI) {
-        let rowWords = Int(v.row_count) * Int(v.words)
-        guard rowWords == 0 || v.rows != nil, v.dirty_count == 0 || v.dirty_rows != nil else { return nil }
+        guard v.words >= 1, v.words <= UInt32(maxTableWords),
+              let rowCount = Int(exactly: v.row_count), let dirtyCount = Int(exactly: v.dirty_count),
+              let rowWords = Int(exactly: UInt64(v.row_count) * UInt64(v.words)),
+              rowWords <= Int.max / MemoryLayout<UInt32>.stride,
+              rowWords == 0 || v.rows != nil, dirtyCount == 0 || v.dirty_rows != nil
+        else { return nil }
         self.init(
-            key: Key64(lo: v.key_lo, hi: v.key_hi), slot: v.slot, words: Int(v.words), rowCount: Int(v.row_count),
+            key: Key64(lo: v.key_lo, hi: v.key_hi), slot: v.slot, words: Int(v.words), rowCount: rowCount,
             rows: UnsafeBufferPointer(start: rowWords > 0 ? v.rows : nil, count: rowWords),
-            owners: UnsafeBufferPointer(start: v.row_count > 0 ? v.owners : nil, count: v.owners == nil ? 0 : Int(v.row_count)),
-            dirtyRows: UnsafeBufferPointer(start: v.dirty_count > 0 ? v.dirty_rows : nil, count: Int(v.dirty_count))
+            owners: UnsafeBufferPointer(start: rowCount > 0 ? v.owners : nil, count: v.owners == nil ? 0 : rowCount),
+            dirtyRows: UnsafeBufferPointer(start: dirtyCount > 0 ? v.dirty_rows : nil, count: dirtyCount)
         )
     }
 
@@ -158,12 +173,15 @@ public struct TableReader {
         return rows[r * words + w]
     }
 
-    public func bits(_ r: Int, _ f: FieldSpec) -> UInt32? { word(r, Int(f.word)).map(f.extract) }
+    /// Field bits of row `r`; `nil` for an out-of-range row or a field past this table's row.
+    public func bits(_ r: Int, _ f: FieldSpec) -> UInt32? { f.fits(words: words) ? word(r, Int(f.word)).map(f.extract) : nil }
     public func u32(_ r: Int, _ f: FieldSpec) -> UInt32? { bits(r, f) }
     public func enumValue(_ r: Int, _ f: FieldSpec) -> UInt32? { bits(r, f) }
     public func resource(_ r: Int, _ f: FieldSpec) -> UInt32? { bits(r, f) }
     public func node(_ r: Int, _ f: FieldSpec) -> UInt32? { bits(r, f) }
-    public func i32(_ r: Int, _ f: FieldSpec) -> Int32? { word(r, Int(f.word)).map(f.extractSigned) }
+    public func i32(_ r: Int, _ f: FieldSpec) -> Int32? {
+        f.fits(words: words) ? word(r, Int(f.word)).map(f.extractSigned) : nil
+    }
     public func f32(_ r: Int, _ f: FieldSpec) -> Float? { bits(r, f).map(Float.init(bitPattern:)) }
     public func bool(_ r: Int, _ f: FieldSpec) -> Bool? { bits(r, f).map { $0 & 1 != 0 } }
     public func color(_ r: Int, _ f: FieldSpec) -> Rgba? { bits(r, f).map(Rgba.init(packed:)) }

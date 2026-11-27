@@ -8,7 +8,7 @@
 
 /// `NveBinValue` tag (Rust `nve_abi::NveValueTag`).
 public enum BinTag: UInt8, Sendable {
-    case null = 0, bool, i64, f64, str, bytes, array, map
+    case null = 0, bool = 1, i64 = 2, f64 = 3, str = 4, bytes = 5, array = 6, map = 7
 }
 
 /// Maximum container nesting depth (Rust `NVE_BIN_VALUE_MAX_DEPTH`).
@@ -23,17 +23,27 @@ public enum BinError: Error, Equatable, Sendable {
     case tooLarge
     case maxDepth
     case trailingBytes(Int)
+    /// `BinWriter.end` got a mark that is not an open container in this buffer (e.g. after `clear()`).
+    case invalidMark
 }
 
 /// Zero-copy cursor over `bytes`; slices share the array's storage.
+///
+/// Every length is compared as `UInt64` against the remaining bytes before it becomes an `Int`, so
+/// no wire value can trap on 32-bit hosts (`arm64_32` watchOS).
 public struct BinReader: Sendable {
     public let bytes: [UInt8]
     public private(set) var position = 0
+    /// Reads stop here: `bytes.count`, or the enclosing container's end while validating.
+    private var limit: Int
 
-    public init(_ bytes: [UInt8]) { self.bytes = bytes }
+    public init(_ bytes: [UInt8]) {
+        self.bytes = bytes
+        limit = bytes.count
+    }
 
-    public var remaining: Int { bytes.count - position }
-    public var isAtEnd: Bool { position == bytes.count }
+    public var remaining: Int { limit - position }
+    public var isAtEnd: Bool { position == limit }
 
     // MARK: raw little-endian primitives
 
@@ -53,7 +63,7 @@ public struct BinReader: Sendable {
         return bytes[position..<position + count]
     }
 
-    /// Next `count` bytes decoded as strictly validated UTF-8.
+    /// Next `count` bytes decoded as strictly validated UTF-8 (a leading U+FEFF is kept).
     public mutating func utf8(_ count: Int) throws(BinError) -> String {
         let slice = try take(count)
         guard Utf8.isValid(slice) else { throw .invalidUtf8 }
@@ -63,7 +73,7 @@ public struct BinReader: Sendable {
     // MARK: tagged NveBinValue
 
     public func peekTag() throws(BinError) -> BinTag {
-        guard position < bytes.count else { throw .truncated }
+        guard position < limit else { throw .truncated }
         let raw = bytes[position]
         guard let tag = BinTag(rawValue: raw) else { throw .invalidTag(raw) }
         return tag
@@ -97,12 +107,12 @@ public struct BinReader: Sendable {
 
     public mutating func readStr() throws(BinError) -> String {
         try expect(.str)
-        return try utf8(Int(try u32()))
+        return try utf8(try length())
     }
 
     public mutating func readBytes() throws(BinError) -> ArraySlice<UInt8> {
         try expect(.bytes)
-        return try take(Int(try u32()))
+        return try take(try length())
     }
 
     /// Element count of an array; rejects counts its payload cannot hold.
@@ -111,7 +121,7 @@ public struct BinReader: Sendable {
     /// Entry count of a map; read each entry as `readMapKey()` then a value.
     public mutating func beginMap() throws(BinError) -> Int { try openContainer(.map, minEntryBytes: 5).count }
 
-    public mutating func readMapKey() throws(BinError) -> String { try utf8(Int(try u32())) }
+    public mutating func readMapKey() throws(BinError) -> String { try utf8(try length()) }
 
     /// Skips one value in O(1).
     public mutating func skipValue() throws(BinError) {
@@ -121,7 +131,7 @@ public struct BinReader: Sendable {
         case .null: return
         case .bool: _ = try take(1)
         case .i64, .f64: _ = try take(8)
-        case .str, .bytes, .array, .map: _ = try take(Int(try u32()))
+        case .str, .bytes, .array, .map: _ = try take(try length())
         }
     }
 
@@ -132,7 +142,8 @@ public struct BinReader: Sendable {
         return bytes[start..<position]
     }
 
-    /// Fully validates and consumes the next value (Rust `BinValueView::parse` rules).
+    /// Fully validates and consumes the next value (Rust `BinValueView::parse` rules) without
+    /// decoding or copying anything.
     public mutating func checkValue() throws(BinError) { try checkValue(depth: 0) }
 
     /// Throws unless `bytes` holds exactly one valid `NveBinValue`.
@@ -140,6 +151,13 @@ public struct BinReader: Sendable {
         var r = BinReader(bytes)
         try r.checkValue()
         guard r.isAtEnd else { throw .trailingBytes(r.remaining) }
+    }
+
+    /// A `u32` length that fits the remaining bytes (compared before any `Int` conversion).
+    private mutating func length() throws(BinError) -> Int {
+        let len = try u32()
+        guard UInt64(len) <= UInt64(remaining) else { throw .truncated }
+        return Int(len)
     }
 
     private mutating func le(_ count: Int) throws(BinError) -> UInt64 {
@@ -157,28 +175,38 @@ public struct BinReader: Sendable {
 
     private mutating func openContainer(_ tag: BinTag, minEntryBytes: Int) throws(BinError) -> (count: Int, end: Int) {
         try expect(tag)
-        let payload = Int(try u32())
-        guard payload >= 4, payload <= remaining else { throw .truncated }
+        let payload = try length()
+        guard payload >= 4 else { throw .truncated }
         let end = position + payload
-        let count = Int(try u32())
-        guard count <= (payload - 4) / minEntryBytes else { throw .truncated }
-        return (count, end)
+        let count = try u32()
+        guard UInt64(count) <= UInt64((payload - 4) / minEntryBytes) else { throw .truncated }
+        return (Int(count), end)
+    }
+
+    /// Validates a UTF-8 run of `length()` bytes in place.
+    private mutating func checkUtf8Run() throws(BinError) {
+        guard Utf8.isValid(try take(try length())) else { throw .invalidUtf8 }
     }
 
     private mutating func checkValue(depth: Int) throws(BinError) {
         switch try peekTag() {
         case .null, .i64, .f64: try skipValue()
         case .bool: _ = try readBool()
-        case .str: _ = try readStr()
-        case .bytes: _ = try readBytes()
+        case .str:
+            try expect(.str)
+            try checkUtf8Run()
+        case .bytes: try skipValue()
         case let tag:
             guard depth < binValueMaxDepth else { throw .maxDepth }
             let (count, end) = try openContainer(tag, minEntryBytes: tag == .map ? 5 : 1)
+            // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
+            let outer = limit
+            limit = end
+            defer { limit = outer }
             for _ in 0..<count {
-                if tag == .map { _ = try readMapKey() }
+                if tag == .map { try checkUtf8Run() }
                 try checkValue(depth: depth + 1)
             }
-            guard position <= end else { throw .truncated }
             guard position == end else { throw .trailingBytes(end - position) }
         }
     }
@@ -226,9 +254,10 @@ public struct BinWriter: Sendable {
         f64(v)
     }
 
+    /// Swift strings are always valid Unicode (no lone surrogates), so they encode without checks or copies.
     public mutating func writeStr(_ v: String) throws(BinError) {
         u8(BinTag.str.rawValue)
-        try sized(Array(v.utf8))
+        try sized(v.utf8)
     }
 
     public mutating func writeBytes<Bytes: Collection>(_ v: Bytes) throws(BinError) where Bytes.Element == UInt8 {
@@ -236,7 +265,7 @@ public struct BinWriter: Sendable {
         try sized(v)
     }
 
-    public mutating func writeMapKey(_ key: String) throws(BinError) { try sized(Array(key.utf8)) }
+    public mutating func writeMapKey(_ key: String) throws(BinError) { try sized(key.utf8) }
 
     /// Opens an array of `count` values; close it with `end(_:)`.
     public mutating func beginArray(_ count: UInt32) -> Mark { begin(.array, count) }
@@ -245,6 +274,7 @@ public struct BinWriter: Sendable {
     public mutating func beginMap(_ count: UInt32) -> Mark { begin(.map, count) }
 
     public mutating func end(_ mark: Mark) throws(BinError) {
+        guard mark.lengthPosition >= 0, mark.lengthPosition <= bytes.count - 8 else { throw .invalidMark }
         let payload = bytes.count - mark.lengthPosition - 4
         guard let len = UInt32(exactly: payload) else { throw .tooLarge }
         for k in 0..<4 { bytes[mark.lengthPosition + k] = UInt8(truncatingIfNeeded: len >> (8 * UInt32(k))) }

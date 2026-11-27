@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Key64, Xxh64Hasher, constId, xxh64, xxh64Primes } from '../src/index.ts';
+import { BinCodecError, Key64, Xxh64Hasher, constId, xxh64, xxh64Primes } from '../src/index.ts';
 import { VECTORS, seq, WIRE_SEED } from './golden.ts';
 
 test('golden vectors match Rust nve-hash (one-shot and every chunking)', () => {
@@ -51,4 +51,16 @@ test('Key64 halves, conversions and 53-bit guards', () => {
   assert.equal(le[1], 0xd6);
   assert.throws(() => Key64.readLE(le, 2), RangeError);
   assert.equal(String(k), 'Key64(0x33e73115985a4fd6)');
+});
+
+test('constId encodes in place and rejects lone surrogates; update ranges are checked', () => {
+  assert.equal(constId('héllo wörld — 日本語 🚀').toHex(), '72ac442ff213f592');
+  for (const lone of ['\ud800', 'x\udc00', '\ud83d', '\ude80\ud83d']) {
+    assert.throws(() => constId(lone), (e: unknown) => e instanceof BinCodecError && e.kind === 'invalidUtf8');
+  }
+  const bytes = seq(101);
+  assert.equal(new Xxh64Hasher(WIRE_SEED).update(bytes, 0, 50).update(bytes, 50, 101).digest().toHex(), '277e092a8c3db1bc');
+  for (const [a, b] of [[NaN, 1], [0, 0.5], [2, 1], [0, 102], [-1, 1]] as const) {
+    assert.throws(() => new Xxh64Hasher().update(bytes, a, b), RangeError, `range ${a}..${b}`);
+  }
 });

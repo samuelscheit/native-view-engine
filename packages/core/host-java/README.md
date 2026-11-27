@@ -11,9 +11,16 @@ every Java / Kotlin host binding.
 | `SceneReader`, `SceneException` | Reusable `NveSceneView` frame reader. `attach` validates once; node fields are read by generated offsets. |
 | `HybridRuntime` | `HybridStatus`, `HostStatus`, `HybridException`, `checkSchema`, `DynamicValue` |
 
+- Strings are encoded straight into the writer's buffer, and so is the input to `Xxh64.constId` /
+  `Hasher.updateUtf8`. A lone surrogate is rejected with `INVALID_UTF8`; it is never replaced with `?`.
+- `FieldSpec` rejects invalid specs at construction.
+- Validation does not allocate. The suite proves this with the thread allocation counter.
+
 `attach` sets the passed buffers to little-endian and reads relative to their current position.
 
 ## Verify
+
+`scripts/host-runtimes.sh java` runs this suite. `scripts/check-all.sh` runs it too: C/C++ and TS in `--quick` mode, all five in a full run.
 
 ```bash
 O=$(mktemp -d) && javac --release 11 -Xlint:all -Werror -d "$O" $(find packages/core/host-java/src -name '*.java') \

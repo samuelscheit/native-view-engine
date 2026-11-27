@@ -77,13 +77,20 @@ NVE_INLINE void nve_store_u64_le(uint8_t* p, uint64_t v) {
   nve_store_u32_le(p + 4, (uint32_t)(v >> 32));
 }
 
-/* `bits[shift .. shift + width)` of `word`; `width` in `1..=32`, `shift + width <= 32`. */
-NVE_INLINE uint32_t nve_bits_extract(uint32_t word, uint32_t shift, uint32_t width) {
-  return width >= 32u ? word >> shift : (word >> shift) & ((1u << width) - 1u);
+/* 1 when `[shift, shift + width)` is a non-empty bit range inside one 32-bit word. */
+NVE_INLINE int nve_bits_range_valid(uint32_t shift, uint32_t width) {
+  return width >= 1u && width <= 32u && shift < 32u && shift + width <= 32u;
 }
 
-/* Sign-extends the low `width` bits of `bits` (`width` in `1..=32`). */
+/* `bits[shift .. shift + width)` of `word`; total: an invalid range yields 0 (never a UB shift). */
+NVE_INLINE uint32_t nve_bits_extract(uint32_t word, uint32_t shift, uint32_t width) {
+  if (!nve_bits_range_valid(shift, width)) return 0u;
+  return width == 32u ? word : (word >> shift) & ((1u << width) - 1u);
+}
+
+/* Sign-extends the low `width` bits of `bits`; total: `width` outside `1..=32` yields 0. */
 NVE_INLINE int32_t nve_bits_sign_extend(uint32_t bits, uint32_t width) {
+  if (width < 1u || width > 32u) return 0;
   const uint32_t sign = 1u << (width - 1u);
   const uint32_t masked = width >= 32u ? bits : bits & ((1u << width) - 1u);
   /* `masked - 2^width` in 64-bit: no implementation-defined unsigned -> signed narrowing. */

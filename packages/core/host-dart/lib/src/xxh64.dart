@@ -1,8 +1,8 @@
-import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'key64.dart';
 import 'u64_math.dart';
+import 'utf8.dart';
 
 const Key64 _p1 = Key64(0x85EBCA87, 0x9E3779B1);
 const Key64 _p2 = Key64(0x27D4EB4F, 0xC2B2AE3D);
@@ -34,6 +34,7 @@ final class Xxh64Hasher {
   final Key64 _seed;
   Key64 _v1, _v2, _v3, _v4;
   final Uint8List _buf = Uint8List(32);
+  final Uint8List _scratch = Uint8List(4);
   int _bufLen = 0;
   int _total = 0;
 
@@ -60,8 +61,19 @@ final class Xxh64Hasher {
     }
   }
 
-  /// Feeds `v` as 4 little-endian bytes.
-  void updateU32(int v) => update(<int>[v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF]);
+  /// Feeds `v` as 4 little-endian bytes (no allocation).
+  void updateU32(int v) {
+    write32LE(_scratch, 0, v);
+    update(_scratch);
+  }
+
+  /// Feeds the UTF-8 encoding of [text] without allocating; throws [BinCodecException]
+  /// (`invalidUtf8`) on a lone surrogate (never hashes U+FFFD).
+  void updateUtf8(String text) {
+    for (var i = 0; i < text.length; i += utf16UnitsAt(text, i)) {
+      update(_scratch, 0, encodeUtf8CodePointAt(text, i, _scratch, 0));
+    }
+  }
 
   /// Feeds `v` as 8 little-endian bytes.
   void updateU64(Key64 v) {
@@ -114,5 +126,6 @@ final class Xxh64Hasher {
 /// One-shot canonical XXH64 (bit-identical to Rust `nve_hash::xxh64`).
 Key64 xxh64(List<int> bytes, [Key64 seed = Key64.zero]) => (Xxh64Hasher(seed)..update(bytes)).digest();
 
-/// Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id`).
-Key64 constId(String name) => xxh64(utf8.encode(name));
+/// Identity of a UTF-8 name: `xxh64(name, 0)` (Rust `nve_hash::const_id`); throws
+/// [BinCodecException] (`invalidUtf8`) for a name with a lone surrogate.
+Key64 constId(String name) => (Xxh64Hasher()..updateUtf8(name)).digest();

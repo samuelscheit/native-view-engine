@@ -72,9 +72,8 @@ public struct SceneReader<View: SceneViewABI> {
 
     /// `textSlab[offset ..< offset + len]`; `nil` when out of range or not on UTF-8 boundaries.
     public func textBytes(offset: UInt32, len: UInt32) -> UnsafeBufferPointer<UInt8>? {
-        let start = Int(offset)
-        let end = start + Int(len)
-        guard end <= textSlab.count, isBoundary(start), isBoundary(end) else { return nil }
+        guard let (start, end) = Self.range(offset, len, within: textSlab.count), isBoundary(start), isBoundary(end)
+        else { return nil }
         return UnsafeBufferPointer(rebasing: textSlab[start..<end])
     }
 
@@ -84,15 +83,21 @@ public struct SceneReader<View: SceneViewABI> {
 
     /// `childrenSlab[offset ..< offset + count]`; `nil` when out of range.
     public func children(offset: UInt32, count: UInt32) -> UnsafeBufferPointer<UInt32>? {
-        let start = Int(offset)
-        let end = start + Int(count)
-        guard end <= childrenSlab.count else { return nil }
+        guard let (start, end) = Self.range(offset, count, within: childrenSlab.count) else { return nil }
         return UnsafeBufferPointer(rebasing: childrenSlab[start..<end])
+    }
+
+    /// `offset ..< offset + len` when it lies inside `0 ..< size`, computed in `UInt64` so no
+    /// wire value can trap on 32-bit hosts.
+    private static func range(_ offset: UInt32, _ len: UInt32, within size: Int) -> (Int, Int)? {
+        let end = UInt64(offset) + UInt64(len)
+        guard end <= UInt64(size) else { return nil }
+        return (Int(offset), Int(end))
     }
 
     /// Visits `(index, node)` for every in-range dirty index in O(dirty).
     public func forEachDirty(_ visit: (Int, View.Node) throws -> Void) rethrows {
-        for raw in dirtyIndices where Int(raw) < nodes.count {
+        for raw in dirtyIndices where UInt64(raw) < UInt64(nodes.count) {
             try visit(Int(raw), nodes[Int(raw)])
         }
     }
@@ -110,7 +115,7 @@ public struct SceneReader<View: SceneViewABI> {
 
     private static func buffer<T>(_ p: UnsafePointer<T>?, _ count: UInt32) -> UnsafeBufferPointer<T>? {
         if count == 0 { return UnsafeBufferPointer(start: nil, count: 0) }
-        guard let p else { return nil }
-        return UnsafeBufferPointer(start: p, count: Int(count))
+        guard let p, let n = Int(exactly: count), n <= Int.max / MemoryLayout<T>.stride else { return nil }
+        return UnsafeBufferPointer(start: p, count: n)
     }
 }

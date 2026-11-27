@@ -32,6 +32,76 @@ final class BinCodecTest {
         truncationAndFuzz(c, golden);
         dynamicValue(c, golden);
         utf8(c);
+        hardening(c, golden);
+    }
+
+    static void hardening(Check c, byte[] golden) {
+        // Container limit: children never read past their container (Rust `&bytes[..end]`).
+        c.binError(BinCodecException.Kind.TRUNCATED,
+                () -> BinReader.validate(bytes(6, 5, 0, 0, 0, 1, 0, 0, 0, 4, 2, 0, 0, 0, 0xC0, 0xAF)), "escape container");
+        c.binError(BinCodecException.Kind.TRUNCATED,
+                () -> BinReader.validate(bytes(6, 10, 0, 0, 0, 1, 0, 0, 0, 6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)), "nested escape");
+        // BOM is text on both paths.
+        for (String s : new String[] {"\ufeff", "\ufeffx", "\ufeff\ufeffx"}) {
+            final BinWriter w = new BinWriter();
+            final int m = w.beginMap(1);
+            w.writeMapKey(s);
+            w.writeStr(s);
+            w.end(m);
+            final BinReader r = new BinReader(w.toByteArray());
+            c.that(r.beginMap() == 1 && r.readMapKey().equals(s) && r.readStr().equals(s), "BOM round trip " + s.length());
+        }
+        // Lone surrogates are rejected, never written as '?' or U+FFFD; the buffer stays untouched.
+        for (String lone : new String[] {"\ud800", "a\udc00", "\ud83d", "\ude80\ud83d"}) {
+            final BinWriter w = new BinWriter();
+            c.binError(BinCodecException.Kind.INVALID_UTF8, () -> w.writeMapKey(lone), "map key lone surrogate");
+            c.eq(w.size(), 0, "nothing written for a rejected key");
+            c.binError(BinCodecException.Kind.INVALID_UTF8, () -> w.writeStr(lone), "str lone surrogate");
+            c.eq(w.size(), 0, "nothing written for a rejected string (not even the tag)");
+        }
+        // Stale / foreign marks never patch out of bounds.
+        final BinWriter w = new BinWriter();
+        final int mark = w.beginArray(1);
+        w.writeNull();
+        w.clear();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> w.end(mark), "stale mark after clear");
+        w.writeNull();
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> w.end(0), "mark without a container");
+        c.binError(BinCodecException.Kind.INVALID_MARK, () -> w.end(-1), "negative mark");
+        // Utf8 ranges are bounds-checked (no overflowed `offset + length`).
+        final byte[] bad = bytes(0x41, 0xC0, 0xAF);
+        c.throwsA(IndexOutOfBoundsException.class, () -> Utf8.isValid(bad, 1, Integer.MAX_VALUE), "isValid overflow");
+        c.throwsA(IndexOutOfBoundsException.class, () -> Utf8.isValid(bad, 0, -1), "isValid negative length");
+        c.throwsA(IndexOutOfBoundsException.class, () -> Utf8.isValid(bad, -1, 1), "isValid negative offset");
+        c.throwsA(IndexOutOfBoundsException.class, () -> Utf8.isValid(bad, 2, 2), "isValid past end");
+        c.that(!Utf8.isValid(bad, 1, 2) && Utf8.isValid(bad, 0, 1), "isValid slices");
+        c.throwsA(IndexOutOfBoundsException.class,
+                () -> Utf8.isValid(java.nio.ByteBuffer.wrap(bad), 1, Integer.MAX_VALUE), "isValid(ByteBuffer) overflow");
+        // Validation and steady-state writes allocate nothing per call (the probe must be live).
+        c.that(Alloc.supported(), "thread allocation counter is supported and live");
+        final BinWriter big = new BinWriter(1 << 20);
+        final int arr = big.beginArray(3);
+        big.writeBytes(new byte[256 * 1024]);
+        big.writeStr(new String(new char[64 * 1024]).replace('\0', 'x'));
+        big.writeStr("h\u00e9 \ud83d\ude80");
+        big.end(arr);
+        final byte[] payload = big.toByteArray();
+        BinReader.validate(payload);
+        final BinWriter reuse = new BinWriter(256);
+        reuse.writeStr("warm-up");
+        final long allocated = Alloc.bytes(() -> {
+            for (int i = 0; i < 200; i++) {
+                new BinReader(payload).checkValue();
+                reuse.clear();
+                final int a = reuse.beginArray(2);
+                reuse.writeI64(i);
+                reuse.writeStr("steady \u00e9 \ud83d\ude80");
+                reuse.end(a);
+            }
+        });
+        // 200 validations of a 320 KiB payload: any per-string/bytes copy would be >= 64 MiB; the
+        // only allocations left are the 200 BinReader objects (~32 bytes each).
+        c.that(allocated < 64 * 1024, "validation + writer reuse allocation: " + allocated + " bytes");
     }
 
     static void golden(Check c, byte[] golden) {

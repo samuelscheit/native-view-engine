@@ -63,10 +63,17 @@ NVE_INLINE uint8_t nve_color_channel(uint32_t rgba, uint32_t channel) {
   return (uint8_t)((rgba >> (channel * 8u)) & 0xFFu);
 }
 
-/* 1 when `f` lies inside a row of `words` words (and `Str` has its second word). */
+/* 1 when `f` is well-formed: known kind, a valid bit range, inside a maximal row (32 words). */
+NVE_INLINE int nve_field_valid(NveFieldSpec f) {
+  const uint32_t span = f.kind == (uint8_t)NVE_FIELD_STR ? 2u : 1u;
+  return f.kind <= (uint8_t)NVE_FIELD_NODE && nve_bits_range_valid(f.shift, f.bits) &&
+         (uint32_t)f.word + span <= NVE_MAX_TABLE_WORDS;
+}
+
+/* 1 when `f` is well-formed and lies inside a row of `words` words (`Str` needs its second word). */
 NVE_INLINE int nve_field_fits(NveFieldSpec f, uint32_t words) {
   const uint32_t span = f.kind == (uint8_t)NVE_FIELD_STR ? 2u : 1u;
-  return f.bits >= 1u && f.bits <= 32u && (uint32_t)f.shift + f.bits <= 32u && (uint32_t)f.word + span <= words;
+  return nve_field_valid(f) && (uint32_t)f.word + span <= words;
 }
 
 #endif /* NVE_HOST_TABLE_WORD_H */

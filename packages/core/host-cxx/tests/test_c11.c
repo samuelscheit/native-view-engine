@@ -41,8 +41,13 @@ static void test_xxh64_vectors(void) {
 }
 
 static void test_key64(void) {
-  const NveKey64 k = nve_key64_of("nve.visual", 10);
+  NveKey64 k = {0};
+  CHECK(nve_key64_of("nve.visual", 10, &k) == 1);
   CHECK(k.value == UINT64_C(0x33E73115985A4FD6));
+  /* A name that is not well-formed UTF-8 (lone surrogate / overlong) has no identity. */
+  NveKey64 untouched = {UINT64_C(7)};
+  CHECK(nve_key64_of("\xED\xA0\x80", 3, &untouched) == 0 && untouched.value == 7u);
+  CHECK(nve_key64_of("\xC0\xAF", 2, &untouched) == 0 && untouched.value == 7u);
   CHECK(nve_key64_lo(k) == UINT32_C(0x985A4FD6));
   CHECK(nve_key64_hi(k) == UINT32_C(0x33E73115));
   CHECK(nve_key64_eq(nve_key64_from_halves(nve_key64_lo(k), nve_key64_hi(k)), k));
@@ -73,6 +78,14 @@ static void test_bits(void) {
   CHECK(nve_bits_sign_extend(UINT32_C(0xFFFFFFFF), 32) == -1);
   CHECK(nve_bits_sign_extend(UINT32_C(0x7FFFFFFF), 32) == INT32_MAX);
   CHECK(nve_bits_sign_extend(1u, 1) == -1);
+  /* Invalid ranges are total (0), never a UB shift (the suite runs under UBSan). */
+  CHECK(nve_bits_extract(UINT32_MAX, 0, 0) == 0u);
+  CHECK(nve_bits_extract(UINT32_MAX, 0, 33) == 0u);
+  CHECK(nve_bits_extract(UINT32_MAX, 32, 1) == 0u);
+  CHECK(nve_bits_extract(UINT32_MAX, 31, 2) == 0u);
+  CHECK(nve_bits_extract(UINT32_MAX, UINT32_MAX, 2) == 0u);
+  CHECK(nve_bits_sign_extend(1u, 0) == 0);
+  CHECK(nve_bits_sign_extend(1u, 40) == 0);
 }
 
 static void test_table_word(void) {
@@ -89,6 +102,12 @@ static void test_table_word(void) {
   CHECK(!nve_field_fits(too_wide, 1));
   const NveFieldSpec zero_bits = {0, 0, 0, NVE_FIELD_U32};
   CHECK(!nve_field_fits(zero_bits, 1));
+  const NveFieldSpec past_row = {32, 0, 32, NVE_FIELD_U32};
+  const NveFieldSpec str_past_row = {31, 0, 32, NVE_FIELD_STR};
+  const NveFieldSpec bad_kind = {0, 0, 32, 10};
+  CHECK(!nve_field_valid(past_row) && !nve_field_valid(str_past_row) && !nve_field_valid(bad_kind));
+  CHECK(nve_field_valid(label) && nve_field_valid(opacity));
+  CHECK(nve_field_i32(UINT32_MAX, zero_bits) == 0);
   /* Length: 1.0f points, 50 % percent, auto, and the unused tag `11`. */
   CHECK(nve_length_unit(UINT32_C(0x3F800000)) == NVE_LENGTH_POINTS);
   CHECK(nve_length_value_bits(UINT32_C(0x3F800000)) == UINT32_C(0x3F800000));

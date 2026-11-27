@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use nve_arch_invariants::{
     assert_no_violations, assert_staged_violations, ast_enums, ast_layout, bench, dag,
-    find_files_named, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, purity,
+    find_files_named, host_runtimes, hot_path, hygiene, is_self_invariant_file, is_test_or_bench_rs, purity,
     rel_path, repo_index, rpc_dag, spec_registry, Stage, Violation,
 };
 
@@ -357,5 +357,16 @@ fn spec_invariant_ids_have_mechanical_guards() {
     assert_no_violations(
         "Every promised `[INV:<id>]` in AGENTS.md / docs/BACKLOG.md / docs/architecture.md has a backing mechanical guard",
         &violations,
+    );
+}
+
+/// The static host runtimes (`packages/core/host-*`) mirror status codes, `FieldKind`, value tags,
+/// limits, `Length` tags, and golden XXH64 digests by hand: every copy must match the Rust source.
+#[test]
+fn host_runtime_mirrors_match_rust_sources() {
+    let idx = repo_index();
+    assert_no_violations(
+        "Host runtime mirrors match nve_abi / nve_store / nve_hash",
+        &host_runtimes::check_host_runtime_mirrors(idx),
     );
 }

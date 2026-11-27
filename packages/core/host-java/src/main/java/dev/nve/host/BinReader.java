@@ -12,7 +12,8 @@ import java.nio.charset.StandardCharsets;
  */
 public final class BinReader {
     private final byte[] data;
-    private final int end;
+    /** Reads stop here: the window end, or the enclosing container's end while validating. */
+    private int limit;
     private int pos;
     /** End offset of the container most recently opened by {@link #openContainer}. */
     private int containerEnd;
@@ -28,7 +29,7 @@ public final class BinReader {
         }
         this.data = data;
         this.pos = offset;
-        this.end = offset + length;
+        this.limit = offset + length;
     }
 
     public int position() {
@@ -36,11 +37,11 @@ public final class BinReader {
     }
 
     public int remaining() {
-        return end - pos;
+        return limit - pos;
     }
 
     public boolean atEnd() {
-        return pos == end;
+        return pos == limit;
     }
 
     // ---- raw little-endian primitives ---------------------------------------------------------
@@ -90,7 +91,7 @@ public final class BinReader {
     // ---- tagged NveBinValue ------------------------------------------------------------------
 
     public BinTag peekTag() {
-        if (pos >= end) throw truncated(1);
+        if (pos >= limit) throw truncated(1);
         return BinTag.fromCode(data[pos] & 0xFF);
     }
 
@@ -185,7 +186,7 @@ public final class BinReader {
     }
 
     private int take(int n) {
-        if (n < 0 || n > end - pos) throw truncated(n);
+        if (n < 0 || n > limit - pos) throw truncated(n);
         final int at = pos;
         pos += n;
         return at;
@@ -194,12 +195,12 @@ public final class BinReader {
     /** A {@code u32} length; anything above {@code Integer.MAX_VALUE} cannot fit and is truncated input. */
     private int length() {
         final long len = Integer.toUnsignedLong(u32());
-        if (len > end - pos) throw truncated(len);
+        if (len > limit - pos) throw truncated(len);
         return (int) len;
     }
 
     private BinCodecException truncated(long need) {
-        return new BinCodecException(BinCodecException.Kind.TRUNCATED, "need " + need + " at " + pos + ", have " + (end - pos));
+        return new BinCodecException(BinCodecException.Kind.TRUNCATED, "need " + need + " at " + pos + ", have " + (limit - pos));
     }
 
     private void expect(BinTag tag) {
@@ -220,34 +221,46 @@ public final class BinReader {
         return (int) count;
     }
 
+    /** Validates a length-prefixed UTF-8 run in place (no String, no copy). */
+    private void checkUtf8Run() {
+        final int n = length();
+        final int at = take(n);
+        if (!Utf8.isValid(data, at, n)) throw new BinCodecException(BinCodecException.Kind.INVALID_UTF8, "at " + at);
+    }
+
     private void checkValue(int depth) {
         final BinTag tag = peekTag();
         switch (tag) {
             case NULL:
             case I64:
             case F64:
+            case BYTES:
                 skipValue();
                 return;
             case BOOL:
                 readBool();
                 return;
             case STR:
-                readStr();
-                return;
-            case BYTES:
-                readBytes();
+                expect(BinTag.STR);
+                checkUtf8Run();
                 return;
             default:
                 if (depth >= BinTag.MAX_DEPTH) throw new BinCodecException(BinCodecException.Kind.MAX_DEPTH, "depth " + depth);
                 final boolean isMap = tag == BinTag.MAP;
                 final int count = openContainer(tag, isMap ? 5 : 1);
                 final int stop = containerEnd;
-                for (int i = 0; i < count; i++) {
-                    if (isMap) readMapKey();
-                    checkValue(depth + 1);
+                // Like Rust's `&bytes[..container_end]`: no child read may escape its container.
+                final int outer = limit;
+                limit = stop;
+                try {
+                    for (int i = 0; i < count; i++) {
+                        if (isMap) checkUtf8Run();
+                        checkValue(depth + 1);
+                    }
+                } finally {
+                    limit = outer;
                 }
-                if (pos > stop) throw truncated(pos - stop);
-                if (pos < stop) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (stop - pos) + " bytes");
+                if (pos != stop) throw new BinCodecException(BinCodecException.Kind.TRAILING_BYTES, (stop - pos) + " bytes");
         }
     }
 }

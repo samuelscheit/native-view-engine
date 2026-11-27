@@ -19,9 +19,17 @@ namespace nve::host {
 using FieldSpec = NveFieldSpec;
 using FieldKind = NveFieldKind;
 
-/// `FieldSpec` literal: `field(word, shift, bits, NVE_FIELD_*)`.
-[[nodiscard]] constexpr FieldSpec field(uint8_t word, uint8_t shift, uint8_t bits, FieldKind kind) noexcept {
-  return FieldSpec{word, shift, bits, static_cast<uint8_t>(kind)};
+namespace detail {
+/// Deliberately not `constexpr`: reaching it during constant evaluation is a compile error.
+void field_spec_is_invalid();
+}  // namespace detail
+
+/// Compile-time `FieldSpec` literal `field(word, shift, bits, NVE_FIELD_*)`: an invalid spec
+/// (`bits` outside `1..=32`, `shift + bits > 32`, or past word 31) fails to compile.
+[[nodiscard]] consteval FieldSpec field(uint8_t word, uint8_t shift, uint8_t bits, FieldKind kind) {
+  const FieldSpec f{word, shift, bits, static_cast<uint8_t>(kind)};
+  if (nve_field_valid(f) == 0) detail::field_spec_is_invalid();
+  return f;
 }
 
 /// Decoded `nve_store::Length`.
@@ -77,10 +85,15 @@ class TableReader {
   }
 
   /// Wraps any `NveTableView`-shaped struct (`key_lo`, `key_hi`, `slot`, `words`, `row_count`,
-  /// `dirty_count`, `rows`, `owners`, `dirty_rows`), rejecting null spans with non-zero counts.
+  /// `dirty_count`, `rows`, `owners`, `dirty_rows`), rejecting bad word counts, spans the address
+  /// space cannot hold (32-bit hosts), and null spans with non-zero counts — before forming a span.
   template <class View>
   [[nodiscard]] static std::optional<TableReader> from_view(const View& v) noexcept {
-    const size_t row_words = static_cast<size_t>(v.row_count) * v.words;
+    if (v.words == 0u || v.words > NVE_MAX_TABLE_WORDS) return std::nullopt;
+    const uint64_t row_words64 = static_cast<uint64_t>(v.row_count) * v.words;  // <= 2^37, exact
+    constexpr uint64_t kMaxElems = static_cast<uint64_t>(PTRDIFF_MAX) / sizeof(uint32_t);
+    if (row_words64 > kMaxElems || v.dirty_count > kMaxElems) return std::nullopt;
+    const size_t row_words = static_cast<size_t>(row_words64);
     if ((row_words > 0u && v.rows == nullptr) || (v.dirty_count > 0u && v.dirty_rows == nullptr)) return std::nullopt;
     const std::span<const uint32_t> rows = row_words > 0u ? std::span<const uint32_t>(v.rows, row_words)
                                                           : std::span<const uint32_t>();
@@ -109,8 +122,9 @@ class TableReader {
     return rows_[static_cast<size_t>(r) * words_ + w];
   }
 
+  /// Field bits of row `r`; `nullopt` for an out-of-range row or a spec that does not fit the row.
   [[nodiscard]] std::optional<uint32_t> bits(uint32_t r, FieldSpec f) const noexcept {
-    const std::optional<uint32_t> w = word(r, f.word);
+    const std::optional<uint32_t> w = field_word(r, f);
     if (!w) return std::nullopt;
     return nve_field_bits(*w, f);
   }
@@ -121,7 +135,7 @@ class TableReader {
   [[nodiscard]] std::optional<uint32_t> node(uint32_t r, FieldSpec f) const noexcept { return bits(r, f); }
 
   [[nodiscard]] std::optional<int32_t> i32(uint32_t r, FieldSpec f) const noexcept {
-    const std::optional<uint32_t> w = word(r, f.word);
+    const std::optional<uint32_t> w = field_word(r, f);
     if (!w) return std::nullopt;
     return nve_field_i32(*w, f);
   }
@@ -173,6 +187,11 @@ class TableReader {
   }
 
  private:
+  [[nodiscard]] std::optional<uint32_t> field_word(uint32_t r, FieldSpec f) const noexcept {
+    if (nve_field_fits(f, words_) == 0) return std::nullopt;
+    return word(r, f.word);
+  }
+
   Key64 key_{};
   uint32_t slot_ = 0u;
   uint32_t words_ = 0u;

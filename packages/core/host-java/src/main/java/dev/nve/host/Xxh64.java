@@ -1,7 +1,5 @@
 package dev.nve.host;
 
-import java.nio.charset.StandardCharsets;
-
 /** Canonical XXH64, bit-identical to the Rust {@code nve-hash} crate (unsigned 64-bit in a {@code long}). */
 public final class Xxh64 {
     public static final long PRIME1 = 0x9E3779B185EBCA87L;
@@ -52,6 +50,17 @@ public final class Xxh64 {
             }
             for (; i + 32 <= end; i += 32) stripe(bytes, i);
             while (i < end) buf[bufLen++] = bytes[i++];
+            return this;
+        }
+
+        /**
+         * Feeds the UTF-8 encoding of {@code text} without allocating; throws
+         * {@link BinCodecException.Kind#INVALID_UTF8} on a lone surrogate (never hashes {@code ?}).
+         */
+        public Hasher updateUtf8(CharSequence text) {
+            for (int i = 0; i < text.length(); i += Character.isHighSurrogate(text.charAt(i)) ? 2 : 1) {
+                update(scratch, 0, Utf8.encodeAt(text, i, scratch, 0));
+            }
             return this;
         }
 
@@ -114,9 +123,12 @@ public final class Xxh64 {
         return hash(bytes, 0, bytes.length, seed);
     }
 
-    /** Identity of a UTF-8 name: {@code xxh64(name, 0)} (Rust {@code nve_hash::const_id}). */
-    public static long constId(String name) {
-        return hash(name.getBytes(StandardCharsets.UTF_8), 0L);
+    /**
+     * Identity of a UTF-8 name: {@code xxh64(name, 0)} (Rust {@code nve_hash::const_id}); throws
+     * {@link BinCodecException.Kind#INVALID_UTF8} for a name with a lone surrogate.
+     */
+    public static long constId(CharSequence name) {
+        return new Hasher(0L).updateUtf8(name).digest();
     }
 
     private static long round(long acc, long lane) {

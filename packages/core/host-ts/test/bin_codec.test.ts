@@ -182,3 +182,44 @@ test('strict UTF-8 validation', () => {
     assert.ok(!isValidUtf8(Uint8Array.from(bad)), `invalid ${bad.join(',')}`);
   }
 });
+
+test('hardening: container limit, BOM, lone surrogates, stale marks, NaN counts', () => {
+  expectKind('truncated', () => BinReader.validate(Uint8Array.of(6, 5, 0, 0, 0, 1, 0, 0, 0, 4, 2, 0, 0, 0, 0xc0, 0xaf)), 'escape container');
+  expectKind('truncated', () => BinReader.validate(Uint8Array.of(6, 10, 0, 0, 0, 1, 0, 0, 0, 6, 9, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)), 'nested escape');
+  for (const s of ['\ufeff', '\ufeffx', '\ufeff\ufeffx']) {
+    const w = new BinWriter();
+    const m = w.beginMap(1);
+    w.writeMapKey(s);
+    w.writeStr(s);
+    w.end(m);
+    const r = new BinReader(w.bytes);
+    assert.equal(r.beginMap(), 1);
+    assert.equal(r.readMapKey(), s);
+    assert.equal(r.readStr(), s);
+  }
+  for (const lone of ['\ud800', 'a\udc00', '\ud83d', '\ude80\ud83d']) {
+    const w = new BinWriter();
+    expectKind('invalidUtf8', () => w.writeMapKey(lone), 'key lone surrogate');
+    expectKind('invalidUtf8', () => w.writeStr(lone), 'str lone surrogate');
+    assert.equal(w.length, 0, 'nothing written (not even the tag)');
+  }
+  const w = new BinWriter();
+  const mark = w.beginArray(1);
+  w.writeNull();
+  w.clear();
+  expectKind('invalidMark', () => w.end(mark), 'stale mark');
+  w.writeNull();
+  expectKind('invalidMark', () => w.end(0), 'mark without container');
+  expectKind('invalidMark', () => w.end(NaN), 'NaN mark');
+  // NaN / fractional / Infinity counts never poison the cursor.
+  const r = new BinReader(GOLDEN);
+  for (const bad of [NaN, 0.5, Infinity, -1]) {
+    expectKind('truncated', () => r.bytesView(bad), `bytesView ${bad}`);
+    expectKind('truncated', () => r.utf8(bad), `utf8 ${bad}`);
+  }
+  assert.equal(r.position, 0, 'cursor untouched');
+  BinReader.validate(GOLDEN.slice());
+  assert.throws(() => isValidUtf8(GOLDEN, 0.5, 2), RangeError);
+  assert.throws(() => isValidUtf8(GOLDEN, 2, 1), RangeError);
+  assert.throws(() => isValidUtf8(GOLDEN, 0, GOLDEN.length + 1), RangeError);
+});

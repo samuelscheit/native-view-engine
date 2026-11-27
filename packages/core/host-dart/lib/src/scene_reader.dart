@@ -6,12 +6,11 @@
 /// slab's UTF-8 once; later reads are O(1) bounds checks (out of range throws [RangeError]).
 library;
 
-import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
-import 'bin_codec.dart' show isValidUtf8;
 import 'key64.dart';
 import 'table_reader.dart';
+import 'utf8.dart';
 
 /// Byte offsets of `NveTableView` fields inside wasm32 linear memory (pointers are u32).
 final class TableViewLayout {
@@ -101,10 +100,10 @@ final class SceneReader {
     if (nodeStride <= 0) {
       throw SceneException(SceneErrorKind.missingSlab, 'nodeStride $nodeStride');
     }
-    _requireBytes(nodes.lengthInBytes, nodeCount * nodeStride, 'nodes');
-    _requireBytes(childrenSlab.lengthInBytes, childrenSlabLen * 4, 'childrenSlab');
-    _requireBytes(dirtyIndices.lengthInBytes, dirtyCount * 4, 'dirtyIndices');
-    _requireBytes(removedIds.lengthInBytes, removedCount * 4, 'removedIds');
+    _requireRecords(nodes, nodeCount, nodeStride, 'nodes');
+    _requireRecords(childrenSlab, childrenSlabLen, 4, 'childrenSlab');
+    _requireRecords(dirtyIndices, dirtyCount, 4, 'dirtyIndices');
+    _requireRecords(removedIds, removedCount, 4, 'removedIds');
     if (!isValidUtf8(textSlab)) {
       throw const SceneException(SceneErrorKind.invalidUtf8, 'textSlab');
     }
@@ -148,6 +147,9 @@ final class SceneReader {
     final tables = List<TableReader>.generate(tableCount, (i) {
       final t = tablesBase + i * tl.stride;
       final words = u32(t + tl.words);
+      if (words < 1 || words > maxTableWords) {
+        throw SceneException(SceneErrorKind.invalidTable, 'table $i: words $words outside 1..=$maxTableWords');
+      }
       final rowCount = u32(t + tl.rowCount);
       final tableDirty = u32(t + tl.dirtyCount);
       final ownersPtr = u32(t + tl.owners);
@@ -187,9 +189,10 @@ final class SceneReader {
     );
   }
 
-  static void _requireBytes(int have, int need, String what) {
-    if (need < 0 || have < need) {
-      throw SceneException(SceneErrorKind.missingSlab, '$what holds $have bytes, need $need');
+  /// Division, never `count * size`: hostile counts cannot wrap the 64-bit VM `int`.
+  static void _requireRecords(ByteData view, int count, int size, String what) {
+    if (count < 0 || view.lengthInBytes ~/ size < count) {
+      throw SceneException(SceneErrorKind.missingSlab, '$what holds ${view.lengthInBytes} bytes, need $count x $size');
     }
   }
 
@@ -234,7 +237,8 @@ final class SceneReader {
     return Uint8List.sublistView(_text, offset, offset + len);
   }
 
-  String text(int offset, int len) => utf8.decode(textBytes(offset, len));
+  /// Text at `[offset, offset + len)`; a leading U+FEFF is kept (never stripped).
+  String text(int offset, int len) => decodeUtf8PreserveBom(textBytes(offset, len));
 
   bool _isBoundary(int at) => at == _text.length || (_text[at] & 0xC0) != 0x80;
 

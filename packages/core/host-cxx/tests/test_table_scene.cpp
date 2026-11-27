@@ -126,6 +126,27 @@ void test_table_reader_sparse_and_invalid() {
   CHECK(!TableReader::make(kVisual, 0u, 6u, 3u, rows, {}, {}).has_value());  // 2 rows supplied
 }
 
+void test_hostile_specs_and_views() {
+  const std::vector<uint32_t> rows = make_rows();
+  const auto t = TableReader::make(kVisual, 0u, 6u, 2u, rows, {}, {});
+  CHECK(t.has_value());
+  // Raw C specs bypass `field()`: every malformed one reads as nullopt, never a UB shift (UBSan).
+  const NveFieldSpec bad[] = {
+      {0, 0, 0, NVE_FIELD_U32},  {0, 0, 33, NVE_FIELD_U32},  {0, 31, 2, NVE_FIELD_I32}, {0, 255, 255, NVE_FIELD_I32},
+      {40, 0, 32, NVE_FIELD_U32}, {6, 0, 32, NVE_FIELD_U32}, {5, 0, 32, NVE_FIELD_STR}, {0, 0, 32, 99},
+  };
+  for (const NveFieldSpec& f : bad) {
+    CHECK(!t->bits(0, f).has_value());
+    CHECK(!t->i32(0, f).has_value());
+    CHECK(!t->f32(0, f).has_value());
+  }
+  // Hostile word counts are rejected before any span is formed (64-bit overflow / 32-bit hosts).
+  const TestTableView huge{1u, 2u, 0u, 0x80000001u, 0xFFFFFFFFu, 0u, rows.data(), nullptr, nullptr};
+  CHECK(!TableReader::from_view(huge).has_value());
+  const TestTableView max_rows{1u, 2u, 0u, 32u, 0xFFFFFFFFu, 0xFFFFFFFFu, rows.data(), nullptr, rows.data()};
+  if constexpr (sizeof(void*) == 4) CHECK(!TableReader::from_view(max_rows).has_value());
+}
+
 struct SceneFixture {
   std::vector<TestNode> nodes{{1u, 0u, 3u, 2u, 0u}, {2u, 3u, 4u, 0u, 2u}, {3u, 7u, 0u, 0u, 2u}};
   std::string_view text = "h\xC3\xA9" "\xF0\x9F\x9A\x80";  // "hé" + rocket
@@ -181,6 +202,14 @@ void test_scene_reader() {
   CHECK(scene->find_table(kVisual)->u32(0, kOpacity) == 200u);
   CHECK(!scene->find_table(Key64{1}).has_value());
   CHECK(scene->table(0).has_value() && !scene->table(1).has_value());
+
+  // A leading BOM is text, never stripped.
+  SceneFixture bom;
+  bom.text = "\xEF\xBB\xBF\xEF\xBB\xBFx";
+  const TestSceneView bom_view = bom.view();
+  const auto bom_scene = SceneReader<TestSceneView>::open(&bom_view, kSchema);
+  CHECK(bom_scene.has_value() && bom_scene->text(0, 7) == "\xEF\xBB\xBF\xEF\xBB\xBFx");
+  CHECK(bom_scene->text(0, 3) == "\xEF\xBB\xBF");
 }
 
 void test_scene_reader_rejects() {
@@ -216,6 +245,7 @@ void test_scene_reader_rejects() {
 int main() {
   test_table_reader_dense();
   test_table_reader_sparse_and_invalid();
+  test_hostile_specs_and_views();
   test_scene_reader();
   test_scene_reader_rejects();
   if (g_failures != 0) {
