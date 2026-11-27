@@ -223,6 +223,17 @@ void test_a11y_inputs_images_and_styles() {
   app.w.set(kImgBad, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_SRC, 64u);
   flush(host);
   NVE_CHECK(paintable(kImgBad) == paintable(kImgBytes) && host.texture_cache().hits() == 1u);
+  // Re-decode contract: an unrelated update keeps the applied texture without a cache lookup;
+  // the same id republished with new bytes (node row untouched) re-resolves it.
+  const uint64_t lookups = host.texture_cache().hits() + host.texture_cache().misses();
+  (void)app.w.set_str(kImgBytes, NVE_TABLE_IMAGE_DESC, NVE_TABLE_IMAGE_ALT, "red");
+  flush(host);
+  NVE_CHECK(host.texture_cache().hits() + host.texture_cache().misses() == lookups);
+  NVE_CHECK(gdk_paintable_get_intrinsic_width(paintable(kImgBytes)) == 4);
+  app.w.define_resource(61u, h::kImageSrcKind, h::encode_image_bytes(png(5, 2, h::rgba(0, 0, 255))));
+  flush(host);
+  NVE_CHECK(paintable(kImgBytes) != nullptr && gdk_paintable_get_intrinsic_width(paintable(kImgBytes)) == 5);
+  NVE_CHECK(gdk_paintable_get_intrinsic_width(paintable(kImgBad)) == 4);  // id 64 kept its bytes
 
   // --- Construct-only role change recreates the widget in place (same parent slot).
   GtkWidget* column = host.widget_for_node_id(kColumn);

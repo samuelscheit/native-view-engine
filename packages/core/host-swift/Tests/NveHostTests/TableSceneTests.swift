@@ -163,10 +163,9 @@ final class TableSceneTests: XCTestCase {
         let owners: [UInt32] = [0x0100_0007, 0x0200_0003]
         rows.withUnsafeBufferPointer { rp in
             owners.withUnsafeBufferPointer { op in
-                let t = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op)
-                XCTAssertEqual(t?.isSparse, true)
-                XCTAssertNil(t?.row(of: 0x0200_0003))  // no published row index: nothing resolves
-                XCTAssertEqual(t?.owner(0), 0x0100_0007)
+                // Sparse rows without a published row index could never resolve: rejected.
+                XCTAssertNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op))
+                XCTAssertNotNil(TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 0, rows: rp, owners: op))
                 // Row index: page 0 maps node 7 -> row 0 and node 3 -> row 1 (`row + 1`).
                 var pages = [UInt32](repeating: 0, count: rowIndexPageLen)
                 pages[7] = 1
@@ -176,6 +175,8 @@ final class TableSceneTests: XCTestCase {
                     pages.withUnsafeBufferPointer { pp in
                         let ix = TableReader(key: Key64(1), slot: 0, words: 2, rowCount: 2, rows: rp, owners: op,
                                              rowIndexDir: dp, rowIndexPages: pp)
+                        XCTAssertEqual(ix?.isSparse, true)
+                        XCTAssertEqual(ix?.owner(0), 0x0100_0007)
                         XCTAssertEqual(ix?.row(ofNode: 3), 1)
                         XCTAssertEqual(ix?.row(ofNode: 7), 0)
                         XCTAssertNil(ix?.row(ofNode: 4))  // no row
