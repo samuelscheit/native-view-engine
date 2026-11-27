@@ -33,6 +33,7 @@ struct Recorder {
     std::string value;
     std::string label;
     std::vector<uint32_t> children;
+    uint32_t attached_to = 0u;  // parent view id the adapter linked this view under (1 = root)
     int updates = 0;
   };
   using Handle = View*;
@@ -71,7 +72,10 @@ struct Recorder {
   void set_children(const NodeData&, Handle* parent, std::span<Handle* const> kids) {
     std::vector<uint32_t>& out = parent != nullptr ? (*parent)->children : root_children;
     out.clear();
-    for (Handle* k : kids) out.push_back((*k)->id);
+    for (Handle* k : kids) {
+      out.push_back((*k)->id);
+      (*k)->attached_to = parent != nullptr ? (*parent)->id : 1u;
+    }
   }
 };
 
@@ -206,6 +210,16 @@ void test_writer_round_trip_and_retained_tree() {
     CHECK(r.views.count(make_node_id(6u, 1u)) == 1u && r.views[make_node_id(6u, 1u)].text == "reborn");
     CHECK(h.tree.find(6u) == nullptr && h.tree.find(make_node_id(6u, 1u)) != nullptr);
   }
+
+  // Kind change under a CLEAN parent: the recreated view is relinked into it.
+  w.define_resource(9u, kImageSrcKind, encode_image_url("file:///tmp/b.png"));
+  w.set(5u, NVE_TABLE_IMAGE_DESC, NVE_IMAGE_SRC, 9u);
+  CHECK(h.submit());
+  (void)h.sync();
+  CHECK(r.views[5].kind == NodeKind::Image && r.views[5].image_src == 9u);
+  CHECK(r.views[5].attached_to == 2u);  // the NEW view object was linked
+  CHECK((r.views[2].children == std::vector<uint32_t>{5u, 3u, 4u, make_node_id(6u, 1u)}));
+  w.detach(5u, NVE_TABLE_IMAGE_DESC);
 
   // Detach a table row: the text input loses its value.
   w.detach(5u, NVE_TABLE_TEXT_INPUT_DESC);

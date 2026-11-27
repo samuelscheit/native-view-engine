@@ -72,7 +72,15 @@ class RetainedTree {
       if (entries_[i].stamp != epoch_ && scene.is_live(i)) visit(scene, tables, adapter, i);
     }
     cascade_.clear();
-    for (const uint32_t i : work_) sync_children(scene, tables, adapter, i);
+    // Children of every dirty node, plus the parents of views (re)created under a clean parent.
+    for (const uint32_t i : work_) relink_.push_back(i);
+    for (const uint32_t i : relink_) {
+      if (i < entries_.size() && entries_[i].linked != epoch_) {
+        entries_[i].linked = epoch_;
+        sync_children(scene, tables, adapter, i);
+      }
+    }
+    relink_.clear();
     return updated_;
   }
 
@@ -111,6 +119,7 @@ class RetainedTree {
     uint32_t tag = 0u;
     uint32_t stamp = 0u;     // last epoch this node was visited
     uint32_t resolved = 0u;  // epoch of `style`
+    uint32_t linked = 0u;    // last epoch its children were handed to the adapter
     bool live = false;
     Handle handle{};
     TextStyle style;    // resolved this epoch
@@ -161,6 +170,7 @@ class RetainedTree {
         e.id = node.id;
         e.tag = tag;
         e.live = true;
+        if (node.parent != 0u) relink_.push_back(node_index(node.parent));
       }
       adapter.update(e.handle, node);
     }
@@ -185,6 +195,7 @@ class RetainedTree {
   std::vector<Entry> entries_;
   std::vector<uint32_t> work_;
   std::vector<uint32_t> cascade_;
+  std::vector<uint32_t> relink_;
   std::vector<uint32_t> chain_;
   std::vector<Handle*> kids_;
   uint64_t last_frame_ = 0u;
