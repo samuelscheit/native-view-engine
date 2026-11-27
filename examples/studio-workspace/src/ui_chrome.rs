@@ -151,7 +151,7 @@ pub(crate) fn MobileChrome() -> Element {
             format!("background-color: {}; {}", s.control_bg(a), s.control(a))
         });
         format!(
-            "width: {w}px; height: 26px; min-height: 26px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; border-radius: {}px; {paint}",
+            "min-width: {w}px; height: 26px; min-height: 26px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 8px; padding-vertical: 0px; white-space: nowrap; border-radius: {}px; {paint}",
             s.m.pill_radius
         )
     };
@@ -325,7 +325,7 @@ pub(crate) fn RouteNavBar(compact_header: bool) -> Element {
     let copy_url_lbl = if compact_header { "URL" } else { "Copy URL" };
     let copy_url_w = if compact_header { 34 } else { 58 };
     let copy_url_style = format!(
-        "width: {copy_url_w}px; height: 20px; min-height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 2px; padding-vertical: 0px; background-color: {}; border-radius: {}px; {}",
+        "min-width: {copy_url_w}px; height: 20px; min-height: 20px; flex-shrink: 0; {STRETCH_COL} padding-horizontal: 6px; padding-vertical: 0px; white-space: nowrap; background-color: {}; border-radius: {}px; {}",
         s.t.surface.subtle.hex(),
         s.m.pill_radius,
         s.control(true)

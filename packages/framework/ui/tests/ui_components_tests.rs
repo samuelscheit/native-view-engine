@@ -523,3 +523,27 @@ fn virtual_list_100k_rows_renders_o_viewport_with_scroll_and_keyboard() {
     h.keydown("vlist", "Home", false);
     assert_eq!(h.text_of("vlist-selected"), "0");
 }
+
+#[component]
+fn WrappedVerticalSeparatorApp() -> Element {
+    rsx! {
+        view {
+            test_id: "wrap-row",
+            style: "width: 100px; flex-direction: row; flex-wrap: wrap; align-items: center;",
+            view { style: "width: 80px; height: 40px;" }
+            Separator { test_id: "sep-v", orientation: Orientation::Vertical }
+            view { style: "width: 80px; height: 20px;" }
+        }
+    }
+}
+
+/// A vertical rule spans its own flex line (`align-self: stretch`), never a percentage of the
+/// whole wrapping row: that feedback loop inflated the line and overflowed the row.
+#[test]
+fn vertical_separator_spans_its_flex_line_in_a_wrapping_centered_row() {
+    let h = UiHarness::new(WrappedVerticalSeparatorApp);
+    let sep = h.backend.layout_of(h.find("sep-v")).expect("separator layout");
+    let row = h.backend.layout_of(h.find("wrap-row")).expect("row layout");
+    assert_eq!((sep.width, sep.height), (1.0, 40.0), "separator spans line 1 only: {sep:?}");
+    assert_eq!(row.height, 60.0, "two lines (40 + 20) with no inflated line: {row:?}");
+}

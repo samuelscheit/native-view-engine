@@ -39,14 +39,28 @@ pub fn SectionHeader(title: String, subtitle: String, tag: String) -> Element {
     }
 }
 
+const ONE_COLUMN: MediaQuery = MediaQuery::max_width(767);
+
 /// Reusable 2-column responsive grid that collapses to 1 column on viewports `< 768px`.
+/// Its children use [`responsive_two_col_cell`].
 pub fn responsive_two_col() -> TypedStyle {
     TypedStyle::new()
         .width_pct(100.0)
         .flex_row()
         .gap(14.0)
+        .at(ONE_COLUMN, ResponsiveStylePatch::new().flex_col())
+}
+
+/// Equal-width cell of [`responsive_two_col`]: `flex: 1 1 0%` shares the row, and the stacked
+/// column restores `flex: 0 1 auto` (a zero basis there would be a zero *height*).
+pub fn responsive_two_col_cell() -> TypedStyle {
+    TypedStyle::new()
+        .flex_grow(1.0)
+        .flex_shrink(1.0)
+        .flex_basis_pct(0.0)
+        .min_width_px(0.0)
         .at(
-            MediaQuery::max_width(767),
-            ResponsiveStylePatch::new().flex_col(),
+            ONE_COLUMN,
+            ResponsiveStylePatch::new().flex_grow(0.0).flex_basis(Dimension::Auto),
         )
 }

@@ -11,7 +11,7 @@ use nve_ui::{ColorHex,
 };
 
 use crate::i18n_copy::copy;
-use crate::sections::{responsive_two_col, SectionHeader};
+use crate::sections::{responsive_two_col, responsive_two_col_cell, SectionHeader};
 use crate::shell::AppHandle;
 
 const PLACEMENTS: [(&str, Placement); 6] = [
@@ -173,7 +173,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 nve_style: responsive_two_col(),
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-dialog-modal-card".to_owned()),
                         variant: CardVariant::Outlined,
@@ -208,7 +208,7 @@ pub fn OverlaysSection(handle: AppHandle) -> Element {
                 }
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-sheet-card".to_owned()),
                         variant: CardVariant::Outlined,

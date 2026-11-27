@@ -9,7 +9,7 @@ use nve_ui::{ColorHex,
 };
 
 use crate::i18n_copy::{compute_locale_readout, copy};
-use crate::sections::{responsive_two_col, SectionHeader};
+use crate::sections::{responsive_two_col, responsive_two_col_cell, SectionHeader};
 use crate::shell::AppHandle;
 
 fn runtime_options() -> Vec<ComboboxOption> {
@@ -73,7 +73,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                 nve_style: responsive_two_col(),
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-combobox-single-card".to_owned()),
                         variant: CardVariant::Outlined,
@@ -104,7 +104,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                 }
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-combobox-multi-card".to_owned()),
                         variant: CardVariant::Outlined,
@@ -144,7 +144,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                 nve_style: responsive_two_col(),
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-datepicker-card".to_owned()),
                         variant: CardVariant::Elevated,
@@ -175,7 +175,7 @@ pub fn SelectionSection(handle: AppHandle) -> Element {
                 }
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-daterange-card".to_owned()),
                         variant: CardVariant::Elevated,

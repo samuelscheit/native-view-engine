@@ -49,6 +49,7 @@ impl TypedStyle {
                         FlexAlign::FlexEnd => AlignItems::FlexEnd,
                         FlexAlign::Baseline => AlignItems::Baseline,
                     })
+                    .align_self(l.align_self)
                     .flex_grow(l.flex_grow)
                     .flex_shrink(l.flex_shrink)
                     .row_gap(Length::points(l.gap))

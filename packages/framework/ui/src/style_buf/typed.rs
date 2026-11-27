@@ -214,6 +214,12 @@ impl TypedStyleBuilder {
     }
 
     #[inline]
+    pub fn align_self(mut self, align: nve_components::tables::AlignSelf) -> Self {
+        self.inner = self.inner.align_self(align);
+        self
+    }
+
+    #[inline]
     pub fn align_items(mut self, align: FlexAlign) -> Self {
         self.inner = self.inner.align_items(align);
         self

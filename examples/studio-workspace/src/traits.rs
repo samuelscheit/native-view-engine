@@ -246,13 +246,13 @@ pub fn StudioTraitPreviewChip(#[props(default)] test_id: Option<String>) -> Elem
                 ("trait-accent", accent_lbl.to_owned()),
                 ("trait-compact-scope", compact_attr.to_owned()),
             ]),
-            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; padding-horizontal: 5px; padding-vertical: 3px; background-color: {theme.surface.subtle.hex()}; border-radius: {theme.radius.sm}px; border-width: 1px; border-color: {theme.border.default.hex()};",
+            style: "width: 100%; flex-shrink: 0; flex-direction: row; justify-content: space-between; align-items: center; gap: 6px; padding-horizontal: 5px; padding-vertical: 3px; background-color: {theme.surface.subtle.hex()}; border-radius: {theme.radius.sm}px; border-width: 1px; border-color: {theme.border.default.hex()};",
             text {
-                style: "color: {theme.text.link.hex()}; font-size: 9px;",
+                style: "flex-shrink: 1; min-width: 0px; color: {theme.text.link.hex()}; font-size: 9px;",
                 "{summary}"
             }
             text {
-                style: "color: {theme.text.tertiary.hex()}; font-size: 8px;",
+                style: "flex-shrink: 0; white-space: nowrap; color: {theme.text.tertiary.hex()}; font-size: 8px;",
                 "{mode_tag}"
             }
         }

@@ -16,6 +16,7 @@ use nve_abi::{
     SurfaceId,
 };
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
+use nve_components::tables::AlignSelf;
 
 use crate::mmap_arena::ArenaPod;
 use crate::{LayoutRect, Viewport};
@@ -59,7 +60,8 @@ pub struct RelocLayoutProps {
     pub flex_direction: u8,
     pub justify_content: u8,
     pub align_items: u8,
-    pub _pad: [u8; 3],
+    pub align_self: u8,
+    pub _pad: [u8; 2],
 }
 
 impl RelocLayoutProps {
@@ -119,7 +121,8 @@ impl RelocLayoutProps {
             flex_direction: lp.flex_direction as u8,
             justify_content: lp.justify_content as u8,
             align_items: lp.align_items as u8,
-            _pad: [0; 3],
+            align_self: lp.align_self as u8,
+            _pad: [0; 2],
         }
     }
 
@@ -145,6 +148,14 @@ impl RelocLayoutProps {
             4 => FlexAlign::Baseline,
             _ => FlexAlign::Stretch,
         };
+        let align_self = match self.align_self {
+            1 => AlignSelf::Stretch,
+            2 => AlignSelf::FlexStart,
+            3 => AlignSelf::Center,
+            4 => AlignSelf::FlexEnd,
+            5 => AlignSelf::Baseline,
+            _ => AlignSelf::Auto,
+        };
         LayoutSnapshot {
             width: Self::decode_dim(self.width_tag, self.width_val),
             height: Self::decode_dim(self.height_tag, self.height_val),
@@ -155,6 +166,7 @@ impl RelocLayoutProps {
             flex_direction,
             justify_content,
             align_items,
+            align_self,
             flex_grow: self.flex_grow,
             flex_shrink: self.flex_shrink,
             gap: self.gap,
@@ -290,7 +302,8 @@ const _: () = {
     assert!(offset_of!(RelocLayoutProps, padding) == 36);
     assert!(offset_of!(RelocLayoutProps, margin) == 52);
     assert!(offset_of!(RelocLayoutProps, width_tag) == 68);
-    assert!(offset_of!(RelocLayoutProps, _pad) == 77);
+    assert!(offset_of!(RelocLayoutProps, align_self) == 77);
+    assert!(offset_of!(RelocLayoutProps, _pad) == 78);
 
     assert!(size_of::<RelocSceneNode>() == 128);
     assert!(align_of::<RelocSceneNode>() == 8);

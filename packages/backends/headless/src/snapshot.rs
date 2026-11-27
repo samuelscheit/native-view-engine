@@ -65,6 +65,7 @@ pub fn layout_snapshot_of(store: &NodeStore, id: StoreNodeId) -> LayoutSnapshot 
             nve_components::tables::AlignItems::FlexEnd => nve_abi::FlexAlign::FlexEnd,
             nve_components::tables::AlignItems::Baseline => nve_abi::FlexAlign::Baseline,
         },
+        align_self: l.align_self(),
         flex_grow: l.flex_grow(),
         flex_shrink: l.flex_shrink(),
         gap: px(l.row_gap()).max(px(l.column_gap())),

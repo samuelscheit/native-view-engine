@@ -57,6 +57,7 @@ pub struct LayoutSnapshot {
     pub flex_direction: FlexDirection,
     pub justify_content: FlexJustify,
     pub align_items: FlexAlign,
+    pub align_self: AlignSelf,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub gap: f32,
@@ -76,6 +77,7 @@ impl Default for LayoutSnapshot {
             flex_direction: FlexDirection::Column,
             justify_content: FlexJustify::FlexStart,
             align_items: FlexAlign::Stretch,
+            align_self: AlignSelf::Auto,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             gap: 0.0,
@@ -86,6 +88,7 @@ impl Default for LayoutSnapshot {
 }
 
 use crate::interaction::CursorKind;
+use crate::tables::AlignSelf;
 use crate::layout_ext::{
     GridTrack, GridTrackPlacement, LayoutDirection, LayoutExt, PositionMode,
 };

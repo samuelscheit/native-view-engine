@@ -258,6 +258,13 @@ impl TypedStyle {
     }
 
     #[inline]
+    pub fn align_self(mut self, align: nve_components::tables::AlignSelf) -> Self {
+        self.layout.align_self = align;
+        self.has_layout = true;
+        self
+    }
+
+    #[inline]
     pub fn align_items(mut self, align: FlexAlign) -> Self {
         self.layout.align_items = align;
         self.has_layout = true;

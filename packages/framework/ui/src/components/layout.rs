@@ -141,7 +141,7 @@ pub fn Separator(
     let theme = use_theme();
     let mut sb = match orientation {
         Orientation::Horizontal => TypedStyleBuilder::new().width_pct(100.0).height_px(1.0),
-        Orientation::Vertical => TypedStyleBuilder::new().width_px(1.0).height_pct(100.0),
+        Orientation::Vertical => TypedStyleBuilder::new().width_px(1.0).align_self(AlignSelf::Stretch),
     };
     if let Some(m) = margin {
         sb = sb.margin(m);

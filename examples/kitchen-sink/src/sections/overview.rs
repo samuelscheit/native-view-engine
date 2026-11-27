@@ -10,7 +10,7 @@ use nve_ui::{ColorHex,
 };
 
 use crate::i18n_copy::copy;
-use crate::sections::{responsive_two_col, SectionHeader};
+use crate::sections::{responsive_two_col, responsive_two_col_cell, SectionHeader};
 use crate::shell::AppHandle;
 
 const CURSOR_DEMOS: [(&str, CursorKind); 6] = [
@@ -69,7 +69,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                 nve_style: responsive_two_col(),
 
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-counter-card".to_owned()),
                         variant: CardVariant::Elevated,
@@ -130,7 +130,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
 
                 // Interaction States (:hover / :active / :focus-visible) & CursorKind
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-cursor-card".to_owned()),
                         variant: CardVariant::Outlined,
@@ -315,7 +315,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                 view {
                     nve_style: responsive_two_col(),
                     view {
-                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                        nve_style: responsive_two_col_cell(),
                         Card {
                             variant: CardVariant::Elevated,
                             padding: Some(12.0),
@@ -325,7 +325,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                         }
                     }
                     view {
-                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                        nve_style: responsive_two_col_cell(),
                         Card {
                             variant: CardVariant::Outlined,
                             padding: Some(12.0),
@@ -335,7 +335,7 @@ pub fn OverviewSection(handle: AppHandle) -> Element {
                         }
                     }
                     view {
-                        style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                        nve_style: responsive_two_col_cell(),
                         Card {
                             variant: CardVariant::Subtle,
                             padding: Some(12.0),

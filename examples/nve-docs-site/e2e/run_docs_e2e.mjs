@@ -308,6 +308,15 @@ async function createPageCdp(debugPort) {
   return { cdp, targetId: target.id };
 }
 
+// Flex items must keep their content size: an element whose content overflows its own
+// visible-overflow box was squeezed or collapsed by its container (e.g. a row-only
+// `flex: 1 1 0%` cell stacked into a column, or scroll content shrunk instead of scrolling).
+const COLLAPSED_JS = `((doc) => [...doc.querySelectorAll(".nve")].filter((el) => {
+  const cs = doc.defaultView.getComputedStyle(el);
+  return !el.classList.contains("nve-s") && cs.overflowY === "visible"
+    && !/^(none|inline|contents|table)/.test(cs.display) && el.scrollHeight > el.clientHeight + 1;
+}).slice(0, 6).map((el) => (el.dataset.testid || el.textContent.trim().slice(0, 40)) + " " + el.clientHeight + "<" + el.scrollHeight))`;
+
 async function run() {
   const { distDir, shotsDir, basePath, allowExampleFallback } = parseArgs(process.argv.slice(2));
   assert(fs.existsSync(path.join(distDir, "index.html")), `Missing ${distDir}/index.html`);
@@ -391,22 +400,14 @@ async function run() {
           mainW: main ? main.getBoundingClientRect().width : 0,
           tocW: toc ? toc.getBoundingClientRect().width : 0,
           hydrated: !!window.__NVE_DOCS__,
-          // Scroll content must keep its natural height: a squeezed child (content taller than
-          // its box) means the container shrank it to fit instead of scrolling.
-          squeezed: [...document.querySelectorAll(".nve-s .nve")]
-            .filter((el) => {
-              const cs = getComputedStyle(el);
-              return !el.classList.contains("nve-s") && cs.overflowY === "visible"
-                && !/^(inline|contents|table)/.test(cs.display) && el.scrollHeight > el.clientHeight + 1;
-            })
-            .map((el) => el.dataset.testid || el.textContent.trim().slice(0, 40)),
+          squeezed: ${COLLAPSED_JS}(document),
           sidebarScrolls: (() => {
             const s = document.querySelector('[data-testid="docs-sidebar-scroll"]');
             return !!s && s.scrollHeight > s.clientHeight;
           })(),
         };
       })()`);
-      assert(info.squeezed.length === 0, `SSR ${route}: scroll content squeezed below its natural height: ${info.squeezed.join(" | ")}`);
+      assert(info.squeezed.length === 0, `SSR ${route}: elements squeezed below their content: ${info.squeezed.join(" | ")}`);
       assert(info.sidebarScrolls, `SSR ${route}: desktop sidebar nav must overflow and scroll at 1440x900, not shrink to fit`);
 
       assert(info.hasNav, `SSR ${route}: missing <nav>`);
@@ -998,6 +999,23 @@ async function run() {
         "Kitchen Sink WASM increment Count: 0 -> 1"
       );
       console.log("    ✓ /examples/kitchen-sink/ live WASM booted and incremented Count: 0 -> 1");
+
+      const collapsedExpr = `${COLLAPSED_JS}(document.getElementById("nve-example-frame").contentDocument)`;
+      for (const slug of ["studio", "kitchen-sink"]) {
+        for (const [vw, vh, mob] of [[1440, 900, false], [390, 844, true]]) {
+          await exCdp.setViewport(vw, vh, mob, mob ? 2 : 1);
+          await exCdp.navigate(`${origin}/examples/${slug}/`);
+          await exCdp.waitFor(
+            `(document.getElementById("nve-example-frame")?.contentDocument?.querySelectorAll("#app .nve").length || 0) > 20`,
+            15000,
+            `${slug} ${vw}px live render`
+          );
+          await new Promise((r) => setTimeout(r, 300));
+          const collapsed = await exCdp.eval(collapsedExpr);
+          assert(collapsed.length === 0, `/examples/${slug}/ ${vw}px: flex items collapsed below their content: ${collapsed.join(" | ")}`);
+        }
+      }
+      console.log("    ✓ /examples/{studio,kitchen-sink}/ keep every flex item at its content height (1440 + 390px)");
     } else {
       assert(
         allowExampleFallback,

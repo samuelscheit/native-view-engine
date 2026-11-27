@@ -14,7 +14,7 @@ use nve_ui::{ColorHex,
 };
 
 use crate::i18n_copy::copy;
-use crate::sections::{responsive_two_col, SectionHeader};
+use crate::sections::{responsive_two_col, responsive_two_col_cell, SectionHeader};
 use crate::shell::AppHandle;
 use crate::state::SpringPreset;
 
@@ -167,7 +167,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
 
                 // SpringSpec & TransitionSpec Card
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-motion-card".to_owned()),
                         variant: CardVariant::Outlined,
@@ -237,7 +237,7 @@ pub fn MotionSection(handle: AppHandle) -> Element {
 
                 // NVE_DRAW1 Canvas Card
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-canvas-card".to_owned()),
                         variant: CardVariant::Outlined,

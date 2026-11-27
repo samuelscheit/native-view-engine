@@ -9,7 +9,7 @@ use nve_ui::{ColorHex,
 };
 
 use crate::i18n_copy::copy;
-use crate::sections::{responsive_two_col, SectionHeader};
+use crate::sections::{responsive_two_col, responsive_two_col_cell, SectionHeader};
 use crate::shell::AppHandle;
 
 fn build_demo_form() -> FormState {
@@ -118,7 +118,7 @@ pub fn FormsSection(handle: AppHandle) -> Element {
 
                 // Live FormState Validation Card
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0;",
+                    nve_style: responsive_two_col_cell(),
                     Card {
                         test_id: Some("ks-form-card".to_owned()),
                         variant: CardVariant::Outlined,
@@ -263,7 +263,8 @@ pub fn FormsSection(handle: AppHandle) -> Element {
 
                 // Right Column: Checkbox + Switch + UndoRedoStack
                 view {
-                    style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0%; min-width: 0; flex-direction: column; gap: 14px;",
+                    nve_style: responsive_two_col_cell(),
+                    style: "flex-direction: column; gap: 14px;",
 
                     Card {
                         test_id: Some("ks-toggles-card".to_owned()),

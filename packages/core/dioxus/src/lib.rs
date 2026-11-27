@@ -143,6 +143,7 @@ pub mod prelude {
     pub use dioxus_signals;
     pub use dioxus_signals::{ReadableExt, Signal, WritableExt};
     pub use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
+    pub use nve_components::tables::AlignSelf;
     pub use nve_components::interaction::{CursorKind, InteractionState, StateStyleRule};
     pub use nve_components::layout_ext::{
         GridLine, GridSingleTrack, GridTrack, GridTrackPlacement, GridTrackUnit, LayoutDirection,
