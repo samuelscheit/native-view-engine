@@ -22,9 +22,33 @@ namespace nve::host {
 /// Realized view kind: the node's `primary_slot` table (`RealizationOrder`), else `View`.
 enum class NodeKind : uint8_t { View, Text, Image, TextInput, Scroll, Link };
 
-/// Subscription bit of `kind` in `nve.interaction.event_mask` (`EventMask` = `1 << (kind - 1)`).
+/// Subscription bit of `kind` in `nve.interaction.event_mask` (Rust `EventMask::of`; the three
+/// composition kinds share one bit, so it is not `1 << (kind - 1)`); `0` for unknown kinds.
 [[nodiscard]] constexpr uint32_t event_bit(NveEventKind kind) noexcept {
-  return uint32_t{1} << (static_cast<uint32_t>(kind) - 1u);
+  switch (kind) {
+    case NVE_EVENT_PRESS: return NVE_EVENT_MASK_PRESS;
+    case NVE_EVENT_LONG_PRESS: return NVE_EVENT_MASK_LONG_PRESS;
+    case NVE_EVENT_SCROLL: return NVE_EVENT_MASK_SCROLL;
+    case NVE_EVENT_TEXT_CHANGE: return NVE_EVENT_MASK_TEXT_CHANGE;
+    case NVE_EVENT_FOCUS: return NVE_EVENT_MASK_FOCUS;
+    case NVE_EVENT_BLUR: return NVE_EVENT_MASK_BLUR;
+    case NVE_EVENT_LAYOUT: return NVE_EVENT_MASK_LAYOUT;
+    case NVE_EVENT_CUSTOM: return NVE_EVENT_MASK_CUSTOM;
+    case NVE_EVENT_COMPOSITION_START:
+    case NVE_EVENT_COMPOSITION_UPDATE:
+    case NVE_EVENT_COMPOSITION_END: return NVE_EVENT_MASK_COMPOSITION;
+    case NVE_EVENT_KEY_DOWN: return NVE_EVENT_MASK_KEY_DOWN;
+    case NVE_EVENT_KEY_UP: return NVE_EVENT_MASK_KEY_UP;
+    case NVE_EVENT_SUBMIT: return NVE_EVENT_MASK_SUBMIT;
+    case NVE_EVENT_POINTER_DOWN: return NVE_EVENT_MASK_POINTER_DOWN;
+    case NVE_EVENT_POINTER_MOVE: return NVE_EVENT_MASK_POINTER_MOVE;
+    case NVE_EVENT_POINTER_UP: return NVE_EVENT_MASK_POINTER_UP;
+    case NVE_EVENT_POINTER_ENTER: return NVE_EVENT_MASK_POINTER_ENTER;
+    case NVE_EVENT_POINTER_LEAVE: return NVE_EVENT_MASK_POINTER_LEAVE;
+    case NVE_EVENT_WHEEL: return NVE_EVENT_MASK_WHEEL;
+    case NVE_EVENT_TABLE_EVENT: return NVE_EVENT_MASK_TABLE_EVENT;
+  }
+  return 0u;
 }
 
 /// Fully resolved (inherited) text style.

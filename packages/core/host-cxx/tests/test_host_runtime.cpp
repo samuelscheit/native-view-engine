@@ -517,7 +517,25 @@ void test_resource_codecs() {
 
 }  // namespace
 
+/// `event_bit` matches Rust `EventMask::of` for every kind (composition kinds share a bit).
+void test_event_bits() {
+  static_assert(event_bit(NVE_EVENT_PRESS) == 1u);
+  CHECK(event_bit(NVE_EVENT_COMPOSITION_START) == (1u << 8u));
+  CHECK(event_bit(NVE_EVENT_COMPOSITION_UPDATE) == event_bit(NVE_EVENT_COMPOSITION_END));
+  CHECK(event_bit(NVE_EVENT_KEY_DOWN) == (1u << 9u) && event_bit(NVE_EVENT_SUBMIT) == (1u << 11u));
+  CHECK(event_bit(NVE_EVENT_WHEEL) == (1u << 17u) && event_bit(NVE_EVENT_TABLE_EVENT) == (1u << 18u));
+  CHECK(event_bit(static_cast<NveEventKind>(0)) == 0u && event_bit(static_cast<NveEventKind>(22)) == 0u);
+  uint32_t all = 0u;
+  for (uint32_t k = 1u; k <= 21u; ++k) {
+    const uint32_t bit = event_bit(static_cast<NveEventKind>(k));
+    CHECK(bit != 0u && (bit & (bit - 1u)) == 0u);
+    all |= bit;
+  }
+  CHECK(all == (1u << 19u) - 1u);  // 21 kinds cover exactly the 19 mask bits
+}
+
 int main() {
+  test_event_bits();
   test_resource_codecs();
   test_app_state_paths();
   test_writer_round_trip_and_retained_tree();
