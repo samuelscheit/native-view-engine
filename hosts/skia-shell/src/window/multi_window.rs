@@ -4,35 +4,42 @@
 //! - [`HeadlessMultiWindowHost`] sharing the exact [`WindowManager`] routing, close-veto, modal
 //!   focus blocking, and cascading child cleanup logic for headless unit tests.
 
+#[cfg(test)]
 use std::collections::{BTreeMap, HashMap};
+#[cfg(test)]
 use std::hash::Hash;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
-use nve_abi::{ColorRgba, SurfaceId};
+#[cfg(test)]
+use nve_abi::ColorRgba;
+use nve_abi::SurfaceId;
 use nve_backend_skia::gpu::{
     FrameTelemetry, GpuBackendKind, GpuFramePresenter, GpuSurfaceConfig, GpuSurfaceError,
     GpuSwapchain,
 };
 use nve_backend_skia::CursorKind;
-use nve_engine::{LayoutRect, Viewport};
-use nve_interop::{
-    SurfacePresentation, WindowCommand, WindowDescriptor, WindowError, WindowFlags, WindowHandleId,
-    WindowManager, WindowRect, WindowState,
-};
+use nve_engine::LayoutRect;
+#[cfg(test)]
+use nve_engine::Viewport;
+#[cfg(test)]
+use nve_interop::{SurfacePresentation, WindowError, WindowManager, WindowRect};
+use nve_interop::{WindowCommand, WindowDescriptor, WindowFlags, WindowHandleId, WindowState};
+#[cfg(test)]
 use nve_system_env::LocaleSnapshot;
 use softbuffer::{Context, Surface};
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::keyboard::ModifiersState;
-use winit::window::{
-    Cursor, Fullscreen, Theme as WinitTheme, Window, WindowAttributes, WindowLevel,
-};
+#[cfg(test)]
+use winit::window::Theme as WinitTheme;
+use winit::window::{Cursor, Fullscreen, Window, WindowAttributes, WindowLevel};
 
 pub use super::text_edit::cursor_kind_to_winit;
 
 use super::session::DesktopSession;
 use super::{DesktopApp, DesktopHostError};
+#[cfg(test)]
 use crate::host_services::{SkiaHostEvent, SkiaHostServices};
 
 /// Cross-thread event loop wake signals for [`super::DesktopWindowHost`].
@@ -73,25 +80,11 @@ pub struct SurfaceWindow<A: DesktopApp> {
 }
 
 impl<A: DesktopApp> SurfaceWindow<A> {
-    pub fn window(&self) -> &Arc<Window> { &self.window }
-    pub fn session(&self) -> &DesktopSession<A> { &self.session }
-    pub fn session_mut(&mut self) -> &mut DesktopSession<A> { &mut self.session }
-    pub fn surface_id(&self) -> SurfaceId { self.surface_id }
-    pub fn handle_id(&self) -> WindowHandleId { self.handle_id }
-    pub fn modifiers(&self) -> ModifiersState { self.modifiers }
-    pub fn ime_allowed(&self) -> bool { self.ime_allowed }
-
     pub fn active_backend(&self) -> GpuBackendKind {
         match &self.presenter {
             WindowPresenter::Hardware(sw) => sw.kind(),
             WindowPresenter::Softbuffer { .. } => self.session.active_backend(),
         }
-    }
-
-    pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
-        self.last_telemetry
-            .as_ref()
-            .or_else(|| self.session.last_frame_telemetry())
     }
 
     pub(crate) fn sync_ime_state(&mut self) {
@@ -273,6 +266,7 @@ pub(crate) fn create_presenter(
 }
 
 /// Outcome of handling a window close request or close command.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseOutcome {
     pub vetoed: bool,
@@ -283,6 +277,7 @@ pub struct CloseOutcome {
 /// Headless multi-window session host sharing the exact [`WindowManager`] lifecycle, per-window
 /// session isolation, event routing, close veto, modal blocking, and cascading child cleanup
 /// semantics as [`super::DesktopWindowHost`] without requiring a native display server.
+#[cfg(test)]
 pub struct HeadlessMultiWindowHost<K: Eq + Hash + Copy, A: DesktopApp> {
     windows: HashMap<K, HeadlessSurfaceWindow<A>>,
     surface_to_window: BTreeMap<SurfaceId, K>,
@@ -294,19 +289,21 @@ pub struct HeadlessMultiWindowHost<K: Eq + Hash + Copy, A: DesktopApp> {
     secondary_app_factory: Option<SecondaryAppFactory<A>>,
 }
 
+#[cfg(test)]
 pub struct HeadlessSurfaceWindow<A: DesktopApp> {
     pub session: DesktopSession<A>,
     pub surface_id: SurfaceId,
     pub handle_id: WindowHandleId,
-    pub modifiers: ModifiersState,
     pub ime_allowed: bool,
     pub ime_cursor_rect: Option<LayoutRect>,
 }
 
+#[cfg(test)]
 impl<K: Eq + Hash + Copy, A: DesktopApp> Default for HeadlessMultiWindowHost<K, A> {
     fn default() -> Self { Self::new() }
 }
 
+#[cfg(test)]
 impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
     pub fn new() -> Self {
         Self::with_host_services(SkiaHostServices::new())
@@ -324,8 +321,6 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
             secondary_app_factory: None,
         }
     }
-
-    pub fn host_services(&self) -> &Arc<SkiaHostServices> { &self.host_services }
 
     pub fn set_exit_on_primary_close(&mut self, exit: bool) {
         self.exit_on_primary_close = exit;
@@ -373,7 +368,6 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
                 session,
                 surface_id,
                 handle_id,
-                modifiers: ModifiersState::empty(),
                 ime_allowed,
                 ime_cursor_rect,
             },
@@ -631,11 +625,9 @@ impl<K: Eq + Hash + Copy, A: DesktopApp> HeadlessMultiWindowHost<K, A> {
     }
 
     pub fn window(&self, key: K) -> Option<&HeadlessSurfaceWindow<A>> { self.windows.get(&key) }
-    pub fn window_mut(&mut self, key: K) -> Option<&mut HeadlessSurfaceWindow<A>> { self.windows.get_mut(&key) }
     pub fn window_by_surface(&self, sid: SurfaceId) -> Option<&HeadlessSurfaceWindow<A>> {
         self.surface_to_window.get(&sid).and_then(|k| self.windows.get(k))
     }
     pub fn window_count(&self) -> usize { self.windows.len() }
     pub fn window_manager(&self) -> &WindowManager { &self.window_manager }
-    pub fn window_manager_mut(&mut self) -> &mut WindowManager { &mut self.window_manager }
 }

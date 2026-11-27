@@ -3,8 +3,7 @@
 
 use std::cell::Cell;
 use nve_interop::surface::{
-    ColorScheme as SurfaceColorScheme, FrameworkKind, SafeAreaInsets, SurfaceEnvironment,
-    ThemeContext,
+    ContrastLevel, FrameworkKind, SafeAreaInsets, SurfaceEnvironment, ThemeContext,
 };
 use nve_interop::traits::{
     BuiltinTraitSlot, BuiltinTraits, CanHover, ColorScheme, ContainerSize, DeviceFormFactor,
@@ -308,7 +307,8 @@ fn trait_store_breakpoint_only_revisions_and_per_key_isolation() {
 fn surface_environment_bridges_cleanly_to_and_from_trait_environment() {
     let surface_env = SurfaceEnvironment {
         theme: ThemeContext {
-            color_scheme: SurfaceColorScheme::HighContrastDark,
+            color_scheme: Some(ColorScheme::Dark),
+            contrast: ContrastLevel::High,
             accent_rgba: 0x60A5_FAFF,
             tokens: Default::default(),
         },
@@ -330,10 +330,8 @@ fn surface_environment_bridges_cleanly_to_and_from_trait_environment() {
     assert!(trait_env.get::<ReducedMotion>());
 
     let roundtripped = SurfaceEnvironment::from_trait_environment(&trait_env);
-    assert_eq!(
-        roundtripped.theme.color_scheme,
-        SurfaceColorScheme::HighContrastDark
-    );
+    assert_eq!(roundtripped.theme.color_scheme, Some(ColorScheme::Dark));
+    assert_eq!(roundtripped.theme.contrast, ContrastLevel::High);
     assert_eq!(roundtripped.safe_area, surface_env.safe_area);
     assert_eq!(roundtripped.scale_factor, 3.0);
     assert_eq!(roundtripped.text_scale_factor, 1.25);
@@ -345,6 +343,19 @@ fn surface_environment_bridges_cleanly_to_and_from_trait_environment() {
     assert_eq!(store.get::<ColorScheme>(), ColorScheme::Dark);
     assert!(store.get::<HighContrast>());
     assert_eq!(store.get::<Locale>().as_str(), "he-IL");
+
+    // Follow-system (`color_scheme: None`) preserves the live dark ColorScheme in TraitStore
+    // and resolves explicitly against a dark system scheme instead of silently defaulting to Light.
+    let system_env = SurfaceEnvironment {
+        theme: ThemeContext::system(),
+        ..SurfaceEnvironment::default()
+    };
+    assert_eq!(
+        system_env.to_trait_environment_with_system(ColorScheme::Dark).get::<ColorScheme>(),
+        ColorScheme::Dark
+    );
+    system_env.apply_to_trait_store(&mut store);
+    assert_eq!(store.get::<ColorScheme>(), ColorScheme::Dark);
 
     assert_eq!(FrameworkKind::WebDom.default_host_toolkit(), HostToolkit::WebDom);
     assert_eq!(FrameworkKind::SwiftUI.default_host_toolkit(), HostToolkit::SwiftUi);

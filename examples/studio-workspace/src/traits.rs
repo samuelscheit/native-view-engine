@@ -10,7 +10,7 @@ use nve_interop::traits::{
     ColorScheme, HighContrast, Locale, ReducedMotion, ScaleFactor, SizeClass, TextScale,
     TraitEnvironment, TraitKey, TraitOverrides, TraitStore, UiDensity, ViewportChangeMask,
 };
-use nve_system_env::{ColorScheme as SdkColorScheme, ContrastLevel, LocaleSnapshot, ThemeSnapshot};
+use nve_system_env::{ContrastLevel, LocaleSnapshot, ThemeSnapshot};
 
 use crate::sdk::StudioSystemEnv;
 use crate::state::{AccentTheme, DensityMode, WorkspaceSnapshot};
@@ -49,11 +49,12 @@ pub const fn studio_density_to_trait(density: DensityMode) -> UiDensity {
     }
 }
 
-/// Maps an `nve-system-env` [`SdkColorScheme`] snapshot onto the built-in [`ColorScheme`] trait.
-pub const fn sdk_color_scheme_to_trait(scheme: SdkColorScheme) -> ColorScheme {
+/// Maps an `nve-system-env` `Option<ColorScheme>` onto Studio's resolved [`ColorScheme`] trait
+/// (defaulting to Dark when the host reports `None`).
+pub const fn sdk_color_scheme_to_trait(scheme: Option<ColorScheme>) -> ColorScheme {
     match scheme {
-        SdkColorScheme::Light => ColorScheme::Light,
-        SdkColorScheme::Dark | SdkColorScheme::Unspecified => ColorScheme::Dark,
+        Some(cs) => cs,
+        None => ColorScheme::Dark,
     }
 }
 

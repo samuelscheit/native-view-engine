@@ -105,6 +105,7 @@ impl HotReloadClient {
         out
     }
 
+    #[cfg(test)]
     pub fn receiver(&self) -> &Receiver<HotPatchMsg> {
         &self.rx
     }

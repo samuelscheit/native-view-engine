@@ -22,14 +22,16 @@ use nve_engine::{
     RelocHeader, StateSaveOutcome, StateStoreConfig, StoreBackend, StoreWireReplica, VerifyMode,
     Viewport,
 };
-use nve_store::{ChangeSet, NodeId as StoreNodeId, NodeStore};
+#[cfg(test)]
+use nve_store::NodeStore;
+use nve_store::{ChangeSet, NodeId as StoreNodeId};
 use nve_svg_skia::SvgSkiaSystem;
 
 use super::clipboard::{default_clipboard, ClipboardProvider};
 use super::hot_reload_client::resolve_dylib_path;
-use super::{
-    write_pixel_buffer_ppm, write_pixel_buffer_screenshot, DesktopApp, DesktopHostError,
-};
+#[cfg(test)]
+use super::write_pixel_buffer_ppm;
+use super::{write_pixel_buffer_screenshot, DesktopApp, DesktopHostError};
 use crate::host_services::SkiaHostEvent;
 
 #[inline]
@@ -158,14 +160,12 @@ impl<A: DesktopApp> DesktopSession<A> {
         &mut self.app
     }
 
+    #[cfg(test)]
     pub fn backend(&self) -> &SkiaBackend {
         self.replica.backend()
     }
 
-    pub fn backend_mut(&mut self) -> &mut SkiaBackend {
-        self.replica.backend_mut()
-    }
-
+    #[cfg(test)]
     pub fn store(&self) -> &NodeStore {
         self.replica.store()
     }
@@ -176,10 +176,6 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn pixel_buffer(&self) -> &PixelBuffer {
         &self.pixel_buffer
-    }
-
-    pub fn last_frame_bytes(&self) -> &[u8] {
-        &self.last_frame_bytes
     }
 
     pub fn viewport(&self) -> Viewport {
@@ -194,14 +190,17 @@ impl<A: DesktopApp> DesktopSession<A> {
         self.status_banner = banner;
     }
 
+    #[cfg(test)]
     pub fn focused_node(&self) -> Option<NodeId> {
         self.replica.backend().focused_node()
     }
 
+    #[cfg(test)]
     pub fn layout_of(&self, node_id: NodeId) -> Option<LayoutRect> {
         self.replica.backend().layout_tree().layout_of(node_id)
     }
 
+    #[cfg(test)]
     pub fn selected_text(&self) -> Option<String> {
         let id = self.replica.backend().focused_node()?;
         let (s, e) = self.replica.backend().focus_state().selection_range()?;
@@ -229,15 +228,13 @@ impl<A: DesktopApp> DesktopSession<A> {
         })
     }
 
+    #[cfg(test)]
     pub fn with_clipboard(mut self, clipboard: Box<dyn ClipboardProvider>) -> Self {
         self.clipboard = clipboard;
         self
     }
 
-    pub fn set_clipboard(&mut self, clipboard: Box<dyn ClipboardProvider>) {
-        self.clipboard = clipboard;
-    }
-
+    #[cfg(test)]
     pub fn clipboard_mut(&mut self) -> &mut dyn ClipboardProvider {
         self.clipboard.as_mut()
     }
@@ -252,31 +249,6 @@ impl<A: DesktopApp> DesktopSession<A> {
 
     pub fn last_frame_telemetry(&self) -> Option<&FrameTelemetry> {
         self.last_telemetry.as_ref()
-    }
-
-    pub fn clear_color(&self) -> ColorRgba {
-        self.clear_color
-    }
-
-    pub fn hud_banner_if_enabled(&self) -> Option<&str> {
-        if self.show_hud {
-            self.status_banner.as_deref()
-        } else {
-            None
-        }
-    }
-
-    /// Replays a freeze-dried Frame-0 `NVE2` wire payload directly into the replica and rasterizes it.
-    pub fn replay_frame0_command_buffer(
-        &mut self,
-        frame0_bytes: &[u8],
-    ) -> Result<&PixelBuffer, DesktopHostError> {
-        if !frame0_bytes.is_empty() {
-            self.replica.submit_nve2_frame(frame0_bytes)?;
-            self.last_frame_bytes = frame0_bytes.to_vec();
-        }
-        self.rasterize_current();
-        Ok(&self.pixel_buffer)
     }
 
     /// Atomically persists a self-contained Frame-0 `NVE2` keyframe and live app state into an
@@ -328,6 +300,7 @@ impl<A: DesktopApp> DesktopSession<A> {
     }
 
     /// Writes the current rasterized [`PixelBuffer`] to a binary `P6` PPM file.
+    #[cfg(test)]
     pub fn write_screenshot_ppm(&self, path: &Path) -> Result<(), DesktopHostError> {
         write_pixel_buffer_ppm(&self.pixel_buffer, path)?;
         Ok(())
@@ -378,10 +351,6 @@ impl<A: DesktopApp> DesktopSession<A> {
         )?;
         self.last_telemetry = Some(telemetry.clone());
         Ok(telemetry)
-    }
-
-    pub fn set_cursor_logical(&mut self, x: f32, y: f32) {
-        self.cursor_logical = (x, y);
     }
 
     pub fn cursor_logical(&self) -> (f32, f32) {

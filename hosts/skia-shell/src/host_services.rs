@@ -42,7 +42,9 @@ pub type WindowCommandSink = Arc<dyn Fn(WindowCommand) + Send + Sync>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SkiaHostEvent {
     ThemeChanged(ThemeSnapshot),
+    #[cfg(test)]
     LocaleChanged(LocaleSnapshot),
+    #[cfg(test)]
     SystemEnv {
         theme: ThemeSnapshot,
         locale: LocaleSnapshot,
@@ -52,6 +54,7 @@ pub enum SkiaHostEvent {
 
 /// Direct typed in-process backend for [`SERVICE_WINDOW`] (`resolve_typed::<dyn WindowServiceBackend>`).
 pub trait WindowServiceBackend: Send + Sync {
+    #[cfg(test)]
     fn submit_commands(&self, commands: &[WindowCommand]) -> usize;
 }
 
@@ -108,6 +111,7 @@ impl SkiaWindowBackend {
         }
     }
 
+    #[cfg(test)]
     fn submit_iter(&self, commands: impl IntoIterator<Item = WindowCommand>) -> usize {
         let sink = self
             .window_sink
@@ -137,6 +141,7 @@ impl SkiaWindowBackend {
 }
 
 impl WindowServiceBackend for SkiaWindowBackend {
+    #[cfg(test)]
     fn submit_commands(&self, commands: &[WindowCommand]) -> usize {
         self.submit_iter(commands.iter().cloned())
     }
@@ -149,6 +154,7 @@ impl WindowServiceBackend for SkiaWindowBackend {
 /// remains valid and immovable across Tier-2 `cdylib` reloads and secondary window spawns.
 pub struct SkiaHostServices {
     inner: Arc<dyn HostServiceProvider>,
+    #[cfg(test)]
     channel_bus: Arc<Mutex<NveChannelBus>>,
     typed_events: Arc<TypedEventBus>,
     window_backend: Arc<SkiaWindowBackend>,
@@ -197,9 +203,12 @@ impl SkiaHostServices {
 
         let window_backend = Arc::new(SkiaWindowBackend::new());
         let window_backend_typed = pack_typed::<dyn WindowServiceBackend>(window_backend.clone());
+        #[cfg(not(test))]
+        let _ = channel_bus;
 
         Arc::new(Self {
             inner,
+            #[cfg(test)]
             channel_bus,
             typed_events,
             window_backend,
@@ -288,27 +297,20 @@ impl SkiaHostServices {
         }
     }
 
-    /// Detaches any installed window command sink (subsequent commands buffer in the internal queue).
-    pub fn detach_window_sink(&self) {
-        let mut sink_guard = self
-            .window_backend
-            .window_sink
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *sink_guard = None;
-    }
-
     /// Submits a single typed [`WindowCommand`] directly with zero serialization.
+    #[cfg(test)]
     pub fn submit_window_command(&self, cmd: WindowCommand) {
         let _ = self.window_backend.submit_iter(std::iter::once(cmd));
     }
 
     /// Submits a batch of typed [`WindowCommand`]s directly with zero serialization.
+    #[cfg(test)]
     pub fn submit_window_commands(&self, commands: &[WindowCommand]) -> usize {
         self.window_backend.submit_commands(commands)
     }
 
     /// Drains all buffered window commands (used by headless hosts and unit tests).
+    #[cfg(test)]
     pub fn drain_queued_window_commands(&self) -> Vec<WindowCommand> {
         self.window_backend
             .queued_commands
@@ -336,10 +338,12 @@ impl SkiaHostServices {
             .remove(&handle)
     }
 
+    #[cfg(test)]
     pub fn channel_bus(&self) -> Arc<Mutex<NveChannelBus>> {
         Arc::clone(&self.channel_bus)
     }
 
+    #[cfg(test)]
     pub fn typed_events(&self) -> &Arc<TypedEventBus> {
         &self.typed_events
     }
@@ -352,6 +356,7 @@ impl SkiaHostServices {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(test)]
     pub fn current_locale(&self) -> LocaleSnapshot {
         self.cached_env
             .locale
@@ -361,6 +366,7 @@ impl SkiaHostServices {
     }
 
     /// Builds an initial typed [`SkiaHostEvent::SystemEnv`] carrying the current theme & locale.
+    #[cfg(test)]
     pub fn initial_env_event(&self) -> SkiaHostEvent {
         SkiaHostEvent::SystemEnv {
             theme: self.current_theme(),
@@ -377,7 +383,7 @@ impl SkiaHostServices {
                 .theme
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            guard.color_scheme = winit_theme_to_color_scheme(theme);
+            guard.color_scheme = Some(winit_theme_to_color_scheme(theme));
             guard.scale_factor_x100 = scale_to_x100(scale_factor);
             *guard
         };
@@ -405,21 +411,8 @@ impl SkiaHostServices {
         Some(updated)
     }
 
-    /// Replaces the cached theme snapshot and publishes a retained typed [`ThemeSnapshot`].
-    pub fn update_theme(&self, theme: ThemeSnapshot) -> ThemeSnapshot {
-        {
-            let mut guard = self
-                .cached_env
-                .theme
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            *guard = theme;
-        }
-        SystemEnvBridge::publish_theme(&self.typed_events, theme);
-        theme
-    }
-
     /// Replaces the cached locale snapshot and publishes a retained typed [`LocaleSnapshot`].
+    #[cfg(test)]
     pub fn update_locale(&self, locale: LocaleSnapshot) -> LocaleSnapshot {
         {
             let mut guard = self

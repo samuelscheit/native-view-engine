@@ -291,45 +291,7 @@ pub enum PointerKind {
     Gaze = 5,
 }
 
-/// Binary light/dark appearance scheme for the trait environment.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ColorScheme {
-    #[default]
-    Light = 0,
-    Dark = 1,
-}
-
-impl ColorScheme {
-    #[inline]
-    pub const fn is_dark(self) -> bool {
-        matches!(self, Self::Dark)
-    }
-}
-
-impl From<crate::surface::ColorScheme> for ColorScheme {
-    #[inline]
-    fn from(value: crate::surface::ColorScheme) -> Self {
-        match value {
-            crate::surface::ColorScheme::Dark | crate::surface::ColorScheme::HighContrastDark => {
-                Self::Dark
-            }
-            crate::surface::ColorScheme::Light
-            | crate::surface::ColorScheme::HighContrastLight
-            | crate::surface::ColorScheme::System => Self::Light,
-        }
-    }
-}
-
-impl From<ColorScheme> for crate::surface::ColorScheme {
-    #[inline]
-    fn from(value: ColorScheme) -> Self {
-        match value {
-            ColorScheme::Light => Self::Light,
-            ColorScheme::Dark => Self::Dark,
-        }
-    }
-}
+pub use nve_abi::ColorScheme;
 
 /// Visual spacing/control density preference.
 #[repr(u8)]

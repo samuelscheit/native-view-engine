@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use nve_host_services::HostServiceProvider;
 use nve_mdx::{CalloutKind, TokenKind};
-use nve_system_env::{ColorScheme as SdkColorScheme, SystemEnvClient};
+use nve_system_env::{ColorScheme, SystemEnvClient};
 use nve_ui::{UiPalette, UiTheme};
 
 /// Syntax highlighting palette covering every [`nve_mdx::TokenKind`] variant.
@@ -182,9 +182,9 @@ impl DocsTheme {
         let client = SystemEnvClient::new(provider);
         match client.get_theme() {
             Ok(snapshot) => match snapshot.color_scheme {
-                SdkColorScheme::Dark => true,
-                SdkColorScheme::Light => false,
-                SdkColorScheme::Unspecified => default_dark,
+                Some(ColorScheme::Dark) => true,
+                Some(ColorScheme::Light) => false,
+                None => default_dark,
             },
             Err(_) => default_dark,
         }

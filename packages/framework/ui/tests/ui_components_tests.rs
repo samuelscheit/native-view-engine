@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use common::UiHarness;
 use nve_abi::ColorRgba;
 use nve_dioxus::prelude::*;
-use nve_interop::{ColorScheme, ThemeContext};
+use nve_interop::{ColorScheme, ContrastLevel, ThemeContext};
 use nve_ui::prelude::*;
 use nve_ui::{Orientation, UiDensity};
 
@@ -30,7 +30,8 @@ fn LayoutActionsThemeApp() -> Element {
             let mut tokens = BTreeMap::new();
             tokens.insert("surface_elevated".into(), "#102a43".into());
             UiTheme::from_theme_context(&ThemeContext {
-                color_scheme: ColorScheme::Dark,
+                color_scheme: Some(ColorScheme::Dark),
+                contrast: ContrastLevel::Standard,
                 accent_rgba: 0x10B9_81FF,
                 tokens,
             })

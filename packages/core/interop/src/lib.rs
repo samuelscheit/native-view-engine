@@ -55,9 +55,9 @@ pub use reconcile::{
 #[cfg(feature = "window")]
 pub use surface::SurfacePresentation;
 pub use surface::{
-    ColorScheme, EnvironmentOverrides, FrameworkKind, LifecycleState, SafeAreaInsets,
-    SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator, SurfaceRecord,
-    TeardownRecord, ThemeContext,
+    ColorScheme, ContrastLevel, EnvironmentOverrides, FrameworkKind, LifecycleState,
+    SafeAreaInsets, SurfaceDescriptor, SurfaceEnvironment, SurfaceEvent, SurfaceOrchestrator,
+    SurfaceRecord, TeardownRecord, ThemeContext,
 };
 #[cfg(feature = "window")]
 pub use window::{
@@ -66,12 +66,12 @@ pub use window::{
 };
 #[cfg(feature = "traits")]
 pub use traits::{
-    BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover,
-    ColorScheme as TraitColorScheme, ContainerSize, DeviceFormFactor, HasHardwareKeyboard,
-    HighContrast, HostToolkit, KeyboardInsets, Locale, Orientation, PlatformOs, PointerKind,
-    ReducedMotion, ScaleFactor, SizeClass, TextScale, TraitEnvironment, TraitKey, TraitOverrides,
-    TraitResolver, TraitStore, UiDensity, VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX, VerticalSizeClass,
-    ViewportChangeMask, effective_bottom_inset, keyboard_insets_from_visual_viewport,
+    BUILTIN_TRAIT_COUNT, BuiltinTraitSlot, BuiltinTraits, CanHover, ContainerSize,
+    DeviceFormFactor, HasHardwareKeyboard, HighContrast, HostToolkit, KeyboardInsets, Locale,
+    Orientation, PlatformOs, PointerKind, ReducedMotion, ScaleFactor, SizeClass, TextScale,
+    TraitEnvironment, TraitKey, TraitOverrides, TraitResolver, TraitStore, UiDensity,
+    VISUAL_VIEWPORT_KEYBOARD_THRESHOLD_PX, VerticalSizeClass, ViewportChangeMask,
+    effective_bottom_inset, keyboard_insets_from_visual_viewport,
 };
 
 use nve_abi::SurfaceId;

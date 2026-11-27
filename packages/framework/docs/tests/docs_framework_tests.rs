@@ -92,19 +92,19 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
     let sys_env = Arc::new(MemorySystemEnv::new());
     mem.register_arc(sys_env.clone());
     sys_env.set_theme(ThemeSnapshot {
-        color_scheme: ColorScheme::Light,
+        color_scheme: Some(ColorScheme::Light),
         ..ThemeSnapshot::default()
     });
     assert!(!DocsTheme::from_system_env(mem.as_ref(), true).is_dark);
 
     sys_env.set_theme(ThemeSnapshot {
-        color_scheme: ColorScheme::Dark,
+        color_scheme: Some(ColorScheme::Dark),
         ..ThemeSnapshot::default()
     });
     assert!(DocsTheme::from_system_env(mem.as_ref(), false).is_dark);
 
     sys_env.set_theme(ThemeSnapshot {
-        color_scheme: ColorScheme::Unspecified,
+        color_scheme: None,
         ..ThemeSnapshot::default()
     });
     assert!(DocsTheme::from_system_env(mem.as_ref(), true).is_dark);
@@ -119,7 +119,7 @@ fn theme_tokens_syntax_palette_ui_sync_and_system_env() {
     );
     assert!(app_state.dark_mode);
     sys_env.set_theme(ThemeSnapshot {
-        color_scheme: ColorScheme::Light,
+        color_scheme: Some(ColorScheme::Light),
         ..ThemeSnapshot::default()
     });
     assert!(app_state.sync_with_system_env());

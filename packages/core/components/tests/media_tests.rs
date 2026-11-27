@@ -6,7 +6,7 @@ use std::mem::{align_of, offset_of, size_of};
 use nve_abi::{ColorRgba, Dimension, EdgeInsets, FlexAlign, FlexDirection, FlexJustify};
 use nve_components::style_patch::{LayoutSnapshot, VisualSnapshot};
 use nve_components::media::{
-    FlexWrap, MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
+    ColorScheme, FlexWrap, MediaEnv, MediaPointer, MediaQuery, Overflow, ResponsiveRule,
     ResponsiveStylePatch, TextAlign, MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH,
     MEDIA_FLAG_HAS_REDUCED_MOTION, MEDIA_FLAG_REDUCED_MOTION_VAL,
 };
@@ -35,12 +35,12 @@ fn media_query_repr_c_8_byte_abi_layout_and_raw_validation() {
     assert_eq!(offset_of!(MediaQuery, _pad), 7);
 
     let q = MediaQuery::width_range(600, 1023)
-        .and_color_scheme(MediaColorScheme::Dark)
+        .and_color_scheme(ColorScheme::Dark)
         .and_reduced_motion(true)
         .and_pointer(MediaPointer::Coarse);
     assert_eq!(q.min_width_opt(), Some(600));
     assert_eq!(q.max_width_opt(), Some(1023));
-    assert_eq!(q.color_scheme_opt(), Some(MediaColorScheme::Dark));
+    assert_eq!(q.color_scheme_opt(), Some(ColorScheme::Dark));
     assert_eq!(q.reduced_motion_opt(), Some(true));
     assert_eq!(q.pointer_opt(), Some(MediaPointer::Coarse));
     assert_eq!(
@@ -123,7 +123,7 @@ fn css_conditions_and_complementary_negations() {
         ),
         (
             MediaQuery::min_width(1200)
-                .and_color_scheme(MediaColorScheme::Dark)
+                .and_color_scheme(ColorScheme::Dark)
                 .and_reduced_motion(false)
                 .and_pointer(MediaPointer::Fine),
             "(min-width:1200px) and (prefers-color-scheme:dark) and (prefers-reduced-motion:no-preference) and (pointer:fine)",
@@ -247,8 +247,8 @@ fn randomized_negated_css_conditions_match_exact_de_morgan_complement() {
             q = q.and_max_width((rng.next() % 1800) as u16);
         }
         match rng.next() % 3 {
-            1 => q = q.and_color_scheme(MediaColorScheme::Dark),
-            2 => q = q.and_color_scheme(MediaColorScheme::Light),
+            1 => q = q.and_color_scheme(ColorScheme::Light),
+            2 => q = q.and_color_scheme(ColorScheme::Dark),
             _ => {}
         }
         match rng.next() % 3 {

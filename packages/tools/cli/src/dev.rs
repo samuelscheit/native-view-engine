@@ -412,7 +412,7 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
 
     if opts.skia {
         std::thread::spawn(run_watch_loop);
-        let preview_res = nve_skia_shell::run_desktop_preview(dylib_path, Some(client_ws_url));
+        let preview_res = run_skia_shell_subprocess(&dylib_path, &client_ws_url);
         if let Some(tx) = pair_tx_slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -426,6 +426,70 @@ pub(crate) fn cmd_dev(opts: DevOptions) {
         }
     } else {
         run_watch_loop();
+    }
+}
+
+fn skia_shell_bin_name() -> &'static str {
+    if cfg!(windows) {
+        "nve-skia-shell.exe"
+    } else {
+        "nve-skia-shell"
+    }
+}
+
+fn resolve_skia_shell_binary() -> Result<PathBuf, String> {
+    if let Ok(explicit) = std::env::var("NVE_SKIA_SHELL_BIN") {
+        let p = PathBuf::from(explicit);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    let bin_name = skia_shell_bin_name();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let sibling = dir.join(bin_name);
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+    }
+    let default_bin = PathBuf::from("target/debug").join(bin_name);
+    if default_bin.is_file() {
+        return Ok(default_bin);
+    }
+    println!("[dev] building binary-only host `nve-skia-shell`...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "nve-skia-shell"])
+        .status()
+        .map_err(|e| format!("failed to invoke `cargo build -p nve-skia-shell`: {e}"))?;
+    if !status.success() {
+        return Err(format!("`cargo build -p nve-skia-shell` failed with {status}"));
+    }
+    if default_bin.is_file() {
+        Ok(default_bin)
+    } else {
+        Err(format!(
+            "built `nve-skia-shell` but expected binary at '{}' was not found",
+            default_bin.display()
+        ))
+    }
+}
+
+fn run_skia_shell_subprocess(dylib_path: &Path, ws_url: &str) -> Result<(), String> {
+    let bin = resolve_skia_shell_binary()?;
+    let status = std::process::Command::new(&bin)
+        .arg(dylib_path)
+        .arg("--ws")
+        .arg(ws_url)
+        .status()
+        .map_err(|e| format!("failed to launch '{}': {e}", bin.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` exited with status {status}",
+            bin.display()
+        ))
     }
 }
 

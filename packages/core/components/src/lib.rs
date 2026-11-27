@@ -41,7 +41,7 @@ pub use layout_ext::{
     PositionInsets, PositionMode,
 };
 pub use media::{
-    MediaColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, ResponsiveStylePatch,
+    ColorScheme, MediaEnv, MediaPointer, MediaQuery, ResponsiveRule, ResponsiveStylePatch,
     MEDIA_FLAG_HAS_MAX_WIDTH, MEDIA_FLAG_HAS_MIN_WIDTH, MEDIA_FLAG_HAS_REDUCED_MOTION,
     MEDIA_FLAG_REDUCED_MOTION_VAL,
 };

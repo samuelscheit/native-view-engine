@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use nve_interop::{ColorScheme, ThemeContext};
+use nve_interop::{ColorScheme, ContrastLevel, ThemeContext};
 use nve_ui::prelude::*;
 
 #[test]
@@ -690,7 +690,8 @@ fn theme_context_bridge_toast_queue_and_style_buf_invariants() {
     let mut bright_tokens = BTreeMap::new();
     bright_tokens.insert("surface.bg".into(), "#fafafa".into());
     let bright = UiTheme::from_theme_context(&ThemeContext {
-        color_scheme: ColorScheme::HighContrastLight,
+        color_scheme: Some(ColorScheme::Light),
+        contrast: ContrastLevel::High,
         accent_rgba: 0xFACC_15FF,
         tokens: bright_tokens,
     });

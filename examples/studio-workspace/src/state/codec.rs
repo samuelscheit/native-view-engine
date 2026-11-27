@@ -348,7 +348,7 @@ impl WorkspaceState {
         }
 
         let t = &self.system_env.theme;
-        w.push_u8(t.color_scheme as u8);
+        w.push_u8(ColorScheme::opt_to_u8(t.color_scheme));
         w.push_u8(t.contrast as u8);
         w.push_bool(t.reduced_motion);
         w.push_bool(t.reduced_transparency);
@@ -448,7 +448,7 @@ impl WorkspaceState {
         };
 
         let theme = ThemeSnapshot {
-            color_scheme: ColorScheme::from_u8(r.read_u8()?)?,
+            color_scheme: ColorScheme::opt_from_u8(r.read_u8()?).ok()?,
             contrast: ContrastLevel::from_u8(r.read_u8()?)?,
             reduced_motion: r.read_bool()?,
             reduced_transparency: r.read_bool()?,
