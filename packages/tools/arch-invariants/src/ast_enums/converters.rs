@@ -406,15 +406,19 @@ fn body_has_enum_match(
     impl<'ast> Visit<'ast> for Scan<'_> {
         fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
             let mut enum_arm_count = 0usize;
+            let mut overflowed = false;
             for arm in &m.arms {
                 match extract_arm_patterns_checked(&arm.pat, self.scope, self.self_ty) {
                     PatternExpansion::Ok(pats) => {
                         enum_arm_count += pats.into_iter().filter(|p| p.is_enum_variant).count();
                     }
-                    PatternExpansion::Overflow => return,
+                    PatternExpansion::Overflow => {
+                        overflowed = true;
+                        break;
+                    }
                 }
             }
-            if enum_arm_count >= self.min_arms {
+            if !overflowed && enum_arm_count >= self.min_arms {
                 self.found = true;
             }
             if !self.found {

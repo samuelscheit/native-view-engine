@@ -247,23 +247,14 @@ impl<'a> NormCtx<'a> {
                     if name == "self" || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
                         return self.resolve_var(&name);
                     }
-                    if let Some((qual, variant, has_glob)) =
-                        self.scope().resolve_unqualified_variant(&name)
-                    {
+                    if let Some((qual, _)) = self.scope().resolve_unqualified_variant(&name) {
                         if let Some(q) = qual {
-                            let key = format!("{}::{variant}", q.canonical_key());
                             self.referenced_enum_qualifiers.insert(q);
-                            return key;
-                        }
-                        if has_glob {
+                        } else {
                             self.has_unqualified_enum_ref = true;
                         }
-                        return variant;
                     }
-                    if let Some(q) = self.scope().type_aliases.get(&name) {
-                        return q.canonical_key();
-                    }
-                    return name;
+                    return self.scope().canonical_single_ident(&name);
                 }
                 self.record_enum_path_ref(&p.path);
                 canonical_path(&p.path, self.scope(), self.self_ty)

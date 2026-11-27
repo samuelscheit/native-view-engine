@@ -261,13 +261,7 @@ impl ImportScope {
                 if let Some(last) = prefix.last()
                     && is_type_ident(last)
                 {
-                    let qual = if prefix.len() == 1
-                        && let Some(aliased) = self.type_aliases.get(last)
-                    {
-                        aliased.clone()
-                    } else {
-                        self.qualifier_from_prefix(prefix)
-                    };
+                    let qual = self.qualifier_from_prefix(prefix);
                     self.glob_enums.insert(qual);
                 } else {
                     self.has_unscoped_glob = true;
@@ -309,13 +303,7 @@ impl ImportScope {
             && is_type_ident(parent)
             && !is_screaming_snake_const(orig)
         {
-            let enum_qual = if prefix.len() == 1
-                && let Some(aliased) = self.type_aliases.get(parent)
-            {
-                aliased.clone()
-            } else {
-                self.qualifier_from_prefix(prefix)
-            };
+            let enum_qual = self.qualifier_from_prefix(prefix);
             self.variant_imports
                 .insert(alias.to_string(), (enum_qual, orig.to_string()));
             return;
@@ -333,6 +321,15 @@ impl ImportScope {
 
     /// Builds an `EnumQualifier` for a path whose final segment is the type name.
     pub fn qualifier_from_prefix(&self, segs: &[String]) -> EnumQualifier {
+        if segs.len() == 1 {
+            return self.resolve_single_type_ident(&segs[0]);
+        }
+        if segs.len() == 2 && segs[0] == "self" {
+            if let Some(aliased) = self.type_aliases.get(&segs[1]) {
+                return aliased.clone();
+            }
+            return EnumQualifier::local(&segs[1], self.current_crate.as_deref());
+        }
         let type_name = segs.last().cloned().unwrap_or_default();
         let (origin_crate, origin_mod) =
             extract_origin_crate_and_mod(segs, self.current_crate.as_deref(), &self.mod_imports);
@@ -362,28 +359,15 @@ impl ImportScope {
         if segs.is_empty() {
             return None;
         }
-        if segs.len() == 1 {
-            let raw = &segs[0];
-            if raw == "Self" {
-                let ty = self_ty?;
-                return Some(self.resolve_single_type_ident(ty));
-            }
-            if !is_type_ident(raw) {
-                return None;
-            }
-            return Some(self.resolve_single_type_ident(raw));
+        if segs.len() == 1 && segs[0] == "Self" {
+            let ty = self_ty?;
+            return Some(self.resolve_single_type_ident(ty));
         }
         let last = segs.last()?;
         if !is_type_ident(last) {
             return None;
         }
-        let (origin_crate, origin_mod) =
-            extract_origin_crate_and_mod(segs, self.current_crate.as_deref(), &self.mod_imports);
-        Some(EnumQualifier {
-            origin_crate,
-            origin_mod,
-            type_name: last.clone(),
-        })
+        Some(self.qualifier_from_prefix(segs))
     }
 
     pub fn resolve_single_type_ident(&self, ident: &str) -> EnumQualifier {
@@ -399,15 +383,12 @@ impl ImportScope {
     /// Unified resolver for unqualified enum variants across `Pat::Ident`, `Expr::Path`,
     /// `Expr::Call`, and `Expr::Struct`. Only resolves when an explicit variant import or glob
     /// import is active (never tags ordinary structs/newtypes as enum variants).
-    pub fn resolve_unqualified_variant(
-        &self,
-        name: &str,
-    ) -> Option<(Option<EnumQualifier>, String, bool)> {
+    pub fn resolve_unqualified_variant(&self, name: &str) -> Option<(Option<EnumQualifier>, String)> {
         if matches!(name, "Some" | "None" | "Ok" | "Err") {
             return None;
         }
         if let Some((q, v)) = self.variant_imports.get(name) {
-            return Some((Some(q.clone()), v.clone(), false));
+            return Some((Some(q.clone()), v.clone()));
         }
         if !is_type_ident(name) || is_unqualified_const_ident(name) {
             return None;
@@ -418,12 +399,27 @@ impl ImportScope {
         if self.glob_enums.len() == 1
             && let Some(q) = self.glob_enums.iter().next()
         {
-            return Some((Some(q.clone()), name.to_string(), false));
+            return Some((Some(q.clone()), name.to_string()));
         }
         if !self.glob_enums.is_empty() || self.has_unscoped_glob {
-            return Some((None, name.to_string(), true));
+            return Some((None, name.to_string()));
         }
         None
+    }
+
+    /// Canonicalizes an uppercase single-segment identifier (`resolve_unqualified_variant` ->
+    /// `type_aliases` -> verbatim `name`).
+    pub fn canonical_single_ident(&self, name: &str) -> String {
+        if let Some((qual, variant)) = self.resolve_unqualified_variant(name) {
+            return match qual {
+                Some(q) => format!("{}::{variant}", q.canonical_key()),
+                None => variant,
+            };
+        }
+        if let Some(q) = self.type_aliases.get(name) {
+            return q.canonical_key();
+        }
+        name.to_string()
     }
 
     pub fn is_external_sdk_path(&self, path: &syn::Path) -> bool {
@@ -431,22 +427,17 @@ impl ImportScope {
             return false;
         };
         let name = first.ident.to_string();
-        if EXTERNAL_SDK_ROOTS.contains(&name.as_str()) {
-            return true;
+        if path.leading_colon.is_none() {
+            if let Some(q) = self.type_aliases.get(&name) {
+                return q.is_external_sdk();
+            }
+            if let Some(mapped) = self.mod_imports.get(&name) {
+                return mapped
+                    .as_deref()
+                    .is_some_and(|c| EXTERNAL_SDK_ROOTS.contains(&c));
+            }
         }
-        if self
-            .type_aliases
-            .get(&name)
-            .is_some_and(EnumQualifier::is_external_sdk)
-        {
-            return true;
-        }
-        if let Some(Some(crate_name)) = self.mod_imports.get(&name)
-            && EXTERNAL_SDK_ROOTS.contains(&crate_name.as_str())
-        {
-            return true;
-        }
-        false
+        EXTERNAL_SDK_ROOTS.contains(&name.as_str())
     }
 }
 
@@ -466,9 +457,6 @@ fn resolve_root_crate(
     current_crate: Option<&str>,
     mod_imports: &BTreeMap<String, Option<String>>,
 ) -> Option<String> {
-    if EXTERNAL_SDK_ROOTS.contains(&first) {
-        return Some(first.to_string());
-    }
     if matches!(first, "crate" | "self" | "super") {
         current_crate.map(ToString::to_string)
     } else if let Some(mapped) = mod_imports.get(first) {

@@ -136,14 +136,27 @@ impl FileExtractState<'_> {
                 Item::Trait(tr) if !is_cfg_test_attr(&tr.attrs) => {
                     let tr_name = tr.ident.to_string();
                     for ti in &tr.items {
-                        if let syn::TraitItem::Fn(f) = ti
-                            && !is_cfg_test_attr(&f.attrs)
-                            && let Some(block) = &f.default
-                        {
-                            let sym =
-                                qualify_symbol(&self.mod_path, &format!("{tr_name}::{}", f.sig.ident));
-                            let params = collect_sig_params(&f.sig);
-                            self.run_block_extractor(sym, scope, None, params, block);
+                        match ti {
+                            syn::TraitItem::Fn(f) if !is_cfg_test_attr(&f.attrs) => {
+                                if let Some(block) = &f.default {
+                                    let sym = qualify_symbol(
+                                        &self.mod_path,
+                                        &format!("{tr_name}::{}", f.sig.ident),
+                                    );
+                                    let params = collect_sig_params(&f.sig);
+                                    self.run_block_extractor(sym, scope, None, params, block);
+                                }
+                            }
+                            syn::TraitItem::Const(c) if !is_cfg_test_attr(&c.attrs) => {
+                                if let Some((_, expr)) = &c.default {
+                                    let sym = qualify_symbol(
+                                        &self.mod_path,
+                                        &format!("{tr_name}::{}", c.ident),
+                                    );
+                                    self.run_expr_extractor(sym, scope, None, expr);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -289,6 +302,19 @@ impl MatchExtractor<'_> {
         }
     }
 
+    fn with_nested_scope(
+        &mut self,
+        next_sym: String,
+        locals: Vec<String>,
+        f: impl FnOnce(&mut Self),
+    ) {
+        let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
+        let prev_locals = std::mem::replace(&mut self.enclosing_locals, locals);
+        f(self);
+        self.enclosing_locals = prev_locals;
+        self.symbol = prev_sym;
+    }
+
     fn visit_macro_body_exprs(&mut self, mac: &syn::Macro) {
         if let Ok(args) = mac.parse_body_with(
             syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated,
@@ -323,30 +349,25 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
             Item::Mod(m) => {
                 if let Some((_, sub)) = &m.content {
                     let next_sym = format!("{}::{}", self.symbol, m.ident);
-                    let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                    let prev_locals = std::mem::take(&mut self.enclosing_locals);
-                    let child = ImportScope::child_for_inline_mod(
-                        self.scope_stack.last().unwrap_or(self.base_scope),
-                        sub,
-                    );
-                    self.scope_stack.push(child);
-                    for it in sub {
-                        self.visit_item(it);
-                    }
-                    self.scope_stack.pop();
-                    self.enclosing_locals = prev_locals;
-                    self.symbol = prev_sym;
+                    self.with_nested_scope(next_sym, Vec::new(), |this| {
+                        let child = ImportScope::child_for_inline_mod(
+                            this.scope_stack.last().unwrap_or(this.base_scope),
+                            sub,
+                        );
+                        this.scope_stack.push(child);
+                        for it in sub {
+                            this.visit_item(it);
+                        }
+                        this.scope_stack.pop();
+                    });
                 }
             }
             Item::Fn(f) => {
-                let next_sym = format!("{}::{}", self.symbol, f.sig.ident);
-                let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
                 // Nested `fn` cannot capture outer locals in Rust.
-                let prev_locals =
-                    std::mem::replace(&mut self.enclosing_locals, collect_sig_params(&f.sig));
-                self.visit_block(&f.block);
-                self.enclosing_locals = prev_locals;
-                self.symbol = prev_sym;
+                let next_sym = format!("{}::{}", self.symbol, f.sig.ident);
+                self.with_nested_scope(next_sym, collect_sig_params(&f.sig), |this| {
+                    this.visit_block(&f.block);
+                });
             }
             Item::Impl(imp) => {
                 let impl_ty = last_type_ident(&imp.self_ty);
@@ -360,14 +381,9 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
                                 None => f.sig.ident.to_string(),
                             };
                             let next_sym = format!("{}::{suffix}", self.symbol);
-                            let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                            let prev_locals = std::mem::replace(
-                                &mut self.enclosing_locals,
-                                collect_sig_params(&f.sig),
-                            );
-                            self.visit_block(&f.block);
-                            self.enclosing_locals = prev_locals;
-                            self.symbol = prev_sym;
+                            self.with_nested_scope(next_sym, collect_sig_params(&f.sig), |this| {
+                                this.visit_block(&f.block);
+                            });
                         }
                         syn::ImplItem::Const(c) if !is_cfg_test_attr(&c.attrs) => {
                             let suffix = match &impl_prefix {
@@ -375,11 +391,9 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
                                 None => c.ident.to_string(),
                             };
                             let next_sym = format!("{}::{suffix}", self.symbol);
-                            let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                            let prev_locals = std::mem::take(&mut self.enclosing_locals);
-                            self.visit_expr(&c.expr);
-                            self.enclosing_locals = prev_locals;
-                            self.symbol = prev_sym;
+                            self.with_nested_scope(next_sym, Vec::new(), |this| {
+                                this.visit_expr(&c.expr);
+                            });
                         }
                         _ => {}
                     }
@@ -388,40 +402,40 @@ impl<'ast> Visit<'ast> for MatchExtractor<'_> {
             }
             Item::Trait(tr) => {
                 let tr_name = tr.ident.to_string();
+                self.self_ty_stack.push(None);
                 for ti in &tr.items {
-                    if let syn::TraitItem::Fn(f) = ti
-                        && !is_cfg_test_attr(&f.attrs)
-                        && let Some(block) = &f.default
-                    {
-                        let next_sym = format!("{}::{tr_name}::{}", self.symbol, f.sig.ident);
-                        let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                        let prev_locals = std::mem::replace(
-                            &mut self.enclosing_locals,
-                            collect_sig_params(&f.sig),
-                        );
-                        self.self_ty_stack.push(None);
-                        self.visit_block(block);
-                        self.self_ty_stack.pop();
-                        self.enclosing_locals = prev_locals;
-                        self.symbol = prev_sym;
+                    match ti {
+                        syn::TraitItem::Fn(f) if !is_cfg_test_attr(&f.attrs) => {
+                            if let Some(block) = &f.default {
+                                let next_sym =
+                                    format!("{}::{tr_name}::{}", self.symbol, f.sig.ident);
+                                self.with_nested_scope(
+                                    next_sym,
+                                    collect_sig_params(&f.sig),
+                                    |this| this.visit_block(block),
+                                );
+                            }
+                        }
+                        syn::TraitItem::Const(c) if !is_cfg_test_attr(&c.attrs) => {
+                            if let Some((_, expr)) = &c.default {
+                                let next_sym = format!("{}::{tr_name}::{}", self.symbol, c.ident);
+                                self.with_nested_scope(next_sym, Vec::new(), |this| {
+                                    this.visit_expr(expr);
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 }
+                self.self_ty_stack.pop();
             }
             Item::Const(c) => {
                 let next_sym = format!("{}::const {}", self.symbol, c.ident);
-                let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                let prev_locals = std::mem::take(&mut self.enclosing_locals);
-                self.visit_expr(&c.expr);
-                self.enclosing_locals = prev_locals;
-                self.symbol = prev_sym;
+                self.with_nested_scope(next_sym, Vec::new(), |this| this.visit_expr(&c.expr));
             }
             Item::Static(s) => {
                 let next_sym = format!("{}::static {}", self.symbol, s.ident);
-                let prev_sym = std::mem::replace(&mut self.symbol, next_sym);
-                let prev_locals = std::mem::take(&mut self.enclosing_locals);
-                self.visit_expr(&s.expr);
-                self.enclosing_locals = prev_locals;
-                self.symbol = prev_sym;
+                self.with_nested_scope(next_sym, Vec::new(), |this| this.visit_expr(&s.expr));
             }
             _ => visit::visit_item(self, item),
         }

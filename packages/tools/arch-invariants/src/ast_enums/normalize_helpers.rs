@@ -158,17 +158,7 @@ impl NormCtx<'_> {
                     && pi.subpat.is_none()
                     && is_type_ident(&name)
                 {
-                    if let Some((qual, variant, _)) = self.scope().resolve_unqualified_variant(&name)
-                    {
-                        return match qual {
-                            Some(q) => format!("{}::{variant}", q.canonical_key()),
-                            None => variant,
-                        };
-                    }
-                    if let Some(q) = self.scope().type_aliases.get(&name) {
-                        return q.canonical_key();
-                    }
-                    return name;
+                    return self.scope().canonical_single_ident(&name);
                 }
                 let idx = if let Some(shared) = or_shared.as_deref_mut() {
                     *shared.entry(name.clone()).or_insert_with(|| {

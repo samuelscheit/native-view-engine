@@ -163,24 +163,30 @@ fn record_fn_profile(
                 return;
             }
             let mut match_pairs = Vec::new();
+            let mut overflowed = false;
             for arm in &m.arms {
                 if arm.guard.is_none()
                     && !is_cfg_test_attr(&arm.attrs)
                     && let Some(rhs) = extract_body_mirror_atom(&arm.body, self.scope, self.self_ty)
                 {
-                    let pats = match extract_arm_patterns_checked(&arm.pat, self.scope, self.self_ty)
-                    {
-                        PatternExpansion::Ok(v) => v,
-                        PatternExpansion::Overflow => return,
-                    };
-                    for pat in pats {
-                        if let Some(lhs) = pat.mirror_atom {
-                            match_pairs.push((lhs, rhs.clone()));
+                    match extract_arm_patterns_checked(&arm.pat, self.scope, self.self_ty) {
+                        PatternExpansion::Ok(pats) => {
+                            for pat in pats {
+                                if let Some(lhs) = pat.mirror_atom {
+                                    match_pairs.push((lhs, rhs.clone()));
+                                }
+                            }
+                        }
+                        PatternExpansion::Overflow => {
+                            overflowed = true;
+                            break;
                         }
                     }
                 }
             }
-            self.pairs.extend(match_pairs);
+            if !overflowed {
+                self.pairs.extend(match_pairs);
+            }
             visit::visit_expr_match(self, m);
         }
     }

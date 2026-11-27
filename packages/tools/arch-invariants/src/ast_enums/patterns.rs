@@ -10,10 +10,7 @@ use std::collections::BTreeSet;
 
 use syn::{Lit, Pat};
 
-use super::scope::{
-    is_screaming_snake_const, is_type_ident, is_unqualified_const_ident, EnumQualifier,
-    ImportScope,
-};
+use super::scope::{is_screaming_snake_const, is_type_ident, EnumQualifier, ImportScope};
 
 const PRELUDE_NON_DOMAIN_ENUMS: &[&str] = &[
     "Option",
@@ -169,7 +166,7 @@ fn extract_ident_pat(
         return PatternExpansion::Ok(Vec::new());
     }
     let name = pi.ident.to_string();
-    let Some((qual, variant, _)) = scope.resolve_unqualified_variant(&name) else {
+    let Some((qual, variant)) = scope.resolve_unqualified_variant(&name) else {
         return PatternExpansion::Ok(Vec::new());
     };
     PatternExpansion::Ok(vec![ExtractedPat {
@@ -449,9 +446,8 @@ fn norm_subpat(
                 && pi.mutability.is_none()
                 && pi.subpat.is_none()
                 && is_type_ident(&name)
-                && !is_unqualified_const_ident(&name)
             {
-                return name;
+                return scope.canonical_single_ident(&name);
             }
             let idx = bindings.len();
             bindings.push(name);
@@ -510,8 +506,7 @@ pub(super) fn split_enum_variant_path(
         return None;
     }
     if segs.len() == 1 {
-        let (q, v, _) = scope.resolve_unqualified_variant(&segs[0])?;
-        return Some((q, v));
+        return scope.resolve_unqualified_variant(&segs[0]);
     }
     let leaf = segs.last()?.clone();
     if !is_type_ident(&leaf) || is_screaming_snake_const(&leaf) {
@@ -577,13 +572,7 @@ pub(super) fn canonical_path(
         {
             return scope.resolve_single_type_ident(ty).canonical_key();
         }
-        if let Some((Some(q), v, _)) = scope.resolve_unqualified_variant(single) {
-            return format!("{}::{v}", q.canonical_key());
-        }
-        if let Some(q) = scope.type_aliases.get(single) {
-            return q.canonical_key();
-        }
-        return single.clone();
+        return scope.canonical_single_ident(single);
     }
     let last = &segs[segs.len() - 1];
     let parent_segs = &segs[..segs.len() - 1];
