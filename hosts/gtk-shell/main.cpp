@@ -82,6 +82,7 @@ void on_activate(GtkApplication* app, gpointer data) {
     } else {
       std::cerr << "[nve-gtk-shell] pairing with '" << s->pair_uri << "' failed: " << error << "\n";
       attach_builtin(*s->host);
+      s->no_state = true;  // the fallback app must neither restore nor overwrite another app's state
     }
   } else if (!s->dylib_path.empty()) {
     nve::host::ModuleError code = nve::host::ModuleError::None;
@@ -90,6 +91,7 @@ void on_activate(GtkApplication* app, gpointer data) {
       std::cerr << "[nve-gtk-shell] loading '" << s->dylib_path << "' failed (" << static_cast<int>(code)
                 << "): " << error << "\n";
       attach_builtin(*s->host);
+      s->no_state = true;  // the fallback app must neither restore nor overwrite the dylib's state
     }
   } else {
     attach_builtin(*s->host);

@@ -28,7 +28,8 @@
 namespace nve::host {
 
 /// Why `AppModule::open` failed.
-enum class ModuleError : uint8_t { None = 0, Open = 1, MissingEntry = 2, MissingSurface = 3 };
+/// Why loading an app module failed (`Attach`: the runtime rejected its interfaces).
+enum class ModuleError : uint8_t { None = 0, Open = 1, MissingEntry = 2, MissingSurface = 3, Attach = 4 };
 
 class AppModule {
  public:
@@ -61,8 +62,8 @@ class AppModule {
     if (!m.load(path, err)) return fail(ModuleError::Open, std::move(err));
     m.get_interface_ = reinterpret_cast<NveGetInterfaceFn>(m.symbol("nve_get_interface"));
     if (m.get_interface_ == nullptr) return fail(ModuleError::MissingEntry, "missing nve_get_interface symbol");
-    const auto* surface = static_cast<const NveSurfaceApi*>(m.get_interface_(NVE_IFACE_SURFACE));
-    if (surface == nullptr || surface->create == nullptr) {
+    // Slot completeness is the runtime's check (`attach_app_interface`); only presence here.
+    if (m.get_interface_(NVE_IFACE_SURFACE) == nullptr) {
       return fail(ModuleError::MissingSurface, "missing NVE_IFACE_SURFACE interface");
     }
     if (out_error != nullptr) *out_error = ModuleError::None;

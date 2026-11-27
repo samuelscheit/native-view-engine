@@ -100,47 +100,52 @@ NveGtkHost::~NveGtkHost() {
 }
 
 void NveGtkHost::install_wake_poster() {
-  // Runtime wakes (paired frames, timers) arrive on any thread: hop to the GLib main context.
+  // Runtime wakes (paired frames, timers) arrive on any thread, also the owner thread in the
+  // middle of `attach` / `restore_state`: always queue onto the GLib main context, never run
+  // inline (`g_main_context_invoke` would, re-entering the session or running off-thread).
   std::weak_ptr<std::atomic<bool>> alive = alive_;
   session_->set_wake_poster([alive, this] {
-    g_main_context_invoke_full(nullptr, G_PRIORITY_DEFAULT, &run_wake, new WakeTicket{alive, this}, &free_wake);
+    GSource* source = g_idle_source_new();
+    g_source_set_priority(source, G_PRIORITY_DEFAULT);
+    g_source_set_callback(source, &run_wake, new WakeTicket{alive, this}, &free_wake);
+    g_source_attach(source, g_main_context_default());
+    g_source_unref(source);
   });
 }
 
 // --- App sources -------------------------------------------------------------------------------
 
-void NveGtkHost::on_app_changed() {
-  syncing_ = true;
-  tree_.clear(adapter_);  // views of the previous app (ids may be reused with other kinds)
-  syncing_ = false;
-  (void)pump();
-}
+// Every source change bumps `HostSession::source_generation()`: the next sync is a full pass that
+// keeps views whose node still matches (focus survives a hot reload) and destroys the rest.
 
 bool NveGtkHost::attach_interface(NveGetInterfaceFn get_interface) {
   if (!session_->attach(get_interface)) return false;
-  on_app_changed();
+  (void)pump();
   return true;
 }
 
 bool NveGtkHost::load_dylib(std::string_view path, host::ModuleError* out_error, std::string* out_message) {
   if (!session_->load_module(path, out_error, out_message)) return false;
-  on_app_changed();
+  (void)pump();
   return true;
 }
 
 bool NveGtkHost::reload_dylib(std::string_view path, host::ModuleError* out_error, std::string* out_message) {
   if (!session_->reload_module(path, out_error, out_message)) return false;
-  (void)pump();  // same app identity: reconcile in place, keeping widgets
+  (void)pump();
   return true;
 }
 
 bool NveGtkHost::connect_paired(std::string_view uri, std::string_view token, std::string* out_error) {
   if (!session_->pair(uri, token, out_error)) return false;
-  on_app_changed();
+  (void)pump();
   return true;
 }
 
-void NveGtkHost::disconnect_paired() noexcept { (void)session_->runtime().pair_disconnect(); }
+void NveGtkHost::disconnect_paired() {
+  session_->unpair();
+  (void)pump();
+}
 
 bool NveGtkHost::is_paired() const noexcept { return session_->runtime().pair_is_connected(); }
 
@@ -192,7 +197,7 @@ void NveGtkHost::sync_views() {
     if (guard) {
       canvas_.bind(guard->reader());
       scene_ = &*guard;
-      (void)tree_.sync(guard->reader(), tables_, adapter_);
+      (void)tree_.sync(guard->reader(), tables_, adapter_, session_->source_generation());
       scene_ = nullptr;
     }
   }

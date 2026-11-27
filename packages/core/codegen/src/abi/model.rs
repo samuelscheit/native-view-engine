@@ -317,32 +317,39 @@ pub fn tables_model<'a>(tables: &[&'a TableDesc]) -> Result<Vec<TableModel<'a>>,
 
 /// Distinct named value sets (`word_enum!` variants, `#[values]` flag bits) the fields of
 /// `tables` carry, in first-use order. Sets sharing a name must be identical; names must spell
-/// unique identifiers and every value must fit its field.
+/// identifiers, every emitted `NVE_<SET>_<VALUE>` constant must be unique across all sets and
+/// clear of the `NVE_TABLE_*` namespace, and every value must fit its field.
 pub fn value_sets(tables: &[TableModel<'_>]) -> Result<Vec<&'static ValueSetDesc>, CodegenError> {
     let ident = |s: &str| {
         s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
             && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     };
     let mut out: Vec<&'static ValueSetDesc> = Vec::new();
+    let mut constants = BTreeSet::new();
     for t in tables {
         for f in t.desc.fields {
             let Some(set) = f.values else { continue };
-            let mut names = BTreeSet::new();
+            let err = |why: String| Err(table_error(t.desc, &format!("value set `{}`: {why}", set.name)));
+            if let Some(seen) = out.iter().find(|s| s.name == set.name) {
+                if *seen != set {
+                    return err("defined twice differently".into());
+                }
+                continue;
+            }
+            let prefix = super::spell::screaming(set.name);
+            if !ident(set.name) || set.values.is_empty() || prefix == "TABLE" || prefix.starts_with("TABLE_") {
+                return err("needs an identifier name outside `TABLE*` and at least one value".into());
+            }
             for &(name, value) in set.values {
-                if !ident(set.name) || !ident(name) || !names.insert(super::spell::screaming(name)) {
-                    return Err(table_error(t.desc, &format!("value set `{}`: bad or duplicate name `{name}`", set.name)));
+                let constant = format!("{prefix}_{}", super::spell::screaming(name));
+                if !ident(name) || !constants.insert(constant.clone()) {
+                    return err(format!("bad or duplicate name `{name}` (NVE_{constant})"));
                 }
                 if f.bits < 32 && value >> f.bits != 0 {
-                    return Err(table_error(t.desc, &format!("`{}` value `{name}` exceeds field `{}`", set.name, f.name)));
+                    return err(format!("value `{name}` exceeds field `{}`", f.name));
                 }
             }
-            match out.iter().find(|s| s.name == set.name) {
-                Some(seen) if *seen != set => {
-                    return Err(table_error(t.desc, &format!("value set `{}` defined twice differently", set.name)));
-                }
-                Some(_) => {}
-                None => out.push(set),
-            }
+            out.push(set);
         }
     }
     Ok(out)

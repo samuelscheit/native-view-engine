@@ -132,7 +132,7 @@ class NveGtkHost {
   bool reload_dylib(std::string_view path, host::ModuleError* out_error = nullptr, std::string* out_message = nullptr);
   /// Thin-client mode against an `nve dev` server (`nve://`, `quic://`, `wt://`, `ws(s)://`).
   bool connect_paired(std::string_view uri, std::string_view token, std::string* out_error = nullptr);
-  void disconnect_paired() noexcept;
+  void disconnect_paired();
   [[nodiscard]] bool is_paired() const noexcept;
   /// Applies one `NVE2` frame directly (C++ apps without an `nve_get_interface` module).
   bool submit_frame(std::span<const uint8_t> nve2);
@@ -202,7 +202,6 @@ class NveGtkHost {
   };
 
   bool dispatch(const NveDirectEvent& ev);
-  void on_app_changed();
   void install_wake_poster();
   void sync_views();
   void apply_semantics(GtkNodeView& view, const host::NodeData& node);
