@@ -14,7 +14,8 @@ use nve_query_dioxus::erased_ssr_query_client;
 use nve_rpc::{RpcError, RpcStatus};
 use nve_server::DirectTransport;
 use nve_ssr::{generate_csp_nonce, SsrError, SsrLocalPool, SsrPageOptions, StreamPlan};
-use nve_ui::theme::UiTheme;
+use nve_ui::theme::Theme;
+use nve_ui::ColorHex;
 
 use crate::assets::{error_response, BOOT_JS_PATH};
 use crate::auth::Actor;
@@ -35,7 +36,7 @@ pub fn issues_web_backend() -> WebBackend {
 /// (so the root `scrollview` fills the viewport in both DSD and hydrated modes), and the app's
 /// theme background behind it.
 fn document_head_extra(nonce: &str) -> String {
-    let background = UiTheme::dark().palette.surface_subtle;
+    let background = Theme::DARK.surface.subtle.hex();
     format!(
         "<link rel=\"icon\" href=\"data:,\">\
          <style nonce=\"{nonce}\">html,body{{margin:0;height:100%;background:{background};\

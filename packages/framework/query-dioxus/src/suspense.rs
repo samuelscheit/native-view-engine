@@ -59,7 +59,7 @@ impl BoundaryQuerySet {
 }
 
 /// Context set to `true` inside an enclosing SSR [`QuerySuspense`] boundary so nested
-/// [`QuerySuspense`] boundaries never emit unprojectable nested [`NveStreamSlot`] markers inside
+/// [`QuerySuspense`] boundaries never emit unprojectable nested [`fn@NveStreamSlot`] markers inside
 /// Declarative Shadow DOM; the outer boundary resolves atomically once its full subtree settles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InDeferredSuspense(pub bool);
