@@ -7,6 +7,8 @@
 //! - Typed [`RemoteAction`] mapping standard W3C / TV remote key names to focus & playback actions.
 //! - Title-safe TV overscan safe-area calculator ([`TvOverscanInsets`]).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod overscan;
 pub mod spatial_focus;
 

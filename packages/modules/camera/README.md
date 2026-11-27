@@ -4,20 +4,20 @@ Optional VisionCamera v5 hybrid adapter and typed `CameraPreview` spec (`package
 
 ## Key Public API
 
-- `CameraFacing`, `CameraPreview`, `CameraPreviewProps`, `CameraPreviewCommand`, `StabilizationMode`, `TorchMode`
+- `CameraFacing`, `CameraPreviewTable`, `CameraStabilization`, `CameraTorch`
 - `CameraFrameDescriptor`, `CameraFrameWireLayout`, `CameraFrameProcessor`, `CameraPixelFormat`
-- `nitro`, `interop`, `spec`
+- `nitro` (feature-gated), `frame`, `table`, `types`
 
 ```rust
-use nve_camera::{CameraFacing, CameraPreviewProps};
+use nve_camera::CameraFacing;
 
-let props = CameraPreviewProps::new().with_facing(CameraFacing::Front);
-assert_eq!(props.facing, CameraFacing::Front);
+assert_eq!(CameraFacing::from_preview_u8(2), Some(CameraFacing::Front));
+assert_eq!(CameraFacing::from_preview_u8(0), None);
 ```
 
 ## Dependency Invariants
 
-- **Depends on**: optional `nve-components` (`spec`), `nve-interop` (`interop`), `serde`.
+- **Depends on**: `nve-abi`, `nve-hash`, `nve-store`.
 - **Must NOT depend on**: `nve-backend-*`, `web-sys`, `skia-safe`, `dioxus*`, `serde_json`, or `hosts/*`.
 
 ## Verification

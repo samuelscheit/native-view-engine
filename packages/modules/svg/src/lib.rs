@@ -3,6 +3,8 @@
 //! Pure-spec root crate with zero backend dependencies: defines [`Svg`] (`#[derive(NveTable)]`),
 //! [`SvgPicture`] (`nve_store::Resource`), path parser, and deterministic inline SVG formatter.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod path_parser;
 mod picture;
 

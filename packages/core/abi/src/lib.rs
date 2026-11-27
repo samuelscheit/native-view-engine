@@ -2,6 +2,8 @@
 //! `NveValue`, `NvePropSlice`, `NveCommandSlice`, `NveEventBatch`), plus optional binary wire
 //! codecs (`EventRing`, `NveBinValue`) gated behind `feature = "wire"`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 extern crate self as nve_abi;
 
 pub mod appearance;

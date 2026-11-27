@@ -2,6 +2,8 @@
 //! with direct zero-serialization in-process dispatch ([`StorageBackend`]), `NVK2` on-disk
 //! WAL persistence, and cross-language `NVE_IFACE_HOST` C ABI codecs.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod engine;
 pub mod handler;
 

@@ -9,6 +9,8 @@
 //!
 //! Zero external dependencies beyond `std`, `serde`, and `serde_json`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod error;
 pub mod frontend;
 pub mod naming;

@@ -5,6 +5,8 @@
 //! crate. Each standalone capability module implements [`HostServiceHandler`] for its own
 //! `service_id` and registers cleanly onto [`HostServiceRegistry`] or [`MemoryHostServices`].
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 #[cfg(target_os = "macos")]
 pub mod apple_objc;
 pub mod bridge;

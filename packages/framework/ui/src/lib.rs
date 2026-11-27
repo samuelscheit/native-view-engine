@@ -1,6 +1,8 @@
 //! Accessible, themeable, zero-external-CSS Dioxus UI component library (`nve-ui`) built directly
 //! on `nve-dioxus` primitives and `nve-interop` theme contexts.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod components;
 pub mod focus;
 pub mod form;

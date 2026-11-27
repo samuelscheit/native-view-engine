@@ -7,6 +7,8 @@
 //! (`nve-svg-skia`, `nve-canvas-skia`, 3P plugins) through [`SkiaTableRegistry`] with zero
 //! compile-time module dependencies.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 mod display_list;
 mod focus;
 pub mod font;

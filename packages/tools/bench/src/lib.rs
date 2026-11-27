@@ -4,6 +4,8 @@
 //! Keeps `NVE2` frames, `NodeStore` fixtures, event batches, Dioxus surfaces, modular FFI
 //! modules, and `hosts/web-shell/pkg` size metrics DRY across every benchmark group.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod arena_mmap;
 pub mod wasm_bundle_size;
 

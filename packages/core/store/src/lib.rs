@@ -11,6 +11,8 @@
 //!   boundaries [`wire`] encodes the same `ChangeSet` as table-major `NVE2` and applies it to a
 //!   replica store.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 extern crate self as nve_store;
 
 mod changes;

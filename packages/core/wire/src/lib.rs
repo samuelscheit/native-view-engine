@@ -1,6 +1,8 @@
 //! Unified QUIC (`nve-wire-2`) + HTTP/3 WebTransport (`h3`) + TLS WebSocket (`wss://`)
 //! Happy-Eyeballs wire transport and C ABI for Native View Engine.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod auth;
 pub mod c_api;
 pub mod client;

@@ -1,5 +1,7 @@
 //! Standalone custom Web Element / HTML tag escape hatch (`packages/modules/web-element`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use std::sync::Arc;
 
 use nve_abi::Key64;

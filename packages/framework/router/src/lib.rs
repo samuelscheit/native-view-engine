@@ -2,6 +2,8 @@
 //! bridged to `nve-interop::NveChannelBus` (`CHANNEL_ID_NAVIGATION = 4`) via the compact binary
 //! `NVN1` wire format.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod channel;
 pub mod deeplink;
 pub mod dioxus_ui;

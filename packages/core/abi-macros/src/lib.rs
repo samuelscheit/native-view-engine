@@ -1,6 +1,8 @@
 //! Zero-dependency proc-macro crate implementing `#[derive(NveAbi)]` for single-source-of-truth
 //! C ABI metadata and compile-time layout assertions (`size_of`, `align_of`, `offset_of!`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 extern crate proc_macro;
 
 mod emit;

@@ -11,7 +11,8 @@ Type-safe stack, tab, modal, and deep-link router (`packages/framework/router`, 
 ```rust
 use nve_router::normalize_path;
 
-assert_eq!(normalize_path("/docs//guide/"), "/docs/guide");
+assert_eq!(normalize_path("/docs/guide/").as_deref(), Some("/docs/guide"));
+assert_eq!(normalize_path("/docs//guide/"), None);
 ```
 
 ## Dependency Invariants

@@ -2,6 +2,8 @@
 //! [`ClipboardBackend`] dispatch for in-process Rust hosts and minimal binary wire framing for
 //! cross-language `NVE_IFACE_HOST = 5` FFI calls.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod native;
 
 use std::any::{Any, TypeId};

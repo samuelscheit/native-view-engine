@@ -6,7 +6,8 @@ Zero-dependency proc-macro crate (`packages/core/abi-macros`, **Core Foundation 
 
 - `#[derive(NveAbi)]` (`derive_nve_abi`) with struct/enum attributes `#[nve_abi(size = N, size_64 = N, align = N)]` and field attributes `#[nve_abi(offset = N, offset64 = N, c_type = "...")]`.
 
-```rust
+```rust,ignore
+// Expanded against `nve_abi::schema` in downstream crates (verified by `nve-abi` schema_derive tests).
 use nve_abi::NveAbi;
 
 #[derive(NveAbi)]

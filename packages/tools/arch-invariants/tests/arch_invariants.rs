@@ -195,8 +195,7 @@ fn repo_hygiene_backlog_artifacts_buzzwords_personal_paths_readmes_and_650_line_
     );
     let (v_readme, v_doctest) = hygiene::check_crate_readmes_and_doctest_hooks(idx);
     assert_no_violations("Every packages/** crate has non-empty README.md (>= 5 lines)", &v_readme);
-    assert_staged_violations(
-        Stage::Post1B1D,
+    assert_no_violations(
         "Every workspace lib crate wires README.md into rustdoc doctests",
         &v_doctest,
     );

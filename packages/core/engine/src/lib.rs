@@ -2,6 +2,8 @@
 //! coordinator, `StoreWireReplica` for cross-boundary `NVE2` frames, 6-stage `FrameProfiler` with
 //! Perfetto/Chrome trace export, and 2-tier hot-reload spine.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod app;
 pub mod frame_arena;
 pub mod hotreload;

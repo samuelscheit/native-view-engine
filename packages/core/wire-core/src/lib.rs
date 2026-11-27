@@ -5,6 +5,8 @@
 //! browser WebTransport/WebSocket clients, native QUIC/WSS peers, and C/Swift/Dart FFI adapters
 //! share a single canonical wire format.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod frame;
 pub mod handshake;
 pub mod patch;

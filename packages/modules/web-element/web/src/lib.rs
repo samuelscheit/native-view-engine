@@ -1,5 +1,7 @@
 //! Web DOM & SSR adapter for `nve-web-element` (`WebTableSystem`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use nve_backend_web::html::write_attr;
 use nve_backend_web::{is_safe_custom_tag, is_safe_web_attr, WebSystemCommitCtx, WebTableSystem};
 use nve_store::{NodeId, NodeStore, NveTable, TableSlot};

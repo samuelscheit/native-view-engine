@@ -3,6 +3,8 @@
 //! Owns the analytical 4-subscanline antialiased SVG rasterizer and byte-budgeted LRU [`SvgCache`]
 //! so `nve-backend-skia` carries zero SVG code or dependencies.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 mod rasterize;
 
 use std::collections::{BTreeMap, HashMap};

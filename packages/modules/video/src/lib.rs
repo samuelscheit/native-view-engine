@@ -1,5 +1,7 @@
 //! Standalone hardware-accelerated video player capability (`packages/modules/video`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use nve_store::{NodeId, NveTable, Str, Transaction};
 
 /// Native video player table (`nve.video_player`).

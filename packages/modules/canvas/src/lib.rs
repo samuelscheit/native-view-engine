@@ -4,6 +4,8 @@
 //! and the `NVE_DRAW1` vector [`DrawList`] (`nve_store::Resource`, supporting ephemeral in-place
 //! updates for 120 Hz canvas repaints without hashing).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 mod codec;
 mod draw_list;
 mod types;

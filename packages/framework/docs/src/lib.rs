@@ -4,6 +4,8 @@
 //! The exact same compiled docs application renders cleanly for Web SSR + Progressive Hydration
 //! as well as Native Desktop/Mobile hosts (`nve-skia-shell`, macOS, Windows, iOS, Android).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 pub mod config;
 pub mod registry;
 pub mod render;

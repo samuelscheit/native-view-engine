@@ -4,6 +4,8 @@
 //! for all 6 HTML5 tables (`WebHtml`, `HtmlSemantics`, `HtmlInvoker`, `HtmlForm`,
 //! `HtmlFormControl`, `HtmlDataAttrs`) with zero special-casing inside `nve-backend-web`.
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use nve_backend_web::html::write_attr as push_attr;
 use nve_backend_web::{
     is_safe_custom_tag, is_safe_web_attr, is_safe_web_url, WebSystemCommitCtx, WebTableRegistry,

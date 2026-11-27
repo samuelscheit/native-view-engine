@@ -1,5 +1,7 @@
 //! Standalone backdrop blur surface capability (`packages/modules/blur`).
 
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
+
 use nve_store::{word_enum, NveTable, Rgba};
 
 word_enum! {
