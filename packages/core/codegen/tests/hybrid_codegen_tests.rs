@@ -204,9 +204,9 @@ fn parses_realistic_multi_item_rust_spec_accurately() {
     let video = &spec.views[0];
     assert_eq!(video.name, "VideoSurface");
     assert_eq!(video.trait_name, "VideoSurfaceSpec");
-    assert_eq!(video.props.len(), 6);
+    assert_eq!(video.props.len(), 9);
     assert_eq!(video.events.len(), 2);
-    assert_eq!(video.methods.len(), 2);
+    assert_eq!(video.methods.len(), 3);
     assert!(video.interface_id() >= NVE_HYBRID_INTERFACE_ID_BASE);
     assert_ne!(crypto.interface_id(), video.interface_id());
     assert_ne!(crypto.schema_hash(&spec), video.schema_hash(&spec));
@@ -523,6 +523,28 @@ fn rejects_negative_and_malformed_specs() {
         bad_ident.validate(),
         Err(CodegenError::Validation(_))
     ));
+
+    // 11. Reserved C++ hybrid runtime symbols must be rejected at top level
+    for reserved in [
+        "BinReader",
+        "BinWriter",
+        "DynamicValue",
+        "NveValueTree",
+        "OwnedBytes",
+    ] {
+        let src = format!("#[nve_hybrid_struct]\npub struct {reserved} {{ pub x: u32 }}");
+        assert!(
+            matches!(parse_hybrid_rust_spec(&src), Err(CodegenError::Validation(ref m)) if m.contains("reserved")),
+            "expected reserved error for struct {reserved}"
+        );
+    }
+    for reserved in ["checked_bytes", "to_slice", "require_done"] {
+        let src = format!("#[nve_hybrid_c_fn]\npub extern \"C\" fn {reserved}() -> u32;");
+        assert!(
+            matches!(parse_hybrid_rust_spec(&src), Err(CodegenError::Validation(ref m)) if m.contains("reserved")),
+            "expected reserved error for c_fn {reserved}"
+        );
+    }
 }
 
 #[test]
@@ -637,6 +659,59 @@ void _check_instantiation(const NveHybridCryptoVTable* cvt, const NveHybridVideo
         "C++20 JNI glue failed clang++ -std=c++20 -Werror:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&jni_check.stdout),
         String::from_utf8_lossy(&jni_check.stderr)
+    );
+
+    // 4. Also compile-check shadowing names (`raw` in POD `to_abi()`, and client member names
+    //    `vtable_`/`handle_`/`own`/`take_string`/`take_bytes` as method parameters).
+    let shadow_spec = parse_hybrid_rust_spec(
+        r#"
+#[nve_hybrid_struct]
+pub struct RawPod {
+    pub raw: u32,
+}
+
+#[nve_hybrid_module(name = "Shadow")]
+pub trait ShadowSpec {
+    fn collide(
+        &self,
+        vtable: RawPod,
+        handle: String,
+        own: Vec<u8>,
+        take_string: Vec<i32>,
+        take_bytes: NveValue,
+    ) -> Result<String, String>;
+    fn echo_val(&self, own: Vec<u8>) -> NveValue;
+}
+"#,
+    )
+    .unwrap();
+    generate_hybrid_target(&shadow_spec, HybridTarget::Cpp)
+        .unwrap()
+        .write_to_dir(&dir)
+        .unwrap();
+    let shadow_driver = dir.join("shadow.cpp");
+    std::fs::write(
+        &shadow_driver,
+        r#"
+#include "ShadowHybridSpec.generated.hpp"
+std::string _check_shadow(const NveHybridShadowVTable* vt) {
+  nve::hybrid::ShadowClient c(vt);
+  (void)c.echoVal({});
+  return c.collide(nve::hybrid::RawPod{1u}, "a", {}, {1}, nve::hybrid::DynamicValue{});
+}
+"#,
+    )
+    .unwrap();
+    let shadow_check = Command::new("clang++")
+        .args(["-std=c++20", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
+        .arg(format!("-I{}", dir.display()))
+        .arg(&shadow_driver)
+        .output()
+        .expect("run clang++ on shadowing C++20 header");
+    assert!(
+        shadow_check.status.success(),
+        "Shadowing C++20 header failed clang++:\n{}",
+        String::from_utf8_lossy(&shadow_check.stderr)
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -874,6 +949,7 @@ impl CryptoHybrid for MyCrypto {
             w: cursor.w.iter().rev().copied().collect(),
             r: cursor.r.map(|s| s.to_uppercase()),
             count: cursor.count * 2,
+            tag: cursor.tag.map(|v| -v),
             grid,
         }
     }
@@ -893,6 +969,7 @@ impl VideoSurfaceHybrid for MyVideo {
         if at_point.x < 0.0 { return Err("negative x".to_string()); }
         Ok(vec![0xDE, 0xAD])
     }
+    fn current_metadata(&mut self) -> NveHybridValue { self.props.metadata.clone() }
 }
 
 fn main() {
@@ -1337,6 +1414,7 @@ impl CryptoHybrid for LiveCrypto {
             w: cursor.w.iter().rev().copied().collect(),
             r: cursor.r.map(|s| s.to_uppercase()),
             count: cursor.count * 2,
+            tag: cursor.tag.map(|v| -v),
             grid,
         }
     }
@@ -1353,6 +1431,9 @@ impl VideoSurfaceHybrid for LiveVideo {
     fn apply_props(&mut self, props: VideoSurfaceProps) { self.props = props; }
     fn seek(&mut self, position_ms: u64) { self.seek_pos = position_ms; }
     fn capture_frame(&mut self, at_point: FramePoint) -> Result<Vec<u8>, String> {
+        if at_point.x < 0.0 {
+            return Err("bad \u{1F600}".to_string());
+        }
         if !self.props.muted || self.seek_pos != 9876 {
             return Err("unexpected view state".to_string());
         }
@@ -1363,8 +1444,13 @@ impl VideoSurfaceHybrid for LiveVideo {
         if let Some(poster) = &self.props.poster_url {
             frame.push(poster.len() as u8);
         }
+        frame.extend_from_slice(&self.props.drm_key);
+        for &ch in &self.props.chapters {
+            frame.push(ch as u8);
+        }
         Ok(frame)
     }
+    fn current_metadata(&mut self) -> NveHybridValue { self.props.metadata.clone() }
 }
 
 static CRYPTO_VTABLE: NveHybridCryptoVTable = build_crypto_vtable::<LiveCrypto>();
@@ -1471,17 +1557,6 @@ int main() {
   video.seek(9876u);
   auto frame = video.captureFrame(FramePoint{5.0f, 9.0f});
   assert(frame.size() == 3 && frame[0] == 5 && frame[1] == 9 && frame[2] == 24);
-  // Absent non-direct options cross as `Null`; present ones as their encoding.
-  props.posterUrl = "p.png";
-  props.focusPoint = FramePoint{7.0f, 0.0f};
-  video.setProps(props);
-  frame = video.captureFrame(FramePoint{5.0f, 9.0f});
-  assert(frame.size() == 5 && frame[3] == 7 && frame[4] == 5);
-  props.posterUrl = std::nullopt;
-  props.focusPoint = std::nullopt;
-  video.setProps(props);
-  assert(video.captureFrame(FramePoint{5.0f, 9.0f}).size() == 3);
-
   // A dynamic value crosses as an `NveValue` tree and comes back byte-identical.
   BinWriter dw;
   const auto dmap = dw.begin_map(2);
@@ -1498,15 +1573,38 @@ int main() {
   assert(meta.has_value());
   assert(crypto.inspectDynamic(*meta) == *meta);
 
-  // Field names shadowing codec names (`w`, `mark`, `r`, `count`) and a nested sequence.
+  // Absent non-direct options cross as `Null`; present ones, `Bytes`, `Vec`, and `NveValue`
+  // props round-trip losslessly (nested `NveValue` is never double-wrapped as `Bytes`).
+  props.posterUrl = "p.png";
+  props.focusPoint = FramePoint{7.0f, 0.0f};
+  props.drmKey = {0xAA, 0xBB};
+  props.chapters = {10, 20, 30};
+  props.metadata = *meta;
+  video.setProps(props);
+  frame = video.captureFrame(FramePoint{5.0f, 9.0f});
+  assert(frame.size() == 10 && frame[3] == 7 && frame[4] == 5);
+  assert(frame[5] == 0xAA && frame[6] == 0xBB && frame[7] == 10 && frame[8] == 20 && frame[9] == 30);
+  assert(video.currentMetadata() == *meta);
+  props.posterUrl = std::nullopt;
+  props.focusPoint = std::nullopt;
+  props.drmKey.clear();
+  props.chapters.clear();
+  props.metadata = DynamicValue{};
+  video.setProps(props);
+  assert(video.captureFrame(FramePoint{5.0f, 9.0f}).size() == 3);
+  assert(video.currentMetadata().is_null());
+
+  // Field names shadowing codec names (`w`, `mark`, `r`, `count`), two `Option`s, and a nested sequence.
   Cursor cursor;
   cursor.mark = 1u;
   cursor.w = {1, 2, 3};
   cursor.r = "ab";
   cursor.count = 4u;
+  cursor.tag = 42;
   cursor.grid = {{1, 2, 3}, {4, 5, 6}};
   const Cursor t = crypto.transpose(cursor);
   assert(t.mark == 2u && t.count == 8u && t.r == std::optional<std::string>("AB"));
+  assert(t.tag == std::optional<int32_t>(-42));
   assert((t.w == std::vector<uint8_t>{3, 2, 1}));
   assert((t.grid == std::vector<std::vector<int32_t>>{{1, 4}, {2, 5}, {3, 6}}));
 

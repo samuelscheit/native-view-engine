@@ -17,8 +17,9 @@
 //! and aliases are ignored; everything else (impls, bodies, generics, variadics, `async`, tuple
 //! structs, non-unit variants, `packed`, raw identifiers, `cfg`, ...) is a located error.
 //!
-//! Parsing runs on worker threads whose stack is sized from the input ([`stack`]), so no input
-//! can overflow a stack, and the caller's `proc_macro2` span table is never touched.
+//! Parsing runs on one worker thread with a fixed stack ([`stack`]) sized for every input the
+//! path bound admits, so no input can overflow a stack and the caller's `proc_macro2` span table
+//! is never touched.
 
 mod attrs;
 mod items;

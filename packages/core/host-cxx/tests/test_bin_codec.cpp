@@ -138,10 +138,13 @@ void test_f64_accepts_i64_and_extremes() {
 
 void test_errors() {
   {
-    const std::vector<uint8_t> bad_bool = {1, 2};
+    const std::vector<uint8_t> bad_bool = {1, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
     BinReader r(bad_bool);
     CHECK(!r.read_bool() && r.error() == BinError::InvalidBool);
-    CHECK(BinReader::validate(bad_bool) == BinError::InvalidBool);
+    // Sticky error: `peek_tag()` and `read_f64()` short-circuit even when valid bytes follow.
+    CHECK(r.peek_tag() == BinTag::Null && r.error() == BinError::InvalidBool);
+    CHECK(r.read_f64() == 0.0 && r.error() == BinError::InvalidBool);
+    CHECK(BinReader::validate(std::span<const uint8_t>(bad_bool.data(), 2)) == BinError::InvalidBool);
   }
   {
     const std::vector<uint8_t> bad_tag = {8};

@@ -45,7 +45,7 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
     - **Hybrid spec depth bound:**
       - Counts restart wherever `syn` provably holds no earlier token: `;`, list `,` outside `<..>` and closures, and file-level item bodies and attributes.
       - The cap is 2 Ki tokens: one fixed 132 MiB worker thread, lexed once. The 3,000-const, 3,000-member and 1,000-field specs now parse.
-      - The stack size is checked against every recursive form at the cap.
+      - The stack size is checked against the suite of recursive type, expression, pattern, and item forms just under the cap; `=` inside generic `<...>` no longer disables file-level item resets.
     - **Hybrid spec frontend:**
       - Member attributes are matched by single identifier (`#[clippy::prop]` is rejected).
       - Parameter and receiver attributes are checked.
@@ -66,11 +66,12 @@ Complete reverse-chronological log of shipped milestones in `native-view-engine`
       - Decoders are sticky and confined, unknown fixed arrays are skipped, and buffers must be fully consumed.
       - Peer buffers are RAII-freed and read without copies.
       - `Value` parameters are `const DynamicValue&`, passed as an `NveValueTree`.
-      - `setProps` uses a `std::array`; absent non-direct options are sent as `Null`.
-    - **JNI glue:**
-      - Null props are now `NVE_VAL_NULL`; before, every optional prop failed on Android.
-      - Strings cross as UTF-16 rather than Modified UTF-8.
+      - `setProps` uses a `std::array`, materializes `NveValue` props with `NveValueTree` (never double-wrapped as `Bytes`), skips scratch `BinWriter` writes on absent optional props, and qualifies `this->` / `::nve::` across `to_abi()` and client methods.
+    - **JNI glue & Dart codec:**
+      - Null props are now `NVE_VAL_NULL`; `Array`/`Map` props materialize via `NveValueTree::read_value`.
+      - Strings and `throw_java_exception` (`IllegalStateException(String)`) cross as UTF-16 rather than Modified UTF-8.
       - Direct buffers are strict, every exception kind is converted, and parameters are spelled `arg_*`.
+      - Dart binary struct codec depth-suffixes and scopes `_ov`/`_aw`/`_el`/`_n`/`_list`/`_i` locals so structs with multiple `Option<T>` or nested `Vec` fields analyze cleanly.
     - **Tests:**
       - The JNI glue is linked and run against the Rust provider on a fake `JNIEnv`.
       - The C++ e2e covers dynamic values, nested sequences, invalid UTF-8 and null props.

@@ -29,19 +29,22 @@ pub(super) fn emit_cpp_struct(out: &mut CodeWriter, s: &HybridStructSpec, spec: 
             let cname = c_field_ident(&f.name);
             match &f.ty {
                 HybridType::Enum(_) => {
-                    writeln!(out, "    raw.{cname} = static_cast<uint32_t>({fname});");
+                    writeln!(
+                        out,
+                        "    raw.{cname} = static_cast<uint32_t>(this->{fname});"
+                    );
                 }
                 HybridType::Struct(_) => {
-                    writeln!(out, "    raw.{cname} = {fname}.to_abi();");
+                    writeln!(out, "    raw.{cname} = this->{fname}.to_abi();");
                 }
                 HybridType::FixedArray { .. } => {
                     writeln!(
                         out,
-                        "    std::memcpy(raw.{cname}, {fname}.data(), sizeof(raw.{cname}));"
+                        "    std::memcpy(raw.{cname}, this->{fname}.data(), sizeof(raw.{cname}));"
                     );
                 }
                 _ => {
-                    writeln!(out, "    raw.{cname} = {fname};");
+                    writeln!(out, "    raw.{cname} = this->{fname};");
                 }
             }
         }
@@ -324,7 +327,10 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
     );
     if v.props.is_empty() {
         writeln!(out, "    (void)props;");
-        writeln!(out, "    vtable_->set_props_direct(handle_, nullptr, 0u);");
+        writeln!(
+            out,
+            "    this->vtable_->set_props_direct(this->handle_, nullptr, 0u);"
+        );
         writeln!(out, "  }}");
         writeln!(out);
         return;
@@ -334,13 +340,29 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
         "    std::array<NveMapEntry, {}u> entries{{}};",
         v.props.len()
     );
-    // Keep any scratch BinWriters alive for the duration of set_props_direct.
+    // Keep any scratch `NveValueTree`s / `BinWriter`s alive for the duration of `set_props_direct`.
     for (idx, p) in v.props.iter().enumerate() {
-        if !cpp_prop_is_direct_nve_value(&p.ty) {
-            let pname = cpp_ident(&p.name);
-            let wname = format!("_prop_bin_{idx}");
-            writeln!(out, "    BinWriter {wname};");
-            emit_cpp_bin_write(out, "    ", &wname, &format!("props.{pname}"), &p.ty);
+        let pname = cpp_ident(&p.name);
+        match &p.ty {
+            ty if cpp_prop_is_direct_nve_value(ty) => {}
+            HybridType::Value => {
+                writeln!(
+                    out,
+                    "    const ::nve::host::NveValueTree _prop_tree_{idx}(props.{pname});"
+                );
+            }
+            HybridType::Optional(inner) => {
+                let wname = format!("_prop_bin_{idx}");
+                writeln!(out, "    ::nve::host::BinWriter {wname};");
+                writeln!(out, "    if (props.{pname}.has_value()) {{");
+                emit_cpp_bin_write(out, "      ", &wname, &format!("(*props.{pname})"), inner);
+                writeln!(out, "    }}");
+            }
+            other => {
+                let wname = format!("_prop_bin_{idx}");
+                writeln!(out, "    ::nve::host::BinWriter {wname};");
+                emit_cpp_bin_write(out, "    ", &wname, &format!("props.{pname}"), other);
+            }
         }
     }
     for (idx, p) in v.props.iter().enumerate() {
@@ -365,7 +387,7 @@ pub(super) fn emit_cpp_set_props(out: &mut CodeWriter, pascal: &str, v: &HybridV
     }
     writeln!(
         out,
-        "    const int32_t status = vtable_->set_props_direct(handle_, entries.data(), static_cast<uint32_t>(entries.size()));"
+        "    const int32_t status = this->vtable_->set_props_direct(this->handle_, entries.data(), static_cast<uint32_t>(entries.size()));"
     );
     writeln!(out, "    if (status != NVE_HYBRID_OK) {{");
     writeln!(
@@ -385,31 +407,34 @@ pub(super) fn emit_cpp_client_method(
     let cname = c_field_ident(&method.name);
     writeln!(out, "  {} override {{", cpp_method_signature(method));
 
-    // Prepare arguments
-    let mut call_args = vec!["handle_".to_string()];
+    // Prepare arguments (`this->`, `::nve::`, and `_nve_*` avoid shadowing by parameter names).
+    let mut call_args = vec!["this->handle_".to_string()];
     for (idx, p) in method.params.iter().enumerate() {
         let pname = cpp_ident(&p.name);
         if let (HybridType::Optional(inner), Some(suffix)) = (&p.ty, p.ty.optional_pod_suffix(spec))
         {
-            writeln!(out, "    NveHybridOpt{suffix} _arg_{idx}{{false, {{}}}};");
+            writeln!(
+                out,
+                "    NveHybridOpt{suffix} _nve_arg_{idx}{{false, {{}}}};"
+            );
             writeln!(out, "    if ({pname}.has_value()) {{");
-            writeln!(out, "      _arg_{idx}.is_some = true;");
+            writeln!(out, "      _nve_arg_{idx}.is_some = true;");
             match inner.as_ref() {
                 HybridType::Enum(_) => {
                     writeln!(
                         out,
-                        "      _arg_{idx}.value = static_cast<uint32_t>(*{pname});"
+                        "      _nve_arg_{idx}.value = static_cast<uint32_t>(*{pname});"
                     );
                 }
                 HybridType::Struct(_) => {
-                    writeln!(out, "      _arg_{idx}.value = {pname}->to_abi();");
+                    writeln!(out, "      _nve_arg_{idx}.value = {pname}->to_abi();");
                 }
                 _ => {
-                    writeln!(out, "      _arg_{idx}.value = *{pname};");
+                    writeln!(out, "      _nve_arg_{idx}.value = *{pname};");
                 }
             }
             writeln!(out, "    }}");
-            call_args.push(format!("_arg_{idx}"));
+            call_args.push(format!("_nve_arg_{idx}"));
             continue;
         }
         match &p.ty {
@@ -430,64 +455,70 @@ pub(super) fn emit_cpp_client_method(
             HybridType::String => {
                 writeln!(
                     out,
-                    "    const NveStrSlice _arg_{idx}{{reinterpret_cast<const uint8_t*>({pname}.data()), {pname}.size()}};"
+                    "    const NveStrSlice _nve_arg_{idx}{{reinterpret_cast<const uint8_t*>({pname}.data()), {pname}.size()}};"
                 );
-                call_args.push(format!("_arg_{idx}"));
+                call_args.push(format!("_nve_arg_{idx}"));
             }
             HybridType::Bytes => {
                 writeln!(
                     out,
-                    "    const NveBufferSlice _arg_{idx}{{{pname}.data(), {pname}.size()}};"
+                    "    const NveBufferSlice _nve_arg_{idx}{{{pname}.data(), {pname}.size()}};"
                 );
-                call_args.push(format!("_arg_{idx}"));
+                call_args.push(format!("_nve_arg_{idx}"));
             }
             HybridType::Value => {
-                writeln!(out, "    const NveValueTree _arg_{idx}({pname});");
-                call_args.push(format!("_arg_{idx}.root()"));
+                writeln!(
+                    out,
+                    "    const ::nve::host::NveValueTree _nve_arg_{idx}({pname});"
+                );
+                call_args.push(format!("_nve_arg_{idx}.root()"));
             }
             other => {
-                let wname = format!("_arg_w_{idx}");
-                writeln!(out, "    BinWriter {wname};");
+                let wname = format!("_nve_arg_w_{idx}");
+                writeln!(out, "    ::nve::host::BinWriter {wname};");
                 emit_cpp_bin_write(out, "    ", &wname, &pname, other);
-                call_args.push(format!("to_slice({wname})"));
+                call_args.push(format!("::nve::hybrid::to_slice({wname})"));
             }
         }
     }
 
     match &method.return_type {
         HybridType::Void => {
-            writeln!(out, "    vtable_->{cname}({});", call_args.join(", "));
+            writeln!(out, "    this->vtable_->{cname}({});", call_args.join(", "));
         }
         HybridType::Result { ok, .. } => {
             if !matches!(ok.as_ref(), HybridType::Void) {
-                writeln!(out, "    {} _raw_ok{{}};", c_return_type(ok, spec));
-                call_args.push("&_raw_ok".to_string());
+                writeln!(out, "    {} _nve_raw_ok{{}};", c_return_type(ok, spec));
+                call_args.push("&_nve_raw_ok".to_string());
             }
-            writeln!(out, "    NveHybridOwnedBytes _raw_err{{nullptr, 0, 0}};");
-            call_args.push("&_raw_err".to_string());
+            writeln!(out, "    NveHybridOwnedBytes _nve_raw_err{{nullptr, 0, 0}};");
+            call_args.push("&_nve_raw_err".to_string());
             writeln!(
                 out,
-                "    const int32_t _status = vtable_->{cname}({});",
+                "    const int32_t _nve_status = this->vtable_->{cname}({});",
                 call_args.join(", ")
             );
-            writeln!(out, "    if (_status != NVE_HYBRID_OK) {{");
-            writeln!(out, "      const std::string _msg = take_string(_raw_err);");
+            writeln!(out, "    if (_nve_status != NVE_HYBRID_OK) {{");
             writeln!(
                 out,
-                "      throw std::runtime_error(_msg.empty() ? \"hybrid call failed\" : _msg);"
+                "      const std::string _nve_msg = this->take_string(_nve_raw_err);"
+            );
+            writeln!(
+                out,
+                "      throw std::runtime_error(_nve_msg.empty() ? \"hybrid call failed\" : _nve_msg);"
             );
             writeln!(out, "    }}");
             if !matches!(ok.as_ref(), HybridType::Void) {
-                emit_cpp_return_decode(out, "    ", "_raw_ok", ok, spec);
+                emit_cpp_return_decode(out, "    ", "_nve_raw_ok", ok, spec);
             }
         }
         other => {
             writeln!(
                 out,
-                "    const auto _raw_ret = vtable_->{cname}({});",
+                "    const auto _nve_raw_ret = this->vtable_->{cname}({});",
                 call_args.join(", ")
             );
-            emit_cpp_return_decode(out, "    ", "_raw_ret", other, spec);
+            emit_cpp_return_decode(out, "    ", "_nve_raw_ret", other, spec);
         }
     }
 
@@ -523,22 +554,25 @@ pub(super) fn emit_cpp_return_decode(
             writeln!(out, "{indent}return {s}::from_abi({var});");
         }
         HybridType::String => {
-            writeln!(out, "{indent}return take_string({var});");
+            writeln!(out, "{indent}return this->take_string({var});");
         }
         HybridType::Bytes => {
-            writeln!(out, "{indent}return take_bytes({var});");
+            writeln!(out, "{indent}return this->take_bytes({var});");
         }
         HybridType::Value => {
-            writeln!(out, "{indent}const OwnedBytes _owned = own({var});");
             writeln!(
                 out,
-                "{indent}auto _dv = DynamicValue::from_bytes(_owned.span());"
+                "{indent}const ::nve::hybrid::OwnedBytes _nve_owned = this->own({var});"
             );
             writeln!(
                 out,
-                "{indent}if (!_dv) throw std::runtime_error(\"malformed NveBinValue\");"
+                "{indent}auto _nve_dv = ::nve::host::DynamicValue::from_bytes(_nve_owned.span());"
             );
-            writeln!(out, "{indent}return std::move(*_dv);");
+            writeln!(
+                out,
+                "{indent}if (!_nve_dv) throw std::runtime_error(\"malformed NveBinValue\");"
+            );
+            writeln!(out, "{indent}return std::move(*_nve_dv);");
         }
         HybridType::Optional(inner) if inner.is_pod(spec) => {
             writeln!(
@@ -559,12 +593,18 @@ pub(super) fn emit_cpp_return_decode(
         }
         other => {
             // Decoded straight from the peer's buffer, freed however this scope ends.
-            writeln!(out, "{indent}const OwnedBytes _owned = own({var});");
-            writeln!(out, "{indent}BinReader _r(_owned.span());");
-            writeln!(out, "{indent}{} _out{{}};", cpp_owned_type(other));
-            emit_cpp_bin_read(out, indent, "_r", "_out", other);
-            writeln!(out, "{indent}require_done(_r);");
-            writeln!(out, "{indent}return _out;");
+            writeln!(
+                out,
+                "{indent}const ::nve::hybrid::OwnedBytes _nve_owned = this->own({var});"
+            );
+            writeln!(
+                out,
+                "{indent}::nve::host::BinReader _nve_r(_nve_owned.span());"
+            );
+            writeln!(out, "{indent}{} _nve_out{{}};", cpp_owned_type(other));
+            emit_cpp_bin_read(out, indent, "_nve_r", "_nve_out", other);
+            writeln!(out, "{indent}::nve::hybrid::require_done(_nve_r);");
+            writeln!(out, "{indent}return _nve_out;");
         }
     }
 }

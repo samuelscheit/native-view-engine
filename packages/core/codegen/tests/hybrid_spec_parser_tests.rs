@@ -839,7 +839,7 @@ fn parse_without_depth_error(name: &str, source: &str) {
 #[test]
 fn every_recursive_form_parses_on_its_sized_stack() {
     // (form, path tokens per repetition, prefix repeated, suffix repeated, innermost)
-    let types: [(&str, usize, &str, &str, &str); 13] = [
+    let types: [(&str, usize, &str, &str, &str); 14] = [
         ("*const", 2, "*const ", "", "u8"),
         ("&", 1, "&", "", "u8"),
         ("&'struct", 3, "&'struct ", "", "u8"),
@@ -853,8 +853,9 @@ fn every_recursive_form_parses_on_its_sized_stack() {
         ("fn(", 2, "fn(", ")", "u8"),
         ("extern C fn", 6, "extern \"C\" fn() -> ", "", "u8"),
         ("for<'a, 'b> fn", 14, "for<'a, 'b> fn() -> ", "", "u8"),
+        ("dyn Fn() ->", 5, "dyn Fn() -> ", "", "u8"),
     ];
-    let exprs: [(&str, usize, &str, &str, &str); 37] = [
+    let exprs: [(&str, usize, &str, &str, &str); 43] = [
         ("-", 1, "-", "", "1"),
         ("!", 1, "!", "", "1"),
         ("*", 1, "*", "", "1"),
@@ -888,10 +889,16 @@ fn every_recursive_form_parses_on_its_sized_stack() {
         ("if union", 5, "if union {} else ", "", "{}"),
         ("match", 6, "match a { _ => ", " }", "1"),
         ("loop break", 3, "loop { break ", " }", "1"),
+        ("'a: loop {", 5, "'a: loop { ", "}", ""),
         ("while", 3, "while a { ", " }", ""),
+        ("for x in a {", 5, "for x in a { ", " }", ""),
         ("{ let a =", 4, "{ let a = ", "; a }", "1"),
         ("unsafe", 2, "unsafe { ", "}", ""),
+        ("const {", 2, "const { ", " }", "1"),
         ("S { x:", 4, "S { x: ", " }", "1"),
+        ("a::<", 5, "a::<", ">", "u8"),
+        ("become", 1, "become ", "", "1"),
+        ("yield", 1, "yield ", "", "1"),
     ];
     // Inside a statement / pattern: `let &&&x`, `let [[[x]]]`, `let (((x,),),)`.
     let pats: [(&str, usize, &str, &str, &str); 3] = [
@@ -928,6 +935,10 @@ fn every_recursive_form_parses_on_its_sized_stack() {
             ),
         ));
     }
+    sources.push((
+        "mod m {".into(),
+        nest(("mod m {", 3, "mod m { ", "}", "")),
+    ));
     // Restart-crossing forms: each statement / element / item nests to the cap on its own.
     let deep_neg = "-".repeat(MAX_PATH_TOKENS - 100);
     sources.push((

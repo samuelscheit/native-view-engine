@@ -7,8 +7,10 @@ import 'src/suites.dart';
 void main() {
   final c = runAll();
   runFfi(c); // VM only: the web entry never imports `dart:ffi`
+  c.skips.forEach(stdout.writeln);
   c.failures.forEach(stderr.writeln);
-  stdout.writeln('nve_host (vm): ${c.passed} checks passed, ${c.failed} failed');
+  final skipSuffix = c.skipped == 0 ? '' : ', ${c.skipped} skipped';
+  stdout.writeln('nve_host (vm): ${c.passed} checks passed, ${c.failed} failed$skipSuffix');
   if (c.failed != 0) {
     exitCode = 1;
   }

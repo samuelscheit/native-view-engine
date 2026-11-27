@@ -286,6 +286,7 @@ pub(super) fn emit_dart_bin_write(
     expr: &str,
     ty: &HybridType,
 ) {
+    let d = indent.len();
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{w}.writeBool({expr});"),
         HybridType::U8
@@ -304,15 +305,31 @@ pub(super) fn emit_dart_bin_write(
         HybridType::Struct(_) => writeln!(out, "{indent}{expr}.encodeBin({w});"),
         HybridType::Value => writeln!(out, "{indent}{w}.writeRaw({expr}.binBytes);"),
         HybridType::Optional(inner) => {
-            writeln!(out, "{indent}final _ov = {expr};");
-            writeln!(out, "{indent}if (_ov != null) {{");
-            emit_dart_bin_write(out, &format!("{indent}  "), w, "_ov", inner);
-            writeln!(out, "{indent}}} else {{ {w}.writeNull(); }}");
+            writeln!(out, "{indent}{{");
+            writeln!(out, "{indent}  final _ov{d} = {expr};");
+            writeln!(out, "{indent}  if (_ov{d} != null) {{");
+            emit_dart_bin_write(
+                out,
+                &format!("{indent}    "),
+                w,
+                &format!("_ov{d}"),
+                inner,
+            );
+            writeln!(out, "{indent}  }} else {{");
+            writeln!(out, "{indent}    {w}.writeNull();");
+            writeln!(out, "{indent}  }}");
+            writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
-            writeln!(out, "{indent}{w}.writeArray({expr}.length, (aw) {{");
-            writeln!(out, "{indent}  for (final _el in {expr}) {{");
-            emit_dart_bin_write(out, &format!("{indent}    "), "aw", "_el", inner);
+            writeln!(out, "{indent}{w}.writeArray({expr}.length, (_aw{d}) {{");
+            writeln!(out, "{indent}  for (final _el{d} in {expr}) {{");
+            emit_dart_bin_write(
+                out,
+                &format!("{indent}    "),
+                &format!("_aw{d}"),
+                &format!("_el{d}"),
+                inner,
+            );
             writeln!(out, "{indent}  }}");
             writeln!(out, "{indent}}});");
         }
@@ -332,6 +349,7 @@ pub(super) fn emit_dart_bin_read(
     dst: &str,
     ty: &HybridType,
 ) {
+    let d = indent.len();
     match ty {
         HybridType::Bool => writeln!(out, "{indent}{dst} = {r}.readBool();"),
         HybridType::U8
@@ -360,21 +378,21 @@ pub(super) fn emit_dart_bin_read(
             writeln!(out, "{indent}if ({r}.readNullIfPresent()) {{");
             writeln!(out, "{indent}  {dst} = null;");
             writeln!(out, "{indent}}} else {{");
-            writeln!(out, "{indent}  late final {} _ov;", dart_type(inner));
-            emit_dart_bin_read(out, &format!("{indent}  "), r, "_ov", inner);
-            writeln!(out, "{indent}  {dst} = _ov;");
+            writeln!(out, "{indent}  late final {} _ov{d};", dart_type(inner));
+            emit_dart_bin_read(out, &format!("{indent}  "), r, &format!("_ov{d}"), inner);
+            writeln!(out, "{indent}  {dst} = _ov{d};");
             writeln!(out, "{indent}}}");
         }
         HybridType::Vec(inner) => {
             writeln!(out, "{indent}{{");
-            writeln!(out, "{indent}  final _n = {r}.beginArray();");
-            writeln!(out, "{indent}  final _list = <{}>[];", dart_type(inner));
-            writeln!(out, "{indent}  for (var _i = 0; _i < _n; _i++) {{");
-            writeln!(out, "{indent}    late final {} _el;", dart_type(inner));
-            emit_dart_bin_read(out, &format!("{indent}    "), r, "_el", inner);
-            writeln!(out, "{indent}    _list.add(_el);");
+            writeln!(out, "{indent}  final _n{d} = {r}.beginArray();");
+            writeln!(out, "{indent}  final _list{d} = <{}>[];", dart_type(inner));
+            writeln!(out, "{indent}  for (var _i{d} = 0; _i{d} < _n{d}; _i{d}++) {{");
+            writeln!(out, "{indent}    late final {} _el{d};", dart_type(inner));
+            emit_dart_bin_read(out, &format!("{indent}    "), r, &format!("_el{d}"), inner);
+            writeln!(out, "{indent}    _list{d}.add(_el{d});");
             writeln!(out, "{indent}  }}");
-            writeln!(out, "{indent}  {dst} = _list;");
+            writeln!(out, "{indent}  {dst} = _list{d};");
             writeln!(out, "{indent}}}");
         }
         HybridType::Void

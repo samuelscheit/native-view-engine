@@ -119,7 +119,6 @@ pub(super) fn abi(
         .collect();
     for file in files {
         known.extend(file.aliases.iter().map(|a| a.name));
-        known.extend(file.enums.iter().map(|e| e.name));
         for c in file.consts {
             if c.ty != "u32" || c.value > u64::from(u32::MAX) {
                 return Err(invalid(format!(
@@ -178,8 +177,8 @@ enum Position {
     AliasTarget,
 }
 
-/// The record / alias / enum names the ABI declares, its enums, and the records whose alignment
-/// only C cannot reproduce by value.
+/// The record and alias names the ABI declares, its enums (rejected in signatures), and the
+/// records whose alignment C cannot reproduce by value.
 struct Known<'a> {
     names: BTreeSet<&'a str>,
     enums: BTreeSet<&'a str>,

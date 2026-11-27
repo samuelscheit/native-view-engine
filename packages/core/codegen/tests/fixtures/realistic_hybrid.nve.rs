@@ -46,13 +46,14 @@ pub struct SignedPayload {
 }
 
 /// A record whose field names shadow the generated codec's parameters and locals (`w`, `mark`,
-/// `r`, `count`), with a nested sequence.
+/// `r`, `count`), with two `Option` fields and a nested sequence.
 #[nve_hybrid_struct]
 pub struct Cursor {
     pub mark: u32,
     pub w: Vec<u8>,
     pub r: Option<String>,
     pub count: u32,
+    pub tag: Option<i32>,
     pub grid: Vec<Vec<i32>>,
 }
 
@@ -97,6 +98,15 @@ pub trait VideoSurfaceSpec {
     #[prop(default = None)]
     fn focus_point(&self) -> Option<FramePoint>;
 
+    #[prop]
+    fn drm_key(&self) -> Vec<u8>;
+
+    #[prop]
+    fn chapters(&self) -> Vec<i32>;
+
+    #[prop]
+    fn metadata(&self) -> NveValue;
+
     #[event]
     fn on_progress(&self, position_ms: u64, duration_ms: u64);
 
@@ -108,4 +118,7 @@ pub trait VideoSurfaceSpec {
 
     #[method]
     fn capture_frame(&self, at_point: FramePoint) -> Result<Vec<u8>, String>;
+
+    #[method]
+    fn current_metadata(&self) -> NveValue;
 }

@@ -17,6 +17,8 @@ namespace nve::host {
 /// valid by construction (at most `kBinValueMaxDepth` deep), so building it cannot fail.
 class NveValueTree {
  public:
+  NveValueTree() = default;
+
   explicit NveValueTree(const DynamicValue& value) {
     BinReader r = value.reader();
     root_ = build(r);
@@ -24,6 +26,16 @@ class NveValueTree {
 
   NveValueTree(const NveValueTree&) = delete;
   NveValueTree& operator=(const NveValueTree&) = delete;
+
+  /// Validates and materializes the next value from `r` into this tree, returning its `NveValue`
+  /// root. Strings, bytes, and map keys borrow `r`'s buffer; container slices borrow this tree.
+  /// On malformed input, `r` records the error (sticky) and this returns `Null`.
+  NveValue read_value(BinReader& r) {
+    const std::span<const uint8_t> raw = r.read_checked_value();
+    if (!r.ok()) return NveValue{};
+    BinReader sub(raw);
+    return build(sub);
+  }
 
   [[nodiscard]] const NveValue& root() const noexcept { return root_; }
 

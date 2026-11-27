@@ -111,6 +111,7 @@ class BinReader {
   // ---- tagged NveBinValue -----------------------------------------------------------------
   /// Tag of the next value without consuming it (`BinTag::Null` and an error when truncated).
   BinTag peek_tag() noexcept {
+    if (!ok()) return BinTag::Null;
     if (pos_ >= limit_) return fail<BinTag>(BinError::Truncated);
     const uint8_t t = data_[pos_];
     if (t > static_cast<uint8_t>(BinTag::Map)) return fail<BinTag>(BinError::InvalidTag);

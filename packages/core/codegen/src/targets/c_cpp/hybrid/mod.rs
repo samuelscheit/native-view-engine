@@ -273,16 +273,16 @@ fn emit_c11_vtable(
             HybridType::Void => "void".to_string(),
             other => c_return_type(other, spec),
         };
-        write!(out, "  {ret_ty} (*{mname})(NveAppHandle handle");
+        write!(out, "  {ret_ty} (*{mname})(NveAppHandle _nve_handle");
         for p in &m.params {
             let pname = c_field_ident(&p.name);
             write!(out, ", {} {pname}", c_param_type(&p.ty, spec));
         }
         if let HybridType::Result { ok, .. } = &m.return_type {
             if !matches!(ok.as_ref(), HybridType::Void) {
-                write!(out, ", {}* out_ok", c_return_type(ok, spec));
+                write!(out, ", {}* _nve_out_ok", c_return_type(ok, spec));
             }
-            write!(out, ", NveHybridOwnedBytes* out_err");
+            write!(out, ", NveHybridOwnedBytes* _nve_out_err");
         }
         writeln!(out, ");");
     }

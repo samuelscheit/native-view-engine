@@ -28,7 +28,7 @@ impl HybridFileSpec {
         let mut struct_map: BTreeMap<&str, &HybridStructSpec> = BTreeMap::new();
 
         for c in &self.consts {
-            validate_ident("const", &c.name)?;
+            validate_top_level_ident("const", &c.name)?;
             if !const_names.insert(c.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate const name '{}'",
@@ -38,7 +38,7 @@ impl HybridFileSpec {
         }
 
         for a in &self.aliases {
-            validate_ident("type alias", &a.name)?;
+            validate_top_level_ident("type alias", &a.name)?;
             if !type_names.insert(a.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate type name '{}'",
@@ -49,7 +49,7 @@ impl HybridFileSpec {
         }
 
         for e in &self.enums {
-            validate_ident("enum", &e.name)?;
+            validate_top_level_ident("enum", &e.name)?;
             if !type_names.insert(e.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate type name '{}'",
@@ -83,7 +83,7 @@ impl HybridFileSpec {
         }
 
         for s in &self.structs {
-            validate_ident("struct", &s.name)?;
+            validate_top_level_ident("struct", &s.name)?;
             if !type_names.insert(s.name.as_str()) {
                 return Err(CodegenError::validation(format!(
                     "duplicate type name '{}'",
@@ -147,7 +147,7 @@ impl HybridFileSpec {
         let mut iface_ids: BTreeMap<u32, String> = BTreeMap::new();
 
         for m in &self.modules {
-            validate_ident("module", &m.name)?;
+            validate_top_level_ident("module", &m.name)?;
             validate_ident("module trait", &m.trait_name)?;
             if !item_names.insert(m.name.as_str()) {
                 return Err(CodegenError::validation(format!(
@@ -188,7 +188,7 @@ impl HybridFileSpec {
         }
 
         for v in &self.views {
-            validate_ident("view", &v.name)?;
+            validate_top_level_ident("view", &v.name)?;
             validate_ident("view trait", &v.trait_name)?;
             if !item_names.insert(v.name.as_str()) {
                 return Err(CodegenError::validation(format!(
@@ -290,6 +290,9 @@ impl HybridFileSpec {
         }
 
         if !self.c_functions.is_empty() {
+            for f in &self.c_functions {
+                validate_top_level_ident("c_function", &f.name)?;
+            }
             validate_methods(
                 &self.c_functions,
                 &enum_map,
@@ -301,6 +304,28 @@ impl HybridFileSpec {
 
         Ok(())
     }
+}
+
+/// Top-level symbols exported by the generated C++ `namespace nve::hybrid` runtime bridge.
+const RESERVED_RUNTIME_NAMES: &[&str] = &[
+    "BinReader",
+    "BinWriter",
+    "DynamicValue",
+    "NveValueTree",
+    "OwnedBytes",
+    "checked_bytes",
+    "to_slice",
+    "require_done",
+];
+
+fn validate_top_level_ident(kind: &str, name: &str) -> Result<(), CodegenError> {
+    validate_ident(kind, name)?;
+    if RESERVED_RUNTIME_NAMES.contains(&name) {
+        return Err(CodegenError::validation(format!(
+            "{kind} name '{name}' is reserved by the hybrid runtime"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_ident(kind: &str, name: &str) -> Result<(), CodegenError> {

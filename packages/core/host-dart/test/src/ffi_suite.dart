@@ -11,6 +11,7 @@ void runFfi(Check c) {
   final abi = ffi.Abi.current();
   if (abi == ffi.Abi.linuxIA32 || abi == ffi.Abi.androidIA32) {
     // i386 System V is C-only (see `nveAbiRecordSizes`): Dart cannot over-align `NveDirectEvent`.
+    c.skip('ffi.sizeOf skipped on $abi (i386 System V is C-only)');
     return;
   }
   final model = ffi.sizeOf<ffi.Pointer<ffi.Void>>() == 8 ? 0 : 1;

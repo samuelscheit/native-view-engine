@@ -24,6 +24,7 @@ pub(super) fn emit_jni_cpp(spec: &HybridFileSpec, hpp_header: &str) -> String {
     writeln!(out, "#include <array>");
     writeln!(out, "#include <cstdint>");
     writeln!(out, "#include <exception>");
+    writeln!(out, "#include <optional>");
     writeln!(out, "#include <stdexcept>");
     writeln!(out, "#include <string>");
     writeln!(out, "#include <nve/host/jni.hpp>");
@@ -161,6 +162,7 @@ fn emit_jni_set_props(out: &mut CodeWriter, pascal: &str, props: usize) {
         "    if (map.count > {props}u) throw std::invalid_argument(\"more props than {pascal} declares\");"
     );
     writeln!(out, "    std::array<NveMapEntry, {props}u> entries{{}};");
+    writeln!(out, "    std::optional<NveValueTree> trees;");
     writeln!(
         out,
         "    for (uint32_t i = 0; i < map.count && r.ok(); ++i) {{"
@@ -207,16 +209,11 @@ fn emit_jni_set_props(out: &mut CodeWriter, pascal: &str, props: usize) {
     );
     writeln!(out, "          break;");
     writeln!(out, "        }}");
-    writeln!(
-        out,
-        "        default: {{  // an array / map prop: its validated encoding, as `Bytes`"
-    );
-    writeln!(out, "          const auto v = r.read_checked_value();");
-    writeln!(out, "          entry.value.tag = NVE_VAL_BYTES;");
-    writeln!(
-        out,
-        "          entry.value.data.bytes_val = NveBufferSlice{{v.data(), v.size()}};"
-    );
+    writeln!(out, "        case nve::host::BinTag::Array:");
+    writeln!(out, "        case nve::host::BinTag::Map: {{");
+    writeln!(out, "          if (!trees) trees.emplace();");
+    writeln!(out, "          entry.value = trees->read_value(r);");
+    writeln!(out, "          break;");
     writeln!(out, "        }}");
     writeln!(out, "      }}");
     writeln!(out, "    }}");

@@ -166,8 +166,8 @@ pub(super) fn path_bound(tokens: TokenStream) -> Result<usize, CodegenError> {
                         Delimiter::Bracket => attribute_lead,
                         Delimiter::Parenthesis | Delimiter::None => false,
                     };
-                // The group's own stream is unshared once `g` is gone, so iterating it moves the
-                // tokens instead of cloning them.
+                // Release `g` before pushing so the outer `TokenTree` is not retained while
+                // walking `inner`.
                 let inner = g.stream();
                 drop(g);
                 stack.push(Frame::new(inner, path, false, item_boundary));
@@ -181,7 +181,7 @@ pub(super) fn path_bound(tokens: TokenStream) -> Result<usize, CodegenError> {
                 '#' => frame.attribute_lead = true,
                 '!' if attribute_lead => frame.attribute_lead = true,
                 c => {
-                    frame.assign |= c == '=';
+                    frame.assign |= c == '=' && frame.angles == 0;
                     frame.arrow_lead = p.spacing() == Spacing::Joint && matches!(c, '-' | '=');
                 }
             },
@@ -247,6 +247,10 @@ mod tests {
         assert_eq!(bound("#[doc = \"a\"] #[doc = \"b\"] struct A;")?, 5);
         assert_eq!(bound("const X: u8 = A {} + A {} + A {};")?, 14);
         assert_eq!(bound("impl F<{ 1 }> for A {} x")?, 8);
+        // `=` inside generic arguments (`T = u8`, `Item = u8`) is not an expression assignment:
+        // item bodies still restart the file-level count.
+        assert!(bound(&"struct S<T = u8> {} ".repeat(500))? < 16);
+        assert!(bound(&"trait T where Self: Iterator<Item = u8> {} ".repeat(500))? < 24);
         Ok(())
     }
 }

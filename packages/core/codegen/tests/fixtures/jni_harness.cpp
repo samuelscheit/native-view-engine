@@ -21,6 +21,7 @@ void Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeDestroy(JNIEnv*, jclass,
 void Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeSetProps(JNIEnv*, jclass, jlong, jobject);
 void Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeSeek(JNIEnv*, jclass, jlong, jlong);
 jbyteArray Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeCaptureFrame(JNIEnv*, jclass, jlong, jobject);
+jbyteArray Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeCurrentMetadata(JNIEnv*, jclass, jlong);
 }
 
 using namespace nve::hybrid;
@@ -56,18 +57,36 @@ std::span<const uint8_t> bytes_of(jbyteArray array) {
 
 /// Exactly one Java exception whose message contains `what` was raised; clears it.
 void expect_thrown(JNIEnv& env, const char* what) {
-  if (env.thrown != 1 || env.pending.find(what) == std::string::npos) {
-    std::fprintf(stderr, "expected one exception with `%s`, got %d: `%s`\n", what, env.thrown, env.pending.c_str());
+  if (env.thrown != 1 || env.pending.find(what) == std::string::npos || env.checkjni_error) {
+    std::fprintf(
+        stderr, "expected one CheckJNI-clean exception with `%s`, got %d (checkjni_err=%d): `%s`\n", what, env.thrown,
+        static_cast<int>(env.checkjni_error), env.pending.c_str());
     ++g_failures;
   }
-  env.pending.clear();
-  env.thrown = 0;
+  env.ExceptionClear();
 }
 
-/// The VideoSurface props map, optionally with a poster and focus point.
+std::vector<uint8_t> sample_metadata_bin() {
+  BinWriter w;
+  const auto map = w.begin_map(2);
+  w.write_map_key("tracks");
+  const auto arr = w.begin_array(3);
+  w.write_i64(42);
+  w.write_str("en");
+  w.write_null();
+  w.end(arr);
+  w.write_map_key("hdr");
+  w.write_bool(true);
+  w.end(map);
+  const auto bytes = checked_bytes(w);
+  return {bytes.begin(), bytes.end()};
+}
+
+/// The VideoSurface props map, optionally with poster, focus point, drm_key (`Bytes`),
+/// chapters (`Array`), and nested `metadata` (`NveValue`).
 std::vector<uint8_t> video_props(bool with_options) {
   BinWriter w;
-  const auto map = w.begin_map(6);
+  const auto map = w.begin_map(9);
   w.write_map_key("source_url");
   w.write_str("https://nve.dev/clip.mp4");
   w.write_map_key("muted");
@@ -85,6 +104,31 @@ std::vector<uint8_t> video_props(bool with_options) {
   w.write_map_key("focus_point");
   if (with_options) {
     FramePoint{7.0f, 0.0f}.encode_bin(w);
+  } else {
+    w.write_null();
+  }
+  w.write_map_key("drm_key");
+  if (with_options) {
+    const std::vector<uint8_t> key{0xAA, 0xBB};
+    w.write_bytes(key);
+  } else {
+    w.write_bytes({});
+  }
+  w.write_map_key("chapters");
+  if (with_options) {
+    const auto arr = w.begin_array(3);
+    w.write_i64(10);
+    w.write_i64(20);
+    w.write_i64(30);
+    w.end(arr);
+  } else {
+    const auto arr = w.begin_array(0);
+    w.end(arr);
+  }
+  w.write_map_key("metadata");
+  if (with_options) {
+    const std::vector<uint8_t> meta = sample_metadata_bin();
+    w.raw(meta);
   } else {
     w.write_null();
   }
@@ -114,7 +158,33 @@ void test_video(JNIEnv& env) {
   set_props(video_props(true));
   CHECK(env.thrown == 0);
   frame = Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeCaptureFrame(&env, nullptr, video, at.get());
-  CHECK(frame != nullptr && frame->bytes.size() == 5u && frame->bytes[3] == 7 && frame->bytes[4] == 5);
+  CHECK(frame != nullptr && frame->bytes.size() == 10u);
+  if (frame != nullptr && frame->bytes.size() == 10u) {
+    CHECK(frame->bytes[3] == 7 && frame->bytes[4] == 5);
+    CHECK(static_cast<uint8_t>(frame->bytes[5]) == 0xAAu && static_cast<uint8_t>(frame->bytes[6]) == 0xBBu);
+    CHECK(frame->bytes[7] == 10 && frame->bytes[8] == 20 && frame->bytes[9] == 30);
+  }
+  // `NveValue` nested map/array prop round-trips byte-identically (never double-wrapped as Bytes).
+  jbyteArray meta_out = Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeCurrentMetadata(&env, nullptr, video);
+  CHECK(env.thrown == 0 && meta_out != nullptr);
+  if (meta_out != nullptr) {
+    const auto got = bytes_of(meta_out);
+    CHECK(std::vector<uint8_t>(got.begin(), got.end()) == sample_metadata_bin());
+  }
+
+  // Supplementary UTF-8 error message crosses via UTF-16 `IllegalStateException(String)` with
+  // zero CheckJNI errors and zero leaked local refs.
+  {
+    BinWriter neg;
+    FramePoint{-1.0f, 0.0f}.encode_bin(neg);
+    DirectBuffer neg_at(checked_bytes(neg));
+    const int refs_before = env.live_local_refs;
+    CHECK(Java_dev_nve_hybrid_VideoSurfaceHybridClient_nativeCaptureFrame(&env, nullptr, video, neg_at.get()) ==
+          nullptr);
+    CHECK(env.thrown == 1 && !env.checkjni_error && env.live_local_refs == refs_before);
+    CHECK(env.pending_utf16 == u"bad \U0001F600");
+    env.ExceptionClear();
+  }
 
   // Every malformed props buffer is a Java exception, never a partial update.
   const std::vector<uint8_t> good = video_props(false);
@@ -128,8 +198,8 @@ void test_video(JNIEnv& env) {
   expect_thrown(env, "trailing bytes");
   {
     BinWriter w;
-    const auto map = w.begin_map(7);
-    for (int i = 0; i < 7; ++i) {
+    const auto map = w.begin_map(10);
+    for (int i = 0; i < 10; ++i) {
       w.write_map_key(std::string(1, static_cast<char>('a' + i)));
       w.write_null();
     }
@@ -166,6 +236,14 @@ void test_crypto(JNIEnv& env) {
   if (nonce != nullptr) {
     BinReader r(bytes_of(nonce));
     CHECK(r.read_i64() == 110 && r.ok() && r.at_end());
+  }
+  _jstring empty;
+  jbyteArray empty_nonce =
+      Java_dev_nve_hybrid_CryptoHybridClient_nativeFindNonce(&env, nullptr, crypto, &empty, hint_buf.get());
+  CHECK(env.thrown == 0 && !env.checkjni_error && empty_nonce != nullptr);
+  if (empty_nonce != nullptr) {
+    BinReader r(bytes_of(empty_nonce));
+    CHECK(r.read_i64() == 100 && r.ok() && r.at_end());
   }
   _jstring lone;
   lone.units = std::u16string(1, char16_t{0xD800});
@@ -204,6 +282,7 @@ void test_crypto(JNIEnv& env) {
   cursor.w = {1, 2, 3};
   cursor.r = "ab";
   cursor.count = 4u;
+  cursor.tag = 42;
   cursor.grid = {{1, 2, 3}, {4, 5, 6}};
   BinWriter cw;
   cursor.encode_bin(cw);
@@ -214,10 +293,11 @@ void test_crypto(JNIEnv& env) {
     BinReader r(bytes_of(transposed));
     const Cursor t = Cursor::decode_bin(r);
     CHECK(r.ok() && r.at_end());
-    CHECK(t.mark == 2u && t.count == 8u && t.r == std::optional<std::string>("AB"));
+    CHECK(t.mark == 2u && t.count == 8u && t.r == std::optional<std::string>("AB") && t.tag == std::optional<int32_t>(-42));
     CHECK((t.w == std::vector<uint8_t>{3, 2, 1}));
     CHECK((t.grid == std::vector<std::vector<int32_t>>{{1, 4}, {2, 5}, {3, 6}}));
   }
+  CHECK(!env.checkjni_error);
   Java_dev_nve_hybrid_CryptoHybridClient_nativeDestroy(&env, nullptr, crypto);
 }
 

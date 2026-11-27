@@ -255,13 +255,16 @@ pub(super) fn emit_cpp_fill_nve_value(
                 "{indent}{dst}.data.bytes_val = NveBufferSlice{{{expr}.data(), {expr}.size()}};"
             );
         }
+        HybridType::Value => {
+            writeln!(out, "{indent}{dst} = _prop_tree_{idx}.root();");
+        }
         // An absent non-direct option is `Null` itself, never an encoded null inside `Bytes`.
         HybridType::Optional(_) => {
             writeln!(out, "{indent}if ({expr}.has_value()) {{");
             writeln!(out, "{indent}  {dst}.tag = NVE_VAL_BYTES;");
             writeln!(
                 out,
-                "{indent}  {dst}.data.bytes_val = to_slice(_prop_bin_{idx});"
+                "{indent}  {dst}.data.bytes_val = ::nve::hybrid::to_slice(_prop_bin_{idx});"
             );
             writeln!(out, "{indent}}} else {{");
             writeln!(out, "{indent}  {dst}.tag = NVE_VAL_NULL;");
@@ -271,7 +274,7 @@ pub(super) fn emit_cpp_fill_nve_value(
             writeln!(out, "{indent}{dst}.tag = NVE_VAL_BYTES;");
             writeln!(
                 out,
-                "{indent}{dst}.data.bytes_val = to_slice(_prop_bin_{idx});"
+                "{indent}{dst}.data.bytes_val = ::nve::hybrid::to_slice(_prop_bin_{idx});"
             );
         }
     }

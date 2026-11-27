@@ -18,15 +18,6 @@
 
 namespace nve::host::jni {
 
-/// Raises `IllegalStateException(msg)` unless a Java exception is already pending (it wins).
-inline void throw_java_exception(JNIEnv* env, const char* msg) noexcept {
-  if (env->ExceptionCheck()) return;
-  jclass cls = env->FindClass("java/lang/IllegalStateException");
-  if (cls == nullptr) return;  // `FindClass` raised (e.g. `OutOfMemoryError`)
-  env->ThrowNew(cls, msg != nullptr ? msg : "NVE hybrid call failed");
-  env->DeleteLocalRef(cls);
-}
-
 /// The bytes of a direct `ByteBuffer`, borrowed for the call. Throws for a null or non-direct
 /// buffer (only a valid empty buffer is empty).
 inline std::span<const uint8_t> direct_buffer_span(JNIEnv* env, jobject buffer) {
@@ -57,6 +48,7 @@ inline jbyteArray to_jbyte_array(JNIEnv* env, std::span<const uint8_t> data) {
 inline std::string utf8_of(JNIEnv* env, jstring s) {
   if (s == nullptr) throw std::invalid_argument("null String");
   const jsize len = env->GetStringLength(s);
+  if (len <= 0) return {};
   std::u16string units(static_cast<size_t>(len), u'\0');
   env->GetStringRegion(s, 0, len, reinterpret_cast<jchar*>(units.data()));
   if (env->ExceptionCheck()) throw std::runtime_error("GetStringRegion failed");
@@ -74,6 +66,38 @@ inline jstring java_string(JNIEnv* env, std::string_view s) {
     throw std::length_error("result exceeds a Java string");
   }
   return env->NewString(reinterpret_cast<const jchar*>(units->data()), static_cast<jsize>(units->size()));
+}
+
+/// Raises `IllegalStateException(msg)` unless a Java exception is already pending (it wins).
+/// Constructs the exception with a UTF-16 `jstring` (`NewString` + `<init>(String)`) so
+/// supplementary UTF-8 characters and NUL never reach `ThrowNew`'s Modified UTF-8 parser; falls
+/// back to ASCII `ThrowNew` if constructing the UTF-16 message or exception fails.
+inline void throw_java_exception(JNIEnv* env, const char* msg) noexcept {
+  if (env->ExceptionCheck()) return;
+  jclass cls = env->FindClass("java/lang/IllegalStateException");
+  if (cls == nullptr) return;  // `FindClass` raised (e.g. `OutOfMemoryError`)
+  const char* text = msg != nullptr ? msg : "NVE hybrid call failed";
+  bool thrown = false;
+  try {
+    jstring jmsg = java_string(env, text);
+    if (jmsg != nullptr && !env->ExceptionCheck()) {
+      jmethodID ctor = env->GetMethodID(cls, "<init>", "(Ljava/lang/String;)V");
+      if (ctor != nullptr && !env->ExceptionCheck()) {
+        jobject exc = env->NewObject(cls, ctor, jmsg);
+        if (exc != nullptr && !env->ExceptionCheck()) {
+          thrown = env->Throw(static_cast<jthrowable>(exc)) == 0;
+        }
+        if (exc != nullptr) env->DeleteLocalRef(exc);
+      }
+    }
+    if (jmsg != nullptr) env->DeleteLocalRef(jmsg);
+  } catch (...) {
+    // Non-UTF-8 / oversized / OOM message: fall back to an ASCII `ThrowNew` below.
+  }
+  if (!thrown && !env->ExceptionCheck()) {
+    env->ThrowNew(cls, "NVE hybrid call failed");
+  }
+  env->DeleteLocalRef(cls);
 }
 
 }  // namespace nve::host::jni

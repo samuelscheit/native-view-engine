@@ -258,7 +258,7 @@ fn the_53_bit_scanner_catches_what_it_must() {
         ["1.e20", ".5e20"]
     );
     assert_eq!(
-        inexact_js_literals("x = 1e2147483647 + 1e-2147483648;"),
+        inexact_js_literals("x = 1e2147483647 + 1e-2147483648 + 1.0e-2147483648;"),
         ["1e2147483647"]
     );
     // Escapes skip whole (multi-byte) characters; an escape at the end of input is not a panic.

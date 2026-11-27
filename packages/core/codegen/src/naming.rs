@@ -52,24 +52,17 @@ pub fn to_snake_case(input: &str) -> String {
 pub fn to_pascal_case(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut capitalize_next = true;
-    let mut prev_was_lower = false;
 
     for ch in input.chars() {
         if !ch.is_ascii_alphanumeric() {
             capitalize_next = true;
-            prev_was_lower = false;
             continue;
         }
         if capitalize_next {
             out.push(ch.to_ascii_uppercase());
             capitalize_next = false;
-            prev_was_lower = false;
-        } else if ch.is_ascii_uppercase() && prev_was_lower {
-            out.push(ch);
-            prev_was_lower = false;
         } else {
             out.push(ch);
-            prev_was_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
         }
     }
 
@@ -86,30 +79,22 @@ pub fn to_pascal_case(input: &str) -> String {
 pub fn to_camel_case(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut capitalize_next = false;
-    let mut prev_was_lower = false;
 
     for ch in input.chars() {
         if !ch.is_ascii_alphanumeric() {
             if !out.is_empty() {
                 capitalize_next = true;
             }
-            prev_was_lower = false;
             continue;
         }
         if out.is_empty() {
             out.push(ch.to_ascii_lowercase());
             capitalize_next = false;
-            prev_was_lower = false;
         } else if capitalize_next {
             out.push(ch.to_ascii_uppercase());
             capitalize_next = false;
-            prev_was_lower = false;
-        } else if ch.is_ascii_uppercase() && prev_was_lower {
-            out.push(ch);
-            prev_was_lower = false;
         } else {
             out.push(ch);
-            prev_was_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
         }
     }
 
