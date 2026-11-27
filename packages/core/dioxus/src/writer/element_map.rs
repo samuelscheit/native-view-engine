@@ -32,15 +32,16 @@ impl From<ElementId> for ElementSlot {
     }
 }
 
-/// Reverse entry of a node slot that has never been bound.
-const UNBOUND: ElementId = ElementId(usize::MAX);
+/// Reverse entry of a node slot that is not bound. Dioxus `ElementId`s are dense slab indices,
+/// so `u32` entries halve the reverse table; ids at or above `UNBOUND` are refused at `bind`.
+const UNBOUND: u32 = u32::MAX;
 
 #[derive(Debug, Default)]
 pub(crate) struct ElementMap {
     /// `NodeId::NULL` = unbound.
     el_to_node: IndexVec<ElementSlot, NodeId>,
-    /// Valid only when `el_to_node[entry] == node` (see module docs).
-    node_to_el: IndexVec<NodeIndex, ElementId>,
+    /// `ElementId` slot of each node; valid only when `el_to_node[entry] == node` (module docs).
+    node_to_el: IndexVec<NodeIndex, u32>,
 }
 
 impl ElementMap {
@@ -50,9 +51,20 @@ impl ElementMap {
         map
     }
 
-    /// Binds `el` ↔ `node`, replacing `el`'s previous node (Dioxus recycles `ElementId`s).
+    /// Binds `el` ↔ `node`, replacing `el`'s previous node (Dioxus recycles `ElementId`s) and
+    /// `node`'s previous element (`assign_node_id` may rebind a node), so no stale forward entry
+    /// keeps resolving to `node`.
     #[inline]
     pub(crate) fn bind(&mut self, el: ElementId, node: NodeId) {
+        let Some(raw) = u32::try_from(el.0).ok().filter(|&raw| raw != UNBOUND) else {
+            debug_assert!(false, "ElementId {} exceeds the dense element table", el.0);
+            return;
+        };
+        if let Some(prev) = self.element_of(node)
+            && prev != el
+        {
+            self.el_to_node[ElementSlot::from(prev)] = NodeId::NULL;
+        }
         let slot = ElementSlot::from(el);
         if self.el_to_node.len() <= slot.as_usize() {
             self.el_to_node.resize(slot.as_usize() + 1, NodeId::NULL);
@@ -62,7 +74,7 @@ impl ElementMap {
         if self.node_to_el.len() <= idx.as_usize() {
             self.node_to_el.resize(idx.as_usize() + 1, UNBOUND);
         }
-        self.node_to_el[idx] = el;
+        self.node_to_el[idx] = raw;
     }
 
     #[inline]
@@ -75,8 +87,9 @@ impl ElementMap {
 
     #[inline]
     pub(crate) fn element_of(&self, node: NodeId) -> Option<ElementId> {
-        let el = *self.node_to_el.get(node.node_index())?;
-        (self.node_of(el) == Some(node)).then_some(el)
+        let raw = *self.node_to_el.get(node.node_index())?;
+        let el = ElementId(usize::try_from(raw).ok()?);
+        (raw != UNBOUND && self.node_of(el) == Some(node)).then_some(el)
     }
 
     /// Drops `node`'s binding (no-op when unbound or already rebound elsewhere).
@@ -125,5 +138,43 @@ mod tests {
         assert_eq!((map.node_of(ElementId(3)), map.element_of(b)), (None, None));
         map.unbind_node(b);
         assert_eq!(map.element_of(NodeId::ROOT), Some(ElementId(0)));
+    }
+
+    #[test]
+    fn rebinding_a_node_to_another_element_drops_its_old_forward_entry() {
+        let mut map = ElementMap::with_root();
+        let node = NodeId::new(4, 1);
+        map.bind(ElementId(2), node);
+        // `assign_node_id` moves the node to a new element.
+        map.bind(ElementId(9), node);
+        assert_eq!(map.node_of(ElementId(2)), None, "stale forward alias");
+        assert_eq!(map.node_of(ElementId(9)), Some(node));
+        assert_eq!(map.element_of(node), Some(ElementId(9)));
+        // Rebinding to the same element is idempotent.
+        map.bind(ElementId(9), node);
+        assert_eq!(map.element_of(node), Some(ElementId(9)));
+        map.unbind_node(node);
+        assert_eq!(
+            (map.node_of(ElementId(2)), map.node_of(ElementId(9))),
+            (None, None)
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn out_of_range_element_ids_are_refused() {
+        let mut map = ElementMap::with_root();
+        let node = NodeId::new(4, 1);
+        for el in [ElementId(usize::MAX), ElementId(u32::MAX as usize)] {
+            map.bind(el, node);
+            assert_eq!(map.element_of(node), None);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "exceeds the dense element table")]
+    fn out_of_range_element_ids_are_a_debug_bug() {
+        ElementMap::with_root().bind(ElementId(usize::MAX), NodeId::new(4, 1));
     }
 }

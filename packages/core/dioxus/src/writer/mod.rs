@@ -19,11 +19,10 @@ use nve_components::tables::{
 };
 use nve_store::{ChangeSet, NodeId, NodeStore, Transaction};
 
-use crate::table_attr::TableAttr;
 use crate::typed_style::TypedStyle;
 use element_map::ElementMap;
 pub(crate) use standalone_style::{StandaloneStyleRef, StandaloneStyleVal};
-use standalone_style::{StandaloneStyleList, StylePool};
+use standalone_style::{BufferPool, StandaloneStyleList, TableAttrList};
 
 /// Bridges Dioxus 0.7 `WriteMutations` straight into a single-owner [`NodeStore`].
 pub struct NveMutationWriter {
@@ -36,9 +35,12 @@ pub struct NveMutationWriter {
     pub(crate) stack: Vec<NodeId>,
     pub(crate) child_scratch: Vec<NodeId>,
     pub(crate) incoming_scratch: Vec<NodeId>,
-    /// Tracks active [`TableAttr`] writers per `(node, attr_name)` so multiple table attrs can
+    // The four per-node `HashMap`s below are sparse (only nodes with table attrs or styles) and
+    // keyed by generation-tagged `NodeId`; dense per-slot tables would make them O(1) loads like
+    // `ElementMap` (docs/BACKLOG.md "Dense writer side tables").
+    /// Tracks active [`crate::TableAttr`] writers per `(node, attr_name)` so multiple table attrs can
     /// coexist on one node and `AttributeValue::None` / replacement can call `clear_from`.
-    pub(crate) attached_tables: HashMap<NodeId, Vec<(&'static str, TableAttr)>>,
+    pub(crate) attached_tables: HashMap<NodeId, TableAttrList>,
     /// Tracks active [`TypedStyle`] so inline `style` overrides merge cleanly and restore on clear.
     pub(crate) typed_styles: HashMap<NodeId, TypedStyle>,
     /// Tracks active inline `style="..."` override strings and their accepted CSS property bitmask.
@@ -46,7 +48,7 @@ pub struct NveMutationWriter {
     /// Tracks standalone CSS/style attributes (`width`, `color`, `opacity`, etc.) per node.
     pub(crate) standalone_style_attrs: HashMap<NodeId, StandaloneStyleList>,
     /// Recycled style lists and strings of removed nodes.
-    pub(crate) style_pool: StylePool,
+    pub(crate) buffer_pool: BufferPool,
     #[cfg(test)]
     pub(crate) standalone_replay_count: usize,
     #[cfg(test)]
@@ -70,7 +72,7 @@ impl NveMutationWriter {
             typed_styles: HashMap::default(),
             inline_styles: HashMap::default(),
             standalone_style_attrs: HashMap::default(),
-            style_pool: StylePool::default(),
+            buffer_pool: BufferPool::default(),
             #[cfg(test)]
             standalone_replay_count: 0,
             #[cfg(test)]
@@ -152,7 +154,7 @@ impl NveMutationWriter {
             typed_styles,
             inline_styles,
             standalone_style_attrs,
-            style_pool,
+            buffer_pool,
             #[cfg(test)]
             standalone_replay_count,
             #[cfg(test)]
@@ -172,7 +174,7 @@ impl NveMutationWriter {
                 typed_styles,
                 inline_styles,
                 standalone_style_attrs,
-                style_pool,
+                buffer_pool,
                 #[cfg(test)]
                 standalone_replay_count,
                 #[cfg(test)]
@@ -192,11 +194,11 @@ pub struct StoreMutationTx<'s, 'a> {
     pub(crate) stack: &'a mut Vec<NodeId>,
     pub(crate) child_scratch: &'a mut Vec<NodeId>,
     pub(crate) incoming_scratch: &'a mut Vec<NodeId>,
-    pub(crate) attached_tables: &'a mut HashMap<NodeId, Vec<(&'static str, TableAttr)>>,
+    pub(crate) attached_tables: &'a mut HashMap<NodeId, TableAttrList>,
     pub(crate) typed_styles: &'a mut HashMap<NodeId, TypedStyle>,
     pub(crate) inline_styles: &'a mut HashMap<NodeId, (String, u64)>,
     pub(crate) standalone_style_attrs: &'a mut HashMap<NodeId, StandaloneStyleList>,
-    pub(crate) style_pool: &'a mut StylePool,
+    pub(crate) buffer_pool: &'a mut BufferPool,
     #[cfg(test)]
     pub(crate) standalone_replay_count: &'a mut usize,
     #[cfg(test)]
@@ -221,7 +223,7 @@ impl StoreMutationTx<'_, '_> {
         name: &str,
         val: StandaloneStyleRef<'_>,
     ) -> usize {
-        let pool = &mut *self.style_pool;
+        let pool = &mut *self.buffer_pool;
         let list = self
             .standalone_style_attrs
             .entry(node)
@@ -247,11 +249,11 @@ impl StoreMutationTx<'_, '_> {
         let Some(pos) = list.iter().position(|(k, _)| k == name) else {
             return false;
         };
-        self.style_pool.recycle_entry(list.remove(pos));
+        self.buffer_pool.recycle_entry(list.remove(pos));
         if list.is_empty()
             && let Some(list) = self.standalone_style_attrs.remove(&node)
         {
-            self.style_pool.recycle_list(list);
+            self.buffer_pool.recycle_list(list);
         }
         true
     }
@@ -389,7 +391,7 @@ impl StoreMutationTx<'_, '_> {
                 *mask = next_mask;
             }
             None => {
-                let inline = self.style_pool.string(value);
+                let inline = self.buffer_pool.inline(value);
                 self.inline_styles.insert(node, (inline, next_mask));
             }
         }
@@ -511,24 +513,28 @@ impl StoreMutationTx<'_, '_> {
 
     /// Removes `node` and its entire descendant subtree from `NodeStore` and ID maps.
     pub(crate) fn remove_subtree(&mut self, root: NodeId) {
-        // Breadth-first over the scratch region above the live Dioxus stack (split-at-len).
+        // Depth-first over the scratch region above the live Dioxus stack (split-at-len): popping
+        // keeps peak scratch at the DFS frontier instead of the whole removed subtree. Every
+        // per-node cleanup is order-independent; `tx.remove` walks the subtree itself.
         let base = self.stack.len();
         self.stack.push(root);
-        let mut next = base;
-        while let Some(&nid) = self.stack.get(next) {
-            next += 1;
+        while self.stack.len() > base {
+            let Some(nid) = self.stack.pop() else {
+                break;
+            };
             self.stack.extend_from_slice(self.tx.store().children(nid));
             self.elements.unbind_node(nid);
-            self.attached_tables.remove(&nid);
+            if let Some(list) = self.attached_tables.remove(&nid) {
+                self.buffer_pool.recycle_table_list(list);
+            }
             self.typed_styles.remove(&nid);
             if let Some((inline, _)) = self.inline_styles.remove(&nid) {
-                self.style_pool.recycle_string(inline);
+                self.buffer_pool.recycle_inline(inline);
             }
             if let Some(list) = self.standalone_style_attrs.remove(&nid) {
-                self.style_pool.recycle_list(list);
+                self.buffer_pool.recycle_list(list);
             }
         }
-        self.stack.truncate(base);
         self.tx.remove(root);
     }
 

@@ -1,11 +1,16 @@
 //! Steady-state `WriteMutations` fixture shared by the `NveMutationWriter` zero-allocation guard
-//! and Criterion bench: a keyed list of 32 template items, each `view(padding) > [text, view >
-//! [placeholder]]`, under a column container bound to `ElementId(1)`.
+//! and Criterion bench: a keyed list of 32 template items, each `view(padding) > [text, inner
+//! view > [placeholder]]`, under a column container bound to `ElementId(1)`. Every inner view is
+//! bound through `assign_node_id` and carries an inline `style` plus a `TableAttr`, so removal
+//! and re-instantiation recycle every kind of per-node writer buffer.
 
 use dioxus_core::{
-    AttributeValue, ElementId, Template, TemplateAttribute, TemplateNode, WriteMutations,
+    AttributeValue, ElementId, IntoAttributeValue, Template, TemplateAttribute, TemplateNode,
+    WriteMutations,
 };
-use nve_dioxus::NveMutationWriter;
+use nve_components::tables::Visual;
+use nve_dioxus::{NveMutationWriter, table_attr_fn};
+use nve_store::Rgba;
 
 pub const ITEMS: usize = 32;
 const CONTAINER: ElementId = ElementId(1);
@@ -16,7 +21,7 @@ static CONTAINER_TEMPLATE: Template = Template {
         tag: "view",
         namespace: None,
         attrs: &[TemplateAttribute::Static {
-            name: "flex_direction",
+            name: "flex-direction",
             value: "column",
             namespace: None,
         }],
@@ -54,11 +59,27 @@ pub fn item(k: usize) -> ElementId {
     ElementId(FIRST_ITEM + k)
 }
 
+/// The inner view of item `k`, bound through `assign_node_id`.
+#[inline]
+pub fn inner(k: usize) -> ElementId {
+    ElementId(FIRST_ITEM + ITEMS + k)
+}
+
+/// Path of the inner view inside the item template.
+const INNER_PATH: &[u8] = &[1];
+
+/// Table-attr border colours, indexed like [`Values::table`].
+pub const TABLE_BORDER: [Rgba; 2] = [Rgba::rgb(1, 2, 3), Rgba::rgb(4, 5, 6)];
+
 /// Pre-built attribute values: building an `AttributeValue::Text` allocates, Dioxus owns them.
 pub struct Values {
     pub padding: [AttributeValue; 2],
     pub opacity: [AttributeValue; 2],
+    /// Different property sets, so switching drops `border-radius` (restores the base value)
+    /// and adds `border-width`.
     pub style: [AttributeValue; 2],
+    pub inner_style: [AttributeValue; 2],
+    pub table: [AttributeValue; 2],
 }
 
 pub fn values() -> Values {
@@ -70,17 +91,35 @@ pub fn values() -> Values {
         opacity: [AttributeValue::Float(0.5), AttributeValue::Float(0.75)],
         style: [
             AttributeValue::Text("background-color: #1e293b; border-radius: 4px".into()),
-            AttributeValue::Text("background-color: #334155; border-radius: 6px".into()),
+            AttributeValue::Text("background-color: #334155; border-width: 2px".into()),
         ],
+        inner_style: [
+            AttributeValue::Text("width: 10px; opacity: 0.25".into()),
+            AttributeValue::Text("width: 20px; opacity: 0.75; border-radius: 3px".into()),
+        ],
+        table: TABLE_BORDER.map(|c| {
+            table_attr_fn(move |tx, node| {
+                tx.edit::<Visual>(node).border_color(c);
+            })
+            .into_value()
+        }),
     }
 }
 
-pub fn mount_list(writer: &mut NveMutationWriter) {
+/// Instantiates item `k` on top of the stack and styles its inner view with `pick`.
+fn instantiate_item(tx: &mut impl WriteMutations, v: &Values, k: usize, pick: usize) {
+    tx.load_template(ITEM_TEMPLATE, 0, item(k));
+    tx.assign_node_id(INNER_PATH, inner(k));
+    tx.set_attribute("style", None, &v.inner_style[pick], inner(k));
+    tx.set_attribute("accent", None, &v.table[pick], inner(k));
+}
+
+pub fn mount_list(writer: &mut NveMutationWriter, v: &Values) {
     writer.with_transaction(|tx| {
         tx.load_template(CONTAINER_TEMPLATE, 0, CONTAINER);
         tx.append_children(ElementId(0), 1);
         for k in 0..ITEMS {
-            tx.load_template(ITEM_TEMPLATE, 0, item(k));
+            instantiate_item(tx, v, k, 0);
         }
         tx.append_children(CONTAINER, ITEMS);
     });
@@ -124,12 +163,18 @@ pub fn keyed_reorder(writer: &mut NveMutationWriter, frame: usize) {
 }
 
 /// Removes one item subtree, then re-instantiates it from the template into the freed slots
-/// (Dioxus recycles the `ElementId`).
-pub fn remove_and_reinstantiate(writer: &mut NveMutationWriter, frame: usize) {
+/// (Dioxus recycles the `ElementId`s), alternating the inner view's style and table attr.
+pub fn remove_and_reinstantiate(writer: &mut NveMutationWriter, v: &Values, frame: usize) {
     let k = frame % ITEMS;
     writer.with_transaction(|tx| {
         tx.remove_node(item(k));
-        tx.load_template(ITEM_TEMPLATE, 0, item(k));
+        instantiate_item(tx, v, k, (frame / ITEMS) % 2);
         tx.append_children(CONTAINER, 1);
     });
+}
+
+/// Whether the last transaction changed the store at all (an elided frame measures nothing).
+pub fn store_changed(writer: &NveMutationWriter) -> bool {
+    let c = writer.last_changes();
+    !(c.touched.is_empty() && c.children.is_empty() && c.created.is_empty() && c.removed.is_empty())
 }

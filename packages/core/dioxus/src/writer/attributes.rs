@@ -61,7 +61,11 @@ impl StoreMutationTx<'_, '_> {
                     return;
                 }
                 if let Some(table_attr) = any.as_any().downcast_ref::<TableAttr>() {
-                    let list = self.attached_tables.entry(node).or_default();
+                    let pool = &mut *self.buffer_pool;
+                    let list = self
+                        .attached_tables
+                        .entry(node)
+                        .or_insert_with(|| pool.table_list());
                     if let Some((_, prev)) = list.iter_mut().find(|(k, _)| *k == name) {
                         if !prev.same_writer_kind(table_attr) {
                             prev.clear_from(self.tx, node);
@@ -512,8 +516,10 @@ impl StoreMutationTx<'_, '_> {
         {
             let (_, prev) = list.swap_remove(pos);
             prev.clear_from(self.tx, node);
-            if list.is_empty() {
-                self.attached_tables.remove(&node);
+            if list.is_empty()
+                && let Some(list) = self.attached_tables.remove(&node)
+            {
+                self.buffer_pool.recycle_table_list(list);
             }
             return;
         }
@@ -523,7 +529,7 @@ impl StoreMutationTx<'_, '_> {
         match name {
             "style" => {
                 if let Some((inline, prev_mask)) = self.inline_styles.remove(&node) {
-                    self.style_pool.recycle_string(inline);
+                    self.buffer_pool.recycle_inline(inline);
                     let layers = nve_components::prop_bits_to_layers(prev_mask);
                     if layers != 0 {
                         self.rebuild_style_layers_mask(node, layers);
