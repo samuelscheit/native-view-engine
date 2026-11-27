@@ -2,6 +2,13 @@
 
 **Native View Engine (`nve`)** is a native-speed, multi-backend cross-platform UI engine written in Rust and C++20. Write declarative UI once with Rust HTML-like ergonomics (Dioxus 0.7 `rsx!` + fine-grained signals, or any custom frontend) and drive **real platform-native views**, **GPU/Skia canvases**, and **Web WASM DOM** from a single zero-copy binary ABI — with sub-second iteration and zero overhead.
 
+> [!WARNING]
+> This project is heavily work in progress as a proof-of-concept and does not yet meet its stated goals.
+
+> [!Note]
+> #### I would greatly appreciate any help and feedback :) please feel free to submit PRs, issues, and discussions or [contact me here](https://samuelscheit.com/#contact)
+> 
+
 ## Big Goals
 
 1. **Zero-Overhead Binary Architecture**: Cross the Rust ↔ host boundary via a single modular C ABI (`nve_get_interface(uint32_t)`), one batched binary `CommandBuffer` per frame, and a zero-copy `#[repr(C)]` `NveValue` bump-arena FFI sink — zero Hermes/JS VM, direct binary bridge, zero per-prop FFI chatter.
