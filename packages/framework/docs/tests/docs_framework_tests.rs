@@ -136,11 +136,13 @@ fn docs_theme_follows_os_with_docs_brand_and_syntax_and_callout_tones() {
         DocsRoute::root(),
         DocsViewport::desktop_default(),
     );
-    assert_eq!(app_state.theme_mode, ThemeMode::System);
+    assert_eq!(app_state.theme_mode(), ThemeMode::System);
     assert!(app_state.theme().is_dark(), "None scheme falls back to config.default_dark");
-    // The user toggle pins the opposite of the resolved scheme.
-    app_state.toggle_theme();
-    assert_eq!(app_state.theme_mode, ThemeMode::Light);
+    // The user mode pins a scheme, and writes through the cell shared with the host.
+    let host_cell = app_state.config.theme_mode.clone();
+    app_state.set_theme_mode(ThemeMode::Light);
+    assert_eq!(app_state.theme_mode(), ThemeMode::Light);
+    assert_eq!(host_cell.get(), ThemeMode::Light);
     assert!(!app_state.theme().is_dark());
 }
 
@@ -397,12 +399,35 @@ fn live_os_appearance_changes_rethemes_mounted_docs_until_user_pins_a_mode() {
         assert_eq!(h.bg(root), Theme::preset(polarity, AppBrand::Docs).surface.canvas, "{polarity:?}");
     }
 
-    // The user toggle pins Dark; later OS changes no longer override it.
-    h.press("docs-theme-toggle");
+    // The user pins Dark; later OS changes no longer override it.
+    h.press("docs-theme-mode-dark");
     h.set_os_theme(ColorScheme::Light, ContrastLevel::Standard);
     let root = h.find("docs-root");
     assert_eq!(h.raw_str(root, "data-theme").as_deref(), Some("dark"));
+    assert_eq!(h.raw_str(root, "data-theme-mode").as_deref(), Some("dark"));
     assert_eq!(h.bg(root), Theme::preset(Polarity::Dark, AppBrand::Docs).surface.canvas);
+
+    // Back to System: the OS appearance applies again immediately.
+    h.press("docs-theme-mode-system");
+    let root = h.find("docs-root");
+    assert_eq!(h.raw_str(root, "data-theme").as_deref(), Some("light"));
+    assert_eq!(h.raw_str(root, "data-theme-mode").as_deref(), Some("system"));
+}
+
+/// The System / Light / Dark control is a radio group: exactly one segment is checked, and it
+/// follows the user's choice.
+#[test]
+fn theme_mode_control_checks_exactly_the_active_mode() {
+    let mut h = DocsHarness::mount("/", DocsViewport::desktop_default());
+    for (press, expected) in [(None, "system"), (Some("light"), "light"), (Some("dark"), "dark"), (Some("system"), "system")] {
+        if let Some(mode) = press {
+            h.press(&format!("docs-theme-mode-{mode}"));
+        }
+        for mode in ["system", "light", "dark"] {
+            let seg = h.find(&format!("docs-theme-mode-{mode}"));
+            assert_eq!(h.aria_checked(seg), Some(mode == expected), "{mode} after {press:?}");
+        }
+    }
 }
 
 /// Rendered-contrast guard: every visible text run of the mounted fixture site (shell, MDX
@@ -420,14 +445,19 @@ fn every_rendered_text_run_is_readable_in_all_four_polarities() {
             (ColorScheme::Dark, ContrastLevel::High, 7.0),
         ] {
             h.set_os_theme(scheme, contrast);
-            for v in h.text_contrast_violations(min) {
-                failures.push(format!("{route} {scheme:?}/{contrast:?}: {v}"));
+            let non_text = if contrast == ContrastLevel::High { 4.5 } else { 3.0 };
+            // The shell and page, then the open search modal with results, in this polarity.
+            for surface in ["page", "search"] {
+                if surface == "search" {
+                    h.press("docs-search-trigger");
+                    h.type_text("docs-search-input", "component");
+                }
+                for v in h.text_contrast_violations(min).into_iter().chain(h.indicator_contrast_violations(non_text)) {
+                    failures.push(format!("{route} {surface} {scheme:?}/{contrast:?}: {v}"));
+                }
             }
-        }
-        h.press("docs-search-trigger");
-        h.type_text("docs-search-input", "component");
-        for v in h.text_contrast_violations(7.0) {
-            failures.push(format!("{route} search (HC Dark): {v}"));
+            h.keydown("docs-search-input", "Escape", false, false, false, false);
+            assert!(h.maybe_find("docs-search-input").is_none(), "Escape closes search");
         }
     }
     assert!(failures.is_empty(), "{} low-contrast text runs:\n{}", failures.len(), failures.join("\n"));
@@ -445,8 +475,8 @@ fn theme_follows_os_then_toggle_pins_canvas_and_surface_colors() {
     assert_eq!(h.bg(root_id), light.surface.canvas);
     assert_eq!(h.bg(nav_id), light.surface.base);
 
-    // Toggle pins dark mode.
-    h.press("docs-theme-toggle");
+    // The user pins dark mode.
+    h.press("docs-theme-mode-dark");
     // A pinned scheme survives a later OS change while the OS contrast preference still applies.
     h.set_os_theme(ColorScheme::Light, ContrastLevel::High);
     let root_id = h.find("docs-root");
@@ -459,8 +489,8 @@ fn theme_follows_os_then_toggle_pins_canvas_and_surface_colors() {
     assert_eq!(h.bg(root_id), dark.surface.canvas);
     assert_eq!(h.bg(nav_id), dark.surface.base);
 
-    // Toggle back to light mode.
-    h.press("docs-theme-toggle");
+    // And pins light mode.
+    h.press("docs-theme-mode-light");
     let root_id = h.find("docs-root");
     assert_eq!(h.raw_str(root_id, "data-theme").as_deref(), Some("light"));
     assert_eq!(h.bg(root_id), light.surface.canvas);

@@ -1,10 +1,38 @@
 //! Sticky top navbar (`accessibility_role: "banner"`) with brand, sections, `⌘K` search, theme toggle, and mobile drawer toggle.
 
 use nve_dioxus::prelude::*;
-use nve_ui::{accent_indicator, ColorHex, Hex};
+use nve_ui::{accent_indicator, tab_colors, ColorHex, Hex, ThemeMode};
 
 use crate::route::DocsRoute;
 use crate::state::{navigate_to, use_docs_state};
+
+/// One segment of the System / Light / Dark theme control (`role="radio"`); the selected
+/// segment is raised and outlined with the accent indicator (WCAG 1.4.11 boundary).
+#[component]
+fn ThemeModeOption(mode: ThemeMode, selected: bool) -> Element {
+    let mut state = use_docs_state();
+    let theme = state.read().theme();
+    let c = tab_colors(&theme, selected, false);
+    let hint = match mode {
+        ThemeMode::System => "Follow the system theme",
+        ThemeMode::Light => "Light theme",
+        ThemeMode::Dark => "Dark theme",
+    };
+    rsx! {
+        pressable {
+            test_id: "docs-theme-mode-{mode.as_str()}",
+            accessibility_role: "radio",
+            accessibility_label: "{hint}",
+            aria_checked: if selected { "true" } else { "false" },
+            style: "padding-horizontal: 8px; padding-vertical: 4px; border-radius: 6px; background-color: {c.bg.hex()}; border-width: 1px; border-color: {c.border.hex()};",
+            onpress: move |_| state.write().set_theme_mode(mode),
+            text {
+                style: "font-size: 12px; font-weight: 600; color: {c.fg.hex()};",
+                "{mode.label()}"
+            }
+        }
+    }
+}
 
 /// Sticky top navigation bar rendered across all viewports.
 #[component]
@@ -12,6 +40,7 @@ pub fn DocsNavbar() -> Element {
     let mut state = use_docs_state();
     let snap = state.read();
     let theme = snap.theme();
+    let theme_mode = snap.theme_mode();
     let drawer_open = snap.mobile_drawer_open;
     let active_route = snap.active_route.as_str().to_string();
     let site_title = snap.config.site_title.clone();
@@ -41,12 +70,6 @@ pub fn DocsNavbar() -> Element {
         .collect();
     drop(snap);
 
-    let theme_label = if theme.is_dark() { "Light" } else { "Dark" };
-    let theme_hint = if theme.is_dark() {
-        "Switch to light theme"
-    } else {
-        "Switch to dark theme"
-    };
     let menu_label = if drawer_open { "Close" } else { "Menu" };
     let menu_expanded = if drawer_open { "true" } else { "false" };
 
@@ -181,17 +204,13 @@ pub fn DocsNavbar() -> Element {
                     }
                 }
 
-                pressable {
-                    test_id: "docs-theme-toggle",
-                    accessibility_role: "button",
-                    accessibility_label: "{theme_hint}",
-                    style: "padding-horizontal: 10px; padding-vertical: 6px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
-                    onpress: move |_| {
-                        state.write().toggle_theme();
-                    },
-                    text {
-                        style: "font-size: 12px; font-weight: 600; color: {theme.text.primary.hex()};",
-                        "{theme_label}"
+                view {
+                    test_id: "docs-theme-mode",
+                    accessibility_role: "radiogroup",
+                    accessibility_label: "Color theme",
+                    style: "flex-direction: row; gap: 2px; padding: 2px; border-radius: 8px; background-color: {theme.surface.subtle.hex()}; border-width: 1px; border-color: {theme.border.default.hex()};",
+                    for mode in ThemeMode::ALL {
+                        ThemeModeOption { key: "{mode.as_str()}", mode, selected: mode == theme_mode }
                     }
                 }
 

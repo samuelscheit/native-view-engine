@@ -5,6 +5,7 @@
 //! as well as Native Desktop/Mobile hosts (`nve-skia-shell`, macOS, Windows, iOS, Android).
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod config;
 pub mod registry;
@@ -36,7 +37,7 @@ pub use state::{
     navigate_to_target, use_docs_state,
 };
 pub use theme::{
-    CalloutTone, callout_tone, docs_theme_config, snapshot_appearance, syntax_color,
+    CalloutTone, ThemeModeCell, callout_tone, docs_theme_config, snapshot_appearance, syntax_color,
     system_appearance,
 };
 

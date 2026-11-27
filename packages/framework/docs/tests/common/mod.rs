@@ -20,7 +20,7 @@ use nve_clipboard::MemoryClipboard;
 use nve_host_services::{HostServiceProvider, MemoryHostServices};
 use nve_mdx::{CompileOptions, CompiledSite, SiteSource, compile_site_with_validation};
 use nve_system_env::{ColorScheme, ContrastLevel, MemorySystemEnv, ThemeSnapshot};
-use nve_ui::audit::text_contrast_violations;
+use nve_ui::audit::{indicator_contrast_violations, text_contrast_violations};
 
 pub const RUST_SNIPPET: &str =
     "fn main() {\n    let surface = create_docs_surface();\n    println!(\"ready\");\n}";
@@ -246,6 +246,29 @@ impl DocsHarness {
     }
 
     /// [`nve_ui::audit::text_contrast_violations`] on the mounted tree, formatted.
+    /// Checked/selected controls (theme segments, tabs, selected search result) whose visible
+    /// boundary is below `min` (WCAG 1.4.11).
+    pub fn indicator_contrast_violations(&self, min: f64) -> Vec<String> {
+        let store = self.surface.store();
+        indicator_contrast_violations(store, min)
+            .into_iter()
+            .map(|v| {
+                let tid = store.try_row::<DebugId>(v.node).map(|d| d.test_id().to_string()).unwrap_or_default();
+                format!("{} indicator {tid:?} {:?}: {:.2} (fg {:?} on {:?})", v.text, v.node, v.ratio, v.fg, v.bg)
+            })
+            .collect()
+    }
+
+    /// `aria-checked` of a node (`None` when the node does not declare it).
+    pub fn aria_checked(&self, id: AbiNodeId) -> Option<bool> {
+        use nve_components::tables::AriaTriState;
+        match self.surface.store().try_row::<Accessibility>(NodeId(id))?.checked() {
+            AriaTriState::True => Some(true),
+            AriaTriState::False => Some(false),
+            _ => None,
+        }
+    }
+
     pub fn text_contrast_violations(&self, min: f64) -> Vec<String> {
         text_contrast_violations(self.surface.store(), min)
             .into_iter()

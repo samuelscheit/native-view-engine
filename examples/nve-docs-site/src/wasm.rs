@@ -6,8 +6,10 @@
 //! across desktop/tablet/mobile viewports, and enables `⌘K` search, theme toggle, code copy,
 //! and all 5 interactive playgrounds.
 
+mod appearance;
+
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use nve_abi::{
     EventPayload, FrameId, NativeEvent, NativeEventKind, NVE_KEY_MOD_CTRL, NVE_KEY_MOD_META,
@@ -20,20 +22,18 @@ use nve_docs::{DocsRoute, DocsViewport};
 use nve_engine::{StoreBackend, Viewport};
 use nve_router::web::{BrowserHistoryBackend, WebHistoryAdapter};
 use nve_store::NodeId as StoreNodeId;
+use nve_ui::ThemeMode;
 use nve_web_html::{DataAttrList, HtmlDataAttrs};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 
-use std::sync::Arc;
-
-use nve_docs::{docs_theme_config, system_appearance};
-use nve_host_services::MemoryHostServices;
-use nve_system_env::{ColorScheme, ContrastLevel, LocaleSnapshot, MemorySystemEnv, ThemeSnapshot};
-use nve_ui::{ColorHex, Theme, ThemeMode};
-
+use crate::host::DocsHost;
 use crate::site::{embedded_compiled_site, nve_docs_site_config};
-use crate::{create_nve_docs_surface_with_host, docs_host_services, surface_theme_mode};
+use appearance::{
+    AppearanceListener, browser_theme_snapshot, persist_theme_mode, remove_ssr_appearance_overrides,
+    stored_theme_mode, sync_document_theme,
+};
 
 const DOCS_SURFACE_ID: SurfaceId = 1;
 
@@ -44,13 +44,13 @@ struct DocsWebSession {
     history: WebHistoryAdapter<DocsRoute, BrowserHistoryBackend>,
     frame_id: FrameId,
     viewport: DocsViewport,
-    dark_mode: bool,
     last_route: String,
+    /// Last persisted user mode (written to `localStorage` when the surface changes it).
+    persisted_mode: ThemeMode,
     hydration_report: HydrationReport,
-    /// Browser appearance (`prefers-color-scheme` / `prefers-contrast`), published live to the
-    /// mounted `DocsApp` subscription and kept across surface rebuilds.
-    system_env: Arc<MemorySystemEnv>,
-    host: Arc<MemoryHostServices>,
+    /// Browser appearance and user mode, shared with every (re)mounted surface. Also held by the
+    /// appearance listener, which publishes even while the session is busy.
+    host: Rc<DocsHost>,
 }
 
 impl DocsWebSession {
@@ -95,25 +95,8 @@ impl DocsWebSession {
         self.data_attr_of(id, "data-route")
     }
 
-    fn current_dark_mode(&self) -> bool {
-        let Some(id) = self.find_node_by_test_id("docs-root") else {
-            return self.dark_mode;
-        };
-        match self.data_attr_of(id, "data-theme") {
-            Some(s) => s != "light",
-            None => self.dark_mode,
-        }
-    }
-
-    /// The theme the mounted surface resolves (user mode + live browser appearance).
-    fn current_theme(&self) -> Theme {
-        let mode = surface_theme_mode(&self.surface);
-        docs_theme_config(mode).resolve(system_appearance(self.host.as_ref(), self.dark_mode))
-    }
-
-    /// Publishes a browser appearance change to the mounted docs and repaints.
-    fn apply_browser_appearance(&mut self) {
-        self.system_env.set_theme_and_publish(self.host.typed_events(), browser_theme_snapshot());
+    /// Repaints after a host appearance change was published to the mounted docs.
+    fn repaint_appearance(&mut self) {
         if let Err(err) = self.render_next_frame() {
             web_sys::console::error_1(&JsValue::from_str(&format!("[nve-docs-site appearance] {err}")));
         }
@@ -121,8 +104,12 @@ impl DocsWebSession {
     }
 
     fn sync_browser_chrome(&mut self, push_history: bool) {
-        self.dark_mode = self.current_dark_mode();
-        sync_document_theme(&self.current_theme());
+        let mode = self.host.theme_mode();
+        if mode != self.persisted_mode {
+            persist_theme_mode(mode);
+            self.persisted_mode = mode;
+        }
+        sync_document_theme(mode, &self.host.theme());
 
         if let Some(route) = self.current_active_route()
             && route != self.last_route
@@ -179,8 +166,6 @@ impl DocsWebSession {
         route: &str,
         viewport: DocsViewport,
     ) -> Result<(), String> {
-        let theme_mode = surface_theme_mode(&self.surface);
-        self.dark_mode = self.current_dark_mode();
         self.viewport = viewport;
         self.last_route = DocsRoute::new(route).as_str().to_string();
         self.backend.reset();
@@ -192,16 +177,9 @@ impl DocsWebSession {
                 scale_factor: device_pixel_ratio(),
             },
         );
-        self.surface = create_nve_docs_surface_with_host(
-            DOCS_SURFACE_ID,
-            embedded_compiled_site(),
-            route,
-            viewport,
-            nve_docs_site_config(&self.base_path).with_theme_mode(theme_mode),
-            Arc::clone(&self.host),
-        );
+        self.surface = self.host.mount(DOCS_SURFACE_ID, embedded_compiled_site(), route, &self.base_path, viewport);
         self.render_next_frame()?;
-        sync_document_theme(&self.current_theme());
+        sync_document_theme(self.host.theme_mode(), &self.host.theme());
         sync_document_title(&self.last_route, &self.base_path);
         Ok(())
     }
@@ -212,8 +190,7 @@ struct ActiveDocsApp {
     container: web_sys::Element,
     link_interceptor: Closure<dyn FnMut(web_sys::MouseEvent)>,
     resize_listener: Closure<dyn FnMut(web_sys::Event)>,
-    appearance_listener: Closure<dyn FnMut(web_sys::Event)>,
-    appearance_queries: Vec<web_sys::MediaQueryList>,
+    _appearance: AppearanceListener,
 }
 
 impl Drop for ActiveDocsApp {
@@ -227,12 +204,6 @@ impl Drop for ActiveDocsApp {
             let _ = window.remove_event_listener_with_callback(
                 "resize",
                 self.resize_listener.as_ref().unchecked_ref(),
-            );
-        }
-        for query in &self.appearance_queries {
-            let _ = query.remove_event_listener_with_callback(
-                "change",
-                self.appearance_listener.as_ref().unchecked_ref(),
             );
         }
     }
@@ -295,7 +266,13 @@ impl DocsWebController {
 
     #[wasm_bindgen(getter)]
     pub fn dark_mode(&self) -> bool {
-        self.session.borrow().dark_mode
+        self.session.borrow().host.theme().is_dark()
+    }
+
+    /// The user's theme mode (`system` / `light` / `dark`).
+    #[wasm_bindgen(getter)]
+    pub fn theme_mode(&self) -> String {
+        self.session.borrow().host.theme_mode().as_str().to_string()
     }
 
     #[wasm_bindgen(getter)]
@@ -367,42 +344,17 @@ fn reset_scroll_containers() {
     }
 }
 
-const PREFERS_DARK: &str = "(prefers-color-scheme: dark)";
-const PREFERS_MORE_CONTRAST: &str = "(prefers-contrast: more)";
-
-fn media_query(query: &str) -> Option<web_sys::MediaQueryList> {
-    web_sys::window()?.match_media(query).ok().flatten()
-}
-
-/// The browser's appearance as an `nve-system-env` snapshot (`None` scheme when `matchMedia` is
-/// unavailable, so `DocsSiteConfig::default_dark` decides).
-fn browser_theme_snapshot() -> ThemeSnapshot {
-    let color_scheme = media_query(PREFERS_DARK)
-        .map(|q| if q.matches() { ColorScheme::Dark } else { ColorScheme::Light });
-    let contrast = if media_query(PREFERS_MORE_CONTRAST).is_some_and(|q| q.matches()) {
-        ContrastLevel::High
-    } else {
-        ContrastLevel::Standard
-    };
-    ThemeSnapshot { color_scheme, contrast, ..ThemeSnapshot::default() }
-}
-
-fn sync_document_theme(theme: &Theme) {
-    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-        if let Some(root) = doc.document_element() {
-            let _ = root.set_attribute("data-theme", if theme.is_dark() { "dark" } else { "light" });
+/// Repaints `session` once it is free again (an appearance change arrived mid-dispatch).
+fn schedule_appearance_repaint(session: Weak<RefCell<DocsWebSession>>) {
+    let Some(window) = web_sys::window() else { return };
+    let retry = Closure::once_into_js(move || {
+        let Some(strong) = session.upgrade() else { return };
+        match strong.try_borrow_mut() {
+            Ok(mut s) => s.repaint_appearance(),
+            Err(_) => schedule_appearance_repaint(session),
         }
-        if let Some(body) = doc.body() {
-            let _ = body.set_attribute(
-                "style",
-                &format!(
-                    "margin:0;background-color:{};color:{};",
-                    theme.surface.canvas.hex(),
-                    theme.text.primary.hex()
-                ),
-            );
-        }
-    }
+    });
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(retry.unchecked_ref(), 0);
 }
 
 fn sync_document_title(route: &str, base_path: &str) {
@@ -457,19 +409,9 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         },
     );
 
-    let system_env = Arc::new(MemorySystemEnv::with_initial(
-        browser_theme_snapshot(),
-        LocaleSnapshot::default(),
-    ));
-    let host = docs_host_services(system_env.clone());
-    let surface = create_nve_docs_surface_with_host(
-        DOCS_SURFACE_ID,
-        embedded_compiled_site(),
-        initial_route.as_str(),
-        actual_vp,
-        nve_docs_site_config(base_path).with_theme_mode(ThemeMode::System),
-        Arc::clone(&host),
-    );
+    let persisted_mode = stored_theme_mode();
+    let host = Rc::new(DocsHost::new(browser_theme_snapshot(), persisted_mode, true));
+    let surface = host.mount(DOCS_SURFACE_ID, embedded_compiled_site(), initial_route.as_str(), base_path, actual_vp);
 
     let session = Rc::new(RefCell::new(DocsWebSession {
         base_path: base_path.to_string(),
@@ -478,11 +420,10 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         history,
         frame_id: 0,
         viewport: actual_vp,
-        dark_mode: true,
         last_route: initial_route.as_str().to_string(),
+        persisted_mode,
         hydration_report: HydrationReport::default(),
-        system_env,
-        host,
+        host: Rc::clone(&host),
     }));
 
     // Wire reactive event callback from WebBackend's RootEventDelegator into DioxusSurface
@@ -508,6 +449,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             .render_next_frame()
             .map_err(|e| JsValue::from_str(&e))?;
         guard.hydration_report = guard.backend.hydration_report().clone();
+        remove_ssr_appearance_overrides();
         guard.sync_browser_chrome(false);
         guard
             .pump_events()
@@ -616,23 +558,17 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
         resize_listener.as_ref().unchecked_ref(),
     );
 
-    // Follow live browser appearance changes (OS dark mode / increased contrast).
+    // Follow live browser appearance changes (OS dark mode / increased contrast). The change is
+    // published to the mounted docs even while the session is busy; the repaint then waits.
     let session_appearance = Rc::downgrade(&session);
-    let appearance_listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-        if let Some(session_appearance) = session_appearance.upgrade()
-            && let Ok(mut s) = session_appearance.try_borrow_mut()
-        {
-            s.apply_browser_appearance();
+    let appearance = AppearanceListener::install(move || {
+        host.publish_theme(browser_theme_snapshot());
+        let Some(strong) = session_appearance.upgrade() else { return };
+        match strong.try_borrow_mut() {
+            Ok(mut s) => s.repaint_appearance(),
+            Err(_) => schedule_appearance_repaint(Rc::downgrade(&strong)),
         }
     });
-    let appearance_queries: Vec<web_sys::MediaQueryList> =
-        [PREFERS_DARK, PREFERS_MORE_CONTRAST].into_iter().filter_map(media_query).collect();
-    for query in &appearance_queries {
-        let _ = query.add_event_listener_with_callback(
-            "change",
-            appearance_listener.as_ref().unchecked_ref(),
-        );
-    }
 
     ACTIVE_DOCS_APP.with(|slot| {
         *slot.borrow_mut() = Some(ActiveDocsApp {
@@ -640,8 +576,7 @@ pub fn hydrate_docs_app(container_id: &str, base_path: &str) -> Result<DocsWebCo
             container,
             link_interceptor,
             resize_listener,
-            appearance_listener,
-            appearance_queries,
+            _appearance: appearance,
         });
     });
 

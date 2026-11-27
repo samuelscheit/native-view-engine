@@ -88,8 +88,6 @@ pub struct DocsAppState {
     pub custom_pages: Arc<CustomPageRegistry>,
     pub host_services: Arc<dyn HostServiceProvider>,
     pub active_route: DocsRoute,
-    /// User color-scheme preference ([`ThemeMode::System`] follows the OS).
-    pub theme_mode: ThemeMode,
     /// Last known host appearance (`nve-system-env`).
     pub appearance: Appearance,
     pub viewport: DocsViewport,
@@ -135,7 +133,6 @@ impl DocsAppState {
         viewport: DocsViewport,
     ) -> Self {
         let appearance = system_appearance(host_services.as_ref(), config.default_dark);
-        let theme_mode = config.theme_mode;
         let search_index = Arc::new(site.search_index.clone());
         let mut collapsed_folders = BTreeSet::new();
         collect_initially_collapsed(&site.nav.items, &mut collapsed_folders);
@@ -160,7 +157,6 @@ impl DocsAppState {
             custom_pages,
             host_services,
             active_route: resolved_route,
-            theme_mode,
             appearance,
             viewport,
             mobile_drawer_open: false,
@@ -175,8 +171,13 @@ impl DocsAppState {
     }
 
     /// Resolve the active Docs-brand [`Theme`] from the user mode and the host appearance.
-    pub const fn theme(&self) -> Theme {
-        docs_theme_config(self.theme_mode).resolve(self.appearance)
+    pub fn theme(&self) -> Theme {
+        docs_theme_config(self.theme_mode()).resolve(self.appearance)
+    }
+
+    /// The user's color-scheme preference ([`ThemeMode::System`] follows the OS).
+    pub fn theme_mode(&self) -> ThemeMode {
+        self.config.theme_mode.get()
     }
 
     /// Resolve the active compiled page, falling back to the first page if not found.
@@ -220,9 +221,10 @@ impl DocsAppState {
         }
     }
 
-    /// Toggle to the opposite of the currently resolved scheme (pins an explicit mode).
-    pub fn toggle_theme(&mut self) {
-        self.theme_mode = if self.theme().is_dark() { ThemeMode::Light } else { ThemeMode::Dark };
+    /// Sets the user's color-scheme preference (the only writer of the shared mode cell, so
+    /// every change also re-renders through the signal write that calls it).
+    pub fn set_theme_mode(&mut self, mode: ThemeMode) {
+        self.config.theme_mode.set(mode);
     }
 
 

@@ -9,61 +9,47 @@ use nve_abi::{
 use nve_dioxus::DioxusSurface;
 use nve_docs::DocsViewport;
 use nve_engine::{HotPatchMsg, NveApp};
+use nve_system_env::ThemeSnapshot;
 
-use std::sync::Arc;
-
-use nve_system_env::NativeSystemEnv;
-use nve_ui::ThemeMode;
-
-use crate::site::{embedded_compiled_site, nve_docs_site_config};
-use crate::{create_nve_docs_surface_with_host, docs_host_services, surface_theme_mode};
+use crate::host::DocsHost;
+use crate::site::embedded_compiled_site;
 
 /// Native host module exporting the embedded `nve-docs-site` application over `nve_get_interface`.
 pub struct DocsSiteModule {
     surface_id: SurfaceId,
     route: String,
     viewport: DocsViewport,
+    /// Seeded from the OS appearance; host theme events (`NVE_IFACE_HOST`) publish into it live.
+    host: DocsHost,
     surface: DioxusSurface,
     last_state_buf: Vec<u8>,
 }
 
 impl DocsSiteModule {
-    fn rebuild_surface(&mut self) {
-        let mode = surface_theme_mode(&self.surface);
-        self.surface = create_native_surface(self.surface_id, &self.route, self.viewport, mode);
+    /// A module on an explicit host (tests, embedders with their own appearance source).
+    pub fn with_host(surface_id: SurfaceId, host: DocsHost) -> Self {
+        let route = "/".to_string();
+        let viewport = DocsViewport::desktop_default();
+        let surface = host.mount(surface_id, embedded_compiled_site(), &route, "", viewport);
+        Self { surface_id, route, viewport, host, surface, last_state_buf: Vec::new() }
     }
-}
 
-/// Mounts the docs on the host OS appearance (`NativeSystemEnv`); `default_dark` only applies when
-/// the OS reports no scheme.
-fn create_native_surface(
-    surface_id: SurfaceId,
-    route: &str,
-    viewport: DocsViewport,
-    theme_mode: ThemeMode,
-) -> DioxusSurface {
-    create_nve_docs_surface_with_host(
-        surface_id,
-        embedded_compiled_site(),
-        route,
-        viewport,
-        nve_docs_site_config("").with_theme_mode(theme_mode),
-        docs_host_services(Arc::new(NativeSystemEnv::new())),
-    )
+    pub fn surface(&self) -> &DioxusSurface {
+        &self.surface
+    }
+
+    pub fn host(&self) -> &DocsHost {
+        &self.host
+    }
+
+    fn rebuild_surface(&mut self) {
+        self.surface = self.host.mount(self.surface_id, embedded_compiled_site(), &self.route, "", self.viewport);
+    }
 }
 
 impl NveApp for DocsSiteModule {
     fn create(surface_id: SurfaceId) -> Self {
-        let route = "/".to_string();
-        let viewport = DocsViewport::desktop_default();
-        let surface = create_native_surface(surface_id, &route, viewport, ThemeMode::System);
-        Self {
-            surface_id,
-            route,
-            viewport,
-            surface,
-            last_state_buf: Vec::new(),
-        }
+        Self::with_host(surface_id, DocsHost::native())
     }
 
     fn render(&mut self, frame_id: FrameId) -> &[u8] {
@@ -109,6 +95,18 @@ impl NveApp for DocsSiteModule {
             return true;
         }
         false
+    }
+
+    /// Host appearance changes (`ThemeSnapshot` repr-C payloads from the Skia shell's
+    /// `ThemeChanged`) re-theme the mounted docs through `nve-system-env`, with no rebuild.
+    fn dispatch_host_events(&mut self, batch: &[u8]) -> bool {
+        match ThemeSnapshot::from_repr_c_bytes(batch) {
+            Ok(theme) => {
+                self.host.publish_theme(theme);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     fn apply_hot_patch(&mut self, msg: &HotPatchMsg) -> bool {

@@ -1,11 +1,43 @@
 //! Docs bridges onto the unified [`nve_ui::Theme`]: [`AppBrand::Docs`] accent, OS-following
 //! polarity via `nve-system-env`, MDX syntax-token and callout-tone lookups.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use nve_abi::ColorRgba;
 use nve_host_services::HostServiceProvider;
 use nve_mdx::{CalloutKind, TokenKind};
 use nve_system_env::{SystemEnvClient, ThemeSnapshot};
 use nve_ui::{AppBrand, Appearance, Syntax, Theme, ThemeConfig, ThemeMode, Tone};
+
+/// The user's [`ThemeMode`], shared between a mounted docs surface and its host: the surface
+/// writes it (through [`crate::DocsAppState::set_theme_mode`]), hosts read it to persist the
+/// choice and to paint document chrome, and rebuilt surfaces mounted with the same cell keep it.
+/// Clones share one value; equality is identity.
+#[derive(Debug, Clone, Default)]
+pub struct ThemeModeCell(Arc<AtomicU8>);
+
+impl ThemeModeCell {
+    pub fn new(mode: ThemeMode) -> Self {
+        Self(Arc::new(AtomicU8::new(mode.index())))
+    }
+
+    pub fn get(&self) -> ThemeMode {
+        ThemeMode::from_index(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn set(&self, mode: ThemeMode) {
+        self.0.store(mode.index(), Ordering::Relaxed);
+    }
+}
+
+impl PartialEq for ThemeModeCell {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ThemeModeCell {}
 
 /// Docs theme preferences: Docs brand, following the OS unless the user toggles a mode.
 pub const fn docs_theme_config(mode: ThemeMode) -> ThemeConfig {

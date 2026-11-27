@@ -33,6 +33,8 @@ pub mod ssg;
 pub mod ssr;
 #[cfg(feature = "ssr")]
 pub mod ssr_stream;
+#[cfg(feature = "ssr")]
+pub mod ssr_variants;
 pub mod state_css;
 #[cfg(feature = "ssr")]
 pub mod streaming;

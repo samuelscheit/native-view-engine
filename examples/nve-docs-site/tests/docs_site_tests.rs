@@ -166,7 +166,7 @@ fn all_30_embedded_routes_validate_and_render_semantic_ssr() {
             custom_route,
             "/native-view-engine",
             DocsViewport::desktop_default(),
-        );
+        ).expect("docs SSR");
         assert!(!ssr.html.is_empty(), "SSR HTML empty for {custom_route}");
         assert!(
             ssr.html.contains("<main") && ssr.html.contains("<h1"),
@@ -180,7 +180,7 @@ fn all_30_embedded_routes_validate_and_render_semantic_ssr() {
             public_route.as_str(),
             "/native-view-engine",
             DocsViewport::desktop_default(),
-        );
+        ).expect("docs SSR");
         assert!(
             !ssr.html.is_empty(),
             "SSR HTML empty for route {}",
@@ -215,7 +215,7 @@ fn zero_mismatch_hydrate_from_ssr_preserves_dom_identity() {
         "/docs/guides/ui-components",
         "/docs/guides/local-first-crdt",
     ] {
-        let ssr = render_nve_docs_ssr(route, "", DocsViewport::desktop_default());
+        let ssr = render_nve_docs_ssr(route, "", DocsViewport::desktop_default()).expect("docs SSR");
         for client_vp in [
             DocsViewport::desktop_default(),
             DocsViewport::new(1024.0, 768.0),

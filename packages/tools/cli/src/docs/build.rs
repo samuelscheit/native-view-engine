@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use nve_backend_web::{SsrDocumentOptions, WebBackend};
+use nve_backend_web::SsrDocumentOptions;
 use nve_docs::DocsViewport;
 use nve_mdx::CompiledSite;
 
@@ -40,11 +40,12 @@ pub(crate) struct BuildSummary {
     pub examples: ExamplesStageSummary,
 }
 
+/// Theme-independent document layout chrome; colors (canvas, ink, `theme-color`, every appearance)
+/// come from `nve_docs_site::render_docs_ssr`'s head.
 const DOCS_HEAD_CHROME: &str = concat!(
-    "<meta name=\"theme-color\" content=\"#09090b\">\n",
     "<style data-nve-docs-chrome>",
     "*,*::before,*::after{box-sizing:border-box;}",
-    "html,body{margin:0;padding:0;width:100%;height:100%;background:#09090b;color:#fafafa;",
+    "html,body{margin:0;padding:0;width:100%;height:100%;",
     "font-family:Inter,-apple-system,BlinkMacSystemFont,\"Segoe UI\",Roboto,Helvetica,Arial,sans-serif;",
     "-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}",
     "#app{width:100%;height:100%;}",
@@ -218,33 +219,20 @@ fn emit_ssr_page(
     description: Option<&str>,
     body_scripts: Option<&str>,
 ) -> Result<(usize, usize), String> {
-    let mut surface = nve_docs_site::create_nve_docs_surface_full(
-        1,
-        Arc::clone(site),
-        public_route,
-        base_path,
-        DocsViewport::desktop_default(),
-        true,
-    );
-    let mut backend = WebBackend::new();
-    nve_docs_site::register_web_systems(backend.table_registry_mut());
-    surface
-        .commit_to(1, &mut backend)
-        .map_err(|e| format!("SSR commit_to failed for '{public_route}': {e}"))?;
-
-    let ssr_preview = backend.render_ssr(surface.store());
-    let css_bytes = ssr_preview.base_css.len() + ssr_preview.style_css.len();
+    let ssr = nve_docs_site::render_docs_ssr(site, public_route, base_path, DocsViewport::desktop_default())?;
+    let ssr_preview = ssr.output();
+    let css_bytes = ssr_preview.base_css.len() + ssr_preview.style_css.len() + ssr.head.len();
 
     let canonical = canonical_url_for(site_url, public_route);
-    let doc_html = backend.render_ssr_document(
-        surface.store(),
+    let doc_html = ssr.backend.render_ssr_document(
+        ssr.surface.store(),
         &SsrDocumentOptions {
             title: title.to_string(),
             description: description.map(str::to_string),
             canonical_url: Some(canonical),
             og_image: None,
             lang: Some("en".to_string()),
-            head_extra: Some(DOCS_HEAD_CHROME.to_string()),
+            head_extra: Some(format!("{}{DOCS_HEAD_CHROME}", ssr.head)),
             body_scripts: body_scripts.map(str::to_string),
             enable_event_replay: body_scripts.is_some(),
             style_nonce: None,
@@ -379,28 +367,16 @@ fn render_404_page(
     site_url: &str,
     body_scripts: Option<&str>,
 ) -> Result<String, String> {
-    let mut surface = nve_docs_site::create_nve_docs_surface_full(
-        1,
-        Arc::clone(site),
-        "/",
-        base_path,
-        DocsViewport::desktop_default(),
-        true,
-    );
-    let mut backend = WebBackend::new();
-    nve_docs_site::register_web_systems(backend.table_registry_mut());
-    surface
-        .commit_to(1, &mut backend)
-        .map_err(|e| format!("SSR 404 commit_to failed: {e}"))?;
-    Ok(backend.render_ssr_document(
-        surface.store(),
+    let ssr = nve_docs_site::render_docs_ssr(site, "/", base_path, DocsViewport::desktop_default())?;
+    Ok(ssr.backend.render_ssr_document(
+        ssr.surface.store(),
         &SsrDocumentOptions {
             title: "Native View Engine — Documentation".to_string(),
             description: Some("Native View Engine documentation".to_string()),
             canonical_url: Some(format!("{site_url}/")),
             og_image: None,
             lang: Some("en".to_string()),
-            head_extra: Some(DOCS_HEAD_CHROME.to_string()),
+            head_extra: Some(format!("{}{DOCS_HEAD_CHROME}", ssr.head)),
             body_scripts: body_scripts.map(str::to_string),
             enable_event_replay: body_scripts.is_some(),
             style_nonce: None,

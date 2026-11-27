@@ -2,7 +2,7 @@
 //! and `data-nve-island` / `data-nve-hydrate` progressive hydration attributes.
 
 use std::sync::Arc;
-use nve_ui::{ColorHex, Hex};
+use nve_ui::{ColorHex, tab_colors};
 
 use dioxus_core_macro::Props;
 use nve_dioxus::prelude::*;
@@ -68,26 +68,8 @@ pub fn LiveDemoView(
         .unwrap_or(140);
     let hydrate_str = hydrate.as_str();
 
-    let prev_bg = if is_preview {
-        theme.status.accent.subtle.hex()
-    } else {
-        Hex::TRANSPARENT
-    };
-    let prev_fg = if is_preview {
-        theme.status.accent.text.hex()
-    } else {
-        theme.text.secondary.hex()
-    };
-    let code_bg = if !is_preview {
-        theme.status.accent.subtle.hex()
-    } else {
-        Hex::TRANSPARENT
-    };
-    let code_fg = if !is_preview {
-        theme.status.accent.text.hex()
-    } else {
-        theme.text.secondary.hex()
-    };
+    let prev = tab_colors(&theme, is_preview, false);
+    let code = tab_colors(&theme, !is_preview, false);
 
     let group_for_preview = tab_group.clone();
     let group_for_code = tab_group.clone();
@@ -134,12 +116,12 @@ pub fn LiveDemoView(
                         test_id: "docs-demo-tab-preview-{id}",
                         accessibility_role: "tab",
                         aria_selected: if is_preview { "true" } else { "false" },
-                        style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {prev_bg};",
+                        style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {prev.bg.hex()}; border-width: 1px; border-color: {prev.border.hex()};",
                         onpress: move |_| {
                             state.write().set_active_tab(group_for_preview.clone(), "preview");
                         },
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {prev_fg};",
+                            style: "font-size: 12px; font-weight: 600; color: {prev.fg.hex()};",
                             "Preview"
                         }
                     }
@@ -147,12 +129,12 @@ pub fn LiveDemoView(
                         test_id: "docs-demo-tab-code-{id}",
                         accessibility_role: "tab",
                         aria_selected: if !is_preview { "true" } else { "false" },
-                        style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {code_bg};",
+                        style: "padding-horizontal: 9px; padding-vertical: 4px; border-radius: 6px; background-color: {code.bg.hex()}; border-width: 1px; border-color: {code.border.hex()};",
                         onpress: move |_| {
                             state.write().set_active_tab(group_for_code.clone(), "code");
                         },
                         text {
-                            style: "font-size: 12px; font-weight: 600; color: {code_fg};",
+                            style: "font-size: 12px; font-weight: 600; color: {code.fg.hex()};",
                             "Code"
                         }
                     }

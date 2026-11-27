@@ -40,7 +40,7 @@ pub fn DocsShell() -> Element {
     };
     let page_toc_enabled = page.as_ref().is_none_or(|p| p.frontmatter.toc);
     let color_scheme_attr = if theme.is_dark() { "dark" } else { "light" };
-    let theme_mode_attr = snap.theme_mode.as_str();
+    let theme_mode_attr = snap.theme_mode().as_str();
     drop(snap);
 
     let article_container_style = TypedStyle::new()

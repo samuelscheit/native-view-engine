@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn, spawnSync } from "node:child_process";
+import { runThemeScenarios } from "./theme_e2e.mjs";
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -488,7 +489,7 @@ async function run() {
     console.log("    ✓ Hero Preview Card tabs (Live UI -> RSX Code -> Binary IR) verified");
 
     // Theme toggle Dark -> Light -> Screenshot 2 -> Dark
-    await cdp.eval(`document.querySelector('[data-testid="docs-theme-toggle"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-theme-mode-light"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === false`, 4000, "light theme switch");
     const lightBg = await cdp.eval(`getComputedStyle(document.querySelector('[data-testid="docs-root"]')).backgroundColor`);
     // `Theme::preset(Polarity::Light, AppBrand::Docs).surface.canvas` (#f6f6f8).
@@ -496,7 +497,7 @@ async function run() {
     await cdp.capturePng(path.join(shotsDir, "landing-desktop-light.png"));
     console.log(`    ✓ Landing light mode verified (landing-desktop-light.png captured)`);
 
-    await cdp.eval(`document.querySelector('[data-testid="docs-theme-toggle"]').click()`);
+    await cdp.eval(`document.querySelector('[data-testid="docs-theme-mode-system"]').click()`);
     await cdp.waitFor(`window.__NVE_DOCS__.dark_mode === true`, 4000, "dark theme restore");
 
     // Development & Benchmark Progression Dashboard: scroll to controls + charts, capture screenshot, test Log scale + category pills + Table view
@@ -918,6 +919,8 @@ async function run() {
     // -----------------------------------------------------------------------
     // 4. LIVE LAZY-LOADED WASM EXAMPLE APPS (/examples/studio/ & /examples/kitchen-sink/)
     // -----------------------------------------------------------------------
+    await runThemeScenarios({ createPageCdp, debugPort: chrome.debugPort, origin, shotsDir, path, assert });
+
     console.log("==> [4/5] Verifying lazy-loaded live WASM example apps (/examples/studio/ & /examples/kitchen-sink/)...");
     const { cdp: exCdp } = await createPageCdp(chrome.debugPort);
     await exCdp.setViewport(1440, 900, false, 1);

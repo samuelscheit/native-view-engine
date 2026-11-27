@@ -43,6 +43,9 @@ pub enum ThemeMode {
 }
 
 impl ThemeMode {
+    /// Every mode, in control order (System first).
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
     pub const fn resolve(self, os: ColorScheme) -> ColorScheme {
         match self {
             Self::System => os,
@@ -62,11 +65,29 @@ impl ThemeMode {
 
     /// Inverse of [`Self::as_str`].
     pub fn parse(token: &str) -> Option<Self> {
-        match token {
-            "system" => Some(Self::System),
-            "light" => Some(Self::Light),
-            "dark" => Some(Self::Dark),
-            _ => None,
+        Self::ALL.into_iter().find(|m| m.as_str() == token)
+    }
+
+    /// Short control label (`Auto` / `Light` / `Dark`).
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::System => "Auto",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
+    /// Dense index into [`Self::ALL`] (for atomics and binary snapshots).
+    pub const fn index(self) -> u8 {
+        self as u8
+    }
+
+    /// Inverse of [`Self::index`]; out-of-range indices follow the OS.
+    pub const fn from_index(index: u8) -> Self {
+        match index {
+            1 => Self::Light,
+            2 => Self::Dark,
+            _ => Self::System,
         }
     }
 }

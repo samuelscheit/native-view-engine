@@ -2,6 +2,7 @@
 //! on `nve-dioxus` primitives and `nve-interop` theme contexts.
 
 #![cfg_attr(doctest, doc = include_str!("../README.md"))]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod audit;
 pub mod components;
