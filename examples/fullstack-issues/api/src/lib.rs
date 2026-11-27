@@ -146,7 +146,7 @@ pub struct WorkspaceStats {
 }
 
 /// Parses `?comments_issue=<u64>` from a URL query string (with or without leading `?`),
-/// defaulting to [`IssueId(1)`] so SSR and WASM hydration share one canonical parser.
+/// defaulting to `IssueId(1)` so SSR and WASM hydration share one canonical parser.
 #[must_use]
 pub fn parse_comments_issue_query(query: Option<&str>) -> IssueId {
     parse_u64_query_param(query, "comments_issue")

@@ -3,7 +3,7 @@
 //! (`SsrStyleTracker` cost independent of how many rules were already sent).
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::cell::Cell;
 use std::alloc::System;
 
 use nve_backend_web::WebBackend;
@@ -13,14 +13,34 @@ use nve_store::{ChangeSet, NodeId, NodeStore, Rgba};
 
 struct CountingAlloc;
 
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+// Per-thread allocation counter (const-initialized so `try_with` never allocates or re-enters).
+// Isolates each test from `libtest` runner and sibling test threads.
+thread_local! {
+    static ALLOC_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[inline]
+fn bump_alloc_count() {
+    let _ = ALLOC_COUNT.try_with(|c| c.set(c.get().wrapping_add(1)));
+}
+
+#[inline]
+fn thread_alloc_count() -> usize {
+    ALLOC_COUNT.with(Cell::get)
+}
 
 // SAFETY: every method forwards unchanged arguments to `System`, which upholds the `GlobalAlloc` contract.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_alloc_count();
         // SAFETY: `layout` is forwarded unchanged from our caller to `System`.
         unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        bump_alloc_count();
+        // SAFETY: `layout` is forwarded unchanged from our caller to `System`.
+        unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -29,7 +49,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_alloc_count();
         // SAFETY: `ptr`/`layout` come from a prior `System` allocation per the caller contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -37,9 +57,6 @@ unsafe impl GlobalAlloc for CountingAlloc {
 
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
-
-/// The counter is process-global: tests measuring it must not overlap.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn rgb(i: u32) -> Rgba {
     Rgba::rgb((i % 251) as u8, (i / 251 % 251) as u8, 7)
@@ -78,16 +95,59 @@ fn delta_allocations_after(prior: u32) -> usize {
         tx.append_child(parent, fresh);
         tx.commit_into(&mut changes);
     }
-    let before = ALLOC_COUNT.load(Ordering::SeqCst);
+    let before = thread_alloc_count();
     let delta = web.render_ssr_subtree_delta(&store, parent, &mut shell.style_tracker);
-    let after = ALLOC_COUNT.load(Ordering::SeqCst);
+    let after = thread_alloc_count();
     assert_eq!(delta.rule_hashes.len(), 1, "only the new rule is streamed: {delta:?}");
-    after - before
+    after.wrapping_sub(before)
+}
+
+#[test]
+fn counting_alloc_isolates_current_thread_and_observes_allocations() {
+    let before = thread_alloc_count();
+    let probe: Vec<u8> = std::hint::black_box(vec![1u8; 64]);
+    let after_probe = thread_alloc_count();
+    drop(probe);
+    assert!(
+        after_probe.wrapping_sub(before) >= 1,
+        "CountingAlloc must observe allocations on the current thread"
+    );
+
+    let before_bg = thread_alloc_count();
+    let handle = std::thread::spawn(|| {
+        let bg: Vec<u8> = std::hint::black_box(vec![7u8; 256]);
+        bg.len()
+    });
+    assert_eq!(handle.join().unwrap(), 256);
+    let _ = before_bg; // spawn/join itself allocates on this thread; steady-state isolation below:
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        tx.send(()).unwrap();
+        for _ in 0..64 {
+            let v: Vec<u8> = std::hint::black_box(vec![3u8; 128]);
+            drop(v);
+        }
+        done_tx.send(()).unwrap();
+    });
+    rx.recv().unwrap();
+    let start = thread_alloc_count();
+    // Wait without allocating on this thread.
+    while done_rx.try_recv().is_err() {
+        std::thread::yield_now();
+    }
+    let end = thread_alloc_count();
+    worker.join().unwrap();
+    assert_eq!(
+        end.wrapping_sub(start),
+        0,
+        "background thread allocations must not pollute this thread's CountingAlloc counter"
+    );
 }
 
 #[test]
 fn slot_delta_allocations_do_not_scale_with_previously_sent_rules() {
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let small = delta_allocations_after(10);
     let large = delta_allocations_after(1_000);
     // Equal up to amortized container growth (`Vec` / hash-set doubling).
@@ -100,26 +160,25 @@ fn slot_delta_allocations_do_not_scale_with_previously_sent_rules() {
 
 #[test]
 fn csp_nonce_and_options_have_strictly_bounded_allocations() {
-    let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // Warm up OS RNG once before measuring.
     let _ = generate_csp_nonce().unwrap();
 
-    let before = ALLOC_COUNT.load(Ordering::SeqCst);
+    let before = thread_alloc_count();
     let nonce = generate_csp_nonce().unwrap();
-    let after = ALLOC_COUNT.load(Ordering::SeqCst);
+    let after = thread_alloc_count();
     assert_eq!(nonce.len(), 24);
     assert!(
-        after - before <= 1,
+        after.wrapping_sub(before) <= 1,
         "generate_csp_nonce should perform at most 1 String allocation, did {}",
-        after - before
+        after.wrapping_sub(before)
     );
 
-    let before_plan = ALLOC_COUNT.load(Ordering::SeqCst);
+    let before_plan = thread_alloc_count();
     let _plan = StreamPlan::default();
     let _page = SsrPageOptions::new("", WebBackend::new);
-    let after_plan = ALLOC_COUNT.load(Ordering::SeqCst);
+    let after_plan = thread_alloc_count();
     assert_eq!(
-        after_plan - before_plan,
+        after_plan.wrapping_sub(before_plan),
         0,
         "StreamPlan::default() and SsrPageOptions::new(\"\", WebBackend::new) must perform 0 heap allocations"
     );
